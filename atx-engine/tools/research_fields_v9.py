@@ -160,8 +160,9 @@ FIELDS: dict = {
 # The producing code of each field group (contract of task C-3: {group: (entry names,)}); compute() orchestrates.
 PRODUCERS = {"v9_nt": ("nt_rows",), "v9_earnseason": ("earn_season_rows",)}
 # The names each producer group imports from another field module (their closure is an input pin, imported_code).
-IMPORTS: dict = {
-    "v9_nt": (research_fields_sec, ("Calendar", "Latest", "Windowed", "accession_keys", "cik_positions")),
+IMPORTS: dict = {   # v9_nt's SEC_CLOCK, STAGES: added by P9 A1 (test_field_module_imports, FD-2)
+    "v9_nt": (research_fields_sec, ("Calendar", "Latest", "Windowed", "accession_keys", "cik_positions", "SEC_CLOCK",
+                                    "STAGES")),
     "v9_earnseason": (research_fields_v8, ("issuer_history", "LatestRows", "QuarterIndex", "gathered", "picked"))}
 
 

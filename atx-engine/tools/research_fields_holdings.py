@@ -1,12 +1,12 @@
 """Point-in-time research fields from the atx-db holdings and short-side stages (platform v7 lane W5b).
 
-Registered into ``prepare_research_fields.py`` by one hook (``register(globals())``, placed after lane W5a's hook):
-``register`` wraps the builder's ``run`` and ``main`` in its own namespace. When none of ``HOLD_FIELDS`` is requested
-the wrapped ``run`` calls the builder unchanged (every byte of every other field and manifest entry is the same).
-When some are, the builder computes the other fields, and the ``publish`` step of its manifest is intercepted once:
-this module writes its ``<field>.f64`` payloads into the same exclusive output directory, appends its manifest entries
-(registry order, after the builder's) and ``source_checks.holdings``, and only then is the manifest published. A run
-that requests only holdings fields carries the builder's cheapest field (``mkt_ret``) and drops it before publication.
+Registered into ``prepare_research_fields.py`` as a late ``FIELD_MODULES`` module (``FIELD_MODULES.append(_holdings.
+bind(globals()))``, lane A1 of P9; until then a wrap of the builder's ``run`` and ``main``). When none of
+``HOLD_FIELDS`` is requested nothing of this module runs (every byte of every other field and manifest entry is the
+same). When some are, ``check`` pins the stages before any output, the builder computes the other fields and assembles
+its manifest, and ``finish`` writes this module's ``<field>.f64`` payloads into the same exclusive output directory and
+appends its manifest entries (registry order, after the builder's) and ``source_checks.holdings`` before the manifest
+is published. A run may request holdings fields only.
 With ``--reuse`` (v8 C-3) a holdings field is copied from the prior directory when its producing code (``PRODUCERS``
 kind closure plus the builder code it reads through ``ns``), stage manifest pins, research seal (review N-1: each
 entry records ``seal_date``), formula and dependencies are unchanged (prepare_research_fields.REUSE_MODULE_RULE); every
@@ -33,9 +33,7 @@ field value was read. No field reads a return, and no statistic conditioned on r
 """
 from __future__ import annotations
 
-import argparse
 import datetime as dt
-import functools
 import hashlib
 import json
 from pathlib import Path
@@ -1386,90 +1384,58 @@ def build_all(ns, names, role_dir: Path, role_sha256: str, output: Path, manifes
     budget.report("holdings-complete", fields=len(names), peak_rss_mib=budget.peak >> 20)
 
 
-def _drop_from_reuse(block: dict, name: str) -> None:
-    """Remove the carried field from the builder's --reuse block (it leaves no trace in the manifest)."""
-    for k in ("reused", "computed"):
-        block[k] = [x for x in block[k] if x != name]
-    for k in ("not_reused", "producing_code_sha256_lf"):
-        block[k].pop(name, None)
+# ---------------------------------------------------------------------------------------------------------------------
+# The module object the builder binds (a late FIELD_MODULES module; lane A1 of P9 replaced the run/main wrap)
+# ---------------------------------------------------------------------------------------------------------------------
+
+def bind(host_namespace: dict) -> "HoldingsFieldModule":
+    """The builder's hook (``FIELD_MODULES.append(_holdings.bind(globals()))``). ``HOLD_FIELDS`` stay out of the builder's
+    ``ALL_FIELDS``: the builder orders a late module's fields after every other field, as the manifest always had them."""
+    return HoldingsFieldModule(host_namespace)
 
 
-def register(ns: dict):
-    """The registry hook: wrap ``run`` and ``main`` of the builder namespace ``ns`` (idempotent per namespace)."""
-    if ns.get("_holdings_registered"):
-        return
-    base_run, base_main = ns["run"], ns["main"]
+class HoldingsFieldModule:
+    """``LATE``: the builder computes and digests every other field, assembles its manifest, then calls ``finish``,
+    which writes this module's payloads into the same exclusive output directory and appends their entries (registry
+    order, after the builder's) and ``source_checks.holdings`` before the manifest is published (``build_all``)."""
+    GROUP, FIELDS, OPTIONS, LATE = GROUP, HOLD_FIELDS, STAGE_KWARGS, True
 
-    @functools.wraps(base_run)
-    def run(role_dir, role_sha256, output, fields=None, **kw):
-        fields = list(ns["DEFAULT_FIELDS"] if fields is None else fields)
-        inputs = {k: kw.pop(k, None) for k in STAGE_KWARGS}
-        mine = requested(fields)
-        if not mine:
-            return base_run(role_dir, role_sha256, output, fields, **kw)
-        if len(set(fields)) != len(fields):
-            raise ValueError("--fields must be distinct names")
-        rest = [x for x in fields if x not in HOLD_FIELDS]
-        validate(fields, rest, inputs)
-        stages = open_stages(mine, inputs)
-        carrier = not rest
-        budget = ns["Budget"](kw.get("max_rss_mib", 700), kw.get("max_seconds", 1800.0))
-        state = {"done": False}
-        target = Path(output) / "manifest.json"
-        base_publish = ns["publish"]
+    def __init__(self, host_namespace: dict):
+        self.ns = host_namespace
+        self._stages: dict = {}
 
-        def publish(path, value):
-            if not state["done"] and Path(path) == target and value.get("schema") == ns["SCHEMA"]:
-                state["done"] = True
-                if carrier:  # the carried field leaves no trace
-                    value["fields"] = [e for e in value["fields"] if e["name"] != "mkt_ret"]
-                    value["files"].pop("mkt_ret.f64")
-                    (Path(output) / "mkt_ret.f64").unlink()
-                    if isinstance(value.get("reuse"), dict):
-                        _drop_from_reuse(value["reuse"], "mkt_ret")
-                reused, prior_checks = {}, {}
-                if kw.get("reuse") is not None:  # v8 C-3: the builder's reuse block exists (value["reuse"])
-                    role = ns["Role"](Path(role_dir), role_sha256)
-                    reused, reasons, prior = ns["reuse_module_fields"](
-                        sys.modules[__name__], Path(kw["reuse"]), kw.get("reuse_sha256"), role, mine, Path(output),
-                        budget, options=inputs, reused_names=set(value["reuse"]["reused"]),
-                        hardlink=bool(kw.get("reuse_hardlink", False)))
-                    prior_checks = prior.get(GROUP) if isinstance(prior.get(GROUP), dict) else {}
-                    order = [e["name"] for e in value["fields"]] + mine
-                    block = value["reuse"]
-                    for kind, key in KIND_CHECK_KEY.items():
-                        names = [x for x in mine if HOLD_FIELDS[x]["kind"] == kind]
-                        if names:
-                            ns["merge_module_reuse"](block, order, names, reused, reasons, group=f"{GROUP}.{key}",
-                                                     prior_check=prior_checks.get(key))
-                    block.pop("_source_checks", None)  # build_all carries the prior checks of fully reused kinds
-                build_all(ns, mine, Path(role_dir), role_sha256, Path(output), value, budget, stages, reused,
-                          prior_checks)
-            return base_publish(path, value)
-
-        ns["publish"] = publish
-        try:
-            return base_run(role_dir, role_sha256, output, rest or ["mkt_ret"], **kw)
-        finally:
-            ns["publish"] = base_publish
-
-    def main(argv=None):
-        p = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    @staticmethod
+    def add_arguments(parser):
+        g = parser.add_argument_group("holdings fields (research_fields_holdings.py: " + ",".join(HOLD_FIELDS) + ")")
         for key in STAGES:
             flag = "--" + key.replace("_", "-")
-            p.add_argument(flag, dest=key, type=Path)
-            p.add_argument(flag + "-sha256", dest=key + "_sha256")
-        mine, rest = p.parse_known_args(argv)
-        if "-h" in rest or "--help" in rest:
-            print("holdings fields (research_fields_holdings.py, named in --fields): " + ",".join(HOLD_FIELDS)
-                  + "\n  stage inputs: " + " ".join(f"--{k.replace('_', '-')} DIR --{k.replace('_', '-')}-sha256 PIN"
-                                                    for k in STAGES))
-        wrapped = ns["run"]
-        ns["run"] = functools.partial(wrapped, **vars(mine))
-        try:
-            return base_main(rest)
-        finally:
-            ns["run"] = wrapped
+            g.add_argument(flag, dest=key, type=Path, help=f"the atx-db alpha-panel {key}/ stage directory")
+            g.add_argument(flag + "-sha256", dest=key + "_sha256", help="SHA-256 of that stage's manifest.json")
 
-    ns["run"], ns["main"] = run, main
-    ns["_holdings_registered"] = True
+    def check(self, selected, options: dict):
+        """Before any output: requirements and stage inputs (``validate``), then every stage the requested fields read
+        is opened and pinned (``open_stages``) for ``finish``."""
+        self._stages = {}
+        mine = requested(selected)
+        if mine:
+            validate(selected, [x for x in selected if x not in HOLD_FIELDS], options)
+            self._stages = open_stages(mine, options)
+
+    def merge_reuse(self, block: dict, order: list, names: list, reused: dict, reasons: dict, prior: dict) -> None:
+        """The builder's --reuse block extended with this module's decisions, one merge per kind (group
+        ``holdings.<check key>``). The prior check of a fully reused kind goes to ``source_checks.holdings`` through
+        ``finish`` (``build_all``), never to the builder's top-level source checks."""
+        checks = prior.get(GROUP) if isinstance(prior.get(GROUP), dict) else {}
+        for kind, key in KIND_CHECK_KEY.items():
+            mine = [x for x in names if HOLD_FIELDS[x]["kind"] == kind]
+            if mine:
+                self.ns["merge_module_reuse"](block, order, mine, reused, reasons, group=f"{GROUP}.{key}",
+                                              prior_check=checks.get(key))
+                block.get("_source_checks", {}).pop(f"{GROUP}.{key}", None)
+
+    def finish(self, names, role_dir: Path, role_sha256: str, output: Path, manifest: dict, budget, reused: dict,
+               prior: dict) -> None:
+        """Compute ``names`` (those not in ``reused``) and extend ``manifest`` before it is published."""
+        checks = prior.get(GROUP) if isinstance(prior.get(GROUP), dict) else {}
+        build_all(self.ns, names, Path(role_dir), role_sha256, Path(output), manifest, budget, self._stages, reused,
+                  checks)

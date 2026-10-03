@@ -309,16 +309,16 @@
     },
     "si_dtc": {
       "max_stale_days": 45,
-      "rows_available_on_or_after_2025_dropped": 0,
       "rows_ignored_unknown_id": 0,
       "rows_matched_axis": 15,
+      "rows_sealed_dropped": 0,
       "rows_total": 15
     },
     "si_shares": {
       "max_stale_days": 45,
-      "rows_available_on_or_after_2025_dropped": 1,
       "rows_ignored_unknown_id": 1,
       "rows_matched_axis": 18,
+      "rows_sealed_dropped": 1,
       "rows_total": 20
     }
   },

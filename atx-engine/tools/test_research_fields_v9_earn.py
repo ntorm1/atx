@@ -200,7 +200,7 @@ class EarnSeason(unittest.TestCase):
             m = self.w.run("sealed", fields=[NAME])
             m_loud = loud.run("sealed-loud", fields=[NAME])
         dropped = sum(1 for r in self.w.rows if r["accepted_utc"] >= seal)
-        key = "rows_available_on_or_after_2025_dropped"     # the builder's historical name for the sealed count
+        key = "rows_sealed_dropped"     # the published name of the sealed count (P9 A1; was ..._on_or_after_2025_...)
         self.assertEqual(m["source_checks"]["v9"][NAME]["fund_events"][key], dropped)
         self.assertEqual(m_loud["source_checks"]["v9"][NAME]["fund_events"][key], dropped + len(extra))
         self.assertEqual(m_loud["files"][f"{NAME}.f64"], m["files"][f"{NAME}.f64"])
@@ -231,7 +231,7 @@ class EarnSeason(unittest.TestCase):
         got = isolated(TOOLS, code, json.dumps({"role": str(w.role), "role_sha": w.role_sha,
                                                 "out": str(w.base / "repo-2024"), "options": opts}))
         self.assertEqual(got["seal"], "2024-01-01")
-        self.assertEqual(got["events"]["rows_available_on_or_after_2025_dropped"], len(late))
+        self.assertEqual(got["events"]["rows_sealed_dropped"], len(late))
         self.assertEqual(got["payload"], self.manifest["files"][f"{NAME}.f64"])
 
     def test_byte_identity_with_the_v8_quarter_fields(self):

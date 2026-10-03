@@ -9,6 +9,12 @@ The repository window (research-window-v2, seal 2024-01-01) is what every tool b
 test_research_window.py, which checks it, and the tools' refusals under it, in fresh interpreters that never load
 this file. atx-impl/tools loads its own instance of research_window.py (engine_tools.py), so a mixed run
 ``pytest atx-engine/tools atx-impl/tools`` keeps the repository window there.
+
+P9 ruling A1-C: the bind stays through wave 1. Without it 115 tests of 22 legacy-dated modules fail (their fixtures
+run Oct-Dec 2024 sessions, 2024 13F quarters, ...; ``pytest --noconftest``), which wave-2 lane T2 re-dates before it
+deletes this bind (G-P9).
+Lane A1's seal behaviour is pinned under the repository window in fresh interpreters meanwhile
+(test_prepare_research_fields_seal.py, test_field_registry.py).
 """
 import research_window
 

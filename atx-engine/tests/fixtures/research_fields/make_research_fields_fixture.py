@@ -13,10 +13,13 @@ Layout under DIR:
   finra/      dissemination_schedule.csv, asof/si_shares.csv (LF), asof/si_dtc.csv (CRLF), asof/manifest.json
   expected/   si_shares.f64, si_dtc.f64, vol_126.f64 (the Python builder's bytes) and manifest.normalized.json: the
               Python manifest with absolute paths under DIR written as "<fixture>/<posix path>" and the Python code
-              identity keys (code_sha256*, code_git_blob_sha1, producer) dropped, so a builder edit that leaves every
-              field byte unchanged leaves the fixture unchanged.
+              identity keys (code_sha256*, code_git_blob_sha1, producer) and the interpreter / library versions
+              (runtime_versions, P9 A1) dropped, so a builder edit that leaves every field byte unchanged leaves the
+              fixture unchanged.
 
-One synthetic FINRA row is dated 2024-02-07: it is the reader-side seal probe (dropped and counted by both sides).
+One synthetic FINRA row is dated 2024-02-07: it is the reader-side seal probe (dropped and counted by both sides, as
+``rows_sealed_dropped``). The fixture is generated under the repository research window (research_window.json; this
+directory has no test harness that binds another), which ``build`` asserts.
 """
 from __future__ import annotations
 
@@ -39,7 +42,7 @@ N_SESSIONS = 300
 FIRST = dt.date(2021, 1, 4)
 FIELDS = ["si_shares", "si_dtc", "vol_126"]
 SEALED_DISSEMINATION = "2024-02-07"
-CODE_KEYS = {"code_sha256", "code_sha256_lf", "code_git_blob_sha1", "producer"}
+CODE_KEYS = {"code_sha256", "code_sha256_lf", "code_git_blob_sha1", "producer", "runtime_versions"}
 
 
 def sessions() -> list[dt.date]:
@@ -161,6 +164,9 @@ def build(out: Path) -> None:
     """Write the inputs under ``out`` and the Python builder's outputs under ``out/expected``."""
     sys.path.insert(0, str(TOOLS))
     import prepare_research_fields as builder   # the EXISTING Python builder
+    import research_window as rw
+    if rw.WINDOW_ID != rw.current()["WINDOW_ID"] or builder.SEAL != rw.current()["SEAL"]:
+        raise RuntimeError(f"the fixture is generated under the repository research window, not {rw.WINDOW_ID}")
     for sub in ("role", "finra", "expected"):
         if (out / sub).exists():
             shutil.rmtree(out / sub)

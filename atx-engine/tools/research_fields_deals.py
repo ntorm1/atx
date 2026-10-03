@@ -62,8 +62,9 @@ FILING_COLS = ("cik", "form", "is_amendment", "available_at")
 LAG_SESSIONS = 1
 
 # The names the producer imports from other field modules: their closure is an input pin (imported_code).
-IMPORTS = ((research_fields_sec, ("Calendar", "Latest", "Windowed", "cik_positions")),
-           (research_fields_v9, ("stage_batches", "form_codes")))
+IMPORTS = ((research_fields_sec, ("Calendar", "Latest", "Windowed", "cik_positions", "SEC_CLOCK", "STAGES")),
+           (research_fields_v9, ("stage_batches", "form_codes", "NT_PRESENCE_DAYS", "NT_PRESENT", "PERIODIC_FORMS")))
+# SEC_CLOCK, STAGES, NT_PRESENCE_DAYS, NT_PRESENT, PERIODIC_FORMS: added by P9 A1 (test_field_module_imports, FD-2)
 
 DEAL_RULE = (
     "sec-deal-target-pending-v1 on the sec_filings stage's filings.parquet: forms upper-cased and trimmed, originals "
