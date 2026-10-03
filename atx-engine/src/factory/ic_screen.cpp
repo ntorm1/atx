@@ -626,4 +626,5 @@ std::string_view ic_screen_rule_name(IcScreenRule rule) noexcept {
   return "unknown";
 }
 usize ic_screen_simd_width() noexcept { return Batch::size; }
+atx::engine::BuildFlavor ic_screen_build_flavor() noexcept { return ATX_ENGINE_BUILD_FLAVOR; }
 } // namespace atx::engine::factory

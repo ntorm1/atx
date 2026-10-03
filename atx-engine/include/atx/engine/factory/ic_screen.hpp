@@ -7,6 +7,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
+#include "atx/engine/build_flavor.hpp"
 #include "atx/engine/factory/ic_screen_config.hpp"
 
 namespace atx::engine::alpha { class Panel; }
@@ -135,5 +136,8 @@ prepare_ic_screen_scratch(const IcScreenCache& cache);
 [[nodiscard]] std::string_view ic_screen_reason_name(IcScreenReason reason) noexcept;
 [[nodiscard]] std::string_view ic_screen_rule_name(IcScreenRule rule) noexcept;
 [[nodiscard]] atx::usize ic_screen_simd_width() noexcept;
+// P9 S1 (DS-1): the build flavour of the TU that scores IC (atx/engine/build_flavor.hpp), so
+// the IC-result cache identity takes FP flags, assertions, CRT and xsimd version from here.
+[[nodiscard]] atx::engine::BuildFlavor ic_screen_build_flavor() noexcept;
 
 } // namespace atx::engine::factory

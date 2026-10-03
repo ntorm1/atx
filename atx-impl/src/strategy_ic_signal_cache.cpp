@@ -17,6 +17,7 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+#include "atx/engine/build_flavor.hpp"
 #include "build_provenance.hpp"
 
 namespace atx::impl::strategy::ic_detail {
@@ -90,8 +91,13 @@ constexpr std::array<std::string_view,2> legacy_engine_shas{
 constexpr const char* cache_schema="atx.dsl-candidate-signal/v1";
 constexpr const char* cache_layout="date-major-little-endian-f64;non-finite-stored-as-quiet-NaN";
 } // namespace
+// P9 S1 (DS-1): plus the build flavour token (build type, NDEBUG, CRT, xsimd version) of this TU,
+// which shares the VM-instantiating runner TU's flag set (strategy_ic_detail.hpp). The equity-dev
+// Debug flavour keeps the empty token, so its identity, cache root and summaries keep their bytes;
+// any other flavour (equity-rel) appends one and gets its own cache root: no shared entries.
 std::string vm_identity() {
-  return "dslvm"+std::to_string(dsl_vm_semantics_version)+"_"+std::string(vm_compiler)+std::string(vm_fp_flavor);
+  return "dslvm"+std::to_string(dsl_vm_semantics_version)+"_"+std::string(vm_compiler)+
+      std::string(vm_fp_flavor)+atx::engine::build_flavor_suffix(ATX_ENGINE_BUILD_FLAVOR);
 }
 // ---- Candidate signal cache -------------------------------------------------
 // ROOT is DIR/<vm identity>/ (DIR itself for the legacy identity), so a VM or
