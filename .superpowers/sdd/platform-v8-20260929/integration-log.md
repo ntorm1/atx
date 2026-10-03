@@ -7610,3 +7610,103 @@ sharpe_within_.100: True (1.808289 >= 1.749482; dSR -.041193), mechanics: True (
   Y-F0 stays the unlevered claims book; X-10 is never in the Sharpe claim. Which book is deployed is the owner's risk
   decision (PM7-3); OD-P9-3 keeps P9 at L <= 2.0.
 - **Count:** 1 construction trial, N 61 of 62; it enters V.
+
+## R0-11 Y-1 vol-target on Y-F0, child of X-10 (P9 Phase 0) (2026-10-03, 15:16Z-)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD before `dbc2b975`. Ledger `build-equity/trials.jsonl`
+132 lines (file `e242e161`, head `15484aa1699daa9a`), N 61 (`backtest_integrity.ledger_n`; construction cap 62: Y-1 takes
+the last slot). Rulings applied: Y1-PARENT (P9 `progress.md`: parent = X-10's spec), SEAL-ALLOW (per-hit source check of
+Y-1's own run dirs), R0-6-ATT (only if an attempt fails), R0-7-MAN (the cell's template spec, as R0-10), R0-7-EOL (done in
+R0-7), OD-P9-3 (P9 keeps L <= 2.0; Y-1's cap is 2.0 and L_t <= 2.0 by its clip).
+
+### Registration and route (by hand through `research_cycle.py`, as R0-10)
+
+- **Registration:** v8y 6 Y-1 row, v8y 8 Y-1 bullet, v8y 13 P14, v8y 14 Y-1 row (template
+  `scripts/specs/v8/y-vol-target.json` @ `47d6afd9`, file `4e190f5434dfc13aced1459721cde476faf3560ef99aa41e05bfe492e2f141b4`;
+  cap 2.0, floor 1, cadence 21, annualisation 252; `nav --vol-target vol-target-v1 --risk-model <store> --risk-model-sha256
+  <pin>`), YP-8, YP-9; NAV-only; not gross-matched (PM7-20 reading B). YP-15 does not apply (Y-5 rejected).
+- **Route:** PM8-14 / YP-7: "X-10 and Y-1 by hand through `research_cycle.py`" (the driver has only `v8-mech` and
+  `pm7-34`; Y-1's gross band and its three-part rule are not in `scripts/wave_rules.py`, as R0-10 checked). Runbook as
+  R0-10: template copy, `lock --write`, `plan`, pre-registration commit, `run --stop-after nav`, mechanics before any
+  return, `run` (summ ledgers the cell), bundles and book reader with the driver's own argv builders
+  (`wave_steps.bundle_argv`, `reader_argv`); verdict by hand. Memory gate on every launch: free >= cap + 1,536 MiB
+  (NAV / summ / readers 3,072), host check (no compiler, no `atx-*` exe, no research process), free sampled every 0.25 s.
+
+### Pin, parent and P14 checks (read-only; before anything is written or run)
+
+1. **Template pin:** disk sha256 `4e190f5434dfc13aced1459721cde476faf3560ef99aa41e05bfe492e2f141b4` = v8y 14's registered
+   file pin; last commit on the path `47d6afd9`; `git diff HEAD` on it empty. **PASS.**
+2. **Parent check (Y1-PARENT):** the template's `"parent": null` names no parent. Its `"nominal_parent": "base-b0c.json"`
+   is the planning placeholder: `research_spec.py` "planned against while parent is null: plan works, run refuses", and
+   v8y 14 "The four YCOMB templates name `nominal_parent` only: root sets `parent` to the last accepted spec at run time".
+   Precedent: `y-norm-score.json` carries the same `base-b0c.json`, and the driver's Y-3 copy (`4f1e0e08`,
+   `wave_steps.rule_cell_doc`) kept it beside `parent` `lib-v8ysb-gm.json`. So neither field names a parent that conflicts
+   with X-10: **no stop.** The description's "parent = X-F0" / "against X-F0" is v8y Appendix C (9): under PM8-10 (e) the
+   unlevered parent is Y-F0 (v8y 8). With `parent` = `x-leverage-L2.0.json` (= Y-F0 + `nav.leverage` 2.0), the resolved
+   NAV argv is v8y 8's "Y-F0's spec + `nav.leverage` 2.0 + `nav --vol-target ...`" and the derived paired reference is
+   X-10's NAV (v8y 8 "Paired reference: X-10's NAV"), so summ's paired dSR is Y-1 vs X-10.
+3. **P14 (v8y 13: "the risk store's role pin equals Y-F0's role"):** store `build-equity/v8-risk-lo3-v10`
+   `manifest.json` re-hashed `862515d92623be37fbd4b126c8f0350a20135e7977f1cbf66c6c33f1644ecd5a` (= the registered pin);
+   its `role` = {`manifest_sha256` `e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4`, `path`
+   `build-equity/train-2020-2023-lo3/manifest.json`}. Y-F0's spec (`lib-v8ysb-gm.json` `1e3ec118`) `inputs.role` = the
+   same path, sha256 `e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4`; the role manifest on disk
+   re-hashed `e1c67101...395f4`; X-10's plan pin `role e1c67101 [locked, verified]` (R0-10). **P14 PASS: equal**, so the
+   store is not rebuilt (0 trials). Store keys beside: schema `atx.risk-model/v1`, model `atx-risk-v1.1`, seal begin
+   2024-01-01 with role_last_session_ns 1703808000000000000 (2023-12-29); the store R-8 ran on (`r8.json` fills).
+4. **Defined (v8y 6 "Undefined" Y-1 row):** X-10 is accepted (neither undefined nor void); its NAV rule is aim-partial-v5
+   with no `--risk-target`, no spo, no v6; the store is given. Y-1 is defined unless the NAV refuses at run time (then 0,
+   logged).
+
+### Books the rule reads (from records; no new read)
+
+- **Y-F0** `lib-v8ysb-gm.json` (`1e3ec118`), L_P 1.1828; NAV `build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb`
+  (`summary.json` `2d30b7f6`, S2 daily `73b69bcc`); all-rows S2 gross G_P .9862134133265011; net annual
+  .05653814276222473; S2 net Sharpe 1.849482026329859 (`p9-r10-x10/book.json` `d222b547`, parent row).
+- **X-10** `x-leverage-L2.0.json` (`ebe68e6e`), L 2.0; NAV `build-equity/mega-nav-v8x-theme-erc-L2.0-v8ysb`
+  (`summary.json` `1bc1b6ca`, S2 daily `e783eb74`); trial `25f3b27aae4754ab` (s2_net_sr 1.8082892420018353).
+
+### Mechanics limits (v8y 8 Y-1, YP-9), written before any Y-1 run
+
+All rows of the S2 daily CSV (`modeled-1bn-stale5-v1+swap-fin-v1`); P = Y-F0, the unlevered parent (v8y 8 "[1.0, 2.0] x
+G_P / L_P widened by .005"; template "G_parent / L_parent"; YCOMB "the same parent as X-10"); r = 2.0 / L_P = 2.0 / 1.1828
+= 1.6909029421711192.
+
+| row | registered | Y-1 limit | unrounded limit used by the check |
+|---|---|---|---|
+| mean gross leverage | [1.0, 2.0] x G_P / L_P, widened by .005 (G_P / L_P = .9862134133265011 / 1.1828) | **[.828796, 1.672591]** | [0.8287955811012014, 1.6725911622024028] |
+| abs(mean net leverage) | .02 r (X-10's) | **<= .033818** | 0.033818058843422386 |
+| tau (turnover) mean | .20 r (X-10's) | **<= .338181** | 0.3381805884342239 |
+| tau p95 | .30 r (X-10's) | **<= .507271** | 0.5072708826513358 |
+| max return identity error; max cash book relative error | unchanged | <= the summary's `accounting_checks.tolerance` | - |
+
+Verified against v8y 8 (the Y-1 and X-10 bullets) and YP-9: the band equals the dispatch's [.8288, 1.6726] and R0-10's
+report line 135; the other rows equal X-10's limits as committed at `50406181`. (Printed only: the band on X-10's own
+gross / L, .8333588, would be [.828359, 1.671718]; the registration names G_P / L_P of the unlevered parent.) A value
+outside its limit = mechanics fail = **rejected, counted** (v8y 12): summ still runs and ledgers the cell. The NAV's own
+`--daily-turnover-mean-max .20 --daily-turnover-p95-max .30` flags are carried; their summary flags are printed.
+
+**`vol_target.csv` before any return** (v8y 8; the template's "before any return"; the R-8 `risk_target` precedent of
+batch 2g), read in this order, keys only (no return column) and printed: (a) estimates against scored decisions / 21;
+(b) decisions before the first estimate; (c) decisions and estimates at the cap 2.0 / at the floor 1 / unclipped; L_t n,
+mean, min, max; sigma_hat and sigma_ref over the estimates; (d) priced_share mean, min, max. The registration gives
+these no number. Root stops for a PM ruling before summ (no return read, so 0 trials) if one contradicts the registered
+rule's own definition: an L_t outside [1, 2.0]; L_t other than 2.0 before the first estimate or at it (sigma_ref_1 =
+sigma_hat_1); two estimates fewer than 21 sessions apart; no estimate at all; or a priced_share mean below .9956 (R-8's
+minimum on this store: the reading of "near 1" would then need a ruling).
+
+**Identity before any return** (template): flag-absent suites `VolTarget.*:RiskTarget.*:BookVolTarget.*` re-run on the
+P5 target-tests exe (v8-16d `d504994d`; synthetic, no real data); the parent's NAV argv on the P5 targets exe `72ff6d2d`
+reproduced Y-F0's files 27 / 27 (R0-9 P13 (a)); X-10 ran on the same exe.
+
+### Acceptance (registered: v8y 6 Y-1 row and v8y 8; decides), fixed before the run
+
+1. Paired S2 net dSR of Y-1 against X-10 **> 0** (summ's paired block, reference = X-10's NAV; the bundle X-10 vs Y-1
+   prints both p); AND
+2. X-10's leverage rule against Y-F0: S2 net annual return at 1x (book reader `net_annual`) **above .05653814276222473**
+   AND S2 net Sharpe **>= 1.849482026329859 - .100 = 1.749482026329859**; AND
+3. mechanics as above.
+
+Printed, deciding nothing: dSR against Y-F0 (bundle Y-F0 vs Y-1), both p of each bundle; net annual return, realised vol
+and max drawdown of Y-F0, X-10 and Y-1 side by side; mean L_t; net Sharpe at 1x and at 4x NAV; cost per traded dollar;
+DSR (N 62); PBO; year table. If accepted, Y-1 replaces X-10 as Y-F (v8y 1). Count: 1 construction trial (N 61 -> 62 =
+the cap) whatever the verdict; 0 admission trials.
