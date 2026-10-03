@@ -504,9 +504,8 @@ class QuarterFields(unittest.TestCase):
             m_loud = loud.run("sealed-loud")
         dropped = sum(1 for r in self.w.rows if r["accepted_utc"] >= seal)
         self.assertGreater(dropped, 0)
-        self.assertEqual(m["source_checks"]["v8"]["fund_events"]["rows_available_on_or_after_2025_dropped"], dropped)
-        self.assertEqual(m_loud["source_checks"]["v8"]["fund_events"]["rows_available_on_or_after_2025_dropped"],
-                         dropped + len(extra))
+        self.assertEqual(m["source_checks"]["v8"]["fund_events"]["rows_sealed_dropped"], dropped)
+        self.assertEqual(m_loud["source_checks"]["v8"]["fund_events"]["rows_sealed_dropped"], dropped + len(extra))
         for name in NEW:
             self.assertEqual(m_loud["files"][f"{name}.f64"], m["files"][f"{name}.f64"], name)
         unsealed = loud.run("unsealed-loud")

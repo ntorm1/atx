@@ -35,7 +35,9 @@ def test_the_fixture_is_the_python_builders_output(tmp_path):
 def test_the_fixture_exercises_every_rule():
     m = json.loads((HERE / "expected" / "manifest.normalized.json").read_text(encoding="utf-8"))
     checks = m["source_checks"]
-    assert checks["si_shares"]["rows_available_on_or_after_2025_dropped"] == 1      # the seal probe row
+    assert checks["si_shares"]["rows_sealed_dropped"] == 1      # the seal probe row (2024-02-07, repository seal)
+    assert "rows_available_on_or_after_2025_dropped" not in json.dumps(m)   # the published name only (P9 A1)
+    assert m["seal"]["exclusive_end"] == "2024-01-01" and "runtime_versions" not in m   # normalised away
     assert checks["si_shares"]["rows_ignored_unknown_id"] == 1
     assert (HERE / "finra" / "asof" / "si_dtc.csv").read_bytes().count(b"\r\n") == len(fx.SI_DTC) + 1
     shape = (fx.N_SESSIONS, len(fx.IDS))

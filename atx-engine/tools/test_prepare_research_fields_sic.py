@@ -119,7 +119,7 @@ class SicEventsOverride(unittest.TestCase):
             self.assertEqual(y, x, name)   # clock, definition, coverage, nan reasons: unchanged
         st, st0 = self.same["source_checks"]["issuer"], self.plain["source_checks"]["issuer"]
         self.assertEqual(st["sic_events_override"]["manifest_sha256"], self.stage_sha)
-        for k in ("rows_total", "rows_available_on_or_after_2025_dropped", "rows_ignored_unlinked_cik", "rows_used",
+        for k in ("rows_total", "rows_sealed_dropped", "rows_ignored_unlinked_cik", "rows_used",
                   "rows_used_invalid_sic_skipped", "rows_sharing_cik_and_clock"):
             self.assertEqual(st["sic_events"][k], st0["sic_events"][k], k)
         self.assertEqual((st["sic_events"]["rows_by_sic_basis"], st["sic_events"]["rows_used_carried"],
