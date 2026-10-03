@@ -10,9 +10,9 @@ Three current agent lanes (list live agents before dispatching duplicates):
 
 | Agent | Current work | State/artifacts |
 |---|---|---|
-| /root/t2_fix_r1 | Task 2 fix round 2 | r1 commits d306e776,f0ab20f5,21d6c4ac; I1/I2/I3/I5 addressed, I4 French FAIL remains (27/60). Task 2x separately review-clean COMPLETE. Dated header backfill and independent class/REIT audit underway; <=3000 HTTP attempts /1 per sec, 200 reserved for later audit. |
-| /root/t4_ratios | Task 4 implementation recovery | Task3 review-clean COMPLETE with known Task5/9 gate dependencies. Task4 resumes WIP fd9d67b7 and consumes R6 v2 clock keys plus owner profitability/growth requirements. Universe refresh still pending. |
-| /root/t14_notes | Task 14 fix round 3 | r2 commits1b1856c2,1fae76ef,f986d6fe,20cd6ffe; N1 addressed/no new blocker, I4 and denominator still open. Implement general role-aware hierarchy extraction on retained100-pilot, then bounded300more/1500attempt tranche after fixtures; see ledger. |
+| /root/t2_fix_r1 | Task 2 fix round 2 | Interim02f6d78b;1454priorityheaders fetched,1331CIKs accepted,123missingstate unknown. Class pass running,50initial10MBoversize responses retried under64MB/0.4GiBguard. Same3000totalattemptcap/200auditreserve. I4 French gate remeasurement pending; Task2x already complete. |
+| /root/t4_ratios | Task 4 implementation recovery | Interim e49b2b0a plus WIPfd9d67b7. R6 clock keys and R7 std-stage chain; R8 WRDS definitions require distinct cap/earnings and paid-dividend extensions. Primary dilutedP/E and indicatedyield remain explicitNULL pending certified inputs. Independent sourcechecks expanded19to36formulas; remaining37unverified exposed. Final evidence/report pending. |
+| /root/t14_notes | Task 14 fix round 3 | Interim762502b9,6425c274. Nine primary-corroborated reportable cuts,100pilot outcomes, persisted partition/foreign-sales quality flags. Business scan19332readableannualaccessions;16321have neither readableBusiness norpilotprimary. Qualified evidence tests/build/gates/report pending. No newHTTP;300-case expansion deferred pending demonstrated benefit. |
 
 Latest completed reviews: review-T3-r2-findings.md Approved and review-T14-r2-findings.md Needs fixes (I4/denominator only). Task3 is complete under recorded Task5/9 dependency rulings. Task9 still orientation only; follows Task14. All remaining ordering remains below; Task2x is already complete, not a new dispatch.
 
