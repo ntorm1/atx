@@ -116,3 +116,4 @@ P9 room (plan §5.2): N_c <= 69, K_a <= 10, M + 0, N_tot <= 250.
 - The v8 branch was neither deleted nor moved.
 
 ## Branch point
+- v8 head SHA = P9 branch point: `31b024c8411da8162f44038d26235da1898d5b3d` (`feat/platform-v8-20260929`; `feat/platform-p9-20261003` cut from it by `git switch -c` in `C:/atx-wt/pool-2`; `wave status` re-run just before the cut: y-s, y-3, y-2, y-5 9/9 done, y-s.head.json exit 2 as before; ledger 133 lines `27e40f9f`).
