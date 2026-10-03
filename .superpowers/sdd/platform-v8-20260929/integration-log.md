@@ -7361,3 +7361,65 @@ Cell w vs the parent's w (`mega-v8yw-train-two-speed-1` vs `mega-v8xw-train-them
 | 06 match | 0 | 85.1 | 713 (nav) | 5,062 / 3,931 | `6e7cb5b0813368bc2a86cd5c1a36274eac637c6417e6fdd2b5ba016a69085954` | `ebeadabe` (D) | PM6-6: calibration G .9215182646 vs G_parent .9862134133 (miss .0647 > .005) -> one correction L 1.1828 x .98621 / .92152 = **L 1.2658**; `y-two-speed-y-5-gm.json` (sha256 `1357018b`, digest `83e6b284`; differs from the cell only in name, description, nav.leverage, nav.output); matched NAV `mega-nav-v8y-two-speed-L1.2658-run` exit 0, 82.7 s, 713 MiB, exe `72ff6d2d` (u, fit, w, card = the calibration's: no re-run): **G .9862947654** (within .005); readers mech-calibration `aca98588`, mech-matched `c4435b67`; matched S2 daily CSV `86c8b47e` |
 | 07 verify | 0 | 0.3 | - (no exe) | 4,683 / 4,660 | `997d151a41236165bf78585027501c4177b7d9be37323797c4678e04e0974c89` | - | SEAL-ALLOW: `tools/sealsrc.py --manifest scripts/specs/v8/waves/y-5.json` exit 0 before the run: 6 hits over 26 files, `2026-10-02` source (a) x4 (consoles 004:4, 005:93, 009:4, 010:63), `2026-10-03` source (b) x2 (005:7, 010:7), **0 OTHER**; argv adds `--seal-allow "2026-10-02=untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)" --seal-allow "2026-10-03=receipt started_utc wall-clock (PM SEAL-ALLOW)"`. Mechanics **PASS** 6/6 (gross_all_rows .98629 in [.90, 1.05]; abs net .00528 <= .02; tau mean .02608 <= .20; p95 .03182 <= .30; return identity 3.75e-16, cash book 3.88e-14 <= 1e-09); binding argv `ec792778`, file `8ba41527`, spec `83e6b284`; seal scan 26 logs, 0 tokens; NAV exe cell `72ff6d2d` = parent `72ff6d2d` (ref none) |
 | 08 judge | 0 | 43.0 | 571 (summ) | 4,716 / 3,956 | `687283dd822c86b8aa2ffb78d3a952b12e9f5d437ba3b80f38c14d8d7e8128cc` | - | driver: `run y-two-speed-y-5-gm.json` (monitor 1.6 s 128 MiB; summ 37.7 s, 571 MiB, ledgered the cell), bundle (`75d16ebd`), book reader (`35a4d4d7`); printed **`verdict (pm7-34): NOT ACCEPTED {'dsr_positive': False, 'mechanics': True, 'criteria': False}`**; dSR -0.1201 (Memmel SE .0753); ledger 130 -> 131 lines |
+| 09 record | 0 | 0.5 | - (no exe) | 4,265 / 4,230 | `a41d4dbdafada006e0ee32fdce3988a8e391792eb2d5d57cb1755c71c2573bbe` | - (no queue: rule wave) | SEAL-ALLOW per-hit check before the run (`tools/sealsrc.py` exit 0): 11 hits over 37 files, `2026-10-02` (a) x7, `2026-10-03` (b) x4, **0 OTHER**; same two `--seal-allow` flags. `wave-result.json` **`ec4e07c29aae75182ed6afd42f1f0f8b825065689e84da11b36c459884183b6a`**, `wave-log.md` `3aa0f085`; copies under `.superpowers/sdd/platform-v8-20260929/waves/y-5/` byte-equal; ledger 130 -> **131** lines (head `6c5f0ff1`), N 59 -> **60**, cell trial `cc150c210a3f98e4`; seal scan 37 logs, 0 tokens; `wave status` 9/9 done |
+
+Root's own run dirs outside the wave's scan (`p9-r09-p13-*-run`) and the cell's run dirs, scanned the same way (iso
+tokens >= 2024-01-01 in `*.log` / `*.json`, 38 files): `2026-10-02` x18 (the png name, source a), `2026-10-03` x18
+(`started_utc`, source b), 0 OTHER.
+
+**Y-5 result (R0-9).** Driver verdict line as printed at judge: `verdict (pm7-34): NOT ACCEPTED {'dsr_positive': False,
+'mechanics': True, 'criteria': False}`. Under PM7-34 the cell is **rejected and counted** (1 construction trial, N 60).
+The next parent stays `scripts/specs/v8/lib-v8ysb-gm.json` (library v8ysb, L 1.1828), as the driver prints; it is Y-F0
+(v8y 1: last accepted cell after Y-5), the parent of X-10 (R0-10).
+
+**P13 (v8y 13): PASS before the cell's NAV**: (a) the parent's fit 3/3, w 10/12 (+2 timing-only) and NAV 27/27
+reproduce with `--two-speed` absent; (b) `TwoSpeedRunner.*` 2/2 on the P5 ic-tests exe; (c) the cell's own w pass
+reproduces the parent's combined signal, finite / member masks, targets and `__combined__` rows byte for byte, and
+stage 04 set `parent` in the copy.
+
+**Printed-only items of the registration (v8y 6 Y-5 row; decide nothing).** From `wave-result.json` `stats` (S2
+`modeled-1bn-stale5-v1+swap-fin-v1`), cell vs parent: turnover per unit gross .026441 vs .028528; cost per traded dollar
+12.648 vs 12.658 bps; net Sharpe at 4x NAV 1.6023 vs 1.6994; net annual return 5.357% vs 5.654%. Fast mass share
+(`train_sleeve_fast_share.f64` of the cell's w pass, `f38407e8`, pinned by `train_sleeves.json` `4f536da8`; fast themes
+`["reversal_seasonality"]`): over the 1,006 TRAIN dates (2020-2023) constant **.120861** (every date > 0); over all 1,405
+role dates mean .116307, 63 dates 0 (no theme present, PM8-16 #9), > 0 range .120861-.126709. NAV summary
+`construction.two_speed` (matched NAV, identical in all 5 scenarios): cadence 1, theta_fast .129449436703876, theta_slow
+.05, fast_half_life 5, fast_bound 10, rebalances_skipped_by_a_sleeve 0, parent_rebalances_skipped 0,
+parent_constructions_failed 0.
+
+**The driver's log section** (`build-equity/waves/y-5/wave-log.md`, pasted as written):
+
+### Cell y-5 (rule wave; template `y-two-speed.json` on v8ysb): N 60
+
+**NOT ACCEPTED.** Manifest `scripts/specs/v8/waves/y-5.json` sha256 `f538f9f590570d3c` (commit `43128be8d023`); parent `scripts/specs/v8/lib-v8ysb-gm.json` (library v8ysb, L 1.1828); driver `research_cycle.py wave run`.
+
+Budget v8y-construction-n59-plus-1: construction N 59 -> 60 of 62.
+
+**Cell** `scripts/specs/v8/y-two-speed-y-5-gm.json` (rule, library v8ysb): gross match pm6-6: calibration L 1.1828 G 0.9215182646 vs G_parent 0.9862134133 -> corrected to L 1.2658, G 0.9862947654.
+
+**Mechanics (S2, read before any return): PASS** (gross_all_rows 0.98629 [0.9, 1.05]; abs_net_all_rows 0.0052849 <= 0.02; tau_mean 0.026078 <= 0.2; tau_p95 0.031816 <= 0.3; max_return_identity_error 3.747e-16 <= 1e-09; max_cash_book_relative_error 3.8789e-14 <= 1e-09).
+
+**Statistics of record** (S2): net Sharpe 1.7294 vs parent 1.8495: dSR -0.1201, Memmel SE 0.0753, CBB 95% [-0.26493053102975767, 0.0399586255843882], LW p 0.1398; bundle p one-sided 0.9316, two-sided 0.1398. DSR (N 60): ledger 0.7804; PBO 0.1509.
+
+**Verdict (pm7-34: paired S2 net dSR > 0 AND mechanics (PM7-34); criteria printed, decide nothing): NOT ACCEPTED** {'criteria': False, 'dsr_positive': False, 'mechanics': True}.
+- criterion capacity-4x-higher (printed): unmet
+- criterion turnover-per-gross-not-higher (printed): met
+- criterion cost-bps-lower (printed): met
+
+Returns (S2, annual): net 5.36% (CAGR 5.45%) vs 5.65%; gross of cost 6.71% vs 7.07%; vol 3.10%; max drawdown 2.67%; 4x net Sharpe 1.6023 vs 1.6994; tau 0.02608 (per unit gross 0.02644).
+
+Ledger `build-equity/trials.jsonl`: lines 130 -> 131, head `6c5f0ff1faca1a1b`, N 59 -> 60, cell trial `cc150c210a3f98e4`; admission lines appended 0.
+
+| phase | run dir | s | peak MiB | outcome |
+|---|---|---|---|---|
+| u | `build-equity/mega-v8-b0b-train-u-v8ysb-run1` | 12.7 | 530 | completed |
+| fit | `build-equity/mega-weights-v8y-two-speed-run1` | 1.0 | 58 | completed |
+| w | `build-equity/mega-v8yw-train-two-speed-run1` | 62.2 | 1559 | completed |
+| nav | `build-equity/mega-nav-v8y-two-speed-run` | 78.9 | 713 | completed |
+| card | `build-equity/mega-cards-v8y-two-speed-run` | 18.8 | 1363 | completed |
+| nav | `build-equity/mega-nav-v8y-two-speed-L1.2658-run` | 82.7 | 713 | completed |
+| monitor | `build-equity/mega-monitor-v8y-two-speed-run` | 1.6 | 128 | completed |
+| summ | `build-equity/cycle-v8y-two-speed-y-5-gm/summ-run1` | 37.7 | 571 | completed |
+
+Hidden-data record: seal scan of 37 log(s) (every run dir, reader and console of the wave; forms iso, compact, year, quarter): 0 date token(s) at or after 2024-01-01 (2026-10-02 x7 allowed: untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW); 2026-10-03 x4 allowed: receipt started_utc wall-clock (PM SEAL-ALLOW); 20260927 x1 allowed: nav_summ's default bootstrap seed (not a date); 20260929 x69 allowed: nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)).
+**Next parent: `scripts/specs/v8/lib-v8ysb-gm.json`, library v8ysb.**
