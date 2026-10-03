@@ -7031,3 +7031,16 @@ criteria list (Y-3's registered criterion, gross-of-cost return per unit gross, 
 hand), the budget id and caps, the record dir, and the template's EOL on disk vs its registered pin. The draft and the
 choices are in `.superpowers/sdd/platform-p9-20261003/root-R0-7-report.md`.
 
+### R0-7 resume: R0-7-EOL (P9 progress.md ruling) -- template LF bytes restored (13:2xZ)
+
+Per template: `git diff --ignore-cr-at-eol HEAD -- <p>` 0 lines; disk bytes with CR stripped sha256 = HEAD blob (content
+identical); then `rm <p>` + `git -c core.autocrlf=false checkout -- <p>`; `git ls-files --eol` now `i/lf w/lf`; `git status`
+clean (only the untracked png). No hash edited.
+
+| template | disk before (CRLF) | disk after (LF) | pin | result |
+|---|---|---|---|---|
+| `scripts/specs/v8/y-norm-score.json` | `73d16673f93e8ff0...` | `693c64f5471ceff6f21320c5bfee92d4f741226cbf7be295b1905e0a569e677f` | registered `693c64f5` (v8y 14) | **equal** |
+| `scripts/specs/v8/y-theme-tsmom.json` | `020f0085a987c6a0...` | `9d3548b670547d138b3fdaeec0f170a2861b2a60d777c94788446e6c9b4cd83f` | registered `9d3548b6` | **equal** |
+| `scripts/specs/v8/y-two-speed.json` | `93aab9c6bb126cee...` | `e29365d1597a31ba659996120ec2fc05f8d3947419249e4bbe945736533ca023` | HEAD blob `e29365d1` (R0-9-PIN; registered `69cf6134`) | **equal** to HEAD blob |
+| `scripts/specs/v8/y-vol-target.json` | `d498abaded58de8e...` | `4e190f5434dfc13aced1459721cde476faf3560ef99aa41e05bfe492e2f141b4` | registered `4e190f54` | **equal** |
+
