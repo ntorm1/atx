@@ -7423,3 +7423,73 @@ Ledger `build-equity/trials.jsonl`: lines 130 -> 131, head `6c5f0ff1faca1a1b`, N
 
 Hidden-data record: seal scan of 37 log(s) (every run dir, reader and console of the wave; forms iso, compact, year, quarter): 0 date token(s) at or after 2024-01-01 (2026-10-02 x7 allowed: untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW); 2026-10-03 x4 allowed: receipt started_utc wall-clock (PM SEAL-ALLOW); 20260927 x1 allowed: nav_summ's default bootstrap seed (not a date); 20260929 x69 allowed: nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)).
 **Next parent: `scripts/specs/v8/lib-v8ysb-gm.json`, library v8ysb.**
+
+## R0-10 X-10 leverage L 2.0 on Y-F0 (P9 Phase 0) (2026-10-03, 14:50Z-)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD before `74184cce`. Ledger `build-equity/trials.jsonl`
+131 lines (head `6c5f0ff1faca1a1b`), N 60 (`backtest_integrity.ledger_n`; construction cap 62). Rulings applied:
+SEAL-ALLOW (per-hit source check of X-10's own run dirs), R0-6-ATT (only if an attempt fails), R0-7-MAN (as below),
+R0-7-EOL (done in R0-7), OD-P9-3 (P9 keeps L <= 2.0; X-10 at exactly 2.0 is the registered cell).
+
+### Registration and route: by hand through `research_cycle.py`, not the wave driver (why)
+
+- **Registration** (v8y 8, 14 X-10 row; v8y 6 X-10 row): parent Y-F0 at L_P; L = 2.0, one value, no grid; spec
+  `change.set {"nav.leverage": "2.0", "nav.output"}` on Y-F0's spec (its NAV flags carried); not gross-matched (PM7-11;
+  v8y 6 PM6-6 column "no"); mechanics restated by r = 2.0 / L_P, written in the cell's plan before the run (PM7-17);
+  acceptance PM7-34 (3).
+- **Route of record:** PM8-14 rules YP-7 as YPRE recommends: "Y-S (stage by stage), Y-3, Y-2, Y-5 through `wave run`;
+  X-10 and Y-1 by hand". YP-7's text: "X-10 and Y-1 by hand through `research_cycle.py` as in X batch 1 -- the driver
+  has only `v8-mech` limits and no leverage acceptance rule, and a new named rule is a reviewed code change".
+- **Checked on disk** (`scripts/wave_rules.py` at `74184cce`): `MECHANICS` holds only `v8-mech` (gross [.90, 1.05],
+  |net| <= .02, tau .20 / .30, unscaled); `ACCEPTANCE` holds only `pm7-34` (dSR > 0 AND mechanics) and `v8-prereg-5`;
+  `GROSS_MATCH` `pm6-6` / `none`; `rule_cell` needs a registered template file, and X-10 has none (its registration is a
+  `change.set` on Y-F0). A `waves/x-10.json` would judge X-10 by the unscaled gross band (an L 2.0 book's gross of about
+  1.67 fails [.90, 1.05]) and by dSR > 0 instead of PM7-34 (3). A new rule is a code change, which this dispatch
+  forbids. **So no wave manifest is written.** R0-7-MAN's procedure (every key from the registration, the chain rule or
+  a copy; no free constant) is applied to the form v8y 8 / 14 registers: the cell's template spec.
+- **Runbook** (`task-CELLS-brief.md`; the R-8 precedent, the last not-gross-matched NAV-only hand cell): one template
+  spec under `scripts/specs/v8/`; `lock --write`; `plan`; spec committed on a clean tree before `run`; `run
+  --stop-after nav`; mechanics read before any return (S2; keys only: `wave_readers.py mechanics` under the bounded
+  runner with the driver's reader caps 180 s / 1,536 MiB / 512 MiB free); per-hit seal check of the cell's run dirs; then
+  `run` (monitor, summ: the ledger line and `cycle_verdict.json`); then the bundle (`nav_summ.py --protocol v8 --bundle`,
+  both p; PM5-23) and the book reader (`wave_readers.py book`) under the bounded runner, as the driver's judge stage
+  builds them (`wave_steps.bundle_argv`, `reader_argv`); verdict = PM7-34 (3) applied by hand to those artifacts.
+- **Memory gate:** every exe launch waits for free >= cap + 1,536 MiB (NAV / summ / readers: 1,536 + 1,536 = 3,072),
+  with a host check (no compiler, no `atx-*` exe, no other research process) and free memory sampled every 0.25 s.
+
+### Y-F0 (v8y 1: the last accepted cell after Y-5, leverage excluded)
+
+- Spec `scripts/specs/v8/lib-v8ysb-gm.json` sha256 `1e3ec118273cb52d7248568011e7dc24a211e7204c25b1116f5a5bd7deaa8626`
+  (Y-S cell; library v8ysb; Y-3, Y-2, Y-5 not accepted; Y-5 wave-result `ec4e07c2` `next_parent` = the same spec).
+- L_P **1.1828**; NAV `build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb`: `summary.json` `2d30b7f6`, S2 daily
+  `daily_modeled-1bn-stale5-v1+swap-fin-v1.csv` `73b69bcc`, `capacity_curve.csv` `edf1001d`; all-rows S2 gross G_P
+  .9862134133; ledger trial `11c10defb3cf38a5` (s2_net_sr 1.849482026329859); fields v15 `26fee5ce`.
+- **X-10 is defined:** L_P 1.1828 < 2.0 (v8y 6 "Undefined" X-10 row: L_P >= 2.0).
+
+### Scaled mechanics (v8y 8; PM7-11 as amended by PM7-17), written before any X-10 run
+
+r = 2.0 / L_P = 2.0 / 1.1828 = **1.6909029421711192**.
+
+| row (S2 daily CSV, all rows) | registered (`v8-mech`) | X-10 limit (x r) | unrounded limit used by the check |
+|---|---|---|---|
+| mean gross leverage | [.90, 1.05] | **[1.521813, 1.775448]** | [1.5218126479540073, 1.7754480892796753] |
+| abs(mean net leverage) | <= .02 | **<= .033818** | 0.033818058843422386 |
+| tau (turnover) mean | <= .20 | **<= .338181** | 0.3381805884342239 |
+| tau p95 | <= .30 | **<= .507271** | 0.5072708826513358 |
+| max return identity error; max cash book relative error | <= the NAV's tolerance | unchanged | the summary's `accounting_checks.tolerance` |
+
+Every other row is unchanged. A value outside its limit = mechanics fail = **rejected, counted** (v8y 12: not a
+void). The NAV's own flags `--daily-turnover-mean-max .20 --daily-turnover-p95-max .30` are carried unchanged
+("its NAV flags carried"); the summary's `meets_daily_turnover_*` flags are printed; the gate is the scaled row above.
+
+### Acceptance (PM7-34 (3); v8y 6 X-10 row; decides) and prints, fixed before the run
+
+1. S2 net annual return at 1x (book reader `net_annual` = the summary's primary-scenario `ann_mean`) **above Y-F0's
+   .05653814276222473**; AND
+2. S2 net Sharpe **not lower than Y-F0's 1.849482026329859 by more than .100**, i.e. >= 1.749482026329859; AND
+3. mechanics as above.
+
+Printed, deciding nothing: the 4x guard (net Sharpe at 4x NAV vs Y-F0's 1.6994264697927697); paired S2 net dSR vs
+Y-F0, Memmel SE, CBB interval, both p; DSR (N 61); PBO; the v8y 8 report columns for Y-F0 and X-10 (net annual
+return, net Sharpe at 1x and 4x, realised vol, max drawdown; for X-10 L is fixed at 2.0, mean L_t = 2.0, mean
+all-rows gross printed). Count: 1 construction trial (N 60 -> 61 <= 62) whatever the verdict; 0 admission trials.
