@@ -58,10 +58,11 @@ V15_FIELDS = (
 GROUP_FIELDS = {"grp_sic2", "grp_ff12", "grp_ff49", "grp_ff12f49", "ea_time_of_day"}
 
 
-def engine_only_row(name: str, requires=()) -> dict:
+def engine_only_row(name: str, requires=(), dtype: str = "f64") -> dict:
     """A synthetic DEC-5 row: a field only the C++ executable produces (no Python twin), named by its BuilderKind id."""
-    return {"name": name, "kind": "engine", "builder": name, "dtype": "f64", "point_in_time": True,
-            "spec_text": {"units": "synthetic", "clock": "synthetic", "staleness": "synthetic", "source_columns": [],
+    units = "categorical code (synthetic)" if dtype == "group" else "synthetic"
+    return {"name": name, "kind": "engine", "builder": name, "dtype": dtype, "point_in_time": True,
+            "spec_text": {"units": units, "clock": "synthetic", "staleness": "synthetic", "source_columns": [],
                           "definition": "a synthetic engine-only row", "point_in_time": True, "non_pit_aspects": [],
                           "domain": None},
             "formula_sha256": "5" * 64, "requires": list(requires), "options": {}, "sources": ["synthetic_source"],
@@ -77,6 +78,13 @@ def every_module():
         yield
 
 
+def engine_only_names(doc: dict) -> set:
+    """The registry's engine-only rows (DEC-5: no Python twin) for the builder with every shim's modules bound. The
+    committed-file tests hold every other row to the code and leave these to ``validate`` (review of A1, N1)."""
+    with every_module():
+        return set(fr.engine_only(vars(tool), doc))
+
+
 @contextlib.contextmanager
 def plain_builder():
     """The builder exactly as imported (the entry binds modules into it; undone on exit)."""
@@ -88,18 +96,18 @@ class CommittedRegistry(unittest.TestCase):
     def test_valid_and_in_v15_order(self):
         doc = fr.load()
         names = fr.names(doc)
-        with every_module():
-            only = set(fr.engine_only(vars(tool), doc))
+        only = engine_only_names(doc)
         today = [x for x in names if x not in only]   # the Python-producible rows (DEC-5 adds engine-only rows)
         self.assertEqual(doc["schema"], "atx.field-registry/v1")
         self.assertEqual(len(today), 92)
         self.assertEqual(len(V15_FIELDS), 84)
         self.assertEqual([x for x in names if x in V15_FIELDS], list(V15_FIELDS))   # v15's manifest order
         self.assertTrue(all(set(row) == set(fr.ROW_KEYS) for row in doc["fields"]))
-        # lane A2's P5 flip names each ported field the engine path routes by its own BuilderKind id; engine-only rows
-        # and later ports may carry any kind id (no pin to ENGINE_FIELDS: review of A1, M1)
-        ported = {name: kind_id for name, kind_id in fr.engine_flips(doc).items() if name in engine.ENGINE_FIELDS}
-        self.assertTrue(all(kind_id == name for name, kind_id in ported.items()), ported)
+        # an engine twin is a field the engine shim routes, named by its own BuilderKind id (lane A2's P5 flip of
+        # si_shares, si_dtc, vol_126); engine-only rows (DEC-5) are exempt and carry any kind id (review of A1, M1, N2)
+        twins = {name: kind_id for name, kind_id in fr.engine_flips(doc).items() if name not in only}
+        self.assertTrue(set(twins) <= set(engine.ENGINE_FIELDS), twins)
+        self.assertTrue(all(kind_id == name for name, kind_id in twins.items()), twins)
         self.assertEqual(today[-len(hold.HOLD_FIELDS):], list(hold.HOLD_FIELDS))    # holdings last, as manifests
         self.assertEqual(fr.dump(doc), fr.DEFAULT_PATH.read_bytes())                # committed in dump's form
 
@@ -109,18 +117,19 @@ class CommittedRegistry(unittest.TestCase):
         accepts the file, and the Python-producible rows alone are ``generate``'s bytes (flag-absent identity: with no
         engine-only row, today's file is exactly ``generate``'s output). Some SEC clock texts embed the seal date, so
         this harness's bound window cannot."""
-        code = ("import importlib, json\n"
+        code = ("import importlib, json, sys\n"
+                "from pathlib import Path\n"
                 "import prepare_research_fields as b, field_registry as fr\n"
                 "for s in fr.SHIMS: importlib.import_module(s).register(vars(b))\n"
-                "d = fr.load()\n"
+                "d = fr.load(sys.argv[1])\n"
                 "only = set(fr.engine_only(vars(b), d))\n"
                 "today = {**d, 'fields': [r for r in d['fields'] if r['name'] not in only]}\n"
                 "fr.check(vars(b), d)\n"
-                "print(json.dumps({'equal': fr.dump(fr.regenerate(vars(b), d)) == fr.DEFAULT_PATH.read_bytes(),\n"
+                "print(json.dumps({'equal': fr.dump(fr.regenerate(vars(b), d)) == Path(sys.argv[1]).read_bytes(),\n"
                 "                  'generate_equal': fr.dump(fr.generate(vars(b), engine=fr.engine_flips(today)))\n"
                 "                                    == fr.dump(today),\n"
                 "                  'rows': len(today['fields'])}))\n")
-        got = isolated(TOOLS, code)
+        got = isolated(TOOLS, code, fr.DEFAULT_PATH)   # the file the harness's fr.load() reads
         self.assertEqual(got, {"equal": True, "generate_equal": True, "rows": 92})
 
     def test_engine_only_rows_appended_to_the_committed_file_check_and_round_trip(self):
@@ -147,14 +156,17 @@ class CommittedRegistry(unittest.TestCase):
             path = Path(temp) / "registry.json"
             path.write_bytes(fr.dump(doc))
             got = isolated(TOOLS, code, path)
-        self.assertEqual(got["only"], ["syn_engine_mid", "syn_engine_last"])
+        synthetic = ["syn_engine_mid", "syn_engine_last"]
+        self.assertEqual([x for x in got["only"] if x in synthetic], synthetic)   # in order, among any committed ones
         self.assertTrue(got["equal"])
-        self.assertIn("syn_engine_last, syn_engine_mid are not producible", got["refused"])
+        self.assertIn("are not producible", got["refused"])
+        for name in synthetic:
+            self.assertIn(name, got["refused"])
 
     def test_this_harness_generates_the_same_rows_up_to_window_dependent_text(self):
         doc = fr.load()
         with every_module():
-            gen = fr.generate(vars(tool), engine=fr.engine_flips(doc))
+            gen = fr.regenerate(vars(tool), doc)   # engine-only rows kept verbatim; every other row from the code
         self.assertEqual(fr.names(gen), fr.names(doc))
         for a, b in zip(gen["fields"], doc["fields"]):
             self.assertEqual({k: v for k, v in a.items() if k not in ("spec_text", "formula_sha256")},
@@ -162,17 +174,23 @@ class CommittedRegistry(unittest.TestCase):
 
     def test_lane_a2_flip_keeps_the_registry_tests_green(self):
         """The P5 edit (si_shares, si_dtc, vol_126 -> kind engine, builder = own name; nothing else) is what
-        ``generate(engine=engine_flips(file))`` reproduces, and the entry's check accepts it."""
+        ``generate(engine=<the file's engine twins>)`` reproduces over the Python-producible rows, and the entry's check
+        accepts it; engine-only rows (DEC-5) are not twins and stay out of ``generate``."""
+        a2 = ("si_shares", "si_dtc", "vol_126")
         flipped = copy.deepcopy(fr.load())
         for row in flipped["fields"]:
-            if row["name"] in ("si_shares", "si_dtc", "vol_126"):
+            if row["name"] in a2:
                 row.update(kind="engine", builder=row["name"])
         fr.validate(flipped)
-        self.assertEqual(fr.engine_flips(flipped), {x: x for x in ("si_shares", "si_dtc", "vol_126")})
+        only = engine_only_names(flipped)
+        twins = {name: kind_id for name, kind_id in fr.engine_flips(flipped).items() if name not in only}
+        self.assertEqual({x: twins.get(x) for x in a2}, {x: x for x in a2})
         with every_module():
-            gen = fr.generate(vars(tool), engine=fr.engine_flips(flipped))
+            gen = fr.generate(vars(tool), engine=twins)
             fr.check(vars(tool), gen)
-        for a, b in zip(gen["fields"], flipped["fields"]):
+        today = [row for row in flipped["fields"] if row["name"] not in only]
+        self.assertEqual(fr.names(gen), [row["name"] for row in today])
+        for a, b in zip(gen["fields"], today):
             self.assertEqual({k: v for k, v in a.items() if k not in ("spec_text", "formula_sha256")},
                              {k: v for k, v in b.items() if k not in ("spec_text", "formula_sha256")}, a["name"])
         with self.assertRaisesRegex(fr.RegistryError, "not producible"):
@@ -180,9 +198,11 @@ class CommittedRegistry(unittest.TestCase):
 
     def test_dtype_is_declared_by_units_not_by_name(self):
         doc = fr.load()
-        group = {row["name"] for row in doc["fields"] if row["dtype"] == "group"}
+        only = engine_only_names(doc)   # an engine-only row declares its dtype with no Python spec to check it against
+        rows = [row for row in doc["fields"] if row["name"] not in only]
+        group = {row["name"] for row in rows if row["dtype"] == "group"}
         self.assertEqual(group, GROUP_FIELDS)
-        prefix = {row["name"] for row in doc["fields"] if row["name"].startswith("grp_")}
+        prefix = {row["name"] for row in rows if row["name"].startswith("grp_")}
         self.assertEqual(group - prefix, {"ea_time_of_day"})   # the classifier a grp_ inference reads as f64 (DS 2)
         self.assertEqual(prefix - group, set())
 
@@ -198,6 +218,40 @@ class CommittedRegistry(unittest.TestCase):
                              tool.formula_id(name, tool.spec_definition(name, engine.price.LAG_SESSIONS)))
         self.assertEqual((doc["si_shares"]["options"], doc["vol_126"]["options"]),
                          ({"group": "finra"}, {"group": "price_volume"}))
+
+
+class CommittedRegistryWithADec5Row(CommittedRegistry):
+    """Review of A1, N1: every ``CommittedRegistry`` test, unedited, on the committed file plus one appended engine-only
+    row (``fr.DEFAULT_PATH`` points at that copy, in this harness and in the fresh interpreters), so a DEC-5 append
+    needs no edit to these tests."""
+    DTYPE = "f64"
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.temp = tempfile.TemporaryDirectory()
+        doc = fr.load()
+        doc["fields"].append(engine_only_row("syn_dec5", requires=[doc["fields"][0]["name"]], dtype=cls.DTYPE))
+        path = Path(cls.temp.name) / "field_registry.json"
+        path.write_bytes(fr.dump(doc))
+        cls.path_patch = mock.patch.object(fr, "DEFAULT_PATH", path)
+        cls.path_patch.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.path_patch.stop()
+        cls.temp.cleanup()
+        super().tearDownClass()
+
+    def test_the_copy_holds_the_engine_only_row(self):
+        doc = fr.load()
+        self.assertEqual(engine_only_names(doc), {"syn_dec5"})
+        self.assertEqual((fr.names(doc)[-1], doc["fields"][-1]["dtype"]), ("syn_dec5", self.DTYPE))
+
+
+class CommittedRegistryWithADec5GroupRow(CommittedRegistryWithADec5Row):
+    """The same, with the appended engine-only row a classifier (``dtype: group``)."""
+    DTYPE = "group"
 
 
 class Validation(unittest.TestCase):
