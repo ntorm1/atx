@@ -423,10 +423,10 @@ def test_restatement_vintages_from_quarterly_history(monkeypatch, tmp_path):
     w.ev(40, "fy0", T(2021, 2, 20), fy0, "FY", "10-K")
     e1 = w.ev(40, "q1", T(2021, 5, 1), q1, "Q1", sale_q=100.0, mib=50.0, pstk=0.0, sale_ttm=400.0,
               cat={"ceq": 400.0, "teq": 450.0}, **{"at": 1000.0, "seq": 400.0})
-    for item, v in (("sale_q", 100.0), ("at", 1000.0), ("seq", 400.0), ("mib", 50.0), ("pstk", 0.0)):
+    for item, v in (("sale_q", 100.0), ("at", 1000.0), ("seq", 400.0), ("pstk", 0.0)):
         w.hist(40, item, q1, v, e1["available_at"], accn="q1")
     e2 = w.ev(40, "q2", T(2021, 8, 1), q2, "Q2")
-    for item, v in (("sale_q", 90.0), ("at", 1010.0), ("seq", 410.0)):     # the Q2 10-Q restates Q1
+    for item, v in (("sale_q", 90.0), ("at", 1010.0), ("seq", 410.0), ("mib", 60.0)):
         w.hist(40, item, q1, v, e2["available_at"], accn="q2")
     e3 = w.ev(40, "fy1", T(2022, 2, 20), fy1, "FY", "10-K", sale_q=100.0, sale_ttm=400.0, ni_ttm=40.0)
     w.hist(40, "sale_q", fy1, 100.0, e3["available_at"], accn="fy1")
@@ -441,8 +441,8 @@ def test_restatement_vintages_from_quarterly_history(monkeypatch, tmp_path):
     assert rows[0][:5] == ("q1", q1, "filing", False, True)
     v = rows[1]
     assert v[:5] == ("q2", q1, "restatement", True, False) and v[11] == e2["available_at"]
-    assert v[5:10] == (90.0, 1010.0, 410.0, 410.0, 460.0)
-    assert set(v[10].split(",")) == {"sale_q", "sale_ttm", "at", "seq", "c_ceq", "c_teq"}   # TTM includes Q1
+    assert v[5:10] == (90.0, 1010.0, 410.0, 410.0, 470.0)  # new history MIB moves actual base stock 50 -> 60
+    assert set(v[10].split(",")) == {"sale_q", "sale_ttm", "at", "seq", "mib", "c_ceq", "c_teq"}
     for sql in cs.macros_sql(tmp_path / "cstd"):
         con.execute(sql)
     asof = lambda t: con.execute(f"SELECT accession, saleq FROM fundq_asof(TIMESTAMP '{t}') "  # noqa: E731
@@ -479,11 +479,25 @@ def test_rdq_gate_uses_acceptance_et_date_of_filing(tmp_path):
     w.write()
     con = duckdb.connect()
     con.execute("SET TimeZone = 'UTC'")
-    con.execute("CREATE TABLE cov AS SELECT 2021 AS year, cik, DATE '2021-03-31' AS datadate, "
+    con.execute("CREATE TABLE cov AS SELECT 2021 AS year, cik, 'q' AS accession, DATE '2021-03-31' AS datadate, "
                 "DATE '2021-04-19' AS rdq, 'filing' AS rdq_src, TIMESTAMP '2021-05-05 20:00' AS clock_utc, "
                 "TIMESTAMP '2021-05-07' AS available_at, DATE '2021-05-05' AS filed, '10-Q' AS form "
                 "FROM (VALUES (51), (52)) v(cik)")
     r = cs.rdq_gate(con, tmp_path, tmp_path / 'earn_x')["by_year"]["2021"]
     assert r["rdq_8k_same_date"] == 0.5  # 01:00 UTC is May 5 ET; 05:00 UTC is May 6 ET
     assert r["rdq_from_8k_pit"] == 0.0
+    con.close()
+
+
+def test_rdq_gate_modeled_filing_clock_uses_filed_date(monkeypatch, tmp_path):
+    w = World(tmp_path)
+    w.ev(53, 'q', T(2021, 5, 7, 22), D(2021, 3, 31), 'Q1', clock_basis='fc1', filed=D(2021, 5, 5))
+    w.ann.append({'cik': 53, 'accession': 'a', 'announcement_utc': T(2021, 5, 6, 16),
+                  'available_at': T(2021, 5, 6, 16), 'fiscal_period_end': D(2021, 3, 31), 'is_primary': True})
+    _build(monkeypatch, w)
+    con = C.connect(memory='100MB', threads=1)
+    con.execute('CREATE TABLE mem AS SELECT 2021 AS year, 53 AS cik')
+    cs.coverage_gate(con, tmp_path / 'cstd')
+    r = cs.rdq_gate(con, tmp_path / 'cstd', tmp_path / 'earn_x')['by_year']['2021']
+    assert r['rdq_8k_same_date'] == 0.0  # conservative modeled clock is not an acceptance date
     con.close()

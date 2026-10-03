@@ -109,7 +109,7 @@ DATADATE_MAX_DAYS = 365
 EFF_DAY = 7                      # a period ending on day 1..7 belongs to the previous month
 RDQ_MATCH_DAYS = 7
 Q_DUR, FY_DUR, NINE_DUR = (80, 120), (350, 380), (250, 290)
-N_BUCKETS = 8
+N_BUCKETS = 32
 MEM = os.environ.get("ATX_CSTD_DUCKDB_MEM", "450MB")
 QUARTERLY_FORMS = ("10-Q", "10-K", "10-QT", "10-KT", "10-Q/A", "10-K/A", "10-QT/A", "10-KT/A")
 ANNUAL_FORMS = ("10-K", "10-K/A", "10-KT", "10-KT/A", "20-F", "20-F/A", "40-F", "40-F/A")
@@ -601,10 +601,6 @@ def _derive(con, inp: Inputs) -> None:
         FROM j WHERE fqtr = 4 AND dform IN ({annual})""")
 
 
-def _delta(h: str, rate: str) -> str:
-    return (f"CASE WHEN d.{h}_n IS NOT NULL AND d.{h}_o IS NOT NULL THEN (d.{h}_n - d.{h}_o) * {rate} ELSE 0.0 END")
-
-
 def _vintages(con) -> None:
     """``r2`` = the event rows ``r2e`` plus restatement vintages: for every filing A that changed a
     ``quarterly_history`` value of an older datadate D of the issuer (A is not a filing of D and comes after D's
@@ -676,7 +672,10 @@ def _vintages(con) -> None:
         new[col] = (f"CASE WHEN coalesce(d.{h}_d4, 0) = 0 OR b.\"{col}\" IS NULL THEN b.\"{col}\" "
                     f"ELSE b.\"{col}\" + d.{h}_d4 * {ttm} END")
     for col, parts in VINT_DERIVED.items():
-        moves = " + ".join(f"({sign}) * {_delta(h, spot)}" for h, sign in parts)
+        # The stock can first appear in history after the base filing. Move derived components by the
+        # actual published stock change, including that case, rather than requiring an old history fact.
+        moves = " + ".join(f"({sign}) * (CASE WHEN ({new[h]}) IS NOT NULL THEN "
+                           f"({new[h]}) - coalesce(b.\"{h}\", 0.0) ELSE 0.0 END)" for h, sign in parts)
         new[col] = f"CASE WHEN b.{col} IS NULL THEN NULL ELSE b.{col} + {moves} END"
     changed = " || ".join([f"CASE WHEN ({expr}) IS DISTINCT FROM b.\"{col}\" THEN ',{col}' ELSE '' END"
                            for col, expr in new.items()] +
@@ -901,6 +900,14 @@ def coverage_gate(con, out: Path) -> dict[str, Any]:
 
 def rdq_gate(con, out: Path, earn: Path) -> dict[str, Any]:
     ann = _q(earn / "announcements.parquet")
+    if (out / "manifest.json").exists():
+        man = C.read_json(out / "manifest.json")
+        events = _q(C.build_root() / man.get("fund_stage", DEFAULT_FUND_STAGE) / "events.parquet")
+        con.execute(f"CREATE OR REPLACE TEMP TABLE filing_clocks AS "
+                    f"SELECT cik, accession, clock_basis FROM read_parquet('{events}')")
+    else:
+        con.execute("CREATE OR REPLACE TEMP TABLE filing_clocks AS SELECT NULL::BIGINT AS cik, "
+                    "NULL::VARCHAR AS accession, NULL::VARCHAR AS clock_basis WHERE false")
     con.execute(f"""CREATE OR REPLACE TEMP TABLE ann_all AS SELECT cik, fiscal_period_end, is_primary,
                         CAST(timezone('America/New_York', CAST(announcement_utc AS TIMESTAMPTZ)) AS DATE) AS ann_date,
                         CAST(timezone('America/New_York', CAST(available_at AS TIMESTAMPTZ)) AS DATE) AS accepted_date
@@ -914,12 +921,14 @@ def rdq_gate(con, out: Path, earn: Path) -> dict[str, Any]:
                        AND abs(datediff('day', a.fiscal_period_end, c.datadate)) <= {RDQ_MATCH_DAYS}) AS corroborated,
                EXISTS (SELECT 1 FROM ann_all a WHERE a.cik = c.cik AND a.is_primary
                        AND a.accepted_date <= CASE WHEN c.clock_utc IS NOT NULL
+                           AND fc.clock_basis = 'fsds_accepted_utc'
                            THEN CAST(timezone('America/New_York', CAST(c.clock_utc AS TIMESTAMPTZ)) AS DATE)
                            ELSE c.filed END
                        AND abs(datediff('day', a.fiscal_period_end, c.datadate)) <= {RDQ_MATCH_DAYS}) AS same_date,
                NOT EXISTS (SELECT 1 FROM ann_all a WHERE a.cik = c.cik AND a.ann_date > c.datadate - 400
                            AND a.ann_date <= c.datadate + 120) AS issuer_no_202
-        FROM cov c WHERE c.form IN ('10-Q', '10-QT')""")
+        FROM cov c LEFT JOIN filing_clocks fc USING (cik, accession)
+        WHERE c.form IN ('10-Q', '10-QT')""")
     res: dict[str, Any] = {"basis": "first-reported 10-Q/10-QT fundq rows of linked member issuers (as coverage)",
                            "gate": RDQ_GATE, "by_year": {}}
     fails = []

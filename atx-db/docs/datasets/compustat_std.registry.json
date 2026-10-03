@@ -9,7 +9,9 @@
       "--fund-stage",
       "fundamentals_v10",
       "--earn-stage",
-      "earnings_calendar"
+      "earnings_calendar",
+      "--buckets",
+      "32"
     ],
     [
       "validate"
@@ -30,7 +32,7 @@
   "manifest": "compustat_std/manifest.json",
   "vintage": "vintage",
   "staleness": "a row describes datadate as known at available_at; consumers bound staleness by session - datadate (e.g. <= 400 days) or by the next expected filing",
-  "guard_gb": 0.8,
+  "guard_gb": 1.0,
   "code": [
     "compustat_std",
     "fund_catalog",
