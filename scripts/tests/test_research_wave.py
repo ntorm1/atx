@@ -229,6 +229,46 @@ def test_a_dropped_string_makes_the_b_library_and_gross_is_matched(tmp_path):
     assert subjects[0].startswith("wave w1: lib-w1b-gm.json at L") and subjects[1].startswith("wave w1: cell library w1b")
 
 
+def test_engine_gross_match_is_the_python_match_in_one_nav(tmp_path):
+    """P9 C2 (P15): gross_match pm6-6-engine stops the run stage after w and runs ONE NAV in the match stage, the -gm
+    copy at the cell's L with nav --calibrate-gross G_parent; its correction, gross and the leverage it reports are the
+    Python match's (pm6-6, two NAVs) bit for bit."""
+    results, calls = {}, {}
+    for mode in ("pm6-6", "pm6-6-engine"):
+        root = F.build(tmp_path / mode, gross_match=mode)
+        fake = F.FakeCycle(root, ONE_DROPPED, gross_per_l={"w1b": 0.9604 / 1.1474}, dsr=-0.05)
+        code, lines = wave(root, fake, "run")
+        assert code == 0, lines
+        results[mode] = json.loads((root / "out/waves/w1/wave-result.json").read_text())["cell"]
+        calls[mode] = [F.unrooted(c[2:]) for c in fake.calls if Path(c[1]).name == "research_cycle.py" and c[2] == "run"]
+    py, en = results["pm6-6"], results["pm6-6-engine"]
+    assert en["corrected"] is True and en["gross_match"] == "pm6-6-engine"
+    for key in ("leverage", "gross", "gross_parent", "gross_calibration", "leverage_calibration", "corrected"):
+        assert en[key] == py[key], key
+    assert en["spec"] == "scripts/specs/v8/lib-w1b-gm.json" and en["nav"] == "out/nav-w1b-L1.1474-gm"
+    gm = json.loads((tmp_path / "pm6-6-engine" / en["spec"]).read_text())
+    assert gm["name"] == "w1b-gm" and gm["nav"]["leverage"] == "1.1474"
+    flags = gm["nav"]["flags"]
+    assert flags[flags.index("--calibrate-gross") + 1] == repr(en["gross_parent"])
+    assert flags[flags.index("--calibrate-tolerance") + 1] == "0.005"
+    navs = [c for c in calls["pm6-6-engine"] if "--stop-after" in c]
+    assert ["run", "scripts/specs/v8/lib-w1b.json", "--stop-after", "w"] in navs
+    assert sum(1 for c in navs if c[c.index("--stop-after") + 1] == "nav") == 1           # one NAV, not two
+    assert sum(1 for c in calls["pm6-6"] if c[-2:] == ["--stop-after", "nav"]) == 2
+
+
+def test_engine_gross_match_within_tolerance_keeps_the_leverage(tmp_path):
+    root = F.build(tmp_path / "r", gross_match="pm6-6-engine")
+    fake = F.FakeCycle(root, KEPT_ALL)
+    code, lines = wave(root, fake, "run")
+    assert code == 0, lines
+    cell = json.loads((root / "out/waves/w1/wave-result.json").read_text())["cell"]
+    assert cell["corrected"] is False and cell["leverage"] == "1.1474" and cell["spec"].endswith("-gm.json")
+    assert abs(cell["gross"] - cell["gross_parent"]) <= 0.005 and cell["gross"] == cell["gross_calibration"]
+    match = json.loads((root / "out/waves/w1/receipts/06-match.json").read_text())
+    assert "engine" in json.dumps(match)
+
+
 def test_the_gate_stopping_the_wave_records_no_cell(tmp_path):
     root = F.build(tmp_path / "r")
     fake = F.FakeCycle(root, {"alpha_a": ("admitted", -1), "alpha_b": ("admitted", -1), "alpha_c": ("admitted", -1)},

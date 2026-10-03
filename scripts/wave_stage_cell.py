@@ -10,9 +10,11 @@ resume compares their argv and executable (the Python interpreter) only.
 from __future__ import annotations
 
 import ast
+import copy
 from pathlib import Path
 import re
 
+import research_spec
 import wave_manifest as WM
 import wave_rules as WR
 import wave_steps as WS
@@ -34,12 +36,31 @@ def screen_first(w: Wave, done: dict) -> bool:
     return done["spec"].get("kind") == "b-library" and WM.speed(w.manifest, "screen_first")
 
 
+def engine(w: Wave) -> bool:
+    """P9 C2 (P15): the manifest's gross_match runs PM6-6 inside the nav exe (wave_rules.GROSS_MATCH "engine":
+    ``nav --calibrate-gross``): the run stage stops after the w phase (every cell has one: Wave.phase_bases) and the
+    match stage runs the one NAV, calibrated. Any other mode (absent: pm6-6) is the Python match, unchanged."""
+    return bool((WR.GROSS_MATCH.get(w.manifest.get("gross_match")) or {}).get("engine"))
+
+
+ENGINE_STOP = "w"
+
+
 def run_stage(w: Wave, done: dict, log) -> dict:
     if no_cell(done):
         return skipped("no cell")
     cell = done["spec"]["cell_spec"]
     if screen_first(w, done):
         w.run(cyc(w,"run", cell, "--screen"), "the b library's screen (its gate re-read)")
+    if engine(w):
+        w.run(cyc(w, "run", cell, "--stop-after", ENGINE_STOP),
+              f"the cell's inputs (--stop-after {ENGINE_STOP}: its NAV runs once, calibrated, in the match stage)")
+        out = {"spec": cell, "nav": None, "engine": True, "phases": phase_rows(w, cell)}
+        notes = exe_notes(w, out["phases"])
+        if notes:
+            log(f"   exe notes (reused on a rebuilt exe without an exes_sha256 pin, E1-REUSE-a2): {'; '.join(notes)}")
+            out["exe_notes"] = notes
+        return out
     w.run(cyc(w,"run", cell, "--stop-after", "nav"), "calibration run (--stop-after nav)")
     nav = w.outputs(cell)["nav"]
     if not w.exists(f"{nav}/summary.json"):
@@ -60,7 +81,7 @@ def run_plan(w: Wave, done: dict) -> list[str]:
         lines.append("#   (a b library with speed.screen_first runs `run <cell> --screen` first)")
     elif screen_first(w, done):
         lines.append(WS.fmt_argv(cyc(w,"run", cell, "--screen")))
-    return lines + [WS.fmt_argv(cyc(w,"run", cell, "--stop-after", "nav"))]
+    return lines + [WS.fmt_argv(cyc(w,"run", cell, "--stop-after", ENGINE_STOP if engine(w) else "nav"))]
 
 
 # ------------------------------------------------------------------ readers
@@ -191,6 +212,8 @@ def reader_plan(w: Wave, kind: str, name: str, navs: dict) -> str:
 def match(w: Wave, done: dict, log) -> dict:
     if no_cell(done):
         return skipped("no cell")
+    if engine(w):
+        return match_engine(w, done, log)
     m, s = w.manifest, done["spec"]
     mode = m["gross_match"]
     cal = read_once(w, "mechanics", "mech-calibration", {"cell": done["run"]["nav"], "parent": s["reference_nav"]})
@@ -229,8 +252,89 @@ def match(w: Wave, done: dict, log) -> dict:
                 readers=reader_digests(w, ["mech-calibration", "mech-matched"]))
 
 
+CALIBRATION_KEYS = ("target", "tolerance", "leverage_requested", "gross_requested", "corrected", "leverage", "gross",
+                    "matched", "construction_reused")
+
+
+def calibrated_doc(doc: dict, resolved: dict, g_parent: float, tolerance: float, note: str) -> dict:
+    """The calibrated copy of a cell spec file ``doc`` (``resolved``: its resolved spec, for a template): named -gm, its
+    NAV output <output>-gm, nav.flags + ``--calibrate-gross repr(G_parent) --calibrate-tolerance repr(T)`` (repr
+    round-trips: the exe parses the reader's G_parent exactly). nav.leverage stays the cell's L: the exe applies
+    PM6-6's correction itself and records it in summary.json calibration."""
+    out = copy.deepcopy(doc)
+    out["name"] = f"{doc['name']}-gm"
+    out["description"] = (doc.get("description", "") + " " + note).strip()
+    nav_out = f"{resolved['nav']['output']}-gm"
+    ops = {"--calibrate-gross": repr(float(g_parent)), "--calibrate-tolerance": repr(float(tolerance))}
+    if research_spec.is_template(doc):
+        change = out.setdefault("change", {})
+        change.setdefault("set", {})["nav.output"] = nav_out
+        change.setdefault("flags", {}).setdefault("nav", {}).update(ops)
+        return out
+    flags = research_spec.apply_flags(list(out["nav"].get("flags", [])), ops, "calibrated nav")
+    out["nav"] = dict(out["nav"], output=nav_out, flags=flags)
+    return out
+
+
+def match_engine(w: Wave, done: dict, log) -> dict:
+    """PM6-6 in one process (P9 C2, P15; Rulings C2-1..3): G_parent from the parent's mechanics, the -gm copy of the
+    cell at its own L with ``nav --calibrate-gross G_parent``, ONE NAV run; its summary.json calibration record says
+    what the exe did (pass 1 at L, at most one correction, published at the final L). matched false is a stop (the
+    NAV stays, as the Python mode's matched run does); the mechanics reader of the published NAV must give the exe's
+    own G bit for bit (both are numpy's mean of the S2 daily gross)."""
+    m, s = w.manifest, done["spec"]
+    mode = m["gross_match"]
+    rule = WR.GROSS_MATCH[mode]
+    par = read_once(w, "mechanics", "mech-parent", {"parent": s["reference_nav"]})
+    gp = par["navs"]["parent"]["mean_gross_leverage_all_rows"]
+    if not (WR._num(gp) and gp > 0):
+        raise StageError(f"gross match (engine): the parent's all-rows gross {gp!r} must be finite and > 0")
+    log(f"   gross (engine): G_parent {gp} (mode {mode}, tolerance {rule['tolerance']}); nav --calibrate-gross")
+    gm = WS.gm_path(s["cell_spec"])
+    w.require_clean("match", {gm})
+    note = (f"Wave {m['wave']} at matched gross in one process (Ruling PM6-6, nav --calibrate-gross {gp!r}, P9 C2): "
+            f"the exe calibrates at L {s['leverage']} and publishes at the final L (summary.json calibration).")
+    write_spec_file(w, gm, calibrated_doc(w.read_json(s["cell_spec"]), w.load_spec(s["cell_spec"]), gp,
+                                          rule["tolerance"], note))
+    nav = w.outputs(gm)["nav"]
+    w.run(cyc(w, "lock", gm), "lock (dry: every pin of the -gm copy verified)")
+    commit = w.commit_paths(f"wave {m['wave']}: {Path(gm).name} calibrated in one process (PM6-6, P9 C2)", {gm}) \
+        or w.committed(gm)
+    w.run(cyc(w, "run", gm, "--stop-after", "nav"), "calibrated run (--stop-after nav, nav --calibrate-gross)")
+    cal = (w.read_json(f"{nav}/summary.json") or {}).get("calibration")
+    if not isinstance(cal, dict) or any(k not in cal for k in CALIBRATION_KEYS):
+        raise StageError(f"gross match (engine): {nav}/summary.json has no complete calibration record (an exe "
+                         "without nav --calibrate-gross?)", EXIT_PIN)
+    cal = {k: cal[k] for k in CALIBRATION_KEYS}
+    if cal["leverage_requested"] != float(s["leverage"]) or cal["target"] != gp:
+        raise StageError(f"gross match (engine): the calibration ran at L {cal['leverage_requested']} toward "
+                         f"{cal['target']}, not the cell's L {s['leverage']} toward G_parent {gp}", EXIT_PIN)
+    got = read_once(w, "mechanics", "mech-matched", {"cell": nav})
+    g2 = got["navs"]["cell"]["mean_gross_leverage_all_rows"]
+    if g2 != cal["gross"]:
+        raise StageError(f"gross match (engine): the mechanics reader's G {g2!r} is not the exe's {cal['gross']!r}")
+    corrected = bool(cal["corrected"])
+    lev = f"{cal['leverage']:.4f}" if corrected else s["leverage"]
+    log(f"   calibrated: G {cal['gross_requested']} at L {s['leverage']} -> L {lev}, G {g2} vs G_parent {gp}")
+    if not cal["matched"]:
+        raise StageError(f"gross match (engine): the published run's G {g2} is {abs(g2 - gp):.5f} from G_parent {gp} "
+                         f"after {rule['corrections']} correction: stop for the PM's ruling (no ledger line)")
+    return {"mode": mode, "tolerance": rule["tolerance"], "g_parent": gp, "g_calibration": cal["gross_requested"],
+            "leverage_calibration": s["leverage"], "corrected": corrected, "cell_spec": gm, "commit": commit,
+            "nav": nav, "leverage": lev, "g_cell": g2, "mechanics": got["navs"]["cell"],
+            "spec_digest": w.spec_digest(gm), "phases": phase_rows(w, gm),
+            "readers": reader_digests(w, ["mech-parent", "mech-matched"]), "engine": True, "calibration": cal}
+
+
 def match_plan(w: Wave, done: dict) -> list[str]:
     run, s = done.get("run") or {}, done.get("spec") or {}
+    if engine(w):
+        return [reader_plan(w, "mechanics", "mech-parent", {"parent": s.get("reference_nav", "<parent NAV>")}),
+                "#   write <cell>-gm.json (nav.flags + --calibrate-gross G_parent --calibrate-tolerance T, at the "
+                "cell's L), then",
+                "#   research_cycle.py lock <cell>-gm.json ; git commit ; research_cycle.py run <cell>-gm.json --stop-after "
+                "nav (one NAV: pass 1, at most one correction, published at the final L) ; mechanics reader "
+                "(mech-matched)"]
     navs = {"cell": run.get("nav", "<calibration NAV>"), "parent": s.get("reference_nav", "<parent NAV>")}
     return [reader_plan(w, "mechanics", "mech-calibration", navs),
             f"#   |G - G_parent| > tolerance ({w.manifest['gross_match']}): write <cell>-gm.json at L', then",
