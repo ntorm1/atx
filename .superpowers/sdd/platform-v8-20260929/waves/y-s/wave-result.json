@@ -1,0 +1,674 @@
+{
+  "schema": "atx.wave-result/v1",
+  "wave": "y-s",
+  "kind": "library",
+  "description": "Cell Y-S (v8y-prereg sections 3, 6, 14; PM8-10 (e), PM8-14): one add-alpha wave of the 15 Y strings (YSIG 10 + YDATA 5) in roster order (YP-13) on X-F0 = X-5 (x-theme-erc-gm.json, library v8x3b, L 1.1720; X-7 not accepted, X-9 undefined), fields v15 lo3; acceptance PM7-34 (dSR > 0 AND mechanics); sign rule PM7-35; PM6-6 gross matching; marginal pool only with a 720 s cap (PM8-15 (a), (b)); budget: X hand-written 25 used + Y 15 new <= 40 (the Y cap of 15), construction N 56 + 1 <= 62 (N_c(X-F0) + 6).",
+  "manifest": {
+    "commit": "4492f3015346f71ecde46199dbd0ed62ad23a82c",
+    "path": "scripts/specs/v8/waves/y-s.json",
+    "sha256": "22b5534f79dae93fb40d7e11f802211668c98b93123ee28fafa4c54aa05d8ac4"
+  },
+  "library": "v8ys",
+  "template": null,
+  "budget": {
+    "admission_cap": 40,
+    "admission_cycle_prefixes": [
+      "v8x",
+      "v8ys"
+    ],
+    "admission_new": 15,
+    "admission_new_ids": [
+      "peer_mom_1m",
+      "so_wang_rev",
+      "iv_vol_of_vol",
+      "day_rev_freq",
+      "mom_turn",
+      "ea_uvol",
+      "dato",
+      "fscore_hbm",
+      "exch_switch",
+      "ins_cluster",
+      "smile_slope",
+      "stio_trade",
+      "div_event",
+      "deal_target",
+      "conn_rev"
+    ],
+    "admission_origin": null,
+    "admission_used": 25,
+    "construction_cap": 62,
+    "id": "v8x-hand-25-plus-y-15"
+  },
+  "parent": {
+    "spec": "scripts/specs/v8/x-theme-erc-gm.json",
+    "spec_digest": "92131961088d0e9f12ea70271f8a9b2e8220771ff5e6ebd84c249e3e9cbf6593",
+    "library": "v8x3b",
+    "nav": "build-equity/mega-nav-v8x-theme-erc-L1.1720",
+    "leverage": "1.1720"
+  },
+  "screen": {
+    "spec": "scripts/specs/v8/lib-v8ys.json",
+    "gate_exit": 0,
+    "rows": [
+      {
+        "decision": "drop",
+        "id": "peer_mom_1m",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition admitted with runner sign -1 against prior +1: dropped from the wave",
+        "runner_sign": -1,
+        "status": "admitted"
+      },
+      {
+        "decision": "keep",
+        "id": "so_wang_rev",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition not admitted (status reject_turnover): stays at weight 0",
+        "runner_sign": 1,
+        "status": "reject_turnover"
+      },
+      {
+        "decision": "keep",
+        "id": "iv_vol_of_vol",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition admitted with the prior sign",
+        "runner_sign": 1,
+        "status": "admitted"
+      },
+      {
+        "decision": "keep",
+        "id": "day_rev_freq",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition admitted with the prior sign",
+        "runner_sign": 1,
+        "status": "admitted"
+      },
+      {
+        "decision": "keep",
+        "id": "mom_turn",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition admitted with the prior sign",
+        "runner_sign": 1,
+        "status": "admitted"
+      },
+      {
+        "decision": "keep",
+        "id": "ea_uvol",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition admitted with the prior sign",
+        "runner_sign": 1,
+        "status": "admitted"
+      },
+      {
+        "decision": "keep",
+        "id": "dato",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition admitted with the prior sign",
+        "runner_sign": 1,
+        "status": "admitted"
+      },
+      {
+        "decision": "keep",
+        "id": "fscore_hbm",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition admitted, runner sign 0 (R-2 precedent)",
+        "runner_sign": 0,
+        "status": "admitted"
+      },
+      {
+        "decision": "drop",
+        "id": "exch_switch",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition admitted with runner sign -1 against prior +1: dropped from the wave",
+        "runner_sign": -1,
+        "status": "admitted"
+      },
+      {
+        "decision": "drop",
+        "id": "ins_cluster",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition admitted with runner sign -1 against prior +1: dropped from the wave",
+        "runner_sign": -1,
+        "status": "admitted"
+      },
+      {
+        "decision": "drop",
+        "id": "smile_slope",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition admitted with runner sign -1 against prior +1: dropped from the wave",
+        "runner_sign": -1,
+        "status": "admitted"
+      },
+      {
+        "decision": "keep",
+        "id": "stio_trade",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition admitted with the prior sign",
+        "runner_sign": 1,
+        "status": "admitted"
+      },
+      {
+        "decision": "drop",
+        "id": "div_event",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition admitted with runner sign -1 against prior +1: dropped from the wave",
+        "runner_sign": -1,
+        "status": "admitted"
+      },
+      {
+        "decision": "keep",
+        "id": "deal_target",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition admitted with the prior sign",
+        "runner_sign": 1,
+        "status": "admitted"
+      },
+      {
+        "decision": "drop",
+        "id": "conn_rev",
+        "kind": "add",
+        "prior_sign": 1,
+        "reason": "addition admitted with runner sign -1 against prior +1: dropped from the wave",
+        "runner_sign": -1,
+        "status": "admitted"
+      }
+    ],
+    "kept": [
+      "so_wang_rev",
+      "iv_vol_of_vol",
+      "day_rev_freq",
+      "mom_turn",
+      "ea_uvol",
+      "dato",
+      "fscore_hbm",
+      "stio_trade",
+      "deal_target"
+    ],
+    "dropped": [
+      "peer_mom_1m",
+      "exch_switch",
+      "ins_cluster",
+      "smile_slope",
+      "div_event",
+      "conn_rev"
+    ],
+    "sign_rule": "pm7-35"
+  },
+  "cell": {
+    "spec": "scripts/specs/v8/lib-v8ysb-gm.json",
+    "spec_digest": "1e3ec118273cb52d7248568011e7dc24a211e7204c25b1116f5a5bd7deaa8626",
+    "library": "v8ysb",
+    "kind": "b-library",
+    "nav": "build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb",
+    "leverage": "1.1828",
+    "gross": 0.9862134133265011,
+    "gross_parent": 0.9862260459332546,
+    "gross_calibration": 0.9772114158018187,
+    "leverage_calibration": "1.1720",
+    "corrected": true,
+    "gross_match": "pm6-6"
+  },
+  "marginal": {
+    "source": "the screen (scripts/specs/v8/lib-v8ys.json): per-row fields carried, max_abs_rho, max_rho_member left null (over the screen library)",
+    "mode": "pool-only",
+    "rows": [
+      {
+        "id": "so_wang_rev",
+        "ic21": 0.0015374222188127159,
+        "ic21_hac_t": 0.895413453549624,
+        "marginal_ic21": 0.00029650087175234994,
+        "marginal_hac_t": 0.16331022771093825,
+        "max_abs_rho": null,
+        "max_rho_member": null
+      },
+      {
+        "id": "iv_vol_of_vol",
+        "ic21": 0.018272359082618858,
+        "ic21_hac_t": 1.8950427167458186,
+        "marginal_ic21": 0.013397139745390887,
+        "marginal_hac_t": 1.3657284572607722,
+        "max_abs_rho": null,
+        "max_rho_member": null
+      },
+      {
+        "id": "day_rev_freq",
+        "ic21": 0.01325785248794601,
+        "ic21_hac_t": 1.373545234479234,
+        "marginal_ic21": 0.00853565512698674,
+        "marginal_hac_t": 0.941835811062872,
+        "max_abs_rho": null,
+        "max_rho_member": null
+      },
+      {
+        "id": "mom_turn",
+        "ic21": 0.003655361030082734,
+        "ic21_hac_t": 0.4933929932055142,
+        "marginal_ic21": -0.0001290793584934873,
+        "marginal_hac_t": -0.01854398196326668,
+        "max_abs_rho": null,
+        "max_rho_member": null
+      },
+      {
+        "id": "ea_uvol",
+        "ic21": 0.01039729673124275,
+        "ic21_hac_t": 1.2527594263504733,
+        "marginal_ic21": 0.008479578197826724,
+        "marginal_hac_t": 1.02049162643844,
+        "max_abs_rho": null,
+        "max_rho_member": null
+      },
+      {
+        "id": "dato",
+        "ic21": -0.0014409977397643204,
+        "ic21_hac_t": -0.2261872109703376,
+        "marginal_ic21": -0.011520948561048532,
+        "marginal_hac_t": -2.2437770146262985,
+        "max_abs_rho": null,
+        "max_rho_member": null
+      },
+      {
+        "id": "fscore_hbm",
+        "ic21": 0.007223689839968131,
+        "ic21_hac_t": 1.230138155732251,
+        "marginal_ic21": 0.005444723584086093,
+        "marginal_hac_t": 0.9557367718323687,
+        "max_abs_rho": null,
+        "max_rho_member": null
+      },
+      {
+        "id": "stio_trade",
+        "ic21": 0.010521593004279817,
+        "ic21_hac_t": 2.6474184832565912,
+        "marginal_ic21": 0.009415766829058415,
+        "marginal_hac_t": 2.425486942248791,
+        "max_abs_rho": null,
+        "max_rho_member": null
+      },
+      {
+        "id": "deal_target",
+        "ic21": 0.0012169406942064722,
+        "ic21_hac_t": 0.18606841282194939,
+        "marginal_ic21": -0.00023138358333990358,
+        "marginal_hac_t": -0.03652195295452722,
+        "max_abs_rho": null,
+        "max_rho_member": null
+      }
+    ]
+  },
+  "mechanics": {
+    "pass": true,
+    "rows": [
+      {
+        "check": "gross_all_rows",
+        "limit": "[0.9, 1.05]",
+        "pass": true,
+        "value": 0.9862134133265011
+      },
+      {
+        "check": "abs_net_all_rows",
+        "limit": "<= 0.02",
+        "pass": true,
+        "value": 0.005339981852022642
+      },
+      {
+        "check": "tau_mean",
+        "limit": "<= 0.2",
+        "pass": true,
+        "value": 0.028134396709054203
+      },
+      {
+        "check": "tau_p95",
+        "limit": "<= 0.3",
+        "pass": true,
+        "value": 0.033410443831757175
+      },
+      {
+        "check": "max_return_identity_error",
+        "limit": "<= 1e-09",
+        "pass": true,
+        "value": 3.67544536472586e-16
+      },
+      {
+        "check": "max_cash_book_relative_error",
+        "limit": "<= 1e-09",
+        "pass": true,
+        "value": 1.1074477435259236e-13
+      }
+    ],
+    "rule": "v8-mech"
+  },
+  "nav_exe": {
+    "cell": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+    "equal": false,
+    "parent": "a95f6f0af06907f3707ca10b182de451d84727aeeb1ce5e7170906fd36d31417",
+    "ref": "ran"
+  },
+  "seal_scan": {
+    "files": 79,
+    "seal": "2024-01-01",
+    "forms": [
+      "iso",
+      "compact",
+      "year",
+      "quarter"
+    ],
+    "tokens_at_or_after_seal": 0,
+    "where": [],
+    "seal_references": {
+      "tokens": 0,
+      "files": []
+    },
+    "allowed": [
+      {
+        "token": "2026-10-02",
+        "ruling": "untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)",
+        "tokens": 10,
+        "files": [
+          "build-equity/waves/y-s/consoles/019-screen.log",
+          "build-equity/waves/y-s/consoles/032-the-b-library-s-screen--its-gate-re-read.log",
+          "build-equity/waves/y-s/consoles/033-the-b-library-s-screen--its-gate-re-read.log",
+          "build-equity/waves/y-s/consoles/034-calibration-run----stop-after-nav.log",
+          "build-equity/waves/y-s/consoles/035-mechanics-reader.log",
+          "build-equity/waves/y-s/consoles/039-matched-run----stop-after-nav.log",
+          "build-equity/waves/y-s/consoles/040-mechanics-reader.log",
+          "build-equity/waves/y-s/consoles/041-the-cell-s-monitor-and-summ--nav-summ-scores-and.log",
+          "build-equity/waves/y-s/consoles/042-bundle--pm5-23.log",
+          "build-equity/waves/y-s/consoles/043-book-reader.log"
+        ]
+      },
+      {
+        "token": "2026-10-03",
+        "ruling": "receipt started_utc wall-clock (PM SEAL-ALLOW)",
+        "tokens": 4,
+        "files": [
+          "build-equity/waves/y-s/consoles/035-mechanics-reader.log",
+          "build-equity/waves/y-s/consoles/040-mechanics-reader.log",
+          "build-equity/waves/y-s/consoles/042-bundle--pm5-23.log",
+          "build-equity/waves/y-s/consoles/043-book-reader.log"
+        ]
+      },
+      {
+        "token": "20260927",
+        "ruling": "nav_summ's default bootstrap seed (not a date)",
+        "tokens": 1,
+        "files": [
+          "build-equity/cycle-v8ysb-gm/summ-run1/stdout.log"
+        ]
+      },
+      {
+        "token": "20260929",
+        "ruling": "nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)",
+        "tokens": 66,
+        "files": [
+          "build-equity/cycle-v8ysb-gm/summ-run1/stdout.log",
+          "build-equity/waves/y-s/bundle-run1/stdout.log"
+        ]
+      }
+    ],
+    "rulings": {
+      "2026-10-02": "untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)",
+      "2026-10-03": "receipt started_utc wall-clock (PM SEAL-ALLOW)"
+    }
+  },
+  "stats": {
+    "cell": {
+      "ann_vol": 0.030569717335626075,
+      "annual_costs": {
+        "borrow": 0.003275975200840431,
+        "long_financing": 0.0020127166514112933,
+        "trade_cost": 0.008851338874388331
+      },
+      "cagr": 0.05766642148886314,
+      "cost_bps_traded": 12.657953278624719,
+      "daily_csv_sha256": "73b69bcceb122b7c21bb3f75619058c51b8104ebd8a694bbbb1b12db14b401b0",
+      "dir": "build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb",
+      "gross_annual": 0.07067817348886478,
+      "gross_sharpe": 2.3117806086991832,
+      "max_drawdown": 0.02580037230369092,
+      "mean_gross_leverage_all_rows": 0.9862134133265011,
+      "net_annual": 0.05653814276222473,
+      "net_sharpe": 1.849482026329859,
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "tau_gmv_mean": 0.028134396709054203,
+      "tau_per_gross": 0.028527696266223746,
+      "x4_net_sharpe": 1.6994264697927697
+    },
+    "parent": {
+      "ann_vol": 0.028699158490858027,
+      "annual_costs": {
+        "borrow": 0.003312415914076666,
+        "long_financing": 0.002012380084954716,
+        "trade_cost": 0.00838234061043611
+      },
+      "cagr": 0.05165524880856753,
+      "cost_bps_traded": 12.561406606226495,
+      "daily_csv_sha256": "529062d6f06f1ceb8dab5e7cbd98a3693a2f66922b0b4547df81f956fd4e3d61",
+      "dir": "build-equity/mega-nav-v8x-theme-erc-L1.1720",
+      "gross_annual": 0.06448890046788266,
+      "gross_sharpe": 2.247383714732064,
+      "max_drawdown": 0.020598949990380255,
+      "mean_gross_leverage_all_rows": 0.9862260459332546,
+      "net_annual": 0.05078176385841518,
+      "net_sharpe": 1.7694513194382149,
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "tau_gmv_mean": 0.0268443424622213,
+      "tau_per_gross": 0.02721925928940439,
+      "x4_net_sharpe": 1.654876435267752
+    }
+  },
+  "paired": {
+    "cbb_ci": [
+      -0.23580753873511617,
+      0.4071793491746803
+    ],
+    "dsr": 0.08003070689164593,
+    "lw_p": 0.6262,
+    "se": 0.1501668298849328
+  },
+  "bundle": {
+    "cbb_ci95": [
+      -0.23580753873511617,
+      0.4071793491746803
+    ],
+    "dsr": 0.08003070689164593,
+    "freeze_gate": false,
+    "lw_ci95": [
+      -0.25602634753526005,
+      0.41616745333931215
+    ],
+    "memmel_se": 0.1501668298849328,
+    "p_one_sided": 0.3122,
+    "p_two_sided": 0.6262,
+    "path": "build-equity/waves/y-s/bundle.json",
+    "rho": 0.9556041703496023,
+    "sessions": 1005,
+    "sha256": "570018ba221d8db91a3c2957bdc86e5a36b4f7fbd54836cbc1a15fd71840241e"
+  },
+  "dsr": {
+    "cell_count": 0.8468454502619669,
+    "effective_n": 0.943993184922582,
+    "legacy": {
+      "cells": 37,
+      "dsr": 0.9667950445761051,
+      "note": "legacy variance (ledger lines without a window_id): reported, gates nothing"
+    },
+    "n": 57,
+    "source": "nav_summ --dsr-ledger (deflated_ledger)",
+    "variance_cells": 28,
+    "variance_sr": 0.0012816619293363253,
+    "window_id": "research-window-v2"
+  },
+  "pbo": 0.07661227661227661,
+  "verdict": {
+    "accepted": true,
+    "checks": {
+      "criteria": false,
+      "dsr_positive": true,
+      "mechanics": true
+    },
+    "criteria": [
+      {
+        "criterion": "capacity-4x-higher",
+        "met": true,
+        "printed": "met",
+        "text": "net Sharpe at 4x NAV (capacity_curve.csv) higher than the parent's"
+      },
+      {
+        "criterion": "turnover-per-gross-not-higher",
+        "met": false,
+        "printed": "unmet",
+        "text": "turnover per unit gross (tau_gmv_mean / all-rows gross) not higher than the parent's"
+      },
+      {
+        "criterion": "cost-bps-lower",
+        "met": false,
+        "printed": "unmet",
+        "text": "S2 cost_bps_traded lower than the parent's"
+      }
+    ],
+    "decided_by": [
+      "dsr_positive",
+      "mechanics"
+    ],
+    "dsr": 0.08003070689164593,
+    "rule": "pm7-34",
+    "text": "paired S2 net dSR > 0 AND mechanics (PM7-34); criteria printed, decide nothing"
+  },
+  "ledger": {
+    "path": "build-equity/trials.jsonl",
+    "lines_before": 112,
+    "lines_after": 128,
+    "head": "e186895aeed3f7f3f51f4e13e93c7b736047b304f3bc89c1ff09cf48b6994030",
+    "n_before": 56,
+    "n_after": 57,
+    "trial_id": "11c10defb3cf38a5",
+    "admission_lines": [
+      "peer_mom_1m",
+      "so_wang_rev",
+      "iv_vol_of_vol",
+      "day_rev_freq",
+      "mom_turn",
+      "ea_uvol",
+      "dato",
+      "fscore_hbm",
+      "exch_switch",
+      "ins_cluster",
+      "smile_slope",
+      "stio_trade",
+      "div_event",
+      "deal_target",
+      "conn_rev"
+    ]
+  },
+  "next_parent": {
+    "spec": "scripts/specs/v8/lib-v8ysb-gm.json",
+    "library": "v8ysb"
+  },
+  "timings": [
+    {
+      "executable_sha256": "985019d97d3db335430da8dda2160c9b4908c0db462344478b7e64bb5fa3c989",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 530,
+      "phase": "u",
+      "run_dir": "build-equity/mega-v8-b0b-train-u-v8ysb-run1",
+      "seconds": 12.68800000000192
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 58,
+      "phase": "fit",
+      "run_dir": "build-equity/mega-weights-v8x-theme-erc-v8ysb-run1",
+      "seconds": 1.889999999999418
+    },
+    {
+      "executable_sha256": "985019d97d3db335430da8dda2160c9b4908c0db462344478b7e64bb5fa3c989",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 1436,
+      "phase": "w",
+      "run_dir": "build-equity/mega-v8xw-train-theme-erc-v8ysb-run2",
+      "seconds": 52.79699999999866
+    },
+    {
+      "executable_sha256": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 586,
+      "phase": "nav",
+      "run_dir": "build-equity/mega-nav-v8x-theme-erc-L1.1720-v8ysb-run",
+      "seconds": 59.71800000000076
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 1524,
+      "phase": "card",
+      "run_dir": "build-equity/mega-cards-v8x-theme-erc-v8ysb-run",
+      "seconds": 24.485000000000582
+    },
+    {
+      "executable_sha256": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 586,
+      "phase": "ref",
+      "run_dir": "build-equity/mega-nav-v8x-theme-erc-L1.1720-v8ysb-ref-run",
+      "seconds": 61.9059999999954
+    },
+    {
+      "executable_sha256": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 586,
+      "phase": "nav",
+      "run_dir": "build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb-run",
+      "seconds": 55.56300000000192
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 128,
+      "phase": "monitor",
+      "run_dir": "build-equity/mega-monitor-v8x-theme-erc-v8ysb-run",
+      "seconds": 1.5780000000013388
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 626,
+      "phase": "summ",
+      "run_dir": "build-equity/cycle-v8ysb-gm/summ-run1",
+      "seconds": 40.04699999999866
+    }
+  ],
+  "receipts": {
+    "01-preflight": "f4f759088ae95ac284e224e99fc3ab9346b1684e168df5db98ee87918cf59d14",
+    "02-register": "facb7fb20cfb09768450377d70de6993e3276882a844dc6458fa153a48f8de2d",
+    "03-screen": "8562e09b672d089d502b004b0e1e02d8b7f472f9fc2aea1fcdd26f66e28ce11f",
+    "04-spec": "ce88ee2925fc67b52dc794d918dc38578a6637da0ae7d832676cd51781bff1e9",
+    "05-run": "eb23472eb751dd75a54edc2d872658050b2cc1a598a85d8703acddd143612571",
+    "06-match": "b23bd9289ee3e9e52616868e91ec31d9cdb58ca2af9f1c7353caa3963d66c5ce",
+    "07-verify.failed-1": "ae50e347fe7e076835039b37a40a5178e6d616ebca33831ad48353268925ec25",
+    "07-verify": "82f72a1b11c10d018b17fcc31c7aba7c5148036ee972440770f081bd1c63fe86",
+    "08-judge": "5fdc3b015ac4fe4cfe7d9c9fa76e33ab80310a158d5e076a8372ce3fac0a9c46"
+  }
+}
