@@ -34,8 +34,8 @@ TEST(BookTwoSpeed, RegisteredConstants) {
   EXPECT_NEAR(std::pow(1.0 - eb::two_speed_fast_theta(1.0), 5.0), 0.5, 1e-15);
 }
 
-// Ruling PM8-16 #4: theta_f = 1 - 2^(-C/5) per rebalance at cadence C, so the fast half-life is five
-// sessions at any cadence (C = 5: one step halves the gap; C = 10: one step leaves a quarter).
+// Ruling PM8-16 #4: theta_f = 1 - 2^(-C/5) per rebalance at cadence C, so the fast half-life is
+// five sessions at any cadence (C = 5: one step halves the gap; C = 10: one step leaves a quarter).
 TEST(BookTwoSpeed, FastThetaFollowsTheCadence) {
   EXPECT_EQ(eb::two_speed_fast_theta(5.0), 0.5);
   EXPECT_EQ(eb::two_speed_fast_theta(10.0), 0.75);
@@ -44,7 +44,8 @@ TEST(BookTwoSpeed, FastThetaFollowsTheCadence) {
     EXPECT_GT(theta, 0.0) << cadence;
     EXPECT_LE(theta, 1.0) << cadence;
     // 5 / C rebalances (5 sessions) leave half of a constant aim gap.
-    EXPECT_NEAR(std::pow(1.0 - theta, eb::two_speed_fast_half_life / cadence), 0.5, 1e-14) << cadence;
+    EXPECT_NEAR(std::pow(1.0 - theta, eb::two_speed_fast_half_life / cadence), 0.5, 1e-14)
+        << cadence;
   }
   EXPECT_EQ(eb::two_speed_fast_theta(4096.0), 1.0); // the replay's largest cadence: one step
 }
@@ -99,7 +100,8 @@ TEST(BookTwoSpeed, OppositeSleeveTradesNet) {
   EXPECT_LT(r->net_trade, r->sleeve_trade);
 }
 
-// Half-life matched: five fast steps close half of a constant aim gap; the slow sleeve keeps about 77%.
+// Half-life matched: five fast steps close half of a constant aim gap; the slow sleeve keeps about
+// 77%.
 TEST(BookTwoSpeed, FastSleeveHalvesItsGapInFiveSteps) {
   const std::vector<f64> aim{1.0};
   std::vector<f64> fast{0.0}, slow{0.0}, book{0.0};
@@ -165,9 +167,11 @@ TEST(BookTwoSpeed, AimPartialStepOnTheAimIsTheNettedSleeveMove) {
     for (usize i = 0; i < member.size(); ++i) {
       const f64 book_step = c + theta_s * (L * desired[i] - c);
       const f64 remainder = c - before[i];
-      const f64 sleeves = fast[i] + remainder + theta_s * (L * (1.0 - share) * slow_desired[i] - remainder);
+      const f64 sleeves =
+          fast[i] + remainder + theta_s * (L * (1.0 - share) * slow_desired[i] - remainder);
       EXPECT_NEAR(book_step, sleeves, 1e-15) << c << ' ' << i;
-      EXPECT_NEAR(fast[i], before[i] + theta_f * (L * share * fast_desired[i] - before[i]), 1e-15) << i;
+      EXPECT_NEAR(fast[i], before[i] + theta_f * (L * share * fast_desired[i] - before[i]), 1e-15)
+          << i;
     }
 }
 
@@ -182,23 +186,27 @@ TEST(BookTwoSpeed, NettedAimRefusalsWriteNothing) {
       EXPECT_EQ(desired[i], 0.3);
     }
   };
-  EXPECT_FALSE(eb::two_speed_aim(member, fast_desired, 1.5, 1.0, 0.1, 0.05, fast, desired));  // share
-  EXPECT_FALSE(eb::two_speed_aim(member, fast_desired, 0.5, 0.0, 0.1, 0.05, fast, desired));  // leverage
-  EXPECT_FALSE(eb::two_speed_aim(member, fast_desired, 0.5, 1.0, 0.0, 0.05, fast, desired));  // theta
+  // share, leverage, theta
+  EXPECT_FALSE(eb::two_speed_aim(member, fast_desired, 1.5, 1.0, 0.1, 0.05, fast, desired));
+  EXPECT_FALSE(eb::two_speed_aim(member, fast_desired, 0.5, 0.0, 0.1, 0.05, fast, desired));
+  EXPECT_FALSE(eb::two_speed_aim(member, fast_desired, 0.5, 1.0, 0.0, 0.05, fast, desired));
   EXPECT_FALSE(eb::two_speed_aim(bad_member, fast_desired, 0.5, 1.0, 0.1, 0.05, fast, desired));
-  EXPECT_FALSE(eb::two_speed_aim(member, std::vector<f64>{nan, 0.2}, 0.5, 1.0, 0.1, 0.05, fast, desired));
-  EXPECT_FALSE(eb::two_speed_aim(member, std::vector<f64>{0.1}, 0.5, 1.0, 0.1, 0.05, fast, desired));
+  EXPECT_FALSE(eb::two_speed_aim(member, std::vector<f64>{nan, 0.2}, 0.5, 1.0, 0.1, 0.05, fast,
+                                 desired));
+  EXPECT_FALSE(
+      eb::two_speed_aim(member, std::vector<f64>{0.1}, 0.5, 1.0, 0.1, 0.05, fast, desired));
   untouched();
   // A nonmember's NaN is no refusal (its F and aim become 0).
   std::vector<f64> loose{nan, 0.2};
-  EXPECT_TRUE(eb::two_speed_aim(std::vector<atx::u8>{0, 1}, loose, 0.5, 1.0, 0.1, 0.05, fast, desired));
+  EXPECT_TRUE(
+      eb::two_speed_aim(std::vector<atx::u8>{0, 1}, loose, 0.5, 1.0, 0.1, 0.05, fast, desired));
   EXPECT_EQ(fast[0], 0.0);
   EXPECT_EQ(desired[0], 0.0);
 }
 
-// Ruling PM8-16 #10: under a scaler the plan at lambda L steps any current weight c to the remainder
-// R = c - lambda_prev F moving at theta_s toward lambda L m_s d_s plus the scaled fast sleeve
-// lambda F_next; equal scales write nothing (the netted aim bit for bit).
+// Ruling PM8-16 #10: under a scaler the plan at lambda L steps any current weight c to the
+// remainder R = c - lambda_prev F moving at theta_s toward lambda L m_s d_s plus the scaled fast
+// sleeve lambda F_next; equal scales write nothing (the netted aim bit for bit).
 TEST(BookTwoSpeed, CarryKeepsTheFastHoldingAtTheBooksScale) {
   const std::vector<atx::u8> member{1, 1, 1, 0};
   const std::vector<f64> fast_desired{0.3, -0.1, 0.0, 0.2}, slow_desired{-0.2, 0.25, 0.1, 0.0};

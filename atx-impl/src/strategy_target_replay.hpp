@@ -115,14 +115,13 @@ struct TargetReplayConfig {
   bool norm_score{};
   // two-speed-v1 (v8 Y-5, lane YCOMB; aim-partial-v5; nav --two-speed two-speed-v1; it needs the
   // replay's construction state (the target and NAV replays hold one; nav decide refuses) and the
-  // saved sleeves). false (default):
-  // off, every output unchanged. On: on every rebalance decision the fast and the slow sleeve blends
-  // (TargetReplayInput::sleeve_*) each get the construction above (ranks, demean, gross 1, locate
-  // zeroing, neutralization); a virtual fast sleeve F moves toward L m_f d_f at theta_f = 1 -
-  // 2^(-C/5) at the cadence C (engine/book/two_speed.hpp; 0 off membership; Ruling PM8-16 #4), the
-  // book's remainder (current - F) is the slow sleeve, moving toward L m_s d_s at trade_fraction,
-  // which must be the registered theta_s = .05 (PM8-16 #3), and the desired target is the aim
-  // whose aim-partial-v5 step is exactly that netted move:
+  // saved sleeves). false (default): off, every output unchanged. On: on every rebalance decision
+  // the fast and the slow sleeve blends (TargetReplayInput::sleeve_*) each get the construction
+  // above (ranks, demean, gross 1, locate zeroing, neutralization); a virtual fast sleeve F moves
+  // toward L m_f d_f at theta_f = 1 - 2^(-C/5) at the cadence C (engine/book/two_speed.hpp; 0 off
+  // membership; Ruling PM8-16 #4), the book's remainder (current - F) is the slow sleeve, moving
+  // toward L m_s d_s at trade_fraction, which must be the registered theta_s = .05 (PM8-16 #3),
+  // and the desired target is the aim whose aim-partial-v5 step is exactly that netted move:
   //   desired = m_s d_s + (F_prev + (F_next - F_prev) / trade_fraction) / L,
   // m_f the fast themes' mass share of the decision over the themes with a present member (m_s =
   // 1 - m_f). Under the NAV's leverage scaler (--risk-target / --vol-target) a book plans at

@@ -517,8 +517,8 @@ co::Result<bool> finish_desired(const TargetReplayConfig& cfg, detail::DesiredSt
 // proceeds (finish_desired). Both off, the construction is the pre-v8 one. v8 X inv-vol-v1
 // scales the tied ranks at the band's seam (the two are never on together).
 // v8 Y-5 two-speed-v1 (defined after form_desired, which it runs once per sleeve).
-co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg, usize d,
-                                   std::vector<Ranked>& row, std::vector<f64>& desired,
+co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg,
+                                   usize d, std::vector<Ranked>& row, std::vector<f64>& desired,
                                    PriceRiskScratch& scratch, ConstructionDay& out,
                                    std::span<const u8> no_short, detail::DesiredState* state);
 co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg,
@@ -526,7 +526,8 @@ co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayCon
                               PriceRiskScratch& scratch, ConstructionDay& out,
                               std::span<const u8> no_short = {},
                               detail::DesiredState* state = nullptr) {
-  if (two_speed_on(cfg)) return two_speed_desired(in, cfg, d, row, desired, scratch, out, no_short, state);
+  if (two_speed_on(cfg))
+    return two_speed_desired(in, cfg, d, row, desired, scratch, out, no_short, state);
   const usize n = in.instruments, offset = d * n;
   if (!no_short.empty() && no_short.size() != n)
     return co::Err(co::ErrorCode::InvalidArgument, "target replay: no-short mask geometry");
@@ -603,12 +604,16 @@ co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetRepl
   const usize n = in.instruments, cells = in.dates * n;
   if (state == nullptr)
     return co::Err(co::ErrorCode::InvalidArgument,
-                   "target replay: two-speed-v1 needs the replay's construction state (the fast sleeve)");
-  if (in.sleeve_fast.size() != cells || in.sleeve_slow.size() != cells || in.sleeve_fast_share.size() != in.dates)
-    return co::Err(co::ErrorCode::InvalidArgument, "target replay: two-speed-v1 needs the saved sleeves");
+                   "target replay: two-speed-v1 needs the replay's construction state (the fast "
+                   "sleeve)");
+  if (in.sleeve_fast.size() != cells || in.sleeve_slow.size() != cells ||
+      in.sleeve_fast_share.size() != in.dates)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: two-speed-v1 needs the saved sleeves");
   const f64 share = in.sleeve_fast_share[d];
   if (!(share >= 0 && share <= 1))
-    return co::Err(co::ErrorCode::InvalidArgument, "target replay: two-speed-v1 fast share outside [0, 1]");
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: two-speed-v1 fast share outside [0, 1]");
   auto inner = cfg;
   inner.two_speed = false;
   auto fast_in = in, slow_in = in;
@@ -617,9 +622,10 @@ co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetRepl
   ConstructionDay fast_day;
   if (state->fast_desired.size() != n) state->fast_desired.assign(n, 0.0);
   if (desired.size() != n) desired.assign(n, 0.0);
-  ATX_TRY(const bool fast_ok, form_desired(fast_in, inner, d, row, state->fast_desired, scratch, fast_day,
-                                           no_short, state));
-  ATX_TRY(const bool slow_ok, form_desired(slow_in, inner, d, row, desired, scratch, out, no_short, state));
+  ATX_TRY(const bool fast_ok, form_desired(fast_in, inner, d, row, state->fast_desired, scratch,
+                                           fast_day, no_short, state));
+  ATX_TRY(const bool slow_ok,
+          form_desired(slow_in, inner, d, row, desired, scratch, out, no_short, state));
   if (!fast_ok && slow_ok) copy_neutralization(fast_day, out); // the skip is the fast sleeve's
   out.locate_zeroed += fast_day.locate_zeroed;
   // Mechanics only (the skip rule above is unchanged): would the parent's construction of the full
@@ -745,8 +751,10 @@ struct SavedBlend {
   std::vector<u64> ids;
   std::vector<f64> sleeve_fast, sleeve_slow, sleeve_fast_share; // v8 Y-5 two-speed-v1 only
   TargetReplayInput view() const {
-    TargetReplayInput x{dates, names, begin, end, signal, member, sessions, ids, close, raw, present, volume};
-    x.sleeve_fast = sleeve_fast; x.sleeve_slow = sleeve_slow; x.sleeve_fast_share = sleeve_fast_share;
+    TargetReplayInput x{dates, names, begin, end, signal, member, sessions, ids, close, raw,
+                        present, volume};
+    x.sleeve_fast = sleeve_fast; x.sleeve_slow = sleeve_slow;
+    x.sleeve_fast_share = sleeve_fast_share;
     return x;
   }
 };
@@ -817,25 +825,33 @@ bool admitted_signal_semantics(const Json& j) {
 }
 // v8 Y-5 two-speed-v1: the sleeves the combined manifest `j` pins (composition_sleeves: the
 // sleeve manifest's name and SHA-256, written by the IC runner under a theme_sleeves block), each
-// payload checked against its receipt, each sleeve's support that of the blend, each share in [0, 1].
+// payload checked against its receipt, each sleeve's support that of the blend, each share in
+// [0, 1].
 co::Status load_sleeves(const std::filesystem::path& base, const Json& j, const std::string& role,
                         SavedBlend& out) {
   const auto refuse = [](const std::string& what) {
-    return co::Err(co::ErrorCode::InvalidArgument, "target replay: two-speed-v1 needs the saved sleeves: " + what);
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: two-speed-v1 needs the saved sleeves: " + what);
   };
   if (!j.contains("composition_sleeves") || !j.at("composition_sleeves").is_object())
-    return refuse("the combined manifest pins none (fit --two-speed two-speed-v1, then the w pass)");
+    return refuse("the combined manifest pins none (fit --two-speed two-speed-v1, then the w "
+                  "pass)");
   const auto& pin = j.at("composition_sleeves");
-  if (!pin.contains("rule") || !pin.at("rule").is_string() || pin.at("rule").get<std::string>() != "two-speed-v1" ||
-      !pin.contains("manifest") || !pin.at("manifest").is_string() || !pin.contains("manifest_sha256") ||
-      !pin.at("manifest_sha256").is_string() || pin.at("manifest").get<std::string>() != role + "_sleeves.json")
-    return refuse("composition_sleeves must be {rule: two-speed-v1, manifest: <role>_sleeves.json, manifest_sha256}");
+  if (!pin.contains("rule") || !pin.at("rule").is_string() ||
+      pin.at("rule").get<std::string>() != "two-speed-v1" || !pin.contains("manifest") ||
+      !pin.at("manifest").is_string() || !pin.contains("manifest_sha256") ||
+      !pin.at("manifest_sha256").is_string() ||
+      pin.at("manifest").get<std::string>() != role + "_sleeves.json")
+    return refuse("composition_sleeves must be {rule: two-speed-v1, manifest: "
+                  "<role>_sleeves.json, manifest_sha256}");
   ATX_TRY(auto m, pinned_json((base / (role + "_sleeves.json")).string(),
                               pin.at("manifest_sha256").get<std::string>()));
   if (!m.is_object() || m.value("schema", std::string{}) != "atx.dsl-combined-sleeves/v1" ||
-      m.value("status", std::string{}) != "complete" || m.value("rule", std::string{}) != "two-speed-v1" ||
-      m.value("role", std::string{}) != role || !m.contains("dates") || !m.contains("instruments") ||
-      m.at("dates").get<u64>() != out.dates || m.at("instruments").get<u64>() != out.names ||
+      m.value("status", std::string{}) != "complete" ||
+      m.value("rule", std::string{}) != "two-speed-v1" ||
+      m.value("role", std::string{}) != role || !m.contains("dates") ||
+      !m.contains("instruments") || m.at("dates").get<u64>() != out.dates ||
+      m.at("instruments").get<u64>() != out.names ||
       !m.contains("files") || !m.at("files").is_object() || m.at("files").size() != 3)
     return refuse("the sleeve manifest's contract");
   const auto& files = m.at("files");
@@ -1792,8 +1808,10 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
 // functions (a plain call would find these same-named wrappers first).
 namespace detail {
 TargetReplayInput LoadedSavedBlend::view() const {
-  TargetReplayInput x{dates, names, begin, end, signal, member, sessions, ids, close, raw, present, volume};
-  x.sleeve_fast = sleeve_fast; x.sleeve_slow = sleeve_slow; x.sleeve_fast_share = sleeve_fast_share;
+  TargetReplayInput x{dates, names, begin, end, signal, member, sessions, ids, close, raw,
+                      present, volume};
+  x.sleeve_fast = sleeve_fast; x.sleeve_slow = sleeve_slow;
+  x.sleeve_fast_share = sleeve_fast_share;
   return x;
 }
 co::Result<LoadedSavedBlend> load_saved_blend(const TargetReplayRunConfig& cfg, bool with_volume) {

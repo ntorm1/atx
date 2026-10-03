@@ -926,8 +926,8 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       throw std::invalid_argument("--risk-target-bias/--risk-target-cadence need --risk-target");
     if (vol_target_given) { // v8 Y: the scaler under Law::vol_target_v1 (registered constants only)
       if (o.risk_target.on)
-        throw std::invalid_argument("--vol-target and --risk-target are exclusive (both set the aim "
-                                    "leverage)");
+        throw std::invalid_argument("--vol-target and --risk-target are exclusive (both set the "
+                                    "aim leverage)");
       o.risk_target.on = true;
       o.risk_target.law = risk_target::Law::vol_target_v1;
     }
@@ -1050,7 +1050,7 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       if (risk_model.empty() || risk_model_sha256.empty())
         throw std::invalid_argument("--vol-target needs --risk-model and --risk-model-sha256 "
                                     "(the atx-risk-v1 store of the role)");
-    } else if (o.risk_target.on) { // v8 R-8: risk-target-v1 scales aim-partial-v5's and spo-v3's aim
+    } else if (o.risk_target.on) { // v8 R-8: risk-target-v1 scales aim-partial-v5's, spo-v3's aim
       const auto* rule = value_of("--rule"); // the spo rules and v6 read aim-partial-v5 here
       if (o.aim_v6 || (o.spo_v1 && spo_version != 3) || !rule || *rule != "aim-partial-v5")
         throw std::invalid_argument("--risk-target needs --rule aim-partial-v5 or spo-v3 (the "

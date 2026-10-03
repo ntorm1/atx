@@ -3586,8 +3586,8 @@ co::Result<NavDecision> nav_decide(const NavReplayInput& in, const NavReplayConf
     // v8 Y-5: two-speed-v1's virtual fast sleeve is replay state the holdings file does not carry.
     if (two_speed_on(cfg.target))
       return co::Err(co::ErrorCode::InvalidArgument,
-                     "nav decide: two-speed-v1 carries the fast sleeve's state, which positions do not "
-                     "(replay only)");
+                     "nav decide: two-speed-v1 carries the fast sleeve's state, which positions "
+                     "do not (replay only)");
     ATX_TRY_VOID(validate_nav_input(input, cfg, 1));
     const usize n = x.instruments;
     if (d < x.decision_begin || d >= x.decision_end)

@@ -1,10 +1,13 @@
-// two-speed-v1 (platform v8 Y-5, lane YCOMB; Rulings PM8-5, PM8-10): the IC composition's fast and
-// slow sleeves (the theme parts of the blend, bit for bit, with the fast mass share per date) and the
-// NAV construction that trades them: the desired target of every decision equals an independent
-// recomputation (each sleeve's own construction, the virtual fast sleeve's recursion, the netted
-// aim); with a zero fast share the run is the parent's bit for bit; the option is refused outside
-// aim-partial-v5, with the shaping options that keep state, without the replay's state or without
-// the sleeves; rule id, recipe and summary carry it only when on.
+// two-speed-v1 (platform v8 Y-5, lane YCOMB; Rulings PM8-5, PM8-10, PM8-16): the IC composition's
+// fast and slow sleeves (the theme parts of the blend, bit for bit, with the fast mass share per
+// date over the themes present) and the NAV construction that trades them: the desired target of
+// every decision equals an independent recomputation (each sleeve's own construction, the virtual
+// fast sleeve's recursion at theta_f = 1 - 2^(-C/5), the netted aim); with a zero fast share the
+// run is the parent's bit for bit (also under a neutralization with locate-in-aim, and under
+// vol-target-v1); under a leverage scaler the book is the scaled sleeve decomposition (lambda F);
+// the option is refused outside aim-partial-v5 at theta_s .05 and the fixed rate, with the shaping
+// options that keep state, in a grid mixing cadences, without the replay's state or without the
+// sleeves; rule id, recipe and summary carry it only when on.
 //
 // Suite: TwoSpeed
 
@@ -51,7 +54,8 @@ bool same(f64 a, f64 b) { return (std::isnan(a) && std::isnan(b)) || bits(a) == 
 TEST(TwoSpeed, RegisteredTable) {
   const std::vector<std::pair<std::string, f64>> registered{
       {"value", 252.0}, {"profitability_quality", 252.0}, {"investment_issuance", 252.0},
-      {"earnings_momentum", 63.0}, {"price_momentum", 126.0}, {"low_risk", 252.0}, {"short_interest", 63.0},
+      {"earnings_momentum", 63.0}, {"price_momentum", 126.0}, {"low_risk", 252.0},
+      {"short_interest", 63.0},
       {"reversal_seasonality", 5.0}, {"options_implied", 21.0}, {"ownership_flow", 63.0},
       {"filing_events", 21.0}, {"price_volume", 5.0}};
   ASSERT_EQ(st::two_speed_half_lives.size(), registered.size());
@@ -59,11 +63,13 @@ TEST(TwoSpeed, RegisteredTable) {
   for (const auto& [theme, half_life] : registered) {
     ASSERT_TRUE(st::two_speed_half_life(theme, h)) << theme;
     EXPECT_EQ(h, half_life) << theme;
-    EXPECT_EQ(st::two_speed_fast(h), theme == "reversal_seasonality" || theme == "price_volume") << theme;
+    EXPECT_EQ(st::two_speed_fast(h), theme == "reversal_seasonality" || theme == "price_volume")
+        << theme;
   }
   EXPECT_FALSE(st::two_speed_half_life("liquidity", h));
   usize fast = 0;
-  for (const auto& [name, half_life] : st::two_speed_half_lives) fast += st::two_speed_fast(half_life) ? 1U : 0U;
+  for (const auto& [name, half_life] : st::two_speed_half_lives)
+    fast += st::two_speed_fast(half_life) ? 1U : 0U;
   EXPECT_EQ(fast, 2U); // reversal_seasonality and price_volume
   EXPECT_EQ(st::two_speed_rule, "two-speed-v1");
 }
@@ -75,7 +81,8 @@ struct Composer {
   std::vector<usize> themes{0, 1, 1};
   std::vector<int> signs{1, 1, 1};
   std::vector<u8> member = std::vector<u8>(days * width, 1);
-  std::vector<std::vector<f64>> signals = std::vector<std::vector<f64>>(3, std::vector<f64>(days * width));
+  std::vector<std::vector<f64>> signals =
+      std::vector<std::vector<f64>>(3, std::vector<f64>(days * width));
   st::IcCompositionConfig cfg;
   Composer() {
     cfg.dates = days; cfg.instruments = width; cfg.decision_end = days;
@@ -87,9 +94,11 @@ struct Composer {
     }
     member[width + 3] = 0;
   }
-  std::optional<st::IcCompositionResult> compose(const std::vector<f64>& weights, std::span<const u8> fast = {},
-                                                 std::span<const st::IcThemeBlock> schedule = {}) const {
-    auto c = st::IcComposition::create(cfg, candidates, member, weights, themes, st::IcThemeRule::standardise);
+  std::optional<st::IcCompositionResult> compose(
+      const std::vector<f64>& weights, std::span<const u8> fast = {},
+      std::span<const st::IcThemeBlock> schedule = {}) const {
+    auto c = st::IcComposition::create(cfg, candidates, member, weights, themes,
+                                       st::IcThemeRule::standardise);
     if (!c) return std::nullopt;
     if (!schedule.empty() && !c->schedule_theme_masses(schedule)) return std::nullopt;
     if (!fast.empty() && !c->set_theme_sleeves(fast)) return std::nullopt;
@@ -125,7 +134,8 @@ TEST(TwoSpeed, CompositionSleevesAreTheThemePartsOfTheBlend) {
   ASSERT_TRUE(scheduled);
   EXPECT_EQ(scheduled->sleeve_fast_share[1], .5 / (.5 + w_b));
   EXPECT_EQ(scheduled->sleeve_fast_share[2], 0.0);
-  EXPECT_EQ(scheduled->sleeve_fast[2 * Composer::width], 0.0); // theme a off: the fast sleeve adds nothing
+  // Theme a off: the fast sleeve adds nothing.
+  EXPECT_EQ(scheduled->sleeve_fast[2 * Composer::width], 0.0);
 }
 
 // Ruling PM8-16 #9: the fast share of a date counts only the themes with a present member there
@@ -164,9 +174,11 @@ TEST(TwoSpeed, CompositionSleeveRefusalsKeepNothing) {
   auto comp = st::IcComposition::create(c.cfg, c.candidates, c.member, weights, c.themes,
                                         st::IcThemeRule::standardise);
   ASSERT_TRUE(comp);
-  for (const auto& bad : {std::vector<u8>{1}, std::vector<u8>{1, 1}, std::vector<u8>{0, 0}, std::vector<u8>{2, 0}})
+  for (const auto& bad : {std::vector<u8>{1}, std::vector<u8>{1, 1}, std::vector<u8>{0, 0},
+                          std::vector<u8>{2, 0}})
     EXPECT_FALSE(comp->set_theme_sleeves(bad));
-  for (usize k = 0; k < c.candidates.size(); ++k) ASSERT_TRUE(comp->add(k, c.signals[k], c.signs[k]));
+  for (usize k = 0; k < c.candidates.size(); ++k)
+    ASSERT_TRUE(comp->add(k, c.signals[k], c.signs[k]));
   const auto out = comp->finish();
   ASSERT_TRUE(out);
   EXPECT_TRUE(out->sleeve_fast.empty());
@@ -193,7 +205,8 @@ st::TargetReplayConfig two_speed_config(bool on) {
 }
 struct Sleeves {
   std::vector<f64> fast, slow, share;
-  Sleeves(const Role& role, f64 fast_share) : fast(role.signal), slow(role.signal), share(role.d, fast_share) {
+  Sleeves(const Role& role, f64 fast_share)
+      : fast(role.signal), slow(role.signal), share(role.d, fast_share) {
     for (auto& x : fast) x = 1.0 - x; // the reversed order (NaN stays NaN)
   }
   void attach(st::TargetReplayInput& x) const {
@@ -360,7 +373,8 @@ TEST(TwoSpeed, NavReplayTradesTheNettedSleeves) {
   // Without the sleeves the replay refuses.
   const auto bare = st::replay_nav(role.nav(), cfg);
   ASSERT_FALSE(bare);
-  EXPECT_NE(bare.error().to_string().find("two-speed-v1 needs the saved sleeves"), std::string::npos);
+  EXPECT_NE(bare.error().to_string().find("two-speed-v1 needs the saved sleeves"),
+            std::string::npos);
 }
 
 TEST(TwoSpeed, RefusedOutsideItsConstruction) {
@@ -368,17 +382,20 @@ TEST(TwoSpeed, RefusedOutsideItsConstruction) {
   const Sleeves sleeves(role, 0.3);
   auto x = role.target();
   sleeves.attach(x);
-  // The target replay holds a construction state: with the sleeves it runs, without them it refuses.
+  // The target replay holds a construction state: with the sleeves it runs, without them it
+  // refuses.
   EXPECT_TRUE(st::replay_targets(x, two_speed_config(true)));
   const auto bare = st::replay_targets(role.target(), two_speed_config(true));
   ASSERT_FALSE(bare);
-  EXPECT_NE(bare.error().to_string().find("two-speed-v1 needs the saved sleeves"), std::string::npos);
+  EXPECT_NE(bare.error().to_string().find("two-speed-v1 needs the saved sleeves"),
+            std::string::npos);
   // form_desired without a state refuses before any write.
   std::vector<Ranked> row;
   std::vector<f64> desired(role.n, 7.0);
   st::PriceRiskScratch scratch;
   st::ConstructionDay rec;
-  const auto stateless = st::detail::form_desired(x, two_speed_config(true), 0, row, desired, scratch, rec);
+  const auto stateless =
+      st::detail::form_desired(x, two_speed_config(true), 0, row, desired, scratch, rec);
   ASSERT_FALSE(stateless);
   EXPECT_NE(stateless.error().to_string().find("construction state"), std::string::npos);
   for (const f64 v : desired) EXPECT_EQ(v, 7.0);
@@ -431,7 +448,8 @@ TEST(TwoSpeed, RuleIdRecipeAndSummaryCarryTheRuleOnlyWhenOn) {
   EXPECT_EQ(block.at("cadence").get<usize>(), 1U);
   EXPECT_EQ(block.at("theta_fast").get<f64>(), atx::engine::book::two_speed_fast_theta(1.0));
   EXPECT_FALSE(summary_off.at("construction").contains("two_speed"));
-  // Ruling PM8-16 #4: at cadence 5 the recipe and the summary print C and theta_f = 1 - 2^(-1) = .5.
+  // Ruling PM8-16 #4: at cadence 5 the recipe and the summary print C and theta_f = 1 - 2^(-1)
+  // = .5.
   auto weekly = on;
   weekly.cadence = 5;
   EXPECT_EQ(Json::parse(st::detail::construction_recipe_json(weekly)).at("two_speed_theta_fast"),
@@ -440,8 +458,9 @@ TEST(TwoSpeed, RuleIdRecipeAndSummaryCarryTheRuleOnlyWhenOn) {
   EXPECT_EQ(summary_weekly.at("construction").at("two_speed").at("cadence").get<usize>(), 5U);
   EXPECT_EQ(summary_weekly.at("construction").at("two_speed").at("theta_fast").get<f64>(), 0.5);
 }
-// ---- Y-5 / Y-1 composition (registered order Y-5 -> X-10 -> Y-1): the netted aim is the book target;
-// --vol-target / --risk-target scale its leverage (the scaler reads the net book, never F) ----
+// ---- Y-5 / Y-1 composition (registered order Y-5 -> X-10 -> Y-1): the netted aim is the book
+// target; --vol-target / --risk-target scale its leverage (the scaler reads the net book, never F)
+// and the book carries its fast holding at its scale (lambda F, Ruling PM8-16 #10) ----
 std::shared_ptr<const sp::RiskStore> clean_store(const Directory& dir, const Role& role, u64 seed) {
   const std::vector<u8> forecast(role.d, u8{1});
   const auto sha = write_risk_model(dir.path, role.sessions, role.n, forecast, "role-sha", seed);
@@ -478,7 +497,8 @@ TEST(TwoSpeed, UnderVolTargetZeroShareIsTheParentRunBitForBit) {
     const auto parent = st::replay_nav(role.nav(), cfg);
     ASSERT_TRUE(parent) << parent.error().to_string();
     for (const auto& day : parent->days) parent_returns.push_back(day.net_return);
-    for (const auto& r : extension.risk_target_scaler()->records()) parent_leverage.push_back(r.leverage);
+    for (const auto& r : extension.risk_target_scaler()->records())
+      parent_leverage.push_back(r.leverage);
   }
   const Sleeves sleeves(role, 0.0);
   auto in = role.nav();
@@ -666,8 +686,8 @@ TEST(TwoSpeed, UnderARiskTargetTheBookIsTheScaledSleeveDecomposition) {
 }
 
 TEST(TwoSpeed, ParseComposesWithTheScalersAndRefusesTheRest) {
-  const std::vector<std::string> base{"nav", "--rule", "aim-partial-v5", "--aim-leverage", "2", "--output", "x",
-                                      "--two-speed", "two-speed-v1"};
+  const std::vector<std::string> base{"nav", "--rule", "aim-partial-v5", "--aim-leverage", "2",
+                                      "--output", "x", "--two-speed", "two-speed-v1"};
   const std::vector<std::string> store{"--risk-model", "risk", "--risk-model-sha256", "abc"};
   for (const auto& scaler : {std::vector<std::string>{"--vol-target", "vol-target-v1"},
                              std::vector<std::string>{"--risk-target", ".05"}}) {
@@ -677,15 +697,19 @@ TEST(TwoSpeed, ParseComposesWithTheScalersAndRefusesTheRest) {
     const auto r = parse(args);
     ASSERT_TRUE(r) << r.error().to_string();
     EXPECT_TRUE(r->options.risk_target.on);
-    EXPECT_NE(std::find(r->args.begin(), r->args.end(), "--two-speed"), r->args.end()); // the replay's flag
+    // The replay's flag.
+    EXPECT_NE(std::find(r->args.begin(), r->args.end(), "--two-speed"), r->args.end());
   }
-  for (const auto& args : {std::vector<std::string>{"nav", "--rule", "aim-partial-v6", "--output", "x", "--two-speed",
-                                                    "two-speed-v1"},
-                           std::vector<std::string>{"nav", "--rule", "aim-partial-v5", "--rate", "per-name-v1",
-                                                    "--output", "x", "--two-speed", "two-speed-v1"}}) {
+  const std::vector<std::string> v6{"nav", "--rule", "aim-partial-v6", "--output", "x",
+                                    "--two-speed", "two-speed-v1"};
+  const std::vector<std::string> per_name{"nav", "--rule", "aim-partial-v5", "--rate",
+                                          "per-name-v1", "--output", "x", "--two-speed",
+                                          "two-speed-v1"};
+  for (const auto& args : {v6, per_name}) {
     const auto r = parse(args);
     ASSERT_FALSE(r);
-    EXPECT_NE(r.error().to_string().find("--two-speed"), std::string::npos) << r.error().to_string();
+    EXPECT_NE(r.error().to_string().find("--two-speed"), std::string::npos)
+        << r.error().to_string();
   }
 }
 
