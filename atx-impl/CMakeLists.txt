@@ -203,3 +203,5 @@ endif()
 target_sources(atx-impl-core PRIVATE src/stage_equity_mine.cpp)
 # platform v8 D-2: the `exposures` verb (contract K2) of atx-equity-strategy-targets
 target_sources(atx-impl-core PRIVATE src/strategy_exposures_verb.cpp)
+# P9 S1: the marginal verb's pair cache (--pair-cache)
+target_sources(atx-impl-core PRIVATE src/strategy_marginal_pair_cache.cpp)

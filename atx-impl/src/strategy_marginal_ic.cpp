@@ -1,5 +1,7 @@
 #include "strategy_marginal_ic.hpp"
+#include "strategy_ic_detail.hpp" // shared hash_valid / metadata_text (review CM s.2)
 #include "strategy_ic_runner.hpp" // ic_cache_vm_identity: the cache root this build writes
+#include "strategy_marginal_pair_cache.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -10,6 +12,8 @@
 #include <ios>
 #include <limits>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <ostream>
@@ -25,7 +29,9 @@
 #include "atx/core/sha256.hpp"
 #include "atx/engine/combine/group_rerank.hpp"
 #include "atx/engine/combine/marginal_rank_ic.hpp"
+#include "atx/engine/data/role_panel.hpp"
 #include "atx/engine/data/strategy_data.hpp"
+#include "atx/engine/parallel/det_pool.hpp"
 
 namespace atx::impl::strategy {
 namespace {
@@ -33,6 +39,7 @@ using namespace atx;
 namespace co = atx::core;
 namespace cb = atx::engine::combine;
 namespace fs = std::filesystem;
+namespace icd = ic_detail;
 using Json = nlohmann::json;
 constexpr f64 quiet_nan = std::numeric_limits<f64>::quiet_NaN();
 constexpr usize npos = std::numeric_limits<usize>::max();
@@ -40,6 +47,9 @@ constexpr usize npos = std::numeric_limits<usize>::max();
 constexpr usize horizon = 21, execution_delay = 1, hac_lag = 21;
 constexpr u64 metadata_limit = 1ULL << 20;
 constexpr usize max_listing = usize{1} << 16;
+constexpr usize max_workers = 16;          // --workers: the research IC worker bound
+constexpr usize band_rows_per_worker = 16; // rows of one band chunk per worker (--workers > 1)
+constexpr usize max_digests = 4096;        // --verified-digests lines
 // File-format contracts of strategy_ic_runner.cpp (--candidate-cache v2, --save-combined).
 constexpr std::string_view signal_schema = "atx.dsl-candidate-signal/v2";
 constexpr std::string_view signal_layout = "date-major-little-endian-f64;non-finite-stored-as-quiet-NaN";
@@ -49,9 +59,8 @@ constexpr std::string_view fields_schema = "atx.research-role-fields/v1";
 constexpr std::string_view output_schema = "atx.marginal-ic/v1";
 
 co::Error fail(co::ErrorCode code, const std::string& message) { return co::Error{code, "marginal IC: " + message}; }
-bool hash_valid(std::string_view s) {
-  return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
-}
+// The library's candidate-id rule. Kept here: the runner's copies of it (composition_id,
+// theme_name, safe_name) are TU-local, none is in strategy_ic_detail.hpp.
 bool safe_id(std::string_view s) {
   return !s.empty() && s.size() <= 64 && std::all_of(s.begin(), s.end(), [](char c) {
     return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
@@ -65,23 +74,18 @@ std::optional<u64> count_of(const Json& j, const char* key) {
   return std::nullopt;
 }
 Json finite_or_null(f64 v) { return std::isfinite(v) ? Json(v) : Json(nullptr); }
-
-// `limit`: metadata_limit, or ic_fields_manifest_max_bytes for a fields manifest (review B-4).
-co::Result<std::string> read_text(const fs::path& path, std::string_view what, u64 limit = metadata_limit) {
-  std::ifstream in(path, std::ios::binary | std::ios::ate);
-  if (!in || in.tellg() <= 0 || static_cast<u64>(in.tellg()) > limit)
-    return co::Err(fail(co::ErrorCode::InvalidArgument, std::string(what) + " missing, empty or over " +
-        std::to_string(limit >> 20) + " MiB: " + path.string()));
-  std::string text(static_cast<usize>(in.tellg()), '\0');
-  in.seekg(0); in.read(text.data(), static_cast<std::streamsize>(text.size()));
-  if (!in) return co::Err(fail(co::ErrorCode::IoError, std::string(what) + " read: " + path.string()));
-  return co::Ok(std::move(text));
+using Clock = std::chrono::steady_clock;
+f64 seconds_between(Clock::time_point from, Clock::time_point to) {
+  return std::chrono::duration<f64>(to - from).count();
 }
+
 struct Pinned { Json json; std::string sha, text; };
-// `pin` empty: the SHA256 is computed and recorded, not checked.
-co::Result<Pinned> pinned_json(const fs::path& path, const std::string& pin, std::string_view what,
-                               u64 limit = metadata_limit) {
-  ATX_TRY(auto text, read_text(path, what, limit));
+// The shared metadata reader plus a recorded SHA256. `pin` empty: computed and recorded, not
+// checked (ic_detail::pinned_json refuses an empty pin, so it cannot serve this contract).
+// `limit`: metadata_limit, or ic_fields_manifest_max_bytes for a fields manifest (review B-4).
+co::Result<Pinned> pinned_document(const fs::path& path, const std::string& pin,
+                                   std::string_view what, u64 limit = metadata_limit) {
+  ATX_TRY(auto text, icd::metadata_text(path.string(), limit));
   ATX_TRY(auto sha, co::sha256_hex(text));
   if (!pin.empty() && pin != sha)
     return co::Err(fail(co::ErrorCode::InvalidArgument, std::string(what) + " SHA256 differs from its pin: " + path.string()));
@@ -89,6 +93,20 @@ co::Result<Pinned> pinned_json(const fs::path& path, const std::string& pin, std
   if (j.is_discarded() || !j.is_object())
     return co::Err(fail(co::ErrorCode::InvalidArgument, std::string(what) + " is not a JSON object: " + path.string()));
   return co::Ok(Pinned{std::move(j), std::move(sha), std::move(text)});
+}
+// The lines of a small UTF-8 text file: a leading BOM and each line's trailing CR dropped.
+std::vector<std::string> text_lines(std::string_view text) {
+  if (text.starts_with("\xEF\xBB\xBF")) text.remove_prefix(3);
+  std::vector<std::string> out;
+  while (!text.empty()) {
+    const auto end = text.find('\n');
+    auto line = text.substr(0, end);
+    if (line.ends_with('\r')) line.remove_suffix(1);
+    out.emplace_back(line);
+    if (end == std::string_view::npos) break;
+    text.remove_prefix(end + 1U);
+  }
+  return out;
 }
 
 // ---- inputs -------------------------------------------------------------------
@@ -103,13 +121,13 @@ co::Result<FileReceipt> receipt(const Json& files, const fs::path& dir, const st
   if (!files.contains(name) || !files.at(name).is_object())
     return co::Err(fail(co::ErrorCode::InvalidArgument, "pool manifest lacks the file receipt " + name));
   const auto& row = files.at(name); auto sha = text_of(row, "sha256"); const auto recorded = count_of(row, "bytes");
-  if (!hash_valid(sha) || !recorded || *recorded != bytes)
+  if (!icd::hash_valid(sha) || !recorded || *recorded != bytes)
     return co::Err(fail(co::ErrorCode::InvalidArgument, "pool file receipt " + name + " (SHA256 or extent)"));
   return co::Ok(FileReceipt{dir / name, std::move(sha), bytes});
 }
 co::Result<Pool> read_pool(const MarginalIcConfig& cfg) {
   Pool pool; pool.path = cfg.pool_path;
-  ATX_TRY(auto pinned, pinned_json(pool.path, cfg.pool_sha256, "pool combined manifest"));
+  ATX_TRY(auto pinned, pinned_document(pool.path, cfg.pool_sha256, "pool combined manifest"));
   const Json& j = pinned.json; pool.sha = pinned.sha;
   const auto dates = count_of(j, "dates"), names = count_of(j, "instruments");
   const auto begin = count_of(j, "score_begin"), end = count_of(j, "score_end");
@@ -122,11 +140,11 @@ co::Result<Pool> read_pool(const MarginalIcConfig& cfg) {
   pool.dates = static_cast<usize>(*dates); pool.names = static_cast<usize>(*names);
   pool.score_begin = static_cast<usize>(*begin); pool.score_end = static_cast<usize>(*end);
   pool.role_sha = text_of(j, "role_manifest_sha256"); pool.library_sha = text_of(j, "library_sha256");
-  if (!hash_valid(pool.role_sha) || !hash_valid(pool.library_sha))
+  if (!icd::hash_valid(pool.role_sha) || !icd::hash_valid(pool.library_sha))
     return co::Err(fail(co::ErrorCode::InvalidArgument, "pool role/library SHA256"));
   if (j.contains("composition_weights_sha256")) {
     pool.weights_sha = text_of(j, "composition_weights_sha256");
-    if (!hash_valid(pool.weights_sha)) return co::Err(fail(co::ErrorCode::InvalidArgument, "pool composition_weights_sha256"));
+    if (!icd::hash_valid(pool.weights_sha)) return co::Err(fail(co::ErrorCode::InvalidArgument, "pool composition_weights_sha256"));
   }
   const u64 cells = static_cast<u64>(pool.dates) * pool.names;
   const auto dir = pool.path.parent_path(); const auto prefix = role + "_combined"; const auto& files = j.at("files");
@@ -140,7 +158,7 @@ co::Result<Pool> read_pool(const MarginalIcConfig& cfg) {
 // theme: the library row's `theme`, else its family. sign: the row's prior_sign when +1/-1.
 struct Candidate { std::string id, family, theme, dsl_sha; std::optional<int> prior_sign; };
 co::Result<std::vector<Candidate>> read_library(const MarginalIcConfig& cfg, std::string& sha) {
-  ATX_TRY(auto pinned, pinned_json(cfg.library_path, cfg.library_sha256, "library"));
+  ATX_TRY(auto pinned, pinned_document(cfg.library_path, cfg.library_sha256, "library"));
   const Json& j = pinned.json; sha = pinned.sha;
   if (text_of(j, "schema") != library_schema || !j.contains("candidates") || !j.at("candidates").is_array() ||
       j.at("candidates").empty() || j.at("candidates").size() > 256U)
@@ -163,13 +181,64 @@ co::Result<std::vector<Candidate>> read_library(const MarginalIcConfig& cfg, std
   return co::Ok(std::move(out));
 }
 
+// --candidates FILE (P9 S1, ruling P4): one library candidate id per line, blank lines ignored.
+// `listed[k]` = 1 for a listed candidate; without the option every candidate is listed.
+struct Listing {
+  std::vector<u8> listed; usize count{}; std::string path, sha; Json ids = Json::array();
+};
+co::Result<Listing> read_candidates(const MarginalIcConfig& cfg,
+                                    const std::vector<Candidate>& lib) {
+  Listing out; out.listed.assign(lib.size(), cfg.candidates_path.empty() ? u8{1} : u8{0});
+  if (cfg.candidates_path.empty()) { out.count = lib.size(); return co::Ok(std::move(out)); }
+  ATX_TRY(const auto text, icd::metadata_text(cfg.candidates_path, metadata_limit));
+  ATX_TRY(out.sha, co::sha256_hex(text));
+  out.path = cfg.candidates_path;
+  std::map<std::string, usize> index;
+  for (usize k = 0; k < lib.size(); ++k) index.emplace(lib[k].id, k);
+  for (const auto& line : text_lines(text)) {
+    if (line.empty()) continue;
+    const auto at = index.find(line);
+    if (!safe_id(line) || at == index.end())
+      return co::Err(fail(co::ErrorCode::InvalidArgument,
+                          "--candidates: " + line + " is not a candidate id of --library"));
+    if (out.listed[at->second] != 0)
+      return co::Err(fail(co::ErrorCode::InvalidArgument,
+                          "--candidates: " + line + " is listed twice"));
+    out.listed[at->second] = 1;
+  }
+  for (usize k = 0; k < lib.size(); ++k)
+    if (out.listed[k] != 0) { out.ids.push_back(lib[k].id); ++out.count; }
+  if (out.count == 0U)
+    return co::Err(fail(co::ErrorCode::InvalidArgument, "--candidates lists no candidate"));
+  return co::Ok(std::move(out));
+}
+
+// --verified-digests FILE (P9 S1): payload SHA256s the caller already verified, one per line.
+struct Verified { std::set<std::string> digests; std::string path, sha; usize accepted{}; };
+co::Result<Verified> read_verified(const MarginalIcConfig& cfg) {
+  Verified out;
+  if (cfg.verified_digests_path.empty()) return co::Ok(std::move(out));
+  ATX_TRY(const auto text, icd::metadata_text(cfg.verified_digests_path, metadata_limit));
+  ATX_TRY(out.sha, co::sha256_hex(text));
+  out.path = cfg.verified_digests_path;
+  for (const auto& line : text_lines(text)) {
+    if (line.empty()) continue;
+    if (!icd::hash_valid(line) || out.digests.size() >= max_digests)
+      return co::Err(fail(co::ErrorCode::InvalidArgument,
+                          "--verified-digests: at most 4096 lowercase SHA256 lines; refused: " +
+                          line.substr(0, 80)));
+    out.digests.insert(line);
+  }
+  return co::Ok(std::move(out));
+}
+
 // The pool's weighted members grouped into theme composites T_j = sum_{k in j} s_k w_k r_k over
 // the members' centred ranks r_k (fixed denominator: an unranked member adds 0), which is the
 // no-redistribution blend split by theme. Theme names come from the weights file's theme block
 // (theme_standardise or theme_redistribution, read by the IC runner's ic_weights_themes, so the
 // grouping is the blend's own; review B-2), else from the library rows. Under theme_standardise
 // with rerank true each T_j is the blend's theme term instead: its centred tied re-rank over the
-// member names with a present member of j (rerank_theme_rows).
+// member names with a present member of j (rerank_theme).
 struct Themes {
   std::string path, sha;
   std::string block;                    // the weights file's theme block; empty: library themes
@@ -192,7 +261,7 @@ co::Result<Themes> read_themes(const MarginalIcConfig& cfg, const Pool& pool, co
   if (pool.weights_sha.empty())
     return co::Err(fail(co::ErrorCode::InvalidArgument, "--themes needs a pool blended with pinned composition "
         "weights (its manifest names composition_weights_sha256)"));
-  ATX_TRY(auto pinned, pinned_json(cfg.themes_path, pool.weights_sha, "themes (the pool's composition weights)"));
+  ATX_TRY(auto pinned, pinned_document(cfg.themes_path, pool.weights_sha, "themes (the pool's composition weights)"));
   const Json& j = pinned.json; t.path = cfg.themes_path; t.sha = pinned.sha;
   const auto schema = text_of(j, "schema");
   if ((schema != "atx.dsl-composition-weights/v1" && schema != "atx.dsl-composition-weights/v2") ||
@@ -240,8 +309,10 @@ co::Result<Themes> read_themes(const MarginalIcConfig& cfg, const Pool& pool, co
     if (at == t.names.end()) t.names.push_back(name);
   }
   if (t.names.empty() || t.names.size() + 1U > cb::kMaxMarginalRegressors)
-    return co::Err(fail(co::ErrorCode::InvalidArgument, "themes: 1..10 weighted themes (the composite plus the "
-        "themes may not exceed 11 regressors)"));
+    return co::Err(fail(co::ErrorCode::InvalidArgument,
+                        "themes: 1.." + std::to_string(cb::kMaxMarginalRegressors - 1U) +
+                        " weighted themes (the composite plus the themes may not exceed " +
+                        std::to_string(cb::kMaxMarginalRegressors) + " regressors)"));
   return co::Ok(std::move(t));
 }
 
@@ -249,15 +320,15 @@ co::Result<Themes> read_themes(const MarginalIcConfig& cfg, const Pool& pool, co
 co::Result<std::map<std::string, std::string>> read_fields(const MarginalIcConfig& cfg, const Pool& pool, std::string& sha) {
   std::map<std::string, std::string> out;
   if (cfg.fields_directory.empty()) return co::Ok(std::move(out));
-  ATX_TRY(auto pinned, pinned_json(fs::path(cfg.fields_directory) / "manifest.json", std::string{}, "fields manifest",
-                                   ic_fields_manifest_max_bytes));
+  ATX_TRY(auto pinned, pinned_document(fs::path(cfg.fields_directory) / "manifest.json", std::string{}, "fields manifest",
+                                       ic_fields_manifest_max_bytes));
   const Json& j = pinned.json; sha = pinned.sha;
   if (text_of(j, "schema") != fields_schema || !j.contains("role") || text_of(j.at("role"), "manifest_sha256") != pool.role_sha ||
       !j.contains("fields") || !j.at("fields").is_array())
     return co::Err(fail(co::ErrorCode::InvalidArgument, "fields manifest schema or role binding differs from the pool's role"));
   for (const auto& row : j.at("fields")) {
     const auto name = text_of(row, "name"), payload = text_of(row, "sha256");
-    if (name.empty() || !hash_valid(payload)) return co::Err(fail(co::ErrorCode::InvalidArgument, "fields manifest row " + name));
+    if (name.empty() || !icd::hash_valid(payload)) return co::Err(fail(co::ErrorCode::InvalidArgument, "fields manifest row " + name));
     out[name] = payload;
   }
   return co::Ok(std::move(out));
@@ -269,7 +340,7 @@ using FieldShas = std::map<std::string, std::string>;
 // nullopt: an intact entry for other field payloads than the pinned fields manifest names.
 co::Result<std::optional<CacheEntry>> accept_sidecar(const fs::path& path, const Candidate& c, const std::string& stem,
                                                      const Pool& pool, const FieldShas& fields) {
-  ATX_TRY(auto text, read_text(path, "candidate cache sidecar"));
+  ATX_TRY(auto text, icd::metadata_text(path.string(), metadata_limit));
   const auto j = Json::parse(text, nullptr, false);
   const u64 bytes = static_cast<u64>(pool.dates) * pool.names * sizeof(f64);
   auto sha = text_of(j, "payload_sha256");
@@ -277,7 +348,7 @@ co::Result<std::optional<CacheEntry>> accept_sidecar(const fs::path& path, const
       text_of(j, "dsl_sha256") != c.dsl_sha || text_of(j, "role_manifest_sha256") != pool.role_sha ||
       text_of(j, "layout") != signal_layout || text_of(j, "payload") != stem + ".f64" ||
       count_of(j, "dates") != std::optional<u64>(pool.dates) || count_of(j, "instruments") != std::optional<u64>(pool.names) ||
-      count_of(j, "bytes") != std::optional<u64>(bytes) || !hash_valid(sha) || !j.contains("field_payload_sha256") ||
+      count_of(j, "bytes") != std::optional<u64>(bytes) || !icd::hash_valid(sha) || !j.contains("field_payload_sha256") ||
       !j.at("field_payload_sha256").is_object())
     return co::Err(fail(co::ErrorCode::InvalidArgument, "candidate cache sidecar does not describe " + c.id +
         " on the pool's role: " + path.string()));
@@ -356,38 +427,19 @@ co::Status bind_role(const engine::data::StrategyRoleData& role, const Pool& poo
     return co::Err(fail(co::ErrorCode::InvalidArgument, "role sessions/instrument ids differ from the pool's axes"));
   return co::Ok();
 }
-// Cumulative excluded one-day returns (the runner's guard_for): an adjacent observed step with
-// |log close step| > 1.5, or above |log raw_close step| + .10.
-std::vector<u32> return_guard(const engine::alpha::Panel& p, std::span<const f64> close, std::span<const f64> raw) {
-  const usize d = p.dates(), n = p.instruments();
-  std::vector<u32> out(d * n, 0U);
-  for (usize t = 1; t < d; ++t) for (usize i = 0; i < n; ++i) {
-    const usize a = (t - 1) * n + i, b = t * n + i;
-    bool bad = false;
-    if (p.in_universe(t - 1, i) && p.in_universe(t, i) && std::isfinite(close[a]) && std::isfinite(close[b]) &&
-        close[a] > 0 && close[b] > 0) {
-      const f64 r = std::log(close[b]) - std::log(close[a]);
-      bad = std::abs(r) > 1.5;
-      if (std::isfinite(raw[a]) && std::isfinite(raw[b]) && raw[a] > 0 && raw[b] > 0)
-        bad = bad || std::abs(r) > std::abs(std::log(raw[b]) - std::log(raw[a])) + .10;
-    }
-    out[b] = out[a] + (bad ? 1U : 0U);
-  }
-  return out;
-}
 // The engine research label (ic_screen.cpp prepare_cache with require_endpoint_presence, delay
 // 1, maturity = role end): decision-eligible at d, both endpoints present, no guarded step
-// between them, finite positive decision/entry/exit closes, finite return.
+// between them, finite positive decision/entry/exit closes, finite return. The guard is the
+// runner's own, engine::data::research_return_guard (review CM s.2: v8 carried a verbatim copy).
 co::Result<Labels> research_labels(const engine::data::StrategyRoleData& role) {
   const auto& p = role.panel; const usize n = p.instruments();
   ATX_TRY(const auto close_id, p.field_id("close"));
-  ATX_TRY(const auto raw_id, p.field_id("raw_close"));
-  const auto close = p.field_all(close_id), raw = p.field_all(raw_id);
+  const auto close = p.field_all(close_id);
   const usize lag = execution_delay + horizon;
   Labels out; out.begin = role.score_begin;
   out.rows = role.score_end > role.score_begin + lag ? role.score_end - role.score_begin - lag : 0U;
   if (out.rows < 2U) return co::Err(fail(co::ErrorCode::InvalidArgument, "role window too short for mature h 21 labels"));
-  const auto guard = return_guard(p, close, raw);
+  ATX_TRY(const auto guard, engine::data::research_return_guard(role));
   out.values.assign(out.rows * n, quiet_nan);
   for (usize row = 0; row < out.rows; ++row) {
     const usize t = out.begin + row, entry = t + execution_delay, last = entry + horizon;
@@ -408,7 +460,7 @@ co::Result<Labels> research_labels(const engine::data::StrategyRoleData& role) {
 // Ruling E-10 (review B-3): the pool's role is the one its candidate signals were scored on,
 // so a role built with --delisting-returns is refused before any payload is opened.
 co::Status refuse_terminal_return_role(const MarginalIcConfig& cfg) {
-  ATX_TRY(const auto manifest, read_text(cfg.role_manifest, "role manifest"));
+  ATX_TRY(const auto manifest, icd::metadata_text(cfg.role_manifest, metadata_limit));
   return engine::data::refuse_delisting_returns_signal_role(manifest, cfg.role_manifest);
 }
 // The role lives only inside this call: it is released before any payload is streamed.
@@ -420,21 +472,30 @@ co::Result<Labels> load_labels(const MarginalIcConfig& cfg, const Pool& pool) {
 
 // ---- streaming ----------------------------------------------------------------
 // One date-major f64 payload, verified whole once (extent + SHA256), then read a row at a time.
+// `verify` false: a payload whose SHA256 the caller vouches for (--verified-digests); its extent
+// is still checked. read() is thread-safe: band workers share one reader per payload.
 class RowReader {
 public:
-  static co::Result<RowReader> open(const fs::path& path, const std::string& sha, usize dates, usize names) {
+  static co::Result<RowReader> open(const fs::path& path, const std::string& sha, usize dates,
+                                    usize names, bool verify) {
     std::error_code ec; const auto size = fs::file_size(path, ec);
     if (ec || static_cast<u64>(size) != static_cast<u64>(dates) * names * sizeof(f64))
       return co::Err(fail(co::ErrorCode::InvalidArgument, "payload extent: " + path.string()));
-    ATX_TRY(const auto actual, co::sha256_file(path.string()));
-    if (actual != sha) return co::Err(fail(co::ErrorCode::InvalidArgument, "payload SHA256 mismatch: " + path.string()));
+    if (verify) {
+      ATX_TRY(const auto actual, co::sha256_file(path.string()));
+      if (actual != sha)
+        return co::Err(fail(co::ErrorCode::InvalidArgument,
+                            "payload SHA256 mismatch: " + path.string()));
+    }
     RowReader out; out.names_ = names; out.dates_ = dates; out.path_ = path;
+    out.lock_ = std::make_unique<std::mutex>();
     out.in_.open(path, std::ios::binary);
     if (!out.in_) return co::Err(fail(co::ErrorCode::IoError, "payload open: " + path.string()));
     return co::Ok(std::move(out));
   }
   co::Status read(usize date, std::span<f64> row) {
     if (date >= dates_ || row.size() != names_) return co::Err(fail(co::ErrorCode::Internal, "row read geometry"));
+    const std::lock_guard<std::mutex> hold(*lock_);
     in_.seekg(static_cast<std::streamoff>(date * names_ * sizeof(f64)), std::ios::beg);
     // SAFETY: char writes the object representation of the caller's f64 row of exactly that extent.
     in_.read(reinterpret_cast<char*>(row.data()), static_cast<std::streamsize>(names_ * sizeof(f64)));
@@ -443,93 +504,282 @@ public:
   }
 private:
   std::ifstream in_; fs::path path_; usize dates_{}, names_{};
+  std::unique_ptr<std::mutex> lock_; // guards in_'s seek + read pair
 };
+// raw / marginal: per listed candidate, one value per row (unlisted: empty, never written).
 struct Series { std::vector<f64> raw, marginal; usize spanned{}; };
+// candidates: a reader per needed library candidate (unneeded: nullopt, never opened).
 struct Streams {
-  RowReader pool; std::vector<RowReader> candidates; std::vector<u8> member;
+  RowReader pool; std::vector<std::optional<RowReader>> candidates; std::vector<u8> member;
 };
+// The read-only inputs of the streaming pass, shared by every band worker.
+struct StreamPlan {
+  const MarginalIcConfig& cfg;
+  const Themes& themes;
+  const Labels& labels;
+  usize names{};              // the role's instruments: a payload row's width
+  std::span<const u8> listed; // per library candidate: residualised, gets a row
+  std::span<const u8> needed; // per library candidate: read and ranked every row
+};
+// One band worker's buffers, sized once to the role width (a row's m names fit in any of them),
+// so no row allocates and every span taken over them stays valid.
+struct RowScratch {
+  std::vector<f64> full;                // one payload row as stored (role width)
+  std::vector<usize> names;             // the row's names: its members (compacted) or every name
+  std::vector<u8> member;               // their pool member flags
+  std::vector<f64> composite, label, values, plane, nan_row;
+  std::vector<f64> book, self_composite, self_theme; // --exclude-self only
+  std::vector<std::vector<f64>> ranks;  // per library candidate (needed ones sized)
+  std::vector<std::vector<f64>> themes; // per theme
+  std::vector<std::span<const f64>> regressors, self_regressors, rank_rows;
+  std::vector<std::pair<f64, usize>> sorted;
+  cb::MarginalRankIcScratch kernel;
+  f64 read_seconds{}, kernel_seconds{}, pairwise_seconds{};
+};
+void size_scratch(const StreamPlan& plan, RowScratch& s) {
+  const usize n = plan.names, j_n = plan.themes.names.size(), k_n = plan.needed.size();
+  s.full.assign(n, 0.0); s.names.reserve(n); s.member.assign(n, u8{0});
+  for (auto* row : {&s.composite, &s.label, &s.values, &s.plane}) row->assign(n, quiet_nan);
+  s.nan_row.assign(n, quiet_nan);
+  if (plan.cfg.exclude_self)
+    for (auto* row : {&s.book, &s.self_composite, &s.self_theme}) row->assign(n, quiet_nan);
+  s.ranks.assign(k_n, {});
+  for (usize k = 0; k < k_n; ++k) if (plan.needed[k] != 0) s.ranks[k].assign(n, quiet_nan);
+  s.themes.assign(j_n, std::vector<f64>(n, quiet_nan));
+  s.regressors.assign(1U + j_n, {}); s.self_regressors.assign(1U + j_n, {});
+  s.rank_rows.assign(k_n, {});
+  s.sorted.reserve(n);
+}
+std::span<f64> head(std::vector<f64>& buffer, usize m) {
+  return std::span<f64>(buffer.data(), m);
+}
+// Payload row `t` of `reader` at the scratch's names, into `out` (m values).
+co::Status gather_row(RowReader& reader, usize t, RowScratch& s, std::span<f64> out) {
+  ATX_TRY_VOID(reader.read(t, s.full));
+  for (usize j = 0; j < out.size(); ++j) out[j] = s.full[s.names[j]];
+  return co::Ok();
+}
+// out[i] += s_q w_q r_q(i) for each weighted member q that `take` accepts, in library order, on
+// member names where r_q is ranked: the no-redistribution sum of the v8 theme composites.
+template<class Take>
+void add_weighted_ranks(const Themes& themes, const RowScratch& s, usize m, Take take,
+                        std::span<f64> out) {
+  for (usize q = 0; q < themes.theme_of.size(); ++q) {
+    if (themes.theme_of[q] == npos || !take(q)) continue;
+    const f64 weight = themes.signed_weight[q]; const auto& rank = s.ranks[q];
+    for (usize i = 0; i < m; ++i)
+      if (s.member[i] != 0 && std::isfinite(rank[i])) out[i] += weight * rank[i];
+  }
+}
+// Member names 0, other names NaN: every composite's starting row.
+void member_zero(const RowScratch& s, std::span<f64> out) {
+  for (usize i = 0; i < out.size(); ++i) out[i] = s.member[i] != 0 ? 0.0 : quiet_nan;
+}
 // ew-theme-std-v1 with rerank true (review B-2): theme j's row becomes the blend's theme term,
-// the centred tied re-rank of sum_{k in j} s_k w_k r_k over the member names where a member of
-// j is ranked, with the IC composition's kernel and accumulation order (library order,
-// combine/group_rerank.hpp). Member names without a ranked member of j keep 0 (neutral, as in
-// the blend) and nonmembers NaN, as the caller initialised `theme_rows`. Unit scale: the
-// blend's factor W_theme would not change the residual. `plane` holds one row (n values).
-co::Status rerank_theme_rows(const Themes& themes, std::span<const u8> member,
-                             const std::vector<std::vector<f64>>& ranks, std::vector<f64>& plane,
-                             std::vector<std::vector<f64>>& theme_rows,
-                             std::vector<std::pair<f64, usize>>& scratch) {
-  const usize n = member.size();
-  for (usize j = 0; j < theme_rows.size(); ++j) {
-    std::fill(plane.begin(), plane.end(), quiet_nan);
-    for (usize k = 0; k < ranks.size(); ++k) {
-      if (themes.theme_of[k] != j) continue;
-      for (usize i = 0; i < n; ++i)
-        if (member[i] != 0 && std::isfinite(ranks[k][i]))
-          cb::accumulate_group_cell(plane[i], themes.signed_weight[k] * ranks[k][i]);
-    }
-    ATX_TRY_VOID(cb::add_group_rerank(plane, n, 0U, 1U, 1.0, theme_rows[j], scratch));
+// the centred tied re-rank of sum_{k in j, k != skip} s_k w_k r_k over the member names where
+// such a k is ranked, with the IC composition's kernel and accumulation order (library order,
+// combine/group_rerank.hpp), added to `out` (member_zero'd by the caller: member names without a
+// ranked member keep 0, neutral as in the blend, nonmembers NaN). Unit scale: the blend's factor
+// W_theme would not change the residual. A row without names adds nothing.
+co::Status rerank_theme(const Themes& themes, usize j, usize skip, usize m, RowScratch& s,
+                        std::span<f64> out) {
+  if (m == 0U) return co::Ok();
+  const auto plane = head(s.plane, m);
+  std::fill(plane.begin(), plane.end(), quiet_nan);
+  for (usize k = 0; k < themes.theme_of.size(); ++k) {
+    if (themes.theme_of[k] != j || k == skip) continue;
+    const auto& rank = s.ranks[k];
+    for (usize i = 0; i < m; ++i)
+      if (s.member[i] != 0 && std::isfinite(rank[i]))
+        cb::accumulate_group_cell(plane[i], themes.signed_weight[k] * rank[i]);
+  }
+  return cb::add_group_rerank(plane, m, 0U, 1U, 1.0, out, s.sorted);
+}
+// The row's regressors over its m names: the pool's composite, then each theme composite.
+co::Status build_regressors(const Themes& themes, usize m, RowScratch& s) {
+  s.regressors[0] = head(s.composite, m);
+  for (usize j = 0; j < themes.names.size(); ++j) {
+    const auto row = head(s.themes[j], m);
+    member_zero(s, row);
+    if (themes.rerank) ATX_TRY_VOID(rerank_theme(themes, j, npos, m, s, row));
+    else add_weighted_ranks(themes, s, m, [&](usize q) { return themes.theme_of[q] == j; }, row);
+    s.regressors[1U + j] = row;
   }
   return co::Ok();
 }
-// Per decision row: every candidate's centred rank over the pool's members, the theme
-// composites, then one kernel call per candidate and one pairwise-correlation update.
-co::Status stream_rows(const MarginalIcConfig& cfg, const Pool& pool, const std::vector<Candidate>& lib,
-                       const Themes& themes, const Labels& labels, Streams& in, std::vector<Series>& series,
-                       cb::PairwiseRowCorrelation& rho) {
-  const usize n = pool.names, k_n = lib.size(), j_n = themes.names.size();
-  std::vector<std::vector<f64>> raw(k_n, std::vector<f64>(n)), ranks(k_n, std::vector<f64>(n));
-  std::vector<std::vector<f64>> theme_rows(j_n, std::vector<f64>(n));
-  // `plane`: one row of rerank_theme_rows (inside the admission's fixed 32 MiB slack).
-  std::vector<f64> composite(n), plane(themes.rerank ? n : 0U);
-  // Row views are taken once: none of these buffers is resized while streaming.
-  std::vector<std::span<const f64>> regressors, rank_rows;
-  regressors.emplace_back(composite);
-  for (const auto& row : theme_rows) regressors.emplace_back(row);
-  for (const auto& row : ranks) rank_rows.emplace_back(row);
-  cb::MarginalRankIcScratch scratch; std::vector<std::pair<f64, usize>> sorted;
-  for (auto& s : series) { s.raw.assign(labels.rows, quiet_nan); s.marginal.assign(labels.rows, quiet_nan); }
-  for (usize row = 0; row < labels.rows; ++row) {
-    const usize t = labels.begin + row;
-    const std::span<const u8> member(in.member.data() + t * n, n);
-    ATX_TRY_VOID(in.pool.read(t, composite));
-    for (usize k = 0; k < k_n; ++k) {
-      ATX_TRY_VOID(in.candidates[k].read(t, raw[k]));
-      ATX_TRY_VOID(cb::centred_tied_ranks(raw[k], member, ranks[k], sorted));
+// --exclude-self: member k's regressors without its own term. The book composite is the plain
+// reconstruction sum over the weighted members of s w r (s.book, built per row) minus k's term;
+// k's theme composite is rebuilt without k (re-ranked under rerank); other themes are kept.
+co::Status self_regressors(const Themes& themes, usize k, usize m, RowScratch& s) {
+  const auto composite = head(s.self_composite, m); const auto& rank = s.ranks[k];
+  const f64 weight = themes.signed_weight[k];
+  for (usize i = 0; i < m; ++i) {
+    const bool ranked = s.member[i] != 0 && std::isfinite(rank[i]);
+    composite[i] = ranked ? s.book[i] - weight * rank[i] : s.book[i];
+  }
+  const usize own = themes.theme_of[k];
+  const auto theme = head(s.self_theme, m);
+  member_zero(s, theme);
+  if (themes.rerank) ATX_TRY_VOID(rerank_theme(themes, own, k, m, s, theme));
+  else add_weighted_ranks(themes, s, m,
+                          [&](usize q) { return themes.theme_of[q] == own && q != k; }, theme);
+  s.self_regressors[0] = composite;
+  for (usize j = 0; j < themes.names.size(); ++j)
+    s.self_regressors[1U + j] = j == own ? std::span<const f64>(theme) : s.regressors[1U + j];
+  return co::Ok();
+}
+// One decision row: gather the row's names, rank every needed candidate, build the regressors,
+// score each listed candidate (the series cells of this row only) and take the row's pair
+// values. Writes nothing shared but `series` cells at `row`, `pairs_out` and `spanned_out`.
+co::Status process_row(const StreamPlan& plan, Streams& in, const cb::PairwiseRowCorrelation& rho,
+                       usize row, RowScratch& s, std::vector<Series>& series,
+                       std::span<f64> pairs_out, std::span<u8> spanned_out) {
+  const usize n = plan.names, t = plan.labels.begin + row, k_n = plan.needed.size();
+  const std::span<const u8> member(in.member.data() + t * n, n);
+  s.names.clear();
+  for (usize i = 0; i < n; ++i)
+    if (!plan.cfg.compact_rows || member[i] != 0) s.names.push_back(i);
+  const usize m = s.names.size();
+  for (usize j = 0; j < m; ++j) s.member[j] = member[s.names[j]];
+  const std::span<const u8> member_m(s.member.data(), m);
+  auto mark = Clock::now();
+  ATX_TRY_VOID(gather_row(in.pool, t, s, head(s.composite, m)));
+  for (usize k = 0; k < k_n; ++k) {
+    if (plan.needed[k] == 0) {
+      s.rank_rows[k] = std::span<const f64>(s.nan_row.data(), m);
+      continue;
     }
-    for (auto& row_values : theme_rows)
-      for (usize i = 0; i < n; ++i) row_values[i] = member[i] != 0 ? 0.0 : quiet_nan;
-    if (themes.rerank) {
-      // `sorted` is free again: every candidate row above is already ranked.
-      ATX_TRY_VOID(rerank_theme_rows(themes, member, ranks, plane, theme_rows, sorted));
-    } else {
-      for (usize k = 0; k < k_n; ++k) {
-        if (themes.theme_of[k] == npos) continue;
-        auto& target = theme_rows[themes.theme_of[k]];
-        for (usize i = 0; i < n; ++i)
-          if (member[i] != 0 && std::isfinite(ranks[k][i])) target[i] += themes.signed_weight[k] * ranks[k][i];
+    const auto values = head(s.values, m), ranks = head(s.ranks[k], m);
+    ATX_TRY_VOID(gather_row(*in.candidates[k], t, s, values));
+    const auto ranked = Clock::now(); s.read_seconds += seconds_between(mark, ranked);
+    ATX_TRY_VOID(cb::centred_tied_ranks(values, member_m, ranks, s.sorted));
+    s.rank_rows[k] = ranks;
+    mark = Clock::now(); s.kernel_seconds += seconds_between(ranked, mark);
+  }
+  // `sorted` is free again: every candidate row above is already ranked.
+  ATX_TRY_VOID(build_regressors(plan.themes, m, s));
+  if (plan.cfg.exclude_self) {
+    member_zero(s, head(s.book, m));
+    add_weighted_ranks(plan.themes, s, m, [](usize) { return true; }, head(s.book, m));
+  }
+  const f64* label = plan.labels.values.data() + row * n;
+  for (usize j = 0; j < m; ++j) s.label[j] = label[s.names[j]];
+  // m == 0 (no member name): v8's kernel returned NaN, NaN, not spanned, as the cells already hold.
+  for (usize k = 0; k < k_n && m > 0U; ++k) {
+    if (plan.listed[k] == 0) continue;
+    std::span<const std::span<const f64>> regressors = s.regressors;
+    if (plan.cfg.exclude_self && plan.themes.theme_of[k] != npos) {
+      ATX_TRY_VOID(self_regressors(plan.themes, k, m, s));
+      regressors = s.self_regressors;
+    }
+    ATX_TRY(const auto day,
+            cb::marginal_rank_ic_day(head(s.ranks[k], m), regressors, head(s.label, m),
+                                     plan.cfg.min_names, s.kernel));
+    series[k].raw[row] = day.raw_ic; series[k].marginal[row] = day.marginal_ic;
+    spanned_out[k] = day.spanned;
+  }
+  const auto paired = Clock::now(); s.kernel_seconds += seconds_between(mark, paired);
+  ATX_TRY_VOID(rho.day_values(s.rank_rows, pairs_out));
+  s.pairwise_seconds += seconds_between(paired, Clock::now());
+  return co::Ok();
+}
+struct StageTimes { f64 read{}, kernel{}, pairwise{}; };
+usize band_chunk_rows(usize workers) {
+  return workers > 1U ? band_rows_per_worker * workers : 1U;
+}
+// The rows in chunks; inside a chunk, DetPool date bands (the composition's quotient/remainder
+// split) write only their own rows' cells; after each join the chunk's pair values and spanned
+// flags are added in date order, so every worker count gives the serial bits (and workers 1 is
+// the v8 per-date loop: day_values then accumulate is add_date).
+co::Status stream_rows(const StreamPlan& plan, Streams& in, std::vector<Series>& series,
+                       cb::PairwiseRowCorrelation& rho, StageTimes& times) {
+  const usize workers = plan.cfg.workers, k_n = plan.needed.size();
+  std::vector<RowScratch> scratch(workers);
+  for (auto& s : scratch) size_scratch(plan, s);
+  std::optional<engine::parallel::DetPool> pool;
+  if (workers > 1U) pool.emplace(workers);
+  const usize chunk = band_chunk_rows(workers), pairs = rho.computed_pairs().size();
+  std::vector<f64> pair_values(chunk * pairs);
+  std::vector<u8> spanned(chunk * k_n);
+  std::vector<co::Status> status;
+  for (usize begin = 0; begin < plan.labels.rows; begin += chunk) {
+    const usize count = std::min(chunk, plan.labels.rows - begin);
+    const usize bands = std::min(count, workers * 4U);
+    status.assign(bands, co::Ok());
+    std::fill(spanned.begin(), spanned.end(), u8{0});
+    // SAFETY (data races): bands partition the chunk's rows; band b writes only its rows' series
+    // cells, pair_values and spanned rows, and status[b]; worker w alone uses scratch[w]. The
+    // plan, labels, member mask and rho (day_values is const) are read-only, and every payload
+    // read holds its reader's lock. parallel_for's barrier orders every write before the
+    // date-ordered accumulation below.
+    const auto band = [&](usize b, usize worker) {
+      const usize first = count / bands * b + count % bands * b / bands;
+      const usize last = count / bands * (b + 1U) + count % bands * (b + 1U) / bands;
+      for (usize r = first; r < last; ++r) {
+        auto done = process_row(plan, in, rho, begin + r, scratch[worker], series,
+                                std::span<f64>(pair_values).subspan(r * pairs, pairs),
+                                std::span<u8>(spanned).subspan(r * k_n, k_n));
+        if (!done) { status[b] = std::move(done); return; }
       }
+    };
+    if (pool) pool->parallel_for(bands, band);
+    else for (usize b = 0; b < bands; ++b) band(b, 0U);
+    for (const auto& done : status) if (!done) return done; // the lowest failing band
+    for (usize r = 0; r < count; ++r) {
+      ATX_TRY_VOID(rho.accumulate(std::span<const f64>(pair_values).subspan(r * pairs, pairs)));
+      for (usize k = 0; k < k_n; ++k)
+        series[k].spanned += static_cast<usize>(spanned[r * k_n + k]);
     }
-    const std::span<const f64> label(labels.values.data() + row * n, n);
-    for (usize k = 0; k < k_n; ++k) {
-      ATX_TRY(const auto day, cb::marginal_rank_ic_day(ranks[k], regressors, label, cfg.min_names, scratch));
-      series[k].raw[row] = day.raw_ic; series[k].marginal[row] = day.marginal_ic;
-      series[k].spanned += day.spanned;
-    }
-    ATX_TRY_VOID(rho.add_date(rank_rows));
+  }
+  for (const auto& s : scratch) {
+    times.read += s.read_seconds; times.kernel += s.kernel_seconds;
+    times.pairwise += s.pairwise_seconds;
   }
   return co::Ok();
 }
-co::Result<Streams> open_streams(const Pool& pool, const std::vector<CacheEntry>& entries) {
-  ATX_TRY(auto composite, RowReader::open(pool.signal.path, pool.signal.sha, pool.dates, pool.names));
+// The pool composite and every needed candidate payload (verified unless vouched for), plus the
+// member mask.
+co::Result<Streams> open_streams(const Pool& pool, const std::vector<CacheEntry>& entries,
+                                 std::span<const u8> needed, Verified& verified) {
+  const auto verify = [&](const std::string& sha) {
+    const bool vouched = verified.digests.contains(sha);
+    verified.accepted += vouched ? 1U : 0U;
+    return !vouched;
+  };
+  ATX_TRY(auto composite, RowReader::open(pool.signal.path, pool.signal.sha, pool.dates, pool.names,
+                                          verify(pool.signal.sha)));
   ATX_TRY(auto member, read_pinned<u8>(pool.member));
   if (std::any_of(member.begin(), member.end(), [](u8 v) { return v > 1; }))
     return co::Err(fail(co::ErrorCode::InvalidArgument, "pool member mask is not binary"));
   Streams out{std::move(composite), {}, std::move(member)};
-  out.candidates.reserve(entries.size());
-  for (const auto& entry : entries) {
-    ATX_TRY(auto reader, RowReader::open(entry.payload, entry.payload_sha, pool.dates, pool.names));
-    out.candidates.push_back(std::move(reader));
+  out.candidates.resize(entries.size());
+  for (usize k = 0; k < entries.size(); ++k) {
+    if (needed[k] == 0) continue;
+    const auto& entry = entries[k];
+    ATX_TRY(auto reader, RowReader::open(entry.payload, entry.payload_sha, pool.dates, pool.names,
+                                         verify(entry.payload_sha)));
+    out.candidates[k].emplace(std::move(reader));
   }
+  return co::Ok(std::move(out));
+}
+// --pair-cache: every computed pair found in the cache is seeded and no longer computed.
+struct PairCacheUse { std::optional<MarginalPairCache> cache; usize hits{}; };
+co::Result<PairCacheUse> seed_pairs(const MarginalIcConfig& cfg, const Pool& pool, usize rows,
+                                    const std::vector<CacheEntry>& entries,
+                                    cb::PairwiseRowCorrelation& rho) {
+  PairCacheUse out;
+  if (cfg.pair_cache_directory.empty()) return co::Ok(std::move(out));
+  ATX_TRY(auto cache, open_marginal_pair_cache(cfg.pair_cache_directory,
+      MarginalPairScope{pool.role_sha, pool.member.sha, pool.score_begin, rows, cfg.min_names}));
+  std::vector<cb::PairSeed> seeds;
+  for (const auto& [a, b] : rho.computed_pairs()) {
+    const auto hit =
+        cache.stats.find(marginal_pair_key(entries[a].payload_sha, entries[b].payload_sha));
+    if (hit == cache.stats.end()) continue;
+    seeds.push_back({a, b, hit->second.sum, static_cast<usize>(hit->second.dates)});
+  }
+  ATX_TRY_VOID(rho.seed(seeds));
+  out.hits = seeds.size(); out.cache.emplace(std::move(cache));
   return co::Ok(std::move(out));
 }
 
@@ -559,8 +809,8 @@ Json candidate_row(const std::vector<Candidate>& lib, const Themes& themes, cons
 Json method_json(const MarginalIcConfig& cfg, const Themes& themes) {
   Json regressors = Json::array({"book_composite"});
   for (const auto& name : themes.names) regressors.push_back("theme:" + name);
-  return Json{{"label", "close[d+1+21]/close[d+1]-1;strict-positive-observed-endpoints;role-maturity;"
-                        "guard observed-adjacent-log1.5;adjusted-log-vs-raw+.10"},
+  Json out{{"label", "close[d+1+21]/close[d+1]-1;strict-positive-observed-endpoints;role-maturity;"
+                     "guard observed-adjacent-log1.5;adjusted-log-vs-raw+.10"},
       {"horizon", horizon}, {"execution_delay", execution_delay},
       {"candidate", "centred-tied-rank over the pool's member names with a finite signal"},
       {"regressors", std::move(regressors)},
@@ -580,6 +830,14 @@ Json method_json(const MarginalIcConfig& cfg, const Themes& themes) {
               "max |mean| over the other library candidates"},
       {"orientation", "DSL (raw, unoriented): multiply by `sign` for the book orientation"},
       {"min_names", cfg.min_names}};
+  // Present only with --exclude-self, so outputs without it keep their bytes.
+  if (cfg.exclude_self)
+    out["exclude_self"] =
+        "book member rows: the book composite regressor is the sum over the other weighted members "
+        "of sign*weight*centred-rank (unranked adds 0; the pool's saved composite minus the "
+        "member's term for a plain pinned-weights blend) and the member's theme composite is "
+        "rebuilt without it (re-ranked under rerank); other rows and themes as for every row";
+  return out;
 }
 } // namespace
 
@@ -600,6 +858,24 @@ co::Result<u64> marginal_ic_working_bytes(usize dates, usize names, usize score_
   return co::Ok(total);
 }
 
+co::Result<u64> marginal_ic_working_bytes(usize dates, usize names, usize score_rows,
+                                          usize candidates, usize regressors,
+                                          const MarginalWorkingExtras& extras) {
+  ATX_TRY(u64 total, marginal_ic_working_bytes(dates, names, score_rows, candidates, regressors));
+  const u64 k = candidates, n = names;
+  if (extras.workers == 0U || extras.workers > max_workers ||
+      extras.computed_pairs > k * (k - 1U) / 2U || extras.cached_pairs > kMaxMarginalCachedPairs)
+    return co::Err(fail(co::ErrorCode::InvalidArgument,
+                        "working-bytes options (workers 1..16, pairs)"));
+  const u64 workers = extras.workers, row_set = n * (2U * k + regressors + 4U) * sizeof(f64);
+  total += (workers - 1U) * row_set;                               // band workers' row sets
+  if (extras.exclude_self) total += workers * n * 3U * sizeof(f64); // member regressor rows
+  if (workers > 1U)                                                // one band chunk of pair values
+    total += band_chunk_rows(extras.workers) * (extras.computed_pairs * sizeof(f64) + k);
+  total += static_cast<u64>(extras.cached_pairs) * kMarginalCachedPairBytes; // loaded pairs
+  return co::Ok(total);
+}
+
 co::Status run_marginal_ic(const MarginalIcConfig& cfg, std::ostream& progress) {
   try {
     using steady = std::chrono::steady_clock;
@@ -608,10 +884,15 @@ co::Status run_marginal_ic(const MarginalIcConfig& cfg, std::ostream& progress) 
     if (cfg.candidate_cache_directory.empty() || cfg.library_path.empty() || cfg.pool_path.empty() ||
         cfg.role_manifest.empty() || cfg.output_directory.empty() || cfg.min_names < 3U ||
         cfg.max_working_bytes < (32ULL << 20) || cfg.max_working_bytes > (16ULL << 30) ||
-        (!cfg.library_sha256.empty() && !hash_valid(cfg.library_sha256)) ||
-        (!cfg.pool_sha256.empty() && !hash_valid(cfg.pool_sha256)))
+        (!cfg.library_sha256.empty() && !icd::hash_valid(cfg.library_sha256)) ||
+        (!cfg.pool_sha256.empty() && !icd::hash_valid(cfg.pool_sha256)))
       return co::Err(fail(co::ErrorCode::InvalidArgument, "bounded config (needs --candidate-cache, --library, --pool, "
           "--role, --output; --min-names >= 3; --max-memory-mib 32..16384)"));
+    if (cfg.workers == 0U || cfg.workers > max_workers ||
+        (cfg.exclude_self && cfg.themes_path.empty()))
+      return co::Err(fail(co::ErrorCode::InvalidArgument,
+                          "--workers 1..16; --exclude-self needs --themes (book members are known "
+                          "only from the pool's weights)"));
     std::error_code ec;
     if (fs::exists(cfg.output_directory, ec) || ec)
       return co::Err(fail(co::ErrorCode::AlreadyExists, "output directory must be new: " + cfg.output_directory));
@@ -622,6 +903,8 @@ co::Status run_marginal_ic(const MarginalIcConfig& cfg, std::ostream& progress) 
     ATX_TRY(const auto themes, read_themes(cfg, pool, lib));
     std::string fields_sha;
     ATX_TRY(const auto fields, read_fields(cfg, pool, fields_sha));
+    ATX_TRY(const auto listing, read_candidates(cfg, lib));
+    ATX_TRY(auto verified, read_verified(cfg));
     const auto identity = ic_cache_vm_identity().identity;
     const std::vector<fs::path> roots{fs::path(cfg.candidate_cache_directory) / identity, fs::path(cfg.candidate_cache_directory)};
     std::vector<CacheEntry> entries; entries.reserve(lib.size());
@@ -632,27 +915,78 @@ co::Status run_marginal_ic(const MarginalIcConfig& cfg, std::ostream& progress) 
     const usize lag = execution_delay + horizon;
     const usize rows = pool.score_end > pool.score_begin + lag ? pool.score_end - pool.score_begin - lag : 0U;
     const usize regressors = 1U + themes.names.size();
-    ATX_TRY(const auto required, marginal_ic_working_bytes(pool.dates, pool.names, rows, lib.size(), regressors));
+    // Pairs: those with a listed candidate (all without --candidates), minus the cached ones.
+    cb::PairwiseRowCorrelation rho(lib.size(), cfg.min_names);
+    if (!cfg.candidates_path.empty()) ATX_TRY_VOID(rho.restrict_to(listing.listed));
+    const auto pair_started = steady::now();
+    ATX_TRY(auto pair_cache, seed_pairs(cfg, pool, rows, entries, rho));
+    f64 pair_cache_seconds = since(pair_started);
+    // A candidate is read and ranked when it gets a row, builds a theme composite or is in a
+    // computed pair; any other payload is never opened.
+    std::vector<u8> needed(lib.size(), u8{0});
+    for (usize k = 0; k < lib.size(); ++k)
+      needed[k] = static_cast<u8>(listing.listed[k] != 0 || themes.theme_of[k] != npos);
+    for (const auto& [a, b] : rho.computed_pairs()) { needed[a] = 1; needed[b] = 1; }
+    const MarginalWorkingExtras extras{cfg.workers, cfg.exclude_self, rho.computed_pairs().size(),
+                                       pair_cache.cache ? pair_cache.cache->stats.size() : 0U};
+    ATX_TRY(const auto required, marginal_ic_working_bytes(pool.dates, pool.names, rows, lib.size(),
+                                                           regressors, extras));
     if (required > cfg.max_working_bytes)
       return co::Err(fail(co::ErrorCode::Unavailable, "required_bytes=" + std::to_string(required) +
           " exceeds --max-memory-mib before any payload load"));
     progress << "marginal: candidates=" << lib.size() << " regressors=" << regressors << " rows=" << rows
              << " names=" << pool.names << " required_bytes=" << required << '\n' << std::flush;
+    if (!cfg.candidates_path.empty() || pair_cache.cache)
+      progress << "marginal: listed=" << listing.count
+               << " computed_pairs=" << rho.computed_pairs().size()
+               << " cached_pairs=" << pair_cache.hits << '\n' << std::flush;
     const auto label_started = steady::now();
     ATX_TRY(const auto labels, load_labels(cfg, pool));
-    progress << "marginal: labels rows=" << labels.rows << " seconds=" << since(label_started) << '\n' << std::flush;
-    const auto verify_started = steady::now();
-    ATX_TRY(auto streams, open_streams(pool, entries));
-    progress << "marginal: payloads verified=" << entries.size() + 1U << " seconds=" << since(verify_started) << '\n'
+    const auto label_seconds = since(label_started);
+    progress << "marginal: labels rows=" << labels.rows << " seconds=" << label_seconds << '\n'
              << std::flush;
+    const auto verify_started = steady::now();
+    ATX_TRY(auto streams, open_streams(pool, entries, needed, verified));
+    const auto hash_seconds = since(verify_started);
+    const auto opened = static_cast<usize>(std::count(needed.begin(), needed.end(), u8{1})) + 1U;
+    progress << "marginal: payloads verified=" << opened - verified.accepted
+             << " seconds=" << hash_seconds << '\n' << std::flush;
     const auto stream_started = steady::now();
     std::vector<Series> series(lib.size());
-    cb::PairwiseRowCorrelation rho(lib.size(), cfg.min_names);
-    ATX_TRY_VOID(stream_rows(cfg, pool, lib, themes, labels, streams, series, rho));
+    for (usize k = 0; k < lib.size(); ++k) {
+      if (listing.listed[k] == 0) continue;
+      series[k].raw.assign(labels.rows, quiet_nan);
+      series[k].marginal.assign(labels.rows, quiet_nan);
+    }
+    StageTimes times;
+    const StreamPlan plan{cfg, themes, labels, pool.names, listing.listed, needed};
+    ATX_TRY_VOID(stream_rows(plan, streams, series, rho, times));
     const auto stream_seconds = since(stream_started);
     progress << "marginal: streamed rows=" << labels.rows << " seconds=" << stream_seconds << '\n' << std::flush;
+    progress << "marginal: stages hash=" << hash_seconds << " read=" << times.read
+             << " kernel=" << times.kernel << " pairwise=" << times.pairwise
+             << " workers=" << cfg.workers << '\n' << std::flush;
+    // Newly computed pairs go to the cache before the output exists (a failed store leaves none).
+    Json pair_cache_input = nullptr;
+    if (pair_cache.cache) {
+      const auto store_started = steady::now();
+      MarginalPairStats computed;
+      for (const auto& [a, b] : rho.computed_pairs())
+        computed.try_emplace(marginal_pair_key(entries[a].payload_sha, entries[b].payload_sha),
+                             MarginalPairStat{rho.sum(a, b), rho.dates(a, b)});
+      ATX_TRY(const auto shard, store_marginal_pairs(*pair_cache.cache, computed));
+      pair_cache_seconds += since(store_started);
+      const auto& cache = *pair_cache.cache;
+      pair_cache_input = Json{{"directory", cfg.pair_cache_directory},
+          {"key_sha256", cache.key_sha}, {"shards_read", cache.shards},
+          {"cached_pairs", cache.stats.size()},
+          {"hits", pair_cache.hits}, {"computed", rho.computed_pairs().size()},
+          {"shard", shard.empty() ? Json(nullptr) : Json(shard)}};
+    }
     Json rows_json = Json::array();
-    for (usize k = 0; k < lib.size(); ++k) rows_json.push_back(candidate_row(lib, themes, entries, series, rho, k));
+    for (usize k = 0; k < lib.size(); ++k)
+      if (listing.listed[k] != 0)
+        rows_json.push_back(candidate_row(lib, themes, entries, series, rho, k));
     Json theme_members = Json::object();
     for (usize k = 0; k < lib.size(); ++k)
       if (themes.theme_of[k] != npos) theme_members[themes.names[themes.theme_of[k]]].push_back(lib[k].id);
@@ -673,12 +1007,28 @@ co::Status run_marginal_ic(const MarginalIcConfig& cfg, std::ostream& progress) 
         {"themes", std::move(themes_input)},
         {"fields", cfg.fields_directory.empty() ? Json(nullptr)
                                                 : Json{{"directory", cfg.fields_directory}, {"manifest_sha256", fields_sha}}}};
+    // P9 S1 keys, each present only with its option, so outputs without them keep their bytes.
+    if (!cfg.candidates_path.empty())
+      inputs["candidates"] =
+          Json{{"path", listing.path}, {"sha256", listing.sha}, {"ids", listing.ids}};
+    if (!cfg.verified_digests_path.empty())
+      inputs["verified_digests"] = Json{{"path", verified.path}, {"sha256", verified.sha},
+          {"listed", verified.digests.size()}, {"accepted", verified.accepted}};
+    if (pair_cache.cache) inputs["pair_cache"] = std::move(pair_cache_input);
+    // Timings are never reproducible; the keys beside stream and total are P9 S1's stage split
+    // (read, kernel and pairwise are summed over band workers).
+    Json stage_seconds{{"stream", stream_seconds}, {"labels", label_seconds},
+        {"hash", hash_seconds}, {"read", times.read}, {"kernel", times.kernel},
+        {"pairwise", times.pairwise}};
+    if (!cfg.pair_cache_directory.empty()) stage_seconds["pair_cache"] = pair_cache_seconds;
+    stage_seconds["total"] = since(started);
     Json out{{"schema", std::string(output_schema)}, {"status", "complete"}, {"contract", "K6"},
         {"method", method_json(cfg, themes)}, {"inputs", std::move(inputs)},
         {"window", {{"score_begin", labels.begin}, {"rows", labels.rows}, {"first_decision_session_ns", labels.first_session_ns},
                     {"last_decision_session_ns", labels.last_session_ns}}},
-        {"working_bytes", required}, {"stage_seconds", {{"stream", stream_seconds}, {"total", since(started)}}},
+        {"working_bytes", required}, {"stage_seconds", std::move(stage_seconds)},
         {"candidates", std::move(rows_json)}};
+    if (cfg.workers > 1U) out["workers"] = cfg.workers;
     if (!fs::create_directory(cfg.output_directory, ec))
       return co::Err(fail(co::ErrorCode::AlreadyExists, "output directory must be new; " + ec.message()));
     const auto path = fs::path(cfg.output_directory) / "marginal_ic.json";
@@ -704,15 +1054,28 @@ int dispatch_marginal_ic(int argc, char** argv, std::ostream& out, std::ostream&
                "--role MANIFEST --output NEWDIR\n"
                "    [--library-sha256 SHA] [--pool-sha256 SHA] [--themes WEIGHTS_JSON] [--fields DIR]\n"
                "    [--min-names N (50)] [--max-memory-mib N (600)]\n"
+               "    [--candidates FILE] [--pair-cache DIR] [--verified-digests FILE]\n"
+               "    [--workers N (1)] [--exclude-self]\n"
                "  Writes NEWDIR/marginal_ic.json (atx.marginal-ic/v1, contract K6): per library candidate ic21,\n"
                "  ic21_hac_t, marginal_ic21, marginal_hac_t (Bartlett lag 21), max_abs_rho, max_rho_member.\n"
                "  --pool: a --save-combined manifest; --role must be its role (bound by SHA256).\n"
                "  --themes: the pool's composition weights (bound by the pool's composition_weights_sha256);\n"
-               "    adds one theme composite per weighted theme (<= 10), grouped by the file's theme block\n"
+               "    adds one theme composite per weighted theme (<= 33), grouped by the file's\n"
+               "    theme block\n"
                "    (re-ranked under ew-theme-std-v1 rerank). --fields: the fields manifest whose\n"
-               "    payload SHA256s pick among cache entries of one candidate.\n";
+               "    payload SHA256s pick among cache entries of one candidate.\n"
+               "  --candidates: one library candidate id per line; only those get rows (rho\n"
+               "    for pairs with one); every candidate stays in the regressors and in the\n"
+               "    max_abs_rho search.\n"
+               "  --pair-cache: pair statistics reused across runs on the role.\n"
+               "  --verified-digests: payload SHA256s (one per line) the caller verified; those\n"
+               "    payloads are not re-hashed.\n"
+               "  --workers: date bands on 1..16 threads (same bytes at every count).\n"
+               "  --exclude-self (with --themes): book member rows residualised on regressors\n"
+               "    without the member.\n";
         return 0;
       }
+      if (key == "--exclude-self") { cfg.exclude_self = true; continue; }
       if (++i >= argc) throw std::invalid_argument("missing option value: " + key);
       const std::string value = argv[i];
       const auto integer = [&]() -> u64 {
@@ -731,7 +1094,14 @@ int dispatch_marginal_ic(int argc, char** argv, std::ostream& out, std::ostream&
       else if (key == "--fields") cfg.fields_directory = value;
       else if (key == "--output") cfg.output_directory = value;
       else if (key == "--min-names") cfg.min_names = static_cast<usize>(integer());
-      else if (key == "--max-memory-mib") {
+      else if (key == "--candidates") cfg.candidates_path = value;
+      else if (key == "--pair-cache") cfg.pair_cache_directory = value;
+      else if (key == "--verified-digests") cfg.verified_digests_path = value;
+      else if (key == "--workers") {
+        const auto workers = integer();
+        if (workers == 0U || workers > max_workers) throw std::invalid_argument("--workers 1..16");
+        cfg.workers = static_cast<usize>(workers);
+      } else if (key == "--max-memory-mib") {
         const auto mib = integer();
         if (mib > 16384U) throw std::invalid_argument("memory limit");
         cfg.max_working_bytes = mib << 20;
