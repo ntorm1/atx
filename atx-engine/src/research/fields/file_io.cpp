@@ -1,5 +1,6 @@
 #include "atx/engine/research/fields/file_io.hpp"
 
+#include <cstdio>
 #include <fstream>
 #include <ios>
 #include <string>
@@ -56,6 +57,34 @@ std::string record_path(const std::filesystem::path &path) {
   }
   const auto absolute = std::filesystem::absolute(path, ec);
   return ec ? path.string() : absolute.lexically_normal().string();
+}
+
+std::FILE *open_exclusive(const std::filesystem::path &path) noexcept {
+  std::FILE *file = nullptr;
+#if defined(_WIN32)
+  if (_wfopen_s(&file, path.c_str(), L"wbx") != 0) {
+    file = nullptr;
+  }
+#else
+  file = std::fopen(path.c_str(), "wbx");
+#endif
+  return file;
+}
+
+core::Status write_exclusive(const std::filesystem::path &path, std::string_view bytes) {
+  std::FILE *file = open_exclusive(path);
+  if (file == nullptr) {
+    return core::Err(core::ErrorCode::IoError,
+                     "research fields: cannot create (exists or not writable) " + path.string());
+  }
+  const bool written = std::fwrite(bytes.data(), 1U, bytes.size(), file) == bytes.size();
+  const bool flushed = std::fflush(file) == 0;
+  const bool closed = std::fclose(file) == 0;
+  if (!written || !flushed || !closed) {
+    return core::Err(core::ErrorCode::IoError,
+                     "research fields: write failed for " + path.string());
+  }
+  return core::Ok();
 }
 
 core::Result<FileStamp> file_stamp(const std::filesystem::path &path) {

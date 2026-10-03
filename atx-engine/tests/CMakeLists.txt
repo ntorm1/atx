@@ -370,7 +370,8 @@ add_executable(atx-engine-research-fields-tests EXCLUDE_FROM_ALL
     research/research_fields_writer_test.cpp
     research/research_fields_volume_mean_test.cpp
     research/research_fields_finra_asof_test.cpp
-    research/research_fields_fixture_test.cpp)
+    research/research_fields_fixture_test.cpp
+    research/research_fields_cli_test.cpp)
 target_link_libraries(atx-engine-research-fields-tests PRIVATE
     atx::engine-research-fields GTest::gtest_main atx_warnings Threads::Threads atx-test-scratch
     nlohmann_json::nlohmann_json)

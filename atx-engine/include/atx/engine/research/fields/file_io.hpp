@@ -5,8 +5,10 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdio>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
@@ -24,6 +26,15 @@ namespace atx::engine::research::fields {
 // The absolute, normalised path text a source record names (symlinks resolved where the path
 // exists).
 [[nodiscard]] std::string record_path(const std::filesystem::path &path);
+
+// Creates `path` for binary writing exclusively (C11 "x" mode: CREATE_NEW / O_EXCL, so an existing
+// file is never truncated); nullptr when it exists or cannot be created. The caller closes it.
+[[nodiscard]] std::FILE *open_exclusive(const std::filesystem::path &path) noexcept;
+
+// Creates `path` exclusively and writes `bytes`, flushed and closed. Err(IoError) when it exists or
+// cannot be written.
+[[nodiscard]] core::Status write_exclusive(const std::filesystem::path &path,
+                                           std::string_view bytes);
 
 // (size, last write time) of a file: captured before a read and compared after it, as the Python
 // builder's identity() check, so a file replaced during a build is refused. Err(IoError) when it

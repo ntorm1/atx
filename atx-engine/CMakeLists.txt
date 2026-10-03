@@ -257,6 +257,7 @@ add_library(atx-engine-research-fields ${ATX_LIB_TYPE} EXCLUDE_FROM_ALL
     src/research/fields/file_io.cpp
     src/research/fields/finra_asof_field.cpp
     src/research/fields/finra_inputs.cpp
+    src/research/fields/research_fields_cli.cpp
     src/research/fields/role_axes.cpp
     src/research/fields/role_rows.cpp
     src/research/fields/trailing_mean.cpp
@@ -273,6 +274,11 @@ target_link_libraries(atx-engine-research-fields
     PRIVATE
         atx_warnings
         nlohmann_json::nlohmann_json)
+
+# Slice 3: the field builder's executable (`atx-research-fields build --spec S --receipt R`), the
+# engine path of prepare_research_fields.py --engine-fields. EXCLUDE_FROM_ALL like its library.
+add_executable(atx-research-fields EXCLUDE_FROM_ALL src/research/fields/research_fields_main.cpp)
+target_link_libraries(atx-research-fields PRIVATE atx::engine-research-fields atx_warnings)
 
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)

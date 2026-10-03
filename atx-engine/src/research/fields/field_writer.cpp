@@ -26,19 +26,6 @@ constexpr std::array<f64, 5> kQuantiles{0.001, 0.01, 0.5, 0.99, 0.999};
                      "research fields: " + std::string(what) + " " + path.string());
 }
 
-// Exclusive creation: an existing path is never truncated (C11 "x" mode, CREATE_NEW / O_EXCL).
-[[nodiscard]] std::FILE *open_exclusive(const std::filesystem::path &path) noexcept {
-  std::FILE *file = nullptr;
-#if defined(_WIN32)
-  if (_wfopen_s(&file, path.c_str(), L"wbx") != 0) {
-    file = nullptr;
-  }
-#else
-  file = std::fopen(path.c_str(), "wbx");
-#endif
-  return file;
-}
-
 } // namespace
 
 void FieldWriter::FileCloser::operator()(std::FILE *file) const noexcept {
