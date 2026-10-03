@@ -92,3 +92,29 @@ def test_parsed_adapter_reconciles_cover_and_uses_actual_acceptance(tmp_path):
     assert result["available_at"].day == 15
     assert result["value_unit"] == "USD_THOUSANDS"
     con.close()
+
+
+def test_native_submissions_partition_reads_original_history_and_missing_clock(tmp_path):
+    import zipfile
+    from atx_db._submissions_archive import SubmissionsArchive
+    from atx_db.alpha_panel.thirteenf_quality import inventory_submissions
+    archive = tmp_path / "submissions.zip"
+    history = "CIK0000000001-submissions-001.json"
+    main = dict(filings=dict(recent=dict(form=["13F-HR/A"],accessionNumber=["0000000001-20-000001"],
+        filingDate=["2020-05-15"],reportDate=["2020-03-31"],acceptanceDateTime=["2020-05-15T20:00:00Z"]),
+        files=[dict(name=history),dict(name="CIK0000000001-submissions-002.json")]))
+    historical = dict(form=["13F-NT"],accessionNumber=["0000000001-19-000001"],filingDate=["2019-05-15"])
+    with zipfile.ZipFile(archive,"w",zipfile.ZIP_DEFLATED) as source:
+        source.writestr("CIK0000000001.json",json.dumps(main))
+        source.writestr(history,json.dumps(historical))
+    # Fixture-only cache creation; native production reader forbids rebuilding it.
+    with SubmissionsArchive(archive):
+        pass
+    output=tmp_path / "inventory.jsonl"
+    receipt=inventory_submissions(archive,output,after=None,through="CIK0000000009.json",max_main=10,
+                                  first=__import__('datetime').date(2019,1,1))
+    rows=[json.loads(line) for line in output.read_text().splitlines()]
+    assert len(rows)==2 and rows[0]["form"]=="13F-HR/A"
+    assert rows[1]["report_quarter"] is None and rows[1]["available_at"] is None
+    assert receipt["exceptions"][0]["reason"]=="history_member_missing"
+    assert receipt["source_completeness"]=="UNQUALIFIED_PARTITION"

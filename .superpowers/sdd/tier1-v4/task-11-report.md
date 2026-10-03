@@ -94,3 +94,20 @@ Checkpoint fixture totals: source3,quality7,features6,insider4,nport7. No broad
 suite. No own live jobs. FullTask11 acceptance unchanged5FAIL/unmeasured criteria;
 native source/cohort/coverage/operational work still in progress. Independent
 review requested at this checkpoint; real builds remain controller scheduled.
+
+## Source inventory checkpoint
+
+Controller cache audit succeeded3.0s,.0517GiB under0.3cap. Authenticated directory
+reports985667mainJSON/5374historyJSON; original archive content not yet verified.
+Native read-only inventory partition now independently hashes archive and uses
+source-checked CRC/member reader with cache mutation forbidden. Main/history
+documents stream one at a time with4MiB/member,max10000main bounds. Missing history
+files, malformed arrays, absent acceptance/reportDate remain explicit. CIK axis
+partition coverage and original retrieval clock remain unqualified/open.
+
+Source4fixturetests pass; quality8fixtures pass including retained original main
+and history ZIP members, missing history reference and absent clocks. Commands:
+`pytest -n 0 tests/test_alpha_panel_thirteenf_source.py -q`; `pytest -n 0
+tests/test_alpha_panel_thirteenf_quality.py -q`. Insider4fixtures pass after monthly
+monetary missingness repair: present unknown values yield NULL, absent trade sides
+zero; n_value_missing diagnostics retained. No actual inventory job launched here.

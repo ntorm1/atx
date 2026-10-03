@@ -9,6 +9,8 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
+import sqlite3
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -94,6 +96,46 @@ def audit_roots(roots: list[Path], *, max_files: int = 200000,
     return result
 
 
+def inspect_submissions_cache(archive: Path, index: Path, receipt: Path) -> dict[str, Any]:
+    """Read-only authenticated directory metadata, without opening ZIP members.
+
+    Cache digest authenticates this locally generated cache against its retained
+    receipt. Archive stat equality is checked, but archive contents are explicitly
+    UNVERIFIED until a separately scheduled full source hash/member audit.
+    """
+    expected = receipt.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise ValueError("invalid submissions directory digest receipt")
+    actual = C.sha256_file(index)
+    if actual != expected:
+        raise ValueError("submissions directory cache digest mismatch")
+    before = C.file_identity(index)
+    con = sqlite3.connect(index.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
+    try:
+        con.execute("PRAGMA query_only=ON")
+        con.execute("PRAGMA cache_size=-8192")
+        metadata = dict(con.execute("SELECT key,value FROM metadata LIMIT 65"))
+        if len(metadata) > 64:
+            raise ValueError("unexpected directory metadata size")
+        identity = json.loads(metadata["identity"])
+        stat = archive.stat()
+        if identity["source_stat"] != [stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns]:
+            raise ValueError("submissions archive stat identity differs from directory")
+        counts = dict(con.execute("SELECT kind,count(*) FROM members GROUP BY kind"))
+        sample = list(con.execute("SELECT name,kind FROM members WHERE kind IN(1,2) ORDER BY kind,name LIMIT 8"))
+        schema = list(con.execute("SELECT name,sql FROM sqlite_master WHERE type='table' ORDER BY name"))
+        if C.file_identity(index) != before or C.sha256_file(index) != actual:
+            raise RuntimeError("directory changed during read-only inspection")
+        return {"schema": "atx.thirteenf-submissions-cache-inspection/v1",
+            "archive": C.file_identity(archive), "archive_expected_sha256": identity["source_sha256"],
+            "archive_content_verified": False, "cache": before,"cache_sha256": actual,
+            "cache_digest_receipt": C.file_identity(receipt),"metadata": metadata,
+            "member_counts_by_kind": counts,"sample_names": sample,"tables": schema,
+            "source_completeness": "UNMEASURED", "available_at": dt.datetime.now(dt.UTC).isoformat()}
+    finally:
+        con.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -107,9 +149,15 @@ def main(argv: list[str] | None = None) -> int:
     schema = sub.add_parser("schemas")
     schema.add_argument("--file", type=Path, action="append", required=True)
     schema.add_argument("--output", type=Path, required=True)
+    directory = sub.add_parser("inspect-submissions-cache")
+    for name in ("archive", "index", "receipt", "output"):
+        directory.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args(argv)
     if args.output.exists():
         parser.error("audit output exists; choose a new evidence path")
+    if args.command == "inspect-submissions-cache":
+        C.write_json_atomic(args.output, inspect_submissions_cache(args.archive,args.index,args.receipt))
+        return 0
     if args.command == "schemas":
         if len(args.file) > 8:
             parser.error("at most eight explicit source files")

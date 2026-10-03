@@ -109,11 +109,18 @@ LABEL_SQL = """CREATE OR REPLACE TABLE lab AS
     FROM yrs LEFT JOIN ny USING (owner_cik, y) LEFT JOIN best USING (owner_cik, y)"""
 
 
+def _value_total(cond: str) -> str:
+    """An absent trade side is zero; a present trade with unknown value is unknown."""
+    return (f"CASE WHEN count(*) FILTER (WHERE {cond}) = count(value) FILTER (WHERE {cond}) "
+            f"THEN coalesce(sum(value) FILTER (WHERE {cond}), 0) END")
+
+
 def _side(cond: str, pfx: str) -> str:
+    buy_value = _value_total(f"transaction_code = 'P' AND {cond}")
+    sell_value = _value_total(f"transaction_code = 'S' AND {cond}")
     return (f"count(*) FILTER (WHERE transaction_code = 'P' AND {cond}) AS {pfx}n_buy, "
             f"count(*) FILTER (WHERE transaction_code = 'S' AND {cond}) AS {pfx}n_sell, "
-            f"coalesce(sum(value) FILTER (WHERE transaction_code = 'P' AND {cond}), 0) "
-            f"- coalesce(sum(value) FILTER (WHERE transaction_code = 'S' AND {cond}), 0) AS {pfx}net_value, "
+            f"({buy_value}) - ({sell_value}) AS {pfx}net_value, "
             f"count(DISTINCT owner_cik) FILTER (WHERE transaction_code = 'P' AND {cond}) "
             f"- count(DISTINCT owner_cik) FILTER (WHERE transaction_code = 'S' AND {cond}) AS {pfx}net_buyers")
 
@@ -127,15 +134,16 @@ def monthly_sql(trades: str) -> str:
                coalesce(sum(shares) FILTER (WHERE transaction_code = 'S'), 0) AS sell_shares,
                coalesce(sum(shares) FILTER (WHERE transaction_code = 'P'), 0)
                  - coalesce(sum(shares) FILTER (WHERE transaction_code = 'S'), 0) AS net_shares,
-               coalesce(sum(value) FILTER (WHERE transaction_code = 'P'), 0) AS buy_value,
-               coalesce(sum(value) FILTER (WHERE transaction_code = 'S'), 0) AS sell_value,
-               coalesce(sum(value) FILTER (WHERE transaction_code = 'P'), 0)
-                 - coalesce(sum(value) FILTER (WHERE transaction_code = 'S'), 0) AS net_value,
+               {_value_total("transaction_code = 'P'")} AS buy_value,
+               {_value_total("transaction_code = 'S'")} AS sell_value,
+               ({_value_total("transaction_code = 'P'")})
+                 - ({_value_total("transaction_code = 'S'")}) AS net_value,
                count(DISTINCT owner_cik) FILTER (WHERE transaction_code = 'P') AS n_buyers,
                count(DISTINCT owner_cik) FILTER (WHERE transaction_code = 'S') AS n_sellers,
                {_side("cmp_label = 'opportunistic'", 'opp_')}, {_side("cmp_label = 'routine'", 'rtn_')},
                {_side("(officer OR director)", 'od_')},
                avg(CASE WHEN aff10b5one THEN 1.0 WHEN aff10b5one IS NOT NULL THEN 0.0 END) AS share_10b5_1,
+               count(*) FILTER (WHERE value IS NULL) AS n_value_missing,
                max(available_at) AS available_at, '{RULE}' AS cmp_rule
         FROM read_parquet('{trades}')
         WHERE available_at >= TIMESTAMPTZ '{FIRST_YEAR}-01-01 00:00:00+00'

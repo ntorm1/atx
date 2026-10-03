@@ -45,6 +45,124 @@ def master_inventory(lines: Iterable[str], *, inventory_url: str,
                "report_quarter": None, "available_at": None}
 
 
+def submissions_inventory(document: dict[str, Any], *, cik: int, member: str,
+                          archive_sha256: str, first: dt.date) -> Iterable[dict[str, Any]]:
+    """Recent and historical SEC submission arrays, with strict shape validation.
+
+    An inventory slice is not a complete cohort certificate. Main document
+    filings.files references must also be reconciled to retained history members.
+    Missing reportDate/acceptance remain explicit; no guessed ownership quarter.
+    """
+    fields = document.get("filings", {}).get("recent", document)
+    forms = fields.get("form", [])
+    for name in ("accessionNumber", "filingDate"):
+        if len(fields.get(name, [])) != len(forms):
+            raise ValueError("submission arrays have unequal required lengths")
+    for name in ("reportDate", "acceptanceDateTime"):
+        if name in fields and len(fields[name]) != len(forms):
+            raise ValueError("submission arrays have unequal optional lengths")
+    for index, form in enumerate(forms):
+        if form not in FORMS:
+            continue
+        filed = dt.date.fromisoformat(fields["filingDate"][index])
+        if filed < first:
+            continue
+        accession = accession_key(fields["accessionNumber"][index])
+        report_date = fields.get("reportDate", [None] * len(forms))[index] or None
+        report = dt.date.fromisoformat(report_date) if report_date else None
+        accepted = fields.get("acceptanceDateTime", [None] * len(forms))[index] or None
+        yield {"accession": accession, "cik": cik, "form": form,
+            "filing_date": filed.isoformat(), "filing_quarter": f"{filed.year}q{(filed.month-1)//3+1}",
+            "report_date": report_date,
+            "report_quarter": f"{report.year}q{(report.month-1)//3+1}" if report else None,
+            "available_at": accepted,"clock_basis": "submission_acceptance" if accepted else "clock_missing",
+            "source_url": f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/",
+            "inventory_url": "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip",
+            "inventory_sha256": archive_sha256,"inventory_member": member}
+
+
+def inventory_submissions(archive: Path, output: Path, *, after: str | None,
+                         through: str, max_main: int, first: dt.date,
+                         max_member_bytes: int = 4 * 1024 * 1024) -> dict[str, Any]:
+    """Bounded read-only archive partition; never rebuild another producer's cache.
+
+    Full partition reader coverage and missing history chunk keys are retained.
+    Complete inventory admission requires all partitions across the full CIK
+    axis, consistent archive identity and every referenced public history chunk.
+    """
+    from atx_db._submissions_archive import SubmissionsArchive, _one_info
+
+    class ReadOnlyArchive(SubmissionsArchive):
+        def _build_index(self) -> None:
+            raise ValueError("authenticated submissions directory required; no cache mutation allowed")
+
+    if not 1 <= max_main <= 10000 or not 1 <= max_member_bytes <= 4*1024*1024:
+        raise ValueError("positive inventory bounds required")
+    if output.exists():
+        raise ValueError("inventory output exists")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    partial = output.with_suffix(output.suffix + ".partial")
+    counts = {"main_members": 0,"history_members": 0,"filings": 0}
+    exceptions = []
+    last = after
+    with ReadOnlyArchive(archive) as source, partial.open("x",encoding="utf-8") as sink:
+        def read_member(name: str) -> dict[str, Any]:
+            indexed = source._connection().execute("SELECT record FROM members WHERE name=?",(name,)).fetchone()
+            if indexed is None:
+                raise KeyError(name)
+            if _one_info(indexed[0]).file_size > max_member_bytes:
+                raise ValueError("submission member exceeds explicit byte bound")
+            return json.loads(source.read(name))
+
+        def emit(member: str,doc: dict[str,Any],cik: int) -> None:
+            for row in submissions_inventory(doc,cik=cik,member=member,archive_sha256=source.sha256,first=first):
+                sink.write(json.dumps(row) + "\n")
+                counts["filings"] += 1
+
+        bounded = False
+        for name in source.main_members(after=after,through=through):
+            if counts["main_members"] >= max_main:
+                bounded = True
+                break
+            last = name
+            cik = int(re.fullmatch(r"CIK(\d{10})\.json",name).group(1))
+            try:
+                document = read_member(name)
+                history_references = document.get("filings",{}).get("files",[])
+                emit(name,document,cik)
+                # Keep only reference metadata; do not retain all historical JSON
+                # documents for one manager in memory.
+                del document
+                for history in history_references:
+                    # Retain even old references; the complete history contract is
+                    # independent of a current recent-array observation window.
+                    history_name = history["name"]
+                    if history_name not in source:
+                        exceptions.append({"cik":cik,"member":history_name,"reason":"history_member_missing"})
+                        continue
+                    try:
+                        emit(history_name,read_member(history_name),cik)
+                        counts["history_members"] += 1
+                    except (KeyError,ValueError) as exc:
+                        exceptions.append({"cik":cik,"member":history_name,"reason":str(exc)})
+            except (KeyError,ValueError) as exc:
+                exceptions.append({"cik":cik,"member":name,"reason":str(exc)})
+            counts["main_members"] += 1
+        source.assert_unchanged()
+        archive_sha = source.sha256
+    partial.replace(output)
+    receipt = {"schema":"atx.thirteenf-submissions-inventory-partition/v1", "counts":counts,
+        "after":after,"through":through,"last_main_member":last,"bound_reached":bounded,
+        "first_filing_date":first.isoformat(),"exceptions":exceptions,"archive_sha256":archive_sha,
+        "source_completeness":"UNQUALIFIED_PARTITION", "output_sha256":C.sha256_file(output),
+        "archive_source_url":"https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip",
+        "archive_retrieval_clock":None,
+        "code_sha256": {"thirteenf_quality":C.sha256_file(Path(__file__)),
+            "submissions_archive":C.sha256_file(Path(__import__('atx_db._submissions_archive',fromlist=['__file__']).__file__))}}
+    C.write_json_atomic(output.with_suffix(output.suffix + ".receipt.json"),receipt)
+    return receipt
+
+
 def reconcile(expected: dict[str, Any], retained: dict[str, Any] | None,
               parsed: dict[str, Any] | None) -> dict[str, Any]:
     """FAIL every unexplained gap; exemptions need original public evidence.
@@ -251,7 +369,19 @@ def main(argv: list[str] | None = None) -> int:
     adapter = sub.add_parser("adapt-parsed")
     for name in ("filings", "holdings", "sec-filings", "output"):
         adapter.add_argument("--" + name, type=Path, required=True)
+    inventory = sub.add_parser("inventory-submissions")
+    inventory.add_argument("--archive",type=Path,required=True)
+    inventory.add_argument("--output",type=Path,required=True)
+    inventory.add_argument("--after")
+    inventory.add_argument("--through",required=True)
+    inventory.add_argument("--max-main",type=int,default=1000)
+    inventory.add_argument("--first",type=dt.date.fromisoformat,default=dt.date(2019,1,1))
     args = parser.parse_args(argv)
+    if args.command == "inventory-submissions":
+        receipt = inventory_submissions(args.archive,args.output,after=args.after,through=args.through,
+                                        max_main=args.max_main,first=args.first)
+        print(json.dumps(receipt,sort_keys=True))
+        return 2 if receipt["exceptions"] or receipt["bound_reached"] else 0
     receipt = (build(args.expected, args.retained, args.parsed) if args.command == "build" else
                adapt_parsed(args.filings, args.holdings, args.sec_filings, args.output))
     print(json.dumps(receipt, sort_keys=True))

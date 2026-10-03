@@ -48,3 +48,20 @@ Incomplete-cohort observations remain diagnostics. Unknown manager types remain
 unknown, ownership above 100% is flagged, and value changes are never flows.
 Native vintage producers, public inventories, amendments, links, denominator
 clocks, active/passive evidence and all-three-universe coverage remain unfinished.
+
+`inspect-submissions-cache` authenticates a retained directory against its digest
+receipt and archive stat identity using immutable read-only SQLite with8MBcache.
+It explicitly does not authenticate ZIP contents. Controller metadata result:
+985667mainJSON and5374historicalJSON entries, archive expectedSHA
+702fbcd8b4335bc649e9e4eab3a202f3effc314b43421664bfecb59365767165.
+
+`thirteenf_quality inventory-submissions` reads a bounded immutable source
+partition. The retained archive is independently hashed; source/cache/member
+identities and CRCs use the existing bounded SubmissionsArchive reader. A local
+subclass forbids cache rebuilding. Defaults1000mainmembers,hardcap10000 and4MiB
+per decompressed member. Main and referenced history documents are streamed,
+missing/malformed history references retained as explicit exceptions. Required
+submission array lengths must agree. Missing report/acceptance dates stay missing.
+Partitions remain UNQUALIFIED until the whole CIK axis and all history references
+are reconciled. Original archive retrieval clock remains unknown, never inferred
+from filesystem mtime. No acquisition or network is involved.

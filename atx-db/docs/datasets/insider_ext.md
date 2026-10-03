@@ -10,6 +10,10 @@ the inclusive 0.2–5 times close band. Multiple issuer share classes on the dat
 are ambiguous without a dated security link: value stays NULL. `panel_close` is
 unadjusted USD/share; `price_sanity` explains qualification or missingness.
 Shares and trade counts survive value qualification failure.
+Monthly monetary sums now remain NULL when any relevant present trade has
+unknown value. A genuinely absent trade side is zero. `n_value_missing` reports
+the count of unqualified/missing monetary amounts, preventing price exclusions
+from masquerading as known zero insider net buying.
 
 Row availability is the later of the original filing clock and conservative
 22:00 UTC of transaction date, preventing same-day close evidence from becoming

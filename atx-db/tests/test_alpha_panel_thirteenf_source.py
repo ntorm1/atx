@@ -1,6 +1,8 @@
 from atx_db.alpha_panel.thirteenf_source import audit_roots
 import io
 import json
+import sqlite3
+import pytest
 
 
 def test_metadata_does_not_certify_receipts(tmp_path):
@@ -30,3 +32,26 @@ def test_all_file_inventory_preserves_opaque_source_candidates(tmp_path):
     result = audit_roots([tmp_path], metadata_sink=sink)
     assert result["candidate_files"] == []
     assert json.loads(sink.getvalue())["path"].endswith("master.idx")
+
+
+def test_readonly_submissions_cache_inspection_pins_receipt_without_certifying_archive(tmp_path):
+    from atx_db.alpha_panel.thirteenf_source import inspect_submissions_cache
+    from atx_db.alpha_panel.common import sha256_file
+    archive,index,receipt = [tmp_path / p for p in ("submissions.zip","directory.sqlite3","directory.sha256")]
+    archive.write_bytes(b"fixture")
+    stat=archive.stat()
+    con=sqlite3.connect(index)
+    con.execute("CREATE TABLE metadata(key TEXT,value TEXT)")
+    identity=dict(source_sha256=sha256_file(archive),source_stat=[stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns])
+    con.execute("INSERT INTO metadata VALUES('identity',?)",(json.dumps(identity),))
+    con.execute("CREATE TABLE members(name TEXT,kind INTEGER)")
+    con.executemany("INSERT INTO members VALUES(?,?)",[("CIK0000000001.json",1),("CIK0000000001-submissions-001.json",2)])
+    con.commit()
+    con.close()
+    receipt.write_text(sha256_file(index))
+    result=inspect_submissions_cache(archive,index,receipt)
+    assert result["member_counts_by_kind"] == {1:1,2:1}
+    assert result["archive_content_verified"] is False
+    receipt.write_text("0"*64)
+    with pytest.raises(ValueError,match="digest mismatch"):
+        inspect_submissions_cache(archive,index,receipt)
