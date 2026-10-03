@@ -3,7 +3,8 @@
 ## Outcome
 DONE_WITH_CONCERNS: all five deliverables are committed. The planted-IC "within one SE" check is reported, not
 asserted, because at seed 7 it fails for planted_b by the reference's estimate. This needs a PM ruling (Deviation 1).
-Everything else is as briefed, adjusted by rulings P1, P2, P11 and P13.
+Everything else is as briefed, adjusted by rulings P1, P2, P11 and P13. (Superseded by the "Fix round 1" section at
+the end: PM ruling T1-SE, 2-SE band asserted.)
 
 ## Branch / SHA
 `feat/p9-t1-20261003`, pool-19. All work is committed and the tree is clean.
@@ -350,3 +351,102 @@ that moves u, fit, w or NAV bytes has landed. C1 moves NAV bytes at slot 8, so r
   and select sets with the `ctest -L` regex.
 - `generate_from_spec.py --spec specs/library-v71.json --check` verifies 19 frozen artefacts and 48 K1 rows with the
   committed fixture plan; the 11 class-C generators were 5,069 lines plus 2,752 test lines.
+
+## Fix round 1 (review BLOCK at 3fbc94e0; PM ruling T1-SE)
+
+### Outcome
+DONE. The major finding is fixed: planted recovery is now asserted in a pre-registered 2-SE band. Deviation 1 above
+is resolved by ruling T1-SE. Minor findings 2, 3 and 6 are fixed in code; findings 4, 5 and 7 are answered below.
+
+### Commits (on top of `3fbc94e0`)
+| commit | content | merge |
+|---|---|---|
+| `dd5c4f5e` fix(canary) | findings 1, 3, 6 and the mirror half of 2 | with tasks 1-4. It touches no file of the deletion commit: `git merge-tree --write-tree --merge-base=3fbc94e0 019239f6 dd5c4f5e` exits 0, so it cherry-picks cleanly onto `019239f6` |
+| `10493041` fix(guards) | finding 2, versioned half | with the class-C deletion `dee23d2a` (it constrains the post-deletion allowlist) |
+| the next commit | this section | doc only |
+
+### Changes
+**Finding 1 (major), `scripts/tests/test_cycle_e2e.py` and `fixtures/tiny_world_ic.py`.**
+- New constant `PLANTED_BAND_SE = 2.0`, cited to PM ruling T1-SE.
+- `planted_report(mean, se, planted, band_se)` returns `band_se` and `within_band` (`|z| <= band_se`). The one-SE
+  flag is gone.
+- `_live_cycle` asserts `planted_problems(planted_block(...)) == []` for planted_a and planted_b, after the IC tie and
+  before the goldens. noise_c is not in the band: its planted value is 0 and it sits at z +2.23 at seed 7.
+- `record()` refuses to write when a planted member is outside the band.
+- New offline test `test_reference_planted_members_sit_inside_the_band_at_seed_7`:
+  - reference z = -0.82 (planted_a) and -1.14 (planted_b), each within 0.005 and both inside the band;
+  - noise_c at z +2.23, outside the band;
+  - a moved estimate (z -2.5) is refused.
+- The module docstring cites T1-SE.
+
+**Finding 3, `record()`.**
+- `record()` refuses before any run when `builds[<type>]` is already recorded, unless `--repin` is passed (a ruled
+  re-pin, plan section 0.6). It then prints `re-pin <type> <key>: old -> new` for every digest.
+- It applies the live test's admission facts through a shared `admission_problems()`: copy_b redundant with
+  planted_b, planted_a and planted_b admitted. Before, only copy_b was checked.
+- New tests:
+  - `test_record_refuses_to_overwrite_a_recorded_entry_without_repin`: the goldens file is unchanged after the
+    refusal.
+  - `test_admission_problems_name_every_broken_fact`.
+- `research-build.ps1 -CanaryRecord` therefore fails on an already recorded build type. A ruled re-pin runs
+  `test_cycle_e2e.py --record --repin --bin DIR --build-type T` directly.
+
+**Finding 2.**
+- Versioned guard (`10493041`): the size cap is replaced by `set(ALLOWLIST) <= FROZEN_ROWS`, the 30 base rows.
+- Mirror guard (`dd5c4f5e`): the row cap is replaced by live (module, symbol) pairs being a subset of
+  `FROZEN_PAIRS`, the 39 base pairs (verified equal to the base allowlist).
+- `RULE_SYMBOLS` now derives from `FROZEN_PAIRS`, so retiring a row never weakens the scan for that name.
+- A retiring lane deletes rows and changes nothing else. A ruled new row (A1/A2's seal rule) is added to
+  `FROZEN_PAIRS` by root.
+
+**Finding 6, eval_tie.**
+- `expected.json` gains `host` (numpy 1.26.4, openblas64 0.3.23.dev, AMD64, the CPU string).
+- `--check` compares exactly only on an equal host identity, and at 1e-12 relative otherwise.
+- `test_regenerating_writes_the_committed_bytes` skips on another host.
+- Values and input SHA-256s are unchanged (the diff is +6 lines of host block).
+
+**Finding 4 (historical v61/v70/v71 specs name the deleted `check_fund_ic_v6.py`).** No T1 file edit, as the
+review asks. Proposed PM ruling line: "historical v61/v70/v71 specs are not replayable after the audit section 4
+deletion; their libraries and recipes stay frozen, sha-pinned data -- cost if wrong: a replay needs the file from git
+history".
+
+**Finding 5 (handoff).** The eval_tie verifier imports `backtest_integrity`, `nav_summ` and `dsr_total`, which B2
+deletes in wave 2, and no routine suite runs it.
+- B2 retires or converts `test_eval_tie_fixture.py` and the `--check` path of `generate_eval_tie.py` in its deletion
+  commit.
+- The data files and `expected.json` stay as the inputs of B2's EvalVerb gtest.
+- Until then root runs `$PY -m pytest -q -p no:cacheprovider atx-engine/tests/fixtures/eval_tie/test_eval_tie_fixture.py`
+  explicitly each wave.
+
+**Finding 7 (G-P4 scope).** These are not labelled because they are bounded duplicates whose sources CTest already
+registers through their owning group targets or the labelled strategy exes:
+- `atx-engine-ic-screen-tests` ("Do not duplicate CTest registrations", engine tests list);
+- `atx-impl-ic-screen-tests`;
+- `atx-engine-w1-eval-tests` and the other `atx-engine-w1-*-tests`;
+- `ic_screen_test` / `ic_research_test` run in `atx-impl-strategy-ic-tests` under `atx_equity_strategy`.
+
+Like the `atx_equity_strategy` precedent, an unfiltered `ctest` on a tree where `atx-engine-research-fields-tests` or
+`atx-impl-strategy-mine-tests` is unbuilt lists `<target>_NOT_BUILT` placeholders, and those fail if run. Label-filtered
+runs are unaffected. The admission target is confirmed by the review as `atx-engine-research-admission-tests` in
+`atx-engine/tests`, which the engine-side deferred call registers.
+
+### Evidence
+1. Covering tests under both hash seeds, at `10493041`: `PYTHONHASHSEED=0` and `=1`:
+   `"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider scripts/tests/test_cycle_e2e.py
+   scripts/tests/test_no_versioned_scripts.py scripts/tests/test_no_python_mirror.py
+   atx-engine/tests/fixtures/eval_tie/test_eval_tie_fixture.py`. Both seeds gave exit_code=0:
+   ```
+   G-P5: 37 mirrored rule function(s) in 14 row(s) left for P9 lanes
+   32 passed, 1 skipped in 3.74s        (seed 0; the skip is the live canary without ATX_EQUITY_BIN)
+   32 passed, 1 skipped in 3.21s        (seed 1)
+   ```
+2. `"C:/Program Files/Python312/python.exe" atx-engine/tests/fixtures/eval_tie/generate_eval_tie.py --check` gave
+   exit_code=0:
+   ```
+   eval_tie: tied
+   ```
+
+### How root verifies (changes to the steps above)
+The live canary now also fails when planted_a or planted_b lies outside 2 SE. The first `-CanaryRecord` per build type
+refuses on a band miss, so a recorded golden always carries a recovered planted signal. Later changes need
+`--record --repin` and a ruling.
