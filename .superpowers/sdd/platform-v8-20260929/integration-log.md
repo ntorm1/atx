@@ -7117,3 +7117,31 @@ Ledger `build-equity/trials.jsonl`: lines 128 -> 129, head `a083edaa836b69ef`, N
 Hidden-data record: seal scan of 39 log(s) (every run dir, reader and console of the wave; forms iso, compact, year, quarter): 0 date token(s) at or after 2024-01-01 (2026-10-02 x7 allowed: untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW); 2026-10-03 x4 allowed: receipt started_utc wall-clock (PM SEAL-ALLOW); 20260927 x1 allowed: nav_summ's default bootstrap seed (not a date); 20260929 x67 allowed: nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)).
 **Next parent: `scripts/specs/v8/lib-v8ysb-gm.json`, library v8ysb.**
 
+## R0-8 Y-2 theme-tsmom (P9 Phase 0) (2026-10-03, 13:27Z-)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD before `629abbc8`. Parent named by the Y-3 driver:
+`scripts/specs/v8/lib-v8ysb-gm.json` (library v8ysb, L 1.1828; `build-equity/waves/y-3/wave-result.json` `619809ea`
+`next_parent`; Y-3 NOT ACCEPTED, so the last accepted cell is still Y-S). Ledger `build-equity/trials.jsonl` 129 lines, N 58.
+Rulings applied: R0-7-MAN (same mechanical manifest procedure), R0-7-EOL (already done for all four templates), SEAL-ALLOW,
+R0-6-ATT (only if an attempt fails).
+
+| check (read-only) | argv / source | result |
+|---|---|---|
+| template pin | `sha256sum scripts/specs/v8/y-theme-tsmom.json`; `git ls-files --eol` | `9d3548b670547d138b3fdaeec0f170a2861b2a60d777c94788446e6c9b4cd83f` = registered pin (v8y 14, template @ `43745dd7`, its only commit); `i/lf w/lf` |
+| Y-2 defined on the parent | `lib-v8ysb-gm.json` `fit.flags` | `--composition ew-theme-std-v1 --theme-erc theme-erc-v1`; no `--theme-resid`, no `--era`: **defined** (v8y 6 "Undefined" Y-2 row) |
+| registered constants | v8y 14 Y-2 row | lookback 252, lag 3, step 21 inside `fit --theme-tsmom theme-tsmom-v1` = the template's `change.flags.fit`; no `rule_cell.constants` key (none free) |
+
+### R0-8 R0-7-MAN: Y-2 manifest committed
+
+Keys: `wave` y-2, `rule_cell` = the template + its registered pin, `parent` = the Y-3 driver's `next_parent`,
+`expect.n_before` 58, `budget.id` v8y-construction-n58-plus-1, `out_dir` build-equity/waves/y-2; `schema`, `fields`,
+`acceptance` (pm7-34; printed as Y-S and Y-3), `gross_match` pm6-6 (v8y 6: PM6-6 yes for Y-2), `budget.construction_cap`
+62, `ledger`, `record` copied from `y-3.json`. Description states PM8-10 (c)'s dSR SE window and CM-2. No free constant.
+
+| step | argv | exit | result |
+|---|---|---|---|
+| manifest | written from `y-3.json` by key (2-space JSON, LF); `diff y-3.json y-2.json` = wave, description, template + pin, budget id, n_before, out_dir | - | `scripts/specs/v8/waves/y-2.json` sha256 `3655181d316f65489064576e763cd01955ddb9ac9dce7a94deea8872ec19b538` (disk = blob, `i/lf w/lf`) |
+| plan (pre-commit) | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave plan scripts/specs/v8/waves/y-2.json --root C:/atx-wt/pool-2` | **0** | 9 stages pending; cell file `scripts/specs/v8/y-theme-tsmom-y-2.json`; nothing written |
+| pre-registration commit | `git commit -m "wave y-2: manifest (pre-registration of cell Y-2; v8y-prereg sections 5, 6, 14)"` | 0 | **`15017bb4`** |
+| plan (committed) | same argv | **0** | 27 lines; manifest sha256 `3655181d...`; state `build-equity/waves/y-2/receipts` |
+
