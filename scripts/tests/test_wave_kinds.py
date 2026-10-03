@@ -82,6 +82,26 @@ def ic_table(manifest_params: bool = True) -> dict:
     return doc
 
 
+# D1's params_schema of two rows as committed at base 1239a5ff (composition_rules_list.json): ew-theme-std-v1's
+# describes the weights-file block, not a manifest's params (ruling D1-PSCHEMA). Frozen here because D2 re-pins
+# that fixture (wave2-carry D2): the fail-closed checks below keep testing D1's shape after that merge.
+D1_SCHEMAS = {
+    "ew-theme-std-v1": {"type": "object", "required": ["rule", "rerank", "themes"], "properties": {
+        "rerank": {"type": "boolean"}, "rule": {"const": "ew-theme-std-v1"},
+        "themes": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[a-z0-9_]{1,64}$"}}}},
+    "two-speed-v1": {"type": "object", "additionalProperties": False, "required": ["rule"],
+                     "properties": {"rule": {"const": "two-speed-v1"}}}}
+
+
+def d1_table() -> dict:
+    """The committed table with D1_SCHEMAS in place of its rows' schemas (D1's state, whatever D2 commits)."""
+    doc = ic_table(manifest_params=False)
+    for row in doc["rules"]:
+        if row["id"] in D1_SCHEMAS:
+            row["params_schema"] = json.loads(json.dumps(D1_SCHEMAS[row["id"]]))
+    return doc
+
+
 class KindsFake(F.FakeCycle):
     """wave_fixture's executor plus the exes' rule listings (K-P9-6 / K-P9-7) and the field and role builders."""
 
@@ -246,9 +266,10 @@ def test_rule_flags_from_the_tables():
     assert "set to" in WK.rule_flags([{"name": "ew-theme-std-v1"}, {"name": "ic-shrink-v1"}], tables)[1][0]
     # D1's committed schemas describe the weights-file block, not the manifest's params (ruling D1-PSCHEMA: D2
     # corrects them): a manifest naming ew-theme-std-v1 is refused against them, fail closed
-    got = WK.rule_flags([{"name": "ew-theme-std-v1"}], {"ic": ic_table(manifest_params=False)})[1]
+    got = WK.rule_flags([{"name": "ew-theme-std-v1"}], {"ic": d1_table()})[1]
     assert got == ["rules.ew-theme-std-v1: missing ['rerank', 'themes']"]
-    assert WK.checked_params("two-speed-v1", {}, ic_table(False)["rules"][-1]) == {"rule": "two-speed-v1"}
+    two_speed = next(r for r in d1_table()["rules"] if r["id"] == "two-speed-v1")
+    assert WK.checked_params("two-speed-v1", {}, two_speed) == {"rule": "two-speed-v1"}
     template = {"change": {"flags": {"fit": {"--two-speed": "two-speed-v1"}}}}
     assert WK.owned_flags({"fit": {"--two-speed": "two-speed-v1"}}, template) == ["fit --two-speed"]
 
@@ -308,7 +329,7 @@ def test_rule_wave_refuses_a_name_no_table_lists(tmp_path):
     code, log = wave(root, KindsFake(root), "run", "--until", "spec")
     assert code == 3
     root = world(tmp_path / "b", load_fixture("new-combination-rule.json"))
-    code, _ = wave(root, KindsFake(root, ic=ic_table(manifest_params=False)), "run", "--until", "spec")
+    code, _ = wave(root, KindsFake(root, ic=d1_table()), "run", "--until", "spec")
     assert code == 3                                                 # D1's schemas, before D2's (D1-PSCHEMA)
 
 
