@@ -354,3 +354,69 @@ All six runs completed (exit 0) through `run_bounded_research.py` (scratch `reru
   NAV Y-F0 `p9-b0-yf0-nav` (`summary.json` `4f048210`, S2 daily `e7eb5720`, was `73b69bcc`), X-10 `p9-b0-x10-nav`
   (`summary.json` `42d104fc`), Y-1 `p9-b0-y1-nav` (`summary.json` `07e23261`, `vol_target.csv` `100286a5`).
 - 0 trials; `build-equity/trials.jsonl` 133 lines, `27e40f9f` (mtime 11:32, unchanged).
+
+### M1d resume: result (detail in `root-wave1-merge-report.md` "M1d resume")
+
+**Status: STOP for a PM ruling** -- all blocks done, P9-B0 holds, but the failure set is outside the five named
+known-reds by two new items. No code change; no expected hash edited; 0 trials (133 lines, `27e40f9f`).
+
+| block | result |
+|---|---|
+| 1 suites (rest) | `atx-impl-tests` whole (Debug): 1,124 passed / 5 skipped / **1 failed** `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest` (new red 1: pre-existing since `d060cd81` 2026-09-26, not wave 1). pytest: `scripts/tests` seed 0 and seed 1 each 373p / 4s / 1f (= M1a-RED, same assertion), `atx-engine/tools` 399p, `atx-impl/tools` 640p / 3s, `atx-impl/strategies` 14p |
+| 2 canary (G-P8) | p9-1l Debug record (`506ea123`), p9-1m Debug check 15 passed; p9-1n equity-rel build (25 TUs, 0 warnings) + Release record (`5e1ebbbc`), p9-1o Release check 15 passed; Release digests = Debug digests (all five) |
+| 3 Release IC (G-P3 IC half) | u / w / marginal Release vs Debug: payloads bit-identical; Release marginal refuses NotFound before a Release u pass and succeeds after; Release gtests S1 filter 31/31, w1-foundation 83/83, **ic-tests whole 186/193** (new red 2: 7 `StrategyIcRunner.*`, Release only, MAX_PATH 262 > 260 from S1's Release cache root in the test scratch path) |
+| 4 P9-B0 | list `7d5b2ec9` before the runs; 6 runs, **0 differences outside the list**; re-based references `build-equity/p9-b0-*` |
+| 5 scoreboard | `scoreboard --timings` exit 0: lineage X-F0 -> Y-F0 (y-s), 4/4 checks, ledger chain verified (133 lines, head `5a3ef9d9`, N 62) |
+
+New reds needing a ruling (not in M1a-RED / M1c-RED): (1) `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest`
+(Debug `atx-impl-tests`; manifest line `config_json=` added by `d060cd81` vs a test asserting the manifest ignores
+config_json); (2) seven Release-only `StrategyIcRunner.*` in `atx-impl-strategy-ic-tests` (`candidate cache partial
+output`, path 262 chars: test scratch root + `dslvm1_clang18.1_opt_md_ndebug_xs13.0.0`). Real-data Release paths
+measured under 260 (~16 chars margin on the spec cache).
+
+#### `scoreboard --timings` (v8 waves, wall seconds by phase; runs)
+
+| wave | card | fit | monitor | nav | ref | summ | u | w | total |
+|---|---|---|---|---|---|---|---|---|---|
+| y-2 | 18.2 (1) | 0.8 (1) | 1.6 (1) | 90.9 (2) | - | 34.4 (1) | 12.7 (1) | 42.2 (1) | 200.7 |
+| y-3 | 24.5 (1) | 1.9 (1) | 1.6 (1) | 105.5 (2) | - | 37.2 (1) | 12.7 (1) | 52.8 (1) | 236.2 |
+| y-5 | 18.8 (1) | 1.0 (1) | 1.6 (1) | 161.6 (2) | - | 37.7 (1) | 12.7 (1) | 62.2 (1) | 295.5 |
+| y-s | 24.5 (1) | 1.9 (1) | 1.6 (1) | 115.3 (2) | 61.9 (1) | 40.0 (1) | 12.7 (1) | 52.8 (1) | 310.7 |
+
+No P9 wave exists yet, so these are v8's numbers re-read through the P9 scoreboard (the baseline the S1 / S2 / C2 / E1
+speed claims are measured against). M1d's own walls for comparison (Debug unless noted; busy host): P9-B0 u 20.2 s,
+w 133.8 s, NAV 79-90 s; Release u cold 160.5 s, Release w warm 52.6 s, Release marginal 104.8 s vs Debug 416.5 s.
+
+#### Platform gates (G-P) after M1d
+
+| gate | state | evidence |
+|---|---|---|
+| G-P4 CTest | **ticked** | `ctest -N`: `atx_research` 106 (fields 46 + admission 16 + mine 44), `atx_equity_strategy` 577 (strategy 46 + ic 193 + target 338); all run (failures: M1a-RED's two gtests only) |
+| G-P6 no versioned script | **ticked** | class-C generators deleted at M1a after slice-2 `--check`; `test_no_versioned_scripts.py` green under seeds 0 and 1 |
+| G-P8 canary | **ticked** | goldens recorded Debug (p9-1l) and Release (p9-1n), checked green on p9-1m and p9-1o; Release = Debug digests |
+| G-P3 Release adopted, IC half | shown, **not ticked** | u / w / marginal payload identity and the S1 refusal / adoption behaviour hold; held back by new red 2 (Release ic-tests) until ruled |
+| G-P3 NAV half | shown on X-5 at M1c | wave-3 gate (plan §4.3) |
+| G-P5 | guard only | `test_no_python_mirror.py` green (37 functions / 14 rows left for wave 2) |
+| G-P7 | first half only | eval_tie fixture (M1a); wave 2 |
+| G-P1, G-P2, G-P9 | not checkable at wave 1 | - |
+
+Plan §4.3 phase-1 exit: wave-1 merged yes; G-P4 yes; G-P8 yes; G-P3 IC half pending ruling; P9-B0 pinned yes.
+
+#### Disk (Rulings DISK, DISK-2), after every gate and P9-B0 had finished
+
+Checked first (0 tracked, git-ignored, no reparse point inside, rename probe) and found unnamed by any P9 spec, test,
+plan or sprint brief (grep of `scripts/specs`, `scripts/tests`, `docs/plans`, `atx-impl/strategies` and the
+`.superpowers` dirs of pools 2, 17, 19, 20: only receipts, logs and `disk-audit.md` name them). Deleted, all in pool-2
+`build-equity/`:
+
+| path | what | files |
+|---|---|---|
+| `p9-m1d-rel-cache` | my Release-adoption DIR (hard links of D1's cache + the Release root) | 348 |
+| `p9-d1-x5-cand-cache-empty` | DISK-2 (audit #5): D1's cold X-5 cache | 174 |
+| `v8-i16d-cand-cache-empty` | DISK-2 (audit #2): v8 R0-3 cold X-5 cache | 174 |
+| `recent-fast-validation-2023-2024-v1-fields-v{1,2,3}/*.f64` | DISK-2 (audit #4): payloads only, deleted unread; each `manifest.json` kept | 11 + 8 + 8 (984,602,304 B) |
+
+Free on C: 36,422,791,168 B before, 49,014,763,520 B after. Not touched: spec-pinned caches
+(`mega-candidate-cache-v8-lo3` / `-lo1`), the lo3 hard-linked stores, risk dirs, reference outputs, `trials.jsonl`.
+Also removed: my pytest basetemp dirs (scratchpad) and one `.pyc` my canary run wrote. Kept: the P9-B0 references and
+the adoption run dirs (evidence). Next free build tag **p9-1p**.

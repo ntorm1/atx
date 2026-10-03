@@ -795,3 +795,175 @@ half; full state in `handoff-root-m1d.md` (same dir). No code commit, no merge, 
 
 - Not started: canary goldens (both still null), Release IC adoption, P9-B0 (no substitution list written), scoreboard /
   timings, G-P ticks. Next free build tag **p9-1l**.
+
+### M1d resume (root-m1d resume, 2026-10-03 evening)
+
+Resumed from `handoff-root-m1d.md` at head `3c5f0b8e` (resume rulings); nothing done in the stopped run was redone.
+Code is still the wave-1 head `b52a5de7` (every later commit is docs or the goldens file). Debug bin = p9-1k (checked by
+SHA against its receipt). Scratch logs and scripts: session scratchpad `m1d/`. Host: lanes compiling most of the time;
+free memory 1.2-4.6 GiB; the bounded runner's admission (no compiler running) made P9-B0 / adoption runs wait up to
+9.3 min.
+
+**Status: STOP for a PM ruling.** Every block is done; P9-B0 holds; but the wave-1 failure set is NOT within the five
+named known-reds: 1 Debug + 7 Release failures more (below). No code was changed, no expected hash edited.
+
+#### Block 1 (rest): `atx-impl-tests` whole and pytest
+
+| suite | result | wall |
+|---|---|---|
+| `atx-impl-tests` (Debug, p9-1k `dd58e3ad`, whole binary, first whole run in P9) | 1,130 tests: 1,124 passed, 5 skipped, **1 FAILED: `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest`** | 1,256 s |
+| pytest `scripts/tests`, `PYTHONHASHSEED=0` | 373 passed, 4 skipped, 1 failed = M1a-RED `test_research_mine.py::test_fields_are_the_rule_applied_to_the_registry` (`:119`, the same three names `noa_lag4`, `ea_window_pre5`, `ins_cluster_buy`) | 1,136 s |
+| pytest `scripts/tests`, `PYTHONHASHSEED=1` | 373 passed, 4 skipped, 1 failed (the same) | 1,074 s |
+| pytest `atx-engine/tools` | 399 passed, 6 subtests | 647 s |
+| pytest `atx-impl/tools` | 640 passed, 3 skipped, 17 subtests | 658 s |
+| pytest `atx-impl/strategies` | 14 passed | 10 s |
+
+All pytest: explicit paths, `-p no:cacheprovider`, `--basetemp` in the scratchpad (deleted after), `PYTHONDONTWRITEBYTECODE=1`;
+`scripts/tests` ran after both canary goldens were committed. `test_no_versioned_scripts.py` (G-P6) and
+`test_no_python_mirror.py` (G-P5 guard, 37 mirrored rule functions in 14 rows) green under both seeds.
+
+**New red 1 (Debug, pre-existing, not from wave 1): `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest`**
+(`atx-impl/tests/provenance_digest_test.cpp:373`): `_manifest.txt` differs between two discover runs that differ only
+in `config_json` (`field_cardinality_max` 12 vs 999), because the manifest now carries a `config_json=...` line.
+That line was added by `d060cd81` (2026-09-26, "bind IC screening configuration and discovery resume identity",
+`atx-impl/src/stage_discover.cpp:963, 1444`); the test's assertion (manifest invariant to config_json) dates from
+`4c795fbe` (2026-06-28). `git diff 6a68d7f9 HEAD` on `stage_discover.cpp` and the test is empty: it has been red since
+2026-09-26, before the P9 base; no wave-1 lane touches it. Nobody ran this binary whole before (M1b / M1c ran filters).
+Not fixed: whether the manifest or the test is the contract is a ruling.
+
+#### Block 2: tiny-world canary goldens (G-P8)
+
+| tag | preset | source | build | canary | result |
+|---|---|---|---|---|---|
+| **p9-1l** | equity-dev | `7d5b2ec9` | ic + targets, 0 TUs, 8.4 s | `-CanaryRecord` (first record, no `--repin`: both entries were null) | exit 0, 24.2 s; Debug goldens written, committed `506ea123` |
+| **p9-1m** | equity-dev | `506ea123` | 0 TUs, 8.7 s | `-Canary` (check) | **15 passed**, exit 0 |
+| **p9-1n** | equity-rel | `506ea123` | ic, targets, ic-tests, w1-foundation-tests: **25 TUs, 3 links, 232.8 s, 0 warnings** | `-CanaryRecord` | exit 0, 16.5 s; Release goldens committed `5e1ebbbc` |
+| **p9-1o** | equity-rel | `5e1ebbbc` | 0 TUs, 15.6 s | `-Canary` (check) | **15 passed**, exit 0 |
+
+Goldens (`scripts/tests/fixtures/tiny_world_goldens.json`): the Release entry equals the Debug entry on all five
+digests: u orientations `38115194`, fit admission decisions `71b47e87`, fit weights `d222c876`, w combined f64
+`1f7ac0a8`, NAV primary daily `eb385a15` (primary `modeled-1bn-stale5-v1+swap-fin-v1`; planted members within the
+T1-SE band in both). Exes: Debug ic `393183c0` / targets `407c34ad`; Release ic **`ea370cec`** / targets `93ea323e`
+(p9-1j's, unchanged). First-run seconds 19.6 (Debug record, host busy) / 12.6 (Release); both checks passed the 15 s
+budget. Release tree not reconfigured (configured at `61ac4423`, code `b52a5de7`).
+
+#### Block 3: Release IC adoption (G-P3, IC half)
+
+Expectation written and committed before the runs (`7d5b2ec9`, integration log). Release exes p9-1n: ic-tests
+`0748dd5c`, w1-foundation-tests `daf0009c`.
+
+| Release gtests (p9-1n) | result |
+|---|---|
+| `atx-impl-strategy-ic-tests` S1 filter (`MarginalIc.*:IcIdentity.*:CombineMarginalRankIc.*` + 2 pins) | **31 passed** |
+| `atx-engine-w1-foundation-tests` whole (alpha oracle, conformance, widened conformance, streaming, combine) | **83 passed** |
+| `atx-impl-strategy-ic-tests` whole | **186 passed, 7 FAILED** (Debug: 193 / 193) |
+
+**New red 2 (Release only, from S1's Release cache root): 7 `StrategyIcRunner.*`**
+(`ExtraFieldsResolveByNameAndMatchHandComputedSignals`, `GrpFieldsBindAsGroupClassifiersAndExcludeNaNLabels`,
+`CandidateCacheKeyChangesOnlyForCandidatesReadingAChangedFieldPayload`, `CandidateCacheReadsV1EntriesInPlaceThroughKnownManifests`,
+`CandidateCacheWritesFitWithinTheDeepestCommittedPath`, `ExtraFieldsResideOnlyWhileReferencedAndReloadExactly`,
+`ExtraFieldsAreMaskedByRolePresence`), each `IoError: IC runner: candidate cache partial output: <path>`
+(`strategy_ic_signal_cache.cpp:416`). Every failing path is **262 characters**: the test scratch root
+(`%TEMP%\atxv-<id>\atx-strategy-ic-runner-<ts>-<n>\c\`, 94 chars) + S1's Release identity directory
+`dslvm1_clang18.1_opt_md_ndebug_xs13.0.0\` (40 chars; the Debug root has none) + role / `fp_` / `ic1_` dirs + the
+`.<16 hex>.partial` file: over Windows MAX_PATH (260). Debug paths are 222. S1's lane never built (no Release run of
+these tests existed; M1b deferred them to M1d). Real-data Release runs are under the limit (my DIR: longest 233; the
+spec cache `mega-candidate-cache-v8-lo3` + Release root: ~244 for the longest entry name), but the margin is ~16
+characters. Not a slip (not a typo / include); not fixed: the fix is a layout or test-scratch decision (shorter Release
+root token, shorter test scratch, or long-path support), for the PM.
+
+Runs (DIR = `build-equity/p9-m1d-rel-cache`, hard-link copy of `p9-d1-x5-cand-cache-empty`; argvs from the named
+receipts, only `--candidate-cache`, `--output` and the exe changed; `relrun.py`; Release PATH = vcpkg release bin only):
+
+| step | run | outcome | wall / peak |
+|---|---|---|---|
+| 1 | Debug marginal (`p9-s1-x5-marginal-new-run` argv) | first try `p9-m1d-dbg-marginal-run`: **time-limit** at the reference's 360 s (host busy; the reference took 178 s); rerun `p9-m1d-dbg-marginal2` at 600 s (the runner's maximum): completed | 416.5 s / 297 MiB |
+| 2 | Release marginal, same argv, before any Release u pass | **refused as specified**: exit 1, 0.3 s, `NotFound: marginal IC: no candidate cache entry for value_composite (...) on role e1c67101...; run the u pass with --candidate-cache first`; no output dir | 0.3 s |
+| 3 | Debug u (`mega-v8-b0b-train-u-v8x3b-run1` argv) | completed (warm Debug) | 92.3 s / 673 MiB |
+| 4 | Release u, same argv (cap 3,072 for the cold pass) | completed; wrote `DIR/dslvm1_clang18.1_opt_md_ndebug_xs13.0.0/` | 160.5 s / 1,693 MiB |
+| 5 | Debug w (`p9-d1-x5-w-run` argv) | completed (warm) | 87.2 s / 1,371 MiB |
+| 6 | Release w, same argv | completed (warm Release) | 52.6 s / 1,362 MiB |
+| 7 | Release marginal, as step 2 | **completed** | 104.8 s / 295 MiB |
+
+| Debug vs Release | payload files | other files (paths only) |
+|---|---|---|
+| u (3 vs 4) | **10 / 10 byte-identical**: orientations `3428b2f8` (= X-5 spec pin `reference_orientations`), daily IC `51b0f8d4` (= pin `reference_daily_ic`), recipe, 6 `train_combined.*`, planned targets | `summary.json` 666 leaves: identity strings (`vm_identity` -> `..._opt_md_ndebug_xs13.0.0`, `ic_results` identity / key / subdirectory, 58 `signal_key_sha256`), cache-root paths (directory, fields_directory, 58 payload + 58 sidecar paths now under `DIR/<Release root>/`, same file names), cache state counters (hits, misses, vm_evaluations, ic_results hits / misses, research_fields loads / bytes / peak, verify_bytes, ic_cache_bytes, ic_scratch_bytes), timing. `train_candidates.jsonl`: timing + `signal_cache` / `ic_result_cache` "hit" -> "miss" (58 each): warm Debug vs cold Release, cache state, not a payload; my written jsonl expectation named timing only, so this is a recorded deviation, explained by step 5 vs 6 below |
+| w (5 vs 6) | **10 / 10 byte-identical** (combined json `2a442f56` = X-5 spec pin `reference_combined`) | `summary.json`: identity strings, cache-root paths, `ic_cache_bytes`, `ic_scratch_bytes`, timing; `train_candidates.jsonl`: **timing only** (both warm: hit / hit) |
+| marginal (1b vs 7) | `marginal_ic.json` | **only** `/inputs/candidate_cache/build_vm_identity` and `/stage_seconds/*` (7): exactly the expectation. (Debug on DIR vs S1's Debug on the shared cache: only `/inputs/candidate_cache/directory` + `/stage_seconds/*`.) |
+
+**Release IC adoption on real data holds** (u, w, marginal: payloads bit-identical to Debug; the NotFound refusal and
+the fill-then-succeed behaviour exactly as S1 specified). Speed (S1 item 5, logged): marginal 104.8 s Release vs
+416.5 s Debug on a busy host (178 s Debug when quieter); w 52.6 s vs 87.2 s; cold Release u 160.5 s.
+G-P3 IC half is **not ticked** while new red 2 (Release `atx-impl-strategy-ic-tests`) is unruled.
+
+#### Block 4: P9-B0 (DEC-20, Ruling B0-Y1)
+
+Substitution list written and committed alone before any run: **`7d5b2ec9`** (integration log, "P9-B0 substitution
+list"): runs, per-file / per-path lists, and the B0-Y1 code-path proof (7 steps) for the Y-1 `vol_target` rows and
+L1-L4 book blocks. Results (integration log "P9-B0 result", `f9fbae2f`):
+
+| run | vs reference | outside the list |
+|---|---|---|
+| u `p9-b0-yf0-u` | 3 files identical; `summary.json` 140 + `train_candidates.jsonl` 134 timing leaves | 0 |
+| fit `p9-b0-yf0-fit` | `admission.csv` identical; `admission.json` `/inputs/script_sha256`; `composition_weights.json` `/provenance/{script_sha256, admission_sha256}`; `std/registry_sha256` identical as predicted | 0 |
+| w `p9-b0-yf0-w` | 10 payload files identical (combined json `e13fbc4d`); `summary.json` 277 + jsonl 268 timing leaves | 0 |
+| NAV Y-F0 `p9-b0-yf0-nav` | 16 identical; 8 sqrt CSVs (cost columns only, 1-8 rows of 1,006); summary `/scenarios/1..4`, `/v7/extras`, `/v7/files` +2, `/producer` +3; capacity summary `/scenarios/1..4`; extras `/files/capacity/summary.json` +1 | 0 |
+| NAV X-10 `p9-b0-x10-nav` | 15 identical; 9 sqrt CSVs; same JSON paths (capacity `/scenarios/0..4`) | 0 |
+| NAV Y-1 `p9-b0-y1-nav` | 17 identical incl. **`vol_target.csv`** (`100286a5`); 8 sqrt CSVs; same JSON paths; no `/vol_target` leaf moved (B0-Y1 additions allowed, not needed) | 0 |
+
+**P9-B0 holds.** Re-based references: the six `build-equity/p9-b0-*` dirs (Y-F0 S2 daily `e7eb5720`, was `73b69bcc`;
+summaries Y-F0 `4f048210`, X-10 `42d104fc`, Y-1 `07e23261`). No statistic was read: SHA, JSON paths, CSV header
+names and differing-row counts only.
+
+#### Block 5: scoreboard, ledger, timings
+
+`research_cycle.py scoreboard --timings` exit 0 (2 s): lineage `(parent) x-theme-erc-gm.json` -> `y-s
+lib-v8ysb-gm.json`; 4 waves (y-s ACCEPTED; y-2, y-3, y-5 NOT ACCEPTED); checks 4 / 4 (each trial ledgered, its
+`s2_net_sr` equal); ledger `build-equity/trials.jsonl` chain verified, 133 lines, head `5a3ef9d9`, N 62. Timings table
+appended to the integration log. Disclosure: the scoreboard prints its ledgered TRAIN (2020-2023) rows by design; I
+saw them on the console; no decision here uses them and none is copied into these files.
+
+Trial ledger: **0 trials**; 133 lines, sha256 `27e40f9f`, mtime 11:32 (unchanged at the end).
+
+#### Block 6: G-P rows (detail in the integration log)
+
+Ticked: **G-P4** (CTest registration; atx_research 106, atx_equity_strategy 577), **G-P6** (guard green under both
+seeds; class-C generators deleted at M1a), **G-P8** (canary goldens recorded and checked on Debug and Release; Release
+= Debug digests). Shown but **not ticked**: G-P3 IC half (runs hold; Release ic-tests new red 2 unruled). Not wave-1
+checkable: G-P1, G-P2, G-P5 (guard only), G-P7 (first half only), G-P9, G-P3 NAV half (shown on X-5 at M1c; wave 3).
+
+#### Failure set at the end of M1d
+
+| failure | build | named known-red? |
+|---|---|---|
+| `test_research_mine.py::test_fields_are_the_rule_applied_to_the_registry` | both seeds | yes (M1a-RED) |
+| `ResearchFieldsWriter.QuantilesPartitionLikeNumpy`, `ResearchFieldsVolumeMean.SumOrderIsNumpys` | Debug (blocks of the stopped run) | yes (M1a-RED) |
+| `BookNormalScore.TiesShareTheMeanRankAndMirrorsAreOpposite`, `BookNormalScore.FixtureTellsWrongRulesApart` | Release (M1c run; not re-run: no Release target-tests rebuild in this resume) | yes (M1c-RED) |
+| `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest` | Debug `atx-impl-tests` | **no** (new red 1; pre-existing since `d060cd81`) |
+| 7 x `StrategyIcRunner.*` (MAX_PATH) | Release `atx-impl-strategy-ic-tests` | **no** (new red 2; S1 Release cache root) |
+
+Gate "failure set within the five named known-reds": **not met** -> STOP for a ruling on new reds 1 and 2.
+
+#### Disk (Rulings DISK, DISK-2)
+
+Deleted after every gate and P9-B0 had finished (rename probe, then remove; each checked: 0 tracked files,
+git-ignored, no reparse point inside): my `p9-m1d-rel-cache` (348 files: the hard links + the Release root);
+DISK-2's `p9-d1-x5-cand-cache-empty` and `v8-i16d-cand-cache-empty` (174 files each; no P9 spec, test, plan or
+sprint brief names them, only receipts, logs and the disk audit); the 27 `.f64` payloads of
+`recent-fast-validation-2023-2024-v1-fields-v{1,2,3}` (11 + 8 + 8, 984,602,304 B; each `manifest.json` kept; files
+deleted unread). Free space on C: 36,422,791,168 B before, 49,014,763,520 B after (other agents wrote meanwhile).
+Also my five pytest basetemp dirs (their `*current` symlinks pointed inside the basetemp) and the one `.pyc` my
+canary run wrote (`atx-impl/tools/__pycache__/fit_composition_weights.cpython-312.pyc`). Kept:
+every P9-B0 / adoption run dir (evidence, ~380 MiB), all pinned caches, references and `trials.jsonl`.
+
+#### M1d resume commits (first-parent, on `3c5f0b8e`)
+
+| commit | what |
+|---|---|
+| `7d5b2ec9` | P9-B0 substitution list (B0-Y1) and the Release IC expectation, before any run |
+| `506ea123` | tiny-world goldens, Debug first record (p9-1l) |
+| `5e1ebbbc` | tiny-world goldens, Release first record (p9-1n) |
+| `f9fbae2f` | P9-B0 result in the integration log |
+| (next) | this section, the integration-log close-out (G-P ticks, timings, disk) |
+
+Next free build tag: **p9-1p**. No process of mine left running (checked).
