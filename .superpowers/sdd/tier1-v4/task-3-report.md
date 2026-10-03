@@ -480,3 +480,67 @@ EPS was never sampled; the inline XBRL parser dropped nested `ix:nonFraction` fa
 temporary-equity term from funda (fqtr 4 only) instead of the fundamentals catalog; the DO zero rule was a 460-day
 look-back that nulled ibq for issuers with a tiny DO fact 15 months earlier (now the filing's own period). Remaining:
 `epsfxq_src` is not published (epsfxq follows the epspxq rule with diluted concepts).
+
+## Fix round 1 (recovered and completed 2026-10-03)
+
+This section supersedes the original report's vintage design, annual filtering, MIBT/NIADJ naming, rdq gate metric, and measured counts. Original task commits: `d9c48999`, `bda46f04`. Fix implementation/docs commit: `791767cd` (fix(compustat): publish historical restatement vintages and protect annual periods). The report-only commit is identified in the final controller contract because a commit cannot embed its own SHA.
+
+Implementer: Codex (runtime identified as GPT-6 family; gpt-6.1-sol requested by the resume contract, exact backend routing not independently exposed). The legacy GC6 Co-Authored-By trailer is retained as instructed and is not a model attribution.
+
+### Changes and stable interface
+
+- Preserve and finish the previous uncommitted module/test edits. Rule `cstd-pit-v2` adds `vintage_kind` (`filing`, `restatement`). Older quarterly and annual comparative periods receive new rows at the later history/filing clock. Keys remain `(cik, datadate, fyearq, fqtr, accession)` for fundq and `(cik, datadate, fyear, accession)` for funda; as-of macros keep latest visible vintage per `(cik, datadate)`.
+- Funda requires an annual-form base period (10-K/10-KT/20-F/40-F and amendments) with fqtr 4. A later 10-Q can validly restate that annual period with annual values and its later clock: 64,617 such annual comparative rows. Current-quarter 10-Q TTM values cannot become annual base rows. FY-labelled 10-Qs cannot set/reset fyr. Tests cover both distinctions.
+- Rename the upstream temporary-equity field to `tempeq` and basic common-income field to `nicon`; neither Compustat MIBT nor NIADJ is claimed. All 81 catalog fields are retained, including these two documented extensions.
+- T3-b rdq gate uses primary matched 8-K acceptance on/before the filing's ET calendar date (`clock_utc`, `filed` fallback), not rdq or the FX-delayed item clock. Report strict `rdq_from_8k_pit` alongside. Published item availability and rdq sourcing stay PIT; the gate changes no values/clocks.
+- Correct balance information lookup to the same datadate's latest visible catalog temporary-equity row, preventing a restating filing's current-period value from contaminating the diagnostic.
+
+### Real build, evidence and commands
+
+From `C:/atx/atx-db`, set `$env:PYTHONPATH="C:/atx/atx-db/src"; $env:OPENBLAS_NUM_THREADS="1"`. Each command below ran sequentially under the memory guard, never above 0.8 GiB. Exact receipt/stdout/stderr arguments are listed; corresponding files exist under the task workspace.
+
+```powershell
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-build.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-build.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-build.err.log -- .venv/Scripts/python.exe -m atx_db.alpha_panel.compustat_std build --fund-stage fundamentals_v10 --earn-stage earnings_calendar --buckets 32
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-validate.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-validate.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-validate.err.log --quiet -- .venv/Scripts/python.exe -m atx_db.alpha_panel.compustat_std validate
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-cutoff.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-cutoff.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-cutoff.err.log --quiet -- .venv/Scripts/python.exe -m atx_db.alpha_panel.compustat_std cutoff
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-handcheck.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-handcheck.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-handcheck.err.log --quiet -- .venv/Scripts/python.exe -m atx_db.alpha_panel.compustat_std handcheck --n 30
+.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.6 --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-diagnostics.receipt.json --stdout ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-diagnostics.out.log --stderr ../.superpowers/sdd/tier1-v4/logs/t3-fix1-resume-diagnostics.err.log --quiet -- .venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t3-fix1-diagnostics.py
+```
+
+Outputs: fundq 747,073 rows / 17,010 CIKs / 70,163,590 bytes; funda 235,563 rows / 15,875 CIKs / 45,917,402 bytes. Fundq includes 325,843 restatement rows, 406,166 first-reported rows, 7,267 FX-converted rows and 29 rows without a fiscal quarter. Datadate 2004-12-31-2026-08-31; available_at 2010-01-05 19:00 UTC-2026-09-19 22:00 UTC. Fresh build returncode 0, 176.1 s, native peak 0.7662 GiB, no cap hit. Validate 29.3 s; cutoff 11.4 s; handcheck 28.0 s. No return statistics were computed.
+
+Recovered receipts were inspected before running: earlier build 1 was stopped for low host commit headroom (172.5 s, returncode 137), build 2 hit DuckDB memory exhaustion (45 s, returncode 1), build 3 succeeded with 32 buckets (337.9 s, peak 0.7454 GiB). Its validate/cutoff artifacts were recovered; fresh runs above supersede them. No processes were killed or guards bypassed.
+
+### Gates (original eight criteria: 5 PASS / 3 FAIL)
+
+| Criterion | Status | Measured | Exact command |
+| --- | --- | --- | --- |
+| Date outlier exclusion | PASS | Published datadates 2004-12-31-2026-08-31, inside [1990-01-01, build +365d]; excluded events 0, history 108, selected Company Facts 0 | guarded build command above; manifest excluded_outside_datadate_window |
+| Core/YTD coverage per year | PASS | saleq min .9636; ibq .9955; atq .9962; ceqq .9938; cheq .9882; cshoq .9966; oancfy .9774; capxy .9319 | guarded validate command above |
+| rdq >=.95 under T3-b | FAIL | Same-ET-date .9015-.9459; strict .8500-.9008 | guarded validate command above |
+| Four-quarter sum within .5% on >=.98 | FAIL | saleq .9655-.9797; niq .9697-.9847 | guarded validate command above |
+| atq=ltq+teqq within .5% on >=.97 | FAIL | .9020-.9287; same-period temporary-equity information .9424-.9688 | guarded validate command above |
+| FSDS >=.98 within .5% | PASS | 6,084 cells; 6,039 mapped (.9926); 6,030 matched (.9985 of mapped) | guarded validate command above |
+| 30 issuer-quarter hand checks, 0 mismatches | PASS | 30 completed / 240 item checks: 228 direct matches, 10 derived matches, 2 zero-rule observations, 0 mismatches | guarded handcheck command above |
+| Cutoff rebuild, 0 differences | PASS | 90 CIKs including 19 FX-converted; 19,956 rows / 1,691,724 cells; 0 cell and 0 row-set differences at five cutoffs | guarded cutoff command above |
+
+| year | rdq same-date | rdq strict | saleq sum4 | niq sum4 | balance | balance + temp equity (info) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2020 | 0.9108 | 0.8610 | 0.9770 | 0.9807 | 0.9124 | 0.9427 |
+| 2021 | 0.9015 | 0.8500 | 0.9655 | 0.9697 | 0.9020 | 0.9424 |
+| 2022 | 0.9417 | 0.8938 | 0.9768 | 0.9779 | 0.9195 | 0.9599 |
+| 2023 | 0.9459 | 0.9008 | 0.9797 | 0.9838 | 0.9280 | 0.9635 |
+| 2024 | 0.9411 | 0.8891 | 0.9781 | 0.9839 | 0.9287 | 0.9688 |
+| 2025 | 0.9267 | 0.8769 | 0.9789 | 0.9847 | 0.9245 | 0.9688 |
+
+Focused schema diagnostics (`t3-fix1-diagnostics.py`, exact SQL saved in `t3-fix1-evidence.json`): 0 duplicate fundq keys, 0 duplicate funda keys, 0 nonannual funda filing rows, 0 funda rows lacking an earlier annual base, 0 restatement rows before the matched filing acceptance clock. The informational count of 64,617 annual restatements sourced from 10-Qs is valid, not the removed TTM leak. Manifest publishes coverage/FSDS/cutoff/handcheck PASS and rdq/sum4/balance FAIL.
+
+### Tests and self-review
+
+`cd C:/atx/atx-db; $env:PYTHONPATH="C:/atx/atx-db/src"; $env:OPENBLAS_NUM_THREADS="1"; .venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_alpha_panel_compustat_std.py -q` - `15 passed in 7.19s` (offline fixtures, <60 s). Covers historical quarter/annual comparatives, as-of visibility/cutoff equality, annual-only/fyr protection, extension naming, same-date gate vs strict share, acceptance-date/ET boundary vs rdq and delayed item availability. `git diff --check -- <four implementation/docs paths>` passed.
+
+Changed committed paths: `atx-db/src/atx_db/alpha_panel/compustat_std.py`, `atx-db/tests/test_alpha_panel_compustat_std.py`, `atx-db/docs/datasets/compustat_std.md`, `atx-db/docs/datasets/compustat_std.registry.json`, this report. Task-local diagnostic script/evidence and receipts remain controller scratch artifacts. No foreign-dirty/shared-registry/other-task paths edited or staged.
+
+Sources landed: none, 0 raw bytes. Handcheck reads existing public SEC EDGAR primary filing documents through `sec_http`, <=5 requests/s; no external licensed data or new acquisition cadence. Disk published parquet 116,080,992 bytes (~110.7 MiB), plus validation/manifest and retained guarded scratch. Scratch facts support cutoff rebuilding; bucketed build uses 32 buckets at 450 MB DuckDB.
+
+Remaining qualifications: restatement values supported by quarterly_history move by visible deltas; fields without corresponding history (other catalog/share/debt descriptors) retain base values. FX restatements retain base conversion rates. Four-quarter annual derivation shares history with the sum4 metric, so sum4 is partly non-independent. The upstream v10 Q4 and mezzanine/balance/history issues remain explicitly FAIL and route to Task 5 under amended T3-a; rdq calendar coverage routes to Task 9. Task 4 can consume the documented stable schema now. No gate was weakened beyond the explicit T3-b ruling.

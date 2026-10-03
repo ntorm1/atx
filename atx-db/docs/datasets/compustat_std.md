@@ -61,8 +61,8 @@ CREATE OR REPLACE MACRO funda_asof(ts) AS TABLE SELECT * FROM read_parquet('<roo
 * `fyr` = effective month of the latest FY-labelled annual-form datadate visible at the row, else inferred from
   the row's own label (Qk / annual FY): effective month + 3 (4 - k). A 10-Q labelled FY cannot set/reset fyr.
   Restatement vintages retain their base period's calendar.
-* `fqtr` = ((effective month - fyr - 1) mod 12) div 3 + 1 (dates win over the DEI label: 1,922 of
-  308,729 Q1-Q3-labelled rows differ, mostly fiscal-year changes and mislabelled filings);
+* `fqtr` = ((effective month - fyr - 1) mod 12) div 3 + 1 (dates win over the DEI label: 3,161 of
+  509,849 Q1-Q3-labelled rows differ, mostly fiscal-year changes and mislabelled filings);
 * `fyearq` / `fyear` = calendar year of the fiscal year end the quarter belongs to, minus 1 when `fyr` < 6
   (Compustat: Walmart's year ending 2024-01-31 is fyear 2023).
 
