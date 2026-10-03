@@ -152,3 +152,7 @@ foreach(_strategy_tests IN ITEMS
     gtest_discover_tests(${_strategy_tests} DISCOVERY_MODE PRE_TEST TEST_PREFIX "${_strategy_tests}."
         PROPERTIES LABELS atx_equity_strategy)
 endforeach()
+
+# Platform P9 B1: the `factors` verb (contract K-P9-4) on its synthetic role, beside the other
+# atx-equity-strategy-targets verbs (FactorsVerb.*; the glob above also compiles it into atx-impl-tests).
+target_sources(atx-impl-strategy-target-tests PRIVATE strategy_factors_verb_test.cpp)
