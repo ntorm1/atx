@@ -4,8 +4,8 @@
 // the NAV replay share:
 //   - the per-theme alpha-decay half-life table (sessions), registered blind; a theme whose
 //     half-life is at most engine::book::two_speed_fast_bound (10) is FAST, every other weighted
-//     theme SLOW (atx-impl/tools/composition_two_speed.py keeps the same table; its test pins this
-//     copy);
+//     theme SLOW (this is the only copy: the Python wrapper writes {"rule": "two-speed-v1"} and the
+//     IC runner reads the table here, Ruling PM8-12);
 //   - the IC runner (weights-file block theme_sleeves) splits the standardised blend into the fast
 //     and the slow themes' parts and saves them with the fast part's theme-mass share per date
 //     (<role>_sleeves.json, pinned in the combined manifest as composition_sleeves);
