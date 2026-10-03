@@ -111,3 +111,65 @@ and history ZIP members, missing history reference and absent clocks. Commands:
 tests/test_alpha_panel_thirteenf_quality.py -q`. Insider4fixtures pass after monthly
 monetary missingness repair: present unknown values yield NULL, absent trade sides
 zero; n_value_missing diagnostics retained. No actual inventory job launched here.
+
+## Coherent native checkpoint for independent review
+
+Controller pilot:6.0s,.0477GiB under0.3cap,childexit2 deliberate incomplete bound,
+no stderr.250main+39history members,13813F accession rows,0exceptions;lastmain
+CIK0000005818.json;bound_reached=true. Independently verified retained submissions
+ZIP SHA702fbcd8b4335bc649e9e4eab3a202f3effc314b43421664bfecb59365767165;
+output SHA46d9f789695ee444c6df3e2681c608d45f46d2a9418bc355c1a0a67fed102b21.
+Evidence task11-submissions-inventory-pilot-v1.jsonl(+receipt),
+logs/t11-submissions-inventory-pilot-v1.*. This authenticates a bounded public
+submission inventory source, not retained HR/HR-A/NT filing originals or complete
+2020 cohorts. Archive retrieval clock still unknown. Source admission unchanged.
+
+R16 recorded in code/docs: prior-visible baseline and arrived cohort states are
+separate from retrospective final inventory. Future managers cannot suppress
+earlier snapshots. Missing outstanding reports/entrants/late amendments preserve
+strict actual clocks and cohortID/denominator/source lineage. Full-market levels
+stay NULL absent independent contemporaneous population completeness. Qualified
+reported-table absence is distinct from economic ownership zero; absent-manager
+positions cannot become zero for changes without qualified table-absence proof.
+
+Native features CLI now includes bounded cohort metadata producer and three-
+universe coverage adapter. Coverage rejects empty/duplicate/null/wrongtype/missing/
+extra membership keys against independently pinned expected keys, preserves all
+benchmark cells, strict cutoff and freshest report quarter; no late old-quarter
+amendment replaces a newer report.150day staleness inherited; levels/changes and
+nonnull/fresh/qualified/knownzero/incomplete/missing/stale counts are separate.
+Coverage admission remains UNQUALIFIED pending source/independent universe admission.
+
+Native NPORT flow-vintages producer recomputes actual-public-event snapshots,
+including late prior-report amendments changing the current denominator only
+after their clock. Global latest/deadline selection does not apply to this new
+producer. Missing series/report/public clocks are explicit rejected accessions;
+source-clock NULL remains preserved with diagnostic audit clock. Required R5
+return boundary and reported-component missingness remain enforced. All new
+products UNQUALIFIED_SOURCE_COMPLETENESS; original global-latest ownership builder
+is not repaired/accepted and must not be silently bound.
+
+Passing focused commands/results:
+- `pytest -n 0 tests/test_alpha_panel_thirteenf_features.py -q`:9passed
+- `pytest -n 0 tests/test_alpha_panel_thirteenf_quality.py tests/test_alpha_panel_thirteenf_features.py -q`:17passed before latest nativecohortfixture
+- `pytest -n 0 tests/test_alpha_panel_nport.py -q`:9passed
+- source4 and insider4 focused passes recorded above.
+Total current fixture identities:35(source4,quality9,features9,NPORT9,insider4).
+No full suite; no own real-data jobs or own live exec sessions.
+
+Original acceptance criteria still5FAIL/UNMEASURED (publicbronze completeness,
+typedvalue>=90%/quarter2019+,NPORT>=95%member2020+,13D/13G hand/parse thresholds,
+insider net-value p99.9). All three universe accepted coverage remains unmeasured.
+Task11 remains IN_PROGRESS; this is a reviewable native diagnostic checkpoint.
+
+Remaining fullTask11: independent original/member authenticity/retrieval clocks,
+complete authoritative accession partitions/history/cohort reconciliations,
+retained13F bronze recovery after globally reconciled SEC budget, shared-manager/
+notice/combination/confidentiality and amendment position overlap/unit/source
+checks, automated native actual-position/cohort/split/denominator/type snapshot
+assembly (current feature-builder normalized snapshots are not a complete native
+source pipeline), filer typing build,11NPORT source quarters/full ownership vintage
+security aggregation, stakes parser/handchecks/rebuild, insider quiescent-input
+and realbuild qualification, finaluniverse_release_v1/v11bindings, R15 full reader-
+product provenance/key admission, realall-universe coverage/operationalrebuilds,
+economic-source approvals and independent review. No gate weakened or implied PASS.

@@ -1,0 +1,8 @@
+{
+  "stage": "nport_vintages",
+  "path": "nport_vintages/fund_flows.parquet",
+  "keys": ["fund_key", "report_date", "available_at"],
+  "schema_id": "atx.alpha-panel.nport-vintages/v1",
+  "as_of_macro_sql": "SELECT * FROM read_parquet('nport_vintages/fund_flows.parquet') WHERE available_at < cutoff",
+  "admission": "unqualified_source_inventory_bronze_and_economic_review_required"
+}

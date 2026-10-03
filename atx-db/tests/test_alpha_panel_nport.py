@@ -121,6 +121,47 @@ def _fil(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
                     rows)
 
 
+def test_actual_clock_vintages_preserve_original_and_late_prior_amendment():
+    con=duckdb.connect()
+    con.execute("SET TimeZone='UTC'")
+    timestamp=lambda value:dt.datetime.fromisoformat(value).replace(tzinfo=dt.UTC)
+    q1,q2=dt.date(2020,3,31),dt.date(2020,6,30)
+    _fil(con,[
+        ("F1","F1","p0",q1,dt.date(2020,5,15),timestamp("2020-05-15T20:00:00"),100.0,0.0,0.0,0.0),
+        ("F1","F1","c0",q2,dt.date(2020,8,15),timestamp("2020-08-15T20:00:00"),120.0,0.1,15.0,5.0),
+        ("F1","F1","c1",q2,dt.date(2020,8,20),timestamp("2020-08-20T20:00:00"),121.0,0.1,17.0,5.0),
+        ("F1","F1","p1",q1,dt.date(2020,8,25),timestamp("2020-08-25T20:00:00"),110.0,0.0,0.0,0.0)])
+    original=con.execute(N.effective_asof_sql(timestamp("2020-08-20T20:00:00"))).fetchall()
+    assert {row[5] for row in original}=={"p0","c0"}
+    versions=con.execute(f"""SELECT accession,available_at,previous_accession,flow_pct_reported
+        FROM ({N.flow_vintages_sql()}) WHERE report_date=DATE '2020-06-30' ORDER BY available_at""").fetchall()
+    assert [row[0] for row in versions]==["c0","c1","c1"]
+    assert [row[2] for row in versions]==["p0","p0","p1"]
+    assert [row[3] for row in versions]==pytest.approx([0.1,0.12,12/110])
+    con.close()
+
+
+def test_native_flow_vintage_producer_accounts_for_missing_series_clock(tmp_path,monkeypatch):
+    import json
+    monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT",str(tmp_path / "lake"))
+    con=duckdb.connect()
+    q=dt.date(2020,3,31)
+    at=dt.datetime(2020,5,15,20,tzinfo=dt.UTC)
+    _fil(con,[("F1","F1","a",q,at.date(),at,100.0,0.0,0.0,0.0)])
+    source=tmp_path / "filings.parquet"
+    con.execute(f"""COPY (SELECT * EXCLUDE(fund_key) FROM fil UNION ALL
+        SELECT * EXCLUDE(fund_key) REPLACE(NULL AS series_id,'bad' AS accession,NULL AS available_at) FROM fil)
+        TO '{source.as_posix()}' (FORMAT parquet)""")
+    manifest=tmp_path / "source-manifest.json"
+    manifest.write_text(json.dumps(dict(status="complete")))
+    receipt=N.build_flow_vintages([source],manifest)
+    assert receipt["rows"]==1 and receipt["rejected_filings"]==1
+    rejected=pq.read_table(tmp_path / "lake/nport_vintages/rejected_filings.parquet").to_pylist()[0]
+    assert rejected["source_available_at"] is None and rejected["available_at"] is not None
+    assert rejected["reason"]=="series_id_missing"
+    con.close()
+
+
 def test_effective_reports_and_flows() -> None:
     con = duckdb.connect()
     t = lambda d: dt.datetime.combine(d, dt.time(20), tzinfo=dt.UTC)  # noqa: E731

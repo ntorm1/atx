@@ -370,9 +370,14 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--limit", type=int)
     f.add_argument("--only")
     sub.add_parser("build")
+    vintages = sub.add_parser("flow-vintages")
+    vintages.add_argument("--filings",type=Path,action="append",required=True)
+    vintages.add_argument("--input-manifest",type=Path,required=True)
     args = ap.parse_args(argv)
     if args.cmd == "fetch":
         print(json.dumps(fetch(args.limit, args.only)), flush=True)
+    elif args.cmd == "flow-vintages":
+        print(json.dumps(build_flow_vintages(args.filings,args.input_manifest),default=str),flush=True)
     else:
         rec = build()
         print(json.dumps({k: rec.get(k) for k in ("coverage_by_year", "mapping", "timings_s")}, default=str)[:6000], flush=True)
@@ -382,6 +387,100 @@ def main(argv: list[str] | None = None) -> int:
 # ---------------------------------------------------------------- build
 BUILD_MEMORY = "400MB"
 FLOW_GAP_DAYS = (75, 105)   # a prior report counts for the quarterly flow when 75-105 days earlier
+
+
+def effective_asof_sql(cutoff: dt.datetime) -> str:
+    """Current visible version of every fund report, including late amendments.
+
+    ``fil`` has canonical fund_key and public UTC availability. No deadline may
+    globally discard an amendment or suppress the earlier public original.
+    """
+    if cutoff.tzinfo is None:
+        raise ValueError("NPORT cutoff requires timezone")
+    at=cutoff.astimezone(dt.UTC).isoformat()
+    return f"""SELECT * FROM fil WHERE available_at<TIMESTAMPTZ '{at}'
+        AND fund_key IS NOT NULL AND report_date IS NOT NULL
+        QUALIFY row_number() OVER(PARTITION BY fund_key,report_date
+            ORDER BY available_at DESC,accession DESC)=1"""
+
+
+def flow_vintages_sql() -> str:
+    """Recompute visible report snapshots at every actual fund filing event.
+
+    A delayed prior-report amendment changes the denominator only from its own
+    clock onward. It creates another current-report flow vintage as well.
+    No quarter-end/publication-lag backdating or globally latest restatement.
+    """
+    gap=f"date_diff('day',prev_report_date,report_date) BETWEEN {FLOW_GAP_DAYS[0]} AND {FLOW_GAP_DAYS[1]} AND prev_net_assets>0"
+    return f"""WITH events AS (
+        SELECT DISTINCT fund_key,available_at AS event_available_at FROM fil
+        WHERE fund_key IS NOT NULL AND report_date IS NOT NULL AND available_at IS NOT NULL),
+    visible AS (
+        SELECT e.event_available_at,f.*,
+            row_number() OVER(PARTITION BY e.fund_key,e.event_available_at,f.report_date
+                ORDER BY f.available_at DESC,f.accession DESC) AS rk
+        FROM events e JOIN fil f ON e.fund_key=f.fund_key AND f.available_at<=e.event_available_at
+        WHERE f.report_date IS NOT NULL),
+    prior AS (
+        SELECT fund_key,series_id,cik,report_date,accession,event_available_at AS available_at,
+            available_at AS filing_available_at,net_assets,
+            CASE WHEN report_date<DATE '2023-01-01' THEN ret_q END AS ret_q,
+            ({_FLOW}) AS net_flow_reported,
+            lag(report_date) OVER w AS prev_report_date,lag(net_assets) OVER w AS prev_net_assets,
+            lag(accession) OVER w AS previous_accession,lag(available_at) OVER w AS previous_available_at
+        FROM visible WHERE rk=1
+        WINDOW w AS(PARTITION BY fund_key,event_available_at ORDER BY report_date))
+    SELECT *,CASE WHEN {gap} THEN net_flow_reported/prev_net_assets END AS flow_pct_reported,
+        CASE WHEN {gap} AND ret_q IS NOT NULL THEN net_assets-prev_net_assets*(1+ret_q) END AS flow_proxy,
+        CASE WHEN net_flow_reported IS NULL THEN 'reported_component_missing' END AS flow_missing_reason,
+        CASE WHEN report_date>=DATE '2023-01-01' THEN 'return_window_holdout' END AS return_boundary_reason,
+        'UNQUALIFIED_SOURCE_COMPLETENESS' AS quality_status
+    FROM prior ORDER BY fund_key,report_date,available_at"""
+
+
+def build_flow_vintages(filings:list[Path],input_manifest:Path) -> dict[str,Any]:
+    """Native append-clock product from a complete explicit consumed-file list.
+
+    Source/bronze admission remains independently required; this stage does not
+    inherit certification from an old parent manifest or undeclared side product.
+    """
+    if not 1<=len(filings)<=2048 or len({str(p.resolve()) for p in filings})!=len(filings):
+        raise ValueError("1-2048 unique explicit filing products required")
+    source_hash=C.sha256_file(input_manifest)
+    if C.read_json(input_manifest).get("status")!="complete":
+        raise ValueError("NPORT parent publication incomplete")
+    identities={str(p):{"bytes":p.stat().st_size,"sha256":C.sha256_file(p)} for p in filings}
+    out=C.stage_dir("nport_vintages")
+    con=C.connect(memory="128MB",threads=1,db_file="nport_vintages.duckdb")
+    paths=",".join("'"+p.as_posix().replace("'","''")+"'" for p in filings)
+    try:
+        con.execute(f"""CREATE TABLE fil AS SELECT *,nullif(trim(series_id),'') AS fund_key
+            FROM read_parquet([{paths}],hive_partitioning=false,union_by_name=true)""")
+        invalid=con.execute("""SELECT count(*) FROM(
+            SELECT accession,available_at,count(*) n FROM fil GROUP BY 1,2
+            HAVING accession IS NULL OR count(*)!=1)""").fetchone()[0]
+        if invalid:
+            raise ValueError("duplicate/null NPORT filing vintage key")
+        con.execute(f"CREATE TABLE flow_vintages AS {flow_vintages_sql()}")
+        for path in filings:
+            if path.stat().st_size!=identities[str(path)]["bytes"] or C.sha256_file(path)!=identities[str(path)]["sha256"]:
+                raise RuntimeError("NPORT source file changed during vintage build")
+        if C.sha256_file(input_manifest)!=source_hash:
+            raise RuntimeError("NPORT source manifest changed during vintage build")
+        rows=C.copy_to_parquet(con,"SELECT * FROM flow_vintages",out / "fund_flows.parquet")
+        rejected=C.copy_to_parquet(con,"""SELECT accession,available_at AS source_available_at,
+            current_timestamp AS available_at,
+            CASE WHEN fund_key IS NULL THEN 'series_id_missing' WHEN report_date IS NULL THEN 'report_date_missing'
+                 ELSE 'public_clock_missing' END AS reason FROM fil
+            WHERE fund_key IS NULL OR report_date IS NULL OR available_at IS NULL""",out / "rejected_filings.parquet")
+        receipt={"rows":rows,"rejected_filings":rejected,"gate_status":"UNQUALIFIED"}
+        C.write_stage_manifest("nport_vintages","atx.alpha-panel.nport-vintages/v1",("nport","common"),{
+            "receipt":receipt,"gate_status":"UNQUALIFIED","input_evidence_files":identities,
+            "input_manifests_sha256":{str(input_manifest):source_hash},
+            "limits":"Public inventory/bronze/cohort completeness and source-economic review outstanding"})
+        return receipt
+    finally:
+        con.close()
 
 
 def _isin_cusip_sql(x: str) -> str:

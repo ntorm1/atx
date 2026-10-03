@@ -17,6 +17,56 @@ SCHEMA = "atx.alpha-panel.thirteenf-quality/v1"
 FORMS = {"13F-HR", "13F-HR/A", "13F-NT", "13F-NT/A"}
 
 
+def effective_chain(filings:list[dict[str,Any]],cutoff:dt.datetime) -> dict[str,Any]:
+    """One filer/report cohort's actual-public-clock base/additive amendment chain.
+
+    Notices are accounted for but cannot become known-zero holdings. Unknown
+    amendment types or inconsistent report dates remain keyed exceptions.
+    """
+    if cutoff.tzinfo is None:
+        raise ValueError("filing cutoff requires timezone")
+    visible=[]
+    exceptions=[]
+    for filing in filings:
+        accession=accession_key(filing["accession"])
+        value=filing.get("available_at")
+        if not value:
+            exceptions.append({"accession":accession,"reason":"public_clock_missing"})
+            continue
+        clock=dt.datetime.fromisoformat(value.replace("Z","+00:00"))
+        if clock.tzinfo is None:
+            raise ValueError("filing public clock requires timezone")
+        if clock<cutoff:
+            visible.append((clock,accession,filing))
+    visible.sort(key=lambda row:(row[0],row[1]))
+    report_dates={row[2].get("report_date") for row in visible}
+    filers={row[2].get("filer_cik") for row in visible}
+    if len(report_dates)>1 or None in report_dates or len(filers)>1 or None in filers:
+        exceptions.append({"accession":None,"reason":"filer_or_report_cohort_inconsistent"})
+    base=None
+    additions=[]
+    notices=[]
+    for clock,accession,filing in visible:
+        form=filing["form"]
+        amendment=(filing.get("amendment_type") or "").upper().strip()
+        if form in {"13F-NT","13F-NT/A"}:
+            notices.append(accession)
+        elif form=="13F-HR" or (form=="13F-HR/A" and amendment=="RESTATEMENT"):
+            base=accession
+            additions=[]
+        elif form=="13F-HR/A" and amendment=="NEW HOLDINGS":
+            if base is None:
+                exceptions.append({"accession":accession,"reason":"additive_amendment_without_base"})
+            else:
+                additions.append(accession)
+        else:
+            exceptions.append({"accession":accession,"reason":"form_or_amendment_type_unresolved"})
+    return {"effective_accessions":([base]+additions) if base else [],"notices":notices,
+        "visible_accessions":[row[1] for row in visible],"exceptions":exceptions,
+        "chain_status":"FAIL" if exceptions else "CANDIDATE",
+        "holdings_zero_known":False}
+
+
 def accession_key(value: str) -> str:
     key = value.replace("-", "")
     if not re.fullmatch(r"\d{18}", key):

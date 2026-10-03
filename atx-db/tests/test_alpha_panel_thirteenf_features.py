@@ -8,6 +8,7 @@ def snapshot(current, previous, **kwargs):
     args = dict(current_managers={"a", "b"}, previous_managers={"a", "b"},
                 cohort_complete=True, previous_complete=True, denominator_shares=100,
                 prior_to_current_split=1, denominator_available=True)
+    args.update(population_complete=True,table_absence_qualified=True,previous_table_absence_qualified=True)
     args.update(kwargs)
     return ownership_snapshot(current, previous, **args)
 
@@ -36,6 +37,9 @@ def test_zero_unknown_types_and_overownership_are_preserved():
     assert result["inst_ownership"] == 1.1 and result["ownership_above_one"]
     assert result["shares_by_filer_type"] == {"unknown": 110}
     assert snapshot({"a": 10}, {}, denominator_available=False)["inst_ownership"] is None
+    partial=snapshot({}, {},population_complete=False)
+    assert partial["reported_holding_zero"] is True
+    assert partial["inst_ownership"] is None and partial["inst_shares"] is None
 
 
 def test_native_vintage_producer_requires_explicit_bindings_and_clocks(tmp_path, monkeypatch):
@@ -117,3 +121,82 @@ def test_dated_denominator_rejects_class_ambiguity_conflict_and_late_source(tmp_
     assert rows[103] == (None,"denominator_share_class_ambiguous")
     assert rows[104] == (None,"denominator_source_missing")
     con.close()
+
+
+def test_native_coverage_preserves_full_denominator_strict_clock_and_latest_quarter(tmp_path,monkeypatch):
+    import duckdb
+    from atx_db.alpha_panel.thirteenf_features import measure_coverage
+    from atx_db.alpha_panel.common import sha256_file
+    monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT",str(tmp_path / "lake"))
+    con=duckdb.connect()
+    member,expected,features=[tmp_path / (name+".parquet") for name in ("member","expected","features")]
+    con.execute("""CREATE TABLE m AS SELECT DATE '2020-05-18' AS session_date,security_id,
+        TIMESTAMPTZ '2020-05-15T22:00:00Z' AS cutoff FROM (VALUES(101),(102),(103)) t(security_id)""")
+    con.execute("""CREATE TABLE f AS SELECT * FROM (VALUES
+        (101,DATE '2020-03-31',TIMESTAMPTZ '2020-05-15T21:00:00Z',0.0,0.0,0,0,true,'QUALIFIED'),
+        (101,DATE '2019-12-31',TIMESTAMPTZ '2020-05-15T21:30:00Z',9.0,9.0,9,9,true,'QUALIFIED'),
+        (103,DATE '2020-03-31',TIMESTAMPTZ '2020-05-15T22:00:00Z',1.0,1.0,1,1,true,'QUALIFIED'))
+        t(security_id,period_q,available_at,inst_ownership,inst_ownership_change,inst_n_holders,
+          inst_breadth_change,cohort_complete,quality_status)""")
+    for table,path in (("m",member),("m",expected),("f",features)):
+        con.execute(f"COPY {table} TO '{path.as_posix()}' (FORMAT parquet)")
+    specfile=tmp_path / "coverage.json"
+    item=dict(path=str(member),path_sha256=sha256_file(member),expected_keys=str(expected),expected_keys_sha256=sha256_file(expected))
+    spec={name:item.copy() for name in ("member_equity","univ_all_common","univ_r3000p")}
+    specfile.write_text(json.dumps(spec))
+    receipt=measure_coverage(specfile,features,tmp_path / "coverage-out.json")
+    level=next(row for row in receipt["reports"]["member_equity"] if row["metric"]=="inst_ownership")
+    assert level["benchmark_cells"]==3 and level["qualified_cells"]==1
+    assert level["known_zero_cells"]==1 and level["no_visible_feature_cells"]==2
+    con.execute(f"COPY (SELECT * FROM m WHERE security_id!=102) TO '{member.as_posix()}' (FORMAT parquet)")
+    for item in spec.values():
+        item["path_sha256"]=sha256_file(member)
+    specfile.write_text(json.dumps(spec))
+    with pytest.raises(ValueError,match="expected key set mismatch"):
+        measure_coverage(specfile,features,tmp_path / "coverage-fail.json")
+    con.close()
+
+
+def test_pit_cohort_baseline_future_manager_entrants_missing_and_amendments():
+    from atx_db.alpha_panel.thirteenf_features import cohort_state
+    at=lambda day:dt.datetime(2020,5,day,20,tzinfo=dt.UTC)
+    def original(manager,day):
+        return dict(filer_cik=manager,form="13F-HR",accession=f"manager{manager}-{day}",
+                    available_at=at(day).isoformat(),qualified_original=True)
+    prior=[original("0001",10),original("2",21)]
+    current=[original("1",15),original("2",19)]
+    earlier=cohort_state(prior,current,at(20))
+    assert earlier["prior_visible_baseline_manager_ids"]==["1"]
+    assert earlier["visible_entrant_manager_ids"]==["2"]
+    assert earlier["prior_visible_baseline_complete"]
+    assert not earlier["full_population_complete"] and earlier["retrospective_inventory_complete"] is None
+    missing=cohort_state(prior,[],at(20))
+    assert missing["outstanding_manager_ids"]==["1"] and not missing["prior_visible_baseline_complete"]
+    amendment=dict(filer_cik="1",form="13F-HR/A",accession="amendment",available_at=at(20).isoformat(),
+                   source_qualified=False,amendment_type="RESTATEMENT")
+    assert cohort_state(prior,current+[amendment],at(20))["prior_visible_baseline_complete"]
+    later=cohort_state(prior,current+[amendment],at(20)+dt.timedelta(microseconds=1))
+    assert not later["prior_visible_baseline_complete"]
+    assert cohort_state(prior,current,at(22))["prior_visible_baseline_manager_ids"]==["1","2"]
+
+
+def test_native_cohort_vintages_preserve_missing_populations_and_rejected_accessions(tmp_path,monkeypatch):
+    import pyarrow.parquet as pq
+    from atx_db.alpha_panel.thirteenf_features import build_cohort_vintages
+    monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT",str(tmp_path / "lake"))
+    filing=tmp_path / "filings.jsonl"
+    rows=[dict(accession="prior",form="13F-HR",filer_cik=1,report_date="2019-12-31",
+               available_at="2020-02-15T20:00:00Z",qualified_original=True),
+          dict(accession="current",form="13F-HR",filer_cik=1,report_date="2020-03-31",
+               available_at="2020-05-15T20:00:00Z",qualified_original=True),
+          dict(accession="missing",form="13F-HR",filer_cik=2,report_date=None,available_at=None)]
+    filing.write_text("".join(json.dumps(row)+"\n" for row in rows))
+    manifest=tmp_path / "manifest.json"
+    manifest.write_text('{"status":"complete"}')
+    receipt=build_cohort_vintages(filing,manifest,event_start=dt.datetime(2020,5,1,tzinfo=dt.UTC),
+                                 event_end=dt.datetime(2020,6,1,tzinfo=dt.UTC))
+    assert receipt["rows"]==1 and receipt["rejected_filings"]==1
+    cohort=pq.read_table(tmp_path / "lake/thirteenf_cohorts/cohorts.parquet").to_pylist()[0]
+    assert cohort["prior_visible_baseline_complete"]
+    assert not cohort["full_population_complete"] and not cohort["economic_ownership_zero_known"]
+    assert cohort["source_accessions"]==["current","prior"]

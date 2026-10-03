@@ -118,3 +118,16 @@ def test_native_submissions_partition_reads_original_history_and_missing_clock(t
     assert rows[1]["report_quarter"] is None and rows[1]["available_at"] is None
     assert receipt["exceptions"][0]["reason"]=="history_member_missing"
     assert receipt["source_completeness"]=="UNQUALIFIED_PARTITION"
+
+
+def test_effective_amendment_chain_uses_strict_public_clock():
+    import datetime as dt
+    from atx_db.alpha_panel.thirteenf_quality import effective_chain
+    rows=[]
+    for number,(day,form,kind) in enumerate([(15,"13F-HR",None),(20,"13F-HR/A","NEW HOLDINGS"),(25,"13F-HR/A","RESTATEMENT")]):
+        rows.append(dict(accession=f"0000000001-20-{number+1:06d}",filer_cik=1,report_date="2020-03-31",form=form,
+            amendment_type=kind,available_at=f"2020-05-{day}T20:00:00Z"))
+    cutoff=lambda day:dt.datetime(2020,5,day,20,tzinfo=dt.UTC)
+    assert effective_chain(rows,cutoff(20))["effective_accessions"]==["000000000120000001"]
+    assert effective_chain(rows,cutoff(21))["effective_accessions"]==["000000000120000001","000000000120000002"]
+    assert effective_chain(rows,cutoff(26))["effective_accessions"]==["000000000120000003"]

@@ -10,7 +10,7 @@ Rows preserve security_id, period_q, available_at; vintages are distinct keys.
 
 | Column family | Type/unit | Definition |
 |---|---|---|
-| inst_shares;inst_shares_change | DOUBLE/shares | Complete cohort level; common membership prior holdings adjusted to current split basis |
+| inst_shares;inst_shares_change | DOUBLE/shares | Level requires independent entire-population completeness; change uses explicitly scoped identical qualified cohorts and current split basis |
 | inst_ownership;inst_ownership_change | DOUBLE/fraction | Level and split-adjusted numerator change over same currently dated denominator |
 | inst_n_holders;inst_breadth_change | BIGINT/managers | Positive SH holders and difference on identical complete cohorts |
 | inst_new_positions;inst_closed_positions;inst_persistent_holders | BIGINT/managers | Positive/zero transition counts and retained positive holders |
@@ -21,6 +21,19 @@ Rows preserve security_id, period_q, available_at; vintages are distinct keys.
 | denominator_shares | DOUBLE/shares | Explicit currently dated share-class denominator input |
 | shares_by_filer_type;shares_by_manager_style | VARCHAR/JSON | Source-evidenced type or active/passive/unknown shares; no inferred active/passive labels |
 | source_accessions;quality_status | lineage | Source keys and UNQUALIFIED_NORMALIZED_ADAPTERS |
+| population_complete;reported_holding_zero;observed_n_holders | diagnostic | Full contemporaneous population proof, source-qualified table absence and observed positive reporters are distinct |
+| comparison_cohort_id;comparison_population_managers | lineage | Stable sorted prior-population ID and explicit manager denominator |
+| prior_visible_baseline_complete;contemporaneous_arrived_complete;retrospective_inventory_complete | cohort | R16 historical baseline/arrival state; retrospective flag remains NULL |
+
+Full ownership levels are missing by default without independent contemporaneous
+population completeness. A source-complete table absence only establishes
+reported_holding_zero after exclusions/confidentiality/shared-manager ambiguity
+checks; it never establishes economic ownership zero. Missing position defaults
+are forbidden for changes without qualified table-absence proof on both dates.
+Comparable changes require identical eligible manager populations and complete
+qualified originals, dated mapping/units/splits. Observed levels and reporting
+arrivals remain separately labeled diagnostics. Native metadata cohorts:
+[thirteenf_cohorts.md](thirteenf_cohorts.md).
 
 `dated_link_sql` retains every position/value and uses CUSIP report-date validity
 plus strict link public availability. Multiple class candidates remain unmapped.
@@ -33,3 +46,17 @@ Daily PIT: available_at strictly before previous session22UTC. Monthly PIT:
 strictly before month-end-session22UTC. No return products. Staleness/history,
 all-three-universe coverage, native event/cohort snapshot assembly, original source
 admission, split/source handchecks and independent review remain release gaps.
+
+Native coverage CLI: `--coverage-members specification.json --features
+features.parquet --coverage-output output.json`. The specification contains
+member_equity,univ_all_common,univ_r3000p entries, each with path/path_sha256 and
+independent expected_keys/expected_keys_sha256. Both key populations must be
+nonempty, typed DATE/integer, unique/nonnull and exactly equal. Actual membership
+contains timezone-aware cutoff for every cell. Null,duplicate,missing,extra keys
+reject the measurement. Independent release-source admission remains required.
+
+Coverage keeps every benchmark cell; selects freshest visible report quarter
+then latest vintage with strict clock; uses inherited150calendar-day staleness.
+Reports levels/changes/breadth peryear2020+, nonnull/fresh/qualified/knownzero,
+incompletecohort/missingfeature/stale counts separately. No return evaluation.
+UNQUALIFIED source features cannot become qualified coverage or known-zero cells.
