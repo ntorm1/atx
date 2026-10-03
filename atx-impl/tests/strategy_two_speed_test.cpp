@@ -12,6 +12,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <span>
@@ -601,6 +602,15 @@ TEST(TwoSpeed, BudgetChargesTheSleeveState) {
     EXPECT_EQ(on - off, u64{n} * 3U * sizeof(f64)) << n;
     EXPECT_EQ(off, 0U) << n; // no neutralization and no other v8 option: no state
   }
+}
+
+// Review YCOMB #8: with the flags absent the record grows only by norm-score-v1's two fields; the
+// two-speed flags sit in the padding after `neutralize` (no tail padding: the record ends at its
+// last f64).
+TEST(TwoSpeed, FlagsSitInTheRecordsPadding) {
+  EXPECT_LT(offsetof(st::ConstructionDay, two_speed_parent_failed),
+            offsetof(st::ConstructionDay, neutralize_used));
+  EXPECT_EQ(sizeof(st::ConstructionDay), offsetof(st::ConstructionDay, norm_max_abs) + sizeof(f64));
 }
 
 // The NAV summary's construction.two_speed prints both skip counts (mechanics only).

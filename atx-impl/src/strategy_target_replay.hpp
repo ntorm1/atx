@@ -177,9 +177,16 @@ enum class NeutralizeOutcome : atx::u8 {
   NotAttempted = 0, Applied = 1, SkippedTooFewNames = 2, SkippedExcludedShare = 3,
   SkippedRefused = 4, SkippedAmplification = 5
 };
+// v8 growth with every flag absent (review YCOMB #8): norm-score-v1's two fields add 16 B; the
+// two-speed flags sit in the padding after `neutralize` and add none. Every output is unchanged;
+// the budget charges per decision row (target replay, NAV books x sessions) rise by 16 B a row.
 struct ConstructionDay {
   bool rebalance{}; // effective: a cadence decision that was not skipped
   NeutralizeOutcome neutralize{NeutralizeOutcome::NotAttempted};
+  // two-speed-v1 (v8 Y-5; mechanics, printed only): the rebalance was skipped because a sleeve's
+  // neutralization was skipped; the parent's construction of the full blend would have been
+  // skipped; that diagnostic construction returned an error (recorded, never raised).
+  bool two_speed_sleeve_skipped{}, two_speed_parent_skipped{}, two_speed_parent_failed{};
   atx::usize neutralize_used{}, neutralize_excluded{}, banded_names{};
   atx::f64 neutralize_excluded_share{}; // excluded-row gross / entry gross
   atx::f64 neutralize_amplification{};  // entry gross / residual gross; NaN if undefined
@@ -207,10 +214,6 @@ struct ConstructionDay {
   // kernel ran (every cadence decision with the rule on); no CSV column.
   atx::usize norm_scored{};
   atx::f64 norm_max_abs{};
-  // two-speed-v1 (v8 Y-5; mechanics, printed only): the rebalance was skipped because a sleeve's
-  // neutralization was skipped; the parent's construction of the full blend would have been
-  // skipped; that diagnostic construction returned an error (recorded, never raised).
-  bool two_speed_sleeve_skipped{}, two_speed_parent_skipped{}, two_speed_parent_failed{};
 };
 struct TargetReplayDay {
   atx::usize decision{}, entry{}, endpoint{}; // dates sentinel if beyond input
