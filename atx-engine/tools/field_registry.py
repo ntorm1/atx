@@ -24,17 +24,27 @@ Each row has exactly ``ROW_KEYS``:
   group that --reuse fingerprints); ``sources``: the input names the producer reads (``run()`` keywords or the module
   options' destinations); ``first_session``: not declared yet (null); ``owner``: the registration mechanism.
 
+A ``kind: engine`` row is either the engine twin of a field the Python builder also produces (a port: si_shares,
+si_dtc, vol_126) or an engine-only row, which the bound builder cannot produce: no Python twin. An engine-only row is
+how DEC-5 adds every new field: a row naming its C++ builder kind, added to the file with no edit here. Only the
+Python-producible rows are compared with the code (``check``) and regenerated from it (``regenerate``); an engine-only
+row is checked by the schema alone (``validate``) and kept verbatim at its position.
+
 The entry (``entry``, called by the builder's ``main`` when ``--registry`` is given) loads and validates the registry,
-binds every module a python row names into the builder (rows in registry order), refuses a registry that disagrees with
-the code (field set and order, owner module, point-in-time flag, dependencies, dtype rule, formula fingerprint), expands
-``--fields all`` to every row, and runs the builder's own argv parser and ``run``. Engine rows are computed by the
-executable only when ``--engine-exe`` is given (``prepare_research_fields_engine.engine_path``); without it the Python
-builder computes them, as before (the engine path becomes the default only after root's TRAIN identity run, migration
-section 3.3). With ``--registry`` absent nothing changes: the builder's ``main`` never calls this module.
+binds every module a python row names into the builder (rows in registry order), refuses a registry whose
+Python-producible rows disagree with the code (their field set and relative order, owner module, point-in-time flag,
+dependencies, dtype rule, formula fingerprint) or that has a python row the code cannot produce, expands ``--fields
+all`` to every row, and runs the builder's own argv parser and ``run``. Engine rows are computed by the executable only
+when ``--engine-exe`` is given (``prepare_research_fields_engine.engine_path``); without it the Python builder computes
+an engine twin, as before (the engine path becomes the default only after root's TRAIN identity run, migration section
+3.3). A requested engine-only row has no Python fallback: the entry refuses it without ``--engine-exe``, and with it
+unless the engine shim routes it (``ENGINE_FIELDS``), before any output. With ``--registry`` absent nothing changes: the
+builder's ``main`` never calls this module.
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib
 import json
 from pathlib import Path
@@ -247,7 +257,8 @@ def owners(ns: dict) -> dict:
 
 
 def engine_flips(doc: dict) -> dict:
-    """{name: C++ builder kind id} of a registry's engine rows (``generate(ns, engine=...)`` reproduces them)."""
+    """{name: C++ builder kind id} of a registry's engine rows: ``generate(ns, engine=...)`` reproduces the engine twins
+    among them; ``regenerate`` also keeps the engine-only ones."""
     return {row["name"]: row["builder"] for row in doc["fields"] if row["kind"] == "engine"}
 
 
@@ -280,19 +291,45 @@ def generate(ns: dict, engine: dict | None = None) -> dict:
     return validate({"schema": SCHEMA, "dtype_rule": DTYPE_RULE, "fields": rows})
 
 
+def engine_only(ns: dict, doc: dict) -> list:
+    """Names of the registry's engine rows the bound builder cannot produce (no Python twin), in registry order."""
+    code = code_fields(ns)
+    return [row["name"] for row in doc["fields"] if row["kind"] == "engine" and row["name"] not in code]
+
+
+def regenerate(ns: dict, doc: dict) -> dict:
+    """The generator round-trip of a registry ``doc`` that may hold engine-only rows (DEC-5): ``generate`` with
+    ``doc``'s engine twins flipped as in ``doc``, its rows filling ``doc``'s Python-producible positions in code order,
+    and ``doc``'s engine-only rows kept verbatim at their positions (a python row the code cannot produce is dropped;
+    a code field without a row is appended). ``dump(regenerate(ns, doc)) == dump(doc)`` exactly when ``doc`` is the
+    code's registry with valid engine-only rows spliced in; with none it equals ``generate(ns, engine_flips(doc))``."""
+    code = code_fields(ns)
+    flips = {name: kind_id for name, kind_id in engine_flips(doc).items() if name in code}
+    gen = generate(ns, engine=flips)
+    generated = iter(gen["fields"])
+    rows = [next(generated) if row["name"] in code else copy.deepcopy(row) for row in doc["fields"]
+            if row["name"] in code or row["kind"] == "engine"]
+    return validate({**gen, "fields": rows + list(generated)})
+
+
 def check(ns: dict, doc: dict) -> None:
-    """Refuse a registry that disagrees with the bound builder: the same fields in the same order, and per row the
-    owning module (python rows), point-in-time flag, dependencies, dtype and formula fingerprint."""
+    """Refuse a registry whose Python-producible rows disagree with the bound builder: the same fields in the same
+    relative order, and per row the owning module (python rows), point-in-time flag, dependencies, dtype and formula
+    fingerprint. A python row the builder cannot produce is refused; an engine-only row (no Python twin, DEC-5) is
+    accepted as ``validate`` left it."""
     code = code_fields(ns)
     lag = ns["FUND_LAG_SESSIONS_DECLARED"]
-    if names(doc) != list(code):
-        extra = [x for x in names(doc) if x not in code]
-        absent = [x for x in code if x not in names(doc)]
+    producible = [x for x in names(doc) if x in code]
+    extra = [row["name"] for row in doc["fields"] if row["name"] not in code and row["kind"] != "engine"]
+    if extra or producible != list(code):
+        absent = [x for x in code if x not in producible]
         raise RegistryError("field registry and builder disagree on the field list or its order"
                             + (f" (rows the builder cannot produce: {', '.join(extra)})" if extra else "")
                             + (f" (fields without a row: {', '.join(absent)})" if absent else ""))
     for row in doc["fields"]:
         name = row["name"]
+        if name not in code:   # engine-only: the executable's row; nothing in Python to compare it with
+            continue
         spec, module = code[name]
         if row["kind"] == "python" and row["builder"] != module:
             raise RegistryError(f"field registry row {name}: builder {row['builder']} but {module} produces it")
@@ -327,12 +364,22 @@ def entry(ns: dict, argv: list, build_main) -> object:
     fields = select(doc, a.fields) if a.fields is not None else list(ns["DEFAULT_FIELDS"])
     kinds = {row["name"]: row["kind"] for row in doc["fields"]}
     engine_rows = [x for x in fields if kinds[x] == "engine"]
+    no_twin = set(engine_only(ns, doc))
+    only = [x for x in engine_rows if x in no_twin]   # engine-only rows: no Python fallback
     if a.fields is not None:
         rest = rest + ["--fields", ",".join(fields)]
     if engine_rows and a.engine_exe is not None:
         engine = importlib.import_module(ENGINE_SHIM)
+        unrouted = [x for x in only if x not in engine.ENGINE_FIELDS]
+        if unrouted:
+            raise RegistryError(f"field registry: engine-only rows {', '.join(unrouted)} have no route in "
+                                f"{ENGINE_SHIM} (it routes {', '.join(engine.ENGINE_FIELDS)}) and no Python "
+                                "producer; refusing")
         with engine.engine_path(a.engine_exe, engine_rows):
             return build_main(rest)
+    if only:
+        raise RegistryError(f"field registry: engine-only rows {', '.join(only)} have no Python producer; they need "
+                            "--engine-exe <build>/bin/atx-research-fields.exe")
     if engine_rows:
         print(f"field registry: engine rows {', '.join(engine_rows)} are computed by the Python builder "
               "(no --engine-exe)", file=sys.stderr, flush=True)
