@@ -1,6 +1,6 @@
 # Task 14: recovered segments and notes publication
 
-**Current status after Fix round 1: DONE_WITH_CONCERNS; binding gates 0 PASS / 2 FAIL.** Verified reconciliation is **81.00%-84.95%**, below 95%. The source-wide numeric revenue proxy is **88.89%-90.39%**, missing 90% in 2020/2021/2024; its independent all-filer disclosure denominator is additionally uncertified. Earlier registry-proxy PASS and arithmetic-fit figures below are historical and superseded by the Fix round 1 section. No fitting was restored to inflate verification.
+**Current status after Fix round 2: DONE_WITH_CONCERNS; binding gates 0 PASS / 2 FAIL.** Verified reconciliation is **81.00%-84.96%**, below 95%. The source-wide numeric revenue proxy is **88.94%-90.43%**, missing 90% in 2020/2021/2024; its independent all-filer disclosure denominator is additionally uncertified. Earlier registry-proxy PASS and arithmetic-fit figures below are historical and superseded by the latest Fix round 2 section. No fitting was restored to inflate verification.
 
 Status: DONE_WITH_CONCERNS. Recovery performed 2026-10-03 by GPT-6 (runtime identity; no child agents). Both deliverables exist and the successful real build is verified. The reconciliation gate remains a genuine FAIL; thresholds and denominators were not relaxed. This report recovers the missing report from persisted artifacts, rather than claiming another full build.
 
@@ -91,15 +91,15 @@ Other documented limitations: major-customer percentage facts largely absent fro
 
 No new network landing during Task 14 recovery. Reused SEC DERA Financial Statement and Notes datasets: `https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets`, URL pattern `https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/{YYYYqN,YYYY_MM}_notes.zip`. Existing landing: 40 sources, 2019q1-2026_08; quarterly through 2025q2, monthly from 2025_07. Historical downloaded bytes 15,456,189,519; parsed notes ~818 MB, source zips deleted. SEC public data/fair-access terms; existing SEC client 5 requests/second, declared user agent. Receipts `data/raw/sec_notes/receipts.jsonl` and archived receipt copy. These historical landing figures come from task-NOTES-report, not a fresh download. Recovery disk adds only tiny evidence files; no >1GB landing.
 
-## Fix round 1 (authoritative current publication)
+## Fix round 1 (historical publication, superseded by round 2)
 
 Review `review-T14-r0-findings.md` read verbatim. Implemented I1-I3 corrections and a bounded, source-supported portion of I4. I4's binding gate remains genuinely FAIL; safe extraction and missing source structure are distinguished below. No subagents, shared contracts, progress files, foreign paths or raw landing changes.
 
 New commits:
 
-- `1fd12bc8` — fix(atx-db): preserve segment disclosure provenance and correct notes PIT coverage.
-- `91fbb1e4` — docs(atx-db): publish corrected notes census gates and coverage evidence.
-- This final report-only commit — docs(sdd): record Task 14 Fix round 1 verified gate failures (its own SHA is available in git log and controller final response).
+- `1fd12bc8` â€” fix(atx-db): preserve segment disclosure provenance and correct notes PIT coverage.
+- `91fbb1e4` â€” docs(atx-db): publish corrected notes census gates and coverage evidence.
+- This final report-only commit â€” docs(sdd): record Task 14 Fix round 1 verified gate failures (its own SHA is available in git log and controller final response).
 
 ### Corrections and behaviour
 
@@ -181,3 +181,71 @@ Final integrity: **13/13 parquet SHA/size matches**, code SHA matches manifest, 
 Corrected outputs: features 164,704 rows / 9,027,384 bytes; reconciliation 46,513 / 1,641,601; source-wide census 201,137 / 2,124,326; segments 2,484,216 / 23,990,714; wide 197,148 / 17,829,282; long items unchanged 18,470,845 / 125,791,550. Total parquet **180,404,857 bytes**. Features filed 2019-01-02..2026-08-31, periods 2011-09-30..2026-07-31, availability 2019-01-02 21:13..2026-08-31 21:01 UTC. New census includes all periodic source filings; features may contain amendment placeholders. Docs/registry describe new provenance and census columns/keys and the separate gate-certification limitation. Shared stage registry still untouched; Task 17 owns integration.
 
 No new URLs fetched or raw files changed; existing source landing and terms/cadence figures remain those in initial Sources. No >1GB landing, no held-out return statistic, no threshold waiver. This round increases parquet disk by 4,642,031 bytes over the recovery publication and adds small task-specific evidence files. Stage publishes with genuine gate_status FAIL under GC9; it is not declared fully parity-certified.
+
+## Fix round 2 (authoritative current publication)
+
+Review `review-T14-r1-findings.md` read verbatim. N1 addressed; retained I4 and independent denominator certification remain unmet. Current binding status **0 PASS / 2 FAIL**, with lower verified figures preserved. No numerical hierarchy inference, proxy waiver, threshold relaxation, foreign edits, progress edits or subagents.
+
+Implementation commits **1b1856c2** and **1fae76ef** (accession-scope correction) preserves the census for every republished existing partition when item extraction is restricted. Offline two-year build then one-year rebuild fixture preserves omitted census, count, HHI and gate denominator. Targeted regression red: 1 failed in 3.02s; green: 1 passed in 2.28s. Final covering command `.venv/Scripts/python.exe -m pytest -o addopts='' --run-slow tests/test_alpha_panel_notes.py tests/test_alpha_panel_notes_fund.py -q`: **26 passed in 34.72s**, exit 0, final completed session 93481. `t14-fix-r2-tests.txt` records actual final tool output.
+
+Accession-scoped primary-evidenced ReportableLegalEntities and ReportableGeographicalComponents exceptions supplement generally admissible OperatingSegments. Primary disclosures corroborate Forian's three reportable segments, Avantor's identical operating/reportable geographic segments, and Smith Douglas's Southeast/Central reportable segments. Members remain unchanged; this is container identity, not an arithmetic-fitted hierarchy. Fixture tests assert direct count/HHI for both identities. Detailed source URLs, response SHA256 and checked raw receipts appear in `t14-fix-r2-pilot-evidence.json`.
+
+### Causal audit and unresolved implementation/source split
+
+Baseline all **3,183** keys audited: **1,945** verified reconciliation misses and **1,238** missing-revenue filings. Compact reproducible index `t14-fix-r2-case-keys.jsonl`; scripts retain detailed raw NUM/DIM evidence locally. Diagnostic classes below describe required evidence, not certified economic causality:
+
+| Diagnostic evidence class | Cases |
+|---|---:|
+| no_eligible_annual_revenue_fact_requires_expanded_source_or_disclosure | 818 |
+| unknown_discrepancy_requires_primary_disclosure | 237 |
+| unknown_extra_axis_structure_requires_disclosure | 815 |
+| component_equivalence_or_consolidated_total_requires_source_evidence | 554 |
+| numeric_candidate_without_hierarchy_provenance_requires_disclosure | 730 |
+| local_context_or_concept_review_needed | 6 |
+| local_alternate_full_concept_with_all_numeric_members | 23 |
+
+The 23 alternate recognized-concept cases include 10 numerical fits, none accepted merely for fitting. Cowen `0001466538-20-000026` explicitly reconciles Economic Income segment revenue to US GAAP with funds/consolidation adjustments; this disproves automatic equivalence. Three of the six context-review cases support the container correction. The other three contain only a ConsolidatedEntities business aggregate; no artificial segment split is inferred.
+
+Martin Marietta `0000950170-23-004361` independently discloses East/West nested under Total Building Materials, plus Magnesia Specialties. This proves at least one source-supported hierarchy exists, but a general filing-role-aware presentation/definition parser and full production structural landing remain **unimplemented**. It is not labeled intrinsic data failure. Exact role relationships must be preserved before member/count correction; a subtotal keyword or subset sum is insufficient. The compact key index identifies this case separately. The 818 cases with no eligible annual revenue fact in retained known concepts need expanded source or definition-equivalence evidence; it is not proven that every one lacks revenue in the filing. Other 3,178 keys beyond the three container cases, one hierarchy case and one non-equivalence case remain **unknown local versus new-source causality**; diagnostic categories do not certify that split. No pilot extrapolation is claimed.
+
+### Authorized primary-disclosure pilot and minimal next acquisition
+
+Deterministic selection: all 29 local-review cases plus balanced discrepancy/SIC strata, seed `t14-r2-pilot-1`; **100/100 processed**, **100 successful primary filings**, **398 total HTTP attempts** including retries/redirects, **589,808,378 response bytes**, **41,607,091 on-disk bytes**. Enforced <=1 attempt/s, <=600 attempts, <=750 MiB response landing, sec_http approved User-Agent/shared limiter, <=0.8 GiB Job Object. Raw receipts `data/raw/sec_notes_t14_pilot/receipts.jsonl`; no raw data committed. Pilot selection, summary and raw SHA checks are persisted. Existing Business cache was consulted first; its corrupt/oversized parts are reported in pilot cache_errors rather than silently treated as complete.
+
+Primary path: SEC Archives accession primary document for Item 8 segment notes, accession index.json, relevant definition/presentation/calculation linkbases. All 3,183 residual primary URLs are identified; expanded residual acquisition needs 3,183 primary +3,183 index +3,183..9,549 structure GETs before retries, estimated **10,472,668,404 uncompressed primary bytes** using historical median. Production untagged denominator requires independent classification of **35,677** original annual filings; 35,676 primary URLs known, one index resolution needed, median-size estimate **117,384,037,276 bytes** before compression. Existing 28 historical Notes ZIPs total **12,205,444,547 bytes**, but TAG/PRE/roles were not retained. Minimal next step is bounded role-aware extraction/validation from this pilot, then approval of a scoped full structural/source landing; full corpus was not launched. Preserve C:>=40GB before any >1GB landing. Estimates are cost estimates, not evidence that missing data will resolve every gate.
+
+### Latest measured gates and restricted-build integrity
+
+| Year | Multi | Revenue proxy count/share | Verified reconciliation count/share |
+|---|---:|---|---|
+| 2020 | 2118 | 1900/2118 = 89.7100% | 1539/1900 = 81.0000% |
+| 2021 | 2058 | 1852/2058 = 89.9900% | 1513/1852 = 81.7000% |
+| 2022 | 2049 | 1852/2049 = 90.3900% | 1525/1852 = 82.3400% |
+| 2023 | 2040 | 1837/2040 = 90.0500% | 1523/1837 = 82.9100% |
+| 2024 | 1981 | 1762/1981 = 88.9400% | 1497/1762 = 84.9600% |
+| 2025 | 2006 | 1814/2006 = 90.4300% | 1475/1814 = 81.3100% |
+
+Certified all-filer revenue gate remains FAIL with denominator_certified=false; numeric proxy observations are not certified PASSs. Restricted-year real rebuild recomputed every census row; all-year census digest and omitted 2020-2022 feature/reconciliation digests match baseline: {'census': True, 'omitted_2020_2022_features': True, 'omitted_2020_2022_recon': True}; omitted gate counts preserved=True. Updated parquet total **180,404,910 bytes**; full row/size table and GC3 year panels in dataset docs and `t14-fix-r2-evidence.json`. GC3 refreshed at 2026-10-03T17:06:42+00:00; actual current input SHA256 {'universe_manifest': '33a15585807fa242fc4e7eb38ec3c1902bf043ba442f57b2e2a8f45dbad7071d', 'identity_manifest': '0df3dc103b49f8494002b48983c6895a30f707b4a75eb61f6d6c1f9f169f2e76', 'calendar': 'dd9cb6958d8a4a84de1f6a4ac44d07a8f8e8f9ad8d6ebed477e30d89675fa44e'}. No returns computed.
+
+### Exact guarded commands and receipts
+
+From C:/atx/atx-db, PYTHONPATH=C:/atx/atx-db/src, OPENBLAS_NUM_THREADS=1. Each command below used `.venv/Scripts/python.exe ../.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb CAP --wait-minutes 60 --receipt ../.superpowers/sdd/tier1-v4/receipts/RECEIPT -- COMMAND`. One data job at a time in this lane.
+
+| Receipt | Cap | Command after -- | Exit | Seconds | Peak GiB |
+|---|---:|---|---:|---:|---:|
+| t14_fix_r2_causal_audit_r2.json | 0.8 | `.venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t14-fix-r2-causal-audit.py` | 0 | 22.0 | 0.6393 |
+| t14_fix_r2_acquisition_audit_r2.json | 0.8 | `.venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t14-fix-r2-acquisition-audit.py` | 0 | 3.0 | 0.1619 |
+| t14_fix_r2_pilot_r3.json | 0.8 | `.venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t14-fix-r2-pilot.py` | 0 | 427.3 | 0.2759 |
+| t14_fix_r2_preservation_before.json | 0.6 | `.venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t14-fix-r2-preservation.py before` | 0 | 2.0 | 0.126 |
+| t14_fix_r2_build.json | 0.9 | `.venv/Scripts/python.exe -m atx_db.alpha_panel.fund_notes build --years 2025` | 0 | 112.1 | 0.5399 |
+| t14_fix_r2_preservation_after.json | 0.6 | `.venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t14-fix-r2-preservation.py after` | 0 | 1.0 | 0.1266 |
+| t14_fix_r2_coverage.json | 0.8 | `.venv/Scripts/python.exe -m atx_db.alpha_panel.fund_notes coverage` | 0 | 5.0 | 0.3106 |
+| t14_fix_r2_evidence.json | 0.6 | `.venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t14-fix-r2-evidence.py` | 0 | 1.0 | 0.1039 |
+| t14_fix_r2_integrity.json | 0.6 | `.venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t14-fix-r2-integrity.py` | 0 | 1.0 | 0.0604 |
+| t14_fix_r2_pilot_evidence.json | 0.6 | `.venv/Scripts/python.exe ../.superpowers/sdd/tier1-v4/t14-fix-r2-pilot-evidence.py` | 0 | 1.0 | 0.084 |
+
+All successful receipts cap_hit=false. Initial causal SQL alias failed before publication; initial acquisition diagnostic exceeded its 0.6 GiB guard and was replaced by a filtered bounded scan at 0.8 GiB. Initial pilot cache scan hit DuckDB allocation limit; second hit a corrupt cached parquet. Both stopped before HTTP, so consumed no SEC attempts. Third reads bounded partitions and records unavailable cache parts. Failed receipts retained. Final output integrity verifies all parquet hashes, code hash, duplicate keys, candidate separation, amendment ancestry and census/recon agreement.
+
+Round2 commits: implementation **1b1856c2** and **1fae76ef**; evidence/docs **f986d6fe**; final report commit identifies itself via git log. Prior Task14 SHAs remain 7ec056a3,146a7766,95a03266,f77afbc3,1fd12bc8,91fbb1e4,6bcce194.
+
+Post-fix measured effect: exactly three formerly missing-revenue filings recovered and directly reconciled (one each 2023/2024/2025), with source-wide denominator counts unchanged. Remaining baseline verified misses: 1,945; missing revenue now 1,235. All 2019-2026 census rows preserve the baseline digest. Report-generation command also ran under 0.6 GiB guard, receipt t14_fix_r2_report.json: exit 0, 1.0s, peak 0.0352 GiB, cap_hit=false.
