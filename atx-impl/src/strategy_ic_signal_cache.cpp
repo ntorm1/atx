@@ -38,7 +38,8 @@ constexpr int dsl_vm_semantics_version=1;
 // a semantic change bumps dsl_vm_semantics_version (clean cache miss); either way
 // the pin is re-set. The test also fails if a listed file includes an unlisted
 // atx/engine header, so the list cannot silently fall behind the closure.
-constexpr std::array<std::string_view,33> dsl_vm_sources{
+constexpr std::array<std::string_view,34> dsl_vm_sources{
+    "atx-engine/include/atx/engine/alpha/asof_ops.hpp",
     "atx-engine/include/atx/engine/alpha/bytecode.hpp",
     "atx-engine/include/atx/engine/alpha/cs_ops.hpp",
     "atx-engine/include/atx/engine/alpha/cs_radix.hpp",
@@ -72,8 +73,11 @@ constexpr std::array<std::string_view,33> dsl_vm_sources{
     "atx-engine/src/alpha/typecheck.cpp",
     "atx-engine/src/data/strategy_data.cpp",
     "atx-engine/src/data/role_panel.cpp"};
+// v8 lane YOPS re-pinned WITHOUT a bump: it adds opcodes and kernels (group_sum,
+// group_delay, the as-of rank family; asof_ops.hpp) and changes no evaluated bit of
+// any pre-existing DSL string (a string naming a new op could not parse before).
 constexpr std::string_view dsl_vm_sources_sha256=
-    "ad6c4ca710606ab2602f9bb27bc2cd593e46fd104c308c2d1198651d96113d62";
+    "fcf8021e76ee5ac3c161302367a27b8f6c49cd28a580d1339ff801d9feca1619";
 // Entries written before this identity existed sit directly under DIR/<sha>/ with
 // no vm_identity key. They came from engine builds 429cbe43/6d85ac2a (clang-cl
 // 18.1.8, dev preset, no /arch) and no alpha, parallel or core source changed
