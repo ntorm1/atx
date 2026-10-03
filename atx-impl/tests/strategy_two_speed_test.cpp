@@ -496,13 +496,12 @@ TEST(TwoSpeed, UnderVolTargetZeroShareIsTheParentRunBitForBit) {
     EXPECT_EQ(bits(records[k].leverage), bits(parent_leverage[k])) << k;
 }
 
-// A fast share of .3 under vol-target-v1. (1) The hook plans the carried netted aim at the scaler's
-// L_t: update_weights with --aim-leverage L_t on the netted desired target plus the carry of F from
-// the book's previous lambda = L_t / L (engine::book::two_speed_carry; Ruling PM8-16 #10), bit for
-// bit; without F the hook refuses. (2) Closed form at L_t = 1 against the run's L 1.2 (no dust,
-// immediate exit): the book moves toward (1 / L) x the netted target T = L m_s d_s + F + (F_next -
-// F) / theta, and F follows the run's L whatever L_t is.
-TEST(TwoSpeed, UnderVolTargetTheScalerScalesTheNettedTarget) {
+// A fast share of .3 under vol-target-v1: the hook plans the carried netted aim at the scaler's
+// L_t, i.e. update_weights with --aim-leverage L_t on the netted desired target plus the carry of F
+// from the book's previous lambda = L_t / L (engine::book::two_speed_carry; Ruling PM8-16 #10), bit
+// for bit; without F entering the rebalance the hook refuses before the scaler moves. F follows the
+// run's L whatever L_t is. (The book's closed form under a moving L_t is the replay test below.)
+TEST(TwoSpeed, UnderVolTargetTheHookPlansTheCarriedNettedAimAtLt) {
   const Directory dir;
   const Role role(50, 12, 41);
   const auto risk = clean_store(dir, role, 5);
@@ -512,13 +511,10 @@ TEST(TwoSpeed, UnderVolTargetTheScalerScalesTheNettedTarget) {
   const Sleeves sleeves(role, 0.3);
   auto x = role.target();
   sleeves.attach(x);
-  auto fast_x = x, slow_x = x;
+  auto fast_x = x;
   fast_x.signal = sleeves.fast;
-  slow_x.signal = sleeves.slow;
   auto plain = cfg.target;
   plain.two_speed = false;
-  auto fixed = cfg.target;
-  fixed.aim_leverage = 1.0; fixed.dust_multiple = 0.0; fixed.exit_rate = 1.0;
   const f64 L = cfg.target.aim_leverage, theta = cfg.target.trade_fraction;
   const f64 theta_f = atx::engine::book::two_speed_fast_theta(1.0);
   v7::NavV7Options o;
@@ -528,20 +524,21 @@ TEST(TwoSpeed, UnderVolTargetTheScalerScalesTheNettedTarget) {
   st::detail::DesiredState state;
   std::vector<Ranked> row;
   st::PriceRiskScratch scratch;
-  std::vector<f64> current(role.n, 0.0), closed(role.n, 0.0), F(role.n, 0.0);
+  std::vector<f64> current(role.n, 0.0), F(role.n, 0.0);
   f64 lambda_prev = 0; // the book's lambda at its previous rebalance (none yet)
   for (usize d = 0; d < 45; ++d) {
-    std::vector<f64> desired(role.n, 0.0), df(role.n, 0.0), ds(role.n, 0.0);
-    st::ConstructionDay rec, rf, rs;
-    ASSERT_TRUE(st::detail::form_desired(x, cfg.target, d, row, desired, scratch, rec, {}, &state));
+    std::vector<f64> desired(role.n, 0.0), df(role.n, 0.0);
+    st::ConstructionDay rec, rf;
+    ASSERT_TRUE(
+        st::detail::form_desired(x, cfg.target, d, row, desired, scratch, rec, {}, &state));
     ASSERT_TRUE(st::detail::form_desired(fast_x, plain, d, row, df, scratch, rf));
-    ASSERT_TRUE(st::detail::form_desired(slow_x, plain, d, row, ds, scratch, rs));
     std::vector<f64> hooked = current, at_lt = current;
     st::TargetReplayDay a, b;
     if (d == 0) { // without F entering the rebalance the scaled two-speed plan refuses
       std::vector<f64> untouched = current;
       st::TargetReplayDay z;
       EXPECT_FALSE(v7::plan(x, cfg, d, true, 0.0, 1e8, desired, untouched, z, {}));
+      EXPECT_TRUE(extension.risk_target_scaler()->records().empty()); // the scaler never moved
     }
     ASSERT_TRUE(v7::plan(x, cfg, d, true, 0.0, 1e8, desired, hooked, a, {}, {}, {},
                          state.fast_before));
@@ -555,25 +552,116 @@ TEST(TwoSpeed, UnderVolTargetTheScalerScalesTheNettedTarget) {
                                                    L, theta, carried));
     lambda_prev = lambda;
     ASSERT_TRUE(st::detail::update_weights(x, t, d, true, 0.0, carried, at_lt, b));
-    for (usize i = 0; i < role.n; ++i) EXPECT_EQ(bits(hooked[i]), bits(at_lt[i])) << d << ' ' << i;
+    for (usize i = 0; i < role.n; ++i)
+      EXPECT_EQ(bits(hooked[i]), bits(at_lt[i])) << d << ' ' << i;
     current = hooked;
-    std::vector<f64> step = closed;
-    st::TargetReplayDay c;
-    ASSERT_TRUE(st::detail::update_weights(x, fixed, d, true, 0.0, desired, step, c));
     for (usize i = 0; i < role.n; ++i) {
-      if (!role.member[d * role.n + i]) {
-        F[i] = 0.0;
-        EXPECT_EQ(step[i], 0.0) << d << ' ' << i;
-        continue;
-      }
       const f64 before = F[i];
-      F[i] = before + theta_f * (L * 0.3 * df[i] - before);
-      const f64 netted = L * (1.0 - 0.3) * ds[i] + before + (F[i] - before) / theta;
-      EXPECT_NEAR(step[i], closed[i] + theta * ((1.0 / L) * netted - closed[i]), 1e-14) << d << ' ' << i;
+      F[i] = role.member[d * role.n + i] ? before + theta_f * (L * 0.3 * df[i] - before) : 0.0;
       EXPECT_NEAR(state.fast[i], F[i], 1e-15) << d << ' ' << i;
     }
-    closed = step;
   }
+}
+
+// The observed book's decisions: the plan's current weight (held_weight, bit for bit) and the
+// rule's plan per instrument (a name the export omits has both 0).
+struct Plans final : st::NavHoldingsSink {
+  explicit Plans(usize names) : n(names) {}
+  usize n;
+  std::vector<usize> rows;
+  std::vector<std::vector<f64>> current, rule;
+  atx::core::Status session(const st::NavReplayDay& day,
+                            std::span<const st::NavHolding> names) override {
+    if (!day.decision) return atx::core::Ok();
+    rows.push_back(day.session_index);
+    auto& c = current.emplace_back(n, 0.0);
+    auto& r = rule.emplace_back(n, 0.0);
+    for (const auto& h : names) {
+      c[h.index] = h.held_weight;
+      r[h.index] = h.rule_weight;
+    }
+    return atx::core::Ok();
+  }
+};
+
+// Review YCOMB #13 (Ruling PM8-16 #10) through replay_nav: under risk-target-v1 with a target far
+// below the book's forecast (sigma* 1e-4, so every estimate clips at the floor .8 L) L_t leaves L
+// at the first estimate. Every rebalance's plan of every member is, in closed form, the remainder
+// R = c - lambda_prev F moving at theta_s toward lambda L m_s d_s plus the scaled fast sleeve
+// lambda F_next: c the plan's current weight, d_s and d_f each sleeve's own construction, F the
+// recursion F_next = F + theta_f (L m_f d_f - F), lambda = L_t / L from the scaler's records and
+// lambda_prev the book's lambda at its previous rebalance (no dust, immediate exit).
+TEST(TwoSpeed, UnderARiskTargetTheBookIsTheScaledSleeveDecomposition) {
+  const Directory dir;
+  const Role role(50, 12, 41);
+  const auto risk = clean_store(dir, role, 5);
+  ASSERT_NE(risk, nullptr);
+  auto cfg = parent_config();
+  cfg.target.two_speed = true;
+  cfg.target.dust_multiple = 0.0;
+  cfg.target.exit_rate = 1.0;
+  const Sleeves sleeves(role, 0.3);
+  auto in = role.nav();
+  sleeves.attach(in.target);
+  auto fast_x = in.target, slow_x = in.target;
+  fast_x.signal = sleeves.fast;
+  slow_x.signal = sleeves.slow;
+  auto plain = cfg.target;
+  plain.two_speed = false;
+  v7::NavV7Options o;
+  o.risk_target.on = true;
+  o.risk_target.law = rt::Law::risk_target_v1;
+  o.risk_target.params.sigma_star = 1e-4;
+  o.spo_risk = risk;
+  const v7::ScopedNavExtension extension(o);
+  Plans plans(role.n);
+  const std::array<st::NavScenario, 1> one{cfg.scenario};
+  const auto run = st::replay_nav_scenarios(in, cfg, one, plans, 0);
+  ASSERT_TRUE(run) << run.error().to_string();
+  std::map<i64, f64> leverage; // L_t of every scored decision, by session
+  for (const auto& r : extension.risk_target_scaler()->records()) leverage[r.session] = r.leverage;
+  const f64 L = cfg.target.aim_leverage, theta = cfg.target.trade_fraction;
+  const f64 theta_f = atx::engine::book::two_speed_fast_theta(1.0);
+  std::vector<Ranked> row;
+  st::PriceRiskScratch scratch;
+  std::vector<f64> F(role.n, 0.0);
+  f64 lambda_prev = 0, carry_max = 0;
+  usize scaled = 0, rescaled = 0, checked = 0;
+  ASSERT_GT(plans.rows.size(), 40U);
+  for (usize k = 0; k < plans.rows.size(); ++k) {
+    const usize d = plans.rows[k];
+    ASSERT_EQ(leverage.count(role.sessions[d]), 1U) << d;
+    const f64 lambda = leverage.at(role.sessions[d]) / L;
+    if (lambda_prev == 0) lambda_prev = lambda;
+    scaled += lambda != 1.0 ? 1U : 0U;
+    rescaled += lambda != lambda_prev ? 1U : 0U;
+    std::vector<f64> df(role.n, 0.0), ds(role.n, 0.0);
+    st::ConstructionDay rf, rs;
+    ASSERT_TRUE(st::detail::form_desired(fast_x, plain, d, row, df, scratch, rf));
+    ASSERT_TRUE(st::detail::form_desired(slow_x, plain, d, row, ds, scratch, rs));
+    for (usize i = 0; i < role.n; ++i) {
+      if (!role.member[d * role.n + i]) { // the immediate exit
+        F[i] = 0.0;
+        EXPECT_EQ(plans.rule[k][i], 0.0) << d << ' ' << i;
+        continue;
+      }
+      const f64 c = plans.current[k][i];
+      const f64 before = F[i];
+      F[i] = before + theta_f * (L * 0.3 * df[i] - before);
+      const f64 remainder = c - lambda_prev * before;
+      const f64 want = remainder +
+          theta * (lambda * L * (1.0 - 0.3) * ds[i] - remainder) + lambda * F[i];
+      EXPECT_NEAR(plans.rule[k][i], want, 1e-13) << d << ' ' << i;
+      carry_max = std::max(carry_max,
+                           std::abs((lambda - lambda_prev) * (1.0 - theta) / theta * before));
+      ++checked;
+    }
+    lambda_prev = lambda;
+  }
+  EXPECT_GT(checked, 0U);
+  EXPECT_GT(scaled, 0U);      // L_t != L
+  EXPECT_GT(rescaled, 0U);    // the scale moved between two rebalances
+  EXPECT_GT(carry_max, 1e-6); // and there the carry moved the plan
 }
 
 TEST(TwoSpeed, ParseComposesWithTheScalersAndRefusesTheRest) {
