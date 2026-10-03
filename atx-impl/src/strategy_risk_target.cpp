@@ -1,6 +1,7 @@
 // risk-target-v1 (platform v8 R-8): the NAV replay's scaler over the engine kernel
 // (engine::book::risk_target_update), its series and its published blocks. The rule is stated in
-// strategy_risk_target.hpp; the wiring into the construction rules is strategy_nav_v7.cpp.
+// strategy_risk_target.hpp; each replay book plans through its own BookLeverage (P9 C1:
+// strategy_nav_replay.cpp), the v7 seam through Scaler (strategy_nav_v7.cpp).
 #include "strategy_risk_target.hpp"
 
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include <string>
 #include <utility>
 #include <nlohmann/json.hpp>
+#include "atx/engine/book/two_speed.hpp"
 #include "strategy_vol_target.hpp"
 
 namespace atx::impl::strategy::risk_target {
@@ -69,14 +71,30 @@ struct BookStats {
 bool vol_law(const Options& o) { return o.law == Law::vol_target_v1; }
 } // namespace
 
-Scaler::Scaler(const Options& o, std::shared_ptr<const spo::RiskStore> risk)
+NavLeverageRule leverage_rule(const Options& o, std::shared_ptr<const spo::RiskStore> risk) {
+  NavLeverageRule rule;
+  if (!o.on) return rule;
+  rule.law = vol_law(o) ? NavLeverageLaw::VolTargetV1 : NavLeverageLaw::RiskTargetV1;
+  rule.params = o.params;
+  rule.risk = std::move(risk);
+  return rule;
+}
+
+Options options_of(const NavLeverageRule& rule) noexcept {
+  Options o;
+  if (rule.law == NavLeverageLaw::Fixed) return o;
+  o.on = true;
+  o.params = rule.params;
+  o.law = rule.law == NavLeverageLaw::VolTargetV1 ? Law::vol_target_v1 : Law::risk_target_v1;
+  return o;
+}
+
+BookScaler::BookScaler(const Options& o, std::shared_ptr<const spo::RiskStore> risk)
     : options_(o), risk_(std::move(risk)) {}
 
-void Scaler::begin_run() { books_.clear(); }
-
-co::Result<f64> Scaler::leverage(const TargetReplayInput& x, usize d, bool rebalance,
-                                 std::string_view book, f64 base,
-                                 std::span<const f64> current, bool record) {
+co::Result<f64> BookScaler::leverage(const TargetReplayInput& x, usize d, bool rebalance,
+                                     std::string_view book, f64 base,
+                                     std::span<const f64> current, std::vector<Record>* records) {
   if (!risk_)
     return co::Err(co::ErrorCode::InvalidArgument,
                    "risk-target-v1: no risk model (--risk-model)");
@@ -87,42 +105,39 @@ co::Result<f64> Scaler::leverage(const TargetReplayInput& x, usize d, bool rebal
     ATX_TRY_VOID(risk_->check_axes(x.session_keys, x.instruments));
     axes_checked_ = true;
   }
-  auto found = books_.find(book);
-  if (found == books_.end()) found = books_.emplace(std::string(book), Book{}).first;
-  Book& b = found->second;
   bool updated = false;
   const bool vol = vol_law(options_); // vol-target-v1 (v8 Y): its own state, the same forecast
   const bool forecast = d < risk_->dates() && risk_->forecast()[d] != 0;
-  const bool due = vol ? eb::vol_target_due(b.vol, d)
-                       : eb::risk_target_due(b.state, d, options_.params.cadence);
+  const bool due = vol ? eb::vol_target_due(vol_, d)
+                       : eb::risk_target_due(state_, d, options_.params.cadence);
   if (forecast && due) {
-    ATX_TRY(updated, estimate(d, base, current, b));
+    ATX_TRY(updated, estimate(d, base, current));
   }
   const f64 in_force =
-      vol ? eb::vol_target_in_force(b.vol, base) : eb::risk_target_in_force(b.state, base);
-  if (record) {
-    const eb::RiskTargetLeverage& at = vol ? b.vol.at : b.state.at;
+      vol ? eb::vol_target_in_force(vol_, base) : eb::risk_target_in_force(state_, base);
+  if (records) {
+    const eb::RiskTargetLeverage& at = vol ? vol_.at : state_.at;
     Record r;
     r.session = x.session_keys[d];
     r.book = std::string(book);
     r.rebalance = rebalance;
     r.updated = updated;
     r.base = base;
-    r.gross = b.gross;
-    r.priced_share = b.priced_share;
-    r.sigma_hat = vol ? b.vol.sigma_hat : b.state.sigma_hat;
+    r.gross = gross_;
+    r.priced_share = priced_share_;
+    r.sigma_hat = vol ? vol_.sigma_hat : state_.sigma_hat;
     r.raw = at.raw;
     r.leverage = in_force;
     r.clip = at.clip;
-    if (vol) r.sigma_ref = b.vol.sigma_ref;
-    records_.push_back(std::move(r));
+    if (vol) r.sigma_ref = vol_.sigma_ref;
+    records->push_back(std::move(r));
   }
   return co::Ok(in_force);
 }
 
 // The book's priced names at d, in instrument order (their weights, industry columns 1 + slot,
 // style rows, specific variances), the whole book's gross, then the engine's update.
-co::Result<bool> Scaler::estimate(usize d, f64 base, std::span<const f64> current, Book& book) {
+co::Result<bool> BookScaler::estimate(usize d, f64 base, std::span<const f64> current) {
   ATX_TRY_VOID(risk_->read(d, slice_));
   group_.clear(); exposures_.clear(); specific_.clear(); weights_.clear();
   f64 gross = 0, priced_gross = 0;
@@ -143,15 +158,71 @@ co::Result<bool> Scaler::estimate(usize d, f64 base, std::span<const f64> curren
                                  slice_.covariance, specific_};
   // vol-target-v1 (v8 Y): the same model and book, its own law and state (base = the cap L).
   auto update = vol_law(options_)
-                    ? eb::vol_target_update(base, d, model, weights_, gross, book.vol)
+                    ? eb::vol_target_update(base, d, model, weights_, gross, vol_)
                     : eb::risk_target_update(options_.params, base, d, model, weights_, gross,
-                                             book.state);
+                                             state_);
   ATX_TRY(const bool updated, std::move(update));
   if (updated) {
-    book.gross = gross;
-    book.priced_share = priced_gross / gross;
+    gross_ = gross;
+    priced_share_ = priced_gross / gross;
   }
   return co::Ok(updated);
+}
+
+BookLeverage::BookLeverage(const Options& o, std::shared_ptr<const spo::RiskStore> risk)
+    : scaler_(o, std::move(risk)) {}
+
+co::Result<const std::vector<f64>*> BookLeverage::plan(
+    const TargetReplayInput& x, const NavReplayConfig& cfg, usize d, bool rebalance,
+    std::string_view book, std::span<const f64> current, const std::vector<f64>& desired,
+    std::span<const f64> two_speed_fast, std::vector<Record>* records) {
+  // v8 Y-5 two-speed-v1 (Ruling PM8-16 #10): the book's fast holding follows its scale lambda =
+  // L_t / L. Its rebalance plans at L_t the netted desired target plus the carry of F from the
+  // book's lambda at its previous two-speed rebalance (its first: lambda itself, no carry), so
+  // the remainder moves at theta_s toward lambda L m_s d_s and the fast part becomes lambda F_next.
+  // Checked before the scaler moves.
+  const bool carry = two_speed_on(cfg.target) && rebalance;
+  const usize n = x.instruments;
+  if (carry && (two_speed_fast.size() != n || desired.size() != n || d >= x.dates))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav v7: two-speed-v1 under --risk-target / --vol-target needs the fast "
+                   "sleeve F entering the rebalance");
+  const f64 base = cfg.target.aim_leverage;
+  ATX_TRY(const f64 leverage,
+          scaler_.leverage(x, d, rebalance, book, base, current, records));
+  scaled_ = cfg;
+  scaled_.target.aim_leverage = leverage;
+  if (!carry) return co::Ok(&desired);
+  const f64 lambda = leverage / base;
+  if (std::isnan(lambda_)) lambda_ = lambda; // the book's first two-speed rebalance: no carry
+  carried_.assign(desired.begin(), desired.end());
+  ATX_TRY_VOID(eb::two_speed_carry(x.member.subspan(d * n, n), two_speed_fast, lambda_, lambda,
+                                   base, cfg.target.trade_fraction, carried_));
+  lambda_ = lambda;
+  return co::Ok(static_cast<const std::vector<f64>*>(&carried_));
+}
+
+Scaler::Scaler(const Options& o, std::shared_ptr<const spo::RiskStore> risk)
+    : options_(o), risk_(std::move(risk)) {}
+
+void Scaler::begin_run() { books_.clear(); }
+
+BookLeverage& Scaler::book(std::string_view label) {
+  auto found = books_.find(label);
+  if (found == books_.end())
+    found = books_.try_emplace(std::string(label), options_, risk_).first;
+  return found->second;
+}
+
+co::Result<f64> Scaler::leverage(const TargetReplayInput& x, usize d, bool rebalance,
+                                 std::string_view book_label, f64 base,
+                                 std::span<const f64> current, bool record) {
+  return book(book_label).scaler().leverage(x, d, rebalance, book_label, base, current,
+                                            record ? &records_ : nullptr);
+}
+
+void Scaler::append(std::span<const Record> records) {
+  records_.insert(records_.end(), records.begin(), records.end());
 }
 
 std::string records_csv(std::span<const Record> records, Law law) {
@@ -254,5 +325,61 @@ std::string rule_suffix(const Options& o) {
   if (o.params.cadence != eb::risk_target_default_cadence)
     id += "-cadence-" + std::to_string(o.params.cadence);
   return id;
+}
+
+namespace {
+// One JSON Schema property: its type, its nav flag (x-flag) and the extra keywords.
+Json property(const char* type, const char* flag, Json keywords = Json::object()) {
+  keywords["type"] = type;
+  keywords["x-flag"] = flag;
+  return keywords;
+}
+Json leverage_cap() {
+  return property("number", "--aim-leverage",
+                  Json{{"minimum", 1}, {"maximum", 2}, {"default", 1}});
+}
+Json store_properties(Json properties) {
+  properties["risk_model"] = property("string", "--risk-model");
+  properties["risk_model_sha256"] =
+      property("string", "--risk-model-sha256", Json{{"pattern", "^[0-9a-f]{64}$"}});
+  return properties;
+}
+Json rule_row(const char* id, const char* flag, Json properties, Json required,
+              Json incompatible) {
+  return Json{{"id", id},
+              {"kind", "leverage"},
+              {"x-flag", flag},
+              {"params_schema", Json{{"type", "object"},
+                                     {"additionalProperties", false},
+                                     {"required", std::move(required)},
+                                     {"properties", std::move(properties)}}},
+              {"incompatible", std::move(incompatible)}};
+}
+} // namespace
+
+Json leverage_rules_json() {
+  Json rows = Json::array();
+  rows.push_back(rule_row("fixed-v1", "--aim-leverage", Json{{"aim_leverage", leverage_cap()}},
+                          Json::array({"aim_leverage"}),
+                          Json::array({"vol-target-v1", "risk-target-v1"})));
+  rows.push_back(rule_row("vol-target-v1", "--vol-target vol-target-v1",
+                          store_properties(Json{{"aim_leverage", leverage_cap()}}),
+                          Json::array({"aim_leverage", "risk_model", "risk_model_sha256"}),
+                          Json::array({"risk-target-v1", "aim-partial-v6", "spo-v1", "spo-v2",
+                                       "spo-v3"})));
+  Json risk = store_properties(Json{{"aim_leverage", leverage_cap()}});
+  risk["sigma_star"] = property("number", "--risk-target",
+                                Json{{"exclusiveMinimum", 0}, {"maximum", 1}});
+  risk["bias"] = property("number", "--risk-target-bias",
+                          Json{{"exclusiveMinimum", 0}, {"maximum", 10},
+                               {"default", eb::risk_target_default_bias}});
+  risk["cadence"] = property("integer", "--risk-target-cadence",
+                             Json{{"minimum", 1}, {"maximum", 10000},
+                                  {"default", eb::risk_target_default_cadence}});
+  rows.push_back(rule_row("risk-target-v1", "--risk-target S", std::move(risk),
+                          Json::array({"aim_leverage", "sigma_star", "risk_model",
+                                       "risk_model_sha256"}),
+                          Json::array({"vol-target-v1", "aim-partial-v6", "spo-v1", "spo-v2"})));
+  return rows;
 }
 } // namespace atx::impl::strategy::risk_target

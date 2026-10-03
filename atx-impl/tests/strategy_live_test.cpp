@@ -28,6 +28,7 @@
 #include "../src/strategy_live.hpp"
 #include "../src/strategy_nav_replay.hpp"
 #include "../src/strategy_nav_replay_detail.hpp"
+#include "../src/strategy_nav_v7.hpp"
 #include "../src/strategy_orders.hpp"
 #include "../src/strategy_reconcile.hpp"
 #include "../src/strategy_target_replay.hpp"
@@ -38,6 +39,7 @@
 namespace {
 using namespace atx;
 namespace st = atx::impl::strategy;
+namespace v7 = atx::impl::strategy::v7;
 namespace co = atx::core;
 using Json = nlohmann::json;
 constexpr i64 day_ns = 86'400'000'000'000LL;
@@ -2227,10 +2229,13 @@ TEST(AdvHold, RefusedOutsideTheNavPathAndWhenMalformed) {
   EXPECT_FALSE(std::filesystem::exists(word));
 }
 
-// --capacity-curve with --adv-hold-q (ruling E-15): the v7 parser passes the flag through to both
-// passes, so the main pass and every capacity book record the cap (rule id, recipe adv_hold keys
-// with the E-15 sentence, summary construction.adv_hold), and the x1 capacity book is still the
-// main pass's S2 book bit for bit (both passes cap at the run's initial NAV).
+// --capacity-curve with --adv-hold-q: the main books and every capacity book record the cap
+// (rule id, recipe adv_hold keys with the capacity sentence, summary construction.adv_hold), and
+// the x1 capacity book is still the main S2 book bit for bit (multiple 1: the run's initial
+// NAV). P9 C1 re-pin (deliverable 5): the capacity books joined the main lockstep and each
+// capacity book's cap reads its multiple's NAV (Ruling E-15's initial-NAV cap at every multiple
+// is retired), so the recipe's adv_hold_rule and the help say so; the pinned help substring
+// below is the new sentence (AdvHoldCapacityPerMultiple checks the per-multiple cap itself).
 TEST(AdvHold, CapacityCurveCarriesTheCapInBothPasses) {
   PinBench bench;
   const auto root = bench.dir.path / "curve";
@@ -2261,8 +2266,163 @@ TEST(AdvHold, CapacityCurveCarriesTheCapInBothPasses) {
   EXPECT_TRUE(std::filesystem::exists(root / "capacity_curve.csv"));
   std::ostringstream help, quiet;
   ASSERT_EQ(nav_cli({"nav", "--help"}, help, quiet), 0);
-  EXPECT_NE(help.str().find("the cap uses the run's initial NAV for every book, each "
-                            "--capacity-curve book included"), std::string::npos);
+  EXPECT_NE(help.str().find("the cap uses each book's NAV: the run's initial NAV, m x that NAV "
+                            "for the --capacity-curve book at multiple m"),
+            std::string::npos);
+}
+
+// P9 C1 (deliverable 5): under --capacity-curve the capacity book at multiple m is the NAV-m book
+// divided by m, so its ADV cap is the NAV-m book's, Q ADV / (L m NAV): the capacity x4 book's
+// shared construction (its clipped names and clipped mass at every decision) is, bit for bit,
+// that of a book of another id run alone at initial NAV 4 x NAV, while the main book (multiple
+// 1) keeps the cap at NAV and clips differently (the cap binds on the bench). The main book and
+// x4 run in one replay_nav_scenarios call (one lockstep group per multiple).
+TEST(AdvHoldCapacityPerMultiple, CapReadsEachMultiplesNav) {
+  const CapBench bench;
+  const auto in = bench.input();
+  auto cfg = v61_book(1e7);
+  cfg.target.adv_hold_q = 0.1;
+  const auto x4 = st::cost_v2::capacity_scenarios(cfg.scenario)[3];
+  ASSERT_EQ(x4.id, "capacity-x4-v1");
+  v7::NavV7Options o;
+  o.capacity = true;
+  const v7::ScopedNavExtension extension(o);
+  const std::array<st::NavScenario, 2> books{cfg.scenario, x4};
+  const auto joint = st::replay_nav_scenarios(in, cfg, books);
+  ASSERT_TRUE(joint) << joint.error().to_string();
+  ASSERT_EQ(joint->size(), 2U);
+  // The NAV-4 cap: a book that is no capacity book, alone at initial NAV 4 x 1e7.
+  auto nav4 = cfg;
+  nav4.initial_nav = 4.0 * cfg.initial_nav;
+  auto plain = cfg.scenario;
+  plain.id = "modeled-nav4-cap-v1";
+  const std::array<st::NavScenario, 1> one{plain};
+  const auto alone = st::replay_nav_scenarios(in, nav4, one);
+  ASSERT_TRUE(alone) << alone.error().to_string();
+  const auto& main = (*joint)[0].days;
+  const auto& capacity = (*joint)[1].days;
+  const auto& reference = alone->front().days;
+  ASSERT_EQ(capacity.size(), reference.size());
+  ASSERT_EQ(main.size(), reference.size());
+  usize clipped = 0;
+  bool differs = false;
+  for (usize t = 0; t < reference.size(); ++t) {
+    const auto& c = capacity[t].construction;
+    const auto& r = reference[t].construction;
+    EXPECT_EQ(c.adv_clipped, r.adv_clipped) << t;
+    EXPECT_EQ(bits(c.adv_clipped_mass), bits(r.adv_clipped_mass)) << t;
+    clipped += c.adv_clipped;
+    differs = differs ||
+              bits(main[t].construction.adv_clipped_mass) != bits(c.adv_clipped_mass);
+  }
+  EXPECT_GT(clipped, 0U); // the NAV-4 cap binds
+  EXPECT_TRUE(differs);   // and it is not the main book's (NAV) cap
+  // Without --capacity-curve the same id is an ordinary book: the cap reads the initial NAV.
+  {
+    const v7::ScopedNavExtension off(v7::NavV7Options{});
+    EXPECT_FALSE(v7::capacity_book(x4));
+    EXPECT_EQ(v7::nav_multiple(x4), 1.0);
+  }
+  EXPECT_TRUE(v7::capacity_book(x4));
+  EXPECT_EQ(v7::nav_multiple(x4), 4.0);
+}
+
+// P9 C1 (deliverable 4): summary.json is written last and binds the v7 files: its v7.files
+// carries the SHA-256 of v7_extras.json and of capacity/summary.json (and v7_extras.json the
+// capacity summary's too), every v7 file exists before it (no later write time), and it names
+// its producer (engine_git_sha, build_type). The capacity directory keeps the capacity pass's
+// summary: pass "capacity", the unbound extras sentence, no producer. A run without the v7 seam
+// names its producer and carries no v7 block.
+TEST(NavSummaryBinding, SummaryIsLastAndBindsTheExtrasAndTheCapacitySummary) {
+  PinBench bench;
+  const auto root = bench.dir.path / "bound";
+  std::ostringstream out, err;
+  ASSERT_EQ(nav_cli(nav_args(bench.artifact, root, {"--capacity-curve"}), out, err), 0)
+      << err.str();
+  const auto summary = read_json(root / "summary.json");
+  ASSERT_TRUE(summary.at("v7").contains("files"));
+  const auto& files = summary.at("v7").at("files");
+  const auto extras_sha = co::sha256_file((root / "v7_extras.json").string()).value();
+  const auto capacity_sha =
+      co::sha256_file((root / "capacity" / "summary.json").string()).value();
+  EXPECT_EQ(files.at("v7_extras.json"), extras_sha);
+  EXPECT_EQ(files.at("capacity/summary.json"), capacity_sha);
+  EXPECT_EQ(files.size(), 2U);
+  const auto extras = read_json(root / "v7_extras.json");
+  EXPECT_EQ(extras.at("files").at("capacity/summary.json"), capacity_sha);
+  EXPECT_EQ(extras.at("files").at("capacity_curve.csv"),
+            co::sha256_file((root / "capacity_curve.csv").string()).value());
+  EXPECT_NE(summary.at("v7").at("extras").get<std::string>().find("before this summary"),
+            std::string::npos);
+  EXPECT_EQ(summary.at("v7").at("declarations").at("pass"), "main");
+  // Written last: no file of the directory (the capacity directory's included) is newer.
+  const auto last = std::filesystem::last_write_time(root / "summary.json");
+  usize files_seen = 0;
+  for (const auto& e : std::filesystem::recursive_directory_iterator(root)) {
+    if (!e.is_regular_file()) continue;
+    ++files_seen;
+    EXPECT_LE(e.last_write_time(), last) << e.path().string();
+  }
+  EXPECT_GE(files_seen, 2U * 5U + 2U * 5U + 6U);
+  const auto& producer = summary.at("producer");
+  EXPECT_FALSE(producer.at("engine_git_sha").get<std::string>().empty());
+  const auto build = producer.at("build_type").get<std::string>();
+  EXPECT_TRUE(build == "release" || build == "debug") << build;
+  EXPECT_TRUE(producer.at("definition").is_string());
+  // The capacity directory: the capacity pass's summary bytes (unbound, no producer).
+  const auto capacity = read_json(root / "capacity" / "summary.json");
+  EXPECT_FALSE(capacity.contains("producer"));
+  EXPECT_FALSE(capacity.at("v7").contains("files"));
+  EXPECT_EQ(capacity.at("v7").at("declarations").at("pass"), "capacity");
+  EXPECT_NE(capacity.at("v7").at("extras").get<std::string>().find("after this summary"),
+            std::string::npos);
+  EXPECT_EQ(capacity.at("recipe_sha256"),
+            co::sha256_hex(read_json(root / "capacity" / "recipe.json").dump()).value());
+  // A run without the v7 seam: the producer, no v7 block, no v7 file.
+  const auto plain = bench.dir.path / "plain";
+  ASSERT_EQ(nav_cli(nav_args(bench.artifact, plain), out, err), 0) << err.str();
+  const auto plain_summary = read_json(plain / "summary.json");
+  EXPECT_FALSE(plain_summary.contains("v7"));
+  EXPECT_EQ(plain_summary.at("producer"), producer);
+  EXPECT_FALSE(std::filesystem::exists(plain / "v7_extras.json"));
+}
+
+// P9 C1 (deliverable 2) through the command line: --capacity-curve runs the capacity books in the
+// main lockstep (one replay, no second dispatch) and publishes <output>/capacity with the five
+// capacity books' daily and events files; the x1 capacity book's daily and events files are the
+// main primary S2 book's byte for byte, the curve has one row per multiple, and the main
+// directory's daily and events files are those of the run without the curve, byte for byte.
+TEST(NavCapacityLockstep, CliPublishesTheCapacityDirectoryFromOneLockstep) {
+  PinBench bench;
+  const auto curve = bench.dir.path / "curve";
+  const auto plain = bench.dir.path / "plain";
+  std::ostringstream out, err;
+  ASSERT_EQ(nav_cli(nav_args(bench.artifact, curve, {"--capacity-curve"}), out, err), 0)
+      << err.str();
+  ASSERT_EQ(nav_cli(nav_args(bench.artifact, plain), out, err), 0) << err.str();
+  usize compared = 0;
+  for (const auto& e : std::filesystem::directory_iterator(plain)) {
+    const auto name = e.path().filename().string();
+    if (name.rfind("daily_", 0) != 0 && name.rfind("events_", 0) != 0) continue;
+    EXPECT_TRUE(file_bytes(e.path()) == file_bytes(curve / name)) << name;
+    ++compared;
+  }
+  EXPECT_EQ(compared, 10U); // 5 tiered books x (daily, events)
+  const auto capacity = read_json(curve / "capacity" / "summary.json");
+  ASSERT_EQ(capacity.at("scenarios").size(), st::cost_v2::capacity_multiples.size());
+  const std::string primary =
+      read_json(curve / "summary.json").at("primary_scenario").get<std::string>();
+  const std::string unit = capacity.at("primary_scenario").get<std::string>();
+  EXPECT_EQ(unit.rfind("capacity-x1-v1", 0), 0U) << unit;
+  for (const char* kind : {"daily_", "events_"})
+    EXPECT_TRUE(file_bytes(curve / "capacity" / (kind + unit + ".csv")) ==
+                file_bytes(curve / (kind + primary + ".csv")))
+        << kind;
+  const auto extras = read_json(curve / "v7_extras.json");
+  EXPECT_EQ(extras.at("capacity").size(), st::cost_v2::capacity_multiples.size());
+  EXPECT_EQ(extras.at("capacity_x1_equals_primary_bit_for_bit"), true);
+  EXPECT_EQ(lines(curve / "capacity_curve.csv").size(),
+            st::cost_v2::capacity_multiples.size() + 1);
 }
 
 // ---- v8 E-25 (Ruling E-25): nav --label-role, the role that MARKS the books ----
