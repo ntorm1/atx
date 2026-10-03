@@ -670,3 +670,102 @@ session scratchpad `m1c/`.
   matched `financing`, the `scenarios[*].financing` blocks (TRAIN 2020-2023 financing dollars / shares) of
   `p9-d1-x5-nav` and its `capacity/summary.json`. Nothing dated 2024-01-01 or later; no comparison or decision used
   them (identity is SHA and path only); every later print was paths, SHAs or header names.
+
+### Slot 8 Release clause (C1 report §4 run (b), G-P3 NAV half)
+
+The Debug results above were committed first (`61ac4423`). Then:
+
+- **Memory gate:** `research-build.ps1 -Preset equity-rel -DryRun` -> Admitted True (free 5,648 MiB, commit 8,240
+  MiB); no wait was needed.
+- **Configure** (first Release tree in pool-2): `scripts\atx-build.ps1 configure -Preset equity-rel` -> exit 0,
+  121 s; `build-equity-rel/` (gitignored `build-*/`), deps fetched into `deps/equity-rel` (S1's preset), vcpkg
+  packages already installed; engine_git_sha `61ac4423...-dirty` (configure-time HEAD; code = `b52a5de7`). The one
+  `NativeCommandError` line in the log is PowerShell wrapping cmake's stderr notice `# date: USE_SYSTEM_TZ_DB OFF`.
+- **Build p9-1j** (equity-rel, source `61ac4423` = `b52a5de7` + docs, DirtyEntries 4 outside the code pathspec, 4
+  jobs, free 4,896 MiB): exactly C1's three targets -> **exit 0, 802.6 s, 314 TUs (from scratch), 11 links**.
+  Warnings: **0 first-party**; the log has 11 "warning" lines, all third-party: 7 x `clang-cl: warning: argument
+  unused during compilation: '/MP'` on the FetchContent spdlog TUs (`deps/equity-rel/spdlog-build`), and 4 lines from
+  the vendored `atx-core/third-party/databento-cpp` (`getenv` deprecated, `historical.cpp:1142`, `live.cpp:18`, plus
+  two "1 warning generated"). First-party code builds under `/W4 /WX`, so any first-party warning would have failed
+  the build. Executables: targets **`93ea323ea02817ef8c7b6c84f304332718bc7b3ed6e46a6c61f7a96dc5b266cc`**,
+  target-tests `671d9e44...bd01`, w1-cost-tests `51011f9e...ec31`.
+- **gtests, Release:**
+
+  | binary / filter | result |
+  |---|---|
+  | `atx-engine-w1-cost-tests --gtest_filter=ReplayCostSqrt.*` (the Release half of the sqrt probe) | 3 passed |
+  | `atx-engine-w1-cost-tests` (whole) | 49 passed |
+  | `atx-impl-strategy-target-tests` C1 new filter (includes `ReplayCostSqrt.CapacityLawAndS2MarginalCostBitsArePinned`) | 13 passed |
+  | `atx-impl-strategy-target-tests` (whole) | **336 passed, 2 FAILED**: `BookNormalScore.TiesShareTheMeanRankAndMirrorsAreOpposite`, `BookNormalScore.FixtureTellsWrongRulesApart` |
+
+  **The two Release failures are not from C1 and predate wave 1.** Both are `EXPECT_EQ` of
+  `engine::book::normal_scores` output against `eval::norm_ppf(u)` that misses by 1 ULP in Release only
+  (`book_normal_score_test.cpp:57`: `out[4]` 0.96742156610170082 vs `norm_ppf(10/12)` ...071; `:76`: `top`
+  3.0908256489420887 vs `norm_ppf(1001/1002)` ...891). The kernel is header-only (`normal_score.hpp`), from v8 commit
+  `02633038` (Y-3 norm-score-v1); `git diff d7c1c520 HEAD` is empty for `normal_score.hpp`, the test and every
+  `norm_ppf` header (`deflated_sharpe.hpp`, `decay_monitor.hpp`), and C1 touches none of them. The same binary in Debug
+  passes 338/338. No Release build of this test existed before (pool-2 had no Release tree). Not a known red under
+  M1a-RED, so the M1a-RED gate ("failure set == exactly the three") needs a ruling. I fixed nothing and edited no
+  expectation. Exposure: only `--rank-shape norm-score-v1` books (the Y-3 template) call this kernel. X-5 has no rank
+  shape, so the NAV identity below does not cover it.
+- **Identity: X-5 NAV, Release vs stage-2 Debug.** Same argv; only the exe path and `--output` changed (`navrun.py`:
+  positions 0 and 15); `--build-type Release`; same limits.
+
+  | run | exe | outcome | wall | peak RSS | min free |
+  |---|---|---|---|---|---|
+  | `p9-c1-rel-x5-nav(-run)` | p9-1j `93ea323e` | completed, exit 0 | 41.7 s (Debug: 62.6 s) | 581 MiB | 2,220 MiB |
+
+  | compared with `p9-c1-s2-x5-nav` | expected | observed | match |
+  |---|---|---|---|
+  | 26 files other than `summary.json` (all CSVs, both recipes, `capacity/summary.json`, `v7_extras.json`) | byte-identical | 26 / 26 identical | **yes** |
+  | `summary.json` (`5c34142b` -> `42581a3d`) | only `/producer` | CHANGED `/producer/build_type` (debug -> release), `/producer/engine_git_sha` (`1239a5ff...-dirty` -> `61ac4423...-dirty`, the two trees' configure commits); 0 other leaves; the object minus `producer` is equal | **yes** |
+
+  **Release clause holds:** with `sqrt` in, the Release NAV of X-5 equals Debug bit for bit outside `producer`. The
+  plan §2.4 C1 fallback (NAV stays Debug) is not triggered, and G-P3's NAV half is shown on X-5 at this build. Neither
+  `guarded_move`'s `std::log` nor the p95 / cagr CRT calls moved a byte on this book set.
+- **Trial ledger:** 0 trials; 133 lines, `27e40f9f` (re-checked after the Release run).
+
+### M1c commits (first-parent, on `d656bbfa`)
+
+| commit | what |
+|---|---|
+| `02d6232b` | DEC-20 substitution list in `integration-log.md`, before any C1 run |
+| `d71cabe1` | merge C1 step 1/2: `dd925b7f` (sqrt), the stage-1 source |
+| `b52a5de7` | merge C1 step 2/2: `10c35df3` (whole lane), the stage-2 source; code tree = single-merge tree `7ead85f7` |
+| `61ac4423` | Debug results (report section, log row) |
+| (next) | Release clause + this hand-off, the log, `progress.md` (PM's pending lines unedited + `- M1c result:`) |
+| (next) | PM / doc files as they were in the tree: sprint plan, `wave2-carry.md`, `wave2-lane-dispatch.md` |
+
+### For M1d (post-merge gates) and the whole-wave review
+
+- **Status: M1c DONE, with one item for a PM ruling:** the Release-only `BookNormalScore` pair above (v8 code, not a
+  merge result). Until it is ruled, a Release run of `atx-impl-strategy-target-tests` (or a Release `ctest` over it)
+  fails exactly these two, besides the three M1a-RED known reds. C1's slot found no slip, no design error and no
+  identity difference outside the written list.
+- **Next free build tag: `p9-1k`** (p9-1g stage-1 exe, p9-1h C1 Debug, p9-1i earlier lanes after C1, p9-1j C1 Release).
+- **Wave-1 code head = `b52a5de7`** (all 8 slots; my later commits are docs only).
+- **bin now (equity-dev, Debug):** targets `bf4b0ec2`, target-tests `64da5532`, w1-cost-tests `ca235cb8`, ic
+  `a1ceb9e0`, ic-tests `f970bf08`, impl-tests `0de252d5`; unchanged from M1b: admission `416966bc`, admission-tests
+  `c2b35ce7`, fields exe `666ae58f`.
+- **Release tree now exists:** `build-equity-rel/` (configured at `61ac4423`, deps in `deps/equity-rel`), holding
+  Release targets `93ea323e`, target-tests `671d9e44`, w1-cost-tests `51011f9e`. M1d's Release IC adoption (S1's
+  deferred Release gtests and marginal) and the Release canary build on it. Expect it to compile only the IC closure
+  now. A from-scratch Release build cost 803 s at 4 jobs.
+- **Debug configure provenance is stale:** `build-equity` was last configured at `1239a5ff` (no CMake change since),
+  so a Debug NAV `summary.json` `/producer/engine_git_sha` reads `1239a5ff...-dirty`. That matches the field's own
+  definition (configure-time commit), but it does not name the code head. If P9-B0's re-based reference or the canary
+  goldens should carry the current commit, reconfigure the Debug tree first (`atx-build.ps1 configure -Preset
+  equity-dev`). `producer` is dropped from every cross-build comparison and is on the DEC-20 list either way.
+- **P9-B0 (DEC-20), C1 part:** the NAV substitution list for any parent NAV re-run under this build is the union of my
+  stage-1 and stage-2 lists (integration log "M1c"). Sqrt may move the S2-family / capacity CSVs and the matching
+  `summary.json` / `capacity/summary.json` / `v7_extras.json` paths. Structure adds `/v7/files`, `/producer`,
+  `/v7/extras` (text) and `v7_extras` `/files/capacity/summary.json`. On X-5 the observed sqrt move is small: 8
+  dailies, `daily_csv_sha256` leaves and 1 cost leaf, with no events file, curve or TC file. The new Debug X-5 NAV
+  reference is `build-equity/p9-c1-s2-x5-nav` (S2 daily `75a54774`); the Release twin is `p9-c1-rel-x5-nav`.
+- **Canary goldens (G-P8):** T1's goldens are recorded after C1, which is now merged. Record them on equity-dev, then
+  equity-rel (`research-build.ps1 -Canary` / `-CanaryRecord`; `--record` needs the re-pin flag). The tag must build both
+  canary exes (ic + targets).
+- **Reference exes kept** (with DLLs): `build-equity/p9-m1c-ref-targets-pre-c1` (`f0ee3908`, p9-1f, pre-C1), plus
+  M1b's three.
+- **Host:** free memory 2.2-6.2 GB during my runs; another tree's build (pool-21) and pytest ran alongside. I left no
+  process of my own (checked at hand-off).
