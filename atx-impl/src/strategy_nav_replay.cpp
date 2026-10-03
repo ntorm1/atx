@@ -338,6 +338,14 @@ co::Status validate_nav_config(const NavReplayConfig& cfg) {
     return co::Err(co::ErrorCode::InvalidArgument,
                    "nav replay: a leverage rule (risk-target-v1, vol-target-v1) needs "
                    "aim-partial-v5, whose aim is aim_leverage x desired");
+  // P9 C2 (carried C1 minors): the rule reads the pinned atx-risk-v1 store, and risk-target-v1
+  // its S, b and C in their declared ranges, here as well as at the v7 command line, so a config
+  // built in code cannot reach the scaler without them (vol-target-v1's constants are fixed).
+  if (law != NavLeverageLaw::Fixed && !cfg.leverage.risk)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: a leverage rule needs the pinned atx-risk-v1 store (none given)");
+  if (law == NavLeverageLaw::RiskTargetV1)
+    ATX_TRY_VOID(bk::validate_risk_target(cfg.leverage.params));
   if (!std::isfinite(cfg.initial_nav) || cfg.initial_nav <= 0 || cfg.liquidity_window < 2 ||
       cfg.liquidity_window > max_dates || cfg.min_vol_pairs < 2 ||
       cfg.min_vol_pairs > cfg.liquidity_window || !cfg.max_events ||
@@ -1271,6 +1279,78 @@ struct SharedDecision {
   // [d - w, d)), formed once here when some book has v7 state; null otherwise.
   const cost_v2::DecisionLiquidity* liquidity{};
 };
+// P9 C2 (--calibrate-gross): the shared construction of every decision of one run_books call,
+// recorded by the calibration pass and restored by the published pass instead of forming it
+// again: what the books read of decide_construction's work, i.e. the effective rebalance, the
+// tier census and construction record, the desired target after every cadence decision (the
+// only decisions that write it) and, with borrow tiers, every decision's tier and missing flags
+// (MARK, the locate block and the holdings export read them). The construction's own state (the
+// hold band, the price-exposure ring, the locate-in-aim mask, the tier scan) is read by no book,
+// so a restored decision hands every book the bytes the formed one would. Valid only while the
+// construction reads nothing that differs between the passes (run_nav_replay decides).
+struct ConstructionTape {
+  struct Decision {
+    usize t{};
+    bool cadence{}, rebalance{};
+    TierCensus census;
+    ConstructionDay construction;
+  };
+  bool replay{}; // false: record
+  std::vector<Decision> decisions;
+  std::vector<f64> desired;      // names values per cadence decision, in order
+  std::vector<u8> tier, missing; // names values per decision (borrow tiers only)
+  usize next{}, next_desired{}, next_tier{}; // replay cursors
+};
+// The record's size bound for `decisions` decisions of `names` names (every decision a cadence
+// decision; tiered: two flag bytes per name).
+u64 construction_tape_bytes(usize decisions, usize names, bool tiered) {
+  const u64 per_name = sizeof(f64) + (tiered ? 2U : 0U);
+  return u64{decisions} * (sizeof(ConstructionTape::Decision) + u64{names} * per_name);
+}
+void record_construction(ConstructionTape& tape, usize t, bool cadence,
+                         const Construction& shared, const BorrowTiers& tiers,
+                         const SharedDecision& decided) {
+  tape.decisions.push_back({t, cadence, decided.rebalance, decided.census, decided.construction});
+  if (cadence) tape.desired.insert(tape.desired.end(), shared.desired.begin(), shared.desired.end());
+  if (tiers.active) {
+    tape.tier.insert(tape.tier.end(), tiers.tier.begin(), tiers.tier.end());
+    tape.missing.insert(tape.missing.end(), tiers.missing.begin(), tiers.missing.end());
+  }
+}
+// Decision t of the published pass from the record (Internal on any mismatch: the record is
+// of another calendar, so nothing may be restored from it).
+co::Status restore_construction(ConstructionTape& tape, usize t, bool cadence,
+                                Construction& shared, BorrowTiers& tiers,
+                                SharedDecision& decided) {
+  const auto broken = [] {
+    return co::Err(co::ErrorCode::Internal,
+                   "nav calibrate: the recorded construction does not match the published pass");
+  };
+  if (tape.next >= tape.decisions.size()) return broken();
+  const auto& rec = tape.decisions[tape.next];
+  if (rec.t != t || rec.cadence != cadence) return broken();
+  const usize n = shared.desired.size();
+  if (cadence) {
+    if (tape.desired.size() - tape.next_desired < n) return broken();
+    const auto from = tape.desired.begin() + static_cast<std::ptrdiff_t>(tape.next_desired);
+    std::copy(from, from + static_cast<std::ptrdiff_t>(n), shared.desired.begin());
+    tape.next_desired += n;
+  }
+  if (tiers.active) {
+    if (tape.tier.size() - tape.next_tier < n) return broken();
+    const auto at = static_cast<std::ptrdiff_t>(tape.next_tier);
+    const auto width = static_cast<std::ptrdiff_t>(n);
+    std::copy(tape.tier.begin() + at, tape.tier.begin() + at + width, tiers.tier.begin());
+    std::copy(tape.missing.begin() + at, tape.missing.begin() + at + width,
+              tiers.missing.begin());
+    tape.next_tier += n;
+  }
+  decided.rebalance = rec.rebalance;
+  decided.census = rec.census;
+  decided.construction = rec.construction;
+  ++tape.next;
+  return co::Ok();
+}
 // A book's second phase of session t: its DECIDE (on a decision session), close, the
 // final-session report, then (scored rows only) the observer and the row. Book-owned
 // state only (the observed book alone touches the sink and `holdings`); per-name-v1 rates
@@ -1306,12 +1386,15 @@ co::Status close_book(const TargetReplayInput& x, const Ctx& c, Book& b,
 // on `pool` when given (engine for_each_lane: lane-owned writes only, the lowest failing
 // book's error). An observer only reads the observed book (its trace is written beside,
 // never read by, the arithmetic). `stages` (--stage-timers) receives the construction and
-// exposure seconds.
+// exposure seconds. `tape` (P9 C2, --calibrate-gross; null: every decision formed here, the
+// path before C2): record mode appends every decision's shared construction, replay mode
+// restores it instead of decide_construction.
 co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
                                                    const NavFinancingFields& fields,
                                                    std::span<const Ctx> ctxs,
                                                    const Observer& observer,
-                                                   par::DetPool* pool, StageClock* stages) {
+                                                   par::DetPool* pool, StageClock* stages,
+                                                   ConstructionTape* tape = nullptr) {
   const usize begin = x.decision_begin, end = x.decision_end, count = ctxs.size();
   // The shared construction's config (neutralization, price risk, guard) is every book's:
   // replay_books admits only variants that agree on it (with the ADV cap also on the aim
@@ -1387,9 +1470,14 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
       });
       const auto started = stages ? std::chrono::steady_clock::now()
                                  : std::chrono::steady_clock::time_point{};
-      ATX_TRY(decided.rebalance,
-              decide_construction(x, fields, base, t, cadence, {}, shared, tiers,
-                                  decided.census, decided.construction));
+      if (tape && tape->replay) {
+        ATX_TRY_VOID(restore_construction(*tape, t, cadence, shared, tiers, decided));
+      } else {
+        ATX_TRY(decided.rebalance,
+                decide_construction(x, fields, base, t, cadence, {}, shared, tiers,
+                                    decided.census, decided.construction));
+        if (tape) record_construction(*tape, t, cadence, shared, tiers, decided);
+      }
       if (stages) stages->construction += seconds_since(started);
       // P9 C1: the v7 rules' decision liquidity, once for every book of a rebalance decision
       // (the same function and inputs each book's rule read before: x's rows [t - w, t)).
@@ -1420,6 +1508,11 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
         return refuse_inert_warm_start(x, warm);
     }
   }
+  // P9 C2: a restored pass consumed the whole record (else it was another calendar's).
+  if (tape && tape->replay && tape->next != tape->decisions.size())
+    return co::Err(co::ErrorCode::Internal,
+                   "nav calibrate: the recorded construction has decisions the published pass "
+                   "never reached");
   // Accumulated: a grid of several leverage groups (review A-1) calls run_books per group.
   if (stages) stages->exposures += shared.price.exposure.ring.seconds;
   std::vector<NavReplayResult> results;
@@ -2387,10 +2480,13 @@ std::vector<std::vector<usize>> book_groups(std::span<const NavReplayConfig> con
 // the ADV cap at several aim leverages or NAV multiples, or two-speed-v1 at several leverages,
 // one per book group: book_groups). One variant is replay_nav_scenarios: the same validation
 // and the same books. P9 C1: each config gets the v7 seam's leverage rule (v7::configure) and
-// the books' records join the seam's after the replay (v7::observe).
+// the books' records join the seam's after the replay (v7::observe). P9 C2: `tape` is handed to
+// a one-group run_books (InvalidArgument for several groups); observe false (the calibration
+// pass) keeps the books' records out of the seam's.
 co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
     const NavReplayInput& in, std::span<const NavReplayConfig> variants,
-    std::span<const NavScenario> scenarios, const Observer& observer, StageClock* stages) {
+    std::span<const NavScenario> scenarios, const Observer& observer, StageClock* stages,
+    ConstructionTape* tape = nullptr, bool observe = true) {
   if (scenarios.empty() || scenarios.size() > max_scenarios)
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: 1..16 scenarios per replay");
   if (variants.empty() || variants.size() > nav_max_grid_variants)
@@ -2481,7 +2577,10 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
     std::vector<NavReplayResult> flat(books);
     const auto groups = book_groups(configs);
     if (groups.size() == 1) { // every book in one lockstep run (always without the cap)
-      ATX_TRY(flat, run_books(x, in.financing, ctxs, observer, pool.get(), stages));
+      ATX_TRY(flat, run_books(x, in.financing, ctxs, observer, pool.get(), stages, tape));
+    } else if (tape) {
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav calibrate: a recorded construction serves one lockstep group only");
     } else {
       // Review A-1 (P9 C1: and the capacity multiples): each group of books with one leverage
       // and multiple runs its own lockstep (its shared construction capped at that leverage
@@ -2500,7 +2599,9 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
         for (usize j = 0; j < part.size(); ++j) flat[group[j]] = std::move(part[j]);
       }
     }
-    v7::observe(flat); // P9 C1: the books' records join the v7 seam's (identity without it)
+    // P9 C1: the books' records join the v7 seam's (identity without it); P9 C2: not those of a
+    // calibration pass, which publishes nothing.
+    if (observe) v7::observe(flat);
     std::vector<std::vector<NavReplayResult>> out(variants.size());
     for (usize k = 0; k < books; ++k) out[k / scenarios.size()].push_back(std::move(flat[k]));
     return co::Ok(std::move(out));
@@ -2741,6 +2842,10 @@ struct NavRun {
   std::span<const NavSummary> capacity_summaries{};
   const v7::RunRecords* records{};
   bool capacity_pass{};
+  // P9 C2: summary.json's calibration record (--calibrate-gross; null: no key). The main
+  // directory only; the recipe never records it (the decide path's recipe pin stays the plain
+  // run's at the final leverage).
+  const Json* calibration{};
 };
 // The summary's warm_start record; null without a warm start. Called after the replay
 // accepted the input (warm_start_sessions <= decision_begin). The role rows of the first
@@ -2911,6 +3016,7 @@ co::Status publish_nav(const NavRun& run, std::ostream& progress) {
     progress << "nav replay stage seconds: " << summary.at("stage_seconds").dump() << '\n';
   }
   if (!run.capacity_pass) summary["producer"] = producer_json(); // P9 C1
+  if (run.calibration && !run.capacity_pass) summary["calibration"] = *run.calibration; // P9 C2
   return write_json(dir / "summary.json", summary);
 }
 // P9 C1: <output>/capacity, the capacity books' directory (recipe.json, daily and events CSVs,
@@ -3328,17 +3434,105 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
                           const NavFieldsPin& fields, const NavRateOptions& rate,
                           const NavExecutionOptions& execution, const NavEmitOptions& emit,
                           std::ostream& progress) {
+  return run_nav_replay(cfg, limits, fields, rate, execution, emit, NavCalibrateOptions{},
+                        progress);
+}
+
+namespace {
+// P9 C2: the options, the rule they need (aim_leverage is aim-partial-v5's key) and no spo rule
+// (its engines keep the rows of every replay of the process, pass 1's included).
+co::Status check_calibrate(const TargetReplayConfig& target, const NavCalibrateOptions& options) {
+  ATX_TRY_VOID(validate_calibrate(options));
+  if (!options.on()) return co::Ok();
+  if (target.rule != TargetReplayRule::AimPartialV5)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav calibrate: --calibrate-gross needs --rule aim-partial-v5 (its aim "
+                   "leverage is what PM6-6 corrects)");
+  if (v7::shared_plan_state())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav calibrate: --calibrate-gross is refused with an spo rule (its engines "
+                   "would keep the calibration pass's rows)");
+  return co::Ok();
+}
+// The S2 book's all-rows mean gross leverage: numpy's mean of its daily gross_leverage column
+// over every row (nav_summ mean_gross_leverage_all_rows).
+f64 all_rows_gross(const NavReplayResult& book) {
+  std::vector<f64> gross;
+  gross.reserve(book.days.size());
+  for (const auto& day : book.days) gross.push_back(day.gross_leverage);
+  return numpy_mean(gross);
+}
+template <class T> u64 bytes_of(const std::vector<T>& v) { return u64{v.size()} * sizeof(T); }
+// What the admitted run holds after its load (blend, fields, label marks).
+u64 payload_bytes(const AdmittedRun& a) {
+  const auto& b = a.blend;
+  return bytes_of(b.signal) + bytes_of(b.close) + bytes_of(b.raw) + bytes_of(b.volume) +
+         bytes_of(b.member) + bytes_of(b.present) + bytes_of(b.sessions) + bytes_of(b.ids) +
+         bytes_of(b.sleeve_fast) + bytes_of(b.sleeve_slow) + bytes_of(b.sleeve_fast_share) +
+         bytes_of(a.fields.shares_out) + bytes_of(a.fields.si_shares) +
+         bytes_of(a.fields.industry) + bytes_of(a.label.close) + bytes_of(a.label.raw) +
+         bytes_of(a.label.present);
+}
+// Whether pass 2 may replay pass 1's construction: the construction reads nothing that differs
+// between the passes (adv-hold-v1's cap reads L, two-speed-v1's F moves toward L and DECIDE reads
+// it, and the holdings export of a declared hold band reads the band state, which a restored
+// pass does not advance), and its record fits what --max-bytes leaves after the workspace
+// reserve of every book and the load (max_working_bytes is a recipe key: it is never raised).
+bool construction_reusable(const TargetReplayRunConfig& cfg, const NavReplayConfig& base,
+                           const AdmittedRun& admitted, usize books, bool tiered,
+                           bool holdings) {
+  const auto& target = base.target;
+  if (target.adv_hold_q > 0 || two_speed_on(target) || (holdings && hold_band_declared(target)))
+    return false;
+  const auto& blend = admitted.blend;
+  const u64 reserve = nav_workspace_reserve_bytes(base, books, tiered, blend.names,
+                                                  blend.end - blend.begin, holdings);
+  const u64 held = reserve + payload_bytes(admitted);
+  if (cfg.target.max_working_bytes <= held) return false;
+  const usize decisions = blend.end - blend.begin + base.warm_start_sessions;
+  return construction_tape_bytes(decisions, blend.names, tiered) <=
+         cfg.target.max_working_bytes - held;
+}
+// P9 C2 pass 1: the primary S2 book alone at the requested leverage (no other main book, no
+// capacity book, no observer; the v7 seam's records untouched), recording the shared construction
+// into `tape` when given; then PM6-6's step (strategy_nav_calibrate.hpp).
+co::Result<NavCalibration> calibration_pass(const NavReplayInput& input,
+                                            const NavReplayConfig& requested,
+                                            std::span<const NavScenario> scenarios,
+                                            const NavCalibrateOptions& options,
+                                            ConstructionTape* tape, StageClock* stages) {
+  const auto primary = scenarios.subspan(nav_primary_scenario_index, 1);
+  ATX_TRY(const auto pass, replay_books(input, std::span<const NavReplayConfig>(&requested, 1),
+                                        primary, Observer{}, stages, tape, false));
+  NavCalibration c;
+  c.options = options;
+  c.leverage_requested = requested.target.aim_leverage;
+  c.gross_requested = all_rows_gross(pass.front().front());
+  ATX_TRY(c.step, calibrate_step(c.leverage_requested, options.target_gross, c.gross_requested,
+                                 options.tolerance));
+  c.construction_reused = tape != nullptr;
+  return co::Ok(std::move(c));
+}
+} // namespace
+
+co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
+                          const NavFieldsPin& fields, const NavRateOptions& rate,
+                          const NavExecutionOptions& execution, const NavEmitOptions& emit,
+                          const NavCalibrateOptions& calibrate, std::ostream& progress) {
   try {
     StageTimes times; // --stage-timers: the clock starts at entry
     StageTimes* const timed = emit.stage_timers ? &times : nullptr;
     ATX_TRY_VOID(check_run(cfg, limits, fields, execution.label_role));
+    ATX_TRY_VOID(check_calibrate(cfg.target, calibrate)); // P9 C2
     const bool tiered = !fields.manifest_path.empty();
     // L4 hook: the books; P9 C1: the capacity books of --capacity-curve in the same lockstep,
     // from lockstep.capacity_begin on (lockstep.books.size() without them).
     const auto lockstep = v7::lockstep_scenarios(nav_scenario_matrix(tiered));
     const auto& scenarios = lockstep.books;
     const usize main_books = lockstep.capacity_begin;
-    const auto base = run_base(cfg.target, rate, execution);
+    // P9 C2: the run as requested (admission, the calibration pass); without --calibrate-gross
+    // the published run is exactly this one.
+    const auto requested = run_base(cfg.target, rate, execution);
     const bool holdings = !emit.holdings_directory.empty();
     if (holdings) {
       const auto nav_dir = std::filesystem::path(cfg.output_directory);
@@ -3350,7 +3544,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     }
     // Admission (the reserve at the pinned role's own geometry, then the fields and the
     // loader against the rest) and the pinned load (v8 E-25: with the label role's marks).
-    ATX_TRY(auto admitted, admit_and_load(cfg, base, fields, scenarios.size(), holdings,
+    ATX_TRY(auto admitted, admit_and_load(cfg, requested, fields, scenarios.size(), holdings,
                                           execution.label_role));
     times.loaded = StageTimes::Clock::now();
     const auto& blend = admitted.blend; const auto& loaded = admitted.fields;
@@ -3360,22 +3554,60 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     const NavReplayInput input{view, blend.volume,
                                NavFinancingFields{loaded.shares_out, loaded.si_shares},
                                NavMarkPrices{marks.close, marks.raw, marks.present}};
+    StageClock* const stages = timed ? &times.replay : nullptr;
+    // P9 C2 (--calibrate-gross): pass 1 on this load, then the published run at the final
+    // leverage; `published` is the plain run's config at that leverage (cfg without the flag).
+    TargetReplayRunConfig published = cfg;
+    NavCalibration calibration;
+    ConstructionTape tape;
+    if (calibrate.on()) {
+      const bool reuse = construction_reusable(cfg, requested, admitted, scenarios.size(), tiered,
+                                               holdings);
+      ATX_TRY(calibration, calibration_pass(input, requested, scenarios, calibrate,
+                                            reuse ? &tape : nullptr, stages));
+      published.target.aim_leverage = calibration.step.leverage;
+      tape.replay = true;
+      const auto precision = progress.precision(17); // console only
+      progress << "nav calibrate: pass 1 (S2 alone) at L " << calibration.leverage_requested
+               << ": G " << calibration.gross_requested << " vs target "
+               << calibrate.target_gross << " (tolerance " << calibrate.tolerance << ") -> L "
+               << calibration.step.leverage
+               << (calibration.step.corrected ? " (one correction)" : " (kept)")
+               << "; construction " << (reuse ? "reused" : "formed again") << '\n';
+      progress.precision(precision);
+    }
+    const auto base = run_base(published.target, rate, execution);
+    ConstructionTape* const restore =
+        calibrate.on() && calibration.construction_reused ? &tape : nullptr;
     // All scenarios in lockstep: the desired target (and its price exposures) and
     // the borrow tiers are formed once per decision for every scenario book. With
     // --emit-holdings the primary book is observed (read only) while it runs.
-    StageClock* const stages = timed ? &times.replay : nullptr;
+    const auto replay = [&](const Observer& observer) -> co::Result<std::vector<NavReplayResult>> {
+      ATX_TRY(auto grid, replay_books(input, std::span<const NavReplayConfig>(&base, 1),
+                                      scenarios, observer, stages, restore));
+      return co::Ok(std::move(grid.front()));
+    };
     std::vector<NavReplayResult> results;
     HoldingsEmitter csv;
     if (holdings) {
       ATX_TRY_VOID(csv.open(emit.holdings_directory, emit.format, view.instrument_ids,
                             hold_band_declared(base.target)));
-      ATX_TRY(results, replay_observed(input, base, scenarios,
-                                       Observer{&csv, nav_primary_scenario_index}, stages));
+      ATX_TRY(results, replay(Observer{&csv, nav_primary_scenario_index}));
       ATX_TRY_VOID(csv.close());
     } else {
-      ATX_TRY(results, replay_observed(input, base, scenarios, Observer{}, stages));
+      ATX_TRY(results, replay(Observer{}));
     }
     times.replayed = StageTimes::Clock::now();
+    Json calibration_record(nullptr);
+    if (calibrate.on()) {
+      calibration.gross = all_rows_gross(results[nav_primary_scenario_index]);
+      calibration_record = Json::parse(calibration_summary_json(calibration));
+      const auto precision = progress.precision(17); // console only
+      progress << "nav calibrate: published at L " << calibration.step.leverage << ": G "
+               << calibration.gross << " ("
+               << (calibration_matched(calibration) ? "matched" : "NOT matched: a stop") << ")\n";
+      progress.precision(precision);
+    }
     std::vector<NavSummary> summaries; summaries.reserve(scenarios.size());
     for (const auto& result : results) {
       ATX_TRY(auto summary, summarize_nav(result, limits));
@@ -3391,7 +3623,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     const std::span<const NavReplayResult> all_results(results);
     const std::span<const NavSummary> all_summaries(summaries);
     const v7::RunRecords records = v7::run_records(all_scenarios, all_results, all_summaries);
-    const NavRun run{cfg,
+    const NavRun run{published,
                      limits,
                      base,
                      all_scenarios.first(main_books),
@@ -3407,7 +3639,8 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
                      all_results.subspan(main_books),
                      all_summaries.subspan(main_books),
                      v7::installed() ? &records : nullptr,
-                     false};
+                     false,
+                     calibration_record.is_null() ? nullptr : &calibration_record};
     // Console provenance only: the cache changes no published byte, so no file records it.
     if (base.liquidity_cache) progress << "nav replay: shared execution liquidity cache on\n";
     if (!label.is_null())
@@ -3561,7 +3794,7 @@ Json nav_rules_json() {
   return Json{{"schema", nav_rules_schema},
               {"capabilities", Json::array({"leverage-rule-per-book", "capacity-main-lockstep",
                                             "summary-binds-extras", "producer-identity",
-                                            "sqrt-impact-exact"})},
+                                            "sqrt-impact-exact", "calibrate-gross-pm6-6"})},
               {"rules", risk_target::leverage_rules_json()}};
 }
 } // namespace
@@ -3586,6 +3819,7 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
   try {
     TargetReplayRunConfig cfg; NavTurnoverLimits limits; NavFieldsPin fields;
     NavRateOptions rate; NavExecutionOptions execution; NavEmitOptions emit;
+    NavCalibrateOptions calibrate; // P9 C2 --calibrate-gross / --calibrate-tolerance
     std::string grid_path; // v8 --construction-grid
     std::set<std::string> seen;
     for (int i = 1; i < argc; ++i) {
@@ -3655,7 +3889,13 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "(universe.delisting.applied.members_cleared_on_termination_session N), exactly "
                "N cells --role has absent and keeps a member; it must not reach the research "
                "seal and may only add presence to --role's, at its prices; recipe and summary "
-               "record label_role)]\n"
+               "record label_role)] "
+               "[--calibrate-gross G_P [--calibrate-tolerance .005] (P9 C2, Ruling PM6-6 in "
+               "one process: pass 1 = the S2 book alone at --aim-leverage L; G = its all-rows "
+               "mean gross; |G - G_P| > tolerance: ONE correction L' = L x G_P / G to 4 "
+               "decimals, refused outside [1, 2]; the published run is the plain run at the "
+               "final L plus summary.json calibration {..., matched}; aim-partial-v5, not with "
+               "--construction-grid or an spo rule)]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
                "PRIMARY, S3 modeled-1bn-terminal-adverse-v1); costs/borrow are not flags.\n"
                "Without --fields: flat-300-v0 financing only. With the pinned role fields "
@@ -3722,6 +3962,8 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--rate-max") rate.rate_max = real();
       else if (key == "--daily-turnover-mean-max") limits.daily_mean_max = real();
       else if (key == "--daily-turnover-p95-max") limits.daily_p95_max = real();
+      else if (key == "--calibrate-gross") calibrate.target_gross = real(); // P9 C2
+      else if (key == "--calibrate-tolerance") calibrate.tolerance = real();
       else if (key == "--neutralize") {
         if (!detail::parse_neutralize(value, cfg.target))
           throw std::invalid_argument(
@@ -3739,6 +3981,14 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
     if (execution.label_role.manifest_path.empty() !=
         execution.label_role.manifest_sha256.empty())
       throw std::invalid_argument("--label-role and --label-role-sha256 go together");
+    // P9 C2: the tolerance belongs to --calibrate-gross, whose value is a finite gross (a parsed
+    // "nan" would otherwise read as the flag being absent); one run, never a grid.
+    if (seen.count("--calibrate-tolerance") && !seen.count("--calibrate-gross"))
+      throw std::invalid_argument("--calibrate-tolerance needs --calibrate-gross");
+    if (seen.count("--calibrate-gross") && !std::isfinite(calibrate.target_gross))
+      throw std::invalid_argument("--calibrate-gross must be finite and > 0");
+    if (calibrate.on() && !grid_path.empty())
+      throw std::invalid_argument("--calibrate-gross does not take --construction-grid");
     // The rate belongs to aim-partial-v5, its parameters to --rate per-name-v1. A grid
     // checks every variant's own rule (its --rule overrides the base's), as its
     // standalone command line would be checked.
@@ -3764,7 +4014,7 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       if (seen.count(flag) && rate.rate != NavRateRule::PerNameV1)
         throw std::invalid_argument(std::string(flag) + " needs --rate per-name-v1");
     const auto status = grid_path.empty()
-        ? run_nav_replay(cfg, limits, fields, rate, execution, emit, out)
+        ? run_nav_replay(cfg, limits, fields, rate, execution, emit, calibrate, out)
         : run_nav_grid(cfg, limits, fields, rate, execution, emit, grid_path, out);
     if (!status) { err << status.error().to_string() << '\n'; return 1; }
     return 0;

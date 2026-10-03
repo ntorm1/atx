@@ -221,3 +221,6 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
     set_property(SOURCE src/strategy_ic_rules.cpp APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/strategy_ic_rules.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
+# P9 lane C2: nav --calibrate-gross, Ruling PM6-6 in one process (strategy_nav_calibrate.hpp: the numpy
+# mean of the S2 gross, the 4-decimal correction, the summary record).
+target_sources(atx-impl-core PRIVATE src/strategy_nav_calibrate.cpp)

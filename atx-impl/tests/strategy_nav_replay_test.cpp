@@ -3410,3 +3410,110 @@ TEST(ConstructionGrid, RefusesBadGridsBeforeAnyOutput) {
   ASSERT_EQ(run("ok.json", {}), 0) << err.str();
   EXPECT_EQ(file_names(never), (std::vector<std::string>{"a", "grid_manifest.json"}));
 }
+
+namespace {
+std::string calibrate_file_bytes(const std::filesystem::path& p) {
+  std::ifstream in(p, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+std::vector<std::string> calibrate_tree(const std::filesystem::path& root) {
+  std::vector<std::string> names;
+  for (const auto& e : std::filesystem::recursive_directory_iterator(root))
+    if (e.is_regular_file())
+      names.push_back(std::filesystem::relative(e.path(), root).generic_string());
+  std::sort(names.begin(), names.end());
+  return names;
+}
+// The primary S2 book's all-rows mean gross of a published directory as nav_summ computes it:
+// numpy's mean of the daily CSV's gross_leverage column (17 significant digits round-trip).
+f64 calibrate_gross_of(const std::filesystem::path& dir) {
+  const auto label = read_json(dir / "summary.json").at("primary_scenario").get<std::string>();
+  std::ifstream in(dir / ("daily_" + label + ".csv"));
+  std::string line;
+  std::getline(in, line);
+  usize column = 0;
+  {
+    std::stringstream header(line);
+    for (std::string cell; std::getline(header, cell, ',') && cell != "gross_leverage";) ++column;
+  }
+  std::vector<f64> gross;
+  while (std::getline(in, line)) {
+    std::stringstream row(line);
+    std::string cell;
+    for (usize k = 0; k <= column && std::getline(row, cell, ','); ++k) {}
+    gross.push_back(std::stod(cell));
+  }
+  return st::numpy_mean(gross);
+}
+} // namespace
+
+// P9 C2 (--calibrate-gross) with the borrow fields: mixed tiers (MARK's financing, the locate
+// block, the census and the holdings export read the recorded tiers) and aim-partial-v5 at a
+// 3-session cadence. One correction publishes the plain run at L' (the two-process result) byte
+// for byte from pass 1's recorded construction (construction_reused), and the --emit-holdings
+// directory (no hold band: still reused) is the plain run's byte for byte.
+TEST(CalibrateGross, TieredRunReusesTheConstructionByteForByte) {
+  Panel p(36, 10);
+  randomize_rows(p, 17, 0);
+  for (f64& v : p.volume) v *= 1e5; // liquid enough that the $1bn books fill (absent: NaN stays)
+  const auto f = random_fields(p, 29);
+  Directory dir;
+  auto a = write_artifact(dir.path, p);
+  const auto pin = write_fields(dir.path, a, p, f, [](Json&) {});
+  a.cfg.target.rule = st::TargetReplayRule::AimPartialV5;
+  a.cfg.target.cadence = 3;
+  a.cfg.target.trade_fraction = 0.25;
+  std::ostringstream progress;
+  const f64 off = std::numeric_limits<f64>::quiet_NaN();
+  const auto run = [&](const std::string& name, f64 leverage, f64 target,
+                       const std::string& holdings) {
+    auto cfg = a.cfg;
+    cfg.output_directory = (dir.path / name).string();
+    cfg.target.aim_leverage = leverage;
+    st::NavEmitOptions emit;
+    if (!holdings.empty()) emit.holdings_directory = (dir.path / holdings).string();
+    st::NavCalibrateOptions calibrate;
+    calibrate.target_gross = target;
+    calibrate.tolerance = 1e-6; // a 10% gap is a correction whatever the fixture's gross
+    return st::run_nav_replay(cfg, st::NavTurnoverLimits{}, pin, st::NavRateOptions{},
+                              st::NavExecutionOptions{}, emit, calibrate, progress);
+  };
+  const auto first = run("first", 1.5, off, "");
+  ASSERT_TRUE(first) << first.error().to_string();
+  const f64 g = calibrate_gross_of(dir.path / "first");
+  ASSERT_GT(g, 1e-3) << "the fixture's books must build";
+  const f64 target = g * 1.1;
+  const auto corrected = st::leverage_4_decimals(1.5 * target / g);
+  ASSERT_TRUE(corrected);
+  ASSERT_TRUE(*corrected >= 1.0 && *corrected <= 2.0) << *corrected;
+  const auto second = run("second", *corrected, off, "second-holdings");
+  ASSERT_TRUE(second) << second.error().to_string();
+  const auto calibrated = run("calibrated", 1.5, target, "calibrated-holdings");
+  ASSERT_TRUE(calibrated) << calibrated.error().to_string();
+  const auto names = calibrate_tree(dir.path / "calibrated");
+  EXPECT_EQ(names, calibrate_tree(dir.path / "second"));
+  for (const auto& name : names) {
+    if (name == "summary.json") continue;
+    EXPECT_TRUE(calibrate_file_bytes(dir.path / "calibrated" / name) ==
+                calibrate_file_bytes(dir.path / "second" / name)) << name;
+  }
+  auto summary = read_json(dir.path / "calibrated" / "summary.json");
+  EXPECT_EQ(summary.at("primary_scenario"), "modeled-1bn-stale5-v1+swap-fin-v1");
+  const auto calibration = summary.at("calibration");
+  summary.erase("calibration");
+  EXPECT_EQ(summary, read_json(dir.path / "second" / "summary.json"));
+  EXPECT_EQ(calibration.at("corrected"), true);
+  EXPECT_EQ(calibration.at("construction_reused"), true);
+  EXPECT_EQ(std::bit_cast<u64>(calibration.at("leverage").get<f64>()),
+            std::bit_cast<u64>(*corrected));
+  EXPECT_EQ(std::bit_cast<u64>(calibration.at("gross_requested").get<f64>()),
+            std::bit_cast<u64>(g));
+  EXPECT_EQ(std::bit_cast<u64>(calibration.at("gross").get<f64>()),
+            std::bit_cast<u64>(calibrate_gross_of(dir.path / "second")));
+  const auto held = calibrate_tree(dir.path / "calibrated-holdings");
+  EXPECT_EQ(held, calibrate_tree(dir.path / "second-holdings"));
+  EXPECT_GE(held.size(), 3U);
+  for (const auto& name : held)
+    EXPECT_TRUE(calibrate_file_bytes(dir.path / "calibrated-holdings" / name) ==
+                calibrate_file_bytes(dir.path / "second-holdings" / name)) << name;
+}
