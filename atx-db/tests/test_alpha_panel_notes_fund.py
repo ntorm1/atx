@@ -492,3 +492,81 @@ def test_explicit_reportable_container_identity(lake_seg, monkeypatch) -> None:
     # The same generic geographic container is insufficient without filing evidence.
     unrelated=features['0000000020-26-000020']
     assert unrelated.bseg_n==2 and unrelated.bseg_rev_hhi is None
+
+
+def _role(edges, concept='us-gaap_Revenues', name='role-a'):
+    from atx_db.alpha_panel import fund_notes_structure as S
+    return {'role':name,'kind':'presentationLink','invalid':[],
+            'edges':[(concept,S.AXIS,'parent-child'),(S.AXIS,S.DOMAIN,'parent-child')]+[(a,b,'parent-child') for a,b in edges]}
+
+
+def test_disclosed_nested_structure_and_equal_siblings():
+    from atx_db.alpha_panel import fund_notes_structure as S
+    role=_role([(S.DOMAIN,'x_TotalMember'),('x_TotalMember','x_AMember'),('x_TotalMember','x_BMember'),(S.DOMAIN,'x_CMember')])
+    result=S.select_hierarchy([role],'us-gaap_Revenues',{'Total','A','B','C'})
+    assert result['status']=='verified_structure' and result['members']==['A','B','C']
+    # Values deliberately absent: equal-valued distinct siblings cannot change identity.
+    assert S.select_hierarchy([role],'us-gaap_Revenues',{'Total','A','C'})['status']=='incomplete_or_unmapped_partition'
+
+
+def test_structure_conflicts_overlap_ambiguity_and_missing_links():
+    from atx_db.alpha_panel import fund_notes_structure as S
+    nested=_role([(S.DOMAIN,'x_TotalMember'),('x_TotalMember','x_AMember'),('x_TotalMember','x_BMember')])
+    other=_role([(S.DOMAIN,'x_AMember'),(S.DOMAIN,'x_CMember')],name='role-b')
+    assert S.select_hierarchy([nested,other],'us-gaap_Revenues',{'Total','A','B','C'})['status']=='conflicting_roles'
+    overlap=_role([(S.DOMAIN,'x_PMember'),(S.DOMAIN,'x_QMember'),('x_PMember','x_AMember'),('x_QMember','x_AMember')])
+    assert S.select_hierarchy([overlap],'us-gaap_Revenues',{'P','Q','A'})['status']=='invalid_role_graph'
+    flat=_role([(S.DOMAIN,'x_TotalMember'),(S.DOMAIN,'x_AMember'),(S.DOMAIN,'x_BMember')])
+    assert S.select_hierarchy([flat],'us-gaap_Revenues',{'Total','A','B'})['status']=='flat_ambiguous'
+    assert S.select_hierarchy([],'us-gaap_Revenues',{'A','B'})['status']=='missing_links'
+    # Cowen-style custom Economic Income concept is not equivalent to GAAP Revenues.
+    assert S.select_hierarchy([_role([(a,b) for a,b,_ in nested['edges'][2:]],concept='x_EconomicIncomeRevenue')],'us-gaap_Revenues',{'Total','A','B'})['status']=='missing_links'
+
+
+def test_structure_primary_context_period_and_concept():
+    from atx_db.alpha_panel import fund_notes_structure as S
+    html=b'''<xbrli:context id="current"><xbrli:period><xbrli:startDate>2024-01-01</xbrli:startDate><xbrli:endDate>2024-12-31</xbrli:endDate></xbrli:period><xbrldi:explicitMember dimension="us-gaap:StatementBusinessSegmentsAxis">x:AMember</xbrldi:explicitMember></xbrli:context><ix:nonFraction name="us-gaap:Revenues" contextRef="current">50</ix:nonFraction>'''
+    assert S.primary_contexts(html,'us-gaap_Revenues','2024-12-31')=={'A':['current']}
+    assert S.primary_contexts(html,'us-gaap_Revenues','2023-12-31')=={}
+    assert S.primary_contexts(html,'x_EconomicIncomeRevenue','2024-12-31')=={}
+
+
+def test_source_structure_production_economics_and_clock(lake_seg,monkeypatch):
+    from atx_db.alpha_panel import fund_notes_structure as S
+    monkeypatch.setattr(S,'cached_accessions',lambda root:{I9})
+    monkeypatch.setattr(S,'cached_structure',lambda root,adsh,tag,period,members:{
+        'status':'verified_structure','members':['SubA','SubB','Other'],
+        'concept':'us-gaap_Revenues','period':period,'roles':[{'role':'fixture-note-8'}],
+        'sources':[{'sha256':'fixture','url':'fixture'}],
+        'context_ids':{'SubA':['original-a'],'SubB':['original-b'],'Other':['original-c']}})
+    FN.build()
+    out=N.C.stage_dir(FN.STAGE); row=_features(out)[I9]
+    assert (row.bseg_n,row.bseg_rev_n,row.bseg_recon_class)==(3,3,'reconciled_search')
+    assert row.bseg_rev_hhi==pytest.approx((40**2+30**2+25**2)/95**2)
+    assert row.available_at==dt.datetime(2022,3,7,21,30,tzinfo=UTC)
+    con=duckdb.connect()
+    census=con.execute(f"SELECT n_members,n_members_source_tagged,member_basis FROM read_parquet('{out/'segment_census.parquet'}') WHERE adsh=?",[I9]).fetchone()
+    assert census==(3,4,'source_role_structure')
+    assert con.execute(f"SELECT count(*) FROM read_parquet('{out/'segment_structure.parquet'}')").fetchone()[0]==1
+    con.close()
+
+
+def test_cached_structure_requires_exact_source_role_and_cut(tmp_path,monkeypatch):
+    import gzip,json
+    from atx_db.alpha_panel import fund_notes_structure as S
+    primary=b'''<xbrli:context id="a"><xbrli:period><xbrli:startDate>2024-01-01</xbrli:startDate><xbrli:endDate>2024-12-31</xbrli:endDate></xbrli:period><xbrldi:explicitMember dimension="us-gaap:StatementBusinessSegmentsAxis">x:AMember</xbrldi:explicitMember></xbrli:context><xbrli:context id="b"><xbrli:period><xbrli:startDate>2024-01-01</xbrli:startDate><xbrli:endDate>2024-12-31</xbrli:endDate></xbrli:period><xbrldi:explicitMember dimension="us-gaap:StatementBusinessSegmentsAxis">x:BMember</xbrldi:explicitMember></xbrli:context><ix:nonFraction name="us-gaap:Revenues" contextRef="a">50</ix:nonFraction><ix:nonFraction name="us-gaap:Revenues" contextRef="b">50</ix:nonFraction>'''
+    nodes=['us-gaap_Revenues',S.AXIS,S.DOMAIN,'x_TotalMember','x_AMember','x_BMember']
+    loc=''.join(f'<link:loc xlink:label="n{i}" xlink:href="x.xsd#{n}"/>' for i,n in enumerate(nodes))
+    arcs=''.join(f'<link:presentationArc xlink:from="n{a}" xlink:to="n{b}" xlink:arcrole="http://www.xbrl.org/2003/arcrole/parent-child"/>' for a,b in [(0,1),(1,2),(2,3),(2,4),(2,5)])
+    xml=f'<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink"><link:presentationLink xlink:role="fixture-role">{loc}{arcs}</link:presentationLink></link:linkbase>'.encode()
+    receipts=[]
+    for kind,body in [('primary',primary),('linkbase',xml)]:
+        filename=kind+'.gz';(tmp_path/filename).write_bytes(gzip.compress(body))
+        receipts.append({'adsh':'fixture-original','http_status':200,'kind':kind,'path':filename,'url':'fixture-'+kind,'sha256':hashlib.sha256(body).hexdigest()})
+    (tmp_path/'receipts.jsonl').write_text('\n'.join(json.dumps(r) for r in receipts),encoding='utf-8')
+    monkeypatch.setattr(S,'CORROBORATED',{'fixture-original':{'primary_sha256':receipts[0]['sha256'],'role':'fixture-role','concept':'us-gaap_Revenues','members':['A','B'],'basis':'explicit primary reported level'}})
+    result=S.cached_structure(tmp_path,'fixture-original','Revenues','2024-12-31',{'A','B','Total'})
+    assert result['status']=='verified_structure' and result['context_ids']=={'A':['a'],'B':['b']}
+    assert S.cached_structure(tmp_path,'fixture-amendment','Revenues','2024-12-31',{'A','B'})['status']=='missing_links'
+    (tmp_path/'primary.gz').write_bytes(gzip.compress(primary+b'changed'))
+    assert S.cached_structure(tmp_path,'fixture-original','Revenues','2024-12-31',{'A','B','Total'})['status']=='source_hash_mismatch'

@@ -89,7 +89,7 @@ THREADS = 1                               # derived pivots: 0.68 GiB peak with 2
 STITCH_MEMORY = "150MB"                   # DuckDB limit while pyarrow stitches the yearly parts
 ITEMS_THREADS = 2                         # items extraction (joins, no wide pivot): within the 0.6 GiB cap
 RECON_TOL = 0.01
-MODULES = ("fund_notes", "notes_fetch", "common")
+MODULES = ("fund_notes", "fund_notes_structure", "notes_fetch", "common")
 
 #: (item, group, kind, concept chain in priority order)
 ITEMS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
@@ -522,6 +522,8 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
     done_years = sorted(int(d.name.split("=", 1)[1]) for d in (out / "items").glob("year=*"))
     with C.timed(receipt, 'business_census'):
         collect_business_census(con, parts, done_years)
+    con.execute('CREATE OR REPLACE TEMP TABLE business_census_original AS SELECT * FROM business_census')
+    con.execute('CREATE OR REPLACE TEMP TABLE structure_evidence(adsh VARCHAR,tag VARCHAR,proof_json VARCHAR)')
     C.copy_to_parquet(con, """SELECT s.cik,s.adsh,s.form,s.period,s.filed,s.available_at,
         count(DISTINCT b.member) AS n_members, count(DISTINCT b.member)>=2 AS multi_segment
         FROM sub s LEFT JOIN business_census b USING(adsh)
@@ -550,6 +552,16 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
             C.copy_to_parquet(con, wide_sql(items), wd, 32768)
             C.copy_to_parquet(con, features_sql(items, seg.as_posix(), wd.as_posix(), rc.as_posix()),
                               tmp / "features" / f"{y}.parquet", 32768)
+    # Apply source-verified role identities to the economic census, retaining raw counts.
+    C.copy_to_parquet(con,"""SELECT s.cik,s.adsh,s.form,s.period,s.filed,s.available_at,
+        count(DISTINCT b.member) AS n_members,count(DISTINCT b.member)>=2 AS multi_segment,
+        count(DISTINCT raw.member) AS n_members_source_tagged,
+        CASE WHEN max(e.adsh) IS NULL THEN 'current_period_numeric_tags' ELSE 'source_role_structure' END AS member_basis
+        FROM sub s LEFT JOIN business_census b USING(adsh)
+        LEFT JOIN business_census_original raw USING(adsh) LEFT JOIN structure_evidence e USING(adsh)
+        WHERE year(s.filed) IN ("""+','.join(map(str,done_years))+""") GROUP BY ALL ORDER BY s.filed,s.adsh""",
+        out/'segment_census.parquet')
+    C.copy_to_parquet(con,'SELECT * FROM structure_evidence ORDER BY adsh,tag',out/'segment_structure.parquet')
     con.execute("DROP TABLE IF EXISTS ny")
     con.execute("DROP TABLE IF EXISTS dimy")
     con.execute(f"SET memory_limit = '{STITCH_MEMORY}'")   # pyarrow stitches next (0xC0000005 at the cap, 2026-10-03)
@@ -587,6 +599,7 @@ def build(years: list[int] | None = None) -> dict[str, Any]:
                          "restricted_year_scope": "item extraction restricted; census recomputed for every republished partition year",
                          "extra_context_projection": "explicit exhaustive timing_transfer_partition only",
                          "full_revenue_tags": list(FULL_REVENUE_TAGS),
+                         "source_structure": "filing/role/concept/period/context IDs + compressed source SHA; conflicting/incomplete graphs rejected; source identities independent of arithmetic verification",
                          "monthly_cutoff": "month-end session 22:00 UTC",
                          "denominator_certified": False},
         "receipt": receipt,
@@ -761,7 +774,38 @@ def recon_overlay(con, items: str, seg: str, strict: str):
             GROUP BY 1 ORDER BY 1""").fetchall():
         comps.setdefault(adsh, []).append(value)
     rows = []
+    from . import fund_notes_structure as FS
+    rawroot = Path('data/raw/sec_notes_t14_pilot')
+    cached_keys=FS.cached_accessions(rawroot)
     for adsh, _per, _cur, tag, total, recon in con.execute("SELECT * FROM miss ORDER BY adsh").fetchall():
+        values=mem.get(adsh, {}).get(tag, {})
+        proof=FS.cached_structure(rawroot,adsh,tag,str(_per),set(values)) if adsh in cached_keys else {'status':'missing_links'}
+        if proof['status']=='verified_structure':
+            own_totals=con.execute(f"""SELECT DISTINCT value FROM read_parquet('{items}',hive_partitioning=false)
+              WHERE adsh=? AND tag=? AND ddate=? AND qtrs=4 AND uom=? AND coreg IS NULL
+                AND segments IS NULL AND value IS NOT NULL""",[adsh,tag,_per,_cur]).fetchall()
+            if len(own_totals)!=1 or own_totals[0][0]!=total:
+                # A role-correct segment concept cannot borrow a different GAAP/component total.
+                continue
+            selected={m:values[m] for m in proof['members']}
+            bridge=[]
+            for member,context_ids in proof.get('bridge_context_ids',{}).items():
+                facts=con.execute(f"""SELECT DISTINCT value,segments FROM read_parquet('{items}',hive_partitioning=false)
+                  WHERE adsh=? AND tag=? AND ddate=? AND qtrs=4 AND uom=? AND coreg IS NULL
+                    AND segments=? AND value IS NOT NULL""",
+                  [adsh,tag,_per,_cur,f'ConsolidationItems={member};']).fetchall()
+                if len(facts)==1:
+                    bridge.append({'member':member,'value':facts[0][0],'segments':facts[0][1],'context_ids':context_ids})
+            proof['source_bridge_terms']=bridge
+            # Structural identity is independent of reconciliation success and arithmetic values.
+            con.execute('DELETE FROM business_census WHERE adsh=? AND member NOT IN (SELECT unnest(?))',
+                        [adsh,proof['members']])
+            con.execute('INSERT INTO structure_evidence VALUES (?,?,?)',[adsh,tag,json.dumps(proof)])
+            rows.append({'adsh':adsh,'recon_rule':'source_role_structure','candidate_only':False,
+                         'dropped_members':sorted(set(values)-set(selected)),
+                         'seg_sum_reconciled':sum(selected.values()),'reconciling_used':sum(t['value'] for t in bridge) if bridge else None,
+                         'seg_members':[{'member':m,'value':v} for m,v in sorted(selected.items())]})
+            continue
         cs = comps.get(adsh, []) + ([recon] if recon is not None else [])
         r = recon_search(mem.get(adsh, {}), total, tag, cs)
         if r is not None:
@@ -776,7 +820,13 @@ def recon_final_sql(strict: str) -> str:
     """Strict recon rows plus the search overlay (registered as ``recon_ov``): ``recon_class`` becomes
     ``reconciled_search`` where the search succeeded; ``recon_class_strict`` keeps the strict class."""
     return f"""
-        SELECT r.* REPLACE (CASE WHEN o.adsh IS NOT NULL AND NOT o.candidate_only THEN 'reconciled_search' ELSE r.recon_class END AS recon_class),
+        SELECT r.* REPLACE (CASE WHEN o.adsh IS NOT NULL AND NOT o.candidate_only
+               AND (o.recon_rule<>'source_role_structure' OR abs(o.seg_sum_reconciled+coalesce(o.reconciling_used,0)-r.consolidated_revenue)<=.01*abs(r.consolidated_revenue))
+               THEN 'reconciled_search' ELSE r.recon_class END AS recon_class,
+               CASE WHEN o.recon_rule='source_role_structure' THEN len(o.seg_members) ELSE r.n_members END AS n_members,
+               CASE WHEN o.recon_rule='source_role_structure' THEN len(o.seg_members) ELSE r.n_revenue_members END AS n_revenue_members,
+               CASE WHEN o.recon_rule='source_role_structure' THEN o.reconciling_used ELSE r.reconciling_items END AS reconciling_items,
+               CASE WHEN o.recon_rule='source_role_structure' THEN o.seg_sum_reconciled ELSE r.seg_sum END AS seg_sum),
                r.recon_class AS recon_class_strict, o.recon_rule, o.dropped_members, o.seg_sum_reconciled,
                o.reconciling_used, o.seg_members, coalesce(o.candidate_only, false) AS candidate_only
         FROM read_parquet('{strict}') r LEFT JOIN recon_ov o USING (adsh)
