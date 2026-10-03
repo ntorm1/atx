@@ -62,3 +62,20 @@ atx-db/.venv/Scripts/python.exe -m pytest -n0 -o addopts='' atx-db/tests/test_al
 ```
 
 Results: generator27families/68contracts; covering7files **96PASS77.74s total**, including retained20Task3PIT/delayed-clock fixtures and the new TEQ cutoff. Final source-inventory/wrapper/matrix refinement rerun **16PASS2.59s**. Earlier fixture incorrectly indexed an absent missing-value history key; corrected the assertion to require no emitted fact, then reran successfully. No real-data scan, stage write, HTTP acquisition or threshold/denominator change occurred in this fix round. Actual producer/source/coverage gates remain unmeasured; Task4 acceptance remains OPEN0/6PASS. Await scoped code re-review and guarded slot.
+
+## Fix round2 — history contracts and exact extract completeness
+
+Read review-T5-prebuild-r1-findings.md fully. Addressed retained I4 and the new extract-completeness Important before any source reuse/build. ROA/ROE/accrual quality now bind actual current/prior stocks, source tables and same-fiscal-quarter four-quarter history. All seven margin/profitability changes bind the exact base metric inputs at both endpoints. ROA/ROE changes explicitly require averaged stock history at each endpoint, including the eight-quarter-old balance. Unsupported ROIC/ROCE capital-scope prerequisites also carry explicit prior dependencies and remain UNPROVIDED/UNSUPPORTED; they are not invented published columns. A regression asserts every formula referencing prior history declares a nonempty prior-input list and comparison period. Matrix remains27families/68contracts; no metric was dropped.
+
+Extract reuse validates the mandatory pinned plan before linking anything; actual data filenames equal the approved set; receipt stems agree with their declared data filename; declared members are distinct and equal the approved set. Data SHA/size pins remain required. Missing/duplicate/stale/incomplete snapshots fail before creating the destination. Named regressions cover duplicate references, missing approved members, missing pinned plan and stale plan, plus existing hash mismatch rejection. I1/I2/I3 and IB fixes remain unchanged.
+
+Exact commands from C:/atx, PYTHONPATH=C:/atx/atx-db/src, OPENBLAS_NUM_THREADS=1:
+
+```powershell
+atx-db/.venv/Scripts/python.exe .superpowers/sdd/tier1-v4/t5-requirements.py
+atx-db/.venv/Scripts/python.exe -m pytest -n0 -o addopts='' -p no:cacheprovider atx-db/tests/test_alpha_panel_fund_depth.py atx-db/tests/test_alpha_panel_fund_depth_publish.py atx-db/tests/test_alpha_panel_fund_depth_std.py::test_delayed_and_restated_reported_total_equity_preserves_prior_cutoff atx-db/tests/test_alpha_panel_fund_depth_std.py::test_v11_missing_discontinued_and_extraordinary_facts_do_not_certify_ib -q --tb=short
+atx-db/.venv/Scripts/python.exe -m pytest -n0 -o addopts='' -p no:cacheprovider atx-db/tests/test_alpha_panel_fund_depth.py -q --tb=short
+atx-db/.venv/Scripts/python.exe -m pytest -n0 -o addopts='' -p no:cacheprovider atx-db/tests/test_alpha_panel_fund_depth_publish.py -q --tb=short
+```
+
+Results: **23PASS6.58s**; final exact-data-set checks **16PASS2.21s**; final prior-contract assertions **5PASS1.24s**. No real-data scans, source writes/reuse, stage publication, HTTP, foreign edits or acceptance threshold/denominator changes. All actual acceptance measurements remain pending; Task4 remains OPEN0/6PASS. Await scoped re-review/data-slot grant.

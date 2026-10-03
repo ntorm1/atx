@@ -85,6 +85,47 @@ for family,col in (('basic','cshpri'),('diluted','cshfd')):
   'current_input_columns':[col],'prior_input_columns':[col],'prior_period':'previous comparable source full fiscal year',
   'gold_column':family+'_share_dilution','source_table':'fundamentals_v11.catalog',
   'status':'Requires certified class/split/share basis; missing history is NULL'}
+metric_inputs={
+ 'gross_margin':['gp_ttm','sale_ttm'],'operating_margin':['oi_ttm','sale_ttm'],
+ 'net_margin':['ni_ttm','sale_ttm'],'cash_margin':['cfo_ttm','sale_ttm'],
+ 'gp_assets':['gp_ttm','at'],'roa':['ni_ttm','at'],
+ 'roe':['ni_ttm','seq','txditc'],'accrual_quality':['ni_ttm','cfo_ttm','at'],
+}
+for name,stock in (('roic','source_invested_capital'),('roce','source_capital_employed')):
+ row=contracts[name]
+ current=['source_EBIT',stock]+(['source_effective_tax'] if name=='roic' else [])
+ row.update(current_input_columns=current,prior_input_columns=[stock],
+            prior_period='same fiscal quarter four quarters earlier',
+            source_table='UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS',
+            status='UNSUPPORTED until exact EBIT/capital/tax economic scope is independently sourced',
+            input_bindings={'current':{'table':'UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS','columns':current},
+                            'prior':{'table':'UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS','columns':[stock],
+                                     'period':'same fiscal quarter four quarters earlier'}},
+            source_gap='These semantic prerequisite names are not published columns; no proxy/substitution is certified.')
+average_stocks={'roa':['at'],'roe':['seq','txditc'],'accrual_quality':['at']}
+for name,columns in metric_inputs.items():
+ row=contracts[name];row['current_input_columns']=columns
+ row['source_table']='fundamentals_v11.events/catalog'
+ row['input_bindings']={'current':{'table':row['source_table'],'columns':columns,'period':'current TTM endpoint'}}
+ if name in average_stocks:
+  stocks=average_stocks[name]
+  row.update(prior_input_columns=stocks,prior_period='same fiscal quarter four quarters earlier',
+             denominator_history={'current_endpoint':{'current_stocks':stocks,'prior_stocks':stocks,
+                 'prior_period':'same fiscal quarter four quarters earlier','method':'arithmetic mean; no missing substitution'}})
+  row['input_bindings']['prior']={'table':row['source_table'],'columns':stocks,'period':row['prior_period']}
+for name in ('gross_margin','operating_margin','net_margin','cash_margin','gp_assets','roa','roe'):
+ row=contracts[name+'_change'];base=contracts[name];columns=metric_inputs[name]
+ row.update(formula=f'{name}(current_endpoint)-{name}(prior_endpoint)',
+            metric_formula=base['formula'],current_input_columns=columns,prior_input_columns=columns,
+            prior_period='same fiscal quarter four quarters earlier',source_table=base['source_table'],
+            input_bindings={'current':{'table':base['source_table'],'columns':columns,'period':'current TTM endpoint'},
+                            'prior':{'table':base['source_table'],'columns':columns,'period':'same fiscal quarter four quarters earlier'}})
+ if name in average_stocks:
+  stocks=average_stocks[name]
+  row['denominator_history']={
+    'current_endpoint':{'current_stocks':stocks,'prior_stocks':stocks,'prior_period':'four quarters before current endpoint'},
+    'prior_endpoint':{'current_stocks':stocks,'prior_stocks':stocks,'prior_period':'four quarters before prior endpoint (eight before current)'},
+    'method':'arithmetic mean at each endpoint; all source stocks required; no missing substitution'}
 doc={
  'version':'fundamentals-v11-requirements-v1', 'status':'SOURCE_QUALIFICATION_AND_COVERAGE_PENDING',
  'primitives':{k:{'columns':list(v),'implemented_columns':[c for c in v if c in cols],

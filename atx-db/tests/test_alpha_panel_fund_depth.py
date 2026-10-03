@@ -137,11 +137,33 @@ def test_original_local_name_collision_and_blank_do_not_certify_source_values():
 def test_extract_reuse_verifies_receipt_and_excludes_mutable_parts(tmp_path):
     src=tmp_path/'old';cf=src/'_work/cf';cf.mkdir(parents=True)
     data=cf/'batch-0000.parquet';data.write_bytes(b'fixture')
+    plan=cf/'plan.json';plan.write_text('{}')
     (src/'manifest.json').write_text(json.dumps({'sources':{'companyfacts_batches':
-        {data.name:{'extract_sha256':D.C.sha256_file(data)}}}}))
+        {data.name:{'extract_sha256':D.C.sha256_file(data)}},
+        'companyfacts_extract_plan':{'sha256':D.C.sha256_file(plan)}}}))
     (cf/'batch-0000.json').write_text(json.dumps({'file':data.name,'parquet_bytes':7,'parquet_sha256':D.C.sha256_file(data)}))
     (cf/'unapproved.partial').write_bytes(b'junk')
     result=D.reuse_extract(src,tmp_path/'new')
-    assert result['files']==2 and not (tmp_path/'new/_work/cf/unapproved.partial').exists()
+    assert result['files']==3 and not (tmp_path/'new/_work/cf/unapproved.partial').exists()
     data.write_bytes(b'changed')
     with pytest.raises(ValueError,match='receipt hash'):D.reuse_extract(src,tmp_path/'another')
+
+
+@pytest.mark.parametrize('defect',['duplicate','missing_member','missing_plan','stale_plan'])
+def test_extract_reuse_fails_closed_on_incomplete_approved_snapshot(tmp_path,defect):
+    src=tmp_path/'old';cf=src/'_work/cf';cf.mkdir(parents=True);plan=cf/'plan.json';plan.write_text('{}')
+    expected={}
+    for i in range(2):
+        data=cf/f'batch-{i:04d}.parquet';data.write_bytes(bytes([i]))
+        expected[data.name]={'extract_sha256':D.C.sha256_file(data)}
+        (cf/f'batch-{i:04d}.json').write_text(json.dumps({'file':data.name,'parquet_bytes':1,'parquet_sha256':D.C.sha256_file(data)}))
+    (src/'manifest.json').write_text(json.dumps({'sources':{'companyfacts_batches':expected,
+        'companyfacts_extract_plan':{'sha256':D.C.sha256_file(plan)}}}))
+    if defect=='duplicate':
+        (cf/'batch-0001.json').write_bytes((cf/'batch-0000.json').read_bytes())
+    elif defect=='missing_member':
+        (cf/'batch-0001.parquet').unlink();(cf/'batch-0001.json').unlink()
+    elif defect=='missing_plan':plan.unlink()
+    else:plan.write_text('{"changed":true}')
+    with pytest.raises(ValueError):D.reuse_extract(src,tmp_path/'new')
+    assert not (tmp_path/'new').exists()

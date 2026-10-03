@@ -50,3 +50,20 @@ def test_owner_growth_families_have_exact_inputs_and_explicit_gaps():
     assert 'basic_share_dilution' in rows and 'diluted_share_dilution' in rows
     assert 'not currently published' in rows['diluted_shares_quarterly_yoy_growth']['source_gap']
     assert rows['free_cash_flow_quarterly_yoy_growth']['current_input_columns']==['cfo_q','capx_q']
+
+
+def test_prior_dependent_average_and_change_contracts_bind_actual_history():
+    rows=json.loads((ROOT/'atx-db/docs/datasets/fundamentals_v11.requirements.json').read_text())['formula_to_gold']
+    for name,prior in {'roa':['at'],'roe':['seq','txditc'],'accrual_quality':['at']}.items():
+        row=rows[name]
+        assert row['prior_input_columns']==prior and row['input_bindings']['prior']['columns']==prior
+        assert row['prior_period']=='same fiscal quarter four quarters earlier'
+    for name in ('gross_margin','operating_margin','net_margin','cash_margin','gp_assets','roa','roe'):
+        row=rows[name+'_change']
+        assert row['current_input_columns']==row['prior_input_columns']==rows[name]['current_input_columns']
+        assert row['metric_formula']==rows[name]['formula'] and row['input_bindings']['prior']['period']==row['prior_period']
+    for name in ('roa_change','roe_change'):
+        assert 'eight before current' in rows[name]['denominator_history']['prior_endpoint']['prior_period']
+    for row in rows.values():
+        if 'prior' in row['formula']:
+            assert row['prior_input_columns'] and row['prior_period']

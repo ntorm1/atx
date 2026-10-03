@@ -307,13 +307,22 @@
       "gold_column": "gross_margin",
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
-        "gp_q",
         "gp_ttm",
-        "sale_q",
         "sale_ttm"
       ],
       "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "gp_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        }
+      }
     },
     "operating_margin": {
       "formula": "oi_ttm/sale_ttm",
@@ -324,13 +333,22 @@
       "gold_column": "operating_margin",
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
-        "oi_q",
         "oi_ttm",
-        "sale_q",
         "sale_ttm"
       ],
       "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "oi_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        }
+      }
     },
     "net_margin": {
       "formula": "ni_ttm/sale_ttm",
@@ -341,13 +359,22 @@
       "gold_column": "net_margin",
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
-        "ni_q",
         "ni_ttm",
-        "sale_q",
         "sale_ttm"
       ],
       "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        }
+      }
     },
     "cash_margin": {
       "formula": "cfo_ttm/sale_ttm",
@@ -359,11 +386,21 @@
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
         "cfo_ttm",
-        "sale_q",
         "sale_ttm"
       ],
       "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "cfo_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        }
+      }
     },
     "gp_assets": {
       "formula": "gp_ttm/at",
@@ -374,12 +411,22 @@
       "gold_column": "gp_assets",
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
-        "at",
-        "gp_q",
-        "gp_ttm"
+        "gp_ttm",
+        "at"
       ],
       "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "gp_ttm",
+            "at"
+          ],
+          "period": "current TTM endpoint"
+        }
+      }
     },
     "roa": {
       "formula": "ni_ttm/mean(at,prior_at)",
@@ -390,12 +437,44 @@
       "gold_column": "roa",
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
-        "at",
-        "ni_q",
-        "ni_ttm"
+        "ni_ttm",
+        "at"
       ],
-      "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "prior_input_columns": [
+        "at"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "at"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "at"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      },
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "denominator_history": {
+        "current_endpoint": {
+          "current_stocks": [
+            "at"
+          ],
+          "prior_stocks": [
+            "at"
+          ],
+          "prior_period": "same fiscal quarter four quarters earlier",
+          "method": "arithmetic mean; no missing substitution"
+        }
+      }
     },
     "roe": {
       "formula": "ni_ttm/mean(seq+txditc,prior_seq+prior_txditc)",
@@ -407,16 +486,50 @@
       "gold_column": "roe",
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
-        "ceq",
-        "ni_q",
         "ni_ttm",
         "seq",
-        "teq",
-        "txditc",
-        "txt_ttm"
+        "txditc"
       ],
-      "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "prior_input_columns": [
+        "seq",
+        "txditc"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "seq",
+            "txditc"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "seq",
+            "txditc"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      },
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "denominator_history": {
+        "current_endpoint": {
+          "current_stocks": [
+            "seq",
+            "txditc"
+          ],
+          "prior_stocks": [
+            "seq",
+            "txditc"
+          ],
+          "prior_period": "same fiscal quarter four quarters earlier",
+          "method": "arithmetic mean; no missing substitution"
+        }
+      }
     },
     "roic": {
       "formula": "source_EBIT*(1-source_effective_tax)/mean(source_invested_capital,prior_source_invested_capital)",
@@ -427,20 +540,36 @@
         "tax"
       ],
       "gold_column": "roic",
-      "status": "Task7/16 registration and independent qualification pending",
+      "status": "UNSUPPORTED until exact EBIT/capital/tax economic scope is independently sourced",
       "current_input_columns": [
-        "ceq",
-        "dlc",
-        "dltt",
-        "oi_q",
-        "oi_ttm",
-        "seq",
-        "teq",
-        "txditc",
-        "txt_ttm"
+        "source_EBIT",
+        "source_invested_capital",
+        "source_effective_tax"
       ],
-      "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "prior_input_columns": [
+        "source_invested_capital"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS",
+      "input_bindings": {
+        "current": {
+          "table": "UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS",
+          "columns": [
+            "source_EBIT",
+            "source_invested_capital",
+            "source_effective_tax"
+          ]
+        },
+        "prior": {
+          "table": "UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS",
+          "columns": [
+            "source_invested_capital"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      },
+      "source_gap": "These semantic prerequisite names are not published columns; no proxy/substitution is certified."
     },
     "roce": {
       "formula": "source_EBIT/mean(source_capital_employed,prior_source_capital_employed)",
@@ -450,18 +579,34 @@
         "debt"
       ],
       "gold_column": "roce",
-      "status": "Task7/16 registration and independent qualification pending",
+      "status": "UNSUPPORTED until exact EBIT/capital/tax economic scope is independently sourced",
       "current_input_columns": [
-        "ceq",
-        "dlc",
-        "dltt",
-        "oi_q",
-        "oi_ttm",
-        "seq",
-        "teq"
+        "source_EBIT",
+        "source_capital_employed"
       ],
-      "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "prior_input_columns": [
+        "source_capital_employed"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS",
+      "input_bindings": {
+        "current": {
+          "table": "UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS",
+          "columns": [
+            "source_EBIT",
+            "source_capital_employed"
+          ]
+        },
+        "prior": {
+          "table": "UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS",
+          "columns": [
+            "source_capital_employed"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      },
+      "source_gap": "These semantic prerequisite names are not published columns; no proxy/substitution is certified."
     },
     "cash_conversion": {
       "formula": "cfo_ttm/ni_ttm",
@@ -489,13 +634,46 @@
       "gold_column": "accrual_quality",
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
-        "at",
+        "ni_ttm",
         "cfo_ttm",
-        "ni_q",
-        "ni_ttm"
+        "at"
       ],
-      "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "prior_input_columns": [
+        "at"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "cfo_ttm",
+            "at"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "at"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      },
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "denominator_history": {
+        "current_endpoint": {
+          "current_stocks": [
+            "at"
+          ],
+          "prior_stocks": [
+            "at"
+          ],
+          "prior_period": "same fiscal quarter four quarters earlier",
+          "method": "arithmetic mean; no missing substitution"
+        }
+      }
     },
     "free_cash_flow": {
       "formula": "cfo_ttm-capx_ttm",
@@ -1838,7 +2016,7 @@
       }
     },
     "gross_margin_change": {
-      "formula": "current-prior",
+      "formula": "gross_margin(current_endpoint)-gross_margin(prior_endpoint)",
       "primitive_families": [
         "gross_profit",
         "sales"
@@ -1846,16 +2024,38 @@
       "gold_column": "gross_margin_change",
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
-        "gp_q",
         "gp_ttm",
-        "sale_q",
         "sale_ttm"
       ],
-      "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "prior_input_columns": [
+        "gp_ttm",
+        "sale_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "metric_formula": "gp_ttm/sale_ttm",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "gp_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "gp_ttm",
+            "sale_ttm"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      }
     },
     "operating_margin_change": {
-      "formula": "current-prior",
+      "formula": "operating_margin(current_endpoint)-operating_margin(prior_endpoint)",
       "primitive_families": [
         "operating_income",
         "sales"
@@ -1863,16 +2063,38 @@
       "gold_column": "operating_margin_change",
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
-        "oi_q",
         "oi_ttm",
-        "sale_q",
         "sale_ttm"
       ],
-      "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "prior_input_columns": [
+        "oi_ttm",
+        "sale_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "metric_formula": "oi_ttm/sale_ttm",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "oi_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "oi_ttm",
+            "sale_ttm"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      }
     },
     "net_margin_change": {
-      "formula": "current-prior",
+      "formula": "net_margin(current_endpoint)-net_margin(prior_endpoint)",
       "primitive_families": [
         "net_income",
         "sales"
@@ -1880,16 +2102,38 @@
       "gold_column": "net_margin_change",
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
-        "ni_q",
         "ni_ttm",
-        "sale_q",
         "sale_ttm"
       ],
-      "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "prior_input_columns": [
+        "ni_ttm",
+        "sale_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "metric_formula": "ni_ttm/sale_ttm",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "sale_ttm"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      }
     },
     "cash_margin_change": {
-      "formula": "current-prior",
+      "formula": "cash_margin(current_endpoint)-cash_margin(prior_endpoint)",
       "primitive_families": [
         "operating_cash_flow",
         "sales"
@@ -1898,14 +2142,37 @@
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
         "cfo_ttm",
-        "sale_q",
         "sale_ttm"
       ],
-      "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "prior_input_columns": [
+        "cfo_ttm",
+        "sale_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "metric_formula": "cfo_ttm/sale_ttm",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "cfo_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "cfo_ttm",
+            "sale_ttm"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      }
     },
     "gp_assets_change": {
-      "formula": "current-prior",
+      "formula": "gp_assets(current_endpoint)-gp_assets(prior_endpoint)",
       "primitive_families": [
         "gross_profit",
         "assets"
@@ -1913,15 +2180,38 @@
       "gold_column": "gp_assets_change",
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
-        "at",
-        "gp_q",
-        "gp_ttm"
+        "gp_ttm",
+        "at"
       ],
-      "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "prior_input_columns": [
+        "gp_ttm",
+        "at"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "metric_formula": "gp_ttm/at",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "gp_ttm",
+            "at"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "gp_ttm",
+            "at"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      }
     },
     "roa_change": {
-      "formula": "current-prior",
+      "formula": "roa(current_endpoint)-roa(prior_endpoint)",
       "primitive_families": [
         "net_income",
         "assets"
@@ -1929,15 +2219,59 @@
       "gold_column": "roa_change",
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
-        "at",
-        "ni_q",
-        "ni_ttm"
+        "ni_ttm",
+        "at"
       ],
-      "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "prior_input_columns": [
+        "ni_ttm",
+        "at"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "metric_formula": "ni_ttm/mean(at,prior_at)",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "at"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "at"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      },
+      "denominator_history": {
+        "current_endpoint": {
+          "current_stocks": [
+            "at"
+          ],
+          "prior_stocks": [
+            "at"
+          ],
+          "prior_period": "four quarters before current endpoint"
+        },
+        "prior_endpoint": {
+          "current_stocks": [
+            "at"
+          ],
+          "prior_stocks": [
+            "at"
+          ],
+          "prior_period": "four quarters before prior endpoint (eight before current)"
+        },
+        "method": "arithmetic mean at each endpoint; all source stocks required; no missing substitution"
+      }
     },
     "roe_change": {
-      "formula": "current-prior",
+      "formula": "roe(current_endpoint)-roe(prior_endpoint)",
       "primitive_families": [
         "net_income",
         "equity",
@@ -1946,16 +2280,64 @@
       "gold_column": "roe_change",
       "status": "Task7/16 registration and independent qualification pending",
       "current_input_columns": [
-        "ceq",
-        "ni_q",
         "ni_ttm",
         "seq",
-        "teq",
-        "txditc",
-        "txt_ttm"
+        "txditc"
       ],
-      "prior_input_columns": [],
-      "input_clock": "latest source vintage strictly before feature cutoff"
+      "prior_input_columns": [
+        "ni_ttm",
+        "seq",
+        "txditc"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "metric_formula": "ni_ttm/mean(seq+txditc,prior_seq+prior_txditc)",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "seq",
+            "txditc"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "seq",
+            "txditc"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      },
+      "denominator_history": {
+        "current_endpoint": {
+          "current_stocks": [
+            "seq",
+            "txditc"
+          ],
+          "prior_stocks": [
+            "seq",
+            "txditc"
+          ],
+          "prior_period": "four quarters before current endpoint"
+        },
+        "prior_endpoint": {
+          "current_stocks": [
+            "seq",
+            "txditc"
+          ],
+          "prior_stocks": [
+            "seq",
+            "txditc"
+          ],
+          "prior_period": "four quarters before prior endpoint (eight before current)"
+        },
+        "method": "arithmetic mean at each endpoint; all source stocks required; no missing substitution"
+      }
     },
     "basic_share_dilution": {
       "formula": "cshpri/prior(cshpri)-1",

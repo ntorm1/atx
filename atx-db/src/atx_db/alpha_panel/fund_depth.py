@@ -106,27 +106,34 @@ def acquire(targets: list[dict], root: Path) -> dict:
 
 def reuse_extract(source: Path, target: Path) -> dict:
     """Hardlink immutable extract/preparation inputs only; never link outputs or mutable part files."""
-    src=source/'_work'/'cf';dst=target/'_work'/'cf';dst.mkdir(parents=True,exist_ok=True)
+    src=source/'_work'/'cf';dst=target/'_work'/'cf'
     approved=C.read_json(source/'manifest.json')['sources']
     expected=approved['companyfacts_batches']
+    if {p.name for p in src.glob('batch-[0-9][0-9][0-9][0-9].parquet')}!=set(expected):
+        raise ValueError('Approved extraction data member set differs')
+    plan=src/'plan.json'
+    if not plan.is_file():raise ValueError('Approved extraction plan missing')
+    if C.sha256_file(plan)!=approved['companyfacts_extract_plan']['sha256']:
+        raise ValueError('Approved extraction plan hash mismatch')
     receipts=sorted(src.glob('batch-[0-9][0-9][0-9][0-9].json'))
     if not receipts:raise FileNotFoundError('No approved extraction receipts')
     if len(receipts)!=len(expected):raise ValueError('Approved extraction inventory count differs')
-    inventory=[]
+    inventory=[];declared=set()
     for receipt in receipts:
         record=C.read_json(receipt);p=src/record['file']
         if p.parent!=src or not re.fullmatch(r'batch-\d{4}\.parquet',p.name):
             raise ValueError('Unsupported extraction inventory member')
+        if p.stem!=receipt.stem or p.name in declared:
+            raise ValueError('Extraction receipt stem mismatch or duplicate member')
+        declared.add(p.name)
         pinned=expected.get(p.name,{})
         if (record['parquet_sha256']!=pinned.get('extract_sha256')
                 or p.stat().st_size!=record['parquet_bytes'] or C.sha256_file(p)!=record['parquet_sha256']):
             raise ValueError('Source extraction receipt hash/size mismatch')
         inventory.extend((p,receipt))
-    plan=src/'plan.json'
-    if plan.exists():
-        if C.sha256_file(plan)!=approved['companyfacts_extract_plan']['sha256']:
-            raise ValueError('Approved extraction plan hash mismatch')
-        inventory.append(plan)
+    if declared!=set(expected):raise ValueError('Approved extraction member set differs')
+    inventory.append(plan)
+    dst.mkdir(parents=True,exist_ok=True)
     count=logical=0
     for p in inventory:
         dest=dst/p.name
