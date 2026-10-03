@@ -1,8 +1,9 @@
 // Implementation of the atx::core::db SQLite wrapper.
 //
-// This is the ONLY translation unit that includes <sqlite3.h>; the C API and
-// its macros are confined here (the public headers forward-declare the opaque
-// handles). See include/atx/core/db/sqlite.hpp for the contract.
+// One of the two translation units that include <sqlite3.h> (with
+// connection.cpp); the C API and its macros are confined to atx-core's src/db/
+// (the public headers forward-declare the opaque handles). See
+// include/atx/core/db/sqlite.hpp for the contract.
 
 #include "atx/core/db/sqlite.hpp"
 

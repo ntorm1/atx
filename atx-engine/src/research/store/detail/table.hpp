@@ -17,8 +17,8 @@
 // schema object. Everything here is checked at compile time: col() static_asserts the member
 // type against the Sql type; table() rejects (as a constant-evaluation error naming the rule)
 // 0 or more than 32 columns, no key column, a duplicate or non-identifier name, a nullable
-// key, a later column (since > table since) that is not optional, and an `allowed` value
-// holding a quote.
+// key, a later column (since > table since) that is not optional; col() also rejects an
+// `allowed` list on a non-Text column or with a quote / non-ASCII value, and kKey | kVolatile.
 
 #include <array>
 #include <concepts>
@@ -88,7 +88,8 @@ template <> struct SqlCpp<Sql::Blob> { using type = std::vector<std::byte>; };
 inline void descriptor_error_name_not_lowercase_identifier() noexcept {}
 inline void descriptor_error_bad_flags() noexcept {}
 inline void descriptor_error_since_below_one() noexcept {}
-inline void descriptor_error_allowed_value_has_quote() noexcept {}
+inline void descriptor_error_allowed_value_has_quote_or_non_ascii() noexcept {}
+inline void descriptor_error_allowed_on_non_text_column() noexcept {}
 inline void descriptor_error_duplicate_column_name() noexcept {}
 inline void descriptor_error_no_key_column() noexcept {}
 inline void descriptor_error_key_column_is_optional() noexcept {}
@@ -122,7 +123,10 @@ concept StorableAs =
 template <class Row>
 concept RowType = std::is_aggregate_v<Row> && std::default_initializable<Row>;
 
-template <class Row, class M, Sql T> struct Column {
+// Constrained here as well as in col(), so a Column built by hand cannot bypass the check.
+template <class Row, class M, Sql T>
+  requires StorableAs<M, T>
+struct Column {
   using row_type = Row;
   using member_type = M;
   using value_type = typename detail::Unwrap<M>::type;
@@ -139,11 +143,13 @@ template <class Row, class M, Sql T> struct Column {
 // The column factory. `name` is the SQL column name; `member` the row member it maps;
 // `flags` a kKey / kIndexed / kVolatile set; `allowed` a span over a namespace-scope
 // constexpr array of the permitted text values (CHECK(<c> IN (...))); `since` the schema
-// version that adds the column (a column later than its table must be optional).
+// version that adds the column (a column later than its table must be optional). Refused:
+// `allowed` on a kind other than Text, an `allowed` value with a quote or a non-ASCII byte
+// (the printed schema must stay ASCII), and kKey together with kVolatile (a key is digested).
+// The return type is deduced so a type mismatch reports the static_assert message below.
 template <Sql T, RowType Row, class M>
-[[nodiscard]] consteval Column<Row, M, T> col(std::string_view name, M Row::*member, u8 flags = 0,
-                                              std::span<const std::string_view> allowed = {},
-                                              i32 since = 1) {
+[[nodiscard]] consteval auto col(std::string_view name, M Row::*member, u8 flags = 0,
+                                 std::span<const std::string_view> allowed = {}, i32 since = 1) {
   static_assert(StorableAs<M, T>,
                 "store::col: the member type does not match the Sql type (Int i64, Bool bool, "
                 "Real f64, U64 u64, Text/Sha256/RelPath/Json std::string, Blob "
@@ -151,15 +157,20 @@ template <Sql T, RowType Row, class M>
   if (!detail::is_identifier(name)) {
     detail::descriptor_error_name_not_lowercase_identifier();
   }
-  if ((flags & ~kAllFlags) != 0) {
+  if ((flags & ~kAllFlags) != 0 || (flags & (kKey | kVolatile)) == (kKey | kVolatile)) {
     detail::descriptor_error_bad_flags();
   }
   if (since < 1) {
     detail::descriptor_error_since_below_one();
   }
+  if (!allowed.empty() && T != Sql::Text) {
+    detail::descriptor_error_allowed_on_non_text_column();
+  }
   for (const std::string_view value : allowed) {
-    if (value.find('\'') != std::string_view::npos) {
-      detail::descriptor_error_allowed_value_has_quote();
+    for (const char c : value) {
+      if (c == '\'' || static_cast<unsigned char>(c) > 0x7FU) {
+        detail::descriptor_error_allowed_value_has_quote_or_non_ascii();
+      }
     }
   }
   return Column<Row, M, T>{name, member, ColOpts{flags, since, allowed}};

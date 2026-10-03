@@ -57,7 +57,11 @@ class OpenTest(StoreCase):
         self.assertEqual(con.execute("PRAGMA trusted_schema").fetchone(), (0,))
         self.assertEqual(con.execute("PRAGMA busy_timeout").fetchone(), (30000,))
         self.assertEqual(con.execute("PRAGMA journal_mode").fetchone(), ("wal",))
+        self.assertEqual(con.execute("PRAGMA synchronous").fetchone(), (1,))  # NORMAL for a cache
         self.assertIsNone(con.isolation_level)
+        for unc in ("//server/share/store.sqlite", "\\\\server\\share\\store.sqlite"):
+            with self.assertRaisesRegex(rs.StoreError, "UNC"):
+                rs.Store.open(unc)
 
     def test_open_runs_no_ddl_and_never_creates_a_file(self):
         before = self.raw("SELECT type, name, sql FROM sqlite_schema ORDER BY name")
@@ -165,6 +169,20 @@ class RowsTest(StoreCase):
                 with self.store.transaction():
                     pass
 
+    def test_a_failed_commit_rolls_back(self):
+        # A deferred foreign key fails at COMMIT, which leaves SQLite's transaction open.
+        con = self.store.connection
+        con.execute("CREATE TEMP TABLE parent(id INTEGER PRIMARY KEY)")
+        con.execute("CREATE TEMP TABLE child(p INTEGER REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED)")
+        with self.assertRaises(sqlite3.IntegrityError):
+            with self.store.transaction():
+                self.store.insert("plain", {"a": "t", "b": 1, "c": None, "d": "dropped"})
+                con.execute("INSERT INTO child(p) VALUES (5)")
+        self.assertFalse(con.in_transaction)
+        with self.store.transaction():  # the connection is usable again
+            self.store.insert("plain", {"a": "t", "b": 2, "c": None, "d": "kept"})
+        self.assertEqual([r["d"] for r in self.store.select("plain")], ["kept"])
+
 
 class CatalogStoreTest(StoreCase):
     group = "catalog_core"
@@ -179,6 +197,7 @@ class CatalogStoreTest(StoreCase):
         self.store.insert("artifact", row)
         self.assertEqual(self.store.get("artifact", {"path_key": "a.json"}), row)
         self.assertEqual(self.store.connection.execute("PRAGMA application_id").fetchone(), (0x41545843,))
+        self.assertEqual(self.store.connection.execute("PRAGMA synchronous").fetchone(), (2,))  # FULL
 
 
 if __name__ == "__main__":

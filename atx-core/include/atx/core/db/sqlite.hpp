@@ -15,8 +15,9 @@
 //
 //  Opaque-handle discipline: this header forward-declares the SQLite C structs
 //  (`sqlite3`, `sqlite3_stmt`) and NEVER includes <sqlite3.h>. The C API and its
-//  macros are confined to src/db/sqlite.cpp, so including this header does not
-//  drag the entire SQLite C surface into every translation unit.
+//  macros are confined to src/db/ (sqlite.cpp, connection.cpp), so including
+//  this header does not drag the entire SQLite C surface into every translation
+//  unit.
 //
 // ===========================================================================
 //  Threading (build is SQLITE_THREADSAFE=2 — "multi-thread")
@@ -55,9 +56,10 @@
 #include "atx/core/error.hpp" // Result, Status, Error, ErrorCode
 #include "atx/core/types.hpp" // i32, i64, f64, u8
 
-// Opaque SQLite C handles. Full definitions live in <sqlite3.h>, included ONLY
-// in src/db/sqlite.cpp. Forward-declaring the C struct tags lets us hold typed
-// pointers as members without exposing the C API to includers of this header.
+// Opaque SQLite C handles. Full definitions live in <sqlite3.h>, included only
+// in src/db/sqlite.cpp and src/db/connection.cpp. Forward-declaring the C struct
+// tags lets us hold typed pointers as members without exposing the C API to
+// includers of this header.
 struct sqlite3;
 struct sqlite3_stmt;
 

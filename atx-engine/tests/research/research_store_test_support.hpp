@@ -112,6 +112,21 @@ inline constexpr GroupOps kMigGroupV2 =
 inline constexpr GroupOps kPlainCatalogGroup =
     group_ops<kPlainTable>("plain_group", DbKind::Catalog, 1);
 
+// Fix round 1 groups. kMigGroupV1Edited: the v1 "mig" group with a column added in place, no
+// version bump (schema drift). kDupInfoGroup: a second catalog group that also folds in
+// store_info. kPlainAgainGroup: a second catalog group with a table named like plain_group's.
+inline constexpr auto kMigV1EditedTable = table<MigV2Row>(
+    "mig",
+    TableOpts{.version = 1, .since = 1, .append_only = false, .volatile_table = false, .check = {}},
+    col<Sql::Text>("k", &MigV2Row::k, kKey), col<Sql::Int>("a", &MigV2Row::a),
+    col<Sql::Real>("b", &MigV2Row::b));
+inline constexpr GroupOps kMigGroupV1Edited =
+    group_ops<kStoreInfoTable, kMigV1EditedTable>("mig", DbKind::Cache, 1);
+inline constexpr GroupOps kDupInfoGroup =
+    group_ops<kStoreInfoTable, kMigV1Table>("dup_info", DbKind::Catalog, 1);
+inline constexpr GroupOps kPlainAgainGroup =
+    group_ops<kPlainTable>("plain_again", DbKind::Catalog, 1);
+
 // The toy cache group whose printed form is fixtures/research_store/schema/toy.json: the
 // Python accessor tests use it for every Sql type (the real groups have no bool or blob).
 inline constexpr GroupOps kToyGroup =

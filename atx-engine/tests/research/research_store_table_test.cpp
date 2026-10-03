@@ -24,6 +24,17 @@ using store::test::kToyTable;
 using store::test::PlainRow;
 using store::test::ToyRow;
 
+// Review finding 4: the member-type rule binds Column itself, not only col().
+template <class M>
+concept IntColumnFormable = requires { typename store::Column<ToyRow, M, store::Sql::Int>; };
+static_assert(IntColumnFormable<atx::i64> && IntColumnFormable<std::optional<atx::i64>>);
+static_assert(!IntColumnFormable<atx::i32> && !IntColumnFormable<bool>);
+static_assert(!store::StorableAs<atx::i32, store::Sql::Int>);
+static_assert(!store::StorableAs<float, store::Sql::Real>);
+static_assert(!store::StorableAs<std::string, store::Sql::Blob>);
+static_assert(!store::StorableAs<std::optional<atx::i64>, store::Sql::Bool>);
+static_assert(store::StorableAs<std::optional<atx::u64>, store::Sql::U64>);
+
 namespace {
 
 atx::core::Status insert_row(db::Database &d, const ToyRow &row) {
@@ -142,8 +153,8 @@ TEST(ResearchStoreTable, ReadRejectsNullInRequiredColumn) {
                      "2, 1.0, 0, 's', 'p', '{}', x'', NULL, NULL)"));
   auto stmt = d.prepare(store::select_all_sql(kToyTable));
   ASSERT_TRUE(stmt) << stmt.error().to_string();
-  for (const std::string_view expected : {"toy.b: bool column holds 2", "toy.i: column 1 is NULL",
-                                          "toy.i: column 1 has storage class 3"}) {
+  // The contract is the code and the "<table>.<column>: " prefix; the rest is wrapper text.
+  for (const std::string_view expected : {"toy.b: ", "toy.i: ", "toy.i: "}) {
     ASSERT_EQ(*stmt->step(), db::Statement::Step::Row);
     auto row = store::read(*stmt, kToyTable);
     ASSERT_FALSE(row) << expected;

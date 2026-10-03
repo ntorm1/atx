@@ -7,6 +7,7 @@
 #include "atx/core/db/connection.hpp"
 
 #include <bit>
+#include <exception>
 #include <filesystem>
 #include <limits>
 #include <string>
@@ -32,16 +33,34 @@
 namespace atx::core::db {
 namespace {
 
-// A UTF-8 path string as a filesystem path (the store API speaks UTF-8; a narrow
-// std::filesystem::path would use the ANSI code page on Windows).
-[[nodiscard]] std::filesystem::path utf8_path(std::string_view text) {
-  std::u8string u8;
-  u8.reserve(text.size());
-  for (const char c : text) {
-    u8.push_back(static_cast<char8_t>(c));
+#if defined(_WIN32)
+// The root name (e.g. L"C:", or L"\\\\server" for a share) of a UTF-8 path resolved through
+// links: weakly_canonical follows the existing prefix through junctions and symlinks, so a
+// link to a share is seen as the share. A final-path "\\?\" prefix is dropped ("\\?\UNC\" is
+// a share). Invalid UTF-8 or an unresolvable path is an error, never a throw
+// (std::filesystem::path throws on invalid UTF-8 on MSVC).
+[[nodiscard]] Result<std::wstring> resolved_root(std::string_view text) {
+  try {
+    std::error_code ec;
+    const std::filesystem::path resolved = std::filesystem::weakly_canonical(
+        std::filesystem::path{std::u8string{text.begin(), text.end()}}, ec);
+    if (ec) {
+      return Err(ErrorCode::IoError,
+                 "store path cannot be resolved: " + std::string{text} + ": " + ec.message());
+    }
+    std::wstring native = resolved.native();
+    if (native.starts_with(L"\\\\?\\UNC\\")) {
+      return Ok(std::wstring{L"\\\\"});
+    }
+    if (native.starts_with(L"\\\\?\\")) {
+      native.erase(0, 4);
+    }
+    return Ok(std::filesystem::path{native}.root_name().wstring());
+  } catch (const std::exception &) {
+    return Err(ErrorCode::InvalidArgument, "store path is not valid UTF-8: " + std::string{text});
   }
-  return std::filesystem::path{u8};
 }
+#endif
 
 // WAL keeps its index in shared memory, which works on one host only.
 [[nodiscard]] Status refuse_remote_path(std::string_view path) {
@@ -50,13 +69,7 @@ namespace {
                "store path refused (UNC path; WAL needs a local disk): " + std::string{path});
   }
 #if defined(_WIN32)
-  std::error_code ec;
-  const std::filesystem::path absolute = std::filesystem::absolute(utf8_path(path), ec);
-  if (ec) {
-    return Err(ErrorCode::IoError, "store path cannot be resolved: " + std::string{path} + ": " +
-                                       ec.message());
-  }
-  const std::wstring root = absolute.root_name().wstring();
+  ATX_TRY(const std::wstring root, resolved_root(path));
   if (root.starts_with(L"\\\\") || root.starts_with(L"//")) {
     return Err(ErrorCode::InvalidArgument,
                "store path refused (resolves to a UNC path): " + std::string{path});
