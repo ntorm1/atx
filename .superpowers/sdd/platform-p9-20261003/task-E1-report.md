@@ -438,3 +438,92 @@ All on the clean tree at `210d5de8`.
   (rebased away and gc'd), git fails and the stage stops with exit 3 rather than reusing (fails closed).
 - The deferred minors remain: lock robustness, the template / add-alpha inheritance of `exes_sha256`, nested time
   keys in content digests, completion order under parallel judge, and K-P9-10 attempt numbering.
+
+## Fix round 2
+
+### Outcome
+DONE: re-review 1's N1 (fixed under PM ruling E1-REUSE-a2) and N2 are fixed in two Python-only commits on
+FIX_BASE `124e2f4e`. Flag-absent identity against 3fa2dd4a still holds (evidence 4).
+
+### Commits
+| fix | commit | subject |
+|---|---|---|
+| N1 / E1-REUSE-a2 | `af1038d0` | exe check on reuse refuses only against an exes_sha256 pin |
+| N2 | `a830deca` | claim adopt never kills the launched child |
+
+This section is a separate commit on top of `a830deca`.
+
+### What changed
+- **E1-REUSE-a2** (`scripts/cycle_resume.py`, `research_cycle.py`, `wave_stage_util.py`, `wave_stage_cell.py`,
+  `wave_result.py`):
+  - `check_receipt_exe` now returns (how, note). For a done bounded step whose K-P9-10 receipt records
+    `executable_sha256`, it asks `Cycle.reuse_pin(st)` for the step's exe key (the argv after `--`, matched against
+    `exes`) and that key's `exes_sha256` pin.
+  - Which pin applies: for an output the template inherited from its parent (`Cycle.inherited`: same output name
+    via `PHASE_OUTPUTS`, same out_root, no `--suffix`), the pin comes from the parent's resolved spec
+    (`Cycle.parent_spec`) only. Otherwise it comes from this spec.
+  - Pinned and different: HARD-STOP, exit 3 (`... the parent's|the spec's exes_sha256 pins ic <sha>: refusing to
+    reuse it`). Pinned and equal: logs `receipt exe: ... = the spec's|parent's exes_sha256 pin of <key>`.
+  - Unpinned: a receipt that names another SHA than the exe on disk is reused, with one cycle log line
+    `   receipt exe NOTE: <phase> output ... reused (no exes_sha256 pin; ruling E1-REUSE-a2)`.
+  - The wave's run stage checks the cell's phase rows (`exe_notes`: completed K-P9-10 receipts whose `command[0]`
+    now hashes differently). On a mismatch it logs one line, writes `outputs.exe_notes` into `05-run.json`, and
+    `wave-result.json` carries `cell.exe_notes`, which `wave-log.md` prints as one `**Exe notes**` line. With no
+    mismatch there is no key and no line.
+- **N2** (`scripts/run_bounded_research.py`): `HostClaims.adopt` takes the claims lock (bounded wait
+  `ADOPT_LOCK_SECONDS` = 5 s; a busy lock does not stop the write). `write` retries `os.replace` on
+  `PermissionError` for `REPLACE_RETRY_SECONDS` = 2 s, then removes its temp file. Any adopt failure (lock,
+  replace, a child that already exited) is a stderr warning that keeps the runner-pid claim. It never raises, so it
+  can no longer record runner-error and kill the child it just launched.
+
+Tests (`scripts/tests/test_wave_driver.py`, now 19; `test_resume_refuses_exe_mismatch` is replaced):
+- `test_resume_exe_check_pinned_refuses_unpinned_notes`:
+  - unpinned: after an IC rebuild the cycle exits 0, logs the NOTE line, and re-runs nothing;
+  - pinned: receipts matching the pin are reused (logged); a stale u or nav receipt exits 3 with nothing re-run;
+  - receipts without `executable_sha256`, or written before K-P9-10, are reused as before.
+- `test_nav_only_template_after_ic_rebuild`: a NAV-only child of a parent whose u / w receipts carry the old IC exe,
+  in four cases:
+  - unpinned: exits 0, notes u and w, and only N2 runs;
+  - cell pinned to the rebuilt exes, parent unpinned: inherited outputs are noted, not refused;
+  - parent pinned to the old exe: reused, logged as "= the parent's pin";
+  - parent pin moved: exit 3, nothing runs.
+  The test also asserts that `inherited` is true for fields / u / fit / w and false for card (absent here) and nav.
+- `test_run_stage_notes_unpinned_exe_reuse`: a planted K-P9-10 u receipt whose exe was rebuilt gives one driver
+  log line, `05-run.json` exe_notes, `wave-result.json` `cell.exe_notes` and one wave-log.md line. A clean world
+  gets none of them.
+- `test_adopt_never_kills_the_child` (Windows): with a reader holding the claim open for 0.5 s, adopt writes it
+  once the reader closes. With the claim held open past the retries, adopt warns, keeps the runner-pid claim, and
+  leaves no temp or lock file.
+
+### Evidence
+All on the clean tree at `a830deca`.
+1. `"C:/Program Files/Python312/python.exe" scripts/tests/run_two_seeds.py` (`PYTHONDONTWRITEBYTECODE=1`) -> exit 0
+   ```
+   == PYTHONHASHSEED=0 -m pytest -q -p no:cacheprovider scripts/tests
+   344 passed, 4 skipped in 347.63s (0:05:47)
+   == PYTHONHASHSEED=0: exit 0
+   == PYTHONHASHSEED=1 -m pytest -q -p no:cacheprovider scripts/tests
+   344 passed, 4 skipped in 300.10s (0:05:00)
+   == PYTHONHASHSEED=1: exit 0
+   ```
+2. `... -m pytest -q -p no:cacheprovider atx-engine/tools` -> exit 0: `349 passed, 6 subtests passed in 174.46s`
+3. `... -m pytest -q -p no:cacheprovider atx-impl/tools` -> exit 0:
+   `625 passed, 2 skipped, 17 subtests passed in 193.04s`
+4. Identity, tiny-world wave (scratch, not committed; no `driver` key, plain and PM8-15-ruled), HEAD `a830deca`
+   vs `3fa2dd4a`:
+   - ruled world: 0 differences (argv 18/18, files 43/43, log lines 53/53, specs 3/3);
+   - plain world: argv 17/17, files 42/42, log lines 51/51 and specs 3/3 identical, except git's CRLF warning in
+     one commit console log, which also differs between two HEAD runs.
+
+### Deviations
+- "Receipt note" is implemented as the wave run stage's `exe_notes` (05-run.json, wave-result.json `cell`), with
+  one wave-log.md line and one driver log line. Bounded-runner receipts are write-once and are not edited. A
+  standalone `research_cycle.py run` logs the NOTE line only.
+- "Inherited" means the template keeps the parent's output name for that phase (research_spec's reuse rule). A
+  `--suffix` run, or a different out_root, inherits nothing.
+
+### Open risks
+- `Cycle.parent_spec` loads the parent with `load_spec`. A parent that no longer resolves stops the child with the
+  usual spec error. It resolved when the child itself was loaded, so this matters only if the parent changes
+  between the two loads.
+- The other review minors stay deferred, as listed in fix round 1.
