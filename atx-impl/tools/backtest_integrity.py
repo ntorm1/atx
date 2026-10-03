@@ -1084,39 +1084,68 @@ def ledger_head(path: Path) -> str:
     return _walk(p)[1] if p.exists() else CHAIN_GENESIS
 
 
-def ledger_append(path: Path, records: list[dict], *, chain: bool = False) -> tuple[list[dict], list[dict]]:
+def ledger_append(path: Path, records: list[dict], *, chain: bool = False,
+                  lock_seconds: float = 60.0) -> tuple[list[dict], list[dict]]:
     """Append records not already present (same trial_id); returns (appended, skipped). Never rewrites a line.
 
     ``chain`` (and any ledger whose last line is already chained) writes ``prev_sha256`` into every appended line;
     without it the lines are written exactly as before v8. Every record is checked against the lines before it
     (``check_line``) before anything is written: one refusal (ValueError) appends nothing. An appended era line's
-    ``era_of`` must name a cell line of the ledger or of this batch (``check_era_of``, review P-1)."""
+    ``era_of`` must name a cell line of the ledger or of this batch (``check_era_of``, review P-1).
+
+    Lock (P9 OR-5): the chain check and the append run under ``<ledger>.lock``, created O_CREAT | O_EXCL, so two
+    writers never append on the same chain head; a second writer waits up to ``lock_seconds`` and is then refused
+    (ValueError naming the holder) with nothing appended. The lock is removed afterwards, a refusal included; a crashed
+    writer leaves it behind (check that no writer is alive, then remove it). The appended bytes are unchanged."""
+    import os  # noqa: PLC0415  (the lock is local to this function: P9 P0-FIX scope)
+    import time  # noqa: PLC0415
     p = Path(path)
-    existing, prev = _walk(p) if p.exists() else ([], CHAIN_GENESIS)   # verifies the chain before anything is appended
-    before = {r.get("trial_id"): r for r in existing}
-    chained = chain or bool(existing and "prev_sha256" in existing[-1])
-    appended: list[dict] = []
-    skipped: list[dict] = []
-    for rec in records:
-        if check_line(before, rec):
-            rec = pin_rerun(before, rec)                                 # review F-1: the re-run pins its target
-            appended.append(rec)
-        else:
-            skipped.append(rec)
-        before.setdefault(rec["trial_id"], rec)
-    for rec in appended:   # after the batch: a pool's era lines precede the pooled line they name
-        if is_era_line(rec):
-            check_era_of(before, rec)
-    if appended:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        with Path(path).open("a", encoding="utf-8", newline="\n") as f:
-            for k, rec in enumerate(appended):
-                if chained:
-                    rec = appended[k] = dict(rec, prev_sha256=prev)
-                text = json.dumps(rec, sort_keys=True, separators=(",", ":"))
-                prev = line_sha256(text) if chained else fold_head(prev, text)
-                f.write(text + "\n")
-    return appended, skipped
+    lock = p.with_name(p.name + ".lock")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + lock_seconds
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except (FileExistsError, PermissionError):    # Windows: a lock being removed reads as access denied
+            if time.monotonic() >= deadline:
+                try:
+                    held = lock.read_text(encoding="utf-8").strip() or "empty"
+                except OSError:
+                    held = "unreadable"
+                raise ValueError(f"ledger {p}: {lock} is held ({held}) after {lock_seconds:g} s: another writer is "
+                                 "appending; a crashed writer leaves it behind (check that none is alive, then remove "
+                                 "it)") from None
+            time.sleep(0.05)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"pid": os.getpid()}) + "\n")
+        existing, prev = _walk(p) if p.exists() else ([], CHAIN_GENESIS)   # verifies the chain before appending
+        before = {r.get("trial_id"): r for r in existing}
+        chained = chain or bool(existing and "prev_sha256" in existing[-1])
+        appended: list[dict] = []
+        skipped: list[dict] = []
+        for rec in records:
+            if check_line(before, rec):
+                rec = pin_rerun(before, rec)                                 # review F-1: the re-run pins its target
+                appended.append(rec)
+            else:
+                skipped.append(rec)
+            before.setdefault(rec["trial_id"], rec)
+        for rec in appended:   # after the batch: a pool's era lines precede the pooled line they name
+            if is_era_line(rec):
+                check_era_of(before, rec)
+        if appended:
+            with p.open("a", encoding="utf-8", newline="\n") as f:
+                for k, rec in enumerate(appended):
+                    if chained:
+                        rec = appended[k] = dict(rec, prev_sha256=prev)
+                    text = json.dumps(rec, sort_keys=True, separators=(",", ":"))
+                    prev = line_sha256(text) if chained else fold_head(prev, text)
+                    f.write(text + "\n")
+        return appended, skipped
+    finally:
+        lock.unlink(missing_ok=True)
 
 
 def invalid_ids(records: list[dict]) -> set:

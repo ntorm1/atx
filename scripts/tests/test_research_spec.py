@@ -36,18 +36,84 @@ import research_add_alpha as RA  # noqa: E402
 V8 = Path(os.environ.get("ATX_TEST_V8_SPECS") or HERE.parent / "specs" / "v8")
 
 
+def add_alpha_content(doc, lib: str) -> bool:
+    """A plain spec as research_add_alpha.derive_spec writes it for library ``lib``: its description names add-alpha
+    and the library, gated p1-<lib>, pinning the parent's library as its baseline and comparing its u pass with the
+    parent's rows."""
+    return isinstance(doc, dict) and not RS.is_template(doc) and \
+        str(doc.get("description", "")).startswith(f"Library {lib} = ") and \
+        "(research_cycle.py add-alpha; derived from the " in doc["description"] and \
+        (doc.get("gate") or {}).get("name") == f"p1-{lib}" and "baseline_library" in (doc.get("inputs") or {}) and \
+        [c.get("name") for c in doc.get("compare") or []][-2:] == ["parent-orientations", "parent-train-daily-ic"]
+
+
 def generated_by_add_alpha(path: Path) -> bool:
     """Ruling PM5-24: a library spec `research_cycle.py add-alpha` generated (R-2, R-7, R-12), not an authored one,
     recognised from its content as research_add_alpha.derive_spec writes it: a plain spec in lib-NAME.json (add-alpha's
-    name) whose description names add-alpha and the library NAME, gated p1-NAME, pinning the parent's library as its
-    baseline and comparing its u pass with the parent's rows."""
+    name) with add-alpha's content for library NAME (add_alpha_content)."""
     m = re.fullmatch(r"lib-(.+)\.json", path.name)
+    return m is not None and add_alpha_content(json.loads(path.read_text(encoding="utf-8")), m[1])
+
+
+def add_alpha_copy(path: Path) -> bool:
+    """A spec add-alpha generated, copied by hand at another leverage (Ruling PM6-6, e.g. lib-v81-gm.json): a plain spec
+    in lib-NAME-gm.json named NAME-gm with add-alpha's content for library NAME (add_alpha_content)."""
+    m = re.fullmatch(r"lib-(.+)-gm\.json", path.name)
     doc = json.loads(path.read_text(encoding="utf-8")) if m else None
-    return m is not None and isinstance(doc, dict) and not RS.is_template(doc) and \
-        str(doc.get("description", "")).startswith(f"Library {m[1]} = ") and \
-        "(research_cycle.py add-alpha; derived from the " in doc["description"] and \
-        (doc.get("gate") or {}).get("name") == f"p1-{m[1]}" and "baseline_library" in (doc.get("inputs") or {}) and \
-        [c.get("name") for c in doc.get("compare") or []][-2:] == ["parent-orientations", "parent-train-daily-ic"]
+    return m is not None and isinstance(doc, dict) and doc.get("name") == f"{m[1]}-gm" and add_alpha_content(doc, m[1])
+
+
+# Review F-9 (P9 P0-FIX): a spec's kind, read from its content, decides the pins `lock --write` fills (spec_null_pins);
+# no list of file names. A -gm copy (PM6-6) takes the kind of what it copies: a template copy is a template, a copy of
+# add-alpha's spec is an add-alpha copy.
+TEMPLATE, BASE, ADD_ALPHA_COPY, GENERATED_KIND = "template", "base", "add-alpha copy", "generated"
+
+
+def spec_kind(path: Path) -> str:
+    """template (a child: a cell written as its parent plus the registered change), generated (add-alpha's own spec),
+    add-alpha copy (a hand copy of one, add_alpha_copy) or base (any other plain spec: a root of the chain)."""
+    if RS.is_template(json.loads(path.read_text(encoding="utf-8"))):
+        return TEMPLATE
+    return GENERATED_KIND if generated_by_add_alpha(path) else ADD_ALPHA_COPY if add_alpha_copy(path) else BASE
+
+
+def nominal_spec(path: Path) -> dict:
+    """A spec file resolved on its nominal chain: each template up the chain on its nominal_parent, whatever parent
+    root set (as the authored specs plan)."""
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if not RS.is_template(doc):
+        return RC.load_spec(path)
+    return RS.resolve(dict(doc, parent=None), path, nominal_spec, research_tree.REPO)
+
+
+def spec_null_pins(path: Path) -> set[str]:
+    """Every pin root fills with `lock --write` (after the runbook builds and the parent cell), as the spec is authored
+    and planned on its nominal parent, by the spec's kind (review F-9):
+      a plain spec (base, add-alpha copy, generated): each input but a committed library or recipe (an atx-impl/ file
+          it is authored with, checked against its bytes), and an as-built fields manifest;
+      a template: its nominal parent's, less the inputs research_spec drops from a parent (IDENTITY_INPUTS, DERIVED),
+          plus the inputs it derives from that parent (reference_cell, reference_admission; reference_combined and
+          reference_weights when the resolved spec has a marginal section; reference_resid_parent when its fit flags
+          add --theme-resid), those it adds (change.inputs) and the fields manifest when the resolved fields are as
+          built."""
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if not RS.is_template(doc):
+        out = {f"inputs.{k}" for k, item in doc["inputs"].items() if committed(item["path"]) is None}
+        return out | ({"fields.manifest_sha256"} if RC.as_built(doc.get("fields")) else set())
+    nominal = dict(doc, parent=None)
+    parent, _ = RS.parent_of(nominal, path, research_tree.REPO)
+    resolved = nominal_spec(path)
+    change = doc.get("change") or {}
+    fit_ops = (change.get("flags") or {}).get("fit") or {}
+    derived = {"reference_cell", "reference_admission"} | \
+        ({"reference_combined", "reference_weights"} if "marginal" in resolved else set()) | \
+        ({"reference_resid_parent"} if isinstance(fit_ops.get(RS.RESID_FLAG), str) else set())
+    unset = set(change.get("unset") or [])
+    out = spec_null_pins(parent) - {f"inputs.{k}" for k in RS.IDENTITY_INPUTS + RS.DERIVED} - unset
+    out |= {f"inputs.{k}" for k in derived} - unset
+    out |= {f"inputs.{k}" for k in change.get("inputs") or {}}
+    out.discard("fields.manifest_sha256")
+    return out | ({"fields.manifest_sha256"} if RC.as_built(resolved.get("fields")) else set())
 
 
 GENERATED = sorted(p.name for p in V8.glob("*.json") if generated_by_add_alpha(p))
@@ -56,40 +122,6 @@ BASE_NULLS = {"inputs.role", "inputs.identity_bridge", "inputs.fund_events", "fi
 CHILD_NULLS = BASE_NULLS | {"inputs.reference_cell", "inputs.reference_admission",       # derived from the parent
                             "inputs.label_role"}                                          # B0c's (E-25), inherited
 LIB_NULLS = CHILD_NULLS | {"inputs.library", "inputs.recipe", "inputs.reference_combined", "inputs.reference_weights"}
-# every pin root fills (`lock --write` after the runbook builds and the parent cell), per spec, as planned today
-NULL_PINS = {"base-lo1.json": BASE_NULLS,
-             "base-lo3.json": BASE_NULLS | {"inputs.sic_events", "inputs.reference_cell"},
-             "base-b0c.json": CHILD_NULLS, "r1-comp-v8.json": CHILD_NULLS, "r2-lib-v80.json": LIB_NULLS,
-             "r3-aim-gain.json": CHILD_NULLS, "r4-hold-band.json": CHILD_NULLS, "r5-adv-hold.json": CHILD_NULLS,
-             "r6-spo-v3.json": CHILD_NULLS, "r7-lib-v81.json": LIB_NULLS,
-             "r8.json": CHILD_NULLS,
-             "r10.json": CHILD_NULLS}                                        # R-10 (E-38), planned on R-1
-NULL_PINS["r11.json"] = CHILD_NULLS | {"inputs.reference_resid_parent"}                  # v8 R-11 (R6B-O-5)
-NULL_PINS["r1-comp-v8-gm.json"] = CHILD_NULLS               # R-1 at matched gross (PM6-6), by hand on base-b0c
-NULL_PINS["r3-aim-gain-gm.json"] = CHILD_NULLS              # R-3 at matched gross (PM6-6), by hand on lib-v80 (PM7-4)
-NULL_PINS["r6-spo-v3-gm.json"] = CHILD_NULLS                # R-6 at matched gross (PM6-6), by hand on lib-v80
-NULL_PINS["r9a.json"] = NULL_PINS["r9b.json"] = CHILD_NULLS  # R-9a / R-9b, theta .03 / .04, report only (PM7-21)
-# R-7 at matched gross (PM6-6): add-alpha's lib-v81.json copied by hand with nav.leverage / nav.output (a plain spec:
-# every input pin but the committed libraries and recipe is lock-filled, as a base spec's)
-NULL_PINS["lib-v81-gm.json"] = {"inputs.role", "inputs.label_role", "inputs.baseline_fields", "fields.manifest_sha256",
-                                "inputs.reference_admission", "inputs.reference_cell", "inputs.reference_combined",
-                                "inputs.reference_weights", "inputs.reference_daily", "inputs.reference_orientations",
-                                "inputs.reference_daily_ic"}
-NULL_PINS["x-theme-erc.json"] = CHILD_NULLS                 # v8 X (lane XCOMB): theme-erc-v1, planned on R-1
-NULL_PINS["x-inv-vol.json"] = CHILD_NULLS                   # v8 X (lane XCOMB): inv-vol-v1, planned on B0c
-# X batch 1 at matched gross (PM6-6), by hand: X-3 (add-alpha's lib-v8x3b.json copied, as lib-v81-gm.json), X-5 and X-6
-# (the XCOMB templates copied with nav.leverage / nav.output)
-NULL_PINS["lib-v8x3b-gm.json"] = NULL_PINS["lib-v81-gm.json"]
-NULL_PINS["x-theme-erc-gm.json"] = CHILD_NULLS
-NULL_PINS["x-inv-vol-gm.json"] = CHILD_NULLS
-# X batch 2 at matched gross (PM6-6), by hand: X-7 (add-alpha's lib-v8x7b.json copied, as lib-v8x3b-gm.json)
-NULL_PINS["lib-v8x7b-gm.json"] = NULL_PINS["lib-v81-gm.json"]
-NULL_PINS["y-vol-target.json"] = CHILD_NULLS               # v8 Y (lane YCOMB): vol-target-v1, planned on B0c
-NULL_PINS["y-norm-score.json"] = CHILD_NULLS               # v8 Y (lane YCOMB): norm-score-v1, planned on B0c
-NULL_PINS["y-theme-tsmom.json"] = CHILD_NULLS              # v8 Y (lane YCOMB): theme-tsmom-v1, planned on X-5
-NULL_PINS["y-two-speed.json"] = CHILD_NULLS                # v8 Y-5 (lane YCOMB): two-speed-v1, planned on X-5
-ADD_ALPHA_COPIES = {"lib-v81-gm.json", "lib-v8x3b-gm.json", "lib-v8x7b-gm.json"}  # an add-alpha spec copied by hand: no
-#                                                                                    base-only pins
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
 FILLS["r6-spo-v3-gm.json"] = STORE_FILLS                                                  # PM6-6: R-6's store
@@ -270,7 +302,7 @@ def check_nominal_plan(tmp_path: Path, specs: Path, name: str) -> None:
     path = authored_dir(specs, tmp_path / "authored") / name
     root, spec, c, lines = plan_on_stand_ins(tmp_path / "nominal", path)
     assert RC.plan_lines(c, lines_only=True) and not any("<sha256:" in x for x in lines if x.startswith("#"))
-    assert unlocked_pins(c, spec) == NULL_PINS[name]
+    assert unlocked_pins(c, spec) == spec_null_pins(path), name                  # by the spec's kind (review F-9)
     assert any(x.startswith("# phase fields [pinned; done; as built") and "UNLOCKED" in x for x in lines)
     assert [x[len("# fill (root fills before `run`): "):] for x in lines if x.startswith("# fill")] == FILLS.get(name, [])
     doc = json.loads(path.read_text(encoding="utf-8"))
@@ -305,10 +337,11 @@ def check_live_plan(tmp_path: Path, specs: Path, name: str) -> dict:
             if item["sha256"] and committed(item["path"]) is not None}
     links = RS.chain(path, research_tree.REPO)
     above = ({p.name for p, _, _, _ in links} | {links[-1][2].name if links else name}) - {name}
-    if name in NULL_PINS and above <= set(NULL_PINS) - ADD_ALPHA_COPIES:
+    if spec_kind(path) != GENERATED_KIND and all((specs / n).is_file() and spec_kind(specs / n) in (BASE, TEMPLATE)
+                                                 for n in above):
         # (an add-alpha parent, lib-v80.json, or a hand copy of one, has fewer; a lock's pin on a committed file, e.g.
         # R-2's library once add-alpha wrote it (PM6-10), is checked against its bytes, not a stand-in: it may stand LOCKED)
-        assert unlocked_pins(c, spec) >= NULL_PINS[name] - held, name
+        assert unlocked_pins(c, spec) >= spec_null_pins(path) - held, name
     for section, option in fill_options():                    # PM5-24: a value root fills is its placeholder or well
         value = RC.option_value((spec.get(section) or {}).get("flags") or [], option)          # formed (own, inherited)
         assert value in (None, f"<fill:{section}.flags {option}>") or well_filled(option, value), (name, option, value)
@@ -330,9 +363,46 @@ def test_every_v8_spec_loads_and_plans(tmp_path, name):
     """Every live authored spec plans as authored (check_nominal_plan) and as it stands (check_live_plan): the same
     whether root has locked it, set a template's parent or filled its values or not. The authored set is the registry
     (a spec add-alpha generated is checked by test_every_generated_spec_plans_and_parents_the_templates)."""
-    assert set(V8_SPECS) == set(NULL_PINS)
+    assert spec_kind(V8 / name) in (BASE, TEMPLATE, ADD_ALPHA_COPY), name                # review F-9: no file list
     check_nominal_plan(tmp_path, V8, name)
     check_live_plan(tmp_path, V8, name)
+
+
+def test_spec_kind_null_pins(tmp_path, authored_v8):
+    """Review F-9 (P9 P0-FIX): the pins a spec's lock fills follow from its kind, read from its content, not from a
+    list of file names: a base spec's are its stand-in inputs and the fields manifest; a template's its nominal
+    parent's less the parent's identity inputs, plus what it derives and adds (R-1: B0c's label role and the paired
+    reference; R-2: its library, recipe and pool; R-11: the resid parent); an add-alpha copy's every input but the
+    committed library and recipe. A new cell of each kind (a template, a -gm copy of add-alpha's spec) plans with no
+    edit of this file."""
+    kinds = {n: spec_kind(V8 / n) for n in ("base-lo1.json", "base-b0c.json", "x-theme-erc-gm.json",
+                                            "lib-v81-gm.json")}
+    assert kinds == {"base-lo1.json": BASE, "base-b0c.json": TEMPLATE, "x-theme-erc-gm.json": TEMPLATE,
+                     "lib-v81-gm.json": ADD_ALPHA_COPY}
+    assert all(spec_kind(V8 / n) == GENERATED_KIND for n in GENERATED)
+    want = {"base-lo1.json": BASE_NULLS, "base-lo3.json": BASE_NULLS | {"inputs.sic_events", "inputs.reference_cell"},
+            "r1-comp-v8.json": CHILD_NULLS, "r2-lib-v80.json": LIB_NULLS, "x-theme-erc-gm.json": CHILD_NULLS,
+            "r11.json": CHILD_NULLS | {"inputs.reference_resid_parent"},
+            "lib-v81-gm.json": {"inputs.role", "inputs.label_role", "inputs.baseline_fields", "fields.manifest_sha256",
+                                "inputs.reference_admission", "inputs.reference_cell", "inputs.reference_combined",
+                                "inputs.reference_weights", "inputs.reference_daily", "inputs.reference_orientations",
+                                "inputs.reference_daily_ic"}}
+    assert {n: spec_null_pins(authored_v8 / n) for n in want} == want
+    specs = tmp_path / "v8"
+    shutil.copytree(V8, specs)
+    cell = json.loads((specs / "x-theme-erc.json").read_text(encoding="utf-8"))          # a new template cell
+    cell["name"] = "x-theme-erc-p9"
+    cell["change"]["set"]["nav.output"] = cell["change"]["set"]["nav.output"] + "-p9"
+    (specs / "x-theme-erc-p9.json").write_text(json.dumps(cell, indent=2), encoding="utf-8")
+    lib = next(n for n in GENERATED if not (V8 / n.replace(".json", "-gm.json")).exists())
+    copy_ = json.loads((specs / lib).read_text(encoding="utf-8"))                          # add-alpha's, by hand
+    copy_["name"] = f"{copy_['name']}-gm"
+    copy_["nav"] = dict(copy_["nav"], leverage="1.5", output=copy_["nav"]["output"] + "-L1.5")
+    gm = lib.replace(".json", "-gm.json")
+    (specs / gm).write_text(json.dumps(copy_, indent=2), encoding="utf-8")
+    assert (spec_kind(specs / "x-theme-erc-p9.json"), spec_kind(specs / gm)) == (TEMPLATE, ADD_ALPHA_COPY)
+    for k, name in enumerate(("x-theme-erc-p9.json", gm)):
+        check_nominal_plan(tmp_path / f"new-{k}", specs, name)
 
 
 def test_the_fixtures_plan_a_locked_spec_as_unlocked(tmp_path):
@@ -466,7 +536,7 @@ def check_generated(tmp_path: Path, specs: Path, name: str) -> None:
     on it (check_live_plan), but one whose composition map lacks its composition, which refuses it at load (R-10 on a
     parent that is not standardised, E-45)."""
     path = specs / name
-    assert generated_by_add_alpha(path) and name not in NULL_PINS, name
+    assert generated_by_add_alpha(path) and spec_kind(path) == GENERATED_KIND, name
     _, spec, c, lines = plan_on_stand_ins(tmp_path / "plan", path)
     assert RC.plan_lines(c, lines_only=True) and not any("<sha256:" in x for x in lines if x.startswith("#")), name
     stand_ins = {f"inputs.{k}" for k, item in spec["inputs"].items() if committed(item["path"]) is None}

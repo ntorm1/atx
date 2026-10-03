@@ -89,9 +89,10 @@ def main() -> int:
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
-    if (not command or not math.isfinite(args.seconds) or not 0 < args.seconds <= 600
+    if (not command or not math.isfinite(args.seconds) or not 0 < args.seconds <= research_tree.RUNNER_MAX_SECONDS
             or not 32 <= args.max_rss_mib <= 8192 or not 64 <= args.min_free_mib <= 8192):
-        parser.error("require a command, <=600 seconds, and explicit bounded RAM limits")
+        parser.error(f"require a command, <={research_tree.RUNNER_MAX_SECONDS} seconds, and explicit bounded RAM "
+                     "limits")
     if args.role_id is not None and not re.fullmatch(r"[A-Za-z0-9_]+", args.role_id):
         parser.error("--role-id must match [A-Za-z0-9_]+")
     root = (args.root or Path(__file__).resolve().parents[1]).resolve()

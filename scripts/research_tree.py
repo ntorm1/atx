@@ -6,6 +6,9 @@
 * ``--no-git`` (contract K3) is accepted only for a root outside any git repository (test roots, e.g. the tiny_world
   fixture): ``repo_root_of`` walks up from the root looking for a ``.git`` entry.
 * ``window_id`` names the research window (task W0-1, ``atx.research-window/v2``) for the derived cache and fit roots.
+* ``RUNNER_MAX_SECONDS`` is the bounded runner's hard time cap (run_bounded_research.py refuses more): a wave
+  manifest, a cycle spec and a wave step refuse a phase cap above it when they are loaded or built (P9 OR-1), never
+  half way through a wave.
 
 Standard library only (the bounded runner imports it before psutil is needed).
 """
@@ -20,6 +23,17 @@ REPO = Path(__file__).resolve().parents[1]
 CODE_PATHSPEC = ("atx-core", "atx-tsdb", "atx-engine", "atx-impl", "scripts", "CMakeLists.txt", "CMakePresets.json",
                  "cmake")
 WINDOW_JSON = "atx-impl/strategies/research_window.json"     # W0-1: the one source of the research window
+RUNNER_MAX_SECONDS = 600                                     # run_bounded_research.py's hard time cap (P9 OR-1)
+
+
+def seconds_cap_refusal(key: str, value) -> str | None:
+    """Why a runner time cap ``value`` at ``key`` (a dotted manifest or spec key) is refused: above
+    RUNNER_MAX_SECONDS, the bounded runner would exit 2 with no receipt; None when it is within the cap (a number's
+    other checks stay the caller's)."""
+    if type(value) in (int, float) and value > RUNNER_MAX_SECONDS:
+        return (f"{key} {value} is above the bounded runner's maximum {RUNNER_MAX_SECONDS} s "
+                "(research_tree.RUNNER_MAX_SECONDS; run_bounded_research.py refuses it)")
+    return None
 
 
 def repo_root_of(path: Path) -> Path | None:

@@ -4,15 +4,16 @@ The record stage (wave_stages.record) builds both from the stage receipts' outpu
 (wave_scoreboard.py) reads only these files and the ledger. Layout:
 
   {schema, wave, kind (library | rule), manifest{path, sha256, commit}, library | null, template | null,
-   budget{id, admission_used, admission_new, admission_new_ids, admission_cap, admission_cycle_prefix,
-   admission_origin, construction_cap} (preflight's count), parent{spec, spec_digest, library, nav,
-   leverage}, screen{spec, gate_exit, rows[], kept[], dropped[], sign_rule} | null, cell{spec, spec_digest, library,
-   kind, nav, leverage, gross, gross_parent, corrected} | null, marginal{source, mode, rows[]} | null (report only),
-   mechanics{rule, pass, rows[]} | null,
+   budget{id, admission_used, admission_new, admission_new_ids, admission_cap, admission_cycle_prefix |
+   admission_cycle_prefixes, admission_origin, construction_cap} (preflight's count), parent{spec, spec_digest,
+   library, nav, leverage}, screen{spec, gate_exit, rows[], kept[], dropped[], sign_rule} | null, cell{spec,
+   spec_digest, library, kind, nav, leverage, gross, gross_parent, corrected} | null, marginal{source, mode, rows[]} |
+   null (report only), mechanics{rule, pass, rows[]} | null, nav_exe{parent, cell, equal, ref} | null (verify's NAV
+   exe SHA-256s, P9 OR-2),
    stats{cell, parent} (the book reader's rows) | null, paired{...} | null, bundle{...} | null, dsr{...} | null,
    pbo, verdict{rule, text, accepted, checks, decided_by, criteria[]} | {accepted: false, reason},
    ledger{path, lines_before, lines_after, head, n_before, n_after, trial_id, admission_lines[]},
-   next_parent{spec, library}, timings[{phase, run_dir, outcome, exit_code, seconds, peak_mib}],
+   next_parent{spec, library}, timings[{phase, run_dir, outcome, exit_code, seconds, peak_mib, executable_sha256}],
    receipts{stage: sha256}}
 """
 from __future__ import annotations
@@ -58,6 +59,7 @@ def build(w, done: dict, ledger: dict, seal: dict | None = None) -> dict:
                         "kept": sc["decision"]["kept"], "dropped": sc["decision"]["dropped"],
                         "sign_rule": sc["decision"]["rule"]} if sc.get("decision") else None),
             "cell": cell, "marginal": marginal_rows(sc, sp, jd), "mechanics": vf.get("mechanics"),
+            "nav_exe": vf.get("nav_exe"),
             "seal_scan": seal if seal is not None else vf.get("seal_scan"),
             "stats": jd.get("book"), "paired": jd.get("paired"), "bundle": jd.get("bundle"), "dsr": jd.get("dsr"),
             "pbo": jd.get("pbo"), "verdict": verdict, "ledger": ledger,
@@ -115,8 +117,9 @@ def budget_line(b: dict, led: dict) -> str:
     out = [f"Budget {b.get('id')}:"]
     if "admission_cap" in b:
         used, new = b.get("admission_used", 0), b.get("admission_new", 0)
+        prefixes = b.get("admission_cycle_prefixes") or [b.get("admission_cycle_prefix")]   # P9 DEC-2: a list
         out.append(f"admission trials {used} + {new} new = {used + new} of {b['admission_cap']} (cycles "
-                   f"{b.get('admission_cycle_prefix')}*" + (f", origin {b['admission_origin']}"
+                   + ", ".join(f"{p}*" for p in prefixes) + (f", origin {b['admission_origin']}"
                                                              if b.get("admission_origin") else "") +
                    "; re-screens left out);")
     if "construction_cap" in b:

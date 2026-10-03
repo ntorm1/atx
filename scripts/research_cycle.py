@@ -56,9 +56,14 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   omitted, derive to <out_root or build-equity>/{candidate-cache,fit-work}/<role sha16>-<window id>
                   (shared, content-keyed; never suffixed)
   runner.phases   {phase: {seconds, max_rss_mib, min_free_mib}} per-phase caps over the runner's; absent, the OD-2 rule
-                  table RUNNER_PHASE_RULES applies (u and w: 300 s / 2,560 MiB on a role of more than 1,200 dates)
+                  table RUNNER_PHASE_RULES applies (u and w: 300 s / 2,560 MiB on a role of more than 1,200 dates); a
+                  time cap (here or runner.seconds) above research_tree.RUNNER_MAX_SECONDS is refused at load (P9 OR-1)
   receipts        "every-phase": the direct phases (fields, check, monitor, summ) run through the bounded runner too
-  ref             skipped when this cycle's fields manifest SHA equals inputs.baseline_fields (the parent's fields)
+  ref             skipped when this cycle's fields manifest SHA equals inputs.baseline_fields (the parent's fields),
+                  unless the NAV exe's SHA-256 differs from the executable_sha256 of the parent NAV's completed run
+                  receipt (inputs.reference_cell; P9 OR-2): then the reference construction runs
+  nav, ref        done when summary.json exists and, for an argv with --capacity-curve, capacity_curve.csv and
+                  v7_extras.json too (written after the summary; P9 NV-4); a summary without them is a failed attempt
   marginal        {output, pool (input key, default reference_combined), themes (input key of the pool's composition
                   weights, e.g. reference_weights; optional), flags (--min-names N, --max-memory-mib N)}: the verb's
                   whole argv is built from the spec (--candidate-cache, --library(-sha256), --pool(-sha256), --role,
@@ -226,6 +231,9 @@ BUILDS = {
     "equity-rel": {"bin": "build-equity-rel/bin", "path": ["C:/atx-cache/vcpkg_installed/x64-windows/bin"]},
 }
 EXE_NAMES = {"ic": "atx-equity-strategy-ic.exe", "nav": "atx-equity-strategy-targets.exe"}
+# P9 NV-4: the NAV verb (strategy_nav_v7.cpp) writes summary.json before the capacity pass and v7_extras.json; a NAV
+# whose argv carries CAPACITY_FLAG is done only when CAPACITY_FILES exist beside its summary.json
+CAPACITY_FLAG, CAPACITY_FILES = "--capacity-curve", ("capacity_curve.csv", "v7_extras.json")
 # Default per-phase runner caps, applied when the spec's runner.phases does not name the phase. OD-2 (owner ruling
 # E-1, 2026-09-29): the IC passes get 2,560 MiB and 300 s on a role longer than 1,200 dates (the 3-year role has
 # 1,155, the 4-year role about 1,405); every other phase keeps the runner's own caps.
@@ -304,7 +312,7 @@ def validate_spec(spec: dict) -> None:
     r = spec["runner"]
     if not all(k in r for k in ("script", "seconds", "max_rss_mib", "min_free_mib")):
         raise CycleError("spec runner needs script, seconds, max_rss_mib, min_free_mib", EXIT_USAGE)
-    validate_runner_phases(r.get("phases"))
+    validate_runner_phases(r.get("phases"), r["seconds"])
     need = {"fields": ("output",), "static_check": ("script",), "ic": ("u_output", "flags"),
             "fit": ("script", "output", "flags"), "gate": ("admitted",), "nav": ("output", "rule", "flags"),
             "summ": ("script", "dsr_n"), "card": ("script", "output"), "monitor": ("script", "output"),
@@ -366,7 +374,12 @@ def validate_spec(spec: dict) -> None:
                              f"{spec['summ']['dsr_n']}: the listed grid must be the declared N trials", EXIT_USAGE)
 
 
-def validate_runner_phases(phases) -> None:
+def validate_runner_phases(phases, seconds=None) -> None:
+    """runner.phases (and ``seconds``, the runner's own cap): positive caps, a time cap at most the bounded runner's
+    maximum (research_tree.RUNNER_MAX_SECONDS, P9 OR-1: refused at load, never as a runner exit 2 mid-cycle)."""
+    refusal = research_tree.seconds_cap_refusal("spec runner.seconds", seconds)
+    if refusal:
+        raise CycleError(refusal, EXIT_USAGE)
     if phases is None:
         return
     if not isinstance(phases, dict) or not all(p in PHASES and isinstance(c, dict) and c and set(c) <= set(CAP_KEYS)
@@ -374,6 +387,10 @@ def validate_runner_phases(phases) -> None:
                                                for p, c in phases.items()):
         raise CycleError(f"spec runner.phases must map a phase to caps {{{', '.join(CAP_KEYS)}}} (positive numbers)",
                          EXIT_USAGE)
+    for p, c in phases.items():
+        refusal = research_tree.seconds_cap_refusal(f"spec runner.phases.{p}.seconds", c.get("seconds"))
+        if refusal:
+            raise CycleError(refusal, EXIT_USAGE)
 
 
 def argparse_values(flags: list, option: str) -> list:
@@ -1014,10 +1031,23 @@ class Cycle:
                              nav, fdm, role_m, role_sha)
         if "baseline_fields" in s["inputs"] and step.state != "done" and \
                 self.res.sha(fdm) == self.pin("baseline_fields"):
+            cell_exe, parent_exe = self.nav_exe_shas()
+            if cell_exe and parent_exe and cell_exe != parent_exe:   # P9 OR-2: equal fields, another NAV exe
+                step.note = (f"fields manifest {fdm} equals the parent's (inputs.baseline_fields) but the NAV exe "
+                             f"differs (sha256 {cell_exe}, the parent NAV's {parent_exe}): the reference "
+                             "construction runs")
+                return step
             step.kind, step.state = "skipped", "skipped"
             step.note = (f"fields manifest {fdm} equals the parent's (inputs.baseline_fields): the reference "
                          "construction is identical by construction")
         return step
+
+    def nav_exe_shas(self) -> tuple[str | None, str | None]:
+        """(the SHA-256 of the NAV exe this cycle runs, the executable_sha256 of the parent NAV's last completed run
+        receipt, inputs.reference_cell): None where unknown (no file, no reference cell, no receipt recording it)."""
+        ref = self.idir("reference_cell") if "reference_cell" in self.spec["inputs"] else None
+        return (self.res.sha(self.spec["exes"]["nav"]),
+                cycle_resume.completed_exe_sha256(self.res, ref, MAX_ATTEMPTS) if ref else None)
 
     def marginal_step(self, lib: str, fd: str) -> Step:
         """F-2's marginal IC verb (contract K6) over the u pass's candidate cache and fields dir, on this cycle's role:
@@ -1173,13 +1203,27 @@ class Cycle:
             s["exes"]["nav"], "nav", "--combined", comb, "--combined-sha256", comb_sha, "--role", role_m,
             "--role-sha256", role_sha, "--fields", fdm, "--fields-sha256", self.rt_sha(fdm), "--output", n_out,
             "--rule", nav["rule"], *flags, *label]
-        if self.res.exists(f"{n_out}/summary.json"):
+        missing = self.capacity_missing(n_out, flags)
+        if self.res.exists(f"{n_out}/summary.json") and not missing:
             state, note = "done", ""
+        elif missing:
+            state, note = "failed", (f"{n_out}/summary.json exists but {', '.join(missing)} of {CAPACITY_FLAG} do not "
+                                     "(the NAV verb writes summary.json before its capacity pass and extras: that pass "
+                                     "did not finish; P9 NV-4); never overwritten: use a fresh --suffix")
         elif self.res.exists_dir(n_out) or self.res.exists_dir(run_dir):
             state, note = "failed", self.failure_note(run_dir) + "; never overwritten: use a fresh --suffix"
         else:
             state, note = "pending", "" if phase == "nav" else "reference construction on this cycle's fields"
         return Step(phase, "bounded", argv, n_out, run_dir, k, state, note)
+
+    def capacity_missing(self, n_out: str, flags: list) -> list[str]:
+        """The files a NAV whose argv carries --capacity-curve still lacks beside its summary.json (CAPACITY_FILES:
+        written after the summary, P9 NV-4); empty without the flag, without a summary.json, or for a summary known
+        by hash only (content checks skipped, as complete_summary skips them)."""
+        rel = f"{n_out}/summary.json"
+        if CAPACITY_FLAG not in flags or not self.res.exists(rel) or self.res.hash_only(rel):
+            return []
+        return [name for name in CAPACITY_FILES if not self.res.exists(f"{n_out}/{name}")]
 
     def ledger_cells(self, n_out: str) -> tuple[list[str], int]:
         """summ.cells_from_ledger / dsr_n "ledger+1": (every trial line's cell, in ledger order, this cycle's own cell

@@ -221,6 +221,9 @@ elif "fit.py" in " ".join(cmd):
 elif "nav" in cmd:
     (child / "summary.json").write_text(json.dumps({"status": "complete", "primary_scenario": "s2"}))
     (child / "daily_s2.csv").write_text(beh.get("daily", {}).get(child.name, "net_return\n0.001\n"))
+    if "--capacity-curve" in cmd and b != "capacity-crash":   # the NAV verb writes these after summary.json (NV-4)
+        (child / "capacity_curve.csv").write_text("multiple,book,net_sharpe\n4,s2,1.0\n")
+        (child / "v7_extras.json").write_text(json.dumps({"capacity_curve": True}))
 elif "marginal" in cmd:                                     # v8 A-2: the IC exe's marginal verb (contract K6)
     (child / "marginal_ic.json").write_text(json.dumps({"candidates": [
         {"id": "new_alpha", "ic21": 0.012, "ic21_hac_t": 2.1, "marginal_ic21": 0.008, "marginal_hac_t": 1.6,
