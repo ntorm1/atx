@@ -214,6 +214,13 @@ All four D1 minors are fixed (above).
 
 ## Disk (DISK / DISK-2)
 
-- After this report is committed, the lane deletes its own `C:/atx-wt/pool-20/build-equity` object tree. It keeps the
-  `mega-p9-d2-*` receipts and logs.
-- It also deletes its own scratch: the scratchpad `d2-*` files it created and its pytest temp dirs.
+- Done after the report commit. The lane deleted the `build-equity` entries its configure and builds created, by
+  name: `atx-core`, `atx-engine`, `atx-impl`, `atx-tsdb`, `bin`, `lib`, `tests`, `CMakeFiles` and the generated
+  top-level files.
+- Kept:
+  - the `mega-p9-d2-{a,b,c,d}-{receipt.json,build.log,cache-stats.log}` files and `vcpkg-manifest-install.log`;
+  - the two directories that predate this session, `audits/` and `v8-interim3-pitch-render-run2/`.
+- Evidence logs (gtest and pytest output, build stdout) were moved to `evidence-D2/` beside this report. They are
+  untracked and git-ignored.
+- The lane's scratchpad files and the pool's `__pycache__` directories were deleted. Root rebuilds pool-20 from
+  configure if it builds there.
