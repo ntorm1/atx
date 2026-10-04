@@ -1,0 +1,232 @@
+{
+ "script_sha256": "8e24943e1dc2f7b739266214c9fb09caa0e6b034304e33c1d5eef964327b7534",
+ "fcw_file": "C:\\atx-wt\\pool-20\\atx-impl\\tools\\fit_composition_weights.py",
+ "cases": {
+  "std-erc-tsmom": {
+   "code": 0,
+   "argv": [
+    "--screen",
+    "v4-prior-v1",
+    "--output",
+    "C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\6ea15be9-c1e8-4316-99d4-4854dfd7c03c\\scratchpad\\d2r\\world-pre\\std-erc-tsmom-plain",
+    "--orientation",
+    "prior",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1",
+    "--theme-tsmom",
+    "theme-tsmom-v1"
+   ],
+   "files": {
+    "admission.csv": "d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5",
+    "admission.json": "ac62384169700c71b53c7c48d1b98ae94de0d69614a54a8671f3e008cd642d64",
+    "composition_weights.json": "8e1537b85cd4c686f81c861679c2b9683f42f5cef0cb088a946a42f0eac3f4b2"
+   },
+   "summary_sha256": "366933d7b72ff8e3b30a2161a9d018aa0686090dae75b7948e4cec78ecc6454b",
+   "summary": {
+    "admission_sha256": "ac62384169700c71b53c7c48d1b98ae94de0d69614a54a8671f3e008cd642d64",
+    "admitted": 5,
+    "candidates": 10,
+    "composition": "ew-theme-std-v1",
+    "computed_this_run": 10,
+    "counts": {
+     "admitted": 5,
+     "reject_insufficient": 1,
+     "reject_no_prior": 1,
+     "reject_redundant": 1,
+     "reject_turnover": 1,
+     "reject_veto": 1
+    },
+    "files": {
+     "admission.csv": "d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5",
+     "admission.json": "ac62384169700c71b53c7c48d1b98ae94de0d69614a54a8671f3e008cd642d64",
+     "composition_weights.json": "8e1537b85cd4c686f81c861679c2b9683f42f5cef0cb088a946a42f0eac3f4b2"
+    },
+    "nonzero_weights": 5,
+    "orientation": "prior",
+    "output": "C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\6ea15be9-c1e8-4316-99d4-4854dfd7c03c\\scratchpad\\d2r\\world-pre\\std-erc-tsmom-plain",
+    "refused_decisions": 0,
+    "reused": 0,
+    "screen": "v4-prior-v1",
+    "sign_conflicts": [
+     "insufficient"
+    ],
+    "sign_conflicts_weighted": [],
+    "status": "complete",
+    "tau_flagged": [
+     "fast_a"
+    ],
+    "theme_erc": {
+     "parent_rule": "ew-theme-std-v1",
+     "theme_shares": {
+      "reversal_seasonality": 0.4823886006153717,
+      "value": 0.5176113993846284
+     }
+    },
+    "theme_tsmom": {
+     "blocks": 15,
+     "parent_rule": "theme-erc-v1",
+     "theme_blocks_off": 0,
+     "theme_on_fraction": {
+      "reversal_seasonality": 1.0,
+      "value": 1.0
+     }
+    },
+    "themes_present": [
+     "reversal_seasonality",
+     "value"
+    ],
+    "weighted_standalone_turnover": 0.37358083628688593,
+    "weights_sha256": "8e1537b85cd4c686f81c861679c2b9683f42f5cef0cb088a946a42f0eac3f4b2"
+   },
+   "seconds_present": true
+  },
+  "shrink-tsmom": {
+   "code": 0,
+   "argv": [
+    "--screen",
+    "v4-prior-v1",
+    "--output",
+    "C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\6ea15be9-c1e8-4316-99d4-4854dfd7c03c\\scratchpad\\d2r\\world-pre\\shrink-tsmom-plain",
+    "--orientation",
+    "prior",
+    "--composition",
+    "ic-shrink-v1",
+    "--theme-tsmom",
+    "theme-tsmom-v1"
+   ],
+   "files": {
+    "admission.csv": "d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5",
+    "admission.json": "ac62384169700c71b53c7c48d1b98ae94de0d69614a54a8671f3e008cd642d64",
+    "composition_weights.json": "ecb74ed6387c78397ae24f5f3323360bb296bb612a2120148539dcda13474dab"
+   },
+   "summary_sha256": "925a1417a5120a00ecd15e327f6937132b62610725584953f7eac67ad1b29ac3",
+   "summary": {
+    "admission_sha256": "ac62384169700c71b53c7c48d1b98ae94de0d69614a54a8671f3e008cd642d64",
+    "admitted": 5,
+    "candidates": 10,
+    "composition": "ic-shrink-v1",
+    "computed_this_run": 10,
+    "counts": {
+     "admitted": 5,
+     "reject_insufficient": 1,
+     "reject_no_prior": 1,
+     "reject_redundant": 1,
+     "reject_turnover": 1,
+     "reject_veto": 1
+    },
+    "files": {
+     "admission.csv": "d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5",
+     "admission.json": "ac62384169700c71b53c7c48d1b98ae94de0d69614a54a8671f3e008cd642d64",
+     "composition_weights.json": "ecb74ed6387c78397ae24f5f3323360bb296bb612a2120148539dcda13474dab"
+    },
+    "nonzero_weights": 5,
+    "orientation": "prior",
+    "output": "C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\6ea15be9-c1e8-4316-99d4-4854dfd7c03c\\scratchpad\\d2r\\world-pre\\shrink-tsmom-plain",
+    "refused_decisions": 0,
+    "reused": 0,
+    "screen": "v4-prior-v1",
+    "sign_conflicts": [
+     "insufficient"
+    ],
+    "sign_conflicts_weighted": [],
+    "status": "complete",
+    "tau_flagged": [
+     "fast_a"
+    ],
+    "theme_tsmom": {
+     "blocks": 15,
+     "parent_rule": "ic-shrink-v1",
+     "theme_blocks_off": 0,
+     "theme_on_fraction": {
+      "reversal_seasonality": 1.0,
+      "value": 1.0
+     }
+    },
+    "themes_present": [
+     "reversal_seasonality",
+     "value"
+    ],
+    "weighted_standalone_turnover": 0.39096189503419854,
+    "weights_sha256": "ecb74ed6387c78397ae24f5f3323360bb296bb612a2120148539dcda13474dab"
+   },
+   "seconds_present": true
+  },
+  "std-aim-resid": {
+   "code": 0,
+   "argv": [
+    "--screen",
+    "v4-prior-v1",
+    "--output",
+    "C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\6ea15be9-c1e8-4316-99d4-4854dfd7c03c\\scratchpad\\d2r\\world-pre\\std-aim-resid-plain",
+    "--orientation",
+    "prior",
+    "--composition",
+    "ew-theme-std-aim-v1",
+    "--theme-resid",
+    "theme-resid-v1"
+   ],
+   "files": {
+    "admission.csv": "d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5",
+    "admission.json": "ac62384169700c71b53c7c48d1b98ae94de0d69614a54a8671f3e008cd642d64",
+    "composition_weights.json": "33758b683a05a4ee52ad8e441b3a894fecbd59260f6105600c96931ea98f40b3"
+   },
+   "summary_sha256": "ab5e9e373b707111fdd5e4497f7b55d2505723b699631d8a2dc5d06dacf75ea1",
+   "summary": {
+    "admission_sha256": "ac62384169700c71b53c7c48d1b98ae94de0d69614a54a8671f3e008cd642d64",
+    "admitted": 5,
+    "aim_gain_max": 0.6285891042970112,
+    "aim_gain_min": 0.05,
+    "aim_theme_weights": {
+     "reversal_seasonality": 0.37816060677765106,
+     "value": 0.6218393932223489
+    },
+    "candidates": 10,
+    "composition": "ew-theme-std-aim-v1",
+    "computed_this_run": 10,
+    "counts": {
+     "admitted": 5,
+     "reject_insufficient": 1,
+     "reject_no_prior": 1,
+     "reject_redundant": 1,
+     "reject_turnover": 1,
+     "reject_veto": 1
+    },
+    "files": {
+     "admission.csv": "d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5",
+     "admission.json": "ac62384169700c71b53c7c48d1b98ae94de0d69614a54a8671f3e008cd642d64",
+     "composition_weights.json": "33758b683a05a4ee52ad8e441b3a894fecbd59260f6105600c96931ea98f40b3"
+    },
+    "nonzero_weights": 5,
+    "orientation": "prior",
+    "output": "C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\6ea15be9-c1e8-4316-99d4-4854dfd7c03c\\scratchpad\\d2r\\world-pre\\std-aim-resid-plain",
+    "refused_decisions": 0,
+    "reused": 0,
+    "screen": "v4-prior-v1",
+    "sign_conflicts": [
+     "insufficient"
+    ],
+    "sign_conflicts_weighted": [],
+    "status": "complete",
+    "tau_flagged": [
+     "fast_a"
+    ],
+    "theme_residualise": {
+     "order": [
+      "value",
+      "reversal_seasonality"
+     ],
+     "rule": "theme-resid-v1"
+    },
+    "themes_present": [
+     "reversal_seasonality",
+     "value"
+    ],
+    "weighted_standalone_turnover": 0.3561940291844829,
+    "weights_sha256": "33758b683a05a4ee52ad8e441b3a894fecbd59260f6105600c96931ea98f40b3"
+   },
+   "seconds_present": true
+  }
+ }
+}
