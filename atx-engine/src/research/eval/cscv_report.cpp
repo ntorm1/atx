@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <utility>
 #include <vector>
 
@@ -22,12 +23,32 @@ core::Result<CscvReport> cscv_report(std::span<const f64> matrix, usize sessions
     return core::Err(core::ErrorCode::InvalidArgument,
                      "cscv_pbo: blocks must be even, >= 2 and <= T");
   }
+  // Ruling B2-R2: a candidate whose used returns are all equal has Sharpe 0 in every split, the
+  // Python's rule (_subset_sr: mean / sd where the variance is > 0, else 0). Its centred block
+  // sums there are exact small multiples of one rounding residue, so the Python variance is
+  // exactly 0 -- the same condition, no tolerance. The engine CSCV would divide by the reference
+  // gather's rounding residue instead, so such a column goes to it as zeros, whose Sharpe is
+  // exactly 0 by the engine's own zero-std rule.
+  const usize used = (sessions / blocks) * blocks;
+  std::vector<usize> constant;
+  for (usize c = 0; c < n; ++c) {
+    bool same = true;
+    for (usize t = 1; t < used && same; ++t) {
+      same = matrix[t * n + c] == matrix[c];
+    }
+    if (same && std::isfinite(matrix[c])) {
+      constant.push_back(c);
+    }
+  }
   // Candidate-major for the engine (M[c * T + t]).
   std::vector<f64> perf(matrix.size());
   for (usize t = 0; t < sessions; ++t) {
     for (usize c = 0; c < n; ++c) {
       perf[c * sessions + t] = matrix[t * n + c];
     }
+  }
+  for (const usize c : constant) {
+    std::fill_n(perf.begin() + static_cast<std::ptrdiff_t>(c * sessions), sessions, 0.0);
   }
   std::vector<atx::engine::eval::PboSplitTrace> trace;
   ATX_TRY(atx::engine::eval::PboResult res,
@@ -51,6 +72,7 @@ core::Result<CscvReport> cscv_report(std::span<const f64> matrix, usize sessions
   out.cached_evaluations = res.cached_evaluations;
   out.reference_evaluations = res.reference_evaluations;
   out.ambiguous_comparisons = res.ambiguous_comparisons;
+  out.constant_candidates = std::move(constant);
   out.logit_mean = numpy::mean(out.logits);
 
   std::vector<f64> sorted = out.logits;

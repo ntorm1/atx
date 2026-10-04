@@ -455,13 +455,15 @@ target_compile_definitions(atx-engine-research-ledger-tests PRIVATE
 add_executable(atx-engine-research-eval-tests EXCLUDE_FROM_ALL
     research/research_eval_tie_test.cpp
     research/research_eval_rng_test.cpp
-    research/research_eval_conditional_test.cpp)
+    research/research_eval_conditional_test.cpp
+    research/research_eval_edges_test.cpp)
 target_link_libraries(atx-engine-research-eval-tests PRIVATE
     atx-engine-research-eval GTest::gtest_main atx_warnings Threads::Threads atx-test-scratch
     nlohmann_json::nlohmann_json)
 target_include_directories(atx-engine-research-eval-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(atx-engine-research-eval-tests PRIVATE
-    "ATX_EVAL_TIE_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/eval_tie\"")
+    "ATX_EVAL_TIE_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/eval_tie\""
+    "ATX_EVAL_EDGES_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_eval_edges\"")
 foreach(_b2_tests IN ITEMS atx-engine-research-ledger-tests atx-engine-research-eval-tests)
     gtest_discover_tests(${_b2_tests} DISCOVERY_MODE PRE_TEST TEST_PREFIX "${_b2_tests}."
         PROPERTIES LABELS atx_research)

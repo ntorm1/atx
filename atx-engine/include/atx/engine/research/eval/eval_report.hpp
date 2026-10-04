@@ -19,10 +19,13 @@
 //                        tot and v8 rows), cross (nav_summ.dsr_rows over the cells, N =
 //                        dsr_n), lo (lo_null_dsr, N = dsr_n), onc (effective_n_dsr)},
 //                   paired (nav_summ.paired_stats keys plus K-P9-5's se = the LW studentized
-//                        SE, p_one, p_two, and the reference) or null with paired_note,
+//                        SE, p_one, p_two, and the reference; one_minus_rho and degenerate of
+//                        ruling B2-R1: a degenerate pair has null memmel_se / t / se / p) or null
+//                        with paired_note,
 //                   conditional (conditional.hpp on the paired dSR and its Memmel SE) | null
 //   onc           null | backtest_integrity.effective_trials (cluster members by label)
 //   pbo           null | backtest_integrity.cscv_pbo keys, logits, labels, engine diagnostics
+//                 (with constant_candidates: ruling B2-R2, Sharpe 0 in every split)
 //   hand[]        DSR_hand rows (dsr_total.hand_row) of --hand books
 //   conditional   {threshold, alpha, se_basis, rows (the --step lineage, then the cells),
 //                  cumulative {cells, raw_sum, adjusted_sum, null_bias_sum}} -- printed only
@@ -92,6 +95,7 @@ struct EvalRequest {
   atx::engine::research::ledger::MissingLedger ledger_missing{
       atx::engine::research::ledger::MissingLedger::Empty};
   std::string window_id{std::string(atx::engine::data::kResearchWindowId)};
+  // Trusted-caller inputs (eval_cli.hpp): the + 1 of house_v1 / tot follows them as given.
   std::vector<LabeledPath> trials;         // label -> trial_id
   std::vector<std::string> history;        // labels scored as history reads (Ruling E-41)
   std::vector<HandBook> hands;

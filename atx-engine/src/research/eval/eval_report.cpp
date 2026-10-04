@@ -231,6 +231,8 @@ struct LedgerState {
               {"sr_reference", num(p.sr_reference)},
               {"dsr", num(p.dsr)},
               {"rho", num(p.rho)},
+              {"one_minus_rho", num(p.one_minus_rho)},
+              {"degenerate", p.degenerate},
               {"memmel_se", num(p.memmel_se)},
               {"t", opt(p.t)},
               {"cbb_ci95", Json::array({num(p.cbb_lo), num(p.cbb_hi)})},
@@ -455,7 +457,8 @@ struct Cell {
                Json{{"rule", "pbo_cscv_traced CachedMomentsV2"},
                     {"cached_evaluations", r.cached_evaluations},
                     {"reference_evaluations", r.reference_evaluations},
-                    {"ambiguous_comparisons", r.ambiguous_comparisons}}}};
+                    {"ambiguous_comparisons", r.ambiguous_comparisons},
+                    {"constant_candidates", r.constant_candidates}}}};
 }
 
 [[nodiscard]] core::Result<Json> pbo_block(const EvalRequest &rq,
@@ -733,6 +736,10 @@ void cell_text(std::string &out, const Json &c) {
            fmt(p["se"], "%.3f") + " p two-sided " + fmt(p["p_two"], "%.4f") + " one-sided " +
            fmt(p["p_one"], "%.4f") + " | CBB 95% [" + fmt(p["cbb_ci95"][0], "%+.3f") + ", " +
            fmt(p["cbb_ci95"][1], "%+.3f") + "]\n";
+    if (p["degenerate"].get<bool>()) {
+      out += "   paired: degenerate pair (1 - rho " + fmt(p["one_minus_rho"], "%.3e") +
+             " < 1e-06): SE, t and p refused (ruling B2-R1)\n";
+    }
   } else if (c.contains("paired_note")) {
     out += "   " + c["paired_note"].get<std::string>() + "\n";
   }

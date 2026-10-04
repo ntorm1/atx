@@ -18,6 +18,10 @@
 //
 // Exhaustive only (the engine bounds S <= 16 blocks, C(16, 8) = 12,870 splits); the Python's
 // seeded subsample of splits has no engine twin and is refused by the verb.
+//
+// A candidate constant over the used sessions has Sharpe 0 in every split (ruling B2-R2, the
+// Python's zero-variance rule). A candidate constant over only some blocks is not covered: there
+// both the Python and the engine divide by a rounding residue, and neither value is a statistic.
 
 #include <array>
 #include <optional>
@@ -56,6 +60,9 @@ struct CscvReport {
   u64 cached_evaluations{};
   u64 reference_evaluations{};
   u64 ambiguous_comparisons{};
+  // Ruling B2-R2: candidates whose used returns are all equal (Sharpe 0 in every split, as the
+  // Python's _subset_sr gives them); the engine CSCV saw them as zeros.
+  std::vector<usize> constant_candidates;
 };
 
 // CSCV of a T x N date-major matrix (row t, candidate k at t * N + k: align_many's layout).

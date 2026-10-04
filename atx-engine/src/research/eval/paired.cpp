@@ -16,7 +16,6 @@ namespace {
 
 constexpr usize kM = 4U; // the moment columns a, b, a^2, b^2
 using Vec4 = std::array<f64, kM>;
-using Mat4 = std::array<Vec4, kM>;
 
 constexpr f64 kNaN = std::numeric_limits<f64>::quiet_NaN();
 
@@ -41,37 +40,21 @@ struct PopDsr {
   return out;
 }
 
-// v' M v as numpy's (v @ M) @ v.
-[[nodiscard]] f64 quad_matmul(const Vec4 &v, const Mat4 &m) {
-  Vec4 vm{};
-  for (usize j = 0; j < kM; ++j) {
-    f64 acc = 0.0;
-    for (usize i = 0; i < kM; ++i) {
-      acc += v[i] * m[i][j];
-    }
-    vm[j] = acc;
-  }
-  f64 q = 0.0;
-  for (usize j = 0; j < kM; ++j) {
-    q += vm[j] * v[j];
-  }
-  return q;
+// One row's influence term g'(y_k - m) of the dSR: the cell's Sharpe terms plus the reference's,
+// summed last, so the one cancellation (the two Sharpe influence series, nearly equal as rho -> 1)
+// happens on two numbers of the series' own scale.
+[[nodiscard]] f64 influence(const Vec4 &g, const Vec4 &y, const Vec4 &m) {
+  const f64 cell = g[0] * (y[0] - m[0]) + g[2] * (y[2] - m[2]);
+  const f64 ref = g[1] * (y[1] - m[1]) + g[3] * (y[3] - m[3]);
+  return cell + ref;
 }
 
-// einsum("di,dij,dj->d") for one draw: i outer, j inner, ((g_i psi_ij) g_j).
-[[nodiscard]] f64 quad_einsum(const Vec4 &v, const Mat4 &m) {
-  f64 q = 0.0;
-  for (usize i = 0; i < kM; ++i) {
-    for (usize j = 0; j < kM; ++j) {
-      q += v[i] * m[i][j] * v[j];
-    }
-  }
-  return q;
-}
-
-// nav_summ.bartlett_psi: Bartlett-kernel HAC long-run covariance of the rows of y (T x 4),
-// autocovariances / T, column means sequential.
-[[nodiscard]] Mat4 bartlett_psi(const std::vector<Vec4> &y, usize lag) {
+// g' Psi g of nav_summ.bartlett_psi (Bartlett-kernel HAC long-run covariance of the rows of y,
+// T x 4, autocovariances / T, lag = block - 1), formed as the long-run variance of the scalar
+// influence series z_k = g'(y_k - mean): g' Gamma_l g = sum_k z_{k+l} z_k / T term by term, so it
+// is the same statistic (ruling B2-R1 (a)) without the 4 x 4 quadratic form whose terms cancel to
+// 1 - rho as rho -> 1. Column means sequential (numpy's axis-0 order).
+[[nodiscard]] f64 bartlett_quadratic(const std::vector<Vec4> &y, const Vec4 &g, usize lag) {
   const usize t = y.size();
   const f64 tf = static_cast<f64>(t);
   Vec4 mean{};
@@ -83,42 +66,25 @@ struct PopDsr {
   for (usize c = 0; c < kM; ++c) {
     mean[c] /= tf;
   }
-  std::vector<Vec4> e(t);
+  std::vector<f64> z(t);
   for (usize k = 0; k < t; ++k) {
-    for (usize c = 0; c < kM; ++c) {
-      e[k][c] = y[k][c] - mean[c];
-    }
+    z[k] = influence(g, y[k], mean);
   }
-  Mat4 psi{};
-  for (usize i = 0; i < kM; ++i) {
-    for (usize j = 0; j < kM; ++j) {
-      f64 acc = 0.0;
-      for (usize k = 0; k < t; ++k) {
-        acc += e[k][i] * e[k][j];
-      }
-      psi[i][j] = acc / tf;
-    }
+  f64 acc = 0.0;
+  for (usize k = 0; k < t; ++k) {
+    acc += z[k] * z[k];
   }
+  f64 q = acc / tf;
   const usize top = std::min(lag, t - 1U);
   for (usize ell = 1; ell <= top; ++ell) {
-    Mat4 g{};
-    for (usize i = 0; i < kM; ++i) {
-      for (usize j = 0; j < kM; ++j) {
-        f64 acc = 0.0;
-        for (usize k = 0; k + ell < t; ++k) {
-          acc += e[k + ell][i] * e[k][j];
-        }
-        g[i][j] = acc / tf;
-      }
+    f64 cross = 0.0;
+    for (usize k = 0; k + ell < t; ++k) {
+      cross += z[k + ell] * z[k];
     }
     const f64 w = 1.0 - static_cast<f64>(ell) / (static_cast<f64>(lag) + 1.0);
-    for (usize i = 0; i < kM; ++i) {
-      for (usize j = 0; j < kM; ++j) {
-        psi[i][j] += w * (g[i][j] + g[j][i]);
-      }
-    }
+    q += w * (2.0 * cross / tf);
   }
-  return psi;
+  return q;
 }
 
 // np.corrcoef(a, b)[0, 1]: row means pairwise, cross products times 1 / (T - 1), two divisions
@@ -142,13 +108,34 @@ struct PopDsr {
   return std::isnan(rho) ? rho : std::clamp(rho, -1.0, 1.0);
 }
 
-// nav_summ.memmel_se (annualized SRs in, annualized SE out).
-[[nodiscard]] f64 memmel_se(f64 sr_a, f64 sr_b, f64 rho, usize t) {
+// 1 - rho from the standardized difference series: sum((za - zb)^2) = 2 (T - 1)(1 - rho) exactly,
+// za = (a - mean) / sd (ddof 1). A sum of squares of small differences keeps its relative
+// precision where 1 - corrcoef loses it (ruling B2-R1 (a)). NaN when either sd is not positive.
+[[nodiscard]] f64 one_minus_rho(std::span<const f64> a, std::span<const f64> b, f64 sa, f64 sb) {
+  if (!(sa > 0.0 && sb > 0.0)) {
+    return kNaN;
+  }
+  const usize t = a.size();
+  const f64 ma = numpy::mean(a);
+  const f64 mb = numpy::mean(b);
+  f64 acc = 0.0;
+  for (usize k = 0; k < t; ++k) {
+    const f64 dz = (a[k] - ma) / sa - (b[k] - mb) / sb;
+    acc += dz * dz;
+  }
+  return acc / (2.0 * static_cast<f64>(t - 1U));
+}
+
+// nav_summ.memmel_se (annualized SRs in, annualized SE out) in the stable form of ruling B2-R1 (a):
+// 2 - 2 rho = 2 omr and a^2 + b^2 - 2 a b rho^2 = (a - b)^2 + 2 a b omr (2 - omr), omr = 1 - rho.
+[[nodiscard]] f64 memmel_se(f64 sr_a, f64 sr_b, f64 omr, usize t) {
   const f64 root = std::sqrt(kAnnualization);
   const f64 a = sr_a / root;
   const f64 b = sr_b / root;
+  const f64 diff = a - b;
+  const f64 one_minus_rho2 = omr * (2.0 - omr);
   const f64 var =
-      (2.0 - 2.0 * rho + 0.5 * (a * a + b * b - 2.0 * a * b * rho * rho)) / static_cast<f64>(t);
+      (2.0 * omr + 0.5 * (diff * diff + 2.0 * a * b * one_minus_rho2)) / static_cast<f64>(t);
   return std::sqrt(std::max(var, 0.0) * kAnnualization);
 }
 
@@ -187,8 +174,10 @@ core::Result<PairedStats> paired_stats(std::span<const f64> a, std::span<const f
   const f64 sa = numpy::std_dev(a, 1U);
   const f64 sb = numpy::std_dev(b, 1U);
   out.rho = (sa > 0.0 && sb > 0.0) ? pearson(a, b) : kNaN;
+  out.one_minus_rho = one_minus_rho(a, b, sa, sb);
+  out.degenerate = out.one_minus_rho < kDegenerateOneMinusRho;
   out.dsr = out.sr - out.sr_reference;
-  out.memmel_se = memmel_se(out.sr, out.sr_reference, out.rho, t);
+  out.memmel_se = out.degenerate ? kNaN : memmel_se(out.sr, out.sr_reference, out.one_minus_rho, t);
   if (out.memmel_se > 0.0) {
     out.t = out.dsr / out.memmel_se;
   }
@@ -212,8 +201,7 @@ core::Result<PairedStats> paired_stats(std::span<const f64> a, std::span<const f
                                        [](f64 g) { return std::isfinite(g); });
   const f64 s0 =
       grad_finite
-          ? std::sqrt(std::max(quad_matmul(pop0.grad, bartlett_psi(y, config.block - 1U)), 0.0) /
-                      tf)
+          ? std::sqrt(std::max(bartlett_quadratic(y, pop0.grad, config.block - 1U), 0.0) / tf)
           : 0.0;
 
   const usize blocks = (t + config.block - 1U) / config.block;
@@ -222,7 +210,6 @@ core::Result<PairedStats> paired_stats(std::span<const f64> a, std::span<const f
   std::vector<f64> xa(t);
   std::vector<f64> xb(t);
   std::vector<Vec4> ys(t);
-  std::vector<Vec4> sums(blocks);
   std::vector<f64> boot(config.draws);
   std::vector<f64> tstar(config.draws);
   std::vector<f64> ds(config.draws);
@@ -237,8 +224,9 @@ core::Result<PairedStats> paired_stats(std::span<const f64> a, std::span<const f
       xb[i] = b[idx];
       ys[i] = y[idx];
     }
-    boot[d] = (numpy::mean(xa) / numpy::std_dev(xa, 1U) - numpy::mean(xb) / numpy::std_dev(xb, 1U)) *
-              root;
+    boot[d] =
+        (numpy::mean(xa) / numpy::std_dev(xa, 1U) - numpy::mean(xb) / numpy::std_dev(xb, 1U)) *
+        root;
     Vec4 ms{};
     for (const Vec4 &r : ys) {
       for (usize c = 0; c < kM; ++c) {
@@ -249,28 +237,19 @@ core::Result<PairedStats> paired_stats(std::span<const f64> a, std::span<const f
       ms[c] /= tf;
     }
     const PopDsr pop = dsr_population(ms);
+    // g' Psi* g with Psi* = sum_j S_j S_j' / T: the squares of the block sums of the influence
+    // series, the same statistic as the 4 x 4 form (ruling B2-R1 (a)).
+    f64 q = 0.0;
     for (usize j = 0; j < blocks; ++j) {
-      Vec4 acc{};
+      f64 acc = 0.0;
       const usize end = std::min((j + 1U) * config.block, t);
       for (usize r = j * config.block; r < end; ++r) {
-        for (usize c = 0; c < kM; ++c) {
-          acc[c] += ys[r][c] - ms[c];
-        }
+        acc += influence(pop.grad, ys[r], ms);
       }
-      sums[j] = acc;
-    }
-    Mat4 psi{};
-    for (usize i = 0; i < kM; ++i) {
-      for (usize k = 0; k < kM; ++k) {
-        f64 acc = 0.0;
-        for (usize j = 0; j < blocks; ++j) {
-          acc += sums[j][i] * sums[j][k];
-        }
-        psi[i][k] = acc / tf;
-      }
+      q += acc * acc;
     }
     ds[d] = pop.d;
-    ss[d] = std::sqrt(quad_einsum(pop.grad, psi) / tf);
+    ss[d] = std::sqrt(q / tf / tf);
     tstar[d] = std::abs(pop.d - d0) / ss[d];
   }
 
@@ -286,6 +265,11 @@ core::Result<PairedStats> paired_stats(std::span<const f64> a, std::span<const f
     }
   }
   out.lw.dsr_population = d0 * root;
+  if (out.degenerate) { // ruling B2-R1 (c): no studentized inference on a degenerate pair
+    out.lw.se = kNaN;
+    out.lw.valid_draws = 0U;
+    return core::Ok(std::move(out));
+  }
   out.lw.se = s0 * root;
   out.lw.valid_draws = good.size();
   if (!good.empty() && s0 > 0.0 && std::isfinite(d0)) {

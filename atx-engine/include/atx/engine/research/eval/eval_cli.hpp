@@ -21,6 +21,12 @@
 // --out writes it to PATH (the text print still goes to `out` unless --json). The ledger is
 // read and verified, never written.
 //
+// --trial and --history are trusted-caller flags (review B2 S4): the + 1 of house_v1 / tot follows
+// them as given (a cell named by --trial whose id is ledgered, or by --history, adds no trial), and
+// the verb cannot check them against the series. nav_summ derives both from the NAV dir (trial_id
+// of the daily CSV's SHA-256; a history read is a pool scored before TRAIN, Ruling E-41); any other
+// caller must do the same.
+//
 // Exit codes: 0 evaluated; 1 refused (message on `err`); 2 usage.
 
 #include <ostream>
