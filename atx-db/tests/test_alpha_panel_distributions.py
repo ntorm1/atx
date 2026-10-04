@@ -228,7 +228,8 @@ Item 3</pre></body></html>""", encoding="utf-8")
     assert result["rows"] == 2
     rows = pq.read_table(tmp_path / "events/buyback.parquet").to_pylist()
     assert next(r for r in rows if r["event_type"] == "execution")["first_announcement"] is False
-    assert next(r for r in rows if r["event_type"] == "new")["first_announcement"] is True
+    assert next(r for r in rows if r["event_type"] == "new")["first_announcement"] is None
+    assert next(r for r in rows if r["event_type"] == "new")["first_announcement_basis"] == "unknown_incomplete_global_history"
     assert rows[0]["xbrl_after_available_at"] > rows[0]["available_at"]
     products = list((tmp_path / "events/buyback_products").iterdir())
     assert len(products) == 1
@@ -244,6 +245,22 @@ Item 3</pre></body></html>""", encoding="utf-8")
     pq.write_table(table, target)
     with pytest.raises(FileExistsError):
         B.phase_publish(admission_path=admission, expected_sha256=sha)
+    # Even adding an earlier matching authorization to the admitted partition
+    # does not certify completeness of global prior history.
+    earlier = tmp_path / "earlier.htm"
+    earlier.write_text("<html><p>The board authorized a new share repurchase program of up to $1 million of common stock.</p></html>")
+    record = {"cik": 1, "accession": "earlier-authorization", "form": "8-K", "filing_date": "2021-01-01",
+        "fetched_at": "2021-01-01T20:00:00Z", "source_path": str(earlier), "source_doc": "earlier.htm",
+        "source_url": "https://www.sec.gov/earlier-fixture", "link_basis": "unknown", "storage_encoding": "plain",
+        "stored_sha256": C.sha256_file(earlier), "source_sha256": C.sha256_file(earlier)}
+    with catalog.open("a") as stream:
+        stream.write(json.dumps(record) + "\n")
+    admission, sha = admitted_fixture(tmp_path, catalog)
+    B.parse_native(admission, sha)
+    B.phase_publish(admission_path=admission, expected_sha256=sha)
+    with_prior = pq.read_table(target).to_pylist()
+    assert all(row["first_announcement"] is None for row in with_prior if row["event_type"] != "execution")
+    assert B.validate_product(target, admission, sha)["native_replay"] == "PASS"
 
 
 def test_increase_new_amount_and_ambiguous_classes():
@@ -254,6 +271,15 @@ def test_increase_new_amount_and_ambiguous_classes():
     assert D.extract_declarations(text.replace("increased from", "including")) == []
     assert D.extract_declarations(text.replace("common stock.", "common stock and Class B common stock.")) == []
     assert D.extract_declarations("The company will not pay a dividend pursuant to its variable dividend policy.") == []
+
+
+@pytest.mark.parametrize("value", ["USD600 million", "USD600 thousand", "USD600", "USD600,000"])
+def test_aggregate_or_unresolved_not_a_per_share_rate(value):
+    text = f"The board declared a regular quarterly cash dividend totaling {value} for Class A common stock, with the per share amount to be determined."
+    assert D.extract_declarations(text) == []
+    assert D.extract_declarations(f"The board declared a regular quarterly cash dividend of {value} million per share of Class A common stock.") == []
+    assert D.extract_declarations("The board declared a regular quarterly cash dividend increased from USD600 million to USD0.60 per share of Class A common stock.") == []
+    assert D.extract_declarations("The board declared a regular quarterly cash dividend of USD0.60 per share of Class A common stock, with the final amount to be determined.") == []
 
 
 def test_scaled_surrounding_part_ii_rejected():

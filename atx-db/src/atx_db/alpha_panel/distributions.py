@@ -52,16 +52,18 @@ def extract_declarations(text: str) -> list[dict[str, Any]]:
             continue
         if not re.search(r"\bcash\s+dividend\b", sentence, re.I):
             continue
-        if re.search(r"\b(?:not|no|never)\b.{0,40}\b(?:declare|pay|approve)|\b(?:variable|policy|historical|previously)\b", sentence, re.I):
+        if re.search(r"\b(?:not|no|never)\b.{0,40}\b(?:declare|pay|approve)|\b(?:variable|policy|historical|previously|undetermined)\b|\b(?:to\s+be|not\s+yet)\s+determined\b", sentence, re.I):
             continue
-        amounts = list(re.finditer(r"(?:US\$|USD\s*|U\.S\.\s+dollars?\s*)\s*(\d+(?:\.\d+)?)\s*(?:per\s+(?:common\s+)?share|a\s+share)?", sentence, re.I))
+        amounts = list(re.finditer(r"(?:US\$|USD\s*|U\.S\.\s+dollars?\s*)\s*(\d+(?:\.\d+)?)", sentence, re.I))
         classes = list(re.finditer(r"\b(?:Class\s+[A-Z]\s+)?common\s+(?:stock|shares)\b", sentence, re.I))
-        if not amounts or len(classes) != 1 or not re.search(r"per\s+(?:common\s+)?share|a\s+share", sentence, re.I):
+        if not amounts or len(classes) != 1:
             continue
+        def per_share(match: re.Match) -> bool:
+            return bool(re.match(r"\s*(?:per\s+(?:common\s+)?share|a\s+share)\b", sentence[match.end():], re.I))
         klass = classes[0]
-        if len(amounts) == 1:
+        if len(amounts) == 1 and per_share(amounts[0]):
             amount = amounts[0]
-        elif len(amounts) == 2 and re.search(r"\b(?:increase\w*|raise\w*)\b", sentence, re.I) and re.search(r"\bfrom\s*$", sentence[:amounts[0].start()], re.I) and re.fullmatch(r"\s*(?:per\s+share\s*)?to\s*", sentence[amounts[0].end():amounts[1].start()], re.I):
+        elif len(amounts) == 2 and per_share(amounts[1]) and re.search(r"\b(?:increase\w*|raise\w*)\b", sentence, re.I) and re.search(r"\bfrom\s*$", sentence[:amounts[0].start()], re.I) and re.fullmatch(r"\s*(?:(?:per\s+(?:common\s+)?share|a\s+share)\s*)?to\s*", sentence[amounts[0].end():amounts[1].start()], re.I):
             amount = amounts[1]
         else:
             continue

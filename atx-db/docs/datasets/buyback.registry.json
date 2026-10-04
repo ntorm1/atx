@@ -2,7 +2,7 @@
   "stage": "events/buyback",
   "path": "events/buyback.parquet",
   "keys": ["accession", "source_sha256", "event_type", "evidence"],
-  "schema_id": "atx.alpha-panel.events.buyback/v2",
+  "schema_id": "atx.alpha-panel.events.buyback/v3",
   "asof_macro_sql": "SELECT * FROM buyback WHERE EXISTS (SELECT 1 FROM admitted_calendar WHERE session_date = asof_date) AND available_at < CAST((SELECT max(session_date) FROM admitted_calendar WHERE session_date < asof_date) AS TIMESTAMP) + INTERVAL 22 HOUR",
   "gate_status": "FAIL: 0 actual native handchecks / 200 required"
 }

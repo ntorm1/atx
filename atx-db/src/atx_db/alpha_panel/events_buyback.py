@@ -1,8 +1,8 @@
 """Stage ``events`` table ``buyback`` (S6.3): share repurchase authorisation announcements from 8-K text.
 
-Documents (2019+, ruling D7): the 8-K main documents and EX-99 exhibits that EDGAR full-text search hits for
-repurchase-program phrases (``events_sources`` query ``buyback``), fetched into ``data/raw/sec_events``, plus every
-earnings-release exhibit already read for guidance (landed v2 objects and fetched ``guidance`` hits).
+Documents: independently admitted original retained objects in deterministic partitions
+of the complete eligible2020+8-K/10-Qsource catalog. No network acquisition is performed.
+Byte/reader replay does not certify source semantic correctness or prior-history completeness.
 
 Extraction (:func:`extract_authorizations`, pure), per sentence:
 
@@ -15,15 +15,18 @@ Extraction (:func:`extract_authorizations`, pure), per sentence:
 * A sentence about an older authorisation is skipped: "remaining under", "previously announced / authorized",
   "existing program" (unless "additional" / "increase"), or an authorisation dated (``authorized in <month> <year>``)
   more than 120 days before the filing.
-* One event per (filing, amount); the first sentence wins. ``first_announcement`` marks the earliest filing of a
-  CIK's (event_type, amount) within 180 days (a later earnings release repeating an 8-K announcement is a repeat).
+* One event per (filing, amount); the first sentence wins. ``first_announcement`` is
+  NULL for authorizations until complete global prior-history dependencies are admitted.
+  A document-hash partition cannot prove the absence of an earlier180day authorization.
+  Executions have false and a not-applicable basis, never first-announcement status.
 
 XBRL join (no recomputation): the fundamentals stage's ``buyback_authorized`` / ``buyback_remaining``
 (``fundamentals/events.parquet``, from ``StockRepurchaseProgramAuthorizedAmount1`` /
 ``...RemainingAuthorizedRepurchaseAmount1``): the latest value known before the announcement (``xbrl_*_before``, by
 ``clock_utc < available_at``) and the first reported after it (``xbrl_*_after``, with its accession).
 
-Clock: ``available_at`` = the 8-K's EDGAR acceptance (sec_filings rule); ``event_date`` = the 8-K report date.
+Clock: matching original source receipt fetched_at/done_at conservativefloor. Original
+acceptance/class semantics remain explicitly unqualified; event_date is unknown.
 """
 
 from __future__ import annotations
@@ -42,9 +45,9 @@ from typing import Any
 from . import common as C
 from .guidance import SCALE, find_values, _apply_scale
 
-EXTRACTOR_VERSION = "buyback-rules-v2"
+EXTRACTOR_VERSION = "buyback-rules-v3"
 TABLE = "buyback"
-SCHEMA = "atx.alpha-panel.events.buyback/v2"
+SCHEMA = "atx.alpha-panel.events.buyback/v3"
 
 BUYBACK_OBJ = re.compile(r"\b(?:re-?purchases?|buy-?backs?|buy\s+back)\b", re.IGNORECASE)
 #: An authorising act (a verb), or "new / additional [$X] share repurchase ..." (a noun phrase naming a new program).
@@ -393,13 +396,10 @@ def validate_product(target: Path, admission_path: Path, expected_sha256: str) -
     N.validate_keys(pq.read_table(target).to_pylist(), ["accession", "source_sha256", "event_type", "evidence"])
     con = C.connect(memory="128MB", threads=1)
     con.register("native", table)
-    con.execute("""CREATE TABLE b AS SELECT r.*, r.event_type <> 'execution' AND NOT EXISTS (
-        SELECT 1 FROM native o WHERE o.cik=r.cik AND o.event_type=r.event_type
-        AND coalesce(o.amount_usd,-1)=coalesce(r.amount_usd,-1)
-        AND coalesce(o.amount_shares,-1)=coalesce(r.amount_shares,-1)
-        AND coalesce(o.total_after_usd,-1)=coalesce(r.total_after_usd,-1)
-        AND (o.available_at<r.available_at OR (o.available_at=r.available_at AND o.accession<r.accession))
-        AND o.available_at>=r.available_at-INTERVAL 180 DAY) AS first_announcement FROM native r""")
+    con.execute("""CREATE TABLE b AS SELECT r.*,
+        CASE WHEN r.event_type='execution' THEN false ELSE CAST(NULL AS BOOLEAN) END AS first_announcement,
+        CASE WHEN r.event_type='execution' THEN 'not_applicable_execution'
+             ELSE 'unknown_incomplete_global_history' END AS first_announcement_basis FROM native r""")
     fund = Path(admitted["inputs"]["fundamentals"]["path"]).parent / "events.parquet"
     if EC.link_table_path().resolve() != (Path(admitted["inputs"]["identity"]["path"]).parent / "link_table.parquet").resolve():
         raise ValueError("security reader is not admitted identity path")
@@ -458,17 +458,10 @@ def phase_publish(*, admission_path: Path | None = None, expected_sha256: str | 
     rows = (_tmp() / "buyback_rows.parquet").as_posix()
     fund = (C.build_root() / "fundamentals" / "events.parquet").as_posix()
     con.execute(f"""
-        CREATE TABLE b AS
-        SELECT r.*,
-               -- earliest filing of the same (cik, type, amount) within 180 days is the announcement
-               r.event_type <> 'execution' AND NOT EXISTS (SELECT 1 FROM read_parquet('{rows}') o
-                           WHERE o.cik = r.cik AND o.event_type = r.event_type
-                             AND coalesce(o.amount_usd, -1) = coalesce(r.amount_usd, -1)
-                             AND coalesce(o.amount_shares, -1) = coalesce(r.amount_shares, -1)
-                             AND coalesce(o.total_after_usd, -1) = coalesce(r.total_after_usd, -1)
-                             AND (o.available_at < r.available_at
-                                  OR (o.available_at = r.available_at AND o.accession < r.accession))
-                             AND o.available_at >= r.available_at - INTERVAL 180 DAY) AS first_announcement
+        CREATE TABLE b AS SELECT r.*,
+            CASE WHEN r.event_type='execution' THEN false ELSE CAST(NULL AS BOOLEAN) END AS first_announcement,
+            CASE WHEN r.event_type='execution' THEN 'not_applicable_execution'
+                 ELSE 'unknown_incomplete_global_history' END AS first_announcement_basis
         FROM read_parquet('{rows}') r""")
     con.execute(f"""
         CREATE TABLE fx AS SELECT cik, accession AS xbrl_accession, clock_utc, buyback_authorized, buyback_remaining
@@ -492,7 +485,7 @@ def phase_publish(*, admission_path: Path | None = None, expected_sha256: str | 
     receipt["rows"] = C.copy_to_parquet(con, """
         SELECT cik, security_id, link_tier, link_basis, is_member_issuer, accession, form, items, source_doc,
                doc_source, filing_date, event_date, available_at, acceptance_clock, vintage_risk, event_type,
-               amount_usd, amount_shares, total_after_usd, first_announcement, xbrl_authorized_before,
+               amount_usd, amount_shares, total_after_usd, first_announcement, first_announcement_basis, xbrl_authorized_before,
                xbrl_remaining_before, xbrl_authorized_after, xbrl_remaining_after, xbrl_after_accession,
                xbrl_after_available_at, evidence, extractor_version, source_sha256, execution_period,
                execution_shares, execution_average_price, public_program_shares, remaining_authorization_usd

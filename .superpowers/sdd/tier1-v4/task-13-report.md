@@ -206,3 +206,50 @@ offline fixtures only. Loaded compiled PyArrowlib/parquet and DuckDBbinary ident
 are now included alongside lxml and stage readers before/after computation. All
 five finding-specific tests and the full independent replay rejection integration
 are in this single covering file; no unchanged test suite was rerun.
+
+## Fix round R2 — review8f80ae3f
+
+Exact findings:`review-T13-native-r1-findings.md`. I2–I5were addressed byR1;
+remaining I1and newI6corrected within owned paths. Two actual fix rounds total.
+Full source task remains BLOCKED, with original thresholds/denominators unchanged.
+
+I1: selected monetary value must have an immediately attached per-share unit.
+Explicit from/to increase permits the first value's omitted unit only in that narrow
+from/to clause when the selected new value carries a local per-share unit. Aggregate
+million/thousand/comma-scaled totals and unresolved per-share statements reject before
+amount/declared_regular_rate emission. A per-share phrase elsewhere cannot qualifyUSD600
+million. No clearing only the final indicated rate to hide a wrong raw amount.
+
+I6: independently admitted source partitions are not complete prior issuer authorization
+history. Producer and public native replay now retain first_announcement=NULL for every
+authorization with first_announcement_basis=unknown_incomplete_global_history. Executions
+remainfalse with not_applicable_execution. Neither isolated later filings nor a partition
+containing an earlier matching authorization can certify global180dayhistory. No implicit
+history union from only successful partitions is used. Independent complete global prior-
+history admission remains required before introducing nonnull authorization classification.
+Buyback schema/extractor bumpedv3, docs/registry/module contract updated consistently.
+
+Covering offline fixtures: strict local unit/from-to arithmetic and ambiguous/unresolved
+aggregate cases; native publication with a later authorization alone and with an earlier
+matching authorization one month before, both retainNULL; public full native/join replay
+agrees with unknown classification and still rejects tampered joins. DuckDB128MB/1thread.
+
+Exact covering command fromC:/atx/atx-db, PYTHONPATH=C:/atx/atx-db/src,
+OPENBLAS_NUM_THREADS=1:
+
+```powershell
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_alpha_panel_distributions.py -k 'increase_new_amount or aggregate_or_unresolved or buyback_pinned_publish' -q
+```
+
+Result6passed,16deselected in19.83s before correcting the module's stale contract text;
+post-contract/code-identity result recorded below. Only covering cases ran; no broad
+unchanged tests. No actual source/data/hash/HTTP jobs ran; root's live exclusive slot was
+not used or bypassed. Generated root feasibility evidence remains original-byte/layout
+proof only. No source semantics, actual rates or Boolean handcheck matches were invented.
+Actual gates unchanged0PASS/3FAIL, declaration/vendorcashcoverage unmeasured, buyback
+independentchecks0/200; Task4R11and full source/coverage/publication obligations remain open.
+
+FinalR2covering result:**6passed,16deselected in18.03s** after current module contract
+and reader-code identities. `git diff --check` passes for owned paths. R2commits only
+distribution/buyback source, directly covering test, corresponding docs/registry and
+this forced-added report; no shared/foreign/frozen producers were edited.

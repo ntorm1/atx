@@ -7,7 +7,7 @@ objects, match original source receipts, pin exact reader/parser code before com
 check every input afterward, and compare every admitted native-derived output row.
 
 Outputs:`events/buyback.parquet`, retained `events/buyback_products/<id>/buyback.parquet`
-and immutable product manifest. Schema:`atx.alpha-panel.events.buyback/v2`. Public exact
+and immutable product manifest. Schema:`atx.alpha-panel.events.buyback/v3`. Public exact
 base columns/types:`OUT_COLUMNS`; complete derived schema is independently regenerated
 by `validate_product`. Key:non-null unique(accession,source_sha256,event_type,evidence).
 Native source truth remains unqualified even when byte/schema/replay validation passes.
@@ -17,6 +17,13 @@ execution_shares(double,shares),execution_average_price(double,USD/share),
 public_program_shares(double,shares),remaining_authorization_usd(double,USD). Source
 identity/evidence/accession and explicit conservative receipt clock survive every row.
 Announcements retain new/increase types; execution never becomes first_announcement.
+Authorization first_announcement is currently NULL with explicit
+first_announcement_basis=unknown_incomplete_global_history. Executions are false with
+basis=not_applicable_execution. A document-hash partition cannot establish complete
+prior180day issuer authorization history; even successful publication of one or more
+partitions must not classify an isolated later filing as first. Independent global
+prior-history admission is not implemented, so producer and public replay preserve
+unknown classification until that dependency is completed.
 Future XBRL corroboration retains its own future availability and cannot inform the
 announcement-time value. Issuer-primary identity joins are not dividend-class certification.
 

@@ -30,8 +30,12 @@ keys reject before manifest/current publication. Public schema: `output_schema()
 Only explicit USD, common class and affirmative declaration clauses are parsed. Supported
 from/to increases use the new value. Ambiguous multiple amounts/classes, variable policies,
 no-pay statements, paid-only totals, unknown special/cadence and unsupported currency do
-not invent rates. Spin-off dates remain missing unless explicitly supported. Original
-HTML/GZIP bytes are verified before normalization; exact JSON facts retain source identity.
+not invent rates. Spin-off dates remain missing unless explicitly supported.
+Selected USD amounts must have an immediately attached per-share unit; a narrow explicit
+from/to change permits the old value's omitted unit only when the new value has that
+local unit. Aggregate scales and unresolved per-share values never populate amount or
+declared_regular_rate. A per-share phrase elsewhere cannot qualify an aggregate total.
+Original HTML/GZIP bytes are verified before normalization; exact JSON facts retain source identity.
 
 Daily visibility uses the previous admitted exchange session at22UTC (including weekends
 and holidays), strictly less than cutoff. Monthly requires an admitted month-end session
