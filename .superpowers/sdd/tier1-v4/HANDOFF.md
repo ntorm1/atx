@@ -2,6 +2,38 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
+**Engineering checkpoint:** Task16 golden delivery committed6438c2021eee2901830202729af2b1d7c8f70f24;
+20 focused offline tests pass (panel7/13.98s, evaluation5/12.20s,
+export5/44.16s, native windows3/22.82s). Full task-16-report.md distinguishes
+missing native reader/mapping engineering from actual source-proof/gate gaps.
+No actual panel, labels, evaluation or consumer artifact was published.
+Independent review package review-T16-golden-delivery.diff is ready,34258lines
+including644field registry. Fresh reviewer spawn and resuming prior t10 reviewer
+both hit runtime thread limit. After their own commits freeze, Task17 can review
+Task16 and Task16 can review Task17; neither reviews its own implementation.
+All whole-task counters remain unchanged. Task17 native/catalog checkpoint9e05e42d
+is committed with17offlinePASS42.03s and8module/4JSON staticPASS. FullTask17
+remains incomplete, including named native reader/mapping gaps in its report.
+Cross-reviews are now LIVE: /root/t17_runtime_integration reviews Task16;
+/root/t16_golden_delivery reviews Task17. Their own implementations are frozen.
+Task17 reviewer reproduced the golden cash-conversion state/label bug (2.8s,
+pure synthetic); Task16 reviewer now owns one brief synthetic catalog view/proof
+tamper check. Task15's remaining fixture checks are next. No broad suite reruns.
+Root readinessv5 independently PASS after scoped Minor citation correction:
+all46 contracts/statuses/prior observations preserved; extraction totals now
+directly cite task16-extract-admission-r19-v1.audit.json. No gates promoted.
+
+**Sole root job: host observer47830, not a data builder.** Fresh guard status
+showed5.0086GiBfreecommit/3.602physical and zero live guards after serialized
+fixtures, materially changed from the0.7095GiBstop. One new31sample/300s observer
+uses0.1GiBguard and original3GiBcommit/1GiBphysical scheduling condition, unique
+v3 logs. Require completed condition plus unchanged ordinary guards before any
+financial reschedule; earlier failed windows remain unchanged. First13samples
+remain above4.5GiBcommit, but no completed window is claimed. Prepared exact
+t17-preserve-orphan-lock-v3.ps1 parses and is NOT RUN. It binds dead PIDs,
+v3 guard-receipt identity, four-byte lock7732 and unchanged candidate evidence;
+run only after completed observer/new scheduling decision, root-serialized.
+
 **CURRENT: Financial pilot v3 ended without any admitted financial batch.**
 Session44681 stopped_low_commit after60.9s, peak126,025,728bytes, exit137,
 no process-cap hit, freecommit0.7GiB. Guard6424/child10692/native7732 are dead;
@@ -15,9 +47,9 @@ full native validation. No fourth financial retry or new observer loop this turn
 Root inventory59077 also ended stopped_low_commit24.3s/49,414,144bytes, no cap,
 exit137, freecommit0.7095GiB. Part0001 has only an80,360byte partial and no
 completed output/receipt; part0000 remains the sole completed partition.
-Guard10812/child12324 are absent. No actual job is live; further actual jobs held.
-Task16 finishes the current synthetic test lane, then Task15, then Task17;
-authors may continue code/docs while new test launches are held to avoid overlap.
+Guard10812/child12324 are absent. Further data jobs held; later observer is above.
+Task16's synthetic test lane is complete; Task15 then Task17 have the remaining
+checks. Authors continue code/docs while new test launches are held to avoid overlap.
 
 Prior v3 scheduling decision (the attempted build is now terminal):
 R25 task-25-host-reschedule-ruling.md supersedes only the controller-added3GiB
