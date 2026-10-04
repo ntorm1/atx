@@ -614,17 +614,25 @@ f64 pooled_eigen_b(const rk::BiasHarness& h, std::vector<f64>& pooled, usize& se
 // simulated length equal to the estimator's effective sample): under atx-cov-v1 the pooled family
 // b lies in its band and at least the nominal 95% of the ranks lie in theirs; atx-risk-v1.1 on the
 // same panel misses the pooled band (small eigenfactors under-forecast) -- the teeth. Ranks at the
-// eigenvalue floor are excluded and counted (at most one). (2) The churn panel (cap-constrained
-// industries whose constraint direction moves at each membership change, the short-HL small_config)
-// keeps the relative check, S2b lowers the family's b; its per-rank b is printed as a diagnostic.
+// eigenvalue floor are excluded and counted (at most one). A negative control (re-review R1b): the
+// same kernel at half amplification (a = 0.5, about half the variance correction) must miss the
+// band (pooled out, or fewer than 95% of the ranks in), so the band separates a correct adjustment
+// from a merely positive one. (2) The churn panel (cap-constrained industries whose constraint
+// direction moves at each membership change, the short-HL small_config) keeps the relative check,
+// S2b lowers the family's b; its per-rank b is printed as a diagnostic.
 TEST(CovBias, EigenFamilyInBandOnAPlantedModel) {
   {
     const BandPanel band(500, 300, 29);
     const auto panel_band = band.panel();
     const auto cov = run_eigen_family(panel_band, band_config(rk::RiskRecipe::CovV1));
     const auto v11 = run_eigen_family(panel_band, band_config(rk::RiskRecipe::RiskV11));
+    auto half_config = band_config(rk::RiskRecipe::CovV1);
+    half_config.eigen_amplification = 0.5;
+    const auto half = run_eigen_family(panel_band, half_config);
     std::cout << "[eigen b per rank] band panel atx-cov-v1:" << cov.text() << '\n'
-              << "[eigen b per rank] band panel atx-risk-v1.1:" << v11.text() << '\n';
+              << "[eigen b per rank] band panel atx-risk-v1.1:" << v11.text() << '\n'
+              << "[eigen b per rank] band panel atx-cov-v1 a=0.5 (negative control):"
+              << half.text() << '\n';
     EXPECT_LE(cov.excluded, 1U);
     EXPECT_GE(cov.kept, BandPanel::factors - 1);
     ASSERT_GT(cov.pooled_n, 2000U);
@@ -632,6 +640,10 @@ TEST(CovBias, EigenFamilyInBandOnAPlantedModel) {
     EXPECT_GE(cov.share_in_band(), 0.95) << cov.text();
     EXPECT_GT(v11.pooled, 1.0 + v11.pooled_band()) << v11.text();
     EXPECT_GE(cov.share_in_band(), v11.share_in_band());
+    // The negative control fails the band the correct kernel passes (the test has teeth).
+    EXPECT_EQ(half.pooled_n, cov.pooled_n);
+    EXPECT_TRUE(std::abs(half.pooled - 1.0) > half.pooled_band() || half.share_in_band() < 0.95)
+        << half.text();
   }
   const auto panel = base_panel().panel();
   {
@@ -825,5 +837,44 @@ TEST(CovBias, MinVarAndOptimizedEqualTheDenseInverseOnSmallN) {
     w /= w.cwiseAbs().sum();
     expect_book(1 + q, w, "optimized");
   }
+}
+
+// Re-review nit (S7): a session whose extended books cannot be formed is counted, never silent.
+// Four names on market + one industry: a positive definite block forms the minvar book (count 0);
+// a non-finite off-diagonal entry, or a block that is not positive definite (failed LLT), forms
+// nothing and counts 1.
+TEST(CovBias, UnformedExtendedBooksAreCounted) {
+  constexpr usize n = 4, kf = rk::factor_count;
+  const std::vector<i64> sessions = weekday_sessions(2);
+  const std::vector<u64> ids{600, 603, 606, 609};
+  rk::RiskPanel panel;
+  panel.dates = 2; panel.instruments = n; panel.sessions = sessions; panel.ids = ids;
+  const usize market = 0, industry = rk::industry_factor(0);
+  const std::vector<f64> ret(kf, missing), gamma(kf, missing), specific(n, 2e-4),
+      styles(n * rk::style_count, 0.0);
+  const std::vector<u8> slot(n, 0), eligible(n, 1), structural(kf, 0), flags(n, 0);
+  const auto run = [&](f64 off_diagonal, f64 industry_variance, usize& held) {
+    std::vector<f64> cov(kf * kf, missing);
+    cov[market * kf + market] = 4e-4;
+    cov[industry * kf + industry] = industry_variance;
+    cov[market * kf + industry] = off_diagonal;
+    cov[industry * kf + market] = off_diagonal;
+    rk::RiskDay day;
+    day.date = 0; day.session = sessions[0]; day.fitted = true; day.forecast = true;
+    day.factor_return = ret; day.covariance = cov; day.specific_variance = specific;
+    day.industry_slot = slot; day.eligible = eligible; day.styles = styles;
+    day.factor_structural = structural; day.eigen_gamma = gamma; day.specific_flags = flags;
+    rk::BiasHarness harness(panel, 0, 7, {}, rk::BiasFamilies::Extended);
+    EXPECT_TRUE(harness.on_day(day));
+    held = harness.formed(0).size();
+    return harness.extended_unformed();
+  };
+  usize held = 0;
+  EXPECT_EQ(run(1e-5, 2e-4, held), 0U);
+  EXPECT_EQ(held, n) << "a positive definite block forms the minvar book";
+  EXPECT_EQ(run(missing, 2e-4, held), 1U);
+  EXPECT_EQ(held, 0U) << "a non-finite block entry";
+  EXPECT_EQ(run(1e-5, -2e-4, held), 1U);
+  EXPECT_EQ(held, 0U) << "a block that is not positive definite";
 }
 } // namespace

@@ -337,12 +337,14 @@ inline rk::RiskModelConfig small_config(rk::RiskRecipe recipe) {
   return c;
 }
 // The band configuration (BandPanel): the factor variances' half-life equal to the correlation
-// half-life (42) and no Newey-West lags, so S2b's simulated length (the Kish count of those
-// weights) is the effective sample of every entry of F; the VRA off (lambda^2 = 1: stage S2c is
-// not under test); the price styles (beta, residual vol, momentum, liquidity) out of reach.
+// half-life (21, small_config's own variance half-life; review R1b: at 42 a half-strength, wrong
+// n_eff or uniform adjustment still passed the band in 50-75% of seeds) and no Newey-West lags, so
+// S2b's simulated length (the Kish count of those weights, ~60 >= K + 1 = 8) is the effective
+// sample of every entry of F; the VRA off (lambda^2 = 1: stage S2c is not under test); the price
+// styles (beta, residual vol, momentum, liquidity) out of reach.
 inline rk::RiskModelConfig band_config(rk::RiskRecipe recipe) {
   rk::RiskModelConfig c = small_config(recipe);
-  c.vol_halflife = 42; c.correlation_halflife = 42;
+  c.vol_halflife = 21; c.correlation_halflife = 21;
   c.variance_nw_lags = 0; c.correlation_nw_lags = 0;
   c.vra_min_dates = 1'000'000;
   c.beta_window = 4096; c.min_beta_pairs = 4096; c.momentum_window = 4096; c.adv_window = 4096;
