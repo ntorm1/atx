@@ -36,20 +36,22 @@ def replay_exact(candidate: T.Candidate, document: bytes, document_pin: N.Native
                  vendor: bytes | Path, target_pin: P.VendorPricePin, target_economic: bytes,
                  target_economic_pin: P.EconomicPin, *, expected: dict,
                  acquirer_pin: P.VendorPricePin | None = None, acquirer_economic: bytes | None = None,
-                 acquirer_economic_pin: P.EconomicPin | None = None, bulk_clock=None) -> T.TerminalValue:
+                 acquirer_economic_pin: P.EconomicPin | None = None, bulk_clock=None, clock_receipts=None) -> T.TerminalValue:
     """Native replay only; no ID/boolean/hash-only route around source semantics."""
     before = exact_code_pins()
     actual = {"candidate": _canonical(candidate), "document_pin": _canonical(document_pin),
               "target_pin": _canonical(target_pin), "target_economic_pin": _canonical(target_economic_pin),
               "acquirer_pin": _canonical(acquirer_pin), "acquirer_economic_pin": _canonical(acquirer_economic_pin),
-              "expected_code": before, "return_policy": expected.get("return_policy")}
-    if expected != actual or expected["return_policy"] not in ("value-only", "pre2023-native-qualified"):
+              "expected_code": before, "return_policy": expected.get("return_policy"),
+              "auxiliary_clock_inventory": N.clock_inventory({document_pin.source_id: bulk_clock} if bulk_clock else {}, clock_receipts)}
+    if expected != actual or expected["return_policy"] not in ("value-only", "pre2023-native-qualified", "source-only-native-dlret-r21"):
         raise ValueError("complete independently pinned exact-native admission mismatch")
     # Pin all reader/code identities before first monetary/price computation.
     clocks = {document_pin.source_id: bulk_clock} if bulk_clock is not None else None
     financial = F.replay_financial({document_pin.source_id: document}, (document_pin,),
                                    admission_id="independently-pinned-exact-native-contract",
-                                   expected_code=F.financial_code_pins(), bulk_clocks=clocks)[0]
+                                   expected_code=F.financial_code_pins(), bulk_clocks=clocks,
+                                   expected_auxiliary=expected["auxiliary_clock_inventory"], clock_receipts=clock_receipts)[0]
     target = P.read_vendor_price(vendor, target_pin, target_economic, target_economic_pin, "native-exact-replay")
     if (financial.target_name != target_economic_pin.issuer_name or financial.target_share_class != target.share_class
         or target.security_id != candidate.security_id or target.session_date != candidate.last_session):
@@ -77,8 +79,10 @@ def replay_exact(candidate: T.Candidate, document: bytes, document_pin: N.Native
     # in the full publisher outcome, never used to shrink the population.
     qualified = T.value_terminal(dataclasses.replace(candidate, continued=False), terms, target, acquirer)
     remaining = set(qualified.reason) - {"native_replay_admission_unavailable"}
+    if expected["return_policy"] == "source-only-native-dlret-r21":
+        remaining.discard("return_holdout")
     dlret = None
-    if expected["return_policy"] == "pre2023-native-qualified" and not remaining:
+    if expected["return_policy"] in ("pre2023-native-qualified", "source-only-native-dlret-r21") and not remaining:
         dlret = qualified.proceeds_per_share / target.close - 1
     elif expected["return_policy"] == "value-only":
         remaining.add("return_not_requested_value_only")

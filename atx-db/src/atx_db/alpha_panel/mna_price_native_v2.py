@@ -82,8 +82,9 @@ def read_economic(blob: bytes, pin: EconomicPin) -> EconomicPin:
         or re.search(r"\bADSs?\b|\bADRs?\b|depositary|preferred|ordinary shares|\bunits?\b", pin.class_quote, re.I)
         or not re.search(r"\b(?:USD|U\.S\. dollars)\b.*\bper share\b", pin.currency_unit_quote, re.I)
         or re.search(r"\bor\b|\b(?:EUR|GBP|CAD|JPY|CNY)\b", pin.currency_unit_quote, re.I)
-        or not re.search(r"\bclose\b.*\bunadjusted\b.*\btraded close\b", pin.raw_basis_quote, re.I)
-        or not re.search(r"\bconversion (?:ratio|terms)\b.*\bunchanged\b.*\b(?:split|FX)\b", pin.conversion_basis_quote, re.I)
+        or not re.fullmatch(r"close is the unadjusted raw traded close\.", pin.raw_basis_quote, re.I)
+        or not re.fullmatch(r"conversion terms are unchanged with no split or FX conversion\.", pin.conversion_basis_quote, re.I)
+        or re.search(r"\b(?:close|conversion terms) (?:is|are|can be|may be) (?:not\b|adjusted\b|changed\b|split-adjusted\b)|\bconversion terms (?:may|can|will) change\b", text, re.I)
         or pin.valid_from.isoformat() not in pin.validity_quote or pin.valid_to.isoformat() not in pin.validity_quote
         or pin.valid_to < pin.valid_from):
         raise ValueError("native economic class/currency/unit/raw/split/FX/date proof unsupported")

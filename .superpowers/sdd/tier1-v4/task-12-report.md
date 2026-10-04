@@ -223,3 +223,71 @@ Static code identity from mna_publish_v2.publisher_code_pins():
 This is static implementation/semantic identity, not an actual source admission
 or return-evaluation freeze. Actual source/proof contract remains externally
 unavailable and unissued. All original numeric gates/strict holdout survive.
+
+
+## Fixround1/5: I1-I5 and binding R21
+
+Status: DONE_WITH_CONCERNS, engineering ready for scoped independent rereview.
+Initial commits faa18387, 11892c26, a2f97138, e255b515 preserved. Actual model
+GPT6.1 Sol. No actual source/price/data job, HTTP request, actual DLRET run or
+publication occurred. All changes are owned private modules, direct tests/docs,
+and this report; no shared modules or foreign labels were edited.
+
+I1: Conditional/qualified cash sentences are refused. Full supported conversion
+tails must be consumed; if/provided-that/unless/subject-to and unknown only-when
+qualifications preserve NULL with reasons. Five focused adversarial cases.
+I2: Raw-close and unchanged split/FX quotes require full affirmative supported
+sentences, and contradictory statements anywhere in the original block refuse
+qualification. Three focused negation/contradiction cases.
+I3: Full auxiliary bulk plus matching SGML typed pins, original byte identities,
+receipt identities/URLs/status/bytes/retrieval clocks are independently frozen
+in the producer and exact admission contracts. Missing/extra/swapped inventories
+fail even when newly self-hashed. One complete original fixture regression.
+I4: Public replay validates exact Arrow/Parquet field inventory/order/type,
+nullability, decimal precision/scale, list types, UTC timestamp unit/timezone,
+and empty schemas. Manifest and product identities are rechecked afterward.
+Two refreshed-hash VARCHAR forgery regressions cover nonempty and empty tables.
+I5: Runtime admission binds actual loaded Python reader semantics, PyArrow and
+DuckDB entrypoints/compiled binaries/shared DLLs, Python runtime/executable and
+actual New York TZif bytes used through ZoneInfo.from_file. Full frozen identity
+is checked before/after computation and public replay. Runtime regression tests
+reader replacement, abbreviated proof and timezone drift. An intermediate
+marshal code fingerprint changed during legitimate executions; replaced with
+stable recursive code structure hashing, then all affected cases passed.
+
+R21 is binding: owner clarified cutoff applies to evaluation and forward labels
+only. A separate immutable `source-only-native-dlret-r21` policy allows qualified
+individual 2023+ raw DLRET. Output records policy and is_forward_label=False;
+complete forward-window eligibility remains strictly pre2023. Synthetic 2023
+cash source returns .2 only under source-only policy; old pre2023 policy stays
+NULL, and complete-window eligibility is false. No source value is certified as
+a residual-month proof or forward label. The earlier metadata-only 1003/2267
+44.24% ceiling is superseded by R21 and no longer a release constraint; it never
+was a measured coverage result. Original 2267 denominator, 80% gates and
+200 >=95% handcheck gate remain unchanged.
+
+Actual gates remain 1 metadata PASS /4 FAIL-unmeasured. Actual independent
+party/class/currency/unit/raw-close/split/FX documentation and complete original
+admissions, 200-deal native review, bounded actual runs/publication remain absent.
+No invented proofs or placeholder PASS. Current externally missing prerequisites
+are separate from the genuine implemented conditional path.
+
+Focused command (C:/atx/atx-db, OPENBLAS_NUM_THREADS=1, PYTHONPATH=src):
+`python -m pytest tests/test_mna_review_semantics_v2.py tests/test_mna_review_clock_v2.py tests/test_mna_review_schema_v2.py tests/test_mna_review_runtime_v2.py tests/test_mna_r21_source_policy.py -n0 -o addopts='' -p no:cacheprovider -q`
+13 passed in29.63s. Relevant positive cash/stock, exact publication/public replay
+and matching SGML/bulk clock selectors: 4 passed in18.74s with same options.
+No broad unchanged reruns; no file exceeds60s. Publisher fixtures use DuckDB
+128MB/one thread. No persistent owned fixture data or obsolete files needed
+cleanup; no global/foreign/active cache sweeps performed.
+
+Refrozen static semantic ID: mna-native-common-raw-usd-v2-fix1-r21.
+Native contract SHA256: 742293ff9056dedb96aa8a96a962d152cd30fd2b5dc9ec246983e4ae27b66adb.
+Canonical full publisher-code identity SHA256:
+67170669f376da35d4768a3ce8c2549ba83bf81d62ee4fb5d3837cde3c085db9.
+Canonical runtime identity SHA256:
+53b542e27dc3714a06857cb26edde622f3f1e0480a2f83ef09c54124f2ccffcf.
+Canonical means json.dumps(sort_keys=True,separators=(',',':')) UTF8 SHA256.
+These describe this checked implementation/runtime before actual measurements;
+no actual original-source economic admission/evaluation freeze was issued.
+The independent caller must freeze complete full dictionaries, not these hashes
+alone. Fixround1 commit SHA follows in controller delivery.

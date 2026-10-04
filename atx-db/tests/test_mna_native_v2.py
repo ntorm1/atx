@@ -95,8 +95,15 @@ FILER:
     html, docpin = native()
     docpin = replace(docpin, available_at=clock, fetched_at=clock+dt.timedelta(days=1),
                      clock_basis="native_sec_bulk_acceptance")
+    clocks={docpin.source_id:(blob,pin,matching)}
+    receipts={}
+    for body, proof in ((blob,pin),matching):
+        receipts[proof.source_id]=json.dumps({'url':'https://www.sec.gov/original/'+proof.source_id,
+                                             'status':200,'sha256':proof.sha256,'bytes':len(body),'error':None,
+                                             'fetched_at':str(proof.fetched_at)}).encode()
     rows = N.replay_native({docpin.source_id: html}, (docpin,), admission_id="fixture",
-                           expected_code=N.code_pins(), bulk_clocks={docpin.source_id: (blob, pin, matching)})
+                           expected_code=N.code_pins(), bulk_clocks=clocks,
+                           expected_auxiliary=N.clock_inventory(clocks,receipts), clock_receipts=receipts)
     assert rows[0].available_at == clock
     with pytest.raises(ValueError, match="clock object inventory"):
         N.replay_native({docpin.source_id: html}, (docpin,), admission_id="fixture", expected_code=N.code_pins())

@@ -50,7 +50,7 @@ def _contract(contract: bytes, expected_sha256: str) -> dict:
     value = json.loads(contract)
     if set(value) != {"schema", "admission_id", "expected_code", "candidate_inventory", "source_pins",
                       "input_manifests_sha256", "candidate_source_links", "gate_handcheck",
-                      "candidate_original_sha256", "source_receipts", "candidate_clock_rule", "exact_admissions"}:
+                      "candidate_original_sha256", "source_receipts", "candidate_clock_rule", "exact_admissions", "auxiliary_clock_inventory"}:
         raise ValueError("complete exact producer admission contract schema required")
     if value["schema"] != SCHEMA or not value["admission_id"] or value["expected_code"] != publisher_code_pins():
         raise ValueError("producer schema/admission/code mismatch")
@@ -106,7 +106,7 @@ def build_rows(contract: bytes, expected_contract_sha256: str, objects: Mapping[
                pins: tuple[N.NativePin, ...], *, candidate_original: bytes,
                input_manifests: Mapping[str, bytes], receipts: Mapping[str, bytes], bulk_clocks=None,
                exact_inputs: Mapping[str, dict] | None = None,
-               handcheck_original: bytes | None = None) -> tuple[list[dict], list[dict], dict]:
+               handcheck_original: bytes | None = None, clock_receipts=None) -> tuple[list[dict], list[dict], dict]:
     """Bind admission before native compute; retain complete candidate/source sets."""
     admission = _contract(contract, expected_contract_sha256)
     before = publisher_code_pins()
@@ -151,10 +151,12 @@ def build_rows(contract: bytes, expected_contract_sha256: str, objects: Mapping[
             or T.utc(dt.datetime.fromisoformat(record["fetched_at"].replace("Z", "+00:00"))) != T.utc(pin.fetched_at)):
             raise ValueError("native original receipt/document clock/identity mismatch")
     financial = F.replay_financial(objects, pins, admission_id=admission["admission_id"],
-                                   expected_code=F.financial_code_pins(), bulk_clocks=bulk_clocks)
+                                   expected_code=F.financial_code_pins(), bulk_clocks=bulk_clocks,
+                                   expected_auxiliary=admission["auxiliary_clock_inventory"], clock_receipts=clock_receipts)
     source_rows = [dataclasses.asdict(row) for row in financial]
     F.validate_financial_rows(source_rows, objects, pins, admission_id=admission["admission_id"],
-                              expected_code=F.financial_code_pins(), bulk_clocks=bulk_clocks)
+                              expected_code=F.financial_code_pins(), bulk_clocks=bulk_clocks,
+                                   expected_auxiliary=admission["auxiliary_clock_inventory"], clock_receipts=clock_receipts)
     by_source = {row.source_id: row for row in financial}
     pin_by_source = {pin.source_id: pin for pin in pins}
     exact_inputs = exact_inputs or {}
@@ -197,14 +199,21 @@ def build_rows(contract: bytes, expected_contract_sha256: str, objects: Mapping[
                          "currency": selected.cash_currency if selected else None,
                          "settlement_date": selected.settlement_date if selected else None,
                          "source_ids": tuple(source_ids), "proceeds_per_share": None, "dlret": None,
+                         "dlret_policy": admission["exact_admissions"].get(key, {}).get("return_policy", "value-only"),
+                         "is_forward_label": False,
                          "dlret_exact": False, "dlret_imputed": False, "reason": tuple(sorted(set(reasons)))}
         if key in exact_inputs:
             if selected is None:
                 raise ValueError("exact-native admission requires one independently linked native source")
             try:
+                selected_clock = (bulk_clocks or {}).get(selected.source_id)
+                selected_receipts = {}
+                if selected_clock:
+                    auxiliary_ids = {selected_clock[1].source_id, selected_clock[2][1].source_id}
+                    selected_receipts = {source_id: clock_receipts[source_id] for source_id in auxiliary_ids}
                 qualified = E.replay_exact(candidate, objects[selected.source_id], pin_by_source[selected.source_id],
                                             expected=admission["exact_admissions"][key],
-                                            bulk_clock=(bulk_clocks or {}).get(selected.source_id), **exact_inputs[key])
+                                            bulk_clock=selected_clock, clock_receipts=selected_receipts, **exact_inputs[key])
                 outcome.update(available_at=qualified.available_at, source_ids=qualified.source_ids,
                                deal_id=qualified.deal_id, currency=qualified.currency, settlement_date=qualified.settlement_date,
                                proceeds_per_share=float(qualified.proceeds_per_share) if qualified.proceeds_per_share is not None else None,
@@ -229,13 +238,13 @@ def build_rows(contract: bytes, expected_contract_sha256: str, objects: Mapping[
 def publish_value_only(output_root: Path, contract: bytes, expected_contract_sha256: str,
                        objects: Mapping[str, bytes], pins: tuple[N.NativePin, ...], *, candidate_original: bytes,
                        input_manifests: Mapping[str, bytes], receipts: Mapping[str, bytes], bulk_clocks=None,
-                       exact_inputs: Mapping[str, dict] | None = None, handcheck_original: bytes | None = None) -> Path:
+                       exact_inputs: Mapping[str, dict] | None = None, handcheck_original: bytes | None = None, clock_receipts=None) -> Path:
     """Immutable build, publish-last manifest, no existing vintage overwrite."""
     import pyarrow as pa
     source_rows, outcomes, gates = build_rows(contract, expected_contract_sha256, objects, pins,
                                              candidate_original=candidate_original, input_manifests=input_manifests,
                                              receipts=receipts, bulk_clocks=bulk_clocks, exact_inputs=exact_inputs,
-                                             handcheck_original=handcheck_original)
+                                             handcheck_original=handcheck_original, clock_receipts=clock_receipts)
     admission = _contract(contract, expected_contract_sha256)
     build_id = expected_contract_sha256
     output_root.mkdir(parents=True, exist_ok=True)
@@ -243,7 +252,7 @@ def publish_value_only(output_root: Path, contract: bytes, expected_contract_sha
     if final.exists():
         validate_publication(final, contract, expected_contract_sha256, objects, pins,
                              candidate_original=candidate_original, input_manifests=input_manifests, receipts=receipts,
-                             bulk_clocks=bulk_clocks, exact_inputs=exact_inputs, handcheck_original=handcheck_original)
+                             bulk_clocks=bulk_clocks, exact_inputs=exact_inputs, handcheck_original=handcheck_original, clock_receipts=clock_receipts)
         return final
     pending = output_root / (build_id + ".partial")
     if pending.exists():
@@ -251,29 +260,15 @@ def publish_value_only(output_root: Path, contract: bytes, expected_contract_sha
         # build. Incomplete evidence is retained; never overwrite or guess.
         validate_publication(pending, contract, expected_contract_sha256, objects, pins,
                              candidate_original=candidate_original, input_manifests=input_manifests,
-                             receipts=receipts, bulk_clocks=bulk_clocks, exact_inputs=exact_inputs, handcheck_original=handcheck_original)
+                             receipts=receipts, bulk_clocks=bulk_clocks, exact_inputs=exact_inputs, handcheck_original=handcheck_original, clock_receipts=clock_receipts)
         os.rename(pending, final)
         return final
     pending.mkdir(exist_ok=False)
     con = C.connect(memory="128MB", threads=1, temp_dir=pending / "spill")
     try:
         # Explicit schemas preserve null types and arrays even for empty tables.
-        source_schema = pa.schema([(name, typ) for name, typ in (
-            ("accession", pa.string()), ("source_id", pa.string()), ("source_sha256", pa.string()),
-            ("available_at", pa.timestamp("us", tz="UTC")), ("completion_date", pa.date32()),
-            ("announce_date", pa.date32()),
-            ("termination_date", pa.date32()),
-            ("settlement_date", pa.date32()), ("target_name", pa.string()), ("target_share_class", pa.string()),
-            ("acquirer_name", pa.string()), ("acquirer_share_class", pa.string()), ("consideration_type", pa.string()),
-            ("cash_per_share", pa.decimal128(30, 12)), ("cash_currency", pa.string()), ("stock_ratio", pa.decimal128(30, 12)),
-            ("status", pa.string()), ("consideration_clauses", pa.list_(pa.string())), ("reasons", pa.list_(pa.string())))])
-        terminal_schema = pa.schema([(name, typ) for name, typ in (
-            ("security_id", pa.int64()), ("last_session", pa.date32()),
-            ("candidate_available_at", pa.timestamp("us", tz="UTC")), ("available_at", pa.timestamp("us", tz="UTC")),
-            ("legacy_continued", pa.bool_()), ("source_ids", pa.list_(pa.string())),
-            ("deal_id", pa.string()), ("currency", pa.string()), ("settlement_date", pa.date32()),
-            ("proceeds_per_share", pa.float64()), ("dlret", pa.float64()),
-            ("dlret_exact", pa.bool_()), ("dlret_imputed", pa.bool_()), ("reason", pa.list_(pa.string())))])
+        schemas = publication_schemas()
+        source_schema, terminal_schema = schemas["mna"], schemas["events"]
         for name, rows, schema in (("mna", source_rows, source_schema), ("events", outcomes, terminal_schema)):
             con.register("native_rows", pa.Table.from_pylist(rows, schema=schema))
             C.copy_to_parquet(con, "SELECT * FROM native_rows", pending / f"{name}.parquet", row_group_size=32768)
@@ -295,7 +290,7 @@ def publish_value_only(output_root: Path, contract: bytes, expected_contract_sha
     C.write_json_atomic(pending / "manifest.json", manifest)
     validate_publication(pending, contract, expected_contract_sha256, objects, pins,
                          candidate_original=candidate_original, input_manifests=input_manifests, receipts=receipts,
-                         bulk_clocks=bulk_clocks, exact_inputs=exact_inputs, handcheck_original=handcheck_original)
+                         bulk_clocks=bulk_clocks, exact_inputs=exact_inputs, handcheck_original=handcheck_original, clock_receipts=clock_receipts)
     os.rename(pending, final)
     return final
 
@@ -303,15 +298,19 @@ def publish_value_only(output_root: Path, contract: bytes, expected_contract_sha
 def validate_publication(directory: Path, contract: bytes, expected_contract_sha256: str,
                          objects: Mapping[str, bytes], pins: tuple[N.NativePin, ...], *, candidate_original: bytes,
                          input_manifests: Mapping[str, bytes], receipts: Mapping[str, bytes], bulk_clocks=None,
-                         exact_inputs: Mapping[str, dict] | None = None, handcheck_original: bytes | None = None) -> None:
+                         exact_inputs: Mapping[str, dict] | None = None, handcheck_original: bytes | None = None, clock_receipts=None) -> None:
     """Public read-only full-file/native replay; hashes alone cannot certify rows."""
     import pyarrow.parquet as pq
+    code_before = publisher_code_pins()
+    manifest_bytes = (directory / "manifest.json").read_bytes()
+    identities_before = {name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
+                         for name in ("mna.parquet", "events.parquet")}
     expected_source, expected_terminal, gates = build_rows(contract, expected_contract_sha256, objects, pins,
                                                           candidate_original=candidate_original,
                                                           input_manifests=input_manifests, receipts=receipts,
                                                           bulk_clocks=bulk_clocks, exact_inputs=exact_inputs,
-                                                          handcheck_original=handcheck_original)
-    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+                                                          handcheck_original=handcheck_original, clock_receipts=clock_receipts)
+    manifest = json.loads(manifest_bytes)
     admission = _contract(contract, expected_contract_sha256)
     if set(manifest) != {"schema", "status", "build_id", "admission_contract_sha256", "code",
                          "input_manifests_sha256", "gate_status", "rows", "keys", "table_schemas", "files",
@@ -332,7 +331,14 @@ def validate_publication(directory: Path, contract: bytes, expected_contract_sha
         path = directory / f"{name}.parquet"
         if hashlib.sha256(path.read_bytes()).hexdigest() != manifest["files"].get(path.name):
             raise ValueError("public output identity mismatch")
-        actual = pq.read_table(path).to_pylist()
+        expected_schema = publication_schemas()[name]
+        physical = pq.read_schema(path)
+        if not physical.equals(expected_schema, check_metadata=False):
+            raise ValueError("exact physical Arrow/Parquet schema required")
+        table = pq.read_table(path)
+        if not table.schema.equals(expected_schema, check_metadata=False):
+            raise ValueError("parsed table physical schema changed during admission")
+        actual = table.to_pylist()
         expected_keys = ["accession", "source_id", "available_at"] if name == "mna" else ["security_id", "last_session", "candidate_available_at"]
         if manifest["keys"].get(name) != expected_keys:
             raise ValueError("complete immutable output key contract required")
@@ -343,3 +349,28 @@ def validate_publication(directory: Path, contract: bytes, expected_contract_sha
         # using canonical serialization; no selected passing projection.
         if _json(actual) != _json(expected) or manifest["rows"].get(name) != len(expected):
             raise ValueError("full public schema/key/native output replay mismatch")
+    if (publisher_code_pins() != code_before or (directory / "manifest.json").read_bytes() != manifest_bytes
+        or any(hashlib.sha256((directory / name).read_bytes()).hexdigest() != sha for name, sha in identities_before.items())):
+        raise ValueError("public product/manifest/runtime identity changed during admission")
+
+
+def publication_schemas():
+    import pyarrow as pa
+    source_schema = pa.schema([(name, typ) for name, typ in (
+        ("accession", pa.string()), ("source_id", pa.string()), ("source_sha256", pa.string()),
+        ("available_at", pa.timestamp("us", tz="UTC")), ("completion_date", pa.date32()),
+        ("announce_date", pa.date32()),
+        ("termination_date", pa.date32()),
+        ("settlement_date", pa.date32()), ("target_name", pa.string()), ("target_share_class", pa.string()),
+        ("acquirer_name", pa.string()), ("acquirer_share_class", pa.string()), ("consideration_type", pa.string()),
+        ("cash_per_share", pa.decimal128(30, 12)), ("cash_currency", pa.string()), ("stock_ratio", pa.decimal128(30, 12)),
+        ("status", pa.string()), ("consideration_clauses", pa.list_(pa.string())), ("reasons", pa.list_(pa.string())))])
+    terminal_schema = pa.schema([(name, typ) for name, typ in (
+        ("security_id", pa.int64()), ("last_session", pa.date32()),
+        ("candidate_available_at", pa.timestamp("us", tz="UTC")), ("available_at", pa.timestamp("us", tz="UTC")),
+        ("legacy_continued", pa.bool_()), ("source_ids", pa.list_(pa.string())),
+        ("deal_id", pa.string()), ("currency", pa.string()), ("settlement_date", pa.date32()),
+        ("proceeds_per_share", pa.float64()), ("dlret", pa.float64()),
+        ("dlret_exact", pa.bool_()), ("dlret_imputed", pa.bool_()), ("reason", pa.list_(pa.string())))])
+    terminal_schema = terminal_schema.append(pa.field("dlret_policy", pa.string())).append(pa.field("is_forward_label", pa.bool_()))
+    return {"mna": source_schema, "events": terminal_schema}

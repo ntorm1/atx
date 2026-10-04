@@ -41,3 +41,14 @@ preferred consideration, plus unqualified historical public clock. It is a
 source-layout lead, not certified terms/terminal coverage. No new HTTP/source
 acquisition occurred. NonUTF8, multiple-document submissions, alternate units,
 split/FX conversions and broader sentence grammars remain explicitlyunsupported.
+
+
+Fixround1 admission is defined by `mna-native-common-raw-usd-v2-fix1-r21` in
+`mna_v2.native-contract.json`. Conditional consideration is unsupported; complete
+auxiliary bulk/SGML originals and receipts must match the independently frozen
+inventory. Loaded readers, compiled runtimes, timezone bytes and physical output
+schemas are checked before and after native public replay. Under R21, the
+explicit source-only native DLRET policy may produce qualified individual values
+for 2023 onward; these rows are not forward labels or evaluation observations.
+The historical 44.24% blanket-cutoff ceiling is superseded, without certifying
+actual coverage or changing the 2267 denominator and acceptance thresholds.

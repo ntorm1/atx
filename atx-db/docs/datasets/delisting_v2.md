@@ -39,7 +39,7 @@ Staleness: event vintage, no arbitrary carryforward of status or terms.
 | deal_id | text nullable | Original-source deal identity |
 | proceeds_per_share | double, currency/target share nullable | Cash or acquirer terminal close times conversion ratio plus cash; conditional qualification only |
 | currency | text nullable | Explicit native currency; dollar symbol alone is ambiguous |
-| dlret | double nullable | Qualified proceeds / target last close minus one, strictly pre2023 only |
+| dlret | double nullable | Qualified proceeds / target last close minus one, policy-qualified individual source value; evaluation/forward labels pre2023 only |
 | dlret_exact | boolean | True only after original native financial/class/price/basis replay under frozen pre2023 policy |
 | dlret_imputed | boolean | False; no invented zero or imputed exact return |
 | reason | string array | Every unresolved provenance/class/unit/clock/value condition |
@@ -51,7 +51,7 @@ price basis. Adjustment factors and FX must be independently native-qualified;
 this core never guesses them. CVRs, elections, proration or unresolved fractional
 treatment remain NULL. A terminal return does not certify residual-month cash,
 conversion treatment, intermediate prices/actions or a complete forward label.
-Every return observation and complete window ends before 2023-01-01; source
+Evaluation observations and complete forward windows end before 2023-01-01; source
 and value coverage continue all2020+. The standalone formula is offline-fixture
 only, not a builder certification API.
 
@@ -90,4 +90,15 @@ Publication uses128MB/one-thread DuckDB, atomic Parquet and publish-last manifes
 
 The independent manual review contract pins original review bytes, reviewer, frozen candidate keys and every expected native financial field/source SHA. Boolean correct flags or declared success counts are rejected. Missing/failed cases remain in the frozen denominator. Numeric gates retain200 handchecks>=95%, qualified consideration>=80% and exactDLRET>=80% of2267. Source-only parsing is diagnostic. All actual coverage by year/universe remains unmeasured.
 
-Constraint feasibility (metadata only): pre2023 raw M&A counts207+394+402=1003. The unchanged full2267 denominator and strict pre2023-only exact-return policy cap the possible numerator at1003/2267=44.24%, below80% even with perfect sources. Complete windows can reduce it further. This is a constraint conflict, not measured coverage or permission to change the holdout/denominator.
+Historical metadata feasibility: the earlier blanket construction cutoff implied1003/2267=44.24%. R21 supersedes that construction restriction; this is no longer a release constraint and was never measured coverage. The full2267 denominator and80% gate remain unchanged/unmeasured.
+
+
+Fix round1 and R21 refreeze
+--------------------------
+Semantic contract: mna-native-common-raw-usd-v2-fix1-r21. Conditional cash requires the supported amount/share clauses to consume the entire consideration tail, with if/provided-that/unless/subject-to conditions rejected. Economic basis uses narrow affirmative full statements and rejects negative, alternative and contradictory statements; identities never override economic meaning.
+
+The frozen producer and per-event exact contract now bind complete auxiliary clock original bytes, matching SGML typed pins and original receipt inventories. Missing/extra/replaced auxiliary inputs reject even when supplied with new self-matching hashes. Public admission validates exact physical Arrow/Parquet field types, decimals, UTC timestamp units/timezones and arrays, including empty products, plus whole-row/key replay. Product and manifest identities are rechecked across admission.
+
+Runtime expectation includes the actual loaded Python reader code objects, PyArrow/Parquet/DuckDB entrypoints and compiled binaries/shared libraries, Python runtime binary and exact America/New_York TZif data. The clock reader constructs ZoneInfo from those pinned bytes; all runtime identities are checked before/after compute and public replay. Changed or abbreviated runtime expectations reject.
+
+R21 adds a separately frozen source-only-native-dlret-r21 policy: independently qualified individual source DLRET may be constructed2023+; source rows explicitly carry dlret_policy and is_forward_label=false. The separate pre2023-native-qualified policy and complete forward-window boundary remain strict. This produces no residual-month treatment, tradable label, post2022 evaluation or statistical assessment. Old construction ceilings/receipts are superseded, not promoted toPASS. No actual new measurement occurred; actual gates remainFAIL/unmeasured.

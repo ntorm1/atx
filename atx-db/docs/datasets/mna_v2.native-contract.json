@@ -19,7 +19,9 @@
     "mna_price_native_v2",
     "mna_exact_v2",
     "mna_publish_v2",
-    "common"
+    "common",
+    "mna_runtime_v2",
+    "runtime"
   ],
   "clock_basis": [
     "native_sec_acceptance",
@@ -81,7 +83,7 @@
     "metadata_item_completion",
     "issuer_primary_line_mapping"
   ],
-  "semantic_contract_id": "mna-native-common-raw-usd-v2-initial1",
+  "semantic_contract_id": "mna-native-common-raw-usd-v2-fix1-r21",
   "financial_output_schema": [
     "accession",
     "source_id",
@@ -136,7 +138,8 @@
   ],
   "return_policies": [
     "value-only",
-    "pre2023-native-qualified"
+    "pre2023-native-qualified",
+    "source-only-native-dlret-r21"
   ],
   "external_prerequisites_unavailable": [
     "independently_qualified_actual_economic_sources",
@@ -160,6 +163,32 @@
     "pre2023_ceiling_numerator": 1003,
     "ceiling": 0.44243493603881784,
     "unchanged_exact_gate": 0.8,
-    "is_return_measurement": false
-  }
+    "is_return_measurement": false,
+    "superseded_by": "R21",
+    "is_release_constraint": false
+  },
+  "auxiliary_clock_admission": [
+    "independently_frozen_complete_typed_bulk_and_matching_SGML_pins",
+    "original_auxiliary_byte_identities",
+    "complete_original_receipt_SHA_URL_bytes_status_and_retrieval_clocks",
+    "missing_extra_swapped_inventory_refusal"
+  ],
+  "runtime_admission": [
+    "loaded_python_reader_code_objects",
+    "actual_PyArrow_and_DuckDB_entrypoints",
+    "compiled_reader_binaries_and_PyArrow_shared_DLLs",
+    "Python_runtime_binary",
+    "explicit_tzdata_New_York_TZif_bytes_used_for_normalization",
+    "before_after_and_public_replay_identity_checks"
+  ],
+  "physical_schema_admission": [
+    "exact_field_inventory_order_nullability_and_types",
+    "UTC_timestamp_unit_timezone",
+    "decimal_precision_scale",
+    "list_types",
+    "empty_tables",
+    "product_manifest_identity_recheck"
+  ],
+  "source_only_policy": "individual_source_values_2020_onward_never_forward_labels_or_evaluation",
+  "evaluation_forward_labels_end_exclusive": "2023-01-01"
 }

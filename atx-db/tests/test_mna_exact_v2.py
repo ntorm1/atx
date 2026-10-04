@@ -53,7 +53,7 @@ FILER:
                 "target_pin": E._canonical(target), "target_economic_pin": E._canonical(target_basis),
                 "acquirer_pin": E._canonical(acquirer) if stock else None,
                 "acquirer_economic_pin": E._canonical(acquirer_basis) if stock else None,
-                "expected_code": E.exact_code_pins(), "return_policy": "pre2023-native-qualified"}
+                "auxiliary_clock_inventory": {}, "expected_code": E.exact_code_pins(), "return_policy": "pre2023-native-qualified"}
     return args, kw, expected
 
 

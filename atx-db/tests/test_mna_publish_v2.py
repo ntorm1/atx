@@ -31,7 +31,7 @@ def inputs():
                         "candidate_source_links": {key: [pin.source_id]}, "gate_handcheck": "unmeasured",
                         "candidate_original_sha256": hashlib.sha256(candidate_original).hexdigest(),
                         "candidate_clock_rule": "legacy-stage-documented-UTC",
-                        "exact_admissions": {},
+                        "exact_admissions": {}, "auxiliary_clock_inventory": {},
                         "source_receipts": {pin.source_id: {"sha256": hashlib.sha256(receipt).hexdigest(), "url": url}}})
     return contract, hashlib.sha256(contract).hexdigest(), {pin.source_id: blob}, (pin,), candidate_original, manifests, receipts
 
@@ -93,7 +93,7 @@ def test_conditional_exact_native_path_publishes_and_publicly_replays(tmp_path):
                         'candidate_source_links': {key: [docpin.source_id]}, 'gate_handcheck': 'unmeasured',
                         'input_manifests_sha256': {name: hashlib.sha256(blob).hexdigest() for name,blob in manifests.items()},
                         'source_receipts': {docpin.source_id: {'sha256': hashlib.sha256(receipt).hexdigest(), 'url': url}},
-                        'exact_admissions': {key: expected}})
+                        'exact_admissions': {key: expected}, 'auxiliary_clock_inventory': {}})
     exact_inputs = {key: {'vendor': vendor, 'target_pin': target_pin, 'target_economic': economic,
                          'target_economic_pin': economic_pin, **exact_kw}}
     kw = {'candidate_original': original, 'input_manifests': manifests, 'receipts': {docpin.source_id: receipt},

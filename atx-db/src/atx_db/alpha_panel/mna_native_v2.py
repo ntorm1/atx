@@ -13,7 +13,7 @@ import datetime as dt
 import hashlib
 import json
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, asdict
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Mapping
@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 from . import mna_vintages_v2 as V
 from . import terminal_mna_v2 as T
+from . import mna_runtime_v2 as R
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,30 @@ class BulkClockPin:
     accession: str
     available_at: dt.datetime
     fetched_at: dt.datetime
+
+
+def clock_inventory(bulk_clocks, receipts=None) -> dict:
+    """Full typed auxiliary pins, original identities and receipt provenance."""
+    bulk_clocks, receipts = bulk_clocks or {}, receipts or {}
+    expected_ids = {pin.source_id for _, pin, _ in bulk_clocks.values()} | {
+        native.source_id for _, _, (_, native) in bulk_clocks.values()}
+    if set(receipts) != expected_ids:
+        raise ValueError("complete exact auxiliary original receipt inventory required")
+    result = {}
+    for document_id, (bulk, pin, (submission, native)) in bulk_clocks.items():
+        originals = []
+        for blob, proof in ((bulk, pin), (submission, native)):
+            receipt = receipts[proof.source_id]
+            record = json.loads(receipt)
+            if (hashlib.sha256(blob).hexdigest() != proof.sha256 or record.get("sha256") != proof.sha256
+                or record.get("status") != 200 or record.get("bytes") != len(blob) or record.get("error") is not None
+                or not isinstance(record.get("url"), str) or not record["url"].startswith(("https://www.sec.gov/", "https://data.sec.gov/"))
+                or T.utc(dt.datetime.fromisoformat(record["fetched_at"].replace("Z", "+00:00"))) != T.utc(proof.fetched_at)):
+                raise ValueError("native auxiliary original/receipt identity mismatch")
+            originals.append({"pin": asdict(proof), "original_sha256": hashlib.sha256(blob).hexdigest(),
+                              "receipt_sha256": hashlib.sha256(receipt).hexdigest(), "url": record["url"]})
+        result[document_id] = originals
+    return json.loads(json.dumps(result, default=str, sort_keys=True))
 
 
 def read_bulk_clock(blob: bytes, pin: BulkClockPin,
@@ -104,9 +129,10 @@ class _Text(HTMLParser):
 
 def code_pins() -> dict[str, str]:
     """Exact local static reader, parser and qualification code identity."""
-    return {name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+    return {"runtime": R.runtime_identity(), "mna_runtime_v2": hashlib.sha256(Path(R.__file__).read_bytes()).hexdigest(),
+            **{name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
             for name, module in (("mna_native_v2", __import__(__name__, fromlist=["x"])),
-                                 ("mna_vintages_v2", V), ("terminal_mna_v2", T))}
+                                 ("mna_vintages_v2", V), ("terminal_mna_v2", T))}}
 
 
 def read_native(blob: bytes, pin: NativePin, admission_id: str,
@@ -127,7 +153,7 @@ def read_native(blob: bytes, pin: NativePin, admission_id: str,
         if not accession or not cik or not acceptance:
             raise ValueError("native submission accession/filer/acceptance missing")
         clock = dt.datetime.strptime(acceptance.group(1), "%Y%m%d%H%M%S").replace(
-            tzinfo=ZoneInfo("America/New_York")).astimezone(T.UTC)
+            tzinfo=R.new_york_zone()).astimezone(T.UTC)
         if accession.group(1) != pin.accession or int(cik.group(1)) != pin.cik or clock != available:
             raise ValueError("native submission identity/clock mismatch")
         if available > fetched:
@@ -160,7 +186,8 @@ def read_native(blob: bytes, pin: NativePin, admission_id: str,
 
 def replay_native(objects: Mapping[str, bytes], pins: tuple[NativePin, ...], *,
                   admission_id: str, expected_code: Mapping[str, str],
-                  bulk_clocks: Mapping[str, tuple[bytes, BulkClockPin, tuple[bytes, NativePin]]] | None = None) -> list[V.DealVintage]:
+                  bulk_clocks: Mapping[str, tuple[bytes, BulkClockPin, tuple[bytes, NativePin]]] | None = None,
+                  expected_auxiliary: dict | None = None, clock_receipts=None) -> list[V.DealVintage]:
     """Compute with code bound before, all objects pinned, and checked afterward."""
     before = code_pins()
     if dict(expected_code) != before:
@@ -169,6 +196,8 @@ def replay_native(objects: Mapping[str, bytes], pins: tuple[NativePin, ...], *,
     if len(ids) != len(set(ids)) or set(ids) != set(objects):
         raise ValueError("complete unique native object inventory required")
     bulk_clocks = bulk_clocks or {}
+    if clock_inventory(bulk_clocks, clock_receipts) != (expected_auxiliary or {}):
+        raise ValueError("independently frozen auxiliary clock inventory mismatch")
     if set(bulk_clocks) != {pin.source_id for pin in pins if pin.clock_basis == "native_sec_bulk_acceptance"}:
         raise ValueError("complete exact native clock object inventory required")
     rows = [read_native(objects[pin.source_id], pin, admission_id, bulk_clocks.get(pin.source_id)) for pin in pins]
@@ -180,13 +209,14 @@ def replay_native(objects: Mapping[str, bytes], pins: tuple[NativePin, ...], *,
 
 def validate_native_rows(rows: list[dict], objects: Mapping[str, bytes], pins: tuple[NativePin, ...], *,
                          admission_id: str, expected_code: Mapping[str, str],
-                         bulk_clocks: Mapping[str, tuple[bytes, BulkClockPin, tuple[bytes, NativePin]]] | None = None) -> None:
+                         bulk_clocks: Mapping[str, tuple[bytes, BulkClockPin, tuple[bytes, NativePin]]] | None = None,
+                         expected_auxiliary=None, clock_receipts=None) -> None:
     """Read-only public admission: full schema, keys, inventory and native replay."""
     names = {field.name for field in fields(V.DealVintage)}
     if any(set(row) != names for row in rows):
         raise ValueError("full exact public schema required")
     expected = replay_native(objects, pins, admission_id=admission_id, expected_code=expected_code,
-                             bulk_clocks=bulk_clocks)
+                             bulk_clocks=bulk_clocks, expected_auxiliary=expected_auxiliary, clock_receipts=clock_receipts)
     actual = [V.DealVintage(**row) for row in rows]
     V.validate_vintages(actual)
     key = lambda row: (row.accession, row.source_id, row.available_at)

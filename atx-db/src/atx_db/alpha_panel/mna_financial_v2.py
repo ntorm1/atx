@@ -37,6 +37,7 @@ _USD = re.compile(r"\b(?:USD|US\$|U\.S\. dollars?)\s*(?P<amount>\d+(?:\.\d+)?)\s
 _STOCK = re.compile(r"(?P<ratio>\d+(?:\.\d+)?) (?:of a )?shares? of "
                     r"(?P<issuer>[A-Z][\w&.,' -]{1,100}?) (?P<class>(?:Class [A-Z] )?common stock)\b")
 _BLOCKS = {
+    "conditional_consideration": re.compile(r"\bif\b|\bprovided\s+that\b|\bunless\b|\bsubject\s+to\b|\bconditions?\b", re.I),
     "elected_or_alternative_consideration": re.compile(r"\belect\w*\b|\bproration\b|\bor\b|\bin lieu\b", re.I),
     "ads_or_unit_conversion_unqualified": re.compile(r"\bADSs?\b|American Depositary|depositary receipts|ordinary shares", re.I),
     "contingent_or_adjustable_consideration": re.compile(r"\bCVRs?\b|contingent|subject to adjustment|up to", re.I),
@@ -128,7 +129,14 @@ def parse_financial(text: str, pin: N.NativePin) -> FinancialVintage:
             target = named[0].group("issuer").strip()
             target_class = named[0].group("class")
         amounts = list(_USD.finditer(clause))
-        stocks = list(_STOCK.finditer(clause[_CONVERT.search(clause).end():]))
+        tail = clause[_CONVERT.search(clause).end():].strip().rstrip(".")
+        stocks = list(_STOCK.finditer(tail))
+        # Require the supported monetary clauses to consume the entire tail.
+        # Identity/replay cannot make an unknown qualifier unconditional.
+        residue = _USD.sub("", _STOCK.sub("", tail))
+        residue = re.sub(r"\b(?:and|without interest)\b|[(),;.]|\bi\b|\bii\b", "", residue, flags=re.I).strip()
+        if residue:
+            reasons.append("unsupported_qualified_consideration_tail")
         if len(amounts) > 1 or len(stocks) > 1 or (not amounts and not stocks):
             reasons.append("native_consideration_unqualified")
         if not reasons or set(reasons) <= {"native_settlement_unqualified", "native_completion_unqualified"}:
@@ -164,12 +172,14 @@ def financial_code_pins() -> dict[str, str]:
 
 
 def replay_financial(objects: Mapping[str, bytes], pins: tuple[N.NativePin, ...], *,
-                     admission_id: str, expected_code: Mapping[str, str], bulk_clocks=None) -> list[FinancialVintage]:
+                     admission_id: str, expected_code: Mapping[str, str], bulk_clocks=None,
+                     expected_auxiliary=None, clock_receipts=None) -> list[FinancialVintage]:
     before = financial_code_pins()
     if dict(expected_code) != before:
         raise ValueError("complete independent financial reader/code identity required")
     # Native identity/clock admission happens before financial computation.
-    N.replay_native(objects, pins, admission_id=admission_id, expected_code=N.code_pins(), bulk_clocks=bulk_clocks)
+    N.replay_native(objects, pins, admission_id=admission_id, expected_code=N.code_pins(), bulk_clocks=bulk_clocks,
+                    expected_auxiliary=expected_auxiliary, clock_receipts=clock_receipts)
     rows = []
     for pin in pins:
         text = objects[pin.source_id].decode("utf-8", errors="strict")
@@ -185,12 +195,14 @@ def replay_financial(objects: Mapping[str, bytes], pins: tuple[N.NativePin, ...]
 
 
 def validate_financial_rows(rows: list[dict], objects: Mapping[str, bytes], pins: tuple[N.NativePin, ...], *,
-                            admission_id: str, expected_code: Mapping[str, str], bulk_clocks=None) -> None:
+                            admission_id: str, expected_code: Mapping[str, str], bulk_clocks=None,
+                            expected_auxiliary=None, clock_receipts=None) -> None:
     names = {field.name for field in fields(FinancialVintage)}
     if any(set(row) != names for row in rows):
         raise ValueError("complete financial schema required")
     actual = [FinancialVintage(**row) for row in rows]
-    expected = replay_financial(objects, pins, admission_id=admission_id, expected_code=expected_code, bulk_clocks=bulk_clocks)
+    expected = replay_financial(objects, pins, admission_id=admission_id, expected_code=expected_code, bulk_clocks=bulk_clocks,
+                                expected_auxiliary=expected_auxiliary, clock_receipts=clock_receipts)
     key = lambda row: (row.accession, row.source_id, row.available_at)
     keys = [key(row) for row in actual]
     if len(keys) != len(set(keys)) or sorted(actual, key=key) != sorted(expected, key=key):
