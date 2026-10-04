@@ -1,5 +1,7 @@
 # Request to the atx-db owner (P9 lane AL-DATA, 2026-10-04; fix round 1)
 
+**DRAFT. Do not hand this over.** Fix round 2 was stopped by the owner before any major re-review finding (RM1-RM3) was fixed; A0 below is the superseded round-1 text (see `task-AL-DATA-report.md`, "Fix round 2 (stopped by the owner)").
+
 - **From:** the atx P9 sprint, lane AL-DATA. This lane writes documents only (Ruling W3-18).
 - **To:** the atx-db owner. Part A goes to stage owner MKT, panel U3 and security_master. Parts B1 / B3 go to the TXT
   and fundamentals owners.

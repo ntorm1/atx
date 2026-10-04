@@ -227,3 +227,64 @@ Not fixed: nothing in the review is left undone.
   - "usually excludes R&D" became the cited element split;
   - the circular back-solve is no longer used as an argument;
   - the CW sample end stays unverified.
+
+## Fix round 2 (stopped by the owner)
+
+The owner stopped the session partway through fix round 2. **No text in `atx-db-request.md` or `builder-designs.md` was
+rewritten.** The only change to the request is a DRAFT line at its top. The Outcome, Consumers and Q1 text above is
+still the round-1 text: ALD-7 and the re-review supersede its "cannot be told from source".
+
+**Status per re-review finding** (review `## Re-review`):
+
+| finding | status |
+|---|---|
+| RM1 (A0 rewrite: the two paths, drop the over-strong bullets; report "cannot tell" and Q1) | **partly**: source for path (a) verified (below); no text written |
+| RM2 (a runnable rebuild-vs-rebuild diff; `primary` test; extended rule) | **not started**: no diff design written |
+| RM3 (channel 4 misses the panel's backfill-tier `cik`; R7 (d); receipt key; aspect clause) | **not started** |
+| Rm1 (assertion 4 "fails today" reason) | not started |
+| Rm2 (Consumers: panel `cik`, `delisting` stage) | not started |
+| Rm3 (delete SR_b 1.77 and X-4 -.058 at designs `:26`, report `:63`, `:215`) | not started |
+| Rn1 (one publication-date rule, F1 vs F2) | not started |
+| Rn2 (aspect text vs request: NULL) | not started |
+
+**A0: what was verified in source by this round** (atx-db at main `dec03454`, read with `git show`; the bridge files
+`identity_links.py`, `alpha_panel/identity_table.py`, `alpha_panel/identity_backfill.py`, `identity_reconstruction.py`
+and `market_owner_bridge.py` have an empty `git diff` from `dec03454` and from `0e2fa077` to `f3b0aa75`):
+
+- **Path (a), the primary flag computed with the 2026 backfill lines: verified within `identity_table` and
+  `identity_backfill`.**
+  - `identity_table.py:72-85`: the per-session `days` table joins every row of `identity/links_combined.parquet`,
+    with no tier filter (`:76` keeps `backfill` and `name` as tiers). `links_combined` holds strict, backfill and name
+    rows (`:3-4`; `identity_backfill.py:132-152`, `:169`).
+  - `identity_table.py:111-112`: `is_issuer_primary` = first row per `(cik, session_date)` by `adv63 DESC NULLS LAST,
+    security_id`, over all tiers. `links_combined`'s own `primary` column is not read (`:75-78` select `cik, tier,
+    basis, available_at` only).
+  - `:119-133`: the intervals are split where the flag changes; `:131`: an interval's `available_at` is the minimum
+    over it.
+  - `:172-176`, `:187-195`: the `pit` export keeps the strict and name tiers only **after** the flag is set; `:190`
+    writes it as `P` / `J`.
+  - So on any `(cik, session)` whose highest-`adv63` linked line is a backfill line, the `pit` export carries every
+    line of that CIK as `J` that session. Splitting can also change `start`, `end_incl`, `available_at` and row
+    presence of the strict / name rows (derived from `:119-133`, `:131`; not yet written into A0).
+  - Backfill lines: `identity_backfill.py:52-58` (r4 export rows with `link_basis = 'current_ticker_verified'`,
+    `link_primary` P / J, `valid_until` NULL: open at the 2026 snapshot); `:71-89` (the line's final run, no gap over 21
+    sessions, ending on or after 2026-09-01); `:96-109` (days after the CIK's first periodic filing, after any strict
+    link to another CIK, and not already strict-linked). `available_at` is the snapshot time (`:20`;
+    `identity_table.py:20-21`).
+- **Still unverified by this round:**
+  - that the role universe `linked-operating-v3` keeps only `P` lines (`prepare_recent_research.py:13`, `:586`;
+    `prepare_research_fields.py:1685`, `:1735-1736`, as the re-review cites): not read;
+  - how `build_rehearsal` creates the `current_ticker_verified` rows and whether the 2026 directory decides them
+    (`identity_links.py:930-967`, `_company_versions` `:274-338`, `_class_proof_at` `:517-549`): not read;
+  - **path (b)**, the 2026 SEC ticker list changing r4 link acceptance (`identity_links.py:1287-1289`;
+    `identity_reconstruction.py:144-147`, `:1411-1426`, `:1535-1551`, `:1564-1581`, `:1601-1608`): **not verified**;
+  - what the Nasdaq directory snapshot does in `build_rehearsal` (`identity_links.py:840-861`, `:925-967`): not read;
+  - the empty-directory guard and pinned-input checks (`:740-741`, `:842-848`, `:1248-1250`): not read;
+  - the panel `cik` path of RM3 (`panel.py:468-477`; `indexes.py:151`, `:166-174`): not read.
+- **Runnable rebuild-vs-rebuild diff: not written.**
+
+**Disagreement with the re-review (one, minor).** The re-review says backfill lines are backdated "over the line's
+final run from 2017-10" (`identity_backfill.py:10-14`, `:35`). In source, `COMBINED_FROM = 2017-10-01` (`:35`) bounds
+only the strict-day expansion (`:116`); the backfill days (`:96-104`) are bounded by the final run and the first
+periodic filing, and `identity_table` reads link days from 2017-01-01 (`identity_table.py:72`). Where an A0 rewrite
+dates the backfill span, it should cite those lines, not `:35`. This does not change path (a).
