@@ -37,9 +37,7 @@ RUNNER_TOLERANCE. The shared fixture atx-impl/tests/fixtures/theme_erc_v1.json p
 from __future__ import annotations
 
 import argparse
-import hashlib
 import math
-from pathlib import Path
 
 import numpy as np
 
@@ -86,8 +84,13 @@ def _require(condition, message: str, error: type[Exception]) -> None:
         raise error(message)
 
 
-def module_sha256() -> str:
-    return hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
+PRODUCERS = ("theme_erc", "attach")  # the writers of provenance.theme_erc and its block (ruling D2-2)
+
+
+def producer_fingerprint() -> str:
+    """provenance.theme_erc's code identity (ruling D2-2: composition_rules.module_fingerprint; module_sha256, the
+    whole file's SHA-256, before P9 lane D2)."""
+    return composition_rules.module_fingerprint(__file__, PRODUCERS)
 
 
 # ---------------------------------------------------------------- step 3: the engine kernel's arithmetic
@@ -210,18 +213,24 @@ def rule_weights(ids: list[str], themes: list[str], shares: list[float], order: 
 
 
 def theme_erc(parent: composition_rules.StdFit, ids: list[str], themes: list[str], matrix: np.ndarray,
-              mask: np.ndarray, parent_rule: str, error: type[Exception] = ErcError) -> composition_rules.StdFit:
+              mask: np.ndarray, parent_rule: str, error: type[Exception] = ErcError,
+              engine: tuple | None = None) -> composition_rules.StdFit:
     """theme-erc-v1 over the parent fit's members (input order: the fitter's admission order), with the theme table,
-    the runner block and provenance (attached by ``attach``)."""
+    the runner block and provenance (attached by ``attach``). ``engine`` (the fitter's --engine-fit, ruling D2-1): the
+    C++ fit's (within-theme shares, covariance, rule_weights' dict) (composition_engine_fit.kernels), written in place
+    of this function's own; None: computed here."""
     _require(parent_rule in PARENT_RULES, f"{RULE_ID}: {PARENT_ONLY}", error)
     _require(len(ids) == len(themes) == np.asarray(matrix).shape[0] and ids,
              f"{RULE_ID}: one factor series per member", error)
-    shares = parent_shares(parent, ids, themes, error)
     order = sorted(set(themes))
     mask = np.asarray(mask, dtype=bool)
-    series = sleeve_series(matrix, themes, shares, order, mask)
-    cov = covariance(series, error)
-    fit = rule_weights(ids, themes, shares, order, cov, error)
+    if engine is None:
+        shares = parent_shares(parent, ids, themes, error)
+        series = sleeve_series(matrix, themes, shares, order, mask)
+        cov = covariance(series, error)
+        fit = rule_weights(ids, themes, shares, order, cov, error)
+    else:
+        shares, cov, fit = engine
     weights, cap = fit["weights"], fit["cap"]
     capped = {k for it in fit["passes"] for k in it["capped"]}
     vols = [math.sqrt(ANNUALIZATION * cov[i][i]) for i in range(len(order))]
@@ -263,7 +272,7 @@ def theme_erc(parent: composition_rules.StdFit, ids: list[str], themes: list[str
                    "ew-theme-std-v1 per-date re-rank, unchanged; the rule table re-applies the ERC shares and the cap "
                    "to theme_erc.members and theme_erc.covariance and refuses a weight off by more than "
                    "runner_tolerance_absolute (strategy_ic_admission.cpp, strategy_ic_theme_erc.cpp)"),
-        "module_sha256": module_sha256()}
+        "producer_fingerprint": producer_fingerprint()}
     return composition_rules.StdFit(weights=weights, theme_table=theme_table, block=block, provenance=provenance,
                                     text=COMPOSITION_TEXT, fit_series=FIT_SERIES, ids=list(ids))
 

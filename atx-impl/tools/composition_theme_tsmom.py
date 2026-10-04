@@ -35,10 +35,10 @@ sides (ThemeTsmom.SharedFixtureMasses).
 from __future__ import annotations
 
 import argparse
-import hashlib
-from pathlib import Path
 
 import numpy as np
+
+import composition_rules  # this directory: module_fingerprint (ruling D2-2)
 
 RULE_ID = "theme-tsmom-v1"
 BLOCK = "theme_schedule"                 # the top-level key of the weights document
@@ -75,8 +75,13 @@ def _require(condition, message: str, error: type[Exception]) -> None:
         raise error(message)
 
 
-def module_sha256() -> str:
-    return hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
+PRODUCERS = ("schedule", "attach")  # the writers of theme_schedule and provenance.theme_tsmom (ruling D2-2)
+
+
+def producer_fingerprint() -> str:
+    """provenance.theme_tsmom's code identity (ruling D2-2: composition_rules.module_fingerprint; module_sha256, the
+    whole file's SHA-256, before P9 lane D2)."""
+    return composition_rules.module_fingerprint(__file__, PRODUCERS)
 
 
 # ---------------------------------------------------------------- step 3: the runner kernel's arithmetic
@@ -153,8 +158,11 @@ class Schedule:
 
 
 def schedule(ids: list[str], themes: list[str], weights, matrix: np.ndarray, sessions, mask: np.ndarray,
-             parent_rule: str, error: type[Exception] = TsmomError) -> Schedule:
-    """theme-tsmom-v1 over the parent fit's members (input order: the fitter's active order) and final weights."""
+             parent_rule: str, error: type[Exception] = TsmomError, engine: dict | None = None) -> Schedule:
+    """theme-tsmom-v1 over the parent fit's members (input order: the fitter's active order) and final weights.
+    ``engine`` (the fitter's --engine-fit, ruling D2-1): the C++ fit's parent masses and, per block, trailing sums,
+    masses and themes switched off (composition_engine_fit.kernels), written in place of this function's own; None:
+    computed here."""
     weights = [float(w) for w in weights]
     m = np.asarray(matrix, dtype=np.float64)
     sessions = np.asarray(sessions)
@@ -169,13 +177,21 @@ def schedule(ids: list[str], themes: list[str], weights, matrix: np.ndarray, ses
     starts = block_starts(m.shape[1])
     _require(0 < len(starts) <= MAX_BLOCKS, f"{RULE_ID}: the role has {m.shape[1]} decisions; the first block needs "
                                             f"more than {LOOKBACK + LAG - 1}", error)
-    series = sleeves(m, themes, weights, order, mask)
-    parent = theme_masses(themes, weights, order)
+    if engine is None:
+        series = sleeves(m, themes, weights, order, mask)
+        parent = theme_masses(themes, weights, order)
+    else:
+        parent = engine["parent"]
+        _require(len(engine["blocks"]) == len(starts), f"{RULE_ID}: the engine schedule's blocks are not the role's",
+                 error)
     blocks, detail, on_count = [], [], [0] * len(order)
     off_total = 0
-    for j in starts:
-        t = trailing(series, j)
-        w, off = masses(parent, t, error)
+    for b, j in enumerate(starts):
+        if engine is None:
+            t = trailing(series, j)
+            w, off = masses(parent, t, error)
+        else:
+            t, w, off = engine["blocks"][b]
         off_total += off
         for i, x in enumerate(t):
             on_count[i] += 1 if x > 0.0 else 0
@@ -196,7 +212,7 @@ def schedule(ids: list[str], themes: list[str], weights, matrix: np.ndarray, ses
                    "the runner re-applies step 3 to the recorded trailing sums with the parent's W_theme summed from the "
                    "pinned weights, and the composition re-ranks each theme per date unchanged, times the mass in force "
                    "(strategy_ic_theme_tsmom.cpp, IcComposition::schedule_theme_masses)"),
-        "module_sha256": module_sha256()}
+        "producer_fingerprint": producer_fingerprint()}
     summary = {"parent_rule": parent_rule, "blocks": len(starts), "theme_blocks_off": off_total,
                "theme_on_fraction": provenance["theme_on_fraction"]}
     return Schedule(block, provenance, summary)

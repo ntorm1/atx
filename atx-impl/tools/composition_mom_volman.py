@@ -13,17 +13,22 @@ in the top-level theme_schedule block {rule, theme, lookback, lag, step, session
 theme_standardise and provenance.rule stay the parent's.
 
 Parents: ew-theme-std-v1 and ic-shrink-v1, with or without --theme-erc theme-erc-v1. Refused with --theme-resid (a
-residualised composite is not the sleeve), with --theme-tsmom (one theme_schedule block holds one rule) and under --era
-(the schedule's sessions are one role's).
+residualised composite is not the sleeve), with --theme-tsmom (one theme_schedule block holds one rule), under --era
+(the schedule's sessions are one role's) and under --engine-fit (P9 lane D2, ruling D2-1: that flag writes the C++
+fit's values, and the C++ composition fit, atx-research-composition fit, records no momentum sleeve; the sleeve here is
+this module's Python arithmetic on the final weights).
+
+provenance.mom_volman names its writer by ``producer_fingerprint`` (CM-5 / ruling D2-2, as every composition module
+since P9 lane D2: composition_rules.module_fingerprint of PRODUCERS, which also covers the composition_theme_tsmom code
+the sleeve reads).
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
-from pathlib import Path
 
 import numpy as np
 
+import composition_rules  # this directory: module_fingerprint (ruling D2-2)
 import composition_theme_tsmom
 
 RULE_ID = "mom-volman-v1"
@@ -45,6 +50,10 @@ RULE_TEXT = (
 PARENT_ONLY = (f"--mom-volman {RULE_ID} needs the prior path (--orientation prior, a v4 screen) and --composition "
                f"{' or '.join(PARENT_RULES)} (with or without --theme-erc); it is refused with --theme-resid and "
                "--theme-tsmom and under --era")
+ENGINE_FIT_REFUSED = (f"--mom-volman {RULE_ID} is refused under --engine-fit: that flag writes the C++ composition "
+                      "fit's values (P9 lane D2, ruling D2-1), and atx-research-composition fit records no momentum "
+                      "sleeve; run the cell without --engine-fit")
+PRODUCERS = ("schedule", "attach")  # the writers of theme_schedule and provenance.mom_volman (ruling D2-2)
 
 
 class VolmanError(ValueError):
@@ -56,8 +65,10 @@ def _require(condition, message: str, error: type[Exception]) -> None:
         raise error(message)
 
 
-def module_sha256() -> str:
-    return hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
+def producer_fingerprint() -> str:
+    """provenance.mom_volman's code identity (ruling D2-2: composition_rules.module_fingerprint; module_sha256, the
+    whole file's SHA-256, before the lane merged P9 lane D2)."""
+    return composition_rules.module_fingerprint(__file__, PRODUCERS)
 
 
 class Schedule:
@@ -94,7 +105,7 @@ def schedule(ids: list[str], themes: list[str], weights, matrix: np.ndarray, ses
                    "the runner computes every block's sigma, target and scale from the recorded sleeve "
                    "(strategy_ic_mom_volman.cpp mom_volman_blocks) and the composition re-ranks each theme per date "
                    "unchanged, times the mass in force (IcComposition::schedule_theme_masses)"),
-        "module_sha256": module_sha256()}
+        "producer_fingerprint": producer_fingerprint()}
     summary = {"parent_rule": parent_rule, "decisions": int(m.shape[1])}
     return Schedule(block, provenance, summary)
 
@@ -117,9 +128,10 @@ def add_argument(parser: argparse.ArgumentParser) -> None:
 
 def check_args(args, prior: bool, pooled: bool, error: type[Exception] = VolmanError) -> None:
     """Refused before any compute: the flag needs the prior path and a PARENT_RULES composition, and is refused with
-    --theme-resid, --theme-tsmom and under --era."""
+    --theme-resid, --theme-tsmom, under --era and under --engine-fit (ENGINE_FIT_REFUSED)."""
     if getattr(args, "mom_volman", None) is None:
         return
     _require(prior and getattr(args, "composition", None) in PARENT_RULES and
              getattr(args, "theme_resid", None) is None and getattr(args, "theme_tsmom", None) is None and not pooled,
              f"{RULE_ID}: {PARENT_ONLY}", error)
+    _require(not getattr(args, "engine_fit", False), f"{RULE_ID}: {ENGINE_FIT_REFUSED}", error)

@@ -158,7 +158,9 @@ def test_the_theme_tuple_is_the_registry_table_in_file_order():
     assert fcw.V7_APPENDED_THEMES == fcw.PRIOR_THEMES[len(fcw.V4_THEMES):]
     assert fcw.registered_prior_themes() == fcw.PRIOR_THEMES
     assert fcw.registry_themes(fcw.REGISTRY_PATH) == fcw.PRIOR_THEMES
-    # At the P9 base the registry is the list of record.
+    # At the P9 base the registry is the list of record. This pins today's 13 themes on purpose (D1 review minor, P9
+    # lane D2): the first theme a lane registers (AL-COMB, or E2's --theme-registry) must update this line and
+    # test_composition_resid's built-in table check in the same commit.
     assert fcw.PRIOR_THEMES == fcw.V4_THEMES + fcw.V7_APPENDED_THEMES_OF_RECORD
 
 

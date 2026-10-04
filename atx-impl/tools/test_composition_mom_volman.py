@@ -4,6 +4,7 @@ sigma, target and scale are C++, tested by MomVolman.*), the refusals, and the f
 (the parent's document plus the block, nothing else; flag absent, the parent's bytes)."""
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 import re
@@ -48,21 +49,25 @@ class DeclaredRule(unittest.TestCase):
         self.assertEqual((cmv.LOOKBACK, cmv.LAG, cmv.STEP), (126, 2, 21))  # registered blind (BSC's six months)
 
     def test_block_is_the_rule_tables_row(self):
-        """The K-P9-6 fixture row: the same block key, every const the module's, every required key written."""
+        """The K-P9-6 fixture row: the same block key; its params_schema is P9 lane D2's K-P9-9 params form (ruling
+        D1-PSCHEMA): a closed object of the rule key and the registered constants, each optional, typed and const. The
+        block the fitter writes is those keys, every one at its const, plus the scaled theme (fixed by the rule id) and
+        the recorded sleeve with its sessions (the row's parse checks the block)."""
         row = rule_row(cmv.RULE_ID)
         self.assertEqual((row["block_key"], row["stage"]), (cmv.BLOCK, "schedule"))
         self.assertEqual(sorted(row["incompatible"]), ["theme-resid-v1", "theme-tsmom-v1"])
         schema = row["params_schema"]
-        self.assertFalse(schema["additionalProperties"])
-        consts = {k: v["const"] for k, v in schema["properties"].items() if "const" in v}
-        self.assertEqual(consts, {"rule": cmv.RULE_ID, "theme": cmv.THEME, "lookback": cmv.LOOKBACK, "lag": cmv.LAG,
-                                  "step": cmv.STEP})
-        for key in ("sessions", "sleeve"):
-            self.assertEqual((schema["properties"][key]["minItems"], schema["properties"][key]["maxItems"]),
-                             (cmv.LOOKBACK + cmv.LAG, cmv.MAX_DECISIONS), key)
+        self.assertEqual((schema["type"], schema["additionalProperties"]), ("object", False))
+        self.assertNotIn("required", schema)
+        self.assertEqual(schema["properties"], {"rule": {"type": "string", "const": cmv.RULE_ID},
+                                                "lookback": {"type": "integer", "const": cmv.LOOKBACK},
+                                                "lag": {"type": "integer", "const": cmv.LAG},
+                                                "step": {"type": "integer", "const": cmv.STEP}})
         block = cmv.schedule(*Kernel.world(), parent_rule="ew-theme-std-v1").block
-        self.assertEqual(sorted(block), sorted(schema["required"]))
-        self.assertEqual(sorted(block), sorted(schema["properties"]))
+        self.assertEqual(sorted(set(block) - set(schema["properties"])), ["sessions", "sleeve", "theme"])
+        self.assertEqual({k: block[k] for k in schema["properties"]},
+                         {k: v["const"] for k, v in schema["properties"].items()})
+        self.assertEqual(block["theme"], cmv.THEME)
 
 
 class Kernel(unittest.TestCase):
@@ -94,7 +99,13 @@ class Kernel(unittest.TestCase):
         self.assertEqual((fit.provenance["parent_rule"], fit.provenance["decisions"], fit.provenance["train_decisions"]),
                          ("theme-erc-v1", 150, 143))
         self.assertEqual(fit.summary, {"parent_rule": "theme-erc-v1", "decisions": 150})
-        self.assertEqual(fit.provenance["module_sha256"], cmv.module_sha256())
+        # CM-5 / ruling D2-2 (P9 lane D2): the writer's producer fingerprint, not the whole file's SHA-256.
+        self.assertNotIn("module_sha256", fit.provenance)
+        self.assertFalse(hasattr(cmv, "module_sha256"))
+        self.assertRegex(fit.provenance["producer_fingerprint"], r"^[0-9a-f]{64}$")
+        self.assertEqual(fit.provenance["producer_fingerprint"], cmv.producer_fingerprint())
+        self.assertEqual(cmv.producer_fingerprint(), cr.module_fingerprint(cmv.__file__, cmv.PRODUCERS))
+        self.assertEqual(cmv.PRODUCERS, ("schedule", "attach"))
 
     def test_refusals(self):
         ids, themes, weights, matrix, sessions, mask = self.world()
@@ -235,6 +246,18 @@ class FitterEndToEnd(unittest.TestCase):
             cmv.check_args(args, prior=False, pooled=False)
         cmv.check_args(args, prior=True, pooled=False)
         cmv.check_args(self.fx.args(self.root / "x", **ERC_ARGS), prior=False, pooled=True)  # flag absent: no check
+        # --engine-fit (P9 lane D2) writes the C++ fit's values and the C++ fit records no momentum sleeve: refused
+        # before any compute, by the module and by the fitter (nothing published).
+        with self.assertRaises(cmv.VolmanError) as caught:
+            cmv.check_args(argparse.Namespace(**dict(vars(args), engine_fit=True)), prior=True, pooled=False)
+        self.assertIn("--engine-fit", str(caught.exception))
+        cmv.check_args(argparse.Namespace(**dict(vars(args), engine_fit=False)), prior=True, pooled=False)
+        out = self.root / "refused-engine"
+        with unittest.mock.patch.object(cr, "REGISTRY_PATH", self.root / "no-registry.json"), \
+                self.assertRaises(fcw.FitError) as caught:
+            fcw.fit(self.fx.args(out, **VOLMAN_ARGS, engine_fit=True))
+        self.assertIn(cmv.ENGINE_FIT_REFUSED, str(caught.exception))
+        self.assertFalse(out.exists())
 
 
 if __name__ == "__main__":

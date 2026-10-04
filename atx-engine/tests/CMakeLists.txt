@@ -437,3 +437,17 @@ target_link_libraries(atx-engine-research-admission-tests PRIVATE
 target_include_directories(atx-engine-research-admission-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(atx-engine-research-admission-tests PRIVATE
     "ATX_RESEARCH_ADMISSION_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_admission\"")
+
+# Platform P9 lane D2: the composition library's bounded target (ResearchComposition.*; the Python-generated
+# fixture path is a target-local define), registered in CTest under atx_research like B1's. The library target is
+# defined after this directory (end of atx-engine/CMakeLists.txt); CMake resolves the link name at generation.
+add_executable(atx-engine-research-composition-tests EXCLUDE_FROM_ALL
+    research/research_composition_fit_test.cpp)
+target_link_libraries(atx-engine-research-composition-tests PRIVATE
+    atx-engine-research-composition atx-engine-research-admission GTest::gtest_main atx_warnings Threads::Threads
+    atx-test-scratch nlohmann_json::nlohmann_json)
+target_include_directories(atx-engine-research-composition-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(atx-engine-research-composition-tests PRIVATE
+    "ATX_RESEARCH_COMPOSITION_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_composition\"")
+gtest_discover_tests(atx-engine-research-composition-tests DISCOVERY_MODE PRE_TEST
+    TEST_PREFIX "atx-engine-research-composition-tests." PROPERTIES LABELS atx_research)

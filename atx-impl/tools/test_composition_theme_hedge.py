@@ -17,7 +17,11 @@ import unittest.mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import composition_rules as cr  # noqa: E402
 import composition_theme_hedge as cth  # noqa: E402
+import composition_engine_fit as cef  # noqa: E402
+import composition_theme_erc as cte  # noqa: E402
+import composition_theme_tsmom as ct  # noqa: E402
 import fit_composition_weights as fcw  # noqa: E402
+import test_composition_engine_fit as tcef  # noqa: E402  (its --engine-fit stand-ins, not its tests)
 import test_fit_composition_weights as tfw  # noqa: E402  (its synthetic fitter fixture, not its tests)
 
 HEADER = Path(__file__).resolve().parents[1] / "src" / "strategy_ic_theme_hedge.hpp"
@@ -46,10 +50,15 @@ class DeclaredRule(unittest.TestCase):
         row = rows[0]
         self.assertEqual((row["block_key"], row["stage"], row["recipe_key"]), (cth.BLOCK, "hedge", "composition_hedge"))
         self.assertEqual(sorted(row["incompatible"]), ["theme-resid-v1", "two-speed-v1"])
+        # P9 lane D2's K-P9-9 params form (ruling D1-PSCHEMA): a closed object of the rule key and the registered
+        # constants, each optional, typed and const; the spec block the fitter writes is exactly those consts.
         schema = row["params_schema"]
-        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual((schema["type"], schema["additionalProperties"]), ("object", False))
+        self.assertNotIn("required", schema)
         self.assertEqual({k: v["const"] for k, v in schema["properties"].items()}, cth.spec_block())
-        self.assertEqual(sorted(schema["required"]), sorted(cth.spec_block()))
+        self.assertEqual({k: v["type"] for k, v in schema["properties"].items()},
+                         {"rule": "string", "lookback": "integer", "lag": "integer", "step": "integer",
+                          "min_pairs": "integer"})
 
     def test_attach_and_its_refusals(self):
         parent = {"weights": {"a": 1.0}, "theme_standardise": {"rerank": True, "themes": ["value"]},
@@ -85,6 +94,8 @@ class DeclaredRule(unittest.TestCase):
         for fields, prior, pooled in bad:
             with self.assertRaises(cth.HedgeError, msg=str((fields, prior, pooled))):
                 cth.check_args(argparse.Namespace(**fields), prior=prior, pooled=pooled)
+        # Accepted under --engine-fit (P9 lane D2): the block holds only the registered constants.
+        cth.check_args(argparse.Namespace(**dict(vars(ok), engine_fit=True)), prior=True, pooled=False)
 
 
 class FitterEndToEnd(unittest.TestCase):
@@ -157,6 +168,32 @@ class FitterEndToEnd(unittest.TestCase):
             self.assertFalse(out.exists())
         with self.assertRaises(cth.HedgeError):
             cth.check_args(self.fx.args(self.root / "x", **HEDGE_ARGS), prior=True, pooled=True)
+
+
+class EngineFit(unittest.TestCase):
+    """--theme-hedge under --engine-fit (P9 lane D2's flag, its stand-in executables): the C++-valued document plus the
+    same spec block; the admission files and the weights file minus provenance.engine_fit are the flag-absent run's."""
+
+    def test_the_spec_block_rides_on_the_engine_document(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fx = tcef.World.build(root)
+            case = dict(STD_ARGS, theme_erc=cte.RULE_ID, theme_tsmom=ct.RULE_ID, theme_hedge=cth.RULE_ID)
+            with unittest.mock.patch.object(cr, "REGISTRY_PATH", root / "no-registry.json"):
+                plain_code, _ = fcw.fit(fx.args(root / "plain", **case))
+                with tcef.StandIns(root / "factors") as stand:
+                    code, summary = fcw.fit(fx.args(root / "engine", **case, **tcef.placeholders(root / "in")))
+            self.assertEqual((plain_code, code), (fcw.EXIT_OK, fcw.EXIT_OK))
+            self.assertEqual(stand.calls, ["screen", "fit"])
+            plain, engine = tcef.load(root / "plain"), tcef.load(root / "engine")
+            self.assertEqual(sorted(engine), sorted(plain))
+            for name in (fcw.OUTPUT_ADMISSION, fcw.OUTPUT_ADMISSION_CSV):
+                self.assertEqual(engine[name], plain[name], name)
+            self.assertEqual(tcef.without_engine_fit(engine[fcw.OUTPUT_WEIGHTS]), plain[fcw.OUTPUT_WEIGHTS])
+            doc = json.loads(engine[fcw.OUTPUT_WEIGHTS])
+            self.assertEqual(doc[cth.BLOCK], SPEC)
+            self.assertEqual(summary["theme_hedge"], SPEC)
+            self.assertEqual(doc["provenance"][cef.PROVENANCE_KEY]["status"], "agree")
 
 
 if __name__ == "__main__":
