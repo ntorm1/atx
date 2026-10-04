@@ -1,0 +1,1 @@
+{"version":"tier1-native-readers-v1","duckdb_memory_ceiling_bytes":128000000,"threads":1,"timezone":"UTC","file_backed":true,"process_guard_max_gib":1.0,"actual_initial_guard_gib":0.8,"disk_floor_gib":40,"financial_reader":"separately_pinned_original_R23_256MB","quality":"NOT_PRODUCTION_READY","complete_native_protocol":true}

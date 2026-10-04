@@ -1,0 +1,11 @@
+{
+  "name": "tier1_native_readers",
+  "schema": "atx.tier1-native-readers/v1",
+  "module": "atx_db.alpha_panel.tier1_native_readers",
+  "products": ["standardized_v11", "ratios_v11", "earnings_calendar_v2", "ea_actuals"],
+  "role": "Complete conditional native orchestration and immutable reader admission",
+  "actual_status": "FAIL_PENDING",
+  "production_ready": false,
+  "source_coverage_measured": false,
+  "independent_review_required": true
+}

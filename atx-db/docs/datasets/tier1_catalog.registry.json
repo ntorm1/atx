@@ -1,0 +1,10 @@
+{
+  "name": "tier1_catalog",
+  "schema": "atx.tier1-catalog/v1",
+  "module": "atx_db.alpha_panel.tier1_catalog",
+  "role": "Conditional integration through existing stagelake catalog and verify entrypoints",
+  "actual_status": "FAIL_PENDING",
+  "production_ready": false,
+  "source_coverage_measured": false,
+  "independent_review_required": true
+}

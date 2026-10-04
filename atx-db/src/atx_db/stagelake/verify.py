@@ -291,6 +291,9 @@ def main(argv: list[str] | None = None) -> int:
     from .coverage import coverage_report
 
     ap = argparse.ArgumentParser(prog="python -m atx_db.stagelake verify", description=__doc__.splitlines()[0])
+    ap.add_argument('--tier1-contract',type=Path,help='independently admitted complete Tier1 source/code/native reader contract')
+    ap.add_argument('--catalog',type=Path,help='validate actual Task17 catalog bytes, source snapshot and serving registry')
+    ap.add_argument('--legacy',action='store_true',help='preserved generic file verification; cannot satisfy Task17')
     ap.add_argument("--stage", action="append", default=None, help="stage name (repeatable); default: all")
     ap.add_argument("--root", type=Path, default=None)
     ap.add_argument("--no-hash", action="store_true", help="check sizes only, skip SHA-256")
@@ -298,7 +301,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--now", default=None, help="ISO timestamp for the future-clock check (default: now)")
     args = ap.parse_args(argv)
     root = args.root or default_root()
-    stages = registry.load(strict=False)
+    if args.tier1_contract:
+        from atx_db.alpha_panel import tier1_catalog as T
+        from atx_db.alpha_panel import common as C
+        if args.no_hash or args.stage:ap.error('full Tier1 verification cannot skip hashes or required stages')
+        spec=C.read_json(args.tier1_contract)
+        try:
+            if args.catalog:T.verify_catalog(root.resolve(),args.catalog.resolve(),spec)
+            else:T.verify_publications(root.resolve(),spec)
+            frozen,stages,results=T.preflight(root.resolve(),native_text=spec.get('native_text'),publications=spec.get('publications'))
+            if T.A.digest(frozen)!=spec['snapshot_sha256']:raise ValueError('independent catalog source snapshot differs')
+            T.A.check_pins(spec['code_pins'],T.code_pins())
+        except (ValueError,RuntimeError,FileNotFoundError) as exc:
+            print('FAIL Tier1: '+str(exc));return 1
+        print(render(results));return 0
+    if args.catalog:ap.error('--catalog requires full --tier1-contract')
+    stages = registry.load(strict=False,tier1=not args.legacy)
     now = dt.datetime.fromisoformat(args.now).replace(tzinfo=dt.UTC) if args.now else None
     results = verify(root, stages, args.stage, now, not args.no_hash)
     print(render(results))

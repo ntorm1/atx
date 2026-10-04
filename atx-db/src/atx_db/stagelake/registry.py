@@ -357,11 +357,15 @@ def discover(src_root: Path = SRC_ROOT, package: str = "atx_db", errors: list[st
 
 
 def load(src_root: Path = SRC_ROOT, extra: Iterable[Stage] = (), include_discovered: bool = True,
-         strict: bool = True) -> list[Stage]:
+         strict: bool = True, tier1: bool = True) -> list[Stage]:
     """Every registered stage, validated, in topological order (inputs first).
 
     ``strict=False`` (the CLIs): a discovered entry that does not validate (bad field, unknown input, clash) is
     dropped with a warning on stderr, so one lane's broken declaration cannot stop verify, catalog or plan."""
+    extra = tuple(extra)
+    if tier1 and src_root == SRC_ROOT and not extra and include_discovered:
+        from atx_db.alpha_panel.tier1_catalog import declarations
+        return declarations()
     stages = list(STAGES) + list(extra)
     if not include_discovered:
         return validate(stages)
