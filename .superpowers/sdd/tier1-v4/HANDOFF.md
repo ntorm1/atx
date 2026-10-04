@@ -1,5 +1,92 @@
 # tier1-v4 controller handoff
 
+LATEST (2026-10-04, supersedes historical CURRENT below): no actual root job
+is live. Goal remains ACTIVE and no gold feature panel is release-ready.
+The linked P9 request has a further precision revision, snapshotv3 59,756B
+SHA8f9916d59eb7f3b6f5c7b72768c3e4246c0d189dfbd42344330b57689f1d3321.
+Goal8.2 and p9-request-precision-clarification-v1.md preserve it. Equal seal
+counts do not imply equal rows; B1=A and B12=B2 validation because shared
+rehearsals. Stage I label/input hashes are not code-byte provenance. Readiness12
+and appendix3 preserve all46/23 complete records; generator completed1s/
+26,206,208B/.15. T17 review found Important I1, omitted current appendix SHA;
+failed12 preserved. New readiness13 binds unchanged appendix3 d37d1e36...d33ba6;
+its generator completed0/1s/26,628,096B/.15 and independent I1 rereview PASS/PASS
+in review-readiness-v13-findings.md. No gate/status changes. Latest approved
+metadata is readiness13/appendix3; their generated review field remains the
+historical pending-at-generation state and the separate review is authoritative.
+Financial state remains eight retained units0..7 and seven separately audited
+units0..6; audit7v2 and creator8 onward have NOTRUN. Observerv11 completed the
+original300s/31samples, but scheduling FAILED: minimum commit2.8857GiB<3,
+physical2.2555; guard301.2s/27,508,736B, finer minimum2.6104/2.0466. No restart.
+Disk briefly rose above40GiB; latest T15 gzip collection refused BEFORE child
+at39.994709GiB, so all fixture/source builds are held again. No guard waiver.
+
+A0 retained-provenance v2 inspected exact twelve code snapshots. All12 raw
+hashes match original r4 declarations, and all12 normalized LF files match
+dec03454/current. Prior four r4 discrepancies were mixed line endings; this
+does not resolve alpha common.py provenance or name a producing commit. The
+original preparation directory/JSON/DB and ri2_a input receipt are absent.
+Original OPS and document-review metadata hashes match; five present-declared
+OPS exports exist stat-only, sixth export was historically declared missing.
+Three original source paths exist; original staged TickerHistory path is absent.
+All367 pinned original review body paths are absent. V1 failed on missing OPS
+file key and is retained; v2 completed2s/66,449,408B/.15, independently PASS/PASS
+in review-p9-a0-retained-provenance-v1.md. No D0/arm/source/gate promotion.
+
+Separate recovery audit completed8s/30,564,352B/.15/original40floor: Downloads
+TickerHistory3 (3,617,973,507B) exactly matches original0ed96...abbae SHA.
+No copy/restoration/receipt substitution. Zero candidate objects for all367
+original document SHA names in four named native stores (events, earnings,
+issuer round2, universe handcheck round2); not a global backup search. Review
+review-p9-a0-recovery-candidates-v1.md PASS/PASS. Full original bodies remain
+an actual A0 execution dependency; no HTTP grant exists.
+
+Root implemented separate private_identity_differential.py and direct tests,
+frozen49770435 (six exact code/report/evidence paths). Full-row EXCEPT ALL,
+r4-only created_at exclusion, duplicate/NULL native keys, explicit schema
+failure, raw hashes before/finally, bounded file-backed128MiB/1thread/UTC and
+failure cleanup. Three physical tests PASS0.85s, guard2s/64,602,112B/.6/40.
+Independent T16 review PASS/PASS in review-p9-a0-d0-kernel-v1.md, no corrections;
+no actual D0 run. Isolated-diagnostic-plan-v1
+is only a design: S1-S4 not implemented. Shared common.py and alpha
+identity_links.py are frozen financial pins; do not edit them for A0. No new
+worktree allowed; future isolated checked source copy must preserve native
+input guards and use one code digest across A/B1/B2/B12.
+
+Agent progress this turn: T17 complete SEC extraction/history1PASS2.81s,
+Accepted100-row1PASS1.55s, full native event-ledger/body1PASS1.52s; T15 five
+iXBRL parser nodes PASS, sixth dated fitting initially failed timestamp setup,
+then corrected test-only UTC seconds passed1PASS2.07s. New gzip storage node
+NOTRUN due latest disk refusal. T16 R7.2 strict/name/proven-unlinked1PASS1.13s
+and full native calendar axis1PASS.79s; original prechild refusal preserved.
+These are focused engineering checks; full public/native/source qualification
+and all original economic/coverage/consumer gates remain open.
+
+Latest lane change: T16 now implements only NEW private_identity_capsule.py,
+test_private_identity_capsule.py and task-28-identity-capsule-report.md for
+A0's exact same-code S1-S4 controls. Task1 is preserved with its full native
+rank-source fixture pending disk/upstreamM; full scope and repair2/5 unchanged.
+No actual capsule/arm launch, original recovery, new worktree or shared legacy
+edit is authorized by this code-only assignment. T15 continues M; T17 full
+event/cover/public integration. No author fixture is live or granted.
+
+Full event-body role uses exact native SEC FetchLedgerStore originals/ledger,
+not FT annual receipt fallback. T17 owns disjoint original identity_cover
+replay via unchanged cover_page._build_year/native notes parts; financial
+admission cannot substitute for that cover source. T15 owns market/raw dated
+strict-name census and conditional full security_master/identity roles. Avoid
+shares->liquidity->full link_table->shares cycle: full link_table depends on
+original panel_core/membership and stays a separate later role. Authentication
+does not clear A0's unresolved PIT semantics. No source admission by aliases.
+
+Root index will be empty after its exact43-path evidence checkpoint; agents
+must coordinate before staging. Original cleanup already complete; no new
+source/cache deletions this turn. Existing fourteenGB observed cleanup total
+is historical free-space gain, not an assertion about present free space.
+An optional asynchronous user question asks whether a backup location exists
+for the367 identity-oracle-session8 originals. No answer yet; continue the
+authorized code work, with actual arms requiring those exact original bodies.
+
 CURRENT: linked P9 request advanced to round3. Exact new snapshot
 p9-al-data-request-v2.md is59567B SHA256
 d2182547eaafda33d33c51502c07a4622f36d38fb2ca219fbef4eea95019ab02.
