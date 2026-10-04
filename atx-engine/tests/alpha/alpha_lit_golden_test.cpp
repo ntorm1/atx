@@ -227,7 +227,9 @@ std::string bit_mismatch(const std::vector<atx::f64> &got, const std::vector<atx
 // these rows, because two documented divergences exist: the sliding lanes return NaN where the
 // batch value is pure roundoff (ts_sliding.hpp NUMERICS), and the A-09 flat-window guard is
 // batch-only (ts_ops.hpp FlatGuard), so ResearchFast ts_zscore of a flat window is 0 where
-// AuditExact is NaN (204 cells of ts_zscore(fund, 5); S2R report).
+// AuditExact is NaN (204 cells of ts_zscore(fund, 5); S2R report). P9 Ruling S2R-1: that
+// flat-window 0 is a documented property of ResearchFast through P9, not fixed now (the
+// streaming-path fix is a P10 item); this skip of the NaN pattern stands under that ruling.
 std::string tolerance_mismatch(const std::vector<atx::f64> &rf, const std::vector<atx::f64> &ae) {
   if (rf.size() != ae.size()) {
     return "size " + std::to_string(rf.size()) + " vs " + std::to_string(ae.size());
@@ -236,7 +238,7 @@ std::string tolerance_mismatch(const std::vector<atx::f64> &rf, const std::vecto
     const atx::f64 r = rf[c];
     const atx::f64 a = ae[c];
     if (std::isnan(a) || std::isnan(r)) {
-      continue; // the NaN pattern: see above
+      continue; // the NaN pattern: see above (Ruling S2R-1)
     }
     const bool ok = (std::isinf(a) || std::isinf(r))
                         ? (r == a)

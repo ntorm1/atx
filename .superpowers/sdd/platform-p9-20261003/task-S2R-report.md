@@ -8,6 +8,10 @@ Making Release produce the Debug bits from source is impossible, and every build
 The options below need a PM ruling. No pin, golden or expected value was edited. No kernel source changed. The only
 code change is a disabled diagnostic test that counts in no suite total.
 
+**Round 2 (Ruling M2c-RED-2, then S2R-1): DONE_WITH_CONCERNS.** The test is split, Debug and Release are green, and
+the S2R-1 list is in. Release alpha: 780 passed / 2 skipped / 0 failed, with the named lit-golden skip. No pin was
+edited. Sections 11-13 below; sections 1-10 are round 1 and are unchanged.
+
 ## 1. Cause (one line)
 
 Debug (`/MDd`) and Release (`/MD`) call two different C-runtime DLLs. `std::pow` with run-time operands resolves to
@@ -180,3 +184,244 @@ Receipts: `build-equity/mega-p9-s2r-{a,b,c}-receipt.json` (+ `-build.log`, `-cac
 After the commit, deleted by name: `build-equity-rel/` and `deps/equity-rel/` (pool-18; both created by this lane's
 configure), the Debug build objects under `build-equity/` (receipts, build logs and the pre-existing `audits/` and
 `v8-interim3-pitch-render-run2/` kept), and the scratch dumps / scripts in the session scratchpad (by name).
+
+## 11. Ruling M2c-RED-2
+
+Round 2, after Ruling M2c-RED-2. Commits: `5c9a5162` (the split, WIP at the owner stop), `49029727` (handoff), and
+the round-2 final commit (S2R-1 comment + this report + logs). The attribution in sections 1-6 stands as written.
+
+### 11.1 What changed
+
+Only `atx-engine/tests/alpha/alpha_lit_golden_test.cpp`. No kernel, pin, golden, expected value or source digest moved.
+`dsl_vm` stays `5bcd55c7` and `ic_result` stays `dd3c6011`; the test file is in neither list.
+
+- **New `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeVmMatchesOracle`.** It runs in every build and checks the
+  correctness property behind the pins, row by row over the 84-row battery:
+  - VM AuditExact == oracle, bit for bit. This is CRT-independent: inside one build, both call the same `pow`.
+  - ResearchFast serial == ResearchFast on a 2-worker `DetPool`, bit for bit.
+  - On the 66 rows without a ResearchFast tolerance op: ResearchFast == AuditExact, bit for bit.
+    - The tolerance ops are a frozen list, `kResearchFastToleranceOps`: 15 opcodes, the reroutes at `vm.hpp:1838-1935`.
+  - On the 18 tolerance rows (`kResearchFastToleranceRows`, asserted): finite cells must be within
+    `1e-9 * (1 + |ae|)`, and an infinity must be the same infinity in both paths.
+    - The NaN pattern is not compared on these rows (Ruling S2R-1). The comment at `tolerance_mismatch` names the
+      ruling. This round's only code change is that comment.
+  - Every row has a finite cell.
+  - Teeth: a 1-ULP perturbation of a real output is reported as a mismatch.
+- **`EveryPreW2OpcodeDigestIsPinned`** still prints the three digests in every build. It compares them to the pins only
+  under `#if defined(_MSC_VER) && defined(_DEBUG) && defined(_DLL)`, i.e. `/MDd` = `ucrtbased.dll`, the CRT the pins
+  were captured with.
+  - Why these macros: `_DEBUG` (a debug CRT) and `_DLL` (the DLL CRT) are set by the CRT switch, whatever `NDEBUG`
+    says. `_MSC_VER` follows the precedent at `alpha_vm_test.cpp:56`.
+  - In every other build the test is `GTEST_SKIP`ped with the message in 11.4.
+- **Pins unchanged:** `0x971c3da60ca89aa3` / `0xe9e7128fd5359900` / `0x971c3da60ca89aa3`.
+- **`DISABLED_PerRowDigestDump`** is kept as the diagnostic.
+
+### 11.2 CRT files on this host
+
+Measured 2026-10-04 and re-measured at the Release run; unchanged.
+
+| file | FileVersion | bytes | SHA-256 |
+|---|---|---|---|
+| `C:\Windows\System32\ucrtbase.dll` (Release, OS-serviced) | 10.0.26100.7623 | 1,373,280 | `2c08e77f86b0953cffa505bdbe64e87ecb7c088db65d5acb9a2eee65a32565ef` |
+| `C:\Windows\System32\ucrtbased.dll` (Debug, SDK copy) | 10.0.22000.832 | 2,229,728 | `19e79e91a6aadda65191ea6ddda4cc106e26c78338b05e73092e20709399f48d` |
+
+- The Release exe imports `pow` from the api-set `api-ms-win-crt-math-l1-1-0.dll`, which resolves to `ucrtbase.dll`.
+- `downlevel\api-ms-win-crt-math-l1-1-0.dll` is 10.0.26100.1, SHA-256 `c0502b62...f78f`.
+
+**CRT-dependent opcodes:**
+- Now: the `pow` family.
+  - Pow: `^` and `power` with an exponent other than a literal 2 (`vm.hpp:259`, `oracle.hpp:539`,
+    `streaming_engine.hpp:717`, the parser fold `parser.hpp:309`).
+  - Spow: `vm.hpp:153`, `oracle.hpp:172`.
+- Latent:
+  - Tanh: `vm.hpp:244`, `oracle.hpp:513`, `streaming_engine.hpp:744`. It differs on 0.29 % of arguments with FMA3 on.
+  - The `ts_decay_exp` weights: `ts_ops.hpp:1183`, `ts_sliding.hpp:351,355`, `oracle.cpp:845`.
+- Unaffected: exponents 0 and 1, which are exact in both DLLs.
+
+### 11.3 Results
+
+| build | tag | run | result | log (`s2r-logs/`) |
+|---|---|---|---|---|
+| Debug (`equity-dev`) | p9-s2r-e (alpha), p9-s2r-d (ic) | `AlphaLitGolden_ExistingOps.*` | 3 OK, 1 disabled; prints the pins | `debug-e-litgolden.log` |
+| Debug | p9-s2r-e | `atx-engine-alpha-tests` whole | **783 passed / 0 skipped / 0 failed**, 1 disabled | `debug-e-alpha-whole.log` |
+| Debug | p9-s2r-d | `atx-impl-strategy-ic-tests`, S2 filter | **28 / 28** | `debug-d-ic-s2filter.log` |
+| Debug | p9-s2r-d | `atx-impl-strategy-ic-tests` whole | **204 / 204** | `debug-d-ic-whole.log` |
+| Release (`equity-rel`) | p9-s2r-g | `AlphaLitGolden_ExistingOps.*` | **2 OK + 1 SKIPPED** (the pinned test, with the message), 1 disabled; prints `0xeeae40c4a6d7d93b` / `0x24c97b5bfeab6518` / `0xeeae40c4a6d7d93b` (= root's M2c prints) | `release-g-litgolden.log` |
+| Release | p9-s2r-g | `atx-engine-alpha-tests` whole | **780 passed / 2 skipped / 0 failed**, 1 disabled | `release-g-alpha-whole.log` |
+| Release | p9-s2r-g | `atx-impl-strategy-ic-tests`, S2 filter | **28 / 28** | `release-g-ic-s2filter.log` |
+| Release | p9-s2r-g | `atx-impl-strategy-ic-tests` whole | **204 / 204** | `release-g-ic-whole.log` |
+
+Every count matches the expectation, so no difference needs explaining.
+- **Debug alpha:** 783 = round 1's 782 + the new test.
+- **Release alpha:** 782 tests ran = 780 passed + 2 skipped. The 2 skips are:
+  - `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` (M2c-RED-2);
+  - `AlphaVm_ZeroAlloc.WarmDispatchLoop_BoundedByOutputsAndSizeIndependent`, a Release-only skip that already existed
+    (also at root and in round 1's p9-s2r-c).
+- **Against round 1's Release** (779 / 1 skipped / 1 failed): +1 for the new test, which passes, and the failure is now
+  the named skip.
+- **Debug was not re-run this round.** The only change since p9-s2r-e is a comment: 4 inserted and 2 deleted lines, all
+  `//`.
+
+Build evidence:
+- Configure `equity-rel`: exit 0 (63 s); log `release-f-configure.log`.
+- **p9-s2r-f**: exit 1 after 582 s, from a build trap and not a code red. Receipt `build-equity/mega-p9-s2r-f-*` kept.
+  - The first launch was refused by the memory gate (free 1509 / commit 1481 MiB). The refusal threw before any receipt
+    was written, so the tag was not used up. A bounded wait loop then launched the build.
+  - The failure: `alpha_lit_golden_test.cpp` (the only TU that really compiled, because its comment changed) hit
+    `file '...\deps\equity-rel\eigen3-src\Eigen\Dense' has been modified since the precompiled header
+    'atx-engine-test-pch.dir\cmake_pch.cxx.pch' was built: mtime changed (was 1791125831, now 1791131812)`.
+  - Cause: ccache restored round 1's test PCH, but this round's configure had re-fetched `deps/equity-rel` with new
+    file times.
+  - Fix, per the ledger precedent (root p9-c2-i, `progress.md` BUILD TRAP note):
+    - deleted the two outputs of that PCH step by name (`atx-engine-test-pch.dir\cmake_pch.cxx.{pch,obj}`);
+    - rebuilt under the next tag, with `CCACHE_RECACHE=1` for that one invocation.
+- **p9-s2r-g**: exit 0, 257 s, 79 TUs, 3 links, 0 warnings. Provenance `49029727-dirty`, where the dirt is the S2R-1
+  comment committed in this round.
+  - Before starting, the gate loop waited about 7 min while another build ran on the host. The gate was never
+    bypassed.
+  - Exe SHA-256: alpha `8144b9e8ac55abfb...`, ic `67acb6841f60605f...`.
+
+### 11.4 What root must re-prove at merge
+
+1. **Targets:** `atx-engine-alpha-tests` and `atx-impl-strategy-ic-tests`, in Debug (`equity-dev`) and Release
+   (`equity-rel`).
+2. **Expected counts** on this lane's tree (root `f6444417` + S2R). Root's later merges may add tests; the deltas are
+   what this lane fixes.
+
+   | build | alpha whole | lit-golden filter | ic S2 filter | ic whole |
+   |---|---|---|---|---|
+   | Debug | 783 passed / 0 skipped / 0 failed (1 disabled) | 3 OK; prints the pins | 28 / 28 | 204 / 204 |
+   | Release | 780 passed / 2 skipped / 0 failed (1 disabled) | 2 OK + 1 SKIPPED | 28 / 28 | 204 / 204 |
+
+   - The Release skips must be exactly `EveryPreW2OpcodeDigestIsPinned` and
+     `AlphaVm_ZeroAlloc.WarmDispatchLoop_BoundedByOutputsAndSizeIndependent`.
+   - `EveryPreW2OpcodeVmMatchesOracle` must PASS in both builds.
+3. **The exact skip message**, verbatim from `release-g-litgolden.log`:
+
+   > Ruling M2c-RED-2: the pins are a Debug-CRT golden on this host (ucrtbased.dll, /MDd). This build links another
+   > CRT (Release: ucrtbase.dll), whose std::pow differs from ucrtbased.dll's by 1 ULP on ~0.2% of arguments (rows
+   > power(close, 0.5), signedpower(returns, 2), close ^ 3). Correctness runs in every build:
+   > EveryPreW2OpcodeVmMatchesOracle.
+
+4. **Release prints on this host:** `0xeeae40c4a6d7d93b` / `0x24c97b5bfeab6518` / `0xeeae40c4a6d7d93b`, with
+   `ucrtbase.dll` 10.0.26100.7623 (`2c08e77f...`).
+   - A different Release print is a skip, not a failure, but it means the UCRT or the battery changed. Apply
+     M2c-RED-2 (d).
+5. **Gate wording** (M2c-RED-2 (c)): 0 failed, with one named Release skip.
+6. **Build trap:** if a pool's `deps/<preset>` was re-fetched after ccache stored its PCHs, a changed PCH-consumer TU
+   fails with "has been modified since the precompiled header". Use the fix in 11.3.
+
+### 11.5 P10 notes
+
+- **Streaming-path `ts_zscore` fix (Ruling S2R-1).** Give the ResearchFast Welford state the A-09 guard.
+  - Where: `TsvWelfordState::emit`, `ts_ops.hpp:884-910`. The VM sweep (`vm.hpp:1931`) and the streaming engine
+    (`streaming_engine.hpp:191,1058`) share it.
+  - What: on a window that is flat by the `tsv_is_flat` rule (`sqrt(s/n) <= 1e-10*|m|`), Zscore -> NaN and
+    Var / Std -> exactly 0.
+  - Also give the tiny-window direct `rsquare` (`ts_sliding.hpp:599`, d <= 4, test `ss_tot == 0.0`) the relative
+    guard.
+  - Cost:
+    - the ResearchFast payloads of every candidate whose `ts_zscore` / `stddev` / `ts_std` / `ts_var` sees a flat
+      window move;
+    - the P9-B0 ResearchFast references must be re-based;
+    - a `dsl_vm` source-digest re-pin and a semantics bump;
+    - S2's review reopens.
+  - After the fix, the test can compare the NaN pattern one way on the tolerance rows: AuditExact NaN => ResearchFast
+    NaN. It still cannot compare both ways, because of the documented sliding divergence (NaN where the batch value is
+    roundoff, `ts_sliding.hpp` NUMERICS).
+- **In-repo deterministic `pow` / `tanh`.** The owner's call (M2c-RED-2 (a), OD5-2); options as in section 5.
+  - **(A) In-repo `pow` / `tanh`.**
+    - The three lit-golden pins move to one set for both builds. Debug rows 5 / 6 / 83 move 1 / 3 / 1 cells; Release
+      rows 5 / 6 / 83 move 2 / 1 / 0 cells.
+    - No other test pins evaluated values of these ops (canary, mine and formulaic sha pins: none use them).
+    - `dsl_vm` source-digest re-pin, and `dsl_vm_semantics_version` 1 -> 2. That version keys the cache dir, so every
+      candidate cache entry misses once.
+    - P9-B0 re-base: `res_mom_12_1` (`signedpower(.., 0.5)`) can move.
+    - A correctly rounded `pow` means vendoring third-party source (e.g. CORE-MATH `cr_pow`, MIT, about 1.5k lines), a
+      new third-party source and the owner's call. The alternative is an in-house implementation that is deterministic
+      but not correctly rounded: IEEE basic ops only, contraction-free.
+  - **(B) One CRT for both builds.**
+    - Debug pins move to the Release prints above. Release bits do not move. The Debug cache flavour needs a bump. No
+      third-party code.
+    - The bits stay OS-serviced: a Windows Update of `ucrtbase.dll` can move them (M2c-RED-2 (d) guard).
+- **Unverified deletion (disclosed):** in round 1 I deleted the session scratchpad's `.mypy_cache` by name.
+  - It was probably created by the mypy hook on my scratch scripts, but it was not verified as mine.
+  - It is a regenerable cache only.
+
+## 12. Ruling S2R-1: book candidates and P9 strings that feed a flat-capable input to a flat-window-split op
+
+This was done by source reading only: specs and kernels, no data, no statistic. Script `s2r-logs/tools/s2r1_scan.py`,
+output `s2r-logs/s2r1-spec-scan.txt`.
+
+### 12.1 Which ops split on a flat window (AuditExact batch with the A-09 guard vs the ResearchFast reroute)
+
+The only ResearchFast mode branches are `vm.hpp:1838-1935`. A third, the `delta` SIMD subtraction at `vm.hpp:2033`,
+is elementwise and therefore bit-exact. Every other op, every W2 op included, runs the same kernel in both modes.
+
+| op (DSL names) | AuditExact on a flat window | ResearchFast path | ResearchFast on a flat window |
+|---|---|---|---|
+| `ts_zscore` | NaN (`ts_ops.hpp:1144`) | Welford `emit`, no guard (`ts_ops.hpp:904-905`) | `(x - m) / sqrt(clamped s / (n-1))`, which by source can be four things (below). **The ruled split.** |
+| `stddev`, `ts_std`, `ts_var` | exactly 0 (`ts_ops.hpp:230-231`) | same Welford `emit` (`ts_ops.hpp:897-903`) | the clamped residual: 0 or a tiny positive value, inside the 1e-9 contract (below) |
+| `rsquare` | NaN | TimeReg lane | d <= 4: the direct fit tests only `ss_tot == 0.0` (`ts_sliding.hpp:599`), so a finite roundoff ratio is possible; d > 4: `kCancelGuard` gives NaN (`ts_sliding.hpp:677`, matches) |
+| `slope`, `resid` | exactly 0 | TimeReg lane (`ts_sliding.hpp:669-674`) | about 0 (roundoff); value-only |
+| `correlation` / `ts_corr`, `ts_regression` | NaN | pair lane with `relative_flat = true` (`ts_sliding.hpp:245,307-312`) | NaN: **no split** |
+| `covariance`, `ts_av_diff`, `decay_linear`, `wma`, `ts_sum`, `ts_mean`, `ts_decay_exp` | no flat guard in the batch kernel | rerouted | no flat-window split (tolerance only) |
+| skew / kurt / `ts_skew` / `ts_kurt`, `ts_scale`, the other ts ops, every W2 op (`ts_std_mp`, `ts_zscore_mp`, `ts_beta_on`, `ts_topk_mean`, ...) | - | not rerouted | same kernel in both modes: **no split** |
+
+Detail for the first two rows:
+- **`ts_zscore`:** ResearchFast gives one of:
+  - 0, when the compensated mean rounds back to `x` exactly. That is the battery's 204 cells.
+  - ±O(1) noise (the pre-A-09 symptom), when it does not.
+  - ±inf, when `s` clamps to 0 with `x != m`.
+  - NaN, when both are 0.
+  - So the ruling's "scores 0" is the case observed on the battery, not the only one the source allows.
+- **`stddev` / `ts_std` / `ts_var`:** the residual also appears on an all-zero window reached by sliding. A Welford
+  state is reset only when its last finite cell leaves.
+  - The NaN pattern of the op itself is the same in both modes.
+  - A downstream `x / stddev(..)` or `0 * log(stddev(..))` turns an AuditExact NaN into a finite ResearchFast value.
+
+Both production consumers default to ResearchFast:
+- the IC runner, unless `--audit-exact` (`strategy_ic_runner.cpp:296`);
+- the NAV / targets runner (`strategy_runner.cpp:804`).
+
+### 12.2 Where I looked
+
+- **Book:** spec `scripts/specs/v8/lib-v8ysb-gm.json`. Its `inputs.library` is
+  `atx-impl/strategies/fund_industry_ic_v8ysb.json`: 67 candidates with inline `dsl`.
+  - Cross-checks: same ids as `libraries/v8ysb.json`; every `dsl` equals `alphas/registry.json`; the spec's
+    `baseline_library` (`fund_industry_ic_v8x3b.json`) is 58 of the 67 with equal `dsl`.
+- **P9:** every JSON under `scripts/specs/p9/`: `candidates/russell_recon.json`, `blocked/hf_crowd.json`,
+  `blocked/lazy_prices.json`.
+- **Match:** a word-bounded call of `ts_zscore`, `stddev`, `ts_std`, `ts_var`, `slope`, `rsquare` or `resid` in any
+  string. The parser has no macro that lowers to these opcodes; only the registry names in `registry.cpp:76-101` do.
+
+### 12.3 The list
+
+- **`ts_zscore` (the ruled split): 0 book candidates, 0 P9 strings.**
+- **`ts_var`, `slope`, `rsquare`, `resid`: 0 / 0.** `qmj_safety` matches "slope" only in its `notes.deviation` prose.
+- **P9 strings: 0.** The only P9 DSL strings are `rank(russell_recon)` and `rank(lazy_prices)`, which use no
+  time-series op. `hf_crowd` has no DSL yet.
+- **`stddev` (the TsStd form of the same Welford cause): 5 book candidates.**
+
+| id | fragment | input | can the input be flat over the window? | effect if flat |
+|---|---|---|---|---|
+| `smax` | `ts_max(ret, 21) / stddev(ret, 252) + 0 * log(stddev(ret, 252))`, with `ret = close / delay(close, 1) - 1` | daily return | only as an all-zero window: the role close carried unchanged (not NaN) for 253 sessions | **can split like S2R-1.** AuditExact: stddev 0, so `0 * log(0)` = NaN; that idiom is the author's zero-std guard, and the name drops. ResearchFast: a tiny positive residual gives `0 / tiny + 0 * log(tiny)` = 0, so the name scores 0 (mid-book). If the residual clamps to 0, both give NaN |
+| `smax5` | `ts_topk_mean(ret, 21, 5) / stddev(ret, 21) + 0 * log(stddev(ret, 21))` | daily return | all-zero window: 22 sessions of unchanged close (about a one-month halt with a carried close) | **can split like S2R-1**, as `smax` |
+| `iv_rv_spread` | `ts_backfill(iv_atm_21d + ..., 5) - stddev(ret, 21) * 15.8745` | daily return | 22 sessions of unchanged close | value only: AuditExact subtracts 0, ResearchFast at most about 1e-8. The rank is unchanged unless two names tie to that precision |
+| `qmj_safety` | `rank(decay_linear(-1 * stddev(ni_q / be_lag1q + 0 * log(be_lag1q), 252), 21))` | as-of quarterly ROE, forward-filled between filings (A-09's own case) | yes, if no new quarterly value enters for 252 sessions (fundamentals stale for a year while the name stays in the universe) | value only: AuditExact -0 exactly, ResearchFast -tiny. Only the order among the tied flat names can change |
+| `res_mom_12_1` | `ts_sum(ret, 231) / stddev(ret, 231)`, `stddev(mkt_ret, 231)` | daily return; market return | `ret`: all-zero for 232 sessions only. `mkt_ret`: no | **masked**: the same expression's `correlation(ret, mkt_ret, 231)` has a flat side, which is NaN in both modes (pair-lane guard). The NaN propagates through the `-`, so both modes give NaN |
+
+Whether any universe name actually has 22 or 253 sessions of carried, unchanged, non-NaN close, or a year of stale
+ROE, is a data question. It is not answered here; the lane is blind.
+
+For the prereg (S2R-1): no P9 string and no book candidate uses `ts_zscore`. The same-cause `stddev` form reaches the
+book through `smax` and `smax5`. By PATH-1, each cell's eval mode equals its reference's, so a flat-window name
+behaves the same way on both sides of a pair.
+
+## 13. Disk (round 2)
+
+After the round-2 commit, by name:
+- `build-equity-rel/` and `deps/equity-rel/`, both created by this round's configure; then `deps/` if empty.
+- My scratch scripts in the session scratchpad: `s2r-f-wait-build.ps1`, `s2r-g-wait-build.ps1`, `s2r1_scan.py`.
+
+Kept: the receipts and logs `build-equity/mega-p9-s2r-{f,g}-*` and `s2r-logs/`.
