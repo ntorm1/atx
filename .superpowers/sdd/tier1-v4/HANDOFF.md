@@ -19,7 +19,8 @@ p9-a0-manifest-preflight-v2.json. SevenJSON296141B+17codefiles; exactP9bridge
 manifestpinmatches. Export/link-tabledeclareHEADc0dc376f; notprovenwholebuild.
 Fourr4codefiles andcommon.py mismatchdec03454 evenafterLF/CRLFcomparison;
 nohashguardwaiver, D0/unifiedproducingcommit/unmeasuredarmsremainopen.
-See p9-a0-manifest-preflight-report-v1.md; independentT15metadatareview pending.
+See p9-a0-manifest-preflight-report-v1.md; independentT15metadatareview PASS/PASS
+in review-p9-a0-and-text-metadata-v1.md, namedmetadata/provenanceleadsONLY.
 
 New2textlog audit completed1s/29757440B:181321B additionalexecutionlogs,
 111newguardrecords; withprior517 records,10namedterminalinvocations recovered
@@ -35,6 +36,11 @@ receipt20261004T190342-17248,35.1742935GiB<original40floor. Calendar node was
 NOTLAUNCHED. BothnewnodesNOTRUN; no retries/waivers. LaterC37543346176B.
 Diskfree fell again after the completed cleanup; no new deletion identified.
 All authors continue code/review; furtherfixtures/builds await originalguards.
+Task1publicbuild/source/reader/resolver/CAS wiring nowauthoredbutuntested.
+Preserve original genuinelyunlinked economics through an explicitly proven
+noqualifyingstrict/name-link state fromfullnative datedidentitycensus; never
+infer it fromNULL joins, absentfiles or callerbools. Unknown/ambiguous stays
+quarantined. T15/T16coordinateprimitive; no backfillcompany/operating influence.
 
 ROOT HAS NO ACTUAL JOB LIVE. No financialrestart: originalobserverv10failed.
 Financialretained0..7/eight andseparatelyaudited0..6/seven unchanged. Audit7v2,
