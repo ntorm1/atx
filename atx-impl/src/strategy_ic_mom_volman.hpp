@@ -47,8 +47,9 @@ struct MomVolmanBlock {
   atx::f64 scale{};       // step 5: target / sigma
 };
 // Steps 2-5 on one recorded sleeve (decision order). Err (InvalidArgument, "mom-volman-v1: ...")
-// for a sleeve of at most 127 or more than mom_volman_max_decisions values, a non-finite value, or
-// a block whose sigma is not finite and > 0.
+// for a sleeve of at most 127 or more than mom_volman_max_decisions values, a non-finite value, a
+// block whose sigma is not finite and > 0, or one whose target or scale is not finite (no cap is
+// registered: a tiny positive sigma gives a large finite scale, accepted).
 [[nodiscard]] atx::core::Result<std::vector<MomVolmanBlock>> mom_volman_blocks(
     std::span<const atx::f64> sleeve);
 } // namespace atx::impl::strategy

@@ -414,7 +414,7 @@ TEST(ThemeHedgeRule, StageWiringAndRefusals) {
   EXPECT_FALSE(st::ic_composition_stage_bytes(f.days, f.width, 4, 2, with_sleeves));
   EXPECT_FALSE(st::ic_composition_stage_bytes(f.days, f.width, 4, 2, with_resid));
   EXPECT_FALSE(st::ic_composition_stage_bytes(f.days, f.width, 4, 2, alone));
-  const auto hedge_bytes = st::theme_hedge_working_bytes(f.days, f.width);
+  const auto hedge_bytes = st::theme_hedge_working_bytes(f.days, f.width, 2);
   const auto staged = st::ic_composition_stage_bytes(f.days, f.width, 4, 2, scheduled);
   ASSERT_TRUE(hedge_bytes);
   ASSERT_TRUE(staged);
@@ -422,7 +422,141 @@ TEST(ThemeHedgeRule, StageWiringAndRefusals) {
   const auto scratch =
       cb::char_cov_hedge_scratch_bytes(f.days, f.width, cb::CharCovHedgeConfig{252, 2, 21, 126});
   ASSERT_TRUE(scratch);
-  EXPECT_EQ(*hedge_bytes, f.days * f.width * (2U * sizeof(f64) + 1U) + *scratch);
+  // Per cell: returns, the hedged plane, the presence copy; then the kernel's scratch; then the
+  // printed trace (ruling ALCOMB-5 S-3): the ratio in force per date and, for each of the 3 blocks
+  // of 300 dates (253, 274, 295), its start and one ratio per theme.
+  ASSERT_EQ(st::theme_hedge_block_count(f.days), 3U);
+  EXPECT_EQ(*hedge_bytes, f.days * f.width * (2U * sizeof(f64) + 1U) + *scratch +
+                              f.days * sizeof(f64) + 3U * (sizeof(usize) + 2U * sizeof(f64)));
+  EXPECT_FALSE(st::theme_hedge_working_bytes(0, f.width, 2));
+  EXPECT_FALSE(st::theme_hedge_working_bytes(f.days, f.width,
+                                             std::numeric_limits<usize>::max() / 4U));
+}
+
+// Ruling ALCOMB-5 S-3: add_theme_hedged also returns the hedge ratio it applied per theme and block
+// (the kernel's ratio in force at each block start 253 + 21 b, bit for bit) without changing the
+// blend; one trace output without the other is refused before any write. The block count is 0 up
+// to 253 dates and one more every 21 dates after.
+TEST(ThemeHedgeRule, TheTraceIsTheKernelRatioAtEachBlockStart) {
+  EXPECT_EQ(st::theme_hedge_block_count(0), 0U);
+  EXPECT_EQ(st::theme_hedge_block_count(253), 0U);
+  EXPECT_EQ(st::theme_hedge_block_count(254), 1U);
+  EXPECT_EQ(st::theme_hedge_block_count(274), 1U);
+  EXPECT_EQ(st::theme_hedge_block_count(275), 2U);
+  constexpr usize days = 320, width = 8;
+  Lcg g{3U};
+  std::vector<std::vector<f64>> planes(2, std::vector<f64>(days * width));
+  std::vector<f64> returns(days * width, kNaN);
+  std::vector<f64> loading(width);
+  for (auto& b : loading) b = 1.0 + .7 * g.next();
+  for (usize d = 0; d < days; ++d) {
+    const f64 f = .01 * g.next();
+    for (usize i = 0; i < width; ++i) {
+      const usize at = d * width + i;
+      planes[0][at] = g.next() > -.85 ? g.next() + .5 * loading[i] : kNaN;
+      planes[1][at] = g.next() > -.85 ? g.next() - .3 * loading[i] : kNaN;
+      if (d > 0 && g.next() > -.9) returns[at] = loading[i] * f + .004 * g.next();
+    }
+  }
+  const std::vector<f64> mass{.4, .6};
+  const std::vector<st::IcThemeBlock> schedule{{280, {.2, .8}}};
+  std::vector<f64> plain(days * width, 0.0), traced(days * width, 0.0);
+  ASSERT_TRUE(st::add_theme_hedged(planes, mass, schedule, returns, width, plain));
+  std::vector<usize> block{99U};
+  std::vector<std::vector<f64>> ratio{{1.0}};
+  ASSERT_TRUE(st::add_theme_hedged(planes, mass, schedule, returns, width, traced, &block, &ratio));
+  EXPECT_TRUE(same_bits(traced, plain));
+  ASSERT_EQ(block, (std::vector<usize>{253U, 274U, 295U, 316U}));
+  ASSERT_EQ(ratio.size(), 2U);
+  const cb::CharCovHedgeConfig registered{252, 2, 21, 126};
+  std::vector<f64> hedged(days * width), in_force(days);
+  cb::CharCovHedgeScratch scratch;
+  bool active = false;
+  for (usize t = 0; t < 2; ++t) {
+    ASSERT_TRUE(cb::char_cov_hedge(planes[t], returns, width, registered, hedged, scratch,
+                                   {{}, {}, in_force, {}}));
+    ASSERT_EQ(ratio[t].size(), block.size());
+    for (usize b = 0; b < block.size(); ++b) {
+      EXPECT_EQ(bits(ratio[t][b]), bits(in_force[block[b]])) << t << ' ' << b;
+      // Held from the block start to the next one.
+      const usize end = b + 1U < block.size() ? block[b + 1U] : days;
+      for (usize d = block[b]; d < end; ++d) EXPECT_EQ(bits(in_force[d]), bits(ratio[t][b]));
+      active = active || ratio[t][b] != 0.0;
+    }
+  }
+  EXPECT_TRUE(active);
+  // One output without the other: refused, nothing written.
+  std::vector<f64> untouched(days * width, 7.0);
+  std::vector<usize> lone{5U};
+  EXPECT_FALSE(st::add_theme_hedged(planes, mass, schedule, returns, width, untouched, &lone,
+                                    nullptr));
+  for (const f64 x : untouched) EXPECT_EQ(x, 7.0);
+  EXPECT_EQ(lone, std::vector<usize>{5U});
+  // A role too short for a block: no block, one empty row per theme.
+  constexpr usize short_days = 200;
+  std::vector<std::vector<f64>> short_planes(2, std::vector<f64>(short_days * width, .1));
+  std::vector<f64> short_returns(short_days * width, .001), short_out(short_days * width, 0.0);
+  ASSERT_TRUE(st::add_theme_hedged(short_planes, mass, {}, short_returns, width, short_out, &block,
+                                   &ratio));
+  EXPECT_TRUE(block.empty());
+  ASSERT_EQ(ratio.size(), 2U);
+  EXPECT_TRUE(ratio[0].empty() && ratio[1].empty());
+}
+
+// Ruling ALCOMB-5 S-3 on the runner's path: the parse names the hedged themes by composition index,
+// the composition keeps the ratios it applied, and the role summary prints them per block with the
+// block's date index and session; nothing without the block (flag absent).
+TEST(ThemeHedgeRule, SummaryTracePrintsTheHedgeRatiosPerBlock) {
+  const Fixture f(300, 8);
+  const auto pinned = f.parse(Fixture::document(hedge_block));
+  ASSERT_TRUE(pinned) << pinned.error().to_string();
+  EXPECT_EQ(pinned->hedge_themes, (std::vector<std::string>{"value", "price_momentum"}));
+  const auto stages = icd::composition_stages(*pinned, f.sessions);
+  ASSERT_TRUE(stages);
+  auto c = st::IcComposition::create_from_stages(f.cfg, f.candidates, f.member, *stages);
+  ASSERT_TRUE(c) << c.error().to_string();
+  ASSERT_TRUE(icd::attach_theme_hedge(*pinned, f.role(), *c));
+  const auto combined = f.finish(*c);
+  ASSERT_TRUE(combined);
+  ASSERT_EQ(combined->hedge_block, (std::vector<usize>{253U, 274U, 295U}));
+  ASSERT_EQ(combined->hedge_ratio.size(), 2U);
+  Json result{{"role", "train"}};
+  ASSERT_TRUE(icd::add_theme_hedge_trace(*pinned, f.sessions, *combined, result));
+  const auto reread = Json::parse(result.dump()); // as summary.json carries it
+  const auto& trace = reread.at("composition_hedge_trace");
+  EXPECT_EQ(trace.at("rule"), "theme-cov-hedge-v1");
+  EXPECT_EQ(trace.at("themes"), Json::array({"value", "price_momentum"}));
+  ASSERT_EQ(trace.at("blocks").size(), 3U);
+  bool active = false;
+  for (usize b = 0; b < 3U; ++b) {
+    const auto& row = trace.at("blocks").at(b);
+    EXPECT_EQ(row.at("decision_index").get<usize>(), combined->hedge_block[b]);
+    EXPECT_EQ(row.at("session_ns").get<i64>(), f.sessions[combined->hedge_block[b]]);
+    ASSERT_EQ(row.at("h").size(), 2U);
+    for (usize t = 0; t < 2U; ++t) {
+      EXPECT_EQ(bits(row.at("h").at(t).get<f64>()), bits(combined->hedge_ratio[t][b]));
+      active = active || combined->hedge_ratio[t][b] != 0.0;
+    }
+  }
+  EXPECT_TRUE(active); // the blend moved from 274 on (StageWiringAndRefusals)
+  // A composition whose shape does not match the pinned themes is refused (Internal).
+  auto bent = *combined;
+  bent.hedge_ratio.pop_back();
+  Json untouched{{"role", "train"}};
+  const auto refused = icd::add_theme_hedge_trace(*pinned, f.sessions, bent, untouched);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), core::ErrorCode::Internal);
+  // Flag absent: no hedge themes, nothing printed (the composition is the plain one).
+  const auto absent = f.parse(Fixture::document());
+  ASSERT_TRUE(absent);
+  EXPECT_TRUE(absent->hedge_themes.empty());
+  const auto plain = f.plain();
+  ASSERT_TRUE(plain);
+  EXPECT_TRUE(plain->hedge_block.empty() && plain->hedge_ratio.empty());
+  Json kept{{"role", "train"}};
+  ASSERT_TRUE(icd::add_theme_hedge_trace(*absent, f.sessions, *plain, kept));
+  ASSERT_TRUE(icd::add_mom_volman_trace(*absent, kept));
+  EXPECT_EQ(kept, (Json{{"role", "train"}}));
 }
 
 // The runner's returns are price-risk-v1's guarded session returns (session_interval_returns, row

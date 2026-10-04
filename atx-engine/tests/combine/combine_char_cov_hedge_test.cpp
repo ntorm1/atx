@@ -89,8 +89,9 @@ void random_panel(usize names, usize dates, u64 seed, std::vector<f64>& score,
 }
 
 // Two names: R = (+.5, -.5) every date, returns a_s and -a_s, so the sleeve is a_{d+2} exactly and
-// the loadings are +1 and -1 exactly. Two names always lie in the span of [1, R]: beta_perp is 0,
-// there is no hedge leg, the hedge ratio stays 0 and the output is the rank itself, bit for bit.
+// the loadings are +1 and -1 exactly. Two names with distinct ranks lie in the span of [1, R]
+// (two tied names would not: R is then constant): beta_perp is 0, there is no hedge leg, the hedge
+// ratio stays 0 and the output is the rank itself, bit for bit.
 TEST(CharCovHedge, ClosedForm2Names) {
   constexpr usize names = 2, dates = 24;
   std::vector<f64> score(names * dates), returns(names * dates, kNaN);

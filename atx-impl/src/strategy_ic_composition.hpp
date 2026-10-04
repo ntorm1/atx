@@ -43,6 +43,11 @@ struct IcCompositionResult {
   // NaN, as `signal` is built) and per date the fast themes' share of the theme mass in force
   // over the themes with a present member at that date (0 when none has one; Ruling PM8-16 #9).
   std::vector<atx::f64> sleeve_fast, sleeve_slow, sleeve_fast_share;
+  // theme-cov-hedge-v1 (P9 lane AL-COMB; empty unless set_theme_hedge ran): the date index of each
+  // hedge block start and, per theme index, the hedge ratio h in force from it to the next block
+  // start (add_theme_hedged; the IC runner prints them, ruling ALCOMB-5 S-3).
+  std::vector<atx::usize> hedge_block;
+  std::vector<std::vector<atx::f64>> hedge_ratio;
 };
 // Conservative owned allocation envelope, including result + scratch and bounded
 // candidate strings. Excludes caller Panel, VM, labels and incoming signal.

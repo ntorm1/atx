@@ -57,8 +57,11 @@ Cross-lane, inside P17's three:
      - two includes.
    - `atx-impl/src/strategy_ic_rules.hpp`: two declarations.
    - The K-P9-6 pins that follow the rows: `atx-impl/tests/fixtures/composition_rules_list.json` (two rows added and
-     the `incompatible` lists) and `atx-impl/tests/strategy_ic_rules_test.cpp` `TableCoversEveryRule` (lists extended;
-     no existing expected value changed).
+     the `incompatible` lists) and `atx-impl/tests/strategy_ic_rules_test.cpp` `TableCoversEveryRule` (lists
+     extended). Expected values re-pinned by the new rows (corrected in the combined round, review S-4): in
+     `TableCoversEveryRule`, theme-resid-v1's `incompatible` size goes from 2U to 4U; in the fixture, the
+     `incompatible` lists of the three v8 rows theme-resid-v1, theme-tsmom-v1 and two-speed-v1 gain the new
+     rows' ids. Each follows the new symmetric pairs (P17 item 1); no other existing expected value changed.
 2. The plugin entry:
    - `atx-impl/tools/fit_composition_weights.py`: two imports, a `PARENT_CHECKED_MODIFIERS` tail, two attach blocks.
    - `atx-impl/tools/test_fit_composition_rule_plugins.py`: the `MODIFIER_MODULES` pin, the `written` dict and the
@@ -341,3 +344,193 @@ Re-apply on D2's form:
 2. In a reused pool, `research-build.ps1` needs `atx-build.ps1 configure -Preset equity-dev` first (57 s). A cold
    `atx-engine-combine-tests` is then 556 s / 234 TUs, and a cold `atx-impl-strategy-ic-tests` 577 s / 105 TUs, at 4
    jobs. Incremental re-links take about 20 s.
+
+## Combined round (ALCOMB-5)
+
+| | |
+|---|---|
+| Outcome | BLOCKED at step (c): no build. Steps (a), (b) and (d) are done; the C++ of (b) is written and unbuilt |
+| Merge commit | `aca3570decb43024b88bd605666378bfdff724b3` (`aca3570d`), parents `9692a73e` (the reviewed lane) and `49af0a52` (D2's approved head); `git merge --no-ff`, no rebase, no history rewrite (ALCOMB-5a) |
+| Fix commit | the commit that carries this section, on top of the merge |
+| Builds | none. `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\atx-build.ps1 configure -Preset equity-dev` (pool-19 has no build tree since DISK-2) was refused by the session's permission system before it ran. Without a configure, `research-build.ps1` cannot build (it needs `build.ninja`). Tag `p9-alcomb-f` is still unused |
+| Trials | 0. No 2020-2023 return / IC / NAV output was read; the trial ledger was not touched |
+
+### Why BLOCKED, and what the next session runs (handoff)
+
+The permission system refused the configure (and, earlier, a `git checkout --` that would have split the worktree
+edits; that split was done instead by staging only the merge's files). Nothing was retried around the refusal. Once a
+configure in pool-19 is permitted, in this order (one build at a time, memory gate, root first):
+
+1. `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\atx-build.ps1 configure -Preset equity-dev`.
+2. `powershell scripts\research-build.ps1 -Tag p9-alcomb-f -Targets "atx-engine-combine-tests,atx-impl-strategy-ic-tests,atx-equity-strategy-ic"`.
+3. Regenerate the fixture with the generator: `build-equity\bin\atx-equity-strategy-ic.exe --list-rules --json >
+   atx-impl\tests\fixtures\composition_rules_list.json` (the exe prints `dump(2)` plus a newline). Expected change,
+   from the C++ and not checked by hand: only the `params_schema` of `mom-volman-v1` and `theme-cov-hedge-v1` (see
+   "Fixture"). Commit it on its own.
+4. Anchored gtests (`--gtest_filter`): combine `CharCovHedge.*`; strategy-ic
+   `CharCovHedge.*:ThemeHedgeRule.*:MomVolman.*:CompositionRules.*:StrategyIcComposition.*:ThemeTsmom*:TwoSpeed*:ThemeResid*:StrategyIcRunner.*:MarginalIc.PairCacheSourcesPinned`;
+   then each whole binary.
+5. Re-run the pytests below; the two fixture-dependent reds must turn green.
+6. IC exe flag-absent identity (see "Flag-absent identity"), then delete the build object tree by name.
+
+### Step (a): the merge and its conflicts
+
+Three files conflicted; each was resolved by the report's P17 map.
+
+| file | resolution |
+|---|---|
+| `atx-impl/src/strategy_ic_rules.cpp` | D2's `*_params_schema` literals kept. D1's block-schema literals (and AL-COMB's `volman_schema` / `hedge_schema`) dropped, as D2 dropped them. AL-COMB's `*_excludes` arrays replace D2's `resid_excludes{2}` / `resid_ids` (the new rows add pairs). Two new literals in D2's form: `volman_params_schema` = `{rule, lookback 126, lag 2, step 21}`, `hedge_params_schema` = `{rule, lookback 252, lag 2, step 21, min_pairs 126}`, each a typed `const`, none required, `additionalProperties: false`. Rows wrapped to stay within 100 columns |
+| `atx-impl/tools/fit_composition_weights.py` | D2's `compose(engine)` kept. The `--mom-volman` and `--theme-hedge` attach blocks move into it after `--two-speed`, before `composition_resid.apply` (the same order as before). Imports: both sides |
+| `atx-impl/CMakeLists.txt` | both tails kept (AL-COMB's two sources, D2's `target_link_libraries(... atx-engine-research-composition)`) |
+
+Auto-merged and checked by reading: `strategy_ic_rules.hpp` (the two declarations), `strategy_ic_runner.cpp`
+(MR-2's hook beside D2's runner edits), `strategy_ic_rules_test.cpp` (the extended `TableCoversEveryRule` lists),
+`test_fit_composition_rule_plugins.py`. D2 kept `ic_detail::composition_schedule` in `strategy_ic_theme_tsmom.cpp` and
+kept `composition_theme_tsmom.sleeves` / `.SERIES` in Python, so the volman dispatcher and the sleeve source are
+unchanged.
+
+Adaptations to D2's shape, in the merge commit:
+
+- `ParamsSchemaConstantsAreTheRegisteredOnes` gains the two rows (`st::mom_volman_{lookback,lag,step}`,
+  `st::theme_hedge_{lookback,lag,step,min_pairs}`) and the two includes. No existing row changed.
+- `params_schema` keys are the numeric registered constants. `mom-volman-v1`'s scaled theme (`price_momentum`) is not a
+  params key: it is fixed by the rule id, and the row's parse checks it in the block. That parse also checks
+  `sessions` / `sleeve` (the old block schema's array bounds are not in the params form, as for D2's tsmom row).
+- CM-5 / D2-2: `composition_mom_volman` writes `provenance.mom_volman.producer_fingerprint` =
+  `composition_rules.module_fingerprint(__file__, PRODUCERS)`, `PRODUCERS = ("schedule", "attach")`, in place of the
+  whole-file `module_sha256`. The closure reaches `composition_theme_tsmom` (a `LOCAL_MODULES` member), so a sleeve
+  edit moves it. `theme-cov-hedge-v1` writes no provenance block.
+- `--engine-fit` (D2-1): `composition_mom_volman.check_args` refuses it with `ENGINE_FIT_REFUSED`. The C++ fit
+  (`atx-research-composition fit`) records no momentum sleeve, so the sleeve would be a Python number in a file whose
+  `provenance.engine_fit.written` says every fitted number is C++'s. `--theme-hedge` is accepted under `--engine-fit`:
+  its block is the registered constants only.
+- Pytests re-pinned to D2's params form (the old block-schema assertions cannot hold after D1-PSCHEMA):
+  `test_composition_mom_volman.py` / `test_composition_theme_hedge.py` `test_block_is_the_rule_tables_row`, and the
+  `module_sha256` -> `producer_fingerprint` provenance assertion.
+
+The fit path: D2 moved no AL-COMB code. The hedge has nothing to fit. mom-volman's fit is tsmom's step 1 (the
+sleeve), which D2's C++ computes inside `theme_tsmom_schedule` but does not output; hence the `--engine-fit` refusal
+(open question 2).
+
+### Fixture
+
+- `atx-impl/tests/fixtures/composition_rules_list.json` is the only K-P9-6 fixture this lane pins. In both commits it
+  is git's text merge of the two sides, **not regenerated** (the generator is the built exe; no build was permitted).
+  It was not edited by hand.
+- Its state: D2's eight rows are in D2's form and carry the AL-COMB `incompatible` additions; the `mom-volman-v1` and
+  `theme-cov-hedge-v1` rows still carry the old block-schema `params_schema` (`required`, plus `theme` / `sessions` /
+  `sleeve` for volman).
+- Red until regenerated: `CompositionRules.ListRulesJsonPinned` (unbuilt here) and the two pytests
+  `DeclaredRule::test_block_is_the_rule_tables_row` (seen red; see evidence).
+- Expected after regeneration: only those two rows' `params_schema`. `recipe_sha256` does not hash `params_schema`
+  (D2 re-pinned only `params_schema`), and the `incompatible` lists already match the C++ table.
+- No other fixture changed (`atx-engine/tests/fixtures/research_composition/fit_v1.json` is D2's, untouched).
+
+### Step (b): the Suggested items
+
+| # | what changed | where | test | evidence |
+|---|---|---|---|---|
+| S-1 | `mom_volman_blocks` refuses a block whose `target` or `scale = target / sigma` is not finite, naming the rule and the decision ("mom-volman-v1: the scale target / sigma before decision J must be finite (no cap is registered)"), before the composition's mass check | `strategy_ic_mom_volman.cpp` `mom_volman_blocks`; header comment | new `MomVolman.TinyVolatilityGivesAFiniteScaleAndOverflowIsRefused`: 1e-2 then 1e-120 gives 8 finite blocks, block 253's sigma about 1e-120 and scale in (1e117, 1e119), and the parse schedules W x scale (finite). 1e153 then 3e-162 (positive sigma about 3e-162 under a target about 1e152) is refused at decision 253 with that text, and the same sleeve cut at 253 decisions is accepted | unbuilt |
+| S-2 | documented, not changed (ALCOMB-5): h_t unbounded, `R_t - h_t H_t` not re-standardised (equal dispersion lost for a hedged theme), all-tied date adds `-h_t H_t`; visible through S-3's trace | `scripts/specs/p9/rules/theme-cov-hedge-v1.json` `fixed_choices` + `history` | n/a | `wave_manifest` checks below |
+| S-3 | the IC exe prints, in each scored role's `summary.json` entry, `composition_hedge_trace` = `{rule, themes (by composition index), semantics, blocks: [{decision_index, session_ns, h: [per theme]}]}` and `composition_schedule_trace` = `{rule, theme, semantics, blocks: [{from_session, sigma, target, scale}]}`. Both are C++ values. h is the kernel's ratio in force at each block start 253 + 21 b (`add_theme_hedged` optional `block` / `ratio` outputs; `IcCompositionResult::hedge_block` / `hedge_ratio`). The volman values are the parse's `mom_volman_blocks` values (`PinnedWeights::volman_*`). Python derives neither. The keys are absent unless the rule's block is present. `theme_hedge_working_bytes` gains `themes` and counts the trace (dates x 8 B plus blocks x (8 + 8 x themes) B); `theme_hedge_block_count` is new | `strategy_ic_theme_hedge.{hpp,cpp}`, `strategy_ic_mom_volman.cpp`, `strategy_ic_rules.hpp` (2 declarations), `strategy_ic_composition.{hpp,cpp}` (MR-1), `strategy_ic_runner.cpp` (MR-2), `strategy_ic_detail.hpp` (MR-5) | new `ThemeHedgeRule.TheTraceIsTheKernelRatioAtEachBlockStart` (bit-equal to the kernel's per-date ratio, held to the next block, blend bits unchanged, lone output refused unwritten, short role gives no block), `ThemeHedgeRule.SummaryTracePrintsTheHedgeRatiosPerBlock` (runner path, JSON round trip bit-equal, shape refusal Internal, flag absent adds nothing), `MomVolman.SummaryTracePrintsTheScalePerBlock` (bit-equal per block; no key without the block or under theme-tsmom-v1). `StageWiringAndRefusals`' byte formula extended by the trace (the model changed; the formula is restated term by term) | unbuilt |
+| S-4 | the "no existing expected value changed" sentence corrected (TableCoversEveryRule 2U -> 4U; the three v8 fixture rows' `incompatible`) | this report, "Files changed", item 1 | n/a | n/a |
+| S-5 | "with two names it always is" -> "two names with distinct ranks always are ...; two tied names leave R constant, so the residual is beta less its mean, which is spanned only when their betas are equal" | `char_cov_hedge.hpp` step 3 comment; `ClosedForm2Names` comment | comment only | n/a |
+| S-6 | both templates name exactly the fitter's `PARENT_RULES` (`--composition ew-theme-std-v1` or `ic-shrink-v1`, with the modifiers each accepts); `ic-shrink-aim-v1` is no longer offered. Requires-items updated for the merge | `scripts/specs/p9/templates/{theme-cov-hedge,mom-volman}.json` | new `test_composition_theme_hedge.py::DeclaredRule::test_parent_text_is_the_parents_the_fitter_accepts` | pytest green |
+
+Template and registration pins: both templates changed, so both registrations' `manifest_fragment.rule_cell.template_sha256`
+were recomputed from the committed LF bytes: theme-cov-hedge `7c6778bbd6c5759e3c431bae3cf301700240e672ea8406926b549927688dfb15`,
+mom-volman `b060a6f3968f829b3b37050de71238dd333431726bef79b2722519810c6406ec`. Each registration gained a `history` row
+("no constant, prediction or rule step changed; trials 0") and `fixed_choices` lines (hedge: S-2, S-3; volman: S-1,
+ALCOMB-4's TRAIN-schedule limit, the `--engine-fit` refusal, S-3).
+
+The mom-volman template no longer promises "the sleeve's volatility and Sharpe before and after scaling". It prints
+sigma_b / target_b / scale_b per block and says the sleeve Sharpe has no producer until the PM rules one. The
+registration keeps its prediction unchanged and gains a `requires` line for that ruling (open question 1).
+
+### Step (c): evidence (Python only; no C++ was built)
+
+Logs are in `.superpowers/sdd/platform-p9-20261003/evidence-AL-COMB/` (git-ignored).
+
+- `r5-pytest-composition-head.log`, from `atx-impl/tools`, `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p
+  no:cacheprovider --basetemp=<scratch>` over 11 files: `test_composition_{theme_hedge,mom_volman,theme_tsmom,two_speed,rules,theme_erc,resid,ic_shrink,engine_fit,fit_fixture}.py`
+  and `test_fit_composition_rule_plugins.py`.
+  - Result: exit 1, `2 failed, 130 passed, 1 skipped, 36 subtests passed`.
+  - The 2 failures are exactly the two fixture-dependent `test_block_is_the_rule_tables_row`: the stale volman / hedge
+    `params_schema` still has `required`.
+  - The skip is D2's `RealExecutables` (no exe).
+  - The new `EngineFit.test_the_spec_block_rides_on_the_engine_document` passes with D2's stand-ins: the C++-valued
+    document carries the same spec block, admission files byte-equal, weights equal minus `provenance.engine_fit`.
+  - The volman `--engine-fit` refusal passes too.
+- `r5-pytest-composition.log`: the same 11 files, run earlier on the same Python tree, with identical counts.
+- `r5-pytest-fitter.log`: `test_fit_composition_weights{,_pool,_store}.py`, exit 0, `142 passed`.
+- `r5-pytest-guards.log`, from the pool root: `scripts/tests/test_no_python_mirror.py
+  scripts/tests/test_no_versioned_scripts.py`, exit 0, `11 passed`. It prints `G-P5: 34 mirrored rule function(s) in
+  13 row(s)`, D2's count: AL-COMB adds no mirror.
+- `wave_manifest.rule_cell_problems` + `registration_problems` give `[]` for both fragments. Each `template_sha256`
+  equals its file's SHA-256, and the K-P9-11 keys equal the registration's (E8 again).
+- `research_cycle.load_spec` resolves both templates (`p9-theme-cov-hedge`, `p9-mom-volman`) (E7 again).
+- `ruff --select F` is clean on the changed Python. The three E501 lines in `test_composition_mom_volman.py` predate
+  this round. No changed C++ line is over 100 columns.
+
+### Flag-absent identity
+
+- **Fitter.** Evidence: `r5-fitter-flag-absent-identity.json`. D2's head fitter (extracted from `49af0a52` into
+  scratch) and the merged fitter ran on the same synthetic world (aim_world), with neither AL-COMB flag, for five
+  cases: std, std+erc, std+erc+tsmom, ic-shrink, std+two-speed.
+  - `admission.csv` is byte-identical in every case.
+  - `admission.json` differs only in `inputs.producer_fingerprint`.
+  - `composition_weights.json` differs only in `provenance.producer_fingerprint` and in `provenance.admission_sha256`
+    (the SHA-256 of that admission.json).
+  - Cause: CM-5's `OUTPUT_PRODUCERS = ("fit", "fit_prior")` closure gained the two flags (D2 `d0153b259e951b66` ->
+    merged `d28a30895ad1393e`). Any modifier added to the fitter moves it.
+  - The store-record fingerprints are unchanged (FACTOR `962cd507af511fe3`, CONTEXT `70e1eda51539c353`, AIM
+    `f1fb0d3a5183a723`, AIM_ERA `9a880f97b42fdae6`), so the fit work store is reused. Every D2 composition module is
+    byte-unchanged.
+- **IC exe.** Not run (no build). By construction:
+  - the two summary keys are written only when `pinned.hedge_themes` is non-empty (set only by an accepted
+    `theme_hedge` block) or `pinned.schedule == "mom-volman-v1"`;
+  - the recipe, combined manifest, stage list and stage bytes are unchanged when neither block is present;
+  - pinned by `SummaryTracePrintsTheHedgeRatiosPerBlock`, `SummaryTracePrintsTheScalePerBlock` and the existing
+    `FlagAbsentIdentity` (all unbuilt).
+  - Root's X-5 w-argv byte-identity on the built exe is the check.
+
+### Updated merge requests for root
+
+| # | edit | flag-absent effect |
+|---|---|---|
+| MR-1 (extended) | as before, plus `IcCompositionResult::hedge_block` / `hedge_ratio`, `finish` passes them to `add_theme_hedged`, `theme_hedge_working_bytes(dates, names, themes)` at both call sites | none: both vectors stay empty; stage bytes unchanged without a hedge stage |
+| MR-2 (extended) | as before, plus two calls after `planned_target_proxy` in `score_role`: `add_theme_hedge_trace(pinned, role.session_keys, *combined, result)`, `add_mom_volman_trace(pinned, result)` | none: both return before writing |
+| MR-3 | `stage_name` `hedge` case (unchanged) | none |
+| MR-4 | lane E2's `scripts/wave_kinds.py` `COMPOSITION_FLAGS`: `"theme-cov-hedge-v1": {"fit": {"--theme-hedge": "theme-cov-hedge-v1"}}`, `"mom-volman-v1": {"fit": {"--mom-volman": "mom-volman-v1"}}` (E2 is not in this tree) | none (new keys) |
+| MR-5 (new) | D1's `strategy_ic_detail.hpp` `PinnedWeights`: `volman_sigma`, `volman_target`, `volman_scale`, `hedge_themes` (S-3) | none: empty unless the rule's block parses |
+
+Root items:
+
+- **Literals** for `classes.json` (SQL2-CLS): `atx.p9-rule-registration/v1`, `atx.p9-diagnostic-spec/v1`.
+- **Template pins** assume LF bytes: they need E2's `scripts/specs/** text eol=lf`. Root re-pins when it sets
+  `parent`.
+- **Q5 diagnostic**: the zero-trial lit section-8 Q5 diagnostic (`scripts/specs/p9/diagnostics/al-comb-q5-style-variance.json`)
+  runs between wave 2 and the P9 cells, before P9-H is registered.
+- **X-5 fit-argv identity substitution list** after this merge: `inputs.producer_fingerprint`,
+  `provenance.producer_fingerprint`, `provenance.admission_sha256`. These are added to D2's four CM-5 / D2-2 keys
+  (evidence above).
+- **The fixture**: if this lane cannot build, root regenerates `composition_rules_list.json` from its merged exe and
+  checks that only the two AL-COMB rows' `params_schema` move.
+
+### Open questions (PM)
+
+1. The plan's P9-M "the momentum sleeve's vol and Sharpe" (template: before and after scaling; registered prediction:
+   vol falls, Sharpe rises) has no producer. The IC exe now prints sigma_b / target_b / scale_b. A realised Sharpe
+   needs a ruled definition and a C++ producer. `admission::mean_sharpe` is the house's; atx-impl-core does not link
+   `atx-engine-research-admission` publicly. Rule a producer, or cut the item, before P9-M is registered.
+2. `--engine-fit --mom-volman` is refused (the C++ fit records no sleeve). Adding the sleeve to D2's C++ fit is D3's
+   (D3 owns those files next and retires `composition_theme_tsmom.sleeves`). Until then P9-M runs without
+   `--engine-fit`.
+3. The build permission for pool-19 (configure + `p9-alcomb-f`) is needed to finish step (c).
+
+### Disk
+
+- No build object tree exists in pool-19: it was deleted under DISK-2 and nothing was configured. `build-equity\`
+  keeps only the `mega-p9-alcomb-{a,b,d,e}-*` receipts / logs and the two pre-session directories.
+- Scratch deleted by name after the commit: the `alcomb_*.py` scripts, the `alcomb-*` copies, D2's extracted tree,
+  the identity outputs and the pytest basetemps.

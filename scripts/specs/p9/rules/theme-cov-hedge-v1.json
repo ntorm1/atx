@@ -40,7 +40,9 @@
     "the score is the theme's standardised re-rank (the composite the book holds), not a raw characteristic",
     "returns are the role's guarded session returns (price-risk-v1's guard, session_interval_returns); an invalid return adds 0 to a sleeve and leaves the pair out of a loading",
     "h_t is the OLS slope (intercept included) of the theme sleeve on the hedge leg's return, 0 before decision 253, below 126 pairs or without variance; held between re-estimates",
-    "before h_t's first estimate the composition is the parent's bit for bit; no fitted constant enters the weights file (the fitter writes only the constants block)"
+    "before h_t's first estimate the composition is the parent's bit for bit; no fitted constant enters the weights file (the fitter writes only the constants block)",
+    "h_t has no bound and the hedged re-rank R_t - h_t H_t is not re-standardised (review S-2, documented by Ruling ALCOMB-5, not changed: the registered DMRS design, blind): a theme with |h_t| > 1 enters the blend with more cross-sectional dispersion than W_t implies, so ew-theme-std-v1's equal-dispersion property does not hold for a hedged theme; on a date whose present names all tie on R_t while H_t is defined, the theme adds the pure hedge leg -h_t H_t",
+    "the IC exe prints h_t per theme and block in each scored role's summary entry (composition_hedge_trace; Ruling ALCOMB-5, review S-3), so both properties are visible in every cell"
   ],
   "predictions": {
     "registered_before_any_read": "book volatility ratio to the parent < 1; gross alpha ratio to the parent about 1 (plan section 5.2 P9-H, section 5.3 OD-3 predictions)",
@@ -57,7 +59,7 @@
     "kind": "rule",
     "rule_cell": {
       "template": "scripts/specs/p9/templates/theme-cov-hedge.json",
-      "template_sha256": "095d2d7e432a083fca269f9836c29293d9a19dd9bc1408219cd45dc5e8e2978f",
+      "template_sha256": "7c6778bbd6c5759e3c431bae3cf301700240e672ea8406926b549927688dfb15",
       "name": "theme-cov-hedge-v1",
       "source_sample_end": 2017,
       "predicted_mechanism": "each theme's composite is long the names that load on the theme's own factor beyond what the theme's characteristic explains; shorting that loading at a walk-forward minimum-variance ratio lowers the book's variance at about the same gross alpha",
@@ -74,7 +76,7 @@
   "requires": [
     "root runs scripts/specs/p9/diagnostics/al-comb-q5-style-variance.json (zero trials) and prints q and q_lit in the P9 prereg before the PM registers P9-H",
     "the PM registers P9-H (plan DEC-15, section 5.2)",
-    "lane AL-COMB rebased on D2's head and merged (P17)"
+    "lane AL-COMB's combined round (Rulings ALCOMB-5 / ALCOMB-5a: D2's head merged into the lane) reviewed and merged by root"
   ],
   "history": [
     {
@@ -82,6 +84,12 @@
       "at": "2026-10-03",
       "by": "AL-COMB",
       "note": "P9 lane AL-COMB (lit section 1.1 [21], section 6 row 1; plan DEC-15); blind registration, one variant, no grid, trials 0"
+    },
+    {
+      "status": "proposed",
+      "at": "2026-10-04",
+      "by": "AL-COMB",
+      "note": "combined round (Ruling ALCOMB-5): the unbounded h_t and the un-restandardised hedged re-rank documented in fixed_choices (S-2), the printed hedge ratios added (S-3), template_sha256 re-pinned to the edited template; no constant, prediction or rule step changed; trials 0"
     }
   ]
 }

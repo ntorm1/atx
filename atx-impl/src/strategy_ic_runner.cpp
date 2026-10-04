@@ -567,6 +567,10 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     result["planned_target_proxy"]={{"total_turnover",combined->total_planned_turnover},
         {"deployment_turnover",combined->deployment_turnover},{"deployment_date",combined->deployment_date},
         {"initial_deployment_included",true},{"actual_trades_or_costs",false}};
+    // P9 lane AL-COMB (ruling ALCOMB-5 S-3): theme-cov-hedge-v1's hedge ratios per theme and block
+    // and mom-volman-v1's scale per block; nothing unless those rules run.
+    ATX_TRY_VOID(add_theme_hedge_trace(pinned,role.session_keys,*combined,result));
+    ATX_TRY_VOID(add_mom_volman_trace(pinned,result));
   }
   if (save) {
     result["combined_artifact"]=std::move(saved);

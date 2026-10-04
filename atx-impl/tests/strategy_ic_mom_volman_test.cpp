@@ -227,4 +227,92 @@ TEST(MomVolman, SharedParseAndRefusals) {
                                 {"order", Json::array({"value", "price_momentum"})}};
   refused(resid, "no theme_residualise");
 }
+
+// `first` for d < 126, then `rest`: the block at 253 (and later) reads only `rest`.
+std::vector<f64> regime_sleeve(usize n, f64 first, f64 rest) {
+  std::vector<f64> out(n);
+  for (usize d = 0; d < n; ++d) out[d] = (d < 126U ? first : rest) * (d % 2U == 0U ? 1.0 : -1.0);
+  return out;
+}
+
+// Review S-1 / ruling ALCOMB-4 (no cap): a tiny but positive realised volatility (1e-120 after a
+// 1e-2 regime) gives a large scale, finite and accepted, and the parse schedules it; a scale that
+// overflows (1e153 then 3e-162: a positive sigma near 3e-162 under a target near 1e152) is refused
+// by mom_volman_blocks, naming the rule and the block, not later by the composition's mass check.
+TEST(MomVolman, TinyVolatilityGivesAFiniteScaleAndOverflowIsRefused) {
+  const auto tiny = st::mom_volman_blocks(regime_sleeve(280, 1e-2, 1e-120));
+  ASSERT_TRUE(tiny) << tiny.error().to_string();
+  ASSERT_EQ(tiny->size(), 8U); // 127, 148, ..., 274
+  for (const auto& b : *tiny) {
+    SCOPED_TRACE(b.decision);
+    EXPECT_TRUE(std::isfinite(b.scale));
+    EXPECT_EQ(bits(b.scale), bits(b.target / b.sigma));
+  }
+  const auto& quiet = (*tiny)[6]; // j = 253: the window 126 .. 251 holds only 1e-120
+  EXPECT_EQ(quiet.decision, 253U);
+  EXPECT_NEAR(quiet.sigma / 1e-120, 1.0, 1e-12);
+  EXPECT_GT(quiet.scale, 1e117);
+  EXPECT_LT(quiet.scale, 1e119);
+  // The parse takes it: price_momentum's mass in that block is W x the scale, finite.
+  Json block = Weights::volman(280);
+  const auto values = regime_sleeve(280, 1e-2, 1e-120);
+  for (usize d = 0; d < values.size(); ++d) block["sleeve"][d] = values[d];
+  const Weights w;
+  const auto pinned = w.parse(Weights::document(block));
+  ASSERT_TRUE(pinned) << pinned.error().to_string();
+  ASSERT_EQ(pinned->schedule_mass.size(), 8U);
+  EXPECT_EQ(bits(pinned->schedule_mass[6][1]), bits((0.0 + .2 + .3) * quiet.scale));
+  EXPECT_TRUE(std::isfinite(pinned->schedule_mass[6][1]));
+  // Overflow: refused here, with the rule's name and the block's decision.
+  const auto overflow = st::mom_volman_blocks(regime_sleeve(260, 1e153, 3e-162));
+  ASSERT_FALSE(overflow);
+  EXPECT_NE(overflow.error().message().find("mom-volman-v1: the scale target / sigma before "
+                                            "decision 253 must be finite"),
+            std::string::npos)
+      << overflow.error().message();
+  // Its blocks before 253 are finite: the same sleeve cut at 253 decisions is accepted.
+  EXPECT_TRUE(st::mom_volman_blocks(regime_sleeve(253, 1e153, 3e-162)));
+}
+
+// Ruling ALCOMB-5 S-3: the role summary prints, per block, its first session, sigma, target and
+// scale (the values the schedule applied, bit for bit); nothing without a mom-volman-v1 block (a
+// theme-tsmom-v1 schedule included).
+TEST(MomVolman, SummaryTracePrintsTheScalePerBlock) {
+  const Weights w;
+  const auto pinned = w.parse(Weights::document(Weights::volman(400)));
+  ASSERT_TRUE(pinned) << pinned.error().to_string();
+  const auto blocks = st::mom_volman_blocks(step_sleeve(400));
+  ASSERT_TRUE(blocks);
+  Json result{{"role", "train"}};
+  ASSERT_TRUE(icd::add_mom_volman_trace(*pinned, result));
+  ASSERT_TRUE(result.contains("composition_schedule_trace"));
+  const auto& trace = result.at("composition_schedule_trace");
+  EXPECT_EQ(trace.at("rule"), "mom-volman-v1");
+  EXPECT_EQ(trace.at("theme"), "price_momentum");
+  ASSERT_EQ(trace.at("blocks").size(), blocks->size());
+  for (usize b = 0; b < blocks->size(); ++b) {
+    SCOPED_TRACE(b);
+    const auto& row = trace.at("blocks").at(b);
+    EXPECT_EQ(row.at("from_session").get<i64>(), static_cast<i64>(1000 + (*blocks)[b].decision));
+    EXPECT_EQ(bits(row.at("sigma").get<f64>()), bits((*blocks)[b].sigma));
+    EXPECT_EQ(bits(row.at("target").get<f64>()), bits((*blocks)[b].target));
+    EXPECT_EQ(bits(row.at("scale").get<f64>()), bits((*blocks)[b].scale));
+  }
+  // Printed as JSON text and read back, every value keeps its bits.
+  const auto reread = Json::parse(result.dump());
+  EXPECT_EQ(bits(reread.at("composition_schedule_trace").at("blocks").at(5).at("scale").get<f64>()),
+            bits((*blocks)[5].scale));
+  // No block, or theme-tsmom-v1's: nothing is added.
+  for (const auto& doc : {Weights::document(nullptr),
+                          Weights::document(Json::parse(
+                              R"({"rule":"theme-tsmom-v1","lookback":252,"lag":3,"step":21,)"
+                              R"("themes":["price_momentum","value"],)"
+                              R"("blocks":[{"from_session":1200,"trailing":[1.0,-1.0]}]})"))}) {
+    const auto other = w.parse(doc);
+    ASSERT_TRUE(other) << other.error().to_string();
+    Json untouched{{"role", "train"}};
+    ASSERT_TRUE(icd::add_mom_volman_trace(*other, untouched));
+    EXPECT_EQ(untouched, (Json{{"role", "train"}}));
+  }
+}
 } // namespace

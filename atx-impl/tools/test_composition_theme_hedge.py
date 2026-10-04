@@ -25,6 +25,7 @@ import test_composition_engine_fit as tcef  # noqa: E402  (its --engine-fit stan
 import test_fit_composition_weights as tfw  # noqa: E402  (its synthetic fitter fixture, not its tests)
 
 HEADER = Path(__file__).resolve().parents[1] / "src" / "strategy_ic_theme_hedge.hpp"
+TEMPLATE = Path(__file__).resolve().parents[2] / "scripts" / "specs" / "p9" / "templates" / "theme-cov-hedge.json"
 RULES = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "composition_rules_list.json"
 STD_ARGS = dict(screen="v4-prior-v1", orientation="prior", composition="ew-theme-std-v1")
 ERC_ARGS = dict(STD_ARGS, theme_erc="theme-erc-v1")
@@ -96,6 +97,18 @@ class DeclaredRule(unittest.TestCase):
                 cth.check_args(argparse.Namespace(**fields), prior=prior, pooled=pooled)
         # Accepted under --engine-fit (P9 lane D2): the block holds only the registered constants.
         cth.check_args(argparse.Namespace(**dict(vars(ok), engine_fit=True)), prior=True, pooled=False)
+
+    def test_parent_text_is_the_parents_the_fitter_accepts(self):
+        """Review S-6: the refusal text and the cell template name exactly PARENT_RULES as compositions (an
+        ic-shrink-aim-v1 parent is refused, so neither offers it)."""
+        self.assertEqual(cth.PARENT_RULES, ("ew-theme-std-v1", "ic-shrink-v1"))
+        template = json.loads(TEMPLATE.read_text(encoding="utf-8"))
+        text = template["description"] + " ".join(template["requires"])
+        for rule in cth.PARENT_RULES:
+            self.assertIn(rule, cth.PARENT_ONLY)
+            self.assertIn(f"--composition {rule}", text)
+        self.assertNotIn("ic-shrink-aim-v1", cth.PARENT_ONLY)
+        self.assertNotIn("ic-shrink-aim-v1", text)
 
 
 class FitterEndToEnd(unittest.TestCase):

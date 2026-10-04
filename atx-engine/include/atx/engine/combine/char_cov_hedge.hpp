@@ -29,8 +29,9 @@
 //     least-squares residual of beta on [1, R(d, .)] (group_residualise.hpp): the part of the
 //     loading the characteristic does not explain. H(d, i) is its centred tied rank over the
 //     support, 0 for a ranked name outside it. H(d) is defined iff the support has two names and
-//     the residual is not spanned (with two names it always is: [1, R] spans every two-name
-//     cross-section).
+//     the residual is not spanned (two names with distinct ranks always are: [1, R] spans them;
+//     two tied names leave R constant, so the residual is beta less its mean, which is spanned
+//     only when their betas are equal).
 //  4. hedge return g(d') = sum_i H(d', i) r_i(d') where H(d') is defined (as s).
 //  5. h, the hedge ratio: at each block start j_b = lookback + lag - 1 + b * step (b = 0, 1, ...),
 //     the OLS slope (intercept included) of s on g over the window's pairs where both are defined

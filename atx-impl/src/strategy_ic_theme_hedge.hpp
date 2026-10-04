@@ -44,9 +44,16 @@ inline constexpr atx::usize theme_hedge_min_pairs = 126; // price-risk-v1's beta
 
 // Working bytes of the hedge beside the composition's planes: the role's session returns (owned by
 // the composition from attach to finish), one hedged plane, the presence copy attach_theme_hedge
-// builds and the kernel's scratch. InvalidArgument for empty dimensions; OutOfRange on overflow.
+// builds, the kernel's scratch and the printed hedge ratios of `themes` themes (the ratio in force
+// per date, then per block its start and one ratio per theme). InvalidArgument for empty
+// dimensions; OutOfRange on overflow.
 [[nodiscard]] atx::core::Result<atx::u64> theme_hedge_working_bytes(atx::usize dates,
-                                                                   atx::usize names);
+                                                                   atx::usize names,
+                                                                   atx::usize themes);
+
+// The hedge blocks of `dates` dates: block b starts at date index lookback + lag - 1 + b * step
+// (253 + 21 b) while it is below `dates`; none for 253 dates or fewer.
+[[nodiscard]] atx::usize theme_hedge_block_count(atx::usize dates) noexcept;
 
 // Step 5 for every theme: `planes` one date-major dates x `names` plane per theme holding the sum
 // of its present members' w_k s_k rank_k (NaN = no member present), `mass` W_theme per plane,
@@ -54,13 +61,16 @@ inline constexpr atx::usize theme_hedge_min_pairs = 126; // price-risk-v1's beta
 // IcComposition::schedule_theme_masses' blocks), `session_returns` dates x names. Per theme in
 // index order and per block of the schedule, every cell with a hedged value adds the mass in force
 // times that value to `out` (a zero mass adds nothing), the order the ew-theme-std-v1 composition
-// adds its re-ranks in. Refuses (InvalidArgument) on mismatched shapes or a non-finite mass;
-// OutOfRange if the hedged plane cannot be allocated.
-[[nodiscard]] atx::core::Status add_theme_hedged(std::span<const std::vector<atx::f64>> planes,
-                                                 std::span<const atx::f64> mass,
-                                                 std::span<const IcThemeBlock> schedule,
-                                                 std::span<const atx::f64> session_returns,
-                                                 atx::usize names, std::span<atx::f64> out);
+// adds its re-ranks in. With `block` and `ratio` (both or neither), also the hedge ratios it
+// applied: `block` the start of each hedge block (theme_hedge_block_count of them), `ratio[t][b]`
+// theme t's h in force from block b's start to the next block's (both replaced only on success).
+// Refuses (InvalidArgument) on mismatched shapes, a non-finite mass or one trace output without the
+// other; OutOfRange if the hedged plane or the trace cannot be allocated.
+[[nodiscard]] atx::core::Status add_theme_hedged(
+    std::span<const std::vector<atx::f64>> planes, std::span<const atx::f64> mass,
+    std::span<const IcThemeBlock> schedule, std::span<const atx::f64> session_returns,
+    atx::usize names, std::span<atx::f64> out, std::vector<atx::usize>* block = nullptr,
+    std::vector<std::vector<atx::f64>>* ratio = nullptr);
 
 // The role's session returns (dates x names): row s, name i is the valid adjusted simple return
 // over (s - 1, s] by price-risk-v1's guard (session_interval_returns: both sessions present with

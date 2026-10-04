@@ -9,8 +9,10 @@ hedge ratio re-estimated every 21 decisions) and the IC runner's rule atx-impl/s
 the scored role's own sessions, so nothing fitted on TRAIN enters the file: this module only adds
 ``theme_hedge: {"rule": "theme-cov-hedge-v1", "lookback": 252, "lag": 2, "step": 21, "min_pairs": 126}`` to a
 standardised parent document (the registered constants, which the runner checks). The recipe's and the combined
-manifest's ``composition_hedge`` are the receipts. Refused with --theme-resid and --two-speed (a residualised or split
-composite is another object) and under --era (the hedge reads one role's sessions).
+manifest's ``composition_hedge`` are the receipts; the IC exe's role summary prints the hedge ratio per theme and
+block (composition_hedge_trace). Refused with --theme-resid and --two-speed (a residualised or split composite is
+another object) and under --era (the hedge reads one role's sessions). Accepted under --engine-fit (P9 lane D2): the
+block holds only the registered constants, so no fitted value of the file comes from this module.
 """
 from __future__ import annotations
 

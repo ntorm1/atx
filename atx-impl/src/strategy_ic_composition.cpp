@@ -150,8 +150,9 @@ co::Result<u64> ic_composition_stage_bytes(usize dates, usize names, usize count
   ATX_TRY(const u64 bytes,
           ic_composition_working_bytes(dates, names, count, themes, plan.rule, plan.sleeves));
   if (!plan.hedge) return co::Ok(bytes);
-  // theme-cov-hedge-v1 (P9 AL-COMB): session returns, the hedged plane and the kernel's scratch.
-  ATX_TRY(const u64 hedge, theme_hedge_working_bytes(dates, names));
+  // theme-cov-hedge-v1 (P9 AL-COMB): session returns, the hedged plane, the kernel's scratch and
+  // the printed hedge ratios.
+  ATX_TRY(const u64 hedge, theme_hedge_working_bytes(dates, names, themes));
   if (hedge > std::numeric_limits<u64>::max() - bytes)
     return co::Err(co::ErrorCode::OutOfRange, "IC composition: working bytes overflow");
   return co::Ok(bytes + hedge);
@@ -476,7 +477,8 @@ co::Status IcComposition::set_theme_hedge(std::vector<f64> session_returns) {
   ATX_TRY(const u64 bytes, ic_composition_working_bytes(p.cfg.dates, p.cfg.instruments,
                                                         p.candidates.size(), p.std_mass.size(),
                                                         IcThemeRule::standardise, false));
-  ATX_TRY(const u64 hedge, theme_hedge_working_bytes(p.cfg.dates, p.cfg.instruments));
+  ATX_TRY(const u64 hedge,
+          theme_hedge_working_bytes(p.cfg.dates, p.cfg.instruments, p.std_mass.size()));
   if (bytes > p.cfg.max_working_bytes || hedge > p.cfg.max_working_bytes - bytes)
     return co::Err(co::ErrorCode::OutOfRange,
                    "IC composition: working budget exceeded (theme hedge)");
@@ -508,12 +510,14 @@ co::Result<IcCompositionResult> IcComposition::finish() {
     // theme-cov-hedge-v1 (P9 AL-COMB): each theme's re-rank hedged on its own sleeve's covariance
     // loading, times the mass in force (W_theme before the first block), themes in index order; a
     // date before the hedge ratio's first estimate adds the re-rank itself, as the branches below.
+    // The hedge ratios per theme and block go to the result (the runner prints them).
     if (p.hedge_returns.empty() || !p.sleeve_of.empty())
       return co::Err(co::ErrorCode::InvalidArgument,
                      "IC composition: a theme hedge needs its session returns and no theme "
                      "sleeves");
     ATX_TRY_VOID(add_theme_hedged(p.std_plane, p.std_mass, p.schedule, p.hedge_returns,
-                                  p.cfg.instruments, out.signal));
+                                  p.cfg.instruments, out.signal, &out.hedge_block,
+                                  &out.hedge_ratio));
   } else if (p.schedule.empty()) {
     for (usize t = 0; t < p.std_plane.size(); ++t)
       ATX_TRY_VOID(cb::add_group_rerank(p.std_plane[t], p.cfg.instruments, 0, p.cfg.dates, p.std_mass[t],

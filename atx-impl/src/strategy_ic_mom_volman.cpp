@@ -35,7 +35,14 @@ co::Result<std::vector<MomVolmanBlock>> mom_volman_blocks(std::span<const f64> s
                              " must be finite and > 0"));
     sigma_sum += sigma;
     const f64 target = sigma_sum / static_cast<f64>(out.size() + 1U);
-    out.push_back({j, sigma, target, target / sigma});
+    // No cap (registered, ALCOMB-4): a tiny but positive sigma gives a large finite scale; one so
+    // small that target / sigma overflows (or a running sum that does) is refused here, naming the
+    // rule, not later by the composition's mass check (review S-1).
+    const f64 scale = target / sigma;
+    if (!std::isfinite(target) || !std::isfinite(scale))
+      return co::Err(refused("the scale target / sigma before decision " + std::to_string(j) +
+                             " must be finite (no cap is registered)"));
+    out.push_back({j, sigma, target, scale});
   }
   return co::Ok(std::move(out));
 }
@@ -114,18 +121,29 @@ co::Status composition_volman(const Json& j, const RuleInputs& in, PinnedWeights
                    "IC runner: theme_schedule: " + blocks.error().message());
   std::vector<i64> from;
   std::vector<std::vector<f64>> scheduled;
+  std::vector<f64> sigma, target, scale;
   from.reserve(blocks->size());
   scheduled.reserve(blocks->size());
+  sigma.reserve(blocks->size());
+  target.reserve(blocks->size());
+  scale.reserve(blocks->size());
   for (const auto& b : *blocks) {
     from.push_back(sessions[b.decision].get<i64>());
     auto masses = mass;
     masses[momentum] = mass[momentum] * b.scale;
     scheduled.push_back(std::move(masses));
+    sigma.push_back(b.sigma);
+    target.push_back(b.target);
+    scale.push_back(b.scale);
   }
   pinned.schedule = std::string(mom_volman_rule);
   pinned.schedule_from = std::move(from);
   pinned.schedule_mass = std::move(scheduled);
   pinned.schedule_off = 0;
+  // What the role summary prints (add_mom_volman_trace, ruling ALCOMB-5 S-3).
+  pinned.volman_sigma = std::move(sigma);
+  pinned.volman_target = std::move(target);
+  pinned.volman_scale = std::move(scale);
   return co::Ok();
 }
 } // namespace
@@ -141,5 +159,30 @@ co::Status composition_schedule_rules(const Json& j, const RuleInputs& in, Pinne
       return composition_volman(j, in, pinned);
   }
   return composition_schedule(j, in, pinned);
+}
+
+co::Status add_mom_volman_trace(const PinnedWeights& pinned, Json& result) {
+  if (pinned.schedule != mom_volman_rule) return co::Ok();
+  const usize blocks = pinned.schedule_from.size();
+  if (pinned.volman_sigma.size() != blocks || pinned.volman_target.size() != blocks ||
+      pinned.volman_scale.size() != blocks)
+    return co::Err(co::ErrorCode::Internal, "IC runner: mom-volman-v1 trace shape");
+  Json rows = Json::array();
+  for (usize b = 0; b < blocks; ++b)
+    rows.push_back(Json{{"from_session", pinned.schedule_from[b]},
+                        {"sigma", pinned.volman_sigma[b]},
+                        {"target", pinned.volman_target[b]},
+                        {"scale", pinned.volman_scale[b]}});
+  result["composition_schedule_trace"] = Json{
+      {"rule", std::string(mom_volman_rule)},
+      {"theme", std::string(mom_volman_theme)},
+      {"semantics",
+       "per block of the recorded sleeve, from its first session from_session to the next "
+       "block's: sigma = the sleeve's realised volatility over the 126 decisions ending two "
+       "before the block (the root of the mean square), target = the mean of sigma over this and "
+       "every earlier block, scale = target / sigma, the factor on price_momentum's W_t (each "
+       "role applies a block from its first session at or after from_session)"},
+      {"blocks", std::move(rows)}};
+  return co::Ok();
 }
 } // namespace atx::impl::strategy::ic_detail

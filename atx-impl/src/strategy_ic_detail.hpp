@@ -164,6 +164,10 @@ struct PinnedWeights {
   // two-speed-v1 (platform v8 Y-5, strategy_ic_two_speed.cpp): a theme_sleeves block on that rerank-true
   // block; `sleeves` its rule ("" none), the fast flag per composition theme index, the fast themes.
   std::string sleeves; std::vector<u8> sleeve_fast; std::vector<std::string> sleeve_fast_themes;
+  // P9 lane AL-COMB (ruling ALCOMB-5 S-3: what the role summary prints; empty unless the rule's
+  // block is present): mom-volman-v1's sigma, target and scale per schedule block, and
+  // theme-cov-hedge-v1's theme names by composition theme index.
+  std::vector<f64> volman_sigma,volman_target,volman_scale; std::vector<std::string> hedge_themes;
   std::vector<const CompositionRule*> rules;
   // What the composition's grouping stage and admission receive: the standardised themes, else
   // the (possibly empty) within-theme-v1 themes.
