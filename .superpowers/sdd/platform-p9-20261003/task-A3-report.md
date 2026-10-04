@@ -5,7 +5,7 @@
 | Outcome | **DONE_WITH_CONCERNS** (concerns below; none blocks the merge of the first five commits) |
 | Pool / branch | `C:/atx-wt/pool-12`, `feat/p9-a3-20261003` |
 | Base | `1239a5ff` |
-| Head (code) | `6262224f` (this report is committed on top of it) |
+| Head (code) | after fix round 1: the re-applied registry flip is the branch head, the one commit after this report's commit; everything below it merges without the flip (see "Fix round 1") |
 | Contract | `wave2-lane-dispatch.md`, `brief-A3.md`, `wave2-carry.md` (A3), `resume-rulings.md` (All agents, A3-1..4, A3-RED, W2-BUILD, DISK, DISK-2) |
 
 ## Commits (base..head, in order)
@@ -18,7 +18,14 @@
 | `51f8158b` | gtests: leak probes (`ResearchFieldsVendorFields.*`), fixture identity (`ResearchFieldsVendorFixture.*`) | |
 | `b07782e6` | A3-1 routing edit in `prepare_research_fields_engine.py`; registry owner suffix; pytests | |
 | `27c22eb3` | 100-column reflows (A3 headers; A2's `research_fields_cli.hpp`) | comments only |
-| `6262224f` | **registry flip** of the six rows to `kind: engine` | **merge only after the A3-RED review and root's TRAIN identity run** (field-flip freeze) |
+| `6262224f` | **registry flip** of the six rows to `kind: engine` | reverted by `2b7af4fa` in fix round 1; net zero below the re-applied flip |
+| `f7941ab0` | this report (first version), A3-RED evidence, receipts | docs |
+| `56474bbf` | the review (APPROVE, A3-RED confirmed) | docs, the reviewer's |
+| `2b7af4fa` | revert of `6262224f` (the flip held back) | fix round 1 |
+| `69743545` | S-1: sealed rows of a straddling group reach nothing; `rows_sealed_value_decoded`; new gtest | fix round 1 |
+| `165b794b` | S-3: the panel guard fails closed on missing statistics; new pytest | fix round 1 |
+| (this commit) | report: fix round 1, S-5 correction | docs |
+| branch head | **the registry flip re-applied** (cherry-pick of `6262224f`, same content) | **merge only after root's TRAIN identity run**; everything below it merges first |
 
 ## Built and run in the lane (ruling W2-BUILD)
 
@@ -102,10 +109,13 @@ gtest's window and minimum (module globals, read at call time; nothing else is p
 - **Two values `{-0.0, -0.0}`:** `gamma = p` = `[0.001, 0.01, 0.5, 0.99, 0.999]`. The kept branch gives
   `-0.0 + 0.0 = +0.0`, the overwrite branch gives `-0.0`. Measured: `[+0.0, +0.0, -0.0, -0.0, -0.0]`. Added as a test,
   so both branches are pinned.
-- **The code** (`field_stats.cpp:243-252` `lerp`, numpy-exact since `e812a0fd`) returns `-0.0`, and the corrected test
-  passes.
-- **Root cause:** `e812a0fd` added the numpy-exact `lerp` and this hand-derived expectation together. It was written by
-  an uncompiled lane and never ran until T1 registered the executable in CTest.
+- **The code** (`field_stats.cpp:243-252` `lerp`) returns `-0.0`, and the corrected test passes.
+- **Root cause** (corrected in fix round 1, review S-5): the numpy rule was in the code from the start. `eccf6338`
+  already had the `gamma >= 0.5` overwrite lerp and marked the above-bounds index -1 before computing gamma
+  (`field_stats.cpp:61,72` there: "numpy marks the above-bounds index -1 before it computes gamma"). `e812a0fd` moved
+  that lerp into a helper and added the hand-derived `{-0.0} -> +0.0` expectation, which contradicted the existing
+  code and its comment. It was written by an uncompiled lane and never ran until T1 registered the executable in
+  CTest.
 - **Every other expectation of the test is unchanged in `ef921abd`:** the `small`, `large` and `unsorted` cases.
 
 ### (2) `ResearchFieldsVolumeMean.SumOrderIsNumpys`
@@ -160,7 +170,7 @@ it. The test first ran when T1 registered the executable.
 | Item | Status |
 |---|---|
 | M1a-RED (required) | **done** in `ef921abd`, its own commit before the flip; root causes above; reviewer re-derives (A3-RED) |
-| Field-flip freeze | respected: the flip is the last code commit (`6262224f`), separate, after the fix; root merges it only after A3-RED is accepted and the TRAIN identity holds |
+| Field-flip freeze | respected: the flip is the last code commit, separate, after the fix; root merges it only after A3-RED is accepted and the TRAIN identity holds. Fix round 1: `6262224f` reverted (`2b7af4fa`) and re-applied unchanged as the branch head (see "Fix round 1") |
 | A1-SHIM (shims route through `--registry`) | **not done** (see Concerns 1) |
 | P13 (absent-seal refusal) | untouched (ruling A3-2) |
 | A1 merge state (`regenerate()` round-trip) | holds: `test_field_registry.py` 35 passed with the owner suffix and the flip |
@@ -174,8 +184,12 @@ it. The test first ran when T1 registered the executable.
 - **K-P9-2, source half.** `VendorPanel` (`research/fields/sources/vendor_panel.{hpp,cpp}`) does the following:
   - hashes the file once and checks it against the role's `source_sha256`, with a stamp check before and after;
   - scans the row groups once over the union of requested columns;
-  - pushes the seal down to the row-group statistics: a sealed group is never read, and a straddling group has only
-    its keys decoded;
+  - pushes the seal down to the row-group statistics: a wholly sealed group is never read. A group that straddles
+    the seal has its keys decoded and its sealed rows dropped by date; its value chunks are decoded only when a
+    pre-seal row survives, and then whole (a parquet column chunk is the unit of decode), sealed rows' values
+    included. Those values are never read and reach no observation, matrix, statistic or output;
+    `rows_sealed_value_decoded` counts them (corrected in fix round 1, review S-1; the earlier text said a straddling
+    group "has only its keys decoded", which holds only when no pre-seal row of it survives);
   - applies the observation contract once;
   - quarantines duplicate keys in every matrix;
   - runs factor-break-v1 once (`sources/factor_break.{hpp,cpp}`), one implementation for the two Python copies.
@@ -370,3 +384,148 @@ without `ceq_iss_5y`, and `ceq_iss_5y` left to Python while the open returns are
    `prepare_research_fields_engine.same_panel` refuses otherwise.
 3. A fresh-pool equity-dev configure with per-worktree deps took 643 s. The first research-fields build took 334 s for
    87 TUs, at 4 jobs.
+
+## Fix round 1 (PM ruling A3-FIX1, review `task-A3-review.md` at `56474bbf`: APPROVE, A3-RED confirmed)
+
+Three Suggested findings fixed now. S-2 and S-4 are wave 3; S-6 is acknowledged by the PM (`coskew_60m` and
+`xrd0_ttm` stay Python).
+
+### Where the flip sits
+
+History is not rewritten. The branch reads, oldest first:
+
+```
+... 27c22eb3  6262224f (flip)  f7941ab0  56474bbf  2b7af4fa (revert of the flip)
+    69743545 (S-1)  165b794b (S-3)  <this report commit>  <branch head: the flip re-applied>
+```
+
+- The re-applied flip is a cherry-pick of `6262224f` with the same content: the six rows go to `kind: engine`, plus
+  the pytest that pins them. It is the branch head, the one commit after this report's commit; its SHA is in the
+  lane's final message.
+- **Root merges the parent of the head first** (everything except the flip). `6262224f` and its revert `2b7af4fa`
+  cancel, so that tree has the three A2 engine rows only. Root merges the head (the flip) only after the TRAIN identity
+  run.
+- The re-apply was checked before this report: it cherry-picks cleanly onto `165b794b`, and on the post-flip tree
+  `test_vendor_engine_path.py` gives 9 passed, `test_research_fields_engine_path.py` 11 passed and
+  `test_field_registry.py` 35 passed (real executable).
+
+### S-1: sealed values in a straddling row group (`69743545`)
+
+What happens, exactly (the code, its comments, the test header and the fixture generator's docstring now say this):
+
+1. A row group whose tradingDate statistics start on or after the seal is never read.
+2. Any other read group has its key columns (tradingDate, securityID) decoded first. `select_rows` drops each sealed
+   row first, by its date alone. It counts the row (`rows_sealed_dropped`) and looks at nothing else of it, so a
+   sealed row cannot reach `rows_off_calendar` or any later check. Before the fix, a sealed row fell through to the
+   window check, which also dropped it (the window ends at `min(role last, seal - 1)`); the drop is now explicit and
+   first.
+3. If no row of the group survives, its value columns are never decoded (the fixture's straddling group, pinned by
+   `SealPushDown`).
+4. If a pre-seal row survives, the group's value chunks are decoded whole, because a parquet column chunk is the unit
+   of decode. The sealed rows' values are in that decode. Only the surviving rows' indexes are read from it
+   (`observation`), and the chunks are released when `scan_row_group` returns. So no sealed value reaches an
+   observation, a matrix, a statistic, a message or an output.
+5. The new statistic `rows_sealed_value_decoded` (in `VendorScanStats` and the engine's
+   `source_checks.<field>.source`) counts the sealed rows decoded this way. It is 0 when no sealed value was decoded at
+   all. On the TRAIN run, root reads this count directly (review section 6, item 4) instead of inferring it.
+
+New gtest `ResearchFieldsVendorPanel.SealedValuesOfAStraddlingGroupReachNothing`:
+
+- The test writes three synthetic one-row-group parquets (seal probes, ruling T2-SYN) over a role of four sessions
+  (2023-12-26..29, lines 1 and 2).
+- **clean:** the role's eight rows only.
+- **sealed:** the clean rows plus five poisoned rows dated 2024-01-01..03. The poison is a sealed holiday, a sealed
+  key written twice, an id off the role, shares above the A9 ceiling, non-observations and absurd bars. The result:
+  - one straddling group with keys and values decoded;
+  - `rows_sealed_dropped == rows_sealed_value_decoded == 5`;
+  - every other statistic equals the clean file's (rows selected, off calendar, duplicates, A9 rows, C-81 lines,
+    repaired and kept-gap steps);
+  - every matrix cell is bit-equal to the clean file's (factor, close, shares, open, the three bars, `first_above`);
+  - the six payloads are byte-equal to the clean file's.
+- **inside (the teeth):** the same poison dated inside the window (2023-12-25, 28, 28, 29) moves everything it
+  should:
+  - off calendar 1;
+  - duplicates 2;
+  - A9 rows 3;
+  - C-81 lines 2;
+  - matrices differ.
+
+`SealPushDown` also pins `rows_sealed_value_decoded == 0` for the fixture.
+
+The test's first run failed on one teeth line only. I had hand-counted 1 duplicate key for the "inside" case, but the
+poison row on `(2023-12-29, line 2)` also lands on a clean key, so the true count is 2. I corrected that expectation in
+this new, not-yet-passing test, with the reason in its comment, before committing. No code changed, and no existing
+expectation was edited.
+
+### S-3: the panel guard fails closed (`165b794b`)
+
+`same_panel` used to refuse only on a differing statistic, so an empty Python panel record compared nothing and
+passed. It now refuses in two cases:
+
+- **Python statistics** that are not a dict, or that lack any of `PANEL_KEYS`. These are `rows_scanned`,
+  `rows_on_or_after_seal_skipped`, `rows_selected`, `rows_off_calendar` and `duplicate_keys_quarantined`; both Python
+  panels always record them.
+- **An engine entry without its panel block**, meaning no `source_checks.source` dict, or an empty one.
+
+New pytest `test_panel_guard_fails_closed_on_missing_statistics`:
+
+- Complete, equal price and ohlc statistics pass.
+- Each of these Python records is refused with the "recorded no read statistics" message: `{}`, `None`, a record
+  missing `rows_selected`, and a record holding only `rule`.
+- Each of these engine entries is refused with the "carries no vendor panel statistics" message: `{}`,
+  `{"source_checks": {}}`, an empty `source`, and a `None` `source`.
+
+### S-5: root-cause attribution
+
+Corrected in place under "A3-RED" (1). The numpy lerp and the -1 index marking were in `eccf6338`. `e812a0fd` moved
+the lerp into a helper and added the hand-derived expectation that contradicted them. The substance of the root cause
+is unchanged.
+
+### Builds and tests (fix round 1)
+
+The equity-dev tree had been deleted under DISK-2. I reconfigured it with per-worktree deps
+(`atx-build.ps1 configure -Preset equity-dev -DFETCHCONTENT_BASE_DIR=C:/atx-wt/pool-12/deps/equity-dev`, exit 0,
+157 s), then ran two builds through `research-build.ps1`, each admitted by the memory gate. Receipts are in
+`a3-build/`.
+
+| Tag | Source | Targets | Exit | Wall | TUs | Warnings in log |
+|---|---|---|---|---|---|---|
+| `p9-a3-d` | `2b7af4fa` + the S-1 / S-3 edits | `atx-engine-research-fields, atx-engine-research-fields-tests, atx-research-fields` | 0 | 52 s | 89 | 0 |
+| `p9-a3-e` | the same + the corrected teeth count | `atx-engine-research-fields-tests` | 0 | 17 s | 1 | 0 |
+
+- **gtests**, whole target (`p9-a3-e`): `66 tests from 13 test suites ran ... [ PASSED ] 66 tests`. That is the 65
+  from before plus the new straddle test. The anchored M1a-RED and seal filters
+  (`ResearchFieldsVendorPanel.Seal*:ResearchFieldsWriter.QuantilesPartitionLikeNumpy:ResearchFieldsVolumeMean.*`)
+  are all green.
+- **pytest**: explicit paths, each file in its own session, with `ATX_RESEARCH_FIELDS_EXE` set to the `p9-a3-d`
+  `atx-research-fields.exe`. Every exit code is 0.
+
+  | File | Pre-flip tree (below the head) | Post-flip trial |
+  |---|---|---|
+  | `test_vendor_engine_path.py` | 8 passed | 9 passed |
+  | `test_research_fields_engine_path.py` | 11 passed | 11 passed |
+  | `test_vendor_panel_fixture.py` | 3 passed | (not run) |
+  | `test_research_fields_fixture.py` | 2 passed | (not run) |
+  | `test_field_registry.py` | 35 passed | 35 passed |
+  | `test_no_new_python_builder.py` | 4 passed | (not run) |
+
+  `test_vendor_panel_fixture.py` re-runs the generator and the Python builder; with the docstring edit, every
+  committed fixture byte still comes back.
+
+### For root, updated
+
+- **Anchored filter for A3:** `ResearchFieldsVendorPanel.*:ResearchFieldsVendorFields.*:ResearchFieldsVendorFixture.*:
+  ResearchFieldsNyseCalendar.*:ResearchFieldsFactorBreak.*`, now 19 tests (19 passed, run here). The whole target is
+  66 of 66.
+- **Merge order:**
+  1. Merge the parent of the branch head; the pre-flip tree is green.
+  2. Run the TRAIN identity run.
+  3. Merge the head (the flip) only after that run passes.
+- **Seal check on the TRAIN run:** read `source_checks.<field>.source.rows_sealed_value_decoded`. 0 means no sealed
+  value was decoded at all; a positive count is the number of sealed rows decoded with their chunk and dropped unread.
+
+### DISK-2 (again)
+
+After this report's commit, I delete the object tree I rebuilt and `deps/equity-dev/`, by name. The `mega-p9-a3-*`
+receipts and logs and `a3-fix1-configure.log` stay in `build-equity/`; the pre-existing `audits/` and
+`v8-interim3-pitch-render-run2/` are left alone.
