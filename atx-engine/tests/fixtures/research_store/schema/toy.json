@@ -1,0 +1,213 @@
+{
+  "name": "toy",
+  "db": "cache",
+  "version": 1,
+  "tables": [
+    {
+      "name": "store_info",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": true,
+      "key": [
+        "key"
+      ],
+      "columns": [
+        {
+          "name": "key",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "value",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE store_info(key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(key)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "toy",
+      "version": 3,
+      "since": 1,
+      "append_only": true,
+      "volatile": false,
+      "key": [
+        "k"
+      ],
+      "columns": [
+        {
+          "name": "k",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "i",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "b",
+          "type": "bool",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "r",
+          "type": "real",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "u",
+          "type": "u64",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "s",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": true,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "p",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "j",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "x",
+          "type": "blob",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "o",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": [
+            "red",
+            "blue"
+          ]
+        },
+        {
+          "name": "v",
+          "type": "int",
+          "nullable": true,
+          "indexed": false,
+          "volatile": true,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE toy(k TEXT NOT NULL, i INTEGER NOT NULL, b INTEGER NOT NULL CHECK(b IN (0, 1)), r REAL NOT NULL, u INTEGER NOT NULL, s TEXT NOT NULL CHECK(length(s) = 64 AND s NOT GLOB '*[^0-9a-f]*'), p TEXT NOT NULL CHECK(instr(p, '\\') = 0 AND substr(p, 1, 1) <> '/' AND ('/' || p || '/') NOT GLOB '*/../*'), j TEXT NOT NULL CHECK(json_valid(j)), x BLOB NOT NULL, o TEXT CHECK(o IN ('red', 'blue')), v INTEGER, PRIMARY KEY(k)) STRICT, WITHOUT ROWID;",
+        "CREATE INDEX ix_toy_s ON toy(s);",
+        "CREATE TRIGGER toy_no_update BEFORE UPDATE ON toy BEGIN SELECT RAISE(ABORT, 'toy is append-only'); END;",
+        "CREATE TRIGGER toy_no_delete BEFORE DELETE ON toy BEGIN SELECT RAISE(ABORT, 'toy is append-only'); END;"
+      ]
+    },
+    {
+      "name": "plain",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "a",
+        "b"
+      ],
+      "columns": [
+        {
+          "name": "a",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "b",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "c",
+          "type": "real",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "d",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE plain(a TEXT NOT NULL, b INTEGER NOT NULL, c REAL, d TEXT NOT NULL, PRIMARY KEY(a, b)) STRICT, WITHOUT ROWID;"
+      ]
+    }
+  ],
+  "views": []
+}

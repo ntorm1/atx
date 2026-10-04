@@ -105,7 +105,7 @@ void merge_blocks(Json &entry, const Json &blocks) {
 // Builds every plan through its kind, in order, sharing one context; the receipt entries.
 [[nodiscard]] core::Result<Json> build_entries(const BuildSpec &spec, const RoleAxes &role,
                                                std::span<const FieldPlan> plans) {
-  BuildContext ctx{spec, role, {}};
+  BuildContext ctx{spec, role, {}, plans};
   Json fields = Json::array();
   for (const FieldPlan &plan : plans) {
     ATX_TRY(const auto built, plan.kind->build(plan, ctx));
@@ -161,35 +161,56 @@ void merge_blocks(Json &entry, const Json &blocks) {
 
 [[nodiscard]] bool is_known_key(std::string_view key, bool registry) {
   return key == "schema" || key == "role" || key == "output_dir" || key == "fields" ||
-         key == "finra" || (registry && key == "reuse");
+         key == "finra" || key == "price_source" || (registry && key == "reuse") ||
+         key == "thirteenf" || key == "indexes";
+}
+
+// j's "manifest_sha256", lower-cased: 64 hex digits (`key` names the block in the refusal).
+[[nodiscard]] core::Result<std::string> sha256_pin(const Json &j, const std::string &key) {
+  ATX_TRY(auto pin, required_string(j, "manifest_sha256"));
+  std::transform(pin.begin(), pin.end(), pin.begin(), [](char c) {
+    return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  });
+  const bool hex = pin.size() == 64 && std::all_of(pin.begin(), pin.end(), [](char c) {
+                     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                   });
+  if (!hex) {
+    return core::Err(invalid(key + ".manifest_sha256 must be 64 hex digits"));
+  }
+  return core::Ok(std::move(pin));
+}
+
+// A {"dir", "manifest_sha256"} block named `key`: Err for another shape or key; the dir.
+[[nodiscard]] core::Result<std::filesystem::path> pinned_dir(const Json &j,
+                                                             const std::string &key) {
+  if (!j.is_object()) {
+    return core::Err(invalid(key + " must be an object {dir, manifest_sha256}"));
+  }
+  for (auto it = j.begin(); it != j.end(); ++it) {
+    if (it.key() != "dir" && it.key() != "manifest_sha256") {
+      return core::Err(invalid("unknown " + key + " key " + it.key()));
+    }
+  }
+  ATX_TRY(const auto dir, required_string(j, "dir"));
+  return core::Ok(std::filesystem::path(dir));
 }
 
 // "reuse": {"dir", "manifest_sha256"?} of a v2 spec; the pin is compared lower-case.
 [[nodiscard]] core::Result<ReuseRequest> parse_reuse(const Json &j) {
-  if (!j.is_object()) {
-    return core::Err(invalid("reuse must be an object {dir, manifest_sha256}"));
-  }
-  for (auto it = j.begin(); it != j.end(); ++it) {
-    if (it.key() != "dir" && it.key() != "manifest_sha256") {
-      return core::Err(invalid("unknown reuse key " + it.key()));
-    }
-  }
   ReuseRequest out;
-  ATX_TRY(const auto dir, required_string(j, "dir"));
-  out.dir = std::filesystem::path(dir);
+  ATX_TRY(out.dir, pinned_dir(j, "reuse"));
   if (j.contains("manifest_sha256")) {
-    ATX_TRY(auto pin, required_string(j, "manifest_sha256"));
-    std::transform(pin.begin(), pin.end(), pin.begin(), [](char c) {
-      return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    });
-    const bool hex = pin.size() == 64 && std::all_of(pin.begin(), pin.end(), [](char c) {
-                       return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-                     });
-    if (!hex) {
-      return core::Err(invalid("reuse.manifest_sha256 must be 64 hex digits"));
-    }
-    out.manifest_sha256 = std::move(pin);
+    ATX_TRY(out.manifest_sha256, sha256_pin(j, "reuse"));
   }
+  return core::Ok(std::move(out));
+}
+
+// "thirteenf" / "indexes": {"dir", "manifest_sha256"} of an atx-db stage (lane AL-SIG); the pin is
+// required and compared lower-case.
+[[nodiscard]] core::Result<StageRequest> parse_stage(const Json &j, const std::string &key) {
+  StageRequest out;
+  ATX_TRY(out.dir, pinned_dir(j, key));
+  ATX_TRY(out.manifest_sha256, sha256_pin(j, key));
   return core::Ok(std::move(out));
 }
 
@@ -321,9 +342,21 @@ core::Result<BuildSpec> parse_build_spec(std::string_view json_text,
       ATX_TRY(const auto finra, required_string(j, "finra"));
       out.finra = std::filesystem::path(finra);
     }
+    if (j.contains("price_source")) { // the vendor-panel kinds' input (P9 A3)
+      ATX_TRY(const auto price_source, required_string(j, "price_source"));
+      out.price_source = std::filesystem::path(price_source);
+    }
     if (j.contains("reuse")) {
       ATX_TRY(auto reuse, parse_reuse(j.at("reuse")));
       out.reuse = std::move(reuse);
+    }
+    if (j.contains("thirteenf")) {
+      ATX_TRY(auto stage, parse_stage(j.at("thirteenf"), "thirteenf"));
+      out.thirteenf = std::move(stage);
+    }
+    if (j.contains("indexes")) {
+      ATX_TRY(auto stage, parse_stage(j.at("indexes"), "indexes"));
+      out.indexes = std::move(stage);
     }
     const auto planned = plan_fields(out, registry); // every name through its kind's parse
     if (!planned) {
@@ -341,8 +374,10 @@ core::Result<std::string> build_fields(const BuildSpec &spec, std::string_view s
     ATX_TRY_VOID(require_output_dir(spec));
     ATX_TRY(const auto role, RoleAxes::load(spec.role_dir, spec.role_manifest_sha256));
     ATX_TRY(const auto plans, plan_fields(spec, nullptr));
+    ATX_TRY_VOID(check_stage_pins(spec));
     ATX_TRY(Json fields, build_entries(spec, role, plans));
     ATX_TRY_VOID(repin_role(spec));
+    ATX_TRY_VOID(check_stage_pins(spec));
     const Json receipt = receipt_json(spec, spec_sha256, role, std::move(fields), producer);
     return core::Ok(receipt.dump(2) + "\n");
   } catch (const std::exception &e) {
@@ -363,6 +398,7 @@ core::Result<RegistryBuild> build_registry_fields(const BuildSpec &spec,
     }
     ATX_TRY(const auto role, RoleAxes::load(spec.role_dir, spec.role_manifest_sha256));
     ATX_TRY(const auto plans, plan_fields(spec, &registry));
+    ATX_TRY_VOID(check_stage_pins(spec)); // before the reuse decision: a reused field is bound too
     std::optional<ReuseOutcome> reuse;
     if (spec.reuse) {
       ATX_TRY(auto outcome, reuse_payloads(*spec.reuse, role, plans, producer, spec.output_dir));
@@ -379,6 +415,7 @@ core::Result<RegistryBuild> build_registry_fields(const BuildSpec &spec,
     }
     ATX_TRY(const Json built, build_entries(spec, role, to_build));
     ATX_TRY_VOID(repin_role(spec));
+    ATX_TRY_VOID(check_stage_pins(spec));
     Json receipt = receipt_json(spec, spec_sha256, role, built, producer);
     receipt["registry"] = Json{{"path", registry.path}, {"sha256", registry.sha256}};
     receipt["reused"] = std::move(reused_names);

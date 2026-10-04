@@ -1,0 +1,15 @@
+{
+  "chain": "fx-w1",
+  "index": 1,
+  "inputs": {
+    "manifest_sha256": "fa573e0d97d13fe202f422b954a17fefdd99203c31b49a71f8fede7df88e7026"
+  },
+  "outputs": {
+    "n_before": 3
+  },
+  "schema": "atx.stage-receipt/v1",
+  "seconds": 0.25,
+  "stage": "preflight",
+  "started_utc": "2023-06-01T00:00:00+00:00",
+  "status": "ok"
+}

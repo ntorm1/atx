@@ -1,0 +1,77 @@
+[
+  {
+    "name": "toy-every-type",
+    "table": "toy",
+    "version": 3,
+    "columns": [
+      {"name": "k", "type": "text", "value": "key-1"},
+      {"name": "i", "type": "int", "value": -42},
+      {"name": "b", "type": "bool", "value": true},
+      {"name": "r", "type": "real", "bits": "3ff8000000000000"},
+      {"name": "u", "type": "u64", "hex": "ffffffffffffffff"},
+      {"name": "s", "type": "sha256", "value": "abababababababababababababababababababababababababababababababab"},
+      {"name": "p", "type": "relpath", "value": "dir/file.json"},
+      {"name": "j", "type": "json", "value": "{\"x\":[1,2]}"},
+      {"name": "x", "type": "blob", "hex": "00ff10"},
+      {"name": "o", "type": "text", "value": null}
+    ]
+  },
+  {
+    "name": "negative-zero",
+    "table": "reals",
+    "version": 1,
+    "columns": [{"name": "r", "type": "real", "bits": "8000000000000000"}]
+  },
+  {
+    "name": "positive-zero",
+    "table": "reals",
+    "version": 1,
+    "columns": [{"name": "r", "type": "real", "bits": "0000000000000000"}]
+  },
+  {
+    "name": "nan-payload",
+    "table": "reals",
+    "version": 1,
+    "columns": [{"name": "r", "type": "real", "bits": "7ff8000000000001"}]
+  },
+  {
+    "name": "utf8-and-empty",
+    "table": "texts",
+    "version": 7,
+    "columns": [
+      {"name": "t", "type": "text", "value": "é€"},
+      {"name": "e", "type": "text", "value": ""},
+      {"name": "x", "type": "blob", "hex": ""},
+      {"name": "n", "type": "json", "value": null}
+    ]
+  },
+  {
+    "name": "int-extremes",
+    "table": "ints",
+    "version": 1,
+    "columns": [
+      {"name": "lo", "type": "int", "value": -9223372036854775808},
+      {"name": "hi", "type": "int", "value": 9223372036854775807},
+      {"name": "zero", "type": "int", "value": 0},
+      {"name": "f", "type": "bool", "value": false},
+      {"name": "u", "type": "u64", "hex": "0000000000000000"}
+    ]
+  },
+  {
+    "name": "artifact",
+    "table": "artifact",
+    "version": 1,
+    "columns": [
+      {"name": "path_key", "type": "text", "value": "scripts/specs/p9/a.json"},
+      {"name": "path", "type": "relpath", "value": "scripts/specs/p9/A.json"},
+      {"name": "sha256", "type": "sha256", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      {"name": "bytes", "type": "int", "value": 120},
+      {"name": "class", "type": "text", "value": "spec"},
+      {"name": "json_schema", "type": "text", "value": null},
+      {"name": "sha_source", "type": "text", "value": "verified"},
+      {"name": "declared_by", "type": "relpath", "value": null},
+      {"name": "eol", "type": "text", "value": "lf"},
+      {"name": "producer_key", "type": "sha256", "value": null}
+    ]
+  }
+]

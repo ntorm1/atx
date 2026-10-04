@@ -1,0 +1,3 @@
+# AL-SIG fixture: every stage file is pinned by SHA-256 in its stage manifest (two parts deliberately mis-pinned: the
+# sealed-part probe), the role by its manifest, the expected payloads by the gtest. No end-of-line conversion.
+* -text

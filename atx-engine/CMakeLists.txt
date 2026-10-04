@@ -325,6 +325,33 @@ target_sources(atx-engine-research-fields PRIVATE "${_atx_fields_identity_cpp}")
 add_executable(atx-research-fields EXCLUDE_FROM_ALL src/research/fields/research_fields_main.cpp)
 target_link_libraries(atx-research-fields PRIVATE atx::engine-research-fields atx_warnings)
 
+# P9 lane SQL1 (K-P9-13, ruling SQL-5): the research-artifact SQLite store core -- compile-time
+# table descriptors and their templates (DDL, bind / read, record digest, schema JSON), the
+# catalog_core and cache groups, store open / create / migrate and the catalog digest. SQLite is
+# the vendored atx_sqlite3 reached only through atx::core's db wrapper (ruling SQL-4). The
+# descriptor templates sit in private headers under src/ (reached as research/store/detail/...)
+# and are instantiated in exactly one TU per group (core_ops.cpp, cache_ops.cpp). No PCH entry.
+# EXCLUDE_FROM_ALL: nothing links it until a consumer asks.
+add_library(atx-engine-research-store ${ATX_LIB_TYPE} EXCLUDE_FROM_ALL
+    src/research/store/core_ops.cpp
+    src/research/store/cache_ops.cpp
+    src/research/store/digest.cpp
+    src/research/store/store.cpp)
+add_library(atx::engine-research-store ALIAS atx-engine-research-store)
+target_include_directories(atx-engine-research-store
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_features(atx-engine-research-store PUBLIC cxx_std_20)
+target_link_libraries(atx-engine-research-store
+    PUBLIC
+        atx::core
+    PRIVATE
+        atx_warnings
+        nlohmann_json::nlohmann_json)
+
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
@@ -361,3 +388,70 @@ target_link_libraries(atx-engine-research-admission
         nlohmann_json::nlohmann_json)
 add_executable(atx-research-admission EXCLUDE_FROM_ALL src/research/admission/admission_main.cpp)
 target_link_libraries(atx-research-admission PRIVATE atx::engine-research-admission atx_warnings)
+
+# P9 lane SQL2 (K-P9-13, rulings SQL-2 / SQL-5 / SQL-7): the artifact catalog over the research
+# store -- the catalog_records descriptors (instantiated only in records_ops.cpp), the class
+# registry reader, the seal guard, pins, ingesters, queries -- and the `atx-research-store` CLI
+# (init / catalog / ingest / verify / query / digest / dump / cache / schema / quick-check). Its
+# own library so cache users never link the ingesters. The class registry is data read at run time
+# (atx-engine/schemas/research_store/classes.json); ATX_RESEARCH_STORE_CLASSES names the source
+# tree's copy as the CLI's last fallback. No PCH entry. EXCLUDE_FROM_ALL: no research executable
+# links it.
+add_library(atx-engine-research-catalog ${ATX_LIB_TYPE} EXCLUDE_FROM_ALL
+    src/research/store/catalog/records_ops.cpp
+    src/research/store/catalog/catalog.cpp
+    src/research/store/catalog/classify.cpp
+    src/research/store/catalog/seal_guard.cpp
+    src/research/store/catalog/pins.cpp
+    src/research/store/catalog/json_text.cpp
+    src/research/store/catalog/ingest_run.cpp
+    src/research/store/catalog/ingest_stage.cpp
+    src/research/store/catalog/ingest_cycle.cpp
+    src/research/store/catalog/ingest_wave.cpp
+    src/research/store/catalog/ingest_spec.cpp
+    src/research/store/catalog/ingest_ledger.cpp
+    src/research/store/catalog/ingest_fields.cpp
+    src/research/store/catalog/ingest_build.cpp
+    src/research/store/catalog/query.cpp
+    src/research/store/catalog/cache_index.cpp
+    src/research/store/catalog/store_cli.cpp)
+add_library(atx::engine-research-catalog ALIAS atx-engine-research-catalog)
+target_include_directories(atx-engine-research-catalog
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_features(atx-engine-research-catalog PUBLIC cxx_std_20)
+target_compile_definitions(atx-engine-research-catalog PRIVATE
+    "ATX_RESEARCH_STORE_CLASSES=\"${CMAKE_CURRENT_SOURCE_DIR}/schemas/research_store/classes.json\"")
+target_link_libraries(atx-engine-research-catalog
+    PUBLIC
+        atx::engine-research-store
+    PRIVATE
+        atx_warnings
+        nlohmann_json::nlohmann_json)
+add_executable(atx-research-store EXCLUDE_FROM_ALL src/research/store/catalog/store_main.cpp)
+target_link_libraries(atx-research-store PRIVATE atx::engine-research-catalog atx_warnings)
+
+# Platform P9 A3 (cross-lane append, ruling P2; migration slice 4): the shared vendor panel (one hashed TickerHistory3
+# scan per build, the seal pushed down; K-P9-2 source half), factor-break-v1, the NYSE rule calendar and the
+# vendor-panel builder kinds join the fields library. Arrow / Parquet reach it through atx::core (PUBLIC).
+target_sources(atx-engine-research-fields PRIVATE
+    src/research/fields/sources/factor_break.cpp
+    src/research/fields/sources/nyse_calendar.cpp
+    src/research/fields/sources/vendor_panel.cpp
+    src/research/fields/vendor_fields.cpp)
+
+# P9 lane AL-SIG (cross-lane append): the atx-db stage readers (research/fields/sources/, ruling P18: the pinned
+# stage, its parquet column decoders, the 13F and Russell-proxy readers) and the engine-only field kinds gia_13f
+# and russell_recon (DEC-5) join the research-fields library. The readers use atx::core's parquet reader only.
+target_sources(atx-engine-research-fields PRIVATE
+    src/research/fields/sources/stage.cpp
+    src/research/fields/sources/parquet_columns.cpp
+    src/research/fields/sources/thirteenf_filings.cpp
+    src/research/fields/sources/thirteenf_holdings.cpp
+    src/research/fields/sources/russell_proxy.cpp
+    src/research/fields/gia_13f_field.cpp
+    src/research/fields/gia_13f_skill.cpp
+    src/research/fields/russell_recon_field.cpp)

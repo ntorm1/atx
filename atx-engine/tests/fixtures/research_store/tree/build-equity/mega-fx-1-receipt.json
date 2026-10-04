@@ -1,0 +1,13 @@
+{
+    "Source":  "ffffffffffffffffffffffffffffffffffffffff",
+    "Preset":  "equity-dev",
+    "ExitCode":  0,
+    "WallSeconds":  102.2326265,
+    "Tag":  "fx-1",
+    "Executables":  {
+                        "atx-research-store":  {
+                                                   "Path":  "C:\\atx\\build-equity\\bin\\atx-research-store.exe",
+                                                   "Sha256":  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                                               }
+                    }
+}

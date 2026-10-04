@@ -233,7 +233,7 @@ def test_flag_errors(tmp_path, monkeypatch):
         engine.run(FIXTURE / "role", role_sha(), tmp_path / "d", ["si_dtc"], engine_fields=["vol_126"],
                    engine_exe=standin(tmp_path), finra=FIXTURE / "finra", module_options={})
     with pytest.raises(engine.EngineError, match="no engine route"):    # the builder entry's call (A1)
-        with engine.engine_path(standin(tmp_path), ["ret_overnight"]):
+        with engine.engine_path(standin(tmp_path), ["coskew_60m"]):     # a price field the engine does not port
             pass
     monkeypatch.setattr(engine, "REGISTRY", tmp_path / "absent" / "field_registry.json")
     with pytest.raises(engine.EngineError, match="cannot be read"):
@@ -241,7 +241,8 @@ def test_flag_errors(tmp_path, monkeypatch):
 
 
 def test_engine_rows_follow_the_registry(tmp_path, field_registry):
-    assert engine.ENGINE_FIELDS == ("si_shares", "si_dtc", "vol_126")   # the routable fields (lane A1 imports it)
+    assert engine.ENGINE_FIELDS == ("si_shares", "si_dtc", "vol_126", "ret_overnight", "ret_intraday", "ceq_iss_5y",
+                                    "open_adj", "high_adj", "low_adj")  # the routable fields (lane A1 imports it)
     assert engine.engine_rows() == ["si_shares", "si_dtc", "vol_126"]          # registration order, python rows out
     assert engine.engine_rows(field_registry) == ["si_shares", "si_dtc", "vol_126"]
     flipped = write_registry(tmp_path / "other.json", {"vol_126": "engine", "si_dtc": "python", "si_shares": "python"})
