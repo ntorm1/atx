@@ -35,6 +35,16 @@ def test_all153_120_slots_mean_sign_rho_tstats_and_original_gates():
     assert report['readiness']=='NOT_PRODUCTION_READY' and report['source_quality_certified'] is False
 
 
+def test_statistical_success_and_caller_flags_never_admit_source_gate():
+    units,entries,osap=evidence()
+    for unit in units.values():unit['source_quality_certified']=True;unit['independent_source_admission']='PASS'
+    report=R.summarize(units,entries,osap)
+    assert all(report['gates'][name]['pass'] for name in ('jkp_matched_rho_share','jkp_mean_sign_share','osap_median_rho'))
+    gate=report['gates']['source_admission']
+    assert not gate['pass'] and gate['measured'] is None and gate['status']=='pending_independent_actual_source_acceptance'
+    assert report['gate_status']['source_admission']=='FAIL' and not report['source_quality_certified']
+
+
 def test_missing_overlap_member_remains_in_osap_denominator():
     units,entries,osap=evidence()
     for m in R.MONTHS:units[m]['outcomes']['age']['osap']=None

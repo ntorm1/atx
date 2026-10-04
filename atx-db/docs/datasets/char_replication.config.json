@@ -1,5 +1,5 @@
 {
-  "version": "char-replication-v1-r20",
+  "version": "char-replication-v1-r20-restart1",
   "registry_sha256": "caf3bc45efda101fa4f5f96831093858388d27c71c45d836392b0fa4b00caa16",
   "upstream_factor_config_sha256": "0d38a84b7a12825511686956ac52f87bd24769ee8741477cdb425e61b5a4f4b0",
   "original153": [
@@ -376,6 +376,8 @@
     "osap_denominator": "entire nonempty independently admitted original153 overlap; every matched member must reach60finite pairs and finite rho"
   },
   "readiness": "NOT_PRODUCTION_READY",
+  "finalization": "existing immutable finals require independent expected byte equality; sealed generation requires full native public replay; writer-locked recoverable two-pointer intent and prior-byte rollback",
+  "source_prerequisite": "separate machine FAIL/pending; no independent actual source-economic acceptance adjudication admitted; caller pins and statistical success never certify sources",
   "source_quality_certified": false,
   "predictive_claim": "none; Task16 distinct predictive family/horizons/FDR remain separate",
   "actual_return_runs": []

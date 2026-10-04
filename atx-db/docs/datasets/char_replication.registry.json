@@ -1,11 +1,11 @@
 {
   "dataset": "char_replication",
-  "version": "char-replication-v1-r20",
+  "version": "char-replication-v1-r20-restart1",
   "config": "char_replication.config.json",
   "documentation": "char_replication.md",
   "path": "validation/char_replication.json",
   "keys": ["manifest SHA256", "holding_month", "JKP characteristic name"],
-  "schema_id": "char-replication-v1-r20",
+  "schema_id": "char-replication-v1-r20-restart1",
   "asof_macro_sql": null,
   "clock": "validation artifact; formation inputs obey Task7 PIT, complete evaluated windows end before2023",
   "inventory": "original153; complete independently admitted OSAP overlap",
@@ -14,7 +14,7 @@
   "readiness": "NOT_PRODUCTION_READY",
   "source_quality_certified": false,
   "actual_return_runs": [],
-  "actual_gates": {"jkp_matched_rho_share": "FAIL/unmeasured", "jkp_mean_sign_share": "FAIL/unmeasured", "osap_median_rho": "FAIL/unmeasured"},
+  "actual_gates": {"jkp_matched_rho_share": "FAIL/unmeasured", "jkp_mean_sign_share": "FAIL/unmeasured", "osap_median_rho": "FAIL/unmeasured", "source_admission": "FAIL/pending_independent_actual_source_acceptance"},
   "source_admission": "FAIL/unmeasured; root independently pins binding/source metadata before measurement",
   "predictive_significance": "none; Task16 remains a distinct family"
 }

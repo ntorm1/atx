@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import contextlib
+import hashlib
 import datetime as dt
 import json
 import math
@@ -17,7 +18,7 @@ from . import char_monthly_evidence as E
 from .char_monthly_registry import FREEZE_SHA256,JKP153
 
 STAGE='char_replication'
-VERSION='char-replication-v1-r20'
+VERSION='char-replication-v1-r20-restart1'
 CONFIG_PATH=Path(__file__).parents[3]/'docs/datasets/char_replication.config.json'
 CONFIG=E.read_metadata(CONFIG_PATH)
 CONFIG_SHA=R.digest(CONFIG)
@@ -77,17 +78,117 @@ def summarize(units,jkp_entries,osap_entries):
     gates={'jkp_matched_rho_share':{'pass':good/153>=.7,'measured':good/153,'numerator':good,'denominator':153,'required':.7,'rho_threshold':.7},
         'jkp_mean_sign_share':{'pass':signs/153>=.9,'measured':signs/153,'numerator':signs,'denominator':153,'required':.9},
         'osap_median_rho':{'pass':len(values)==len(osap_names) and median is not None and median>=.6,'measured':median,'matched':len(values),'denominator':len(osap_names),'required':.6}}
+    gates['source_admission']={'pass':False,'measured':None,'status':'pending_independent_actual_source_acceptance',
+        'reason':'native replay and caller pins do not constitute independent actual source-economic acceptance; no acceptance adjudication admitted',
+        'required':'independent actual source-economic acceptance, separately adjudicated before qualification'}
     return {'stage':STAGE,'version':VERSION,'registry_sha256':FREEZE_SHA256,'config_sha256':CONFIG_SHA,'readiness':'NOT_PRODUCTION_READY','source_quality_certified':False,
         'requested_slots':[{'holding_month':m,'formation':units[m]['formation'],'population':units[m]['population'],'benchmark_counts':units[m]['benchmark_counts']} for m in MONTHS],
         'outcomes':outcomes,'gates':gates,'gate_status':{n:'PASS' if v['pass'] else 'FAIL' for n,v in gates.items()},
         'interpretation':'monthly benchmark close-to-close replication only; no executable trade, net-profitability or Task16 predictive significance claim'}
 
 
+def json_bytes(value):return (json.dumps(value,sort_keys=True,indent=2,default=str,allow_nan=False)+'\n').encode('utf-8')
+
+
 def immutable(path,value):
     path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_name(path.name+'.'+uuid.uuid4().hex+'.partial')
-    with tmp.open('x',encoding='utf-8') as stream:
-        json.dump(value,stream,sort_keys=True,indent=2,default=str,allow_nan=False);stream.write('\n');stream.flush();os.fsync(stream.fileno())
+    with tmp.open('xb') as stream:
+        stream.write(json_bytes(value));stream.flush();os.fsync(stream.fileno())
     os.link(tmp,path);tmp.unlink()
+
+
+def immutable_expected(path,value):
+    if path.exists():
+        before=R.identity(path)
+        if path.read_bytes()!=json_bytes(value) or R.identity(path)!=before:raise ValueError('existing immutable final differs from independently reconstructed expected bytes')
+    else:immutable(path,value)
+
+
+def atomic_pointer(path,payload):
+    path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_name(path.name+'.'+uuid.uuid4().hex+'.partial')
+    with tmp.open('xb') as stream:stream.write(payload);stream.flush();os.fsync(stream.fileno())
+    os.replace(tmp,path)
+
+
+def pointer_paths(root):return {'current':root/STAGE/'current.json','validation':root/'validation/char_replication.json'}
+
+
+def check_prior_pair(root,prior):
+    if (prior['current'] is None)!=(prior['validation'] is None):raise ValueError('incomplete prior publication pair')
+    if prior['current'] is None:return
+    current,validation=[json.loads(prior[key]['text']) for key in ('current','validation')]
+    if set(current)!={'generation','manifest'} or set(validation)!={'generation','manifest','report'} or current['generation']!=validation['generation'] or current['manifest']!=validation['manifest']:raise ValueError('prior publication pointers disagree')
+    generation=generation_path(root,current['generation']);N.identity_pin(current['manifest'])
+    if R.identity(generation/'manifest.json')!=current['manifest']:raise ValueError('prior publication manifest changed')
+    manifest=E.read_metadata(generation/'manifest.json');report=E.read_metadata(generation/'char_replication.json')
+    if manifest.get('report')!=R.identity(generation/'char_replication.json') or R.digest(validation['report'])!=R.digest(report):raise ValueError('prior publication report changed')
+    if manifest.get('source_quality_certified') is not False or report.get('source_quality_certified') is not False or manifest.get('readiness')!='NOT_PRODUCTION_READY' or report.get('readiness')!='NOT_PRODUCTION_READY' or report.get('gate_status',{}).get('source_admission')!='FAIL':raise ValueError('prior pointer restoration cannot certify source quality')
+
+
+def load_pending(root,name,expected_sha):
+    marker=root/STAGE/'publication.pending.json'
+    if not marker.exists():return None
+    record=E.read_metadata(marker)
+    if set(record)!={'intent','identity'}:raise ValueError('abbreviated publication pending marker')
+    target=R.safe_path(root/STAGE,record['intent'])
+    if target.name!='intent.json' or target.parent.parent!=(root/STAGE/'publications').resolve() or R.identity(target)!=record['identity']:raise ValueError('publication intent identity changed')
+    intent=E.read_metadata(target)
+    if set(intent)!={'version','generation','expected_bindings_sha256','manifest','desired','prior'} or intent['version']!=VERSION or intent['generation']!=name or intent['expected_bindings_sha256']!=expected_sha:raise ValueError('finish original admitted publication transaction before another generation')
+    if intent['manifest']!=R.identity(generation_path(root,name)/'manifest.json'):raise ValueError('publication target manifest changed')
+    if set(intent['desired'])!={'current','validation'} or set(intent['prior'])!={'current','validation'}:raise ValueError('incomplete publication pointer pair')
+    for old in intent['prior'].values():
+        if old is not None:
+            if set(old)!={'text','identity'} or not isinstance(old['text'],str):raise ValueError('abbreviated prior pointer evidence')
+            payload=old['text'].encode('utf-8');N.identity_pin(old['identity'])
+            if old['identity']!={'sha256':hashlib.sha256(payload).hexdigest(),'bytes':len(payload)}:raise ValueError('prior pointer bytes changed')
+    check_prior_pair(root,intent['prior'])
+    return target,intent
+
+
+def restore_prior(root,pending):
+    _,intent=pending;paths=pointer_paths(root)
+    for key,path in paths.items():
+        actual=path.read_bytes() if path.exists() else None
+        prior=intent['prior'][key];old=prior['text'].encode('utf-8') if prior else None
+        if actual not in (old,json_bytes(intent['desired'][key])):raise ValueError('publication pointer changed outside recorded transaction')
+    for key,path in paths.items():
+        prior=intent['prior'][key]
+        if prior is None:
+            if path.exists():path.unlink()
+        else:atomic_pointer(path,prior['text'].encode('utf-8'))
+
+
+def publish_pair(root,generation,report,snapshot,expected_sha):
+    """Called under writer lock only, after complete independent native replay."""
+    pin=R.identity(generation/'manifest.json');desired={'current':{'generation':generation.name,'manifest':pin},'validation':{'generation':generation.name,'manifest':pin,'report':report}}
+    paths=pointer_paths(root);pending=load_pending(root,generation.name,expected_sha)
+    if pending:
+        if R.digest(pending[1]['desired'])!=R.digest(desired):raise ValueError('pending publication differs from independently replayed target')
+        restore_prior(root,pending)
+    else:
+        if all(path.exists() and path.read_bytes()==json_bytes(desired[key]) for key,path in paths.items()):return
+        prior={}
+        for key,path in paths.items():
+            prior[key]=None
+            if path.exists():
+                before=R.identity(path);payload=path.read_bytes()
+                if R.identity(path)!=before or before!={'sha256':hashlib.sha256(payload).hexdigest(),'bytes':len(payload)}:raise ValueError('prior pointer changed during capture')
+                prior[key]={'text':payload.decode('utf-8'),'identity':before}
+        check_prior_pair(root,prior)
+        intent={'version':VERSION,'generation':generation.name,'expected_bindings_sha256':expected_sha,'manifest':pin,'desired':desired,'prior':prior}
+        target=root/STAGE/'publications'/uuid.uuid4().hex/'intent.json';immutable(target,intent)
+        C.write_json_atomic(root/STAGE/'publication.pending.json',{'intent':target.relative_to(root/STAGE).as_posix(),'identity':R.identity(target)})
+        pending=(target,intent)
+    try:
+        recheck(snapshot)
+        for key,path in paths.items():atomic_pointer(path,json_bytes(desired[key]))
+        recheck(snapshot)
+        if any(path.read_bytes()!=json_bytes(desired[key]) for key,path in paths.items()):raise ValueError('publication pair changed during commit')
+        immutable_expected(pending[0].parent/'complete.json',{'version':VERSION,'intent':R.identity(pending[0]),'desired_sha256':R.digest(desired)})
+        (root/STAGE/'publication.pending.json').unlink()
+    except BaseException:
+        restore_prior(root,pending)
+        raise
 
 
 @contextlib.contextmanager
@@ -185,15 +286,20 @@ def build(root,binding_path,name,max_new_months=None,expected_bindings_sha256=No
     if max_new_months is not None and (type(max_new_months) is not int or max_new_months<1):raise ValueError('positive bounded monthly budget required')
     generation=generation_path(root,name);stage=root/STAGE
     with writer_lock(stage):
-        if (generation/'manifest.json').exists():raise ValueError('immutable completed Task8 generation')
+        pending=load_pending(root,name,expected_bindings_sha256)
+        if pending:restore_prior(root,pending)
         con=C.connect(memory='128MB',threads=1,temp_dir=stage/'_spill',db_file='char-replication-'+uuid.uuid4().hex+'.duckdb')
         try:
             snapshot,context=freeze(root,binding_path,con,expected_bindings_sha256);snap_path=generation/'snapshot.json'
             if snap_path.exists():
-                if R.digest(E.read_metadata(snap_path))!=R.digest(snapshot):raise ValueError('stale Task8 restart snapshot')
+                immutable_expected(snap_path,snapshot)
             else:
                 if generation.exists() and any(generation.iterdir()):raise ValueError('unsealed candidate without source snapshot')
                 immutable(snap_path,snapshot)
+            if (generation/'manifest.json').exists():
+                manifest=validate_generation(root,generation,con,expected_bindings_sha256)
+                publish_pair(root,generation,E.read_metadata(generation/'char_replication.json'),snapshot,expected_bindings_sha256)
+                return {'status':'candidate_published','published':True,'gate_status':manifest['gate_status'],'readiness':'NOT_PRODUCTION_READY'}
             units={};new=0
             for holding in MONTHS:
                 receipt=generation/'months'/holding/'receipt.json'
@@ -209,15 +315,18 @@ def build(root,binding_path,name,max_new_months=None,expected_bindings_sha256=No
                     immutable(receipt,unit);new+=1
                 units[holding]=unit
             report=summarize(units,context['jkp_doc']['entries'],context['osap_doc']['entries'])
-            recheck(snapshot);immutable(generation/'char_replication.json',report)
-            manifest={'stage':STAGE,'version':VERSION,'status':'complete','config_sha256':CONFIG_SHA,'registry_sha256':FREEZE_SHA256,'readiness':'NOT_PRODUCTION_READY','source_quality_certified':False,
-                'snapshot':R.identity(snap_path),'report':R.identity(generation/'char_replication.json'),'months':{m:R.identity(generation/'months'/m/'receipt.json') for m in MONTHS},'gate_status':report['gate_status']}
-            immutable(generation/'manifest.json',manifest)
+            recheck(snapshot);immutable_expected(generation/'char_replication.json',report)
+            manifest=expected_manifest(generation,report)
+            immutable_expected(generation/'manifest.json',manifest)
             validate_generation(root,generation,con,expected_bindings_sha256)
-            C.write_json_atomic(stage/'current.json',{'generation':name,'manifest':R.identity(generation/'manifest.json')})
-            C.write_json_atomic(root/'validation/char_replication.json',{'generation':name,'manifest':R.identity(generation/'manifest.json'),'report':report})
+            publish_pair(root,generation,report,snapshot,expected_bindings_sha256)
             return {'status':'candidate_published','published':True,'gate_status':manifest['gate_status'],'readiness':'NOT_PRODUCTION_READY'}
         finally:con.close()
+
+
+def expected_manifest(generation,report):
+    return {'stage':STAGE,'version':VERSION,'status':'complete','config_sha256':CONFIG_SHA,'registry_sha256':FREEZE_SHA256,'readiness':'NOT_PRODUCTION_READY','source_quality_certified':False,
+        'snapshot':R.identity(generation/'snapshot.json'),'report':R.identity(generation/'char_replication.json'),'months':{m:R.identity(generation/'months'/m/'receipt.json') for m in MONTHS},'gate_status':report['gate_status']}
 
 
 def validate_generation(root,generation,con,expected_bindings_sha256=None):
@@ -227,6 +336,7 @@ def validate_generation(root,generation,con,expected_bindings_sha256=None):
     if {p.name for p in generation.iterdir()}!={'manifest.json','snapshot.json','char_replication.json','months'} or {p.name for p in (generation/'months').iterdir()}!=set(MONTHS):raise ValueError('incomplete/extra full Task8 generation inventory')
     current,context=freeze(root,Path(snapshot['binding_path']),con,expected_bindings_sha256)
     if R.digest(current)!=R.digest(snapshot):raise ValueError('Task8 source/config/code snapshot stale')
+    immutable_expected(generation/'snapshot.json',current)
     expected={'stage':STAGE,'version':VERSION,'status':'complete','config_sha256':CONFIG_SHA,'registry_sha256':FREEZE_SHA256,'readiness':'NOT_PRODUCTION_READY','source_quality_certified':False}
     if any(manifest.get(k)!=v for k,v in expected.items()) or manifest.get('source_quality_certified') is not False:raise ValueError('unsupported Task8 qualification')
     if set(manifest.get('months',{}))!=set(MONTHS) or manifest.get('snapshot')!=R.identity(generation/'snapshot.json') or manifest.get('report')!=R.identity(generation/'char_replication.json'):raise ValueError('incomplete/tampered Task8 metadata')
@@ -239,6 +349,8 @@ def validate_generation(root,generation,con,expected_bindings_sha256=None):
         units[holding]=unit
     report=summarize(units,context['jkp_doc']['entries'],context['osap_doc']['entries'])
     if R.digest(E.read_metadata(generation/'char_replication.json'))!=R.digest(report) or manifest['gate_status']!=report['gate_status']:raise ValueError('Task8 original report/gates differ from full native replay')
+    immutable_expected(generation/'char_replication.json',report)
+    immutable_expected(generation/'manifest.json',expected_manifest(generation,report))
     recheck(snapshot)
     if manifest_pin!=R.identity(generation/'manifest.json') or manifest['snapshot']!=R.identity(generation/'snapshot.json') or manifest['report']!=R.identity(generation/'char_replication.json') or any(manifest['months'][m]!=R.identity(generation/'months'/m/'receipt.json') for m in MONTHS):raise ValueError('Task8 changed during public validation')
     return manifest

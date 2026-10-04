@@ -74,3 +74,43 @@ Only new `char_replication.py`, `char_replication_native.py`, direct `test_alpha
 Sources landed:0URLs/0bytes; no cadence/terms/rate-limit claim from uninspected actual sources. Disk used: new source/docs/test/report files and small synthetic fixture files only; real-data storage unchanged. No cleanup deletion attempted in this Task8 assignment; retained test evidence. Prior Task16 automatic cleanup rejection remains documented in its frozen report and was not retried.
 
 Self-review checked complete120x153 axes, all-missing outcomes, native signed returns, explicit OSAP weighting, full-window calendar/native sources, source admission vs measured economic status, R20 reference populations and R21 boundaries, external caller admission, immutable restart/publication and source/code drift rejection. No original gate waiver, outcome-based mapping/sign change, invented source treatment or post2022 evaluation permission introduced. Remaining limitation is unmeasured actual source economics and prerequisite independent upstream/source admission. Commit SHA(s) are supplied in final controller handoff; no implementation changes are authorized after actual code freeze without renewed review.
+
+## Fixround1/5 — finalization recovery and explicit source prerequisite
+
+Read `review-T8-native-findings.md`. Important I1 and Minor M1 addressed in owned Task8 files only. Original engineering commit `4738a7b4` retained. No Task16/Task6/Task7/shared/foreign/ledger edits, agents or actual source/data/hash/metadata/HTTP/return jobs. Root's new R23 runtime integration remains Task17's lane; Task16 cap5/5/code freeze unchanged.
+
+I1: existing immutable report and manifest must match byte-for-byte the independently replayed expected serialization. Their presence no longer prevents safe continuation; differing contents reject without overwriting. A sealed generation is recovered only through full120 native public replay and complete expected report/manifest verification. Snapshots/finals are immutable; expected serialization is explicit UTF8/LF JSON, and the semantic refreeze invalidates incompatible old snapshots rather than silently adopting them.
+
+Publication now uses a writer-locked immutable intent plus atomic pending marker, preserving exact previous pointer bytes and identities. The previous pair must match its retained immutable manifest/report and remain source-unqualified. Ordinary exceptions at either pointer restore the prior pair. A retained mixed pointer pair is restored before source admission on retry; independently validated expected target contents must match the pending intent before both pointers can commit. Source drift or changed target economics reject while the old pair remains restored. A completed journal and its original intent remain as evidence; pending control state clears only after consistent pointer writes and source before/after checks. Already completed generations can publish idempotently only after full native replay. Unknown altered pointer/intent/final contents remain fail-closed for controller inspection. Hard-killed writer locks still require the original controller inspection rule; no automatic lock stealing/deletion was introduced.
+
+M1: generated `gates` and manifest `gate_status` now contain a distinct `source_admission:FAIL`, measuredNULL and status `pending_independent_actual_source_acceptance`, with a reason explaining that no independent actual source-economic adjudication is admitted in this checkpoint. Full native replay, external caller pins and three successful statistics cannot turn it into a source certificate. A fixture deliberately supplies caller PASS/source-quality flags alongside passing statistics and verifies the separate source gate remains FAIL. This does not change any original statistical threshold, denominator, sign, formula, source/window qualification or R20/R21 axis.
+
+Construction update `cb114231` now has independent scoped Task6/7 R21 engineering approval (`review-T6-T7-r21-findings.md`), superseding the pending-review notes above. Its fixed semantic digests are unchanged. Actual upstream/source economic acceptance remains open. Task8 refreeze: version `char-replication-v1-r20-restart1`; canonical config SHA256 `4fadca9bd527c716c8650bc632885bf2155388c92b93707df06bdd005b89385a`; config physical SHA256/bytes `3c3fe59d00ba4e2b5843861cb3cbf7af981e1c73cf8c511526e44c485cee6461`/9856; main module physical SHA256/bytes `2a6a229e58647c8271110e181fe8326dd3a36ed8508d0649a14f1ab814645a69`/27059. Native module unchanged. Existing schema/binding versions remain explicit, with the new config hash required in reviewed metadata. No actual binding or generation was constructed by this lane.
+
+Focused offline commands, from `C:/atx`, with `OPENBLAS_NUM_THREADS=1`, `PYTHONPATH=C:/atx/atx-db/src`, and Python `atx-db/.venv/Scripts/python.exe`:
+
+```powershell
+& atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_alpha_panel_char_replication_finalization.py -n0 -o addopts='' -p no:cacheprovider -q
+# 7 passed in31.33s: each immutable/pointer boundary, exact artifact preservation, differing-byte refusal and full-replay idempotence.
+& atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_alpha_panel_char_replication_stats.py -n0 -o addopts='' -p no:cacheprovider -q -k 'statistical_success or all153'
+# 2 passed,8 deselected in0.92s: unchanged statistical arithmetic plus explicit pending source gate despite caller/statistical success.
+& atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_alpha_panel_char_replication_publication.py -n0 -o addopts='' -p no:cacheprovider -q -k 'bounded_restart or interrupted_month or guard'
+# 3 passed,3 deselected in5.70s: covering bounded restart/immutable no-overwrite/default guard behavior.
+& atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_alpha_panel_char_replication_native.py -n0 -o addopts='' -p no:cacheprovider -q -k external_binding
+# 1 passed,16 deselected in6.84s: external caller admission and full source/proof/code snapshot under refrozen config.
+```
+
+Initial new prior/restoration file:6passed48.61s. After strengthening prior immutable/source-pending checks,6passed80.47s, **exceeding the per-file60s budget**. This over-budget run is not hidden or described as compliant. Split only those six new R1 cases into three two-case files and reran those smaller files sequentially to establish bounded checkpoints; no broad unchanged native/statistical suite was rerun. Final bounded-file results follow below. Fixtures isolate native economics explicitly; no real source evidence is qualified by these operational tests.
+
+```powershell
+& atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_alpha_panel_char_replication_prior_publication.py -n0 -o addopts='' -p no:cacheprovider -q --durations=2
+# 2 passed in34.68s: prior pair restored after each pointer; corrected generation recovered with immutable intent/completion evidence.
+& atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_alpha_panel_char_replication_prior_finals.py -n0 -o addopts='' -p no:cacheprovider -q
+# 2 passed in38.64s: prior pair preserved after report/manifest write; full recovery commits the new pair.
+& atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_alpha_panel_char_replication_prior_recovery.py -n0 -o addopts='' -p no:cacheprovider -q
+# 2 passed in20.80s: hard-stop mixed pair restored before stale source rejection; changed native outcomes refuse pending target publication.
+```
+
+Fixround owned changes: main module/config/docs/registry, source-gate direct test, new finalization/prior-publication/prior-finals/prior-recovery direct fixture files and this report. Native producer/economic module unchanged. No cleanup deletion attempted; retained small fixture and interruption evidence. All expected immutable mismatches remain preserved. The old source/config hashes above are historical checkpoints, superseded by this version; all own implementation SHA(s) are listed in the final controller handoff.
+
+Actual gates remain **0 PASS / 4 FAIL-unmeasured**: original JKP rho-share, JKP mean-sign-share, complete OSAP median and independent actual source acceptance. Actual Task8 measured rows/months0/120, sources landed0bytes, statistical/source quality acceptance unmeasured, NOT_PRODUCTION_READY. Exact root guarded templates above remain valid with the newly independently admitted config/binding SHA; root alone controls future real jobs. No source economics/PASS or Task16 significance claim.
