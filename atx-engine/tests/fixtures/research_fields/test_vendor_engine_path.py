@@ -209,3 +209,22 @@ def test_real_executable_refuses_a_longer_python_panel(tmp_path, monkeypatch):
     with pytest.raises(engine.EngineError, match="ret_overnight: the engine's vendor panel differs"):
         run(tmp_path / "out", engine_fields=["ret_overnight"], exe=Path(os.environ["ATX_RESEARCH_FIELDS_EXE"]),
             fields=["ret_overnight", "ceq_iss_5y"])
+
+
+def test_panel_guard_fails_closed_on_missing_statistics():
+    """Review S-3: ``same_panel`` compares nothing when either side has no statistics, so it refuses: an empty, partial
+    or non-dict Python panel record, and an engine entry without its panel block. Complete equal statistics pass."""
+    m = json.loads((VENDOR / "expected" / "manifest.normalized.json").read_text(encoding="utf-8"))
+    stats = m["source_checks"]["price"]["source"]
+    entry = {"source_checks": {"source": {engine.SCAN_KEYS.get(k, k): v for k, v in stats.items() if k != "rule"}}}
+    engine.same_panel("ret_overnight", entry, stats)   # complete and equal: accepted
+    partial = {k: v for k, v in stats.items() if k != "rows_selected"}
+    for bad in ({}, None, partial, {"rule": stats["rule"]}):
+        with pytest.raises(engine.EngineError, match="ret_overnight: this builder's vendor panel recorded no read"):
+            engine.same_panel("ret_overnight", entry, bad)
+    for empty in ({}, {"source_checks": {}}, {"source_checks": {"source": {}}}, {"source_checks": {"source": None}}):
+        with pytest.raises(engine.EngineError, match="ret_overnight: the engine's receipt carries no vendor panel"):
+            engine.same_panel("ret_overnight", empty, stats)
+    bars = m["source_checks"]["ohlc"]["source"]          # the ohlc panel records every PANEL_KEYS key too
+    engine.same_panel("open_adj", {"source_checks": {"source": {engine.SCAN_KEYS.get(k, k): v for k, v in
+                                                                 bars.items() if k != "rule"}}}, bars)
