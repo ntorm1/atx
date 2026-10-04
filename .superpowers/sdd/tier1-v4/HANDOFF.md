@@ -2,10 +2,54 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
-**LATEST (2026-10-04): root owns live session76964, batches72..79, R19.**
+**LATEST: no root data job is live; diagnostic75979 ended0.**
+256MB DuckDB nativebatch diagnostic passed70.1s/557,416,448peakbytes within.8GiB,
+sourcebefore24s/nativebatch45.39s/after69.02s;2,919,100outputbytes, noadmission.
+R23 task-23-fund-runtime-ruling.md routes explicit pinned256MB runtime adapter
+to Task17 integration, same frozen nativefunctions/allchecks, no monkeypatch
+or sixthTask16fix. Task17briefupdated; dispatch queued until slotfree.
+All85 source batches admitted; assembly4s/53,673,984bytes produced external
+task16-extract-admission-r19-v1.json physicalSHA
+168b3ff61f4580066db74624bf58efb803993e8d2a0f1060daf4dfec1024ab1f,
+23601bytes,120,117,237rows/20,390members. Full native sourcefreeze generation
+r17_20261004_002 --max-new-batches0 passed47s/173,875,200bytes and aftercleanup
+again42s/174,542,848bytes. Snapshot physicalSHA
+c73f6293a5785c185567b01c443747aa2c7294614b45bfdaf2b8016ec9807a0c.
+Allfinancial85units still missing; no manifest or pointer publication.
+
+Firstfinancialpilot68158 is TERMINAL failed48.1s/307,679,232bytes,exit1/nocap,
+not hoststop: DuckDB internal128MB OOM at fundamentals.stream_issuers ordered
+join,121.8MiB/122MiB used. Guard26140/child24996 command absent; sessionhandle
+lost on continuation, authoritative receipt and OS verify ended. No blindretry.
+Task16 remains capped5/5; producer/sourcecode685a7550 unchanged. Root now runs
+isolated t16-fund-runtime-diagnostic-v1.py with256MB DuckDB within same0.8GiB
+process and40GiB diskfloor. It rechecks exact source snapshot before/after,
+replays one batch into new private diagnostic scratch, never admits/publishes.
+Diagnostic now complete as above; reviewed operational integration routeR23; no sixth
+Task16 fix or monkeypatching existing source admission identity.
+
+Cleanupv3 executed3s/214,700,032bytes: exact ownfundspill642,822,144 plus
+interruptedextract21,296,236 logicalbytes removed. Observedfree gain660,836,352;
+total allthree cleanup gains4,748,378,112bytes. Cfree51,772,059,648after; larger
+20GBexternalrecovery not attributed to us. Persisted logs/disk-cleanup-applied-v3.json
+is valid; stdout Select-Object on ordered dictionary displayed null fields only.
+Do not infer removal failure from that display. Postcleanup fullnativefreeze
+passed as above. Foreign/unknowngeneric caches and blockedpytest233/234 untouched.
+
+Task13 round3 52bb3669 review Needs fixes: I2/I3 addressed, I1 unsupported
+condition/negation and I4 samefunction__code__ timezone drift remain. Fresh
+GPT6.1Sol /root/t13_fix_round4 owns cumulative4/5; originalauthor idle.
+Task8 /root/t16_extract_round5 fixesround1 finalpublicationrestart/M1sourcegate.
+Task10 /root/t7_characteristics implements initialguidance; R22 now binding
+task-22-guidance-units-ruling.md: primaryguid_surprise comparableEPS/strict
+priorissueclose only, revenueguidance/revisionsretained, no inventedrevenuenormalizer.
+No actualevaluation/sourceHTTP/agentdatajobs. Rootuncommittednewreviews,
+sourceadmission/cleanupmetadata/helpers/R22/latestledger still needexplicitcommit.
+
+**LATEST (2026-10-04): root owns live session9237, batches80..84, R19.**
 This checkpoint supersedes every historical live-session statement below.
-Batches0..71 completed native replay and independent two-pass root admission.
-Session3577 (64..71) ended0. Latest source continuation has admitted72..74.
+Batches0..82 completed native replay and independent two-pass root admission.
+Sessions3577 (64..71) and76964(72..79) ended0. Lastfive now running.
 Session79333 (56..63) ended0; native jobs32-45s, peak373-399MB.
 Session52018 (48..55) ended0; native jobs32-50s, peak384-419MB.
 Session40057 also ended0. Immediately afterward goldreadinessmetadataaudit passed
@@ -14,12 +58,17 @@ gold,golden_panel,characteristics,char_monthly,labels_goldready directories all
 ABSENT; panel_goldreadyexists with2018-2021dirs/refresh_progress/_receipts, no
 rootcompletionmanifest. No values/returnsread. Userstatusquestionanswered:
 no publishedgoldfeaturepanel orreadyatx-implgoldload; unfinishedintermediateonly.
-Keep session76964 owned until completion; no competing actual data jobs.
+Keep session9237 owned until completion; no competing actual data jobs.
 C: free now32,110,305,280bytes, below GC4 40GB threshold for >1GB landings.
 Cause not attributed to this task. No >1GB landing until sufficient free space.
-disk-space-preflight-v3.py prepared NOT RUN: guarded read-only bounded metadata
-inventory of atx-db/data plus exact own scratch, queued immediately after79.
+disk-space-preflight-v3.json completed26s/46,792,704peakbytes under0.3GiBguard:
+166,490files/52,171,204,783logicalbytes; Cfree31,285,911,552after audit.
+Ownfundspill642,748,416bytes + interruptedextractscratch21,296,236bytes.
+Largegeneric_tmp17.98GBincludes foreign/unknownspill/universe/panel caches;
+PIDmatch alone is insufficient ownership due reuse. Do not remove them.
 No deletion authority from size alone; protect sources/candidates/foreign caches.
+Afterall85 assemble externaladmission, then nativefundgeneration002 source
+freeze --max-new-batches0. Fullfinanciallandings>1GB mustwaitfor>=40GBfree.
 Root committed gold status evidence, latest ledger and Task12 R1 review a11bb591.
 Task12 fixround1 commit67a5f1ac submitted and scoped review now assigned to
 /root/t16_release_foundation, package review-T12-native-r1.diff1420lines.
@@ -43,10 +92,16 @@ Task6/7 R21 independent review APPROVED in review-T6-T7-r21-findings.md;
 no new findings, actual source/economic gates remain open. Prior repair2/5each.
 Task8 initial native harness4738a7b4 committed9newfiles, config
 4db383560aff8770c50cb0f9fcd634e5b89d3fd74d35ddf21a887a3361601cfa.
-Independent review now assigned /root/t16_release_foundation using
-review-T8-native.diff1572lines. Author17native/9stats/6publication fixtures and
-2focused checks passed; actual0PASS/4FAIL-unmeasured. Task13 original author
-resumed fixround3/5 on all four native qualification findings, no actual jobs.
+Independent review Needs fixes in review-T8-native-findings.md: I1 finalization
+restart across report/manifest/two pointers; M1 missing machine-readable source
+gate. Originalauthor now fixesround1/5. Actual0PASS/4FAIL-unmeasured.
+Task12 round2 commit82bad1ae independently Approved in
+review-T12-native-r2-findings.md;15context refusals+2cash/stock positives4.07s,
+remainingI2 addressed. Actual full2267/80%/200 gates unchanged/unmeasured.
+Task13 originalauthor still fixesround3/5 on four native qualification findings.
+NewTask10 guidance nowassigned idleTask7author /root/t7_characteristics,
+code/offlineonly nativefullstage with original>=90%/300handchecks/peryearshare.
+ExistingTask9 dependencies/nativeclocks and originalbudgethold preserved.
 
 Previousstatusauditpreparation (now completed):
 Session10527(32..39) ended0. User asks whether anygoldfeaturepanels are ready;

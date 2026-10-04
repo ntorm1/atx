@@ -1,0 +1,1714 @@
+{
+  "status": "ALL85_SUCCESSFUL_REPLAY_RECEIPTS_INDEPENDENTLY_PINNED",
+  "receipt_count": 85,
+  "rows": 120117237,
+  "members": 20390,
+  "admission": {
+    "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-extract-admission-r19-v1.json",
+    "sha256": "168b3ff61f4580066db74624bf58efb803993e8d2a0f1060daf4dfec1024ab1f",
+    "bytes": 23601
+  },
+  "execution_evidence": {
+    "0": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0000-admission-v1.json",
+        "identity": {
+          "sha256": "ea0975b8ae9f3195aad95a44aa7e3b2d8dccfd4ca25d168aa17e9c2837d3f6ab",
+          "bytes": 4785
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0000-v1.receipt.json",
+        "identity": {
+          "sha256": "fa35b1c9742d02ad643b225551505027078423e5b8712e420ac30fe421e013eb",
+          "bytes": 2124
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "ca9066a223f61174eb9e91e58cbfbbfc87cbd1f868116428ef7533915811d522",
+        "bytes": 1946
+      }
+    },
+    "1": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0001-admission-v1.json",
+        "identity": {
+          "sha256": "97ed14e9c1e37eef9553346ae05c24904bcad1d7b2ed7d065e45af5aadfcb9d2",
+          "bytes": 4786
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0001-v1.receipt.json",
+        "identity": {
+          "sha256": "9bac06e522e8d2b98253e13f4a06176037740073c6ee85a6059b70e8b96b76be",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "ad5d9f01e4371b15b3982a6e72bda16e751a460eb2361a3b192858f6dd0a4b3c",
+        "bytes": 1948
+      }
+    },
+    "2": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0002-admission-v1.json",
+        "identity": {
+          "sha256": "4a1ac01cc13ddac455353081c387abe2fac81af25e54923d82f86c106864e1f6",
+          "bytes": 4785
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0002-v1.receipt.json",
+        "identity": {
+          "sha256": "1482a4bbeeed52d1739be0052ef5221d3a204d6cda96bff8109aa711d3594f08",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "4856387ca17004038a506e5e165b01534c40b4d8493f1d260506a483f0ccb39c",
+        "bytes": 1947
+      }
+    },
+    "3": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0003-admission-v1.json",
+        "identity": {
+          "sha256": "b07922d3c080160a1bd585148b8aee57f18f7a555cceb540851795de49e6f3b8",
+          "bytes": 4784
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0003-v1.receipt.json",
+        "identity": {
+          "sha256": "14766ff05f147d7636878ab3637f266e80ab170eccc60bacb08722ea54604fb0",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "6921baccd4831dd01793eb784e05f963778da710e7c02cbfa5f52b6e36ac2432",
+        "bytes": 1952
+      }
+    },
+    "4": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0004-admission-v1.json",
+        "identity": {
+          "sha256": "3daaaf0ba3851acfac1b48583e1feb7af0db9f08d150b0ea26027b609dd9a225",
+          "bytes": 4785
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0004-v1.receipt.json",
+        "identity": {
+          "sha256": "36516cd9de36caaf041f65b43962be29247349b246824a663575573e06fad6fb",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "30d06c8360bdf727fc1a443dde381eb2a689f72de7b8d771c9276abf854f8bac",
+        "bytes": 1950
+      }
+    },
+    "5": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0005-admission-v1.json",
+        "identity": {
+          "sha256": "2a321ec16d06521ad15d59db23e764c3683fab50cc8f264e52fd74d2decdc596",
+          "bytes": 4785
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0005-v1.receipt.json",
+        "identity": {
+          "sha256": "35e78c230a1d06d059786ac1a6c4d06558d355a2311d0fb4e5a4d1f271fa6aa1",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "94e08cd265f8df39d9ac26bc07675ea534b293114ad1d4d901ff5234d9559e5a",
+        "bytes": 1951
+      }
+    },
+    "6": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0006-admission-v1.json",
+        "identity": {
+          "sha256": "f9b114a5539d2ff98a3ba987a8dd04cb6e8292952763b8d355446c27a8282040",
+          "bytes": 4785
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0006-v1.receipt.json",
+        "identity": {
+          "sha256": "c162960b83e5ce27aa9a368ecf6829dd61bc9d9a3ff09898e653fe893b96b33f",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "3ad4d4b542e7aece2ef9dbb4790c9183601d46302db9c083311aaffd1b4ec182",
+        "bytes": 1978
+      }
+    },
+    "7": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0007-admission-v1.json",
+        "identity": {
+          "sha256": "af52bbfe4593ca20d2e27d77ab4c4d8b7e73bf0747a96538fa9ed8a95018949b",
+          "bytes": 4785
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0007-v1.receipt.json",
+        "identity": {
+          "sha256": "5f32515312ca2649286d87bf8e6f8884ac3c2a57e8b0e370fad29ac873f2b9cc",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "3f287607ee922cf36abfe67a61406a1bf9e0f9bcde664c5d97103f51d1ba995f",
+        "bytes": 1948
+      }
+    },
+    "8": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0008-admission-v1.json",
+        "identity": {
+          "sha256": "1f460e62525dd9149efe22bcf008e2f84b7f62ce58bf3ae0242f11751956d7aa",
+          "bytes": 4785
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0008-v1.receipt.json",
+        "identity": {
+          "sha256": "676cd724d112423e3568e4a5f06a45c4b54eca6291ec83330bbde748eee32c88",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "1036e323f79b7d2bdd10ee7e4dde411c930cc33c4d2c23158dfa3a0af49d0f00",
+        "bytes": 1948
+      }
+    },
+    "9": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0009-admission-v1.json",
+        "identity": {
+          "sha256": "17e5c64448fa3f69d1c257f31b64d6fa7a154e6458a1dd2ba064c3403ad8a08a",
+          "bytes": 4786
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0009-v2.receipt.json",
+        "identity": {
+          "sha256": "b0561750d86322ee58dcfc9d9697c01393c3846c2d939452b16340f257f4479c",
+          "bytes": 2464
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "c168afd412261830302266ffc4c46251e4eca2f289cad62bfd855185eb3e0cd5",
+        "bytes": 1951
+      }
+    },
+    "10": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0010-admission-v1.json",
+        "identity": {
+          "sha256": "2b2e5c79f527dea2a8a59a0bb41b3af9935e4258739b8eae9101e0e758b2a9fa",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0010-v1.receipt.json",
+        "identity": {
+          "sha256": "82ccbf30577d6325c8cb2bcd02ac3450571cea4073716b2021753efd680d0a63",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "6f62a341a0ee77682ad80b53bb677a56df8e10e1a3b09ed5e916db5ee5f4476f",
+        "bytes": 1953
+      }
+    },
+    "11": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0011-admission-v1.json",
+        "identity": {
+          "sha256": "415a6feb27e8bf67f8f0ba76ef5ddbd4288cd04a7e1658c2c7be05139cf76c63",
+          "bytes": 4786
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0011-v1.receipt.json",
+        "identity": {
+          "sha256": "60fe91ab71056fccbd435d7c02df9ea1058d38720315be557da79ba186bd7d72",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "62f8708cdfaef6cca1cc5471e022ad43665e976f38c8adaacc8f90d46ec3c1b3",
+        "bytes": 1951
+      }
+    },
+    "12": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0012-admission-v1.json",
+        "identity": {
+          "sha256": "253bbb7087ca32ea8424d7df110afc1d87f4e964fde88c7afd2564d7fbac93c5",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0012-v2.receipt.json",
+        "identity": {
+          "sha256": "32115e3f122604988cf4bb9573f8d2fdde0b6b6506fb1f03ac312ac0dbf45443",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "31b23eb355c7d162545fe9836e69011328219cf35fec58b305479406c848306b",
+        "bytes": 1952
+      }
+    },
+    "13": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0013-admission-v1.json",
+        "identity": {
+          "sha256": "9c79b55d214afe3944e1fb43e4fede9c998c3f44c59f522dc623933842ef31ec",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0013-v1.receipt.json",
+        "identity": {
+          "sha256": "039d766d599bbc9fba5f50a01e9a04864991a09598ad27f7bcf60b16e666a70f",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "a4ad285db3906239f0a78a82c55b4db6f3703d9a847fa7386b10ab2317ef523a",
+        "bytes": 1950
+      }
+    },
+    "14": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0014-admission-v1.json",
+        "identity": {
+          "sha256": "15267e9eee14c3c69b30c4e9906fdb4b72ff7e2a7adc4b077ef3e734678aee18",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0014-v1.receipt.json",
+        "identity": {
+          "sha256": "32a6cf3425af2a3edaab37811ee7edc7fba5d52d6cc1a0e30544f33ff172064c",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "a8da0706c9ce783f309aee9bf7a11bc5a6c88211ab5bad04a96175226e7e99db",
+        "bytes": 1953
+      }
+    },
+    "15": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0015-admission-v1.json",
+        "identity": {
+          "sha256": "eaa9db77f1d760b5a94c587920725eb4d9e8f0de5c3bd492ead53d113e102cf6",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0015-v2.receipt.json",
+        "identity": {
+          "sha256": "b810d794547558602575627267ae239639ed26e5997881ebf3cf6fd4d745daf9",
+          "bytes": 2464
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "5204e03c3883e079f241f39aa9029fe3b2b200025b7e0dc88aa0554048c22a86",
+        "bytes": 1953
+      }
+    },
+    "16": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0016-admission-v1.json",
+        "identity": {
+          "sha256": "68914686451c68705d4f27688498ede83e211f1e33ccb8d2a6234bfa603dba8a",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0016-v1.receipt.json",
+        "identity": {
+          "sha256": "6786ed9c142bada3adf067c0f65e2161c7e4b125dffb564b16c3e6abab3cf280",
+          "bytes": 2127
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "eab390caf21440860e99a87c783f10e2650c938e04594e21b5f98f493b296f13",
+        "bytes": 1949
+      }
+    },
+    "17": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0017-admission-v1.json",
+        "identity": {
+          "sha256": "5af0cd161f0e84a1b01bcbf126fd5620434be90105ec0ff305cd909ce15036bc",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0017-v1.receipt.json",
+        "identity": {
+          "sha256": "ac4a85fdcd6bbb1b6eb366e1f1428152c47e0ea5b6c886ecb9053cddfe16fad1",
+          "bytes": 2125
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "7a7e2dd5163608b14bb1d36569e913f91999c81adb478f489f4fa1abf0b9c1dc",
+        "bytes": 1950
+      }
+    },
+    "18": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0018-admission-v1.json",
+        "identity": {
+          "sha256": "05db286706c5ac803ae33e6080ccfd290eb3e82bc8fca2cce248f9a373dea9c8",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0018-v1.receipt.json",
+        "identity": {
+          "sha256": "bfbeebbac31c89958853d5c91ddbc7c1d17f9a441139c4056205aa1de36affc6",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "27fb1dd784a13e35309227a6df596ac557f8bc2af494b3ed4d6057a550cdb6be",
+        "bytes": 1951
+      }
+    },
+    "19": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0019-admission-v1.json",
+        "identity": {
+          "sha256": "75f2f89e9298505754be0eafbafdc616337c394bb8f404383ef0fdbcb05a629b",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0019-v1.receipt.json",
+        "identity": {
+          "sha256": "8ec4369af22aff60adbf6ec00534895c7703abad2725418da827030d000135c6",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "561855c18420fd9bc8fcc5020df68de9b94bc729496a6cf9e3f471c52c75f058",
+        "bytes": 1952
+      }
+    },
+    "20": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0020-admission-v1.json",
+        "identity": {
+          "sha256": "8b3ea5f88bb2b2d2e46a1dbc86958045f8fe45cc83d6c94c43b3464c1daeda7a",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0020-v1.receipt.json",
+        "identity": {
+          "sha256": "a288582b1ba0d7797ddb3a0a6459da930e3aad74a4d9c326cb012f472e0594b8",
+          "bytes": 2126
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "bb9b7026f465b21965fc3d76e125196d63a2fb8ca28fd685b2520e50e5464b6f",
+        "bytes": 1951
+      }
+    },
+    "21": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0021-admission-v1.json",
+        "identity": {
+          "sha256": "37dc94a07459ed5a5138d71e77c152fb8a3f43a6542f53bf0ade246d02fdaf26",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0021-v1.receipt.json",
+        "identity": {
+          "sha256": "9da89ff0e28db32be9156333014f2f368d44be86bd7cbc0076e95295a21db989",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "54666c629dd2fc4988d97dbc2216afc5d6f339270c81a08240628b61d801051c",
+        "bytes": 1951
+      }
+    },
+    "22": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0022-admission-v1.json",
+        "identity": {
+          "sha256": "a06e7d0f13af846c68351d25dae2b960b5788fffa631a45c949bc610ef9e5c88",
+          "bytes": 4786
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0022-v1.receipt.json",
+        "identity": {
+          "sha256": "845d0046fcb185a2ff103754ef87fe4b9119284a1d3fe8ba374041b545b21ca9",
+          "bytes": 2127
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "3f979983e7fda9a6b21b60e0825036f8ace93bf63a9006ca63e956985a395712",
+        "bytes": 1951
+      }
+    },
+    "23": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0023-admission-v1.json",
+        "identity": {
+          "sha256": "cf09cd19c6ece00c10868755767d4c07e335f04c1d4f72fddee4b1f265afee14",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0023-v1.receipt.json",
+        "identity": {
+          "sha256": "8970d2a0a18a0da236daa4e909e3d4783dfc32d45b6f8b143e31da2013ec207b",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "5ef8bcc975f5bacd6ee93beeccb80dbedb2b64ede2dc0c7e48e1c6fca35659be",
+        "bytes": 1951
+      }
+    },
+    "24": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0024-admission-v1.json",
+        "identity": {
+          "sha256": "71d3394344a3f5f03f8483382440e625e3578476ce16ab9affe269b2e691911f",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0024-v1.receipt.json",
+        "identity": {
+          "sha256": "db337e7792f5e9baa26e5fb052ac56a03cb14ef683a3ace563e1dca52cde09d6",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "b0e17d59abac28856d16f6adf149dde080ac0df1a76914ea472aff5b12107757",
+        "bytes": 1952
+      }
+    },
+    "25": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0025-admission-v1.json",
+        "identity": {
+          "sha256": "a055e2056a5816bcf6293198d2fc675401d09f3b4126e3309ec3e98296d9a5a0",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0025-v1.receipt.json",
+        "identity": {
+          "sha256": "b3494ebb01b5bd629ad06bf8f739b386be45ac8ec144f5c4f918f195e6c2e8db",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "cb3493252ef3a183e96303721a711b66d7f74f010ef17012f207ad08a3ef6b9e",
+        "bytes": 1952
+      }
+    },
+    "26": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0026-admission-v1.json",
+        "identity": {
+          "sha256": "116f01c625649bd47d13cb40ca7a88e88aa49fe1bf11d025f8e82b379f9e8a0b",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0026-v1.receipt.json",
+        "identity": {
+          "sha256": "b7b62ab6b894a63092b77c37582cbafcc2c9d9a210daceb4cfe50ca8afa2e73a",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "7582fba2c86cca9b7ee973e2947e306805149218a985972cdb58dcac2a330f18",
+        "bytes": 1950
+      }
+    },
+    "27": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0027-admission-v1.json",
+        "identity": {
+          "sha256": "416008de3e4a8b0afdc057da948626b158375bdbe3bffd1e6f28eb973a9a9a11",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0027-v1.receipt.json",
+        "identity": {
+          "sha256": "189e46f16252bf7b3023fdd4e75123f51189db87c14908ece5c7b2793e0a46af",
+          "bytes": 2126
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "e9454d78f72f9fad98687743e6afaf5cb9bb0d609461e6919aad4ccc531dfca1",
+        "bytes": 1952
+      }
+    },
+    "28": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0028-admission-v1.json",
+        "identity": {
+          "sha256": "77f962bbf73909f7c36efc63b69e477d6f03651b41f3afd2c326c2138a3049b6",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0028-v1.receipt.json",
+        "identity": {
+          "sha256": "e32314fd0844146f5ee8c669bf098267c17fa9623534c30f37c87d20be1c2fa1",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "a5c2d73b6b64e01816553cc7ef7233e603718c79ba4e0999de81904c406212f5",
+        "bytes": 1951
+      }
+    },
+    "29": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0029-admission-v1.json",
+        "identity": {
+          "sha256": "9c988a8d88a9581ee792d965a4e1ecdd968309edb34d3a114b23bd10d3258d26",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0029-v1.receipt.json",
+        "identity": {
+          "sha256": "4b21687db7be125f19de3553458c63c1b31021eb3f48d46ca3bab79e986ff1ba",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "42df17d396924b4b3fc629d6c418fa77ee964347420dacb9251f01f39987a1f5",
+        "bytes": 1953
+      }
+    },
+    "30": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0030-admission-v1.json",
+        "identity": {
+          "sha256": "9f735bdd18a97636bc7ad36f40154f3f66b3408227371c906cb8040ed9052701",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0030-v1.receipt.json",
+        "identity": {
+          "sha256": "1c6c1e19575aa27602b8a367ac631e7d1f9aeaeddaf430fe331269bd7b08fcc5",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "3a545d48de0bb2618d7a1825e951568560a38ab1d6dd6e44461ca28f266ddac7",
+        "bytes": 1953
+      }
+    },
+    "31": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0031-admission-v1.json",
+        "identity": {
+          "sha256": "0d51cc120d33c83fbdbcb9b44655d17b895d95fa188d65d25d3ffa092a8336c0",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0031-v1.receipt.json",
+        "identity": {
+          "sha256": "bc0cd5f8f189f918881ae6555b446da4a959b358ddfcd42a15ed93a04c48a850",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "55fe53334483d212a4a72a4ef5ab466a1e2bdc50a6f4c50ff7f925740b1c1d3c",
+        "bytes": 1951
+      }
+    },
+    "32": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0032-admission-v1.json",
+        "identity": {
+          "sha256": "467e82feb8e365be6ec2ad8331bd5e487d391f24711d9e6d9702818a165f6c8c",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0032-v1.receipt.json",
+        "identity": {
+          "sha256": "dd8e90352919afac70dea3c1f83502036955327d7ca0b9dad0c881f50e7e9e90",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "8964a680b05f9ad20964799316a58a9ba0dfacb90686fcc820f6d8cee910e64a",
+        "bytes": 1953
+      }
+    },
+    "33": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0033-admission-v1.json",
+        "identity": {
+          "sha256": "e6f63a6b2dde752c78e0d65f42b964bf2392ec33d9a12a41f475e8462b9cbb44",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0033-v1.receipt.json",
+        "identity": {
+          "sha256": "a3fc285803e66c02e4c34fc4c66e4b90ec5384b41353a509428f571de4e73769",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "092d9dd7bb5a3aa738abf31708361e488bfdfae5c3ab6a960b18af9481b03d7f",
+        "bytes": 1953
+      }
+    },
+    "34": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0034-admission-v1.json",
+        "identity": {
+          "sha256": "2ab81928d4a32a301cd387b8747a501738106713c8014683b951608524665128",
+          "bytes": 4786
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0034-v1.receipt.json",
+        "identity": {
+          "sha256": "aed451db834be39c819b017db4096b42795e0353afde60a033578ea90cacc751",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "04d8407fe4e4bcde87c2bf206af32209a6829f43ea0f6287734dfbda3cb0a782",
+        "bytes": 1953
+      }
+    },
+    "35": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0035-admission-v1.json",
+        "identity": {
+          "sha256": "22af5fd4f08045ea14f4a618a9d2469e454513a0298a93128051a688015d7d00",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0035-v1.receipt.json",
+        "identity": {
+          "sha256": "f5aff36d76b673262b8144439562c310a9a64a713290490f02e65dbe28cdc62f",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "4940d5dd22f6b929a3bce7cebf261c2f12ca6df493f647ce6e2b2d48ae47e400",
+        "bytes": 1951
+      }
+    },
+    "36": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0036-admission-v1.json",
+        "identity": {
+          "sha256": "25e07474c3d807ff8366bffe9895e93f852531bef5fbfa3e5a2f3e74b826598b",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0036-v1.receipt.json",
+        "identity": {
+          "sha256": "c0ce8e217d3a1bc5348e90c0f73bc9b2603f619886dbad72db6179f1f7b540b7",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "77a17bc46bd58d77b2d1d79a308e73e8ebc4802cf290129fb96a4e75f8059f5e",
+        "bytes": 1952
+      }
+    },
+    "37": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0037-admission-v1.json",
+        "identity": {
+          "sha256": "6d88bc3a2a6b7d4db040e27ad85465407965a85be2ae54eaf5b3cff77679de40",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0037-v1.receipt.json",
+        "identity": {
+          "sha256": "ea3f4048c33581d9242ebcb63d1080e0f823d409fb73120e30d736ee2fdb0a1d",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "a30c87c46937895d842d98e7ba9f05d414852f482a56dcf0e0c271548cc3d2b5",
+        "bytes": 1953
+      }
+    },
+    "38": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0038-admission-v1.json",
+        "identity": {
+          "sha256": "2176da33298c0d3f0dcfe28cb9e5ae82d877853e2de37591f2f567c172fdc857",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0038-v1.receipt.json",
+        "identity": {
+          "sha256": "97987d96b624be968cde980c633986374fd3e224f8c74ab0d33f6b0556dd1633",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "25739dc4a951336e4289931bba2f1f69d63c701e90c725e82cf59470961c5981",
+        "bytes": 1953
+      }
+    },
+    "39": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0039-admission-v1.json",
+        "identity": {
+          "sha256": "12b287c39b6d6b6466b620dda14980d61fda1b505f5d1b73522c302cc1feff0e",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0039-v1.receipt.json",
+        "identity": {
+          "sha256": "48dd8a094d0f82da313fb1f52ef161f9d852385f2a35c2eaa221061a9974fc04",
+          "bytes": 2127
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "621fb42f1b42ad084ee331af5502cd149071bd388e4fcaf4be238b3a368aaa50",
+        "bytes": 1953
+      }
+    },
+    "40": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0040-admission-v1.json",
+        "identity": {
+          "sha256": "d42fa24a365ef2f8643526c8056215bb134ddbff354cd3c31b86b89661904fb4",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0040-v1.receipt.json",
+        "identity": {
+          "sha256": "d930d5191fe4fb6dcba83dd6c192dea67d0ffe7f97047443f61dbee659d5c5d6",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "49e2657c5b48bfa9359708fc21b04ee0903b1f71d1a6ee1b8e31a32bb1665baf",
+        "bytes": 1952
+      }
+    },
+    "41": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0041-admission-v1.json",
+        "identity": {
+          "sha256": "1c09780bb0694d4f0bcf32c496216737b3a36179ca57060b3fb630cdc01be0c6",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0041-v1.receipt.json",
+        "identity": {
+          "sha256": "368d0a2f8d8382367f128946dd3d469b05da7fab3da157e3b013005e56119aee",
+          "bytes": 2124
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "8ae4e8a7d67d2e0ff891ed3bc553b9cf5066d0035f1c2eefec1bfe91c2a49a28",
+        "bytes": 1953
+      }
+    },
+    "42": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0042-admission-v1.json",
+        "identity": {
+          "sha256": "0a7e165b309d843f589b24b52b628a3dff38bee410201742994a6ac4895b53ff",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0042-v1.receipt.json",
+        "identity": {
+          "sha256": "a3435ed2de6b38900e839e1f5df5707e5c4143c4cb38a32e286035bafea7c712",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "514e94af08b2448bbd91badc0805faa6243bacc5807d8ceba5799710470a0cb9",
+        "bytes": 1953
+      }
+    },
+    "43": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0043-admission-v1.json",
+        "identity": {
+          "sha256": "8ce994c7bf31ab5d75b4532deb206517ee5fb7db397afac379b26d75b1c8ada6",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0043-v1.receipt.json",
+        "identity": {
+          "sha256": "1f8d623e55ddccc3b2c962132e337f078d02e6fe14ec16a1a24ddabcdacc1859",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "b1e73e43397e358616473058dfa39edbe857cfb34bfca4f919c685488fe7e550",
+        "bytes": 1952
+      }
+    },
+    "44": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0044-admission-v1.json",
+        "identity": {
+          "sha256": "0e7c1cdcfd98a05c24367122a1de77e2c668407203d5938ee58dc3b3047c32e1",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0044-v1.receipt.json",
+        "identity": {
+          "sha256": "2d3f1f0a838102e6a9a0a375fe7531fe4531ed5da3dc2994e2a958958ec49568",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "3ed9f647ce2f3e3ae5f63449260b074111139e2301391f65c478fe2782976626",
+        "bytes": 1953
+      }
+    },
+    "45": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0045-admission-v1.json",
+        "identity": {
+          "sha256": "2c092a2ab927218e23b1de382e7f2e74b7326d7360f91ad436f2c2f626ac7de7",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0045-v1.receipt.json",
+        "identity": {
+          "sha256": "40e093becfe0c3d123c3a134436df2fd3c38ca54dc2101a33af321c7053ed7d7",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "3a02c9bd7c7875d91e2dcb89296da59f97e610f54fc4b829bacdeee97de1593e",
+        "bytes": 1950
+      }
+    },
+    "46": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0046-admission-v1.json",
+        "identity": {
+          "sha256": "bf97e689c7451bbabdc3fb0911191aac31753ea4f1d7c490c1cb9de239889085",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0046-v1.receipt.json",
+        "identity": {
+          "sha256": "03ec832a9a3b7787225539b00cd06ea0a4e98b2316cc6b325310faf907e4bec6",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "782667bb7feb093430ea715e55f3e7c3d223724d7a5bef857a796527502358ce",
+        "bytes": 1953
+      }
+    },
+    "47": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0047-admission-v1.json",
+        "identity": {
+          "sha256": "99ff579229b75899c3a9b45f2b9e5d21ebf54a08d715e381cc9b13b9b5d13d63",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0047-v1.receipt.json",
+        "identity": {
+          "sha256": "ec3fef57cbfa3cc05ca0136f4169bc2a597c3ca47e7144ca1a1f8c3c32642d68",
+          "bytes": 2127
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "9218025f68adb3dd5b65a12ff71d54bada9734c4bb211bcfc82a378c4ea15aa7",
+        "bytes": 1953
+      }
+    },
+    "48": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0048-admission-v1.json",
+        "identity": {
+          "sha256": "2a71232aeb5aa0a8adf9592ca11fcef2b1b572b7763bbaca43fc14687f6f13f1",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0048-v1.receipt.json",
+        "identity": {
+          "sha256": "b3a322ca13a125c6459534fce5b0fd0c600fceddc2c13d6d34c68a9f4c329636",
+          "bytes": 2125
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "d6de61321febc15cb5cc5fb38705cd86d5171c7b50a56144e95776da237d9537",
+        "bytes": 1952
+      }
+    },
+    "49": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0049-admission-v1.json",
+        "identity": {
+          "sha256": "a7b70ccba46a03dc3cc8241890b37f7dc5dbf693d49f9f4929fea05abaaecdf5",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0049-v1.receipt.json",
+        "identity": {
+          "sha256": "94dd10898a0e342ba696b611dfd65f4449804849032c049e2fa504246571dcbf",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "efa24a2899ead5180936cc32cbbf30a09eed47a6de72f005345b0d1ce67e76f1",
+        "bytes": 1953
+      }
+    },
+    "50": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0050-admission-v1.json",
+        "identity": {
+          "sha256": "ed4deb48cf15eb7829391a6a9e6b96669c83ef1ecc1afd8ab17563dfc809bf84",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0050-v1.receipt.json",
+        "identity": {
+          "sha256": "8ecf5390dadfe9fb56c20a2d1cec8c0c0a734f5477f52b50a79ef6a6bce77c02",
+          "bytes": 2127
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "1abce8d3576fdb3a04c61e0ca15f806822396dd1af714318d1d99cdad534bde8",
+        "bytes": 1952
+      }
+    },
+    "51": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0051-admission-v1.json",
+        "identity": {
+          "sha256": "5a1cc2df1d8de3bb2ba6d0bfd120acf54d59027ad4dc73ec9cdf19d905c28970",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0051-v1.receipt.json",
+        "identity": {
+          "sha256": "879b1d6c9680beb670bf05fd715cacc6c7dd5c68e33a650102c230d4b38a4157",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "c5585160d4d34b8c1517059aa6b0fa8b2261af3608cf4b21f11c8d94fe922753",
+        "bytes": 1953
+      }
+    },
+    "52": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0052-admission-v1.json",
+        "identity": {
+          "sha256": "c9013409100bf14c61bac1bf42366394ff228cfaa0df7350026afb9806922d9e",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0052-v1.receipt.json",
+        "identity": {
+          "sha256": "5bb26c2d955eb1692e5afc3353ab6ed82ffed9e3ae022e9746fe8c7843941ba7",
+          "bytes": 2127
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "c850a8a262b6166af897082092cf50a914730135781765c4b65183029a9d7029",
+        "bytes": 1953
+      }
+    },
+    "53": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0053-admission-v1.json",
+        "identity": {
+          "sha256": "3f327fbeef3394b74d82a3f699d856f09c5b18396abd48a69c6009fb679fd708",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0053-v1.receipt.json",
+        "identity": {
+          "sha256": "0940d38a37841e445a08f677c96c4d4e1e7e69232e6a3b8af4de0cbaee1ec34a",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "8f2e52e9f3c4aabf114f1a1ba47aa4b3d3f7e1cca2d2f129463996cdad3471ec",
+        "bytes": 1952
+      }
+    },
+    "54": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0054-admission-v1.json",
+        "identity": {
+          "sha256": "d665a65708ddd8d4ef32dff462cca1269e691231f2951cdde35dd2f98aac0317",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0054-v1.receipt.json",
+        "identity": {
+          "sha256": "e6d4376c75f6929c3852371d733ba5ae842dee1508fa904dbe40ed91da98c81d",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "71ce042bcc3150a28f1a2ea561763cf075c9e6291c48f1639662aa8bbca2b98f",
+        "bytes": 1950
+      }
+    },
+    "55": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0055-admission-v1.json",
+        "identity": {
+          "sha256": "1c20ff8e52440192564123392bd891aebf7cd1361813d20668dc44df7aa5f929",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0055-v1.receipt.json",
+        "identity": {
+          "sha256": "b0725c17b6ffe9eea2d05ddc4a980d138b732f27bda972d88224860760fe6aca",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "0a20441e8a013ec83953061983878aeac770ed10f2e55559108c2a5a14325bf2",
+        "bytes": 1947
+      }
+    },
+    "56": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0056-admission-v1.json",
+        "identity": {
+          "sha256": "a2f2f48965635278bccf40186a8302ceaabc2bfde6900367b911f25cd772f257",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0056-v1.receipt.json",
+        "identity": {
+          "sha256": "35213e975157f080af26a061e324b6942da0ece0af046ff699c9e56930cdb564",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "a96c0094229d6d9c5e0d3e36a629361f965e7d22cf6fd7e6c1d806875b40e4bc",
+        "bytes": 1950
+      }
+    },
+    "57": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0057-admission-v1.json",
+        "identity": {
+          "sha256": "58134b57c020be8229c33cb1c5f05dab16ca5b9f63661d36cbd346127fa0247e",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0057-v1.receipt.json",
+        "identity": {
+          "sha256": "f3a65f43b4f6b34226b713364e305ca493fee57f03aaba8ebfbf4972909a7514",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "b3bb13df67f7eb2c5fc5d508c826c900d28be343ae9a009efbe47625e2f11732",
+        "bytes": 1952
+      }
+    },
+    "58": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0058-admission-v1.json",
+        "identity": {
+          "sha256": "f9d015a68884df9b215964e10f83ac3361b9736ba7b241c1dd574ce7a3723934",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0058-v1.receipt.json",
+        "identity": {
+          "sha256": "88392974fe374c834e47b481a27959e5afb36919f79199392b6afa394423a584",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "25efb1fe2db62787f5b1da9bde7b8704bb02a7ccddc4e4272147a2a17baabfd5",
+        "bytes": 1953
+      }
+    },
+    "59": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0059-admission-v1.json",
+        "identity": {
+          "sha256": "240c41ae2192d5314487b9e525a06107dc33880d1ed56e957574900474eb4738",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0059-v1.receipt.json",
+        "identity": {
+          "sha256": "75c2f2b2d494e4fc8483aae46460fb4c3bfd6c149b3cf186bdfad395b7b6c853",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "62ae3f6bef9f62e20eefe3e302a1e58c9c0ac565dbb31c98bf62defafb03cc84",
+        "bytes": 1952
+      }
+    },
+    "60": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0060-admission-v1.json",
+        "identity": {
+          "sha256": "8668d112e90519517f82cb1c0c2a8d4c55bdb457c7462c5ee0290cb1f5bbab52",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0060-v1.receipt.json",
+        "identity": {
+          "sha256": "151b95eb4cf0255a481edb752fda86fcc9502308e16a3e8a320b496edf9d6ab5",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "7c3a80f2e5cff1d7429274e1b8356a3a12320cf469607b1d104d648e609243a5",
+        "bytes": 1952
+      }
+    },
+    "61": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0061-admission-v1.json",
+        "identity": {
+          "sha256": "94a928e81e03787c2d53f10f4c5f3f2497604286c79eb431c55a6fe402084629",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0061-v1.receipt.json",
+        "identity": {
+          "sha256": "8a64e92c313471cae92ebf525e60f56a81875067eee41c81f652343bad306cb1",
+          "bytes": 2127
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "3cbb7181e36508ca429fbfe9e10d0ea39fe6fa26fd1db67cd5f15edeee290b39",
+        "bytes": 1950
+      }
+    },
+    "62": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0062-admission-v1.json",
+        "identity": {
+          "sha256": "840bec4b684834f4dede87fa1f95527c69fab8dc0adf7d298ca43c6aaa290ea4",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0062-v1.receipt.json",
+        "identity": {
+          "sha256": "110f1750121fdf7e26557b650e8e368f8e0cf3083531b21b20fd43ddfc11e68d",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "bbab5727f5cd89f75dbbc1c6e94f249e4d21444e2028c65a4120b20c2d7418a9",
+        "bytes": 1952
+      }
+    },
+    "63": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0063-admission-v1.json",
+        "identity": {
+          "sha256": "3cf61926323df8429462e853ac6fa92d411e8b69f626592a4c6968f65105cb54",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0063-v1.receipt.json",
+        "identity": {
+          "sha256": "dd61b406beff8fc886e2a6f65a78cdb38d335fc924d2262d6286076b1d0fd19c",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "82a22d16d8bd1a890cb0bbd17da6a8ff315e33ec4b1de308f9345c1bf852c7e2",
+        "bytes": 1953
+      }
+    },
+    "64": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0064-admission-v1.json",
+        "identity": {
+          "sha256": "79ef448600ea1c6b3d7e5b31bf80d7af073943af9db84dca7093a9e39444cf1c",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0064-v1.receipt.json",
+        "identity": {
+          "sha256": "7b6f40dcc8ef28cafe3b2f0b259523735b82f0415b2a41d2eaa655a8b8a7233d",
+          "bytes": 2125
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "8c08db7ae6b7b7ee188db2d6a3a1b5954a32fbfe022ac2ece280f508ebbc4131",
+        "bytes": 1949
+      }
+    },
+    "65": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0065-admission-v1.json",
+        "identity": {
+          "sha256": "b6ee7a0d538c208eb7662f3e05c51c2008e014c7f4a92fb1bc4ca4a366a6f0f4",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0065-v1.receipt.json",
+        "identity": {
+          "sha256": "6698195952239afc5eab377582c908889d265d9bf7dc11ad996c8b67718bc52f",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "738bcbe66bfd88fc60cc946339d078bdc974d089482d479737f73ebf446315c7",
+        "bytes": 1953
+      }
+    },
+    "66": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0066-admission-v1.json",
+        "identity": {
+          "sha256": "ad54b4910425b3555a2d347acca73bb37f5b5e9cd18320f8c5577591c66f9bab",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0066-v1.receipt.json",
+        "identity": {
+          "sha256": "2ed5af1d8fe686392db751d906219866be51c78134c0ca779df50c05b26c015f",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "81a09dbf6748045cc9a66b14dcb1a1cf8eebbddf727619a0ef7d29020e041468",
+        "bytes": 1950
+      }
+    },
+    "67": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0067-admission-v1.json",
+        "identity": {
+          "sha256": "618950fc8635fbeb0d9edbbbf7a748d5788951d31d76edf1e4a49bdba5aa8b30",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0067-v1.receipt.json",
+        "identity": {
+          "sha256": "d480a80de95601b5058022b6ee7f30d53417e16fcd6b5ea45faf93d95c987128",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "452ab11ddc5d6a76ff036bbfc674478bf6953a3a84786ba38c2ed4173bfeb2fd",
+        "bytes": 1953
+      }
+    },
+    "68": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0068-admission-v1.json",
+        "identity": {
+          "sha256": "b9bd6b4daafd444c8e7684d50cdbde2aa26ded4fd04327cdb452256fd7c30375",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0068-v1.receipt.json",
+        "identity": {
+          "sha256": "339ffa822d7d719cf93a5f8ab4fbecdb35ea5b7129498e24da8c73dd8e4932a1",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "4ee333a1e0df046585c4821109d927cece0d709d6958a3e0f98c73ed3cadd37c",
+        "bytes": 1948
+      }
+    },
+    "69": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0069-admission-v1.json",
+        "identity": {
+          "sha256": "2cf2fd552f616a9e362d087e3047acd8eafd4c705cf3272f5c4cd50c0b0c8ed4",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0069-v1.receipt.json",
+        "identity": {
+          "sha256": "90445e28e8be29725f56e88d9367c32db331966a5b3f2566d93e59b40ecc9895",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "84ee4cad1429203196f83fdb898dc1ecdc6427b6611dd9bcdb8692019e59701d",
+        "bytes": 1952
+      }
+    },
+    "70": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0070-admission-v1.json",
+        "identity": {
+          "sha256": "cccd1f9b891c6b43c0d5d87ba44c81e255c077693906f1605465abdb94a0294e",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0070-v1.receipt.json",
+        "identity": {
+          "sha256": "d684811de232d8e77e3a9452aa8a033786e453051a16b5f7b7e89db2ca88b5ea",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "2560e4d52905d52d122e810354cbc0d8b1dabeed4e4de3d12c6a4be005c34411",
+        "bytes": 1953
+      }
+    },
+    "71": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0071-admission-v1.json",
+        "identity": {
+          "sha256": "df09e0cb61c4ba0b114f3f598a962d6ffc5d7180d9d82ddee784c2efeb034b7e",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0071-v1.receipt.json",
+        "identity": {
+          "sha256": "7a34cb0506f154545170fbb96d2abd0ff70d3deea866f845c9077c303d500c7c",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "e8d48bb48b90d1a4cbc8bddb3197608e0ab8bf4db311c7617ad3e0f7f2fe5503",
+        "bytes": 1952
+      }
+    },
+    "72": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0072-admission-v1.json",
+        "identity": {
+          "sha256": "9877880f40dcd453a2e788875cd9ecb648798884c5192717645d9ba4b81f2505",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0072-v1.receipt.json",
+        "identity": {
+          "sha256": "9776f0b0cc47e23d74c7c4bbc5cf3fb2c044b42804fdbf42e95364cb07bc646f",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "e1b844e9b984a7dd360e794b38c916442e4001171d645b904876c25fc96e9f0f",
+        "bytes": 1953
+      }
+    },
+    "73": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0073-admission-v1.json",
+        "identity": {
+          "sha256": "ab1af51803be169e07a64c0c391fc4aa0002aef7b27cca2e8f4c8d94b3b3590b",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0073-v1.receipt.json",
+        "identity": {
+          "sha256": "bf9fd3f8ef142a2a877c677fa79621375d1d0f1675de03c3686375ea6d5c1e8b",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "b60edcd70d54977b8efdf78acd3f052c3048121c1f8af7d8b4be086d7b37a62c",
+        "bytes": 1947
+      }
+    },
+    "74": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0074-admission-v1.json",
+        "identity": {
+          "sha256": "93eb22bfb4f91e385ba0500ce9fb45ef59fa11705c94d63451e998cca7d2de1e",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0074-v1.receipt.json",
+        "identity": {
+          "sha256": "070551a410bc0216facac07a6f354561296fd6a26b1ce09e96ae2f7650c3d5b9",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "eca305a9480b6e62a962999a5717d93e42bdf28721f7aeedcb017eba107f0ace",
+        "bytes": 1953
+      }
+    },
+    "75": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0075-admission-v1.json",
+        "identity": {
+          "sha256": "555498f82b850faf995b7661b7252cbc676bffab6bbaa0b1f1b62f0fbf9c6b98",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0075-v1.receipt.json",
+        "identity": {
+          "sha256": "8fe6805220520f25bb40e927cb254743b8325d0fce8262e2ae6b3d1fad95eb2a",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "5d6fcbe1086e29007cebab39e4990439c71e2652758cad33639b5131b94e8ae5",
+        "bytes": 1950
+      }
+    },
+    "76": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0076-admission-v1.json",
+        "identity": {
+          "sha256": "2b15caed6b120b2c1e5654ebac153f9e8632acb286261ce23ebde89fd88c273b",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0076-v1.receipt.json",
+        "identity": {
+          "sha256": "d8e16c048e2b8e46d50e5ae0cf60d52f5b2a567533fc955b92459a6e9a58765e",
+          "bytes": 2126
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "7831517e5e5436573cb54e9a71b94f4a2704cb4825b7674b42125dca29b2d9d3",
+        "bytes": 1949
+      }
+    },
+    "77": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0077-admission-v1.json",
+        "identity": {
+          "sha256": "41ac44c3357b84fdd19decc10c27737006bfd4f3fabd3af94e4551950d23775e",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0077-v1.receipt.json",
+        "identity": {
+          "sha256": "1d3ec7d5aada934a08201689ae3880b20fe50a07770d6e3c552f7f02d7f4008f",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "dc45f3ebdbc4e940a9217185e68b34a590bfad1d035b6d30689106fe0eebe326",
+        "bytes": 1951
+      }
+    },
+    "78": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0078-admission-v1.json",
+        "identity": {
+          "sha256": "b6160bed9de071c6fa3924054b6cc6b51da53e28fb7353185d762f5cc95f59bc",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0078-v1.receipt.json",
+        "identity": {
+          "sha256": "718f9fad9fe7be9f2b9b2ac636a1918e4301b9d2f60c5a86960bba323ebf5e8a",
+          "bytes": 2128
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "613baa7b6cdd051d9dde7e3e55d4954154e0347cc3720a2e5b40d43fd2ebd698",
+        "bytes": 1953
+      }
+    },
+    "79": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0079-admission-v1.json",
+        "identity": {
+          "sha256": "e0030e66b6dc2af2313ff1310823c2f034b87c93ce9ce20fd09c5bcba4a8b174",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0079-v1.receipt.json",
+        "identity": {
+          "sha256": "67098c31257d146308ed1699e745042ae0d61e61192dd7ad3bea10ca13bf297a",
+          "bytes": 2127
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "18a79ca493ede647a28533bc1ab31b2da5dc1cae62cbd85b6f941e064f9d45e2",
+        "bytes": 1952
+      }
+    },
+    "80": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0080-admission-v1.json",
+        "identity": {
+          "sha256": "47068dc7231e595a61066104a44cd889384831bf6c217e697df2e0c30e3aae21",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0080-v1.receipt.json",
+        "identity": {
+          "sha256": "487af2bf9d96ef4d81be141fbaeaca6a2d1ba49d918f9c42f42e410bd452c353",
+          "bytes": 2130
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "9673f83017eaba12133cb1c0a98714fbd8888dbef049cb230276892ba77a272a",
+        "bytes": 1952
+      }
+    },
+    "81": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0081-admission-v1.json",
+        "identity": {
+          "sha256": "5865bafea0e7a9e59aa544ae1cc0c55715397a6edd9f23417fe1d3791a147f99",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0081-v1.receipt.json",
+        "identity": {
+          "sha256": "16482422150bfcc1a4fb2e8b879b838e5a6f127a782fa217d49a4e224be647f0",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "a4b72c60c042155bfd42fa3b5ba66db74d2d217fc21894fcf795045edbe6ba89",
+        "bytes": 1953
+      }
+    },
+    "82": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0082-admission-v1.json",
+        "identity": {
+          "sha256": "3b02556c083665ba3817fd0ded6144923cc129141f3f45cb877d16e7225520bf",
+          "bytes": 4788
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0082-v1.receipt.json",
+        "identity": {
+          "sha256": "bb90bf8c19c768b50d38b38d4d6916c4cbccae2d6a301f665dec13ecf5626318",
+          "bytes": 2127
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "ad4de1820d72f66be06bbce853b32d1c577ced0dce2cf5c29edc351f196c970a",
+        "bytes": 1953
+      }
+    },
+    "83": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0083-admission-v1.json",
+        "identity": {
+          "sha256": "3bf16d058a6104e891336d6e9d82118359c61c02a14487cd9b810ecd4b7eae9e",
+          "bytes": 4789
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0083-v1.receipt.json",
+        "identity": {
+          "sha256": "24daa688b81a473edcb14632f67670a1685fae98ab96eff828cb9938d1896716",
+          "bytes": 2127
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "a2ceb65e3fc76a07b05b1a91a2e05d820d0716f6d16ab800f2608038084c0dc3",
+        "bytes": 1952
+      }
+    },
+    "84": {
+      "independent_admission": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0084-admission-v1.json",
+        "identity": {
+          "sha256": "52b21909e838674fd21713fb6f795f1ea2e73012a278ff7d91ab8f14388383dc",
+          "bytes": 4787
+        }
+      },
+      "native_guard": {
+        "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-extract-r19-b0084-v1.receipt.json",
+        "identity": {
+          "sha256": "c874f676b765cc83f674c3e762b1501c7606acc8302073bb4c2529c8dfa10f9f",
+          "bytes": 2129
+        }
+      },
+      "independent_audit_guard": {
+        "sha256": "831518d8de0d3cbc4f7501ce63290362f365e7b0516325c8c0391ddda09c3cdc",
+        "bytes": 1950
+      }
+    }
+  },
+  "qualification": "Complete successful source-validation receipt inventory only. Native freeze must still verify all current actual source/preparation/reader bytes and cached receipt semantics; all financial/economic/production gates remain open."
+}

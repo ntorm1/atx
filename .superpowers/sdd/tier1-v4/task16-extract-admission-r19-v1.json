@@ -1,0 +1,600 @@
+{
+  "receipts": {
+    "0": {
+      "identity": {
+        "bytes": 2470572,
+        "sha256": "601026f84182cfb7a728265df9cc56bbf50dd4bac626965facc2a2778a3e0855"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0000.json"
+    },
+    "1": {
+      "identity": {
+        "bytes": 2470510,
+        "sha256": "87ddd829e78bea5b2195a6cf2c3cb104a53df9a1a35f267979b942ddb8b1dde0"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0001.json"
+    },
+    "10": {
+      "identity": {
+        "bytes": 2472795,
+        "sha256": "a9e43611b61cf7c250e562c166e1ce419e2bfa1e881029e2ec01693432a83b61"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0010.json"
+    },
+    "11": {
+      "identity": {
+        "bytes": 2473519,
+        "sha256": "da7856542aff811878e9967e5239ba9ca4747d6a1bb09c90011e98da411808a2"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0011.json"
+    },
+    "12": {
+      "identity": {
+        "bytes": 2470425,
+        "sha256": "f790dc8fc4ca5aa28d680db9b9da4e674354da27035b41611a2f6927c4ecfe2c"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0012.json"
+    },
+    "13": {
+      "identity": {
+        "bytes": 2472276,
+        "sha256": "851f7a69cc26bfa4952106fd5526c5a684fdef05cd63a7ae2835c0373b2ab574"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0013.json"
+    },
+    "14": {
+      "identity": {
+        "bytes": 2473933,
+        "sha256": "b1d5f5bef513c77face8fea68342481dd75ce20e2bfeb015c0b424da6a9985c7"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0014.json"
+    },
+    "15": {
+      "identity": {
+        "bytes": 2473086,
+        "sha256": "3060988f7307609334faf639189347451160808353a26f310ead33743ade5d16"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0015.json"
+    },
+    "16": {
+      "identity": {
+        "bytes": 2473606,
+        "sha256": "c958d5b690a7ba3b2d4f552ae1ca6f79e160ef7b79544aac888e5c7d52d6d8a1"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0016.json"
+    },
+    "17": {
+      "identity": {
+        "bytes": 2474620,
+        "sha256": "4cd4bd3a9a7878ede6b14a2b1673d9f24b8d6bcf261ca59bb2f0011a28073b8c"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0017.json"
+    },
+    "18": {
+      "identity": {
+        "bytes": 2473539,
+        "sha256": "64c9d8073e96a05ca33ed539ce8bb655453367cbf8ee22b7d3954c5896c74119"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0018.json"
+    },
+    "19": {
+      "identity": {
+        "bytes": 2474625,
+        "sha256": "2f242c26de44297b246cc66c87c5b9e3ed71f3b72cfe769ebe8b3b38bcba0f6c"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0019.json"
+    },
+    "2": {
+      "identity": {
+        "bytes": 2470938,
+        "sha256": "f7a49b6f6682d3eff7b57849978469cab2f0722d1639d01ae12fa7b81e27972c"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0002.json"
+    },
+    "20": {
+      "identity": {
+        "bytes": 2474179,
+        "sha256": "b059100106354b8c3a6ac4f80e16db7b26176f1ced329d0e21af0fffd70f1d01"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0020.json"
+    },
+    "21": {
+      "identity": {
+        "bytes": 2473385,
+        "sha256": "df19bcdd8b266579947cc164f30bf0dac84111e83b764cc2d6138e8035fb6a3b"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0021.json"
+    },
+    "22": {
+      "identity": {
+        "bytes": 2473471,
+        "sha256": "bb07ab08d03863560e58aa7584e8293a9531f37ed585f4997c634e5230ac711a"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0022.json"
+    },
+    "23": {
+      "identity": {
+        "bytes": 2474135,
+        "sha256": "d8fcd5a951dc5b30c20479a6c39cc1855465c690b29601b451d3a5223f7e418c"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0023.json"
+    },
+    "24": {
+      "identity": {
+        "bytes": 2472961,
+        "sha256": "bcb25e4ad2c372307d077bc493ab8d2dae00b802ab500a2e18e797344d714e1f"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0024.json"
+    },
+    "25": {
+      "identity": {
+        "bytes": 2473355,
+        "sha256": "65989b1ea0c4eda871a63bcbdcd622b0a07806ee09e713e51eea0adae3866d3a"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0025.json"
+    },
+    "26": {
+      "identity": {
+        "bytes": 2473604,
+        "sha256": "46a5555e6c82f3e2ccd9c150f8bc665a260c59694def4d3678e911a2c1df4a66"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0026.json"
+    },
+    "27": {
+      "identity": {
+        "bytes": 2474912,
+        "sha256": "da0647e1cd430502785d4006de80f06f0429f98ca10ae2ddbb68671895cbfa7a"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0027.json"
+    },
+    "28": {
+      "identity": {
+        "bytes": 2473181,
+        "sha256": "095905e826193b770c80bb5271b357df56284385e76daa6ff5320db40fd2cc62"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0028.json"
+    },
+    "29": {
+      "identity": {
+        "bytes": 2473205,
+        "sha256": "ec2c27876b9a4996a06a0185a3eed9ed3435e067071e3b077ef33af7a102a4d0"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0029.json"
+    },
+    "3": {
+      "identity": {
+        "bytes": 2469731,
+        "sha256": "b3a0dea16491111ff7cc6ab5d2cddfdb5fc11850a4fd8005c2997cd8444d52be"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0003.json"
+    },
+    "30": {
+      "identity": {
+        "bytes": 2473872,
+        "sha256": "154772efc954dc7582bc8d0dd31cc1a10cefdb1ce1ae3e8454d71fff95787eac"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0030.json"
+    },
+    "31": {
+      "identity": {
+        "bytes": 2474580,
+        "sha256": "31e93c3548e57fc0c423069c0220f95c8c947c34f46ede1db9f5273afdafdd64"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0031.json"
+    },
+    "32": {
+      "identity": {
+        "bytes": 2473146,
+        "sha256": "ae69f446250ae68845f135012bf88b2911fba3c8e39f235963e4e186f9c7a1bd"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0032.json"
+    },
+    "33": {
+      "identity": {
+        "bytes": 2472953,
+        "sha256": "79de02b404cbe9ece42cde6566e2d0fc9b20ff573a2932ce23ea89cea9782c48"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0033.json"
+    },
+    "34": {
+      "identity": {
+        "bytes": 2472947,
+        "sha256": "880457276e871d99deb6afbaac26570dddf628df4b0f786c29895b5f88084769"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0034.json"
+    },
+    "35": {
+      "identity": {
+        "bytes": 2475917,
+        "sha256": "ea5e874afc500e1a63097e526736549aa2dca0df1e147d4c15776d813737347e"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0035.json"
+    },
+    "36": {
+      "identity": {
+        "bytes": 2477321,
+        "sha256": "f9f70490f17a8379d635a7c5b6720270a1b472d6b98f79eb6227eb8bb04fed89"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0036.json"
+    },
+    "37": {
+      "identity": {
+        "bytes": 2477139,
+        "sha256": "4fea549b5f2c31b59ad98275aab15722dec1de4f20044ac53cca35f7450bd672"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0037.json"
+    },
+    "38": {
+      "identity": {
+        "bytes": 2476758,
+        "sha256": "f60517374b1e142162665992a6f982eeb6b788cc849b29db494ef8f394e6043b"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0038.json"
+    },
+    "39": {
+      "identity": {
+        "bytes": 2475452,
+        "sha256": "6ba75411f782b01f60c0a57f44bb710750567567a2c2e740733b2643ffa1c2b4"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0039.json"
+    },
+    "4": {
+      "identity": {
+        "bytes": 2470260,
+        "sha256": "c577b2c803c92b5fe73b4544852adc05e21777d9846bca1f6ad1cff9d13f6293"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0004.json"
+    },
+    "40": {
+      "identity": {
+        "bytes": 2476386,
+        "sha256": "564d050d02eb4aee0b051502b532c92db6cf81ae4966a4d7fff9f59530d0b7ad"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0040.json"
+    },
+    "41": {
+      "identity": {
+        "bytes": 2476597,
+        "sha256": "7dcff4a548ddd020b906b60c491e0852a2986f57d8ff2e1689a6bd1ae7233719"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0041.json"
+    },
+    "42": {
+      "identity": {
+        "bytes": 2476026,
+        "sha256": "e9e85653709174cc4b90381d814279ea879d423a1d0e759cd7e166fb20a152f5"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0042.json"
+    },
+    "43": {
+      "identity": {
+        "bytes": 2477504,
+        "sha256": "f022432b73ac715796798a65ee97143934c155042b2e4cb8134ea91ddc28616d"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0043.json"
+    },
+    "44": {
+      "identity": {
+        "bytes": 2479275,
+        "sha256": "196225d54b01d55407a09dc51a1e7e5affedf2e6bfc5157a019f9392a3aaa217"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0044.json"
+    },
+    "45": {
+      "identity": {
+        "bytes": 2476724,
+        "sha256": "e3645537666261153824eaaa0f02ca7ab46d80f118f852c5f4710af0c6cae223"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0045.json"
+    },
+    "46": {
+      "identity": {
+        "bytes": 2476792,
+        "sha256": "92692bf09e6159b40bf9f12c6928446970f7ea0b2301e95f1e71cc21e733f377"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0046.json"
+    },
+    "47": {
+      "identity": {
+        "bytes": 2478062,
+        "sha256": "ed65b4906c99e1b47057dfe3334c130e387c9da6235c3467b8b8bd8d30e8bcd1"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0047.json"
+    },
+    "48": {
+      "identity": {
+        "bytes": 2475241,
+        "sha256": "96e1425e5482cc275dcb2724dc828892e17949ae1bf3cb0d28dddc42e208fd39"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0048.json"
+    },
+    "49": {
+      "identity": {
+        "bytes": 2477004,
+        "sha256": "d5c3364218435a600bd7756eed119a86003078e9717adc3c939907bc826da123"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0049.json"
+    },
+    "5": {
+      "identity": {
+        "bytes": 2470134,
+        "sha256": "37990e2ae8ff16f706cad83818ea80524163205a63f5160af028aa53eb9de2d4"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0005.json"
+    },
+    "50": {
+      "identity": {
+        "bytes": 2479588,
+        "sha256": "ace004681e7e25865912269c2734fbe3eb5013ae6aea304f8de19cf77566c4e2"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0050.json"
+    },
+    "51": {
+      "identity": {
+        "bytes": 2476828,
+        "sha256": "6819c92bdefe76fce56456b485582f4698f68d1a8135ed4e0c1a64297814ba20"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0051.json"
+    },
+    "52": {
+      "identity": {
+        "bytes": 2480095,
+        "sha256": "6266328c73be007fd064ab7ea109f145616038963452fba1e33b4cc61de7a829"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0052.json"
+    },
+    "53": {
+      "identity": {
+        "bytes": 2479311,
+        "sha256": "a3b70a4afd061751ef4d68d1e8c5c48d143960d08f734c698c3f7f193de6c7b7"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0053.json"
+    },
+    "54": {
+      "identity": {
+        "bytes": 2478773,
+        "sha256": "2e06ef047a4bb60f8c8d9452df6982e5b724436363044347ed8b7023da87bbef"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0054.json"
+    },
+    "55": {
+      "identity": {
+        "bytes": 2478200,
+        "sha256": "c8a54e3f7eb68dbeb8d1c63585d6a99b367a5ea38bf4c8beaf293acf1b7a7e7f"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0055.json"
+    },
+    "56": {
+      "identity": {
+        "bytes": 2482069,
+        "sha256": "06f91741734b8564d41b58e31416cd491af85a41b28999b589085a1e659122c7"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0056.json"
+    },
+    "57": {
+      "identity": {
+        "bytes": 2480063,
+        "sha256": "ec8f8daaef6fe71baf12a6b4af94ae6500394efa6a56eb2525dffa0c754394ba"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0057.json"
+    },
+    "58": {
+      "identity": {
+        "bytes": 2481101,
+        "sha256": "95bfaabef857171746d9d4f71fc0df205ce3f7a32f125ccb1872592ef9142865"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0058.json"
+    },
+    "59": {
+      "identity": {
+        "bytes": 2478205,
+        "sha256": "861d5ee7154518b9750275f22a9fe9370f6c10dbd86bc2205493e8d9cd055d19"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0059.json"
+    },
+    "6": {
+      "identity": {
+        "bytes": 2470927,
+        "sha256": "f1857f22cd313aa85ac20123ce810c5a0a51f46afd0808650803b61aedddf6bd"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0006.json"
+    },
+    "60": {
+      "identity": {
+        "bytes": 2481829,
+        "sha256": "6a1ce9574341f9bb437de1ef463252995073d4fe55990b24fdf72d838d9fdb72"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0060.json"
+    },
+    "61": {
+      "identity": {
+        "bytes": 2480541,
+        "sha256": "90cfe3f83a8c603658da22af07c1f423412a7bd0ea4268bca9b5fc14e8a81ae7"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0061.json"
+    },
+    "62": {
+      "identity": {
+        "bytes": 2484685,
+        "sha256": "0ea5a8496f2131f49f208f100cb80e55bdb9325e36370bae5438502021a21ee2"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0062.json"
+    },
+    "63": {
+      "identity": {
+        "bytes": 2481011,
+        "sha256": "e6b72d8e0ad4cb3a669630a4921c4d0b20673a943c230294b55bf5f7c37c5a14"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0063.json"
+    },
+    "64": {
+      "identity": {
+        "bytes": 2480200,
+        "sha256": "78e055ad6da8ed5c83e8fac01498d31d8b1774a4b0072c959a5379aabfabc03a"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0064.json"
+    },
+    "65": {
+      "identity": {
+        "bytes": 2479045,
+        "sha256": "c7845df8e19905bef596d0d2a45e67813b9e99e322260249d89d7c41a4318488"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0065.json"
+    },
+    "66": {
+      "identity": {
+        "bytes": 2483255,
+        "sha256": "b1abaca82db15c5f3a2d275f56c51044ef504c77637a4f733cc8d75ecf1fce62"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0066.json"
+    },
+    "67": {
+      "identity": {
+        "bytes": 2479939,
+        "sha256": "8348049faa167745df98850a375819472d2d2c3e2060233b416be6da7b11ff09"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0067.json"
+    },
+    "68": {
+      "identity": {
+        "bytes": 2480295,
+        "sha256": "9ad8e93a3ae25535fccbd279108cb44d34070bb989ced0945f0a87332dd4bd7a"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0068.json"
+    },
+    "69": {
+      "identity": {
+        "bytes": 2478453,
+        "sha256": "cba4c64931b8649c03e865f4e0d4bb4ed021492e9601b95b1f92439aa5da03ff"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0069.json"
+    },
+    "7": {
+      "identity": {
+        "bytes": 2470566,
+        "sha256": "baff6c760029f13015d18df0e4d095ce1e88e52385b28595701b2af2bdf6be56"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0007.json"
+    },
+    "70": {
+      "identity": {
+        "bytes": 2480096,
+        "sha256": "5ef7b71a5abccb5b03ea5c1461a91e6be21a52cbd4c6f45ee921eda4d35ee40e"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0070.json"
+    },
+    "71": {
+      "identity": {
+        "bytes": 2481870,
+        "sha256": "e674cfff77c19d3960db6396c9e300072fbb0cc280321b7ac712064bdc734e26"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0071.json"
+    },
+    "72": {
+      "identity": {
+        "bytes": 2481892,
+        "sha256": "762b37ec08293774780bba40823babccdb886ae47537dfe980354e77c4afea8a"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0072.json"
+    },
+    "73": {
+      "identity": {
+        "bytes": 2482048,
+        "sha256": "c7b403b16f7f4a791bbb09958ffbfbfd11fbd9544e57561245276c957fa8d072"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0073.json"
+    },
+    "74": {
+      "identity": {
+        "bytes": 2481576,
+        "sha256": "f48571233472e6745daf0ac04b2cfc0d7d2702cfa9735c44439d11ee6ca13698"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0074.json"
+    },
+    "75": {
+      "identity": {
+        "bytes": 2482229,
+        "sha256": "126acbc47a237105564741359aa114c96fb95ed30eb50912c90a3ed7a69a1569"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0075.json"
+    },
+    "76": {
+      "identity": {
+        "bytes": 2484661,
+        "sha256": "d92eff258087e60797e20f963195b124924306c94b5d4114ed82dd66695a43e5"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0076.json"
+    },
+    "77": {
+      "identity": {
+        "bytes": 2486206,
+        "sha256": "eb3682cda84b28b75f49adf7c10d59e69d18ee7a504e19257e91a264502a52d6"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0077.json"
+    },
+    "78": {
+      "identity": {
+        "bytes": 2489715,
+        "sha256": "32e1cab8eeacbfde016d5a44acff12848417930115710a2e2d90eadb2475d889"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0078.json"
+    },
+    "79": {
+      "identity": {
+        "bytes": 2491091,
+        "sha256": "59a056e6d08a11058c8c3af768d9701ac60895d0f6dfd50d75de39f3bd177245"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0079.json"
+    },
+    "8": {
+      "identity": {
+        "bytes": 2470648,
+        "sha256": "fab91ddc2c28da133b0bb2f2d5a33d7b09f864db92545da645de07b3d4b6395c"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0008.json"
+    },
+    "80": {
+      "identity": {
+        "bytes": 2496068,
+        "sha256": "92a1bbc336d9975a11902e53f134af207a55ff02f8ebb061c40654a9caa142bb"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0080.json"
+    },
+    "81": {
+      "identity": {
+        "bytes": 2506079,
+        "sha256": "94b9c3428649cfdd8a82c49fdcf98d5229a10f8351064536089375b342ab122e"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0081.json"
+    },
+    "82": {
+      "identity": {
+        "bytes": 2514349,
+        "sha256": "428d4a3ff29c16b046fee175b7f85de7cf360e4462c7cf940ef0d5bb0c59ddd1"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0082.json"
+    },
+    "83": {
+      "identity": {
+        "bytes": 2543453,
+        "sha256": "28469af91f38a53530f815bea9ca26dc12ea28915cfe37932e8e872c9740a035"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0083.json"
+    },
+    "84": {
+      "identity": {
+        "bytes": 2540438,
+        "sha256": "4f96a2b69e71320fcf686ca5bade1dc38b5642ef12d7c8451b5a15e6695183a3"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0084.json"
+    },
+    "9": {
+      "identity": {
+        "bytes": 2472762,
+        "sha256": "b36f4df7424a4c8e07f5f37cfe405889b998c1b5f939a35bda23573dd9bbacc6"
+      },
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fund_extract_validation_v1\\r19_20261004_001\\batch-0009.json"
+    }
+  },
+  "version": "fund-extract-validation-v1"
+}

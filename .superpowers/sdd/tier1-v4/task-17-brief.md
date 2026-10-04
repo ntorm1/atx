@@ -1,5 +1,14 @@
 ### Task 17: Product catalog + parity scorecard refresh
 
+R23 operational integration prerequisite: read task-23-fund-runtime-ruling.md.
+The actual Task16 financial CLI exhausted its hardcoded128MB DuckDB allowance;
+a same-kernel256MB diagnostic succeeded within the unchanged0.8GiB process cap.
+Task17 must implement/review an explicit separately pinned runtime adapter using
+native connection-taking functions and every existing admission/merge/public
+validation/publication/recovery check. Never mutate frozen Task16/Task5/common
+code, monkeypatch globals or reset Task16's exhausted5/5 repair counter.
+This precursor does not complete the catalog/parity/fullTask17 obligations.
+
 Owner extension: read `owner-coverage-addendum.md`; catalog 13F bronze-to-gold completeness and profitability/growth primitive/feature coverage, preserving all explained and unexplained gaps.
 
 Deliverable: `atx-db/docs/TIER1_V4_PRODUCT_CATALOG.md` — one section per dataset family (§1 map rows): stage,
