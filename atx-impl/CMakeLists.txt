@@ -225,3 +225,6 @@ endif()
 # section 1); strategy_ic_{shrink,theme_erc,theme_tsmom,theme_resid}.hpp and strategy_two_speed.hpp are thin
 # includes of it, and the IC runner's verify and composition call it.
 target_link_libraries(atx-impl-core PUBLIC atx-engine-research-composition)
+# P9 lane C2: nav --calibrate-gross, Ruling PM6-6 in one process (strategy_nav_calibrate.hpp:
+# the numpy mean of the S2 gross, the 4-decimal correction, the summary record).
+target_sources(atx-impl-core PRIVATE src/strategy_nav_calibrate.cpp)

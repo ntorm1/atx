@@ -260,6 +260,8 @@ def verify_inputs(w: Wave, done: dict) -> dict:
     now: dict = {"readers": reader_digests(w, list(mt["readers"]))}
     if mt.get("spec_digest"):
         now["spec_digest"] = w.spec_digest(mt["cell_spec"]) if w.exists(mt["cell_spec"]) else None
+    if mt.get("record_spec"):           # P9 C2 (review R4): engine mode's cell of record, what next_parent names
+        now["record_spec_digest"] = w.spec_digest(mt["record_spec"]) if w.exists(mt["record_spec"]) else None
     return pinned("match", mt, now)
 
 

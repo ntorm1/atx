@@ -9,6 +9,7 @@
 #include <string_view>
 #include <vector>
 #include "atx/engine/book/risk_target.hpp"
+#include "strategy_nav_calibrate.hpp" // P9 C2: NavCalibrateOptions
 #include "strategy_target_replay.hpp"
 
 namespace atx::impl::strategy {
@@ -693,6 +694,25 @@ struct NavEmitOptions {
                                                const NavExecutionOptions& execution,
                                                const NavEmitOptions& emit,
                                                std::ostream& progress);
+// --calibrate-gross G_P [--calibrate-tolerance T] (P9 C2; strategy_nav_calibrate.hpp states the
+// rule): one load, pass 1 = the primary S2 book alone at cfg.target.aim_leverage L, PM6-6's
+// decision, pass 2 = this run at the final L (cfg with aim_leverage L', every file the plain
+// run's bytes at L') plus summary.json calibration. Pass 2 replays pass 1's shared construction
+// (borrow tiers, census, desired target and its record) unless the construction reads a setting
+// that differs between the passes or a state pass 1 does not form: --adv-hold-q (the cap reads
+// L), --two-speed (F moves toward L; DECIDE reads it) and --emit-holdings with a declared hold
+// band (the export reads the band state), or unless the record does not fit what --max-bytes
+// leaves after the load; then pass 2 forms it again (the same bytes either way). Requires
+// aim-partial-v5 (aim_leverage is its key); refused with an spo rule (its engines keep pass 1's
+// rows). NavCalibrateOptions{} (off) is exactly the seven-argument overload.
+[[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
+                                               const NavTurnoverLimits& limits,
+                                               const NavFieldsPin& fields,
+                                               const NavRateOptions& rate,
+                                               const NavExecutionOptions& execution,
+                                               const NavEmitOptions& emit,
+                                               const NavCalibrateOptions& calibrate,
+                                               std::ostream& progress);
 // argv[0] is the "nav" verb. Rejects --one-way-bps / --annual-borrow-bps.
 // --fields PATH/manifest.json --fields-sha256 SHA enables the financing matrix.
 // --rate fixed|per-name-v1 is refused (usage error) unless --rule aim-partial-v5, and
@@ -701,7 +721,9 @@ struct NavEmitOptions {
 // the valueless flags --locate-in-aim and --liquidity-cache. v7: --emit-holdings NEWDIR
 // [--holdings-format f64|csv]. v8: --warm-start-sessions K, --book-workers N, the valueless
 // --stage-timers, --construction-grid GRID.json (run_nav_grid), and --label-role PATH
-// --label-role-sha256 SHA (E-25, together or neither: NavExecutionOptions::label_role).
+// --label-role-sha256 SHA (E-25, together or neither: NavExecutionOptions::label_role). P9 C2:
+// --calibrate-gross G_P [--calibrate-tolerance T] (NavCalibrateOptions; the tolerance only with
+// it; not with --construction-grid).
 // P9 C1 (K-P9-7, Ruling P7): `nav --list-rules [--json]` prints the rule contract and exits 0
 // before any other flag is read: {"schema": "atx.nav-rules/v1", "capabilities": [...], "rules":
 // [{id, kind, params_schema, incompatible}]}; this lane lists the leverage rules (fixed-v1,
