@@ -56,11 +56,19 @@ class Feature:
     citation: str = REFERENCE
 
     def record(self):
+        quarterly={"sale":"fundq.saleq", "ni":"fundq.ibq", "at":"fundq.atq",
+                   "be":"fundq.seqq+fundq.txditcq-fundq.pstkq",
+                   "ocf":"fundq.oancfy minus preceding same-fiscal-year oancfy unless fqtr=1",
+                   "capx":"fundq.capxy minus preceding same-fiscal-year capxy unless fqtr=1",
+                   "xrd":"fundq.xrdy minus preceding same-fiscal-year xrdy unless fqtr=1",
+                   "fcf":"standalone fundq.oancfy minus standalone fundq.capxy, both YTD predecessors required",
+                   "eps_basic":"fundq.epspiq", "eps_diluted":"fundq.epsfiq",
+                   "shares_basic":"fundq.cshpriq", "shares_diluted":"fundq.cshfdq"}
         return {**asdict(self), "jkp_name": self.name if self.name in JKP153 or self.family != "owner" else None,
                 "original153": self.name in JKP153, "stored_sign": "natural; economic_sign unapplied",
                 "coverage_class":"price" if self.implementation=="market" else "accounting",
                 "source":"explicit final compustat_std_v11 vintages / qualified pinned price, cap, factor, event products",
-                "primitive_dependencies":{d:PRIMITIVES.get(d.rsplit('_l',1)[0],f"source-backed standardized/quarterly item {d}") for d in self.dependencies},
+                "primitive_dependencies":{d:(quarterly.get(d,f"qualified fundq.{d}; exact fiscal/currency/available_at vintage") if self.implementation=="quarterly" or self.name.endswith(("_q_yoy","_ttm_yoy")) else PRIMITIVES.get(d.rsplit('_l',1)[0],f"source-backed standardized item {d}")) for d in self.dependencies},
                 "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies"}
 
 
@@ -119,9 +127,9 @@ def _registry():
     # Quarterly kernels use true standalone quarters, never YTD-as-quarter.
     for name, definition, deps, history in (
         ("niq_at","latest IBQ / previous-quarter AT",("ibq","atq"),"2 consecutive quarters"),
-        ("niq_be","latest IBQ / previous-quarter BE",("ibq","seqq","pstkq"),"2 consecutive quarters"),
+        ("niq_be","latest IBQ / previous-quarter BE",("ibq","seqq","txditcq","pstkq"),"2 consecutive quarters"),
         ("niq_at_chg1","NIQ/previousAT minus same fiscal quarter prior year",("ibq","atq"),"6 consecutive quarters"),
-        ("niq_be_chg1","NIQ/previousBE minus same fiscal quarter prior year",("ibq","seqq","pstkq"),"6 consecutive quarters"),
+        ("niq_be_chg1","NIQ/previousBE minus same fiscal quarter prior year",("ibq","seqq","txditcq","pstkq"),"6 consecutive quarters"),
         ("saleq_gr1","SALEQ / year-ago SALEQ - 1",("saleq",),"5 consecutive quarters"),
         ("niq_su","(IBQ-yearagoIBQ-mean previous8 seasonal differences) / sample std previous8 differences",("ibq",),"13 consecutive quarters"),
         ("saleq_su","(SALEQ-yearagoSALEQ-mean previous8 seasonal differences) / sample std previous8 differences",("saleq",),"13 consecutive quarters"),
@@ -154,7 +162,7 @@ def _registry():
         "ami_126d":("mean(abs(total return)/dollar volume)*1e6; min60","liquidity",True),
         "rmax1_21d":("largest trailing21 daily total return; min15","risk",True),
         "rmax5_21d":("mean 5 largest trailing21 daily total returns; min15","risk",True),
-        "rmax5_rvol_21d":("rmax5_21d / sample excess-return std252d; min120","risk",True),
+        "rmax5_rvol_21d":("rmax5_21d / sample excess-return std252d; denominator min120; every denominator price/return independently certified, no dropping missing cells","risk",True),
         "rskew_21d":("mean cubed demeaned trailing21 excess returns divided by sample std cubed; min15","risk",True),
         "rvol_21d":("sample standard deviation trailing21 daily excess returns; min15","risk",True),
     }
@@ -173,7 +181,7 @@ def _registry():
         market_defs[f"resff3_{a}_1"]=(f"(product(1+FF3 residual) lag1 through lag{a})-1, divided by fit residual sample std; trailing36-month fit min24; no future rows","momentum",True)
     for a,b in ((1,1),(2,5),(6,10),(11,15),(16,20)):
         for kind in ("an","na"):
-            market_defs[f"seas_{a}_{b}{kind}"]=(f"mean monthly returns lag{12*a}..{12*b} {'multiples12' if kind=='an' else 'excluding multiples12'}; exact months","seasonality",True)
+            market_defs[f"seas_{a}_{b}{kind}"]=(f"mean monthly returns lag{12*a if kind=='an' else 12*(a-1)+1}..{12*b} {'multiples12' if kind=='an' else 'excluding multiples12'}; current t at index-1; lag i index-(i+1); maximum lag+1 observations","seasonality",True)
     for name,(formula,family,returns) in market_defs.items():
         sign = -1 if name.startswith(("ivol","rvol","rmax","ami","dolvol","turnover","zero","beta","betabab","chcsho","ret_1_","ret_60_")) else 1
         rows[name]=Feature(name,family,formula,("prices","calendar","issuer_cap_quality","market_factors" if returns else "price_basis"),sign,"see formula; exact trailing windows",return_derived=returns,implementation="market",unit="USD" if name in ("market_equity","dolvol_126d") else "USD/share" if name=="prc" else "dimensionless")
@@ -213,7 +221,8 @@ def _registry():
     for primitive in ("sale","ni","ocf","fcf","at","be","capx","xrd","eps_basic","eps_diluted","shares_basic","shares_diluted"):
         for frequency in ("q_yoy","ttm_yoy"):
             name=f"owner_{primitive}_{frequency}"
-            rows[name]=Feature(name,"owner",f"{primitive} {frequency} growth, prior positive base only",(primitive,),1,"5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",implementation="quarterly")
+            unsupported=frequency=="ttm_yoy" and primitive in ("eps_basic","eps_diluted","shares_basic","shares_diluted")
+            rows[name]=Feature(name,"owner",f"{primitive} {frequency} growth, prior positive base only",(primitive,),1,"5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",implementation="unsupported" if unsupported else "quarterly",unsupported_reason="TTM weighted earnings and shares basis not independently admitted" if unsupported else None)
     extras={"chs_proxy":"Campbell-Hilscher-Szilagyi NIMTA,TLMTA,EXRET,SIGMA,RSIZE,CASHMTA,MB,PRICE failure-probability score; exact coefficients and market basis unresolved",
             "insider_net_buy_6m":"six-month net split-adjusted insider open-market shares / dated issuer shares",
             "insider_buyers_6m":"distinct buying insiders in six months; zero only after complete issuer filing-cohort proof",
@@ -235,7 +244,7 @@ def _registry():
 
 REGISTRY = _registry()
 BY_NAME = {f.name:f for f in REGISTRY}
-FREEZE = {"version":"char-monthly-v1-frozen", "original153":list(JKP153),
+FREEZE = {"version":"char-monthly-v1-frozen-r18", "original153":list(JKP153),
           "primitive_definitions":PRIMITIVES,
           "registry":[f.record() for f in REGISTRY], "coverage_years":list(range(2020,2026)),
           "coverage_populations":["member_equity","univ_all_common","univ_r3000p"],
@@ -244,7 +253,9 @@ FREEZE = {"version":"char-monthly-v1-frozen", "original153":list(JKP153),
           "holdout":{"return_statistics_end_exclusive":"2023-01-01","complete_label_window":True},
           "trials":{"primary":"Task16 predeclared family unchanged; this whole registry exploratory", "no_outcome_selection":True},
           "normalization":"natural raw values; composite signs from predeclared economics; no winsorization",
-          "replication":{"tercile_breakpoints":[1/3,2/3],"nonmicro_nyse_percentile":0.20,"cap_nyse_percentile":0.80,"minimum_names_per_leg":5,"minimum_months":60,"original_matched_factors":list(JKP153),"period_start":"2020-01-01","period_end_exclusive":"2023-01-01","all_outcomes_reported":True},
+          "ratio_comparison":"exact admitted final monthly inventory and original72dates; every original eligible member must have compatible independently pinned annual/fiscal/currency/cap/vintage/definition proof or gate FAIL",
+          "formation_audit":"fixed key/cik alignment; independent source and evidence clocks; matching issuer cap; qualifications only, protected values never overwritten",
+          "replication":{"tercile_breakpoints":[1/3,2/3],"nonmicro_nyse_percentile":0.20,"cap_nyse_percentile":0.80,"minimum_names_per_leg":5,"minimum_months":60,"original_matched_factors":list(JKP153),"holding_month_start":"2013-01","holding_month_end":"2022-12","formation_month_start":"2012-12","formation_month_end":"2022-11","requested_months":120,"period_end_exclusive":"2023-01-01","osap_overlap":"nonempty independently admitted fixed metadata mapping before returns; all mapped members denominator","all_outcomes_reported":True},
           "growth":"positive previous base only; zero/negative prior -> explicit NULL",
           "history":"exact fiscal year/quarter and currency continuity; never row-number lags across gaps"}
 FREEZE_SHA256 = digest(FREEZE)

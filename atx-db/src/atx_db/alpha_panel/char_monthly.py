@@ -107,7 +107,7 @@ def validate_unit(con,relation,date,population=None):
     if schema!=expected_schema:raise RuntimeError("monthly exact schema differs")
     if con.execute(f"SELECT 1 FROM {relation} GROUP BY session_date,security_id HAVING count(*)<>1 LIMIT 1").fetchone():raise RuntimeError("duplicate monthly keys")
     bad=con.execute(f"""SELECT count(*) FROM {relation} WHERE session_date<>? OR session_date IS NULL OR security_id IS NULL
-        OR available_at<>? OR source_available_at>=? OR quality_reasons IS NULL OR source_clocks IS NULL""",[date,N.clock(date),N.clock(date)]).fetchone()[0]
+        OR available_at IS NULL OR available_at<>? OR source_available_at>=? OR quality_reasons IS NULL OR source_clocks IS NULL""",[date,N.clock(date),N.clock(date)]).fetchone()[0]
     if bad:raise RuntimeError("monthly key/clock/quality violation")
     if population is None:population=N.population(con,date)
     expected={(r["session_date"],r["security_id"]) for r in population}
@@ -146,8 +146,10 @@ def coverage(receipts):
 
 
 def gates(evidence):
-    result={"implemented_original153":{"pass":sum(BY_NAME[n].implementation!="unsupported" for n in JKP153)>=150,
-             "measured":sum(BY_NAME[n].implementation!="unsupported" for n in JKP153),"denominator":153,"required":150}}
+    qualified=sum(BY_NAME[n].implementation!="unsupported" and any(evidence[f"{y}/{p}"]["fields"][n]["numerator"]>0 for y in range(2020,2023) for p in POPS) for n in JKP153)
+    result={"implemented_original153":{"pass":qualified>=150,"measured":qualified,
+             "implemented_kernel_count":sum(BY_NAME[n].implementation!="unsupported" for n in JKP153),"denominator":153,"required":150,
+             "meaning":"implemented original formulas with at least one independently qualified input observation; executor count alone does not establish economic validity"}}
     for family,threshold in (("accounting",.9),("price",.97)):
         # All original fields retain denominator, including unimplemented fields
         # and return-derived nulls in the original 2023--2025 gate years.
@@ -161,6 +163,14 @@ def gates(evidence):
     return result
 
 
+def required_window(start,end,dates):
+    if start>dt.date(2020,1,1) or end<dt.date(2025,12,31):raise ValueError("original 2020-2025 coverage window cannot be reduced")
+    if len(dates)!=len(set(dates)) or dates!=sorted(dates):raise ValueError("invalid monthly date inventory")
+    required={(y,m) for y in range(2020,2026) for m in range(1,13)}
+    supplied=[(d.year,d.month) for d in dates]
+    if not required<=set(supplied) or len(supplied)!=len(set(supplied)):raise ValueError("original monthly inventory incomplete")
+
+
 def build(root,bindings,generation_id,start,end,max_new_months=None):
     if not generation_id or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in generation_id):raise ValueError("safe explicit generation id required")
     if start>dt.date(2020,1,1) or end<dt.date(2025,12,31):raise ValueError("original 2020-2025 coverage window cannot be reduced")
@@ -171,6 +181,7 @@ def build(root,bindings,generation_id,start,end,max_new_months=None):
         try:
             snapshot=N.admit(root,bindings,con)
             dates=N.months(con,start,end)
+            required_window(start,end,dates)
             generation=R.safe_path(stage/"generations",generation_id);generation.mkdir(parents=True,exist_ok=True)
             frozen={"source":snapshot,"bindings":bindings,"registry_sha256":FREEZE_SHA256,"code":{str(p):R.identity(p) for p in N.code_paths()},"months":[d.isoformat() for d in dates],"start":str(start),"end":str(end)}
             if (generation/"snapshot.json").exists():
@@ -216,7 +227,9 @@ def validate_generation(root,generation,con):
     frozen=C.read_json(generation/"snapshot.json")
     snapshot=N.admit(root,frozen["bindings"],con)
     if snapshot!=frozen["source"] or frozen["registry_sha256"]!=FREEZE_SHA256:raise RuntimeError("monthly source snapshot changed")
-    dates=N.months(con,dt.date.fromisoformat(frozen["start"]),dt.date.fromisoformat(frozen["end"]))
+    start,end=dt.date.fromisoformat(frozen["start"]),dt.date.fromisoformat(frozen["end"])
+    dates=N.months(con,start,end)
+    required_window(start,end,dates)
     if manifest["months"]!=[d.isoformat() for d in dates] or frozen["months"]!=manifest["months"]:raise RuntimeError("monthly date inventory differs")
     expected={f"month={d:%Y-%m}/char_monthly.parquet" for d in dates}
     if set(manifest["files"])!=expected or C.output_hashes(generation)!=manifest["files"]:raise RuntimeError("monthly file inventory differs")

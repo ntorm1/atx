@@ -127,7 +127,7 @@ No Task7 real build, file hash/inventory, source acquisition or return run has o
 ```
 
 The connection is file backed with spill, 380MB and one thread. One security's
-1260-session daily and 240-month market history is fetched at a time; issuer
+1260-session daily and 241-month market history is fetched at a time; issuer
 accounting cache is capped at 128 and each issuer snapshot at 500 rows (overflow
 fails, never silently truncates). Output insert batches are 32 and Parquet row
 groups 2048. Monthly receipts bind exact source/config/code/window hashes and
@@ -164,6 +164,34 @@ matched monthly observations. Every original factor outcome is reported, includi
 unsupported/insufficient windows; factor and sign-share denominators remain 153.
 No statistical significance or predictive ability has been measured or asserted.
 
+R18 fixes the requested holding axis at 2013-01 through 2022-12 (120 slots) and
+the formation axis at the pinned preceding-month last exchange session,
+2012-12 through 2022-11. Minimum paired observations remains60. Missing calendar
+or feature history remains explicitly failed in the120-slot inventory. Labels and
+benchmarks outside these exact axes are refused before aggregation. Existing
+2020–2025 coverage dates and all153 JKP outcomes remain unchanged.
+
+OSAP requires `osap_mapping: {path, identity:{sha256,bytes}, expected_sha256}`;
+the caller SHA must identify a separately independently reviewed contract.
+Contract version `char_monthly_osap_mapping_v1` binds this registry SHA, an
+`authoritative_metadata` file-identity inventory, all153 `entries` (mapped or
+excluded with independent metadata identifier/reason), and a separately pinned
+`admission_record` with caller expected SHA. The record contains the registry SHA,
+canonical entries digest `mapping_sha256`, and phase `frozen_before_any_return_run`.
+Mapped entries explicitly identify OSAP name, sign (+1/-1), decimal units,
+vw_cap weighting and usa country. Duplicate names, unsupported conventions,
+missing inventory or absent reviewed metadata refuse evaluation. All matched
+members, including missing/failed correlations, stay in the OSAP denominator;
+a median of successful matches cannot pass an incomplete overlap. This interface
+does not invent or certify an actual authoritative mapping; root/Task8 must
+independently supply and review it before any actual returns.
+
+Formation-quality input columns are allowlisted: formation, security_id, cik,
+available_at, source_available_at, me, nyse, primary_security, certified. Keys/CIK
+and issuer cap must match the validated feature row; both clocks precede cutoff.
+Only the last four qualifications enter portfolio rows. Features, population
+flags and publication/source clocks cannot be overwritten by external audit rows.
+
 `compare-ratios` takes explicit final `ratios_v11` monthly file pins, leaves labels
 out, and measures all72 dates x bm/ep/sp/gpa (min10 finite pairs, rho>=.99).
 It compares be_me, nix_me (NI incl extraordinary items), sale_me, gp_at to the
@@ -172,6 +200,28 @@ in bounded month artifacts: issuer/clock, currency, annual-versus-TTM period,
 issuer cap, missing primitives and book/numerator definitions. Diagnostic cohorts
 do not replace the binding member-equity comparison. Task4/17 acceptance remains held
 until this actual comparison is measured on completed final producer files.
+
+Comparator manifest identity must equal the fully admitted feature snapshot's
+ratios_v11 manifest, and caller monthly files must equal its complete monthly
+inventory. `ratio_basis` uses the same separately reviewed `{path,identity,
+expected_sha256}` contract interface, version `char_monthly_ratio_basis_v1`,
+registry SHA and independently pinned `product` of per-date/security/formula
+basis rows. Each row supplies CIK, fiscal datadate, genuine_annual flow basis,
+same_annual_snapshot balance basis, USD currency, issuer cap and
+all_eligible_issuer_classes cap basis, matching fundamental vintage, the explicit
+book/NI/sales/GP definition, and information/source/fundamental/cap clocks.
+Unknown or incompatible basis never forms a pair; every original member must
+pair compatibly and all72 dates/288 comparisons must exist for acceptance.
+Reported rho cannot turn incompatible monotonic values into a passing gate.
+Actual independent basis proofs remain an outstanding source dependency.
+
+Seasonal annual lags are12a..12b at multiples12; nonannual lags are
+12(a-1)+1..12b excluding multiples12. Current observation is t, so lag i reads
+index-(i+1); lag240 requires241 observations. rmax5_rvol_21d separately validates
+its trailing252-session denominator, minimum120 observations and certification
+of every used price/return cell. Quarterly metadata includes txditcq book equity
+and explicit standalone-flow YTD predecessors; four owner TTM EPS/share metrics
+are structurally unsupported until weighted earnings/share inputs are admitted.
 
 Remaining limits: no qualified actual source bindings/publication; exact duration
 parameters; complete insider/event source cohorts; historical source completeness,

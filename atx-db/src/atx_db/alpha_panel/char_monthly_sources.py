@@ -169,7 +169,7 @@ def price_history(con,sid,date):
     monthly=records(con,"""WITH factors AS (SELECT * FROM cm_monthly_factors WHERE month_end<DATE '2023-01-01' AND available_at<?
         QUALIFY row_number() OVER(PARTITION BY month_end ORDER BY available_at DESC)=1),
       data AS (SELECT * FROM cm_monthly_market WHERE security_id=? AND month_end<=? AND available_at<?
-        QUALIFY row_number() OVER(PARTITION BY security_id,month_end ORDER BY available_at DESC)=1 ORDER BY month_end DESC LIMIT 240)
+        QUALIFY row_number() OVER(PARTITION BY security_id,month_end ORDER BY available_at DESC)=1 ORDER BY month_end DESC LIMIT 241)
       SELECT d.month_end,d.shares_adjusted,d.issuer_me,d.dividend_dollars,d.available_at,d.source_available_at,
         CASE WHEN d.month_end<DATE '2023-01-01' AND d.return_certified THEN d.ret END AS ret,
         CASE WHEN d.month_end<DATE '2023-01-01' AND d.return_certified THEN d.ret-f.rf END AS ret_exc,

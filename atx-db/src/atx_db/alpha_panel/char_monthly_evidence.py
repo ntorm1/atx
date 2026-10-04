@@ -1,6 +1,7 @@
 """Frozen replication and value diagnostics; no post-2022 return aggregation."""
 from __future__ import annotations
 import datetime as dt
+import json
 from pathlib import Path
 import numpy as np
 from . import common as C
@@ -9,6 +10,19 @@ from . import char_monthly_kernels as K
 from .char_monthly_registry import JKP153,BY_NAME,FREEZE_SHA256
 
 BOUNDARY=dt.date(2023,1,1)
+
+
+def qualify_formation(row,audit):
+    allowed={"formation","security_id","cik","available_at","source_available_at","me","nyse","primary_security","certified"}
+    if not audit:return {**row,"certified":False,"primary_security":False}
+    if set(audit)-allowed:raise ValueError("protected or unknown formation audit columns")
+    if (audit.get("formation"),audit.get("security_id"),audit.get("cik"))!=(row["session_date"],row["security_id"],row["cik"]):
+        raise ValueError("formation audit issuer/key mismatch")
+    cutoff=dt.datetime.combine(row["session_date"],dt.time(22),dt.UTC)
+    if any(audit.get(k) is None or audit[k]>=cutoff for k in ("available_at","source_available_at")):
+        raise ValueError("formation audit clock leaks or missing")
+    if audit.get("me")!=row.get("issuer_me"):raise ValueError("formation audit issuer cap differs")
+    return {**row,**{k:audit.get(k) for k in ("me","nyse","primary_security","certified")}}
 
 
 def _pearson(pairs):
@@ -32,6 +46,7 @@ def tercile(rows,feature,formation):
     invalidates that month's portfolio, preserving its original denominator.
     """
     if formation>=BOUNDARY:raise ValueError("formation outside return-statistic window")
+    if any(r.get("entry_date") is None or r.get("exit_date") is None for r in rows):return None,"missing_eligible_complete_label_window"
     if any(r["entry_date"]<=formation or r["exit_date"]>=BOUNDARY or r["entry_date"]>=BOUNDARY or r["exit_date"]<r["entry_date"] for r in rows):raise ValueError("incomplete/heldout label window before return aggregation")
     if len({r["cik"] for r in rows})!=len(rows):raise ValueError("duplicate issuer formation")
     if any(K.finite(r.get(feature)) and (r.get("certified") is not True or not K.finite(r.get("me")) or r["me"]<=0) for r in rows):return None,"invalid_or_uncertified_eligible_issuer_cap"
@@ -52,15 +67,35 @@ def tercile(rows,feature,formation):
     return (returns[1]-returns[0])*BY_NAME[feature].economic_sign,None
 
 
-def replication(panel_months,labels,jkp,osap):
+def requested_axes(calendar):
+    axes={}
+    for n in range(120):
+        y,m=divmod(2013*12+n,12);holding=(y,m+1)
+        py,pm=divmod(y*12+m-1,12)
+        candidates=[d for d in calendar if (d.year,d.month)==(py,pm+1)]
+        axes[holding]=max(candidates) if candidates else None
+    return axes
+
+
+def replication(panel_months,labels,jkp,osap,osap_mapping=None,calendar=()):
     """All predeclared outcomes; factor matching is a frozen full153 identity."""
     # Boundary checked before grouping/ranking/aggregation or reading returns.
     if any(r["formation"]>=BOUNDARY or r["exit_date"]>=BOUNDARY or r["entry_date"]>=BOUNDARY for r in labels):raise ValueError("heldout labels supplied")
     if any(r["month"]>=BOUNDARY for r in jkp+osap):raise ValueError("heldout benchmark supplied")
+    if not osap_mapping:raise ValueError("nonempty independently admitted OSAP overlap required")
+    axes=requested_axes(calendar)
+    formations={d:holding for holding,d in axes.items() if d is not None}
+    if any(d not in formations for d in panel_months):raise ValueError("formation outside exact requested calendar axis")
+    for r in labels:
+        if set(r)-{"formation","cik","entry_date","exit_date","ret","return_certified"}:raise ValueError("protected or unknown label columns")
+        holding=formations.get(r["formation"])
+        if holding is None or any((r[k].year,r[k].month)!=holding for k in ("entry_date","exit_date")) or r["entry_date"]<=r["formation"] or r["exit_date"]<r["entry_date"]:
+            raise ValueError("label outside exact holding/formation axes")
     by_label={(r["formation"],r["cik"]):r for r in labels}
     if len(by_label)!=len(labels):raise ValueError("ambiguous issuer label")
     own={};exclusions={}
-    for formation,rows in panel_months.items():
+    for formation in formations:
+        rows=panel_months.get(formation,[])
         if formation>=BOUNDARY:raise ValueError("heldout formation supplied")
         issuers={}
         for row in rows:
@@ -68,7 +103,7 @@ def replication(panel_months,labels,jkp,osap):
                 if row["cik"] in issuers:raise ValueError("ambiguous primary security")
                 label=by_label.get((formation,row["cik"]))
                 if label is None:
-                    label={"entry_date":formation+dt.timedelta(days=1),"exit_date":formation+dt.timedelta(days=1),"ret":None,"return_certified":False}
+                    label={"entry_date":None,"exit_date":None,"ret":None,"return_certified":False}
                 issuers[row["cik"]]={**row,**label}
         for feature in JKP153:
             value,reason=tercile(list(issuers.values()),feature,formation)
@@ -77,29 +112,33 @@ def replication(panel_months,labels,jkp,osap):
     def bench(rows):
         out={}
         for r in rows:
+            if r["formation"] not in formations or (r["month"].year,r["month"].month)!=formations[r["formation"]]:raise ValueError("benchmark outside holding/formation axes")
             key=(r["formation"],r["feature"])
             if key in out:raise ValueError("ambiguous benchmark factor month")
             if r.get("unit")!="decimal" or r.get("weighting")!="vw_cap" or r.get("country")!="usa":raise ValueError("benchmark convention mismatch")
             out[key]=r["ret"]
         return out
     jb,ob=bench(jkp),bench(osap)
+    if any(feature not in JKP153 for _,feature in jb) or any(feature not in {m["osap_name"] for m in osap_mapping.values()} for _,feature in ob):raise ValueError("benchmark outside frozen name inventory")
     outcomes={}
     for feature in JKP153:
         pairs=[(v,jb[k]) for k,v in own.items() if k[1]==feature and K.finite(v) and K.finite(jb.get(k))]
-        other=[(v,ob[k]) for k,v in own.items() if k[1]==feature and K.finite(v) and K.finite(ob.get(k))]
+        match=osap_mapping.get(feature)
+        other=[(v,ob[(k[0],match["osap_name"])]*match["sign"]) for k,v in own.items() if match and k[1]==feature and K.finite(v) and K.finite(ob.get((k[0],match["osap_name"])))]
         means=(float(np.mean([x for x,y in pairs])),float(np.mean([y for x,y in pairs]))) if pairs else (None,None)
-        outcomes[feature]={"months":len(pairs),"jkp_rho":_pearson(pairs) if len(pairs)>=60 else None,
+        outcomes[feature]={"requested_months":120,"missing_calendar_months":sum(d is None for d in axes.values()),"months":len(pairs),"jkp_rho":_pearson(pairs) if len(pairs)>=60 else None,
                            "mean_sign_agrees":means[0]*means[1]>0 if all(K.finite(x) for x in means) else False,
                            "osap_months":len(other),"osap_rho":_pearson(other) if len(other)>=60 else None,
                            "status":"testable" if len(pairs)>=60 else "insufficient_overlap; original denominator retained"}
     good=sum(K.finite(r["jkp_rho"]) and r["jkp_rho"]>=.7 for r in outcomes.values())
     signs=sum(r["mean_sign_agrees"] and r["months"]>=60 for r in outcomes.values())
-    osvalues=[r["osap_rho"] for r in outcomes.values() if K.finite(r["osap_rho"])]
+    osvalues=[outcomes[n]["osap_rho"] for n in osap_mapping if K.finite(outcomes[n]["osap_rho"])]
     median=float(np.median(osvalues)) if osvalues else None
     return {"registry_sha256":FREEZE_SHA256,"outcomes":outcomes,"exclusions":exclusions,
+            "requested_slots":[{"holding_month":f"{y:04d}-{m:02d}","formation":str(d) if d else None,"status":"calendar_admitted" if d else "missing_calendar_FAIL"} for (y,m),d in axes.items()],
             "gates":{"jkp_matched_rho_share":{"pass":good/153>=.7,"measured":good/153,"numerator":good,"denominator":153},
                      "jkp_mean_sign_share":{"pass":signs/153>=.9,"measured":signs/153,"numerator":signs,"denominator":153},
-                     "osap_median_rho":{"pass":len(osvalues)==153 and median is not None and median>=.6,"measured":median,"matched":len(osvalues),"denominator":153}}}
+                     "osap_median_rho":{"pass":len(osvalues)==len(osap_mapping) and median is not None and median>=.6,"measured":median,"matched":len(osvalues),"denominator":len(osap_mapping)}}}
 
 
 def pinned_records(con,root,binding,boundary_fields=()):
@@ -124,6 +163,7 @@ def run(root,generation,bindings_path,output,con):
     manifest=validate_generation(root,generation,con)
     binding=C.read_json(bindings_path)
     if binding.get("registry_sha256")!=FREEZE_SHA256 or set(binding.get("products",{}))!={"labels","jkp","osap","formation_quality"}:raise ValueError("frozen evidence product contract required")
+    mapping=admit_osap_mapping(root,binding.get("osap_mapping"))
     pins={name:{p:R.identity(R.safe_path(root,p)) for p in row["files"]} for name,row in binding["products"].items()}
     bounds={"labels":("formation","entry_date","exit_date"),"jkp":("month",),"osap":("month",),"formation_quality":("formation",)}
     products={name:pinned_records(con,root,row,bounds[name]) for name,row in binding["products"].items()}
@@ -136,19 +176,21 @@ def run(root,generation,bindings_path,output,con):
     panel={}
     for relative in manifest["files"]:
         date=dt.date.fromisoformat(relative.split("/")[0].split("=")[1]+"-01")
-        if date>=BOUNDARY:continue
+        if (date.year,date.month)<(2012,12) or (date.year,date.month)>(2022,11):continue
         rows=records(con,"SELECT * FROM "+sql([generation/relative]))
-        for row in rows:
+        for i,row in enumerate(rows):
             audit=quality.get((row["session_date"],row["security_id"]),{})
-            if audit and (audit.get("available_at") is None or audit["available_at"]>=dt.datetime.combine(row["session_date"],dt.time(22),dt.UTC)):
-                raise ValueError("formation audit clock leaks")
-            row.update(audit)
+            rows[i]=qualify_formation(row,audit)
         if rows:panel[rows[0]["session_date"]]=rows
-    result=replication(panel,labels,products["jkp"],products["osap"])
+    calendar=[r[0] for r in con.execute("SELECT session_date FROM cm_calendar").fetchall()]
+    result=replication(panel,labels,products["jkp"],products["osap"],mapping,calendar)
+    result["osap_mapping_admission"]=binding["osap_mapping"]
+    result["osap_mapping_inventory"]=reviewed_metadata(root,binding["osap_mapping"],"char_monthly_osap_mapping_v1")["entries"]
     result["input_files"]=pins;result["feature_manifest"]=R.identity(generation/"manifest.json")
     for name,row in binding["products"].items():
         for relative,pin in row["files"].items():
             if R.identity(R.safe_path(root,relative))!=pin:raise RuntimeError("evidence source changed")
+    if admit_osap_mapping(root,binding["osap_mapping"])!=mapping:raise RuntimeError("mapping changed during evaluation")
     C.write_json_atomic(output,result)
     return result
 
@@ -166,7 +208,17 @@ def compare_ratios(root,generation,bindings_path,output,con):
     doc=C.read_json(bindings_path)
     binding=doc.get("ratios")
     if doc.get("registry_sha256")!=FREEZE_SHA256 or not binding:raise ValueError("frozen final ratio comparison binding required")
-    if any(Path(p).parts[0]!="ratios_v11" for p in binding["files"]):raise ValueError("explicit final ratios_v11 source required")
+    snapshot=C.read_json(generation/"snapshot.json")["source"]
+    final_pin=snapshot["manifests"].get("ratios_v11/manifest.json")
+    if final_pin is None or binding.get("manifest")!=final_pin or R.identity(root/"ratios_v11/manifest.json")!=final_pin:
+        raise ValueError("comparator differs from independently admitted final ratio manifest")
+    final=C.read_json(root/"ratios_v11/manifest.json")
+    expected={"ratios_v11/"+p:{k:pin[k] for k in ("sha256","bytes")} for p,pin in final["files"].items() if p.startswith("monthly/") and p.endswith("ratios_monthly.parquet")}
+    if not expected or binding.get("files")!=expected:raise ValueError("exact admitted final monthly ratio inventory required")
+    basis=reviewed_metadata(root,doc.get("ratio_basis"),"char_monthly_ratio_basis_v1")
+    basis_rows=pinned_records(con,root,basis["product"])
+    basis_index={(r["session_date"],r["security_id"],r["formula"]):r for r in basis_rows}
+    if len(basis_index)!=len(basis_rows):raise ValueError("ambiguous independent ratio basis")
     pins={p:R.identity(R.safe_path(root,p)) for p in binding["files"]}
     if pins!=binding["files"]:raise RuntimeError("ratio source pin differs")
     paths=[R.safe_path(root,p) for p in binding["files"]]
@@ -190,10 +242,11 @@ def compare_ratios(root,generation,bindings_path,output,con):
                 x=row.get(feature);v=r.get(ratio)
                 y=1/v if name in ("ep","sp") and K.finite(v) and v>0 else v if name in ("bm","gpa") else None
                 cutoff=dt.datetime.combine(date,dt.time(22),dt.UTC)
-                valid=(r.get("cik")==row["cik"] and r.get("fund_available_at") is not None and r["fund_available_at"]<cutoff)
+                proof=basis_index.get((date,row["security_id"],name),{})
+                causes=ratio_basis_reasons(row,r,proof,name,date)
+                valid=not causes
                 if valid and K.finite(x) and K.finite(y):pairs.append((x,y))
                 if not valid or not K.finite(x) or not K.finite(y) or abs(x-y)>1e-10*max(1,abs(y)):
-                    causes=[]
                     if not r:causes.append("missing_final_ratio_key")
                     if not valid:causes.append("issuer_or_information_clock_mismatch")
                     if row.get("accounting_datadate")!=r.get("datadate"):causes.append("fiscal_period_or_annual_TTM_basis")
@@ -203,19 +256,87 @@ def compare_ratios(root,generation,bindings_path,output,con):
                     if not K.finite(y):causes.append("missing_ratio_primitive_or_history")
                     if not causes:causes.append("numerator_or_book_definition")
                     disagreements.append({"session_date":str(date),"security_id":row["security_id"],"cik":row["cik"],"formula":name,"characteristic":x,"ratio":y,"causes":causes})
-            stats[name]={"rho":spearman(pairs) if len(pairs)>=10 else None,"paired":len(pairs),"eligible_denominator":len(rows)}
+            stats[name]={"rho":spearman(pairs) if len(pairs)>=10 else None,"paired":len(pairs),"eligible_denominator":len(rows),"complete_compatible_cohort":len(pairs)==len(rows)}
         dates[str(date)]=stats
         detail=output.parent/(output.stem+"-keyed")/f"month={date:%Y-%m}.json"
         C.write_json_atomic(detail,disagreements)
         diagnostic_files[detail.relative_to(output.parent).as_posix()]=R.identity(detail)
         disagreement_count+=len(disagreements)
     values=[r["rho"] for stats in dates.values() for r in stats.values()]
-    full=len(dates)==72 and len(values)==288 and all(K.finite(v) for v in values)
+    full=len(dates)==72 and len(values)==288 and all(K.finite(v) for v in values) and all(r["complete_compatible_cohort"] for stats in dates.values() for r in stats.values())
     measured=min((v for v in values if K.finite(v)),default=None)
     result={"registry_sha256":FREEZE_SHA256,"dates":dates,"disagreement_count":disagreement_count,"disagreement_files":diagnostic_files,
             "gate":{"pass":full and measured>=.99,"measured":measured,"required":.99,"expected_dates":72,"expected_formula_dates":288},
             "input_files":pins,"feature_manifest":R.identity(generation/"manifest.json")}
     for p,pin in pins.items():
         if R.identity(R.safe_path(root,p))!=pin:raise RuntimeError("ratio comparison source changed")
+    if R.identity(root/"ratios_v11/manifest.json")!=final_pin:raise RuntimeError("final ratio manifest changed")
+    reviewed_metadata(root,doc["ratio_basis"],"char_monthly_ratio_basis_v1")
+    pinned_records(con,root,basis["product"])
     C.write_json_atomic(output,result)
     return result
+
+
+def reviewed_metadata(root,binding,version):
+    """Caller SHA is an independently reviewed contract, never a producer flag."""
+    if not isinstance(binding,dict) or set(binding)!={"path","identity","expected_sha256"}:raise ValueError("independently reviewed metadata contract required")
+    path=R.safe_path(root,binding["path"])
+    if binding["identity"].get("sha256")!=binding["expected_sha256"] or R.identity(path)!=binding["identity"]:raise ValueError("reviewed metadata identity mismatch")
+    doc=read_metadata(path)
+    if doc.get("version")!=version or doc.get("registry_sha256")!=FREEZE_SHA256:raise ValueError("reviewed metadata version/registry mismatch")
+    return doc
+
+
+def read_metadata(path):
+    def unique(pairs):
+        result={}
+        for name,value in pairs:
+            if name in result:raise ValueError("duplicate reviewed metadata key: "+name)
+            result[name]=value
+        return result
+    return json.loads(path.read_text(encoding="utf-8"),object_pairs_hook=unique)
+
+
+def admit_osap_mapping(root,binding):
+    contract=reviewed_metadata(root,binding,"char_monthly_osap_mapping_v1")
+    entries=contract.get("entries",{})
+    if set(entries)!=set(JKP153):raise ValueError("complete original153 mapped-or-excluded inventory required")
+    metadata=contract.get("authoritative_metadata",{})
+    if not metadata:raise ValueError("pinned authoritative mapping metadata required")
+    for path,pin in metadata.items():
+        if R.identity(R.safe_path(root,path))!=pin:raise ValueError("authoritative mapping metadata changed")
+    record=contract.get("admission_record",{})
+    if set(record)!={"path","identity","expected_sha256"}:raise ValueError("immutable pre-return mapping admission required")
+    path=R.safe_path(root,record["path"])
+    if record["expected_sha256"]!=record["identity"].get("sha256") or R.identity(path)!=record["identity"]:raise ValueError("mapping admission pin mismatch")
+    admission=read_metadata(path)
+    if admission.get("registry_sha256")!=FREEZE_SHA256 or admission.get("mapping_sha256")!=R.digest(entries) or admission.get("phase")!="frozen_before_any_return_run":raise ValueError("mapping not independently frozen before returns")
+    mapped={}
+    for name,item in entries.items():
+        if item.get("status")=="excluded":
+            if set(item)!={"status","reason","metadata_id"} or not item["reason"] or item["metadata_id"] not in metadata:raise ValueError("unsupported mapping exclusion")
+            continue
+        if set(item)!={"status","osap_name","sign","unit","weighting","country","metadata_id"} or item["status"]!="mapped" or not isinstance(item["osap_name"],str) or not item["osap_name"] or type(item["sign"]) is not int or item["sign"] not in (-1,1) or (item["unit"],item["weighting"],item["country"])!=("decimal","vw_cap","usa") or item["metadata_id"] not in metadata:
+            raise ValueError("unsupported mapping convention or identity")
+        mapped[name]=item
+    if not mapped or len({item["osap_name"] for item in mapped.values()})!=len(mapped):raise ValueError("empty or ambiguous OSAP overlap")
+    return mapped
+
+
+def ratio_basis_reasons(row,reference,proof,name,date):
+    cutoff=dt.datetime.combine(date,dt.time(22),dt.UTC)
+    causes=[]
+    if not proof: return ["missing_independent_economic_basis"]
+    if any(proof.get(k) is None or proof[k]>=cutoff for k in ("available_at","source_available_at","fund_available_at","cap_available_at")):
+        causes.append("independent_basis_clock_missing_or_late")
+    if reference.get("fund_available_at") is None or reference["fund_available_at"]>=cutoff or row.get("accounting_available_at") is None or row["accounting_available_at"]>=cutoff:
+        causes.append("fundamental_information_clock_missing_or_late")
+    if reference.get("cik")!=row["cik"] or proof.get("cik")!=row["cik"]:causes.append("issuer_mismatch")
+    if (row.get("accounting_datadate")!=reference.get("datadate") or proof.get("datadate")!=row.get("accounting_datadate") or proof.get("flow_basis")!="genuine_annual" or proof.get("balance_basis")!="same_annual_snapshot"):
+        causes.append("fiscal_period_or_annual_TTM_basis")
+    if row.get("accounting_currency")!="USD" or reference.get("curcd")!="USD" or proof.get("currency")!="USD":causes.append("currency")
+    if not K.finite(row.get("issuer_me")) or row.get("issuer_me")!=reference.get("me") or proof.get("issuer_me")!=row.get("issuer_me") or proof.get("cap_basis")!="all_eligible_issuer_classes":causes.append("issuer_market_cap_basis")
+    if proof.get("fund_available_at")!=row.get("accounting_available_at") or reference.get("fund_available_at")!=row.get("accounting_available_at"):causes.append("fundamental_vintage_basis")
+    expected={"bm":"seq+txditc-pstk","ep":"ni_including_extraordinary","sp":"annual_sale","gpa":"annual_sale_minus_cogs_over_annual_at"}
+    if proof.get("definition")!=expected[name]:causes.append("numerator_or_book_definition")
+    return causes

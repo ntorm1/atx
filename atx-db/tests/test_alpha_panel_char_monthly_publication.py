@@ -26,6 +26,9 @@ def setup(monkeypatch,tmp_path):
     monkeypatch.setattr(C,"connect",connect);monkeypatch.setattr(N,"admit",admit)
     monkeypatch.setattr(N,"code_paths",lambda:[source]);monkeypatch.setattr(N,"months",lambda *_:dates)
     monkeypatch.setattr(N,"population",population);monkeypatch.setattr(M,"native_month",unit)
+    # Orchestration fixture has two units; original full-window admission is
+    # independently exercised in test_original_window_and_month_inventory.
+    monkeypatch.setattr(M,"required_window",lambda *args:None)
     monkeypatch.setattr(R,"recheck",lambda root,snapshot:admit(root,{},None))
     return dates,source
 

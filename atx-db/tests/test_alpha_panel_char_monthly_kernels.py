@@ -133,8 +133,8 @@ def test_all_152_supported_original_formulas_produce_qualified_fixture_values():
                      "volume":100+i%50,"shares":10000,"price_certified":True,"return_certified":True,
                      "corwin_schultz_spread":.01})
     monthly=[];calendar=[]
-    for i in range(240):
-        n=2003*12+i;y,m=divmod(n,12);month=m+1
+    for i in range(241):
+        n=2003*12-1+i;y,m=divmod(n,12);month=m+1
         end=(dt.date(y+1,1,1) if month==12 else dt.date(y,month+1,1))-dt.timedelta(days=1)
         while end.weekday()>=5:end-=dt.timedelta(days=1)
         mkt=.05*math.sin(i*.17);smb=.04*math.cos(i*.23);hml=.04*math.sin(i*.33)
@@ -152,3 +152,32 @@ def test_all_152_supported_original_formulas_produce_qualified_fixture_values():
         rows.append({"cik":i,"univ_all_common":True,"values":varied,"reasons":dict(reasons)})
     K.cross_section(rows)
     assert sum(rows[0]["values"][n] is not None for n in JKP153)==152
+
+
+def test_seasonal_exact_lags_and_maximum_history():
+    date=dt.date(2022,12,30)
+    bars=[{"session_date":date}]
+    monthly=[{"ret":float(i),"month_end":date} for i in range(241)]
+    assert K.market("seas_1_1an",bars,monthly,date,{})==228
+    assert K.market("seas_1_1na",bars,monthly,date,{})==pytest.approx(sum(240-i for i in range(1,12))/11)
+    assert K.market("seas_16_20an",bars,monthly,date,{})==pytest.approx(sum(240-i for i in range(192,241,12))/5)
+    with pytest.raises(K.Missing,match="history"):K.market("seas_16_20an",bars,monthly[1:],date,{})
+
+
+def test_rmax_denominator_requires_complete_certification_and_minimum():
+    date=dt.date(2022,12,30)
+    bars=[{"session_date":date,"ret":.01+i*.0001,"ret_exc":.009+i*.0001,"price_certified":True,"return_certified":True} for i in range(252)]
+    assert math.isfinite(K.market("rmax5_rvol_21d",bars,[],date,{}))
+    bars[0]["return_certified"]=False
+    with pytest.raises(K.Missing,match="denominator"):K.market("rmax5_rvol_21d",bars,[],date,{})
+    with pytest.raises(K.Missing,match="denominator_session_history"):K.market("rmax5_rvol_21d",bars[-21:],[],date,{})
+
+
+def test_quarterly_metadata_exposes_actual_book_flow_and_weighted_share_limits():
+    assert "txditcq" in BY_NAME["niq_be"].dependencies
+    assert "txditcq" in BY_NAME["niq_be_chg1"].dependencies
+    assert "preceding same-fiscal-year" in BY_NAME["owner_ocf_q_yoy"].record()["primitive_dependencies"]["ocf"]
+    for primitive in ("eps_basic","eps_diluted","shares_basic","shares_diluted"):
+        feature=BY_NAME[f"owner_{primitive}_ttm_yoy"]
+        assert feature.implementation=="unsupported" and "weighted" in feature.unsupported_reason
+        assert "fundq." in feature.record()["primitive_dependencies"][primitive]

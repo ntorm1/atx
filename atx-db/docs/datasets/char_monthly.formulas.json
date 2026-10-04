@@ -46,7 +46,7 @@
       "name": "at_me",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "me": "sum all qualified eligible issuer classes; every constituent positive finite USD with independent dated membership/cap proof"
       },
       "return_derived": false,
@@ -192,7 +192,7 @@
       "original153": true,
       "primitive_dependencies": {
         "me": "sum all qualified eligible issuer classes; every constituent positive finite USD with independent dated membership/cap proof",
-        "xrd": "source-backed standardized/quarterly item xrd"
+        "xrd": "source-backed standardized item xrd"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -394,7 +394,7 @@
       "name": "gp_at",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "gp": "funda.gp or sale-funda.cogs"
       },
       "return_derived": false,
@@ -423,7 +423,7 @@
       "name": "gp_atl1",
       "original153": true,
       "primitive_dependencies": {
-        "at_l1": "source-backed standardized/quarterly item at_l1",
+        "at_l1": "source-backed standardized item at_l1",
         "gp": "funda.gp or sale-funda.cogs"
       },
       "return_derived": false,
@@ -539,7 +539,7 @@
       "name": "op_at",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "op": "ebitda+funda.xrd"
       },
       "return_derived": false,
@@ -568,7 +568,7 @@
       "name": "op_atl1",
       "original153": true,
       "primitive_dependencies": {
-        "at_l1": "source-backed standardized/quarterly item at_l1",
+        "at_l1": "source-backed standardized item at_l1",
         "op": "ebitda+funda.xrd"
       },
       "return_derived": false,
@@ -597,7 +597,7 @@
       "name": "cop_at",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "cop": "op-oacc"
       },
       "return_derived": false,
@@ -626,7 +626,7 @@
       "name": "cop_atl1",
       "original153": true,
       "primitive_dependencies": {
-        "at_l1": "source-backed standardized/quarterly item at_l1",
+        "at_l1": "source-backed standardized item at_l1",
         "cop": "op-oacc"
       },
       "return_derived": false,
@@ -655,7 +655,7 @@
       "name": "ocf_at",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "ocf": "funda.oancf"
       },
       "return_derived": false,
@@ -684,7 +684,7 @@
       "name": "opex_at",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "opex": "funda.xopr or funda.cogs+funda.xsga"
       },
       "return_derived": false,
@@ -713,7 +713,7 @@
       "name": "cash_at",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "cash": "funda.che"
       },
       "return_derived": false,
@@ -742,7 +742,7 @@
       "name": "noa_at",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "noa": "cowc+nncoa"
       },
       "return_derived": false,
@@ -771,7 +771,7 @@
       "name": "oaccruals_at",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "oacc": "ni-ocf"
       },
       "return_derived": false,
@@ -829,7 +829,7 @@
       "name": "taccruals_at",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "tacc": "oacc+nfna-nfna_l1"
       },
       "return_derived": false,
@@ -887,7 +887,7 @@
       "name": "at_be",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "be": "seq+funda.txditc-funda.pstk"
       },
       "return_derived": false,
@@ -916,7 +916,7 @@
       "name": "at_turnover",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "sale": "funda.sale or source-backed funda.revt"
       },
       "return_derived": false,
@@ -1033,7 +1033,7 @@
       "original153": true,
       "primitive_dependencies": {
         "sale": "funda.sale or source-backed funda.revt",
-        "xrd": "source-backed standardized/quarterly item xrd"
+        "xrd": "source-backed standardized item xrd"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -1062,7 +1062,7 @@
       "original153": true,
       "primitive_dependencies": {
         "nix": "funda.ni",
-        "pi": "source-backed standardized/quarterly item pi"
+        "pi": "source-backed standardized item pi"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -1090,7 +1090,7 @@
       "name": "dbnetis_at",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "dbnetis": "funda.dltt-dltt_l1+funda.dlc-dlc_l1 (source-backed balance-change fallback)"
       },
       "return_derived": false,
@@ -1119,7 +1119,7 @@
       "name": "eqnetis_at",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "eqnetis": "eqis-eqbb"
       },
       "return_derived": false,
@@ -1148,7 +1148,7 @@
       "name": "netis_at",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "netis": "eqnetis+dbnetis"
       },
       "return_derived": false,
@@ -1178,7 +1178,7 @@
       "original153": true,
       "primitive_dependencies": {
         "aliq": "cash+.75*coa+.5*(funda.at-ca-funda.intan)",
-        "at_l1": "source-backed standardized/quarterly item at_l1"
+        "at_l1": "source-backed standardized item at_l1"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -1207,7 +1207,7 @@
       "original153": true,
       "primitive_dependencies": {
         "aliq": "cash+.75*coa+.5*(funda.at-ca-funda.intan)",
-        "mat_l1": "source-backed standardized/quarterly item mat_l1"
+        "mat_l1": "source-backed standardized item mat_l1"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -1235,8 +1235,8 @@
       "name": "at_gr1",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
-        "at_l1": "source-backed standardized/quarterly item at_l1"
+        "at": "source-backed standardized item at",
+        "at_l1": "source-backed standardized item at_l1"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -1322,8 +1322,8 @@
       "name": "capx_gr1",
       "original153": true,
       "primitive_dependencies": {
-        "capx": "source-backed standardized/quarterly item capx",
-        "capx_l1": "source-backed standardized/quarterly item capx_l1"
+        "capx": "source-backed standardized item capx",
+        "capx_l1": "source-backed standardized item capx_l1"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -1351,8 +1351,8 @@
       "name": "capx_gr2",
       "original153": true,
       "primitive_dependencies": {
-        "capx": "source-backed standardized/quarterly item capx",
-        "capx_l2": "source-backed standardized/quarterly item capx_l2"
+        "capx": "source-backed standardized item capx",
+        "capx_l2": "source-backed standardized item capx_l2"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -1380,8 +1380,8 @@
       "name": "capx_gr3",
       "original153": true,
       "primitive_dependencies": {
-        "capx": "source-backed standardized/quarterly item capx",
-        "capx_l3": "source-backed standardized/quarterly item capx_l3"
+        "capx": "source-backed standardized item capx",
+        "capx_l3": "source-backed standardized item capx_l3"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -1468,7 +1468,7 @@
       "name": "be_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "be": "seq+funda.txditc-funda.pstk",
         "be_l1": "seq+funda.txditc-funda.pstk"
       },
@@ -1499,7 +1499,7 @@
       "name": "coa_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "coa": "ca-cash",
         "coa_l1": "ca-cash"
       },
@@ -1530,7 +1530,7 @@
       "name": "col_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "col": "cl-funda.dlc",
         "col_l1": "cl-funda.dlc"
       },
@@ -1561,7 +1561,7 @@
       "name": "cowc_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "cowc": "coa-col",
         "cowc_l1": "coa-col"
       },
@@ -1592,7 +1592,7 @@
       "name": "fnl_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "fnl": "debt+funda.pstk",
         "fnl_l1": "debt+funda.pstk"
       },
@@ -1623,7 +1623,7 @@
       "name": "ncoa_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "ncoa": "funda.at-ca-funda.ivao",
         "ncoa_l1": "funda.at-ca-funda.ivao"
       },
@@ -1654,7 +1654,7 @@
       "name": "ncol_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "ncol": "funda.lt-cl-funda.dltt",
         "ncol_l1": "funda.lt-cl-funda.dltt"
       },
@@ -1685,7 +1685,7 @@
       "name": "nfna_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "nfna": "fna-fnl",
         "nfna_l1": "fna-fnl"
       },
@@ -1716,7 +1716,7 @@
       "name": "nncoa_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "nncoa": "ncoa-ncol",
         "nncoa_l1": "ncoa-ncol"
       },
@@ -1747,7 +1747,7 @@
       "name": "noa_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "noa": "cowc+nncoa",
         "noa_l1": "cowc+nncoa"
       },
@@ -1778,7 +1778,7 @@
       "name": "sti_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "sti": "funda.ivst",
         "sti_l1": "funda.ivst"
       },
@@ -1809,7 +1809,7 @@
       "name": "lti_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "lti": "funda.ivao",
         "lti_l1": "funda.ivao"
       },
@@ -1840,7 +1840,7 @@
       "name": "inv_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "inv": "funda.invt",
         "inv_l1": "funda.invt"
       },
@@ -1871,7 +1871,7 @@
       "name": "tax_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "tax": "funda.txt",
         "tax_l1": "funda.txt"
       },
@@ -1902,7 +1902,7 @@
       "name": "ppeinv_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at_l1": "source-backed standardized/quarterly item at_l1",
+        "at_l1": "source-backed standardized item at_l1",
         "ppeinv": "ppeg+inv",
         "ppeinv_l1": "ppeg+inv"
       },
@@ -1934,8 +1934,8 @@
       "name": "lnoa_gr1a",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
-        "at_l1": "source-backed standardized/quarterly item at_l1",
+        "at": "source-backed standardized item at",
+        "at_l1": "source-backed standardized item at_l1",
         "lnoa": "funda.ppent+funda.intan+funda.ao-funda.lo+funda.dp",
         "lnoa_l1": "funda.ppent+funda.intan+funda.ao-funda.lo+funda.dp"
       },
@@ -1965,8 +1965,8 @@
       "name": "emp_gr1",
       "original153": true,
       "primitive_dependencies": {
-        "emp": "source-backed standardized/quarterly item emp",
-        "emp_l1": "source-backed standardized/quarterly item emp_l1"
+        "emp": "source-backed standardized item emp",
+        "emp_l1": "source-backed standardized item emp_l1"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -1996,8 +1996,8 @@
       "name": "sale_emp_gr1",
       "original153": true,
       "primitive_dependencies": {
-        "emp": "source-backed standardized/quarterly item emp",
-        "emp_l1": "source-backed standardized/quarterly item emp_l1",
+        "emp": "source-backed standardized item emp",
+        "emp_l1": "source-backed standardized item emp_l1",
         "sale": "funda.sale or source-backed funda.revt",
         "sale_l1": "funda.sale or source-backed funda.revt"
       },
@@ -2030,7 +2030,7 @@
       "name": "tangibility",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "cash": "funda.che",
         "inv": "funda.invt",
         "ppeg": "funda.ppegt",
@@ -2068,10 +2068,10 @@
       "name": "capex_abn",
       "original153": true,
       "primitive_dependencies": {
-        "capx": "source-backed standardized/quarterly item capx",
-        "capx_l1": "source-backed standardized/quarterly item capx_l1",
-        "capx_l2": "source-backed standardized/quarterly item capx_l2",
-        "capx_l3": "source-backed standardized/quarterly item capx_l3",
+        "capx": "source-backed standardized item capx",
+        "capx_l1": "source-backed standardized item capx_l1",
+        "capx_l2": "source-backed standardized item capx_l2",
+        "capx_l3": "source-backed standardized item capx_l3",
         "sale": "funda.sale or source-backed funda.revt",
         "sale_l1": "funda.sale or source-backed funda.revt",
         "sale_l2": "funda.sale or source-backed funda.revt",
@@ -2107,12 +2107,12 @@
       "name": "rd5_at",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
-        "xrd": "source-backed standardized/quarterly item xrd",
-        "xrd_l1": "source-backed standardized/quarterly item xrd_l1",
-        "xrd_l2": "source-backed standardized/quarterly item xrd_l2",
-        "xrd_l3": "source-backed standardized/quarterly item xrd_l3",
-        "xrd_l4": "source-backed standardized/quarterly item xrd_l4"
+        "at": "source-backed standardized item at",
+        "xrd": "source-backed standardized item xrd",
+        "xrd_l1": "source-backed standardized item xrd_l1",
+        "xrd_l2": "source-backed standardized item xrd_l2",
+        "xrd_l3": "source-backed standardized item xrd_l3",
+        "xrd_l4": "source-backed standardized item xrd_l4"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -2221,9 +2221,9 @@
         "sale": "funda.sale or source-backed funda.revt",
         "sale_l1": "funda.sale or source-backed funda.revt",
         "sale_l2": "funda.sale or source-backed funda.revt",
-        "xsga": "source-backed standardized/quarterly item xsga",
-        "xsga_l1": "source-backed standardized/quarterly item xsga_l1",
-        "xsga_l2": "source-backed standardized/quarterly item xsga_l2"
+        "xsga": "source-backed standardized item xsga",
+        "xsga_l1": "source-backed standardized item xsga_l1",
+        "xsga_l2": "source-backed standardized item xsga_l2"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -2290,8 +2290,8 @@
       "name": "ocf_at_chg1",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
-        "at_l1": "source-backed standardized/quarterly item at_l1",
+        "at": "source-backed standardized item at",
+        "at_l1": "source-backed standardized item at_l1",
         "ocf": "funda.oancf",
         "ocf_l1": "funda.oancf"
       },
@@ -2336,15 +2336,15 @@
       "name": "f_score",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
-        "at_l1": "source-backed standardized/quarterly item at_l1",
-        "at_l2": "source-backed standardized/quarterly item at_l2",
+        "at": "source-backed standardized item at",
+        "at_l1": "source-backed standardized item at_l1",
+        "at_l2": "source-backed standardized item at_l2",
         "ca": "funda.act",
         "ca_l1": "funda.act",
         "cl": "funda.lct",
         "cl_l1": "funda.lct",
-        "dltt": "source-backed standardized/quarterly item dltt",
-        "dltt_l1": "source-backed standardized/quarterly item dltt_l1",
+        "dltt": "source-backed standardized item dltt",
+        "dltt_l1": "source-backed standardized item dltt_l1",
         "eqis": "funda.sstk",
         "gp": "funda.gp or sale-funda.cogs",
         "gp_l1": "funda.gp or sale-funda.cogs",
@@ -2387,15 +2387,15 @@
       "name": "o_score",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "ca": "funda.act",
         "cl": "funda.lct",
         "debt": "funda.dltt+funda.dlc",
-        "dp": "source-backed standardized/quarterly item dp",
-        "lt": "source-backed standardized/quarterly item lt",
+        "dp": "source-backed standardized item dp",
+        "lt": "source-backed standardized item lt",
         "nix": "funda.ni",
         "nix_l1": "funda.ni",
-        "pi": "source-backed standardized/quarterly item pi"
+        "pi": "source-backed standardized item pi"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -2429,13 +2429,13 @@
       "name": "z_score",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "ca": "funda.act",
         "cl": "funda.lct",
         "ebitda": "funda.ebitda or funda.oibdp or sale-opex",
         "fiscal_me": "same cap rule at last pinned session <= fiscal period end, never current cap",
-        "lt": "source-backed standardized/quarterly item lt",
-        "re": "source-backed standardized/quarterly item re",
+        "lt": "source-backed standardized item lt",
+        "re": "source-backed standardized item re",
         "sale": "funda.sale or source-backed funda.revt"
       },
       "return_derived": false,
@@ -2472,15 +2472,15 @@
       "name": "kz_index",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "be": "seq+funda.txditc-funda.pstk",
         "cash": "funda.che",
         "debt": "funda.dltt+funda.dlc",
         "div": "funda.dvt or funda.dv or funda.dvc+funda.dvp, all supplied components certified",
-        "dp": "source-backed standardized/quarterly item dp",
+        "dp": "source-backed standardized item dp",
         "fiscal_me": "same cap rule at last pinned session <= fiscal period end, never current cap",
         "ni": "funda.ib or funda.ni-funda.xido",
-        "ppent_l1": "source-backed standardized/quarterly item ppent_l1",
+        "ppent_l1": "source-backed standardized item ppent_l1",
         "seq": "funda.seq or funda.ceq+funda.pstk or funda.at-funda.lt"
       },
       "return_derived": false,
@@ -2513,7 +2513,7 @@
       "name": "ival_me",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "be": "seq+funda.txditc-funda.pstk",
         "be_l1": "seq+funda.txditc-funda.pstk",
         "div": "funda.dvt or funda.dv or funda.dvc+funda.dvp, all supplied components certified",
@@ -2546,8 +2546,8 @@
       "name": "niq_at",
       "original153": true,
       "primitive_dependencies": {
-        "atq": "source-backed standardized/quarterly item atq",
-        "ibq": "source-backed standardized/quarterly item ibq"
+        "atq": "qualified fundq.atq; exact fiscal/currency/available_at vintage",
+        "ibq": "qualified fundq.ibq; exact fiscal/currency/available_at vintage"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -2564,6 +2564,7 @@
       "dependencies": [
         "ibq",
         "seqq",
+        "txditcq",
         "pstkq"
       ],
       "economic_sign": 1,
@@ -2576,9 +2577,10 @@
       "name": "niq_be",
       "original153": true,
       "primitive_dependencies": {
-        "ibq": "source-backed standardized/quarterly item ibq",
-        "pstkq": "source-backed standardized/quarterly item pstkq",
-        "seqq": "source-backed standardized/quarterly item seqq"
+        "ibq": "qualified fundq.ibq; exact fiscal/currency/available_at vintage",
+        "pstkq": "qualified fundq.pstkq; exact fiscal/currency/available_at vintage",
+        "seqq": "qualified fundq.seqq; exact fiscal/currency/available_at vintage",
+        "txditcq": "qualified fundq.txditcq; exact fiscal/currency/available_at vintage"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -2606,8 +2608,8 @@
       "name": "niq_at_chg1",
       "original153": true,
       "primitive_dependencies": {
-        "atq": "source-backed standardized/quarterly item atq",
-        "ibq": "source-backed standardized/quarterly item ibq"
+        "atq": "qualified fundq.atq; exact fiscal/currency/available_at vintage",
+        "ibq": "qualified fundq.ibq; exact fiscal/currency/available_at vintage"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -2624,6 +2626,7 @@
       "dependencies": [
         "ibq",
         "seqq",
+        "txditcq",
         "pstkq"
       ],
       "economic_sign": 1,
@@ -2636,9 +2639,10 @@
       "name": "niq_be_chg1",
       "original153": true,
       "primitive_dependencies": {
-        "ibq": "source-backed standardized/quarterly item ibq",
-        "pstkq": "source-backed standardized/quarterly item pstkq",
-        "seqq": "source-backed standardized/quarterly item seqq"
+        "ibq": "qualified fundq.ibq; exact fiscal/currency/available_at vintage",
+        "pstkq": "qualified fundq.pstkq; exact fiscal/currency/available_at vintage",
+        "seqq": "qualified fundq.seqq; exact fiscal/currency/available_at vintage",
+        "txditcq": "qualified fundq.txditcq; exact fiscal/currency/available_at vintage"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -2665,7 +2669,7 @@
       "name": "saleq_gr1",
       "original153": true,
       "primitive_dependencies": {
-        "saleq": "source-backed standardized/quarterly item saleq"
+        "saleq": "qualified fundq.saleq; exact fiscal/currency/available_at vintage"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -2692,7 +2696,7 @@
       "name": "niq_su",
       "original153": true,
       "primitive_dependencies": {
-        "ibq": "source-backed standardized/quarterly item ibq"
+        "ibq": "qualified fundq.ibq; exact fiscal/currency/available_at vintage"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -2719,7 +2723,7 @@
       "name": "saleq_su",
       "original153": true,
       "primitive_dependencies": {
-        "saleq": "source-backed standardized/quarterly item saleq"
+        "saleq": "qualified fundq.saleq; exact fiscal/currency/available_at vintage"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -2746,7 +2750,7 @@
       "name": "ni_inc8q",
       "original153": true,
       "primitive_dependencies": {
-        "ibq": "source-backed standardized/quarterly item ibq"
+        "ibq": "qualified fundq.ibq; exact fiscal/currency/available_at vintage"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -2774,8 +2778,8 @@
       "name": "ocfq_saleq_std",
       "original153": true,
       "primitive_dependencies": {
-        "oancfy": "source-backed standardized/quarterly item oancfy",
-        "saleq": "source-backed standardized/quarterly item saleq"
+        "oancfy": "qualified fundq.oancfy; exact fiscal/currency/available_at vintage",
+        "saleq": "qualified fundq.saleq; exact fiscal/currency/available_at vintage"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -2828,8 +2832,8 @@
       "name": "ni_ar1",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
-        "at_l1": "source-backed standardized/quarterly item at_l1",
+        "at": "source-backed standardized item at",
+        "at_l1": "source-backed standardized item at_l1",
         "ni": "funda.ib or funda.ni-funda.xido",
         "ocf": "funda.oancf"
       },
@@ -2861,8 +2865,8 @@
       "name": "ni_ivol",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
-        "at_l1": "source-backed standardized/quarterly item at_l1",
+        "at": "source-backed standardized item at",
+        "at_l1": "source-backed standardized item at_l1",
         "ni": "funda.ib or funda.ni-funda.xido",
         "ocf": "funda.oancf"
       },
@@ -2894,8 +2898,8 @@
       "name": "earnings_variability",
       "original153": true,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
-        "at_l1": "source-backed standardized/quarterly item at_l1",
+        "at": "source-backed standardized item at",
+        "at_l1": "source-backed standardized item at_l1",
         "ni": "funda.ib or funda.ni-funda.xido",
         "ocf": "funda.oancf"
       },
@@ -2927,10 +2931,10 @@
       "name": "age",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "price_basis": "source-backed standardized/quarterly item price_basis",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "price_basis": "source-backed standardized item price_basis",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -2960,10 +2964,10 @@
       "name": "market_equity",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "price_basis": "source-backed standardized/quarterly item price_basis",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "price_basis": "source-backed standardized item price_basis",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -2993,10 +2997,10 @@
       "name": "prc",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "price_basis": "source-backed standardized/quarterly item price_basis",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "price_basis": "source-backed standardized item price_basis",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3026,10 +3030,10 @@
       "name": "chcsho_12m",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "price_basis": "source-backed standardized/quarterly item price_basis",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "price_basis": "source-backed standardized item price_basis",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3059,10 +3063,10 @@
       "name": "eqnpo_12m",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3092,10 +3096,10 @@
       "name": "div12m_me",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "price_basis": "source-backed standardized/quarterly item price_basis",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "price_basis": "source-backed standardized item price_basis",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3125,10 +3129,10 @@
       "name": "prc_highprc_252d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "price_basis": "source-backed standardized/quarterly item price_basis",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "price_basis": "source-backed standardized item price_basis",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3158,10 +3162,10 @@
       "name": "bidaskhl_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "price_basis": "source-backed standardized/quarterly item price_basis",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "price_basis": "source-backed standardized item price_basis",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3191,10 +3195,10 @@
       "name": "beta_60m",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3224,10 +3228,10 @@
       "name": "corr_1260d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3257,10 +3261,10 @@
       "name": "betabab_1260d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3290,10 +3294,10 @@
       "name": "betadown_252d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3323,10 +3327,10 @@
       "name": "beta_dimson_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3356,10 +3360,10 @@
       "name": "coskew_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3389,10 +3393,10 @@
       "name": "ami_126d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3422,10 +3426,10 @@
       "name": "rmax1_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3455,10 +3459,10 @@
       "name": "rmax5_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3480,7 +3484,7 @@
       ],
       "economic_sign": -1,
       "family": "risk",
-      "formula": "rmax5_21d / sample excess-return std252d; min120",
+      "formula": "rmax5_21d / sample excess-return std252d; denominator min120; every denominator price/return independently certified, no dropping missing cells",
       "history": "see formula; exact trailing windows",
       "implementation": "market",
       "jkp_name": "rmax5_rvol_21d",
@@ -3488,10 +3492,10 @@
       "name": "rmax5_rvol_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3521,10 +3525,10 @@
       "name": "rskew_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3554,10 +3558,10 @@
       "name": "rvol_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3587,10 +3591,10 @@
       "name": "zero_trades_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "price_basis": "source-backed standardized/quarterly item price_basis",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "price_basis": "source-backed standardized item price_basis",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3620,10 +3624,10 @@
       "name": "zero_trades_126d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "price_basis": "source-backed standardized/quarterly item price_basis",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "price_basis": "source-backed standardized item price_basis",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3653,10 +3657,10 @@
       "name": "zero_trades_252d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "price_basis": "source-backed standardized/quarterly item price_basis",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "price_basis": "source-backed standardized item price_basis",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3686,10 +3690,10 @@
       "name": "dolvol_126d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "price_basis": "source-backed standardized/quarterly item price_basis",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "price_basis": "source-backed standardized item price_basis",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3719,10 +3723,10 @@
       "name": "dolvol_var_126d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "price_basis": "source-backed standardized/quarterly item price_basis",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "price_basis": "source-backed standardized item price_basis",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3752,10 +3756,10 @@
       "name": "turnover_126d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "price_basis": "source-backed standardized/quarterly item price_basis",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "price_basis": "source-backed standardized item price_basis",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3785,10 +3789,10 @@
       "name": "turnover_var_126d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "price_basis": "source-backed standardized/quarterly item price_basis",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "price_basis": "source-backed standardized item price_basis",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3818,10 +3822,10 @@
       "name": "ivol_capm_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3851,10 +3855,10 @@
       "name": "iskew_capm_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3884,10 +3888,10 @@
       "name": "ivol_ff3_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3917,10 +3921,10 @@
       "name": "iskew_ff3_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3950,10 +3954,10 @@
       "name": "ivol_hxz4_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -3983,10 +3987,10 @@
       "name": "iskew_hxz4_21d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4016,10 +4020,10 @@
       "name": "ivol_capm_252d",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4049,10 +4053,10 @@
       "name": "ret_1_0",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4082,10 +4086,10 @@
       "name": "ret_12_1",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4115,10 +4119,10 @@
       "name": "ret_12_7",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4148,10 +4152,10 @@
       "name": "ret_3_1",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4181,10 +4185,10 @@
       "name": "ret_6_1",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4214,10 +4218,10 @@
       "name": "ret_60_12",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4247,10 +4251,10 @@
       "name": "ret_9_1",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4280,10 +4284,10 @@
       "name": "resff3_6_1",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4313,10 +4317,10 @@
       "name": "resff3_12_1",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4338,7 +4342,7 @@
       ],
       "economic_sign": 1,
       "family": "seasonality",
-      "formula": "mean monthly returns lag12..12 multiples12; exact months",
+      "formula": "mean monthly returns lag12..12 multiples12; current t at index-1; lag i index-(i+1); maximum lag+1 observations",
       "history": "see formula; exact trailing windows",
       "implementation": "market",
       "jkp_name": "seas_1_1an",
@@ -4346,10 +4350,10 @@
       "name": "seas_1_1an",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4371,7 +4375,7 @@
       ],
       "economic_sign": 1,
       "family": "seasonality",
-      "formula": "mean monthly returns lag12..12 excluding multiples12; exact months",
+      "formula": "mean monthly returns lag1..12 excluding multiples12; current t at index-1; lag i index-(i+1); maximum lag+1 observations",
       "history": "see formula; exact trailing windows",
       "implementation": "market",
       "jkp_name": "seas_1_1na",
@@ -4379,10 +4383,10 @@
       "name": "seas_1_1na",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4404,7 +4408,7 @@
       ],
       "economic_sign": 1,
       "family": "seasonality",
-      "formula": "mean monthly returns lag24..60 multiples12; exact months",
+      "formula": "mean monthly returns lag24..60 multiples12; current t at index-1; lag i index-(i+1); maximum lag+1 observations",
       "history": "see formula; exact trailing windows",
       "implementation": "market",
       "jkp_name": "seas_2_5an",
@@ -4412,10 +4416,10 @@
       "name": "seas_2_5an",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4437,7 +4441,7 @@
       ],
       "economic_sign": -1,
       "family": "seasonality",
-      "formula": "mean monthly returns lag24..60 excluding multiples12; exact months",
+      "formula": "mean monthly returns lag13..60 excluding multiples12; current t at index-1; lag i index-(i+1); maximum lag+1 observations",
       "history": "see formula; exact trailing windows",
       "implementation": "market",
       "jkp_name": "seas_2_5na",
@@ -4445,10 +4449,10 @@
       "name": "seas_2_5na",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4470,7 +4474,7 @@
       ],
       "economic_sign": 1,
       "family": "seasonality",
-      "formula": "mean monthly returns lag72..120 multiples12; exact months",
+      "formula": "mean monthly returns lag72..120 multiples12; current t at index-1; lag i index-(i+1); maximum lag+1 observations",
       "history": "see formula; exact trailing windows",
       "implementation": "market",
       "jkp_name": "seas_6_10an",
@@ -4478,10 +4482,10 @@
       "name": "seas_6_10an",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4503,7 +4507,7 @@
       ],
       "economic_sign": -1,
       "family": "seasonality",
-      "formula": "mean monthly returns lag72..120 excluding multiples12; exact months",
+      "formula": "mean monthly returns lag61..120 excluding multiples12; current t at index-1; lag i index-(i+1); maximum lag+1 observations",
       "history": "see formula; exact trailing windows",
       "implementation": "market",
       "jkp_name": "seas_6_10na",
@@ -4511,10 +4515,10 @@
       "name": "seas_6_10na",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4536,7 +4540,7 @@
       ],
       "economic_sign": 1,
       "family": "seasonality",
-      "formula": "mean monthly returns lag132..180 multiples12; exact months",
+      "formula": "mean monthly returns lag132..180 multiples12; current t at index-1; lag i index-(i+1); maximum lag+1 observations",
       "history": "see formula; exact trailing windows",
       "implementation": "market",
       "jkp_name": "seas_11_15an",
@@ -4544,10 +4548,10 @@
       "name": "seas_11_15an",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4569,7 +4573,7 @@
       ],
       "economic_sign": -1,
       "family": "seasonality",
-      "formula": "mean monthly returns lag132..180 excluding multiples12; exact months",
+      "formula": "mean monthly returns lag121..180 excluding multiples12; current t at index-1; lag i index-(i+1); maximum lag+1 observations",
       "history": "see formula; exact trailing windows",
       "implementation": "market",
       "jkp_name": "seas_11_15na",
@@ -4577,10 +4581,10 @@
       "name": "seas_11_15na",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4602,7 +4606,7 @@
       ],
       "economic_sign": -1,
       "family": "seasonality",
-      "formula": "mean monthly returns lag192..240 multiples12; exact months",
+      "formula": "mean monthly returns lag192..240 multiples12; current t at index-1; lag i index-(i+1); maximum lag+1 observations",
       "history": "see formula; exact trailing windows",
       "implementation": "market",
       "jkp_name": "seas_16_20an",
@@ -4610,10 +4614,10 @@
       "name": "seas_16_20an",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4635,7 +4639,7 @@
       ],
       "economic_sign": 1,
       "family": "seasonality",
-      "formula": "mean monthly returns lag192..240 excluding multiples12; exact months",
+      "formula": "mean monthly returns lag181..240 excluding multiples12; current t at index-1; lag i index-(i+1); maximum lag+1 observations",
       "history": "see formula; exact trailing windows",
       "implementation": "market",
       "jkp_name": "seas_16_20na",
@@ -4643,10 +4647,10 @@
       "name": "seas_16_20na",
       "original153": true,
       "primitive_dependencies": {
-        "calendar": "source-backed standardized/quarterly item calendar",
-        "issuer_cap_quality": "source-backed standardized/quarterly item issuer_cap_quality",
-        "market_factors": "source-backed standardized/quarterly item market_factors",
-        "prices": "source-backed standardized/quarterly item prices"
+        "calendar": "source-backed standardized item calendar",
+        "issuer_cap_quality": "source-backed standardized item issuer_cap_quality",
+        "market_factors": "source-backed standardized item market_factors",
+        "prices": "source-backed standardized item prices"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4678,12 +4682,12 @@
       "name": "mispricing_mgmt",
       "original153": true,
       "primitive_dependencies": {
-        "at_gr1": "source-backed standardized/quarterly item at_gr1",
-        "chcsho_12m": "source-backed standardized/quarterly item chcsho_12m",
-        "eqnpo_12m": "source-backed standardized/quarterly item eqnpo_12m",
-        "noa_at": "source-backed standardized/quarterly item noa_at",
-        "oaccruals_at": "source-backed standardized/quarterly item oaccruals_at",
-        "ppeinv_gr1a": "source-backed standardized/quarterly item ppeinv_gr1a"
+        "at_gr1": "source-backed standardized item at_gr1",
+        "chcsho_12m": "source-backed standardized item chcsho_12m",
+        "eqnpo_12m": "source-backed standardized item eqnpo_12m",
+        "noa_at": "source-backed standardized item noa_at",
+        "oaccruals_at": "source-backed standardized item oaccruals_at",
+        "ppeinv_gr1a": "source-backed standardized item ppeinv_gr1a"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4713,10 +4717,10 @@
       "name": "mispricing_perf",
       "original153": true,
       "primitive_dependencies": {
-        "gp_at": "source-backed standardized/quarterly item gp_at",
-        "niq_at": "source-backed standardized/quarterly item niq_at",
-        "o_score": "source-backed standardized/quarterly item o_score",
-        "ret_12_1": "source-backed standardized/quarterly item ret_12_1"
+        "gp_at": "source-backed standardized item gp_at",
+        "niq_at": "source-backed standardized item niq_at",
+        "o_score": "source-backed standardized item o_score",
+        "ret_12_1": "source-backed standardized item ret_12_1"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4748,12 +4752,12 @@
       "name": "qmj_prof",
       "original153": true,
       "primitive_dependencies": {
-        "gp_at": "source-backed standardized/quarterly item gp_at",
-        "gp_sale": "source-backed standardized/quarterly item gp_sale",
-        "ni_at": "source-backed standardized/quarterly item ni_at",
-        "ni_be": "source-backed standardized/quarterly item ni_be",
-        "oaccruals_at": "source-backed standardized/quarterly item oaccruals_at",
-        "ocf_at": "source-backed standardized/quarterly item ocf_at"
+        "gp_at": "source-backed standardized item gp_at",
+        "gp_sale": "source-backed standardized item gp_sale",
+        "ni_at": "source-backed standardized item ni_at",
+        "ni_be": "source-backed standardized item ni_be",
+        "oaccruals_at": "source-backed standardized item oaccruals_at",
+        "ocf_at": "source-backed standardized item ocf_at"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4784,11 +4788,11 @@
       "name": "qmj_growth",
       "original153": true,
       "primitive_dependencies": {
-        "cfoa_ch5": "source-backed standardized/quarterly item cfoa_ch5",
-        "gmar_ch5": "source-backed standardized/quarterly item gmar_ch5",
-        "gpoa_ch5": "source-backed standardized/quarterly item gpoa_ch5",
-        "roa_ch5": "source-backed standardized/quarterly item roa_ch5",
-        "roe_ch5": "source-backed standardized/quarterly item roe_ch5"
+        "cfoa_ch5": "source-backed standardized item cfoa_ch5",
+        "gmar_ch5": "source-backed standardized item gmar_ch5",
+        "gpoa_ch5": "source-backed standardized item gpoa_ch5",
+        "roa_ch5": "source-backed standardized item roa_ch5",
+        "roe_ch5": "source-backed standardized item roe_ch5"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4819,11 +4823,11 @@
       "name": "qmj_safety",
       "original153": true,
       "primitive_dependencies": {
-        "betabab_1260d": "source-backed standardized/quarterly item betabab_1260d",
-        "debt_at": "source-backed standardized/quarterly item debt_at",
-        "earnings_variability": "source-backed standardized/quarterly item earnings_variability",
-        "o_score": "source-backed standardized/quarterly item o_score",
-        "z_score": "source-backed standardized/quarterly item z_score"
+        "betabab_1260d": "source-backed standardized item betabab_1260d",
+        "debt_at": "source-backed standardized item debt_at",
+        "earnings_variability": "source-backed standardized item earnings_variability",
+        "o_score": "source-backed standardized item o_score",
+        "z_score": "source-backed standardized item z_score"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4852,9 +4856,9 @@
       "name": "qmj",
       "original153": true,
       "primitive_dependencies": {
-        "qmj_growth": "source-backed standardized/quarterly item qmj_growth",
-        "qmj_prof": "source-backed standardized/quarterly item qmj_prof",
-        "qmj_safety": "source-backed standardized/quarterly item qmj_safety"
+        "qmj_growth": "source-backed standardized item qmj_growth",
+        "qmj_prof": "source-backed standardized item qmj_prof",
+        "qmj_safety": "source-backed standardized item qmj_safety"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -4998,7 +5002,7 @@
       "name": "ebitda_at",
       "original153": false,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "ebitda": "funda.ebitda or funda.oibdp or sale-opex"
       },
       "return_derived": false,
@@ -5143,7 +5147,7 @@
       "name": "ebit_at",
       "original153": false,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "ebit": "funda.ebit or funda.oiadp or ebitda-funda.dp"
       },
       "return_derived": false,
@@ -5230,7 +5234,7 @@
       "name": "ni_at",
       "original153": false,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "ni": "funda.ib or funda.ni-funda.xido"
       },
       "return_derived": false,
@@ -5317,7 +5321,7 @@
       "name": "nix_at",
       "original153": false,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "nix": "funda.ni"
       },
       "return_derived": false,
@@ -5549,7 +5553,7 @@
       "name": "fcf_at",
       "original153": false,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "fcf": "ocf-funda.capx"
       },
       "return_derived": false,
@@ -5781,7 +5785,7 @@
       "name": "debt_at",
       "original153": false,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
+        "at": "source-backed standardized item at",
         "debt": "funda.dltt+funda.dlc"
       },
       "return_derived": false,
@@ -6015,8 +6019,8 @@
       "name": "gpoa_ch5",
       "original153": false,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
-        "at_l5": "source-backed standardized/quarterly item at_l5",
+        "at": "source-backed standardized item at",
+        "at_l5": "source-backed standardized item at_l5",
         "gp": "funda.gp or sale-funda.cogs",
         "gp_l5": "funda.gp or sale-funda.cogs"
       },
@@ -6081,8 +6085,8 @@
       "name": "roa_ch5",
       "original153": false,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
-        "at_l5": "source-backed standardized/quarterly item at_l5",
+        "at": "source-backed standardized item at",
+        "at_l5": "source-backed standardized item at_l5",
         "ni": "funda.ib or funda.ni-funda.xido",
         "ni_l5": "funda.ib or funda.ni-funda.xido"
       },
@@ -6114,8 +6118,8 @@
       "name": "cfoa_ch5",
       "original153": false,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
-        "at_l5": "source-backed standardized/quarterly item at_l5",
+        "at": "source-backed standardized item at",
+        "at_l5": "source-backed standardized item at_l5",
         "ocf": "funda.oancf",
         "ocf_l5": "funda.oancf"
       },
@@ -6410,8 +6414,8 @@
       "name": "owner_at_gr1",
       "original153": false,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
-        "at_l1": "source-backed standardized/quarterly item at_l1"
+        "at": "source-backed standardized item at",
+        "at_l1": "source-backed standardized item at_l1"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -6439,8 +6443,8 @@
       "name": "owner_at_gr3",
       "original153": false,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
-        "at_l3": "source-backed standardized/quarterly item at_l3"
+        "at": "source-backed standardized item at",
+        "at_l3": "source-backed standardized item at_l3"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -6526,8 +6530,8 @@
       "name": "owner_capx_gr1",
       "original153": false,
       "primitive_dependencies": {
-        "capx": "source-backed standardized/quarterly item capx",
-        "capx_l1": "source-backed standardized/quarterly item capx_l1"
+        "capx": "source-backed standardized item capx",
+        "capx_l1": "source-backed standardized item capx_l1"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -6555,8 +6559,8 @@
       "name": "owner_capx_gr3",
       "original153": false,
       "primitive_dependencies": {
-        "capx": "source-backed standardized/quarterly item capx",
-        "capx_l3": "source-backed standardized/quarterly item capx_l3"
+        "capx": "source-backed standardized item capx",
+        "capx_l3": "source-backed standardized item capx_l3"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -6584,8 +6588,8 @@
       "name": "owner_xrd_gr1",
       "original153": false,
       "primitive_dependencies": {
-        "xrd": "source-backed standardized/quarterly item xrd",
-        "xrd_l1": "source-backed standardized/quarterly item xrd_l1"
+        "xrd": "source-backed standardized item xrd",
+        "xrd_l1": "source-backed standardized item xrd_l1"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -6613,8 +6617,8 @@
       "name": "owner_xrd_gr3",
       "original153": false,
       "primitive_dependencies": {
-        "xrd": "source-backed standardized/quarterly item xrd",
-        "xrd_l3": "source-backed standardized/quarterly item xrd_l3"
+        "xrd": "source-backed standardized item xrd",
+        "xrd_l3": "source-backed standardized item xrd_l3"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -6933,8 +6937,8 @@
       "name": "owner_roa",
       "original153": false,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at",
-        "at_l1": "source-backed standardized/quarterly item at_l1",
+        "at": "source-backed standardized item at",
+        "at_l1": "source-backed standardized item at_l1",
         "nix": "funda.ni"
       },
       "return_derived": false,
@@ -7000,7 +7004,7 @@
         "ebit": "funda.ebit or funda.oiadp or ebitda-funda.dp",
         "ic": "be+debt-cash",
         "ic_l1": "be+debt-cash",
-        "pi": "source-backed standardized/quarterly item pi",
+        "pi": "source-backed standardized item pi",
         "tax": "funda.txt"
       },
       "return_derived": false,
@@ -7090,7 +7094,7 @@
       "name": "owner_wc_growth",
       "original153": false,
       "primitive_dependencies": {
-        "at_l1": "source-backed standardized/quarterly item at_l1",
+        "at_l1": "source-backed standardized item at_l1",
         "cowc": "coa-col",
         "cowc_l1": "coa-col"
       },
@@ -7211,14 +7215,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "sale q_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_sale_q_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "sale": "funda.sale or source-backed funda.revt"
+        "sale": "fundq.saleq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7238,14 +7242,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "sale ttm_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_sale_ttm_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "sale": "funda.sale or source-backed funda.revt"
+        "sale": "fundq.saleq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7265,14 +7269,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "ni q_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_ni_q_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "ni": "funda.ib or funda.ni-funda.xido"
+        "ni": "fundq.ibq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7292,14 +7296,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "ni ttm_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_ni_ttm_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "ni": "funda.ib or funda.ni-funda.xido"
+        "ni": "fundq.ibq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7319,14 +7323,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "ocf q_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_ocf_q_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "ocf": "funda.oancf"
+        "ocf": "fundq.oancfy minus preceding same-fiscal-year oancfy unless fqtr=1"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7346,14 +7350,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "ocf ttm_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_ocf_ttm_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "ocf": "funda.oancf"
+        "ocf": "fundq.oancfy minus preceding same-fiscal-year oancfy unless fqtr=1"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7373,14 +7377,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "fcf q_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_fcf_q_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "fcf": "ocf-funda.capx"
+        "fcf": "standalone fundq.oancfy minus standalone fundq.capxy, both YTD predecessors required"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7400,14 +7404,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "fcf ttm_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_fcf_ttm_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "fcf": "ocf-funda.capx"
+        "fcf": "standalone fundq.oancfy minus standalone fundq.capxy, both YTD predecessors required"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7427,14 +7431,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "at q_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_at_q_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at"
+        "at": "fundq.atq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7454,14 +7458,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "at ttm_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_at_ttm_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "at": "source-backed standardized/quarterly item at"
+        "at": "fundq.atq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7481,14 +7485,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "be q_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_be_q_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "be": "seq+funda.txditc-funda.pstk"
+        "be": "fundq.seqq+fundq.txditcq-fundq.pstkq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7508,14 +7512,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "be ttm_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_be_ttm_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "be": "seq+funda.txditc-funda.pstk"
+        "be": "fundq.seqq+fundq.txditcq-fundq.pstkq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7535,14 +7539,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "capx q_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_capx_q_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "capx": "source-backed standardized/quarterly item capx"
+        "capx": "fundq.capxy minus preceding same-fiscal-year capxy unless fqtr=1"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7562,14 +7566,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "capx ttm_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_capx_ttm_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "capx": "source-backed standardized/quarterly item capx"
+        "capx": "fundq.capxy minus preceding same-fiscal-year capxy unless fqtr=1"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7589,14 +7593,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "xrd q_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_xrd_q_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "xrd": "source-backed standardized/quarterly item xrd"
+        "xrd": "fundq.xrdy minus preceding same-fiscal-year xrdy unless fqtr=1"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7616,14 +7620,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "xrd ttm_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_xrd_ttm_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "xrd": "source-backed standardized/quarterly item xrd"
+        "xrd": "fundq.xrdy minus preceding same-fiscal-year xrdy unless fqtr=1"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7643,14 +7647,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "eps_basic q_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_eps_basic_q_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "eps_basic": "funda.epspi"
+        "eps_basic": "fundq.epspiq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7670,14 +7674,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "eps_basic ttm_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
-      "implementation": "quarterly",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
+      "implementation": "unsupported",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_eps_basic_ttm_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "eps_basic": "funda.epspi"
+        "eps_basic": "fundq.epspiq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7686,7 +7690,7 @@
       "staleness": "annual 550 days; quarterly 400 days; prices exact month-end session",
       "stored_sign": "natural; economic_sign unapplied",
       "unit": "dimensionless",
-      "unsupported_reason": null
+      "unsupported_reason": "TTM weighted earnings and shares basis not independently admitted"
     },
     {
       "citation": "https://jkpfactors.s3.amazonaws.com/documents/Documentation.pdf",
@@ -7697,14 +7701,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "eps_diluted q_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_eps_diluted_q_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "eps_diluted": "funda.epsfi"
+        "eps_diluted": "fundq.epsfiq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7724,14 +7728,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "eps_diluted ttm_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
-      "implementation": "quarterly",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
+      "implementation": "unsupported",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_eps_diluted_ttm_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "eps_diluted": "funda.epsfi"
+        "eps_diluted": "fundq.epsfiq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7740,7 +7744,7 @@
       "staleness": "annual 550 days; quarterly 400 days; prices exact month-end session",
       "stored_sign": "natural; economic_sign unapplied",
       "unit": "dimensionless",
-      "unsupported_reason": null
+      "unsupported_reason": "TTM weighted earnings and shares basis not independently admitted"
     },
     {
       "citation": "https://jkpfactors.s3.amazonaws.com/documents/Documentation.pdf",
@@ -7751,14 +7755,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "shares_basic q_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_shares_basic_q_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "shares_basic": "funda.cshpri"
+        "shares_basic": "fundq.cshpriq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7778,14 +7782,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "shares_basic ttm_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
-      "implementation": "quarterly",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
+      "implementation": "unsupported",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_shares_basic_ttm_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "shares_basic": "funda.cshpri"
+        "shares_basic": "fundq.cshpriq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7794,7 +7798,7 @@
       "staleness": "annual 550 days; quarterly 400 days; prices exact month-end session",
       "stored_sign": "natural; economic_sign unapplied",
       "unit": "dimensionless",
-      "unsupported_reason": null
+      "unsupported_reason": "TTM weighted earnings and shares basis not independently admitted"
     },
     {
       "citation": "https://jkpfactors.s3.amazonaws.com/documents/Documentation.pdf",
@@ -7805,14 +7809,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "shares_diluted q_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
       "implementation": "quarterly",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_shares_diluted_q_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "shares_diluted": "funda.cshfd"
+        "shares_diluted": "fundq.cshfdq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7832,14 +7836,14 @@
       "economic_sign": 1,
       "family": "owner",
       "formula": "shares_diluted ttm_yoy growth, prior positive base only",
-      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; no fiscal-calendar/currency gaps",
-      "implementation": "quarterly",
+      "history": "5 consecutive quarters for q; 8 consecutive quarters for TTM; YTD flows additionally require preceding within-year quarter; exact fiscal/currency vintages",
+      "implementation": "unsupported",
       "jkp_name": null,
       "missingness": "unknown primitive/history/currency/quality -> NULL with keyed reason; never zero-fill",
       "name": "owner_shares_diluted_ttm_yoy",
       "original153": false,
       "primitive_dependencies": {
-        "shares_diluted": "funda.cshfd"
+        "shares_diluted": "fundq.cshfdq"
       },
       "return_derived": false,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -7848,7 +7852,7 @@
       "staleness": "annual 550 days; quarterly 400 days; prices exact month-end session",
       "stored_sign": "natural; economic_sign unapplied",
       "unit": "dimensionless",
-      "unsupported_reason": null
+      "unsupported_reason": "TTM weighted earnings and shares basis not independently admitted"
     },
     {
       "citation": "https://jkpfactors.s3.amazonaws.com/documents/Documentation.pdf",
@@ -8028,8 +8032,8 @@
       "name": "ceq_iss_5y",
       "original153": false,
       "primitive_dependencies": {
-        "monthly_market.issuer_me": "source-backed standardized/quarterly item monthly_market.issuer_me",
-        "monthly_market.ret": "source-backed standardized/quarterly item monthly_market.ret"
+        "monthly_market.issuer_me": "source-backed standardized item monthly_market.issuer_me",
+        "monthly_market.ret": "source-backed standardized item monthly_market.ret"
       },
       "return_derived": true,
       "sector_applicability": "generic operating/working-capital metrics structurally NULL for banks/insurers; REIT NI metrics retained but not FFO proxies",
@@ -8258,5 +8262,5 @@
     "tacc": "oacc+nfna-nfna_l1",
     "tax": "funda.txt"
   },
-  "registry_sha256": "9fd7b12cad6802394138a925f63e1ff4166c4f8190be0a86be6ab8fa4004628e"
+  "registry_sha256": "203c72b363638e8a74e4fd16dfa3888bda576ac0a8eca9f4ab9d5a80db81b5e8"
 }

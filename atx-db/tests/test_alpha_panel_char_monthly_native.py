@@ -97,3 +97,29 @@ def test_failclosed_unqualified_generation_and_reduced_window(con,tmp_path):
         M.build(tmp_path,{},"fixture",dt.date(2021,1,1),dt.date(2025,12,31))
     with pytest.raises(ValueError,match="safe explicit"):
         M.build(tmp_path,{},"../escape",dt.date(2020,1,1),dt.date(2025,12,31))
+
+
+def test_public_unit_rejects_null_publication_clock(con):
+    date=fixture(con)
+    M.native_month(con,date)
+    con.execute("UPDATE cm_output SET available_at=NULL")
+    with pytest.raises(RuntimeError,match="clock"):M.validate_unit(con,"cm_output",date)
+
+
+def test_original_window_and_month_inventory_cannot_be_reduced():
+    dates=[dt.date(y,m,28) for y in range(2020,2026) for m in range(1,13)]
+    M.required_window(dt.date(2020,1,1),dt.date(2025,12,31),dates)
+    with pytest.raises(ValueError,match="incomplete"):M.required_window(dt.date(2020,1,1),dt.date(2025,12,31),dates[1:])
+    with pytest.raises(ValueError,match="reduced"):M.required_window(dt.date(2021,1,1),dt.date(2025,12,31),dates)
+
+
+def test_public_generation_rejects_self_consistent_abbreviated_window(con,tmp_path,monkeypatch):
+    from atx_db.alpha_panel.char_monthly_registry import FREEZE_SHA256
+    generation=tmp_path/"candidate";generation.mkdir()
+    manifest={"stage":M.STAGE,"schema":M.SCHEMA,"status":"complete","registry_sha256":FREEZE_SHA256,"source_quality_certified":False,"readiness":"NOT_PRODUCTION_READY"}
+    snapshot={"source":{},"bindings":{},"registry_sha256":FREEZE_SHA256,"start":"2020-01-01","end":"2025-12-31"}
+    (generation/"manifest.json").write_text(json.dumps(manifest))
+    (generation/"snapshot.json").write_text(json.dumps(snapshot))
+    monkeypatch.setattr(N,"admit",lambda *args:{})
+    monkeypatch.setattr(N,"months",lambda *args:[dt.date(2022,6,30)])
+    with pytest.raises(ValueError,match="inventory incomplete"):M.validate_generation(tmp_path,generation,con)

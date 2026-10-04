@@ -558,10 +558,14 @@
   ],
   "primary_candidates": "Task16 separately committed predeclared family; no substitution or selection in this module",
   "prohibit_post2022_aggregate_return_or_return_regression_products": true,
-  "registry_sha256": "9fd7b12cad6802394138a925f63e1ff4166c4f8190be0a86be6ab8fa4004628e",
+  "registry_sha256": "203c72b363638e8a74e4fd16dfa3888bda576ac0a8eca9f4ab9d5a80db81b5e8",
   "replication": {
     "all_outcomes_reported": true,
     "cap_nyse_percentile": 0.8,
+    "formation_month_end": "2022-11",
+    "formation_month_start": "2012-12",
+    "holding_month_end": "2022-12",
+    "holding_month_start": "2013-01",
     "minimum_months": 60,
     "minimum_names_per_leg": 5,
     "nonmicro_nyse_percentile": 0.2,
@@ -720,8 +724,9 @@
       "zero_trades_21d",
       "zero_trades_252d"
     ],
+    "osap_overlap": "nonempty independently admitted fixed metadata mapping before returns; all mapped members denominator",
     "period_end_exclusive": "2023-01-01",
-    "period_start": "2020-01-01",
+    "requested_months": 120,
     "tercile_breakpoints": [
       0.3333333333333333,
       0.6666666666666666
@@ -729,5 +734,5 @@
   },
   "require_entire_label_window_before_boundary": true,
   "return_statistics_end_exclusive": "2023-01-01",
-  "version": "task7-predeclared-v1"
+  "version": "task7-predeclared-v1-r18"
 }

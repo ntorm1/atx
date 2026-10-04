@@ -280,8 +280,8 @@ def market(name,bars,monthly,date,cap):
     if name.startswith("seas_"):
         _,a,bkind=name.split("_");a=int(a);b=int(bkind[:-2]);annual=bkind[-2:]=="an"
         lags=[i for i in range(12*(a-1)+1,12*b+1) if (i%12==0)==annual]
-        if len(monthly)<max(lags):raise Missing("insufficient_monthly_history")
-        return S.mean(get([monthly[-i] for i in lags],"ret"))
+        if len(monthly)<max(lags)+1:raise Missing("insufficient_monthly_history")
+        return S.mean(get([monthly[-i-1] for i in lags],"ret"))
     if name.startswith("resff3_"):
         a=int(name.split("_")[1]);window=monthly[-36:]
         y=get(window,"ret_exc");x=list(zip(get(window,"mkt_rf"),get(window,"smb"),get(window,"hml")))
@@ -316,7 +316,12 @@ def market(name,bars,monthly,date,cap):
     if name=="rskew_21d":return skew(y)
     if name=="rmax1_21d":return max(raw)
     if name=="rmax5_21d":return S.mean(sorted(raw,reverse=True)[:5])
-    if name=="rmax5_rvol_21d":return ratio(S.mean(sorted(raw,reverse=True)[:5]),std(get(bars[-252:],"ret_exc")))
+    if name=="rmax5_rvol_21d":
+        denominator=bars[-252:]
+        if len(denominator)<120:raise Missing("insufficient_denominator_session_history")
+        if any(r.get("price_certified") is not True or r.get("return_certified") is not True for r in denominator):
+            raise Missing("uncertified_denominator_total_return_or_price_basis")
+        return ratio(S.mean(sorted(raw,reverse=True)[:5]),std(get(denominator,"ret_exc")))
     m=get(window,"mkt_rf")
     if name in ("corr_1260d","betabab_1260d"):
         y3=[sum(y[i-2:i+1]) for i in range(2,len(y))];m3=[sum(m[i-2:i+1]) for i in range(2,len(m))]
