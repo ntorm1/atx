@@ -69,6 +69,13 @@ produced the payload (never this builder unless it is the same code); the manife
 reuse by ``REUSE_MODULE_RULE``: the module's PRODUCERS closure plus the builder code it reads through its host handle,
 its stage manifest pins as the source check, its formula keys; their computed entries record the module's code
 identity as ``producer``.
+
+P9 lane A1: every manifest records ``runtime_versions`` (python, numpy, pyarrow, duckdb), and --reuse copies no field
+from a prior recording other versions (``REUSE_RUNTIME_RULE``, finding FD-2) nor any entry an engine produced
+(``producer.kind == "engine"``, K-P9-3); ``load_prior`` refuses a prior written under another research seal
+(``require_research_seal``); the count of rows dropped at the seal is published as ``rows_sealed_dropped``
+(``published_checks``). ``--registry field_registry.json --fields <list|all>`` builds from the field registry
+(``field_registry.py``, K-P9-1), the one entry that replaces the draft shims' register one-liners.
 """
 from __future__ import annotations
 
@@ -77,11 +84,13 @@ import csv
 import datetime as dt
 import gzip
 import hashlib
+import importlib.metadata
 import io
 import json
 import math
 import os
 from pathlib import Path
+import platform
 import re
 import subprocess
 import sys
@@ -94,6 +103,7 @@ import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
 import code_fingerprint  # noqa: E402  (same directory: the AST closure fingerprints --reuse keys on)
+import field_registry  # same directory: the field registry and its entry (--registry; K-P9-1)
 import research_window as rw  # same directory: the research window (TRAIN and the seal)
 
 SCHEMA = "atx.research-role-fields/v1"
@@ -2437,12 +2447,25 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         fund_events: Path | None = None, fund_events_sha256: str | None = None,
         fund_lag_sessions: int = FUND_LAG_SESSIONS_DECLARED, finra_short_volume: Path | None = None,
         reuse: Path | None = None, reuse_sha256: str | None = None, reuse_hardlink: bool = False,
-        module_options: dict | None = None, sic_events: Path | None = None, sic_events_sha256: str | None = None):
+        module_options: dict | None = None, sic_events: Path | None = None, sic_events_sha256: str | None = None,
+        **module_kwargs):
+    """Build ``fields`` into the new directory ``output``. ``module_options`` (and any keyword named in a field
+    module's ``OPTIONS``, e.g. the holdings stages ``thirteenf=``, ``thirteenf_sha256=``) are the modules' inputs."""
     fields = list(fields)
-    if not fields or len(set(fields)) != len(fields) or any(f not in ALL_FIELDS for f in fields):
-        raise ValueError(f"--fields must be distinct names from {', '.join(ALL_FIELDS)}")
-    selected = [f for f in ALL_FIELDS if f in fields]  # registry order: stable manifests
+    late = [m for m in FIELD_MODULES if getattr(m, "LATE", False)]   # computed when the manifest is assembled
+    late_fields = [f for m in late for f in m.FIELDS]
+    if not fields or len(set(fields)) != len(fields) or any(f not in ALL_FIELDS and f not in late_fields
+                                                            for f in fields):
+        raise ValueError(f"--fields must be distinct names from {', '.join(list(ALL_FIELDS) + late_fields)}")
+    unknown = sorted(k for k in module_kwargs if not any(k in m.OPTIONS for m in FIELD_MODULES))
+    if unknown:
+        raise TypeError(f"run() got unexpected keyword arguments: {', '.join(unknown)}")
+    module_options = {**(module_options or {}), **module_kwargs}
+    # registry order: stable manifests (a late module's fields after every other field)
+    selected = [f for f in ALL_FIELDS if f in fields] + [f for f in late_fields if f in fields]
     for f in selected:
+        if f not in ALL_FIELDS:
+            continue   # a late module checks its own requirements (check)
         missing = [x for x in ALL_FIELDS[f].get("requires", []) if x not in selected]
         if missing:
             raise ValueError(f"--fields: {f} requires {', '.join(missing)} in the same run (its units rule reads it)")
@@ -2470,6 +2493,7 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
     budget.report("role-admitted", dates=role.n_dates, instruments=role.n)
     output.mkdir(parents=False, exist_ok=False)  # exclusive; never reuse or replace
     reused, reuse_block, th_known = {}, None, None
+    late_reuse: dict = {}   # id(module) -> (its reused {name: (entry, pin)}, the prior source checks)
     if reuse is not None:
         roots = {"role": [role_dir], "finra": [finra], "th": [tickerhistory], "lake": [lake],
                  "issuer": [p for p in (identity_bridge, fund_events, role_dir, sic_events) if p is not None],
@@ -2482,18 +2506,23 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
                                                      [f for f in selected if f not in module_fields], output, budget,
                                                      roots=roots, lag=fund_lag_sessions, tickerhistory=tickerhistory,
                                                      hardlink=reuse_hardlink)
-        for m in FIELD_MODULES:  # v8 C-3: each opt-in module reuses by its own PRODUCERS, stage pins and formula
+        # v8 C-3: each opt-in module reuses by its own PRODUCERS, stage pins and formula (late modules last)
+        for m in [m for m in FIELD_MODULES if m not in late] + late:
             names = [f for f in selected if f in m.FIELDS]
             if names:
                 got, why, prior_checks = reuse_module_fields(
                     sys.modules[type(m).__module__], Path(reuse), reuse_sha256, role, names, output, budget,
                     options=module_options or {}, reused_names=set(reused), hardlink=reuse_hardlink)
                 reused.update(got)
-                merge_module_reuse(reuse_block, selected, names, got, why, group=m.GROUP,
-                                   prior_check=prior_checks.get(m.GROUP))
+                if hasattr(m, "merge_reuse"):   # a module with its own reuse groups (holdings: one per kind)
+                    m.merge_reuse(reuse_block, selected, names, got, why, prior_checks)
+                else:
+                    merge_module_reuse(reuse_block, selected, names, got, why, group=m.GROUP,
+                                       prior_check=prior_checks.get(m.GROUP))
+                late_reuse[id(m)] = (got, prior_checks)
     outcome = {}
     source_checks = dict(reuse_block.pop("_source_checks")) if reuse_block else {}
-    groups = {g: [f for f in selected if ALL_FIELDS[f]["group"] == g and f not in reused]
+    groups = {g: [f for f in selected if f in ALL_FIELDS and ALL_FIELDS[f]["group"] == g and f not in reused]
               for g in ("role", "finra", "th", "lake", "issuer", "finra_sv")}
     field_stats, field_extras = {}, {}
     # th_known: (file identity, SHA-256) of the TickerHistory hashed by the th group (or by the reuse source check),
@@ -2543,10 +2572,13 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         field_extras["sv_ratio126"] = extra
         budget.report("sv_ratio126-complete", finite_member_frac=outcome["sv_ratio126"][2]["finite_member_frac"])
     for m in FIELD_MODULES:  # W5a registry hook: each opt-in module computes its requested, non-reused fields
-        m.compute([f for f in selected if f in m.FIELDS and f not in reused], role, output, budget,
-                  module_options or {}, outcome, source_checks, field_extras)
+        if m not in late:
+            m.compute([f for f in selected if f in m.FIELDS and f not in reused], role, output, budget,
+                      module_options or {}, outcome, source_checks, field_extras)
     files, entries = {}, []
     for name in selected:
+        if name in late_fields:
+            continue   # appended by its module's finish, after every other entry
         if name in reused:
             entry, file_pin = reused[name]
             files[entry["file"]] = file_pin
@@ -2601,6 +2633,7 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         "excluded_source_columns": EXCLUDED_SOURCE_COLUMNS,
         "source_checks": source_checks,
         **code_identity_of(builder_source()),
+        "runtime_versions": runtime_versions(),   # FD-2: the interpreter and libraries (a --reuse key)
         "historical_vintage_verified": False, "common_stock_verified": False,
     }
     revisions = {f: FORMULA_REVISION[f] for f in selected if FORMULA_REVISION.get(f, 1) != 1}
@@ -2608,6 +2641,14 @@ def run(role_dir: Path, role_sha256: str, output: Path, fields=DEFAULT_FIELDS, *
         manifest["formula_revisions"] = revisions
     if reuse_block is not None:
         manifest["reuse"] = reuse_block
+    for m in late:   # a late module computes its fields and extends the manifest before it is published
+        names = [f for f in selected if f in m.FIELDS]
+        if names:
+            got, prior_checks = late_reuse.get(id(m), ({}, {}))
+            m.finish(names, role_dir, role_sha256, output, manifest, budget, got, prior_checks)
+    for key in ("source_checks", "reuse"):   # FD-5: the sealed-rows key (the reuse block carries prior checks)
+        if key in manifest:
+            manifest[key] = published_checks(manifest[key])
     publish(output / "manifest.json", manifest)
     budget.report("fields-complete", fields=len(entries), peak_rss_mib=budget.peak >> 20)
     return manifest
@@ -2809,6 +2850,7 @@ def reuse_module_fields(module, prior_dir: Path, prior_sha256: str | None, role:
         return (ident_m, ident_h, *found[key])
 
     reasons, candidates = {}, {}
+    runtime_why = runtime_mismatch(prior)
     for name in names:
         e, pin = entries.get(name), (prior.get("files") or {}).get(f"{name}.f64")
         if e is None or pin is None:
@@ -2818,6 +2860,9 @@ def reuse_module_fields(module, prior_dir: Path, prior_sha256: str | None, role:
                 or e.get("shape") != shape or e.get("sha256") != pin.get("sha256")
                 or pin.get("bytes") != role.n_dates * role.n * 8):
             reasons[name] = "prior entry layout/shape/pin differs"
+            continue
+        if runtime_why or engine_produced(e):
+            reasons[name] = runtime_why or ENGINE_REUSE_REASON
             continue
         spec = module.field_spec(name)
         if module_formula(e) != module_formula(spec):
@@ -2913,9 +2958,85 @@ def _copy_payload(src: Path, dst: Path, hardlink: bool, budget: Budget) -> tuple
     return h.hexdigest(), size
 
 
+SEALED_ROWS_KEY = "rows_sealed_dropped"
+# The shared readers' historical name for the same count (finra_field, load_bridge, load_events): it says 2025 for the
+# 2024 seal. Those readers keep it, because their code is the --reuse fingerprint of every group that reaches them and
+# the role builder (prepare_recent_research.py) publishes their stats under golden pins; this builder publishes the
+# count as SEALED_ROWS_KEY (P9 A1, finding FD-5).
+LEGACY_SEALED_ROWS_KEY = "rows_available_on_or_after_2025_dropped"
+
+
+def published_checks(value):
+    """``value`` (a manifest's source_checks) with every ``LEGACY_SEALED_ROWS_KEY`` renamed ``SEALED_ROWS_KEY`` at any
+    depth: the checks this run computed and the ones it carries from a prior manifest alike."""
+    if isinstance(value, dict):
+        return {(SEALED_ROWS_KEY if k == LEGACY_SEALED_ROWS_KEY else k): published_checks(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [published_checks(v) for v in value]
+    return value
+
+
+def require_research_seal(manifest: dict, what: str) -> None:
+    """Refuse a fields manifest written under another research seal: its ``seal.exclusive_end`` is present and is not
+    this window's seal (P9 G-P9, finding FD-5). A manifest without a seal block is accepted as legacy and logged (P9
+    ruling P13: refused from wave 2, once every live manifest is shown to carry one); a seal block that is not an object
+    is malformed, never legacy, and is refused like a different seal."""
+    if "seal" in manifest and not isinstance(manifest["seal"], dict):
+        raise rw.SealError(f"{what} carries a malformed seal block (not an object); refusing")
+    end = manifest.get("seal", {}).get("exclusive_end")
+    if end is None:
+        print(f"{what}: no seal.exclusive_end recorded; accepted as a legacy manifest (P13)", file=sys.stderr,
+              flush=True)
+        return
+    if end != SEAL.isoformat():
+        raise rw.SealError(f"{what} was built under the research seal {end}, not {SEAL.isoformat()} "
+                           f"({rw.WINDOW_ID}); refusing")
+
+
+def engine_produced(entry: dict) -> bool:
+    """A manifest entry whose payload the C++ executable produced (contract K-P9-3: ``producer.kind == "engine"``; a
+    producer without ``kind`` is the Python shape, P9 ruling P6)."""
+    producer = entry.get("producer")
+    return isinstance(producer, dict) and producer.get("kind") == "engine"
+
+
+ENGINE_REUSE_REASON = ("engine producer (K-P9-3): reuse of an engine entry is keyed on the executable's identity, "
+                       "not on Python code")
+REUSE_RUNTIME_RULE = ("FD-2: a manifest records the interpreter and library versions its payloads were computed with "
+                      "(runtime_versions: python, numpy, pyarrow, duckdb); --reuse copies no field from a prior that "
+                      "records other versions (numpy's reduction order, DuckDB's fsum); a prior that records none "
+                      "(written before P9) is reused under the other rules, and the reuse block says so "
+                      "(prior_runtime_versions null)")
+
+
+def runtime_versions() -> dict:
+    """The versions this process computes with (finding FD-2): the interpreter, the imported numpy and pyarrow, and the
+    installed duckdb (None when it is not installed)."""
+    try:
+        duckdb = importlib.metadata.version("duckdb")
+    except importlib.metadata.PackageNotFoundError:
+        duckdb = None
+    return {"python": platform.python_version(), "numpy": np.__version__, "pyarrow": pa.__version__,
+            "duckdb": duckdb}
+
+
+def runtime_mismatch(prior: dict) -> str | None:
+    """Why no field of ``prior`` is reusable by ``REUSE_RUNTIME_RULE``, or None."""
+    then = prior.get("runtime_versions")
+    if then is None:
+        return None
+    now = runtime_versions()
+    if not isinstance(then, dict) or then != now:
+        then = then if isinstance(then, dict) else {}
+        moved = ", ".join(f"{k} {then.get(k)} -> {now.get(k)}" for k in sorted(set(then) | set(now))
+                          if then.get(k) != now.get(k))
+        return f"runtime versions differ ({moved or 'malformed record'})"
+    return None
+
+
 def load_prior(prior_dir: Path, prior_sha256: str | None, role: Role) -> tuple[dict, str]:
-    """(prior manifest, its SHA-256): a complete fields manifest bound to this role (manifest, sessions, ids, member),
-    checked against --reuse-sha256 when given."""
+    """(prior manifest, its SHA-256): a complete fields manifest bound to this role (manifest, sessions, ids, member)
+    and written under this research seal (``require_research_seal``), checked against --reuse-sha256 when given."""
     blob = (prior_dir / "manifest.json").read_bytes()
     prior_manifest_sha = sha_bytes(blob)
     if prior_sha256 is not None and prior_manifest_sha != prior_sha256.lower():
@@ -2923,6 +3044,7 @@ def load_prior(prior_dir: Path, prior_sha256: str | None, role: Role) -> tuple[d
     prior = json.loads(blob)
     if prior.get("schema") != SCHEMA or prior.get("status") != "complete":
         raise ValueError("--reuse: prior directory is not a complete atx.research-role-fields/v1 manifest")
+    require_research_seal(prior, "--reuse: the prior fields manifest")
     bound = prior.get("role") or {}
     if (bound.get("manifest_sha256") != role.manifest_sha256 or bound.get("sessions_sha256") != role.sessions_sha256
             or bound.get("ids_sha256") != role.ids_sha256
@@ -3048,6 +3170,7 @@ def reuse_fields(prior_dir: Path, prior_sha256: str | None, role: Role, selected
         return prior_sic.get("table_sha256") == sic_table[0]
 
     reasons, candidates = {}, {}
+    runtime_why = runtime_mismatch(prior)
     for name in selected:
         e = entries.get(name)
         pin = (prior.get("files") or {}).get(f"{name}.f64")
@@ -3058,6 +3181,9 @@ def reuse_fields(prior_dir: Path, prior_sha256: str | None, role: Role, selected
                 or e.get("shape") != shape or e.get("sha256") != pin.get("sha256")
                 or pin.get("bytes") != role.n_dates * role.n * 8):
             reasons[name] = "prior entry layout/shape/pin differs"
+            continue
+        if runtime_why or engine_produced(e):
+            reasons[name] = runtime_why or ENGINE_REUSE_REASON
             continue
         want = formula_id(name, spec_definition(name, lag))
         got = formula_id(name, entry_definition(e), prior_revisions.get(name, 1))
@@ -3130,7 +3256,8 @@ def reuse_fields(prior_dir: Path, prior_sha256: str | None, role: Role, selected
              "reused": [n for n in selected if n in reused], "computed": [n for n in selected if n not in reused],
              "not_reused": {n: reasons[n] for n in selected if n in reasons},
              "source_checks_from_prior": sorted(carried),
-             "prior_source_checks_of_partial_groups": partial, "_source_checks": carried}
+             "prior_source_checks_of_partial_groups": partial, "_source_checks": carried,
+             "runtime_rule": REUSE_RUNTIME_RULE, "prior_runtime_versions": prior.get("runtime_versions")}
     if directory_checked:  # v8 C-3: only when a directory source was checked (other reuse blocks are unchanged)
         block["directory_rule"] = REUSE_DIRECTORY_RULE
     budget.report("reuse-plan", reused=len(block["reused"]), computed=len(block["computed"]))
@@ -3138,6 +3265,20 @@ def reuse_fields(prior_dir: Path, prior_sha256: str | None, role: Role, selected
 
 
 def main(argv=None):
+    """The builder's command line. With ``--registry R`` (K-P9-1, ``field_registry.entry``) the fields come from the
+    registry (``--fields <list|all>``, every module a row names bound, the registry checked against this code); without
+    it, exactly the builder's argv as before."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if field_registry.wants_registry(argv):
+        if __name__ == "__main__":   # run as a script: work in the importable instance the shims and engine path bind
+            import prepare_research_fields as entry   # noqa: PLW0406  (this file, imported once under its own name)
+            return entry.main(argv)
+        return field_registry.entry(globals(), argv, parse_and_run)
+    return parse_and_run(argv)
+
+
+def parse_and_run(argv):
+    """The builder's own argv parser and ``run`` (every bound module adds its options)."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--role", required=True, type=Path, help="published recent-research role directory")
     p.add_argument("--role-sha256", required=True, help="SHA-256 of the role's manifest.json")
@@ -3181,10 +3322,11 @@ def main(argv=None):
 
 
 # W5a registry hook (placeholder: lane W5a registers research_fields_sec.py here)
-# W5b registry hook (platform v7): the 13F / FTD / Reg SHO / short-volume-ext fields of research_fields_holdings.py.
-# register() wraps run() and main() in this namespace; nothing changes unless one of its fields is requested.
+# W5b registry hook (platform v7): the 13F / FTD / Reg SHO / short-volume-ext fields of research_fields_holdings.py, a
+# late FIELD_MODULES module (lane A1 of P9; was a run/main wrap): its fields stay out of ALL_FIELDS and come after every
+# other field; nothing changes unless one of its fields is requested.
 import research_fields_holdings as _holdings  # noqa: E402  (same directory, as prepare_recent_research imports this)
-_holdings.register(globals())
+FIELD_MODULES.append(_holdings.bind(globals()))
 # Platform v8 F-1 registry hook: the price and long-lookback fields of research_fields_price.py, an opt-in FIELD_MODULES
 # module like research_fields_sec.py (registry after every field above); nothing changes unless one is requested.
 import research_fields_price as _price  # noqa: E402  (same directory; it does not import this module)

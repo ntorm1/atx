@@ -283,7 +283,7 @@ class ResearchFields(unittest.TestCase):
         self.assertEqual(dtc[t_of("2024-11-15"), b], 2.25)  # 2024-10-01 + 45
         self.assertTrue(np.isnan(dtc[t_of("2024-11-18"), b]))
         checks = self.manifest["source_checks"]["si_shares"]
-        self.assertEqual(checks["rows_available_on_or_after_2025_dropped"], 1)
+        self.assertEqual(checks["rows_sealed_dropped"], 1)
         self.assertEqual(checks["rows_ignored_unknown_id"], 1)
 
     def test_tickerhistory_same_date_alignment_duplicates_and_earn(self):
@@ -1283,7 +1283,7 @@ class IssuerFields(unittest.TestCase):
         self.assertEqual(self.fx.field("issuer", "grp_sic2")[t_of("2024-10-22"), 4], 28)  # null-SIC row skipped
         st = self.manifest["source_checks"]["issuer"]
         self.assertEqual(st["sic_events"]["rows_used_invalid_sic_skipped"], 2)
-        self.assertEqual(st["sic_events"]["rows_available_on_or_after_2025_dropped"], 1)
+        self.assertEqual(st["sic_events"]["rows_sealed_dropped"], 1)
         self.assertGreater(self.entry("grp_ff49")["nan_reasons_member_cells"]["unmapped"], 0)
         self.assertEqual(st["sic_mapping"]["versions"], tool.SIC_MAPPING_VERSIONS)
 
@@ -1327,7 +1327,7 @@ class IssuerFields(unittest.TestCase):
         st = self.manifest["source_checks"]["issuer"]
         b = st["identity_bridge"]
         self.assertEqual((b["rows_total"], b["rows_dropped_kind_not_p_or_j"], b["rows_dropped_excluded_basis"],
-                          b["rows_available_on_or_after_2025_dropped"], b["rows_ignored_off_axis"], b["rows_used"]),
+                          b["rows_sealed_dropped"], b["rows_ignored_off_axis"], b["rows_used"]),
                          (10, 1, 1, 1, 1, 6))
         self.assertEqual((b["rehearsal_identity"], b["scope_complete"]), (True, False))
         self.assertEqual((b["rows_used_available_after_start_mark"], b["rows_used_available_exactly_at_start_mark"]),
@@ -1335,7 +1335,7 @@ class IssuerFields(unittest.TestCase):
         self.assertIn("start <= date(session) <= end_incl", b["link_rule"])
         self.assertEqual(b["ambiguous_cells"], sum(d.month == 11 for d in SESSIONS))
         ev = st["fund_events"]
-        self.assertEqual((ev["rows_total"], ev["rows_available_on_or_after_2025_dropped"], ev["rows_ignored_unlinked_cik"],
+        self.assertEqual((ev["rows_total"], ev["rows_sealed_dropped"], ev["rows_ignored_unlinked_cik"],
                           ev["rows_sharing_cik_and_clock"], ev["rows_used_fc1_clock"], ev["rows_used_staleness_400"]),
                          (12, 1, 1, 1, 2, 1))
         self.assertEqual((ev["values_label"], ev["rehearsal_identity"]), ("modeled_unaccepted", True))

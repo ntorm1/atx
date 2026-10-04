@@ -1,0 +1,3 @@
+# Byte-identity fixture: every file is pinned by SHA-256 (role manifest, FINRA receipt, expected payloads), and
+# si_dtc.csv is CRLF on purpose. No end-of-line conversion on checkout or commit.
+* -text

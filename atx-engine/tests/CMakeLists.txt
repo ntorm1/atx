@@ -387,6 +387,24 @@ if(ATX_USE_PCH)
     target_precompile_headers(atx-engine-w1-risk-tests REUSE_FROM atx-engine-test-pch)
 endif()
 
+# Platform core migration slice 1: the research field-builder library's own bounded target. Its sources live in
+# tests/research/, which is deliberately not a test group (ATX_ALL_TEST_GROUPS): the files are listed here and
+# compile into this executable only, without the shared test PCH (the fixture path is a target-local define).
+# Run it directly with a gtest filter (ResearchFields*) or by CTest label atx_research (registered once, at the end).
+add_executable(atx-engine-research-fields-tests EXCLUDE_FROM_ALL
+    research/research_fields_clock_test.cpp
+    research/research_fields_writer_test.cpp
+    research/research_fields_volume_mean_test.cpp
+    research/research_fields_finra_asof_test.cpp
+    research/research_fields_fixture_test.cpp
+    research/research_fields_cli_test.cpp)
+target_link_libraries(atx-engine-research-fields-tests PRIVATE
+    atx::engine-research-fields GTest::gtest_main atx_warnings Threads::Threads atx-test-scratch
+    nlohmann_json::nlohmann_json)
+target_include_directories(atx-engine-research-fields-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(atx-engine-research-fields-tests PRIVATE
+    "ATX_RESEARCH_FIELDS_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_fields\"")
+
 add_executable(atx-engine-w1-data-tests EXCLUDE_FROM_ALL
     data/exposure_panel_test.cpp
     data/price_exposure_provider_test.cpp
@@ -401,3 +419,91 @@ target_link_libraries(atx-engine-w1-data-tests PRIVATE atx-test-scratch)
 if(ATX_USE_PCH)
     target_precompile_headers(atx-engine-w1-data-tests REUSE_FROM atx-engine-test-pch)
 endif()
+
+# P9 lane T1 (gate G-P4): the research test executables join CTest under the label atx_research. The call is
+# deferred to the end of this directory, so a target that a later block of this file defines is registered too
+# (wave-1 lanes append their blocks below this one); a name with no target is skipped, and a target that another
+# line already registered (gtest_discover_tests sets CTEST_DISCOVERED_TEST_COUNTER) is not registered twice. The
+# targets stay EXCLUDE_FROM_ALL: PRE_TEST discovery enumerates each built one at ctest time, and one that is not
+# built appears as <target>_NOT_BUILT, which carries no label. Count: ctest -N -L atx_research.
+function(atx_engine_register_research_tests)
+    foreach(_research_tests IN ITEMS
+            atx-engine-research-fields-tests      # migration slice 1 (fields review section 1: unregistered before)
+            atx-engine-research-admission-tests)  # P9 lane B1 (research/admission), once its block lands
+        if(NOT TARGET ${_research_tests})
+            continue()
+        endif()
+        get_property(_registered TARGET ${_research_tests} PROPERTY CTEST_DISCOVERED_TEST_COUNTER SET)
+        if(_registered)
+            continue()
+        endif()
+        gtest_discover_tests(${_research_tests} DISCOVERY_MODE PRE_TEST TEST_PREFIX "${_research_tests}."
+            PROPERTIES LABELS atx_research)
+    endforeach()
+endfunction()
+cmake_language(DEFER CALL atx_engine_register_research_tests)
+
+# P9 lane A2 (cross-lane append, ruling P2): the field registry / builder-kind (K-P9-1, K-P9-2) and
+# publish-last manifest / producer / reuse (K-P9-3) gtests join the research-fields test target.
+target_sources(atx-engine-research-fields-tests PRIVATE
+    research/research_fields_registry_test.cpp
+    research/research_fields_manifest_test.cpp)
+
+# Platform P9 B1: the admission library's own bounded target (sources in tests/research/, not a test group; no
+# shared test PCH; the fitter-generated fixture path is a target-local define). Run it directly with the gtest
+# filter ResearchAdmission*. The library target is defined after this directory (end of atx-engine/CMakeLists.txt);
+# CMake resolves the link name at generation.
+add_executable(atx-engine-research-admission-tests EXCLUDE_FROM_ALL
+    research/research_admission_screen_test.cpp
+    research/research_admission_sign_test.cpp
+    research/research_admission_fixture_test.cpp)
+target_link_libraries(atx-engine-research-admission-tests PRIVATE
+    atx-engine-research-admission GTest::gtest_main atx_warnings Threads::Threads atx-test-scratch
+    nlohmann_json::nlohmann_json)
+target_include_directories(atx-engine-research-admission-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(atx-engine-research-admission-tests PRIVATE
+    "ATX_RESEARCH_ADMISSION_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_admission\"")
+
+# P9 lane SQL1 (K-P9-13): the research-store gtests (descriptor templates, schema fixtures, digests,
+# open / migrate). Sources in tests/research/ (not a test group), no shared test PCH; the private
+# engine src/ dir is on the include path because the tests instantiate toy descriptors through
+# research/store/detail/*. Registered directly under the CTest label atx_research (the deferred
+# registration above skips a target that is already registered).
+add_executable(atx-engine-research-store-tests EXCLUDE_FROM_ALL
+    research/research_store_table_test.cpp
+    research/research_store_schema_test.cpp
+    research/research_store_digest_test.cpp
+    research/research_store_open_test.cpp)
+target_link_libraries(atx-engine-research-store-tests PRIVATE
+    atx::engine-research-store GTest::gtest_main atx_warnings Threads::Threads atx-test-scratch
+    nlohmann_json::nlohmann_json)
+target_include_directories(atx-engine-research-store-tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(atx-engine-research-store-tests PRIVATE
+    "ATX_RESEARCH_STORE_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_store\"")
+gtest_discover_tests(atx-engine-research-store-tests DISCOVERY_MODE PRE_TEST
+    TEST_PREFIX "atx-engine-research-store-tests." PROPERTIES LABELS atx_research)
+
+# P9 lane SQL2 (K-P9-13): the artifact catalog gtests (ResearchCatalog*, SealGuard*, StoreCli*) over
+# the synthetic tree fixtures/research_store/tree (and legacy_records). Sources in tests/research/
+# (not a test group), no shared test PCH; public catalog headers only. Registered directly under
+# the CTest label atx_research.
+add_executable(atx-engine-research-catalog-tests EXCLUDE_FROM_ALL
+    research/research_catalog_test.cpp
+    research/research_catalog_seal_test.cpp
+    research/research_catalog_cli_test.cpp)
+target_link_libraries(atx-engine-research-catalog-tests PRIVATE
+    atx::engine-research-catalog GTest::gtest_main atx_warnings Threads::Threads atx-test-scratch)
+target_include_directories(atx-engine-research-catalog-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(atx-engine-research-catalog-tests PRIVATE
+    "ATX_RESEARCH_STORE_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_store\""
+    "ATX_RESEARCH_STORE_CLASSES_FILE=\"${CMAKE_CURRENT_SOURCE_DIR}/../schemas/research_store/classes.json\"")
+gtest_discover_tests(atx-engine-research-catalog-tests DISCOVERY_MODE PRE_TEST
+    TEST_PREFIX "atx-engine-research-catalog-tests." PROPERTIES LABELS atx_research)
+
+# P9 lane A3 (cross-lane append, ruling P2): the vendor panel, factor-break-v1, NYSE calendar and vendor-panel field
+# gtests join the research-fields test target (fixture under fixtures/research_fields/vendor).
+target_sources(atx-engine-research-fields-tests PRIVATE
+    research/research_fields_vendor_panel_test.cpp
+    research/research_fields_vendor_fields_test.cpp
+    research/research_fields_vendor_fixture_test.cpp)

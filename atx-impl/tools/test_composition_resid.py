@@ -239,8 +239,10 @@ class DeclaredRule(unittest.TestCase):
     def test_declared_constants_and_their_cpp_pins(self):
         self.assertEqual((cres.RULE_ID, cres.BLOCK, cres.SPAN_TOLERANCE),
                          ("theme-resid-v1", "theme_residualise", 1e-10))
-        # rule 1 (Ruling PM4-11): the order is PRIOR_THEMES; its first ten are the frozen v4 list + v7 appended theme
-        self.assertEqual(cres.FROZEN_PREFIX, fcw.V4_THEMES + fcw.V7_APPENDED_THEMES)
+        # rule 1 (Ruling PM4-11): the order is PRIOR_THEMES; its first ten are the frozen v4 list + v7 appended theme,
+        # then filing_events (Ruling PM7-15 (a)), then price_volume (Rulings PM7-36 (a), PM7-39), then merger_arbitrage, last (PM8-14)
+        self.assertEqual(cres.FROZEN_PREFIX + ("filing_events", "price_volume", "merger_arbitrage"),
+                         fcw.V4_THEMES + fcw.V7_APPENDED_THEMES)
         self.assertEqual(cres.registered_order(fcw.PRIOR_THEMES), fcw.PRIOR_THEMES)
         self.assertEqual(cres.STD_RULE_ID, cr.STD_RULE_ID)
         # rule 6 (E-44, E-45): every rerank-true theme_standardise rule the fitter writes (R-1 / R-3, then R-10)
@@ -256,14 +258,15 @@ class DeclaredRule(unittest.TestCase):
         self.assertIn('theme_residualise_rule="theme-resid-v1";', detail)
         self.assertIn('"theme_residualise"', (REPO / "atx-impl" / "src" / "strategy_ic_theme_resid.cpp").read_text(
             encoding="utf-8"))
-        # finding R6B-O-4: the runner's copy of the registered order (strategy_ic_theme_resid.hpp theme_resid_order)
-        # extends the fitter's PRIOR_THEMES and places filing_events after the frozen ten (Ruling PM4-11)
-        header = (REPO / "atx-impl" / "src" / "strategy_ic_theme_resid.hpp").read_text(encoding="utf-8")
-        listed = re.search(r"theme_resid_order\{([^}]*)\}", header)
+        # finding R6B-O-4: the runner's built-in theme table (P9 lane D1: strategy_ic_rules.hpp builtin_registry_themes,
+        # the order theme-resid-v1 reads without --theme-registry; it replaced strategy_ic_theme_resid.hpp's
+        # theme_resid_order) extends the fitter's PRIOR_THEMES and places filing_events after the frozen ten (PM4-11)
+        header = (REPO / "atx-impl" / "src" / "strategy_ic_rules.hpp").read_text(encoding="utf-8")
+        listed = re.search(r"builtin_registry_themes\{([^}]*)\}", header)
         self.assertIsNotNone(listed)
         cpp = tuple(re.findall(r'"([a-z0-9_]+)"', listed.group(1)))
         self.assertEqual(cpp[:len(fcw.PRIOR_THEMES)], fcw.PRIOR_THEMES)
-        self.assertEqual(cpp, cres.FROZEN_PREFIX + ("filing_events",))
+        self.assertEqual(cpp, cres.FROZEN_PREFIX + ("filing_events", "price_volume", "merger_arbitrage"))
         self.assertEqual(cres.registered_order(cpp), cpp)
 
     def test_theme_order_is_the_registered_order_restricted(self):
@@ -278,17 +281,18 @@ class DeclaredRule(unittest.TestCase):
         """Ruling PM4-11 (finding R6B-O-2): a theme registered after the frozen ten (v8.1's filing_events, E7) is
         appended in registration order, so filing_events is last, after ownership_flow; before it is registered it is
         refused as outside the order. The frozen ten may not be reordered, dropped or interleaved."""
-        later = fcw.PRIOR_THEMES + ("filing_events",)
+        before, later = cres.FROZEN_PREFIX, fcw.PRIOR_THEMES          # filing_events registered (Ruling PM7-15 (a))
+        self.assertEqual(later, before + ("filing_events", "price_volume", "merger_arbitrage"))   # PM7-39, PM8-14
         self.assertEqual(cres.registered_order(later), later)
         self.assertEqual(cres.theme_order(["filing_events", "ownership_flow", "value"], later),
                          ["value", "ownership_flow", "filing_events"])
         self.assertEqual(cres.theme_order(["filing_events", "low_risk"], later + ("another_theme",)),
                          ["low_risk", "filing_events"])
         with self.assertRaises(cres.ResidError):
-            cres.theme_order(["filing_events", "value"], fcw.PRIOR_THEMES)
-        swapped = ("profitability_quality", "value") + fcw.PRIOR_THEMES[2:]
-        interleaved = fcw.PRIOR_THEMES[:9] + ("filing_events",) + fcw.PRIOR_THEMES[9:]
-        for bad in (swapped, interleaved, fcw.PRIOR_THEMES[1:], later + ("value",), ()):
+            cres.theme_order(["filing_events", "value"], before)
+        swapped = ("profitability_quality", "value") + later[2:]
+        interleaved = before[:9] + ("filing_events",) + before[9:]
+        for bad in (swapped, interleaved, later[1:], later + ("value",), ()):
             with self.subTest(bad=bad), self.assertRaises(cres.ResidError):
                 cres.registered_order(bad)
 
@@ -670,15 +674,15 @@ class FitterEndToEnd(unittest.TestCase):
         """Ruling PM4-11 (finding R6B-O-2): the fitter passes its PRIOR_THEMES, so a theme registered later (E7's
         filing_events, in the registry and in V7_APPENDED_THEMES: finding R6C-4) is placed last once it is registered,
         and a weighted member of it is refused before."""
-        later = fcw.PRIOR_THEMES + ("filing_events",)
+        before, later = cres.FROZEN_PREFIX, fcw.PRIOR_THEMES          # filing_events registered (Ruling PM7-15 (a))
+        self.assertEqual(later[-3:], ("filing_events", "price_volume", "merger_arbitrage"))   # PM7-39, PM8-14
         doc = json.loads(json.dumps(self.std))
         weighted = [i for i, w in doc["weights"].items() if w > 0]
         doc["theme_standardise"]["themes"][weighted[0]] = "filing_events"
         self.assertEqual(cres.attach(json.loads(json.dumps(doc)), later)[cres.BLOCK]["order"][-1], "filing_events")
         with self.assertRaises(cres.ResidError):
-            cres.attach(doc, fcw.PRIOR_THEMES)
-        with unittest.mock.patch.object(fcw, "PRIOR_THEMES", later), \
-                unittest.mock.patch.object(fcw, "REGISTRY_PATH", self.registry("later.json", later)), \
+            cres.attach(doc, before)
+        with unittest.mock.patch.object(fcw, "REGISTRY_PATH", self.registry("later.json", later)), \
                 unittest.mock.patch.object(cr, "REGISTRY_PATH", self.root / "no-registry.json"):
             code, _ = fcw.fit(self.fx.args(self.root / "later-resid", theme_resid=cres.RULE_ID, **STD_ARGS))
         self.assertEqual(code, fcw.EXIT_OK)
@@ -691,12 +695,12 @@ class FitterEndToEnd(unittest.TestCase):
         registered order, before anything is computed (here before the parent flags are even read): a theme registered
         without extending V7_APPENDED_THEMES (E7's filing_events), PRIOR_THEMES extended without the registry, or the
         same themes in another order are refused naming both tuples, with no output. Flag absent: not checked."""
-        later = fcw.PRIOR_THEMES + ("filing_events",)
-        reordered = fcw.PRIOR_THEMES[1:] + fcw.PRIOR_THEMES[:1]
+        before, later = cres.FROZEN_PREFIX, fcw.PRIOR_THEMES          # filing_events registered (Ruling PM7-15 (a))
+        reordered = later[1:] + later[:1]
         bogus_parent = {"theme_resid_parent": str(self.root / "no-parent.json"), "theme_resid_parent_sha256": "0" * 64}
-        for name, registered, constant in (("registered-only", later, fcw.PRIOR_THEMES),
-                                           ("constant-only", fcw.PRIOR_THEMES, later),
-                                           ("reordered", reordered, fcw.PRIOR_THEMES)):
+        for name, registered, constant in (("registered-only", later, before),
+                                           ("constant-only", before, later),
+                                           ("reordered", reordered, later)):
             with self.subTest(name), unittest.mock.patch.object(fcw, "PRIOR_THEMES", constant), \
                     unittest.mock.patch.object(fcw, "REGISTRY_PATH", self.registry(f"{name}.json", registered)), \
                     unittest.mock.patch.object(cr, "REGISTRY_PATH", self.root / "no-registry.json"):

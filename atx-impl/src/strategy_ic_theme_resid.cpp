@@ -10,7 +10,7 @@
 #include <vector>
 #include "atx/engine/combine/group_rerank.hpp"
 #include "atx/engine/combine/group_residualise.hpp"
-#include "strategy_ic_detail.hpp"
+#include "strategy_ic_rules.hpp"
 
 namespace atx::impl::strategy {
 namespace {
@@ -133,11 +133,14 @@ namespace atx::impl::strategy::ic_detail {
 // `order` naming each of that block's weighted themes exactly once (the registered theme order the
 // fitter wrote). Every weighted candidate's theme index becomes its theme's position in `order`, so
 // the composition residualises the theme at position t on the themes before it. Ruling PM4-11
-// (finding R6B-O-4): every weighted theme must be in theme_resid_order and `order` must be that
-// list restricted to the weighted themes; the order is recorded (pinned.residualise_order: the
-// recipe and the combined manifest). Absent: nothing changes. Runs after composition_standardise,
-// before any role payload.
-co::Status composition_residualise(const Json& j,const Library& lib,PinnedWeights& pinned) {
+// (finding R6B-O-4): every weighted theme must be registered and `order` must be the registered
+// order restricted to the weighted themes; the order is recorded (pinned.residualise_order: the
+// recipe and the combined manifest). The registered order is the theme table's (P9 lane D1,
+// strategy_ic_rules.hpp: the alpha registry's themes, or the built-in table, the same thirteen
+// themes in the order the rule was registered on). Absent: nothing changes. Runs after
+// composition_standardise, before any role payload.
+co::Status composition_residualise(const Json& j,const RuleInputs& in,PinnedWeights& pinned) {
+  const auto& lib=in.lib;
   if (!j.contains("theme_residualise")) return co::Ok();
   const auto& block=j.at("theme_residualise");
   if (!block.is_object() || !block.contains("rule") || block.at("rule")!=theme_residualise_rule ||
@@ -153,15 +156,12 @@ co::Status composition_residualise(const Json& j,const Library& lib,PinnedWeight
   std::vector<std::string> names(pinned.std_theme_count);
   for (usize k=0;k<lib.candidates.size();++k)
     if (pinned.values[k]>0) names[pinned.std_themes[k]]=listed.at(lib.candidates[k].id).get<std::string>();
-  const auto registered_theme=[](std::string_view theme) {
-    return std::find(theme_resid_order.begin(),theme_resid_order.end(),theme)!=theme_resid_order.end();
-  };
   for (const auto& theme:names)
-    if (!registered_theme(theme))
+    if (!registered_theme(in.themes,theme))
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: theme_residualise: weighted theme "+theme+
           " is outside the registered theme order of theme-resid-v1 (Ruling PM4-11)");
-  std::vector<std::string> registered; // theme_resid_order restricted to the weighted themes
-  for (const std::string_view theme:theme_resid_order) {
+  std::vector<std::string> registered; // the registered order restricted to the weighted themes
+  for (const std::string_view theme:in.themes.names) {
     const auto weighted=[theme](const std::string& name) { return std::string_view(name)==theme; };
     if (std::any_of(names.begin(),names.end(),weighted)) registered.emplace_back(theme);
   }

@@ -1,0 +1,38 @@
+{
+  "schema": "atx.research-wave/v1",
+  "wave": "y-2",
+  "description": "Cell Y-2 theme-tsmom-v1 (v8y-prereg sections 5, 6, 14; PM8-10 (c), (e); YP-7): rule wave, template scripts/specs/v8/y-theme-tsmom.json @ 43745dd7 (blob 9d3548b6), registered constants lookback 252, lag 3, step 21 inside fit --theme-tsmom theme-tsmom-v1 (the template's flag), on the parent's fit argv, u the parent's; parent = Y-S cell lib-v8ysb-gm.json (library v8ysb, L 1.1828; Y-3 not accepted, wave-result 619809ea next_parent); fields v15 lo3; acceptance PM7-34 (dSR > 0 AND mechanics); PM6-6 gross matching; dSR SE printed with its 2021-2023 window (PM8-10 (c)); CM-2: the sleeves use the parent's full-TRAIN weights and the rule is a frozen mask out of sample, the registration stands (PM8-12 (e)); budget construction N 58 + 1 <= 62 (N_c(X-F0) + 6), 0 admission trials.",
+  "parent": {
+    "spec": "scripts/specs/v8/lib-v8ysb-gm.json",
+    "library": "v8ysb"
+  },
+  "fields": {
+    "dir": "build-equity/train-2020-2023-lo3-fields-v15",
+    "manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09"
+  },
+  "rule_cell": {
+    "template": "scripts/specs/v8/y-theme-tsmom.json",
+    "template_sha256": "9d3548b670547d138b3fdaeec0f170a2861b2a60d777c94788446e6c9b4cd83f"
+  },
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": [
+      "capacity-4x-higher",
+      "turnover-per-gross-not-higher",
+      "cost-bps-lower"
+    ]
+  },
+  "gross_match": "pm6-6",
+  "budget": {
+    "id": "v8y-construction-n58-plus-1",
+    "construction_cap": 62
+  },
+  "ledger": "build-equity/trials.jsonl",
+  "expect": {
+    "n_before": 58
+  },
+  "out_dir": "build-equity/waves/y-2",
+  "record": {
+    "copy_to": ".superpowers/sdd/platform-v8-20260929/waves"
+  }
+}

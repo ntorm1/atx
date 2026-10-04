@@ -1,0 +1,36 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-r9a-theta.03",
+  "description": "Cell R-9a (plan section 7 'Task R-9 (optional)', capacity frontier; N 49; Rulings E-37, E-38, PM7-21): report only. The parent's NAV argv (rule aim-partial-v5, L the parent's, not gross matched) with theta = --trade-fraction .03 (the parent's .05); u, fit, card, w and monitor are the parent's. Frontier point: the capacity curve's x4 row (E-29); the $1bn book is reported beside it; the deployed book does not change. spo-v3 is not involved (E-37). \"verdict\": false: the cell takes its construction ledger line (summ --ledger) and writes no verdict; nothing is accepted or rejected. R-9c (theta .05) is the parent byte for byte and is read from the parent (adds 0).",
+  "parent": "lib-v80.json",
+  "nominal_parent": "base-b0c.json",
+  "change": {
+    "set": {
+      "nav.output": "build-equity/mega-nav-v8-r9a-t.03-d.1-fixed-obdelta-x.05-loc-L1.1474-v80",
+      "verdict": false
+    },
+    "flags": {
+      "nav": {
+        "--trade-fraction": ".03"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80/summary.json",
+      "sha256": "083a56da0e4381b9c7ae9db10b19783b5185a0f6043f240aa3c721150ad42c85"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8-r1-std-v80/admission.json",
+      "sha256": "f613fe920de92eb9a5fbb8c1524f5891808672f1dda44ee69c8a63af2dc9e90c"
+    },
+    "reference_combined": {
+      "path": "build-equity/mega-v8-r1w-train-std-v80-1/train_combined.json",
+      "sha256": "bbbf6f2bfe6f857e914f4354bc943ea55976024c8b28df385992f09038f7cd98"
+    },
+    "reference_weights": {
+      "path": "build-equity/mega-weights-v8-r1-std-v80/composition_weights.json",
+      "sha256": "032133450dedc5f5747d65f60ca1e4abeeca00eff0e9280f749c061986f3b5ce"
+    }
+  }
+}

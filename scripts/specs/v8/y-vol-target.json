@@ -1,0 +1,20 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8y-vol-target",
+  "description": "Y cell (lane YCOMB, task-YCOMB-report.md rule Y-1; runs only under the PM's Y registration, after X-10, parent = X-F0, the last accepted unlevered book, the same parent as X-10): book-level volatility-managed leverage vol-target-v1, the risk-managed form of the leverage cell X-10. Every constant registered blind before any read. Hypothesis (Moreira and Muir 2017; Harvey et al. 2018; real-time constant as Cederburg et al. 2020): forecast risk varies more than the book's expected return, so cutting the leverage when the ex-ante volatility is above its own running mean raises the Sharpe ratio of the levered book at the same cap. Rule: each book's aim leverage is L_t = clip(L x sigma_ref_t / sigma_hat_t, 1, L) with L = 2.0 (X-10's fixed leverage, the executable's maximum, the cap); sigma_hat_t = risk-target-v1's forecast (sqrt(252 x book_variance) of the book's current weights at gross 1 over the whole book, on row d of the pinned atx-risk-v1 store of the role, the names with a risk row); sigma_ref_t = the mean of the book's estimates so far, sigma_hat_t included (point in time: the first estimate gives L exactly); estimated at the book's first decision with a forecast and a book, then every 21 sessions, held between, L before the first; the floor 1 is the executable's minimum. Registered constants: cap = X-10's L 2.0, floor 1, cadence 21, annualisation 252; no flag moves them. The change: nav --vol-target vol-target-v1 --risk-model <the atx-risk-v1 store of the role> --risk-model-sha256 <pin> (root fills both: the R-8 store build-equity/v8-risk-lo3-v10, manifest 862515d9..., if its role pin matches the parent's role) and nav.leverage 2.0 (X-10's). NAV-only: u, fit, card and w are the parent's. NOT gross matched (PM6-6 does not apply: the rule sets the leverage; Ruling PM7-20's reading B for R-8): mechanics gross limit restated from the registered clip only, all-rows S2 gross inside [1.0, 2.0] x G_parent / L_parent widened by .005, written in the cell's plan before the run. Before any return: identity (flag absent byte-identical: atx-impl-strategy-target-tests VolTarget.* RiskTarget.* BookVolTarget.*; the parent's NAV argv re-run reproduces the parent's files), then vol_target.csv mechanics (estimates about scored sessions / 21, decisions before the first estimate, clip counts, priced_share near 1). Acceptance (registered): paired S2 net dSR > 0 against X-10 (the fixed-L book at the same cap: the hypothesis) AND X-10's leverage-cell rule against X-F0 (net annual return higher AND S2 net Sharpe not lower than X-F0's by more than .100, PM7-34 (3)) AND mechanics. Printed, deciding nothing: dSR against X-F0, net annual return, realised vol and max drawdown of X-F0, X-10 and this cell side by side, mean L_t, 4x net Sharpe, cost per traded dollar. If accepted it replaces X-10 as the levered book X-F offered to the owner (PM7-3: the owner's risk decision).",
+  "parent": null,
+  "nominal_parent": "base-b0c.json",
+  "change": {
+    "set": {
+      "nav.output": "build-equity/mega-nav-v8y-vol-target-L2.0",
+      "nav.leverage": "2.0"
+    },
+    "flags": {
+      "nav": {
+        "--vol-target": "vol-target-v1",
+        "--risk-model": "<fill:nav.flags --risk-model>",
+        "--risk-model-sha256": "<fill:nav.flags --risk-model-sha256>"
+      }
+    }
+  }
+}

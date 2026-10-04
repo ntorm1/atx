@@ -4253,3 +4253,3849 @@ recipe records none; trial-ledger block in the interim config; scorecard filler 
   digest): `v8.py` new block `v8_headline`; `pitch.py` `combined_label` / `universe_kept_label` config keys (v7 defaults
   keep the v7 bytes); `report.py` `blk_alpha_t` omits the Raw dir column when no candidate records a raw direction.
 
+## cells batch 2e: tests (PM7-4), R-5, risk model on the 4-year role, R-6 (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `3c6ae225` (clean; code head `1cc4c6c9`;
+executables v8-12 Debug: IC `ab7e2cbd`, NAV / targets `5497c89d`, risk `8967952c`; nothing built; PM5-21 holds).
+Read: integrator-rules, status 6 sections 1, 2, 4, progress "PM session 6" to the end (PM6-1..12, PM7-1..5),
+task-CELLS-brief, this log's batches 2c and 2d. Same scratch readers as batches 2c / 2d (`mech.py`: mechanics keys
+only; `cellstats.py`: return side, after mechanics passed; `bundle.sh`: the PM5-23 bundle). Parent = R-2
+(`scripts/specs/v8/lib-v80.json`, L 1.1474, all-rows gross .9859903463). N 44 at the start. Disk 125,601,484 KiB free.
+
+### 1. Tests (Ruling PM7-4; tests only)
+
+`scripts/tests/test_research_spec.py` (+3 lines): `NULL_PINS["r3-aim-gain-gm.json"] = CHILD_NULLS` (the authored-set
+equality at `:290`), `EXPECTED_CHANGES["r3-aim-gain-gm.json"] = EXPECTED_CHANGES["r3-aim-gain.json"] | {"nav.leverage"}`
+and the composition map entry `"r3-aim-gain-gm.json": ("ew-theme-v1", "ew-theme-aim-v2")` (as `r1-comp-v8-gm.json`'s
+pins: the registered change of `r3-aim-gain.json` on its nominal parent base-b0c, plus `nav.leverage`). The third line
+was needed: with the first two alone `test_templates_differ_from_the_parent_only_by_the_registered_change[r3-aim-gain-gm.json]`
+failed on the fit flags (the change's composition map was unknown for the new name). Python
+`"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider -rs`, `ATX_EQUITY_BIN` /
+`ATX_EQUITY_TARGETS_EXE` absolute (v8-12), vcpkg bins on PATH:
+
+| suite | before | after |
+|---|---|---|
+| `scripts/tests` (whole) | 17 failed, 174 passed, 3 skipped (161.7 s) | **192 passed, 3 skipped, 0 failed** (111.9 s) |
+| `atx-impl/strategies` (whole) | - | **163 passed** (21.6 s) |
+
+The 3 skips are the RESEARCH_CYCLE_LIVE_ROOT tests (as every batch).
+
+Commit `81c80c39`.
+
+### Cell R-5 (r5-adv-hold on lib-v80; nav --adv-hold-q .1; L 1.1474)
+
+**N before: 44; this cell makes 45 (<= 51).** Brief row (task-CELLS-brief.md:58): "net Sharpe at 4x higher AND net at
+1x not lower by more than one paired SE AND S3 not lower (`--adv-hold-q .10`, capacity curve)" (E-15, PM4-5). Parent =
+the last accepted cell = R-2 (`lib-v80.json`); R-3 and R-4 were not accepted.
+
+**Identity cell:** not run here (as R-4): the template's "identity cell first: --adv-hold-q 1e9" was integration 5
+part C identity 3 (PASS, R-5's declared differences only); PM4-3 retired identities 2 and 3. No executable changed since
+(v8-12, NAV `5497c89d`).
+
+**Spec.** `scripts/specs/v8/r5-adv-hold.json` (template): `"parent": null -> "lib-v80.json"` only; `lock` (dry) 0,
+`lock --write` 0 (reference_cell R-2 `083a56da`, reference_admission `f613fe92`, reference_combined `bbbf6f2b`,
+reference_weights `03213345`), dry lock after 0. File `304e7f1aaf835e14038f0eb20609c65ea0f509cfbb25f6cb001b4fd0e4811dc2`,
+**spec digest (template chain) `4336ab810fa19a61951b5e8cf60097ab6dd185da1fb0596614bd1527dc4ae5d3`**; commit `8ed541a6`.
+`test_research_spec.py` with the locked file: 51 passed (whole-file meta-test deselected). Plan exit 0: every pin
+`[locked, verified]` (library v80 `68ce8539`, recipe `fb09b740`, role lo3 `e1c67101`, label_role `95e16cfe`, fields v10
+`a4a060ae` 70 rows); fields, u, fit, card, marginal, w, monitor = R-2's (done); nav pending: R-2's argv plus
+`--adv-hold-q .1` (`--capacity-curve` already the parent's) at `--aim-leverage 1.1474`; summ `--dsr-n 45`. The nav
+output name keeps the template's "L1.247" text (cosmetic; the run is at 1.1474). Gate p1-v80 re-read: 0 status changes,
+3 of 7, PASS; "0 admission trial line(s) appended, 7 already ledgered".
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| nav (L 1.1474; step (1)) | 180 / 1,536 | 59.4 | 586 | 0 | `babe4001a3485f237bbfe29a2d1eed73f0c7a75e508302f7610ab3eb22b926d4` | `build-equity/mega-nav-v8-r5-advq.1-t.05-d.1-fixed-obdelta-x.05-loc-L1.247`; recipe rule `aim-partial-v5+neutral-price-risk-v1+adv-hold-0.1`, `adv_hold_q` .1 |
+
+Receipt: completed, `clean in the code pathspec`, source `8ed541a6`, NAV exe `5497c89d` (v8-12).
+
+**Gross match (step 1 at the parent's L 1.1474; mechanics only):** G **0.9839319270** vs G_parent .9859903463:
+|diff| **.00206** <= .005 -> **the cell stands at L 1.1474** (no `-gm` spec, no correction; the step-(1) run is the
+cell; calibration runs 0).
+
+**Mechanics (S2, read before any return): PASS.** All-rows gross .9839 in [.90, 1.05] (post-ramp .9897); net +.0038
+(<= .02); tau mean .02380 <= .20, p95 .02819 <= .30 (1,004 sessions; summary flags true); max gross 1.116, max |net|
+.029; gross at score_begin .9370; by year .961 / 1.000 / .982 / .992; 1,006 CSV rows 2020-01-02..2023-12-29, 1,005
+return rows; accounting 6.7e-14 / 3.7e-16. **ADV cap active** (`construction.adv_hold`, identical in all 5 scenarios,
+desired-weight units): 1,004 decisions; clipped names mean 69.3, max 131, total 69,543; clipped mass mean .0164, max
+.0375; unplaced 0; residual breach (one pass, reported) in 864 decisions, 4,350 name-decisions, names max 18, mass mean
+5.9e-5, max .00052, excess max 9.3e-5.
+
+**Criterion reading, fixed before any return of the cell is read.** Registered text (plan R-5, task-R-5-brief,
+task-CELLS-brief:58): (a) S2 net Sharpe at 4x NAV (capacity curve, `capacity_curve.csv` row multiple 4, `net_sharpe`)
+strictly higher than R-2's; (b) S2 net Sharpe at 1x "not lower by more than one paired SE": dSR >= -SE, SE = the
+paired Memmel SE of the statistics of record (the pitch config labels it "within one Memmel SE of the parent's"; that
+label is the report tool's, not the registration; the registered words are one-sided); (c) S3 =
+`modeled-1bn-terminal-adverse-v1+swap-fin-v1` net Sharpe (summary, 1x) not lower than R-2's (>=). Acceptance (rule 5):
+dSR > 0 AND mechanics AND (a) AND (b) AND (c). R-5 at 4x reads its cap at the initial NAV (E-15 / PM4-5, disclosed).
+(Commit `6ca6ebfe`, before the summ phase.)
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| monitor | - | - | - | - | - | done (R-2's; not re-run) |
+| summ | 180 / 1,536 | 19.6 | 588 | 0 | `766660bfafdd36b9806070cdd878f3a29ef260a55f250e2c44df97c5565b07f7` | `cycle-v8-r5-adv-hold/summ.json` `2c1f042a`, `pbo.json` `9bc752ad`, `cycle_verdict.json` `ebb0ff6c` |
+| one-sided p (PM5-23) | 180 / 1,536 | 1.6 | 552 | 0 | `f09865af84b6cf12fdf82981e4deea729e0fa766998bcc8b71278bc106db3df8` | `v8-cells-r5-bundle.json` `5dcca351` (no `--ledger`) |
+
+Files: `summary.json` `39594c15`, S2 daily `94d59265`, `capacity_curve.csv` `ec25a1af`, `recipe.json` `364dab25`.
+
+**Statistics of record** (S2): net Sharpe **R-5 +1.2019** vs R-2 +1.2559. Paired (1,005 sessions, 4,999 valid
+resamples): **dSR -.0540**; rho .9990; **Memmel SE .0226** (t -2.39); CBB 95% [-.1036, -.0053]; LW SE .0246, 95%
+[-.1047, -.0034]; **bootstrap p one-sided .9768, two-sided .0396** (the bundle reproduces the cycle's dSR, SE, CI and
+two-sided p exactly). DSR (N 45): ledger DSR .9822 (V[SR] from 8 cells on research-window-v2); legacy (37) .7416;
+effective-N .7107; PSR vs 0 .9902; PBO .2769.
+
+**Criterion (registered; reading fixed above):**
+- (a) S2 net Sharpe at 4x NAV (capacity curve): **1.1268 vs R-2 1.1785: not higher -> FAIL.**
+- (b) dSR -.0540 vs -SE -.0226: **lower by more than one paired SE -> FAIL** (t -2.39).
+- (c) S3 (`modeled-1bn-terminal-adverse-v1+swap-fin-v1`) net Sharpe **.1692 vs R-2 .2163: lower -> FAIL.**
+
+**Verdict (rule 5): dSR -.054 <= 0 AND criterion FAIL (a, b, c) -> NOT ACCEPTED.** Ledger line trial `b4e31e283cd5d53b`
+(cell = the R-5 NAV dir, s2_net_sr 1.20193, origin prior, window research-window-v2, prev `a8d43fc9` = R-4's head);
+**N after 45** (ledger 53 lines: 45 construction + 7 admission + 1 protocol; file `3807cc00`; head `e57a2802`). Matches
+the brief. Not retried. **Parent stays R-2.**
+
+Returns (S2, annual): net 4.34% (CAGR 4.37%) vs R-2 4.54%; gross of cost 5.59% (R-2 5.81%); trade cost .72% (.74%),
+borrow .33%, long financing .20%; vol 3.61%; max drawdown 3.27%; gross Sharpe 1.549 (R-2 1.610). Every scenario's net
+Sharpe is lower than R-2's (linear-6bps 1.311 / 1.371; flat-300 .983 / 1.031; engine-tiers 1.130 / 1.185).
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0133 | -.380 | .0338 | .0262 | 14.32 |
+| 2021 | 252 | +.0956 | +2.533 | .0363 | .0226 | 11.31 |
+| 2022 | 251 | +.0781 | +1.809 | .0422 | .0234 | 11.88 |
+| 2023 | 250 | +.0175 | +.580 | .0309 | .0230 | 11.18 |
+
+Capacity (report only; R-2 beside): net Sharpe .5x 1.232 (1.289), 1x 1.202 (1.256), 2x 1.173 (1.223), **4x 1.127
+(1.178)**, 8x 1.079 (1.100); cost bps per traded dollar 10.43 / 12.17 / 14.44 / 16.79 / 18.67 (R-2 10.67 / 12.47 / 14.66
+/ 16.87 / 18.67); capped fill share .0009 / .0024 / .0118 / .0704 / .2008 (R-2 .0010 / .0034 / .0190 / .0802 / .2083).
+
+**Appendix A:** `TRAIN construction cells 45; admission trials this sprint 7 (plus 8 re-screens); window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.` Defects: none. Consequence: R-6 runs on R-2 (E-26: R-5 not accepted, so spo-v3's aim takes
+no `--adv-hold-q`; R-4 not accepted, no `--hold-band`).
+
+v9 note (from a result, not a spec): the cap lowers cost per traded dollar only 2.4% at 1x and .5% at 4x and capped
+fills 30% at 1x / 12% at 4x, while gross-of-cost Sharpe falls .06: the pro-rata redistribution moves 1.6% of desired
+gross from names held large against their ADV to the rest of their side, and that costs more signal than it saves in
+cost; at $1-4bn the cost model is not bound by holdings / ADV at Q .10.
+
+Commit `da70dacb` (R-5 verdict, log and ledger line).
+
+### 3a. Risk model atx-risk-v1.1 on the 4-year role (R-6 step 3; not a trial)
+
+Inputs: the parent R-2's role and fields (role lo3 `e1c67101`, fields v10 lo3 `a4a060ae`; the fields R-6's NAV reads).
+Caps: 180 s / 1,536 MiB (W0-c: not an IC phase; the v7 risk stores ran under the same caps). No `--book-weights` (a
+risk model, not a diagnostic); `--emit-exposures all` (the spo rules refuse a store without the exposure files). Run on
+the clean tree at `da70dacb` through the bounded runner (data runs only through it; the cycle has no risk phase):
+
+```
+run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/v8-risk-lo3-v10-run
+  --bind build-equity/bin/atx-equity-strategy-risk.exe --bind build-equity/train-2020-2023-lo3/manifest.json
+  --bind build-equity/train-2020-2023-lo3-fields-v10/manifest.json -- build-equity/bin/atx-equity-strategy-risk.exe risk
+  --role build-equity/train-2020-2023-lo3/manifest.json --role-sha256 e1c67101...395f4
+  --fields build-equity/train-2020-2023-lo3-fields-v10/manifest.json --fields-sha256 a4a060ae...70809
+  --output build-equity/v8-risk-lo3-v10 --emit-exposures all
+```
+
+| step | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| risk (exe v8-12 `8967952c`) | 180 / 1,536 | 31.2 | 612 | 0 | `5e88ccaee5eea6ff17cde45999217a5ffa73fff4dd60b6f4f4785b766d20a219` | `build-equity/v8-risk-lo3-v10/manifest.json` **`862515d92623be37fbd4b126c8f0350a20135e7977f1cbf66c6c33f1644ecd5a`** (the new pin) |
+
+Receipt: completed, `clean in the code pathspec`, source `da70dacb`. Manifest: schema `atx.risk-model/v1`, model
+**atx-risk-v1.1**, status complete, role pin `e1c67101` (the NAV's `--role-sha256`; the store refuses another role),
+fields `a4a060ae`, seal begin 2024-01-01, role last session 2023-12-29 (`1703808000000000000`); geometry 1,405 dates x
+5,922 instruments, 62 factors, 11 styles; first forecast 2019-09-03, 1,341 fitted / 1,090 forecast sessions, mean
+R^2 .247; `unavailable` []; invariant refusals 0 (no specific variance clamped; max daily D .361 < bound 1.0); 0
+style-dates dropped; forecast sessions with an unforecast exposed factor 0. Bias harness: factor ok (51 series, b mean
+1.002, dropped 0), random ok (64), book not asked. Files: factor_covariance `9d9c62a2`, specific_variance `a7792a53`,
+style_exposures `8ae6c185`, factor_structural `f63df1a4`, industry_slot `9b7cca17`, diagnostics `ca94f5c9` (1,405
+rows). Check: every model file is byte-identical to B0c's diagnostic store `b0c-risk` (fields v9 lo3; same role) --
+fields v10 adds 7 fields the risk descriptors do not read; only `bias.csv` / `bias_summary.json` differ (that store had
+`--book-weights`). Not a trial, no return exists in a risk model.
+
+### Cell R-6 (r6-spo-v3 on lib-v80; spo-v3, S_prior 20; L 1.1474)
+
+**N before: 45; this cell makes 46 (<= 51).** Brief row (task-CELLS-brief.md:59): "cost per traded dollar not higher
+AND tripwire clear AND mean `aim_correlation_traded_after` >= .9; the run voids itself on primary-book limits_unmet > 0"
+(E-14, E-14a, E-26, E-31, E-31a, E-37). Parent = R-2 (`lib-v80.json`); R-4 and R-5 were not accepted, so (E-26) the
+aim carries neither `--hold-band` nor `--adv-hold-q`.
+
+**Identities:** not run here (as R-4 / R-5): flag off = integration 5 part C identity 1, spo-v2 side files and pin =
+identity 7 (PM3-7), both PASS and re-run on the v8-12 executables by PM4-3 (1, 4, 7, 8); no executable changed since.
+
+**Spec.** `scripts/specs/v8/r6-spo-v3.json` (template): `"parent": null -> "lib-v80.json"`; the two fills
+`--risk-model build-equity/v8-risk-lo3-v10`, `--risk-model-sha256 862515d9...4ecd5a` (step 3a); `lock` (dry) 0, `lock
+--write` 0 (reference_cell R-2 `083a56da`, reference_admission `f613fe92`, reference_combined `bbbf6f2b`,
+reference_weights `03213345`), dry after 0. File `87518e08a9124fd5efa48fa750cbd689e8ea383d62037e634f3cb06315f87f19`,
+**spec digest (template chain) `689c826d521e04384df0c9a7acfab955b4a733c8fcbb24ffdec8ca7248580e7d`**.
+`test_research_spec.py` with the filled, locked file: 51 passed (meta-test deselected). Plan exit 0: 8 pins `[locked,
+verified]`; nav pending: R-2's argv with `--rule spo-v3` and `--spo-alpha implied-aim --risk-model
+build-equity/v8-risk-lo3-v10 --risk-model-sha256 862515d9... --spo-books primary` at `--aim-leverage 1.1474`
+(`--capacity-curve`, `--warm-start-sessions 60`, `--label-role` the parent's); no `--spo-iters` / `--spo-tol` (refused,
+E-31a); summ `--dsr-n 46`. The nav output name keeps the template's "L1.247" text (cosmetic; the run is at 1.1474).
+
+**Pre-return reads, fixed before the run (E-31, E-31a, E-14a; template description):** (1) exit code: 3 = void (no NAV,
+no return file) -> E-31a: a blind fix and a re-run, no new trial; a fix needing an executable change is a PM5-21 stop;
+(2) `v7_extras.json` `spo_v3.tripwire.status` == "clear", `limits_unmet_primary.count` == 0; (3) `summary.json`
+`v7.spo_v3_books.<primary>`: `unconverged`, `limits_unmet`, `mean_iterations`, decisions; the E-14 / E-14a value
+`aim_correlation_traded_after.mean` (criterion, >= .9); (4) mechanics keys (mech.py) and gross matching (PM6-6). Never
+`stdout.log` (it prints net Sharpe per book). Criterion of record (task-CELLS-brief:59; pitch config): (a)
+`cost_bps_traded` (summ, S2 cost per traded dollar) <= R-2's 12.466; (b) tripwire status "clear"; (c) primary
+`limits_unmet` 0 (E-31a: else void); (d) `aim_correlation_traded_after.mean` >= .9.
+Commit `e770fc36` (spec, this text).
+
+**Calibration step (1): r6-spo-v3.json's NAV at the parent L 1.1474** (`run --stop-after nav`; no free-memory refusal):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| nav (L 1.1474, calibration) | 180 / 1,536 | 110.9 | 593 | 0 | `796a1133be00b00f339583f6868f3e29e3a6753700424aaa89a6170662535bea` | `build-equity/mega-nav-v8-r6-spo-v3-L1.247` (mechanics only) |
+
+Receipt: completed, `clean in the code pathspec`, source `e770fc36`, NAV exe `5497c89d`. Exit 0: **not void** (E-31a).
+Files: the two primary-scenario books only (S1 linear-6bps, S2; `--spo-books primary`), `spo_diagnostics.csv`,
+`v7_extras.json`, capacity. Read (by key name, scratch `spo_mech.py`; no return, cost or Sharpe printed):
+- **Tripwire: status `clear`**; `limits_unmet_primary.count` **0** (first_session none); capped_specific_decisions 0;
+  gross_bound_breaches 0 (bound 2 L = 2.2948); max planned gross 1.0926.
+- **Convergence (primary S2 book): 1,004 decisions, unconverged 0, limits_unmet 0, mean iterations 81.8**; max primal
+  residual 3.7e-11, max dual 1.0e-9 (tol 1e-9; iters 2,000; both registered, not on the argv). S1 book: 1,004 / 0 / 0 /
+  81.6.
+- Calibration: gamma 835.51 = 20 / sigma_aim .023937 (aim gross 1.0879, 1,888 names, first session 2020-01-02).
+- E-14 / E-14a value (S2 book): aim_correlation_traded_after mean **.9592** (min .912, n 1,003) >= .9; planned
+  aim_correlation .9660; tracking error mean .0051; trade-limit share mean .036.
+- Mechanics (mech.py): **G 1.0288508598** vs G_parent .9859903463: |diff| **.0429 > .005** -> correction. (Net +.0006,
+  tau mean .0627 / p95 .0963, max gross 1.120, max |net| .022, score_begin .940, accounting 6.2e-14 / 3.7e-16: inside
+  the limits.)
+- **L' = 1.1474 x .9859903463 / 1.0288508598 = 1.09960 -> 1.0996** (>= 1, inside the exe's [1, 2]).
+
+**Matched spec** `scripts/specs/v8/r6-spo-v3-gm.json` (new template: r6-spo-v3.json's change with the same filled
+store + `nav.leverage` "1.0996" + `nav.output` `build-equity/mega-nav-v8-r6-spo-v3-L1.0996`; parent lib-v80.json;
+`lock` / `lock --write` / dry lock 0 / 0 / 0, the same four derived pins). File
+`2a669f35bd6a2ece959dd96ac38001818fcd927ee16dbf5db3f26c23e9451e97`, **spec digest (template chain)
+`cd49cb4768472eeefd3c24c0dea8e8801c4509b19c039b4b7ad00ab9ecd87979`**. Plan exit 0: 8 pins `[locked, verified]`; the nav
+argv equals the calibration's except `--aim-leverage 1.0996` and `--output`; summ `--dsr-n 46`. Tests only, so the
+suite knows the hand-written spec (as R-1-gm / R-3-gm): `test_research_spec.py` `NULL_PINS`, `FILLS` (the store),
+`EXPECTED_CHANGES` (r6's | nav.leverage), the nav delta and the spo-rule name check take `r6-spo-v3-gm.json`;
+`scripts/tests` **194 passed, 3 skipped, 0 failed** (109.0 s). The calibration run is not a trial and is not ledgered;
+its outputs stay unread beyond the keys above. Commit `3f1f63dc`.
+
+**The cell: r6-spo-v3-gm.json's NAV at L 1.0996** (`run --stop-after nav`):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| nav (L 1.0996, the cell) | 180 / 1,536 | 124.8 | 593 | 0 | `4b07df9ae8f97f26e9ff6d4ce585a60c34f004a464f1336c3d305da62bcc3535` | `build-equity/mega-nav-v8-r6-spo-v3-L1.0996` |
+
+Receipt: completed, `clean in the code pathspec`, source `3f1f63dc`, NAV exe `5497c89d`. Exit 0: **not void**. Read
+before any return (same keys):
+- **Tripwire: status `clear`; `limits_unmet_primary.count` 0**; capped_specific 0; gross_bound_breaches 0 (bound
+  2.1992); max planned gross 1.0461.
+- **Convergence (S2 book): 1,004 decisions, unconverged 0, limits_unmet 0, mean iterations 81.8**; max primal 3.7e-11,
+  dual 1.0e-9. S1: 1,004 / 0 / 0 / 81.6. gamma 871.83 = 20 / sigma_aim .022940 (aim gross 1.0425, 1,888 names).
+- **E-14 / E-14a (S2): aim_correlation_traded_after mean .9601** (min .914, n 1,003) >= .9; planned .9669; TE mean
+  .0048; trade-limit share .034.
+- **Gross match: G 0.9862950362 vs G_parent .9859903463: |diff| .00030 <= .005** (one correction).
+- **Mechanics (S2): PASS.** All-rows gross .9863 in [.90, 1.05] (post-ramp .9914); net +.0006; tau mean .06304 <= .20,
+  p95 .09721 <= .30 (1,004 sessions; summary flags true); max gross 1.074, max |net| .021; score_begin .901; by year
+  .980 / .993 / .998 / .974; 1,006 CSV rows 2020-01-02..2023-12-29, 1,005 return rows; accounting 4.7e-14 / 3.5e-16.
+  (Executed turnover is 2.6 x R-2's .0239: not a criterion of this cell; reported.)
+Commit `2d39d532`, then the cycle resumed (monitor = R-2's, done):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| summ | 180 / 1,536 | 22.1 | 557 | 0 | `9e8d1f4d974a0035042b8c3ff6d3aefc19adb286f25dd943c305ac97098d3ee5` | `cycle-v8-r6-spo-v3-gm/summ.json` `8397ec3a`, `pbo.json` `71426cd0`, `cycle_verdict.json` `60dff79e` |
+| one-sided p (PM5-23) | 180 / 1,536 | 0.8 | 506 | 0 | `0513a7466b2abde0d1ed0bb6bd9f4c2c7462df71641ae83fdeeeae2e56ea3553` | `v8-cells-r6-bundle.json` `74929849` (no `--ledger`) |
+
+Files: `summary.json` `4c8770cf`, S2 daily `fce81ca2`, `capacity_curve.csv` `c4408d80`, `recipe.json` `07439591`,
+`v7_extras.json` `00e1f58f`, `spo_diagnostics.csv` `f85a8b78`.
+
+**Statistics of record** (S2): net Sharpe **R-6 +.7606** vs R-2 +1.2559. Paired (1,005 sessions, 4,999 valid
+resamples): **dSR -.4954**; rho .936; **Memmel SE .1798** (t -2.76); CBB 95% [-.896, -.116]; LW SE .1988, 95% [-.905,
+-.086]; **bootstrap p one-sided .9956, two-sided .0210** (the bundle reproduces the cycle exactly). DSR (N 46): ledger
+DSR .7964 (V[SR] from 9 cells on research-window-v2); legacy .4134; effective-N .3930; PSR vs 0 .9339; PBO .2637.
+
+**Criterion (registered; reading fixed above):**
+- (a) cost per traded dollar (`cost_bps_traded`, S2): **18.791 bps vs R-2 12.466: higher -> FAIL.**
+- (b) tripwire status **clear -> pass**. (c) primary `limits_unmet` **0 -> pass** (no void).
+- (d) `aim_correlation_traded_after.mean` **.9601 >= .9 -> pass.**
+
+**Verdict (rule 5): dSR -.495 <= 0 AND criterion (a) FAIL -> NOT ACCEPTED.** Ledger line trial `81fe22855e797aa1` (cell =
+the L1.0996 NAV dir, s2_net_sr .76057, prev `e57a2802` = R-5's head); **N after 46** (ledger 54 lines: 46 construction +
+7 admission + 1 protocol; file `0c1df8bd`; head `986d8b58`). Matches the brief. The L 1.1474 calibration run of
+r6-spo-v3.json stays unledgered (PM6-6). Not retried. **Parent stays R-2.**
+
+Returns (S2, annual): net 3.13% (CAGR 3.10%) vs R-2 4.54%; **gross of cost 6.63%** (R-2 5.81%); trade cost **2.96%**
+(R-2 .74%), borrow .33%, long financing .20%; vol 4.12%; max drawdown 5.12%; gross Sharpe 1.609 (R-2 1.610).
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0265 | -.526 | .0489 | .0787 | 22.27 |
+| 2021 | 252 | +.0826 | +2.083 | .0384 | .0596 | 18.74 |
+| 2022 | 251 | +.0593 | +1.349 | .0436 | .0597 | 17.28 |
+| 2023 | 250 | +.0116 | +.382 | .0318 | .0541 | 15.94 |
+
+Capacity (report only, E-37; R-2 beside): net Sharpe .5x .773 (1.289), 1x .761 (1.256), 2x .783 (1.223), **4x .807
+(1.178)**, 8x .814 (1.100); cost bps per traded dollar 17.09 / 18.79 / 20.00 / 20.70 / 21.00 (R-2 10.67 / 12.47 / 14.66
+/ 16.87 / 18.67); capped fill share .0088 / .0253 / .0591 / .1120 / .1815.
+
+**Appendix A:** `TRAIN construction cells 46; admission trials this sprint 7 (plus 8 re-screens); window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.` Defects: none (no void, no refusal). Consequences (E-38, E-45, E-37): R-6 rejected ->
+R-10, R-11 and R-12 are undefined; R-9 (three report-only theta cells) is defined (the parent R-2's rule
+aim-partial-v5 reads theta). Remaining: R-7 (47), R-8 (48), R-9a-c (49-51): N 51 exactly.
+
+v9 note (from a result, not a spec): at S_prior 20 the tracker holds the aim (corr .96) but trades 2.6 x the
+aim-partial book (tau .063 vs .024; holding period 15.7 sessions) and at 1.5 x the cost per dollar; gross-of-cost
+Sharpe is unchanged (1.609 / 1.610), so the whole loss is trading cost: gamma = 20 / sigma_aim (about 870) dominates the
+cost / H term; v7's aim-partial theta .05 is the cheaper tracker of the same aim.
+
+### Hidden-data record (batch 2e)
+
+- Inputs opened by the tools: role lo3, the lo3-dlret label role, fields v10 lo3 (the risk verb's descriptors and every
+  NAV), the R-2 combined signal and weights, the new risk store `v8-risk-lo3-v10` (seal begin 2024-01-01, role last
+  session 2023-12-29), the ledger and the ledgered NAV dirs of the summ grid, each cell's own outputs. No atx-db stage
+  was opened.
+- Consoles scanned for 2024-2029 date tokens (R-5 plan / runs; risk run; R-6 and R-6-gm plans / runs; risk stdout):
+  none except the runner's own start stamp 2026-10-02. Last NAV session in every run 2023-12-29
+  (`last_session_ns` 1703808000000000000). **Nothing dated 2024-01-01 or later was opened.** No `stdout.log` of a NAV
+  run was opened. **The R-6 calibration run (L 1.1474) was read for tripwire, convergence and mechanics keys only.**
+
+### Open items (batch 2e)
+
+- `scripts/tests` 194 passed / 3 skipped / 0 failed with `r6-spo-v3-gm.json` registered (tests only, commit
+  `3f1f63dc`); `atx-impl/strategies` 163 passed (step 1).
+- Two template outputs carry a cosmetic "L1.247" in their names though they ran at 1.1474 (`r5-adv-hold.json`, the R-6
+  calibration `r6-spo-v3.json`).
+- The new risk store `build-equity/v8-risk-lo3-v10` (manifest `862515d9`, 481 MiB) is the one R-8 fills (`r8.json`
+  `--risk-model`); keep it.
+- **Current accepted parent: R-2** (`scripts/specs/v8/lib-v80.json`), L 1.1474, G .9859903463; S2 net Sharpe +1.2559,
+  net annual return 4.54%, net Sharpe at 4x 1.178, tau_gmv_mean .02393. **N 46**; admission trials 7 of 15 (plus 8
+  re-screens); history reads 0. Disk 124,736,080 KiB free (119.0 GiB).
+
+## cells batch 2f: fields v11, R-7, R-8 (stopped before the run), R-9 (not started) (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `9364ffca` (clean; code head `1cc4c6c9`;
+executables v8-12 Debug: IC `ab7e2cbd`, NAV / targets `5497c89d`, risk `8967952c`; nothing built; PM5-21 holds: the
+only commits are registry rows, the v8.1 library files and spec, and this log). Read: integrator-rules, progress "PM
+session 6" to the end (PM6-1..12, PM7-1..15, batch 2e lines), task-CELLS-brief, task-R-7-brief, task-R-8-R-9-brief,
+task-R-8-report, rulings E-36, E-37, E-38, E-40, E-43, E-45, PM4-8, R7-a..c, this log's batches 2b-2e, plan R-7..R-9,
+section 12.1, library-v8-draft sections 3-8, task-A2-report root sequence. Same scratch readers as batches 2c-2e
+(`mech.py`: mechanics keys only; `cellstats.py` / `crit.py`: return side, after mechanics passed; `bundle.sh`: the PM5-23
+bundle; `k1plan.py`: the PM6-9 K1 route). Parent = R-2 (`scripts/specs/v8/lib-v80.json`, L 1.1474, all-rows gross
+.9859903463). N 46 at the start; admission trials 7 of 15. Disk 127,724,511,232 B free (118.9 GiB); RAM 5,497 MiB free.
+
+### 1. Fields v11 on lo3 (R-7 "fields v11 first"; Ruling R7-c)
+
+**Preconditions:** tree clean at `9364ffca`; `atx-engine/tools` unchanged since v10's source `0d553a34` (`git diff`
+empty); builder `b44cff42`, `research_fields_sec.py` `27034019`, `research_fields_holdings.py` `edfd1967`,
+`research_fields_price.py` `fc5e4b5a`, `research_fields_v8.py` `d90bb44d` (= v10's bindings); the builder knows the three
+F-3 fields (F-B `k8_item402_63`, F-C `gscore7_lowbm`, F-D `eps_consist_4y`).
+
+**Command** = v10's recorded argv (receipt `train-2020-2023-lo3-fields-v10-run`, verbatim; checked option by option by
+script) with F-3's v11 delta (task-F-3-report "Argv deltas"), nothing else: `--output
+build-equity/train-2020-2023-lo3-fields-v11`; `--fields <the 70 v10 names in v10's argv order>,k8_item402_63,gscore7_lowbm,eps_consist_4y`;
+`--reuse build-equity/train-2020-2023-lo3-fields-v10 --reuse-sha256 a4a060ae...70809 --reuse-hardlink`; builder
+`--max-rss-mib 2048 --max-seconds 580`. Runner `--seconds 600 --max-rss-mib 2560 --min-free-mib 512`, binds the five tool
+modules, the role manifest and the prior's manifest.
+
+| step | receipt dir | source | outcome / exit | s | peak MiB | argv digest | receipt.json SHA-256 | output manifest SHA-256 |
+|---|---|---|---|---|---|---|---|---|
+| fields v11 lo3 | `train-2020-2023-lo3-fields-v11-run` | `9364ffca` | completed / 0 | **24.5** | **382** | `8d15b5e9afea4e2449ce9ec10a0855918809c44b2f9aefd55dec1c2052504096` | `656a28796350e5fece4b880d64523ba25ce5f9a12024ee809ecf2b9c8e2eecaf` | **`5826c02a27f6ad292597f017e075116d1ac18a1713aa8dda1be323217e895f69`** |
+
+Receipt: `clean in the code pathspec`, dirty outside none, min system free 5,454 MiB. Manifest (metadata only): status
+complete, `seal.exclusive_end` 2024-01-01, role `e1c67101`, **73 rows**, 84 source paths, none 2024-named;
+`code_sha256_lf` `74df97f9` (= v10's); 618,633 B. `reuse`: from v10 lo3 `a4a060ae`, mode hardlink.
+
+**Counts: reused 70, computed 3 = the expected 70 / 3 (PM3-5a, F-3).** Computed: `k8_item402_63` (`27444f8b`,
+sec-k8-item402-63-v1), `gscore7_lowbm` (`47cd57b9`, mohanram-g7-lowbm3-sic2-v1), `eps_consist_4y` (`1c86e185`,
+alwathainani-eps-consistency-16q-v1), each "absent from the prior manifest". The 70 v10 payloads: entry sha256 = v10
+entry sha256 (70 / 70), hardlinks of the v10 files (same inode, 70 / 70); all 73 payloads re-hash to their pins. Order:
+registry order (the three new names at rows 56, 64, 65); the 70 v10 names keep their relative order (the spec list is
+the manifest's, as add-alpha writes it). Disk: the v11 dir is 4.6 GiB on disk (hardlinks; new payloads only are new
+bytes).
+
+### Cell R-7 (library v8.1 on R-2; fields v11; L 1.1414 after one correction): NOT ACCEPTED (dSR < 0), N 47
+
+**N before: 46; this cell makes 47 (<= 51).** Brief row (task-CELLS-brief.md:60): "turnover not higher (marginal IC gates
+nothing); fields v11 first" (E-36, R7-a..c). Parent = the last accepted cell = R-2 (`lib-v80.json`); R-3..R-6 were not
+accepted. The template `r7-lib-v81.json` stays unrun (parent null): its own `requires` says R-7 runs as add-alpha's
+`lib-v81.json` (one cell, one trial line), as R-2 ran as `lib-v80.json`.
+
+**Wave preparation (A2 root sequence "R-7: as R-2"; draft section 6 E6-E10):**
+1. Registry hand edits (commit **`7402d7b2`**): E6 field rows `ceq_iss_5y`, `coskew_60m` (origin fields_v10), E8
+   `k8_item402_63`, `gscore7_lowbm`, `eps_consist_4y` (fields_v11); clock = the v11 manifest row's clock verbatim, basis
+   = its definition + "(formula id X; producer atx-engine/tools/<module>, fields-vN)", the existing rows' form (only
+   name / clock / definition / formula_id / producer read). E7 theme `filing_events` (draft text). **Ruling R7-a:
+   `house_budget.max_roster` 56 -> 64** (57 members > 56; generate_library refuses a roster over the cap). Registry
+   `570f022a` -> `29780f04`. **FINDING (tests, not fixed):** `atx-impl/strategies/test_generate_library.py::
+   test_v71_library_byte_identical` now fails at its recipe assert: the committed v7.1 slim recipe records
+   `generation.house_budget` (max_roster 56), so a regeneration differs in that one value (byte 1330, "6" for "5"); the
+   v7.1 IC library still regenerates byte for byte (`787c802e`, the asserts before pass). Draft section 5 named this
+   consequence of the raise; no pinned file changed (the v7.1 / v8.0 recipes on disk are untouched). A test premise for
+   the PM (tests only).
+2. **K1 by the PM6-9 route** (`scratchpad/k1plan.py`: the exe's `--plan-only --max-memory-mib 2560` on the exact library
+   bytes add-alpha builds; add-alpha checks `plan.library_sha256`): 5 plans, each sha = the library sha; committed under
+   `r7-plans/` (SHA-256): comp_eq_iss_5y `47aecfb2...`, coskew_60m `660736be...`, gscore_lowbm `97b160c0...`,
+   nonreliance_402 `f601cf4b...`, earn_consistency `80c50ff3...` (full: `sha256sum r7-plans/*.json`).
+3. The 5 calls (draft section 7 v8.1 strings verbatim, checked by script; draft order; `--parent v80 --name v81
+   --parent-spec scripts/specs/v8/lib-v80.json --fields build-equity/train-2020-2023-lo3-fields-v11`): every call exit 0.
+4. **Counts (equal the draft):** roster 57 (52 + 5; the 52 v8.0 candidate rows byte-identical in the v8.1 library);
+   recipe trials: admission_trials 5, new_candidates 5, unchanged 52; families 11 (`filing_events` new); no new budget
+   exception. **K1 rows of the 5 = draft section 4** (DSL sha16 / bars / slots / extra fields): comp_eq_iss_5y `269ddd24`
+   20/3/2, coskew_60m `de6da255` 20/3/1, gscore_lowbm `c41ec275` 20/3/2, nonreliance_402 `63a5d143` 0/3/1,
+   earn_consistency `943f4187` 20/3/1 (exe node counts 8 / 7 / 5 / 5 / 4 against the mirror's 7 / 6 / 5 / 4 / -: no
+   node budget exists; reported). The 52 parent rows equal R-2's last K1 plan (52 / 52). Plan: 57 candidates, max slots
+   8, lookback 272.
+5. Registration appended to `v8-prereg.md` ("Library v8.1 (cell R-7)": draft sha `326ad240` unchanged since R-2,
+   R7-a..c, E-36; pins: library **`c6bf150e...1c56`**, slim recipe `d72589a1...bea3`, `libraries/v81.json` `8bb0aa07`,
+   stub `f2d53652`, registry `3697342a`, fields v11 `5826c02a`); commit **`8d2eac5e`** (registry, library, recipe,
+   definition, stub, `scripts/specs/v8/lib-v81.json`, prereg, plans).
+
+**Spec** `scripts/specs/v8/lib-v81.json` (generated and locked by add-alpha; 12 pins; file / spec digest
+`281c7b70516d3c395f1bfd0a82b482b8fe7af330c6913f6199dcf9c6afa65c46`): parent R-2 (reference_cell `083a56da`,
+reference_admission `f613fe92`, reference_combined `bbbf6f2b`, reference_weights `03213345`, reference_daily `7cfe21c4`,
+reference_orientations `312bbf4e`, reference_daily_ic `10f22711`); baseline library v80 `68ce8539`, baseline fields v10
+`a4a060ae`; fields as built v11 `5826c02a` (73 rows); fit `ew-theme-std-v1` (inherited); gate p1-v81 (the 5, require
+any, sign_agrees); **marginal on the full pool (pool reference_combined, themes reference_weights: PM6-8 held for R-2
+only; R-7 only adds members)**; ref on v11 fields; nav.leverage 1.1474 (the parent's L = step (1)). `plan` exit 0, every
+pin `[locked, verified]`.
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output / result |
+|---|---|---|---|---|---|---|
+| fields | - | - | - | - | - | done (as built v11, 73 rows == the spec list) |
+| u | 300 / 2,560 | 9.9 | 927 | 0 | `f92d04eb3697de4cd861bc19849569934ca9dc84bd4638bee99d954b8fa34513` | `mega-v8-b0b-train-u-v81-1` |
+| u-compare | internal | - | - | PASS | - | parent-orientations IDENTICAL (52 objects; b adds 5); parent-train-daily-ic IDENTICAL (152,152 rows of 52 keys byte for byte; b adds 14,630 rows of 5 keys) |
+| fit | 180 / 1,536 | 2.9 | 422 | 0 | `06928ca4eb802b5efce69b5233b8ca8110c08df82f574f826a77346316f029cc` | weights `3249f989` (ew-theme-std-v1; 46 of 57 weighted; nonreliance_402 at the cap 1/(2T) = .04545, T 11) |
+| card | 300 / 2,560 | 20.5 | 1,311 | 0 | `3d838f9935a7013cbeb17a7f93e7b782459e07baee23eb8281435aab39a0fd00` | `mega-cards-v8-r1-std-v81` |
+| marginal (full pool, K6, report only) | 180 / 1,536 | 170.3 | 252 | 0 | `ac47ec275828c0dc530dec540ec66d31e03694a396a94ea9e2aed2ee61811670` | `...-u-v81-marginal-pool/marginal_ic.json` (170 s of the 180 s cap: see open items) |
+| gate p1-v81 | internal | - | - | PASS | - | 5 admission lines ledgered (chained, before the read-out) |
+| ref (identity, L 1.1474) | 180 / 1,536 | 50.8 | 586 | 0 | `57b9b72626972e4fd78b877f35b689a295d1b7750a731ec8cc0fa5d9fa053b64` | **ref-s2-daily IDENTICAL bit for bit** to R-2's S2 daily (`7cfe21c4`, 940,625 B): fields v11 reproduces the parent |
+| w | 300 / 3,072 | 38.8 | 1,372 | 0 | `39ca1ff5df2efcd20e9138baacbcc72c70ce9efe95af0ee2ac8936c160f25171` | `mega-v8-r1w-train-std-v81-1` |
+| nav step (1) (L 1.1474, calibration) | 180 / 1,536 | 45.4 | 586 | 0 | `fd87afecb4715978acea590132755788c86ec7c6d65d029da058fb72bb26574a` | mechanics only |
+
+Sources: screen `8d2eac5e` (`run --screen`), then `run --stop-after nav` at `8d2eac5e`; exes IC `ab7e2cbd`, NAV
+`5497c89d`; every receipt `clean in the code pathspec`.
+
+**Admission (gate p1-v81, v4-prior-v1; require any): PASS, 4 of 5 admitted with the prior sign** -- comp_eq_iss_5y (HAC t
+-.26; max |rho| .848 with net_payout), coskew_60m (-.03; .612 with comp_eq_iss_5y), nonreliance_402 (-.49; .194),
+earn_consistency (-.01; .241); gscore_lowbm status admitted with runner sign 0 against prior +1 (sign_agrees false, not
+counted by the gate; 374 train days). Reference members vs R-2's admission: 0 status changes. **Admission trials this
+sprint: 12 of 15 (plus 8 re-screens).** K6 (full pool, report only, gates nothing; E-36): marginal IC21 / HAC t
+comp_eq_iss_5y +.0022 / .42, coskew_60m +.0170 / 1.63, gscore_lowbm none (the verb wrote no value; not investigated: it gates nothing), nonreliance_402 +.0011 / .29,
+earn_consistency -.0003 / -.11.
+
+**Gross match, step (1) at the parent's L 1.1474 (mechanics only, mech.py):** G **0.9912148513** vs G_parent (R-2)
+**0.9859903463**: |diff| **.00522 > .005** -> one correction. (The other step-(1) mechanics keys were inside the limits:
+net +.0043, tau .02318 / .02772, max gross 1.125.) **L' = 1.1474 x 0.9859903463 / 0.9912148513 = 1.141352 -> 1.1414**
+(>= 1).
+
+**Matched spec** `scripts/specs/v8/lib-v81-gm.json` (new plain spec, hand-written: lib-v81.json with `name` v81-gm, a
+description sentence, `nav.leverage` "1.1414", `nav.output` `build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v81`;
+every pin unchanged; `lock` / `lock --write` / dry 0 / 0 / 0). A template could not serve: a template's derived
+reference pins come from its parent, and the paired reference must stay R-2, not the add-alpha spec's calibration run.
+Tests only: `test_research_spec.py` `NULL_PINS["lib-v81-gm.json"]` (a plain spec's lock-filled pins, as a base spec's),
+so the suite knows the hand-written spec (as R-1-gm / R-3-gm / R-6-gm); 54 passed (meta-test deselected). Commit
+**`714770f9`**. **Refusal and spec-only fix (PM5-21):** the first `run --stop-after nav` HARD-STOPPED at `ref` before any
+phase ran (exit 3): the done ref NAV (lib-v81's, at 1.1474) was made by an argv differing from this spec's ref argv only by
+`--aim-leverage` (the ref step inherits `nav.leverage`). Fix: `ref.leverage` "1.1474" (a designed ref key: the reference
+construction is R-2 at its own L), relocked; commit **`395071fb`**; file / spec digest
+**`9b5eeec43cecab029977074ea600006ac56361f06d50ecb7e5199c4985a4df93`**. Planned NAV argv = step (1)'s except `--output` and
+`--aim-leverage 1.1474 -> 1.1414` (diffed by script). The step-(1) run of lib-v81.json is not a trial and is never
+resumed past nav (no monitor, no summ, no ledger line).
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| ref / u / fit / card / marginal / gate / w | - | - | - | - | - | lib-v81.json's (done; ref binding argv `905d7d17` = its own; ref-s2-daily IDENTICAL again; gate: "0 appended, 5 already ledgered") |
+| nav (L 1.1414, the cell) | 180 / 1,536 | 45.2 | 586 | 0 | `485cb3481fec1125d4fc959cf160dc3f87a60fb1f3a2568722c617664fe5a77d` | `summary.json` `3205d868`, S2 daily `11743abe`, `capacity_curve.csv` `e118a926`, `recipe.json` `fc07b10a` |
+| monitor | 180 / 1,536 | 1.3 | 117 | 0 | - | `mega-monitor-v8-r1-std-v81/monitor.json` `add5f6bb`: M2 alarm (alarm 5, warn 16, ok 25), M1 / M3 / M4 n/a |
+| summ | 180 / 1,536 | 22.6 | 560 | 0 | - | `cycle-v81-gm/summ.json` `2eec1982`, `pbo.json` `39773d3a`, `cycle_verdict.json` `cf2e1f57` |
+| one-sided p (PM5-23) | 180 / 1,536 | 0.8 | 409 | 0 | `409b3479ac11dda3969d3e34c9f065a6bfe24186d90767d0ede4ec686cf1f968` | `v8-cells-r7-bundle.json` `6175d767` (no `--ledger`) |
+
+NAV receipt: completed, `clean in the code pathspec`, source `395071fb`, exe `5497c89d`; `construction.v5.aim_leverage`
+1.1414.
+
+**Gross match: G 0.9859967596 vs G_parent 0.9859903463: |diff| .0000064 <= .005** (one correction).
+**Mechanics (S2, read before any return): PASS.** All-rows gross .9860 in [.90, 1.05] (post-ramp .9917); net +.0043
+(<= .02); tau mean .02317 <= .20, p95 .02772 <= .30 (1,004 sessions; summary flags true); max gross 1.119, max |net| .030;
+gross at score_begin .9431; by year .962 / 1.002 / .985 / .995; 1,006 CSV rows 2020-01-02..2023-12-29, 1,005 return rows;
+accounting 1.1e-13 / 4.1e-16 (tol 1e-9).
+
+**Criterion (book turnover not higher; executed tau_gmv_mean, as R-2):** .023173 vs R-2 .023929 -> **PASS**.
+
+**Statistics of record** (S2 = `modeled-1bn-stale5-v1+swap-fin-v1`): net Sharpe **R-7 +1.1898** vs R-2 +1.2559. Paired
+(studentized CBB, block 21, seed 20260929, 4,999 resamples, 4,999 valid; 1,005 sessions): **dSR -.0662**; rho .979;
+**Memmel SE .1037** (t -.64); CBB 95% [-.269, +.125]; LW SE .1005, 95% [-.273, +.141]; **bootstrap p one-sided .7318,
+two-sided .524** (the bundle reproduces the cycle's dSR, SE, CI and two-sided p exactly). DSR (N 47, verdict
+`--dsr-ledger`): ledger DSR .9556 (V[SR] from 10 cells on research-window-v2); legacy (37) .7327; effective-N .7166 (N_eff
+4); PSR vs 0 .9904; PBO .3172.
+
+**Verdict (prereg rule 5): dSR -.066 <= 0 -> NOT ACCEPTED** (mechanics PASS, criterion PASS; the wave is judged whole).
+Recorded by the tooling: `cycle-v81-gm/cycle_verdict.json` (spec `9b5eeec4`) and the ledger line (trial
+`9a3608a7e6a0df3f`, cell = the L1.1414 NAV dir, s2_net_sr 1.18979, origin prior, window research-window-v2, prev
+`2635608f`). **N after: 47** (ledger 60 lines = 47 construction + 12 admission + 1 protocol; file `e6613e7b`; head
+`a11bcbb1`). Matches the brief. Not retried. **Parent stays R-2.**
+
+Returns (S2, annual): net 4.18% (ann mean; CAGR 4.20%) vs R-2 4.54%; gross of cost 5.44% (R-2 5.81%); trade cost .72%,
+borrow .34%, long financing .20%; vol 3.51%; max drawdown 3.09%; gross Sharpe 1.549 (R-2 1.610). Every scenario lower than
+R-2's (linear-6bps 1.301 / 1.371; S3 terminal-adverse .138 / .216; flat-300 .960 / 1.031; engine-tiers 1.114 / 1.185).
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0140 | -.446 | .0307 | .0258 | 14.79 |
+| 2021 | 252 | +.0924 | +2.385 | .0374 | .0218 | 11.56 |
+| 2022 | 251 | +.0723 | +1.721 | .0412 | .0227 | 12.19 |
+| 2023 | 250 | +.0202 | +.695 | .0297 | .0224 | 11.62 |
+
+Capacity (report only; R-2 beside): net Sharpe .5x 1.221 (1.289), 1x 1.190 (1.256), 2x 1.149 (1.223), **4x 1.103
+(1.178)**, 8x 1.038 (1.100); cost bps per traded dollar 10.74 / 12.55 / 14.75 / 16.93 / 18.75 (R-2 10.67 / 12.47 / 14.66 /
+16.87 / 18.67).
+
+**Appendix A:** `TRAIN construction cells 47; admission trials this sprint 12 (plus 8 re-screens); window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.` Defects: none (one cycle refusal fixed in the spec before any phase ran).
+
+v9 note (from a result, not a spec): the five new members' admission HAC t are all between -.49 and -.01 and the wave
+lowers gross-of-cost Sharpe by .06 at an unchanged cost per dollar; a new eleventh theme takes 1/11 of every theme's
+share (the one-member `filing_events` theme sits at its cap .045 on a flag that marks few names).
+
+### Tests (end of step 1)
+
+`ATX_EQUITY_BIN` / `ATX_EQUITY_TARGETS_EXE` absolute (v8-12), vcpkg bins on PATH:
+- `scripts/tests` (whole): **195 passed, 3 skipped, 0 failed** (130.5 s; skips: the three RESEARCH_CYCLE_LIVE_ROOT tests).
+- `atx-impl/strategies` (whole): **162 passed, 1 failed** -- `test_v71_library_byte_identical` (the R7-a finding above).
+
+### Cell R-8 (ex-ante risk target, `r8.json`): STOPPED BEFORE THE RUN (how PM6-6 applies is not settled)
+
+Nothing was edited, locked, planned or run for R-8; `r8.json` is unchanged (parent null). N 47; no trial burned.
+
+**What is settled.** Parent = R-2 (`lib-v80.json`, L 1.1474; R-7 was not accepted). Store: `build-equity/v8-risk-lo3-v10`
+(manifest `862515d9`; batch 2e: 0 invariant refusals, no specific variance clamped, max daily D .361 < 1.0; R-6's spo-v3
+runs on it reported capped_specific_decisions 0), so the brief's "check the risk store's capped_specific count first" is
+met from records. Acceptance: **Ruling E-43 settles it** -- prereg rule 5 governs: paired S2 net dSR > 0 against the
+parent AND mechanics AND realised volatility of the S2 net series inside [.04, .06] (= [.8, 1.2] x sigma_star .05) in
+each TRAIN year 2020-2023; the plan's "dSR not lower by more than one SE" (repeated in the dispatch) is the plan's
+expectation, not the rule (pitch config R-8 check: `ann_vol` between .04 and .06 from the nav_summ year table).
+
+**What is not settled: PM6-6 on a cell whose purpose is to set leverage.** PM6-6 says "every construction cell runs at the
+L that puts its all-rows gross within +/- .005 of its parent's"; R-8's registered rule (E-40, task-R-8-report, `r8.json`
+description) is `L_t = clip(S / (b sigma_hat_t), .8 L, 1.25 L)`, S .05, b 1.15, cadence 21, with L = the parent's
+`--aim-leverage`. No brief, ruling or report says which governs (grep of PM6-6 across the sprint directory: no R-8
+mention; PM7-3 / PM7-11 restate the gross limit for the X leverage cell only). The two readings, both fixed here before
+any R-8 number exists:
+
+- **Reading A (PM6-6 applies as written):** step (1) = `r8.json` on R-2 at L 1.1474, mechanics only; if |G - .98599| >
+  .005, L' = L x G_parent / G in a `-gm` spec (`nav.leverage`, which here is the scaler's base L: the clip band
+  [.8 L', 1.25 L'] and the leverage before the first estimate), at most two corrections; then rule 5 and the volatility
+  band on the matched run. Mechanical consequence (from the registered rule only): wherever the clip does not bind, L_t =
+  S / (b sigma_hat_t) does not depend on L, so gross does not move with L and the linear correction need not converge
+  (PM6-6: a cell that misses +/- .005 after two corrections fails mechanics and is ledgered rejected); where matching
+  succeeds it does so through the clip, so the book's mean leverage is set by the parent's gross, not by S, and the cell
+  tests the timing of leverage at the parent's dollar gross.
+- **Reading B (PM6-6 does not apply; R-8 is the registered leverage rule):** one run at the parent's L 1.1474 as the
+  scaler's base; gross is what the rule gives. Open inside B: whether the mechanics gross limit [.90, 1.05] binds
+  unchanged (PM6-6: "the mechanics limits are unchanged") or is restated for this cell before the run, as PM7-11 did for
+  the X leverage cell. The registered clip allows aim leverage .918 to 1.434 (.8 and 1.25 x 1.1474); at the parent's
+  gross / L ratio (.98599 / 1.1474 = .859) that is all-rows gross from about .79 to 1.23 -- outside [.90, 1.05] at both
+  ends of the band. Under B the paired dSR compares books of different dollar gross (PM6-6's reason for matching).
+
+Per the dispatch, R-8 stops here for the PM's reading (and, under B, the gross limit). Nothing else of R-8 depends on a
+choice: once ruled, the sequence is `r8.json` parent -> `lib-v80.json`, fills `--risk-model build-equity/v8-risk-lo3-v10
+--risk-model-sha256 862515d92623be37fbd4b126c8f0350a20135e7977f1cbf66c6c33f1644ecd5a`, lock, commit, plan, `run
+--stop-after nav`; mechanics and the `risk_target` blocks (decisions_before_first_estimate, estimates about scored
+sessions / 21, clip counts, priced_share) before any return; then summ, bundle, year table.
+
+### Cells R-9a-c: NOT STARTED
+
+They follow R-8 (order; their parent is "the final construction" = the last accepted cell after R-8, and N 49-51 follow
+N 48). Open choices found in the brief while preparing (for the PM's next dispatch; nothing was written or run):
+1. **Machinery:** the dispatch says R-9 needs R-6's spo-v3 machinery; Ruling E-37 defines R-9 only on a parent whose rule
+   reads theta (aim-partial-v5) and calls theta meaningless in the tracker. R-6 was rejected, so the parent's rule is
+   aim-partial-v5 and spo-v3 is not involved (`--trade-fraction` = theta).
+2. **"With NAV 4x":** the NAV executable has no NAV-size flag (the $1bn is fixed by the scenarios); 4x exists only as the
+   capacity curve's x4 row (E-29). Reading: each cell is the parent's NAV argv with `--trade-fraction` .03 / .04 / .05 and
+   its frontier point is the x4 row; its $1bn row is a different book from the deployed one, which "does not change"
+   (report only).
+3. **theta .05 is the parent's theta:** R-9c reproduces the parent's NAV byte for byte (its x4 row = R-2's 1.178); run and
+   counted (N 51, as the brief's "3 cells") or read from the parent (adds 0).
+4. **PM6-6 on theta .03 / .04:** a lower theta lowers gross (the book lags the aim more); matched L or the parent's L.
+5. **Spec form:** no R-9 template exists (a spec-only template is allowed); the cycle has no report-only mode: with
+   `"verdict": true` it writes an accepted / rejected verdict, which the report tool refuses on a report-only cell
+   (PM4-8); with `"verdict": false` research_cycle still passes summ its `--ledger` (the construction line, N + 1) and writes no
+   verdict.
+
+### Hidden-data record (batch 2f)
+
+- Inputs opened by the tools: role lo3, the lo3-dlret label role, fields v10 / v11 lo3, the lo3 candidate cache, R-2's
+  u / fit / w / NAV outputs, the atx-db stages and fundamental events v3 through the fields builder's sealed readers
+  (read only; nothing under `atx-db/` written), the vendor TickerHistory3 file (reader-side seal), the ledger and the
+  ledgered NAV dirs of the summ grid, the cell's own outputs.
+- Consoles scanned for 2024-2029 date tokens (fields v11 runner console and logs, add-alpha consoles, R-7 plan / screen /
+  three run consoles): none except the runner's own start stamp 2026-10-02. Last NAV session in every run 2023-12-29
+  (`last_session_ns` 1703808000000000000). Fields v11 manifest: seal 2024-01-01, no 2024-named source.
+- Disclosure: while finding the manifest keys for the registry rows I printed the full v10 manifest rows of
+  grp_ff12f49, ceq_iss_5y and coskew_60m once, which include their `coverage` blocks (finite-cell counts and value
+  quantiles per year 2018-2023; no return, IC or Sharpe); nothing was used from them.
+- **Nothing dated 2024-01-01 or later was opened.** No `stdout.log` of a NAV run was opened. **The R-7 step-(1) run of
+  lib-v81.json (L 1.1474) was read for mechanics keys only.**
+
+### Open items (batch 2f)
+
+- **PM ruling needed (R-8):** reading A or B of PM6-6 above (and, under B, the gross limit). R-9 waits on R-8 and on
+  choices 2-5.
+- `atx-impl/strategies` `test_v71_library_byte_identical` fails since R7-a's roster cap 64 (the v7.1 slim recipe records
+  `house_budget`); tests-only fix or a ruling.
+- R-7's marginal phase took 170.3 s of its 180 s cap (full pool, 11 regressors; add-alpha gives `marginal` the runner's
+  default caps, while W0-c allows the IC phases 300 s / 2,560 MiB). A later wave on a larger pool may time out there.
+- `r7-lib-v81.json` stays unrun (parent null), as `r2-lib-v80.json`.
+- **Current accepted parent: R-2** (`scripts/specs/v8/lib-v80.json`), L 1.1474, G .9859903463; S2 net Sharpe +1.2559,
+  net annual return 4.54%, net Sharpe at 4x 1.178, tau_gmv_mean .02393. **N 47**; admission trials 12 of 15 (plus 8
+  re-screens; the 3 left lapse with R-12); history reads 0. Disk 123,940,056 KiB free (118.2 GiB).
+
+## cells batch 2g: tests (PM7-22), R-8, R-9a/b, W0-4 re-runs, V8-F (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `98d50d7c` (clean; code head `1cc4c6c9`;
+executables v8-12 Debug: IC `ab7e2cbd`, NAV / targets `5497c89d`; nothing built; PM5-21 holds). Read: integrator-rules,
+progress "PM session 7" to the end (PM7-1..22, batch 2e / 2f lines), this log's batch 2f from R-8 to its end,
+task-R-8-R-9-brief, task-W0-4-brief, task-V8-F-brief, rulings E-2, E-34, E-43, PM5-18, PM5-22, PM5-23. Same scratch
+readers as batches 2c-2f (`mech.py`: mechanics keys only; `cellstats.py` / `crit.py`: return side, after mechanics
+passed; `bundle.sh`: the PM5-23 bundle). Parent = R-2 (`scripts/specs/v8/lib-v80.json`, L 1.1474, all-rows gross
+.9859903463). N 47 at the start. Disk 126,778,818,560 B free (118.1 GiB); RAM 4,936 MiB free.
+
+### 1. Tests (Ruling PM7-22; tests only)
+
+`atx-impl/strategies/test_generate_library.py::test_v71_library_byte_identical` (+16 / -4): the v7.1 IC library is still
+compared byte for byte (sha `787c802e` and the committed file); the slim recipe is compared except its roster-cap field:
+the test asserts the regenerated cap is at least the committed one (64 >= 56), then regenerates in a copy of the tree
+(the file's own `tree()` / `edit_registry()` helpers) with `house_budget.max_roster` set to the cap the committed recipe
+records (56) and requires the library and the recipe byte for byte there, and both `--check` calls (`--strategies` the
+copy; plain and `--plan-json`) return 0. No pinned file, registry or generator changed. Python `-p no:cacheprovider`,
+`ATX_EQUITY_BIN` / `ATX_EQUITY_TARGETS_EXE` absolute (v8-12), vcpkg bins on PATH:
+
+| suite | before | after |
+|---|---|---|
+| `atx-impl/strategies/test_generate_library.py` | 1 failed (byte 1330, "6" for "5") | 9 passed |
+| `scripts/tests` (whole) | 195 passed, 3 skipped (batch 2f) | **195 passed, 3 skipped, 0 failed** (107.2 s) |
+| `atx-impl/strategies` (whole) | 162 passed, 1 failed (batch 2f) | **163 passed, 0 failed** (23.7 s) |
+
+The 3 skips are the RESEARCH_CYCLE_LIVE_ROOT tests (as every batch).
+
+Commit `caefcd6a`.
+
+### Cell R-8 (r8.json on lib-v80; risk target S .05, b 1.15, cadence 21; base L 1.1474; not gross matched, PM7-20)
+
+**N before: 47; this cell makes 48 (<= 51).** Brief row (task-CELLS-brief.md:61): "realised volatility inside [.8, 1.2] x
+5% in each TRAIN year; `r8.json`; check the risk store's capped_specific count first" (E-40, E-43). Parent = the last
+accepted cell = R-2 (`lib-v80.json`); R-3..R-7 were not accepted. Store check met from records (batch 2f: `v8-risk-lo3-v10`,
+manifest `862515d9`, 0 invariant refusals, no specific variance clamped; R-6's runs on it capped_specific_decisions 0).
+
+**Identity (template "before any return"):** `atx-impl-strategy-target-tests.exe` (v8-12, 2026-10-01 18:55, the build of the
+NAV exe `5497c89d`) `--gtest_filter=RiskTarget.*:BookRiskTarget.*:SpoPin.*:SpoV3.*:SpoHook.*:NavV7Hook.*`: **56 / 56
+passed** (includes `RiskTarget.FlagAbsentKeepsThePinnedBenchDigests` and `SpoV3.V1AndV2DigestsUnchanged`). The parent's NAV
+argv re-run on v8-12 reproduced R-2's S2 daily bit for bit in R-7's `ref` phase (batch 2f). No executable changed since.
+
+**Spec.** `scripts/specs/v8/r8.json` (template): `"parent": null -> "lib-v80.json"`; the two designed fills `--risk-model
+build-equity/v8-risk-lo3-v10`, `--risk-model-sha256 862515d9...4ecd5a` (manifest re-hashed now: equal); nothing else. `lock`
+(dry) 0, `lock --write` 0 (reference_cell R-2 `083a56da`, reference_admission `f613fe92`, reference_combined `bbbf6f2b`,
+reference_weights `03213345`), dry after 0. File `04c67351d5b9b87807598214b25e0455595c552706ac9275bd4fdeb14c47a167`, **spec
+digest (template chain) `fe60420efa51a579511545f0cf83a71ab02d00fc513f2d9fd4f1142b0287ea93`**. `test_research_spec.py` with
+the filled, locked file: 55 passed. Plan exit 0: 8 pins `[locked, verified]`; fields, u, fit, card, marginal, w, monitor =
+R-2's (done); nav pending. **Nav argv diffed by script against R-2's NAV receipt: equal except `--output` and the five
+inserted flags `--risk-target .05 --risk-target-bias 1.15 --risk-target-cadence 21 --risk-model build-equity/v8-risk-lo3-v10
+--risk-model-sha256 862515d9...`** (`--aim-leverage 1.1474`, `--trade-fraction .05`, `--capacity-curve`,
+`--warm-start-sessions 60`, `--label-role` the parent's). Summ `--dsr-n 48 --ledger build-equity/trials.jsonl`. The nav
+output name keeps the template's "L1.247" text (cosmetic; the base L is 1.1474).
+
+**Reading, fixed before the run (PM7-20, E-43; no number of R-8 exists):**
+1. One run, base L 1.1474 (the parent's), not gross matched; no correction step; not retried in any form.
+2. Before any return, in this order: (a) the `risk_target` blocks (`summary.json` `risk_target.books.<S2>`:
+   decisions, estimates against scored sessions / 21, decisions / estimates at each clip, decisions_before_first_estimate,
+   L_t and multiplier n / mean / min / max; `risk_target.csv` `priced_share`); (b) mechanics (S2; mech.py, keys only):
+   **all-rows gross inside [.784, 1.237]** (PM7-20: [.8, 1.25] x G_parent .98599, widened by .005), |net| <= .02, tau mean
+   <= .20, p95 <= .30, accounting. A mechanics value outside its limit stops the batch before any return (dispatch).
+3. Acceptance (E-43, rule 5): paired S2 net dSR against R-2 > 0 AND mechanics AND realised volatility of the S2 net daily
+   returns (`nav_summ --protocol v8` year table, column `vol`) inside [.04, .06] (closed) in each of 2020, 2021, 2022, 2023.
+   The plan's "dSR >= -1 SE" is expectation, printed, gates nothing. The verdict line prints both books' all-rows gross.
+
+Commit `59a27af8` (spec, this text). Then `run --stop-after nav` (no free-memory refusal):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| fields / u / fit / card / marginal / gate / w | - | - | - | - | - | R-2's (done; gate p1-v80 re-read PASS, 0 status changes, "0 appended, 7 already ledgered") |
+| nav (base L 1.1474, the cell) | 180 / 1,536 | 47.4 | 589 | 0 | `bde30cac5840c91637b8e31d8e608dd1de12d01c7e03cd2dcf747ef9acbbf19e` | `build-equity/mega-nav-v8-r8-rt.05-b1.15-c21-L1.247`; recipe rule `aim-partial-v5+neutral-price-risk-v1+risk-target-0.05` |
+
+Receipt: completed, `clean in the code pathspec`, source `59a27af8`, NAV exe `5497c89d`.
+
+**Pre-return reads (in the fixed order; scratch `rtblock.py` and `mech.py`, keys only):**
+- **`risk_target` block** (summary.json; rule risk-target-v1, S .05, b 1.15, cadence 21, clip [.8, 1.25], 252): S2 book
+  decisions 1,004, **decisions_before_first_estimate 0**, **estimates 48** (1,004 / 21 = 47.8), base L 1.1474; decisions at
+  clip hi **374**, at clip lo **21**, unclipped 609; estimates at clip hi 18, at clip lo 1 (of 48); L_t mean **1.3082**
+  (min .9179 = .8 L, max 1.4343 = 1.25 L), multiplier mean 1.1402; sigma_hat over the 48 estimates mean .0320 (min .0172,
+  max .0587). `risk_target.csv` (5,020 rows = 1,004 x 5 books): S2 **priced_share mean .9986** (min .9956, max 1.0000);
+  48 updated rows; first decision 2020-01-02, last 2023-12-27 (ns stamps). Estimates at the clip by year: hi 2020 6
+  (Jan-Mar, Sep-Nov), 2021 4 (Apr, May, Sep, Oct), 2022 0, 2023 8 (May-Dec); lo once (Apr 2020, sigma_hat .0587).
+- **Mechanics (S2): PASS.** All-rows gross **1.1244** in [.784, 1.237] (PM7-20; post-ramp 1.1244); net +.0050 (<= .02);
+  tau mean .02428 <= .20, p95 .03061 <= .30 (1,004 sessions; summary flags true); max gross 1.368, max |net| .030; gross at
+  score_begin 1.171; by year 1.083 / 1.182 / 1.040 / 1.192; 1,006 CSV rows 2020-01-02..2023-12-29, 1,005 return rows;
+  accounting 7.8e-14 / 4.3e-16 (tol 1e-9); `construction.v5.aim_leverage` 1.1474 (base), theta .05.
+
+Commit `9df90d63`, then the cycle resumed (monitor = R-2's, done):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| summ | 180 / 1,536 | 19.5 | 610 | 0 | `7f475126a3af03341f52ef1ddbc8385c2ab99533167014e591e3da7f408e90b1` | `cycle-v8-r8-risk-target/summ.json` `61612188`, `pbo.json` `f7729e5c`, `cycle_verdict.json` `e4f65be7` |
+| one-sided p (PM5-23) | 180 / 1,536 | 0.8 | 461 | 0 | `9815d5be2739b55fae89de83b676c0c6e642de84524c10e2e1e508c5e4e0ec4e` | `v8-cells-r8-bundle.json` `608b51ec` (no `--ledger`) |
+
+**Statistics of record** (S2 = `modeled-1bn-stale5-v1+swap-fin-v1`): net Sharpe **R-8 +1.2449** vs R-2 +1.2559. Paired
+(studentized CBB, block 21, seed 20260929, 4,999 resamples; 1,005 sessions): **dSR -.0111**; rho .9958; **Memmel SE
+.0460** (t -.24); CBB 95% [-.1149, +.0905]; LW SE .0539, 95% [-.1247, +.1026]; **bootstrap p one-sided .5826, two-sided
+.8428** (the bundle reproduces the cycle's dSR, SE, CI and two-sided p exactly). DSR (N 48, verdict `--dsr-ledger`): ledger
+DSR .9635 (V[SR] 7.77e-05 from 11 cells on research-window-v2); legacy (37) .7609; effective-N .7466 (N_eff 4); PSR vs 0
+.9919; PBO .3169. **All-rows gross: R-8 1.1244, R-2 .9860** (PM7-20: the paired dSR compares books of different dollar
+gross).
+
+**Criterion (E-43):** realised volatility of the S2 net daily returns (summ year table `ann_vol`): 2020 **.0401**, 2021
+**.0433**, 2022 **.0441**, 2023 **.0365** -> inside [.04, .06] in 2020-2022, **below .04 in 2023 -> FAIL**. (Plan
+expectation, gates nothing: dSR -.0111 >= -SE -.0460, met.)
+
+**Verdict (rule 5, E-43): dSR -.011 <= 0 AND volatility band FAIL (2023) -> NOT ACCEPTED** (mechanics PASS). Recorded by
+the tooling: `cycle-v8-r8-risk-target/cycle_verdict.json` (spec `fe60420e`; ledger head `3b00257b`, 61 lines) and the
+ledger line (trial `c360f66b7af19aae`, cell = the R-8 NAV dir, s2_net_sr 1.24487, origin prior, window research-window-v2,
+prev `a11bcbb1` = R-7's head). **N after: 48** (ledger 61 lines = 48 construction + 12 admission + 1 protocol; file
+`2dcecbc3`). Matches the brief. Not retried, not re-parameterised (E-43). **Parent stays R-2.**
+
+Returns (S2, annual): net **5.13%** (CAGR 5.17%) vs R-2 4.54%; gross of cost 6.61% (R-2 5.81%); trade cost .87% (.74%),
+borrow .38%, long financing .23%; vol 4.12% (R-2 3.62%); max drawdown 3.26%; gross Sharpe 1.606 (R-2 1.610). Scenarios
+(cell / R-2): linear-6bps 1.358 / 1.371; S3 terminal-adverse .239 / .216; flat-300 1.024 / 1.031; engine-tiers 1.172 /
+1.185.
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0124 | -.292 | .0401 | .0270 | 14.82 |
+| 2021 | 252 | +.1153 | +2.541 | .0433 | .0231 | 11.84 |
+| 2022 | 251 | +.0846 | +1.869 | .0441 | .0237 | 12.33 |
+| 2023 | 250 | +.0235 | +.660 | .0365 | .0234 | 12.00 |
+
+Capacity (report only; R-2 beside): net Sharpe .5x 1.277 (1.289), 1x 1.245 (1.256), 2x 1.211 (1.223), **4x 1.166
+(1.178)**, 8x 1.095 (1.100); cost bps per traded dollar 10.87 / 12.73 / 14.93 / 17.05 / 18.77 (R-2 10.67 / 12.47 / 14.66 /
+16.87 / 18.67); capped share .0011 / .0048 / .0263 / .0997 / .2366 (R-2 .0010 / .0034 / .0190 / .0802 / .2083).
+
+**Appendix A:** `TRAIN construction cells 48; admission trials this sprint 12 (plus 8 re-screens); window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.` Defects: none (no refusal, no fix).
+
+v9 note (from a result, not a spec): the rule is mostly a leverage raise: L_t averages 1.308 (1.14 x base), at the upper
+clip on 37% of decisions; the ex-ante vol of the gross-1 book is low in calm spells (sigma_hat .017-.025), so S / (b
+sigma_hat) exceeds 1.25 L there and the clip, not the target, sets the leverage; 2023's realised vol .0365 stays under .04
+with the clip binding from May. Net return rises .59 pt for .011 of Sharpe -- the PM7-3 leverage question, not alpha.
+
+Commit `dbc70008` (R-8 verdict, log and ledger line).
+
+### Cells R-9a / R-9b (theta .03 / .04 on R-2; report only; PM7-21); R-9c read from the parent
+
+**Parent = the last accepted cell after R-8 = R-2** (`lib-v80.json`, rule aim-partial-v5, theta .05, L 1.1474). E-37 / PM7-21
+(1): theta = `--trade-fraction`; spo-v3 not involved. N before 48; R-9a makes 49, R-9b 50; R-9c (theta .05 = the parent)
+adds 0 and is read from R-2's own files (PM7-21 (3)).
+
+**Specs (spec-only templates, PM7-21 (5)):** `scripts/specs/v8/r9a.json` / `r9b.json`, new: parent `lib-v80.json`, nominal
+parent `base-b0c.json`; change = `nav.output` (`build-equity/mega-nav-v8-r9{a,b}-t.0{3,4}-d.1-fixed-obdelta-x.05-loc-L1.1474-v80`),
+`"verdict": false`, nav flag `--trade-fraction .03` / `.04`; nothing else. `lock` / `lock --write` / dry 0 / 0 / 0 each (the
+four derived pins of R-2: `083a56da`, `f613fe92`, `bbbf6f2b`, `03213345`). Files r9a `81e2f0b4...7a97`, r9b
+`c320310f...1614`; **spec digests (template chain) r9a `4674033ff37aea4f507110a71fe12285884f09a6d7a8f6fc79ec03bea225c6c8`,
+r9b `5ef8593b83cd2a57d9e488100dca3fb8139eb398f072264dff92d10bd9d3bc3d`**. Tests only (so the suite knows the two specs):
+`test_research_spec.py` `NULL_PINS` (CHILD_NULLS), `EXPECTED_CHANGES` {nav.output, nav.flags, verdict}, the nav delta (the
+parent's flags with the `--trade-fraction` value replaced); 59 passed. Plans exit 0: 8 pins `[locked, verified]` each;
+fields, u, fit, card, marginal, w, monitor = R-2's (done); **nav argv diffed by script against R-2's NAV receipt: equal
+except `--output` and the `--trade-fraction` value (index 21: .05 -> .03 / .04)**; summ `--protocol v8 --origin prior
+--ledger build-equity/trials.jsonl --ledger-kind construction` (`--dsr-n 49` at plan time), no `--json`, no `--dsr-ledger`
+(no verdict).
+
+**Reading, fixed before either run:** (1) one run each at L 1.1474, not gross matched, never retried; (2) before any
+return: mechanics (S2, mech.py) with the registered limits unchanged (all-rows gross [.90, 1.05], |net| <= .02, tau mean
+<= .20, p95 <= .30, accounting); a value outside a limit stops the batch before any return (dispatch stop condition;
+PM7-21 restates no limit for these cells); (3) report: S2 ($1bn) net Sharpe, the capacity curve's x4 row (net Sharpe,
+cost per traded dollar), all-rows gross, turnover, the bundle against R-2 (PM5-23; information only), the year table; no
+verdict, nothing accepted or rejected, the deployed book stays R-2; (4) each cell's ledger line is written by its summ
+(construction, N 49 / N 50).
+
+Commit `6ac2fda5` (specs, tests, this text). **R-9a** `run --stop-after nav`:
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| nav (theta .03, L 1.1474) | 180 / 1,536 | 43.8 | 586 | 0 | `43c9ad1a4d59306856c2c705fd6f6f7661719b562256686856c8a91714f340c2` | `build-equity/mega-nav-v8-r9a-t.03-d.1-fixed-obdelta-x.05-loc-L1.1474-v80`; rule `aim-partial-v5+neutral-price-risk-v1`, theta .03 |
+
+Receipt: completed, `clean in the code pathspec`, source `6ac2fda5`. **Mechanics (S2): PASS.** All-rows gross **.9350** in
+[.90, 1.05] (post-ramp .9432); net +.0032; tau mean .01796, p95 .02124 (flags true); max gross 1.070, max |net| .030;
+score_begin .812; by year .903 / .960 / .929 / .948; 1,006 CSV rows, 1,005 return rows; accounting 6.8e-14 / 4.3e-16.
+Commit `104a750c`; cycle resumed: summ 19.7 s, 613 MiB, exit 0 (receipt `b7f6683e1ffab0abf2d3e3f77387543b73bda4bff01a5445f77abd928e698ff1`;
+no summ.json: no verdict, `cycle_verdict.json` without scoring blocks); bundle (PM5-23) 0.8 s, 475 MiB, exit 0 (receipt
+`1523993543673c9a45698d14fe3ca0697a407352a1cadd4108fd4cafae8c6fa8`, `v8-cells-r9a-bundle.json` `06c6efda`). Ledger line
+trial `a9d199bf9616015b` (cell = the R-9a NAV dir, s2_net_sr 1.24329, window research-window-v2, prev `3b00257b` = R-8's
+head); **N 49** (62 lines = 49 + 12 + 1; file `874e986c`).
+
+**R-9a (theta .03), report only:** S2 ($1bn) net Sharpe **1.2433** (R-2 1.2559); **x4 row net Sharpe 1.1966** (R-2 1.1784),
+cost per traded dollar 15.89 bps (16.87), capped share .044 (.080); all-rows gross .9350 (R-2 .9860); tau .01796 (.02393);
+net annual return 4.27% (4.54%), gross of cost 5.27%, trade cost .49%; vol 3.44%; max drawdown 3.35%. Against R-2
+(information only): dSR -.0127, Memmel SE .0573, p one-sided .563, two-sided .844. Capacity .5x 1.265, 1x 1.243, 2x 1.230,
+4x 1.197, 8x 1.121; cost bps 10.15 / 11.73 / 13.71 / 15.89 / 17.84.
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0133 | -.435 | .0298 | .0203 | 13.87 |
+| 2021 | 252 | +.0934 | +2.580 | .0348 | .0169 | 10.77 |
+| 2022 | 251 | +.0755 | +1.782 | .0415 | .0176 | 11.39 |
+| 2023 | 250 | +.0196 | +.669 | .0298 | .0171 | 10.84 |
+
+Commit `37b4dede`. **R-9b** `run --stop-after nav`:
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| nav (theta .04, L 1.1474) | 180 / 1,536 | 45.9 | 586 | 0 | `f0ba01fe6da9779ded7c2aa8a92326205a08f5410a61a18981804f976c3fa25a` | `build-equity/mega-nav-v8-r9b-t.04-d.1-fixed-obdelta-x.05-loc-L1.1474-v80`; theta .04 |
+
+Receipt: completed, `clean in the code pathspec`, source `37b4dede`. **Mechanics (S2): PASS.** All-rows gross **.9650** in
+[.90, 1.05] (post-ramp .9716); net +.0037; tau mean .02110, p95 .02496 (flags true); max gross 1.099, max |net| .030;
+score_begin .892; by year .940 / .984 / .961 / .975; 1,006 CSV rows, 1,005 return rows; accounting 8.0e-14 / 4.2e-16.
+Commit `83cc948d`; cycle resumed: summ 23.4 s, 613 MiB, exit 0 (receipt
+`2ef388ddc3e80277004714bf82cf634cf95664fbf970bf9b10b62f0f414cc564`); bundle 0.8 s, 506 MiB, exit 0 (receipt
+`c89dd5775c664481019df784c5c4691581673a5bbe2b6d2f69de7f17b17c7531`, `v8-cells-r9b-bundle.json` `bb9e35bf`). Ledger line
+trial `2dd5442da54cca97` (cell = the R-9b NAV dir, s2_net_sr 1.25275, prev `30c6f7b7` = R-9a's head); **N 50** (63 lines =
+50 + 12 + 1; file `9cb99c5f`).
+
+**R-9b (theta .04), report only:** S2 ($1bn) net Sharpe **1.2528**; **x4 row net Sharpe 1.1864**, cost per traded dollar
+16.45 bps, capped share .062; all-rows gross .9650; tau .02110; net annual return 4.44%, gross of cost 5.58%, trade cost
+.62%; vol 3.54%; max drawdown 3.30%. Against R-2 (information only): dSR -.0032, Memmel SE .0256, p one-sided .534,
+two-sided .912. Capacity .5x 1.281, 1x 1.253, 2x 1.228, 4x 1.186, 8x 1.113; cost bps 10.42 / 12.12 / 14.24 / 16.45 / 18.32.
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0120 | -.362 | .0320 | .0235 | 14.37 |
+| 2021 | 252 | +.0961 | +2.583 | .0358 | .0200 | 11.13 |
+| 2022 | 251 | +.0783 | +1.823 | .0420 | .0207 | 11.77 |
+| 2023 | 250 | +.0195 | +.653 | .0305 | .0203 | 11.20 |
+
+**R-9c (theta .05) = R-2, read from its files (adds 0):** $1bn 1.2559; x4 1.1785, cost 16.87 bps, capped share .080; gross
+.9860; tau .02393; net annual return 4.54%.
+
+**Frontier (report only; the deployed book stays R-2):**
+
+| theta | cell | N | all-rows gross | tau | $1bn net Sharpe | x4 net Sharpe | x4 cost bps | net annual return ($1bn) |
+|---|---|---|---|---|---|---|---|---|
+| .03 | R-9a | 49 | .9350 | .01796 | 1.2433 | **1.1966** | 15.89 | 4.27% |
+| .04 | R-9b | 50 | .9650 | .02110 | 1.2528 | **1.1864** | 16.45 | 4.44% |
+| .05 | R-9c = R-2 | (47) | .9860 | .02393 | 1.2559 | **1.1785** | 16.87 | 4.54% |
+
+Appendix A (after R-9b): `TRAIN construction cells 50; admission trials this sprint 12 (plus 8 re-screens); window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.` The registered cell program ends here at N 50 (PM7-21 (3)). Defects: none.
+
+v9 note (from a result, not a spec): at 4x a slower tracker gains .018 of net Sharpe per .01 of theta while the $1bn book
+loses .003-.010 and gross falls with theta (the book is not gross matched); at matched gross the x4 ranking is not
+measured.
+
+Commit `96bdba9d` (R-9 report, ledger lines).
+
+### 4. W0-4 re-runs of the ledgered v7 cells on the 4-year roles (PM5-22, PM5-18; add 0 to N)
+
+**Cells (PM5-22's list = the 8 legacy construction lines):** v6.1 `a04a3d9cbf5d76a7`, C1 `ebd8da9260b0a80a`, C2
+`1873d32cd7019870`, C3 `479049dd2f2b58c4`, spo-v1 `554b0d8ad9304ea5` (all v6.1's combined, role lo1), v7.0
+`2b4de3cc3aaaebf2` (lo1), v7.0-lo3 `741d9c05a871a5d5`, spo-v2 `9e1ad5f7ac4b9937` (v7.0-lo3's combined). v7.1's two lines are
+re-based as B0a / B0b (N 38, 39) already.
+
+**Mechanism (tooling as built, no code change; PM5-21):** each re-run is a cycle spec whose summ ledgers one construction
+line through `nav_summ --rerun-of <trial_id> --rerun-basis window` (backtest_integrity: a window re-run adds 0 to N, carries
+window_id research-window-v2, enters V[SR] of prereg item 3; one re-run per target; its target is the legacy line). New
+spec-only templates under `scripts/specs/v8-rerun/` (outside `scripts/specs/v8/`, so the v8 spec registry and its tests are
+untouched): the library re-runs are templates on `base-lo1.json` / `base-lo3.json` (B0a / B0b: the 4-year role, fields v9,
+candidate cache, IC caps, the v7 NAV argv aim-partial-v5 L 1.247) with the original library and recipe pinned
+(`change.inputs`), outputs renamed, `card` / `monitor` unset (report-only phases, not part of the NAV), the derived paired
+references unset (a re-run is scored alone, FIX-3 procedure), `verdict` false, `summ.cells_from_ledger` unset, `summ.dsr_n`
+50, `summ.extra` `--protocol v8 --psr --json <cycle dir>/summ.json --rerun-of <id> --rerun-basis window`; the gate reads
+out the original gate's members with `admitted []` (no admission line can be written: PM5-18, "evaluated and logged" by
+root from admission.json, never a stop). The NAV-only cells (C1-C3, spo-v1, spo-v2) are templates on the library re-run
+with the recorded NAV options.
+
+| spec (scripts/specs/v8-rerun/) | file sha256 (16) | chain digest (16) | re-runs | parent |
+|---|---|---|---|---|
+| w04-v61-lo1.json | `73446559a264feff` | `c694a303b133d114` | v6.1 | base-lo1.json |
+| w04-v61-c1-lo1.json | `6bb9f0749f368d28` | `44a73c5fc5ec6fcc` | C1 | w04-v61-lo1.json |
+| w04-v61-c2-lo1.json | `5ca2e68f4f24ff18` | `ecbaa6e838c5f635` | C2 | w04-v61-lo1.json |
+| w04-v61-c3-lo1.json | `5f471606c33078ce` | `8408b4e15188403e` | C3 | w04-v61-lo1.json |
+| w04-v70-lo1.json | `2de4b3fa674139fb` | `9f4c28b648b2008e` | v7.0 | base-lo1.json |
+| w04-v70-lo3.json | `c2b5092cbe93739b` | `1d4e97d31fa4bafd` | v7.0-lo3 | base-lo3.json |
+| w04-v70-spo2-lo3.json | `e0a6871c13113109` | `cedff0782cbb089d` | spo-v2 | w04-v70-lo3.json |
+| (spo-v1: written after its risk store exists) | | | spo-v1 | w04-v61-lo1.json |
+
+Plans exit 0 (pins `[locked, verified]`: library / recipe of v6.1 `db35c276` / `9bf278a6`, v7.0 `e7bae75c` / `60b82300`; role
+lo1 `2ff9d771` or lo3 `e1c67101`; identity bridge, fundamental events (and on lo3 the sic events manifest, read for its pin
+only, as B0b / B0c); fields v9 lo1 `888e6616` / lo3 `9f156363` pinned and done). **NAV argv against each original's
+receipt (by script): equal except `--combined` (new), `--role` / `--fields` and their pins (the window) and `--output`**;
+C1-C3 equal as option maps (order differs: the cycle writes `--rule` after `--output`); spo-v2 also its store: the recorded
+store argv (`risk --role R --fields F --emit-exposures all`) on this role and fields is `build-equity/b0c-risk` (lo3, fields v9,
+manifest `5dd560d7`; its `--book-weights` adds only the bias files; model files byte-identical to `v8-risk-lo3-v10`, batch 2e).
+
+**Reading, fixed before any re-run:** (1) a re-run carries no acceptance and no limit of its own (PM5-22: the same trials on
+a longer window; prereg item 3 puts every ledgered cell's re-run into V[SR], invalid lines only left out); mechanics are read
+before its summ (mech.py) and printed, and a value outside the v8 cell limits is reported, not a stop -- the v7 spo-v1 trial
+itself was ledgered at all-rows gross .6465 on 2020-2022 (and spo-v2 .9735, v6.1 .9683); (2) a re-run that cannot complete
+(refusal, void, non-zero exit) is "a cell that cannot be reproduced" (PM5-22): listed with the reason and left out, never
+fixed in code; (3) the admission rows of the original gate members are logged (status, runner sign against prior, sign
+agreement); a disagreement is reported, not a stop (PM5-18); (4) N stays 50 after every re-run (checked by the ledger count).
+
+Commit `80b767af` (specs, this text). Each re-run: `run --stop-after nav` (scratch `rerun.sh`), mechanics (mech.py), then
+`run` (summ, ledger line). Exes v8-12 (IC `ab7e2cbd`, NAV `5497c89d`, risk `8967952c`); every receipt completed, `clean in
+the code pathspec`.
+
+**Spec slip and fix (spec only, PM5-21):** the v6.1 re-run's summ (a direct phase: base-lo1 has no every-phase receipts, so
+the cycle dir did not exist) appended its ledger line and printed its tables, then failed writing `--json
+build-equity/cycle-v8-w04-v61-lo1/summ.json` (FileNotFoundError; HARD-STOP [summ] exit 4; no summ.json, no cycle_verdict).
+The other specs' `--json` moved to `build-equity/v8-w04-summ-<spec>.json` (commit `c89b9b66`); v6.1's own change was
+undone (`09969efc`, file `73446559` again) because its NAV is bound to digest `c694a303` (the cycle refused to score it under
+the edited digest, exit 3, nothing run); its ledger line is final (one re-run per target) and its numbers below are its summ
+console's. The NAV-only children were planned again after the fix (chain digests C1 `feb9dcdb`, C2 `cf0abf18`, C3
+`194802ab`, v7.0 `0f267c73`, v7.0-lo3 `99df0403`, spo-v2 `459de0f5`).
+
+**Risk store for spo-v1 (not a trial):** the recorded `v7-w1-risk-all` argv on the 4-year role: `run_bounded_research.py
+--seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/v8-risk-lo1-v9-run --bind <risk exe, role lo1,
+fields v9 lo1> -- atx-equity-strategy-risk.exe risk --role build-equity/train-2020-2023-lo1/manifest.json --role-sha256
+2ff9d771... --fields build-equity/train-2020-2023-lo1-fields-v9/manifest.json --fields-sha256 888e6616... --emit-exposures
+all --output build-equity/v8-risk-lo1-v9`: 27.4 s, 610 MiB, exit 0, receipt `2f1257e40958c4d9`, source `09969efc`;
+**manifest `bdacc15b0ccff20dbf0e8de3bd10b49bd7552f18bfea33a742c8fffa0911e411`**; atx-risk-v1.1, complete, role `2ff9d771`, seal
+2024-01-01, last session 2023-12-29; 1,405 dates x 5,922 instruments, 62 factors, 11 styles; invariant refusals 0 (nothing
+clamped; max daily specific variance .367); bias harness factor b mean .999, 0 refused. Spec `w04-v61-spo1-lo1.json`
+(file `8b7a064d62f770f7`; option map = the recorded argv except the store and its pin), commit `a4063b7c`.
+
+| re-run | target trial | phases (s / peak MiB) | all-rows gross | net | tau mean / p95 | S2 net Sharpe 2020-2023 | ledger line | 
+|---|---|---|---|---|---|---|---|
+| v6.1 (lo1) | `a04a3d9cbf5d76a7` | u 19.8 / 666, fit 0.8 / 57, w 17.8 / 667, nav 20.6 / 448 | .9751 | +.0034 | .0367 / .0436 | **+.9802** | `1e6f4262f0e2a3ec` |
+| C1 | `ebd8da9260b0a80a` | nav 21.6 / 449 | .9768 | +.0024 | .0361 / .0415 | **+.9364** | `1a9f1c9599524c9e` |
+| C2 | `1873d32cd7019870` | nav 22.0 / 450 | .9778 | +.0021 | .0358 / .0411 | **+.9080** | `4867927f07ac60be` |
+| C3 | `479049dd2f2b58c4` | nav 23.1 / 449 | .9779 | +.0020 | .0355 / .0424 | **+.9022** | `261feb83c2c6f2dd` |
+| spo-v1 | `554b0d8ad9304ea5` | nav 47.1 / 448 | **.6793** (outside [.90, 1.05]; v7's own .6465) | +.0002 | .1197 / .1609 | **-1.3869** | `70dd1ffb2017c0ad` |
+| v7.0 (lo1) | `2b4de3cc3aaaebf2` | u 20.6 / 667, fit 0.5 / 57, w 17.5 / 667, nav 16.8 / 448 | .9757 | +.0040 | .0364 / .0429 | **+1.0727** | `9c2ce0104221c6e0` |
+| v7.0-lo3 | `741d9c05a871a5d5` | u 21.9 / 671, fit 0.8 / 58, w 17.7 / 672, nav 17.3 / 448 | .9711 | +.0038 | .0367 / .0432 | **+1.0839** | `5bd30f88e63bb7fd` |
+| spo-v2 | `9e1ad5f7ac4b9937` | nav 43.5 / 449 | .9801 | +.0003 | .0413 / .0613 | **+.5093** | `e532228e6b9d5e3c` |
+
+Every NAV: 1,006 CSV rows, 1,004 return rows (the v7 protocol: no warm start), last session 2023-12-29, accounting <=
+1.5e-13 / 4.3e-16. The u passes hit the 4-year candidate caches (19.8-21.9 s); the fits reused the fit-work store (<= 0.8 s).
+spo-v2: not void (exit 0; `--specific-ceiling-void on`). Ledger after the 8: **71 lines = 58 construction (50 counted + 8
+window re-runs at count 0) + 12 admission + 1 protocol; N 50** (backtest_integrity.trial_counts); file `2b0cdd18`, head
+`098251f9`. Summ JSONs `build-equity/v8-w04-summ-*.json` (C1 `d019dd7e`, C2 `0a6ee0da`, C3 `893e4616`, spo-v1 `902d55b2`,
+v7.0 `601b2a33`, v7.0-lo3 `330394c4`, spo-v2 `2c0939cf`).
+
+**Gates (PM5-18, logged, never a stop):** v6.1's p1 member sv_flow admitted, runner sign +1 = prior, agrees (HAC t 1.43);
+report rows si_ratio, dtc admitted, si_change reject_veto. v7.0's p1-v70 members on lo1: q5_eg, smax5 admitted; qmj_safety
+reject_veto, nincr and res_mom_ind reject_redundant (the fitter's v4-prior-v1 screen on the 4-year window, as in B0a); every
+runner sign agrees with the prior. v7.0-lo3: read-out with nothing listed (as v7u-lo3). No admission line was written.
+
+Year tables (S2; rows, net return, net Sharpe, vol):
+
+| re-run | 2020 | 2021 | 2022 | 2023 |
+|---|---|---|---|---|
+| v6.1 | 251, +.0160, +.315, .0556 | 252, +.0778, +2.275, .0332 | 251, +.0840, +1.645, .0500 | 250, +.0000, +.020, .0375 |
+| C1 | +.0071, +.155, .0557 | +.0746, +2.220, .0326 | +.0859, +1.646, .0511 | +.0038, +.119, .0383 |
+| C2 | +.0036, +.093, .0562 | +.0728, +2.174, .0326 | +.0867, +1.648, .0514 | +.0042, +.128, .0386 |
+| C3 | +.0038, +.095, .0574 | +.0724, +2.165, .0325 | +.0870, +1.653, .0515 | +.0041, +.127, .0386 |
+| spo-v1 | -.0331, -1.805, .0186 | +.0001, +.011, .0125 | -.0168, -1.670, .0102 | -.0231, -2.323, .0101 |
+| v7.0 | +.0072, +.170, .0491 | +.0890, +2.489, .0345 | +.0811, +1.673, .0475 | +.0053, +.172, .0343 |
+| v7.0-lo3 | +.0127, +.286, .0482 | +.0835, +2.408, .0335 | +.0796, +1.676, .0465 | +.0053, +.172, .0345 |
+| spo-v2 | -.0232, -.614, .0372 | +.0490, +1.597, .0302 | +.0251, +.952, .0265 | +.0083, +.432, .0197 |
+
+Not reproducible: none (8 of 8 ran). Hidden data: every input sealed at 2024-01-01; last session 2023-12-29 in every run.
+
+Commit `5f073613` (re-run log, ledger line).
+
+### 5. V8-F: cumulative test, freeze gate, DSR at the v8 count; H-2
+
+**The final book (V8-F = the last accepted cell, brief step 1): R-2** (`scripts/specs/v8/lib-v80.json`, NAV
+`build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80`, L 1.1474). Base: B0c
+(`build-equity/mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247`). N 50.
+
+**Freeze gate as registered (v8-prereg item 9; task V8-F step 2), read before any V8-F number is computed:**
+(a) S2 net Sharpe of R-2 on 2020-2023 >= 1.0; (b) mechanics (R-2's, PASS in batch 2d; re-read by mech.py); (c) cumulative
+paired S2 net dSR (R-2 - B0c) > 0 AND studentized circular-block bootstrap p < .10, **one-sided** (Ruling E-34: "the freeze
+gate's 'bootstrap p < .10' is one-sided, as coded in nav_summ since the v7 bundles -- the registered hypothesis dSR > 0 is
+directional -- cost if wrong: the gate is twice as loose as a two-sided reading; the scorecard prints both p values"):
+`nav_summ --protocol v8 --bundle B0c R-2` (bounded, no `--ledger`), its verdict block; (d) cell-count DSR >= .95 under
+OD-4 (prereg item 3, PM7-7): nav_summ `--dsr-ledger build-equity/trials.jsonl` on R-2's dir, `deflated_ledger` (N = the
+ledger's construction trials = 50; V[SR] = `backtest_integrity.dsr_variance`: sample variance, ddof 1, of the per-session
+S2 net SRs of the construction lines on research-window-v2 -- the 13 v8 cells B0a..R-9b and the 8 window re-runs; the
+legacy variance printed beside, gating nothing). Beside it (gate nothing): effective-N DSR, PBO, PSR, MinTRL, from one
+bounded nav_summ over every ledgered cell with R-2 last, `--reference` B0c, `--effective-n dirs --psr --pbo --dsr-ledger`,
+no `--ledger` (the cycle summ's form at today's ledger). The gate passes only if (a)-(d) all hold.
+**OD-3:** if (d) is unmet, the record says so and names OD-3 (history 2013-2019) as the lever (brief step 3); the
+registered procedure names the lever and asks for no read. No history file is opened: Ruling E-2 keeps OD-3 at "tooling
+only, no read ... the plan's recommendation is to build the tools and leave the read to an explicit owner ruling; a read
+cannot be undone" (plan OD-3: "not run in v8 without a ruling"); E-41 counts any such read separately. If any step asked
+for that read, the batch would stop here and report.
+**H-2** (task-H brief): "Root measures cold VM seconds of library v7.1 in AuditExact on E3 and the fixture." Checked from
+code before any run: the IC runner fixes `EvalMode::ResearchFast` (`atx-impl/src/strategy_ic_runner.cpp:223`,
+`strategy_runner.cpp:804`); no flag, verb or tool of the v8-12 executables selects AuditExact on a role (the engine's
+`alpha_kernels_bench` times single kernels on synthetic panels, not a library on E3). A measurement needs an executable
+change: PM5-21 forbids it, so H-2 is not run (stop condition for this item; reported).
+
+Commit `7243bffe` (this reading). Runs (bounded, clean tree, no `--ledger`; the ledger is unchanged at 71 lines, file
+`2b0cdd18`):
+
+| step | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| bundle B0c -> R-2 (`bundle.sh`, tag v8f) | 180 / 1,536 | 0.8 | 479 | 0 | `7f5c537a22e0ee40a46f22de5f7f5752815804fb2beb96365e5b1fa0035f4f5e` | `build-equity/v8-cells-v8f-bundle.json` `ab3b5f60` |
+| grid summ (57 ledgered cells + R-2 last; scratch `v8f_grid.py`) | 180 / 1,536 | 27.3 | 593 | 0 | `ca97f4e7aa460b9f261955b0bca807ed3df17fa86a7999aaeb490f3bb91cb8f2` | `build-equity/v8-f-grid-summ.json` `42ffb9d2`, `v8-f-grid-pbo.json` `d31fd389` |
+
+(A first grid attempt, `build-equity/v8-f-grid-run`, did not start: the scratch argv file carried CR line ends, nav_summ.py
+was not found, exit 2 in 0.3 s, nothing read or written; re-run as `-run2` with the same argv.)
+
+**(a) S2 net Sharpe R-2 2020-2023: 1.2559 >= 1.0 -> PASS.**
+**(b) Mechanics (R-2, re-read): PASS** -- all-rows gross .9860 in [.90, 1.05], net +.0042, tau mean .02393 / p95 .02841, 1,006
+CSV rows, 1,005 return rows, last session 2023-12-29.
+**(c) Cumulative paired S2 net (R-2 - B0c): dSR +.1232** (R-2 1.2559, B0c 1.1328); rho .914; **Memmel SE .2088** (t .59); CBB
+95% [-.292, +.529]; LW SE .2141, 95% [-.303, +.549]; **bootstrap p one-sided .278 (E-34, the gate's), two-sided .567**;
+bundle verdict `dsr_positive` true, `pass` false (alpha .10) -> **FAIL** (p >= .10). By year (R-2 / B0c): 2020 -.316 / +.319,
+2021 2.596 / 2.352, 2022 1.841 / 1.936, 2023 .638 / .118.
+**(d) Cell-count DSR at the v8 count: .4648 < .95 -> FAIL.** N **50** (ledger construction trials by the defect rule);
+**V[SR] (`dsr_variance`) 1.2971e-03 per session** (ddof 1; 21 construction lines on research-window-v2: B0a, B0b, B0c, R-1..R-8,
+R-9a, R-9b and the 8 window re-runs; = .3269 in annual units, SD .572); SR0 1.3014 annual > SR 1.2559. Beside it, gating
+nothing: legacy-variance DSR .7651 (37 cells, V 5.98e-04); effective-N DSR .7240 (ONC N_eff 4 of 58 series, 754 common
+sessions); listed-dirs DSR .6545 (58 dirs); PSR vs 0 .9926 (MinTRL 458 sessions, 1.82 y), vs .5 .9289 (MinTRL 1,263
+sessions, 5.01 y); CSCV PBO .3590 (58 candidates, 16 blocks of 47 sessions, 12,870 splits, exhaustive; winner IS 1.652 ->
+OOS 1.108 mean; P(winner OOS loss) .052).
+
+**Freeze gate (v8-prereg item 9): UNMET** -- (a) and (b) hold; (c) fails on p (.278 one-sided); (d) fails (.465). As the brief
+step 3 says: the gate is unmet, and **OD-3 (history 2013-2019) is the named lever**; the registered procedure asks for no read,
+so none was made (E-2: an explicit owner ruling first). No remedy is applied. The book stays R-2.
+
+**H-2: not measured** (see the reading: no executable selects AuditExact on a role; PM5-21).
+
+**Final book R-2** (S2): net annual return 4.54% (CAGR 4.57%), gross of cost 5.81%, vol 3.61%, max drawdown 3.25%; net
+Sharpe 1.2559 ($1bn), at 4x NAV 1.1785 (capacity curve); tau_gmv_mean .02393; all-rows gross .9860; L 1.1474.
+
+**Appendix A (V8-F):** `TRAIN construction cells 50; admission trials this sprint 12 (plus 8 re-screens); window
+research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history
+reads 0; 2025+ never read.`
+
+### Hidden-data record (batch 2g)
+
+- Inputs opened by the tools: roles lo1 / lo3 (4-year), the lo3-dlret label role, fields v9 lo1 / lo3 and v10 lo3, the lo1 /
+  lo3 candidate caches and fit-work store, R-2's u / fit / w / NAV outputs, the risk stores `v8-risk-lo3-v10`, `b0c-risk` and
+  the new `v8-risk-lo1-v9`, the v6.1 / v7.0 libraries and recipes, the ledger and the ledgered NAV dirs (the 3-year legacy
+  dirs included, for their mechanics keys and the grid), each run's own outputs. The lo3 re-run plans hash-verified the
+  atx-db identity-bridge and sic-events manifests (read only, as B0b / B0c; nothing under `atx-db/` written).
+- Every NAV's last session 2023-12-29 (`1703808000000000000`); every store and fields manifest sealed at 2024-01-01.
+  **Nothing dated 2024-01-01 or later was opened.** No NAV `stdout.log` was opened. No history (2013-2019) file was opened.
+
+### Open items (batch 2g)
+
+- **Freeze gate unmet** (p .278; DSR .465): OD-3 is the named lever; an owner ruling is needed for any history read.
+- **H-2** needs an executable change (an AuditExact switch on the IC runner); not done under PM5-21.
+- v6.1 re-run: no `summ.json` / `cycle_verdict.json` (its summ died on the `--json` path after writing its ledger line;
+  numbers from its console, kept in the log above).
+- R-8 left two v9 notes (leverage, not alpha); R-9's frontier favours theta .03 at 4x (report only).
+- **Current book: R-2**; N 50; admission trials 12 of 15; history reads 0. Disk 125,635,739,648 B free (117.0 GiB).
+
+## integration 8 (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `7fb2a0d2` (clean). Scope: `task-INT8-brief.md`
+(merge order, items 5a-5g, builds A / B / C, tests, identities), PM7-13, PM7-15 (a), PM7-25 (freeze ended; R-2 must
+reproduce under the new build before any X measurement), PM7-26. Tag prefix v8-14 (v8-12 pinned Wave 0, v8-13 the
+unadopted Release build). No X cell, no add-alpha screen of an X candidate, no campaign, no X result opened (none exist).
+
+### Merges (`--no-ff` by SHA; each `git merge-tree` re-run at dispatch: six clean, XCOMB one file as predicted)
+
+| # | lane | lane SHA (= branch head) | merge | conflicts |
+|---|---|---|---|---|
+| 1 | XPRE | `da3bb239` | `491f2ea8` | none |
+| 2 | XSIG | `7467448f` | `a30d0fb1` | none |
+| 2 | XIMP | `3db253d5` | `e99aa994` | none |
+| 3 | LIB3 / FIELDS-V9 | `834d5a05` | `f6786b9f` | none |
+| 3 | XDATA incl. task GOLD | `e3654b93` (ahead of the `d44fa7f6` progress.md records by `9ffbce6c`, `3c0aee08`, `e3654b93`: task GOLD, PM7-19 / PM7-23; wanted, merged) | `7c3d63be` | none |
+| 5 | XCOMB | `914f9944` | `ecef208e` | `scripts/tests/test_research_spec.py`, 3 hunks, the brief's union: NULL_PINS keeps v8's r3-gm / r6-gm / r9a-b / lib-v81-gm pins and adds `x-theme-erc.json`, `x-inv-vol.json`, one `STORE_FILLS` (v8 spelling); EXPECTED_CHANGES keeps v8's lines and `THETA`, adds the two `x-*`; `nav_delta` closes with `x-inv-vol.json`, keeps the r6-gm / THETA / `spo` lines, `assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json", "x-inv-vol.json") + spo` |
+| 6 | mining (MINE-MEM, -STAT, -RUN, -JOIN, ENG-SLOT) | `1bd448cd` | `31086f3a` | none; auto-merged files re-read: `atx-impl/CMakeLists.txt` (mine sources :28-34, theme-erc :114 / :121), `MINED_MAX_BUDGET = 10000`, ledger tests at 10000 (the 1000s left are campaign-line fixture budgets, not the ceiling), `research_cycle.py` `mine` dispatch in `main` |
+
+No lane touched `atx-db/` (`git diff --name-only <base> <sha> -- atx-db` empty for all seven).
+
+### To-write items (each its own commit)
+
+| item | commit | what |
+|---|---|---|
+| 5c PM6-9 | `d148bdf9` | `generate_library.exe_plan(..., max_memory_mib=None)` appends `--max-memory-mib N`; `research_add_alpha.plan_for` passes the parent spec's `ic.flags` value. The fake IC exe records its plan argv (opt-in `FAKE_IC_ARGV`, set in `953c9569`); `test_add_alpha_validates_through_the_exe_plan` asserts `--max-memory-mib 1536` (fails without the fix, checked) |
+| 5d PM7-15 (a) | `b8d4af86`, `ffbf3888` | `V7_APPENDED_THEMES = ("ownership_flow", "filing_events")`; `test_composition_resid.py` (:243, :278-294, :671-711) takes the frozen ten (`cres.FROZEN_PREFIX`) as the before-registration order; `test_fit_composition_weights.py` constants and refusal text; `ffbf3888` the same refusal literal in `test_fit_composition_weights_store.py` (found by the XCOMB suite run) |
+| 5e PM7-13 | `d12c8b0b` | `registry.json` `house_budget.max_roster` 64 -> 80; `atx-impl/strategies` 163 passed |
+| 5f | `953c9569` | `research_add_alpha.MARGINAL_CAPS = {"seconds": 360}` written into `runner.phases.marginal` of every add-alpha wave spec unless the parent's spec names one (spec data, OD-2 precedent). R-7's marginal receipt (`mega-v8-b0b-train-u-v81-marginal-pool-run`): wall 170.3 s of 180, peak 252 MiB; 80/57 x 252 = 354 MiB < 1,400, so `max_rss_mib` stays the runner's 1,536. No X wave spec or template exists in the tree yet, so `EXPECTED_CHANGES` has nothing to admit; the add-alpha tests in `test_research_cycle.py` and `test_research_spec.py` assert the cap. The PM restates it in `v8x-prereg.md` before X-2 |
+| 5a R6C-7 | `6cb4c857` | `composition_recorded_rule`: a file without a string `provenance.rule` passes only without a `theme_standardise` block, else `Err(InvalidArgument, "... carry a theme_standardise block without a string provenance.rule (finding R6C-7)")`; comment fixed. Tests: `themed_text` gives a `std_block` doc its rule, `shrink_doc` and XCOMB's `erc_doc` record `provenance.rule` (brief finding F1); `RecordedRuleMustWrite...` moves the no-provenance `ic-shrink-v1` doc to the refused cases and admits a plain v1 file without provenance |
+| 5b R6C-3 (tests only) | `57483cf3` | `ThemeResid.UnequalTieBlocksBesideSingletonsPinTheBlockMean`: UNEQUAL_PLANES / _EXPECTED / _WRONG through `st::add_theme_residualised` (W .5/.5, 1e-15, one value per block, add order 0,1,5,7,2,4,6,3). No source seam (cut 2 not needed; the seam was optional): the 1e16 summation-order pin stays Python-only |
+| (mine test) | `6a1363a9` | `test_research_mine.py::test_fields_are_the_rule_applied_to_the_registry` asserted the two `HELD_BY_V8_LIBRARY` fields unread by the registry; R-2 was accepted, so its rows read them. Now asserts the excluded classes unread and the held fields present in v9; the rule (12 fields = the template's) unchanged |
+| 5g PM7-13 | `5c65cee8` | `kMaxMinePoolMembers = 80` (`strategy_mine_pool.hpp:31`, comment :13, `strategy_mine.hpp:137`), `research_mine.py MAX_POOL_MEMBERS = 80`, runbook :80 / :100. `StrategyMine.WorkingBytesAreThePeakOfThePhases` keeps the 53-member peaks at members {1, 80} |
+| H-2 | `66f83b35` | see section H-2 |
+
+### Builds (`scripts/research-build.ps1 -Preset equity-dev`; build dir `build-equity`; 4 jobs each, first attempt)
+
+| tag | source | targets | result |
+|---|---|---|---|
+| v8-14a (build A) | `57483cf3` | equity-strategy-ic, -targets, impl-strategy-ic-tests, -target-tests, engine-combine-tests, -book-tests | exit 0, 74.4 s, 31 TUs, 7 links; reconfigured (GLOB mismatch: new sources); receipt `3e12fa39...c4a9` |
+| v8-14b (build B) | `5c65cee8` | equity-strategy-mine, impl-strategy-mine-tests, engine-factory-tests, engine-alpha-tests, atx-shm-worker | exit 0, 98.5 s, 44 TUs (incl. `search_driver.cpp`, the seven `strategy_mine*.cpp`, `alpha_vm_slot_reuse_test.cpp`), 7 links; receipt `e0760327...e4b2` |
+| **v8-14 (build C, the record)** | `66f83b35` | all fourteen research executables and test targets of the brief | exit 0, 59.7 s, 32 TUs, 12 links; receipt `e8d1831c...3e68`; `ConfiguredProvenance` `5c65cee8` (configure-time, set at build B; build C did not reconfigure; the only code between is H-2's flag; strategy_live reports this provenance as a health warning, never a refusal, review C4; the executable SHA binds the code) |
+
+**0 compile fixes**: the mining and XCOMB C++ (never compiled before), 5a, 5b and H-2 compiled first time under `/W4 /WX`;
+no warning or error line in any of the three logs. Research executables on **v8-14** (bin 2026-10-02 10:48):
+
+| executable | v8-14 SHA-256 |
+|---|---|
+| atx-equity-strategy-ic | `67f7292192bf431fccb1af185857e4b51d316860d42ea021037e37af288b4e6b` |
+| atx-equity-strategy-targets | `a95f6f0af06907f3707ca10b182de451d84727aeeb1ce5e7170906fd36d31417` |
+| atx-equity-strategy-risk | `d7e424b23f097737cf3086dff886b5cf45e9b77dcb0d1059fa99d8c604fcf623` |
+| atx-equity-strategy-mine | `2176fa4a3e7b49c5d375b0d41e30cb8504687073d35328b05df7132def2ed7ec` |
+
+Test executables (v8-14): mine-tests `d6e40412`, factory `58bb8bee`, alpha `c623aff2`, ic `b7be8c2c`, target `ca223f8a`,
+impl `c6824689`, strategy `1d05e484`, book `4ed6dc96`, combine `be5e8ff4`, shm-worker `9586f5d5`.
+
+### Mining golden `0x889874a3b9b29c55` (not edited), fixture, slot reuse
+
+| test | exe | 1 worker | 4 workers |
+|---|---|---|---|
+| `SignalFitnessDefaults.ExplicitDefaultsKeepTheGoldenDigestAtEveryWorkerCount` (loops {1, 4}) | factory-tests and mine-tests (v8-14b; mine-tests again on v8-14) | **holds** | **holds** |
+| `SignalFitnessDefaults.ImplicitDefaultsKeepTheGoldenDigest` | both | holds | - |
+| `NsgaSearch.ScalarRaw_ReproducesGoldenDigest` | factory-tests | holds | - |
+
+- `--gtest_filter=SignalFitnessDefaults.*:NsgaSearch.ScalarRaw_ReproducesGoldenDigest:SignalFitnessPath.*`: factory 10/10, mine 9/9.
+- `StrategyMineRule.*:StrategyMine.*:StrategyMineCampaign.*`: **29/29**. `PromotesThePlantedSignalsOnlyInFiveSeeds` passes
+  (asserts **`rung_failed == 0`** and `failed == 0`); `MembersStreamByDateAsStored` passes (write / remove / rename refused
+  while held: the Windows share mode observed, not only asserted); `WorkingBytesAreThePeakOfThePhases` passes at M 80.
+- `SameSeedSameChainHeadAtOneAndFourWorkers` (`build-equity/v8-i8-mine-heads.xml`, `88716737...b075`):
+  `fixture_registry_head` `0ca572d1d176d86de6d89746b37365f3046a8a84166f3219964251bfac36d56a`,
+  `fixture_trials_csv_sha256` `e3196f0932615112abdd0006c065920eb29c22959f8f5544d6617658694602ef` (differ from `20e7bd19`'s by
+  design: MINE-STAT's recipe keys).
+- **`atx-engine-alpha-tests --gtest_filter=AlphaVmSlotReuse.*`, run directly: 6/6 passed** (1.99 s; no abort, no byte
+  difference: AuditExact, ResearchFast, masked AuditExact, masked ResearchFast all byte-equal to a fresh engine); recorded
+  `forms` 107, `variants` 1,266, `max_target_slots` 9 (`build-equity/v8-i8-slot-reuse.xml`, `be42b334...7373`). Whole
+  alpha binary (never run in this sprint's integrations before): **755/755**.
+
+### Tests (counts grow only by the lanes' tests and this integration's)
+
+| suite | build | result |
+|---|---|---|
+| ic-tests `GroupErc.*:ThemeErcV1.*:CompositionV8.*:ThemeResid*` | v8-14a | **36/36** |
+| atx-impl-strategy-ic-tests (whole) | v8-14 | **159/159** (145 + 12 XCOMB + 1 R6C-3 + 1 H-2) |
+| target-tests `InvVol.*:BookInverseVol.*` | v8-14a | **9/9** |
+| atx-impl-strategy-target-tests (whole) | v8-14a, v8-14 | **268/268** (259 + 9); `[spo-pin]` v1 `0xda6b6871e7e267c5` / `0xaabdbb72f99a6e13`, `[spo-v3-pin]` v2 `0xb039820b40d5cf24` / `0xd24b61721a7c698c` |
+| atx-engine-combine-tests | v8-14a, v8-14 | **238/238** (233 + 5) |
+| atx-engine-book-tests | v8-14a, v8-14 | **160/160** (155 + 5) |
+| atx-impl-strategy-mine-tests (whole) | v8-14b, v8-14 | **44/44** (31 + 13) |
+| atx-engine-factory-tests (whole) | v8-14b (= v8-14 bytes) | **392/392** (390 + 2) |
+| atx-engine-alpha-tests | v8-14b (= v8-14 bytes) | `AlphaVmSlotReuse.*` **6/6**; whole **755/755** |
+| atx-impl-tests (from the repo root) | v8-14 | 1,052 run: **1,046 passed, 5 skipped, 1 failed: the known `ConfigJsonNotInDiscoverDigest`** (1,028 + 24 through the globs); same spo pin lines |
+| atx-impl-strategy-tests | v8-14 | **46/46** |
+| XPRE pytest (`test_dsr_total`, `test_nav_summ`, `_v8`, `_pool`, `test_backtest_integrity`, `test_trial_ledger_rules`, `test_holdout_gate`) | - | **96 passed, 1 skipped** (`ATX_EQUITY_ROOT`); `test_flag_absent_is_byte_identical_to_the_pre_x_nav_summ` passed; with `ATX_EQUITY_ROOT=build-equity` `test_legacy_n37_numbers_reproduced` **passed** |
+| mining pytest (`test_research_mine`, `test_research_ledger`, `test_trial_ledger_rules`, `test_mine_overlap_factor`) | - | **61 passed** |
+| `research_cycle.py mine plan scripts/specs/v9/mine-c1.json` | - | metadata only, as expected: pins UNLOCKED, pool MISSING, pool_source / max_memory_mib TO FILL, four requires lines; budget 132 |
+| XCOMB pytest (7 files) | - | **209 passed** after `ffbf3888` (1 failed before it: the 5d literal) |
+| LIB3 / FIELDS-V9 (3 files) | - | **26 passed**; XDATA (`test_research_fields_xdata`, `_gold`) **14 passed** |
+| XSIG `xsig_check.py` | - | **`xsig_check: PASS`** |
+| atx-engine/tools (whole) | - | **293 passed** |
+| atx-impl/tools (whole; `ATX_EQUITY_BIN`, `ATX_EQUITY_TARGETS_EXE` absolute, v8-14) | v8-14 | **612 passed, 1 skipped** (`ATX_EQUITY_ROOT` unset in the whole run) |
+| atx-impl/strategies | - | **163 passed**; `test_generate_library.py` with `ATX_V71_PLAN_JSON` **9 passed** |
+| scripts/tests (whole; v8-14) | v8-14 | **245 passed, 3 skipped** (the RESEARCH_CYCLE_LIVE_ROOT skips); tiny_world: no golden moved; `git status` clean after |
+
+LIB3 / XDATA identity: `git diff --stat 7fb2a0d2 HEAD -- atx-engine/tools` lists only their 10 new files (plain builder
+untouched; no fields rebuild).
+
+### Identity under v8-14 (PM7-25; bounded runner, clean tree `66f83b35`, one at a time; argv = the recorded receipt's with only the output path renamed)
+
+Every receipt: outcome completed, exit 0, `git: clean in the code pathspec`, source `66f83b35`, exe = v8-14's.
+
+**R-2 (the V8-F book; X baseline)**
+
+| pass | source receipt | new receipt.json SHA-256 | s / MiB | result |
+|---|---|---|---|---|
+| w (`--output build-equity/v8-i8-r2-w`; 300 s / 3,072 MiB) | `mega-v8-r1w-train-std-v80-run1` | `26536b276bb2731e023824ef9bb3680afa9f46d068b769488b15f34bcce279f0` | 36.2 / 1,308 | **10 of 12 byte-identical**: `recipe.json` `7380ec35`, `orientations.json` `ed90c8d0`, `train_combined.f64` `6331421f`, `train_combined.json` `bbbf6f2b`, `_member.u8` / `_finite.u8` `c61f5b62`, `_ids.u64` `761bd1df`, `_sessions.i64` `ab244802`, `train_planned_targets.csv` `2e743418`, `train_daily_ic.csv` `b631b6e3`; `summary.json` (216 paths) and `train_candidates.jsonl` (207) differ **only in timing paths** (`stage_seconds.*`, `wall_seconds`, `hash_seconds`), as INT7 |
+| fit (`--output build-equity/v8-i8-r2-fit`; 180 / 1,536) | `mega-weights-v8-r1-std-v80-run1` | `422d01050ad9ac35f4910ae0f374681a064c9eb9c439cfd60d7f9735a10563df` | 0.8 / 55 | `admission.csv` byte-identical; `admission.json` differs only in `inputs/script_sha256`; `composition_weights.json` differs only in `provenance/script_sha256`, `provenance/admission_sha256` (the SHA of the new admission.json, `e7fbdfe8`) and **`provenance/std/registry_sha256`** (`570f022a` -> `566d7076`). Both files are **byte-identical after substituting those values back**. The registry is an input the fitter reads (not on the argv): `570f022a` is the registry at R-2's fit (`9d4203f0`); it changed at `7402d7b2` / `8d2eac5e` (R-7 rows and the roster cap 64, before V8-F) and at `d12c8b0b` (item 5e). Weights, signs, admission rows: identical. **Listed for the PM: one allowed-list exception (an input-pin field), no computed value differs** |
+| NAV (`--output build-equity/v8-i8-r2-nav`; 180 / 1,536) | `mega-nav-v8-r1-std-...-L1.1474-v80-run` | `74d0474a9a7149de9f22e8970418758823cbd50d1514f611820d8a50c071e807` | 42.5 / 586 | **27 of 27 byte-identical** (every `daily_*.csv`, `events_*.csv`, `recipe.json` `2311993e`, `summary.json` `083a56da`, `capacity_curve.csv` `b99b1cd1`, `v7_*`, the 12 `capacity/` files; S2 daily `7cfe21c4`); `stdout.log` differs only on its output-path line. Not refused at `--max-bytes` (brief F2) |
+
+This is also XCOMB's flag-absent identity (theme-erc: w pass and fit without `--theme-erc`; inv-vol: the V8-F NAV argv)
+and items 5b / 5d.
+
+**INT7's identities (lanes' flag-absent; the v8-i7 receipts' argv, outputs `v8-i8-*`)**
+
+| id | receipt.json SHA-256 | s / MiB | result |
+|---|---|---|---|
+| 1a | `b387bb9dd27d0def6996233f109bf0320ed5eaa9e47bbdd0e104319634a50dd1` | 13.5 / 359 | **12 of 12** byte-identical to `v8-i7-i1-nav`; stdout identical |
+| 1b | `dbb1097e3a8aff21b4230a67487e40792d4da35e3e7a4956114b97da73db2ff3` | 13.5 / 361 | NAV **12 of 12**, holdings **4 of 4**; stdout identical |
+| 4 step 1 | `423bf780b530687784f6a2ed5bf2b1e9f360eb65976d29871080169a44c0f00d` | 0.3 / 5 | weights file **byte-identical** (`d49e208c`) |
+| 4 step 2 | `fda2e9ec826a52b0c73e628242863eb0244e8222b005096d6bc0ccc570f74bf3` | 18.3 / 506 | **10 of 12**; `summary.json` / `train_candidates.jsonl` timing paths only (as INT7) |
+| 7 | `83396a5c28016c213545d709fa24dd7c1c5484b2979ae9f032db5ed307282004` | 35.0 / 360 | **9 of 9** |
+| 8 | `775aeca659b00ca2aeba26017fc5865a5ecd98db0dda05cce83e2cbd93a99b87` | 14.3 / 464 | **12 of 12**; stdout identical |
+
+XPRE: flag-absent test (4 argv sets) passed; legacy n37 reproduced. Mining: no flag; the golden is its identity (holds).
+**R-2 reproduces under v8-14** (w, NAV byte for byte; fit with the three provenance hashes above), so X has its baseline.
+
+### H-2 (AuditExact cost; flag-gated, flag absent byte-identical)
+
+The AuditExact selection is small: `IcRunnerConfig::audit_exact` (`--eval-mode audit-exact`, the only accepted value) sets
+`al::EvalMode::AuditExact` where the runner builds its Engine (`strategy_ic_runner.cpp:223`) and the recipe's `vm`
+(`AuditExact;full-historical-asof-member-mask`); refused with `--candidate-cache` (entries keyed on ResearchFast).
+Commit `66f83b35`, test `StrategyIcRunner.AuditExactEvalModeIsRecordedAndRefusedWithTheCache`. Flag absent: every
+identity above passed on the build that carries it.
+
+Measured as the task-H brief says (cold VM seconds of library v7.1, E3 and the fixture); no IC statistic read:
+- **E3** (4-year role lo3 `e1c67101`, fields v9 lo3 `9f156363`: B0b's u-pass argv without `--save-combined` /
+  `--candidate-cache`, plus `--no-composition`, 4 workers, 2,560 MiB, bounded 600 s / 2,560 MiB; 48 candidates, every one
+  evaluated): ResearchFast VM **59.4 s** (wall 91.7, peak 1,496 MiB, receipt `5b98f8b5...ecb12`); AuditExact VM **70.1 s**
+  (wall 100.1, peak 1,496, receipt `1c4ab80f...c578c`). **Ratio 1.18x.**
+- **Fixture** (tiny_world, its 4-member library, synthetic, 5 repetitions each, 1 worker): median VM 13.7 ms ResearchFast,
+  14.5 ms AuditExact: ratio 1.06x (noise level).
+- Debug (`equity-dev`) executables, one run per mode on E3. **AuditExact costs less than 3x ResearchFast (1.18x)**: the
+  brief's condition for planning the date-blocked runner (platform review P-5b) is met; planning it is the PM's.
+- The two E3 output dirs (`build-equity/v8-i8-h2-fast`, `-audit`) hold IC rows of v7.1 on 2020-2023 that were not opened;
+  they are measurement runs (0 trials, prereg section 3) and select nothing.
+
+### Campaign memory probe: not run
+
+`v8x-prereg.md` counts a probe at 0 trials (section 3) and orders it in the runbook (section 9: after `mine pool` on H-F's
+pool source, with role lo3 and H-F's fields, A2-A4), but it does not state that the probe reads no return, and its
+inputs (pool from H-F, H-F's fields) do not exist before X-2..X-8. The dispatch's condition is not met.
+
+### What the X cells can run now (v8-14; PM preconditions P4 (X list pinned) and P6 (fields v13) still the PM's / root's)
+
+- **X-2** (refinements, 5 strings) and **X-3** (XSIG 5 + XDATA 3): add-alpha with the K1 plan under the spec's IC cap (5c),
+  the marginal cap 360 s (5f), roster cap 80 (5e), `filing_events` last in the fitter (5d), the field builders (LIB3,
+  XDATA) and the v8-14 IC / NAV executables. X-3 also needs the IC-pass memory cap re-probed (P7, PM7-13).
+- **X-4** (value within FF49, 9 re-screens): add-alpha re-screens on the same tools.
+- **X-5** theme-erc-v1 / **X-6** inv-vol-v1: built on v8-14, flag-absent identities pass on R-2; root sets the parent.
+- **X-9** (mined wave): mining merged and built, golden at 1 and 4 workers, fixture `rung_failed == 0`, slot reuse 6/6,
+  pool cap 80; needs H-F (after X-2..X-8), the pool step, the probe and the spec edits of the runbook (A2: role lo3).
+
+### Scoped review range
+
+- Code: `7fb2a0d2..66f83b35` in `research_tree.CODE_PATHSPEC`: the seven lane merges and the integration commits
+  `d148bdf9`, `b8d4af86`, `d12c8b0b`, `953c9569`, `6cb4c857`, `57483cf3`, `ffbf3888`, `6a1363a9`, `5c65cee8`, `66f83b35`.
+
+### Hidden-data record
+
+- Inputs opened by tools: roles lo1 (3-year) / lo3 (3- and 4-year) and the lo3-dlret label role, fields v7 / v9 / v10,
+  the v7.1 / v8.0 libraries and recipes, the lo3 / v71 candidate caches and fit-work store, R-2's u / w / fit / NAV
+  outputs (pinned inputs of the identities), the lo3 risk model `786cb601`, the INT7 identity inputs, the v7.1 n37 cells
+  (XPRE legacy test), the ledger (tests only, read, not appended), tiny_world (synthetic). Tests used synthetic fixtures.
+- Read by me: lane reports, briefs, rulings, sources, build receipts and logs, runner receipts (outcome, exit, timings,
+  SHA-256s, argv), output-file SHA-256s, JSON paths of differences (no values), gtest pass / fail / pin lines, the H-2
+  timing fields, R-7's marginal receipt (wall, peak). No return, Sharpe or IC statistic was read or printed.
+- Scan of every `v8-i8-*-run` stdout / stderr for dates in 2024 or later: none.
+- **Nothing dated 2024-01-01 or later was opened. No X cell, screen or campaign was run. No ledger line was written (N 50).**
+
+### Open items
+
+- **For the PM:** R-2's fit identity has one difference outside the allowed list: `provenance/std/registry_sha256` (input
+  pin of the registry, which changed by R-7 before V8-F and by 5e); every computed byte is identical (above).
+- Restate the X waves' marginal cap (5f, 360 s) in `v8x-prereg.md` before X-2; re-probe the IC-pass memory cap before X-3.
+- H-2: P-5b (date-blocked runner) is plannable on the 1.18x reading (Debug; a Release reading may differ).
+- v8-14's configured provenance is `5c65cee8` (one commit behind the source: H-2's flag only).
+- Known: `ConfigJsonNotInDiscoverDigest` (1). The bare `atx-equity-strategy` was not built (no research script uses it).
+- Disk 125,337,964,544 B free (116.7 GiB).
+
+## X batch 1 (cells X-2..X-6): fields v13 built; K1 pre-checks; STOPPED before the X list pin (P4) (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `3d12d495` (clean; build v8-14, nothing
+built). Read: integrator-rules, `v8x-prereg.md` (whole), progress "PM session 7" to the end (PM7-1..31), the XIMP, XSIG,
+XDATA, XCOMB reports, this log's integration 8, batches 2c, 2d (R-2..R-4) and 2f. Baseline / first parent R-2
+(`lib-v80.json`, L 1.1474, G .9859903463), N 50. Scratch readers as batches 2c-2f (`k1plan.py`, PM6-9 route).
+
+**No X cell ran. No admission line, no construction line, no ledger write (ledger 71 lines, `2b0cdd18`, N 50). No
+IC, return, Sharpe, turnover or NAV number of any X candidate exists or was read.**
+
+### Registration gaps raised to the PM before any X read
+
+1. XDATA's three X-3 candidates (`div_season`, `vol_beta`, `season_y2_5`) carry no tier, no settled theme for
+   `vol_beta` ("low_risk (or a new macro_vol_risk)") and no add-alpha text (report section 4b: "suggested frozen
+   strings for the PM's registration; not registered here"); PM7-16 (a) fixed none of them. Tier sets the
+   within-theme share under ew-theme-std-v1 (registry `tier_scores`), so it is a constant root cannot choose.
+2. Fields v13 (P6) needs both draft entry modules in one builder process; the fold XDATA named for integration 8
+   (one tuple element in `prepare_research_fields_draft.DRAFT_MODULES`) was not made. Route used (no file changed):
+   one bounded `python -c` run calling the two entries' own `register` on the builder namespace, then the builder's
+   own `main` (below).
+
+The PM answered by message and asked root to write its ruling into `progress.md` before pinning the X list (P4). **The
+session's permission system refused that edit.** By the PM's order (ruling first, then P4) P4 was not pinned, and
+every X cell needs P4 before its first measurement (`v8x-prereg.md` section 11 (1)): **X-2..X-6 not started.** The
+decision on how to proceed is the PM's / owner's.
+
+### 0. Fields v13 on lo3 (precondition P6; 0 trials)
+
+Command = v11's recorded argv (receipt `train-2020-2023-lo3-fields-v11-run`) with `--output
+build-equity/train-2020-2023-lo3-fields-v13`, `--fields` = v10's 70 names in v10's argv order +
+`nt_first_126,earn_season_rank` (LIB3 / FIELDS-V9, `research_fields_v9.py`) + `div_month_pred,beta_dvol_21,season_y2_5`
+(XDATA, `research_fields_xdata.py`), `--reuse build-equity/train-2020-2023-lo3-fields-v10 --reuse-sha256 a4a060ae...70809
+--reuse-hardlink`; builder `--max-rss-mib 2048 --max-seconds 580`; runner `--seconds 600 --max-rss-mib 2560 --min-free-mib
+512` (W0-i), binds the ten tool modules (plain builder, sec, holdings, price, v8, both draft entries, v9, xdata, gold),
+the role manifest and v10's manifest. Driver (whole): `import sys; sys.path.insert(0, 'atx-engine/tools'); import
+prepare_research_fields as b; import prepare_research_fields_draft as d; import prepare_research_fields_xdata as x;
+d.register(vars(b)); x.register(vars(b)); b.main(sys.argv[1:])`. Script `scratchpad/fv13.sh`.
+
+| step | receipt dir | source | outcome / exit | s | peak MiB | receipt.json SHA-256 | output manifest SHA-256 |
+|---|---|---|---|---|---|---|---|
+| fields v13 lo3 | `train-2020-2023-lo3-fields-v13-run` | `3d12d495` | completed / 0 | **44.0** | **543** | `b08496275758521c278a206fd4f6c7e5ebae340aed72cc2826c3be4fe12425a1` | **`e5f7f28c465a92885d55d55a439eb2f217b9f5f15d51017b4293ebc55935e9b2`** |
+
+Receipt: `clean in the code pathspec`, dirty outside none, min system free 5,863 MiB; stdout `7dff1514`, stderr empty.
+Manifest (metadata only): status complete, `seal.exclusive_end` 2024-01-01, role lo3 (1,405 dates, first session
+2018-06-01), **75 rows**, builder `code_sha256_lf` `74df97f9` (= v10's / v11's), 633,772 B; no 2024- or 2025-named
+source. **Counts: reused 70, computed 5 = the expected 70 / 5** (`nt_first_126` `3532615a` sec-nt-first365-126-v1,
+`earn_season_rank` `fca9f725` chss-earnrank-ni20q-v1, producer module `research_fields_v9.py`; `div_month_pred`
+`06535cab` hs-divseason-q3-6-9-12-v1, `beta_dvol_21` `f4a1cf31` ahxz-beta-dvol-spy21-v1, `season_y2_5` `ce5b9286`
+hs-season-y2-5-v1, producer `research_fields_xdata.py`). The 70 v10 payloads: entry sha256 = v10's (70 / 70), hardlinks
+of the v10 files (70 / 70); all 75 payloads re-hash to their pins. New rows at 62-66 (registry order). Dir 4.7 GiB
+apparent (hardlinks). Logs scanned for 2024-2029 date tokens: none.
+
+### K1 pre-checks (metadata only; PM6-9 route; nothing written to the tree; plans in the scratchpad, not of record)
+
+Each frozen string as its own add-alpha argv on v80 (R-2) with fields v13 through `k1plan.py` (the exe's `--plan-only
+--max-memory-mib 2560` on the exact library bytes). The plans of record are re-made call by call at registration.
+
+- **X-2 (XIMP, verbatim; A-1 without `--rescreen`): 5 / 5 plan.** DSL sha16 / bars / slots / nodes / extra fields =
+  the XIMP tables exactly: q5_eg_f49g `07a61a9e` 272/7/33/6 (exception inherited from q5_eg_f49), iv_rv_spread_xe
+  `29e7d9cf` 21/7/31/2, ind_adj_rev_5_nx `9c1d051d` 5/6/21/2, ins_opp_buy `981d01b2` 0/3/4/1, bac_vq `116135c0`
+  272/6/20/1. Library 52 members, max slots 8 (qmj_safety), lookback 272.
+- **X-3 XSIG (frozen lines parsed verbatim; placeholders substituted only): 5 / 5 plan** once the four fields have
+  registry rows (added in memory for the check: without them the exe refuses "undeclared DSL field", the expected
+  state before the wave's registry edit). Rows = XSIG section 5: stmom `06dc6238` 41/5/shares_out, earn_season
+  `64a0be8f` 0/5/ea_days_to_expected+earn_season_rank, k8_intensity `0b7d6cde` 209/5/k8_count_63, inst_persist
+  `ea338c04` 272/6/inst_own_chg_q, nt_late `bafc4e3a` 0/3/nt_first_126; exe node counts 22 / 11 / 16 / 34 / 5 against the
+  mirror's 21 / 11 / 15 / 34 / 4 (no node budget exists; as R-7).
+- **X-3 XDATA (3): not checked** (their registration is the PM's ruling of the message above).
+- **X-4 (XIMP C-1 table, verbatim; replaced member's theme / tier / sign): 9 / 9 plan**, rows = the C-1 table:
+  value_composite_v49 `09fb156c` 20/6/19/5, bm_v49 `a37c3eca` 20/4/11/3, ep_v49 `0d1975e5` 20/4/11/3, cfp_v49 `86aed322`
+  20/4/11/3, fcfp_v49 `408ba943` 20/3/9/4, ebit_ev_v49 `4a2b9ba7` 20/5/18/5, net_payout_v49 `8b6e8423` 20/3/11/5, sp_v49
+  `1153ac46` 20/4/11/3, rd_me_v49 `bf89d6a6` 20/4/11/3.
+
+So no X string is void at K1 on the evidence so far.
+
+### Hidden-data record (X batch 1)
+
+- Inputs opened by tools: role lo3, fields v10 (reuse) and the sealed atx-db stages / fundamental events / vendor
+  TickerHistory3 file through the field builder's sealed readers (read only; nothing under `atx-db/` written); fields
+  v13 metadata for the K1 plans.
+- Read by me: lane reports, rulings, sources, the v13 receipt and manifest metadata (status, seal, names, entry
+  sha256 / formula / producer, reuse lists; not the coverage blocks), plan rows (metadata).
+- **Nothing dated 2024-01-01 or later was opened. No X statistic exists.**
+
+### Open items (X batch 1)
+
+- **For the PM / owner:** the refused `progress.md` edit (above); P4, then X-2..X-6, wait on it. Fields v13 is ready
+  (manifest `e5f7f28c`); the K1 evidence above needs no re-run beyond the plans of record at registration.
+- Before X-3's add-alpha: registry field rows for `k8_count_63`, `inst_own_chg_q` (XSIG L2), `nt_first_126`,
+  `earn_season_rank`, `div_month_pred`, `beta_dvol_21`, `season_y2_5` (clock / basis from the v13 manifest rows); the
+  IC-pass memory re-probe (PM7-31) on X-3's cumulative K1 plan.
+- Current accepted parent: **R-2** (`lib-v80.json`), N 50, admission trials 12 of 15 (v8) + 0 of 13 (X hand-written).
+  Disk 124,832,608,256 B free (116.3 GiB).
+
+### X batch 1, resumed (PM message after PM7-32 was recorded by the PM at `bc153439`)
+
+**Preconditions (0 trials).**
+- Registry field rows (commit `297c5d55`, registry `566d7076` -> `fe109c9b`): `k8_count_63`, `inst_own_chg_q` = XSIG's L2
+  rows verbatim (formula id, origin, producer and clock checked equal to the v13 manifest rows; XSIG's basis text is the
+  longer one); `nt_first_126`, `earn_season_rank` (fields_v13, `research_fields_v9.py`), `div_month_pred`,
+  `beta_dvol_21`, `season_y2_5` (fields_v13, `research_fields_xdata.py`): clock = the v13 manifest row's verbatim, basis =
+  its definition + "(formula id X; producer ..., fields-v13)" (R-2 / R-7 form). No theme or budget change.
+- K1 of the three XDATA strings (PM7-32 argv) on v13: div_season `5a1380a1` 0 bars / 2 slots / div_month_pred, vol_beta
+  `91583af3` 20 / 3 / beta_dvol_21, season_y2_5 `13fe28b6` 0 / 2 / season_y2_5; the XSIG five re-checked against the
+  committed registry (same rows as above). All 22 X strings plan; none void.
+- **X list pinned (P4):** `v8x-prereg.md` section 14, commit `3603845b`, file SHA-256
+  `25ba909f95bfc42722fece5dda0501ec8d12700d038fcfb8794ae344df68ecd4` (27 items with DSL / template SHA-256, lane report
+  commits, the XDATA argv of PM7-32, the fields v13 pin, the criteria); recorded in `progress.md` (`5af8e6cd`).
+- P6 fields v13: above (`e5f7f28c`, 70 / 5). P7 the IC-pass memory re-probe: at X-3's cumulative K1 plan (below).
+
+**Rulings received during the batch (recorded by the PM):** PM7-34 (owner directive): from X-2 on, every X cell is
+accepted iff paired S2 net dSR > 0 AND mechanics (PM6-6 unchanged); each cell's capacity / turnover / cost criterion is
+computed and printed as "capacity criterion: met / unmet" and decides nothing. **The new rule took effect at X-2 (the
+first X cell; no X verdict had been written).** PM7-35: see X-2 below.
+
+### Cell X-2 (refinement wave; library v8x2 screen, then v8x2b): N 51
+
+**Registration** (commit `8a0a48ac`): 5 add-alpha calls (`scratchpad/x2_add5.sh`; XIMP argv verbatim, A-1 without
+`--rescreen`), `--parent v80 --name v8x2 --parent-spec scripts/specs/v8/lib-v80.json --fields
+build-equity/train-2020-2023-lo3-fields-v13`, K1 plans of record under `x2-plans/` (PM6-9): every call exit 0. Counts =
+the X list: roster 52 (5 in place at 26, 31, 33, 38, 41), recipe admission_trials 5 / new 5 / unchanged 47 / removed
+bac, ind_adj_rev_5, ins_opp, iv_rv_spread, q5_eg_f49; q5_eg_f49g inherits max_extra_fields 6; K1 rows = XIMP's; the 47
+unchanged rows = R-2's last plan (47 / 47). Library `46068582`, recipe `3e685f20`, spec `lib-v8x2.json` (12 pins
+locked). Registration appended to `v8-prereg.md` ("Library v8x2").
+
+**`run --screen`** (source `8a0a48ac`, then `4566ec94`):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| u | 300 / 2,560 | 15.6 | 1,496 | 0 | `c6611af213db5f8ae3ebbb0421243c88080e629a3c52d1b60e81908fd98f242a` | `mega-v8-b0b-train-u-v8x2-1` |
+| u-compare | internal | - | - | PASS | - | orientations IDENTICAL (47 objects; b adds 5); daily IC IDENTICAL (137,522 rows of 47 keys byte for byte; b adds 14,630 rows of 5) |
+| fit | 180 / 1,536 | 3.1 | 443 | 0 | `0d34d64361fbd2f279df038b5cacd0426b84a94affa1f1430d30b11cadd34f8c` | `mega-weights-v8-r1-std-v8x2` |
+| card | 300 / 2,560 | 19.2 | 1,398 | 0 | `dd856231668d4b9e9a08e125e833c976866abb596895ba175b120f408e9e8e5a` | `mega-cards-v8-r1-std-v8x2` |
+| marginal (themes) | 360 / 1,536 | 0.3 | 2 | **1** | `374d531bafc2c9cb759a72b46a1b6931792d4090b7ab9a0be647b60f00c8b592` | refusal: "themes: pool member bac is not in --library" -> HARD-STOP exit 4 |
+| marginal (pool only, PM6-8 (i)) | 360 / 1,536 | 141.1 | 296 | 0 | `e3f29f82523c1ab1bb529933850e06c9224411b9d1efbb82fc2aa9333f27ca0d` | `...-v8x2-marginal-poolonly` (report only) |
+| gate p1-v8x2 | internal | - | - | PASS | - | **5 admission lines ledgered** (ledger 71 -> 76 lines) |
+
+Spec-only fix (commit `4566ec94`; confirmed for replacing waves by PM7-32): `marginal.themes` deleted, `marginal.output`
+-> `...-v8x2-marginal-poolonly`; lock / lock --write / dry 0 / 0 / 0, every pin unchanged; the screen resumed at marginal.
+
+**Readings stated before any gate line was read** (scratch note, 15:45Z): "a refinement the gate does not admit
+leaves the wave" (prereg section 6, PM7-18 b): R-a = status admitted AND runner sign = prior (the gate's own pass);
+R-b = status admitted (what the prior-oriented fit weights). **Admission (gate p1-v8x2, v4-prior-v1): PASS, 2 of 5 with
+the prior sign;** all 5 status admitted; q5_eg_f49g and ins_opp_buy runner sign +1 (agree); **bac_vq,
+ind_adj_rev_5_nx, iv_rv_spread_xe runner sign -1 against prior +1** (the case where R-a and R-b differ). Reference
+members vs R-2's admission: 0 status changes. STOPPED for the PM; **Ruling PM7-35: reading R-a** -- the three leave the
+wave, bac / ind_adj_rev_5 / iv_rv_spread keep their pre-X strings at 0 trials; the 5 admission lines stay counted; for
+additions (X-3) a status-admitted member with runner sign 0 stays (R-2 precedent) and one with runner sign opposite to
+its prior is dropped from the wave; the same reading applies to X-4's re-screened replacements.
+
+**Library v8x2b** (the cell): v80 with only q5_eg_f49g (38) and ins_opp_buy (41) (`scratchpad/x2b_add2.sh`, the same
+argv, `--name v8x2b`; plans `x2b-plans/`); library `f60162a2`, recipe `24444852` (admission_trials 2, unchanged 50),
+spec `lib-v8x2b.json` with PM6-8 (i) applied before any run. Registered in `v8-prereg.md` ("Library v8x2b").
+
+| phase (v8x2b; source `86b0f202`) | caps | s | peak MiB | exit | receipt.json SHA-256 | output / result |
+|---|---|---|---|---|---|---|
+| u | 300 / 2,560 | 6.0 | 528 | 0 | `04869456798817f7de768fb17a1eb21e76db792ee86d3b8ad7429fd116bd50c7` | u-compare IDENTICAL (50 objects; 146,300 rows of 50 keys) |
+| fit | 180 / 1,536 | 0.8 | 56 | 0 | `e379cf9688740c56b8355fc587bd9640cce05f71900bc5eb583533ce93aa1202` | `mega-weights-v8-r1-std-v8x2b` |
+| card | 300 / 2,560 | 14.5 | 1,271 | 0 | `56e5d0747687e0fe9d732b353f7384c0b7b8923726b2be758242fe75212c5f6b` | - |
+| marginal (pool only) | 360 / 1,536 | 134.6 | 251 | 0 | `b506021e45f7512904b3ab5d8b9bcdce1a8f8179320a681a27f563c485c7c6a0` | report only |
+| gate p1-v8x2b | internal | - | - | PASS | - | 2 of 2 with the prior sign (q5_eg_f49g, ins_opp_buy); **0 lines appended, 2 already ledgered**; 0 reference status changes |
+| ref (L 1.1474) | 180 / 1,536 | 43.3 | 586 | 0 | `bfc873982be8246e3eda349f60a7bc74e982b2815e099cd98b3158ccc0754b28` | **ref-s2-daily IDENTICAL** to R-2's S2 daily (`7cfe21c4`, 940,625 B): fields v13 reproduces the parent |
+| w | 300 / 3,072 | 31.2 | 1,307 | 0 | `ae34838585c84c2b2f6cad5896f3e8c635726fdfceb20199c56d0b4ee0ee09a6` | `mega-v8-r1w-train-std-v8x2b-1` |
+| nav (L 1.1474; step (1) = the cell) | 180 / 1,536 | 41.5 | 586 | 0 | `e9f43eb009e1d69ad1bbba9f2aaac6168d893da9a3439bedb7bbd7a26ca3ee3e` | `summary.json` `a9ed9f31`, S2 daily `ad9de313`, capacity `54c68d58`, recipe `f16fc8b1` |
+| monitor / summ | 180 / 1,536 | 1.0 / 28.4 | 106 / 592 | 0 | - | `monitor.json` `47c1008c` (alarm); `cycle-v8x2b/summ.json` `3377c4a4`, `cycle_verdict.json` `d8c231e5` |
+| one-sided p (PM5-23) | 180 / 1,536 | 0.8 | 479 | 0 | `010be337f42aa6d7d91cecf4f0c0ab057e8df6fc008691f2816a8110ec28acf3` | `v8-cells-x2-bundle.json` `39d7157f` |
+
+**Gross match (step 1 at the parent's L 1.1474; mech.py, mechanics keys only): G 0.9862108210 vs G_parent 0.9859903463,
+|diff| .00022 <= .005 -> the cell stands at L 1.1474** (no correction; no calibration run beyond the cell).
+**Mechanics (S2, read before any return): PASS.** All-rows gross .9862 in [.90, 1.05] (post-ramp .9921); net +.0044
+(<= .02); tau mean .02383 <= .20, p95 .02826 <= .30 (1,004 sessions; summary flags true); max gross 1.121, max |net|
+.030; gross at score_begin .939; by year .963 / 1.000 / .986 / .996; 1,006 CSV rows, 1,005 return rows; accounting
+7.8e-14 / 3.8e-16 (tol 1e-9).
+
+**Statistics of record** (S2): net Sharpe **X-2 +1.2669** vs R-2 +1.2559. Paired (studentized CBB, block 21, seed
+20260929, 4,999 resamples; 1,005 sessions): **dSR +.0109**, rho .993, **Memmel SE .0603** (t +.18); CBB 95% [-.123,
++.159]; LW SE .0724, 95% [-.138, +.160]; **bootstrap p one-sided .4502, two-sided .8882** (bundle = cycle). DSR (verdict,
+`--dsr-ledger`, N 51): ledger DSR **.4878** (V[SR] 1.252e-03 per session from 22 window lines); effective-N .7280; legacy
+.7681; PBO .3618.
+
+**Capacity criterion (PM7-10, printed, decides nothing under PM7-34): net Sharpe at 4x NAV 1.1883 vs 1.1785 -> met.**
+Turnover tau_gmv_mean .02383 vs .02393 (per unit gross .02417 vs .02427).
+
+**Verdict (PM7-34: dSR > 0 AND mechanics): dSR +.011 > 0 AND mechanics PASS -> ACCEPTED, N 51.** Ledger line trial
+`348d59bf4a3c3778` (cell = the v8x2b NAV dir, s2_net_sr 1.26688, origin prior, window research-window-v2, prev
+`9bd909df`); ledger 77 lines (59 construction incl. the 8 W0-4 re-runs, 17 admission, 1 protocol), file `ce1e430d`, head
+`3c84c5b2`. **Admission trials: v8 12 + X 5 (of 13 hand-written).**
+
+Returns (S2, annual): net 4.64% (CAGR 4.67%) vs R-2 4.54%; gross of cost 5.92% (5.81%); trade cost .74%, borrow .34%,
+long financing .20%; vol 3.66%; max drawdown 3.11% (3.25%); gross Sharpe 1.618 (1.610).
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | -.0038 | -.089 | .0359 | .0263 | 14.99 |
+| 2021 | 252 | +.1010 | +2.649 | .0366 | .0227 | 11.56 |
+| 2022 | 251 | +.0739 | +1.743 | .0416 | .0234 | 12.21 |
+| 2023 | 250 | +.0187 | +.609 | .0315 | .0229 | 11.58 |
+
+Capacity (report only; R-2 beside): net Sharpe .5x 1.305 (1.289), 1x 1.267 (1.256), 2x 1.237 (1.223), **4x 1.188
+(1.178)**, 8x 1.106 (1.100); cost bps per traded dollar 10.76 / 12.58 / 14.79 / 16.99 / 18.78 (R-2 10.67 / 12.47 / 14.66 /
+16.87 / 18.67). Disclosure (PM7-18 b): ins_opp_buy (B-3) is one of the refinements "chosen with TRAIN statistics in
+view"; the X report prints the book with and without it.
+
+**Next parent: `scripts/specs/v8/lib-v8x2b.json`, library v8x2b, L 1.1474, G 0.9862108210.**
+
+### Cell X-3 (new-signal wave; library v8x3 on X-2): N 52
+
+**Registration:** 8 add-alpha calls in the X list order (`scratchpad/x3_add8.py`: XSIG section 5 lines and the PM7-32
+XDATA argv parsed verbatim, placeholders filled with v8x2b / v8x3 / `lib-v8x2b.json` / fields v13), each with its K1
+plan of record (`x3-plans/`); every call exit 0. Counts = the X list: roster 60 (52 parent rows unchanged, their plan
+rows = v8x2b's 52 / 52), recipe admission_trials 8 / new 8 / unchanged 52, no exception; K1 rows = XSIG section 5 and
+the XDATA pre-check (bars / slots / extra): stmom 41/5/shares_out, earn_season 0/5/ea_days_to_expected+earn_season_rank,
+k8_intensity 209/5/k8_count_63, inst_persist 272/6/inst_own_chg_q, nt_late 0/3/nt_first_126, div_season
+0/2/div_month_pred, vol_beta 20/3/beta_dvol_21, season_y2_5 0/2/season_y2_5. Library `e5259541`, recipe `5c943ef7`,
+registry `b55d8fdc`; `filing_events` is last in `V7_APPENDED_THEMES` (PM7-15 a). Marginal on the full pool with the
+parent's theme weights (only additions). Registered in `v8-prereg.md` ("Library v8x3").
+
+**IC-pass memory re-probe (PM7-31, P7; mechanics only):** the IC exe's metadata-only `--plan-only` on the final 60-member
+library, role lo3, fields v13, `--workers 4`: at `--max-memory-mib 2560` the plan passes; at 1,024 it refuses with
+**required_bytes 2,122,538,268 (2,024.2 MiB), max_compiled_slots 8** (R-2's library on v13: 2,122,534,172). Cap 2,560 MiB
+(2,684,354,560 B) holds with 536 MiB of headroom: **the IC-phase cap stays 2,560 MiB** (W0-c). X-2's u pass peaked at
+1,496 MiB.
+
+**Wave composition, stated before X-3's screen (PM7-35):** an addition with status admitted and runner sign = prior
+stays; status admitted and runner sign 0 stays (R-2 precedent); status admitted and runner sign opposite to its prior is
+dropped (the cell then runs on v8x3b = v8x2b + the kept additions, same trial ids); a non-admitted addition stays at
+weight 0 (R-2 / R-7 precedent); the gate stops the cell only if none of the 8 has its prior sign.
+
+**`run --screen` of v8x3** (source `d0b329a9`; marginal on the full pool, no refusal):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| u | 300 / 2,560 | 16.2 | 1,053 | 0 | `db8acdca448d73715e7bc3c273838ec17ec1d627b5033d62f7b5e8163df48700` | u-compare IDENTICAL (52 objects; 152,152 rows of 52 keys; b adds 23,408 rows of 8) |
+| fit | 180 / 1,536 | 4.4 | 428 | 0 | `fbbe727c26d1483b83ec7d3d6856adb803194c2ab2e00591da4cfff91a424eee` | - |
+| card | 300 / 2,560 | 22.0 | 1,333 | 0 | `c8a68dadf84d54f3fa1192cd24539a79994edf3c5e164d114fe5be28cdd780fe` | - |
+| marginal (full pool) | 360 / 1,536 | 175.5 | 252 | 0 | `7f189543885f1dbd8ac9796f59fed94182ec0054be80027f16d9cdec862e2f79` | report only |
+| gate p1-v8x3 | internal | - | - | PASS | - | **8 admission lines ledgered** (ledger 77 -> 85) |
+
+**Admission (gate p1-v8x3): PASS, 5 of 8 with the prior sign; all 8 status admitted.** Runner sign = prior (+1):
+k8_intensity, inst_persist, nt_late, vol_beta, season_y2_5. Runner sign 0: div_season (stays, R-2 precedent). **Runner
+sign -1 against +1: stmom, earn_season -> dropped from the wave** (PM7-35, as stated above). Reference members vs
+X-2's admission: 0 status changes. **Admission trials: X hand-written 13 of 13** (v8 12).
+
+**Library v8x3b** (the cell): v8x2b + k8_intensity, inst_persist, nt_late, div_season, vol_beta, season_y2_5 = 58
+(`scratchpad/x3b_add.py`, the same argv with `--name v8x3b`; plans `x3b-plans/`); library `32f8d69f`, recipe `698599bb`
+(admission_trials 6, unchanged 52), spec `lib-v8x3b.json` (`2bd1dbf4`), marginal on the full pool. Registered in
+`v8-prereg.md` ("Library v8x3b").
+
+| phase (v8x3b; source `3b9bb3da`, then `028b2440`) | caps | s | peak MiB | exit | receipt.json SHA-256 | output / result |
+|---|---|---|---|---|---|---|
+| ref | - | - | - | skipped | - | fields equal the parent's (v13): identical by construction (the cycle's rule) |
+| u | 300 / 2,560 | 26.6 | 673 | 0 | `3f4acb47b676e800982b3d03dffe534f88ff3dcefb5cdebd06f1ca30901e1d4e` | u-compare IDENTICAL (52 objects; 152,152 rows of 52 keys; b adds the 6 members and the `__combined__` row key, 2,926 rows each) |
+| fit / card | 180 / 1,536; 300 / 2,560 | 0.8 / 15.0 | 55 / 1,390 | 0 | `35480d80...` / `a7a88870...` | - |
+| marginal (full pool) | 360 / 1,536 | 167.0 | 296 | 0 | `4bad1955...` | report only |
+| gate p1-v8x3b | internal | - | - | PASS | - | 5 of 6 with the prior sign (div_season sign 0); **0 lines appended, 6 already ledgered**; 0 reference status changes |
+| w | 300 / 3,072 | 34.7 | 1,372 | 0 | `6e7dea427e5499ee9372d6c94a5406acd6770f3fd947680d516a7f50c3a1bb01` | `mega-v8-r1w-train-std-v8x3b-1` |
+| nav step (1) (L 1.1474, calibration) | 180 / 1,536 | 41.6 | 586 | 0 | `cf580717c2611168d30c1328941163d40988f793e668120bb80e8d3fb967df13` | mechanics only |
+| nav (L 1.1414, the cell; `lib-v8x3b-gm.json`) | 180 / 1,536 | 45.5 | 586 | 0 | `9752d6bd87a350151b4d6e657e361937c88ec7d8335cf66561dc697201aad3a8` | `summary.json` `e342db4f`, S2 daily `7b407f56`, capacity `318364f1`, recipe `3f448613` |
+| monitor / summ | 180 / 1,536 | 1.3 / 30.5 | 121 / 581 | 0 | - | `cycle-v8x3b-gm/summ.json` `c062348f`, `cycle_verdict.json` `1486a397` |
+| one-sided p | 180 / 1,536 | 0.8 | 578 | 0 | `3b7369bd6d7e66e3339a06c3050ddeda2b1f52ec3e2a94b50d53470c05e65a63` | `v8-cells-x3-bundle.json` `09d8f0d0` (FINAL v8x3b-gm vs BASE X-2) |
+
+**Gross match:** step (1) at the parent's L 1.1474: G **0.9913686083** vs G_parent (X-2) **0.9862108210**, |diff|
+**.00516 > .005** -> one correction: L' = 1.1474 x .9862108210 / .9913686083 = 1.141430 -> **1.1414**. Matched spec
+`scripts/specs/v8/lib-v8x3b-gm.json` (`scratchpad/gmspec.py`: lib-v8x3b.json with name v8x3b-gm, one description
+sentence, `nav.leverage` 1.1414, `nav.output` `...-loc-L1.1414-v8x3b`, `ref.leverage` 1.1474; lock / write / dry 0 / 0 /
+0, every pin unchanged; file `8b1c1352`); commit `028b2440`. **Matched run: G 0.9861733264 vs .9862108210, |diff| .00004
+(one correction).** The step-(1) run of lib-v8x3b.json is not a trial and is never resumed past nav.
+
+**Mechanics (S2, matched run, read before any return): PASS.** All-rows gross .9862 (post-ramp .9922); net +.0051; tau
+mean .02303 / p95 .02695 (1,004 sessions; flags true); max gross 1.122, max |net| .027; score_begin .936; by year .966 /
+.998 / .984 / .998; 1,006 CSV rows, 1,005 return rows; accounting 4.9e-14 / 3.9e-16.
+
+**Statistics of record** (S2): net Sharpe **X-3 +1.4205** vs X-2 +1.2669. Paired (1,005 sessions, 4,999 resamples):
+**dSR +.1536**, rho .971, **Memmel SE .1200** (t +1.28); CBB 95% [-.091, +.398]; LW SE .1271, 95% [-.101, +.409];
+**bootstrap p one-sided .0978, two-sided .2324**. DSR (verdict, N 52): ledger DSR **.6097** (V[SR] 1.229e-03 per session,
+23 window lines); effective-N .8118; legacy .8455; PBO .2588.
+
+**Capacity criterion (PM7-10, printed; decides nothing under PM7-34): net Sharpe at 4x NAV 1.3159 vs 1.1883 -> met.**
+Turnover .02303 vs .02383 (per unit gross .02336 vs .02417); cost per traded dollar 12.53 vs 12.58 bps.
+
+**Verdict (PM7-34): dSR +.154 > 0 AND mechanics PASS -> ACCEPTED, N 52.** Ledger line trial `1700a97fef85b059` (cell =
+the L1.1414 v8x3b NAV dir, s2_net_sr 1.42049, prev `522dfa34`); ledger 86 lines (60 construction incl. the 8 W0-4
+re-runs, 25 admission, 1 protocol), file `4e6988cd`, head `7f13f733`.
+
+Returns (S2, annual): net 4.97% (CAGR 5.03%) vs X-2 4.64%; gross of cost 6.22% (5.92%); trade cost .72%, borrow .34%,
+long financing .20%; vol 3.50%; max drawdown 2.87% (3.11%); gross Sharpe 1.779 (1.618).
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | +.0176 | +.493 | .0367 | .0252 | 14.98 |
+| 2021 | 252 | +.0968 | +2.662 | .0349 | .0220 | 11.56 |
+| 2022 | 251 | +.0632 | +1.690 | .0368 | .0228 | 12.11 |
+| 2023 | 250 | +.0249 | +.812 | .0312 | .0220 | 11.50 |
+
+Capacity (report only; X-2 beside): net Sharpe .5x 1.452 (1.305), 1x 1.420 (1.267), 2x 1.380 (1.237), **4x 1.316
+(1.188)**, 8x 1.222 (1.106); cost bps per traded dollar 10.73 / 12.53 / 14.74 / 16.94 / 18.75.
+
+**Next parent: `scripts/specs/v8/lib-v8x3b-gm.json`, library v8x3b, L 1.1414, G 0.9861733264.**
+
+### Cell X-4 (value theme within FF49, XIMP C-1; library v8x4 on X-3): N 53
+
+**Registration:** 9 add-alpha calls in roster order (`scratchpad/x4_add9.py`: C-1 DSL verbatim, each `--replaces
+<member> --rescreen` with the replaced member's theme / tier / sign / prior-sign source / form / notes, citation + ";
+within FF49: Ehsani, Harvey and Li 2023, FAJ"; `--parent v8x3b --name v8x4 --parent-spec
+scripts/specs/v8/lib-v8x3b-gm.json --fields build-equity/train-2020-2023-lo3-fields-v13`), K1 plans `x4-plans/`; every
+call exit 0. Counts: roster 58 (positions 0-8 re-screened in place), recipe admission_trials 0 / rescreens 9 / unchanged
+49 (rows = v8x3b's 49 / 49); K1 rows = the C-1 table. Library `c7d52c68`, recipe `87effd86`, registry `7ff10f4e`. Spec
+`lib-v8x4.json` (nav.leverage 1.1414 inherited; gate p1-v8x4 lists the 9 re-screens: add-alpha's rule for a wave of
+re-screens only, so they are ledgered as admission lines, PM7-18 (c)); PM6-8 (i) applied before any run (the parent's
+theme weights hold the replaced value members; marginal without themes); relocked (`2502950c`). Registered in
+`v8-prereg.md` ("Library v8x4").
+
+**Readings stated before X-4's screen:** (1) wave composition (PM7-35, "the same reading applies to X-4's re-screened
+replacements"): a `_v49` re-screen stays only with status admitted AND runner sign = prior; otherwise its original
+(FF12) member is restored at 0 trials (the cell then runs on v8x4b, same trial ids). (2) Criterion: PM7-34 (dSR > 0 AND
+mechanics) decides; XIMP C-1's criterion (turnover per unit gross not higher, PM5-11's statistic) printed. (3) FF49
+covered member cells (XIMP C-1's mechanical count, from the fields v13 payload metadata before the cell, score window
+2020-2023): `grp_ff49` finite on **1,854,568 of 1,857,206** member cells (.99858) against `grp_ff12` 1,857,206 (1.0):
+2,638 member cells (.14%) lose their value members under FF49.
+
+**`run --screen` of v8x4** (source `58340960`):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| u | 300 / 2,560 | 18.2 | 1,430 | 0 | `5ff4f9f42482d58ea6436e221e994db82f71b5bb2f2826b778e95acb3ad029c6` | u-compare IDENTICAL (49 objects; 143,374 rows of 49 keys; b adds 26,334 rows of 9) |
+| fit / card | 180 / 1,536; 300 / 2,560 | 5.0 / 22.6 | 445 / 1,387 | 0 | `dfcbcb35...` / `e1959466...` | - |
+| marginal (pool only, PM6-8 i) | 360 / 1,536 | 157.7 | 251 | 0 | `9d2e70d0...` | report only |
+| gate p1-v8x4 | internal | - | - | PASS | - | **9 re-screen lines ledgered** (kind admission; ledger 86 -> 95) |
+
+**Admission (gate p1-v8x4): PASS.** Status admitted with runner sign +1: **value_composite_v49, bm_v49,
+net_payout_v49** (kept). reject_redundant (with value_composite_v49): ep_v49 (sign 0), cfp_v49, fcfp_v49, ebit_ev_v49
+(sign 0), sp_v49. rd_me_v49: status admitted, runner sign 0. Reference members vs X-3's admission: 0 status changes. By
+reading (1): **ep, cfp, fcfp, ebit_ev_f49, sp and rd_me keep their FF12 strings** (restored at 0 trials); the cell runs
+on **library v8x4b** = v8x3b with value_composite, bm, net_payout re-screened in place (`scratchpad/x4b_add.py`, the
+same argv with `--name v8x4b`; plans `x4b-plans/`): library `78dc39ad`, recipe `c45e92e6` (rescreens 3, unchanged 55),
+spec `lib-v8x4b.json` with PM6-8 (i) before any run. Registered in `v8-prereg.md` ("Library v8x4b").
+
+| phase (v8x4b; source `a595cd75`) | caps | s | peak MiB | exit | receipt.json SHA-256 | output / result |
+|---|---|---|---|---|---|---|
+| ref | - | - | - | skipped | - | fields equal the parent's |
+| u | 300 / 2,560 | 26.3 | 673 | 0 | `76be1cb98e3ef680f040618f5110cdbb49393f194376c5531acd96cc6d005963` | u-compare IDENTICAL (55 objects; 160,930 rows of 55 keys) |
+| fit / card | 180 / 1,536; 300 / 2,560 | 0.8 / 14.6 | 57 / 1,307 | 0 | `5a56dc9b...` / `bf760d80...` | - |
+| marginal (pool only) | 360 / 1,536 | 143.8 | 251 | 0 | `f0ed8aaf...` | report only |
+| gate p1-v8x4b | internal | - | - | PASS | - | 3 of 3 with the prior sign; 0 lines appended, 3 already ledgered; reference members vs X-3: 1 status change (fcfp reject_redundant -> admitted) |
+| w | 300 / 3,072 | 41.5 | 1,371 | 0 | `5036d615051e0ab308d80b42886bc1010a419d36bcd96bcfb1d5e52dc74bf963` | - |
+| nav (L 1.1414; step (1) = the cell) | 180 / 1,536 | 45.9 | 586 | 0 | `95523fba7e68ecf89f2eeada3ca88db0581acf8e75e1cc3d38684255bb0e3e7b` | `summary.json` `94c90ac1`, S2 daily `61950615`, capacity `965bd97e`, recipe `d93a6ed8` |
+| monitor / summ | 180 / 1,536 | 1.3 / 30.2 | 121 / 608 | 0 | `04ef798e...` / `8559dc01...` | `cycle-v8x4b/summ.json` `008bc708`, `cycle_verdict.json` `9cfbf6cf` |
+| one-sided p | 180 / 1,536 | 0.8 | 624 | 0 | `4f1f804bc04d84d032e4118968f35680f0a2f2f4bf3e1c1179f76fbb36eb6f83` | `v8-cells-x4-bundle.json` `ea89a295` (vs X-3) |
+
+**Gross match:** G **0.9874558833** vs G_parent (X-3) .9861733264, |diff| **.00128** <= .005 -> stands at L 1.1414 (no
+correction). **Mechanics PASS:** gross .9875 (post-ramp .9936), net +.0048, tau .02282 / p95 .02664, max gross 1.124,
+max |net| .026, score_begin .937, by year .967 / .999 / .985 / .999, accounting 3.2e-14 / 4.5e-16.
+
+**Statistics of record:** S2 net Sharpe **X-4 +1.3627** vs X-3 +1.4205: **dSR -.0578**, rho .997, **Memmel SE .0374**
+(t -1.55); CBB 95% [-.126, +.014]; LW SE .0365, 95% [-.131, +.015]; **p one-sided .9434, two-sided .1210**. DSR (N 53):
+ledger .5757 (24 window lines); effective-N .7774; legacy .8157; PBO .2692.
+
+**Criterion (XIMP C-1 / PM5-11, printed; decides nothing under PM7-34): turnover per unit gross .023108 vs .023355 ->
+met.** 4x net Sharpe 1.2594 vs 1.3159; cost per traded dollar 12.51 vs 12.53 bps.
+
+**Verdict (PM7-34): dSR -.058 <= 0 -> NOT ACCEPTED, N 53** (rejected on dSR, not on the capacity criterion: PM7-34's
+stop does not apply). Ledger trial `2280702d7080a6ec` (s2_net_sr 1.36266, prev `d4d2c955`); ledger 96 lines (61
+construction incl. 8 W0-4 re-runs, 34 admission incl. 9 re-screens, 1 protocol), file `bf005971`, head `be896680`. Not
+retried. **Parent stays X-3** (`lib-v8x3b-gm.json`).
+
+Returns (S2): net 4.76% (CAGR 4.82%); gross of cost 6.01%; trade cost .71%, borrow .34%, long financing .20%; vol 3.50%;
+max drawdown 2.86%; gross Sharpe 1.720. Years: 2020 +.0149 / .409; 2021 +.0960 / 2.710; 2022 +.0591 / 1.614; 2023 +.0240
+/ .779 (net return / net Sharpe; tau .0250 / .0218 / .0227 / .0218; cost bps 14.94 / 11.53 / 12.09 / 11.49). Capacity: .5x
+1.395, 1x 1.363, 2x 1.321, 4x 1.259, 8x 1.171.
+
+### Cell X-5 (composition rule theme-erc-v1, XCOMB; template `x-theme-erc.json` on X-3): N 54
+
+**Spec:** `scripts/specs/v8/x-theme-erc.json` with `"parent": "lib-v8x3b-gm.json"` (X-3, the last accepted cell; X-4 not
+accepted), `lock --write` (commit `6a98af47`; reference_weights `82685a22`, reference_cell X-3's summary `e342db4f`). The
+registered change verbatim (fit `--theme-erc theme-erc-v1`; outputs renamed); u and marginal are X-3's (done).
+
+**Calibration (PM6-6 step 1, not a trial):** `run --stop-after nav` at the parent's L 1.1414: fit .8 s, card 16.3 s, gate
+p1-v8x3b re-read PASS (0 appended, 0 status changes), w 43.0 s / 1,371 MiB, nav 45.1 s / 586 MiB
+(`mega-nav-v8x-theme-erc`). Mechanics only (mech.py): all-rows S2 gross **.9604183310** vs G_parent .9861733264, |diff|
+.0258 > .005 -> L' = 1.1414 x .9861733264 / .9604183310 = 1.17201 -> **1.1720**, set as nav.leverage in the template copy
+`x-theme-erc-gm.json` (nav.output `mega-nav-v8x-theme-erc-L1.1720`; R-3 precedent; commit `9dde65fd`; lock verified).
+
+**Theme shares (fit provenance, TRAIN decisions 1,004):** 11 themes, ERC dispersion 4.4e-16 (tolerance 1e-10), 10,000
+sweeps: earnings_momentum .068, filing_events .048, investment_issuance .142, low_risk .123, options_implied .058,
+ownership_flow .113, price_momentum .054, profitability_quality .108, reversal_seasonality .121, short_interest .079, value
+.086 (parent: 1/11 = .091 each). Member cap 1/22 = .0455 bound on issuance_xbrl, iv_rv_spread, ins_opp_buy, inst_best_ideas
+(one cap iteration); runner re-check to 1e-12.
+
+**Matched run** (`run --stop-after nav`, then `run`; source `9dde65fd`): nav 45.4 s / 586 MiB at --aim-leverage 1.1720;
+G **.9862260459** vs .9861733264, |diff| **.00005** <= .005 (no further correction). **Mechanics (S2, read before any
+return): PASS.** All-rows gross .9862 (post-ramp .9917); net +.0051; tau .02684 / p95 .03073; max gross 1.112; max |net|
+.027; score_begin .943 (all 5 scenarios .941 - .945); gross by year .967 / .995 / .985 / .997; accounting 1.1e-13 /
+3.9e-16. monitor 1.3 s; summ 33.8 s / 603 MiB (`--dsr-n 54`, reference X-3's NAV). Spec sha256 `92131961`.
+
+**Statistics of record** (S2; bundle `scratchpad/bundle.sh` X-3 vs X-5, block 21, seed 20260929, 4,999 resamples, bundle
+`7805e136`): net Sharpe **X-5 +1.7695** vs X-3 +1.4205: **dSR +.3490**, rho .920, **Memmel SE .2011** (t +1.74); CBB 95%
+[-.017, +.703]; LW SE .1868, 95% [-.041, +.740]; **bootstrap p one-sided .0288, two-sided .0782**. DSR (N 54): ledger
+**.8291** (V[SR] 1.239e-03 per session, 25 research-window-v2 lines); effective-N .9405 (4 clusters); legacy .9580; PBO
+.0384.
+
+**Capacity criterion (registered: turnover per unit gross not higher than the parent's; printed, decides nothing under
+PM7-34): .027219 vs .023355 -> unmet.** 4x net Sharpe 1.6549 vs 1.3159; cost per traded dollar 12.56 vs 12.53 bps.
+
+**Verdict (PM7-34): dSR +.349 > 0 AND mechanics PASS -> ACCEPTED, N 54** (the registered turnover criterion is unmet; under
+PM7-34 it decides nothing). Ledger trial `269cfc47be86d4a7` (s2_net_sr 1.76945, prev `be896680`); ledger 97 lines (62
+construction incl. 8 W0-4 re-runs, 34 admission, 1 protocol), file `9f4aa4d9`, head `877cf36f`. Calibration run
+`mega-nav-v8x-theme-erc` not ledgered (PM6-6).
+
+Returns (S2): net 5.08% (CAGR 5.17%); gross of cost 6.45%; trade cost .84%, borrow .33%, long financing .20%; vol 2.87%;
+max drawdown 2.06%; gross Sharpe 2.247. Years: 2020 +.0130 / .478; 2021 +.1038 / 3.282; 2022 +.0684 / 2.171; 2023 +.0232
+/ .926 (net return / net Sharpe; tau .0290 / .0260 / .0265 / .0259; cost bps 14.95 / 11.61 / 12.20 / 11.58). Capacity: .5x
+1.809, 1x 1.769, 2x 1.727, 4x 1.655, 8x 1.553. Read: the gain is a risk reduction (vol 2.87% vs 3.50%, net return 5.08% vs
+4.97%) bought with 16% more turnover per unit gross.
+
+**Next parent: `scripts/specs/v8/x-theme-erc-gm.json`, library v8x3b, theme-erc-v1, L 1.1720, G .9862260459.**
+
+### Cell X-6 (capacity rule inv-vol-v1, XCOMB; template `x-inv-vol.json` on X-5): N 55
+
+**Spec:** `scripts/specs/v8/x-inv-vol.json` with `"parent": "x-theme-erc-gm.json"` (X-5), `lock --write` (commit
+`13488f89`; reference_cell X-5's summary `a03937cf`, reference_weights `8310da2c`). The registered change verbatim (nav
+`--vol-scale inv-vol-v1`, NAV-only). **Deploy-key gap:** the cycle did not refuse (`plan` and `run` have no decide phase;
+the template's "decide is out of scope" stands); the cell ran. Template note: it renames only nav.output, so the cycle
+resolved the monitor phase to X-5's monitor output as done and no X-6 monitor ran (the verdict reads none of it; template
+frozen, not edited).
+
+**Calibration (not a trial):** `run --stop-after nav` at the parent's L 1.1720: nav 47.1 s / 586 MiB (`mega-nav-v8x-inv-vol`;
+recipe vol_scale inv-vol-v1, floor fraction .25). Mechanics only: all-rows gross **1.0099371711** vs G_parent .9862260459,
+|diff| .0237 > .005 -> L' = 1.1720 x .9862260459 / 1.0099371711 = 1.14448 -> **1.1445**, in the template copy
+`x-inv-vol-gm.json` (nav.output `mega-nav-v8x-inv-vol-L1.1445`; commit `03be90ce`; lock verified).
+
+**Matched run** (source `03be90ce`): nav 46.7 s / 586 MiB; G **.9861788467** vs .9862260459, |diff| **.00005** <= .005.
+**Mechanics (S2, read before any return): PASS.** All-rows gross .9862 (post-ramp .9910); net +.0021; tau .02593 / p95
+.02950; max gross 1.094; max |net| .025; score_begin .951 (all 5 scenarios .950 - .953); gross by year .970 / 1.001 / .981
+/ .993; accounting 5.1e-14 / 4.3e-16. summ 28.3 s / 629 MiB (`--dsr-n 55`, reference X-5's NAV). Spec sha256 `10b57394`.
+
+**Statistics of record** (S2; bundle X-5 vs X-6 `e11bb2bd`): net Sharpe **X-6 +1.6743** vs X-5 +1.7695: **dSR -.0952**,
+rho .910, **Memmel SE .2141** (t -.44); CBB 95% [-.546, +.360]; LW SE .2324, 95% [-.585, +.395]; **p one-sided .6346,
+two-sided .6914**. DSR (N 55): ledger .7720 (V[SR] 1.250e-03, 26 window lines); effective-N .9079; legacy .9381; PBO .0412.
+
+**Capacity criterion (registered: net Sharpe at 4x NAV higher AND S2 cost_bps_traded lower; printed, decides nothing under
+PM7-34): 4x 1.5725 vs 1.6549 (not higher); cost per traded dollar 10.97 vs 12.56 bps (lower) -> unmet.** Turnover per unit
+gross .026295 vs .027219.
+
+**Verdict (PM7-34): dSR -.095 <= 0 -> NOT ACCEPTED, N 55** (rejected on dSR). Ledger trial `60e3c75e3111f2db` (s2_net_sr
+1.67426, prev `877cf36f`); ledger 98 lines (63 construction incl. 8 W0-4 re-runs, 34 admission, 1 protocol), file
+`e8d9dcac`, head `a190f7ef`. Not retried. **Parent stays X-5.**
+
+Returns (S2): net 3.91% (CAGR 3.96%); gross of cost 5.12%; trade cost .71%, borrow .31%, long financing .20%; vol 2.33%;
+max drawdown 2.37%; gross Sharpe 2.195. Years: 2020 +.0139 / .571; 2021 +.0740 / 2.856; 2022 +.0592 / 2.760; 2023 +.0121
+/ .556 (tau .0277 / .0247 / .0259 / .0253; cost bps 13.31 / 9.88 / 10.64 / 10.09). Capacity: .5x 1.721, 1x 1.674, 2x
+1.616, 4x 1.573, 8x 1.493. Read: cost per traded dollar fell 13% as designed, but the book lost return (3.91% vs 5.08%)
+faster than it lost risk.
+
+### X batch 1 close
+
+**Accepted X book = X-5** (`scripts/specs/v8/x-theme-erc-gm.json`: library v8x3b = R-2's v80 + X-2's q5_eg_f49g,
+ins_opp_buy + X-3's six; composition theme-erc-v1; L 1.1720). S2: net Sharpe **1.7695**, net annual **5.08%** (CAGR
+5.17%), gross of cost **6.45%**, x4 net Sharpe **1.6549**, turnover tau **.02684** (per unit gross .02722), max drawdown
+**2.06%**, all-rows gross .98623. **Cumulative paired vs R-2** (`lib-v80.json`, bundle `907fda68`, block 21, seed
+20260929, 4,999 resamples): S2 net Sharpe 1.7695 vs 1.2559, **dSR +.5135, Memmel SE .1841** (t +2.79), rho .933; CBB
+95% [+.137, +.854]; LW SE .1848; **p one-sided .0032, two-sided .0098** (bundle's freeze-gate part: pass at alpha .10).
+R-2 for reference: net 4.54%, gross of cost 5.81%, x4 1.1785, tau .02393, max drawdown 3.25%.
+
+Cells: X-2 accepted (N 51), X-3 accepted (N 52), X-4 not accepted (N 53), X-5 accepted (N 54), X-6 not accepted (N 55).
+Admission lines: v8 12 + X hand-written 13 of 13 + X-4 re-screens 9 = 34; X-5 and X-6 add none. Ledger 98 lines, head
+`a190f7ef`, file `e8d9dcac`.
+
+**Hidden-data record:** every run read TRAIN only (fields v13 `train-2020-2023-lo3`, sessions 2020-01-03 - 2023-12-29);
+nothing dated 2024-01-01 or later opened; no 2013-2019 history read; `atx-db/` and `C:/atx-wt/pool-10` untouched; no
+executable or tool-script change; no push.
+
+**Open items:** (1) B-3: ins_opp_buy carries the PM7-18 b disclosure (refinement chosen with TRAIN statistics in
+view) -- now in the accepted book. (2) The hand-written gm specs (`lib-v8x3b-gm.json`, `x-theme-erc-gm.json`,
+`x-inv-vol-gm.json`) are not in the tests' NULL_PINS list. (3) Deploy path for theme-erc-v1 (decide / manifest pins) not
+exercised in this batch. (4) `x-inv-vol.json` does not rename monitor.output (template defect, monitor-only). (5) X-5's
+registered turnover criterion is unmet (+16% turnover per unit gross vs X-3); accepted under PM7-34 only.
+
+## X batch 2 (cell X-7, the formulaic-alpha wave): XWQ merged; STOPPED at step 2 (the theme needs C++) (2026-10-02)
+
+Integrator in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `3a6cdbc5` (clean; build v8-14, nothing
+built). Read: integrator-rules; progress from the owner directive of 2026-10-02 to the end (PM7-33..37, X batch 1
+lines); `v8x-prereg.md` sections 3, 11, 14; this log's "X batch 1"; `task-XWQ-report.md` (whole). Parent = X-5
+(`x-theme-erc-gm.json`), N 55, X hand-written admission trials 13.
+
+**No X-7 string was registered or screened. No data process ran. No admission or construction line (ledger 98 lines,
+file `e8d9dcac`, N 55, admission trials unchanged). No IC, return, Sharpe, turnover or NAV number of any X-7 string exists
+or was read.**
+
+### 1. Lane XWQ merged (tests only fixed)
+
+`git merge --no-ff 7bf8e68e` (lane `feat/platform-v8-xwq-20261002`, pool 12, base `bc153439`) -> **`03fcf92f`**, no
+conflict: 5 new files (+2,370), `atx-engine/tools/{research_fields_ohlc,prepare_research_fields_ohlc,
+test_research_fields_ohlc}.py`, `xwq_check.py`, `task-XWQ-report.md`; no C++, no existing file changed.
+
+| suite | result |
+|---|---|
+| atx-engine/tools (whole) | **300 passed**, 6 subtests (293 + the lane's 7) |
+| atx-impl/strategies (whole) | **163 passed** |
+| atx-impl/tools (whole; `ATX_EQUITY_BIN`, `ATX_EQUITY_TARGETS_EXE` absolute, v8-14) | **612 passed, 1 skipped** (`ATX_EQUITY_ROOT` unset), 17 subtests |
+| scripts/tests (whole; `ATX_EQUITY_BIN` v8-14), before the fix | 27 failed, 221 passed, 3 skipped |
+| scripts/tests (whole), after `4d0c8d8f` | **248 passed, 3 skipped, 0 failed** (the RESEARCH_CYCLE_LIVE_ROOT skips) |
+| `xwq_check.py` | **`xwq_check: PASS`** (101 rows, 14 picks, 59 mutants fail, 14 add-alpha lines) |
+| `xsig_check.py` | **`xsig_check: PASS`** |
+
+The 27 failures predate the merge (X batch 1's commits; scripts/tests was not run after X-3) and are fixed in tests only,
+commit **`4d0c8d8f`**:
+- `test_research_spec.py`: the three batch-1 gm specs join NULL_PINS (`lib-v8x3b-gm.json` = `lib-v81-gm.json`'s set,
+  `x-theme-erc-gm.json` and `x-inv-vol-gm.json` CHILD_NULLS); without them `set(V8_SPECS) == set(NULL_PINS)` failed in
+  every parametrized case (24) and the two whole-file tests. Two consequences of registering them: (a) the nominal plan
+  allows `ref` skipped when the spec's fields are its baseline fields (`lib-v8x3b-gm.json` runs on X-2's fields v13: the
+  cycle's documented ref-skip rule); (b) the live chain check treats a hand copy of an add-alpha spec
+  (`ADD_ALPHA_COPIES`: `lib-v81-gm.json`, `lib-v8x3b-gm.json`) like an add-alpha parent (it has no base-only pins
+  `identity_bridge`, `fund_events`), as the check's own comment already did for `lib-v80.json`.
+- `test_research_mine.py::test_fields_are_the_rule_applied_to_the_registry`: X-3's `k8_intensity` and `inst_persist`
+  read `k8_count_63` and `inst_own_chg_q`, two of the template's 12 mined fields. Prereg A3 re-applies the field rule at
+  the campaign lock (H-F); the test now reads the rule on the registry without the `v8x` members (the registration) and
+  asserts the X members only remove fields. **For the lock (A3):** mine-c1 then has 10 fields, B = 110 (not 132).
+
+### 2. PM7-36 (a), theme `price_volume`: STOPPED -- the change needs C++
+
+Made as integration 8 item 5d made `filing_events` (registry `themes` table + `V7_APPENDED_THEMES` + the test literals),
+uncommitted, then restored by hand (the session refused `git checkout`; tree clean, `git status` empty at `4d0c8d8f`).
+With the registry row and `V7_APPENDED_THEMES = ("ownership_flow", "filing_events", "price_volume")`, 6 Python tests fail:
+five are literal pins of the kind 5d edited (`test_composition_resid.py:244`, `:283`, `:676`;
+`test_fit_composition_weights.py` OwnershipFlowTheme constants and refusal text; `test_fit_composition_weights_store.py`
+refusal text). The sixth is not: **`test_composition_resid.py:266`** (finding R6B-O-4) pins the IC runner's copy of the
+registered theme order, `theme_resid_order` in **`atx-impl/src/strategy_ic_theme_resid.hpp`** (`std::array<..., 11>`,
+ending `filing_events`), to extend the fitter's `PRIOR_THEMES`. With the five literals updated, it still fails:
+`cpp[:12] != PRIOR_THEMES` (the C++ list lacks `price_volume`). For `filing_events` the C++ list already held the theme
+(lane R-11), so 5d was Python only; for `price_volume` it is not.
+
+What the C++ list does: it is read only under a weights file's `theme_residualise` block (theme-resid-v1, R-11, not
+accepted, not on X-5's path); there it refuses a weighted theme outside the list. X-7 itself does not read it:
+admission reads the registry's `themes` table (`fit_composition_weights.prior_themes`), and theme-erc-v1 orders the
+themes by name in the weights file, which the runner's theme-erc table takes as recorded (at most 32 themes). The pin
+exists so that a theme-resid fit is never admitted and fitted by the fitter and then refused by the runner.
+
+Options for the PM (not taken): (i) one C++ constant (`theme_resid_order` 11 -> 12 entries, `"price_volume"` last; the
+pin literal `test_composition_resid.py:267` follows), build `atx-equity-strategy-ic,atx-impl-strategy-ic-tests` on a
+new tag, flag-absent identity (X-5's w pass) before X-7; (ii) a ruling that relaxes R6B-O-4 for themes registered after
+the runner's copy (Python only; theme-resid-v1 with a `price_volume` member would then be refused by the runner); (iii)
+another theme for the 8 `price_volume` picks (a change of the XWQ registration).
+
+**How theme-erc-v1 treats a twelfth theme (stated now, before any X-7 screen; holds under any option above):** the
+parent X-5 already has 11 themes with a member (`filing_events` included). `price_volume` would be the twelfth.
+theme-erc-v1 (`composition_theme_erc.py`, registered by XCOMB) takes T = the themes with a weighted member, in sorted
+name order (`price_volume` between `price_momentum` and `profitability_quality`, whatever its registry position): the
+theme sleeves are re-built from the kept members with the parent rule's (ew-theme-std-v1) within-theme tier-score
+shares, all T theme shares are re-solved by ERC on the new T x T TRAIN covariance (10,000 sweeps, dispersion <= 1e-10),
+and the member cap is 1/(2T) (1/24 at T = 12; 1/22 if no `price_volume` member stays). No share is set by hand; the
+existing themes' shares move only through the re-solve. The 3 picks in existing themes (`wq_035`, `wq_030`, `wq_043`
+in `reversal_seasonality`; `wq_101` in `price_momentum`) enter those sleeves the same way.
+
+### 3. and 4. Not started
+
+Fields v14 (v13 + `open_adj`, `high_adj`, `low_adj`; XWQ section 7 driver; 0 trials) and X-7 (12 strings; #33 and #38
+withdrawn by PM7-36 (c)) wait for the PM's ruling on step 2: the dispatch orders them after the theme.
+
+### Hidden-data record (X batch 2)
+
+- Opened by tools: the test suites' synthetic fixtures and committed files only; no role, field payload, IC, NAV or
+  ledger content (the ledger's line count and file hash only).
+- Read by me: rulings, reports, sources, test output. **Nothing dated 2024-01-01 or later; no 2013-2019 history; no X-7
+  statistic exists.** `atx-db/` and `C:/atx-wt/pool-10` untouched; no build; no push.
+
+### Open items (X batch 2)
+
+- **For the PM:** the ruling on step 2 (options above). Then: theme step, fields v14, X-7 as dispatched.
+- Head `4d0c8d8f` before this log commit; ledger 98 lines (`e8d9dcac`), N 55, X hand-written admission trials 13.
+- Disk 121,810,661,376 B free (113.4 GiB).
+
+## X batch 2, resumed (PM7-39, PM session 8): identity under v8-15, fields v14, X-7, campaign v9-mine-c1, X-9 (2026-10-02)
+
+Integrator (root) in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `798d3b23` (clean). Read: CLAUDE.md
+build rules, integrator-rules, progress "PM session 7" to the end (PM7-1..39), `v8x-prereg.md` (whole), this log from V8-F
+to the end, `task-XWQ-report.md` (sections 1-3, 5-11), `review-x5-theme-erc.md`. Rulings PM8-1..PM8-4 recorded verbatim in
+`progress.md` ("PM session 8", commit `183d9184`) before any measurement. Parent X-5 (`x-theme-erc-gm.json`), N 55.
+
+### 1. Identity under build v8-15 (PM7-39 / PM7-30): verified from disk, tests run, logged
+
+A previous root session built and ran the identity but did not log it. Verified from disk, not from its report:
+- **Build v8-15** (`scripts/research-build.ps1`, receipt `build-equity/mega-v8-15-receipt.json` `afca7cbe`): source
+  `798d3b23` (theme `price_volume` 12th and last in `theme_resid_order`), DirtyEntries 0, preset equity-dev, targets
+  `atx-equity-strategy-ic`, `atx-impl-strategy-ic-tests`, exit 0, 10.4 s, 3 TUs, 3 links; ConfiguredProvenance `5c65cee8`
+  (configure-time, as v8-14). Executables re-hashed on disk = the receipt: **atx-equity-strategy-ic `6aac48f2...1d59`**,
+  ic-tests `d6cc36ae...7dd1`. Unchanged from v8-14 (re-hashed): targets `a95f6f0a`, mine `2176fa4a`, risk `d7e424b2`.
+- **X-5 identity** (bounded runner, source `798d3b23` clean, argv = X-5's recorded receipt with only `--output`
+  renamed, checked token by token: 1 differing token each):
+
+| pass | X-5 receipt | new receipt (`receipt.json` SHA-256) | exe | s / MiB | result |
+|---|---|---|---|---|---|
+| fit (180 / 1,536) | `mega-weights-v8x-theme-erc-run1` | `v8-i15-x5fit-run` `f3da276b69a3b04366d8bd232c8454878d81f10ca29892238fe3941d6d7ca1e9` | python (fitter) | 0.8 / 57 | `admission.csv` byte-identical; `admission.json` differs only in `inputs/script_sha256` (`4c529f5f` -> `270068c8`: `fit_composition_weights.py` gained `price_volume` in `V7_APPENDED_THEMES`); `composition_weights.json` only in `provenance/script_sha256`, `provenance/admission_sha256` (`5f5b3edb` -> `209e0b26`) and `provenance/std/registry_sha256` (`7ff10f4e` -> `19b01d11`: the `price_volume` theme row). **Both files byte-identical after substituting those values back** (weights `8310da2c`, admission `5f5b3edb`), the PM7-30 allowed list; stdout one JSON line differing in those hashes, output path and seconds |
+| w (300 / 3,072) | `mega-v8xw-train-theme-erc-run1` | `v8-i15-x5w-run` `ae7f49f5311dd3ceb350e83d637a0e6aeda15cb27b9b2d3cb7295607597635f9` | ic v8-15 `6aac48f2` (X-5 ran v8-14 `67f72921`) | 39.6 / 1,370 | **10 of 12 byte-identical**; `summary.json` (238 paths) and `train_candidates.jsonl` (229) differ **only in timing paths** (`stage_seconds.*`, `wall_seconds`, `hash_seconds`); stdout 117 of 177 lines differ only in the timing tokens `seconds=`, `ic=` (ic seconds), `composition=` (composition seconds) |
+| NAV (180 / 1,536) | `mega-nav-v8x-theme-erc-L1.1720-run` | `v8-i15-x5nav-run` `4b093261c7f5099db493e571176a8c32aa26a028e6fc9f45f9b77bda73cb9fa2` | targets `a95f6f0a` | 45.4 / 586 | **27 of 27 byte-identical** (S2 daily, `summary.json`, `capacity/`); stdout 1 of 17 lines differs, on the output path only |
+
+- **Tests on v8-15 (run now; none had been recorded):** `atx-impl-strategy-ic-tests` whole **159 / 159** (xml
+  `build-equity/v8-i15-ic-tests.xml` `dcc6e4c9`); `atx-impl/tools` whole (`ATX_EQUITY_BIN`, `ATX_EQUITY_TARGETS_EXE`
+  absolute) **612 passed, 1 skipped**; `atx-impl/strategies` **163 passed**; `scripts/tests` whole **248 passed, 3
+  skipped, 0 failed**.
+
+**X-5 reproduces under v8-15** (w and NAV byte for byte; fit with the three provenance hashes of the PM7-30 kind). X-7
+runs on v8-15. No statistic was read (comparisons by SHA-256, JSON paths and masked log tokens only). Disk 122,762,747,904
+B free (114.3 GiB).
+
+### 2. Fields v14 lo3 (XWQ section 7 driver; 0 trials; caps W0-i) -- plan, written before the run
+
+Command = fields v13's recorded argv (receipt `train-2020-2023-lo3-fields-v13-run`), built token by token by
+`scratchpad/fv14.py`, 5 tokens changed and no other: (2) the driver of XWQ section 7 verbatim (`... import
+prepare_research_fields_ohlc as o; d.register(vars(b)); x.register(vars(b)); o.register(vars(b)); b.main(sys.argv[1:])`);
+(8) `--output build-equity/train-2020-2023-lo3-fields-v14`; (10) `--fields` = v13's 75 names in v13's order +
+`open_adj,high_adj,low_adj`; (64) `--reuse build-equity/train-2020-2023-lo3-fields-v13`; (66) `--reuse-sha256 e5f7f28c...`
+(v13's manifest). `--reuse-hardlink` and `--price-source` (the role's TickerHistory3) as v13. Builder `--max-rss-mib 2048
+--max-seconds 580`; runner `--seconds 600 --max-rss-mib 2560 --min-free-mib 512`, binding v13's ten tool modules +
+`research_fields_ohlc.py` + `prepare_research_fields_ohlc.py`, the role manifest and v13's manifest. **Expected: 75 reused
+/ 3 computed; the 75 payloads bit-identical to v13's (hardlinks); seal 2024-01-01.** A different count or a refusal stops
+the step (PM8-4 b).
+
+| step | receipt dir | source | outcome / exit | s | peak MiB | receipt.json SHA-256 | output manifest SHA-256 |
+|---|---|---|---|---|---|---|---|
+| fields v14 lo3 | `train-2020-2023-lo3-fields-v14-run` | `26bddfbb` | completed / 0 | **72.8** | **277** | `e389a4932f65d53228323435a1a9dbd81a6a06beb1ff4597eaf10de5ee389900` | **`4b12c0e1d90d8ab5cfa6e6281d104a4b8d229a42060505c39217f97d616cbb0c`** |
+
+Receipt: `clean in the code pathspec`, dirty outside none, min system free 871 MiB; stdout `0023e693`, stderr empty.
+Manifest (metadata only): status complete, `seal.exclusive_end` 2024-01-01, role lo3 (1,405 dates, 2018-06-01 -
+2023-12-29, `e1c67101`), **78 rows** (v13's 75 + `open_adj`, `high_adj`, `low_adj`), builder `code_sha256_lf` `74df97f9`
+(= v13's), 661,711 B. **Counts: reused 75, computed 3 = the expected 75 / 3**: `open_adj` `13e4ba54` ohlc-open-adj-v1,
+`high_adj` `e7d4100c` ohlc-high-adj-v1, `low_adj` `e9a3a7b2` ohlc-low-adj-v1, producer `research_fields_ohlc.py`
+(`code_sha256_lf` `26356cf6`), clock ohlc-same-session-v1 (PM7-36 b). The 75 v13 payloads: entry sha256 = v13's (75 /
+75), hardlinks of the v13 files (75 / 75); all 78 payloads re-hash to their pins. Dir 4.9 GiB apparent (hardlinks). Logs
+scanned for 2024-2029 date tokens: none; the manifest's `source_checks` carry the seal date and two calendar `last`
+metadata entries (`sec`, `v9/nt_first_126`) unchanged from v13 (not read).
+
+### 3. Cell X-7 (formulaic-alpha wave, 12 XWQ strings on X-5)
+
+**Preconditions (0 trials).** Registry field rows `open_adj`, `high_adj`, `low_adj` (commit `2ebbdbe0`, registry
+`1069d88c`): formula id, origin `fields_x7`, producer and basis = XWQ L2 verbatim; clock = the fields v14 manifest row
+verbatim for all three (XWQ: "root copies clock and basis checks against the build of record"; the L2 open_adj clock
+differs from the build's by the word "its"); formula ids checked equal to the v14 manifest rows. `atx-impl/strategies`
+163 passed. Theme `price_volume` in the registry since `798d3b23`.
+
+**K1 pre-check (metadata only; `scratchpad/x7_add.py` without `--go`: each frozen line verified against its printed
+SHA-256 prefix, the four placeholders filled -- parent `v8x3b`, name `v8x7`, parent spec
+`scripts/specs/v8/x-theme-erc-gm.json`, fields v14 -- and the exe's (v8-15) `--plan-only` on parent + that string; plans
+in the scratchpad, not of record).** 11 of 12 rows = XWQ section 6 (bars / slots / extra fields; the exe's node count
+exceeds the mirror's by one for wq_055, wq_006, wq_002, wq_043, wq_044, as X batch 1). **wq_099: exe 104 bars / 8 slots
+/ high_adj, low_adj against XWQ's 7 slots** (the XSIG mirror's count of the `b > a` order): over the house budget
+(`max_slots` 7), so add-alpha's K1 refuses it as frozen.
+
+**Rule applied (registered, written before any variant is planned).** XWQ section 6 (the registration of X-7, accepted by
+PM7-36): "a string K1 refuses is rewritten only mechanically (same semantics) or withdrawn at 0 trials"; XWQ E5 / XWQ-e
+(PM7-36) fixes what "mechanically" means: the same formula with the operands of a commutative op or of a comparison
+swapped, proved identical by `xwq_check.canonical()`. So: the 64 variants of the frozen wq_099 DSL generated by the six
+swaps E5 allows (the comparison `a > b` / `b < a`; `+` in the mid price; `*` in the dollar volume; `*` in `-1 * x`;
+the operands of each of the two `correlation` calls), each checked `canonical(variant) == canonical(frozen)`, are planned
+by the v8-15 exe (`--plan-only`, metadata only, parent + variant). The string registered is the variant that plans within
+the house budget with **the fewest swaps**, ties broken by (i) no `correlation` operand swap before one (a `+`, `*` or
+comparison swap is exact in IEEE arithmetic, a correlation swap is exact only if the kernel is symmetric), (ii) the
+leftmost swapped node in the frozen text. If none fits, wq_099 is withdrawn at 0 trials and X-7 screens 11 strings.
+Every other byte of the frozen line (theme, tier, sign, citation, formula, domain, deviation) is unchanged; the formula
+note "written b > a for the 7-slot budget" then describes the mirror's order, not necessarily the registered one (the
+registered DSL is the record). No IC, return or statistic exists for any X-7 string.
+
+**Variants planned** (`scratchpad/x7_wq099_variants.py`, output `x7-wq099-variants.json`): 64 of 64 canonical-equal to the
+frozen string; every one 104 bars, high_adj / low_adj, 28 nodes; exe slots: 8 without the `-1 * x` swap and without the
+comparison swap, 9 with the comparison swap alone, **6 with the `-1 * x` swap**, 7 with both. 32 fit. **Chosen by the
+rule: one swap, `(x * -1)` for `(-1 * x)`** (no correlation swap; it is also the paper's printed order `(... * -1)`):
+`rank(decay_linear((((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19),
+ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0) * -1), 21))`, SHA-256 in the JSON; K1 104 / 6 /
+high_adj, low_adj. Multiplication by -1 is exact in either order, so the values equal the frozen string's bit for bit.
+
+**Registration** (commit `a12854ff`; `v8-prereg.md` "Library v8x7", `ce994900`): 12 add-alpha calls
+(`scratchpad/x7_add.py --go`: each printed line verified against its SHA-256 prefix; placeholders parent `v8x3b`, name
+`v8x7`, parent spec `scripts/specs/v8/x-theme-erc-gm.json`, fields v14; wq_099 with the rewrite above; `--plan-json
+x7-plans/<id>.json`, the plans of record made by the v8-15 exe on the exact cumulative library bytes, PM6-9); every call
+exit 0. Counts = the registration: roster 70 (58 parent rows unchanged), recipe admission_trials 12 / new 12 / unchanged
+58, no exception; K1 rows = XWQ section 6 (wq_099 104 / 6). Library `fd966384`, recipe `6131f1ad`, registry `f0ee2288`,
+spec `lib-v8x7.json` (12 pins locked; fit flags inherited from X-5 incl. `--theme-erc theme-erc-v1`; nav L 1.1720).
+IC-pass memory (mechanics only): 70 members, fields v14, `--workers 4`: passes at 2,560; refuses at 1,024 with
+required_bytes 2,122,543,388 (2,024.2 MiB): **cap unchanged**.
+
+**`run --screen` of v8x7** (source `ce994900`):
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| u | 300 / 2,560 | 58.5 | 1,244 | 0 | `e2c98d1dfab3927f253cf4cf5305ef08615ed68b2cbd6fb635eb78df760111a1` | u-compare IDENTICAL (58 objects; 169,708 rows of 58 keys byte for byte; b adds 35,112 rows of 12) |
+| fit | 180 / 1,536 | 14.9 | 443 | 0 | `d81f454d607423b3955f1659e2062e66528507f42b4a9b248d31f1f9821a6163` | - |
+| card | 300 / 2,560 | 60.0 | 1,554 | 0 | `1a0a68ccc35ad4f58d02f48d8a8adda5016c54a3435085ac07fcac1db9953e2d` | - |
+| marginal (themes) | 360 / 1,536 | 0.5 | 12 | **1** | `b5d1252777cebdab15e9f8d698c3d60d789a79ad7b87f1040008046e712f7d1e` | refusal: "marginal IC: themes: 1..10 weighted themes (the composite plus the themes may not exceed 11 regressors)" -> HARD-STOP exit 4 |
+
+**Marginal refusal: cause and the rule applied.** The pool's weights file is X-5's (theme-erc-v1), which weights 11
+themes (`filing_events` included); the marginal verb takes at most 10 theme regressors beside the composite. Any wave
+on X-5 hits it; it is not caused by the X-7 strings. The marginal phase gates nothing (the gate reads the admission
+only); the registered remedy for a marginal refusal is PM6-8 (i) (spec-only: delete `marginal.themes`, new
+`marginal.output`, relock, resume at marginal; standing for replacing waves by PM7-32), and it changes no number that
+decides anything (the K6 diagnostic is residualised on the parent's combined signal alone). Applied under PM8-4 (a
+registered rule covers the case; no reading changes a number); logged here: `marginal.output`
+`...-v8x7-marginal-poolonly-b`, `themes` deleted; `lock` / `lock --write` leave every pin unchanged (diff: the marginal
+block only).
+
+| phase (source `1ab1fd89`) | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| marginal (pool only, `-poolonly-b`) | 360 / 1,536 / 512 free | 259.9 | 296 | 15 | `9276d5036d49809edcd0db35a405875dabc750a07a114ac4551c9e0e7d68518e` | **system-memory-limit**: host free memory fell to 506 MiB (other sessions' builds: a vcpkg grpc build, 17 `cl.exe`, and `C:/atx/build-server`); no output dir written, nothing read |
+
+A failed run with no output (rule 7 blind re-run, adds nothing). Waited until no compiler ran and 7.7 GiB were free; the
+receipt dir is never overwritten, so `marginal.output` -> `...-v8x7-marginal-poolonly-c` (spec-only, pins unchanged).
+
+| phase (source `6c3ad86c`) | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| marginal (pool only, `-poolonly-c`) | 360 / 1,536 | 331.5 | 296 | 0 | `faef9217df83b5cfc252c0c548925269e6538b515b5aa3387e5bbb6136068a5e` | report only (92% of the 360 s cap) |
+| gate p1-v8x7 | internal | - | - | PASS | - | **12 admission lines ledgered** (ledger 98 -> 110 lines, file `8bc57f2f`, head `af281c31`) |
+
+**Admission (gate p1-v8x7, v4-prior-v1): PASS, 8 of 12 with the prior sign.** Status admitted, runner sign +1 = prior:
+wq_099, wq_035, wq_055, wq_006, wq_095, wq_085, wq_043, wq_044. **wq_002: status admitted, runner sign -1 against +1.**
+**wq_101: status reject_turnover (tau .7042 > .70), runner sign -1 against +1.** wq_030: reject_redundant (with wq_035),
+runner sign +1. wq_014: reject_redundant (with wq_006), runner sign +1. Reference members vs X-5's admission: 0 status
+changes. **Admission trials: X hand-written 13 + 12 = 25** (v8 12; X-4 re-screens 9; 46 admission lines).
+
+**Wave composition (PM7-35, applied as ruled; the readings were stated before X-3's screen):** wq_002 and wq_101 have a
+runner sign opposite to their prior -> **dropped** (PM7-35: "Additions (X-3, X-7): ... runner sign opposite to the prior
+is dropped"; wq_101 is also not admitted, so under the other wording of the X-3 statement, "a non-admitted addition
+stays at weight 0", it would sit in the library at weight 0: the fit gives it no weight, theme-erc-v1 counts only
+weighted members, and the combined signal and NAV are the same either way, so no number depends on the reading).
+wq_030 and wq_014 (status reject_redundant, prior sign) **stay at weight 0** (R-2 / R-7 precedent). The cell runs on
+**library v8x7b = v8x3b + wq_099, wq_035, wq_055, wq_006, wq_095, wq_085, wq_030, wq_043, wq_014, wq_044** (68; the same
+strings and trial ids: 0 new admission lines).
+
+**Library v8x7b** (commit `eabf55fd`): 10 add-alpha calls with `--name v8x7b` (same argv; plans `x7b-plans/`), every call
+exit 0; library `81db1d30`, recipe `f205da12` (admission_trials 10, unchanged 58), registry unchanged (`f0ee2288`), spec
+`lib-v8x7b.json` with PM6-8 (i) applied before any run. Registered in `v8-prereg.md` ("Library v8x7b").
+
+| phase (v8x7b; source `eabf55fd`) | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| u | 300 / 2,560 | 13.3 | 530 | 0 | `c7343357050e5ac02fe68667a9ce54e87852695c713443301716e8461eee6816` | u-compare IDENTICAL (58 objects; 169,708 rows of 58 keys; b adds 29,260 rows of 10) |
+| fit / card | 180 / 1,536; 300 / 2,560 | 2.2 / 35.3 | 58 / 1,450 | 0 | `fd069a33...` / `24637480...` | - |
+| marginal (pool only, `-poolonly-b`) | 360 / 1,536 | 360.5 | 251 | 15 | `7222547ab0d1d2d1669f3ec63e094b65562741f2903eeb7e33afc3b61503e61f` | **time-limit** (the 360 s cap of PM7-31); no output dir, nothing read |
+
+**The time cap and what was done.** v8x7's marginal (70 members) took 331.5 s; v8x7b's (68) hit 360 s while the host was
+loaded by other sessions (CPU 46-61%: VS Code / pylance at 320% of one core, Defender at 100%, a `C:/atx/build-server-rel`
+clang-cl build). The phase is report only (it gates nothing). A run killed by the runner leaves no output: rule 7's
+blind re-run (as the campaign runbook treats a time-limit: remove the cause without reading anything, re-run the same
+spec). Cause removed by waiting for a quiet host (no compiler, CPU under 25% for 30 s); `marginal.output` ->
+`...-v8x7b-marginal-poolonly-c` (spec-only, pins unchanged). **If the blind re-run hits the cap again, root stops (PM8-4
+(c)).**
+
+| phase (v8x7b; source `4c4fad7e`) | caps | s | peak MiB | exit | receipt.json SHA-256 | output / result |
+|---|---|---|---|---|---|---|
+| marginal (pool only, `-poolonly-c`; blind re-run, quiet host) | 360 / 1,536 | 253.1 | 296 | 0 | `203ba856d5105156cde2cdb1743c186724f931be05af7653a05096e53d35e362` | report only |
+| gate p1-v8x7b | internal | - | - | PASS | - | 8 of 10 with the prior sign (wq_030, wq_014 reject_redundant, as in v8x7); **0 lines appended, 10 already ledgered**; 0 reference status changes |
+| ref (L 1.1720, fields v14) | 180 / 1,536 | 59.0 | 586 | 0 | `5d8151ca9cc07dd483d9d09f99f9d4bacc1452233daf54779a4515c5cbda0ad3` | **ref-s2-daily IDENTICAL** to X-5's S2 daily bit for bit (`529062d6`, 941,374 B): fields v14 reproduces the parent |
+| w | 300 / 3,072 | 53.5 | 1,436 | 0 | `e4a1f7d1909b6b1bf0ba27ba8c821ff571bd00d1216c27628c6435b342455986` | `mega-v8xw-train-theme-erc-v8x7b-1` |
+| nav step (1) (L 1.1720, calibration) | 180 / 1,536 | 55.3 | 586 | 0 | `faa808f397f0b80ffb40490b768599a3f739a6ad0e607a44ee8511d251b3c365` | mechanics only |
+
+**Gross match (PM6-6; `scratchpad/mech.py`, mechanics keys only):** step (1) at the parent's L 1.1720: all-rows S2 gross
+**0.9111922356** vs G_parent (X-5) **0.9862260459**, |diff| **.07503 > .005** -> one correction: L' = 1.1720 x
+.9862260459 / .9111922356 = 1.26851 -> **1.2685** (inside the executable's [1, 2]). Matched spec
+`scripts/specs/v8/lib-v8x7b-gm.json` (`scratchpad/gmspec.py`: lib-v8x7b.json with name v8x7b-gm, one description
+sentence, `nav.leverage` 1.2685, `nav.output` `...-L1.2685-v8x7b`, `ref.leverage` 1.1720; `lock --write` leaves every pin
+unchanged; file `599655e2`). The step-(1) run of lib-v8x7b.json is not a trial and is never resumed past nav.
+
+**Theme shares (fit provenance, theme-erc-v1 re-solved on T = 12, decisions 1,004):** ERC dispersion 6.7e-16, 10,000
+sweeps, member cap 1/24 = .0417 (two cap iterations: issuance_xbrl, iv_rv_spread, ins_opp_buy, then inst_best_ideas):
+price_volume **.154**, investment_issuance .124, profitability_quality .098, ownership_flow .097, low_risk .097, value
+.073, reversal_seasonality .069, short_interest .068, earnings_momentum .062, options_implied .059, price_momentum .054,
+filing_events .044.
+
+| phase (v8x7b-gm; source `eb3b329e`) | caps | s | peak MiB | exit | receipt.json SHA-256 | output / result |
+|---|---|---|---|---|---|---|
+| nav (L 1.2685, the cell) | 180 / 1,536 | 57.4 | 586 | 0 | `bf9709e69096389b...` | `summary.json` `e25a0b4f`, S2 daily `9e6fbe91`, capacity `87f424ca`, recipe `5b1770a3` |
+| monitor / summ | 180 / 1,536 | 1.6 / 44.7 | 134 / 619 | 0 | `101cc6a6...` / `e979c6ba...` | `cycle-v8x7b-gm/summ.json` `dd38d7a8`, `cycle_verdict.json` `38a7bc66` |
+| one-sided p (PM5-23) | 180 / 1,536 | 2.4 | 610 | 0 | `52b2b19a1b3441e9f2e8aabfb714dec7c5929179b35ee6d4ae9c303cb3b8ffb0` | `v8-cells-x7-bundle.json` `332a97db` (FINAL v8x7b-gm vs BASE X-5) |
+
+**Matched run: G 0.9863734223 vs .9862260459, |diff| .00015 (one correction).** **Mechanics (S2, matched run, read before
+any return): PASS.** All-rows gross .9864 in [.90, 1.05] (post-ramp .9918); net +.0047 (<= .02); tau mean .03562 <= .20,
+p95 .03944 <= .30 (1,005 sessions; flags true); max gross 1.123, max |net| .029; gross by year .970 / .996 / .985 / .994;
+1,006 CSV rows, 1,005 return rows, last session 2023-12-29; accounting 1.5e-13 / 4.0e-16 (tol 1e-9).
+
+**Statistics of record** (S2; bundle X-5 vs X-7, block 21, seed 20260929, 4,999 resamples; 1,005 sessions): net Sharpe
+**X-7 +1.6087** vs X-5 +1.7695: **dSR -.1607**, rho .927, **Memmel SE .1927** (t -.83); CBB 95% [-.518, +.207]; LW SE
+.1873, 95% [-.536, +.215]; **bootstrap p one-sided .8096, two-sided .399**. DSR (verdict, `--dsr-ledger`, N 56): ledger
+DSR **.7309** (V[SR] 1.245e-03 per session, 27 research-window-v2 lines; SR0 1.299 annual); effective-N .8807; legacy
+.9206; PBO .0916.
+
+**Capacity criterion (PM7-10, printed; decides nothing under PM7-34 / PM8-1): net Sharpe at 4x NAV 1.5060 vs 1.6549 ->
+unmet.** Turnover tau .03562 vs .02684 (+33%); cost per traded dollar 12.60 vs 12.56 bps.
+
+**Verdict (PM7-34 / PM8-1: dSR > 0 AND mechanics): dSR -.161 <= 0 -> NOT ACCEPTED, N 56.** Ledger line trial
+`ab36ff093e393264` (cell = the L1.2685 v8x7b NAV dir, s2_net_sr 1.60873, origin prior, window research-window-v2, prev
+`af281c31`); ledger 111 lines (64 construction incl. the 8 W0-4 re-runs, 46 admission, 1 protocol), file `58bfef12`,
+head `7aaf0ae1`. Not retried. **Parent stays X-5** (`x-theme-erc-gm.json`).
+
+Returns (S2, annual): net 4.61% (CAGR 4.67%) vs X-5 5.08%; gross of cost 6.26% (6.45%); trade cost 1.12% (.84%), borrow
+.33%, long financing .20%; vol 2.87% (2.87%); max drawdown 2.18% (2.06%); gross Sharpe 2.184 (2.247).
+
+| year | rows | net return | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|---|
+| 2020 | 252 | +.0058 | +.219 | .0284 | .0375 | 14.96 |
+| 2021 | 252 | +.1017 | +3.217 | .0302 | .0346 | 11.58 |
+| 2022 | 251 | +.0640 | +2.067 | .0303 | .0355 | 12.29 |
+| 2023 | 250 | +.0177 | +.716 | .0251 | .0349 | 11.68 |
+
+Capacity (report only; X-5 beside): net Sharpe .5x 1.669 (1.809), 1x 1.609 (1.769), 2x 1.563 (1.727), **4x 1.506
+(1.655)**, 8x 1.433 (1.553); cost bps per traded dollar 10.75 / 12.60 / 14.85 / 17.00 / 18.66. Read: the ERC re-solve gave
+the new `price_volume` sleeve the largest share (.154, a low-volatility sleeve), the book's volatility did not fall
+(2.87% both), the gross return fell (6.26% vs 6.45%) and trading cost rose by .28% a year with 33% more turnover: the
+formulaic picks paid less than they cost at the book's horizon.
+
+Tests after the cell (tests only, `a80e2c47`): `lib-v8x7b-gm.json` joins NULL_PINS / ADD_ALPHA_COPIES as `lib-v8x3b-gm.json`
+did; `scripts/tests` **249 passed, 3 skipped, 0 failed**. Disk: 69,372,051,456 B free (64.6 GiB): the drop from 114 GiB
+is other sessions' builds (a vcpkg grpc build tree, `C:/atx/build-server-rel`); this batch's new outputs are about 2 GiB
+(bar fields 3 x 69 MB, candidate-cache entries of the 22 X-7 member runs, cards, w and NAV dirs).
+
+### 4. Campaign v9-mine-c1 (prereg section 9 runbook, PM7-2, PM7-12) -- plan, written before any campaign command
+
+**H-F = X-5** (the last accepted hand-written X cell; X-7 not accepted): spec `x-theme-erc-gm.json`, library v8x3b, w
+pass `build-equity/mega-v8xw-train-theme-erc-1`, fit `build-equity/mega-weights-v8x-theme-erc`, role lo3
+(`train-2020-2023-lo3/manifest.json`, B0b won), fields v13 (`train-2020-2023-lo3-fields-v13/manifest.json`).
+**Step 0 (integration 8 receipt; executables unchanged since):** mine exe `2176fa4a`, mine-tests `d6e40412`, factory-tests
+`58bb8bee` (re-hashed now = v8-14's): mine-tests 44 / 44, factory 392 / 392, golden `0x889874a3b9b29c55` at 1 and 4
+workers, `PromotesThePlantedSignalsOnlyInFiveSeeds` rung_failed 0 (integration 8 log). v8-15 rebuilt only the ic exe.
+**A3 field rule at the lock** (registry at H-F, every X-listed member included): k8_count_63 (read by k8_intensity) and
+inst_own_chg_q (inst_persist) leave the list; no X-7 string reads any of the 12. **Fields 10**: iv_atm_63d, iv_atm_126d,
+ea_delay_days, ins_net_buy_ratio, ins_n_buyers, ins_n_sellers, k8_days_since_any, inst_breadth_chg,
+regsho_threshold_days63, sv_offexchange_share126 (all 10 are fields v13 rows). **B = 11 x 10 = 110** (A3; F = 1.54 for
+101..1,000; z(110) = 3.5062, raw discover t = 3.5062 x 1.54 = 5.3996; Fc 1.77 for m <= 16). Prereg items 4, 5 and 12 (3)
+amended to match in the spec commit (runbook step 2). **Commands, in order** (`RC = python scripts/research_cycle.py`,
+`SPEC = scripts/specs/v9/mine-c1.json`): edit SPEC (fields, budget 110, `inputs.role` / `inputs.fields` = H-F's,
+`pool_source` = H-F's three files); `$RC mine lock $SPEC --write`; `$RC mine pool $SPEC`; `$RC mine lock $SPEC --write`;
+`$RC mine probe $SPEC` (W = the largest of 4, 2, 1 with required <= 7,680 MiB; `max_memory_mib` = required at W rounded up
+to 64); delete the four `requires` lines (OD-7: PM7-2, PM7-12; PM7-27 (2)); commit; `$RC mine plan $SPEC` (header
+check); `$RC mine run $SPEC --date 2026-10-02` alone, only with free physical memory >= `max_memory_mib` + 1,024 MiB
+(PM7-12; else A4: workers 4 -> 2 -> 1 with the probe value, never the budget; stop if 1 does not fit); `$RC
+ledger-campaign --ledger build-equity/trials.jsonl --campaign build-equity/mine-v9-c1` must exit 2. Reads only in the
+registered order (receipt; ledger line; mechanics; then counts, promotions, `mined_members.json`, `trials.csv` last).
+The spec edits break `scripts/tests/test_research_mine.py`'s pins of the committed template (12 fields, 4 requires,
+fills); fixed in tests only after the run (as `4d0c8d8f`).
+
+**Steps 1-6 done (metadata only; no payload opened by the probe; nothing of the campaign has run):**
+- Spec filled (`scratchpad/mine_fill.py`): fields 10, budget 110, role lo3, fields v13, `pool_source` = X-5's three files,
+  description. `mine lock --write`: role `e1c67101`, fields `e5f7f28c`, combined `2a442f56`, weights `8310da2c`, summary
+  `9303cac6` locked; pool missing (expected).
+- `mine pool`: `build-equity/mine-pool-v9-c1/manifest.json` (`atx.mine-pool/v1`): 1 regressor (`book` = X-5's combined
+  signal) and **47 members** (every v8x3b member with a positive weight in X-5's weights; hard links into the lo3
+  candidate cache; 3.0 GiB apparent). `mine lock --write`: pool `d129f873`.
+- **Finding (tool defect, fixed, `23b52a5d`):** `mine probe` failed before any verb ran: `FileNotFoundError [WinError 2]`
+  -- Windows CreateProcess does not find the relative verb path `build-equity/bin/atx-equity-strategy-mine.exe` written
+  with '/' (the bounded runner resolves its command with `shutil.which`, so IC / NAV phases never met it; the probe and
+  `mine run`'s `--help` check launch the verb directly). Fix: `research_mine.launchable()` resolves argv[0] against the
+  root at those two launches only; printed lines and the run's argv keep the spec's spelling. Test added (the probe
+  launches the root-resolved verb; `launchable` unit test); `test_research_mine.py` on the committed template 41 passed.
+  Rule 7: a tool defect, nothing read, 0 trials.
+- **`mine probe`** (verb `2176fa4a`, `--max-memory-mib 64`, refuses before any payload): required **3,737 MiB at 4
+  workers**, 2,577 at 2, 2,560 at 1. **Identity of the memory model (runbook step 5: "other numbers mean a wrong
+  build"):** the runbook's 3,979 / 2,784 / 2,765 are the joined model at 12 fields and an assumed 1,405 x 6,100 shape;
+  the lo3 role has 5,922 instruments (role manifest). The same probe at the registered 12 fields (`scratchpad/probe12.py`,
+  spec not edited, metadata only) gives 3,865 / 2,705 / 2,687 MiB; the joined model's bytes scaled by 5,922 / 6,100 give
+  3,862 / 2,702 / 2,684 MiB plus about 4 MiB of fixed terms that do not scale (`small`, metadata): **the build is the
+  joined head**; the 10-field numbers are the same model with two fields fewer. **W = 4; `max_memory_mib` 3,776**
+  (3,737 rounded up to 64; <= 7,680); runner 8,192 MiB / 600 s.
+- `requires` deleted: (1) OD-7 granted by the owner's goal text as ruled in PM7-2 and confirmed in PM7-27 (2); (2)
+  runbook step 1 passed at integration 8 on these executables (mine `2176fa4a`, mine-tests `d6e40412`, factory `58bb8bee`;
+  golden at 1 and 4 workers; rung_failed 0); (3) step 2 done for the source cell H-F = X-5; (4) the field rule re-checked
+  (A3: 10 fields).
+- Prereg amended in the same commit (`docs/plans/2026-10-01-v9-mine-campaign-prereg.md` items 4, 5 and the reading of
+  12 (3), runbook step 2): 10 fields, N 110, z(110) 3.5062, raw discover t 5.3996.
+- `mine plan` header: every input and pool_source line `[locked, verified]`; `capacity 110 (templates 11 x 10, stage 2
+  off); budget 110 (ceiling in force 10000)`; `Bonferroni z 3.5062`, `F 1.54`, `raw discover t 5.3996`; `Fc by m (m
+  1..16: 1.77; cap 16)`; `discover [2020-01-01, 2023-01-01), confirm [2023-01-01, 2024-01-01)`; `--max-memory-mib 3776,
+  runner 8192 MiB / 600 s`; registry `new`; no `# requires`, no `# fill` line.
+
+**Step 8, run** (`mine run scripts/specs/v9/mine-c1.json --date 2026-10-02`, source `a5df67ae` clean; launched by
+`scratchpad/mine_go.py` only when free physical memory was >= 3,776 + 1,536 MiB and no compiler ran: 6,201 MiB free; no
+other process of this session ran during it):
+
+| step | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| mine run (verb `2176fa4a`, W 4) | 600 / 8,192 / 512 free | 232.6 | 2,211 | 0 | `be23441d2bdf2d68569af3d42dc811877c0578c0c53bcc7880cd4b0376d0cdf2` | `build-equity/mine-v9-c1/`: `campaign.json` `10a64f8a`, `mined_members.json` `4f09e4e0`, `trials.csv` `d6d127a1`, `ledger_line.json` `90abe2c5` |
+
+Checked before any statistic, in the registered order (prereg section 9; runbook steps 9-10):
+1. **Receipt**: completed, exit 0, `clean in the code pathspec`, min system free 728 MiB.
+2. **Campaign line** appended by `mine run` before anything printed a statistic: trial **`f1ce3bf835d4dc54`**, kind
+   mining-campaign, count 0, registry count 110 (total 110), budget 110. Ledger 112 lines, file `0c9d36b6`, chain head
+   **`d1484e69`**; campaign lines 1; construction N **56 unchanged**. `ledger-campaign` again: **exit 2** ("shares
+   trial_id, recipe_sha256, campaign ... a second confirm read on the same identity is refused"); ledger unchanged.
+3. **Mechanics** (`mine run`'s checks; none failed): distinct **110** = evaluated 101 + screen-rejected 9 (ic-undefined) +
+   racing-rejected 0 + rung-failed 0 + failed 0 (budget 110, capacity 110); registry new 110, n_raw 110, 216,648 B, head
+   `3792dd6d`; hurdle z 3.506204726617 = z(110), overlap factor 1.54, ceiling 10,000; recipe confirm bands
+   [[16, 1.77], [64, 1.96], [256, 2.15]] (mined-v1's); label rows discover 734, confirm 228; recipe pins and windows =
+   the spec; fields = the spec's 10; footprint required_bytes 3,918,459,408 (= the probe), 232.2 s.
+4. Then, in order: **(a) counts: shortlisted 0, rho pass 0, confirm read 0, confirm defined 0, admitted 0.** (b)
+   promotions `[]`; `mined_members.json`: 0 members (registry head `3792dd6d`). (c) last, diagnostic, selects nothing:
+   `trials.csv` evaluated 101 with an f2; largest f2 4.998 (next 4.81, 4.76, 4.62, 4.05) against the raw discover hurdle
+   5.3996 (f2 / 1.54 >= 3.5062): **no trial cleared it**; 12 of 101 had f2 >= 2.
+5. `mine wave scripts/specs/v9/mine-c1.json --parent v8x3b --name v8x3bm1 --parent-spec
+   scripts/specs/v8/x-theme-erc-gm.json`: "v9-mine-c1 admitted no member: no wave, no cell, no admission trial".
+
+**Campaign v9-mine-c1: complete, final, admitted 0. M = 110** (registry count; enters N_tot by PM7-7). **X-9 (mined
+wave): undefined (0)** -- no member, no cell, no admission trial (prereg item 11; v8x prereg section 6). N_c stays 56.
+**N_tot = 102 (trial_counts of the ledger) + 110 (M) = 212.** Appendix A addition: `mined campaigns 1 (v9-mine-c1:
+budget 110, registry count 110, admitted 0)`.
+
+Tests (tests only, `a1d2ef74`): the spec edits broke `test_research_mine.py`'s 26 pins of the committed template, as
+announced; the registered template (`23b52a5d`'s bytes) is now the fixture `scripts/tests/fixtures/mine-c1.registered.json`
+that those tests read, and a new test pins the live spec as locked (A3 fields = the template's less the X members'
+fields, B 110, every pin locked, no requires, no fill, the cap a multiple of 64 <= 7,680, everything else the
+template's). `test_research_mine.py` **42 passed**; `scripts/tests` **251 passed, 3 skipped, 0 failed**;
+`test_trial_ledger_rules`, `test_mine_overlap_factor`, `test_dsr_total` **23 passed**.
+
+### State at the stop (PM8-3: X-10 deferred; root stops here)
+
+- **Accepted X book = X-5** (`scripts/specs/v8/x-theme-erc-gm.json`, library v8x3b, theme-erc-v1, L 1.1720): S2 net
+  Sharpe 1.7695, net annual 5.08%, gross of cost 6.45%, 4x net Sharpe 1.655, tau .02684, max drawdown 2.06%. H-F = X-5;
+  X-F0 so far = X-5 (Y cells next, PM8-2).
+- Cells this batch: X-7 NOT ACCEPTED (N 56, dSR -.161, p one-sided .810, two-sided .399); campaign admitted 0; X-9
+  undefined. N_c 56; admission lines 46 (v8 12, X hand-written 25, X-4 re-screens 9); M 110; N_tot 212; ledger 112
+  lines, head `d1484e69`.
+- Not run (PM8-3): X-10, the X gate / adoption print, the hidden block, OD-3.
+
+### Hidden-data record (X batch 2, resumed)
+
+- Inputs opened by tools: role lo3 and the lo3-dlret label role, fields v13 / v14 (v14 built from the role's
+  TickerHistory3 price source through the sealed builder: vendor rows on or after 2024-01-01 skipped and counted),
+  X-5's u / fit / w / NAV outputs, the lo3 candidate cache, the X-7 library outputs, the mine pool, the ledger. The fields
+  v14 build re-read the atx-db stage pins of v13's argv (hash checks; nothing under `atx-db/` written).
+- Read by me: receipts, manifests (metadata), gate rows, the cycle verdicts, the NAV mechanics keys before any return,
+  then X-7's returns after its mechanics passed, the campaign's receipt / ledger line / mechanics, then its counts and
+  the `trials.csv` f2 column (diagnostic). Every NAV's last session 2023-12-29; every manifest sealed at 2024-01-01.
+- **Nothing dated 2024-01-01 or later was opened. No 2013-2019 history read. No `stdout.log` of a NAV or of the campaign
+  verb was opened.** `C:/atx`, `atx-db/` and pools 7, 8, 10, 12-15 untouched; no push.
+
+### Open items (X batch 2, resumed)
+
+- Tool fix `23b52a5d` (`research_mine.launchable`): a code change in the scripts pathspec, outside the build; reviewers
+  may want it in the next scoped review.
+- The marginal phase is near its 360 s cap at 68-70 members (253-332 s on a quiet host); a wave above about 70 members
+  will hit it (a PM restatement of the cap, as PM7-31 did, would be needed before Y waves).
+- X-5's weights hold 11 themes, so every add-alpha wave on it needs PM6-8 (i) for the marginal (the verb takes 10 themes).
+- Disk 69,954,383,872 B free (65.1 GiB); other sessions' builds took about 50 GiB during the batch.
+
+## Y integration (root, PM session 8 dispatch, second session): merges, theme, repair, build v8-16, fields v15, Y cells (2026-10-02)
+
+Root in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `ac07c12a` (clean). Read: `C:/atx/CLAUDE.md`,
+progress "PM session 7" and "PM session 8" to the end, `v8x-prereg.md` sections 6-8, this log's last 330 lines (X batch 2
+and its resume), `pm8-rulings-draft.md`, `v8y-prereg.md` @ `87a9e0f4` in full (blob SHA-256 `d78aba66...57fe` = PM8-14's),
+integrator-rules. State at the start: book X-5 (`x-theme-erc-gm.json`), N_c 56, admission lines 46 (X hand-written 25),
+M 110, N_tot 212, ledger 112 lines (head `d1484e69`).
+
+### 0. Rulings recorded (`56fd1639`, `09b4ab71`)
+
+PM8-5..PM8-14 and the lane notes between them appended verbatim to progress.md from the PM's draft (draft deleted; it was
+git-ignored); PM8-15 and PM8-17 verbatim from the PM's messages. PM8-16 was not received by root.
+
+### 1. Merges (`--no-ff` by SHA, the dispatch's order; 0 conflicts)
+
+| # | lane | lane SHA (branch head at merge) | merge | content | suites |
+|---|---|---|---|---|---|
+| 1 | YPRE | `87a9e0f4` | `ddf8ad73` | `v8y-prereg.md` (committed blob `d78aba66...57fe` = PM8-14's pin), report | docs only: none affected |
+| 2 | YSIG | `5431831a` | `b5e84bb6` | report, `ysig_check.py` | `ysig_check: PASS`; `xsig_check: PASS`; `xwq_check: PASS` |
+| 3 | YDATA | `e1cf4135` | `cd90e6c6` | 5 field modules + tests, `prepare_research_fields_ydata.py`, vwap data ask | `atx-engine/tools` whole **340 passed**, 6 subtests (= the lane's count) |
+| 4a | YOPS | `97e6befc` (head when merged) | `fad041f7` | `group_sum`, as-of rank family, `group_delay`; `yops_check.py` | `yops_check: PASS` (40 planted errors fail); C++ at build v8-16 |
+| 4b | YOPS (delivered, PM message) | `fe790af7` | `8544a36f` | op tests (`alpha_formulaic_ops_test.cpp`), `asof_ops.hpp` listed and `dsl_vm_sources_sha256` re-pinned `fcf8021e...` without a semantics bump, report, `test_yops_check.py` | C++ at build v8-16a |
+| 5 | YINFRA | `85a98a5b` (cleared by the PM's message; report section 7 "Review fixes": 18 of 18 closed, each with its commit and tests) | `c3235084` | wave driver (`research_cycle.py wave`), candidate queue, scoreboard, `stage_chain.py` | see the suite table below |
+| - | YCOMB | not merged | - | waits for the PM's review verdict (dispatch) | - |
+
+No lane touched `atx-db/`. Build v8-16 (YOPS `97e6befc`) is superseded by v8-16a (YOPS `fe790af7`) before any run read
+an output of it: v8-16's ic-tests showed `StrategyIcRunner.VmSourcesPinnedToSemanticsVersion` failing (vm.hpp includes
+the unlisted `asof_ops.hpp`; digest `7523...d830` vs pin `ad6c...3d62`), which the lane's `75a73cac` fixes at the source.
+
+### 2. Theme `merger_arbitrage` (`55eefd38`) and the iv_vol_of_vol repair (`cf0ec969`), 0 trials each
+
+- `merger_arbitrage` (PM8-8 (2), PM8-14, v8y-prereg section 10): registry themes table (YDATA's L1 text verbatim),
+  `fit_composition_weights.V7_APPENDED_THEMES` (4 entries), `theme_resid_order` 12 -> 13 entries in
+  `atx-impl/src/strategy_ic_theme_resid.hpp:24-29` (last); the pin literals of `test_composition_resid.py` (:243-245,
+  :268, :284, :677), `test_fit_composition_weights.py` (:2811-2815, :2885) and `test_fit_composition_weights_store.py`
+  (:212) follow (as `798d3b23`). The three files: **124 passed**, 17 subtests (R6B-O-4's C++/Python pin included).
+  `atx-impl/strategies` **163 passed**. The two-speed half-life row `{"merger_arbitrage", 126.0}` (YP-10) waits for the
+  YCOMB merge (the table is YCOMB's code).
+- iv_vol_of_vol (PM8-8 (6), YP-5): the registered string with every `iv_atm_21d` read as `delay(iv_atm_21d, 1)`, SHA-256
+  **`4d42a72b859c3ff4ae69ed82cf34c8263d9877c4f0600b03c6cc32887ac5fac0`** (= YP-5's); `ysig_check.py`: the candidate
+  string re-pinned (`REPAIRED`), the LIB2 string still checked byte for byte (`c5ecec15`), mirror figures 41 bars / 5
+  slots / 15 nodes / `iv_atm_21d` (house budget 314 / 7), the add-alpha line = the LIB2 line with only `--dsl` and
+  `--deviation` changed (deviation + "; IV rows t-21..t-1, the vendor IV clock (PM8-8 (6) repair)"): **line SHA-256
+  `60edfca89dba05d5e3faa1f29ce7da839114858a7a2bfee19a21af0fb8721493`** (was `06ef2910...37f8`). `ysig_check: PASS`.
+- Roster cap 80 -> 96 (PM8-6, P4): **not made**. The one-line registry edit was refused by this session's permission
+  system ("Modify Shared Resources"); not retried by other means. It binds nothing in Y: X-F0 = X-5 holds library v8x3b
+  (60 members; X-7 not accepted), so the Y-S screen library holds 60 + 15 = 75 <= 80. Reported to the PM.
+
+### 2b. P7 blind checks (citations; before any Y read; YP-6)
+
+- `mom_turn` (Lee-Swaminathan 2000): the paper's abstract: "high-volume portfolios, on average, realize higher momentum
+  profits"; Chen-Zimmermann `MomVol` (sign +1) keeps the high-volume tercile. The interaction's +1 agrees. Stands.
+- `dato` (Soliman 2008): Chen-Zimmermann `ChAssetTurnover` "Annual change in AssetTurnover", sign **+1**. Agrees. Stands.
+- `div_event` (MTW 1995): Chen-Zimmermann `DivInit` "not having paid a dividend in the last 24 months" (= the 504-session
+  gap) sign +1; `DivOmit` sign -1 (the field's -1). The 252-session window is MTW's one-year drift (CZ holds 6 months for
+  DivInit: a portfolio choice, not the paper's window). No contradiction. Stands.
+- `exch_switch`: Chen-Zimmermann `ExchSwitch` sign -1, "switched from AMEX or NASDAQ to NYSE within the past year, or from
+  NASDAQ to AMEX" = the string's -1 x up-switch flag over 365 days. Stands.
+- `deal_target` 252-session horizon: a mechanical cap, not a constant of Mitchell-Pulvino; not readable as a paper value.
+  Registration stands; risk printed (YP-6: "a paper that cannot be read leaves the registration standing").
+- `shD1` (PM8-8 (3)): SpiderRock's documentation names its slope fields "Interpolated 21 day ATM vol slope" (the same text
+  YDATA quotes for `shD1`), a surface property at the session, the slope the vendor defines as the volatility difference
+  between moneyness -0.5 and +0.5; the TickerHistory3 row of `shD1` itself was not reachable on the public site (risk
+  printed). The house exclusion (`docs/superpowers/specs/2026-06-16-orats-history-loader-design.md:95`) was a blanket
+  "forward horizon" label written without the dictionary. The field reads session t-1 only (`ivshape-lag1-v1`); its
+  look-ahead probe and teeth pass (`test_research_fields_ivshape.py`, in the 340). Accepted at lag 1 as PM8-8 (3) rules.
+
+Sources: onlinelibrary.wiley.com/doi/10.1111/0022-1082.00280 (LS 2000 abstract); github.com/OpenSourceAP/CrossSection
+SignalDoc.csv (CZ rows); docs.spiderrockconnect.com (slope fields).
+
+### 3. Build v8-16 / v8-16a and the identity of X-5 -- plan, written before the runs
+
+Builds (`scripts/research-build.ps1 -Preset equity-dev`, target-scoped, one at a time): **v8-16** at `cf0ec969` (YOPS
+`97e6befc`): `atx-equity-strategy, -ic, -targets, atx-impl-strategy-ic-tests, atx-engine-factory-tests,
+atx-engine-alpha-tests`: exit 0, 601.6 s, 180 TUs, 8 links, **0 compile fixes**; ic-tests 158 / 159 (the tripwire above).
+**v8-16a** at `09b4ab71` (YOPS `fe790af7`), the same six targets: exit 0, 535.4 s (3 jobs at 3,177 MiB free), 135 TUs,
+8 links, **0 compile fixes, 0 warning lines**; receipt `build-equity/mega-v8-16a-receipt.json`. Executables (SHA-256):
+ic **`d0afb8cabc23ade8d6f82fd57c75da09d8745e265c652c6510d3ffd143c25e61`**, targets
+**`1e7c304272f8fa4dafa3694cb8a93be32fb79777d54319604085291d071a9054`**, atx-equity-strategy `34e1dace...e1`, ic-tests
+`3f40261c...07ab`, factory-tests `11eb72c4...fed3`, alpha-tests `6438fe88...b884`. Unchanged since v8-14 / v8-15 (not
+rebuilt): risk `d7e424b2`, mine `2176fa4a`. After YCOMB a further tag builds YCOMB's targets.
+
+| suite (v8-16a) | result |
+|---|---|
+| `atx-impl-strategy-ic-tests` whole (xml `build-equity/v8-i16a-ic-tests.xml`) | **159 / 159** (`StrategyIcRunner.VmSourcesPinnedToSemanticsVersion` passes at `fcf8021e`) |
+| `atx-engine-factory-tests --gtest_filter=NsgaSearch.*:SignalFitness*` | **24 / 24**: `NsgaSearch.ScalarRaw_ReproducesGoldenDigest`, `SignalFitnessDefaults.ImplicitDefaultsKeepTheGoldenDigest`, `...ExplicitDefaultsKeepTheGoldenDigestAtEveryWorkerCount` (1 and 4 workers): **golden `0x889874a3b9b29c55` holds** |
+| `atx-engine-factory-tests` whole | **392 / 392** |
+| `atx-engine-alpha-tests --gtest_filter=AlphaVmSlotReuse.*` (xml `v8-i16a-slot-reuse.xml`) | **6 / 6** |
+| `atx-engine-alpha-tests --gtest_filter=AlphaFormulaicOps*` | **15 / 16**: `AlphaFormulaicOps_Frozen.ReportStringsArePinnedCompileAndMatchTheOracle` fails at `alpha_formulaic_ops_test.cpp:913` (`EXPECT_GT(finite, 0U) << "#88"`): string #88 has no finite cell on the test's 130 x 8 fixture; VM == oracle on every cell (:910) and every SHA pin pass. A fixture degeneracy in a lane test, not a VM defect; no Y string reads a new op (PM8-17). Not edited by root (a lane test); reported to the PM for a YOPS test-only fix |
+| `atx-engine-alpha-tests` whole | **770 / 771** (the same one) |
+
+The PM routed it to YOPS: fix **`b25c2a2f`** (test only: each frozen string's `analyze()` lookback pinned, max 91; VM ==
+oracle kept on the holed fixture; finite cells checked on a complete 132 x 16 fixture), merged **`7bea1a6d`**; build
+**v8-16b** (`atx-engine-alpha-tests` only; exit 0, 10.0 s, 1 TU, 1 link; `e6d300f1...`): `AlphaFormulaicOps*` **16 / 16**,
+whole alpha **771 / 771**. Every frozen string has finite cells on the C++ generator. The VM sources tripwire pin is
+unchanged by it; the research executables stay v8-16a's.
+
+Python suites after the YINFRA merge (`ATX_EQUITY_BIN`, `ATX_EQUITY_TARGETS_EXE` = v8-16a, absolute):
+
+| suite | result |
+|---|---|
+| scripts/tests (whole) | 307 passed, 3 skipped, **1 failed**: `test_research_wave.py::test_add_alpha_save_plan_is_opt_in` (YINFRA #18's test). Cause: the stdout masking replaced the run's root path forms in `set` order, which follows the string hash; when `tmp/<tag>` went before `tmp/<tag>/root` a line kept `<ROOT>/root/` (fails or passes by `PYTHONHASHSEED`). **Fix `3a146fe7`** (tests only, `scripts/tests/test_research_wave.py:148-150`: longest form first); passes under seeds 0-5; `test_research_wave.py` 15 / 15 |
+| atx-engine/tools (whole) | **348 passed**, 6 subtests (340 + YINFRA's stage-chain tests) |
+| atx-impl/tools (whole) | **612 passed, 1 skipped**, 17 subtests |
+
+X-5 identity under v8-16a (PM7-30; bounded runner; argv = X-5's recorded receipt with only `--output` renamed, and for
+w also `--candidate-cache` -> a new empty directory `build-equity/v8-i16-cand-cache-empty` (PM message: the cache key is
+unchanged, so a warm cache would never run the new VM on the X-book strings); limits and bindings as recorded):
+
+| pass | base receipt | new output | compared to | expected |
+|---|---|---|---|---|
+| fit | `mega-weights-v8x-theme-erc-run1` | `v8-i16-x5-fit` | `mega-weights-v8x-theme-erc` | `admission.csv` byte-identical; `admission.json`, `composition_weights.json` identical after substituting `script_sha256`, `admission_sha256`, `provenance/std/registry_sha256` (fitter and registry gained `merger_arbitrage`) |
+| w (cold cache) | `mega-v8xw-train-theme-erc-run1` | `v8-i16-x5-w` | `mega-v8xw-train-theme-erc-1` | every file byte-identical but timing / cache-count paths; `train_combined.*` byte for byte (the library re-evaluated by the v8-16a VM) |
+| NAV | `mega-nav-v8x-theme-erc-L1.1720-run` | `v8-i16-x5-nav` | `mega-nav-v8x-theme-erc-L1.1720` | 27 / 27 byte-identical |
+
+A mismatch is a stop (PM8-4 (b)). No statistic is read: comparisons by SHA-256 and JSON paths only.
+
+## P9 Phase 0, root steps R0-3, R0-4, R0-5 (PM session 9 dispatch; 2026-10-03)
+
+Root in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `84f06f6b` (code pathspec clean; one untracked file
+outside it, `docs/plans/2026-10-02-x5-equity-curve.png`, not root's, left alone). Read: P9 plan
+(`docs/plans/2026-10-03-p9-sprint-plan.md`) header DS paragraph, sections 0.6 and 1.1 (R0-3..R0-5), integrator-rules,
+global-constraints, `v8y-prereg.md` sections 9 and 13 (P5, P8, P10) and Appendix B YP-12, this log's "Y integration" section
+3, progress PM7-30 and PM8-4. Lane E1's P0-FIX files and `y-s.json` untouched (R0-2). No C++ built.
+
+### R0-3. X-5 identity under build v8-16d: verified from disk (v8y P5, PM7-30)
+
+The three passes were run by a previous root session at source `d7c1c520` (bounded runner, "clean in the code pathspec",
+dirty outside none) but no result was logged. Verified from disk now, not from a report:
+- **Build v8-16d** (receipt `build-equity/mega-v8-16d-receipt.json` `a3258637`): source `e0fd0297`, DirtyEntries 0, preset
+  equity-dev, 8 targets (`atx-equity-strategy`, `-ic`, `-targets`, `atx-impl-strategy-ic-tests`, `-target-tests`,
+  `atx-impl-tests`, `atx-engine-book-tests`, `atx-engine-research-fields-tests`), exit 0, 287.5 s, 104 TUs, 10 links.
+  Executables re-hashed on disk = the receipt: **ic `985019d97d3db335430da8dda2160c9b4908c0db462344478b7e64bb5fa3c989`**,
+  **targets `72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25`**, atx-equity-strategy `8c4cc70b...a3ea`.
+  v8-16c (`5b9af8ba`) exited 1 (superseded before any run); v8-16e (`2206504b`) rebuilt `atx-impl-strategy-ic-tests` only
+  (`3393a953`). Between `e0fd0297` and `84f06f6b` the only C++ change is `atx-impl/tests/strategy_ic_runner_test.cpp`
+  (v8-16e's): the research executables are current.
+- **Argv** (token by token against X-5's recorded receipts): fit 1 differing token (`--output`), w 2 (`--output`;
+  `--candidate-cache` -> the new empty `build-equity/v8-i16d-cand-cache-empty`), NAV 1 (`--output`); limits equal.
+
+| pass | X-5 receipt / reference | new receipt (`receipt.json` SHA-256) | exe | s / MiB | result |
+|---|---|---|---|---|---|
+| fit (180 / 1,536) | `mega-weights-v8x-theme-erc-run1` / `mega-weights-v8x-theme-erc` | `v8-i16d-x5-fit-run` `cd7458de867e2e7cc55e9c68d2c34afad9116e96a43e307db0b1b479092ed5d0` | python (fitter) | 1.6 / 56 | `admission.csv` **byte-identical** (`b6cb8a74`); `admission.json` differs only in `/inputs/script_sha256` (`4c529f5f` -> `8d05a9bb` = the fitter at head: `merger_arbitrage` in `V7_APPENDED_THEMES`); `composition_weights.json` only in `/provenance/script_sha256` (same), `/provenance/admission_sha256` (`5f5b3edb` -> `90adeef8`) and `/provenance/std/registry_sha256` (`7ff10f4e` -> `6a1ef89d` = `registry.json` at head: theme `merger_arbitrage`, the Y field rows). **Both byte-identical after substituting those values back** (admission `5f5b3edb`, weights `8310da2c`): the PM7-30 list, nothing else |
+| w, cold cache (300 / 3,072) | `mega-v8xw-train-theme-erc-run1` / `mega-v8xw-train-theme-erc-1` | `v8-i16d-x5-w-run` `d6c9f5069a5f8d1c948960de9fdcdad582dfda99dbc0e72cfa8523e7535d8f8f` | ic v8-16d `985019d9` (X-5 ran v8-14 `67f72921`) | 254.4 / 2,373 | **10 of 12 byte-identical**: the six `train_combined.*` (`.json` `2a442f56` = X-5's pin, `.f64` `c17ac935`), `train_daily_ic.csv`, `orientations.json`, `recipe.json`, `train_planned_targets.csv` -- the library re-evaluated by the v8-16d VM (58 VM evaluations) reproduces byte for byte. `summary.json` (603 of 7,245 leaf paths) and `train_candidates.jsonl` (464 of 6,554) differ only in timing paths (`stage_seconds.*`, `wall_seconds`, `hash_seconds`), cache paths and counts (`candidate_cache.{directory, fields_directory, entries[].payload, entries[].sidecar, hits, misses, vm_evaluations, ic_results.hits, ic_results.misses}`, per candidate `signal_cache`, `ic_result_cache`) and the cold-cache I/O counters `research_fields.{field_loads, loaded_bytes, peak_resident_fields}`, `verify_bytes` |
+| NAV (180 / 1,536) | `mega-nav-v8x-theme-erc-L1.1720-run` / `mega-nav-v8x-theme-erc-L1.1720` | `v8-i16d-x5-nav-run` `618f0b69d2635707758366563f185c4c7ccf723857e99ce7a3280c28d809bd35` | targets v8-16d `72ff6d2d` (X-5 ran `a95f6f0a`) | 145.7 / 585 | **27 of 27 byte-identical** (S2 daily `529062d6...3d61` = X-5's ledgered series SHA-256, trial `269cfc47be86d4a7`; `summary.json` `a03937cf`; `capacity/`); `--max-bytes 1073741824` held |
+
+The I/O counters follow the cache state, not the build: the reference ran warm (hits 58, misses 0, vm_evaluations 0,
+field_loads 0), this run cold (hits 0, misses 58, vm_evaluations 58, field_loads 68, peak resident fields 8). Cross-check:
+the superseded v8-16a cold run `v8-i16-x5-w` (same argv, its own empty cache) and this run differ in `summary.json` only in
+timing and cache-directory paths (I/O counters equal).
+
+**R0-3: PASS. X-5 reproduces under v8-16d** (NAV and w byte for byte with every Y flag absent; fit with the three
+provenance hashes of the PM7-30 kind). Comparisons by SHA-256 and JSON paths only; no value of `summary.json`,
+`train_daily_ic.csv` or any NAV file was read; no NAV `stdout.log` opened. Observation (timing only, decides nothing): the
+v8-16d NAV took 145.7 s of its 180 s cap (X-5 under v8-15: 45.4 s; the X-7 ref: 59.0 s), minimum system free 1,300 MiB
+during the run; host load from other sessions is the likely cause, but Y-cell NAV phases have 34 s headroom at that pace.
+
+### R0-4. Fields v15 (v8y section 9, P8): checks from disk
+
+Built by the previous root session at source `5db89d36` (two bounded processes, v8y section 9 A then B); not logged.
+
+| step | receipt dir | outcome / exit | s | peak MiB | receipt.json SHA-256 | output manifest SHA-256 |
+|---|---|---|---|---|---|---|
+| A, v15a | `train-2020-2023-lo3-fields-v15a-run` | completed / 0 | 294.5 | 710 | `1b87f1ae631932264d6699a136088400471a4afc01205dba4853fb28daaf83bd` | `0422a796b1deee72793a82e2adfb00bdad04614ea4789a918f98a9aca9124e7f` |
+| B, v15 | `train-2020-2023-lo3-fields-v15-run` | completed / 0 | 209.8 | 799 | `201fe448da9b9813d062a1aa5f9699152716212df3b7a5397847b1fc75308252` | **`26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09`** |
+
+- Caps W0-i (600 s / 2,560 MiB) held by both; receipts "clean in the code pathspec", dirty outside none, stderr empty.
+- **Pin: the v15 manifest re-hashes to `26fee5ce...3b09` = `scripts/specs/v8/waves/y-s.json` `fields.manifest_sha256`**
+  (`fields.dir` `build-equity/train-2020-2023-lo3-fields-v15`).
+- **Counts = section 9's expectation.** v15a: reused **78** (from v14 `4b12c0e1`), computed **5** (`iv_skew_21`,
+  `stio_chg_q`, `div_init_omit`, `deal_pending`, `exch_up_365d`). v15: reused **83** (from v15a `0422a796`), computed **1**
+  (`conn_ret63`); 84 fields. Reused entries: sha256 = the prior manifest's 78 / 78 and 83 / 83; hardlinks of the prior files
+  78 / 78 and 83 / 83; all 84 v15 payloads re-hash to their pins (84 / 84). Builder `code_sha256_lf` `74df97f9` (= v13 /
+  v14).
+- **Seal**: status complete; `seal.exclusive_end` 2024-01-01 ("every source row available on or after 2024-01-01 is
+  dropped before use; role sessions asserted < 2024-01-01"); role lo3 `e1c67101`, 1,405 dates, 2018-06-01 - 2023-12-29.
+- Section 9 source checks (metadata): `source_checks.ivshape.orientation_line` = ticker SPY (security 549535; 1,404
+  sessions with a slope, 0 duplicates quarantined, 0 rows off calendar). `mgr13f.thirteenf.per_quarter`: 28 quarters, 0
+  sealed; `short_term_filers` / `filers` .246-.271 over the 24 defined quarters (the first 4 undefined: rule
+  `yz-short-term-tercile-v1` needs q-3..q), i.e. the top third of the classified filers by the rule's construction.
+- Date tokens in the v15 manifest (paths only, values not read): 92 tokens dated 2024 or later, 54 of them the seal date
+  2024-01-01; the rest are metadata strings (field caveats, the `calendar.last` entries of `sec`, `v9/nt_first_126`,
+  `deals`, short-volume file download stamps, one plausibility-rule text, one excluded-column reason), as v13 / v14.
+
+**P8 plan, written before the run.** The parent's ref on v15 = X-5's NAV receipt argv with three tokens changed (the
+X-7 ref precedent `mega-nav-v8x-theme-erc-L1.1720-v8x7b-ref`): `--fields build-equity/train-2020-2023-lo3-fields-v15/manifest.json`,
+`--fields-sha256 26fee5ce...3b09`, `--output build-equity/p9-r04-x5-ref-v15` (a name the Y-S wave's own `<nav.output>-ref`
+cannot collide with). Runner: `--output build-equity/p9-r04-x5-ref-v15-run --seconds 180 --max-rss-mib 1536
+--min-free-mib 512`, bindings as X-5's (targets exe v8-16d `72ff6d2d`, `train_combined.json` `2a442f56`, the v15 manifest,
+the lo3-dlret label role `95e16cfe`). **Expected: `daily_modeled-1bn-stale5-v1+swap-fin-v1.csv` SHA-256 =
+`529062d6f06f1ceb8dab5e7cbd98a3693a2f66922b0b4547df81f956fd4e3d61`** (X-5's ledgered S2 series); any other value is a
+rule-7 stop. Compared by SHA-256 only; free memory checked >= 586 + 1,536 MiB before launch.
+
+### R0-5. IC memory re-probe for the Y-S screen library (v8y P10, YP-12) -- plan, written before the run
+
+The Y-S library file is written by the wave's register stage (after R0-2), so the probe uses a scratch copy built in memory
+by `generate_library.py`'s own functions (registry copied in memory; the 15 alphas of `y-s.json` registered in roster
+order, each `dsl` checked against its `dsl_sha256`; `child_library(v8x3b -> v8ys)`, `build_library`, `encode`; nothing in
+the repo written): **73 members (58 + 15), 63 fields, 12 families, SHA-256
+`bbcfbf9dd000dc41055e2415ddc1a0047811a796752de55fd4e92ab636f4e9bd`** (not of record; R0-6 can compare the registered
+library's bytes to it). Probe: ic v8-16d `--plan-only` (metadata only, no payload) on that library, role lo3, fields v15,
+with the screen u pass's flags (`--min-names 1000 --workers 4 --no-composition`, as `mega-v8-b0b-train-u-v8x7b-run1`) and
+`--max-memory-mib 8192` so the plan prints `roles[].required_bytes` instead of refusing; through the bounded runner (120 s,
+1,024 MiB). Rule (plan R0-5, YP-12): <= 2,560 MiB: cap unchanged; over 2,560: probe workers 2 and 1 and report for a cap
+ruling (w already runs at 3,072); over 3,072: stop.
+
+### R0-4 / R0-5 results (source `d23efa5a`, the plan commit; one run at a time; free memory 5,546 MiB before the first)
+
+| run | receipt dir | exe | s / peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| P8: X-5 ref on v15 (180 / 1,536) | `p9-r04-x5-ref-v15-run` | targets v8-16d `72ff6d2d` | 56.4 / 586 | 0 | `2dc33a24098571a174c90f9206848115a70304e5f41d8caae9d5af1e1d9f9edd` | **S2 daily `529062d6f06f1ceb8dab5e7cbd98a3693a2f66922b0b4547df81f956fd4e3d61` = X-5's ledgered series**; 23 of 27 files byte-identical to X-5's NAV, the other 4 (`recipe.json`, `summary.json`, `capacity/recipe.json`, `capacity/summary.json`) differ only in `/financing_fields/manifest_sha256` (v13 -> v15) and, in the two summaries, the `/recipe_sha256` that follows it |
+| R0-5: Y-S screen library `--plan-only`, workers 4 (120 / 1,024) | `p9-r05-ys-plan-w4-run` | ic v8-16d `985019d9` | 0.27 / 2 | 0 | `c33557ebcaea383d32ff5e49cde21f74e209952eaedb7e0ae1c6debe6a6fd07a` | plan (stdout `f0623208`): metadata-only, 73 candidates, composition skipped, max compiled slots 8, lookback 272, resident field capacity 8 (87 planned loads of 60 declared fields), **required_bytes 2,047,374,058 = 1,952.5 MiB** |
+| R0-5 calibration: X-5's w pass `--plan-only` (v8x3b, its weights, fields v13, workers 4) | `p9-r05-x5w-plan-w4-run` | ic v8-16d `985019d9` | 0.27 / 2 | 0 | `a28ece5f6c6e2c01e05ffd551e15339b1b54cee76086cc4f7e1723e02366a547` | plan (stdout `a8e8f69c`): 58 candidates, 11 themes standardised, slots 8, capacity 8: required_bytes 2,854,733,324 = 2,722.5 MiB |
+
+Argv of the P8 run against X-5's NAV receipt: exactly the three planned tokens differ (11 `--fields`, 13
+`--fields-sha256`, 15 `--output`); receipt "clean in the code pathspec", dirty outside only the untracked png, stderr empty,
+minimum system free 4,768 MiB. **P8: PASS** (the parent reads no new field; its S2 series on v15 is X-5's byte for byte).
+
+**R0-5: 1,952.5 MiB <= 2,560 MiB: the Y-S screen's IC cap stays 2,560 at `--workers 4`; no cap ruling needed.** The old
+~3,200 MiB estimate scaled admission linearly in members; the admission of a `--no-composition` u pass does not depend on
+the member count at all (`strategy_ic_admission.cpp:246-282`: cells x (72 + 8 x max slots), the resident field capacity, the
+labels and the worker envelope), only on the worst candidate's slots (8, a parent member; the 15 Y rows plan at <= 6). The
+composition plane is the only member- and theme-dependent term: X-5's w admission minus the Y-S u admission = 807,359,266 B
+= `ic_composition_working_bytes(1,405 x 5,922, 58 members, 11 themes, standardise)` to the byte, so **the Y-S cell's w pass
+(73 members, 12 themes, the same slots and capacity) admits 2,047,374,058 + 873,930,226 = 2,921,304,284 B = 2,786.0 MiB
+<= its 3,072 cap** [arith, formula verified on X-5]. The 15 Y plan rows (scratch, not of record; register makes the K1
+plans of record): slots 2-6, lookback 0-272, extra fields <= 4 (dato), all within the house budget (7 / 314 / 5);
+`iv_vol_of_vol` 5 slots / 41 bars / `iv_atm_21d` as the repair logged.
+
+### State and hidden-data record (R0-3..R0-5)
+
+- R0-3 PASS, R0-4 PASS (pin, 83 / 1, seal, P8), R0-5 PASS (1,952.5 MiB; cap unchanged). Nothing for the PM to rule. Next:
+  R0-2 (P0-FIX merge, `y-s.json` amendment), then R0-6.
+- Opened by tools: the X-5 u / fit / w / NAV outputs and receipts (SHA-256, JSON paths, the cache / field-load counters),
+  the v13 / v14 / v15a / v15 field manifests (metadata) and payload bytes (hashing only), the role and label-role
+  manifests, the ledger line of X-5 (series path and SHA only), the two plan JSONs. Read by me: receipts, manifests
+  (metadata), JSON path lists, plan rows. While locating the ref precedent in this log I passed X-7's already-ledgered
+  public lines (section "X batch 2, resumed"); no Y statistic exists or was read.
+- **Nothing dated 2024-01-01 or later was opened. No NAV `stdout.log` opened; no value of a `summary.json`, a daily CSV or
+  `train_daily_ic.csv` read.** `C:/atx`, `atx-db/`, other pools and E1's files untouched; no build; no push.
+
+## P9 Phase 0, root step R0-2: P0-FIX merge and Y-S amendment (DEC-1, DEC-2; 2026-10-03)
+
+| item | result |
+|---|---|
+| head before | `fd962cb975d65e58fdfb5d2a8a6adc6808270638` (code pathspec clean; only the untracked `docs/plans/2026-10-02-x5-equity-curve.png`) |
+| merge | `git merge --no-ff 3fa2dd4affe4b4de718d222435801b318ebf5cf0` (lane E1 task 0 = P0-FIX, `feat/p9-e1-20261003`, review APPROVE `task-E1t0-review.md`) -> **`1b9b37e8`**; 18 files, +763 / -126, no conflict (root's commits since `d7c1c520` are docs / sprint files only); E1's report commit `a57961bb` and later commits not merged |
+| check live (pre-amend) | `wave plan scripts/specs/v8/waves/y-s.json` -> exit 2: `marginal.seconds 720 is above the bounded runner's maximum 600 s (research_tree.RUNNER_MAX_SECONDS; run_bounded_research.py refuses it)` |
+| `scripts/tests`, PYTHONHASHSEED=0 (`scripts/tests/run_two_seeds.py`) | **323 passed, 4 skipped**, 0 failed (403.5 s) |
+| `scripts/tests`, PYTHONHASHSEED=1 | **323 passed, 4 skipped**, 0 failed (329.6 s); runner exit 0 |
+| `atx-engine/tools` | **348 passed**, 6 subtests passed, 0 failed (232.7 s) |
+| `atx-impl/tools` | **625 passed, 2 skipped**, 17 subtests passed, 0 failed (255.0 s) |
+| amendment (pre-registration commit) | **`4492f3015346f71ecde46199dbd0ed62ad23a82c`** `prereg(v8): amend Y-S wave manifest per DEC-1, DEC-2 (R0-2)`: `y-s.json` and `y-s.head.json` `marginal.seconds` 720 -> 600 (DEC-1); budget `admission_cycle_prefix "v8x"` -> `admission_cycle_prefixes ["v8x", "v8ys"]` (DEC-2); 2 files, +7 / -4, nothing else; head = full manifest minus `candidates` (True); `wave_manifest.validate(head + candidates)` = `[]` |
+| `wave plan scripts/specs/v8/waves/y-s.json` | **exit 0**, 57 lines; manifest sha256 `22b5534f79dae93fb40d7e11f802211668c98b93123ee28fafa4c54aa05d8ac4`; stages 01 preflight .. 09 record all `pending` |
+
+Fixes made: none. Build: none. Open item: both descriptions still say "marginal pool only with a 720 s cap" (E1 report:
+"root's wording to update, not checked"); left as is because R0-2's dispatch allows no other change; the binding value is
+`marginal.seconds` 600. Hidden data: no real-data run; no output, receipt, NAV, IC or ledger value opened (the plan prints
+argv and receipt states only); nothing dated 2024-01-01 or later opened. `C:/atx`, `atx-db/` untouched; no push.
+Next: R0-6.
+
+## P9 Phase 0, root step R0-6: cell Y-S through the wave driver, stage by stage (v8y P9-P12; DEC-1; 2026-10-03)
+
+Root in `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, start `4a5e84a0` (code pathspec clean; only the untracked
+`docs/plans/2026-10-02-x5-equity-curve.png`, not root's). Read: P9 plan sections 0.5 (DEC-1, DEC-2), 0.6, 1.1 (R0-6 and its
+pre-ruled marginal fallback), 1.2; `v8y-prereg.md` sections 3, 5, 6 (Y-S row), 7, 12, 13 (P9-P12), 14; integrator-rules;
+global-constraints; `y-s.json` (manifest sha256 `22b5534f`, commit `4492f301`); E1's task-0 report (concerns: forced ref,
+capacity completeness); root's R0-3..R0-5 report; driver code `research_wave.py`, `wave_stages.py`, `wave_stage_*.py`,
+`wave_context.py`, `wave_steps.py` (marginal rewrite), `wave_result.py` (marginal rows), `wave_scoreboard.py`.
+State dir `build-equity/waves/y-s/` does not exist yet (`wave status`: preflight pending, the rest blocked).
+
+### Plan, written before stage 01 runs
+
+Command per stage: `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave run scripts/specs/v8/waves/y-s.json
+--until <stage>`, one stage at a time, one real run at a time, no build (unless the pre-ruled fallback needs the IC exe).
+
+**Memory gate before each stage that runs an exe: free physical memory >= planned peak + 1,536 MiB, else wait (poll 60 s,
+up to 30 min).** Planned peaks (MiB) and gates:
+
+| stage | exes it runs | planned peak (source) | gate free MiB |
+|---|---|---|---|
+| 01 preflight | none (Python checks) | - | - |
+| 02 register | IC exe `--plan-only` x 15 (add-alpha K1, metadata only) | 2 (R0-5 plan-only receipt) | 1,538 |
+| 03 screen | u (IC), fit, card, marginal (pool only, 600 s), gate | 1,953 (u admission 1,952.5, R0-5; card 1,554 and marginal 296 measured on X-7) | 3,489 |
+| 04 spec | none if every string is kept; add-alpha `--plan-only` per kept string for a b library | 2 | 1,538 |
+| 05 run | ref NAV (forced: fields v15 vs v13 and NAV exe `72ff6d2d` vs X-5's `a95f6f0a`), w (IC), NAV; a b library re-screens first | 2,786 (w admission, R0-5 arith; cap 3,072) | 4,322 |
+| 06 match | mechanics reader; a -gm NAV if gross misses by > .005 | 586 (NAV, P8) | 2,122 |
+| 07 verify | none | - | - |
+| 08 judge | monitor, summ (nav_summ), bundle, book reader (Python) | 1,536 (cap; not measured) | 3,072 |
+| 09 record | none | - | - |
+
+**Hand plan for stage 01 (preflight; expected receipt `build-equity/waves/y-s/receipts/01-preflight.json`, exit 0):**
+- manifest `scripts/specs/v8/waves/y-s.json`, sha256 `22b5534f79dae93fb40d7e11f802211668c98b93123ee28fafa4c54aa05d8ac4`, commit
+  `4492f3015346f71ecde46199dbd0ed62ad23a82c`; code pathspec clean.
+- parent `scripts/specs/v8/x-theme-erc-gm.json`: name `v8x-theme-erc-gm`, L 1.1720, NAV `build-equity/mega-nav-v8x-theme-erc-L1.1720`
+  (`summary.json` `a03937cf...`; `capacity_curve.csv` and `v7_extras.json` present by name: the P0-FIX completeness rule is met),
+  summ ledger `build-equity/trials.jsonl` = the manifest's; library `v8x3b`.
+- fields `build-equity/train-2020-2023-lo3-fields-v15`, manifest `26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09`,
+  84 rows, status complete, `seal.exclusive_end` 2024-01-01; every candidate's declared fields in it (the 6 new ones included).
+- no sealed year in the fields dir, parent path, `build-equity/waves/y-s`, `v8ys`.
+- ledger 112 lines, head `d1484e69...`, N 56 = `expect.n_before` 56.
+- budget `v8x-hand-25-plus-y-15`: admission used **25** (X hand-written: cycles `v8x*`; X-4's 9 re-screens left out; no `v8ys*`
+  line yet), new **15** (the roster, in order), cap 40 (25 + 15 = 40, holds); prefixes `["v8x", "v8ys"]`; origin null;
+  construction cap 62 (56 + 1 = 57, holds).
+- queue: the 15 `scripts/specs/v8/candidates/<id>.json` pinned with the manifest's DSL SHA-256 (no problem line).
+- window `research-window-v2`, seal 2024-01-01.
+
+**Expectations for the later stages (checked when each runs):**
+- 02 register: 15 add-alpha exits 0 (`--name v8ys`, `--save-plan build-equity/waves/y-s/plans/v8ys/<id>.json`); library v8ys =
+  v8x3b's 58 + the 15 in roster order = 73 members; its IC library bytes compared with R0-5's scratch build
+  (`bbcfbf9d...`, not of record); `lib-v8ys.json` rewritten once by the PM8-15 ruling (marginal pool only, `-poolonly`
+  output, `runner.phases.marginal.seconds` 600), lock dry; one commit of exactly add-alpha's files.
+- 03 screen: u, fit, card, marginal, gate under the bounded runner (u 300 s / 2,560 MiB; card 300 / 2,560; marginal 600 /
+  1,536; fit 180 / 1,536); u-compare of the 58 parent rows identical (P8: the parent reads no new field); 15 admission lines
+  ledgered (ledger 112 -> 127 lines, N stays 56); the PM7-35 sign rule on the 15 rows. Gate exit 10 = no cell (logged, 0).
+- **Marginal fallback (pre-ruled, plan R0-6):** a time-cap failure (nothing written) gets ONE blind re-run on a quiet host
+  (no compiler running, free >= peak + 1,536 MiB); a second failure moves the marginal to the Release IC exe under v8y P6 after
+  its u / w identity (0 trials), building only the IC exe with `scripts/research-build.ps1` tag `p9-0r` if needed.
+- 04 spec: every string kept -> the cell is the screen library (`lib-v8ys.json`); some dropped -> b library `v8ysb` (same trial
+  ids, 0 new lines) with `speed.reuse_screen_marginal`: no second marginal pass; **b-reuse check (P12, once):** the
+  per-row marginal fields carried into the wave result equal the screen's `marginal_ic.json` rows of the kept ids byte for
+  byte (compared by canonical-JSON SHA-256, no value printed). If no string is dropped the b path does not run and the check
+  is logged as not applicable (the screen-library rows checked equal instead).
+- 05 run: ref compare `ref-s2-daily` reproduces X-5's S2 daily `529062d6` (P8 precedent) or exit 4 = stop; w, NAV.
+- 06 match: PM6-6 (tolerance .005 on all-rows S2 gross vs X-5's .9862260459), at most one correction.
+- 07 verify: mechanics (all-rows gross [.90, 1.05], |mean net| <= .02, tau mean <= .20, p95 <= .30) before any return is read;
+  C-13 binding; NAV exe parent vs cell (differ: ref must have run on the cell's exe); seal scan.
+- 08 judge: **acceptance PM7-34: paired S2 net dSR > 0 against X-5 AND mechanics**; printed only: capacity 4x, turnover per
+  gross, cost bps; bundle both p.
+- 09 record: ledger N 56 -> 57 (the cell's line among the lines appended since preflight); wave-result.json; copies to
+  `.superpowers/sdd/platform-v8-20260929/waves/y-s/`. **Scoreboard 4x check (P12):** `research_cycle.py scoreboard` 4x net
+  Sharpe row against the 4x row of one real `capacity_curve.csv` read directly.
+
+### Stages 01-02 (source `c4201d94`; argv `wave run scripts/specs/v8/waves/y-s.json --until <stage>`)
+
+| stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
+|---|---|---|---|---|---|---|
+| 01 preflight | 0 | - / 0.30 | - (no exe) | 4,879 / - | `01-preflight.json` `f4f759088ae95ac284e224e99fc3ab9346b1684e168df5db98ee87918cf59d14` | **= hand plan on every item**: manifest commit `4492f301`, sha `22b5534f`; parent `v8x-theme-erc-gm` L 1.1720, NAV `mega-nav-v8x-theme-erc-L1.1720`, spec digest `92131961`; fields `26fee5ce`, 84 rows, seal 2024-01-01; ledger 112 lines, head `d1484e69a5f2...`, N 56; budget used 25 + new 15 (roster order) <= 40, prefixes `["v8x", "v8ys"]`, construction cap 62; window research-window-v2 |
+| 02 register | 0 | 9.1 / 8.94 | 2 per plan-only (R0-5) | 4,850 / 4,675 | `02-register.json` `facb7fb20cfb09768450377d70de6993e3276882a844dc6458fa153a48f8de2d` | 15 add-alpha exit 0; K1 plans of record `build-equity/waves/y-s/plans/v8ys/<id>.json` (59..73 rows; e.g. `peer_mom_1m` 6 slots / 41 bars, `iv_vol_of_vol` 5 / 41 / `iv_atm_21d` = the repaired string `4d42a72b`, `dato` 5 / 272 / 4 extra fields, `conn_rev` 3 / 0); **IC library `fund_industry_ic_v8ys.json` `bbcfbf9dd000dc41055e2415ddc1a0047811a796752de55fd4e92ab636f4e9bd` = R0-5's scratch build byte for byte** (73 members); `lib-v8ys.json` rewritten once by PM8-15 (marginal `-poolonly`, `runner.phases.marginal.seconds` 600), lock dry; spec `05732a95`; driver commit **`a5914373`** (exactly the 6 add-alpha files: registry, IC library, recipe, library def, prereg stub, spec) |
+
+Gate list of `lib-v8ys.json`: the 15 strings, roster order, require any, sign_agrees. u 300 s / 2,560 MiB, w 300 / 3,072,
+card 300 / 2,560, marginal 600 / 1,536 (default rss), others 180 / 1,536.
+
+### Stage 03 screen (source `c25f7064`; gate 3,489 MiB: free 4,952 at 08:12:15, no compiler running)
+
+argv (driver): `research_cycle.py run scripts/specs/v8/lib-v8ys.json --screen --root C:/atx-wt/pool-2`. Stage exit 0, wall
+301.7 s (receipt 301.53 s); minimum system free during the stage 3,427 MiB. Receipt `03-screen.json`
+`8562e09b672d089d502b004b0e1e02d8b7f472f9fc2aea1fcdd26f66e28ce11f`; console `consoles/019-screen.log`.
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| u | 300 / 2,560 | 35.2 | 1,181 | 0 | `186ca092fb811b8fa5501eadc7c5ea749d2b525f9ea3a25e348152c67fac2137` | ic `985019d9` (v8-16d); **u-compare IDENTICAL**: orientations 58 objects (b adds 15), `train_daily_ic.csv` 169,708 rows of 58 keys byte for byte (b adds 43,890 rows of 15) |
+| fit | 180 / 1,536 | 8.7 | 452 | 0 | `82c5b16a7afce0611061c3c5a72337e0ac0330c735b5ed1f6f4e56dd97d2f413` | admission `b922673b` |
+| card | 300 / 2,560 | 31.6 | 1,558 | 0 | `ac133b10f4714c9356361b2d0cb38d8efa1ba82fc02507199941a96968766e9a` | - |
+| marginal (pool only) | **600** / 1,536 | **223.5** | 252 | 0 | `542b2e5e064c66ee2e880a037632caeff4d0089d06dbaaf626c196635b3b84bb` | `marginal_ic.json` `3df5f949` (73 rows); 37% of the cap: **no time-cap failure, the pre-ruled fallback did not trigger** |
+| gate p1-v8ys | internal | - | - | **PASS** (exit 0) | - | **15 admission lines appended, 0 already ledgered** (ledger 112 -> 127 lines, file `869a0c6a`; N stays 56); reference members vs X-5's admission: 0 status changes |
+
+**Admission (v4-prior-v1) and the PM7-35 sign rule, applied by the driver's code (`wave_rules.sign_pm7_35`):** 7 of 15 admitted
+with the prior sign: `iv_vol_of_vol`, `day_rev_freq`, `mom_turn`, `ea_uvol`, `dato`, `stio_trade`, `deal_target` (keep).
+`fscore_hbm` admitted with runner sign 0 (keep, R-2 precedent). `so_wang_rev` reject_turnover (tau .9659 > .70), runner sign +1
+(keep at weight 0). **Admitted with runner sign -1 against prior +1 -> dropped: `peer_mom_1m`, `exch_switch`, `ins_cluster`,
+`smile_slope`, `div_event`, `conn_rev`.** Kept 9, dropped 6 -> the cell is the b library **v8ysb** (v8x3b + the 9 kept, 67
+members; same trial ids, 0 new lines). Admission trials: X hand-written 25 + Y hand-written 15 = 40 (cap 40).
+
+**P12 b-reuse, first half:** the screen receipt's carried marginal rows equal the source `marginal_ic.json` rows 15 of 15 on
+all 7 K6 keys (canonical-JSON SHA-256 per row; `scratchpad/mcheck.py screen`). The second half (the wave result's carried
+per-row fields vs the source) is checked after the record stage.
+
+### Stage 04 spec (source `02d524d3`; gate 1,538 MiB: free 5,235)
+
+| stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
+|---|---|---|---|---|---|---|
+| 04 spec | 0 | 7.4 / 7.16 | 2 per plan-only | 5,235 / 5,080 | `04-spec.json` `ce88ee2925fc67b52dc794d918dc38578a6637da0ae7d832676cd51781bff1e9` | kind **b-library**: 9 add-alpha `--name v8ysb` exit 0 (plans `waves/y-s/plans/v8ysb/`); IC library `fund_industry_ic_v8ysb.json` `41010b0b` (67 members); `lib-v8ysb.json` `ae4808b8` (= spec digest): marginal phase and its runner cap removed (`speed.reuse_screen_marginal`, mode pool-only = the screen's: reuse true); gate p1-v8ysb lists the 9 kept; NAV `mega-nav-v8x-theme-erc-L1.1720-v8ysb` at L 1.1720, ref `...-v8ysb-ref`, paired reference = X-5's NAV; driver commit **`816be40b`** (5 files: IC library, recipe, library def, prereg stub, spec; registry unchanged) |
+
+### Resume after the owner stop (PM session 2; 2026-10-03): lock, receipts 01-04, the killed stage-05 attempt -- STOPPED for a ruling
+
+Stage-04 rows committed alone first: `d66f93f6` `log(p9): R0-6 Y-S stage 04 spec (816be40b)`.
+
+**chain.lock (PM resume ruling, P9 `progress.md`: "root removes the stale y-s chain.lock only after confirming pid 25424 is
+not alive and logs it"):** `build-equity/waves/y-s/chain.lock` held `{"pid": 25424, "started_utc": "2026-10-03T12:19:29+00:00"}`
+(file sha256 `35b22df35d5d5ca9c5e646e1d34dc2da17879a8006ce0d899054f24d5ba2dff1`). `Get-Process -Id 25424`: not found;
+`tasklist /FI "PID eq 25424"`: no task (12:31:13Z); process scan: no research python, compiler, cmake or ninja alive (editor
+mypy / formatter servers only). **Lock removed 12:35:03Z** (the remedy `stage_chain.Chain.acquire` names: "check that no
+run is alive, then remove it").
+
+**Receipts 01-04 under the driver's resume logic** (`wave status scripts/specs/v8/waves/y-s.json`: `Chain.state` re-reads
+every receipt and recomputes its inputs, runs nothing, takes no lock): exit 0; preflight, register, screen, spec **done**;
+run pending; match, verify, judge, record blocked. SHA-256 of the four receipts = the logged values (`f4f75908`,
+`facb7fb2`, `8562e09b`, `ce88ee29`). No receipt deleted; no `05-run.failed-*` receipt exists (the kill raised nothing
+inside the chain).
+
+**The killed stage-05 attempt (ruled: a failed attempt, not a cell, 0 trials).** Read from console 032 and the bounded
+runner's run dirs; free / min during not recorded (the previous root was killed):
+
+| step (attempt under lock 12:19:29Z) | argv (driver) | exit | s | peak MiB | run dir | result |
+|---|---|---|---|---|---|---|
+| b-library screen (its gate re-read) | `research_cycle.py run scripts/specs/v8/lib-v8ysb.json --screen --root C:/atx-wt/pool-2` | 0 | u 12.7, fit 1.9, card 24.5 | u 530, fit 58, card 1,524 | `...-u-v8ysb-run1`, `...-v8ysb-run1` (fit), `...-cards-...-v8ysb-run`: completed exit 0 | console `consoles/032-the-b-library-s-screen--its-gate-re-read.log`; u-compare **IDENTICAL** (58 objects; 169,708 rows of 58 keys; b adds 9 objects / 26,334 rows); ledger 0 appended, 9 already ledgered; gate p1-v8ysb **PASS** (7 of 9 listed admitted with the prior sign; reference members 0 status changes); verdict `build-equity/cycle-v8ysb/cycle_verdict.json` |
+| calibration run: ref | `research_cycle.py run scripts/specs/v8/lib-v8ysb.json --stop-after nav --root C:/atx-wt/pool-2` | completed exit 0 | 61.9 | 586 | `mega-nav-v8x-theme-erc-L1.1720-v8ysb-ref-run` (receipt) | primary daily CSV sha256 `529062d6f06f...` (as `research_cycle.py status` prints it; = X-5's S2 daily); the ref-compare step did not run |
+| calibration run: w attempt 1 | (same process) | **killed** | - | - | `mega-v8xw-train-theme-erc-v8ysb-run1`: `start.json` 12:21:16Z, **no receipt**; output `-1` partial | - |
+| nav, monitor | - | not started | - | - | - | - |
+
+No console exists for the killed command (the driver writes one when a command returns). Ledger after the attempt:
+`build-equity/trials.jsonl` 127 lines, sha256 `869a0c6a18ec...` = the post-stage-03 record: **0 trials** added.
+
+**Why stage 05 was not started (brief stop rule: a refusal; nothing improvised).** `research_cycle.py status
+scripts/specs/v8/lib-v8ysb.json` (read-only) prints `w failed build-equity/mega-v8xw-train-theme-erc-v8ysb-1 | attempt left
+build-equity/mega-v8xw-train-theme-erc-v8ysb-run1 without a receipt; never overwritten: rerun with --attempt w=2`. The cycle
+picks an attempt by itself only among complete ones (`ic_attempt`, research_cycle.py:909-928) and its run loop raises
+`HARD-STOP [w]` on a failed step (:1690); `wave run` takes no `--attempt` (research_wave.py: `--root`, `--until`,
+`--dry-run`, `--seal-allow`) and the run stage calls `run <cell> --stop-after nav` without one (wave_stage_cell.py
+`run_stage`). So `wave run ... --until run` would HARD-STOP at w (exit 4, `05-run.failed-1.json`). The PM's resume ruling
+re-runs stage 05 "from receipts 01-04" but does not name the attempt; root asks for a ruling (options in the R0-6 report)
+and does not run stage 05. Nothing was built; no exe launched by root; nothing dated 2024-01-01 or later opened; `C:/atx`,
+`atx-db/` untouched; no push.
+
+### R0-6-ATT: w attempt 2 by the cycle's documented recovery (PM ruling R0-6-ATT, P9 `progress.md`:102; option A)
+
+`mcheck.py` copied first to `.superpowers/sdd/platform-p9-20261003/tools/mcheck.py` (sha256 `51db5e18587f...` = the scratchpad
+copy). Gate 4,322 MiB: free 5,573 at 12:42:23Z, no compiler, no research process. Run **once**:
+`"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/v8/lib-v8ysb.json --stop-after nav
+--attempt w=2 --root C:/atx-wt/pool-2` -- **exit 0, wall 114 s (12:42:37Z-12:44:31Z), min free during 3,546 MiB (12:44:14Z),
+no compiler seen.** Attempt 1 (`mega-v8xw-train-theme-erc-v8ysb-run1` / `-1`) stays on disk as it was: killed by the owner
+stop, no receipt, 0 trials.
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| fields | - | - | - | done | - | v15 `26fee5ce`, 84 rows == the spec list |
+| ref | (attempt 05-killed) | 61.9 | 586 | done | binding argv `027092b5` | **ref-s2-daily IDENTICAL** bit for bit (941,374 bytes, `529062d6`) vs X-5's S2 daily |
+| u / fit / card | - | - | - | done | - | u-compare IDENTICAL (58 objects; 169,708 rows of 58 keys; b adds 9 / 26,334) |
+| gate p1-v8ysb | internal | - | - | **PASS** | - | 0 admission lines appended, 9 already ledgered; 7 of 9 with the prior sign; reference members 0 status changes |
+| **w attempt 2** | 300 / 3,072 | **52.8** | 1,436 | 0 | `543860bb562ced79bdc14b24b53f75b67926fbc6ce7f3e1e441e610403b57453` | exe `985019d9`; output `mega-v8xw-train-theme-erc-v8ysb-2`, `train_combined.json` `e13fbc4d` |
+| **nav** | 180 / 1,536 | **59.7** | 586 | 0 | `26fdb2820217fb292feed665acc49b7548b7036bfb3c46cd06718a08df8d1525` | exe `72ff6d2d`; `mega-nav-v8x-theme-erc-L1.1720-v8ysb` at L 1.1720 (`summary.json` `26921704`; `capacity_curve.csv`, `v7_extras.json` present); binding `41c1da0e` |
+
+Ledger after: 127 lines, `869a0c6a` (unchanged: 0 trials). Nothing read from the NAV beyond file names and hashes.
+
+### Stage 05 run (source `de5823f2`; gate 4,322 MiB: free 5,191 at 12:45:46Z, no compiler running)
+
+| stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
+|---|---|---|---|---|---|---|
+| 05 run | 0 | 2.3 / 2.08 | - (no exe launched: every phase done) | 5,191 / 5,134 | `05-run.json` `eb23472eb751dd75a54edc2d872658050b2cc1a598a85d8703acddd143612571` | **the driver adopts attempt 2**: console 033 (`run lib-v8ysb.json --screen`, exit 0: u/fit/card done, 0 admission lines appended / 9 already ledgered, gate p1-v8ysb PASS), console 034 (`run lib-v8ysb.json --stop-after nav`, exit 0, attempts auto): ref done (binding `027092b5`), **ref-s2-daily IDENTICAL** (`529062d6`, 941,374 bytes), u-compare IDENTICAL, **w: done (`mega-v8xw-train-theme-erc-v8ysb-2`)**, **nav: done** (binding spec `ae4808b8`, argv `84d9944c`); no w or nav launched a third time. Receipt phases: u run1, fit run1, card run, ref run, **w run2** (52.8 s, 1,436 MiB, exe `985019d9`), nav run (59.7 s, 586 MiB, exe `72ff6d2d`); w run1 (killed, no receipt) has no row. NAV `mega-nav-v8x-theme-erc-L1.1720-v8ysb`, `summary_sha256` `26921704`. No driver commit (the run stage commits nothing). Ledger 127 lines, `869a0c6a` (0 trials) |
+
+### Stage 06 match (source `843fe55c`; gate 2,122 MiB: free 4,847 at 12:46:25Z, no compiler running)
+
+| stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
+|---|---|---|---|---|---|---|
+| 06 match | 0 | 59.3 / 59.06 | 586 (matched NAV); readers 44 | 4,847 / 3,879 | `06-match.json` `b23bd9289ee3e9e52616868e91ec31d9cdb58ca2af9f1c7353caa3963d66c5ce` | PM6-6 (tolerance .005): calibration at L 1.1720 **G 0.9772114158 vs G_parent 0.9862260459** (miss .0090 > .005) -> `lib-v8ysb-gm.json` at **L 1.1828** (spec digest `1e3ec118`), lock dry exit 0, **driver commit `c0f1fae6`** (exactly the -gm file); matched run `run lib-v8ysb-gm.json --stop-after nav` exit 0 (console 039: ref, ref-s2-daily IDENTICAL `529062d6`, u-compare IDENTICAL, gate PASS with 0 lines appended, **w: done (attempt 2 reused)**, nav attempt 1 55.6 s / 586 MiB, receipt `fbfb6208b985...`, exe `72ff6d2d`); **matched G 0.9862134133 vs G_parent 0.9862260459**, within tolerance after 1 correction. Cell NAV `mega-nav-v8x-theme-erc-L1.1828-v8ysb` (`summary.json` `2d30b7f6`). Readers: `mech-calibration.json` `56d6be1c`, `mech-matched.json` `811be8ec` |
+
+### Stage 07 verify (source `4833e844`; no exe, no memory gate; free 4,557 at 12:48:14Z, no compiler running) -- STOPPED for a ruling
+
+| stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
+|---|---|---|---|---|---|---|
+| 07 verify | **4** | 0.7 / 0.41 | - (no exe) | 4,557 / 4,634 | `07-verify.failed-1.json` `ae50e347fe7e076835039b37a40a5178e6d616ebca33831ad48353268925ec25` (no ok receipt) | mechanics (v8-mech) on the -gm cell, as printed: gross_all_rows 0.9862134133 in [0.9, 1.05] pass; abs_net_all_rows 0.0053399819 <= 0.02 pass; tau_mean 0.0281343967 <= 0.2 pass; tau_p95 0.0334104438 <= 0.3 pass; max_return_identity_error 3.7e-16 <= 1e-9 pass; max_cash_book_relative_error 1.1e-13 <= 1e-9 pass. C-13 binding and NAV-exe check: not in the stage's problem list. **HARD-STOP: "9 date token(s) at or after the seal 2024-01-01" in consoles 019, 032, 033, 034, 035, 039, 040: "stop for the PM's ruling (the cell ran; no ledger line was written)"** |
+
+The 9 tokens, classified with `wave_seal.tokens` (token, form and the 40 characters before it only; no data line opened):
+7 x `2026-10-02` (iso) = the file name `docs/plans/2026-10-02-x5-equity-curve.png` (untracked, not root's, outside the code
+pathspec), printed by research_cycle's dirty check ("dirty outside the code pathspec (listed, not a stop)") in consoles
+019/032/033/034/039 and in the reader receipts' `dirty_outside_pathspec` in 035/040; 2 x `2026-10-03` (iso) = `"started_utc"`
+of the bounded-runner receipt the mechanics reader prints (consoles 035, 040). None is a data date. No precedent:
+y-s is the first wave whose verify stage has run (the log holds no `--seal-allow` ruling). The driver's remedy is
+`research_wave.py run ... --seal-allow TOKEN=RULING` (kept by the verify receipt for the record stage's second scan).
+Ledger 127 lines, `869a0c6a` (0 trials). Root stops for the PM's ruling (brief: a validator refuses).
+
+### Stage 07 verify, second attempt under PM ruling SEAL-ALLOW (P9 `progress.md`:108; source `88b51a3c`; no exe; free 5,333 at 12:53:29Z, no compiler)
+
+**Per-hit source check before use** (`.superpowers/sdd/platform-p9-20261003/tools/sealsrc.py`: the files
+`wave_seal.wave_logs` returns over receipts 01-06 = 68 files, the scanner's own regexes, seeds and seal-reference rule;
+prints file, line, token, form, source only). 9 hits = the scan's 9; **OTHER 0**:
+
+| file (`build-equity/waves/y-s/consoles/`) : line | token | source |
+|---|---|---|
+| `019-screen.log`:4 | 2026-10-02 | (a) dirty list: `docs/plans/2026-10-02-x5-equity-curve.png` |
+| `032-the-b-library-s-screen--its-gate-re-read.log`:4 | 2026-10-02 | (a) dirty list |
+| `033-the-b-library-s-screen--its-gate-re-read.log`:4 | 2026-10-02 | (a) dirty list |
+| `034-calibration-run----stop-after-nav.log`:4 | 2026-10-02 | (a) dirty list |
+| `035-mechanics-reader.log`:7 | 2026-10-03 | (b) receipt `"started_utc"` wall-clock |
+| `035-mechanics-reader.log`:93 | 2026-10-02 | (a) receipt `dirty_outside_pathspec` list |
+| `039-matched-run----stop-after-nav.log`:4 | 2026-10-02 | (a) dirty list |
+| `040-mechanics-reader.log`:7 | 2026-10-03 | (b) receipt `"started_utc"` wall-clock |
+| `040-mechanics-reader.log`:63 | 2026-10-02 | (a) receipt `dirty_outside_pathspec` list |
+
+argv: `wave run scripts/specs/v8/waves/y-s.json --until verify --seal-allow "2026-10-02=untracked owner plot file name
+docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)" --seal-allow "2026-10-03=receipt started_utc
+wall-clock (PM SEAL-ALLOW)"`
+
+| stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
+|---|---|---|---|---|---|---|
+| 07 verify | 0 | 0.9 / - | - (no exe) | 5,333 / 5,357 | `07-verify.json` `82f72a1b11c10d018b17fcc31c7aba7c5148036ee972440770f081bd1c63fe86` | as printed: mechanics (6 rows as in the first attempt) **PASS**; binding `a9bf5d2a9177` (spec `1e3ec118273c`); **seal scan 68 log(s), 0 tokens** (allowed: 2026-10-02 x7 in 7 files, 2026-10-03 x2 in 2 files, rulings kept in the receipt); NAV exe `72ff6d2d7070` vs parent `a95f6f0af069` (ref ran: equal false, ref-s2-daily identical). The first attempt's `07-verify.failed-1.json` stays for the record |
+
+### Stage 08 judge (source `4284b822`; gate 3,072 MiB: free 5,303 at 12:54:09Z, no compiler running)
+
+| stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
+|---|---|---|---|---|---|---|
+| 08 judge | 0 | 46.5 / 46.28 | 626 (summ) | 5,303 / 4,524 | `08-judge.json` `5fdc3b015ac4fe4cfe7d9c9fa76e33ab80310a158d5e076a8372ce3fac0a9c46` | driver prints: **`verdict (pm7-34): ACCEPTED {'dsr_positive': True, 'mechanics': True, 'criteria': False}`**. Ledger 127 -> **128 lines** (file `f665ed9e`; the cell's line, re-read by the record stage). No driver commit |
+
+| phase | caps | s | peak MiB | exit | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| `research_cycle.py run scripts/specs/v8/lib-v8ysb-gm.json` (console 041): monitor | 180 / 1,536 | 1.6 | 128 | 0 | `95f14829eaab5922560168435ccf89db9c2b2931a49fc32427514a747460309a` | `mega-monitor-v8x-theme-erc-v8ysb` |
+| summ (nav_summ, ledgers the cell) | 180 / 1,536 | 40.0 | 626 | 0 | `a769a6c31ca2554bf6c90eb937cd06c61912d403cd50f64593dfc8b3e5802806` | `cycle-v8ysb-gm/summ.json` `0ef36000`, `cycle_verdict.json` `ea3112ec` |
+| bundle PM5-23 (console 042) | 180 / 1,536 | 1.0 | 318 | 0 | `929e7fad938f46aefd500ca7b9f6bac4e52e5d394182e75d116142c44822a19d` | `waves/y-s/bundle.json` `570018ba` (X-5 NAV vs the cell) |
+| book reader (console 043) | 180 / 1,536 | 0.5 | 45 | 0 | `1c949fd68c748491ed50993a5c4308d056e41d650f9af0e3dda7ab077bbd850e` | `readers/book.json` `9f895ca9` |
+
+The statistics of record (dSR, SE, p, DSR, PBO, the printed-only criteria) are pasted from the driver's own log section
+after the record stage.
+
+### Stage 09 record (source `f4808a37`; no exe; free 4,759 at 12:56:41Z, no compiler running)
+
+**Per-hit source check before the record stage's second scan** (`tools/sealsrc.py`, 79 files): 14 hits, **OTHER 0**: the 9
+of stage 07 plus `041-the-cell-s-monitor-and-summ--nav-summ-scores-and.log`:4 2026-10-02 (a) dirty list;
+`042-bundle--pm5-23.log`:7 2026-10-03 (b) `"started_utc"`, :93 2026-10-02 (a) receipt `dirty_outside_pathspec`;
+`043-book-reader.log`:7 2026-10-03 (b) `"started_utc"`, :93 2026-10-02 (a) receipt `dirty_outside_pathspec`.
+
+| stage | exit | wall s (process / receipt) | peak MiB | free before / min during | receipt (SHA-256) | result |
+|---|---|---|---|---|---|---|
+| 09 record | 0 | 1.0 / - | - (no exe) | 4,759 / 4,605 | `09-record.json` `7c1079381b22d8b723cf4da12a95117bf8a8d0474c729257d1b8589616f80924` | `wave-result.json` `57e9f5ea4a56f1147c08442d99f4cc03535ae7ea57ca7b1cc2cb8f4774175ac0`; log section `wave-log.md` `3b872598`; **N 56 -> 57**; ledger 128 lines, head `e186895aeed3f7f3`, cell trial `11c10defb3cf38a5`; seal scan 79 logs, 0 tokens (2026-10-02 x10, 2026-10-03 x4 allowed by SEAL-ALLOW; seeds 20260927 x1, 20260929 x66); copies at `.superpowers/sdd/platform-v8-20260929/waves/y-s/` byte-equal; **driver commit `fd55d436`** (queue status of the 15 candidate files, "(ACCEPTED)") |
+
+**P12 b-reuse, second half** (`.superpowers/sdd/platform-p9-20261003/tools/mcheck.py result`; canonical-JSON SHA-256 per
+row, no value printed): source `build-equity/mega-v8-b0b-train-u-v8ys-marginal-poolonly/marginal_ic.json` `3df5f949` (73
+rows); the result's marginal block: source "the screen (lib-v8ys.json): per-row fields carried, max_abs_rho,
+max_rho_member left null (over the screen library)", mode pool-only, 9 rows -> **9 of 9 rows byte-equal on keys id,
+ic21, ic21_hac_t, marginal_ic21, marginal_hac_t**; max_abs_rho and max_rho_member null in all 9 rows (as the source line
+says). With the first half (15 of 15 on 7 keys, stage 03): **b-reuse verified**.
+
+**P12 scoreboard 4x row** (`research_cycle.py scoreboard --root C:/atx-wt/pool-2`, exit 0; reads only wave results and
+the ledger): y-s 4x net SR `1.6994264697927697` = the `capacity-x4-v1+swap-fin-v1` row's `net_sharpe` of
+`build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb/capacity_curve.csv` (`edf1001d`, read directly) byte for byte;
+parent row 4x `1.654876435267752` = `mega-nav-v8x-theme-erc-L1.1720/capacity_curve.csv` (`42ef4ea9`) 4x `net_sharpe`
+`1.6548764352677521` (the same IEEE double). Ledger check: "y-s: trial `11c10defb3cf38a5` ledgered; s2_net_sr equal".
+**Scoreboard 4x verified.**
+
+**The driver's log section** (`build-equity/waves/y-s/wave-log.md`, pasted as written):
+
+### Cell y-s (library wave; library v8ys screen, then v8ysb on v8x3b): N 57
+
+**ACCEPTED.** Manifest `scripts/specs/v8/waves/y-s.json` sha256 `22b5534f79dae93f` (commit `4492f3015346`); parent `scripts/specs/v8/x-theme-erc-gm.json` (library v8x3b, L 1.1720); driver `research_cycle.py wave run`.
+
+Budget v8x-hand-25-plus-y-15: admission trials 25 + 15 new = 40 of 40 (cycles v8x*, v8ys*; re-screens left out); construction N 56 -> 57 of 62.
+
+**Screen** (`scripts/specs/v8/lib-v8ys.json`, gate exit 0, sign rule pm7-35): kept so_wang_rev, iv_vol_of_vol, day_rev_freq, mom_turn, ea_uvol, dato, fscore_hbm, stio_trade, deal_target; dropped peer_mom_1m, exch_switch, ins_cluster, smile_slope, div_event, conn_rev.
+
+| id | kind | prior | status | runner sign | decision | reason |
+|---|---|---|---|---|---|---|
+| peer_mom_1m | add | +1 | admitted | -1 | drop | addition admitted with runner sign -1 against prior +1: dropped from the wave |
+| so_wang_rev | add | +1 | reject_turnover | 1 | keep | addition not admitted (status reject_turnover): stays at weight 0 |
+| iv_vol_of_vol | add | +1 | admitted | 1 | keep | addition admitted with the prior sign |
+| day_rev_freq | add | +1 | admitted | 1 | keep | addition admitted with the prior sign |
+| mom_turn | add | +1 | admitted | 1 | keep | addition admitted with the prior sign |
+| ea_uvol | add | +1 | admitted | 1 | keep | addition admitted with the prior sign |
+| dato | add | +1 | admitted | 1 | keep | addition admitted with the prior sign |
+| fscore_hbm | add | +1 | admitted | 0 | keep | addition admitted, runner sign 0 (R-2 precedent) |
+| exch_switch | add | +1 | admitted | -1 | drop | addition admitted with runner sign -1 against prior +1: dropped from the wave |
+| ins_cluster | add | +1 | admitted | -1 | drop | addition admitted with runner sign -1 against prior +1: dropped from the wave |
+| smile_slope | add | +1 | admitted | -1 | drop | addition admitted with runner sign -1 against prior +1: dropped from the wave |
+| stio_trade | add | +1 | admitted | 1 | keep | addition admitted with the prior sign |
+| div_event | add | +1 | admitted | -1 | drop | addition admitted with runner sign -1 against prior +1: dropped from the wave |
+| deal_target | add | +1 | admitted | 1 | keep | addition admitted with the prior sign |
+| conn_rev | add | +1 | admitted | -1 | drop | addition admitted with runner sign -1 against prior +1: dropped from the wave |
+
+**Cell** `scripts/specs/v8/lib-v8ysb-gm.json` (b-library, library v8ysb): gross match pm6-6: calibration L 1.1720 G 0.9772114158 vs G_parent 0.9862260459 -> corrected to L 1.1828, G 0.9862134133.
+
+**Mechanics (S2, read before any return): PASS** (gross_all_rows 0.98621 [0.9, 1.05]; abs_net_all_rows 0.00534 <= 0.02; tau_mean 0.028134 <= 0.2; tau_p95 0.03341 <= 0.3; max_return_identity_error 3.6754e-16 <= 1e-09; max_cash_book_relative_error 1.1074e-13 <= 1e-09).
+
+**Statistics of record** (S2): net Sharpe 1.8495 vs parent 1.7695: dSR +0.0800, Memmel SE 0.1502, CBB 95% [-0.23580753873511617, 0.4071793491746803], LW p 0.6262; bundle p one-sided 0.3122, two-sided 0.6262. DSR (N 57): ledger 0.8468; PBO 0.0766.
+
+**Verdict (pm7-34: paired S2 net dSR > 0 AND mechanics (PM7-34); criteria printed, decide nothing): ACCEPTED** {'criteria': False, 'dsr_positive': True, 'mechanics': True}.
+- criterion capacity-4x-higher (printed): met
+- criterion turnover-per-gross-not-higher (printed): unmet
+- criterion cost-bps-lower (printed): unmet
+
+Returns (S2, annual): net 5.65% (CAGR 5.77%) vs 5.08%; gross of cost 7.07% vs 6.45%; vol 3.06%; max drawdown 2.58%; 4x net Sharpe 1.6994 vs 1.6549; tau 0.02813 (per unit gross 0.02853).
+
+Ledger `build-equity/trials.jsonl`: lines 112 -> 128, head `e186895aeed3f7f3`, N 56 -> 57, cell trial `11c10defb3cf38a5`; admission lines appended 15.
+
+| phase | run dir | s | peak MiB | outcome |
+|---|---|---|---|---|
+| u | `build-equity/mega-v8-b0b-train-u-v8ysb-run1` | 12.7 | 530 | completed |
+| fit | `build-equity/mega-weights-v8x-theme-erc-v8ysb-run1` | 1.9 | 58 | completed |
+| w | `build-equity/mega-v8xw-train-theme-erc-v8ysb-run2` | 52.8 | 1436 | completed |
+| nav | `build-equity/mega-nav-v8x-theme-erc-L1.1720-v8ysb-run` | 59.7 | 586 | completed |
+| card | `build-equity/mega-cards-v8x-theme-erc-v8ysb-run` | 24.5 | 1524 | completed |
+| ref | `build-equity/mega-nav-v8x-theme-erc-L1.1720-v8ysb-ref-run` | 61.9 | 586 | completed |
+| nav | `build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb-run` | 55.6 | 586 | completed |
+| monitor | `build-equity/mega-monitor-v8x-theme-erc-v8ysb-run` | 1.6 | 128 | completed |
+| summ | `build-equity/cycle-v8ysb-gm/summ-run1` | 40.0 | 626 | completed |
+
+Hidden-data record: seal scan of 79 log(s) (every run dir, reader and console of the wave; forms iso, compact, year, quarter): 0 date token(s) at or after 2024-01-01 (2026-10-02 x10 allowed: untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW); 2026-10-03 x4 allowed: receipt started_utc wall-clock (PM SEAL-ALLOW); 20260927 x1 allowed: nav_summ's default bootstrap seed (not a date); 20260929 x66 allowed: nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)).
+**Next parent: `scripts/specs/v8/lib-v8ysb-gm.json`, library v8ysb.**
+
+## R0-7 Y-3 norm-score (P9 Phase 0): STOP before stage 01 -- no wave manifest (2026-10-03, 13:07Z)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD `ff0c5552`. Parent named by the Y-S driver:
+`scripts/specs/v8/lib-v8ysb-gm.json` (library v8ysb, L 1.1828; `wave-result.json` `next_parent`). **Nothing ran; 0 trials;
+ledger `build-equity/trials.jsonl` 128 lines (= R0-6's), N 57.**
+
+| check (read-only) | argv / source | result |
+|---|---|---|
+| Y-3 wave manifest | `ls scripts/specs/v8/waves/`; `git log --all -- scripts/specs/v8/waves/` | **absent**: only `y-s.json`, `y-s.head.json` (commits `d7c1c520`, `4492f301`); no Y-3 manifest or head on any branch |
+| registration | `v8y-prereg.md` sections 5, 6, 14; YP-7 | template `scripts/specs/v8/y-norm-score.json` @ `02633038`, file `693c64f5...`; through `wave run` as a `rule_cell`; PM6-6 gm template; PM7-34; 1 construction cell, 0 admission |
+| template pin | `git show 02633038:` / `HEAD:` piped to sha256 | blob `693c64f5471ceff6...` = the registered pin (unchanged since `02633038`) |
+| template on disk | `sha256sum`; `git ls-files --eol` | `73d16673f93e8ff0...`: `i/lf w/crlf` (`core.autocrlf=true`). The driver hashes disk bytes (`wave_context.Wave.sha`), so preflight with the registered pin would refuse ("not the pinned cell template"). All four `y-*.json` templates are `w/crlf`; `y-s.json` and `lib-v8ysb-gm.json` are `w/lf` |
+| Y-3 defined on the parent | `lib-v8ysb-gm.json` `nav` | rule `aim-partial-v5`, L 1.1828; no `--hold-band`, `--vol-scale`, spo: **defined** |
+| draft manifest (scratchpad, uncommitted) | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave plan <scratchpad>/y-3.draft.json --root C:/atx-wt/pool-2` | **exit 0**, 9 stages pending; cell file `scripts/specs/v8/y-norm-score-y-3.json`; draft sha256 `d4ece3a5bded754b...`; nothing written (no `build-equity/waves/y-3`, tree unchanged) |
+| heads-up for R0-9 | `git log -- scripts/specs/v8/y-two-speed.json` | blob at HEAD `e29365d1` != registered `69cf6134` (@ `e2ac7d63`); changed by `b3b5dab4` "registered text follows the code" |
+
+**Why stopped (brief stop rule "something needs a ruling"; nothing improvised).** The manifest's commit is the
+pre-registration (preflight: "manifest committed"), and it holds choices no ruling fixes: the wave id, the printed
+criteria list (Y-3's registered criterion, gross-of-cost return per unit gross, has no named rule; YP-7 says to write it by
+hand), the budget id and caps, the record dir, and the template's EOL on disk vs its registered pin. The draft and the
+choices are in `.superpowers/sdd/platform-p9-20261003/root-R0-7-report.md`.
+
+### R0-7 resume: R0-7-EOL (P9 progress.md ruling) -- template LF bytes restored (13:2xZ)
+
+Per template: `git diff --ignore-cr-at-eol HEAD -- <p>` 0 lines; disk bytes with CR stripped sha256 = HEAD blob (content
+identical); then `rm <p>` + `git -c core.autocrlf=false checkout -- <p>`; `git ls-files --eol` now `i/lf w/lf`; `git status`
+clean (only the untracked png). No hash edited.
+
+| template | disk before (CRLF) | disk after (LF) | pin | result |
+|---|---|---|---|---|
+| `scripts/specs/v8/y-norm-score.json` | `73d16673f93e8ff0...` | `693c64f5471ceff6f21320c5bfee92d4f741226cbf7be295b1905e0a569e677f` | registered `693c64f5` (v8y 14) | **equal** |
+| `scripts/specs/v8/y-theme-tsmom.json` | `020f0085a987c6a0...` | `9d3548b670547d138b3fdaeec0f170a2861b2a60d777c94788446e6c9b4cd83f` | registered `9d3548b6` | **equal** |
+| `scripts/specs/v8/y-two-speed.json` | `93aab9c6bb126cee...` | `e29365d1597a31ba659996120ec2fc05f8d3947419249e4bbe945736533ca023` | HEAD blob `e29365d1` (R0-9-PIN; registered `69cf6134`) | **equal** to HEAD blob |
+| `scripts/specs/v8/y-vol-target.json` | `d498abaded58de8e...` | `4e190f5434dfc13aced1459721cde476faf3560ef99aa41e05bfe492e2f141b4` | registered `4e190f54` | **equal** |
+
+### R0-7 resume: R0-7-MAN (P9 progress.md ruling) -- Y-3 manifest committed
+
+| step | argv | exit | result |
+|---|---|---|---|
+| manifest | the R0-6 report's validated draft, "DRAFT (uncommitted; for the PM's ruling) -- " prefix removed from `description`, 2-space JSON, LF | - | `scripts/specs/v8/waves/y-3.json` sha256 `a49e53874a3432edcf29e492f660816b76f6de16d65635b663a0252063a1dc10` (disk = blob, `i/lf w/lf`) |
+| pre-registration commit | `git commit -m "wave y-3: manifest (pre-registration of cell Y-3; v8y-prereg sections 5, 6, 14)"` | 0 | **`c18a92b7`** |
+| plan | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave plan scripts/specs/v8/waves/y-3.json --root C:/atx-wt/pool-2` | **0** | 27 lines; manifest sha256 `a49e5387...`; 9 stages pending; state `build-equity/waves/y-3/receipts`; cell file `scripts/specs/v8/y-norm-score-y-3.json` |
+
+### R0-7 Y-3 stage 01 preflight
+
+Argv (every stage): `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave run scripts/specs/v8/waves/y-3.json --root C:/atx-wt/pool-2 --until <stage>`. Host check before each stage (psutil): no compiler, no `atx-*` exe, no research process in pool-2.
+
+| stage | exit | wall s | peak MiB | free before / min | receipt SHA-256 | commit | result |
+|---|---|---|---|---|---|---|---|
+| 01 preflight | 0 | 0.5 | - (no exe) | 4,480 / 4,480 | `003e265c5436eda829785718a53c364562226b44c5616fa9ac159f00a1db323e` | - | manifest commit `c18a92b7`; parent v8ysb-gm (L 1.1828), spec digest `1e3ec118`; fields `26fee5ce` (84 rows, seal end 2024-01-01); template `693c64f5`; ledger 128 lines N 57 (head `e186895a`); budget construction cap 62 |
+| 02 register | 0 | 0.2 | - | 4,204 / 4,204 | `b06d66b2eca413b28f0a0ec5a228681ec1825481dcb3131c921ade493af3e7a8` | - | `{"skipped": "a rule wave registers no strings"}` |
+| 03 screen | 0 | 0.2 | - | 4,104 / 4,104 | `9d4571c0612f0419f73d59d16d8afc520da73bdf0430d708256842a62c99c4c0` | - | `{"skipped": "a rule wave has no admission strings"}` (no gate, 0 admission trials) |
+| 04 spec | 0 | 1.2 | - (lock only) | 4,000 / 3,920 | `47fcb6e2d0fe5d6404f9a20000804087996291f51bf673cbbcc18866fc00330a` | `4f1e0e08` (D) | rule cell `scripts/specs/v8/y-norm-score-y-3.json` (sha256 `7e38a595`, spec digest `3290c59a`): template + parent `lib-v8ysb-gm.json`, `nav --rank-shape norm-score-v1`, nav.output `build-equity/mega-nav-v8y-norm-score`, L 1.1828 (the parent's, calibration), no constants; `lock --write` reference cell = parent NAV summary `2d30b7f6`, admission `121f7046`; paired reference NAV `mega-nav-v8x-theme-erc-L1.1828-v8ysb` |
+| 05 run | 0 | 56.0 | 586 (nav) | 3,724 / 3,033 | `3aa00ea5da844f806e83a667e7a3fd19144d661669207d7021c1b73311bd86d2` | - | driver argv `research_cycle.py run scripts/specs/v8/y-norm-score-y-3.json --stop-after nav`; calibration NAV at L 1.1828: `build-equity/mega-nav-v8y-norm-score-run` completed exit 0, 54.6 s, 586 MiB, exe `72ff6d2d`; u, fit, w (run2), card, monitor = the parent's receipts (no re-run); summary sha256 `cf8d5deb` (not read: no return before mechanics) |
+| 06 match | 0 | 53.8 | 586 (nav) | 4,021 / 2,353 | `6d0b78fb726803bcaf62c779725089681893e4e1b342ba7be48d804bdf2c7cf2` | `5049f58f` (D) | PM6-6: calibration G 1.0016936049 vs G_parent .9862134133 (miss .0155 > .005) -> one correction L 1.1828 x .98621 / 1.00169 = **L 1.1645**; `y-norm-score-y-3-gm.json` (sha256 `27a49f50`, digest `e4b72314`; differs from the cell only in name, description, nav.leverage, nav.output); matched NAV `mega-nav-v8y-norm-score-L1.1645-run` exit 0, 50.9 s, 586 MiB, exe `72ff6d2d`: **G .9861866382** (within .005); readers mech-calibration `38b0e85f`, mech-matched `1f572154`; matched daily CSV `7599e870` |
+| 07 verify | 0 | 0.5 | - (no exe) | 3,496 / 3,380 | `63dfb015ab2ce900f94123d9887dadf276e3e2a4cc3bd6aba425b4c8670e55ce` | - | SEAL-ALLOW: `tools/sealsrc.py --manifest scripts/specs/v8/waves/y-3.json` exit 0 before the run: 6 hits over 30 files, `2026-10-02` source (a) x4 (consoles 004:4, 005:93, 009:4, 010:63), `2026-10-03` source (b) x2 (005:7, 010:7), **0 OTHER**; argv adds `--seal-allow "2026-10-02=untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)" --seal-allow "2026-10-03=receipt started_utc wall-clock (PM SEAL-ALLOW)"`. Mechanics **PASS** 6/6 (gross_all_rows .98619 in [.90, 1.05]; abs net .00574 <= .02; tau mean .02933 <= .20; p95 .03473 <= .30; return identity 3.59e-16, cash book 8.44e-14 <= 1e-09); binding argv `cba99575`, file `908fb987`, spec `e4b72314`; seal scan 30 logs, 0 tokens; NAV exe cell `72ff6d2d` = parent `72ff6d2d` (ref none) |
+| 08 judge | 0 | 40.2 | 580 (summ) | 3,819 / 3,133 | `7f4964cd2a55bf437d36404ba79eef2dbbbae14438dad4221ceb098b9d5a9659` | - | driver: `run y-norm-score-y-3-gm.json` (summ 37.2 s, 580 MiB, ledgered the cell), bundle (`f67bc6d1`), book reader (`2ed88bf0`); printed **`verdict (pm7-34): NOT ACCEPTED {'dsr_positive': False, 'mechanics': True, 'criteria': False}`**; dSR -0.0376 (Memmel SE .0401); ledger 128 -> 129 lines |
+| 09 record | 0 | 0.5 | - (no exe) | 3,927 / 3,927 | `3712c174053ee4cc4c13a40f2ba7131ff08ff65444d561031f901e7c7ffed522` | - (no queue: rule wave) | SEAL-ALLOW per-hit check before the run (`tools/sealsrc.py` exit 0): 11 hits over 39 files, `2026-10-02` (a) x7, `2026-10-03` (b) x4, **0 OTHER**; same two `--seal-allow` flags. `wave-result.json` **`619809ea396b173acf54d617f9b6838391ed0645eda89ad0e7497588cdb6583e`**, `wave-log.md` `bd6ebbb7`; copies under `.superpowers/sdd/platform-v8-20260929/waves/y-3/` byte-equal; ledger 128 -> **129** lines (head `a083edaa`), N 57 -> **58**, cell trial `ee5487109c705108`; seal scan 39 logs, 0 tokens |
+
+**Y-3 result (R0-7).** Driver verdict line as printed at judge: `verdict (pm7-34): NOT ACCEPTED {'dsr_positive': False,
+'mechanics': True, 'criteria': False}`. Under PM7-34 the cell is **rejected and counted** (1 construction trial, N 58). The
+next parent stays `scripts/specs/v8/lib-v8ysb-gm.json` (library v8ysb, L 1.1828), as the driver prints.
+
+**YP-7 hand print (registered criterion of the hypothesis; decides nothing).** S2 gross-of-cost annual return per unit
+of all-rows gross, from `wave-result.json` `stats` (`gross_annual` / `mean_gross_leverage_all_rows`): cell .0729263299 /
+.9861866382 = **.0739477976**; parent .0706781735 / .9862134133 = **.0716662058**; difference +.0022815918: **above the
+parent's (met)**. Also printed (cell vs parent, S2 `modeled-1bn-stale5-v1+swap-fin-v1`): net annual 5.834% vs 5.654%;
+realised vol 3.220% vs 3.057%; turnover per unit gross .029742 vs .028528; cost per traded dollar 12.708 vs 12.658 bps;
+borrow .3306% vs .3276% a year; trade cost .9268% vs .8851%; 4x net Sharpe 1.6874 vs 1.6994; `construction.rank_shape`
+(cell NAV summary, every scenario): id norm-score-v1, max |z| 3.2806, 1,004 scored decisions, mean 1,846.3 names.
+
+**The driver's log section** (`build-equity/waves/y-3/wave-log.md`, pasted as written):
+
+### Cell y-3 (rule wave; template `y-norm-score.json` on v8ysb): N 58
+
+**NOT ACCEPTED.** Manifest `scripts/specs/v8/waves/y-3.json` sha256 `a49e53874a3432ed` (commit `c18a92b7c0ec`); parent `scripts/specs/v8/lib-v8ysb-gm.json` (library v8ysb, L 1.1828); driver `research_cycle.py wave run`.
+
+Budget v8y-construction-n57-plus-1: construction N 57 -> 58 of 62.
+
+**Cell** `scripts/specs/v8/y-norm-score-y-3-gm.json` (rule, library v8ysb): gross match pm6-6: calibration L 1.1828 G 1.0016936049 vs G_parent 0.9862134133 -> corrected to L 1.1645, G 0.9861866382.
+
+**Mechanics (S2, read before any return): PASS** (gross_all_rows 0.98619 [0.9, 1.05]; abs_net_all_rows 0.0057379 <= 0.02; tau_mean 0.029332 <= 0.2; tau_p95 0.034728 <= 0.3; max_return_identity_error 3.592e-16 <= 1e-09; max_cash_book_relative_error 8.4431e-14 <= 1e-09).
+
+**Statistics of record** (S2): net Sharpe 1.8119 vs parent 1.8495: dSR -0.0376, Memmel SE 0.0401, CBB 95% [-0.10597929739157326, 0.028037769129756952], LW p 0.2690; bundle p one-sided 0.8644, two-sided 0.2690. DSR (N 58): ledger 0.8221; PBO 0.0765.
+
+**Verdict (pm7-34: paired S2 net dSR > 0 AND mechanics (PM7-34); criteria printed, decide nothing): NOT ACCEPTED** {'criteria': False, 'dsr_positive': False, 'mechanics': True}.
+- criterion capacity-4x-higher (printed): unmet
+- criterion turnover-per-gross-not-higher (printed): unmet
+- criterion cost-bps-lower (printed): unmet
+
+Returns (S2, annual): net 5.83% (CAGR 5.95%) vs 5.65%; gross of cost 7.29% vs 7.07%; vol 3.22%; max drawdown 2.70%; 4x net Sharpe 1.6874 vs 1.6994; tau 0.02933 (per unit gross 0.02974).
+
+Ledger `build-equity/trials.jsonl`: lines 128 -> 129, head `a083edaa836b69ef`, N 57 -> 58, cell trial `ee5487109c705108`; admission lines appended 0.
+
+| phase | run dir | s | peak MiB | outcome |
+|---|---|---|---|---|
+| u | `build-equity/mega-v8-b0b-train-u-v8ysb-run1` | 12.7 | 530 | completed |
+| fit | `build-equity/mega-weights-v8x-theme-erc-v8ysb-run1` | 1.9 | 58 | completed |
+| w | `build-equity/mega-v8xw-train-theme-erc-v8ysb-run2` | 52.8 | 1436 | completed |
+| nav | `build-equity/mega-nav-v8y-norm-score-run` | 54.6 | 586 | completed |
+| card | `build-equity/mega-cards-v8x-theme-erc-v8ysb-run` | 24.5 | 1524 | completed |
+| monitor | `build-equity/mega-monitor-v8x-theme-erc-v8ysb-run` | 1.6 | 128 | completed |
+| nav | `build-equity/mega-nav-v8y-norm-score-L1.1645-run` | 50.9 | 586 | completed |
+| summ | `build-equity/cycle-v8y-norm-score-y-3-gm/summ-run1` | 37.2 | 580 | completed |
+
+Hidden-data record: seal scan of 39 log(s) (every run dir, reader and console of the wave; forms iso, compact, year, quarter): 0 date token(s) at or after 2024-01-01 (2026-10-02 x7 allowed: untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW); 2026-10-03 x4 allowed: receipt started_utc wall-clock (PM SEAL-ALLOW); 20260927 x1 allowed: nav_summ's default bootstrap seed (not a date); 20260929 x67 allowed: nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)).
+**Next parent: `scripts/specs/v8/lib-v8ysb-gm.json`, library v8ysb.**
+
+## R0-8 Y-2 theme-tsmom (P9 Phase 0) (2026-10-03, 13:27Z-)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD before `629abbc8`. Parent named by the Y-3 driver:
+`scripts/specs/v8/lib-v8ysb-gm.json` (library v8ysb, L 1.1828; `build-equity/waves/y-3/wave-result.json` `619809ea`
+`next_parent`; Y-3 NOT ACCEPTED, so the last accepted cell is still Y-S). Ledger `build-equity/trials.jsonl` 129 lines, N 58.
+Rulings applied: R0-7-MAN (same mechanical manifest procedure), R0-7-EOL (already done for all four templates), SEAL-ALLOW,
+R0-6-ATT (only if an attempt fails).
+
+| check (read-only) | argv / source | result |
+|---|---|---|
+| template pin | `sha256sum scripts/specs/v8/y-theme-tsmom.json`; `git ls-files --eol` | `9d3548b670547d138b3fdaeec0f170a2861b2a60d777c94788446e6c9b4cd83f` = registered pin (v8y 14, template @ `43745dd7`, its only commit); `i/lf w/lf` |
+| Y-2 defined on the parent | `lib-v8ysb-gm.json` `fit.flags` | `--composition ew-theme-std-v1 --theme-erc theme-erc-v1`; no `--theme-resid`, no `--era`: **defined** (v8y 6 "Undefined" Y-2 row) |
+| registered constants | v8y 14 Y-2 row | lookback 252, lag 3, step 21 inside `fit --theme-tsmom theme-tsmom-v1` = the template's `change.flags.fit`; no `rule_cell.constants` key (none free) |
+
+### R0-8 R0-7-MAN: Y-2 manifest committed
+
+Keys: `wave` y-2, `rule_cell` = the template + its registered pin, `parent` = the Y-3 driver's `next_parent`,
+`expect.n_before` 58, `budget.id` v8y-construction-n58-plus-1, `out_dir` build-equity/waves/y-2; `schema`, `fields`,
+`acceptance` (pm7-34; printed as Y-S and Y-3), `gross_match` pm6-6 (v8y 6: PM6-6 yes for Y-2), `budget.construction_cap`
+62, `ledger`, `record` copied from `y-3.json`. Description states PM8-10 (c)'s dSR SE window and CM-2. No free constant.
+
+| step | argv | exit | result |
+|---|---|---|---|
+| manifest | written from `y-3.json` by key (2-space JSON, LF); `diff y-3.json y-2.json` = wave, description, template + pin, budget id, n_before, out_dir | - | `scripts/specs/v8/waves/y-2.json` sha256 `3655181d316f65489064576e763cd01955ddb9ac9dce7a94deea8872ec19b538` (disk = blob, `i/lf w/lf`) |
+| plan (pre-commit) | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave plan scripts/specs/v8/waves/y-2.json --root C:/atx-wt/pool-2` | **0** | 9 stages pending; cell file `scripts/specs/v8/y-theme-tsmom-y-2.json`; nothing written |
+| pre-registration commit | `git commit -m "wave y-2: manifest (pre-registration of cell Y-2; v8y-prereg sections 5, 6, 14)"` | 0 | **`15017bb4`** |
+| plan (committed) | same argv | **0** | 27 lines; manifest sha256 `3655181d...`; state `build-equity/waves/y-2/receipts` |
+
+### R0-8 Y-2 stages
+
+Argv (every stage): `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave run scripts/specs/v8/waves/y-2.json --root C:/atx-wt/pool-2 --until <stage>`. Host check before each stage (psutil): no compiler, no `atx-*` exe, no research process; free memory sampled every 0.25 s during the stage. Gates: a stage with an exe needs free >= its peak + 1,536 MiB (05 run: w plan 2,786 + 1,536 = 4,322, the R0-6-ATT gate on the same library; 06 / 08: cap 1,536 + 1,536 = 3,072).
+
+| stage | exit | wall s | peak MiB | free before / min | receipt SHA-256 | commit | result |
+|---|---|---|---|---|---|---|---|
+| 01 preflight | 0 | 0.3 | - (no exe) | 4,275 / 4,248 | `a7f876c13100abae6e73d82581d092f2c50cfc98fcd66b8cfa41401f642c62f3` | - | manifest commit `15017bb4`; parent v8ysb-gm (L 1.1828), spec digest `1e3ec118`; fields `26fee5ce` (84 rows, seal end 2024-01-01); template `9d3548b6`; ledger 129 lines N 58 (head `a083edaa`); budget v8y-construction-n58-plus-1, construction cap 62 |
+| 02 register | 0 | 0.1 | - | 4,219 / 4,219 | `87a9551cc61431be410584d90df0065c13facf352cf97a5d0b77a4aeae7bbc0a` | - | `{"skipped": "a rule wave registers no strings"}` |
+| 03 screen | 0 | 0.1 | - | 4,078 / 4,078 | `15ea31c51f4bb7eaf5bc109e3bf72da8fbe8c9b93bea586c57ffa25501058eff` | - | `{"skipped": "a rule wave has no admission strings"}` (no gate, 0 admission trials) |
+| 04 spec | 0 | 0.7 | - (lock only) | 4,060 / 4,014 | `ccf78090e9af5fb1a60d077bea26f29dcc40e67a643287d1ea4d10b78d10debe` | `519abce7` (D) | rule cell `scripts/specs/v8/y-theme-tsmom-y-2.json` (sha256 `5e9fa011`, spec digest `8b299be6`): template + parent `lib-v8ysb-gm.json`, `fit --theme-tsmom theme-tsmom-v1`, outputs fit/card/w/nav/monitor renamed `*-v8y-theme-tsmom`, L 1.1828 (the parent's, calibration), no constants; `lock --write` reference cell = parent NAV summary `2d30b7f6`, admission `121f7046`; paired reference NAV `mega-nav-v8x-theme-erc-L1.1828-v8ysb` |
+| 05 run | 0 | 106.9 | 1,432 (w) | 4,339 / 2,862 (gate 4,322 met after 117 s wait) | `309b66eda38dc61c3bb106ccf5f0025ef1a735dec5dfe01404d75292ac11cb67` | - | driver argv `research_cycle.py run scripts/specs/v8/y-theme-tsmom-y-2.json --stop-after nav`; calibration at L 1.1828: u = the parent's receipt (`mega-v8-b0b-train-u-v8ysb-run1`, no re-run); fit `mega-weights-v8y-theme-tsmom-run1` 0.8 s 57 MiB (exe `624bbc05`); w `mega-v8yw-train-theme-tsmom-run1` 42.2 s 1,432 MiB (exe `985019d9`); NAV `mega-nav-v8y-theme-tsmom-run` 43.5 s 586 MiB (exe `72ff6d2d`); card `mega-cards-v8y-theme-tsmom-run` 18.2 s 1,396 MiB; all exit 0 completed; summary sha256 `ea2b135a` (not read: no return before mechanics) |
+| 06 match | 0 | 50.2 | 586 (nav) | 4,812 / 3,804 | `8d8aa008d97d5bbbc3385c0b3d0a235db540ccd1dd19f8a3ffa161b9b23fb099` | `31250f46` (D) | PM6-6: calibration G .9689836621 vs G_parent .9862134133 (miss .0172 > .005) -> one correction L 1.1828 x .98621 / .96898 = **L 1.2038**; `y-theme-tsmom-y-2-gm.json` (sha256 `b50c31f6`, digest `e84e35cc`; differs from the cell only in name, description, nav.leverage, nav.output); matched NAV `mega-nav-v8y-theme-tsmom-L1.2038-run` exit 0, 47.4 s, 586 MiB, exe `72ff6d2d` (u, fit, w, card = the calibration's: no re-run): **G .9862340550** (within .005); readers mech-calibration `b1a404de`, mech-matched `9d6df741`; matched daily CSV `06fab81b` |
+| 07 verify | 0 | 0.3 | - (no exe) | 4,547 / 4,510 | `60dd5f657f9a443212485e0a452007287f94b8ce474b714ecb7d150005e97482` | - | SEAL-ALLOW: `tools/sealsrc.py --manifest scripts/specs/v8/waves/y-2.json` exit 0 before the run: 6 hits over 26 files, `2026-10-02` source (a) x4 (consoles 004:4, 005:93, 009:4, 010:63), `2026-10-03` source (b) x2 (005:7, 010:7), **0 OTHER**; argv adds `--seal-allow "2026-10-02=untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)" --seal-allow "2026-10-03=receipt started_utc wall-clock (PM SEAL-ALLOW)"`. Mechanics **PASS** 6/6 (gross_all_rows .98623 in [.90, 1.05]; abs net .00484 <= .02; tau mean .03022 <= .20; p95 .04759 <= .30; return identity 4.36e-16, cash book 3.88e-14 <= 1e-09); binding argv `d093abf9`, file `9ff9bdc0`, spec `e84e35cc`; seal scan 26 logs, 0 tokens; NAV exe cell `72ff6d2d` = parent `72ff6d2d` (ref none) |
+| 08 judge | 0 | 39.1 | 609 (summ) | 4,566 / 3,891 | `d8096f2d7319e73821d32100d4be82c846d057623f5f0eacb54c74d3c739d356` | - | driver: `run y-theme-tsmom-y-2-gm.json` (monitor 1.6 s 130 MiB; summ 34.4 s, 609 MiB, ledgered the cell), bundle (`16a246b1`), book reader (`7f64bf79`); printed **`verdict (pm7-34): NOT ACCEPTED {'dsr_positive': False, 'mechanics': True, 'criteria': False}`**; dSR -0.3313 (Memmel SE .2307); ledger 129 -> 130 lines (trial `aeeb2073e0bd8e2a`) |
+| 09 record | 0 | 0.4 | - (no exe) | 4,330 / 4,297 | `06c23eae60666912a6ac46db6b6882282baa440f50cc684e0f630ffb5052a538` | - (no queue: rule wave) | SEAL-ALLOW per-hit check before the run (`tools/sealsrc.py` exit 0): 11 hits over 37 files, `2026-10-02` (a) x7, `2026-10-03` (b) x4, **0 OTHER**; same two `--seal-allow` flags. `wave-result.json` **`09fbd24ec7d12ba706f7f383d57048efe67817a443c50d784fec1317e3d1fcb4`**, `wave-log.md` `aea00914`; copies under `.superpowers/sdd/platform-v8-20260929/waves/y-2/` byte-equal; ledger 129 -> **130** lines (head `58bce60e`), N 58 -> **59**, cell trial `aeeb2073e0bd8e2a`; seal scan 37 logs, 0 tokens; `wave status` 9/9 done |
+
+**Y-2 result (R0-8).** Driver verdict line as printed at judge: `verdict (pm7-34): NOT ACCEPTED {'dsr_positive': False,
+'mechanics': True, 'criteria': False}`. Under PM7-34 the cell is **rejected and counted** (1 construction trial, N 59). The
+next parent stays `scripts/specs/v8/lib-v8ysb-gm.json` (library v8ysb, L 1.1828), as the driver prints.
+
+**dSR SE and its window (PM8-10 (c); printed, decides nothing).** Paired S2 net dSR -0.3313, **Memmel SE 0.2307** (CBB 95%
+[-1.057, 0.230]; rho .8951), computed by the driver's bundle over the 1,005 paired S2 return sessions of TRAIN
+(2020-01-03 .. 2023-12-29; ledger `window`). The rule's own window is **2021-2023**: the first schedule block starts at
+decision 254 (session 2021-01-05) and the last at decision 989 (2023-12-06); before decision 254 (2020) the theme masses
+are the parent's, so in 2020 the cell differs from the parent only by its matched L (1.2038 vs 1.1828).
+
+**CM-2 (P9 plan section 1.1 row R0-8; composition review CM-2).** Y-2's sleeves are formed with the parent's final
+full-TRAIN weights (theme-erc-v1 covariance and cap), so "no mean is fitted / walk-forward" holds only for the mass
+schedule, not for the sleeve weights; out of sample the rule is a frozen mask (a role after TRAIN keeps the last block's
+masses; a pre-TRAIN history role gets the parent's masses). The registration stands (PM8-12 (e): a delivered Y lane is
+not rewritten before its cell runs); the cell ran as registered on TRAIN only, and no out-of-sample read was made.
+
+**Printed-only items of the registration (v8y 6 Y-2 row; decide nothing).** From the cell fit
+`build-equity/mega-weights-v8y-theme-tsmom/composition_weights.json` (`5f94c607`) `provenance.theme_tsmom`: rule
+theme-tsmom-v1 on parent rule theme-erc-v1, lookback 252, lag 3, step 21, 1,004 decisions, 36 blocks, 12 themes;
+**theme_blocks_off 141** (of 432 theme-blocks; per block 2..7); **theme_on_fraction**: reversal_seasonality 1.000,
+investment_issuance .944, profitability_quality .944, value .944, low_risk .778, ownership_flow .722, short_interest .694,
+price_momentum .667, earnings_momentum .500, options_implied .333, filing_events .306, merger_arbitrage .250. From
+`wave-result.json` `stats` (S2 `modeled-1bn-stale5-v1+swap-fin-v1`), cell vs parent: turnover per unit gross .030641 vs
+.028528; cost per traded dollar 12.614 vs 12.658 bps; net annual return 4.787% vs 5.654%; 4x net Sharpe 1.3498 vs 1.6994.
+
+**The driver's log section** (`build-equity/waves/y-2/wave-log.md`, pasted as written):
+
+### Cell y-2 (rule wave; template `y-theme-tsmom.json` on v8ysb): N 59
+
+**NOT ACCEPTED.** Manifest `scripts/specs/v8/waves/y-2.json` sha256 `3655181d316f6548` (commit `15017bb41023`); parent `scripts/specs/v8/lib-v8ysb-gm.json` (library v8ysb, L 1.1828); driver `research_cycle.py wave run`.
+
+Budget v8y-construction-n58-plus-1: construction N 58 -> 59 of 62.
+
+**Cell** `scripts/specs/v8/y-theme-tsmom-y-2-gm.json` (rule, library v8ysb): gross match pm6-6: calibration L 1.1828 G 0.9689836621 vs G_parent 0.9862134133 -> corrected to L 1.2038, G 0.9862340550.
+
+**Mechanics (S2, read before any return): PASS** (gross_all_rows 0.98623 [0.9, 1.05]; abs_net_all_rows 0.0048411 <= 0.02; tau_mean 0.030219 <= 0.2; tau_p95 0.04759 <= 0.3; max_return_identity_error 4.3639e-16 <= 1e-09; max_cash_book_relative_error 3.8829e-14 <= 1e-09).
+
+**Statistics of record** (S2): net Sharpe 1.5182 vs parent 1.8495: dSR -0.3313, Memmel SE 0.2307, CBB 95% [-1.0569527140577306, 0.23048206379363126], LW p 0.3976; bundle p one-sided 0.8794, two-sided 0.3976. DSR (N 59): ledger 0.6457; PBO 0.1511.
+
+**Verdict (pm7-34: paired S2 net dSR > 0 AND mechanics (PM7-34); criteria printed, decide nothing): NOT ACCEPTED** {'criteria': False, 'dsr_positive': False, 'mechanics': True}.
+- criterion capacity-4x-higher (printed): unmet
+- criterion turnover-per-gross-not-higher (printed): unmet
+- criterion cost-bps-lower (printed): met
+
+Returns (S2, annual): net 4.79% (CAGR 4.85%) vs 5.65%; gross of cost 6.25% vs 7.07%; vol 3.15%; max drawdown 3.39%; 4x net Sharpe 1.3498 vs 1.6994; tau 0.03022 (per unit gross 0.03064).
+
+Ledger `build-equity/trials.jsonl`: lines 129 -> 130, head `58bce60efae09d44`, N 58 -> 59, cell trial `aeeb2073e0bd8e2a`; admission lines appended 0.
+
+| phase | run dir | s | peak MiB | outcome |
+|---|---|---|---|---|
+| u | `build-equity/mega-v8-b0b-train-u-v8ysb-run1` | 12.7 | 530 | completed |
+| fit | `build-equity/mega-weights-v8y-theme-tsmom-run1` | 0.8 | 57 | completed |
+| w | `build-equity/mega-v8yw-train-theme-tsmom-run1` | 42.2 | 1432 | completed |
+| nav | `build-equity/mega-nav-v8y-theme-tsmom-run` | 43.5 | 586 | completed |
+| card | `build-equity/mega-cards-v8y-theme-tsmom-run` | 18.2 | 1396 | completed |
+| nav | `build-equity/mega-nav-v8y-theme-tsmom-L1.2038-run` | 47.4 | 586 | completed |
+| monitor | `build-equity/mega-monitor-v8y-theme-tsmom-run` | 1.6 | 130 | completed |
+| summ | `build-equity/cycle-v8y-theme-tsmom-y-2-gm/summ-run1` | 34.4 | 609 | completed |
+
+Hidden-data record: seal scan of 37 log(s) (every run dir, reader and console of the wave; forms iso, compact, year, quarter): 0 date token(s) at or after 2024-01-01 (2026-10-02 x7 allowed: untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW); 2026-10-03 x4 allowed: receipt started_utc wall-clock (PM SEAL-ALLOW); 20260927 x1 allowed: nav_summ's default bootstrap seed (not a date); 20260929 x68 allowed: nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)).
+**Next parent: `scripts/specs/v8/lib-v8ysb-gm.json`, library v8ysb.**
+
+
+## R0-9 Y-5 two-speed (P9 Phase 0) (2026-10-03, 13:49Z-)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD before `020cc018`. Ledger `build-equity/trials.jsonl`
+130 lines, N 59 (construction cap 62). Rulings applied: R0-9-PIN, R0-7-MAN, R0-7-EOL (done in R0-7), SEAL-ALLOW, R0-6-ATT
+(only if an attempt fails). DEC-16 noted (info-clock distinct from Y-5; context only).
+
+### R0-9-PIN: template diff (read-only)
+
+| check | argv / source | result |
+|---|---|---|
+| registered bytes | `git show e2ac7d63:scripts/specs/v8/y-two-speed.json \| sha256sum` | `69cf613457ff5b474d56269ff200d3d0211b5f06a0e67162e03b9b3c06b3291e` = v8y 14's pin (blob `b3834504`) |
+| HEAD bytes | `git show HEAD:...` and disk; `git ls-files --eol` | `e29365d1597a31ba659996120ec2fc05f8d3947419249e4bbe945736533ca023` (blob `fb472969`), disk = HEAD, `i/lf w/lf`; history: `e2ac7d63`, then `b3b5dab4` (2026-10-02 21:26 -0400, "registered text follows the code and PM8-16") only |
+| JSON diff | leaf-path diff of both parsed files (python json) | 12 leaf paths each, union 12; **only `/description` differs** (3,191 -> 4,286 chars); top-level key order equal; equal with `description` removed; `git diff e2ac7d63 HEAD` = 1 line (+1 / -1), the description line |
+
+**R0-9-PIN holds**: the manifest pins `e29365d1` (LF bytes); both SHAs and the description-only diff are recorded here.
+
+### Parent (registration vs driver)
+
+- Registration: `y-two-speed.json` `parent: null`, `nominal_parent` `x-theme-erc.json`; text: "parent = the last accepted book
+  at that point, whose fit carries a standardised composition" (v8y 14: "root sets `parent` to the last accepted spec at run
+  time"). Last accepted = Y-S cell `scripts/specs/v8/lib-v8ysb-gm.json` (Y-3, Y-2 not accepted). Its fit
+  `--composition ew-theme-std-v1 --theme-erc theme-erc-v1`: `composition_weights.json` has `theme_standardise` (rerank
+  true, 12 themes), no `theme_residualise`, no `theme_schedule`, no `theme_sleeves`.
+- Driver: `build-equity/waves/y-2/wave-result.json` (`09fbd24e`) `next_parent` = `scripts/specs/v8/lib-v8ysb-gm.json`
+  (v8ysb). **Agree: not ambiguous.**
+- Y-5 defined on it (v8y 6 "Undefined" Y-5 row): NAV `aim-partial-v5`, cadence 1, `--trade-fraction .05` (fixed rate), no
+  `--hold-band` / `--vol-scale` / `--adv-hold-q`, not spo / v6; fit rerank-true `theme_standardise`, no
+  `theme_residualise`; the 12 weighted themes are all in the 13-entry table (`strategy_two_speed.hpp`, `merger_arbitrage`
+  126 by `0ad71615`, an ancestor of the v8-16d source `e0fd0297`); fast bucket = reversal_seasonality (5; price_volume has
+  no weighted member), slow = the other 11: neither empty. **Defined.**
+
+### P13 plan (v8y 13 P13; YCOMB "How root verifies flag absent"), written before any run
+
+Build: the P5 build is v8-16d (ic `985019d9`, targets `72ff6d2d`; R0-3) + v8-16e's ic-tests (`3393a953`). The parent's
+receipts ran on exactly these executables (fit python `624bbc05` with fitter `8d05a9bb` = disk now; w `985019d9`; NAV
+`72ff6d2d`). Every run below goes through the bounded runner (or the cycle); free memory >= peak + 1,536 MiB; no compiler,
+no `atx-*` exe, no research process; comparisons by SHA-256 and JSON paths only (no value read).
+
+(a) **Flag absent: the parent's fit, w and NAV argv re-run** (`--two-speed` absent; argv = the parent's receipt `command`
+with only `--output` renamed; the receipt's limits and `--bind` set):
+| pass | parent receipt / output | new run dir / output | limits | expected |
+|---|---|---|---|---|
+| fit | `mega-weights-v8x-theme-erc-v8ysb-run1` / `mega-weights-v8x-theme-erc-v8ysb` | `p9-r09-p13-fit-run` / `p9-r09-p13-fit` | 180 s / 1,536 | `admission.csv`, `admission.json`, `composition_weights.json` byte-identical (fitter and registry unchanged since the parent's fit; a difference outside PM7-30's three provenance paths is a stop) |
+| w | `mega-v8xw-train-theme-erc-v8ysb-run2` / `mega-v8xw-train-theme-erc-v8ysb-2` | `p9-r09-p13-w-run` / `p9-r09-p13-w` | 300 s / 3,072 | the six `train_combined.*`, `train_daily_ic.csv`, `orientations.json`, `recipe.json`, `train_planned_targets.csv` byte-identical; `summary.json`, `train_candidates.jsonl` only in timing / cache paths (R0-3's list). Candidate cache as the parent's argv (warm: same exe as the parent's w, so a cold cache would test nothing new) |
+| NAV | `mega-nav-v8x-theme-erc-L1.1828-v8ysb-run` / `mega-nav-v8x-theme-erc-L1.1828-v8ysb` | `p9-r09-p13-nav-run` / `p9-r09-p13-nav` | 180 s / 1,536 | every file byte-identical (reads the parent's combined `e13fbc4d`) |
+
+(b) **`TwoSpeedRunner.*`** on the P5 ic-tests exe (`3393a953`; 2 / 2 in `build-equity/v8-i16e-ic-tests.xml`): re-run
+`--gtest_filter=TwoSpeedRunner.*` (synthetic fixture, no real data), xml `build-equity/p9-r09-p13-twospeedrunner.xml`.
+
+(c) **The cell's own w pass reproduces the parent's combined signal byte for byte**, and `parent` is set in the copy: after
+stage 04 writes `scripts/specs/v8/y-two-speed-y-5.json` (its `parent` must be `lib-v8ysb-gm.json`), root runs the strict
+prefix of stage 05's own argv, `research_cycle.py run scripts/specs/v8/y-two-speed-y-5.json --stop-after w` (u = the
+parent's receipt; the cell's fit with `--two-speed`, card, w), before any cell NAV. The cell's w vs the parent's w
+(`mega-v8xw-train-theme-erc-v8ysb-2`), as `TwoSpeedRunner.SavesTheSleevesBesideAnUnchangedBlend` asserts:
+`train_combined.f64`, `_finite.u8`, `_member.u8`, `train_planned_targets.csv` byte-identical (also `_ids.u64`,
+`_sessions.i64`); the `__combined__` rows of `train_daily_ic.csv` equal (SHA-256 of the extracted rows; no value printed);
+`train_combined.json` keeps its 5-file set and pins `train_sleeves.json` by SHA-256 under `composition_sleeves`;
+`recipe.json` differs only in `composition_sleeves` and `composition_weights_sha256`. Stage 05 then resumes (fit, card, w
+done) and runs the calibration NAV.
+
+**Stop**: any (a) mismatch beyond the stated paths, a (b) failure, or a (c) mismatch = P13 fails = stop (0 trials).
+
+### P13 (a) and (b) results (source `73e50d6a`, the plan commit; one run at a time)
+
+Launch: `"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --output build-equity/<run dir> --seconds
+<s> --max-rss-mib <m> --min-free-mib 512 --bind <the parent receipt's bindings> -- <the parent receipt's command, --output
+renamed>`, PATH prepended with the spec's `env_path_prepend`. Host check before each (psutil): no compiler, no `atx-*` exe,
+no research process (two other lanes' pytest running, not blocking); free memory sampled every 0.25 s.
+
+| pass | run dir | gate / free before / min | s / peak MiB | exe | receipt.json SHA-256 | result |
+|---|---|---|---|---|---|---|
+| fit (180 / 1,536) | `p9-r09-p13-fit-run` | 1,594 / 2,601 / 2,400 | 1.3 / 63 | python `624bbc05`, fitter `8d05a9bb` | `e099fad9b5c122a65f600f28448877caa9ce1f2817177d45a66d0ba563efbf42` | **3 / 3 byte-identical**: `admission.csv` `c3933116`, `admission.json` `121f7046`, `composition_weights.json` `0c480773` (= the parent's pins; no substitution needed) |
+| w (300 / 3,072) | `p9-r09-p13-w-run` | 4,322 / 4,390 / 2,910 (first try: gate not met in 900 s at ~3,700 free, nothing launched; second: met after 647 s) | 45.4 / 1,435 | ic `985019d9` | `3983802f5668eb5d194567fc55deb1c762c49301c7ee23a81f3db825e0297754` | **10 / 12 byte-identical**: `train_combined.json` `e13fbc4d`, `.f64` `70d863f9`, `_finite.u8` `c61f5b62`, `_ids.u64` `761bd1df`, `_member.u8` `c61f5b62`, `_sessions.i64` `ab244802`, `train_daily_ic.csv` `45261f20`, `orientations.json` `8d1a7f64`, `recipe.json` `c248eff7`, `train_planned_targets.csv` `cb744a74`; `summary.json` (273 of 8,330 leaf paths) and `train_candidates.jsonl` (264 of 7,571) differ only in `stage_seconds.*`, `wall_seconds`, `hash_seconds` (warm cache both: no cache-count path differs) |
+| NAV (180 / 1,536) | `p9-r09-p13-nav-run` | 3,072 / 4,652 / 3,973 | 43.0 / 586 | targets `72ff6d2d` | `c86205248efb088cfd4c1f9f3192f314fa2ec36b672f853fc3aa08bae50a4aeb` | **27 / 27 byte-identical** |
+| (b) `TwoSpeedRunner.*` | `build-equity/bin/atx-impl-strategy-ic-tests.exe --gtest_filter=TwoSpeedRunner.* --gtest_output=xml:build-equity/p9-r09-p13-twospeedrunner.xml` | - | 0.7 | ic-tests `3393a953` (v8-16e) | xml `08412bc0` | **2 / 2 passed** (`SavesTheSleevesBesideAnUnchangedBlend`, `BlockRefusalsPrecedeAnyPayloadOrOutput`) |
+
+All three receipts: completed, exit 0, "clean in the code pathspec", dirty outside only the untracked png, stderr empty.
+**P13 (a) PASS** (the parent's fit, w and NAV argv reproduce on the P5 build with `--two-speed` absent) and **(b) PASS**.
+(c) follows stage 04. Comparisons by SHA-256 and JSON paths only; no value read.
+
+### R0-9 R0-7-MAN: Y-5 manifest committed
+
+Keys: `wave` y-5, `rule_cell` = the template + `e29365d1` (R0-9-PIN), `parent` = the Y-2 driver's `next_parent`,
+`expect.n_before` 59, `budget.id` v8y-construction-n59-plus-1, `out_dir` build-equity/waves/y-5; `schema`, `fields`,
+`acceptance` (pm7-34; printed as Y-S, Y-3, Y-2), `gross_match` pm6-6 (v8y 6: PM6-6 yes for Y-5, gm template),
+`budget.construction_cap` 62, `ledger`, `record` copied from `y-2.json`. Registered constants (theta_s .05 = the parent's
+`--trade-fraction`, theta_f .12945, section 11's table) live inside the template's `--two-speed two-speed-v1` flags (C++):
+no `rule_cell.constants` key, no free constant. The description records both template SHAs and the description-only diff.
+
+| step | argv | exit | result |
+|---|---|---|---|
+| manifest | written from `y-2.json` by key (2-space JSON, LF); key-by-key diff vs `y-2.json` = wave, description, rule_cell, budget, expect, out_dir (key order equal) | - | `scripts/specs/v8/waves/y-5.json` sha256 `f538f9f590570d3cb80f31aa9e3e8dd1f38fd3b1cb168cc738756ad4da762e89` (`i/lf w/lf`) |
+| plan (pre-commit) | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave plan scripts/specs/v8/waves/y-5.json --root C:/atx-wt/pool-2` | **0** | 9 stages pending; cell file `scripts/specs/v8/y-two-speed-y-5.json`; nothing written |
+| pre-registration commit | `git commit -m "wave y-5: manifest (pre-registration of cell Y-5; v8y-prereg sections 5, 6, 13 P13, 14)"` | 0 | **`43128be8`** |
+| plan (committed) | same argv | **0** | 27 lines; state `build-equity/waves/y-5/receipts` |
+
+### R0-9 Y-5 stages
+
+Argv (every stage): `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py wave run scripts/specs/v8/waves/y-5.json --root C:/atx-wt/pool-2 --until <stage>`. Host check before each stage (psutil): no compiler, no `atx-*` exe, no research process; free memory sampled every 0.25 s during the stage. Gates: a stage with an exe needs free >= its peak + 1,536 MiB (05 run: w plan 2,786 + 1,536 = 4,322, as R0-8; 06 / 08: cap 1,536 + 1,536 = 3,072).
+
+| stage | exit | wall s | peak MiB | free before / min | receipt SHA-256 | commit | result |
+|---|---|---|---|---|---|---|---|
+| 01 preflight | 0 | 0.4 | - (no exe) | 4,688 / 4,665 | `c1d7ad9ab16cd9402de476490112880ee1a09627444b32073669181121de70e9` | - | manifest commit `43128be8` (`f538f9f5`); parent v8ysb-gm (L 1.1828), spec digest `1e3ec118`; fields `26fee5ce` (84 rows, seal end 2024-01-01); template `e29365d1`; ledger 130 lines N 59 (head `58bce60e`); budget v8y-construction-n59-plus-1, construction cap 62 |
+| 02 register | 0 | 0.1 | - | 4,604 / 4,604 | `05b1cd155d78f9f2a6de5f6fc80032088efa279ec1b516ac66e8644f2bdf17fa` | - | `{"skipped": "a rule wave registers no strings"}` |
+| 03 screen | 0 | 0.1 | - | 4,597 / 4,597 | `8b01c8bfd13700c65a2f72f937b6a4c3cc35f967e9dc3dfc14498d0a46880747` | - | `{"skipped": "a rule wave has no admission strings"}` (no gate, 0 admission trials) |
+| 04 spec | 0 | 0.6 | - (lock only) | 4,573 / 4,526 | `fff1031e9d253f7a6af8477a32c6873fe99f8ace3837ed4b10ec4207f2eecaff` | `875fcc0f` (D) | rule cell `scripts/specs/v8/y-two-speed-y-5.json` (sha256 `b2671dff`, spec digest `d2dd8ddd`): template + **`parent` `lib-v8ysb-gm.json`** (P13's "parent set in the copy"), name `v8y-two-speed-y-5`, `change` = the template's (fit and nav `--two-speed two-speed-v1`; outputs fit / card / w / nav / monitor renamed `*-v8y-two-speed`), description = the template's, L 1.1828 (the parent's, calibration), no constants; `lock --write` reference cell = parent NAV summary `2d30b7f6`, admission `121f7046`; paired reference NAV `mega-nav-v8x-theme-erc-L1.1828-v8ysb`; `research_cycle.py plan` of the cell: u done (the parent's receipt), fit / card / w / nav pending, w -> `mega-v8yw-train-two-speed-1` |
+
+**P13 (c): the cell's own w pass (source `ef1b77ac`; before any cell NAV).** Argv `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/v8/y-two-speed-y-5.json --stop-after w --root C:/atx-wt/pool-2` (the strict prefix of stage 05's own `--stop-after nav`); gate 4,322: free 4,455 before, min 3,111; exit 0, 83.5 s. Phases: u done (the parent's receipt); gate read-out `p1-v8ysb PASS` (7 of 9, 0 status changes vs the parent's admission; ledger: 0 admission lines appended, 9 already ledgered).
+
+| phase | run dir | s / peak MiB | exe | receipt.json SHA-256 |
+|---|---|---|---|---|
+| fit | `mega-weights-v8y-two-speed-run1` | 1.0 / 58 | python `624bbc05` | `82632867a6251c4216143207ff64d3bb7818d7952e836ba3f52003425a55950f` |
+| card | `mega-cards-v8y-two-speed-run` | 18.8 / 1,363 | python `624bbc05` | `9d3544ee76872adf1654daf444bb6541ee25f6c2745463c4a098d8a3704ed91c` |
+| w | `mega-v8yw-train-two-speed-run1` -> `mega-v8yw-train-two-speed-1` | 62.2 / 1,559 | ic `985019d9` | `8a40eb399c5b307759a95f5474b5308ea961c5de94aff7200019987a677e027b` |
+
+Cell fit vs the parent's fit: `admission.csv` `c3933116` and `admission.json` `121f7046` byte-identical;
+`composition_weights.json` (`4660971c` vs `0c480773`) differs in 1 of 2,854 leaf paths, the added `/theme_sleeves/rule`.
+
+Cell w vs the parent's w (`mega-v8yw-train-two-speed-1` vs `mega-v8xw-train-theme-erc-v8ysb-2`), the
+`TwoSpeedRunner.SavesTheSleevesBesideAnUnchangedBlend` assertions on real outputs:
+- byte-identical: `train_combined.f64` `70d863f9` (66,563,280 B), `train_combined_finite.u8` `c61f5b62`,
+  `train_combined_member.u8` `c61f5b62`, `train_planned_targets.csv` `cb744a74`, `train_combined_ids.u64` `761bd1df`,
+  `train_combined_sessions.i64` `ab244802`;
+- `__combined__` rows of `train_daily_ic.csv`: 2,926 vs 2,926 rows, SHA-256 of the rows `9c225856` both, header equal (the
+  whole file is byte-identical, `45261f20`);
+- `train_combined.json` (`cfbad468` vs `e13fbc4d`): `files` 5 vs 5, equal; differs only in `/composition_sleeves/{rule,
+  manifest, manifest_sha256}` (two-speed-v1, `train_sleeves.json`, its SHA-256 = the file's `4f536da8`),
+  `/composition_weights_sha256` (the weights file above) and `/run_recipe_sha256` (follows `recipe.json`);
+- `recipe.json` (`15a2263f` vs `c248eff7`): differs only in `/composition_sleeves` and `/composition_weights_sha256`;
+- sleeve files written: `train_sleeve_fast.f64` `d486a407`, `train_sleeve_slow.f64` `f1c9bb84` (66,563,280 B each),
+  `train_sleeve_fast_share.f64` `f38407e8` (11,240 B), `train_sleeves.json` `4f536da8` (values not read here).
+
+**P13 (c) PASS. P13: PASS (a, b, c; `parent` set in the copy at stage 04).** The run adds 0 trials (ledger 130 lines).
+| 05 run | 0 | 80.1 | 713 (nav) | 5,131 / 4,040 (gate 3,072: fit, card and w already done by P13 (c), so only the NAV, cap 1,536, remained) | `fdc99f643c9939f6972870cebbf8412342e0efa64ce286bb2f2b249c59154ba3` | - | driver argv `research_cycle.py run scripts/specs/v8/y-two-speed-y-5.json --stop-after nav`; it **adopted** P13 (c)'s fit (`mega-weights-v8y-two-speed-run1`), card and w (`mega-v8yw-train-two-speed-run1`) as done (same run dirs; nothing re-run); u = the parent's receipt; calibration NAV at L 1.1828 `mega-nav-v8y-two-speed-run` 78.9 s 713 MiB (exe `72ff6d2d`), exit 0 completed; summary sha256 `6620eabc` (not read: no return before mechanics) |
+| 06 match | 0 | 85.1 | 713 (nav) | 5,062 / 3,931 | `6e7cb5b0813368bc2a86cd5c1a36274eac637c6417e6fdd2b5ba016a69085954` | `ebeadabe` (D) | PM6-6: calibration G .9215182646 vs G_parent .9862134133 (miss .0647 > .005) -> one correction L 1.1828 x .98621 / .92152 = **L 1.2658**; `y-two-speed-y-5-gm.json` (sha256 `1357018b`, digest `83e6b284`; differs from the cell only in name, description, nav.leverage, nav.output); matched NAV `mega-nav-v8y-two-speed-L1.2658-run` exit 0, 82.7 s, 713 MiB, exe `72ff6d2d` (u, fit, w, card = the calibration's: no re-run): **G .9862947654** (within .005); readers mech-calibration `aca98588`, mech-matched `c4435b67`; matched S2 daily CSV `86c8b47e` |
+| 07 verify | 0 | 0.3 | - (no exe) | 4,683 / 4,660 | `997d151a41236165bf78585027501c4177b7d9be37323797c4678e04e0974c89` | - | SEAL-ALLOW: `tools/sealsrc.py --manifest scripts/specs/v8/waves/y-5.json` exit 0 before the run: 6 hits over 26 files, `2026-10-02` source (a) x4 (consoles 004:4, 005:93, 009:4, 010:63), `2026-10-03` source (b) x2 (005:7, 010:7), **0 OTHER**; argv adds `--seal-allow "2026-10-02=untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)" --seal-allow "2026-10-03=receipt started_utc wall-clock (PM SEAL-ALLOW)"`. Mechanics **PASS** 6/6 (gross_all_rows .98629 in [.90, 1.05]; abs net .00528 <= .02; tau mean .02608 <= .20; p95 .03182 <= .30; return identity 3.75e-16, cash book 3.88e-14 <= 1e-09); binding argv `ec792778`, file `8ba41527`, spec `83e6b284`; seal scan 26 logs, 0 tokens; NAV exe cell `72ff6d2d` = parent `72ff6d2d` (ref none) |
+| 08 judge | 0 | 43.0 | 571 (summ) | 4,716 / 3,956 | `687283dd822c86b8aa2ffb78d3a952b12e9f5d437ba3b80f38c14d8d7e8128cc` | - | driver: `run y-two-speed-y-5-gm.json` (monitor 1.6 s 128 MiB; summ 37.7 s, 571 MiB, ledgered the cell), bundle (`75d16ebd`), book reader (`35a4d4d7`); printed **`verdict (pm7-34): NOT ACCEPTED {'dsr_positive': False, 'mechanics': True, 'criteria': False}`**; dSR -0.1201 (Memmel SE .0753); ledger 130 -> 131 lines |
+| 09 record | 0 | 0.5 | - (no exe) | 4,265 / 4,230 | `a41d4dbdafada006e0ee32fdce3988a8e391792eb2d5d57cb1755c71c2573bbe` | - (no queue: rule wave) | SEAL-ALLOW per-hit check before the run (`tools/sealsrc.py` exit 0): 11 hits over 37 files, `2026-10-02` (a) x7, `2026-10-03` (b) x4, **0 OTHER**; same two `--seal-allow` flags. `wave-result.json` **`ec4e07c29aae75182ed6afd42f1f0f8b825065689e84da11b36c459884183b6a`**, `wave-log.md` `3aa0f085`; copies under `.superpowers/sdd/platform-v8-20260929/waves/y-5/` byte-equal; ledger 130 -> **131** lines (head `6c5f0ff1`), N 59 -> **60**, cell trial `cc150c210a3f98e4`; seal scan 37 logs, 0 tokens; `wave status` 9/9 done |
+
+Root's own run dirs outside the wave's scan (`p9-r09-p13-*-run`) and the cell's run dirs, scanned the same way (iso
+tokens >= 2024-01-01 in `*.log` / `*.json`, 38 files): `2026-10-02` x18 (the png name, source a), `2026-10-03` x18
+(`started_utc`, source b), 0 OTHER.
+
+**Y-5 result (R0-9).** Driver verdict line as printed at judge: `verdict (pm7-34): NOT ACCEPTED {'dsr_positive': False,
+'mechanics': True, 'criteria': False}`. Under PM7-34 the cell is **rejected and counted** (1 construction trial, N 60).
+The next parent stays `scripts/specs/v8/lib-v8ysb-gm.json` (library v8ysb, L 1.1828), as the driver prints; it is Y-F0
+(v8y 1: last accepted cell after Y-5), the parent of X-10 (R0-10).
+
+**P13 (v8y 13): PASS before the cell's NAV**: (a) the parent's fit 3/3, w 10/12 (+2 timing-only) and NAV 27/27
+reproduce with `--two-speed` absent; (b) `TwoSpeedRunner.*` 2/2 on the P5 ic-tests exe; (c) the cell's own w pass
+reproduces the parent's combined signal, finite / member masks, targets and `__combined__` rows byte for byte, and
+stage 04 set `parent` in the copy.
+
+**Printed-only items of the registration (v8y 6 Y-5 row; decide nothing).** From `wave-result.json` `stats` (S2
+`modeled-1bn-stale5-v1+swap-fin-v1`), cell vs parent: turnover per unit gross .026441 vs .028528; cost per traded dollar
+12.648 vs 12.658 bps; net Sharpe at 4x NAV 1.6023 vs 1.6994; net annual return 5.357% vs 5.654%. Fast mass share
+(`train_sleeve_fast_share.f64` of the cell's w pass, `f38407e8`, pinned by `train_sleeves.json` `4f536da8`; fast themes
+`["reversal_seasonality"]`): over the 1,006 TRAIN dates (2020-2023) constant **.120861** (every date > 0); over all 1,405
+role dates mean .116307, 63 dates 0 (no theme present, PM8-16 #9), > 0 range .120861-.126709. NAV summary
+`construction.two_speed` (matched NAV, identical in all 5 scenarios): cadence 1, theta_fast .129449436703876, theta_slow
+.05, fast_half_life 5, fast_bound 10, rebalances_skipped_by_a_sleeve 0, parent_rebalances_skipped 0,
+parent_constructions_failed 0.
+
+**The driver's log section** (`build-equity/waves/y-5/wave-log.md`, pasted as written):
+
+### Cell y-5 (rule wave; template `y-two-speed.json` on v8ysb): N 60
+
+**NOT ACCEPTED.** Manifest `scripts/specs/v8/waves/y-5.json` sha256 `f538f9f590570d3c` (commit `43128be8d023`); parent `scripts/specs/v8/lib-v8ysb-gm.json` (library v8ysb, L 1.1828); driver `research_cycle.py wave run`.
+
+Budget v8y-construction-n59-plus-1: construction N 59 -> 60 of 62.
+
+**Cell** `scripts/specs/v8/y-two-speed-y-5-gm.json` (rule, library v8ysb): gross match pm6-6: calibration L 1.1828 G 0.9215182646 vs G_parent 0.9862134133 -> corrected to L 1.2658, G 0.9862947654.
+
+**Mechanics (S2, read before any return): PASS** (gross_all_rows 0.98629 [0.9, 1.05]; abs_net_all_rows 0.0052849 <= 0.02; tau_mean 0.026078 <= 0.2; tau_p95 0.031816 <= 0.3; max_return_identity_error 3.747e-16 <= 1e-09; max_cash_book_relative_error 3.8789e-14 <= 1e-09).
+
+**Statistics of record** (S2): net Sharpe 1.7294 vs parent 1.8495: dSR -0.1201, Memmel SE 0.0753, CBB 95% [-0.26493053102975767, 0.0399586255843882], LW p 0.1398; bundle p one-sided 0.9316, two-sided 0.1398. DSR (N 60): ledger 0.7804; PBO 0.1509.
+
+**Verdict (pm7-34: paired S2 net dSR > 0 AND mechanics (PM7-34); criteria printed, decide nothing): NOT ACCEPTED** {'criteria': False, 'dsr_positive': False, 'mechanics': True}.
+- criterion capacity-4x-higher (printed): unmet
+- criterion turnover-per-gross-not-higher (printed): met
+- criterion cost-bps-lower (printed): met
+
+Returns (S2, annual): net 5.36% (CAGR 5.45%) vs 5.65%; gross of cost 6.71% vs 7.07%; vol 3.10%; max drawdown 2.67%; 4x net Sharpe 1.6023 vs 1.6994; tau 0.02608 (per unit gross 0.02644).
+
+Ledger `build-equity/trials.jsonl`: lines 130 -> 131, head `6c5f0ff1faca1a1b`, N 59 -> 60, cell trial `cc150c210a3f98e4`; admission lines appended 0.
+
+| phase | run dir | s | peak MiB | outcome |
+|---|---|---|---|---|
+| u | `build-equity/mega-v8-b0b-train-u-v8ysb-run1` | 12.7 | 530 | completed |
+| fit | `build-equity/mega-weights-v8y-two-speed-run1` | 1.0 | 58 | completed |
+| w | `build-equity/mega-v8yw-train-two-speed-run1` | 62.2 | 1559 | completed |
+| nav | `build-equity/mega-nav-v8y-two-speed-run` | 78.9 | 713 | completed |
+| card | `build-equity/mega-cards-v8y-two-speed-run` | 18.8 | 1363 | completed |
+| nav | `build-equity/mega-nav-v8y-two-speed-L1.2658-run` | 82.7 | 713 | completed |
+| monitor | `build-equity/mega-monitor-v8y-two-speed-run` | 1.6 | 128 | completed |
+| summ | `build-equity/cycle-v8y-two-speed-y-5-gm/summ-run1` | 37.7 | 571 | completed |
+
+Hidden-data record: seal scan of 37 log(s) (every run dir, reader and console of the wave; forms iso, compact, year, quarter): 0 date token(s) at or after 2024-01-01 (2026-10-02 x7 allowed: untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW); 2026-10-03 x4 allowed: receipt started_utc wall-clock (PM SEAL-ALLOW); 20260927 x1 allowed: nav_summ's default bootstrap seed (not a date); 20260929 x69 allowed: nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)).
+**Next parent: `scripts/specs/v8/lib-v8ysb-gm.json`, library v8ysb.**
+
+## R0-10 X-10 leverage L 2.0 on Y-F0 (P9 Phase 0) (2026-10-03, 14:50Z-)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD before `74184cce`. Ledger `build-equity/trials.jsonl`
+131 lines (head `6c5f0ff1faca1a1b`), N 60 (`backtest_integrity.ledger_n`; construction cap 62). Rulings applied:
+SEAL-ALLOW (per-hit source check of X-10's own run dirs), R0-6-ATT (only if an attempt fails), R0-7-MAN (as below),
+R0-7-EOL (done in R0-7), OD-P9-3 (P9 keeps L <= 2.0; X-10 at exactly 2.0 is the registered cell).
+
+### Registration and route: by hand through `research_cycle.py`, not the wave driver (why)
+
+- **Registration** (v8y 8, 14 X-10 row; v8y 6 X-10 row): parent Y-F0 at L_P; L = 2.0, one value, no grid; spec
+  `change.set {"nav.leverage": "2.0", "nav.output"}` on Y-F0's spec (its NAV flags carried); not gross-matched (PM7-11;
+  v8y 6 PM6-6 column "no"); mechanics restated by r = 2.0 / L_P, written in the cell's plan before the run (PM7-17);
+  acceptance PM7-34 (3).
+- **Route of record:** PM8-14 rules YP-7 as YPRE recommends: "Y-S (stage by stage), Y-3, Y-2, Y-5 through `wave run`;
+  X-10 and Y-1 by hand". YP-7's text: "X-10 and Y-1 by hand through `research_cycle.py` as in X batch 1 -- the driver
+  has only `v8-mech` limits and no leverage acceptance rule, and a new named rule is a reviewed code change".
+- **Checked on disk** (`scripts/wave_rules.py` at `74184cce`): `MECHANICS` holds only `v8-mech` (gross [.90, 1.05],
+  |net| <= .02, tau .20 / .30, unscaled); `ACCEPTANCE` holds only `pm7-34` (dSR > 0 AND mechanics) and `v8-prereg-5`;
+  `GROSS_MATCH` `pm6-6` / `none`; `rule_cell` needs a registered template file, and X-10 has none (its registration is a
+  `change.set` on Y-F0). A `waves/x-10.json` would judge X-10 by the unscaled gross band (an L 2.0 book's gross of about
+  1.67 fails [.90, 1.05]) and by dSR > 0 instead of PM7-34 (3). A new rule is a code change, which this dispatch
+  forbids. **So no wave manifest is written.** R0-7-MAN's procedure (every key from the registration, the chain rule or
+  a copy; no free constant) is applied to the form v8y 8 / 14 registers: the cell's template spec.
+- **Runbook** (`task-CELLS-brief.md`; the R-8 precedent, the last not-gross-matched NAV-only hand cell): one template
+  spec under `scripts/specs/v8/`; `lock --write`; `plan`; spec committed on a clean tree before `run`; `run
+  --stop-after nav`; mechanics read before any return (S2; keys only: `wave_readers.py mechanics` under the bounded
+  runner with the driver's reader caps 180 s / 1,536 MiB / 512 MiB free); per-hit seal check of the cell's run dirs; then
+  `run` (monitor, summ: the ledger line and `cycle_verdict.json`); then the bundle (`nav_summ.py --protocol v8 --bundle`,
+  both p; PM5-23) and the book reader (`wave_readers.py book`) under the bounded runner, as the driver's judge stage
+  builds them (`wave_steps.bundle_argv`, `reader_argv`); verdict = PM7-34 (3) applied by hand to those artifacts.
+- **Memory gate:** every exe launch waits for free >= cap + 1,536 MiB (NAV / summ / readers: 1,536 + 1,536 = 3,072),
+  with a host check (no compiler, no `atx-*` exe, no other research process) and free memory sampled every 0.25 s.
+
+### Y-F0 (v8y 1: the last accepted cell after Y-5, leverage excluded)
+
+- Spec `scripts/specs/v8/lib-v8ysb-gm.json` sha256 `1e3ec118273cb52d7248568011e7dc24a211e7204c25b1116f5a5bd7deaa8626`
+  (Y-S cell; library v8ysb; Y-3, Y-2, Y-5 not accepted; Y-5 wave-result `ec4e07c2` `next_parent` = the same spec).
+- L_P **1.1828**; NAV `build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb`: `summary.json` `2d30b7f6`, S2 daily
+  `daily_modeled-1bn-stale5-v1+swap-fin-v1.csv` `73b69bcc`, `capacity_curve.csv` `edf1001d`; all-rows S2 gross G_P
+  .9862134133; ledger trial `11c10defb3cf38a5` (s2_net_sr 1.849482026329859); fields v15 `26fee5ce`.
+- **X-10 is defined:** L_P 1.1828 < 2.0 (v8y 6 "Undefined" X-10 row: L_P >= 2.0).
+
+### Scaled mechanics (v8y 8; PM7-11 as amended by PM7-17), written before any X-10 run
+
+r = 2.0 / L_P = 2.0 / 1.1828 = **1.6909029421711192**.
+
+| row (S2 daily CSV, all rows) | registered (`v8-mech`) | X-10 limit (x r) | unrounded limit used by the check |
+|---|---|---|---|
+| mean gross leverage | [.90, 1.05] | **[1.521813, 1.775448]** | [1.5218126479540073, 1.7754480892796753] |
+| abs(mean net leverage) | <= .02 | **<= .033818** | 0.033818058843422386 |
+| tau (turnover) mean | <= .20 | **<= .338181** | 0.3381805884342239 |
+| tau p95 | <= .30 | **<= .507271** | 0.5072708826513358 |
+| max return identity error; max cash book relative error | <= the NAV's tolerance | unchanged | the summary's `accounting_checks.tolerance` |
+
+Every other row is unchanged. A value outside its limit = mechanics fail = **rejected, counted** (v8y 12: not a
+void). The NAV's own flags `--daily-turnover-mean-max .20 --daily-turnover-p95-max .30` are carried unchanged
+("its NAV flags carried"); the summary's `meets_daily_turnover_*` flags are printed; the gate is the scaled row above.
+
+### Acceptance (PM7-34 (3); v8y 6 X-10 row; decides) and prints, fixed before the run
+
+1. S2 net annual return at 1x (book reader `net_annual` = the summary's primary-scenario `ann_mean`) **above Y-F0's
+   .05653814276222473**; AND
+2. S2 net Sharpe **not lower than Y-F0's 1.849482026329859 by more than .100**, i.e. >= 1.749482026329859; AND
+3. mechanics as above.
+
+Printed, deciding nothing: the 4x guard (net Sharpe at 4x NAV vs Y-F0's 1.6994264697927697); paired S2 net dSR vs
+Y-F0, Memmel SE, CBB interval, both p; DSR (N 61); PBO; the v8y 8 report columns for Y-F0 and X-10 (net annual
+return, net Sharpe at 1x and 4x, realised vol, max drawdown; for X-10 L is fixed at 2.0, mean L_t = 2.0, mean
+all-rows gross printed). Count: 1 construction trial (N 60 -> 61 <= 62) whatever the verdict; 0 admission trials.
+
+### R0-10 cell spec (the registered form; R0-7-MAN applied to it), lock and plan (source `50406181`, the plan commit)
+
+- **File** `scripts/specs/v8/x-leverage-L2.0.json` (template, `i/lf`), name `v8x-leverage-L2.0`; every key from the
+  registration or the chain rule: `parent` = `lib-v8ysb-gm.json` (Y-F0; `nominal_parent` the same, so the nominal chain
+  is the real one); `change.set` = `nav.leverage` "2.0" (v8y 14's value verbatim) and `nav.output`
+  `build-equity/mega-nav-v8x-theme-erc-L2.0-v8ysb` (the driver's PM6-6 output-naming rule `wave_steps.renamed_output`:
+  the token L1.1828 -> L2.0); nothing else (no flag, no unset, no input). The description states the scaled mechanics
+  and PM7-34 (3) as written above. No free constant.
+- `lock` (dry) exit 0; **`lock --write` exit 0**: reference_cell = Y-F0's `summary.json` `2d30b7f6`, reference_admission
+  `121f7046` (the derived pins, as Y-3's); dry after exit 0. File sha256
+  **`ebe68e6e4de3ad5b0dc5b86e38d8f749cf77d3bd637c55d5453e9c1e4a674975`**, spec digest (template chain)
+  **`234dbe71a210ec496fe13582ea9e025720c53ca71b9db6a42f84bbac5703a477`**.
+- **`plan` exit 0** (24 lines): 6 pins `[locked, verified]` (library `41010b0b`, recipe `9d357c75`, role `e1c67101`,
+  label_role `95e16cfe`, reference_cell `2d30b7f6`, reference_admission `121f7046`); fields v15 `26fee5ce` (pinned,
+  done); u, fit, card, w (`mega-v8xw-train-theme-erc-v8ysb-2`) and monitor = Y-F0's (done); gate read-out; **nav
+  pending** -> `build-equity/mega-nav-v8x-theme-erc-L2.0-v8ysb` (run dir `-run`, 180 s / 1,536 MiB); summ (always) ->
+  `build-equity/cycle-v8x-leverage-L2.0/summ-run1`, `--reference` Y-F0's NAV, `--dsr-n 61`, `--ledger
+  build-equity/trials.jsonl --ledger-kind construction --dsr-ledger build-equity/trials.jsonl --origin prior`. No ref
+  phase (research_spec drops the parent's identity sections). Monitor is Y-F0's (the registration renames only
+  nav.output; X-6 precedent; the verdict reads none of it).
+- **NAV argv vs Y-F0's NAV receipt** (`mega-nav-v8x-theme-erc-L1.1828-v8ysb-run`, by script, 47 vs 47 tokens): equal
+  except `--output` (`...-L2.0-v8ysb`) and **`--aim-leverage 1.1828 -> 2.0`** (and the exe path spelled relative vs
+  absolute: the same file). Every other NAV flag carried (`--trade-fraction .05`, `--neutralize price-risk-v1`,
+  `--daily-turnover-mean-max .20`, `--daily-turnover-p95-max .30`, `--warm-start-sessions 60`, `--capacity-curve`, the
+  label role, ...). NAV exe `build-equity/bin/atx-equity-strategy-targets.exe` sha256 `72ff6d2d...` = Y-F0's NAV
+  receipt `executable_sha256` (source `c0f1fae6`).
+- `PYTHONHASHSEED=0 python -m pytest -q -p no:cacheprovider scripts/tests/test_research_spec.py` with the new locked file on disk: **86 passed** (181 s; the P0-FIX kind rule needs no tests-only commit).
+- **Pre-registration commit** of the cell: the spec and this log section together (next commit). No X-10 run has started.
+
+### R0-10 X-10 stage 1: NAV (`run --stop-after nav`) and mechanics before any return (source `42ddf3ba`)
+
+Host check before each launch (psutil): no compiler, no `atx-*` exe, no other research process; free memory sampled
+every 0.25 s (scratch `gate_run.py`, console logs kept in the scratchpad and scanned below).
+
+| step | argv | gate / free before / min | exit | s / peak MiB | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| NAV (the cell) | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/v8/x-leverage-L2.0.json --stop-after nav --root C:/atx-wt/pool-2` (launch 14:58:27Z) | 3,072 (met after 4 s) / 3,101 / 2,065 | **0** | 49.1 / 586 (cycle wall 49.8) | `b14ac066b05a0528b9e01ab3cb12e17c67d6608fd191e2925def2df8cdc3fd6b` | `build-equity/mega-nav-v8x-theme-erc-L2.0-v8ysb` (run dir `-run`): fields / u / fit / card / w Y-F0's (done); gate p1-v8ysb re-read PASS (0 status changes; 0 admission lines appended, 9 already ledgered); receipt completed, "clean in the code pathspec", source `42ddf3ba`, NAV exe `72ff6d2d` (= Y-F0's); `summary.json` `1bc1b6ca`, S2 daily `e783eb74` (not read: no return before mechanics) |
+| mechanics reader | `run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/p9-r10-x10/mech-run1 --bind scripts/wave_readers.py --bind <both summary.json> --bind <both NAVs' daily_*.csv and capacity_curve.csv> -- python scripts/wave_readers.py mechanics --nav cell=<X-10 NAV> --nav parent=<Y-F0 NAV> --output build-equity/p9-r10-x10/mech.json` (the driver's `reader_argv`) | 3,072 / 3,498 / 3,389 | **0** | 0.5 / 45 | `2d933c8890d4377a37fb16ce30ed63cf684848430db0760149746f20ad864fd5` | `mech.json` `603b5afbcc05a25e1546cff705075c3835b27ca782bb49371c62052c2974a87b` (construction keys only) |
+
+**Mechanics (S2 `modeled-1bn-stale5-v1+swap-fin-v1`, the limits written at `50406181`): PASS 6/6.**
+
+| row | X-10 | limit | result | Y-F0 (beside) |
+|---|---|---|---|---|
+| all-rows mean gross | **1.666718** | [1.521813, 1.775448] | PASS | .986213 |
+| abs(all-rows mean net) | **.010446** | <= .033818 | PASS | .005340 |
+| tau mean | **.028189** | <= .338181 | PASS | .028134 |
+| tau p95 | **.033163** | <= .507271 | PASS | .033410 |
+| max return identity error | 3.39e-16 | <= 1e-09 | PASS | 3.68e-16 |
+| max cash book relative error | 4.80e-14 | <= 1e-09 | PASS | 1.11e-13 |
+
+Also (keys only): aim_leverage 2.0; post-ramp gross 1.6760 (943 rows); max gross 1.9156; max |net| .0469; gross by year
+1.636 / 1.684 / 1.663 / 1.684; 1,006 CSV rows, 1,005 return rows, 1,004 tau sessions; the NAV's own turnover flags
+`meets_daily_turnover_mean` / `_p95` true. Gross ratio X-10 / Y-F0 = 1.690017 (L ratio r = 1.690903).
+
+**Seal (SEAL-ALLOW per-hit check; scratch `sealx10.py`, wave_seal's four forms and date rule over `stdout.log`,
+`stderr.log`, `receipt.json` of the NAV and reader run dirs and both console logs; 8 files): `2026-10-02` source (a)
+x4 (the png name in the runner's dirty list), `2026-10-03` source (b) x3 (receipt `started_utc`), **0 OTHER**.**
+No return, Sharpe or NAV figure has been read. Trials so far: 0 (ledger 131 lines).
+
+### R0-10 X-10 stage 2: summ (ledger line), bundle and book reader (source `c8391595`; after the mechanics passed)
+
+| step | argv | gate / free before / min | exit | s / peak MiB | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| cycle resume | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/v8/x-leverage-L2.0.json --root C:/atx-wt/pool-2` (launch 15:00:44Z) | 3,072 / 3,617 / 2,866 | **0** | cycle 36.3; summ 35.5 / 629 | summ `605b710f556d4aee52e0e63b8c19bdad700b4ac08ee97fbb8c2643cd4ae649e6` | fields / u / fit / card / w / monitor Y-F0's (done); nav done, binding spec `234dbe71`, argv `f782dfe9` (`cycle_binding.json`); summ `--reference` Y-F0's NAV, `--dsr-n 61`, ledgered the cell; `cycle-v8x-leverage-L2.0/summ.json` `4673c632`, `pbo.json` `2735da3c`, `cycle_verdict.json` `a11bd45a`; stderr: nav_summ's usual "69 listed dir(s) have a defined SR but --dsr-n is 61" warning |
+| bundle (PM5-23) | `run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/p9-r10-x10/bundle-run1 --bind atx-impl/tools/nav_summ.py --bind <both summary.json> --bind <both NAVs' daily_*.csv, capacity_curve.csv> -- python atx-impl/tools/nav_summ.py --protocol v8 --bundle <Y-F0 NAV> <X-10 NAV> --bundle-json build-equity/p9-r10-x10/bundle.json` (the driver's `bundle_argv`) | 3,072 / 3,459 / 2,820 | **0** | 0.8 / 561 | `63eae3e7d105a2c5afbd7ad01c8cc5de3b41790da57666e4fcab0965b05eaa4f` | `bundle.json` `a57d82d017767054b250e3b3c1749e29cf82f1af4d9efa01942aa04b0153f4fb` |
+| book reader | `... --output build-equity/p9-r10-x10/book-run1 ... -- python scripts/wave_readers.py book --nav cell=<X-10 NAV> --nav parent=<Y-F0 NAV> --output build-equity/p9-r10-x10/book.json` (the driver's `reader_argv`) | 3,072 / 3,447 / 3,416 | **0** | 0.3 / 5 | `28bf0d07f78aee45380e3f2fec7ff111b0bbc2268deb4ea36efbcf4fd5c06c48` | `book.json` `d222b54716af870b7ef7cd41dcda5bf865bc082f6819b9bef5c2bec2b01d3de4` |
+
+**Ledger** `build-equity/trials.jsonl`: 131 -> **132 lines** (file `e242e161`, head `15484aa1699daa9a`); the new line:
+construction, trial **`25f3b27aae4754ab`**, cell `build-equity/mega-nav-v8x-theme-erc-L2.0-v8ysb`, s2_net_sr
+1.8082892420018353, origin prior, count 1, window research-window-v2, prev `6c5f0ff1` (Y-5's head). **N 60 -> 61**
+(`ledger_n`; construction cap 62: 1 slot left, for Y-1). 0 admission lines appended (61 admission lines unchanged).
+
+**Seal (SEAL-ALLOW per-hit check, every X-10 run dir and console: NAV, mech, summ, bundle, book; 20 files of
+`stdout.log` / `stderr.log` / `receipt.json` / consoles, and the five `start.json` + the NAV `cycle_binding.json`):
+`2026-10-02` source (a) x10 (+5 in start.json), `2026-10-03` source (b) x8 (+5 in start.json), the bootstrap seeds
+`20260927` x1 / `20260929` x70 (wave_seal.SEEDS), **0 OTHER**.**
+
+**Statistics of record** (S2 `modeled-1bn-stale5-v1+swap-fin-v1`; bundle and cycle agree on dSR, SE, CI and two-sided
+p): net Sharpe **X-10 1.8083** vs Y-F0 1.8495; paired (studentized CBB, block 21, seed 20260929, 4,999 resamples,
+1,005 sessions): **dSR -0.0412**, rho .99949, **Memmel SE .0162** (t -2.55), CBB 95% [-.0680, -.0137]; LW SE .0140, 95%
+[-.0693, -.0132]; **bootstrap p one-sided .9984, two-sided .0048**. DSR (N 61, `--dsr-ledger`): ledger **.8184** (V[SR]
+1.2865e-03 per session, 32 research-window-v2 lines); effective-N .9274; legacy .9586. **PBO .1566.** By year (dSR):
+2020 -.0570, 2021 -.0459, 2022 -.0528, 2023 +.0001.
+
+**The v8y 8 report columns (book reader `book.json`; 4x from `capacity_curve.csv`):**
+
+| book | L (mean L_t) | all-rows gross | net annual (CAGR) | gross of cost | net Sharpe 1x | net Sharpe 4x | realised vol | max drawdown | cost bps / traded $ |
+|---|---|---|---|---|---|---|---|---|---|
+| Y-F0 (`lib-v8ysb-gm.json`) | 1.1828 (fixed) | .98621 | **5.654%** (5.767%) | 7.068% | **1.8495** | **1.6994** | **3.057%** | **2.580%** | 12.66 |
+| X-10 (`x-leverage-L2.0.json`) | 2.0 (fixed; mean L_t 2.0) | 1.66672 | **9.306%** (9.606%) | 11.922% | **1.8083** | **1.5829** | **5.146%** | **4.326%** | 14.51 |
+
+X-10 annual costs: trade 1.722%, borrow .554%, long financing .340% (Y-F0 .885% / .328% / .201%). Capacity curve
+(net Sharpe; X-10 / Y-F0): .5x 1.8545 / 1.8997, 1x 1.8083 / 1.8495, 2x 1.7261 / 1.7976, 4x 1.5829 / 1.6994, 8x 1.4434 /
+1.5538; capped share at 4x .2047 / .1004.
+
+| year | net return X-10 / Y-F0 | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|
+| 2020 | .0696 / .0431 | 1.278 / 1.335 | .0538 / .0320 | .0303 / .0304 | 17.12 / 14.98 |
+| 2021 | .1673 / .0983 | 2.938 / 2.984 | .0531 / .0316 | .0275 / .0273 | 13.40 / 11.68 |
+| 2022 | .1152 / .0691 | 2.046 / 2.099 | .0542 / .0322 | .0278 / .0278 | 14.37 / 12.36 |
+| 2023 | .0354 / .0211 | .820 / .820 | .0439 / .0260 | .0271 / .0271 | 13.45 / 11.72 |
+
+**Verdict.** No tool prints a PM7-34 (3) verdict: `cycle_verdict.json` carries the paired / dsr / pbo blocks and no
+accepted field; the bundle's `verdict` block is the v8-prereg item 9 freeze-gate part ("cumulative paired S2 net
+dSR(FINAL - BASE) > 0 and ... one-sided p < alpha"), printed `pass: false, dsr_positive: false`, and it is not X-10's
+rule (v8y 6 replaces dSR > 0 for this cell). Root applies the registered rule (written at `50406181`) to those
+artifacts:
+
+`verdict (PM7-34 (3), v8y 6 / 8, by hand): ACCEPTED {net_annual_above_parent: True (.093061 > .056538),
+sharpe_within_.100: True (1.808289 >= 1.749482; dSR -.041193), mechanics: True (6/6 at r 1.690903)}`
+
+- **4x guard (printed, decides nothing):** net Sharpe at 4x NAV 1.5829 vs Y-F0's 1.6994: lower by .1165.
+- **Y-F (v8y 1):** X-10 is now the levered book offered to the owner unless Y-1 is accepted (Y-1 replaces it then).
+  Y-F0 stays the unlevered claims book; X-10 is never in the Sharpe claim. Which book is deployed is the owner's risk
+  decision (PM7-3); OD-P9-3 keeps P9 at L <= 2.0.
+- **Count:** 1 construction trial, N 61 of 62; it enters V.
+
+## R0-11 Y-1 vol-target on Y-F0, child of X-10 (P9 Phase 0) (2026-10-03, 15:16Z-)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD before `dbc2b975`. Ledger `build-equity/trials.jsonl`
+132 lines (file `e242e161`, head `15484aa1699daa9a`), N 61 (`backtest_integrity.ledger_n`; construction cap 62: Y-1 takes
+the last slot). Rulings applied: Y1-PARENT (P9 `progress.md`: parent = X-10's spec), SEAL-ALLOW (per-hit source check of
+Y-1's own run dirs), R0-6-ATT (only if an attempt fails), R0-7-MAN (the cell's template spec, as R0-10), R0-7-EOL (done in
+R0-7), OD-P9-3 (P9 keeps L <= 2.0; Y-1's cap is 2.0 and L_t <= 2.0 by its clip).
+
+### Registration and route (by hand through `research_cycle.py`, as R0-10)
+
+- **Registration:** v8y 6 Y-1 row, v8y 8 Y-1 bullet, v8y 13 P14, v8y 14 Y-1 row (template
+  `scripts/specs/v8/y-vol-target.json` @ `47d6afd9`, file `4e190f5434dfc13aced1459721cde476faf3560ef99aa41e05bfe492e2f141b4`;
+  cap 2.0, floor 1, cadence 21, annualisation 252; `nav --vol-target vol-target-v1 --risk-model <store> --risk-model-sha256
+  <pin>`), YP-8, YP-9; NAV-only; not gross-matched (PM7-20 reading B). YP-15 does not apply (Y-5 rejected).
+- **Route:** PM8-14 / YP-7: "X-10 and Y-1 by hand through `research_cycle.py`" (the driver has only `v8-mech` and
+  `pm7-34`; Y-1's gross band and its three-part rule are not in `scripts/wave_rules.py`, as R0-10 checked). Runbook as
+  R0-10: template copy, `lock --write`, `plan`, pre-registration commit, `run --stop-after nav`, mechanics before any
+  return, `run` (summ ledgers the cell), bundles and book reader with the driver's own argv builders
+  (`wave_steps.bundle_argv`, `reader_argv`); verdict by hand. Memory gate on every launch: free >= cap + 1,536 MiB
+  (NAV / summ / readers 3,072), host check (no compiler, no `atx-*` exe, no research process), free sampled every 0.25 s.
+
+### Pin, parent and P14 checks (read-only; before anything is written or run)
+
+1. **Template pin:** disk sha256 `4e190f5434dfc13aced1459721cde476faf3560ef99aa41e05bfe492e2f141b4` = v8y 14's registered
+   file pin; last commit on the path `47d6afd9`; `git diff HEAD` on it empty. **PASS.**
+2. **Parent check (Y1-PARENT):** the template's `"parent": null` names no parent. Its `"nominal_parent": "base-b0c.json"`
+   is the planning placeholder: `research_spec.py` "planned against while parent is null: plan works, run refuses", and
+   v8y 14 "The four YCOMB templates name `nominal_parent` only: root sets `parent` to the last accepted spec at run time".
+   Precedent: `y-norm-score.json` carries the same `base-b0c.json`, and the driver's Y-3 copy (`4f1e0e08`,
+   `wave_steps.rule_cell_doc`) kept it beside `parent` `lib-v8ysb-gm.json`. So neither field names a parent that conflicts
+   with X-10: **no stop.** The description's "parent = X-F0" / "against X-F0" is v8y Appendix C (9): under PM8-10 (e) the
+   unlevered parent is Y-F0 (v8y 8). With `parent` = `x-leverage-L2.0.json` (= Y-F0 + `nav.leverage` 2.0), the resolved
+   NAV argv is v8y 8's "Y-F0's spec + `nav.leverage` 2.0 + `nav --vol-target ...`" and the derived paired reference is
+   X-10's NAV (v8y 8 "Paired reference: X-10's NAV"), so summ's paired dSR is Y-1 vs X-10.
+3. **P14 (v8y 13: "the risk store's role pin equals Y-F0's role"):** store `build-equity/v8-risk-lo3-v10`
+   `manifest.json` re-hashed `862515d92623be37fbd4b126c8f0350a20135e7977f1cbf66c6c33f1644ecd5a` (= the registered pin);
+   its `role` = {`manifest_sha256` `e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4`, `path`
+   `build-equity/train-2020-2023-lo3/manifest.json`}. Y-F0's spec (`lib-v8ysb-gm.json` `1e3ec118`) `inputs.role` = the
+   same path, sha256 `e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4`; the role manifest on disk
+   re-hashed `e1c67101...395f4`; X-10's plan pin `role e1c67101 [locked, verified]` (R0-10). **P14 PASS: equal**, so the
+   store is not rebuilt (0 trials). Store keys beside: schema `atx.risk-model/v1`, model `atx-risk-v1.1`, seal begin
+   2024-01-01 with role_last_session_ns 1703808000000000000 (2023-12-29); the store R-8 ran on (`r8.json` fills).
+4. **Defined (v8y 6 "Undefined" Y-1 row):** X-10 is accepted (neither undefined nor void); its NAV rule is aim-partial-v5
+   with no `--risk-target`, no spo, no v6; the store is given. Y-1 is defined unless the NAV refuses at run time (then 0,
+   logged).
+
+### Books the rule reads (from records; no new read)
+
+- **Y-F0** `lib-v8ysb-gm.json` (`1e3ec118`), L_P 1.1828; NAV `build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb`
+  (`summary.json` `2d30b7f6`, S2 daily `73b69bcc`); all-rows S2 gross G_P .9862134133265011; net annual
+  .05653814276222473; S2 net Sharpe 1.849482026329859 (`p9-r10-x10/book.json` `d222b547`, parent row).
+- **X-10** `x-leverage-L2.0.json` (`ebe68e6e`), L 2.0; NAV `build-equity/mega-nav-v8x-theme-erc-L2.0-v8ysb`
+  (`summary.json` `1bc1b6ca`, S2 daily `e783eb74`); trial `25f3b27aae4754ab` (s2_net_sr 1.8082892420018353).
+
+### Mechanics limits (v8y 8 Y-1, YP-9), written before any Y-1 run
+
+All rows of the S2 daily CSV (`modeled-1bn-stale5-v1+swap-fin-v1`); P = Y-F0, the unlevered parent (v8y 8 "[1.0, 2.0] x
+G_P / L_P widened by .005"; template "G_parent / L_parent"; YCOMB "the same parent as X-10"); r = 2.0 / L_P = 2.0 / 1.1828
+= 1.6909029421711192.
+
+| row | registered | Y-1 limit | unrounded limit used by the check |
+|---|---|---|---|
+| mean gross leverage | [1.0, 2.0] x G_P / L_P, widened by .005 (G_P / L_P = .9862134133265011 / 1.1828) | **[.828796, 1.672591]** | [0.8287955811012014, 1.6725911622024028] |
+| abs(mean net leverage) | .02 r (X-10's) | **<= .033818** | 0.033818058843422386 |
+| tau (turnover) mean | .20 r (X-10's) | **<= .338181** | 0.3381805884342239 |
+| tau p95 | .30 r (X-10's) | **<= .507271** | 0.5072708826513358 |
+| max return identity error; max cash book relative error | unchanged | <= the summary's `accounting_checks.tolerance` | - |
+
+Verified against v8y 8 (the Y-1 and X-10 bullets) and YP-9: the band equals the dispatch's [.8288, 1.6726] and R0-10's
+report line 135; the other rows equal X-10's limits as committed at `50406181`. (Printed only: the band on X-10's own
+gross / L, .8333588, would be [.828359, 1.671718]; the registration names G_P / L_P of the unlevered parent.) A value
+outside its limit = mechanics fail = **rejected, counted** (v8y 12): summ still runs and ledgers the cell. The NAV's own
+`--daily-turnover-mean-max .20 --daily-turnover-p95-max .30` flags are carried; their summary flags are printed.
+
+**`vol_target.csv` before any return** (v8y 8; the template's "before any return"; the R-8 `risk_target` precedent of
+batch 2g), read in this order, keys only (no return column) and printed: (a) estimates against scored decisions / 21;
+(b) decisions before the first estimate; (c) decisions and estimates at the cap 2.0 / at the floor 1 / unclipped; L_t n,
+mean, min, max; sigma_hat and sigma_ref over the estimates; (d) priced_share mean, min, max. The registration gives
+these no number. Root stops for a PM ruling before summ (no return read, so 0 trials) if one contradicts the registered
+rule's own definition: an L_t outside [1, 2.0]; L_t other than 2.0 before the first estimate or at it (sigma_ref_1 =
+sigma_hat_1); two estimates fewer than 21 sessions apart; no estimate at all; or a priced_share mean below .9956 (R-8's
+minimum on this store: the reading of "near 1" would then need a ruling).
+
+**Identity before any return** (template): flag-absent suites `VolTarget.*:RiskTarget.*:BookVolTarget.*` re-run on the
+P5 target-tests exe (v8-16d `d504994d`; synthetic, no real data); the parent's NAV argv on the P5 targets exe `72ff6d2d`
+reproduced Y-F0's files 27 / 27 (R0-9 P13 (a)); X-10 ran on the same exe.
+
+### Acceptance (registered: v8y 6 Y-1 row and v8y 8; decides), fixed before the run
+
+1. Paired S2 net dSR of Y-1 against X-10 **> 0** (summ's paired block, reference = X-10's NAV; the bundle X-10 vs Y-1
+   prints both p); AND
+2. X-10's leverage rule against Y-F0: S2 net annual return at 1x (book reader `net_annual`) **above .05653814276222473**
+   AND S2 net Sharpe **>= 1.849482026329859 - .100 = 1.749482026329859**; AND
+3. mechanics as above.
+
+Printed, deciding nothing: dSR against Y-F0 (bundle Y-F0 vs Y-1), both p of each bundle; net annual return, realised vol
+and max drawdown of Y-F0, X-10 and Y-1 side by side; mean L_t; net Sharpe at 1x and at 4x NAV; cost per traded dollar;
+DSR (N 62); PBO; year table. If accepted, Y-1 replaces X-10 as Y-F (v8y 1). Count: 1 construction trial (N 61 -> 62 =
+the cap) whatever the verdict; 0 admission trials.
+
+### R0-11 identity, cell spec, lock and plan (source `d1f2d7f2`, the plan commit)
+
+- **Identity (template "before any return"):** `build-equity/bin/atx-impl-strategy-target-tests.exe` (v8-16d receipt
+  `d504994d...ed0c` = disk) `--gtest_filter=VolTarget.*:RiskTarget.*:BookVolTarget.* --gtest_output=xml:build-equity/p9-r11-y1/voltarget-identity.xml`
+  (gate 3,072 met; host check clean): exit 0, **17 / 17 passed** (VolTarget 5, RiskTarget 7 incl.
+  `FlagAbsentKeepsThePinnedBenchDigests`, BookVolTarget 5); xml `cd9401955f246ef77acbb567c7b161f0e99570b63d62fc3c57db6dabcea02b52`
+  (tests 17, failures 0, errors 0). The parent's NAV argv on the targets exe `72ff6d2d` reproduced Y-F0's files 27 / 27
+  (R0-9 P13 (a)); X-10's NAV ran on the same exe; the Y-1 NAV binds it (plan below).
+- **File** `scripts/specs/v8/y-vol-target-y-1.json` (template, `i/lf`), written by the driver's own builder
+  `wave_steps.rule_cell_doc(template, "scripts/specs/v8/y-vol-target.json", "scripts/specs/v8/x-leverage-L2.0.json",
+  {constants: {flags: {nav: fills}}}, "y-1")` at `wave_steps.rule_cell_path` and serialised as `wave_context.write_json`
+  (indent 2, LF). Against the template (`4e190f54`) exactly three keys differ: `name` `v8y-vol-target-y-1` (the driver's
+  "-<wave>" rule); `parent` `x-leverage-L2.0.json` (Y1-PARENT); `change.flags.nav` the two registered root fills
+  `--risk-model build-equity/v8-risk-lo3-v10` and `--risk-model-sha256 862515d92623be37fbd4b126c8f0350a20135e7977f1cbf66c6c33f1644ecd5a`
+  (v8y 8 / the template text; the values R-8's `r8.json` carries). `description`, `nominal_parent`, `change.set`
+  (`nav.output` `build-equity/mega-nav-v8y-vol-target-L2.0`, `nav.leverage` "2.0") and `--vol-target vol-target-v1` are
+  the template's bytes. No free constant.
+- `lock` (dry) exit 0; **`lock --write` exit 0**: reference_cell = **X-10's** `summary.json` `1bc1b6ca`,
+  reference_admission `121f7046` (derived from the parent chain); dry after exit 0. File sha256
+  **`faffee1795ba500fbebaa5a52e2449acaf02c92f7ee972011a267a52ba265f77`**, spec digest (template chain)
+  **`95a2173d195006578bcab0449e5838b5a13792fff55e5271b52504aa4ae5a98f`**.
+- **`plan` exit 0** (25 lines): 6 pins `[locked, verified]` (library `41010b0b`, recipe `9d357c75`, role `e1c67101`,
+  label_role `95e16cfe`, reference_cell `1bc1b6ca` (X-10), reference_admission `121f7046`); chain
+  `y-vol-target-y-1.json` -> `x-leverage-L2.0.json` -> `lib-v8ysb-gm.json`; fields v15 `26fee5ce` (pinned, done); u,
+  fit, card, w (`mega-v8xw-train-theme-erc-v8ysb-2`, combined `e13fbc4d`) and monitor = Y-F0's (done); gate read-out;
+  **nav pending** -> `build-equity/mega-nav-v8y-vol-target-L2.0` (run dir `-run`, 180 s / 1,536 MiB); summ (always) ->
+  `build-equity/cycle-v8y-vol-target-y-1/summ-run1`, **`--reference` X-10's NAV** (`mega-nav-v8x-theme-erc-L2.0-v8ysb`),
+  **`--dsr-n 62`**, 71 listed dirs (the cell last), `--ledger build-equity/trials.jsonl --ledger-kind construction
+  --dsr-ledger build-equity/trials.jsonl --origin prior`.
+- **NAV argv vs X-10's NAV receipt** (`mega-nav-v8x-theme-erc-L2.0-v8ysb-run`, by script, 47 vs 53 tokens): equal except
+  `--output` (`build-equity/mega-nav-v8y-vol-target-L2.0`) and the six inserted tokens **`--vol-target vol-target-v1
+  --risk-model build-equity/v8-risk-lo3-v10 --risk-model-sha256 862515d9...4ecd5a`** (and the exe path spelled relative
+  vs absolute: the same file). `--aim-leverage 2.0` (the cap), `--rule aim-partial-v5`, `--trade-fraction .05`,
+  `--neutralize price-risk-v1`, `--daily-turnover-mean-max .20`, `--daily-turnover-p95-max .30`,
+  `--warm-start-sessions 60`, `--capacity-curve`, the label role: carried. NAV exe
+  `build-equity/bin/atx-equity-strategy-targets.exe` sha256 `72ff6d2d...` = X-10's NAV receipt `executable_sha256`.
+- `PYTHONHASHSEED=0 python -m pytest -q -p no:cacheprovider scripts/tests/test_research_spec.py` with the new locked
+  file on disk: **87 passed** (179.7 s).
+- **Pre-registration commit** of the cell: the spec and this log section together (next commit). No Y-1 run has started.
+
+### R0-11 Y-1 stage 1: NAV (`run --stop-after nav`), mechanics and `vol_target.csv` before any return (source `ac74a48c`)
+
+Host check before each launch (psutil): no compiler, no `atx-*` exe, no other research process; free memory sampled
+every 0.25 s (scratch `gate_run.py`, as R0-10; console logs kept in the scratchpad and scanned below).
+
+| step | argv | gate / free before / min | exit | s / peak MiB | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| NAV (the cell) | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/v8/y-vol-target-y-1.json --stop-after nav --root C:/atx-wt/pool-2` (launch 15:27:37Z) | 3,072 (met at once) / 6,452 / 5,693 | **0** | 48.1 / 590 (cycle wall 48.8) | `cefce32db0a9a0862e299798a17032580e7f7654ca1e450fced2960694442cb4` | `build-equity/mega-nav-v8y-vol-target-L2.0` (run dir `-run`): fields / u / fit / card / w Y-F0's (done); gate p1-v8ysb re-read PASS (0 status changes; 0 admission lines appended, 9 already ledgered); receipt completed, "clean in the code pathspec" (dirty outside: the untracked png only), source `ac74a48c`, NAV exe `72ff6d2d` (= X-10's and Y-F0's); recipe rule `aim-partial-v5+neutral-price-risk-v1+vol-target-v1`; `summary.json` `876d107b`, S2 daily `d6d145ef`, `vol_target.csv` `100286a5` (returns not read) |
+| mechanics reader | `run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/p9-r11-y1/mech-run1 --bind scripts/wave_readers.py --bind <three summary.json> --bind <the three NAVs' daily_*.csv and capacity_curve.csv> -- python scripts/wave_readers.py mechanics --nav cell=<Y-1 NAV> --nav parent=<X-10 NAV> --nav yf0=<Y-F0 NAV> --output build-equity/p9-r11-y1/mech.json` (the driver's `reader_argv`) | 3,072 / 6,383 / 6,336 | **0** | 0.5 / 44 | `461fb4840bc6e0b3f359499d3e64ae81ecd8bda8a1b537e0d95d3dcb85bab5dc` | `mech.json` `99eb2484efcd753938f576cc633d020795d349837d4c621f537f3dbbf1e11468` (construction keys only) |
+
+**Mechanics (S2 `modeled-1bn-stale5-v1+swap-fin-v1`, the limits written at `d1f2d7f2`; scratch `mechy1.py`): PASS 6/6.**
+
+| row | Y-1 | limit | result | X-10 / Y-F0 (beside) |
+|---|---|---|---|---|
+| all-rows mean gross | **1.555665** | [.828796, 1.672591] | PASS | 1.666718 / .986213 |
+| abs(all-rows mean net) | **.009668** | <= .033818 | PASS | .010446 / .005340 |
+| tau mean | **.028536** | <= .338181 | PASS | .028189 / .028134 |
+| tau p95 | **.034943** | <= .507271 | PASS | .033163 / .033410 |
+| max return identity error | 4.20e-16 | <= 1e-09 | PASS | 3.39e-16 / 3.68e-16 |
+| max cash book relative error | 3.78e-14 | <= 1e-09 | PASS | 4.80e-14 / 1.11e-13 |
+
+Also (keys only): aim_leverage 2.0 (the cap); post-ramp gross 1.5575 (943 rows); max gross 1.8099; max |net| .0441; gross
+by year 1.382 / 1.638 / 1.547 / 1.658; 1,006 CSV rows, 1,005 return rows, 1,004 tau sessions; the NAV's turnover flags
+`meets_daily_turnover_mean` / `_p95` true. Gross ratio Y-1 / X-10 .933370 (= mean multiplier .933566 within .0002);
+Y-1 / Y-F0 1.577412.
+
+**`vol_target.csv` and the summary `vol_target` block (S2 book; scratch `vty1.py`, `vty1b.py`; keys only, no return
+column), in the order written at `d1f2d7f2`:**
+- (a) **estimates 48** in the 1,004 scored decisions (1,004 / 21 = 47.81); the 47 gaps between them all exactly 21
+  decisions (cadence 1: 21 sessions); none fewer than 21.
+- (b) **decisions_before_first_estimate 0** (the NAV's own summary block). The rule's state runs through the 60-session
+  warm-up (the code's declaration: "every book runs on its own state, the warm-up included"; `vol_target.csv` holds "one
+  row per scored decision"), so the book's first estimates fall in the unscored warm-up and the first scored decision
+  carries their state: sigma_ref .020866 at scored row 0, the first in-window estimate at scored row 4. The exact
+  reconstruction: sigma_ref of every in-window estimate = the running mean of 3 warm-up estimates (n_w solved from rows 0
+  and 4: 3.000000000) and the in-window sigma_hat, **max error 0.0 over 48 estimates**; L_t = clip(2.0 x sigma_ref /
+  sigma_hat, 1, 2.0) **exactly (max error 0.0) on all 1,004 decisions**; sigma_hat, sigma_ref and L_t held between
+  estimates on every non-update row. The same shape as R-8 on this store (batch 2g: decisions_before_first_estimate 0,
+  48 estimates).
+- (c) decisions at the cap 2.0 **584**, at the floor 1 **21**, unclipped **399**; estimates at the cap 28, at the floor
+  1, unclipped 19 (of 48); **L_t n 1,004, mean 1.867132, min 1.0, max 2.0** (multiplier mean .933566); sigma_hat over the
+  48 estimates mean .025992 (min .013146, max .046352); sigma_ref mean .025920 (min .017902, max .027769). First scored
+  decision 2020-01-02, last 2023-12-27 (ns stamps).
+- (d) **priced_share mean .998634** (min .995193, max 1.0; 1,004 rows).
+- **Stop checks (`d1f2d7f2`): none fires.** Every L_t in [1, 2.0]; no scored decision before the first estimate, so "L
+  before the first" has no scored row, and the exact running-mean fit gives sigma_ref = sigma_hat at the book's first
+  estimate (a mean of one); no two estimates fewer than 21 apart; 48 estimates; priced_share mean .998634 >= .9956.
+  Disclosure: the scratch `vty1.py` first took the first in-window update (row 4) as the book's first estimate and
+  printed "sigma_ref_1 != sigma_hat_1"; that was its indexing, not the rule: the first estimate is a warm-up one, as
+  `vty1b.py`'s exact reconstruction shows.
+
+**Seal (SEAL-ALLOW per-hit check; scratch `sealx10.py`, wave_seal's four forms and date rule over `stdout.log`,
+`stderr.log`, `receipt.json` of the NAV and mech run dirs and the NAV, mech and identity-gtest console logs; 9 files):
+`2026-10-02` source (a) x4 (the png name in the runner's dirty list), `2026-10-03` source (b) x3 (receipt
+`started_utc`), **0 OTHER**.** No return, Sharpe or NAV figure has been read. Trials so far: 0 (ledger 132 lines).
+
+### R0-11 Y-1 stage 2: summ (ledger line), bundles and book reader (source `00f0521a`; after the mechanics passed)
+
+| step | argv | gate / free before / min | exit | s / peak MiB | receipt.json SHA-256 | output |
+|---|---|---|---|---|---|---|
+| cycle resume | `"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/v8/y-vol-target-y-1.json --root C:/atx-wt/pool-2` (launch 15:32:15Z) | 3,072 / 5,748 / 4,967 | **0** | cycle 43.6; summ 42.5 / 562 | summ `6c3810efaa6eed971e974d19fdb731428b891b6f1d5ffe55139f2cd1960697dc` | fields / u / fit / card / w / monitor Y-F0's (done); nav done, binding spec `95a2173d`, argv `6c830675` (`cycle_binding.json` `34c86e52`); summ `--reference` X-10's NAV, `--dsr-n 62`, ledgered the cell; `cycle-v8y-vol-target-y-1/summ.json` `78aea78d`, `pbo.json` `2beb256c`, `cycle_verdict.json` `5c113f3f`; stderr: nav_summ's usual "70 listed dir(s) have a defined SR but --dsr-n is 62" warning |
+| bundle vs X-10 (PM5-23; deciding dSR's p) | `run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/p9-r11-y1/bundle-x10-run1 --bind atx-impl/tools/nav_summ.py --bind <both summary.json> --bind <both NAVs' daily_*.csv, capacity_curve.csv> -- python atx-impl/tools/nav_summ.py --protocol v8 --bundle <X-10 NAV> <Y-1 NAV> --bundle-json build-equity/p9-r11-y1/bundle-x10.json` (the driver's `bundle_argv`) | 3,072 / 5,802 / 5,403 | **0** | 0.8 / 468 | `98e17ee523d6bcef352046ddab34fc7faf8192e6c9558a6275e2d3e18fa166e8` | `bundle-x10.json` `241c5bd9248499dd9bb15623b03995209256f669b438724c7116d338c755b9c4` |
+| bundle vs Y-F0 (printed) | the same with `<Y-F0 NAV> <Y-1 NAV>`, run dir `bundle-yf0-run1`, `--bundle-json build-equity/p9-r11-y1/bundle-yf0.json` | 3,072 / 5,788 / 5,442 | **0** | 0.8 / 443 | `1eecc7728291adab13d5533fc115679a0f5894ba18be9c6c209d45552e04c50e` | `bundle-yf0.json` `4c15e0befd562654b9ec1a82993fcfe101252e3c60ed32b9ebc0266393633966` |
+| book reader | `... --output build-equity/p9-r11-y1/book-run1 ... -- python scripts/wave_readers.py book --nav cell=<Y-1 NAV> --nav parent=<X-10 NAV> --nav yf0=<Y-F0 NAV> --output build-equity/p9-r11-y1/book.json` (the driver's `reader_argv`) | 3,072 / 5,787 / 5,725 | **0** | 0.5 / 45 | `cc07453501a86307b4895a6600695c085073674354c2de20c7e6ec99eb7bc23b` | `book.json` `b85952b024a351b217b81d2d5cf87f8a86d15572114372674bcd5549d5917f2e` |
+
+All four receipts: completed, exit 0, "clean in the code pathspec", source `00f0521a`.
+
+**Ledger** `build-equity/trials.jsonl`: 132 -> **133 lines** (file `27e40f9f`, head `5a3ef9d9bf242dbb`); the new line:
+construction, trial **`0ad7ea4c5122ebe3`**, cell `build-equity/mega-nav-v8y-vol-target-L2.0`, s2_net_sr
+1.8297698079085447, origin prior, count 1, window research-window-v2, prev `15484aa1` (X-10's head). **N 61 -> 62**
+(`ledger_n`; construction cap 62: **the cap is reached, no slot left**). 0 admission lines appended (61 unchanged).
+
+**Seal (SEAL-ALLOW per-hit check over every Y-1 run dir and console: NAV, mech, summ, both bundles, book (stdout.log /
+stderr.log / receipt.json), the NAV, mech, gtest, run, bundle and book consoles, the six `start.json` and the NAV
+`cycle_binding.json`; 32 files): `2026-10-02` source (a) x18, `2026-10-03` source (b) x16, the bootstrap seeds
+`20260927` x1 / `20260929` x72 (wave_seal.SEEDS), **0 OTHER**.**
+
+**Statistics of record** (S2 `modeled-1bn-stale5-v1+swap-fin-v1`; the bundle vs X-10 and the cycle agree on dSR, SE, CI
+and two-sided p): net Sharpe **Y-1 1.8298** vs X-10 1.8083 vs Y-F0 1.8495. Paired vs **X-10** (studentized CBB, block 21,
+seed 20260929, 4,999 resamples, 1,005 sessions): **dSR +0.0215**, rho .99471, **Memmel SE .0518** (t .41), CBB 95%
+[-.0580, +.1061]; LW SE .0416, 95% [-.0660, +.1090]; **bootstrap p one-sided .2980, two-sided .6326**. By year (dSR vs
+X-10): 2020 -.0279, 2021 -.0456, 2022 +.1232, 2023 +.0042. Paired vs **Y-F0** (printed): **dSR -0.0197**, Memmel SE
+.0519, CBB 95% [-.1024, +.0649], p one-sided .6652, two-sided .6602. DSR (N 62, `--dsr-ledger`): ledger **.8251** (V[SR]
+1.2957e-03 per session, 33 research-window-v2 lines); effective-N .9316; legacy .9618. **PBO .1526.** (The bundles'
+`verdict` blocks are the v8-prereg item 9 freeze-gate part, not Y-1's rule: vs X-10 `pass: false, dsr_positive: true`.)
+
+**The v8y 8 report columns (book reader `book.json`; 4x from `capacity_curve.csv`):**
+
+| book | L (mean L_t) | all-rows gross | net annual (CAGR) | gross of cost | net Sharpe 1x | net Sharpe 4x | realised vol | max drawdown | cost bps / traded $ |
+|---|---|---|---|---|---|---|---|---|---|
+| Y-F0 (`lib-v8ysb-gm.json`) | 1.1828 (fixed) | .98621 | **5.654%** (5.767%) | 7.068% | **1.8495** | **1.6994** | **3.057%** | **2.580%** | 12.66 |
+| X-10 (`x-leverage-L2.0.json`) | 2.0 (fixed) | 1.66672 | **9.306%** (9.606%) | 11.922% | **1.8083** | **1.5829** | **5.146%** | **4.326%** | 14.51 |
+| Y-1 (`y-vol-target-y-1.json`) | cap 2.0; **mean L_t 1.8671** | 1.55566 | **8.799%** (9.070%) | 11.196% | **1.8298** | **1.6281** | **4.809%** | **3.602%** | 14.03 |
+
+Y-1 annual costs: trade 1.563%, borrow .516%, long financing .318% (X-10 1.722% / .554% / .340%). Capacity curve (net
+Sharpe; Y-1 / X-10 / Y-F0): .5x 1.8722 / 1.8545 / 1.8997, 1x 1.8298 / 1.8083 / 1.8495, 2x 1.7620 / 1.7261 / 1.7976, 4x
+1.6281 / 1.5829 / 1.6994, 8x 1.5098 / 1.4434 / 1.5538; capped share at 4x .1882 / .2047 / .1004.
+
+| year | net return Y-1 / X-10 / Y-F0 | net Sharpe | vol | tau | cost bps |
+|---|---|---|---|---|---|
+| 2020 | .0605 / .0696 / .0431 | 1.250 / 1.278 / 1.335 | .0479 / .0538 / .0320 | .0312 / .0303 / .0304 | 15.87 / 17.12 / 14.98 |
+| 2021 | .1591 / .1673 / .0983 | 2.893 / 2.938 / 2.984 | .0515 / .0531 / .0316 | .0277 / .0275 / .0273 | 13.24 / 13.40 / 11.68 |
+| 2022 | .1114 / .1152 / .0691 | 2.170 / 2.046 / 2.099 | .0494 / .0542 / .0322 | .0280 / .0278 / .0278 | 14.07 / 14.37 / 12.36 |
+| 2023 | .0349 / .0354 / .0211 | .824 / .820 / .820 | .0430 / .0439 / .0260 | .0272 / .0271 / .0271 | 13.34 / 13.45 / 11.72 |
+
+**Verdict.** No tool prints Y-1's registered rule: `cycle_verdict.json` carries the paired / dsr / pbo blocks and no
+accepted field; the bundles' `verdict` blocks are the freeze-gate part. Root applies the registered rule (v8y 6 Y-1 row
+and v8y 8; written at `d1f2d7f2`) to those artifacts:
+
+`verdict (v8y 6 / 8 Y-1 registered rule, by hand): ACCEPTED {dsr_vs_x10_positive: True (+.021481; Memmel SE .0518;
+p one-sided .2980), x10_rule_vs_yf0: True (net_annual .087990 > .056538 AND net Sharpe 1.829770 >= 1.749482; dSR vs
+Y-F0 -.019712), mechanics: True (6/6; gross 1.555665 in [.828796, 1.672591])}`
+
+- **Printed, deciding nothing:** dSR vs Y-F0 -.0197 (p one-sided .6652); 4x net Sharpe 1.6281 (X-10 1.5829, Y-F0
+  1.6994); mean L_t 1.8671; cost 14.03 bps per traded dollar; DSR (N 62) .8251; PBO .1526.
+- **Y-F (v8y 1):** Y-1 is accepted, so **Y-1 replaces X-10 as Y-F**, the levered book offered to the owner. Y-F0 stays the
+  unlevered claims book; neither X-10 nor Y-1 is in the Sharpe claim. Which book is deployed is the owner's risk decision
+  (PM7-3); OD-P9-3 keeps P9 at L <= 2.0 (Y-1's L_t <= 2.0). Y-1 gets no OD-3 read (YP-11: a `--risk-model` NAV).
+- **Count:** 1 construction trial, **N 62 of 62** (the cap); it enters V.
+
+## R0-12 adoption print (v8y 7), after re-deriving X-10 and Y-1 (P9 Phase 0) (2026-10-03, 16:00Z-)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD before `671d61d2`. Ledger `build-equity/trials.jsonl`
+133 lines (file `27e40f9f`, head `5a3ef9d9bf242dbb`), N 62 of 62. Rulings applied: P9 `progress.md:172` (re-derive the
+two hand verdicts before opening the logged rows), `:173` (reader / bundle stages only, 0 trials, memory gate,
+SEAL-ALLOW), SEAL-ALLOW, Y1-PARENT. Report: `.superpowers/sdd/platform-p9-20261003/root-R0-12-report.md`.
+
+### R0-12 Part A: X-10 and Y-1 re-derived from the rule text and the files
+
+The derivation was committed at `5292b46e` before the R0-10 / R0-11 verdict rows were opened.
+
+Anchoring disclosure: before this derivation the agent saw three pieces of verdict text:
+- the truncated subjects of `e6418b0d` and `0829f784` in `git log --oneline`;
+- "X-10 is accepted" in `d1f2d7f2`, the commit that holds Y-1's limits;
+- three lines of that diff's context.
+
+| cell | rule | re-derived | deciding numbers (source files in the report, with sha256) | logged | match |
+|---|---|---|---|---|---|
+| X-10 | PM7-34 (3); v8y 6 / 8; limits `50406181` | **ACCEPTED** | net annual .093061 > .056538; S2 net Sharpe 1.808289 >= 1.749482 (dSR vs Y-F0 -.041193); mechanics 6 / 6 at r 1.690903 (gross 1.666718 in [1.521813, 1.775448], abs net .010446, tau .028189 / .033163, accounting 3.39e-16 / 4.80e-14) | lines 7605-7606: ACCEPTED, the same numbers | **yes** |
+| Y-1 | v8y 6 / 8 (YP-9); limits `d1f2d7f2` | **ACCEPTED** | dSR vs X-10 +.021481 (Memmel SE .0518, p one-sided .2980); net annual .087990 > .056538; S2 net Sharpe 1.829770 >= 1.749482 (dSR vs Y-F0 -.019712); mechanics 6 / 6 (gross 1.555665 in [.828796, 1.672591]); `vol_target.csv`: 48 estimates, 0 before the first, 584 / 21 / 399, L_t in [1.0, 2.0], priced_share mean .998634 | lines 7863-7865: ACCEPTED, the same numbers | **yes** |
+
+### R0-12 route and gate
+
+- Six steps, each 0 trials. Each argv is built by the driver's own builders (`wave_steps.reader_argv`, `bundle_argv`,
+  `bounded_argv`).
+- Each step ran once under `run_bounded_research.py` with the reader caps 180 s / 1,536 MiB / 512 MiB free, one at a
+  time.
+- Gate before each launch: free memory >= 3,072 MiB (cap + 1,536), sampled every .25 s.
+- The ledger's line count and sha256 were checked before and after each step. An argv that holds `--ledger` was
+  refused (scratch `r12run.py`).
+- The DSR step is v8y 4's tool `nav_summ.py --dsr-total`. It is read-only (no `--ledger`). It is a reader that is not
+  one of the driver's named stages.
+- No wave manifest was used, so no `--seal-allow` was passed.
+- Host: the only other jobs were another session's atx-db jobs in `C:/atx` (`compustat_std build`, `fund_notes build`,
+  pytest). There was no compiler, no `atx-*` exe and no other research run of root's.
+
+| step | command (under the bounded runner) | gate / free before / min | exit | s / peak MiB | receipt.json SHA-256 | output (SHA-256) |
+|---|---|---|---|---|---|---|
+| mech | `wave_readers.py mechanics --nav yf0=<Y-F0 NAV>` | 3,072 / 3,646 / 3,566 | **0** | 0.5 / 45 | `2865798f7c75e37d199a6388b148e246531e34fcd9e7f826ce226230e245e768` | `p9-r12-adopt/mech.json` `c397ac3f` |
+| bundle R-2 | `nav_summ.py --protocol v8 --bundle <R-2 NAV> <Y-F0 NAV>` | 3,072 / 3,536 / 2,942 | **0** | 1.3 / 479 | `25c6c4ab3e20e8dc996935da145b39afab331f4295bbec3aa9228e4bd87fb9d4` | `bundle-r2-yf0.json` `803e5456` |
+| bundle X-F0 | the same, `<X-F0 NAV> <Y-F0 NAV>` | 3,072 / 3,568 / 3,179 | **0** | 1.1 / 516 | `b1986f51baf8fce42ba866f8062155d2de4530722d285880870bf9ddf9d56a90` | `bundle-xf0-yf0.json` `f3098044` |
+| bundle B0c | the same, `<B0c NAV> <Y-F0 NAV>` | 3,072 / 3,606 / 3,172 | **0** | 1.1 / 479 | `36ab6f638e491217f0095baade0432c7ab8096dba9a9f326908b60fa58e7b27f` | `bundle-b0c-yf0.json` `24f6479b` |
+| book | `wave_readers.py book`, 6 books (Y-F0, R-2, X-F0, B0c, Y-1, X-10) | 3,072 / 4,466 / 4,399 | **0** | 0.5 / 45 | `c9f875fb152bc0be14a66aced63c54baaaf39312c50b347aac2f92d8f855b545` | `book.json` `642ad29b` |
+| DSR | `nav_summ.py --protocol v8 <Y-F0> <R-2> --dsr-total trials.jsonl --dsr-hand <X-F0> --dsr-hand <R-2> --ledger-n trials.jsonl --json` | 3,072 / 4,431 / 4,370 | **0** | 0.5 / 49 | `f04213e3f61f973bb85b3f0e031e49f5a399b39f175994534a6f73fbb79d75ae` | `dsr.json` `fdb6a972` |
+
+Every receipt: completed, exit 0, "clean in the code pathspec", source `5292b46e`. The run dirs are under
+`build-equity/p9-r12-adopt/`. The NAV dirs:
+- Y-F0 `mega-nav-v8x-theme-erc-L1.1828-v8ysb`;
+- R-2 (V8-F) `mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80`;
+- X-F0 `mega-nav-v8x-theme-erc-L1.1720`;
+- B0c `mega-nav-v8-b0c-dlret-ws60-v71-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247`.
+
+The ledger was **133 lines, `27e40f9f`, before and after every step. 0 trials.**
+
+**Seal (per-hit check; scratch `sealr12.py`).** It applies `tools/sealsrc.py`'s classification to 36 files: every
+file under `p9-r12-adopt/` and the six consoles. Hits:
+- `2026-10-02`, source (a), x18: the png name in the dirty list;
+- `2026-10-03`, source (b), x18: receipt `started_utc`;
+- seed `20260929` x6;
+- **`20261003` x18, OTHER.** Its source is the P9 sprint directory name `.superpowers/sdd/platform-p9-20261003/progress.md`
+  in each receipt's / start.json's / console's `dirty_outside_pathspec` list (progress.md held the PM's uncommitted
+  lines).
+
+That token is a path name, not a data date. SEAL-ALLOW's two sources do not cover it, so it is **for the PM's
+ruling**. Every number read in this step comes from TRAIN NAV outputs through the seal-checked loaders.
+
+### R0-12 the print (v8y 7; S2 `modeled-1bn-stale5-v1+swap-fin-v1`)
+
+**Adoption rule (PM7-34 (2), v8y 7): Y-F0 is deployable iff S2 net Sharpe >= 1.0 AND mechanics of Y-F0.**
+- S2 net Sharpe **1.849482 >= 1.0**.
+- Mechanics (v8-mech, `mech.json`): **PASS 6 / 6**.
+  - all-rows gross .986213 in [.90, 1.05];
+  - abs(net) .005340 <= .02;
+  - tau mean .028134 <= .20;
+  - tau p95 .033410 <= .30;
+  - accounting 3.68e-16 / 1.11e-13 <= 1e-09.
+- **Rule met: Y-F0 (`scripts/specs/v8/lib-v8ysb-gm.json`, L 1.1828) is the deployable book**, in R-2's place.
+
+**G-B1 (P9 plan 0.3), for Y-F0:**
+- S2 net Sharpe of the deployable unlevered book: **1.849482**.
+- Floor >= 1.0: **met**.
+- P9 target >= 1.85: not met (1.849482).
+
+**Bundles** (nav_summ `--protocol v8`: block 21, seed 20260929, 4,999 resamples; 1,005 sessions):
+
+| bundle (base -> Y-F0) | dSR | SR Y-F0 / base | rho | Memmel SE | CBB 95% | LW 95% | p one-sided | p two-sided | tool verdict (v8-prereg 9 part) |
+|---|---|---|---|---|---|---|---|---|---|
+| R-2 -> Y-F0 | **+.5935** | 1.8495 / 1.2559 | .8995 | .2258 | [+.132, +1.088] | [+.068, +1.119] | **.0030** | **.0308** | PASS |
+| X-F0 -> Y-F0 | **+.0800** | 1.8495 / 1.7695 | .9556 | .1502 | [-.236, +.407] | [-.256, +.416] | **.3122** | **.6262** | FAIL |
+| B0c -> Y-F0 | **+.7167** | 1.8495 / 1.1328 | .8721 | .2548 | [+.233, +1.189] | [+.232, +1.202] | **.0024** | **.0050** | PASS |
+
+**Deflated Sharpe** (`dsr.json`; ledger 133 lines, chain head `5a3ef9d9bf242dbb`). V[SR] is 1.296e-03 per session, from
+33 research-window-v2 cells. Y-F0 moments: SR 1.849 annual, T 1005, skew -.376, kurtosis 5.636.
+
+| print | book | N | DSR | SR0 (annual) |
+|---|---|---|---|---|
+| **DSR_tot** | Y-F0 | N_tot 233 = admission 61 + construction 62 + campaign registry 110 | **.6798** | 1.609 |
+| **DSR_hand** (YP-2; X-9 undefined, so not in the lineage) | Y-F0 | N_hand 123 = 233 - M 110 - mined-wave lines 0; `dsr_total.dsr_at`, V as DSR_tot | **.7589** | 1.487 |
+| **DSR_v8** | Y-F0 | N_c 62 | **.8350** | 1.347 |
+| beside: X-F0 at its own state (`--dsr-hand`) | X-F0 | prefix 97 lines, N_tot 88; V 1.239e-03 (25 cells) | .7741 | 1.389 |
+| beside: V8-F at its own state (`--dsr-hand`, prefix rule) | R-2 | prefix 50 lines, N_tot 49; V 1.272e-05 (5 cells) | .9857 | .128 |
+| beside: V8-F at the print's N and V | R-2 | N_tot 233 / N_c 62 | .2468 / .4297 | 1.609 / 1.347 |
+| beside: V8-F public (freeze print, line 5250) | R-2 | N 50; V 1.2971e-03 (21 cells) | .4648 | 1.301 |
+
+**PBO.** v8y 7 does not name the PBO grid. Both are printed; the choice is the PM's:
+- over the ledger's whole grid: **.1526** (70 candidates, 16 blocks, 12,870 splits). The file is Y-1's summ
+  `cycle-v8y-vol-target-y-1/pbo.json` `2beb256c`. No cell has been ledgered since, so the grid is unchanged;
+- Y-F0's own cycle: .0766 (65 candidates, `cycle-v8ysb-gm/pbo.json` `556192c0`).
+
+**4x capacity row** (`capacity_curve.csv`, multiple 4, `capacity-x4-v1+swap-fin-v1`):
+
+| book | net Sharpe | gross Sharpe | ann mean net | ann vol | max DD | cost bps / traded $ | capped share | file |
+|---|---|---|---|---|---|---|---|---|
+| Y-F0 | **1.6994** | 2.2444 | .05186 | .03051 | .02641 | 17.09 | .1004 | `edf1001d` |
+| R-2 | 1.1785 | 1.5966 | .04229 | .03589 | .03334 | 16.87 | .0802 | `b99b1cd1` |
+
+**Books** (`book.json`; net annual = summary `ann_mean`; turnover = tau_gmv mean):
+
+| book | net Sharpe 1x | net Sharpe 4x | net annual (CAGR) | gross of cost | all-rows gross | tau mean (per unit gross) | vol | max DD | cost bps |
+|---|---|---|---|---|---|---|---|---|---|
+| Y-F0 | **1.8495** | **1.6994** | **5.654%** (5.767%) | 7.068% | .98621 | **.02813** (.02853) | 3.057% | 2.580% | 12.66 |
+| R-2 (V8-F) | 1.2559 | 1.1785 | 4.536% (4.571%) | 5.812% | .98599 | .02393 (.02427) | 3.611% | 3.248% | 12.47 |
+| X-F0 (X-5) | 1.7695 | 1.6549 | 5.078% (5.166%) | 6.449% | .98623 | .02684 (.02722) | 2.870% | 2.060% | 12.56 |
+| B0c | 1.1328 | .9776 | 4.417% (4.436%) | 6.050% | .98196 | .03407 (.03469) | 3.899% | 3.885% | 13.13 |
+| Y-F = Y-1 (v8y 8) | 1.8298 | 1.6281 | 8.799% (9.070%) | 11.196% | 1.55566 | .02854 (.01834) | 4.809% | 3.602% | 14.03 |
+| X-10 (v8y 8) | 1.8083 | 1.5829 | 9.306% (9.606%) | 11.922% | 1.66672 | .02819 (.01691) | 5.146% | 4.326% | 14.51 |
+
+Y-1 mean L_t is 1.8671, from the summary's `vol_target` block for the S2 book. X-10's L is fixed at 2.0.
+
+**Year table** (bundle `year_table`, S2):
+
+| year | Y-F0 net / SR / vol / tau / bps | R-2 net / SR | X-F0 net / SR | B0c net / SR | dSR vs R-2 / X-F0 / B0c |
+|---|---|---|---|---|---|
+| 2020 (252) | +.0431 / 1.335 / .0320 / .0304 / 14.98 | -.0111 / -.316 | +.0130 / .478 | +.0135 / .319 | +1.651 / +.857 / +1.016 |
+| 2021 (252) | +.0983 / 2.984 / .0316 / .0273 / 11.68 | +.0983 / 2.596 | +.1038 / 3.282 | +.0767 / 2.352 | +.388 / -.298 / +.632 |
+| 2022 (251) | +.0691 / 2.099 / .0322 / .0278 / 12.36 | +.0796 / 1.841 | +.0684 / 2.171 | +.0859 / 1.936 | +.259 / -.072 / +.163 |
+| 2023 (250) | +.0211 / .820 / .0260 / .0271 / 11.72 | +.0193 / .638 | +.0232 / .926 | +.0034 / .118 | +.182 / -.107 / +.702 |
+
+**Appendix A (Y form, v8y 14):** `TRAIN construction cells 62; admission trials this sprint 61 (v8 12, X hand-written 25,
+mined 0, Y hand-written 15; X-4 re-screens 9, a part the Y form has no slot for); mined campaigns 1 (v9-mine-c1: budget
+110, registry count 110, admitted 0); N_tot 233; N_hand 123; window research-window-v2 (2020-2023); hidden 2024+ unread
+in this sprint; validation reads before v8: 2 (2023-2024); history reads 0; 2025+ never read.`
+
+The parts come from the ledger's `cycle` field: v80 7 + v81 5; v8x2 5 + v8x3 8 + v8x7 12; v8x4 9; v8ys 15. The tool's
+own v8 line: "TRAIN construction cells 62; admission trials this sprint 61; ...; history reads 0; 2025+ never read."
+
+**Claims** (v8x 7, with Y-F0 for X-F0; values only).
+- **Sharpe up** ("only under (a)-(c)"):
+  - (a) dSR vs V8-F +.5935, one-sided p .0030 < .10: met;
+  - (b) DSR_tot .6798 >= .95: **unmet**;
+  - (c) mechanics: met.
+  - PM7-34 (2) replaced the gate as the adoption rule. v8y 7 carries v8x 7's claim text unchanged.
+- **DSR up** (DSR_tot(Y-F0) .6798 against DSR_tot(V8-F) at V8-F's ledger state). The reference is ambiguous and is for
+  the PM:
+  - the tool's `--dsr-hand` prefix rule gives .9857 (N_tot 49), which Y-F0 is below;
+  - v8y 4's "public .465 at N 50" gives .4648, which Y-F0 is above;
+  - beside: V8-F at the print's N and V is .2468.
+- **Capacity up** (sign level): Y-F0 4x 1.6994 vs R-2 4x 1.1785, positive sign.
+- **Return up**, in two parts:
+  - Y-F0 vs R-2 at matched gross (.98621 vs .98599): 5.654% vs 4.536%;
+  - Y-F (Y-1) vs Y-F0 (leverage, the owner's risk decision): 8.799% vs 5.654%.
+- **PM7-37 / PM7-38 (X-5 lines kept):**
+  - X-5's +.349 is reported as in sample until OD-3;
+  - the review's decomposition: lower volatility +.311, gross alpha +.080, trade cost -.042, borrow +.002;
+  - "under the rule's own equal-Sharpe premise the expected gain is about +.15".
+
+**Open for the PM (not picked here):**
+1. the seal token `20261003` (sprint dir name in the dirty list), outside SEAL-ALLOW's two sources;
+2. the V8-F reference of "DSR up";
+3. the PBO grid.
+
+Count: 0 trials. Ledger 133 lines, `27e40f9f`, N 62 of 62.
+
+## R0-14 final v8 report (status 8), P9 n_before, Phase-0 exit gate, P9 branch cut (P9 Phase 0) (2026-10-03, 16:41Z-)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-v8-20260929`, HEAD before `32b33236`. Report:
+`.superpowers/sdd/platform-p9-20261003/root-R0-14-report.md`. Status 8: `docs/plans/2026-10-03-platform-v8-status-8.md`.
+Rulings applied: P9 `progress.md:185` ("DSR up": three readings, no claim), `:186` (PBO: both values), `:14` (OD-P9-1
+placeholder 8.0%), `:18` (OD-P9-3: L <= 2.0), `:141` (E1-STALE). No build, no research run, no pytest; 0 trials.
+
+**Re-checks (read-only).** Every reader / bundle / PBO / wave-result file status 8 cites re-hashed equal to its logged
+prefix: book `642ad29b` / `d222b547` / `b85952b0`; mech `c397ac3f` / `603b5afb` / `99eb2484`; `dsr.json` `fdb6a972`,
+`dsr-run1/stdout.log` `cd1a6375`; bundles `803e5456` `f3098044` `24f6479b` `a57d82d0` `241c5bd9` `4c15e0be`; PBO
+`2beb256c` `556192c0`; wave results `57e9f5ea` `619809ea` `09fbd24e` `ec4e07c2`. `p9-r12-adopt/book.json` re-read for
+Y-F0, X-10, Y-1: equal to R0-12's table to every digit.
+
+**Side by side** (S2 `modeled-1bn-stale5-v1+swap-fin-v1`, TRAIN 2020-2023; `book.json` `642ad29b`, = lines 7990-8001):
+
+| book | L / mean L_t | mean gross | net annual (CAGR) | net Sharpe 1x | 4x | vol | max DD |
+|---|---|---|---|---|---|---|---|
+| Y-F0 `lib-v8ysb-gm.json` | 1.1828 fixed | .98621 | 5.654% (5.767%) | 1.8495 | 1.6994 | 3.057% | 2.580% |
+| X-10 `x-leverage-L2.0.json` | 2.0 fixed | 1.66672 | 9.306% (9.606%) | 1.8083 | 1.5829 | 5.146% | 4.326% |
+| Y-1 `y-vol-target-y-1.json` (= Y-F) | mean L_t 1.8671, cap 2.0 | 1.55566 | 8.799% (9.070%) | 1.8298 | 1.6281 | 4.809% | 3.602% |
+
+Verdicts (registered): Y-S ACCEPTED; Y-3, Y-2, Y-5 NOT ACCEPTED (rejected, counted); X-10 and Y-1 ACCEPTED by hand,
+re-derived independently at R0-12 (match). Leverage decision laid out for the owner in status 8 §4 (OD-P9-3; L <= 2.0
+until ruled; Y-1 reads a risk model, so no history read, YP-11).
+
+**Ledger = P9 `n_before`** (`build-equity/trials.jsonl`: **133 lines, sha256 `27e40f9f`**, head `5a3ef9d9bf242dbb`;
+counted with `backtest_integrity.trial_counts` / `ledger_n`, aggregates only):
+
+| count | value | how | plan 5.1 projection |
+|---|---|---|---|
+| N_c | **62** | 70 construction lines - 8 window re-runs | <= 62: at the ceiling |
+| K_a hand-written | **40** | X 25 (v8x2 5, v8x3 8, v8x7 12) + Y 15 (v8ys) | 40: equal |
+| K_a all admission lines | 61 | + v8 12 (v80 7, v81 5) + X-4 re-screens 9 (v8x4); mined 0 | counted apart |
+| M | **110** | v9-mine-c1, line 112 (budget 110, adds 0 to trial_counts) | 110: equal |
+| N_tot | **233** | sum(trial_counts) 123 + M 110 | <= 233 (212 + 21): at the ceiling |
+
+N_hand 123; V 1.2957e-03 per session (33 cells). P9 room (plan 5.2): N_c <= 69, K_a <= 10, M + 0, N_tot <= 250.
+
+**Phase-0 exit gate (plan 4.3): met.** Y cells each ledgered (lines 128-133: `11c10defb3cf38a5`, `ee5487109c705108`,
+`aeeb2073e0bd8e2a`, `cc150c210a3f98e4`, `25f3b27aae4754ab`, `0ad7ea4c5122ebe3`; 0 undefined, 0 void); adoption print done
+(R0-12 `5292b46e`, `32b33236`); v8 report written (status 8, this commit); G-B1 printed for Y-F0 (1.849482: floor 1.0
+met, target 1.85 missed by .000518); ledger state recorded (above; status 8 5; R0-14 report).
+
+**`wave status`** (`research_cycle.py wave status scripts/specs/v8/waves/<w>.json --root C:/atx-wt/pool-2`, read-only):
+y-s, y-3, y-2, y-5 **9/9 done, exit 0**. `y-s.head.json`: exit 2, refused as a manifest ("a wave has exactly one of
+candidates ... and rule_cell"); it is y-s's manifest minus `candidates` (line 6677), not a separate wave. X-10 and Y-1
+have no manifest (by hand, YP-7). No wave in flight (E1-STALE holds). Re-run just before the branch cut.
+
+**Branch.** `feat/platform-p9-20261003` is cut in pool-2 from the commit that adds this section (`git switch -c`); its
+SHA, the v8 head, is recorded in `root-R0-14-report.md` on the P9 branch. `feat/platform-v8-20260929` is kept, not
+moved.
+
+Hard rules: nothing in `C:/atx`; `atx-db/` untouched; no push; no subagent; exact-path staging only (the design agents'
+`cov-*` / `sql-*` / `briefs/brief-COV.md` / `briefs/brief-SQL*.md` files untouched); the untracked png left alone;
+nothing dated 2024-01-01 or later opened. Count: 0 trials. Ledger 133 lines, `27e40f9f`, N 62 of 62.

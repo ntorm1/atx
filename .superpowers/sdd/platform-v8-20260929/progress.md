@@ -1620,3 +1620,675 @@ Order of work: integration 3 Part 4 identities (a-g), integration 4, Wave 1 revi
   mining branch `1bd448cd` (C++ never compiled) and FIELDS-V9 / LIB3 `834d5a05` stay on their branches for
   integration 8 -- an uncompiled C++ merge could leave main unbuildable -- cost if wrong: the owner wanted them
   on main now; they are one merge away. Status 6 and goal prompt 6: `docs/plans/2026-10-02-platform-v8-status-6.md`.
+
+## PM session 7 (2026-10-02, after owner stop 2)
+
+- Owner goal (2026-10-02, replaces "stop here"): "finish v8 implementation, use opus 5.5 sub agent implementation
+  agents and preserve your own context window. Expand v8 scope to include real progress towards alpha generation by
+  deploying agents to work on finding new orthogonal alpha dsl signals, improving exsisting ones, improving
+  combinations, finding new datasets etc. The goal is to finish v8 implementation for atx-engine and atx-impl and
+  push sharpe, defalted sharpe, capactiy, gross returns all up."
+- State at the start: root `4e0aa98f`, clean; book R-2; N 44 of 51; admission trials 7 of 15 (the 8 left are
+  allocated: v8.1 5 in R-7, v8.2 3 in R-12); history reads 0. Pool 10 is leased by another session of the owner
+  (`merge/main-tier1-v3-20261002`, alive): this sprint does not touch pool 10 from here on. Pools 7 and 8 remain;
+  new lanes lease new pools.
+- Ruling PM7-1 (two tracks). Track 1: the registered cell program runs unchanged to V8-F (N <= 51, PM5-21, PM5-23,
+  PM6-6), then integration 8. Track 2 ("expansion X"): lanes prepare, blind, new signals, repairs of existing
+  signals, combination and capacity rules, dataset field builders and the registration of a mined campaign. No X
+  lane reads a return, an IC or a NAV number of the 2020-2023 window. X measurements start only after V8-F and
+  integration 8, under a pre-registration (`v8x-prereg.md`) that the PM rules on before the first X measurement:
+  baseline = the book at V8-F, the trial count continues from N at V8-F (no reset), the X budget is fixed there in
+  advance, and the deflated Sharpe is computed on the total count -- the owner asks for Sharpe and deflated Sharpe
+  both up; a trial that is not counted raises the first and voids the second, and X trials before V8-F would
+  break the registered budget -- cost if wrong: X results arrive some hours later than they could.
+- Ruling PM7-2 (OD-7). The owner goal text ("deploying agents to work on finding new orthogonal alpha dsl
+  signals") is taken as the owner ruling OD-7 asked for: one mined campaign may run in X, after integration 8 has
+  compiled the mining branch and the golden holds, under the MINE-RUN registration (`6ea76460`) as amended by
+  `v8x-prereg.md` (budget declared in advance, memory cap, every campaign evaluation counted for deflation) --
+  the mine verb is the registered tool for exactly this request -- cost if wrong: the owner meant hand-written
+  signals only; the campaign's count lowers the deflated Sharpe of X; the X report prints the deflated Sharpe
+  of the hand-written set alone beside the total so the owner can drop the campaign.
+- Ruling PM7-3 (return level). Gross matching (PM6-6) holds the return level of every cell at its parent's by
+  construction, so "gross returns up" cannot come from a construction cell. It comes from (a) return per unit
+  gross (signal quality: X signals, repairs, combination) and (b) the leverage the capacity allows. X registers one
+  leverage cell at the end: L raised inside the executable's [1, 2] with the registered guard "net Sharpe at 4x
+  NAV not lower than the parent's by more than one SE"; the mechanics limit on gross for that cell is restated in
+  `v8x-prereg.md` before it runs -- return from leverage is the owner's risk decision and must be shown as such,
+  not as alpha -- cost if wrong: none measured; the cell is one trial.
+- Ruling PM7-4 (tests). The integrator adds `r3-aim-gain-gm.json` to the spec list of
+  `scripts/tests/test_research_spec.py` itself (tests only, one entry and its pin) -- pool 10, the FIX lane's
+  worktree, is held by another session -- cost if wrong: none; the suite's result line is the check.
+- Ruling PM7-5 (X lanes). Five lanes, Opus 5.5, one pool each, briefs in `task-X-briefs.md`: XSIG (new signals,
+  orthogonal by construction to the 10 themes), XIMP (blind repairs and refinements of roster members), XCOMB
+  (combination and capacity rules beyond R-10 / R-11), XDATA (dataset map, field builders from data in house,
+  external data list), XPRE (`v8x-prereg.md` and the campaign registration). Lane rules bind. Every candidate is
+  one variant per hypothesis with every constant fixed blind in the report (precedent E-30) -- cost if wrong:
+  uncompiled C++ and unscreened candidates accumulate until integration 8; bounded by the per-lane caps in the
+  briefs.
+- Cells batch 2e (log section of that name), at matched gross (PM6-6):
+  Tests (PM7-4, `81c80c39`): `r3-aim-gain-gm.json` registered in `test_research_spec.py`; `scripts/tests` 192 passed,
+  3 skipped, 0 failed; `atx-impl/strategies` 163 passed.
+  R-5 (`r5-adv-hold.json`, `--adv-hold-q .1`, L 1.1474, gross .98393 against .98599): NOT accepted, N 45. S2 net
+  Sharpe 1.2019 (parent 1.2559); dSR -.0540, SE .0226, p one-sided .977 (two-sided .040); criterion failed (4x net
+  Sharpe 1.1268 against 1.1785; dSR below minus one SE; S3 .1692 against .2163). Parent stays R-2.
+  Risk model atx-risk-v1.1 on the 4-year role (role lo3, fields v10): `build-equity/v8-risk-lo3-v10`, manifest
+  `862515d9`; complete, 0 invariant refusals, bias factor / random ok; model files byte-identical to B0c's `b0c-risk`.
+  R-6 (`r6-spo-v3-gm.json`, spo-v3, S_prior 20, L 1.0996 after one correction from 1.1474, gross .98630 against
+  .98599): NOT accepted, N 46. Before any return: tripwire clear, primary limits_unmet 0, unconverged 0 (mean 82
+  iterations), no void. S2 net Sharpe .7606 (parent 1.2559); dSR -.4954, SE .1798, p one-sided .996 (two-sided .021);
+  criterion failed on cost per traded dollar (18.79 bps against 12.47); aim correlation .960 >= .9 met. Parent stays
+  R-2. E-38 / E-45: R-10, R-11, R-12 undefined; R-9 defined.
+- Lanes dispatched (Opus 5.5): integrator batch 2e in root (PM7-4 tests, R-5, risk model, R-6); XSIG pool 12,
+  XPRE pool 7, XCOMB pool 13, XDATA pool 14, XIMP pool 15 (branch `feat/platform-v8-ximp2-20261002`). Pool 10 was
+  released by the owner's other session and leased to XIMP by the lease script; its working tree shows 76
+  tracked `build-equity/` files as deleted (not by this sprint); the restore was refused by the permission
+  system, so the pool is left untouched and held (run id `v8x-ximp-20261002`) for the owner. Local `main` moved to
+  `179af41c` (the owner's warehouse merge): the final v8 merge into main is a real merge, after the freeze gate.
+- XPRE delivered `v8x-prereg.md` (`71a68d60`, pool 7, 249 lines). Rulings on its 11 open choices, made before
+  any X measurement and before any X lane result is read by the PM (parked while the integrator held root):
+- Ruling PM7-6 (X budget): at most 10 construction cells (X-1..X-10), at most 39 admission trials (23 hand-written,
+  16 mined), one campaign of at most 132 evaluations; waves share one cell (repairs X-1, refinements X-2,
+  XSIG + XDATA X-3, mined X-9), every new string is one admission trial; one cell each for the 2 processing
+  variants, the 3 XCOMB rules and the leverage cell, which is last -- sized to the lanes' caps; a fixed budget
+  is what makes the deflated Sharpe meaningful -- cost if wrong: good candidates beyond the caps wait for v9.
+- Ruling PM7-7 (count and deflation): N_tot = every trial the defect rule counts in `build-equity/trials.jsonl`
+  (any kind) + the campaign registry count; no netting of mined members that are not admitted; V = variance
+  (ddof 1) of S2 net Sharpe over construction lines on research-window-v2 (`dsr_variance`); DSR_tot gates;
+  DSR_hand (ledger up to before the campaign) and the v8-count value are printed beside it -- the conservative
+  count; PM7-2 -- cost if wrong: the gate is harder than a netted count would make it.
+- Ruling PM7-8 (X gate): the X book replaces the V8-F book only if DSR_tot >= .95 AND the paired one-sided
+  p < .10 against the V8-F book; otherwise the V8-F book stays the deployable book and the X report says so --
+  cost if wrong: a better book is not adopted in v8; nothing is lost, it is carried to v9 with its count.
+- Ruling PM7-9 (repairs, X-1): a repair is accepted on mechanics alone and its member is not re-screened, ONLY
+  where the PM has confirmed the defect from XIMP's proof (the roster string does not compute its own stated
+  canonical definition, shown from DSL semantics); anything else moves to the refinement list and takes an
+  admission trial. The X-1 cell is run, counted and printed -- prereg rule 7: a defect fix is a correction,
+  not a hypothesis -- cost if wrong: a repair that lowers Sharpe stays in the book; that is the honest book.
+- Ruling PM7-10 (alpha waves' criterion): waves X-2, X-3, X-9 are judged on dSR > 0 AND mechanics AND "net
+  Sharpe at 4x NAV not lower than the parent's" (replaces "turnover not higher"; amends campaign D14) -- the
+  owner's target is capacity, and a turnover bar rejects fast signals that pay for their trading -- cost if
+  wrong: turnover may rise while the 4x measure holds; the turnover is printed.
+- Ruling PM7-11 (leverage cell, last): L 2.0 (the executable's maximum, one value, no grid); "one SE" = .100
+  (plan 12.2); accepted on net annual return higher AND net Sharpe at 4x NAV not lower than the parent's by
+  more than .100 AND mechanics, with the gross limit restated as [.90, 1.05] x (2.0 / L_parent) x the parent's
+  matched gross ratio, written in the cell's plan before the run. The X report prints the unlevered and the
+  levered book side by side with maximum drawdown; which is deployed is the owner's risk decision (PM7-3) --
+  cost if wrong: one trial.
+- Ruling PM7-12 (campaign): memory cap = the registered probe's value (expected 4,032 MiB); the campaign runs
+  alone (no other data process, no build); if free physical memory at the start is below the cap + 1 GiB the
+  integrator lowers workers, never the budget, and stops if that is not enough; source cell = the last
+  hand-written X book (amends D15); every evaluation enters N_tot -- cost if wrong: a slow campaign.
+- Ruling PM7-13 (caps): roster and pool caps 64 -> 80, done at integration 8 (after the freeze gate, PM5-21),
+  identity by the golden and the pinned bench -- X-3 would otherwise fit about 4 new members -- cost if wrong:
+  a larger IC pass; the memory cap of the IC pass is re-probed before X-3.
+- Ruling PM7-14 (smaller points): plan section 13 bars bind X, lifted by name only for risk-only rules; if
+  XIMP-C and XCOMB deliver the same mechanism, XCOMB's is kept and one change per member applies; XSIG and
+  XDATA candidates enter in one wave (X-3); no hidden-block read without an owner ruling, at most one, on a
+  book chosen before the read -- cost if wrong: none measured.
+- Follow-up to XPRE: mark the 11 choices as ruled in `v8x-prereg.md`; write `nav_summ.py --dsr-total`
+  (precondition P5) in the lane with synthetic tests, for merge at integration 8.
+- XSIG delivered (`b30311a3`, `7467448f`, pool 12): 5 candidates, not 12 (the lane's honest count), ranked:
+  stmom, earn_season, k8_intensity, inst_persist, nt_late; strings frozen in `task-XSIG-report.md`; check
+  script `xsig_check.py` passes (parses the 52 roster strings, mutation probe 6 of 6). No result was read.
+- Ruling PM7-15 (XSIG's six points, ruled before any screen): (a) theme `filing_events` is added to the
+  registry and appended LAST in the fitter's theme order, at integration 8 -- last place leaves every existing
+  theme's residual under `theme-resid-v1` unchanged; (b) inst_persist sits in `reversal_seasonality` -- its
+  mechanism is reversal of persistent institutional trades; in `ownership_flow` it would be averaged with
+  members of the opposite sign; (c) roster 65 against 64 is covered by PM7-13 (cap 80); (d) quarters as
+  63-session lags stand as the registered definition; (e) stmom, earn_season and nt_late are registered once,
+  here, and are removed from the v9 draft's screen set; (f) turnover is covered by PM7-10 (the 4x criterion) --
+  cost if wrong: (b) a theme share diluted by one slow member; the rest none measured. The X-3 wave therefore
+  holds 5 XSIG strings plus XDATA's; unused admission trials of the 23 are not reallocated to new strings
+  written after any X result is seen.
+- Cells batch 2f (log section of that name), at matched gross (PM6-6):
+  Fields v11 lo3 (`build-equity/train-2020-2023-lo3-fields-v11`, manifest `5826c02a`): reused 70 / computed 3 as
+  expected (k8_item402_63, gscore7_lowbm, eps_consist_4y); the 70 v10 payloads bit-identical (hardlinks); 24.5 s, 382 MiB.
+  Registry (`7402d7b2`): E6 / E8 field rows, E7 theme filing_events, R7-a roster cap 56 -> 64; the v7.1 slim recipe
+  records house_budget, so `test_v71_library_byte_identical` now fails on it (the v7.1 IC library still regenerates
+  byte for byte): finding, tests only.
+  R-7 (`lib-v81-gm.json`, library v8.1 = v8.0 + 5, L 1.1414 after one correction from 1.1474, gross .98600 against
+  .98599): NOT accepted, N 47. Admission 5 trials (12 of 15): comp_eq_iss_5y, coskew_60m, nonreliance_402,
+  earn_consistency admitted with the prior sign, gscore_lowbm admitted with runner sign 0 (not counted); gate PASS.
+  S2 net Sharpe 1.1898 (parent 1.2559); dSR -.0662, SE .1037, p one-sided .732 (two-sided .524); criterion (turnover
+  .02317 <= .02393) met; mechanics pass. Net Sharpe at 4x 1.103 (parent 1.178). One spec-only fix before any phase ran
+  (`ref.leverage` 1.1474: the cycle refused the ref binding). Parent stays R-2. Tests: `scripts/tests` 195 passed, 3
+  skipped; `atx-impl/strategies` 162 passed, 1 failed (the R7-a finding).
+  R-8: STOPPED before the run (nothing edited, run or ledgered; N 47). Acceptance is settled by E-43 (dSR > 0 AND
+  mechanics AND S2 realised vol in [.04, .06] each year; the plan's "dSR >= -1 SE" is expectation). Not settled: how
+  PM6-6 applies to a cell whose rule sets leverage. Reading A: match gross through the scaler's base L (clip band
+  [.8 L, 1.25 L]); where the clip does not bind L_t = S / (b sigma_hat) ignores L, so matching may not converge
+  (PM6-6: rejected after two corrections). Reading B: one run at L 1.1474, gross as the rule gives; then whether the
+  gross limit [.90, 1.05] binds or is restated (the clip spans all-rows gross about .79 to 1.23 at R-2's gross / L).
+  PM ruling needed. R-9a-c not started (after R-8; open choices: "NAV 4x" exists only as the capacity curve's x4 row;
+  theta .05 equals the parent's; PM6-6 on theta; no template and no report-only verdict in the cycle; spo-v3 not
+  involved per E-37).
+- Integrator batch 2f dispatched in root (fields v11, R-7, R-8, R-9a-c). Rulings below were parked while it held
+  root.
+- XDATA delivered (pool 14: `1df3da62`, `e035a773`, `71238bb4`, `d44fa7f6`; report `task-XDATA-report.md`):
+  dataset map, status of the data asks, 8 field families ranked, 3 builders with look-ahead probes
+  (`div_month_pred`, `beta_dvol_21`, `season_y2_5`; `atx-engine/tools` 260 passed), 5 external datasets (ORATS
+  options history, S&P Global Securities Finance, Zacks estimates, USPTO PatentsView with the KPSS match,
+  Hoberg-Phillips TNIC-3). No result was read. Two atx-db documents the lane read print data-presence counts for
+  2024-2026 (no return, no signal statistic); disclosed, nothing used them.
+- Ruling PM7-16 (XDATA, before any screen): (a) the three built fields and their candidates `div_season`,
+  `vol_beta`, `season_y2_5` enter wave X-3 with XSIG's five (8 strings, 8 admission trials of the 23);
+  (b) the two constants the lane recalled are confirmed by the PM from the literature and stand as registered:
+  predicted dividend month = a dividend 3, 6, 9 or 12 months before (Hartzmark-Solomon 2013, quarterly payers),
+  and the aggregate-volatility beta needs more than 17 daily observations in the window (Ang-Hodrick-Xing-Zhang
+  2006); (c) `season_y2_5` stays in `reversal_seasonality`: new by horizon only, the fitter's member cap bounds
+  the theme; (d) no X consumer binds a gold alpha panel of atx-db: they are uncommitted, sit beside holdout
+  evaluation code, and no proof exists that they hold no label, no IC column and no row dated 2024 or later --
+  hidden-data rule -- cost if wrong: a usable in-house panel waits for v9; (e) the families that need a
+  warehouse change (filing text, N-PORT flows, tax and pension items, 13F manager types, TNIC peers) and the 5
+  external datasets go to handoff 2 as owner decisions; nothing is built for them in v8.
+- XPRE follow-up delivered (pool 7): `57157a05` (`v8x-prereg.md` with the rulings written in, 258 lines),
+  `44a27d5d` (`nav_summ.py --dsr-total LEDGER [--dsr-hand DIR ...]`, logic in the new module
+  `atx-impl/tools/dsr_total.py`; `test_dsr_total.py` 8 passed; `atx-impl/tools` 592 passed / 2 skipped; flags
+  absent byte-identical on 4 argv sets), `da3bb239` (report). Merges at integration 8 (PM5-21).
+- Ruling PM7-17 (amends the wording of PM7-11): the leverage cell's gross limit is all-rows gross inside
+  [.90, 1.05] x 2.0 / L_parent, where L_parent is the parent's matched L; the words "x the parent's matched gross
+  ratio" are struck -- they named nothing defined; the limit scales the registered one by the leverage ratio
+  and nothing else -- cost if wrong: none; ruled before the cell exists. The total count includes legacy
+  composition, universe and data lines of the ledger (PM7-7: every trial the defect rule counts); the printed
+  breakdown shows them.
+- XIMP delivered (pool 15: `6f7bae47`, `c622b4ab`, `3db253d5`; report `task-XIMP-report.md`; no code). 52 roster
+  strings audited: 0 sign, lag, skip, denominator or look-ahead defects; 1 domain-guard gap (A-1, `q5_eg_f49`:
+  the year-ago ROE has no book-equity guard); 4 refinements (B-1 `iv_rv_spread_xe`, B-2 `ind_adj_rev_5_nx`, B-3
+  `ins_opp_buy`, B-4 `bac_vq`); 1 processing variant (C-1: the nine value members ranked within FF49). Disclosed
+  by the lane: `code-review-v8-signal.md`, which the brief named, quotes TRAIN statistics for bac, iv_rv_spread,
+  ins_opp and some value members; the lane's selection rule (report B.0) does not use them.
+- Ruling PM7-18 (XIMP, before any screen): (a) A-1 is NOT a rule-7 repair: the PM read the proof; the guard gap
+  is real, but the member's registration disclosed it, so the registered string computes its registered
+  definition and the change is a variant. `q5_eg_f49g` takes 1 admission trial and enters wave X-2 with the
+  refinements; cell X-1 (repairs) is empty and is dropped (construction cells at most 9) -- PM7-9's test is
+  "does not compute its own stated definition"; the stricter reading costs 1 trial and keeps the count honest
+  -- cost if wrong: 1 trial of 23. (b) B-1..B-4 are 4 admission trials, one wave (X-2), 5 strings with A-1; a
+  vetoed replacement restores its original member at 0 trials (the original holds its own admission). Because
+  the review file the lane read prints TRAIN statistics on three of the four replaced members, the X report
+  marks B-1, B-3 and B-4 as "chosen with TRAIN statistics in view" and prints the book with and without them.
+  (c) C-1 is 9 re-screens (R2-e precedent) and 1 construction cell, after X-2; the re-screens are ledger lines
+  and so count in N_tot (PM7-7). (d) B-1 stands with the producer's caveat on `iv_atm_21d` printed. (e) `smax`
+  beside `smax5`: no change; a removal is not a hypothesis any lane registered. Hand-written admission trials
+  allotted: X-2 5, X-3 8; 13 of 23; the other 10 lapse -- cost if wrong: none measured.
+- Owner ruling (2026-10-02, on PM7-16 (d)): "approved to read these" -- the gold alpha panels of atx-db may be
+  read by X.
+- Ruling PM7-19 (replaces PM7-16 (d); how the approval is used): X may read the gold alpha panels, read-only, in
+  place (the owner's tree; nothing under `atx-db/` is written, in any worktree). The approval is taken as access
+  to the panels, not as a lift of the hidden-data rule or of the seal, which the owner did not name: every
+  reader takes the seal from `research_window`, pushes the date filter down so that no row dated 2024-01-01 or
+  later is loaded, and refuses, by name, every label, forward-return, IC and holdout column; the holdout
+  evaluation code and its outputs stay closed. Schema and file metadata are read first; a panel whose
+  point-in-time stamping cannot be shown from its documentation or source is not bound. Strings on panel
+  fields come from the 10 lapsed hand-written admission trials (PM7-18), at most 6, in wave X-3, frozen
+  blind before any screen -- the hidden block is the only untouched test the book has; an approval to read
+  panels does not say to spend it -- cost if wrong: the owner meant the holdout rows too; one line from the
+  owner opens them, nothing is lost.
+- Batch 2f read by the PM: fields v11 70 / 3 (manifest `5826c02a`); R-7 not accepted (N 47; dSR -.0662, p one-sided
+  .732; turnover criterion met); admission trials 12 of 15 (the 3 of v8.2 lapse with R-12). R-8 stopped before
+  its run for a ruling; R-9 not started. Book R-2.
+- Ruling PM7-20 (R-8 and PM6-6; ruled before any R-8 number exists): reading B. R-8 is the registered leverage
+  rule; it runs once with the parent's L 1.1474 as the scaler's base and is not gross matched -- its hypothesis
+  is the leverage path itself; where the clip does not bind L_t does not depend on L, so matching would test
+  the clip, not the rule. The mechanics gross limit for this cell is restated, from the registered clip only:
+  all-rows gross inside [.8, 1.25] x G_parent, widened by .005: [.784, 1.237]. Acceptance is E-43 unchanged (dSR
+  > 0, mechanics, realised volatility in [.04, .06] each year). The verdict line prints both books' all-rows
+  gross, because the paired dSR here compares books of different dollar gross -- cost if wrong: a dSR partly
+  due to mean leverage; the Sharpe ratio is first-order invariant to it and the gross is printed.
+- Ruling PM7-21 (R-9, ruled before any R-9 number exists): (1) R-9 runs on the parent's rule aim-partial-v5,
+  theta = `--trade-fraction`; spo-v3 is not involved (E-37; the PM's dispatch text was wrong). (2) Each cell is
+  the parent's NAV argv with theta .03 / .04; its frontier point is the capacity curve's x4 row (E-29); report
+  only, the deployed book does not change. (3) R-9c (theta .05) is the parent byte for byte: it is read from
+  the parent and adds 0; the program ends at N 50, not 51. (4) No gross matching: parent's L; the cells are
+  report-only and their gross is printed. (5) Spec-only templates with `"verdict": false`; each takes its
+  construction line (N 49, N 50) -- cost if wrong: one unused trial.
+- Ruling PM7-22 (tests): `test_v71_library_byte_identical` compares the library bytes and the recipe except the
+  roster-cap field, which R7-a raised from 56 to 64 (tests only) -- the library regenerates byte for byte; the
+  cap is not content -- cost if wrong: none.
+- Note for X: R-7's marginal phase took 170.3 s of its 180 s cap; the X waves' cap is restated at integration 8.
+- Cells batch 2g (log section of that name):
+  Tests (PM7-22): `test_v71_library_byte_identical` compares the v7.1 library byte for byte and the recipe except the
+  roster cap (regenerated at the committed cap 56 in a copy of the tree, byte for byte; both `--check` calls there);
+  `scripts/tests` 195 passed, 3 skipped, 0 failed; `atx-impl/strategies` 163 passed, 0 failed.
+  R-8 (`r8.json`, risk target S .05 / b 1.15 / cadence 21, base L 1.1474, not gross matched, PM7-20): NOT accepted, N 48.
+  Before any return: risk_target S2 1,004 decisions, 48 estimates, 0 before the first, clip hi 374 / lo 21, L_t mean 1.308,
+  priced_share .9986; mechanics PASS (all-rows gross 1.1244 in [.784, 1.237]; net +.0050; tau .02428 / .03061). S2 net
+  Sharpe 1.2449 (parent 1.2559); dSR -.0111, SE .0460, p one-sided .583 (two-sided .843); all-rows gross R-8 1.1244, R-2
+  .9860; realised vol 2020 .0401 / 2021 .0433 / 2022 .0441 / 2023 .0365 -> band [.04, .06] fails in 2023. Net annual
+  return 5.13% (R-2 4.54%); net Sharpe at 4x 1.166 (1.178). Parent stays R-2.
+  R-9 (report only, PM7-21; parent R-2, aim-partial-v5, L 1.1474, not gross matched; `r9a.json` / `r9b.json`, "verdict":
+  false; mechanics PASS): R-9a theta .03, N 49: x4 row net Sharpe 1.1966, $1bn 1.2433, gross .9350, tau .01796, cost at
+  4x 15.89 bps. R-9b theta .04, N 50: x4 1.1864, $1bn 1.2528, gross .9650, tau .02110, 16.45 bps. R-9c theta .05 = R-2
+  (adds 0): x4 1.1785, $1bn 1.2559, gross .9860, 16.87 bps. The deployed book stays R-2; program ends at N 50.
+  W0-4 re-runs (PM5-22; specs `scripts/specs/v8-rerun/`, templates on base-lo1 / base-lo3, summ `--rerun-of <id>
+  --rerun-basis window`, add 0): 8 of 8 ran; S2 net Sharpe 2020-2023 v6.1 .980, C1 .936, C2 .908, C3 .902, spo-v1
+  -1.387 (gross .679, as v7's .647), v7.0 1.073, v7.0-lo3 1.084, spo-v2 .509. Gates logged (sv_flow and v7.0's five
+  members agree with the prior; none stopped; no admission line). spo-v1's store `v8-risk-lo1-v9` built (manifest
+  `bdacc15b`, not a trial). Ledger 71 lines, N 50. Spec slip: v6.1's summ wrote its ledger line, then failed on its
+  --json path (spec fixed for the others; v6.1's numbers from its console).
+  V8-F (final book R-2): cumulative vs B0c dSR +.1232, SE .2088, p one-sided .278 (two-sided .567); S2 net 1.2559 >= 1.0;
+  mechanics PASS; cell-count DSR at N 50 .4648 (V[SR] 1.297e-03 per session from 21 window lines; SR0 1.301); beside:
+  legacy DSR .765, effective-N .724 (N_eff 4), PSR vs 0 .993, PBO .359. **Freeze gate UNMET** (p and DSR); OD-3 is the
+  named lever; no history read. H-2 not measured (needs an executable change: the IC runner fixes ResearchFast;
+  PM5-21). Final book: net 4.54%, 4x net Sharpe 1.178, tau .02393, max drawdown 3.25%.
+- Integrator batch 2g dispatched in root (PM7-22 tests, R-8, R-9a / b, W0-4 re-runs, V8-F, H-2). Parked while it
+  holds root:
+- XDATA task GOLD delivered (pool 14: `9ffbce6c`, `3c0aee08`, `e3654b93`; `atx-engine/tools` 267 passed). The
+  gold and characteristics stages of atx-db are not built yet (the silver panel is still being written, no
+  manifest): nothing can be bound today. The sealed reader `research_fields_gold.py` exists (opt-in; pinned
+  manifest SHA; refuses label / forward / IC / holdout columns and the `g_*` / `c_*` features by name; seal
+  pushed into the parquet read), tested on synthetic data only. Candidates on panel columns: 0 (the panels
+  recompute sources v8 already reads; two ideas withdrawn at 0 trials).
+- Ruling PM7-23 (gold panels in X): no gold panel field enters X; the 10 spare hand-written admission trials
+  lapse (X hand-written strings stay 13). The `g_*` / `c_*` features stay refused: which of them exist was chosen
+  in atx-db with 2019-2021 forward returns (90 signals x 3 horizons x 2 variants), so binding one imports a
+  search that this ledger does not count -- deflated Sharpe -- cost if wrong: a mined feature with real alpha
+  waits for a v9 registration that counts the atx-db screen. For the owner (handoff 2): when the gold stages
+  publish; and that the 2024-2026 frozen evaluation planned in atx-db, if run on features X later binds, spends
+  the hidden block for them.
+- XCOMB delivered (pool 13: `30b719e0` theme-erc-v1, `068b4a4d` inv-vol-v1, `914f9944` report; Python fitter
+  suites 209 passed; C++ not compiled). Two rules, the third slot left unused by the lane (every candidate was a
+  rejected or measured rule). Templates `x-theme-erc.json`, `x-inv-vol.json`.
+- Ruling PM7-24 (X cell list, final, before any X measurement): X-2 refinement wave (5 strings); X-3 new-signal
+  wave (8 strings: XSIG 5, XDATA 3); X-4 value theme within FF49 (9 re-screens); X-5 `theme-erc-v1` (criterion as
+  registered by the lane: dSR > 0, mechanics, turnover per unit gross not above the parent's; plan section 13's
+  bar is lifted by name for this risk-only rule, PM7-14); X-6 `inv-vol-v1` (dSR > 0, mechanics, net Sharpe at 4x
+  NAV above the parent's, S2 cost per traded dollar below the parent's); X-9 the mined wave (PM7-2, PM7-12);
+  X-10 the leverage cell (PM7-11, PM7-17), last. Seven construction cells at most; X-1, X-7, X-8 are unused and
+  are not refilled. Order as numbered; parent = the last accepted cell; PM6-6 gross matching on every cell but
+  X-10. `theme-erc-v1` is undefined on a `theme-resid-v1` parent; no such parent exists (R-11 undefined) -- cost
+  if wrong: none measured.
+- Read-only planner delivered `task-INT8-brief.md` (folded in with this entry): none of the 7 lane heads is an
+  ancestor of the v8 head; 1 predicted conflict (`scripts/tests/test_research_spec.py`, XCOMB, resolve as the
+  union); 0 first-compile findings in the mining and XCOMB C++; 2 run-time findings with fixes named.
+- Batch 2g read by the PM. R-8 not accepted (N 48; dSR -.0111, p one-sided .583; realised volatility 2023 .0365
+  below .04; net annual 5.13% at gross 1.124 against 4.54% at .986). R-9a / R-9b report only (N 49, 50): x4 net
+  Sharpe 1.197 / 1.186 against R-2's 1.178. W0-4 re-runs done, N unchanged. V8-F: final book R-2; cumulative
+  against B0c dSR +.1232, SE .2088, p one-sided .278 (two-sided .567); deflated Sharpe at N 50 .465 (V 1.297e-03
+  per session, 21 window lines); the freeze gate is UNMET (p not below .10; DSR below .95). OD-3 named as the
+  lever, nothing read. H-2 not measured (needs an executable change).
+- Ruling PM7-25 (close of the registered v8 program): the program is closed at N 50 with book R-2. The gain
+  over B0c (S2 net Sharpe 1.133 -> 1.256, x4 .978 -> 1.178) is reported as not significant (p .278) and the
+  deflated Sharpe as .465; no claim beyond the registered mechanical facts is made. The gate has run, so the
+  PM5-21 freeze ends: integration 8 may change executables, under a new build tag, and R-2's NAV, fit and
+  w-pass outputs must reproduce byte for byte under the new build before any X measurement (else X has no
+  baseline). The X baseline is R-2. OD-3 (history 2013-2019) and any hidden-block read stay closed: owner
+  decisions, listed in handoff 2. H-2 is measured in integration 8 if the AuditExact selection is a small
+  flag-gated change -- cost if wrong: none; the unmet gate is stated in every report.
+- Ruling PM7-26 (X against an unmet gate): X runs as registered (`v8x-prereg.md`, PM7-6..24). Its adoption gate
+  (DSR_tot >= .95 and p < .10 against R-2) is far from the present .465 and each X trial raises the bar; the PM
+  expects it to stay unmet unless the Sharpe gain is large, and says so here before any X number exists. X
+  cells are still accepted or rejected one by one on their registered rule, and the X report prints the
+  accepted X book beside R-2 with DSR_tot, DSR_hand and the v8-count value -- the owner asked for real progress
+  on alpha; a measured, counted result is that progress whether or not the gate is met -- cost if wrong: none.
+- Integration 8 dispatched in root (brief `task-INT8-brief.md`). Parked while it holds root:
+- Owner ruling (2026-10-02, after the V8-F read): "Approve all your recommendations. Prioritize sharpe, gross
+  return, high capacity, statistical significance."
+- Ruling PM7-27 (what the approval covers): it covers what the PM put to the owner: (1) the OD-3 history read
+  (2013-2019), which the PM named as the registered lever for the unmet gate and the one thing that can move
+  the p value and the deflated Sharpe; OD-3 is now open, under a protocol written and ruled before the read
+  (PM7-28); (2) the X program as registered (PM7-6..26), the mined campaign (PM7-2), the leverage cell
+  (PM7-11, PM7-17); (3) the handling of gold panels (PM7-19, PM7-23). It does not cover what the PM did not
+  recommend: any read of the hidden block (2024-01-01 or later) stays closed, and nothing under `atx-db/` is
+  written -- an approval of recommendations is not an approval of things not recommended -- cost if wrong:
+  one line from the owner opens them.
+- Ruling PM7-28 (OD-3 protocol, outline; the full text is `v8-od3-protocol.md`, to be ruled before any history
+  byte is read): the history is read once, after the last X cell, on books fixed before the read: B0c, R-2 and
+  the accepted X book (if any). No cell, signal, weight or constant is chosen, changed or re-fitted after the
+  read; the history is a test window, not a tuning window. It answers the gate's two statistics on the longer
+  sample and nothing else. The owner's priority order (Sharpe, gross return, capacity, significance) changes no
+  registered criterion; it is used only where a ruling is still open.
+- XPRE delivered `v8-od3-protocol.md` (`186ce9c5`, pool 7, 199 lines; no history data read). Feasibility from
+  manifests and source: 2013 cannot be scored (399-session warm-up from 2012-03-26; no SIC or fundamentals for
+  lo3 before 2014); of the 52 v8.0 members 14 work from the warm-up, 4 from 2014, 26 from about 2014-08, 8 only
+  from 2018 (delisting returns and short-interest data start 2018). Power stated before the read: paired
+  p < .10 needs a 2015-2019 dSR of about .22; DSR >= .95 needs a history Sharpe of about 2.3, out of reach.
+- Ruling PM7-29 (OD-3 protocol, ruled before any history byte is read; the 12 choices as the lane recommends):
+  (1) TRAIN admission, signs and weights are carried back unchanged; no re-admission, no re-fit on history
+  (overrides E-17's pooled re-admission for this read) -- it makes 2015-2019 a true out-of-sample test of the
+  books as built; a re-fit would test the method, not the book. (2) Scored window 2015-01-01 to 2019-12-31;
+  stop, before any return, if the first era has under 1,000 lo3 names. (3) Missing members drop out by the
+  coded present-member rule; B0c carries the same gaps. (4) Universe lo3. (5) Per-era delisting-return label
+  roles. (6) Each book's L is carried; no gross calibration on history; gross is printed. (7) Borrow tiers
+  before 2018 as coded. (8) The gate is read on pooled 2015-2023; the history alone is printed beside it.
+  (9) Deflated Sharpe with the total trial count and the TRAIN-window variance. (10) The ledger takes one
+  history line per book read (B0c, R-2, the X book): history reads 0 -> 2 or 3. (11) Data builds, coverage
+  and mechanics checks on the history may run while X runs; no return, IC or NAV number of the history is
+  opened until the last X cell is ledgered. (12) The X book's gate is against R-2; R-2's against B0c.
+  The deflated-Sharpe part of the gate is expected to stay unmet (power note above); the read can settle the
+  p-value part only. Whatever it shows is printed; a history result that is worse than TRAIN is the result --
+  cost if wrong: (1) is the costly one: if the owner wanted the best book on 11 years, a pooled re-fit is a
+  separate, counted program after this read.
+- Follow-up to XPRE: the five Python tooling gaps (T1-T5) written in the lane with synthetic tests, merged
+  after integration 8.
+- Integration 8 read by the PM (head `5cf83074`, build tag v8-14): all seven lanes merged (XPRE, XSIG, XIMP, LIB3,
+  XDATA with GOLD, XCOMB, mining); 0 compile fixes; C++ suites pass (impl-tests 1 known failure,
+  ConfigJsonNotInDiscoverDigest); golden `0x889874a3b9b29c55` holds at 1 and 4 workers; `AlphaVmSlotReuse.*`
+  6 / 6; R-2 under v8-14: NAV 27 / 27 byte-identical, w pass identical but timing fields, fit identical after
+  substituting `script_sha256`, `admission_sha256` and `provenance/std/registry_sha256`. H-2: flag
+  `--eval-mode audit-exact`; AuditExact 1.18x ResearchFast on E3 (Debug), under 3x, so P-5b may be planned (v9).
+- Ruling PM7-30 (identity under v8-14): R-2 reproduces; the X baseline is R-2 on build v8-14. The
+  `registry_sha256` difference is an input-pin difference: the registry gained rows (R-7, item 5e) and no
+  weight, sign or admission row moved -- byte equality after substitution is the proof -- cost if wrong: none.
+- Ruling PM7-31 (X run settings, before any X measurement): the marginal phase's time cap is 360 s for every X
+  wave (R-7 took 170 s of 180 s; restated here as `v8x-prereg.md` requires); the IC pass memory cap is
+  re-probed before X-3 on mechanics only; the campaign memory probe runs only after the last hand-written
+  cell, on H-F's pool, and reads no return. X trial numbering continues: X-2 is N 51.
+- X batch 1, first dispatch: stopped before the X list pin (P4); no X cell ran, nothing ledgered (N 50). Done at 0
+  trials: fields v13 lo3 (70 reused / 5 computed, manifest `e5f7f28c`, the 70 byte-identical to v10); K1
+  pre-checks: X-2 5 / 5, XSIG 5 / 5, X-4 9 / 9 plan; no X string void. Cause of the stop: the integrator asked
+  the PM for a ruling on XDATA's registration; the PM ruled by message and told the integrator to write the
+  ruling here; the session's permission system refused that edit by the integrator. The PM records its own
+  ruling below (the PM writes every ruling of this ledger); the owner is told.
+- Ruling PM7-32 (XDATA registration for X-3; made by the PM by message at the integrator's question, blind,
+  before the X list pin and before any X read; recorded here by the PM): themes div_season
+  `reversal_seasonality`, vol_beta `low_risk`, season_y2_5 `reversal_seasonality`; no new theme. Tier C+ for all
+  three. Prior sign +1, origin prior. Citations Hartzmark-Solomon 2013 (JFE), Ang-Hodrick-Xing-Zhang 2006 (JF),
+  Heston-Sadka 2008 (JFE) with Keloharju-Linnainmaa-Nyberg 2016 (JF); form, formula, domain and deviation
+  verbatim from `task-XDATA-report.md` sections 4a / 4b -- XDATA's report gave strings, themes and signs but
+  no tier; tier is a weighting constant, so it is fixed here; C+ is the grade XSIG gave its two new
+  single-study candidates, and an unregistered prior takes the least weight -- cost if wrong: three members
+  under-weighted inside their themes; no result was seen. Fields v13 by one bounded run registering both
+  entry modules is accepted (no file change). Confirmed readings: A-1 runs without `--rescreen` (PM7-18 a);
+  a replacing wave's marginal refusal takes the PM6-8 (i) spec-only fix; X-4's statistic is PM5-11's.
+- X batch 1 preconditions (log "X batch 1"): registry X field rows (`297c5d55`; XSIG L2 verbatim for k8_count_63 /
+  inst_own_chg_q, the five v13 fields from the v13 manifest rows). X list pinned (P4): `v8x-prereg.md` section 14
+  (`3603845b`), file SHA-256 `25ba909f95bfc42722fece5dda0501ec8d12700d038fcfb8794ae344df68ecd4`; 27 items (X-2 5,
+  X-3 8, X-4 9, X-5, X-6). Fields v13 lo3 (P6): manifest `e5f7f28c`, 70 reused / 5 computed, the 70 byte-identical.
+  K1: all 22 strings plan on v13 (X-2 5, X-3 8, X-4 9); none void.
+- X-2 (refinement wave; log "X batch 1"), acceptance under PM7-34 (in effect from X-2): screen of `lib-v8x2.json`
+  (5 admission lines; gate PASS 2 of 5 with the prior sign; bac_vq, ind_adj_rev_5_nx, iv_rv_spread_xe runner sign
+  -1 against +1) -> PM7-35 (R-a): the cell is `lib-v8x2b.json` (q5_eg_f49g, ins_opp_buy; 0 new lines). L 1.1474,
+  gross .98621 against .98599 (no correction). ACCEPTED, N 51. S2 net Sharpe 1.2669 (parent 1.2559); dSR +.0109,
+  SE .0603, p one-sided .450 (two-sided .888); mechanics pass; capacity criterion met (4x net Sharpe 1.188 against
+  1.178); turnover .02383 (.02393). Net annual 4.64% (4.54%), gross of cost 5.92% (5.81%), max drawdown 3.11%.
+  DSR at N 51 .488. Admission trials: X hand-written 5 of 13. Parent is X-2 (`lib-v8x2b.json`).
+- X-3 (new-signal wave; log "X batch 1"): IC-pass memory re-probed (PM7-31) on the 60-member library, 4 workers:
+  required 2,024 MiB < cap 2,560 (cap unchanged). Screen of `lib-v8x3.json`: 8 admission lines; gate PASS 5 of 8 with
+  the prior sign; stmom and earn_season runner sign -1 against +1 -> dropped (PM7-35); div_season sign 0 stays. The
+  cell is `lib-v8x3b-gm.json` (k8_intensity, inst_persist, nt_late, div_season, vol_beta, season_y2_5; 0 new lines),
+  L 1.1414 after one correction from 1.1474, gross .98617 against .98621. ACCEPTED, N 52. S2 net Sharpe 1.4205
+  (parent 1.2669); dSR +.1536, SE .1200, p one-sided .098 (two-sided .232); mechanics pass; capacity criterion met
+  (4x 1.316 against 1.188); turnover .02303 (.02383). Net annual 4.97% (4.64%), gross of cost 6.22% (5.92%), max
+  drawdown 2.87%. DSR at N 52 .610. Admission trials: X hand-written 13 of 13. Parent is X-3 (`lib-v8x3b-gm.json`).
+- X-4 (value within FF49; log "X batch 1"): screen of `lib-v8x4.json` (9 re-screen lines, PM7-18 c); kept
+  value_composite_v49, bm_v49, net_payout_v49; ep, cfp, fcfp, ebit_ev_f49, sp (their `_v49` redundant) and rd_me
+  (`_v49` sign 0) restored (PM7-35). The cell is `lib-v8x4b.json`, L 1.1414, gross .98746 against .98617 (no
+  correction). NOT ACCEPTED, N 53 (dSR, not the capacity criterion). S2 net Sharpe 1.3627 (parent 1.4205); dSR
+  -.0578, SE .0374, p one-sided .943 (two-sided .121); mechanics pass; criterion (turnover per unit gross .02311
+  against .02336) met, printed only. Parent stays X-3.
+- X-5 (theme-erc-v1; log "X batch 1"): `x-theme-erc.json` on X-3, calibration gross .96042 at L 1.1414 -> the cell is
+  `x-theme-erc-gm.json`, L 1.1720, gross .98623 against .98617. ACCEPTED, N 54. S2 net Sharpe 1.7695 (parent
+  1.4205); dSR +.3490, SE .2011, p one-sided .029 (two-sided .078); mechanics pass; capacity criterion (turnover per
+  unit gross .02722 against .02336) unmet, printed only (PM7-34); 4x 1.655 (1.316). Net annual 5.08% (4.97%), gross
+  of cost 6.45% (6.22%), max drawdown 2.06%. DSR at N 54 .829. Parent is X-5 (`x-theme-erc-gm.json`).
+- X-6 (inv-vol-v1; log "X batch 1"): `x-inv-vol.json` on X-5 ran (no refusal; no decide phase), calibration gross
+  1.00994 at L 1.1720 -> the cell is `x-inv-vol-gm.json`, L 1.1445, gross .98618 against .98623. NOT ACCEPTED, N 55.
+  S2 net Sharpe 1.6743 (parent 1.7695); dSR -.0952, SE .2141, p one-sided .635 (two-sided .691); mechanics pass;
+  capacity criterion unmet (4x 1.573 against 1.655; cost 10.97 against 12.56 bps), printed only. Parent stays X-5.
+- X batch 1 closed: accepted X book = X-5 (`x-theme-erc-gm.json`). S2 net Sharpe 1.7695, net annual 5.08%, gross of
+  cost 6.45%, x4 1.655, turnover .02684, max drawdown 2.06%. Cumulative against R-2: dSR +.5135, SE .1841, p
+  one-sided .0032 (two-sided .0098). Admission lines 34 (v8 12, X hand-written 13 of 13, X-4 re-screens 9); ledger 98
+  lines, head `a190f7ef`.
+- X batch 1 resumed in root (X-2..X-6). Parked while it holds root:
+- XPRE delivered the OD-3 tooling (pool 7: `f68058e2` T1-T5, `846941d2` protocol as ruled with the runbook,
+  `a7671d1a` report; 31 new tests pass; `atx-impl/tools` 609 passed; flags absent byte-identical). It merges
+  after the last X cell and before the history read. Limit: a book whose NAV reads `--risk-model` cannot be
+  read on the history (no per-era risk store); the runbook stops on it.
+- Owner directive (2026-10-02): "we should try world quant style alphas based on ohlcv data to see if we can
+  build more alphas. 101 formulaic alphas pdf is good place to start. Could help improve v8 sharpe".
+- Ruling PM7-33 (formulaic-alpha wave, cell X-7; ruled before the lane starts and before any X result is read
+  by the PM): lane XWQ translates Kakushadze (2016), "101 Formulaic Alphas", into the DSL, blind. Every formula
+  that the op catalog and the fields in house can express exactly is listed. From those the lane selects, by a
+  rule fixed in its report before selection and using no return of any window, at most 20 strings for the
+  wave: the roster cap is 80 (PM7-13), the roster after X-3 is 60. Each selected string is one admission
+  trial (X hand-written admission trials 13 -> at most 33; this replaces the 10 lapsed trials, PM7-18) and
+  enters N_tot; the wave is one construction cell, X-7, after X-6 and before the mined wave, judged by PM7-10
+  (dSR > 0, mechanics, net Sharpe at 4x NAV not lower than the parent's; turnover printed). The published
+  formulas trade at horizons of days; the book trades slowly, so each string is taken with the library's
+  standard smoothing (the house `decay_linear` 21 form), fixed blind, no per-alpha tuning. The formulas not
+  selected are not screened in v8 and are listed for v9 -- the owner asks for more alphas and for
+  statistical significance; 101 screened strings would add 101 to the deflation count for signals whose
+  published holding period the book cannot trade; 20 chosen blind is the largest wave the cap admits --
+  cost if wrong: a good formula among the unselected waits for v9.
+- Lane XWQ dispatched (pool 12, branch `feat/platform-v8-xwq-20261002`).
+- Owner directive (2026-10-02): "we can relax significance and capacity and push more weight towards sharpe and
+  gross return. We need to meet a minimum baseline to get started capacity is a bonus."
+- Ruling PM7-34 (made blind: the PM has seen no X result; sent to the running integrator and to XWQ by message
+  at once, recorded here when root was free). (1) Cell acceptance, for every X cell whose verdict is not yet
+  written: dSR > 0 AND mechanics. Each cell's registered capacity, turnover or cost criterion is computed and
+  printed as "capacity criterion: met / unmet" and no longer decides (amends PM7-10, PM7-24). A cell already
+  rejected only on such a criterion is reported to the PM and re-ruled before the next cell runs. (2) Adoption
+  (replaces PM7-8): the accepted X book is the deployable book if S2 net Sharpe >= 1.0 (the "minimum
+  baseline", the registered first part of the freeze gate) AND mechanics; the cumulative p against R-2,
+  DSR_tot, DSR_hand and the 4x net Sharpe are printed beside it and do not gate. (3) Leverage cell X-10
+  (amends PM7-11): accepted on net annual return higher AND S2 net Sharpe not lower than the parent's by more
+  than .100 AND mechanics; the 4x guard is printed. (4) X-7 (amends PM7-33): fast formulas are not excluded;
+  two house smoothing forms fixed before selection, assigned by the formula's printed look-backs
+  (longest window under 10 sessions: `decay_linear` 5; else 21). (5) Unchanged: every trial is still counted
+  and every statistic still printed; one variant per hypothesis; no retry of a rejected cell; the hidden
+  block stays closed; the OD-3 read stays last and informational. The reports say in plain words that the
+  book was adopted on the owner's relaxed rule and what the significance statistics are -- the owner sets
+  the risk appetite; the PM's part is that the numbers stay honest -- cost if wrong: a book adopted on a
+  gain that is noise; the printed p and deflated Sharpe show exactly that risk.
+- X-2 screen (gate p1-v8x2 PASS; 5 admission lines ledgered): all 5 status admitted; runner sign agrees with
+  the prior for q5_eg_f49g and ins_opp_buy; against it (-1) for bac_vq, ind_adj_rev_5_nx, iv_rv_spread_xe. The
+  integrator stopped: "a refinement the gate does not admit" had two readings, written down by it before it
+  read the gate.
+- Ruling PM7-35 (made with the screen's signs known and no w, NAV or return in existence): reading R-a. For a
+  replacement, "admitted" means status admitted AND runner sign agrees with the prior; the three leave the
+  wave and bac, ind_adj_rev_5, iv_rv_spread keep their pre-X strings (PM7-18 b). X-2 runs on v8x2b = v80 with
+  q5_eg_f49g and ins_opp_buy replaced. Additions (X-3, X-7): runner sign 0 stays (R-2 precedent); runner sign
+  opposite to the prior is dropped; fixed before X-3's screen. X-4's re-screened replacements take the same
+  reading -- a replacement must show its registered sign to displace a member that holds its admission; the
+  fit would otherwise weight it against its own evidence -- cost if wrong: three refinements left out,
+  listed for v9.
+- XWQ delivered (pool 12; tier 1 `387ed0e9`, `5b8e7b55`, `46225af7`, `1f8bf582`, `63e39f9c`; tier 2 `0fcb9f2c`,
+  `7bf8e68e`; report `task-XWQ-report.md`). Of the 101 formulas 46 are expressible exactly, 55 are not (43 need
+  vwap, 12 rank a price level inside a time-series op). Tier 1: 6 picks (#99, #35, #55, #6, #2, #101), one per
+  mechanism group. Tier 2 (asked by the PM after the owner relaxed significance): 8 more (#95, #85, #30, #43,
+  #14, #38, #44, #33). `xwq_check.py` PASS (cell for cell against numpy; 59 planted errors fail). New fields
+  `open_adj`, `high_adj`, `low_adj`. No result was read by the lane.
+- Ruling PM7-36 (XWQ, before any X-7 screen): (a) new theme `price_volume`, appended after `filing_events`;
+  (b) the bar fields are same-session like `close`, stamped and clocked as `close` is (report section 7 cites
+  the lines); (c) #33 and #38 are withdrawn at 0 trials: they short the strong intraday days that tier-1 #101
+  buys, so the wave would hold two opposite priors on one mechanism -- one variant per hypothesis; (d) #14 and
+  #44 stay: overlap with #6 is bounded by the theme share and the member cap. X-7 screens 12 strings
+  (X hand-written admission trials 13 + 12 = 25). The 43 formulas that need vwap are a data ask for the
+  owner (handoff 2) -- cost if wrong: (c) the reversal reading of the bar was the right one and is not
+  screened; it is listed for v9.
+- X batch 1 read by the PM (head `2397b33f`): X-2 accepted (N 51, dSR +.011); X-3 accepted (N 52, dSR +.154, p
+  one-sided .098; 6 of 8 new members); X-4 not accepted (N 53, dSR -.058); X-5 `theme-erc-v1` accepted under
+  PM7-34 (N 54, dSR +.349, p one-sided .029; capacity criterion unmet: turnover per unit gross .02722 against
+  .02336); X-6 not accepted (N 55, dSR -.095). Accepted X book = X-5: S2 net Sharpe 1.7695, net annual 5.08%,
+  gross of cost 6.45%, x4 net 1.655, turnover .02684, maximum drawdown 2.06%; cumulative paired against R-2
+  dSR +.5135, SE .1841, p one-sided .0032.
+- Ruling PM7-37 (how X-5 is reported; written when its number was read): `theme-erc-v1` sets ten theme shares
+  from the sleeve covariance of the same four years the book is then scored on. It reads no mean return, but
+  the shares are fitted in sample, and one risk-only reweighting giving +.349 is larger than the PM's prior.
+  The X-5 gain is therefore reported as in-sample until the OD-3 read, where the TRAIN shares are carried
+  back to 2015-2019 unchanged (PM7-29 (1)); a read-only adversarial review of the rule's code path (look-ahead
+  in the sleeve returns, the fit window, the runner's verify) runs before X-10 and before any report -- cost
+  if wrong: none; the cell stays accepted on its registered rule unless the review finds a defect (rule 7).
+- X batch 2 dispatched in root (merge XWQ `7bf8e68e`, theme `price_volume`, fields v14, X-7). Parked meanwhile:
+- Adversarial review of X-5 delivered (`review-x5-theme-erc.md`, folded in with this entry). Verdict SOUND with
+  qualifications: no defect, no look-ahead beyond the declared full-TRAIN covariance fit, fair comparison (the
+  two NAV recipes differ only in leverage and the combined-signal hash). Decomposition of +.349: lower
+  volatility +.311 (3.50% -> 2.87% at matched gross, lower in every year), gross alpha +.080, trade cost -.042
+  (turnover +16.5%), borrow +.002. Shares after the cap: investment_issuance .141, low_risk .129,
+  reversal_seasonality .128, profitability_quality .114, ownership_flow .091, value .090, short_interest .083,
+  earnings_momentum .071, price_momentum .057, filing_events .051, options_implied .0455. In the parent 62% of
+  risk sat in price_momentum, filing_events and earnings_momentum. The size is inflated in sample: the
+  low-volatility themes were also the high-Sharpe themes in 2020-2023 (rank correlation +.65); under the rule's
+  own equal-Sharpe premise the expected gain is about +.15. Reviewer's odds: about 60% that a positive gain
+  survives out of sample, about 70% that it is well below +.35.
+- Ruling PM7-38 (after the review): X-5 stands accepted (no defect; rule 7 does not apply). Every report prints
+  the review's decomposition and the "about +.15 expected" line beside the +.349. The OD-3 read prints, for
+  X-5 against its parent on 2015-2019, the volatility ratio and the return ratio separately (a return ratio
+  under about .85 means the TRAIN gain was mostly the in-sample alignment) -- cost if wrong: none.
+- X batch 2 stopped at the theme step (head `069428e6`): XWQ merged (`03fcf92f`), suites pass (`scripts/tests` 248
+  passed after a tests-only fix `4d0c8d8f`); theme `price_volume` needs the C++ list `theme_resid_order`
+  (`strategy_ic_theme_resid.hpp`) extended, which the pin R6B-O-4 requires. Nothing screened; N 55.
+  Note for the campaign: at its lock mine-c1 loses the two fields X-3 members now read; 10 fields, B = 110.
+- Ruling PM7-39 (theme `price_volume`; before any X-7 screen): option (i). The C++ list takes `price_volume` as
+  its 12th and last entry; the ic executable and its tests are rebuilt under a new build tag; X-5's w pass,
+  fit and NAV must reproduce under the new build (PM7-30's identity rule) before fields v14 and X-7 -- the
+  registered pin keeps Python and C++ theme orders equal; relaxing the pin or moving the picks to another
+  theme would change a registration to save one build -- cost if wrong: one build and one identity run.
+
+## PM session 8
+
+Owner goal of 2026-10-02, evening: "finish v8 implementation ... expand v8 scope to include real progress towards alpha
+generation ... new orthogonal alpha dsl signals, improving existing ones, improving combinations, finding new datasets
+... push sharpe, deflated sharpe, capacity, gross returns all up ... Prioritize sharpe and gross returns over
+significance and capacity. We need to clear the hurdle rate first to enter production."
+- Ruling PM8-1 (blind; no X-7, campaign, X-9 or X-10 statistic exists): PM7-34 stays the acceptance and adoption rule.
+  Every trial is still counted and every statistic still printed -- cost if wrong: as PM7-34.
+- Ruling PM8-2 (blind): a second expansion "Y" is opened: lanes YSIG (new signals, round 2), YDATA (vwap and new field
+  families), YCOMB (combination and return rules, round 2), YINFRA (reusable research-loop tooling; no trials). Y cells
+  run after X-9 on parent = the accepted book then. The Y budget and cell list are pinned in a `v8y-prereg.md` by the
+  PM before any Y measurement.
+- Ruling PM8-3 (blind to X-10; re-order made before any X-10 read): the leverage cell X-10 moves to after the last Y
+  cell (PM7-3: leverage scales whatever was built). The X gate / adoption print of section 7 runs once after it. Order
+  now: X-7, campaign v9-mine-c1, X-9, Y cells, X-10, adoption print, OD-3 read last -- cost if wrong: none; one order
+  change with no read.
+- Ruling PM8-4: root runs X batch 2 and 3 without returning to the PM between cells, under the registered rules. Root
+  stops and reports only when (a) a step has two readings that change a number, (b) a mechanic or identity check
+  fails, (c) a cap is hit. A stop costs hours; a registered rule that covers the case is applied and logged, not asked
+  about.
+- X batch 2 resumed in root (log "X batch 2, resumed"). Step 1 (PM7-39): build v8-15 (`798d3b23`, ic + ic-tests; ic
+  `6aac48f2`) verified on disk; X-5 reproduces under it: w 10 / 12 byte-identical (the 2 others timing paths only), NAV
+  27 / 27, fit byte-identical after the PM7-30 substitution (script, admission and registry hashes; registry
+  `7ff10f4e` -> `19b01d11` by the `price_volume` row); ic-tests 159 / 159, `atx-impl/tools` 612 passed, `scripts/tests`
+  248 passed, 0 failed (`c87b9051`).
+- Fields v14 lo3 (`build-equity/train-2020-2023-lo3-fields-v14`, 0 trials): v13 + `open_adj`, `high_adj`, `low_adj` by the
+  XWQ section 7 driver; manifest `4b12c0e1d90d8ab5cfa6e6281d104a4b8d229a42060505c39217f97d616cbb0c`; reused 75 / computed 3
+  as expected, the 75 bit-identical (hardlinks of v13); 72.8 s, 277 MiB.
+- X-7 (formulaic-alpha wave; log "X batch 2, resumed"): wq_099 plans 8 slots in the exe as frozen; rewritten by the
+  registered mechanical rule (XWQ section 6 / E5) to `(x * -1)`, 6 slots, same values. Screen of `lib-v8x7.json` (12
+  admission lines; gate PASS 8 of 12 with the prior sign); wq_002 and wq_101 runner sign -1 -> dropped (PM7-35);
+  wq_030, wq_014 reject_redundant stay at weight 0. Marginal phase: X-5's weights hold 11 themes, the verb takes 10 ->
+  PM6-8 (i) applied (report only); two runs failed on the host (memory floor, then the 360 s cap under other sessions'
+  load), blind re-runs, nothing read. The cell is `lib-v8x7b-gm.json` (v8x3b + 10), theme-erc-v1 re-solved on 12 themes
+  (price_volume .154), L 1.2685 after one correction from 1.1720, gross .98637 against .98623. NOT ACCEPTED, N 56. S2 net
+  Sharpe 1.6087 (parent 1.7695); dSR -.1607, SE .1927, p one-sided .810 (two-sided .399); mechanics pass; capacity
+  criterion unmet (4x 1.506 against 1.655); turnover .03562 (.02684). Net annual 4.61% (5.08%), gross of cost 6.26%
+  (6.45%), max drawdown 2.18%. DSR at N 56 .731. Admission trials: X hand-written 25 (13 + 12). Parent stays X-5.
+- Campaign v9-mine-c1 (log "X batch 2, resumed", step 4) on H-F = X-5: A3 left 10 fields, B = 110 (z 3.5062, raw
+  discover t 5.3996); pool 47 members + the book composite; probe 3,737 / 2,577 / 2,560 MiB at 4 / 2 / 1 workers (the
+  12-field probe matches the joined model at the role's 5,922 names), W 4, cap 3,776 MiB. A tool defect stopped the
+  probe before any verb ran (Windows relative path), fixed in `research_mine.py` (`23b52a5d`, rule 7). Run 232.6 s,
+  completed; campaign line `f1ce3bf835d4dc54` (registry count 110), N_c unchanged 56, second line refused (exit 2);
+  mechanics pass (distinct 110 = 101 evaluated + 9 screen-rejected; racing / rung-failed 0). Shortlisted 0 (largest
+  raw f2 5.00 against 5.40), admitted 0. X-9 undefined (0). M 110; N_tot 212. Tests `a1d2ef74` (the registered
+  template kept as a fixture; the live spec pinned as locked): `scripts/tests` 251 passed, 0 failed.
+- X batch 2 stopped where PM8-3 puts the stop: X-10 deferred. Accepted X book = X-5 (S2 net Sharpe 1.7695, net 5.08%,
+  gross of cost 6.45%, 4x 1.655, tau .02684, max drawdown 2.06%). Ledger 112 lines, head `d1484e69`.
+
+- Recorded by root (Y integration, second session): PM8-5..PM8-14 and the lane notes between them verbatim from the
+  PM's draft `pm8-rulings-draft.md` (draft deleted after this commit); PM8-15 verbatim from the PM's dispatch.
+
+- PM8-5: multi-horizon rule added to YCOMB (cap 5); YSIG registers horizon class + half-life per candidate and proposes per-theme half-life table.
+- PM8-6 (YSIG rulings, blind, no Y statistic): YSIG-a granted (iv_vol_of_vol, day_rev_freq, exch_switch carried from R-12 with LIB2's frozen argv; R-12 never ran, 0 trials spent). YSIG-b granted (Y fields = v14 + exch_up_365d). YSIG-c granted (peer_mom_1m equal-weighted; group_sum op listed as an op ask, not written in Y). Roster cap: `house_budget.max_roster` 80 -> 96 for Y, before any Y screen (79 + YDATA candidates would exceed 80; the cap was a budget guard, not a hypothesis) -- cost if wrong: none; every string is still an admission trial.
+- PM8-7: YSIG round 2b dispatched (fill to 16: short_interest priority, unread fields).
+
+- PM8-8 (YDATA rulings, blind): (1) VWAP: owner decision (external purchase); until then XWQ's 43 V formulas stay out; data ask doc `docs/plans/2026-10-02-v8y-vwap-data-ask.md`. (2) Theme `merger_arbitrage` approved as the 13th theme, appended last in Python and the C++ `theme_resid_order` (PM7-39 precedent: one build + identity run); `div_event` in filing_events confirmed. (3) TH3 shD1 at lag 1 allowed: observed at the session, not forward-looking (lane's argument); root verifies the vendor column semantics and the look-ahead probe before the screen. (4) 4 YDATA admission trials approved; Y budget pinned in v8y-prereg (hand-written admission trials +14 for Y: 10 YSIG + 4 YDATA; N_c +6 for Y cells). (5) ORATS put-wing: deferred; if it arrives, one of smile_slope / iv_skew is kept before any read. (6) DEFECT: R-12 `iv_vol_of_vol` reads `iv_atm_21d` one session early under the IV clock -> root corrects the lag to the IV-clock convention of `iv_rv_spread_xe` before the screen (a defect repair, 0 trials, one variant), string SHA re-pinned and logged.
+YDATA delivered (pool-13, 6e0e4ee3): fields iv_skew_21, stio_chg_q, div_init_omit, deal_pending; candidates smile_slope, stio_trade, div_event, deal_target (all C+, +1). Root verifies MTW window and 252-session deal horizon against the papers. Ranked sources: merger arb (built), 13F common-ownership lead-lag (pairwise reader needed), N-PORT flows, Lazy Prices text, pension underfunding, analyst revisions (buy).
+
+- PM8-9 (YINFRA): merge order at Y integration: YINFRA first (pure tooling, flag-absent identity; suites 273/0), then YSIG, YDATA, YCOMB. First real wave (Y-SIG) runs stage by stage with `--until` and root compares against a hand plan on the first stage; the "b" library reuse of the screen's marginal rows is report-only and is verified byte-equal on one cell before trusted. Release IC exe recommendation: root confirms the byte-identity lines (log 3344-3358) and switches the IC exe to Release under a new build tag with an identity run (PM7-30). Scoreboard's 4x row assumption checked on one real capacity_curve.csv.
+YINFRA delivered (pool-15, dde31df3): `research_cycle.py candidates pin|emit`, `wave plan|run|status`, `scoreboard --timings`; 9 resumable stages with receipts; seal scan on run logs; cross-lane edits research_cycle.py dispatch lines, research_add_alpha.py --save-plan opt-in.
+
+- PM8-10 (YCOMB rulings, blind; no Y statistic exists): (a) Y-5 two-speed-v1 is wired (IC/NAV) as one cell -- the owner's directive asks for the multi-horizon mechanism; R-3 (Garleanu-Pedersen per-signal decay in the aim, dSR -.0118) is a different hypothesis from fast/slow sleeves netted before trading, and the PM counts Y-5 once; (b) Y-1 vol-target-v1 is a distinct hypothesis from R-8 (time-varying leverage against a constant L, Moreira-Muir); it runs as the child of X-10 with its registered criterion; if E-45 makes it undefined on X-10 at run time it is 0 and logged; (c) Y-3 and Y-2 accepted as registered (PM7-34 default; borrow and cost per traded dollar printed for Y-3; dSR SE printed for Y-2 with its 2021-2023 window stated); (d) Y-4 stays unused; (e) Y cell order, fixed now: Y-S (one add-alpha wave: YSIG 10 + YDATA 4 (+ YDATA round 2 if delivered before the Y-S screen), parent = the accepted book after X-9) -> Y-3 norm-score -> Y-2 theme-tsmom -> Y-5 two-speed -> X-10 (L 2.0) -> Y-1 vol-target -> adoption print (section 7) -> OD-3 read. Why: signals before rules; the rank-shape rule acts on member scores before sleeves; theme timing before the trade rule; leverage last and its managed form after it -- cost if wrong: none; the order is set with no read.
+YCOMB delivered (pool-14, 4ffd0eb0): Y-1 vol-target-v1 (nav, not gross matched), Y-2 theme-tsmom-v1 (fit --theme-tsmom), Y-3 norm-score-v1 (nav --rank-shape), Y-5 two-speed kernel (wiring pending). Build targets: atx-impl-strategy-target-tests, atx-impl-strategy-ic-tests, atx-impl-tests, engine book group, atx-equity-strategy, atx-equity-strategy-ic. Identity: parent NAV byte-identical flags absent; fit same weights except script_sha256; w identical combined signal.
+
+- PM8-11 (YDATA round 2, blind): `conn_rev` (`rank((-1 * conn_ret63))`, reversal_seasonality, C+, +1; field `conn_ret63` from 13F, 05f0a409) joins the Y-S wave as the 15th hand-written admission trial (Y total 15: YSIG 10 + YDATA 5). The LIB3-c cost exclusion was a capacity/cost reading; under PM7-34 cost no longer excludes a candidate before its screen, the capacity criterion is printed. Raw FCAP ranks accepted (the paper's abnormal step needs data not in house; stated as a deviation). If a fund-level route lands later, one version is kept before any read. The field is built in its own process with `--reuse` (3-6 min est.). This is the v9 C-7 / D-L3 string; Y consumes it, v9's list drops it.
+YDATA round 2 (pool-13, e1cf4135): conn_ret63 builder, 340 tools tests pass.
+
+- PM8-12 (owner architecture directive, 2026-10-02 evening; binding on every lane from now): "move away from continuously generating massive python scripts like atx-impl/strategies/generate_fund_ic_v70.py for research/implementation. Focus on building core functionality that is reusable and modular in the core C++ engine and use python as a flexible wrapper around that. Build the platform out instead of hacking on to it." Rules: (a) no new versioned copy of a script (generate_*_vN.py and the like); a change is a flag or a spec, not a copy; (b) numerical and research logic (field builders, fitters, composition and NAV rules, IC / marginal / admission statistics) lives in atx-engine C++ with tests; Python is orchestration, specs, receipts and reporting; (c) a Python fitter that mirrors a C++ rule ("Python equals C++" tests) is a duplication to retire, not a pattern to extend; (d) lane YARCH audits the Python surface (11 generate_* scripts, scripts/research_*.py ~4,400 lines, atx-engine/tools ~26,000 lines) and delivers the migration plan and first C++ slices; (e) a Y lane already delivered is not rewritten before its cell runs (the registration stands); the migration lands after the Y cells, except where YARCH's slice is byte-identical and root chooses to merge it earlier -- cost if wrong: one sprint of platform work before the next alpha wave; the owner asked for it.
+
+- PM8-13 (blind): the per-theme half-life table pinned = YCOMB's (fast set reversal_seasonality, price_volume at theta_f = 1 - 2^(-1/5); the rest at the parent's .05); YSIG's table differs only within the slow bucket and its member-level override is not adopted. Y-5 wired in C++ (`book::two_speed_aim`, e2ac7d63); gross matching applies. Composition with vol-target / risk-target: the netted aim is the book target, leverage rules scale the net book (follow-up ordered). Skipped-rebalance count printed beside the parent's.
+Y-2 note for YARCH: `composition_theme_tsmom.py` duplicates the C++ mass kernel -> retire in migration.
+
+- PM8-14 (Y pre-registration, blind; `v8y-prereg.md` @ 87a9e0f4 on feat/platform-v8-ypre-20261002, SHA-256 d78aba66...57fe): ruled as YPRE recommends on every open choice YP-1..YP-15. In particular: YP-4/YP-10 the two-speed half-life table gains `{"merger_arbitrage", 126.0}` (C++ and Python) before the build (root edits at integration; flag-absent identity unaffected); YP-5 the iv_vol_of_vol repair spelling is `delay(iv_atm_21d, 1)` at each read (SHA 4d42a72b...); YP-6 a sign or constant its citation contradicts is corrected before any read at 0 trials; YP-7 Y-S (stage by stage), Y-3, Y-2, Y-5 through `wave run`; X-10 and Y-1 by hand; YP-8 Y-1 runs even after a rejected X-10; YP-11 OD-3 reads Y-F0 only; YP-12 IC memory re-probed before the Y-S screen, marginal-phase cap 720 s; YP-13 roster order as listed; YP-15 YCOMB 3ff73201 is Y-1's registered form on a Y-5 parent. Housekeeping: YSIG's candidate numbering Y-1..Y-10 is not used (ids only); root adds the missing `deal_pending` registry row from the YDATA report at the fields v15 build; YDATA candidates get horizon class / half-life from their theme's table entry.
+
+- PM8-15 (root's questions after X batch 3): (a) the marginal-phase time cap is 720 s for every Y wave (YP-12); (b) PM6-8 (i) is the standing rule for every add-alpha wave whose parent is a theme-erc book with more themes than the marginal tool takes; (c) the runbook's probe expectations are restated at the role's 5,922 names -- cost if wrong: none, no number read changes.
+- PM8-17 (blind; by message to root, recorded verbatim): the 10 newly expressible formulaic strings (YOPS report section 4) are entered in the candidate queue as proposed and are NOT screened in Y (0 trials) -- X-7's formulaic wave was just rejected at dSR -.161 with turnover up a third, and the Y budget is better spent on the 15 Y strings; they are listed for v9.
+
+## YSIG delivered (pool-12, 5720aa0f): 9 candidates
+peer_mom_1m, so_wang_rev, iv_vol_of_vol, day_rev_freq, mom_turn, ea_uvol, dato, fscore_hbm, exch_switch.
+Concern: Lee-Swaminathan and Soliman signs from memory -> root verifies against citation before screen.
+Round 2b (5431831a): +1 ins_cluster (ownership_flow, C+, medium) -> Y set = 10. Short interest / value exhausted on v14 fields.
+Data asks from YSIG: securities lending (utilisation, borrow fee, lendable supply); SG&A + R&D history fields (intangible value).
+ins_cluster: cluster rule 3 buyers / 21 sessions (looser than paper's 2 days) -- registered as is, one variant.
+
+## PM session 9 (P9 sprint, R0-0)
+
+Recorded by root (pool-2, `feat/platform-v8-20260929` @ `d7c1c520`) as plan `docs/plans/2026-10-03-p9-sprint-plan.md`
+section 1.1 step R0-0 requires: the PM's rulings DEC-1..DEC-4 and DEC-19 exactly as decided in plan section 0.5, made
+blind (no Y statistic exists; no Y cell has run). "[plan text]" marks a quotation from the plan. "Cost if wrong" is taken
+from plan section 6 (row OD-P9-2) for DEC-3 and from sections 1.2 / 7.1 for the others.
+
+- Ruling DEC-1 (blind; no Y statistic exists): Blocker 1 -- amend `y-s.json` marginal cap 720 -> 600 s (the runner's
+  hard maximum) before preflight; add one `RUNNER_MAX_SECONDS` constant checked at manifest and spec load (P0-FIX =
+  lane E1 task 0; the spec amended at R0-2) -- why: `y-s.json:41` asks for 720 s but `run_bounded_research.py:92-94`
+  refuses more than 600 s, and the validators accept any positive value (`wave_manifest.py:225-229`,
+  `research_cycle.py:369-376`, `wave_steps.py:181-183`; OR-1); X-7's pool-only marginal took 331.5 s at 70 members, so
+  Y-S at 58 + 15 = 73 members is ~360 s [arith, K^2 scaling, CM section 5], inside 600 s; X-7's 360.5 s failure was host
+  load (F-5) -- cost if wrong: "blocker; no output byte moves" [plan text, section 1.2 row `RUNNER_MAX_SECONDS`]; "The
+  wave driver's first real run (Y-S) finds new defects | medium | Phase 0 stops for rulings | stage-by-stage `--until`
+  (P12); P0-FIX closes the two known blockers" [plan text, section 7.1]. If 600 s proves too tight, R0-6's pre-ruled
+  fallback applies: "a time-cap failure (nothing written) gets one blind re-run on a quiet host (no compiler, free >=
+  peak + 1,536 MiB); a second failure moves the marginal to the Release IC exe under v8y P6 after its u / w identity
+  (0 trials)" [plan text, section 1.1 R0-6]. Note: the 720 s amended here is the cap of PM8-15 (a) / YP-12, which the
+  runner cannot honour.
+- Ruling DEC-2 (blind): Blocker 2 -- the admission budget counts a list of cycle prefixes; the Y-S budget is amended to
+  `["v8x", "v8ys"]` (P0-FIX `admission_cycle_prefixes`, the string form stays valid; the spec amended at R0-2) -- why:
+  `wave_stage_preflight.py:72` counts one prefix while `y-s.json:13` names library `v8ys` and `:27` prefix `v8x` (OR
+  section 4); the registered hand count is "X hand-written 25 + Y 15" (v8y section 3), which spans both prefixes -- cost
+  if wrong: "admission budget prefix list (`admission_cycle_prefixes`; the string form stays valid) | OR §4 |
+  **before** (P0-FIX) | blocker" [plan text, section 1.2]; "Phase 0 stops for rulings" [plan text, section 7.1 row "The
+  wave driver's first real run (Y-S) finds new defects"].
+- Ruling DEC-3 (blind; the PM's default pending owner decision OD-P9-2): OD-3 is not read at the end of v8; it is read
+  once at the P9 freeze on the frozen P9-F0 with Y-F0 beside it (R0-13: not read now; if the owner rules "read now",
+  v8x section 10's runbook on Y-F0 only, YP-11) -- why: `holdout_gate.py` is one-shot and the history block is
+  single-use; reading Y-F0 now leaves P9 with no clean test (lit section 5.2 (b), 5.3); PM8-10 (e)'s order (OD-3 read
+  last in v8) may change before a read at no cost -- cost if wrong: "none for ~2 sessions (root stops before OD-3
+  anyway, st7:68-69); reading now spends the only clean test on a book P9 is built to replace" [plan text, section 6
+  row OD-P9-2].
+- Ruling DEC-4 (blind): Before the Y cells only Python fixes that move no exe output byte land; anything that moves NAV,
+  IC, fit, weights or manifest bytes waits for the P9 re-base -- why: NV-4 (Python half), OR-2 (rows), OR-5, F-7, F-9
+  are byte-neutral; NV-1..NV-3, CM-5, CM-6, DS-3, FD-1, FD-5 are not; identity discipline (main review section 4) and
+  PM8-12 (e) (the migration lands after the Y cells) -- cost if wrong: the deferred fixes carry "moves NAV bytes: one
+  re-pin" (C1), "moves fit bytes" (D2), "moves IC bytes" (S2), "moves manifest bytes" (A1, A2) and "changes resume
+  semantics and the run-dir naming the seal scan re-derives (OR §4 coupling)" (E1) [plan text, section 1.2 "why"
+  column]; "Identity re-pin cascade: C1 (NAV summary keys, maybe cost bits), A1 (manifest keys), D2 (fit SHA) move
+  bytes; a wrong substitution list hides a real change | medium | a paired test against a stale reference" [plan text,
+  section 7.1].
+- Ruling DEC-19 (blind): Pools -- 12-16 released at wave-1 dispatch (all merged by SHA, st7:88); 7 and 8 recovered
+  after `-Status` shows the owner dead; 17-20 leased fresh; never 1, 2 (root), 6, 10 -- why: lease status at plan time
+  was 7, 8, 10 owner=dead and 12-16 alive (the v8y lanes, all merged, st7:88); `global-constraints.md` (never 1 or 6);
+  X briefs rule 4 (pool 10); wave 1 needs eight pools (section 3.3: A1 12, A2 13, B1 14, C1 15, D1 16, E1 17, S1 18,
+  T1 19) -- cost if wrong: sections 1.2 and 7.1 hold no row on pools; nearest plan text: "Root is the bottleneck ... |
+  high | waves stall; lanes idle" [plan text, section 7.1]. Root releases a pool only when its branch head is an
+  ancestor of `feat/platform-v8-20260929` and its tree holds nothing uncommitted; otherwise the pool stays leased and
+  is reported, so a wrong release costs no lane work.
+
+PM8-16 and PM8-18, recorded verbatim. Status 7 names them (`docs/plans/2026-10-02-platform-v8-status-7.md:57-58`:
+"PM8-16 YCOMB registration fixes. ... PM8-18 YARCH slices.") but this file held no text for either. Searched: status 7,
+`pm8-rulings-addendum.md`, `integration-log.md` (line 6436: "PM8-16 was not received by root."), `review-ycomb.md`,
+`task-YCOMB-report.md`, `git log --all --grep=PM8-16` / `--grep=PM8-18`. The fullest text is the PM's addendum
+`.superpowers/sdd/platform-v8-20260929/pm8-rulings-addendum.md` (git-ignored, never committed; mtime 2026-10-02 23:27),
+lines 27 and 31; PM8-16's per-finding rulings are also in `review-ycomb.md:5` (committed in `cc08ac35`). Commits citing
+them: PM8-16 `5c5ea976`, `e1460432`, `5ee9f039`, `573816d3`, `f51c7289`, `b3b5dab4`, `2206504b`, `cc08ac35`; PM8-18
+`e812a0fd`, `ffbbcb56`, `88cd7d49`.
+
+PM8-16 (verbatim, `pm8-rulings-addendum.md:27`):
+
+> - PM8-16 (YCOMB review, blind; `review-ycomb.md`): registration fixes -- theta_s = .05 enforced (refuse trade_fraction != .05 under two-speed); theta_f = 1 - 2^(-C/5) at cadence C; fast mass share over themes with a present member at d; carry lambda_t * F under vol/risk-target; refuse --rank-shape with aim-partial-v6. Two MAJOR (per-name rate accepted with two-speed; grid cadence guard) + 14 MINOR fixed before merge. Reviewer found no compile or look-ahead defect.
+
+PM8-16, the per-finding rulings (verbatim, `review-ycomb.md:5`):
+
+> PM rulings on the registration findings (PM8-16, blind): #3 theta_s = .05 is the registration: refuse `trade_fraction != two_speed_slow_theta` under two-speed. #4 theta_f = 1 - 2^(-C/5) so the fast half-life is 5 sessions at any cadence C; print C and theta_f in the summary. #9 the fast mass share is computed over themes with at least one present member at d (the parent's own re-ranking behaviour). #10 carry lambda_t * F (the fast holding follows the scaled book), registered now. #11 refuse `--rank-shape` with aim-partial-v6 (report says v5 only).
+
+PM8-18 (verbatim, `pm8-rulings-addendum.md:31`):
+
+> - PM8-18 (YARCH): slices 1-2 (C++ field library `atx-engine-research-fields-tests`, 26 tests, EXCLUDE_FROM_ALL; spec-driven `generate_from_spec.py` rebuilding the v71 library byte-for-byte) merge after root builds the test target; the 11 deprecated generators are deleted only after the `--plan-json` gate (saved live `--plan-only` output, check exit 0). Audit top 5 by lines retired: legacy generators 5,069 (done), field builders 8,891 (started), composition mirrors 1,756, integrity stats + trial counting 1,953, admission screens 1,520. Slices 3 (engine-fields exe + `--engine-fields` flag + 4 more builders) and 4 (composition mirrors to thin callers) dispatched.

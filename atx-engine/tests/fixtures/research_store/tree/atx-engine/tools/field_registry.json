@@ -1,0 +1,11 @@
+{
+  "schema": "atx.field-registry/v1",
+  "fields": [
+    {
+      "name": "f1"
+    },
+    {
+      "name": "f2"
+    }
+  ]
+}

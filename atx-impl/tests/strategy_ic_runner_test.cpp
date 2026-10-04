@@ -19,20 +19,28 @@
 #include "atx/core/sha256.hpp"
 #include "atx/engine/alpha/bytecode.hpp"
 #include "strategy_ic_runner.hpp"
+#include "strategy_target_replay_detail.hpp" // v8 Y-5: the replay loader reads the sleeves back
 
 namespace {
 using namespace atx;
 using Json = nlohmann::json;
 constexpr usize D = 480, N = 8;
 constexpr i64 day = 86'400'000'000'000LL;
+// The scratch name is short on purpose (P9 M1d-RED-2). A Release build nests its
+// candidate-cache identity directory (dslvm1_clang18.1_opt_md_ndebug_xs13.0.0, 40
+// characters; Debug has none) below the cache root, and with the former
+// "atx-strategy-ic-runner-<ns stamp>-<n>" name the deepest ".partial" reached 262
+// characters, over Windows MAX_PATH. "icr-<6 digits>-<n>" is at most ~14 characters.
+// The temp root is already private to this process (atx-test-scratch); the stamp only
+// separates leftovers, and create_directory settles any collision.
 struct Directory {
   std::filesystem::path path;
   Directory() {
     static std::atomic<unsigned> sequence{};
-    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count() % 1'000'000;
     for (unsigned a = 0; a < 32; ++a) {
       auto candidate = std::filesystem::temp_directory_path() /
-          ("atx-strategy-ic-runner-" + std::to_string(stamp) + "-" + std::to_string(sequence.fetch_add(1)));
+          ("icr-" + std::to_string(stamp) + "-" + std::to_string(sequence.fetch_add(1)));
       if (std::filesystem::create_directory(candidate)) { path = std::move(candidate); break; }
     }
   }
@@ -809,11 +817,18 @@ TEST(StrategyIcRunner, InvalidCompositionWeightsRefuseBeforeAnyPayloadOrOutput) 
 }
 // ---- ew-theme-v6 within-theme redistribution (V6-W; fix round 1 I1 / I3) ----
 // A TRAIN-bound weights file under `schema` with raw `weights` and raw `extra`
-// members (signs, a theme_redistribution block).
+// members (signs, a theme_redistribution block). A theme_standardise block in `extra`
+// (std_block's spelling) gets the fitter's provenance.rule naming its own rule (finding R6C-7).
 std::string themed_text(const std::string& schema,const atx::impl::strategy::IcRunnerConfig& cfg,
                         const std::string& weights,const std::string& extra) {
+  const std::string key="\"theme_standardise\":{\"rule\":\"";
+  std::string provenance;
+  if (const auto at=extra.find(key);at!=std::string::npos) {
+    const auto begin=at+key.size();
+    provenance=",\"provenance\":{\"rule\":\""+extra.substr(begin,extra.find('"',begin)-begin)+"\"}";
+  }
   return "{\"schema\":\""+schema+"\",\"library_sha256\":\""+cfg.library_sha256+"\",\"train_manifest_sha256\":\""+
-      cfg.train_sha256+"\",\"weights\":"+weights+extra+"}";
+      cfg.train_sha256+"\",\"weights\":"+weights+extra+provenance+"}";
 }
 std::string theme_block(const std::string& themes,const std::string& rule="within-theme-v1",
                         const std::string& composition="ew-theme-v6") {
@@ -2881,7 +2896,8 @@ TEST(Workers, OutputsByteIdenticalAt4And8And16) {
 }
 // Review focus 3: --plan-only reports each role's required bytes; the per-worker
 // envelope is as coded, so 16 workers need exactly 12 envelopes more than 4; below
-// the requirement the run refuses before any payload, naming the bytes. OD-2: the
+// the requirement the run refuses before any payload, naming the bytes (P9 lane D1:
+// --plan-only prints its plan first, IcAdmission.PlanPrintsRequiredBytesOverCap). OD-2: the
 // CLI admits --max-memory-mib 2560 (bound 16,384) and --workers 16 (bound 16).
 TEST(StrategyIcRunner, AdmissionReportsRequiredBytes) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
@@ -2909,7 +2925,7 @@ TEST(StrategyIcRunner, AdmissionReportsRequiredBytes) {
     tight.plan_only=plan_only; const auto run=run_named(dir,tight,"tight");
     EXPECT_FALSE(run.ok);
     EXPECT_NE(run.error.find("required_bytes="+std::to_string(required)),std::string::npos) << run.error;
-    EXPECT_TRUE(run.log.empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"tight"));
+    EXPECT_EQ(run.log.empty(),!plan_only); EXPECT_FALSE(std::filesystem::exists(dir.path/"tight"));
   }
   const auto cli=[&](const std::string& mib,const std::string& workers,std::string& out) {
     std::vector<std::string> args{"atx-equity-strategy-ic","--library",cfg.library_path,"--library-sha256",
@@ -2927,6 +2943,105 @@ TEST(StrategyIcRunner, AdmissionReportsRequiredBytes) {
   EXPECT_EQ(admitted.at("max_working_bytes"),2560ULL<<20); EXPECT_EQ(admitted.at("workers"),16);
   EXPECT_EQ(cli("16385","16",printed),2); // the CLI's memory bound
   EXPECT_EQ(cli("2560","17",printed),1);  // bounded config
+}
+// P9 lane D1 (the memory model, strategy_ic_admission.cpp admit): a --plan-only whose scored
+// role exceeds the cap still prints its plan -- every role with its required_bytes, within_budget
+// and its memory terms, which sum to required_bytes -- then refuses with the unplanned run's
+// message (exit 1 through the CLI, the plan on stdout). Within the cap the plan carries none of
+// those keys, so its bytes are the v8 plan's. No payload is read either way.
+TEST(IcAdmission, PlanPrintsRequiredBytesOverCap) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  cfg.plan_only=true; cfg.max_working_bytes=512ULL<<20;
+  std::ostringstream within_log;
+  const auto within=atx::impl::strategy::run_ic(cfg,within_log);
+  ASSERT_TRUE(within) << within.error().to_string();
+  const auto admitted=Json::parse(within_log.str());
+  EXPECT_FALSE(admitted.contains("admission"));
+  ASSERT_EQ(admitted.at("roles").size(),2U);
+  for (const auto& row:admitted.at("roles")) {
+    EXPECT_FALSE(row.contains("within_budget")); EXPECT_FALSE(row.contains("memory_terms"));
+  }
+  const auto required=admitted.at("roles").at(0).at("required_bytes").get<u64>();
+  auto over=cfg; over.max_working_bytes=required-1;
+  std::ostringstream log;
+  const auto refused=atx::impl::strategy::run_ic(over,log);
+  ASSERT_FALSE(refused);
+  const auto message=refused.error().to_string();
+  EXPECT_NE(message.find("required_bytes="+std::to_string(required)+" max_compiled_slots="),
+            std::string::npos) << message;
+  EXPECT_NE(message.find("exceeds configured memory budget before payload load"),std::string::npos)
+      << message;
+  const auto plan=Json::parse(log.str());
+  EXPECT_EQ(plan.at("admission"),"refused-required-bytes-exceed-max-working-bytes");
+  EXPECT_EQ(plan.at("max_working_bytes"),required-1);
+  EXPECT_EQ(plan.at("candidate_count"),admitted.at("candidate_count"));
+  ASSERT_EQ(plan.at("roles").size(),2U);
+  const std::vector<std::string> terms{"fixed_slack_bytes","role_and_worst_candidate_vm_bytes",
+      "composition_bytes","axis_bytes","research_field_bytes","label_bytes","worker_bytes"};
+  for (usize r=0;r<2;++r) {
+    SCOPED_TRACE(r);
+    const auto& row=plan.at("roles").at(r);
+    EXPECT_EQ(row.at("role"),admitted.at("roles").at(r).at("role"));
+    EXPECT_EQ(row.at("required_bytes"),admitted.at("roles").at(r).at("required_bytes"));
+    EXPECT_FALSE(row.at("within_budget").get<bool>());
+    const auto& memory=row.at("memory_terms");
+    ASSERT_EQ(memory.size(),terms.size());
+    u64 sum=0;
+    for (const auto& term:terms) {
+      ASSERT_TRUE(memory.contains(term)) << term;
+      sum+=memory.at(term).get<u64>();
+    }
+    EXPECT_EQ(sum,row.at("required_bytes").get<u64>());
+    EXPECT_EQ(memory.at("fixed_slack_bytes"),32ULL<<20);
+    EXPECT_EQ(memory.at("research_field_bytes"),0U); // no extra fields
+    EXPECT_EQ(memory.at("worker_bytes"),0U);         // one worker
+  }
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+  // The CLI: exit 1, the plan on stdout.
+  std::vector<std::string> args{"atx-equity-strategy-ic","--library",cfg.library_path,
+      "--library-sha256",cfg.library_sha256,"--train",cfg.train_manifest,"--train-sha256",
+      cfg.train_sha256,"--validation",cfg.validation_manifest,"--validation-sha256",
+      cfg.validation_sha256,"--min-names","3","--min-dates","8","--max-memory-mib","32",
+      "--plan-only"};
+  std::vector<char*> argv; for (auto& arg:args) argv.push_back(arg.data());
+  std::ostringstream stdout_log,stderr_log;
+  EXPECT_EQ(atx::impl::strategy::dispatch_ic(static_cast<int>(argv.size()),argv.data(),
+                                             stdout_log,stderr_log),1);
+  EXPECT_EQ(Json::parse(stdout_log.str()).at("admission"),
+            "refused-required-bytes-exceed-max-working-bytes");
+  EXPECT_NE(stderr_log.str().find("exceeds configured memory budget before payload load"),
+            std::string::npos);
+}
+// Task H-2: --eval-mode audit-exact evaluates every candidate under the VM's AuditExact mode and
+// names it in the recipe's vm; absent, the recipe keeps ResearchFast. It is refused with
+// --candidate-cache (entries keyed on ResearchFast) before any output, and the CLI takes no
+// other mode.
+TEST(StrategyIcRunner, AuditExactEvalModeIsRecordedAndRefusedWithTheCache) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  const auto fast=run_named(dir,cfg,"fast"); ASSERT_TRUE(fast.ok) << fast.error;
+  auto exact=cfg; exact.audit_exact=true;
+  const auto audit=run_named(dir,exact,"audit"); ASSERT_TRUE(audit.ok) << audit.error;
+  EXPECT_EQ(read_json(dir.path/"fast"/"recipe.json").at("vm"),"ResearchFast;full-historical-asof-member-mask");
+  EXPECT_EQ(read_json(dir.path/"audit"/"recipe.json").at("vm"),"AuditExact;full-historical-asof-member-mask");
+  auto cached=exact; cached.candidate_cache_directory=(dir.path/"cache").string();
+  const auto refused=run_named(dir,cached,"cached");
+  EXPECT_FALSE(refused.ok);
+  EXPECT_NE(refused.error.find("--eval-mode audit-exact is refused with --candidate-cache"),std::string::npos)
+      << refused.error;
+  EXPECT_TRUE(refused.log.empty());
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"cached")); EXPECT_FALSE(std::filesystem::exists(dir.path/"cache"));
+  const auto cli=[&](const std::string& mode) {
+    std::vector<std::string> args{"atx-equity-strategy-ic","--library",cfg.library_path,"--library-sha256",
+        cfg.library_sha256,"--train",cfg.train_manifest,"--train-sha256",cfg.train_sha256,"--min-names","3",
+        "--min-dates","8","--eval-mode",mode,"--plan-only"};
+    std::vector<char*> argv; for (auto& arg:args) argv.push_back(arg.data());
+    std::ostringstream stdout_log,stderr_log;
+    return atx::impl::strategy::dispatch_ic(static_cast<int>(argv.size()),argv.data(),stdout_log,stderr_log);
+  };
+  EXPECT_EQ(cli("audit-exact"),0);
+  EXPECT_EQ(cli("research-fast"),2); // the CLI takes audit-exact only
 }
 // ---- Platform v8 R-1: composition ew-theme-std-v1 (theme_standardise block) ----
 std::string std_block(const std::string& themes,bool rerank,const std::string& rule="ew-theme-std-v1") {
@@ -3314,7 +3429,7 @@ const std::vector<ShrinkMember> shrink_members{
 // The members' weights file: weights, +1 signs of the weighted members, and a theme_standardise
 // block of `rule` (rerank true) naming their themes; ic-shrink-v1 adds its ic_shrink inputs,
 // ic-shrink-aim-v1 those with the gains. The weights are ic-shrink-v1's, or ic-shrink-aim-v1's
-// for that rule or with `aim_weights`.
+// for that rule or with `aim_weights`. provenance.rule records `rule` (finding R6C-7).
 Json shrink_doc(const atx::impl::strategy::IcRunnerConfig& cfg,const std::string& rule,bool aim_weights=false) {
   const bool aim=aim_weights || rule=="ic-shrink-aim-v1";
   Json weights=Json::object(),signs=Json::object(),themes=Json::object(),members=Json::object();
@@ -3329,7 +3444,8 @@ Json shrink_doc(const atx::impl::strategy::IcRunnerConfig& cfg,const std::string
   if (rule=="ic-shrink-v1" || rule=="ic-shrink-aim-v1")
     block["ic_shrink"]=Json{{"intensity",.5},{"floor",0.0},{"members",members}};
   return Json{{"schema",weights_v2},{"library_sha256",cfg.library_sha256},
-      {"train_manifest_sha256",cfg.train_sha256},{"weights",weights},{"signs",signs},{"theme_standardise",block}};
+      {"train_manifest_sha256",cfg.train_sha256},{"weights",weights},{"signs",signs},{"theme_standardise",block},
+      {"provenance",{{"rule",rule}}}};
 }
 // ic-shrink-v1 runs ew-theme-std-v1's per-date standardisation unchanged: the same weights pinned
 // under either rule give the same blend, planned targets and IC rows byte for byte (the flag-
@@ -3542,7 +3658,8 @@ TEST(CompositionV8, IcShrinkAimRefusalsPrecedeAnyPayloadOrOutput) {
 // (provenance.rule) must write its theme_standardise block, refused before any payload or output.
 // Admitted: each row under the rule that writes it (ew-theme-std-v1 also under R-3's
 // ew-theme-std-aim-v1), the rerank-off identity device on ew-theme-v1 weights, a file without a
-// block under a rule that writes none, and a file without provenance (hand-written weights).
+// block under a rule that writes none, and a file without provenance and without a block
+// (hand-written weights). A block without a string provenance.rule is refused (finding R6C-7).
 TEST(CompositionV8, RecordedRuleMustWriteTheStandardiseBlockBeforeAnyPayloadOrOutput) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
   ASSERT_TRUE(shrink_library(cfg));
@@ -3559,7 +3676,7 @@ TEST(CompositionV8, RecordedRuleMustWriteTheStandardiseBlockBeforeAnyPayloadOrOu
   // weights) recording `recorded` (empty: no provenance); `plain`: schema v1, no block.
   const auto doc=[&](const std::string& block,const std::string& recorded,bool aim=false,bool plain=false) {
     auto d=shrink_doc(cfg,block,aim);
-    if (!recorded.empty()) d["provenance"]["rule"]=recorded;
+    if (recorded.empty()) d.erase("provenance"); else d["provenance"]["rule"]=recorded;
     if (plain) { d.erase("theme_standardise"); d["schema"]=weights_v1; }
     return d;
   };
@@ -3568,7 +3685,7 @@ TEST(CompositionV8, RecordedRuleMustWriteTheStandardiseBlockBeforeAnyPayloadOrOu
   const std::vector<Json> admitted{
       doc("ew-theme-std-v1","ew-theme-std-v1"),doc("ew-theme-std-v1","ew-theme-std-aim-v1",true),
       doc("ic-shrink-v1","ic-shrink-v1"),doc("ic-shrink-aim-v1","ic-shrink-aim-v1"),identity,
-      doc("ew-theme-std-v1","ew-theme-v1",false,true),doc("ic-shrink-v1","")};
+      doc("ew-theme-std-v1","ew-theme-v1",false,true),doc("ew-theme-std-v1","",false,true)};
   for (const auto& d:admitted) {
     std::ostringstream log; EXPECT_EQ(attempt(d,true,log),"") << d.dump();
   }
@@ -3596,7 +3713,9 @@ TEST(CompositionV8, RecordedRuleMustWriteTheStandardiseBlockBeforeAnyPayloadOrOu
       {doc("ew-theme-std-v1","ew-theme-std-aim-v1",false,true),writes("ew-theme-std-aim-v1","ew-theme-std-v1",none)},
       {doc("ew-theme-std-v1","ew-theme-v1"),unwritten("ew-theme-std-v1","ew-theme-v1")}, // rerank true: no identity
       {doc("ic-shrink-v1","ew-theme-v1"),unwritten("ic-shrink-v1","ew-theme-v1")},
-      {doc("ic-shrink-aim-v1","mv-shrink-0.9-nonneg-v1"),unwritten("ic-shrink-aim-v1","mv-shrink-0.9-nonneg-v1")}};
+      {doc("ic-shrink-aim-v1","mv-shrink-0.9-nonneg-v1"),unwritten("ic-shrink-aim-v1","mv-shrink-0.9-nonneg-v1")},
+      {doc("ic-shrink-v1",""),"IC runner: composition weights carry a theme_standardise block without a string "
+                              "provenance.rule (finding R6C-7)"}};
   for (const bool plan_only:{true,false}) {
     for (const auto& [d,reason]:cases) {
       std::ostringstream log;
@@ -3641,5 +3760,538 @@ TEST(ThemeResidRunner, RidesOnEveryRerankTrueRuleOfTheTable) {
     EXPECT_EQ(record.at("residualise"),"theme-resid-v1");
     EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
   }
+}
+// ---- Platform v8 X (lane XCOMB): composition theme-erc-v1 (the theme_standardise rule table) ----
+// The shrink library's six candidates in two themes, within-theme shares liquidity {volume_level
+// 1/2, volume_vee 1/4, volume_lag_1 1/4} and size {volume_rank 1/2, volume_lag_2 1/2, volume_lag_3
+// 0}; the sleeve covariance recorded in the order [size, liquidity] (not the first appearance):
+// variances 4e-4 and 1e-4, covariance 5e-5, so the ERC shares are size 1/3, liquidity 2/3 (two
+// groups: sigma_other / (sigma_1 + sigma_2)). Before the cap {1/3, 1/6, 1/6 | 1/6, 1/6, 0};
+// volume_level's 1/3 is capped at 1/4 and its 1/12 goes to the size members (x 5/4):
+// {1/4, 1/6, 1/6 | 5/24, 5/24, 0}, the hand derivation the runner verifies.
+struct ErcRunnerMember { const char* id; const char* theme; f64 share; f64 weight; };
+const std::vector<ErcRunnerMember> erc_members{
+    {"volume_level","liquidity",.5,1.0/4},{"volume_rank","size",.5,5.0/24},{"volume_vee","liquidity",.25,1.0/6},
+    {"volume_lag_1","liquidity",.25,1.0/6},{"volume_lag_2","size",.5,5.0/24},{"volume_lag_3","size",0.0,0.0}};
+// The members' weights file: the rule's weights, +1 signs of the weighted members, and a
+// theme_standardise block of `rule` (rerank true); theme-erc-v1 adds its theme_erc inputs.
+// provenance.rule records `rule` (finding R6C-7).
+Json erc_doc(const atx::impl::strategy::IcRunnerConfig& cfg,const std::string& rule) {
+  Json weights=Json::object(),signs=Json::object(),themes=Json::object(),members=Json::object();
+  for (const auto& m:erc_members) {
+    weights[m.id]=m.weight;
+    members[m.id]={{"theme",m.theme},{"share",m.share}};
+    if (m.weight>0) { signs[m.id]=1; themes[m.id]=m.theme; }
+  }
+  Json block{{"rule",rule},{"rerank",true},{"themes",themes}};
+  if (rule=="theme-erc-v1") {
+    const Json matrix=Json::array({Json::array({4e-4,5e-5}),Json::array({5e-5,1e-4})});
+    const Json covariance{{"themes",Json::array({"size","liquidity"})},{"matrix",matrix}};
+    block["theme_erc"]=Json{{"sweeps",10000},{"dispersion",1e-10},{"members",members},{"covariance",covariance}};
+  }
+  return Json{{"schema",weights_v2},{"library_sha256",cfg.library_sha256},
+      {"train_manifest_sha256",cfg.train_sha256},{"weights",weights},{"signs",signs},{"theme_standardise",block},
+      {"provenance",{{"rule",rule}}}};
+}
+// theme-erc-v1 runs ew-theme-std-v1's per-date standardisation unchanged: the same weights pinned
+// under either rule give the same blend, planned targets and IC rows byte for byte (the flag-absent
+// identity of the rule table). The recipe, the combined manifests and the summary name the rule;
+// the marginal verb's reader takes the block as a standardised one.
+TEST(CompositionV8, ThemeErcRunsTheStandardisationUnchangedAndRecordsItsRule) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(shrink_library(cfg)); cfg.save_combined=true;
+  const auto pin=[&](const std::string& file,const Json& doc) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,doc.dump(),cfg.composition_weights_sha256);
+  };
+  ASSERT_TRUE(pin("std.json",erc_doc(cfg,"ew-theme-std-v1")));
+  const auto standard=run_named(dir,cfg,"std"); ASSERT_TRUE(standard.ok) << standard.error;
+  ASSERT_TRUE(pin("erc.json",erc_doc(cfg,"theme-erc-v1")));
+  const auto erc=run_named(dir,cfg,"erc"); ASSERT_TRUE(erc.ok) << erc.error;
+  for (const std::string role_name:{"train","validation"}) {
+    SCOPED_TRACE(role_name);
+    for (const auto* suffix:{"_combined.f64","_combined_member.u8","_combined_finite.u8","_planned_targets.csv"}) {
+      const auto expected=file_sha(dir.path/"std"/(role_name+suffix)); ASSERT_FALSE(expected.empty()) << suffix;
+      EXPECT_EQ(file_sha(dir.path/"erc"/(role_name+suffix)),expected) << suffix;
+    }
+    const auto daily=role_name+"_daily_ic.csv";
+    EXPECT_FALSE(combined_rows(dir.path/"std"/daily).empty());
+    EXPECT_EQ(combined_rows(dir.path/"erc"/daily),combined_rows(dir.path/"std"/daily));
+    EXPECT_EQ(member_rows(dir.path/"erc"/daily),member_rows(dir.path/"std"/daily));
+    EXPECT_EQ(read_json(dir.path/"erc"/(role_name+"_combined.json")).at("composition_standardise"),"theme-erc-v1");
+  }
+  auto std_recipe=read_json(dir.path/"std"/"recipe.json"),erc_recipe=read_json(dir.path/"erc"/"recipe.json");
+  EXPECT_EQ(erc_recipe.at("composition_standardise"),"theme-erc-v1");
+  for (auto* recipe:{&std_recipe,&erc_recipe}) {
+    recipe->erase("composition_standardise"); recipe->erase("composition_weights_sha256");
+  }
+  EXPECT_EQ(erc_recipe,std_recipe); // the same per-date method statement
+  EXPECT_EQ(read_json(dir.path/"erc"/"summary.json").at("composition_weights").at("standardise"),"theme-erc-v1");
+  const auto grouping=atx::impl::strategy::ic_weights_themes(text_of(dir.path/"erc.json"));
+  ASSERT_TRUE(grouping) << grouping.error().to_string();
+  EXPECT_EQ(grouping->block,"theme_standardise"); EXPECT_TRUE(grouping->rerank);
+  EXPECT_EQ(grouping->themes.size(),5U);
+}
+// The runner verifies a theme-erc-v1 file against its recorded inputs before any payload or
+// output: weights off the rule (beyond 1e-12), other constants, rerank off, missing or malformed
+// inputs, a covariance the kernel refuses, shares that do not sum to 1, a weighted non-member, a
+// themes entry that is not the member's theme; and (finding R6B-C-5) a recorded fitter rule that
+// does not write the block. A file recording theme-erc-v1 under its own block is admitted.
+TEST(CompositionV8, ThemeErcRefusalsPrecedeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(shrink_library(cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto path=dir.path/"weights.json"; cfg.composition_weights_path=path.string();
+  const auto attempt=[&](const Json& doc,bool plan_only,std::ostringstream& log) {
+    cfg.plan_only=plan_only;
+    if (!text_file(path,doc.dump(),cfg.composition_weights_sha256)) return std::string("unwritable");
+    const auto status=atx::impl::strategy::run_ic(cfg,log);
+    return status?std::string{}:status.error().to_string();
+  };
+  const auto good=erc_doc(cfg,"theme-erc-v1");
+  const auto change=[&](auto&& edit) { auto doc=good; edit(doc); return doc; };
+  // Admitted: the rule's weights, weights within the 1e-12 tolerance, and the recorded rule.
+  const auto within=change([](Json& d) { d["weights"]["volume_vee"]=1.0/6+5e-13; });
+  const auto recorded=change([](Json& d) { d["provenance"]["rule"]="theme-erc-v1"; });
+  for (const auto* doc:{&good,&within,&recorded}) {
+    std::ostringstream log; EXPECT_EQ(attempt(*doc,true,log),"") << doc->dump();
+  }
+  const std::string rule="IC runner: theme_standardise rule theme-erc-v1: ";
+  const std::string malformed=rule+"member volume_rank needs {theme: a theme of theme_erc.covariance.themes";
+  const std::string covariance=rule+"theme_erc.covariance must be {themes";
+  auto std_block_erc_rule=erc_doc(cfg,"ew-theme-std-v1");
+  std_block_erc_rule["provenance"]["rule"]="theme-erc-v1";
+  const std::vector<std::pair<Json,std::string>> cases{
+      {change([](Json& d) { d["weights"]["volume_vee"]=1.0/6+1e-9; d["weights"]["volume_lag_1"]=1.0/6-1e-9; }),
+       rule+"composition weight of volume_vee is"},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["sweeps"]=100; }),
+       rule+"theme_erc sweeps and dispersion must be the registered 10000 and 1e-10"},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["dispersion"]=1e-6; }),
+       rule+"theme_erc sweeps and dispersion must be the registered 10000 and 1e-10"},
+      {change([](Json& d) { d["theme_standardise"].erase("theme_erc"); }),rule+"needs theme_erc {sweeps"},
+      {change([](Json& d) { d["theme_standardise"]["rerank"]=false; }),
+       "theme_standardise rule theme-erc-v1 needs rerank true"},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"].erase("covariance"); }),covariance},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["covariance"]["matrix"][1]=Json::array({5e-5}); }),
+       rule+"theme_erc.covariance.matrix must be square"},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["covariance"]["matrix"][1][0]=6e-5; }),
+       "IC runner: theme-erc-v1: group erc: the covariance is not symmetric"},
+      {change([](Json& d) {
+         d["theme_standardise"]["theme_erc"]["covariance"]["themes"]=Json::array({"size","size"});
+       }),rule+"theme_erc.covariance.themes must name distinct themes"},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["members"]["volume_rank"]["theme"]="other"; }),
+       malformed},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["members"]["volume_rank"]["share"]="0.5"; }),
+       malformed},
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["members"]["volume_rank"]["share"]=.6; }),
+       "IC runner: theme-erc-v1: a theme's within-theme shares do not sum to 1"},
+      {change([](Json& d) {
+         d["theme_standardise"]["theme_erc"]["members"]["other"]=Json{{"theme","size"},{"share",0.0}};
+       }),rule+"member of unknown candidate: other"},
+      // Without volume_lag_2 the size shares sum to 1/2: refused by the rule before the weights.
+      {change([](Json& d) { d["theme_standardise"]["theme_erc"]["members"].erase("volume_lag_2"); }),
+       "IC runner: theme-erc-v1: a theme's within-theme shares do not sum to 1"},
+      {change([](Json& d) { d["theme_standardise"]["themes"]["volume_vee"]="size"; }),
+       rule+"themes.volume_vee is not its theme_erc member theme"},
+      {change([](Json& d) { d["provenance"]["rule"]="ew-theme-std-v1"; }),
+       "IC runner: composition weights record provenance.rule ew-theme-std-v1, which writes theme_standardise rule "
+       "ew-theme-std-v1, but carry theme_standardise rule theme-erc-v1"},
+      {std_block_erc_rule,
+       "IC runner: composition weights record provenance.rule theme-erc-v1, which writes theme_standardise rule "
+       "theme-erc-v1, but carry theme_standardise rule ew-theme-std-v1"}};
+  for (const bool plan_only:{true,false}) {
+    for (const auto& [doc,reason]:cases) {
+      std::ostringstream log;
+      const auto error=attempt(doc,plan_only,log);
+      ASSERT_FALSE(error.empty()) << doc.dump();
+      EXPECT_NE(error.find(reason),std::string::npos) << doc.dump() << " -> " << error;
+      EXPECT_TRUE(log.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+  }
+}
+// ---- Platform v8 Y-2 (lane YCOMB): composition schedule theme-tsmom-v1 (theme_schedule block) ----
+std::string tsmom_block(const std::string& themes,const std::string& blocks,const std::string& rule="theme-tsmom-v1",
+                        const std::string& lag="3") {
+  return ",\"theme_schedule\":{\"rule\":\""+rule+"\",\"lookback\":252,\"lag\":"+lag+",\"step\":21,\"themes\":"+
+         themes+",\"blocks\":"+blocks+"}";
+}
+std::string tsmom_row(i64 session,const std::string& trailing) {
+  return "{\"from_session\":"+std::to_string(session)+",\"trailing\":"+trailing+"}";
+}
+std::vector<f64> combined_payload(const std::filesystem::path& path) {
+  std::vector<f64> out(D*N); if (!read_payload(path,out)) out.clear(); return out;
+}
+// Vee library, themes value (volume_level + volume_vee, W .5) and price_momentum (volume_rank, W .5);
+// the block order is ascending: [price_momentum, value]. One block from TRAIN session 400 with value's
+// trailing sum negative: value gets mass 0 and price_momentum S / K x .5 = 1. TRAIN rows before 400
+// are the parent's bit for bit, rows from 400 those of a price_momentum-only file (weight 1); every
+// validation row (its sessions follow the block) too. A block with both sums positive is the parent
+// byte for byte. Recipe, combined manifest and summary record the rule; nothing else moves.
+TEST(ThemeTsmomRunner, SwitchesThemesAtTheBlockSessionAndRecordsTheRule) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); cfg.save_combined=true;
+  const std::string weights=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  const std::string signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
+  const std::string themes=R"({"volume_level":"value","volume_rank":"price_momentum","volume_vee":"value"})";
+  const std::string order=R"(["price_momentum","value"])";
+  const i64 session=(17683+400)*day;
+  const auto pin=[&](const std::string& file,const std::string& text) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,text,cfg.composition_weights_sha256);
+  };
+  ASSERT_TRUE(pin("std.json",themed_text(weights_v2,cfg,weights,signs+std_block(themes,true))));
+  const auto parent=run_named(dir,cfg,"std"); ASSERT_TRUE(parent.ok) << parent.error;
+  ASSERT_TRUE(pin("pm.json",themed_text(weights_v2,cfg,R"({"volume_level":0,"volume_rank":1.0,"volume_vee":0})",
+                                        signs+std_block(R"({"volume_rank":"price_momentum"})",true))));
+  const auto pm=run_named(dir,cfg,"pm"); ASSERT_TRUE(pm.ok) << pm.error;
+  ASSERT_TRUE(pin("on.json",themed_text(weights_v2,cfg,weights,signs+std_block(themes,true)+
+                                        tsmom_block(order,"["+tsmom_row(session,"[0.02,-0.01]")+"]"))));
+  const auto on=run_named(dir,cfg,"on"); ASSERT_TRUE(on.ok) << on.error;
+  ASSERT_TRUE(pin("all.json",themed_text(weights_v2,cfg,weights,signs+std_block(themes,true)+
+                                         tsmom_block(order,"["+tsmom_row(session,"[0.02,0.01]")+"]"))));
+  const auto all=run_named(dir,cfg,"all"); ASSERT_TRUE(all.ok) << all.error;
+  for (const std::string role_name:{"train","validation"}) {
+    SCOPED_TRACE(role_name);
+    const auto combined=role_name+"_combined.f64";
+    const auto a=combined_payload(dir.path/"std"/combined),b=combined_payload(dir.path/"pm"/combined),
+               s=combined_payload(dir.path/"on"/combined);
+    ASSERT_EQ(a.size(),D*N); ASSERT_EQ(b.size(),D*N); ASSERT_EQ(s.size(),D*N);
+    const usize from=role_name=="train"?400U:0U;
+    bool moved=false;
+    for (usize k=0;k<D*N;++k) {
+      const auto& want=k/N<from?a:b;
+      EXPECT_TRUE(same_value(s[k],want[k])) << k/N << ' ' << k%N;
+      moved=moved || (k/N>=from && !same_value(a[k],b[k]));
+    }
+    EXPECT_TRUE(moved); // the parent and the price_momentum-only blend differ after the block
+    for (const auto* suffix:{"_combined.f64","_combined_finite.u8","_planned_targets.csv"})
+      EXPECT_EQ(file_sha(dir.path/"all"/(role_name+suffix)),file_sha(dir.path/"std"/(role_name+suffix))) << suffix;
+    const auto daily=role_name+"_daily_ic.csv";
+    EXPECT_EQ(member_rows(dir.path/"on"/daily),member_rows(dir.path/"std"/daily)); // members never see it
+    EXPECT_EQ(combined_rows(dir.path/"all"/daily),combined_rows(dir.path/"std"/daily));
+    const auto manifest=read_json(dir.path/"on"/(role_name+"_combined.json"));
+    EXPECT_EQ(manifest.at("composition_schedule"),"theme-tsmom-v1");
+    EXPECT_EQ(manifest.at("composition_standardise"),"ew-theme-std-v1");
+    EXPECT_FALSE(read_json(dir.path/"std"/(role_name+"_combined.json")).contains("composition_schedule"));
+  }
+  auto on_recipe=read_json(dir.path/"on"/"recipe.json"),std_recipe=read_json(dir.path/"std"/"recipe.json");
+  EXPECT_EQ(on_recipe.at("composition_schedule"),"theme-tsmom-v1");
+  EXPECT_FALSE(std_recipe.contains("composition_schedule"));
+  on_recipe.erase("composition_schedule");
+  on_recipe.erase("composition_weights_sha256"); std_recipe.erase("composition_weights_sha256");
+  EXPECT_EQ(on_recipe,std_recipe); // every other method statement is the parent's
+  const auto record=read_json(dir.path/"on"/"summary.json").at("composition_weights").at("schedule");
+  EXPECT_EQ(record.at("rule"),"theme-tsmom-v1");
+  EXPECT_EQ(record.at("blocks").get<usize>(),1U);
+  EXPECT_EQ(record.at("first_session").get<i64>(),session);
+  EXPECT_EQ(record.at("theme_blocks_off").get<usize>(),1U);
+  EXPECT_EQ(read_json(dir.path/"all"/"summary.json").at("composition_weights").at("schedule")
+                .at("theme_blocks_off").get<usize>(),0U);
+  EXPECT_FALSE(read_json(dir.path/"std"/"summary.json").at("composition_weights").contains("schedule"));
+}
+TEST(ThemeTsmomRunner, BlockRefusalsPrecedeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  // Payloads are absent: every refusal below must precede any role payload read.
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto path=dir.path/"weights.json"; cfg.composition_weights_path=path.string();
+  const std::string equal=R"({"volume_level":0.5,"volume_rank":0.5})";
+  const std::string two=R"({"volume_level":"value","volume_rank":"price_momentum"})";
+  const std::string order=R"(["price_momentum","value"])";
+  const std::string rows="["+tsmom_row(1000,"[1.0,-1.0]")+","+tsmom_row(2000,"[-1.0,1.0]")+"]";
+  const auto std_on=std_block(two,true);
+  Json admitted;
+  {
+    ASSERT_TRUE(text_file(path,themed_text(weights_v2,cfg,equal,std_on+tsmom_block(order,rows)),
+                          cfg.composition_weights_sha256));
+    cfg.plan_only=true; std::ostringstream log;
+    const auto status=atx::impl::strategy::run_ic(cfg,log);
+    ASSERT_TRUE(status) << status.error().to_string();
+    admitted=Json::parse(log.str());
+  }
+  EXPECT_EQ(admitted.at("composition_weights").at("schedule").at("theme_blocks_off").get<usize>(),2U);
+  const std::string shape="theme_schedule must be {rule: theme-tsmom-v1, lookback: 252, lag: 3, step: 21";
+  const std::string needs="theme_schedule needs a theme_standardise block with rerank true and no theme_residualise";
+  const std::string listed="theme_schedule themes must be the weighted themes of theme_standardise in ascending order";
+  const std::string row_shape="theme_schedule block must be {from_session: integer, trailing: [one number per theme]}";
+  const std::vector<std::pair<std::string,std::string>> cases{
+      {themed_text(weights_v2,cfg,equal,std_block(two,false)+tsmom_block(order,rows)),needs},
+      {themed_text(weights_v2,cfg,equal,std_block(R"({"volume_level":"value","volume_rank":"price_momentum"})",true)+
+                                        resid_block(R"(["value","price_momentum"])")+tsmom_block(order,rows)),needs},
+      {themed_text(weights_v2,cfg,equal,std_on+tsmom_block(order,rows,"theme-tsmom-v2")),shape},
+      {themed_text(weights_v2,cfg,equal,std_on+tsmom_block(order,rows,"theme-tsmom-v1","2")),shape},
+      {themed_text(weights_v2,cfg,equal,std_on+tsmom_block(order,"[]")),shape},
+      {themed_text(weights_v2,cfg,equal,std_on+R"(,"theme_schedule":[1])"),shape},
+      {themed_text(weights_v2,cfg,equal,std_on+tsmom_block(R"(["value","price_momentum"])",rows)),listed},
+      {themed_text(weights_v2,cfg,equal,std_on+tsmom_block(R"(["price_momentum"])",rows)),listed},
+      {themed_text(weights_v2,cfg,equal,std_on+tsmom_block(order,"["+tsmom_row(1000,"[1.0]")+"]")),row_shape},
+      {themed_text(weights_v2,cfg,equal,std_on+tsmom_block(order,R"([{"from_session":1.5,"trailing":[1.0,1.0]}])")),
+       row_shape},
+      {themed_text(weights_v2,cfg,equal,std_on+tsmom_block(order,"["+tsmom_row(2000,"[1.0,1.0]")+","+
+                                                                 tsmom_row(2000,"[1.0,1.0]")+"]")),
+       "theme_schedule from_session must increase strictly"},
+      {themed_text(weights_v2,cfg,equal,std_on+tsmom_block(order,"["+tsmom_row(1000,R"([1.0,"x"])")+"]")),
+       "theme_schedule: theme-tsmom-v1: parent masses must be finite and > 0 and trailing sums finite"}};
+  for (const bool plan_only:{true,false}) {
+    for (const auto& [text,reason]:cases) {
+      ASSERT_TRUE(text_file(path,text,cfg.composition_weights_sha256));
+      cfg.plan_only=plan_only; std::ostringstream attempt;
+      const auto status=atx::impl::strategy::run_ic(cfg,attempt);
+      ASSERT_FALSE(status) << text;
+      EXPECT_NE(status.error().to_string().find(reason),std::string::npos)
+          << text << " -> " << status.error().to_string();
+      EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+  }
+}
+// ---- Platform v8 Y-5 (lane YCOMB): composition sleeves two-speed-v1 (theme_sleeves block) ----
+std::string sleeves_block(const std::string& rule="two-speed-v1") {
+  return ",\"theme_sleeves\":{\"rule\":\""+rule+"\"}";
+}
+// Vee library: value (volume_level + volume_vee, W .5, slow: 252 sessions) and price_volume
+// (volume_rank, W .5, fast: 5 sessions). The blend, its finite mask, targets and __combined__ rows
+// are the parent's byte for byte; the saved fast sleeve is the price_volume-only blend and the slow
+// sleeve the value-only blend, bit for bit; the fast share is .5 on every date; the combined
+// manifest pins <role>_sleeves.json by SHA-256 and the replay loader reads it back under
+// two-speed-v1; the recipe differs from the parent's only by composition_sleeves.
+TEST(TwoSpeedRunner, SavesTheSleevesBesideAnUnchangedBlend) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); cfg.save_combined=true;
+  const std::string weights=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  const std::string signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
+  const std::string themes=R"({"volume_level":"value","volume_rank":"price_volume","volume_vee":"value"})";
+  const auto pin=[&](const std::string& file,const std::string& text) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,text,cfg.composition_weights_sha256);
+  };
+  ASSERT_TRUE(pin("std.json",themed_text(weights_v2,cfg,weights,signs+std_block(themes,true))));
+  const auto parent=run_named(dir,cfg,"std"); ASSERT_TRUE(parent.ok) << parent.error;
+  ASSERT_TRUE(pin("fast.json",themed_text(weights_v2,cfg,R"({"volume_level":0,"volume_rank":0.5,"volume_vee":0})",
+                                          signs+std_block(R"({"volume_rank":"price_volume"})",true))));
+  const auto fast=run_named(dir,cfg,"fast"); ASSERT_TRUE(fast.ok) << fast.error;
+  ASSERT_TRUE(pin("slow.json",themed_text(weights_v2,cfg,R"({"volume_level":0.25,"volume_rank":0,"volume_vee":0.25})",
+                                          signs+std_block(R"({"volume_level":"value","volume_vee":"value"})",true))));
+  const auto slow=run_named(dir,cfg,"slow"); ASSERT_TRUE(slow.ok) << slow.error;
+  ASSERT_TRUE(pin("two.json",themed_text(weights_v2,cfg,weights,signs+std_block(themes,true)+
+      sleeves_block())));
+  const auto two=run_named(dir,cfg,"two"); ASSERT_TRUE(two.ok) << two.error;
+  for (const std::string role_name:{"train","validation"}) {
+    SCOPED_TRACE(role_name);
+    for (const auto* suffix:{"_combined.f64","_combined_finite.u8","_combined_member.u8","_planned_targets.csv"})
+      EXPECT_EQ(file_sha(dir.path/"two"/(role_name+suffix)),file_sha(dir.path/"std"/(role_name+suffix))) << suffix;
+    const auto daily=role_name+"_daily_ic.csv";
+    EXPECT_EQ(combined_rows(dir.path/"two"/daily),combined_rows(dir.path/"std"/daily));
+    const auto manifest=read_json(dir.path/"two"/(role_name+"_combined.json"));
+    EXPECT_EQ(manifest.at("files").size(),5U); // the admitted file set is unchanged
+    const auto& sleeves=manifest.at("composition_sleeves");
+    EXPECT_EQ(sleeves.at("rule"),"two-speed-v1");
+    EXPECT_EQ(sleeves.at("manifest"),role_name+"_sleeves.json");
+    EXPECT_EQ(sleeves.at("manifest_sha256"),file_sha(dir.path/"two"/(role_name+"_sleeves.json")));
+    EXPECT_FALSE(read_json(dir.path/"std"/(role_name+"_combined.json")).contains("composition_sleeves"));
+    EXPECT_FALSE(std::filesystem::exists(dir.path/"std"/(role_name+"_sleeves.json")));
+    const auto sleeve_manifest=read_json(dir.path/"two"/(role_name+"_sleeves.json"));
+    EXPECT_EQ(sleeve_manifest.at("fast_themes"),Json::array({"price_volume"}));
+    const auto f=combined_payload(dir.path/"two"/(role_name+"_sleeve_fast.f64"));
+    const auto s=combined_payload(dir.path/"two"/(role_name+"_sleeve_slow.f64"));
+    const auto want_f=combined_payload(dir.path/"fast"/(role_name+"_combined.f64"));
+    const auto want_s=combined_payload(dir.path/"slow"/(role_name+"_combined.f64"));
+    const auto blend=combined_payload(dir.path/"std"/(role_name+"_combined.f64"));
+    ASSERT_EQ(f.size(),D*N); ASSERT_EQ(s.size(),D*N); ASSERT_EQ(want_f.size(),D*N); ASSERT_EQ(want_s.size(),D*N);
+    bool split=false;
+    for (usize k=0;k<D*N;++k) {
+      EXPECT_TRUE(same_value(f[k],want_f[k])) << k;
+      EXPECT_TRUE(same_value(s[k],want_s[k])) << k;
+      if (std::isnan(blend[k])) continue;
+      EXPECT_NEAR(f[k]+s[k],blend[k],1e-15) << k;
+      split=split || !same_value(f[k],s[k]);
+    }
+    EXPECT_TRUE(split);
+    std::vector<f64> share(D);
+    ASSERT_TRUE(read_payload(dir.path/"two"/(role_name+"_sleeve_fast_share.f64"),share));
+    // PM8-16 #9 (5ee9f039): the share counts only the themes present at the date, 0 when none is (the blend
+    // row has no finite cell); .5 wherever both are present (integration of YCOMB: the test predated #9).
+    for (usize d=0;d<D;++d) {
+      bool present=false;
+      for (usize i=0;i<N;++i) present=present || !std::isnan(blend[d*N+i]);
+      EXPECT_EQ(share[d],present?0.5:0.0) << d;
+    }
+  }
+  auto two_recipe=read_json(dir.path/"two"/"recipe.json"),std_recipe=read_json(dir.path/"std"/"recipe.json");
+  EXPECT_EQ(two_recipe.at("composition_sleeves"),"two-speed-v1");
+  EXPECT_FALSE(std_recipe.contains("composition_sleeves"));
+  two_recipe.erase("composition_sleeves");
+  two_recipe.erase("composition_weights_sha256"); std_recipe.erase("composition_weights_sha256");
+  EXPECT_EQ(two_recipe,std_recipe);
+  EXPECT_EQ(read_json(dir.path/"two"/"summary.json").at("composition_weights").at("sleeves").at("fast_themes"),
+            Json::array({"price_volume"}));
+  // The replay loader reads the pinned sleeves back under two-speed-v1 (and refuses without them).
+  namespace st=atx::impl::strategy;
+  st::TargetReplayRunConfig load;
+  load.combined_path=(dir.path/"two"/"train_combined.json").string();
+  load.combined_sha256=file_sha(dir.path/"two"/"train_combined.json");
+  load.target.rule=st::TargetReplayRule::AimPartialV5; load.target.cadence=1; load.target.trade_fraction=0.05;
+  load.target.dust_multiple=0.1; load.target.aim_leverage=1.2; load.target.two_speed=true;
+  const auto loaded=st::detail::load_saved_blend(load,false);
+  ASSERT_TRUE(loaded) << loaded.error().to_string();
+  const auto f=combined_payload(dir.path/"two"/"train_sleeve_fast.f64");
+  ASSERT_EQ(loaded->sleeve_fast.size(),f.size());
+  for (usize k=0;k<f.size();++k) EXPECT_TRUE(same_value(loaded->sleeve_fast[k],f[k])) << k;
+  EXPECT_EQ(loaded->view().sleeve_fast_share.size(),D);
+  load.combined_path=(dir.path/"std"/"train_combined.json").string();
+  load.combined_sha256=file_sha(dir.path/"std"/"train_combined.json");
+  const auto refused=st::detail::load_saved_blend(load,false);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().to_string().find("two-speed-v1 needs the saved sleeves"),std::string::npos);
+  load.target.two_speed=false; // the parent's run loads as before
+  EXPECT_TRUE(st::detail::load_saved_blend(load,false));
+}
+TEST(TwoSpeedRunner, BlockRefusalsPrecedeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto path=dir.path/"weights.json"; cfg.composition_weights_path=path.string();
+  const std::string equal=R"({"volume_level":0.5,"volume_rank":0.5})";
+  const std::string two=R"({"volume_level":"value","volume_rank":"price_volume"})";
+  const auto std_on=std_block(two,true);
+  const auto plan=[&](const std::string& text,Json& printed) {
+    if (!text_file(path,text,cfg.composition_weights_sha256)) return std::string("unwritable");
+    cfg.plan_only=true; std::ostringstream log;
+    const auto status=atx::impl::strategy::run_ic(cfg,log);
+    if (!status) return status.error().to_string();
+    printed=Json::parse(log.str()); return std::string{};
+  };
+  // Admitted: the sleeves add two f64 planes and one f64 per date to each role's admission.
+  Json with,without;
+  ASSERT_EQ(plan(themed_text(weights_v2,cfg,equal,std_on+sleeves_block()),with),"");
+  ASSERT_EQ(plan(themed_text(weights_v2,cfg,equal,std_on),without),"");
+  for (usize r=0;r<2;++r)
+    EXPECT_EQ(with.at("roles").at(r).at("required_bytes").get<u64>()-
+              without.at("roles").at(r).at("required_bytes").get<u64>(),D*N*16U+D*8U) << r;
+  EXPECT_EQ(with.at("composition_weights").at("sleeves").at("rule"),"two-speed-v1");
+  const std::string shape="theme_sleeves must be {rule: two-speed-v1}";
+  const std::string needs="theme_sleeves needs a theme_standardise block with rerank true and no theme_residualise";
+  const std::string both="theme_sleeves needs at least one fast and one slow weighted theme";
+  const std::vector<std::pair<std::string,std::string>> cases{
+      {themed_text(weights_v2,cfg,equal,std_block(two,false)+sleeves_block()),needs},
+      {themed_text(weights_v2,cfg,equal,std_block(R"({"volume_level":"value","volume_rank":"price_momentum"})",true)+
+                                        resid_block(R"(["value","price_momentum"])")+sleeves_block()),needs},
+      {themed_text(weights_v2,cfg,equal,sleeves_block()),needs},
+      {themed_text(weights_v2,cfg,equal,std_on+sleeves_block("two-speed-v2")),shape},
+      {themed_text(weights_v2,cfg,equal,std_on+R"(,"theme_sleeves":{"rule":"two-speed-v1","fast":["value"]})"),shape},
+      {themed_text(weights_v2,cfg,equal,std_on+R"(,"theme_sleeves":["two-speed-v1"])"),shape},
+      {themed_text(weights_v2,cfg,equal,std_block(R"({"volume_level":"value","volume_rank":"liquidity"})",true)+
+                                        sleeves_block()),
+       "theme_sleeves: weighted theme liquidity has no registered half-life"},
+      // Registered table, closed form: value 252 and price_momentum 126 are both slow; price_volume
+      // and reversal_seasonality (5) both fast.
+      {themed_text(weights_v2,cfg,equal,std_block(R"({"volume_level":"value","volume_rank":"price_momentum"})",true)+
+                                        sleeves_block()),both},
+      {themed_text(weights_v2,cfg,equal,std_block(R"({"volume_level":"reversal_seasonality","volume_rank":"price_volume"})",
+                                                  true)+sleeves_block()),both}};
+  for (const bool plan_only:{true,false}) {
+    for (const auto& [text,reason]:cases) {
+      ASSERT_TRUE(text_file(path,text,cfg.composition_weights_sha256));
+      cfg.plan_only=plan_only; std::ostringstream attempt;
+      const auto status=atx::impl::strategy::run_ic(cfg,attempt);
+      ASSERT_FALSE(status) << text;
+      EXPECT_NE(status.error().to_string().find(reason),std::string::npos)
+          << text << " -> " << status.error().to_string();
+      EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+    }
+  }
+}
+// ---- P9 lane D1: the theme table from --theme-registry (strategy_ic_rules.hpp) ----
+// The alpha registry (atx-impl/strategies/alphas/registry.json) pinned by its SHA-256 gives the
+// built-in table's run byte for byte (the flag-absent identity: blend, masks, planned targets,
+// daily IC and recipe), and summary.json (and a plan) records the pin. Its order is the rule's: a
+// registry listing the themes in reverse makes theme-resid-v1's registered order [price_momentum,
+// value], so ab.json (order [value, price_momentum]) is refused before any payload and the
+// reversed order residualises value on price_momentum -- the blend ThemeResidRunner's swapped
+// names give under the built-in order. A bad pin or a path without its SHA is refused.
+TEST(ThemeRegistryRunner, RegistryOrderIsTheRegisteredOrder) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); cfg.save_combined=true;
+  const std::string weights=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  const std::string signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
+  const std::string themes=
+      R"({"volume_level":"value","volume_rank":"price_momentum","volume_vee":"value"})";
+  const std::string swapped=
+      R"({"volume_level":"price_momentum","volume_rank":"value","volume_vee":"price_momentum"})";
+  const auto pin=[&](const std::string& file,const std::string& text) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,text,cfg.composition_weights_sha256);
+  };
+  const auto registry=std::filesystem::path(ATX_IMPL_TESTS_DIR)/".."/"strategies"/"alphas"/
+                      "registry.json";
+  const auto registry_sha=file_sha(registry);
+  ASSERT_FALSE(registry_sha.empty()) << registry.string();
+  ASSERT_TRUE(pin("ab.json",themed_text(weights_v2,cfg,weights,
+                                        signs+std_block(themes,true)+
+                                        resid_block(R"(["value","price_momentum"])"))));
+  const auto builtin=run_named(dir,cfg,"builtin"); ASSERT_TRUE(builtin.ok) << builtin.error;
+  auto with=cfg;
+  with.theme_registry_path=registry.string(); with.theme_registry_sha256=registry_sha;
+  const auto pinned=run_named(dir,with,"registry"); ASSERT_TRUE(pinned.ok) << pinned.error;
+  for (const std::string role_name:{"train","validation"})
+    for (const auto* suffix:{"_combined.f64","_combined_member.u8","_combined_finite.u8",
+                             "_planned_targets.csv","_daily_ic.csv"}) {
+      const auto expected=file_sha(dir.path/"builtin"/(role_name+suffix));
+      ASSERT_FALSE(expected.empty()) << role_name << suffix;
+      EXPECT_EQ(file_sha(dir.path/"registry"/(role_name+suffix)),expected) << role_name << suffix;
+    }
+  EXPECT_EQ(read_json(dir.path/"registry"/"recipe.json"),
+            read_json(dir.path/"builtin"/"recipe.json"));
+  EXPECT_EQ(read_json(dir.path/"registry"/"summary.json").at("theme_registry_sha256"),registry_sha);
+  EXPECT_FALSE(read_json(dir.path/"builtin"/"summary.json").contains("theme_registry_sha256"));
+  auto plan_cfg=with; plan_cfg.plan_only=true; std::ostringstream plan_log;
+  ASSERT_TRUE(atx::impl::strategy::run_ic(plan_cfg,plan_log));
+  EXPECT_EQ(Json::parse(plan_log.str()).at("theme_registry_sha256"),registry_sha);
+  // The built-in run of the swapped names under the built-in order.
+  ASSERT_TRUE(pin("ba.json",themed_text(weights_v2,cfg,weights,
+                                        signs+std_block(swapped,true)+
+                                        resid_block(R"(["value","price_momentum"])"))));
+  const auto ba=run_named(dir,cfg,"ba"); ASSERT_TRUE(ba.ok) << ba.error;
+  // The reversed registry (the registry's thirteen themes at the P9 base, last first).
+  const std::vector<std::string> order{"value","profitability_quality","investment_issuance",
+      "earnings_momentum","price_momentum","low_risk","short_interest","reversal_seasonality",
+      "options_implied","ownership_flow","filing_events","price_volume","merger_arbitrage"};
+  std::string reversed=R"({"schema":"atx.alpha-registry/v1","themes":{)";
+  for (usize t=order.size();t-->0;) reversed+="\""+order[t]+"\":{}"+(t?",":"");
+  reversed+="}}";
+  auto flipped=cfg; flipped.theme_registry_path=(dir.path/"reversed.json").string();
+  ASSERT_TRUE(text_file(flipped.theme_registry_path,reversed,flipped.theme_registry_sha256));
+  ASSERT_TRUE(pin("ab.json",themed_text(weights_v2,cfg,weights,
+                                        signs+std_block(themes,true)+
+                                        resid_block(R"(["value","price_momentum"])"))));
+  flipped.composition_weights_path=cfg.composition_weights_path;
+  flipped.composition_weights_sha256=cfg.composition_weights_sha256;
+  const auto refused=run_named(dir,flipped,"refused");
+  EXPECT_FALSE(refused.ok);
+  EXPECT_NE(refused.error.find("[price_momentum, value], not [\"value\",\"price_momentum\"]"),
+            std::string::npos) << refused.error;
+  EXPECT_TRUE(refused.log.empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"refused"));
+  ASSERT_TRUE(pin("rev.json",themed_text(weights_v2,cfg,weights,
+                                         signs+std_block(themes,true)+
+                                         resid_block(R"(["price_momentum","value"])"))));
+  flipped.composition_weights_path=cfg.composition_weights_path;
+  flipped.composition_weights_sha256=cfg.composition_weights_sha256;
+  const auto rev=run_named(dir,flipped,"rev"); ASSERT_TRUE(rev.ok) << rev.error;
+  for (const std::string role_name:{"train","validation"})
+    for (const auto* suffix:{"_combined.f64","_combined_finite.u8","_planned_targets.csv"})
+      EXPECT_EQ(file_sha(dir.path/"rev"/(role_name+suffix)),
+                file_sha(dir.path/"ba"/(role_name+suffix))) << role_name << suffix;
+  EXPECT_EQ(read_json(dir.path/"rev"/"recipe.json").at("composition_residualise_order"),
+            Json::array({"price_momentum","value"}));
+  // Pin refusals precede any payload or output.
+  auto bad=with; bad.theme_registry_sha256=std::string(64,'0');
+  const auto bad_pin=run_named(dir,bad,"bad-pin");
+  EXPECT_FALSE(bad_pin.ok); EXPECT_TRUE(bad_pin.log.empty());
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"bad-pin"));
+  auto unpinned=with; unpinned.theme_registry_sha256.clear();
+  const auto no_sha=run_named(dir,unpinned,"no-sha");
+  EXPECT_FALSE(no_sha.ok);
+  EXPECT_NE(no_sha.error.find("bounded config"),std::string::npos) << no_sha.error;
+  EXPECT_FALSE(std::filesystem::exists(dir.path/"no-sha"));
 }
 } // namespace

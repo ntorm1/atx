@@ -1,0 +1,48 @@
+{
+  "id": "fscore_hbm",
+  "dsl": "rank(decay_linear(((rank(((be / me_company) + (0 * log(be)))) > 0.8) ? (fscore - 4.5) : 0), 21))",
+  "dsl_sha256": "f4d3d3fa7f14fb6ff2d61651880837b187bb66429b4051f167593815e839f21f",
+  "theme": "profitability_quality",
+  "tier": "C+",
+  "prior_sign": 1,
+  "citation": "Piotroski (2000, JAR 38 supplement) Value investing: the use of historical financial statement information to separate winners from losers",
+  "origin": "prior",
+  "hypothesis": "fscore_hbm",
+  "kind": "add",
+  "fields": [
+    "be",
+    "fscore",
+    "me_company"
+  ],
+  "prior_sign_source": "Piotroski 2000",
+  "form": "R(decay_linear(x, 21))",
+  "formula": "fscore - 4.5 for the top book-to-market quintile (cross-sectional rank of be / me_company above 0.8), 0 elsewhere; inside value stocks high F-score firms beat low F-score firms",
+  "domain": "NaN where book equity is not positive or be / me_company is NaN; for value names NaN where fscore is NaN",
+  "deviation": "continuous F-score centred at 4.5 (the midpoint of 0..9), not the paper's high (8-9) minus low (0-1) portfolios; market-wide quintile on the role universe each session, not annual sorts; filing-clock items; house decay; the unconditional fscore member stays (this adds weight inside value names only)",
+  "lane": "YSIG",
+  "report": "task-YSIG-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "in-book",
+  "wave": "y-s",
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 8); line ceeed83aa97b7d0f = v8y-prereg section 14"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    },
+    {
+      "status": "in-book",
+      "at": "2026-10-03",
+      "by": "research_cycle.py wave",
+      "wave": "y-s",
+      "note": "wave-result True"
+    }
+  ]
+}

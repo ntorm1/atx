@@ -1,0 +1,18 @@
+{
+  "schema": "atx.research-wave/v1",
+  "wave": "y-s",
+  "description": "Cell Y-S (v8y-prereg sections 3, 6, 14; PM8-10 (e), PM8-14): one add-alpha wave of the 15 Y strings (YSIG 10 + YDATA 5) in roster order (YP-13) on X-F0 = X-5 (x-theme-erc-gm.json, library v8x3b, L 1.1720; X-7 not accepted, X-9 undefined), fields v15 lo3; acceptance PM7-34 (dSR > 0 AND mechanics); sign rule PM7-35; PM6-6 gross matching; marginal pool only with a 720 s cap (PM8-15 (a), (b)); budget: X hand-written 25 used + Y 15 new <= 40 (the Y cap of 15), construction N 56 + 1 <= 62 (N_c(X-F0) + 6).",
+  "parent": {"spec": "scripts/specs/v8/x-theme-erc-gm.json", "library": "v8x3b"},
+  "fields": {"dir": "build-equity/train-2020-2023-lo3-fields-v15",
+             "manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09"},
+  "library": "v8ys",
+  "acceptance": {"rule": "pm7-34", "printed": ["capacity-4x-higher", "turnover-per-gross-not-higher", "cost-bps-lower"]},
+  "sign_rule": "pm7-35",
+  "gross_match": "pm6-6",
+  "budget": {"id": "v8x-hand-25-plus-y-15", "admission_cap": 40, "admission_cycle_prefixes": ["v8x", "v8ys"], "construction_cap": 62},
+  "ledger": "build-equity/trials.jsonl",
+  "expect": {"n_before": 56},
+  "out_dir": "build-equity/waves/y-s",
+  "record": {"copy_to": ".superpowers/sdd/platform-v8-20260929/waves"},
+  "marginal": {"ruling": "PM8-15", "pool_only": true, "seconds": 600}
+}

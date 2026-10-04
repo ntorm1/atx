@@ -479,11 +479,15 @@ def validate_plan(reg: dict, lib: dict, library_doc: dict, library_bytes: bytes,
 
 
 def exe_plan(exe: str, library: Path, role_manifest: str, role_sha: str, fields_dir: str, fields_sha: str, *,
-             cwd: Path, env: dict | None = None) -> dict:
-    """Run the IC exe's metadata-only plan on a library file (no payload is read) and return its JSON."""
+             cwd: Path, env: dict | None = None, max_memory_mib: int | None = None) -> dict:
+    """Run the IC exe's metadata-only plan on a library file (no payload is read) and return its JSON.
+    `max_memory_mib` (PM6-9): the spec's IC memory cap, passed as --max-memory-mib so the plan is made under the
+    run's cap; None leaves the argv as before."""
     argv = [exe, "--plan-only", "--library", str(library), "--library-sha256", sha256(Path(library).read_bytes()),
             "--train", role_manifest, "--train-sha256", role_sha, "--train-fields", fields_dir,
             "--train-fields-sha256", fields_sha]
+    if max_memory_mib is not None:
+        argv += ["--max-memory-mib", str(max_memory_mib)]
     try:
         done = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=300)
     except (OSError, subprocess.SubprocessError) as exc:

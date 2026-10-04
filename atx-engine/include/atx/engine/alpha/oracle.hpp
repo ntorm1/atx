@@ -380,6 +380,7 @@ private:
     case OpCode::CsQuantile:
     case OpCode::CsVecSum:
     case OpCode::CsVecAvg:
+    case OpCode::CsSumG: // v8 YOPS group_sum
       return eval_cross_section(in);
     case OpCode::TsDelay:
     case OpCode::TsDelta:
@@ -449,6 +450,15 @@ private:
     case OpCode::TsDecayLinearMp:
     case OpCode::TsCorrMp:
       return eval_lit(in);
+    // ---- platform-v8 YOPS formulaic ops: independent twins (oracle_formulaic.cpp;
+    //      CsSumG is a Cs op above) ----
+    case OpCode::GroupDelay:
+    case OpCode::AsofRankTsRank:
+    case OpCode::AsofRankTsMin:
+    case OpCode::AsofRankDecayLinear:
+    case OpCode::AsofRankCorr:
+    case OpCode::AsofRankCov:
+      return eval_formulaic(in);
     case OpCode::Pin:
     case OpCode::StoreAlpha:
     case OpCode::Free:
@@ -625,6 +635,12 @@ private:
   // solve order, so the VM differential is a real cross-check.
   [[nodiscard]] atx::core::Status eval_lit(const Instr &in);
 
+  // ---- platform-v8 YOPS group_delay / as-of rank (src/alpha/oracle_formulaic.cpp) --
+  // Restates the asof_ops.hpp rule INDEPENDENTLY (no asof_ops.hpp include): per
+  // date, the factor scan, the window rows re-ranked with this oracle's cs_rank,
+  // then this oracle's own ts_unary_at / ts_binary_at over the ranked window.
+  [[nodiscard]] atx::core::Status eval_formulaic(const Instr &in);
+
   // ---- stateful recurrence (forward scan, true cross-date state) -----------
   [[nodiscard]] atx::core::Status eval_recurrence(const Instr &in);
   // Per-op filter helpers — each restates the recurrence math INLINE (no shared
@@ -724,6 +740,11 @@ void cs_winsorize(std::span<const atx::f64> x, const std::vector<atx::usize> &va
 void cs_group_count_mean(std::span<const atx::f64> x, std::span<const atx::f64> g,
                          const std::vector<atx::usize> &valid, std::span<atx::f64> out,
                          bool want_mean);
+
+// CsSumG (v8 YOPS group_sum): broadcast Σ x over the group's valid members
+// (ascending instrument order) to each valid member. A NaN group label -> NaN.
+void cs_group_sum(std::span<const atx::f64> x, std::span<const atx::f64> g,
+                  const std::vector<atx::usize> &valid, std::span<atx::f64> out);
 
 // CsScaleG (P3b-2): scale within each group so Σ|x| over the group's valid
 // members == 1 (zero-L1 group -> 0). A NaN group label -> stays NaN.

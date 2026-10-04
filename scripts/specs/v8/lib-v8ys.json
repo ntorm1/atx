@@ -1,0 +1,344 @@
+{
+  "schema": "atx.research-cycle-spec/v1",
+  "name": "v8ys",
+  "description": "Library v8ys = v8x3b + peer_mom_1m, so_wang_rev, iv_vol_of_vol, day_rev_freq, mom_turn, ea_uvol, dato, fscore_hbm, exch_switch, ins_cluster, smile_slope, stio_trade, div_event, deal_target, conn_rev (research_cycle.py add-alpha; derived from the v8x3b spec by the name rule). Identity before the cell: the u pass reproduces the parent's orientation and daily-IC member rows; ref is skipped when the fields equal the parent's. `run --screen` reads the admission; `run` the cell.",
+  "python": "C:/Program Files/Python312/python.exe",
+  "env_path_prepend": [
+    "C:/atx-cache/vcpkg_installed/x64-windows/debug/bin",
+    "C:/atx-cache/vcpkg_installed/x64-windows/bin"
+  ],
+  "runner": {
+    "script": "scripts/run_bounded_research.py",
+    "seconds": 180,
+    "max_rss_mib": 1536,
+    "min_free_mib": 512,
+    "phases": {
+      "u": {
+        "seconds": 300,
+        "max_rss_mib": 2560
+      },
+      "w": {
+        "seconds": 300,
+        "max_rss_mib": 3072
+      },
+      "card": {
+        "seconds": 300,
+        "max_rss_mib": 2560
+      },
+      "marginal": {
+        "seconds": 600
+      }
+    }
+  },
+  "exes": {
+    "ic": "build-equity/bin/atx-equity-strategy-ic.exe",
+    "nav": "build-equity/bin/atx-equity-strategy-targets.exe"
+  },
+  "inputs": {
+    "library": {
+      "path": "atx-impl/strategies/fund_industry_ic_v8ys.json",
+      "sha256": "bbcfbf9dd000dc41055e2415ddc1a0047811a796752de55fd4e92ab636f4e9bd"
+    },
+    "recipe": {
+      "path": "atx-impl/strategies/fund_industry_ic_v8ys.recipe.v2.json",
+      "sha256": "b679dd3a4a7512e74109d654d3308b55251c9bd6e9d1e34436dda7e4b83811a3"
+    },
+    "baseline_library": {
+      "path": "atx-impl/strategies/fund_industry_ic_v8x3b.json",
+      "sha256": "32f8d69f669fccfca8c150df11ee9615a6f2d6ef59537c87e3de2a24cdd04a54"
+    },
+    "role": {
+      "dir": "build-equity/train-2020-2023-lo3",
+      "path": "build-equity/train-2020-2023-lo3/manifest.json",
+      "universe": "linked-operating-v3",
+      "sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4"
+    },
+    "label_role": {
+      "dir": "build-equity/train-2020-2023-lo3-dlret",
+      "path": "build-equity/train-2020-2023-lo3-dlret/manifest.json",
+      "sha256": "95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069"
+    },
+    "baseline_fields": {
+      "dir": "build-equity/train-2020-2023-lo3-fields-v13",
+      "path": "build-equity/train-2020-2023-lo3-fields-v13/manifest.json",
+      "sha256": "e5f7f28c465a92885d55d55a439eb2f217b9f5f15d51017b4293ebc55935e9b2"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8x-theme-erc/admission.json",
+      "sha256": "5f5b3edb280cb44ff64fa3208cecc319f166d8eae1c1326c526f455a74f2b196"
+    },
+    "reference_cell": {
+      "dir": "build-equity/mega-nav-v8x-theme-erc-L1.1720",
+      "path": "build-equity/mega-nav-v8x-theme-erc-L1.1720/summary.json",
+      "sha256": "a03937cf410dfdba75d503f2108c973a881f1d34afcb36a4c20a5e500e6f804d"
+    },
+    "reference_combined": {
+      "path": "build-equity/mega-v8xw-train-theme-erc-1/train_combined.json",
+      "sha256": "2a442f560982749b74283f16ef3060656f270d6130628c64fcd4bde77259cb86"
+    },
+    "reference_weights": {
+      "path": "build-equity/mega-weights-v8x-theme-erc/composition_weights.json",
+      "sha256": "8310da2c05aa8e46573aaa2f7660a8a635b5f6c44c6f758c495c3d719710d699"
+    },
+    "reference_daily": {
+      "path": "build-equity/mega-nav-v8x-theme-erc-L1.1720/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+      "sha256": "529062d6f06f1ceb8dab5e7cbd98a3693a2f66922b0b4547df81f956fd4e3d61"
+    },
+    "reference_orientations": {
+      "path": "build-equity/mega-v8-b0b-train-u-v8x3b-1/orientations.json",
+      "sha256": "3428b2f80ee31d921f1320c0fe980a16cd53b29b0f1c650c14aabec07c5c37ac"
+    },
+    "reference_daily_ic": {
+      "path": "build-equity/mega-v8-b0b-train-u-v8x3b-1/train_daily_ic.csv",
+      "sha256": "51b0f8d4d1899f3d8a78ecff6e3d6be6f48229cf1e3265f13dd1780e0a8bccfc"
+    }
+  },
+  "fields": {
+    "output": "build-equity/train-2020-2023-lo3-fields-v15",
+    "manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09",
+    "list": [
+      "si_shares",
+      "si_dtc",
+      "iv_atm_21d",
+      "iv_atm_63d",
+      "iv_atm_126d",
+      "earn_recent",
+      "shares_out",
+      "mkt_ret",
+      "be",
+      "at",
+      "at_lag4",
+      "lt",
+      "che",
+      "debt",
+      "sale_ttm",
+      "gp_ttm",
+      "oi_ttm",
+      "ni_ttm",
+      "ni_q",
+      "ni_q_lag4",
+      "be_lag1q",
+      "be_lag1q_lag4",
+      "cfo_ttm",
+      "capx_ttm",
+      "xrd_ttm",
+      "dvc_ttm",
+      "prstkc_ttm",
+      "sstk_ttm",
+      "txt_q",
+      "txt_q_lag4",
+      "shrs_q",
+      "shrs_q_lag4",
+      "noa",
+      "noa_lag4",
+      "sue",
+      "fscore",
+      "me_company",
+      "grp_sic2",
+      "grp_ff12",
+      "grp_ff49",
+      "sv_ratio126",
+      "ea_days_to_expected",
+      "ea_days_since",
+      "ea_window_pre5",
+      "ea_window_post3",
+      "ea_delay_days",
+      "ea_time_of_day",
+      "ins_net_buy_ratio",
+      "ins_n_buyers",
+      "ins_n_sellers",
+      "ins_opportunistic_net",
+      "ins_cluster_buy",
+      "k8_count_63",
+      "k8_item_material_21",
+      "k8_days_since_any",
+      "ret_overnight",
+      "ret_intraday",
+      "ceq_iss_5y",
+      "coskew_60m",
+      "vol_126",
+      "xrd0_ttm",
+      "grp_ff12f49",
+      "nt_first_126",
+      "earn_season_rank",
+      "div_month_pred",
+      "beta_dvol_21",
+      "season_y2_5",
+      "open_adj",
+      "high_adj",
+      "low_adj",
+      "iv_skew_21",
+      "stio_chg_q",
+      "div_init_omit",
+      "deal_pending",
+      "conn_ret63",
+      "inst_own_share",
+      "inst_breadth_chg",
+      "inst_own_chg_q",
+      "inst_best_ideas",
+      "inst_n_holders",
+      "ftd_shares_ratio21",
+      "regsho_threshold_days63",
+      "sv_offexchange_share126",
+      "exch_up_365d"
+    ]
+  },
+  "ic": {
+    "u_output": "build-equity/mega-v8-b0b-train-u-v8ys",
+    "w_output": "build-equity/mega-v8xw-train-theme-erc-v8ys",
+    "cache": "build-equity/mega-candidate-cache-v8-lo3",
+    "flags": [
+      "--max-memory-mib",
+      "2560",
+      "--min-names",
+      "1000",
+      "--workers",
+      "4",
+      "--save-combined"
+    ],
+    "w_flags": {
+      "--max-memory-mib": "3072"
+    }
+  },
+  "fit": {
+    "script": "atx-impl/tools/fit_composition_weights.py",
+    "output": "build-equity/mega-weights-v8x-theme-erc-v8ys",
+    "work_dir": "build-equity/fit-work",
+    "flags": [
+      "--orientation",
+      "prior",
+      "--screen",
+      "v4-prior-v1",
+      "--composition",
+      "ew-theme-std-v1",
+      "--theme-erc",
+      "theme-erc-v1"
+    ],
+    "max_seconds": 150,
+    "max_passes": 3
+  },
+  "card": {
+    "script": "atx-impl/tools/alpha_report_card.py",
+    "output": "build-equity/mega-cards-v8x-theme-erc-v8ys",
+    "flags": [
+      "--workers",
+      "4",
+      "--work-dir",
+      "build-equity/fit-work"
+    ]
+  },
+  "gate": {
+    "name": "p1-v8ys",
+    "admitted": [
+      "peer_mom_1m",
+      "so_wang_rev",
+      "iv_vol_of_vol",
+      "day_rev_freq",
+      "mom_turn",
+      "ea_uvol",
+      "dato",
+      "fscore_hbm",
+      "exch_switch",
+      "ins_cluster",
+      "smile_slope",
+      "stio_trade",
+      "div_event",
+      "deal_target",
+      "conn_rev"
+    ],
+    "require": "any",
+    "sign_agrees": true,
+    "report": []
+  },
+  "nav": {
+    "output": "build-equity/mega-nav-v8x-theme-erc-L1.1720-v8ys",
+    "rule": "aim-partial-v5",
+    "leverage": "1.1720",
+    "flags": [
+      "--cadence",
+      "1",
+      "--trade-fraction",
+      ".05",
+      "--dust-multiple",
+      ".1",
+      "--aim-leverage",
+      "{leverage}",
+      "--daily-turnover-mean-max",
+      ".20",
+      "--daily-turnover-p95-max",
+      ".30",
+      "--neutralize",
+      "price-risk-v1",
+      "--max-bytes",
+      "1073741824",
+      "--order-basis",
+      "delta",
+      "--exit-rate",
+      ".05",
+      "--locate-in-aim",
+      "--liquidity-cache",
+      "--warm-start-sessions",
+      "60",
+      "--capacity-curve"
+    ]
+  },
+  "monitor": {
+    "script": "atx-impl/tools/book_monitor.py",
+    "output": "build-equity/mega-monitor-v8x-theme-erc-v8ys",
+    "flags": []
+  },
+  "summ": {
+    "script": "atx-impl/tools/nav_summ.py",
+    "dsr_n": "ledger+1",
+    "cells_from_ledger": true,
+    "extra": [
+      "--protocol",
+      "v8",
+      "--effective-n",
+      "dirs",
+      "--psr",
+      "--pbo"
+    ],
+    "ledger": "build-equity/trials.jsonl",
+    "ledger_kind": "construction",
+    "origin": "prior"
+  },
+  "verdict": true,
+  "marginal": {
+    "output": "build-equity/mega-v8-b0b-train-u-v8ys-marginal-poolonly",
+    "pool": "reference_combined"
+  },
+  "receipts": "every-phase",
+  "ref": {
+    "output": "build-equity/mega-nav-v8x-theme-erc-L1.1720-v8ys-ref",
+    "combined": "reference_combined"
+  },
+  "compare": [
+    {
+      "name": "ref-s2-daily",
+      "after": "ref",
+      "mode": "file",
+      "a": "{input:reference_daily}",
+      "b": "{out:ref}/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv"
+    },
+    {
+      "name": "parent-orientations",
+      "after": "u",
+      "mode": "json-rows",
+      "array": "candidates",
+      "key": "id",
+      "keys": "{input:baseline_library}",
+      "a": "{input:reference_orientations}",
+      "b": "{out:u}/orientations.json"
+    },
+    {
+      "name": "parent-train-daily-ic",
+      "after": "u",
+      "mode": "csv-rows",
+      "key": "id",
+      "keys": "{input:baseline_library}",
+      "a": "{input:reference_daily_ic}",
+      "b": "{out:u}/train_daily_ic.csv"
+    }
+  ]
+}

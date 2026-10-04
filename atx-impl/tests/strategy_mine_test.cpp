@@ -8,10 +8,12 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -23,6 +25,18 @@
 #include "strategy_mine_ledger.hpp"
 #include "strategy_mine_rule.hpp"
 #include "strategy_research_role.hpp"
+// Lane MINE-MEM: the memory model against the fixture's allocations.
+#include "atx/engine/alpha/bytecode.hpp"
+#include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/alpha/parser.hpp"
+#include "atx/engine/alpha/registry.hpp"
+#include "atx/engine/alpha/vm.hpp"
+#include "atx/engine/factory/fidelity.hpp"
+#include "atx/engine/factory/genome.hpp"
+#include "atx/engine/factory/ic_research.hpp"
+#include "strategy_mine_pool.hpp"
+// Review MINE-16: the trial log's rung-failed status.
+#include "strategy_mine_detail.hpp"
 
 // platform v8 H-3: `atx-equity-strategy-mine` on a synthetic role (the sprint plan's fixture
 // acceptance) and the mined-v1 arithmetic.
@@ -439,27 +453,31 @@ TEST(StrategyMineRule, HurdleIsTheBonferroniValueOfThePlan) {
   EXPECT_TRUE(std::isnan(st::mined_hurdle(0)));
 }
 
-// Review MINE-6: the hurdle is read on f2 / 1.55, so at a hurdle of 3 an f2 of 4.6 is out and
-// one of 4.7 is in.
-TEST(StrategyMineRule, ShortlistIsByF2ThenHashAndCapped) {
+// Review MINE-6: the hurdle is read on f2 / F, so with F 1.55 at a hurdle of 3 an f2 of 4.6 is
+// out and one of 4.7 is in; a NaN factor (a budget the table does not cover) shortlists nothing.
+// Ruling PM5-9: the shortlist is every read above the hurdle (the cap applies after the rho
+// step, StrategyMineRule.RhoStepRunsOverTheWholeShortlistThenCaps).
+TEST(StrategyMineRule, ShortlistIsByF2ThenHash) {
   const std::vector<st::MinedRead> reads{{9, 5.0}, {3, missing}, {2, 7.0}, {1, 5.0},
                                          {4, 3.0}, {5, 4.6},     {6, 4.7}};
-  EXPECT_EQ(st::mined_shortlist(reads, 3.0, 8), (std::vector<usize>{2, 3, 0, 6}));
-  EXPECT_EQ(st::mined_shortlist(reads, 3.0, 2), (std::vector<usize>{2, 3}));
-  EXPECT_TRUE(st::mined_shortlist(reads, missing, 8).empty());
+  EXPECT_EQ(st::mined_shortlist(reads, 3.0, 1.55), (std::vector<usize>{2, 3, 0, 6}));
+  EXPECT_TRUE(st::mined_shortlist(reads, missing, 1.55).empty());
+  EXPECT_TRUE(st::mined_shortlist(reads, 3.0, missing).empty());
 }
 
-// Review MINE-6 (Ruling E-32a): the label-overlap factor and the window floors it was derived on
-// are registered with the rule, and the derivation's estimator (mine_overlap_factor.py
+// Review MINE-6 (Ruling E-32a): the label-overlap factors and the window floors they were derived
+// on are registered with the rule, and the derivation's estimator (mine_overlap_factor.py
 // summarize_t) is the verb's: summarize_rank_ic at Bartlett lag 21 over the defined days. The
-// pinned t's are the script's on the same series (test_mine_overlap_factor.py pins them too).
+// pinned t's are the script's on the same series (test_mine_overlap_factor.py pins them too, and
+// pins both factor tables against this header).
 TEST(StrategyMineRule, OverlapFactorIsRegisteredAndItsEstimatorIsTheVerbs) {
-  EXPECT_EQ(st::kMinedOverlapFactor, 1.55);
+  EXPECT_EQ(st::kMinedOverlapBands[1].top, 1000U);
+  EXPECT_EQ(st::kMinedOverlapBands[1].factor, 1.54);
   EXPECT_EQ(st::kMinedMinDiscoverRows, 504U);
   EXPECT_EQ(st::kMinedMinConfirmRows, 200U);
   EXPECT_EQ(ex::kResearchIcHacLag, 21U);
-  EXPECT_DOUBLE_EQ(st::mined_overlap_corrected(3.1), 2.0);
-  EXPECT_TRUE(std::isnan(st::mined_overlap_corrected(missing)));
+  EXPECT_DOUBLE_EQ(st::mined_overlap_corrected(3.1, 1.55), 2.0);
+  EXPECT_TRUE(std::isnan(st::mined_overlap_corrected(missing, 1.54)));
   std::vector<f64> daily(60);
   for (usize k = 0; k < daily.size(); ++k)
     daily[k] = static_cast<f64>(static_cast<int>((k * 37U) % 23U) - 11) / 100.0 + 0.004;
@@ -482,8 +500,12 @@ TEST(StrategyMineRule, RhoIsGreedyAgainstMembersAndKeptCandidates) {
   cb::PairwiseRowCorrelation rho(4, 3);
   const std::vector<std::span<const f64>> rows{m, c, c, m};
   for (int d = 0; d < 3; ++d) ASSERT_TRUE(rho.add_date(rows));
-  const auto out = st::mined_rho_select(rho, 1, 3);
+  const auto out = st::mined_rho_select(rho, 1, 3, 3, 8); // every pair defined on 3 dates
   ASSERT_EQ(out.size(), 3U);
+  for (const auto &r : out) {
+    EXPECT_TRUE(r.read);
+    EXPECT_EQ(r.undefined, st::kMinedNoRow);
+  }
   EXPECT_TRUE(out[0].pass);
   EXPECT_NEAR(out[0].max_abs, 0.0, 1e-12);
   EXPECT_FALSE(out[1].pass); // blocked by candidate 0 (row 1), which passed
@@ -493,13 +515,14 @@ TEST(StrategyMineRule, RhoIsGreedyAgainstMembersAndKeptCandidates) {
   EXPECT_EQ(out[2].against, 0U);
 }
 
-// Review MINE-6: the confirm read is taken as t / 1.55 -- the raw t's 9.3, 3.875 and 2.945 are
-// 6.0, 2.5 and 1.9 on the corrected scale.
+// Review MINE-6 (lane MINE-STAT): four confirm reads are taken as t / Fc(4) = t / 1.77 -- the raw
+// t's 10.62, 4.425 and 3.363 are 6.0, 2.5 and 1.9 on the corrected scale.
 TEST(StrategyMineRule, ConfirmIsOneSidedWithBenjaminiYekutieli) {
-  const std::vector<f64> t{9.3, 3.875, 2.945, missing};
+  const std::vector<f64> t{10.62, 4.425, 3.363, missing};
   const auto out = st::mined_confirm(t);
   ASSERT_EQ(out.size(), 4U);
-  EXPECT_EQ(out[1].t, 3.875);
+  EXPECT_EQ(out[1].t, 4.425);
+  for (const auto &read : out) EXPECT_EQ(read.factor, 1.77);
   EXPECT_NEAR(out[0].t_corrected, 6.0, 1e-12);
   EXPECT_NEAR(out[1].t_corrected, 2.5, 1e-12);
   EXPECT_NEAR(out[2].t_corrected, 1.9, 1e-12);
@@ -523,6 +546,134 @@ TEST(StrategyMineRule, ConfirmReadNeedsItsFullWindow) {
   EXPECT_EQ(st::kMinedMinConfirmRows, 200U);
 }
 
+// Lane MINE-STAT (lifts Ruling PM4-13): the discover factor is read from the --budget band and the
+// confirm factor from the band of m, the reads that reach the confirm; a band's top belongs to it,
+// and a count the table does not cover (0, or above the last top) reads NaN, so no hurdle passes.
+// Both tables grow with their count (deeper levels, heavier tails), and the ceiling is the
+// overlap table's last top.
+TEST(StrategyMineRule, FactorsAreReadFromTheirBands) {
+  EXPECT_EQ(st::kMinedMaxBudget, 10000U);
+  EXPECT_EQ(st::kMinedMaxBudget, st::kMinedOverlapBands.back().top);
+  const std::vector<std::pair<u64, f64>> budgets{
+      {1U, 1.47},    {100U, 1.47},   {101U, 1.54},  {128U, 1.54},
+      {1000U, 1.54}, {1001U, 1.63}, {10000U, 1.63}};
+  for (const auto &[budget, factor] : budgets)
+    EXPECT_EQ(st::mined_overlap_factor(budget), factor) << budget;
+  EXPECT_TRUE(std::isnan(st::mined_overlap_factor(0U)));
+  EXPECT_TRUE(std::isnan(st::mined_overlap_factor(st::kMinedMaxBudget + 1U)));
+  const std::vector<std::pair<usize, f64>> reads{
+      {1U, 1.77}, {16U, 1.77}, {17U, 1.96}, {64U, 1.96}, {65U, 2.15}, {256U, 2.15}};
+  for (const auto &[m, factor] : reads) EXPECT_EQ(st::mined_confirm_factor(m), factor) << m;
+  EXPECT_TRUE(std::isnan(st::mined_confirm_factor(0U)));
+  EXPECT_TRUE(std::isnan(st::mined_confirm_factor(257U)));
+  for (usize k = 1; k < st::kMinedOverlapBands.size(); ++k) {
+    EXPECT_GT(st::kMinedOverlapBands[k].top, st::kMinedOverlapBands[k - 1].top);
+    EXPECT_GT(st::kMinedOverlapBands[k].factor, st::kMinedOverlapBands[k - 1].factor);
+  }
+  for (usize k = 1; k < st::kMinedConfirmBands.size(); ++k) {
+    EXPECT_GT(st::kMinedConfirmBands[k].top, st::kMinedConfirmBands[k - 1].top);
+    EXPECT_GT(st::kMinedConfirmBands[k].factor, st::kMinedConfirmBands[k - 1].factor);
+  }
+  // The configuration's shortlist bound (--max-promotions 1..256) is the confirm table's last top.
+  EXPECT_EQ(st::kMinedConfirmBands.back().top, 256U);
+}
+
+// Lane MINE-STAT: the confirm factor follows m. The same t 4.425 reads 2.5 among 16 reads (Fc
+// 1.77) and about 2.26 among 17 (Fc 1.96); above the table (257 reads) Fc is NaN and nothing
+// confirms however large t is.
+TEST(StrategyMineRule, ConfirmFactorFollowsTheReadsThatReachIt) {
+  std::vector<f64> t(16U, missing);
+  t[0] = 4.425;
+  const auto sixteen = st::mined_confirm(t);
+  EXPECT_EQ(sixteen[0].factor, 1.77);
+  EXPECT_NEAR(sixteen[0].t_corrected, 2.5, 1e-12);
+  t.push_back(missing);
+  const auto seventeen = st::mined_confirm(t);
+  EXPECT_EQ(seventeen[0].factor, 1.96);
+  EXPECT_NEAR(seventeen[0].t_corrected, 4.425 / 1.96, 1e-12);
+  EXPECT_LT(seventeen[0].t_corrected, sixteen[0].t_corrected);
+  std::vector<f64> many(257U, 50.0);
+  const auto over = st::mined_confirm(many);
+  ASSERT_EQ(over.size(), 257U);
+  for (const auto &read : over) {
+    EXPECT_TRUE(std::isnan(read.factor));
+    EXPECT_FALSE(read.confirmed);
+  }
+}
+
+// Ruling PM5-9 (review MINE-14): the greedy rho step runs over the whole shortlist and the cap
+// applies to the candidates that pass. Row 0 a pool member m; candidates c (orthogonal to m), c
+// again, then d (orthogonal to both). Cap 2: c passes, its copy is blocked by c, d passes, so two
+// reads reach the confirm; the pre-PM5-9 rule capped the shortlist to {c, c} first and kept one.
+// Cap 1: the step stops at c and never reads the rest.
+TEST(StrategyMineRule, RhoStepRunsOverTheWholeShortlistThenCaps) {
+  const std::vector<f64> m{1, -1, 1, -1, 1, -1, 1, -1}, c{1, 1, -1, -1, 1, 1, -1, -1},
+      d{1, -1, -1, 1, 1, -1, -1, 1};
+  cb::PairwiseRowCorrelation rho(4, 3);
+  const std::vector<std::span<const f64>> rows{m, c, c, d};
+  for (int d = 0; d < 3; ++d) ASSERT_TRUE(rho.add_date(rows));
+  const auto two = st::mined_rho_select(rho, 1, 3, 3, 2);
+  ASSERT_EQ(two.size(), 3U);
+  EXPECT_TRUE(two[0].read && two[0].pass);
+  EXPECT_TRUE(two[1].read);
+  EXPECT_FALSE(two[1].pass);
+  EXPECT_EQ(two[1].against, 1U);
+  EXPECT_TRUE(two[2].read && two[2].pass);
+  EXPECT_NEAR(two[2].max_abs, 0.0, 1e-12);
+  const auto one = st::mined_rho_select(rho, 1, 3, 3, 1);
+  EXPECT_TRUE(one[0].read && one[0].pass);
+  for (usize k = 1; k < 3U; ++k) {
+    EXPECT_FALSE(one[k].read) << k;
+    EXPECT_FALSE(one[k].pass) << k;
+    EXPECT_EQ(one[k].against, st::kMinedNoRow) << k;
+  }
+}
+
+// Ruling PM5-8 (review MINE-15): every row a candidate is checked against must give a defined rho
+// -- on at least min_dates dates, a date counting when at least min_names names are joint -- or
+// the candidate fails, whatever its other pairs read; the first such row is reported. The
+// pre-PM5-8 rule let an undefined pair pass.
+TEST(StrategyMineRule, UndefinedRhoFailsTheCandidate) {
+  const std::vector<f64> m{1, -1, 1, -1, 1, -1, 1, -1}, c{1, 1, -1, -1, 1, 1, -1, -1};
+  // A member on two names only (min_names 3): its pair with any candidate is never defined.
+  const std::vector<f64> sparse{1, -1, missing, missing, missing, missing, missing, missing};
+  cb::PairwiseRowCorrelation narrow(3, 3);
+  const std::vector<std::span<const f64>> narrow_rows{sparse, m, c};
+  for (int d = 0; d < 3; ++d) ASSERT_TRUE(narrow.add_date(narrow_rows));
+  EXPECT_EQ(narrow.dates(0, 2), 0U);
+  for (const usize min_dates : {usize{0}, usize{3}}) {
+    const auto out = st::mined_rho_select(narrow, 2, 1, min_dates, 8);
+    ASSERT_EQ(out.size(), 1U);
+    EXPECT_TRUE(out[0].read);
+    EXPECT_FALSE(out[0].pass) << min_dates; // defined and 0 to m, undefined to the sparse member
+    EXPECT_EQ(out[0].undefined, 0U);
+    EXPECT_EQ(out[0].against, 1U);
+    EXPECT_NEAR(out[0].max_abs, 0.0, 1e-12);
+  }
+  // Defined on 3 dates: fails under min_dates 4, passes under 3.
+  cb::PairwiseRowCorrelation brief(2, 3);
+  const std::vector<std::span<const f64>> brief_rows{m, c};
+  for (int d = 0; d < 3; ++d) ASSERT_TRUE(brief.add_date(brief_rows));
+  const auto short_of = st::mined_rho_select(brief, 1, 1, 4, 8);
+  EXPECT_FALSE(short_of[0].pass);
+  EXPECT_EQ(short_of[0].undefined, 0U);
+  const auto enough = st::mined_rho_select(brief, 1, 1, 3, 8);
+  EXPECT_TRUE(enough[0].pass);
+  EXPECT_EQ(enough[0].undefined, st::kMinedNoRow);
+  // An earlier kept candidate is checked like a member: x is defined against m (names 4..7) but
+  // shares no name with the kept c (names 0..3), so x fails on c's row.
+  const std::vector<f64> half_c{1, 1, -1, -1, missing, missing, missing, missing};
+  const std::vector<f64> x{missing, missing, missing, missing, 1, 1, -1, -1};
+  cb::PairwiseRowCorrelation kept(3, 3);
+  const std::vector<std::span<const f64>> kept_rows{m, half_c, x};
+  for (int d = 0; d < 3; ++d) ASSERT_TRUE(kept.add_date(kept_rows));
+  const auto out = st::mined_rho_select(kept, 1, 2, 3, 8);
+  EXPECT_TRUE(out[0].pass);
+  EXPECT_FALSE(out[1].pass);
+  EXPECT_EQ(out[1].undefined, 1U);
+  EXPECT_EQ(out[1].against, 0U);
+}
+
 TEST(StrategyMine, TemplatesAreTheHouseSet) {
   const std::vector<std::string> fields{"a", "b"};
   const auto t = st::mine_templates(fields);
@@ -534,13 +685,52 @@ TEST(StrategyMine, TemplatesAreTheHouseSet) {
   EXPECT_EQ(t[21], "rank(delta(b, 252))");
 }
 
-// Review MINE-10: the memory admission is the derived sum documented in strategy_mine.hpp. The
-// pinned totals come from the MINE-FIX report's Python mirror of that formula: a small footprint
-// and the report's worked example (the 4-year role, 1,405 x 6,100, 16 fields, 4 workers, one
-// rung, the default search's 272 trials). One more trial costs its daily IC, its allowance and
-// its registry row; one more prior record its registry row. The configuration bounds need far
-// more than the 64 GiB --max-memory-mib ceiling, so such a campaign is refused before payload.
-TEST(StrategyMine, WorkingBytesAreTheDerivedSum) {
+// The 4-year role of the MINE-10 table: 1,405 x 6,100, 16 fields, 3 regressors, 32 members, one
+// rung, a shortlist of 16, the default search's 272 trials.
+st::MineFootprint four_year_footprint(usize workers) {
+  st::MineFootprint role;
+  role.dates = 1405;
+  role.names = 6100;
+  role.extras = 16;
+  role.regressors = 3;
+  role.members = 32;
+  role.workers = workers;
+  role.rungs = 1;
+  role.shortlist = 16;
+  role.trials = 16U * 11U + 24U * 4U;
+  return role;
+}
+
+// The fixture campaign's footprint (Fixture::config: five fields, one regressor, one member, one
+// rung, 16 promotions, 55 templates + 16 x 2 stage-2 trials, a fresh registry).
+st::MineFootprint fixture_footprint(usize workers) {
+  st::MineFootprint fx;
+  fx.dates = D;
+  fx.names = N;
+  fx.extras = 5;
+  fx.regressors = 1;
+  fx.members = 1;
+  fx.workers = workers;
+  fx.rungs = 1;
+  fx.shortlist = 16;
+  fx.trials = 5U * 11U + 16U * 2U;
+  return fx;
+}
+
+// Review MINE-10, lane MINE-MEM: the memory admission is the peak of the phases documented in
+// strategy_mine.hpp -- resident terms plus the larger of the search (the fitness and the largest
+// of its bind, race and full-pass sub-phases) and the promotion (the shortlist and the largest of
+// its engine, rho and confirm steps). The pinned values come from the Python mirror of that model
+// (lane reports MINE-MEM, MINE-JOIN). One more trial costs its daily IC, its allowance and its
+// registry row; one more prior record its registry row. Lane MINE-JOIN: the shortlist term is the
+// cap of signals (MINE-STAT's rho step keeps kept + batch <= K) and the members are streamed one
+// date at a time (member_rows), so on the 4-year role the peak is 3,161 MiB at 1 worker (the
+// promotion) and 4,572 MiB at 4 (the search); MINE-MEM had 5,319 at both, the old sum 11,111 at
+// 4. The first real campaign's shape (12 fields, one regressor, 53 members, stage 1 only, no
+// racing) needs 2,765 MiB at 1 worker and 3,978 MiB at 4, whatever its member count. The
+// configuration bounds need far more than the 64 GiB --max-memory-mib ceiling, so such a
+// campaign is refused before any payload.
+TEST(StrategyMine, WorkingBytesAreThePeakOfThePhases) {
   EXPECT_EQ(st::kMineMaxProgramSlots, 8U);
   st::MineFootprint small;
   small.dates = 100;
@@ -555,7 +745,7 @@ TEST(StrategyMine, WorkingBytesAreTheDerivedSum) {
   small.prior_records = 7;
   const auto base = st::mine_working_bytes(small);
   ASSERT_TRUE(base.has_value()) << base.error().to_string();
-  EXPECT_EQ(*base, u64{85'689'444});
+  EXPECT_EQ(*base, u64{85'422'464});
   auto more_trials = small;
   more_trials.trials += 1U;
   EXPECT_EQ(st::mine_working_bytes(more_trials).value() - *base,
@@ -563,17 +753,88 @@ TEST(StrategyMine, WorkingBytesAreTheDerivedSum) {
   auto more_prior = small;
   more_prior.prior_records += 1U;
   EXPECT_EQ(st::mine_working_bytes(more_prior).value() - *base, u64{128});
-  st::MineFootprint role;
-  role.dates = 1405;
-  role.names = 6100;
-  role.extras = 16;
-  role.regressors = 3;
-  role.members = 32;
-  role.workers = 4;
-  role.rungs = 1;
-  role.shortlist = 16;
-  role.trials = 16U * 11U + 24U * 4U;
-  EXPECT_EQ(st::mine_working_bytes(role).value(), u64{11'651'171'382});
+
+  const auto four = st::mine_memory(four_year_footprint(4));
+  ASSERT_TRUE(four.has_value()) << four.error().to_string();
+  const st::MineMemory &m = *four;
+  // The terms of the report's table (bytes).
+  EXPECT_EQ(m.metadata, u64{67'108'864});
+  EXPECT_EQ(m.role, u64{1'379'569'236});
+  EXPECT_EQ(m.regressors, u64{205'692'000});
+  EXPECT_EQ(m.trial_reads, u64{7'513'728});
+  EXPECT_EQ(m.registry, u64{559'104});
+  EXPECT_EQ(m.discover_cache, u64{419'999'460});
+  EXPECT_EQ(m.discover_workspaces, u64{3'572'800});
+  EXPECT_EQ(m.rung_caches, u64{205'736'960});
+  EXPECT_EQ(m.rung_workspaces, u64{2'011'200});
+  EXPECT_EQ(m.bind_transient, u64{677'069'500});
+  EXPECT_EQ(m.race_panels, u64{655'643'250});
+  EXPECT_EQ(m.race_engines, u64{1'114'165'000});
+  EXPECT_EQ(m.race_signals, u64{137'128'000});
+  EXPECT_EQ(m.full_engines, u64{2'228'330'000});
+  EXPECT_EQ(m.full_signals, u64{274'256'000});
+  EXPECT_EQ(m.shortlist, u64{1'097'024'000});
+  EXPECT_EQ(m.promotion_engine, u64{557'082'500});
+  EXPECT_EQ(m.member_rows, u64{1'561'600});
+  EXPECT_EQ(m.rho_rows, u64{2'476'864});
+  EXPECT_EQ(m.confirm_cache, u64{420'892'660});
+  // The phases, summed here independently of MineMemory's own sums.
+  const u64 resident = m.metadata + m.role + m.regressors + m.trial_reads + m.registry;
+  const u64 fitness = m.discover_cache + m.discover_workspaces + m.rung_caches + m.rung_workspaces;
+  const u64 race = m.race_panels + m.race_engines + m.race_signals;
+  const u64 full = m.full_engines + m.full_signals;
+  const u64 search = fitness + std::max({m.bind_transient, race, full});
+  const u64 promotion =
+      m.shortlist + std::max({m.promotion_engine, m.member_rows + m.rho_rows, m.confirm_cache});
+  EXPECT_EQ(m.resident(), resident);
+  EXPECT_EQ(m.search(), search);
+  EXPECT_EQ(m.promotion(), promotion);
+  EXPECT_EQ(m.peak(), resident + std::max(search, promotion));
+  EXPECT_EQ(m.resident(), u64{1'660'442'932});
+  EXPECT_EQ(m.search(), u64{3'133'906'420});
+  EXPECT_EQ(m.promotion(), u64{1'654'106'500});
+  EXPECT_EQ(st::mine_working_bytes(four_year_footprint(4)).value(), u64{4'794'349'352});
+  const auto one = st::mine_memory(four_year_footprint(1));
+  ASSERT_TRUE(one.has_value()) << one.error().to_string();
+  EXPECT_EQ(one->search(), u64{1'595'598'920});
+  EXPECT_EQ(one->promotion(), u64{1'654'106'500});
+  EXPECT_EQ(one->peak(), u64{3'314'549'432});
+  // The first real campaign (lane MINE-RUN's mine-c1): 12 fields, one regressor, 53 members, the
+  // 132 stage-1 templates, no racing, the cap of 16. The member count no longer moves the peak.
+  for (const usize workers : {usize{1}, usize{4}}) {
+    auto c1 = four_year_footprint(workers);
+    c1.extras = 12;
+    c1.regressors = 1;
+    c1.members = 53;
+    c1.rungs = 0;
+    c1.trials = 12U * 11U;
+    const auto first = st::mine_memory(c1);
+    ASSERT_TRUE(first.has_value()) << first.error().to_string();
+    EXPECT_EQ(first->resident(), u64{1'245'173'652});
+    EXPECT_EQ(first->search(), workers == 1U ? u64{1'046'539'160} : u64{2'926'158'260});
+    EXPECT_EQ(first->promotion(), u64{1'654'106'500});
+    EXPECT_EQ(first->peak(), workers == 1U ? u64{2'899'280'152} : u64{4'171'331'912});
+    EXPECT_LE(first->peak(), u64{7680} << 20);
+    for (const usize members : {usize{1}, st::kMaxMinePoolMembers}) {
+      c1.members = members;
+      EXPECT_EQ(st::mine_working_bytes(c1).value(), first->peak()) << members;
+    }
+  }
+  // Without racing the race terms vanish and the search is the fitness and the full pass.
+  auto unraced = four_year_footprint(4);
+  unraced.rungs = 0;
+  const auto plain = st::mine_memory(unraced);
+  ASSERT_TRUE(plain.has_value());
+  EXPECT_EQ(plain->bind_transient + plain->race_panels + plain->race_engines +
+                plain->race_signals + plain->rung_caches + plain->rung_workspaces,
+            u64{0});
+  EXPECT_EQ(plain->search(), plain->discover_cache + plain->discover_workspaces +
+                                 plain->full_engines + plain->full_signals);
+  // The fixture campaigns (StrategyMineCampaign.SameSeedSameChainHeadAtOneAndFourWorkers reads
+  // these back from campaign.json).
+  EXPECT_EQ(st::mine_working_bytes(fixture_footprint(1)).value(), u64{95'199'808});
+  EXPECT_EQ(st::mine_working_bytes(fixture_footprint(4)).value(), u64{101'584'960});
+
   st::MineFootprint bounds;
   bounds.dates = 4096;
   bounds.names = 20000;
@@ -584,10 +845,295 @@ TEST(StrategyMine, WorkingBytesAreTheDerivedSum) {
   bounds.rungs = 2;
   bounds.shortlist = 256;
   bounds.trials = 64U * 11U + 4096U * 256U;
-  EXPECT_EQ(st::mine_working_bytes(bounds).value(), u64{1'184'945'709'312});
+  EXPECT_EQ(st::mine_working_bytes(bounds).value(), u64{517'571'694'848});
   EXPECT_GT(st::mine_working_bytes(bounds).value(), u64{64} << 30);
   bounds.trials = (u64{1} << 32) + 1U;
   EXPECT_FALSE(st::mine_working_bytes(bounds).has_value());
+}
+
+// Lane MINE-MEM: the model's terms against the allocations they stand for, measured on the
+// fixture (1,844 x 16, the five mined fields, one regressor, one member, one rung of stride 2, 4
+// workers). Equal where the allocation is a function of the geometry -- the pool payloads, the
+// strided rung panel with its member and guard, a signal set -- and at most the term where it
+// depends on the window's rows or on the program -- an IC cache (label rows <= dates) or a VM slot
+// pool (a template's slots <= kMineMaxProgramSlots). No member is ever held whole: bind_mine_pool
+// loads the regressor only, and the rho check streams one date of each member (lane MINE-JOIN).
+TEST(StrategyMineCampaign, ModelTermsAreTheFixtureAllocations) {
+  namespace al = atx::engine::alpha;
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  const auto cfg = f.config("memory", 1, 4);
+  const auto memory = st::mine_memory(fixture_footprint(cfg.workers));
+  ASSERT_TRUE(memory.has_value()) << memory.error().to_string();
+  const auto role = st::ResearchRole::load(cfg.role);
+  ASSERT_TRUE(role.has_value()) << role.error().to_string();
+  const al::Panel &panel = (*role)->panel();
+  ASSERT_EQ(panel.cells(), D * N);
+  ASSERT_EQ(panel.num_fields(), 3U + cfg.role.fields.size());
+  // The pool: the regressor payload exactly; the member bound, never loaded, and streamed one date
+  // at a time over the discover rows (the rows the stream hands over are what it holds).
+  const auto manifest = st::read_mine_pool_manifest(cfg.pool_path, cfg.pool_sha256);
+  ASSERT_TRUE(manifest.has_value()) << manifest.error().to_string();
+  const auto pool = st::bind_mine_pool(*manifest, **role);
+  ASSERT_TRUE(pool.has_value()) << pool.error().to_string();
+  u64 regressor_bytes = 0;
+  for (const st::MinePoolColumn &column : pool->regressors)
+    regressor_bytes += column.values.size() * sizeof(f64);
+  EXPECT_EQ(regressor_bytes, memory->regressors);
+  ASSERT_EQ(pool->members.size(), 1U);
+  u64 streamed = 0;
+  const auto stream = st::stream_mine_pool_members(
+      *pool, score_begin, kConfirmRow,
+      [&streamed](usize, std::span<const std::span<const f64>> rows) -> core::Status {
+        u64 held = 0;
+        for (const std::span<const f64> &row : rows) held += row.size() * sizeof(f64);
+        streamed = std::max(streamed, held);
+        return core::Ok();
+      });
+  ASSERT_TRUE(stream) << stream.error().to_string();
+  EXPECT_EQ(streamed, memory->member_rows);
+  // The racing rung: the strided panel (every field and its universe) exactly, and with the
+  // strided member and guard the fitness's bind transient exactly.
+  const u32 stride = cfg.race_strides.front();
+  const auto rung = ex::strided_panel(panel, 1U, stride);
+  ASSERT_TRUE(rung.has_value()) << rung.error().to_string();
+  u64 rung_bytes = rung->cells(); // the universe, one byte per cell
+  for (usize k = 0; k < rung->num_fields(); ++k)
+    rung_bytes += rung->field_all(static_cast<al::FieldId>(k)).size() * sizeof(f64);
+  EXPECT_EQ(rung_bytes, memory->race_panels);
+  const auto rung_member = ex::strided_cells((*role)->member(), D, N, 1U, stride);
+  const auto rung_guard = ex::strided_cells((*role)->guard(), D, N, 1U, stride);
+  ASSERT_TRUE(rung_member.has_value() && rung_guard.has_value());
+  EXPECT_EQ(rung_bytes + rung_member->size() + rung_guard->size() * sizeof(u32),
+            memory->bind_transient);
+  // The IC caches, with the scorer's member rows on the full panel: discover [2020-01-01,
+  // 2022-07-01) and confirm [2022-07-01, 2024-01-01); the rung's discover cache on the strided
+  // panel with min_names scaled by the stride, as ResearchIcFitness prepares it.
+  const auto cache_bytes = [&cfg](const al::Panel &on, usize begin, usize end, usize min_names,
+                                  std::span<const u8> eligible, std::span<const u32> guard,
+                                  bool member_rows) -> u64 {
+    const auto recipe = ex::research_window_ic_config(begin, end, min_names, cfg.min_dates,
+                                                      cfg.max_working_bytes);
+    const auto cache = ex::prepare_research_ic(on, recipe, {3, true, 1}, eligible, guard);
+    EXPECT_TRUE(cache.has_value()) << cache.error().to_string();
+    if (!cache.has_value()) return u64{0};
+    const u64 rows =
+        member_rows ? cache->label_rows(ex::kResearchIcHorizon) * on.instruments() : u64{0};
+    return cache->bytes() + rows;
+  };
+  const u64 workspace = memory->discover_workspaces / cfg.workers;
+  EXPECT_LE(cache_bytes(panel, score_begin, kConfirmRow, cfg.min_names, (*role)->member(),
+                        (*role)->guard(), true),
+            memory->discover_cache);
+  EXPECT_LE(cache_bytes(panel, kConfirmRow, D, cfg.min_names, (*role)->member(),
+                        (*role)->guard(), true),
+            memory->confirm_cache - workspace);
+  const usize rung_names = std::max<usize>(3U, (cfg.min_names + stride - 1U) / stride);
+  EXPECT_LE(cache_bytes(*rung, score_begin, kConfirmRow, rung_names, *rung_member, *rung_guard,
+                        false),
+            memory->rung_caches);
+  // A full-pass engine: every template's program on the role panel, masked as the search masks
+  // it. Its signal is exactly one worker's share of full_signals; its slot pool with the mask
+  // copy is within one worker's share of full_engines, the promotion engine's term.
+  const al::Library lib{};
+  const std::span<const u8> eligible = (*role)->member();
+  u64 largest = 0;
+  for (const std::string &dsl : st::mine_templates(cfg.role.fields)) {
+    auto ast = al::parse_expr(dsl, lib);
+    ASSERT_TRUE(ast.has_value()) << dsl;
+    auto genome = ex::analyze_into(std::move(*ast));
+    ASSERT_TRUE(genome.has_value()) << dsl;
+    const auto program = al::compile(genome->ast, genome->analysis);
+    ASSERT_TRUE(program.has_value()) << dsl;
+    al::Engine engine{panel};
+    ASSERT_TRUE(engine.set_cross_section_mask(std::vector<u8>(eligible.begin(), eligible.end())));
+    const auto signals = engine.evaluate(*program);
+    ASSERT_TRUE(signals.has_value()) << dsl;
+    ASSERT_EQ(signals->alphas.size(), 1U) << dsl;
+    EXPECT_EQ(signals->alphas.front().values.size() * sizeof(f64),
+              memory->full_signals / cfg.workers)
+        << dsl;
+    largest = std::max<u64>(largest, engine.pool_capacity() * panel.cells() * sizeof(f64) +
+                                         panel.cells());
+  }
+  EXPECT_GT(largest, u64{0});
+  EXPECT_LE(largest, memory->full_engines / cfg.workers);
+  EXPECT_EQ(memory->full_engines / cfg.workers, memory->promotion_engine);
+}
+
+// Lane MINE-JOIN: the rho check's members, streamed. Every date of [begin, end) comes once and in
+// order, each member's row bit for bit as stored (the fixture's m2, then p1), whether the pool
+// reads its held payloads in place (writers denied: the bind verified them) or verifies them whole
+// again on every pass; so the rho step ranks the bytes the whole-panel load gave it. The caller's
+// Err ends the stream and is returned as is; a range past the pool's dates is refused. While the
+// pool holds the payloads (Windows) no write, delete or rename gets through, and the stream and the
+// pre-write check still read the verified bytes; once the pool is gone the payload can change, and
+// the next bind refuses it in load_pinned_f64's words. Without a share mode (POSIX) the change is
+// refused when the stream ends and by the pre-write check.
+TEST(StrategyMineCampaign, MembersStreamByDateAsStored) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  const World world;
+  const fs::path pool_dir = f.dir.path / "pool";
+  const fs::path p1_file = pool_dir / "p1.f64";
+  ASSERT_TRUE(payload(pool_dir, f.pool_files, "p1.f64", world.p1));
+  std::string sha;
+  ASSERT_TRUE(f.write_pool_manifest("stream.json", {"book"}, {"m2", "p1"}, sha));
+  const auto cfg = f.config("stream", 1, 1);
+  const auto role = st::ResearchRole::load(cfg.role);
+  ASSERT_TRUE(role.has_value()) << role.error().to_string();
+  const auto manifest = st::read_mine_pool_manifest((pool_dir / "stream.json").string(), sha);
+  ASSERT_TRUE(manifest.has_value()) << manifest.error().to_string();
+  auto pool = st::bind_mine_pool(*manifest, **role);
+  ASSERT_TRUE(pool.has_value()) << pool.error().to_string();
+  ASSERT_EQ(pool->members.size(), 2U);
+  EXPECT_EQ(pool->dates, D);
+  EXPECT_EQ(pool->instruments, N);
+  EXPECT_EQ(pool->writers_denied, st::kPinnedReadDeniesWriters);
+  const std::array<const std::vector<f64> *, 2> stored{&world.m2, &world.p1};
+  std::vector<usize> seen;
+  usize differ = 0;
+  const auto compare = [&seen, &differ, &stored](usize d,
+                                                 std::span<const std::span<const f64>> rows)
+      -> core::Status {
+    seen.push_back(d);
+    if (rows.size() != stored.size()) ++differ;
+    for (usize k = 0; k < std::min(rows.size(), stored.size()); ++k) {
+      const auto got = std::as_bytes(rows[k]);
+      const auto want = std::as_bytes(std::span<const f64>(*stored[k]).subspan(d * N, N));
+      if (!std::equal(got.begin(), got.end(), want.begin(), want.end())) ++differ;
+    }
+    return core::Ok();
+  };
+  for (const bool denied : {true, false}) { // in place (held), then verified whole again
+    pool->writers_denied = denied && st::kPinnedReadDeniesWriters;
+    seen.clear();
+    differ = 0;
+    const auto status = st::stream_mine_pool_members(*pool, score_begin, kConfirmRow, compare);
+    ASSERT_TRUE(status) << denied << ": " << status.error().to_string();
+    EXPECT_EQ(differ, 0U) << denied;
+    ASSERT_EQ(seen.size(), kConfirmRow - score_begin) << denied;
+    for (usize k = 0; k < seen.size(); ++k) EXPECT_EQ(seen[k], score_begin + k) << k;
+    EXPECT_TRUE(st::check_mine_pool_members(*pool)) << denied;
+  }
+  pool->writers_denied = st::kPinnedReadDeniesWriters;
+  const auto ignore = [](usize, std::span<const std::span<const f64>>) -> core::Status {
+    return core::Ok();
+  };
+  usize calls = 0;
+  const auto stopped = st::stream_mine_pool_members(
+      *pool, score_begin, kConfirmRow,
+      [&calls](usize, std::span<const std::span<const f64>>) -> core::Status {
+        ++calls;
+        return core::Err(core::ErrorCode::Internal, "stop here");
+      });
+  ASSERT_FALSE(stopped);
+  EXPECT_EQ(stopped.error().message(), "stop here");
+  EXPECT_EQ(calls, 1U);
+  EXPECT_FALSE(st::stream_mine_pool_members(*pool, 0U, D + 1U, ignore));
+  EXPECT_FALSE(st::stream_mine_pool_members(*pool, kConfirmRow, score_begin, ignore));
+  EXPECT_TRUE(st::stream_mine_pool_members(*pool, score_begin, score_begin, ignore));
+  EXPECT_TRUE(st::check_mine_pool_members(*pool));
+  std::vector<f64> changed = world.p1;
+  changed[score_begin * N] += 1.0;
+  const auto write_changed = [&p1_file, &changed]() {
+    std::ofstream out(p1_file, std::ios::binary | std::ios::trunc);
+    const auto bytes = std::as_bytes(std::span<const f64>(changed));
+    out.write(reinterpret_cast<const char *>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    out.close();
+    return static_cast<bool>(out);
+  };
+  const std::string mismatch = "mine pool payload p1 SHA256 mismatch: p1.f64";
+  if constexpr (st::kPinnedReadDeniesWriters) {
+    // Held: no writer, delete or rename gets the payload; the reads still see the verified bytes.
+    EXPECT_FALSE(write_changed());
+    std::error_code ec;
+    EXPECT_FALSE(fs::remove(p1_file, ec));
+    EXPECT_TRUE(ec);
+    fs::rename(p1_file, pool_dir / "p1-moved.f64", ec);
+    EXPECT_TRUE(ec);
+    EXPECT_TRUE(fs::exists(p1_file));
+    seen.clear();
+    differ = 0;
+    EXPECT_TRUE(st::stream_mine_pool_members(*pool, score_begin, kConfirmRow, compare));
+    EXPECT_EQ(differ, 0U);
+    EXPECT_TRUE(st::check_mine_pool_members(*pool));
+    // Released: the payload can change, and the next bind refuses it.
+    { const st::MinePool released = std::move(*pool); }
+    ASSERT_TRUE(write_changed());
+    const auto rebound = st::bind_mine_pool(*manifest, **role);
+    ASSERT_FALSE(rebound);
+    EXPECT_NE(rebound.error().message().find(mismatch), std::string::npos)
+        << rebound.error().to_string();
+  } else {
+    ASSERT_TRUE(write_changed());
+    for (const auto &refused :
+         {st::stream_mine_pool_members(*pool, score_begin, kConfirmRow, ignore),
+          st::check_mine_pool_members(*pool)}) {
+      ASSERT_FALSE(refused);
+      EXPECT_NE(refused.error().message().find(mismatch), std::string::npos)
+          << refused.error().to_string();
+    }
+  }
+}
+
+// ---- rung failures (review MINE-16) -----------------------------------------------------------
+// A racing rejection whose rung read failed (SearchResult::rung_failed_hashes, a subset of
+// fidelity_rejected_hashes) is its own trial status, rung-failed, counted apart from the
+// racing-rejected ones; a slot-bound refusal stays failed. Seen in two stages, an expression keeps
+// its better status: racing-rejected over rung-failed, whichever stage saw which.
+TEST(StrategyMine, RungFailuresAreTheirOwnTrialStatus) {
+  namespace md = st::mine_detail;
+  const atx::engine::alpha::Library lib{};
+  const auto stage_of = [&lib](const std::vector<std::string> &dsl) {
+    md::StageRun stage;
+    for (usize k = 0; k < dsl.size(); ++k) {
+      auto ast = atx::engine::alpha::parse_expr(dsl[k], lib);
+      EXPECT_TRUE(ast.has_value()) << dsl[k];
+      if (!ast.has_value()) continue;
+      auto genome = ex::analyze_into(std::move(*ast));
+      EXPECT_TRUE(genome.has_value()) << dsl[k];
+      if (!genome.has_value()) continue;
+      genome->canon_hash = 101U + k;
+      stage.result.all_scored.push_back(std::move(*genome));
+    }
+    return stage;
+  };
+  // 101 raced and lost, 102 failed at the rung, 103 refused by the slot bound.
+  md::StageRun first = stage_of({"rank(p1)", "rank(p2)", "rank(p3)"});
+  first.result.fidelity_rejected_hashes = {101U, 102U};
+  first.result.rung_failed_hashes = {102U};
+  first.result.slot_refused_hashes = {103U};
+  first.result.unscored_hashes = {103U};
+  std::vector<md::MinedTrial> trials;
+  std::unordered_map<u64, usize> index;
+  md::classify(first, 1U, trials, index);
+  ASSERT_EQ(trials.size(), 3U);
+  EXPECT_EQ(trials[0].status, md::TrialStatus::RacingRejected);
+  EXPECT_EQ(trials[0].reason, "racing-rejected");
+  EXPECT_EQ(trials[1].status, md::TrialStatus::RungFailed);
+  EXPECT_EQ(trials[1].reason, "rung-failed");
+  EXPECT_EQ(md::status_name(md::TrialStatus::RungFailed), "rung-failed");
+  EXPECT_EQ(trials[2].status, md::TrialStatus::Failed);
+  EXPECT_EQ(trials[2].reason, "slot-bound");
+  const md::Counts counts = md::count_statuses(trials);
+  EXPECT_EQ(counts.racing_rejected, 1U);
+  EXPECT_EQ(counts.rung_failed, 1U);
+  EXPECT_EQ(counts.failed, 1U);
+  EXPECT_EQ(counts.evaluated + counts.screen_rejected, 0U);
+  EXPECT_NE(md::trials_csv(trials).find("0000000000000066,1,rung-failed,rung-failed,"),
+            std::string::npos);
+  // Stage 2 races 101 again and the rung fails it; 102 is raced and lost this time.
+  md::StageRun second = stage_of({"rank(p1)", "rank(p2)"});
+  second.result.fidelity_rejected_hashes = {101U, 102U};
+  second.result.rung_failed_hashes = {101U};
+  md::classify(second, 2U, trials, index);
+  ASSERT_EQ(trials.size(), 3U);
+  EXPECT_EQ(trials[0].status, md::TrialStatus::RacingRejected);
+  EXPECT_EQ(trials[1].status, md::TrialStatus::RacingRejected);
+  EXPECT_EQ(trials[1].reason, "racing-rejected");
+  EXPECT_EQ(md::count_statuses(trials).rung_failed, 0U);
 }
 
 // ---- the fixture acceptance --------------------------------------------------------------------
@@ -598,9 +1144,18 @@ const Json *promotion_of(const Json &campaign, const std::string &dsl) {
   return nullptr;
 }
 
+// Lane MINE-STAT: a factor table as the recipe carries it, [[top, factor], ...].
+Json bands_of(std::span<const st::MinedFactorBand> bands) {
+  Json out = Json::array();
+  for (const st::MinedFactorBand &band : bands)
+    out.push_back(Json::array({band.top, band.factor}));
+  return out;
+}
+
 // 3 planted signals promoted, the planted copy stopped by the marginal term alone (the pool's
 // member m2 is independent of it, so no rho step could), no noise expression promoted, in 5
-// seeds; registry count = evaluated + racing-rejected + screen-rejected. Review MINE-9: stage 1
+// seeds; registry count = evaluated + racing-rejected + screen-rejected + rung-failed, with no
+// rung failure (review MINE-16). Review MINE-9: stage 1
 // (the templates, one generation, no mutation) does not depend on the seed, so the seeds differ
 // in stage 2 only; the test pins that stage 1 is the same in every seed rather than counting it
 // five times.
@@ -621,10 +1176,13 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
     const f64 hurdle = campaign.at("hurdle").at("t").get<f64>();
     const Json &trials = campaign.at("trials");
     const Json &registry = campaign.at("registry");
+    // Review MINE-16: the registry identity counts the rung failures apart, and the fixture has
+    // none (a failure would change its reason tag and so the chain head).
     EXPECT_EQ(registry.at("n_raw").get<u64>(),
               trials.at("evaluated").get<u64>() + trials.at("screen_rejected").get<u64>() +
-                  trials.at("racing_rejected").get<u64>())
+                  trials.at("racing_rejected").get<u64>() + trials.at("rung_failed").get<u64>())
         << "seed " << seed;
+    EXPECT_EQ(trials.at("rung_failed").get<u64>(), 0U) << "seed " << seed;
     EXPECT_EQ(trials.at("failed").get<u64>(), 0U) << "seed " << seed; // none past the slot bound
     EXPECT_EQ(campaign.at("search").at("max_program_slots").get<u32>(), st::kMineMaxProgramSlots);
     EXPECT_GT(trials.at("racing_rejected").get<u64>(), 0U) << "seed " << seed;
@@ -636,9 +1194,12 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
     EXPECT_LE(registry.at("n_raw").get<u64>(), kBudget);
     EXPECT_LE(campaign.at("search").at("capacity").get<u64>(), kBudget);
     EXPECT_EQ(hurdle, st::mined_hurdle(kBudget)) << "seed " << seed;
-    // Review MINE-6: the hurdle is read on f2 / F, and F is part of the recipe.
-    EXPECT_EQ(campaign.at("hurdle").at("overlap_factor").get<f64>(), st::kMinedOverlapFactor);
-    EXPECT_EQ(campaign.at("recipe").at("overlap_factor").get<f64>(), st::kMinedOverlapFactor);
+    // Review MINE-6 (lane MINE-STAT): the hurdle is read on f2 / F, F the factor of the budget's
+    // band; the recipe carries the tables F is read from.
+    const f64 factor = st::mined_overlap_factor(kBudget);
+    EXPECT_EQ(campaign.at("hurdle").at("overlap_factor").get<f64>(), factor);
+    EXPECT_EQ(campaign.at("recipe").at("overlap_bands"), bands_of(st::kMinedOverlapBands));
+    EXPECT_EQ(campaign.at("recipe").at("confirm_bands"), bands_of(st::kMinedConfirmBands));
     std::array<bool, 3> planted_read{};
     for (const Json &member : mined.at("members")) {
       const auto dsl = member.at("dsl").get<std::string>();
@@ -657,8 +1218,8 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
                                    [](const TrialRow &row) { return row.dsl == "rank(copy)"; });
     ASSERT_NE(copy, rows.end()) << "seed " << seed;
     EXPECT_EQ(copy->status, "evaluated") << "seed " << seed;
-    EXPECT_GE(st::mined_overlap_corrected(copy->f1), hurdle) << "seed " << seed;
-    EXPECT_LT(st::mined_overlap_corrected(copy->f2), hurdle) << "seed " << seed;
+    EXPECT_GE(st::mined_overlap_corrected(copy->f1, factor), hurdle) << "seed " << seed;
+    EXPECT_LT(st::mined_overlap_corrected(copy->f2, factor), hurdle) << "seed " << seed;
     EXPECT_TRUE(promotion_of(campaign, "rank(copy)") == nullptr) << "seed " << seed;
     // Stage 1 in the same order with the same racing in every seed.
     std::string stage1;
@@ -681,11 +1242,12 @@ TEST(StrategyMineCampaign, PromotesThePlantedSignalsOnlyInFiveSeeds) {
 // Review MINE-9 (T-1 standard): the mined-v1 rule pinned on the 88 templates of all eight fields
 // (stage 1 only, no racing, so every template is read in full; --budget 1000), each pin a case a
 // wrong rule passes:
-//   E-32      rank(swap) is shortlisted and passes the rho check, and its raw IC t / F on the
+//   E-32      rank(swap) is shortlisted and passes the rho check, and its raw IC t / Fc on the
 //             confirm window clears 2, but its confirm marginal t is undefined (the book spans
 //             every confirm row): a raw-IC confirm would admit it;
 //   sign      rank(neg) is admitted with sign -1; rank(flip) (sign -1 frozen from discover) reads
-//             a confirm t / F of about -3.6 and is rejected: a confirm on |t| would admit it;
+//             a confirm t / Fc below -2 (about -5.6 raw) and is rejected: a confirm on |t| would
+//             admit it;
 //   N         the hurdle is mined_hurdle(--budget), not that of the 88 trials recorded, and the
 //             shortlist is exactly the evaluated rows with f2 / F at or above it, by f2;
 //   copy      rank(copy) clears the hurdle on f1 and not on f2, so it never reaches the rho step
@@ -698,18 +1260,24 @@ TEST(StrategyMineCampaign, RulePinsOnTheTemplates) {
   cfg.stage2_generations = 0;
   cfg.race_strides.clear();
   cfg.max_promotions = 64; // above the 27 rows the replica shortlists: no cap
-  cfg.budget = st::kMinedMaxBudget; // 1000: Ruling PM4-13's ceiling itself is accepted
+  // The 1,000 band (F 1.54). At the 10,000 ceiling the hurdle is 4.56 x 1.63, which the replica's
+  // rank(swap) does not clear.
+  cfg.budget = 1000U;
   std::ostringstream progress;
   const auto status = st::run_mine(cfg, progress);
   ASSERT_TRUE(status) << status.error().to_string() << "\n" << progress.str();
   const fs::path out(cfg.output_directory);
   const Json campaign = read_json(out / "campaign.json");
   const auto rows = read_trials(out / "trials.csv");
-  // Ruling PM4-13: the ceiling is in the recipe (so its identity) and in the hurdle, beside F.
-  EXPECT_EQ(campaign.at("budget").get<u64>(), st::kMinedMaxBudget);
+  // Ruling PM4-13 lifted by the table (lane MINE-STAT): the ceiling and both factor tables are in
+  // the recipe (so its identity), the ceiling and the factor of the budget's band in the hurdle.
+  EXPECT_EQ(campaign.at("budget").get<u64>(), 1000U);
   EXPECT_EQ(campaign.at("recipe").at("max_budget").get<u64>(), st::kMinedMaxBudget);
   EXPECT_EQ(campaign.at("hurdle").at("max_budget").get<u64>(), st::kMinedMaxBudget);
-  EXPECT_EQ(campaign.at("recipe").at("overlap_factor").get<f64>(), st::kMinedOverlapFactor);
+  EXPECT_EQ(campaign.at("recipe").at("overlap_bands"), bands_of(st::kMinedOverlapBands));
+  EXPECT_EQ(campaign.at("recipe").at("confirm_bands"), bands_of(st::kMinedConfirmBands));
+  const f64 factor = st::mined_overlap_factor(1000U);
+  EXPECT_EQ(campaign.at("hurdle").at("overlap_factor").get<f64>(), factor);
   ASSERT_EQ(rows.size(), 88U);
   ASSERT_EQ(campaign.at("registry").at("n_raw").get<u64>(), 88U);
   // N: the declared budget's Bonferroni value.
@@ -720,7 +1288,7 @@ TEST(StrategyMineCampaign, RulePinsOnTheTemplates) {
   std::vector<const TrialRow *> expected;
   for (const TrialRow &row : rows)
     if (row.status == "evaluated" && std::isfinite(row.f2) &&
-        st::mined_overlap_corrected(row.f2) >= hurdle)
+        st::mined_overlap_corrected(row.f2, factor) >= hurdle)
       expected.push_back(&row);
   std::sort(expected.begin(), expected.end(), [](const TrialRow *a, const TrialRow *b) {
     return a->f2 != b->f2 ? a->f2 > b->f2 : a->canon_hash < b->canon_hash;
@@ -737,7 +1305,8 @@ TEST(StrategyMineCampaign, RulePinsOnTheTemplates) {
   EXPECT_TRUE(swapped->at("confirm_read").get<bool>());
   EXPECT_TRUE(swapped->at("confirm_defined").get<bool>());
   EXPECT_TRUE(swapped->at("confirm_marginal_t").is_null());
-  EXPECT_GE(st::mined_overlap_corrected(swapped->at("confirm_ic_t").get<f64>()),
+  EXPECT_GE(st::mined_overlap_corrected(swapped->at("confirm_ic_t").get<f64>(),
+                                        swapped->at("confirm_factor").get<f64>()),
             st::kMinedConfirmT);
   EXPECT_FALSE(swapped->at("admitted").get<bool>());
   // Sign: frozen from discover.
@@ -758,8 +1327,8 @@ TEST(StrategyMineCampaign, RulePinsOnTheTemplates) {
                                  [](const TrialRow &row) { return row.dsl == "rank(copy)"; });
   ASSERT_NE(copy, rows.end());
   EXPECT_EQ(copy->status, "evaluated");
-  EXPECT_GE(st::mined_overlap_corrected(copy->f1), hurdle);
-  EXPECT_LT(st::mined_overlap_corrected(copy->f2), hurdle);
+  EXPECT_GE(st::mined_overlap_corrected(copy->f1, factor), hurdle);
+  EXPECT_LT(st::mined_overlap_corrected(copy->f2, factor), hurdle);
   EXPECT_TRUE(promotion_of(campaign, "rank(copy)") == nullptr);
   // Admitted: only expressions of p1, p2, p3 or neg, and each of them.
   const Json mined = read_json(out / "mined_members.json");
@@ -780,6 +1349,237 @@ TEST(StrategyMineCampaign, RulePinsOnTheTemplates) {
   EXPECT_TRUE(read_field[0] && read_field[1] && read_field[2] && read_field[3]);
 }
 
+// The stage-1 campaign of the rule's fixture tests below: fields p1 and p2, one generation of the
+// templates, no racing, --budget 1000 (so every template is read in full).
+st::MineConfig templates_only(const Fixture &f, const std::string &tag) {
+  auto cfg = f.config(tag, 1, 1);
+  cfg.role.fields = {"p1", "p2"};
+  cfg.stage2_generations = 0;
+  cfg.race_strides.clear();
+  cfg.budget = 1000U;
+  return cfg;
+}
+
+// Ruling PM5-9 (review MINE-14): the greedy rho step runs over the whole shortlist, then the cap
+// applies. A first campaign names the template that leads the shortlist (rank(p1) or rank(p2);
+// the pool's members do not enter f2); the second makes that field a pool member beside m2 and
+// caps the confirm at one read (--max-promotions 1). The lead is blocked (|rho| 1 to its own
+// field), so the one confirm read goes to the first candidate further down that passes, and the
+// step reads nothing after it. The pre-PM5-9 rule capped first: its shortlist was the blocked
+// lead alone and it admitted nothing.
+TEST(StrategyMineCampaign, RhoStepReadsTheWholeShortlistBeforeTheCap) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  const World world;
+  const fs::path pool = f.dir.path / "pool";
+  ASSERT_TRUE(payload(pool, f.pool_files, "p1.f64", world.p1));
+  ASSERT_TRUE(payload(pool, f.pool_files, "p2.f64", world.p2));
+  std::ostringstream progress;
+  const auto first = templates_only(f, "lead");
+  const auto first_status = st::run_mine(first, progress);
+  ASSERT_TRUE(first_status) << first_status.error().to_string();
+  const auto first_rows = read_trials(fs::path(first.output_directory) / "trials.csv");
+  const TrialRow *lead = nullptr;
+  for (const TrialRow &row : first_rows) {
+    if (row.status != "evaluated" || !std::isfinite(row.f2)) continue;
+    if (lead == nullptr || row.f2 > lead->f2 ||
+        (row.f2 == lead->f2 && row.canon_hash < lead->canon_hash))
+      lead = &row;
+  }
+  ASSERT_TRUE(lead != nullptr);
+  ASSERT_TRUE(lead->dsl == "rank(p1)" || lead->dsl == "rank(p2)") << lead->dsl;
+  const std::string field = lead->dsl.substr(5U, 2U);
+  std::string sha;
+  ASSERT_TRUE(f.write_pool_manifest("lead.json", {"book"}, {"m2", field}, sha));
+  auto cfg = templates_only(f, "capped");
+  cfg.pool_path = (pool / "lead.json").string();
+  cfg.pool_sha256 = sha;
+  cfg.max_promotions = 1;
+  const auto status = st::run_mine(cfg, progress);
+  ASSERT_TRUE(status) << status.error().to_string();
+  const fs::path out(cfg.output_directory);
+  const Json campaign = read_json(out / "campaign.json");
+  const Json &promotions = campaign.at("promotions");
+  ASSERT_GE(promotions.size(), 2U);
+  const Json &blocked = promotions.front();
+  EXPECT_EQ(blocked.at("dsl").get<std::string>(), lead->dsl);
+  EXPECT_TRUE(blocked.at("rho_read").get<bool>());
+  EXPECT_FALSE(blocked.at("rho_pass").get<bool>());
+  EXPECT_EQ(blocked.at("max_rho_row").get<std::string>(), "pool:" + field);
+  EXPECT_GT(blocked.at("max_abs_rho").get<f64>(), st::kMinedMaxAbsRho);
+  // Every row up to the first that passes is read; that one alone is confirmed-read; none after
+  // it is read.
+  usize reached = promotions.size();
+  for (usize k = 0; k < promotions.size(); ++k) {
+    const Json &row = promotions[k];
+    if (k < reached) {
+      EXPECT_TRUE(row.at("rho_read").get<bool>()) << k;
+      if (row.at("rho_pass").get<bool>()) reached = k;
+    } else {
+      EXPECT_FALSE(row.at("rho_read").get<bool>()) << k;
+    }
+    EXPECT_EQ(row.at("confirm_read").get<bool>(), k == reached) << k;
+  }
+  ASSERT_LT(reached, promotions.size());
+  EXPECT_GT(reached, 0U);
+  const Json &passed = promotions[reached];
+  EXPECT_EQ(passed.at("confirm_factor").get<f64>(), st::mined_confirm_factor(1U));
+  EXPECT_TRUE(passed.at("admitted").get<bool>()) << passed.dump();
+  EXPECT_EQ(campaign.at("admitted").get<usize>(), 1U);
+}
+
+// Ruling PM5-8 (review MINE-15): "to every member" means every member is checked and passes, so a
+// candidate whose rho against a member is undefined fails. Two pools, each the independent m2 and
+// one member no candidate can be checked against: `sparse` (m2 on 5 names, under --min-names 10:
+// no date has enough joint names) and `brief` (m2 on the first 100 discover rows only, under
+// --min-dates 128). Every shortlisted template fails on that member and nothing is admitted. The
+// pre-PM5-8 rule let the undefined pair pass and admitted the planted fields.
+TEST(StrategyMineCampaign, UndefinedRhoAgainstAMemberFails) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  const World world;
+  std::vector<f64> sparse(world.m2.size(), missing), brief(world.m2.size(), missing);
+  for (usize c = 0; c < world.m2.size(); ++c) {
+    if (c % N < 5U) sparse[c] = world.m2[c];
+    if (c / N >= score_begin && c / N < score_begin + 100U) brief[c] = world.m2[c];
+  }
+  const fs::path pool = f.dir.path / "pool";
+  ASSERT_TRUE(payload(pool, f.pool_files, "sparse.f64", sparse));
+  ASSERT_TRUE(payload(pool, f.pool_files, "brief.f64", brief));
+  for (const char *name : {"sparse", "brief"}) {
+    const std::string member(name);
+    std::string sha;
+    ASSERT_TRUE(f.write_pool_manifest(member + ".json", {"book"}, {"m2", member}, sha));
+    auto cfg = templates_only(f, "undefined-" + member);
+    cfg.pool_path = (pool / (member + ".json")).string();
+    cfg.pool_sha256 = sha;
+    std::ostringstream progress;
+    const auto status = st::run_mine(cfg, progress);
+    ASSERT_TRUE(status) << member << ": " << status.error().to_string();
+    const Json campaign = read_json(fs::path(cfg.output_directory) / "campaign.json");
+    const Json &promotions = campaign.at("promotions");
+    ASSERT_FALSE(promotions.empty()) << member;
+    for (const Json &row : promotions) {
+      const std::string dsl = row.at("dsl").get<std::string>();
+      EXPECT_TRUE(row.at("rho_read").get<bool>()) << member << " " << dsl;
+      EXPECT_FALSE(row.at("rho_pass").get<bool>()) << member << " " << dsl;
+      EXPECT_EQ(row.at("rho_undefined_row").get<std::string>(), "pool:" + member) << dsl;
+      EXPECT_FALSE(row.at("confirm_read").get<bool>()) << member << " " << dsl;
+    }
+    EXPECT_EQ(campaign.at("admitted").get<usize>(), 0U) << member;
+  }
+}
+
+// Lane MINE-JOIN (MINE-STAT's open risk): the promotion evaluates each rho batch on a fresh engine
+// (strategy_mine_promote.cpp evaluate_signals), so a promoted signal must not depend on which
+// engine evaluated it or on what that engine evaluated before. al::Engine keeps its slot pool
+// (zeroed when fresh, the previous program's values when reused) and grow-only scratch across
+// evaluate() calls. The 88 templates of the eight fixture fields, evaluated as evaluate_signals
+// does (the role's panel, the decision membership as the cross-section mask), give byte-equal
+// signals on a fresh engine per program, per batch of 5 (an uneven split) and of 16 (the default
+// cap: the first batch's free slots), on one engine for all 88 in order and in reverse order.
+TEST(StrategyMineCampaign, PromotionSignalsDoNotDependOnTheEngine) {
+  namespace al = atx::engine::alpha;
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  auto cfg = f.config("engines", 1, 1);
+  cfg.role.fields = {"p1", "p2", "p3", "copy", "n1", "swap", "neg", "flip"};
+  const auto role = st::ResearchRole::load(cfg.role);
+  ASSERT_TRUE(role.has_value()) << role.error().to_string();
+  const al::Panel &panel = (*role)->panel();
+  const std::span<const u8> mask = (*role)->member();
+  const al::Library lib{};
+  std::vector<al::Program> programs;
+  for (const std::string &dsl : st::mine_templates(cfg.role.fields)) {
+    auto ast = al::parse_expr(dsl, lib);
+    ASSERT_TRUE(ast.has_value()) << dsl;
+    auto genome = ex::analyze_into(std::move(*ast));
+    ASSERT_TRUE(genome.has_value()) << dsl;
+    auto program = al::compile(genome->ast, genome->analysis);
+    ASSERT_TRUE(program.has_value()) << dsl;
+    programs.push_back(std::move(*program));
+  }
+  ASSERT_EQ(programs.size(), 88U);
+  // programs[order[k]] for every k, a fresh engine every `batch` programs.
+  const auto evaluate = [&programs, &panel, mask](const std::vector<usize> &order, usize batch) {
+    std::vector<std::vector<f64>> out(programs.size());
+    std::unique_ptr<al::Engine> engine;
+    for (usize k = 0; k < order.size(); ++k) {
+      if (k % batch == 0U) {
+        engine = std::make_unique<al::Engine>(panel);
+        EXPECT_TRUE(engine->set_cross_section_mask(std::vector<u8>(mask.begin(), mask.end())));
+      }
+      auto signals = engine->evaluate(programs[order[k]]);
+      EXPECT_TRUE(signals.has_value()) << order[k];
+      if (!signals.has_value() || signals->alphas.empty()) continue;
+      out[order[k]] = std::move(signals->alphas.front().values);
+    }
+    return out;
+  };
+  std::vector<usize> forward(programs.size());
+  for (usize p = 0; p < forward.size(); ++p) forward[p] = p;
+  const std::vector<usize> backward(forward.rbegin(), forward.rend());
+  const std::vector<std::vector<f64>> reference = evaluate(forward, 1U);
+  const auto differ = [&reference](const std::vector<std::vector<f64>> &got) {
+    usize count = 0;
+    for (usize p = 0; p < reference.size(); ++p) {
+      const auto want = std::as_bytes(std::span<const f64>(reference[p]));
+      const auto have = std::as_bytes(std::span<const f64>(got[p]));
+      if (want.size() != D * N * sizeof(f64) ||
+          !std::equal(want.begin(), want.end(), have.begin(), have.end()))
+        ++count;
+    }
+    return count;
+  };
+  for (const usize batch : {usize{5}, usize{16}, programs.size()})
+    EXPECT_EQ(differ(evaluate(forward, batch)), 0U) << batch;
+  EXPECT_EQ(differ(evaluate(backward, programs.size())), 0U);
+}
+
+// Lane MINE-JOIN: the rho step batched three ways is one campaign. Pool members m2 and p2 (so the
+// shortlist's lead rank(p2) is blocked), --max-promotions 2, --budget 22 (the 22 templates of p1
+// and p2, F 1.47: a long shortlist). rho_batch 0 (the verb: the free slots, a fresh engine each),
+// 1 (a fresh engine per candidate) and 64 (the whole shortlist on one engine) write equal
+// promotions (every rho and confirm value), members, trial logs and registry heads. The verb's
+// batching reads more rows than the cap, so it ran more than one batch.
+TEST(StrategyMineCampaign, RhoBatchingNeverChangesThePromotion) {
+  Fixture f;
+  ASSERT_TRUE(f.ok);
+  const World world;
+  const fs::path pool = f.dir.path / "pool";
+  ASSERT_TRUE(payload(pool, f.pool_files, "p2.f64", world.p2));
+  std::string sha;
+  ASSERT_TRUE(f.write_pool_manifest("batching.json", {"book"}, {"m2", "p2"}, sha));
+  std::vector<Json> promotions, members;
+  std::vector<std::string> logs, heads;
+  for (const usize batch : {usize{0}, usize{1}, usize{64}}) {
+    auto cfg = templates_only(f, "batch-" + std::to_string(batch));
+    cfg.pool_path = (pool / "batching.json").string();
+    cfg.pool_sha256 = sha;
+    cfg.budget = 22U;
+    cfg.max_promotions = 2;
+    cfg.rho_batch = batch;
+    std::ostringstream progress;
+    const auto status = st::run_mine(cfg, progress);
+    ASSERT_TRUE(status) << batch << ": " << status.error().to_string();
+    const fs::path out(cfg.output_directory);
+    const Json campaign = read_json(out / "campaign.json");
+    promotions.push_back(campaign.at("promotions"));
+    members.push_back(read_json(out / "mined_members.json").at("members"));
+    logs.push_back(text_of(out / "trials.csv"));
+    heads.push_back(campaign.at("registry").at("head").get<std::string>());
+  }
+  usize read = 0;
+  for (const Json &row : promotions.front()) read += row.at("rho_read").get<bool>() ? 1U : 0U;
+  ASSERT_GT(read, 2U) << promotions.front().dump();
+  for (usize k = 1; k < promotions.size(); ++k) {
+    EXPECT_EQ(promotions[k], promotions[0]) << k;
+    EXPECT_EQ(members[k], members[0]) << k;
+    EXPECT_EQ(logs[k], logs[0]) << k;
+    EXPECT_EQ(heads[k], heads[0]) << k;
+  }
+}
+
 // Same seed twice and at 1 and 4 workers: the same registry chain head, trial log and members.
 // An existing registry reopens only against its exported head, and a re-run of the recorded
 // campaign's recipe (a second confirm read on its identity, review MINE-3) is refused, writing
@@ -795,7 +1595,13 @@ TEST(StrategyMineCampaign, SameSeedSameChainHeadAtOneAndFourWorkers) {
     const auto status = st::run_mine(cfg, progress);
     ASSERT_TRUE(status) << status.error().to_string();
     const fs::path out(cfg.output_directory);
-    heads.push_back(read_json(out / "campaign.json").at("registry").at("head").get<std::string>());
+    const Json campaign = read_json(out / "campaign.json");
+    heads.push_back(campaign.at("registry").at("head").get<std::string>());
+    // Lane MINE-MEM: the admission campaign.json records is the model's peak at this worker
+    // count (95,199,808 B at 1 worker, 101,584,960 at 4; lane MINE-JOIN).
+    EXPECT_EQ(campaign.at("search").at("required_bytes").get<u64>(),
+              st::mine_working_bytes(fixture_footprint(workers)).value())
+        << tag;
     logs.push_back(text_of(out / "trials.csv"));
     members.push_back(read_json(out / "mined_members.json").at("members").dump());
   }
@@ -804,6 +1610,10 @@ TEST(StrategyMineCampaign, SameSeedSameChainHeadAtOneAndFourWorkers) {
     EXPECT_EQ(logs[k], logs[0]) << k;
     EXPECT_EQ(members[k], members[0]) << k;
   }
+  // Lane MINE-MEM: the fixture's registry head and trial log, recorded (--gtest_output=xml) so
+  // one build's campaign can be compared with another's; equal at 1 and 4 workers above.
+  RecordProperty("fixture_registry_head", heads.front());
+  RecordProperty("fixture_trials_csv_sha256", core::sha256_hex(logs.front()).value_or(""));
   auto again = f.config("w1a", 7, 1);
   again.output_directory = (f.dir.path / "out-w1a-again").string();
   std::ostringstream progress;
@@ -894,14 +1704,14 @@ TEST(StrategyMineCampaign, RefusesAMissingBudgetOrOneBelowTheCapacity) {
   EXPECT_EQ(st::mine_trial_capacity(cfg), templates);
 }
 
-// Ruling PM4-13: the overlap factor is validated to --budget kMinedMaxBudget (1000) only, so
-// 1001 is refused before any payload -- here the role and pool manifests do not even exist --
-// and writes nothing (RulePinsOnTheTemplates runs at 1000 itself). The ledger twin refuses a
-// line above the ceiling in campaign_line's words and accepts one at it.
+// Ruling PM4-13, lifted by lane MINE-STAT's table: the overlap factors are validated to --budget
+// kMinedMaxBudget (10,000) only, so 10,001 is refused before any payload -- here the role and
+// pool manifests do not even exist -- and writes nothing. The ledger twin refuses a line above
+// the ceiling in campaign_line's words and accepts one at it.
 TEST(StrategyMineCampaign, RefusesABudgetAboveTheCeilingBeforeAnyPayload) {
   Fixture f;
   ASSERT_TRUE(f.ok);
-  EXPECT_EQ(st::kMinedMaxBudget, 1000U);
+  EXPECT_EQ(st::kMinedMaxBudget, 10000U);
   auto cfg = f.config("ceiling", 1, 1);
   cfg.budget = st::kMinedMaxBudget + 1U;
   cfg.role.manifest = (f.dir.path / "absent-role.json").string();
@@ -910,7 +1720,7 @@ TEST(StrategyMineCampaign, RefusesABudgetAboveTheCeilingBeforeAnyPayload) {
   const auto refused = st::run_mine(cfg, progress);
   ASSERT_FALSE(refused);
   const std::string message = refused.error().message();
-  EXPECT_NE(message.find("--budget 1001 is above kMinedMaxBudget 1000 (Ruling PM4-13)"),
+  EXPECT_NE(message.find("--budget 10001 is above kMinedMaxBudget 10000 (Ruling PM4-13)"),
             std::string::npos)
       << message;
   EXPECT_NE(message.find("validated to that budget only"), std::string::npos) << message;
@@ -935,7 +1745,7 @@ TEST(StrategyMineCampaign, RefusesABudgetAboveTheCeilingBeforeAnyPayload) {
   const auto above = st::mine_ledger_line(line);
   ASSERT_FALSE(above);
   EXPECT_NE(above.error().message().find(
-                "budget is at most 1000 (kMinedMaxBudget, Ruling PM4-13: the overlap factor is "
+                "budget is at most 10000 (kMinedMaxBudget, Ruling PM4-13: the overlap factor is "
                 "validated to that budget only)"),
             std::string::npos)
       << above.error().to_string();

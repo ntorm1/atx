@@ -197,6 +197,10 @@ if b == "refuse":
     receipt("prelaunch-memory-refusal", None); sys.exit(1)
 if b == "error":
     receipt("process-error", 1); sys.exit(1)
+if b in ("floor-kill", "floor-kill-partial"):    # P9 OR-4: the host memory floor killed it (before / after a write)
+    if b == "floor-kill-partial":
+        Path(cmd[cmd.index("--output") + 1]).mkdir(parents=True, exist_ok=True)
+    receipt("system-memory-limit", 1); sys.exit(1)
 if b == "incomplete":
     (out / "stdout.log").write_text('{"status": "incomplete", "partial": true}'); receipt("process-error", 3); sys.exit(1)
 for rel, text in beh.get("touch", {}).get(out.name, []):   # v8 A-3: a file written while this phase runs
@@ -221,6 +225,9 @@ elif "fit.py" in " ".join(cmd):
 elif "nav" in cmd:
     (child / "summary.json").write_text(json.dumps({"status": "complete", "primary_scenario": "s2"}))
     (child / "daily_s2.csv").write_text(beh.get("daily", {}).get(child.name, "net_return\n0.001\n"))
+    if "--capacity-curve" in cmd and b != "capacity-crash":   # the NAV verb writes these after summary.json (NV-4)
+        (child / "capacity_curve.csv").write_text("multiple,book,net_sharpe\n4,s2,1.0\n")
+        (child / "v7_extras.json").write_text(json.dumps({"capacity_curve": True}))
 elif "marginal" in cmd:                                     # v8 A-2: the IC exe's marginal verb (contract K6)
     (child / "marginal_ic.json").write_text(json.dumps({"candidates": [
         {"id": "new_alpha", "ic21": 0.012, "ic21_hac_t": 2.1, "marginal_ic21": 0.008, "marginal_hac_t": 1.6,
@@ -237,7 +244,8 @@ receipt("completed", 0)
 # unbounded config) and pinned; test_marginal_argv_is_the_verbs_full_cli re-reads the C++ and fails if it moves.
 VERB_REQUIRED = ("--candidate-cache", "--library", "--pool", "--role", "--output")
 VERB_OPTIONS = {"--candidate-cache", "--library", "--library-sha256", "--pool", "--pool-sha256", "--role", "--themes",
-                "--fields", "--output", "--min-names", "--max-memory-mib"}   # dispatch_marginal_ic, each takes a value
+                "--fields", "--output", "--min-names", "--max-memory-mib",   # dispatch_marginal_ic, each takes a value
+                "--candidates", "--pair-cache", "--verified-digests"}        # + lane S1's (P9 E1 x S1 merge note)
 FAKE_RUNNER = FAKE_RUNNER.replace("@MARGINAL_REQUIRED@", repr(VERB_REQUIRED))
 
 FAKE_FIELDS = r'''
@@ -1747,12 +1755,14 @@ def test_verdict_schema(tmp_path):
 V70_OUT = {"fields": FIELDS_V7, "u": "build-equity/mega-v70-train-u-1", "w": "build-equity/mega-v70w-train-ew-1",
            "fit": "build-equity/mega-weights-v70-ew", "nav": V70_CELL}
 FAKE_IC_PLAN = r'''
-import hashlib, json, re, sys
+import hashlib, json, os, re, sys
 from pathlib import Path
 a = sys.argv[1:]
 if "--help" in a:
     print("equity-strategy-ic --library JSON ... [--no-composition]\n  equity-strategy-ic marginal --candidate-cache DIR")
     sys.exit(0)
+if os.environ.get("FAKE_IC_ARGV"):                     # opt-in: the last plan argv, for the tests that read it
+    Path(os.environ["FAKE_IC_ARGV"]).write_text(json.dumps(a))
 lib = json.loads(Path(a[a.index("--library") + 1]).read_text())
 declared = {f["name"] for f in lib["fields"]} - {"close", "raw_close", "volume"}
 rows = [{"id": c["id"], "dsl_sha256": hashlib.sha256(c["dsl"].encode()).hexdigest(),
@@ -1877,7 +1887,7 @@ def test_add_alpha_entry_byte_identical_to_committed(tmp_path):
         f"{V70_OUT['fit']}/composition_weights.json", "build-equity/recent-fast-train-2020-2022-v2-lo1/manifest.json",
         spec["inputs"]["reference_combined"]["sha256"], "1000")
     assert [c["name"] for c in spec["compare"]] == ["ref-s2-daily", "parent-orientations", "parent-train-daily-ic"]
-    assert "phases" not in spec["runner"]                                        # a 3-year role: no OD-2 caps
+    assert spec["runner"]["phases"] == {"marginal": RA.MARGINAL_CAPS}           # a 3-year role: no OD-2 caps (5f)
     reg_bytes = (s / "alphas" / "registry.json").read_bytes()
     assert RC.main(add_argv(root, "ftd_fail") + ["--plan-json", str(plan)]) == RC.EXIT_OK   # identical: reused
     assert (s / "alphas" / "registry.json").read_bytes() == reg_bytes
@@ -1909,8 +1919,9 @@ def test_add_alpha_refusals_write_nothing(tmp_path):
     assert RA.next_name("v71") == "v72" and RA.next_name("v7-lo3") == "v7-lo4"
 
 
-def test_add_alpha_validates_through_the_exe_plan(tmp_path):
+def test_add_alpha_validates_through_the_exe_plan(tmp_path, monkeypatch):
     root = add_alpha_root(tmp_path)
+    monkeypatch.setenv("FAKE_IC_ARGV", str(tmp_path / "fake_ic_argv.json"))
     (root / "bin").mkdir()
     (root / "bin" / "fake_ic.py").write_text(FAKE_IC_PLAN)
     (root / "bin" / "ic.cmd").write_text(f'@"{sys.executable}" "%~dp0fake_ic.py" %*\n')
@@ -1921,9 +1932,16 @@ def test_add_alpha_validates_through_the_exe_plan(tmp_path):
     (root / "build-equity" / "recent-fast-train-2020-2022-v2-lo1" / "manifest.json").write_text(json.dumps(
         {"universe": {"id": "linked-operating-v1"}, "dates": 1405, "score_begin": 399}))   # the 4-year role
     assert RC.main(add_argv(root, "ins_opp")) == RC.EXIT_OK                          # the exe's --plan-only rows
+    plan_argv = json.loads((tmp_path / "fake_ic_argv.json").read_text())
+    assert "--plan-only" in plan_argv                                                 # PM6-9: the spec's IC cap
+    assert plan_argv[plan_argv.index("--max-memory-mib") + 1] == RC.option_value(spec["ic"]["flags"],
+                                                                                   "--max-memory-mib") == "1536"
     child = RC.load_spec(root / "scripts" / "specs" / "v8" / "lib-v71a.json")
     assert child["runner"]["phases"] == {"u": {"seconds": 300, "max_rss_mib": 2560},
-                                         "w": {"seconds": 300, "max_rss_mib": 2560}}   # OD-2, written as spec data
+                                         "w": {"seconds": 300, "max_rss_mib": 2560},   # OD-2, written as spec data
+                                         "marginal": {"seconds": 360}}                  # integration 8 item 5f
+    assert RC.Cycle(child, RC.Resolver(root), verify=False).phase_caps("marginal") == {
+        "seconds": 360, "max_rss_mib": child["runner"]["max_rss_mib"], "min_free_mib": child["runner"]["min_free_mib"]}
     lib = json.loads((root / "atx-impl" / "strategies" / "fund_industry_ic_v71a.json").read_text())
     assert lib["families"][-1]["id"] == "ownership_flow"                             # a new theme enters with ins_opp
     wide = add_argv(root, "ea_overdue", name="v71c", id="wide_overdue", dsl="rank((-1 * ea_days_to_expected))")

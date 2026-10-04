@@ -87,6 +87,15 @@ at or after the seal is refused before a statistic is formed.
                          dSR table and the verdict dSR > 0 and one-sided p < --bundle-alpha (.10, the freeze gate);
                          --bundle-json OUT writes it.
 
+Expansion X (v8x-prereg.md section 4, precondition P5; Rulings PM7-1, PM7-2, PM7-7; opt-in, logic in dsr_total.py):
+  --dsr-total LEDGER     total-count DSR of every listed dir. N_tot = every trial the defect rule counts in LEDGER (any
+                         kind) + the mining campaigns' registry counts (+1 for a dir not in the ledger). V[SR] is the
+                         ddof-1 variance from dsr_variance (construction cells on the current window). The v8-count
+                         value (N = the construction trials, as --dsr-ledger) is printed beside it. A missing ledger is
+                         refused.
+  --dsr-hand DIR         with --dsr-total; repeatable. DSR_hand of a ledgered book: N_tot and V of the ledger prefix
+                         that ends at DIR's own construction line. A dir that is missing or not ledgered is refused.
+
 Era pools (platform v8 H-1; opt-in, without --pool nothing above moves):
   --pool DIR ... [--pool-ids ID,...] [--pool-reference DIR ...]
                          one pooled row of era NAV dirs in date order (era_pool.pool_rows), after the listed dirs:
@@ -120,6 +129,7 @@ from pathlib import Path
 import numpy as np
 
 import backtest_integrity as BI
+import dsr_total as DT
 
 EP = BI.era_pool()  # task H-1: the era pooling rules (atx-engine/tools/era_pool.py; standard library)
 ANNUAL = 252
@@ -1002,12 +1012,57 @@ def integrity(args, argv, results, analysed) -> None:
             r["deflated_ledger"] = ledger_dsr(r["net_moments"], records, tid in present, wid, history)
             print(f"== ledger DSR {d}")
             print_ledger_dsr(r["deflated_ledger"])
+    if getattr(args, "dsr_total", None):
+        dsr_total_block(args, results)
     if args.ledger_n:
         records = BI.ledger_read(Path(args.ledger_n))
         for line in BI.appendix_a(records, args.ledger_n):
             print(line)
         if v8:
             print(BI.appendix_a_v8(records))
+
+
+def ledgered_book(d: Path, scenario: str | None) -> tuple[str, dict]:
+    """(construction trial_id, net moments) of a --dsr-hand NAV dir. A dir without summary.json or the scenario's
+    daily CSV is refused before anything is computed."""
+    if not (d / "summary.json").is_file():
+        raise SystemExit(f"nav_summ: --dsr-hand {d}: no summary.json")
+    scen = scenario_of(load_summary(d), scenario)["scenario"]
+    daily = d / f"daily_{scen}.csv"
+    if not daily.is_file():
+        raise SystemExit(f"nav_summ: --dsr-hand {d}: no {daily.name}")
+    nets = np.array(list(net_series(load_daily(d, scen)).values()), dtype=np.float64)
+    return BI.trial_id("construction", BI.sha256_file(daily)), net_moments(nets)
+
+
+def dsr_total_block(args, results: list[dict]) -> None:
+    """--dsr-total / --dsr-hand (v8x-prereg.md section 4). Prints the total-count DSR and the v8-count value of every
+    listed dir, then DSR_hand of each --dsr-hand book; adds r["deflated_total"] to every listed row (the --dsr-hand
+    rows under "hand")."""
+    try:
+        ledger = DT.read_ledger(Path(args.dsr_total))
+    except ValueError as exc:
+        raise SystemExit(f"nav_summ: {exc}") from exc
+    records, wid = ledger["records"], BI.window_id()
+    present = DT.construction_ids(records)
+    head = {"ledger": ledger["path"], "lines": len(records), "chain_head": ledger["chain_head"]}
+    for d, r in zip(args.dirs, results):
+        tid = BI.trial_id("construction", BI.sha256_file(Path(d) / f"daily_{r['scenario']}.csv"))
+        r["deflated_total"] = dict(head, trial_id=tid, **DT.ledger_rows(r["net_moments"], records, tid in present, wid))
+        for line in DT.format_book(d, r["net_moments"], ledger, r["deflated_total"]):
+            print(line)
+    hands = []
+    for h in args.dsr_hand:
+        tid, moments = ledgered_book(Path(h), args.scenario)
+        try:
+            row = DT.hand_row(moments, ledger, tid, wid)
+        except ValueError as exc:
+            raise SystemExit(f"nav_summ: {h}: {exc}") from exc
+        hands.append(dict(row, dir=h, net_moments=moments))
+        for line in DT.format_hand(h, moments, row):
+            print(line)
+    for r in results[:len(args.dirs)]:
+        r["deflated_total"]["hand"] = hands
 
 
 def float_list(text: str) -> list[float]:
@@ -1051,6 +1106,10 @@ def main(argv=None) -> int:
     ap.add_argument("--ledger-defect", default=None, help="REASON: the appended line is an invalid cell (N excludes it)")
     ap.add_argument("--year-table", action="store_true", help="per-year table of every listed dir")
     ap.add_argument("--dsr-ledger", default=None, help="DSR with N and V[SR] from this ledger (OD-4)")
+    ap.add_argument("--dsr-total", default=None, metavar="LEDGER",
+                    help="total-count DSR: N_tot = every trial of LEDGER + campaign registry counts (v8x-prereg)")
+    ap.add_argument("--dsr-hand", action="append", default=[], metavar="DIR",
+                    help="with --dsr-total: DSR_hand of a ledgered book on the ledger prefix ending at its line")
     ap.add_argument("--bundle", nargs=2, default=None, metavar=("BASE", "FINAL"),
                     help="cumulative paired test FINAL vs BASE with its verdict")
     ap.add_argument("--bundle-alpha", type=float, default=BUNDLE_ALPHA)
@@ -1088,6 +1147,10 @@ def main(argv=None) -> int:
         ap.error("--protocol v8 records the origin class in every ledger line: give --origin prior|grid|mined (K5)")
     if args.dsr_ledger and not (args.dirs or args.pool):
         ap.error("--dsr-ledger needs NAV dirs")
+    if args.dsr_total and (not args.dirs or args.pool):
+        ap.error("--dsr-total needs NAV dirs and reads TRAIN dirs only (no --pool)")
+    if args.dsr_hand and not args.dsr_total:
+        ap.error("--dsr-hand needs --dsr-total LEDGER")
     if args.bundle_json and not args.bundle:
         ap.error("--bundle-json needs --bundle BASE FINAL")
     if not 0 < args.bundle_alpha < 0.5:

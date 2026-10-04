@@ -3,9 +3,10 @@
 
   research_cycle.py plan   SPEC [--root R] [--suffix S [--keep-fields]] [--attempt PHASE=N ...] [--reuse-fields DIR]
                                 [--ledger PATH] [--runner-override KEY=VALUE ...] [--lines-only] [--no-git] [--screen]
-  research_cycle.py run    SPEC [same options] [--stop-after PHASE]
+  research_cycle.py run    SPEC [same options] [--stop-after PHASE] [--auto-attempt]
+                                [--admission-wait S [--host-budget-mib N]]
   research_cycle.py status SPEC [same options]
-  research_cycle.py lock   SPEC [--root R] [--relock] [--write]
+  research_cycle.py lock   SPEC [--root R] [--relock] [--write] [--exes]
   research_cycle.py add-alpha --id X --dsl "..." --theme T --tier B --prior-sign 1 --citation "..." --origin prior
                               --parent v71 [--name v72] [--plan-json PATH] [--root R]   (research_add_alpha.py)
   research_cycle.py cache gc --keep-referenced-by SPEC [SPEC ...] [--under DIR] [--root R] [--apply]
@@ -17,6 +18,8 @@
                            F-1, F-5: the owner ruling's id and date; a blind or returns re-run of TID needs the ruling)
   research_cycle.py ledger-campaign --ledger PATH --campaign DIR [--date D] [--root R]
                            (research_ledger.py, Ruling E-33: a mine output's campaign line; count 0, registry count)
+  research_cycle.py mine {lock,pool,probe,plan,run} SPEC [--root R] [...]
+                           (research_mine.py, v9 MINE-RUN: one mined campaign as a pinned cell, ledgered on completion)
 
 Platform v8 (lane A) additions, each off unless the spec or the command line asks for it:
   --screen        run: fields, check, u (+ --no-composition when the IC exe offers it), fit, card, marginal (the exe's
@@ -24,7 +27,35 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   (admission and marginal rows, per-phase seconds and peak MiB) into the cycle dir
                   <out_root or build-equity>/cycle-<name>[-suffix]/; a full run writes it too (with the paired dSR,
                   DSR N and PBO blocks read from nav_summ --json / --pbo-json when the spec sets "verdict": true)
-  --no-git        (contract K3) only for a --root outside any git repository: no clean check, the bounded runner gets
+  --auto-attempt  (P9 OR-4) a bounded step whose latest attempt the host refused (cycle_resume.AUTO_OUTCOMES: the
+                  memory floor at launch or while running, a launch-admission timeout) and whose output is absent runs
+                  again in <run dir>/attempt-k (k = 2, 3, ... <= MAX_ATTEMPTS) on the next invocation; without the flag
+                  that state is a stop, as before. A step whose run dir holds attempt-k sub-dirs is read from the
+                  latest (its receipt and NAV binding); attempt 1 keeps the run dir of before
+  resume argv     (P9 OR-3, K-P9-10) a done bounded output (u, fit, w, card, marginal, every-phase fields / monitor) is
+                  reused only when its run receipt's command equals the one this spec would run now
+                  (cycle_resume.REUSE_NEUTRAL options aside); a receipt written before K-P9-10 is reused as before.
+                  Rulings E1-REUSE (a), E1-REUSE-a2: a done bounded output (nav, ref too) whose K-P9-10 receipt names
+                  another executable SHA than the spec's exes_sha256 pin of that exe (for an output a template
+                  inherited: the parent's pin) is refused (exit 3); without a pin, a mismatch with the exe on disk is
+                  reused and logged (`receipt exe NOTE:`)
+  --admission-wait S  (P9 F-5 (a)) every bounded process waits, at most S seconds, before its launch for free memory
+                  >= its declared peak + floor and no compiler (run_bounded_research --admission-wait-seconds)
+  --host-budget-mib N (P9 OR section 5; needs --admission-wait) the host memory semaphore over declared caps (runner
+                  --host-budget-mib), and the steps that read nothing of each other run side by side under it
+                  (PARALLEL: ref || u, card || marginal); a phase cap above N is refused when planned. Each launch
+                  checks free memory inside the semaphore's lock, net of the other claims' unallocated caps, so a
+                  pair never over-commits; N bounds the sum of declared caps: set it no higher than the host's free
+                  memory at wave start
+  --keep-verdicts (P9 OR section 3) every cycle_verdict.json write also leaves its bytes in
+                  <cycle dir>/verdicts/<mode>-<k>.json, never overwritten (a receipt's verdict pin never dangles)
+  exes_sha256     (P9 OR-2) {exe key: SHA-256} of the exes the cell runs (effective exes: ic, nav), written by
+                  `lock --exes` (a template's into change.set, over the pins its parent's spec carries); plan and run stop
+                  (exit 3) when an exe no longer hashes to its pin; absent, exes are pinned by path only, as before
+  marginal.candidates (P9 ruling P4) [member id, ...]: the marginal verb gets --candidates FILE, the ids one per line
+                  (UTF-8) in <cycle dir>/marginal-candidates-<sha12>.txt, written when the step starts and bound in its
+                  receipt; set by a wave whose manifest's marginal ruling has candidates_only; absent, as before
+  --no-git       (contract K3) only for a --root outside any git repository: no clean check, the bounded runner gets
                   --root R --no-git, and a relative tool path (runner, builder, fit, card, monitor, summ scripts) that
                   is absent under R resolves to this worktree's copy
   clean check     scoped to the code pathspec (research_tree.CODE_PATHSPEC), before every executed phase; dirty paths
@@ -54,9 +85,14 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
                   omitted, derive to <out_root or build-equity>/{candidate-cache,fit-work}/<role sha16>-<window id>
                   (shared, content-keyed; never suffixed)
   runner.phases   {phase: {seconds, max_rss_mib, min_free_mib}} per-phase caps over the runner's; absent, the OD-2 rule
-                  table RUNNER_PHASE_RULES applies (u and w: 300 s / 2,560 MiB on a role of more than 1,200 dates)
+                  table RUNNER_PHASE_RULES applies (u and w: 300 s / 2,560 MiB on a role of more than 1,200 dates); a
+                  time cap (here or runner.seconds) above research_tree.RUNNER_MAX_SECONDS is refused at load (P9 OR-1)
   receipts        "every-phase": the direct phases (fields, check, monitor, summ) run through the bounded runner too
-  ref             skipped when this cycle's fields manifest SHA equals inputs.baseline_fields (the parent's fields)
+  ref             skipped when this cycle's fields manifest SHA equals inputs.baseline_fields (the parent's fields),
+                  unless the NAV exe's SHA-256 differs from the executable_sha256 of the parent NAV's completed run
+                  receipt (inputs.reference_cell; P9 OR-2): then the reference construction runs
+  nav, ref        done when summary.json exists and, for an argv with --capacity-curve, capacity_curve.csv and
+                  v7_extras.json too (written after the summary; P9 NV-4); a summary without them is a failed attempt
   marginal        {output, pool (input key, default reference_combined), themes (input key of the pool's composition
                   weights, e.g. reference_weights; optional), flags (--min-names N, --max-memory-mib N)}: the verb's
                   whole argv is built from the spec (--candidate-cache, --library(-sha256), --pool(-sha256), --role,
@@ -149,6 +185,7 @@ an rss-limit refusal to check the hard stop).
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -203,7 +240,12 @@ INPUT_KEYS = ("library", "recipe", "baseline_library", "role", "identity_bridge"
 # pins of inputs.library, inputs.<marginal.pool>, inputs.role, inputs.<marginal.themes>, this cycle's cache, fields and
 # output); marginal.flags may set only MARGINAL_SPEC_FLAGS (unsigned integers; --min-names defaults to the u pass's).
 MARGINAL_REQUIRED = ("--candidate-cache", "--library", "--pool", "--role", "--output")
-MARGINAL_BUILT = MARGINAL_REQUIRED + ("--library-sha256", "--pool-sha256", "--themes", "--fields")
+MARGINAL_CANDIDATES = "--candidates"   # P9 ruling P4: marginal.candidates -> the verb's --candidates FILE (lane S1)
+# Lane S1's value options --pair-cache DIR and --verified-digests FILE (P9 E1 x S1 merge note) belong to the step, never
+# to marginal.flags: no spec sets them until E2 wires them (S1's --workers / --exclude-self are not value pairs here).
+MARGINAL_BUILT = MARGINAL_REQUIRED + ("--library-sha256", "--pool-sha256", "--themes", "--fields", MARGINAL_CANDIDATES,
+                                      "--pair-cache", "--verified-digests")
+MEMBER_ID_RE = re.compile(r"[A-Za-z0-9_.:-]+")
 W_BUILT = ("--library", "--library-sha256", "--train", "--train-sha256", "--train-fields", "--train-fields-sha256",
            "--output", "--candidate-cache", "--composition-weights", "--composition-weights-sha256")
 MARGINAL_SPEC_FLAGS = {"--min-names": (3, None), "--max-memory-mib": (32, 16384)}   # option: (min, max) as the verb
@@ -224,12 +266,25 @@ BUILDS = {
     "equity-rel": {"bin": "build-equity-rel/bin", "path": ["C:/atx-cache/vcpkg_installed/x64-windows/bin"]},
 }
 EXE_NAMES = {"ic": "atx-equity-strategy-ic.exe", "nav": "atx-equity-strategy-targets.exe"}
+EXES_PIN = "exes_sha256"               # P9 OR-2: spec {exe key: SHA-256}, written by `lock --exes`
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
+# ruling E1-REUSE-a2: the spec key naming each phase's output (Cycle.inherited: a template keeps its parent's output
+# when the name is the parent's)
+PHASE_OUTPUTS = {"fields": ("fields", "output"), "u": ("ic", "u_output"), "w": ("ic", "w_output"),
+                 "fit": ("fit", "output"), "card": ("card", "output"), "marginal": ("marginal", "output"),
+                 "monitor": ("monitor", "output"), "nav": ("nav", "output")}
+# P9 NV-4: the NAV verb (strategy_nav_v7.cpp) writes summary.json before the capacity pass and v7_extras.json; a NAV
+# whose argv carries CAPACITY_FLAG is done only when CAPACITY_FILES exist beside its summary.json
+CAPACITY_FLAG, CAPACITY_FILES = "--capacity-curve", ("capacity_curve.csv", "v7_extras.json")
 # Default per-phase runner caps, applied when the spec's runner.phases does not name the phase. OD-2 (owner ruling
 # E-1, 2026-09-29): the IC passes get 2,560 MiB and 300 s on a role longer than 1,200 dates (the 3-year role has
 # 1,155, the 4-year role about 1,405); every other phase keeps the runner's own caps.
 RUNNER_PHASE_RULES = (
     {"phases": ("u", "w"), "when": {"role_dates_over": 1200}, "caps": {"seconds": 300, "max_rss_mib": 2560}},
 )
+# P9 OR section 5: under a host memory budget (--host-budget-mib) a pending step of the key phase runs side by side with
+# the next pending step of the value phase (only its own compare steps between): neither reads what the other writes
+PARALLEL = {"ref": "u", "card": "marginal"}
 
 
 class CycleError(Exception):
@@ -302,7 +357,7 @@ def validate_spec(spec: dict) -> None:
     r = spec["runner"]
     if not all(k in r for k in ("script", "seconds", "max_rss_mib", "min_free_mib")):
         raise CycleError("spec runner needs script, seconds, max_rss_mib, min_free_mib", EXIT_USAGE)
-    validate_runner_phases(r.get("phases"))
+    validate_runner_phases(r.get("phases"), r["seconds"])
     need = {"fields": ("output",), "static_check": ("script",), "ic": ("u_output", "flags"),
             "fit": ("script", "output", "flags"), "gate": ("admitted",), "nav": ("output", "rule", "flags"),
             "summ": ("script", "dsr_n"), "card": ("script", "output"), "monitor": ("script", "output"),
@@ -364,7 +419,12 @@ def validate_spec(spec: dict) -> None:
                              f"{spec['summ']['dsr_n']}: the listed grid must be the declared N trials", EXIT_USAGE)
 
 
-def validate_runner_phases(phases) -> None:
+def validate_runner_phases(phases, seconds=None) -> None:
+    """runner.phases (and ``seconds``, the runner's own cap): positive caps, a time cap at most the bounded runner's
+    maximum (research_tree.RUNNER_MAX_SECONDS, P9 OR-1: refused at load, never as a runner exit 2 mid-cycle)."""
+    refusal = research_tree.seconds_cap_refusal("spec runner.seconds", seconds)
+    if refusal:
+        raise CycleError(refusal, EXIT_USAGE)
     if phases is None:
         return
     if not isinstance(phases, dict) or not all(p in PHASES and isinstance(c, dict) and c and set(c) <= set(CAP_KEYS)
@@ -372,6 +432,10 @@ def validate_runner_phases(phases) -> None:
                                                for p, c in phases.items()):
         raise CycleError(f"spec runner.phases must map a phase to caps {{{', '.join(CAP_KEYS)}}} (positive numbers)",
                          EXIT_USAGE)
+    for p, c in phases.items():
+        refusal = research_tree.seconds_cap_refusal(f"spec runner.phases.{p}.seconds", c.get("seconds"))
+        if refusal:
+            raise CycleError(refusal, EXIT_USAGE)
 
 
 def argparse_values(flags: list, option: str) -> list:
@@ -425,6 +489,12 @@ def validate_v8_keys(spec: dict) -> None:
     E-27b on the parsed argv (``validate_e27b``)."""
     if "build" in spec and spec["build"] not in BUILDS:
         raise CycleError(f"spec build must be one of {', '.join(BUILDS)}", EXIT_USAGE)
+    if EXES_PIN in spec:
+        pins, exes = spec[EXES_PIN], effective_exes(spec)
+        if not (isinstance(pins, dict) and pins and all(k in exes and isinstance(v, str) and SHA256_RE.fullmatch(v)
+                                                        for k, v in pins.items())):
+            raise CycleError(f"spec {EXES_PIN} must map exes keys ({', '.join(exes) or 'none'}) to SHA-256 digests "
+                             "(`lock --exes` writes it)", EXIT_USAGE)
     if "out_root" in spec and (not isinstance(spec["out_root"], str) or not spec["out_root"] or
                                Path(spec["out_root"]).is_absolute()):
         raise CycleError("spec out_root must be a root-relative directory (the bounded runner writes only inside "
@@ -531,6 +601,11 @@ def validate_marginal(spec: dict) -> None:
     if "--min-names" not in flags[::2] and ic_names is not None and not ic_names.isdigit():
         raise CycleError(f"spec marginal: the u pass's --min-names {ic_names!r} is not a count (set marginal.flags "
                          "--min-names)", EXIT_USAGE)
+    ids = m.get("candidates")
+    if ids is not None and not (isinstance(ids, list) and ids and len(set(ids)) == len(ids) and
+                                all(isinstance(x, str) and MEMBER_ID_RE.fullmatch(x) for x in ids)):
+        raise CycleError("spec marginal.candidates must be distinct member ids (P9 ruling P4: the verb's --candidates "
+                         "FILE, one id per line)", EXIT_USAGE)
 
 
 def input_dir(item: dict) -> str:
@@ -598,6 +673,9 @@ def parse_runner_overrides(items: list[str]) -> dict:
         if key not in ("seconds", "max_rss_mib", "min_free_mib") or not value.replace(".", "", 1).isdigit():
             raise CycleError(f"--runner-override {item}: expected seconds|max_rss_mib|min_free_mib=NUMBER", EXIT_USAGE)
         out[key] = int(value) if value.isdigit() else float(value)
+        refusal = research_tree.seconds_cap_refusal("--runner-override seconds", out[key]) if key == "seconds" else None
+        if refusal:                                       # P9 OR-1: refused here, not as a runner exit 2 mid-cycle
+            raise CycleError(refusal, EXIT_USAGE)
     return out
 
 
@@ -665,6 +743,7 @@ class Step:
         self.attempt, self.state, self.note = attempt, state, note
         self.checks = checks or []  # compare steps: the resolved comparisons
         self.role, self.cycle = None, None  # a roles: cycle's era id and era Cycle (H-1; step_key, fields_check)
+        self.writes: dict[str, str] = {}   # {repo path: UTF-8 text} written when the step starts (start_step)
 
     @property
     def done(self) -> bool:
@@ -688,7 +767,8 @@ class Cycle:
     def __init__(self, spec: dict, res: Resolver, *, suffix: str | None = None, attempts: dict | None = None,
                  reuse_fields: str | None = None, ledger: str | None = None, spec_path: Path | None = None,
                  keep_fields: bool = False, runner_overrides: dict | None = None, no_git: bool = False,
-                 screen: bool = False, capabilities=None, verify: bool = True, role_key: str | None = None):
+                 screen: bool = False, capabilities=None, verify: bool = True, role_key: str | None = None,
+                 auto_attempt: bool = False, launch: dict | None = None, keep_verdicts: bool = False):
         if keep_fields and reuse_fields:
             raise CycleError("--keep-fields and --reuse-fields exclude each other", EXIT_USAGE)
         if reuse_fields and as_built(spec.get("fields")):
@@ -708,6 +788,10 @@ class Cycle:
         self.attempts = dict(attempts or {})
         self.reuse_fields, self.ledger, self.spec_path = reuse_fields, ledger, spec_path
         self.no_git, self.screen = no_git, screen
+        self.auto_attempt = auto_attempt    # P9 OR-4: a refused attempt with no output advances to attempt-k
+        # P9 F-5 (a) / OR section 5: {admission_wait_seconds, host_budget_mib} for every bounded process ({}: none)
+        self.launch = {k: v for k, v in (launch or {}).items() if v is not None}
+        self.keep_verdicts = keep_verdicts  # P9 OR section 3: per-run verdict copies (cycle_verdict.keep_copy)
         self._capabilities = capabilities   # None: probe the IC exe's --help when a step needs it (cached)
         self.py = spec["python"]
         # task H-1 (research_roles.py): an era of a roles: cycle keys its outputs and receipts by role_key; the
@@ -719,6 +803,7 @@ class Cycle:
         self.summ_history = False
         # verify=False: names only (add-alpha reads a parent spec's outputs); no pin, no step
         self.pins = self.verify_inputs() if verify else {}
+        self.exe_pins = self.verify_exes() if verify else {}     # P9 OR-2: {} without exes_sha256
 
     # -------------------------------------------------------------- names and pins
     def out(self, name: str, keyed: bool = True) -> str:
@@ -803,6 +888,56 @@ class Cycle:
                     raise CycleError(f"role universe is {got!r}, spec declares {role['universe']!r}", EXIT_PIN)
         return pins
 
+    def verify_exes(self) -> dict:
+        """P9 OR-2: {exe key: (path, sha)} of the exes the spec pins (exes_sha256, `lock --exes`); each must hash to its
+        pin (else exit 3: a rebuilt exe is re-pinned by `lock --exes --write`). {} without the key, as before."""
+        out = {}
+        for key, want in (self.spec.get(EXES_PIN) or {}).items():
+            rel = (self.spec.get("exes") or {}).get(key)
+            got = self.res.sha(rel) if rel else None
+            if got is None:
+                raise CycleError(f"exe {key} missing: {rel} (spec {EXES_PIN} pins {want})", EXIT_PIN)
+            if got != want:
+                raise CycleError(f"PIN MISMATCH exe {key}: {rel} is {got}, spec {EXES_PIN} pins {want} (a rebuilt exe "
+                                 "is re-pinned by `lock --exes --write`; outputs the old exe made are then refused on "
+                                 "resume: move them aside or run under a fresh --suffix)", EXIT_PIN)
+            out[key] = (rel, got)
+        return out
+
+    def parent_spec(self) -> dict | None:
+        """The resolved spec of this cycle's template parent (None for a plain spec, or without a spec file); loaded
+        once. Ruling E1-REUSE-a2: the outputs a template keeps from its parent are judged by the parent's pins."""
+        if not hasattr(self, "_parent_spec"):
+            self._parent_spec = None
+            try:
+                doc = json.loads(Path(self.spec_path).read_text(encoding="utf-8")) if self.spec_path else None
+            except (OSError, ValueError):
+                doc = None
+            if isinstance(doc, dict) and research_spec.is_template(doc):
+                path, _ = research_spec.parent_of(doc, Path(self.spec_path), research_tree.REPO)
+                self._parent_spec = load_spec(path)
+        return self._parent_spec
+
+    def inherited(self, phase: str) -> bool:
+        """Whether this cycle's ``phase`` output is its template parent's (research_spec: every output a template keeps
+        is the parent's and resumes as done): the phase's output name (PHASE_OUTPUTS) and out_root are the parent's,
+        and the cycle runs without --suffix."""
+        keys, parent = PHASE_OUTPUTS.get(phase), self.parent_spec()
+        if keys is None or parent is None or self.suffix or self.spec.get("out_root") != parent.get("out_root"):
+            return False
+        name = (self.spec.get(keys[0]) or {}).get(keys[1])
+        return isinstance(name, str) and name == (parent.get(keys[0]) or {}).get(keys[1])
+
+    def reuse_pin(self, st: Step) -> tuple[str | None, str | None, str]:
+        """(exe key, its exes_sha256 pin or None, whose pin) that a done bounded step's receipt is judged by (ruling
+        E1-REUSE-a2): the step's executable (its argv after the runner's ``--``) as a key of exes; the pin of the
+        parent's resolved spec for an output the template inherited, else this spec's. No pin: not refused."""
+        exe = st.argv[st.argv.index("--") + 1]
+        key = next((k for k, v in (self.spec.get("exes") or {}).items() if v == exe), None)
+        inherited = self.inherited(st.phase)
+        pins = ((self.parent_spec() if inherited else self.spec) or {}).get(EXES_PIN) or {}
+        return key, pins.get(key) if key else None, "the parent's" if inherited else "the spec's"
+
     def pin(self, key: str) -> str:
         return self.pins[key][1]
 
@@ -856,10 +991,73 @@ class Cycle:
                  "--min-free-mib", str(caps["min_free_mib"])]
         if self.role_key and phase in ERA_PHASES:   # H-1: an era's own run (the pooled fit and summ have none)
             argv += ["--role-id", self.role_key]
+        if self.spec.get("build") in research_tree.BUILD_TYPES:   # K-P9-10: the exes' build type in the receipt
+            argv += ["--build-type", research_tree.BUILD_TYPES[self.spec["build"]]]
+        argv += self.launch_flags(caps, phase)
         argv += ["--output", run_dir]
         for b in binds:
             argv += ["--bind", b]
         return argv + ["--"]
+
+    def launch_flags(self, caps: dict, phase: str | None) -> list[str]:
+        """The runner's launch admission options (none without --admission-wait / --host-budget-mib); a phase whose
+        declared cap is above the host budget would never be admitted: refused when planned."""
+        out = []
+        if "admission_wait_seconds" in self.launch:
+            out += ["--admission-wait-seconds", format(self.launch["admission_wait_seconds"], "g")]
+        budget = self.launch.get("host_budget_mib")
+        if budget is not None:
+            if caps["max_rss_mib"] > budget:
+                raise CycleError(f"--host-budget-mib {budget} is below the {phase or 'runner'} cap max_rss_mib "
+                                 f"{caps['max_rss_mib']}: that process would never be admitted", EXIT_USAGE)
+            out += ["--host-budget-mib", str(budget)]
+        return out
+
+    # -------------------------------------------------------------- attempt sub-dirs (P9 OR-4)
+    def retarget(self, st: Step, run_dir: str, attempt: int) -> None:
+        """Point a bounded step's runner at ``run_dir`` (an attempt-k sub-dir of its run dir) as attempt ``attempt``:
+        the runner's --output and --attempt before its "--" (the command after it is unchanged)."""
+        k = st.argv.index("--")
+        head, tail = list(st.argv[:k]), st.argv[k:]
+        i = head.index("--output")
+        head[i + 1] = run_dir
+        if "--attempt" in head:
+            head[head.index("--attempt") + 1] = str(attempt)
+        else:
+            head[i:i] = ["--attempt", str(attempt)]
+        st.argv, st.run_dir = head + tail, run_dir
+
+    def resolve_attempts(self, st: Step) -> None:
+        """Attempt sub-dirs of a bounded step (P9 OR-4): attempt 1 is the step's run dir, attempt k >= 2 is
+        <run dir>/attempt-k. A step with sub-dirs on disk is pointed at the latest one (where its receipt and NAV
+        binding are). A failed step whose output is absent and whose latest attempt the runner refused for host
+        memory (cycle_resume.AUTO_OUTCOMES: nothing ran to the end, nothing was written) advances to the next
+        attempt-k under --auto-attempt (no spec edit, no --suffix); without the flag it stays a stop, as before."""
+        if st.kind != "bounded" or not st.run_dir or st.state not in ("done", "failed") or \
+                st.phase in ("check", "summ"):
+            return
+        base = st.run_dir
+        dirs = cycle_resume.attempt_dirs(self.res, base, MAX_ATTEMPTS)
+        if len(dirs) > 1:
+            self.retarget(st, dirs[-1], len(dirs))
+            if st.state == "failed":       # the latest attempt's receipt, not the first one's
+                st.note = f"{self.failure_note(dirs[-1])} (attempt {len(dirs)}); never overwritten"
+        if st.state != "failed" or (st.output and self.res.exists_dir(st.output)):
+            return
+        r = self.receipt(dirs[-1])
+        if not (isinstance(r, dict) and r.get("outcome") in cycle_resume.AUTO_OUTCOMES):
+            return
+        nxt = f"{base}/{cycle_resume.ATTEMPT_PREFIX}{len(dirs) + 1}"
+        if len(dirs) >= MAX_ATTEMPTS:
+            st.note += f"; refused with nothing written, and the {MAX_ATTEMPTS} attempts are spent"
+        elif self.auto_attempt:
+            self.retarget(st, nxt, len(dirs) + 1)
+            st.state = "pending"
+            st.note = (f"attempt {len(dirs) + 1} (--auto-attempt): {dirs[-1]} was refused ({r.get('outcome')}) and "
+                       f"{st.output} is absent")
+        else:
+            st.note += (f"; refused with nothing written: a resume with --auto-attempt runs attempt {len(dirs) + 1} in "
+                        f"{nxt}")
 
     def always_run_dir(self, phase: str) -> str:
         """A fresh receipt dir of an always-run phase (check, summ): <cycle dir>/<phase>-run<k>, k the first unused."""
@@ -990,6 +1188,8 @@ class Cycle:
             out.append(self.monitor_step(u_out, w_dir, card_out))
         if "summ" in s:
             out.append(self.summ_step(w_dir, n_out))
+        for st in out:
+            self.resolve_attempts(st)
         steps = self.with_compares(out)
         if self.screen:  # u -> fit -> card -> marginal -> gate; the identity NAV and the cell wait for the full run
             for st in steps:
@@ -1012,10 +1212,23 @@ class Cycle:
                              nav, fdm, role_m, role_sha)
         if "baseline_fields" in s["inputs"] and step.state != "done" and \
                 self.res.sha(fdm) == self.pin("baseline_fields"):
+            cell_exe, parent_exe = self.nav_exe_shas()
+            if cell_exe and parent_exe and cell_exe != parent_exe:   # P9 OR-2: equal fields, another NAV exe
+                step.note = (f"fields manifest {fdm} equals the parent's (inputs.baseline_fields) but the NAV exe "
+                             f"differs (sha256 {cell_exe}, the parent NAV's {parent_exe}): the reference "
+                             "construction runs")
+                return step
             step.kind, step.state = "skipped", "skipped"
             step.note = (f"fields manifest {fdm} equals the parent's (inputs.baseline_fields): the reference "
                          "construction is identical by construction")
         return step
+
+    def nav_exe_shas(self) -> tuple[str | None, str | None]:
+        """(the SHA-256 of the NAV exe this cycle runs, the executable_sha256 of the parent NAV's last completed run
+        receipt, inputs.reference_cell): None where unknown (no file, no reference cell, no receipt recording it)."""
+        ref = self.idir("reference_cell") if "reference_cell" in self.spec["inputs"] else None
+        return (self.res.sha(self.spec["exes"]["nav"]),
+                cycle_resume.completed_exe_sha256(self.res, ref, MAX_ATTEMPTS) if ref else None)
 
     def marginal_step(self, lib: str, fd: str) -> Step:
         """F-2's marginal IC verb (contract K6) over the u pass's candidate cache and fields dir, on this cycle's role:
@@ -1036,6 +1249,13 @@ class Cycle:
             argv += ["--themes", self.ipath(themes)]
             binds.append(self.ipath(themes))
         argv += ["--fields", fd]
+        writes = {}
+        if m.get("candidates"):           # P9 ruling P4: only the wave's ids, one per line (written when it starts)
+            text = "".join(f"{x}\n" for x in m["candidates"])
+            path = f"{self.cycle_dir()}/marginal-candidates-{hashlib.sha256(text.encode()).hexdigest()[:12]}.txt"
+            argv += [MARGINAL_CANDIDATES, path]
+            binds.append(path)
+            writes[path] = text
         flags = list(m.get("flags", []))
         min_names = option_value(s["ic"]["flags"], "--min-names")
         if "--min-names" not in flags[::2] and min_names is not None:   # the u pass's name floor
@@ -1044,8 +1264,10 @@ class Cycle:
         if "marginal" not in self.capabilities():
             return Step("marginal", "skipped", argv, m_out, run_dir, None, "skipped",
                         "the IC exe offers no marginal verb (contract K6, lane F): skipped")
-        return Step("marginal", "bounded", argv, m_out, run_dir, None, *self.single_state(
+        st = Step("marginal", "bounded", argv, m_out, run_dir, None, *self.single_state(
             m_out, run_dir, f"{m_out}/marginal_ic.json"))
+        st.writes = writes
+        return st
 
     def check_marginal_bindings(self, pool_key: str, themes: str | None) -> None:
         """The verb's bindings of the files this spec pins, checked when the step is planned (exit 3 before any phase
@@ -1171,13 +1393,27 @@ class Cycle:
             s["exes"]["nav"], "nav", "--combined", comb, "--combined-sha256", comb_sha, "--role", role_m,
             "--role-sha256", role_sha, "--fields", fdm, "--fields-sha256", self.rt_sha(fdm), "--output", n_out,
             "--rule", nav["rule"], *flags, *label]
-        if self.res.exists(f"{n_out}/summary.json"):
+        missing = self.capacity_missing(n_out, flags)
+        if self.res.exists(f"{n_out}/summary.json") and not missing:
             state, note = "done", ""
+        elif missing:
+            state, note = "failed", (f"{n_out}/summary.json exists but {', '.join(missing)} of {CAPACITY_FLAG} do not "
+                                     "(the NAV verb writes summary.json before its capacity pass and extras: that pass "
+                                     "did not finish; P9 NV-4); never overwritten: use a fresh --suffix")
         elif self.res.exists_dir(n_out) or self.res.exists_dir(run_dir):
             state, note = "failed", self.failure_note(run_dir) + "; never overwritten: use a fresh --suffix"
         else:
             state, note = "pending", "" if phase == "nav" else "reference construction on this cycle's fields"
         return Step(phase, "bounded", argv, n_out, run_dir, k, state, note)
+
+    def capacity_missing(self, n_out: str, flags: list) -> list[str]:
+        """The files a NAV whose argv carries --capacity-curve still lacks beside its summary.json (CAPACITY_FILES:
+        written after the summary, P9 NV-4); empty without the flag, without a summary.json, or for a summary known
+        by hash only (content checks skipped, as complete_summary skips them)."""
+        rel = f"{n_out}/summary.json"
+        if CAPACITY_FLAG not in flags or not self.res.exists(rel) or self.res.hash_only(rel):
+            return []
+        return [name for name in CAPACITY_FILES if not self.res.exists(f"{n_out}/{name}")]
 
     def ledger_cells(self, n_out: str) -> tuple[list[str], int]:
         """summ.cells_from_ledger / dsr_n "ledger+1": (every trial line's cell, in ledger order, this cycle's own cell
@@ -1320,8 +1556,8 @@ class Cycle:
             j = self.attempts["fit"]
         elif self.res.exists(f"{w_dir}/composition_weights.json"):
             j = runs[-1] if runs else 1
-        elif runs:
-            last = self.receipt(f"{w_dir}-run{runs[-1]}")
+        elif runs:   # the pass's last attempt (an attempt-k sub-dir after a refusal, P9 OR-4) decides the next pass
+            last = self.receipt(cycle_resume.attempt_dirs(self.res, f"{w_dir}-run{runs[-1]}", MAX_ATTEMPTS)[-1])
             j = runs[-1] + 1 if last and last.get("exit_code") == FIT_INCOMPLETE else runs[-1]
         else:
             j = 1
@@ -1542,9 +1778,14 @@ def header(cycle: Cycle) -> list[str]:
              f"root {cycle.res.root}; "
              f"suffix {cycle.suffix or 'none'}{' (fields kept)' if cycle.keep_fields else ''}; attempts "
              f"{cycle.attempts or 'auto'}; runner overrides {cycle.runner_overrides or 'none'}"
-             f"{'; --no-git' if cycle.no_git else ''}{'; --screen' if cycle.screen else ''}"]
+             f"{'; --no-git' if cycle.no_git else ''}{'; --screen' if cycle.screen else ''}"
+             f"{'; --auto-attempt' if getattr(cycle, 'auto_attempt', False) else ''}"
+             f"{'; --keep-verdicts' if getattr(cycle, 'keep_verdicts', False) else ''}"
+             + "".join(f"; {k} {v}" for k, v in (getattr(cycle, "launch", None) or {}).items())]
     for key, (rel, sha, how) in cycle.pins.items():
         lines.append(f"# pin {key}: {rel} {sha} [{how}]")
+    for key, (rel, sha) in (getattr(cycle, "exe_pins", None) or {}).items():   # P9 OR-2 (none without the pins)
+        lines.append(f"# pin exe {key}: {rel} {sha} [{EXES_PIN}, verified]")
     return lines + research_spec.header_lines(cycle.spec, cycle.spec_path, research_tree.REPO)
 
 
@@ -1621,6 +1862,103 @@ def execute(argv: list[str], root: Path, env: dict, capture: bool) -> subprocess
     return subprocess.run(argv, cwd=root, env=env, capture_output=capture, text=True)
 
 
+def parallel_partner(cycle: Cycle, steps: list[Step], idx: int, stop_after: str | None) -> int | None:
+    """P9 OR section 5: the index of the step that runs side by side with ``steps[idx]``, or None. Only under a host
+    memory budget (--host-budget-mib: every bounded process holds its declared cap in the host semaphore), only for a
+    pending bounded step of a PARALLEL key phase whose next step that is not one of its own compare steps (nor skipped)
+    is the pending bounded step of the paired phase, of the same era, with every pin resolved; never past --stop-after."""
+    st = steps[idx]
+    want = PARALLEL.get(st.phase)
+    if not cycle.launch.get("host_budget_mib") or want is None or st.kind != "bounded" or st.state != "pending" or \
+            stop_after in (st.phase, st.phase + COMPARE_SUFFIX):
+        return None
+    for j in range(idx + 1, len(steps)):
+        x = steps[j]
+        if x.phase == st.phase + COMPARE_SUFFIX or x.state == "skipped":
+            continue
+        ok = x.phase == want and x.kind == "bounded" and x.state == "pending" and x.role == st.role and \
+            "<sha256:" not in " ".join(x.argv)
+        return j if ok else None
+    return None
+
+
+def start_step(cycle: Cycle, st: Step, key: str, clean, log, seen: set) -> None:
+    """Before a process step runs: no unresolved upstream pin, no existing output (never overwritten), a clean tree;
+    then its log lines."""
+    if "<sha256:" in " ".join(st.argv):
+        raise CycleError(f"HARD-STOP [{key}]: an upstream pin is unresolved (upstream output missing)")
+    if st.output and st.state == "pending" and st.phase != "fit" and cycle.res.exists_dir(st.output):
+        raise CycleError(f"HARD-STOP [{key}]: output {st.output} exists (never overwritten)")
+    check_clean(cycle, clean, log, seen)
+    if st.phase == "summ" and cycle.spec.get("verdict"):
+        cycle.res.path(cycle.cycle_dir()).mkdir(parents=True, exist_ok=True)   # nav_summ --json target
+    for rel, text in st.writes.items():   # e.g. the marginal --candidates FILE (P9 ruling P4): its name carries its SHA
+        dest = cycle.res.path(rel)
+        if dest.is_file() and dest.read_bytes() != text.encode("utf-8"):
+            raise CycleError(f"HARD-STOP [{key}]: {rel} exists with other bytes (never overwritten)")
+        if not dest.is_file():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(text.encode("utf-8"))
+    log(f"== {key}" + (f" (attempt {st.attempt})" if st.attempt else ""))
+    log(fmt_argv(st.argv))
+
+
+def run_processes(pair: list, root: Path, env: dict, executor) -> list[tuple]:
+    """[(CompletedProcess, wall seconds)] of each (step, key): one step runs in this thread, as always; a parallel
+    pair in two threads (each bounded process waits for its own claim in the host semaphore)."""
+    def one(item) -> tuple:
+        started = time.monotonic()
+        done = executor(item[0].argv, root, env, item[0].kind == "bounded")
+        return done, time.monotonic() - started
+    if len(pair) == 1:
+        return [one(pair[0])]
+    with ThreadPoolExecutor(max_workers=len(pair)) as pool:
+        return list(pool.map(one, pair))
+
+
+def step_outcome(cycle: Cycle, st: Step, key: str, done, log) -> bool:
+    """A process step's result from its receipt (bounded) or exit code (direct); raises CycleError (HARD-STOP) on a
+    refusal or failure; True when the fit exited "incomplete" and its next pass runs (FIT_INCOMPLETE)."""
+    if st.kind != "bounded":
+        if st.kind == "direct" and done.returncode != 0:
+            raise CycleError(f"HARD-STOP [{key}]: exit {done.returncode}")
+        return False
+    r = cycle.receipt(st.run_dir)
+    if r is None:
+        tail = (done.stderr or "")[-400:]
+        raise CycleError(f"HARD-STOP [{key}]: no receipt in {st.run_dir} (runner exit {done.returncode}) {tail}")
+    peak = (r.get("sampled_peak_tree_rss_bytes") or 0) >> 20
+    log(f"   receipt: outcome {r.get('outcome')} exit {r.get('exit_code')} {r.get('wall_seconds', 0):.1f} s peak "
+        f"{peak} MiB")
+    if st.phase == "fit" and r.get("exit_code") == FIT_INCOMPLETE and r.get("outcome") == "process-error":
+        if st.attempt >= int(cycle.spec["fit"].get("max_passes", 3)):
+            raise CycleError(f"HARD-STOP [fit]: still incomplete after {st.attempt} passes")
+        log("   fit incomplete (exit 3, the documented resume protocol): next pass resumes")
+        return True
+    if r.get("outcome") != "completed" or r.get("exit_code") != 0:
+        retry = r.get("outcome") in cycle_resume.AUTO_OUTCOMES and st.output and \
+            not cycle.res.exists_dir(st.output)   # P9 OR-4: the host refused it, nothing was written
+        raise CycleError(f"HARD-STOP [{key}]: receipt {st.run_dir}: outcome {r.get('outcome')}, "
+                         f"exit_code {r.get('exit_code')}{', ' + r['error'] if r.get('error') else ''}"
+                         + ("; nothing was written: a resume with --auto-attempt runs the next attempt"
+                            if retry else ""))
+    return False
+
+
+def finish_step(cycle: Cycle, st: Step, key: str, idx: int, log) -> None:
+    """After a process step succeeded: its output is complete (the step re-resolved at its index ``idx``), the fields
+    check, a NAV's binding (review C-13, F-6), the summ's ledger copy."""
+    post = cycle.steps()[idx]
+    if st.phase in ("u", "w", "fit", "nav", "ref", "fields", "card", "monitor", "marginal") and not post.done:
+        raise CycleError(f"HARD-STOP [{key}]: exit 0 but its output is incomplete ({st.output})")
+    if st.phase == "fields":
+        fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
+    if st.phase in ("nav", "ref"):  # review C-13 (F-6: ref too): what a later resume checks
+        cycle_resume.write_binding(cycle, st)
+    if st.phase == "summ":
+        copy_ledger(cycle, log)
+
+
 def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executor=execute,
               clean=git_scoped) -> int:
     root = cycle.res.root
@@ -1649,11 +1987,21 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
             log(f"== {key}: done ({st.output})")
             if st.phase == "fields":
                 fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
-            if st.phase in ("nav", "ref"):  # review C-13: scored only when made from this spec (F-6: ref compared
-                try:                        # only when made by the NAV command the spec runs now)
-                    log(f"   binding: {cycle_resume.check_binding(cycle, st)}")
-                except cycle_resume.ResumeError as exc:
-                    raise CycleError(f"HARD-STOP [{key}]: {exc}", EXIT_PIN) from exc
+            try:
+                if st.phase in ("nav", "ref"):  # review C-13: scored only when made from this spec (F-6: ref
+                    log(f"   binding: {cycle_resume.check_binding(cycle, st)}")   # compared only when made by the
+                elif st.kind == "bounded":      # NAV command the spec runs now); P9 OR-3: every other bounded output
+                    how = cycle_resume.check_receipt_argv(cycle, st)               # reused only on the same argv
+                    if how:
+                        log(f"   receipt argv: {how}")
+                if st.kind == "bounded":        # E1-REUSE-a2: a pinned exe refuses another; unpinned: noted
+                    exe, note = cycle_resume.check_receipt_exe(cycle, st)
+                    if exe:
+                        log(f"   receipt exe: {exe}")
+                    if note:
+                        log(f"   receipt exe NOTE: {note}")
+            except cycle_resume.ResumeError as exc:
+                raise CycleError(f"HARD-STOP [{key}]: {exc}", EXIT_PIN) from exc
         elif st.kind == "internal":
             w_dir = next(x.output for x in steps if x.phase == "fit")
             admission_trials(cycle, w_dir, log)
@@ -1665,47 +2013,26 @@ def run_cycle(cycle: Cycle, *, stop_after: str | None = None, log=print, executo
         elif st.kind == "compare":
             compare(cycle, st, log)
         else:
-            if "<sha256:" in " ".join(st.argv):
-                raise CycleError(f"HARD-STOP [{key}]: an upstream pin is unresolved (upstream output missing)")
-            if st.output and st.state == "pending" and st.phase != "fit" and cycle.res.exists_dir(st.output):
-                raise CycleError(f"HARD-STOP [{key}]: output {st.output} exists (never overwritten)")
-            check_clean(cycle, clean, log, seen)
-            if st.phase == "summ" and cycle.spec.get("verdict"):
-                cycle.res.path(cycle.cycle_dir()).mkdir(parents=True, exist_ok=True)   # nav_summ --json target
-            log(f"== {key}" + (f" (attempt {st.attempt})" if st.attempt else ""))
-            log(fmt_argv(st.argv))
-            started = time.monotonic()
-            done = executor(st.argv, root, env, st.kind == "bounded")
-            timings[key] = {"seconds": time.monotonic() - started, "run_dir": st.run_dir}
-            if st.kind == "bounded":
-                r = cycle.receipt(st.run_dir)
-                if r is None:
-                    tail = (done.stderr or "")[-400:]
-                    raise CycleError(f"HARD-STOP [{key}]: no receipt in {st.run_dir} (runner exit "
-                                     f"{done.returncode}) {tail}")
-                peak = (r.get("sampled_peak_tree_rss_bytes") or 0) >> 20
-                log(f"   receipt: outcome {r.get('outcome')} exit {r.get('exit_code')} "
-                    f"{r.get('wall_seconds', 0):.1f} s peak {peak} MiB")
-                if st.phase == "fit" and r.get("exit_code") == FIT_INCOMPLETE and r.get("outcome") == "process-error":
-                    if st.attempt >= int(cycle.spec["fit"].get("max_passes", 3)):
-                        raise CycleError(f"HARD-STOP [fit]: still incomplete after {st.attempt} passes")
-                    log("   fit incomplete (exit 3, the documented resume protocol): next pass resumes")
-                    continue
-                if r.get("outcome") != "completed" or r.get("exit_code") != 0:
-                    raise CycleError(f"HARD-STOP [{key}]: receipt {st.run_dir}: outcome {r.get('outcome')}, "
-                                     f"exit_code {r.get('exit_code')}{', ' + r['error'] if r.get('error') else ''}")
-            else:
-                if st.kind == "direct" and done.returncode != 0:
-                    raise CycleError(f"HARD-STOP [{key}]: exit {done.returncode}")
-            post = cycle.steps()[phase_idx]
-            if st.phase in ("u", "w", "fit", "nav", "ref", "fields", "card", "monitor", "marginal") and not post.done:
-                raise CycleError(f"HARD-STOP [{key}]: exit 0 but its output is incomplete ({st.output})")
-            if st.phase == "fields":
-                fields_check(st.cycle or cycle, f"{st.output}/manifest.json", log)
-            if st.phase in ("nav", "ref"):  # review C-13 (F-6: ref too): what a later resume checks
-                cycle_resume.write_binding(cycle, st)
-            if st.phase == "summ":
-                copy_ledger(cycle, log)
+            pair = [(st, key, phase_idx)]   # P9 OR section 5: with its PARALLEL partner under a host memory budget
+            j = parallel_partner(cycle, steps, phase_idx, stop_after)
+            if j is not None:
+                pair.append((steps[j], step_key(steps[j]), j))
+            for x, k, _ in pair:
+                start_step(cycle, x, k, clean, log, seen)
+            if j is not None:
+                log(f"   {key} || {pair[1][1]}: side by side under the host memory budget "
+                    f"{cycle.launch['host_budget_mib']} MiB")
+            results = run_processes(pair, root, env, executor)
+            for (x, k, _), (done, seconds) in zip(pair, results):
+                timings[k] = {"seconds": seconds, "run_dir": x.run_dir}
+            again = False
+            for (x, k, i), (done, _) in zip(pair, results):
+                if step_outcome(cycle, x, k, done, log):
+                    again = True        # the fit's next pass (the fit is never paired)
+                    break
+                finish_step(cycle, x, k, i, log)
+            if again:
+                continue
         # --stop-after PHASE stops after the last step of that phase (every era's, in a roles: cycle)
         if stop_after == st.phase and not any(x.phase == st.phase for x in steps[phase_idx + 1:]):
             log(f"== stopped after {st.phase} (--stop-after)")
@@ -1732,7 +2059,7 @@ def admission_trials(cycle, w_dir: str, log) -> None:
 def write_verdict(cycle: Cycle, timings: dict, log) -> dict:
     try:
         return _write_verdict(cycle, timings, cycle_resume.spec_digest(cycle), log,   # F-9: the template chain's
-                              ledger_state(cycle))
+                              ledger_state(cycle), keep=bool(getattr(cycle, "keep_verdicts", False)))
     except ValueError as exc:     # review C-1: no verdict DSR from a cell count; C-6: a broken ledger chain
         raise CycleError(f"HARD-STOP [verdict]: {exc}") from exc
 
@@ -1788,9 +2115,39 @@ def copy_ledger(cycle: Cycle, log) -> None:
 
 
 # ------------------------------------------------------------------ lock
-def lock(spec_path: Path, root: Path, relock: bool = False) -> tuple[dict, list[str]]:
+def lock(spec_path: Path, root: Path, relock: bool = False, exes: bool = False) -> tuple[dict, list[str]]:
     """The spec with every input pin (and a null as-built fields.manifest_sha256) computed from its file; a template
-    gets the pins of the inputs it adds or derives (research_spec.lock_template), its parent keeps its own."""
+    gets the pins of the inputs it adds or derives (research_spec.lock_template), its parent keeps its own. ``exes``
+    (``lock --exes``, P9 OR-2) also pins the exes the cell runs (lock_exes)."""
+    spec, notes = lock_inputs(spec_path, root, relock)
+    if exes:
+        lock_exes(spec, spec_path, Resolver(root), notes)
+    return spec, notes
+
+
+def lock_exes(spec: dict, spec_path: Path, res: Resolver, notes: list[str]) -> None:
+    """P9 OR-2: exes_sha256 = {exe key: SHA-256} of every exe the cell runs (effective_exes of the resolved spec), always
+    the files as they are now (a pin that moves is noted RELOCKED: re-pinning the build is the point of the call); a
+    template's goes into change.set, over the pins its parent's spec carries. A missing exe is exit 3."""
+    template = research_spec.is_template(spec)
+    exes = effective_exes(load_spec(spec_path) if template else spec)
+    if not exes:
+        raise CycleError("lock --exes: the spec names no exes", EXIT_PIN)
+    target = spec.setdefault("change", {}).setdefault("set", {}) if template else spec
+    have, pins = target.get(EXES_PIN) or {}, {}
+    for key, rel in sorted(exes.items()):
+        got = res.sha(rel)
+        if got is None:
+            raise CycleError(f"lock --exes: exe {key} missing: {rel}", EXIT_PIN)
+        old = have.get(key)
+        if old != got:
+            notes.append(f"RELOCKED exe {key}: {rel} {old} -> {got}" if old else f"locked exe {key}: {rel} {got}")
+        pins[key] = got
+    target[EXES_PIN] = pins
+
+
+def lock_inputs(spec_path: Path, root: Path, relock: bool = False) -> tuple[dict, list[str]]:
+    """``lock`` without --exes: the input pins (see lock)."""
     spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
     if "roles" in spec:                    # H-1: the inputs and every role's role and fields pins
         import research_roles  # noqa: PLC0415  (imports this module)
@@ -1861,6 +2218,18 @@ def main(argv=None) -> int:
     if argv[:1] == ["add-alpha"]:            # registry entry, library, prereg stub, derived spec, lock
         import research_add_alpha  # noqa: PLC0415  (imports this module)
         return research_add_alpha.main(argv[1:])
+    if argv[:1] == ["mine"]:                 # v9 MINE-RUN: a mined campaign cell (atx-equity-strategy-mine)
+        import research_mine  # noqa: PLC0415  (imports this module)
+        return research_mine.main(argv[1:])
+    if argv[:1] == ["wave"]:                 # v8 YINFRA: one research wave, one command (research_wave.py)
+        import research_wave  # noqa: PLC0415  (imports this module)
+        return research_wave.main(argv[1:])
+    if argv[:1] == ["candidates"]:           # v8 YINFRA: the candidate queue (wave_queue.py)
+        import wave_queue  # noqa: PLC0415
+        return wave_queue.main(argv[1:])
+    if argv[:1] == ["scoreboard"]:           # v8 YINFRA: the lineage of accepted books (wave_scoreboard.py)
+        import wave_scoreboard  # noqa: PLC0415
+        return wave_scoreboard.main(argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     ap.add_argument("verb", choices=("plan", "run", "status", "lock"))
@@ -1874,15 +2243,27 @@ def main(argv=None) -> int:
     ap.add_argument("--runner-override", action="append", default=[], help="seconds|max_rss_mib|min_free_mib=N")
     ap.add_argument("--lines-only", action="store_true", help="plan: the command lines only")
     ap.add_argument("--stop-after", choices=STOP_PHASES, default=None)
+    ap.add_argument("--auto-attempt", action="store_true",
+                    help="P9 OR-4: a step the host refused (memory) with nothing written runs again in <run dir>/"
+                         "attempt-k (the wave passes it when its manifest's driver.auto_attempt is true)")
+    ap.add_argument("--keep-verdicts", action="store_true",
+                    help="P9 OR section 3: also write each verdict to <cycle dir>/verdicts/<mode>-<k>.json (never "
+                         "overwritten)")
+    ap.add_argument("--admission-wait", type=float, default=None, metavar="SECONDS",
+                    help="P9 F-5 (a): every bounded process waits (bounded) for free memory and no compiler")
+    ap.add_argument("--host-budget-mib", type=int, default=None, metavar="N",
+                    help="P9 OR section 5: the host memory semaphore (needs --admission-wait); PARALLEL steps side by "
+                         "side")
     ap.add_argument("--relock", action="store_true", help="lock: replace pins that differ from the files")
     ap.add_argument("--write", action="store_true", help="lock: write the pins back into SPEC")
+    ap.add_argument("--exes", action="store_true", help="lock: also pin the exes' SHA-256 (exes_sha256, P9 OR-2)")
     ap.add_argument("--no-git", action="store_true", help="K3: a --root outside any git repository (test roots)")
     ap.add_argument("--screen", action="store_true", help="u, fit, card, marginal, gate; stop before w")
     a = ap.parse_args(argv)
     try:
         spec_path = find_spec(a.spec)
         if a.verb == "lock":
-            spec, notes = lock(spec_path, a.root, a.relock)
+            spec, notes = lock(spec_path, a.root, a.relock, a.exes)
             for n in notes:
                 print(n)
             text = json.dumps(spec, indent=2) + "\n"
@@ -1894,10 +2275,15 @@ def main(argv=None) -> int:
             return EXIT_OK
         if a.suffix is not None and (not a.suffix or any(c in a.suffix for c in "/\\ ")):
             raise CycleError("--suffix must be a non-empty name without separators or spaces", EXIT_USAGE)
+        refusal = research_tree.launch_refusal(a.admission_wait, a.host_budget_mib)
+        if refusal:
+            raise CycleError(f"--admission-wait / --host-budget-mib: {refusal}", EXIT_USAGE)
+        launch = {"admission_wait_seconds": a.admission_wait, "host_budget_mib": a.host_budget_mib}
         cycle = make_cycle(Resolver(a.root), suffix=a.suffix, attempts=parse_attempts(a.attempt),
                            reuse_fields=a.reuse_fields, ledger=a.ledger, spec_path=spec_path, keep_fields=a.keep_fields,
                            runner_overrides=parse_runner_overrides(a.runner_override), no_git=a.no_git,
-                           screen=a.screen)
+                           screen=a.screen, auto_attempt=a.auto_attempt, launch=launch,
+                           keep_verdicts=a.keep_verdicts)
         if a.verb == "plan":
             print("\n".join(plan_lines(cycle, a.lines_only)))
             return EXIT_OK

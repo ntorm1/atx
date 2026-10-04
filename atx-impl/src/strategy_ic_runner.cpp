@@ -1,6 +1,7 @@
 #include "strategy_ic_runner.hpp"
 #include "strategy_ic_composition.hpp"
 #include "strategy_ic_detail.hpp"
+#include "strategy_ic_rules.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -60,10 +61,14 @@ co::Result<Json> save_bytes(const std::filesystem::path& path,std::span<const st
   out.close(); if (!out) return co::Err(co::ErrorCode::IoError,"IC runner: combined payload close");
   return binary_receipt(path,bytes.size());
 }
+// `pinned`: the composition rule table rows whose stage runs record their ids under their recipe
+// keys (theme-resid-v1 also its order), as in the recipe; two-speed-v1 saves the sleeves of
+// `combined` in their own manifest instead.
 co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& spec,
     const engine::data::StrategyRoleData& role,std::span<const f64> signal,std::span<const u8> member,
-    const Json& orientations,const std::string& recipe_sha,const std::string& orientation_pin,bool pinned_signs,
-    bool themed=false,std::string_view standardised={},std::span<const std::string> residualised={}) {
+    const Json& orientations,const std::string& recipe_sha,const std::string& orientation_pin,
+    const PinnedWeights& pinned,const IcCompositionResult& combined) {
+  const bool pinned_signs=!pinned.signs.empty();
   if constexpr (std::endian::native!=std::endian::little)
     return co::Err(co::ErrorCode::Unavailable,"IC runner: combined artifact requires little-endian host");
   const auto cells=role.panel.dates()*role.panel.instruments();
@@ -100,7 +105,7 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
   finite.close(); if (!finite) return co::Err(co::ErrorCode::IoError,"IC runner: combined finite-mask close");
   ATX_TRY(auto finite_file,binary_receipt(dir/finite_name,cells)); files[finite_name]=std::move(finite_file);
   ATX_TRY(auto orientation_sha,co::sha256_hex(orientations.dump()));
-  const bool pinned=!cfg.composition_weights_sha256.empty();
+  const bool weighted=!cfg.composition_weights_sha256.empty();
   Json manifest{{"schema","atx.dsl-combined-signal/v1"},{"status","complete"},{"role",spec.name},
       {"layout","date-major-little-endian"},{"dates",role.panel.dates()},{"instruments",role.panel.instruments()},
       {"score_begin",role.score_begin},{"score_end",role.score_end},{"role_manifest_sha256",spec.sha},
@@ -108,7 +113,7 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
       {"train_manifest_sha256",cfg.train_sha256},{"run_recipe_sha256",recipe_sha},
       {"orientation_candidates_sha256",orientation_sha},
       {"orientations_artifact_sha256",orientation_pin.empty()?Json(nullptr):Json(orientation_pin)},
-      {"signal_semantics",pinned
+      {"signal_semantics",weighted
           ?"exact-pre-target-composition;pinned-candidate-weights;missing-or-unoriented-neutral-fixed-denominator"
           :"exact-pre-target-composition;equal-family/equal-within;missing-or-unoriented-neutral-fixed-denominator"},
       {"member_semantics","decision-member-and-source-present-and-finite-positive-close;independent-of-component-coverage"},
@@ -117,22 +122,58 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
       {"role_window_required",true},{"finite_cells",finite_cells},{"member_cells",member_cells},
       {"files",std::move(files)},{"actual_trades_or_returns",false}};
   // Key absent (not null) without weights: the default manifest bytes are unchanged.
-  if (pinned) manifest["composition_weights_sha256"]=cfg.composition_weights_sha256;
+  if (weighted) manifest["composition_weights_sha256"]=cfg.composition_weights_sha256;
   // Signs from that same pinned file; signal_semantics is unchanged so replay
   // consumers still admit the blend, and this key states which signs were used.
   if (pinned_signs) manifest["composition_signs"]="pinned-candidate-signs";
-  // Same precedent for ew-theme-v6: the blend redistributes a missing member's mass
-  // inside its theme (per name and date); signal_semantics stays admissible to the
-  // replay consumers and this key (absent otherwise) states the redistribution.
-  if (themed) manifest["composition_redistribution"]=theme_redistribution_rule;
-  // Same for a theme_standardise rule with rerank on (absent otherwise, and with rerank off):
-  // ew-theme-std-v1, or ic-shrink-v1 / ic-shrink-aim-v1 (platform v8 R-10; the same per-date
-  // standardisation).
-  if (!standardised.empty()) manifest["composition_standardise"]=std::string(standardised);
-  // And theme-resid-v1 on top of it with its theme order (v8 R-11, finding R6B-O-4; absent otherwise).
-  if (!residualised.empty()) {
-    manifest["composition_residualise"]=theme_residualise_rule;
-    manifest["composition_residualise_order"]=theme_order_json(residualised);
+  // Same precedent for every composition rule whose stage runs (strategy_ic_rules.hpp; absent
+  // otherwise, and for a rerank-false theme_standardise): ew-theme-v6's redistribution
+  // (composition_redistribution), a theme_standardise rule with rerank on (ew-theme-std-v1, or
+  // ic-shrink-v1 / ic-shrink-aim-v1 / theme-erc-v1, the same per-date standardisation;
+  // composition_standardise), theme-resid-v1 on it with its theme order (v8 R-11, finding
+  // R6B-O-4) and theme-tsmom-v1's mass schedule (v8 Y-2). signal_semantics stays admissible to the
+  // replay consumers and these keys state the rule.
+  bool sleeves=false;
+  for (const auto* rule:running_rules(pinned)) {
+    if (rule->stage==IcStageKind::sleeves) { sleeves=true; continue; }
+    manifest[std::string(rule->recipe_key)]=std::string(rule->id);
+    if (rule->stage==IcStageKind::residualise)
+      manifest["composition_residualise_order"]=theme_order_json(pinned.residualise_order);
+  }
+  // two-speed-v1 (v8 Y-5; absent otherwise): the fast and slow sleeves and the fast share per date in
+  // their own manifest (the combined file set above stays the five files every consumer admits),
+  // pinned here by name and SHA-256.
+  if (sleeves) {
+    const std::string_view sleeve_rule=pinned.sleeves;
+    const std::span<const std::string> fast_themes=pinned.sleeve_fast_themes;
+    const IcCompositionResult& parts=combined;
+    if (parts.sleeve_fast.size()!=cells || parts.sleeve_slow.size()!=cells ||
+        parts.sleeve_fast_share.size()!=role.panel.dates())
+      return co::Err(co::ErrorCode::Internal,"IC runner: sleeve geometry");
+    Json sleeve_files;
+    const auto keep=[&](const std::string& name,std::span<const std::byte> bytes)->co::Status {
+      ATX_TRY(auto receipt,save_bytes(dir/name,bytes));
+      sleeve_files[name]=std::move(receipt); return co::Ok();
+    };
+    const auto sleeve_prefix=spec.name+"_sleeve";
+    ATX_TRY_VOID(keep(sleeve_prefix+"_fast.f64",
+                      std::as_bytes(std::span<const f64>(parts.sleeve_fast))));
+    ATX_TRY_VOID(keep(sleeve_prefix+"_slow.f64",
+                      std::as_bytes(std::span<const f64>(parts.sleeve_slow))));
+    ATX_TRY_VOID(keep(sleeve_prefix+"_fast_share.f64",
+                      std::as_bytes(std::span<const f64>(parts.sleeve_fast_share))));
+    const Json sleeve_manifest{{"schema","atx.dsl-combined-sleeves/v1"},{"status","complete"},
+        {"rule",std::string(sleeve_rule)},{"role",spec.name},{"dates",role.panel.dates()},
+        {"instruments",role.panel.instruments()},{"fast_themes",theme_order_json(fast_themes)},
+        {"semantics","fast|slow: members 0 plus the sleeve's themes' W_theme x per-date re-rank (the mass in "
+                     "force), nonmembers NaN, date-major little-endian; fast_share: per date the fast themes' "
+                     "share of the theme mass in force"},
+        {"files",std::move(sleeve_files)}};
+    const auto sleeve_name=spec.name+"_sleeves.json";
+    ATX_TRY_VOID(write_json(dir/sleeve_name,sleeve_manifest));
+    ATX_TRY(auto sleeve_pin,co::sha256_file((dir/sleeve_name).string()));
+    manifest["composition_sleeves"]=Json{{"rule",std::string(sleeve_rule)},{"manifest",sleeve_name},
+                                         {"manifest_sha256",sleeve_pin}};
   }
   // Likewise absent unless a fields manifest is pinned for this role.
   if (!spec.fields.sha.empty()) manifest["research_fields_manifest_sha256"]=spec.fields.sha;
@@ -220,7 +261,7 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
     // Engine's own ensure_pool otherwise retains both during construction.
     vm.reset();
     vm=std::make_unique<al::Engine>(*panel);
-    vm->set_eval_mode(al::EvalMode::ResearchFast);
+    vm->set_eval_mode(cfg.audit_exact?al::EvalMode::AuditExact:al::EvalMode::ResearchFast);
     if (pool) { vm->set_cs_pool(pool); vm->set_ts_pool(pool); }
     ATX_TRY_VOID(vm->set_cross_section_mask(role.decision_member));
     progress<<"IC VM-arena previous_slots="<<previous_slots
@@ -240,16 +281,15 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
   }
   return co::Ok(std::move(out));
 }
-// `blend_signs`: pinned per-candidate blend signs (empty = the TRAIN IC orientation).
-// `themes`: pinned themes under `rule` (empty = none; redistribute: ew-theme-v6,
-// standardise: ew-theme-std-v1's per-date rule, run for the theme_standardise rule `std_rule`
-// that the combined manifest records; residualise: that rule then theme-resid-v1, in the theme
-// order `resid_order` that the combined manifest also records).
+// `pinned`: the composition weights (pinned.values: per-candidate weights, empty = equal family/
+// within weights; pinned.signs: blend signs, empty = the TRAIN IC orientation) and the composition
+// rule table rows the file carries; the rows whose stage runs are the composition's ordered stage
+// list (composition_stages, strategy_ic_rules.hpp) and the combined manifest's rule keys.
 co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const Role& spec,
-    const KnownManifests& known,std::span<const f64> weights,std::span<const int> blend_signs,
-    std::vector<int>& signs,Json& frozen,const std::string& recipe_sha,const std::string& orientation_pin,
-    std::ostream& progress,std::span<const usize> themes={},IcThemeRule rule=IcThemeRule::redistribute,
-    std::string_view std_rule=theme_standardise_rule,std::span<const std::string> resid_order={}) {
+    const KnownManifests& known,const PinnedWeights& pinned,std::vector<int>& signs,Json& frozen,
+    const std::string& recipe_sha,const std::string& orientation_pin,std::ostream& progress) {
+  const std::span<const f64> weights(pinned.values);
+  const std::span<const int> blend_signs(pinned.signs);
   const auto started=std::chrono::steady_clock::now();
   progress<<"IC loading "<<spec.name<<" admitted_bytes="<<spec.bytes<<'\n'<<std::flush;
   ATX_TRY_VOID(fields_bound(lib,spec));
@@ -319,7 +359,13 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     for (const auto& c:lib.candidates) candidates.push_back({c.id,c.family});
     IcCompositionConfig cc; cc.dates=role.panel.dates(); cc.instruments=role.panel.instruments();
     cc.decision_begin=role.score_begin; cc.decision_end=role.score_end; cc.max_working_bytes=cfg.max_working_bytes;
-    ATX_TRY(auto created,IcComposition::create(cc,candidates,effective,weights,themes,rule));
+    // The ordered stage list (P9 lane D1): the theme grouping (ew-theme-v6's redistribution or a
+    // rerank-true theme_standardise row), theme-resid-v1, theme-tsmom-v1 (each block from the first
+    // session of this role at or after its from_session; a role after the last block keeps the last
+    // block's masses) and two-speed-v1's sleeves -- create, schedule_theme_masses and
+    // set_theme_sleeves in that order, as the v8 runner called them.
+    ATX_TRY(auto stages,composition_stages(pinned,role.session_keys));
+    ATX_TRY(auto created,IcComposition::create_from_stages(cc,candidates,effective,stages));
     composition.emplace(std::move(created));
   }
   // One key per candidate (empty = cache off); directories are created on write.
@@ -498,11 +544,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   const bool save=combined && cfg.save_combined;
   if (save) {
     const auto save_started=std::chrono::steady_clock::now();
-    const bool themed=!themes.empty();
     ATX_TRY(saved,save_combined_artifact(cfg,spec,role,combined->signal,effective,frozen,recipe_sha,orientation_pin,
-        !blend_signs.empty(),themed && rule==IcThemeRule::redistribute,
-        (themed && rule!=IcThemeRule::redistribute)?std_rule:std::string_view{},
-        (themed && rule==IcThemeRule::residualise)?resid_order:std::span<const std::string>{}));
+        pinned,*combined));
     save_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-save_started).count();
   }
   const auto seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-started).count();
@@ -573,6 +616,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
         cfg.validation_manifest.empty()!=cfg.validation_sha256.empty() ||
         cfg.orientations_path.empty()!=cfg.orientations_sha256.empty() ||
         cfg.composition_weights_path.empty()!=cfg.composition_weights_sha256.empty() ||
+        cfg.theme_registry_path.empty()!=cfg.theme_registry_sha256.empty() ||
         cfg.train_fields_directory.empty()!=cfg.train_fields_sha256.empty() ||
         cfg.validation_fields_directory.empty()!=cfg.validation_fields_sha256.empty() ||
         (!cfg.validation_fields_directory.empty() && cfg.validation_manifest.empty()) ||
@@ -582,21 +626,29 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     if (cfg.no_composition && !cfg.composition_weights_path.empty())
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: --no-composition builds no blend, so "
           "--composition-weights (which only weight the blend) is refused with it");
+    if (cfg.audit_exact && !cfg.candidate_cache_directory.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: --eval-mode audit-exact is refused with "
+          "--candidate-cache (its entries are keyed on ResearchFast)");
     ATX_TRY(auto lib,library(cfg));
+    // The theme table (P9 lane D1): --theme-registry's themes, else the built-in table.
+    ATX_TRY(const auto themes,theme_table(cfg));
     // Both new options are fully validated here, before any role payload.
-    ATX_TRY(const auto pinned,composition_weights(cfg,lib));
+    ATX_TRY(const auto pinned,composition_weights(cfg,lib,themes));
     const bool pinned_signs=!pinned.signs.empty();
     ATX_TRY_VOID(cache_preflight(cfg,lib));
     ATX_TRY(const auto known,legacy_manifests(cfg));
     std::vector<Role> roles;
-    // Fields bind at admission (metadata only); an unscored frozen TRAIN needs none.
-    ATX_TRY(auto train,admit(cfg,lib,cfg.train_manifest,cfg.train_sha256,"train",!validation_only,
-        pinned.composition_theme_count(),pinned.theme_rule()));
+    // Fields bind at admission (metadata only); an unscored frozen TRAIN needs none. A scored role
+    // over the memory budget is refused here, except under --plan-only, which prints every role's
+    // required_bytes first (P9 lane D1) and then refuses the same way.
+    ATX_TRY(auto train,admit(cfg,lib,cfg.train_manifest,cfg.train_sha256,"train",pinned));
+    if (!validation_only && !cfg.plan_only) ATX_TRY_VOID(within_budget(cfg,lib,train));
     ATX_TRY_VOID(bind_fields(lib,train,cfg.train_fields_directory,cfg.train_fields_sha256,!validation_only));
     roles.push_back(std::move(train));
     if (!cfg.validation_manifest.empty()) {
-      ATX_TRY(auto val,admit(cfg,lib,cfg.validation_manifest,cfg.validation_sha256,"validation",true,
-          pinned.composition_theme_count(),pinned.theme_rule()));
+      ATX_TRY(auto val,admit(cfg,lib,cfg.validation_manifest,cfg.validation_sha256,"validation",
+                             pinned));
+      if (!cfg.plan_only) ATX_TRY_VOID(within_budget(cfg,lib,val));
       ATX_TRY_VOID(bind_fields(lib,val,cfg.validation_fields_directory,cfg.validation_fields_sha256,true));
       ATX_TRY_VOID(same_field_definitions(lib,roles.front(),val));
       if (roles.front().metadata.at("score_end_ns").get<i64>()>val.metadata.at("score_start_ns").get<i64>())
@@ -621,13 +673,28 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       progress<<listing.dump(2)<<'\n'; return co::Ok();
     }
     if (cfg.plan_only) {
+      // A scored role over the memory budget (P9 lane D1): the plan still prints, each role with
+      // within_budget and its memory terms (admit), then the run refuses exactly as an unplanned
+      // run does (the first such role's required_bytes message; exit 1). Within budget the plan's
+      // bytes are unchanged.
+      const auto over=std::find_if(roles.begin(),roles.end(),[&](const Role& role) {
+        return role.bytes>cfg.max_working_bytes;
+      });
       // `candidates`: contract K1 rows (candidate_plan_rows); the count is candidate_count.
       Json plan{{"mode","metadata-only-no-payload"},{"candidate_count",lib.candidates.size()},
           {"candidates",candidate_plan_rows(lib)},{"max_working_bytes",cfg.max_working_bytes},
           {"max_compiled_slots",lib.max_slots},{"required_lookback",lib.lookback},{"workers",cfg.workers},
           {"library_sha256",cfg.library_sha256},{"roles",Json::array()}};
-      for (const auto& role:roles) plan["roles"].push_back({{"role",role.name},
-          {"manifest_sha256",role.sha},{"required_bytes",role.bytes}});
+      for (const auto& role:roles) {
+        Json row{{"role",role.name},{"manifest_sha256",role.sha},{"required_bytes",role.bytes}};
+        if (over!=roles.end()) {
+          row["within_budget"]=role.bytes<=cfg.max_working_bytes;
+          row["memory_terms"]=role.memory;
+        }
+        plan["roles"].push_back(std::move(row));
+      }
+      if (over!=roles.end()) plan["admission"]="refused-required-bytes-exceed-max-working-bytes";
+      if (!themes.registry_sha256.empty()) plan["theme_registry_sha256"]=themes.registry_sha256;
       if (validation_only) {
         plan["run_mode"]="validation-only-frozen-TRAIN";
         plan["train_recipe_sha256"]=recovered.recipe_sha;
@@ -656,10 +723,11 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
           ATX_TRY(auto entry,cache_plan(cfg,lib,role,known)); plan["candidate_cache"].push_back(std::move(entry));
         }
       }
-      progress<<plan.dump(2)<<'\n'; return co::Ok();
+      progress<<plan.dump(2)<<'\n';
+      if (over!=roles.end()) return within_budget(cfg,lib,*over);
+      return co::Ok();
     }
-    auto recipe=method_recipe(cfg,true,pinned_signs,!pinned.themes.empty(),pinned.standardise_rule(),
-                              pinned.residualise_order);
+    auto recipe=method_recipe(cfg,true,pinned_signs,&pinned);
     for (const auto& role:roles) recipe["role_manifest_sha256"][role.name]=role.sha;
     if (fields_pinned(cfg)) recipe["research_fields"]=fields_recipe(fields_pins(cfg),lib);
     if (validation_only) {
@@ -679,6 +747,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
         {"train_candidates_planned",validation_only?usize{0}:lib.candidates.size()},{"full_book_evaluations",0}};
     if (!cfg.composition_weights_sha256.empty()) report["composition_weights_sha256"]=cfg.composition_weights_sha256;
     if (pinned_signs) report["composition_signs"]="pinned-candidate-signs";
+    // Present only with --theme-registry (P9 lane D1): the theme table's source.
+    if (!themes.registry_sha256.empty()) report["theme_registry_sha256"]=themes.registry_sha256;
     if (!weights_record.is_null()) report["composition_weights"]=weights_record;
     if (!definitions_check.empty()) report["research_field_definitions_checked_against"]=definitions_check;
     if (recipe.contains("research_fields")) report["research_fields"]=recipe.at("research_fields");
@@ -698,9 +768,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     }
     ATX_TRY_VOID(write_json(dir/"summary.json",report));
     for (const auto& role:roles) {
-      auto scored=score_role(cfg,lib,role,known,pinned.values,pinned.signs,signs,orientations,recipe_sha,
-          report.value("orientations_artifact_sha256",std::string{}),progress,pinned.composition_themes(),
-          pinned.theme_rule(),pinned.standardise_rule(),pinned.residualise_order);
+      auto scored=score_role(cfg,lib,role,known,pinned,signs,orientations,recipe_sha,
+          report.value("orientations_artifact_sha256",std::string{}),progress);
       if (!scored) {
         report["status"]="failed"; report["error"]=scored.error().to_string();
         ATX_TRY_VOID(write_json(dir/"summary.json",report)); return co::Err(scored.error());
@@ -736,6 +805,19 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
 int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
   IcRunnerConfig cfg;
   try {
+    // K-P9-6 (P9 lane D1): `--list-rules --json` prints the composition rule table and the exe's
+    // capabilities (strategy_ic_rules.hpp list_rules_json) and nothing else; it takes no other
+    // option (JSON is its only format).
+    for (int i=1;i<argc;++i)
+      if (std::string_view(argv[i])=="--list-rules") {
+        const bool json_flag=argc==3 &&
+            (std::string_view(argv[1])=="--json" || std::string_view(argv[2])=="--json");
+        if (!json_flag) throw std::invalid_argument("--list-rules takes exactly --json");
+        const auto listing=list_rules_json();
+        if (!listing) { err<<listing.error().to_string()<<'\n'; return 1; }
+        out<<listing->dump(2)<<'\n';
+        return 0;
+      }
     for (int i=1;i<argc;++i) {
       const std::string key=argv[i];
       if (key=="--plan-only") { cfg.plan_only=true; continue; }
@@ -748,12 +830,22 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "[--candidate-cache DIR [--cache-legacy-fields DIR]... [--cache-report]] "
                "[--composition-weights JSON --composition-weights-sha256 SHA] "
                "[--train-fields DIR --train-fields-sha256 SHA] [--validation-fields DIR --validation-fields-sha256 SHA] "
-               "[--no-composition]\n"
+               "[--no-composition] [--eval-mode audit-exact] "
+               "[--theme-registry JSON --theme-registry-sha256 SHA] "
+               "| --list-rules --json\n"
                "  verbs: marginal (marginal IC of each candidate against a saved blend, contract K6; see\n"
                "    `atx-equity-strategy-ic marginal --help`); ic (this option list, also the default).\n"
+               "  --list-rules --json: print the composition rule table and the exe's\n"
+               "    capabilities (contract K-P9-6, schema atx.composition-rules/v1) and exit.\n"
+               "  --theme-registry: the alpha registry (atx-impl/strategies/alphas/registry.json);\n"
+               "    its themes table, in file order, is the theme table theme-resid-v1 and\n"
+               "    two-speed-v1 read (absent: the built-in table, the registry's themes at the\n"
+               "    P9 base).\n"
                "  --no-composition: screening pass; member IC rows and orientations only (byte-identical to a full\n"
                "    run's), no blend, __combined__ rows, planned targets or saved blend; with --candidate-cache a\n"
                "    candidate whose signal and IC result are both cached is not loaded. Refuses --composition-weights.\n"
+               "  --eval-mode audit-exact: task H-2 cost measurement; every candidate under the VM's AuditExact mode\n"
+               "    (the recipe's vm names it); refused with --candidate-cache (its entries are keyed on ResearchFast).\n"
                "  --*-fields: atx.research-role-fields/v1 directory bound to that role; SHA pins DIR/manifest.json.\n"
                "  --candidate-cache: content-keyed entries (v2) under DIR[/<vm-identity>]/<role-sha>/[fp_<fk16>/]\n"
                "    <id>.<dsl16>.{f64,json}, keyed on the DSL and the payload SHA256 of each field it reads; v1 entries\n"
@@ -773,6 +865,8 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "    rule ic-shrink-v1 (rerank true) runs the same and adds ic_shrink {intensity, floor, members: {id:\n"
                "    {theme, ic}}}: the weights must be that rule on those inputs (verified before any payload);\n"
                "    rule ic-shrink-aim-v1 likewise, each member also carrying the parent's aim gain {theme, ic, gain};\n"
+               "    rule theme-erc-v1 likewise with theme_erc {sweeps, dispersion, members: {id: {theme, share}},\n"
+               "    covariance: {themes, matrix}}: equal-risk-contribution theme shares times the members' shares;\n"
                "    schema atx.dsl-composition-weights/v2 iff one block is present, v1 iff none. Optional beside a\n"
                "    rerank-true theme_standardise: theme_residualise {rule: theme-resid-v1, order: [theme, ...]}\n"
                "    (order: the registered theme order restricted to the weighted themes) residualises each\n"
@@ -805,10 +899,16 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       else if (key=="--train-fields-sha256") cfg.train_fields_sha256=value;
       else if (key=="--validation-fields") cfg.validation_fields_directory=value;
       else if (key=="--validation-fields-sha256") cfg.validation_fields_sha256=value;
+      else if (key=="--theme-registry") cfg.theme_registry_path=value;
+      else if (key=="--theme-registry-sha256") cfg.theme_registry_sha256=value;
       else if (key=="--max-memory-mib") { const auto n=integer(); if (n>16384) throw std::invalid_argument("memory limit"); cfg.max_working_bytes=n<<20; }
       else if (key=="--min-names") cfg.min_names=static_cast<usize>(integer());
       else if (key=="--min-dates") cfg.min_dates=static_cast<usize>(integer());
       else if (key=="--workers") cfg.workers=static_cast<usize>(integer());
+      else if (key=="--eval-mode") {   // task H-2: the AuditExact cost measurement only
+        if (value!="audit-exact") throw std::invalid_argument("--eval-mode takes audit-exact");
+        cfg.audit_exact=true;
+      }
       else throw std::invalid_argument("unknown option: "+key);
     }
     const auto result=run_ic(cfg,out);

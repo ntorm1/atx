@@ -1,0 +1,89 @@
+{
+  "schema": "atx.mine-campaign-spec/v1",
+  "name": "mine-c1",
+  "description": "v9 mined campaign C1 (OD-7): stage-1 templates of 10 fields the book does not read (v8x prereg A3: k8_count_63 and inst_own_chg_q left the list at the lock, read by X-3 members), mined-v1, budget 110",
+  "campaign_id": "v9-mine-c1",
+  "registration": "docs/plans/2026-10-01-v9-mine-campaign-prereg.md",
+  "requires": [],
+  "python": "C:/Program Files/Python312/python.exe",
+  "build": "equity",
+  "exe": "atx-equity-strategy-mine.exe",
+  "runner": {
+    "script": "scripts/run_bounded_research.py",
+    "seconds": 600,
+    "max_rss_mib": 8192,
+    "min_free_mib": 512
+  },
+  "inputs": {
+    "role": {
+      "path": "build-equity/train-2020-2023-lo3/manifest.json",
+      "sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4"
+    },
+    "fields": {
+      "path": "build-equity/train-2020-2023-lo3-fields-v13/manifest.json",
+      "sha256": "e5f7f28c465a92885d55d55a439eb2f217b9f5f15d51017b4293ebc55935e9b2"
+    },
+    "pool": {
+      "path": "build-equity/mine-pool-v9-c1/manifest.json",
+      "sha256": "d129f87304d845c1b5a1908d49365a2bc84d019019cedff4cfe594bc4cb45bf3"
+    }
+  },
+  "pool_source": {
+    "combined": {
+      "path": "build-equity/mega-v8xw-train-theme-erc-1/train_combined.json",
+      "sha256": "2a442f560982749b74283f16ef3060656f270d6130628c64fcd4bde77259cb86"
+    },
+    "weights": {
+      "path": "build-equity/mega-weights-v8x-theme-erc/composition_weights.json",
+      "sha256": "8310da2c05aa8e46573aaa2f7660a8a635b5f6c44c6f758c495c3d719710d699"
+    },
+    "summary": {
+      "path": "build-equity/mega-v8xw-train-theme-erc-1/summary.json",
+      "sha256": "9303cac6e0e6a463d7af313f1ca34e85aac9ae0f5df9d6e0726c573ca15c567f"
+    }
+  },
+  "fields": [
+    "iv_atm_63d",
+    "iv_atm_126d",
+    "ea_delay_days",
+    "ins_net_buy_ratio",
+    "ins_n_buyers",
+    "ins_n_sellers",
+    "k8_days_since_any",
+    "inst_breadth_chg",
+    "regsho_threshold_days63",
+    "sv_offexchange_share126"
+  ],
+  "windows": {
+    "discover": [
+      "{train_begin}",
+      "2023-01-01"
+    ],
+    "confirm": [
+      "2023-01-01",
+      "{train_end}"
+    ]
+  },
+  "budget": 110,
+  "search": {
+    "seed": 1,
+    "workers": 4,
+    "stage2_seeds": 12,
+    "stage2_population": 24,
+    "stage2_generations": 0,
+    "race_strides": "none",
+    "race_keep": 0.3333333333333333
+  },
+  "rule": {
+    "min_names": 1000,
+    "min_dates": 128,
+    "max_promotions": 16
+  },
+  "max_memory_mib": 3776,
+  "registry": {
+    "path": "build-equity/mine-v9-c1/registry.atxtrg",
+    "head": null
+  },
+  "output": "build-equity/mine-v9-c1",
+  "ledger": "build-equity/trials.jsonl"
+}

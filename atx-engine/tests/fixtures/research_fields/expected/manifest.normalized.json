@@ -1,0 +1,327 @@
+{
+  "cell_rule": "NaN where the field is not visible at the session decision or the source is absent",
+  "common_stock_verified": false,
+  "coverage_basis": "member.u8 cells of the role (member cells with a finite value / member cells)",
+  "excluded_source_columns": [
+    {
+      "columns": "atmCenH_* (proposed hv_<tenor>)",
+      "reason": "not realized historical volatility: equals atmCenI_<tenor> exactly whenever nEarnCnt_<tenor> == 0 (sample H/I p10=p50=p90=1.000) and differs only when a scheduled earnings event falls inside the tenor (corr with atmCenI_21d 0.95); an alternate earnings adjustment of the same IV built from the forward-looking earnings calendar and *EMove family. Realized volatility is computable from close in the DSL."
+    },
+    {
+      "columns": "nEarnCnt_5d..nEarnCnt_504d",
+      "reason": "count FUTURE earnings events within the next N sessions (nEarnCnt_5d is 1 on the five sessions up to and including earnFlag -1 and 0 from the reaction session on): forward-looking"
+    },
+    {
+      "columns": "nEarnCnt",
+      "reason": "semantics unverified (typically 8, sometimes 7 on event sessions)"
+    },
+    {
+      "columns": "hEMove, iEMove, wkD1, shD1, qtrD1, lnD1",
+      "reason": "forward-horizon moves; excluded as look-ahead by the ORATS history loader design (2026-06-16)"
+    },
+    {
+      "columns": "earnFlag == -1",
+      "reason": "presumes a known future event date; mapped to 0 (same as N)"
+    },
+    {
+      "columns": "same-date vendor shares",
+      "reason": "A8: vendor runs start at the filing cover date; replaced by the 90-day lag (shares_out)"
+    }
+  ],
+  "fields": [
+    {
+      "caveats": [
+        "settlements before 2021-06 come from FINRA's later consolidated republication, not the bytes the exchanges disseminated (vintage risk; see vintage_risk counts)",
+        "securityID mapping by ORATS ticker_tk on the last trading day <= settlement (producer mapping_report.json)"
+      ],
+      "clock": "finra-asof:latest-row-with-available_at<date(session)-strict;available_at=official-dissemination-date;replicates-atx-impl-build_asof_column",
+      "coverage": {
+        "finite_cells_all": 406,
+        "finite_member_cells": 385,
+        "finite_member_frac": 0.170732,
+        "member_cells": 2255,
+        "member_finite_max": 123456789.0,
+        "member_finite_mean": 10612658.61103896,
+        "member_finite_min": -0.0,
+        "member_finite_quantiles": {
+          "p0.1": 0.0,
+          "p1": -0.0,
+          "p50": 150.0,
+          "p99": 123456789.0,
+          "p99.9": 123456789.0
+        },
+        "per_year": {
+          "2021": {
+            "finite_member_cells": 332,
+            "finite_member_frac": 0.170431,
+            "member_cells": 1948
+          },
+          "2022": {
+            "finite_member_cells": 53,
+            "finite_member_frac": 0.172638,
+            "member_cells": 307
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 169,
+          "finite_member_frac": 0.1298,
+          "member_cells": 1302
+        },
+        "vintage_risk": {
+          "finite_member_cells": 233,
+          "first_session_vintage_safe": "2021-07-26",
+          "last_session_with_republished_visible_cell": "2021-07-23",
+          "rule": "visible row disseminated on or before 2021-06-09 (settlement before 2021-06-01): later FINRA republication"
+        }
+      },
+      "dtype": "<f8",
+      "file": "si_shares.f64",
+      "layout": "date-major",
+      "name": "si_shares",
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "sha256": "51978fbb5b9f70e5ebbb47f4728bb3bf7695401c0fe128b219f92fd38a5bbb5e",
+      "shape": [
+        300,
+        8
+      ],
+      "source_columns": [
+        "value"
+      ],
+      "sources": [
+        {
+          "bytes": 410,
+          "path": "<fixture>/finra/asof/si_shares.csv",
+          "sha256": "7a250dd602eb50535a9bbf393d669164d90f30c9f15f39b305353f79e652d654"
+        },
+        {
+          "bytes": 237,
+          "path": "<fixture>/finra/asof/manifest.json",
+          "sha256": "139fbef2a0081446a81e11aef5d038594c24a4791ab0ad8921873d668f16954c"
+        },
+        {
+          "bytes": 3063,
+          "path": "<fixture>/finra/dissemination_schedule.csv",
+          "sha256": "6686cb71e8dfda6ab9218d8e73fe1abbbab88e3f84db5ffd2b777d0650b56b4e"
+        }
+      ],
+      "staleness": "age=date(session)-available_at calendar days; age>45 -> NaN; before first visible row -> NaN; visible NaN stays NaN (no skip-back)",
+      "units": "shares short (FINRA consolidated currentShortPositionQuantity)",
+      "vintage_safe_from": "2021-06-10"
+    },
+    {
+      "caveats": [
+        "FINRA reports days-to-cover floored at 1.00 (about 40% of producer rows equal 1); si_shares / volume is the unfloored alternative",
+        "settlements before 2021-06 come from FINRA's later consolidated republication (vintage risk)"
+      ],
+      "clock": "finra-asof:latest-row-with-available_at<date(session)-strict;available_at=official-dissemination-date;replicates-atx-impl-build_asof_column",
+      "coverage": {
+        "finite_cells_all": 451,
+        "finite_member_cells": 434,
+        "finite_member_frac": 0.192461,
+        "member_cells": 2255,
+        "member_finite_max": 3.125,
+        "member_finite_mean": 0.8225806451612904,
+        "member_finite_min": 0.0,
+        "member_finite_quantiles": {
+          "p0.1": 0.0,
+          "p1": 0.0,
+          "p50": 0.0,
+          "p99": 3.125,
+          "p99.9": 3.125
+        },
+        "per_year": {
+          "2021": {
+            "finite_member_cells": 401,
+            "finite_member_frac": 0.205852,
+            "member_cells": 1948
+          },
+          "2022": {
+            "finite_member_cells": 33,
+            "finite_member_frac": 0.107492,
+            "member_cells": 307
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 124,
+          "finite_member_frac": 0.095238,
+          "member_cells": 1302
+        },
+        "vintage_risk": {
+          "finite_member_cells": 308,
+          "first_session_vintage_safe": "2021-07-09",
+          "last_session_with_republished_visible_cell": "2021-07-08",
+          "rule": "visible row disseminated on or before 2021-06-09 (settlement before 2021-06-01): later FINRA republication"
+        }
+      },
+      "dtype": "<f8",
+      "file": "si_dtc.f64",
+      "layout": "date-major",
+      "name": "si_dtc",
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "sha256": "6ad53de4acc99153411973d5835aa23f67244d3f90c85f5ac1598f36d899a8c4",
+      "shape": [
+        300,
+        8
+      ],
+      "source_columns": [
+        "value"
+      ],
+      "sources": [
+        {
+          "bytes": 318,
+          "path": "<fixture>/finra/asof/si_dtc.csv",
+          "sha256": "c7ad6f30ea8f1a64a00e8ce4dc3767c49aceae1f7a4be988586091dc1bc7a684"
+        },
+        {
+          "bytes": 237,
+          "path": "<fixture>/finra/asof/manifest.json",
+          "sha256": "139fbef2a0081446a81e11aef5d038594c24a4791ab0ad8921873d668f16954c"
+        },
+        {
+          "bytes": 3063,
+          "path": "<fixture>/finra/dissemination_schedule.csv",
+          "sha256": "6686cb71e8dfda6ab9218d8e73fe1abbbab88e3f84db5ffd2b777d0650b56b4e"
+        }
+      ],
+      "staleness": "age=date(session)-available_at calendar days; age>45 -> NaN; before first visible row -> NaN; visible NaN stays NaN (no skip-back)",
+      "units": "days to cover (FINRA daysToCoverQuantity; FINRA floors the ratio at 1.00)",
+      "vintage_safe_from": "2021-06-10"
+    },
+    {
+      "caveats": [
+        "the role's volume.f64 is raw share volume (volume_basis raw-share-volume), not restated across splits",
+        "one price line's values (the vendor securityID), not an issuer total"
+      ],
+      "clock": "role-close-lag1-v1: row t reads the role's volume.f64 and present.u8 rows of sessions t-126..t-1 only (each known at its 22:00 UTC close mark)",
+      "coverage": {
+        "finite_cells_all": 1044,
+        "finite_member_cells": 998,
+        "finite_member_frac": 0.442572,
+        "member_cells": 2255,
+        "member_finite_max": 91703223.18844831,
+        "member_finite_mean": 62109179.688490584,
+        "member_finite_min": 28686621.69249697,
+        "member_finite_quantiles": {
+          "p0.1": 28691940.41181633,
+          "p1": 29462773.850700207,
+          "p50": 60064717.39783241,
+          "p99": 88935197.44496898,
+          "p99.9": 91703146.05163114
+        },
+        "per_year": {
+          "2021": {
+            "finite_member_cells": 767,
+            "finite_member_frac": 0.393737,
+            "member_cells": 1948
+          },
+          "2022": {
+            "finite_member_cells": 231,
+            "finite_member_frac": 0.752443,
+            "member_cells": 307
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 977,
+          "finite_member_frac": 0.750384,
+          "member_cells": 1302
+        }
+      },
+      "definition": "row t >= 126: mean of the role's volume.f64 over the sessions s in t-126..t-1 with present[s] == 1 and a finite volume >= 0; NaN when fewer than 63 such sessions or t < 126. Raw share volume in each session's own share units, as the DSL's volume (a split inside the window mixes share bases)",
+      "dtype": "<f8",
+      "file": "vol_126.f64",
+      "formula_id": "price-vol-126-lag1-v1",
+      "formula_sha256": "cb44b19e3eda43f3ca0969974a99d1b4439f5bbfa56d09436ad15e8cc572160e",
+      "lag_sessions": 1,
+      "layout": "date-major",
+      "min_history": "126 role sessions",
+      "name": "vol_126",
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "sha256": "ef4a61ebb2832154955bc061a48f821fde6bb52a147fac6169ef9b169cb65f9a",
+      "shape": [
+        300,
+        8
+      ],
+      "source_columns": [
+        "volume.f64",
+        "present.u8"
+      ],
+      "sources": [
+        {
+          "bytes": 19200,
+          "path": "<fixture>/role/volume.f64",
+          "sha256": "de601762e64002d80797a00f788d88e653251d8e831a8e5ce2f6513522982651"
+        },
+        {
+          "bytes": 2400,
+          "path": "<fixture>/role/present.u8",
+          "sha256": "c643befdf43f3d51505aa66b8cf5b14b4af4bd6d594f9887c7139c1483608c61"
+        }
+      ],
+      "staleness": "no fill: fewer than 63 present sessions in the window -> NaN",
+      "units": "shares per session: mean raw daily share volume"
+    }
+  ],
+  "files": {
+    "si_dtc.f64": {
+      "bytes": 19200,
+      "sha256": "6ad53de4acc99153411973d5835aa23f67244d3f90c85f5ac1598f36d899a8c4"
+    },
+    "si_shares.f64": {
+      "bytes": 19200,
+      "sha256": "51978fbb5b9f70e5ebbb47f4728bb3bf7695401c0fe128b219f92fd38a5bbb5e"
+    },
+    "vol_126.f64": {
+      "bytes": 19200,
+      "sha256": "ef4a61ebb2832154955bc061a48f821fde6bb52a147fac6169ef9b169cb65f9a"
+    }
+  },
+  "historical_vintage_verified": false,
+  "instrument_namespace": "spiderrock.securityID",
+  "non_point_in_time_fields": [],
+  "point_in_time_definition": "point_in_time is true when both a field's cell values and which of its cells are NaN use only information available by the session's decision (every finite cell of every field is known by the session-date 22:00 UTC mark, before the 23:00 UTC decision). A false flag carries point_in_time_reason and non_pit_aspects (values and/or presence). Revision vintage of the sources (FINRA republication, unproven vendor vintage) is reported separately (historical_vintage_verified, vintage_safe_from, caveats) and does not set this flag. Consumers that must avoid look-ahead refuse point_in_time false fields unless explicitly allowed.",
+  "role": {
+    "clock_recipe": "modeled-session+22h-mark+23h-decision-v1",
+    "dates": 300,
+    "first_session": "2021-01-04",
+    "ids_sha256": "d22296f38f7e16f7ed3287880eb75cf5b95d86c65a57e564557eaca2df3faab3",
+    "instruments": 8,
+    "last_session": "2022-02-25",
+    "manifest_sha256": "dd56e6afb9e2a58f55ac982f4e4307691099a1667269584c0f4f3516c07276a7",
+    "member_sha256": "2bac925075796390b52425585098cea118255097e27f6bdd3952832980e91304",
+    "path": "<fixture>/role",
+    "score_begin": 130,
+    "score_end": 300,
+    "sessions_sha256": "57b1cacf4ba2e999b61c79160326c64a5f1f3225cf5c11329e06b3296767ca04",
+    "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "schema": "atx.research-role-fields/v1",
+  "seal": {
+    "exclusive_end": "2024-01-01",
+    "rule": "every source row available on or after 2024-01-01 is dropped before use; role sessions asserted < 2024-01-01"
+  },
+  "source_checks": {
+    "price": {
+      "clock": "price-close-lag1-v1: row t reads vendor observations dated on or before session t-1 only (each known at that session's 22:00 UTC close mark, before the t-1 decision); sessions are the role's own inside the role and the NYSE rule sessions (nyse-rule-v1) before it; rows after the role's last session or on or after the seal are never read",
+      "lag_sessions": 1
+    },
+    "si_dtc": {
+      "max_stale_days": 45,
+      "rows_ignored_unknown_id": 0,
+      "rows_matched_axis": 15,
+      "rows_sealed_dropped": 0,
+      "rows_total": 15
+    },
+    "si_shares": {
+      "max_stale_days": 45,
+      "rows_ignored_unknown_id": 1,
+      "rows_matched_axis": 18,
+      "rows_sealed_dropped": 1,
+      "rows_total": 20
+    }
+  },
+  "status": "complete",
+  "visibility_mark": "every finite cell of every field is known by the session-date 22:00 UTC mark (the role close clock), before the 23:00 UTC decision"
+}

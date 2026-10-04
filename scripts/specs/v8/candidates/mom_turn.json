@@ -1,0 +1,46 @@
+{
+  "id": "mom_turn",
+  "dsl": "rank(decay_linear(((rank(((delay(close, 21) / delay(close, 252)) - 1)) - 0.5) * (rank(delay(ts_mean((volume / shares_out), 231), 21)) - 0.5)), 21))",
+  "dsl_sha256": "09946f74588e3060c9f54a0bbefde0c173e1bb39efcdbb10e6d95633c522b373",
+  "theme": "price_momentum",
+  "tier": "C+",
+  "prior_sign": 1,
+  "citation": "Lee and Swaminathan (2000, JF 55(5)) Price momentum and trading volume",
+  "origin": "prior",
+  "hypothesis": "mom_turn",
+  "kind": "add",
+  "fields": [
+    "shares_out"
+  ],
+  "prior_sign_source": "Lee-Swaminathan 2000",
+  "form": "R(decay_linear(x, 21))",
+  "formula": "(rank(12-1 return) - 0.5) x (rank(mean daily turnover, volume / shares_out, over the same sessions t-251..t-21) - 0.5): the momentum x turnover interaction alone; momentum is larger among high-turnover stocks",
+  "domain": "NaN where the 12-1 return or any of the 231 daily turnovers is NaN",
+  "deviation": "the interaction term only, with centred cross-sectional ranks (no momentum main effect, which mom_12_1 carries, and no turnover main effect); continuous, not the paper's 10 x 3 portfolios; the house 12-1 return with turnover over the same 231 sessions; daily turnover = raw share volume / vendor shares_out (A8 90-day lag, split-restated); house decay",
+  "lane": "YSIG",
+  "report": "task-YSIG-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "in-book",
+  "wave": "y-s",
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 5); line 0a53d97cc2f24308 = v8y-prereg section 14"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    },
+    {
+      "status": "in-book",
+      "at": "2026-10-03",
+      "by": "research_cycle.py wave",
+      "wave": "y-s",
+      "note": "wave-result True"
+    }
+  ]
+}

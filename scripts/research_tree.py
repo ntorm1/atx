@@ -6,11 +6,20 @@
 * ``--no-git`` (contract K3) is accepted only for a root outside any git repository (test roots, e.g. the tiny_world
   fixture): ``repo_root_of`` walks up from the root looking for a ``.git`` entry.
 * ``window_id`` names the research window (task W0-1, ``atx.research-window/v2``) for the derived cache and fit roots.
+* ``RUNNER_MAX_SECONDS`` is the bounded runner's hard time cap (run_bounded_research.py refuses more): a wave
+  manifest, a cycle spec and a wave step refuse a phase cap above it when they are loaded or built (P9 OR-1), never
+  half way through a wave.
+* ``argv_sha256`` is the one digest of a command's arguments after its executable (contract K-P9-10: the bounded
+  runner's receipt, research_cycle's resume check and NAV binding); ``BUILD_TYPES`` maps a cycle spec's "build" to the
+  CMake build type the runner records.
+* ``launch_refusal`` checks the launch admission options (a bounded wait, a host memory budget: P9 F-5 (a), OR
+  section 5) wherever they are given: the runner, research_cycle and a wave manifest's driver block.
 
 Standard library only (the bounded runner imports it before psutil is needed).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -20,6 +29,38 @@ REPO = Path(__file__).resolve().parents[1]
 CODE_PATHSPEC = ("atx-core", "atx-tsdb", "atx-engine", "atx-impl", "scripts", "CMakeLists.txt", "CMakePresets.json",
                  "cmake")
 WINDOW_JSON = "atx-impl/strategies/research_window.json"     # W0-1: the one source of the research window
+RUNNER_MAX_SECONDS = 600                                     # run_bounded_research.py's hard time cap (P9 OR-1)
+BUILD_TYPES = {"equity": "Debug", "equity-rel": "Release"}  # research_cycle's spec "build" -> the CMake build type
+ADMISSION_MAX_SECONDS = 3600     # the runner's --admission-wait-seconds bound (P9 F-5 (a))
+HOST_BUDGET_MIB = (64, 65536)    # the runner's --host-budget-mib range (P9 OR section 5)
+
+
+def launch_refusal(wait, budget) -> str | None:
+    """Why launch admission options are refused: ``wait`` (seconds) in (0, ADMISSION_MAX_SECONDS], ``budget`` (MiB, an
+    integer in HOST_BUDGET_MIB) only with a wait; None = accepted (either may be None: not given)."""
+    if wait is not None and not (type(wait) in (int, float) and 0 < wait <= ADMISSION_MAX_SECONDS):
+        return f"the launch admission wait must be in (0, {ADMISSION_MAX_SECONDS}] seconds"
+    if budget is not None and (wait is None or type(budget) is not int or
+                               not HOST_BUDGET_MIB[0] <= budget <= HOST_BUDGET_MIB[1]):
+        return (f"the host memory budget needs a launch admission wait and is an integer in [{HOST_BUDGET_MIB[0]}, "
+                f"{HOST_BUDGET_MIB[1]}] MiB")
+    return None
+
+
+def argv_sha256(args) -> str:
+    """SHA-256 of a command's arguments after its executable (a compact JSON list of strings): the bounded runner's
+    receipt ``argv_sha256`` (contract K-P9-10) and cycle_resume's NAV binding (review C-13) use this one rule."""
+    return hashlib.sha256(json.dumps([str(a) for a in args], separators=(",", ":")).encode()).hexdigest()
+
+
+def seconds_cap_refusal(key: str, value) -> str | None:
+    """Why a runner time cap ``value`` at ``key`` (a dotted manifest or spec key) is refused: above
+    RUNNER_MAX_SECONDS, the bounded runner would exit 2 with no receipt; None when it is within the cap (a number's
+    other checks stay the caller's)."""
+    if type(value) in (int, float) and value > RUNNER_MAX_SECONDS:
+        return (f"{key} {value} is above the bounded runner's maximum {RUNNER_MAX_SECONDS} s "
+                "(research_tree.RUNNER_MAX_SECONDS; run_bounded_research.py refuses it)")
+    return None
 
 
 def repo_root_of(path: Path) -> Path | None:

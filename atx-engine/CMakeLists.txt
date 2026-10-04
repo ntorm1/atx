@@ -39,6 +39,7 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/alpha/dag.cpp
     src/alpha/lexer.cpp
     src/alpha/oracle.cpp
+    src/alpha/oracle_formulaic.cpp
     src/alpha/oracle_lit.cpp
     src/alpha/panel.cpp
     src/alpha/parser.cpp
@@ -244,6 +245,113 @@ target_link_libraries(atx-engine PUBLIC Threads::Threads)
 add_executable(atx-shm-worker src/parallel/shm_worker_main.cpp)
 target_link_libraries(atx-shm-worker PRIVATE atx::engine atx_warnings)
 
+# Platform core migration slice 1 (docs/plans/2026-10-02-platform-core-migration.md): the engine's research
+# field-builder layer as its own small library. It needs atx::core and header-only engine pieces only
+# (research_window.hpp), never the atx-engine archive or its PCH, so an edit here rebuilds this library and its
+# test target alone. EXCLUDE_FROM_ALL: no existing build compiles it unless a consumer asks for it.
+add_library(atx-engine-research-fields ${ATX_LIB_TYPE} EXCLUDE_FROM_ALL
+    src/research/fields/asof_series.cpp
+    src/research/fields/clock.cpp
+    src/research/fields/field_registry.cpp
+    src/research/fields/field_spec.cpp
+    src/research/fields/field_stats.cpp
+    src/research/fields/field_writer.cpp
+    src/research/fields/file_io.cpp
+    src/research/fields/finra_asof_field.cpp
+    src/research/fields/finra_inputs.cpp
+    src/research/fields/manifest.cpp
+    src/research/fields/producer.cpp
+    src/research/fields/registry.cpp
+    src/research/fields/research_fields_cli.cpp
+    src/research/fields/reuse.cpp
+    src/research/fields/role_axes.cpp
+    src/research/fields/role_rows.cpp
+    src/research/fields/trailing_mean.cpp
+    src/research/fields/volume_mean_field.cpp)
+add_library(atx::engine-research-fields ALIAS atx-engine-research-fields)
+target_include_directories(atx-engine-research-fields
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>)
+target_compile_features(atx-engine-research-fields PUBLIC cxx_std_20)
+# nlohmann_json is PUBLIC: the field registry, builder-kind, manifest and reuse headers speak JSON
+# documents (K-P9-1 rows, kind blocks, manifest entries).
+target_link_libraries(atx-engine-research-fields
+    PUBLIC
+        atx::core
+        nlohmann_json::nlohmann_json
+    PRIVATE
+        atx_warnings)
+
+# P9 K-P9-3 producer identity: the git commit and build type baked at configure time into one
+# generated source (the atx-impl engine_git_sha rule: `git rev-parse HEAD`, "-dirty" for a modified
+# tree, "unknown" without git). configure_file rewrites it only when the text changes, so a no-op
+# build stays a no-op; a changed value recompiles that one source. The value is provenance; reuse is
+# keyed on the executable's own SHA-256 (producer.hpp).
+set(ATX_RESEARCH_FIELDS_GIT_SHA "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE _atx_fields_git_sha
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _atx_fields_git_rc
+        ERROR_QUIET)
+    if(_atx_fields_git_rc EQUAL 0 AND _atx_fields_git_sha)
+        set(ATX_RESEARCH_FIELDS_GIT_SHA "${_atx_fields_git_sha}")
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" status --porcelain
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _atx_fields_git_dirty
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(_atx_fields_git_dirty)
+            set(ATX_RESEARCH_FIELDS_GIT_SHA "${ATX_RESEARCH_FIELDS_GIT_SHA}-dirty")
+        endif()
+    endif()
+endif()
+set(ATX_RESEARCH_FIELDS_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
+if(NOT ATX_RESEARCH_FIELDS_BUILD_TYPE)
+    set(ATX_RESEARCH_FIELDS_BUILD_TYPE "unknown")
+endif()
+set(_atx_fields_identity_cpp "${CMAKE_CURRENT_BINARY_DIR}/generated/research_fields_build_identity.cpp")
+configure_file(src/research/fields/build_identity.cpp.in "${_atx_fields_identity_cpp}" @ONLY)
+target_sources(atx-engine-research-fields PRIVATE "${_atx_fields_identity_cpp}")
+
+# Slice 3: the field builder's executable (`atx-research-fields build --spec S --receipt R
+# [--registry REGISTRY]`), the engine path of prepare_research_fields_engine.py and, with the field
+# registry (K-P9-1), a publish-last fields manifest with reuse. EXCLUDE_FROM_ALL like its library.
+add_executable(atx-research-fields EXCLUDE_FROM_ALL src/research/fields/research_fields_main.cpp)
+target_link_libraries(atx-research-fields PRIVATE atx::engine-research-fields atx_warnings)
+
+# P9 lane SQL1 (K-P9-13, ruling SQL-5): the research-artifact SQLite store core -- compile-time
+# table descriptors and their templates (DDL, bind / read, record digest, schema JSON), the
+# catalog_core and cache groups, store open / create / migrate and the catalog digest. SQLite is
+# the vendored atx_sqlite3 reached only through atx::core's db wrapper (ruling SQL-4). The
+# descriptor templates sit in private headers under src/ (reached as research/store/detail/...)
+# and are instantiated in exactly one TU per group (core_ops.cpp, cache_ops.cpp). No PCH entry.
+# EXCLUDE_FROM_ALL: nothing links it until a consumer asks.
+add_library(atx-engine-research-store ${ATX_LIB_TYPE} EXCLUDE_FROM_ALL
+    src/research/store/core_ops.cpp
+    src/research/store/cache_ops.cpp
+    src/research/store/digest.cpp
+    src/research/store/store.cpp)
+add_library(atx::engine-research-store ALIAS atx-engine-research-store)
+target_include_directories(atx-engine-research-store
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_features(atx-engine-research-store PUBLIC cxx_std_20)
+target_link_libraries(atx-engine-research-store
+    PUBLIC
+        atx::core
+    PRIVATE
+        atx_warnings
+        nlohmann_json::nlohmann_json)
+
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
@@ -255,3 +363,82 @@ endif()
 if(ATX_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
+
+# Platform P9 B1 (DEC-7; migration plan section 1 `admission/`): the admission screen (screen_v4 on eval::hac,
+# greedy redundancy, the PM7-35 sign predicate, the report-only traded-horizon columns) as its own small library.
+# Like the fields library it needs atx::core and header-only engine pieces only (eval/hac.hpp,
+# data/research_window.hpp), never the atx-engine archive or its PCH. EXCLUDE_FROM_ALL: nothing builds it unless
+# asked. The executable screens a K-P9-4 factor series directory (`atx-research-admission screen ...`).
+add_library(atx-engine-research-admission ${ATX_LIB_TYPE} EXCLUDE_FROM_ALL
+    src/research/admission/admission_cli.cpp
+    src/research/admission/admission_csv.cpp
+    src/research/admission/screen.cpp
+    src/research/admission/traded_horizon.cpp)
+add_library(atx::engine-research-admission ALIAS atx-engine-research-admission)
+target_include_directories(atx-engine-research-admission
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>)
+target_compile_features(atx-engine-research-admission PUBLIC cxx_std_20)
+target_link_libraries(atx-engine-research-admission
+    PUBLIC
+        atx::core
+    PRIVATE
+        atx_warnings
+        nlohmann_json::nlohmann_json)
+add_executable(atx-research-admission EXCLUDE_FROM_ALL src/research/admission/admission_main.cpp)
+target_link_libraries(atx-research-admission PRIVATE atx::engine-research-admission atx_warnings)
+
+# P9 lane SQL2 (K-P9-13, rulings SQL-2 / SQL-5 / SQL-7): the artifact catalog over the research
+# store -- the catalog_records descriptors (instantiated only in records_ops.cpp), the class
+# registry reader, the seal guard, pins, ingesters, queries -- and the `atx-research-store` CLI
+# (init / catalog / ingest / verify / query / digest / dump / cache / schema / quick-check). Its
+# own library so cache users never link the ingesters. The class registry is data read at run time
+# (atx-engine/schemas/research_store/classes.json); ATX_RESEARCH_STORE_CLASSES names the source
+# tree's copy as the CLI's last fallback. No PCH entry. EXCLUDE_FROM_ALL: no research executable
+# links it.
+add_library(atx-engine-research-catalog ${ATX_LIB_TYPE} EXCLUDE_FROM_ALL
+    src/research/store/catalog/records_ops.cpp
+    src/research/store/catalog/catalog.cpp
+    src/research/store/catalog/classify.cpp
+    src/research/store/catalog/seal_guard.cpp
+    src/research/store/catalog/pins.cpp
+    src/research/store/catalog/json_text.cpp
+    src/research/store/catalog/ingest_run.cpp
+    src/research/store/catalog/ingest_stage.cpp
+    src/research/store/catalog/ingest_cycle.cpp
+    src/research/store/catalog/ingest_wave.cpp
+    src/research/store/catalog/ingest_spec.cpp
+    src/research/store/catalog/ingest_ledger.cpp
+    src/research/store/catalog/ingest_fields.cpp
+    src/research/store/catalog/ingest_build.cpp
+    src/research/store/catalog/query.cpp
+    src/research/store/catalog/cache_index.cpp
+    src/research/store/catalog/store_cli.cpp)
+add_library(atx::engine-research-catalog ALIAS atx-engine-research-catalog)
+target_include_directories(atx-engine-research-catalog
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_features(atx-engine-research-catalog PUBLIC cxx_std_20)
+target_compile_definitions(atx-engine-research-catalog PRIVATE
+    "ATX_RESEARCH_STORE_CLASSES=\"${CMAKE_CURRENT_SOURCE_DIR}/schemas/research_store/classes.json\"")
+target_link_libraries(atx-engine-research-catalog
+    PUBLIC
+        atx::engine-research-store
+    PRIVATE
+        atx_warnings
+        nlohmann_json::nlohmann_json)
+add_executable(atx-research-store EXCLUDE_FROM_ALL src/research/store/catalog/store_main.cpp)
+target_link_libraries(atx-research-store PRIVATE atx::engine-research-catalog atx_warnings)
+
+# Platform P9 A3 (cross-lane append, ruling P2; migration slice 4): the shared vendor panel (one hashed TickerHistory3
+# scan per build, the seal pushed down; K-P9-2 source half), factor-break-v1, the NYSE rule calendar and the
+# vendor-panel builder kinds join the fields library. Arrow / Parquet reach it through atx::core (PUBLIC).
+target_sources(atx-engine-research-fields PRIVATE
+    src/research/fields/sources/factor_break.cpp
+    src/research/fields/sources/nyse_calendar.cpp
+    src/research/fields/sources/vendor_panel.cpp
+    src/research/fields/vendor_fields.cpp)

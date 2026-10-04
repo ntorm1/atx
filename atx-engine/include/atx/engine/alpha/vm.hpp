@@ -92,6 +92,7 @@
 #include "atx/core/macro.hpp"
 #include "atx/core/types.hpp"
 
+#include "atx/engine/alpha/asof_ops.hpp" // platform-v8 YOPS as-of rank kernel
 #include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/cs_ops.hpp"
 #include "atx/engine/alpha/fusion.hpp" // Lane 2: FusedProgram / FusedKernel
@@ -366,9 +367,10 @@ struct KernelPolicy {
 //    * Cells       — element-wise maps, Const, Select, Pin, Split2: cell i depends
 //                    only on input cell i;
 //    * Dates       — LoadField and every Cs* op: a date row depends only on that
-//                    date's rows;
-//    * Instruments — every Ts*/OU/recurrence/Kalman op: instrument column j
-//                    depends only on input column j.
+//                    date's rows; the v8 as-of ops: date row t depends only on
+//                    input rows <= t (inputs are complete before the node runs);
+//    * Instruments — every Ts*/OU/recurrence/Kalman op (and v8 group_delay):
+//                    instrument column j depends only on input column j.
 //  A kernel executed over a sub-range [lo, hi) of its axis therefore writes
 //  exactly the cells the full-range call writes for that range, with the SAME
 //  per-cell arithmetic in the SAME order — so any partition of the axis across
@@ -716,7 +718,9 @@ public:
   //  Errors: Err(InvalidArgument) for Free / StoreAlpha / an out-of-range slot.
   // =======================================================================
   [[nodiscard]] static ChunkAxis chunk_axis(OpCode op) noexcept {
-    if (op == OpCode::LoadField || is_cs_op(op)) {
+    // v8 YOPS as-of ops: date row t reads input rows t+1-d-j .. t only, so date
+    // bands are independent (the inputs are immutable while the node runs).
+    if (op == OpCode::LoadField || is_cs_op(op) || detail::is_asof_op(op)) {
       return ChunkAxis::Dates;
     }
     if (is_instrument_op(op)) {
@@ -854,6 +858,7 @@ private:
     case OpCode::CsVecAvg:
     case OpCode::CsBucket:  // W2: date rows (lit_ops.hpp)
     case OpCode::CsResidOn: // W2
+    case OpCode::CsSumG:    // v8 YOPS group_sum
       return true;
     default:
       return false;
@@ -867,7 +872,8 @@ private:
                           v <= static_cast<atx::u8>(OpCode::OuFilter);
     return ts_block || op == OpCode::KalmanReg || op == OpCode::OuTheta ||
            op == OpCode::OuHalflife || op == OpCode::OuMean || op == OpCode::OuZscore ||
-           detail::is_lit_ts_op(op); // W2 trailing-window ops
+           detail::is_lit_ts_op(op) || // W2 trailing-window ops
+           op == OpCode::GroupDelay;   // v8 YOPS: delay's shift on a classifier
   }
 
   // Slot offset an operand reads beyond its own slot: Pin's projected pin, and a
@@ -1242,6 +1248,7 @@ private:
     case OpCode::CsQuantile:
     case OpCode::CsVecSum:
     case OpCode::CsVecAvg:
+    case OpCode::CsSumG: // v8 YOPS group_sum (cs_ops.hpp)
       return eval_cross_section(in, instruments, lo, hi);
     case OpCode::TsDelay:
     case OpCode::TsDelta:
@@ -1316,11 +1323,52 @@ private:
     case OpCode::TsDecayLinearMp:
     case OpCode::TsCorrMp:
       return eval_lit_ts(in, dates, instruments, lo, hi);
+    // ---- platform-v8 YOPS formulaic ops (CsSumG is a Cs op above) ----
+    case OpCode::GroupDelay: // delay's lookback kernel; the window is operand 1 (a Const)
+      return eval_ts_lookback(OpCode::TsDelay, src_col(in, 0), dst_col(in), dates, instruments,
+                              detail::tsv_window_of(src_col(in, 1)), lo, hi);
+    case OpCode::AsofRankTsRank:
+    case OpCode::AsofRankTsMin:
+    case OpCode::AsofRankDecayLinear:
+    case OpCode::AsofRankCorr:
+    case OpCode::AsofRankCov:
+      return eval_asof(in, instruments, lo, hi);
     case OpCode::StoreAlpha:
     case OpCode::Free:
       ATX_UNREACHABLE(); // StoreAlpha/Free handled by evaluate(); never dispatched
     }
     ATX_UNREACHABLE(); // exhaustive switch — no valid fallthrough
+  }
+
+  // ---- platform-v8 YOPS as-of rank family (kernel + rules: asof_ops.hpp) -----
+  // Date rows [d0, d1): row t (NaN while t + 1 < d + j) hands the kernel the
+  // contiguous input rows of its window — x / y / the Cs mask rows
+  // t+1-d-j .. t-j and the w rows t+1-d-j .. t — so a date band reads only rows
+  // <= its own and writes only its own rows. Serial within a band (one scratch).
+  [[nodiscard]] atx::core::Status eval_asof(const Instr &in, atx::usize instruments,
+                                            atx::usize d0, atx::usize d1) {
+    const detail::AsofGeom geo = detail::asof_geom(in.imm);
+    const std::span<const atx::f64> x = src_col(in, 0);
+    const std::span<const atx::f64> w = src_col(in, 1);
+    const bool pair = detail::asof_is_pair(in.op);
+    const std::span<const atx::f64> y = pair ? src_col(in, 2) : std::span<const atx::f64>{};
+    const std::span<atx::f64> out = dst_col(in);
+    const std::span<const atx::u8> mask{cs_mask_};
+    const atx::usize span_rows = geo.d + geo.j;
+    const atx::usize nd = geo.d * instruments;
+    for (atx::usize t = d0; t < d1; ++t) {
+      const std::span<atx::f64> orow = out.subspan(t * instruments, instruments);
+      if (geo.d == 0 || t + 1 < span_rows) {
+        std::fill(orow.begin(), orow.end(), detail::kCsNaN);
+        continue;
+      }
+      const atx::usize b = (t + 1 - span_rows) * instruments; // first cell of row s0
+      detail::asof_rank_row(in.op, x.subspan(b, nd), w.subspan(b, span_rows * instruments),
+                            pair ? y.subspan(b, nd) : y,
+                            mask.empty() ? mask : mask.subspan(b, nd), instruments, geo.d, orow,
+                            asof_scratch_, policy_.rank_ties, policy_.flat);
+    }
+    return atx::core::Ok();
   }
 
   // ---- platform-v7 W2 literature ops (kernels + NaN rules: lit_ops.hpp) ------
@@ -1500,7 +1548,7 @@ private:
     const bool grouped =
         (in.op == OpCode::CsDemeanG || in.op == OpCode::CsNeutG || in.op == OpCode::CsRankG ||
          in.op == OpCode::CsZscoreG || in.op == OpCode::CsCountG || in.op == OpCode::CsMeanG ||
-         in.op == OpCode::CsScaleG || in.op == OpCode::CsResidualize);
+         in.op == OpCode::CsScaleG || in.op == OpCode::CsResidualize || in.op == OpCode::CsSumG);
     std::span<const atx::f64> g{};
     std::span<const atx::f64> z{}; // cs_residualize optional style covariate (src[2])
     // The scalar 2nd operand: CsScale's target L1 norm `a`, CsWinsorize's std
@@ -1643,6 +1691,9 @@ private:
       break;
     case OpCode::CsMeanG:
       detail::cs_group_count_mean_row(x, g, valid, out, /*want_mean=*/true, scratch);
+      break;
+    case OpCode::CsSumG:
+      detail::cs_group_aggregate_row(x, g, valid, out, detail::GroupAgg::Sum, scratch);
       break;
     case OpCode::CsScaleG:
       detail::cs_group_scale_row(x, g, valid, out, scratch);
@@ -2168,6 +2219,7 @@ private:
   detail::CsScratch cs_scratch_;       // Cs* grouped/sort scratch; grown once, reset per date
   std::vector<atx::f64> lit_win_;      // W2 Ts gathered windows (n_in * d); grown on demand
   detail::LitScratch lit_scratch_;     // W2 sort / OLS rows / regression-row scratch
+  detail::AsofScratch asof_scratch_;   // v8 YOPS as-of rank rows / factor / window scratch
   // S3-3: optional intra-eval column pool + PER-WORKER scratch. ts_pool_ is null by
   // default (serial). When set, the batch column loop runs over instrument bands on
   // the pool; each worker `wid` owns ts_col_thr_[wid] (x column), ts_col_b_thr_[wid]

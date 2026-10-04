@@ -19,6 +19,14 @@ constexpr atx::f64 kMaxImpactExponent = 2.0;
 
 bool finite_nonnegative(atx::f64 value) noexcept { return std::isfinite(value) && value >= 0.0; }
 
+// participation^delta. The registered square-root law (delta == .5) takes std::sqrt, which IEEE
+// 754 rounds correctly in every build and C runtime, so the modeled cost is the same bits in a
+// Debug and a Release build (P9 C1, DEC-11: std::pow is not correctly rounded and the Debug and
+// Release C runtimes may differ in its last bit). Any other exponent keeps std::pow.
+atx::f64 participation_power(atx::f64 participation, atx::f64 delta) noexcept {
+  return delta == 0.5 ? std::sqrt(participation) : std::pow(participation, delta);
+}
+
 } // namespace
 
 SurfaceReplayCost::SurfaceReplayCost(atx::engine::cost::CostSurface surface,
@@ -89,7 +97,8 @@ atx::f64 SqrtImpactCost::cost_fraction(atx::f64 abs_dollars,
     return std::numeric_limits<atx::f64>::quiet_NaN();
   }
   const auto participation = abs_dollars / adv;
-  const auto impact = cfg_.y * liquidity.daily_vol * std::pow(participation, cfg_.delta);
+  const auto impact =
+      cfg_.y * liquidity.daily_vol * participation_power(participation, cfg_.delta);
   return (liquidity.half_spread_bps + commission_bps_) * kBpsToFraction + impact;
 }
 

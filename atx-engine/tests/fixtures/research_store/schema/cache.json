@@ -1,0 +1,409 @@
+{
+  "name": "cache",
+  "db": "cache",
+  "version": 1,
+  "tables": [
+    {
+      "name": "store_info",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": true,
+      "key": [
+        "key"
+      ],
+      "columns": [
+        {
+          "name": "key",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "value",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE store_info(key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(key)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "record",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "root",
+        "kind",
+        "key_sha256"
+      ],
+      "columns": [
+        {
+          "name": "root",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "kind",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "key_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "key",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "body",
+          "type": "json",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "body_file",
+          "type": "relpath",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "body_bytes",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "content_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE record(root TEXT NOT NULL, kind TEXT NOT NULL, key_sha256 TEXT NOT NULL CHECK(length(key_sha256) = 64 AND key_sha256 NOT GLOB '*[^0-9a-f]*'), key TEXT NOT NULL CHECK(json_valid(key)), body TEXT CHECK(json_valid(body)), body_file TEXT CHECK(instr(body_file, '\\') = 0 AND substr(body_file, 1, 1) <> '/' AND ('/' || body_file || '/') NOT GLOB '*/../*'), body_bytes INTEGER NOT NULL, content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(root, kind, key_sha256), CHECK((body IS NULL) <> (body_file IS NULL))) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "ic_signal",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "key_sha256"
+      ],
+      "columns": [
+        {
+          "name": "key_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "schema",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "role_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "id",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "dsl_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "vm_identity",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "eval_mode",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "payload",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "payload_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "payload_bytes",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "sidecar",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE ic_signal(key_sha256 TEXT NOT NULL CHECK(length(key_sha256) = 64 AND key_sha256 NOT GLOB '*[^0-9a-f]*'), schema TEXT NOT NULL, role_sha256 TEXT NOT NULL CHECK(length(role_sha256) = 64 AND role_sha256 NOT GLOB '*[^0-9a-f]*'), id TEXT NOT NULL, dsl_sha256 TEXT NOT NULL CHECK(length(dsl_sha256) = 64 AND dsl_sha256 NOT GLOB '*[^0-9a-f]*'), vm_identity TEXT NOT NULL, eval_mode TEXT NOT NULL, payload TEXT NOT NULL CHECK(instr(payload, '\\') = 0 AND substr(payload, 1, 1) <> '/' AND ('/' || payload || '/') NOT GLOB '*/../*'), payload_sha256 TEXT NOT NULL CHECK(length(payload_sha256) = 64 AND payload_sha256 NOT GLOB '*[^0-9a-f]*'), payload_bytes INTEGER NOT NULL, sidecar TEXT NOT NULL CHECK(json_valid(sidecar)), PRIMARY KEY(key_sha256)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "ic_result",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "entry_dir",
+        "id"
+      ],
+      "columns": [
+        {
+          "name": "entry_dir",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "id",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "key_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "record",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "record_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE ic_result(entry_dir TEXT NOT NULL CHECK(instr(entry_dir, '\\') = 0 AND substr(entry_dir, 1, 1) <> '/' AND ('/' || entry_dir || '/') NOT GLOB '*/../*'), id TEXT NOT NULL, key_sha256 TEXT NOT NULL CHECK(length(key_sha256) = 64 AND key_sha256 NOT GLOB '*[^0-9a-f]*'), record TEXT NOT NULL CHECK(json_valid(record)), record_sha256 TEXT NOT NULL CHECK(length(record_sha256) = 64 AND record_sha256 NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(entry_dir, id)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "pair_key",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "key_sha256"
+      ],
+      "columns": [
+        {
+          "name": "key_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "version",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "key_text",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE pair_key(key_sha256 TEXT NOT NULL CHECK(length(key_sha256) = 64 AND key_sha256 NOT GLOB '*[^0-9a-f]*'), version INTEGER NOT NULL, key_text TEXT NOT NULL, PRIMARY KEY(key_sha256)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "pair_stat",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "key_sha256",
+        "payload_lo",
+        "payload_hi"
+      ],
+      "columns": [
+        {
+          "name": "key_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "payload_lo",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "payload_hi",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "sum_bits",
+          "type": "u64",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "dates",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE pair_stat(key_sha256 TEXT NOT NULL CHECK(length(key_sha256) = 64 AND key_sha256 NOT GLOB '*[^0-9a-f]*'), payload_lo TEXT NOT NULL CHECK(length(payload_lo) = 64 AND payload_lo NOT GLOB '*[^0-9a-f]*'), payload_hi TEXT NOT NULL CHECK(length(payload_hi) = 64 AND payload_hi NOT GLOB '*[^0-9a-f]*'), sum_bits INTEGER NOT NULL, dates INTEGER NOT NULL, PRIMARY KEY(key_sha256, payload_lo, payload_hi)) STRICT, WITHOUT ROWID;"
+      ]
+    }
+  ],
+  "views": []
+}

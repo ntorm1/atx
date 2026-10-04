@@ -5,6 +5,7 @@
                               [--removes ID ... | --replaces ID ... [--rescreen]]
                               [--exception LIMIT=N ... --exception-basis TEXT] [--fields DIR]
                               [--prior-sign-source S] [--form F] [--formula F] [--domain D] [--deviation D]
+                              [--save-plan PATH]   (YINFRA, opt-in: also write the validated K1 plan of record)
 
 1. registers the alpha in atx-impl/strategies/alphas/registry.json (an identical registration of an existing id is
    reused, another definition of it refused; theme, tier and origin are checked against the registry);
@@ -36,7 +37,7 @@
    composition weights as the theme regressors (inputs.reference_weights); "receipts": "every-phase", "verdict": true,
    summ.dsr_n "ledger+1", summ.origin = the new members' origin class (the most searched of them; review C-2: the cell
    is scored under nav_summ --protocol v8, the parent's summ.extra kept without its --origin); the OD-2 caps written
-   into runner.phases when they apply;
+   into runner.phases when they apply, and runner.phases.marginal (MARGINAL_CAPS) when the parent's spec has none;
 6. locks it (every pin computed from its file). A missing input leaves the spec unlocked (exit 3: `lock --write` later).
 
 Nothing is written when the registration, the library, the plan or the spec template fails (exit 2). A library that
@@ -67,6 +68,11 @@ FIELD_BUILDER_INPUTS = ("identity_bridge", "fund_events", "sic_events", "reuse_f
 REBUILT_INPUTS = ("library", "recipe", "baseline_library", "baseline_fields")   # + every reference_* input
 SHARED_FIT_STORE = "fit-work"           # C-1: the fitter / card / monitor store base <out base>/fit-work
 PARENT_PINNED = ("label_role",)         # review F-8: kept with the parent's pin (a changed file stops `lock`, exit 3)
+# Integration 8 item 5f: the marginal verb reads every library candidate against the pool and the theme composites,
+# so its time grows with the roster (R-7, 57 members: 170.3 s of the runner's 180 s; about 240 s at the roster cap 80,
+# PM7-13). Written into runner.phases.marginal as spec data (precedent OD-2); R-7's peak 252 MiB x 80 / 57 stays
+# under the runner's 1,536 MiB, so the memory cap is the runner's.
+MARGINAL_CAPS = {"seconds": 360}
 
 
 class AddAlphaError(Exception):
@@ -219,6 +225,9 @@ def derive_spec(parent: dict, parent_name: str, name: str, lib_rel: str, recipe_
     od2 = {p: {k: v for k, v in c.items() if runner_caps[k] != v} for p, c in caps.items()}
     if any(od2.values()) and not s["runner"].get("phases"):
         s["runner"] = dict(s["runner"], phases={p: c for p, c in od2.items() if c})   # the caps are spec data
+    phases = s["runner"].get("phases") or {}
+    if "marginal" not in phases:                                                      # item 5f: MARGINAL_CAPS
+        s["runner"] = dict(s["runner"], phases=dict(phases, marginal=dict(MARGINAL_CAPS)))
     return s
 
 
@@ -275,10 +284,12 @@ def plan_for(parent_spec: dict, root: Path, library_bytes: bytes, lib_id: str, f
     fdm = f"{fields_dir}/manifest.json"
     if res.sha(role) is None or res.sha(fdm) is None:
         raise AddAlphaError(f"K1 plan: the role {role} and the fields {fdm} must exist (or pass --plan-json)")
+    cap = RC.option_value(c.spec["ic"].get("flags", []), "--max-memory-mib")   # PM6-9: the plan under the run's cap
     with tempfile.TemporaryDirectory() as tmp:
         lib = Path(tmp) / f"{lib_id}.json"
         lib.write_bytes(library_bytes)
-        return G.exe_plan(str(exe), lib, role, res.sha(role), fields_dir, res.sha(fdm), cwd=root, env=c.env())
+        return G.exe_plan(str(exe), lib, role, res.sha(role), fields_dir, res.sha(fdm), cwd=root, env=c.env(),
+                          max_memory_mib=None if cap is None else int(cap))
 
 
 def parse_limits(items: list[str]) -> dict:
@@ -361,6 +372,11 @@ def add_alpha(a) -> int:
                                         [alphas[i] for i in new_ids], spec_rel), encoding="utf-8", newline="\n")
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8", newline="\n")
+    if getattr(a, "save_plan", None) is not None:   # YINFRA: the K1 plan of record (a resumed call rewrites it)
+        out = a.save_plan if a.save_plan.is_absolute() else root / a.save_plan
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8", newline="\n")
+        print(f"K1 plan of record {out.as_posix()} (sha256 {G.sha256(out.read_bytes())})")
     print(f"add-alpha {a.id}: {'registered' if created else 'already registered (identical)'} in "
           f"{STRATEGIES}/{G.REGISTRY_PATH}")
     print(f"library {name} ({lib['id']}): {len(lib['members'])} members = {a.parent} + {new_ids}; "
@@ -405,6 +421,9 @@ def main(argv=None) -> int:
     ap.add_argument("--formula", default=None)
     ap.add_argument("--domain", default=None)
     ap.add_argument("--deviation", default=None)
+    ap.add_argument("--save-plan", type=Path, default=None, metavar="PATH",
+                    help="also write the K1 plan this call validated (the plan of record) to PATH (root-relative or "
+                         "absolute; written only when every check passed; a resumed call rewrites it)")
     ap.add_argument("--root", type=Path, default=research_tree.REPO)
     a = ap.parse_args(argv)
     try:

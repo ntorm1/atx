@@ -1,0 +1,386 @@
+{
+  "schema": "atx.research-wave/v1",
+  "wave": "y-s",
+  "description": "Cell Y-S (v8y-prereg sections 3, 6, 14; PM8-10 (e), PM8-14): one add-alpha wave of the 15 Y strings (YSIG 10 + YDATA 5) in roster order (YP-13) on X-F0 = X-5 (x-theme-erc-gm.json, library v8x3b, L 1.1720; X-7 not accepted, X-9 undefined), fields v15 lo3; acceptance PM7-34 (dSR > 0 AND mechanics); sign rule PM7-35; PM6-6 gross matching; marginal pool only with a 720 s cap (PM8-15 (a), (b)); budget: X hand-written 25 used + Y 15 new <= 40 (the Y cap of 15), construction N 56 + 1 <= 62 (N_c(X-F0) + 6).",
+  "parent": {
+    "spec": "scripts/specs/v8/x-theme-erc-gm.json",
+    "library": "v8x3b"
+  },
+  "fields": {
+    "dir": "build-equity/train-2020-2023-lo3-fields-v15",
+    "manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09"
+  },
+  "library": "v8ys",
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": [
+      "capacity-4x-higher",
+      "turnover-per-gross-not-higher",
+      "cost-bps-lower"
+    ]
+  },
+  "sign_rule": "pm7-35",
+  "gross_match": "pm6-6",
+  "budget": {
+    "id": "v8x-hand-25-plus-y-15",
+    "admission_cap": 40,
+    "admission_cycle_prefixes": [
+      "v8x",
+      "v8ys"
+    ],
+    "construction_cap": 62
+  },
+  "ledger": "build-equity/trials.jsonl",
+  "expect": {
+    "n_before": 56
+  },
+  "out_dir": "build-equity/waves/y-s",
+  "record": {
+    "copy_to": ".superpowers/sdd/platform-v8-20260929/waves"
+  },
+  "marginal": {
+    "ruling": "PM8-15",
+    "pool_only": true,
+    "seconds": 600
+  },
+  "candidates": [
+    {
+      "id": "peer_mom_1m",
+      "dsl": "rank(decay_linear((((group_mean(((close / delay(close, 21)) - 1), grp_ff49) * group_count(((close / delay(close, 21)) - 1), grp_ff49)) - ((close / delay(close, 21)) - 1)) / (group_count(((close / delay(close, 21)) - 1), grp_ff49) - 1)), 21))",
+      "dsl_sha256": "67d4ff4a86c439d7734f7cf6ceff56318137ee1565a3729430a736caada2de77",
+      "theme": "price_momentum",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "Moskowitz and Grinblatt (1999, JF 54(4)) Do industries explain momentum?",
+      "origin": "prior",
+      "hypothesis": "peer_mom_1m",
+      "kind": "add",
+      "fields": [
+        "grp_ff49"
+      ],
+      "prior_sign_source": "Moskowitz-Grinblatt 1999",
+      "form": "R(decay_linear(x, 21))",
+      "formula": "equal-weighted mean 21-session return of the stock's FF49 industry peers with the stock itself excluded: (n x group_mean(r21) - r21) / (n - 1), n = the industry's names with a finite r21; industries that won over the last month continue (industry momentum is strongest at one month)",
+      "domain": "NaN where the stock's own 21-session return or its FF49 label is NaN, and for a stock alone in its industry (n = 1: 0 / 0)",
+      "deviation": "equal-weighted peers, not the paper's value-weighted industry portfolios (the value-weighted leave-one-out string needs 8 slots in the compiler mirror, over the house 7; equal weights as ind_mom_12_1); the stock is left out of its own industry mean (its own one-month return, which reverses, is not in the signal); 49 Fama-French industries, not the paper's 20; rolling 21 sessions with the house decay, not monthly portfolios; a sibling share class of the same company counts as a peer",
+      "lane": "YSIG",
+      "report": "task-YSIG-report.md"
+    },
+    {
+      "id": "so_wang_rev",
+      "dsl": "rank((ea_window_pre5 * (-1 * group_neutralize(((close / delay(close, 3)) - 1), grp_ff49))))",
+      "dsl_sha256": "c145cd2a7c1f85ef88a9bed87662ee8e3af8c71becb1d2b3f742aacd10cf59c8",
+      "theme": "reversal_seasonality",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "So and Wang (2014, JFE 114(1)) News-driven return reversals: liquidity provision ahead of earnings announcements",
+      "origin": "prior",
+      "hypothesis": "so_wang_rev",
+      "kind": "add",
+      "fields": [
+        "ea_window_pre5",
+        "grp_ff49"
+      ],
+      "prior_sign_source": "So-Wang 2014",
+      "form": "R(x)",
+      "formula": "-(3-session return, FF49 industry-demeaned) while the expected earnings announcement is 1..5 sessions ahead (ea_window_pre5 = 1), else 0; short-term reversals are about six times larger ahead of scheduled earnings news (market makers price the inventory risk of holding through it)",
+      "domain": "NaN where the earnings calendar is NaN (no visible primary 8-K 2.02 within 200 days, or overdue by more than 63 sessions) or the 3-session return is NaN; 0 outside the window (most names tie at the middle rank)",
+      "deviation": "rolling 3-session return ending at the decision session while the expected date is 1..5 sessions ahead (paper: the return over days a-4..a-2, held a-1..a+1 around the realised date); expected date from the house yoy_364 calendar, not the realised date; FF49-demeaned as the house reversal members (paper: raw returns); no decay (event-window form); the house fills at t+1",
+      "lane": "YSIG",
+      "report": "task-YSIG-report.md"
+    },
+    {
+      "id": "iv_vol_of_vol",
+      "dsl": "rank(decay_linear(((-1 * (ts_std_mp(delay(iv_atm_21d, 1), 21, 12) / ts_mean_mp(delay(iv_atm_21d, 1), 21, 12))) + (0 * log(ts_std_mp(delay(iv_atm_21d, 1), 21, 12)))), 21))",
+      "dsl_sha256": "4d42a72b859c3ff4ae69ed82cf34c8263d9877c4f0600b03c6cc32887ac5fac0",
+      "theme": "options_implied",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "Baltussen, van Bekkum and van der Grient (2018, JFQA 53(4)) Unknown unknowns: uncertainty about risk and stock returns",
+      "origin": "prior",
+      "hypothesis": "iv_vol_of_vol",
+      "kind": "add",
+      "fields": [
+        "iv_atm_21d"
+      ],
+      "prior_sign_source": "Baltussen-van Bekkum-van der Grient 2018",
+      "form": "R(decay_linear(x, 21))",
+      "formula": "-VOV, VOV = sample std of iv_atm_21d over the last 21 sessions / its mean over the same sessions (each with at least 12 finite cells); long low vol-of-vol",
+      "domain": "NaN with fewer than 12 finite IV cells in 21 sessions (iv_atm_21d is NaN outside [0.02, 5]) and on a flat window (std 0: 0 * log(0) is NaN)",
+      "deviation": "21 sessions with 12 required (paper: 20 days, 12 required); ddof 1 (paper 1/20); vendor 21-session constant-maturity clean ATM IV (paper: OptionMetrics nearest-ATM call/put average); flat windows NaN; house 21-session decay on a monthly measure; top 3,000; IV rows t-21..t-1, the vendor IV clock (PM8-8 (6) repair)",
+      "lane": "YSIG",
+      "report": "task-YSIG-report.md"
+    },
+    {
+      "id": "day_rev_freq",
+      "dsl": "rank(decay_linear(ts_mean_mp((((ret_overnight > 0) && (ret_intraday < 0)) ? 1 : 0), 21, 15), 21))",
+      "dsl_sha256": "a5416c4ea13d4422592b378716d2a11b493d0152d06c2a48afc3b5937e42c5a7",
+      "theme": "reversal_seasonality",
+      "tier": "B-",
+      "prior_sign": 1,
+      "citation": "Akbas, Boehmer, Jiang and Koch (2022, JFE 145(3)) Overnight returns, daytime reversals, and future stock returns",
+      "origin": "prior",
+      "hypothesis": "day_rev_freq",
+      "kind": "add",
+      "fields": [
+        "ret_intraday",
+        "ret_overnight"
+      ],
+      "prior_sign_source": "Akbas-Boehmer-Jiang-Koch 2022",
+      "form": "R(decay_linear(x, 21))",
+      "formula": "share of the last 21 sessions (at least 15 with both returns finite) with a positive overnight return followed by a negative intraday return of the same session (ret_overnight > 0 and ret_intraday < 0); a frequent tug of war predicts higher returns",
+      "domain": "a session counts only when both returns are finite (compare and && propagate NaN); NaN with fewer than 15 such sessions; withdrawn at 0 trials if the fields lack the vendor open (FieldNeedsOpen)",
+      "deviation": "rolling 21 sessions, not the calendar month; vendor open, not the auction print (a factor step dated t-1 sits in the overnight return); one-session field lag; house 21-session decay",
+      "lane": "YSIG",
+      "report": "task-YSIG-report.md"
+    },
+    {
+      "id": "mom_turn",
+      "dsl": "rank(decay_linear(((rank(((delay(close, 21) / delay(close, 252)) - 1)) - 0.5) * (rank(delay(ts_mean((volume / shares_out), 231), 21)) - 0.5)), 21))",
+      "dsl_sha256": "09946f74588e3060c9f54a0bbefde0c173e1bb39efcdbb10e6d95633c522b373",
+      "theme": "price_momentum",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Lee and Swaminathan (2000, JF 55(5)) Price momentum and trading volume",
+      "origin": "prior",
+      "hypothesis": "mom_turn",
+      "kind": "add",
+      "fields": [
+        "shares_out"
+      ],
+      "prior_sign_source": "Lee-Swaminathan 2000",
+      "form": "R(decay_linear(x, 21))",
+      "formula": "(rank(12-1 return) - 0.5) x (rank(mean daily turnover, volume / shares_out, over the same sessions t-251..t-21) - 0.5): the momentum x turnover interaction alone; momentum is larger among high-turnover stocks",
+      "domain": "NaN where the 12-1 return or any of the 231 daily turnovers is NaN",
+      "deviation": "the interaction term only, with centred cross-sectional ranks (no momentum main effect, which mom_12_1 carries, and no turnover main effect); continuous, not the paper's 10 x 3 portfolios; the house 12-1 return with turnover over the same 231 sessions; daily turnover = raw share volume / vendor shares_out (A8 90-day lag, split-restated); house decay",
+      "lane": "YSIG",
+      "report": "task-YSIG-report.md"
+    },
+    {
+      "id": "ea_uvol",
+      "dsl": "rank(decay_linear(ts_backfill((log((ts_sum((volume / shares_out), 3) / (3 * delay(ts_mean((volume / shares_out), 60), 7)))) + (0 * log((1 - abs((ea_days_since - 1)))))), 126), 21))",
+      "dsl_sha256": "15f682ffd7504fbb249d5cffedc80a8be28ce93e781e41a5843413f7135d515c",
+      "theme": "earnings_momentum",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Garfinkel and Sokobin (2006, JAR 44(1)) Volume, opinion divergence, and returns: a study of post-earnings announcement drift",
+      "origin": "prior",
+      "hypothesis": "ea_uvol",
+      "kind": "add",
+      "fields": [
+        "ea_days_since",
+        "shares_out"
+      ],
+      "prior_sign_source": "Garfinkel-Sokobin 2006",
+      "form": "R(decay_linear(x, 21))",
+      "formula": "log(turnover over sessions a-1..a+1 around the reaction session a of the latest earnings announcement / (3 x mean daily turnover over sessions a-65..a-6)), set at t = a+1 and held (ts_backfill 126) until the next announcement; post-announcement returns rise with abnormal announcement volume (opinion divergence)",
+      "domain": "NaN without an announcement reaction session in the last 126 sessions with finite turnover windows (turnover = volume / shares_out; ea_days_since NaN for non-filers of 8-K 2.02)",
+      "deviation": "abnormal volume = log ratio to the stock's own pre-announcement turnover (paper: volume unexplained by a regression on prior trading activity); 3-session window a-1..a+1; carried to the next announcement with the house ear idiom (ts_backfill 126) and decay 21; unsigned (not conditioned on the earnings news)",
+      "lane": "YSIG",
+      "report": "task-YSIG-report.md"
+    },
+    {
+      "id": "dato",
+      "dsl": "group_rank(decay_linear(((((sale_ttm / noa) - (delay(sale_ttm, 252) / noa_lag4)) + (0 * log(noa))) + (0 * log(noa_lag4))), 21), grp_ff12)",
+      "dsl_sha256": "694fbe591a52faf131cebef6b0ccc753b3d30d7a7fa99609ce3f1915a916a20d",
+      "theme": "profitability_quality",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Soliman (2008, The Accounting Review 83(3)) The use of DuPont analysis by market participants",
+      "origin": "prior",
+      "hypothesis": "dato",
+      "kind": "add",
+      "fields": [
+        "grp_ff12",
+        "noa",
+        "noa_lag4",
+        "sale_ttm"
+      ],
+      "prior_sign_source": "Soliman 2008",
+      "form": "R(decay_linear(x, 21))",
+      "formula": "change in asset turnover: sale_ttm / noa - (sale_ttm 252 sessions earlier) / noa_lag4, ranked within FF12; a rise in asset turnover predicts higher returns",
+      "domain": "NaN where net operating assets now or four quarters earlier are not positive (0 x log guard) or an input is NaN",
+      "deviation": "NOA at the period end, not average NOA; prior-year sales = sale_ttm 252 sessions earlier (the filing clock can read a TTM one quarter off for a few sessions around a filing; noa_lag4 is the exact four-quarter lag); continuous rank within FF12 (house R1), not deciles; house decay",
+      "lane": "YSIG",
+      "report": "task-YSIG-report.md"
+    },
+    {
+      "id": "fscore_hbm",
+      "dsl": "rank(decay_linear(((rank(((be / me_company) + (0 * log(be)))) > 0.8) ? (fscore - 4.5) : 0), 21))",
+      "dsl_sha256": "f4d3d3fa7f14fb6ff2d61651880837b187bb66429b4051f167593815e839f21f",
+      "theme": "profitability_quality",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Piotroski (2000, JAR 38 supplement) Value investing: the use of historical financial statement information to separate winners from losers",
+      "origin": "prior",
+      "hypothesis": "fscore_hbm",
+      "kind": "add",
+      "fields": [
+        "be",
+        "fscore",
+        "me_company"
+      ],
+      "prior_sign_source": "Piotroski 2000",
+      "form": "R(decay_linear(x, 21))",
+      "formula": "fscore - 4.5 for the top book-to-market quintile (cross-sectional rank of be / me_company above 0.8), 0 elsewhere; inside value stocks high F-score firms beat low F-score firms",
+      "domain": "NaN where book equity is not positive or be / me_company is NaN; for value names NaN where fscore is NaN",
+      "deviation": "continuous F-score centred at 4.5 (the midpoint of 0..9), not the paper's high (8-9) minus low (0-1) portfolios; market-wide quintile on the role universe each session, not annual sorts; filing-clock items; house decay; the unconditional fscore member stays (this adds weight inside value names only)",
+      "lane": "YSIG",
+      "report": "task-YSIG-report.md"
+    },
+    {
+      "id": "exch_switch",
+      "dsl": "rank((-1 * exch_up_365d))",
+      "dsl_sha256": "f433b32af008e74c13f04026537a12f735f636cd3a2dadade94200dcd0263ac3",
+      "theme": "filing_events",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Dharan and Ikenberry (1995, JF 50(5)) The long-run negative drift of post-listing stock returns; Chen-Zimmermann ExchSwitch",
+      "origin": "prior",
+      "hypothesis": "exch_switch",
+      "kind": "add",
+      "fields": [
+        "exch_up_365d"
+      ],
+      "prior_sign_source": "Dharan-Ikenberry 1995",
+      "form": "R(x)",
+      "formula": "-1{the FINRA listing market moved up (Nasdaq -> NYSE, NYSE American -> NYSE, Nasdaq -> NYSE American) on a row disseminated within the last 365 days} (exch_up_365d, finra-listing-up-switch365-v1); prior sign negative",
+      "domain": "NaN when the listing market is unknown (latest visible name row older than 45 days) or the name history is shorter than 410 days; a binary flag: switched names tie at the bottom rank, the rest tie above",
+      "deviation": "FINRA short-interest market class at its semi-monthly dissemination (up to about 15 days after the move) instead of CRSP exchange codes; 365 calendar days; moves that keep the vendor line count (de-SPACs included), moves with a new line are not seen; Arca, BZX and OTC moves are not events; continuous rank, not an event-time portfolio",
+      "lane": "YSIG",
+      "report": "task-YSIG-report.md"
+    },
+    {
+      "id": "ins_cluster",
+      "dsl": "rank(ins_cluster_buy)",
+      "dsl_sha256": "a3dfad407c4cd493562022b50172e18ab764033812844a6b23b9209a788f23d2",
+      "theme": "ownership_flow",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Alldredge and Blank (2019, Journal of Financial Research 42(2)) Do insiders cluster trades with colleagues? Evidence from daily insider trading",
+      "origin": "prior",
+      "hypothesis": "ins_cluster",
+      "kind": "add",
+      "fields": [
+        "ins_cluster_buy"
+      ],
+      "prior_sign_source": "Alldredge-Blank 2019",
+      "form": "R(x)",
+      "formula": "ins_cluster_buy: 1 when at least 3 distinct insiders (directors or officers) made open-market purchases with transaction dates in the last 21 sessions, visible at t, else 0; clustered insider purchases are followed by higher abnormal returns over the next month than solitary ones",
+      "domain": "NaN without a visible insider transaction row of the issuer within 365 days (Section 16 presence; foreign private issuers NaN); a binary flag: flagged names tie at the top rank, the rest tie below",
+      "deviation": "cluster = at least 3 distinct buyers within 21 sessions (field sec-ins-cluster-buy21-min3-v1), not the paper's purchase within two days of a peer insider's purchase; directors and officers on original Form 4s (10% owners and joint 10%-owner filings excluded); continuous rank of a flag, not an event-time portfolio; no decay (the flag lives 21 sessions from the trade date)",
+      "lane": "YSIG",
+      "report": "task-YSIG-report.md"
+    },
+    {
+      "id": "smile_slope",
+      "dsl": "rank(decay_linear((-1 * iv_skew_21), 21))",
+      "dsl_sha256": "063202690eb1f981d789a31206f080318d73bdd7477aff6fe261f1ad32159609",
+      "theme": "options_implied",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Xing, Zhang and Zhao (2010, JFQA) What does the individual option volatility smirk tell us about future equity returns?; Yan (2011, JFE) Jump risk and the cross section of stock returns",
+      "origin": "prior",
+      "hypothesis": "smile_slope",
+      "kind": "add",
+      "fields": [
+        "iv_skew_21"
+      ],
+      "prior_sign_source": "Xing-Zhang-Zhao 2010; Yan 2011",
+      "form": "R(decay_linear(x, 21))",
+      "formula": "-iv_skew_21 (xzz-yan-skew-shd1-spy-oriented-v1), decayed 21: the vendor 21-day ATM volatility slope (TickerHistory3 shD1: the volatility difference across standardized moneyness -0.5 and +0.5) of session t-1, signed by SPY's median slope over t-21..t-1 so that a put-rich smile is positive; long flat smiles, short steep put skews",
+      "domain": "NaN without a valid session t-1 cell (unique key, atmCenI_21d in [0.02, 5], 0 < |slope| <= 5) or with fewer than 17 SPY slopes in t-21..t-1; values in [-5, 5]",
+      "deviation": "vendor fitted-curve slope at 21 trading days in standardized moneyness, not XZZ's OTM put minus ATM call IV nor Yan's delta -0.2 put minus delta 0.5 call (OptionMetrics); sign fixed by SPY's put-rich smile, not by the vendor's undocumented convention; lag 1 for the vendor IV clock; house 21-session decay",
+      "lane": "YDATA",
+      "report": "task-YDATA-report.md"
+    },
+    {
+      "id": "stio_trade",
+      "dsl": "rank(stio_chg_q)",
+      "dsl_sha256": "e845ba078144883ba13eefd48bfce4d1016dbf35e889515d64b46b4f6ccc619e",
+      "theme": "ownership_flow",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Yan and Zhang (2009, RFS 22(2)) Institutional investors and equity returns: are short-term institutions better informed?; Gaspar, Massa and Matos (2005, JFE) churn rate",
+      "origin": "prior",
+      "hypothesis": "stio_trade",
+      "kind": "add",
+      "fields": [
+        "stio_chg_q"
+      ],
+      "prior_sign_source": "Yan-Zhang 2009",
+      "form": "R(x)",
+      "formula": "stio_chg_q (yz-stio-chg-q-v1): change over the anchor 13F quarter P of the fraction of shares outstanding held by the filers classified short-term at P-1 (top tercile of the Gaspar-Massa-Matos minimum churn averaged over P-4..P-1, computed from their own 13F books); long names short-term institutions bought",
+      "domain": "NaN without a fresh visible 13F quarter with positions in the security (F13 clock, 150 days), without the previous calendar quarter, without a short-term classification (4 consecutive churn quarters, 3 classified filers), without shares_out, or with a level above 2",
+      "deviation": "13F filers of every type; churn on each filer's mapped book with a holder-detected share-basis change instead of CRSP adjustment factors; minimum churn at quarter-end 13F prices (median implied value / shares); shares outstanding = the house A8 90-day lagged vendor count; quarter visible after its 45-day deadline + 46 h, forward-filled until the next",
+      "lane": "YDATA",
+      "report": "task-YDATA-report.md"
+    },
+    {
+      "id": "div_event",
+      "dsl": "rank(div_init_omit)",
+      "dsl_sha256": "2dbe474ef4f26f2d0dd8e3a845a57bdfaae26728b5d58fa747a665ec1540bbe6",
+      "theme": "filing_events",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Michaely, Thaler and Womack (1995, JF 50(2)) Price reactions to dividend initiations and omissions: overreaction or drift?",
+      "origin": "prior",
+      "hypothesis": "div_event",
+      "kind": "add",
+      "fields": [
+        "div_init_omit"
+      ],
+      "prior_sign_source": "Michaely-Thaler-Womack 1995",
+      "form": "R(x)",
+      "formula": "div_init_omit (mtw-div-init-omit-v1): +1 in the 252 sessions after a dividend initiation (an ex-date with none in the prior 504 sessions while trading), -1 in the 252 sessions after an omission is detected (a quarterly payer's last ex-date + 126 sessions), else 0; long initiators, short omitters",
+      "domain": "NaN with fewer than 504 sessions of the line's ledger; values -1, 0, 1 (mostly 0: ties at the middle rank)",
+      "deviation": "ex-dates from the vendor cumulative factor (XDATA ledger, cash yields 1 bp to 4%), not CRSP distribution codes or announcement dates; an omission is detected 126 sessions after the last payment, not at the board's announcement; the 504-session gap and 252-session window as recalled from MTW",
+      "lane": "YDATA",
+      "report": "task-YDATA-report.md"
+    },
+    {
+      "id": "deal_target",
+      "dsl": "rank(deal_pending)",
+      "dsl_sha256": "815952591ce849a82926f3144c0714ee5eba0925d0d7c82971842202e71aaf05",
+      "theme": "merger_arbitrage",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Mitchell and Pulvino (2001, JF) Characteristics of risk and return in risk arbitrage; Baker and Savasoglu (2002, JFE) Limited arbitrage in mergers and acquisitions",
+      "origin": "prior",
+      "hypothesis": "deal_target",
+      "kind": "add",
+      "fields": [
+        "deal_pending"
+      ],
+      "prior_sign_source": "Mitchell-Pulvino 2001; Baker-Savasoglu 2002",
+      "form": "R(x)",
+      "formula": "deal_pending (sec-deal-target-pending-v1): 1 while the issuer is the target of a pending merger or tender offer (an original PREM14A, DEFM14A, PREM14C, DEFM14C, SC 14D9 or SC14D9C under its CIK, not an acquirer's proxy with its own S-4 in the prior 365 days, open until the first later Form 25, 25-NSE or 15 or 252 sessions), else 0; long pending targets",
+      "domain": "NaN unless the line's primary link is a domestic periodic filer (a 10-K / 10-Q family filing within 400 days); values 0 and 1",
+      "deviation": "target identified by form type under the CIK, not by a deal database; no acquirer hedge for stock deals; withdrawn deals end at 252 sessions; the merger proxy follows the announcement by weeks, so the spread is captured, not the announcement jump",
+      "lane": "YDATA",
+      "report": "task-YDATA-report.md"
+    },
+    {
+      "id": "conn_rev",
+      "dsl": "rank((-1 * conn_ret63))",
+      "dsl_sha256": "4a1cffe83a007531b9820da67da1a0938391832c79116c5319cd11e4858bcc45",
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "prior_sign": 1,
+      "citation": "Anton and Polk (2014, JF 69(3)) Connected stocks",
+      "origin": "prior",
+      "hypothesis": "conn_rev",
+      "kind": "add",
+      "fields": [
+        "conn_ret63"
+      ],
+      "prior_sign_source": "Anton-Polk 2014",
+      "form": "R(x)",
+      "formula": "-conn_ret63 (ap-connected-ret63-13f-v1): the rank(FCAP)-weighted 63-session return, ending t-1, of each stock's 50 strongest connections through common active 13F owners (FCAP = common owners' value of both / the pair's market value; active = within-book active share >= 0.2); long low connected return",
+      "domain": "NaN without a fresh visible 13F network in which the line is a connected member node (F13 clock, 150 days) or with fewer than 10 valid connected returns",
+      "deviation": "13F managers instead of CRSP active mutual funds (index books screened by within-book active share, filer_type not built); FCAP rank not orthogonalized to the Table II pair controls; top-50 links; all role members, not only above the NYSE median; no own-return double sort; no month skip or five-month hold (frozen v9 string)",
+      "lane": "YDATA",
+      "report": "task-YDATA-report.md"
+    }
+  ]
+}

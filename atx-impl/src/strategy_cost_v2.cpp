@@ -26,6 +26,14 @@ bool guarded_move(f64 close_a, f64 close_b, f64 raw_a, f64 raw_b) {
   return !std::isfinite(adjusted) || std::abs(adjusted) > 1.5 ||
          std::abs(adjusted) > std::abs(raw) + .10;
 }
+// x^delta. The registered square-root law (delta == .5) takes std::sqrt, correctly rounded in
+// every build and C runtime (P9 C1, DEC-11, Ruling P10: the capacity law impact_y * m^delta and
+// the marginal cost of the S2 law, as engine::book::SqrtImpactCost's participation term). Any
+// other exponent keeps std::pow; the v6 band exponent (form_aim_v6) and the KO cube root are not
+// square roots and are unchanged.
+f64 law_power(f64 x, f64 delta) noexcept {
+  return delta == 0.5 ? std::sqrt(x) : std::pow(x, delta);
+}
 // "capacity-x<m>-v1" with the shortest round-trip spelling of m, '.' written 'p'.
 std::string capacity_id(f64 m) {
   std::array<char, 32> text{};
@@ -135,7 +143,7 @@ std::vector<NavScenario> capacity_scenarios(const NavScenario& s2) {
   for (const f64 m : capacity_multiples) {
     NavScenario s = s2;
     s.id = capacity_id(m);
-    s.impact_y = s2.impact_y * std::pow(m, s2.impact_delta); // m = 1: x 1.0, exact
+    s.impact_y = s2.impact_y * law_power(m, s2.impact_delta); // m = 1: x 1.0, exact
     s.max_participation = s2.max_participation / m;           // m = 1: / 1.0, exact
     out.push_back(std::move(s));
   }
@@ -193,7 +201,7 @@ f64 marginal_cost_s2(const NavScenario& s2, f64 q, f64 adv, f64 sigma) noexcept 
   const f64 vol = std::isnan(sigma) ? s2.fallback_daily_vol : sigma;
   if (!finite_nonnegative(vol)) return nan;
   return (s2.half_spread_bps + s2.commission_bps) * bps +
-         (1.0 + s2.impact_delta) * s2.impact_y * vol * std::pow(q / adv, s2.impact_delta);
+         (1.0 + s2.impact_delta) * s2.impact_y * vol * law_power(q / adv, s2.impact_delta);
 }
 
 f64 finite_median(std::span<const f64> values) {

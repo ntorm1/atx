@@ -1,0 +1,39 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "ffffffffffffffffffffffffffffffffffffffff",
+  "started_utc": "2023-06-01T00:00:00+00:00",
+  "command": [
+    "C:\\atx\\build-equity\\bin\\atx-equity-strategy-targets.exe",
+    "nav",
+    "--output",
+    "build-equity/fx-nav"
+  ],
+  "executable_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+  "argv_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "attempt": 1,
+  "build_type": "Debug",
+  "bindings": [
+    {
+      "path": "scripts/specs/v8/fx-base.json",
+      "sha256": "606b7a859dcca03d0bfe4b642a878b494d6992e01f93bd48f8beabf97fae459e"
+    },
+    {
+      "path": "C:\\elsewhere\\not-in-the-tree\\bound.json",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 4096,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 0,
+  "minimum_system_free_bytes": 123456789,
+  "outcome": "launch-failed",
+  "exit_code": null,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    "build-equity/x"
+  ],
+  "role_id": "fx_role"
+}

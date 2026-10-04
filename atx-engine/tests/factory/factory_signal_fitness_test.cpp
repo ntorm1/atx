@@ -169,7 +169,8 @@ struct Golden {
 
 // Scores raw = (canon_hash mod 997) + 1, rejects genomes whose DSL reads `reject_field`, and
 // records per call whether instrument 0 is NaN on every date (the mask's reach). Worker-local
-// records only, merged on demand.
+// records only, merged on demand. `fail` fails every call; `fail_rung_field` (review MINE-16)
+// fails the racing-rung calls of genomes whose DSL reads it.
 class RecordingFitness final : public ex::SignalFitness {
 public:
   struct Call {
@@ -178,8 +179,10 @@ public:
     u32 stride{};
     bool first_name_masked{};
   };
-  explicit RecordingFitness(std::string reject_field = {}, bool fail = false)
-      : reject_field_{std::move(reject_field)}, fail_{fail} {}
+  explicit RecordingFitness(std::string reject_field = {}, bool fail = false,
+                            std::string fail_rung_field = {})
+      : reject_field_{std::move(reject_field)}, fail_{fail},
+        fail_rung_field_{std::move(fail_rung_field)} {}
 
   atx::core::Status bind(const ex::SignalFitnessBinding &binding) override {
     dates_ = binding.dates;
@@ -203,6 +206,10 @@ public:
     calls_[worker].push_back(Call{genome.canon_hash, level.full, level.inst_stride, masked});
     ex::SignalScore out;
     const std::string dsl = atx::engine::alpha::unparse(genome.ast);
+    if (!level.full && !fail_rung_field_.empty() &&
+        dsl.find(fail_rung_field_) != std::string::npos) {
+      return atx::core::Err(atx::core::ErrorCode::Internal, "recording fitness: rung failure");
+    }
     if (!reject_field_.empty() && dsl.find(reject_field_) != std::string::npos) {
       out.rejected = true;
       return out;
@@ -224,6 +231,7 @@ public:
 private:
   std::string reject_field_;
   bool fail_{};
+  std::string fail_rung_field_;
   usize dates_{1};
   usize low_rungs_{};
   std::vector<std::vector<Call>> calls_;
@@ -336,6 +344,125 @@ TEST(SignalFitnessPath, MaskReachesFullAndRungEngines) {
   EXPECT_EQ(full + r.fidelity_rejected_hashes.size(), r.all_scored.size());
   EXPECT_FALSE(r.fidelity_rejected_hashes.empty()); // eta 1/3 of 7 keeps 3
   EXPECT_TRUE(std::is_sorted(r.fidelity_rejected_hashes.begin(), r.fidelity_rejected_hashes.end()));
+}
+
+// Lane MINE-MEM: with racing on the signal-fitness path, the full-pass engines are released for
+// every race and rebuilt for the full pass, and the strided rung panels are released after it.
+// Over three generations every full and rung call still masks instrument 0 (the rebuilt engines
+// and panels carry the mask), every candidate is raced or fully scored once, and the run is the
+// same twice on one driver (its rung panels rebuilt) and on a fresh driver at 4 workers.
+TEST(SignalFitnessPath, RebuiltEnginesKeepTheMaskAndTheRunAcrossGenerations) {
+  const Golden g;
+  std::vector<u8> mask(g.panel.cells(), 1);
+  for (usize d = 0; d < g.panel.dates(); ++d) {
+    mask[d * g.panel.instruments()] = 0; // instrument 0 is never eligible
+  }
+  const std::vector<u32> strides{2};
+  const auto rungs = ex::instrument_rungs(strides);
+  ASSERT_TRUE(rungs.has_value());
+  struct Outcome {
+    u64 digest{};
+    std::vector<u64> scored;
+    std::vector<u64> rejected;
+    std::vector<u64> admitted;
+  };
+  const auto search = [&](ex::SearchDriver &driver, usize workers) {
+    RecordingFitness fitness;
+    ex::SearchConfig cfg = legacy_pin_cfg(99);
+    cfg.population = cs_seeds().size();
+    cfg.generations = 3;
+    cfg.n_workers = workers;
+    cfg.signal_fitness = &fitness;
+    cfg.cross_section_mask = mask;
+    cfg.fidelity.enabled = true;
+    cfg.fidelity.rungs = *rungs;
+    const AlphaStore pool{};
+    const ex::SearchResult r = driver.run(cfg, pool);
+    EXPECT_FALSE(r.signal_path_invalid) << r.signal_path_error;
+    usize full = 0;
+    for (const auto &call : fitness.calls()) {
+      EXPECT_TRUE(call.first_name_masked) << "full=" << call.full;
+      full += call.full ? 1U : 0U;
+    }
+    EXPECT_EQ(full + r.fidelity_rejected_hashes.size(), r.all_scored.size());
+    Outcome out;
+    out.digest = r.digest;
+    for (const ex::Genome &genome : r.all_scored) {
+      out.scored.push_back(genome.canon_hash);
+    }
+    for (const ex::Genome &genome : r.admitted_candidates) {
+      out.admitted.push_back(genome.canon_hash);
+    }
+    out.rejected = r.fidelity_rejected_hashes;
+    return out;
+  };
+  ex::SearchDriver driver{g.lib, g.panel, g.policy, g.sim, cs_seeds(), {"close", "rev"}};
+  const Outcome first = search(driver, 1);
+  EXPECT_GT(first.scored.size(), cs_seeds().size()); // later generations bred new candidates
+  EXPECT_FALSE(first.rejected.empty());
+  ex::SearchDriver fresh{g.lib, g.panel, g.policy, g.sim, cs_seeds(), {"close", "rev"}};
+  for (const Outcome &again : {search(driver, 1), search(fresh, 4)}) {
+    EXPECT_EQ(again.digest, first.digest);
+    EXPECT_EQ(again.scored, first.scored);
+    EXPECT_EQ(again.rejected, first.rejected);
+    EXPECT_EQ(again.admitted, first.admitted);
+  }
+}
+
+// Review MINE-16: a racing rejection whose rung read failed is listed in rung_failed_hashes, a
+// subset of fidelity_rejected_hashes; one read and lost at the rung is not. Run 1: the seed
+// rank(absent) reads a field the panel lacks, so its rung engine's evaluate fails, while the
+// functor rejects the two genomes that read rev (read, not failed). Run 2: the functor fails the
+// rung reads of those two instead. The race sees a NaN either way, so both runs reject the same
+// candidates and fold the same digest.
+TEST(SignalFitnessPath, RungFailuresAreListedApartFromRacingRejections) {
+  const Golden g;
+  std::vector<std::string> seeds = cs_seeds();
+  seeds.emplace_back("rank(absent)");
+  const std::vector<u32> strides{2};
+  const auto rungs = ex::instrument_rungs(strides);
+  ASSERT_TRUE(rungs.has_value());
+  const auto hashes_reading = [](const ex::SearchResult &r, const std::string &field) {
+    std::vector<u64> out;
+    for (const ex::Genome &genome : r.all_scored) {
+      if (atx::engine::alpha::unparse(genome.ast).find(field) != std::string::npos) {
+        out.push_back(genome.canon_hash);
+      }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+  };
+  const auto search = [&](RecordingFitness &fitness) {
+    ex::SearchConfig cfg = one_generation_cfg(seeds.size());
+    cfg.signal_fitness = &fitness;
+    cfg.fidelity.enabled = true;
+    cfg.fidelity.rungs = *rungs;
+    return g.run(cfg, seeds);
+  };
+  RecordingFitness rejecting{"rev"};
+  const ex::SearchResult lost = search(rejecting);
+  ASSERT_FALSE(lost.signal_path_invalid) << lost.signal_path_error;
+  const std::vector<u64> absent = hashes_reading(lost, "absent");
+  const std::vector<u64> rev = hashes_reading(lost, "rev");
+  ASSERT_EQ(absent.size(), 1U);
+  ASSERT_EQ(rev.size(), 2U);
+  EXPECT_EQ(lost.rung_failed_hashes, absent);
+  for (const u64 hash : rev) {
+    EXPECT_TRUE(std::binary_search(lost.fidelity_rejected_hashes.begin(),
+                                   lost.fidelity_rejected_hashes.end(), hash));
+  }
+  EXPECT_TRUE(std::includes(lost.fidelity_rejected_hashes.begin(),
+                            lost.fidelity_rejected_hashes.end(), lost.rung_failed_hashes.begin(),
+                            lost.rung_failed_hashes.end()));
+  RecordingFitness failing{{}, false, "rev"};
+  const ex::SearchResult failed = search(failing);
+  ASSERT_FALSE(failed.signal_path_invalid) << failed.signal_path_error;
+  std::vector<u64> both = absent;
+  both.insert(both.end(), rev.begin(), rev.end());
+  std::sort(both.begin(), both.end());
+  EXPECT_EQ(failed.rung_failed_hashes, both);
+  EXPECT_EQ(failed.fidelity_rejected_hashes, lost.fidelity_rejected_hashes);
+  EXPECT_EQ(failed.digest, lost.digest);
 }
 
 TEST(SignalFitnessPath, RefusesDateStridesLegacyOverlaysBadMasksAndFunctorErrors) {

@@ -172,7 +172,9 @@ def mine_recipe(tag: str, confirm: tuple[str, str]) -> dict:
             "discover": {"begin": "2020-01-01", "end": confirm[0], "rows": [383, 1295], "label_rows": 890},
             "confirm": {"begin": confirm[0], "end": confirm[1], "rows": [1295, 1844], "label_rows": 527},
             "ic": "research_window_ic_config (EquivalenceV3, ...)", "marginal": "combine::marginal_rank_ic_day ...",
-            "overlap_factor": 1.55, "max_budget": 1000, "min_discover_rows": 504, "min_confirm_rows": 200,
+            "overlap_bands": [[100, 1.47], [1000, 1.54], [10000, 1.63]],
+            "confirm_bands": [[16, 1.77], [64, 1.96], [256, 2.15]],
+            "max_budget": 10000, "min_discover_rows": 504, "min_confirm_rows": 200,
             "min_names": 10, "min_dates": 128}
 
 
@@ -281,8 +283,8 @@ def test_ledger_campaign_appends_the_mine_verbs_campaign_line(tmp_path, capsys):
     refused("mine/old-form", "differs from campaign_line on count")
     mine_output(root, "mine/overspent", 4, registry_rel="mine/r-over.atxtrg", budget=3)     # rule 10: over budget
     refused("mine/overspent", "budget is fixed in advance")
-    mine_output(root, "mine/over-ceiling", 4, registry_rel="mine/r-ceil.atxtrg", budget=1001)
-    refused("mine/over-ceiling", "at most 1000 (kMinedMaxBudget, Ruling PM4-13")             # above F's validation
+    mine_output(root, "mine/over-ceiling", 4, registry_rel="mine/r-ceil.atxtrg", budget=10001)
+    refused("mine/over-ceiling", "at most 10000 (kMinedMaxBudget, Ruling PM4-13")           # above F's validation
     edited = mine_output(root, "mine/edited", 4, registry_rel="mine/r-edit.atxtrg")
     log = bytearray((root / "mine" / "r-edit.atxtrg").read_bytes())
     log[60] ^= 1

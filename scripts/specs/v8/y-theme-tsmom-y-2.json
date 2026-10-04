@@ -1,0 +1,31 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8y-theme-tsmom-y-2",
+  "description": "Y cell (lane YCOMB, task-YCOMB-report.md rule Y-2; runs only under the PM's Y registration; parent = the last accepted book whose fit carries a standardised composition, X-F0's theme-erc-v1 fit (X-5) or a later accepted one): composition schedule theme-tsmom-v1, every constant registered blind before any read. Hypothesis (Ehsani and Linnainmaa 2022, Journal of Finance 77(3), factor momentum; Gupta and Kelly 2019): a factor's own trailing one-year return predicts its next month, and factors after a losing year earn about zero; R-10, R-11 and theme-erc-v1 fix member or theme weights once from TRAIN, none moves a weight through time. Rule: theme sleeve r_t(d) = sum_{k in t} (w_k / W_t) s_k f_k(d) over the parent fit's role decisions (w the parent's final weights, f_k the fitter's factor series formed at d and realised at d + 2, flat 0); every 21 decisions from decision 254 (lookback 252, lag 3, step 21) a theme whose trailing sum T_t = sum of r_t over d = j - 254 .. j - 3 is not positive gets mass 0 and its mass goes pro rata to the other themes (all positive or none positive: the parent's masses; before decision 254, i.e. about 2020, the parent's masses); weights, signs, members and the per-date standardisation are the parent's; the IC runner re-applies the masses to the recorded sums (theme_schedule block; strategy_ic_theme_tsmom.cpp). No mean is fitted: each block reads the sign of sums realised at least 3 sessions before it, so the rule is walk-forward on the scored window. The change: fit --theme-tsmom theme-tsmom-v1 on the parent's fit argv (its --composition ew-theme-std-v1 or ic-shrink-v1, with or without --theme-erc; refused with --theme-resid and --era). Downstream outputs renamed (fit, card, w, nav, monitor); the u pass is the parent's. Gross matching (Ruling PM6-6) applies: the schedule changes theme shares, not the book's scale, so it is judged at the parent's dollar gross; a calibration run at the parent's L (mechanics only: all-rows S2 gross G_cal, no return read), then the trial at L = L_parent x G_parent / G_cal (4 decimals) set by root as nav.leverage in a -gm copy. Identity before the cell: the parent's w argv re-run on the new build is byte-identical (flag absent); the parent's fit argv re-run gives the same composition_weights.json and admission.json except script_sha256; a file whose blocks all keep every theme reproduces the parent's combined signal byte for byte (ThemeTsmomRunner.*). Acceptance (PM7-34 default): paired S2 net dSR > 0 against the parent AND mechanics. Printed, deciding nothing: theme_blocks_off and theme_on_fraction (provenance.theme_tsmom), turnover per unit gross (tau_gmv_mean / mean_gross_leverage_all_rows, S2), cost per traded dollar, net annual return, net Sharpe at 4x NAV.",
+  "parent": "lib-v8ysb-gm.json",
+  "nominal_parent": "x-theme-erc.json",
+  "change": {
+    "set": {
+      "fit.output": "build-equity/mega-weights-v8y-theme-tsmom",
+      "card.output": "build-equity/mega-cards-v8y-theme-tsmom",
+      "ic.w_output": "build-equity/mega-v8yw-train-theme-tsmom",
+      "nav.output": "build-equity/mega-nav-v8y-theme-tsmom",
+      "monitor.output": "build-equity/mega-monitor-v8y-theme-tsmom"
+    },
+    "flags": {
+      "fit": {
+        "--theme-tsmom": "theme-tsmom-v1"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb/summary.json",
+      "sha256": "2d30b7f6466cbcb3e5bf0f4758ce5570e853d26b15b44eba93814151e21aa525"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8x-theme-erc-v8ysb/admission.json",
+      "sha256": "121f70466884030f97d98ec3d965760e7df376c160385072d0abc8428b9bf255"
+    }
+  }
+}

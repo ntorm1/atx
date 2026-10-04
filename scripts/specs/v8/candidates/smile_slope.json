@@ -1,0 +1,46 @@
+{
+  "id": "smile_slope",
+  "dsl": "rank(decay_linear((-1 * iv_skew_21), 21))",
+  "dsl_sha256": "063202690eb1f981d789a31206f080318d73bdd7477aff6fe261f1ad32159609",
+  "theme": "options_implied",
+  "tier": "C+",
+  "prior_sign": 1,
+  "citation": "Xing, Zhang and Zhao (2010, JFQA) What does the individual option volatility smirk tell us about future equity returns?; Yan (2011, JFE) Jump risk and the cross section of stock returns",
+  "origin": "prior",
+  "hypothesis": "smile_slope",
+  "kind": "add",
+  "fields": [
+    "iv_skew_21"
+  ],
+  "prior_sign_source": "Xing-Zhang-Zhao 2010; Yan 2011",
+  "form": "R(decay_linear(x, 21))",
+  "formula": "-iv_skew_21 (xzz-yan-skew-shd1-spy-oriented-v1), decayed 21: the vendor 21-day ATM volatility slope (TickerHistory3 shD1: the volatility difference across standardized moneyness -0.5 and +0.5) of session t-1, signed by SPY's median slope over t-21..t-1 so that a put-rich smile is positive; long flat smiles, short steep put skews",
+  "domain": "NaN without a valid session t-1 cell (unique key, atmCenI_21d in [0.02, 5], 0 < |slope| <= 5) or with fewer than 17 SPY slopes in t-21..t-1; values in [-5, 5]",
+  "deviation": "vendor fitted-curve slope at 21 trading days in standardized moneyness, not XZZ's OTM put minus ATM call IV nor Yan's delta -0.2 put minus delta 0.5 call (OptionMetrics); sign fixed by SPY's put-rich smile, not by the vendor's undocumented convention; lag 1 for the vendor IV clock; house 21-session decay",
+  "lane": "YDATA",
+  "report": "task-YDATA-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "dropped",
+  "wave": "y-s",
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 11); line bf1a6f07d786c4fc = v8y-prereg section 14"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    },
+    {
+      "status": "dropped",
+      "at": "2026-10-03",
+      "by": "research_cycle.py wave",
+      "wave": "y-s",
+      "note": "wave-result True"
+    }
+  ]
+}

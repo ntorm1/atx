@@ -25,6 +25,9 @@
 #include <utility>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "atx/engine/book/inverse_vol.hpp"     // v8 X (lane XCOMB): inv-vol-v1's kernel
+#include "atx/engine/book/normal_score.hpp"    // v8 Y (lane YCOMB): norm-score-v1's kernel
+#include "atx/engine/book/two_speed.hpp"       // v8 Y-5 (lane YCOMB): two-speed-v1's netted aim
 #include "atx/engine/data/research_window.hpp" // v8 E-25: the seal a label role may not reach
 #include "atx/engine/data/strategy_data.hpp"   // review B-3: --role is never a delisting-returns role
 
@@ -73,6 +76,11 @@ const char* neutralize_name(TargetNeutralize id) {
 }
 bool aim_partial(const TargetReplayConfig& cfg) {
   return cfg.rule == TargetReplayRule::AimPartialV5;
+}
+// two-speed-v1's fast rate per rebalance at the config's cadence C (Ruling PM8-16 #4):
+// 1 - 2^(-C/5), so the fast half-life is 5 sessions at any cadence.
+f64 two_speed_theta_fast(const TargetReplayConfig& cfg) {
+  return eb::two_speed_fast_theta(static_cast<f64>(cfg.cadence));
 }
 // v6 prereg C2: nonmembers decay at exit_rate instead of exiting at once (1 = off).
 bool decaying_exit(const TargetReplayConfig& cfg) { return cfg.exit_rate != 1.0; }
@@ -145,6 +153,29 @@ co::Status validate_config(const TargetReplayConfig& cfg) {
     return co::Err(co::ErrorCode::InvalidArgument,
                    "target replay: adv_hold_q must be finite >= 0 (0 = off) and needs "
                    "aim-partial-v5");
+  // inv-vol-v1 (v8 X): aim-partial-v5 only, and not with the hold band (both act between the
+  // tied ranks and the demean, so their order would be a new rule).
+  if (inv_vol_on(cfg) && (!aim_partial(cfg) || hold_band_on(cfg)))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: vol_scale inv-vol-v1 needs aim-partial-v5 and no hold_band");
+  // norm-score-v1 (v8 Y): aim-partial-v5 only, and neither with the hold band nor with
+  // inv-vol-v1 (all three act between the tied ranks and the demean).
+  if (norm_score_on(cfg) && (!aim_partial(cfg) || hold_band_on(cfg) || inv_vol_on(cfg)))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: rank_shape norm-score-v1 needs aim-partial-v5, no hold_band "
+                   "and no vol_scale");
+  // two-speed-v1 (v8 Y-5): aim-partial-v5 only (its step is the netted sleeve move), and none of
+  // the options that keep per-name state or cap the desired target in the shared state.
+  if (two_speed_on(cfg) &&
+      (!aim_partial(cfg) || hold_band_on(cfg) || inv_vol_on(cfg) || adv_hold_on(cfg)))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: two-speed-v1 needs aim-partial-v5, no hold_band, no "
+                   "vol_scale and no adv_hold");
+  // Its slow rate is the registered theta_s = .05 (Ruling PM8-16 #3): the trade fraction is it.
+  if (two_speed_on(cfg) && cfg.trade_fraction != eb::two_speed_slow_theta)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: two-speed-v1 needs trade_fraction .05 (its registered slow "
+                   "rate theta_s)");
   return co::Ok();
 }
 // compute_price_exposures + neutralize_target scratch: per name the returns block,
@@ -160,9 +191,12 @@ u64 price_risk_scratch_bytes(const TargetReplayConfig& cfg, usize instruments) {
   return u64{instruments} * (block * sizeof(f64) + 128) + block * sizeof(f64) + groups;
 }
 // The v8 construction state per name (detail::DesiredState): hold-band-v1's rank_set and
-// desired_prev, adv-hold-v1's ADV row and caps. Zero with every v8 option off.
+// desired_prev, adv-hold-v1's ADV row and caps, inv-vol-v1's volatility row and its sorted
+// scratch, two-speed-v1's fast sleeve (and its value entering the rebalance), fast desired
+// target and parent diagnostic scratch (review YCOMB #7). Zero with every v8 option off.
 u64 desired_state_bytes(const TargetReplayConfig& cfg, usize instruments) {
-  const u64 per_name = (hold_band_on(cfg) ? 2U : 0U) + (adv_hold_on(cfg) ? 2U : 0U);
+  const u64 per_name = (hold_band_on(cfg) ? 2U : 0U) + (adv_hold_on(cfg) ? 2U : 0U) +
+                       (inv_vol_on(cfg) ? 2U : 0U) + (two_speed_on(cfg) ? 4U : 0U);
   return u64{instruments} * per_name * sizeof(f64);
 }
 co::Status validate_input(const TargetReplayInput& in, const TargetReplayConfig& cfg) {
@@ -253,6 +287,38 @@ co::Status held_desired(std::span<const f64> signal, std::span<const u8> member,
   ATX_TRY(const auto counts, eb::apply_hold_band(desired, desired, member, band, state->hold));
   out.hold_moved = counts.moved; out.hold_kept = counts.kept;
   out.hold_first_set = counts.first_set;
+  demean_gross_one(row, desired);
+  return co::Ok();
+}
+// inv-vol-v1 (TargetReplayConfig::inv_vol): the tied ranks, each member's rank times median /
+// max(s_i, inv_vol_floor_fraction x median) on the NAV replay's execution volatilities
+// (state->sigma, engine::book::scale_inverse_vol), then the unchanged demean and gross 1. The
+// kernel's record goes to `out`.
+co::Status vol_scaled_desired(std::span<const f64> signal, std::span<const u8> member,
+                              detail::DesiredState* state, std::vector<Ranked>& row,
+                              std::vector<f64>& desired, ConstructionDay& out) {
+  if (!state || state->sigma.size() != signal.size())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: vol_scale inv-vol-v1 needs the NAV replay's volatility row");
+  member_ranks(signal, member, row, desired);
+  ATX_TRY(const auto stats, eb::scale_inverse_vol(desired, state->sigma, member,
+                                                  inv_vol_floor_fraction, state->sigma_sorted));
+  out.inv_vol_scaled = stats.scaled; out.inv_vol_filled = stats.filled;
+  out.inv_vol_floored = stats.floored; out.inv_vol_median = stats.median;
+  out.inv_vol_max_multiplier = stats.max_multiplier;
+  demean_gross_one(row, desired);
+  return co::Ok();
+}
+// norm-score-v1 (TargetReplayConfig::norm_score): the tied ranks (which leave `row` sorted), each
+// member's rank replaced by its van der Waerden normal score (engine::book::normal_scores), then
+// the unchanged demean and gross 1. The kernel's record goes to `out`.
+co::Status normal_scored_desired(std::span<const f64> signal, std::span<const u8> member,
+                                 std::vector<Ranked>& row, std::vector<f64>& desired,
+                                 ConstructionDay& out) {
+  member_ranks(signal, member, row, desired);
+  ATX_TRY(const auto stats, eb::normal_scores(row, desired));
+  out.norm_scored = stats.scored;
+  out.norm_max_abs = stats.max_abs;
   demean_gross_one(row, desired);
   return co::Ok();
 }
@@ -448,12 +514,20 @@ co::Result<bool> finish_desired(const TargetReplayConfig& cfg, detail::DesiredSt
 }
 // v8 hold-band-v1: the band acts on the members' tied ranks inside the desired target (between
 // the ranks and the demean), on `state`; adv-hold-v1 caps the result of a rebalance that
-// proceeds (finish_desired). Both off, the construction is the pre-v8 one.
+// proceeds (finish_desired). Both off, the construction is the pre-v8 one. v8 X inv-vol-v1
+// scales the tied ranks at the band's seam (the two are never on together).
+// v8 Y-5 two-speed-v1 (defined after form_desired, which it runs once per sleeve).
+co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg,
+                                   usize d, std::vector<Ranked>& row, std::vector<f64>& desired,
+                                   PriceRiskScratch& scratch, ConstructionDay& out,
+                                   std::span<const u8> no_short, detail::DesiredState* state);
 co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg,
                               usize d, std::vector<Ranked>& row, std::vector<f64>& desired,
                               PriceRiskScratch& scratch, ConstructionDay& out,
                               std::span<const u8> no_short = {},
                               detail::DesiredState* state = nullptr) {
+  if (two_speed_on(cfg))
+    return two_speed_desired(in, cfg, d, row, desired, scratch, out, no_short, state);
   const usize n = in.instruments, offset = d * n;
   if (!no_short.empty() && no_short.size() != n)
     return co::Err(co::ErrorCode::InvalidArgument, "target replay: no-short mask geometry");
@@ -461,6 +535,11 @@ co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayCon
   if (hold_band_on(cfg)) {
     ATX_TRY_VOID(held_desired(in.signal.subspan(offset, n), member, *cfg.hold_band, state, row,
                               desired, out));
+  } else if (inv_vol_on(cfg)) { // v8 X inv-vol-v1 (validate_config: never with the hold band)
+    ATX_TRY_VOID(vol_scaled_desired(in.signal.subspan(offset, n), member, state, row, desired,
+                                    out));
+  } else if (norm_score_on(cfg)) { // v8 Y norm-score-v1 (never with the two above)
+    ATX_TRY_VOID(normal_scored_desired(in.signal.subspan(offset, n), member, row, desired, out));
   } else {
     desired_target(in.signal.subspan(offset, n), member, row, desired);
   }
@@ -498,6 +577,80 @@ co::Result<bool> form_desired(const TargetReplayInput& in, const TargetReplayCon
     outcome = NeutralizeOutcome::SkippedAmplification; // NaN (flat target) never skips
   out.neutralize = outcome;
   return finish_desired(cfg, state, desired, out, outcome == NeutralizeOutcome::Applied);
+}
+// The neutralization outcome and statistics of a construction record (the rest stays).
+void copy_neutralization(const ConstructionDay& from, ConstructionDay& to) {
+  to.neutralize = from.neutralize;
+  to.neutralize_used = from.neutralize_used;
+  to.neutralize_excluded = from.neutralize_excluded;
+  to.neutralize_excluded_share = from.neutralize_excluded_share;
+  to.neutralize_amplification = from.neutralize_amplification;
+  to.neutralize_groups = from.neutralize_groups;
+  to.neutralize_unknown_group_names = from.neutralize_unknown_group_names;
+  to.neutralize_fallback_names = from.neutralize_fallback_names;
+}
+// v8 Y-5 two-speed-v1. Each sleeve blend gets the construction (the config with two_speed off:
+// ranks, demean, gross 1, locate zeroing, neutralization); a skipped neutralization of either
+// skips the rebalance and F does not move. Otherwise the engine kernel
+// engine::book::two_speed_aim advances the virtual fast sleeve F (theta_f = 1 - 2^(-C/5) at
+// cadence C) and turns the slow desired target into the netted aim that aim-partial-v5 trades at
+// trade_fraction. The construction record is the slow sleeve's (its locate count includes the
+// fast sleeve's), except that when only the fast sleeve's neutralization skips, its outcome and
+// statistics are the record's, so the skip counts as one wherever the record is read.
+co::Result<bool> two_speed_desired(const TargetReplayInput& in, const TargetReplayConfig& cfg,
+                                   usize d, std::vector<Ranked>& row, std::vector<f64>& desired,
+                                   PriceRiskScratch& scratch, ConstructionDay& out,
+                                   std::span<const u8> no_short, detail::DesiredState* state) {
+  const usize n = in.instruments, cells = in.dates * n;
+  if (state == nullptr)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: two-speed-v1 needs the replay's construction state (the fast "
+                   "sleeve)");
+  if (in.sleeve_fast.size() != cells || in.sleeve_slow.size() != cells ||
+      in.sleeve_fast_share.size() != in.dates)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: two-speed-v1 needs the saved sleeves");
+  const f64 share = in.sleeve_fast_share[d];
+  if (!(share >= 0 && share <= 1))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: two-speed-v1 fast share outside [0, 1]");
+  auto inner = cfg;
+  inner.two_speed = false;
+  auto fast_in = in, slow_in = in;
+  fast_in.signal = in.sleeve_fast;
+  slow_in.signal = in.sleeve_slow;
+  ConstructionDay fast_day;
+  if (state->fast_desired.size() != n) state->fast_desired.assign(n, 0.0);
+  if (desired.size() != n) desired.assign(n, 0.0);
+  // Qualified as at the rebalance call below: unqualified, ADL on the detail:: argument types also
+  // finds detail::form_desired (same signature) and the call is ambiguous (integration of YCOMB).
+  ATX_TRY(const bool fast_ok,
+          ::atx::impl::strategy::form_desired(fast_in, inner, d, row, state->fast_desired, scratch,
+                                              fast_day, no_short, state));
+  ATX_TRY(const bool slow_ok, ::atx::impl::strategy::form_desired(slow_in, inner, d, row, desired,
+                                                                  scratch, out, no_short, state));
+  if (!fast_ok && slow_ok) copy_neutralization(fast_day, out); // the skip is the fast sleeve's
+  out.locate_zeroed += fast_day.locate_zeroed;
+  // Mechanics only (the skip rule above is unchanged): would the parent's construction of the full
+  // blend have been skipped at d? Only a neutralization can skip, so without one it never is.
+  // Neutralizing, it is a third construction and neutralization per decision (about 3x the
+  // parent's construction time); printed only, so an error is recorded, never raised.
+  out.two_speed_sleeve_skipped = !fast_ok || !slow_ok;
+  if (neutralizing(inner)) {
+    if (state->parent_desired.size() != n) state->parent_desired.assign(n, 0.0);
+    ConstructionDay parent_day;
+    const auto parent = ::atx::impl::strategy::form_desired(in, inner, d, row, state->parent_desired,
+                                                            scratch, parent_day, no_short, state);
+    out.two_speed_parent_failed = !parent;
+    out.two_speed_parent_skipped = parent && !*parent;
+  }
+  if (!fast_ok || !slow_ok) return co::Ok(false);
+  if (state->fast.size() != n) state->fast.assign(n, 0.0);
+  state->fast_before.assign(state->fast.begin(), state->fast.end()); // F entering the step
+  ATX_TRY_VOID(eb::two_speed_aim(in.member.subspan(d * n, n), state->fast_desired, share,
+                                 cfg.aim_leverage, two_speed_theta_fast(cfg), cfg.trade_fraction,
+                                 state->fast, desired));
+  return co::Ok(true);
 }
 void rough_return(const TargetReplayInput& in, const TargetReplayConfig& cfg,
                   std::span<const f64> weights, TargetReplayDay& out) {
@@ -549,6 +702,11 @@ co::Result<TargetReplayResult> replay_targets(const TargetReplayInput& in,
     if (adv_hold_on(cfg))
       return co::Err(co::ErrorCode::InvalidArgument,
                      "target replay: adv_hold_q is a NAV replay option (ADV and NAV)");
+    // inv-vol-v1 reads the execution volatility of the NAV replay's liquidity window (v8 X).
+    if (inv_vol_on(cfg))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "target replay: vol_scale inv-vol-v1 is a NAV replay option (the execution "
+                     "volatility)");
     std::vector<f64> current(in.instruments), desired(in.instruments);
     std::vector<Ranked> row; row.reserve(in.instruments);
     PriceRiskScratch price; // grows only when neutralizing
@@ -594,8 +752,13 @@ struct SavedBlend {
   std::vector<u8> member, present;
   std::vector<i64> sessions;
   std::vector<u64> ids;
+  std::vector<f64> sleeve_fast, sleeve_slow, sleeve_fast_share; // v8 Y-5 two-speed-v1 only
   TargetReplayInput view() const {
-    return {dates, names, begin, end, signal, member, sessions, ids, close, raw, present, volume};
+    TargetReplayInput x{dates, names, begin, end, signal, member, sessions, ids, close, raw,
+                        present, volume};
+    x.sleeve_fast = sleeve_fast; x.sleeve_slow = sleeve_slow;
+    x.sleeve_fast_share = sleeve_fast_share;
+    return x;
   }
 };
 co::Result<Json> pinned_json(const std::string& path, const std::string& pin) {
@@ -663,6 +826,52 @@ bool admitted_signal_semantics(const Json& j) {
   const auto& weights = j.at("composition_weights_sha256");
   return weights.is_string() && hash_valid(weights.get<std::string>());
 }
+// v8 Y-5 two-speed-v1: the sleeves the combined manifest `j` pins (composition_sleeves: the
+// sleeve manifest's name and SHA-256, written by the IC runner under a theme_sleeves block), each
+// payload checked against its receipt, each sleeve's support that of the blend, each share in
+// [0, 1].
+co::Status load_sleeves(const std::filesystem::path& base, const Json& j, const std::string& role,
+                        SavedBlend& out) {
+  const auto refuse = [](const std::string& what) {
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "target replay: two-speed-v1 needs the saved sleeves: " + what);
+  };
+  if (!j.contains("composition_sleeves") || !j.at("composition_sleeves").is_object())
+    return refuse("the combined manifest pins none (fit --two-speed two-speed-v1, then the w "
+                  "pass)");
+  const auto& pin = j.at("composition_sleeves");
+  if (!pin.contains("rule") || !pin.at("rule").is_string() ||
+      pin.at("rule").get<std::string>() != "two-speed-v1" || !pin.contains("manifest") ||
+      !pin.at("manifest").is_string() || !pin.contains("manifest_sha256") ||
+      !pin.at("manifest_sha256").is_string() ||
+      pin.at("manifest").get<std::string>() != role + "_sleeves.json")
+    return refuse("composition_sleeves must be {rule: two-speed-v1, manifest: "
+                  "<role>_sleeves.json, manifest_sha256}");
+  ATX_TRY(auto m, pinned_json((base / (role + "_sleeves.json")).string(),
+                              pin.at("manifest_sha256").get<std::string>()));
+  if (!m.is_object() || m.value("schema", std::string{}) != "atx.dsl-combined-sleeves/v1" ||
+      m.value("status", std::string{}) != "complete" ||
+      m.value("rule", std::string{}) != "two-speed-v1" ||
+      m.value("role", std::string{}) != role || !m.contains("dates") ||
+      !m.contains("instruments") || m.at("dates").get<u64>() != out.dates ||
+      m.at("instruments").get<u64>() != out.names ||
+      !m.contains("files") || !m.at("files").is_object() || m.at("files").size() != 3)
+    return refuse("the sleeve manifest's contract");
+  const auto& files = m.at("files");
+  const auto prefix = role + "_sleeve";
+  const usize cells = out.dates * out.names;
+  ATX_TRY_VOID(payload(base, files, prefix + "_fast.f64", out.sleeve_fast, cells));
+  ATX_TRY_VOID(payload(base, files, prefix + "_slow.f64", out.sleeve_slow, cells));
+  ATX_TRY_VOID(payload(base, files, prefix + "_fast_share.f64", out.sleeve_fast_share, out.dates));
+  for (usize k = 0; k < cells; ++k) {
+    const bool finite = std::isfinite(out.signal[k]);
+    if (std::isfinite(out.sleeve_fast[k]) != finite || std::isfinite(out.sleeve_slow[k]) != finite)
+      return refuse("a sleeve's support differs from the blend's");
+  }
+  for (const f64 share : out.sleeve_fast_share)
+    if (!(share >= 0 && share <= 1)) return refuse("a fast share outside [0, 1]");
+  return co::Ok();
+}
 co::Status admit_saved(const TargetReplayRunConfig& cfg, SavedBlend& out,
                        bool with_volume = false) {
   ATX_TRY(out.manifest, pinned_json(cfg.combined_path, cfg.combined_sha256));
@@ -715,6 +924,12 @@ co::Status admit_saved(const TargetReplayRunConfig& cfg, SavedBlend& out,
   if (j.at("finite_cells").get<u64>() != finite_count ||
       j.at("member_cells").get<u64>() != members)
     return co::Err(co::ErrorCode::InvalidArgument, "target replay: support count mismatch");
+  // v8 Y-5 two-speed-v1: the two sleeve planes and the share row, charged to the same budget.
+  if (two_speed_on(cfg.target)) {
+    if (!budget.add(cells, 2 * sizeof(f64)) || !budget.add(d, sizeof(f64)))
+      return co::Err(co::ErrorCode::OutOfRange, "target replay: aggregate input/workspace budget");
+    ATX_TRY_VOID(load_sleeves(base, j, role, out));
+  }
   return validate_input(out.view(), cfg.target);
 }
 co::Status load_prices(const TargetReplayRunConfig& cfg, SavedBlend& out,
@@ -974,6 +1189,9 @@ std::string rule_id(const TargetReplayConfig& c) {
   if (c.band_multiple > 0) id += "+band-" + decimal(c.band_multiple);
   if (hold_band_declared(c)) id += "+hold-band-" + decimal(*c.hold_band);
   if (adv_hold_on(c)) id += "+adv-hold-" + decimal(c.adv_hold_q);
+  if (inv_vol_on(c)) id += "+inv-vol-v1"; // v8 X (lane XCOMB)
+  if (norm_score_on(c)) id += "+norm-score-v1"; // v8 Y (lane YCOMB)
+  if (two_speed_on(c)) id += "+two-speed-v1";   // v8 Y-5 (lane YCOMB)
   return id;
 }
 const char* outcome_label(NeutralizeOutcome outcome) {
@@ -1023,6 +1241,37 @@ constexpr const char* adv_hold_rule_declaration =
     "E-15: the cap uses the run's initial NAV for every capacity book, so the capacity book at "
     "multiple m holds up to m x adv_hold_q of ADV (the initial-NAV rule stressed at NAV x m, "
     "not a cap set per multiple)";
+constexpr const char* inv_vol_rule_declaration =
+    "inv-vol-v1 (v8 X, lane XCOMB, capacity): on every rebalance decision each member's centred "
+    "tied rank r_i is multiplied by m_i = median / max(s_i, vol_scale_floor_fraction * median) "
+    "before the demean; s_i = the sample SD of the adjacent present, unguarded adjusted simple "
+    "returns the execution cost model reads for this decision's fills (session d + 1: rows "
+    "[d + 1 - w, d + 1), w = liquidity_window, at least min_vol_pairs pairs; rows <= d only); "
+    "median = the median of the members' finite s_i > 0 (the middle one, or the mean of the two "
+    "middle ones); a member without one takes s_i = median (m = 1); with no member having one "
+    "the ranks stay as they are; then the unchanged demean, gross 1, locate zeroing, "
+    "neutralization and ADV cap. Book-independent: every scenario and capacity book holds the "
+    "same scaled target (summary construction.vol_scale)";
+constexpr const char* two_speed_rule_declaration =
+    "two-speed-v1 (v8 Y-5, lane YCOMB, multi-horizon; PM8-5, PM8-10, PM8-16): the saved fast "
+    "sleeve (themes with a registered alpha half-life <= 10 sessions) and slow sleeve each get "
+    "the construction; a virtual fast sleeve F moves toward L m_f d_f at theta_f = 1 - 2^(-C/5) "
+    "per rebalance at cadence C (a 5-session half-life at any cadence; 0 off membership); the "
+    "book's remainder current - F moves toward L m_s d_s at theta_s = trade_fraction = .05; the "
+    "book trades only the netted change (desired = m_s d_s + (F + (F_next - F) / theta_s) / L "
+    "under aim-partial-v5); m_f the fast themes' mass share of the decision over the themes "
+    "with a present member; under --risk-target / --vol-target a book plans at L_t = lambda L "
+    "and its fast holding follows its scale (lambda F: its plan carries F from its lambda at "
+    "its previous rebalance)";
+constexpr const char* norm_score_rule_declaration =
+    "norm-score-v1 (v8 Y, lane YCOMB, concentration): on every rebalance decision each member's "
+    "centred tied rank is replaced by its van der Waerden normal score z = Phi^{-1}(u) before the "
+    "demean, u = (b + e + 1) / (2 (N + 1)) for the tie block [b, e) of the N members sorted by "
+    "the blend (the mean 1-based rank of the block over N + 1; tied members share one score), "
+    "Phi^{-1} the inverse standard-normal CDF (Acklam with one Halley step); then the unchanged "
+    "demean, gross 1, locate zeroing, neutralization and ADV cap. No free constant. "
+    "Book-independent: every scenario and capacity book holds the same target (summary "
+    "construction.rank_shape)";
 // The aim_partial declarations' nonmember clause: the immediate exit (exit_rate 1: the
 // default text byte for byte) or, below 1, a pointer to exit_rate_rule.
 const char* nonmember_exit(const TargetReplayConfig& c) {
@@ -1092,6 +1341,20 @@ Json construction_recipe(const TargetReplayConfig& c) {
   if (adv_hold_on(c)) { // v8 R-5; absent at Q = 0 (off)
     j["adv_hold_q"] = c.adv_hold_q;
     j["adv_hold_rule"] = adv_hold_rule_declaration;
+  }
+  if (inv_vol_on(c)) { // v8 X (lane XCOMB); absent when off
+    j["vol_scale"] = "inv-vol-v1";
+    j["vol_scale_floor_fraction"] = inv_vol_floor_fraction;
+    j["vol_scale_rule"] = inv_vol_rule_declaration;
+  }
+  if (norm_score_on(c)) { // v8 Y (lane YCOMB); absent when off
+    j["rank_shape"] = "norm-score-v1";
+    j["rank_shape_rule"] = norm_score_rule_declaration;
+  }
+  if (two_speed_on(c)) { // v8 Y-5 (lane YCOMB); absent when off
+    j["two_speed"] = "two-speed-v1";
+    j["two_speed_theta_fast"] = two_speed_theta_fast(c);
+    j["two_speed_rule"] = two_speed_rule_declaration;
   }
   return j;
 }
@@ -1183,6 +1446,51 @@ Json adv_hold_summary(const TargetReplayConfig& c, std::span<const ConstructionD
                            {"names_max", over_max}, {"mass_mean", mean(residual)},
                            {"mass_max", residual_max}, {"excess_max", excess_max}}}};
 }
+// inv-vol-v1 (v8 X) over the decisions the kernel ran on: decisions scaled and decisions without
+// a usable volatility (ranks left as they are), the members scaled, filled (no volatility: m = 1)
+// and floored (m = 1 / floor fraction), the spread of the decisions' median volatility and the
+// largest multiplier.
+Json inv_vol_summary(std::span<const ConstructionDay> decisions) {
+  usize scaled_days = 0, bare_days = 0, scaled = 0, filled = 0, floored = 0;
+  f64 multiplier_max = 0;
+  std::vector<f64> medians;
+  for (const auto& d : decisions) {
+    if (std::isnan(d.inv_vol_median)) { ++bare_days; continue; }
+    if (!d.inv_vol_scaled) continue;
+    ++scaled_days; scaled += d.inv_vol_scaled; filled += d.inv_vol_filled;
+    floored += d.inv_vol_floored; medians.push_back(d.inv_vol_median);
+    multiplier_max = std::max(multiplier_max, d.inv_vol_max_multiplier);
+  }
+  std::sort(medians.begin(), medians.end());
+  const auto share = [scaled](usize count) {
+    return scaled ? Json(static_cast<f64>(count) / static_cast<f64>(scaled)) : Json(nullptr);
+  };
+  const Json lowest = medians.empty() ? Json(nullptr) : Json(medians.front());
+  const Json highest = medians.empty() ? Json(nullptr) : Json(medians.back());
+  return Json{{"id", "inv-vol-v1"}, {"rule", "recipe vol_scale_rule"},
+      {"floor_fraction", inv_vol_floor_fraction}, {"scaled_decisions", scaled_days},
+      {"decisions_without_volatility", bare_days}, {"scaled_names_total", scaled},
+      {"filled_names_total", filled}, {"floored_names_total", floored},
+      {"filled_share", share(filled)}, {"floored_share", share(floored)},
+      {"median_volatility", {{"min", lowest}, {"median", finite_or_null(quantile(medians, .5))},
+                             {"max", highest}}},
+      {"max_multiplier", multiplier_max}};
+}
+// norm-score-v1 (v8 Y) over the decisions the kernel scored: decisions, names scored and the
+// largest |score| (the row's tail; about Phi^{-1}(N / (N + 1)) with N members).
+Json norm_score_summary(std::span<const ConstructionDay> decisions) {
+  usize days = 0, scored = 0;
+  f64 max_abs = 0;
+  for (const auto& d : decisions) {
+    if (!d.norm_scored) continue;
+    ++days; scored += d.norm_scored; max_abs = std::max(max_abs, d.norm_max_abs);
+  }
+  return Json{{"id", "norm-score-v1"}, {"rule", "recipe rank_shape_rule"},
+      {"scored_decisions", days}, {"scored_names_total", scored},
+      {"scored_names_mean", days ? Json(static_cast<f64>(scored) / static_cast<f64>(days))
+                                 : Json(nullptr)},
+      {"max_abs_score", max_abs}};
+}
 Json construction_summary(const TargetReplayConfig& c, std::span<const ConstructionDay> decisions) {
   usize cadence_days = 0, rebalanced = 0, attempted = 0, applied = 0, banded = 0;
   usize too_few = 0, excluded = 0, refused = 0, amplified = 0;
@@ -1233,6 +1541,24 @@ Json construction_summary(const TargetReplayConfig& c, std::span<const Construct
     body["neutralize_industry"] = industry_summary(decisions);
   if (hold_band_declared(c)) body["hold_band"] = hold_band_summary(c, decisions);
   if (adv_hold_on(c)) body["adv_hold"] = adv_hold_summary(c, decisions);
+  if (inv_vol_on(c)) body["vol_scale"] = inv_vol_summary(decisions);
+  if (norm_score_on(c)) body["rank_shape"] = norm_score_summary(decisions);
+  if (two_speed_on(c)) { // v8 Y-5: the registered constants and the skip mechanics (printed only)
+    usize sleeve_skipped = 0, parent_skipped = 0, parent_failed = 0;
+    for (const auto& day : decisions) {
+      sleeve_skipped += day.two_speed_sleeve_skipped ? 1U : 0U;
+      parent_skipped += day.two_speed_parent_skipped ? 1U : 0U;
+      parent_failed += day.two_speed_parent_failed ? 1U : 0U;
+    }
+    body["two_speed"] = Json{{"id", "two-speed-v1"}, {"cadence", c.cadence},
+                             {"theta_fast", two_speed_theta_fast(c)},
+                             {"theta_slow", c.trade_fraction},
+                             {"fast_half_life", eb::two_speed_fast_half_life},
+                             {"fast_bound", eb::two_speed_fast_bound},
+                             {"rebalances_skipped_by_a_sleeve", sleeve_skipped},
+                             {"parent_rebalances_skipped", parent_skipped},
+                             {"parent_constructions_failed", parent_failed}};
+  }
   return Json{{"construction", std::move(body)}};
 }
 // The id's CLI spelling; price-risk-ind-v2 also sets its declared vol/log-ADV windows
@@ -1485,7 +1811,11 @@ int dispatch_target_replay(int argc, char** argv, std::ostream& out, std::ostrea
 // functions (a plain call would find these same-named wrappers first).
 namespace detail {
 TargetReplayInput LoadedSavedBlend::view() const {
-  return {dates, names, begin, end, signal, member, sessions, ids, close, raw, present, volume};
+  TargetReplayInput x{dates, names, begin, end, signal, member, sessions, ids, close, raw,
+                      present, volume};
+  x.sleeve_fast = sleeve_fast; x.sleeve_slow = sleeve_slow;
+  x.sleeve_fast_share = sleeve_fast_share;
+  return x;
 }
 co::Result<LoadedSavedBlend> load_saved_blend(const TargetReplayRunConfig& cfg, bool with_volume) {
   try {
@@ -1506,6 +1836,8 @@ co::Result<LoadedSavedBlend> load_saved_blend(const TargetReplayRunConfig& cfg, 
     out.raw = std::move(blend.raw); out.volume = std::move(blend.volume);
     out.member = std::move(blend.member); out.present = std::move(blend.present);
     out.sessions = std::move(blend.sessions); out.ids = std::move(blend.ids);
+    out.sleeve_fast = std::move(blend.sleeve_fast); out.sleeve_slow = std::move(blend.sleeve_slow);
+    out.sleeve_fast_share = std::move(blend.sleeve_fast_share);
     out.manifest_json = blend.manifest.dump();
     return co::Ok(std::move(out));
   } catch (const std::bad_alloc&) {

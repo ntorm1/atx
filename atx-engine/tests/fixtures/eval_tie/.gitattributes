@@ -1,0 +1,3 @@
+# Statistics tie fixture (P9 lane T1, contract K-P9-5): every input is pinned by SHA-256 in expected.json and the
+# binaries are raw little-endian arrays. No end-of-line conversion on checkout or commit.
+* -text

@@ -1,0 +1,69 @@
+{
+  "schema": "atx.mine-campaign-spec/v1",
+  "name": "mine-c1",
+  "description": "v9 mined campaign C1 (OD-7): stage-1 templates of 12 fields the book does not read, mined-v1, budget 132",
+  "campaign_id": "v9-mine-c1",
+  "registration": "docs/plans/2026-10-01-v9-mine-campaign-prereg.md",
+  "requires": [
+    "OD-7: the owner grants campaign v9-mine-c1 as registered in docs/plans/2026-10-01-v9-mine-campaign-prereg.md (root deletes this line and cites the ruling id in the commit)",
+    "lanes MINE-MEM and MINE-STAT merged and built (as joined by lane MINE-JOIN), and the runbook's fixture acceptance (step 1) passed on that build",
+    "source cell: pool_source names the last accepted cell at the campaign (V8-F after the freeze gate, or the v9 prior wave's cell; prereg D15), and inputs.role / inputs.fields are that cell's role and fields (lo1 shown; lo3 if B0b won)",
+    "fields re-checked against the registry of record by the registration's rule (a field the book then reads leaves the list and the budget becomes 11 x fields)"
+  ],
+  "python": "C:/Program Files/Python312/python.exe",
+  "build": "equity",
+  "exe": "atx-equity-strategy-mine.exe",
+  "runner": {
+    "script": "scripts/run_bounded_research.py",
+    "seconds": 600,
+    "max_rss_mib": 8192,
+    "min_free_mib": 512
+  },
+  "inputs": {
+    "role": {"path": "build-equity/train-2020-2023-lo1/manifest.json", "sha256": null},
+    "fields": {"path": "build-equity/train-2020-2023-lo1-fields-v9/manifest.json", "sha256": null},
+    "pool": {"path": "build-equity/mine-pool-v9-c1/manifest.json", "sha256": null}
+  },
+  "pool_source": {
+    "combined": {"path": "<fill:the source cell's w pass dir, i.e. <ic.w_output>-<attempt>/train_combined.json>", "sha256": null},
+    "weights": {"path": "<fill:the source cell's fit output /composition_weights.json>", "sha256": null},
+    "summary": {"path": "<fill:the source cell's w pass dir /summary.json>", "sha256": null}
+  },
+  "fields": [
+    "iv_atm_63d",
+    "iv_atm_126d",
+    "ea_delay_days",
+    "ins_net_buy_ratio",
+    "ins_n_buyers",
+    "ins_n_sellers",
+    "k8_count_63",
+    "k8_days_since_any",
+    "inst_breadth_chg",
+    "inst_own_chg_q",
+    "regsho_threshold_days63",
+    "sv_offexchange_share126"
+  ],
+  "windows": {
+    "discover": ["{train_begin}", "2023-01-01"],
+    "confirm": ["2023-01-01", "{train_end}"]
+  },
+  "budget": 132,
+  "search": {
+    "seed": 1,
+    "workers": 4,
+    "stage2_seeds": 12,
+    "stage2_population": 24,
+    "stage2_generations": 0,
+    "race_strides": "none",
+    "race_keep": 0.3333333333333333
+  },
+  "rule": {
+    "min_names": 1000,
+    "min_dates": 128,
+    "max_promotions": 16
+  },
+  "max_memory_mib": "<fill:the probe's required MiB at the chosen workers rounded up to 64 (the joined model gives 4032 at 4 workers, 2816 at 2 or 1, for 1..64 members), at most 7680>",
+  "registry": {"path": "build-equity/mine-v9-c1/registry.atxtrg", "head": null},
+  "output": "build-equity/mine-v9-c1",
+  "ledger": "build-equity/trials.jsonl"
+}

@@ -36,18 +36,84 @@ import research_add_alpha as RA  # noqa: E402
 V8 = Path(os.environ.get("ATX_TEST_V8_SPECS") or HERE.parent / "specs" / "v8")
 
 
+def add_alpha_content(doc, lib: str) -> bool:
+    """A plain spec as research_add_alpha.derive_spec writes it for library ``lib``: its description names add-alpha
+    and the library, gated p1-<lib>, pinning the parent's library as its baseline and comparing its u pass with the
+    parent's rows."""
+    return isinstance(doc, dict) and not RS.is_template(doc) and \
+        str(doc.get("description", "")).startswith(f"Library {lib} = ") and \
+        "(research_cycle.py add-alpha; derived from the " in doc["description"] and \
+        (doc.get("gate") or {}).get("name") == f"p1-{lib}" and "baseline_library" in (doc.get("inputs") or {}) and \
+        [c.get("name") for c in doc.get("compare") or []][-2:] == ["parent-orientations", "parent-train-daily-ic"]
+
+
 def generated_by_add_alpha(path: Path) -> bool:
     """Ruling PM5-24: a library spec `research_cycle.py add-alpha` generated (R-2, R-7, R-12), not an authored one,
     recognised from its content as research_add_alpha.derive_spec writes it: a plain spec in lib-NAME.json (add-alpha's
-    name) whose description names add-alpha and the library NAME, gated p1-NAME, pinning the parent's library as its
-    baseline and comparing its u pass with the parent's rows."""
+    name) with add-alpha's content for library NAME (add_alpha_content)."""
     m = re.fullmatch(r"lib-(.+)\.json", path.name)
+    return m is not None and add_alpha_content(json.loads(path.read_text(encoding="utf-8")), m[1])
+
+
+def add_alpha_copy(path: Path) -> bool:
+    """A spec add-alpha generated, copied by hand at another leverage (Ruling PM6-6, e.g. lib-v81-gm.json): a plain spec
+    in lib-NAME-gm.json named NAME-gm with add-alpha's content for library NAME (add_alpha_content)."""
+    m = re.fullmatch(r"lib-(.+)-gm\.json", path.name)
     doc = json.loads(path.read_text(encoding="utf-8")) if m else None
-    return m is not None and isinstance(doc, dict) and not RS.is_template(doc) and \
-        str(doc.get("description", "")).startswith(f"Library {m[1]} = ") and \
-        "(research_cycle.py add-alpha; derived from the " in doc["description"] and \
-        (doc.get("gate") or {}).get("name") == f"p1-{m[1]}" and "baseline_library" in (doc.get("inputs") or {}) and \
-        [c.get("name") for c in doc.get("compare") or []][-2:] == ["parent-orientations", "parent-train-daily-ic"]
+    return m is not None and isinstance(doc, dict) and doc.get("name") == f"{m[1]}-gm" and add_alpha_content(doc, m[1])
+
+
+# Review F-9 (P9 P0-FIX): a spec's kind, read from its content, decides the pins `lock --write` fills (spec_null_pins);
+# no list of file names. A -gm copy (PM6-6) takes the kind of what it copies: a template copy is a template, a copy of
+# add-alpha's spec is an add-alpha copy.
+TEMPLATE, BASE, ADD_ALPHA_COPY, GENERATED_KIND = "template", "base", "add-alpha copy", "generated"
+
+
+def spec_kind(path: Path) -> str:
+    """template (a child: a cell written as its parent plus the registered change), generated (add-alpha's own spec),
+    add-alpha copy (a hand copy of one, add_alpha_copy) or base (any other plain spec: a root of the chain)."""
+    if RS.is_template(json.loads(path.read_text(encoding="utf-8"))):
+        return TEMPLATE
+    return GENERATED_KIND if generated_by_add_alpha(path) else ADD_ALPHA_COPY if add_alpha_copy(path) else BASE
+
+
+def nominal_spec(path: Path) -> dict:
+    """A spec file resolved on its nominal chain: each template up the chain on its nominal_parent, whatever parent
+    root set (as the authored specs plan)."""
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if not RS.is_template(doc):
+        return RC.load_spec(path)
+    return RS.resolve(dict(doc, parent=None), path, nominal_spec, research_tree.REPO)
+
+
+def spec_null_pins(path: Path) -> set[str]:
+    """Every pin root fills with `lock --write` (after the runbook builds and the parent cell), as the spec is authored
+    and planned on its nominal parent, by the spec's kind (review F-9):
+      a plain spec (base, add-alpha copy, generated): each input but a committed library or recipe (an atx-impl/ file
+          it is authored with, checked against its bytes), and an as-built fields manifest;
+      a template: its nominal parent's, less the inputs research_spec drops from a parent (IDENTITY_INPUTS, DERIVED),
+          plus the inputs it derives from that parent (reference_cell, reference_admission; reference_combined and
+          reference_weights when the resolved spec has a marginal section; reference_resid_parent when its fit flags
+          add --theme-resid), those it adds (change.inputs) and the fields manifest when the resolved fields are as
+          built."""
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if not RS.is_template(doc):
+        out = {f"inputs.{k}" for k, item in doc["inputs"].items() if committed(item["path"]) is None}
+        return out | ({"fields.manifest_sha256"} if RC.as_built(doc.get("fields")) else set())
+    nominal = dict(doc, parent=None)
+    parent, _ = RS.parent_of(nominal, path, research_tree.REPO)
+    resolved = nominal_spec(path)
+    change = doc.get("change") or {}
+    fit_ops = (change.get("flags") or {}).get("fit") or {}
+    derived = {"reference_cell", "reference_admission"} | \
+        ({"reference_combined", "reference_weights"} if "marginal" in resolved else set()) | \
+        ({"reference_resid_parent"} if isinstance(fit_ops.get(RS.RESID_FLAG), str) else set())
+    unset = set(change.get("unset") or [])
+    out = spec_null_pins(parent) - {f"inputs.{k}" for k in RS.IDENTITY_INPUTS + RS.DERIVED} - unset
+    out |= {f"inputs.{k}" for k in derived} - unset
+    out |= {f"inputs.{k}" for k in change.get("inputs") or {}}
+    out.discard("fields.manifest_sha256")
+    return out | ({"fields.manifest_sha256"} if RC.as_built(resolved.get("fields")) else set())
 
 
 GENERATED = sorted(p.name for p in V8.glob("*.json") if generated_by_add_alpha(p))
@@ -56,18 +122,10 @@ BASE_NULLS = {"inputs.role", "inputs.identity_bridge", "inputs.fund_events", "fi
 CHILD_NULLS = BASE_NULLS | {"inputs.reference_cell", "inputs.reference_admission",       # derived from the parent
                             "inputs.label_role"}                                          # B0c's (E-25), inherited
 LIB_NULLS = CHILD_NULLS | {"inputs.library", "inputs.recipe", "inputs.reference_combined", "inputs.reference_weights"}
-# every pin root fills (`lock --write` after the runbook builds and the parent cell), per spec, as planned today
-NULL_PINS = {"base-lo1.json": BASE_NULLS,
-             "base-lo3.json": BASE_NULLS | {"inputs.sic_events", "inputs.reference_cell"},
-             "base-b0c.json": CHILD_NULLS, "r1-comp-v8.json": CHILD_NULLS, "r2-lib-v80.json": LIB_NULLS,
-             "r3-aim-gain.json": CHILD_NULLS, "r4-hold-band.json": CHILD_NULLS, "r5-adv-hold.json": CHILD_NULLS,
-             "r6-spo-v3.json": CHILD_NULLS, "r7-lib-v81.json": LIB_NULLS,
-             "r8.json": CHILD_NULLS,
-             "r10.json": CHILD_NULLS}                                        # R-10 (E-38), planned on R-1
-NULL_PINS["r11.json"] = CHILD_NULLS | {"inputs.reference_resid_parent"}                  # v8 R-11 (R6B-O-5)
-NULL_PINS["r1-comp-v8-gm.json"] = CHILD_NULLS               # R-1 at matched gross (PM6-6), by hand on base-b0c
 STORE_FILLS = ["<fill:nav.flags --risk-model>", "<fill:nav.flags --risk-model-sha256>"]
 FILLS = {"r6-spo-v3.json": STORE_FILLS, "r8.json": STORE_FILLS}   # R-8: the risk store (lane RISK)
+FILLS["r6-spo-v3-gm.json"] = STORE_FILLS                                                  # PM6-6: R-6's store
+FILLS["y-vol-target.json"] = STORE_FILLS                                     # v8 Y (YCOMB): the risk target's store
 
 
 def fill_options(name: str | None = None) -> list[tuple[str, str]]:
@@ -100,7 +158,21 @@ EXPECTED_CHANGES = {"base-b0c.json": {"nav.output", "nav.flags"} | LABEL_ROLE,
 EXPECTED_CHANGES["r11.json"] = FIT_DOWN | {"fit.flags"}                                   # v8 R-11 (lane ORTH)
 # Ruling PM6-6: R-1's registered change at the aim leverage that matches the parent's all-rows S2 gross
 EXPECTED_CHANGES["r1-comp-v8-gm.json"] = EXPECTED_CHANGES["r1-comp-v8.json"] | {"nav.leverage"}
+EXPECTED_CHANGES["r3-aim-gain-gm.json"] = EXPECTED_CHANGES["r3-aim-gain.json"] | {"nav.leverage"}     # PM7-4
+EXPECTED_CHANGES["r6-spo-v3-gm.json"] = EXPECTED_CHANGES["r6-spo-v3.json"] | {"nav.leverage"}         # PM6-6
+# Ruling PM7-21: R-9a / R-9b change theta (--trade-fraction) and are report-only ("verdict": false)
+EXPECTED_CHANGES["r9a.json"] = EXPECTED_CHANGES["r9b.json"] = {"nav.output", "nav.flags", "verdict"}
+THETA = {"r9a.json": ".03", "r9b.json": ".04"}
+EXPECTED_CHANGES["x-theme-erc.json"] = FIT_DOWN | {"fit.flags"}                          # v8 X (lane XCOMB)
+EXPECTED_CHANGES["x-inv-vol.json"] = {"nav.output", "nav.flags"}                          # v8 X (lane XCOMB)
+EXPECTED_CHANGES["y-vol-target.json"] = {"nav.output", "nav.flags", "nav.leverage"}       # v8 Y: X-10's L, managed
+EXPECTED_CHANGES["y-norm-score.json"] = {"nav.output", "nav.flags"}                       # v8 Y (lane YCOMB)
+EXPECTED_CHANGES["y-theme-tsmom.json"] = FIT_DOWN | {"fit.flags"}                        # v8 Y (lane YCOMB)
+EXPECTED_CHANGES["y-two-speed.json"] = FIT_DOWN | {"fit.flags", "nav.flags"}            # v8 Y-5: fit and NAV
 FIT_APPENDED = {"r11.json": ["--theme-resid", "theme-resid-v1"]}                          # options a template appends
+FIT_APPENDED["x-theme-erc.json"] = ["--theme-erc", "theme-erc-v1"]                       # v8 X (lane XCOMB)
+FIT_APPENDED["y-theme-tsmom.json"] = ["--theme-tsmom", "theme-tsmom-v1"]                 # v8 Y (lane YCOMB)
+FIT_APPENDED["y-two-speed.json"] = ["--two-speed", "two-speed-v1"]                       # v8 Y-5 (lane YCOMB)
 MISSING = object()
 
 
@@ -230,7 +302,7 @@ def check_nominal_plan(tmp_path: Path, specs: Path, name: str) -> None:
     path = authored_dir(specs, tmp_path / "authored") / name
     root, spec, c, lines = plan_on_stand_ins(tmp_path / "nominal", path)
     assert RC.plan_lines(c, lines_only=True) and not any("<sha256:" in x for x in lines if x.startswith("#"))
-    assert unlocked_pins(c, spec) == NULL_PINS[name]
+    assert unlocked_pins(c, spec) == spec_null_pins(path), name                  # by the spec's kind (review F-9)
     assert any(x.startswith("# phase fields [pinned; done; as built") and "UNLOCKED" in x for x in lines)
     assert [x[len("# fill (root fills before `run`): "):] for x in lines if x.startswith("# fill")] == FILLS.get(name, [])
     doc = json.loads(path.read_text(encoding="utf-8"))
@@ -243,7 +315,9 @@ def check_nominal_plan(tmp_path: Path, specs: Path, name: str) -> None:
         assert e.value.code == RC.EXIT_PIN and not (root / "calls.log").exists()
     else:
         assert refusal is None and not any(x.startswith("# template") for x in lines)
-    assert all(st.kind != "skipped" or st.phase == "marginal" for st in c.steps())
+    same_fields = (spec["inputs"].get("baseline_fields") or {}).get("path") == f"{spec['fields']['output']}/manifest.json"
+    assert all(st.kind != "skipped" or st.phase == "marginal" or       # ref: skipped on the parent's fields (X-3 gm)
+               (same_fields and st.phase in ("ref", "ref" + RC.COMPARE_SUFFIX)) for st in c.steps())
 
 
 def check_live_plan(tmp_path: Path, specs: Path, name: str) -> dict:
@@ -262,10 +336,12 @@ def check_live_plan(tmp_path: Path, specs: Path, name: str) -> dict:
     held = {f"inputs.{k}" for k, item in spec["inputs"].items()
             if item["sha256"] and committed(item["path"]) is not None}
     links = RS.chain(path, research_tree.REPO)
-    if {p.name for p, _, _, _ in links} | {links[-1][2].name if links else name} <= set(NULL_PINS):
-        # (an add-alpha parent, lib-v80.json, has fewer; a lock's pin on a committed file, e.g. R-2's library once
-        # add-alpha wrote it (PM6-10), is checked against its bytes, not a stand-in: it may stand LOCKED)
-        assert unlocked_pins(c, spec) >= NULL_PINS[name] - held, name
+    above = ({p.name for p, _, _, _ in links} | {links[-1][2].name if links else name}) - {name}
+    if spec_kind(path) != GENERATED_KIND and all((specs / n).is_file() and spec_kind(specs / n) in (BASE, TEMPLATE)
+                                                 for n in above):
+        # (an add-alpha parent, lib-v80.json, or a hand copy of one, has fewer; a lock's pin on a committed file, e.g.
+        # R-2's library once add-alpha wrote it (PM6-10), is checked against its bytes, not a stand-in: it may stand LOCKED)
+        assert unlocked_pins(c, spec) >= spec_null_pins(path) - held, name
     for section, option in fill_options():                    # PM5-24: a value root fills is its placeholder or well
         value = RC.option_value((spec.get(section) or {}).get("flags") or [], option)          # formed (own, inherited)
         assert value in (None, f"<fill:{section}.flags {option}>") or well_filled(option, value), (name, option, value)
@@ -287,9 +363,53 @@ def test_every_v8_spec_loads_and_plans(tmp_path, name):
     """Every live authored spec plans as authored (check_nominal_plan) and as it stands (check_live_plan): the same
     whether root has locked it, set a template's parent or filled its values or not. The authored set is the registry
     (a spec add-alpha generated is checked by test_every_generated_spec_plans_and_parents_the_templates)."""
-    assert set(V8_SPECS) == set(NULL_PINS)
+    # review F-9 (no file list): the kind from independent evidence: a template by its schema; a lib-NAME-gm.json
+    # beside a generated lib-NAME.json is that spec's hand copy (PM6-6), recognised from the copy's own content; any
+    # other plain spec is a base (review E1t0 minor 4: the old line could not fail)
+    copied = V8 / re.sub(r"-gm\.json$", ".json", name)
+    want = TEMPLATE if RS.is_template(json.loads((V8 / name).read_text(encoding="utf-8"))) else \
+        ADD_ALPHA_COPY if name.startswith("lib-") and name.endswith("-gm.json") and copied.is_file() and \
+        generated_by_add_alpha(copied) else BASE
+    assert spec_kind(V8 / name) == want, name
     check_nominal_plan(tmp_path, V8, name)
     check_live_plan(tmp_path, V8, name)
+
+
+def test_spec_kind_null_pins(tmp_path, authored_v8):
+    """Review F-9 (P9 P0-FIX): the pins a spec's lock fills follow from its kind, read from its content, not from a
+    list of file names: a base spec's are its stand-in inputs and the fields manifest; a template's its nominal
+    parent's less the parent's identity inputs, plus what it derives and adds (R-1: B0c's label role and the paired
+    reference; R-2: its library, recipe and pool; R-11: the resid parent); an add-alpha copy's every input but the
+    committed library and recipe. A new cell of each kind (a template, a -gm copy of add-alpha's spec) plans with no
+    edit of this file."""
+    kinds = {n: spec_kind(V8 / n) for n in ("base-lo1.json", "base-b0c.json", "x-theme-erc-gm.json",
+                                            "lib-v81-gm.json")}
+    assert kinds == {"base-lo1.json": BASE, "base-b0c.json": TEMPLATE, "x-theme-erc-gm.json": TEMPLATE,
+                     "lib-v81-gm.json": ADD_ALPHA_COPY}
+    assert all(spec_kind(V8 / n) == GENERATED_KIND for n in GENERATED)
+    want = {"base-lo1.json": BASE_NULLS, "base-lo3.json": BASE_NULLS | {"inputs.sic_events", "inputs.reference_cell"},
+            "r1-comp-v8.json": CHILD_NULLS, "r2-lib-v80.json": LIB_NULLS, "x-theme-erc-gm.json": CHILD_NULLS,
+            "r11.json": CHILD_NULLS | {"inputs.reference_resid_parent"},
+            "lib-v81-gm.json": {"inputs.role", "inputs.label_role", "inputs.baseline_fields", "fields.manifest_sha256",
+                                "inputs.reference_admission", "inputs.reference_cell", "inputs.reference_combined",
+                                "inputs.reference_weights", "inputs.reference_daily", "inputs.reference_orientations",
+                                "inputs.reference_daily_ic"}}
+    assert {n: spec_null_pins(authored_v8 / n) for n in want} == want
+    specs = tmp_path / "v8"
+    shutil.copytree(V8, specs)
+    cell = json.loads((specs / "x-theme-erc.json").read_text(encoding="utf-8"))          # a new template cell
+    cell["name"] = "x-theme-erc-p9"
+    cell["change"]["set"]["nav.output"] = cell["change"]["set"]["nav.output"] + "-p9"
+    (specs / "x-theme-erc-p9.json").write_text(json.dumps(cell, indent=2), encoding="utf-8")
+    lib = next(n for n in GENERATED if not (V8 / n.replace(".json", "-gm.json")).exists())
+    copy_ = json.loads((specs / lib).read_text(encoding="utf-8"))                          # add-alpha's, by hand
+    copy_["name"] = f"{copy_['name']}-gm"
+    copy_["nav"] = dict(copy_["nav"], leverage="1.5", output=copy_["nav"]["output"] + "-L1.5")
+    gm = lib.replace(".json", "-gm.json")
+    (specs / gm).write_text(json.dumps(copy_, indent=2), encoding="utf-8")
+    assert (spec_kind(specs / "x-theme-erc-p9.json"), spec_kind(specs / gm)) == (TEMPLATE, ADD_ALPHA_COPY)
+    for k, name in enumerate(("x-theme-erc-p9.json", gm)):
+        check_nominal_plan(tmp_path / f"new-{k}", specs, name)
 
 
 def test_the_fixtures_plan_a_locked_spec_as_unlocked(tmp_path):
@@ -423,7 +543,7 @@ def check_generated(tmp_path: Path, specs: Path, name: str) -> None:
     on it (check_live_plan), but one whose composition map lacks its composition, which refuses it at load (R-10 on a
     parent that is not standardised, E-45)."""
     path = specs / name
-    assert generated_by_add_alpha(path) and name not in NULL_PINS, name
+    assert generated_by_add_alpha(path) and spec_kind(path) == GENERATED_KIND, name
     _, spec, c, lines = plan_on_stand_ins(tmp_path / "plan", path)
     assert RC.plan_lines(c, lines_only=True) and not any("<sha256:" in x for x in lines if x.startswith("#")), name
     stand_ins = {f"inputs.{k}" for k, item in spec["inputs"].items() if committed(item["path"]) is None}
@@ -543,18 +663,30 @@ def check_registered_change(specs: Path, name: str) -> None:
                  # R-8: the registered constants spelled out; --capacity-curve (E-29) is already the parent's
                  "r8.json": pn + ["--risk-target", ".05", "--risk-target-bias", "1.15", "--risk-target-cadence", "21",
                                   "--risk-model", "<fill:nav.flags --risk-model>", "--risk-model-sha256",
-                                  "<fill:nav.flags --risk-model-sha256>"]}
+                                  "<fill:nav.flags --risk-model-sha256>"],
+                 "x-inv-vol.json": pn + ["--vol-scale", "inv-vol-v1"],                  # v8 X (lane XCOMB)
+                 # v8 Y (lane YCOMB): vol-target-v1 on the risk target's store (root fills it)
+                 "y-vol-target.json": pn + ["--vol-target", "vol-target-v1", "--risk-model",
+                                            "<fill:nav.flags --risk-model>", "--risk-model-sha256",
+                                            "<fill:nav.flags --risk-model-sha256>"],
+                 "y-norm-score.json": pn + ["--rank-shape", "norm-score-v1"],             # v8 Y (lane YCOMB)
+                 "y-two-speed.json": pn + ["--two-speed", "two-speed-v1"]}                # v8 Y-5 (lane YCOMB)
+    nav_delta["r6-spo-v3-gm.json"] = nav_delta["r6-spo-v3.json"]              # PM6-6: R-6's change, its L apart
+    for r9, theta in THETA.items():                                          # PM7-21: the parent's argv, theta set
+        nav_delta[r9] = [theta if k and pn[k - 1] == "--trade-fraction" else x for k, x in enumerate(pn)]
+    spo = ("r6-spo-v3.json", "r6-spo-v3-gm.json")
     assert cn == nav_delta.get(name, pn)
-    assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json", "r6-spo-v3.json")   # E-29: the 4x report
+    assert "--capacity-curve" in cn or name not in ("r5-adv-hold.json", "x-inv-vol.json") + spo   # E-29: the 4x report
     comp = {"r1-comp-v8.json": ("ew-theme-v1", "ew-theme-std-v1"),
             "r1-comp-v8-gm.json": ("ew-theme-v1", "ew-theme-std-v1"),                     # PM6-6: R-1's change
             "r3-aim-gain.json": ("ew-theme-v1", "ew-theme-aim-v2"),                       # E-27b
+            "r3-aim-gain-gm.json": ("ew-theme-v1", "ew-theme-aim-v2"),                    # PM6-6 / PM7-4: R-3's change
             "r10.json": ("ew-theme-std-v1", "ic-shrink-v1")}               # (the parent's --composition, the cell's;
     # r10 derives its rule from any parent composition, Ruling E-44: test_r10_derives_its_rule_from_the_parent...)
     old, new = comp.get(name, (None, None))
     assert child["fit"]["flags"] == [new if x == old else x for x in parent["fit"]["flags"]] + \
         FIT_APPENDED.get(name, [])
-    assert (child["nav"]["rule"] == "spo-v3") == (name == "r6-spo-v3.json")
+    assert (child["nav"]["rule"] == "spo-v3") == (name in spo)
 
 
 @pytest.mark.parametrize("name", [n for n in V8_SPECS if n in EXPECTED_CHANGES])
@@ -1124,7 +1256,8 @@ def test_add_alpha_on_a_v8_base_spec_screens_and_runs(tmp_path):
                      "nav": base["nav"]["output"].replace("-v71-", "-v80-"),
                      "monitor": "build-equity/mega-monitor-v8-b0a-v80"}              # the name rule
     assert (spec["ic"]["cache"], spec["fit"]["work_dir"]) == (base["ic"]["cache"], "build-equity/fit-work")   # C-1
-    assert spec["card"]["flags"] == base["card"]["flags"] and spec["runner"] == base["runner"]
+    assert spec["card"]["flags"] == base["card"]["flags"] and spec["runner"] == dict(   # + the marginal cap (5f)
+        base["runner"], phases=dict(base["runner"]["phases"], marginal=RA.MARGINAL_CAPS))
     assert spec["fields"] == dict(base["fields"], manifest_sha256=spec["fields"]["manifest_sha256"])
     assert spec["gate"] == {"name": "p1-v80", "admitted": ["v8_probe"], "require": "any", "sign_agrees": True,
                             "report": []}
@@ -1287,3 +1420,47 @@ def test_cache_gc_apply_with_the_v8_specs_keeps_the_shared_stores(tmp_path, monk
     assert not any((root / "build-equity" / r).exists() for r in stale)
     assert any(x.startswith("keep  build-equity/fit-work/fedcba9876543210-research-window-v1") and
                "(store base build-equity/fit-work named by " in x and "v8-b0a-lo1" in x for x in log), log
+
+
+def test_x_theme_erc_appends_its_flag_to_the_parents_fit(tmp_path, authored_v8):
+    """v8 X (lane XCOMB): theme-erc-v1 keeps the parent's composition (its within-theme shares) and adds the fitter flag
+    --theme-erc; the description registers the rule's constants, the gross matching and R-1's criterion; on an R-1
+    parent the w pass inherits Ruling E-28's 3,072 MiB."""
+    sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
+    import fit_composition_weights as fcw
+    doc = json.loads((authored_v8 / "x-theme-erc.json").read_text(encoding="utf-8"))
+    assert doc["nominal_parent"] == "r1-comp-v8.json" and doc["parent"] is None and "requires" not in doc
+    for text in ("10000 sweeps", "1e-10", "1/(2T)", "PM6-6", "tau_gmv_mean / mean_gross_leverage_all_rows",
+                 "paired S2 net dSR > 0 against the parent AND mechanics"):
+        assert text in doc["description"], text
+    path = tmp_path / "x-theme-erc-on-r1.json"
+    path.write_text(json.dumps(dict(doc, parent=str(authored_v8 / "r1-comp-v8.json"))), encoding="utf-8")
+    spec = RC.load_spec(path)
+    assert RC.option_value(spec["fit"]["flags"], "--composition") == "ew-theme-std-v1"
+    assert RC.option_value(spec["fit"]["flags"], "--theme-erc") == "theme-erc-v1"
+    required = ["--library", "l", "--library-sha256", "0", "--train", "t", "--train-sha256", "0", "--orientations", "o",
+                "--orientations-sha256", "0", "--runner-summary", "s", "--runner-summary-sha256", "0", "--screen",
+                "v4-prior-v1", "--output", "w"]
+    assert fcw.parse_args(required + ["--theme-erc", "theme-erc-v1"]).theme_erc == "theme-erc-v1"  # the fitter's flag
+    assert fcw.parse_args(required).theme_erc is None                                                # flag absent
+    root, spec = fake_root(tmp_path / "root", spec)
+    c = RC.Cycle(spec, RC.Resolver(root), spec_path=path, capabilities=T.CAPS)
+    assert [c.phase_caps(p)["max_rss_mib"] for p in ("u", "w", "card", "nav")] == [2560, 3072, 2560, 1536]
+
+
+def test_x_inv_vol_appends_its_flag_to_the_parents_nav(tmp_path, authored_v8):
+    """v8 X (lane XCOMB): inv-vol-v1 is a NAV-only change, nav --vol-scale inv-vol-v1 after the parent's flags (the
+    4x NAV report --capacity-curve is the parent's); the description registers the rule's constants, the gross
+    matching and the capacity criterion."""
+    doc = json.loads((authored_v8 / "x-inv-vol.json").read_text(encoding="utf-8"))
+    assert doc["nominal_parent"] == "base-b0c.json" and doc["parent"] is None and "requires" not in doc
+    for text in (".25 x median", "session d + 1", "PM6-6", "net Sharpe at 4x NAV", "cost_bps_traded",
+                 "paired S2 net dSR > 0 against the parent AND mechanics", "recipe pin mismatch"):
+        assert text in doc["description"], text
+    path = tmp_path / "x-inv-vol-on-b0c.json"
+    path.write_text(json.dumps(dict(doc, parent=str(authored_v8 / "base-b0c.json"))), encoding="utf-8")
+    spec = RC.load_spec(path)
+    parent = RC.load_spec(authored_v8 / "base-b0c.json")
+    assert spec["nav"]["flags"] == parent["nav"]["flags"] + ["--vol-scale", "inv-vol-v1"]
+    assert "--capacity-curve" in spec["nav"]["flags"]
+    assert spec["fit"]["flags"] == parent["fit"]["flags"] and spec["fit"]["output"] == parent["fit"]["output"]

@@ -30,20 +30,34 @@
 //   Series summaries are the mean of the defined daily values with a Bartlett HAC t at a
 //   fixed lag (small-sample corrected, eval::hac::mean_inference), computed over the defined
 //   dates compacted in order (undefined dates are dropped, not zero-filled).
+//
+//   Every kernel here reads only names with a finite value and visits them in ascending index
+//   order, so a caller may drop names that are NaN in every input of a date (the marginal verb
+//   keeps only the date's member names, P9 S1) and get the same bits.
 
 #include <limits>  // std::numeric_limits
 #include <span>    // std::span
 #include <utility> // std::pair
 #include <vector>  // std::vector
 
-#include "atx/core/error.hpp" // Result
-#include "atx/core/types.hpp" // f64, u8, usize
+#include "atx/core/error.hpp"          // Result
+#include "atx/core/types.hpp"          // f64, u8, usize
+#include "atx/engine/build_flavor.hpp" // BuildFlavor
 
 namespace atx::engine::combine {
 
-// At most the book composite plus ten theme composites.
-inline constexpr atx::usize kMaxMarginalRegressors = 11U;
+// At most the book composite plus 33 theme composites (P9 S1, CM-6: the v8 cap of ten themes was
+// below the composition's theme count and forced every theme-erc wave pool-only).
+inline constexpr atx::usize kMaxMarginalRegressors = 34U;
 inline constexpr atx::f64 kMarginalNaN = std::numeric_limits<atx::f64>::quiet_NaN();
+// BUMP with any change that can alter one bit of a pair's per-date correlation or of its
+// accumulation over dates (centred_tied_ranks, PairwiseRowCorrelation): it keys the marginal
+// verb's pair cache, so a bump is a clean miss, never a stale hit.
+inline constexpr int kPairwiseRowCorrelationVersion = 1;
+
+// The build flavour of the TU that computes the ranks and pair correlations (it keys the pair
+// cache; atx/engine/build_flavor.hpp).
+[[nodiscard]] atx::engine::BuildFlavor marginal_rank_ic_build_flavor() noexcept;
 
 // Reusable buffers of the row kernels (grown on first use to the row width; never shrunk).
 struct MarginalRankIcScratch {
@@ -94,20 +108,61 @@ struct RankIcSummary {
 // finite names, a date counting for a pair only when at least `min_names` names are joint and
 // the correlation is defined. Rows are expected bounded (centred ranks): the one-pass moments
 // cannot overflow and their cancellation is harmless at that scale.
+//
+// P9 S1 (marginal verb speed). Before the first date the computed pairs may be narrowed to those
+// touching a listed row (restrict_to) and single pairs seeded with a cached sum and date count
+// (seed). A date's correlations of the computed pairs can be taken (day_values: const, so
+// distinct dates may run concurrently) and added later, date by date (accumulate). add_date is
+// exactly day_values then accumulate: per pair the same arithmetic and the same summation order,
+// so a banded caller that accumulates in date order reproduces the serial bits.
+struct PairSeed {
+  atx::usize a = 0U;
+  atx::usize b = 0U;
+  atx::f64 sum = 0.0;
+  atx::usize dates = 0U;
+};
+
 class PairwiseRowCorrelation {
 public:
   PairwiseRowCorrelation(atx::usize rows, atx::usize min_names);
   // `rows.size()` must equal the constructed row count and every row the same width.
   [[nodiscard]] atx::core::Status add_date(std::span<const std::span<const atx::f64>> rows);
+  // Keeps computing only the pairs with at least one row whose `listed` flag is nonzero
+  // (`listed.size()` = rows). Err on a size mismatch or after the first date.
+  [[nodiscard]] atx::core::Status restrict_to(std::span<const atx::u8> listed);
+  // Each seed's pair (a != b, either order) takes the cached sum and date count and is no longer
+  // computed. Err on a bad index, a pair not computed (already seeded or restricted away), a
+  // non-finite sum or |sum| > dates (each date adds a value in [-1, 1]), one pair seeded twice,
+  // or after the first date; an Err seeds nothing.
+  [[nodiscard]] atx::core::Status seed(std::span<const PairSeed> seeds);
+  // The computed pairs (a < b) in row-major order: the slots of day_values.
+  [[nodiscard]] std::span<const std::pair<atx::usize, atx::usize>>
+  computed_pairs() const noexcept {
+    return computed_;
+  }
+  // One date: per computed pair its clamped correlation, or NaN when the date does not count for
+  // it. `out.size()` must equal computed_pairs().size(); `rows` as for add_date.
+  [[nodiscard]] atx::core::Status day_values(std::span<const std::span<const atx::f64>> rows,
+                                             std::span<atx::f64> out) const;
+  // Adds one date of day_values (same size): every non-NaN value counts.
+  [[nodiscard]] atx::core::Status accumulate(std::span<const atx::f64> values);
   // NaN when the pair was never defined; a == b is NaN (not a pair).
   [[nodiscard]] atx::f64 mean(atx::usize a, atx::usize b) const noexcept;
   [[nodiscard]] atx::usize dates(atx::usize a, atx::usize b) const noexcept;
+  // The accumulated sum of the pair's clamped daily correlations (0 when never defined).
+  [[nodiscard]] atx::f64 sum(atx::usize a, atx::usize b) const noexcept;
 
 private:
+  [[nodiscard]] atx::core::Status check_rows(std::span<const std::span<const atx::f64>> rows) const;
+  void collect_computed();
+
   atx::usize rows_ = 0U;
   atx::usize min_names_ = 0U;
+  bool started_ = false;
   std::vector<atx::f64> sum_;     // upper triangle, row-major a * rows_ + b (a < b)
   std::vector<atx::usize> count_; // same layout
+  std::vector<atx::u8> compute_;  // same layout: 1 = computed by add_date / day_values
+  std::vector<std::pair<atx::usize, atx::usize>> computed_; // the pairs with compute_ set
 };
 
 } // namespace atx::engine::combine

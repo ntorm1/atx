@@ -161,6 +161,19 @@ theme_gain_weights: within-theme renormalisation, then the member cap 1/(2T)), s
 Ruling PM4-7: ic-shrink-v1 takes its ICs from the pooled admission rows' train_mean and ic-shrink-aim-v1 also the pooled
 aim gains (composition_ic_shrink.ic_shrink, as in the single window), and --theme-resid attaches its block to the pooled
 document (composition_resid.apply); one era equals the single window for each.
+v8 X (lane XCOMB) ``--theme-erc theme-erc-v1`` (composition_theme_erc; single window, --composition ew-theme-std-v1 or
+ic-shrink-v1, not with --theme-resid): the parent's pre-cap within-theme shares times equal-risk-contribution theme
+shares of the theme sleeves' TRAIN covariance, then the member cap 1/(2T); the block and provenance.theme_erc replace
+the parent's block and provenance.rule. Absent: every byte as before (but script_sha256).
+v8 Y (lane YCOMB) ``--theme-tsmom theme-tsmom-v1`` (composition_theme_tsmom; single window, --composition
+ew-theme-std-v1 or ic-shrink-v1 with or without --theme-erc, not with --theme-resid): a walk-forward theme mass
+schedule (every 21 decisions from decision 254, a theme whose sleeve's trailing 252-decision return is not positive
+gets mass 0); the top-level theme_schedule block and provenance.theme_tsmom are added, weights, signs, the
+theme_standardise block and provenance.rule stay the parent's. Absent: every byte as before (but script_sha256).
+v8 Y-5 (lane YCOMB) ``--two-speed two-speed-v1`` (composition_two_speed; single window, a standardised composition,
+not with --theme-resid): writes only the spec block theme_sleeves {rule: two-speed-v1} (Ruling PM8-12: the rule is the
+IC runner's and the engine's); the w pass then saves the fast and slow sleeves and nav --two-speed trades them.
+Absent: every byte as before (but script_sha256).
 Exit codes: 0 complete; 1 refused (nothing published); 3 incomplete (rerun); 4 admission published,
 no weights (nothing admitted or no positive weight). Numpy only, single-threaded BLAS.
 """
@@ -181,6 +194,7 @@ from pathlib import Path  # noqa: E402
 import shutil  # noqa: E402
 import sys  # noqa: E402
 import time  # noqa: E402
+from typing import Callable, NamedTuple  # noqa: E402
 
 import numpy as np  # noqa: E402
 
@@ -200,6 +214,9 @@ import horizon_stats  # noqa: E402  (same directory: the report-only traded-hori
 import composition_rules  # noqa: E402  (v8 R-1: composition ew-theme-std-v1, pure functions in this directory)
 import composition_ic_shrink  # noqa: E402  (v8 R-10: composition ic-shrink-v1, pure functions in this directory)
 import composition_resid  # noqa: E402  (v8 R-11: --theme-resid theme-resid-v1, the theme_residualise block)
+import composition_theme_erc  # noqa: E402  (v8 X, lane XCOMB: --theme-erc theme-erc-v1, ERC theme shares)
+import composition_theme_tsmom  # noqa: E402  (v8 Y, lane YCOMB: --theme-tsmom theme-tsmom-v1, theme schedule)
+import composition_two_speed  # noqa: E402  (v8 Y-5, lane YCOMB: --two-speed two-speed-v1, fast/slow sleeves)
 
 RULE_ID = "mv-shrink-0.9-nonneg-v1"
 # Root preregistration (before any v3 measurement): the same fit with a net mean vector,
@@ -249,6 +266,11 @@ POOLED_COMPOSITIONS = (EW_THEME_RULE_ID, AIM_V2_RULE_ID, V6_RULE_ID, composition
 # Ruling PM4-7: the --theme-resid rules the pooled fit implements (composition_resid.apply on the pooled document, as in
 # the single window, on each parent whose rerank-true block it accepts); any other is refused by name.
 POOLED_THEME_RESID = (composition_resid.RULE_ID,)
+# P9 lane D1: the modifier rules (each a flag on a prior parent fit, in its own module), in argparse order; the ones
+# that check their parents (check_args(args, prior, pooled, error)) run in this order, after theme-resid-v1's checks
+# (composition_resid.PRIOR_ONLY and require_resid_order). A new modifier is one module appended here.
+PARENT_CHECKED_MODIFIERS = (composition_theme_erc, composition_theme_tsmom, composition_two_speed)
+MODIFIER_MODULES = (composition_resid,) + PARENT_CHECKED_MODIFIERS
 AIM_FIT_SERIES = ("none (aim-scaled equal theme weights from TRAIN signal-rank second moments); diagnostic uses "
                   "s_k*f over ALL TRAIN scored decisions, flat decisions 0")
 SHRINK_LAMBDA = 0.9  # Sh = 0.1 * S + 0.9 * diag(S), written literally below
@@ -267,9 +289,15 @@ V4_THEMES = ("value", "profitability_quality", "investment_issuance", "earnings_
 # list. A prior-metadata theme may be any of PRIOR_THEMES; the weights provenance lists an appended theme under
 # themes_preregistered only when some candidate declares it, so a library without one (v6.1, v7.0: ownership_flow is
 # empty until wave 2) keeps its bytes. ew-theme-v1 counts only themes with an admitted member, so an empty theme never
-# changes a weight.
-V7_APPENDED_THEMES = ("ownership_flow",)
-PRIOR_THEMES = V4_THEMES + V7_APPENDED_THEMES
+# changes a weight. filing_events (v8.1 E7) is appended last (Ruling PM7-15 (a)), after the registry's themes table and
+# the runner's theme_resid_order, so every earlier theme keeps its theme-resid-v1 residual; price_volume (v8 X-7, lane
+# XWQ) after it (Rulings PM7-36 (a), PM7-39), in the registry, here and in theme_resid_order; merger_arbitrage (v8 Y,
+# lane YDATA) last (Rulings PM8-8 (2), PM8-14), the same three places.
+# P9 lane D1 (one theme table): PRIOR_THEMES and V7_APPENDED_THEMES are read from the registry's themes table at import
+# (registered_prior_themes, below REGISTRY_PATH) -- the table the IC runner reads through --theme-registry -- so a theme
+# is registered in one place. This list of record (the registry's appended themes at the P9 base) is the fall-back
+# when the registry file is absent.
+V7_APPENDED_THEMES_OF_RECORD = ("ownership_flow", "filing_events", "price_volume", "merger_arbitrage")
 TIER_GRADES = ("A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D")  # strongest first
 V4_STATUSES = ("admitted", "reject_no_prior", "reject_insufficient", "reject_turnover", "reject_veto",
                "reject_redundant")
@@ -414,31 +442,54 @@ def horizon_fingerprint() -> str:
         raise FitError(f"horizon_stats fingerprint: {exc}") from exc
 
 
-def prior_themes() -> tuple[tuple, str]:
-    """(admissible prior-metadata themes, their source): the alpha registry's ``themes`` table (task A-1) when the
-    registry file exists, else the in-file list V4_THEMES + V7_APPENDED_THEMES."""
-    if not REGISTRY_PATH.is_file():
-        return PRIOR_THEMES, "in-file list"
-    j = unique_json(REGISTRY_PATH.read_bytes(), "alpha registry")
+def registry_themes(path: Path) -> tuple:
+    """The ``themes`` table of the alpha registry at ``path``, in file order: an atx.alpha-registry/v1 document whose
+    themes table is non-empty with non-empty string names, else refused."""
+    j = unique_json(path.read_bytes(), "alpha registry")
     themes = j.get("themes") if isinstance(j, dict) else None
     require(isinstance(j, dict) and j.get("schema") == REGISTRY_SCHEMA and isinstance(themes, dict) and themes and
-            all(isinstance(t, str) and t for t in themes), f"alpha registry: {REGISTRY_PATH} is not an "
+            all(isinstance(t, str) and t for t in themes), f"alpha registry: {path} is not an "
                                                             f"{REGISTRY_SCHEMA} document with a themes table")
-    return tuple(themes), f"registry {REGISTRY_PATH.name}"
+    return tuple(themes)
+
+
+def registered_prior_themes() -> tuple:
+    """P9 lane D1: the fitter's theme tuple (PRIOR_THEMES, theme-resid-v1's registered order, Ruling PM4-11) -- the
+    registry's themes table in file order, whose first themes must be the frozen V4_THEMES; without the registry file
+    V4_THEMES + V7_APPENDED_THEMES_OF_RECORD. Read once, at import."""
+    if not REGISTRY_PATH.is_file():
+        return V4_THEMES + V7_APPENDED_THEMES_OF_RECORD
+    themes = registry_themes(REGISTRY_PATH)
+    require(themes[:len(V4_THEMES)] == V4_THEMES, f"alpha registry: {REGISTRY_PATH} themes must begin with the frozen "
+                                                  f"v4 list {', '.join(V4_THEMES)} (Ruling PM4-11)")
+    return themes
+
+
+PRIOR_THEMES = registered_prior_themes()
+V7_APPENDED_THEMES = PRIOR_THEMES[len(V4_THEMES):]  # the themes registered after the v4 list, in registration order
+
+
+def prior_themes() -> tuple[tuple, str]:
+    """(admissible prior-metadata themes, their source): the alpha registry's ``themes`` table (task A-1) read now when
+    the registry file exists, else the import-time PRIOR_THEMES (the in-file list of record)."""
+    if not REGISTRY_PATH.is_file():
+        return PRIOR_THEMES, "in-file list"
+    return registry_themes(REGISTRY_PATH), f"registry {REGISTRY_PATH.name}"
 
 
 def require_resid_order(args) -> None:
     """v8 R-11, finding R6C-4 (Ruling PM5-12): theme-resid-v1 takes its order from PRIOR_THEMES (Ruling PM4-11) while
     admission reads prior_themes() (the registry's themes table when present). Under --theme-resid the two tuples must
-    be equal before anything is computed: a theme registered without extending V7_APPENDED_THEMES (E7's filing_events)
-    would otherwise be admitted and fitted, then refused as outside the registered order."""
+    be equal before anything is computed: a theme admitted outside the registered order would otherwise be fitted, then
+    refused. Since P9 lane D1 PRIOR_THEMES is the registry's table read at import, so they differ only when the registry
+    changed (or REGISTRY_PATH moved) after the fitter was loaded."""
     if getattr(args, "theme_resid", None) is None:
         return
     themes, source = prior_themes()
     require(tuple(themes) == PRIOR_THEMES,
             f"--theme-resid {args.theme_resid}: the admissible themes ({source}: {', '.join(themes)}) are not "
-            f"PRIOR_THEMES, the registered theme order (Ruling PM4-11: {', '.join(PRIOR_THEMES)}); extend "
-            f"V7_APPENDED_THEMES to the registry's themes, in its order, before a theme-resid fit")
+            f"PRIOR_THEMES, the registered theme order (Ruling PM4-11: {', '.join(PRIOR_THEMES)}); PRIOR_THEMES is "
+            f"the registry's themes table read when the fitter was loaded: fit with that registry")
 
 
 def appended_themes(themes: tuple) -> tuple:
@@ -1984,6 +2035,8 @@ def fit(args, log=None) -> tuple[int, dict]:
     require(prior or (recipe_path is None and recipe_sha is None), "--recipe is read only by --screen v4-prior-v1/v2")
     require(prior or getattr(args, "theme_resid", None) is None, composition_resid.PRIOR_ONLY)  # v8 R-11
     require_resid_order(args)  # v8 R-11, finding R6C-4: the registry's themes are PRIOR_THEMES, before any compute
+    for modifier in PARENT_CHECKED_MODIFIERS:  # v8 X / Y / Y-5: --theme-erc, --theme-tsmom, --two-speed's parents
+        modifier.check_args(args, prior, pooled(args), FitError)
     resid_parent = load_resid_parent(args)  # v8 R-11, finding R6B-O-5: pinned before anything is computed
     require((recipe_path is None) == (recipe_sha is None), "--recipe and --recipe-sha256 go together")
     netcost = args.composition == NETCOST_RULE_ID
@@ -2190,6 +2243,116 @@ def fit(args, log=None) -> tuple[int, dict]:
     return EXIT_OK, summary
 
 
+# ---------------------------------------------------------------- prior weight rules (P9 lane D1)
+class PriorFitInputs(NamedTuple):
+    """What a prior weight rule reads, as fit_prior holds it: the fitted members ``active`` (admission order) and the
+    per-candidate ``ids``, ``themes``, ``tiers``, admission ``rows`` and aim records ``aims`` (None unless ``aim``)."""
+    active: list
+    ids: list
+    themes: list
+    tiers: list
+    rows: list
+    aims: list | None
+    aim: bool
+
+
+class PriorFit(NamedTuple):
+    """A prior weight rule's weights (one per active member), theme table, composition text and fit-series text;
+    ``parent`` the rule's fit object (composition_rules.ew_theme_std / composition_ic_shrink.ic_shrink, which
+    theme-erc-v1 and the block attach read; None otherwise) and ``v6_detail`` ew-theme-v6's detail (None otherwise)."""
+    weights: np.ndarray
+    theme_table: dict
+    text: str
+    fit_series: str
+    parent: object = None
+    v6_detail: object = None
+
+
+class PriorWeightRule(NamedTuple):
+    """One row of PRIOR_WEIGHT_RULES: the --composition ids it fits, its fit (PriorFitInputs -> PriorFit) and, for a
+    rule that may leave every weight zero, the reason the admission table is then published without weights."""
+    ids: tuple
+    fit: Callable
+    empty_reason: str | None = None
+
+
+def _ew_theme_fit(x: PriorFitInputs) -> PriorFit:  # v4 R4
+    weights, theme_table = ew_theme_weights([x.themes[k] for k in x.active])
+    return PriorFit(weights, theme_table,
+                    "w_k=1/(T*n_theme(k)) over admitted non-degenerate k; T=themes with >=1 such member; "
+                    "no mean or covariance estimation",
+                    "none (equal theme weights); diagnostic uses s_k*f over ALL TRAIN scored decisions, flat decisions 0")
+
+
+def _aim_v1_fit(x: PriorFitInputs) -> PriorFit:  # v5 R4' (single window only: the pooled fit refuses it, Ruling E-27b)
+    weights, theme_table = ew_theme_aim_weights([x.themes[k] for k in x.active],
+                                                [x.aims[k]["gain"] for k in x.active])  # type: ignore[index]
+    return PriorFit(weights, theme_table,
+                    "w_k=(g_k/(T*n_theme(k)))/sum_m(g_m/(T*n_theme(m))) over admitted non-degenerate k "
+                    "(normalised globally); g_k=theta*sum_{j=0..126}(1-theta)^j*rho_k(j) clipped to [0.05,1], "
+                    "rho_k from TRAIN rank autocorrelation; T=themes with >=1 such member; no mean or "
+                    "covariance estimation", AIM_FIT_SERIES)
+
+
+def _v6_fit(x: PriorFitInputs) -> PriorFit:
+    # (c) reads the standalone tau of each member's admission row: admission.json candidates[].tau (status admitted).
+    weights, theme_table, v6_detail = ew_theme_v6_weights([x.ids[k] for k in x.active], [x.themes[k] for k in x.active],
+                                                          [x.rows[k]["tau"] for k in x.active])
+    return PriorFit(weights, theme_table,
+                    "ew-theme-v6: theme'=options_implied->short_interest, low_risk dropped (weight 0); within "
+                    "theme' b=1/n, a member with admission tau_k>=0.08 keeps b/3 and the freed mass goes pro rata "
+                    "(by b) to the theme's slow members (none slow: weights stay b); w_k=within_k/T, T=themes' "
+                    "with >=1 member; missing members' mass stays in the theme per name and day "
+                    "(theme_redistribution within-theme-v1, applied by the IC runner); no mean or covariance "
+                    "estimation",
+                    "none (prior-fixed theme weights; TRAIN standalone tau only flags fast sleeves); diagnostic uses "
+                    "s_k*f over ALL TRAIN scored decisions, flat decisions 0, without the per-name within-theme "
+                    "redistribution", v6_detail=v6_detail)
+
+
+def _std_fit(x: PriorFitInputs) -> PriorFit:  # v8 R-1 (and R-3's gains): rules in composition_rules.py
+    std = composition_rules.ew_theme_std([x.ids[k] for k in x.active], [x.themes[k] for k in x.active],
+                                         [x.tiers[k] for k in x.active], error=FitError,
+                                         gains=[x.aims[k]["gain"] for k in x.active] if x.aim else None)  # type: ignore[index]
+    return PriorFit(std.weights, std.theme_table, std.text, std.fit_series, parent=std)
+
+
+def _aim_v2_fit(x: PriorFitInputs) -> PriorFit:  # v8 R-3 on ew-theme-v1 (E-27a/b), single window and era pool (E-35a)
+    gains = [x.aims[k]["gain"] for k in x.active]  # type: ignore[index]
+    weights, theme_table = composition_rules.ew_theme_aim_v2([x.ids[k] for k in x.active],
+                                                             [x.themes[k] for k in x.active], gains, error=FitError)
+    return PriorFit(weights, theme_table, composition_rules.AIM_V2_TEXT, composition_rules.AIM_V2_FIT_SERIES)
+
+
+def _ic_shrink_fit(x: PriorFitInputs) -> PriorFit:  # v8 R-10: the admission rows' train_mean are the ICs
+    std = composition_ic_shrink.ic_shrink([x.ids[k] for k in x.active], [x.themes[k] for k in x.active],
+                                          [x.rows[k]["train_mean"] for k in x.active], error=FitError,
+                                          gains=[x.aims[k]["gain"] for k in x.active] if x.aim else None)  # type: ignore[index]
+    return PriorFit(std.weights, std.theme_table, std.text, std.fit_series, parent=std)
+
+
+# P9 lane D1 (DEC-8): the prior weight rules in place of fit_prior's if/elif -- dispatch only, each row calling its
+# rule's code with the arguments that chain passed (weights, tables and texts unchanged). The ids partition
+# PRIOR_COMPOSITIONS; a prior composition outside every row is refused by name (Ruling E-35: no fall-back to
+# ew-theme-v1). A new prior rule is one row (and its PRIOR_COMPOSITIONS entry).
+PRIOR_WEIGHT_RULES = (
+    PriorWeightRule((EW_THEME_RULE_ID,), _ew_theme_fit),
+    PriorWeightRule((AIM_RULE_ID,), _aim_v1_fit),
+    PriorWeightRule((V6_RULE_ID,), _v6_fit, "fit: ew-theme-v6 leaves no member outside the dropped themes"),
+    PriorWeightRule(composition_rules.STD_RULES, _std_fit),
+    PriorWeightRule((AIM_V2_RULE_ID,), _aim_v2_fit),
+    PriorWeightRule(composition_ic_shrink.RULES, _ic_shrink_fit),
+)
+
+
+def prior_weight_rule(composition: str) -> PriorWeightRule:
+    """The PRIOR_WEIGHT_RULES row fitting ``composition``; refused (FitError) when no row does."""
+    for rule in PRIOR_WEIGHT_RULES:
+        if composition in rule.ids:
+            return rule
+    raise FitError(f"fit: --composition {composition} has no prior weight rule")
+
+
 def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], factors: np.ndarray,
               taus: list[float], shas: list[str], cache_entry: list[str], records: list[dict], inputs: dict,
               window: dict, decision_sessions: np.ndarray, computed: int, reused: int, out: Path,
@@ -2312,55 +2475,25 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
                        "factor series", files={n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())},
                        seconds=round(time.perf_counter() - started, 2))
         return EXIT_NO_WEIGHTS, summary
-    if args.composition == AIM_RULE_ID:  # v5 R4' (single window only: the pooled fit refuses it, Ruling E-27b)
-        weights, theme_table = ew_theme_aim_weights([themes[k] for k in active],
-                                                    [aims[k]["gain"] for k in active])  # type: ignore[index]
-        composition_text = ("w_k=(g_k/(T*n_theme(k)))/sum_m(g_m/(T*n_theme(m))) over admitted non-degenerate k "
-                            "(normalised globally); g_k=theta*sum_{j=0..126}(1-theta)^j*rho_k(j) clipped to [0.05,1], "
-                            "rho_k from TRAIN rank autocorrelation; T=themes with >=1 such member; no mean or "
-                            "covariance estimation")
-        fit_series = AIM_FIT_SERIES
-    elif v6:
-        # (c) reads the standalone tau of each member's admission row: admission.json candidates[].tau (status admitted).
-        weights, theme_table, v6_detail = ew_theme_v6_weights([ids[k] for k in active], [themes[k] for k in active],
-                                                              [rows[k]["tau"] for k in active])
-        composition_text = ("ew-theme-v6: theme'=options_implied->short_interest, low_risk dropped (weight 0); within "
-                            "theme' b=1/n, a member with admission tau_k>=0.08 keeps b/3 and the freed mass goes pro rata "
-                            "(by b) to the theme's slow members (none slow: weights stay b); w_k=within_k/T, T=themes' "
-                            "with >=1 member; missing members' mass stays in the theme per name and day "
-                            "(theme_redistribution within-theme-v1, applied by the IC runner); no mean or covariance "
-                            "estimation")
-        fit_series = ("none (prior-fixed theme weights; TRAIN standalone tau only flags fast sleeves); diagnostic uses "
-                      "s_k*f over ALL TRAIN scored decisions, flat decisions 0, without the per-name within-theme "
-                      "redistribution")
-        if not float(np.sum(weights)) > 0:  # every member sat in a dropped theme: admission table only
-            publish_directory(out, files)
-            summary.update(status="published-without-weights", reason="fit: ew-theme-v6 leaves no member outside the "
-                           "dropped themes", files={n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())},
-                           seconds=round(time.perf_counter() - started, 2))
-            return EXIT_NO_WEIGHTS, summary
-    elif args.composition in composition_rules.STD_RULES:  # v8 R-1 (and R-3's gains): rules in composition_rules.py
-        std = composition_rules.ew_theme_std([ids[k] for k in active], [themes[k] for k in active],
-                                             [tiers[k] for k in active], error=FitError,
-                                             gains=[aims[k]["gain"] for k in active] if aim else None)  # type: ignore[index]
-        weights, theme_table, composition_text, fit_series = std.weights, std.theme_table, std.text, std.fit_series
-    elif args.composition == AIM_V2_RULE_ID:  # v8 R-3 on ew-theme-v1 (E-27a/b), single window and era pool (E-35a)
-        gains = [aims[k]["gain"] for k in active]  # type: ignore[index]
-        weights, theme_table = composition_rules.ew_theme_aim_v2([ids[k] for k in active], [themes[k] for k in active],
-                                                                 gains, error=FitError)
-        composition_text, fit_series = composition_rules.AIM_V2_TEXT, composition_rules.AIM_V2_FIT_SERIES
-    elif args.composition in composition_ic_shrink.RULES:  # v8 R-10: the admission rows' train_mean are the ICs
-        std = composition_ic_shrink.ic_shrink([ids[k] for k in active], [themes[k] for k in active],
-                                              [rows[k]["train_mean"] for k in active], error=FitError,
-                                              gains=[aims[k]["gain"] for k in active] if aim else None)  # type: ignore[index]
-        weights, theme_table, composition_text, fit_series = std.weights, std.theme_table, std.text, std.fit_series
-    else:
-        require(args.composition == EW_THEME_RULE_ID,  # Ruling E-35: nothing falls back to ew-theme-v1
-                f"fit: --composition {args.composition} has no prior weight rule")
-        weights, theme_table = ew_theme_weights([themes[k] for k in active])
-        composition_text = ("w_k=1/(T*n_theme(k)) over admitted non-degenerate k; T=themes with >=1 such member; "
-                            "no mean or covariance estimation")
-        fit_series = "none (equal theme weights); diagnostic uses s_k*f over ALL TRAIN scored decisions, flat decisions 0"
+    # P9 lane D1: the prior weight rule table (PRIOR_WEIGHT_RULES) in place of the v8 if/elif; ``std`` is the parent
+    # fit theme-erc-v1 and the block attach read, ``v6_detail`` ew-theme-v6's (each None for the other rules).
+    rule = prior_weight_rule(args.composition)
+    prior_fit = rule.fit(PriorFitInputs(active, ids, themes, tiers, rows, aims, aim))
+    weights, theme_table, composition_text, fit_series = (prior_fit.weights, prior_fit.theme_table, prior_fit.text,
+                                                         prior_fit.fit_series)
+    std, v6_detail = prior_fit.parent, prior_fit.v6_detail
+    if rule.empty_reason is not None and not float(np.sum(weights)) > 0:  # ew-theme-v6: every member sat in a dropped
+        publish_directory(out, files)                                       # theme: admission table only
+        summary.update(status="published-without-weights", reason=rule.empty_reason,
+                       files={n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())},
+                       seconds=round(time.perf_counter() - started, 2))
+        return EXIT_NO_WEIGHTS, summary
+    erc = None
+    if getattr(args, "theme_erc", None) is not None:  # v8 X (XCOMB) theme-erc-v1 on the parent fit (check_args ran)
+        erc = composition_theme_erc.theme_erc(std, [ids[k] for k in active], [themes[k] for k in active],
+                                              np.vstack([prior_signs[k] * zero_filled[k] for k in active]),
+                                              train_mask, args.composition, error=FitError)
+        weights, theme_table, composition_text, fit_series = erc.weights, erc.theme_table, erc.text, erc.fit_series
     for k, w in zip(active, weights):
         weight_rows[k]["weight"] = float(w)
     if v6:  # theme' tables carry their own member lists (merged themes); dropped members are marked
@@ -2426,6 +2559,19 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
         composition_rules.attach_std(document, std)
     if args.composition in composition_ic_shrink.RULES:  # schema v2, its theme_standardise, provenance.ic_shrink
         composition_ic_shrink.attach(document, std)
+    if erc is not None:  # v8 X (XCOMB): the theme-erc-v1 block replaces the parent's; provenance.theme_erc
+        composition_theme_erc.attach(document, erc)
+        summary["theme_erc"] = {"parent_rule": args.composition,
+                                "theme_shares": erc.provenance["theme_shares"]}
+    if getattr(args, "theme_tsmom", None) is not None:  # v8 Y (YCOMB): the schedule on the final weights (check_args ran)
+        tsmom = composition_theme_tsmom.schedule(
+            [ids[k] for k in active], [themes[k] for k in active], weights, matrix, decision_sessions, train_mask,
+            composition_theme_erc.RULE_ID if erc is not None else args.composition, error=FitError)
+        composition_theme_tsmom.attach(document, tsmom)
+        summary["theme_tsmom"] = tsmom.summary
+    if getattr(args, "two_speed", None) is not None:  # v8 Y-5 (YCOMB): the spec block only (check_args ran)
+        composition_two_speed.attach(document, error=FitError)
+        summary["two_speed"] = document[composition_two_speed.BLOCK]
     # v8 R-11 --theme-resid (theme order: PRIOR_THEMES, Ruling PM4-11; --theme-resid-parent: finding R6B-O-5); absent:
     # no change
     composition_resid.apply(args, document, summary, PRIOR_THEMES, FitError, parent=resid_parent,
@@ -2579,7 +2725,8 @@ def parse_args(argv):
                    help="v8 H-1: an era pooled before the --train role (date order; repeatable): its role manifest, "
                         "TRAIN orientations.json and runner summary.json with their SHA-256 pins")
     p.add_argument("--era-id", default=None, help="v8 H-1: the era id of the --train role (the anchor, last era)")
-    composition_resid.add_argument(p)  # v8 R-11: --theme-resid theme-resid-v1
+    for modifier in MODIFIER_MODULES:  # --theme-resid (R-11), --theme-erc (X), --theme-tsmom (Y), --two-speed (Y-5)
+        modifier.add_argument(p)
     return p.parse_args(argv)
 
 

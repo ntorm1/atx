@@ -182,6 +182,36 @@ def fingerprints(source: bytes, producers: dict, orchestration=frozenset(), host
     return out
 
 
+def cross_module_reads(source: bytes, entries: tuple, local_modules, orchestration=frozenset()) -> dict:
+    """{module name: sorted names} that the closure of ``entries`` reads from another module of ``local_modules``:
+    a name bound by ``from M import x`` that the closure reaches, and every ``alias.attr`` read in a reached statement
+    where ``alias`` is bound by ``import M as alias``. ``fingerprints`` hashes those import statements, not the code
+    they name, so each read must be pinned some other way (a module's ``IMPORTS`` closure or a data pin; finding FD-2).
+    ValueError when the source lacks an entry name or does not parse."""
+    module = Module(source)
+    if not module.has(entries):
+        raise ValueError(f"cross_module_reads: the source lacks one of {tuple(entries)}")
+    local = frozenset(local_modules)
+    names = module.reach(entries, orchestration)
+    aliases: dict = {}
+    out: dict = {}
+    for name in names:
+        for stmt in module.bindings[name]:
+            if isinstance(stmt, ast.ImportFrom) and stmt.level == 0 and stmt.module in local:
+                if any((a.asname or a.name) == name for a in stmt.names):
+                    imported = next(a.name for a in stmt.names if (a.asname or a.name) == name)
+                    out.setdefault(stmt.module, set()).add(imported)
+            elif isinstance(stmt, ast.Import):
+                for a in stmt.names:
+                    if (a.asname or a.name).split(".")[0] == name and a.name in local:
+                        aliases[name] = a.name
+    for stmt in module.statements(names):
+        for n in ast.walk(stmt):
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id in aliases:
+                out.setdefault(aliases[n.value.id], set()).add(n.attr)
+    return {k: sorted(v) for k, v in sorted(out.items())}
+
+
 def fingerprint(source: bytes, entries: tuple, group: str = "producer") -> str:
     """The fingerprint of one entry tuple; ValueError when the source lacks an entry name."""
     fp = fingerprints(source, {group: tuple(entries)})[group]

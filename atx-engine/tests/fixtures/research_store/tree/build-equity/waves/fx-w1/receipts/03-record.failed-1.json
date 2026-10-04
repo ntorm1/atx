@@ -1,0 +1,13 @@
+{
+  "chain": "fx-w1",
+  "code": 4,
+  "error": "placeholder failure",
+  "index": 3,
+  "inputs": {},
+  "outputs": {},
+  "schema": "atx.stage-receipt/v1",
+  "seconds": 0.0,
+  "stage": "record",
+  "started_utc": "2023-06-01T00:00:03+00:00",
+  "status": "failed"
+}

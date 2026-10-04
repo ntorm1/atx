@@ -50,14 +50,26 @@ def edit_registry(root: Path, change) -> None:
 
 
 # ------------------------------------------------------------------ the brief's acceptance tests
-def test_v71_library_byte_identical():
+def test_v71_library_byte_identical(tmp_path):
     docs = G.documents(HERE, "v71")
     blob = docs["fund_industry_ic_v71.json"]
     assert hashlib.sha256(blob).hexdigest() == V71_SHA256
     assert blob == (HERE / "fund_industry_ic_v71.json").read_bytes()          # the committed IC library, byte for byte
-    assert docs["fund_industry_ic_v71.recipe.v2.json"] == (HERE / "fund_industry_ic_v71.recipe.v2.json").read_bytes()
-    assert G.main(["--library", "v71", "--check"]) == 0
-    assert G.main(["--library", "v71", "--check", "--plan-json", str(PLAN)]) == 0
+    # Ruling PM7-22: the recipe is compared except its roster-cap field. The slim recipe records the registry's
+    # house_budget, and Ruling R7-a raised max_roster 56 -> 64 (library v8.1); the cap is not content. Every other
+    # recipe byte is compared by regenerating, in a copy of the tree, at the cap the committed recipe records.
+    recipe = "fund_industry_ic_v71.recipe.v2.json"
+    committed = (HERE / recipe).read_bytes()
+    cap = json.loads(committed)["generation"]["house_budget"]["max_roster"]
+    now = json.loads(docs[recipe])
+    assert now["generation"]["house_budget"]["max_roster"] >= cap
+    root = tree(tmp_path)
+    edit_registry(root, lambda reg: reg["house_budget"].update(max_roster=cap))
+    at_cap = G.documents(root, "v71")
+    assert at_cap["fund_industry_ic_v71.json"] == blob
+    assert at_cap[recipe] == committed
+    assert G.main(["--library", "v71", "--check", "--strategies", str(root)]) == 0
+    assert G.main(["--library", "v71", "--check", "--plan-json", str(PLAN), "--strategies", str(root)]) == 0
 
 
 def test_plan_rows_equal_static_validation():

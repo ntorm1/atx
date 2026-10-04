@@ -1,0 +1,1173 @@
+{
+  "frozen": "rank(decay_linear((-1 * ((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0)), 21))",
+  "rows": [
+    {
+      "swaps": [],
+      "n": 0,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "3ea99660fd87ccf3d6522380f8d7d1500dae2f89222b0ef777d41162fea33c22",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "times"
+      ],
+      "n": 1,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "8b1c639a55ed50565328eb96680ac522dd42485f0705143a2d5b1cc105aefe52",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "plus"
+      ],
+      "n": 1,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "8ffe44d5070927433ae2c56e89a57a81191cf6ac6fd8f488c153f9e6d444750a",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "plus",
+        "times"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "461106b1e0562124679a2a76dc1e94e0a2a159c988aa416e80b56b1fda7858d3",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "corrB"
+      ],
+      "n": 1,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "b2b5fd3c03f94d57c6d75e30ab204ccb2216931668207904dade5f2685a98e7e",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "corrB",
+        "times"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "de3d8333e47f55595cf9e570b36448511ec7eed169b343fac3fbb7d96247a3e8",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "corrB",
+        "plus"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "0e3b9c697ffba7810bf89766d2bd22ba9a5c3a7ee594af34f7d3ec4dbc0738b1",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "corrB",
+        "plus",
+        "times"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "bce33f639c3a6e0e9d431360d7275297ffd61104db6932bc70c598f9b396927b",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "corrA"
+      ],
+      "n": 1,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "660df05e858ff98123aa8697d612f1b1ff4ceef8157cf2fa94514f9a7b2e8d20",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "corrA",
+        "times"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "3a4984e486e0d2fb94b52e2c7ffee9e4f92688462816c64bfdc7aa649f5ca9d6",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "corrA",
+        "plus"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "2d00b734183b3e27f45ad1ac1d54681724d6f836b66bc4fe7cbec236a04de29f",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "corrA",
+        "plus",
+        "times"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "3d86523a1f8a31d444ec1aa43d7e69530bef334022ccf3c00064f8d0ba975bfb",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "corrA",
+        "corrB"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "1ae4084c381c61ce143dcb5132238c92e579ea62aa85b6950c18497d216874fc",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "corrA",
+        "corrB",
+        "times"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "a3516a76cde4caa3e7300922c07a07a3bff514f02ebcf8b8e16cd2c06bfb11e5",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "corrA",
+        "corrB",
+        "plus"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "2fec1d7e3a62ff43a2b5e188229110f4e3cd7c3103116ca54a1a2c811f2229d6",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "corrA",
+        "corrB",
+        "plus",
+        "times"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 8,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "804d9544e9fd3bd79b00d48dc6ef9ae9f82c13b6a50819b42e60c3111b5f6f23",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp"
+      ],
+      "n": 1,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "e0f2447d71f32dc530e30566e0bef5a9fc5dc1521a892ca0c5c0175fce4169c4",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "times"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "9f822ba61db8320e98dbd5632eea614cf5e55db58a2152a2a667ca9f41ac7a72",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "plus"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "8b7bcea3f4df7c47c6b6e48f8355a06e953fffc72c65cb043c899129755633eb",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "plus",
+        "times"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "1620913a7c4e4390100c3d75c53194b31f31c0ab40da00c8d9ebe9c7c71accc8",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "corrB"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "79bd451a4aeef1db23043cf2007d0e982dc92582ba09b6b0429c85d470f9aca0",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "corrB",
+        "times"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "57b6b180cbdcb921ddb0a8dd73a9a28e4ae2ba3c313caae8490568e22148908f",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "corrB",
+        "plus"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "0d8d2c895bc71c47f3cdac382b3f0dd3dfa95e96a89045cc93cf8ba2650cd30f",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "corrB",
+        "plus",
+        "times"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "abd923523a6e5285b5c1fa221649493e11e87d3a59d9e5089ff623c485137f15",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "corrA"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "8870da0461fed688c812344eee6513791af3ce00415c95a34b5ee5e9d2b60b9f",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "corrA",
+        "times"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "b5291700d79f2f956e32d0ffd077748117711f92474c0d63e07f24e45bc8b967",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "corrA",
+        "plus"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "8a27be8b4d886efc48146f78e2219f4f3d4ba70b46285d48bb7ebd027e189a8b",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "corrA",
+        "plus",
+        "times"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "743f3c6709987a57534216d94a0b61e711d7078265e31eb47537c8ebda32364d",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "corrA",
+        "corrB"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "dcc6b0c1ac82be4d52be70fc7793913096589e13c6c9f7aa97e3f20c4a59ae14",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "corrA",
+        "corrB",
+        "times"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "a7761abb69f52b866d7fa1153e74078ef9cbfa7185c63044a6d609b691b5c715",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "corrA",
+        "corrB",
+        "plus"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "b06be813384e337f0ada2c06f75d47938a0def9d3b121164209cd776433b581c",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "cmp",
+        "corrA",
+        "corrB",
+        "plus",
+        "times"
+      ],
+      "n": 5,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 9,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "f7adf04381a95d550ba860c67c8210cf4dda7ef8289bb49c3dbcdb14565f0cbd",
+      "dsl": "rank(decay_linear((-1 * ((rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0)), 21))"
+    },
+    {
+      "swaps": [
+        "neg"
+      ],
+      "n": 1,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "8f56e93677a8c275ec83c1fceda1a057461da3beb63d5b6d6adb35eebda2edab",
+      "dsl": "rank(decay_linear((((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "times"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "301f7a818edaa82ad6d1334c181331050902340cd8e6e9e6b008074fab6257d2",
+      "dsl": "rank(decay_linear((((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "plus"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "f338fcb3dc51de2133dcb844a44575f174e065836b40369203c39da55dfb48de",
+      "dsl": "rank(decay_linear((((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "plus",
+        "times"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "9fa672c0607f6c5ee5500dfb284f915af45799a0cdd4d33ca15c6dfaf2e76018",
+      "dsl": "rank(decay_linear((((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "corrB"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "6cdc6b1bded26435d9dfa04fdd7f3184027e81a6735e08e18f97a2f6e16d0c6c",
+      "dsl": "rank(decay_linear((((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "corrB",
+        "times"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "b1918ff7eb9157d09ddb6a0b59202512831ce4e74b30934e18e27ffb681f4d31",
+      "dsl": "rank(decay_linear((((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "corrB",
+        "plus"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "5b4c3f1e14d98cc39511cbd053591b1517251b754af2085f65012edd38754fdb",
+      "dsl": "rank(decay_linear((((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "corrB",
+        "plus",
+        "times"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "db354af8deec3cab3fa408fbef7e3519291739e9216cea8183993a140293ae8b",
+      "dsl": "rank(decay_linear((((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "corrA"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "dea7b3f868cf6b360acc176b1d9ee400dcd6435332b065a8e0fdaeaacc0c4b9a",
+      "dsl": "rank(decay_linear((((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "corrA",
+        "times"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "cb14259ca161044e59552fb982b012816819f12c0869caff2637ed11e9a86d86",
+      "dsl": "rank(decay_linear((((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "corrA",
+        "plus"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "5f4004f1556e3cc3c61f4a60e40efe08e6d010210917a0a76de8786520a4e4c0",
+      "dsl": "rank(decay_linear((((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "corrA",
+        "plus",
+        "times"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "48b920bb618e897283e1cc7c4e29df4e7449cd6fc980a2b6afeac4475d01fb8d",
+      "dsl": "rank(decay_linear((((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "corrA",
+        "corrB"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "7fc80601695f777a442a67ca707ce09232f6744fc2b881bc50b68a37ec94bcee",
+      "dsl": "rank(decay_linear((((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "corrA",
+        "corrB",
+        "times"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "a6f694a53c7773fe5d8f2965b779fb8c8cde7716c0236dffbc3c52b155f6ba1d",
+      "dsl": "rank(decay_linear((((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "corrA",
+        "corrB",
+        "plus"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "ed3a465c15de870f1cd6ae946ff910034a21726620fbf086e0f0e3683e37f784",
+      "dsl": "rank(decay_linear((((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "corrA",
+        "corrB",
+        "plus",
+        "times"
+      ],
+      "n": 5,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 6,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "e89f4646a37db32b549dcbfa4ce511ef3617f6a805bca88b1ad4bf49f38d5267",
+      "dsl": "rank(decay_linear((((rank(correlation(volume, low_adj, 6)) > rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp"
+      ],
+      "n": 2,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "36a3e6535f85e92c9061e8dd1565e314c6ac31ab04951c74c115a184996d5954",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "times"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "ba97fcca105ae3e9103056bb087d63ac1bbed526f578d93b4e9dde518789bbc6",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "plus"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "85e2ff768869516152d45c22aa1a2ec0c11b934dbb03bc26ebedbcdb6a3be6d7",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "plus",
+        "times"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "5efdf421fb01d9c83c942a5e5e037e5a760d07e721aa1d890ad4f610d45354fb",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "corrB"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "0baef70d4adb8c7daf66b92de95cab8fca3541391f835db98617e8d43512b058",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "corrB",
+        "times"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "7871ed68289256ef716438cac8e0d1e6c88e1a98dd27facdcbfd22d2b815b968",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "corrB",
+        "plus"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "743ce092ad6d2ce6b32a42197a0aa1e53271ff543d02375b6dd62cb285f9432b",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "corrB",
+        "plus",
+        "times"
+      ],
+      "n": 5,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "4443744a650273b596487bbc9cb88ab45e8bccab6a23beb35e9d17a68f0282a1",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8)) < rank(correlation(low_adj, volume, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "corrA"
+      ],
+      "n": 3,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "86772c99a8815f28fa05e4c8c5ac15fd6c40b097810e9f7a50889feda57ce6d2",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "corrA",
+        "times"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "db07df84f77dad8ebdae6c73ec3a29d9ea3fe619e6d8065986d689a1f1198bca",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "corrA",
+        "plus"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "22534dcceb40543b3653c0dd66c2fd59bd43ef6e152bcec0701f3ce9ffd96885",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "corrA",
+        "plus",
+        "times"
+      ],
+      "n": 5,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "812e4f015497e8e1e045e6506445eaa629f65e9c5511056761e936dcf99fe062",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(((low_adj + high_adj) / 2), 19), ts_sum(ts_mean((volume * raw_close), 60), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "corrA",
+        "corrB"
+      ],
+      "n": 4,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "cb354273340daf9868d1549c1c6454a77dc6f8750e47c054fed1b093f415443c",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "corrA",
+        "corrB",
+        "times"
+      ],
+      "n": 5,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "16bef0c84c576203a495bb6f4a1c42d07db4d84130719f9a63d1a729b4a64d83",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((high_adj + low_adj) / 2), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "corrA",
+        "corrB",
+        "plus"
+      ],
+      "n": 5,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "dbe8183bb74861550cd10f4158d8e7d7ab98a10dc82a4e38863c4abfab73139b",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(ts_mean((raw_close * volume), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0) * -1), 21))"
+    },
+    {
+      "swaps": [
+        "neg",
+        "cmp",
+        "corrA",
+        "corrB",
+        "plus",
+        "times"
+      ],
+      "n": 6,
+      "canonical_equal": true,
+      "bars": 104,
+      "slots": 7,
+      "extra": [
+        "high_adj",
+        "low_adj"
+      ],
+      "nodes": 28,
+      "dsl_sha256": "029cb5c924909262b67a45116c593daa2332bf0c262ef4b3749c640d2f07739f",
+      "dsl": "rank(decay_linear((((rank(correlation(ts_sum(ts_mean((volume * raw_close), 60), 19), ts_sum(((low_adj + high_adj) / 2), 19), 8)) < rank(correlation(volume, low_adj, 6))) ? 1 : 0) * -1), 21))"
+    }
+  ],
+  "chosen": {
+    "swaps": [
+      "neg"
+    ],
+    "n": 1,
+    "canonical_equal": true,
+    "bars": 104,
+    "slots": 6,
+    "extra": [
+      "high_adj",
+      "low_adj"
+    ],
+    "nodes": 28,
+    "dsl_sha256": "8f56e93677a8c275ec83c1fceda1a057461da3beb63d5b6d6adb35eebda2edab",
+    "dsl": "rank(decay_linear((((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0) * -1), 21))"
+  },
+  "rule": "fewest swaps; no correlation swap before one; leftmost swapped node"
+}

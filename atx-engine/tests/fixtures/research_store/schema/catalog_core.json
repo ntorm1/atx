@@ -1,0 +1,458 @@
+{
+  "name": "catalog_core",
+  "db": "catalog",
+  "version": 1,
+  "tables": [
+    {
+      "name": "store_info",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": true,
+      "key": [
+        "key"
+      ],
+      "columns": [
+        {
+          "name": "key",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "value",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE store_info(key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(key)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "catalog_run",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": true,
+      "key": [
+        "catalog_run_id"
+      ],
+      "columns": [
+        {
+          "name": "catalog_run_id",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "git_sha",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "store_exe_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "roots",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "started_utc",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "seconds",
+          "type": "real",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "files_seen",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "files_verified",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "files_declared",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "files_skipped",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "catalog_digest",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE catalog_run(catalog_run_id TEXT NOT NULL, git_sha TEXT, store_exe_sha256 TEXT CHECK(length(store_exe_sha256) = 64 AND store_exe_sha256 NOT GLOB '*[^0-9a-f]*'), roots TEXT NOT NULL CHECK(json_valid(roots)), started_utc TEXT NOT NULL, seconds REAL NOT NULL, files_seen INTEGER NOT NULL, files_verified INTEGER NOT NULL, files_declared INTEGER NOT NULL, files_skipped INTEGER NOT NULL, catalog_digest TEXT CHECK(length(catalog_digest) = 64 AND catalog_digest NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(catalog_run_id)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "artifact",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "path_key"
+      ],
+      "columns": [
+        {
+          "name": "path_key",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "path",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": true,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "bytes",
+          "type": "int",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "class",
+          "type": "text",
+          "nullable": false,
+          "indexed": true,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "json_schema",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "sha_source",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": [
+            "verified",
+            "declared"
+          ]
+        },
+        {
+          "name": "declared_by",
+          "type": "relpath",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "eol",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": [
+            "lf",
+            "crlf",
+            "mixed",
+            "none"
+          ]
+        },
+        {
+          "name": "producer_key",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE artifact(path_key TEXT NOT NULL, path TEXT NOT NULL CHECK(instr(path, '\\') = 0 AND substr(path, 1, 1) <> '/' AND ('/' || path || '/') NOT GLOB '*/../*'), sha256 TEXT NOT NULL CHECK(length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'), bytes INTEGER, class TEXT NOT NULL, json_schema TEXT, sha_source TEXT NOT NULL CHECK(sha_source IN ('verified', 'declared')), declared_by TEXT CHECK(instr(declared_by, '\\') = 0 AND substr(declared_by, 1, 1) <> '/' AND ('/' || declared_by || '/') NOT GLOB '*/../*'), eol TEXT CHECK(eol IN ('lf', 'crlf', 'mixed', 'none')), producer_key TEXT CHECK(length(producer_key) = 64 AND producer_key NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(path_key)) STRICT, WITHOUT ROWID;",
+        "CREATE INDEX ix_artifact_sha256 ON artifact(sha256);",
+        "CREATE INDEX ix_artifact_class ON artifact(class);"
+      ]
+    },
+    {
+      "name": "artifact_seen",
+      "version": 1,
+      "since": 1,
+      "append_only": true,
+      "volatile": true,
+      "key": [
+        "path_key",
+        "sha256",
+        "catalog_run_id"
+      ],
+      "columns": [
+        {
+          "name": "path_key",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "catalog_run_id",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE artifact_seen(path_key TEXT NOT NULL, sha256 TEXT NOT NULL CHECK(length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'), catalog_run_id TEXT NOT NULL, PRIMARY KEY(path_key, sha256, catalog_run_id)) STRICT, WITHOUT ROWID;",
+        "CREATE TRIGGER artifact_seen_no_update BEFORE UPDATE ON artifact_seen BEGIN SELECT RAISE(ABORT, 'artifact_seen is append-only'); END;",
+        "CREATE TRIGGER artifact_seen_no_delete BEFORE DELETE ON artifact_seen BEGIN SELECT RAISE(ABORT, 'artifact_seen is append-only'); END;"
+      ]
+    },
+    {
+      "name": "skipped_path",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": true,
+      "key": [
+        "catalog_run_id",
+        "path"
+      ],
+      "columns": [
+        {
+          "name": "catalog_run_id",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "path",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "reason",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": [
+            "seal-name",
+            "outside-roots",
+            "declared-only",
+            "unreadable",
+            "unparsed"
+          ]
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE skipped_path(catalog_run_id TEXT NOT NULL, path TEXT NOT NULL, reason TEXT NOT NULL CHECK(reason IN ('seal-name', 'outside-roots', 'declared-only', 'unreadable', 'unparsed')), PRIMARY KEY(catalog_run_id, path)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "producer",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "producer_key"
+      ],
+      "columns": [
+        {
+          "name": "producer_key",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "kind",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": [
+            "engine",
+            "python",
+            "powershell",
+            "human",
+            "unknown"
+          ]
+        },
+        {
+          "name": "exe_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "git_sha",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "build_type",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "module",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "code_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "receipt_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE producer(producer_key TEXT NOT NULL CHECK(length(producer_key) = 64 AND producer_key NOT GLOB '*[^0-9a-f]*'), kind TEXT NOT NULL CHECK(kind IN ('engine', 'python', 'powershell', 'human', 'unknown')), exe_sha256 TEXT CHECK(length(exe_sha256) = 64 AND exe_sha256 NOT GLOB '*[^0-9a-f]*'), git_sha TEXT, build_type TEXT, module TEXT, code_sha256 TEXT CHECK(length(code_sha256) = 64 AND code_sha256 NOT GLOB '*[^0-9a-f]*'), receipt_sha256 TEXT CHECK(length(receipt_sha256) = 64 AND receipt_sha256 NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(producer_key)) STRICT, WITHOUT ROWID;"
+      ]
+    }
+  ],
+  "views": []
+}

@@ -1,0 +1,19 @@
+{
+  "schema": "atx.research-wave/v1",
+  "wave": "fx-w1",
+  "description": "synthetic wave",
+  "parent": {
+    "spec": "scripts/specs/v8/fx-base.json",
+    "library": "lib-fx"
+  },
+  "fields": {
+    "dir": "build-equity/fx-fields",
+    "manifest_sha256": "7e8efb58e4f6c3876cc41d7d7b1bbcaa9cb0e1d02b78086f0184703108f03ce0"
+  },
+  "rule_cell": {
+    "template": "scripts/specs/v8/fx-tmpl.json",
+    "template_sha256": "2404bb82adb17981269cbcf894d2757c2f53c749f3f38d82259c14a386e5a941"
+  },
+  "ledger": "build-equity/trials.jsonl",
+  "out_dir": "build-equity/waves/fx-w1"
+}

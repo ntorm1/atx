@@ -24,6 +24,13 @@ struct IcCompositionConfig {
 //   residualise   standardise, then theme-resid-v1 (platform v8 R-11; theme index = position
 //                 in the registered order, strategy_ic_theme_resid.hpp).
 enum class IcThemeRule : atx::u8 { redistribute, standardise, residualise };
+// One block of a theme-mass schedule (theme-tsmom-v1, platform v8 Y-2; strategy_ic_theme_tsmom.hpp):
+// from date `begin` until the next block's begin (the last: to the end) the standardised themes
+// enter with `mass` (one finite value >= 0 per theme index) in place of W_theme.
+struct IcThemeBlock {
+  atx::usize begin{};
+  std::vector<atx::f64> mass;
+};
 struct IcCompositionResult {
   std::vector<atx::f64> signal; // date-major; nonmembers NaN, missing contributions zero (pinned themes: see create)
   std::vector<atx::f64> planned_turnover, contribution_fraction;
@@ -31,15 +38,52 @@ struct IcCompositionResult {
   std::vector<atx::usize> eligible_names;
   atx::f64 total_planned_turnover{}, deployment_turnover{};
   atx::usize deployment_date{}; // dates if there was no nonzero deployment
+  // two-speed-v1 (platform v8 Y-5; empty unless set_theme_sleeves ran): the fast and the slow
+  // themes' parts of `signal` (each: members 0 plus its themes' W_theme x re-rank, nonmembers
+  // NaN, as `signal` is built) and per date the fast themes' share of the theme mass in force
+  // over the themes with a present member at that date (0 when none has one; Ruling PM8-16 #9).
+  std::vector<atx::f64> sleeve_fast, sleeve_slow, sleeve_fast_share;
 };
 // Conservative owned allocation envelope, including result + scratch and bounded
 // candidate strings. Excludes caller Panel, VM, labels and incoming signal.
 // `themes` > 0 (pinned themes, at most 32) adds two f64 planes per theme under
 // `redistribute` and one under `standardise`; `residualise` adds to that one plane per theme
 // the regression scratch, instruments x (8 x themes + 8) B; 0 is the unchanged envelope.
+// `sleeves` (two-speed-v1, platform v8 Y-5) adds the two sleeve planes and the share row.
 [[nodiscard]] atx::core::Result<atx::u64> ic_composition_working_bytes(
     atx::usize dates, atx::usize instruments, atx::usize candidates, atx::usize themes = 0,
-    IcThemeRule rule = IcThemeRule::redistribute);
+    IcThemeRule rule = IcThemeRule::redistribute, bool sleeves = false);
+
+// The ordered stage list of a pinned composition (P9 lane D1, DEC-8): the stages the rows of
+// the IC runner's composition rule table (strategy_ic_rules.hpp) run, in application order.
+// One theme grouping first (redistribute: ew-theme-v6's within-theme-v1; standardise:
+// ew-theme-std-v1's per-date rule, which every theme_standardise row runs), then on standardise
+// either residualise (theme-resid-v1) or schedule (theme-tsmom-v1) and/or sleeves
+// (two-speed-v1). Each kind at most once, in this enum's order; no stage = the pinned (or
+// default) weights path.
+enum class IcStageKind : atx::u8 { redistribute, standardise, residualise, schedule, sleeves };
+struct IcStage {
+  IcStageKind kind{};
+  std::vector<IcThemeBlock> blocks; // schedule only: the blocks schedule_theme_masses takes
+  std::vector<atx::u8> fast;        // sleeves only: the flags set_theme_sleeves takes
+};
+// What create_from_stages composes. `weights`: pinned weights in library order (empty: equal
+// family/within weights); `themes`: the grouping stage's theme index per candidate (empty exactly
+// when there is no grouping stage). Both borrowed for the create_from_stages call only.
+struct IcCompositionStages {
+  std::span<const atx::f64> weights;
+  std::span<const atx::usize> themes;
+  std::vector<IcStage> stages;
+};
+// ic_composition_working_bytes of a staged composition: the grouping's rule (residualise when a
+// residualise stage rides on standardise), `themes` the grouping's theme count (0 without one) and
+// the sleeve planes iff a sleeves stage is present. The model is the composition's peak: one
+// theme plane set per theme beside the blend (the worst single candidate's VM slots are admitted
+// by the caller, strategy_ic_admission.cpp). Refuses (InvalidArgument) a malformed stage order
+// and themes without a grouping stage, as create_from_stages does.
+[[nodiscard]] atx::core::Result<atx::u64> ic_composition_stage_bytes(
+    atx::usize dates, atx::usize instruments, atx::usize candidates, atx::usize themes,
+    std::span<const IcStageKind> kinds);
 
 // Streaming equal-family/equal-within-family centered tied-rank composition.
 // create copies membership and candidate metadata. add borrows one signal only
@@ -88,6 +132,14 @@ class IcComposition {
       std::span<const atx::f64> pinned_weights = {}, // empty: equal family/within
       std::span<const atx::usize> pinned_themes = {}, // empty: no redistribution
       IcThemeRule rule = IcThemeRule::redistribute);  // what pinned_themes switch on
+  // The runner's entry (P9 lane D1): create under the grouping stage's rule, then
+  // schedule_theme_masses for a schedule stage and set_theme_sleeves for a sleeves stage, in stage
+  // order; the result is that call sequence's, bit for bit. Refuses (InvalidArgument) a malformed
+  // stage order, a grouping stage without themes or themes without one, and whatever create,
+  // schedule_theme_masses or set_theme_sleeves refuse.
+  [[nodiscard]] static atx::core::Result<IcComposition> create_from_stages(
+      const IcCompositionConfig&, std::span<const IcCompositionCandidate>,
+      std::span<const atx::u8> decision_member, const IcCompositionStages& stages);
   // Optional `pool` (borrowed; alive for the call, never invoked from inside one
   // of its jobs): dates split into contiguous bands, each ranked in a per-worker
   // row. Every blend cell and per-date coverage sum is written by exactly one
@@ -105,6 +157,21 @@ class IcComposition {
   // planned gross/net are reported, not promised to stay1/0 between rebalances.
   // Initial deployment is included in both daily and total turnover.
   [[nodiscard]] atx::core::Result<IcCompositionResult> finish();
+  // theme-tsmom-v1 (platform v8 Y-2): optional, before finish, IcThemeRule::standardise only.
+  // Blocks in non-decreasing `begin` (each <= dates); dates before the first block keep W_theme.
+  // finish then adds, per date and theme, the mass in force at that date times the same re-rank
+  // (a zero mass adds nothing); dates are independent, so blocks repeating W_theme leave the blend
+  // bit for bit unchanged. Not called (or empty): finish is unchanged. Refuses (InvalidArgument)
+  // under another rule, after finish, or on a malformed block; nothing is kept on refusal.
+  [[nodiscard]] atx::core::Status schedule_theme_masses(std::span<const IcThemeBlock> blocks);
+  // two-speed-v1 (platform v8 Y-5): optional, before finish, IcThemeRule::standardise only. `fast`:
+  // one flag per theme index (1 fast, 0 slow), at least one of each. finish then also adds each
+  // theme's W x re-rank (the mass in force, as `signal` gets it) to its sleeve's plane and records
+  // the fast themes' mass share per date (over the themes present at the date); `signal` is
+  // unchanged bit for bit. Refuses
+  // (InvalidArgument) under another rule, after finish or on a malformed flag row; OutOfRange when
+  // the planes exceed the working budget. Nothing is kept on refusal.
+  [[nodiscard]] atx::core::Status set_theme_sleeves(std::span<const atx::u8> fast);
  private:
   struct Impl;
   explicit IcComposition(std::unique_ptr<Impl>);

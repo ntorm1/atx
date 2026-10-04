@@ -1,0 +1,46 @@
+{
+  "id": "exch_switch",
+  "dsl": "rank((-1 * exch_up_365d))",
+  "dsl_sha256": "f433b32af008e74c13f04026537a12f735f636cd3a2dadade94200dcd0263ac3",
+  "theme": "filing_events",
+  "tier": "C+",
+  "prior_sign": 1,
+  "citation": "Dharan and Ikenberry (1995, JF 50(5)) The long-run negative drift of post-listing stock returns; Chen-Zimmermann ExchSwitch",
+  "origin": "prior",
+  "hypothesis": "exch_switch",
+  "kind": "add",
+  "fields": [
+    "exch_up_365d"
+  ],
+  "prior_sign_source": "Dharan-Ikenberry 1995",
+  "form": "R(x)",
+  "formula": "-1{the FINRA listing market moved up (Nasdaq -> NYSE, NYSE American -> NYSE, Nasdaq -> NYSE American) on a row disseminated within the last 365 days} (exch_up_365d, finra-listing-up-switch365-v1); prior sign negative",
+  "domain": "NaN when the listing market is unknown (latest visible name row older than 45 days) or the name history is shorter than 410 days; a binary flag: switched names tie at the bottom rank, the rest tie above",
+  "deviation": "FINRA short-interest market class at its semi-monthly dissemination (up to about 15 days after the move) instead of CRSP exchange codes; 365 calendar days; moves that keep the vendor line count (de-SPACs included), moves with a new line are not seen; Arca, BZX and OTC moves are not events; continuous rank, not an event-time portfolio",
+  "lane": "YSIG",
+  "report": "task-YSIG-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "dropped",
+  "wave": "y-s",
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 9); line 7f2cac46fb20a586 = v8y-prereg section 14"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    },
+    {
+      "status": "dropped",
+      "at": "2026-10-03",
+      "by": "research_cycle.py wave",
+      "wave": "y-s",
+      "note": "wave-result True"
+    }
+  ]
+}

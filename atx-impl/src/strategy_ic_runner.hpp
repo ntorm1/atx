@@ -31,6 +31,11 @@ struct IcRunnerConfig {
   // With --candidate-cache, a candidate whose signal and IC result are both cached is
   // never loaded. Not a method input; refuses --composition-weights.
   bool no_composition{false};
+  // Cost measurement (platform v8 task H-2, --eval-mode audit-exact): every candidate is
+  // evaluated under the VM's AuditExact mode instead of ResearchFast, and the recipe's "vm"
+  // names it. Refused with --candidate-cache, whose entries are keyed on ResearchFast. False:
+  // the runner is unchanged.
+  bool audit_exact{false};
   // Optional reusable raw DSL signals under ROOT = DIR[/<vm-identity>] (the
   // <vm-identity> level is omitted only for the legacy identity dslvm1_clang18.1).
   // Content-keyed layout (atx.dsl-candidate-signal/v2, written by this runner):
@@ -69,6 +74,12 @@ struct IcRunnerConfig {
   // recipe, cache keys and every output are byte-identical to runs without them.
   std::string train_fields_directory, train_fields_sha256;
   std::string validation_fields_directory, validation_fields_sha256;
+  // Optional pinned alpha registry (atx-impl/strategies/alphas/registry.json, SHA-256 of the file;
+  // P9 lane D1): its `themes` table, in document order, is the theme table that theme-resid-v1
+  // (registered order) and two-speed-v1 (theme set) read. Absent: the built-in table, the
+  // registry's themes at the P9 base, so every output is byte-identical to runs without it;
+  // present, summary.json (and a --plan-only plan) records theme_registry_sha256.
+  std::string theme_registry_path, theme_registry_sha256;
 };
 // IC-only research; no book, surfaces, fees, Sharpe, stock events or holdout.
 // TRAIN21h sample rank-IC fits signs; validation uses frozen signs; screening remains diagnostic for the fixed blend.

@@ -324,6 +324,11 @@ struct SearchConfig {
   // weak panel, an active or injected IC screen, output dedup, deflation, capacity or
   // turnover objectives, a checkpoint sink or resume, a CPCV DateV2 plan, and any low
   // rung that is not instrument_only (a date stride changes every time-series operator).
+  // Memory (lane MINE-MEM): with racing on, the race and the full pass never hold each
+  // other's buffers -- the full-pass engines are released for each race and rebuilt for the
+  // full pass, and the strided rung panels are released after each race. A rebuilt engine
+  // computes the bits a reused one does (Engine::evaluate depends only on program, panel and
+  // mask), so this changes no result.
   SignalFitness *signal_fitness{nullptr};
   // op_catalog: the op-swap catalogue, rebuilt at the top of run(); the default is the
   // constructor's catalogue exactly.
@@ -395,6 +400,12 @@ struct SearchResult {
   // Platform v8 review MINE-10: complete, sorted identities of the candidates refused by
   // SearchConfig::max_program_slots (each one is also in unscored_hashes).
   std::vector<atx::u64> slot_refused_hashes;
+  // Platform v8 review MINE-16 (signal-fitness path): complete, sorted identities of the
+  // racing rejections whose rung read failed -- a compile or VM failure on the rung engine (an
+  // empty signal set included) or a functor Err -- rather than scored and lost. A subset of
+  // fidelity_rejected_hashes: the race still treats such a read as NaN, so no other result
+  // changes. Empty when a race rejects nothing (it fails open).
+  std::vector<atx::u64> rung_failed_hashes;
   // A refused cross_section_mask / signal_fitness configuration, a failed bind, or a
   // functor Err while scoring: nothing from the failing generation is admitted.
   bool signal_path_invalid{false};
@@ -771,7 +782,9 @@ private:
                   SearchResult &res);
   CanonCfg canon_cfg_{};
   FingerprintIndex fp_index_{};
-  // Strided sub-panels per low rung (lazily built, keyed by the rung strides).
+  // Strided sub-panels per low rung (lazily built, keyed by the rung strides). On the
+  // signal-fitness path they are released after each race (lane MINE-MEM) and rebuilt by the
+  // next one: strided_panel is a pure copy of panel_.
   std::vector<Rung> rung_keys_;
   std::vector<alpha::Panel> rung_panels_;
 };

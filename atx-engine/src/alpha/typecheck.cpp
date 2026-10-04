@@ -122,6 +122,15 @@ bool is_rolling_ts(OpCode op) noexcept {
   case OpCode::CsBucket:
   case OpCode::GroupCross:
   case OpCode::CsResidOn:
+  case OpCode::CsSumG:
+  // v8 YOPS: group_delay is a shift and the as-of family carries its own
+  // (d-1)+j lookback rule (analyze_formulaic_call), so none is rolling here.
+  case OpCode::GroupDelay:
+  case OpCode::AsofRankTsRank:
+  case OpCode::AsofRankTsMin:
+  case OpCode::AsofRankDecayLinear:
+  case OpCode::AsofRankCorr:
+  case OpCode::AsofRankCov:
     return false;
   }
   return false; // unreachable for valid OpCode
@@ -527,10 +536,79 @@ atx::core::Result<TypeInfo> analyze_lit_call(const Ast &ast, std::span<const Typ
   return atx::core::Ok(TypeInfo{shape, e.op->out_dtype, child_lb});
 }
 
+// ===========================================================================
+//  v8 lane YOPS formulaic ops: group_delay and the as-of rank family (group_sum
+//  is a plain group op and takes the generic path below). Same strict dtype
+//  refusals as the W2 ops.
+// ===========================================================================
+namespace {
+
+// The op-named refusal (lit_fail's message shape), convertible to any Result<T>.
+[[nodiscard]] auto formulaic_fail(const Expr &e, std::string_view what) {
+  return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                        std::string{e.op->name} + ": " + std::string{what});
+}
+
+// child + extra bars of lookback, refusing a u16 overflow instead of wrapping.
+[[nodiscard]] atx::core::Result<atx::u16> formulaic_lookback(const Expr &e, atx::u32 extra,
+                                                             atx::u16 child) {
+  const atx::u32 lb = extra + static_cast<atx::u32>(child);
+  if (lb > std::numeric_limits<atx::u16>::max()) {
+    return formulaic_fail(e, "lookback exceeds 65535 bars");
+  }
+  return atx::core::Ok(static_cast<atx::u16>(lb));
+}
+
+} // namespace
+
+atx::core::Result<TypeInfo> analyze_formulaic_call(const Ast &ast, std::span<const TypeInfo> out,
+                                                   const Expr &e) {
+  ATX_TRY_VOID(reject_record_operands(out, e));
+  ATX_TRY_VOID(validate_node_contract(e));
+  for (atx::u8 k = 0; k < e.n_hparams; ++k) {
+    if (!std::isfinite(e.hparams[k])) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "hyperparameter must be a compile-time constant");
+    }
+  }
+  const atx::u16 child_lb = max_child_lookback(out, e);
+  const Shape shape = e.op->shape_of(std::span<const Shape>{});
+  if (e.op->opcode == OpCode::GroupDelay) {
+    // group_delay(g, d): delay's shift rule (lookback d + child) on a classifier.
+    if (!is_group_label(out[e.a])) {
+      return formulaic_fail(e, "operand must be a Group classifier");
+    }
+    ATX_TRY(const atx::u16 d, window_value(ast, e));
+    ATX_TRY(const atx::u16 lb, formulaic_lookback(e, static_cast<atx::u32>(d), child_lb));
+    return atx::core::Ok(TypeInfo{shape, DType::Group, lb});
+  }
+  // asof_rank_<outer>(x, w, [y,] d, j): numeric vectors; d in [1, 65535] and
+  // j in [0, 65535] integers; row t reads rows t-j-d+1 .. t, so the lookback is
+  // (d - 1) + j + child.
+  const bool pair = asof_is_pair(e.op->opcode);
+  if (!is_f64_vector(out[e.a]) || !is_f64_vector(out[e.b]) ||
+      (pair && !is_f64_vector(out[e.c]))) {
+    return formulaic_fail(e, "operands must be numeric (f64) vectors");
+  }
+  if (!hparam_count_in(e.hparams[0], 1.0, 65535.0)) {
+    return formulaic_fail(e, "window d must be an integer in [1, 65535]");
+  }
+  if (!hparam_count_in(e.hparams[1], 0.0, 65535.0)) {
+    return formulaic_fail(e, "lag j must be an integer in [0, 65535]");
+  }
+  const atx::u32 extra =
+      static_cast<atx::u32>(e.hparams[0]) - 1U + static_cast<atx::u32>(e.hparams[1]);
+  ATX_TRY(const atx::u16 lb, formulaic_lookback(e, extra, child_lb));
+  return atx::core::Ok(TypeInfo{shape, e.op->out_dtype, lb});
+}
+
 atx::core::Result<TypeInfo> analyze_call(const Ast &ast, std::span<const TypeInfo> out,
                                          const Expr &e) {
   if (is_lit_op(e.op->opcode)) {
     return analyze_lit_call(ast, out, e); // W2 ops own their complete rail set
+  }
+  if (e.op->opcode == OpCode::GroupDelay || is_asof_op(e.op->opcode)) {
+    return analyze_formulaic_call(ast, out, e); // v8 YOPS ops own their rail set
   }
   ATX_TRY_VOID(reject_record_operands(out, e));
   ATX_TRY_VOID(validate_node_contract(e));

@@ -1,0 +1,19 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-w04-v61-c1-lo1",
+  "description": "W0-4 step 4 re-run (PM5-22; adds 0 to N): the ledgered v7 cell C1 (trial ebd8da9260b0a80a, build-equity/mega-nav-v61u-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C1) from its recorded NAV argv: v6.1's combined signal with --rule aim-partial-v6 --cost-shrink-kappa .5 --rate-clip .5,1.5, on the v6.1 re-run of the 4-year role lo1 (w04-v61-lo1.json; NAV-only). Scored alone; summ ledgers --rerun-of ebd8da9260b0a80a --rerun-basis window. No verdict.",
+  "parent": "w04-v61-lo1.json",
+  "nominal_parent": "w04-v61-lo1.json",
+  "change": {
+    "unset": ["inputs.reference_cell", "inputs.reference_admission"],
+    "set": {
+      "nav.output": "build-equity/mega-nav-v8-w04-v61-lo1-ew-t.05-d.1-fixed-obdelta-x.05-loc-L1.247-v6C1",
+      "nav.rule": "aim-partial-v6",
+      "summ.extra": ["--protocol", "v8", "--psr", "--json", "build-equity/v8-w04-summ-w04-v61-c1-lo1.json",
+                     "--rerun-of", "ebd8da9260b0a80a", "--rerun-basis", "window"]
+    },
+    "flags": {
+      "nav": {"--cost-shrink-kappa": ".5", "--rate-clip": ".5,1.5"}
+    }
+  }
+}

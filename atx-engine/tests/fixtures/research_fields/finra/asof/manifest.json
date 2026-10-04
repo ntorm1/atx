@@ -1,0 +1,10 @@
+{
+  "outputs": {
+    "si_shares": {
+      "sha256": "7a250dd602eb50535a9bbf393d669164d90f30c9f15f39b305353f79e652d654"
+    },
+    "si_dtc": {
+      "sha256": "c7ad6f30ea8f1a64a00e8ce4dc3767c49aceae1f7a4be988586091dc1bc7a684"
+    }
+  }
+}

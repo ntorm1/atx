@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -348,3 +349,69 @@ TEST(AtxImplProvenance, DateCpcvPersistsActiveRecipeAndActualPathMetadata) {
     EXPECT_TRUE(json_value_of(legacy.config_json,"cpcv_rule").empty());
 }
 }
+
+// P9 Ruling M1d-RED-1b: the discover config JSON is written to the sidecar
+// <alpha_out>/_config.json, not into _manifest.txt. With a non-legacy recipe (the
+// defaults: pbo cached-moments-v2, IC screen on) the sidecar is written and holds
+// exactly the config persisted in the run-DB, and the manifest carries no
+// `config_json=` line. With every rule at its legacy value no sidecar is due, and a
+// stale one left in the output directory by an earlier run is removed.
+namespace atxtest_provenance {
+namespace {
+std::string read_binary(const fs::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::ostringstream text; text << in.rdbuf(); return text.str();
+}
+} // namespace
+
+TEST(AtxImplProvenance, ConfigSidecarHoldsTheRunConfigAndStaysOutOfTheManifest) {
+    auto panel = make_panel();
+    ASSERT_TRUE(panel.has_value());
+    const std::string panel_path = write_panel_tmp(*panel, "config_sidecar");
+    const fs::path active_out = fs::temp_directory_path() / "atx_prov_sidecar_active";
+    const fs::path legacy_out = fs::temp_directory_path() / "atx_prov_sidecar_legacy";
+    const std::string db_path = (fs::temp_directory_path() / "atx_prov_sidecar.db").string();
+    std::error_code ec;
+    fs::remove_all(active_out, ec); fs::remove_all(legacy_out, ec); fs::remove(db_path, ec);
+
+    // Default recipe: the sidecar is due.
+    auto active_cfg = gated_cfg(panel_path, active_out.string());
+    active_cfg.run_db = db_path;
+    auto active = atx::impl::run_discover(active_cfg);
+    ASSERT_TRUE(active.has_value()) << active.error().message();
+    std::string persisted;
+    {
+        auto db = store::StoreDb::open(db_path);
+        ASSERT_TRUE(db.has_value());
+        persisted = read_run_text(*db, "config_json");
+    }
+    ASSERT_FALSE(persisted.empty());
+    ASSERT_TRUE(fs::exists(active_out / "_config.json"));
+    const std::string sidecar = read_binary(active_out / "_config.json");
+    EXPECT_EQ(sidecar, persisted + "\n") << "the sidecar holds the run's config_json, newline-terminated";
+    EXPECT_EQ(json_value_of(sidecar, "seed"), "4242");
+    EXPECT_EQ(json_value_of(sidecar, "pbo_rule"), "cached-moments-v2");
+    const std::string active_manifest = read_binary(active_out / "_manifest.txt");
+    ASSERT_FALSE(active_manifest.empty());
+    EXPECT_EQ(active_manifest.find("config_json="), std::string::npos)
+        << "the config JSON must not be written into _manifest.txt";
+
+    // Every rule at its legacy value: no sidecar is due; a stale one is removed.
+    fs::create_directories(legacy_out);
+    { std::ofstream stale(legacy_out / "_config.json", std::ios::binary); stale << "{\"stale\":true}\n"; }
+    auto legacy_cfg = gated_cfg(panel_path, legacy_out.string());
+    legacy_cfg.pbo_rule = atx::engine::eval::PboRule::LegacyGatherV1;
+    legacy_cfg.ic_screen.rule = atx::engine::factory::IcScreenRule::DisabledV1;
+    legacy_cfg.cpcv_rule = atx::engine::eval::CpcvRule::ObservationV1;
+    auto legacy = atx::impl::run_discover(legacy_cfg);
+    ASSERT_TRUE(legacy.has_value()) << legacy.error().message();
+    EXPECT_FALSE(fs::exists(legacy_out / "_config.json"))
+        << "a stale sidecar must not survive a run that writes none";
+    const std::string legacy_manifest = read_binary(legacy_out / "_manifest.txt");
+    ASSERT_FALSE(legacy_manifest.empty());
+    EXPECT_EQ(legacy_manifest.find("config_json="), std::string::npos);
+
+    fs::remove_all(active_out, ec); fs::remove_all(legacy_out, ec);
+    fs::remove(db_path, ec); fs::remove(panel_path, ec);
+}
+} // namespace atxtest_provenance

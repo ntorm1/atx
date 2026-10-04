@@ -1,0 +1,1351 @@
+{
+  "schema": "atx.dsl-ic-experiment/v2",
+  "id": "fund_industry_ic_v8ys",
+  "library": {
+    "path": "fund_industry_ic_v8ys.json",
+    "sha256": "bbcfbf9dd000dc41055e2415ddc1a0047811a796752de55fd4e92ab636f4e9bd"
+  },
+  "parent": {
+    "name": "v8x3b",
+    "library": "fund_industry_ic_v8x3b.json",
+    "sha256": "32f8d69f669fccfca8c150df11ee9615a6f2d6ef59537c87e3de2a24cdd04a54"
+  },
+  "registry": {
+    "path": "alphas/registry.json",
+    "schema": "atx.alpha-registry/v1"
+  },
+  "preregistration": "atx-impl/strategies/libraries/v8ys.prereg.md (add-alpha stub; root registers it in the sprint pre-registration before any IC read)",
+  "generation": {
+    "generator": "generate_library.py",
+    "rule": "registry-library-v1: one registry entry per alpha, the library = its ordered member ids",
+    "candidates": 73,
+    "families": 12,
+    "family_is_theme": true,
+    "new_members": [
+      "peer_mom_1m",
+      "so_wang_rev",
+      "iv_vol_of_vol",
+      "day_rev_freq",
+      "mom_turn",
+      "ea_uvol",
+      "dato",
+      "fscore_hbm",
+      "exch_switch",
+      "ins_cluster",
+      "smile_slope",
+      "stio_trade",
+      "div_event",
+      "deal_target",
+      "conn_rev"
+    ],
+    "house_budget": {
+      "max_extra_fields": 5,
+      "max_slots": 7,
+      "max_prior_bars": 314,
+      "max_dsl_bytes": 4096,
+      "max_roster": 80
+    },
+    "budget_exceptions": [
+      {
+        "id": "qmj_safety",
+        "max_slots": 8,
+        "basis": "v7-prereg.md Ruling 7.0-b (2026-09-28, declared before any run): the verbatim qmj_safety string needs 8 estimated peak slots against the house budget of 7, which under draft section 0 would withdraw it; allowed as this recorded exception instead (the top-ranked draft candidate; u-pass cost about +52 MB per slot per worker, headroom 1,061 MiB peak vs the 1,536 MiB cap); wave 1 stays at 5 candidates / 5 admission trials"
+      },
+      {
+        "id": "earn_surprise_comp",
+        "max_extra_fields": 8,
+        "basis": "Ruling R2-b"
+      },
+      {
+        "id": "q5_eg_f49g",
+        "max_extra_fields": 6,
+        "basis": "inherited from q5_eg_f49 (replaced in place): q5_eg_f49: inherited from q5_eg (replaced in place): q5_eg: prereg ruling (library-v7-draft 3.5a; v7-prereg.md \"Library v7.0\" and its Correction): q5_eg reads six fields-v7 fields, one over the per-candidate budget; no new field"
+      }
+    ]
+  },
+  "lineage": [
+    {
+      "id": "value_composite",
+      "roster_order": 1,
+      "theme": "value",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Fama-French 1992; Lakonishok-Shleifer-Vishny 1994; Israel-Laursen-Richardson 2021",
+      "form": "mean_k R(decay_linear(x_k, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "5a611ce6ec50066442ba982967eb984d822710c243db1e8f4d4767f44e723fdb",
+      "fields": [
+        "be",
+        "cfo_ttm",
+        "grp_ff12",
+        "me_company",
+        "ni_ttm"
+      ]
+    },
+    {
+      "id": "bm",
+      "roster_order": 2,
+      "theme": "value",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "prior_sign_source": "Rosenberg-Reid-Lanstein 1985; Fama-French 1992",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "77d03bd2b6037431cb7ca61c39fba579980f1c0068d0b7e047f6eeb7b6322696",
+      "fields": [
+        "be",
+        "grp_ff12",
+        "me_company"
+      ]
+    },
+    {
+      "id": "ep",
+      "roster_order": 3,
+      "theme": "value",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "prior_sign_source": "Basu 1977",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "1008a66639abd8b97dcf8941603ddc25a8761434d54d15ebbe6d23618b49a1d9",
+      "fields": [
+        "grp_ff12",
+        "me_company",
+        "ni_ttm"
+      ]
+    },
+    {
+      "id": "cfp",
+      "roster_order": 4,
+      "theme": "value",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Lakonishok-Shleifer-Vishny 1994",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "df82d0c0b2f594f626e94ea26d1e7719674c0ff107daacef10c61f9f4e19beaf",
+      "fields": [
+        "cfo_ttm",
+        "grp_ff12",
+        "me_company"
+      ]
+    },
+    {
+      "id": "fcfp",
+      "roster_order": 5,
+      "theme": "value",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Lakonishok-Shleifer-Vishny 1994; Hackel-Livnat-Rai 1994",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "78755e702842cda0124d0d3cc0f87b84656ffe9d4ed3459d3124bb85e7324d0a",
+      "fields": [
+        "capx_ttm",
+        "cfo_ttm",
+        "grp_ff12",
+        "me_company"
+      ]
+    },
+    {
+      "id": "ebit_ev_f49",
+      "roster_order": 6,
+      "theme": "value",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Loughran and Wellman (2011, JFQA) enterprise multiple (works in large caps); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v80",
+      "dsl_sha256": "cab4b49a219f9cc5167d814f380faa2238cd1789adb61a0273e0b380ae392752",
+      "fields": [
+        "che",
+        "debt",
+        "grp_ff12f49",
+        "me_company",
+        "oi_ttm"
+      ]
+    },
+    {
+      "id": "net_payout",
+      "roster_order": 7,
+      "theme": "value",
+      "tier": "A",
+      "tier_rank": 1,
+      "prior_sign": 1,
+      "prior_sign_source": "Boudoukh-Michaely-Richardson-Roberts 2007",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "0de7136873939cf187fd2510e32edc75a40e7629615858990821e0b94c02bc02",
+      "fields": [
+        "dvc_ttm",
+        "grp_ff12",
+        "me_company",
+        "prstkc_ttm",
+        "sstk_ttm"
+      ]
+    },
+    {
+      "id": "sp",
+      "roster_order": 8,
+      "theme": "value",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "prior_sign_source": "Barbee-Mukherji-Raines 1996",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "b580ed819ae324eef88609d551471a493f299819adf90520d757f98b6ab059e7",
+      "fields": [
+        "grp_ff12",
+        "me_company",
+        "sale_ttm"
+      ]
+    },
+    {
+      "id": "rd_me",
+      "roster_order": 9,
+      "theme": "value",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "prior_sign_source": "Chan-Lakonishok-Sougiannis 2001",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "bcedc098d64f331cf2c0719bccea2fb91ba777f959b7ca53d3f2df8088d05075",
+      "fields": [
+        "grp_ff12",
+        "me_company",
+        "xrd_ttm"
+      ]
+    },
+    {
+      "id": "gpa_f49",
+      "roster_order": 10,
+      "theme": "profitability_quality",
+      "tier": "A",
+      "tier_rank": 1,
+      "prior_sign": 1,
+      "prior_sign_source": "Novy-Marx (2013, JFE) gross profitability (works in large caps; replicated by Hou, Xue and Zhang 2020); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v80",
+      "dsl_sha256": "0b6e2e71126f907f669cfb10da54fc9f809a28b50dd12ba5f17292571dcf8f35",
+      "fields": [
+        "at",
+        "gp_ttm",
+        "grp_ff12f49"
+      ]
+    },
+    {
+      "id": "opbe",
+      "roster_order": 11,
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "prior_sign_source": "Fama-French 2015",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "1ff820cb588190898e41ba6444fd9b4c0ce79d511eb93e34d939ca210503ba0f",
+      "fields": [
+        "be",
+        "grp_ff12",
+        "oi_ttm"
+      ]
+    },
+    {
+      "id": "cbop_f49",
+      "roster_order": 12,
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "prior_sign_source": "Ball, Gerakos, Linnainmaa and Nikolaev (2016, JFE) cash-based operating profitability (subsumes accruals); operating profitability excludes R&D: Ball, Gerakos, Linnainmaa and Nikolaev (2015, JFE); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v80",
+      "dsl_sha256": "5e87793d886965c1f72d6d916a89960d126d22b99d1c142e3d90072ec61f95a0",
+      "fields": [
+        "at",
+        "cfo_ttm",
+        "grp_ff12f49",
+        "xrd_ttm"
+      ]
+    },
+    {
+      "id": "roe_q",
+      "roster_order": 13,
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "prior_sign_source": "Hou-Xue-Zhang 2015",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "fea12f1f59565b4ec97e64df93219bbc3228348daa4bb8a78cdc5974a4f99be7",
+      "fields": [
+        "be_lag1q",
+        "grp_ff12",
+        "ni_q"
+      ]
+    },
+    {
+      "id": "roa",
+      "roster_order": 14,
+      "theme": "profitability_quality",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Balakrishnan-Bartov-Faurel 2010",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "fcd1f798342235a802733141d8be82b23e109b3d9151af412e4bdd2527278645",
+      "fields": [
+        "at",
+        "grp_ff12",
+        "ni_ttm"
+      ]
+    },
+    {
+      "id": "accruals_f49",
+      "roster_order": 15,
+      "theme": "profitability_quality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Sloan (1996, TAR); Hribar and Collins (2002, JAR) cash-flow-statement accruals; decay: Green, Hand and Soliman (2011, MS); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v80",
+      "dsl_sha256": "76d1eae76e0ec47297008a5a5dfd98c4cb39b97ea8385a5f7eef24d0681dea4b",
+      "fields": [
+        "at",
+        "at_lag4",
+        "cfo_ttm",
+        "grp_ff12f49",
+        "ni_ttm"
+      ]
+    },
+    {
+      "id": "fscore",
+      "roster_order": 16,
+      "theme": "profitability_quality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Piotroski 2000",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "67d1f50140676f30cac7621fc43007601d44cb99a5994eb2c77101350d80de6e",
+      "fields": [
+        "fscore",
+        "grp_ff12"
+      ]
+    },
+    {
+      "id": "asset_growth_f49",
+      "roster_order": 17,
+      "theme": "investment_issuance",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Cooper, Gulen and Schill (2008, JF) asset growth (weak in big stocks: Fama and French 2008); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v80",
+      "dsl_sha256": "75910b923589e52829ab660f56f4bd95572619d6c54e03ea7f4b038a79639aa3",
+      "fields": [
+        "at",
+        "at_lag4",
+        "grp_ff12f49"
+      ]
+    },
+    {
+      "id": "noa_f49",
+      "roster_order": 18,
+      "theme": "investment_issuance",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "prior_sign_source": "Hirshleifer, Hou, Teoh and Zhang (2004, JAE) net operating assets; S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v80",
+      "dsl_sha256": "ea8fd7176bfd15a74baec1eeac7bdd16b1c0b936529a7d8fa5974e1e2eb3681a",
+      "fields": [
+        "at_lag4",
+        "grp_ff12f49",
+        "noa"
+      ]
+    },
+    {
+      "id": "issuance_xbrl",
+      "roster_order": 19,
+      "theme": "investment_issuance",
+      "tier": "A",
+      "tier_rank": 1,
+      "prior_sign": 1,
+      "prior_sign_source": "Pontiff-Woodgate 2008",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "9ce73869fbbec055df54939ec2d4262454d24dd2c64c21f411195d4baf029642",
+      "fields": [
+        "grp_ff12",
+        "shrs_q",
+        "shrs_q_lag4"
+      ]
+    },
+    {
+      "id": "issuance_vendor",
+      "roster_order": 20,
+      "theme": "investment_issuance",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "prior_sign_source": "Daniel-Titman 2006",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "ff4ac4adac6298e4d1211ad467159ab8f8f2214182201c0319fba24bee9338e7",
+      "fields": [
+        "close",
+        "grp_ff12",
+        "raw_close",
+        "shares_out"
+      ]
+    },
+    {
+      "id": "ear",
+      "roster_order": 21,
+      "theme": "earnings_momentum",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Chan-Jegadeesh-Lakonishok 1996; Brandt-Kishore-Santa-Clara-Venkatachalam 2008",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "9d38cd38ddb1e76bd43a9287375663fbe0f28ef467738a60d2ae1d3c39fead57",
+      "fields": [
+        "close",
+        "earn_recent",
+        "mkt_ret"
+      ]
+    },
+    {
+      "id": "res_mom_12_1",
+      "roster_order": 22,
+      "theme": "price_momentum",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Blitz-Huij-Martens 2011",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "8aafaffe1e4a5446a5163d8262fd7ec92266590d0d217e13138b5ab544b9439d",
+      "fields": [
+        "close",
+        "mkt_ret"
+      ]
+    },
+    {
+      "id": "mom_12_1",
+      "roster_order": 23,
+      "theme": "price_momentum",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Jegadeesh-Titman 1993",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "d6906c60dbabeb3581025807a5f674981e538867081b26634bf02023f09832d9",
+      "fields": [
+        "close"
+      ]
+    },
+    {
+      "id": "ind_mom_12_1",
+      "roster_order": 24,
+      "theme": "price_momentum",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "prior_sign_source": "Moskowitz-Grinblatt 1999",
+      "form": "decay_linear(R(x), 21)",
+      "origin": "prior",
+      "added_in": "v4",
+      "dsl_sha256": "8260a5a0dc907297e96927429685617ad3385fec387f6faf05b4b8d0f85ee025",
+      "fields": [
+        "close",
+        "grp_ff49"
+      ]
+    },
+    {
+      "id": "within_ind_mom",
+      "roster_order": 25,
+      "theme": "price_momentum",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Asness-Porter-Stevens 2000",
+      "form": "decay_linear(R(x), 21)",
+      "origin": "prior",
+      "added_in": "v4",
+      "dsl_sha256": "2eac2b0c6a0348a2e49f77873d4c50623bc643262159569298a982c3a6676c15",
+      "fields": [
+        "close",
+        "grp_ff49"
+      ]
+    },
+    {
+      "id": "high_52w",
+      "roster_order": 26,
+      "theme": "price_momentum",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "prior_sign_source": "George-Hwang 2004",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "3fd5372bbc084061ba9bfa05f7c7875d3e43ed28a2f241a05e2b816635f5e77e",
+      "fields": [
+        "close"
+      ]
+    },
+    {
+      "id": "bac",
+      "roster_order": 27,
+      "theme": "low_risk",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Asness-Frazzini-Gormsen-Pedersen 2020",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "a760b8a09e10d13f5233216a5a1d5c84a465bb3861bd2cc403d3ffb36e14a3f9",
+      "fields": [
+        "close",
+        "mkt_ret"
+      ]
+    },
+    {
+      "id": "smax",
+      "roster_order": 28,
+      "theme": "low_risk",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Asness-Frazzini-Gormsen-Pedersen 2020; Bali-Cakici-Whitelaw 2011",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "f1a0e0f07c27a752cb6777e800866d01f57f133be72f48047be2a2957a3a3aa4",
+      "fields": [
+        "close"
+      ]
+    },
+    {
+      "id": "si_ratio",
+      "roster_order": 29,
+      "theme": "short_interest",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Asquith-Pathak-Ritter 2005",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "22d70e1aeef635cc505774888a43e625d2ef28b7b1bb66589759c6030aae2fe9",
+      "fields": [
+        "shares_out",
+        "si_shares"
+      ]
+    },
+    {
+      "id": "dtc",
+      "roster_order": 30,
+      "theme": "short_interest",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Hong-Li-Ni-Scheinkman-Yan 2015",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "1f11ac6a4cc8c632f35dc6f889ab76cc579cd9ca7f3a006042f44ac570624d8d",
+      "fields": [
+        "si_dtc"
+      ]
+    },
+    {
+      "id": "si_change",
+      "roster_order": 31,
+      "theme": "short_interest",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "prior_sign_source": "Rapach-Ringgenberg-Zhou 2016 (direction)",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "8e0a405634f50fd57a280357a5882026be54d7f1a6f095627ffa333d98ab44b4",
+      "fields": [
+        "shares_out",
+        "si_shares"
+      ]
+    },
+    {
+      "id": "ind_adj_rev_5",
+      "roster_order": 32,
+      "theme": "reversal_seasonality",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "prior_sign_source": "Da-Liu-Schaumburg 2014; Hameed-Mian 2015",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "d8670a1639dc65f9c7b6b9ef9629cad62bed98a579ac723da8fa03260cc2ce22",
+      "fields": [
+        "close",
+        "grp_ff49"
+      ]
+    },
+    {
+      "id": "seasonality_same_month",
+      "roster_order": 33,
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Heston-Sadka 2008",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "4aceab7f23fe8fb97a60c1bd66e9082a7c86f609a889199ae208647b1c737527",
+      "fields": [
+        "close"
+      ]
+    },
+    {
+      "id": "iv_rv_spread",
+      "roster_order": 34,
+      "theme": "options_implied",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "prior_sign_source": "Bali-Hovakimian 2009",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v6",
+      "dsl_sha256": "70d32c54cbdbe4fc3e709d1b4e9039b88237ef67bfa7545429e1eeae5d7d37f7",
+      "fields": [
+        "close",
+        "iv_atm_21d"
+      ]
+    },
+    {
+      "id": "opex_at_f49",
+      "roster_order": 35,
+      "theme": "profitability_quality",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "prior_sign_source": "Novy-Marx (2011, RF) operating leverage; proxy opex = sale_ttm - oi_ttm (includes D&A) because fields-v6 has no opex_ttm; S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v80",
+      "dsl_sha256": "b0ad578045fc7f0b3168e4050c6177d2173039d485a1332f1d3edadcc77855ad",
+      "fields": [
+        "at",
+        "grp_ff12f49",
+        "oi_ttm",
+        "sale_ttm"
+      ]
+    },
+    {
+      "id": "sv_flow",
+      "roster_order": 36,
+      "theme": "short_interest",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "prior_sign_source": "Wang-Yan-Zheng 2020",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v61",
+      "dsl_sha256": "4f4651fb4c1972dba284f994bcf75399f2ca5cc041b48fa83d63306d246c56de",
+      "fields": [
+        "grp_ff12",
+        "sv_ratio126"
+      ]
+    },
+    {
+      "id": "qmj_safety",
+      "roster_order": 37,
+      "theme": "low_risk",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "prior_sign_source": "Asness-Frazzini-Pedersen 2019",
+      "form": "mean_k R(decay_linear(x_k, 21))",
+      "origin": "prior",
+      "added_in": "v70",
+      "dsl_sha256": "8b9586cecc179e5bdac784cb63359434f32e81edb1f91ca0629df67e2fc79997",
+      "fields": [
+        "at",
+        "be_lag1q",
+        "close",
+        "debt",
+        "mkt_ret",
+        "ni_q"
+      ]
+    },
+    {
+      "id": "nincr",
+      "roster_order": 38,
+      "theme": "earnings_momentum",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Barth-Elliott-Finn 1999",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v70",
+      "dsl_sha256": "3b0c33a5f87b887f67fee284b91bb6785309ff3fb40d10aad398164aaa363b38",
+      "fields": [
+        "ni_q",
+        "ni_q_lag4"
+      ]
+    },
+    {
+      "id": "q5_eg_f49g",
+      "roster_order": 39,
+      "theme": "investment_issuance",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "prior_sign_source": "Hou, Mo, Xue and Zhang (2021, RF) q5 expected investment growth, Table I Panel D slopes (tau = 1); S-12 FF49 financials",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v8x2",
+      "dsl_sha256": "07a61a9eeedf47ba8743086054475298ff892f5444cf66dd47316e6ab35cbf41",
+      "fields": [
+        "at",
+        "be_lag1q",
+        "cfo_ttm",
+        "grp_ff12f49",
+        "me_company",
+        "ni_q"
+      ]
+    },
+    {
+      "id": "smax5",
+      "roster_order": 40,
+      "theme": "low_risk",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Asness-Frazzini-Gormsen-Pedersen 2020; Bali-Cakici-Whitelaw 2011",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v70",
+      "dsl_sha256": "7eec92bff4d0be02f980afb1d85d1df998ac457abaf99d05603faccae0876857",
+      "fields": [
+        "close"
+      ]
+    },
+    {
+      "id": "res_mom_ind",
+      "roster_order": 41,
+      "theme": "price_momentum",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "prior_sign_source": "Blitz-Huij-Martens 2011",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v70",
+      "dsl_sha256": "d318cf2c71267d5804a3a1759575a521415496298086a01b319786c2642968af",
+      "fields": [
+        "close",
+        "grp_ff49"
+      ]
+    },
+    {
+      "id": "ins_opp_buy",
+      "roster_order": 42,
+      "theme": "ownership_flow",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "prior_sign_source": "Lakonishok-Lee 2001; Jeng-Metrick-Zeckhauser 2003",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v8x2",
+      "dsl_sha256": "981d01b22ba05cfa768ae1b7a009001d18172dad81a9f2bbeb9a6f3c1f75a68a",
+      "fields": [
+        "ins_opportunistic_net"
+      ]
+    },
+    {
+      "id": "inst_best_ideas",
+      "roster_order": 43,
+      "theme": "ownership_flow",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Cohen-Polk-Silli 2010",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v71",
+      "dsl_sha256": "b22cbc3d02d0914dcb4d2a31f5f1586ab4a252dd52b1856227a51e1175cd476f",
+      "fields": [
+        "inst_best_ideas"
+      ]
+    },
+    {
+      "id": "ftd_fail",
+      "roster_order": 44,
+      "theme": "short_interest",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Evans-Geczy-Musto-Reed 2009; Autore-Boulton-Braga-Alves 2015",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v71",
+      "dsl_sha256": "c58ac3b5a885805a6f5ff92abb3cf1fcc4aad4262ce03db9aeb745cf423ff9b8",
+      "fields": [
+        "ftd_shares_ratio21"
+      ]
+    },
+    {
+      "id": "ea_overdue",
+      "roster_order": 45,
+      "theme": "earnings_momentum",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Johnson-So 2018; Bagnoli-Kross-Watts 2002",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v71",
+      "dsl_sha256": "eb2062118a5ca0ad3dbb011b1e60859bbb43b8b372a8dee466289c5b409f9c47",
+      "fields": [
+        "ea_days_to_expected"
+      ]
+    },
+    {
+      "id": "ear_mom_12m",
+      "roster_order": 46,
+      "theme": "earnings_momentum",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Gerard and Jehl (2025, FAJ) The Many Facets of Stock Momentum; Chan, Jegadeesh and Lakonishok (1996, JF)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v80",
+      "dsl_sha256": "eb4ced22fe5bcff5f56a6ca26ebba5ca47c25bb2ed86267a1374445d97043917",
+      "fields": [
+        "close",
+        "ea_days_since",
+        "mkt_ret"
+      ]
+    },
+    {
+      "id": "earn_surprise_comp",
+      "roster_order": 47,
+      "theme": "earnings_momentum",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Bernard and Thomas (1989, JAR); Hou, Mo, Xue and Zhang (2021, RF); Thomas and Zhang (2011, JAR); composite: Novy-Marx (2015, WP); Martineau (2022, CFR)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v80",
+      "dsl_sha256": "959788e7fdc9f6b046353e0d73f6c5ade241ce9f5edbca07ffe8589b1dab04c3",
+      "fields": [
+        "at_lag4",
+        "be_lag1q",
+        "be_lag1q_lag4",
+        "ni_q",
+        "ni_q_lag4",
+        "sue",
+        "txt_q",
+        "txt_q_lag4"
+      ]
+    },
+    {
+      "id": "op_rd",
+      "roster_order": 48,
+      "theme": "profitability_quality",
+      "tier": "A-",
+      "tier_rank": 2,
+      "prior_sign": 1,
+      "prior_sign_source": "Novy-Marx and Medhat (2025, NBER WP 33601); Ball, Gerakos, Linnainmaa and Nikolaev (2015, JFE)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v80",
+      "dsl_sha256": "211c045b41bd487959d2745607e57655f1aba18b391133d4724d1704f9e8ae79",
+      "fields": [
+        "at",
+        "grp_ff12",
+        "oi_ttm",
+        "xrd_ttm"
+      ]
+    },
+    {
+      "id": "dtc_slow",
+      "roster_order": 49,
+      "theme": "short_interest",
+      "tier": "B+",
+      "tier_rank": 3,
+      "prior_sign": 1,
+      "prior_sign_source": "Hong, Li, Ni, Scheinkman and Yan (2015, NBER WP 21166) Days to cover and stock returns",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v80",
+      "dsl_sha256": "4554a05f99eef28147ab0adab13e31ec9c4817a1a093698ed7b65b4fe67f67e7",
+      "fields": [
+        "si_shares",
+        "volume"
+      ]
+    },
+    {
+      "id": "pct_accruals",
+      "roster_order": 50,
+      "theme": "profitability_quality",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "prior_sign_source": "Hafzalla, Lundholm and Van Winkle (2011, TAR) Percent accruals",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v80",
+      "dsl_sha256": "4711ad7c27bad506ffb9deb28cdd4c034ea5a92454f115a2c946ea52de355b7f",
+      "fields": [
+        "cfo_ttm",
+        "ni_ttm"
+      ]
+    },
+    {
+      "id": "fip_id",
+      "roster_order": 51,
+      "theme": "price_momentum",
+      "tier": "B",
+      "tier_rank": 4,
+      "prior_sign": 1,
+      "prior_sign_source": "Da, Gurun and Warachka (2014, RFS) Frog in the pan",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v80",
+      "dsl_sha256": "f13685ff95864040051f618daa22ffc2fc6f55e2efa7c4961badc9259e6c10e0",
+      "fields": [
+        "close"
+      ]
+    },
+    {
+      "id": "si_low_io",
+      "roster_order": 52,
+      "theme": "short_interest",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "prior_sign_source": "Asquith, Pathak and Ritter (2005, JFE); Nagel (2005, JFE)",
+      "form": "as in the DSL",
+      "origin": "prior",
+      "added_in": "v80",
+      "dsl_sha256": "d76f14082ca7255a8cea83d90c569930385d7ab7e84ab6d01f4924f87b7ae089",
+      "fields": [
+        "inst_own_share",
+        "shares_out",
+        "si_shares"
+      ]
+    },
+    {
+      "id": "k8_intensity",
+      "roster_order": 53,
+      "theme": "filing_events",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Zhao 2017",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v8x3",
+      "dsl_sha256": "0b7d6cdeb6c2f86e328543eb7c996c5d4939fd960631cabce65b4a11e1c7cb05",
+      "fields": [
+        "k8_count_63"
+      ]
+    },
+    {
+      "id": "inst_persist",
+      "roster_order": 54,
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Dasgupta-Prat-Verardo 2011",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v8x3",
+      "dsl_sha256": "ea338c04bdff78ef224eb4244568fa672b051eb2c94020749add9f3ba184ab9c",
+      "fields": [
+        "inst_own_chg_q"
+      ]
+    },
+    {
+      "id": "nt_late",
+      "roster_order": 55,
+      "theme": "filing_events",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "prior_sign_source": "Bartov-Konchitchki 2017",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v8x3",
+      "dsl_sha256": "bafc4e3a93204e59b4a455e7c88335167ed612f01072192526551eea58a7aeed",
+      "fields": [
+        "nt_first_126"
+      ]
+    },
+    {
+      "id": "div_season",
+      "roster_order": 56,
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Hartzmark-Solomon 2013",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v8x3",
+      "dsl_sha256": "5a1380a1d482c34aca88450b8de9a065150afeaa0c3c8cd359956d4cfd06d0dc",
+      "fields": [
+        "div_month_pred"
+      ]
+    },
+    {
+      "id": "vol_beta",
+      "roster_order": 57,
+      "theme": "low_risk",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Ang-Hodrick-Xing-Zhang 2006",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v8x3",
+      "dsl_sha256": "91583af314a4f9dcec2c6a2c2fc1a507fbfdd39a60068bfe744e8158b6458e94",
+      "fields": [
+        "beta_dvol_21"
+      ]
+    },
+    {
+      "id": "season_y2_5",
+      "roster_order": 58,
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Heston-Sadka 2008; Keloharju-Linnainmaa-Nyberg 2016",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v8x3",
+      "dsl_sha256": "13fe28b662804e2d4daaad505475d65837cd8aaa95dc57650835e3c5a5d818eb",
+      "fields": [
+        "season_y2_5"
+      ]
+    },
+    {
+      "id": "peer_mom_1m",
+      "roster_order": 59,
+      "theme": "price_momentum",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "prior_sign_source": "Moskowitz-Grinblatt 1999",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "67d4ff4a86c439d7734f7cf6ceff56318137ee1565a3729430a736caada2de77",
+      "fields": [
+        "close",
+        "grp_ff49"
+      ]
+    },
+    {
+      "id": "so_wang_rev",
+      "roster_order": 60,
+      "theme": "reversal_seasonality",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "prior_sign_source": "So-Wang 2014",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "c145cd2a7c1f85ef88a9bed87662ee8e3af8c71becb1d2b3f742aacd10cf59c8",
+      "fields": [
+        "close",
+        "ea_window_pre5",
+        "grp_ff49"
+      ]
+    },
+    {
+      "id": "iv_vol_of_vol",
+      "roster_order": 61,
+      "theme": "options_implied",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "prior_sign_source": "Baltussen-van Bekkum-van der Grient 2018",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "4d42a72b859c3ff4ae69ed82cf34c8263d9877c4f0600b03c6cc32887ac5fac0",
+      "fields": [
+        "iv_atm_21d"
+      ]
+    },
+    {
+      "id": "day_rev_freq",
+      "roster_order": 62,
+      "theme": "reversal_seasonality",
+      "tier": "B-",
+      "tier_rank": 5,
+      "prior_sign": 1,
+      "prior_sign_source": "Akbas-Boehmer-Jiang-Koch 2022",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "a5416c4ea13d4422592b378716d2a11b493d0152d06c2a48afc3b5937e42c5a7",
+      "fields": [
+        "ret_intraday",
+        "ret_overnight"
+      ]
+    },
+    {
+      "id": "mom_turn",
+      "roster_order": 63,
+      "theme": "price_momentum",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Lee-Swaminathan 2000",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "09946f74588e3060c9f54a0bbefde0c173e1bb39efcdbb10e6d95633c522b373",
+      "fields": [
+        "close",
+        "shares_out",
+        "volume"
+      ]
+    },
+    {
+      "id": "ea_uvol",
+      "roster_order": 64,
+      "theme": "earnings_momentum",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Garfinkel-Sokobin 2006",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "15f682ffd7504fbb249d5cffedc80a8be28ce93e781e41a5843413f7135d515c",
+      "fields": [
+        "ea_days_since",
+        "shares_out",
+        "volume"
+      ]
+    },
+    {
+      "id": "dato",
+      "roster_order": 65,
+      "theme": "profitability_quality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Soliman 2008",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "694fbe591a52faf131cebef6b0ccc753b3d30d7a7fa99609ce3f1915a916a20d",
+      "fields": [
+        "grp_ff12",
+        "noa",
+        "noa_lag4",
+        "sale_ttm"
+      ]
+    },
+    {
+      "id": "fscore_hbm",
+      "roster_order": 66,
+      "theme": "profitability_quality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Piotroski 2000",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "f4d3d3fa7f14fb6ff2d61651880837b187bb66429b4051f167593815e839f21f",
+      "fields": [
+        "be",
+        "fscore",
+        "me_company"
+      ]
+    },
+    {
+      "id": "exch_switch",
+      "roster_order": 67,
+      "theme": "filing_events",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Dharan-Ikenberry 1995",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "f433b32af008e74c13f04026537a12f735f636cd3a2dadade94200dcd0263ac3",
+      "fields": [
+        "exch_up_365d"
+      ]
+    },
+    {
+      "id": "ins_cluster",
+      "roster_order": 68,
+      "theme": "ownership_flow",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Alldredge-Blank 2019",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "a3dfad407c4cd493562022b50172e18ab764033812844a6b23b9209a788f23d2",
+      "fields": [
+        "ins_cluster_buy"
+      ]
+    },
+    {
+      "id": "smile_slope",
+      "roster_order": 69,
+      "theme": "options_implied",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Xing-Zhang-Zhao 2010; Yan 2011",
+      "form": "R(decay_linear(x, 21))",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "063202690eb1f981d789a31206f080318d73bdd7477aff6fe261f1ad32159609",
+      "fields": [
+        "iv_skew_21"
+      ]
+    },
+    {
+      "id": "stio_trade",
+      "roster_order": 70,
+      "theme": "ownership_flow",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Yan-Zhang 2009",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "e845ba078144883ba13eefd48bfce4d1016dbf35e889515d64b46b4f6ccc619e",
+      "fields": [
+        "stio_chg_q"
+      ]
+    },
+    {
+      "id": "div_event",
+      "roster_order": 71,
+      "theme": "filing_events",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Michaely-Thaler-Womack 1995",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "2dbe474ef4f26f2d0dd8e3a845a57bdfaae26728b5d58fa747a665ec1540bbe6",
+      "fields": [
+        "div_init_omit"
+      ]
+    },
+    {
+      "id": "deal_target",
+      "roster_order": 72,
+      "theme": "merger_arbitrage",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Mitchell-Pulvino 2001; Baker-Savasoglu 2002",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "815952591ce849a82926f3144c0714ee5eba0925d0d7c82971842202e71aaf05",
+      "fields": [
+        "deal_pending"
+      ]
+    },
+    {
+      "id": "conn_rev",
+      "roster_order": 73,
+      "theme": "reversal_seasonality",
+      "tier": "C+",
+      "tier_rank": 6,
+      "prior_sign": 1,
+      "prior_sign_source": "Anton-Polk 2014",
+      "form": "R(x)",
+      "origin": "prior",
+      "added_in": "v8ys",
+      "dsl_sha256": "4a1cffe83a007531b9820da67da1a0938391832c79116c5319cd11e4858bcc45",
+      "fields": [
+        "conn_ret63"
+      ]
+    }
+  ],
+  "trials": {
+    "new_candidates": 15,
+    "unchanged_candidates": 58,
+    "admission_trials": 15,
+    "dsr_n_rule": "cross-cell N = trial-ledger lines at run time + 1 (research_cycle summ.dsr_n \"ledger+1\")"
+  },
+  "static_validation": {
+    "source": "atx-equity-strategy-ic --plan-only candidates[] (contract K1)",
+    "rule": "each member's plan row carries sha256(dsl), fits the house budget or its recorded exception and reads registry fields only; checked by generate_library.py --plan-json and research_cycle.py add-alpha, not recorded here"
+  }
+}

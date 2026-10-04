@@ -1,0 +1,24 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8-w04-v70-spo2-lo3",
+  "description": "W0-4 step 4 re-run (PM5-22; adds 0 to N): the ledgered v7 cell spo-v2 (trial 9e1ad5f7ac4b9937, build-equity/mega-nav-v70-lo3-spo-v2-G1.0) from its recorded NAV argv: v7.0-lo3's combined signal with --rule spo-v2 and its recorded spo flags, on the v7.0 re-run of the 4-year role lo3 (w04-v70-lo3.json; NAV-only). Risk store: the recorded store's argv (risk --role R --fields F --emit-exposures all) on this cell's role and fields is build-equity/b0c-risk (role lo3 e1c67101, fields v9 lo3 9f156363, atx-risk-v1.1; its --book-weights adds only the bias diagnostics; model files byte-identical to v8-risk-lo3-v10, batch 2e). Scored alone; summ ledgers --rerun-of 9e1ad5f7ac4b9937 --rerun-basis window. No verdict.",
+  "parent": "w04-v70-lo3.json",
+  "nominal_parent": "w04-v70-lo3.json",
+  "change": {
+    "unset": ["inputs.reference_cell", "inputs.reference_admission"],
+    "set": {
+      "nav.output": "build-equity/mega-nav-v8-w04-v70-lo3-spo-v2-G1.0",
+      "nav.rule": "spo-v2",
+      "summ.extra": ["--protocol", "v8", "--psr", "--json", "build-equity/v8-w04-summ-w04-v70-spo2-lo3.json",
+                     "--rerun-of", "9e1ad5f7ac4b9937", "--rerun-basis", "window"]
+    },
+    "flags": {
+      "nav": {"--risk-model": "build-equity/b0c-risk",
+              "--risk-model-sha256": "5dd560d7e274f8321bac59725cc4982c2162babc7cf2ec554d430d679a91939b",
+              "--spo-gross": "1.0", "--ic-book": ".02", "--alpha-horizon": "21", "--w-max": ".01",
+              "--adv-cap-q": ".05", "--adv-trade-p": ".01", "--spo-iters": "500", "--spo-tol": "1e-8",
+              "--target-vol": ".05", "--spo-books": "primary", "--specific-ceiling": "1",
+              "--specific-ceiling-void": "on"}
+    }
+  }
+}

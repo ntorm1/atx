@@ -3,13 +3,18 @@
 #include <array>
 #include <iosfwd>
 #include <limits>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
+#include "atx/engine/book/risk_target.hpp"
 #include "strategy_target_replay.hpp"
 
 namespace atx::impl::strategy {
+namespace spo {
+class RiskStore; // strategy_spo.hpp: the pinned atx-risk-v1 store a leverage rule reads
+} // namespace spo
 // Self-financing marked-dollar NAV replay of one pinned saved blend under the
 // same target rules as replay_targets (baseline-v1 / monthly-budget-v2 /
 // aim-partial-v5).
@@ -137,6 +142,22 @@ inline constexpr atx::f64 nav_rate_min = 0.01, nav_rate_max = 0.15;
 //   cancelled. A zero plan (every exit) and, under the locate rule, an order on a
 //   special-tier name stay target orders. Without drift Delta is Target bit for bit.
 enum class NavOrderBasis : atx::u8 { Target = 0, Delta = 1 };
+// The book's leverage rule (P9 C1, DEC-10): what sets the aim leverage the target rule reads at
+// each decision. Fixed (fixed-v1, the default): target.aim_leverage, every byte unchanged.
+// RiskTargetV1 (v8 R-8, risk-target-v1, `params` S, b, C) and VolTargetV1 (v8 Y, vol-target-v1,
+// registered constants; `params` unused): L_t from the book's own scaler on the pinned
+// atx-risk-v1 store `risk` (strategy_risk_target.hpp states both laws; L = target.aim_leverage,
+// the cap of vol-target-v1). Each book runs it on its own state from a clean one, so books on a
+// pool, the variants of a construction grid and the capacity books run it like a book alone; the
+// main books' scored decisions are recorded (NavReplayResult::leverage, a capacity book records
+// none). Not Fixed requires aim-partial-v5 and the store (InvalidArgument); the v7 seam
+// (strategy_nav_v7.hpp) sets it from --risk-target / --vol-target.
+enum class NavLeverageLaw : atx::u8 { Fixed = 0, RiskTargetV1 = 1, VolTargetV1 = 2 };
+struct NavLeverageRule {
+  NavLeverageLaw law{NavLeverageLaw::Fixed};
+  atx::engine::book::RiskTargetParams params{};
+  std::shared_ptr<const spo::RiskStore> risk;
+};
 struct NavReplayConfig {
   TargetReplayConfig target{}; // one_way_bps and annual_borrow_bps must be zero
   NavScenario scenario{};
@@ -182,8 +203,10 @@ struct NavReplayConfig {
   // decision, which stays on the calling thread. Every book's arithmetic is its own and the
   // shared state is read-only inside a phase, so every output is bit-identical to 1 (the
   // default: sequential, today's loop). 1..64; above 1 refused with rate per-name-v1 (one
-  // shared rate buffer) and while a v7 extension is installed (its hook is thread-local).
+  // shared rate buffer) and with an spo rule (its engines hold every book's state). P9 C1: the
+  // leverage rule and every other v7 rule keep their state per book, so they run on the pool.
   atx::usize book_workers{1};
+  NavLeverageRule leverage{}; // P9 C1, DEC-10 (above); Fixed: every byte unchanged
 };
 // v8 E-25 (Ruling E-25; CLI --label-role ROLE/manifest.json --label-role-sha256 SHA): the
 // pinned label role that MARKS the books (run_nav_replay below states the rule). Both empty
@@ -341,6 +364,33 @@ struct NavRateStats {
 struct NavConstructionStats {
   NavRateStats rate_stats{};
 };
+// One scored decision of one main book under a leverage rule (risk_target::Record; P9 C1): the
+// estimate in force and L_t. rebalance; updated (this decision took the estimate in force); base
+// (L, the book's aim leverage); of the estimate in force (NaN before the first) the book's gross
+// and the share of it on names with a risk row, sigma_hat and S / (b sigma_hat) before the clip
+// (raw); leverage (L_t in force, L before the first estimate); clip; sigma_ref (vol-target-v1
+// only: the running mean of the book's estimates at the estimate in force; NaN otherwise).
+struct NavLeverageRecord {
+  atx::i64 session{};
+  std::string book; // "<trading id>+<financing id>"
+  bool rebalance{}, updated{};
+  atx::f64 base{};
+  atx::f64 gross{}, priced_share{}, sigma_hat{}, raw{};
+  atx::f64 leverage{};
+  atx::engine::book::RiskTargetClip clip{atx::engine::book::RiskTargetClip::None};
+  atx::f64 sigma_ref{std::numeric_limits<atx::f64>::quiet_NaN()};
+};
+// One scored rebalance decision of one main book under the v7 seam (v7::TcRecord; P9 C1): the
+// transfer coefficient (cost_v2::transfer_coefficient), the decision's members, the names the v6
+// rule costed and the names the dust band held; c_bar, c_ref and theta under aim-partial-v6 (NaN
+// otherwise).
+struct NavTransferRecord {
+  atx::i64 session{};
+  std::string book; // "<trading id>+<financing id>"
+  atx::f64 tc{};
+  atx::usize members{}, costed{}, banded{};
+  atx::f64 c_bar{}, c_ref{}, theta{};
+};
 struct NavReplayResult {
   std::vector<NavReplayDay> days;
   std::vector<NavEvent> events;
@@ -353,13 +403,21 @@ struct NavReplayResult {
   // Under a warm start it precedes decision_begin when the book deployed in the warm-up.
   atx::usize deployment_index{};
   NavConstructionStats construction{}; // aim-partial-v5 per-name rate statistics
+  // P9 C1: the book's scored leverage-rule decisions (empty under Fixed and for a capacity
+  // book) and its scored v7 rebalance decisions (empty without the v7 seam), in session order.
+  std::vector<NavLeverageRecord> leverage;
+  std::vector<NavTransferRecord> transfer;
 };
 [[nodiscard]] atx::core::Result<NavReplayResult> replay_nav(const NavReplayInput& in,
                                                           const NavReplayConfig& cfg);
 // Several scenarios over one input in lockstep: each decision's desired target
 // (and, for price-risk-v1, its price exposures) is formed ONCE and shared by every
 // scenario book; the books are otherwise independent. results[k] is bit-identical
-// to replay_nav(in, base with scenario = scenarios[k]). 1 <= scenarios <= 8.
+// to replay_nav(in, base with scenario = scenarios[k]). 1 <= scenarios <= 16 (P9 C1: the
+// main books and, under --capacity-curve, the capacity books in one lockstep). With an ADV cap
+// (adv_hold_q > 0) a capacity book's cap reads its multiple's NAV, m x initial_nav (P9 C1, the
+// NAV-m book's cap): each multiple then forms its own construction (one lockstep per multiple,
+// x1 with the main books).
 [[nodiscard]] atx::core::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
     const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios);
 
@@ -425,11 +483,13 @@ public:
 // bit-identical to replay_nav_scenarios(in, variants[v], scenarios)[k]. The variants may
 // differ only in the target construction keys of nav_grid_variant_flags (rule, cadence,
 // trade_fraction, monthly_budget, band_multiple, dust_multiple, aim_leverage, exit_rate);
-// any other difference (the v8 hold_band and adv_hold_q included) is InvalidArgument, and
-// with a hold band every variant has the base's cadence (the band's state advances on the
-// shared cadence decisions). With adv_hold_q > 0 the cap Q ADV / (aim_leverage NAV) reads a
-// variant flag: the variants then run in one lockstep per distinct aim_leverage, each
-// capped at its own (review A-1; without the cap, one lockstep as before). 1 <= variants <=
+// any other difference (the v8 hold_band, adv_hold_q and inv_vol and the leverage rule
+// included) is InvalidArgument, and
+// with a hold band or two-speed-v1 every variant has the base's cadence (the band's state
+// and the fast sleeve F advance on the shared cadence decisions). With adv_hold_q > 0 the
+// cap Q ADV / (aim_leverage NAV) reads a variant flag, and with two-speed-v1 the shared F
+// moves toward L m_f d_f: the variants then run in one lockstep per distinct aim_leverage,
+// each at its own (review A-1, review YCOMB #2; otherwise one lockstep). 1 <= variants <=
 // nav_max_grid_variants; the workspace budget is charged for every book.
 inline constexpr atx::usize nav_max_grid_variants = 16;
 [[nodiscard]] atx::core::Result<std::vector<std::vector<NavReplayResult>>> replay_nav_grid(
@@ -539,7 +599,13 @@ struct NavFieldsPin {
 // run in lockstep; exclusive output directory: recipe.json, daily_<S>.csv,
 // events_<S>.csv, summary.json LAST (S: the trading id, or "<trading>+<financing>"
 // with fields). Everything, fields pins included, is checked and computed before
-// the directory is created.
+// the directory is created. summary.json carries producer {engine_git_sha (the configure-time
+// SHA of the building tree, "-dirty" when it had local changes), build_type "release" | "debug"
+// (NDEBUG), definition}: the executable's identity (P9 C1, NAV receipt completeness); a
+// comparison of two builds' bytes drops that key. Under the v7 seam (P9 C1) the capacity books of
+// --capacity-curve run in the same lockstep, then <output>/capacity/ (recipe, CSVs, summary),
+// the v7 files and v7_extras.json are written before summary.json, which binds them
+// (summary v7.files: the SHA-256 of v7_extras.json and of capacity/summary.json).
 [[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
                                                std::ostream& progress);
 [[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
@@ -636,6 +702,11 @@ struct NavEmitOptions {
 // [--holdings-format f64|csv]. v8: --warm-start-sessions K, --book-workers N, the valueless
 // --stage-timers, --construction-grid GRID.json (run_nav_grid), and --label-role PATH
 // --label-role-sha256 SHA (E-25, together or neither: NavExecutionOptions::label_role).
+// P9 C1 (K-P9-7, Ruling P7): `nav --list-rules [--json]` prints the rule contract and exits 0
+// before any other flag is read: {"schema": "atx.nav-rules/v1", "capabilities": [...], "rules":
+// [{id, kind, params_schema, incompatible}]}; this lane lists the leverage rules (fixed-v1,
+// vol-target-v1, risk-target-v1). Without --json: one "<kind> <id>" line per rule.
+inline constexpr const char* nav_rules_schema = "atx.nav-rules/v1";
 [[nodiscard]] int dispatch_nav_replay(int argc, char** argv, std::ostream& out,
                                       std::ostream& err);
 
@@ -647,10 +718,13 @@ struct NavEmitOptions {
 // (exclusive): <output>/<id>/ byte for byte the directory the standalone nav run with the
 // variant's flags publishes, then <output>/grid_manifest.json LAST (atx.nav-grid-run/v1:
 // the grid file SHA, each variant's flags and file SHAs; stage_seconds with --stage-timers,
-// which then stay out of the variant summaries; leverage_groups, only with --adv-hold-q and
-// several aim leverages: the lockstep groups, review A-1; label_role_sha256 with --label-role,
-// whose load is the grid's one load). Refused with --emit-holdings and while a v7 extension is
-// installed.
+// which then stay out of the variant summaries; leverage_groups, only with --adv-hold-q or
+// --two-speed and several aim leverages: the lockstep groups and the rule of the one that
+// applies, review A-1 / review YCOMB #2; label_role_sha256 with --label-role,
+// whose load is the grid's one load). Refused with --emit-holdings and with an spo rule (its
+// engines hold every book's state). P9 C1: under the v7 seam (--risk-target, --vol-target,
+// aim-partial-v6, --cost-v2, --capacity-curve) every <id>/ carries the standalone run's v7 files
+// too, each from its own books.
 [[nodiscard]] atx::core::Status run_nav_grid(const TargetReplayRunConfig& cfg,
                                              const NavTurnoverLimits& limits,
                                              const NavFieldsPin& fields,

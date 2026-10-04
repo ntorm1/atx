@@ -224,6 +224,20 @@ enum class OpCode : atx::u8 {
   TsMaxMp,
   TsDecayLinearMp,
   TsCorrMp,         // ts_corr_mp(x, y, w, m)
+  // ---- platform-v8 lane YOPS formulaic ops. APPENDED after TsCorrMp so every
+  //      earlier id keeps its value. Registry rows live in detail::formulaic_ops(),
+  //      outside builtin_ops() and literature_ops(), so neither the factory's
+  //      op-swap catalogue (with or without literature_ops) nor its wrapper set
+  //      changes. Kernels: cs_ops.hpp cs_group_aggregate_row (group_sum), the
+  //      ts_ops.hpp delay kernel (group_delay), asof_ops.hpp (the as-of rank
+  //      family); oracle twins: oracle.cpp cs_group_sum, oracle_formulaic.cpp.
+  CsSumG,              // group_sum(x, g): the group's sum over its valid members, broadcast
+  GroupDelay,          // group_delay(g, d) -> Group: the classifier d sessions ago
+  AsofRankTsRank,      // asof_rank_ts_rank(x, w, d, j)
+  AsofRankTsMin,       // asof_rank_ts_min(x, w, d, j)
+  AsofRankDecayLinear, // asof_rank_decay_linear(x, w, d, j)
+  AsofRankCorr,        // asof_rank_correlation(x, w, y, d, j)
+  AsofRankCov,         // asof_rank_covariance(x, w, y, d, j)
 };
 
 // Opcode ids are part of the wire format of serialized programs and of every
@@ -232,6 +246,8 @@ static_assert(static_cast<atx::u8>(OpCode::OuZscore) == 86, "pre-W2 opcode ids a
 static_assert(static_cast<atx::u8>(OpCode::Free) == 88, "pre-W2 opcode ids are frozen");
 static_assert(static_cast<atx::u8>(OpCode::ArgPack) == 89, "W2 opcodes start after Free");
 static_assert(static_cast<atx::u8>(OpCode::TsCorrMp) == 104, "W2 opcode ids are frozen");
+static_assert(static_cast<atx::u8>(OpCode::CsSumG) == 105, "YOPS opcodes start after TsCorrMp");
+static_assert(static_cast<atx::u8>(OpCode::AsofRankCov) == 111, "YOPS opcode ids are frozen");
 
 // =========================================================================
 //  Shape signatures (plan §4 broadcast rules).
@@ -401,8 +417,9 @@ struct OpSig {
 class Library {
 public:
   // Registers all built-in operators (Appendix A), then the W2 literature ops
-  // (detail::literature_ops). The tables are statically valid (no duplicate
-  // names, every row has a shape_of); only the vector allocation can throw.
+  // (detail::literature_ops), then the v8 formulaic ops (detail::formulaic_ops).
+  // The tables are statically valid (no duplicate names, every row has a
+  // shape_of); only the vector allocation can throw.
   Library();
 
   // Look up an operator by name. Returns a non-owning pointer borrowed from the
@@ -462,6 +479,14 @@ namespace detail {
 // for its op-swap buckets and wrapper candidates, so these rows cannot change
 // any seeded search draw. Static storage; every `name` view is non-dangling.
 [[nodiscard]] std::span<const OpSig> literature_ops() noexcept;
+
+// The platform-v8 lane YOPS formulaic ops (group_sum, group_delay and the as-of
+// rank family: the 101-formulaic-alphas constructs the catalogue lacked).
+// Registered into every Library after the literature rows and kept
+// OUT of both tables above: OpCatalog walks only builtin_ops() (and, with
+// OpCatalogCfg::literature_ops, literature_ops()), so no op-swap bucket, wrapper
+// candidate or seeded search draw changes. Static storage.
+[[nodiscard]] std::span<const OpSig> formulaic_ops() noexcept;
 
 // ---- W2 multi-regressor ops ("pack consumers") -------------------------------
 // ts_resid_on / ts_beta_on / cs_resid_on accept more regressors than the three
@@ -542,6 +567,52 @@ inline constexpr atx::usize kMaxCsCovariates = 4;
   default:
     return false;
   }
+}
+
+// ---- platform-v8 lane YOPS formulaic ops ------------------------------------
+// The as-of rank family asof_rank_<outer>(x, w, [y,] d, j) (asof_ops.hpp): the
+// house <outer> over the d sessions ending j sessions ago of the cross-sectional
+// rank of x re-based by the factor w as of the evaluation day.
+[[nodiscard]] constexpr bool is_asof_op(OpCode op) noexcept {
+  switch (op) {
+  case OpCode::AsofRankTsRank:
+  case OpCode::AsofRankTsMin:
+  case OpCode::AsofRankDecayLinear:
+  case OpCode::AsofRankCorr:
+  case OpCode::AsofRankCov:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// The two-series as-of members: operands (x, w, y), y the second series.
+[[nodiscard]] constexpr bool asof_is_pair(OpCode op) noexcept {
+  return op == OpCode::AsofRankCorr || op == OpCode::AsofRankCov;
+}
+
+// The house time-series op an as-of member applies to its re-ranked window
+// (identity for any other opcode).
+[[nodiscard]] constexpr OpCode asof_inner_op(OpCode op) noexcept {
+  switch (op) {
+  case OpCode::AsofRankTsRank:
+    return OpCode::TsRank;
+  case OpCode::AsofRankTsMin:
+    return OpCode::TsMin;
+  case OpCode::AsofRankDecayLinear:
+    return OpCode::TsDecayLinear;
+  case OpCode::AsofRankCorr:
+    return OpCode::TsCorr;
+  case OpCode::AsofRankCov:
+    return OpCode::TsCov;
+  default:
+    return op;
+  }
+}
+
+// Every v8 formulaic opcode (the rows of formulaic_ops()).
+[[nodiscard]] constexpr bool is_formulaic_op(OpCode op) noexcept {
+  return op == OpCode::CsSumG || op == OpCode::GroupDelay || is_asof_op(op);
 }
 
 } // namespace detail

@@ -1,0 +1,374 @@
+{
+  "schema": "atx.wave-result/v1",
+  "wave": "y-5",
+  "kind": "rule",
+  "description": "Cell Y-5 two-speed-v1 (v8y-prereg sections 5, 6, 11, 13 P13, 14; PM8-10 (a), (e); PM8-13; PM8-16): rule wave, template scripts/specs/v8/y-two-speed.json @ b3b5dab4 (blob e29365d1; registered @ e2ac7d63 blob 69cf6134, the two differ only in description, Ruling R0-9-PIN), registered constants theta_s .05 (the parent's trade fraction), theta_f .12945 (half-life 5) and the section 11 half-life table (fast iff half-life <= 10) inside fit --two-speed two-speed-v1 and nav --two-speed two-speed-v1 (the template's flags), on the parent's argv, u the parent's; parent = Y-S cell lib-v8ysb-gm.json (library v8ysb, L 1.1828; Y-2 not accepted, wave-result 09fbd24e next_parent), the last accepted book, whose fit carries a standardised composition (theme_standardise rerank true); P13 checked by root before the cell's NAV; fields v15 lo3; acceptance PM7-34 (dSR > 0 AND mechanics); PM6-6 gross matching (gm template); printed only: turnover per unit gross, cost per traded dollar, 4x net Sharpe, net annual return, the fast mass share; budget construction N 59 + 1 <= 62 (N_c(X-F0) + 6), 0 admission trials.",
+  "manifest": {
+    "commit": "43128be8d023e2219d419513a3c71488049e9647",
+    "path": "scripts/specs/v8/waves/y-5.json",
+    "sha256": "f538f9f590570d3cb80f31aa9e3e8dd1f38fd3b1cb168cc738756ad4da762e89"
+  },
+  "library": null,
+  "template": "scripts/specs/v8/y-two-speed.json",
+  "budget": {
+    "construction_cap": 62,
+    "id": "v8y-construction-n59-plus-1"
+  },
+  "parent": {
+    "spec": "scripts/specs/v8/lib-v8ysb-gm.json",
+    "spec_digest": "1e3ec118273cb52d7248568011e7dc24a211e7204c25b1116f5a5bd7deaa8626",
+    "library": "v8ysb",
+    "nav": "build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb",
+    "leverage": "1.1828"
+  },
+  "screen": null,
+  "cell": {
+    "spec": "scripts/specs/v8/y-two-speed-y-5-gm.json",
+    "spec_digest": "83e6b284cabd57c666a50b3d679f0a59441a0d36b8e1b734a43bbdc703a50cd2",
+    "library": "v8ysb",
+    "kind": "rule",
+    "nav": "build-equity/mega-nav-v8y-two-speed-L1.2658",
+    "leverage": "1.2658",
+    "gross": 0.9862947654458086,
+    "gross_parent": 0.9862134133265011,
+    "gross_calibration": 0.9215182645683836,
+    "leverage_calibration": "1.1828",
+    "corrected": true,
+    "gross_match": "pm6-6"
+  },
+  "marginal": null,
+  "mechanics": {
+    "pass": true,
+    "rows": [
+      {
+        "check": "gross_all_rows",
+        "limit": "[0.9, 1.05]",
+        "pass": true,
+        "value": 0.9862947654458086
+      },
+      {
+        "check": "abs_net_all_rows",
+        "limit": "<= 0.02",
+        "pass": true,
+        "value": 0.005284946286529348
+      },
+      {
+        "check": "tau_mean",
+        "limit": "<= 0.2",
+        "pass": true,
+        "value": 0.026078350308820983
+      },
+      {
+        "check": "tau_p95",
+        "limit": "<= 0.3",
+        "pass": true,
+        "value": 0.03181586330079971
+      },
+      {
+        "check": "max_return_identity_error",
+        "limit": "<= 1e-09",
+        "pass": true,
+        "value": 3.7470027081099033e-16
+      },
+      {
+        "check": "max_cash_book_relative_error",
+        "limit": "<= 1e-09",
+        "pass": true,
+        "value": 3.878898425751267e-14
+      }
+    ],
+    "rule": "v8-mech"
+  },
+  "nav_exe": {
+    "cell": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+    "equal": true,
+    "parent": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+    "ref": "none"
+  },
+  "seal_scan": {
+    "files": 37,
+    "seal": "2024-01-01",
+    "forms": [
+      "iso",
+      "compact",
+      "year",
+      "quarter"
+    ],
+    "tokens_at_or_after_seal": 0,
+    "where": [],
+    "seal_references": {
+      "tokens": 0,
+      "files": []
+    },
+    "allowed": [
+      {
+        "token": "2026-10-02",
+        "ruling": "untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)",
+        "tokens": 7,
+        "files": [
+          "build-equity/waves/y-5/consoles/004-calibration-run----stop-after-nav.log",
+          "build-equity/waves/y-5/consoles/005-mechanics-reader.log",
+          "build-equity/waves/y-5/consoles/009-matched-run----stop-after-nav.log",
+          "build-equity/waves/y-5/consoles/010-mechanics-reader.log",
+          "build-equity/waves/y-5/consoles/011-the-cell-s-monitor-and-summ--nav-summ-scores-and.log",
+          "build-equity/waves/y-5/consoles/012-bundle--pm5-23.log",
+          "build-equity/waves/y-5/consoles/013-book-reader.log"
+        ]
+      },
+      {
+        "token": "2026-10-03",
+        "ruling": "receipt started_utc wall-clock (PM SEAL-ALLOW)",
+        "tokens": 4,
+        "files": [
+          "build-equity/waves/y-5/consoles/005-mechanics-reader.log",
+          "build-equity/waves/y-5/consoles/010-mechanics-reader.log",
+          "build-equity/waves/y-5/consoles/012-bundle--pm5-23.log",
+          "build-equity/waves/y-5/consoles/013-book-reader.log"
+        ]
+      },
+      {
+        "token": "20260927",
+        "ruling": "nav_summ's default bootstrap seed (not a date)",
+        "tokens": 1,
+        "files": [
+          "build-equity/cycle-v8y-two-speed-y-5-gm/summ-run1/stdout.log"
+        ]
+      },
+      {
+        "token": "20260929",
+        "ruling": "nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)",
+        "tokens": 69,
+        "files": [
+          "build-equity/cycle-v8y-two-speed-y-5-gm/summ-run1/stdout.log",
+          "build-equity/waves/y-5/bundle-run1/stdout.log"
+        ]
+      }
+    ],
+    "rulings": {
+      "2026-10-02": "untracked owner plot file name docs/plans/2026-10-02-x5-equity-curve.png in dirty list (PM SEAL-ALLOW)",
+      "2026-10-03": "receipt started_utc wall-clock (PM SEAL-ALLOW)"
+    }
+  },
+  "stats": {
+    "cell": {
+      "ann_vol": 0.03097836552423191,
+      "annual_costs": {
+        "borrow": 0.0032754590726590425,
+        "long_financing": 0.002012795704334607,
+        "trade_cost": 0.008198856626596952
+      },
+      "cagr": 0.054521996047837584,
+      "cost_bps_traded": 12.64835933261,
+      "daily_csv_sha256": "86c8b47e9460f4ab0ed1f7767da786b6b3bfadbedfb9e23002ce1910c6bc2807",
+      "dir": "build-equity/mega-nav-v8y-two-speed-L1.2658",
+      "gross_annual": 0.06705979873819312,
+      "gross_sharpe": 2.1646144206327156,
+      "max_drawdown": 0.026695291027508117,
+      "mean_gross_leverage_all_rows": 0.9862947654458086,
+      "net_annual": 0.05357268733460252,
+      "net_sharpe": 1.7293580996937001,
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "tau_gmv_mean": 0.026078350308820983,
+      "tau_per_gross": 0.026440726669611267,
+      "x4_net_sharpe": 1.6023136519308228
+    },
+    "parent": {
+      "ann_vol": 0.030569717335626075,
+      "annual_costs": {
+        "borrow": 0.003275975200840431,
+        "long_financing": 0.0020127166514112933,
+        "trade_cost": 0.008851338874388331
+      },
+      "cagr": 0.05766642148886314,
+      "cost_bps_traded": 12.657953278624719,
+      "daily_csv_sha256": "73b69bcceb122b7c21bb3f75619058c51b8104ebd8a694bbbb1b12db14b401b0",
+      "dir": "build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb",
+      "gross_annual": 0.07067817348886478,
+      "gross_sharpe": 2.3117806086991832,
+      "max_drawdown": 0.02580037230369092,
+      "mean_gross_leverage_all_rows": 0.9862134133265011,
+      "net_annual": 0.05653814276222473,
+      "net_sharpe": 1.849482026329859,
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "tau_gmv_mean": 0.028134396709054203,
+      "tau_per_gross": 0.028527696266223746,
+      "x4_net_sharpe": 1.6994264697927697
+    }
+  },
+  "paired": {
+    "cbb_ci": [
+      -0.26493053102975767,
+      0.0399586255843882
+    ],
+    "dsr": -0.12012392663616045,
+    "lw_p": 0.1398,
+    "se": 0.07525025339282833
+  },
+  "bundle": {
+    "cbb_ci95": [
+      -0.26493053102975767,
+      0.0399586255843882
+    ],
+    "dsr": -0.12012392663616045,
+    "freeze_gate": false,
+    "lw_ci95": [
+      -0.2768878081453667,
+      0.03652033930513214
+    ],
+    "memmel_se": 0.07525025339282833,
+    "p_one_sided": 0.9316,
+    "p_two_sided": 0.1398,
+    "path": "build-equity/waves/y-5/bundle.json",
+    "rho": 0.9888633802780193,
+    "sessions": 1005,
+    "sha256": "75d16ebd0c9068b3b597ccb9a5f3eada72c3c390c9e643bac0a4de803ee75e79"
+  },
+  "dsr": {
+    "cell_count": 0.7803504347625907,
+    "effective_n": 0.998364059022703,
+    "legacy": {
+      "cells": 37,
+      "dsr": 0.9438649562783565,
+      "note": "legacy variance (ledger lines without a window_id): reported, gates nothing"
+    },
+    "n": 60,
+    "source": "nav_summ --dsr-ledger (deflated_ledger)",
+    "variance_cells": 31,
+    "variance_sr": 0.0012770931163305352,
+    "window_id": "research-window-v2"
+  },
+  "pbo": 0.1508935508935509,
+  "verdict": {
+    "accepted": false,
+    "checks": {
+      "criteria": false,
+      "dsr_positive": false,
+      "mechanics": true
+    },
+    "criteria": [
+      {
+        "criterion": "capacity-4x-higher",
+        "met": false,
+        "printed": "unmet",
+        "text": "net Sharpe at 4x NAV (capacity_curve.csv) higher than the parent's"
+      },
+      {
+        "criterion": "turnover-per-gross-not-higher",
+        "met": true,
+        "printed": "met",
+        "text": "turnover per unit gross (tau_gmv_mean / all-rows gross) not higher than the parent's"
+      },
+      {
+        "criterion": "cost-bps-lower",
+        "met": true,
+        "printed": "met",
+        "text": "S2 cost_bps_traded lower than the parent's"
+      }
+    ],
+    "decided_by": [
+      "dsr_positive",
+      "mechanics"
+    ],
+    "dsr": -0.12012392663616045,
+    "rule": "pm7-34",
+    "text": "paired S2 net dSR > 0 AND mechanics (PM7-34); criteria printed, decide nothing"
+  },
+  "ledger": {
+    "path": "build-equity/trials.jsonl",
+    "lines_before": 130,
+    "lines_after": 131,
+    "head": "6c5f0ff1faca1a1bbc2eb987e5e1f7363cf2bfa7484b58dab5fe194ed3275c11",
+    "n_before": 59,
+    "n_after": 60,
+    "trial_id": "cc150c210a3f98e4",
+    "admission_lines": []
+  },
+  "next_parent": {
+    "spec": "scripts/specs/v8/lib-v8ysb-gm.json",
+    "library": "v8ysb"
+  },
+  "timings": [
+    {
+      "executable_sha256": "985019d97d3db335430da8dda2160c9b4908c0db462344478b7e64bb5fa3c989",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 530,
+      "phase": "u",
+      "run_dir": "build-equity/mega-v8-b0b-train-u-v8ysb-run1",
+      "seconds": 12.68800000000192
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 58,
+      "phase": "fit",
+      "run_dir": "build-equity/mega-weights-v8y-two-speed-run1",
+      "seconds": 1.0470000000059372
+    },
+    {
+      "executable_sha256": "985019d97d3db335430da8dda2160c9b4908c0db462344478b7e64bb5fa3c989",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 1559,
+      "phase": "w",
+      "run_dir": "build-equity/mega-v8yw-train-two-speed-run1",
+      "seconds": 62.15699999999924
+    },
+    {
+      "executable_sha256": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 713,
+      "phase": "nav",
+      "run_dir": "build-equity/mega-nav-v8y-two-speed-run",
+      "seconds": 78.90699999999924
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 1363,
+      "phase": "card",
+      "run_dir": "build-equity/mega-cards-v8y-two-speed-run",
+      "seconds": 18.82800000000134
+    },
+    {
+      "executable_sha256": "72ff6d2d707048ae72b089c362c40b416fda5c9bed2498d64eeb137f678d5f25",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 713,
+      "phase": "nav",
+      "run_dir": "build-equity/mega-nav-v8y-two-speed-L1.2658-run",
+      "seconds": 82.65600000000268
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 128,
+      "phase": "monitor",
+      "run_dir": "build-equity/mega-monitor-v8y-two-speed-run",
+      "seconds": 1.5630000000019209
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 571,
+      "phase": "summ",
+      "run_dir": "build-equity/cycle-v8y-two-speed-y-5-gm/summ-run1",
+      "seconds": 37.70299999999406
+    }
+  ],
+  "receipts": {
+    "01-preflight": "c1d7ad9ab16cd9402de476490112880ee1a09627444b32073669181121de70e9",
+    "02-register": "05b1cd155d78f9f2a6de5f6fc80032088efa279ec1b516ac66e8644f2bdf17fa",
+    "03-screen": "8b01c8bfd13700c65a2f72f937b6a4c3cc35f967e9dc3dfc14498d0a46880747",
+    "04-spec": "fff1031e9d253f7a6af8477a32c6873fe99f8ace3837ed4b10ec4207f2eecaff",
+    "05-run": "fdc99f643c9939f6972870cebbf8412342e0efa64ce286bb2f2b249c59154ba3",
+    "06-match": "6e7cb5b0813368bc2a86cd5c1a36274eac637c6417e6fdd2b5ba016a69085954",
+    "07-verify": "997d151a41236165bf78585027501c4177b7d9be37323797c4678e04e0974c89",
+    "08-judge": "687283dd822c86b8aa2ffb78d3a952b12e9f5d437ba3b80f38c14d8d7e8128cc"
+  }
+}

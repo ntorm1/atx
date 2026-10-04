@@ -1,0 +1,39 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "v8x-theme-erc",
+  "description": "Expansion X cell (lane XCOMB, task-XCOMB-report.md; runs only after V8-F and integration 8, under v8x-prereg.md; parent = the book at that point): composition rule theme-erc-v1, every constant registered blind before any read. Hypothesis: theme shares that give every theme sleeve an equal share of the blend's risk (equal risk contribution) combine better than the parent's equal theme shares 1/T. Rule: the parent's members and pre-cap within-theme shares a_k (ew-theme-std-v1 tier shares or ic-shrink-v1 shrunk-IC shares) unchanged; theme sleeve r_t(d) = sum_{k in t} a_k s_k f_k(d) over the parent fit's TRAIN decisions (the fitter's factor series, flat 0); C = their sample covariance (n - 1), themes in sorted order; theme shares b = the equal-risk-contribution shares of C (Spinu's problem, cyclical coordinate descent, 10000 sweeps from the inverse-volatility point, refused unless max |c_t / mean(c) - 1| <= 1e-10); w_k = a_k b_theme(k), then the member cap 1/(2T); the IC runner's per-date standardisation unchanged (theme_standardise rule theme-erc-v1, its weights verified against the recorded shares and covariance to 1e-12). The change: fit --theme-erc theme-erc-v1 on the parent's fit argv (its --composition must be ew-theme-std-v1 or ic-shrink-v1; the fitter refuses --theme-erc with --theme-resid, so on an R-11 parent the cell is undefined and root rules). Downstream outputs renamed (fit, card, w, nav, monitor); the u pass is the parent's; the w pass inherits Ruling E-28's 3,072 MiB from an R-1 chain. Gross matching (Ruling PM6-6): a calibration run at the parent's L (mechanics only: all-rows S2 gross G_cal, no return read), then the trial at L = L_parent x G_parent / G_cal (4 decimals), set by root as nav.leverage in a -gm copy as for R-1 and R-3. Identity before the cell: the parent's w argv re-run on the new build is byte-identical (flag absent), and the parent's fit argv re-run gives the same composition_weights.json and admission.json except script_sha256. Acceptance (pre-registration rule 5 and R-1's mechanical criterion): paired S2 net dSR > 0 against the parent AND mechanics AND turnover per unit gross (executed: tau_gmv_mean / mean_gross_leverage_all_rows, S2) not higher than the parent's.",
+  "parent": "lib-v8x3b-gm.json",
+  "nominal_parent": "r1-comp-v8.json",
+  "change": {
+    "set": {
+      "fit.output": "build-equity/mega-weights-v8x-theme-erc",
+      "card.output": "build-equity/mega-cards-v8x-theme-erc",
+      "ic.w_output": "build-equity/mega-v8xw-train-theme-erc",
+      "nav.output": "build-equity/mega-nav-v8x-theme-erc",
+      "monitor.output": "build-equity/mega-monitor-v8x-theme-erc"
+    },
+    "flags": {
+      "fit": {
+        "--theme-erc": "theme-erc-v1"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v8x3b/summary.json",
+      "sha256": "e342db4faee76302c6953bf949ad55f3586442ea96600bd9379600519beb5bec"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8-r1-std-v8x3b/admission.json",
+      "sha256": "5f5b3edb280cb44ff64fa3208cecc319f166d8eae1c1326c526f455a74f2b196"
+    },
+    "reference_combined": {
+      "path": "build-equity/mega-v8-r1w-train-std-v8x3b-1/train_combined.json",
+      "sha256": "7f9a6bc529aa9e6b833bd2e159a8a3caa87b98e21f4ea4e8aa863b807b1a2dec"
+    },
+    "reference_weights": {
+      "path": "build-equity/mega-weights-v8-r1-std-v8x3b/composition_weights.json",
+      "sha256": "82685a2246d419db979d9dffa0fd4329f0eaf07668e6944dd8e2f6380d29c2ba"
+    }
+  }
+}

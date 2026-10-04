@@ -24,11 +24,20 @@ namespace atx::impl::strategy::detail {
 // adv_dollars, nav: adv-hold-v1 (v8 R-5) inputs of the decision, filled by the NAV replay before
 // form_desired (one raw-dollar ADV per name, read where the desired weight is nonzero; the
 // run's NAV); caps: the pass's scratch.
+// sigma: inv-vol-v1 (v8 X) input of the decision, filled by the NAV replay before form_desired
+// (one execution volatility per member, NaN for the cost model's fallback); sigma_sorted: the
+// kernel's scratch.
 struct DesiredState {
   atx::engine::book::HoldBandState hold;
   std::vector<atx::f64> adv_dollars;
   atx::f64 nav{};
   std::vector<atx::f64> caps;
+  std::vector<atx::f64> sigma, sigma_sorted;
+  // two-speed-v1 (v8 Y-5): the virtual fast sleeve F per name (empty until the first rebalance),
+  // F entering the latest rebalance (what a scaled book's plan carries: engine::book::
+  // two_speed_carry, Ruling PM8-16 #10) and the fast sleeve's desired target of the decision
+  // (scratch); parent_desired: the mechanics diagnostic's scratch.
+  std::vector<atx::f64> fast, fast_before, fast_desired, parent_desired;
 };
 // One externally pinned saved blend plus its bound price role, owned. Date-major.
 // volume is empty unless requested; present => finite >= 0 raw shares, absent => NaN.
@@ -38,6 +47,8 @@ struct LoadedSavedBlend {
   std::vector<atx::u8> member, present;
   std::vector<atx::i64> sessions;
   std::vector<atx::u64> ids;
+  // two-speed-v1 (v8 Y-5): the saved sleeves the combined manifest pins (loaded only under it).
+  std::vector<atx::f64> sleeve_fast, sleeve_slow, sleeve_fast_share;
   std::string manifest_json; // the pinned combined manifest, re-serialized
   // Borrowed view; valid while *this is alive and unmodified.
   [[nodiscard]] TargetReplayInput view() const;
@@ -140,7 +151,9 @@ void desired_target(std::span<const atx::f64> signal, std::span<const atx::u8> m
 // after the post-processing of a rebalance that proceeds, from state->adv_dollars and
 // state->nav (out.adv_*). InvalidArgument without a state (or its ADV row and NAV) when an
 // option needs it. With both off the state is not read and the arithmetic is the pre-v8
-// construction's, operation for operation.
+// construction's, operation for operation. inv-vol-v1 (v8 X) scales the tied ranks by
+// engine::book::scale_inverse_vol on state->sigma before the demean (out.inv_vol_*);
+// InvalidArgument without a state whose sigma row has one entry per name.
 [[nodiscard]] atx::core::Result<bool> form_desired(
     const TargetReplayInput& in, const TargetReplayConfig& cfg, atx::usize d,
     std::vector<std::pair<atx::f64, atx::usize>>& row, std::vector<atx::f64>& desired,
@@ -150,8 +163,9 @@ void desired_target(std::span<const atx::f64> signal, std::span<const atx::u8> m
 // only then do recipes, CSVs and summaries carry construction keys/columns (the
 // default path emits none).
 [[nodiscard]] bool construction_active(const TargetReplayConfig& cfg);
-// "<rule>[+neutral-<id>][+band-<X>][+hold-band-<B>][+adv-hold-<Q>]" (id: price-risk-v1 |
-// price-risk-ind-v1 | price-risk-ind-v2; X, B, Q: shortest round-trip decimal; B only when > 0).
+// "<rule>[+neutral-<id>][+band-<X>][+hold-band-<B>][+adv-hold-<Q>][+inv-vol-v1]" (id:
+// price-risk-v1 | price-risk-ind-v1 | price-risk-ind-v2; X, B, Q: shortest round-trip decimal; B
+// only when > 0; inv-vol-v1: v8 X, TargetReplayConfig::inv_vol).
 [[nodiscard]] std::string construction_rule_id(const TargetReplayConfig& cfg);
 // Construction recipe keys as a JSON object text; empty when not active.
 [[nodiscard]] std::string construction_recipe_json(const TargetReplayConfig& cfg);

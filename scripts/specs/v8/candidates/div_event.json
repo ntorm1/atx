@@ -1,0 +1,46 @@
+{
+  "id": "div_event",
+  "dsl": "rank(div_init_omit)",
+  "dsl_sha256": "2dbe474ef4f26f2d0dd8e3a845a57bdfaae26728b5d58fa747a665ec1540bbe6",
+  "theme": "filing_events",
+  "tier": "C+",
+  "prior_sign": 1,
+  "citation": "Michaely, Thaler and Womack (1995, JF 50(2)) Price reactions to dividend initiations and omissions: overreaction or drift?",
+  "origin": "prior",
+  "hypothesis": "div_event",
+  "kind": "add",
+  "fields": [
+    "div_init_omit"
+  ],
+  "prior_sign_source": "Michaely-Thaler-Womack 1995",
+  "form": "R(x)",
+  "formula": "div_init_omit (mtw-div-init-omit-v1): +1 in the 252 sessions after a dividend initiation (an ex-date with none in the prior 504 sessions while trading), -1 in the 252 sessions after an omission is detected (a quarterly payer's last ex-date + 126 sessions), else 0; long initiators, short omitters",
+  "domain": "NaN with fewer than 504 sessions of the line's ledger; values -1, 0, 1 (mostly 0: ties at the middle rank)",
+  "deviation": "ex-dates from the vendor cumulative factor (XDATA ledger, cash yields 1 bp to 4%), not CRSP distribution codes or announcement dates; an omission is detected 126 sessions after the last payment, not at the board's announcement; the 504-session gap and 252-session window as recalled from MTW",
+  "lane": "YDATA",
+  "report": "task-YDATA-report.md",
+  "schema": "atx.wave-candidate/v1",
+  "status": "dropped",
+  "wave": "y-s",
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-02",
+      "by": "root",
+      "note": "Y-S (v8y-prereg section 3 row 13); line 6e7436c951616fea = v8y-prereg section 14"
+    },
+    {
+      "status": "pinned",
+      "at": "2026-10-02",
+      "by": "PM",
+      "note": "ruling PM8-14"
+    },
+    {
+      "status": "dropped",
+      "at": "2026-10-03",
+      "by": "research_cycle.py wave",
+      "wave": "y-s",
+      "note": "wave-result True"
+    }
+  ]
+}
