@@ -105,3 +105,29 @@ def test_known_13f_leads_survive_unknown_sample_saturation(tmp_path):
     report=inspect_ledgers([ledger],max_candidates=1)["files"][0]
     assert len(report["known_13f_leads"])==256 and report["known_13f_lead_bound_reached"]
     assert report["13f_lead_records"]==257 and report["scan_complete"]
+
+
+ACTUAL_DIGEST_SUFFIX_FALSE_LEADS = [{'accession': '0001089063-20-000014', 'fetched_at': '2026-09-30T11:14:14.273+00:00', 'http_status': 200, 'sha256': 'd7518906e3d3a4a9f870378df64494b4482b0340b666250aa46842d8c915413f', 'url': 'https://www.sec.gov/Archives/edgar/data/1089063/000108906320000014/dks-20200201.htm'}, {'accession': '0001654954-18-010445', 'fetched_at': '2026-09-30T11:41:42.490+00:00', 'http_status': 200, 'sha256': 'eb0630ec65094eaefc84e2f9e4258d2d5ac16596e31c64ae9d2a44a97364713f', 'url': 'https://www.sec.gov/Archives/edgar/data/732026/000165495418010445/tti_10k.htm'}, {'fetched_at': '2026-09-30T00:16:15.107+00:00', 'sha256': '54a2a1c6ac1bb14a45a09a423b0b68b02b5313d97141b4601597e8c0d2b0113f', 'status': 200, 'url': 'https://www.sec.gov/Archives/edgar/data/851968/000085196826000031/a2026q2pressreleaseandtabl.htm'}, {'fetched_at': '2026-09-30T00:18:37.105+00:00', 'sha256': '94f113f2920e3a6773e5a19c188254c09a55b3061947e0f378c335498f84613f', 'status': 200, 'url': 'https://efts.sec.gov/LATEST/search-index?q=%22financial+results%22+OR+%22results+for+the%22+OR+%22earnings+release%22&forms=6-K&dateRange=custom&startdt=2020-08-01&enddt=2020-08-31&from=1000'}, {'fetched_at': '2026-09-30T00:56:41.809+00:00', 'sha256': 'cd588a5455bf884ec8c380f2b655ba793e40101cf487fb5789671960b3c7713f', 'status': 200, 'url': 'https://www.sec.gov/Archives/edgar/data/1754068/000119312523268875/d559627dex991.htm'}, {'fetched_at': '2026-09-30T01:12:41.539+00:00', 'sha256': 'b938a2a41319563d8d9f3b982440b13e90744f2298cfc3488168bca12695913f', 'status': 200, 'url': 'https://www.sec.gov/Archives/edgar/data/1420811/000142081120000122/ondkearningsrelease202.htm'}]
+
+
+def test_actual_metadata_digest_suffixes_never_become_13f_leads():
+    from atx_db.alpha_panel.thirteenf_source import classify_ledger_metadata
+    assert len(ACTUAL_DIGEST_SUFFIX_FALSE_LEADS)==6
+    assert all(classify_ledger_metadata(row)=="UNKNOWN" for row in ACTUAL_DIGEST_SUFFIX_FALSE_LEADS)
+
+
+@pytest.mark.parametrize("metadata,classification",[
+    ({"form":"13F-HR"},"13F_LEAD"),
+    ({"source.form_type":"13F-NT/A"},"13F_LEAD"),
+    ({"url":"https://www.sec.gov/Archives/edgar/data/1/000000000120000001/13f-hr.xml"},"13F_LEAD"),
+    ({"filename":"manager_13f.xml"},"13F_LEAD"),
+    ({"local_path":"C:/raw/sec_13f/opaque.gz"},"13F_LEAD"),
+    ({"filename":"prefix13f.xml"},"UNKNOWN"),
+    ({"filename":"13foo.xml"},"UNKNOWN"),
+    ({"sha256":"0"*61+"13f","fetched_at":"13f","digest_path":"/13f/x"},"UNKNOWN"),
+    ({"url":"https://13f.example/opaque?form=13f"},"UNKNOWN"),
+    ({"form":"10-K","sha256":"0"*61+"13f"},"OTHER_FORM"),
+])
+def test_semantic_fields_and_token_boundaries_only(metadata,classification):
+    from atx_db.alpha_panel.thirteenf_source import classify_ledger_metadata
+    assert classify_ledger_metadata(metadata)==classification

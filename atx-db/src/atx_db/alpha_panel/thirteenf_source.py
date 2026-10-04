@@ -136,6 +136,36 @@ def inspect_submissions_cache(archive: Path, index: Path, receipt: Path) -> dict
         con.close()
 
 
+def classify_ledger_metadata(metadata:dict[str,Any]) -> str:
+    """Form or filename lead only; opaque metadata remains UNKNOWN.
+
+    Digests, clocks, statuses, accession numbers and arbitrary values are never
+    searched. URL query/host metadata does not identify a filing's form.
+    """
+    from urllib.parse import urlsplit
+    forms=[v.upper().strip() for k,v in metadata.items()
+           if k.rsplit(".",1)[-1].lower() in {"form","form_type","submission_type"} and isinstance(v,str)]
+    if any(form in {"13F-HR","13F-HR/A","13F-NT","13F-NT/A"} for form in forms):
+        return "13F_LEAD"
+    path_fields={"path","object_path","cache_path","local_path","filename","file_name","document_name","primary_document"}
+    url_fields={"url","source_url","request_url","download_url"}
+    for key,value in metadata.items():
+        if not isinstance(value,str):
+            continue
+        field=key.rsplit(".",1)[-1].lower()
+        if field in url_fields:
+            try:
+                value=urlsplit(value).path
+            except ValueError:
+                continue
+        elif field not in path_fields:
+            continue
+        if re.search(r"(?<![a-z0-9])13f(?![a-z0-9])",value,re.I):
+            return "13F_LEAD"
+    known_other={"10-K","10-K/A","10-Q","10-Q/A","8-K","8-K/A","3","3/A","4","4/A","5","5/A","NPORT-P","NPORT-P/A"}
+    return "OTHER_FORM" if forms and all(form in known_other for form in forms) else "UNKNOWN"
+
+
 def inspect_ledgers(files:list[Path], *, max_records:int=100000,
                     max_bytes:int=64*1024*1024, max_record_bytes:int=256*1024,
                     max_candidates:int=2000) -> dict[str,Any]:
@@ -190,12 +220,11 @@ def inspect_ledgers(files:list[Path], *, max_records:int=100000,
                         label=(prefix+str(key))[:128]
                         if isinstance(value,dict):
                             collect(value,label+".",depth+1)
-                        elif re.search(r"url|path|form|accession|sha256|digest|status|fetch|retriev|object|cache",str(key),re.I) and isinstance(value,(str,int,float,bool,type(None))):
+                        elif re.search(r"url|path|form|accession|sha256|digest|status|fetch|retriev|object|cache|filename|file_name|document_name|primary_document|submission_type",str(key),re.I) and isinstance(value,(str,int,float,bool,type(None))):
                             metadata[label]=value[:512] if isinstance(value,str) else value
                 collect(record)
-                forms=[str(v).upper().strip() for k,v in metadata.items() if re.search(r"(^|\.)form$",k,re.I)]
-                is_13f=any(v in {"13F-HR","13F-HR/A","13F-NT","13F-NT/A"} for v in forms) or any(re.search(r"13f(?:[-_/ ]|$)",str(v),re.I) for v in metadata.values())
-                classification="13F_LEAD" if is_13f else "OTHER_FORM" if forms and all(v in {"10-K","10-K/A","10-Q","10-Q/A","8-K","8-K/A","3","3/A","4","4/A","5","5/A","NPORT-P","NPORT-P/A"} for v in forms) else "UNKNOWN"
+                classification=classify_ledger_metadata(metadata)
+                is_13f=classification=="13F_LEAD"
                 matched+=is_13f
                 unknown+=classification=="UNKNOWN"
                 candidate={"record":records,"classification":classification,"metadata":metadata,
