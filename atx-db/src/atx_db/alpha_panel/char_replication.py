@@ -122,6 +122,8 @@ def check_prior_pair(root,prior):
     if R.identity(generation/'manifest.json')!=current['manifest']:raise ValueError('prior publication manifest changed')
     manifest=E.read_metadata(generation/'manifest.json');report=E.read_metadata(generation/'char_replication.json')
     if manifest.get('report')!=R.identity(generation/'char_replication.json') or R.digest(validation['report'])!=R.digest(report):raise ValueError('prior publication report changed')
+    expected={'current':{'generation':generation.name,'manifest':R.identity(generation/'manifest.json')},'validation':{'generation':generation.name,'manifest':R.identity(generation/'manifest.json'),'report':report}}
+    if any(prior[key]['text'].encode('utf-8')!=json_bytes(value) for key,value in expected.items()):raise ValueError('prior pointer bytes differ from independently retained immutable evidence')
     if manifest.get('source_quality_certified') is not False or report.get('source_quality_certified') is not False or manifest.get('readiness')!='NOT_PRODUCTION_READY' or report.get('readiness')!='NOT_PRODUCTION_READY' or report.get('gate_status',{}).get('source_admission')!='FAIL':raise ValueError('prior pointer restoration cannot certify source quality')
 
 
@@ -134,8 +136,10 @@ def load_pending(root,name,expected_sha):
     if target.name!='intent.json' or target.parent.parent!=(root/STAGE/'publications').resolve() or R.identity(target)!=record['identity']:raise ValueError('publication intent identity changed')
     intent=E.read_metadata(target)
     if set(intent)!={'version','generation','expected_bindings_sha256','manifest','desired','prior'} or intent['version']!=VERSION or intent['generation']!=name or intent['expected_bindings_sha256']!=expected_sha:raise ValueError('finish original admitted publication transaction before another generation')
-    if intent['manifest']!=R.identity(generation_path(root,name)/'manifest.json'):raise ValueError('publication target manifest changed')
+    N.identity_pin(intent['manifest'])
     if set(intent['desired'])!={'current','validation'} or set(intent['prior'])!={'current','validation'}:raise ValueError('incomplete publication pointer pair')
+    for key,value in intent['desired'].items():
+        if not isinstance(value,dict) or set(value)!=({'generation','manifest'} if key=='current' else {'generation','manifest','report'}) or value['generation']!=name or value['manifest']!=intent['manifest']:raise ValueError('pending desired pointer does not match recorded target identity')
     for old in intent['prior'].values():
         if old is not None:
             if set(old)!={'text','identity'} or not isinstance(old['text'],str):raise ValueError('abbreviated prior pointer evidence')
@@ -143,6 +147,11 @@ def load_pending(root,name,expected_sha):
             if old['identity']!={'sha256':hashlib.sha256(payload).hexdigest(),'bytes':len(payload)}:raise ValueError('prior pointer bytes changed')
     check_prior_pair(root,intent['prior'])
     return target,intent
+
+
+def check_pending_target(root,pending):
+    intent=pending[1]
+    if intent['manifest']!=R.identity(generation_path(root,intent['generation'])/'manifest.json'):raise ValueError('publication target manifest changed')
 
 
 def restore_prior(root,pending):
@@ -160,11 +169,13 @@ def restore_prior(root,pending):
 
 def publish_pair(root,generation,report,snapshot,expected_sha):
     """Called under writer lock only, after complete independent native replay."""
-    pin=R.identity(generation/'manifest.json');desired={'current':{'generation':generation.name,'manifest':pin},'validation':{'generation':generation.name,'manifest':pin,'report':report}}
     paths=pointer_paths(root);pending=load_pending(root,generation.name,expected_sha)
     if pending:
-        if R.digest(pending[1]['desired'])!=R.digest(desired):raise ValueError('pending publication differs from independently replayed target')
         restore_prior(root,pending)
+        check_pending_target(root,pending)
+    pin=R.identity(generation/'manifest.json');desired={'current':{'generation':generation.name,'manifest':pin},'validation':{'generation':generation.name,'manifest':pin,'report':report}}
+    if pending:
+        if R.digest(pending[1]['desired'])!=R.digest(desired):raise ValueError('pending publication differs from independently replayed target')
     else:
         if all(path.exists() and path.read_bytes()==json_bytes(desired[key]) for key,path in paths.items()):return
         prior={}
@@ -287,7 +298,9 @@ def build(root,binding_path,name,max_new_months=None,expected_bindings_sha256=No
     generation=generation_path(root,name);stage=root/STAGE
     with writer_lock(stage):
         pending=load_pending(root,name,expected_bindings_sha256)
-        if pending:restore_prior(root,pending)
+        if pending:
+            restore_prior(root,pending)
+            check_pending_target(root,pending)
         con=C.connect(memory='128MB',threads=1,temp_dir=stage/'_spill',db_file='char-replication-'+uuid.uuid4().hex+'.duckdb')
         try:
             snapshot,context=freeze(root,binding_path,con,expected_bindings_sha256);snap_path=generation/'snapshot.json'

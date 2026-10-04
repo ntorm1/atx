@@ -114,3 +114,26 @@ Initial new prior/restoration file:6passed48.61s. After strengthening prior immu
 Fixround owned changes: main module/config/docs/registry, source-gate direct test, new finalization/prior-publication/prior-finals/prior-recovery direct fixture files and this report. Native producer/economic module unchanged. No cleanup deletion attempted; retained small fixture and interruption evidence. All expected immutable mismatches remain preserved. The old source/config hashes above are historical checkpoints, superseded by this version; all own implementation SHA(s) are listed in the final controller handoff.
 
 Actual gates remain **0 PASS / 4 FAIL-unmeasured**: original JKP rho-share, JKP mean-sign-share, complete OSAP median and independent actual source acceptance. Actual Task8 measured rows/months0/120, sources landed0bytes, statistical/source quality acceptance unmeasured, NOT_PRODUCTION_READY. Exact root guarded templates above remain valid with the newly independently admitted config/binding SHA; root alone controls future real jobs. No source economics/PASS or Task16 significance claim.
+
+## Fixround2/5 — authenticate rollback before validating the target
+
+Read `review-T8-native-r1-findings.md`; scope is original I1/new I2 only. M1 is closed and unchanged. Own earlier Task8 commits `4738a7b4` and `3b896c5f` preserved; no Task16/6/7/shared/foreign/root-ledger edits, agents or actual source/data/hash/metadata/HTTP/return jobs.
+
+`load_pending` now authenticates the journal's pinned bytes, recorded target identity/desired-pointer consistency and retained prior pair without reading the mutable target manifest. Prior pointer bytes must additionally equal the exact expected serialization reconstructed from the prior immutable manifest/report, so refreshed self-matching prior-byte hashes cannot authorize altered rollback bytes. Under the writer lock, build restores only a recognized old/desired pair first, then the separate `check_pending_target` verifies the target's current manifest identity. The commit helper follows the same order. Corrupt target bytes therefore reject only after exact prior publication restoration; journal/prior/unrelated-pointer failures reject before mutation. Target identity and full120 native public replay are still mandatory before any target commit.
+
+No economic/native adapter, original120/153 inventories, R20/R21 windows, financial convention, statistical threshold or source pending gate changed. The config contract already specified this recovery behavior; its version and canonical hash remain `char-replication-v1-r20-restart1` / `4fadca9bd527c716c8650bc632885bf2155388c92b93707df06bdd005b89385a`. Main code refrozen physical SHA256/bytes: `9860d72571e69ac6d1cd78023f7a50f52319275dc771b9fd87dc88753a77a061` /28061. Source/code snapshots reject old code fingerprints. No actual binding/generation/adjudication created.
+
+Focused offline commands from `C:/atx`, with `OPENBLAS_NUM_THREADS=1`, `PYTHONPATH=C:/atx/atx-db/src`:
+
+```powershell
+& atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_alpha_panel_char_replication_pending_auth.py -n0 -o addopts='' -p no:cacheprovider -q
+# 7 passed in1.36s: one-byte corrupt target after emulated hard stop restores exact prior before rejection; altered journal, prior bytes, refreshed prior hashes, prior immutable evidence, unrelated pointer and refreshed unrelated desired identity reject without mutation.
+& atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_alpha_panel_char_replication_finalization.py::test_completed_republication_is_idempotent_full_native_replay -n0 -o addopts='' -p no:cacheprovider -q
+# 1 passed in13.90s: positive initial commit and idempotent sealed republish both retain full native replay.
+& atx-db/.venv/Scripts/python.exe -m pytest 'atx-db/tests/test_alpha_panel_char_replication_prior_publication.py::test_prior_publication_restored_after_every_final_boundary[current]' -n0 -o addopts='' -p no:cacheprovider -q
+# 1 passed in20.88s: supported previous-generation rollback and recovered positive commit under the strengthened authentication order.
+```
+
+The new authentication fixture uses only synthetic in-memory metadata and local temporary bytes, no DuckDB/native source/economic job. It asserts corrupt target rejection occurs before native admission. Positive publication fixtures explicitly isolate the economic adapter, as previously documented; no fixture constitutes actual acceptance. The changed-code positive prior-pair covering result follows below. No broad unchanged suite was rerun. All focused files remain below60s; no fixture cleanup deletion or source operation attempted.
+
+Actual assessment unchanged: **0 PASS / 4 FAIL-unmeasured**, zero actual Task8 measured months/rows, source acceptance pending, NOT_PRODUCTION_READY. R23/Task17 runtime integration and frozen Task16 are untouched. Ready for independent scoped rereview after the explicit owned-path commit.
