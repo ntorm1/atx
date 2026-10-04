@@ -1,5 +1,47 @@
 # tier1-v4 controller handoff
 
+CURRENT: linked P9 request advanced to round3. Exact new snapshot
+p9-al-data-request-v2.md is59567B SHA256
+d2182547eaafda33d33c51502c07a4622f36d38fb2ca219fbef4eea95019ab02.
+Goal attachment8.1 and task-28-p9-identity-request-revision.md incorporate it.
+Readinessv11/appendixv2 independently PASS/PASS: all46original records and13old
+P9records preserved,10required additions,total23P9groups. Latest review is
+review-readiness-v11-r28-findings.md; no data/source/evaluation gate promotion.
+A0identitybridge diagnostic nowfirstwithinP9; root owns scope/provenance,
+nolegacyidentitymodule edits or actualarm builds yet. T16implements R7.1(a)
+AND R7.2(d): qualifiedstrict/nameCIKs forgrouping/operating, bothnewbackfill
+counts0 plusdirectorycount0. OriginalA4failurepreserved/correctednewprose.
+
+A0preflight controller1 firstguardv1 refusedbeforechild atcommit0.5162GiB;
+noout/err/result. Newguardv2 completed1s/65548288B, samecontroller1/resultv1.
+Controller2/full12r4declarations then guardv3 completed2s/65740800B; latest
+p9-a0-manifest-preflight-v2.json. SevenJSON296141B+17codefiles; exactP9bridge
+manifestpinmatches. Export/link-tabledeclareHEADc0dc376f; notprovenwholebuild.
+Fourr4codefiles andcommon.py mismatchdec03454 evenafterLF/CRLFcomparison;
+nohashguardwaiver, D0/unifiedproducingcommit/unmeasuredarmsremainopen.
+See p9-a0-manifest-preflight-report-v1.md; independentT15metadatareview pending.
+
+New2textlog audit completed1s/29757440B:181321B additionalexecutionlogs,
+111newguardrecords; withprior517 records,10namedterminalinvocations recovered
+(9lowcommitstops/1completed),138unkeyedstatesretained. Notcompleteinventory,
+25,762baseline/all-attempt accounting unknown, SEC HTTP holdunchanged.
+T16new3source/PITsingletonPASS (.30/.69/1.98s; guards2/2/4s), R7.2/calendar
+newerchangesuntested. T17FRED1PASS12.38s; nativeeventSQL1PASS2.85s and complete
+eventquerycorpus1PASS1.85s, alloriginal.6/40guards/nooverride; publicouter
+engineering andactualsourcequalificationstillopen. T15publicmarketcontinues.
+
+LATEST RESOURCE CHANGE: T16new R7.2 node refused_low_disk beforechild,
+receipt20261004T190342-17248,35.1742935GiB<original40floor. Calendar node was
+NOTLAUNCHED. BothnewnodesNOTRUN; no retries/waivers. LaterC37543346176B.
+Diskfree fell again after the completed cleanup; no new deletion identified.
+All authors continue code/review; furtherfixtures/builds await originalguards.
+
+ROOT HAS NO ACTUAL JOB LIVE. No financialrestart: originalobserverv10failed.
+Financialretained0..7/eight andseparatelyaudited0..6/seven unchanged. Audit7v2,
+creator8v1/9..15 remainNOTRUN; old23988lockalreadyrecovered/DONOTrepeat.
+Root index owned for exact R28/preflight/review evidence checkpoint. Gold is
+NOT release-ready. Cleanup alreadycomplete as recorded below; donotrerun.
+
 LATEST: exact orphan-spill cleanupv2 COMPLETED. All80native temporary files,
 7451869184logicalB/7451750400observedfreeB removed; emptydirs retained. Guard
 completed0/6s/190017536B under.4,no cap; all71financial members+snapshot+original
@@ -19,10 +61,14 @@ Original300s>=3commit/>=1physical unchanged. Observerv10/session17570 also
 terminalcompleted0: sample minimumcommit2.0901/physical1.2992; guard finer
 1.4216/1.0344, peak28008448B/no cap. Scheduling FAILED; no financial restart.
 T16heldfamily tests now1PASS each9.89s/7.99s, newprior-exit1PASS.15s; exact
-three-path family correction frozen7b6e9aac, independentT15review pending.
+three-path family correction frozen7b6e9aac, independentT15review PASS/PASS
+in review-task17-family-efficiency-v1.md; no source/integration gate credit.
 T17Frenchsourcev2 now1PASS5.20s/guard6s142594048B, original.6/40floor.
-Root released sole fixture lane to T17 for new complete FRED original-source
-replay node; full outer/native implementation continues. Financialaudit7v2,
+T17new complete FRED original-source/publication/reader node now1PASS12.38s,
+guard14s165081088B/.6/no cap or override. Full actual source qualification and
+catalog/shared-French covering review remain open. T16nowhas sole fixture lane
+for2changed pure nodes and1newphysicalSEC-node; root's small2log metadata audit
+is authored NOTRUN pending lane release. Financialaudit7v2,
 creator8/9..15 stillNOTRUN. Eightretained/sevenaudited unchanged, readinessv10
 latestapproved, norelease-readygold. No new observer launched after v10.
 

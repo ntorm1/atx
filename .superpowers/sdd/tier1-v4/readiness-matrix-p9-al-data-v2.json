@@ -1,0 +1,593 @@
+{
+  "schema": "atx.tier1-v4.p9-al-data-readiness/v2",
+  "version": 2,
+  "source": {
+    "original": "C:/atx-wt/pool-2/.superpowers/sdd/platform-p9-20261003/al-data/atx-db-request.md",
+    "snapshot": ".superpowers/sdd/tier1-v4/p9-al-data-request-v2.md",
+    "bytes": 59567,
+    "sha256": "d2182547eaafda33d33c51502c07a4622f36d38fb2ca219fbef4eea95019ab02",
+    "previous_snapshot_preserved": {
+      "original": "C:/atx-wt/pool-2/.superpowers/sdd/platform-p9-20261003/al-data/atx-db-request.md",
+      "snapshot": ".superpowers/sdd/tier1-v4/p9-al-data-request-v1.md",
+      "bytes": 23418,
+      "sha256": "1be5500839948b4e987075349959458e0e675b6aee04f9d4e364d40aa0b98adc"
+    }
+  },
+  "authority": ".superpowers/sdd/tier1-v4/task-28-p9-identity-request-revision.md",
+  "complete_request_is_binding": true,
+  "release_status": "NOT_READY",
+  "chosen_eligibility_remedy": "R7.1(a)_DATED_EVIDENCE_ONLY_AND_R7.2(d)_QUALIFIED_STRICT_NAME_CIK",
+  "return_evaluation_and_complete_label_cutoff_exclusive": "2023-01-01",
+  "b2_form_adv": "DEFERRED_NOT_IN_SCOPE",
+  "consumer_trial_bars_unchanged": true,
+  "requirements": [
+    {
+      "id": "P9-A01",
+      "priority": "HIGH",
+      "requirement": "Complete immutable rank-date selection vintages for both proxy families",
+      "threshold": "Zero rows or values selected using post-rank facts; every selected member retained",
+      "source_sections": [
+        "A.3 R1",
+        "A.4 assertions1,4,6"
+      ],
+      "dependencies": [
+        "Task1 indexes",
+        "dated source inputs"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "Exact planted sid7 presence",
+          "Full versus censored as-of equality at all five cuts",
+          "Russell and SP500P"
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-A02",
+      "priority": "HIGH",
+      "requirement": "Schedule-derived effective bounds independent of vendor extent",
+      "threshold": "R1/R2/R3 scheduled ends2021-06-25/2022-06-24/2023-06-23 or permitted open vintages; identical rank rows on both data extents",
+      "source_sections": [
+        "A.3 R2",
+        "A.4 assertions2,5,6"
+      ],
+      "dependencies": [
+        "Task1 indexes",
+        "exchange calendar",
+        "schedule"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "Both vendor end dates",
+          "No last_session in rank-vintage ends",
+          "Last reconstitution also stable"
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-A03",
+      "priority": "HIGH",
+      "requirement": "Separate known exit vintages",
+      "threshold": "X/W/Z exits exactly2021-06-02/2021-06-11/2021-09-16 at22:00UTC; aliveV/Y none; latest strictly available vintage",
+      "source_sections": [
+        "A.3 R3",
+        "A.4 assertions3,4,6"
+      ],
+      "dependencies": [
+        "Task1 indexes",
+        "authenticated exit evidence/calendar"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "No exit from non-NULL last_session alone",
+          "Unknown exits excluded with reasons"
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-A04",
+      "priority": "HIGH",
+      "requirement": "PIT summary rows and registered summary clock",
+      "threshold": "Zero dependence on exits not known at rank; recon_summary clock=available_at; later realised aggregates in new vintage rows",
+      "source_sections": [
+        "A.3 R4",
+        "A.4 assertion4"
+      ],
+      "dependencies": [
+        "Task1 indexes/lake metadata"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "R2 additions/deletions2/1 at planted cut",
+          "Turnover equivalence",
+          "No unclocked summary serving"
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-A05",
+      "priority": "HIGH",
+      "requirement": "Daily membership built only from then-available selections/exits",
+      "threshold": "available_at=max(rank mark, prior-session22:00UTC); only vintages stamped at or before row stamp",
+      "source_sections": [
+        "A.3 R5",
+        "A.4 assertions4,6"
+      ],
+      "dependencies": [
+        "Task1 indexes",
+        "exchange calendar"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "Complete as-of membership equality",
+          "Strict downstream read convention preserved"
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-A06",
+      "priority": "HIGH",
+      "requirement": "Dated eligibility removes directory survivor/classification channel",
+      "threshold": "directory_decided_on_rank=0 for every rank2018-2023 underR7(a); all decisive flags use qualified dated evidence",
+      "source_sections": [
+        "A.2 channel4",
+        "A.3 R7",
+        "A.5"
+      ],
+      "dependencies": [
+        "Task1 snapshot",
+        "dated FINRA or other qualified type/ETF evidence",
+        "foreign panel read-only"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "Per-rank eligibility decision counts",
+          "No directory_type/directory_etf downstream effect",
+          "Missing evidence exclusions and original coverage gates retained"
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-A07",
+      "priority": "HIGH",
+      "requirement": "Versioned partition-sealed indexes manifests and arrival receipts",
+      "threshold": "Only russell-proxy-v2/sp500-proxy-v2; each rank_vintage_rows_on_recon equals counts_on_recon; exit_rows per index; available_at-year file bytes/SHA pins",
+      "source_sections": [
+        "A.3 R6,R8",
+        "A.5",
+        "A.6"
+      ],
+      "dependencies": [
+        "Task1 publication/manifest",
+        "P9 consumer handoff"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "No mixed v1/v2",
+          "No2024+part read by pre2024 handoff",
+          "Root manifests/receipts only",
+          "P9 engine re-pin remains external lane responsibility"
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-B01",
+      "priority": "LOW",
+      "requirement": "B1 original annual and quarterly text cohort and comparator",
+      "threshold": "Every specified original10-K-family/10-Q accepted2012-2023; same form/fiscal period prior year, earlier acceptance,180-550day gap; amendments neither current nor prior",
+      "source_sections": [
+        "B1 Ask",
+        "B1 Columns",
+        "B1 Comparator",
+        "B1 Availability"
+      ],
+      "dependencies": [
+        "Task15 extension",
+        "original SEC cohort/body/acceptance"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "10-Q PartI Item2 and PartII Item1A",
+          "Full-primary term-frequency doc_sim_cosine using existing tokenizer",
+          "Every specified identity/prior/reason column",
+          "Prior clock strictness on every row"
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-B02",
+      "priority": "LOW",
+      "requirement": "B1 measured complete cohort and comparator coverage",
+      "threshold": "Per acceptance-year2013-2023 landed/original SEC master-index counts; finite same-period-prior doc_sim coverage>=90%, excluding issuer first-period filings and20-F/40-F only",
+      "source_sections": [
+        "B1 Acceptance(ii)-(iv)",
+        "B1 History arithmetic"
+      ],
+      "dependencies": [
+        "P9-B01",
+        "original SEC master-index closure"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "Publish all yearly denominators and exclusions",
+          "Both originals and strict prior_available_at<available_at",
+          "No new signal trial/bar override"
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-B03",
+      "priority": "LOW",
+      "requirement": "B3 standardized annual fundamentals history and columns",
+      "threshold": "Every requested column/key; fiscal years ending>=2009-01-01 with10-K accepted<2024-01-01; optional2001-2008 remains optional",
+      "source_sections": [
+        "B3 Ask",
+        "B3 Availability"
+      ],
+      "dependencies": [
+        "Task3 export",
+        "qualified financial generation/vintages"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "Complete requested xsga/xrd/gdwl/equity/assets/liability/template/currency columns",
+          "Restatements new vintages, no overwrite",
+          "Leavers retained"
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-B04",
+      "priority": "LOW",
+      "requirement": "B3 SG&A/R&D coverage and convention evidence",
+      "threshold": "Print xsga first-reported nonfinancial coverage forFY2009-2022, joint xsga/xrd share, and original-filing convention evidence for50R&D issuers; convention is reported, not a PASS threshold",
+      "source_sections": [
+        "B3 Acceptance(ii)-(iii)"
+      ],
+      "dependencies": [
+        "P9-B03",
+        "50original issuer filings"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "Do not assume XBRL SG&A includes R&D",
+          "No invented zero/coverage cutoff"
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-B05",
+      "priority": "LOW",
+      "requirement": "Monthly CPI-U NSA if not already in house",
+      "threshold": "BLS CUUR0000SA0 monthly values with authenticated release instants; first determine existing-house availability",
+      "source_sections": [
+        "B3 Ask"
+      ],
+      "dependencies": [
+        "Existing-source audit",
+        "original BLS publication evidence if missing"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "No reconstructed/fabricated release clock",
+          "Keep condition explicit"
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-B06",
+      "priority": "LOW",
+      "requirement": "Shared B1/B3 row-clock, population and pinned partition contract",
+      "threshold": "C1-C6 all hold: row-complete UTC clock or excluded NULL+reason/count, immutable vintages, exact available_at-year parts, no post2023 selection, complete PinnedStage metadata/files/status, leavers retained",
+      "source_sections": [
+        "B common C1-C6",
+        "B1 Acceptance(i)",
+        "B3 Acceptance(i),(iv)"
+      ],
+      "dependencies": [
+        "P9-B01",
+        "P9-B03",
+        "source clocks",
+        "export manifests"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "schema/rule/clock_rule/staleness_days/files bytes+SHA/complete status",
+          "No part contains other-year stamps",
+          "P9 reader receives no2024+part",
+          "All pre2023 evaluation seals unchanged"
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-I01",
+      "priority": "FIRST_WITHIN_P9",
+      "requirement": "A0 first: recover published identity provenance and D0 baseline",
+      "threshold": "Report every requested published code field against dec03454 and the supported build commit; full rebuilt A versus published r4 except created_at, pit and link_table equality and Stage I expected/got/pass. Nonzero reproduction remains reported, never hidden.",
+      "source_sections": [
+        "A0.3 D0"
+      ],
+      "dependencies": [
+        "R28 pinned originals and diagnostic implementation"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "Report every requested published code field against dec03454 and the supported build commit; full rebuilt A versus published r4 except created_at, pit and link_table equality and Stage I expected/got/pass. Nonzero reproduction remains reported, never hidden."
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-I02",
+      "priority": "FIRST_WITHIN_P9",
+      "requirement": "Four isolated rebuilt arms and exact check-only switches",
+      "threshold": "A/B1 share full A rehearsal; B2/B12 share no-ticker reconstruction; every arm retains candidates directory/ticker inputs. Exact S1-S4, same code, all original input/hash guards and fresh isolated directories; export-001 succeeds first attempt. S4 reports failed validation only in diagnostic arms and never authorizes production.",
+      "source_sections": [
+        "A0.3 arms, switches and procedure"
+      ],
+      "dependencies": [
+        "R28 pinned originals and diagnostic implementation"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "A/B1 share full A rehearsal; B2/B12 share no-ticker reconstruction; every arm retains candidates directory/ticker inputs. Exact S1-S4, same code, all original input/hash guards and fresh isolated directories; export-001 succeeds first attempt. S4 reports failed validation only in diagnostic arms and never authorizes production."
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-I03",
+      "priority": "FIRST_WITHIN_P9",
+      "requirement": "Nonvacuous arm sanity and immutable complete source pins",
+      "threshold": "A/B2 backfill positive; B1/B12 zero; A symbol_snapshot_match positive/B2 zero; every name_tier true and validation entry present. Pin preparation receipt, OPS/document review and every original unchanged identity-independent input.",
+      "source_sections": [
+        "A0.3 sanity and procedure"
+      ],
+      "dependencies": [
+        "R28 pinned originals and diagnostic implementation"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "A/B2 backfill positive; B1/B12 zero; A symbol_snapshot_match positive/B2 zero; every name_tier true and validation entry present. Pin preparation receipt, OPS/document review and every original unchanged identity-independent input."
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-I04",
+      "priority": "FIRST_WITHIN_P9",
+      "requirement": "Complete four-way consumer-state comparison",
+      "threshold": "B1/A, B2/A, B12/A headline, B12/B1 clean ticker measure. Exact per-session d22UTC reader predicates through2023-12-29; distinct CIK count/unique CIK/any P/class-status set. Full rows1-6 and requested identifiers with original denominators.",
+      "source_sections": [
+        "A0.3 consumer view and rows1-6"
+      ],
+      "dependencies": [
+        "R28 pinned originals and diagnostic implementation"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "B1/A, B2/A, B12/A headline, B12/B1 clean ticker measure. Exact per-session d22UTC reader predicates through2023-12-29; distinct CIK count/unique CIK/any P/class-status set. Full rows1-6 and requested identifiers with original denominators."
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-I05",
+      "priority": "FIRST_WITHIN_P9",
+      "requirement": "Actual eligible panel cells, row seals and panel-CIK effects",
+      "threshold": "All row7 A-only/B-only/A-total counts for2017-2019 and each2020-2023, correct common/share-class test and panel member flag; full-row rows8/9 separated by availability seal; row10 panel CIK per2018-2023 using exact tier-dependent evidence_at/available_at semantics; row11 sanity per arm.",
+      "source_sections": [
+        "A0.3 rows7-11"
+      ],
+      "dependencies": [
+        "R28 pinned originals and diagnostic implementation"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "All row7 A-only/B-only/A-total counts for2017-2019 and each2020-2023, correct common/share-class test and panel member flag; full-row rows8/9 separated by availability seal; row10 panel CIK per2018-2023 using exact tier-dependent evidence_at/available_at semantics; row11 sanity per arm."
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-I06",
+      "priority": "FIRST_WITHIN_P9",
+      "requirement": "Honest attribution and owner-only counts/identifier handoff",
+      "threshold": "Preserve b1/b2/b3 distinction: b2 A-only is not necessarily look-ahead; zero does not clear later-evidence residual or held-fixed sources. D0 precedes B interpretation. Send requested sr_id/cik and affected cells only; annotate existing P9 freeze, no P9 rerun or pin edit.",
+      "source_sections": [
+        "A0.1 exclusions; A0.3 interpretation; A0.4; OD5-1"
+      ],
+      "dependencies": [
+        "R28 pinned originals and diagnostic implementation"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "Preserve b1/b2/b3 distinction: b2 A-only is not necessarily look-ahead; zero does not clear later-evidence residual or held-fixed sources. D0 precedes B interpretation. Send requested sr_id/cik and affected cells only; annotate existing P9 freeze, no P9 rerun or pin edit."
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-I07",
+      "priority": "FIRST_WITHIN_P9",
+      "requirement": "PIT-a/PIT-c export-local primary and name precedence",
+      "threshold": "Strict/pit primary uses own tiers and links known by d22UTC; name days withheld only by strict links in pit, never backfill. T1 preserves strict X primary and unsplit rows; T2 retains dated name Z under overlapping backfill.",
+      "source_sections": [
+        "A0.4 PIT-a/PIT-c; A0.5 T1/T2"
+      ],
+      "dependencies": [
+        "R28 pinned originals and diagnostic implementation"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "Strict/pit primary uses own tiers and links known by d22UTC; name days withheld only by strict links in pit, never backfill. T1 preserves strict X primary and unsplit rows; T2 retains dated name Z under overlapping backfill."
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-I08",
+      "priority": "FIRST_WITHIN_P9",
+      "requirement": "PIT-b complete clock-specific reconstruction and versioned acceptance",
+      "threshold": "Acceptance/dominance/segment rules depend only on items known at clock c; later items create new versions/valid_until without rewriting earlier ones. Exact class-proof T3/T4 including2.5share+.5symbol and b2/b3 fixtures; fixed B12/A zero rows1-4,7,8 with D0/sanity; new bridge/link-table rule versions.",
+      "source_sections": [
+        "A0.4 PIT-b; A0.5 T3/T4/fixed differential/version"
+      ],
+      "dependencies": [
+        "R28 pinned originals and diagnostic implementation"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "Acceptance/dominance/segment rules depend only on items known at clock c; later items create new versions/valid_until without rewriting earlier ones. Exact class-proof T3/T4 including2.5share+.5symbol and b2/b3 fixtures; fixed B12/A zero rows1-4,7,8 with D0/sanity; new bridge/link-table rule versions."
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-A08",
+      "priority": "HIGH",
+      "requirement": "R7.2(d): dated company grouping and operating identity",
+      "threshold": "Both company keys and is_operating use independently qualified strict/name links. backfill_cik_on_rank selected_company_keys and excluded_only_is_operating are both0 per rank2018-2023; no certification from tier strings alone. R7.1(a) directory count0 remains mandatory.",
+      "source_sections": [
+        "A.3 R7.1/R7.2; A.5"
+      ],
+      "dependencies": [
+        "Task1 repair2/5 and independently qualified dated identity"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "Both company keys and is_operating use independently qualified strict/name links. backfill_cik_on_rank selected_company_keys and excluded_only_is_operating are both0 per rank2018-2023; no certification from tier strings alone. R7.1(a) directory count0 remains mandatory."
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    },
+    {
+      "id": "P9-A09",
+      "priority": "HIGH",
+      "requirement": "Preserve measured legacy A.4 failure and apply corrected specification",
+      "threshold": "Old observed baseline remains immutable. New prose correctly distinguishes legacy X missingboth/other3fullonly/asofR2(4,0) from the fixed(2,1) in both runs; every original as-of, extent, exit and schedule assertion still required for both proxy families.",
+      "source_sections": [
+        "A.4 assertions4-6"
+      ],
+      "dependencies": [
+        "Task1 repair2/5 and independently qualified dated identity"
+      ],
+      "status": "NOT_MEASURED_IMPLEMENTATION_REQUIRED",
+      "measurement": {
+        "command": null,
+        "command_status": "EXPLICIT_VERSIONED_MEASUREMENT_ENTRYPOINT_TO_IMPLEMENT",
+        "required_checks": [
+          "Old observed baseline remains immutable. New prose correctly distinguishes legacy X missingboth/other3fullonly/asofR2(4,0) from the fixed(2,1) in both runs; every original as-of, extent, exit and schedule assertion still required for both proxy families."
+        ]
+      },
+      "evidence_artifacts": [],
+      "gate_promotion": false
+    }
+  ],
+  "supersedes": {
+    "path": "readiness-matrix-p9-al-data-v1.json",
+    "sha256": "992833a1a00c7fa781bfb184c2c5d6e9c360026a1c7bca8a8e2471a46a9f195d"
+  },
+  "interpretation": "Full round3 snapshot is binding; preserve all13 original requirement records and add10 required groups. No source/gate promotion. Diagnostic S4 never changes production acceptance. A0 has P9 priority."
+}
