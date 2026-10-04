@@ -73,6 +73,21 @@ def read_economic(blob: bytes, pin: EconomicPin) -> EconomicPin:
               pin.conversion_basis_quote, pin.validity_quote)
     if any(not quote or re.sub(r"\s+", " ", quote) not in text for quote in quotes):
         raise ValueError("complete original economic quotations required")
+    # Supported evidence is a complete five-statement native block. Reject
+    # unparsed context instead of selecting an affirmative substring from a
+    # negated, conditional, quoted, or contradicted statement. In particular,
+    # caller-selected quotations cannot discard scope in the original bytes.
+    statements = (
+        f"{pin.issuer_name} common stock trades as {pin.ticker}.",
+        "Prices are USD per share.",
+        "close is the unadjusted raw traded close.",
+        "conversion terms are unchanged with no split or FX conversion.",
+        f"Effective from {pin.valid_from.isoformat()} through {pin.valid_to.isoformat()}.",
+    )
+    normalized = lambda value: re.sub(r"\s+", " ", value).strip().casefold()
+    if (tuple(normalized(quote) for quote in quotes) != tuple(normalized(value) for value in statements)
+            or normalized(text) != normalized(" ".join(statements))):
+        raise ValueError("complete affirmative native economic statement context unsupported")
     # The reviewed contract binds literal native identities; matching the words
     # alone is insufficient if any typed economic field or time interval differs.
     if (pin.share_class != "common stock" or pin.unit != "share" or pin.currency != "USD"

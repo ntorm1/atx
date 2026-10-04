@@ -291,3 +291,75 @@ These describe this checked implementation/runtime before actual measurements;
 no actual original-source economic admission/evaluation freeze was issued.
 The independent caller must freeze complete full dictionaries, not these hashes
 alone. Fixround1 commit SHA follows in controller delivery.
+
+
+## Focused fixround2/5: remaining Important I2
+
+Read review-T12-native-r1-findings.md verbatim. Scope only the remaining original
+price/conversion context trust boundary and direct regressions; no reopening of
+I1/I3/I4/I5 or R21, no shared/foreign/evaluation/label edits. Actual model GPT6.1
+Sol. Original commits preserved, including fixround1 67a5f1ac. No actual source,
+data/hash/metadata/HTTP jobs or returns run; root exclusive slot untouched.
+
+mna_price_native_v2.read_economic now validates the complete original economic
+block against five fully supported affirmative statements and validates every
+caller-selected quotation against those same statements. Case/whitespace
+normalization does not remove words or punctuation. Literal issuer/ticker/dates
+are independently pinned. Arbitrary unparsed original context is refused;
+selected affirmative substrings cannot bypass scoped negation, conditions,
+quotations or contradiction. Positive native raw-USD/common-share block remains
+a genuine conditional path. This deliberately narrow supported original grammar
+is documented in the refrozen public semantic contract; broader real original
+formats require a separately reviewed reader extension, never fabricated notes
+or stripping original context. Actual economic source prerequisites remain absent.
+
+New direct cases cover both raw-close and conversion terms inside `It is false
+that`, `Only if approval is granted`, `This claim is disputed`, and a separate
+`The statements below are false` wrapper, with selected affirmative quote left
+unchanged and original source SHA independently refreshed. Eight direct cases
+refuse unsupported context. Two target-raw/acquirer-conversion end-to-end cases
+refresh the complete expected economic pin, fail exact replay, retain proceeds
+and DLRET NULL with explicit admission-failure reason in publication, and pass
+public full-row replay of the NULL output. Manufacturing15 proceeds/.5 exact
+DLRET and refreshing the output hash still fails public replay. Legacy continued
+flag remains preserved; no candidate denominator shrinks and no zero/imputed
+value is created. Positive cash/stock and exact public publication still pass.
+
+Offline commands from C:/atx/atx-db with OPENBLAS_NUM_THREADS=1,PYTHONPATH=src:
+
+1. `.venv/Scripts/python.exe -m pytest tests/test_mna_review_context_v2.py -n0 -o addopts='' -p no:cacheprovider -q`
+   Initial8passed/2failed in36.77s. Both failures were a test-helper schema lookup
+   using events.parquet instead of the public schema key events, after the
+   economic refusal/NULL/public-positive checks had passed. Corrected test key.
+2. `.venv/Scripts/python.exe -m pytest tests/test_mna_review_context_v2.py::test_i2_exact_and_public_replay_keep_scoped_basis_null -n0 -o addopts='' -p no:cacheprovider -q`
+   Final2passed in35.19s, including refreshed-hash forged exact-output refusal.
+   The eight direct cases were unchanged; no broad unchanged rerun.
+3. `.venv/Scripts/python.exe -m pytest tests/test_mna_exact_v2.py::test_genuine_original_native_conditional_cash_and_stock_returns tests/test_mna_publish_v2.py::test_conditional_exact_native_path_publishes_and_publicly_replays tests/test_mna_review_semantics_v2.py::test_i2_negation_and_contradictory_basis_refuse -n0 -o addopts='' -p no:cacheprovider -q`
+   Final covering result follows below.
+
+All offline files/jobs below60s, publishers DuckDB128MB/one thread. No persistent
+owned fixture files landed; no obsolete owned fixture data exists to remove.
+No foreign/global/active caches swept. Owned diff whitespace checks pass.
+
+Refrozen semantic ID: mna-native-common-raw-usd-v2-fix2-r21.
+Native contract SHA256: 8d68e39c1a14e57c86536a88c530016c7363cec4fb166b0ea4251594775dabb6.
+Price reader worktree SHA256: 4a35b9a59c2ee537280b05d9aad9d74e9fe442c27533f7fb7d6ed915dc40f880.
+Canonical full publisher code identity SHA256 (explicit .venv runtime):
+c293a91d87906dd64906dc442ec6483bf359c7e1dbefacff9f629e526cfa4b40.
+Canonical runtime identity SHA256:
+606476f044f8c78e4b586230a69f07ac0513ffecf5a48adc05c6fd0ab83a5bf1.
+Canonical serialization is json.dumps(sort_keys=True,separators=(',',':')) UTF8.
+These are static implementation/runtime identities, not actual economic source
+admission or evaluation/gate evidence. Independent callers must freeze and
+validate full identity dictionaries before actual work, not accept these hashes
+as an assertion. Old identities retained historically and superseded here.
+
+Original full2267, qualified consideration/exactDLRET80%, independent200>=95%
+handchecks unchanged; actual gates remain1metadataPASS/4FAIL-unmeasured. R21
+source-only construction and strict evaluation/complete-forward-window policy
+are unchanged. Status DONE_WITH_CONCERNS: ready for scoped remaining-I2 rereview,
+not production/source acceptance or full Task12 completion.
+
+Final covering command3 result: **6passed in18.24s**. Eight direct new cases plus
+two corrected public regressions and six relevant positive/legacy-negation cases
+verified; no additional code changes followed those passing checks.

@@ -83,7 +83,7 @@
     "metadata_item_completion",
     "issuer_primary_line_mapping"
   ],
-  "semantic_contract_id": "mna-native-common-raw-usd-v2-fix1-r21",
+  "semantic_contract_id": "mna-native-common-raw-usd-v2-fix2-r21",
   "financial_output_schema": [
     "accession",
     "source_id",
@@ -190,5 +190,19 @@
     "product_manifest_identity_recheck"
   ],
   "source_only_policy": "individual_source_values_2020_onward_never_forward_labels_or_evaluation",
-  "evaluation_forward_labels_end_exclusive": "2023-01-01"
+  "evaluation_forward_labels_end_exclusive": "2023-01-01",
+  "economic_basis_context": {
+    "shape": "complete_five_affirmative_statements",
+    "statements": [
+      "<issuer> common stock trades as <ticker>.",
+      "Prices are USD per share.",
+      "close is the unadjusted raw traded close.",
+      "conversion terms are unchanged with no split or FX conversion.",
+      "Effective from <YYYY-MM-DD> through <YYYY-MM-DD>."
+    ],
+    "order": "as_listed",
+    "comparison": "case_insensitive_whitespace_normalized_full_original_block",
+    "unsupported": "additional_or_nested_negation_conditional_quotation_contradictory_context",
+    "missing_or_unsupported_result": "NULL_unqualified_with_reasons"
+  }
 }

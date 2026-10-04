@@ -52,3 +52,14 @@ explicit source-only native DLRET policy may produce qualified individual values
 for 2023 onward; these rows are not forward labels or evaluation observations.
 The historical 44.24% blanket-cutoff ceiling is superseded, without certifying
 actual coverage or changing the 2267 denominator and acceptance thresholds.
+
+
+Fixround2 remaining I2: semantic contract `mna-native-common-raw-usd-v2-fix2-r21`
+requires the complete original economic block to consist of the five affirmative
+statements listed in `mna_v2.native-contract.json`, in that order, with case and
+whitespace normalization only. All selected quotes must also match those full
+statements. Additional wrappers, quotations, negation, conditions, conflicting
+prose or other unparsed context remain unsupported with NULL/reasons. This narrow
+original-language contract avoids certifying an affirmative substring inside a
+false statement. Real evidence outside this grammar needs a separately reviewed
+reader extension; no actual economic originals have been qualified here.

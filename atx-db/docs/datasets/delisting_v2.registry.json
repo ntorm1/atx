@@ -19,5 +19,5 @@
   "native_financial_admission_required": true,
   "evaluation_forward_labels_end_exclusive": "2023-01-01",
   "source_only_dlret_dates": "2020+",
-  "semantic_contract_id": "mna-native-common-raw-usd-v2-fix1-r21"
+  "semantic_contract_id": "mna-native-common-raw-usd-v2-fix2-r21"
 }

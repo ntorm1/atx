@@ -102,3 +102,14 @@ The frozen producer and per-event exact contract now bind complete auxiliary clo
 Runtime expectation includes the actual loaded Python reader code objects, PyArrow/Parquet/DuckDB entrypoints and compiled binaries/shared libraries, Python runtime binary and exact America/New_York TZif data. The clock reader constructs ZoneInfo from those pinned bytes; all runtime identities are checked before/after compute and public replay. Changed or abbreviated runtime expectations reject.
 
 R21 adds a separately frozen source-only-native-dlret-r21 policy: independently qualified individual source DLRET may be constructed2023+; source rows explicitly carry dlret_policy and is_forward_label=false. The separate pre2023-native-qualified policy and complete forward-window boundary remain strict. This produces no residual-month treatment, tradable label, post2022 evaluation or statistical assessment. Old construction ceilings/receipts are superseded, not promoted toPASS. No actual new measurement occurred; actual gates remainFAIL/unmeasured.
+
+
+Fixround2 remaining I2: semantic contract `mna-native-common-raw-usd-v2-fix2-r21`
+requires the complete original economic block to consist of the five affirmative
+statements listed in `mna_v2.native-contract.json`, in that order, with case and
+whitespace normalization only. All selected quotes must also match those full
+statements. Additional wrappers, quotations, negation, conditions, conflicting
+prose or other unparsed context remain unsupported with NULL/reasons. This narrow
+original-language contract avoids certifying an affirmative substring inside a
+false statement. Real evidence outside this grammar needs a separately reviewed
+reader extension; no actual economic originals have been qualified here.
