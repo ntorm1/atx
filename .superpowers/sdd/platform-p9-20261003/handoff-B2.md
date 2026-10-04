@@ -1,5 +1,8 @@
 # Lane B2 handoff: fix round 1, stopped by the owner
 
+**Closed (RESUME 4):** fix round 1 finished; see `task-B2-report.md`, section "Fix round 1". Identity merge point
+`1b25b9a4`, deletion commit `598d2199`; the WIP `dee6cacb` below was taken back (`1b87cb6a`) and re-applied, finished.
+
 **Where:** pool-14, branch `feat/p9-b2-20261003`.
 - Base: `1239a5ff`.
 - Head: the commit that adds this file. Its parent is `dee6cacb` (the WIP deletion).
