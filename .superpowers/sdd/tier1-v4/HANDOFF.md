@@ -14,25 +14,45 @@ Task16 and Task16 can review Task17; neither reviews its own implementation.
 All whole-task counters remain unchanged. Task17 native/catalog checkpoint9e05e42d
 is committed with17offlinePASS42.03s and8module/4JSON staticPASS. FullTask17
 remains incomplete, including named native reader/mapping gaps in its report.
-Cross-reviews are now LIVE: /root/t17_runtime_integration reviews Task16;
-/root/t16_golden_delivery reviews Task17. Their own implementations are frozen.
-Task17 reviewer reproduced the golden cash-conversion state/label bug (2.8s,
-pure synthetic); Task16 reviewer now owns one brief synthetic catalog view/proof
-tamper check. Task15's remaining fixture checks are next. No broad suite reruns.
+Cross-reviews are complete: Task16 spec/quality Needs fixes, eight Important;
+Task17 spec/quality Needs changes, four Important. Exact findings/repro commands
+are in review-T16-golden-delivery-findings.md and review-T17-native-catalog-findings.md.
+Cash conversion returns NULL despite complete synthetic cash evidence (2.8s);
+catalog same-name view20-to999 plus adjacent proof repin is accepted (6.68s).
+R26 task-26-delivery-integration-ruling.md accepts every finding as load-bearing
+and routes the original delivery corrections into existing Task17 integration,
+whole-task round2/5. Task16 stays5/5, no round6/frozen producer edits/newcounter.
+Task17 author now owns its integration and explicitly transferred new golden
+modules/tests/docs, with all original gates preserved. Task16 author is read-only
+source-interface support in task17-integration-source-map.md, not a writer or
+approval lane. Task15 initial original-source text/TNIC implementation continues,
+including original Accepted clock proof and full independent filing census;
+it owns current serialized fixtures and its separate producer paths.
 Root readinessv5 independently PASS after scoped Minor citation correction:
 all46 contracts/statuses/prior observations preserved; extraction totals now
 directly cite task16-extract-admission-r19-v1.audit.json. No gates promoted.
 
-**Sole root job: host observer47830, not a data builder.** Fresh guard status
+**No root job is live.** Host observer47830 completed300.9s/26,492,928bytes,
+exit0/no cap. Minimum31sample commit1.5774GiB (guard1.5782), physical1.6464;
+predeclared3GiBcommit/1GiBphysical condition FALSE. No fourth financial pilot
+or lock recovery ran; prepared v3 lock script remains NOT RUN. Fresh guard status
 showed5.0086GiBfreecommit/3.602physical and zero live guards after serialized
 fixtures, materially changed from the0.7095GiBstop. One new31sample/300s observer
 uses0.1GiBguard and original3GiBcommit/1GiBphysical scheduling condition, unique
-v3 logs. Require completed condition plus unchanged ordinary guards before any
-financial reschedule; earlier failed windows remain unchanged. First13samples
-remain above4.5GiBcommit, but no completed window is claimed. Prepared exact
-t17-preserve-orphan-lock-v3.ps1 parses and is NOT RUN. It binds dead PIDs,
-v3 guard-receipt identity, four-byte lock7732 and unchanged candidate evidence;
-run only after completed observer/new scheduling decision, root-serialized.
+v3 logs. The completed failed condition above supersedes interim readings;
+earlier failed windows remain unchanged. Financial hold remains.
+
+Small cached13F work did advance after this changed resource window. Part0001-v2
+completed28.3s/60,592,128bytes and part0002-v1 completed21.2s/69,169,152bytes,
+each under0.2GiB/no cap with native intentionalexit2 UNQUALIFIED_PARTITION.
+Independent audit90932 completed7.0s/31,141,888bytes, two-pass original ZIP/code/
+output/receipt identities. task11-submissions-progress-v1.json records three
+gap-free bounded outputs:30,000main/2,498history/16,687distinctCIK-accessions,
+zero duplicate accession rows, prior CIK19617 >4MiBexception retained.
+Next cursor is CIK0000900817.json. Full-axis/history/exception closure and
+original-body/economic/cohort/source-clock qualification remain OPEN. Native raw
+submissions Z clocks are leads only (sec_filings.py:19-25); no UTC/PIT inference.
+Interrupted part0001-v1 remains outside the audited chain; preserve it.
 
 **CURRENT: Financial pilot v3 ended without any admitted financial batch.**
 Session44681 stopped_low_commit after60.9s, peak126,025,728bytes, exit137,
@@ -44,9 +64,9 @@ Evidence: t17-interruption-inspection-v3.json and unique v3 guard logs.
 The exact orphan lock7732 (4bytes, SHA61f4a24677e07919033f02398ced57278bae7c0a475a54af9128d142577536cb)
 remains preserved; any later resume requires dead-owner recovery and normal
 full native validation. No fourth financial retry or new observer loop this turn.
-Root inventory59077 also ended stopped_low_commit24.3s/49,414,144bytes, no cap,
+Earlier root inventory59077 ended stopped_low_commit24.3s/49,414,144bytes, no cap,
 exit137, freecommit0.7095GiB. Part0001 has only an80,360byte partial and no
-completed output/receipt; part0000 remains the sole completed partition.
+completed output/receipt; it did not extend the chain. Later completed parts above.
 Guard10812/child12324 are absent. Further data jobs held; later observer is above.
 Task16's synthetic test lane is complete; Task15 then Task17 have the remaining
 checks. Authors continue code/docs while new test launches are held to avoid overlap.
