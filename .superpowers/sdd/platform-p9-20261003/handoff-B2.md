@@ -1,132 +1,169 @@
-# Handoff B2 (owner stop, 2026-10-03)
+# Lane B2 handoff: fix round 1, stopped by the owner
 
-- Pool: `C:/atx-wt/pool-14`. Branch: `feat/p9-b2-20261003`. Base: `1239a5ff`.
-- WIP commit: `a1b05ef8` "wip(b2): ..." (this handoff is committed on top of it). NOTHING HAS BEEN COMPILED (lanes do
-  not build); no gtest written yet; no pytest run on lane changes yet (no Python touched yet).
-- Estimate: about 45% of the lane.
+**Where:** pool-14, branch `feat/p9-b2-20261003`.
+- Base: `1239a5ff`.
+- Head: the commit that adds this file. Its parent is `dee6cacb` (the WIP deletion).
+- **Fix round 1 is about 75% done.**
+  - Every change before the deletion is committed, built and tested.
+  - The re-applied deletion is committed as WIP and is not finished.
+  - The report's "Fix round 1" section is not written yet.
+- **Inputs:**
+  - The review: `task-B2-review.md` (commit `7395965c`).
+  - Rulings B2-R1, B2-R2 and B2-R3: in `C:/atx-wt/pool-2/.superpowers/sdd/platform-p9-20261003/progress.md`, lines 310-312.
 
-## Required carry items
+## Commits of this round, in order
 
-### SQL-7 chain-head function: DONE (code; untested by gtest)
-Header `atx-engine/include/atx/engine/research/ledger/chain.hpp`, namespace `atx::engine::research::ledger`,
-source `atx-engine/src/research/ledger/chain.cpp`. Library target to be named `atx-engine-research-ledger` (CMake
-NOT yet written, see below).
-
-```cpp
-inline constexpr std::string_view kLedgerSchema = "atx.trial-ledger/v1";
-inline constexpr std::string_view kChainGenesis = "000...000"; // 64 zeros
-inline constexpr std::string_view kChainRule = "atx-ledger-chain-fold/v1"; // SQL4 ledger_state.head_rule
-struct ChainHead { std::string head_sha256; usize lines{}; std::string rule; };
-[[nodiscard]] core::Result<ChainHead> chain_head(std::span<const std::string> lines);          // any prefix
-[[nodiscard]] core::Result<std::vector<std::string>> prefix_heads(std::span<const std::string> lines); // head after each line
-[[nodiscard]] core::Result<ChainHead> verify_chain(std::span<const std::string> lines);        // reader's _walk
-// helpers: strip_line_end, is_blank_line, line_sha256, fold_head, is_chained_line
-```
-Rule (one copy, = backtest_integrity.chain_head/_walk): head starts at 64 zeros; per non-blank line in file order: a
-line whose top-level JSON object has key `prev_sha256` -> head = sha256(line bytes without line end); otherwise
-head = sha256(ASCII(head + line_sha256(line))). Blank (whitespace-only) lines skipped; trailing CR/LF stripped.
-verify_chain also checks schema, prev link == head-before, no unchained line after a chained one (1-based physical
-line numbers in messages). Python NaN/Infinity tokens read as null (`src/research/ledger/json_line.{hpp,cpp}`).
-
-### SQL-9: kept. Nothing writes the ledger in C++ except the moved R9 IC ledger (`trial_ledger`, unchanged bytes).
-
-### P11 (B2 writes the eval_tie gtests): NOT STARTED (see Tests).
-### T1 minor (keep eval_tie checker runnable when deleting Python stats): NOT STARTED (deletion not started).
-### Carried B1 minors: not touched (admission lib, out of B2 files; recommend report them as not fixed).
-
-## Brief deliverables
-
-| item | state |
+| commit | what |
 |---|---|
-| `research/ledger` lib: chain, ledger_file (read+verify), trial_counts (trial_counts, ledger_n, N_tot via trial_breakdown, dsr_variance, construction_ids, construction_prefix_length, history reads, defect rule), era_pool (check ids/windows, segment_starts, pooled_sha256, pool_label, trial_id, pooled_trial_id) | written |
-| `trial_ledger.cpp` moved down to `atx-engine/src/research/ledger/trial_ledger.cpp` + header `research/ledger/trial_ledger.hpp` (namespace changed); `atx-impl/src/trial_ledger.hpp` = include + `using` re-exports into `atx::impl`; `atx-impl/src/trial_ledger.cpp` = comment + include only (keeps atx-impl's source list untouched) | written |
-| engine `eval/pbo.{hpp,cpp}`: `PboSplitTrace` + `pbo_cscv_traced(perf, n, splits, rule, trace&)`; body moved into one `run_cscv` (no 2nd CSCV) | written (cross-lane-ish: engine eval file, no owner lane) |
-| `eval/deflated_sharpe_house.hpp`: `HouseDsrMethod` (house_v1, tot, cross, lo, onc), `house_dsr`, `lo_sampling_variance` | written |
-| `research/numpy_reduce.hpp` (numpy pairwise sum/mean/var/std, linear quantile) | written, port verified bit-exact vs numpy in scratch |
-| eval lib (`research/eval/`): numpy_rng (default_rng PCG64 port), house_moments (moments, sharpe, psr_report, dsr_at, dsr_rows, lo_null_dsr), onc_house (MLAM ONC + effective_trials + effective_n_dsr; `KmeansDraws` interface for replay), paired (Memmel, CBB percentile, LW studentized; numpy reduction orders), conditional (AKM), cscv_report (house PBO summaries over `pbo_cscv_traced`), eval_series (CSV `session_ns,net_return` reader, seal refusal, align_many) | written |
-| `eval_report.hpp` (EvalRequest, evaluate, eval_text; JSON layout documented in the header) | header written; **`eval_report.cpp` NOT written** |
-| `eval_cli.{hpp,cpp}`, `eval_main.cpp` (exe `atx-research-eval`) | not started |
-| CMake tail blocks: `atx-engine/CMakeLists.txt` (ledger lib: atx::core + nlohmann_json only; eval lib links atx::engine PRIVATE for pbo; exe), `atx-engine/tests/CMakeLists.txt` (two test exes + registration), `atx-impl/CMakeLists.txt` tail: link atx-impl lib to `atx-engine-research-ledger` (cross-lane, C2 owns) | not started |
-| `nav_summ.py --engine-stats` adapter | not started |
-| `wave_stage_record.py`: record stage writes ledger head (`ledger-head.json` with head, lines, rule) into the sprint dir (cross-lane, E2 owns) | not started |
-| Python statistics deletion as a separate prepared commit | not started |
+| `d12dd945` | Reverts the deletion `b76c2219`, without rewriting history (the lane A3 pattern). |
+| `ec8043b7` | **B2-R1 and B2-R2 in C++.**<br>- Paired statistics are formed from the difference series.<br>- A pair with 1 - rho < 1e-6 is refused as degenerate.<br>- A constant CSCV candidate gets Sharpe 0.<br>- Adds the `fixtures/research_eval_edges` fixture and the `EvalEdges.*` gtests.<br>- Documents `--trial` / `--history` as trusted-caller flags (S4). |
+| `a12b4c30` | **nav_summ, B2-R1 (c) and the pre-deletion part of B2-R3.**<br>- The adapter keeps a degenerate pair's refused values null and prints `na` plus one degenerate line.<br>- With an engine, `nav_summ_run` gains `engine_exe` and `engine_exe_sha256`.<br>- Updates `test_nav_summ_engine.py`.<br>- Renames that test's synthetic ledger to `fixture-ledger.jsonl` (S10). |
+| `b295fa4f` | **Suggested fixes S2, S3, S5, S9 and S10** (details below). |
+| `f07ba1be` | Fixes a `-Wrange-loop-construct` error in the S3 test. |
+| `c85dc6f2` | Fixes Python truthiness of a string `defect` in the S3 reader check. |
+| `d5f653cc` | Moves the edge fixture's 5e-4 case to 5.005e-4. At exactly 5e-4, rho = 0.9995 sits on the rounding boundary of the 3-decimal rho print, so a 1e-16 difference flipped the printed digit. |
+| `dee6cacb` | **WIP, not for merge:** the deletion re-applied, unfinished (details below). |
 
-### Where exactly I stopped / next step
-`eval_report.cpp` was next. Design (implement as written in my notes; mirrors Python dict keys so the nav_summ
-adapter can assign blocks directly):
-- read cells (`read_net_series`), unique labels; moments per cell in FILE order; `dsr_rows(moments, dsr_n)` (cross).
-- ledger: `read_ledger(path, MissingLedger::Empty)` (Python ledger_read semantics), doc `{path, exists, lines,
-  chain_head, chain_rule, window_id}`; `ledgered = construction_ids(records)`; per cell in_ledger = its `--trial`
-  id in ledgered; history = label in `--history`.
-- per cell `dsr.house_v1` = nav_summ.ledger_dsr keys exactly (n = ledger_n(records, in_ledger||history), window_id,
-  variance_sr, cells, variance_source, legacy_variance_sr, legacy_cells, n_rule text as Python, dsr, sr0_daily,
-  sr0_annual, legacy_dsr, legacy_sr0_annual); `dsr.tot` = dsr_total.ledger_rows keys (window_id, in_ledger,
-  variance_sr, cells_in_v, variance_source, parts{by_kind, ledger_trials, campaign_registry, n_tot}, tot, v8; n_tot =
-  parts.n_tot + (in_ledger?0:1), n_c = ledger_n(records, in_ledger)); counts are i64 (do not cast before the n<2
-  check); `dsr.cross`, `dsr.lo` (lo_null_dsr), `dsr.onc` (effective_n_dsr when --onc).
-- paired per cell vs `--paired-of LABEL=REF` else `--paired REF`: align_many of the two; <3 common -> `paired: null`
-  + `paired_note` "paired skipped: N session(s) in common with the reference (3 needed)"; else paired_stats; JSON =
-  nav_summ keys (sessions, sr, sr_reference, dsr, rho, memmel_se, t, cbb_ci95, cbb_valid_draws, lw{dsr_population,
-  se, ci95, p_value, p_one_sided, valid_draws}, draws, block, seed) + K-P9-5 `se` (= lw.se), `p_one`, `p_two`,
-  `reference`. NaN serializes as null: the adapter must turn null back into nan for sr, sr_reference, dsr, rho,
-  memmel_se, cbb_ci95[*], lw.dsr_population, lw.se, and drop lw.p_one_sided unless one_sided.
-- conditional: LineageCell list = `--step LABEL=DSR,SE` steps then cells with finite paired dsr and memmel_se>0;
-  `cumulative_conditional(list, alpha)` (sums SELECTED cells only); per-cell rows from it.
-- onc/pbo: series = `--onc-series` / `--pbo-series` or the cells; align_many; ONC needs T>=3; PBO = cscv_report
-  (exhaustive only, blocks<=16; refuse a Python `--pbo-max-splits` in the adapter). PBO JSON = cscv_pbo keys
-  (seed null, exhaustive true, logit_quantiles p5..p95, logit_distribution{oos_rank, logit, splits}, logits) +
-  labels + engine diagnostics (adapter keeps only Python keys so `--pbo-json` bytes do not change).
-- hand: `--hand TRIAL_ID=CSV`: prefix k = construction_prefix_length (refuse none, Python text), ledger_rows on
-  records[:k] with in_ledger true, prefix_chain_head = chain_head(lines[:k]).
-- top level: schema `atx.research-eval/v1`, config, ledger, cells, onc, pbo, hand, conditional, and K-P9-5 mirrors
-  psr / min_trl / dsr / paired = cells[0]'s.
-- CLI flags planned: `--daily [LABEL=]CSV`(rep), `--paired`, `--paired-of`(rep), `--protocol v7|v8` (v8: draws
-  4999, seed 20260929 unless given), `--draws --block --seed --dsr-n --psr-benchmarks --psr-alpha --onc
-  --onc-series(rep) --onc-init --onc-seed --pbo --pbo-series(rep) --pbo-blocks --ledger --window-id --trial
-  LABEL=ID(rep) --history LABEL(rep) --hand TRIAL_ID=CSV(rep) --step LABEL=DSR,SE(rep) --threshold
-  --conditional-alpha --json --out`. Exit 0 / 1 refused / 2 usage (admission CLI idiom).
+**Identity merge point: `d5f653cc`.** All identity-relevant code is at or before it.
+- **The deletion sits at `dee6cacb` and is incomplete.** Once it is finished, it must again be the last code commit.
+- Two options when finishing it:
+  - Add follow-up commits, then report the final deletion SHA as the range `d5f653cc..<last>`.
+  - Or squash the WIP and its follow-ups into one new commit. That rewrites only commits made this round, never `b76c2219` or earlier.
 
-## Tests to write (none written)
-`atx-engine/tests/research/`: EvalVerb tie test (build 12 CSVs from `eval_tie/series.f64` (500x12 date-major),
-ledger JSONL from `ledger_records.json` adding `"schema":"atx.trial-ledger/v1"`, window `eval-tie-v1`, trial ids
-`000...1..c`; compare to `expected.json` per its `tie_rules` tolerances: 1e-12, integer counts/clusters exact),
-replay of `inputs.onc_picks` through `KmeansDraws`, ResearchEvalRng (cbb_starts.u16 = default_rng(20260929)
-integers(0,500,(4999,24))), `EvalVerb.JsonSchema`, `ResearchLedger.TrialCountsEqualPython` (+ a Python fixture
-generator calling backtest_integrity + pinning pytest), `Conditional.ClosedFormNormalCase` (null bias at c=0 =
-se*sqrt(2/pi); median of N(mu,se)|X>c inverts to mu; c far below -> raw -/+ 1.96 se), chain prefix-head tests.
+## State per item
 
-## Evidence (scratchpad, NOT in repo)
-`C:\Users\natha\AppData\Local\Temp\claude\c--atx\0960fa49-6bf7-4358-9781-d55e083b02da\scratchpad\`:
-`np_rng_port.py` (PCG64 port = numpy, incl. fixture CBB starts), `np_reduce_port.py` (0 mismatches),
-`ref_eval.py` (loop transcription of the C++ eval lib: every eval_tie value within 1e-12, moments bit-exact, ONC
-clusters and LW p-values exact), `cond_check.py` (conditional: medians invert to mu within 4e-13, untruncated CI =
-raw -/+ 1.96 se, null bias exact). Copy them if the next agent wants them; they may vanish.
+### B2-R1 (a): difference-series forms — DONE in `ec8043b7`
+In `paired.cpp`, all of the following are now computed from the difference series:
+- **1 - rho:** `sum((za - zb)^2) / (2 (T - 1))`.
+- **Memmel SE:** uses `2 omr` and `(a - b)^2 + 2 a b omr (2 - omr)`, where `omr` is 1 - rho.
+- **LW point SE `s0`:** the Bartlett long-run variance of the scalar influence series `g'(y_k - mean)`.
+- **Bootstrap SE `s*`:** the sum of squared block sums of that series.
 
-## Decisions
-- house ONC (MLAM) is its own named method beside engine `onc_cluster` (different algorithm; engine's does not
-  reproduce the house's clusters). PBO reuses the ONE engine CSCV via the new trace.
-- numpy RNG ported in C++ so the verb draws CBB starts / ONC picks itself (identity with Python prints).
-- `house_v1` in a new header so `deflated_sharpe.hpp` includers do not recompile.
-- verb input = `session_ns,net_return` CSV written by nav_summ (Python repr; from_chars exact).
-- conditional: SE = Memmel, threshold 0, alpha .05; printed only (no rule reads it).
+`rho` itself is still the numpy-order Pearson value.
+
+### B2-R1 (b): tolerance — DONE
+- **Tolerance:** 1e-12 / (1 - rho), used in `EvalEdges.PairedTiesWithinTheConditioningBound` and in `test_nav_summ_engine.close`, where counts and p-values are compared exactly.
+- **Printed lines:** byte-equal at 1 - rho = 5.005e-4, 5e-5, 5e-6 and 1.02e-6, checked through nav_summ in `test_near_identical_pairs_follow_the_conditioning_rule`.
+- **Caveat:** a printed value that sits exactly on a rounding boundary can still flip. That is how the original 5e-4 case failed; no tolerance can prevent it.
+
+### B2-R1 (c): degenerate refusal — DONE
+- **Rule:** `kDegenerateOneMinusRho = 1e-6`, applied to the stable 1 - rho.
+- **Refused:** `memmel_se`, `t`, `lw.se`, the LW CI, `p_value` and `p_one_sided` are null; `valid_draws` is 0.
+- **Still reported:** dSR, rho, d0 and the CBB interval.
+- **Verb JSON:** the paired block gains `one_minus_rho` and `degenerate`, and the text print adds one line.
+- **nav_summ:**
+  - Prints "Memmel SE na t na" and the degenerate line.
+  - In `--json`, `degenerate` and `one_minus_rho` appear only on a degenerate pair, so every other pair has the Python's keys.
+- **Self pair:** it now prints SE "na", where ruling B2-4 said SE 0. B2-R1 (c) says "same as the self-pair", and I applied "na" to both. **The PM should confirm this.**
+
+### B2-R1 (d): tests — DONE
+- **Fixture** `atx-engine/tests/fixtures/research_eval_edges/`:
+  - Contains the generator, `expected.json` and a pytest.
+  - The series come from an exact LCG, repeated bit for bit by the gtest, so no series file is committed.
+  - Cases: 1 - rho = 5.005e-4, 5e-5, 5e-6, 1.02e-6, 0.98e-6, 5e-9, 6e-13, and the self pair. T is 750, with 999 draws.
+- **Gtests:** `EvalEdges.*` (5 tests).
+- **pytest:** `test_near_identical_pairs_follow_the_conditioning_rule[...]` (7 cases).
+- **Still owed:** Concern 1 in the report must be updated. Text to use:
+  - The engine now forms these statistics stably.
+  - The tolerance is 1e-12 / (1 - rho).
+  - Below 1e-6 the pair is refused.
+  - Root measures rho for the X-5 and Y-F0 pairs.
+
+### B2-R2: constant CSCV candidate — DONE in `ec8043b7`
+- **Fix:** `cscv_report.cpp` passes a column whose used returns are all equal to the engine CSCV as zeros, so its Sharpe is 0 in every split. That is exactly the Python's `var > 0` rule, because the Python's centred moments are exactly 0 for such a column.
+- **JSON:** the column is listed in `pbo.engine.constant_candidates`.
+- **Test:** `EvalEdges.CscvConstantCandidateHasSharpeZero`, on 5 generated candidates plus a constant 0.001 column (240 sessions, 8 blocks). The engine now equals the Python exactly: PBO 0.1857, logits and winner counts `[57,4,9,0,0,0]`.
+- **Not "0.171":** the review's exact series is unknown. A search over numpy seeds 0..59 did not reproduce it.
+- **Not covered:** a candidate that is constant over only some blocks. Both implementations divide by a rounding residue there. This is documented in `cscv_report.hpp`.
+
+### B2-R3: name and pin the verb — PARTIAL
+**Done before the deletion (`a12b4c30`):**
+- `EngineStats` hashes the exe when it opens it.
+- `nav_summ_run` in `--json`, `--pbo-json` and `--bundle-json` records `engine_exe` and `engine_exe_sha256` whenever an engine was used.
+- The test is `test_the_engine_run_names_its_verb`.
+
+**In the WIP `dee6cacb`, untested:**
+- `default_engine_exe` returns `$ATX_EQUITY_BIN/atx-research-eval.exe` whenever `ATX_EQUITY_BIN` is set, so a missing exe there fails closed in `EngineStats`.
+- Lazy `engine_of`, which is S8.
+
+**NOT done:**
+1. **`scripts/research_cycle.py`** (cross-lane with E2):
+   - `effective_exes` adds `"eval": "atx-research-eval.exe"` when `"summ"` is in the spec. Then `lock --exes` pins it and `verify_exes` checks it.
+   - `summ_step` passes `--engine-stats <exes.eval>` right after the script when `exes.eval` is set.
+   - Do **not** add a `--bind` for the exe: `run_bounded_research` refuses binds over 16 MiB, and the Debug exe is about 2.2 MB, so it fits, but a Release exe might not.
+   - Update `test_build_key_resolves_exe_dir`, which asserts the exact exes dict, and add a test.
+2. **`scripts/cycle_verdict.py` `scoring_blocks`:** refuse a `summ.json` or `pbo.json` whose `nav_summ_run.engine_exe_sha256` differs from the cycle's eval pin. Without a pin, compare against the sha of `spec.exes.eval`. Raise `VerdictError` ("not reused"). Add a test in `test_cycle_scoring.py`.
+3. **Test for the fail-closed rule:** `ATX_EQUITY_BIN` set to a dir without the exe means `NS.main` raises SystemExit. Reset `NS._ENGINE` first, because it caches the default verb per process.
+4. **Merge requests to add to the report:**
+   - Add `atx-research-eval` to `$canaryExes` in `research-build.ps1`.
+   - The `exes_sha256` pin, if root prefers E2 to own `research_cycle`.
+
+### Suggested
+| item | state | where | detail or reason |
+|---|---|---|---|
+| S1 (norm_ppf) | not done | — | The house rows use the engine's shared Acklam+Halley `norm_ppf` (`stats_ext.hpp`), which other callers use too. Recorded N_tot is 13..233, and 1e-12 holds up to N = 1e3. List with this reason; the PM may rule a bound. |
+| S2 | done | `b295fa4f` | `chain_head`, `prefix_heads` and `is_chained_line` treat a line as chained only when its `prev_sha256` is non-null, in C++ and in `backtest_integrity.chain_head`. The rule name stays `/v1`. Tests: gtest `ANullPrevLineFoldsInEveryRule` and pytest `test_a_null_prev_line_folds_for_chain_head_as_for_the_reader`. |
+| S3 | done | `b295fa4f`, `c85dc6f2` | The reader refuses three inputs: a BOM at a line start; a raw CR, U+0085, U+2028 or U+2029 inside a line; and a truthy non-object `defect`. Test: `ResearchLedger.ReaderRefusesWhatThePythonRefuses`. |
+| S4 | done, as docs | `ec8043b7` | `eval_cli.hpp` and `eval_report.hpp` document the flags. K-P9-5 itself lives in the plan, which I did not edit. |
+| S5 | done | `b295fa4f` | Dropped the uncalled `check_era_id`, `check_era_windows`, `segment_starts` and `weighted_mean`. |
+| S6 | not done | belongs in the deletion | After the deletion, `test_nav_summ_engine` compares the engine with itself. Option 1: retire the comparison tests and keep the arg, refusal, provenance and degenerate tests, which never skip. Option 2: compare `nav_summ --json` against `frozen_statistics.paired_stats` at the conditioning tolerance. The edge cases there import `generate_research_eval_edges`, whose `paired_case` needs the generator retarget below. |
+| S7 | not done | belongs in the deletion | In `scripts/tests/test_research_ledger.py`, `nav_summ_n` should read N from `nav_summ --json` (`deflated_ledger.n` or `house_v1`) instead of `BI.ledger_n`. |
+| S8 | WIP | `dee6cacb` | Lazy engine. |
+| S9 | done | `b295fa4f` | Lines over 100 columns. |
+| S10 | done | `a12b4c30`, `b295fa4f` | `fixture-ledger.jsonl`. |
+
+**Deletion follow-up besides R3, S6 and S7:** retarget `generate_research_eval_edges.py` from `nav_summ` and `backtest_integrity` to `fixtures/eval_tie/frozen_statistics.py` (`paired_stats`, `cscv_pbo`), the same way `generate_eval_tie.py` was retargeted. Otherwise its import of `NS.paired_stats` breaks after the deletion.
+
+## Builds and tests run
+All builds used `scripts/research-build.ps1` with the equity-dev preset. The receipts are in `build-equity/mega-p9-b2-c*`.
+
+**Builds:**
+- `p9-b2-c` (dirty tree): FAILED on the `-Wrange-loop-construct` error, fixed in `f07ba1be`.
+- `p9-b2-c2`: source `f07ba1be`, 0 dirty entries, exit 0, 11 TUs.
+- `p9-b2-c3`: source `c85dc6f2`, exit 0. The tree was configured fresh this round.
+
+**gtests, run at `c85dc6f2` and `d5f653cc` (logs in `b2-evidence/fix1-gtest-*.log`):**
+- `atx-engine-research-ledger-tests --gtest_filter=ResearchLedger*`: 16 of 16 pass.
+- `atx-engine-research-eval-tests --gtest_filter=EvalVerb.*:ResearchEvalRng.*:Conditional.*:EvalEdges.*`: 21 of 21 pass. The `eval_tie` tie still holds at 1e-12.
+
+**pytest before the deletion, at `d5f653cc`** (`ATX_EQUITY_BIN` set to the pool-14 bin, `ATX_ENGINE_STATS_REQUIRED=1`):
+- The nav_summ, ledger and fixture suites (14 files): 134 passed, 1 skipped, the known root-only v8 test. Log: `b2-evidence/fix1-pytest-pre-deletion.log`.
+- The wave, holdout and mega-report suites: 146 passed. Log: `b2-evidence/fix1-pytest-pre-deletion-wave.log`.
+
+**Flag-absent identity, nav_summ at `1239a5ff` vs `d5f653cc`:**
+- Setup: 5 synthetic dirs, a v8 argv with PSR, effective N, PBO, the ledger DSR, the total DSR and the hand DSR, and a shared pristine ledger. Run once with a far reference and once with a near-identical one (1 - rho = 1.25e-10).
+- Result: stdout, stderr, `--json` and `--pbo-json` are **byte-equal** in both runs.
+
+**`--engine-stats` against Python at `d5f653cc`, same setup:**
+- Far reference: stdout equal, 0 JSON differences.
+- Near reference: the pair is refused as degenerate. As expected, its stdout differs and its JSON gains `degenerate` and `one_minus_rho`.
+- These two scripts were scratch and are deleted. Their content is described here.
+
+**Not run:** anything after the deletion. The WIP has not been tested.
+
+## Exact next steps
+1. In pool-14 at the head, finish the deletion:
+   - B2-R3 in `research_cycle.py` and `cycle_verdict.py`, with tests.
+   - The fail-closed test.
+   - S6, S7 and the edge-generator retarget.
+   - Commit as follow-up commits, or squash this round's WIP into one deletion commit.
+2. Run the post-deletion pytests: the same 14 files plus the wave, holdout and mega-report suites, plus `scripts/tests/test_research_cycle.py`, `test_wave_driver.py` and `test_research_spec.py` (because of `research_cycle`). Use `ATX_EQUITY_BIN` and `ATX_ENGINE_STATS_REQUIRED=1`.
+3. Rebuild only if C++ changes; the exe at `d5f653cc` is current, with sha256 `2398a582…` from `p9-b2-c2`. Check that `p9-b2-c3`'s exe is the same.
+4. Append "Fix round 1" to `task-B2-report.md`:
+   - The new identity merge point is `d5f653cc`, plus the deletion SHA.
+   - Concern 1 rewritten per B2-R1.
+   - B2-R2, B2-R3 and the Suggested table above.
+   - Merge requests: `$canaryExes`, and root checking each identity pair's rho first.
+   - Commit with `git add -f`.
+5. Delete the `build-equity` object tree (DISK-2), keeping `mega-*` receipts and logs. Delete the gtest scratch dir `%TEMP%/atx_research_eval_tie` by name.
 
 ## Open questions for the PM
-1. "Separate prepared commit" deleting the Python statistics: a commit on this branch after root identity, or a
-   patch / side branch? (Root's identity needs both paths, so it cannot be merged before identity.)
-2. K-P9-5 `paired.se`: I map it to the LW studentized SE (memmel_se is separate). Confirm.
-3. eval_tie fixture ledger records lack `schema`; the tie test will add it when writing the JSONL (no expected
-   value touched). OK?
+1. **Self pair:** it now prints SE "na" (B2-R1 (c)) instead of SE 0 (B2-4). Confirm.
+2. **Rounding boundaries:** printed lines can still differ when a printed value lands exactly on a rounding boundary. The 5e-4 case hit this on the 3-decimal rho print. The probability is negligible for real data. Is a note enough?
+3. **B2-R3 placement:** I put the `research_cycle` / `cycle_verdict` pin of the verb in the deletion part, because before the deletion the summ's statistics are `nav_summ.py`'s own and `script_sha256` already covers them. These are E2's files. Who owns this edit?
+4. **S1:** port the bisection `norm_ppf` for the house rows, or rule a bound (N_tot ≤ 1e3 holds 1e-12)?
 
-## Traps
-- Not compiled: re-read every new file for /W4 (unused, sign, shadow) before root builds; `eval_series.cpp` uses
-  `atx::engine::data::` fully qualified on purpose; `cscv_report.cpp` uses ATX_TRY with a typed decl.
-- `atx-impl/src/trial_ledger.cpp` is now a stub; atx-impl must link the ledger lib (CMake tail not done) or the
-  IC trial ledger symbols go unresolved.
-- Python `splitlines()` splits on more separators than LF; the C++ reader splits on LF (+CR strip). Fine for ASCII
-  JSON lines.
-- conditional: raw barely above the threshold (e.g. 1e-9 se) cannot bracket the median -> `clamped` true and the
-  estimate empty (expected: the estimate tends to minus infinity).
-- test_no_python_mirror.py: the adapter must not define any function named like a RULE_SYMBOL (psr, min_trl,
-  deflated_sharpe, expected_max_sr, lo_null_dsr, effective_n_dsr, cscv_pbo, onc, onc_base, effective_trials,
-  dsr_rows, memmel_se, cbb_indices, paired_stats, dsr_at, ledger_rows), methods included.
-- Identity runs must not append to a real ledger (use a copy / omit `--ledger`).
+## Scratch
+- Deleted by name: my scratchpad files `b2fix_*`, `b2c*_*`, `b2r1_*`, `b2fix_base/` and `b2fix_flagwork/`.
+- My stash `b2-fix1-deletion-wip-2` was popped into `dee6cacb`, so no stash of mine remains.
+- Left in place: the `build-equity` object tree, which the next session needs for the exe and the gtests.
