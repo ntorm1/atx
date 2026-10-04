@@ -155,7 +155,8 @@ All builds used `scripts/research-build.ps1` with the equity-dev preset. The rec
    - B2-R2, B2-R3 and the Suggested table above.
    - Merge requests: `$canaryExes`, and root checking each identity pair's rho first.
    - Commit with `git add -f`.
-5. Delete the `build-equity` object tree (DISK-2), keeping `mega-*` receipts and logs. Delete the gtest scratch dir `%TEMP%/atx_research_eval_tie` by name.
+5. Delete the `build-equity` object tree (DISK-2), keeping `mega-*` receipts and logs. (The gtest scratch dirs
+   `%TEMP%/atx_research_eval_tie` / `_edges` were checked: absent.)
 
 ## Open questions for the PM
 1. **Self pair:** it now prints SE "na" (B2-R1 (c)) instead of SE 0 (B2-4). Confirm.
