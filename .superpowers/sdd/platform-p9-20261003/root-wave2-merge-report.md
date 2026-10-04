@@ -1225,3 +1225,110 @@ bytes and the JSON by the comparator; a stdout line is printed only if it differ
      PM, never auto-accepted. A bootstrap-count difference (threshold touch) likewise.
   6. Printed for the record: float leaves bit-equal vs within tolerance per comparison, largest relative difference.
   7. Trial ledger unchanged after all runs (133 lines, `27e40f9f`).
+
+#### B2 identity part: MERGED and verified; TRAIN identity HOLDS (0 B2-7 lines)
+
+- **Ledger:** `Task B2 (identity part): complete at 1b25b9a4`; rulings B2-1..B2-12, B2-R1..B2-R3, SQL2-CLS, CLS-1,
+  RUN-1, M2c-RED-2 (e) read. **Not merged (B2-12):** the post-identity part `598d2199` (deletion) / `8fb17ad6` (B2-10)
+  / `26fe8d50`, `4bed5c43` (docs): the lane redoes it after E2's merge (re-review R1 / R2 and B2-11); the Python
+  statistics of record stay in root until then.
+- **Merge:** `c2416d62` = `git merge --no-ff 1b25b9a4` (lane base `1239a5ff`). Three conflicts, all CMake tails,
+  both sides kept, HEAD's block first: `atx-engine/CMakeLists.txt` (SQL2 catalog / A3 / AL-SIG / D2 composition vs
+  B2's `atx-engine-research-ledger` + `atx-engine-research-eval` libraries and the `atx-research-eval` exe),
+  `atx-engine/tests/CMakeLists.txt` (SQL1 / SQL2 / A3 / AL-SIG / D2 test targets vs B2's ledger / eval test targets),
+  `atx-impl/CMakeLists.txt` (AL-COMB sources, D2 link, C2 source vs B2's `atx-impl-core PUBLIC
+  atx::engine-research-ledger`). Auto-merged and read: `scripts/wave_stage_record.py` (C2's R4 two lines and B2's
+  `ledger-head.json` writer in `record()`, both in E2's file: reconcile both at E2's merge). Root had touched none of
+  B2's other files since `1239a5ff` (`trial_ledger.{hpp,cpp}`, `pbo.*`, `nav_summ.py`, `backtest_integrity.py`,
+  `test_trial_ledger_rules.py`). The lane's report / review / handoff / `b2-evidence/` came with the merge at their
+  `1b25b9a4` state; the current ones (report with fix round 1 and B2-10, handoff, `task-B2-rereview-1.md`, 20
+  `b2-evidence/` files) copied from the lane head's blobs `4bed5c43` (`git add -f`; pool-14 otherwise untouched).
+- **Build p9-2i** (equity-dev; source `c2416d62`, 9 dirty entries = PNGs, `progress.md`, `al-data/`: no code; the
+  tree reconfigured itself, ConfiguredProvenance `c2416d62...-dirty`): `atx-engine-research-ledger-tests,
+  atx-engine-research-eval-tests, atx-research-eval, atx-impl-tests, atx-equity-strategy-ic` (the report's "How root
+  verifies" item 1 plus p9-b2-b's IC exe, which links the moved trial ledger) -> **exit 0, 122.4 s, 38 TUs, 10 links,
+  Jobs 3, 0 warnings**. ledger-tests `8c5a6065`, eval-tests `25c14b28`, verb `bd8b5e08`, impl-tests `237e5826`, IC
+  `6c2e2e2e`.
+- **Build p9-2j** (equity-rel; same source and targets) -> **exit 0, 128.1 s, 46 TUs, 10 links, Jobs 4, 0 warnings**.
+  ledger-tests `bfe2afc3`, eval-tests `e0a51398`, verb `a57a2090`, impl-tests `6a1eb722`, IC `fccaa07e`.
+  (The lane's verb hash `15eebd7d` is another tree's link; not comparable.)
+- **gtests** (logs `m2f-logs/b2-{dbg,rel}-*.log`), Debug and Release alike: `atx-engine-research-eval-tests`
+  `EvalVerb.*:ResearchEvalRng.*:Conditional.*:EvalEdges.*` **24 passed** (= whole target);
+  `atx-engine-research-ledger-tests` `ResearchLedger*` **16 passed** (= whole); `atx-impl-tests` `TrialLedger*`
+  **24 passed** (the moved code through the re-export; re-review check 7).
+- **pytest at the identity point** (`m2f-logs/tools/pyt.sh`: explicit paths, `-p no:cacheprovider`, own
+  `--basetemp`, `ATX_ENGINE_STATS_REQUIRED=1`, `ATX_EQUITY_BIN` = the build type's bin), each with the Debug and with
+  the Release verb: tools set (`test_nav_summ_engine`, `test_nav_summ`, `_pool`, `_v8`, `test_dsr_total`,
+  `test_backtest_integrity`, `test_book_diagnostics` + the three fixture tests `research_ledger`,
+  `research_eval_edges`, `eval_tie`) **109 passed, 1 skipped** (the root-only real-data test); scripts set
+  (`test_no_python_mirror`, `test_research_ledger`, `test_cycle_scoring`) **17 passed** (G-P5 "34 mirrored rule
+  function(s) in 13 row(s)": root's count; B2 deletes its rows only post-identity). The skipped root-only test,
+  `test_nav_summ_v8.py::test_legacy_n37_numbers_reproduced`, run separately with `ATX_EQUITY_ROOT` = pool-2's
+  `build-equity` (Python nav_summ on the v7.1 cells vs `mega-nav-v71-summ-n37.json` / `-pbo-n37.json`, a ledger copy
+  in tmp): **1 passed** (flag-absent identity of the merged `nav_summ.py` on real cells).
+- **TRAIN identity (list `ea52989a` first, rho before it): HOLDS** (`m2f-logs/b2-identity-cmp.txt`; receipts
+  `m2f-logs/receipt-p9-m2f-b2-{x5,yf0}-{p,erel,edbg}.json`). All six runs `completed`, exit 0, source `ea52989a`
+  (clean in the code pathspec), ledger copy bound `27e40f9f`; wall 0.8-1.9 s; sampled peak RSS: Python 620 / 481 MiB,
+  verb runs 51-59 MiB (cap 2,048).
+
+  | comparison | stdout (31 lines) | stderr | JSON (`nav_summ_run` popped) | float leaves bit-equal / within tolerance | largest rel. difference |
+  |---|---|---|---|---|---|
+  | X5 Erel vs P | byte-equal | equal | 0 problems | 76 / 13 | 5.0e-14 |
+  | X5 Edbg vs P | byte-equal | equal | 0 problems | 76 / 13 | 5.0e-14 |
+  | X5 Edbg vs Erel | byte-equal | equal | 0 problems | 89 / 0 | 0 |
+  | YF0 Erel vs P | byte-equal | equal | 0 problems | 78 / 11 | 5.9e-15 |
+  | YF0 Edbg vs P | byte-equal | equal | 0 problems | 78 / 11 | 5.9e-15 |
+  | YF0 Edbg vs Erel | byte-equal | equal | 0 problems | 89 / 0 | 0 |
+
+  - The comparison covers the paired block (dSR, Memmel SE, t, CBB CI and valid draws, the LW block with its
+    p-values), PSR / MinTRL, the deflated rows, the ledger DSR and DSR_tot (row keys `paired`, `psr`, `deflated`,
+    `deflated_ledger`, `deflated_total`, `net_moments`, `year_table`, ...). Every decision field (p-values, valid
+    draws, N) is equal; no `degenerate` / `one_minus_rho` key; the largest difference is about 20x inside the 1e-12
+    tolerance (and the paired tolerance is 1.25e-11 / 2.25e-11).
+  - **B2-7: 0 boundary lines** (no printed line differs), so nothing goes to the PM under B2-7; no bootstrap-count
+    difference.
+  - Each verb run's `nav_summ_run` names its `engine_exe` with `engine_exe_sha256` = the file's SHA-256 (Release
+    `a57a2090`, Debug `bd8b5e08`); the Python runs name none. The Debug and Release verbs agree to the bit on both
+    pairs.
+  - One deviation from the written list, in my expectation only: stderr was not empty but the same 145 bytes in all
+    six runs (nav_summ's existing warning that the recipe's default `--dsr-n` 10 makes V[SR_n] come from the listed
+    dirs); the check (equality) holds. The stdout of both cells also carries nav_summ's existing `WARNING CSV tau
+    mean ... != summary ...` line, in P and E alike: a boolean check (no value printed) finds it in all five dirs,
+    the ledgered v8 X-3 / X-5 / Y-F0 NAVs included (`m2f-logs/tau-warning-presence.txt`): long-standing, not a merge
+    effect, outside this identity.
+  - Trial ledger after the runs: 133 lines, `27e40f9f` (no `--ledger` given).
+- **Re-review check 8** (count only): the ledger of record has 0 lines with `"prev_sha256": null` (37 without the
+  key, 96 chained; `m2f-logs/b2-ledger-prev-null-count.txt`), so B2's S2 change (a null prev folds as unchained)
+  moves no recorded head on real data.
+- **`$canaryExes` += `atx-research-eval`** (merge request 1): `42f42a07`, help text with it; dry runs: a `-Canary` tag
+  without the verb is refused naming it ("missing: atx-research-eval"), with it the plan prints; no receipt written.
+  The canary itself needs the verb only once the post-identity part lands.
+- **SQL2-CLS:** `ba5e6e5d`. The guard on the merge was red on exactly `atx.ledger-head/v1` and `atx.research-eval/v1`
+  (`m2f-logs/b2-sql2cls-guard-before.log`). Rows: `ledger-head` (R6, `**/ledger-head.json`) and `eval-output` (O6,
+  `**/*.json` + schema) of their own (CLS-1 precedent); `atx.research-ledger-fixture/v1` and
+  `atx.research-eval-edges-fixture/v1` into `test-golden` (the re-review's addition; beside
+  `research-admission-fixture` / `factors-verb-fixture`). Store suite **43 passed, 135 subtests** under
+  `PYTHONHASHSEED` 0 and 1 (guard green; 133 + the two rows); fixture chain rel and abs: `files_seen 28 verified 25
+  declared 0 skipped 4`, **`catalog_digest d32f7655...4e69`**, verify 0, identity 12 / 0
+  (`m2f-logs/b2-sql2cls-fixture-chain.log`); a scratch catalog classifies a `ledger-head.json` and an eval document
+  into the two rows (`m2f-logs/b2-sql2cls-classify.txt`).
+- **Not done (post-identity, B2-12):** re-review checks 3 (the named-verb test exists only in `598d2199`) and 5 (hunk
+  placement onto E2's split).
+- **Trial ledger:** 0 trials.
+
+### DISK-2 and M2f status
+
+- **pool-18 (S2R):** nothing to delete: the lane deleted its object trees (left: `build-equity/` 3.2 MB of receipts,
+  logs, `audits/`, `v8-interim3-pitch-render-run2/`; the lease script's 0.5 MB `build/` configure stub, left as at
+  pool-15 in M2e; no `deps/`, no `build-equity-rel/`). pool-14 not touched (lane B2 continues there). No lease
+  released.
+- **Mine:** kept (tiny, evidence): `build-equity/p9-m2f-b2-identity/` (52 KB, the six JSONs) and the six run dirs
+  (21 KB each); scratch (ledger copy, catalogs, pytest temp dirs) deleted by name.
+- **Code head `42f42a07`** (S2R merge `0f7a84b1`; B2 identity merge `c2416d62`; SQL2-CLS `ba5e6e5d`; canary
+  `42f42a07`). Build tags used: p9-2g (equity-dev), p9-2h (equity-rel), p9-2i (equity-dev), p9-2j (equity-rel).
+  **Next free build tag p9-2k.** No new red; no identity miss; nothing half-merged.
+- **Known-red now:** pytest `test_fields_are_the_rule_applied_to_the_registry` (E2). Release
+  `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` is a **named Release skip, 0 failed** (M2c-RED-2 /
+  OD5-2), not a red.
+
+Trial ledger at the end: 133 lines, sha256 `27e40f9f...` (0 trials). Resume notes: `handoff-root-m2f.md`.

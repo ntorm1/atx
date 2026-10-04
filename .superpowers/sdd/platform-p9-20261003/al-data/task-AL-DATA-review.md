@@ -397,3 +397,466 @@ incomplete for the CIK (RM3).
   verdict changes. Use one rule.
 - **Rn2.** `builder-designs.md:351-352`: the aspect says "stale, unknown or common_unverified"; the request (`:154`)
   also says NULL. Align them.
+
+---
+
+## Re-review 2 (fix round 2; rulings ALD-8 to ALD-11, OD5-1), 2026-10-04
+
+**Verdict: CHANGES_REQUIRED.** Counts: blocker 0, major 1, minor 4, nit 4.
+
+**Safe to hand to the atx-db owner: yes, after R2-M1 and the four minors.** Every fix is a text edit in `al-data/`, so
+a delta check of the lines named below is enough. Paths (a), (b1), (b3) and (c) hold in source. As written, the A0.3
+procedure stops at Stage I in arms B2 and B12 whenever path (b) has any effect (R2-M1).
+
+**Method.**
+- Read-only and doc-only.
+- atx-db source was read only through `git -C C:/atx-wt/pool-2 show dec03454:...`. Files: `identity_links.py`,
+  `identity_reconstruction.py`, `alpha_panel/{identity_links,identity_backfill,identity_names,identity_table,build,
+  common,panel}.py` and `stagelake/registry.py`. Each file was read in full or over every cited range.
+- Our tree was read at pool-2 HEAD `2ee62800`.
+  - The amendment targets and the universe code have an empty diff from the lane's `20bc5f5f`. Only `.gitattributes`
+    moved (`scripts/specs/** text eol=lf`).
+  - The working-tree changes to `scripts/specs/p9/blocked/*.json` are EOL-only (`git diff --ignore-cr-at-eol` is
+    empty), so no amendment has been applied yet.
+- For E, one JSON manifest of our tree was read: `build-equity/train-2020-2023-lo3/manifest.json`. Only its keys
+  `universe.id`, `universe.reasons`, `universe.inputs.code`, `universe.inputs.identity_bridge` and
+  `universe.link_member_cells` were read. The last holds five cell counts; no figure from it is quoted here.
+- No data row was opened. Nothing was built, no pytest was run, no git write was made, and nothing under any `atx-db/`
+  working directory was touched. No permission refusal occurred.
+
+### R2.1 The eight re-review-1 findings (A)
+
+| finding | status | evidence |
+|---|---|---|
+| RM1 | fixed | A0.1 now carries paths (a), (b) and (c), with citations. "What the directory does, and does not do" (request `:152-164`) replaces the two over-strong rows; checked at `identity_links.py:517-539`, `:859-861`, `:925-967`. A0.2 states the primary-only filter (`:176-178`). Report `:13-14`: "a dependence path ... exists in source". Q1 is marked superseded (`:204-206`). |
+| RM2 | fixed as asked: the arms, the whole chain, new directories, D0 as a precondition only, the row set, the `primary` case (T1) and PIT-a | the procedure has a new defect that the re-review did not ask about: R2-M1 |
+| RM3 | fixed | channel 4, input 2 (request `:453-462`); R7.2 (`:511-515`); `backfill_cik_on_rank` (`:595-599`); the aspect clause (designs `:371-377`) |
+| Rm1 | fixed | request `:561-569`. I re-derived (3, 0), (4, 0), (2, 1) and the R1 ends from main `indexes.py:274-292` |
+| Rm2 | fixed | report `:100-101` |
+| Rm3 | fixed in the designs and in the report Evidence | report `:264` still quotes both figures, inside the superseded status table (R2-n4) |
+| Rn1 | fixed | designs `:38-39`, `:45-46`, `:70-72`, `:97-98` |
+| Rn2 | fixed | request `:447-449`; designs `:369-370`; `panel.py:569-570` |
+
+### R2.2 Path (a) (B): stated correctly
+
+Every citation holds at `dec03454`:
+- `identity_table.py:72-85` has no tier filter, and `:76` keeps the backfill and name tiers.
+- The `primary` column of `links_combined` is not selected (`:75-77`).
+- The flag is computed over all tiers (`:111-112`).
+- The islands split where the flag changes, and an island's `available_at` is the minimum over it (`:119-133`,
+  `:131`).
+- The pit export keeps strict and name rows only after the flag is set (`:172-176`, `:187-195`), and writes it as `P` /
+  `J` (`:190`).
+- Backfill lines: `identity_backfill.py:52-58`, `:71-89`, `:96-109`. Their clock is `:20`.
+
+T1 tests this path.
+
+### R2.3 Path (b) and the lane's correction (C)
+
+**(ii) holds.** What reaches the bridge is a rival's 2026 ticker removing a link, and the 2026 list moving the end dates
+of the line's other, early-stamped links.
+
+- **(b1)**
+  - `identity_links.py:1287-1289` passes the list to `reconstruct`.
+  - `identity_reconstruction.py:1535-1551` adds the .5 item (weight at `:357`), clocked at the snapshot.
+  - `:464-468` sums every item, with no clock.
+  - `:1577` tests dominance on the final weights (ratio 3.0, `:374`).
+  - A rejected candidate gets no link version at any clock. The rehearsal keeps it only as an unresolved row at the
+    observation (`identity_links.py:881-894`).
+  - So a rival's ticker that tips the 3x test removes a link that Stage I would hold from the candidate's own clock
+    until the rival's evidence is known. **Real.**
+- **(b3)**
+  - `_segments` uses `:1706-1711`, `:1715-1719` and `:1722-1724`. A non-rival does not bound a segment (`:1601-1606`).
+  - An acceptance that needs the 2026 item is clocked at the snapshot (`:1616`; `_pit_clock`, `:1418-1426`).
+  - It still ends the earlier, early-stamped segment at its own start. **Real.**
+
+**(i), the correction for (b2), is half right: the mechanism is right, the reach is wrong.**
+
+- **Why the reach is wrong.**
+  - A dominance winner is high or medium from its own clock. It turns `low` only once the rival's known share items
+    reach the floor and overlap it (`_tier_history`, `:1483-1497`, called at `:1618`; `_tier_known`, `:1466-1480`).
+  - The rehearsal writes one version per tier step (`identity_links.py:895-924`), with basis `reconstructed_<tier>`
+    (`:922`).
+  - A `low` step is role N (`:330-333`) and fails Stage I's keep test (`alpha_panel/identity_links.py:147-151`).
+  - So Stage I drops the link **only from the rival's clock**. Before that, it keeps a high or medium P / J version
+    stamped at the candidate's own clock. For that window, the re-review-1 sentence ("keeps a link stamped years
+    earlier") was right.
+- **What the lane gets right.** In both windows, today's outcome equals the clock-honest one:
+  - before the rival is known, a clock-honest rule accepts the link;
+  - after it is known, a clock-honest dominance test without the 2026 item rejects it.
+
+  The exception is where the tier test and the rival test (`:1435-1443`: final ratio and spans) disagree.
+- **Consequence for A0.3.** (b2) is a dependence without a look-ahead.
+  - In arm B2, the line loses its window link through the later-rival rule (`:144-147`, `:1577`).
+  - So B2 and B12 count those cells "in A only", although PIT-b keeps them.
+  - The request's "this half reaches the strict tier only where ... disagree" (`:131-132`; report `:115-116`, `:196`,
+    `:364`) is false as written (R2-m1).
+
+### R2.4 Path (c) (D): confirmed, so under ALD-9 it stays in A0
+
+**The mechanism.**
+- `identity_backfill.py:118-119` writes the strict days UNION the backfill days.
+- `identity_names.py:77` and `:148-152` delete every name day found in that file (docstring `:14-15`).
+- The combine pass anti-joins `bf_days` again (`identity_backfill.py:129-130`).
+- The pit export drops the backfill row (`identity_table.py:172-176`).
+- So on such a line-day the pit bridge has no row at all.
+
+**It can change pre-2024 rows and universe member-days.**
+- Backfill days have no 2017-10 floor (R2.7).
+- The withheld name row is dated: `available_at` is the dissemination at 22:00 (`identity_names.py:139`). It would
+  qualify in our reader (`prepare_research_fields.py:1714`, `:1722-1723`).
+- In arm A the cell fails universe test 1, "unlinked" (`prepare_recent_research.py:586`).
+- Under S2 the cell is linked. It is kept when the name row is the CIK's P line and its class passes.
+
+**Direction and coverage.** The path removes lines that survived to 2026, so it works against survivorship. B1 row 1
+"in B only" sizes it, and T2 tests it.
+
+### R2.5 The primary-only filter, and provenance (E)
+
+**The filter: confirmed in code at HEAD.**
+- Universe test 3 is `(link >= 0) & ~primary`, reason `secondary_line` (`prepare_recent_research.py:586`, `:728`,
+  `:737`).
+- The flag is `kind == "P"` (`prepare_research_fields.py:1684-1685`). It is set per cell from the P rows of the cell's
+  CIK (`:1735-1736`).
+- Rows qualify from `available_at <= mark(t)` (`:1714`, `:1722-1724`).
+- The fields publish on P lines only (`:328-332`).
+
+**The role: tied to this code, confirmed** (from the role manifest).
+- `universe.inputs.code` records `prepare_recent_research` blob `62b762fc`, which is HEAD's blob.
+- It records `prepare_research_fields` blob `e8b57af5`, which is the file at `eca04c18`. There, `BRIDGE_KINDS`,
+  `BRIDGE_EXCLUDED_BASES`, `load_bridge` and `resolve_links` are byte-identical to HEAD's.
+- `universe.id` is `linked-operating-v3`, `universe.reasons` names `secondary_line`, and `universe.link_member_cells`
+  carries a non-zero `secondary` tally.
+
+**The bridge: only partly tied.**
+- The role records:
+  - `identity_bridge.manifest_sha256` `09aac28f...`, equal to `base-lo3.json:52`;
+  - the bridge's `rule` `identity-link-table-v1/pit`, `rehearsal_identity` true and `scope_complete` false. These are
+    the values that `identity_table.py:41` and `:202-210` write.
+- The bridge manifest's own `code` field (the SHA-256 of `identity_table.py` and `common.py`, plus the C:/atx
+  `git_head`; `identity_table.py:214`, `common.py:130-147`) sits under `C:/atx/atx-db/data`. Our tree quotes it
+  nowhere: `git grep 09aac28f` finds only pins.
+- Even that field would not cover `identity_backfill`, `identity_names`, Stage I or the r4 rehearsal.
+- **Not confirmed:** that the published bridge was built by the code at `dec03454`. D0 is the check, and R2-m4 makes it
+  cheaper.
+
+### R2.6 The A0.3 procedure (F)
+
+| step | runs as written? | what it shows |
+|---|---|---|
+| S1 (`tickers=()` at `:1287-1289`) | yes. S1 sits in `identity_links.py`, which `:725-735` pins in every arm | removes the EV_SYMBOL item only |
+| S2 (empty `cand`) | yes. `pres`, `bf_days` and `other_cik_end` are then empty, and neither pass writes a backfill day | turns off (a), (c), the directory and survival |
+| S3 | yes, but `IDENTITY_R4_DIR` is a constant (`common.py:28`). So S3 is a code switch, like S1 and S2, and it is on in every arm, A included (R2-n1) | - |
+| the directory guard `:846-848` | runs in every arm and passes, because no arm empties the directory | - |
+| the prepare and rehearsal pins (`:740-741`, `:1218-1223`, `:1249-1250`) | pass with new W / R directories | - |
+| **Stage I in arms B2 and B12** | **no**, whenever path (b) moves any link visible before 2025-01-01 (see the note below). The same check stops arm A if r4 does not reproduce, so D0's "report the counts and go on" cannot be followed | **R2-M1** |
+| `build --only identity,backfill,names,combine,identity_table` | yes. The order is kept (`build.py:108-110`) and the environment is inherited (`:77`). The seeded inputs are the only root reads of these stages (`identity_backfill.py:44-46`; `identity_names.py:74-77`, `:132`, `:144`; `identity_table.py:47-55`). Panel core uses no identity (`panel.py:160`) | - |
+| D0 | yes (the owner reads the published files) | reproduction only, never a side of the measured diff |
+| consumer view, rows 1-9 | yes. It is limited to sessions up to 2023-12-29 and to rows with `start` and `available_at` before 2024 (row 9 is reported apart) | - |
+
+*Note on Stage I.* `build` re-runs `compute_links` at seal 2025-01-01. It exits on any difference from hard-coded counts
+of the published r4 (`alpha_panel/identity_links.py:64-72`, `:330-334`). `build.py:113-115` then stops the chain.
+
+**A zero result.** It proves something only when D0 is clean and the sanity row passes.
+- Then a zero B12 proves that the pit bridge, as read in 2017-2023, does not depend on:
+  - the 2026 ticker list in reconstruction;
+  - the 2026 directory;
+  - survival to 2026.
+- The directory reaches pit rows only through backfill candidates (confirmed at `identity_links.py:517-539`,
+  `:926-967`, `:330-333`).
+- A zero does not clear the later-evidence residual, which no arm varies (R2-m2).
+
+**A non-zero result.**
+- B1 attributes to (a) plus (c): row 3 against row 1, as the request says.
+- B2 against A is not a clean measure of (b), for two reasons:
+  - it counts (b2) window cells that carry no look-ahead (R2.3);
+  - a snapshot link is written only for a retrospective row without an evidence id (`identity_links.py:926-927`). B2
+    changes the evidence passed in at `:835` and `:852`, so it can also move the backfill candidates.
+- B12 against B1 (both with the backfill tier off) isolates (b) (R2-m1).
+- (b1), (b2) and (b3) can be told apart only through the identifiers and T3 / T4.
+
+### R2.7 ALD-8 (G): settled in the lane's favour
+
+**The two lines.**
+- `identity_backfill.py:35`: `COMBINED_FROM = "2017-10-01"  # combined/strict day expansion starts here (panel warm-up
+  is 2018)`
+- `identity_backfill.py:116`: `        WHERE c.session_date >= DATE '{COMBINED_FROM}'`
+
+**Which span each limits.**
+- `:35` defines the constant, and `:116` is its only use, in the WHERE clause of `strict_days` (`:111-117`).
+- So both limit the strict-day expansion only.
+
+**What limits the backfill days.**
+- The final run (`:71-89`), built from `root/prices` (`:45`, `:76`). The registry documents that stage as bars from 2018
+  on (`stagelake/registry.py:119-120`).
+- The CIK's first periodic filing (`:101`).
+- The end of any strict link to another CIK (`:102-103`).
+- Strict-wins, applied against the unfloored `links.parquet` (`:105-109`).
+- In the bridge, every tier is further cut by `identity_table.py:72` and by the panel-core sessions.
+
+**Conclusion.** Re-review 1 ("from 2017-10", `:35`) dated the backfill span by a constant that does not bound it. Path
+(a) does not depend on this.
+
+### R2.8 ALD-11 and the spec amendments (H)
+
+**The tests, located.**
+- `scripts/tests/test_p9_al_sig_registrations.py`:
+  - `:156` pins exactly one history entry;
+  - `:109` pins `len(aspects) == 1`;
+  - `:43` and `:65-68` hold the horizon regex;
+  - `:162-163` hold the `hf_crowd` phrases.
+- gtest `research_fields_al_sig_fixture_test.cpp`:
+  - `:140-142` pin one aspect;
+  - `:125-128` compare the row's `formula_sha256` and `spec_text` with the C++ spec. Both values are computed there, not
+    written as literals.
+
+**5.1 and 5.2 (the blocked registrations): content only. Root may apply them.**
+- `dsl` is unchanged, so `dsl_sha256` is unchanged (test `:71`; `wave_manifest.py:205-207`).
+- Both new `notes` keep the required prefix and phrases.
+- `blocked_on` stays a non-empty string (`:155`).
+- `history` keeps one entry.
+- No test edit is needed, and no digest pins these files (`classes.json:15`: `pinned_by: git`).
+
+**5.3 (the second `russell_recon` aspect): under ALD-11 this is the second case. 5.3 is not applied in P9 and becomes a
+P10 note.**
+- The test edits change only the count and the content of `non_pit_aspects`.
+- But the amendment moves the committed `formula_sha256` of the registry row (`field_registry.json:3398`,
+  `787a8d87...a699`):
+  - the source calls it the "formula fingerprint pinned by the registry check and the AL-SIG gtests"
+    (`russell_recon_field.cpp:20-21`);
+  - the build refuses a mismatch (`registry.cpp:288-291`).
+- It also moves the SHA-256 of the registry file, which every later research-fields receipt records
+  (`research_fields_cli.cpp:420`, `manifest.cpp:170`).
+- The lane says so itself (designs `:400`), next to "no expected hash or golden is touched" (designs `:436-437`; report
+  `:531`).
+- No EXE-FREEZE exe is involved. The library links only into `atx-research-fields` and its tests
+  (`atx-engine/CMakeLists.txt:326-327`; `tests/CMakeLists.txt:368-376`).
+
+### R2.9 ALD-3, ALD-4 and ALD-5 (I): honoured
+
+- **ALD-3.** Channel 4 has both inputs (request `:442-470`). R7.1 asks for (b) a dated history or (c) a written proof
+  (`:504-510`).
+- **ALD-4.** B1 (`:637-640`) and B3 (`:687-689`) carry .09-.37 and .32 against the .4 bar. Priority `:34-35` marks them
+  low.
+- **ALD-5.** B2 is dropped in one item that says why (`:36-38`).
+- One consequence of R2.8: A.6 (`:605-607`) says the field "carries two declared aspects", but through P9 the row
+  carries one (R2-m3).
+
+### Re-review 2 findings (`file:line | severity | problem | required fix`)
+
+**Major**
+
+- **R2-M1.** request `:211-222` (switches), `:250-257` (D0)
+  - **Problem.** Stage I's built-in validation refuses arms B2 and B12, the headline, exactly when they would be
+    non-zero.
+    - `alpha_panel/identity_links.py build` recomputes the links at seal 2025-01-01 and exits when the counts (rows,
+      lines, CIKs, rows by tier, ambiguous line-days) differ from the published r4's hard-coded values (`:64-72`,
+      `:330-334`). `build.py:113-115` then stops the chain.
+    - Any (b1) or (b2) link change visible before 2025 trips it.
+    - Arm A trips it too if D0 is non-zero, which contradicts "report the counts and go on".
+    - "No switch disables a guard" (`:219`) misses it.
+  - **Required fix.**
+    - Add **S4**: in every arm, Stage I records its seal-2025 validation (`expected` and `got`) and continues, instead of
+      exiting.
+    - Report arm A's result as a D0 line, and the B arms' results in row 11. The B arms differ by construction whenever
+      path (b) moves a pre-2025 link.
+    - Reword `:219`: S4 is the only check relaxed, and only in this check-only rebuild. No input pin or hash guard is
+      relaxed.
+
+**Minor**
+
+- **R2-m1.** request `:127-132`, `:302-311`, the table at `:280-295`; report `:115-116`, `:195-196`, `:359-371`
+  - **Problem.** (b2) does reach the strict tier, from its own clock until the rival's evidence is known (R2.3). There
+    it equals the clock-honest outcome. So B2 and B12 count those cells "in A only" without any look-ahead.
+    - B2 against A can also move the backfill candidates (R2.6).
+  - **Required fix.**
+    - Restate (b2) with `:1483-1497`, `identity_links.py:922` and `:330-333`.
+    - In "How to read", add: "B2 / B12 'in A only' includes (b2) cells that PIT-b also keeps; they appear because the
+      no-ticker arm still applies the later-rival rule."
+    - Add a column "B12 vs B1" as the attribution of path (b).
+- **R2-m2.** request `:166-171` ("Not covered"), `:298-301`
+  - **Problem.** A0.3 holds a residual fixed that A0.1 does not list. Acceptance, dominance and segment bounds also use
+    evidence items that the archives date 2024-2026: a rival or successor known only after the seal
+    (`identity_reconstruction.py:144-147`, `:1577`, `:1601-1608`, `:1715-1724`). No arm varies them.
+  - **Required fix.** Add a "Not covered" bullet: "a zero clears the three 2026 inputs, not this residual; PIT-b is its
+    fix". The OD5-1 footnote then names it.
+- **R2-m3.** designs section 5 (`:311-317`, 5.3, `:436-437`); report `:48`, `:84`, `:441`, `:531`; request A.6
+  `:605-607`
+  - **Problem.** Under ALD-11, 5.3 moves a pinned digest (R2.8), so it is not applied in P9. The texts still present it
+    as a root amendment for now and say no pinned hash moves.
+  - **Required fix.**
+    - Mark 5.3 "P10 note (ALD-11): moves `formula_sha256` `787a8d87...a699`".
+    - Keep 5.1 and 5.2 as root amendments.
+    - Request A.6: "will carry a second aspect (P10); through P9 the row declares the presence aspect only".
+- **R2-m4.** request `:250-257` (D0)
+  - **Problem.** Nothing in our tree ties the published bridge to `dec03454` (R2.5).
+  - **Required fix.** Ask D0 also to print the published manifests' code fields beside their blob SHAs at `dec03454`.
+    These are JSON reads only:
+    - the export `manifest.json` `code` (`identity_table.py:214`);
+    - `identity/link_table_manifest.json` `code` (`:165`);
+    - `identity/manifest.json` `code_version` and `sources` (`alpha_panel/identity_links.py:326`, `:341`);
+    - the r4 `manifest.json` `code_sha256` and `code_files` (`identity_links.py:1177-1178`).
+
+    Also say that `backfill_manifest.json` and `name_manifest.json` record no code identity
+    (`identity_backfill.py:178`, `identity_names.py:158`).
+
+**Nit**
+
+- **R2-n1.** request `:211`, `:207-208`, `:246-247`
+  - "Off in arm A" is false for S3.
+  - The directory guard is "never reached" should read "never trips".
+  - B12 has no `W_B12`: the sanity check should read `W_B2`.
+- **R2-n2.** request `:346-354` (T3), `:357-358` (T4)
+  - T3's line needs a class proof that gives `common` (`identity_links.py:540-545`). Otherwise its role is N and
+    Stage I drops it (`:330-333`).
+  - T4's "lifecycle .5" cannot occur, because `lifecycle_weight` is 1.0 (`identity_reconstruction.py:356`, `:1373`,
+    `:1386`). Use share 2.5 plus symbol .5.
+- **R2-n3.** request `:294`, `:231-233`
+  - Row 10 should also be filled for B2, because path (b) moves the strict CIKs in `link_table`.
+  - The export phase must succeed on its first attempt. Stage I and `identity_backfill` read `phases/export-001` by name
+    (`alpha_panel/identity_links.py:53`; `identity_backfill.py:43`; attempts are numbered at `identity_links.py:777-781`).
+- **R2-n4.** report `:251-253`, `:264`; request `:119`
+  - The stopped-round text still says no text was rewritten, and it quotes the two book figures.
+  - Stage I keeps tier high or medium **or** basis `strict_dated` / `current_ticker_verified` (`:149`). Reconstructed
+    versions carry `reconstructed_<tier>` (`identity_links.py:922`), so the conclusion holds. Cite `:922`.
+
+### For root and the PM
+
+- **ALD-11.** Apply 5.1 and 5.2. Do not apply 5.3 in P9; it becomes a P10 note.
+- **ALD-9.** Path (c) is confirmed and stays in A0.
+- **ALD-8.** Settled for the lane (R2.7).
+- **Open: R2-M1.** S4 relaxes a reproduction check inside a check-only rebuild. Without it, B2 and B12 cannot run, and
+  path (b) goes unmeasured. PM: confirm that this is acceptable.
+- **Open: ALD-11.** I read "pinned hash" as covering a committed registry fingerprint that the build checks. If the PM
+  treats re-deriving it as a re-pin rather than editing an expected hash, 5.3 may be applied as written.
+
+## Delta check (fix round 3), 2026-10-04
+
+**Verdict: APPROVE.** 9 of 9 re-review-2 findings are fixed as prescribed, and so are ALD-12 (a), (b) and (c). The
+request may be handed to the owner, and root may apply 5.1 and 5.2. Two optional nits follow (D-n1, D-n2). Neither
+blocks; root may fold them in at hand-off.
+
+**Method.**
+- Read-only and doc-only. The only write is this section.
+- atx-db source was read only through `git -C C:/atx-wt/pool-2 show dec03454:...`:
+  - `alpha_panel/{identity_links,build,common,identity_table,identity_backfill,identity_names}.py`;
+  - `identity_links.py` (`:36-40`, `:325-336`, `:515-548`, `:700-790`, `:830-935`, `:1170-1335`);
+  - `identity_reconstruction.py` (`:140-150`, `:280-285`, `:352-376`, `:1368-1390`, `:1405-1500`, `:1530-1626`,
+    `:1700-1726`).
+- Our tree was read at pool-2 HEAD `0f7a84b1`. The amendment targets, the registration test and `wave_manifest.py`
+  have an empty diff from `20bc5f5f`.
+- Scratchpad check: the 5.1 / 5.2 "before" lines were compared with `git show HEAD:` of the two files, and the
+  "after" lines were substituted and parsed as JSON.
+- No data was opened. Nothing was built, no pytest was run, no git write was made, and nothing under `atx-db/` was
+  touched. No permission refusal occurred.
+
+### A. The nine findings
+
+| finding | status | where (request unless named) |
+|---|---|---|
+| R2-M1 | fixed | S4 `:255-265`; reworded guard line `:266-269`; switch intro `:246-247`; sanity `:300-301`; D0 `:309-312`; rows D0 and 11 `:351`, `:362`; "Zero" `:365-371` |
+| R2-m1 | fixed | (b2) restated with `:1483-1497`, `identity_links.py:922`, `:330-333` (`:130-144`); A0.2 `:203-204`; "B12 vs B1" column `:349`; the prescribed sentence verbatim `:383-384`; report `:115-121`, `:202-205`, `:369-386` |
+| R2-m2 | fixed | "Not covered" bullet `:185-188`, with the prescribed wording; OD5-1 footnote `:370-371` |
+| R2-m3 | fixed | designs `:313-316`, `:332-333`, `:348-349`, `:355-357`, `:441-445`; report `:38-39`, `:49-50`, `:86`, `:177`, `:457-461`, `:590-593`; A.6 `:683-684` |
+| R2-m4 | fixed | D0 provenance `:315-323`: all four manifest fields, and the no-code-identity line for backfill and names |
+| R2-n1 | fixed | S3 on in every arm `:246-247`; the guard "never trips" `:242-243`; `W_B2`, no `W_B12` `:296-298` |
+| R2-n2 | fixed | T3 class proof `:423-425` (checked at `identity_links.py:529-545`, `:330-333`); T4 share 2.5 plus symbol .5 `:434-437` (`identity_reconstruction.py:356`, `:1373`, `:1386`) |
+| R2-n3 | fixed | row 10 open in every comparison column `:361`; export first attempt `:281-283` (`identity_links.py:777-781`) |
+| R2-n4 | fixed | report `:258-263` marked historical, figures gone from `:265-276`; request `:119-122` cites `:149` and `:922` |
+
+### B. R2-M1: the diff now runs, and the text says what it must
+
+**Every arm runs to completion with S4, against `dec03454` as read.**
+- **Stage I.** The only `SystemExit` in the identity chain is the validation at `alpha_panel/identity_links.py:333-334`.
+  S4 replaces it, and `receipt["validation"]` (`:332`, `:351-354`) is still written to `build_root()/identity/
+  manifest.json` (`:347`; `common.py:42-45`).
+  - The other raises in Stage I are code invariants (`:191`, `:197`, `:199`, `:251`) and the perm-id check (`:318`).
+  - S1 does not touch either: it changes only the evidence items, not `security_permanent_ids`.
+- **Backfill, names and table.** `identity_backfill`, `identity_names` and `identity_table` contain no `raise`,
+  `assert` or validation (grep at `dec03454`).
+- **Build.** `build.py:113-115` stops only on a non-zero stage exit.
+- **Inputs.** No input is refused.
+  - The rehearsal pins compare within the arm's own new W / R directories (`identity_links.py:735-755`, `:1248-1250`).
+  - The ticker source is checked against the same receipt in every arm (`:842-843`).
+  - S1 lives in `identity_links.py`. So `reconstruction_code_sha256` (`:1244`, `identity_reconstruction.py`) is
+    unchanged.
+  - The directory guard (`:846-848`) never trips.
+
+**The text states all three required points.**
+- **B12 vs B1 is the clean measure of path (b):** `:221`, `:231-232`, `:325`, `:380`.
+- **(b2) is not a look-ahead:** `:130`, `:141-144`, `:203-204`, `:233-237`, `:383-384`.
+- **A zero does not clear the later-evidence residual:** `:187-188`, `:238-239`, `:365-371`. This satisfies ALD-12
+  (a).
+
+### C. ALD-12 (b): present
+
+`:313-314` reads: "Our tree cannot tie the published bridge `identity-bridge-v2-pit` to `dec03454` (it holds only the
+bridge's SHA-256 pin and its rule string); please name the atx-db commit that built it." Every alpha-panel citation
+behind D0 holds at `dec03454`:
+- `identity_table.py:165`, `:214`;
+- `common.py:130-147`;
+- `alpha_panel/identity_links.py:326`, `:341`;
+- `identity_links.py:1177-1178`;
+- `identity_backfill.py:178` and `identity_names.py:158`. Grep confirms that no receipt key of either file holds code.
+
+### D. Spec amendments
+
+**5.1 and 5.2 "before" lines.** Each is byte-identical to `git show HEAD:` of its file:
+- `lazy_prices.json` lines 17, 18, 19, 20 and 28;
+- `hf_crowd.json` line 20.
+- Both files are LF with no BOM.
+
+**"After" lines: valid.**
+- Substituted, both files parse.
+- The key set and order are unchanged, `dsl` and `dsl_sha256` are unchanged, and `history` keeps one entry.
+- Each new `notes` starts with the old value.
+- The changed keys are exactly `formula`, `domain`, `deviation`, `notes` and `blocked_on` (lazy_prices) and `notes`
+  (hf_crowd).
+- Every "after" line equals designs section 5 text.
+
+**Readers and pins.**
+- `scripts/tests/test_p9_al_sig_registrations.py` is the only reader of these files in the tree.
+  - Every assertion that reads them still holds: `:63`, `:65-68`, `:71`, `:153-158`, `:162-163`.
+  - `wave_manifest.py:152-164`, `:196-241` hold too.
+- `classes.json:15` is `pinned_by: git`.
+- The research-store goldens use synthetic trees (`atx-engine/tests/fixtures/research_store`).
+- Neither file's SHA-256 nor its blob id occurs anywhere in HEAD.
+- So applying 5.1 and 5.2 moves no digest, golden, pinned hash or test expectation.
+
+**5.3 is marked NOT applied in P9 (P10 note).** See designs `:315-316`, `:355-357` and `:441-445`, and report `:461`
+and `:520-521`. The supporting citations hold at HEAD:
+- `field_registry.json:3398` (`787a8d87…a699`);
+- `russell_recon_field.cpp:20-21`;
+- `atx-engine/src/research/fields/registry.cpp:288-291`.
+
+### E. New statements against source
+
+Every citation added in this round was spot-checked; all hold except where the two nits below qualify them. Two
+statements carried from re-review 2's own prescription are over-strong. Both are optional fixes:
+
+- **D-n1 (nit; the over-strong text came from re-review 2's R2-M1 wording).** request `:263-264` and row 11 `:362`.
+  - **Problem.** The seal-2025 check compares only counts (`alpha_panel/identity_links.py:351-354`: rows, lines,
+    CIKs, `min_start`, rows by tier, ambiguous line-days).
+    - A moved end date (b3), or offsetting changes, can leave the counts equal.
+    - A 2024-only change can trip the check, although rows 1-10 stop at 2023-12-29.
+    - So "whenever ... exactly when they would be non-zero" and "by construction" are too strong.
+  - **Replacement for `:263-264`:** "Without S4, arms B2 and B12 stop at Stage I whenever path (b) changes one of
+    those counts before 2025-01-01, as almost any link it moves does; arm A stops whenever r4 does not reproduce them
+    (D0)."
+  - **Replacement for the row 11 tail in `:362`** (from "B1's equals A's"): "B1's equals A's, and B12's equals B2's
+    (same rehearsal output); B2's differs from A's whenever path (b) changes one of the counts before 2025-01-01.
+    Equal counts do not show that path (b) moved nothing."
+- **D-n2 (nit).** request `:316-317` and `:322-323`.
+  - **Problem.**
+    - `code_identity` writes one `git_head` per field, not per module (`common.py:144`).
+    - Stage I records no code hash. `code_version` is the constant label `identity-links-v1`
+      (`alpha_panel/identity_links.py:52`), and `sources` hashes the r4 inputs (`:296-301`).
+  - **Replacement for `:316-317`:** "The alpha-panel `code` fields hold `sha256` and `sha256_lf` per module and one
+    `git_head` (`alpha_panel/common.py:130-147`)."
+  - **Replacement for `:322-323`:** "`identity/backfill_manifest.json` and `identity/name_manifest.json` record no
+    code identity (`identity_backfill.py:178`, `identity_names.py:158`), and Stage I records only the label
+    `code_version` (`alpha_panel/identity_links.py:52`) and its input hashes (`:296-301`). For these three stages the
+    named commit is the only tie."
+
+**Out of scope, for the PM (round-2 text, not edited in this round).** Report `:450-451` still asks whether to add path
+(c) to the OD5-1 flag line. ALD-9 already answered it: the flag points at the A0 list.

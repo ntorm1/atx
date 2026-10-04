@@ -1,4 +1,4 @@
-# AL-DATA: builder designs for the gated families (doc-only, W3-18; fix round 1)
+# AL-DATA: builder designs for the gated families (doc-only, W3-18; fix round 2)
 
 This lane builds and registers nothing. Under ruling ALD-4, **no family clears the bar**, so nothing here is built by
 default in P10.
@@ -23,8 +23,7 @@ Constants are fixed from the paper or by a stated mechanical argument. There is 
 **Bar** (lit §3.0): net SR_c >= .4 **and** rho <= .1 to the book, both argued before any data.
 - The rho values are the literature review's rho to *themes* (lit §3.1, [est]). They are used as rho to the book by
   the convention of ALSIG-2 / ALSIG-4.
-- The book figures quoted in this file are SR_b 1.77 (lit §3.0) and X-4's -.058 (lit §0.1). Both come from the public
-  literature review, not from any output.
+- This file quotes no statistic of the book.
 
 **Formulas used for every band.**
 - Annual return = 12 x the monthly figure, or 52 x the weekly figure.
@@ -36,14 +35,16 @@ Constants are fixed from the paper or by a stated mechanical argument. There is 
 - **Post-publication factor h = 1 - .58 = .42.** Lit §2.5, from McLean-Pontiff 2016 [32], where the lit tags it [mem].
   - Ruling ALD-4 applies h to the literature's return whenever TRAIN lies entirely after the source's publication,
     unless post-publication sample evidence is cited.
+  - **One dating rule for every family (review Rn1).** "Publication" is the first public circulation: the working
+    paper where its date is verified, else the journal issue. TRAIN starts 2020-01-01.
   - Costs are not haircut.
 - Net SR_c = h x gross - drag when ALD-4 applies; otherwise gross - drag.
 
 ### F1 Lazy Prices (`lazy_prices`)
 
-**Publication.** JF 75(3), June 2020. TRAIN's first five months precede the issue, but the working paper circulated
-before TRAIN (review n2). ALD-4 names F1, so h applies. No post-publication sample is cited: lit §7 and §8 Q4 leave
-it open.
+**Publication.** The working paper circulated before TRAIN (review n2); the journal issue is JF 75(3), June 2020. By
+the dating rule, TRAIN lies entirely after publication, so h applies (as ALD-4 rules for F1). No post-publication
+sample is cited: lit §7 and §8 Q4 leave it open.
 
 | quantity | value | derivation |
 |---|---|---|
@@ -66,7 +67,9 @@ the same as `hf_crowd`.
   - The literature gives a direction only ("the most crowded long portfolios have the highest returns") and a
     book-level guess (+.02 to +.04, lit §6).
   - Back-solving that guess would be circular, so it is not used.
-  - Publication: RFS 35(7), 2022. TRAIN is not entirely after it, so h does not apply.
+  - Publication: RFS 35(7), 2022. The working-paper date is not verified here, so by the dating rule the journal
+    issue counts: TRAIN is not entirely after it, and h does not apply. If a pre-2020 working paper were verified, h
+    would apply. The verdict is the same either way: F2 fails on rho, and its SR half is not derivable.
 - **Data.** The house stage has no point-in-time fund-type input before 2023 (section 2).
 - **Verdict: fails.**
 
@@ -91,8 +94,8 @@ the same as `hf_crowd`.
   - EKP (NBER w28056 rev. 2021) give "2.11% annually, with a standard deviation of only 6.53%", so SR = .323, and the
     paper states "0.32 over the full sample" (1975-2018), before costs.
   - .32 < .4 before any haircut.
-  - The NBER working paper is dated November 2020 and the CFR article 2022. TRAIN is not entirely after publication,
-    so h is not required. If it were applied, .32 x .42 = .14.
+  - By the dating rule, publication is the NBER working paper of November 2020 (the CFR article is 2022). TRAIN is
+    not entirely after it, so h is not required. If it were applied, .32 x .42 = .14.
   - The annual-rebalance cost would lower it further; it is not quantified here.
 - **The 2007-2018 figure (.62)** is a sub-window. The bar is read on the full-sample figure, as for F1.
 - **rho.** The rho of the difference portfolio to the book has no literature number and is not used. The add
@@ -305,55 +308,146 @@ OD-3 runs on the flat fee.
 
 ---
 
-## 5. Spec amendments for root (ALD-2, ALD-3, ALD-4; not applied by this lane)
+## 5. Spec amendments for root (ALD-2, ALD-3, ALD-4, ALD-11, ALD-12; not applied by this lane)
 
-Root applies these in one spec commit at the wave-2 gate (ALD-2). No `dsl` or `dsl_sha256` changes. No new id is
-proposed: `bm_int`, `pcp_spread` and `os_ratio` are excluded by the bar and not registered (ALD-1).
+- **5.1 and 5.2: root applies them at the wave-2 gate (content-only; ALD-12 (c)).** One spec commit (ALD-2). No `dsl`
+  or `dsl_sha256` changes, no test line changes, and no digest pins these files.
+- **5.3: NOT applied in P9. P10 note (ALD-11): it moves `formula_sha256` `787a8d87…a699`** (the `russell_recon`
+  registry row, `atx-engine/tools/field_registry.json:3398`). Through P9 the row declares the presence aspect only.
+- No new id is proposed: `bm_int`, `pcp_spread` and `os_ratio` are excluded by the bar and not registered (ALD-1).
 
-**5.1 `scripts/specs/p9/blocked/lazy_prices.json`.** Replace four keys and append one history entry.
+The text below is exact: root copies it and makes no other change. The same text is in `task-AL-DATA-report.md`,
+"Fix round 2", item 5, which also gives each key's current (before) value and line.
+
+**Why no history entry is appended (changed from round 1).** `scripts/tests/test_p9_al_sig_registrations.py:156`
+pins `[h["status"] for h in doc["history"]] == ["blocked_on_data"]`, which is exactly one entry. A second entry would
+fail it. So the AL-DATA note goes into `notes`, and `history` is left as it is.
+
+**What the registration test still requires.**
+- `notes` must keep matching `horizon class (fast|medium|slow), half-life (\d+) sessions \(PM8-5` (`:43`, `:65-68`).
+  Both new `notes` values keep the existing text as their prefix.
+- `hf_crowd`'s `notes` must keep "ALSIG-4" and "never queued without a new PM ruling" (`:162-163`).
+- Every changed key must stay a non-empty string (`scripts/wave_manifest.py:233-235`).
+
+**5.1 `scripts/specs/p9/blocked/lazy_prices.json`: replace the values of these five keys. Root applies at the wave-2
+gate (content-only).**
+- Leave every other key unchanged, including `history`.
+- `deviation` is new against round 1. Its old text ("no field name, kind or constant is chosen beyond the paper's
+  similarity sign until it lands") contradicts ALD-1, which fixed the definition before any data.
 
 ```json
 "formula": "lazy_prices (engine-only C++ kind, DEC-5; design .superpowers/sdd/platform-p9-20261003/al-data/builder-designs.md section 1): term-frequency cosine of the full primary document of a firm's latest original 10-K or 10-Q to its original filing of the same form family and fiscal period one fiscal year earlier (higher = fewer changes: the non-changers CMN buy), visible from its EDGAR acceptance under the house stage rule, 400-day staleness; fixed before data (ALD-1)",
 "domain": "[0, 1]; NaN without a same-period prior-year original, past 400 days, or where the text landing does not cover the line",
+"deviation": "the field is not built: PM ruling ALD-4 (it fails the bar on paper); the definition was fixed before any data under PM ruling ALD-1 (full-document cosine of original filings, same-period prior-year comparator, 400-day staleness); the atx-db text landing held about 7% of 10-K / 10-Q at the literature review (lit section 3.1 F1)",
 "blocked_on": "atx-db ask al-data/atx-db-request.md B1 (low priority) and a new PM ruling on the bar (ALD-4)",
-"notes": "<existing notes>; PM ruling ALD-4: on post-publication expectations (literature return x (1 - .58)) the a-priori net SR_c is .09-.37 < .4, so it fails the bar; it stays a blocked_on_data registration and is never queued without a new PM ruling",
-"history": [ ...existing entry...,
-  {"status": "blocked_on_data", "at": "2026-10-04", "by": "AL-DATA",
-   "note": "ALD-4: fails the SR half of the bar (net SR_c .09-.37 after the post-publication base rate); never queued without a new PM ruling; design al-data/builder-designs.md section 1"}]
+"notes": "horizon class slow, half-life 126 sessions (PM8-5: CMN's 3-18 month drift, the filing_events theme's); data class P; blocked_on_data: the 10-K / 10-Q text landing and its engine reader (lit section 6 row lazy_prices, P9DATA -> P9SIG); rho to the themes .1 or less (lit 3.1 F1); PM ruling ALD-4 (AL-DATA, 2026-10-04): on post-publication expectations (literature return x (1 - .58)) the a-priori net SR_c is .09-.37 < .4, so it fails the bar; it stays a blocked_on_data registration and is never queued without a new PM ruling; design al-data/builder-designs.md section 1",
 ```
 
-**5.2 `scripts/specs/p9/blocked/hf_crowd.json`.** Append one history entry. If you prefer to change `formula` to the
-section 2 definition, change only that, blind.
+The trailing comma follows the JSON of the file, where `notes` is followed by `"lane"`.
+
+**5.2 `scripts/specs/p9/blocked/hf_crowd.json`: replace the value of `notes` only. Root applies at the wave-2 gate
+(content-only).** Every other key, including `formula` and `history`, is unchanged.
 
 ```json
-{"status": "blocked_on_data", "at": "2026-10-04", "by": "AL-DATA",
- "note": "W3-18 / ALD-5: design written, not built: rho .2 fails the bar (ALSIG-4); the 2004-2016 source sample overlaps the OD-3 block; source would be the house thirteenf_filer_type stage (filer_type_pit), which has no point-in-time fund-type input before 2023"}
+"notes": "horizon class slow, half-life 63 sessions (PM8-5: quarterly holdings, the ownership_flow theme's); data class P; blocked_on_data: the Form ADV private-fund flag joined to the 13F filer CIK (lit section 6 row hf_crowd, P9DATA -> P9SIG); rho about .2 to momentum and inst_best_ideas (lit 3.1 F2), above the .1 bar, check against inst_best_ideas before any screen; PM ruling ALSIG-4: it stays a blocked_on_data registration and is never queued without a new PM ruling on the bar; AL-DATA (W3-18, ALD-5, 2026-10-04): design written, not built; the 2004-2016 source sample overlaps the OD-3 block; the house source would be the atx-db thirteenf_filer_type stage (filer_type_pit), which has no point-in-time fund-type input before 2023; the Form ADV join is deferred (al-data/atx-db-request.md, B2 dropped); design al-data/builder-designs.md section 2",
 ```
 
-If the schema refuses a second history entry with the same status, the same text goes in `notes`.
+**5.3 `russell_recon`: a second `non_pit_aspects` entry (ALD-3). P10 note (ALD-11): NOT applied in P9; it moves
+`formula_sha256` `787a8d87…a699`.** This is a C++, registry and test change, not a JSON spec edit. The text below is
+kept for P10.
 
-**5.3 `russell_recon`: a second `non_pit_aspects` entry (ALD-3).** This is a C++ and registry change, not a JSON spec
-edit.
-- (i) Append the text below as the **second** element of `d.non_pit_aspects` in `make_russell_recon_spec()`
-  (`atx-engine/src/research/fields/russell_recon_field.cpp:61-69`). Keep the ALSIG-7 entry first.
-- (ii) Re-derive the `russell_recon` row of `atx-engine/tools/field_registry.json` through the AL-SIG round-trip (parse
-  the C++ literal, `field_registry.validate`, `field_registry.dump`, `--check`). The fingerprint moves; the field was
-  never built, so it stays at revision 1.
-- (iii) `research_fields_al_sig_fixture_test.cpp:140` pins `non_pit_aspects.size() == 1U`. It becomes `2U`, and
-  `:141-142` keep checking element 0. This is a deliberate rule change under ruling ALD-3, not an edit to make a test
-  pass.
-- (iv) Root builds `atx-engine-research-fields-tests` + `atx-research-fields` through `research-build.ps1` and runs
-  `ResearchFieldsAlSig*:ResearchFieldsRegistry*`, `test_p9_al_sig_registrations.py` and `test_field_registry.py`.
+(i) `atx-engine/src/research/fields/russell_recon_field.cpp`.
+- After line 59 (`  // in time. The flag and the aspect keep the field out of every IC run (look-ahead guard).`), insert:
 
-The aspect text, verbatim:
+```cpp
+  // Ruling ALD-3 (AL-DATA): the stage's eligibility and company inputs use 2026 snapshots (values).
+```
+
+- On line 69, replace `      "present are point in time."};` with `      "present are point in time.",` followed by these
+  lines:
+
+```cpp
+      "values: the house indexes stage (atx-db alpha_panel.indexes, snapshot) selects members "
+      "on the rank-date panel through security_type, is_adr, is_adr_likely, is_lp and "
+      "is_operating and groups the selected lines into companies by the panel cik; the panel "
+      "takes security_type from the Nasdaq Trader directory snapshot of 2026-09-18 whenever the "
+      "dated FINRA type is NULL (no FINRA row, or one older than the staleness limit), unknown "
+      "or common_unverified, ORs that snapshot's ETF flag into is_etf, which gates is_operating "
+      "(alpha_panel.panel SECURITY_FLAGS, OPERATING_FLAGS), and takes a line's company (CIK) "
+      "from the identity link table, the snapshot-run-backfill-v1 link tier included, whose "
+      "choice of CIK comes from the 2026-09-20 SEC ticker snapshot and which covers only lines "
+      "alive at that snapshot; the CIK also keys is_operating; so a line's membership in R1000P "
+      "or R2000P at a 2018-2023 rank date, the company ranks and the p1000 breakpoint, and "
+      "therefore the line's +1, -1 or 0 or its NaN, can depend on its survival to 2026 and on "
+      "its 2026 classification and CIK (post-seal information)."};
+```
+
+The concatenated string, which is the registry row's second `non_pit_aspects` element, reads:
 
 > values: the house indexes stage (atx-db alpha_panel.indexes, snapshot) selects members on the rank-date panel
-> through security_type, is_adr, is_adr_likely, is_lp and is_operating, and the panel takes security_type from the
-> Nasdaq Trader directory snapshot of 2026-09-18 whenever the dated FINRA type is stale, unknown or
-> common_unverified, and ORs that snapshot's ETF flag into is_etf, which gates is_operating (alpha_panel.panel
-> SECURITY_FLAGS, OPERATING_FLAGS); the snapshot covers only lines still trading in September 2026, so a line's
-> membership in R1000P or R2000P at a 2018-2023 rank date, the company ranks and the p1000 breakpoint, and therefore
-> the line's +1, -1 or 0 or its NaN, can depend on its survival to 2026 and on its 2026 classification (post-seal
-> information).
+> through security_type, is_adr, is_adr_likely, is_lp and is_operating and groups the selected lines into companies by
+> the panel cik; the panel takes security_type from the Nasdaq Trader directory snapshot of 2026-09-18 whenever the
+> dated FINRA type is NULL (no FINRA row, or one older than the staleness limit), unknown or common_unverified, ORs
+> that snapshot's ETF flag into is_etf, which gates is_operating (alpha_panel.panel SECURITY_FLAGS,
+> OPERATING_FLAGS), and takes a line's company (CIK) from the identity link table, the snapshot-run-backfill-v1 link
+> tier included, whose choice of CIK comes from the 2026-09-20 SEC ticker snapshot and which covers only lines alive
+> at that snapshot; the CIK also keys is_operating; so a line's membership in R1000P or R2000P at a 2018-2023 rank
+> date, the company ranks and the p1000 breakpoint, and therefore the line's +1, -1 or 0 or its NaN, can depend on
+> its survival to 2026 and on its 2026 classification and CIK (post-seal information).
+
+The block quote wraps the one string for reading. It has no line breaks, and single spaces join the words.
+
+(ii) `atx-engine/tools/field_registry.json`, the `russell_recon` row.
+- Re-derive it with the AL-SIG round-trip (`task-AL-SIG-report.md:320`):
+  - set `spec_text.non_pit_aspects` to the two strings of the C++ literal;
+  - recompute `formula_sha256` as the C++ `formula_sha256(spec)`;
+  - check with `field_registry.validate`, write with `field_registry.dump`, and re-run `--check`.
+- `formula_sha256` moves from `787a8d87…a699`. The field was never built, so the row stays at revision 1.
+- gtest `ResearchFieldsAlSigFixture.CommittedRowsPinTheSpecs`
+  (`atx-engine/tests/research/research_fields_al_sig_fixture_test.cpp:112-143`) confirms the fingerprint and the spec
+  text.
+
+(iii) `atx-engine/tests/research/research_fields_al_sig_fixture_test.cpp`.
+- Line 140: `  ASSERT_EQ(russell.non_pit_aspects.size(), 1U);` becomes
+  `  ASSERT_EQ(russell.non_pit_aspects.size(), 2U);`.
+- After line 142, insert:
+
+```cpp
+  EXPECT_EQ(russell.non_pit_aspects[1].rfind("values: ", 0), 0U);
+  EXPECT_NE(russell.non_pit_aspects[1].find("snapshot-run-backfill-v1"), std::string::npos);
+```
+
+- Lines 135-136 (comment) become:
+
+```cpp
+  // Ruling ALSIG-7: gia_13f is point in time; russell_recon's presence is not (the house stage's
+  // row set looks ahead to a delisting), declared as a "presence: ..." aspect; ruling ALD-3 adds a
+  // "values: ..." aspect (the stage's 2026 directory and backfill-CIK inputs).
+```
+
+(iv) `scripts/tests/test_p9_al_sig_registrations.py`. It also pins one aspect today (`:109`), which round 1 missed.
+- Line 106 becomes:
+  `    # Rulings ALSIG-7 and ALD-3. The registry row declares the look-ahead exactly ("presence: ..." and "values: ...").`
+- Line 109 becomes:
+  `    assert row["point_in_time"] is False and len(aspects) == 2 and aspects[0].startswith("presence: ")`
+- After line 111, insert:
+
+```python
+    assert aspects[1].startswith("values: ")                 # ruling ALD-3: the 2026 directory and backfill CIK
+    for phrase in ("2026-09-18", "snapshot-run-backfill-v1", "is_operating"):
+        assert phrase in aspects[1], phrase
+```
+
+These test edits are deliberate rule changes under ruling ALD-3. They are not edits to make a test pass. But 5.3 does
+move one pinned value: the registry row's `formula_sha256` (`787a8d87…a699`, `field_registry.json:3398`), which the
+source calls the "formula fingerprint pinned by the registry check and the AL-SIG gtests"
+(`russell_recon_field.cpp:20-21`) and which the build checks (`registry.cpp:288-291`). It also moves the SHA-256 of
+the registry file that later research-fields receipts record. Under ALD-11 that makes 5.3 a P10 note.
+
+(v) **Proof.**
+- Build `atx-engine-research-fields-tests` and `atx-research-fields` through `scripts/research-build.ps1`.
+- Run gtest `ResearchFieldsAlSig*:ResearchFieldsRegistry*`.
+- Run pytest `scripts/tests/test_p9_al_sig_registrations.py`, then `atx-engine/tools/test_field_registry.py`, in
+  separate invocations.
 
 The prefix `values:` follows the house aspect labels. The entry also moves presence, as its text says.
