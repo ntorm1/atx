@@ -1,0 +1,14 @@
+{
+  "schema_id": "atx.alpha-panel.events.mna.native-admission/v2",
+  "status": "contract_specification_not_source_certification",
+  "authority": "independently_reviewed_immutable_caller_pins",
+  "objects": ["source_id", "sha256", "accession", "cik", "fetched_at", "available_at", "clock_basis"],
+  "reader_code_complete_keys": ["mna_native_v2", "mna_vintages_v2", "terminal_mna_v2"],
+  "clock_basis": ["native_sec_acceptance", "retrieval_floor"],
+  "document_output_keys": ["accession", "source_id", "available_at"],
+  "document_output_schema": ["accession", "source_id", "available_at", "consideration_type", "cash_per_share", "stock_ratio", "status", "evidence", "reasons"],
+  "financial_admission_required": ["original_completion_source", "native_completion_date", "native_settlement_date", "target_security_and_share_class", "acquirer_security_and_share_class", "per_target_share_units", "explicit_currency", "signed_split_fx_price_basis", "target_last_session_close_native_replay", "acquirer_terminal_date_close_native_replay", "full2267_candidate_inventory", "independent_handcheck_inventory"],
+  "publication_requires": ["before_compute_code_binding", "after_compute_code_recheck", "complete_inventory_reconciliation", "public_full_schema_key_native_replay", "immutable_no_overwrite_publication", "input_manifests_sha256", "all_gate_results"],
+  "not_implemented": ["native_financial_admission", "price_basis_admission", "actual_immutable_publication"],
+  "never_certifies": ["self_asserted_boolean", "self_hash_receipt", "metadata_item_completion", "issuer_primary_line_mapping"]
+}
