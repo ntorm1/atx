@@ -942,6 +942,19 @@ TEST(RiskCovContainer, RefusesSectionTableAndBlockSizesThatWrap) {
   put(table, 0, h);
   write_file(dir.path / "table.atxcov", table);
   EXPECT_TRUE(parse_error(open(dir.path / "table.atxcov")));
+  // The count clause (re-review nit): the writer's in-range table offset, but 64 entries that run
+  // past the data end. Not re-hashed (the root would read past the file); the check comes first.
+  auto many = bytes;
+  auto hm = get<er::CovFileHeader>(bytes, 0);
+  const u64 data_end = bytes.size() - sizeof(er::CovTrailer);
+  ASSERT_LT(data_end - hm.section_table_offset, 64U * sizeof(er::CovSectionEntry));
+  hm.section_count = 64;
+  put(many, 0, hm);
+  write_file(dir.path / "many.atxcov", many);
+  const auto refused_many = open(dir.path / "many.atxcov");
+  ASSERT_TRUE(parse_error(refused_many));
+  EXPECT_NE(refused_many.error().message().find("section table out of bounds"), std::string::npos)
+      << refused_many.error().to_string();
   // An index entry whose block size wraps next_block (root recomputed: only the bound refuses).
   const u64 table_at = get<u64>(bytes, 40);
   const auto index = get<er::CovSectionEntry>(bytes, table_at + 128);
@@ -964,5 +977,77 @@ TEST(RiskCovContainer, RefusesSectionTableAndBlockSizesThatWrap) {
   put(huge, table_at, meta);
   write_file(dir.path / "huge.atxcov", huge);
   EXPECT_TRUE(parse_error(open(dir.path / "huge.atxcov")));
+}
+
+// Review R2b (fix round 2): K = 1 + G + S is checked in 64 bits with G, S <= 4096 (the writer's
+// bound), so a header or block claiming G = 2^32 - 1, S = 0, K = 0 (a u32 sum that wraps to 0) is
+// a ParseError at the geometry check itself, never a K = 0 view claiming 2^32 - 1 groups. Each
+// refusal is asserted by its message: without the bound a later check would refuse with another.
+TEST(RiskCovContainer, RefusesGeometryThatWrapsK) {
+  constexpr u32 wrap = std::numeric_limits<u32>::max();
+  static_assert(static_cast<u32>(1U + wrap + 0U) == 0U, "the u32 sum the old check used wraps");
+  struct Geometry {
+    u32 k, g, s;
+  };
+  // Two wrapping claims and one above the bound without a wrap (G = 4097, K = 4098).
+  const std::array<Geometry, 3> bad_geometry{{{0, wrap, 0}, {0, 0, wrap}, {4098, 4097, 0}}};
+  const auto has = [](const auto &r, const char *what) {
+    return parse_error(r) && r.error().message().find(what) != std::string::npos;
+  };
+  // parse_cov_block directly: the block's header and the caller agree on the bad geometry.
+  const auto owned = make_block(0, 12, 5);
+  std::vector<u8> block;
+  ASSERT_TRUE(er::encode_cov_block(make_spec(true), owned.input(true), block));
+  const auto patched = [&](const Geometry &geo) {
+    auto out = block;
+    auto h = get<er::CovBlockHeader>(out, 0);
+    h.factors = geo.k;
+    h.groups = geo.g;
+    h.dense = geo.s;
+    put(out, 0, h);
+    return out;
+  };
+  for (const auto &geo : bad_geometry) {
+    const auto r = er::parse_cov_block(patched(geo), geo.k, geo.g, geo.s, true);
+    EXPECT_TRUE(has(r, "block geometry"))
+        << geo.g << ' ' << (r ? "accepted" : r.error().to_string());
+  }
+  // The bound is inclusive: G = 4096 passes the geometry check (this K = 8 block's arrays are then
+  // refused by their own check).
+  const Geometry edge{1 + 4096, 4096, 0};
+  const auto at_edge = er::parse_cov_block(patched(edge), edge.k, edge.g, edge.s, true);
+  ASSERT_TRUE(parse_error(at_edge));
+  EXPECT_EQ(at_edge.error().message().find("geometry"), std::string::npos)
+      << at_edge.error().to_string();
+  // The encoder and the writer refuse the same specs (InvalidArgument) before K is formed.
+  auto spec = make_spec(true);
+  spec.groups = wrap;
+  spec.dense = 0;
+  std::vector<u8> encoded;
+  const auto refused = er::encode_cov_block(spec, owned.input(true), encoded);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), co::ErrorCode::InvalidArgument);
+  EXPECT_NE(refused.error().message().find("geometry"), std::string::npos)
+      << refused.error().to_string();
+  const Directory dir;
+  EXPECT_FALSE(er::CovContainerWriter::create((dir.path / "w.atxcov").string(), spec));
+  // A hash-consistent file (root re-hashed) whose header claims the bad geometry, Full and Lazy.
+  write(dir.path / "m.atxcov", make_blocks(3, 67), true);
+  const auto bytes = read_file(dir.path / "m.atxcov");
+  for (const auto &geo : bad_geometry) {
+    auto bad = bytes;
+    auto h = get<er::CovFileHeader>(bytes, 0);
+    h.factor_count = geo.k;
+    h.group_count = geo.g;
+    h.dense_count = geo.s;
+    put(bad, 0, h);
+    rehash_root(bad);
+    write_file(dir.path / "bad.atxcov", bad);
+    for (const auto mode : {er::VerifyMode::Full, er::VerifyMode::Lazy}) {
+      const auto r = open(dir.path / "bad.atxcov", mode);
+      EXPECT_TRUE(has(r, "header geometry"))
+          << geo.g << ' ' << (r ? "accepted" : r.error().to_string());
+    }
+  }
 }
 } // namespace

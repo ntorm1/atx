@@ -71,6 +71,16 @@ inline constexpr atx::u64 page_bytes = 4096;
 inline constexpr atx::u64 array_align = 64;
 inline constexpr atx::usize root_prefix_bytes = 224; // header[0, 224) enters the root
 
+// Geometry (writer, block encoder and reader alike): G <= 4096 groups, S <= 4096 dense columns and
+// K = 1 + G + S, the sum taken in 64 bits so no file-supplied count can wrap K (review R2b).
+inline constexpr atx::u32 max_groups = 4096;
+inline constexpr atx::u32 max_dense = 4096;
+[[nodiscard]] constexpr bool geometry_ok(atx::u32 factors, atx::u32 groups,
+                                         atx::u32 dense) noexcept {
+  return groups <= max_groups && dense <= max_dense &&
+         atx::u64{factors} == atx::u64{1} + atx::u64{groups} + atx::u64{dense};
+}
+
 // FileHeader.flags
 inline constexpr atx::u32 flag_complete = 1U << 0U;
 inline constexpr atx::u32 flag_f32_exposures = 1U << 1U;
@@ -286,7 +296,8 @@ static_assert(offsetof(CovTrailer, file_bytes) == 8 && offsetof(CovTrailer, root
 // ---- writer inputs ------------------------------------------------------------------------------
 // Constant over a file. The JSON texts are opaque bytes here: the caller passes its canonical
 // spellings (recipe_sha256 = SHA-256(recipe_json), inputs_sha256 = SHA-256(inputs_json)) and a
-// META text that embeds them. factor_names: K names, none empty or holding a NUL.
+// META text that embeds them. factor_names: K names, none empty or holding a NUL. groups and dense
+// at most cov::max_groups / cov::max_dense (refused otherwise, before factors() is used).
 struct CovContainerSpec {
   atx::u32 groups{}, dense{};
   bool f32_exposures{true};
@@ -344,9 +355,10 @@ struct CovBlockView {
   std::span<const atx::u8> factor_flags, row_flags;
 };
 // Parses one block's bytes (`bytes` 64-byte aligned): magic, geometry equal to (factors, groups,
-// dense), array table in bounds, aligned, non-overlapping, ids known (an unknown required id is
-// refused, an unknown optional one ignored), dtype x count consistent, exposures in the stated
-// dtype. ParseError otherwise. No hash is checked here.
+// dense) and cov::geometry_ok (G, S <= 4096, K = 1 + G + S in 64 bits), array table in bounds,
+// aligned, non-overlapping, ids known (an unknown required id is refused, an unknown optional one
+// ignored), dtype x count consistent, exposures in the stated dtype. ParseError otherwise. No hash
+// is checked here.
 [[nodiscard]] atx::core::Result<CovBlockView> parse_cov_block(std::span<const atx::u8> bytes,
                                                               atx::u32 factors, atx::u32 groups,
                                                               atx::u32 dense, bool f32_exposures);

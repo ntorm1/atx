@@ -95,8 +95,11 @@ ArraySpec array_of(cov::ArrayId id, cov::Dtype dtype, std::span<const T> values)
 }
 
 co::Status check_block(const CovContainerSpec &spec, const CovBlockInput &b) {
-  const u64 k = spec.factors(), rows = b.ids.size(), s = spec.dense;
   const auto bad = [](const char *what) { return co::Err(refusal(std::string("block: ") + what)); };
+  // The geometry first: spec.factors() is a u32 sum that only the bound keeps from wrapping.
+  if (spec.groups > cov::max_groups || spec.dense > cov::max_dense)
+    return bad("geometry: at most 4096 groups and 4096 dense columns");
+  const u64 k = spec.factors(), rows = b.ids.size(), s = spec.dense;
   if (rows > std::numeric_limits<u32>::max())
     return bad("too many rows");
   if (b.role_index.size() != rows || b.group.size() != rows || b.specific.size() != rows)
@@ -205,8 +208,10 @@ co::Result<CovBlockView> parse_cov_block(std::span<const u8> bytes, u32 factors,
   const auto h = read_pod<CovBlockHeader>(bytes, 0);
   if (h.magic != cov::block_magic)
     return co::Err(parse_error("block magic"));
+  // K = 1 + G + S in 64 bits with G, S bounded (review R2b): a u32 sum would let G = 2^32 - 1,
+  // S = 0 pass as K = 0.
   if (h.factors != factors || h.groups != groups || h.dense != dense ||
-      factors != 1U + groups + dense)
+      !cov::geometry_ok(factors, groups, dense))
     return co::Err(parse_error("block geometry"));
   if (h.array_count > max_arrays || h.priced > h.rows)
     return co::Err(parse_error("block array count or priced rows"));
@@ -399,7 +404,7 @@ usize CovContainerWriter::blocks() const noexcept { return impl_ ? impl_->index.
 
 co::Result<CovContainerWriter> CovContainerWriter::create(const std::string &path,
                                                           CovContainerSpec spec) {
-  if (spec.groups > 4096 || spec.dense > 4096)
+  if (spec.groups > cov::max_groups || spec.dense > cov::max_dense)
     return co::Err(refusal("geometry: at most 4096 groups and 4096 dense columns"));
   if (spec.factor_names.size() != spec.factors())
     return co::Err(refusal("factor names: K names required"));
@@ -628,7 +633,8 @@ co::Status check_header_and_trailer(std::span<const u8> bytes, CovFileHeader &h)
   if (!all_zero(h.reserved) ||
       !all_zero(bytes.subspan(sizeof(CovFileHeader), cov::header_bytes - sizeof(CovFileHeader))))
     return co::Err(parse_error("header padding not zero"));
-  if (h.factor_count != 1U + h.group_count + h.dense_count || h.date_count == 0)
+  // Overflow-safe (review R2b): K = 1 + G + S in 64 bits, G and S bounded as the writer does.
+  if (!cov::geometry_ok(h.factor_count, h.group_count, h.dense_count) || h.date_count == 0)
     return co::Err(parse_error("header geometry"));
   const auto t = read_pod<CovTrailer>(bytes, size - sizeof(CovTrailer));
   if (t.magic != cov::trailer_magic || t.file_bytes != size || t.root_sha256 != h.root_sha256 ||
