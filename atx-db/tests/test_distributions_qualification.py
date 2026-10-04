@@ -88,7 +88,8 @@ def test_policy_tombstones_and_future_declarations_do_not_rewrite_earlier_rate()
     "only_when", "as_long_as", "false_declaration", "quoted_declaration", "separate_denial", "unknown_condition",
     "future_date", "wrong_header", "wrong_issuer", "multiple_clocks", "swapped_member", "tzif_drift", "normalizer_drift",
     "same_function_code_drift", "same_function_public_code_drift", "producer_after_replay_code_drift",
-    "public_after_replay_code_drift"])
+    "public_after_replay_code_drift", "dom_deleted", "dom_quoted", "dom_hidden", "dom_unknown",
+    "dom_transparent"])
 def test_production_ancillary_admission_replay_qualifies_and_missing_remains_null(tmp_path, monkeypatch, case):
     import json
     import pyarrow as pa
@@ -132,7 +133,13 @@ def test_production_ancillary_admission_replay_qualifies_and_missing_remains_nul
             "stored_sha256": C.sha256_file(path), "storage_encoding": "plain", "fetched_at": "2026-01-01T00:00:00Z",
             "link_basis": "unknown", "receipt": {"path": str(receipt), "sha256": C.sha256_file(receipt), "line": 1,
             "line_sha256": __import__("hashlib").sha256(raw).hexdigest()}}
-    doc = original("release.htm", ("<html><p>" + text + "</p></html>").encode(), DECL)
+    original_html = "<html><p>" + text + "</p></html>"
+    if case == "dom_deleted": original_html = "<html><body><del>" + text + "</del></body></html>"
+    if case == "dom_quoted": original_html = "<html><body><blockquote>" + text + "</blockquote></body></html>"
+    if case == "dom_hidden": original_html = '<html><p style="display:none">' + text + "</p></html>"
+    if case == "dom_unknown": original_html = "<html><body><aside>" + text + "</aside></body></html>"
+    if case == "dom_transparent": original_html = "<html><body><div><p><span>" + text + "</span></p></div></body></html>"
+    doc = original("release.htm", original_html.encode(), DECL)
     clock_body = index(DECL, "2021-01-04 10:00:00")
     if case == "wrong_header":
         clock_body = ("<SEC-DOCUMENT><SEC-HEADER><ACCESSION-NUMBER>0000000900-21-999999\n"
@@ -209,10 +216,15 @@ def test_production_ancillary_admission_replay_qualifies_and_missing_remains_nul
         return
     result = D.build(catalog, [], admission_path=admission, expected_sha256=sha)
     row, = pq.read_table(target).to_pylist()
-    if case not in {"positive", "annual_meeting"}:
+    if case not in {"positive", "annual_meeting", "dom_transparent"}:
         assert row["indicated_annual_dividend_rate"] is None
+        if case.startswith("dom_"):
+            assert "original declaration DOM scope unsupported" in row["source_qualification"]
         assert D.validate_product(target, admission, sha)["conditionally_qualified_events"] == 0
         row["indicated_annual_dividend_rate"] = 2.4
+        if case.startswith("dom_"):
+            row["source_qualification"] = "native_fixed_regular_event"
+            row["security_class_currency_basis"] = "Class A common stock/USD"
         pq.write_table(pa.Table.from_pylist([row], schema=D.output_schema()), target)
         with pytest.raises(ValueError, match="replay"):
             D.validate_product(target, admission, sha)
@@ -223,7 +235,7 @@ def test_production_ancillary_admission_replay_qualifies_and_missing_remains_nul
     assert not row["quote_currency_qualified"]
     assert D.validate_product(target, admission, sha)["conditionally_qualified_events"] == 1
     assert all(gate["status"] == "FAIL" for gate in result["gate_status"].values())
-    if case == "annual_meeting": return
+    if case in {"annual_meeting", "dom_transparent"}: return
     # Independently admitted original ADS evidence cannot qualify common-stock cash.
     negative_class = original("cover.htm", CLASS.replace(b"Class A common stock", b"American depositary shares"), COVER)
     class_path = tmp_path / "class.json"
@@ -257,6 +269,25 @@ def test_ambient_timezone_path_does_not_change_admitted_normalization(tmp_path):
     finally:
         zoneinfo.reset_tzpath(old)
         zoneinfo.ZoneInfo.clear_cache()
+
+
+@pytest.mark.parametrize("wrapper", [
+    "<del>{}</del>", "<blockquote>{}</blockquote>", "<q>{}</q>", "<s>{}</s>",
+    "<span hidden='hidden'>{}</span>", "<p class='disputed'>{}</p>",
+    "<script>{}</script>", "<ins>{}</ins>", "<!-- quoted -->{}",
+    "<p>{}</span>", "<span xmlns='urn:quoted'>{}</span>"])
+def test_original_dom_unsupported_scope_refuses(wrapper):
+    event, text, args = inputs()
+    args["declaration_document"] = ("<html><body>" + wrapper.format(text) + "</body></html>").encode()
+    with pytest.raises(ValueError, match="original declaration DOM"):
+        Q.qualify(event, text, **args)
+
+
+def test_original_dom_complete_text_binds_normalized_evidence():
+    event, text, args = inputs()
+    args["declaration_document"] = ("<html><p>" + text + "</p><p>This declaration is disputed.</p></html>").encode()
+    with pytest.raises(ValueError, match="differs from normalized"):
+        Q.qualify(event, text, **args)
 
 
 def test_original_sgml_membership_positive_and_wrong_member_body():

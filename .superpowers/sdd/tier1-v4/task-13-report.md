@@ -475,3 +475,67 @@ denominators. Full global prior-history/cancellation/carry admission, historical
 currency, actual native acceptance proofs and Task4R11/downstream gate refresh remain
 open. Task13 remains incomplete despite scoped engineering fixes. Round4/5 cumulative;
 explicit owned-path commit with required legacy co-author trailer.
+
+## Final whole-task fix round R5/5 — original DOM scope
+
+Read the Task13 brief, report, GC/R21 and review-T13-native-qualified-r4-findings.md.
+Remaining I1 is addressed in owned qualification code: the admitted original declaration
+bytes now pass a non-repairing, non-networked XML DOM reader before the affirmative
+fullmatch. Only attribute-free html/body/div/p/span/b/strong/i/em layouts are supported.
+Every element and attribute is checked; deleted/quoted/unknown/hidden scope, comments,
+declarations, namespaces and malformed markup refuse qualification with explicit reasons.
+The complete original DOM text must equal normalized evidence after whitespace folding;
+that original text, rather than lossy normalized HTML alone, supplies the fullmatch.
+Production and public native replay share this source-bound reader. Existing accession/
+member-body, class, acceptance/PIT, local cadence, conditional, history and quote-currency
+requirements remain intact. Shared Task9 normalizer/events_sources and other task modules
+were read-only. I4 loaded-timezone protections remain unchanged; I2/I3 were not reopened.
+
+Refrozen semantic rule native-distributions-v6; physical schema remains v3. The only
+producer edit is the owned distributions.py RULE constant. No actual admission was
+rewritten; earlier admissions require independent refreezing. The narrow DOM contract
+intentionally leaves broader real HTML layouts NULL; this is original scope validation,
+not a new numeric/source gate or a claim of real-source certification.
+
+Final covering commands from C:/atx/atx-db, PYTHONPATH=C:/atx/atx-db/src and
+OPENBLAS_NUM_THREADS=1; offline synthetic originals only, DuckDB128MB/1thread,
+no workers/cacheprovider, every invocation below60seconds:
+
+```text
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' -p no:cacheprovider tests/test_distributions_qualification.py -q -k 'production and (dom_hidden or dom_unknown)'
+2 passed, 46 deselected in 21.99s
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' -p no:cacheprovider tests/test_distributions_qualification.py -q -k 'production and (dom_deleted or dom_quoted)'
+2 passed, 46 deselected in 21.69s
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' -p no:cacheprovider tests/test_distributions_qualification.py -q -k 'original_dom or (production and (positive or dom_transparent or annual_meeting))'
+15 passed, 33 deselected in 36.86s
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' -p no:cacheprovider tests/test_alpha_panel_distributions.py -q -k 'native_declaration_dates_rate_and_provenance or original_gzip_admission_duplicates_and_stale_code'
+2 passed, 20 deselected in 6.56s
+```
+
+21 targeted cases passed. Original del/blockquote plus hidden/unknown originals retain
+NULL/reasons through producer and public replay; forged qualified source_qualification,
+class/currency basis and2.4rate rows are rejected by public replay. Ordinary, annual-meeting
+and nested transparent originals preserve2.4positives. Direct cases also cover q/s/ins/
+script wrappers, attributes, comments, malformed and namespaced markup, and original extra
+text absent from normalized evidence. Existing ordinary source-rate/admission pin tests
+pass. An earlier deleted/quoted invocation passed2cases in21.27s before strengthening
+forged positive assertions and adding direct tests; final21.69s command supersedes it.
+No failed pytest invocation; one documentation rg glob command was invalid on Windows,
+corrected to directory plus -g and verified no stale v5 docs. No unchanged broad reruns.
+
+Self-review inspected complete owned diff: original text is checked before qualification,
+unsupported scope cannot become affirmative through markup stripping, strict source/PIT
+and monetary/cadence extraction remain unchanged, and final replay/input identity checks
+remain intact. Parser uses recover=False, resolve_entities=False, load_dtd=False and
+no_network=True; declarations are rejected before parsing. git diff --check on all owned
+source/test/docs/report paths passes. Root independent review remains required.
+
+Actual gates unchanged0PASS/3FAIL: declare-date>=90%2020+member-line cash denominator
+FAIL/unmeasured; source amount within1%on>=95% FAIL/unmeasured; buyback200distinct native
+handchecks>=95% FAIL, independently checked0/200. No actual measuring commands authorized
+or run this round. No actual data/source/hash/metadata/HTTP/return jobs, source landings,
+production publication, cleanup, worktrees or subagents. Root owns actualuniverse60982.
+Coverage2020–2025/all required universes, complete vendor cash denominator, native source
+qualification and full global history/cancellation/carry and Task4R11 refresh remain open.
+Task13 is still incomplete. This is the final cumulative whole-task round5/5, with no reset.
+Explicit owned-path commit only with required legacy Claude co-author attribution.

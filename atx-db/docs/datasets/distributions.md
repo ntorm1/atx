@@ -60,12 +60,19 @@ Schema v3 exposes quote_currency_qualified (false), rate_carry_status, source_va
 (UTC) and class_context. Qualified event availability uses native acceptance and dated
 line evidence; otherwise matching receipt floor. Full persistent carry remains open.
 
-Rule v5 qualification requires the entire original text to match a narrow affirmative
+Rule v6 qualification requires a complete admitted original DOM and its entire text
+to match a narrow affirmative
 unconditional board declaration grammar: explicit declaration date, regular dividend-local
 cadence, USD per-share amount and common class, optional effective-through date. The
 supported annual-meeting preface does not determine dividend cadence. Unknown prefixes,
 suffixes or additional context (conditions, quoted/disputed or negative scope included)
 remain NULL with a reason. Broader filing layouts are unsupported rather than inferred.
+Supported original layouts are well-formed, attribute-free `html` with only transparent
+`body`, `div`, `p`, `span`, `b`, `strong`, `i`, and `em` descendants. No HTML repair is
+used. Deleted/quoted elements (including `del`/`blockquote`), unknown elements, any
+attributes (including hidden/style scope), comments, declarations, namespaces and
+malformed layouts refuse qualification. All original text must match normalized
+evidence after whitespace folding; the original text itself supplies the fullmatch.
 Original accession/issuer and member URI/body bind the acceptance clock;
 related-accession prose never qualifies. Final clock cannot precede the native declaration.
 Explicit admitted TZif/normalizer identities replace ambient timezone normalization.
@@ -73,5 +80,5 @@ Independent code_sha256 includes runtime:zoneinfo.load_data and
 runtime:zoneinfo.TZifHeader.from_file canonical loaded code identities. Same-function
 __code__ replacement rejects; runtime checks and independent pins apply before/after
 normalization, producer replay and public replay. Old admissions require independent
-refreezing under rule v5; physical schema remains v3.
+refreezing under rule v6; physical schema remains v3.
 See the refrozen admission contract; actual0PASS/3FAIL status is unchanged.

@@ -18,7 +18,7 @@ from typing import Any
 
 from . import common as C
 
-RULE = "native-distributions-v5"
+RULE = "native-distributions-v6"
 SCHEMA = "atx.alpha-panel.distributions/v3"
 UTC = dt.timezone.utc
 CADENCE = {"monthly": 12, "quarterly": 4, "semiannual": 2, "semi-annual": 2, "annual": 1}

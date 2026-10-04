@@ -119,6 +119,28 @@ def native_classes(blob: bytes) -> list[dict]:
     return result
 
 
+def original_declaration_text(blob: bytes) -> str:
+    """Read only complete, transparent original layouts without HTML repair.
+
+    Attributes, semantic wrappers, comments, declarations and malformed markup
+    are unsupported. In particular deleted/quoted/hidden text cannot become an
+    affirmative declaration merely because a shared normalizer discards markup.
+    """
+    from lxml import etree
+    if re.search(br"<!|<\?", blob):
+        raise ValueError("original declaration DOM scope unsupported")
+    try:
+        tree = etree.fromstring(blob, parser=etree.XMLParser(
+            resolve_entities=False, load_dtd=False, no_network=True, recover=False))
+    except etree.XMLSyntaxError as error:
+        raise ValueError("original declaration DOM layout unsupported") from error
+    transparent = {"html", "body", "div", "p", "span", "b", "strong", "i", "em"}
+    if tree.tag != "html" or any(
+            node.tag not in transparent or node.attrib for node in tree.iter()):
+        raise ValueError("original declaration DOM scope unsupported")
+    return " ".join("".join(tree.itertext()).split())
+
+
 def qualify(event: dict, native_text: str, *, declaration_accession: str, declaration_clock: bytes,
             class_document: bytes, class_accession: str, class_clock: bytes,
             line_rows: list[dict], declaration_url: str, declaration_document: bytes, class_url: str) -> dict:
@@ -147,7 +169,10 @@ def qualify(event: dict, native_text: str, *, declaration_accession: str, declar
         r"\d+(?:\.\d+)?\s+per\s+share\s+of\s+(?:Class\s+[A-Z]\s+)?common\s+(?:stock|shares)"
         r"(?:,\s+effective\s+through\s+" + D.DATE + r")?\."
     )
-    if not re.fullmatch(supported, native_text.strip(), re.I):
+    original_text = original_declaration_text(declaration_document)
+    if original_text != " ".join(native_text.split()):
+        raise ValueError("original declaration DOM text differs from normalized evidence")
+    if not re.fullmatch(supported, original_text, re.I):
         raise ValueError("complete affirmative unconditional declaration context unsupported")
     local_cadences = re.findall(r"\b(monthly|quarterly|semiannual|semi-annual|annual)\s+(?:regular\s+)?cash\s+dividend\b", event["evidence"], re.I)
     if len(local_cadences) != 1 or local_cadences[0].lower() != event["declared_cadence"]:
