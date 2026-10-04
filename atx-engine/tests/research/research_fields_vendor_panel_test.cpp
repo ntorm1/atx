@@ -1,7 +1,8 @@
 // The shared vendor panel (P9 lane A3; contract K-P9-2, source half): the NYSE rule calendar and
 // the extended axis it reads, factor-break-v1 in closed form, one hash and one scan per build
 // whatever the number of vendor kinds (HashOnce), and the seal pushed down:
-//   - a row group whose dates all fall on or after the seal is never read (SealPushDown);
+//   - a row group whose tradingDate statistics start on or after the seal is never read
+//     (SealPushDown);
 //   - a row group straddling the seal has its keys decoded and its sealed rows dropped by date;
 //     its value chunks are decoded only when a pre-seal row survives (SealPushDown: none does);
 //   - when one does, the value chunks decode whole (a parquet column chunk is the unit of
@@ -764,7 +765,8 @@ TEST(ResearchFieldsVendorPanel, SealedValuesOfAStraddlingGroupReachNothing) {
   EXPECT_EQ(s.rows_sealed_value_decoded, 5U);
   EXPECT_EQ(a.rows_sealed_dropped, 0U);
   EXPECT_EQ(a.rows_sealed_value_decoded, 0U);
-  // ... and reached nothing: every other statistic and every matrix cell is the clean file's.
+  // ... and reached nothing: every value-derived statistic and every matrix cell is the clean
+  // file's (rows_in_file and rows_keys_decoded count the file's rows and decoded keys, by design).
   EXPECT_EQ(s.rows_selected, a.rows_selected);
   EXPECT_EQ(s.rows_off_calendar, a.rows_off_calendar);
   EXPECT_EQ(s.duplicate_keys_quarantined, a.duplicate_keys_quarantined);

@@ -16,11 +16,12 @@
 //      pages are never decompressed or decoded), nor is one wholly outside the axis window and
 //      before the seal; in a read row group the key columns (tradingDate, securityID) are decoded
 //      first, sealed rows and rows off the window, the role's lines or the axis calendar are
-//      dropped (and counted) by key, and the value columns are decoded only when a row survives.
+//      dropped by key (the sealed and off-calendar ones counted), and the value columns are
+//      decoded only when a row survives.
 //      A parquet column chunk is the unit of decode, so a group that straddles the seal and keeps
 //      a surviving pre-seal row has its value chunks decoded whole, its sealed rows' values
-//      included: those values are dropped at decode, never read (only the surviving rows' indexes
-//      are), so none reaches an observation, a matrix, a statistic or a message;
+//      included: those values are decoded with the chunk and released unread (only the surviving
+//      rows' indexes are read), so none reaches an observation, a matrix, a statistic or a message;
 //      rows_sealed_value_decoded counts them;
 //   4. applies the observation contract once (finite positive cumulReturnFactor, finite positive
 //      close, finite volume >= 0, a unique (tradingDate, securityID) key: duplicate keys are
