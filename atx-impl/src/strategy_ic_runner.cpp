@@ -443,10 +443,19 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   const bool signal_cache=!cache.keys.empty();
   // IC-result cache: on exactly when the signal cache is (its entries key on the
   // signal payload SHA256); one scope per scored role, entries per candidate dir.
-  std::optional<IcCacheScope> ic_scope; usize ic_hits=0;
+  std::optional<IcCacheScope> ic_scope,legacy_scope; usize ic_hits=0,legacy_ic_hits=0;
   if (signal_cache) {
-    ATX_TRY(auto scope,ic_cache_scope(spec,role,ic,ic_options,guard,label_role_sha,meter));
+    IcLabelScope scoped;
+    if (terminal) scoped=IcLabelScope{ex::LabelTerminalRule::ImputedV1,label_role_sha};
+    ATX_TRY(auto scope,ic_cache_scope(spec,role,ic,ic_options,guard,scoped,meter));
     ic_scope.emplace(std::move(scope));
+    // P9 S2 (ruling S2-3): the missing-exit-v1 IC beside --label-terminal is cached under its own
+    // scope (keyed label_terminal = missing-exit-v1), never the flag-absent one.
+    if (terminal) {
+      ATX_TRY(auto legacy,ic_cache_scope(spec,role,ic,ic_options,guard,
+          IcLabelScope{ex::LabelTerminalRule::MissingExitV1,{}},meter));
+      legacy_scope.emplace(std::move(legacy));
+    }
   }
   std::vector<f64> signal_buffer; usize cache_hits=0,legacy_hits=0; Json cache_entries=Json::array();
   f64 total_cache_load_seconds=0,total_cache_write_seconds=0;
@@ -472,21 +481,29 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     // A verified IC-result hit replaces evaluate_research_ic; a miss scores and,
     // with the cache on, commits that result keyed on the exact signal bytes.
     std::optional<CachedIc> cached_ic; std::filesystem::path ic_entry; bool ic_probed=false; f64 probe_seconds=0;
+    // P9 S2 (ruling S2-3): the missing-exit-v1 IC beside --label-terminal, from its own scope.
+    std::optional<CachedIc> cached_legacy; std::filesystem::path legacy_entry; bool legacy_probed=false;
     // --no-composition: nothing but IC reads the signal, and an IC entry is keyed on
     // the payload SHA256 its sidecar records, so a signal hit whose IC result is
     // cached too is never loaded (its bytes were verified when that entry was made).
-    // Not under --label-terminal (P9 S2): the missing-exit-v1 IC beside it reads the signal.
-    if (cfg.no_composition && ic_scope && cache.hits[k] && !terminal) {
+    // Under --label-terminal both IC results must be cached (each reads the signal).
+    if (cfg.no_composition && ic_scope && cache.hits[k]) {
       const auto probe_started=std::chrono::steady_clock::now();
       const auto& hit=*cache.hits[k];
       ic_entry=hit.dir/ic_scope->directory/(hit.stem+".json");
       ATX_TRY(cached_ic,ic_cache_lookup(ic_entry,*ic_scope,candidate,hit.payload_sha,scratch,
           ic_options.active_horizons));
       ic_probed=true;
+      if (legacy_scope) {
+        legacy_entry=hit.dir/legacy_scope->directory/(hit.stem+".json");
+        ATX_TRY(cached_legacy,ic_cache_lookup(legacy_entry,*legacy_scope,candidate,hit.payload_sha,
+            *legacy_scratch,ic_options.active_horizons));
+        legacy_probed=true;
+      }
       probe_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-probe_started).count();
     }
     SignalTiming acquired;
-    if (cached_ic) {
+    if (cached_ic && (!legacy_scope || cached_legacy)) {
       release(signal_buffer); // no stale signal outlives its candidate
       acquired.hit=true; acquired.entry=*cache.hits[k];
       progress<<"IC cache-hit "<<candidate.id<<" role="<<spec.name<<" layout="<<(acquired.entry->legacy?"v1":"v2")
@@ -531,12 +548,27 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
             daily_series,cfg.workers));
       }
     }
-    // P9 S2: the same signal under today's labels, evaluated on every run (not cached; one IC pass
-    // beside the VM).
-    std::optional<ex::ResearchIcResult> legacy_scored;
+    // P9 S2: the same signal under today's labels (--label-terminal), from its own IC-result scope
+    // when the cache is on (ruling S2-3), else one IC pass beside the imputed one.
+    std::optional<ex::ResearchIcResult> legacy_scored; IcSeries legacy_series;
     if (legacy_labels) {
-      ATX_TRY(auto legacy,ex::evaluate_research_ic(signal,*legacy_labels,*legacy_scratch,pool.get()));
-      legacy_scored.emplace(std::move(legacy));
+      if (legacy_scope && !legacy_probed) {
+        legacy_entry=acquired.entry->dir/legacy_scope->directory/(acquired.entry->stem+".json");
+        ATX_TRY(cached_legacy,ic_cache_lookup(legacy_entry,*legacy_scope,candidate,
+            acquired.entry->payload_sha,*legacy_scratch,ic_options.active_horizons));
+      }
+      if (cached_legacy) {
+        legacy_scored.emplace(cached_legacy->result); legacy_series=cached_series(*cached_legacy);
+        ++legacy_ic_hits;
+      } else {
+        ATX_TRY(auto legacy,ex::evaluate_research_ic(signal,*legacy_labels,*legacy_scratch,pool.get()));
+        legacy_series=scratch_series(*legacy_scratch);
+        if (legacy_scope) {
+          ATX_TRY_VOID(ic_cache_store(legacy_entry,*legacy_scope,candidate,acquired.entry->payload_sha,
+              legacy,legacy_series,cfg.workers));
+        }
+        legacy_scored.emplace(std::move(legacy));
+      }
     }
     const auto ic_seconds=probe_seconds+
         std::chrono::duration<f64>(std::chrono::steady_clock::now()-ic_started).count();
@@ -567,7 +599,6 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     series(daily,candidate.id,role,daily_series,sign);
     auto summary=result_json(scored,sign,candidate_print);
     if (legacy_scored) {
-      const auto legacy_series=scratch_series(*legacy_scratch);
       IcPrint legacy_print=print; legacy_print.daily=&legacy_series;
       summary["ic_missing_exit_v1"]=result_json(*legacy_scored,sign,legacy_print);
     }
@@ -586,6 +617,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
       summary["stage_seconds"]["cache_write"]=acquired.cache_write;
       summary["signal_cache"]=acquired.hit?"hit":"miss";
       summary["ic_result_cache"]=cached_ic?"hit":"miss";
+      if (legacy_scope) summary["ic_missing_exit_v1_result_cache"]=cached_legacy?"hit":"miss";
     }
     summaries.push_back(summary); ledger<<summary.dump()<<'\n'<<std::flush;
     if (!daily || !ledger) return co::Err(co::ErrorCode::IoError,"IC runner: candidate output");
@@ -679,6 +711,11 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     result["candidate_cache"]["ic_results"]={{"subdirectory",ic_scope->directory},
         {"identity",ic_identity()},{"key",ic_scope->key},{"hits",ic_hits},
         {"misses",lib.candidates.size()-ic_hits}};
+    // Present exactly under --label-terminal (P9 S2, ruling S2-3): the missing-exit-v1 IC's scope.
+    if (legacy_scope)
+      result["candidate_cache"]["ic_results"]["missing_exit_v1"]={
+          {"subdirectory",legacy_scope->directory},{"key",legacy_scope->key},
+          {"hits",legacy_ic_hits},{"misses",lib.candidates.size()-legacy_ic_hits}};
   }
   // SHA-256 spent by this role (field and cache payload verification, cache
   // writes, IC-result scope) and the pinned payload bytes hashed to verify them.

@@ -41,8 +41,12 @@ constexpr std::array<std::string_view,11> ic_result_sources{
     "atx-engine/src/factory/ic_screen.cpp"};
 // P9 S1 re-pinned WITHOUT a bump: ic_screen.{hpp,cpp} add ic_screen_build_flavor() and
 // build_flavor.hpp joins the closure; no scored bit changes (the build token is in ic_identity).
+// P9 S2 re-pinned WITHOUT a bump (ruling S2-1): IcScreenConfig::min_coverage (default .8, the old
+// constant), the named HAC rule (default Bartlett2hV1, the old arithmetic), LabelTerminalRule
+// (default MissingExitV1, the old labels) and estimate_daily_ic. At their defaults every scored
+// bit is unchanged; a non-default value is keyed in the IC-result scope (ic_cache_scope).
 constexpr std::string_view ic_result_sources_sha256=
-    "2d758bff0cfb5090c965d1dc3e4c9403ecdb8f0e29b3a84b243e4532c99615ed";
+    "bd13574c08a61e4c4ac92c351a84dc1face7e2910dd7c8a784f2f278adb29317";
 } // namespace
 // FP build flavor, the IC kernel's SIMD width (its reduction order) and the build flavour token
 // (build type, NDEBUG, CRT, xsimd version), each reported by ic_screen.cpp's own TU (P9 S1, DS-1:
@@ -115,7 +119,7 @@ std::string series_hex(std::span<const f64> values) {
 // every IC entry cached before S2 keep their bytes (no cold pass).
 co::Result<IcCacheScope> ic_cache_scope(const Role& spec,const engine::data::StrategyRoleData& role,
     const ex::IcScreenConfig& ic,const ex::ResearchIcOptions& options,std::span<const u32> guard,
-    const std::string& label_role_sha,HashMeter& meter) {
+    const IcLabelScope& labels,HashMeter& meter) {
   const auto hashing=std::chrono::steady_clock::now();
   ATX_TRY(auto member_sha,co::sha256_hex(std::as_bytes(std::span<const u8>(role.decision_member))));
   ATX_TRY(auto guard_sha,co::sha256_hex(std::as_bytes(guard)));
@@ -136,9 +140,10 @@ co::Result<IcCacheScope> ic_cache_scope(const Role& spec,const engine::data::Str
   if (ic.min_coverage!=ex::kDefaultIcMinCoverage) key["min_coverage_bits"]=bits_hex(ic.min_coverage);
   if (ic.hac_rule!=ex::IcHacRule::Bartlett2hV1)
     key["hac_rule"]=std::string(ex::ic_hac_rule_name(ic.hac_rule));
-  if (!label_role_sha.empty()) {
-    key["label_terminal"]=std::string(ex::label_terminal_rule_name(ex::LabelTerminalRule::ImputedV1));
-    key["label_role_manifest_sha256"]=label_role_sha;
+  if (labels.terminal) {
+    key["label_terminal"]=std::string(ex::label_terminal_rule_name(*labels.terminal));
+    if (*labels.terminal==ex::LabelTerminalRule::ImputedV1)
+      key["label_role_manifest_sha256"]=labels.label_role_sha;
   }
   ATX_TRY(auto key_sha,co::sha256_hex(key.dump()));
   auto directory="ic"+std::to_string(ic_result_semantics_version)+"_"+key_sha.substr(0,16);

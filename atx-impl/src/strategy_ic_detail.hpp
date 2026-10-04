@@ -369,11 +369,17 @@ co::Result<Json> cache_report(const IcRunnerConfig& cfg,const Library& lib,const
 std::string ic_identity();
 IcSeries scratch_series(const ex::ResearchIcScratch& scratch);
 IcSeries cached_series(const CachedIc& cached);
-// `label_role_sha` (P9 S2): the pinned label role of --label-terminal imputed-v1 (empty: today's
-// labels, and the key keeps its bytes).
+// The labels an IC-result scope keys (P9 S2). Absent `terminal` (no --label-terminal): nothing, so
+// the key keeps its bytes. Under --label-terminal: ImputedV1 keys the rule and its label role pin;
+// MissingExitV1 is the IC under today's labels printed beside it (ruling S2-3), keyed by the rule
+// name alone: its own scope, never the flag-absent one, whose entries such a run cannot write.
+struct IcLabelScope {
+  std::optional<ex::LabelTerminalRule> terminal;
+  std::string label_role_sha;
+};
 co::Result<IcCacheScope> ic_cache_scope(const Role& spec,const engine::data::StrategyRoleData& role,
     const ex::IcScreenConfig& ic,const ex::ResearchIcOptions& options,std::span<const u32> guard,
-    const std::string& label_role_sha,HashMeter& meter);
+    const IcLabelScope& labels,HashMeter& meter);
 co::Result<std::optional<CachedIc>> ic_cache_lookup(const std::filesystem::path& path,
     const IcCacheScope& scope,const Candidate& c,const std::string& signal_sha,
     const ex::ResearchIcScratch& scratch,usize active);

@@ -84,7 +84,7 @@ constexpr std::array<std::string_view,35> dsl_vm_sources{
 // windows are sliced from a once-extracted column (the same values in the same order). No
 // evaluated bit changes; the worker-parity and slot-reuse suites pin it.
 constexpr std::string_view dsl_vm_sources_sha256=
-    "fcf8021e76ee5ac3c161302367a27b8f6c49cd28a580d1339ff801d9feca1619";
+    "5bcd55c78814451391063cd9278852f765f02b5378a04d7598c188a568f712b2";
 // Entries written before this identity existed sit directly under DIR/<sha>/ with
 // no vm_identity key. They came from engine builds 429cbe43/6d85ac2a (clang-cl
 // 18.1.8, dev preset, no /arch) and no alpha, parallel or core source changed

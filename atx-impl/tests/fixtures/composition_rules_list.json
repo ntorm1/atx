@@ -1,8 +1,11 @@
 {
   "capabilities": [
     "eval-mode-audit-exact",
+    "ic-hac-rule",
+    "label-terminal",
     "list-rules",
     "marginal",
+    "min-coverage",
     "no-composition",
     "theme-registry"
   ],
