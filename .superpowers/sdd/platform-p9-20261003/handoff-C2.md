@@ -1,5 +1,8 @@
 # Lane C2 hand-off (owner stop, 2026-10-03)
 
+> RESUMED and completed after the owner's re-issued goal: see `task-C2-report.md` (this dir) for the outcome,
+> commits and root's verification list. The text below is the stop-time design record, kept as written.
+
 - Pool `C:/atx-wt/pool-15` (reused; no lease call). Branch `feat/p9-c2-20261003`, base `ad406718` (all eight wave-1
   lanes merged, C1 included). Head: the `wip(c2)` commit that adds this file and `c2-ppf-fma.py` (no code yet).
 - Status: research and design done; **no source file edited**. About 25 % of the lane.
