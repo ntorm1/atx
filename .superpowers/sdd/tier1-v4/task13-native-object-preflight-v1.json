@@ -1,0 +1,776 @@
+{
+  "status": "BOUNDED_ORIGINAL_AVAILABILITY_ONLY",
+  "catalog_sha256": "a76d19d7458481fcd67de4f7397617234f34b98843b2449c291628564690bf64",
+  "catalog_rows": 51384,
+  "notes_original_zip_paths": [
+    {
+      "path": "C:\\atx\\atx-db\\data\\raw\\sec_notes\\2019q4_notes.zip",
+      "status": "MISSING_ORIGINAL_ZIP",
+      "bytes": null,
+      "original_zip_read": false
+    },
+    {
+      "path": "C:\\atx\\atx-db\\data\\raw\\sec_notes\\2020q1_notes.zip",
+      "status": "MISSING_ORIGINAL_ZIP",
+      "bytes": null,
+      "original_zip_read": false
+    }
+  ],
+  "receipts": {
+    "C:\\atx\\atx-db\\data\\raw\\sec-earnings-release\\units-done.jsonl": {
+      "status": "PINNED_RECEIPT_METADATA_ONLY",
+      "sha256": "c86e64229f319c0e42d6def3fa7aedaa503dc7a4cf171fed6d6fce57d7b75405",
+      "rows": [
+        {
+          "line": 8305,
+          "line_sha256": "a862a76815e77b0212173b8bfc367d02d36bed15851f68bb82a58133bf50eb03",
+          "record": {
+            "accession": "0000016160-20-000007",
+            "cik": "0000016160",
+            "document_sha256": "bca214bc5fc720a716e5b8131b9f41acb166598ab3b3203cd2c7f75a51ebd463",
+            "exhibit": "calm2q20pressrelease.htm",
+            "outcome": "document_ok",
+            "unit": "https://www.sec.gov/Archives/edgar/data/16160/000001616020000007/0000016160-20-000007-index.html",
+            "url": null,
+            "sha256": null,
+            "status": null,
+            "fetched_at": null,
+            "done_at": "2026-09-26T22:23:56+00:00",
+            "key": null,
+            "phase": null,
+            "bytes": null
+          }
+        },
+        {
+          "line": 8592,
+          "line_sha256": "ce4d3f1fc0c78a949fe402a48c24ec5b8b888b0d3c1e39947ae038b06fdab866",
+          "record": {
+            "accession": "0000016918-20-000005",
+            "cik": "0000016918",
+            "document_sha256": "dd4009b447ae9f46797fd770e082a955cb81459f477e0af68b6d72e5ee6e68c3",
+            "exhibit": "stzex_99-1.htm",
+            "outcome": "document_ok",
+            "unit": "https://www.sec.gov/Archives/edgar/data/16918/000001691820000005/0000016918-20-000005-index.html",
+            "url": null,
+            "sha256": null,
+            "status": null,
+            "fetched_at": null,
+            "done_at": "2026-09-26T22:26:08+00:00",
+            "key": null,
+            "phase": null,
+            "bytes": null
+          }
+        },
+        {
+          "line": 11646,
+          "line_sha256": "26c2301b2417c455dbf32175637b4ea4bf25cfa0daccdfed6014b6613bebac14",
+          "record": {
+            "accession": "0000022444-20-000006",
+            "cik": "0000022444",
+            "document_sha256": "f1f0fe4c6a31ed49cca151580cdec2cd5478a0681b7fd4cc025bcd08a51b1290",
+            "exhibit": "cmc-11302019xex991.htm",
+            "outcome": "document_ok",
+            "unit": "https://www.sec.gov/Archives/edgar/data/22444/000002244420000006/0000022444-20-000006-index.html",
+            "url": null,
+            "sha256": null,
+            "status": null,
+            "fetched_at": null,
+            "done_at": "2026-09-26T22:49:51+00:00",
+            "key": null,
+            "phase": null,
+            "bytes": null
+          }
+        },
+        {
+          "line": 48889,
+          "line_sha256": "e330063f28c546c4dee55122c78c276a781e1703a582429fdb9799ecb2239a4c",
+          "record": {
+            "accession": "0000096223-20-000003",
+            "cik": "0000096223",
+            "document_sha256": "e1dc140fc738645297f1e33565df1fe10f8869c71c824f883e9b2c67473728fd",
+            "exhibit": "jfgpressrelease11-30x19.htm",
+            "outcome": "document_ok",
+            "unit": "https://www.sec.gov/Archives/edgar/data/96223/000009622320000003/0000096223-20-000003-index.html",
+            "url": null,
+            "sha256": null,
+            "status": null,
+            "fetched_at": null,
+            "done_at": "2026-09-27T16:28:01+00:00",
+            "key": null,
+            "phase": null,
+            "bytes": null
+          }
+        },
+        {
+          "line": 51194,
+          "line_sha256": "2507d0f66c40c45301e67e5ccceb30b698a1b14091b3e13fb607c11e62e15c34",
+          "record": {
+            "accession": "0000100517-20-000002",
+            "cik": "0000100517",
+            "document_sha256": "ea6f8a583e0466646c01b8db13bb731c9283f3879ff8a6d060f7bf205efb34b3",
+            "exhibit": "ual123119spex991.htm",
+            "outcome": "document_ok",
+            "unit": "https://www.sec.gov/Archives/edgar/data/100517/000010051720000002/0000100517-20-000002-index.html",
+            "url": null,
+            "sha256": null,
+            "status": null,
+            "fetched_at": null,
+            "done_at": "2026-09-27T16:44:16+00:00",
+            "key": null,
+            "phase": null,
+            "bytes": null
+          }
+        }
+      ]
+    },
+    "C:\\atx\\atx-db\\data\\raw\\sec_events\\fetch-ledger.jsonl": {
+      "status": "PINNED_RECEIPT_METADATA_ONLY",
+      "sha256": "fe3c65b0bfc9e53823b52a89c074a4add2cded8cf5d444149641e363bee0cdf4",
+      "rows": [
+        {
+          "line": 12775,
+          "line_sha256": "0271055d151d799234a56873ace562ee4a5bda986258cb91237503446271e0b0",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/Archives/edgar/data/866609/000086660920000005/exhibit991cfotransitionnew.htm",
+            "sha256": "e36c05dbc9d9291dc5e34112388670690af3b12d26813120c22b4501d4cd8b68",
+            "status": 200,
+            "fetched_at": "2026-09-30T01:02:24.047+00:00",
+            "done_at": null,
+            "key": null,
+            "phase": null,
+            "bytes": 8012
+          }
+        },
+        {
+          "line": 14724,
+          "line_sha256": "b198874c48dded7317be4f612c2712365f7f4ce64506df4bbb75680441808908",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/Archives/edgar/data/1113481/000110465920001367/tm201193-1_8k.htm",
+            "sha256": "f0187a29437d76e2434272260aca5aa6d497d4eacb22d5fe4fdcf6803b210ba1",
+            "status": 200,
+            "fetched_at": "2026-09-30T01:13:02.251+00:00",
+            "done_at": null,
+            "key": null,
+            "phase": null,
+            "bytes": 58013
+          }
+        },
+        {
+          "line": 14725,
+          "line_sha256": "8973e87b815c1995b62fa90cf33af531519ef3896598fde817242b4e25887c33",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/Archives/edgar/data/8868/000095015720000022/form8-k.htm",
+            "sha256": "2db7aba232e1ed2e5d2c5aa16e3a8a3fed3d89889f80a79cdc5fba7f64fbce4d",
+            "status": 200,
+            "fetched_at": "2026-09-30T01:13:02.259+00:00",
+            "done_at": null,
+            "key": null,
+            "phase": null,
+            "bytes": 68181
+          }
+        },
+        {
+          "line": 14782,
+          "line_sha256": "af1f71bf5d808f6e2bdf75a42477613a16c08ab9b824f87813bedd1a0ce47ac9",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/Archives/edgar/data/858339/000085833920000058/ex991-2020q1cecearning.htm",
+            "sha256": "3f6449bf77d0482057b619183365a2ab54ee9493cb8bfa2baeeac68ace17dbea",
+            "status": 200,
+            "fetched_at": "2026-09-30T01:13:20.355+00:00",
+            "done_at": null,
+            "key": null,
+            "phase": null,
+            "bytes": 497219
+          }
+        },
+        {
+          "line": 14811,
+          "line_sha256": "58cda7a0c8bf0450430e6253a869d179e9b69f1b1a775b47ce183f22f06a6e8a",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/Archives/edgar/data/706688/000070668820000065/a2020q1exhibit991first.htm",
+            "sha256": "35366b66a9c5c91e963b4ac03d8092f58d1c05f2534b8e976c56e2a57f382c09",
+            "status": 200,
+            "fetched_at": "2026-09-30T01:13:30.665+00:00",
+            "done_at": null,
+            "key": null,
+            "phase": null,
+            "bytes": 377258
+          }
+        },
+        {
+          "line": 14876,
+          "line_sha256": "9031d319ffd0344833fe3c70c0c372626e96db1cb15bebc395ba8c7dd73e0c79",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/Archives/edgar/data/1420811/000142081120000072/ondkearningsrelease2020q1.htm",
+            "sha256": "ccaea219841cfae7e5153f0fc47e5d822fcf6e577c0ea290ed1c8783bf519e0c",
+            "status": 200,
+            "fetched_at": "2026-09-30T01:13:52.128+00:00",
+            "done_at": null,
+            "key": null,
+            "phase": null,
+            "bytes": 458327
+          }
+        },
+        {
+          "line": 15030,
+          "line_sha256": "ca98543e94e1bfc4814044d0e95d6efb0f310dcd07d4b32e789e0c16dc0a40f6",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/Archives/edgar/data/890319/000089031920000020/a2019q48-kexhibit99.htm",
+            "sha256": "73dd6725a33ea735ca270cc5c2bba2672a172d64cba3c1ba04ce0dbc0534ad54",
+            "status": 200,
+            "fetched_at": "2026-09-30T01:14:42.314+00:00",
+            "done_at": null,
+            "key": null,
+            "phase": null,
+            "bytes": 1295157
+          }
+        }
+      ]
+    },
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes\\receipts.jsonl": {
+      "status": "PINNED_RECEIPT_METADATA_ONLY",
+      "sha256": "48826531b1c43fa8d96dc65953db57aee7bfbb9192db8cbd6ca0fe4cfd9494dc",
+      "rows": [
+        {
+          "line": 9,
+          "line_sha256": "2ffebaebaa2e4a1d4a3afa9e8ca8a1628a45f5d6fc5d6942c3c5c870764d67e7",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2019q4_notes.zip",
+            "sha256": "819a8b8ed35e31724299659bd842cadea39be994133ce6bb4d5302e1d30ffdf1",
+            "status": "downloaded",
+            "fetched_at": "2026-09-30T00:36:45+00:00",
+            "done_at": null,
+            "key": "2019q4",
+            "phase": null,
+            "bytes": 344265202
+          }
+        },
+        {
+          "line": 10,
+          "line_sha256": "98ce843bf14e675d160ee456e7bfc2b98e9696eebfbccebb72e97b2d35a95ec6",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2019q4_notes.zip",
+            "sha256": "819a8b8ed35e31724299659bd842cadea39be994133ce6bb4d5302e1d30ffdf1",
+            "status": "parsed",
+            "fetched_at": "2026-09-30T00:36:45+00:00",
+            "done_at": null,
+            "key": "2019q4",
+            "phase": null,
+            "bytes": 344265202
+          }
+        },
+        {
+          "line": 12,
+          "line_sha256": "465a28df4ee35945037a0f781b5e6f33e9c6a43a197bb2ebd9930d3e06779c0d",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2020q1_notes.zip",
+            "sha256": "662b783905eab0618e8a81398f560f92289f835d293c7d7239fed7ad34d700fc",
+            "status": "downloaded",
+            "fetched_at": "2026-09-30T00:39:07+00:00",
+            "done_at": null,
+            "key": "2020q1",
+            "phase": null,
+            "bytes": 512526672
+          }
+        },
+        {
+          "line": 13,
+          "line_sha256": "7a715c71ec94f87d87eb6fddfb93bbfaf8050467741e6a753ed86f6f6d459c0c",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2020q1_notes.zip",
+            "sha256": "662b783905eab0618e8a81398f560f92289f835d293c7d7239fed7ad34d700fc",
+            "status": "parsed",
+            "fetched_at": "2026-09-30T00:39:07+00:00",
+            "done_at": null,
+            "key": "2020q1",
+            "phase": null,
+            "bytes": 512526672
+          }
+        }
+      ]
+    },
+    "C:\\atx\\atx-db\\data\\archive\\receipts\\sec_notes-receipts.jsonl": {
+      "status": "PINNED_RECEIPT_METADATA_ONLY",
+      "sha256": "48826531b1c43fa8d96dc65953db57aee7bfbb9192db8cbd6ca0fe4cfd9494dc",
+      "rows": [
+        {
+          "line": 9,
+          "line_sha256": "2ffebaebaa2e4a1d4a3afa9e8ca8a1628a45f5d6fc5d6942c3c5c870764d67e7",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2019q4_notes.zip",
+            "sha256": "819a8b8ed35e31724299659bd842cadea39be994133ce6bb4d5302e1d30ffdf1",
+            "status": "downloaded",
+            "fetched_at": "2026-09-30T00:36:45+00:00",
+            "done_at": null,
+            "key": "2019q4",
+            "phase": null,
+            "bytes": 344265202
+          }
+        },
+        {
+          "line": 10,
+          "line_sha256": "98ce843bf14e675d160ee456e7bfc2b98e9696eebfbccebb72e97b2d35a95ec6",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2019q4_notes.zip",
+            "sha256": "819a8b8ed35e31724299659bd842cadea39be994133ce6bb4d5302e1d30ffdf1",
+            "status": "parsed",
+            "fetched_at": "2026-09-30T00:36:45+00:00",
+            "done_at": null,
+            "key": "2019q4",
+            "phase": null,
+            "bytes": 344265202
+          }
+        },
+        {
+          "line": 12,
+          "line_sha256": "465a28df4ee35945037a0f781b5e6f33e9c6a43a197bb2ebd9930d3e06779c0d",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2020q1_notes.zip",
+            "sha256": "662b783905eab0618e8a81398f560f92289f835d293c7d7239fed7ad34d700fc",
+            "status": "downloaded",
+            "fetched_at": "2026-09-30T00:39:07+00:00",
+            "done_at": null,
+            "key": "2020q1",
+            "phase": null,
+            "bytes": 512526672
+          }
+        },
+        {
+          "line": 13,
+          "line_sha256": "7a715c71ec94f87d87eb6fddfb93bbfaf8050467741e6a753ed86f6f6d459c0c",
+          "record": {
+            "accession": null,
+            "cik": null,
+            "document_sha256": null,
+            "exhibit": null,
+            "outcome": null,
+            "unit": null,
+            "url": "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/2020q1_notes.zip",
+            "sha256": "662b783905eab0618e8a81398f560f92289f835d293c7d7239fed7ad34d700fc",
+            "status": "parsed",
+            "fetched_at": "2026-09-30T00:39:07+00:00",
+            "done_at": null,
+            "key": "2020q1",
+            "phase": null,
+            "bytes": 512526672
+          }
+        }
+      ]
+    }
+  },
+  "sample_outcomes": [
+    {
+      "catalog_row": {
+        "cik": 8868,
+        "accession": "0000950157-20-000022",
+        "form": "8-K",
+        "items": "1.02,2.01,3.01,3.03,5.01,5.02,5.03,9.01",
+        "filing_date": "2020-01-03",
+        "event_date": "2020-01-03",
+        "available_at": "2020-01-03 22:24:06",
+        "acceptance_clock": "file_et",
+        "vintage_risk": null,
+        "is_amendment": false,
+        "doc_source": "sec_events",
+        "source_doc": "form8-k.htm",
+        "doc_sha256": "2db7aba232e1ed2e5d2c5aa16e3a8a3fed3d89889f80a79cdc5fba7f64fbce4d",
+        "url": "https://www.sec.gov/Archives/edgar/data/8868/000095015720000022/form8-k.htm",
+        "file_type": "8-K",
+        "file_description": "CURRENT REPORT",
+        "qids": [
+          "merger"
+        ]
+      },
+      "status": "ORIGINAL_MATCH_ONLY_UNQUALIFIED",
+      "path": "C:\\atx\\atx-db\\data\\raw\\sec_events\\objects\\2d\\2db7aba232e1ed2e5d2c5aa16e3a8a3fed3d89889f80a79cdc5fba7f64fbce4d.gz",
+      "stored_bytes": 10042,
+      "original_bytes": 68181,
+      "stored_sha256": "ff608acc47a48c887caaf48c6d0696aeb94a75613d24ef5f9031faaa002495e5",
+      "original_sha256": "2db7aba232e1ed2e5d2c5aa16e3a8a3fed3d89889f80a79cdc5fba7f64fbce4d",
+      "presence": {
+        "sgml_acceptance": false,
+        "inline_dei": true,
+        "declaration": false,
+        "accepted_index": false
+      },
+      "receipt_lines": [
+        14725
+      ]
+    },
+    {
+      "catalog_row": {
+        "cik": 866609,
+        "accession": "0000866609-20-000005",
+        "form": "8-K",
+        "items": "5.02,9.01",
+        "filing_date": "2020-01-03",
+        "event_date": "2020-01-03",
+        "available_at": "2020-01-03 21:57:20",
+        "acceptance_clock": "file_et",
+        "vintage_risk": null,
+        "is_amendment": false,
+        "doc_source": "sec_events",
+        "source_doc": "exhibit991cfotransitionnew.htm",
+        "doc_sha256": "e36c05dbc9d9291dc5e34112388670690af3b12d26813120c22b4501d4cd8b68",
+        "url": "https://www.sec.gov/Archives/edgar/data/866609/000086660920000005/exhibit991cfotransitionnew.htm",
+        "file_type": "EX-99.1",
+        "file_description": "EXHIBIT 99.1 NEWS RELEASE",
+        "qids": [
+          "cfo_depart_2"
+        ]
+      },
+      "status": "ORIGINAL_MATCH_ONLY_UNQUALIFIED",
+      "path": "C:\\atx\\atx-db\\data\\raw\\sec_events\\objects\\e3\\e36c05dbc9d9291dc5e34112388670690af3b12d26813120c22b4501d4cd8b68.gz",
+      "stored_bytes": 2420,
+      "original_bytes": 8012,
+      "stored_sha256": "a3c5b62a34ea89fd21fa67c7369b55fedb0991119f7df188cd099656608efc77",
+      "original_sha256": "e36c05dbc9d9291dc5e34112388670690af3b12d26813120c22b4501d4cd8b68",
+      "presence": {
+        "sgml_acceptance": false,
+        "inline_dei": false,
+        "declaration": false,
+        "accepted_index": false
+      },
+      "receipt_lines": [
+        12775
+      ]
+    },
+    {
+      "catalog_row": {
+        "cik": 16160,
+        "accession": "0000016160-20-000007",
+        "form": "8-K",
+        "items": "2.02,9.01",
+        "filing_date": "2020-01-06",
+        "event_date": "2020-01-06",
+        "available_at": "2020-01-06 11:37:31",
+        "acceptance_clock": "file_utc",
+        "vintage_risk": null,
+        "is_amendment": false,
+        "doc_source": "landed_v2",
+        "source_doc": "calm2q20pressrelease.htm",
+        "doc_sha256": "bca214bc5fc720a716e5b8131b9f41acb166598ab3b3203cd2c7f75a51ebd463",
+        "url": null,
+        "file_type": null,
+        "file_description": null,
+        "qids": []
+      },
+      "status": "ORIGINAL_MATCH_ONLY_UNQUALIFIED",
+      "path": "C:\\atx\\atx-db\\data\\raw\\sec-earnings-release\\objects\\bc\\bca214bc5fc720a716e5b8131b9f41acb166598ab3b3203cd2c7f75a51ebd463.gz",
+      "stored_bytes": 10280,
+      "original_bytes": 216833,
+      "stored_sha256": "a58331ebb7b1a0183f2b043f5e131530806b7fed4cc75dc08de58208b0ed7272",
+      "original_sha256": "bca214bc5fc720a716e5b8131b9f41acb166598ab3b3203cd2c7f75a51ebd463",
+      "presence": {
+        "sgml_acceptance": false,
+        "inline_dei": false,
+        "declaration": false,
+        "accepted_index": false
+      },
+      "receipt_lines": [
+        8305
+      ]
+    },
+    {
+      "catalog_row": {
+        "cik": 22444,
+        "accession": "0000022444-20-000006",
+        "form": "8-K",
+        "items": "2.02,9.01",
+        "filing_date": "2020-01-06",
+        "event_date": "2020-01-06",
+        "available_at": "2020-01-06 14:43:44",
+        "acceptance_clock": "file_utc",
+        "vintage_risk": null,
+        "is_amendment": false,
+        "doc_source": "landed_v2",
+        "source_doc": "cmc-11302019xex991.htm",
+        "doc_sha256": "f1f0fe4c6a31ed49cca151580cdec2cd5478a0681b7fd4cc025bcd08a51b1290",
+        "url": null,
+        "file_type": "EX-99.1",
+        "file_description": "EXHIBIT 99.1",
+        "qids": [
+          "buyback",
+          "guidance"
+        ]
+      },
+      "status": "ORIGINAL_MATCH_ONLY_UNQUALIFIED",
+      "path": "C:\\atx\\atx-db\\data\\raw\\sec-earnings-release\\objects\\f1\\f1f0fe4c6a31ed49cca151580cdec2cd5478a0681b7fd4cc025bcd08a51b1290.gz",
+      "stored_bytes": 22007,
+      "original_bytes": 508539,
+      "stored_sha256": "5405434e402babac8635c566aa1b9d686e360c0efccdf778805f5536f35ec86c",
+      "original_sha256": "f1f0fe4c6a31ed49cca151580cdec2cd5478a0681b7fd4cc025bcd08a51b1290",
+      "presence": {
+        "sgml_acceptance": false,
+        "inline_dei": false,
+        "declaration": true,
+        "accepted_index": false
+      },
+      "receipt_lines": [
+        11646
+      ]
+    },
+    {
+      "catalog_row": {
+        "cik": 1113481,
+        "accession": "0001104659-20-001367",
+        "form": "8-K",
+        "items": "1.01,2.01,2.04,3.03,5.01,5.02,5.03,8.01,9.01",
+        "filing_date": "2020-01-06",
+        "event_date": "2020-01-06",
+        "available_at": "2020-01-06 17:28:01",
+        "acceptance_clock": "file_et",
+        "vintage_risk": null,
+        "is_amendment": false,
+        "doc_source": "sec_events",
+        "source_doc": "tm201193-1_8k.htm",
+        "doc_sha256": "f0187a29437d76e2434272260aca5aa6d497d4eacb22d5fe4fdcf6803b210ba1",
+        "url": "https://www.sec.gov/Archives/edgar/data/1113481/000110465920001367/tm201193-1_8k.htm",
+        "file_type": "8-K",
+        "file_description": "FORM 8-K",
+        "qids": [
+          "merger"
+        ]
+      },
+      "status": "ORIGINAL_MATCH_ONLY_UNQUALIFIED",
+      "path": "C:\\atx\\atx-db\\data\\raw\\sec_events\\objects\\f0\\f0187a29437d76e2434272260aca5aa6d497d4eacb22d5fe4fdcf6803b210ba1.gz",
+      "stored_bytes": 10190,
+      "original_bytes": 58013,
+      "stored_sha256": "7fb34fd66f57184ded538283331495a5fba29f69343bbe764ecd4273477290d5",
+      "original_sha256": "f0187a29437d76e2434272260aca5aa6d497d4eacb22d5fe4fdcf6803b210ba1",
+      "presence": {
+        "sgml_acceptance": false,
+        "inline_dei": true,
+        "declaration": false,
+        "accepted_index": false
+      },
+      "receipt_lines": [
+        14724
+      ]
+    },
+    {
+      "catalog_row": {
+        "cik": 100517,
+        "accession": "0000100517-20-000002",
+        "form": "8-K",
+        "items": "2.02,9.01",
+        "filing_date": "2020-01-07",
+        "event_date": "2020-01-07",
+        "available_at": "2020-01-07 21:23:35",
+        "acceptance_clock": "file_utc",
+        "vintage_risk": null,
+        "is_amendment": false,
+        "doc_source": "landed_v2",
+        "source_doc": "ual123119spex991.htm",
+        "doc_sha256": "ea6f8a583e0466646c01b8db13bb731c9283f3879ff8a6d060f7bf205efb34b3",
+        "url": null,
+        "file_type": "EX-99.1",
+        "file_description": "EXHIBIT 99.1",
+        "qids": [
+          "guidance"
+        ]
+      },
+      "status": "ORIGINAL_MATCH_ONLY_UNQUALIFIED",
+      "path": "C:\\atx\\atx-db\\data\\raw\\sec-earnings-release\\objects\\ea\\ea6f8a583e0466646c01b8db13bb731c9283f3879ff8a6d060f7bf205efb34b3.gz",
+      "stored_bytes": 4393,
+      "original_bytes": 13345,
+      "stored_sha256": "2f22c5b7dd7924de6c482f732081cd33e87f556f477ee674f55c049c5051003f",
+      "original_sha256": "ea6f8a583e0466646c01b8db13bb731c9283f3879ff8a6d060f7bf205efb34b3",
+      "presence": {
+        "sgml_acceptance": false,
+        "inline_dei": false,
+        "declaration": false,
+        "accepted_index": false
+      },
+      "receipt_lines": [
+        51194
+      ]
+    },
+    {
+      "catalog_row": {
+        "cik": 16918,
+        "accession": "0000016918-20-000005",
+        "form": "8-K",
+        "items": "2.02,7.01,9.01",
+        "filing_date": "2020-01-08",
+        "event_date": "2020-01-07",
+        "available_at": "2020-01-08 13:36:27",
+        "acceptance_clock": "file_utc",
+        "vintage_risk": null,
+        "is_amendment": false,
+        "doc_source": "landed_v2",
+        "source_doc": "stzex_99-1.htm",
+        "doc_sha256": "dd4009b447ae9f46797fd770e082a955cb81459f477e0af68b6d72e5ee6e68c3",
+        "url": null,
+        "file_type": "EX-99.1",
+        "file_description": "EXHIBIT 99.1",
+        "qids": [
+          "guidance",
+          "buyback"
+        ]
+      },
+      "status": "ORIGINAL_MATCH_ONLY_UNQUALIFIED",
+      "path": "C:\\atx\\atx-db\\data\\raw\\sec-earnings-release\\objects\\dd\\dd4009b447ae9f46797fd770e082a955cb81459f477e0af68b6d72e5ee6e68c3.gz",
+      "stored_bytes": 47602,
+      "original_bytes": 1207621,
+      "stored_sha256": "68c825efe3b47851f411b369dbe3b7d1b24189eda171d2ade9c6053237cdb95e",
+      "original_sha256": "dd4009b447ae9f46797fd770e082a955cb81459f477e0af68b6d72e5ee6e68c3",
+      "presence": {
+        "sgml_acceptance": false,
+        "inline_dei": false,
+        "declaration": true,
+        "accepted_index": false
+      },
+      "receipt_lines": [
+        8592
+      ]
+    },
+    {
+      "catalog_row": {
+        "cik": 96223,
+        "accession": "0000096223-20-000003",
+        "form": "8-K",
+        "items": "2.02,9.01",
+        "filing_date": "2020-01-08",
+        "event_date": "2020-01-08",
+        "available_at": "2020-01-08 22:14:34",
+        "acceptance_clock": "file_utc",
+        "vintage_risk": null,
+        "is_amendment": false,
+        "doc_source": "landed_v2",
+        "source_doc": "jfgpressrelease11-30x19.htm",
+        "doc_sha256": "e1dc140fc738645297f1e33565df1fe10f8869c71c824f883e9b2c67473728fd",
+        "url": null,
+        "file_type": "EX-99",
+        "file_description": "PRESS RELEASE ISSUED BY JEFFERIES FINANCIAL GROUP INC. ON JANUARY 8, 2020",
+        "qids": [
+          "guidance"
+        ]
+      },
+      "status": "ORIGINAL_MATCH_ONLY_UNQUALIFIED",
+      "path": "C:\\atx\\atx-db\\data\\raw\\sec-earnings-release\\objects\\e1\\e1dc140fc738645297f1e33565df1fe10f8869c71c824f883e9b2c67473728fd.gz",
+      "stored_bytes": 26632,
+      "original_bytes": 701400,
+      "stored_sha256": "30ad1cc2e56ad1ba2845ee282fcc348387d8ef963e3954004e18d8912059ee50",
+      "original_sha256": "e1dc140fc738645297f1e33565df1fe10f8869c71c824f883e9b2c67473728fd",
+      "presence": {
+        "sgml_acceptance": false,
+        "inline_dei": false,
+        "declaration": false,
+        "accepted_index": false
+      },
+      "receipt_lines": [
+        48889
+      ]
+    }
+  ],
+  "context_snippets": [
+    {
+      "accession": "0000950157-20-000022",
+      "kind": "inline_dei",
+      "context": "to20200103\" format=\"ixt:booleanfalse\">false</ix:nonNumeric><ix:nonNumeric name=\"dei:EntityCentralIndexKey\" id=\"Fact_e37a083247fe41b789c4572901f2f2d1\" contextRef=\"c20200103to20200103\">0000008868</ix:nonNumeric><ix:nonNumeric name=\"dei:CurrentFiscalYearEndDate\" id=\"Fact_a90dda58109a41cc9967249b4f79b5f9\" contextRef=\"c20200103to20200103\">--12-31</"
+    },
+    {
+      "accession": "0000022444-20-000006",
+      "kind": "declaration",
+      "context": "ont style=\"font-family:inherit;font-size:11pt;\">, the board of directors of CMC declared a quarterly dividend of </font><font style=\"font-family:inherit;font-size:11pt;\">$0.12</font><font style=\"font-family:inherit;font-size:11pt;\">&#32;per share of CMC common stock payable to stockholders of record on </font><font style=\"font-family:inherit;font-"
+    },
+    {
+      "accession": "0001104659-20-001367",
+      "kind": "inline_dei",
+      "context": "\n  <ix:hidden>\n    <ix:nonNumeric contextRef=\"From2020-01-05to2020-01-06\" name=\"dei:EntityCentralIndexKey\">0001113481</ix:nonNumeric>\n    <ix:nonNumeric contextRef=\"From2020-01-05to2020-01-06\" format=\"ixt:booleanfalse\" name=\"dei:AmendmentFlag\">false</ix:nonNumeric>\n    <ix:nonNumeric contextRef=\"From2020-01-05to2020-01-06\" name=\"dei:CurrentFis"
+    },
+    {
+      "accession": "0000016918-20-000005",
+      "kind": "declaration",
+      "context": "\"><font style=\"font-family:DIN-Regular,sans-serif;font-size:9pt;color:#5e5e5e;\">Declares quarterly cash dividend</font></div></td></tr></table></div></div><div style=\"line-height:120%;padding-left:4px;text-align:left;\"><div style=\"padding-left:0px;text-indent:0px;line-height:normal;padding-top:10px;\"><table cellpadding=\"0\" cellspacing=\"0\" style=\"font"
+    }
+  ],
+  "stored_plus_decoded_bytes": 2915510,
+  "http_attempts": 0,
+  "qualification": "Availability/native-format leads only, not publication/class/currency/cadence/history/denominator/gate certification."
+}

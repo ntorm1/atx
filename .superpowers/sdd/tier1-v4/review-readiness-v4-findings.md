@@ -1,0 +1,11 @@
+# Independent readiness-matrix-v4 scope review
+
+Status: **Approved; no findings in the requested scope.** Reviewer `/root/t16_extract_round5` authored neither matrix nor R21. Read-only comparison of readiness-matrix-v3.json, readiness-matrix-v4.json and task-21-cutoff-scope-ruling.md; no actual source/data/hash/metadata audit or tests performed.
+
+- Both matrices retain exactly the same46 requirement IDs. Every original `threshold` and `status` string is identical. No gate waiver, threshold relaxation, reduced population or new acceptance PASS was introduced.
+- The new cutoff_scope explicitly retains2023-01-01 as the exclusive boundary for evaluation and complete forward labels. Later historical predictors require original strict PIT/source/history qualification; later individual source-backed DLRET is explicitly source data, never a forward label or evaluation grant.
+- Changed D12/C08/C13/P05 notes match R21: construction-only blanket nulling needs separate reviewed/refrozen implementation; evaluation/replication dates stay unchanged. C13 preserves2267/80% and200 native checks. The superseded44.24% theoretical metadata ceiling is not represented as measured acceptance. R20's all-country nonmicro characteristic reference population is recorded without an outcome-selected recipe change.
+- C14/O04 notes distinguish partial source availability/replayed batches from complete source economics, full85 admission, release restart/rollback and final acceptance. Their operational observations were not independently audited in this scope review and do not create a gate PASS.
+- Release remains NOT_PRODUCTION_READY. Previous scoped review is preserved as historical evidence; v4 review was pending at inspection and full final release review remains pending. No foreign-workflow authorization is inherited.
+
+Check command: offline Python JSON comparison keyed by requirement ID, exact equality of46 threshold/status strings, and inspection of every changed requirement field plus top-level cutoff/review/status policy. Result46/46 unchanged thresholds/statuses; only six requirement notes changed. This approval covers the clarification and evidence-note scope only, not source correctness, execution evidence, current producer qualification or final warehouse release.

@@ -2,13 +2,51 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
-**LATEST (2026-10-04): root LIVE serial batches10..17 session25720, R19.**
+**LATEST (2026-10-04): root LIVE batches32..39, session10527, R19.**
 This checkpoint supersedes every historical live-session statement below.
-Batches0..11 completed native replay and independent two-pass root admission.
+Batches0..34 completed native replay and independent two-pass root admission.
+Sessions9888(16..23) and51181(24..31) ended0; all eachnative+rootaudit succeeded.
+Recent nativebatches take27-34s,peakabout381-396MB; exactpins in per-batchlogs.
+Whole85source admission/financialgates remainincomplete. Never runanother
+actualjob while session10527 is live.
+
+**OWNER R21: cutoff applies to evaluation and forward labels only.**
+Explicituserreply allows historicalreturnfeatures and individualsourceDLRET
+after2022 withoriginalPIT/sourcequality; no later evaluation/forwardlabels.
+task-21-cutoff-scope-ruling.md andglobalconstraintsupdated; readinessmatrixv4
+retainsall46thresholds/statuses andwas independentlyApproved byTask8author
+(review-readiness-v4-findings.md). Task6/7 constructionupdate nowDISPATCHED to
+originalTask7author/root/t7_characteristics withr21-feature-construction-brief.md.
+Newsemanticshashes notyetreported; Task8author coordinatesmigration, noactualrun.
+The earlier44.24%MNAcoverageceiling is superseded, nevermeasuredPASS.
+
+Task12initiale255b515review Needsfixes,I1-I5 inreview-T12-native-findings.md.
+Originalauthor t12_terminal_events fixinground1/5 includingR21sourcepolicy:
+conditionalcash,negatedbasis,auxiliaryclockinventory,physicaltypes,runtimepins.
+Initial4commits faa18387/11892c26/a2f97138/e255b515,48offlinecases.
+Task13nativeproductionwiring cda1e08b submitted,6fixtures7.26s,2/5repairs.
+Reviewpackage review-T13-native-qualified.diff includes62896107/cda1e08b,
+1152lines; independentreview NOTYETDISPATCHED, waitforfreelane. ActualgatesFAIL.
+Rootoriginalobjectaudit2s/147,480,576bytes:8originalobjects matchreceipt+SHA,
+2,915,510storeddecodedbytes;2declaration/2inlineDEI leads,0nativeacceptance;
+exact2019q4/2020q1notesZIPpaths missing. This is source-layout only, noqualifyingPASS.
+
+Historical failed/retry details (preserved):
+Chunk95143 ended at batch15 lowcommit30.1s/378,564,608peakbytes,
+freecommit0.447GiB,exit137/no cap. Guard23792/child19208 absent and no native
+receipt. Explicit retry9830/v2 passed62.1s/388,894,720bytes,1,465,081rows,
+receiptSHA3060988f7307609334faf639189347451160808353a26f310ead33743ade5d16.
+Retained failedv1logs. Keep new session9888 owned through completion.
+Single-batch12 retry1295 ended0:52.1s/357,822,464peakbytes,1,466,339rows,
+receiptSHAf790dc8fc4ca5aa28d680db9b9da4e674354da27035b41611a2f6927c4ecfe2c.
+Batch13passed45.1s/394,104,832bytes;14passed51.1s/360,189,952bytes.
 Single-batch9 retry55669 ended0:58.2s/365,297,664peakbytes,1,410,539rows,
 receiptSHAb36f4df7424a4c8e07f5f37cfe405889b998c1b5f939a35bda23573dd9bbacc6.
 No prior evidence replaced. Batch10passed59.2s/388,677,632bytes;
-batch11passed56.1s/398,966,784bytes. Keep live25720 owned through completion.
+batch11passed56.1s/398,966,784bytes. Chunk25720 then stopped batch12:lowcommit
+29.1s/382,201,856peakbytes,freecommit0.5722GiB,exit137/no cap; prior guard468/
+child18452 absent. At that stop no batch12 receipt or13..17attempts existed.
+Preserved v1logs; separately admitted v2retry succeeded as recorded above.
 Chunk66577 ended at batch9: stopped_low_commit57.2s, peak370,270,208bytes,
 host free commit0.6808GiB, exit137, no cap hit. No batch9 native receipt was
 published; both recorded PIDs absent. Retained failedv1 logs and attempt evidence.
@@ -21,15 +59,26 @@ Frozen producer685a7550 and contract unchanged; Task16 cap remains5/5.
 Task13 R2cb318dd9 independently Approved in review-T13-native-r2-findings.md;
 I1/I6closed, total2/5fixrounds. Full source task remains0PASS/3FAIL. Original
 author's static native source-qualification plan accepted. It prepares bounded
-metadata helper for root AFTERchunkends; continues originalclock/class/currency/
+metadata helper passed rootguard1s/45,813,760bytes,12/12exactpaths exist:
+task13-native-chain-preflight-v1.json contains schemas/footer counts only, no
+rowvalues/fullhash/source qualification. Agent continues originalclock/class/currency/
 cadence/carry native readers offline. No source/datajobs granted to agents.
 Task12 conditional native financial/price proof and exact pre2023 return path
 implemented offline; initial full checkpoint/report/commit not yet submitted.
+Task13 continuation62896107 adds offline native conditional primitives only;
+production wiring stillincomplete,author resumed to complete it and prepare
+unrun bounded original-object audit. No formal newrepairround yet,2/5used.
+Task8 nowassigned existing GPT6.1Sol lane t16_extract_round5 after freshspawn
+andotheridleresume hitthreadlimit. This is a different task; frozenTask16 stays
+untouched/capped5. R20task-8-breakpoint-ruling.md verifies primaryJKPmethod:
+NYSE20/80sizebreakpoints,ALLnonmicro characteristicthirds. ReuseTask7kernel,
+noNYSE-onlynewformula. FullTask8nativeharness implementation offline underway.
 Root task12-price-identity-metadata-v1.json completed2s/68,141,056bytes: raw
 TickerHistory hasclose/closeUnadjPr but no currency/class columns; identities
 andsecurity_master metadata exist, economic meanings remain unqualified.
 No actual return evaluation, HTTP or consumer acceptance. Root operational
-helpers/newreviews/Task12audit JSONs/HANDOFF/progress uncommitted after5a110c87.
+helpers/newreviews/Task12audit JSONs committed769fec84 (14ownedfiles). New latest
+HANDOFF/progress and Task13nativechain helper/JSON remain uncommitted.
 
 Historical extraction checkpoint (superseded):
 Started after real batch0 passed43.0s/389,029,888 peak bytes. Its immutable receipt
