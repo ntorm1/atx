@@ -1,0 +1,31 @@
+{
+  "status": "PRIMARY_DOCUMENTATION_ONLY_NOT_DATA_ADMISSION",
+  "review_date_utc": "2026-10-04",
+  "sources": [
+    {
+      "url": "https://hobergphillips.tuck.dartmouth.edu/tnic_basedata.html",
+      "observations": [
+        "The current base-data page advertises coverage through 2023 and identifies TNIC-3 as the standard three-digit-SIC-granularity product.",
+        "TNIC-2, complete TNIC-All and a preliminary embeddings-based ETNIC product are separate alternatives; none is automatically substituted for TNIC-3."
+      ]
+    },
+    {
+      "url": "https://hobergphillips.tuck.dartmouth.edu/idata/Readme_tnic3.txt",
+      "observations": [
+        "Published score is excess similarity above the inclusion threshold, not the raw cosine score.",
+        "The table includes both ordered directions of each related pair and a self row for each covered firm-year.",
+        "Identifiers are gvkey1 and gvkey2. The year follows fiscal-period end and the source is explicitly not lagged; year alone is not an availability clock.",
+        "Construction filters vocabulary and vertical relationships and calibrates relatedness granularity. A positive-cosine all-word approximation does not reproduce the source definition."
+      ]
+    },
+    {
+      "url": "https://hobergphillips.tuck.dartmouth.edu/industryclass.htm",
+      "observations": [
+        "This older page advertises coverage through 2021, while the current linked base-data page advertises 2023. Preserve endpoint/version provenance rather than treating the older page as current inventory."
+      ]
+    }
+  ],
+  "qualification": "No dataset downloaded, local source bytes inspected, source publication clock established, historical gvkey bridge admitted or license approval inferred. Original coverage, PIT and complete source gates remain open. Implement the conditional authoritative source path alongside any explicitly named approximation; missing implementation must not be represented as source absence.",
+  "sec_http_attempts": 0,
+  "actual_feature_or_return_rows_read": 0
+}

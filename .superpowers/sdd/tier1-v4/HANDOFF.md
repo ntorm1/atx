@@ -2,8 +2,17 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
-**CURRENT: No root actual job remains live. Heavy builds remain held after two
-external low-commit stops and a stopped host observation. Engineering continues.**
+**CURRENT: No root job is live. Heavy financial builds remain held: the completed
+host observation failed its predeclared scheduling condition.**
+New observation54435 completed302.3s/26,566,656bytes under0.1GiBguard, no cap.
+All31samples are in logs/host-headroom-window-v2.json: minimumcommit2.2642GiB,
+physical1.4105GiB; condition3GiBcommit/1GiBphysical NOT met. The guard sampled a
+lower transientcommit2.1808GiB. No third financial pilot was launched, no threshold
+lowered. Observer was justified by recovered4.6969GiB/no live guards after the
+prior0.4012GiBstop, but recovery was not sustained for the required window.
+Later small read-only SEC ledger audits17502/5386 both completed successfully;
+they are not financial rescheduling evidence. Every future actual job remains
+root-serialized and guarded; any heavy resume needs new stable resource evidence.
 Retry27343 ended stopped_low_commit14.1s/123,453,440bytes, exit137/no cap,
 freecommit0.6847GiB. Guard22068/child24980/actual312 ended; matching runtime
 scan empty. Inspectionv2 passed2s/63,905,792bytes under0.2GiB: unchanged
@@ -25,11 +34,31 @@ Task10 repair1/5 committed312c42f6, eight repair/13legacy/one frozen-artifact
 checks passed. Independent scoped rereview PASS for spec and quality: I1-I3
 addressed, no new Important findings (review-T10-native-r1-findings.md). Config
 94358ee94edc83b699bf00cc64216d61eac1a63b89cdf92d39cfa96adca26a33.
-Actual0PASS/7FAIL-unmeasured and manual0/300 unchanged. Task16 golden delivery
-and Task17 full native reader/catalog integration remain active, with frozen
+Actual0PASS/7FAIL-unmeasured and manual0/300 unchanged. Task16 golden delivery,
+Task17 full native reader/catalog integration and freshTask15 text/TNIC native
+implementation remain active, with frozen
 native producers/runtime untouched. Golden labels must implement conditional
 native5/21/63-session price/action/terminal replay, not an all-NULL placeholder.
 Missing actual proofs remain explicit NULL; missing implementation stays open.
+Task15 baseline0817790d, /root/t15_text_native (GPT6.1Sol), original initial
+task under task15-native-continuation-brief.md. Existing three entrypoints clean
+and absent from protected paths at dispatch; direct native helpers/tests/docs
+only. Root keeps actual source/metadata/HTTP jobs; all SEC requests remain held.
+Source inventories must derive from native original filings/accepted records and
+complete independently admitted member populations, not caller-asserted tables.
+R24 task-24-tnic-method-ruling.md resolves the exact original contract after
+reading prior docs: required reproduced TNIC-style prior-yearDF25/SIC3 method,
+strict peer gate and full populations retained. Positive-cosine/nearest5 cannot
+substitute. Correct historical SIC/corpus/vintage PIT; official external import
+is optional, not a new mandatory source. Public reference notes are recorded in
+tnic-primary-documentation-v1.json, no data/source/rights admission.
+
+Fresh SEC chronologyv2 verified20knownfiles/105,599,673bytes twice;12.1s/
+27,267,072bytes under0.15GiB, no HTTP. sec_text has38,433receipts declaring38,678
+requests (Sep29-30), so its old3,303checkpoint is stale. Earnings108,494outcomes
+dateSep26-27; issuer-history2,998attempts dateOct3. Exact baseline interval,
+hidden/pre-receipt retries and complete all-store accounting remain unresolved;
+no new capacity inferred. sec-budget-reconciliation-v2.md records next steps.
 
 Primary public SpiderRock documentation review is recorded in
 vendor-dictionary-review-v1.json. Current Upcoming dictionaries clarify prices,
