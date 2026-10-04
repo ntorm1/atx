@@ -1,34 +1,37 @@
 # Buyback announcements and Part II executions
 
-`events/buyback.parquet` retains the existing 8-K/EX-99 authorization extraction and
-adds eligible retained10-Qdocuments. Explicit authorizations retain `new`/`increase`;
-PartIIItem2table executions have `event_type=execution`, never `first_announcement`.
-The narrow execution reader accepts a native pipe table with these exact columns:
-`Period | Total shares purchased | Average price paid per share (USD) | Shares purchased
-under publicly announced plans | Remaining authorization (USD)`. It accepts month/year
-rows with unscaled nonnegative numbers, rejects unsupported units/currencies, totals,
-and public-program counts above total shares. This does not yet cover arbitrary SEC HTML
-tables or differently captioned issuers; actual coverage is unmeasured.
+Current public build/replay contract: [native admission](distributions_admission.md).
+Legacy catalog parsing and manufactured hash-only parse receipts are refused. CLI requires
+an externally expected complete admission hash; parsing and publication re-read original
+objects, match original source receipts, pin exact reader/parser code before computation,
+check every input afterward, and compare every admitted native-derived output row.
 
-New fields are `source_sha256`(string,native bytes digest), `execution_period`(string,
-month/year), `execution_shares`(double,shares), `execution_average_price`(double,USD/share),
-`public_program_shares`(double,shares), `remaining_authorization_usd`(double,USD). Every
-row preserves source document, accession, evidence and SEC-source availability metadata.
-All event fields use the filing acceptance UTC clock; missing source clocks require
-upstream conservative publication floors. Daily access is strictly before prior-session
-22UTC, monthly access strictly before monthend22UTC. No staleness applies to historical
-events. Existing issuer-primary linkage is issuer-level and does not certify a dividend
-class. Existing later-XBRL corroboration is explicitly clocked and cannot be used as
-announcement-time information.
+Outputs:`events/buyback.parquet`, retained `events/buyback_products/<id>/buyback.parquet`
+and immutable product manifest. Schema:`atx.alpha-panel.events.buyback/v2`. Public exact
+base columns/types:`OUT_COLUMNS`; complete derived schema is independently regenerated
+by `validate_product`. Key:non-null unique(accession,source_sha256,event_type,evidence).
+Native source truth remains unqualified even when byte/schema/replay validation passes.
 
-Parser rows/catalog, fundamental events, fundamental manifest, identity linkage and
-identity manifest are content pinned; publication rechecks them before exposing the
-current alias. Each immutable product is under `events/buyback_products/<id>/` and
-retains its own manifest. Existing products reject overwrite.
+New fields:source_sha256(string,original-byteSHA),execution_period(string,month/year),
+execution_shares(double,shares),execution_average_price(double,USD/share),
+public_program_shares(double,shares),remaining_authorization_usd(double,USD). Source
+identity/evidence/accession and explicit conservative receipt clock survive every row.
+Announcements retain new/increase types; execution never becomes first_announcement.
+Future XBRL corroboration retains its own future availability and cannot inform the
+announcement-time value. Issuer-primary identity joins are not dividend-class certification.
 
-Replay only after root source review, under a0.3GiBguard: `.venv/Scripts/python.exe
--m atx_db.alpha_panel.events_buyback --phase all`. Uses128MBDuckDB and1thread. This
-command does not fetch documents. Catalog10-Qcoverage may be absent and must be audited
-before declaring source completeness. Gate:200distinct native-event checks≥95%; actual
-checks0, gateFAIL. No actual2020–2025coverage or publication is measured; fixture tests
-do not close that gate. Native source sample/terms/history/budget review is outstanding.
+The narrow PartIIItem2reader requires exact unscaled USD/share captions and numeric
+month/year rows. Any scaled/ambiguous section or surrounding shares/amounts scale label
+is rejected with keyed unsupported diagnostics. Different captions, unsupported units,
+totals and public-program shares above total shares remain unsupported. This preserves
+unknowns rather than inventing unscaled share/dollar amounts. Actual catalog contains no
+10Qrows; this does not establish absence of retained10Qdocuments elsewhere.
+
+Availability uses matching original receipt fetched_at/done_at as a conservative floor;
+source acceptance/class semantics remain unqualified. Events have no expiration. Daily
+queries require the prior admitted exchange session22UTC; monthly queries require the
+admitted month-end session22UTC. Product replay uses128MBDuckDB/1thread under the guard.
+
+Gate:200distinct independently reviewed native events with>=95%agreement. Actual checked
+0/200,FAIL. Actual2020?2025coverage and production build remain unmeasured. Root bounded
+source feasibility is not event handcheck evidence or gate acceptance.

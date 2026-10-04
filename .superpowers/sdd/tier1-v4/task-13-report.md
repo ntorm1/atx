@@ -115,3 +115,94 @@ events issuer-primary linkage is not dividend-class identity. Existing events li
 must undergo source/PIT certification in actual build review. These limitations are
 reported as missing evidence and do not relax gates. No broad source scan was run to
 hide them. Downstream Task4R11 remains open until source-certified publication exists.
+
+## Fix round R1 — independent review of539ee6ff
+
+Review:`review-T13-native-findings.md`, five Important engineering findings I1–I5.
+Status remains BLOCKED on actual source semantics/gates; this is an engineering
+correction, not task-completion or actual-gate evidence. Revised native contract
+supersedes every initial normalized-UTF8/hash-receipt build command above. Native
+source prerequisites cannot be counted as the completed original task.
+
+| Finding | Correction | Covering fixture proof |
+|---|---|---|
+| I1 old/new amount | Explicit from/to increase uses the new amount; ambiguous multiple amounts/classes refuse; variable/no-pay policies refuse | test_increase_new_amount_and_ambiguous_classes; test_no_pay_policy_and_holiday_cutoff |
+| I2 calendar day | Prior admitted exchange session, strict22UTC; monthend requires next-session proof; registry SQL updated | test_strict_daily_monthly_clock; weekend/MLKholiday/equality tests |
+| I3 PartII scaled values | Reject scales anywhere in section or explicit surrounding shares/amounts scale scope; keyed unsupported reasons retained | test_scaled_surrounding_part_ii_rejected; native unscaled execution integration |
+| I4 compute/native provenance | Mandatory externally expected admission digest; complete reader/parser identities before computation; raw stored/original/normalization hashes separate; original receipt identity/clockfloor verification; complete eligible source-catalog hash partition; public full-row native/schema/key/join replay before publication and read-only CLI replay | gzip admission/expected denominator/stale code tests; fabricated parse receipt refused; mutated distribution amount and buyback join values reject public replay |
+| I5 duplicate keys | Native and parent catalog nonnull unique keys reject; independently enforce output keys before exposing manifest/current product | duplicate native/parent-key fixture; public validators enforce keys |
+
+New private module:`distributions_native.py`; new public contract:
+`docs/datasets/distributions_admission.md`. Existing distribution/buyback docs and
+registry stubs now describe admitted calendar, exact keys/schemas and current replay.
+Distribution schema/rule bumpedv2. Legacy unadmitted phase_parse explicitly refuses;
+CLI uses parse_native and cannot publish a manufactured hash-only receipt.
+
+Externally expected admission pins catalog, original parent source-catalog, calendar,
+class, clock, fundamental/identity manifests and required descendant files, exact stage
+readers and imported lxml/pyarrow/DuckDBreader entrypoints/binaries. Raw source GZIP
+is bounded decodedlimit+1; every original source receipt line/ledger and body digest
+must match expected identities before normalization. Code/native/input identities are
+rechecked after computation and independent public replay. Source metadata hashes
+prove identity only. They never turn arbitrary class/clock assertions into truth:
+all current indicated annual rates remainNULL; declared regular rates/cadence remain
+separate source-supported fields. Availability is matching original-receipt
+fetched_at/done_at conservativefloor; original acceptance remains unqualified.
+Product statuscomplete means complete admitted extraction/replay, with actual task
+gateFAIL and explicit source_semanticsUNQUALIFIED. Independently admitted parent
+eligible metadata partitions preserve every expected key and unknown/no-supported-
+declaration diagnostics. They are not a vendor-cash full denominator substitute.
+
+Bounds now≤100native docs/partition,≤2MiBstored/decoded per doc,≤8MiBdecoded+normalized
+total, original receipt ledger≤32MiB/line≤64KiB, original metadata≤8MiB/100,000rows.
+Public buyback replay and publication use128MBDuckDB/1thread. No original sources,
+actual hashes, network, HTTP or live data jobs were run by this lane during R1.
+
+Only generated root evidence was read:task13-catalog-preflight-v1.json and
+task13-original-feasibility-v1.json. Root reports schema preflight2s/123,408,384bytes,
+source feasibility4s/141,127,680bytes,0HTTP. Original catalog51384rows/3173718bytes,
+SHAa76d19d7458481fcd67de4f7397617234f34b98843b2449c291628564690bf64;
+23958eligible2020+8K(/A)metadata rows, no10Qrows in this catalog (not absenceelsewhere).
+Two original GZIPobjects totalstored+decoded305336bytes matched receipts/catalog:
+CIK16160/accession0000016160-20-000007 originalSHAbca214bc5fc720a716e5b8131b9f41acb166598ab3b3203cd2c7f75a51ebd463,
+storedSHAa58331ebb7b1a0183f2b043f5e131530806b7fed4cc75dc08de58208b0ed7272,
+normalizedSHAaea4cd33e4bbddc134005809f66f52e547bc7bd21891c5c427caa7e1ddb038d9;
+CIK8868/accession0000950157-20-000022 originalSHA2db7aba232e1ed2e5d2c5aa16e3a8a3fed3d89889f80a79cdc5fba7f64fbce4d,
+storedSHAff608acc47a48c887caaf48c6d0696aeb94a75613d24ef5f9031faaa002495e5,
+normalizedSHA4afbeddcb2f9127705796218a46cb76f5f0f6769c050225e93fe5d63b23d584a.
+These are root-reported original-byte proofs, not lane reaudits or native semantic
+handchecks. Cal-Maine explicitly variable-income policy and willNOTpayQ22020; no
+affirmative/fixed rate inferred. Avon source is a merger document without distribution
+keywords. Both remain class/acceptance/cadenceUNQUALIFIED. Neither closes a gate.
+
+R1 covering command, same required env and working directory:
+
+```powershell
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_alpha_panel_distributions.py -q
+```
+
+Covering suite passed18tests in9.44s before schema-version metadata-only update;
+final result recorded below after current code validation. No broad unchanged-test
+rerun. An intermediate scale-scope test falsely rejected a separate authorization
+million amount; corrected scope to explicit shares/amounts **in** scaled units and
+retested. Root's actual-source results were not substituted for fixture outputs.
+
+Actual gates unchanged:0PASS/3FAIL; declaration coverage/vendorcashagreement
+unmeasured; independent buybackchecks0/200. Exact remaining external work: qualify
+native publication/class/currency/calendar and rate-carry source chains; admit complete
+source partitions with original source receipts; independently admit and measure every
+member-line2020+cash-event/vendor/universe/ex-date denominator (retain unresolveds);
+200distinct native buyback expected-field checks with≥95%agreement; peryear2020–2025
+coverage in all three universes; Task4divyieldactual gate/source-handcheck refresh
+before gold/Task17. No fabricated Boolean matches or metadata-onlyPASS were published.
+
+Final R1 covering result:18passed in12.89s before explicitly adding the loaded
+PyArrowlib/parquet and DuckDBcompiled reader binary identities. Final post-reader-pin
+result appended below. `git diff --check` passed for all owned paths. Only report/docs
+changes follow the final covering tests; commit stages this report using`git add -f`.
+
+Post-reader-pin final covering result:**18passed in19.85s**, command above,
+offline fixtures only. Loaded compiled PyArrowlib/parquet and DuckDBbinary identities
+are now included alongside lxml and stage readers before/after computation. All
+five finding-specific tests and the full independent replay rejection integration
+are in this single covering file; no unchanged test suite was rerun.

@@ -300,6 +300,8 @@ def extract_part_ii(text: str) -> list[dict[str, Any]]:
     if not section:
         return []
     lines = section.group(1).splitlines()
+    if re.search(r"\b(?:millions?|thousands?|billions?|000s|in\s+\$?000)\b", section.group(1), re.I) or re.search(r"\b(?:shares?|amounts?|dollars?)\b[^.\n]{0,80}\b(?:in|expressed\s+in)\s+(?:millions?|thousands?|billions?|000s)\b", text, re.I):
+        return []
     expected = ["period", "total shares purchased", "average price paid per share (usd)",
                 "shares purchased under publicly announced plans", "remaining authorization (usd)"]
     active = False
@@ -332,93 +334,126 @@ def _tmp() -> Path:
 
 
 def phase_parse(start: dt.date = dt.date(2019, 1, 1)) -> dict[str, Any]:
-    """Pure Python over the document catalog (ruling C-1: no DuckDB)."""
+    """Legacy unadmitted catalog parsing cannot produce an admissible product."""
+    raise ValueError("legacy catalog parse lacks independent native admission; use parse_native")
+
+
+def native_rows(admission_path: Path, expected_sha256: str):
+    from . import distributions_native as N
+    from .distributions import clock
+    originals, pins, admitted = N.replay_inputs(admission_path, expected_sha256)
+    rows = []
+    diagnostics = []
+    for doc, blob, text in originals:
+        base = {"cik": doc["cik"], "accession": doc["accession"], "form": doc["form"], "items": doc.get("items"),
+                "source_doc": doc["source_doc"], "doc_source": doc["source_path"],
+                "filing_date": dt.date.fromisoformat(doc["filing_date"]), "event_date": None,
+                "available_at": clock(doc["fetched_at"]).replace(tzinfo=None), "acceptance_clock": "unqualified_fetched_at_floor",
+                "vintage_risk": "clock_class_unqualified", "source_sha256": hashlib.sha256(blob).hexdigest(),
+                "extractor_version": EXTRACTOR_VERSION}
+        for event in extract_authorizations(text, base["filing_date"]):
+            rows.append({**base, **event.__dict__})
+        executions = extract_part_ii(text) if doc["form"].startswith("10-Q") else []
+        for event in executions:
+            rows.append({**base, **event, "event_type": "execution"})
+        diagnostics.append({"accession": doc["accession"], "source_sha256": base["source_sha256"],
+                            "execution_rows": len(executions), "unsupported_part_ii_reason":
+                            "scaled_or_ambiguous_or_unsupported_caption" if doc["form"].startswith("10-Q") and not executions else None})
+    N.validate_keys(rows, ["accession", "source_sha256", "event_type", "evidence"])
+    N.recheck(pins)
+    return rows, pins, admitted, diagnostics
+
+
+def parse_native(admission_path: Path, expected_sha256: str) -> dict[str, Any]:
     import pyarrow as pa
     import pyarrow.parquet as pq
-
-    from . import events_sources as ES
-    from .guidance import peak_memory
-
-    store = ES.open_store()
-    catalog_sha = C.sha256_file(ES.catalog_path())
-
-    def pred(r: dict[str, Any]) -> bool:
-        if not r["form"] or not r["form"].startswith(("8-K", "10-Q")) or (r["filing_date"] or dt.date.min) < start:
-            return False
-        if r["form"].startswith("10-Q"):
-            return (r["file_type"] or "").upper().startswith("10-Q")
-        if r["doc_source"] == "landed_v2":
-            return True
-        q = r["qids"] or []
-        ft = (r["file_type"] or "").upper()
-        return ("buyback" in q or "guidance" in q) and (ft.startswith("EX-99") or ft.startswith("8-K"))
-
-    schema = pa.schema([(n, {"BIGINT": pa.int64(), "VARCHAR": pa.string(), "DATE": pa.date32(),
-                             "TIMESTAMP": pa.timestamp("us"), "DOUBLE": pa.float64()}[t]) for n, t in OUT_COLUMNS])
+    rows, pins, admitted, diagnostics = native_rows(admission_path, expected_sha256)
+    types = {"BIGINT": pa.int64(), "VARCHAR": pa.string(), "DATE": pa.date32(), "TIMESTAMP": pa.timestamp("us"), "DOUBLE": pa.float64()}
+    schema = pa.schema([(name, types[typ]) for name, typ in OUT_COLUMNS])
     dest = _tmp() / "buyback_rows.parquet"
-    tmp = dest.with_name(dest.name + ".partial")
-    writer = pq.ParquetWriter(tmp, schema, compression="zstd")
-    stats: dict[str, Any] = {"documents": 0, "unreadable": 0, "events": 0}
-    buf: list[dict[str, Any]] = []
-    seen: set[tuple[Any, ...]] = set()
-    for r in ES.iter_catalog(pred):
-        stats["documents"] += 1
-        blob = ES.read_document(r, store)
-        if not blob:
-            stats["unreadable"] += 1
-            continue
-        text = ES.document_text(blob, r["source_doc"] or "")
-        for a in extract_authorizations(text, r["filing_date"]):
-            k = (r["accession"], a.event_type, a.amount_usd, a.amount_shares, a.total_after_usd)
-            if k in seen:
-                continue
-            seen.add(k)
-            buf.append({"cik": r["cik"], "accession": r["accession"], "form": r["form"], "items": r["items"],
-                        "source_doc": r["source_doc"], "doc_source": r["doc_source"], "filing_date": r["filing_date"],
-                        "event_date": r["event_date"], "available_at": r["available_at"],
-                        "acceptance_clock": r["acceptance_clock"], "vintage_risk": r["vintage_risk"],
-                        "event_type": a.event_type, "amount_usd": a.amount_usd, "amount_shares": a.amount_shares,
-                        "total_after_usd": a.total_after_usd, "evidence": a.evidence,
-                        "extractor_version": EXTRACTOR_VERSION,
-                        "source_sha256": hashlib.sha256(blob if isinstance(blob, bytes) else blob.encode()).hexdigest()})
-            stats["events"] += 1
-        if r["form"].startswith("10-Q"):
-            for execution in extract_part_ii(text):
-                key = (r["accession"], "execution", execution["execution_period"], execution["evidence"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                buf.append({**{k: r.get(k) for k in ("cik", "accession", "form", "items", "source_doc", "doc_source",
-                            "filing_date", "event_date", "available_at", "acceptance_clock", "vintage_risk")},
-                            **execution, "event_type": "execution", "extractor_version": EXTRACTOR_VERSION,
-                            "source_sha256": hashlib.sha256(blob if isinstance(blob, bytes) else blob.encode()).hexdigest()})
-                stats["events"] += 1
-        if len(buf) >= 5000:
-            writer.write_table(pa.Table.from_pylist(buf, schema=schema))
-            buf.clear()
-    if buf:
-        writer.write_table(pa.Table.from_pylist(buf, schema=schema))
-    writer.close()
-    if C.sha256_file(ES.catalog_path()) != catalog_sha:
-        raise ValueError("document catalog changed during buyback parse")
-    os.replace(tmp, dest)
-    stats["catalog_sha256"] = catalog_sha
-    stats["parse_rows_sha256"] = C.sha256_file(dest)
-    stats["peak_memory"] = peak_memory()
-    C.write_json_atomic(_tmp() / "buyback_parse_receipt.json", stats)
-    return stats
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), dest.with_suffix(".partial"))
+    from . import distributions_native as N
+    N.recheck(pins)
+    dest.with_suffix(".partial").replace(dest)
+    receipt = {"parse_rows_sha256": C.sha256_file(dest), "admission_sha256": expected_sha256,
+               "native_input_code_pins": pins, "population": admitted["population"], "diagnostics": diagnostics}
+    C.write_json_atomic(_tmp() / "buyback_parse_receipt.json", receipt)
+    return receipt
 
 
-def phase_publish() -> dict[str, Any]:
+def validate_product(target: Path, admission_path: Path, expected_sha256: str) -> dict[str, Any]:
+    """Read-only full native and admitted join replay, without trusting a parse receipt."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from . import distributions_native as N, events_common as EC
+    rows, pins, admitted, diagnostics = native_rows(admission_path, expected_sha256)
+    before = C.sha256_file(target)
+    types = {"BIGINT": pa.int64(), "VARCHAR": pa.string(), "DATE": pa.date32(), "TIMESTAMP": pa.timestamp("us"), "DOUBLE": pa.float64()}
+    table = pa.Table.from_pylist(rows, schema=pa.schema([(name, types[typ]) for name, typ in OUT_COLUMNS]))
+    N.validate_keys(pq.read_table(target).to_pylist(), ["accession", "source_sha256", "event_type", "evidence"])
+    con = C.connect(memory="128MB", threads=1)
+    con.register("native", table)
+    con.execute("""CREATE TABLE b AS SELECT r.*, r.event_type <> 'execution' AND NOT EXISTS (
+        SELECT 1 FROM native o WHERE o.cik=r.cik AND o.event_type=r.event_type
+        AND coalesce(o.amount_usd,-1)=coalesce(r.amount_usd,-1)
+        AND coalesce(o.amount_shares,-1)=coalesce(r.amount_shares,-1)
+        AND coalesce(o.total_after_usd,-1)=coalesce(r.total_after_usd,-1)
+        AND (o.available_at<r.available_at OR (o.available_at=r.available_at AND o.accession<r.accession))
+        AND o.available_at>=r.available_at-INTERVAL 180 DAY) AS first_announcement FROM native r""")
+    fund = Path(admitted["inputs"]["fundamentals"]["path"]).parent / "events.parquet"
+    if EC.link_table_path().resolve() != (Path(admitted["inputs"]["identity"]["path"]).parent / "link_table.parquet").resolve():
+        raise ValueError("security reader is not admitted identity path")
+    con.execute(f"CREATE TABLE fx AS SELECT cik, accession AS xbrl_accession, clock_utc, buyback_authorized, buyback_remaining FROM read_parquet('{fund.as_posix()}') WHERE buyback_authorized IS NOT NULL OR buyback_remaining IS NOT NULL")
+    con.execute("""CREATE TABLE b2 AS SELECT b.*, pb.buyback_authorized AS xbrl_authorized_before,
+        pb.buyback_remaining AS xbrl_remaining_before, pa.buyback_authorized AS xbrl_authorized_after,
+        pa.buyback_remaining AS xbrl_remaining_after, pa.xbrl_accession AS xbrl_after_accession,
+        pa.clock_utc AS xbrl_after_available_at FROM b
+        ASOF LEFT JOIN fx pb ON pb.cik=b.cik AND b.available_at>pb.clock_utc
+        ASOF LEFT JOIN fx pa ON pa.cik=b.cik AND pa.clock_utc>b.available_at""")
+    EC.attach_security(con, "b2", "b3", date_col="filing_date")
+    con.execute(f"CREATE VIEW actual AS SELECT * FROM read_parquet('{target.as_posix()}')")
+    actual_schema = dict((r[0], r[1]) for r in con.execute("DESCRIBE actual").fetchall())
+    expected_schema = dict((r[0], r[1]) for r in con.execute("DESCRIBE b3").fetchall())
+    if actual_schema != expected_schema:
+        raise ValueError("exact buyback schema mismatch")
+    columns = ",".join('"' + name + '"' for name in sorted(actual_schema))
+    delta = con.execute(f"SELECT count(*) FROM ((SELECT {columns} FROM actual EXCEPT ALL SELECT {columns} FROM b3) UNION ALL (SELECT {columns} FROM b3 EXCEPT ALL SELECT {columns} FROM actual))").fetchone()[0]
+    con.close()
+    if delta:
+        raise ValueError("buyback full native/join replay mismatch")
+    N.recheck(pins)
+    if C.sha256_file(target) != before:
+        raise ValueError("buyback product changed during admission")
+    return {"native_replay": "PASS", "rows": len(rows), "catalog_rows": admitted["population"]["catalog_rows"],
+            "source_semantics": "UNQUALIFIED", "diagnostics": diagnostics, "sha256": before}
+
+
+def phase_publish(*, admission_path: Path | None = None, expected_sha256: str | None = None) -> dict[str, Any]:
     from . import events_common as EC
+    from . import distributions_native as N
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    if admission_path is None or expected_sha256 is None:
+        raise ValueError("independent complete native admission required; hash-only parse receipt refused")
+    expected_rows, admitted_pins, admitted, diagnostics = native_rows(admission_path, expected_sha256)
 
     receipt: dict[str, Any] = {"parse": C.read_json(_tmp() / "buyback_parse_receipt.json")}
     parse_path = _tmp() / "buyback_rows.parquet"
+    if receipt["parse"].get("admission_sha256") != expected_sha256 or receipt["parse"].get("native_input_code_pins") != admitted_pins:
+        raise ValueError("abbreviated/stale parse provenance refused")
+    types = {"BIGINT": pa.int64(), "VARCHAR": pa.string(), "DATE": pa.date32(), "TIMESTAMP": pa.timestamp("us"), "DOUBLE": pa.float64()}
+    schema = pa.schema([(name, types[typ]) for name, typ in OUT_COLUMNS])
+    parsed = pq.read_table(parse_path)
+    if parsed.schema != schema or not parsed.equals(pa.Table.from_pylist(expected_rows, schema=schema)):
+        raise ValueError("parsed schema/full native replay mismatch")
     if C.sha256_file(parse_path) != receipt["parse"]["parse_rows_sha256"]:
         raise ValueError("buyback parsed rows changed")
     pin_paths = [parse_path, C.build_root() / "fundamentals" / "events.parquet", EC.link_table_path(),
                  C.build_root() / "fundamentals" / "manifest.json", C.build_root() / "identity" / "manifest.json"]
     pinned = {str(p): C.sha256_file(p) for p in pin_paths}
+    if any(str(p.resolve()) not in admitted_pins or C.sha256_file(p) != admitted_pins[str(p.resolve())] for p in pin_paths[1:]):
+        raise ValueError("fundamental/identity reader inputs not independently admitted")
+    pinned.update(admitted_pins)
     con = C.connect(memory="128MB", threads=1)
     rows = (_tmp() / "buyback_rows.parquet").as_posix()
     fund = (C.build_root() / "fundamentals" / "events.parquet").as_posix()
@@ -478,11 +513,13 @@ def phase_publish() -> dict[str, Any]:
                                      OR abs(xbrl_authorized_after - coalesce(total_after_usd, -1)) <= 0.01 * amount_usd))
         FROM read_parquet('{o}') WHERE first_announcement""").fetchone()
     con.close()
+    replay_proof = validate_product(out, admission_path, expected_sha256)
+    N.recheck(admitted_pins)
     for name, digest in pinned.items():
         if C.sha256_file(Path(name)) != digest:
             raise ValueError("buyback input changed during publication")
     C.write_json_atomic(product / "manifest.json", {"schema": SCHEMA, "product_id": product_id,
-        "input_manifests_sha256": pinned, "file_sha256": C.sha256_file(out),
+        "input_manifests_sha256": pinned, "file_sha256": C.sha256_file(out), "admission": replay_proof,
         "gate_status": {"buyback_200_native_handchecks": "FAIL", "measured": 0, "required": 200}, **receipt})
     import shutil
     alias = C.stage_dir(EC.STAGE) / f"{TABLE}.parquet"
@@ -497,12 +534,18 @@ def phase_publish() -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--phase", choices=("parse", "publish", "all"), default="all")
+    ap.add_argument("--admission", type=Path, required=True)
+    ap.add_argument("--admission-sha256", required=True)
+    ap.add_argument("--validate-product", type=Path)
     args = ap.parse_args(argv)
     out: dict[str, Any] = {}
+    if args.validate_product:
+        print(json.dumps(validate_product(args.validate_product, args.admission, args.admission_sha256), default=str))
+        return 0
     if args.phase in ("parse", "all"):
-        out["parse"] = phase_parse()
+        out["parse"] = parse_native(args.admission, args.admission_sha256)
     if args.phase in ("publish", "all"):
-        out["publish"] = phase_publish()
+        out["publish"] = phase_publish(admission_path=args.admission, expected_sha256=args.admission_sha256)
     print(json.dumps(out, default=str, indent=1)[:5000], flush=True)
     return 0
 

@@ -18,8 +18,8 @@ from typing import Any
 
 from . import common as C
 
-RULE = "native-distributions-v1"
-SCHEMA = "atx.alpha-panel.distributions/v1"
+RULE = "native-distributions-v2"
+SCHEMA = "atx.alpha-panel.distributions/v2"
 UTC = dt.timezone.utc
 CADENCE = {"monthly": 12, "quarterly": 4, "semiannual": 2, "semi-annual": 2, "annual": 1}
 MONTHS = {m.lower(): i for i, m in enumerate(
@@ -52,9 +52,18 @@ def extract_declarations(text: str) -> list[dict[str, Any]]:
             continue
         if not re.search(r"\bcash\s+dividend\b", sentence, re.I):
             continue
-        amount = re.search(r"(?:US\$|USD\s*|U\.S\.\s+dollars?\s*)\s*(\d+(?:\.\d+)?)\s*(?:per\s+(?:common\s+)?share|a\s+share)", sentence, re.I)
-        klass = re.search(r"\b(?:Class\s+[A-Z]\s+)?common\s+(?:stock|shares)\b", sentence, re.I)
-        if not amount or not klass:
+        if re.search(r"\b(?:not|no|never)\b.{0,40}\b(?:declare|pay|approve)|\b(?:variable|policy|historical|previously)\b", sentence, re.I):
+            continue
+        amounts = list(re.finditer(r"(?:US\$|USD\s*|U\.S\.\s+dollars?\s*)\s*(\d+(?:\.\d+)?)\s*(?:per\s+(?:common\s+)?share|a\s+share)?", sentence, re.I))
+        classes = list(re.finditer(r"\b(?:Class\s+[A-Z]\s+)?common\s+(?:stock|shares)\b", sentence, re.I))
+        if not amounts or len(classes) != 1 or not re.search(r"per\s+(?:common\s+)?share|a\s+share", sentence, re.I):
+            continue
+        klass = classes[0]
+        if len(amounts) == 1:
+            amount = amounts[0]
+        elif len(amounts) == 2 and re.search(r"\b(?:increase\w*|raise\w*)\b", sentence, re.I) and re.search(r"\bfrom\s*$", sentence[:amounts[0].start()], re.I) and re.fullmatch(r"\s*(?:per\s+share\s*)?to\s*", sentence[amounts[0].end():amounts[1].start()], re.I):
+            amount = amounts[1]
+        else:
             continue
         special = True if re.search(r"\b(?:special|one-time|extraordinary)\b", sentence, re.I) else (
             False if re.search(r"\bregular\b", sentence, re.I) else None)
@@ -110,8 +119,19 @@ def extract_spin_offs(text: str) -> list[dict[str, Any]]:
     return result
 
 
-def visible(row: dict[str, Any], session: dt.date, *, monthly: bool = False) -> bool:
-    cutoff = dt.datetime.combine(session if monthly else session - dt.timedelta(days=1), dt.time(22), UTC)
+def visible(row: dict[str, Any], session: dt.date, *, sessions: list[dt.date], monthly: bool = False) -> bool:
+    if sessions != sorted(set(sessions)) or session not in sessions:
+        raise ValueError("sorted unique admitted exchange sessions required")
+    index = sessions.index(session)
+    if monthly:
+        if index + 1 == len(sessions) or sessions[index + 1].month == session.month:
+            raise ValueError("month-end session requires following-session calendar proof")
+        day = session
+    else:
+        if index == 0:
+            raise ValueError("prior exchange session missing")
+        day = sessions[index - 1]
+    cutoff = dt.datetime.combine(day, dt.time(22), UTC)
     return row["available_at"] < cutoff
 
 
@@ -132,7 +152,74 @@ def gates(cash_rows: list[dict[str, Any]] | None = None,
             "buyback_handcheck": result(matched, len(checked), .95, len(keys) == len(checked) == 200)}
 
 
-def build(documents: Path, input_manifests: list[Path]) -> dict[str, Any]:
+def replay_rows(admission_path: Path, expected_sha256: str) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
+    from . import distributions_native as N
+    originals, pinned, admitted = N.replay_inputs(admission_path, expected_sha256)
+    rows = []
+    diagnostics = []
+    for doc, blob, text in originals:
+        digest = hashlib.sha256(blob).hexdigest()
+        source = Path(doc["source_path"])
+        # Catalog clock/class assertions are not semantic source certification.
+        # Preserve a conservative fetched-at floor until original acceptance evidence is certified.
+        available = clock(doc["fetched_at"])
+        if not doc.get("accession") or not doc.get("source_url") or not doc.get("link_basis"):
+            raise ValueError("accession, source URL and explicit link basis required")
+        events = [xbrl_declared(f) for f in json.loads(blob)["facts"] if f["concept"] == "CommonStockDividendsPerShareDeclared"] if doc.get("format") == "xbrl_json" else extract_declarations(text) + extract_spin_offs(text)
+        diagnostics.append({"accession": doc["accession"], "source_sha256": digest, "parsed_events": len(events),
+            "status": "parsed_source_semantics_unqualified" if events else "no_supported_declaration",
+            "class_clock": "UNQUALIFIED"})
+        for ordinal, event in enumerate(events):
+            if event["declare_date"] and event["declare_date"] > available.date():
+                raise ValueError("future declaration cannot be available earlier")
+            event["indicated_annual_dividend_rate"] = None
+            rows.append({**event, "event_id": f'{doc["accession"]}:{digest}:{ordinal}',
+                "security_id": doc.get("security_id"), "cik": doc["cik"], "accession": doc["accession"],
+                "source_url": doc["source_url"], "source_doc": str(source), "source_sha256": digest,
+                "stored_sha256": doc["stored_sha256"], "normalized_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                "link_basis": "unqualified", "link_tier": "unqualified", "available_at": available,
+                "dividend_announcement_available_at": available, "security_class_currency_basis": None,
+                "source_qualification": "clock_class_unqualified_fetched_at_floor",
+                "vintage_risk": True, "extractor_version": RULE})
+    N.validate_keys(rows, ["event_id"])
+    N.recheck(pinned)
+    admitted["diagnostics"] = diagnostics
+    return rows, pinned, admitted
+
+
+def output_schema():
+    import pyarrow as pa
+    strings = ["event_id", "accession", "source_url", "source_doc", "source_sha256", "link_basis", "link_tier", "kind",
+               "currency", "security_class", "declared_cadence", "source_concept", "evidence", "extractor_version",
+               "security_class_currency_basis", "period_start", "period_end", "distributed_security",
+               "stored_sha256", "normalized_sha256", "source_qualification"]
+    return pa.schema([(k, pa.string()) for k in strings] + [(k, pa.int64()) for k in ("security_id", "cik")] +
+                       [(k, pa.date32()) for k in ("declare_date", "record_date", "pay_date")] +
+                       [(k, pa.float64()) for k in ("amount", "declared_regular_rate", "indicated_annual_dividend_rate", "spin_off_ratio")] +
+                       [(k, pa.bool_()) for k in ("special_flag", "vintage_risk")] +
+                       [(k, pa.timestamp("us", tz="UTC")) for k in ("available_at", "dividend_announcement_available_at")])
+
+
+def validate_product(target: Path, admission_path: Path, expected_sha256: str) -> dict[str, Any]:
+    """Public read-only admission: exact schema, unique keys and every native-replayed row."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from . import distributions_native as N
+    before = C.sha256_file(target)
+    expected, pins, admitted = replay_rows(admission_path, expected_sha256)
+    actual = pq.read_table(target)
+    N.validate_keys(actual.to_pylist(), ["event_id"])
+    if actual.schema != output_schema() or not actual.equals(pa.Table.from_pylist(expected, schema=output_schema())):
+        raise ValueError("distribution schema/full native replay mismatch")
+    N.recheck(pins)
+    if before != C.sha256_file(target):
+        raise ValueError("product changed during admission")
+    return {"schema": SCHEMA, "rows": len(expected), "native_catalog_rows": admitted["population"]["catalog_rows"],
+            "native_replay": "PASS", "source_semantics": "UNQUALIFIED", "sha256": before}
+
+
+def build(documents: Path, input_manifests: list[Path], *, admission_path: Path | None = None,
+          expected_sha256: str | None = None) -> dict[str, Any]:
     """Replay retained native documents; no network. Pin input bytes before and after.
 
     Inputs are UTF-8 text or a JSON document containing a ``facts`` list. Linkage is
@@ -140,48 +227,15 @@ def build(documents: Path, input_manifests: list[Path]) -> dict[str, Any]:
     """
     import pyarrow as pa
     import pyarrow.parquet as pq
-    pinned = {str(p.resolve()): C.sha256_file(p) for p in [documents, *input_manifests]}
-    rows = []
-    with documents.open(encoding="utf-8") as stream:
-        for line in stream:
-            if len(line) > 65536 or len(rows) >= 100000:
-                raise ValueError("bounded adapter limit exceeded; partition input catalog")
-            doc = json.loads(line)
-            source = Path(doc["source_path"])
-            if source.stat().st_size > 2 * 1024 * 1024:
-                raise ValueError("document exceeds 2MiB bounded replay limit")
-            digest = C.sha256_file(source)
-            if digest != doc["source_sha256"]:
-                raise ValueError("native document hash mismatch")
-            pinned[str(source.resolve())] = digest
-            available = clock(doc["available_at"])
-            if not doc.get("accession") or not doc.get("source_url") or not doc.get("link_basis"):
-                raise ValueError("accession, source URL and explicit link basis required")
-            text = source.read_text(encoding="utf-8")
-            events = [xbrl_declared(f) for f in json.loads(text)["facts"] if f["concept"] == "CommonStockDividendsPerShareDeclared"] if doc.get("format") == "xbrl_json" else extract_declarations(text) + extract_spin_offs(text)
-            for ordinal, event in enumerate(events):
-                if event["declare_date"] and event["declare_date"] > available.date():
-                    raise ValueError("future declaration cannot be available earlier")
-                class_basis = bool(doc.get("security_id") is not None and doc.get("security_class") == event["security_class"]
-                                   and doc.get("currency") == event["currency"])
-                if not class_basis:
-                    event["indicated_annual_dividend_rate"] = None
-                rows.append({**event, "event_id": f'{doc["accession"]}:{digest}:{ordinal}',
-                             "security_id": doc.get("security_id"), "cik": doc["cik"], "accession": doc["accession"],
-                             "source_url": doc["source_url"], "source_doc": str(source), "source_sha256": digest,
-                             "link_basis": doc["link_basis"], "link_tier": doc.get("link_tier"),
-                             "available_at": available, "dividend_announcement_available_at": available,
-                             "security_class_currency_basis": f'{event["security_class"]}/{event["currency"]}' if class_basis else None,
-                             "vintage_risk": doc.get("vintage_risk", True), "extractor_version": RULE})
+    if admission_path is None or expected_sha256 is None:
+        raise ValueError("independent complete native admission required")
+    rows, pinned, admitted = replay_rows(admission_path, expected_sha256)
+    if documents.resolve() != Path(admitted["inputs"]["catalog"]["path"]).resolve():
+        raise ValueError("catalog not independently admitted")
+    if any(str(p.resolve()) not in pinned for p in input_manifests):
+        raise ValueError("manifest not independently admitted")
     # Explicit schema makes an empty publication useful and keeps unknowns typed.
-    strings = ["event_id", "accession", "source_url", "source_doc", "source_sha256", "link_basis", "link_tier", "kind",
-               "currency", "security_class", "declared_cadence", "source_concept", "evidence", "extractor_version",
-               "security_class_currency_basis", "period_start", "period_end", "distributed_security"]
-    schema = pa.schema([(k, pa.string()) for k in strings] + [(k, pa.int64()) for k in ("security_id", "cik")] +
-                       [(k, pa.date32()) for k in ("declare_date", "record_date", "pay_date")] +
-                       [(k, pa.float64()) for k in ("amount", "declared_regular_rate", "indicated_annual_dividend_rate", "spin_off_ratio")] +
-                       [(k, pa.bool_()) for k in ("special_flag", "vintage_risk")] +
-                       [(k, pa.timestamp("us", tz="UTC")) for k in ("available_at", "dividend_announcement_available_at")])
+    schema = output_schema()
     code = C.code_identity("distributions", "common")
     identity = hashlib.sha256(json.dumps({"inputs": pinned, "code": {k: v for k, v in code.items() if k != "git_head"}}, sort_keys=True).encode()).hexdigest()
     out = C.stage_dir("corporate_actions") / "distributions_products" / identity
@@ -194,9 +248,12 @@ def build(documents: Path, input_manifests: list[Path]) -> dict[str, Any]:
     target = out / "distributions.parquet"
     pq.write_table(pa.Table.from_pylist(rows, schema=schema), target.with_suffix(".partial"), compression="zstd")
     target.with_suffix(".partial").replace(target)
+    replay_proof = validate_product(target, admission_path, expected_sha256)
     manifest = {"schema": SCHEMA, "rows": len(rows), "product_id": identity, "gate_status": gates(),
                 "input_manifests_sha256": {str(p): pinned[str(p.resolve())] for p in input_manifests},
                 "native_inputs_sha256": pinned, "files": {"distributions.parquet": C.sha256_file(target)},
+                "admission_sha256": expected_sha256, "admission": replay_proof,
+                "population": admitted["population"], "population_diagnostics": admitted["diagnostics"],
                 "code": C.code_identity("distributions", "common"), "status": "complete"}
     C.write_json_atomic(out / "manifest.json", manifest)
     # Compatibility path is a replaceable view of a retained immutable product.
@@ -213,8 +270,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--documents", type=Path, required=True)
     ap.add_argument("--input-manifest", type=Path, action="append", required=True)
+    ap.add_argument("--admission", type=Path, required=True)
+    ap.add_argument("--admission-sha256", required=True)
+    ap.add_argument("--validate-product", type=Path)
     args = ap.parse_args()
-    print(json.dumps(build(args.documents, args.input_manifest), default=str))
+    result = validate_product(args.validate_product, args.admission, args.admission_sha256) if args.validate_product else build(args.documents, args.input_manifest, admission_path=args.admission, expected_sha256=args.admission_sha256)
+    print(json.dumps(result, default=str))
     return 0
 
 
