@@ -540,6 +540,7 @@
     "nonreliance_402",
     "ceq_iss_5y"
   ],
+  "formation_audit": "fixed key/cik alignment; independently pinned reviewed primary/secondary/exclusion proofs and source/evidence clocks; matching issuer cap; unknown classification blocks whole formation with keyed full population counts; protected values never overwritten",
   "input_product_names": [
     "calendar",
     "universe",
@@ -556,9 +557,17 @@
     "monthly_market",
     "sector"
   ],
+  "monthly_label_convention": {
+    "entry": "first actual holding-month session contributing return",
+    "exit": "last actual holding-month session",
+    "interpretation": "benchmark monthly close-to-close total returns; no executable formation-close trade or net profitability claim; Task16 forward contract separate",
+    "start_mark": "prior formation-session close; independently pinned positive price and total-return adjustment/corporate-action basis",
+    "terminal": "unsupported dated proceeds, cash/conversion and residual-month treatment -> missing, never zero-fill",
+    "window": "all admitted calendar sessions with pinned price/corporate-action evidence and complete total-return compound equal to label"
+  },
   "primary_candidates": "Task16 separately committed predeclared family; no substitution or selection in this module",
   "prohibit_post2022_aggregate_return_or_return_regression_products": true,
-  "registry_sha256": "203c72b363638e8a74e4fd16dfa3888bda576ac0a8eca9f4ab9d5a80db81b5e8",
+  "registry_sha256": "b6f915e588129b4f5320a3cf84985fd5838380a56655f38510daafd9f7eccbe9",
   "replication": {
     "all_outcomes_reported": true,
     "cap_nyse_percentile": 0.8,
@@ -734,5 +743,5 @@
   },
   "require_entire_label_window_before_boundary": true,
   "return_statistics_end_exclusive": "2023-01-01",
-  "version": "task7-predeclared-v1-r18"
+  "version": "task7-predeclared-v1-r18-window2"
 }

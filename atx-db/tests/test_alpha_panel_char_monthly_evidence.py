@@ -161,7 +161,7 @@ def test_replication_axes_and_entire_independent_overlap_denominator(monkeypatch
     assert result["requested_slots"][0]["formation"]=="2012-12-31"
     assert result["gates"]["osap_median_rho"]["denominator"]==2
     assert result["gates"]["osap_median_rho"]["pass"] is False
-    panels={date:[{"cik":1,"univ_all_common":True,"primary_security":True,"be_me":float(i)}] for i,date in enumerate(calendar)}
+    panels={date:[{"cik":1,"univ_all_common":True,"classification":"primary","primary_security":True,"be_me":float(i)}] for i,date in enumerate(calendar)}
     benchmark=[]
     for i,date in enumerate(calendar):
         holding=list(E.requested_axes(calendar))[i]
@@ -186,3 +186,78 @@ def test_incompatible_ratio_economic_or_clock_basis_cannot_pair(field,value):
     proof={"cik":1,"datadate":fiscal,"flow_basis":"genuine_annual","balance_basis":"same_annual_snapshot","currency":"USD","issuer_me":100,"cap_basis":"all_eligible_issuer_classes","definition":"seq+txditc-pstk",**{k:early for k in ("available_at","source_available_at","fund_available_at","cap_available_at")}}
     assert E.ratio_basis_reasons(row,reference,proof,"bm",date)==[]
     assert E.ratio_basis_reasons(row,reference,{**proof,field:value},"bm",date)
+
+
+def test_thirty_plus_one_unknown_common_classification_blocks_full_month():
+    formation=dt.date(2012,12,31);calendar=[formation,dt.date(2013,1,2),dt.date(2013,1,31)]
+    data=[{"session_date":formation,"security_id":i,"cik":i,"univ_all_common":True,"classification":"primary","primary_security":True,"nyse":True,"certified":True,"me":100+i,"be_me":i} for i in range(30)]
+    labels=[{"formation":formation,"security_id":i,"cik":i,"entry_date":calendar[1],"exit_date":calendar[2],"ret":i*.001,"return_certified":True} for i in range(30)]
+    benchmark=[{"formation":formation,"month":dt.date(2013,1,31),"feature":"be_me","ret":.1,"unit":"decimal","weighting":"vw_cap","country":"usa"}]
+    mapping={"be_me":{"osap_name":"BM","sign":1}}
+    good=E.replication({formation:data},labels,benchmark,[],mapping,calendar)
+    assert good["outcomes"]["be_me"]["months"]==1
+    unknown=E.qualify_formation({"session_date":formation,"security_id":30,"cik":30,"univ_all_common":True,"be_me":30},{})
+    result=E.replication({formation:data+[unknown]},labels,benchmark,[],mapping,calendar)
+    assert result["outcomes"]["be_me"]["months"]==0
+    pop=result["formation_populations"][str(formation)]
+    assert (pop["full_rows"],pop["common_rows"],pop["primary_rows"],pop["unknown_rows"])==(31,31,30,1)
+    assert pop["keyed_reasons"]["30/30"]=="missing_independent_classification"
+    assert result["exclusions"][f"{formation}/be_me"]=="unknown_independent_formation_population"
+    labels[15]={**labels[15],"ret":None,"return_certified":False,"label_reason":"missing_independent_window_proof"}
+    result=E.replication({formation:data},labels,benchmark,[],mapping,calendar)
+    assert result["outcomes"]["be_me"]["months"]==0
+    assert result["exclusions"][f"{formation}/be_me"]=="missing_independent_complete_monthly_label"
+
+
+def test_independent_secondary_and_exclusion_proof_are_not_unknown():
+    date=dt.date(2012,12,31);early=dt.datetime(2012,12,1,tzinfo=dt.UTC)
+    row={"session_date":date,"security_id":2,"cik":1,"issuer_me":100,"univ_all_common":True}
+    audit={"formation":date,"security_id":2,"cik":1,"me":100,"available_at":early,"source_available_at":early,"classification":"secondary","classification_proof":"proof","primary_security":False,"certified":True,"nyse":True}
+    proof={"formation":str(date),"security_id":2,"cik":1,"classification":"secondary","source_available_at":early.isoformat()}
+    secondary=E.qualify_formation(row,audit,{"proof":proof})
+    primary={**row,"security_id":1,"classification":"primary"}
+    assert E.formation_population([primary,secondary])["unknown_rows"]==0
+    assert E.formation_population([secondary])["unresolved_issuers"]==1
+    assert E.formation_population([secondary])["unknown_rows"]==0
+    excluded=E.qualify_formation(row,{**audit,"classification":"excluded","exclusion_reason":"independently reviewed cohort exclusion"},{"proof":{**proof,"classification":"excluded","exclusion_reason":"independently reviewed cohort exclusion"}})
+    assert E.formation_population([excluded])["excluded_rows"]==1
+    assert E.qualify_formation(row,audit,{})["classification"] is None
+
+
+@pytest.mark.parametrize("damage",["none","partial","start_mark","start_identity","intermediate","corporate_action","return","terminal","calendar","missing_window","missing_return","heldout","source_changed"])
+def test_complete_monthly_window_start_mark_and_intermediate_proof(tmp_path,damage):
+    import json
+    from atx_db.alpha_panel import release_inputs as R
+    from atx_db.alpha_panel.char_monthly_registry import FREEZE_SHA256
+    formation=dt.date(2012,12,31);calendar=[formation,dt.date(2013,1,2),dt.date(2013,1,3),dt.date(2013,1,31)]
+    raw=tmp_path/"observations.fixture";raw.write_text("synthetic independently reviewed price/corporate-action observations")
+    pin={"path":"observations.fixture","identity":R.identity(raw),"expected_sha256":R.identity(raw)["sha256"]}
+    label={"formation":formation,"security_id":1,"cik":1,"entry_date":calendar[1],"exit_date":calendar[-1],"ret":E.K.compound([.01,.02,.03]),"return_certified":True}
+    proof={"version":"char_monthly_complete_window_v1","registry_sha256":FREEZE_SHA256,"formation":str(formation),"security_id":1,"cik":1,"terminal_treatment":"none","start_mark":{"session_date":str(formation),"security_id":1,"cik":1,"basis":"previous_month_close_total_return","price":100,"price_source":pin,"corporate_action_source":pin},"observations":[{"session_date":str(day),"security_id":1,"cik":1,"total_return":value,"price_source":pin,"corporate_action_source":pin} for day,value in zip(calendar[1:],[.01,.02,.03])]}
+    if damage=="partial":label.update(entry_date=dt.date(2013,1,15),exit_date=dt.date(2013,1,15))
+    if damage=="start_mark":proof["start_mark"]["session_date"]="2013-01-02"
+    if damage=="start_identity":proof["start_mark"]["security_id"]=999
+    if damage=="intermediate":proof["observations"].pop(1)
+    if damage=="corporate_action":proof["observations"][1].pop("corporate_action_source")
+    if damage=="return":label["ret"]=.01
+    if damage=="terminal":proof["terminal_treatment"]="unknown_residual_cash"
+    if damage=="calendar":calendar.pop(1)
+    if damage=="missing_return":proof["observations"][1]["total_return"]=None
+    if damage=="heldout":label["exit_date"]=dt.date(2023,1,1)
+    path=tmp_path/"window.json";path.write_text(json.dumps(proof))
+    binding={"path":"window.json","identity":R.identity(path),"expected_sha256":R.identity(path)["sha256"]}
+    windows={f"{formation}/1":binding}
+    if damage=="missing_window":windows={}
+    if damage=="source_changed":raw.write_text("changed independently pinned synthetic source")
+    if damage=="none":assert E.qualify_label(tmp_path,label,calendar,windows)["label_reason"] is None
+    elif damage in ("terminal","missing_window","missing_return"):
+        result=E.qualify_label(tmp_path,label,calendar,windows)
+        assert result["ret"] is None and result["return_certified"] is False and result["label_reason"]
+    else:
+        with pytest.raises(ValueError):E.qualify_label(tmp_path,label,calendar,windows)
+
+
+def test_partial_month_and_wrong_last_calendar_session_refused_before_pairing():
+    formation=dt.date(2012,12,31);calendar=[formation,dt.date(2013,1,2),dt.date(2013,1,15),dt.date(2013,1,31)]
+    label={"formation":formation,"cik":1,"security_id":1,"entry_date":dt.date(2013,1,15),"exit_date":dt.date(2013,1,15),"ret":.1,"return_certified":True}
+    with pytest.raises(ValueError,match="first/last"):E.replication({},[label],[],[],{"be_me":{"osap_name":"BM","sign":1}},calendar)

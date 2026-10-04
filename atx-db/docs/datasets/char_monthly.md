@@ -228,3 +228,37 @@ parameters; complete insider/event source cohorts; historical source completenes
 currency/sector/source zero validation; production memory/time measurement; annual
 versus latest-quarter TTM characteristic basis; actual original gates and Task16
 predictive evidence. These are explicit outstanding acceptance work.
+
+Fix round2 strengthens population admission: missing audits leave primary status
+unknown. `formation_contract` is a caller-expected-SHA-pinned reviewed metadata
+contract (version `char_monthly_formation_classification_v1`, registry SHA), binding
+the exact formation_quality product and nonempty `classification_proofs` inventory.
+Each proof uses the reviewed `{path,identity,expected_sha256}` interface, version
+`char_monthly_classification_proof_v1`, and exact formation/security/CIK/classification
+plus source clock. Exclusions require matching independently reviewed reasons.
+Primary, secondary and excluded are explicit classifications; an unknown common
+classification blocks every factor in that formation. Secondary classes must
+reconcile to one proved primary per issuer. Results retain full row/common/primary/
+secondary/excluded/unknown counts and keyed reasons. Unknown never becomes an
+affirmative exclusion or a smaller passing population.
+
+`label_contract` uses the same reviewed metadata interface, version
+`char_monthly_label_contract_v1`, registry SHA, exact label product, and `windows`
+indexed by formation/CIK. Each window pins an independently reviewed
+`char_monthly_complete_window_v1` artifact containing formation/primary security/
+CIK, terminal treatment, and a start_mark at the preceding formation-session close
+with positive price, matching issuer/security and basis
+`previous_month_close_total_return`. Entry is the first contributing return session
+of the holding month; exit is its last actual exchange session, both taken from
+the admitted calendar. Ordered observations must equal every holding session,
+carry matching issuer/security, finite total returns >=-1, and independently pinned
+price and complete corporate-action evidence. Both start mark and every observation
+pin source identity plus caller-expected SHA; the complete daily compound must
+equal the monthly label. Missing calendar/proof/intermediate return or unsupported
+terminal cash/conversion/residual-month treatment remains missing and blocks the
+affected formation. No one-day interval is extended, and no residual return is
+filled with zero. All window/source/contract identities are rechecked after use.
+This is a benchmark monthly close-to-close total-return convention, with no claim
+of an executable formation-close trade or net profitability. Task16 forward-label
+contracts remain separate. Actual independent classification/window/source proofs
+are not supplied or economically certified by this engineering interface.

@@ -13,7 +13,7 @@
       2024,
       2025
     ],
-    "formation_audit": "fixed key/cik alignment; independent source and evidence clocks; matching issuer cap; qualifications only, protected values never overwritten",
+    "formation_audit": "fixed key/cik alignment; independently pinned reviewed primary/secondary/exclusion proofs and source/evidence clocks; matching issuer cap; unknown classification blocks whole formation with keyed full population counts; protected values never overwritten",
     "gates": {
       "accounting_coverage": 0.9,
       "implemented_original153": 150,
@@ -29,6 +29,14 @@
     "holdout": {
       "complete_label_window": true,
       "return_statistics_end_exclusive": "2023-01-01"
+    },
+    "monthly_label_convention": {
+      "entry": "first actual holding-month session contributing return",
+      "exit": "last actual holding-month session",
+      "interpretation": "benchmark monthly close-to-close total returns; no executable formation-close trade or net profitability claim; Task16 forward contract separate",
+      "start_mark": "prior formation-session close; independently pinned positive price and total-return adjustment/corporate-action basis",
+      "terminal": "unsupported dated proceeds, cash/conversion and residual-month treatment -> missing, never zero-fill",
+      "window": "all admitted calendar sessions with pinned price/corporate-action evidence and complete total-return compound equal to label"
     },
     "normalization": "natural raw values; composite signs from predeclared economics; no winsorization",
     "original153": [
@@ -8472,7 +8480,7 @@
       "no_outcome_selection": true,
       "primary": "Task16 predeclared family unchanged; this whole registry exploratory"
     },
-    "version": "char-monthly-v1-frozen-r18"
+    "version": "char-monthly-v1-frozen-r18-window2"
   },
-  "registry_sha256": "203c72b363638e8a74e4fd16dfa3888bda576ac0a8eca9f4ab9d5a80db81b5e8"
+  "registry_sha256": "b6f915e588129b4f5320a3cf84985fd5838380a56655f38510daafd9f7eccbe9"
 }

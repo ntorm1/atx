@@ -244,7 +244,7 @@ def _registry():
 
 REGISTRY = _registry()
 BY_NAME = {f.name:f for f in REGISTRY}
-FREEZE = {"version":"char-monthly-v1-frozen-r18", "original153":list(JKP153),
+FREEZE = {"version":"char-monthly-v1-frozen-r18-window2", "original153":list(JKP153),
           "primitive_definitions":PRIMITIVES,
           "registry":[f.record() for f in REGISTRY], "coverage_years":list(range(2020,2026)),
           "coverage_populations":["member_equity","univ_all_common","univ_r3000p"],
@@ -254,7 +254,8 @@ FREEZE = {"version":"char-monthly-v1-frozen-r18", "original153":list(JKP153),
           "trials":{"primary":"Task16 predeclared family unchanged; this whole registry exploratory", "no_outcome_selection":True},
           "normalization":"natural raw values; composite signs from predeclared economics; no winsorization",
           "ratio_comparison":"exact admitted final monthly inventory and original72dates; every original eligible member must have compatible independently pinned annual/fiscal/currency/cap/vintage/definition proof or gate FAIL",
-          "formation_audit":"fixed key/cik alignment; independent source and evidence clocks; matching issuer cap; qualifications only, protected values never overwritten",
+          "formation_audit":"fixed key/cik alignment; independently pinned reviewed primary/secondary/exclusion proofs and source/evidence clocks; matching issuer cap; unknown classification blocks whole formation with keyed full population counts; protected values never overwritten",
+          "monthly_label_convention":{"entry":"first actual holding-month session contributing return","exit":"last actual holding-month session","start_mark":"prior formation-session close; independently pinned positive price and total-return adjustment/corporate-action basis","window":"all admitted calendar sessions with pinned price/corporate-action evidence and complete total-return compound equal to label","terminal":"unsupported dated proceeds, cash/conversion and residual-month treatment -> missing, never zero-fill","interpretation":"benchmark monthly close-to-close total returns; no executable formation-close trade or net profitability claim; Task16 forward contract separate"},
           "replication":{"tercile_breakpoints":[1/3,2/3],"nonmicro_nyse_percentile":0.20,"cap_nyse_percentile":0.80,"minimum_names_per_leg":5,"minimum_months":60,"original_matched_factors":list(JKP153),"holding_month_start":"2013-01","holding_month_end":"2022-12","formation_month_start":"2012-12","formation_month_end":"2022-11","requested_months":120,"period_end_exclusive":"2023-01-01","osap_overlap":"nonempty independently admitted fixed metadata mapping before returns; all mapped members denominator","all_outcomes_reported":True},
           "growth":"positive previous base only; zero/negative prior -> explicit NULL",
           "history":"exact fiscal year/quarter and currency continuity; never row-number lags across gaps"}
