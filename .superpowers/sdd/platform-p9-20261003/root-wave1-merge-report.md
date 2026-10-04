@@ -1072,3 +1072,60 @@ Deleted by name: my three scratchpad logs (`p9-1p-dbg-ictests.log`, `p9-1q-rel-i
 
 Commits (first-parent, on `58fab573`): `27e2e5b4` test-only red-2 fix; then the docs commit with this section and the
 integration-log "M1d fix". `progress.md` (PM's file) was left uncommitted as found.
+
+#### Red 1 resolved under Ruling M1d-RED-1b (option B, sidecar), `aa5d4858`
+
+Head before: `b7e8bd69` (the PM's docs commits `47673207`, `b7e8bd69` on top of `b9c461cf`).
+
+**Reader grep first** (as ruled), over C++, Python, PowerShell, shell and tests in the whole worktree:
+- `config_json=` matched only the two writers (`stage_discover.cpp`, gated and window).
+- `config_json` matched otherwise only run-DB columns (`pipeline_run.config_json`; atx-db and `python/tests` tables of
+  their own) and unrelated JSON (`stage_equity_universe.cpp`, `signal_cube.cpp`).
+- Every `_manifest.txt` reader is a gtest (`discover_test`, `store_discover_test`, `sweep_test`, `provenance_test`,
+  `provenance_digest_test`). They read other keys (`cpcv_*`, `oos_pbo`, alpha lines) or whole-file bytes, never
+  `config_json`.
+- Directory scans of an alphas dir (`stage_combine.cpp:1283`; tests' `count_dsl`) filter on `.dsl`, so a new
+  `_config.json` file is invisible to them.
+
+No reader existed, so no P9 pin or reference can depend on one, and nothing had to be re-pointed. Not a STOP.
+
+**Change** (`atx-impl/src/stage_discover.cpp`):
+- `write_config_sidecar` writes `<alpha_out>/_config.json` (= `build_config_json(cfg)` + `'\n'`, binary). It uses the
+  condition that used to emit the manifest line (any non-legacy CPCV / IC-screen / PBO rule; `config_sidecar_due`) and
+  is called from both manifest writers in place of the `config_json=` line.
+- When no sidecar is due, a stale `_config.json` from an earlier run into the same `alpha_out` is removed (discover
+  does not clean `alpha_out`). Otherwise it would pair this run's manifest with another run's configuration.
+- A write or remove failure is an `IoError`. The S6-4 provenance comment now names the sidecar.
+- `provenance_digest_test.cpp` is not edited.
+
+**New test** `AtxImplProvenance.ConfigSidecarHoldsTheRunConfigAndStaysOutOfTheManifest` (`provenance_test.cpp`):
+- Default recipe: the sidecar exists and equals the run-DB `pipeline_run.config_json` + `'\n'` byte for byte (`seed`
+  4242, `pbo_rule` cached-moments-v2), and `_manifest.txt` has no `config_json=`.
+- All-legacy recipe: a planted stale `_config.json` is removed and the manifest has no `config_json=`.
+
+| tag | preset | target | build | result |
+|---|---|---|---|---|
+| **p9-1r** | equity-dev | `atx-impl-tests` | 2 TUs (`stage_discover.cpp`, `provenance_test.cpp`), 2 links (`atx-impl-core.lib`, exe), 60.6 s, 0 warnings; exe `035ea247` | anchored `AtxImplProvenanceDigest.*:AtxImplProvenance.*` **13 / 13** (incl. `ConfigJsonNotInDiscoverDigest` and the new test); whole binary, cwd = pool-2 root: **1,131 tests, 1,126 passed, 5 skipped, 0 failed**, exit 0, 869 s; no tracked file changed by the run |
+
+The five skips are M1d's five (real-data or opt-in fixtures). Run from the root, `ExistingCp14Ledger_StillVerifies`
+ran and passed.
+
+Compatibility: discover manifests written since 2026-09-26 differ by one line (`config_json=`) from new ones. New
+output dirs gain `_config.json` when a non-legacy recipe is active. Nothing pinned reads either (grep above). Stage
+digest, `.dsl` files and `_manifest.bin` are unchanged.
+
+#### Failure set after M1d fix (final)
+
+| failure | build | named known-red? |
+|---|---|---|
+| `test_research_mine.py::test_fields_are_the_rule_applied_to_the_registry` | pytest, both seeds (M1d) | yes (M1a-RED) |
+| `ResearchFieldsWriter.QuantilesPartitionLikeNumpy`, `ResearchFieldsVolumeMean.SumOrderIsNumpys` | Debug (M1d) | yes (M1a-RED) |
+| `BookNormalScore.TiesShareTheMeanRankAndMirrorsAreOpposite`, `BookNormalScore.FixtureTellsWrongRulesApart` | Release (M1c) | yes (M1c-RED) |
+| ~~`AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest`~~ | Debug | fixed (`aa5d4858`) |
+| ~~7 x `StrategyIcRunner.*`~~ | Release | fixed (`27e2e5b4`) |
+
+**wave-1 gate met (known-reds only).** The known-red suites were not re-run: no file in their targets changed.
+
+Commits (first-parent): `27e2e5b4` (red 2, test-only), `b9c461cf` (docs), PM `47673207` / `b7e8bd69`, `aa5d4858`
+(red 1 code + test), then the docs commit with this subsection. Next free build tag **p9-1s**. 0 trials (133 lines,
+`27e40f9f`). Disk: the scratchpad run log of this step deleted; build trees kept.

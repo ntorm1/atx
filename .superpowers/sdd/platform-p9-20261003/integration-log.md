@@ -460,3 +460,23 @@ above.** In `train_candidates.jsonl`, each line may differ only at `/stage_secon
 `summary.json` cache counters stay as listed per comparison (identical when both sides are warm on the same cache).
 
 Disk: only my scratchpad logs deleted; the build trees are kept for wave-2 merges. Next free build tag **p9-1r**.
+
+#### M1d fix, red 1 resolved (Ruling M1d-RED-1b, option B), `aa5d4858`
+
+- Reader grep first: no C++, Python, script or test parses the `config_json=` manifest line (only its two writers
+  matched). `_manifest.txt` readers are gtests reading other keys; alphas-dir scans filter on `.dsl`. So nothing was
+  re-pointed and no P9 pin or reference depends on it.
+- Change: `stage_discover.cpp` writes the config JSON to `<alpha_out>/_config.json` (`build_config_json` + `'\n'`)
+  under the old line's condition (non-legacy CPCV / IC-screen / PBO), in both the gated and the window paths. A stale
+  sidecar is removed when none is due. `_manifest.txt` no longer carries `config_json=`, and the test is unedited.
+- New gtest: `AtxImplProvenance.ConfigSidecarHoldsTheRunConfigAndStaysOutOfTheManifest` (sidecar = run-DB config_json
+  + `'\n'`; no line in the manifest; a stale sidecar is removed by a legacy run).
+- p9-1r (equity-dev, `atx-impl-tests`, 2 TUs, 0 warnings, exe `035ea247`): anchored provenance suites 13 / 13. Whole
+  `atx-impl-tests` from the pool-2 root: **1,131 tests, 1,126 passed, 5 skipped, 0 failed** (869 s).
+- Failure set = the five named known-reds: M1a-RED x3 (pytest `test_fields_are_the_rule_applied_to_the_registry`,
+  `ResearchFieldsWriter.QuantilesPartitionLikeNumpy`, `ResearchFieldsVolumeMean.SumOrderIsNumpys`) and M1c-RED x2
+  (Release `BookNormalScore.*`). Reds 1 and 2 are fixed.
+
+**wave-1 gate met (known-reds only).** Plan §4.3 phase-1 exit: wave-1 merged yes; G-P4 yes; G-P8 yes; G-P3 IC half
+yes; P9-B0 pinned yes; suite gate yes (known-reds only). Next free build tag **p9-1s**. 0 trials (133 lines,
+`27e40f9f`).
