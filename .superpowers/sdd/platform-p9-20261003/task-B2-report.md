@@ -553,3 +553,116 @@ Notes for root:
   `driver.lock_exes`; the lock comes from the wave config or the template's `change.set`.
 - The judge stage's `--bundle` runs nav_summ with its default verb. `bundle.json`'s `nav_summ_run` names that verb but
   is not compared with the pin (outside B2-10 (c)'s text; P10 note).
+
+## Post-identity redo (dispatch R6-2, 2026-10-04; rulings B2-11, B2-12, PRE-15, D2R-2 (b), re-review 1)
+
+**Status: BLOCKED at item 1 (a permission refusal), partial.** Resumed from `handoff-B2.md` at `4bed5c43` (pool-14,
+branch `feat/p9-b2-20261003`). No history rewritten: `598d2199` and `8fb17ad6` stay; no rebase. Code commit of the
+round: `fe152fca`.
+
+### What stopped the round
+
+- `git merge e8e424b9` (plain) stopped on 3 conflicted files (list below). Resolving `scripts/research_cycle.py` means
+  taking E2's version: E2's split turned the 2,316-line module into a 47-line re-export shim, and this branch's side of
+  the file carries the B2-R3 hunks of the deletion commit. The command **`git checkout --theirs
+  scripts/research_cycle.py`** was **refused by the permission system** ("Irreversible Local Destruction"). Under
+  `resume6-addendum.md` it was not retried and not routed around: every other way to resolve that file (an editor
+  rewrite, a revert-then-merge) reaches the same file state.
+- I aborted the merge (`git merge --abort`; the tree is back at `4bed5c43`; nothing is lost, both sides are commits).
+  The conflict state is in `b2-evidence/redo-merge-conflicts.txt`.
+- So items 1-4 and 6, which need the merged tree (E2's split, a real `atx.research-wave/v2` manifest), are **pending**
+  for a follow-up round once the owner allows the resolution. Item 5 (PRE-15) and the Suggested items that touch only
+  B2's own files were done on the pre-merge branch. They merge without a conflict: `git diff --stat 1b25b9a4 e8e424b9`
+  over every file they touch is empty, apart from `atx-engine/tests/CMakeLists.txt`, where root's additions sit above
+  B2's block, far from the one line added here.
+
+### The conflicts and the resolution the follow-up applies
+
+| file | conflict | resolution (placing B2's hunks, E2's logic untouched) |
+|---|---|---|
+| `scripts/research_cycle.py` | 2 hunks: the module docstring (ours 5-190 vs E2's 3 lines), the whole code body (ours 204-2308 vs E2's re-exports) | E2's shim, plus `EVAL_EXE` in its `from cycle.spec import (...)` list. B2's hunks move to the split: the docstring entry `exes.eval` goes to the usage docstring of `scripts/cycle/cli.py`, after `exes_sha256` (`cli.py:51` at root `c8ddf736`); `EVAL_EXE` goes after `EXE_NAMES` (`cycle/spec.py:80`), and the `effective_exes` docstring and `names` line to `cycle/spec.py:415`; the three `summ_step` lines (`--engine-stats <exes.eval>`) go to `cycle/phases.py:733` |
+| `scripts/tests/test_no_python_mirror.py` | 1 hunk, the ALLOWLIST head | drop the six B2 rows (G-P5, as the deletion commit does) and keep root's D2-3 comment and its D3 / P10 `retired_by` retargets of the composition rows |
+| `scripts/wave_stage_record.py` | 1 hunk, `verify`'s `problems` line | `[exe_problem(exe, pins, SK.rule_cell_kind(w)), eval_problem(w, done)]`; `eval_problem` reduced to the spec check by B2-11 and keyed on `wave_kinds.is_v2(w.manifest)` (`V2_SCHEMA` dropped) |
+
+Auto-merged without a conflict: `scripts/tests/test_research_cycle.py` (B2-R3's exes dicts; to re-run against
+`cycle/spec.py`). `scripts/cycle_verdict.py` has no root change since `1b25b9a4`.
+
+### Items
+
+| item | state | change (file:line at `fe152fca`) | test | evidence log (`b2-evidence/`) |
+|---|---|---|---|---|
+| 1. merge root `e8e424b9` (D2R is now in root: `c8ddf736`) | BLOCKED (permission refusal, above) | none; merge aborted | - | `redo-merge-conflicts.txt` |
+| 2. G-P5 deletion on the merged tree; `nav_summ` fails closed without the verb (B2-R3) | pending (needs 1) | the deletion `598d2199` is unchanged on the branch; `nav_summ` fails closed there (`test_a_bin_without_the_verb_fails_closed` passed this round) | `test_nav_summ_engine.py` | `redo-pytest-f-tools-s0.log` |
+| 3. B2-11 | pending (needs 1) | design below | - | - |
+| 4. re-review 1 R1 / R2 | pending (needs 1): R1 is B2-11's verify part, R2 its judge part | design below | - | - |
+| 4. re-review 1 S2 (6 ulps) | done | `research_eval_edges_test.cpp:375-379` comment; report wording here (the fix-round text above says "2 ulps": it is 6 ulps, 6.7e-16 relative, `0x1.fb71fab2eea98p+1` vs `...92p+1`) | gtest log prints it | `redo-gtest-f-eval-whole.log` |
+| 4. S3 (101 columns) | done | `research_eval_edges_test.cpp:1-3` | build | `mega-p9-b2-f` |
+| 4. S4 (classes.json) | already in root (SQL2-CLS): `atx.research-eval/v1`, `atx.ledger-head/v1`, `atx.research-ledger-fixture/v1`, `atx.research-eval-edges-fixture/v1` are all in `classes.json` at root `c8ddf736` | - | - | - |
+| 4. S5 (G-3c names its verb) | done | `book_diagnostics.py:554-562` (`engine_producer`), `:1427` (G-3c result key `engine`) | `test_book_diagnostics.py:567-568` | `redo-pytest-f-tools-s0.log` |
+| 4. S6 (no assertion on Acklam) | done | `research_eval_edges_test.cpp` `HouseNormPpfIsThePythonBisectionForAnyN`: `EXPECT_GT(acklam_worst, 1e-12)` removed, the worst value printed (5.509e-12 at N 1e6) | gtest | `redo-gtest-f-eval-whole.log` |
+| 4. S7 (the constant wins) | done | fixture section `cscv_wins` (`generate_research_eval_edges.py:15-19, 69, 156-168, 201`; `expected.json` +143 lines, every earlier key unchanged, `--check` "tied"); `research_eval_edges_test.cpp:277-336` (`tied_cscv`, `CscvConstantWinsAndTiesTheZeroColumnByIndex`) | gtest; fixture pytest `test_the_second_cscv_grid_...` | `redo-gtest-f-eval-whole.log`, `redo-pytest-f-tools-s0.log` |
+| 4. S1 (refuse at preflight) | left: needs E2's split (`wave_stage_preflight.py`); follow-up | - | - | - |
+| 5. PRE-15 | done | `eval_report.cpp:169-201` (`ledger_rows_json(..., hand_row)`: `tot_minus_m` = house DSR at `n_tot - campaign_registry`, same V), `:584` (whole ledger: on), `:605` (`--hand` prefix: off), `:733-737` (text row), `:813` (text "DSR_hand (prefix rule)"); `eval_report.hpp:17-33`; `dsr_total.py:20-25, 107-135`; `nav_summ.py:91-99, 1102-1104` | gtest `EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns`; pytest `test_dsr_total.py` (closed form, campaign-free ledger, frozen `dsr_at` tie, prefix-rule label, line count) | `redo-gtest-f-eval-whole.log`, `redo-pytest-f-tools-s0.log` |
+| 6. D2R-2 (b) | pending: D2R is in root (`c8ddf736`), but building on its test needs the merge, which hits the refused resolution; the spec / argv scan was not run | - | - | - |
+
+**PRE-15 in detail.** `dsr.tot.tot_minus_m` = `{n, sr0_daily, sr0_annual, dsr}` at N = N_tot - M. That is every trial
+of the whole ledger by the defect rule, + 1 when the book has no construction line yet, without the mining campaigns'
+registry counts M, on the same V as `tot` (v8y YP-2, "what dropping the campaigns gives"). The `--hand` prefix rows
+(v8x PM7-2) keep their rows, carry no `tot_minus_m`, and are printed "prefix rule". nav_summ `--dsr-total` prints one
+more line per dir: `   DSR_hand (N_tot - M=<n>, ruling PRE-15): DSR <x> vs SR0 <y> ann | N_tot - M = <kinds>[ + 1
+(...)]; campaign registry <M> left out | same V`. `--json` gains `deflated_total.tot_minus_m`. `--dsr-hand` lines read
+`== DSR_hand (prefix rule) <dir>: ...` and `   DSR_hand (prefix rule, N_tot=<n>): ...`.
+- gtest (research_ledger fixture: 19 trials by the defect rule, M = 40, V from 5 cells on `ledger-fx-v1`): N_tot - M
+  = 20 for a new book and 19 for a ledgered one, i.e. N_tot minus exactly M; the DSR, SR0 daily and annual equal
+  `dsr_at(moments, N, V)` bit for bit and exceed DSR_tot; a `--hand` row has no `tot_minus_m`; both text labels.
+- pytest: the closed form at N 17 / 18 with M 132 (`statistics.NormalDist` oracle, 1e-9); on the same ledger without
+  its campaign line `tot_minus_m` equals that ledger's `tot` exactly; `tot_minus_m` ties v8y's own definition, the frozen
+  `dsr_at(net_moments, N_tot - M, V)`, within 1e-12; the prefix rule's label and the added line count (per dir 4 lines,
+  was 3).
+
+**B2-11 / R1 / R2: the design the follow-up implements on the merged tree.** None of this is coded yet.
+- verify (R1): `eval_problem` keeps only the spec check. A v2 cell's locked spec must name `exes.eval` and carry the
+  `exes_sha256.eval` pin (`lock --exes`); otherwise it is refused, naming the missing key(s). The summ / pbo hash part
+  leaves verify.
+- judge (R2): for a v2 manifest, `wave_steps.bundle_argv` passes `--engine-stats <the cell spec's exes.eval>`, so the
+  bundle never runs a default verb. `bundle_once` refuses, fail closed:
+  - before the run, a verb on disk whose SHA-256 is not the pin;
+  - after the run, and on reuse, a `bundle.json` whose `nav_summ_run.engine_exe_sha256` is not the pin (`CV.check_verb`).
+
+  So "Statistics of record" are never published from another verb. The cell's own summ runs inside the judge's
+  research_cycle run, which already passes `--engine-stats exes.eval` and has the verdict refuse another verb
+  (`scoring_blocks(verb_sha256(cycle))`). A v1 manifest keeps its plan bytes and behaviour.
+- tests on a real `atx.research-wave/v2` manifest in the real stage order (lock, run, verify, judge), as E2's
+  `test_wave_kinds.py` builds them: verify passes a named and pinned cell before any judge output exists; verify refuses
+  a missing key or pin; the judge refuses a bundle of another verb (fresh and reused) and a verb whose bytes moved. Each
+  refusal gets its teeth shown by mutation.
+
+### Suggested left
+
+- S1 (preflight refusal of a v2 wave whose cell spec cannot name and pin `exes.eval`): it sits in E2's
+  `wave_stage_preflight.py`, which needs the merged tree. It is not cheap: it needs a rule for what "the template will
+  name it" means. Left for the follow-up round or P10.
+
+### State for root
+
+1. **Flag-absent nav_summ identity on B2's identity argv** (`<X-5 | Y-F0 dir> --reference <its base> --protocol v8
+   --psr --dsr-ledger <COPY of trials.jsonl> --dsr-total <same copy> --json a.json`; never `--ledger`; the reference
+   not among the dirs). Compare this branch's nav_summ (with `--engine-stats` or the default verb: after the deletion it
+   is always the verb) against root's identity-run outputs at `1b25b9a4` / `c2416d62`:
+   - stdout equal except one added line per listed dir, `   DSR_hand (N_tot - M=..., ruling PRE-15): ...`;
+   - `a.json` within 1e-12 except the added key `deflated_total.tot_minus_m` (pop it and `nav_summ_run`);
+   - the same argv without `--dsr-total` is byte-equal (stdout, stderr, JSON without `nav_summ_run`).
+   - `--dsr-hand` (not in the identity argv) changes two words per line ("prefix rule").
+2. **What root re-runs on TRAIN at merge:** that argv on X-5 and Y-F0 with the merged head's verb (EXE-CUR: build tag,
+   SHA-256, source commit), compared as in 1. A public cross-check for PRE-15: the trial ledger is unchanged since R0-12
+   (133 lines, `27e40f9f`), so Y-F0's `tot_minus_m` must reproduce R0-12's logged DSR_hand .7589 at N 123 (= N_tot 233
+   - M 110), which v8y's `dsr_at` gave. A miss is a stop for the PM.
+3. **New literals, flags, JSON keys:** no new `atx.<name>/v<n>` literal and no new flag. New JSON keys:
+   `dsr.tot.tot_minus_m` (verb document, `atx.research-eval/v1`), `deflated_total.tot_minus_m` (nav_summ `--json`),
+   `cscv_wins` (a section of `atx.research-eval-edges-fixture/v1`), G-3c `result.engine` {`engine_exe`,
+   `engine_exe_sha256`} (book_diagnostics). CMake: compile definition `ATX_RESEARCH_LEDGER_FIXTURE` added to
+   `atx-engine-research-eval-tests` (B2's own block).
+4. **Cross-lane edits:** none made this round (blocked). Pending for the follow-up, by file and hunk: the three
+   conflicts above; `scripts/cycle/{cli,spec,phases}.py` (B2-R3 placement); `scripts/wave_stage_record.py`
+   (`eval_problem`, `verify`, `bundle_once`); `scripts/wave_steps.py` (`bundle_argv`); `scripts/tests/test_research_spec.py`
+   (D2R-2 (b), the e27b `--protocol` cases, on D2R's version); a test file for B2-11 on E2's fixtures.
