@@ -1,5 +1,33 @@
 # tier1-v4 controller handoff
 
+## Current: seven retained financial units; P9 implementation dispatched
+
+This supersedes earlier live-job statements. Native continuation86809 completed
+successfully:661.3s,624,939,008peakbytes, exit0/no cap or stop, unchanged0.8GiB
+heavy/40GiB disk-floor protocol. Units0..6 are retained; only0/1/2 currently have
+the independent root audit. No financial publication, source-economic gate or
+release-ready gold panel exists. Logs: t17-runtime-b0003-b0006-v1.*.
+
+Incremental t17-financial-unit-validate-v1.py invokes unchanged native admit_unit
+for one retained unit, with complete current source/runtime identities before
+and after and immutable per-unit results. Independent static review PASS/PASS;
+the adjacent PowerShell receipt-match finding was fixed and rereviewed PASS.
+Root controller session61803 now runs batches3..6 sequentially under0.8GiB
+heavy/40GiB guards; no additional checked-unit credit yet. Count a result only with its exact successful
+external guard receipt and final runtime context success; a surviving JSON
+alone grants no credit. Final complete85 validation remains mandatory.
+
+Short helper d0d92665 freezes three owned paths and awaits independent combined
+R26 review. Its author t16 now owns Task1 P9 indexes repair2/5 under
+task1-p9-r2-brief.md, all R1-R8 and dated-only R7(a); no foreign panel changes.
+t17 owns main R26 wiring. t15 owns the exception helper and serialized offline
+fixtures; earlier group1 inherited4workers and group2 exceeded60s, so final
+changed-code checks are split with explicit -n0 and original resource guards.
+t16 will independently review that helper; t15 must not self-review it.
+No cleanup has run since the four previously recorded safe cleanups. Prepared
+refresh-readiness-v8.py is NOT RUN and requires four exact successful audit
+results; current published readinessv7 remains historical until its successor.
+
 ## Latest owner addition and successful replay (supersedes job states below)
 
 User added the full P9 AL-DATA request to the goal. Attachment goal-objective.md
