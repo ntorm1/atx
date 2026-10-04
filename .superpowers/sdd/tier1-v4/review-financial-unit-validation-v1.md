@@ -106,3 +106,12 @@ complete85 final protocol, or source/economic gates.
 Root separately reports an in-memory acceptance-block check: one positive
 accepted and17 concrete mutations refused, chunk96e8cd,2.0s. That is controller
 reported supplemental evidence; this verdict rests on the scoped static review.
+
+Portability correction scoped review: PASS. At controller line27, accepting
+System.Double OR System.Decimal with exact numeric0.8 equality accommodates
+Windows PowerShell ConvertFrom-Json without accepting strings, booleans or a
+changed ceiling. All adjacent command, typed terminal, resource, result and code
+identity predicates remain unchanged. The preserved earlier version's refusal
+is orchestration evidence, not a native-unit failure. No controller execution or
+actual receipt/data read by this reviewer; root's separate reported positive
+actual-receipt and negative string0.8 in-memory check is supplemental evidence.

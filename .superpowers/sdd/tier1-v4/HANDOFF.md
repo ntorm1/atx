@@ -1,19 +1,25 @@
 # tier1-v4 controller handoff
 
-## Current: seven retained financial units; P9 implementation dispatched
+## Current: seven independently checked financial units; continuation34458
 
 This supersedes earlier live-job statements. Native continuation86809 completed
 successfully:661.3s,624,939,008peakbytes, exit0/no cap or stop, unchanged0.8GiB
-heavy/40GiB disk-floor protocol. Units0..6 are retained; only0/1/2 currently have
-the independent root audit. No financial publication, source-economic gate or
+heavy/40GiB disk-floor protocol. Units0..6 are retained and now independently
+checked. No financial publication, source-economic gate or
 release-ready gold panel exists. Logs: t17-runtime-b0003-b0006-v1.*.
 
 Incremental t17-financial-unit-validate-v1.py invokes unchanged native admit_unit
 for one retained unit, with complete current source/runtime identities before
 and after and immutable per-unit results. Independent static review PASS/PASS;
 the adjacent PowerShell receipt-match finding was fixed and rereviewed PASS.
-Root controller session61803 now runs batches3..6 sequentially under0.8GiB
-heavy/40GiB guards; no additional checked-unit credit yet. Count a result only with its exact successful
+Audits3..6 each completed0/no cap or stop:62.1/61.1/76.2/79.1seconds,
+557080576/557715456/551940096/553488384peakbytes. Wrapper61803 stopped after
+successful3 because Windows JSON numeric0.8 became Decimal, not Double;
+the one-line numeric-type correction is independently PASS and the exact
+corrected block accepts the actual3 receipt while refusing strings. Original
+failing wrapper is retained in b3f7c503. Batches4/5/6 ran through the unchanged
+reviewed Python/guard CLI individually (sessions29846/48448/62741), all terminal0.
+No native batch was rerun for that wrapper error. Count a result only with its exact successful
 external guard receipt and final runtime context success; a surviving JSON
 alone grants no credit. Final complete85 validation remains mandatory.
 
@@ -24,9 +30,22 @@ t17 owns main R26 wiring. t15 owns the exception helper and serialized offline
 fixtures; earlier group1 inherited4workers and group2 exceeded60s, so final
 changed-code checks are split with explicit -n0 and original resource guards.
 t16 will independently review that helper; t15 must not self-review it.
-No cleanup has run since the four previously recorded safe cleanups. Prepared
-refresh-readiness-v8.py is NOT RUN and requires four exact successful audit
-results; current published readinessv7 remains historical until its successor.
+Readinessv8 generated successfully under0.15GiB guard, preserving46original
+contracts/statuses and13required P9 appendix groups. It validates all four exact
+successful commands/results/start/code bindings and adds no gate PASS. t15
+independent metadata review pending after exception-helper freeze.
+
+Root sole actual session34458 now runs unchanged R23 build max-new-batches8,
+targeting7..14 under0.8GiB/heavy/40GiBfloor with unique
+logs/t17-runtime-b0007-b0014-v1.*. Its retained frontier is not yet inspected;
+do not count any unit beyond6. Larger scheduling chunks reduce repeated prior
+replay without changing native per-unit checkpoints or validation. Do not rerun
+the completed audits or launch another actual data job.
+
+No cleanup has run since the four previously recorded safe cleanups. Code-only
+P9-B3 CPI preflight found configured CPIAUCSL/observation-date+23h loader cannot
+establish requested NSA/release-clock contract; actual in-house source inventory
+remains pending. Existing macro code and all source/evaluation gates unchanged.
 
 ## Latest owner addition and successful replay (supersedes job states below)
 

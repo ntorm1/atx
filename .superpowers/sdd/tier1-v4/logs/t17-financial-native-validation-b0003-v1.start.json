@@ -1,0 +1,68 @@
+{
+  "batch": 3,
+  "controller_code": {
+    "bytes": 7458,
+    "sha256": "80cc6458cc707e6fae2599860832cbd0836e6ed07217025926f0b15ece52750d"
+  },
+  "frontier": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "resources": {
+    "database": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\_spill\\fund-runtime-9bb058251cbe4c0ebf1e99da4390c76e.duckdb",
+    "duckdb_actual": [
+      "244.1 MiB",
+      1,
+      "UTC"
+    ],
+    "guard": {
+      "cap_bytes": 858992640,
+      "job": "Local\\atx-memory-guard-9324-134356041266235664"
+    }
+  },
+  "runtime_proof": {
+    "bytes": 2780,
+    "sha256": "6b3e26c2c79c78d9d0c3877c5aa1982da591d71d8ee7599504c9c304d1bf7593"
+  },
+  "snapshot": {
+    "bytes": 10411360,
+    "sha256": "c73f6293a5785c185567b01c443747aa2c7294614b45bfdaf2b8016ec9807a0c"
+  },
+  "snapshot_sha256": "baf8f5cc238e9b2c38ab6583463fa0d23166928b645a348137eb5e43d0092f3d",
+  "status": "ONE_UNIT_NATIVE_TYPED_REPLAY_STARTED",
+  "unit_pins": {
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\admission.json": {
+      "bytes": 1252,
+      "sha256": "7fff6ad30d1829c9e5337ca12c5d19f0cf65f5bb9cd26af4d4b411d53ccaed8c"
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-ed102977032d4a97b7590fb70a032ce6\\native\\batch-0003.json": {
+      "bytes": 1633,
+      "sha256": "60be760db9c93805599bc5cf9d3256bc2ba66f357f20e150ef0cf0d8850f6603"
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-ed102977032d4a97b7590fb70a032ce6\\native\\catalog-0003.parquet": {
+      "bytes": 859821,
+      "sha256": "835a65114d11d9255dae738c8601528160f6d131da55058094efdd73f0dd0631"
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-ed102977032d4a97b7590fb70a032ce6\\native\\events-0003.parquet": {
+      "bytes": 898601,
+      "sha256": "e76aab63ce5115443e3a8cc22f3438272659ca5d6ffbda065c410ab24fbbe6dc"
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-ed102977032d4a97b7590fb70a032ce6\\native\\history-0003.parquet": {
+      "bytes": 846808,
+      "sha256": "ecef38dabb8224224d4d674460c11bbc1ddd816c90f81a1cb5810f18fe139aae"
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-ed102977032d4a97b7590fb70a032ce6\\native\\sic-0003.parquet": {
+      "bytes": 53174,
+      "sha256": "8115560cf1f9fa304492147f2528ce3f959b4acc54d441ef3c36fc2d22aa7880"
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-ed102977032d4a97b7590fb70a032ce6\\start.json": {
+      "bytes": 259,
+      "sha256": "29a681131cc8d1949dab8ac34a7bb2f095d450776c3dcf37884769aceb8cfcb4"
+    }
+  }
+}

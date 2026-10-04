@@ -1,0 +1,121 @@
+{
+  "admission": {
+    "attempt": "attempt-4bad946e687445ff9f33a6d179f8b360",
+    "batch": 5,
+    "files": {
+      "catalog": {
+        "bytes": 940711,
+        "file": "catalog-0005.parquet",
+        "rows": 4267,
+        "sha256": "27b2394565e460c7691e8b3524a88e1809281de5f4cd1a991cf11d5f65f3e718"
+      },
+      "events": {
+        "bytes": 1021214,
+        "file": "events-0005.parquet",
+        "rows": 4267,
+        "sha256": "fca7aa1ac58fe6b957244652a2c0d4c660787b118ef6382fcb085c4703f2ada9"
+      },
+      "history": {
+        "bytes": 920902,
+        "file": "history-0005.parquet",
+        "rows": 144374,
+        "sha256": "c6d31657f79542aa652ca96dfeace0dc613809b9bf5cf8a09d1e3c7e158d046b"
+      },
+      "sic": {
+        "bytes": 60364,
+        "file": "sic-0005.parquet",
+        "rows": 4267,
+        "sha256": "c2777cea639f815fbb76b7e831b9e2b2279bf98713a2247947e50a8e3df99c84"
+      }
+    },
+    "native_receipt": {
+      "bytes": 1706,
+      "sha256": "44f1eecb850d2a69f27ad663bdfc315bb82a23c7603467f7238eefd551203ad0"
+    },
+    "snapshot_sha256": "baf8f5cc238e9b2c38ab6583463fa0d23166928b645a348137eb5e43d0092f3d",
+    "start_identity": {
+      "bytes": 259,
+      "sha256": "e0875f8cb3745c5aea4854ae0f2196a8633b8a704c4c81dc68c2af8827ed5e60"
+    },
+    "version": "fund-batch-release-v1"
+  },
+  "batch": 5,
+  "controller_code": {
+    "bytes": 7458,
+    "sha256": "80cc6458cc707e6fae2599860832cbd0836e6ed07217025926f0b15ece52750d"
+  },
+  "external_guard_receipt": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t17-financial-native-validation-b0005-v1.receipt.json",
+  "gate_promotion": false,
+  "new_financial_units_created": 0,
+  "observed_frontier_not_newly_admitted": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "publication": false,
+  "qualification": "Valid only with the matching successful external guard receipt (completed/exit0/no cap or stop) and exact audit invocation. Only the named retained unit was rederived from the frozen originals and compared using unchanged native admit_unit typed/schema/counter validation. Its exact bytes and current source/code/preparation/runtime identities are bound before and after. Other frontier units receive no new semantic credit here. Complete85 publication, original financial/source-economic gates and final full-generation validation remain mandatory.",
+  "resources": {
+    "database": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\_spill\\fund-runtime-e1d469b0b65845899087750b78c69b66.duckdb",
+    "duckdb_actual": [
+      "244.1 MiB",
+      1,
+      "UTC"
+    ],
+    "guard": {
+      "cap_bytes": 858992640,
+      "job": "Local\\atx-memory-guard-16748-134356044343430689"
+    }
+  },
+  "runtime_proof": {
+    "bytes": 2780,
+    "sha256": "6b3e26c2c79c78d9d0c3877c5aa1982da591d71d8ee7599504c9c304d1bf7593"
+  },
+  "seconds": 74.812,
+  "snapshot": {
+    "bytes": 10411360,
+    "sha256": "c73f6293a5785c185567b01c443747aa2c7294614b45bfdaf2b8016ec9807a0c"
+  },
+  "snapshot_sha256": "baf8f5cc238e9b2c38ab6583463fa0d23166928b645a348137eb5e43d0092f3d",
+  "source_quality_certified": false,
+  "start": {
+    "bytes": 3112,
+    "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t17-financial-native-validation-b0005-v1.start.json",
+    "sha256": "31171a417f89022b5ab504d07ccfcca4dda59ac64189b361e328e73cf8266c22"
+  },
+  "status": "ONE_RETAINED_FINANCIAL_UNIT_NATIVE_TYPED_REPLAY_VERIFIED",
+  "successful_external_guard_required": true,
+  "unit_pins": {
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0005\\admission.json": {
+      "bytes": 1253,
+      "sha256": "189b2ca3775cabb27d647518c89c36ea354a17c16cb1bab13020c1b19a8d40e2"
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0005\\attempt-4bad946e687445ff9f33a6d179f8b360\\native\\batch-0005.json": {
+      "bytes": 1706,
+      "sha256": "44f1eecb850d2a69f27ad663bdfc315bb82a23c7603467f7238eefd551203ad0"
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0005\\attempt-4bad946e687445ff9f33a6d179f8b360\\native\\catalog-0005.parquet": {
+      "bytes": 940711,
+      "sha256": "27b2394565e460c7691e8b3524a88e1809281de5f4cd1a991cf11d5f65f3e718"
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0005\\attempt-4bad946e687445ff9f33a6d179f8b360\\native\\events-0005.parquet": {
+      "bytes": 1021214,
+      "sha256": "fca7aa1ac58fe6b957244652a2c0d4c660787b118ef6382fcb085c4703f2ada9"
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0005\\attempt-4bad946e687445ff9f33a6d179f8b360\\native\\history-0005.parquet": {
+      "bytes": 920902,
+      "sha256": "c6d31657f79542aa652ca96dfeace0dc613809b9bf5cf8a09d1e3c7e158d046b"
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0005\\attempt-4bad946e687445ff9f33a6d179f8b360\\native\\sic-0005.parquet": {
+      "bytes": 60364,
+      "sha256": "c2777cea639f815fbb76b7e831b9e2b2279bf98713a2247947e50a8e3df99c84"
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0005\\attempt-4bad946e687445ff9f33a6d179f8b360\\start.json": {
+      "bytes": 259,
+      "sha256": "e0875f8cb3745c5aea4854ae0f2196a8633b8a704c4c81dc68c2af8827ed5e60"
+    }
+  }
+}

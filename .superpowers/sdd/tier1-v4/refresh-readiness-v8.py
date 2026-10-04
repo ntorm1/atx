@@ -92,7 +92,7 @@ for bid in range(3, 7):
 
 result.update(schema='atx.tier1-v4.readiness/v8', version=8, client_date='2026-10-04')
 result['checkpoint'].update(
-    controller_commit='d0d92665',
+    controller_commit='b3f7c503',
     qualification='Seven retained financial units independently checked through the recorded native replay and root evidence chain. This metadata update does not rerun source checks or qualify financial economics, a final publication, gold panels or consumer release.',
     financial_batches_admitted=7,
     financial_batches_independently_checked=list(range(7)),
@@ -102,7 +102,7 @@ result['checkpoint'].update(
 )
 record = {
     'artifact': '.superpowers/sdd/tier1-v4/review-financial-unit-validation-v1.md',
-    'supporting_artifacts': [str(build_receipt), *[a['result'] for a in audits], *[a['guard'] for a in audits]],
+    'supporting_artifacts': [str(build_receipt), '.superpowers/sdd/tier1-v4/t17-financial-unit-wrapper-portability-v1.md', *[a['result'] for a in audits], *[a['guard'] for a in audits]],
     'evidence_identities': evidence, 'unit_measurements': audits,
     'result': f'Native four-new-unit continuation completed{build["run_seconds"]}s/{build["native_peak_job_memory_bytes"]}peakbytes. Each retained3..6 was then independently source-rederived by unchanged admit_unit with full typed/schema/population/counter comparison and source/runtime/code/unit identity checks before/after. Separate immutable results bind exact successful external guard commands. Together with prior v7 evidence for0..2, seven of85 units checked. No complete financial publication or source-economic/release gate passes.',
     'checkpoint_version': 8, 'gate_promotion': False,
