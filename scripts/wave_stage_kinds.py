@@ -418,9 +418,10 @@ def preflight_kind_plan(w: Wave) -> list[str]:
     lines.append("#   then: ruling E2-8: every IC rule mapped in COMPOSITION_FLAGS; no rule's flag in the cell's "
                  "resolved flag lists but through rules (constants / template flags and sets, spellings, "
                  "abbreviations)")
-    lines.append(f"#   then: ruling E2-14: no {' / '.join(WK.MATCH_FLAGS)} in any flag list (the {WK.MATCH_STAGE} match "
-                 "stage's own); ruling E2-15: no ref section but the template's own pinned block, its resolved side "
-                 "judged as the cell's")
+    lines.append(
+        f"#   then: ruling E2-14: no {' / '.join(WK.MATCH_FLAGS)} in any flag list (the {WK.MATCH_STAGE} match "
+        "stage's own); ruling E2-15: no ref section but the template's own pinned block, its resolved side "
+        "judged as the cell's")
     return lines
 
 
