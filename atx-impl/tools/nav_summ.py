@@ -114,14 +114,16 @@ Era pools (platform v8 H-1; opt-in, without --pool nothing above moves):
                          it re-reads, required (review P-1). Its line carries era_of: an era line, adding no trial,
                          never read as a TRAIN cell; refused for a pool of two or more eras or one inside TRAIN.
 
-Engine statistics (platform P9 B2, contract K-P9-5; opt-in, without the flag nothing above moves):
-  --engine-stats [EXE]   every statistic of record (net moments, paired dSR with Memmel SE / CBB / Ledoit-Wolf, the
-                         DSR rows, PSR and MinTRL, ONC effective N, CSCV PBO, the ledger DSR, DSR_tot and DSR_hand) is
-                         computed by the engine verb atx-research-eval (default EXE: build-equity/bin of this checkout)
-                         on the same net series, written as session_ns,net_return CSVs to a private temp dir. The
-                         verb's JSON blocks carry the Python dicts' keys; the printed lines and --json keys are the
-                         same (values agree to 1e-12, the P12 tolerance). --pbo-max-splits is refused (the engine CSCV
-                         is exhaustive). Ledgers are read, never written, by the verb.
+Engine statistics (platform P9 B2, contract K-P9-5):
+  every statistic of record (net moments, paired dSR with Memmel SE / CBB / Ledoit-Wolf, the DSR rows, PSR and MinTRL,
+  ONC effective N, CSCV PBO, the ledger DSR, DSR_tot and DSR_hand) is computed by the engine verb atx-research-eval on
+  the same net series, written as session_ns,net_return CSVs to a private temp dir; the verb's JSON blocks carry the
+  keys printed here. The Python copies were deleted after root's identity run (values agreed to 1e-12, the P12
+  tolerance). The verb is $ATX_EQUITY_BIN/atx-research-eval.exe when ATX_EQUITY_BIN is set (refused when that bin
+  lacks it: no fallback), else build-equity/bin of this checkout; --engine-stats EXE names another. It is opened on
+  first use, so a run that computes no statistic (--ledger-n alone) needs none. Every nav_summ_run of a run that used
+  it records engine_exe and engine_exe_sha256 (ruling B2-R3). --pbo-max-splits is refused (the engine CSCV is
+  exhaustive). Ledgers are read, never written, by the verb.
 """
 from __future__ import annotations
 
@@ -131,6 +133,7 @@ import csv
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -150,12 +153,40 @@ V8_DRAWS, V8_SEED = 4999, 20260929  # v8-prereg item 4 (block stays DEFAULT_BLOC
 PROTOCOLS = ("v7", "v8")
 BUNDLE_ALPHA = 0.10  # v8-prereg item 9: the freeze gate's cumulative paired test, bootstrap p < .10
 DEFAULT_DSR_N = 10  # R6': N = 10 construction cells
-EULER_GAMMA = 0.5772156649015329
 LEVERAGE_GATE_BASIS = ("all_rows: the R6' mechanics gate (ruled D1/R6') reads mean_gross_leverage_all_rows / "
                        "mean_net_leverage_all_rows; mean_gross_leverage / mean_net_leverage are return-row means "
                        "(previous close), kept for continuity")
 RAMP_ROWS = 63  # v6 prereg C4: the theta-ramp rows dropped from the post-ramp (L calibration) means
 ENGINE_EXE = Path(__file__).resolve().parents[2] / "build-equity" / "bin" / "atx-research-eval.exe"
+_ENGINE: list = []   # the default verb of this process (engine_of), created on first use
+
+
+def default_engine_exe() -> Path:
+    """$ATX_EQUITY_BIN/atx-research-eval.exe when ATX_EQUITY_BIN is set (the canary's bin), else ENGINE_EXE. Ruling
+    B2-R3: a bin named by ATX_EQUITY_BIN without the verb fails closed (EngineStats refuses it); there is no fallback to
+    this checkout's build-equity/bin, whose Debug verb may be stale."""
+    env = os.environ.get("ATX_EQUITY_BIN")
+    return Path(env) / ENGINE_EXE.name if env else ENGINE_EXE
+
+
+def engine_of(args) -> "EngineStats":
+    """The engine verb a run's statistics come from: --engine-stats EXE, else the default executable; opened on first
+    use (review B2 S8: a run that computes no statistic, e.g. --ledger-n alone, needs no verb) and kept on ``args``."""
+    eng = getattr(args, "engine", None)
+    if eng is not None:
+        return eng
+    exe = getattr(args, "engine_stats", None)
+    if exe:
+        eng = EngineStats(exe)
+    else:
+        if not _ENGINE:
+            _ENGINE.append(EngineStats(str(default_engine_exe())))
+        eng = _ENGINE[0]
+    try:
+        args.engine = eng
+    except AttributeError:
+        pass
+    return eng
 
 
 class EngineStats:
@@ -172,7 +203,8 @@ class EngineStats:
     def __init__(self, exe: str):
         self.exe = Path(exe).resolve()
         if not self.exe.is_file():
-            raise SystemExit(f"nav_summ: --engine-stats: no executable {self.exe} (build atx-research-eval)")
+            raise SystemExit(f"nav_summ: no engine statistics executable {self.exe}: build atx-research-eval "
+                             "(scripts/research-build.ps1) or name one with --engine-stats EXE")
         self.sha256 = hashlib.sha256(self.exe.read_bytes()).hexdigest()   # ruling B2-R3: the producer of record
         self.dir = Path(tempfile.mkdtemp(prefix="nav_summ_engine_"))
         atexit.register(shutil.rmtree, self.dir, True)
@@ -195,10 +227,11 @@ class EngineStats:
         for k, nets in enumerate(cells):
             argv += ["--daily", f"c{k}={self.csv(nets)}"]
         argv += [str(a) for a in extra] + ["--json"]
-        done = subprocess.run(argv, capture_output=True, text=True, check=False)
-        if done.returncode != 0:
-            raise SystemExit(f"nav_summ: --engine-stats: {done.stderr.strip() or f'exit {done.returncode}'}")
-        return json.loads(done.stdout)
+        with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as proc:
+            out, err = proc.communicate()      # Popen, not run: a test may stand in for git through subprocess.run
+        if proc.returncode != 0:
+            raise SystemExit(f"nav_summ: engine statistics: {err.strip() or f'exit {proc.returncode}'}")
+        return json.loads(out)
 
     def moments_of(self, nets: dict) -> dict:
         return self.run([nets])["cells"][0]["net_moments"]
@@ -451,169 +484,6 @@ def sharpe(x: np.ndarray) -> float:
     return float(x.mean() / sd * math.sqrt(ANNUAL)) if sd > 0 else float("nan")
 
 
-def memmel_se(sr_a: float, sr_b: float, rho: float, t: int) -> float:
-    """Annualized SE of SR_a - SR_b (Memmel 2003 correction of Jobson-Korkie); SRs annualized in, per-session inside."""
-    a, b = sr_a / math.sqrt(ANNUAL), sr_b / math.sqrt(ANNUAL)
-    var = (2.0 - 2.0 * rho + 0.5 * (a * a + b * b - 2.0 * a * b * rho * rho)) / t
-    return math.sqrt(max(var, 0.0) * ANNUAL)
-
-
-def cbb_indices(t: int, draws: int, block: int, rng: np.random.Generator) -> np.ndarray:
-    """(draws, t) circular block bootstrap indices: ceil(t / block) uniform starts, blocks wrap, truncated to t."""
-    blocks = -(-t // block)
-    starts = rng.integers(0, t, size=(draws, blocks))
-    idx = (starts[:, :, None] + np.arange(block)[None, None, :]).reshape(draws, blocks * block)[:, :t]
-    return idx % t
-
-
-def _dsr_population(m: np.ndarray):
-    """dSR (per session, population SD) and its gradient in (mu_a, mu_b, E a^2, E b^2); m has shape (..., 4)."""
-    mu_a, mu_b, g_a, g_b = m[..., 0], m[..., 1], m[..., 2], m[..., 3]
-    va, vb = g_a - mu_a * mu_a, g_b - mu_b * mu_b
-    with np.errstate(invalid="ignore", divide="ignore"):
-        d = mu_a / np.sqrt(va) - mu_b / np.sqrt(vb)
-        grad = np.stack([g_a / va ** 1.5, -g_b / vb ** 1.5, -mu_a / (2 * va ** 1.5), mu_b / (2 * vb ** 1.5)], axis=-1)
-    return d, grad
-
-
-def bartlett_psi(y: np.ndarray, lag: int) -> np.ndarray:
-    """Bartlett-kernel HAC long-run covariance of the rows of y (T x k), autocovariances / T."""
-    e = y - y.mean(axis=0)
-    t = e.shape[0]
-    psi = e.T @ e / t
-    for ell in range(1, min(lag, t - 1) + 1):
-        g = e[ell:].T @ e[:-ell] / t
-        psi += (1.0 - ell / (lag + 1.0)) * (g + g.T)
-    return psi
-
-
-def paired_stats(a: np.ndarray, b: np.ndarray, draws: int = DEFAULT_DRAWS, block: int = DEFAULT_BLOCK,
-                 seed: int = DEFAULT_SEED, one_sided: bool = False) -> dict:
-    """Paired dSR(net) = SR(a) - SR(b) on aligned daily nets: Memmel SE, CBB percentile CI, LW studentized CI.
-
-    ``one_sided`` adds lw["p_one_sided"] (H0: dSR <= 0) from the same resamples: the share of signed studentized draws
-    (ds - d0) / ss at or above d0 / s0, (k + 1) / (valid + 1); without it the result is unchanged."""
-    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
-    t = a.size
-    if t != b.size or t < 3:
-        raise ValueError("paired_stats: need two aligned series of >= 3 sessions")
-    sr_a, sr_b = sharpe(a), sharpe(b)
-    sa, sb = a.std(ddof=1), b.std(ddof=1)
-    rho = float(np.corrcoef(a, b)[0, 1]) if sa > 0 and sb > 0 else float("nan")
-    dsr = sr_a - sr_b
-    se = memmel_se(sr_a, sr_b, rho, t)
-    rng = np.random.default_rng(seed)
-    idx = cbb_indices(t, draws, block, rng)
-    xa, xb = a[idx], b[idx]
-    with np.errstate(invalid="ignore", divide="ignore"):
-        boot = (xa.mean(axis=1) / xa.std(axis=1, ddof=1) - xb.mean(axis=1) / xb.std(axis=1, ddof=1)) * math.sqrt(ANNUAL)
-    ok = np.isfinite(boot)
-    lo, hi = np.quantile(boot[ok], [0.025, 0.975]) if ok.any() else (float("nan"), float("nan"))
-    # Ledoit-Wolf studentized: population-moment dSR, delta-method SE
-    y = np.column_stack([a, b, a * a, b * b])
-    d0, g0 = _dsr_population(y.mean(axis=0))
-    d0 = float(d0)
-    s0 = math.sqrt(max(float(g0 @ bartlett_psi(y, block - 1) @ g0), 0.0) / t) if np.all(np.isfinite(g0)) else 0.0
-    ys = y[idx]                                                  # draws x t x 4
-    ms = ys.mean(axis=1)
-    ds, gs = _dsr_population(ms)
-    blocks = -(-t // block)
-    padded = np.zeros((draws, blocks * block, 4))
-    padded[:, :t] = ys - ms[:, None, :]
-    sums = padded.reshape(draws, blocks, block, 4).sum(axis=2)  # block sums S_j of the centered resample
-    psi = np.einsum("dni,dnj->dij", sums, sums) / t
-    with np.errstate(invalid="ignore", divide="ignore"):
-        ss = np.sqrt(np.einsum("di,dij,dj->d", gs, psi, gs) / t)
-        tstar = np.abs(ds - d0) / ss
-    good = np.isfinite(tstar) & (ss > 0)
-    lw = {"dsr_population": d0 * math.sqrt(ANNUAL), "se": s0 * math.sqrt(ANNUAL), "ci95": [None, None],
-          "p_value": None, "valid_draws": int(good.sum())}
-    if good.any() and s0 > 0 and math.isfinite(d0):
-        c = float(np.quantile(tstar[good], 0.95))
-        lw["ci95"] = [(d0 - c * s0) * math.sqrt(ANNUAL), (d0 + c * s0) * math.sqrt(ANNUAL)]
-        lw["p_value"] = (int((tstar[good] >= abs(d0) / s0).sum()) + 1) / (int(good.sum()) + 1)
-    if one_sided:
-        lw["p_one_sided"] = None
-        if good.any() and s0 > 0 and math.isfinite(d0):
-            signed = (ds[good] - d0) / ss[good]
-            lw["p_one_sided"] = (int((signed >= d0 / s0).sum()) + 1) / (int(good.sum()) + 1)
-    return {"sessions": t, "sr": sr_a, "sr_reference": sr_b, "dsr": dsr, "rho": rho, "memmel_se": se,
-            "t": dsr / se if se > 0 else None, "cbb_ci95": [float(lo), float(hi)], "cbb_valid_draws": int(ok.sum()),
-            "lw": lw, "draws": draws, "block": block, "seed": seed}
-
-
-def norm_cdf(x: float) -> float:
-    return 0.5 * math.erfc(-x / math.sqrt(2.0))
-
-
-def norm_ppf(p: float) -> float:
-    """Standard normal quantile by bisection on ``norm_cdf`` (to double precision; no scipy)."""
-    if not 0.0 < p < 1.0:
-        raise ValueError(f"norm_ppf: p must be in (0, 1), got {p}")
-    lo, hi = -40.0, 40.0
-    for _ in range(200):
-        mid = 0.5 * (lo + hi)
-        if norm_cdf(mid) < p:
-            lo = mid
-        else:
-            hi = mid
-        if hi - lo <= 1e-15 * max(1.0, abs(mid)):
-            break
-    return 0.5 * (lo + hi)
-
-
-def net_moments(x: np.ndarray) -> dict:
-    """Per-session Sharpe (ddof 1), skewness and non-excess kurtosis (population moments) of the daily nets."""
-    x = np.asarray(x, dtype=np.float64)
-    t = int(x.size)
-    e = x - x.mean() if t else x
-    m2 = float((e ** 2).mean()) if t else 0.0
-    sd = float(x.std(ddof=1)) if t > 1 else 0.0
-    return {"sessions": t, "sr_daily": float(x.mean()) / sd if sd > 0 else None,
-            "skew": float((e ** 3).mean()) / m2 ** 1.5 if m2 > 0 else None,
-            "kurtosis": float((e ** 4).mean()) / m2 ** 2 if m2 > 0 else None}
-
-
-def expected_max_sr(variance: float, n: int) -> float:
-    """SR0 = sqrt(V[SR_n]) [(1 - gamma) PhiInv(1 - 1/N) + gamma PhiInv(1 - 1/(N e))] (same units as V's SRs)."""
-    return math.sqrt(variance) * ((1.0 - EULER_GAMMA) * norm_ppf(1.0 - 1.0 / n) +
-                                  EULER_GAMMA * norm_ppf(1.0 - 1.0 / (n * math.e)))
-
-
-def deflated_sharpe(sr: float, t: int, skew: float, kurtosis: float, sr0: float) -> float | None:
-    """DSR = Phi[(SR - SR0) sqrt(T - 1) / sqrt(1 - g3 SR + (g4 - 1) SR^2 / 4)] with per-session SR and SR0."""
-    denom = 1.0 - skew * sr + (kurtosis - 1.0) * sr * sr / 4.0
-    if not (denom > 0 and t > 1):
-        return None
-    return norm_cdf((sr - sr0) * math.sqrt(t - 1) / math.sqrt(denom))
-
-
-def dsr_rows(moments: list[dict], n: int) -> list[dict]:
-    """DSR per NAV dir; V[SR_n] from the dirs' per-session SRs (ddof 1), or Lo (2002) with a single dir."""
-    if n < 2:
-        raise ValueError("DSR needs N >= 2")
-    srs = [m["sr_daily"] for m in moments if m["sr_daily"] is not None]
-    cross = len(moments) >= 2 and len(srs) >= 2
-    v_cross = float(np.var(srs, ddof=1)) if cross else None
-    out = []
-    for m in moments:
-        sr, t = m["sr_daily"], m["sessions"]
-        row = {"n": n, "sessions": t, "sr_daily": sr, "skew": m["skew"], "kurtosis": m["kurtosis"],
-               "sr_annual": sr * math.sqrt(ANNUAL) if sr is not None else None}
-        if sr is None or m["skew"] is None or t < 2:
-            out.append(dict(row, dsr=None, sr0_daily=None, sr0_annual=None, variance_sr=None,
-                            variance_source="undefined (constant or too short net series)"))
-            continue
-        if cross:
-            variance, source = v_cross, f"cross-cell sample variance of {len(srs)} per-session SRs"
-        else:
-            variance, source = (1.0 + sr * sr / 2.0) / t, "Lo (2002) sampling variance (1 + SR^2/2)/T: single cell"
-        sr0 = expected_max_sr(variance, n)
-        out.append(dict(row, dsr=deflated_sharpe(sr, t, m["skew"], m["kurtosis"], sr0), sr0_daily=sr0,
-                        sr0_annual=sr0 * math.sqrt(ANNUAL), variance_sr=variance, variance_source=source))
-    return out
-
-
 def align(cell: dict, reference: dict) -> tuple[np.ndarray, np.ndarray]:
     common = sorted(set(cell) & set(reference))
     return np.array([cell[s] for s in common]), np.array([reference[s] for s in common])
@@ -734,31 +604,6 @@ def print_year_table(rows: list[dict], indent: str = "   ") -> None:
               f"cost_bps {fmt(y['cost_bps_traded'], '.2f')}")
 
 
-def ledger_dsr(moments: dict, records: list[dict], in_ledger: bool, research_window_id: str,
-               history: bool = False) -> dict:
-    """OD-4 DSR of one dir: N = the ledger's construction trials (+1 when the dir is not in the ledger; a history read
-    adds no trial, Ruling E-41), V[SR] from the construction cells ledgered on ``research_window_id``; the legacy
-    variance's DSR beside it (gates nothing)."""
-    v = BI.dsr_variance(records, research_window_id)
-    n = BI.ledger_n(records, in_ledger or history)  # the one N (research_cycle.py's summ.dsr_n "ledger+1" reads it)
-    row = dict(v, n=n, n_rule="construction trials of the ledger by the defect rule" +
-               (" (a history read adds no trial, Ruling E-41)" if history else
-                "" if in_ledger else " + 1 (this cell, not yet ledgered)"),
-               dsr=None, sr0_daily=None, sr0_annual=None, legacy_dsr=None, legacy_sr0_annual=None)
-    sr, t = moments["sr_daily"], moments["sessions"]
-    if sr is None or moments["skew"] is None or t < 2 or n < 2:
-        return row
-    for key, variance in (("", v["variance_sr"]), ("legacy_", v["legacy_variance_sr"])):
-        if variance is None:
-            continue
-        sr0 = expected_max_sr(variance, n)
-        row[f"{key}sr0_annual"] = sr0 * math.sqrt(ANNUAL)
-        row[f"{key}dsr"] = deflated_sharpe(sr, t, moments["skew"], moments["kurtosis"], sr0)
-        if not key:
-            row["sr0_daily"] = sr0
-    return row
-
-
 def print_ledger_dsr(q: dict) -> None:
     print(f"   ledger DSR (N={q['n']}, {q['window_id']}): DSR {fmt(q['dsr'], '.4f')} vs SR0 "
           f"{fmt(q['sr0_annual'], '.3f')} ann | V[SR] from {q['cells']} cells ledgered on {q['window_id']} "
@@ -774,14 +619,9 @@ def bundle(base: Path, final: Path, args) -> dict:
         scen = scenario_of(load_summary(d), args.scenario)["scenario"]
         daily = load_daily(d, scen)
         nets[tag], tables[tag], scenarios[tag] = net_series(daily), year_table(daily), scen
-    engine = getattr(args, "engine", None)
-    if engine:
-        paired = engine.paired_of(nets["final"], nets["base"], args, one_sided=True)
-        if paired is None:
-            raise SystemExit("nav_summ: --bundle: need >= 3 sessions common to BASE and FINAL")
-    else:
-        a, b = align(nets["final"], nets["base"])
-        paired = paired_stats(a, b, args.draws, args.block, args.seed, one_sided=True)
+    paired = engine_of(args).paired_of(nets["final"], nets["base"], args, one_sided=True)
+    if paired is None:
+        raise SystemExit("nav_summ: --bundle: need >= 3 sessions common to BASE and FINAL")
     common = sorted(set(nets["final"]) & set(nets["base"]))
     years = []
     for y in sorted({BI.session_date(s).year for s in common}):
@@ -844,17 +684,12 @@ def analyse(d: Path, args, weights: list[dict], ref_nets: dict | None) -> tuple[
                        weighted_standalone_turnover=w["weighted_standalone_turnover"], tau_book=tau_book,
                        weights_sha256=w["sha256"])
     nets = net_series(daily)
-    engine = getattr(args, "engine", None)
-    out["net_moments"] = (engine.moments_of(nets) if engine else
-                          net_moments(np.array(list(nets.values()), dtype=np.float64)))
+    engine = engine_of(args)
+    out["net_moments"] = engine.moments_of(nets)
     if ref_nets is not None:
-        if engine:
-            out["paired"] = engine.paired_of(nets, ref_nets, args)
-            if out["paired"] is None:
-                raise SystemExit(f"nav_summ: {d}: need >= 3 sessions in common with the reference (paired dSR)")
-        else:
-            a, b = align(nets, ref_nets)
-            out["paired"] = paired_stats(a, b, args.draws, args.block, args.seed)
+        out["paired"] = engine.paired_of(nets, ref_nets, args)
+        if out["paired"] is None:
+            raise SystemExit(f"nav_summ: {d}: need >= 3 sessions in common with the reference (paired dSR)")
     if getattr(args, "year_table", False):
         out["year_table"] = year_table(daily)
     return out, nets
@@ -899,10 +734,7 @@ def paired_or_note(nets: dict, ref_nets: dict, args) -> dict:
     a, b = align(nets, ref_nets)
     if a.size < 3:
         return {"paired_note": f"paired skipped: {a.size} session(s) in common with the reference (3 needed)"}
-    engine = getattr(args, "engine", None)
-    if engine:
-        return {"paired": engine.paired_of(nets, ref_nets, args)}
-    return {"paired": paired_stats(a, b, args.draws, args.block, args.seed)}
+    return {"paired": engine_of(args).paired_of(nets, ref_nets, args)}
 
 
 def analyse_pool(dirs: list[str], ids: list[str], args, weights: list[dict], ref_nets: dict | None) -> tuple[dict, dict]:
@@ -932,9 +764,7 @@ def analyse_pool(dirs: list[str], ids: list[str], args, weights: list[dict], ref
                            weighted_standalone_turnover=w["weighted_standalone_turnover"],
                            tau_book=row["tau_gmv_mean"], weights_sha256=w["sha256"])
         nets = net_series(daily)
-        engine = getattr(args, "engine", None)
-        row["net_moments"] = (engine.moments_of(nets) if engine else
-                              net_moments(np.array(list(nets.values()), dtype=np.float64)))
+        row["net_moments"] = engine_of(args).moments_of(nets)
         if getattr(args, "year_table", False):
             row["year_table"] = year_table(daily)
     if ref_nets is not None:
@@ -1116,12 +946,10 @@ def integrity(args, argv, results, analysed) -> None:
                            "appended": rec["trial_id"] in added_ids}
         print(f"== ledger {args.ledger}: appended {len(added)}, skipped {len(skipped)} already ledgered "
               f"(kind {args.ledger_kind})")
-    engine = getattr(args, "engine", None)
+    engine = engine_of(args)
     if args.psr:
         for d, r in zip(labels, results):
-            r["psr"] = (engine.psr_of(nets_by[d], args.psr_benchmarks, args.psr_alpha) if engine else
-                        BI.psr_report(np.array(list(nets_by[d].values()), dtype=np.float64), args.psr_benchmarks,
-                                      args.psr_alpha))
+            r["psr"] = engine.psr_of(nets_by[d], args.psr_benchmarks, args.psr_alpha)
     eff = None
     if args.effective_n:
         if args.effective_n == "dirs":
@@ -1130,18 +958,10 @@ def integrity(args, argv, results, analysed) -> None:
             records = BI.ledger_read(Path(args.effective_n))
             names, series = BI.ledger_net_series(
                 records, lambda rec: net_series(load_daily_csv(Path(rec["series"]["path"]))))
-        if engine:
-            eff, rows = engine.effective([nets_by[d] for d in labels], names, series, args)
-            for r, (e, lo) in zip(results, rows):
-                r["deflated_effective_n"] = dict(e, clusters=eff["clusters"], source=args.effective_n)
-                r["deflated_lo_null"] = lo
-        else:
-            _, mat = BI.align_many(series)
-            eff = BI.effective_trials(mat, names, n_init=args.onc_init, seed=args.onc_seed)
-            for r in results:
-                r["deflated_effective_n"] = dict(BI.effective_n_dsr(r["net_moments"], eff),
-                                                 clusters=eff["clusters"], source=args.effective_n)
-                r["deflated_lo_null"] = BI.lo_null_dsr(r["net_moments"], args.dsr_n)
+        eff, rows = engine.effective([nets_by[d] for d in labels], names, series, args)
+        for r, (e, lo) in zip(results, rows):
+            r["deflated_effective_n"] = dict(e, clusters=eff["clusters"], source=args.effective_n)
+            r["deflated_lo_null"] = lo
     for d, r in zip(labels, results):
         if "deflated_effective_n" in r or "psr" in r:
             print(f"== integrity {d}")
@@ -1155,11 +975,7 @@ def integrity(args, argv, results, analysed) -> None:
         series = [nets_by[c] if c in nets_by else
                   net_series(load_daily(Path(c), scenario_of(load_summary(Path(c)), args.scenario)["scenario"]))
                   for c in cells]
-        if engine:
-            res, common = engine.cscv(series, args.pbo_blocks)
-        else:
-            common, mat = BI.align_many(series)
-            res = BI.cscv_pbo(mat, blocks=args.pbo_blocks, max_splits=args.pbo_max_splits or None, seed=args.seed)
+        res, common = engine.cscv(series, args.pbo_blocks)
         print_pbo(res, cells, common)
         if args.pbo_json:
             doc = dict(res, logits=res["logits"].tolist(), cells=cells,
@@ -1179,14 +995,8 @@ def integrity(args, argv, results, analysed) -> None:
                 tid = BI.trial_id("construction", BI.sha256_file(Path(d) / f"daily_{r['scenario']}.csv"))
             tids.append(tid)
             histories.append(history)
-        if engine:
-            doc = engine.ledger_rows_of([nets_by[d] for d in labels], args.dsr_ledger, wid, tids, histories)
-            rows = [c["dsr"]["house_v1"] for c in doc["cells"]]
-        else:
-            records = BI.ledger_read(Path(args.dsr_ledger))
-            present = {r.get("trial_id") for r in records if r.get("kind") == "construction"}
-            rows = [ledger_dsr(r["net_moments"], records, tid in present, wid, history)
-                    for r, tid, history in zip(results, tids, histories)]
+        doc = engine.ledger_rows_of([nets_by[d] for d in labels], args.dsr_ledger, wid, tids, histories)
+        rows = [c["dsr"]["house_v1"] for c in doc["cells"]]
         for d, r, row in zip(labels, results, rows):
             r["deflated_ledger"] = row
             print(f"== ledger DSR {d}")
@@ -1213,16 +1023,12 @@ def ledgered_book_series(d: Path, scenario: str | None) -> tuple[str, dict]:
     return BI.trial_id("construction", BI.sha256_file(daily)), net_series(load_daily(d, scen))
 
 
-def ledgered_book(d: Path, scenario: str | None) -> tuple[str, dict]:
-    """(construction trial_id, net moments) of a --dsr-hand NAV dir (``ledgered_book_series``)."""
-    tid, nets = ledgered_book_series(d, scenario)
-    return tid, net_moments(np.array(list(nets.values()), dtype=np.float64))
-
-
-def dsr_total_engine(args, results: list[dict], nets_by: dict) -> None:
-    """dsr_total_block's lines and rows from the engine verb (--engine-stats): one call for the listed dirs, then
-    one per --dsr-hand book, so the order of the printed lines and refusals is the Python's."""
-    engine, wid, path = args.engine, BI.window_id(), str(Path(args.dsr_total))
+def dsr_total_block(args, results: list[dict], nets_by: dict) -> None:
+    """--dsr-total / --dsr-hand (v8x-prereg.md section 4). Prints the total-count DSR and the v8-count value of every
+    listed dir, then DSR_hand of each --dsr-hand book; adds r["deflated_total"] to every listed row (the --dsr-hand
+    rows under "hand"). The rows are the engine verb's (dsr.tot and hand of its document): one call for the listed
+    dirs, then one per --dsr-hand book, so the printed lines and refusals keep their order."""
+    engine, wid, path = engine_of(args), BI.window_id(), str(Path(args.dsr_total))
     tids = [BI.trial_id("construction", BI.sha256_file(Path(d) / f"daily_{r['scenario']}.csv"))
             for d, r in zip(args.dirs, results)]
     doc = engine.ledger_rows_of([nets_by[d] for d in args.dirs], path, wid, tids, [False] * len(tids), "refuse")
@@ -1239,39 +1045,6 @@ def dsr_total_engine(args, results: list[dict], nets_by: dict) -> None:
         row = engine.ledger_rows_of([nets], path, wid, [tid], [False], "refuse", [(tid, nets)])["hand"][0]
         row.pop("path", None)
         moments = row.pop("net_moments")
-        hands.append(dict(row, dir=h, net_moments=moments))
-        for line in DT.format_hand(h, moments, row):
-            print(line)
-    for r in results[:len(args.dirs)]:
-        r["deflated_total"]["hand"] = hands
-
-
-def dsr_total_block(args, results: list[dict], nets_by: dict | None = None) -> None:
-    """--dsr-total / --dsr-hand (v8x-prereg.md section 4). Prints the total-count DSR and the v8-count value of every
-    listed dir, then DSR_hand of each --dsr-hand book; adds r["deflated_total"] to every listed row (the --dsr-hand
-    rows under "hand")."""
-    if getattr(args, "engine", None) and nets_by is not None:
-        dsr_total_engine(args, results, nets_by)
-        return
-    try:
-        ledger = DT.read_ledger(Path(args.dsr_total))
-    except ValueError as exc:
-        raise SystemExit(f"nav_summ: {exc}") from exc
-    records, wid = ledger["records"], BI.window_id()
-    present = DT.construction_ids(records)
-    head = {"ledger": ledger["path"], "lines": len(records), "chain_head": ledger["chain_head"]}
-    for d, r in zip(args.dirs, results):
-        tid = BI.trial_id("construction", BI.sha256_file(Path(d) / f"daily_{r['scenario']}.csv"))
-        r["deflated_total"] = dict(head, trial_id=tid, **DT.ledger_rows(r["net_moments"], records, tid in present, wid))
-        for line in DT.format_book(d, r["net_moments"], ledger, r["deflated_total"]):
-            print(line)
-    hands = []
-    for h in args.dsr_hand:
-        tid, moments = ledgered_book(Path(h), args.scenario)
-        try:
-            row = DT.hand_row(moments, ledger, tid, wid)
-        except ValueError as exc:
-            raise SystemExit(f"nav_summ: {h}: {exc}") from exc
         hands.append(dict(row, dir=h, net_moments=moments))
         for line in DT.format_hand(h, moments, row):
             print(line)
@@ -1305,7 +1078,8 @@ def main(argv=None) -> int:
     ap.add_argument("--onc-seed", type=int, default=DEFAULT_SEED)
     ap.add_argument("--pbo", nargs="*", default=None, help="CSCV PBO over these cells (default: the listed dirs)")
     ap.add_argument("--pbo-blocks", type=int, default=BI.PBO_BLOCKS)
-    ap.add_argument("--pbo-max-splits", type=int, default=0, help="0 = every split; K > 0 = seeded subsample (--seed)")
+    ap.add_argument("--pbo-max-splits", type=int, default=0,
+                    help="0 = every split (the engine CSCV); K > 0 is refused")
     ap.add_argument("--pbo-json", default=None, help="write the PBO result (with every split logit) as JSON")
     ap.add_argument("--psr", action="store_true", help="PSR and MinTRL of every listed dir")
     ap.add_argument("--psr-benchmarks", type=float_list, default=[0.0, 0.5], help="annualized SR* list (0,0.5)")
@@ -1335,9 +1109,9 @@ def main(argv=None) -> int:
                     help="the reference's era NAV dirs, pooled, for the pooled row's paired dSR (default --reference)")
     ap.add_argument("--era-of", default=None, metavar="TRIAL_ID",
                     help="a one-era history --pool with --ledger: the trial_id of the TRAIN cell it re-reads (P-1)")
-    ap.add_argument("--engine-stats", nargs="?", const=str(ENGINE_EXE), default=None, metavar="EXE",
-                    help="statistics of record from the engine verb atx-research-eval (K-P9-5; default EXE "
-                         "build-equity/bin/atx-research-eval.exe of this checkout)")
+    ap.add_argument("--engine-stats", nargs="?", const=None, default=None, metavar="EXE",
+                    help="the engine verb atx-research-eval that computes the statistics of record (K-P9-5; default "
+                         "$ATX_EQUITY_BIN when set, refused there without it, else build-equity/bin of this checkout)")
     argv = list(sys.argv[1:] if argv is None else argv)
     args = ap.parse_args(argv)
     v8 = args.protocol == "v8"
@@ -1372,9 +1146,9 @@ def main(argv=None) -> int:
         ap.error("--bundle-json needs --bundle BASE FINAL")
     if not 0 < args.bundle_alpha < 0.5:
         ap.error("--bundle-alpha in (0, 0.5)")
-    if args.engine_stats and args.pbo_max_splits:
-        ap.error("--engine-stats: the engine CSCV is exhaustive; --pbo-max-splits has no engine twin")
-    args.engine = EngineStats(args.engine_stats) if args.engine_stats else None
+    if args.pbo_max_splits:
+        ap.error("--pbo-max-splits: the engine CSCV is exhaustive (no seeded subsample)")
+    args.engine = None          # the verb, opened on first use by engine_of (review B2 S8)
     weights = load_weights(args.weights)
     ref_nets = None
     if args.reference:
@@ -1392,8 +1166,7 @@ def main(argv=None) -> int:
     names = list(args.dirs) + ([results[-1]["dir"]] if args.pool else [])
     warnings = []
     if results:
-        rows = (args.engine.deflated_rows([nets for _, nets in analysed], args.dsr_n) if args.engine else
-                dsr_rows([r["net_moments"] for r in results], args.dsr_n))
+        rows = engine_of(args).deflated_rows([nets for _, nets in analysed], args.dsr_n)
         for r, q in zip(results, rows):
             r["deflated"] = q
         warnings = listing_warnings(names, results, [nets for _, nets in analysed], args.dsr_n)

@@ -19,7 +19,8 @@ Files (all pinned by SHA-256 in expected.json; .gitattributes keeps their bytes)
   expected.json         the values (below), the ONC draw trace (every k-means++ pick of
                         backtest_integrity.onc in call order), the parameters and a tie rule per value
 
-Values, each from today's Python called as a library (nothing here re-implements a statistic):
+Values, each from the Python statistics of record called as a library (nothing here re-implements a statistic; since
+lane B2's deletion they are frozen_statistics.py, the verbatim copy of the retired functions, module names below):
   moments / net_moments   backtest_integrity.moments, nav_summ.net_moments of the book
   psr                     backtest_integrity.psr_report(book, SR* in {0, .5} annual, alpha .05): PSR and MinTRL
   norm_ppf                backtest_integrity.norm_ppf at every quantile the DSR rows use
@@ -53,11 +54,13 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[3]
 TOOLS = REPO / "atx-impl" / "tools"
-if str(TOOLS) not in sys.path:
-    sys.path.insert(0, str(TOOLS))
-import backtest_integrity as BI  # noqa: E402
-import dsr_total as DT  # noqa: E402
-import nav_summ as NS  # noqa: E402
+for _p in (TOOLS, HERE):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+# P9 B2 deleted these statistics from backtest_integrity.py, nav_summ.py and dsr_total.py (the engine verb
+# atx-research-eval computes them); the checker keeps recomputing this fixture from their frozen copy (T1 minor).
+import frozen_statistics as BI  # noqa: E402
+DT = NS = BI
 
 SCHEMA = "atx.eval-tie/v1"
 GENERATOR = "atx-engine/tests/fixtures/eval_tie/generate_eval_tie.py"
