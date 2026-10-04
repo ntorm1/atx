@@ -213,6 +213,197 @@ def inventory_submissions(archive: Path, output: Path, *, after: str | None,
     return receipt
 
 
+def original_submission_evidence(raw:bytes, expected:dict[str,Any], retained:dict[str,Any]) -> dict[str,Any]:
+    """Parse actual complete SEC submission bytes; claims alone never certify.
+
+    Unsupported originals remain accession-keyed diagnostics. Public acceptance
+    header timezone and value-unit documentary validation are independent gates;
+    this parser does not invent those proofs from dates or caller booleans.
+    """
+    import hashlib
+    import math
+    import xml.etree.ElementTree as ET
+    from urllib.parse import urlparse
+    accession=accession_key(expected["accession"])
+    reasons=[]
+    digest=hashlib.sha256(raw).hexdigest()
+    if digest!=retained.get("sha256"):
+        reasons.append("original_digest_mismatch")
+    url=urlparse(str(retained.get("url", "")))
+    if url.scheme!="https" or url.hostname not in {"www.sec.gov","sec.gov"} or not url.path.startswith("/Archives/") or accession not in url.path.replace("-",""):
+        reasons.append("original_sec_url_accession_unproven")
+    try:
+        fetched=dt.datetime.fromisoformat(retained["fetched_at"].replace("Z","+00:00"))
+        if fetched.tzinfo is None:
+            raise ValueError()
+    except (KeyError,TypeError,ValueError):
+        reasons.append("retrieval_clock_missing_or_invalid")
+    text=raw.decode("utf-8",errors="replace")
+    def header(name):
+        match=re.search(r"^"+re.escape(name)+r"\s*:?\s*([^\r\n<]+)",text,re.M|re.I)
+        return match.group(1).strip() if match else None
+    raw_accession=header("ACCESSION NUMBER")
+    try:
+        if not raw_accession or accession_key(raw_accession)!=accession:
+            reasons.append("original_header_accession_mismatch")
+    except ValueError:
+        reasons.append("original_header_accession_invalid")
+    form=header("CONFORMED SUBMISSION TYPE")
+    if form!=expected.get("form"):
+        reasons.append("original_header_form_mismatch")
+    clock_match=re.search(r"<ACCEPTANCE-DATETIME>(\d{14})",text,re.I)
+    acceptance_header=clock_match.group(1) if clock_match else None
+    # Header clock is retained verbatim: its timezone is not inferred here.
+    reasons.append("original_acceptance_timezone_unverified" if acceptance_header else "original_acceptance_missing")
+    if not re.search(r"<SEC-DOCUMENT>|<SEC-DOCUMENT\s",text,re.I) or "</SEC-DOCUMENT>" not in text.upper():
+        reasons.append("complete_submission_container_missing")
+    roots=[]
+    for xml in re.findall(r"<XML>(.*?)</XML>",text,re.S|re.I):
+        if re.search(r"<!DOCTYPE|<!ENTITY",xml,re.I):
+            reasons.append("xml_external_entity_or_doctype_unsupported")
+            continue
+        try:
+            roots.append(ET.fromstring(xml.strip()))
+        except ET.ParseError:
+            reasons.append("original_xml_parse_failed")
+    def local(tag):
+        return tag.rsplit("}",1)[-1]
+    def values(name):
+        return [node.text.strip() for root in roots for node in root.iter() if local(node.tag)==name and node.text and node.text.strip()]
+    def unique(name):
+        found=values(name)
+        return found[0] if len(found)==1 else None
+    report=unique("reportCalendarOrQuarter")
+    try:
+        report_date=dt.datetime.strptime(report,"%m-%d-%Y").date() if report and "-" in report and len(report.split("-")[0])==2 else dt.date.fromisoformat(report)
+    except (ValueError,TypeError):
+        report_date=None
+        reasons.append("original_cover_report_date_missing_or_invalid")
+    if report_date and expected.get("report_date") and report_date.isoformat()!=expected["report_date"]:
+        reasons.append("inventory_original_report_date_mismatch")
+    positions=[]
+    for root in roots:
+        for node in root.iter():
+            if local(node.tag)!="infoTable":
+                continue
+            fields={local(child.tag):(child.text.strip() if child.text else None) for child in node.iter() if len(child)==0}
+            try:
+                amount=float(fields["sshPrnamt"])
+                value=float(fields["value"])
+                if not math.isfinite(amount) or not math.isfinite(value) or amount<0 or value<0:
+                    raise ValueError()
+            except (KeyError,TypeError,ValueError):
+                reasons.append("original_position_amount_invalid")
+                amount=value=None
+            kind=fields.get("sshPrnamtType")
+            option=fields.get("putCall")
+            if kind not in {"SH","PRN"} or option not in {None,"PUT","CALL"}:
+                reasons.append("original_position_class_unsupported")
+            positions.append(dict(position_index=len(positions),cusip=fields.get("cusip"),shares=amount if kind=="SH" else None,
+                principal=amount if kind=="PRN" else None,amount_type=kind,value_raw=value,put_call=option,
+                other_manager=fields.get("otherManager"),discretion=fields.get("investmentDiscretion")))
+    try:
+        count=int(unique("tableEntryTotal"))
+        total=float(unique("tableValueTotal"))
+        cover_reconciled=count==len(positions) and math.isfinite(total) and all(row["value_raw"] is not None for row in positions) and math.isclose(sum(row["value_raw"] for row in positions),total,rel_tol=1e-9,abs_tol=1e-6)
+    except (TypeError,ValueError):
+        count=total=None
+        cover_reconciled=False
+    if form in {"13F-HR","13F-HR/A"}:
+        if not cover_reconciled:
+            reasons.append("original_cover_table_count_or_value_unreconciled")
+        reasons.append("documentary_value_unit_unverified")
+        if not positions:
+            reasons.append("original_zero_table_requires_independent_omission_proof")
+    # An affirmative boolean cannot replace documentary manager/omission proof.
+    reasons.append("shared_manager_confidential_omission_chain_unverified")
+    amendment_type=unique("amendmentType")
+    if form=="13F-HR/A" and amendment_type not in {"RESTATEMENT","NEW HOLDINGS"}:
+        reasons.append("original_amendment_type_unresolved")
+    return dict(accession=accession,form=form,original_sha256=digest,
+        acceptance_header_raw=acceptance_header,available_at=None,
+        inventory_available_at=expected.get("available_at"),report_date=report_date.isoformat() if report_date else None,
+        table_entry_total=count,table_value_total_raw=total,cover_reconciled=cover_reconciled,
+        amendment_type=amendment_type,positions=positions,source_qualified=False,
+        qualified_original=False,table_absence_qualified=False,
+        gate_status="UNQUALIFIED",exceptions=sorted(set(reasons)),
+        source_url=retained.get("url"),retrieval_clock=retained.get("fetched_at"))
+
+
+def bridge_originals(evidence:Path, roots:list[Path], output:Path, *, max_records:int=1000,
+                     max_object_bytes:int=8*1024*1024) -> dict[str,Any]:
+    """Immutable bounded actual-byte diagnostics from explicitly retained paths.
+
+    Input rows contain independently bound expected inventory record and receipt.
+    This bridge deliberately does not promote normalized evidence to admission.
+    """
+    if output.exists() or output.with_suffix(output.suffix+".receipt.json").exists():
+        raise ValueError("original bridge output/receipt exists")
+    if not 1<=max_records<=10000 or not 1<=max_object_bytes<=8*1024*1024 or not roots:
+        raise ValueError("explicit bounded original inputs/roots required")
+    if evidence.stat().st_size>32*1024*1024:
+        raise ValueError("original evidence manifest exceeds byte bound")
+    source_identity=C.file_identity(evidence)
+    source_hash=C.sha256_file(evidence)
+    allowed=[root.resolve(strict=True) for root in roots]
+    partial=output.with_suffix(output.suffix+".partial")
+    output.parent.mkdir(parents=True,exist_ok=True)
+    records=0
+    bounded=False
+    with evidence.open("rb") as stream,partial.open("x",encoding="utf-8") as sink:
+        while True:
+            line=stream.readline(256*1024+1)
+            if not line:
+                break
+            if records>=max_records:
+                bounded=True
+                break
+            if len(line)>256*1024:
+                raise ValueError("original evidence record byte bound exceeded")
+            row=json.loads(line)
+            expected,retained=row["expected"],row["retained"]
+            accession=accession_key(expected["accession"])
+            result={"accession":accession,"source_qualified":False,"qualified_original":False,
+                    "gate_status":"UNQUALIFIED","exceptions":[]}
+            try:
+                path=Path(retained["path"])
+                if not path.is_absolute():
+                    raise ValueError("original_path_must_be_absolute")
+                resolved=path.resolve(strict=True)
+                if not any(resolved.is_relative_to(root) for root in allowed):
+                    raise ValueError("original_path_outside_configured_roots")
+                for ancestor in [path,*path.parents]:
+                    stat=ancestor.lstat()
+                    if ancestor.is_symlink() or getattr(stat,"st_file_attributes",0)&0x400:
+                        raise ValueError("original_reparse_path_unsupported")
+                identity=C.file_identity(path)
+                if identity["bytes"]>max_object_bytes:
+                    raise ValueError("original_object_byte_bound")
+                with path.open("rb") as original:
+                    raw=original.read(max_object_bytes+1)
+                if len(raw)>max_object_bytes:
+                    raise ValueError("original_object_byte_bound")
+                if raw.startswith(b"\x1f\x8b") or raw.startswith(b"PK"):
+                    raise ValueError("compressed_original_requires_authenticated_member_adapter")
+                result=original_submission_evidence(raw,expected,retained)
+                result["original_file_identity"]=identity
+                if C.file_identity(path)!=identity:
+                    raise RuntimeError("original changed during bridge read")
+            except (OSError,ValueError,KeyError) as exc:
+                result["exceptions"]=[str(exc)]
+            sink.write(json.dumps(result)+"\n")
+            records+=1
+    if C.file_identity(evidence)!=source_identity or C.sha256_file(evidence)!=source_hash:
+        raise RuntimeError("original evidence manifest changed")
+    partial.replace(output)
+    receipt=dict(schema="atx.thirteenf-original-bridge/v1",records=records,bound_reached=bounded,
+        input_manifest_sha256=source_hash,input_identity=source_identity,output_sha256=C.sha256_file(output),
+        source_completeness="UNQUALIFIED_ORIGINAL_DIAGNOSTICS",gate_status="UNQUALIFIED",
+        limits="No clock timezone/unit/shared-manager/omission closure or full inventory admission")
+    C.write_json_atomic(output.with_suffix(output.suffix+".receipt.json"),receipt)
+    return receipt
+
+
 def reconcile(expected: dict[str, Any], retained: dict[str, Any] | None,
               parsed: dict[str, Any] | None) -> dict[str, Any]:
     """FAIL every unexplained gap; exemptions need original public evidence.
@@ -426,7 +617,16 @@ def main(argv: list[str] | None = None) -> int:
     inventory.add_argument("--through",required=True)
     inventory.add_argument("--max-main",type=int,default=1000)
     inventory.add_argument("--first",type=dt.date.fromisoformat,default=dt.date(2019,1,1))
+    originals=sub.add_parser("bridge-originals")
+    originals.add_argument("--evidence",type=Path,required=True)
+    originals.add_argument("--root",type=Path,action="append",required=True)
+    originals.add_argument("--output",type=Path,required=True)
+    originals.add_argument("--max-records",type=int,default=1000)
     args = parser.parse_args(argv)
+    if args.command == "bridge-originals":
+        receipt=bridge_originals(args.evidence,args.root,args.output,max_records=args.max_records)
+        print(json.dumps(receipt,sort_keys=True))
+        return 2 if receipt["bound_reached"] else 0
     if args.command == "inventory-submissions":
         receipt = inventory_submissions(args.archive,args.output,after=args.after,through=args.through,
                                         max_main=args.max_main,first=args.first)

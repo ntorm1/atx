@@ -131,3 +131,48 @@ def test_effective_amendment_chain_uses_strict_public_clock():
     assert effective_chain(rows,cutoff(20))["effective_accessions"]==["000000000120000001"]
     assert effective_chain(rows,cutoff(21))["effective_accessions"]==["000000000120000001","000000000120000002"]
     assert effective_chain(rows,cutoff(26))["effective_accessions"]==["000000000120000003"]
+
+
+def test_actual_original_cover_positions_and_claims_stay_unqualified(tmp_path):
+    import hashlib
+    from atx_db.alpha_panel.thirteenf_quality import original_submission_evidence,bridge_originals
+    raw=b"""<SEC-DOCUMENT>
+ACCESSION NUMBER: 0000000001-20-000001
+CONFORMED SUBMISSION TYPE: 13F-HR
+<ACCEPTANCE-DATETIME>20200515120000
+<XML><edgarSubmission><reportCalendarOrQuarter>03-31-2020</reportCalendarOrQuarter><tableEntryTotal>1</tableEntryTotal><tableValueTotal>10</tableValueTotal></edgarSubmission></XML>
+<XML><informationTable><infoTable><cusip>123456789</cusip><value>10</value><shrsOrPrnAmt><sshPrnamt>100</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt><investmentDiscretion>SOLE</investmentDiscretion></infoTable></informationTable></XML>
+</SEC-DOCUMENT>"""
+    path=tmp_path / "original.txt"
+    path.write_bytes(raw)
+    expected=dict(accession="0000000001-20-000001",form="13F-HR",report_date="2020-03-31")
+    retained=dict(path=str(path),sha256=hashlib.sha256(raw).hexdigest(),url="https://www.sec.gov/Archives/edgar/data/1/000000000120000001/complete.txt",fetched_at="2026-01-01T00:00:00Z",verified_original=True)
+    result=original_submission_evidence(raw,expected,retained)
+    assert result["cover_reconciled"] and result["positions"][0]["shares"]==100
+    assert result["available_at"] is None and result["acceptance_header_raw"]=="20200515120000"
+    assert not result["source_qualified"] and not result["table_absence_qualified"]
+    assert "documentary_value_unit_unverified" in result["exceptions"]
+    bad=original_submission_evidence(raw,expected,dict(retained,sha256="0"*64,url="https://other.example/complete.txt"))
+    assert "original_digest_mismatch" in bad["exceptions"] and "original_sec_url_accession_unproven" in bad["exceptions"]
+    evidence=tmp_path / "evidence.jsonl"
+    evidence.write_text(json.dumps(dict(expected=expected,retained=retained))+"\n"+
+                        json.dumps(dict(expected=expected,retained=dict(retained,path="../outside.txt")))+"\n")
+    output=tmp_path / "bridge.jsonl"
+    receipt=bridge_originals(evidence,[tmp_path],output)
+    rows=[json.loads(line) for line in output.read_text().splitlines()]
+    assert receipt["records"]==2 and rows[1]["exceptions"]==["original_path_must_be_absolute"]
+    assert receipt["source_completeness"]=="UNQUALIFIED_ORIGINAL_DIAGNOSTICS"
+    with pytest.raises(ValueError,match="output/receipt exists"):
+        bridge_originals(evidence,[tmp_path],output)
+    assert bridge_originals(evidence,[tmp_path],tmp_path / "bounded.jsonl",max_records=1)["bound_reached"]
+
+
+def test_original_xml_entities_wrong_counts_and_missing_clock_are_keyed_diagnostics():
+    from atx_db.alpha_panel.thirteenf_quality import original_submission_evidence
+    raw=b'<SEC-DOCUMENT>\nACCESSION NUMBER: invalid\nCONFORMED SUBMISSION TYPE: 13F-HR\n<XML><!DOCTYPE a [<!ENTITY x SYSTEM "file:///secret">]><a>&x;</a></XML></SEC-DOCUMENT>'
+    result=original_submission_evidence(raw,dict(accession="000000000120000001",form="13F-HR"),{})
+    assert "original_header_accession_invalid" in result["exceptions"]
+    assert "xml_external_entity_or_doctype_unsupported" in result["exceptions"]
+    assert "original_acceptance_missing" in result["exceptions"]
+    assert "original_cover_table_count_or_value_unreconciled" in result["exceptions"]
+    assert result["source_qualified"] is False

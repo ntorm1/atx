@@ -136,6 +136,81 @@ def inspect_submissions_cache(archive: Path, index: Path, receipt: Path) -> dict
         con.close()
 
 
+def inspect_ledgers(files:list[Path], *, max_records:int=100000,
+                    max_bytes:int=64*1024*1024, max_record_bytes:int=256*1024,
+                    max_candidates:int=2000) -> dict[str,Any]:
+    """Bounded receipt metadata leads; never read, hash or certify objects.
+
+    Opaque accession URLs without a form stay UNKNOWN, never treated as proof of
+    non-13F content. Candidate truncation and input truncation are explicit.
+    """
+    if not 1<=len(files)<=2 or len(set(map(str,files)))!=len(files):
+        raise ValueError("one or two unique explicit ledgers required")
+    if not 1<=max_records<=100000 or not 1<=max_bytes<=64*1024*1024 or not 1<=max_record_bytes<=256*1024 or not 1<=max_candidates<=2000:
+        raise ValueError("ledger inspection bounds invalid")
+    reports=[]
+    for path in files:
+        before=C.file_identity(path)
+        records=bytes_read=unknown=matched=0
+        candidates=[]
+        exceptions=[]
+        complete=True
+        with path.open("rb") as stream:
+            while True:
+                if records>=max_records or bytes_read>=max_bytes:
+                    if stream.read(1):
+                        exceptions.append({"reason":"record_or_byte_bound"})
+                        complete=False
+                    break
+                line=stream.readline(min(max_record_bytes+1,max_bytes-bytes_read+1))
+                if not line:
+                    break
+                bytes_read+=len(line)
+                records+=1
+                if len(line)>max_record_bytes or bytes_read>max_bytes:
+                    exceptions.append({"record":records,"reason":"record_or_byte_bound"})
+                    complete=False
+                    break
+                try:
+                    record=json.loads(line)
+                    if not isinstance(record,dict):
+                        raise ValueError("object required")
+                except (ValueError,UnicodeError) as exc:
+                    exceptions.append({"record":records,"reason":"malformed_record","detail":str(exc)[:160]})
+                    complete=False
+                    continue
+                metadata={}
+                def collect(obj,prefix="",depth=0):
+                    if depth>3 or len(metadata)>=32:
+                        return
+                    for key,value in obj.items():
+                        if len(metadata)>=32:
+                            break
+                        label=(prefix+str(key))[:128]
+                        if isinstance(value,dict):
+                            collect(value,label+".",depth+1)
+                        elif re.search(r"url|path|form|accession|sha256|digest|status|fetch|retriev|object|cache",str(key),re.I) and isinstance(value,(str,int,float,bool,type(None))):
+                            metadata[label]=value[:512] if isinstance(value,str) else value
+                collect(record)
+                forms=[str(v).upper().strip() for k,v in metadata.items() if re.search(r"(^|\.)form$",k,re.I)]
+                is_13f=any(v in {"13F-HR","13F-HR/A","13F-NT","13F-NT/A"} for v in forms) or any(re.search(r"13f(?:[-_/ ]|$)",str(v),re.I) for v in metadata.values())
+                classification="13F_LEAD" if is_13f else "OTHER_FORM" if forms and all(v in {"10-K","10-K/A","10-Q","10-Q/A","8-K","8-K/A","3","3/A","4","4/A","5","5/A","NPORT-P","NPORT-P/A"} for v in forms) else "UNKNOWN"
+                matched+=is_13f
+                unknown+=classification=="UNKNOWN"
+                if classification!="OTHER_FORM" and len(candidates)<max_candidates:
+                    candidates.append({"record":records,"classification":classification,"metadata":metadata,"referenced_paths_status":"UNVALIDATED_CONFIGURED_ROOTS"})
+        if C.file_identity(path)!=before:
+            raise RuntimeError("ledger changed during inspection")
+        reports.append({"file":before,"records_read":records,"bytes_read":bytes_read,
+            "13f_lead_records":matched,"unknown_records":unknown,"candidates":candidates,
+            "candidate_bound_reached":matched+unknown>len(candidates),
+            "scan_complete":complete,"exceptions":exceptions})
+    return {"schema":"atx.thirteenf-ledger-leads/v1","files":reports,
+        "source_completeness":"UNMEASURED","objects_read":0,"network_attempts":0,
+        "limits":"Receipt metadata alone cannot establish original retention or whole-store absence",
+        "available_at":dt.datetime.now(dt.UTC).isoformat()}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -152,9 +227,19 @@ def main(argv: list[str] | None = None) -> int:
     directory = sub.add_parser("inspect-submissions-cache")
     for name in ("archive", "index", "receipt", "output"):
         directory.add_argument("--" + name, type=Path, required=True)
+    leads=sub.add_parser("inspect-ledgers")
+    leads.add_argument("--file",type=Path,action="append",required=True)
+    leads.add_argument("--output",type=Path,required=True)
+    leads.add_argument("--max-records",type=int,default=100000)
+    leads.add_argument("--max-bytes",type=int,default=64*1024*1024)
+    leads.add_argument("--max-candidates",type=int,default=2000)
     args = parser.parse_args(argv)
     if args.output.exists():
         parser.error("audit output exists; choose a new evidence path")
+    if args.command == "inspect-ledgers":
+        result=inspect_ledgers(args.file,max_records=args.max_records,max_bytes=args.max_bytes,max_candidates=args.max_candidates)
+        C.write_json_atomic(args.output,result)
+        return 0 if all(item["scan_complete"] for item in result["files"]) else 2
     if args.command == "inspect-submissions-cache":
         C.write_json_atomic(args.output, inspect_submissions_cache(args.archive,args.index,args.receipt))
         return 0

@@ -55,3 +55,36 @@ def test_readonly_submissions_cache_inspection_pins_receipt_without_certifying_a
     receipt.write_text("0"*64)
     with pytest.raises(ValueError,match="digest mismatch"):
         inspect_submissions_cache(archive,index,receipt)
+
+
+def test_bounded_ledger_leads_keep_opaque_records_unknown_without_reading_objects(tmp_path):
+    from atx_db.alpha_panel.thirteenf_source import inspect_ledgers
+    ledger=tmp_path / "receipts.jsonl"
+    rows=[dict(form="13F-HR",url="https://www.sec.gov/Archives/opaque",path="missing-original.gz"),
+          dict(url="https://www.sec.gov/Archives/other-opaque",sha256="a"*64),dict(form="10-K")]
+    ledger.write_text("".join(json.dumps(row)+"\n" for row in rows))
+    result=inspect_ledgers([ledger],max_candidates=1)
+    report=result["files"][0]
+    assert report["scan_complete"] and report["records_read"]==3
+    assert report["13f_lead_records"]==1 and report["unknown_records"]==1
+    assert report["candidate_bound_reached"] and result["objects_read"]==0
+    assert result["source_completeness"]=="UNMEASURED"
+    bounded=inspect_ledgers([ledger],max_records=1)["files"][0]
+    assert not bounded["scan_complete"] and bounded["exceptions"][0]["reason"]=="record_or_byte_bound"
+    ledger.write_text('{bad}\n')
+    assert inspect_ledgers([ledger])["files"][0]["exceptions"][0]["reason"]=="malformed_record"
+
+
+def test_ledger_unknown_forms_paths_and_truncation_are_explicit(tmp_path):
+    from atx_db.alpha_panel.thirteenf_source import inspect_ledgers
+    ledger=tmp_path / "ledger.jsonl"
+    ledger.write_text(json.dumps(dict(form="UNKNOWN_FORM",path="../relative.gz"))+"\n"+
+                      json.dumps(dict(path="C:/outside/opaque.gz"))+"\n")
+    report=inspect_ledgers([ledger])["files"][0]
+    assert report["unknown_records"]==2
+    assert {row["metadata"]["path"] for row in report["candidates"]}=={"../relative.gz","C:/outside/opaque.gz"}
+    assert all(row["referenced_paths_status"]=="UNVALIDATED_CONFIGURED_ROOTS" for row in report["candidates"])
+    report=inspect_ledgers([ledger],max_record_bytes=8)["files"][0]
+    assert not report["scan_complete"] and report["exceptions"][0]["reason"]=="record_or_byte_bound"
+    report=inspect_ledgers([ledger],max_bytes=12)["files"][0]
+    assert not report["scan_complete"] and report["bytes_read"]==13
