@@ -533,9 +533,14 @@ permission system**. It was not retried and not routed around; the line mutation
 - The 2.0 cap is kind leverage's (E2-10). A kind rule wave naming fixed-v1 has its `aim_leverage` bounded only by the
   table's `params_schema`, which is [1, 2] in C1's table today. If a table widened it, the cap would not apply there.
   Not ruled.
-- Observation, not ruled: a kind rule wave naming fixed-v1 replaces `{leverage}` with its literal `aim_leverage`. With
-  pm6-6, the match stage's L' (`nav.leverage`) would then not reach the argv. The committed fixture uses
-  `gross_match: "none"`.
+- Observation, ruled E2-13 (b) (wording widened in fix round 4, re-review 3 S3): a kind rule wave naming ANY NAV rule
+  whose params give `aim_leverage` replaces `{leverage}` with that literal: fixed-v1 always (`aim_leverage` is
+  required), vol-target-v1 and risk-target-v1 when the manifest gives it. Under gross matching the match stage's L'
+  (`nav.leverage`) then does not reach the argv. Both modes fail closed: Python pm6-6's matched run repeats the
+  calibration argv, so its G is unchanged and the stage stops after its one correction; pm6-6-engine refuses at match
+  (EXIT_PIN, `wave_stage_cell.match_engine`'s `leverage_requested` check). For the P9 templates: a NAV rule under gross
+  matching omits `aim_leverage` (C1's live table makes it optional for vol-target-v1 / risk-target-v1). The committed
+  fixture uses `gross_match: "none"`.
 
 ### Cross-lane notes for root
 - **MR-4.** Add `theme-cov-hedge-v1` and `mom-volman-v1` to `wave_kinds.COMPOSITION_FLAGS` in the same merge as
@@ -552,3 +557,205 @@ permission system**. It was not retried and not routed around; the line mutation
   `wave_stage_record.py`: `git diff d0054b32 HEAD` is empty for it. So the C2 re-review-2 finding ("merge cleanly with
   E2's `d0054b32`") holds for this head. Root places them at the C2 / E2 merge.
 - Re-review 2's "What root must check at merge" items 3-12 still hold. Re-review this fix SHA (item 13).
+
+## Fix round 4
+Review fixed: `task-E2-rereview-3.md` (`f525b195`, CHANGES_REQUIRED: R3a + S1-S4) on code head `ea7d9dde`. Rulings
+applied: E2-14 (merge root first; R3a), E2-15 (S1 Required: the reference side; S2, S4 fixed; S3 a report edit).
+E2-8, E2-10, E2-12, E2-13, W1-I2, MR-4 and C2-8 still bind. History, nothing squashed, no rebase: merge `d2cea6a6`,
+code `ce8c4f43`, then this report commit.
+
+### The merge (ruling E2-14)
+- **Root sha merged: `42f42a07`** (pool-2's head as found; it contains `c2416d62`: C2, AL-COMB, S2R, B2 identity part).
+  `git merge --no-ff --no-commit 42f42a07` in pool-17, merge base `1239a5ff`.
+- **Conflicted files: 0.** git's automatic merge tree is `0f746a16` (equal to `git merge-tree --write-tree`, run
+  first). Five files changed on both sides, all in disjoint hunks, all auto-merged:
+  - `.gitattributes`: both sides added the same three `scripts/specs/** text eol=lf` lines.
+  - `scripts/tests/test_no_python_mirror.py`: root's D3 / P10 owner edits and E2's `require_research_seal` row.
+  - `scripts/wave_result.py`: C2's `record_spec` / `run_spec` cell fields and E2's exe-notes wording.
+  - `scripts/wave_stage_cell.py`: C2's engine branch, calibrated / record docs and `match_engine`; E2's Python-branch
+    wording.
+  - `scripts/wave_stage_record.py`: B2's ledger head and C2's R4 pin; E2's W1-I2 (a) branch, `verify_plan` and
+    `side_by_side`.
+- **C2's two R4 lines survive unchanged** in `wave_stage_record.verify_inputs` (`if mt.get("record_spec"): ...
+  now["record_spec_digest"] = ...`). So does C2's `wave_result.py` edit (`cell.spec` = `record_spec` when present;
+  `run_spec` / `run_spec_digest`). AL-COMB / C2 / D2 / COV / B2 code outside E2's files is root's, unchanged.
+- **In the merge commit, on top of `0f746a16`** (`git diff 0f746a16 d2cea6a6` is exactly these: 2 files, 5 insertions, 2 deletions):
+  - **MR-4**: `COMPOSITION_FLAGS` gains `"theme-cov-hedge-v1": {"fit": {"--theme-hedge": "theme-cov-hedge-v1"}}` and
+    `"mom-volman-v1": {"fit": {"--mom-volman": "mom-volman-v1"}}` (the fitter's flags, `fit_composition_weights.py`
+    `:221-222`). E2-12's `zz-unmapped-rule-v0` stays unmapped; its assert still passes.
+  - **C2 S13** (it sits in E2's `wave_stage_cell.py`): the engine branch of `run_stage` logs E2's two-line exe-notes
+    wording and carries E2's `# ruling E1-REUSE-a2: outputs made by another exe than on disk now` comment, as the
+    Python branch.
+- **Review item 5 (d)**, C2 left it to E2: `wave_manifest.py`'s doc line names `"pm6-6" | "pm6-6-engine" | "none"`
+  (in `ce8c4f43`).
+- **One test expectation moved with the merge** (in `ce8c4f43`; not a hash, golden or pin): in
+  `test_rule_flags_from_the_tables`, `abbreviated("--the", table_flags(...)["fit"])` now also lists `--theme-hedge`.
+  The test reads the committed IC table (`composition_rules_list.json`), which lists AL-COMB's `theme-cov-hedge-v1`
+  since the merge, and MR-4 maps it. It was the only red of the post-merge kinds / wave / driver run (121 passed, 1
+  failed, `logs/e2f4-postmerge.log`).
+
+### Per finding
+| item | state | change (`ce8c4f43`) | tests (`scripts/tests/test_wave_kinds.py`) |
+|---|---|---|---|
+| R3a (E2-14) | DONE | `wave_kinds.MATCH_FLAGS = ("--calibrate-gross", "--calibrate-tolerance")`, `MATCH_STAGE = "pm6-6-engine"`, `match_flag_reads(token)`: the flags the token reads as after `norm_option` (case, single dash), `=value` stripped, equal or a proper prefix (abbreviation). `wave_stage_kinds`: `match_flag_map_hits` (every option map key or value, parent-value maps too; read BEFORE `resolve`, because `apply_flags` refuses a single-dash key or a missing parent value without naming the flag) and `match_flag_list_hits` (every token of every resolved flag list: `ic` / `ic.w_flags` / `fit` / `nav` / `card`, plus a ref's own flags; route via `touching`, or "the parent spec <path> <list> (the cell inherits it)"). Library kinds: the parent's lists (add-alpha's copy). One refusal, `match_flag_refusal`, exit 3, naming token and route and citing E2-14 / E2-10. The match stage's `-cal` recipe is written after preflight and never read by the guard | `R3A_PROBES` (13): constants.flags, template change.flags, constants.set nav.flags, horizon.flags, a leverage wave's map; `--Calibrate-Gross=0.95`, `-calibrate-tolerance`, `--calib` (both), a value slot, a parent-value map; `fit.flags`, a whole `nav` section, template change.set. `test_match_flags_inherited_from_the_parent_are_refused` (a library kind and a rule kind; the reader's spellings and non-hits). `test_the_match_stage_still_writes_its_own_leverage[pm6-6 / pm6-6-engine]` |
+| E2-15 (b) (S1) | DONE | `ref_refusal`: any raw route to `ref` / `ref.*` is refused (rule_cell.constants.set / .flags, the template's change.set `ref.*`, change.unset, change.flags `ref`, a literal top-level `ref`), except the template's own `change.set ref` whole (`TEMPLATE_REF`; the manifest pins the template's bytes). Called before `resolve`, so a literal key is named | `E2_15_ROUTES` (10, incl. a leverage wave and the manifest replacing the template's own block); `test_the_templates_own_ref_block_is_allowed` (passes to spec) |
+| E2-15 (a) | DONE | The resolved reference side (`ref_step`: the cell's nav with the ref's own rule / leverage / flags) is judged as the cell's: a ref's own flags join the E2-8 comparison as `ref.flags` against the parent's `nav.flags` with only the derived flags; a ref's own leverage must equal the cell's required leverage (`leverage_refusal`, E2-10); its flags are read for match flags (E2-14). A ref without its own flags / leverage inherits the cell's, already judged | `E2_15_SIDE` (5): L 5.0, an unnamed `--vol-target`, `--aim-leverage 5.0`, `--Vol-Tar`, `--calibrate-gross` |
+| E2-15 (c) | DONE | Probed first (below): W1-I2 (a) WAS bypassed through a ref. `exe_problem(exe, pins, rule_cell)`; verify passes `SK.rule_cell_kind(w)` (v2 kinds rule, horizon, role, leverage): a v2 rule cell is judged by the W1-I2 (a) branch whatever its ref phase, because `summ` pairs it with `inputs.reference_cell` (the parent's NAV), never with its ref, and `resolve` drops the parent's `compare`. The refusal adds "(its template's own ref construction, ref ran, is not its paired reference: ruling E2-15 (c))". The v2 verify plan line (`V2_EXE_TEXT`) says so; v1 is unchanged | `test_w1_i2_a_holds_through_a_ref` (4: no ref, constants.set ref, template's own ref, like-with-like control); `test_verify_plan_line_states_the_rule_cell_refusal` (the v2 line's new text; the v1 line byte-equal as before) |
+| S2 | DONE | `schema_problems`: a non-finite float (NaN, Infinity, -Infinity) is refused before any range keyword ("is not a finite number") | `test_non_finite_params_are_refused_at_preflight` (unit + NaN / Infinity `aim_leverage` at preflight) |
+| S4 | DONE | `raw_routes` reads a dict-typed `change.unset` by key (as `research_spec.resolve` iterates it) | 1 row in `E2_10_PROBES` (`{"nav.leverage": true}`), 1 in `E2_15_ROUTES` |
+| S3 | DONE (report) | Fix round 3's E2-13 (b) observation is widened in place (marked): any named NAV rule whose params give `aim_leverage` writes a literal over `{leverage}` (fixed-v1 always, vol-target-v1 / risk-target-v1 when given); both modes fail closed (Python: the matched run repeats the calibration argv; engine: `match_engine`'s `leverage_requested` check, EXIT_PIN); a P9 template's NAV rule under gross matching omits `aim_leverage` | - |
+
+### The probe before the fix (E2-15 (c) asks for it)
+A scratch script (not committed) drove this lane's fake-world helpers on the merge head `d2cea6a6`
+(`logs/e2f4-probe-before.log`; the same script after the fix: `logs/e2f4-probe-after.log`):
+- R3a: `--calibrate-gross` by constants.flags (horizon, `gross_match` none), template change.flags (composition rule),
+  constants.set nav.flags (role), horizon.flags, a leverage wave's map, and `--Calibrate-Gross=0.95` on pm6-6: all exit
+  0 at preflight. After: all exit 3, naming token and route.
+- E2-15 (b): `ref` (L 5.0, an unnamed `--vol-target`) by constants.set (horizon) and by the template's change.set
+  (composition rule): both passed preflight and spec. After: exit 3, by (b) for the manifest route and by (a) for the
+  template's own block.
+- W1-I2 (a) through a ref: parent NAV receipt by exe `a`, the cell's NAV and its ref by exe `b`, gross_match none,
+  horizon. No ref: verify exit 4 (the control). A ref by constants.set: verify **exit 0**, `nav_exe` `{equal: false,
+  ref: "ran"}`. A ref by the template's own block: verify **exit 0**, the same. So the bypass was real on both routes.
+  After: the constants.set route stops at preflight (exit 3); the template's own block reaches verify and is refused
+  (exit 4, "ruling E2-15 (c)"). The test pins all four cases.
+
+### Evidence
+Run in `C:/atx-wt/pool-17`; code at `ce8c4f43`, tree clean. Explicit paths, `PYTHONDONTWRITEBYTECODE=1`,
+`-p no:cacheprovider`, each `--basetemp` its own dir in the session scratchpad, SEPARATE invocations, one after the
+other. Interpreter `C:/Program Files/Python312/python.exe`. Logs: `.superpowers/sdd/platform-p9-20261003/logs/e2f4-*.log`
+(git-ignored).
+```
+PYTHONHASHSEED=0 ... --basetemp=<scratch>/e2r4-suites/bt-s0 scripts/tests
+-> 2 failed, 510 passed, 4 skipped in 608.29s (0:10:08); exit 1     (the 2: root's red, below)
+PYTHONHASHSEED=0 ... --basetemp=<scratch>/e2r4-suites/bt-c0 atx-engine/tools/test_stage_chain.py
+-> 9 passed in 0.39s; exit 0
+PYTHONHASHSEED=1 ... --basetemp=<scratch>/e2r4-suites/bt-s1 scripts/tests
+-> 2 failed, 510 passed, 4 skipped in 577.98s (0:09:37); exit 1     (the same 2: root's red)
+PYTHONHASHSEED=1 ... --basetemp=<scratch>/e2r4-suites/bt-c1 atx-engine/tools/test_stage_chain.py
+-> 9 passed in 0.34s; exit 0
+PYTHONHASHSEED=0 ... --basetemp=<scratch>/e2r4-suites/bt-i0 atx-engine/tools/test_research_store_identity.py
+-> 15 passed, 1 skipped, 6 subtests passed in 1.21s; exit 0
+PYTHONHASHSEED=1 ... --basetemp=<scratch>/e2r4-suites/bt-i1 atx-engine/tools/test_research_store_identity.py
+-> 15 passed, 1 skipped, 6 subtests passed in 1.38s; exit 0      (the skip: atx-research-store.exe not built)
+```
+- **Counts.** Collected 462 at `ea7d9dde` (458 + 4 skip), 516 now (`--collect-only`, node ids compared): +11
+  `test_p9_al_sig_registrations.py` (root, AL-SIG), +5 `test_research_wave.py` (root, C2), +38 mine in
+  `test_wave_kinds.py` (13 R3a, 1 inherited, 2 match stage, 10 + 5 + 1 E2-15 (b) / (a), 4 E2-15 (c), 1 S2, 1 S4 row).
+  The one node id "removed" is renamed, not lost: the S4 row shares its parametrize id with the list-typed unset row,
+  so pytest suffixed both. Every root test id is present on the head. The same 4 live-input skips as rounds 1-3
+  (`ATX_EQUITY_BIN` x1, `RESEARCH_CYCLE_LIVE_ROOT` x3). No skip / xfail added; no hash, golden or pin edited.
+- **The 2 reds are root's, attributed:** `test_research_spec.py::test_e27b_reads_what_the_fitter_and_nav_summ_parse`
+  and `::test_the_whole_file_passes_with_a_generated_spec_present` (it re-runs the file in a subprocess; that run's
+  only failure is e27b). D2 added `--composition-exe` to the fitter (`composition_engine_fit.py:124`), so every proper
+  prefix of `--composition` (the test's `--compo`, `--compo=...`, `--c` spellings) is now ambiguous to the fitter's
+  argparse (exit 2). The same test **fails on root's own code tree `42f42a07`** (git-archive copy, the identical
+  message), passes on `ea7d9dde`, and fails identically on `ce8c4f43`. No line of it, of the fitter or of E-27b's
+  guard is this round's. Not edited here: the test's expectation is about the fitter's abbreviations, and the
+  fitter's `allow_abbrev` is D3's (ruling E2-9). The guard still refuses those spellings (fail closed). Listed for
+  root (below).
+- **Which `atx-engine/tools` / `atx-impl/tools` tests ran, and why.** Only two tests there import a module this lane
+  changed (`grep` of their imports): `test_stage_chain.py` (`stage_chain`) and root's merge-changed
+  `test_research_store_identity.py` (`cycle_resume`, `stage_chain`, `wave_context`, `wave_queue`). Both ran under
+  both seeds. No `atx-impl/tools` test imports a lane module, so none ran.
+
+**Teeth.** A scratch runner (not committed) applied one textual mutation at a time to the working tree, ran the named
+tests (`-k`), and wrote the file back byte for byte (SHA-256 checked; `git status` clean after each;
+`logs/e2f4-teeth.log`).
+
+| label | mutation | result |
+|---|---|---|
+| T1 | option maps not read for match flags | 5 of 13 R3a probes fail (the other 8 are still refused by the resolved-list layer, 3 of them map routes named by `touching`: defense in depth) |
+| T2 | resolved flag lists not read (rule kinds) | 7 failed (set routes, inherited, the ref's own flags) |
+| T3 | a library kind's inherited lists not read | 1 failed (the inherited test) |
+| T4 | `match_flag_reads` exact spelling only | 5 failed (case / dash / `=value` / abbreviation rows, the reader asserts) |
+| T5 | `ref_refusal`'s route check removed | 10 failed: 9 of the 10 `E2_15_ROUTES` rows and `w1_i2[constants]` (the literal-key row has its own line: T14) |
+| T6 | a ref's own flags not in the E2-8 comparison | 3 failed |
+| T7 | a ref's own leverage not judged | 1 failed (L 5.0) |
+| T8 | a ref's own flags not read for match flags | 1 failed |
+| T9 | `exe_problem` back to `ref == "none"` only | 1 failed (`w1_i2[template-a]`: verify exit 0) |
+| T10 | the non-finite check removed | 1 failed |
+| T11 | `change.unset` back to lists only | 2 failed (the two dict-typed rows) |
+| T12 | MR-4's `theme-cov-hedge-v1` row removed | 5 failed (the tables test; plan / spec of the fixtures stop on N1) |
+| T13 | parent-value map values not read | 1 failed |
+| T14 | the literal top-level `ref` check removed | 1 failed (`resolve` still refuses the unknown key, without the E2-15 route) |
+
+**v1 plan output, byte-unchanged.** `research_wave.py plan` on the 5 committed v1 manifests (`y-2`, `y-3`, `y-5`,
+`y-s`, `y-s.head`; `--root` pool-17, whose `build-equity` holds no data) from git-archive copies of `ea7d9dde`,
+`d2cea6a6`, root's `42f42a07` and `ce8c4f43`: all four outputs byte-identical per manifest (4 at exit 0, `y-s.head`
+at exit 2 in every tree).
+
+**No committed spec newly refused.**
+- Scan of all 109 JSON files under `scripts/specs/` (47 templates): no token reads as a match flag; no template sets,
+  unsets or flags `ref`, `compare` or `static_check`, and none has a literal `ref`.
+- To preflight in a fake world, on the `d2cea6a6` and `ce8c4f43` code trees (`logs/e2f4-preflight-*.log`), identical
+  results:
+
+| P9 spec | preflight |
+|---|---|
+| `kinds/leverage-change.json`, `new-combination-rule.json`, `new-field.json`, `new-horizon.json`, `new-nav-rule.json`, `new-signal.json`, `new-universe.json`, `replaced-signal.json` | exit 0 (8 runnable) |
+| `kinds/new-cost-model.json` | exit 3, as before: `cost-sqrt-v2` in neither table (C3) |
+| `kinds/walk-forward.json` | exit 3, as before: schema only (D3) |
+| `templates/mom-volman.json` (AL-COMB) as a v2 kind rule wave `rules: [mom-volman-v1]`, `pm6-6-engine` | exit 0 (MR-4 derives `fit --mom-volman`) |
+| `templates/theme-cov-hedge.json` (AL-COMB) as a v2 kind rule wave `rules: [theme-cov-hedge-v1]`, `pm6-6-engine` | exit 0 (MR-4 derives `fit --theme-hedge`) |
+
+The AL-COMB templates carry `requires` and `parent: null`, so a real wave stops at run until root fills them; the probe
+re-roots them on the fake parent. `diagnostics/`, `rules/`, `candidates/` and `blocked/` hold no wave or template.
+
+### Decisions
+- **Match flags are refused absolutely, not relative to the parent.** E2-8 compares owned flags with the parent's; a
+  match flag is refused even when the parent carries it (a `-cal` run recipe named as a parent instead of its cell of
+  record would otherwise pass). No committed parent carries one.
+- **In every section and in every spelling**, not only `nav`: "only the gross-match stage may put them on an argv".
+  The scan shows no committed token is a prefix of either flag, so the abbreviation rule refuses nothing committed.
+- **"The template's own pinned ref block" = the template file's `change.set ref`, whole.** `ref` is not a template
+  key, so this is the only form a template can carry. A dotted `ref.*` edit, even in the template, is refused (it
+  edits a section; without the whole block it would build a partial ref).
+- **E2-15 (c) is keyed on the v2 kind, not on the ref state.** After (b), a v2 rule cell's ref can only be the
+  template's own, and the probe showed that one still bypassed W1-I2 (a). A v1 rule wave keeps today's verify
+  behaviour: v1 is unchanged by contract, no committed template sets `ref`, and completed v1 waves are not re-run.
+- **`compare` / `static_check` are not refused** (the reviewer's alternative fix): E2-15 names `ref`; adding them
+  changes no NAV, and with (c) a ref proves nothing for a rule cell either way.
+- **`inputs.reference_cell` is already closed**: `wave_stage_library.cell_out` refuses, at the spec stage, a cell
+  whose paired reference is not the parent's NAV.
+
+### Not fixed / open
+- Root's red above (D2's `--composition-exe` vs E-27b's abbreviation spellings): root / D3 (`allow_abbrev`, E2-9).
+- Unchanged: N5 (E2-9), S8 / S6's role seal (E2-7), the stale v1 verify line (E2-6), E2-11.
+- One slip: my first post-merge run used the Bash `python`, which resolves to `C:/atx/atx-db/.venv` (atx-db's venv).
+  It only failed collection (`psutil` missing) under `PYTHONDONTWRITEBYTECODE=1`, wrote nothing and touched no atx-db
+  file. Every later run used `C:/Program Files/Python312/python.exe`.
+- Two teeth-runner slips, fixed in place: its first pass errored on every row (the `--basetemp` parent did not exist;
+  nothing was measured; every file was written back), and its second pass silently skipped T1, T2, T8 and T12 (their
+  patterns held `\n`, the working tree is CRLF under `core.autocrlf`). Those four were re-run with CRLF-aware matching.
+  The table holds valid runs only; `git status` was clean after every pass.
+- The "before" / "after" probe logs were regenerated on git-archive copies of `d2cea6a6` and `ce8c4f43` (the first
+  live "before" run aborted on its template row; the first "after" run predated a refactor). The results match the
+  live runs.
+- No permission refusal this round (no `git restore`; the teeth runner writes the file's own bytes back).
+
+### What root must still check at its merge
+1. **The positive live-table check.** E2's frozen `D1_SCHEMAS` is D1's shape on purpose. Check that the merged IC exe's
+   `--list-rules --json` is the committed `composition_rules_list.json` that E2's tests read (AL-COMB checked
+   `--list-rules` = fixture at p9-2f). Then:
+   - `WK.unmapped_ic_rules` on that live table is `[]` (MR-4 is in this branch);
+   - `WK.rule_flags([{"name": "ew-theme-std-v1"}], {"ic": <live>})` gives `({'fit': {'--composition':
+     'ew-theme-std-v1'}}, [])`;
+   - `new-combination-rule.json` to the spec stage on the live table;
+   - `leverage-change.json` (2.0) and `new-nav-rule.json` to preflight on C1's live NAV table.
+2. **The engine stage on real exes.** The lane proved P9-C's shape on `pm6-6-engine` in the fake world only
+   (`test_the_match_stage_still_writes_its_own_leverage`: preflight passes with the reservation, the `-cal` argv
+   carries the cell's L and `--calibrate-gross`, the `-gm` record is plain at L' to 4 dp, verify pins
+   `record_spec_digest`). On real exes:
+   - the `-cal` NAV calibrates and the `leverage_requested` check passes;
+   - a named NAV rule with `aim_leverage` stops at match (EXIT_PIN);
+   - C3's real trade-rate rows: if a row's x-flag is `--rule <id>`, it duplicates `nav_step`'s `--rule nav.rule`.
+3. **Root's red**: `test_research_spec.py` e27b (and its whole-file re-run). It is red on root's own head; E2's merge
+   neither causes nor fixes it.
+4. **What this merge already did.** C2's R4 lines, C2's `wave_result.py` edit, MR-4 and S13 are in this branch, so at
+   root's merge of E2 they are a re-proof, not hand-placed hunks. Root's own commits after `42f42a07` merge on top as
+   usual.
+5. Re-review 2's items 3-12 still hold (B2-12, the `atx.research-wave/v2` literal in `classes.json`, W1-I1 margins,
+   PM7-35's Python copy, no merge while a wave runs, W1-I2 (b) sequencing, separate pytest invocations, the
+   `test_cycle_e2e` margin, `allow_abbrev` to D3).
+6. Re-review `ce8c4f43` (R3a, E2-15, S2, S4) and the merge `d2cea6a6` (its 5 + 2 lines over `0f746a16`).
