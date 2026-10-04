@@ -194,3 +194,46 @@ Owned files: guidance.py and five guidance_* private modules; new
  task-10-report.md. Existing guidance candidate tests were read/run but not edited.
 No events_sources, ea_actuals, earnings calendar, Task9, old Task6/7, shared registry,
 foreign dirty path, root ledger or another lane's files were edited/staged.
+
+## Whole-task repair round 1/5 — I1, I2, I3
+
+Addressed all three Important findings from review-T10-native-findings.md.
+I1 preserves parser period resolution independently from table/heading origin.
+Explicit stated table and heading periods qualify through the native public path;
+inferred periods remain NULL and cannot acquire invented comparator identities.
+I2 retains independently established source target identities even when numeric
+values are rejected. Duplicate or conflicting latest evidence blocks stale prior
+fallback for surprise and revision. Conflicting mappings retain their union;
+unknown attributes describe an unqualified blocker scope, never a certified
+mapping. Explicit diluted source language does not block unrelated basic targets.
+A genuinely unknown source target remains in release/sample/coverage evidence but
+cannot invent an affected comparator. More than 256 identity proofs refuses the
+unit rather than silently truncating admission.
+I3 rejects NULL or absent-source published issuer keys and verifies the global
+published row count against full per-issuer regeneration, alongside exact row
+multisets. The regression rewrites a fixture product and its legitimate producer
+records; physical authentication passes and semantic validation rejects the orphan.
+
+Re-frozen before any actual measurement: guidance-native-v2-frozen-r1;
+CONFIG_SHA256 94358ee94edc83b699bf00cc64216d61eac1a63b89cdf92d39cfa96adca26a33.
+Config and registry artifacts match the frozen contract. R22 formulas, directions,
+units, original clocks, six yearly member populations and numeric gates unchanged.
+Actual results remain 0 PASS / 7 FAIL-unmeasured; human judgments remain 0/300.
+Source quality remains uncertified and publication NOT_PRODUCTION_READY.
+
+Offline commands use OPENBLAS_NUM_THREADS=1 and PYTHONPATH=C:/atx/atx-db/src;
+fixtures use DuckDB 128MB / one thread. Exact commands and final results:
+- atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_alpha_panel_guidance_review_r1.py -n0 -o addopts='' -p no:cacheprovider -q --tb=short: 8 passed in 27.76s.
+- atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_alpha_panel_guidance.py -n0 -o addopts='' -p no:cacheprovider -q --tb=short: 13 passed in 1.53s.
+- atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_alpha_panel_guidance_native.py -k frozen_artifacts -n0 -o addopts='' -p no:cacheprovider -q --tb=short: 1 passed, 18 deselected in 2.03s.
+Initial new-fixture collection needed importlib loading under pytest import mode;
+two explicit-period fixtures then required source-shaped HTML block tags to
+survive the existing document-text conversion. Both fixture issues were corrected;
+the final full repair file passes. No synthetic case is an actual handcheck.
+
+Self-review checked native qualification and rejected-identity propagation,
+strict earlier clocks, full source populations, independent producer-record
+semantic rejection and frozen artifact equality. New owned test file:
+atx-db/tests/test_alpha_panel_guidance_review_r1.py. No actual data/source/hash/
+metadata/HTTP/return job, shared or foreign edit, or live child job occurred.
+Independent review remains required before actual materialization.

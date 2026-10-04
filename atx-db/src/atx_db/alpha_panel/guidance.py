@@ -56,7 +56,7 @@ from typing import Any
 
 from . import common as C
 
-EXTRACTOR_VERSION = "guidance-rules-v1"
+EXTRACTOR_VERSION = "guidance-rules-v2-period-provenance"
 STAGE = "events"
 TABLE = "guidance"
 SCHEMA = "atx.alpha-panel.events.guidance/v1"
@@ -813,12 +813,16 @@ def extract_from_sentence(s: str, rep: ReportedPeriod, anchor_year: int, heading
         if i in resp:
             per = resp[i]
         pr = resolve_period(per, rep, anchor_year) if per is not None else None
+        period_resolution = pr[3] if pr is not None else None
+        period_origin = "sentence"
         if pr is not None and outlook_only and pr[3] == "inferred":
             continue  # "for the year" without a cue of its own: the reported year as often as the next
         if pr is None and per is None:
             pm = line_prefix_period or heading_period
             pr = resolve_period(pm, rep, anchor_year) if pm is not None else None
             if pr is not None:
+                period_resolution = pr[3]
+                period_origin = "heading" if pm is heading_period else "line_prefix"
                 pr = (pr[0], pr[1], pr[2], "heading" if pm is heading_period else pr[3])
         if pr is None:
             continue
@@ -870,6 +874,7 @@ def extract_from_sentence(s: str, rep: ReportedPeriod, anchor_year: int, heading
             low=low, high=high, point=point, value_type=vt, qualifier=qual, prior_low=prior_low,
             prior_high=prior_high, text_direction=_direction(head[max(0, kw_start - 110):]),
             unit=unit, evidence=s.strip()[:700], source_kind="sentence",
+            extras={"period_resolution": period_resolution, "period_origin": period_origin},
         ))
     return rows
 
@@ -1005,6 +1010,7 @@ def _table_rows(lines: list[str], idx: int, rep: ReportedPeriod, anchor_year: in
                 prior_high=(prior[1] if prior and prior[3] == "range" else prior[2] if prior else None),
                 text_direction=None, unit="USD_PER_SHARE" if measure == "EPS" else "USD",
                 evidence=(lines[idx][:250] + " || " + line[:350]), source_kind="table",
+                extras={"period_resolution": _pb, "period_origin": "table"},
             ))
     return out
 

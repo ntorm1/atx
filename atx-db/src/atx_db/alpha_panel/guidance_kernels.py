@@ -14,10 +14,17 @@ def midpoint(row):
  return None
 
 def comparable(a,b):return all(a.get(k)==b.get(k) for k in KEY) and all(a.get(k) is not None for k in KEY if k!="fiscal_quarter")
+def affects(row,observation):
+ # NULL denotes an explicitly unknown scope within the source-declared target,
+ # not a qualified mapping. Complete conflicting proofs retain their union.
+ for identity in observation.get("comparator_identities") or []:
+  if all(identity.get(key) is None or row.get(key)==identity[key] for key in KEY):return True
+ return False
+
 def prior(row,history):
  tau=clock(row.get("available_at"))
  if tau is None:return None,"issue_clock_unqualified"
- candidates=[r for r in history if comparable(row,r) and clock(r.get("available_at")) is not None and clock(r["available_at"])<tau]
+ candidates=[r for r in history if (comparable(row,r) or affects(row,r)) and clock(r.get("available_at")) is not None and clock(r["available_at"])<tau]
  if not candidates:return None,"no_comparable_prior_guidance"
  latest=max(clock(r["available_at"]) for r in candidates)
  latest_rows=[r for r in candidates if clock(r["available_at"])==latest]

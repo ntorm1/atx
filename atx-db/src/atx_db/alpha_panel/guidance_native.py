@@ -8,8 +8,10 @@ from . import common as C,guidance as G,events_sources as ES
 from . import guidance_sources as S,guidance_publication as P,guidance_kernels as K
 from .guidance_contract import CONFIG,CONFIG_SHA256,digest
 STAGE='events_guidance_v2'
-TEXT=['candidate_id','accession','source_doc','doc_sha256','measure','basis','accounting_basis_id','period_type','fiscal_calendar_id','currency','unit','share_basis','share_basis_id','value_type','evidence','qualification_reason']
+TEXT=['candidate_id','accession','source_doc','doc_sha256','measure','basis','accounting_basis_id','period_type','fiscal_calendar_id','currency','unit','share_basis','share_basis_id','value_type','period_basis','period_resolution','period_origin','evidence','qualification_reason']
 GUIDANCE_SCHEMA=pa.schema([('cik',pa.int64()),('form',pa.string()),('is_amendment',pa.bool_()),('filing_date',pa.date32()),('period_end',pa.date32()),('fiscal_year',pa.int32()),('fiscal_quarter',pa.int32()),('available_at',pa.timestamp('us',tz='UTC')),('source_available_at',pa.timestamp('us',tz='UTC')), *((n,pa.string()) for n in TEXT), *((n,pa.float64()) for n in ('low','high','point','midpoint'))])
+COMPARATOR_TYPE=pa.struct([GUIDANCE_SCHEMA.field(key) for key in K.KEY])
+GUIDANCE_SCHEMA=pa.schema([*GUIDANCE_SCHEMA,('comparator_identities',pa.list_(COMPARATOR_TYPE))])
 RELEASE_SCHEMA=pa.schema([('cik',pa.int64()),('form',pa.string()),('is_amendment',pa.bool_()),('accession',pa.string()),('filing_date',pa.date32()),('available_at',pa.timestamp('us',tz='UTC')),('source_available_at',pa.timestamp('us',tz='UTC')),('n_documents',pa.int32()),('n_candidates',pa.int32()),('n_qualified',pa.int32()),('reason',pa.string()),('sample_key',pa.string()),('document_sha256',pa.list_(pa.string()))])
 FEATURE_SCHEMA=pa.schema([*GUIDANCE_SCHEMA,('event_kind',pa.string()),('guid_revision',pa.float64()),('guid_surprise',pa.float64()),('actual_value',pa.float64()),('prior_accession',pa.string()),('feature_reason',pa.string()),('security_id',pa.int64()),('price_session',pa.date32()),('price_close',pa.float64()),('price_available_at',pa.timestamp('us',tz='UTC'))])
 
@@ -47,9 +49,25 @@ def evidence_ok(proof,tau,sha=None):
 def qualify(candidate,filing,document,proofs):
  tau=K.clock(filing.get('available_at')) if filing.get('acceptance_clock') and 'unresolved' not in filing.get('acceptance_clock','') and 'unresolved' not in (filing.get('vintage_risk') or '') else None
  row={n:None for n in GUIDANCE_SCHEMA.names};row.update(candidate_id=digest({'document':document['doc_sha256'],'candidate':vars(candidate)}),form=filing['form'],is_amendment=filing['is_amendment'],cik=filing['cik'],accession=filing['accession'],filing_date=filing['filing_date'],available_at=tau,source_available_at=K.clock(filing.get('available_at')),source_doc=document.get('source_doc'),doc_sha256=document['doc_sha256'],measure=candidate.measure,basis=candidate.basis,period_type=candidate.period_type,fiscal_year=candidate.fiscal_year,fiscal_quarter=candidate.fiscal_quarter,value_type=candidate.value_type,evidence=candidate.evidence,unit=candidate.unit)
+ resolution=candidate.extras.get('period_resolution') or (candidate.period_basis if candidate.period_basis in ('stated','inferred') else None)
+ row.update(period_basis=candidate.period_basis,period_resolution=resolution,period_origin=candidate.extras.get('period_origin') or candidate.source_kind)
+ identities=[]
+ if resolution=='stated' and candidate.fiscal_year is not None:
+  source_core={k:row.get(k) for k in ('cik','measure','basis','period_type','fiscal_year','fiscal_quarter','unit')}
+  if source_core['basis']=='UNSPECIFIED':source_core['basis']=None
+  share_labels=set(re.findall(r'\b(basic|diluted)\b',candidate.evidence.lower()))
+  if candidate.measure=='EPS' and len(share_labels)==1:source_core['share_basis']=next(iter(share_labels))
+  for proof in proofs:
+   if tau is not None and evidence_ok(proof,tau,document['doc_sha256']):identities.append({**{k:proof.get(k) for k in K.KEY},**source_core})
+  if not identities:identities=[{k:source_core.get(k) for k in K.KEY}]
+ row['comparator_identities']=identities
+ # Consensus provenance survives value refusal; conflicting identities remain separate blockers.
+ for key in ('period_end','fiscal_calendar_id','currency','accounting_basis_id','share_basis','share_basis_id'):
+  values={identity.get(key) for identity in identities}
+  if len(values)==1:row[key]=next(iter(values))
  reason='qualified'
  if tau is None:reason='original_issue_clock_unqualified'
- elif candidate.period_basis!='stated' or candidate.fiscal_year is None:reason='target_inferred_or_unknown'
+ elif resolution!='stated' or candidate.fiscal_year is None:reason='target_inferred_or_unknown'
  elif candidate.basis not in ('GAAP','ADJUSTED'):reason='accounting_basis_unspecified'
  elif len(proofs)!=1 or not evidence_ok(proofs[0],tau,document['doc_sha256']):reason='target_currency_share_evidence_missing_or_ambiguous'
  else:
@@ -132,7 +150,8 @@ def parse(spec,root,*,max_new_releases=None):
         candidates=G.extract_guidance(text,G.ReportedPeriod(None),filing['filing_date'].year)
         if len(candidates)>CONFIG['limits']['candidates_per_document']:reasons.append('candidate_bound_unsupported');continue
         for candidate in candidates:
-         proofs=rows(con,'SELECT * FROM g_targets WHERE cik=? AND accession=? AND measure=? AND basis=? AND period_type=? AND fiscal_year=? AND fiscal_quarter IS NOT DISTINCT FROM ? LIMIT 2',[filing['cik'],filing['accession'],candidate.measure,candidate.basis,candidate.period_type,candidate.fiscal_year,candidate.fiscal_quarter])
+         proofs=rows(con,'SELECT * FROM g_targets WHERE cik=? AND accession=? AND measure=? AND basis=? AND period_type=? AND fiscal_year=? AND fiscal_quarter IS NOT DISTINCT FROM ? LIMIT 257',[filing['cik'],filing['accession'],candidate.measure,candidate.basis,candidate.period_type,candidate.fiscal_year,candidate.fiscal_quarter])
+         if len(proofs)>CONFIG['limits']['comparator_identities_per_candidate']:raise ValueError('comparator identity bound exceeded; no truncated mapping admitted')
          parsed.append(qualify(candidate,filing,document,proofs))
        # Conflicting equal-key values across exhibits are all retained, explicitly NULL.
        groups={}
@@ -318,13 +337,16 @@ def validate(spec,root,manifest=None):
    table(con,'published_features',root/m['products']['guidance_features.parquet'])
    # Independent regeneration with exact full event rows; no success-only validation.
    con.execute('CREATE TEMP TABLE feature_issuers AS SELECT cik FROM native_guidance UNION SELECT cik FROM g_ea_actuals');offset=0
+   if con.execute('SELECT count(*) FROM published_features p WHERE p.cik IS NULL OR NOT EXISTS(SELECT 1 FROM feature_issuers s WHERE s.cik=p.cik)').fetchone()[0]:raise ValueError('orphan feature issuer outside source population')
+   regenerated_count=0
    while True:
     issuers=con.execute('SELECT cik FROM feature_issuers ORDER BY cik LIMIT 512 OFFSET ?',[offset]).fetchall()
     if not issuers:break
     offset+=len(issuers)
     for (cik,) in issuers:
-     expected=pa.Table.from_pylist(issuer_features(con,cik),schema=FEATURE_SCHEMA).to_pylist();actual=rows(con,'SELECT * FROM published_features WHERE cik=?',[cik])
+     expected=pa.Table.from_pylist(issuer_features(con,cik),schema=FEATURE_SCHEMA).to_pylist();regenerated_count+=len(expected);actual=rows(con,'SELECT * FROM published_features WHERE cik=?',[cik])
      if sorted(map(digest,actual))!=sorted(map(digest,expected)):raise ValueError('feature recomputation mismatch')
+   if con.execute('SELECT count(*) FROM published_features').fetchone()[0]!=regenerated_count:raise ValueError('global feature population count mismatch')
    precision=C.read_json(root/m['products']['audit.json'])
    if precision!=m['precision']:raise ValueError('manual precision evidence drift')
    if precision.get('manual_pin'):

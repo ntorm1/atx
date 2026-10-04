@@ -1,6 +1,6 @@
 {
   "asof_macro_sql": "SELECT * FROM resolved_guidance_features WHERE available_at < t_utc",
-  "config_sha256": "9acd5af90a3383d38106fd0ec2b132e4d93e0b8a1cbfe208492258f8e881bcb3",
+  "config_sha256": "94358ee94edc83b699bf00cc64216d61eac1a63b89cdf92d39cfa96adca26a33",
   "daily_cutoff": "t_utc=22:00 UTC of preceding admitted exchange session; never caller calendar day subtraction",
   "keys": {
     "guidance.parquet": [

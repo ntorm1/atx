@@ -1,6 +1,6 @@
 # Native guidance: events_guidance_v2
 
-Frozen semantic SHA256: `9acd5af90a3383d38106fd0ec2b132e4d93e0b8a1cbfe208492258f8e881bcb3`.
+Frozen semantic SHA256: `94358ee94edc83b699bf00cc64216d61eac1a63b89cdf92d39cfa96adca26a33`.
 
 This isolated publication implements semantic `events.guidance/v2`. It never rewrites
 legacy `events/guidance.parquet`, legacy scratch, Task9 outputs or shared registries.
@@ -66,6 +66,10 @@ exact-target/event-specific rather than a fabricated daily freshness claim.
 | share_basis_id | string | identity | Independently proved original split/class/share bridge |
 | value_type | string | range/point/floor/ceiling | Source quote type |
 | evidence | string | text | Original candidate clause, not independent precision certification |
+| period_basis | string | provenance | Original parser origin label (stated/table/heading/inferred) |
+| period_resolution | string | provenance | Stated versus inferred target retained from source resolver |
+| period_origin | string | provenance | Sentence/line-prefix/table/heading source origin, separate from explicitness |
+| comparator_identities | list of keyed structs | provenance only | Separately retained affected target/basis identities; unknown scope stays unknown; never qualified value mapping |
 | qualification_reason | string | text | Exact source/period/basis/clock missingness reason |
 | low | double | measure unit | Source lower endpoint/bound only; point quotes do not manufacture endpoints |
 | high | double | measure unit | Source upper endpoint/bound only |
@@ -174,3 +178,31 @@ There is no invented coverage acceptance threshold; the required yearly share is
 reported on all independently counted member issuers, with missing years explicit.
 Actual stage rows/bytes/span/peak memory and all source/economic measurements remain
 pending. source_quality_certified=false and NOT_PRODUCTION_READY remain binding.
+
+## Whole-task repair1 comparator and population admission
+
+Table and heading origin is separate from target resolution. Explicit source
+labels remain eligible only with the original unique independent proof; inferred
+years/targets remain refused. Parser candidate version is now
+guidance-rules-v2-period-provenance; the new config/code identity refuses stale
+units/generations. No formula, direction, threshold or denominator changed.
+
+Comparator identities are retained separately before value admission. Duplicate
+mappings retain common proved identity; conflicting mappings retain their explicit
+union. A NULL scope attribute denotes uncertainty only within the original
+source-stated target, never a qualified identity. A latest unusable affected issue
+blocks older numeric comparators, even when its ambiguous accounting/calendar/
+share fields cannot populate a single display identity. Explicitly different
+metric/fiscal targets remain unaffected. Proof clocks later than issue cannot
+supply a mapping; only the original source-stated core remains as an uncertain
+blocker. Mapping count>256 refuses without truncating the possible identities.
+
+A missing-source release with genuinely unknown exact target remains in full
+release/sample/coverage failures and creates no invented comparator identity. It
+cannot assert a supersession of a known exact target. This policy supplies no
+completeness/economic certification; actual missing-source evidence remains FAIL.
+
+Public feature replay refuses NULL/orphan issuer IDs outside the parsed-guidance
+plus admitted-actual source union. Global published row count must equal the sum
+of every regenerated issuer's full multiset, in addition to per-issuer equality.
+Consistent byte/schema/row records alone do not certify the feature population.
