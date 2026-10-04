@@ -117,10 +117,22 @@ def nav_exe(w: Wave, done: dict) -> dict:
             "ref": "none" if "ref" not in bases else "unknown" if not cell else "ran" if ran else "missing"}
 
 
+V1_EXE_TEXT = "recorded; differing, the cell's ref must have run on the cell's exe"
+V2_EXE_TEXT = ("a cell without a ref construction, e.g. a rule cell, is refused when the two NAVs' exes differ or only "
+               "one is recorded, by receipt or exes_sha256 pin (ruling W1-I2 (a)); with one, differing, the cell's ref "
+               "must have run on the cell's exe")
+
+
 def verify_plan(w: Wave, done: dict) -> list[str]:
-    builds = ", the field / role builds" if SK.kind(w) in ("field", "role") else ""   # review E2 R1 (v1: as before)
+    """Verify's plan line. Ruling E2-6: a v1 manifest's line keeps its bytes (hash-only plan identity), although
+    exe_problem now refuses a v1 cell without a ref construction too (a known stale v1 line, task-E2-report.md); a v2
+    manifest's line states that refusal (keyed on the cell's ref phase, so every v2 kind: a library cell without a ref
+    is refused alike)."""
+    k = SK.kind(w)
+    builds = ", the field / role builds" if k in ("field", "role") else ""   # review E2 R1 (v1: as before)
+    exe = V1_EXE_TEXT if k is None else V2_EXE_TEXT
     return ["#   mechanics rule v8-mech on the mechanics keys; C-13 binding of the cell's NAV; NAV exe sha256 of the parent "
-            "vs the cell (recorded; differing, the cell's ref must have run on the cell's exe); seal scan of every log "
+            f"vs the cell ({exe}); seal scan of every log "
             f"the wave produced (run dirs of the screen, the cell and its -gm copy, readers{builds}, consoles)"]
 
 

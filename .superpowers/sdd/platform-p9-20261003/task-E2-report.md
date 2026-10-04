@@ -170,7 +170,8 @@ Identity (flag absent = byte-identical):
    `exes_sha256` now locks every spec it writes with `lock --exes --write` even without `driver.lock_exes`, which
    adds those lines and pins to a v1 wave's plan and run. No committed spec pins `exes_sha256` today, so no committed
    manifest moves. (c) Fix round 1 adds refusals only (W1-I1, W1-I2 (a), R2): a plan within the bounds is unchanged;
-   a v2 field / role wave's verify plan line names its builds.
+   a v2 field / role wave's verify plan line names its builds, and every v2 wave's verify plan line states the
+   W1-I2 (a) refusal (Ruling E2-6). A v1 manifest's verify plan line keeps its bytes, and is stale (see Fix round 1).
 
 Post-merge items (Ruling E2-2/3; the exes these need are not in this base):
 - After D2's merge (D2 re-pins `atx-impl/tests/fixtures/composition_rules_list.json`) and C1's merge, with the exes
@@ -242,3 +243,98 @@ Post-merge items (Ruling E2-2/3; the exes these need are not in this base):
   tests). Run them as two invocations. Measured P9 E2, 2026-10-03.
 - research_cycle `--attempt k` (k >= 2) for numbered run dirs moves only the runner head, never the command after
   `--`, so OR-3 resume and argv_sha256 are unaffected (P9 E2, Ruling E2-1).
+
+## Fix round 1
+Review fixed: `task-E2-review.md` (`780a4934`, CHANGES_REQUIRED: R1, R2, S1-S9), plus the PM's W1-I1 and W1-I2 (a)
+(rulings in pool-2 `progress.md`, details in `wave1-whole-review.md` I-1 / I-2). Rulings applied: E2-5, E2-6, E2-7.
+Resumed under RESUME 4 from `handoff-E2.md` (`f692ea36`). Nothing was restarted or squashed.
+
+| SHA | What |
+|---|---|
+| fe140597 | wip at the owner stop: R1, R2, W1-I1, W1-I2 (a), S1-S6, S9, with tests |
+| f692ea36 | handoff at the owner stop (docs only) |
+| this commit | Ruling E2-6: a v2 wave's verify plan line states the W1-I2 (a) refusal (+ test); this section |
+
+| item | state | where | test |
+|---|---|---|---|
+| R1 seal scan of the builds | DONE | `wave_stage_kinds.BUILDS` / `build_bases`; `wave_seal.wave_logs` adds `<out_dir>/builds/<what>-run<k>`; `run_build` refuses a name outside BUILDS; a v2 field / role wave's verify plan line names the builds | `test_wave_kinds.py::test_build_logs_are_seal_scanned`: a field wave whose fake build log says 2024-06-28 (synthetic, T2-SYN) gives verify exit 4 naming the log; a clean log passes |
+| R2 raw rule flags | DONE | `wave_kinds.table_flags` / `raw_rule_flags` (the named rules' derived flags plus every table rule's flags: composition flags, NAV x-flags, param x-flags); preflight checks both `rule_cell.constants.flags` and the template's `change.flags`; `owned_flags` removed (superseded) | `test_rule_wave_refuses_raw_rule_flags` (3 params: the named rule's `--aim-leverage`, an unnamed `--vol-target`, `--theme-erc`; constants and template; `--cadence` still allowed); `test_rule_flags_from_the_tables` |
+| W1-I1 path length | DONE | `cycle/phases.py` `CACHE_*`, `deepest_cache_path`, `cache_path_problem`, `library_ids`, `Cycle.cache_problem` / `cache_path_check` (in `steps()` before u; exit 2); wave `wave_stage_preflight.cache_path_check` (exit 3, before register); facade re-exports. Layout from the C++ (comment block): Release identity `dslvm1_clang18.1_opt_md_ndebug_xs13.0.0`, `_audit` +6 under `--eval-mode audit-exact`, the fp_ level always counted, the `.partial` leaf. The exe prints no identity, so this is a documented bound. Applied only while the spec's IC exe is on disk (Ruling E2-5) | `test_wave_driver.py::test_cache_path_bound_w1_i1`: under the v8 cache of pool-2 the path is 226 + len(id), matching the review's derivation, so ids <= 24 pass (<= 18 with audit-exact); the cycle and the wave refuse; nothing is refused without the exe; CAND_ID_RE stays at 64 |
+| W1-I2 (a) parent exe | DONE | `wave_stage_record.exe_problem`: for `ref == "none"` (a cell without a reference construction, e.g. a rule cell) it refuses when the receipts' exes differ, when the pins name two NAV exes, or when only one side records an exe; it passes only when neither does (synthetic). Both hashes are in the message | `test_rule_cell_parent_nav_from_another_exe_is_refused` (5 params, full fake rule wave to verify); `test_lock_exes_pins_and_verify_compares`: the old "rule cell: recorded only" assertion is replaced by the ruled refusal |
+| E2-6 verify plan line | DONE | `wave_stage_record.verify_plan`: a v1 manifest's line keeps its bytes (`V1_EXE_TEXT`); every v2 manifest's line states the refusal (`V2_EXE_TEXT`) | `test_wave_kinds.py::test_verify_plan_line_states_the_rule_cell_refusal`: the v1 line equals the literal line of before; 4 v2 fixtures (nav rule, combination rule, leverage, new signal) state the refusal and do not say "recorded;" |
+| S1 unwritable claims dir | DONE | `run_bounded_research.ClaimsDirError` (a PermissionError for the whole wait with no lock on disk); `reclaim` returns True only when it removed the lock | added to `test_claims_lock_failures_are_admission_waits` |
+| S2 replay on interrupt | DONE | `Wave.side_by_side` replays its buffers in `finally` | none new (the judge-order test passes) |
+| S3 schema type list / malformed keywords | DONE | `wave_kinds.schema_problems` | `test_schema_subset` |
+| S4 placeholder regex | DONE | `PLACEHOLDER_RE = [A-Z][A-Z0-9_]*` | `test_schema_subset` |
+| S5 normalised field.output | DONE | `wave_kinds._norm` (drops `.`, case-blind) | `test_v2_refusals` (+2 rows) |
+| S6 build reuse | DONE (receipt part); role seal / end left to the builder (Ruling E2-7) | `run_build` reuses an existing output only when this wave's last `<what>` run completed it with this command's argv_sha256, else exit 3 | `test_field_wave_builds_then_registers_on_the_build` (+2 refusals); KindsFake receipts carry argv_sha256 |
+| S7 report plan changes | DONE | "How root verifies" item 5 lists the sticky-pin plan change (and now E2-6) | - |
+| S8 in_code copy | NOT FIXED (accepted, Ruling E2-7) | moving it into `research_tree` is a cross-lane edit to a shared module, and `wave_manifest` <-> `wave_kinds` would import each other | - |
+| S9 missing tests | DONE | leverage bounds, persistent PermissionError, build seal scan | `test_leverage_wave_refuses_a_value_outside_the_nav_table` and the tests above |
+
+Test-side edit in an E2-owned file: `scripts/tests/test_research_spec.py` gains the fixture `stand_in_ic`, which lifts
+`CACHE_PATH_MAX` for the 3 add-alpha tests on `v8_root`. Their IC exe is a stand-in (`bin/ic.cmd`) that writes no
+cache, and pytest tmp roots are deeper than any pool, so W1-I1 would refuse the committed v7.1 / v8 ids there. No
+assertion or expected value was changed.
+
+### Evidence
+Run in `C:/atx-wt/pool-17` on the tree of this commit (WIP `fe140597` + the E2-6 change), explicit paths,
+`PYTHONDONTWRITEBYTECODE=1`, `-p no:cacheprovider`, each `--basetemp` its own dir in the session scratchpad,
+`scripts/tests` and `test_stage_chain.py` as SEPARATE invocations, one after the other. Logs:
+`.superpowers/sdd/platform-p9-20261003/logs/e2f1-{s0,c0,s1,c1}.log` (pool-17, git-ignored, not committed).
+```
+PYTHONHASHSEED=0 "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider -rfEs --basetemp=<scratch>/e2f1-s0 scripts/tests
+-> 434 passed, 4 skipped in 1108.96s (0:18:28); exit 0
+PYTHONHASHSEED=0 ... --basetemp=<scratch>/e2f1-c0 atx-engine/tools/test_stage_chain.py
+-> 9 passed in 0.67s; exit 0
+PYTHONHASHSEED=1 ... --basetemp=<scratch>/e2f1-s1 scripts/tests
+-> 434 passed, 4 skipped in 1667.62s (0:27:47); exit 0
+PYTHONHASHSEED=1 ... --basetemp=<scratch>/e2f1-c1 atx-engine/tools/test_stage_chain.py
+-> 9 passed in 0.94s; exit 0
+```
+The 4 skips are the live-input gates of before (same in both seeds): `test_cycle_e2e.py:439` (ATX_EQUITY_BIN),
+`test_research_cycle.py:56`, `:706`, `:946` (RESEARCH_CYCLE_LIVE_ROOT). 434 = the 420 of round 0 + 14 new
+(test_wave_kinds 42 -> 50; test_wave_driver +6: `test_cache_path_bound_w1_i1` and the 5 parent-NAV params). No skip
+or xfail mark was added. The ledger's known-red `test_research_mine.py::test_fields_are_the_rule_applied_to_the_registry`
+(M1a-RED) was E2's and was fixed in round 0 (`98ffcf75`, root cause in "Required carry items"); it passes in both
+seeds here. Targeted during the round (exit 0): `test_wave_kinds.py -k "verify_plan_line or every_fixture_plans"` 11
+passed; before the owner stop `test_research_spec.py` 87 passed, `test_wave_kinds.py` 49 passed, and the
+test_wave_driver cache_path_bound, parent_nav (x5), lock_exes, claims_lock, launch_waits, two_launches, adopt_never,
+judge_records and k_p9_10 tests. Diagnostic (supports no success claim): the first seed-0 run before `stand_in_ic`
+gave 4 failed / 429 passed / 4 skipped (the 3 v8_root add-alpha tests, plus
+`test_the_whole_file_passes_with_a_generated_spec_present`, which re-runs them): W1-I1 refusing in pytest's deep tmp
+roots, the cause stated above.
+
+### Decisions
+- W1-I1 is gated on the IC exe being on disk (Ruling E2-5): only the exe writes the cache, so with no exe nothing is
+  computed and nothing needs refusing. It also keeps hash-only plans and fake-tool fixtures as before. The cycle check
+  needs the library on disk (its ids); a hash-only plan skips it. A spec whose exe appears after plan is checked at
+  run, because `steps()` runs the check again before u.
+- The W1-I1 bound is conservative: the fp_ level is counted for every candidate (base candidates do not have it), and
+  the Release identity is used for every build (the Debug identity adds no level).
+- W1-I2 (a) is keyed on `ref == "none"` (no reference construction), which is broader than "rule cell" by name: a
+  library cell without a ref phase has the same exposure and is refused alike.
+- E2-6: the new plan text is keyed on the manifest being v2 (any kind), not on kind `rule` only, because the refusal
+  is keyed on the cell's ref phase (above): a v2 library-kind wave's line would otherwise be stale the same way. v2
+  has no plan identity to keep. v1 keeps its bytes. **Known stale v1 plan line (Ruling E2-6):** a v1 manifest's
+  verify plan line still says "NAV exe sha256 of the parent vs the cell (recorded; differing, the cell's ref must
+  have run on the cell's exe)", while verify now refuses a v1 cell without a ref construction whose NAV exes differ
+  or are recorded on one side only.
+- S6 role seal / end and S8: not done here, per Ruling E2-7 (the role builder owns its manifest layout and enforces
+  seal / end; S8 is a cross-lane import cycle). R1's build-log seal scan and the builder's refusal cover S6's risk.
+
+### W1-I1 margin on committed specs (finding for the PM / root)
+A scan over every committed cell spec with an IC pass (Release bound, longest id per spec) found the margin tight.
+The longest id is `seasonality_same_month` (22 chars). The worst spec is `scripts/specs/v70-lo3.json` (cache
+`build-equity/mega-candidate-cache-v70-lo3`, no audit-exact). Re-derived this round with
+`cycle.phases.deepest_cache_path`: **249** at `C:/atx-wt/pool-2`, **250** at `C:/atx-wt/pool-17` (equal to the bound,
+so not refused), **239** at `C:/atx`. A pool path one character longer (e.g. `pool-100`) or a longer cache dir refuses
+that committed spec at plan once the IC exe is built there. Root's plan-identity run in pool-2 stays within the bound.
+The ruling's "AL / PRE ids <= 24 chars" matches exactly: under the v8 cache in pool-2 the bound admits 24 (18 with
+audit-exact).
+
+### Not fixed / open
+- S8 (accepted, E2-7) and S6's role-manifest seal / end check (left to the builder, E2-7).
+- The stale v1 verify plan line (E2-6, above).
+- Root at merge: re-review the fix SHA. The review's "What root must check at merge" items still hold: separate
+  pytest invocations, and plan identity with the real IC exe on disk (which now also runs the W1-I1 check at plan).

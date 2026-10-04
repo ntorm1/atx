@@ -20,6 +20,7 @@ fixtures (scripts/specs/p9/kinds/, gate G-P2). Synthetic worlds only (wave_fixtu
   test_field_wave_builds_then_registers_on_the_build  the register stage builds the fields dir, add-alpha uses it; an
                                                       output this wave's build did not make is refused (S6)
   test_build_logs_are_seal_scanned                    review E2 R1: the builds' logs are in verify's seal scan
+  test_verify_plan_line_states_the_rule_cell_refusal  ruling E2-6: v1 verify plan bytes unchanged; v2 states W1-I2 (a)
   test_role_wave_builds_role_and_fields               the cell's inputs.role and fields dir are the builds'
   test_walk_forward_is_schema_only                    plan prints it; preflight refuses to run it
 """
@@ -499,6 +500,34 @@ def test_build_logs_are_seal_scanned(tmp_path):
     assert [Path(b).name for b in SK.build_bases(w)] == list(SK.BUILDS) == ["fields", "role", "role-fields"]
     with pytest.raises(SK.StageError, match="not one of"):
         SK.run_build(w, "other", "x", [], ["python"], {"seconds": 1, "max_rss_mib": 64})
+
+
+V1_VERIFY_LINE = ("#   mechanics rule v8-mech on the mechanics keys; C-13 binding of the cell's NAV; NAV exe sha256 of the "
+                  "parent vs the cell (recorded; differing, the cell's ref must have run on the cell's exe); seal scan "
+                  "of every log the wave produced (run dirs of the screen, the cell and its -gm copy, readers, "
+                  "consoles)")
+
+
+def verify_lines(log: list[str]) -> list[str]:
+    return [line for line in log if line.startswith("#   mechanics rule v8-mech")]
+
+
+def test_verify_plan_line_states_the_rule_cell_refusal(tmp_path):
+    """Ruling E2-6: a v1 manifest's verify plan line keeps its bytes (hash-only plan identity); a v2 rule wave's line
+    (and every v2 kind's: the refusal is keyed on the cell's ref phase) states ruling W1-I2 (a)'s refusal instead of
+    "recorded"."""
+    root = F.build(tmp_path / "v1")
+    code, log = wave(root, KindsFake(root), "plan")
+    assert code == 0 and verify_lines(log) == [V1_VERIFY_LINE], log
+    refusal = ("(a cell without a ref construction, e.g. a rule cell, is refused when the two NAVs' exes differ or "
+               "only one is recorded, by receipt or exes_sha256 pin (ruling W1-I2 (a)); with one, differing, the "
+               "cell's ref must have run on the cell's exe)")
+    for name in ("new-nav-rule.json", "new-combination-rule.json", "leverage-change.json", "new-signal.json"):
+        root = world(tmp_path / name[:-5], load_fixture(name))
+        code, log = wave(root, KindsFake(root), "plan")
+        lines = verify_lines(log)
+        assert code == 0 and len(lines) == 1 and "recorded;" not in lines[0], (name, log)
+        assert refusal in lines[0], (name, lines)
 
 
 def test_role_wave_builds_role_and_fields(tmp_path):
