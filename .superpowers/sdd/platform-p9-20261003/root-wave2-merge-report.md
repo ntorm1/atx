@@ -1094,3 +1094,24 @@ file moved). Every `$.provenance.<block>.producer_fingerprint` unchanged. Anythi
   `audits/`, `v8-interim3-pitch-render-run2/`, `vcpkg-manifest-install.log`; no `deps/`). Mine: the two X-5 w outputs
   (`build-equity/p9-m2e-alcomb-x5-w-{pre,post}`, 95 MB each) are deleted by name after this commit, receipts kept.
 - **Trial ledger:** 0 trials (133 lines, `27e40f9f`).
+
+### M2e status
+
+Both merges done and verified; nothing half-merged; no build, test or run of mine is running (the only process left is
+C3's lease keeper, 24052, the pool's durable owner by design). **Code head `e1c16051`** (C2 merge `a25453be`, AL-COMB
+merge `9d518317`, eol `2ee62800`, SQL2-CLS `e1c16051`); the docs commits sit on top. Build tags used: p9-2d
+(equity-dev), p9-2e (equity-rel), p9-2f (equity-dev). **Next free build tag p9-2g.** No new red; no identity miss.
+
+- **Concern (C2 root item (ii)):** the deletion of `wave_rules.py:110-119` was not done: it retires the Python `pm6-6`
+  match mode (fixture default, direct tests, G-P5 row) in files E2 is rewriting, a designed change; left to C3
+  with C2-9 and S14 (`wave3-carry.md:221` already lists it there). Its precondition, the gm-pair identity, now holds.
+- **Known-red now:** pytest `test_fields_are_the_rule_applied_to_the_registry` (E2); Release
+  `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` (M2c-RED-2 / OD5-2; S2R's split makes it a visible
+  Release skip). **Release `BookNormalScore.*` x2 cleared** (M1c-RED).
+- **Pools:** pool-15 released (C1's record) and leased to C3 (`feat/p9-c3-20261004` at `e1c16051`, run id
+  `p9-c3-20261004`, keeper alive); `pools.md`. pool-19 unchanged (T1's record, clean), for AL-CLOCK later.
+- **Disk freed (mine):** 212 MB of identity outputs (`p9-m2e-c2-x5-{cal,gm}` 22 MB, `p9-m2e-alcomb-x5-w-{pre,post}`
+  190 MB) plus my session scratch; kept: `p9-m2e-c2-x5-engine` (11 MB) and every run receipt. Lane pools 15 / 19 had
+  already deleted their object trees (DISK-2: nothing left to delete).
+
+Trial ledger at the end: 133 lines, sha256 `27e40f9f...` (0 trials). Resume notes: `handoff-root-m2e2.md`.

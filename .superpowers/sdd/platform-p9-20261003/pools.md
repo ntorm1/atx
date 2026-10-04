@@ -59,3 +59,33 @@ Pool-16 detail (why it is not released):
   commit or park the slice 3b work, merge or abandon `88cd7d49`, then release with `-RunId v8y-yarch-20261002`.
 
 Not touched: pools 1, 2, 6, 10 (rule), 7 and 8 (dead owners; recovery is a later step).
+
+## Wave-3 re-lease: pool-15 -> C3 (root M2e, 2026-10-04; Ruling W3-11)
+
+After C2's merge (`a25453be`) and verification, root released pool-15 and leased it again for lane C3, from pool-2
+with `scripts/lease-worktree.ps1` (v3 heartbeat lease). Log: `m2e-logs/pool15-c3-lease.log`.
+
+- **Release:** the record still held wave 1's C1 lease (`run_id p9-c1-20261003`, agent p9-c1, heartbeat `p9-c1-hb`,
+  keeper 20868 dead): lane C2 had reused the pool without a lease call. `-Release pool-15 -RunId p9-c1-20261003` ->
+  `RELEASED pool=pool-15 run_id=p9-c1-20261003`, exit 0. The run id matched the record, so no stale recovery was
+  involved (the script consults the owner state only on a run-id mismatch). Tree clean before (0 porcelain lines on
+  `feat/p9-c2-20261003` at `1ea664f2`); the script detached it at the record's base `d7c1c520`.
+- **Lease:** `-Branch feat/p9-c3-20261004 -Base e1c160519a753e932827bfd9043773ef989a2e94 -Agent p9-c3 -RunId
+  p9-c3-20261004 -HeartbeatId p9-c3-hb -MaxPool 20`. pool-15 was the only free tree, so the script took it (no new
+  worktree). Exit 1 with `configure failed; lease remains held: C:\atx-wt\pool-15` -- the known failure of the script's
+  optional cold-tree `dev` configure (`cmake/atx-vol-install.cmake`: no `atx-vol` target on this branch), after the
+  lease record, keeper, branch switch and submodule update. It left an ignored, incomplete `build/` in pool-15; lanes
+  build with `research-build.ps1` into `build-equity`, so nothing depends on it.
+- **Verified after:** `-Status`: `pool-15 LEASED run_id=p9-c3-20261004 | agent=p9-c3 | owner_kind=heartbeat |
+  owner=alive | keeper_pid=24052`; branch `feat/p9-c3-20261004`, HEAD `e1c160519a75` (root's M2e code head: C2 and
+  AL-COMB merged, COV in), tree clean, submodule `atx-core/third-party/databento-cpp` at `2a960737` (v0.59.0).
+- **Release later with:** `powershell -NoProfile -File scripts\lease-worktree.ps1 -Release pool-15 -RunId
+  p9-c3-20261004`.
+
+| lane | pool path | branch | run id | heartbeat id | HEAD | owner state |
+|---|---|---|---|---|---|---|
+| C3 | `C:/atx-wt/pool-15` | `feat/p9-c3-20261004` | `p9-c3-20261004` | `p9-c3-hb` | `e1c160519a753e932827bfd9043773ef989a2e94` | alive (keeper 24052) |
+
+Not changed here: pool-19 (AL-COMB merged; W3-11 assigns it to AL-CLOCK) still holds wave 1's T1 record
+(`run_id p9-t1-20261003`, owner dead), tree clean on `feat/p9-alcomb-20261003`; it can be released and re-leased the
+same way when AL-CLOCK is dispatched.
