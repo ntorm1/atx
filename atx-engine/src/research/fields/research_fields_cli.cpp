@@ -369,8 +369,10 @@ core::Result<std::string> build_fields(const BuildSpec &spec, std::string_view s
     ATX_TRY_VOID(require_output_dir(spec));
     ATX_TRY(const auto role, RoleAxes::load(spec.role_dir, spec.role_manifest_sha256));
     ATX_TRY(const auto plans, plan_fields(spec, nullptr));
+    ATX_TRY_VOID(check_stage_pins(spec));
     ATX_TRY(Json fields, build_entries(spec, role, plans));
     ATX_TRY_VOID(repin_role(spec));
+    ATX_TRY_VOID(check_stage_pins(spec));
     const Json receipt = receipt_json(spec, spec_sha256, role, std::move(fields), producer);
     return core::Ok(receipt.dump(2) + "\n");
   } catch (const std::exception &e) {
@@ -391,6 +393,7 @@ core::Result<RegistryBuild> build_registry_fields(const BuildSpec &spec,
     }
     ATX_TRY(const auto role, RoleAxes::load(spec.role_dir, spec.role_manifest_sha256));
     ATX_TRY(const auto plans, plan_fields(spec, &registry));
+    ATX_TRY_VOID(check_stage_pins(spec)); // before the reuse decision: a reused field is bound too
     std::optional<ReuseOutcome> reuse;
     if (spec.reuse) {
       ATX_TRY(auto outcome, reuse_payloads(*spec.reuse, role, plans, producer, spec.output_dir));
@@ -407,6 +410,7 @@ core::Result<RegistryBuild> build_registry_fields(const BuildSpec &spec,
     }
     ATX_TRY(const Json built, build_entries(spec, role, to_build));
     ATX_TRY_VOID(repin_role(spec));
+    ATX_TRY_VOID(check_stage_pins(spec));
     Json receipt = receipt_json(spec, spec_sha256, role, built, producer);
     receipt["registry"] = Json{{"path", registry.path}, {"sha256", registry.sha256}};
     receipt["reused"] = std::move(reused_names);

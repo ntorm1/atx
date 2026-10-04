@@ -238,6 +238,45 @@ TEST(ResearchFieldsAlSigFixture, ReuseFollowsTheStagePin) {
             support::read_bytes(dir / "a" / "russell_recon.f64"));
 }
 
+TEST(ResearchFieldsAlSigFixture, ReuseRefusesAWrongStagePin) {
+  // Review R1: with a valid reuse directory and unchanged stages, a spec whose stage pin is not
+  // the stage manifest's digest is refused before anything is reused or written. Without the
+  // check, reuse rule 5 (the stage manifest re-hashed against the prior entry) would pass.
+  const auto dir = support::scratch("al_sig_reuse_pin");
+  const auto first = build_into(dir, "a", al_sig_spec(dir));
+  ASSERT_TRUE(first.has_value()) << first.error().message();
+  const std::string thirteenf_pin = support::al_sig_stage("thirteenf").manifest_sha256;
+  const std::string indexes_pin = support::al_sig_stage("indexes").manifest_sha256;
+  const auto with_reuse = [&dir](fields::BuildSpec spec) {
+    spec.reuse = fields::ReuseRequest{dir / "a", {}};
+    return spec;
+  };
+  const auto expect_refused = [&dir](const std::string &tag, const fields::BuildSpec &spec) {
+    const auto refused = build_into(dir, tag, spec);
+    ASSERT_FALSE(refused.has_value()) << tag;
+    EXPECT_NE(refused.error().message().find("manifest SHA-256 does not match the pin"),
+              std::string::npos)
+        << tag << ": " << refused.error().message();
+    EXPECT_TRUE(fs::is_empty(dir / tag)) << tag; // nothing reused, copied or built
+    EXPECT_FALSE(fs::exists(dir / (tag + ".json"))) << tag;
+  };
+  auto wrong_thirteenf = with_reuse(al_sig_spec(dir));
+  wrong_thirteenf.thirteenf->manifest_sha256 = indexes_pin; // a real digest, another stage's
+  expect_refused("b", wrong_thirteenf);
+  auto wrong_indexes = with_reuse(al_sig_spec(dir));
+  wrong_indexes.indexes->manifest_sha256 = thirteenf_pin;
+  expect_refused("c", wrong_indexes);
+  // A requested stage no planned field reads is pinned too.
+  auto unread = with_reuse(al_sig_spec(dir));
+  unread.fields = {"russell_recon"};
+  unread.thirteenf->manifest_sha256 = indexes_pin;
+  expect_refused("d", unread);
+  // The control: the same reuse with the right pins reuses both payloads.
+  const auto control = build_into(dir, "e", with_reuse(al_sig_spec(dir)));
+  ASSERT_TRUE(control.has_value()) << control.error().message();
+  EXPECT_EQ(control->reused, 2U);
+}
+
 TEST(ResearchFieldsAlSigFixture, KindsRefuseWithoutTheirStage) {
   const auto registry = committed_registry();
   auto no_thirteenf = al_sig_spec(fs::temp_directory_path());

@@ -102,4 +102,12 @@ struct BuilderKind {
 [[nodiscard]] core::Status check_kind_request(const FieldSpec &spec, std::string_view field,
                                               const nlohmann::json &options);
 
+// Every stage the spec requests (thirteenf, indexes) opened under its pin and its reader's contract
+// (PinnedStage::open), whether or not a planned field reads it: Err for a stage whose manifest is
+// not the pinned one, or not a complete manifest of the contract. A build checks the pins before
+// it reuses or builds any field and again after the last one (as it re-pins the role), so no
+// reused or built field rests on a stage other than the pinned one (lane AL-SIG review R1). A spec
+// without a stage key checks nothing.
+[[nodiscard]] core::Status check_stage_pins(const BuildSpec &spec);
+
 } // namespace atx::engine::research::fields

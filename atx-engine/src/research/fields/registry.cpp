@@ -6,6 +6,8 @@
 
 #include "atx/engine/research/fields/gia_13f_field.hpp"
 #include "atx/engine/research/fields/russell_recon_field.hpp"
+#include "atx/engine/research/fields/sources/russell_proxy.hpp"
+#include "atx/engine/research/fields/sources/thirteenf.hpp"
 #include "atx/engine/research/fields/volume_mean_field.hpp"
 
 namespace atx::engine::research::fields {
@@ -233,6 +235,22 @@ core::Result<std::vector<FieldPlan>> plan_fields(const BuildSpec &spec,
 core::Status check_kind_request(const FieldSpec &spec, std::string_view field,
                                 const nlohmann::json &options) {
   return check_request(spec, field, options);
+}
+
+core::Status check_stage_pins(const BuildSpec &spec) {
+  if (spec.thirteenf) {
+    const auto stage = PinnedStage::open(*spec.thirteenf, kThirteenfStage);
+    if (!stage) {
+      return core::Err(stage.error());
+    }
+  }
+  if (spec.indexes) {
+    const auto stage = PinnedStage::open(*spec.indexes, kIndexesStage);
+    if (!stage) {
+      return core::Err(stage.error());
+    }
+  }
+  return core::Ok();
 }
 
 } // namespace atx::engine::research::fields
