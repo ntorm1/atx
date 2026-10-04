@@ -1,5 +1,6 @@
 import datetime as dt
 import hashlib
+import json
 from dataclasses import asdict, replace
 
 import pytest
@@ -70,3 +71,25 @@ def test_duplicate_native_keys_rejected():
     blob, pin = native()
     with pytest.raises(ValueError, match="unique"):
         N.replay_native({pin.source_id: blob}, (pin, pin), admission_id="fixture", expected_code=N.code_pins())
+
+
+def test_bulk_native_clock_never_inherits_catalog_assertion():
+    blob = json.dumps({"cik": 1, "filings": {"recent": {
+        "accessionNumber": ["0000000001-20-000001"],
+        "acceptanceDateTime": ["2020-01-03T17:30:00Z"]}}}).encode()
+    clock = dt.datetime(2020, 1, 3, 17, 30, tzinfo=UTC)
+    pin = N.BulkClockPin("original-sec-submissions", hashlib.sha256(blob).hexdigest(), 1,
+                         "0000000001-20-000001", clock, clock+dt.timedelta(days=1))
+    assert N.read_bulk_clock(blob, pin) == clock
+    html, docpin = native()
+    docpin = replace(docpin, available_at=clock, fetched_at=clock+dt.timedelta(days=1),
+                     clock_basis="native_sec_bulk_acceptance")
+    rows = N.replay_native({docpin.source_id: html}, (docpin,), admission_id="fixture",
+                           expected_code=N.code_pins(), bulk_clocks={docpin.source_id: (blob, pin)})
+    assert rows[0].available_at == clock
+    with pytest.raises(ValueError, match="clock object inventory"):
+        N.replay_native({docpin.source_id: html}, (docpin,), admission_id="fixture", expected_code=N.code_pins())
+    with pytest.raises(ValueError, match="issuer"):
+        N.read_bulk_clock(blob, replace(pin, cik=2))
+    with pytest.raises(ValueError, match="clock mismatch"):
+        N.read_bulk_clock(blob, replace(pin, available_at=clock-dt.timedelta(days=1)))

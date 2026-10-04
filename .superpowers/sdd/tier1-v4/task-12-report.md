@@ -62,3 +62,14 @@ This is a concrete engineering checkpoint, not Task12 acceptance. No gate was
 weakened and no placeholderPASS was claimed. Self-review: generic evidence hashes
 and IDs alone must never yield exactDLRET; production core fails closed pending
 real reader/financial qualification. Registry explicitly unpublished preview.
+
+## Clock reader follow-up
+
+Added native SEC submissions recent-entry reader with pinned original bytes,
+exact native CIK and unique accession, matching offset-bearing acceptanceDateTime,
+retrieval consistency and complete clock-object inventory. Native HTML accepts
+that separate independently pinned clock object; archived arrays without native
+issuer identity remain unsupported. No catalog clock assertion or filing-date
+backdating. Focused command uses the same environment/pytest options with only
+tests/test_mna_native_v2.py;6passed in0.20s. Total23offline tests now (17terminal,
+6native). No actual source/data/return jobs. Financial admission still open.
