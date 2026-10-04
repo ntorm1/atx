@@ -12,8 +12,11 @@ M1a-RED gtests that A3 owns. The concerns are listed at the end.
 
 - Pool `C:/atx-wt/pool-13` (reused, no lease call). Branch `feat/p9-al-sig-20261003`. Base `1239a5ff`.
 - Commits: `2d7aba4e` (readers, kinds, rows, gtests, registrations), `80074679` (handoff at owner stop), `f1b3c792`
-  (compile fix: `russell_recon_field.cpp` includes `clock.hpp` for `iso_date`), `34e12223` (ALSIG-2: `rank(gia_13f)`
-  leaves the queue). The commit that adds this report comes after them. Everything is committed and the tree is clean.
+  (compile fix: `russell_recon_field.cpp` includes `clock.hpp` for `iso_date`; the deletion of
+  `scripts/specs/p9/candidates/gia_13f.json` was staged at that time and landed in this commit too), `34e12223`
+  (ALSIG-2: the registration test pins `rank(gia_13f)` as excluded). The commit that adds this report comes after
+  them. Everything is committed and the tree is clean. (Attribution corrected in fix round 1, review S5.) Fix round 1
+  commits are listed in the "Fix round 1" section at the end.
 
 ## Files changed
 
@@ -28,8 +31,8 @@ Owned (new):
   written by pyarrow, with an independent numpy oracle.
 - `scripts/specs/p9/candidates/russell_recon.json`, `scripts/specs/p9/blocked/{lazy_prices,hf_crowd}.json`,
   `scripts/tests/test_p9_al_sig_registrations.py`.
-- `scripts/specs/p9/candidates/gia_13f.json` was added in `2d7aba4e` and removed in `34e12223` (ALSIG-2), so the net
-  diff from the base does not contain it.
+- `scripts/specs/p9/candidates/gia_13f.json` was added in `2d7aba4e` and removed in `f1b3c792` (ALSIG-2; staged
+  before the compile-fix commit), so the net diff from the base does not contain it.
 
 Cross-lane edits (each is minimal; the list is for root at merge):
 - `atx-engine/include/atx/engine/research/fields/build_spec.hpp` (A2): adds `struct StageRequest {dir,
@@ -65,7 +68,7 @@ Cross-lane edits (each is minimal; the list is for root at merge):
 | `lazy_prices`, `hf_crowd` registered only as `blocked_on_data` | Done, in `scripts/specs/p9/blocked/`. They are not in the queue: a queue status cannot be `blocked_on_data`. |
 | ALSIG-FLIP: no existing field flipped to `kind: engine` | Held. Only the two new engine-only rows were appended. |
 | Ruling ALSIG-1: verify the WYZ `source_sample_end` | **Verified: 2006** (evidence below). Because of ALSIG-2 the value is no longer in any registration. CHL's 2012 (`russell_recon`) was checked the same way and is also verified. |
-| Ruling ALSIG-2: `gia_13f` not registered; record it as excluded by the bar | Done in `34e12223`. `scripts/specs/p9/candidates/gia_13f.json` is removed. `test_string_excluded_by_the_bar_is_not_registered[gia_13f]` pins that the id and `rank(gia_13f)` are in neither the queue nor the blocked set, and that the engine-only field row still exists. |
+| Ruling ALSIG-2: `gia_13f` not registered; record it as excluded by the bar | Done in `f1b3c792` (file removed) and `34e12223` (test). `scripts/specs/p9/candidates/gia_13f.json` is removed. `test_string_excluded_by_the_bar_is_not_registered[gia_13f]` pins that the id and `rank(gia_13f)` are in neither the queue nor the blocked set, and that the engine-only field row still exists. |
 | Ruling ALSIG-3: `ENGINE_FIELDS` routing of engine-only rows | Out of lane; noted for root / A3 under Concerns. |
 | Carried minors | The carry names none for AL-SIG. |
 
@@ -99,7 +102,7 @@ files are identical and the file lists are equal. Scratch was deleted.
     `8fcb2bee…86be`.
   - The log has no compiler warning besides clang-cl's `/MP` unused-argument notice.
   - The build ran with the fix uncommitted (`DirtyEntries: 1`). That working tree's C++ equals `f1b3c792`, which is
-    also HEAD's C++: `34e12223` touches only Python and JSON.
+    also HEAD's C++: `34e12223` touches only the registration pytest.
 
 **gtests on `p9-alsig-b`.**
 - `atx-engine-research-fields-tests.exe --gtest_filter=ResearchFieldsAlSig* --gtest_brief=1`: exit 0,
@@ -221,3 +224,89 @@ files are identical and the file lists are equal. Scratch was deleted.
 - A reused pool builds `atx-engine-research-fields-tests` + `atx-research-fields` from cold in about 3 minutes with
   ccache warm (configure 65 s, build 100 s, 18 TUs). The lane's C++, written without a compiler, needed one fix (a
   missing `clock.hpp` include) to pass `/W4 /WX`.
+
+## Fix round 1 (review `task-AL-SIG-review.md` at `1c649035`, CHANGES_REQUIRED)
+
+Outcome: R1 fixed. I also did every cheap Suggested finding (S1, S2, S3, S5, S6). S4 is answered by ruling ALSIG-5.
+I found and fixed one more defect while doing S1 (F1 below). The commits, on top of `1c649035`, are `39d8548e`,
+`343efbc7`, `67401122` and `309507fb`. This report commit comes after them.
+
+| finding / ruling | what was done | commit |
+|---|---|---|
+| **R1** (required): the stage pin was never checked on the `--reuse` path | `check_stage_pins(spec)` (`registry.hpp/.cpp`, cross-lane A2 file, appended at the tail) opens every stage the spec requests under its pin and contract, whether or not a planned field reads it. Both build paths (`build_fields`, `build_registry_fields` in `research_fields_cli.cpp`) call it twice: after `plan_fields` and before any reuse or build, and again after the last field, next to `repin_role`. A spec without `thirteenf` / `indexes` checks nothing, so the flag-absent path is unchanged. New gtest `ResearchFieldsAlSigFixture.ReuseRefusesAWrongStagePin`, below. | `39d8548e` |
+| **F1** (found in this round, not in the review): wrong Russell index ids | The house indexes stage names its constituents index ids `R1000P`, `R2000P`, `R3000P`, `SP500P` (atx-db `docs/datasets/indexes.md` and `alpha_panel.indexes`, read from git history as documents and code; no data opened). `r1000` / `r2000` are only the membership file's flag columns. Effect of the old ids: on the real stage `russell_recon` would have been refused (no usable row), not silently wrong. Fix: `kRussell1000Id` / `kRussell2000Id` = `R1000P` / `R2000P`, and the spec text names them. | `343efbc7` |
+| **S1**: `kIndexesStage` did not check its rule | The contract now requires `russell-proxy-v1`. The house manifest's `rule` is a list, `["russell-proxy-v1", "sp500-proxy-v1"]`, so the stage rule check (`stage.cpp`) accepts a string equal to the declared rule or a list that holds it. Anything else is refused, including a missing rule. New gtest `ResearchFieldsAlSigRussell.IndexesStageRule`. | `343efbc7` |
+| F1 + S1, fixture | The generator now writes the house ids and the house rule list. I regenerated with the generator, not by hand. `expected/gia_13f.f64` and `expected/russell_recon.f64` are byte-identical to before. Only `indexes/constituents.parquet`, `indexes/manifest.json` and the `pins.indexes` value in `counts.json` moved. A second generator run into scratch was compared with `cmp`: 29 of 29 files identical. | `343efbc7` |
+| F1, registry row | `russell_recon`'s spec text changed, so its `field_registry.json` row (`spec_text`, `formula_sha256` -> `c6c4b1aa…f1b8`) was re-derived from the C++ literals and written with `field_registry.dump`. It is still revision 1, because the field was never built. The `gia_13f` row is unchanged (`2e693083…e54f`). `CommittedRowsPinTheSpecs` passes, which confirms the C++ fingerprint matches the row. | `343efbc7` |
+| **S2**: a null CUSIP could be mapped | `cusip_map_pit` rows with an empty CUSIP are skipped, and `screen_holding` never maps an empty holding CUSIP (house `build_13f`: null maps to unmapped). `RowScreen` gains the case. The fixture has no null CUSIP and is unchanged. | `67401122` |
+| **S4 / ALSIG-5** | `russell_recon.json` notes now argue both halves of the lit 3.0 bar. The rho half is met: about 0 (F8). The SR_c half cannot be argued a priori: the trade is live about 30 sessions a year, only on the boundary crossers; the CHL post-2015 size is unverified (lit 2.3); the S&P addition effect is now below 1% [57]; and lit 6 puts the gain at +.00 to +.02. So the registration is kept but withdrawn from the trial queue: `proposed -> dropped`, no wave, applied through `wave_queue.transition`; `dropped` is final, so the string can never be pinned. Tests: `test_string_held_by_the_bar_is_out_of_the_trial_queue[russell_recon]` (pinning is refused, the history note names ALSIG-5, both halves are argued) and `test_the_lane_leaves_nothing_in_the_trial_queue`. | `309507fb` |
+| **S3 / ALSIG-4** | `hf_crowd.json` notes record the ruling: it stays a blocked registration and is never queued without a new PM ruling on the bar. Pinned in `test_blocked_registration[hf_crowd]`. | `309507fb` |
+| **ALSIG-6** | The `gia_13f` field and builder kind stay. `test_string_excluded_by_the_bar_is_not_registered` already pins that the row exists. | - |
+| **S5**: report commit attribution | Corrected above. The deletion of `gia_13f.json` landed in `f1b3c792`, because it was staged before that commit. History was not rewritten. | report |
+| **S6**: no evidence for `lazy_prices` / `hf_crowd` `source_sample_end` | Lazy Prices (Cohen, Malloy and Nguyen 2020, JF 75(3)): sample 1995-2014, so 2014. BHL (Brown, Howard and Lundblad 2022, RFS 35(7)): about 1,500 hedge funds 2004-2016, so 2016. Both come from lit 3.1 F1 / F2 ([web]) and were re-verified against the papers by the reviewer (review "Citations"). I did no new lookup. | report |
+
+New gtest `ResearchFieldsAlSigFixture.ReuseRefusesAWrongStagePin`:
+- Setup: a valid reuse directory and unchanged stages.
+- Refused cases: a wrong `thirteenf` pin, a wrong `indexes` pin, and a wrong pin on a requested stage that no planned
+  field reads. Each wrong pin is a real digest of the other stage.
+- Each refusal carries "manifest SHA-256 does not match the pin", the output directory stays empty, and no receipt is
+  written.
+- Control: the right pins with the same reuse directory reuse both fields.
+
+Cross-lane edits added in this round (all A2 files, minimal):
+- `registry.hpp`: one declaration appended at the tail.
+- `registry.cpp`: two includes and one function appended at the tail.
+- `research_fields_cli.cpp`: three `check_stage_pins` call lines, one per call site.
+
+There are no new files and no CMake change.
+
+### Evidence (fix round 1)
+
+**Configure.** `powershell -NoProfile -File scripts\atx-build.ps1 configure -Preset equity-dev` exited 0:
+`-- Configuring done (41.7s)` / `-- Build files have been written to: C:/atx-wt/pool-13/build-equity`.
+
+**Build.**
+- Command: `powershell -NoProfile -File scripts\research-build.ps1 -Tag p9-alsig-c -Targets
+  "atx-engine-research-fields-tests,atx-research-fields"`, exit 0.
+- Gate: admitted at 1846 MiB free, `Jobs` 2. pool-15's Release build was running at the same time.
+- Receipt: `"ExitCode": 0, "CompiledTUs": 94, "Links": 8, "WallSeconds": 141.19`. The tree was cold after the
+  round-0 deletion.
+- Executables: `atx-engine-research-fields-tests` `bb646215…73d6`, `atx-research-fields` `2a78cf2c…0b0a`.
+- Warnings: only the two third-party databento `getenv` deprecation warnings and clang-cl's `/MP` notice.
+- Source: the build ran on the working tree over `1c649035` with every fix-round C++ edit in place (`DirtyEntries`
+  21). Its C++ equals the committed C++ of `309507fb`: no C++ file was edited after the build started.
+
+**gtests.**
+- `atx-engine-research-fields-tests.exe --gtest_filter=ResearchFieldsAlSig*:ResearchFieldsRegistry* --gtest_brief=1`:
+  exit 0, `[==========] 33 tests from 5 test suites ran.` / `[  PASSED  ] 33 tests.`
+  - AL-SIG accounts for 26 of them: Thirteenf 8, Gia 6, Russell 6, Fixture 6. Registry accounts for 7.
+- The whole target: `[==========] 72 tests from 12 test suites ran.` / `[  PASSED  ] 70 tests.` /
+  `[  FAILED  ] 2 tests`.
+  - The two failures are the pre-existing M1a-RED pair that A3 owns (`ResearchFieldsWriter.QuantilesPartitionLikeNumpy`,
+    `ResearchFieldsVolumeMean.SumOrderIsNumpys`).
+  - Every other suite passes, including Fixture 3/3, Cli 3/3 and Manifest 8/8.
+
+**pytest.** Each run used `"C:/Program Files/Python312/python.exe" -B -m pytest -q -p no:cacheprovider`:
+- `scripts/tests/test_p9_al_sig_registrations.py scripts/tests/test_wave_queue.py`: exit 0, `15 passed in 10.11s`.
+- `atx-engine/tools/test_field_registry.py atx-engine/tools/test_no_new_python_builder.py`: exit 0,
+  `39 passed in 40.46s`.
+- `ATX_RESEARCH_FIELDS_EXE=C:/atx-wt/pool-13/build-equity/bin/atx-research-fields.exe` with
+  `atx-engine/tests/fixtures/research_fields/test_research_fields_engine_path.py` (`-rs`): exit 0, `11 passed in
+  10.39s`, nothing skipped. This is the flag-absent identity check with the real executable.
+- `scripts/research_cycle.py candidates validate --dir scripts/specs/p9/candidates`: exit 0,
+  `candidates: 1 valid in scripts/specs/p9/candidates`.
+
+### For root (updates to "How root verifies")
+
+- gtest filter `ResearchFieldsAlSig*:ResearchFieldsRegistry*` must now give **33** passed (was 31).
+- K1 `--plan-only` of `rank(russell_recon)` stays a root item (ALSIG-5), even though the string is now withdrawn from
+  the trial queue.
+- Field changes:
+  - The Russell reader now expects the house ids `R1000P` / `R2000P`.
+  - It also expects a manifest `rule` list holding `russell-proxy-v1`.
+  - The first real `russell_recon` build is the check on the real stage; the docs say this is its shape.
+- Disk: after these runs the `build-equity/` object tree was deleted again. Only my own entries were removed, by name.
+  The `mega-p9-alsig-{a,b,c}-*` receipts and logs are kept, and so are the pre-existing `audits/` and
+  `v8-interim3-pitch-render-run2/`.
+- Scratch: my two fix-round scratch scripts and the configure and build output files in the shared scratchpad were
+  deleted by exact name, with no wildcard.
