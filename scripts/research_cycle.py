@@ -52,6 +52,12 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
   exes_sha256     (P9 OR-2) {exe key: SHA-256} of the exes the cell runs (effective exes: ic, nav), written by
                   `lock --exes` (a template's into change.set, over the pins its parent's spec carries); plan and run stop
                   (exit 3) when an exe no longer hashes to its pin; absent, exes are pinned by path only, as before
+  exes.eval       (P9 ruling B2-R3) the engine verb atx-research-eval that computes nav_summ's statistics of record: a
+                  spec's exes.eval, or with a build key and a summ section the build's bin atx-research-eval.exe; the
+                  summ step passes nav_summ --engine-stats EXE, `lock --exes` pins it, and the verdict refuses a
+                  summ.json / pbo.json whose nav_summ_run.engine_exe_sha256 is not that pin (unpinned: the exe's
+                  SHA-256 now): a summ output of another verb is not reused. Without it, nav_summ resolves its own
+                  verb, as before
   marginal.candidates (P9 ruling P4) [member id, ...]: the marginal verb gets --candidates FILE, the ids one per line
                   (UTF-8) in <cycle dir>/marginal-candidates-<sha12>.txt, written when the step starts and bound in its
                   receipt; set by a wave whose manifest's marginal ruling has candidates_only; absent, as before
@@ -266,6 +272,7 @@ BUILDS = {
     "equity-rel": {"bin": "build-equity-rel/bin", "path": ["C:/atx-cache/vcpkg_installed/x64-windows/bin"]},
 }
 EXE_NAMES = {"ic": "atx-equity-strategy-ic.exe", "nav": "atx-equity-strategy-targets.exe"}
+EVAL_EXE = ("eval", "atx-research-eval.exe")  # P9 ruling B2-R3: the verb of nav_summ's statistics (a summ spec)
 EXES_PIN = "exes_sha256"               # P9 OR-2: spec {exe key: SHA-256}, written by `lock --exes`
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 # ruling E1-REUSE-a2: the spec key naming each phase's output (Cycle.inherited: a template keeps its parent's output
@@ -614,12 +621,15 @@ def input_dir(item: dict) -> str:
 
 
 def effective_exes(spec: dict) -> dict:
-    """spec exes with the build key applied: a missing exe defaults to the build's bin dir, a bare name goes in it."""
+    """spec exes with the build key applied: a missing exe defaults to the build's bin dir, a bare name goes in it. A
+    spec with a summ section also runs the engine verb (EVAL_EXE, ruling B2-R3): with a build key it defaults like the
+    others; without one it is the spec's exes.eval, when given."""
     exes = dict(spec.get("exes") or {})
     b = BUILDS.get(spec.get("build"))
     if b is None:
         return exes
-    for key, name in EXE_NAMES.items():
+    names = dict(EXE_NAMES, **(dict([EVAL_EXE]) if "summ" in spec else {}))
+    for key, name in names.items():
         value = exes.get(key, name)
         exes[key] = value if "/" in value or "\\" in value else f"{b['bin']}/{value}"
     return exes
@@ -1299,6 +1309,9 @@ class Cycle:
     def summ_step(self, w_dir: str, n_out: str) -> Step:
         s, sm = self.spec, self.spec["summ"]
         argv = [self.py, self.tool(sm["script"])]
+        verb = (s.get("exes") or {}).get(EVAL_EXE[0])
+        if verb:            # P9 ruling B2-R3: the engine verb of the statistics of record, pinned with the cell's exes
+            argv += ["--engine-stats", verb]
         if w_dir:
             argv += ["--weights", f"{w_dir}/composition_weights.json"]
         if "reference_cell" in s["inputs"]:
