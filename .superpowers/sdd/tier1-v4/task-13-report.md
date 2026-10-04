@@ -312,3 +312,32 @@ Result:**5passed in0.29s**, offline original-format fixtures only. No unchanged 
 or actual source/data/hash/HTTP jobs ran. No shared/foreign/Task12/Task16producer edits.
 Actual gates remain0PASS/3FAIL; independently checked buybacks0/200; all actual yearly
 coverage and full source-publication/class/currency/history/gate measurements remain open.
+
+
+## Production ancillary continuation (repair rounds remain2/5)
+
+Supersedes checkpoint62896107 standalone limitation. Production and public full replay
+independently admit original declaration/class/clock bodies plus receipts. v2 adds expected
+price-symbol history and expected identity descendants. Parsed Accepted/SGML, same-context
+inline-DEI, exact per-share declaration/cadence/currency and unique available dated line
+conditionally produce event rates. Missing records NULL/reasons; claimed missing/tampered
+objects reject. Complete reader/code pins include both conditional modules. Schema v3
+exposes explicit quote currency false, source validity, carry status and class context.
+Full persistent global history/cancellation inventory remains open.
+
+New t13-native-object-preflight-v1.py created NOT RUN by agent: external guard/no-overwrite,
+exact notes ZIP paths, earliest8 original docs, receipt/catalog before-after pins,2MiB
+stored/decoded per object,24MiB aggregate,16contexts/128KiB output. Root reports2.0s/
+147480576peak bytes/0HTTP:8originals receipt/SHA matched,2915510stored+decoded bytes;
+2inlineDEI/2declaration leads,0Accepted/SGML. Exact2019q4/2020q1 raw notes ZIPs missing,
+not an assertion about every alternative root. Leads do not qualify class/currency/clock.
+
+Covering command fromC:/atx/atx-db with PYTHONPATH=C:/atx/atx-db/src,OPENBLAS_NUM_THREADS=1:
+`.venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_distributions_qualification.py -q`
+6passed7.26s: production positive2.4USD/share/year, missing-chain NULL, independently
+admitted ADS negative NULL, public full replay and ancillary tamper rejection. Offline only;
+no actual data/source/hash/HTTP jobs or unchanged broad suites. Actual gates0PASS/3FAIL,
+buyback handchecks0/200. Full vendor cash denominator, coverage/amount, native acceptance,
+quote currency and complete prior-history proofs remain unmeasured. Task13/Task4R11
+incomplete. Actual modelGPT6.1Sol. Commit requires explicit owned paths and git add -f
+for ignored report/helper; all foreign changes preserved.

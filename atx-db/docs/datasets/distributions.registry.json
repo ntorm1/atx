@@ -2,7 +2,7 @@
   "stage": "corporate_actions/distributions",
   "path": "corporate_actions/distributions.parquet",
   "keys": ["event_id"],
-  "schema_id": "atx.alpha-panel.distributions/v2",
+  "schema_id": "atx.alpha-panel.distributions/v3",
   "asof_macro_sql": "SELECT * FROM distributions WHERE EXISTS (SELECT 1 FROM admitted_calendar WHERE session_date = asof_date) AND available_at < CAST((SELECT max(session_date) FROM admitted_calendar WHERE session_date < asof_date) AS TIMESTAMP) + INTERVAL 22 HOUR",
   "monthly_asof_sql": "SELECT * FROM distributions WHERE EXISTS (SELECT 1 FROM admitted_calendar WHERE session_date = monthend_session) AND date_trunc('month', (SELECT min(session_date) FROM admitted_calendar WHERE session_date > monthend_session)) > date_trunc('month', monthend_session) AND available_at < CAST(monthend_session AS TIMESTAMP) + INTERVAL 22 HOUR",
   "gate_status": "FAIL: actual source evidence and coverage unmeasured",

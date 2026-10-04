@@ -18,8 +18,8 @@ from typing import Any
 
 from . import common as C
 
-RULE = "native-distributions-v2"
-SCHEMA = "atx.alpha-panel.distributions/v2"
+RULE = "native-distributions-v3"
+SCHEMA = "atx.alpha-panel.distributions/v3"
 UTC = dt.timezone.utc
 CADENCE = {"monthly": 12, "quarterly": 4, "semiannual": 2, "semi-annual": 2, "annual": 1}
 MONTHS = {m.lower(): i for i, m in enumerate(
@@ -156,6 +156,7 @@ def gates(cash_rows: list[dict[str, Any]] | None = None,
 
 def replay_rows(admission_path: Path, expected_sha256: str) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
     from . import distributions_native as N
+    from . import distributions_ancillary as A
     originals, pinned, admitted = N.replay_inputs(admission_path, expected_sha256)
     rows = []
     diagnostics = []
@@ -175,15 +176,30 @@ def replay_rows(admission_path: Path, expected_sha256: str) -> tuple[list[dict[s
             if event["declare_date"] and event["declare_date"] > available.date():
                 raise ValueError("future declaration cannot be available earlier")
             event["indicated_annual_dividend_rate"] = None
+            qualification = A.qualify(event, text, doc, admitted, pinned) if event["kind"] == "cash_dividend" else {"reason": "not_fixed_cash_declaration"}
+            qualified = qualification.get("qualified", {})
+            if qualified:
+                event = qualified
+            row_available = qualified.get("available_at", available)
             rows.append({**event, "event_id": f'{doc["accession"]}:{digest}:{ordinal}',
-                "security_id": doc.get("security_id"), "cik": doc["cik"], "accession": doc["accession"],
+                "security_id": qualified.get("security_id", doc.get("security_id")), "cik": doc["cik"], "accession": doc["accession"],
                 "source_url": doc["source_url"], "source_doc": str(source), "source_sha256": digest,
                 "stored_sha256": doc["stored_sha256"], "normalized_sha256": hashlib.sha256(text.encode()).hexdigest(),
-                "link_basis": "unqualified", "link_tier": "unqualified", "available_at": available,
-                "dividend_announcement_available_at": available, "security_class_currency_basis": None,
-                "source_qualification": "clock_class_unqualified_fetched_at_floor",
+                "link_basis": "native_class_dated_symbol" if qualified else "unqualified", "link_tier": "native_verified" if qualified else "unqualified", "available_at": row_available,
+                "dividend_announcement_available_at": qualified.get("dividend_announcement_available_at", available),
+                "security_class_currency_basis": qualified.get("security_class_currency_basis"),
+                "source_qualification": qualification["reason"],
+                "quote_currency_qualified": False, "rate_carry_status": qualified.get("rate_carry_status", "not_established"),
+                "source_valid_until": qualified.get("source_valid_until"),
                 "vintage_risk": True, "extractor_version": RULE})
     N.validate_keys(rows, ["event_id"])
+    for diagnostic in diagnostics:
+        emitted = [row for row in rows if row["accession"] == diagnostic["accession"] and row["source_sha256"] == diagnostic["source_sha256"]]
+        diagnostic["qualified_fixed_regular_events"] = sum(row["source_qualification"] == "native_fixed_regular_event" for row in emitted)
+        diagnostic["qualification_reasons"] = sorted({row["source_qualification"] for row in emitted})
+        diagnostic["class_clock"] = "CONDITIONALLY_VERIFIED" if diagnostic["qualified_fixed_regular_events"] else "UNQUALIFIED"
+        if diagnostic["qualified_fixed_regular_events"]:
+            diagnostic["status"] = "parsed_conditional_native_semantics"
     N.recheck(pinned)
     admitted["diagnostics"] = diagnostics
     return rows, pinned, admitted
@@ -194,12 +210,12 @@ def output_schema():
     strings = ["event_id", "accession", "source_url", "source_doc", "source_sha256", "link_basis", "link_tier", "kind",
                "currency", "security_class", "declared_cadence", "source_concept", "evidence", "extractor_version",
                "security_class_currency_basis", "period_start", "period_end", "distributed_security",
-               "stored_sha256", "normalized_sha256", "source_qualification"]
+               "stored_sha256", "normalized_sha256", "source_qualification", "rate_carry_status", "class_context"]
     return pa.schema([(k, pa.string()) for k in strings] + [(k, pa.int64()) for k in ("security_id", "cik")] +
                        [(k, pa.date32()) for k in ("declare_date", "record_date", "pay_date")] +
                        [(k, pa.float64()) for k in ("amount", "declared_regular_rate", "indicated_annual_dividend_rate", "spin_off_ratio")] +
-                       [(k, pa.bool_()) for k in ("special_flag", "vintage_risk")] +
-                       [(k, pa.timestamp("us", tz="UTC")) for k in ("available_at", "dividend_announcement_available_at")])
+                       [(k, pa.bool_()) for k in ("special_flag", "vintage_risk", "quote_currency_qualified")] +
+                       [(k, pa.timestamp("us", tz="UTC")) for k in ("available_at", "dividend_announcement_available_at", "source_valid_until")])
 
 
 def validate_product(target: Path, admission_path: Path, expected_sha256: str) -> dict[str, Any]:
@@ -217,7 +233,8 @@ def validate_product(target: Path, admission_path: Path, expected_sha256: str) -
     if before != C.sha256_file(target):
         raise ValueError("product changed during admission")
     return {"schema": SCHEMA, "rows": len(expected), "native_catalog_rows": admitted["population"]["catalog_rows"],
-            "native_replay": "PASS", "source_semantics": "UNQUALIFIED", "sha256": before}
+            "native_replay": "PASS", "conditionally_qualified_events": sum(row["source_qualification"] == "native_fixed_regular_event" for row in expected),
+            "quote_currency_qualified": False, "actual_task_gates": "FAIL_UNMEASURED", "sha256": before}
 
 
 def build(documents: Path, input_manifests: list[Path], *, admission_path: Path | None = None,

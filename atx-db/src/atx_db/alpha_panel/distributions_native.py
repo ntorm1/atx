@@ -12,7 +12,7 @@ from typing import Any
 from . import common as C
 
 LIMIT = 2 * 1024 * 1024
-MODULES = ("distributions_native", "distributions", "events_buyback", "events_sources", "events_common", "guidance", "common")
+MODULES = ("distributions_native", "distributions", "distributions_qualification", "distributions_ancillary", "events_buyback", "events_sources", "events_common", "guidance", "common")
 
 
 def code_pins() -> dict[str, str]:
@@ -38,9 +38,12 @@ def admission(path: Path, expected_sha256: str) -> tuple[dict[str, Any], dict[st
     if not expected_sha256 or C.sha256_file(path) != expected_sha256:
         raise ValueError("independent admission SHA mismatch")
     record = json.loads(path.read_text(encoding="utf-8"))
-    if set(record) != {"schema", "inputs", "code_sha256", "population"} or record["schema"] != "atx.native-admission/v1":
+    if set(record) != {"schema", "inputs", "code_sha256", "population"} or record["schema"] not in {"atx.native-admission/v1", "atx.native-admission/v2"}:
         raise ValueError("abbreviated or unknown admission schema")
-    if set(record["inputs"]) != {"catalog", "source_catalog", "calendar", "class", "clock", "fundamentals", "identity"}:
+    required = {"catalog", "source_catalog", "calendar", "class", "clock", "fundamentals", "identity"}
+    if record["schema"] == "atx.native-admission/v2":
+        required.add("prices")
+    if set(record["inputs"]) != required:
         raise ValueError("complete independent input roles required")
     pins = {str(path.resolve()): expected_sha256}
     for item in record["inputs"].values():

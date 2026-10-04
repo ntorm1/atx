@@ -3,8 +3,8 @@
 Admission is an independently reviewed external expectation. The caller supplies both
 its JSON path and expected SHA256; generating expectations from a product/parse receipt
 does not constitute source certification. Byte/replay PASS never means class/clock or
-actual task gate PASS. Current source semantics remain unqualified, every indicated
-annual rate NULL, and every actual gate FAIL/unmeasured. The plain `fetched_at` metadata
+actual task gate PASS. Actual source semantics remain unqualified and every actual gate FAIL/unmeasured.
+Conditional original-body chains qualify individual event rates; missing chains remain NULL. The plain `fetched_at` metadata
 must equal a retained original receipt's fetched_at/done_at; that matching clock is a
 documented conservative floor, not original acceptance certification.
 
@@ -118,12 +118,22 @@ never invents forever carry or a120/365day expiry. No-pay/cancellation/variable 
 are native parsed tombstones. Future declarations are filtered by availability and
 cannot rewrite earlier state.
 
-These functions are not yet wired into production admission. Every original declaration,
-class/index object and dated line inventory still must be independently admitted by the
-bounded original-byte/replay adapter, including complete event inventory through each
-cutoff. Calling the standalone list-based state helper does not prove that inventory is
-complete. Existing production admission therefore retains its honest NULL fallback until
-those concrete ancillary input adapters and original proofs are available. This is an
-implemented conditional path, not actual-source qualification or task-completion evidence.
-Native index/body or original notesZIPmember proofs are required before transformed
-SUB/DEI/cover values are promoted; source timestamps and hashes alone cannot substitute.
+Production and public full replay now use distributions_ancillary.py. Admission v2 adds
+exactly prices:{path,sha256}, supplying session_date/security_id/ticker for the existing
+seven-calendar-day as-of symbol rule. Independently pinned identity link_table.parquet
+supplies cik/valid_from/valid_to/available_at/link_tier. Unique available strict/dated matches
+qualify; quote currency remains separately unqualified. v1 preserves missing-chain NULL.
+
+Exact class input: {schema:"atx.native-class-evidence/v1",records:[...]}; records contain
+exactly declaration_accession,declaration_sha256,class_document,class_clock_document.
+Clock input has schema atx.native-clock-evidence/v1 and records containing exactly
+declaration_accession,declaration_sha256,clock_document. Nested documents use the original
+object/receipt contract above. Duplicate keys, unexpected fields, accession conflicts,
+missing claimed objects and tampering reject. Missing records or legacy empty arrays retain
+NULL/reasons. Native Accepted/SGML and inline-DEI bodies determine semantics; Boolean claims,
+transformed notes and filesystem dates do not. Ancillary originals/receipts and both new
+reader modules are pinned before/after; public replay independently compares every column.
+
+Complete global carry/cancellation/variable-policy inventory, native prior history, quote
+currency and vendor cash denominator remain open. Source-parsed explicit validity is exposed;
+conditional event qualification never certifies persistent state or any actual gate.

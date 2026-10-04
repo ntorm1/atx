@@ -2,8 +2,9 @@
 
 Current contract after Task13 review round1: [native admission](distributions_admission.md).
 The older normalized-UTF8, self-hash-only replay contract is rejected. Source/class/clock
-assertions cannot certify an indicated rate. Current producer withholds every indicated
-annual rate until independent native semantic certification is implemented and measured.
+assertions cannot certify an indicated rate. Production replay conditionally derives event rates from independently admitted original
+declaration/class/acceptance bodies and a unique available dated security match. Missing
+chains remain NULL; actual qualification remains unmeasured.
 Explicit source regular rate/cadence remains available as separate declared fields.
 
 Outputs: `corporate_actions/distributions.parquet`, compatibility copy of retained
@@ -21,7 +22,7 @@ keys reject before manifest/current publication. Public schema: `output_schema()
 | kind; currency; security_class | string | Cash declaration, historical declared XBRL or spin-off; native currency/class |
 | amount; declared_regular_rate | double | Native money/share; regular only when explicitly regular |
 | declared_cadence; special_flag | string/nullable boolean | Explicit cadence; regular false, special true, otherwise unknown |
-| indicated_annual_dividend_rate; security_class_currency_basis | double/string | Currently NULL: native class/clock certification unresolved |
+| indicated_annual_dividend_rate; security_class_currency_basis | double/string | Conditional native event rate/basis; missing chains NULL |
 | available_at; dividend_announcement_available_at | timestamp UTC | Conservative matching original receipt fetched_at/done_at floor |
 | source_qualification; vintage_risk; extractor_version | string/boolean/string | Source semantics unqualified, vintage risk true, rule version |
 | spin_off_ratio; distributed_security | double/string | Explicit distributed shares/parent share and distributed company |
@@ -54,3 +55,7 @@ remain unmeasured. Buyback200distinct native handchecks>=95%:0checked/200require
 Task4R11 source handchecks/gates and downstream rate refresh remain open before gold/Task17.
 No production build is claimed. Root feasibility verified2original objects and0HTTP;
 this proves bytes only, not declarations, class mappings, acceptance or fixed cadence.
+
+Schema v3 exposes quote_currency_qualified (false), rate_carry_status, source_valid_until
+(UTC) and class_context. Qualified event availability uses native acceptance and dated
+line evidence; otherwise matching receipt floor. Full persistent carry remains open.
