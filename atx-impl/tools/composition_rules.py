@@ -131,9 +131,9 @@ def _require(condition, message: str, error: type[Exception]) -> None:
 
 # Ruling D2-2: the composition modules whose code a producer closure may read across modules (finding FD-2).
 LOCAL_MODULES = ("composition_rules", "composition_ic_shrink", "composition_theme_erc", "composition_theme_tsmom",
-                 "composition_resid")
-# The functions that write this module's provenance blocks (provenance.std, provenance.std_identity).
-PRODUCERS = ("ew_theme_std", "identity_document")
+                 "composition_resid", "composition_engine_fit")
+# The functions that write this module's provenance blocks (provenance.std, provenance.std_identity) and attach them.
+PRODUCERS = ("ew_theme_std", "identity_document", "attach_std")
 
 
 @functools.lru_cache(maxsize=None)

@@ -30,8 +30,10 @@ co::Result<std::vector<RegradeApplied>> apply_tier_regrades(std::span<const std:
     }
     auto& tier=tiers[static_cast<atx::usize>(at-ids.begin())];
     if (tier!=row.from && tier!=row.to)
-      return co::Err(co::ErrorCode::InvalidArgument,"tier re-grade of "+std::string(row.id)+": source tier "+
-                     tier+" is neither the declared "+std::string(row.from)+" nor "+std::string(row.to));
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "tier re-grade of "+std::string(row.id)+": source tier "+tier+
+                         " is neither the declared "+std::string(row.from)+" nor "+
+                         std::string(row.to));
     out.member=true;
     out.source_tier=tier;
     out.status=row.from==row.to?"declared-unchanged":(tier==row.from?"applied":"already-at-target");
@@ -64,7 +66,8 @@ co::Result<ThemeGainFit> theme_gain_weights(std::span<const atx::f64> scores,
   for (atx::usize k=0;k<scores.size();++k) fit.uncapped[k]=scores[k]/(count_t*total[group[k]]);
   fit.cap=1.0/(2.0*count_t);
   fit.weights=fit.uncapped;
-  auto passes=cb::cap_across_groups(fit.weights,group,groups,fit.cap,member_cap_tolerance,&fit.passes);
+  auto passes=cb::cap_across_groups(fit.weights,group,groups,fit.cap,member_cap_tolerance,
+                                    &fit.passes);
   if (!passes) return co::Err(refused(passes.error().message()));
   return co::Ok(std::move(fit));
 }

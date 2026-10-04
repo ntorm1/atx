@@ -442,8 +442,10 @@ TEST(CompositionRules, ParamsSchemaConstantsAreTheRegisteredOnes) {
       {"within-theme-v1", Json::object()},
       {"ew-theme-std-v1", Json::object()},
       {"ic-shrink-v1", {{"intensity", st::ic_shrink_intensity}, {"floor", st::ic_shrink_floor}}},
-      {"ic-shrink-aim-v1", {{"intensity", st::ic_shrink_intensity}, {"floor", st::ic_shrink_floor}}},
-      {"theme-erc-v1", {{"sweeps", st::theme_erc_sweeps}, {"dispersion", st::theme_erc_dispersion}}},
+      {"ic-shrink-aim-v1",
+       {{"intensity", st::ic_shrink_intensity}, {"floor", st::ic_shrink_floor}}},
+      {"theme-erc-v1",
+       {{"sweeps", st::theme_erc_sweeps}, {"dispersion", st::theme_erc_dispersion}}},
       {"theme-resid-v1", Json::object()},
       {"theme-tsmom-v1",
        {{"lookback", st::theme_tsmom_lookback}, {"lag", st::theme_tsmom_lag},
@@ -462,7 +464,8 @@ TEST(CompositionRules, ParamsSchemaConstantsAreTheRegisteredOnes) {
       ASSERT_TRUE(properties.contains(it.key())) << it.key();
       const auto& property = properties.at(it.key());
       EXPECT_EQ(property.at("const").get<f64>(), it->get<f64>()) << it.key();
-      EXPECT_EQ(property.at("type").get<std::string>(), it->is_number_float() ? "number" : "integer")
+      EXPECT_EQ(property.at("type").get<std::string>(),
+                it->is_number_float() ? "number" : "integer")
           << it.key();
     }
   }

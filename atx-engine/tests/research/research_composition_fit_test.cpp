@@ -201,7 +201,8 @@ TEST(ResearchComposition, NumpyPairwiseSumIsNumpys) {
   const auto &rows = p.at("rows");
   for (usize r = 0; r < rows.size(); ++r) {
     const auto x = rows.at(r).get<std::vector<f64>>();
-    expect_value(p.at("mean_axis1").at(r), rc::numpy_pairwise_sum(x) / static_cast<f64>(x.size()), true,
+    expect_value(p.at("mean_axis1").at(r),
+                 rc::numpy_pairwise_sum(x) / static_cast<f64>(x.size()), true,
                  "mean row " + std::to_string(r));
   }
 }
@@ -241,7 +242,8 @@ TEST(ResearchComposition, ErcClosedFormTwoThemes) {
 // theme-erc-v1 step 2 by hand: two one-member themes over four TRAIN decisions (a fifth outside
 // TRAIN is ignored): centred (-1.5, -.5, .5, 1.5) and (-3, -1, 1, 3), divisor n - 1 = 3.
 TEST(ResearchComposition, SleeveCovarianceClosedForm) {
-  const std::vector<std::vector<f64>> series{{1.0, 2.0, 3.0, 4.0, 100.0}, {2.0, 4.0, 6.0, 8.0, -100.0}};
+  const std::vector<std::vector<f64>> series{{1.0, 2.0, 3.0, 4.0, 100.0},
+                                             {2.0, 4.0, 6.0, 8.0, -100.0}};
   const std::vector<u8> train{1, 1, 1, 1, 0};
   const std::vector<f64> share{1.0, 1.0};
   const std::vector<usize> theme{0, 1};
@@ -338,7 +340,8 @@ TEST(ResearchComposition, FitEqualsPythonFixture) {
     expect_values(parent.at("weights"), fit->parent_weights, exact, "parent weights");
     expect_values(parent.at("weights_before_cap"), fit->parent_uncapped, exact, "parent uncapped");
     expect_value(parent.at("cap"), fit->parent_cap, true, "parent cap");
-    expect_passes(parent.at("cap_iterations"), fit->parent_passes, ids, fit->themes, exact, "parent");
+    expect_passes(parent.at("cap_iterations"), fit->parent_passes, ids, fit->themes, exact,
+                  "parent");
     if (parent.contains("member_tiers")) {
       EXPECT_EQ(parent.at("member_tiers").get<std::vector<std::string>>(), fit->tiers);
       expect_values(parent.at("member_scores"), fit->scores, true, "scores");
@@ -383,7 +386,8 @@ TEST(ResearchComposition, FitEqualsPythonFixture) {
         }
       }
       expect_values(erc.at("theme_shares"), fit->erc_fit.theme_share, exact, "erc theme shares");
-      expect_values(erc.at("risk_contributions"), fit->erc_fit.contribution, exact, "erc contributions");
+      expect_values(erc.at("risk_contributions"), fit->erc_fit.contribution, exact,
+                    "erc contributions");
       expect_value(erc.at("dispersion"), fit->erc_fit.dispersion, exact, "erc dispersion");
       expect_value(erc.at("cap"), fit->erc_fit.cap, true, "erc cap");
       expect_values(erc.at("weights_before_cap"), fit->erc_fit.uncapped, exact, "erc uncapped");
@@ -396,7 +400,8 @@ TEST(ResearchComposition, FitEqualsPythonFixture) {
       std::vector<std::string> order;
       for (const usize t : fit->schedule.themes) order.push_back(fit->themes[t]);
       EXPECT_EQ(ts.at("theme_order").get<std::vector<std::string>>(), order);
-      expect_values(ts.at("parent_masses"), fit->schedule.parent_mass, exact, "tsmom parent masses");
+      expect_values(ts.at("parent_masses"), fit->schedule.parent_mass, exact,
+                    "tsmom parent masses");
       const Json &blocks = ts.at("blocks");
       ASSERT_EQ(blocks.size(), fit->schedule.blocks.size());
       for (usize b = 0; b < blocks.size(); ++b) {
@@ -426,7 +431,8 @@ TEST(ResearchComposition, FitRefusesMalformedSpecs) {
   const auto refused = [&](Json spec, std::string_view needle) {
     const auto parsed = rc::parse_fit_spec(spec.dump());
     if (!parsed) {
-      EXPECT_NE(parsed.error().message().find(needle), std::string::npos) << parsed.error().message();
+      EXPECT_NE(parsed.error().message().find(needle), std::string::npos)
+          << parsed.error().message();
       return;
     }
     const auto fit = rc::fit_composition(view, in.ids, *parsed);

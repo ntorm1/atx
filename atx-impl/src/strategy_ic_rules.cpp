@@ -451,8 +451,8 @@ constexpr std::array<CompositionRule,8> rule_table{{
      .stage=IcStageKind::standardise, .parse=&composition_standardise, .verify=nullptr,
      .recipe_key="composition_standardise", .recipe_text=standardise_text,
      .working_bytes=grouping_bytes, .params_schema=std_params_schema,
-     .incompatible=redistribute_ids, .requires_any={}, .rerank_off=true, .also_written_by="ew-theme-std-aim-v1",
-     .identity_source="ew-theme-v1"},
+     .incompatible=redistribute_ids, .requires_any={}, .rerank_off=true,
+     .also_written_by="ew-theme-std-aim-v1", .identity_source="ew-theme-v1"},
     // ic-shrink-v1 (R-10, strategy_ic_shrink.hpp)
     {.id=ic_shrink_rule, .version="v1", .block_key="theme_standardise",
      .stage=IcStageKind::standardise, .parse=&composition_standardise, .verify=&verify_ic_shrink,

@@ -18,6 +18,7 @@ built atx-research-admission / atx-research-composition (skipped otherwise).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -236,9 +237,36 @@ def load(directory: Path) -> dict:
 
 
 def without_engine_fit(raw: bytes) -> bytes:
+    """The flag-present weights file minus what only the flag writes: provenance.engine_fit and, in an ic-shrink block,
+    the ruling D2-S4 IC annotations (ic_source back to the flag-absent text, ic_admission_max_abs_diff removed). Each
+    must be there."""
     doc = json.loads(raw)
     del doc["provenance"][cef.PROVENANCE_KEY]
+    shrink = doc["provenance"].get("ic_shrink")
+    if shrink is not None:
+        assert shrink["ic_source"] == cis.IC_SOURCE_ENGINE, shrink["ic_source"]
+        assert 0.0 <= shrink.pop("ic_admission_max_abs_diff") <= cef.P12_TOLERANCE
+        shrink["ic_source"] = cis.IC_SOURCE
     return fcw.canonical_bytes(doc)
+
+
+def nudge_floats(scale: float):
+    """A fit stand-in mutation: every float of the C++ document's fitted blocks times ``scale`` (C++ rounding inside
+    ruling P12 when scale - 1 is far below 1e-12)."""
+    def walk(x):
+        if isinstance(x, float):
+            return x * scale
+        if isinstance(x, list):
+            return [walk(v) for v in x]
+        if isinstance(x, dict):
+            return {k: walk(v) for k, v in x.items()}
+        return x
+
+    def mutate(doc):
+        for key in ("parent", "theme_erc", "theme_tsmom", "weights"):
+            if key in doc:
+                doc[key] = walk(doc[key])
+    return mutate
 
 
 # ---------------------------------------------------------------- tests
@@ -377,6 +405,144 @@ class EngineFitEndToEnd(unittest.TestCase):
                 self.assertEqual(w, got["weights"][cid], (theme, cid))
         self.assertGreater(summary["engine_fit"]["fit_max_rel_float_diff"], 0.0)
         self.assertLessEqual(summary["engine_fit"]["fit_max_rel_float_diff"], cef.P12_TOLERANCE)
+        by_block = summary["engine_fit"]["fit_max_pure_rel_diff_by_block"]      # review S-8 (report only)
+        self.assertEqual(sorted(by_block), ["parent", "weights"])
+        self.assertGreater(by_block["weights"], 0.0)
+
+    def test_provenance_names_the_producing_code(self):
+        """Review S-3: provenance.engine_fit names both executables by SHA-256 and the turning code by fingerprint."""
+        record = json.loads(self.runs["std-erc-tsmom"]["engine"][fcw.OUTPUT_WEIGHTS])["provenance"]["engine_fit"]
+        empty = hashlib.sha256(b"").hexdigest()                                 # the placeholders are empty files
+        self.assertEqual((record["admission_exe_sha256"], record["composition_exe_sha256"]), (empty, empty))
+        self.assertEqual(record["producer_fingerprint"], cef.producer_fingerprint())
+        self.assertEqual(cef.PRODUCERS, ("verify", "kernels", "check_written"))
+
+    def test_ic_shrink_states_its_ics_are_the_cpp_values(self):
+        """Ruling D2-S4: under the flag the ic-shrink block says its ICs are the C++ fit's and records the largest
+        |C++ IC - admission train_mean| (<= P12); admission.json is the flag-absent one."""
+        run = self.runs["shrink-tsmom"]
+        shrink = json.loads(run["engine"][fcw.OUTPUT_WEIGHTS])["provenance"]["ic_shrink"]
+        self.assertEqual(shrink["ic_source"], cis.IC_SOURCE_ENGINE)
+        self.assertEqual(shrink["ic_admission_max_abs_diff"], 0.0)              # stand-ins: the Python's bits
+        plain = json.loads(run["plain"][fcw.OUTPUT_WEIGHTS])["provenance"]["ic_shrink"]
+        self.assertEqual(plain["ic_source"], cis.IC_SOURCE)
+        self.assertNotIn("ic_admission_max_abs_diff", plain)
+        self.assertEqual(run["engine"][fcw.OUTPUT_ADMISSION], run["plain"][fcw.OUTPUT_ADMISSION])
+
+        def shift(doc):  # every C++ IC 1e-9 away from the admission train_mean: beyond P12
+            doc["parent"]["ic"] = [x + 1e-9 for x in doc["parent"]["ic"]]
+        self.assert_refused("shrink-tsmom", "ic-shift", "the C++ fit differs", fit_mutate=shift)
+
+
+class EngineFitResidParent(unittest.TestCase):
+    """Ruling D2-R2: --theme-resid with --theme-resid-parent when either fit runs --engine-fit. The parent is an
+    ic-shrink-v1 cell (the rule whose ICs the flag changes); the engine fits' C++ values are the Python's times
+    1 + 1e-14 (rounding inside P12). composition_resid.parent_check sets provenance.engine_fit and the IC annotations
+    aside and compares the rest under P12; a fitter change beyond P12 is still refused, before the executables run."""
+    SCALE = 1 + 1e-14
+    SHRINK = dict(STD_ARGS, composition=cis.RULE_ID)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        cls.fx = World.build(cls.root)
+        registry = unittest.mock.patch.object(cr, "REGISTRY_PATH", cls.root / "no-registry.json")
+        registry.start()
+        cls.addClassCleanup(registry.stop)
+        cls.addClassCleanup(cls.tmp.cleanup)
+        assert fcw.fit(cls.fx.args(cls.root / "parent-plain", **cls.SHRINK))[0] == fcw.EXIT_OK
+        with StandIns(cls.root / "parent-engine-factors", fit_mutate=nudge_floats(cls.SCALE)):
+            code, _ = fcw.fit(cls.fx.args(cls.root / "parent-engine", **cls.SHRINK,
+                                          **placeholders(cls.root / "parent-engine-in")))
+        assert code == fcw.EXIT_OK
+
+    def child(self, name: str, parent: str, engine: bool, **patches):
+        """The resid re-fit of the parent cell's argv into ``name``: (output dir, (code, summary) or the FitError,
+        the executables' verbs run)."""
+        weights = self.root / parent / fcw.OUTPUT_WEIGHTS
+        args = dict(self.SHRINK, theme_resid=cres.RULE_ID, theme_resid_parent=str(weights),
+                    theme_resid_parent_sha256=hashlib.sha256(weights.read_bytes()).hexdigest())
+        out = self.root / name
+        stand = StandIns(self.root / f"{name}-factors", fit_mutate=nudge_floats(self.SCALE))
+        with contextlib.ExitStack() as stack:
+            for target, attr, value in patches.get("patch", ()):
+                stack.enter_context(unittest.mock.patch.object(target, attr, value))
+            if engine:
+                stack.enter_context(stand)
+                args.update(placeholders(self.root / f"{name}-in"))
+            try:
+                got = fcw.fit(self.fx.args(out, **args))
+            except fcw.FitError as exc:
+                got = exc
+        return out, got, stand.calls
+
+    def assert_child_accepted(self, out: Path, got, parent: str, engine_mode: bool) -> dict:
+        self.assertNotIsInstance(got, Exception, str(got))
+        self.assertEqual(got[0], fcw.EXIT_OK)
+        doc = json.loads((out / fcw.OUTPUT_WEIGHTS).read_bytes())
+        resid = doc["provenance"]["resid"]
+        self.assertEqual(resid["parent_check"], cres.PARENT_CHECK)
+        self.assertEqual(resid.get("parent_check_engine_fit"), cres.PARENT_CHECK_ENGINE_FIT if engine_mode else None)
+        self.assertEqual((out / fcw.OUTPUT_ADMISSION).read_bytes(),
+                         (self.root / parent / fcw.OUTPUT_ADMISSION).read_bytes())
+        return doc
+
+    def test_engine_parent_and_engine_child(self):
+        out, got, calls = self.child("ee", "parent-engine", True)
+        doc = self.assert_child_accepted(out, got, "parent-engine", True)
+        self.assertEqual(calls, ["screen", "fit"])
+        parent = json.loads((self.root / "parent-engine" / fcw.OUTPUT_WEIGHTS).read_bytes())
+        self.assertEqual(doc["weights"], parent["weights"])                     # the same C++ values both times
+        self.assertEqual(doc["provenance"]["ic_shrink"]["ic_source"], cis.IC_SOURCE_ENGINE)
+
+    def test_engine_parent_and_plain_child(self):
+        out, got, calls = self.child("pe", "parent-engine", False)
+        doc = self.assert_child_accepted(out, got, "parent-engine", True)
+        self.assertEqual(calls, [])
+        parent = json.loads((self.root / "parent-engine" / fcw.OUTPUT_WEIGHTS).read_bytes())
+        weighted = [i for i, w in parent["weights"].items() if w > 0]
+        self.assertTrue(any(doc["weights"][i] != parent["weights"][i] for i in weighted))   # Python vs C++ values
+        self.assertNotIn(cef.PROVENANCE_KEY, doc["provenance"])
+
+    def test_plain_parent_and_engine_child_writes_the_cpp_values(self):
+        """The second (C++-valued) pass is checked under P12 and passes; its values are the ones written."""
+        out, got, calls = self.child("ep", "parent-plain", True)
+        doc = self.assert_child_accepted(out, got, "parent-plain", True)
+        self.assertEqual(calls, ["screen", "fit"])
+        parent = json.loads((self.root / "parent-plain" / fcw.OUTPUT_WEIGHTS).read_bytes())
+        for cid, w in parent["weights"].items():
+            self.assertEqual(doc["weights"][cid], w * self.SCALE, cid)
+
+    def test_plain_parent_and_plain_child_is_byte_exact_as_before(self):
+        out, got, _ = self.child("pp", "parent-plain", False)
+        doc = self.assert_child_accepted(out, got, "parent-plain", False)
+        del doc[cres.BLOCK]
+        del doc["provenance"]["resid"]
+        self.assertEqual(fcw.canonical_bytes(doc), (self.root / "parent-plain" / fcw.OUTPUT_WEIGHTS).read_bytes())
+
+    def test_a_fitter_change_is_still_refused_naming_the_cause(self):
+        """A changed shrinkage intensity moves every share far beyond P12: refused in the first (Python) pass, before
+        either executable runs, with a message naming --engine-fit and ruling P12; nothing is published."""
+        real = cis.shrunk_shares
+
+        def changed(themes, ics, intensity=cis.INTENSITY, floor=cis.FLOOR):
+            return real(themes, ics, 0.25, floor)
+        for name, parent, engine, sides in (("ee-changed", "parent-engine", True, "the parent and this re-fit"),
+                                            ("pe-changed", "parent-engine", False, "the parent"),
+                                            ("ep-changed", "parent-plain", True, "this re-fit")):
+            with self.subTest(name):
+                out, got, calls = self.child(name, parent, engine, patch=[(cis, "shrunk_shares", changed)])
+                self.assertIsInstance(got, fcw.FitError)
+                self.assertIn(f"--engine-fit on {sides} (ruling D2-R2)", str(got))
+                self.assertIn("within ruling P12", str(got))
+                self.assertRegex(str(got), r"\(\d+ values differ: \['\$\.")
+                self.assertEqual(calls, [])
+                self.assertFalse(out.exists())
+        out, got, _ = self.child("pp-changed", "parent-plain", False, patch=[(cis, "shrunk_shares", changed)])
+        self.assertIsInstance(got, fcw.FitError)                                 # flag absent: the v8 exact check
+        self.assertIn("a fitter-affecting change lies between the two fits", str(got))
+        self.assertFalse(out.exists())
 
 
 class CheckArgs(unittest.TestCase):
@@ -448,7 +614,7 @@ class ModuleFingerprints(unittest.TestCase):
     composition_rules.module_fingerprint, which moves with code and constants the block's numbers depend on (its own
     module's and the composition modules it reads) and not with comments or formatting."""
     MODULES = {"composition_rules.py": cr, "composition_ic_shrink.py": cis, "composition_theme_erc.py": cte,
-               "composition_theme_tsmom.py": ct, "composition_resid.py": cres}
+               "composition_theme_tsmom.py": ct, "composition_resid.py": cres, "composition_engine_fit.py": cef}
 
     def test_every_module_names_its_writer(self):
         for name, module in self.MODULES.items():
@@ -485,6 +651,12 @@ class ModuleFingerprints(unittest.TestCase):
             self.assertNotEqual(fp(copy("own", own)), base)
             read = {"composition_rules.py": [("\nCAP_TOLERANCE = 1e-12 ", "\nCAP_TOLERANCE = 1e-11 ")]}
             self.assertNotEqual(fp(copy("read", read)), base)      # composition_rules.member_cap's constant
+            # theme-resid's parent check (in apply's closure) reads composition_engine_fit's P12 comparison
+            resid = Path(tmp) / "base" / "composition_resid.py"
+            p12 = Path(tmp) / "p12" / "composition_resid.py"
+            copy("p12", {"composition_engine_fit.py": [("\nP12_TOLERANCE = 1e-12 ", "\nP12_TOLERANCE = 1e-11 ")]})
+            self.assertEqual(cr.module_fingerprint(str(resid), cres.PRODUCERS), cres.producer_fingerprint())
+            self.assertNotEqual(cr.module_fingerprint(str(p12), cres.PRODUCERS), cres.producer_fingerprint())
 
 
 @unittest.skipUnless(os.environ.get("ATX_RESEARCH_ADMISSION_EXE") and os.environ.get("ATX_RESEARCH_COMPOSITION_EXE"),

@@ -83,7 +83,14 @@ AIM_FIT_SERIES = ("TRAIN mean of s_k*f_k per member (the admission train_mean) s
                   "flat decisions 0, without the per-date theme re-rank")
 
 
-PRODUCERS = ("ic_shrink",)  # the writer of provenance.ic_shrink (ruling D2-2)
+PRODUCERS = ("ic_shrink", "attach")  # the writers of provenance.ic_shrink and its block (ruling D2-2)
+# Ruling D2-S4: under the fitter's --engine-fit the ICs are the C++ fit's (its admission mean on the K-P9-4 factor
+# series), not admission.json's Python train_mean; the block says so and records the largest difference.
+IC_SOURCE_ENGINE = (
+    "--engine-fit (ruling D2-S4): the C++ fit's ICs (atx-research-composition fit: the mean of s_k*f_k over the live "
+    "decisions of the parent fit window on the K-P9-4 factor series, the admission library's mean); admission.json "
+    "candidates[].train_mean keeps the Python screen's values, which differ from these by at most "
+    "ic_admission_max_abs_diff (<= ruling P12's 1e-12)")
 
 
 def producer_fingerprint() -> str:
@@ -197,6 +204,9 @@ def ic_shrink(ids: list[str], themes: list[str], ics: list[float],
                    "ic_shrink.members and refuses a weight off by more than runner_tolerance_absolute "
                    "(strategy_ic_admission.cpp, strategy_ic_shrink.cpp)"),
         "producer_fingerprint": producer_fingerprint()}
+    if engine is not None:  # ruling D2-S4: the ICs written are the C++ fit's; how far they are from admission.json's
+        provenance.update(ic_source=IC_SOURCE_ENGINE,
+                          ic_admission_max_abs_diff=float(engine["ic_admission_max_abs_diff"]))
     if gains is None:
         return composition_rules.StdFit(weights=weights, theme_table=theme_table, block=block, provenance=provenance,
                                         text=COMPOSITION_TEXT, fit_series=FIT_SERIES, ids=list(ids))

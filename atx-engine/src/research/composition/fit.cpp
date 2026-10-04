@@ -49,9 +49,11 @@ f64 pairwise(const f64* a,usize n) noexcept {
   return pairwise(a,n2)+pairwise(a+n2,n-n2);
 }
 
-[[nodiscard]] bool shapes_ok(std::span<const std::vector<f64>> series,usize members,usize decisions) {
+[[nodiscard]] bool shapes_ok(std::span<const std::vector<f64>> series,usize members,
+                             usize decisions) {
   return series.size()==members &&
-         std::all_of(series.begin(),series.end(),[&](const std::vector<f64>& s) { return s.size()==decisions; });
+         std::all_of(series.begin(),series.end(),
+                     [&](const std::vector<f64>& s) { return s.size()==decisions; });
 }
 } // namespace
 
@@ -76,8 +78,8 @@ std::optional<f64> train_mean(const FactorSeriesView& view,usize column) {
   return admission::mean_sharpe(live,sharpe_annualization).mean;
 }
 
-co::Result<std::vector<f64>> within_theme_shares(std::span<const f64> uncapped,std::span<const usize> theme,
-                                                 usize themes) {
+co::Result<std::vector<f64>> within_theme_shares(std::span<const f64> uncapped,
+                                                 std::span<const usize> theme,usize themes) {
   if (uncapped.size()!=theme.size() || uncapped.empty() || themes==0U)
     return co::Err(refused("theme-erc-v1: one parent weight and one theme per member"));
   std::vector<f64> total(themes,0.0);
@@ -93,10 +95,12 @@ co::Result<std::vector<f64>> within_theme_shares(std::span<const f64> uncapped,s
 }
 
 co::Result<SleeveCovariance> theme_sleeve_covariance(std::span<const std::vector<f64>> series,
-                                                     std::span<const u8> train,std::span<const f64> share,
+                                                     std::span<const u8> train,
+                                                     std::span<const f64> share,
                                                      std::span<const usize> theme,usize themes) {
   const usize members=share.size();
-  if (members==0U || theme.size()!=members || themes==0U || !shapes_ok(series,members,train.size()))
+  if (members==0U || theme.size()!=members || themes==0U ||
+      !shapes_ok(series,members,train.size()))
     return co::Err(refused("theme-erc-v1: one series, share and theme per member"));
   std::vector<usize> keep;
   for (usize d=0;d<train.size();++d)
@@ -132,9 +136,10 @@ co::Result<SleeveCovariance> theme_sleeve_covariance(std::span<const std::vector
 }
 
 co::Result<TsmomSchedule> theme_tsmom_schedule(std::span<const std::vector<f64>> series,
-                                               std::span<const i64> sessions,std::span<const u8> train,
-                                               std::span<const f64> weights,std::span<const usize> theme,
-                                               usize themes) {
+                                               std::span<const i64> sessions,
+                                               std::span<const u8> train,
+                                               std::span<const f64> weights,
+                                               std::span<const usize> theme,usize themes) {
   const usize members=weights.size();
   const usize decisions=sessions.size();
   if (members==0U || theme.size()!=members || train.size()!=decisions || themes==0U ||
@@ -144,7 +149,8 @@ co::Result<TsmomSchedule> theme_tsmom_schedule(std::span<const std::vector<f64>>
     if (!std::isfinite(weights[k]) || !(weights[k]>=0.0) || theme[k]>=themes)
       return co::Err(refused("theme-tsmom-v1: weights must be finite and >= 0"));
   for (usize d=1;d<decisions;++d)
-    if (!(sessions[d]>sessions[d-1U])) return co::Err(refused("theme-tsmom-v1: decision sessions must increase"));
+    if (!(sessions[d]>sessions[d-1U]))
+      return co::Err(refused("theme-tsmom-v1: decision sessions must increase"));
   TsmomSchedule out;
   std::vector<u8> weighted(themes,0U);
   for (usize k=0;k<members;++k)
@@ -203,11 +209,13 @@ co::Result<std::vector<std::string>> theme_resid_order(std::span<const std::stri
   std::set<std::string> seen;
   for (const auto& theme:registered)
     if (theme.empty() || !seen.insert(theme).second)
-      return co::Err(refused("theme-resid-v1: the registered theme list must name each theme once"));
+      return co::Err(
+          refused("theme-resid-v1: the registered theme list must name each theme once"));
   if (registered.size()<theme_resid_frozen_prefix.size() ||
-      !std::equal(theme_resid_frozen_prefix.begin(),theme_resid_frozen_prefix.end(),registered.begin()))
-    return co::Err(refused("theme-resid-v1: the registered theme order must begin with the frozen ten "
-                           "(Ruling PM4-11)"));
+      !std::equal(theme_resid_frozen_prefix.begin(),theme_resid_frozen_prefix.end(),
+                  registered.begin()))
+    return co::Err(refused("theme-resid-v1: the registered theme order must begin with the "
+                           "frozen ten (Ruling PM4-11)"));
   const std::set<std::string> present(weighted.begin(),weighted.end());
   for (const auto& theme:present)
     if (!seen.contains(theme))
@@ -219,14 +227,15 @@ co::Result<std::vector<std::string>> theme_resid_order(std::span<const std::stri
   return co::Ok(std::move(out));
 }
 
-co::Result<CompositionFit> fit_composition(const FactorSeriesView& view,std::span<const std::string> ids,
-                                           const FitSpec& spec) {
-  const bool std_rule=spec.composition==ew_theme_std_rule || spec.composition==ew_theme_std_aim_rule;
+co::Result<CompositionFit> fit_composition(const FactorSeriesView& view,
+                                           std::span<const std::string> ids,const FitSpec& spec) {
+  const bool std_rule=
+      spec.composition==ew_theme_std_rule || spec.composition==ew_theme_std_aim_rule;
   const bool shrink_rule=spec.composition==ic_shrink_rule || spec.composition==ic_shrink_aim_rule;
   const bool aim=spec.composition==ew_theme_std_aim_rule || spec.composition==ic_shrink_aim_rule;
   if (!std_rule && !shrink_rule)
-    return co::Err(refused("composition must be ew-theme-std-v1, ew-theme-std-aim-v1, ic-shrink-v1 or "
-                           "ic-shrink-aim-v1: "+spec.composition));
+    return co::Err(refused("composition must be ew-theme-std-v1, ew-theme-std-aim-v1, "
+                           "ic-shrink-v1 or ic-shrink-aim-v1: "+spec.composition));
   if (spec.members.empty() || spec.members.size()>max_members)
     return co::Err(refused("1..256 members"));
   if (spec.theme_resid && (spec.theme_erc || spec.theme_tsmom))
@@ -281,7 +290,9 @@ co::Result<CompositionFit> fit_composition(const FactorSeriesView& view,std::spa
     std::vector<usize> count(themes,0U);
     for (usize k=0;k<fit.column.size();++k) {
       const auto ic=train_mean(view,fit.column[k]);
-      if (!ic) return co::Err(refused("ic-shrink-v1: member "+member_ids[k]+" has no live TRAIN decision"));
+      if (!ic)
+        return co::Err(
+            refused("ic-shrink-v1: member "+member_ids[k]+" has no live TRAIN decision"));
       fit.ic.push_back(*ic);
       total[fit.member_theme[k]]+=*ic;
       ++count[fit.member_theme[k]];
@@ -302,15 +313,17 @@ co::Result<CompositionFit> fit_composition(const FactorSeriesView& view,std::spa
     series.push_back(signed_series(view,fit.column[k],spec.members[k].sign));
   if (spec.theme_erc) {
     ATX_TRY(fit.erc_share,within_theme_shares(fit.parent_uncapped,fit.member_theme,themes));
-    ATX_TRY(auto sleeves,theme_sleeve_covariance(series,view.train,fit.erc_share,fit.member_theme,themes));
+    ATX_TRY(auto sleeves,theme_sleeve_covariance(series,view.train,fit.erc_share,
+                                                 fit.member_theme,themes));
     fit.covariance=std::move(sleeves.covariance);
-    ATX_TRY(fit.erc_fit,theme_erc_weights(fit.erc_share,fit.member_theme,themes,fit.covariance,true));
+    ATX_TRY(fit.erc_fit,
+            theme_erc_weights(fit.erc_share,fit.member_theme,themes,fit.covariance,true));
     fit.weights=fit.erc_fit.weights;
     fit.erc=true;
   }
   if (spec.theme_tsmom) {
-    ATX_TRY(fit.schedule,theme_tsmom_schedule(series,view.sessions,view.train,fit.weights,fit.member_theme,
-                                              themes));
+    ATX_TRY(fit.schedule,theme_tsmom_schedule(series,view.sessions,view.train,fit.weights,
+                                              fit.member_theme,themes));
     fit.tsmom=true;
   }
   if (spec.theme_resid) {

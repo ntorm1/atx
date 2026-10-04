@@ -27,7 +27,8 @@
 
 namespace atx::engine::research::composition {
 inline constexpr std::string_view ew_theme_std_rule="ew-theme-std-v1";
-inline constexpr std::string_view ew_theme_std_aim_rule="ew-theme-std-aim-v1"; // block rule stays std
+// the aim variant; its weights file's block rule stays ew-theme-std-v1
+inline constexpr std::string_view ew_theme_std_aim_rule="ew-theme-std-aim-v1";
 inline constexpr atx::f64 member_cap_tolerance=1e-12; // relative (composition_rules.CAP_TOLERANCE)
 // Rule 5, verbatim: (id, from, to); "sue C+ stays" is declared as a no-op row.
 struct TierRegrade {
@@ -50,8 +51,8 @@ struct RegradeApplied {
   bool member{};
 };
 // Rule 5 on `tiers` (one source tier per id, in place), table row by table row; a member is found
-// by its first occurrence in `ids`. Err (InvalidArgument) when a member's source tier is neither the
-// row's from- nor to-grade, or `ids` and `tiers` differ in length.
+// by its first occurrence in `ids`. Err (InvalidArgument) when a member's source tier is neither
+// the row's from- nor to-grade, or `ids` and `tiers` differ in length.
 [[nodiscard]] atx::core::Result<std::vector<RegradeApplied>> apply_tier_regrades(
     std::span<const std::string> ids,std::span<std::string> tiers);
 // Rules 1, 3 and 4 on member scores (composition_rules.theme_gain_weights; the aim rules pass score

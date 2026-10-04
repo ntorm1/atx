@@ -640,7 +640,8 @@ class FitterEndToEnd(unittest.TestCase):
     def test_a_re_fit_that_is_not_the_parent_cells_file_is_refused(self):
         """Finding R6B-O-5: another composition's file, a parent whose weights or admission were changed, a parent with
         a key the re-fit lacks (even a null one), a parent that already carries the block, a wrong pin, a pooled (era)
-        fit and incomplete flags are refused before any output."""
+        fit and incomplete flags are refused before any output; so is a parent fitted before P9 lane D2 (its rule
+        block names its code by module_sha256), with the cause and the remedy (review S-5)."""
         parent = self.root / "std" / fcw.OUTPUT_WEIGHTS
         tampered = self.root / "tampered"
         tampered.mkdir()
@@ -663,7 +664,20 @@ class FitterEndToEnd(unittest.TestCase):
         doc["provenance"]["note"] = None
         (extra / fcw.OUTPUT_WEIGHTS).write_bytes(fcw.canonical_bytes(doc))
         (extra / fcw.OUTPUT_ADMISSION).write_bytes((self.root / "std" / fcw.OUTPUT_ADMISSION).read_bytes())
+        pre_d2 = self.root / "pre-d2"                     # review S-5: a parent as a fitter before P9 lane D2 wrote it
+        pre_d2.mkdir()
+        adm = json.loads((self.root / "std" / fcw.OUTPUT_ADMISSION).read_bytes())
+        adm["inputs"]["script_sha256"] = adm["inputs"].pop("producer_fingerprint")
+        doc = json.loads(parent.read_bytes())
+        doc["provenance"]["script_sha256"] = doc["provenance"].pop("producer_fingerprint")
+        doc["provenance"]["std"]["module_sha256"] = doc["provenance"]["std"].pop("producer_fingerprint")
+        doc["provenance"]["admission_sha256"] = hashlib.sha256(fcw.canonical_bytes(adm)).hexdigest()
+        (pre_d2 / fcw.OUTPUT_ADMISSION).write_bytes(fcw.canonical_bytes(adm))
+        (pre_d2 / fcw.OUTPUT_WEIGHTS).write_bytes(fcw.canonical_bytes(doc))
         cases = [("other-rule", self.root / cis.RULE_ID / fcw.OUTPUT_WEIGHTS, {}, "is not the parent cell's"),
+                 ("pre-d2", pre_d2 / fcw.OUTPUT_WEIGHTS, {},
+                  r"fitted before P9 lane D2: its provenance blocks \['std'\] name their code by module_sha256.*"
+                  r"refit the parent cell with this fitter"),
                  ("tampered", tampered / fcw.OUTPUT_WEIGHTS, {}, r"differ: \['weights'"),
                  ("moved", moved / fcw.OUTPUT_WEIGHTS, {}, r"admission.json differs .*\['rules'\]"),
                  ("extra-null", extra / fcw.OUTPUT_WEIGHTS, {}, r"differ: \['provenance.note'\]"),

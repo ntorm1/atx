@@ -46,6 +46,7 @@ import json
 
 import numpy as np
 
+import composition_engine_fit  # this directory: compare_values, ruling P12's comparison (ruling D2-R2)
 import composition_rules  # this directory: module_fingerprint (ruling D2-2)
 
 RULE_ID = "theme-resid-v1"
@@ -85,6 +86,19 @@ PARENT_CHECK = ("the re-fit minus theme_residualise and provenance.resid equals 
 # P9 lane D2 (CM-5): the fitter's identity in its outputs is producer_fingerprint (script_sha256 before CM-5); either
 # key, on either side, is the fitter identity the check allows to differ (PARENT_CHECK's text is the v8 rule's).
 FITTER_IDENTITY_KEYS = ("script_sha256", "producer_fingerprint")
+# P9 ruling D2-R2: a fit under --engine-fit carries provenance.engine_fit (composition_engine_fit.PROVENANCE_KEY) and
+# states in its ic-shrink block that the ICs are the C++ fit's (ruling D2-S4). Neither is a value the re-fit
+# reproduces, so the check sets them aside; whenever either fit ran --engine-fit every other value is compared under
+# ruling P12 (composition_engine_fit.compare_values) and provenance.resid records this text beside PARENT_CHECK.
+ENGINE_FIT_KEY = composition_engine_fit.PROVENANCE_KEY
+ENGINE_FIT_ANNOTATIONS = {"ic_shrink": ("ic_source", "ic_admission_max_abs_diff")}
+PARENT_CHECK_ENGINE_FIT = (
+    "ruling D2-R2: the parent or the re-fit ran --engine-fit (C++ fit values), so provenance.engine_fit and the "
+    "ic-shrink IC annotations (ic_source, ic_admission_max_abs_diff) are set aside and every other value of the two "
+    "files agrees to ruling P12 (floats within 1e-12 x max(1, |x|); strings, integers, booleans, keys, lengths and "
+    "orders exactly); the admission tables are compared exactly, as without the flag")
+# CM-5 / ruling D2-2: a rule block of a fit made before P9 lane D2 names its code by module_sha256 (the whole file).
+PRE_D2_KEY = "module_sha256"
 
 
 class ResidError(ValueError):
@@ -96,7 +110,8 @@ def _require(condition, message: str, error: type[Exception]) -> None:
         raise error(message)
 
 
-PRODUCERS = ("attach",)  # the writer of the theme_residualise block and provenance.resid (ruling D2-2)
+# The writers of the theme_residualise block and provenance.resid (ruling D2-2; apply adds the parent check's record)
+PRODUCERS = ("attach", "apply")
 
 
 def producer_fingerprint() -> str:
@@ -177,14 +192,22 @@ def _differing(a: dict, b: dict, prefix: str = "") -> list[str]:
 
 
 def parent_check(document: dict, admission: bytes, parent: bytes, parent_admission: bytes,
-                 error: type[Exception] = ResidError) -> None:
+                 error: type[Exception] = ResidError, engine_fit: bool = False) -> bool:
     """Finding R6B-O-5: R-11's weights are a re-fit of its parent cell's argv plus the block, so ``document`` (the
     re-fit, block and provenance.resid attached) must be the parent's weights file ``parent`` again (PARENT_CHECK): the
-    two differ only in provenance.script_sha256 (this fitter file's SHA-256) and provenance.admission_sha256, which may
-    differ only because the admission table records that SHA (``admission`` and ``parent_admission`` equal apart from
-    inputs.script_sha256). Anything else -- fitter-affecting code or an input changed between the parent's fit and this
-    one -- is refused, naming the keys that differ. A parent that already carries the block is refused. Compared as
-    canonical JSON (sorted keys: the fitter's canonical_bytes up to whitespace)."""
+    two differ only in the fitter identity (provenance.producer_fingerprint, or provenance.script_sha256 in a parent
+    fitted before CM-5) and provenance.admission_sha256, which may differ only because the admission table records the
+    fitter identity (``admission`` and ``parent_admission`` equal apart from it). Anything else -- fitter-affecting code
+    or an input changed between the parent's fit and this one -- is refused, naming the keys that differ. A parent that
+    already carries the block is refused, and so is a parent fitted before P9 lane D2 (its rule blocks name their code
+    by module_sha256: no re-fit can equal it; refit the parent). Compared as canonical JSON (sorted keys: the fitter's
+    canonical_bytes up to whitespace).
+
+    Ruling D2-R2: ``engine_fit`` (the re-fit runs --engine-fit) or a parent carrying provenance.engine_fit puts the
+    check in engine-fit mode: provenance.engine_fit and the ic-shrink IC annotations (ENGINE_FIT_ANNOTATIONS) are set
+    aside and the rest is compared under ruling P12 (composition_engine_fit.compare_values: floats within 1e-12 x
+    max(1, |x|), everything else exactly), so C++ values within P12 of the Python's pass and a change beyond it is
+    refused, naming the values. Returns whether the check ran in engine-fit mode."""
     try:
         mother, child_adm, mother_adm = json.loads(parent), json.loads(admission), json.loads(parent_admission)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -194,6 +217,13 @@ def parent_check(document: dict, admission: bytes, parent: bytes, parent_admissi
              error)
     _require(BLOCK not in mother and "resid" not in mother["provenance"],
              f"{RULE_ID}: --theme-resid-parent already carries {BLOCK}: the parent cell is not the rule's parent", error)
+    stale = sorted(k for k, v in mother["provenance"].items() if isinstance(v, dict) and PRE_D2_KEY in v)
+    _require(not stale, f"{RULE_ID}: --theme-resid-parent was fitted before P9 lane D2: its provenance blocks {stale} "
+                        f"name their code by {PRE_D2_KEY}, which CM-5 / ruling D2-2 replaced by producer_fingerprint, "
+                        "so no re-fit by this fitter can equal it; refit the parent cell with this fitter, then re-run "
+                        "this cell against the new parent file", error)
+    parent_engine = ENGINE_FIT_KEY in mother["provenance"]
+    mode = engine_fit or parent_engine
     child = json.loads(_text(document))
     child.pop(BLOCK, None)
     child["provenance"].pop("resid", None)
@@ -208,10 +238,24 @@ def parent_check(document: dict, admission: bytes, parent: bytes, parent_admissi
                              f"beyond inputs.script_sha256 (keys {adm_differ})", error)
     for doc in (child, mother):
         doc["provenance"].pop("admission_sha256", None)
-    differ = sorted([k for k in _differing(child, mother) if k != "provenance"] +
-                    _differing(child["provenance"], mother["provenance"], "provenance."))
-    _require(not differ, f"{RULE_ID}: --theme-resid-parent: the re-fit is not the parent cell's weights file plus the "
-                         f"block (differ: {differ}); a fitter-affecting change lies between the two fits", error)
+        doc["provenance"].pop(ENGINE_FIT_KEY, None)
+        for block, keys in ENGINE_FIT_ANNOTATIONS.items():
+            if mode and isinstance(doc["provenance"].get(block), dict):
+                for key in keys:
+                    doc["provenance"][block].pop(key, None)
+    if not mode:
+        differ = sorted([k for k in _differing(child, mother) if k != "provenance"] +
+                        _differing(child["provenance"], mother["provenance"], "provenance."))
+        _require(not differ, f"{RULE_ID}: --theme-resid-parent: the re-fit is not the parent cell's weights file plus "
+                             f"the block (differ: {differ}); a fitter-affecting change lies between the two fits", error)
+        return False
+    differ, _ = composition_engine_fit.compare_values(mother, child)
+    sides = " and ".join(name for name, on in (("the parent", parent_engine), ("this re-fit", engine_fit)) if on)
+    _require(not differ, f"{RULE_ID}: --theme-resid-parent: --engine-fit on {sides} (ruling D2-R2): the re-fit is not "
+                         f"the parent cell's weights file plus the block within ruling P12 ({len(differ)} values differ: "
+                         f"{differ[:20]}); C++ rounding stays within P12, so a fitter-affecting change or a changed "
+                         "input lies between the two fits", error)
+    return True
 
 
 def add_argument(parser: argparse.ArgumentParser) -> None:
@@ -223,8 +267,10 @@ def add_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--theme-resid-parent", default=None,
                         help="v8 R-11 (finding R6B-O-5): the parent cell's composition_weights.json (its admission.json "
                              "beside it, bound by the file's provenance.admission_sha256); with --theme-resid the re-fit "
-                             "must be that file plus the block (only provenance.script_sha256 and the admission SHA it "
-                             "moves may differ), and provenance.resid records its SHA-256")
+                             "must be that file plus the block (only the fitter identity, producer_fingerprint, and the "
+                             "admission SHA it moves may differ; with --engine-fit on either fit, ruling D2-R2: values "
+                             "within ruling P12), and provenance.resid records its SHA-256; a parent fitted before P9 "
+                             "lane D2 is refused (refit it)")
     parser.add_argument("--theme-resid-parent-sha256", default=None, help="the SHA-256 pin of --theme-resid-parent")
 
 
@@ -242,8 +288,11 @@ def apply(args, document: dict, summary: dict, registered, error: type[Exception
     if parent is not None:
         if admission is None:
             raise error(f"{RULE_ID}: --theme-resid-parent needs the re-fit's admission table")
-        parent_check(document, admission, parent["weights"], parent["admission"], error)
+        mode = parent_check(document, admission, parent["weights"], parent["admission"], error,
+                            engine_fit=bool(getattr(args, "engine_fit", False)))
         document["provenance"]["resid"].update(parent_weights_sha256=parent["sha256"], parent_check=PARENT_CHECK)
+        if mode:  # ruling D2-R2: the comparison this file passed (never written without --engine-fit on a side)
+            document["provenance"]["resid"]["parent_check_engine_fit"] = PARENT_CHECK_ENGINE_FIT
         summary["theme_residualise_parent_sha256"] = parent["sha256"]
     summary[BLOCK] = dict(document[BLOCK])
 

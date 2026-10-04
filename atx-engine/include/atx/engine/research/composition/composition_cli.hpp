@@ -12,13 +12,14 @@
 // after the seal is refused.
 // FILE (atx.composition-fit-spec/v1, at most 16 MiB):
 //   {"schema": "atx.composition-fit-spec/v1",
-//    "composition": "ew-theme-std-v1" | "ew-theme-std-aim-v1" | "ic-shrink-v1" | "ic-shrink-aim-v1",
+//    "composition": "ew-theme-std-v1" | "ew-theme-std-aim-v1" | "ic-shrink-v1"
+//                   | "ic-shrink-aim-v1",
 //    "members": [{"id": ..., "theme": ..., "sign": 1, "tier": <source tier, ew-theme-std rules>,
 //                 "gain": <aim gain, the aim rules>}, ...],   (the fitter's admitted members, in
 //                                                             admission order)
 //    "tier_scores": {tier: score, ...},                       (ew-theme-std rules)
 //    "theme_erc": bool, "theme_tsmom": bool, "theme_resid": bool,
-//    "registered_themes": [theme, ...]}                       (theme-resid-v1: the registered order)
+//    "registered_themes": [theme, ...]}                       (theme-resid-v1: registered order)
 // NEWDIR (created exclusively) receives composition_fit.json (atx.composition-fit/v1): the inputs'
 // SHA-256, the members and themes, and per stage every fitted value the fitter's weights document
 // records (fit.hpp CompositionFit), members and themes by name; floats in shortest round-trip form.

@@ -84,7 +84,7 @@ def _require(condition, message: str, error: type[Exception]) -> None:
         raise error(message)
 
 
-PRODUCERS = ("theme_erc",)  # the writer of provenance.theme_erc (ruling D2-2)
+PRODUCERS = ("theme_erc", "attach")  # the writers of provenance.theme_erc and its block (ruling D2-2)
 
 
 def producer_fingerprint() -> str:

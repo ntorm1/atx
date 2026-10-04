@@ -67,9 +67,11 @@ ALLOWLIST = (
     ("atx-impl/tools/fit_composition_weights.py", ("newey_west_t", "screen_v4"),
      "admission screen and its Newey-West t (composition review table row 7)",
      "new in B1 (atx-engine research/admission on eval/hac.hpp); the fitter is wired to it by D2", "D3"),
+    # P9 ruling D2-5: horizon_stats.py stays through P9 (its code is part of every factor record's key, so removing
+    # it would move keys under pinned records): a named G-P5 exception, retired in P10.
     ("atx-impl/tools/horizon_stats.py", ("theta_weights", "ic_theta", "theta_book_returns"),
      "aim-partial theta of strategy_target_replay.cpp (G-P5 names horizon_stats.py; plan section 2.2 names no owner: "
-     "D2 owns the fitter that imports it)", "atx-impl/src/strategy_target_replay.cpp", "D3"),
+     "D2 owns the fitter that imports it)", "atx-impl/src/strategy_target_replay.cpp", "P10"),
     ("scripts/wave_rules.py", ("matched_leverage", "gross_matches"), "gross-match rule PM6-6 (wave_rules.py:110-119)",
      "new in C2 (atx-equity-strategy-targets nav --calibrate-gross)", "C2"),
     ("scripts/wave_rules.py", ("sign_pm7_35",), "PM7-35 sign rule (P9 ruling P9: kept in wave 1)",

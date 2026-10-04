@@ -698,11 +698,14 @@ TEST(MarginalIc, VerifiedDigestsSkipTheRehash) {
 
 // The pair cache is keyed by kPairwiseRowCorrelationVersion, so an edit to the sources that
 // compute a pair's bits must be a conscious bump-or-repin decision (the IC caches' digest recipe;
-// no include closure: the residualisation and HAC sources never touch a pair).
+// no include closure). The sources are marginal_rank_ic.{hpp,cpp} and, since P9 lane D2 (ruling
+// P8), combine/group_rerank.hpp, whose for_each_centered_rank computes every pair's centred tied
+// ranks; the residualisation and HAC sources never touch a pair.
 TEST(MarginalIc, PairCacheSourcesPinned) {
   const auto id = st::marginal_pair_cache_identity();
   EXPECT_EQ(id.version, cb::kPairwiseRowCorrelationVersion);
-  ASSERT_EQ(id.sources.size(), 2U);
+  ASSERT_EQ(id.sources.size(), 3U);
+  EXPECT_EQ(id.sources.back(), "atx-engine/include/atx/engine/combine/group_rerank.hpp");
   const auto repo = fs::path{ATX_IMPL_TESTS_DIR}.parent_path().parent_path();
   std::string material;
   for (const auto& rel : id.sources) {

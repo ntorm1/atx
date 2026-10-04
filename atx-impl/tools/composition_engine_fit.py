@@ -26,8 +26,14 @@ DIR is the ``atx-equity-strategy-targets factors`` output for the --train role a
    every float to P12_TOLERANCE x max(1, |x|).
 
 Supported: the single-window prior path with ew-theme-std-v1 / ew-theme-std-aim-v1 / ic-shrink-v1 / ic-shrink-aim-v1,
-with or without --theme-erc, --theme-tsmom, --theme-resid and --two-speed (two-speed writes a spec block only: nothing
-to compare). Refused before any compute: another composition, the train orientation or --era.
+with or without --theme-erc, --theme-tsmom, --theme-resid (with or without --theme-resid-parent, either side fitted
+with or without the flag: composition_resid.parent_check compares under ruling P12 then, ruling D2-R2) and --two-speed
+(two-speed writes a spec block only: nothing to compare). Refused before any compute: another composition (the
+ew-theme-v1 / ew-theme-aim-v1 / ew-theme-aim-v2 / ew-theme-v6 rules have no C++ fit), the train orientation or --era.
+
+Under the flag the ic-shrink block states that its ICs are the C++ fit's and records their largest difference from
+admission.json's train_mean (ruling D2-S4); provenance.engine_fit names the producing code (the two executables'
+SHA-256 and this module's fingerprint of verify / kernels / check_written).
 """
 from __future__ import annotations
 
@@ -42,7 +48,9 @@ from typing import NamedTuple
 
 import numpy as np
 
-SUPPORTED = ("ew-theme-std-v1", "ew-theme-std-aim-v1", "ic-shrink-v1", "ic-shrink-aim-v1")
+import composition_rules  # this directory: module_fingerprint (review S-3)
+
+SUPPORTED =("ew-theme-std-v1", "ew-theme-std-aim-v1", "ic-shrink-v1", "ic-shrink-aim-v1")
 STD_COMPOSITIONS = ("ew-theme-std-v1", "ew-theme-std-aim-v1")
 FACTOR_SCHEMA = "atx.factor-series/v1"
 FIT_SPEC_SCHEMA = "atx.composition-fit-spec/v1"
@@ -55,8 +63,9 @@ EXE_SECONDS = 3600
 PROVENANCE_KEY = "engine_fit"  # the weights file's provenance.engine_fit (flag present only)
 WRITTEN = "atx-research-composition fit (C++): every fitted number of the weights file; the admission table: Python"
 REFUSED = (f"--engine-fit runs the single-window prior path with --composition {', '.join(SUPPORTED)} (with or without "
-           "--theme-erc / --theme-tsmom / --theme-resid / --two-speed) and needs --engine-factors, --admission-exe and "
-           "--composition-exe; refused under --era")
+           "--theme-erc / --theme-tsmom / --theme-resid [--theme-resid-parent] / --two-speed) and needs "
+           "--engine-factors, --admission-exe and --composition-exe; refused under --era")
+PRODUCERS = ("verify", "kernels", "check_written")  # the code that turns the executables' output into written values
 
 
 class EngineFitError(ValueError):
@@ -172,17 +181,26 @@ def compare_admission_csv(reference: bytes, candidate: bytes, tolerance: float =
     """Ruling P12 on two admission.csv files: every non-float cell byte for byte, the float cells to
     tolerance x max(1, |reference|). Returns (differences, worst relative float difference)."""
     a, b = reference.decode("utf-8").splitlines(), candidate.decode("utf-8").splitlines()
-    if len(a) != len(b) or a[:1] != b[:1]:
+    if not a or len(a) != len(b) or a[:1] != b[:1]:
         return [f"shape or header differs: {len(a)} vs {len(b)} lines"], math.inf
     header, out, worst = a[0].split(","), [], 0.0
     for n, (ra, rb) in enumerate(zip(a[1:], b[1:]), start=1):
         ca, cb = ra.split(","), rb.split(",")
-        if len(ca) != len(cb):
-            out.append(f"line {n}: {len(ca)} vs {len(cb)} cells")
+        if len(ca) != len(header) or len(cb) != len(header):  # review S-1: no row is truncated by zip
+            out.append(f"line {n}: {len(ca)} vs {len(cb)} cells under a {len(header)}-column header")
             continue
         for col, x, y in zip(header, ca, cb):
             if col in ADMISSION_FLOAT_COLUMNS and x and y:
-                rel = abs(float(x) - float(y)) / max(1.0, abs(float(x)))
+                try:
+                    fx, fy = float(x), float(y)
+                except ValueError:
+                    out.append(f"line {n} {col}: {x!r} vs {y!r} (not numbers)")
+                    continue
+                if not (math.isfinite(fx) and math.isfinite(fy)):  # review S-1: NaN / inf must match exactly
+                    if x != y:
+                        out.append(f"line {n} {col}: {x!r} vs {y!r}")
+                    continue
+                rel = abs(fx - fy) / max(1.0, abs(fx))
                 worst = max(worst, rel)
                 if rel > tolerance:
                     out.append(f"line {n} {col}: {x} vs {y}")
@@ -191,10 +209,35 @@ def compare_admission_csv(reference: bytes, candidate: bytes, tolerance: float =
     return out, worst
 
 
+def _read(path: Path, what: str, error: type[Exception]) -> bytes:
+    """An executable's output file, or the refusal naming it (review S-2)."""
+    try:
+        return Path(path).read_bytes()
+    except OSError as exc:
+        raise error(f"--engine-fit: {what}: {exc}") from exc
+
+
+def _json(raw: bytes, what: str, error: type[Exception]):
+    try:
+        return json.loads(raw)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise error(f"--engine-fit: {what}: not JSON ({exc})") from exc
+
+
+def file_sha256(path: Path, error: type[Exception]) -> str:
+    return hashlib.sha256(_read(path, f"{Path(path).name}", error)).hexdigest()
+
+
 def run_exe(argv: list, error: type[Exception]) -> None:
-    done = subprocess.run([str(a) for a in argv], capture_output=True, text=True, timeout=EXE_SECONDS, check=False)
-    _require(done.returncode == 0, f"{Path(argv[0]).name} {argv[1]} exited {done.returncode}: "
-                                   f"{done.stderr.strip()[-2000:]}", error)
+    name = f"{Path(argv[0]).name} {argv[1]}"
+    try:
+        done = subprocess.run([str(a) for a in argv], capture_output=True, text=True, timeout=EXE_SECONDS,
+                              check=False)
+    except subprocess.TimeoutExpired as exc:  # review S-2: a refusal, not a traceback
+        raise error(f"--engine-fit: {name} ran over {EXE_SECONDS} s") from exc
+    except OSError as exc:
+        raise error(f"--engine-fit: {name} did not start: {exc}") from exc
+    _require(done.returncode == 0, f"{name} exited {done.returncode}: {done.stderr.strip()[-2000:]}", error)
 
 
 def check_admission(args, state: FitterState, work: Path, error: type[Exception]) -> dict:
@@ -204,20 +247,22 @@ def check_admission(args, state: FitterState, work: Path, error: type[Exception]
     out = work / "admission"
     run_exe([args.admission_exe, "screen", "--factors", args.engine_factors, "--candidates", candidates,
              "--output", out, "--screen", state.screen], error)
-    csv = (out / "admission.csv").read_bytes()
+    csv = _read(out / "admission.csv", "the screen's admission.csv", error)
     differ, worst = compare_admission_csv(state.admission_csv, csv)
     _require(not differ, f"admission.csv differs from the fitter's (Ruling P12): {differ[:20]}", error)
-    manifest = json.loads((out / "manifest.json").read_bytes())
+    manifest_raw = _read(out / "manifest.json", "the screen's manifest.json", error)
+    manifest = _json(manifest_raw, "the screen's manifest.json", error)
+    _require(isinstance(manifest, dict), "the screen's manifest.json is not an object", error)
     _require(manifest.get("admitted") == list(state.admitted),
              f"admitted order {manifest.get('admitted')} vs {state.admitted}", error)
     _require(manifest.get("sign_conflicts") == list(state.sign_conflicts),
              f"sign conflicts {manifest.get('sign_conflicts')} vs {state.sign_conflicts}", error)
-    counts = manifest.get("counts", {})
-    _require(all(counts.get(s, 0) == n for s, n in state.counts.items()) and
+    counts = manifest.get("counts")
+    _require(isinstance(counts, dict) and all(counts.get(s, 0) == n for s, n in state.counts.items()) and
              all(state.counts.get(s, 0) == n for s, n in counts.items()),
              f"admission counts {counts} vs {state.counts}", error)
     return {"admission_csv_sha256": hashlib.sha256(csv).hexdigest(),
-            "admission_manifest_sha256": hashlib.sha256((out / "manifest.json").read_bytes()).hexdigest(),
+            "admission_manifest_sha256": hashlib.sha256(manifest_raw).hexdigest(),
             "admission_max_rel_float_diff": worst, "admitted": len(state.admitted)}
 
 
@@ -323,6 +368,19 @@ def compare_values(want, got, where: str = "$", tolerance: float = P12_TOLERANCE
     return out, worst[0]
 
 
+def pure_relative(want, got) -> float:
+    """The largest |a - b| / |a| over the finite non-zero floats a of ``want`` (review S-8, report only: ruling P12's
+    max(1, |a|) floor holds a value far below 1, a covariance or an IC, to an absolute 1e-12)."""
+    if _number(want) and _number(got):
+        a, b = float(want), float(got)
+        return abs(a - b) / abs(a) if a != 0.0 and math.isfinite(a) and math.isfinite(b) else 0.0
+    if isinstance(want, dict) and isinstance(got, dict):
+        return max([pure_relative(want[k], got[k]) for k in set(want) & set(got)], default=0.0)
+    if isinstance(want, (list, tuple)) and isinstance(got, list):
+        return max([pure_relative(a, b) for a, b in zip(want, got)], default=0.0)
+    return 0.0
+
+
 def check_fit(args, state: FitterState, work: Path, error: type[Exception]) -> tuple[dict, dict]:
     """Check 3: the C++ fit of the fitted members equals the fitter's values. Returns (summary keys, C++ document)."""
     spec_bytes = (json.dumps(fit_spec(state), sort_keys=True, indent=1, allow_nan=False) + "\n").encode("utf-8")
@@ -330,15 +388,18 @@ def check_fit(args, state: FitterState, work: Path, error: type[Exception]) -> t
     spec.write_bytes(spec_bytes)
     out = work / "composition"
     run_exe([args.composition_exe, "fit", "--factors", args.engine_factors, "--spec", spec, "--output", out], error)
-    raw = (out / FIT_FILE).read_bytes()
-    got = json.loads(raw)
+    raw = _read(out / FIT_FILE, f"the fit's {FIT_FILE}", error)
+    got = _json(raw, f"the fit's {FIT_FILE}", error)
     _require(isinstance(got, dict) and got.get("schema") == FIT_SCHEMA and got.get("status") == "complete",
              f"{FIT_FILE}: not a complete {FIT_SCHEMA} document", error)
     want = expected_fit(state)
     differ, worst = compare_values(want, {k: got.get(k) for k in want})
     _require(not differ, f"the C++ fit differs from the fitter's ({len(differ)}): {differ[:20]}", error)
+    by_block = {k: pure_relative(want[k], got[k]) for k in ("parent", "theme_erc", "theme_tsmom", "weights")
+                if k in want}
     return ({"composition_fit_sha256": hashlib.sha256(raw).hexdigest(),
              "fit_spec_sha256": hashlib.sha256(spec_bytes).hexdigest(), "fit_max_rel_float_diff": worst,
+             "fit_max_pure_rel_diff_by_block": by_block,
              "blocks": sorted(k for k in ("theme_erc", "theme_tsmom", "theme_resid") if k in want)}, got)
 
 
@@ -346,9 +407,10 @@ def check_fit(args, state: FitterState, work: Path, error: type[Exception]) -> t
 class EngineKernels(NamedTuple):
     """The C++ fit's values in the shapes the composition modules' ``engine`` arguments take. ``parent``: for
     ew-theme-std rules theme_gain_weights' (weights, uncapped, passes, cap), for ic-shrink rules a dict (ic, shrunk,
-    shares, means, equal, uncapped, weights, passes); ``erc`` (theme_erc): (within-theme shares, covariance,
-    rule_weights' dict) or None; ``tsmom`` (schedule): {parent, blocks: [(trailing, masses, themes off)]} or None;
-    ``weights`` the final member weights (fitter member order)."""
+    shares, means, equal, uncapped, weights, passes, and ic_admission_max_abs_diff: max |C++ IC - admission.json
+    train_mean|, ruling D2-S4); ``erc`` (theme_erc): (within-theme shares, covariance, rule_weights' dict) or None;
+    ``tsmom`` (schedule): {parent, blocks: [(trailing, masses, themes off)]} or None; ``weights`` the final member
+    weights (fitter member order)."""
     parent: object
     erc: tuple | None
     tsmom: dict | None
@@ -367,8 +429,23 @@ def _passes(rows: list, index: dict) -> list:
             for p in rows]
 
 
-def kernels(got: dict, state: FitterState) -> EngineKernels:
-    """The C++ document ``got`` (check_fit agreed with it) in the composition modules' engine shapes."""
+def kernels(got: dict, state: FitterState, error: type[Exception] = EngineFitError) -> EngineKernels:
+    """The C++ document ``got`` (check_fit agreed with it) in the composition modules' engine shapes. A missing or
+    malformed value is the refusal ``error`` (review S-2); so is an ic-shrink IC further than ruling P12 from the
+    admission table's train_mean (ruling D2-S4; check_fit already holds it there)."""
+    try:
+        engine = _kernels(got, state)
+    except (KeyError, TypeError, ValueError, IndexError, AttributeError) as exc:
+        raise error(f"--engine-fit: {FIT_FILE} lacks a value the weights file needs: {exc!r}") from exc
+    if isinstance(engine.parent, dict):
+        diff = max(abs(c - float(a)) for c, a in zip(engine.parent["ic"], state.ics))
+        _require(len(engine.parent["ic"]) == len(state.ics) and diff <= P12_TOLERANCE,
+                 f"the C++ ICs are {diff!r} from admission.json's train_mean (ruling P12: {P12_TOLERANCE})", error)
+        engine.parent["ic_admission_max_abs_diff"] = diff
+    return engine
+
+
+def _kernels(got: dict, state: FitterState) -> EngineKernels:
     index = {cid: k for k, cid in enumerate(state.members)}
     p = got["parent"]
     weights = np.asarray(_floats(p["weights"]), dtype=np.float64)
@@ -403,14 +480,24 @@ def verify(args, state: FitterState, error: type[Exception] = EngineFitError) ->
     provenance.engine_fit; the C++ values to write, ``kernels``). Nothing is written beside the output: the C++ outputs
     live in a temporary directory and are named by their SHA-256."""
     summary = {"status": "agree", "written": WRITTEN, "factor_tolerance_abs": FACTOR_TOLERANCE,
-               "p12_tolerance_rel": P12_TOLERANCE}
+               "p12_tolerance_rel": P12_TOLERANCE,
+               # review S-3: the code that produced the written values
+               "admission_exe_sha256": file_sha256(Path(args.admission_exe), error),
+               "composition_exe_sha256": file_sha256(Path(args.composition_exe), error),
+               "producer_fingerprint": producer_fingerprint()}
     summary.update(check_factor_series(Path(args.engine_factors), state, error))
     with tempfile.TemporaryDirectory(prefix="engine-fit-") as tmp:
         work = Path(tmp)
         summary.update(check_admission(args, state, work, error))
         fit_keys, got = check_fit(args, state, work, error)
         summary.update(fit_keys)
-    return summary, kernels(got, state)
+    return summary, kernels(got, state, error)
+
+
+def producer_fingerprint() -> str:
+    """provenance.engine_fit's code identity (review S-3): composition_rules.module_fingerprint of PRODUCERS, the
+    functions that turn the executables' output into the values written."""
+    return composition_rules.module_fingerprint(__file__, PRODUCERS)
 
 
 def check_written(written_weights, engine: EngineKernels, error: type[Exception] = EngineFitError) -> None:

@@ -812,7 +812,7 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
     // capabilities (strategy_ic_rules.hpp list_rules_json) and nothing else; it takes no other
     // option (JSON is its only format). P9 lane D2 (D1 review minor): the verb is argv[1] and
     // argv[2] alone (either order), so an option value spelled --list-rules is an ordinary value;
-    // a --list-rules anywhere else reaches the general parse, which refuses it as an unknown option.
+    // a --list-rules anywhere else reaches the general parse, which refuses it (unknown option).
     if (argc>=2 && std::string_view(argv[1])=="--list-rules" && argc!=3)
       throw std::invalid_argument("--list-rules takes exactly --json");
     if (argc==3) {

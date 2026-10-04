@@ -75,7 +75,7 @@ def _require(condition, message: str, error: type[Exception]) -> None:
         raise error(message)
 
 
-PRODUCERS = ("schedule",)  # the writer of the theme_schedule block and provenance.theme_tsmom (ruling D2-2)
+PRODUCERS = ("schedule", "attach")  # the writers of theme_schedule and provenance.theme_tsmom (ruling D2-2)
 
 
 def producer_fingerprint() -> str:

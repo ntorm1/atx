@@ -120,12 +120,13 @@ inline constexpr std::array<std::string_view,10> theme_resid_frozen_prefix{
 struct FitSpecMember {
   std::string id;
   std::string theme;
-  std::string tier;          // ew-theme-std rules: the source tier (registry, else library / recipe)
+  std::string tier;          // ew-theme-std rules: the source tier (registry, else the library)
   atx::i32 sign{1};          // the prior sign: +1
   std::optional<atx::f64> gain; // the aim rules: the member's aim gain
 };
 struct FitSpec {
-  std::string composition;   // ew-theme-std-v1 | ew-theme-std-aim-v1 | ic-shrink-v1 | ic-shrink-aim-v1
+  // ew-theme-std-v1 | ew-theme-std-aim-v1 | ic-shrink-v1 | ic-shrink-aim-v1
+  std::string composition;
   std::vector<FitSpecMember> members;
   std::vector<std::pair<std::string,atx::f64>> tier_scores; // ew-theme-std rules: tier -> score
   bool theme_erc{};
