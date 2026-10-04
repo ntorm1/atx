@@ -426,3 +426,175 @@ New test names this round: `RiskCovContainer.ParseBlockRefusesArrayBoundsThatWra
 `CovStore.RefusesAContainerReachingTheSealWithoutUnseal`.
 
 Root's verification list above is unchanged; root step 1's counts become 20 (`RiskCovContainer.*`) and 28 (`Cov*`).
+
+## Fix round 2 (re-review `task-COV-rereview-1.md` at `2639de2e`: CHANGES_REQUIRED, R1b + R2b; rulings COV-R1, COV-9)
+
+Status: **R1b and R2b fixed. On the well-posed planted panel at half-lives 21, atx-cov-v1 is in the band; the a = 0.5
+negative control and atx-risk-v1.1 are out of it. No kernel defect.** No test was renamed, no band was loosened and no
+expected hash was edited. Commits: `fb6201b8` (R2b), `e9fc3668` (R1b and the S7 nit), then this report.
+
+### R1b: band panel at half-lives 21, with a negative control
+
+- `band_config` (`atx-impl/tests/strategy_cov_fixture.hpp`): `vol_halflife = correlation_halflife = 21` (was 42).
+  NW lags stay 0, the VRA stays off and the panel is unchanged (`BandPanel` 500 x 300, seed 29, K = 7). Kish(21) =
+  60.6 >= K + 1, so the panel is still well-posed. The band is unchanged: per rank 1 +- sqrt(2/T) with a share >= 0.95;
+  pooled 1 +- sqrt(2/N).
+- Negative control (`CovBias.EigenFamilyInBandOnAPlantedModel`): same panel and config with `eigen_amplification =
+  0.5`, i.e. gamma = 1 + 0.5 (v - 1), about half the variance correction. It must miss the band (pooled out, **or**
+  < 95% of ranks in) on the same N.
+
+Per-rank b, C++ (`p9-cov-h`, `cov-evidence/cov-gt-cov-all-f2.log`). T = 469 per rank, N = 3,283; the rank band is
++-0.065 and the pooled band +-0.025:
+
+| band panel, HL 21 | eigen-00 | -01 | -02 | -03 | -04 | -05 | -06 | pooled b | ranks in band | band |
+|---|---|---|---|---|---|---|---|---|---|---|
+| atx-cov-v1 (a = 1) | 1.013 | 0.998 | 1.013 | 1.020 | 0.993 | 1.021 | 1.009 | **1.009** | **7/7** | **pass** |
+| a = 0.5 (negative control) | 1.085 | 1.051 | 1.058 | 1.054 | 1.015 | 1.024 | 1.007 | 1.042 | 6/7 | **fail** (both clauses) |
+| atx-risk-v1.1 | 1.181 | 1.108 | 1.104 | 1.084 | 1.039 | 1.036 | 0.996 | 1.080 | 3/7 | fail |
+
+How to read it:
+- Margins from 1, in pooled band widths:
+  - atx-cov-v1 is 0.36 widths inside the band.
+  - The a = 0.5 control is 1.7 widths out, and fails the rank share too (6/7 = 0.86).
+  - atx-risk-v1.1 is 3.2 widths out. At HL 42 (round 1) it was 1.7.
+- Worst atx-cov-v1 rank: eigen-05 at 1.021, which is 0.32 of its rank band.
+- Agreement with the reviewer's numpy mirror at HL 21 (6 seeds):
+
+  | | mirror | C++, seed 29 |
+  |---|---|---|
+  | atx-cov-v1 pooled | 1.0056 +- 0.0017 | 1.009 |
+  | atx-cov-v1 ranks | 0.993 .. 1.011 | 0.993 .. 1.021 |
+  | v1.1 pooled | 1.075 | 1.080 |
+  | half strength (C++: a = 0.5) | 1.039 | 1.042 |
+
+  C++ ran one seed. The rates across seeds are the mirror's.
+- Test time: 25.6 s -> 38.6 s (one more atx-cov-v1 run).
+- The churn panel (`small_config`, untouched) prints the same per-rank b as in round 1.
+
+### R2b: K = 1 + G + S without a u32 wrap
+
+- New in `cov_container.hpp`: `cov::geometry_ok(K, G, S)` with `cov::max_groups` and `cov::max_dense` = 4096. It
+  requires G <= 4096, S <= 4096 and u64 K == 1 + u64 G + u64 S. Used in four places:
+  - the header check in `check_header_and_trailer` (`cov_container.cpp:637`, was `:631`);
+  - `parse_cov_block` (`:213-215`, was `:208-209`);
+  - `encode_cov_block`'s `check_block`, which refuses G or S > 4096 before `spec.factors()` is formed
+    (InvalidArgument);
+  - `CovContainerWriter::create` (same constants, same rule).
+- The reader therefore also refuses a geometry the writer cannot produce (G or S > 4096), even without a wrap.
+- New test `RiskCovContainer.RefusesGeometryThatWrapsK`:
+  - **Direct `parse_cov_block`.** The block header and the caller agree on (K 0, G 2^32-1, S 0), (K 0, G 0, S 2^32-1)
+    and (K 4098, G 4097, S 0). Each gives ParseError "block geometry". The edge G = 4096 passes the geometry check;
+    that K = 8 block is then refused by the array check, with no "geometry" in the message.
+  - **Encoder and writer.** `encode_cov_block` with G = 2^32-1 gives InvalidArgument "geometry", and
+    `CovContainerWriter::create` refuses it.
+  - **Hash-consistent file.** For each of the three header geometries, with the root re-hashed: ParseError "header
+    geometry" under Full and under Lazy.
+- **Teeth.** Each refusal is asserted by its message. On the old code (read, not built) the same inputs are refused
+  later, by other checks with other messages: the file by "factor names: K NUL-terminated names expected", the block by
+  "array dtype or count", the encoder by "factor covariance is not K x K". So the test fails on the old code.
+- **Consequence.** K is now bounded at 8,193 on every container path, so `factor_risk_view` cannot report
+  2^32 - 1 groups. Through a container, `book::check_model`'s usize `k * k` (`atx-engine/src/book/risk_target.cpp:35`)
+  can no longer wrap. That line is pre-existing and outside COV's files: a note for the engine owner (root item 5).
+
+### Re-review nits and the earlier Suggested items
+
+- **Fixed: section-table count clause.** Re-review (3) noted it was not exercised.
+  `RiskCovContainer.RefusesSectionTableAndBlockSizesThatWrap` now keeps the writer's in-range table offset and sets
+  `section_count` to 64. It asserts that what remains is < 64 x 64 bytes, and gets "section table out of bounds".
+- **Fixed: S7 counter only ever checked at 0.** New test `CovBias.UnformedExtendedBooksAreCounted`, with 4 names on
+  market + one industry:
+  - a non-finite off-diagonal entry counts 1 and forms no book;
+  - a non-positive-definite block (the LLT fails) counts 1;
+  - the positive-definite control counts 0, and its minvar book holds all 4 names.
+- **Not fixed: S3 verb-level refusal test.** The refusal is unreachable through the verb:
+  - `load_role` refuses any `--max-bytes` <= 64 MiB + cells x 96 (`strategy_risk_verb.cpp:124`).
+  - The kernel's worst workspace is at K 62 with Kish(504) <= 1,454: 62^2 x 128 + 1,454 x 62 x 64 = 6,261,504 B
+    (6.0 MiB).
+  - So no verb run can reach the budget refusal. The refusal stays as a free guard against a future default change.
+    Its rule is tested at the kernel boundary (51,199 B refused / 51,200 B adjusted).
+- **Not fixed: S7, an optimized book with gross 0 is skipped silently** (`strategy_risk_model.cpp:1490`). w = V^-1
+  (alpha - c 1) is 0 only when alpha is constant over the held names. That has probability zero for continuous random
+  scores, and counting it would need a new summary key.
+- **S1 not fixed:** the names are the brief's acceptance contract; the base-anchored proof is root step 2.
+- **S5:** superseded by COV-7.
+- **S8:** by design. It is the D-COV reading below and a P10 recipe candidate.
+- **S9:** a root check (COV-9), root item 1.
+
+### Builds and tests
+
+| tag | targets | exit | wall s | TUs |
+|---|---|---|---|---|
+| p9-cov-h | atx-engine-risk-tests, atx-impl-strategy-target-tests, atx-equity-strategy-risk | 0 | 606 | 369 (fresh tree) |
+
+- **Receipt:** Source `e9fc3668`, DirtyEntries 0, Jobs 4.
+- **Warnings:** only clang-cl's `/MP unused` driver note and the two third-party `getenv` deprecations in
+  `databento-cpp`. 0 in lane code.
+- **Configure.** The tree had been deleted after round 1, so it was configured first. The first attempt of my gate
+  wrapper died in PowerShell: cmake's stderr became a NativeCommandError under `ErrorActionPreference = Stop`. That
+  happened before research-build ran, so there is no receipt and the tag was not spent. I fixed the wrapper and re-ran
+  it.
+- **Gate:** admitted at free 3,760 MiB / commit 5,360 MiB, with no other compiler, linker, ninja or cmake running.
+- **Evidence** (`cov-evidence/`): `cov-h.log` (gate + configure), `mega-p9-cov-h-{receipt.json,build.log}` (UTF-8).
+
+Tests (Debug, `p9-cov-h` executables):
+- `atx-engine-risk-tests --gtest_filter=RiskCovContainer.*` -> **21 passed** (`cov-gt-container-f2.log`).
+- `atx-engine-risk-tests --gtest_filter=Risk*:-RiskQpAugment.MatchesDenseOracleAcrossBattery` -> **431 passed, 1
+  skipped** (`RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery`, nightly), 0 failed, 138 s
+  (`cov-gt-engine-risk-f2.log`).
+- `atx-impl-strategy-target-tests --gtest_filter=CovTruncation.*:CovEigen.*:CovRecipe.*:CovStore.*:CovBias.*:CovDiff.*`
+  -> **29 passed**, 0 failed, 236 s (`cov-gt-cov-all-f2.log`).
+- Unchanged filter `RiskWls.*:RiskEwma.*:RiskBias.*:RiskModel.*:RiskVerb.*:RiskRobust.*:RiskTarget.*:VolTarget.*:NavBookRule.*:Spo*:NavV7Hook.*`
+  -> **104 passed**, 0 failed, 70 s (`cov-gt-regress-f2.log`).
+
+New tests this round: `RiskCovContainer.RefusesGeometryThatWrapsK` and `CovBias.UnformedExtendedBooksAreCounted`.
+Root step 1's counts become 21 (`RiskCovContainer.*`) and 29 (`Cov*`).
+
+### What the churn-panel small-rank bias means for root's D-COV read
+
+1. **Headline per rank, not pooled.**
+   - On the churn panel, eigen-00 (6.07 / 7.12) carries about 2/3 of the pooled sum of z^2. Without it, pooled b is
+     about 1.22 instead of 2.06.
+   - eigen-00 is most likely the near-null direction the cap-weighted industry constraint leaves. That is plausible
+     but not shown: there is no eigenvector diagnostic. It sits above the floor, so the floor rule does not remove it.
+   - D-COV should print per-rank b, plus the pooled family with and without the lowest rank (or the rank aligned with
+     the industry cap-share vector).
+2. **The absolute band is a kernel test, not a TRAIN adoption criterion.**
+   - The band holds only when S2b's simulated length equals the estimator's effective sample. Here that means HL 21 /
+     21 and NW 0. The a = 0.5 control shows what the band then separates.
+   - The recipe's settings are different: variance HL 84, correlation HL 504, NW 5 / 2. S2b simulates Kish(504)
+     ~ 1,454 observations, while F's variances carry Kish(84) ~ 242, and the NW noise is not simulated (S8).
+   - So atx-cov-v1 under-corrects the small ranks by design. "Above band" in small ranks on TRAIN is expected and is
+     not a kernel defect.
+   - Read atx-cov-v1 against atx-risk-v1.1 on identical observations: per-rank b reduction, minvar / optimized b, QLIKE
+     and MRAD. The size of the remaining excess is the P10 recipe input (S8: simulated length = Kish of the variance
+     HL, or simulate the EWMA estimator).
+3. **Read rises at the large-rank end together with lambda^2_factor before calling them harm.** Ranks 04 / 05 / 08 rise
+   on the churn panel. That can be a VRA level effect (the VRA reads the adjusted prior) rather than an eigen effect.
+4. **COV-5:** every atx-cov-v1 parameter stays as fixed in the brief. A change after D-COV is a new recipe id.
+
+### Root items (merge and after)
+
+1. **S9 (COV-9).** Before every COV run (steps 3-5 and D-COV), check that the role manifest has
+   `universe.delisting.returns_applied == false`. The first review found it false for `train-2020-2023-lo3`. The verb
+   guard is P10's.
+2. **Bench link and run (root step 6).**
+   - Run the `rel` preset with `ATX_BUILD_BENCH=ON`, then `atx-engine-bench --benchmark_filter=CovContainer
+     --benchmark_repetitions=5`, and log the medians against cov-design 4.12.
+   - The bench TU has had only a syntax-only compile (`clang-cl /Zs`, round 1). It has never been linked or run. A
+     compile or link error there is the lane's to fix.
+   - This round added `cov::geometry_ok` / `max_groups` / `max_dense` to the header. The bench uses none of them.
+3. **COV-7.** Step 5 (atx-cov-v1 on TRAIN) runs on the Release tree, after Debug = Release byte identity of the
+   container on the lane fixture.
+4. **Counts for root step 1:** `RiskCovContainer.*` 21, `Cov*` 29, unchanged filter 104, `Risk*` 431 + 1 skipped. The
+   base-anchored flag-absent proof is still root step 2 (S1). In `atx-impl/tests/CMakeLists.txt`, keep both C2's and
+   COV's tail lines.
+5. **Engine owner note.** `atx-engine/src/book/risk_target.cpp:35` computes `k * k` in usize (pre-existing). It can no
+   longer wrap through a container now that K <= 8,193. Record it for the engine owner.
+
+### Ledger candidates
+
+- The eigen-family band is a kernel test only with equal variance / correlation half-lives and no NW lags. At HL 21 /
+  T 469 / K 7, the C++ pooled b is: atx-cov-v1 1.009 (7/7 ranks in band), a = 0.5 1.042 (out), v1.1 1.080 (out), with a
+  band of +-0.025. At HL 42 the teeth were too thin (mirror: half-strength variants passed in 50-75% of seeds).
+- The atx-cov-v1 budget refusal cannot be reached through the risk verb. `load_role` needs `--max-bytes` > 64 MiB, and
+  the kernel's worst case at K 62 / Kish(504) is 6.0 MiB.
