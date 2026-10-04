@@ -1176,3 +1176,52 @@ scripts in `m2f-logs/tools/`. Trial ledger at the start: 133 lines, `27e40f9f`. 
 - **Known-red change:** the Release lit-golden red is now a **named Release skip, 0 failed** (M2c-RED-2 (c) / OD5-2).
 - **DISK-2 (pool-18):** see below (end of M2f).
 - **Trial ledger:** 0 trials.
+
+### B2 identity part (`1b25b9a4`, pool-14; re-review 1: identity part sound, post-identity part CHANGES_REQUIRED)
+
+#### B2-R1 (d): rho of the X-5 / Y-F0 pairs, measured and logged before the identity run
+
+Tool `m2f-logs/tools/b2_rho.py` (nav_summ's own paired series: primary scenario, `load_daily` with the seal refusal,
+`net_series`, `align`; no mean / SD / Sharpe / return printed); output `m2f-logs/b2-rho-pairs.txt`. Pairs = each
+cell against its parent, on the pinned references; the ledgered dirs give the same series (same rho to the last bit):
+
+| pair | child | parent | T | rho (numpy) | 1 - rho (stable form) | 1e-12 / (1 - rho) | class |
+|---|---|---|---|---|---|---|---|
+| X-5 | `p9-c1-s2-x5-nav` (X-5's Debug reference since C1) | X-3 `mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v8x3b` (X-5's locked `reference_cell` `e342db4f`) | 1,005 | 0.9202746809672834 | 0.0797253190327169 | 1.254e-11 | paired test defined |
+| Y-F0 | `p9-b0-yf0-nav` (P9-B0) | X-5 `p9-c1-s2-x5-nav` (as ledgered: `mega-nav-v8x-theme-erc-L1.1720`, Y-F0's `reference_cell` `a03937cf`) | 1,005 | 0.9556041703496023 | 0.0443958296503978 | 2.252e-11 | paired test defined |
+
+Both pairs are far above the B2-R1 (c) bound (1 - rho >= 1e-6 by four to five orders of magnitude): neither needs a
+prereg fallback. (Not measured: any P9 pair; a leverage-only child such as X-10 vs Y-F0 is the case to measure at PRE.)
+
+#### Expected difference list for the B2 TRAIN identity (written and committed before the run)
+
+Real data (TRAIN 2020-2023, sealed role; `load_daily` refuses any session at or after the seal), 0 trials (nav_summ is
+never given `--ledger`; the read-only ledger flags get a byte copy), no statistic read by me: stdout is compared by
+bytes and the JSON by the comparator; a stdout line is printed only if it differs (B2-7).
+
+- **Pairs** (the reference is never among the dirs, B2-4 / B2-6): **X5** = dirs `[build-equity/p9-c1-s2-x5-nav]`,
+  `--reference build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v8x3b`; **YF0** = dirs
+  `[build-equity/p9-b0-yf0-nav]`, `--reference build-equity/p9-c1-s2-x5-nav`.
+- **argv** (B2 report, "How root verifies" item 3): `atx-impl/tools/nav_summ.py <child> --reference <parent> --protocol
+  v8 --psr --dsr-ledger L --dsr-total L --json build-equity/p9-m2f-b2-identity/<pair>-<mode>.json`, L = a byte copy
+  of `build-equity/trials.jsonl` (133 lines, `27e40f9f`) in the session scratchpad, bound in each receipt (`--bind`).
+- **Runs, per pair:** **P** = the argv as written (the Python statistics at the identity point); **Erel** = plus
+  `--engine-stats build-equity-rel/bin/atx-research-eval.exe` (p9-2j `a57a2090`, the build type of record, M2c-RED-2
+  (e)); **Edbg** = plus `--engine-stats build-equity/bin/atx-research-eval.exe` (p9-2i `bd8b5e08`). Each through
+  `scripts/run_bounded_research.py --seconds 600 --max-rss-mib 2048` (RUN-1) into
+  `build-equity/p9-m2f-b2-<pair>-<mode>-run`; Python 3.12, numpy 1.26.4; source = the commit carrying this list.
+- **Expected** (comparator `m2f-logs/tools/b2_identity_cmp.py`, output `m2f-logs/b2-identity-cmp.txt`; anything else
+  is reported, and a decision-field difference stops the merge item):
+  1. Every run exits 0 within its limits.
+  2. Erel and Edbg stdout **byte-equal** to P's; stderr equal (expected empty). Erel vs Edbg likewise.
+  3. `--json` rows with `nav_summ_run` popped: equal structure, keys, ints and strings; floats within 1e-12 relative,
+     inside `paired` within 1e-12 / (1 - rho) (X5 1.254e-11, YF0 2.252e-11); `p_value`, `p_one_sided`,
+     `valid_draws`, `cbb_valid_draws` exact (the lane's `test_nav_summ_engine.close`). No `degenerate` /
+     `one_minus_rho` key (both pairs non-degenerate).
+  4. `nav_summ_run` of Erel / Edbg names `engine_exe` and an `engine_exe_sha256` equal to that file's SHA-256; P's
+     names none.
+  5. **B2-7:** every differing stdout line is listed in this report with every differing JSON float leaf (both
+     values, relative difference) and the decision-field check (counts, p-values, flags, N byte-equal); it goes to the
+     PM, never auto-accepted. A bootstrap-count difference (threshold touch) likewise.
+  6. Printed for the record: float leaves bit-equal vs within tolerance per comparison, largest relative difference.
+  7. Trial ledger unchanged after all runs (133 lines, `27e40f9f`).
