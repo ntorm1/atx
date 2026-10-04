@@ -26,6 +26,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 import research_cycle as RC  # noqa: E402
+import cycle.phases as CP  # noqa: E402  (P9 E2 split: Cycle reads window_id from its own module)
+import cycle.spec as CS  # noqa: E402  (P9 E2 split: validate_spec reads INPUT_KEYS from its own module)
 import research_spec as RS  # noqa: E402
 import research_tree  # noqa: E402
 import test_research_cycle as T  # noqa: E402  (the fake tools and fixtures)
@@ -181,7 +183,7 @@ def label_role_input(monkeypatch):
     """Ruling E-25: lane R45 adds inputs.label_role to research_cycle (INPUT_KEYS and the NAV step's --label-role
     MANIFEST --label-role-sha256 SHA); until that merges the v8 specs are checked with the key registered here."""
     if "label_role" not in RC.INPUT_KEYS:
-        monkeypatch.setattr(RC, "INPUT_KEYS", RC.INPUT_KEYS + ("label_role",))
+        monkeypatch.setattr(CS, "INPUT_KEYS", CS.INPUT_KEYS + ("label_role",))
 
 
 def flat(node, pre: str = "") -> dict:
@@ -1157,6 +1159,15 @@ def v71_seed_registry() -> bytes:
     return RA.G.encode_data(seed)
 
 
+@pytest.fixture
+def stand_in_ic(monkeypatch):
+    """v8_root's IC exe is a stand-in (bin/ic.cmd -> fake_ic.py, plan-only) that writes no candidate cache, and pytest's
+    tmp roots are far deeper than a pool's: the ruling W1-I1 cache-path bound (cycle/phases.py CACHE_PATH_MAX, pinned
+    by test_wave_driver.test_cache_path_bound_w1_i1) would refuse the committed v7.1 / v8 ids here. A cycle that runs
+    on it lifts the bound; nothing else changes."""
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", 10 ** 6)
+
+
 def v8_root(tmp_path: Path) -> tuple[Path, Path]:
     """A root with base-lo1.json (its tools re-pointed at the fake ones of test_research_cycle.py, the IC exe at the
     fake --plan-only one), locked on stand-ins of its inputs (fake_root's unlocked copy, re-pinned to the stand-ins'
@@ -1235,6 +1246,7 @@ def test_derive_name_substitutes_the_parent_token_else_appends():
     assert not RA.shared_stores({"fit": {"work_dir": "build-equity/mega-fit-work-v70"}}) and not RA.shared_stores({})
 
 
+@pytest.mark.usefixtures("stand_in_ic")
 def test_add_alpha_on_a_v8_base_spec_screens_and_runs(tmp_path):
     root, parent = v8_root(tmp_path)
     outs = parent_cell(root, parent)
@@ -1275,6 +1287,7 @@ def test_add_alpha_on_a_v8_base_spec_screens_and_runs(tmp_path):
                                                                    "cycle_verdict.json").is_file()
 
 
+@pytest.mark.usefixtures("stand_in_ic")
 def test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_exceptions(tmp_path, capsys, authored_v8):
     root, base = v8_root(tmp_path)
     tpl = json.loads((authored_v8 / "r4-hold-band.json").read_text(encoding="utf-8"))
@@ -1355,6 +1368,7 @@ def test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_excep
         RC.compare_files(RC.Resolver(root), check)
 
 
+@pytest.mark.usefixtures("stand_in_ic")
 def test_add_alpha_child_of_a_labelled_parent_labels_its_ref_and_nav(tmp_path):
     """Review F-8: the child of a labelled parent (inputs.label_role, e.g. B0c) reproduces the parent's NAV in its ref
     phase and compares it byte for byte with the parent's labelled S2 daily CSV; so ref (and nav) carry --label-role and
@@ -1400,7 +1414,7 @@ def test_cache_gc_apply_with_the_v8_specs_keeps_the_shared_stores(tmp_path, monk
     """C-1: the v8 specs name the store base build-equity/fit-work; the fitter, the card and the monitor extend it with
     <role sha16>-<window id> themselves (the monitor reads every window of its role): --apply deletes none of it."""
     import research_gc
-    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    monkeypatch.setattr(CP, "window_id", lambda: "research-window-v2")
     root = tmp_path / "root"
     specs = [V8 / n for n in V8_SPECS + GENERATED]                                   # authored and add-alpha's
     named ={RC.load_spec(p)["fit"]["work_dir"] for p in specs} | {RC.load_spec(p)["ic"]["cache"] for p in specs}

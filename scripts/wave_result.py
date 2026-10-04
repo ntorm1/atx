@@ -220,7 +220,8 @@ def log_section(doc: dict) -> str:
                 (f" -> corrected to L {cell['leverage']}, G {_f(cell['gross'], '.10f')}" if cell["corrected"] else
                  " (stands)") + ".", ""]
         if cell.get("exe_notes"):
-            out += ["**Exe notes** (outputs reused on a rebuilt exe without an exes_sha256 pin, ruling E1-REUSE-a2): "
+            out += ["**Exe notes** (outputs made by another executable than the one on disk now, reused under the "
+                    "exes_sha256 pin rule, ruling E1-REUSE-a2): "
                     + "; ".join(cell["exe_notes"]) + ".", ""]
         mech = doc.get("mechanics") or {}
         out += [f"**Mechanics (S2, read before any return): {'PASS' if mech.get('pass') else 'FAIL'}** (" +

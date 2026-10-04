@@ -1,0 +1,15 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "p9k-rule-composition",
+  "description": "P9 kinds fixture (K-P9-9, G-P2 'new combination rule'): the parent's u pass, a new fit composition named in the wave manifest's rules block (the fitter flag comes from the IC exe's rule table, never from this template); every downstream output renamed.",
+  "parent": null,
+  "nominal_parent": "../../../../../tiny.json",
+  "change": {
+    "set": {
+      "fit.output": "tiny-weights-k-rule",
+      "card.output": "tiny-cards-k-rule",
+      "ic.w_output": "tiny-w-k-rule",
+      "nav.output": "tiny-nav-k-rule"
+    }
+  }
+}
