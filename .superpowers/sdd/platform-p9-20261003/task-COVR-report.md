@@ -18,6 +18,7 @@ give equal bits in both builds. The call sites:
   constructor at `:694` (factor_fast, HL 84), `:696` (factor_corr, HL 504) and `:697` (spec_fast, HL 84).
 - `atx-impl/src/strategy_risk_model.cpp:853`: `update_vra`'s Kish decay, HL 504. This feeds DIAG `eigen_effective`
   and atx-cov-v1's S2b length.
+- [root slip at merge, review S-2] Also on the path: `:815` (VRA decay, HL 42: equal bits at the default); `:523` `pow` only propagates; the set of differing sites is fixed because the half-lives are compile-time defaults, not verb flags (`crt-exp2.txt`: H = 21 also differs).
 
 | H | argument `-1.0/H` (both builds) | Debug `ucrtbased` | Release `ucrtbase` | correctly rounded |
 |---|---|---|---|---|
@@ -81,6 +82,7 @@ Classification:
 - So `exp2` is the whole build-to-build difference on this fixture, for both recipes. This covers the eigen kernel
   (engine /Od vs /O2, Box-Muller `log` / `sin` / `cos`), Eigen, the structural specific model (`exp` / `log`) and the
   bias harness.
+- [root slip at merge, review S-3] The swap excludes the data-dependent `exp` / `log` / `sin` / `cos` only on this fixture; on TRAIN they are excluded only by the 200,000-argument scan (`crt-scan.txt`), not by the swap.
 
 ## 3. Stage table (Debug / Release / swaps)
 
@@ -189,7 +191,7 @@ How it reads:
 - Skips:
   - `RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery` (nightly, both builds).
   - Release only: `RiskSectorColumnsById.CheckedIndexingCatchesThePreW0Read`, a pre-existing NDEBUG skip ("checked
-    indexing is a Debug-build property", `risk_w0r0_sector_columns_test.cpp:170`). It is not COV and not CRT.
+    indexing is a Debug-build property", `risk_w0r0_sector_columns_test.cpp:171`; root slip at merge, review S-6: `:170` is the `#if`). It is not COV and not CRT.
 - The regress filter has 106 tests where root's M2d had 104: later merges added tests.
 - **Before vs after:** the existing tests' sources and every production source equal root's `30b9c9d2`. So "Release
   today" is the Release column, before and after this change. This lane adds one disabled test and moves no count.

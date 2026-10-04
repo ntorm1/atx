@@ -1,0 +1,7 @@
+a-research-spec seed 0 head 5afb5447 code-dirty [] exit 0 wall 317s start 2026-10-04T22:34:50Z env1-hits 0 :: 87 passed in 314.85s (0:05:14)
+a-fitter-composition-exes seed 0 head 5afb5447 code-dirty [] exit 4 wall 1s start 2026-10-04T22:40:40Z env1-hits 0 :: no tests ran in 0.00s  [VOID: invocation slip, relative test paths resolved from the repo root; re-run below]
+a-fitter-composition-exes seed 0 head 5afb5447 code-dirty [] exit 0 wall 103s start 2026-10-04T22:41:03Z env1-hits 0 :: 286 passed, 39 subtests passed in 102.24s (0:01:42)
+a-root1-scripts seed 0 head 5afb5447 code-dirty [] exit 0 wall 643s start 2026-10-04T22:43:03Z env1-hits 0 :: 512 passed, 4 skipped in 642.11s (0:10:42)
+a-root1-stage-chain seed 0 head 5afb5447 code-dirty [] exit 0 wall 1s start 2026-10-04T22:54:45Z env1-hits 0 :: 9 passed in 0.28s
+b-root1-scripts seed 0 head c8ddf736 code-dirty [] exit 0 wall 937s start 2026-10-04T23:02:58Z env1-hits 0 :: 512 passed, 4 skipped in 933.39s (0:15:33)
+b-root1-stage-chain seed 0 head c8ddf736 code-dirty [] exit 0 wall 5s start 2026-10-04T23:19:13Z env1-hits 0 :: 9 passed in 1.15s

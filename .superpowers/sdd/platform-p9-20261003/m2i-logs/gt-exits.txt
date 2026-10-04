@@ -1,0 +1,10 @@
+b-dbg-container exe cbb24a35df4f26c3 filter 'RiskCovContainer.*' exit 0 wall 0s ran 21 passed 21 skipped 0 failed 0 disabled 0 env1-hits 0
+b-dbg-cov-all exe 9f289a7443182245 filter 'CovTruncation.*:CovEigen.*:CovRecipe.*:CovStore.*:CovBias.*:CovDiff.*' exit 0 wall 122s ran 29 passed 29 skipped 0 failed 0 disabled 0 env1-hits 0
+b-dbg-regress exe 9f289a7443182245 filter 'RiskWls.*:RiskEwma.*:RiskBias.*:RiskModel.*:RiskVerb.*:RiskRobust.*:RiskTarget.*:VolTarget.*:NavBookRule.*:Spo*:NavV7Hook.*' exit 0 wall 28s ran 106 passed 106 skipped 0 failed 0 disabled 0 env1-hits 0
+b-dbg-diag-default exe 9f289a7443182245 filter 'CovStageDigest.*' exit 0 wall 0s ran 0 passed 0 skipped 0 failed 0 disabled 1 env1-hits 0
+b-dbg-engine-risk exe cbb24a35df4f26c3 filter 'Risk*:-RiskQpAugment.MatchesDenseOracleAcrossBattery' exit 0 wall 76s ran 432 passed 431 skipped 1 failed 0 disabled 0 env1-hits 0
+b-rel-container exe cd5915cf841ec9c9 filter 'RiskCovContainer.*' exit 0 wall 0s ran 21 passed 21 skipped 0 failed 0 disabled 0 env1-hits 0
+b-rel-cov-all exe 1fd9a34a41899c69 filter 'CovTruncation.*:CovEigen.*:CovRecipe.*:CovStore.*:CovBias.*:CovDiff.*' exit 0 wall 18s ran 29 passed 29 skipped 0 failed 0 disabled 0 env1-hits 0
+b-rel-regress exe 1fd9a34a41899c69 filter 'RiskWls.*:RiskEwma.*:RiskBias.*:RiskModel.*:RiskVerb.*:RiskRobust.*:RiskTarget.*:VolTarget.*:NavBookRule.*:Spo*:NavV7Hook.*' exit 0 wall 11s ran 106 passed 106 skipped 0 failed 0 disabled 0 env1-hits 0
+b-rel-diag-default exe 1fd9a34a41899c69 filter 'CovStageDigest.*' exit 0 wall 0s ran 0 passed 0 skipped 0 failed 0 disabled 1 env1-hits 0
+b-rel-engine-risk exe cd5915cf841ec9c9 filter 'Risk*:-RiskQpAugment.MatchesDenseOracleAcrossBattery' exit 0 wall 5s ran 432 passed 430 skipped 2 failed 0 disabled 0 env1-hits 0

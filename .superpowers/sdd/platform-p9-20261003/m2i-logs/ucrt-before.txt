@@ -1,0 +1,4 @@
+UCRT record before the M2i COV runs (M2c-RED-2 (d); COVR report 8.1), 2026-10-04:
+C:\Windows\System32\ucrtbase.dll   version 10.0.26100.7623  sha256 2C08E77F86B0953CFFA505BDBE64E87ECB7C088DB65D5ACB9A2EEE65A32565EF  (the Release CRT: unchanged since M2f)
+C:\Windows\System32\ucrtbased.dll  version 10.0.22000.832   sha256 19E79E91A6AADDA65191EA6DDDA4CC106E26C78338B05E73092E20709399F48D  (the Debug CRT; = the hash in COVR's record)
+(Windows Kits 10.0.22000.0 x64 ucrt\ucrtbased.dll, same version, sha256 1AE98BB7...768C: the SDK copy, listed for completeness)

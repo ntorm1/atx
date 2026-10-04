@@ -1,0 +1,35 @@
+{
+    "Source":  "c8ddf7368f92d85217fb35a581fbad5d3b934b37",
+    "Preset":  "equity-rel",
+    "DirtyEntries":  5,
+    "ConfiguredProvenance":  "c8ddf7368f92d85217fb35a581fbad5d3b934b37-dirty",
+    "Jobs":  4,
+    "FreeMiB":  5419,
+    "CommitMiB":  3568,
+    "Targets":  [
+                    "atx-impl-strategy-target-tests",
+                    "atx-engine-risk-tests",
+                    "atx-equity-strategy-risk"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  293.3951894,
+    "CompiledTUs":  63,
+    "Links":  4,
+    "Tag":  "p9-2o",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity-rel",
+    "Executables":  {
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "1fd9a34a41899c69d3dc001e432493c0948be95646c36ffe0b6ca33c8897a52f"
+                                                           },
+                        "atx-engine-risk-tests":  {
+                                                      "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-risk-tests.exe",
+                                                      "Sha256":  "cd5915cf841ec9c90be4423c70364f1c6cbc0f4232cafab9e651bddb98cd1c32"
+                                                  },
+                        "atx-equity-strategy-risk":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-risk.exe",
+                                                         "Sha256":  "ccc73cd10ddc0c4454de50a51f2624e8f38f440e1ea5b47b984cbab06444d811"
+                                                     }
+                    }
+}

@@ -240,6 +240,102 @@ Release ruling is void and the run waits").** Evidence `m2g-logs/cov7.txt`, `m2g
   attribute the difference to the container path (Debug also differs) or to the build (Debug equal); reported, not
   re-run further.
 
+### 4 (d) M2i: item 4 re-run in Release (rulings COV-12, COVR-1, PRE-29, EXE-CUR, RUN-1 / RUN-2)
+
+Step group M2i (root, 2026-10-04), after the merges of D2R (`5afb5447`) and COVR (`c8ddf736`). COV-7's Debug = Release
+precondition is replaced by Release = Release (COV-12 (b), cause class (i): the C runtime's `exp2`, COVR report). Evidence
+`m2i-logs/` (tools `m2i-logs/tools/`).
+
+**Pre-run amendments (written and committed before any run below).** The lists 4 (a), 4 (c) D-COV and 4 (c) step 4
+stand as written, except:
+
+- **Exe of record (EXE-CUR, PRE-29).** Every COV run (both D-COV stores and both repeats) is written by ONE file:
+  Release `build-equity-rel/bin/atx-equity-strategy-risk.exe`, build tag **p9-2o** (preset equity-rel, source
+  `c8ddf736`, the COVR merge; receipt `build-equity/mega-p9-2o-receipt.json`), SHA-256 `ccc73cd10ddc0c4454de50a51f2624e8f38f440e1ea5b47b984cbab06444d811` (63 TUs, 0 warnings). Its SHA-256
+  is re-read before the first and after the last run, and each runner receipt records `executable_sha256`.
+- **UCRT record** (M2c-RED-2 (d), COVR 8.1) before the runs: `ucrtbase.dll` 10.0.26100.7623 `2C08E77F...65EF`;
+  `ucrtbased.dll` 10.0.22000.832 `19E79E91...F48D` (`m2i-logs/ucrt-before.txt`). The atx-cov-v1 store's bits depend on
+  `ucrtbase!exp2` (COVR); a store from another `ucrtbase` build is not expected to be byte-identical.
+- **Runner (COVR-1, RUN-1, RUN-2).** Every run: `"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py
+  --output <out>-run --seconds 600 --max-rss-mib 2048 --build-type Release --admission-wait-seconds 1800 -- <exe> risk
+  ...` (`--seconds 1800` of the D-COV list becomes 600). `covr_cmp.py` starts nothing (its compare logic is re-written
+  as `m2i-logs/tools/tree_cmp.py`, which reads outputs the runner wrote). A run that reaches the 600 s cap stops its
+  item: reported, not split.
+- **Output dirs** `build-equity/p9-m2i-*` (instead of `p9-m2g-*`).
+- **C1 = 4 (a)** unchanged (`m2g-logs/tools/s9_check.py` on `build-equity/train-2020-2023-lo3/manifest.json`, pin
+  `e1c67101...95f4`), run before each COV run.
+- **C2 = 4 (c) D-COV**, argv (the M2d step-3 argv of `p9-m2d-cov-risk-container` + `--bias-families extended` +
+  `--recipe`; no other flag):
+  `<exe> risk --role build-equity/train-2020-2023-lo3/manifest.json --role-sha256
+  e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4 --fields
+  build-equity/train-2020-2023-lo3-fields-v10/manifest.json --fields-sha256
+  a4a060ae29c10080ca89b4b29335709558c2ae4842bd29db0398b23a43070809 --output build-equity/p9-m2i-dcov-<v11|covv1>
+  --emit-exposures all --emit-container --bias-families extended --recipe <atx-risk-v1.1|atx-cov-v1>`; first
+  `atx-risk-v1.1` -> `p9-m2i-dcov-v11`, then `atx-cov-v1` -> `p9-m2i-dcov-covv1` (= COV report step 5). Wall and peak
+  from each receipt.
+- **C3 = Release = Release on TRAIN** (replaces Debug = Release, COV-12 (b)): each recipe once more, same exe, same
+  argv except `--output build-equity/p9-m2i-dcov-<v11|covv1>-r2` (run dir `-r2-run`), started as
+  `cmd /c start "" /b /wait /affinity 1 <python> scripts/run_bounded_research.py ...` (`m2i-logs/tools/aff1.cmd`; every
+  C2 / C3 run is driven by `m2i-logs/tools/dcov_run.sh`, which runs S9 first and copies the receipt) so the runner and
+  the exe run on one CPU (the mask is inherited; probed on this host: parent and child report `[0]`). `m2i-logs/tools/aff_probe.py`
+  records the exe's affinity while it runs. The estimator, S2b and the writer start no thread and have no worker knob
+  (COVR report 4), so mask 1 is the "1 CPU / 1 worker" leg; the first run (C2) is the "all CPUs" leg. Criterion
+  (`tree_cmp.py`, full SHA-256 of every file, printed): same file set and every output file byte-identical, incl. the
+  whole `model.atxcov`, its root and `manifest.json` with META (same exe). Any difference = identity miss: stop and
+  report; D-COV is then not read. The output path enters no output file (COVR: equal bytes across output dirs).
+- **C4 = the 4 (c) reads**, tool `m2i-logs/tools/dcov_read.py` (new: the `m2g-logs/tools/dcov_read.py` the list names
+  was never written; tried only on the synthetic COV-7 outputs before this list). Two amendments: (i) the manifest's
+  `extended_families` is null in the COV-7 outputs; `extended_families.unformed_sessions` is then read from
+  `bias_summary.json`; (ii) `bias.csv` is read in the columns `family`, `name`, `z` of the eigen family plus `session`,
+  a timestamp used only to check that both stores score the same observations per rank (never printed). Prints and
+  may-not-prints exactly as the list (no book family, no `realized_return` / `forecast_vol`, no NAV / return / IC /
+  Sharpe / turnover figure). Output `m2i-logs/dcov-read.txt`, copied below. COV-11: per-rank b is read in both
+  directions (b below 1 = over-forecast / over-corrected).
+- **C5 = step 4.** Run: the P9-B0 Y-1 argv with three tokens changed: `--output build-equity/p9-m2i-cov-y1-nav`,
+  `--risk-model build-equity/p9-m2d-cov-risk-container`, `--risk-model-sha256
+  9c12852ea0cd578d2cf968fc858ae7cb986c308f4b533824a34d273ca7e017c7`; runner `--output
+  build-equity/p9-m2i-cov-y1-nav-run --seconds 600 --max-rss-mib 2048 --build-type Release --admission-wait-seconds
+  1800`. Exe: Release `build-equity-rel/bin/atx-equity-strategy-targets.exe` p9-2l `53ca5dd4...` (source `3fd0bf98`).
+  EXE-CUR: `git diff 3fd0bf98..HEAD` over C++ / CMake lists only `atx-impl/tests/CMakeLists.txt` and
+  `atx-impl/tests/strategy_cov_stage_diag.cpp` (COVR), which belong only to the EXCLUDE_FROM_ALL test exe
+  `atx-impl-strategy-target-tests` (no flag, no other target; COVR review (b)); the diff over the files of the NAV
+  target is empty: current. Expected vs `build-equity/p9-b0-y1-nav` as the step-4 list (every file byte-identical except
+  `summary.json` at `/producer/build_type` and `/producer/engine_git_sha`); compared by `m2g-logs/tools/nav_cmp.py
+  build-equity/p9-b0-y1-nav build-equity/p9-m2i-cov-y1-nav --allow summary.json:/producer/build_type --allow
+  summary.json:/producer/engine_git_sha` (file SHA-256, JSON leaf paths, CSV shape and differing-cell counts; no value
+  printed). Checked by reading that the vol-target block names no risk-model path: `strategy_vol_target.cpp:29-41`
+  `parameters_json` has none (the `risk_model` directory block at `strategy_nav_v7.cpp:305-307` is the spo engine's
+  only). If anything else differs: the one Debug attribution run, same argv with `--output
+  build-equity/p9-m2i-cov-y1-nav-dbg`, runner `--build-type Debug`, Debug exe `build-equity/bin/
+  atx-equity-strategy-targets.exe` p9-2m `c02717ef...` (source `5afb5447`; built this step group, replacing the stale
+  p9-2d; no C++ / CMake change of its target since), compared the same way; then STOP and report (COV-12: the PM rules).
+- **C5, COVR-1 reading (written before step 4 runs): `exp2` / `pow` / `exp` on a non-exact input on the NAV exe's read
+  path of `--risk-model` (Y-1: `--vol-target vol-target-v1`, `--rule aim-partial-v5`, no `--two-speed`, no spo
+  rule).** Path read: `strategy_nav_v7.cpp:1333-1340` -> `spo::RiskStore::open` (`strategy_spo.cpp:657-772`: SHA-256
+  of the manifest, JSON parse, `diagnostics.csv` `stoll`, container `CovModelFile::open(..., VerifyMode::Full)` =
+  hash verification, index / flag checks) -> per decision `RiskStore::read` (`strategy_spo.cpp:782-828`:
+  `CovModelFile::view`, `scatter_cov_block` `strategy_risk_model.cpp:1623+` = copies and an f32 store, `isfinite`,
+  f32 -> f64 widening, all exact) -> the scaler `strategy_risk_target.cpp:111-162` -> `engine::book::vol_target_update`
+  (`vol_target.hpp:93-120`: sum, count, one division, `vol_target_leverage` clip) -> `gross_one_vol`
+  (`atx-engine/src/book/risk_target.cpp:120-131`: w / gross, `factor_variance` = products and sums,
+  `std::sqrt(periods_per_year * variance)`). **Found: none.** The only libm call on the path is `std::sqrt`, which
+  IEEE 754 requires correctly rounded in every CRT. Present elsewhere and NOT reached by Y-1: `std::exp2` in
+  `atx-engine/include/atx/engine/book/two_speed.hpp:49` (`two_speed_fast_theta`; `strategy_target_replay.cpp:82-83`,
+  `:650-651` and `strategy_risk_target.cpp:184-201` call it / `two_speed_carry` only when `--two-speed` is on);
+  `std::exp` / `std::log` in `strategy_spo.cpp:879-931` (`calibrate_gamma`, spo rules only); `std::log` of prices in
+  `strategy_target_replay.cpp:670-671` (every NAV run, not the risk-model path; Release = Debug on it is shown by the
+  M2g Q5 Y-F0 re-run, 26 / 27 files identical, `summary.json` producer only). The engine `exp2` sites the COVR review
+  names (`atx-engine/src/risk/cov_ewma.cpp:20`, `src/risk/vol_regime.cpp:65`, `include/.../risk/horizon.hpp:72`) are
+  included by no `atx-impl/src` file (of the four, only `book/two_speed.hpp` is). So a step-4 difference outside the
+  list would not be explained by a CRT transcendental on the container read path.
+- **C6 = step 5** is the atx-cov-v1 run of C2: wall, peak and the manifest's `recipe.eigen_adjustment` block printed.
+- **C7 = store pins** (W3-10 extended by PRE-29), `m2i-logs/tools/store_pins.py` on both D-COV stores: path, SHA-256 of
+  `manifest.json` and of every `files` payload (recomputed and checked against the listed value), the container block.
+  Both stores are kept and never deleted. After C3 is recorded, `build-equity/p9-m2i-dcov-v11-r2`,
+  `build-equity/p9-m2i-dcov-covv1-r2` (their `-r2-run` receipt dirs are kept; receipts copied to `m2i-logs/`) and
+  `build-equity/p9-m2g-cov7/` (COV-12 ruled; synthetic, regenerable) are deleted by name.
+- **Seal:** if a run stops on the run date's token, SEAL-ALLOW-3 applies after the per-hit check (sprint dir `tools/sealsrc.py`).
+
 ## Item 5. AL-COMB Q5 zero-trial diagnostic (`scripts/specs/p9/diagnostics/al-comb-q5-style-variance.json`)
 
 **Pre-run list (committed before the runs; root names the cell here, as the spec requires).**
