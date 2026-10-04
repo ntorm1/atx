@@ -1,5 +1,82 @@
 # tier1-v4 controller handoff
 
+LATEST (2026-10-04 ~20:40 UTC, supersedes every earlier checkpoint): root has
+NO actual job live. Audit7v2 passed64.1s/552,931,328B; creator8v1 passed157.2s/
+585,781,248B. Nine units0..8 retained; eight0..7 separately audited. Unit8 has
+its successful unchanged native double-replay creation. Sequence9..15/session11698
+stopped at9: failed101.2s/491,642,880B/no cap or host stop, internal DuckDB256MB
+(244.1MiB) OOM at SECOND _replay/stream_issuers. No admission9;10..15 NOTRUN.
+Do not repeat v1 tags or silently raise resources/edit frozen runtime/native code.
+R23 remains binding. No orphan-lock recovery needed: normal exception released it.
+
+Root preservation inspectionv1 completed2s/27,283,456B/.2, independently T17
+PASS/PASS: exact63 native member bytes0..8 and snapshot stable before/finally;
+one unadmitted failed9 attempt8e024c20ad76493298df97805f7223ff, six files.
+No final manifest/pointer. Old partial8 preservation is a non-mutation inference;
+the63-member check does not separately authenticate that historical partial.
+Scratch metadata found only26,083,328B in two inspected spill directories,
+not deletion authority or a global cache census. No new cleanup occurred.
+Read financial-b0009-memory-followup-v1.md and independent
+review-financial-b0009-failure-inspection-v1.md. New fresh256MB diagnostic script
+t17-financial-b0009-fresh-replay-diagnostic-v1.py is static PASS/PASS,6314B/
+2ac238719e34d72517bff3b69894d84a36628d49f123b60ae4324a64583b0097, NOTRUN.
+It writes only separate diagnostic outputs, full original replay/typed/counter
+comparison and source checks; no native unit admission/reuse. Needs exact original
+.8/heavy/40 guard after disk recovery. A fit would not by itself prove OOM cause.
+
+Resource boundary: T17 new SEC wrapper fixture refused BEFORE child at34.852081GiB,
+original40floor; no retry. Latest observed Cfree39,411,957,760B (<40GiB).
+All new actual builds and fixtures held; code/review continues. T16 prior granted
+traversal/wrapper/copy-v2 nodes passed3/3, then authored capsule-wide common-input
+binding to prevent B2 changing fixed originals: new covering test NOTRUN.
+Root authored conditional private_identity_arm_comparison.py/directtests for
+P9 rows1-10/identifier exports. Independent T16 review found Important NULL panel
+valid_to extension; corrected to native concrete BETWEEN plus NULL refusal,
+four physical tests NOTRUN. Scoped T16 rereview PASS/PASS static, I1 addressed
+in review-p9-a0-arm-comparison-v2.md; failedv1 retained. No A0 original arms/D0.
+
+Readiness14 generator completed0 and preserves46/23 complete requirements, exact
+unchanged appendix3 SHA and all gates/cutoffs; records current9/8 frontier/failed9,
+preserves entire older checkpoint separately. SHA17c074d9cb28793dadd55a6b5835a7e73faaa11506af2d741930d53c67b4e421;
+T15 independent review PASS/PASS in review-readiness-v14-findings.md; generator
+completed1s/26,931,200B/.15. Latest APPROVED is14/appendix3; generated review field
+retains its historical pending-at-generation state, separate review authoritative.
+No release-ready gold, actual predictive evidence or consumer acceptance.
+
+LATEST (2026-10-04 ~20:20 UTC, supersedes earlier LATEST): goal ACTIVE.
+P9 linked request was reverified at59,756B/8f9916d59eb7f3b6f5c7b72768c3e4246c0d189dfbd42344330b57689f1d3321,
+matching acceptedv3 and goal8.2. No release-ready gold panel exists.
+Observer12 PASSED original31samples/300s: minimumcommit5.0325/physical3.8925GiB;
+guard completed300.3s/27,484,160B, finer minima4.541/3.8054. No waiver.
+Retained financial audit7v2 completed64.1s/552,931,328B under original.8/heavy/40,
+runtime256MB/one-thread/UTC; exact start/controller/result pins authenticated.
+Result5651B/SHA091d50a7901abf5afcf5bc3e531a2ea655650a23182be45d40a51eca4d0cdd96.
+All eight retained units0..7 now separately audited; no publication/gate credit.
+Root sole actual job is creator8v1, session38605, guard3452/child22412.
+It calls unchanged native compute_new including both original derivations;
+preserves old partial8 and all prior units. Do not start duplicate/root data jobs.
+After successful bound creator8 evidence, reviewed controller9..15 can proceed;
+otherwise stop at original failed guard boundary. Final whole85 remains mandatory.
+
+Extra-store recovery metadata v3 independently PASS/PASS:
+190directories/depth0..3 finds six native ledger parents, two additional stores
+sec_13dg/sec_144 contain zero exact candidates for367original SHA names.
+No source body or ledger payload read, no HTTP/restoration/global absence claim.
+V1 generic finalcheck failed; v2 retained75 directory-size-only differences;
+v3 excludes directory sizes and rechecks exact child digests, zero changed states,
+guard4s/28,905,472B/.15. Review-p9-a0-extra-store-candidates-v1.md approved scope.
+
+Author fixtures: T15 retained gzip node1PASS.24s/guard1s62,439,424B;
+T16 initial five capsule nodes PASS, peak<=54,337,536B, before subsequent path/glob
+corrections. Root caught lexical parent traversal; authored refusal+real protected
+sentinel fixture awaits run. Exact native consumed globs replace broader inventories,
+unused FINRA_SV dependency removed; complete native receipt/OPS/document originals
+still required. Shared frozen financial/legacy sources unchanged. No actual A0 arms.
+T17 original cover nodev1 failed DuckDB JSON-arrow precedence; minimal parentheses
+fixv2 PASS2.29s/guard4s159,084,544B, full native cover typed oracle. New coverage and
+buyback public projections remain untested/unqualified. Author jobs held while root
+financial creator lives; independent source/capsule engineering continues.
+
 LATEST (2026-10-04, supersedes historical CURRENT below): no actual root job
 is live. Goal remains ACTIVE and no gold feature panel is release-ready.
 The linked P9 request has a further precision revision, snapshotv3 59,756B

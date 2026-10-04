@@ -1,0 +1,22 @@
+Traceback (most recent call last):
+  File "C:\atx\.superpowers\sdd\tier1-v4\t17-financial-unit-create-v1.py", line 108, in <module>
+    admitted = N.compute_new(snapshot, generation, con, args.batch)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\atx\atx-db\src\atx_db\alpha_panel\fund_batch_release.py", line 616, in compute_new
+    _replay(snapshot,con,bid,Path(tmp));validate_payloads(con,native_dir,bid,source,Path(tmp))
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\atx\atx-db\src\atx_db\alpha_panel\fund_batch_release.py", line 568, in _replay
+    native.process_batch(con,Path(snapshot['binding']['extract_root'])/f'batch-{bid:04d}.parquet',native.ffx.load_optional())
+  File "C:\atx\atx-db\src\atx_db\alpha_panel\fundamentals.py", line 806, in process_batch
+    for cik, rows in stream_issuers(con, base):
+  File "C:\atx\atx-db\src\atx_db\alpha_panel\fundamentals.py", line 724, in stream_issuers
+    cur = con.execute(
+          ^^^^^^^^^^^^
+_duckdb.OutOfMemoryException: Out of Memory Error: could not allocate block of size 256.0 KiB (244.1 MiB/244.1 MiB used)
+
+Possible solutions:
+* Reducing the number of threads (SET threads=X)
+* Disabling insertion-order preservation (SET preserve_insertion_order=false)
+* Increasing the memory limit (SET memory_limit='...GB')
+
+See also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads

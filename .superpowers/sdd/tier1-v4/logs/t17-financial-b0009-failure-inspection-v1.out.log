@@ -1,0 +1,1 @@
+{"status": "FAILED_BATCH9_PRESERVATION_AND_SCRATCH_METADATA_ONLY", "prior_frontier": [0, 1, 2, 3, 4, 5, 6, 7, 8], "failed_attempts": 1, "scratch_directories": 2, "scratch_logical_bytes": 26083328, "identity": {"bytes": 26771, "sha256": "82df3cf5ea14fb911f3c9cb70dcb1505aaae38e7accf307d837995de70d24fc7"}}

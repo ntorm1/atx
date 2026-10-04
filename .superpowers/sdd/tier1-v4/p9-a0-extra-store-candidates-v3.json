@@ -1,0 +1,2256 @@
+{
+  "status": "BOUNDED_ADDITIONAL_NATIVE_CACHE_METADATA_ONLY",
+  "summary": {
+    "directories_visited": 190,
+    "native_stores_found": 6,
+    "additional_stores_checked": 2,
+    "depth_limited_directories_not_searched": 1,
+    "original_documents": 367,
+    "documents_with_candidates_at_initial_stat": 0,
+    "changed_named_path_states": 0
+  },
+  "changed_path_states": [],
+  "stable_final_recheck": true,
+  "directory_name_digests": {
+    "C:\\atx\\atx-db\\data\\raw": "a1519b714a2a2f3597a35bab181476208dbf48bfba2b4eebc8c3bcb1fc509a2a",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks": "7c0e78196e823f0a59b9e96660a6cb605f9cc0896da2f4769cc47a2c9d4ae8e5",
+    "C:\\atx\\atx-db\\data\\raw\\census": "e3558c850b64ad101f5b77224c0c73384f2e6637f595ebc725a8ee086ca5091f",
+    "C:\\atx\\atx-db\\data\\raw\\databento": "26affb7074a2df0fc959fb69839ee0546d28d3dd673626539967d5a7f7f0a720",
+    "C:\\atx\\atx-db\\data\\raw\\finra_short_interest": "671b444ad7cbf6c90a883949b9687eb40f818d6b9486d9532186bb9479cd4117",
+    "C:\\atx\\atx-db\\data\\raw\\finra_short_volume": "9709bfaafcfa78e162a5b2c829650b1f48f2f3b771e56f122ac26a63d000526c",
+    "C:\\atx\\atx-db\\data\\raw\\fred": "6b80317acb23aa66b80e9d77c3adc3c41f1f8899d0f5534ecc53dfc774c77f14",
+    "C:\\atx\\atx-db\\data\\raw\\french": "5efeb4060f2bc530b713e44cc39f19ef4b1a70de88d1d87452a64658b318ee6a",
+    "C:\\atx\\atx-db\\data\\raw\\gleif": "d9eae30bd7e2443a07ea822a7a528fc64f13589186a0ee9fe4e3607672b6029b",
+    "C:\\atx\\atx-db\\data\\raw\\nareit_census": "c145ecf8f8340f871b6eb12250cddbf6cfe8c91354897985c7d589af4b764b96",
+    "C:\\atx\\atx-db\\data\\raw\\openfigi": "8d6de7bf407046c3669c4df1c4c8bc6a599a0536ab44311a1b98ecf5012338e0",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold": "bc033e04920116933a3607247a221cb5de13ce22ec4cead20314c9b69c89f457",
+    "C:\\atx\\atx-db\\data\\raw\\sec-earnings-release": "be6eacdeaf638d76637f660125bfeaf57678939186466d32891149a6a1e7bd11",
+    "C:\\atx\\atx-db\\data\\raw\\sec_13dg": "ad8de84a1a9006f733a75670f9d0f3a96ae140bb751ba19e325473063783156c",
+    "C:\\atx\\atx-db\\data\\raw\\sec_13f": "c2e3e57ee2f7d94050c0385bcf5c9daa45e11ba38c5c2361f3f16beaee9e836c",
+    "C:\\atx\\atx-db\\data\\raw\\sec_144": "ad8de84a1a9006f733a75670f9d0f3a96ae140bb751ba19e325473063783156c",
+    "C:\\atx\\atx-db\\data\\raw\\sec_adv": "161e1bf482b48bee653acc183f3dc8986a3d19a470dcf199d2f5da85603493d9",
+    "C:\\atx\\atx-db\\data\\raw\\sec_events": "ad8de84a1a9006f733a75670f9d0f3a96ae140bb751ba19e325473063783156c",
+    "C:\\atx\\atx-db\\data\\raw\\sec_ftd": "c320c8b390ec39569ef79449b1ee81fd9613f6a7d57d3191ac2afe4c44f986f3",
+    "C:\\atx\\atx-db\\data\\raw\\sec_fundamentals_depth": "3e81d29e0ecb6222e3c98622ef532f0fb59f9120c1c28d3001157b17a1e82444",
+    "C:\\atx\\atx-db\\data\\raw\\sec_issuer_history": "97bf79fe79c7950eb89671f46827eb4f854a108f9933a60d373592e11d7827ec",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes": "ce8d87f51fdd7b75887af9fb982e990676261debd4d3783ef49d4a2a443a4789",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot": "e19c895db0a91d9475816ed987dfc6dcfabcc93a69ac8a200b441510aa6b0328",
+    "C:\\atx\\atx-db\\data\\raw\\sec_nport": "deb138b2b2d32fe7ffb479ced57292fe42988eea3ea72f4f179d0ef7beab7103",
+    "C:\\atx\\atx-db\\data\\raw\\sec_ratios_handcheck": "71b51be388421f9c74e4a129ec8de154382e9b238e309040c66d4e22a03ba075",
+    "C:\\atx\\atx-db\\data\\raw\\sec_text": "c5d6e708f2ee2f481842f3adbbc706342b1cd73c0e0549ab18912c0f5626e632",
+    "C:\\atx\\atx-db\\data\\raw\\sec_universe_hand_check": "97bf79fe79c7950eb89671f46827eb4f854a108f9933a60d373592e11d7827ec",
+    "C:\\atx\\atx-db\\data\\raw\\source_intake": "b9df48845644c51a67977a6bcb007e421c23badd54fee05ac1578b3b5ef7a4cb",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\_runs": "ea9c0b34faae81683e506ed30872ab50c25182eeb80b7901bbd3a52adbcdc1d0",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\french": "26378185d8f903fbf9cc1bf39363c546adf55016e30f2720f75b229d68ad90b9",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\globalq": "26378185d8f903fbf9cc1bf39363c546adf55016e30f2720f75b229d68ad90b9",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\jkp": "26378185d8f903fbf9cc1bf39363c546adf55016e30f2720f75b229d68ad90b9",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\osap": "26378185d8f903fbf9cc1bf39363c546adf55016e30f2720f75b229d68ad90b9",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\parsed": "12722b0d9b72f88a720d73d73c1ccf4fedf4ac7d26aa480439ee3f81a92d4de5",
+    "C:\\atx\\atx-db\\data\\raw\\databento\\equs_summary_ohlcv_1d": "8031306dbdc20ca79d5d824d06b1d55da8cfa268d785e26449185ec317055e7f",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Momentum_Factor_CSV": "4af3f05d1d9b8f79e63f502d22127130e9ec9383f508940019088ba9e1717ae8",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Momentum_Factor_daily_CSV": "6c4e03a6089319b98f5e7d1fcbd97137e40861b69b415baf02228adb73eccd0d",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_5_Factors_2x3_CSV": "3685eb5ee7876ca80a6d1eae022fc1e2a73597e78c134a5fb1391a6104d9cd04",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_5_Factors_2x3_daily_CSV": "eeff47e6fe7ee068c6d4bd1477c7478fc4f160193d00845742a7e77463bc23e1",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_Factors_CSV": "7bd9f7f74ca23758fe8e4061ab3c0aa071def11a5ae62eae2054861aafba786b",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_Factors_daily_CSV": "ea67c9d09d12e1678062e5fbc7d514748ef718380916840da99e2320399e74fc",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes10": "a0f6cb56ca3041745dfffc90f8ac6411a7eaaeef7ef4a73854ef131409fdcad9",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes12": "0b5128b5d16cbd7063a46604bdb4c299606735a26c72ebc9c32a466df870aa61",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes17": "094d8d41a42dce44bc1ad2fee71d1c3557e98d310f13fe410bd16c16652bc8cd",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes30": "8392ed9d80fc9f668c82954d4472217b3b57be67d02839ddbbf2fc69508cbe90",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes38": "9cbd16c3f74143c12f682dc149d3895221a6eea42e1a4623ce911164537a3170",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes48": "32d4fdb15a118f21627beefb0c2656b04fbdf4441dfb69bdab4ba316f231fb20",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes49": "697df00bb6d11015db60d380513657c3b846d2f620e5eeb542e12226b409d68f",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes5": "c9e112d9fb72e30d6b8520ea4b48ff626da41356e8090ca376632f4fedec3813",
+    "C:\\atx\\atx-db\\data\\raw\\gleif\\parsed": "d7859ba3c2fb1cafc099e2806fef8817991e18f4df2ca4c373b371f3ddb8229c",
+    "C:\\atx\\atx-db\\data\\raw\\nareit_census\\round3": "995e53ef325a0c02a587102f3395e39a48b48d37d3d4ae42a9db760d6f09abce",
+    "C:\\atx\\atx-db\\data\\raw\\openfigi\\responses": "c9c5579d75bf3916d9663f45f9d81ff7788cd42e31c65d9cf42d58663141cfd3",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold\\cboe_bzx": "bf00e79ad36a4095d60e6c503c9389f888472607860952651be16cfea829cc46",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold\\finra_otc": "db01df1801aadfa223597a8a764226bbdc3c4fd79f77799053ba0af4d672ee29",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold\\nasdaq": "7486fa377fc98bd46a0bad08cda46b1066eab154ac000e4ef0b6a24e630a15af",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold\\nyse": "70a9aaf4400f89a33eead0a72d7938dac48d0cd7a9ef20e690a550fc13219084",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold\\nyse_american": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold\\nyse_arca": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold\\nyse_combined": "5b516d7d1179bdb1218cbe4c97a4f8702793b9a9c614a17c96826e6ee6c2440f",
+    "C:\\atx\\atx-db\\data\\raw\\sec_adv\\bulk": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "C:\\atx\\atx-db\\data\\raw\\sec_adv\\rosters": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "C:\\atx\\atx-db\\data\\raw\\sec_adv\\thirteenf_cover": "deb138b2b2d32fe7ffb479ced57292fe42988eea3ea72f4f179d0ef7beab7103",
+    "C:\\atx\\atx-db\\data\\raw\\sec_issuer_history\\round2": "193753070358007b32abde77bfc512233522030517fbcc7154450bd9061a2b5a",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes\\meta": "aed41ee2186d360f0ae75d35b889931340eb7bda78035a156c3fa179f08a001c",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000006955-22-000031": "e00a4a9810fd6b3265b746ed354f7370e8b1019e6a1c6b54a21443dffc7e4c10",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000022444-25-000138": "51cce2cfc1678a90b0eb661309d4d17fa8eb7bd0f8c43332950c337ae6ad5770",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000024545-21-000004": "2f66d32ab7682da357c4d2c6569961cf6d4a2b2bb2a2eeefbfea9786c5f8561a",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000027996-25-000051": "5d84b1a6a20f6a11df2f3e601adea68e851b1c108e8e05aee66376e167067a28",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000029332-23-000015": "87b81554ea2bacdcab51efbe7df93318dc81dc8983ab687f2f5aa6bb5a47e9f8",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000050493-23-000021": "e05584d70eaa60ccd5d3b8c6714b3f7397b3dbdde90dcb9a91f525e0aae4aa2d",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000060519-25-000005": "ffd3e5f54f27802715317eb182a4d7bb9e92d00010968f7a44475a019cb9533a",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000071691-22-000006": "ded85d4e3d1f3715b2803f5d60300de5c9faa0e6a1eb41de42b8cc1d0060b59f",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000089089-20-000010": "4d2ee977a38b3728b16ed03f5e22ae26c7f765107d77ea5bb2b8b3b329aae340",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000098246-20-000042": "3e203b075bf637dd99b6059e55b3c5054adfac1d9f9fa7db5aad0c729e023476",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000104889-25-000022": "2999ee181e550e524e9dee7bd422ff8287929c9818cc6b806ab1bb4bb42d3e62",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000105634-23-000005": "48aa5bada3445a5835ad4f385866316e728094625147e168dcb57d4b218722a3",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000107815-25-000103": "644b94962084d2830c11a1fce9529022c8e99e41e84709addf3ba8c889620249",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000109380-20-000092": "9d8b2921433db52fb1317d47b8f61c6869602b8ef1f822d309df84d5254525b5",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000277638-25-000007": "ccdbe8b04668c64513c6fc9cb040b00c920fc3796c5636b74d9a0a686cfa3445",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000350698-21-000031": "b6e4929dbe1aa7838cab41aa65e9c99b3dc9f94811fea530a3c3487351351aa4",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000766421-23-000009": "8c9b4c1f71849f6c9ba9f208ee82f4b9e42ace456d95a30766955b7d10f4bb7b",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000793074-24-000014": "5335f74c3a3efd3ec78514098e0d4a92eb8c94d15cbafa1c2b3588330575ffc0",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000820027-22-000016": "ed73706d03d5edaf5472797aebe1373b0f0b0e149a5141fd8aa0e389c1a2d839",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000820027-23-000014": "2e46f67d2fd3b2b4025bbfad8cf29322d05876f193d6941cc2be6bd9ca1c91f6",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000820027-24-000015": "d2d08ff7ea4c64f8bea92c7e9924b7c14d1f548755ff48b4d02760fb1f75dd68",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000820027-25-000013": "87340299014603892eeff621070062bb1d0a43989dd2cd2e2e3ee1f690cf9fce",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000833079-23-000022": "a76cdf4d294bdb0d8ca66c4f3f48c0e06a9daad869cc22b915a71db9000c239e",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000886206-25-000085": "13f95f960ef375c6b03065a8127344fa99c6746233f9456aaa9efccd2bccaf57",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000891092-20-002167": "10ae4e38c8a501f89aa90b5153628e5392fa45686761b4d9114b5d6343fac27b",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000908255-20-000014": "4fd699db33a8d814650329b27d28aba114070aace9e6bfd9fbbd011b762527df",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000910521-24-000017": "72642580b65da61218492a9b214f46d760456c14418ce0a0bd8b489466d710eb",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000929351-22-000017": "a193cad9dc88794e2f70ba51d260c1665d470013cf20320b7dd05ea1cfdb0edb",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000950170-22-002474": "78a953f1faca04e3f9f124cdfb5b6464d7f896dea297164a5faacaee6cb4077d",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000950170-23-004361": "7244797a26a51a25a77b1131ef30752321d9935692d6f8244be840a7d1bd5e50",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000950170-23-049730": "2457f816ad9061758f35a2e57838e78ca2f3c264c3f591fc100ddc218a2565b4",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000950170-25-029969": "fce18340a7da07af65f065141794925a43288dc9b63e244e5b03f4fbd4905802",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001000228-22-000016": "17192395f1a25850f497f337954041294547dfd9ebc19dc21549cd65bb832aa0",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001047862-22-000039": "06622d2d171ea06f3298ae3b4bb19f7f4ab5607bfb2a22f8379f81314daa92c9",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001047862-23-000038": "025314e226cc197c3c3d3b6dfdfeec1c6c76903e0fd64f2ded9ebd5c485508a1",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001050797-25-000023": "ca059db2061495659cfd069bde479713c7648dcd7c2d0d236c8241c8ced6c663",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001051512-21-000009": "e9d018d282baed10063a1bd4b6e140f004b8687b23e2364473c43126ff689118",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001060391-23-000008": "0ceedcc985ea4a830f314566d0d64ef4d1b0ec6f52ffe3d21cb4a79edb6c511e",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001060391-24-000142": "2b32fb3557eedee36296461e0cdeff03e8dca3df277f1bf0684af84c260507f4",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001060391-25-000091": "1856a15324696557b501672b8019ff784cc3eb0c60594914b21b7c84998f845e",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001084048-20-000012": "6f52c7104c9f55de239404c0e022b11e21a5e4a1bd4aa26152c94ec00d2fdeab",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001101302-25-000015": "e72ac368f242cc171c994a04fbcb640dae89d90feb96441fb237031febd6b21a",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001104659-21-037098": "911f5e4d6c2753313054b43861c1c5be8f61b03f75ba86628cbfff62d9718020",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001140361-22-012185": "0ec22488f1e31d826a6b625b66388a2e94b0ea322fc992871211975615451ed8",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001140361-23-014888": "c4725828bffbf04fa26855d8411fae19a6ed87d6a3f2277398b73f3a9dcc4dec",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001140361-24-008111": "63bd97baf404804ae14482858b1b808b9d52165c6ab2eab0de06db8c911a9240",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001140361-24-027200": "49f55cf29f12d8a4604196d8407601b7ad4d95ba19ca15a7a5fb4cf92496d1f6",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001193125-20-094235": "fe5f2213410e835ef865ce4b04761adccca09b273d12de0238b92fc296f91191",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001213900-22-012344": "62f74d678c45c238caeb2cde1a72640f200a690492d197df48827b2ff405993b",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001213900-25-023815": "8ef1f97fb1df4753e1e792815d8d5fef968e62f74bdadb837cf7e25a0ea1ef6c",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001281761-22-000016": "7ad867d09966f54a69e71df806bcdc69774837190fa2d6bc226a034ae7b5d987",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001287750-23-000010": "18b52ba439354ead47d589fedb51d83d7585a2c01ed8d39773cc92458971af74",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001296435-22-000026": "9f32c9ab0f355bda8f2be074cf46960eec0bf089c251eba3cd3d28c553273940",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001319947-23-000014": "8d6195eaa8d0d3606c0eaca373f9d2cf3b31bf327108478814d8e62ce393e416",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001357615-21-000040": "2641d51cfcb3e08ac76a880b132e5dda0d3f181140bc11e6160ab3130645a020",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001417398-23-000094": "1414c218082a9eeba0a14e2037c64f04dd57e7df98ae4f0d513580e13aed4a5a",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001437749-23-001642": "9b60303055c64273abbe92820a58fb26cedf2cfd2f1a7b75ca7750c2c5300204",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001437749-23-007261": "7af155650de8a9edcfb119c18633a90f230310b77a982eaac6dbc3fd184ec108",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001437749-24-010002": "fc7a1a387eabeb83cc3d34f01c91275d58480f275f410ad7863be38a1cf98a2a",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001466538-20-000026": "279bbbd7ad0ef5d8240db52aa7d41ce5e7e1221c83c5cce33f5d672dd579d203",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001477932-20-007544": "ccee1e3a1a7d9501de341bad3116b160c1f364fe9f6dd52347d2c1230047ab06",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001477932-24-002122": "bb6af9aef92a66a2760e1c489a5e0102d012ed87f0f2b11ca0b961c1b66ef075",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001493152-20-000477": "38ebdf906cc8046989d6857827657b9156fac70b2e6024cb3f8353cf2b66e66d",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001493152-20-004882": "08fcc38103f395cbe5106552f56802850a87680d06c1a42a79bc89b1bcf64c2c",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001493152-21-000157": "528d6217f3305df632d198b443d8a40c27d102b55bb79b33a1c9a208546db3f7",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001515156-20-000018": "28547d53b074e932eb869a7fa04d4d9240e0b5c078d2a983d882db05693d885a",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001515156-21-000010": "a3eb18c8dfbf43347104ca8d089c5b9e11deccbf93c26f9f868e0d3b2473ebf4",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001515156-22-000005": "335e4ebac28f7983728d8dbc9a5c23cc848e89e6d11d89d6b285c6781551ab34",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001526113-24-000007": "9ad16412784bcb7c6522bee4e19eef227afe38bc3368635505f44406b33bd52d",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001527166-24-000019": "f9dccbd3fce58009c31db2973a1cf1e8f04482b839ee4f1199faa295c0d5b1ce",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001534504-22-000007": "1d8362cdbcc74c1ed547b997797832cfaaa488531fa66ed9b8c236c690e50389",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-20-001462": "bd165fcb43fca85c30f2b8e5878ca723ee76e1e4303e3a84c7892e637dfaf760",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-22-003310": "74fda8d74def89a1d60d1fcf1ad988dfeb641c818c06fcdd9128707dd857ff1b",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-22-003617": "ed7f23d56e4caf7f9eb83d3a08c694adf5b161fee2a287ba0b9dd48d53356f48",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-23-003155": "310c631407af85b8dd3af3c5026f6ed4a1a44e870f3db76f15d0c8d267229d37",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-23-003621": "a3fb91e3d1163ffb00fe47c0ef3ca470d5c0ecb3a21610e9145639053bff4d78",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-24-001165": "117c08765bcbaefd85562881d2ef87d32f5886fa5eef2f33968aff9d08ff5e98",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-25-001102": "33aa76dea30eb203a74daf7bfb04060039d6adffafe32d4cd108728a616d4be2",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-25-001617": "d773c8ab4f84f74db56f347834cb3800971c6297bb92d7c434415129aeef7e06",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-25-001888": "0a6c8942ba46fc05a0c7b5df4906648f1f69d030f73984c6faf84c9f0c0c2a19",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001564590-20-006778": "e067df22698484d9b80038220d77a2a1c38cb5e773c06b2163300ba7a6110216",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001564590-21-010973": "de63abb763c99a78677cbb01656f9b22fbc1cce86662cca0419c9bb79782450f",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001564590-22-006399": "7a89da26dd84a485c59cea0adf284413d68f6c9236e26a7b3b30660b18e2fbb6",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001604643-20-000035": "8efe7aa3735711ca3552891ece6f99e0dbc54badb58f240777f18ee88a494750",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001604643-21-000094": "eff3785ea9afb190151ced5c1862f41f3f1873902899aa38fadfcc5575d810b1",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001604643-22-000124": "4ba04fb5f72f72478ab468bca5c39b5c3dbf4cc2dc385fedb416d1aa6ac3d426",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001609253-25-000027": "e03995f870ff7f79c1fc8389517feefb5fabb13da20d321ba1846e70ff25146f",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001628280-20-010583": "cfb27e3760bd7ec3d4f71c9db5d19317ca90a50c81b3e23d042a781a26418ddf",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001628280-24-002371": "9e91d47c87da21160c61f072eb775e3d31f5a38a2de39e4fd3659f761358b189",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001628280-25-009254": "6e9ba08161b108286172dfa688af2f2251a2dcef31d8615016eec4dd72bc805a",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001628280-25-015037": "17b91455edfa309a55c35b95d8d0be2efccb1224991cf50ecaa99d7982fa66b7",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001628280-25-015336": "680e9969ad4ab6eca3d34a570819eb8f0b9ecfc6e63442971f45c81837ab7427",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001644406-21-000009": "2ed0355f7776402394a75f8ad44fa095e31bd6073acd5dfc7f1c7c0edb1061d7",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001653653-25-000004": "db7b768c1a31723fef960668775dcd6a2d7db775c5cb82279609408ba5010c7d",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001704720-25-000015": "f5dbc9acf7a6e6a09f1f17cfb0e95332aaab3fa57fe629426ec89197fe916580",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001705873-25-000018": "08278339f03db9638e7751353e5652962acb925bce9251012b7d50918dbfe3b7",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001722482-24-000012": "59b0ed57a7b53ca4c0ba6c7b91821cb67916214f680a61aeb072f189e3e0e9d9",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001822993-24-000009": "689737d46089209a0e7723315868d5d96874d860ad11bbf738fa515d6561a1a9",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001903596-24-000279": "ca2a0551722afc5f2fe5ce16b14c2d19afcda1775594c19a4913632c68b1a52c",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001982518-25-000007": "0d56dbede714bde521cb5e2fbb618d4e04c478b32dc13f87cc464800ad2bbe39",
+    "C:\\atx\\atx-db\\data\\raw\\sec_ratios_handcheck\\initial-build": "d9bb20c706eba018af6d61d4d8947eeed157c9a3102219e0b3f9f5d8ce7379c7",
+    "C:\\atx\\atx-db\\data\\raw\\sec_text\\_logs": "352a0c477b59826da541bba7fafd493a8db263532ef38ca409e520121c9ebee4",
+    "C:\\atx\\atx-db\\data\\raw\\sec_text\\docs": "4fffa80cda727c92f889ff9afd9d61c0d32a83486c9201ccaaf4f314cd1831a9",
+    "C:\\atx\\atx-db\\data\\raw\\sec_text\\sections": "4fffa80cda727c92f889ff9afd9d61c0d32a83486c9201ccaaf4f314cd1831a9",
+    "C:\\atx\\atx-db\\data\\raw\\sec_universe_hand_check\\round2": "ad8de84a1a9006f733a75670f9d0f3a96ae140bb751ba19e325473063783156c",
+    "C:\\atx\\atx-db\\data\\raw\\source_intake\\nyse_calendar_v1": "c93a6293382e5530c5ccfcd805c5b1cd5a6e1c9ca3a42ef1829d5f63b53171aa",
+    "C:\\atx\\atx-db\\data\\raw\\source_intake\\p9_original_v2": "691bea1e629464a3049e742315456cd4f55fdc3c4db8298062a7097c53918895",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\french\\2026-09-26": "db3d767a882dbdcdd4f553f7e8eaa122852c629cc97fe90af67879737f04f7f0",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\globalq\\2026-09-26": "a919cef1867f1dfaa43df3a9e95992634b2a9299b4bfd8bde4776641060f6872",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\jkp\\2026-09-26": "1bbc586c891aeaaad8d37867bddb7055c1e429ccd9dbd470693d933993070256",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\osap\\2026-09-26": "c80bf46b65296dbb2b00408e0f4433ca65a205f9de5d2c418c90b508b8ee417d",
+    "C:\\atx\\atx-db\\data\\raw\\databento\\equs_summary_ohlcv_1d\\2026-09-14_2026-10-01": "8c46399bbacea9088665c64177d37cea5311d6db8a02b8e5c6699aa7fc3b2db6",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Momentum_Factor_CSV\\20260929T231102Z": "c33b1ddcc3c11365e5863af26e26c96de1af97e6642aaeff0d721df3b1fdcafa",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Momentum_Factor_daily_CSV\\20260929T231101Z": "179eb062cbb7254496614460bd21c57e28f6fd33969d38332078e3f8c5bef20c",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_5_Factors_2x3_CSV\\20260929T231058Z": "c488e113c8dd6ebf92c3de532f45f2ecdcb97357670bfae56ae7a4ea36152094",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_5_Factors_2x3_daily_CSV\\20260929T231057Z": "a9d7433e322db4c0886bd69e92cbbd579a6f8e4aff638279aa555ed73cc4c059",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_Factors_CSV\\20260929T231100Z": "9e0cd9649691103d9d82df2c8d01f606647b05f9b67cd5fdb1c9bcd07473c29e",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_Factors_daily_CSV\\20260929T231059Z": "235847b5dab9710f25f22c8cdd1888921e5b1574ad6cab98583f0ecb06279adb",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes10\\20260929T231104Z": "20e635bab8bd58cfae01e34f5a0067ad71792275607eead2593ae863f7223eb0",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes12\\20260929T231105Z": "cb57ab84e486d94b1c8fe3dc3397e884712056f25286b8118f3c44529c5ff2ce",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes17\\20260929T231106Z": "cfb47b3e700121883af7d1ae28c21a1881ff68503804d12786b98dea64f9d746",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes30\\20260929T231107Z": "6efe9b76ba562bc6bd479f33cd9d0192b1565d58f742d1b6ebbf266c8e828b4f",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes38\\20260929T231109Z": "f1e5cb1a430c2a33a7dd83a150dd43aaa260dacdb5569551f9ead05e977177c8",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes48\\20260929T231110Z": "de424643bc1545edc142517d9ddce81473cd0d50708bfb152a5c1b6582965ef9",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes49\\20260929T231111Z": "f5dc276ec1d10625f97627ae1251894ba0ac369423926dbe72e11e6f9a71e630",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes5\\20260929T231103Z": "8fc8a7cc1dcd1a66c18d98ba8a3ccfb75dd16e2e960b699fbfaf12cb0983e9a9"
+  },
+  "directory_comparison": "Device/inode/mtime plus exact sorted child names/type/symlink digests; directory st_size is not a regular-file byte length and is excluded. Regular-file size remains checked.",
+  "native_stores": [
+    "C:\\atx\\atx-db\\data\\raw\\sec-earnings-release",
+    "C:\\atx\\atx-db\\data\\raw\\sec_13dg",
+    "C:\\atx\\atx-db\\data\\raw\\sec_144",
+    "C:\\atx\\atx-db\\data\\raw\\sec_events",
+    "C:\\atx\\atx-db\\data\\raw\\sec_issuer_history\\round2",
+    "C:\\atx\\atx-db\\data\\raw\\sec_universe_hand_check\\round2"
+  ],
+  "additional_stores": [
+    "C:\\atx\\atx-db\\data\\raw\\sec_13dg",
+    "C:\\atx\\atx-db\\data\\raw\\sec_144"
+  ],
+  "directories_visited": [
+    "C:\\atx\\atx-db\\data\\raw",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks",
+    "C:\\atx\\atx-db\\data\\raw\\census",
+    "C:\\atx\\atx-db\\data\\raw\\databento",
+    "C:\\atx\\atx-db\\data\\raw\\finra_short_interest",
+    "C:\\atx\\atx-db\\data\\raw\\finra_short_volume",
+    "C:\\atx\\atx-db\\data\\raw\\fred",
+    "C:\\atx\\atx-db\\data\\raw\\french",
+    "C:\\atx\\atx-db\\data\\raw\\gleif",
+    "C:\\atx\\atx-db\\data\\raw\\nareit_census",
+    "C:\\atx\\atx-db\\data\\raw\\openfigi",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold",
+    "C:\\atx\\atx-db\\data\\raw\\sec-earnings-release",
+    "C:\\atx\\atx-db\\data\\raw\\sec_13dg",
+    "C:\\atx\\atx-db\\data\\raw\\sec_13f",
+    "C:\\atx\\atx-db\\data\\raw\\sec_144",
+    "C:\\atx\\atx-db\\data\\raw\\sec_adv",
+    "C:\\atx\\atx-db\\data\\raw\\sec_events",
+    "C:\\atx\\atx-db\\data\\raw\\sec_ftd",
+    "C:\\atx\\atx-db\\data\\raw\\sec_fundamentals_depth",
+    "C:\\atx\\atx-db\\data\\raw\\sec_issuer_history",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot",
+    "C:\\atx\\atx-db\\data\\raw\\sec_nport",
+    "C:\\atx\\atx-db\\data\\raw\\sec_ratios_handcheck",
+    "C:\\atx\\atx-db\\data\\raw\\sec_text",
+    "C:\\atx\\atx-db\\data\\raw\\sec_universe_hand_check",
+    "C:\\atx\\atx-db\\data\\raw\\source_intake",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\_runs",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\french",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\globalq",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\jkp",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\osap",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\parsed",
+    "C:\\atx\\atx-db\\data\\raw\\databento\\equs_summary_ohlcv_1d",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Momentum_Factor_CSV",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Momentum_Factor_daily_CSV",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_5_Factors_2x3_CSV",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_5_Factors_2x3_daily_CSV",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_Factors_CSV",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_Factors_daily_CSV",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes10",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes12",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes17",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes30",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes38",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes48",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes49",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes5",
+    "C:\\atx\\atx-db\\data\\raw\\gleif\\parsed",
+    "C:\\atx\\atx-db\\data\\raw\\nareit_census\\round3",
+    "C:\\atx\\atx-db\\data\\raw\\openfigi\\responses",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold\\cboe_bzx",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold\\finra_otc",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold\\nasdaq",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold\\nyse",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold\\nyse_american",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold\\nyse_arca",
+    "C:\\atx\\atx-db\\data\\raw\\regsho_threshold\\nyse_combined",
+    "C:\\atx\\atx-db\\data\\raw\\sec_adv\\bulk",
+    "C:\\atx\\atx-db\\data\\raw\\sec_adv\\rosters",
+    "C:\\atx\\atx-db\\data\\raw\\sec_adv\\thirteenf_cover",
+    "C:\\atx\\atx-db\\data\\raw\\sec_issuer_history\\round2",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes\\meta",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000006955-22-000031",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000022444-25-000138",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000024545-21-000004",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000027996-25-000051",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000029332-23-000015",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000050493-23-000021",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000060519-25-000005",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000071691-22-000006",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000089089-20-000010",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000098246-20-000042",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000104889-25-000022",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000105634-23-000005",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000107815-25-000103",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000109380-20-000092",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000277638-25-000007",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000350698-21-000031",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000766421-23-000009",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000793074-24-000014",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000820027-22-000016",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000820027-23-000014",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000820027-24-000015",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000820027-25-000013",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000833079-23-000022",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000886206-25-000085",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000891092-20-002167",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000908255-20-000014",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000910521-24-000017",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000929351-22-000017",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000950170-22-002474",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000950170-23-004361",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000950170-23-049730",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0000950170-25-029969",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001000228-22-000016",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001047862-22-000039",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001047862-23-000038",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001050797-25-000023",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001051512-21-000009",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001060391-23-000008",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001060391-24-000142",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001060391-25-000091",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001084048-20-000012",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001101302-25-000015",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001104659-21-037098",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001140361-22-012185",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001140361-23-014888",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001140361-24-008111",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001140361-24-027200",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001193125-20-094235",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001213900-22-012344",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001213900-25-023815",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001281761-22-000016",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001287750-23-000010",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001296435-22-000026",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001319947-23-000014",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001357615-21-000040",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001417398-23-000094",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001437749-23-001642",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001437749-23-007261",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001437749-24-010002",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001466538-20-000026",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001477932-20-007544",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001477932-24-002122",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001493152-20-000477",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001493152-20-004882",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001493152-21-000157",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001515156-20-000018",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001515156-21-000010",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001515156-22-000005",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001526113-24-000007",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001527166-24-000019",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001534504-22-000007",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-20-001462",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-22-003310",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-22-003617",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-23-003155",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-23-003621",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-24-001165",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-25-001102",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-25-001617",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001558370-25-001888",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001564590-20-006778",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001564590-21-010973",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001564590-22-006399",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001604643-20-000035",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001604643-21-000094",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001604643-22-000124",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001609253-25-000027",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001628280-20-010583",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001628280-24-002371",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001628280-25-009254",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001628280-25-015037",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001628280-25-015336",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001644406-21-000009",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001653653-25-000004",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001704720-25-000015",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001705873-25-000018",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001722482-24-000012",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001822993-24-000009",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001903596-24-000279",
+    "C:\\atx\\atx-db\\data\\raw\\sec_notes_t14_pilot\\0001982518-25-000007",
+    "C:\\atx\\atx-db\\data\\raw\\sec_ratios_handcheck\\initial-build",
+    "C:\\atx\\atx-db\\data\\raw\\sec_text\\_logs",
+    "C:\\atx\\atx-db\\data\\raw\\sec_text\\docs",
+    "C:\\atx\\atx-db\\data\\raw\\sec_text\\sections",
+    "C:\\atx\\atx-db\\data\\raw\\sec_universe_hand_check\\round2",
+    "C:\\atx\\atx-db\\data\\raw\\source_intake\\nyse_calendar_v1",
+    "C:\\atx\\atx-db\\data\\raw\\source_intake\\p9_original_v2",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\french\\2026-09-26",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\globalq\\2026-09-26",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\jkp\\2026-09-26",
+    "C:\\atx\\atx-db\\data\\raw\\benchmarks\\osap\\2026-09-26",
+    "C:\\atx\\atx-db\\data\\raw\\databento\\equs_summary_ohlcv_1d\\2026-09-14_2026-10-01",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Momentum_Factor_CSV\\20260929T231102Z",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Momentum_Factor_daily_CSV\\20260929T231101Z",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_5_Factors_2x3_CSV\\20260929T231058Z",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_5_Factors_2x3_daily_CSV\\20260929T231057Z",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_Factors_CSV\\20260929T231100Z",
+    "C:\\atx\\atx-db\\data\\raw\\french\\F-F_Research_Data_Factors_daily_CSV\\20260929T231059Z",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes10\\20260929T231104Z",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes12\\20260929T231105Z",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes17\\20260929T231106Z",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes30\\20260929T231107Z",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes38\\20260929T231109Z",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes48\\20260929T231110Z",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes49\\20260929T231111Z",
+    "C:\\atx\\atx-db\\data\\raw\\french\\Siccodes5\\20260929T231103Z"
+  ],
+  "depth_limited_directories_not_searched": [
+    "C:\\atx\\atx-db\\data\\raw\\databento\\equs_summary_ohlcv_1d\\2026-09-14_2026-10-01\\symbology"
+  ],
+  "document_candidates": [
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1000275\\000119312512484654\\d420499d40f.htm",
+      "sha256": "98abd2ce934db937e07b88bd7220e09d8187ff7cec4d8f328edb956dc8da14a4",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1000275\\000121465913000351\\a1241326k.htm",
+      "sha256": "f0406596cd93b8b9cd54bc0b8ed3fb8003484b441b9efa13e4bac58574e6672e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1002225\\000104746915001120\\a2223148z10-k.htm",
+      "sha256": "eae145e679fa410764785ac738224a213334010e05237bba23b485af1abe7e10",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1002225\\000110465915035591\\a15-7327_110q.htm",
+      "sha256": "dd6bdb80a090876fc98ea40d8c793a766fd573fb0bafef011a4103d49ac107f5",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1004155\\000100415516000098\\a201510-k.htm",
+      "sha256": "8ee85f80224370894656049ffbc74156f8e7ea396974e23d59623606194839f3",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1004155\\000100415516000116\\q1201610-q.htm",
+      "sha256": "60def611f1f532b32e114818a37cbcfb6d0aeba4aca7d3413743a8cc375715ca",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1004724\\000100472417000021\\a12312016-documentx10k.htm",
+      "sha256": "a6228bab6e4907416b228dff71465cd09c3ad13e6d4f8cb263b7ccd5db2883b4",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1004724\\000100472417000049\\a06302017-documentx10q.htm",
+      "sha256": "1a595bf229001554b5a5a7b527e2fa9c2f0344e1fc850e96a0c9dbf018c2c806",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1004724\\000110465912075323\\a12-26401_18a12b.htm",
+      "sha256": "a925f0758b18d38b81e0d050fcf057aee3caa3736f7f003ffa274eac83617d31",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1005699\\000117891318000881\\zk1821349.htm",
+      "sha256": "68898ded84609cdbb2d49983224bc4a8b43c91ac7fc9dd698f5b549e7842b70e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1005699\\000117891318002884\\zk1822237.htm",
+      "sha256": "6b919f066dd12ab10bcd6fa0e8604b4a725f22f1ea7dab1e81a5a36b0cd2597d",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1012019\\000143774913002970\\rusha_10k-123112.htm",
+      "sha256": "b70fa165e14801a4d10e0466c0fc9aa8fae3f7d956b7916932b83084bc6e42ba",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1012019\\000143774918003630\\rusha20171231_10k.htm",
+      "sha256": "bb6ae9ea9039bacdf0822d83802f28c194239f0a2680213d04207712996d1b79",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1013462\\000101346225000009\\anss-20241231.htm",
+      "sha256": "3d2ce0fad9765e0e6768439c004e78ceee4ffe8033b29af11cee1077f801a56c",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1013462\\000101346225000017\\anss-20250331.htm",
+      "sha256": "7c2f017e35293507f2224591a18215e3a8d06347ac2e957898c2b2aeccc0bfa0",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1015155\\000114036124024560\\ef20026281_10q.htm",
+      "sha256": "4072b445a2e36cd4ee48985bb9aeae54d20a324f5998cfea37e3439a625f8abb",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1015155\\000114036125012058\\ef20029694_10k.htm",
+      "sha256": "39fb0464a52f47959c32d73a767b120d242df7649f29e9cf95fe84fd6430c6dc",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1016178\\000101617825000010\\carv-20250331.htm",
+      "sha256": "30220bd2c8cd3bb4fdda4d4407f730bdb76d6145b6e1f7021d46fbbf26a1511a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1016178\\000101617825000021\\carv-20250930.htm",
+      "sha256": "dfbda2aec019509fc9cf73615af02f55c8f89b6ab6b5597096008fc354e02c1e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1018005\\000101800513000010\\cwtr2012-10k.htm",
+      "sha256": "b84c0faf0862b885c8dec6c312f02267a2fbf7906ad212cfa3620d29b1b1aa15",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1018005\\000101800513000049\\cwtr-20131102x10q.htm",
+      "sha256": "0146561a4f9756bd8346893333345601f283d5894324fb6a808761ca64d4d2a5",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1021604\\000121390019004756\\f10k2018_ontrackinnovation.htm",
+      "sha256": "24c3b7169378b721219bb264316ccfb9c4cb75f5943249d538c90d062406b995",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1021604\\000121390019015534\\f10q0619_ontrackinnov.htm",
+      "sha256": "c7e80582f2c04a418271dc6e61623a31869c36d027e8fba31f382f0400638776",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1021882\\000093247113008633\\scottsdale485b122013.htm",
+      "sha256": "4845245b33656a4bc95f56c6c45db03a16ee4073bc873d9ba85cf1a4db80f1c3",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1021882\\000093247113008642\\russell1000growthindexfundsp.htm",
+      "sha256": "777039afa7b4faa1473536e678a4f83575218d9d6a095927fd7dfbac61dc76e8",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1021882\\000093247113008659\\sp_3353122013.htm",
+      "sha256": "d8de9c39519f87d5b34a80409f2a0305239be50af14e7bb6b4e046ab5ae60b62",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1021882\\000093247114000009\\scottsdale485b0102141.htm",
+      "sha256": "a90f0dfddde42d2badeba1c6b64cfb156527545694264e67aadec4b7b4983cb8",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\102212\\000119312512460058\\d398264d10q.htm",
+      "sha256": "8b14b50bbf6feb8744b791f3da5e31ed0eee61520141c416679eefd16082bab6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\102212\\000119312513021882\\d472948d8k.htm",
+      "sha256": "7959a1acf8066bead070d6a67325bd23aa3b4990fe8282929f43260ff2f90a75",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1025561\\000149315223040479\\form10-q.htm",
+      "sha256": "10234e8161c4ea4fafd5c49907f7c6ddaea7c8b2ff9aa12216337117ce4edfaa",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1025561\\000149315224006166\\form8-k.htm",
+      "sha256": "d09eba28a78d07f9364cb11dfbae4e41d09799829b90609b025fb569f4ea5acc",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1025561\\000165495423004409\\sbet_10k.htm",
+      "sha256": "17b355338a1d383dd63a42b6e79fc05f081374c53642f1af2430353c01f40c26",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1031927\\000141588916005383\\ecte10k_dec312015.htm",
+      "sha256": "670eff8142d5d856f08dcf83ba206c3bca85aa58b822efc91d75e87a44f02508",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1031927\\000141588916006001\\ecte10q_mar312016.htm",
+      "sha256": "d9859026722e5e326a360560e49446ecca116cc46e726506dd923a7af858aca5",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1040570\\000114036112045840\\form10q.htm",
+      "sha256": "85090a0cd71562b55b0b8bbe031b4c82e7b27fb2c00c9ef9e9b2f0ab9d6f54eb",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1041379\\000104137916000048\\plkiq3201610-q.htm",
+      "sha256": "e28a00776767dc94db4bf613589184bd7c8fa4ad5d6fda2d7afe10041c88a7b2",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1041379\\000104137917000004\\plki1225201610k.htm",
+      "sha256": "947f855030e669869a5270bd31d4d0cf27f6061837d5b060bf969c31b4812ca1",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1044435\\000104443516000065\\acpw1231201510-k.htm",
+      "sha256": "a4a5bdabdd7521a7c5646907069295de659df5e80b54c5670b85c355a5f50005",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1044435\\000104443516000125\\activepower8-avedraft61416.htm",
+      "sha256": "624325bd98efcb6f082cc53c2661fa40800e9dfec93caf608ae5cf300073ae5a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1044435\\000104443516000151\\acpw0930201610-q.htm",
+      "sha256": "18b73c40bc0b455aa0035d791a488a237e0df59a78a59893903f270d6c0b855c",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1046880\\000119312512475627\\d423386d10q.htm",
+      "sha256": "77f2dc61b77fb39c3fd27f5f65c88d3fe05d942db33314c752531c0c3c5b566a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1051512\\000105151216000077\\TDSform10k.htm",
+      "sha256": "dfb8356cd951b6e1eb07b3c60a8a2b0334473c6cda2514b1671d7a0cdc2e1edc",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1051512\\000105151216000125\\tdsform10q.htm",
+      "sha256": "a0a7f2a0a9c76e6998ad69a25dce101656d92dc1b2f1086f666da738a3656cc7",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1051512\\000110465912080150\\a12-27412_48a12b.htm",
+      "sha256": "3e2d43aa1f0ec23bdfb382e418da79eca600c09febcf0d2867adf7a9bd75234f",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\105319\\000095017025029511\\ww-20241228.htm",
+      "sha256": "9dfb217a88bf9544433decd116e6a347b77a6ca83404bc7534935d06348ab6f2",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\105319\\000095017025064482\\ww-20250329.htm",
+      "sha256": "6c544c685178e2497b614ae8c9280e9c335ba1544e73de76368415b3ab093cf4",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\105319\\000119312518298416\\d637799d8a12b.htm",
+      "sha256": "bf692a7468f4b5cfad8a9e3cf2769fb1490aab9e7144d4534e7c327393142084",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1054303\\000093041312004571\\c70638_10-q.htm",
+      "sha256": "124743610e9b2e5c6927bb32f912179e2d1fdb6da1a90235783d1435a12f3920",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1062478\\000119312514088985\\d649559d10k.htm",
+      "sha256": "00970f07f7cbb5a826612de2e805240865efdefb6ecc89191180d1a1032d27bb",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1062478\\000119312514245594\\d744004d8a12g.htm",
+      "sha256": "197280abc30a5f0e09a1e17790553be929678e2509e8235fa3017ba5c6bbf38c",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1062478\\000119312514401006\\d795746d10q.htm",
+      "sha256": "ae3d0aa10af5f4597613aabc0d563aff946800fe3debec8e146a95eacb4bf517",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1065087\\000114420412041978\\v319877_8a-12b.htm",
+      "sha256": "edc621179338b549f80b513ed777e37606a4b174b38f25b5611f860b3aa4c1c1",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1065087\\000114420417015129\\v460825_10k.htm",
+      "sha256": "472a0423bd7e91a958e2edc49356836652ef4c2ee67f7ab308037042422986dd",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1065087\\000114420417041577\\v472029_10q.htm",
+      "sha256": "749a6ca8efd05eeeeea4b8a8fbcdffc50fdf7fa745c35c41a2ba7fcd7ed04547",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1066134\\000104746913008803\\a2216385z10-k.htm",
+      "sha256": "9c514e58a16433a60bb6fa085d1ceebc72935bbfc6d37e2f717329652c1289d8",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1066134\\000110465914037670\\a14-9787_110q.htm",
+      "sha256": "aac419a32ab27a6a472bb7f434619e3a96d886f29c796c78d50fef1ee9398327",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1084577\\000108457722000031\\cyrn-20220930.htm",
+      "sha256": "8ccc4a9060ea6c0a8772c4a4c42c2dbfb88052d3cee4c13e55e985f4af7fbbc8",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1084577\\000121390022014854\\f10k2021_cyrenltd.htm",
+      "sha256": "e889873dc9cdc675577ce2cfdbdd4a27e4125388a93123ef0d3f9fa20a2f82af",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1084755\\000119312512337068\\d361648d10q.htm",
+      "sha256": "ba23c2b40838f21ea672613f561570f2fce657fab4761e10f723ce82d63fc63d",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1089511\\000119312518006687\\d518263d8a12b.htm",
+      "sha256": "292fe6359aa441bf173edec067b44464ee3285a119223059675db29448ecdc4f",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1089511\\000143774921006153\\alsk20201231_10k.htm",
+      "sha256": "c22ce0f30bcff8817fb7de895e748bb254f935d5d746a415aad532880aec213b",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1089511\\000143774921011343\\alsk20210331_10q.htm",
+      "sha256": "1a3984918b804e84a0a2e548a32b2af8b4d9dad0bf72899f12045b58f80d2b66",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1089531\\000110465919062633\\tm1919546d1_10q.htm",
+      "sha256": "946884a16a8cc4e11c394f74fc3ad6c42ca06fd6c81b9ec3e97c8fadf17d98d6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1089531\\000114420419017761\\tv517166_10k.htm",
+      "sha256": "486a36a965c661f188f2d51b509912516f726dab77acecc28a018819561dfe80",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1092662\\000109266216000149\\form8_a12g.htm",
+      "sha256": "9918fdc6805e204ce4435158a91fda11f23c5a9f6fef774a23853109f51d6a5a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1092662\\000114036122039883\\brhc10043514_10q.htm",
+      "sha256": "42aebe38b7a6fb6865aa3e5c267153c11f26d0b23f84205a8d1fe6a8a2fba875",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1092662\\000114036123014526\\brhc10050381_10k.htm",
+      "sha256": "153a8733fce1a2de23a55f158ce670b3c0e759dfa7835247f43cf12c05bebdae",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1097264\\000104746912003243\\a2207770z10-k.htm",
+      "sha256": "c73d735bad10361abc534b06f1ec29c969e145a22392c6d31c2aed9a698cfd11",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1097264\\000110465912053961\\a12-13845_110q.htm",
+      "sha256": "3a8663d5f338cea1dc5f08216c24d23c6a13515d9c1b57f44ee9f2acd9668301",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1099290\\000114420415059251\\v421762_10k.htm",
+      "sha256": "aa5ab17a961eb6ee904dda6ff1f1b717ca815c5d3228df8e5acf4d55f4f98aa1",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1099290\\000114420416104197\\v440223_10q.htm",
+      "sha256": "0f68da052aa9b5677051011b69b8b3bf1e6fc5064e2bc0134258ebe13ecbfe83",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1100441\\000119312518316888\\d633809d10q.htm",
+      "sha256": "05f5f0fa7146d05c5f2caba08c3195e2a6cdf7604cbe72596520cc1c961ae454",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1100441\\000119312519063391\\d674465d10k.htm",
+      "sha256": "05b2cce55216ebfa4e647a4228ca82cb8efba855d2b8a7f563d64f7aa6615802",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1107332\\000119312512214721\\d347342d8a12b.htm",
+      "sha256": "5a71de9538322fcde6503eb39376d7e3242f44a3140c8d98cbe3cce8bd0493cd",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1107332\\000119312514079705\\d650543d10k.htm",
+      "sha256": "7a44a4519982637acc645463ab1cadcabb0ec3b4383c146c3fba972c09782df2",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1107332\\000119312514404506\\d818121d10q.htm",
+      "sha256": "b6d8a388c3730c08ddab0e3b15f37e9c5ae333197672b6805697b052b1fb800a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1108236\\000101905621000204\\arb_10k20ixbrl.htm",
+      "sha256": "8e6da94f343c2ec67e71ef6a0d4660e7bbd3cc60256bc0ace405fe91f7f8da72",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1108236\\000101905621000285\\arb_1q21ixbrl.htm",
+      "sha256": "cb90a9c21e721533229778832c8e6ee466064cce335d0034f90341fc8f3f7550",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1113784\\000104746913001499\\a2213057z10-k.htm",
+      "sha256": "c331004b602a6a2c175253bcfc766cfd9be78ed9a00896b9cac2ed74129d813b",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1113784\\000110465913035107\\a13-7824_110q.htm",
+      "sha256": "71641b3088420ba73d0c766e60561b838d43bd7dd9fedf971138d40da7b2228f",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1114446\\000119312512115964\\d308675d20f.htm",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1124804\\000095017022002112\\mdrx-20211231.htm",
+      "sha256": "2d6824a833b716b868d291b0b97b3cc877a4ea7b6529c4bf6f6979faca933f91",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1124804\\000095017022022665\\mdrx-20220930.htm",
+      "sha256": "784b276c16cb310a2242e109731815728fb4c816a451a44c7f6ceb1f3805aed2",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1124804\\000119312524047054\\d755574d8a12g.htm",
+      "sha256": "4748623ac1a40ed5e9f3cf350a5d936141c1363b44b30380ceee6c746c66c392",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1126216\\000135448814001438\\nts_10k.htm",
+      "sha256": "6e3608cac8e18fa85ee28ce2ba3a20b642f68a9f3f7a54726058d12dd9d61e73",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1126216\\000135448814002706\\nts_10q.htm",
+      "sha256": "e536dde94d65932728a9ea1e1a7cbb0cbe6497ad5e1bd85158d1b2b92274f3d5",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1126956\\000112695612000049\\lacledegroupform10-qjune2012.htm",
+      "sha256": "ef669b877f57c34cf9a3772e497914c78a97221acfafadfc206a86b9866bbd5a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1126956\\000112695612000080\\lacledegroupform10-k2012.htm",
+      "sha256": "99e1e336ca6932a45c6cf268097897453c65e45c1d4e606056784c9c04d70e95",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1141103\\000162828025010519\\ccrn-20241231.htm",
+      "sha256": "39ab46146e43e79d7e70048bbfacff42e29f20cd495c84fb9dcb9e344a67c33c",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1141103\\000162828025038395\\ccrn-20250630.htm",
+      "sha256": "1d35989b804a3d092280d7e4283842222426622f2e8d1a57a10800dce0c4ca1a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1141807\\000114180721000005\\fccy-20201231.htm",
+      "sha256": "2d7c96def2e9f156dd37af5756be68f4b01ed894f5c7b57b4a6ebb870eba66d7",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1141807\\000114180721000023\\fccy-20210930.htm",
+      "sha256": "d50552b0481c6f010ad79fc941c9e964c4c27f1c6dcda422d3b2fb3a9624cc7e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1144967\\000119312512319190\\d281744d20f.htm",
+      "sha256": "fd1a634ed35e6d981e835fcfc26b74d1a8375cb34a5c189f75affab4e9db5ade",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1144967\\000119312513197800\\d532062d6k.htm",
+      "sha256": "cc6486088647efb7d6684019ad9a4d087e861cc8ee418f087e594a281f751bcb",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1163165\\000115752313000399\\a50547123.htm",
+      "sha256": "4abe53264c8d1c63025f518c91fe7ea6bffbdf4d1cc8339d67f92ab09f0c86b6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1163165\\000119312512070636\\d267896d10k.htm",
+      "sha256": "b3952fabedb32ff74cc737a6e35b3de4c268c81fa061f12e4413722901f09f9a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1163165\\000119312512441310\\d404659d10q.htm",
+      "sha256": "29f87f77074916155214e340bc419b7bc44d795926b6d7171d427028fc39773c",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1166691\\000119312512073905\\d262998d10k.htm",
+      "sha256": "bd041709f11b3e16870279e80e116c6574a2dddcccc8045043929ce4d356a6fe",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1166691\\000119312512437120\\d422555d10q.htm",
+      "sha256": "8dbe3f20e9cd77482b50447e3c3912348bfa2a81700734d02452d747ca20261c",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1166691\\000119312512488915\\d447811d8a12b.htm",
+      "sha256": "5e881b7a7bb0562d953741a912c645283cd94c7c2686dc0d594619f46dd0c4cf",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1166691\\000119312513008268\\d464963d8k.htm",
+      "sha256": "105ae651d97af44d6402729310f69c877b4dcc32ea06ab2229f83fb1a88ed265",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1169445\\000116944513000016\\cpsi10q9302013.htm",
+      "sha256": "03948b554316b91b880b46b72cc49d560ed4942c0bdef44b695fe563cea7f566",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1169445\\000119312513101203\\d446934d10k.htm",
+      "sha256": "6c42ecb95155882589638082d1bde9894714cba1254dae7cd090f02e4356ab6c",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1174610\\000119312514076927\\d617164d485apos.htm",
+      "sha256": "879037329b0aad1ad1b55dc9a753abc57dc27ae0223dfc0694a78ae0b28dbde9",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1174610\\000119312514118322\\d547242d485apos.htm",
+      "sha256": "7b86d5468893f5620b8d11efab1d398bcdf9c174c0d941175bd5f3885eb2c25a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1183082\\000105291816000889\\genesis10kmar2516.htm",
+      "sha256": "b9d15387f642499098d23a9803ed7facd80bf6e4140ddf441be1ff2b5b0e845f",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1183082\\000105291816001354\\gfnl10qnov116final.htm",
+      "sha256": "4d6dac3efbc86ad0a3f10be34ffdf1914484aef469e42d96d2ec51a6546c8931",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1288776\\000119312513028362\\d452134d10k.htm",
+      "sha256": "c4f4e9d0a41c3b483f9c7cd346beac891e02afade312f962a921c0c397c048dd",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1302028\\000156459021012572\\mntx-10k_20201231.htm",
+      "sha256": "649c901376e6d46927f65d21270a8fc967d5f8d271367b2efaa4071a4859faeb",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1302028\\000156459021025100\\mntx-10q_20210331.htm",
+      "sha256": "04f5a67732756b371b7e7a5ed632e38c8e30ca50c5f984d0647063063118c262",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1316175\\000110465913007459\\a13-4407_18k.htm",
+      "sha256": "51b0f9ffd5395d8d67a29a8b6f0b4306945be0c07d4ad773f95f3e1d0b2ae652",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1316175\\000121465912004959\\a102912110q.htm",
+      "sha256": "24ccaeea37ea9871f32632f0fea0c4e7a8acd138c18b1d2040d3a7da58cfbd0c",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1335190\\000110465912082669\\a12-28346_58a12b.htm",
+      "sha256": "e02c6c3b7fa4eb0012ad30adf8665dddf8e303ba2099d6f1b1f54b1eb980c3b2",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1335190\\000133519015000024\\mhr-20141231x10xk.htm",
+      "sha256": "cca12cc06bfd0bd76fe8415f7f99f917371fae3ad715fd6dc70151671d3d627e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1335190\\000133519015000099\\mhr-20150930x10xq.htm",
+      "sha256": "7221c9ade45eeeb5de7a00997285131364afea6effcfda8d08b3b8679addab2d",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1336917\\000133691718000009\\ua-20171231x10k.htm",
+      "sha256": "d3fc035fc48b6dc651abf21d394d528350fd7537e6e31d91947c41f5c5349172",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1346610\\000119312517108922\\d296317d8a12b.htm",
+      "sha256": "4530a6f112299d23d039b8812ad7a25321ea0a6c0a59d0c11c1944f124d80e4a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1353970\\000107997320000468\\cxdc_10k-123119.htm",
+      "sha256": "4f5fae54729d1303c9c23ffc85dcf91026c7d0c2b019d656b721383ad119ca18",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1353970\\000107997320000977\\cxdc_10q-093020.htm",
+      "sha256": "b6f93026c9e5ad046f90f59f2270c70fb1803fec65cb114ae20548b4d63b2677",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1364608\\000144554614000590\\etf2_485b.txt",
+      "sha256": "885a04977f7b7b42e859bdd2ae438ce7f6419c6f08d3fec4695ebc761b6a039c",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1364608\\000144554614000722\\pltm_497k.txt",
+      "sha256": "ae692155b7cc65a3cfe5c25a7c8e07fa89541555712d63f798255362235c2ca7",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1364608\\000144554614001022\\etf2_485b.txt",
+      "sha256": "552ba8144c076f0a6b0437b00a0811ddb759e0ef4a0c23e48aef473fd0e12387",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1366367\\000136636714000040\\form8-a12b.htm",
+      "sha256": "f4a60a19c31f02b757646b22fbec69abf0e19f402531ef9b6209699ce40ba9ef",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1366367\\000136636716000168\\a2016930-10q.htm",
+      "sha256": "0ac081c75a9fe7fe3caae21990c83f9074ff5ce067f756cfbf5d4c89a86d560a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1366367\\000136636717000014\\a20161231-10k.htm",
+      "sha256": "c0f3a0347d1f303994688c3e2d740c71a8019c9ab46d84fe2951c6e81a8e6084",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1372183\\000158069518000120\\mkgi-8a12b_022118.htm",
+      "sha256": "3a8809298fdf0d79e246a0f8a790ca7a890a18f9e6382f94c5cd5f64ec2637d7",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1372183\\000158069519000236\\mkgi-10k_022819.htm",
+      "sha256": "7fde865793ca3e35740a2421482907a379a732c3fefaf35988d8ca99dbdbe6c9",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1372183\\000158069520000034\\mkgi-10q_113019.htm",
+      "sha256": "dbc6fbb26b0060d6f48a7bf86859bc320a78e1031177f539db073c491814c546",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1375514\\000119312513364692\\d596671d8a12b.htm",
+      "sha256": "d474a591f593b6c0accaf5836008d85f81fbd71a0de46b0aabcf1de482f8dbf4",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1375514\\000119312513438487\\d625113d10q.htm",
+      "sha256": "18f3a2adc5b118c93918cc1247c10497185270c389348aeb07eea342c489169e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1378872\\000110465914027338\\a14-4480_1485bpos.htm",
+      "sha256": "b458297872be47dec00ef257600e1d2a3624e23d690b9ca5eb9d8cfd54319c33",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1378872\\000119312514152825\\d694222d485apos.htm",
+      "sha256": "6e0f505e5f2036ea5d2192f54305ffb8ff345a3fa8b76b3d04b7a8fc748b3be3",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1380509\\000156459019005510\\hf-10k_20181231.htm",
+      "sha256": "83df4e700da9200a86e4fb8d4ec6e3ca48040cd3e3e7febcd71ffa673d249334",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1380509\\000156459019016597\\hf-10q_20190331.htm",
+      "sha256": "2fcc70f76bd00174fd3c61f18863e3911fdc3268c926a8af0d33c57690c538f3",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1403161\\000119312513032823\\d476341d8k.htm",
+      "sha256": "7ceb7c0bfafa71081bc1dce49bdf91ccc6fff4ad2f36ef5ffec8bbc03bb0633e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1403161\\000138410812000008\\v63012form10q.htm",
+      "sha256": "90f14aba07c30edfae08e3d1806e224ce25439fd0cf45257a004d2f4903e30d6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1403161\\000138410812000011\\v09301210-k.htm",
+      "sha256": "33df56e531f4530670174c7c9a847beebfa5d7eabc7d17a4499068c1dae159b2",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1415022\\000110465913020409\\a13-1167_110k.htm",
+      "sha256": "d2d239bcba76b10a7a304529c736a6da6b72904afcc1fc365609c53052f58a56",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1415022\\000110465913039970\\a13-8383_110q.htm",
+      "sha256": "a43a67e5ec9dd41fc6816c0ce4852ecdb359d0ce0cd23f385ed84c079605a15f",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\14195\\000001419519000027\\bgg-6302019.htm",
+      "sha256": "0dfe5636de68f4928ace6ac059b01a7257e78f037fc49e9b352f017b669720f2",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\14195\\000001419520000029\\bgg-20200329.htm",
+      "sha256": "dd8d7cef4097ac2aeabf342d5312c8bf805aed6c4b8cdcbf55af3f3b9a7d07b6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1425287\\000101376212000737\\form10k.htm",
+      "sha256": "1e18c335b5d9e1fe1d91c9bda8472c175536dd7c137f63754c71011c26bd1c84",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1425287\\000101376212001627\\form10q.htm",
+      "sha256": "aa2d530efee6b5b7a81cd607ea6a534a0f588431654affa8720b06b985ba5878",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1450501\\000089109214003107\\e58245_485bpos.htm",
+      "sha256": "9b9d3dee0a7268679de2e94f0676b3a6c1b5f30e9c64b4ed0098ed3d26dd00e0",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1450501\\000158281614000100\\peano70.htm",
+      "sha256": "f1e140a999636f9fbba22521ff6aa9fa6b8786a6fe8579eb57bff26e784f46d1",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1462223\\000165495421007364\\rcrt_8a12b.htm",
+      "sha256": "54f798d237d8e3c6651e51fdb445fe8ab6ee83e7603a7321bb5a0b7d85da868e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1462223\\000165495423004101\\recruiter_10k.htm",
+      "sha256": "88c70ee1bca69366f9e0806e5860071147b69520333977d2a2dade4278e3894a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1462223\\000165495423006574\\rcrt_10q.htm",
+      "sha256": "6e50d8cf21546a73c6571a4f66727199e79a0ae0c245b6dea74d8ef5ec0c6a95",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1468174\\000119312513055303\\d465174d10k.htm",
+      "sha256": "e4a0295644db3880a7c209ae83ead4bebe79425a9d0da70180482014ab5ab159",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1468174\\000119312513172300\\d528297d8k.htm",
+      "sha256": "61b43e61af0d105e6ee5ef2888a8e5ac25dba76d5eee2d2bb2eb7861b6977c22",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1468174\\000146817412000015\\hq393012.htm",
+      "sha256": "08218622dee2973052e5a0ef2cead86617512c531ac0575b7de0a089452cfdf6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\14693\\000001469318000084\\bfb-2018430x10kapril.htm",
+      "sha256": "7fc3e5c6af7db0c3ac993c8fb3f60d9eb4804d4673b091e81959a86b07dfe3c6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\14693\\000001469323000074\\bfb-20230430.htm",
+      "sha256": "8d18c6bc8eb955b7745bf410bc7b5811a0431d8387c27cb1be5a1d516f9335b6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1486957\\000148695718000045\\bwxt_93018x10qdocument.htm",
+      "sha256": "a75c27acd4577e80925ea925c48677ea16244df9097f178a64519fb0eede0d21",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1486957\\000148695719000004\\bwxt_123118xerdocument.htm",
+      "sha256": "64d3631290ab7f8c59cbfaa5166b45a42d04d70aa1190e073971001de585491c",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1486957\\000148695719000005\\bwxt_123118x10kdocument.htm",
+      "sha256": "9ea21ff2b6a07c70b52a3bc127ca75ee82811dd4be5f0b1cb2298c8607fdb6db",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1503123\\000119312514135691\\d560670d485bpos.htm",
+      "sha256": "7a79ae6aa77c529de2832f9b707db2cb3ebb4bed00a1acb0d0d4d98422eb7690",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1503123\\000119312514152144\\d660355d485bpos.htm",
+      "sha256": "8407d1c38e5b24241934398115cf7bfd80929da95d2138f2d5a0c91cbd3224ef",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1518380\\000147793216011343\\buscar_8a12g.htm",
+      "sha256": "a45097a2dbeb0989d311c34a01b452bc2f768ea0ff759d7aed4fa6ada098b727",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1518380\\000147793217003317\\buscar_10k.htm",
+      "sha256": "f1fe83beecfbac484ac8f94bf0f7f9f44ea21a045aeeb32d667dfdec28ea26bc",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1518380\\000147793217005743\\buscar_10q.htm",
+      "sha256": "cc69e13a54873248e5632c4adc2da05e144d3f8e5cdb1c61a06464f664ea3e7e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1522787\\000139390513000153\\pbfi_8a12g.htm",
+      "sha256": "807b70195204ab0ff62ae9fbdc01532b6b42b14c669e89c6e240fa57198a8fa0",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1522787\\000147793219004105\\cybf_10k.htm",
+      "sha256": "76b1332290b256777200693a7c3bce430937f2c1fd1f9db3dab674c620431bab",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1522787\\000147793220001243\\cybf_10q.htm",
+      "sha256": "191f1b56d34efba2a490219fdde344f877db99cb8b018735a6aa1bc05b80d618",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1532390\\000106299323016652\\form10k.htm",
+      "sha256": "851e0c658af426df19ca9f5c53498bf3fda7c01788cdd5626627eb6f51b5f100",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1532390\\000106299323018414\\form10q.htm",
+      "sha256": "b2e122c789fb0ac8c50d570f3c70b2f841ecc758c61052bb4e918ea0ecd0e944",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1541401\\000119312514387251\\d811027d8k.htm",
+      "sha256": "80cc588de554a906c89f3ead8af9621e62719c5bf2bfdecf82b5bd6f20e60c5e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1541401\\000144530514001129\\esrt12-31x1310xk.htm",
+      "sha256": "f1e683527f39298884e8e856058743cbc58dbcaa5ed3e998af980d3f843e4bcd",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1541401\\000144530514003394\\esrt6-30x1410xq.htm",
+      "sha256": "df687bb430febdcf41f6d1c3def9bccbc8579eb87d57c643bfdae61065bed8f8",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1553023\\000155302321000091\\cone-20210930.htm",
+      "sha256": "7a9a82b5680bd3d435f6b956975b00c759eb7ac169196fd92b38bc09ed694580",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1553023\\000155302322000009\\cone-20211231.htm",
+      "sha256": "920da4951ac9ec4ca18af22ad3a758198535d3c533c67c2d2e2bde69f1a63050",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1564708\\000119312513373501\\d581644d10k.htm",
+      "sha256": "ea2b2c112db50343d90269240ed670b3377887add2b758b3574baee9a03ed204",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1566373\\000095017022003650\\fstx-20211231.htm",
+      "sha256": "4a44166ff12ed577ec768a1491189c5a4c24afaa87646145f494a6f93ab26a8a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1566373\\000095017022024526\\fstx-20220930.htm",
+      "sha256": "7a3403ac099089db529e77c52df1b55591ed7c2031ef963eff370c424673483a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1574774\\000157477420000032\\beat12311910-k.htm",
+      "sha256": "02f2f34b28a033d8e8f18b74930e9a546b8d5bdfe42fd3461ad0ef83762cf163",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1574774\\000157477420000106\\beat-20200930.htm",
+      "sha256": "66e479e79b2acb8bd084c86c5b0faab8281b3f929155de4347349c81981e1121",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1575810\\000110465920026582\\a20-11257_18a12b.htm",
+      "sha256": "bc45ebacb37aeeb256a0892b0551944d4a27adc80209f0861fbe9b12026670d7",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1575810\\000155302315000039\\cone-20141231x10k.htm",
+      "sha256": "607dccc713e7560ad6ba9b7c0896710080f6a4424af82f89dcd55273d5a46993",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1575810\\000155302315000090\\cone-20150930x10q.htm",
+      "sha256": "a417f518689b6af239ba6783565a61f58b480da9143539a6d14ed072df3a53e4",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1620664\\000119312515395050\\d103526d8a12b.htm",
+      "sha256": "111844fe2c0b797f58ba43f75930ea27b4a8a3e292ce252b24c2acfab739af21",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1629137\\000119312515286243\\d12766d8a12b.htm",
+      "sha256": "df3d2b2a4a082face899b79ecb5c9b872b6f928ee21441fa7e224f822be4afa2",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1629137\\000119312518060818\\d518438d10k.htm",
+      "sha256": "a211a77ca7b9dd92afc6b2c3689ae1f0310aba037a802bc417dbdc04d7cdf6f7",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1629137\\000119312518236578\\d535305d10q.htm",
+      "sha256": "03bbc7f6cbf6165b23fc7ffa3106cf6de94adb875838d4712981de708317b08a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1658432\\000164033419000563\\mddt_10k.htm",
+      "sha256": "f586c8ae4896265bc80e2b523bb4df8fda2eb781c946431f93cbc62887e1fa7b",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1658432\\000164033419000922\\mddt_10q.htm",
+      "sha256": "4a160fbe20ba0f49ef227e97526151296114db30b58f1c6366e9a2375a54497b",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1679363\\000110465919035660\\a19-7601_68a12b.htm",
+      "sha256": "3dd15eed6324c72254d4050aadf91ee9df361943a40781c4dc3b5da530e6d43f",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1679363\\000167936324000013\\morf-20231231.htm",
+      "sha256": "7ad8b0fd2d04f9f97dbf942e225cb67ad243e6de2922793fbf4081ec78afd0ca",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1679363\\000167936324000046\\morf-20240630.htm",
+      "sha256": "a98e74e7f7eeba3ba7d132b8866cc5d47a03b154d1f0ae0b9615f6ee0ddb91da",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1719406\\000165495420003527\\brpa_10k.htm",
+      "sha256": "f709106052c89904a7034b92ba9cd603e37a1d0f48dd780a9ea8ef0733dce624",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1719406\\000165495420005634\\brpa_10q.htm",
+      "sha256": "1612deca47f84b06f20672480ced3ec510b7e087c0b48da72b1d7cc6e820db6a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1742924\\000174292423000009\\lthm-20221231.htm",
+      "sha256": "d7280b4a800aba158760cbff4e6b2f03b585fba5ad476c0321a013a585c1088e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1742924\\000174292423000039\\lthm-20230930.htm",
+      "sha256": "bba9f50c572779c33cf19fa78c8fdaf799997e360c5d167a4e2336e480a3c1cf",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1770202\\000149315220002250\\form10-q.htm",
+      "sha256": "c7a38a924586413a653f8cdadb0def75803a6b950ae77c499f6b8ed956fcaba8",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\18172\\000001817212000024\\form8a5sept12.htm",
+      "sha256": "c7bd5b1fa39c4fcd186e99a268bda9f53648361eae89bd5e011045b453ad57d7",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\18172\\000001817216000067\\cas-10kx123115.htm",
+      "sha256": "e8703b9663696e54ded040e4ebf558acdbafec41fb5c583605f8cf16606238f8",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\18172\\000001817216000102\\cas-10qx093016.htm",
+      "sha256": "80bb0e64d443afae0f3eca84154d200f6a619d66265b4c94ef0f196736d43e28",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1827506\\000119312521149990\\d353286d8a12b.htm",
+      "sha256": "10e784ff4e967b4a4ef59f15d42033b9829c7c27f865e06e08a210cccfc4a13d",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1827506\\000182750624000095\\trml-20240930.htm",
+      "sha256": "861f0474c6f898520c0c9adef91a8fec7f8364312aeb5a04c87769b078ff55dd",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1827506\\000182750625000027\\trml-20241231.htm",
+      "sha256": "e07b0e55da02bf0ffb9b4cbf78dfcadc9e361ad42e280ad5196cddecc1dbd667",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1843249\\000121390021016864\\ea138182-8a12b_northern.htm",
+      "sha256": "da657b0f07af3225b42683388f7e01f33cfba75511271b4fd2345ed9b3e0ceb2",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1843249\\000121390022019444\\f10k2021_northerngenes3.htm",
+      "sha256": "f5e2139bb55963cef7c484b59cceb142db8db4f4b6f631c5d4042492ba8142f3",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1843249\\000121390022072356\\f10q0922_northerngen3.htm",
+      "sha256": "f1d2d545487d3b07f6ced510890ae4e2ba352f9e6d90ad1b988cf9a55e844615",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1857662\\000114036121028037\\nt10023866x14_8a12b.htm",
+      "sha256": "6fdc01d6d888ee51a11fe176ad070ac8b946fb935616240ae1f0131add8e8626",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1857662\\000114036122012282\\form10k.htm",
+      "sha256": "a283945e276594abe7a8dec8f508827ba66dd02b100b546c7761d08fb5f4718b",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\1857662\\000114036122020247\\brhc10037866_10q.htm",
+      "sha256": "67a8e9e17ab1d2071bce27c930f7e9dbbe9b7d2fa7a9ad1df7bbf2881eeaf5b2",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\19617\\000001961712000163\\corp10k2011.htm",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\19617\\000001961712000308\\corpq32012.htm",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\19617\\000119312512369700\\d402844d8a12b.htm",
+      "sha256": "6ca10808216a20827df7c743e87eb5a4e8fd69f7f87352dfe05f6f3eefa6e8ab",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\19617\\000119312513023430\\d473319d8k.htm",
+      "sha256": "095c14b69aa1db8e1d4cb183070060c66ffbf5a0e8102ac9ac49168bc727b014",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\2034\\000114420418051414\\tv501271_10k.htm",
+      "sha256": "f9f125acba0bdd932ef8992fb6f28d5fea159d8f11c6c77c854ef4a725f47591",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\2034\\000114420418057666\\tv506287_8a12b.htm",
+      "sha256": "93b88497a3e48e45d972d0d6b978f04ae5dccecc99832749397decb1a5bf0858",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\2034\\000114420419008980\\tv512340_10q.htm",
+      "sha256": "968bd0de74a15e9a595163f4f3aa056676be5911b4dc3fcbcfcda111c16fb98e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\217346\\000110465912071046\\a12-20149_110q.htm",
+      "sha256": "c51f6bed4c527ae865358aacac59e10746033c726143245c19d58b00aa4df5e6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\217346\\000110465913003986\\a13-3441_18k.htm",
+      "sha256": "42b260646f475b4affc2a13c4741b9de150f299bbd42937292710f66285d34a4",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\217346\\000110465913011048\\a12-30151_410k.htm",
+      "sha256": "b8376aee3364ceca98a887d69bb574fdf263f437052dbca3dff566002180366b",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\2178\\000000217824000035\\ae-20231231.htm",
+      "sha256": "348f6a161ba0f11474e485417b8f9b6d01deea40ca926374c0af16b2255f7c90",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\2178\\000000217824000096\\ae-20240930.htm",
+      "sha256": "1b69f6b802cda9fba08939805b9a2b57e801e408d78c3b156a261fea7a4b7022",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\2491\\000104746914007282\\a2220414z10-k.htm",
+      "sha256": "ff267c4c8da0bd3f4e22814570e6af4e32d7c8d01a0317c0eec52a0ae6ebb6d9",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\2491\\000110465914075599\\a14-22449_110q.htm",
+      "sha256": "fb3d54bec99cde9553b120502cc8f39e839a59b308beebf636ea1ba180654cba",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\25475\\000002547518000081\\a10-k123117.htm",
+      "sha256": "9e1a72ca33b672e4b69cc1c8f09389985eb33fca7b66da9c0feed1b1ad1af13c",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\25475\\000095017023006267\\crda-20221231.htm",
+      "sha256": "3fa74dd61bc136a23282d2726660b2e893fe7b857e90b430e06920fb683edcff",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\320174\\000109690615000323\\perseon.htm",
+      "sha256": "22731c912b8993f35182506994871143dc6b264d31b5226ad6a697d5b8df9d02",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\320174\\000109690615000804\\perseon.htm",
+      "sha256": "b01a0fc187f8cfbf56032a36d2bccf3df398b3d315ac558ed69b8120f6123703",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\320174\\000109690615001101\\perseon.htm",
+      "sha256": "e61b6d392bfa9eb2484cb50f64101019c29245334c9608228f4ca32b93a8a869",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\33769\\000003376917000051\\bobe-2017428x10k.htm",
+      "sha256": "c6738df059a615f77f6be2ba83b0d338446dec0dfb0fb8d3e5ff3fa92ef7f8c4",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\33769\\000003376917000096\\bobe-20171027x10q.htm",
+      "sha256": "630e049c0395a1b7a266ea1cc82abda99983548ca924263186f67ed2c3ab55d0",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\350199\\000104746914002945\\a2219208z10-k.htm",
+      "sha256": "f897e4d31fabb197a10a4b523c5b8f62df68794620b767f2278c16e6b3d366e1",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\350199\\000110465913027099\\a13-5448_168a12b.htm",
+      "sha256": "b6ca2e323a197f9e3247d3da957ae5fd0c8ced24a96884cd05debb6f1ed3c11a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\350199\\000110465914079460\\a14-19599_110q.htm",
+      "sha256": "14f124a57a0f14458d35a1648580adfe4e6a7daebc71b7e3278020aa1fe9a25a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\356080\\000119312513093743\\d444986d10k.htm",
+      "sha256": "0a6fa586da1f7bc0a23096ae657d30448f1d54d3696487bc0f6becbef61065b8",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\356080\\000119312513420391\\d606885d10q.htm",
+      "sha256": "81238aabd8f1685f6737dc59a11f6efe1361c0b6244ee182a5924dba24badea4",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\36405\\000093247117003903\\indexfunds_final.htm",
+      "sha256": "7af2ecaf6f9334b3b919ea21f9378aea2838cf064a25411adc95d6d5fb391aeb",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\36405\\000093247117003922\\sp_968042017.htm",
+      "sha256": "1a41ab1512f610880ddc25305af8019cb14dd0d6918d08d0060a02043644559a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\36405\\000093247117004119\\indexxbrl_final.htm",
+      "sha256": "92a570642ae4d1573c43d1b1881c2bc5077f4fa8956dfbb67bb6d508c2d0b5ec",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\36405\\000168386321000551\\f7960d1.htm",
+      "sha256": "bb58efb296f7da7e9c85967ed56476e7eb1240baa67ef3cd516b8b43a49eada2",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\36405\\000168386321002763\\index-20210429.htm",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\40545\\000004054512000016\\ge10k.htm",
+      "sha256": "76481dbcfe6f83e80aeac76f529d6e956ae32ab15e235f0c992a8739460c8994",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\40545\\000004054512000088\\form10q3q.htm",
+      "sha256": "4748050bbb9c737ab2e29f712427aa2d5c8a1b3ad80d917e596fdbea0b676fa8",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\40545\\000004054513000006\\GE-2013-01-18-Form8-K.htm",
+      "sha256": "23288c5e61759b304950450748d46409d74760601c660b2e1a213be727783c24",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\42316\\000156459020010101\\gv-10k_20191231.htm",
+      "sha256": "057749d39d00dd69b6e49bf96ddc732a16e189804011f204035e1d37c9e2f150",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\42316\\000156459020050561\\gv-10q_20200930.htm",
+      "sha256": "21660bb140af96322069cc25a5c4c86168f93762c1fd1c247a5889b981a9b515",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\43196\\000143774923004505\\gtn20221231_10k.htm",
+      "sha256": "da04ff5a2c9d688372d0dc24d5811e4a477d14de7b3b734c6bdea0df694c21fb",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\43920\\000004392018000034\\gef2018q410-k.htm",
+      "sha256": "53d049cf50dc7d7de5986bc61a4dd97e6cafcd82bfa7ef8a849b250886503e88",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\43920\\000004392023000068\\gef-20231031.htm",
+      "sha256": "8ff6e1282a46ceaefcf3070ce378fb0f7ba4097f022cb687baa5a68ca5dfbbde",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\4457\\000000445723000052\\uhal-20230331.htm",
+      "sha256": "26025cd4bb7b1fb0c46c729eb1a03e12ca71f923b1ca45e338a5c21dc6483434",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\46619\\000004661912000004\\hei0731201210q.htm",
+      "sha256": "b3cbc2792714a00dc96945e82497e89c5631e1286f903372c6d30a95e5fe4099",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\46619\\000004661918000117\\hei1031201810k.htm",
+      "sha256": "ef6c52c4f1abe73d60414a980f2b10a6fe979749582b73357c13d45bfe03a688",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\46619\\000004661923000163\\hei-20231031.htm",
+      "sha256": "5bda8277c1661cbb622a873e369b68f4cf8c8e5d23284686c87a46b2a59edec0",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\50863\\000005086313000005\\form8k.htm",
+      "sha256": "c6070283c8b5b5545b1db30090ef1a9cf7a5e3620163e1b4bf7f91daa52c704b",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\50863\\000119312512075534\\d302695d10k.htm",
+      "sha256": "2a1479fe8088c701a36d18fb72a50b6bd1e43ecd29c32439a6141d32328ab9a5",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\50863\\000119312512444095\\d427493d10q.htm",
+      "sha256": "ed352ee4fedcf5f7f9797393473fd1efaa59c6e4233c77b112b37d38707d44ba",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\52848\\000093247116014954\\sp958.htm",
+      "sha256": "7008eb0a31c47750156d0124448ebc52207a08b03c68c49e538a29c1290324c4",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\52848\\000093247117000035\\merged.htm",
+      "sha256": "25a865f8dde204adc83445f6d724ba407ab008582fb39ebf6e6b676a9d1292f1",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\52848\\000093247117004685\\globalworldfinal.htm",
+      "sha256": "b91ba1ae55c1d4c134db2e53f8764f7d1ed406ffd19b4c995d051c4f168d8ae3",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\6314\\000143774913010440\\anen20130801_10k.htm",
+      "sha256": "f9c3d0f9a303fb6c1879f1063f31d5965f013c84eff7688aab1d6cd287b20763",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\6314\\000143774914001124\\anen20131231_10q.htm",
+      "sha256": "0e8c10fcfe8eb83de2bc85852d8b0a268990a98962056e2dabc92a7380fd01f2",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\63908\\000006390812000044\\mcd-9302012x10q.htm",
+      "sha256": "4b8ec5312106a99c05a5368e8ee465f76221c044a88235d62c2e01b5ea217983",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\63908\\000119312512077317\\d260574d10k.htm",
+      "sha256": "57b0488253e37c3f56c8a9dcc4c42fd95925ac4c7d1b8ce9ba47f936dcdd369f",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\63908\\000119312513032402\\d477082d8k.htm",
+      "sha256": "6124481313157fff0d1b835b9909e826774a4b6bff2431c9e0ba1342b08c8372",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\66382\\000006638213000012\\hmi10q_03022013.htm",
+      "sha256": "a0b4993a9f0b49868d5905b9576a59319b4e04e7bc144fbc10e528aa67c01a6d",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\66382\\000006638213000030\\a071920138kexeccomp.htm",
+      "sha256": "e9dc78032e92d040fbd14284a2207ab57d23d83fac674d1b32281cfe64118dbc",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\66382\\000006638213000032\\hmi10k_060113.htm",
+      "sha256": "9182e4673c49e78e0e93a7f89b300d724332a44fe2f3bda96de853b0cdb69df1",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\66740\\000110465912010566\\a11-31280_110k.htm",
+      "sha256": "56c3f23e8fe66da3e8581fadf504f7d2d83c8504b779abdc2f543f7248032f20",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\66740\\000110465912073165\\a12-19916_110q.htm",
+      "sha256": "8857f97d736ab6c458bc274e13158a5c1009531253a05fc9b520653ffe4cd1e6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\66740\\000110465913004260\\a13-3527_18k.htm",
+      "sha256": "fb484875c0023733e9a8bebb18834196e6359e25c6b9d150234e059fc70a1be3",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\706688\\000070668820000012\\a10k4q2019.htm",
+      "sha256": "2289348e70b24d0e8de40be3793348526aa16d38884a37cda24c832b625a0632",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\706688\\000070668820000102\\aan-20200630.htm",
+      "sha256": "f2395c7d15737ed8f82612b6bab006a3c908751e1cc43c1a82479d899330cee1",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\718877\\000162828023004842\\atvi-20221231.htm",
+      "sha256": "81e42f20cd0d031bbc875580ab7fc71ccdf4f0d4c99af3b17d4810cdbfa44547",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\718877\\000162828023026269\\atvi-20230630.htm",
+      "sha256": "733933edca45fbed9f0784aa09562474823c828a26730d96f40d582add8f1391",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\722104\\000119312512339551\\d390116d8a12b.htm",
+      "sha256": "76e7139f8a3b95b2b473c507cd955b1e9fb5df2417b651fc64d5a90c549d9601",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\722104\\000119312513136648\\d441046d10k.htm",
+      "sha256": "47c81128e485504622f99cb46f934a4cac2df0186929e4ca6f78e704a9672f70",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\722104\\000119312513333661\\d540857d10q.htm",
+      "sha256": "77756918084fb89ab887eda9c711abd4d6d72927b8d0e73571e70dce790f4da5",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\727207\\000162828024046408\\axdx-20240930.htm",
+      "sha256": "07a82be7a524ce2b51850b9641384a3867f19301e5becb3814a33fdd4a4561ee",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\727207\\000162828025014205\\axdx-20241231.htm",
+      "sha256": "aea45190fdd61276d43b375dd428803eef1f8c6f2a613706e77f1463259d5834",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\732717\\000073271712000025\\ye11_10k.htm",
+      "sha256": "7aa6d8b4dbd7e0dddb7487c0f63828db9c1a4891d6c2e404d03caedeccd91810",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\732717\\000073271712000088\\q3_10q.htm",
+      "sha256": "61c9f74ef941567eeb5a7f75a75a4b0167287aff7b574d19f5fc0642d1dc8cbd",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\732717\\000073271713000010\\spectrum_8k.htm",
+      "sha256": "6acf345d33114b18f354f4ed3ceed39061c5953d26ccabcb1479a8c22a580a01",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\732717\\000119312512505059\\d455426d8a12b.htm",
+      "sha256": "79efa6b8471d3ad302d79d0ba76f40ea30854dc1528b69292ade5fe5ab313b9a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\748270\\000117184314002843\\f10k_061314.htm",
+      "sha256": "e43ac98f8a66101ede677623b6f882703aac8ce96df91bb0a39ea021b8578ef6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\748270\\000117184314003875\\f10q_080814.htm",
+      "sha256": "cef470c75890598b35808ba849ce0a288946422bfb803781a363c6ba7f959618",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\749038\\000114420416085140\\v433060_8a12b.htm",
+      "sha256": "5ee3c211a8e742aeccdb427bdcf63110e6fed8a5b2653e7a5a4d1af88f1e07f9",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\749038\\000114420417048837\\v474318_10k.htm",
+      "sha256": "f1cce0dc1300fdc39e8c9fb4fde4f8896e439b1fa83521751bae32a2a231620a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\749038\\000114420418008291\\tv484995_10q.htm",
+      "sha256": "4a7e430991c8049d077b94db44d4349fb377f168740db6c8a01f51f6156ecb37",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\778946\\000117120012000976\\i00438_bxg-10q.htm",
+      "sha256": "25cc5b02abc89e4f55a94605dae0b43d47a10e1c0c5eef40b82cd751763f4ff6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\778946\\000117120013000050\\i00033_bxg-10k.htm",
+      "sha256": "fd8e910d6b68e75eb2babea330a98cb95fa02d292df337903ee7982a66479723",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\794105\\000093247118005895\\sp925.htm",
+      "sha256": "39d6a859c9cf6a4c108b5b6de971d615c08315debe481b58116beb55d48b5408",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\794105\\000093247119002351\\ltbond485bfinal.htm",
+      "sha256": "a51653ba5c2193ffe73bb946d978d415445ed8528f2f3d5815425325cccb0ab7",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\794105\\000093247119006455\\ltbondxbrl.htm",
+      "sha256": "210644288533a386b21602080d8b80525d8a34f58312908ea84a503af65364f3",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\811240\\000095017024034812\\biol-20231231.htm",
+      "sha256": "fbb899b7465433eaca95bfa29e6434ef0c43db74bc8657c834efe822f5ceca5d",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\811240\\000095017024058704\\biol-20240331.htm",
+      "sha256": "66ab10a2596a0eedb4d56e8ee34fa9635ecb346391929f781fe6ec467300edee",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\811240\\000119312522064338\\d112023d8a12g.htm",
+      "sha256": "d6981606f6215ef379559370c6a079bc6cf434b55a782dc09c35cf0d9049e44f",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\813621\\000114036113041459\\form10q.htm",
+      "sha256": "59dbbf275ecb16fb60f6921faf4bc52b2bd180f97877625df933bba705bc997a",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\813621\\000114036114010423\\form10k.htm",
+      "sha256": "48c455bd76a5d96f8bd865c3c867f0586073cdc0ab8ca8d4efc4b34abcbadae0",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\816159\\000157104916019454\\t1600688_10q.htm",
+      "sha256": "d40fc4a0f7e6d2d088af116a60f15765e482b13c3e351f7b2578d0152dbf9af7",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\816159\\000157104917001894\\t1700128_10k.htm",
+      "sha256": "a689ccd1b3b831ff386b1f91e42d4339729a182d03cb58bb632dd324c24f3267",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\829365\\000119312521356233\\d232138d8a12b.htm",
+      "sha256": "2f4afd273e0f983e4d0f25d37d01be70c9640d7d3da49b18031b52fba1436f0f",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\830122\\000083012212000036\\pico0331201210q.htm",
+      "sha256": "5ef4fc8b7b331b8aea67ecf9e3a80e523d6a13bd5cf4c7b82d87f161e185efba",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\831001\\000104746912010096\\a2211642z10-q.htm",
+      "sha256": "a3b4972d9a57fb5eaaa362d6cf7646a03b69d176f04cdbbd4188ecad33a6de84",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\831001\\000110465913003060\\a13-3021_18k.htm",
+      "sha256": "0757ae6f439a1f54ca591c9d84149e8d45352cb85ea390d0e1e27998f398a2a5",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\831001\\000120677412000799\\citigroup_10k.htm",
+      "sha256": "7563de84876c0378f977c9eacf4241a53c38ada61fe1152f24cf175bef0235ad",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\835729\\000119312512229756\\d352050d8a12b.htm",
+      "sha256": "8f7ec538b4876765a56aa4305af886d75e222877fee55b68fc7e1138c0c27ac6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\835729\\000119312513210706\\d508475d10k.htm",
+      "sha256": "a5be232be9c76e7f3cc700bbf45f992d028b64b71aadce7e765ae130df3d7e09",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\835729\\000119312513319198\\d558131d10q.htm",
+      "sha256": "b434692da532406746ad01a0cd5843fe3eec66636658f5075f5e09471d6bb543",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\839923\\000110465914073923\\a14-23108_16k.htm",
+      "sha256": "d60655f5fdbbe5297e8bdfba212b2f7dab2df9c262dcb9dd174d3cf33b25febd",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\839923\\000119312514231067\\d729015d20f.htm",
+      "sha256": "bc54cf428a2a08c08178f4f4c099fdc1d8d6b08581178e67f171fdc313f1593f",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\841692\\000119312512286911\\d368379d10q.htm",
+      "sha256": "c153cb7dcf8daf6278db651cd22f3f74c8881bfda3a070330c1ea77a11918512",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\844161\\000156459020020246\\apex-10k_20200201.htm",
+      "sha256": "6e50f1db437dd39b67a1ca8dd4b28f93b59b4b01c9192c95ceac9dabfc7e658c",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\844161\\000156459020043608\\apex-10q_20200801.htm",
+      "sha256": "af0c7fab86f87cd2b8e413d909debbba267e8f04bcab3b5c0e3d1af1a26f9ad3",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\865415\\000119312515168942\\d890027d10q.htm",
+      "sha256": "c677cb8cf164f33330eeda186b73cc8e29972769994be8cf8be5b67b55cd9b8b",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\865415\\000119312515308192\\d87166d10k.htm",
+      "sha256": "7b5767f72b221a9d0b44776afad6ae44ac742a5c044294440af2bd2d1e8a1bc0",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\865941\\000100888616000363\\form10k.htm",
+      "sha256": "0eabb8d8463a8a1aefbc44dc5856589fe3eb938380fe7993b4e861ed948be893",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\865941\\000100888617000026\\form10q.htm",
+      "sha256": "9ec15bbb87c2d55d6295a6f3de4a2d6701f2c5ae841851974e929d02ea27effc",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\866609\\000143774921002669\\io20201231_10k.htm",
+      "sha256": "df1c607ad7e42de6018f2d51ec14cc1aec4655783303cf01292d570acc776c98",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\866609\\000143774921025105\\io20210930_10q.htm",
+      "sha256": "5fc5fef4515639cdc379e2b97d8fe80128005dfc559158fb1e1840b6325e1a41",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\867665\\000143774921011204\\axas20201231_10k.htm",
+      "sha256": "56a0e6fcae7b38b4395e96d05b19fd109e3362984a16e808daf272dfdfb6d797",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\867665\\000143774921012466\\axas20210331_10q.htm",
+      "sha256": "1ba3f4a388b6d8656994f30a48d9f281d1cdd6afca813c48223110f87960730e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\874710\\000141057822001605\\ahpi-20220331x10q.htm",
+      "sha256": "e8e320ddb0f263ded6fc166e9770b1308cc471c67ac545be7982cfa9bc4ea3b6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\874710\\000141057822002861\\ahpi-20220630x10k.htm",
+      "sha256": "9b3427e5c1e75d0687b6386504e26f2dc5dca52b4e2efa460553121fa53029d6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\87565\\000008756517000051\\shlm-20170831x10k.htm",
+      "sha256": "f3d8ab2b008f165986e5c13fe120c7c1a31a20bcaf5cd2fac91500cef6b5ec19",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\87565\\000008756518000031\\shlm-20180531x10q.htm",
+      "sha256": "65b5f7c3d137e38c697f38a8ffdcb7f0f4b7615ca70033cc6db2c07e41025f6e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\881464\\000088146412000017\\amln201263010q.htm",
+      "sha256": "adac6c5fb5b7544d60e63eecadef76ecd19f367c876383562e7fbabd4282b9de",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\881890\\000114036118006315\\form10q.htm",
+      "sha256": "0be5b6d9aa43e35df8a8f0f286d365b4c6924d57fc3356f99f44b8b45cbda00c",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\881890\\000114036118026304\\h10054101x1_10k.htm",
+      "sha256": "b6b95d6fe3dd9136264b8d89ad32b2fc252caa3f6c2b20253bde1851fe3884c9",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\887225\\000119312512196272\\d309886d20f.htm",
+      "sha256": "427b6e57bbcb2e4ac8d903f8a168c727d9752f42a51777ee298a44386b799ba6",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\887225\\000119312512309690\\d383520d6k.htm",
+      "sha256": "9374a812d275b9241bcd318d319a1cc7e969481f5b36511107938a971dcdc0b5",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\887733\\000088773318000016\\cent-2018x10k.htm",
+      "sha256": "5acbee6cbb935bc922089741c5f950f0e37cdb7909703801826c725f3b060dbf",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\887733\\000088773323000017\\cent-20230930.htm",
+      "sha256": "c8dd4728e1f2f4090da3e90229badb0fce42427a0d350cae75092b0c3370c894",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\887733\\000119312513470429\\d616392d10k.htm",
+      "sha256": "515669b19ec61e638e196851217c7041ca9828c38e1c166e42581cfd9294a64e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\889423\\000110465912056636\\a12-13880_110q.htm",
+      "sha256": "054f28e99b70ce44353587cbd3b94c4a6d2ab4a81606bc127a8b757ed5f0eab2",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\889423\\000110465912069759\\a12-24399_18k.htm",
+      "sha256": "46186ca2b9bba5b476deb5e30893bc7cb5a6f62f549194c3c07a8761a031929b",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\893821\\000117891316005665\\zk1618620.htm",
+      "sha256": "6784fd3dfa33d6fb24c645e66cf0fb92af8ed1a88f30b6797863ce4be234eb62",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\896841\\000089684114000007\\a01-07x148xa.htm",
+      "sha256": "bbbbcb4eed8f6847a550f672f07cc6ab507ebc75760d9d28ce2902472585bd41",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\896841\\000089684123000019\\avid-20221231.htm",
+      "sha256": "553537b039afca8b4327973fc58ba3ff25bfd62c336e75b30510519046ae91ac",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\896841\\000089684123000131\\avid-20230630.htm",
+      "sha256": "819d000dfec12c4083fe56cb4db2f34b9d54101060bc44698d7bb2f96deea84e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\898770\\000089877021000098\\smed-20210630.htm",
+      "sha256": "8ee9c4ff74b0c1723c9570e595ab92932c5d817bd3d625a83999bee3b22ccd4e",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\898770\\000089877022000044\\smed-20220331.htm",
+      "sha256": "ee3265c525b61072bee5799fee0d6d3c15e6516934d362fb88ea99308491e8ba",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\899866\\000089986616000224\\form8-a.htm",
+      "sha256": "371cfb3f7fc7f930185a0bf47a5f0c7230bfa56dbcc28de126232997d5d86b21",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\899866\\000089986621000014\\alxn-20201231.htm",
+      "sha256": "8d6b425cc7ade46103b97c7ddacc6fdad1d7dcd114dff8dc3d715b4596076632",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\899866\\000089986621000039\\alxn-20210331.htm",
+      "sha256": "6be0b58bfee4edf60b28e4516fe66d0b8b72b37bc21be0a8a7735ed859f2fd72",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\910612\\000093041312005551\\c71140_8a12b.htm",
+      "sha256": "5f64b051f7ac688a601d0c217db0cf3ee9d790af0ae8202e0ed9c6c12761ee23",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\910612\\000156459020009393\\cbl-20191231.htm",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\910612\\000156459020040444\\cbl-20200630.htm",
+      "sha256": "c7f3cf85b47f7eb483f6ae9e03e13f5a2901f25a1dece45494313d867d8b9ceb",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\911002\\000110465912076653\\a12-19776_110q.htm",
+      "sha256": "8c25272fb6d7a9c62c810225a1eacc3a9edc30482743214f2f412319033d9e80",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\912145\\000091214513000003\\asca-20121231x10k.htm",
+      "sha256": "0a95c2086034fe82097a8ee390cc2cef62f593b51299e50236400c8409bb4d03",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\912145\\000091214513000009\\asca-20130630x10q.htm",
+      "sha256": "c3fbe7902a7292700d2e279614a60de6b4d8e717dab384bda02f6da5dbed4e94",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\913077\\000091307715000028\\affx-20150930x10q.htm",
+      "sha256": "ec44329a7614ff723e472239a47e452131a565d12eb1c659def14fd39ce8717b",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\913077\\000091307716000033\\affx1231201510-k.htm",
+      "sha256": "b43c26f0f9997f1647e0fc66496cb1cd718d3ce299b38ce9156df104fb2eb206",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\915140\\000156459020009393\\cbl-20191231.htm",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\915140\\000156459020040444\\cbl-20200630.htm",
+      "sha256": "c7f3cf85b47f7eb483f6ae9e03e13f5a2901f25a1dece45494313d867d8b9ceb",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\915735\\000110465912081191\\a12-21941_18a12b.htm",
+      "sha256": "1d746e83ed9bc87d9e9ac117dc6f69430e698944f5f1815ada08a0057d2bae26",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\915735\\000120677412004501\\stratasys_10q.htm",
+      "sha256": "2c98563b692c8a15e5c8c03fa7e21fa2970e726fa45b487ddf655a8404720d93",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\918581\\000091858116000141\\a123115-10kxciber.htm",
+      "sha256": "bfe3eaee8c8bcaa02c41266a5f851e6d13f3cab8c8e4e2c651cafd242a2f40f1",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\918581\\000091858116000256\\a93016-10qxciber.htm",
+      "sha256": "df35424e5e8d0bf51cbccbf8d28195ecfcf1a627cdd9e231a6fdd043bc64126c",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\919956\\000091995619000007\\dvcr-2018123110k.htm",
+      "sha256": "8e488b9a019a2422e675ff231e84cd79b07f5d2049777507b56cece884194e35",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\919956\\000091995619000023\\dvcr-20190331x10q.htm",
+      "sha256": "4c86f246367353619b47d8befd9783b5a9edeab20608f9d617c938f2c74748e8",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\920760\\000162828018000562\\len-20171130x10k.htm",
+      "sha256": "31f22bbbabe9c02a5b433d03dde66aa040d454adbe1133dd7440944645ef5765",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\920760\\000162828023001606\\len-20221130.htm",
+      "sha256": "483e1e4f9de93f54d7f31d10d7e39f761ca91d46db7bbd4f8032904f73513b0f",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\93410\\000009341012000003\\cvx-9302012x10qdoc.htm",
+      "sha256": "27f006a0497130abf712d76a15eade69f36eadebc377bed4fa943b0a2fea1401",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\93410\\000095012312002976\\f60351e10vk.htm",
+      "sha256": "3a44ee1b10da93576da3644b5bc843c94b2dc322c43c14738b41978b462e06fc",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\93410\\000119312513009479\\d466014d8k.htm",
+      "sha256": "927517c41f0af9db648b814ea4d4f872698a4d08122e7aaa61bafa7963d03735",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\937136\\000110465914066052\\a14-15162_110k.htm",
+      "sha256": "196c67f23b976806f34d0851f8b3477343298917c733cc2ceaeff50920fb1019",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\937136\\000110465915007053\\a14-26590_110q.htm",
+      "sha256": "b78f1bff8a6e587b4eee92adecf31d3b66d0d0249547f2aa98fb5d208c705fbb",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\945764\\000094576416000136\\dnr-20160930x10q.htm",
+      "sha256": "1abcb1114a54be5347e452918d10cb0c7bb5168d47538effc7e8187af37fbfc5",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\945764\\000094576417000013\\dnr-20161231x10k.htm",
+      "sha256": "bb3cab812adc72491a0108ea6ab63eeb59b296aa45e4c12b39c3b25418787b2b",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\945764\\000094576417000023\\dnr-20170504x8kearningsrel.htm",
+      "sha256": "0300b1083f09fccf792d6179eac4b89a3409d3e58f3a00ec51e164c8478c2b74",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\947263\\000127956912001419\\tdbank40f36811.htm",
+      "sha256": "847c4414dc49be8d2310153ddf374160e56a9de951e04c1ac24e180fe1c50c21",
+      "candidates": []
+    },
+    {
+      "original_path": "C:\\atx\\atx-db\\data\\cache\\identity-oracle-session8\\Archives\\edgar\\data\\947263\\000127956913000075\\tdbank6k.htm",
+      "sha256": "d36a83370562bd8e1b8fd7595a164caba3dc138e5bf2658554c420ee70caaf40",
+      "candidates": []
+    }
+  ],
+  "payload_bytes_read": 0,
+  "network_attempts": 0,
+  "restored_files": 0,
+  "gate_promotion": false,
+  "qualification": "Native ledger parent directories within raw depth0..3 only. Objects subtrees are pruned during discovery and only exact original SHA plain/gzip names are stat-checked. Every changed state is exposed and makes this an unstable observation, not a stable negative lookup or snapshot. Candidate counts are initial observations only. No complete search of arbitrary backups, deeper stores, different layouts or body contents is claimed. No absence, source completeness or admission claim follows from an unstable result; even a stable bounded result does not establish global absence."
+}

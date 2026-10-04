@@ -1,0 +1,231 @@
+{
+  "status": "BOUNDED_HOST_OBSERVATION_COMPLETE",
+  "samples": [
+    {
+      "observed_at_utc": "2026-10-04T20:07:07.677165+00:00",
+      "physical_free_gb": 4.462,
+      "commit_free_gb": 5.9112,
+      "commit_free_bytes": 6347096064,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:07:17.679034+00:00",
+      "physical_free_gb": 4.416,
+      "commit_free_gb": 5.8989,
+      "commit_free_bytes": 6333947904,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:07:27.679530+00:00",
+      "physical_free_gb": 4.326,
+      "commit_free_gb": 5.777,
+      "commit_free_bytes": 6203011072,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:07:37.680264+00:00",
+      "physical_free_gb": 4.0404,
+      "commit_free_gb": 5.0325,
+      "commit_free_bytes": 5403582464,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:07:47.681169+00:00",
+      "physical_free_gb": 4.3805,
+      "commit_free_gb": 5.8414,
+      "commit_free_bytes": 6272143360,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:07:57.681806+00:00",
+      "physical_free_gb": 4.3242,
+      "commit_free_gb": 5.7889,
+      "commit_free_bytes": 6215831552,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:08:07.682754+00:00",
+      "physical_free_gb": 4.3383,
+      "commit_free_gb": 5.7704,
+      "commit_free_bytes": 6195888128,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:08:17.683426+00:00",
+      "physical_free_gb": 4.5926,
+      "commit_free_gb": 5.7067,
+      "commit_free_bytes": 6127542272,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:08:27.684116+00:00",
+      "physical_free_gb": 4.3458,
+      "commit_free_gb": 5.4562,
+      "commit_free_bytes": 5858512896,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:08:37.684600+00:00",
+      "physical_free_gb": 4.3824,
+      "commit_free_gb": 5.5438,
+      "commit_free_bytes": 5952602112,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:08:47.685082+00:00",
+      "physical_free_gb": 4.3803,
+      "commit_free_gb": 5.5632,
+      "commit_free_bytes": 5973450752,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:08:57.686023+00:00",
+      "physical_free_gb": 4.2342,
+      "commit_free_gb": 5.0737,
+      "commit_free_bytes": 5447819264,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:09:07.686572+00:00",
+      "physical_free_gb": 4.3565,
+      "commit_free_gb": 5.2104,
+      "commit_free_bytes": 5594611712,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:09:17.687356+00:00",
+      "physical_free_gb": 4.2812,
+      "commit_free_gb": 5.0618,
+      "commit_free_bytes": 5435101184,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:09:27.687807+00:00",
+      "physical_free_gb": 4.2189,
+      "commit_free_gb": 5.1074,
+      "commit_free_bytes": 5484019712,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:09:37.688608+00:00",
+      "physical_free_gb": 4.2511,
+      "commit_free_gb": 5.1516,
+      "commit_free_bytes": 5531439104,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:09:47.689213+00:00",
+      "physical_free_gb": 4.2023,
+      "commit_free_gb": 5.0715,
+      "commit_free_bytes": 5445513216,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:09:57.689979+00:00",
+      "physical_free_gb": 4.2743,
+      "commit_free_gb": 5.1355,
+      "commit_free_bytes": 5514194944,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:10:07.690861+00:00",
+      "physical_free_gb": 4.2649,
+      "commit_free_gb": 5.1512,
+      "commit_free_bytes": 5531111424,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:10:17.691455+00:00",
+      "physical_free_gb": 4.2599,
+      "commit_free_gb": 5.1297,
+      "commit_free_bytes": 5507997696,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:10:27.692054+00:00",
+      "physical_free_gb": 4.5223,
+      "commit_free_gb": 5.4597,
+      "commit_free_bytes": 5862309888,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:10:37.692605+00:00",
+      "physical_free_gb": 4.4821,
+      "commit_free_gb": 5.4376,
+      "commit_free_bytes": 5838565376,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:10:47.693433+00:00",
+      "physical_free_gb": 4.4369,
+      "commit_free_gb": 5.4245,
+      "commit_free_bytes": 5824503808,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:10:57.694028+00:00",
+      "physical_free_gb": 4.1055,
+      "commit_free_gb": 5.0418,
+      "commit_free_bytes": 5413617664,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:11:07.694631+00:00",
+      "physical_free_gb": 4.0199,
+      "commit_free_gb": 5.3534,
+      "commit_free_bytes": 5748154368,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:11:17.695509+00:00",
+      "physical_free_gb": 4.0134,
+      "commit_free_gb": 5.6348,
+      "commit_free_bytes": 6050353152,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:11:27.695938+00:00",
+      "physical_free_gb": 4.0933,
+      "commit_free_gb": 5.4512,
+      "commit_free_bytes": 5853167616,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:11:37.696653+00:00",
+      "physical_free_gb": 4.3847,
+      "commit_free_gb": 5.43,
+      "commit_free_bytes": 5830434816,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:11:47.697003+00:00",
+      "physical_free_gb": 3.8925,
+      "commit_free_gb": 5.0538,
+      "commit_free_bytes": 5426442240,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:11:57.697414+00:00",
+      "physical_free_gb": 3.9509,
+      "commit_free_gb": 5.2148,
+      "commit_free_bytes": 5599326208,
+      "commit_limit_gb": 23.692
+    },
+    {
+      "observed_at_utc": "2026-10-04T20:12:07.698419+00:00",
+      "physical_free_gb": 4.1122,
+      "commit_free_gb": 5.1852,
+      "commit_free_bytes": 5567553536,
+      "commit_limit_gb": 23.692
+    }
+  ],
+  "duration_seconds": 300,
+  "minimum_commit_free_gib": 5.0325,
+  "minimum_physical_free_gib": 3.8925,
+  "reschedule_condition": {
+    "minimum_commit_free_gib": 3.0,
+    "minimum_physical_free_gib": 1.0
+  },
+  "reschedule_condition_met": true,
+  "qualification": "Scheduling evidence only; disk free freshly observed above40GiB after bounded additional cache metadata inspection. Observerv11 failed the original minimum3GiB condition and is preserved. Original31sample/300s condition is unchanged; every later data job still requires original resource/source guards including40GiB disk floor. No financial or release gate measured."
+}
