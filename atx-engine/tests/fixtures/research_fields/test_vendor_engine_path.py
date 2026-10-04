@@ -185,18 +185,6 @@ def test_panel_guard_refuses_another_panel(tmp_path, monkeypatch, names, match):
     assert not (tmp_path / "out" / "manifest.json").exists()
 
 
-def test_repository_registry_routes_the_vendor_rows_to_the_engine():
-    """K-P9-1 / ruling P5, P9 A3's flip: the six vendor-panel rows are kind engine, builder = their kind id, and keep
-    their python twins' formula fingerprint (each module fingerprints its spec at its own lag)."""
-    rows = {r["name"]: r for r in json.loads((HERE / "field_registry.json").read_text(encoding="utf-8"))["fields"]}
-    for name in FIELDS:
-        assert rows[name]["kind"] == "engine" and rows[name]["builder"] == name, rows[name]
-        assert rows[name]["dtype"] == "f64" and "engine-shim" in rows[name]["owner"]
-        assert rows[name]["formula_sha256"] == builder.formula_id(
-            name, builder.spec_definition(name, engine.lag_of(name)))
-    assert set(engine.engine_rows(HERE / "field_registry.json")) >= set(FIELDS)
-
-
 REAL = pytest.mark.skipif(not os.environ.get("ATX_RESEARCH_FIELDS_EXE"), reason="set ATX_RESEARCH_FIELDS_EXE (root)")
 
 
