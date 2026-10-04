@@ -320,3 +320,31 @@ receipts `m2g-logs/receipt-p9-*q5*.json`, `receipt-p9-b0-yf0-nav-hrun.json`; eve
 - May NOT print: any signal value, and nothing of the u pass's own outputs (`orientations.json`,
   `train_daily_ic.csv`, `summary.json`, `train_candidates.jsonl` hold IC statistics: not opened); no return, IC,
   Sharpe or NAV statistic. The runner's stdout log is not opened (receipt only).
+
+**Result** (evidence `m2g-logs/s2r-diag.txt`, `m2g-logs/receipt-p9-m2g-s2rd-u.json`). One deviation from the list, on
+a limit only: the runner caps `--seconds` at 600 (its refusal: "require a command, <=600 seconds"), so the run used
+`--seconds 600` instead of 1200 (nothing ran under the refused argv). Run `p9-m2g-s2rd-u`: completed, exit 0,
+**94.6 s**, peak 1,617 MiB (inside 2,048), admission wait 0 s; exe `fccaa07e`. Longest path written 210 chars.
+
+| candidate | cells (all sessions / score window) | NaN AuditExact & finite ResearchFast | finite AE & NaN RF | both NaN | both finite |
+|---|---|---|---|---|---|
+| `smax` | 8,320,410 / 5,957,532 | **0 / 0** | 0 / 0 | 6,328,780 / 4,188,740 | 1,991,630 / 1,768,792 |
+| `smax5` | 8,320,410 / 5,957,532 | **0 / 0** | 0 / 0 | 5,830,001 / 4,100,337 | 2,490,409 / 1,857,195 |
+
+- On the P9-B0 u the two candidates' NaN patterns are identical under AuditExact and ResearchFast: the S2R-2
+  flat-window case (AuditExact NaN, ResearchFast 0) does not occur on TRAIN for `smax` / `smax5`. The prereg line
+  stays as ruled (a property of the mode); its measured size on the P9-B0 u is 0 cells. Gates nothing.
+- The `_audit` cache (4.2 GB) and the u output dir were deleted by name after this commit (regenerable in 95 s);
+  the run receipt is kept.
+
+## Notes for the re-run of item 4 (c)
+
+- `run_bounded_research.py` refuses `--seconds` above 600, so the D-COV list's `--seconds 1800` becomes 600 (the COV
+  report's step 5 already treats a wall above 600 s as a stop for its own ruling). Lists otherwise unchanged.
+- The Release risk exe p9-2l (`a31a0f96`) and Debug p9-2k (`94b5a5e7`) are on disk; the COV-7 fixture copy and the
+  four synthetic outputs are kept in `build-equity/p9-m2g-cov7/` for the ruling.
+
+## End state
+
+Trial ledger at the end: 133 lines, `27e40f9f6314585e...` (unchanged; no step passed a ledger). UCRT
+`ucrtbase.dll` 10.0.26100.7623, SHA-256 `2c08e77f...65ef` (unchanged since M2f).

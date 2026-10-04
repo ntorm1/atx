@@ -566,3 +566,20 @@ Base `3e283275` (code `e1c16051`). Detail: `root-wave2-merge-report.md` section 
 Next free build tag **p9-2k**. Known-red after M2f: pytest `test_fields_are_the_rule_applied_to_the_registry` (E2).
 Release `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` is a named Release skip (0 failed; M2c-RED-2 /
 OD5-2).
+
+### M2g: wave-2 gate diagnostics, part 1 (GATE-EARLY; no merge), 2026-10-04
+
+Base `ab189471` (code `42f42a07`). Detail and every pre-run list: `root-wave2-gate-report.md`; logs `m2g-logs/`. Zero
+trials: `build-equity/trials.jsonl` 133 lines `27e40f9f` at start and end.
+
+| item | commits | build tag | runs (bounded, 2,048 MiB) | result |
+|---|---|---|---|---|
+| 1 AL-DATA | spec `30b9c9d2` (5.1 + 5.2, one commit); nits D-n1 / D-n2 in `3fd0bf98` | - | - | `al-data/*.md` already committed as they stood (`ab189471`); six "before" lines byte-identical to HEAD; `test_p9_al_sig_registrations.py` 11p before and after; 5.3 not applied (P10) |
+| 2 ALD-DIAG | list `3fd0bf98`, result `1b8c4df2` | - | `p9-m2g-ald-diag-run` 0.5 s | names / delisted <= 2023-12-01 / unclassified: 2020 2,420 / 83 / 0; 2021 2,540 / 103 / 0; 2022 2,325 / 106 / 0; 2023 2,186 / 95 / 2; almost all M&A (performance 5 in four years) |
+| 3 B2-13 rho | list `3fd0bf98`, result `1b8c4df2` | - | `p9-m2g-b2-13-rho-run` 1.1 s (Release verb `a57a2090`) | X-10 vs Y-F0 rho 0.9994863 (1 - rho 5.14e-4); Y-1 vs X-10 rho 0.9947114 (5.29e-3); pinned = ledgered; both paired-test defined |
+| 4 COV | list `3fd0bf98`, result `1b8c4df2` | **p9-2k** equity-dev `atx-equity-strategy-risk` (1 TU, 9 s) `94b5a5e7`; **p9-2l** equity-rel `atx-equity-strategy-risk, atx-equity-strategy-targets` (2 TUs, 9 s; first attempt refused at the memory gate, no receipt) `a31a0f96`, `53ca5dd4`; 0 warnings | COV-7 on the lane fixture (synthetic, direct) | (a) S9 holds; **(b) COV-7 IDENTITY MISS**: Debug vs Release container blocks differ for both recipes (cov-diff exit 1 at block 2; factor covariance median 17-24 ULP, max rel 1.5e-9; deterministic per build); **(c) not run**: no D-COV, no COV step 4, no step 5, no atx-cov-v1 store; PM ruling needed |
+| 5 Q5 | list `3fd0bf98` + amendment `1b8c4df2`, result `29adf2fa` | - | holdings re-run 27.4 s, book-csv 4.0 s, risk 20.7 s (Debug cross-check 49.2 s), G-2a 6.1 s | Y-F0 holdings re-run inside the list (26/27 identical, `summary.json` producer only); **q +0.0502, q_lit +0.0671**; ex-ante vol ratio not produced; Debug cross-check equal at G-2a's digits |
+| 6 S2R-DIAG | list `29adf2fa`, result final docs commit | - | `p9-m2g-s2rd-u` 94.6 s, peak 1,617 MiB (Release audit-exact u, fresh cache `build-equity/s2rd`) | `smax` 0, `smax5` 0 cells NaN under AuditExact and finite under ResearchFast (all sessions and score window) |
+
+Next free build tag **p9-2m**. Known-red unchanged: pytest `test_fields_are_the_rule_applied_to_the_registry` (E2);
+Release lit-golden is a named skip (M2c-RED-2 / OD5-2). New open item (not a test red): COV-7 identity miss.
