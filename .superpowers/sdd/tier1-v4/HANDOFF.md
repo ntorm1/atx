@@ -1,5 +1,30 @@
 # tier1-v4 controller handoff
 
+## Latest owner addition and successful replay (supersedes job states below)
+
+User added the full P9 AL-DATA request to the goal. Attachment goal-objective.md
+section8 now incorporates it; exact snapshot p9-al-data-request-v1.md is23,418B,
+SHA1be5500839948b4e987075349959458e0e675b6aee04f9d4e364d40aa0b98adc.
+R27/task-27-p9-al-data-goal-addition.md routes priorityA indexes PIT through
+existing Task1 repair2/5 (prior1/5); choose R7(a) dated evidence only and preserve
+foreign panel.py. B1text/B3partitioned fundamentals low priority, B2 deferred.
+Strict pre2023 evaluation/forward-label cutoff and consumer bars remain unchanged.
+Readinessv7 preserves46old contracts/statuses and adds a required13-group P9
+appendix. Independent review by t15 PASSED spec/quality after live-job wording
+was corrected; its exception-helper work has resumed. No P9 product implementation yet.
+
+Replay session80177 completed228.7s/599,658,496bytes, no cap. Root audit88020
+completed26.1s/150,372,352bytes with independently bound pre/post unit identities,
+current frozen source/runtime checks and complete frontier. THREE units0/1/2
+are now independently checked. No final publication or source-economic gate.
+
+Root sole actual session86809 now advances at most four new batches3..6 through
+unchanged R23 native build,0.8GiB/heavy/40GiBfloor, unique
+logs/t17-runtime-b0003-b0006-v1.*. Do not count later checkpoints until an
+appropriate current audit/replay binds them. Old auditv3 is still NOTRUN and
+not applicable; completed auditv4 must not be rerun/overwritten. All three agents
+remain active on disjoint R26 implementation/review; no cleanup has run here.
+
 ## Live continuation checkpoint (2026-10-04 15:30 UTC)
 
 This supersedes the job/lock statements below. Root sole actual session80177 is

@@ -1,0 +1,4 @@
+# Preserve exact owner-supplied document bytes used by the goal's SHA256 pins.
+p9-al-data-request-v1.md -text
+goal-objective-before-p9.md -text
+goal-objective-with-p9.md -text
