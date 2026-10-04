@@ -49,6 +49,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import wave_fixture as F  # noqa: E402
+import cycle.phases as CP  # noqa: E402
 import cycle_resume as CR  # noqa: E402
 import research_cycle as RC  # noqa: E402
 import research_tree as RT  # noqa: E402
@@ -911,13 +912,14 @@ def test_judge_records_in_call_order(tmp_path):
 
 
 # ------------------------------------------------------------------ ruling W1-I1: the IC cache path bound
-def test_cache_path_bound_w1_i1(tmp_path):
+def test_cache_path_bound_w1_i1(tmp_path, monkeypatch):
     """Ruling W1-I1 (whole-wave-1 review I-1): before any compute, research_cycle (plan and run) and the wave's
     preflight refuse candidate ids whose deepest IC cache file would be over 250 characters. The layout is the exe's
     at its Release bound (cycle/phases.py CACHE_*): under the v8 cache of root's tree it is 226 + len(id), the review's
     independent derivation, so ids of up to 24 characters fit there (the ruling's AL / PRE bound), 18 with
     audit-exact. The id regex stays at 64. Nothing is refused while the IC exe is not on disk (it alone writes the
-    cache) or the library is not."""
+    cache) or the library is not. The refusal halves set CACHE_PATH_MAX from the computed deepest path (review E2 N4:
+    nothing depends on the length of pytest's --basetemp), with a fitting id as the positive case."""
     v8 = "C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo3"
     for n in (1, 18, 24, 25, 33):
         assert len(RC.deepest_cache_path(v8, "x" * n)) == 226 + max(n, 3)       # (".<16>.partial" below 3)
@@ -932,36 +934,57 @@ def test_cache_path_bound_w1_i1(tmp_path):
         v8, ["x" * 19], audit=True)
     assert RC.cache_path_problem(v8, []) is None and WM.CAND_ID_RE.pattern.endswith("{0,63}")
     assert RC.library_ids({"candidates": [{"id": "a"}, "b", {"x": 1}, 3]}) == ["a", "b"] and RC.library_ids([]) == []
-    # research_cycle: a deep (pytest) root admits no id at all; plan refuses with exit 2 before anything runs
+    # research_cycle: the bound is set from the cell's own deepest path (review E2 N4: the test does not depend on how
+    # deep pytest's tmp root is): an id that fits exactly passes; one character over, plan refuses with exit 2
+    # before anything runs
     root, sp = T.make_root(tmp_path / "c")
     (root / "lib" / "lib.json").write_text(json.dumps({"candidates": [{"id": "new_alpha"}]}))
-    deep = len(RC.deepest_cache_path(str(root / "out" / "CC"), "new_alpha"))
-    assert deep > RC.CACHE_PATH_MAX
+    c = T.cycle_of(root, sp)
+    deep = len(RC.deepest_cache_path(os.path.abspath(c.res.path(c.cache_dir())), "new_alpha"))
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", deep)
+    assert any(s.phase == "u" for s in T.cycle_of(root, sp).steps())          # fits: nothing refused
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", deep - 1)
     with pytest.raises(RC.CycleError, match=r"IC cache path too long \(ruling W1-I1\)") as e:
         T.cycle_of(root, sp).steps()
     assert e.value.code == RC.EXIT_USAGE and "lib/lib.json" in str(e.value) and "['new_alpha']" in str(e.value)
+    assert f"{deep} characters (> {deep - 1})" in str(e.value)
     assert RC.main(["plan", str(sp), "--root", str(root)]) == RC.EXIT_USAGE and T.calls(root) == []
     doc = json.loads(sp.read_text())
     doc["ic"]["flags"] = ["--workers", "4", "--eval-mode", "audit-exact"]
     sp.write_text(json.dumps(doc))
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", deep)                           # fits the Release bound, not audit's
     with pytest.raises(RC.CycleError, match=r"\(audit-exact\)"):
         T.cycle_of(root, sp).steps()
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", deep + 6)                       # "_audit": 6 characters deeper
+    assert any(s.phase == "u" for s in T.cycle_of(root, sp).steps())
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", deep - 1)
     (root / "bin" / "ic.exe").unlink()                           # no IC exe: nothing can write the cache
     assert any(s.phase == "u" for s in T.cycle_of(root, sp).steps())
     (root / "bin" / "ic.exe").write_bytes(b"ic")
     (root / "lib" / "lib.json").write_text('{"lib": 1}')        # no candidate list (or no library): nothing to check
     assert any(s.phase == "u" for s in T.cycle_of(root, sp).steps())
-    # the wave: with the parent's IC exe on disk, preflight refuses (exit 3) before register writes a registration;
-    # the fixture's fake world has no IC exe, so every other wave test runs as before
+    # the wave: with the parent's IC exe on disk, preflight refuses (exit 3) before register writes a registration
+    # when the cell's deepest path is one character over, and passes when it fits; the fixture's fake world has no IC
+    # exe, so every other wave test runs as before
     root = F.build(tmp_path / "w")
     (root / "bin").mkdir()
     (root / "bin" / "ic.exe").write_bytes(b"ic")
+    parent = RC.load_spec(root / F.PARENT)
+    cell = dict(parent, ic={k: v for k, v in parent["ic"].items() if k != "cache"})   # add-alpha's cell (review N3)
+    pc = RC.Cycle(cell, RC.Resolver(root), verify=False)
+    wdeep = len(RC.deepest_cache_path(os.path.abspath(pc.res.path(pc.cache_dir())), "alpha_a"))
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", wdeep - 1)
     fake = F.FakeCycle(root, ADMIT_ALL)
     assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lambda s: None) == 3
     err = json.loads((root / "out/waves/w1/receipts/01-preflight.failed-1.json").read_text())["error"]
     assert "IC cache path too long (ruling W1-I1)" in err and "'alpha_a'" in err
     assert not any("add-alpha" in a for a in fake.calls)
-    (root / "bin" / "ic.exe").unlink()
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", wdeep)                          # fits: preflight passes, exe on disk
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "preflight"], executor=fake,
+                              log=lambda s: None) == 0
+    (root / "out/waves/w1/receipts/01-preflight.json").unlink()
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", wdeep - 1)
+    (root / "bin" / "ic.exe").unlink()                                        # no IC exe: nothing refused
     assert research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "preflight"], executor=fake,
                               log=lambda s: None) == 0
 

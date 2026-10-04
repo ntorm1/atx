@@ -35,6 +35,14 @@ JSON Schema subset the exes print), with the row's own name as its ``rule`` key 
 a NAV row's from its x-flag keys (the rule's, then each param's), a composition row's from COMPOSITION_FLAGS. The
 preflight stage reads both tables (their SHA-256 in its receipt), validates and derives; the spec stage writes the
 flags into the cell. The exe capabilities the cycle needs come from the same envelope (cycle/phases.exe_capabilities).
+
+Raw rule flags (ruling E2-8, one guard, every v2 kind; wave_stage_kinds.rule_flag_guard): no flag a rule owns
+(owned_flags: every table rule's, named or not, plus the named rules' derived ones) reaches the cell any other way
+than through rules. An option map (rule_cell.constants.flags, the template's change.flags, horizon.flags) may not
+name one, with ``=value`` stripped or as an argparse abbreviation (raw_rule_flags); and the cell's RESOLVED flag lists
+(after constants.set, change.set / unset and the flag maps) must give every owned option the occurrences of the
+parent's lists with only the derived flags applied. The IC table may list no composition row COMPOSITION_FLAGS does not
+map (unmapped_ic_rules: its flags could not be guarded).
 """
 from __future__ import annotations
 
@@ -408,6 +416,14 @@ def rule_flags(rules: list[dict], tables: dict) -> tuple[dict, list[str]]:
     return flags, out
 
 
+def unmapped_ic_rules(tables: dict) -> list[str]:
+    """The ids of the IC exe's composition rows that COMPOSITION_FLAGS does not map (ruling E2-8, review E2 N1): their
+    fitter flags are unknown here, so a raw one could not be refused; the wave stops on them by name (a missed MR-4)."""
+    rows = (tables.get("ic") or {}).get("rules") or []
+    return sorted({r["id"] for r in rows if isinstance(r, dict) and isinstance(r.get("id"), str)} -
+                  set(COMPOSITION_FLAGS))
+
+
 def table_flags(tables: dict) -> dict:
     """{section: {flag}} every rule of the exes' tables turns on, named by the manifest or not: each composition
     row's fitter (and NAV) flags (COMPOSITION_FLAGS), each NAV row's x-flag (its first token) and its params'
@@ -428,16 +444,39 @@ def table_flags(tables: dict) -> dict:
     return out
 
 
-def raw_rule_flags(given: dict, derived: dict, tables: dict) -> list[str]:
-    """The "section flag" entries of ``given`` (rule_cell.constants.flags, a template's change.flags) that a rule
-    owns: one the named rules derive (``derived``) or one any rule of the exes' tables turns on (table_flags), named
-    or not (review E2 R2, F-8: a rule is named in rules and its params checked by its params_schema; a raw flag would
-    run it unchecked)."""
+def owned_flags(tables: dict, derived: dict) -> dict:
+    """{section: {flag}} a rule owns: table_flags plus the named rules' derived flags."""
     owned = table_flags(tables)
     for section, ops in (derived or {}).items():
         owned.setdefault(section, set()).update(ops)
-    return sorted(f"{s} {f}" for s, ops in (given or {}).items() if isinstance(ops, dict)
-                  for f in ops if f in owned.get(s, set()))
+    return owned
+
+
+def abbreviated(token: str, flags) -> list[str]:
+    """The flags of ``flags`` that ``token`` (``=value`` stripped) is a proper prefix of: what argparse's allow_abbrev
+    reads it as (ruling E2-8: such a token is refused as an abbreviation)."""
+    head = token.split("=", 1)[0]
+    return sorted(f for f in flags if len(head) > 2 and head.startswith("--") and f != head and f.startswith(head))
+
+
+def raw_rule_flags(given: dict, derived: dict, tables: dict) -> list[str]:
+    """The "section token" entries of ``given`` (an option map: rule_cell.constants.flags, a template's change.flags,
+    horizon.flags) that a rule owns: the token with any ``=value`` stripped is one the named rules derive
+    (``derived``) or one any rule of the exes' tables turns on (table_flags), named or not; or the token is a proper
+    prefix of such a flag, an argparse abbreviation, entered as "section token (abbreviates [...])" (review E2 R2 /
+    R2b, ruling E2-8, F-8: a rule is named in rules and its params checked by its params_schema; a raw flag would run
+    it unchecked)."""
+    owned = owned_flags(tables, derived)
+    out = []
+    for s, ops in (given or {}).items():
+        for f in (ops if isinstance(ops, dict) else {}):
+            if not isinstance(f, str):
+                continue
+            if f.split("=", 1)[0] in owned.get(s, set()):
+                out.append(f"{s} {f}")
+            elif abbreviated(f, owned.get(s, set())):
+                out.append(f"{s} {f} (abbreviates {abbreviated(f, owned.get(s, set()))})")
+    return sorted(out)
 
 
 # ------------------------------------------------------------------ the cell's constants

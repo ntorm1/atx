@@ -3,11 +3,12 @@ preflight, the field and role builds of the register stage, and the rule cell's 
 A v1 manifest never reaches a function here that changes anything (``kind`` is None): its argv, receipts and bytes
 are those of before.
 
-  preflight  kind rule: both rule tables (the IC exe's --list-rules --json, the NAV exe's nav --list-rules --json),
-             their stdout SHA-256 recorded; every named rule validated and its flags derived (wave_kinds.rule_flags);
-             neither the template's change.flags nor rule_cell.constants.flags may set a rule's flag, named or not
-             (F-8, review E2 R2: wave_kinds.raw_rule_flags). Kind leverage: the value inside the NAV exe's
-             fixed-v1 aim_leverage range when the table lists it. Kind walk-forward: refused (schema only, lane D3)
+  preflight  every kind: both rule tables (the IC exe's --list-rules --json, the NAV exe's nav --list-rules --json),
+             their stdout SHA-256 recorded, and ruling E2-8's raw-rule-flag guard (rule_flag_guard: no flag a rule
+             owns reaches the cell's resolved flag lists but through rules, by any route or spelling; every IC rule
+             mapped in COMPOSITION_FLAGS). Kind rule: every named rule validated and its flags derived
+             (wave_kinds.rule_flags). Kind leverage: the value inside the NAV exe's fixed-v1 aim_leverage range when
+             the table lists it. Kind walk-forward: refused (schema only, lane D3)
   register   kind field: the fields builder on the parent's role (prepare_research_fields.py --registry R --fields
              <the wave's fields + the rows> --reuse <the wave's fields dir>) into field.output under the bounded
              runner; kind role: the role builder (prepare_recent_research.py ... --out role.output) then the fields
@@ -58,39 +59,160 @@ def run_listing(w: Wave, spec: dict, nav: bool) -> tuple[dict | None, str | None
 
 
 def preflight_kind(w: Wave, spec: dict) -> tuple[dict, list[str]]:
-    """({kind, tables?, flags?, leverage?}, problems) of a v2 manifest on its parent's resolved ``spec``; ({}, []) for
-    v1."""
+    """({kind, tables, flags?, leverage?}, problems) of a v2 manifest on its parent's resolved ``spec``; ({}, []) for
+    v1. Every v2 kind reads both rule tables: ruling E2-8's raw-rule-flag guard (rule_flag_guard) needs them."""
     k, m = kind(w), w.manifest
     if k is None:
         return {}, []
-    out, problems = {"kind": k}, []
+    out: dict = {"kind": k}
+    problems: list[str] = []
     if k in WK.SCHEMA_ONLY:
         problems.append(f"kind {k} is schema only until lane D3 wires it: the wave plans, it does not run")
-    if k in ("rule", "leverage"):
-        tables, shas = {}, {}
-        for table, nav in (("ic", False), ("nav", True)):
-            if k == "rule" or nav:
-                tables[table], shas[table] = run_listing(w, spec, nav)
-        out["tables"] = shas
-        if k == "rule":
-            flags, more = WK.rule_flags(m["rules"], tables)
-            problems += more
-            template = w.read_json(m["rule_cell"]["template"]) if w.exists(m["rule_cell"]["template"]) else None
-            given = {"rule_cell.template change.flags": ((template or {}).get("change") or {}).get("flags"),
-                     "rule_cell.constants.flags": (m["rule_cell"].get("constants") or {}).get("flags")}
-            for where, raw in given.items():        # review E2 R2: the named rules' flags and every table rule's
-                owned = WK.raw_rule_flags(raw or {}, flags, tables)
-                if owned:
-                    problems.append(f"{where} sets {owned}, which the exes' rules own (review F-8: name the rule in "
-                                    "rules, never write its flags; its params are checked against its params_schema)")
-            out["flags"] = flags
-        else:
-            bounds, value = WK.leverage_bounds(tables), float(m["leverage"]["value"])
-            if bounds is not None and not bounds[0] <= value <= bounds[1]:
-                problems.append(f"leverage.value {m['leverage']['value']} lies outside the NAV exe's fixed-v1 "
-                                f"aim_leverage range {list(bounds)}")
-            out["leverage"] = {"value": m["leverage"]["value"], "bounds": list(bounds) if bounds else None}
+    tables: dict = {}
+    shas: dict = {}
+    for table, nav in (("ic", False), ("nav", True)):
+        tables[table], shas[table] = run_listing(w, spec, nav)
+    out["tables"] = shas
+    flags: dict = {}
+    if k == "rule":
+        flags, more = WK.rule_flags(m["rules"], tables)
+        problems += more
+        out["flags"] = flags
+    elif k == "leverage":
+        bounds, value = WK.leverage_bounds(tables), float(m["leverage"]["value"])
+        if bounds is not None and not bounds[0] <= value <= bounds[1]:
+            problems.append(f"leverage.value {m['leverage']['value']} lies outside the NAV exe's fixed-v1 "
+                            f"aim_leverage range {list(bounds)}")
+        out["leverage"] = {"value": m["leverage"]["value"], "bounds": list(bounds) if bounds else None}
+    problems += rule_flag_guard(w, spec, tables, flags)
     return out, problems
+
+
+# ------------------------------------------------------------------ preflight: ruling E2-8, the raw-rule-flag guard
+FLAG_MAP_ROUTES = ("rule_cell.constants.flags", "rule_cell.template change.flags", "horizon.flags")
+SET_ROUTES = ("rule_cell.constants.set", "rule_cell.template change.set", "rule_cell.template change.unset")
+
+
+def kind_constants(w: Wave, parent: dict, derived: dict) -> tuple[dict, dict]:
+    """(sets, flags) the kind derives for its rule cell on the ``parent`` spec: rule -> the named rules' flags
+    (``derived``); leverage -> nav.leverage and the renamed NAV output; horizon -> its outputs renamed and its flags."""
+    k, m = kind(w), w.manifest
+    if k == "rule":
+        return {}, derived
+    if k == "leverage":
+        return WK.leverage_set(parent, m["leverage"]["value"]), {}
+    if k == "horizon":
+        return WK.horizon_set(parent, m["horizon"]["days"]), m["horizon"]["flags"]
+    return {}, {}
+
+
+def raw_routes(w: Wave) -> tuple[dict, dict]:
+    """({route: option map}, {route: the dotted keys it sets or unsets}) of the manifest's and the template's raw
+    inputs to the rule cell (FLAG_MAP_ROUTES, SET_ROUTES); empty for a library kind (add-alpha copies the parent's
+    flag lists: no route can set one) and a schema-only kind."""
+    k, m = kind(w), w.manifest
+    if k in WK.LIBRARY_KINDS or k in WK.SCHEMA_ONLY:
+        return {}, {}
+    rc, template, _ = base_rule_cell(w)
+    const, change = rc.get("constants") or {}, (template or {}).get("change") or {}
+    maps = {"rule_cell.constants.flags": const.get("flags"), "rule_cell.template change.flags": change.get("flags"),
+            "horizon.flags": (m.get("horizon") or {}).get("flags") if k == "horizon" else None}
+    sets = {"rule_cell.constants.set": list(const.get("set") or {}),
+            "rule_cell.template change.set": list(change.get("set") or {}),
+            "rule_cell.template change.unset": list(change.get("unset") or [])}
+    return ({r: v for r, v in maps.items() if isinstance(v, dict) and v},
+            {r: [x for x in v if isinstance(x, str)] for r, v in sets.items() if v})
+
+
+def flag_lists(spec: dict, section: str) -> dict:
+    """{label: argv list} of a resolved spec's ``section``: <section>.flags, and for ic also the w pass's list
+    (ic.w_flags applied to ic.flags, as cycle/phases runs it)."""
+    sec: dict = spec[section] if isinstance(spec.get(section), dict) else {}
+    flags: list = sec["flags"] if isinstance(sec.get("flags"), list) else []
+    out = {f"{section}.flags": flags}
+    if section == "ic":
+        out["ic.w_flags"] = research_spec.apply_flags(flags, sec.get("w_flags") or {}, "ic.w_flags")
+    return out
+
+
+def option_tokens(flags: list, option: str) -> list[str]:
+    """The tokens of ``flags`` argparse reads as ``option`` (cycle.spec.argparse_values: exact, ``=value``, prefix)."""
+    return [t for t in flags if isinstance(t, str) and t.startswith("--") and len(t) > 2 and
+            option[2:].startswith(t[2:].split("=", 1)[0])]
+
+
+def touching(section: str, option: str, maps: dict, sets: dict) -> list[str]:
+    """The raw routes that can have changed ``option`` in ``section``'s flag lists: an option map naming it (or a
+    prefix of it), a set / unset key replacing the section, its flags or ic.w_flags."""
+    out = [f"{r} {section} {t}" for r, ops in maps.items()
+           for t in option_tokens(list(ops.get(section) or {}), option)]
+    lists = (f"{section}.flags",) + (("ic.w_flags",) if section == "ic" else ())
+    return out + [f"{r} {key}" for r, ks in sets.items() for key in ks
+                  if key == section or key in lists or any(key.startswith(k + ".") for k in lists)]
+
+
+def rule_flag_guard(w: Wave, parent: dict, tables: dict, derived: dict) -> list[str]:
+    """Ruling E2-8 (review E2 R2 / R2b, N1, N2): the refusals of a v2 wave whose cell would run a rule's flag that
+    rules did not name, for every v2 kind, before register. (1) The IC table lists no composition row
+    COMPOSITION_FLAGS does not map (WK.unmapped_ic_rules), and both tables were read. (2) No option map
+    (FLAG_MAP_ROUTES) names an owned flag, ``=value`` stripped or abbreviated (WK.raw_rule_flags): the derived flags
+    would otherwise silently override it. (3) The rule cell, resolved as the spec stage writes it (the kind's
+    constants, constants.set, the template's change.set / unset and flag maps, research_spec.resolve), gives every
+    owned option of its flag lists the occurrences (argparse_values: exact, ``=value``, abbreviations) of the
+    ``parent``'s lists with only the derived flags applied; a difference is refused with the route that made it.
+    A library kind's cell is add-alpha's copy of the parent's flag lists, so (3) has nothing to compare there."""
+    problems = [f"the {t.upper()} exe's rule table could not be read: the raw-rule-flag guard needs both tables "
+                "(ruling E2-8)" for t in ("ic", "nav") if tables.get(t) is None]
+    unmapped = WK.unmapped_ic_rules(tables)
+    if unmapped:
+        problems.append(f"the IC exe's rule table lists {unmapped}, which wave_kinds.COMPOSITION_FLAGS does not map: "
+                        "their fitter flags cannot be guarded (ruling E2-8): add their rows (e.g. MR-4) first")
+    maps, sets = raw_routes(w)
+    owned = WK.owned_flags(tables, derived)
+    reported = set()
+    for where, ops in maps.items():
+        raw = WK.raw_rule_flags(ops, derived, tables)
+        if raw:
+            problems.append(f"{where} sets {raw}, which the exes' rules own (review F-8, ruling E2-8: name the rule in "
+                            "rules, never write its flags; its params are checked against its params_schema)")
+            reported |= {(s, f) for s in ops if isinstance(ops[s], dict) for t in ops[s] if isinstance(t, str)
+                         for f in owned.get(s, set()) if option_tokens([t], f)}
+    if kind(w) in WK.LIBRARY_KINDS or kind(w) in WK.SCHEMA_ONLY:
+        return problems                             # no rule cell: add-alpha copies the parent's flag lists
+    try:
+        rc, template, tpath = base_rule_cell(w)
+        sets_k, flags_k = kind_constants(w, parent, derived)
+        doc = WS.rule_cell_doc(template or {}, tpath, w.manifest["parent"]["spec"],
+                               WK.merged_constants(rc, sets_k, flags_k), w.manifest["wave"])
+        cell = research_spec.resolve(doc, w.path(cell_path(w)), RC.load_spec, research_tree.REPO)
+        base = dict(parent, **{s: dict(parent[s], flags=research_spec.apply_flags(
+            flag_lists(parent, s)[f"{s}.flags"], ops, f"{s}.flags")) for s, ops in derived.items()
+            if isinstance(parent.get(s), dict)})              # the parent's lists with only the named rules applied
+        changes = []
+        for s in sorted(owned):
+            want_lists = flag_lists(base, s)
+            for label, flags in flag_lists(cell, s).items():
+                changes += [(s, label, opt, RC.argparse_values(flags, opt), RC.argparse_values(want_lists[label], opt),
+                             option_tokens(flags, opt), option_tokens(want_lists[label], opt))
+                            for opt in sorted(owned[s])]
+    except (research_spec.TemplateError, RC.CycleError, KeyError, TypeError) as exc:
+        return problems + [f"the rule cell cannot be resolved for the raw-rule-flag guard (ruling E2-8): {exc}"]
+    grouped: dict = {}
+    for s, label, opt, got, want, toks, base_toks in changes:
+        if got == want or (s, opt) in reported:
+            continue
+        added = sorted({t for t in toks if toks.count(t) > base_toks.count(t)})
+        removed = sorted({t for t in base_toks if base_toks.count(t) > toks.count(t)})
+        what = (f"adds token(s) {added}" if added else f"drops token(s) {removed}" if removed else
+                f"gives token(s) {sorted(set(toks))} other values")
+        via = ", ".join(touching(s, opt, maps, sets) or ["the resolved cell (no raw route names it)"])
+        grouped.setdefault((via, label, what), []).append(f"{opt} {got} (the parent's with only the named rules: "
+                                                          f"{want})")
+    for (via, label, what), opts in grouped.items():
+        problems.append(f"{via}: the cell's {label} {what}, read as {'; '.join(opts)}, a flag the exes' rules own "
+                        "(ruling E2-8: a rule's flag comes only from rules, never from constants.set / change.set / a "
+                        "flag map, another spelling or an abbreviation)")
+    return problems
 
 
 def preflight_kind_plan(w: Wave) -> list[str]:
@@ -100,14 +222,17 @@ def preflight_kind_plan(w: Wave) -> list[str]:
     lines = [f"#   kind {k} (contract K-P9-9)"]
     if k in WK.SCHEMA_ONLY:
         lines.append(f"#   kind {k}: schema only until lane D3 (preflight refuses to run it): {m[WK.BLOCKS[k]]}")
+    spec = w.load_spec(m["parent"]["spec"])
+    exes = RC.effective_exes(spec)
+    for table, nav in (("ic", False), ("nav", True)):
+        if exes.get(table):
+            lines.append(WS.fmt_argv(WK.listing_argv(w.path(exes[table]).as_posix(), nav)))
     if k in ("rule", "leverage"):
-        spec = w.load_spec(m["parent"]["spec"])
-        exes = RC.effective_exes(spec)
-        for table, nav in (("ic", False), ("nav", True)):
-            if (k == "rule" or nav) and exes.get(table):
-                lines.append(WS.fmt_argv(WK.listing_argv(w.path(exes[table]).as_posix(), nav)))
         lines.append(f"#   then: {'rules ' + str(m['rules']) if k == 'rule' else 'leverage ' + str(m['leverage'])} "
                      "validated against those tables (params_schema; flags derived)")
+    lines.append("#   then: ruling E2-8: every IC rule mapped in COMPOSITION_FLAGS; no rule's flag in the cell's "
+                 "resolved flag lists but through rules (constants / template flags and sets, spellings, "
+                 "abbreviations)")
     return lines
 
 
@@ -280,15 +405,10 @@ def rule_cell(w: Wave, done: dict) -> tuple[dict, dict | None, str]:
     if k is None:
         return rc, doc, path
     parent = w.load_spec(m["parent"]["spec"])
-    sets, flags = {}, {}
-    if k == "rule":
-        flags = ((done.get("preflight") or {}).get("kind") or {}).get("flags")
-        if flags is None:
-            raise StageError("spec: the preflight receipt has no derived rule flags (run preflight again)", EXIT_PIN)
-    elif k == "leverage":
-        sets = WK.leverage_set(parent, m["leverage"]["value"])
-    elif k == "horizon":
-        sets, flags = WK.horizon_set(parent, m["horizon"]["days"]), m["horizon"]["flags"]
+    derived = ((done.get("preflight") or {}).get("kind") or {}).get("flags") if k == "rule" else {}
+    if derived is None:
+        raise StageError("spec: the preflight receipt has no derived rule flags (run preflight again)", EXIT_PIN)
+    sets, flags = kind_constants(w, parent, derived)      # the constants preflight's guard resolved (ruling E2-8)
     return WK.merged_constants(rc, sets, flags), doc, path
 
 

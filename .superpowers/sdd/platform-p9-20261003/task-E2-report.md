@@ -338,3 +338,93 @@ audit-exact).
 - The stale v1 verify plan line (E2-6, above).
 - Root at merge: re-review the fix SHA. The review's "What root must check at merge" items still hold: separate
   pytest invocations, and plan identity with the real IC exe on disk (which now also runs the W1-I1 check at plan).
+
+## Fix round 2
+Review fixed: `task-E2-rereview-1.md` (`867f40f4`, CHANGES_REQUIRED: R2b, N1-N5), on top of `05a0fcd1`. Rulings
+applied: E2-8 (R2b + N1 + N2, one guard), E2-9 (N4 fixed, N3 fixed as a one-line use of the cell's own cache dir, N5 a
+P10 note, `allow_abbrev=False` to D3). EXE-FREEZE is root's sequencing (no code here). Nothing squashed.
+
+| item | state | where | test |
+|---|---|---|---|
+| R2b (E2-8 1, 3, 5) raw rule flags on the RESOLVED cell | DONE | `wave_stage_kinds.rule_flag_guard` (preflight, before register). (a) Every option map (`rule_cell.constants.flags`, the template's `change.flags`, `horizon.flags`) is checked by `wave_kinds.raw_rule_flags`: a token is matched with `=value` stripped, and a proper prefix of an owned flag is refused as an abbreviation (`wave_kinds.abbreviated`). The derived flags would otherwise silently override a raw one, so the map check stays. (b) The rule cell is resolved as the spec stage writes it (`kind_constants`, shared with `rule_cell`; `wave_steps.rule_cell_doc`; `research_spec.resolve`). For every owned option, its occurrences in the cell's flag lists (`argparse_values`: exact, `=value`, abbreviations) must equal those of the parent's lists with only the named rules' derived flags applied. Any difference is refused: added, dropped or re-valued. The message names the token(s) and the route (`touching`: constants.set / change.set / change.unset key, or the flag map entry). `wave_kinds.owned_flags` = `table_flags` + derived | `test_wave_kinds.py::test_raw_rule_flags_refused_on_the_resolved_cell` (11 probes, below) and `test_rule_flags_from_the_tables` (`=value`, abbreviation, `abbreviated`) |
+| N2 (E2-8 2) every v2 kind | DONE | `preflight_kind` reads both tables for every v2 kind and runs the guard. Template kinds (rule, horizon, role, leverage with or without a rule_cell) are resolved and compared. Library kinds (add, replace, field) and walk-forward have no rule cell: add-alpha copies the parent's flag lists and no route can set one, so only the table checks apply there | probes on horizon, role and leverage; N1 test on add, rule and horizon |
+| N1 (E2-8 4) unmapped IC rule | DONE | `wave_kinds.unmapped_ic_rules`: an IC row `COMPOSITION_FLAGS` does not map refuses the wave by name ("add their rows (e.g. MR-4) first"). An unreadable table is a refusal too, since the guard needs both | `test_raw_rule_flag_guard_allows_free_flags_and_names_unmapped_ic_rules` |
+| N3 (E2-9) wave W1-I1 cache dir | DONE (one line) | `wave_stage_preflight.cache_path_check`: a library wave's cell is checked on add-alpha's cache dir (the parent's `ic.cache` only when `research_add_alpha.shared_stores(parent)`, else the derived dir; the rule is imported, not copied) | `test_cache_path_bound_w1_i1` (the wave half computes the cell's dir the same way) |
+| N4 (E2-9) W1-I1 test vs `--basetemp` | DONE | `test_wave_driver.py::test_cache_path_bound_w1_i1` sets `cycle.phases.CACHE_PATH_MAX` from the computed deepest path (monkeypatch), so nothing depends on pytest's tmp depth. Positive cases added: a fitting id passes (cycle, audit-exact at +6, and the wave's preflight with the exe on disk) | the test itself |
+| N5 (E2-9) `ClaimsDirError` last-exception race | NOT FIXED (P10 note) | - | - |
+| fitter `allow_abbrev=False` | NOT TOUCHED (D3 carry, E2-9) | the guard refuses abbreviations at preflight; a hand-typed one outside a wave still reaches the fitter until D3 | - |
+
+The 11 probes (each preflight exit 3 before register, with the message text asserted):
+- `constants.set nav.flags += --vol-target` (rule)
+- `constants.set fit.flags = --theme-erc` (rule)
+- template `change.set fit.flags` (rule)
+- `fit --theme-erc=theme-erc-v1` (`=value`)
+- `fit --theme-er` (abbreviation)
+- `fit --composition=ew-theme-std-v1`: now refused at preflight, not at spec (the R6B-C-4 exit 4)
+- `horizon.flags nav --vol-target` (horizon)
+- `constants.set nav.flags += --risk-target` (role)
+- template `change.unset nav.flags`, which drops the parent's `--aim-leverage` (role)
+- template `change.flags nav --risk` (abbreviation of 3 NAV flags, role)
+- `constants.set nav.flags += --two-speed` (leverage with a rule_cell)
+
+Allowed and asserted: `--cadence` by `constants.flags` (the round-1 test) and by `constants.set nav.flags`. The
+horizon fixture's `--cadence` and every fixture's spec stage pass as before.
+
+**Mutation check:** I stashed only the three source files (`wave_kinds.py`, `wave_stage_kinds.py`,
+`wave_stage_preflight.py`) back to `05a0fcd1` and ran the new tests. Result: 12 failed (all 11 probes + the
+free-flag / N1 test). With the fix: 12 passed. The stash was popped clean.
+
+Plan changes (v2 only, no plan identity):
+- Every v2 plan now prints both `--list-rules --json` argvs and one "ruling E2-8" line.
+- Every v2 preflight receipt records both table SHA-256s, not only for rule and leverage.
+- A v1 plan prints neither. `test_verify_plan_line_states_the_rule_cell_refusal` asserts this, and the v1 verify line
+  stays byte-equal.
+
+### Evidence
+Run in `C:/atx-wt/pool-17` on the tree of this commit (`05a0fcd1` + this round). Explicit paths,
+`PYTHONDONTWRITEBYTECODE=1`, `-p no:cacheprovider`, each `--basetemp` its own dir in the session scratchpad, and
+SEPARATE invocations. Logs: `.superpowers/sdd/platform-p9-20261003/logs/e2f2-{s0,c0,s1,c1}.log` (git-ignored).
+```
+PYTHONHASHSEED=0 "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider -rfEs --basetemp=<scratch>/e2f2-s0 scripts/tests
+-> 446 passed, 4 skipped in 907.88s (0:15:07); exit 0
+PYTHONHASHSEED=0 ... --basetemp=<scratch>/e2f2-c0 atx-engine/tools/test_stage_chain.py
+-> 9 passed in 0.95s; exit 0
+PYTHONHASHSEED=1 ... --basetemp=<scratch>/e2f2-s1 scripts/tests
+-> 446 passed, 4 skipped in 936.64s (0:15:36); exit 0
+PYTHONHASHSEED=1 ... --basetemp=<scratch>/e2f2-c1 atx-engine/tools/test_stage_chain.py
+-> 9 passed in 0.67s; exit 0
+```
+- 446 = 434 + 12 new tests in `test_wave_kinds.py` (50 -> 62). The `test_wave_driver.py` W1-I1 test was reworked, not
+  added.
+- The same 4 live-input skips as before. No skip / xfail mark added. No expected value edited: the round-1 R2 test's
+  messages are unchanged, and `test_every_fixture_plans_in_a_fake_world` only gained assertions.
+- Targeted runs this round (exit 0):
+  - `test_wave_kinds.py` 62 passed.
+  - `test_wave_driver.py -k cache_path_bound` 1 passed.
+
+### Decisions
+- **Compare against the parent's lists with only the derived flags applied, not a ban on owned tokens.** A parent may
+  carry a rule flag legitimately (the fake parent's `--aim-leverage {leverage}`; v8 parents' `--composition`).
+  Inherited occurrences are allowed. A dropped one (unset, or a set that replaces the list) is refused like an added
+  one, because both change the construction rule unnamed.
+- **Sections are compared on their own owned flags:** fit against the composition flags, nav against the NAV rows' and
+  `two-speed`'s. `flag_lists` would also compare the ic lists, including the w pass's with `ic.w_flags` applied, but
+  only for a section a table owns flags in, and no table owns an ic flag today. An owned flag written into another
+  section's list is not compared there. The NAV and IC exes refuse unknown flags, and so does the fitter's
+  `parse_args` (`atx-impl/tools/fit_composition_weights.py:2730`).
+- **Duplicates are suppressed:** an option the map check already reported is not reported again by the resolved
+  comparison. The resolved differences are grouped per route, list and token.
+- **The guard is fail-closed:** a template that cannot be resolved, or an unreadable table, refuses the wave.
+- **Accepted by E2-8:** a legitimate non-rule flag that is a proper prefix of a rule flag is refused and must be
+  spelled another way. None is known: `--cadence` and `--min-names` prefix nothing.
+- **N3 stays at one line:** a template cell is still checked on the parent's cache dir, e.g. the role fixture's
+  template sets its own `ic.cache`. research_cycle checks the cell's own dir at plan and again before u, still before
+  any compute (same exposure as N3; no P9 cell is affected).
+
+### Not fixed / open
+- N5 (P10 note, E2-9). S8 and S6's role seal / end check (E2-7). The stale v1 verify plan line (E2-6).
+- Fitter `allow_abbrev=False` is D3's (E2-9).
+- Root at merge: re-review this fix SHA.
+  - When AL-COMB's C++ table lands without MR-4, every v2 wave now stops by name until `COMPOSITION_FLAGS` gains the
+    rows (N1, intended).
+  - The rereview's "What root must check at merge" items 1-11 still hold.

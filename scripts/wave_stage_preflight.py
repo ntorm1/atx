@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 
 import cycle_admission
+import research_add_alpha as AA
 import research_cycle as RC
 import research_ledger
 from research_common import ledger_view
@@ -41,15 +42,18 @@ def sealed_years(text: str) -> list[str]:
 
 def cache_path_check(w: Wave, spec: dict) -> list[str]:
     """Ruling W1-I1 at preflight, before the register stage writes a registration: the wave's candidate ids and the
-    parent library's against the parent's IC cache dir (a cell keeps it: add-alpha copies the spec), as research_cycle
-    checks every cell it plans. [] when the parent runs no IC pass or its cache dir cannot be derived (other checks
-    refuse that)."""
+    parent library's against the cell's IC cache dir, as research_cycle checks every cell it plans. A library wave's
+    cell is add-alpha's: it keeps the parent's ic.cache only on the shared stores, else its cache dir is derived
+    (research_add_alpha.shared_stores, review E2 N3); any other cell is checked on the parent's. [] when the parent
+    runs no IC pass or the cache dir cannot be derived (other checks refuse that)."""
     if "ic" not in spec:
         return []
     ids = [c.get("id") for c in w.manifest.get("candidates") or [] if isinstance(c, dict)]
+    cell = spec if not library_wave(w) or AA.shared_stores(spec) else dict(spec, ic={k: v for k, v in spec["ic"].items()
+                                                                                     if k != "cache"})
     try:
         ids += RC.library_ids(w.read_json(spec["inputs"]["library"]["path"]))
-        problem = RC.Cycle(spec, RC.Resolver(w.root), verify=False).cache_problem(ids)
+        problem = RC.Cycle(cell, RC.Resolver(w.root), verify=False).cache_problem(ids)
     except (ValueError, KeyError, RC.CycleError):
         return []
     return [problem] if problem else []

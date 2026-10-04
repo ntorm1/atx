@@ -16,6 +16,9 @@ fixtures (scripts/specs/p9/kinds/, gate G-P2). Synthetic worlds only (wave_fixtu
   test_rule_kinds_write_the_derived_constants         rule (IC and NAV rows), horizon, leverage without a template: the
                                                       cell the spec stage writes carries the derived flags and names
   test_rule_wave_refuses_raw_rule_flags               review E2 R2: constants.flags / change.flags setting a rule's flag
+  test_raw_rule_flags_refused_on_the_resolved_cell    ruling E2-8 (R2b, N2): set / unset routes, =value, abbreviations,
+                                                      every template kind; the message names token and route
+  test_raw_rule_flag_guard_allows_free_flags_and_names_unmapped_ic_rules  E2-8: --cadence free; N1 unmapped IC rule
   test_leverage_wave_refuses_a_value_outside_the_nav_table  review E2 S9: fixed-v1's aim_leverage range at preflight
   test_field_wave_builds_then_registers_on_the_build  the register stage builds the fields dir, add-alpha uses it; an
                                                       output this wave's build did not make is refused (S6)
@@ -306,6 +309,15 @@ def test_rule_flags_from_the_tables():
         ["nav --aim-leverage", "nav --risk-target"]
     assert WK.table_flags(tables)["nav"] >= {"--aim-leverage", "--vol-target", "--risk-target", "--risk-model",
                                              "--risk-model-sha256", "--two-speed"}
+    # ruling E2-8: "=value" stripped, an argparse abbreviation refused; a free flag stays free
+    assert WK.raw_rule_flags({"fit": {"--theme-erc=theme-erc-v1": True, "--theme-er": "x", "--min-names": "1"}}, {},
+                             tables) == ["fit --theme-er (abbreviates ['--theme-erc'])", "fit --theme-erc=theme-erc-v1"]
+    assert WK.abbreviated("--the", WK.table_flags(tables)["fit"]) == ["--theme-erc", "--theme-resid", "--theme-tsmom"]
+    assert WK.abbreviated("--", {"--x"}) == [] and WK.abbreviated("--theme-erc", {"--theme-erc"}) == []
+    # ruling E2-8 (review N1): an IC rule COMPOSITION_FLAGS does not map is named
+    assert WK.unmapped_ic_rules(tables) == [] and WK.unmapped_ic_rules({}) == []
+    more = dict(ic_table(), rules=ic_table()["rules"] + [{"id": "theme-cov-hedge-v1"}])
+    assert WK.unmapped_ic_rules({"ic": more}) == ["theme-cov-hedge-v1"]
 
 
 # ------------------------------------------------------------------ the fixtures in a fake world
@@ -316,8 +328,7 @@ def test_every_fixture_plans_in_a_fake_world(tmp_path, name):
     code, log = wave(root, KindsFake(root), "plan")
     assert code == 0, log
     text = "\n".join(log)
-    if m["kind"] in ("rule", "leverage"):
-        assert "--list-rules --json" in text
+    assert "--list-rules --json" in text and "ruling E2-8" in text           # every v2 kind reads both tables
     if m["kind"] == "field":
         assert "prepare_research_fields.py --registry atx-engine/tools/field_registry.json --fields a,b,vol_126" in text
     if m["kind"] == "role":
@@ -403,6 +414,95 @@ def test_rule_wave_refuses_raw_rule_flags(tmp_path, flags, owned):
     root = world(tmp_path / "ok", m)
     code, log = wave(root, KindsFake(root), "run", "--until", "preflight")
     assert code == 0, log
+
+
+def set_template(root: Path, m: dict, edit) -> None:
+    """The fixture's template edited by ``edit`` in the world ``root``, re-pinned in the manifest and committed."""
+    tpl = json.loads((root / m["rule_cell"]["template"]).read_text(encoding="utf-8"))
+    edit(tpl)
+    F.write_json(root, m["rule_cell"]["template"], tpl)
+    m["rule_cell"]["template_sha256"] = sha((root / m["rule_cell"]["template"]).read_bytes())
+    F.write_json(root, F.MANIFEST, rerooted(m, root))
+    F.git(root, "commit", "-q", "-am", "the template edited")
+
+
+def constants(**const):
+    return lambda m: m["rule_cell"].update(constants=const)
+
+
+NAV_SET = ["--aim-leverage", "{leverage}"]                          # the fake parent's nav.flags
+RULE_NAV = "scripts/specs/p9/kinds/templates/rule-nav.json"
+E2_8_PROBES = [   # (fixture, manifest edit, template edit, the refusal's text): review E2 R2b / N2 probes
+    ("new-nav-rule.json", constants(set={"nav.flags": NAV_SET + ["--vol-target", "vol-target-v1"]}), None,
+     "rule_cell.constants.set nav.flags: the cell's nav.flags adds token(s) ['--vol-target']"),
+    ("new-combination-rule.json", constants(set={"fit.flags": ["--theme-erc", "theme-erc-v1"]}), None,
+     "rule_cell.constants.set fit.flags: the cell's fit.flags adds token(s) ['--theme-erc']"),
+    ("new-combination-rule.json", None, lambda t: t["change"]["set"].update({"fit.flags": ["--theme-erc", "x"]}),
+     "rule_cell.template change.set fit.flags: the cell's fit.flags adds token(s) ['--theme-erc']"),
+    ("new-nav-rule.json", constants(flags={"fit": {"--theme-erc=theme-erc-v1": True}}), None,
+     "rule_cell.constants.flags sets ['fit --theme-erc=theme-erc-v1'], which the exes' rules own"),
+    ("new-nav-rule.json", constants(flags={"fit": {"--theme-er": "theme-erc-v1"}}), None,
+     "rule_cell.constants.flags sets [\"fit --theme-er (abbreviates ['--theme-erc'])\"]"),
+    ("new-combination-rule.json", constants(flags={"fit": {"--composition=ew-theme-std-v1": True}}), None,
+     "rule_cell.constants.flags sets ['fit --composition=ew-theme-std-v1']"),
+    ("new-horizon.json", lambda m: m["horizon"]["flags"]["nav"].update({"--vol-target": "vol-target-v1"}), None,
+     "horizon.flags sets ['nav --vol-target'], which the exes' rules own"),
+    ("new-universe.json", constants(set={"nav.flags": NAV_SET + ["--risk-target", "0.1"]}), None,
+     "rule_cell.constants.set nav.flags: the cell's nav.flags adds token(s) ['--risk-target']"),
+    ("new-universe.json", None, lambda t: t["change"].update(unset=["nav.flags"]),
+     "rule_cell.template change.unset nav.flags: the cell's nav.flags drops token(s) ['--aim-leverage']"),
+    ("new-universe.json", None, lambda t: t["change"].update(flags={"nav": {"--risk": "0.1"}}),
+     "rule_cell.template change.flags sets [\"nav --risk (abbreviates ['--risk-model', '--risk-model-sha256', "
+     "'--risk-target'])\"]"),
+    ("leverage-change.json", lambda m: m.update(rule_cell={"template": RULE_NAV, "template_sha256": "", "constants": {
+        "set": {"nav.flags": NAV_SET + ["--two-speed", "two-speed-v1"]}}}), None,
+     "rule_cell.constants.set nav.flags: the cell's nav.flags adds token(s) ['--two-speed']"),
+]
+
+
+@pytest.mark.parametrize("name, edit, tedit, needle", E2_8_PROBES)
+def test_raw_rule_flags_refused_on_the_resolved_cell(tmp_path, name, edit, tedit, needle):
+    """Ruling E2-8 (review E2 R2b, N2): a rule flag the manifest does not name is refused at preflight (exit 3, before
+    register) by whatever route it would reach the cell: constants.set / the template's change.set or change.unset
+    replacing a section's flag list (the cell's RESOLVED lists are compared with the parent's under the named rules
+    only), an "=value" spelling, an argparse abbreviation, and in every template kind (rule, horizon, role,
+    leverage). The message names the token and its route. Each probe passed preflight at 05a0fcd1."""
+    m = load_fixture(name)
+    if edit:
+        edit(m)
+    if m.get("rule_cell") and not m["rule_cell"].get("template_sha256"):
+        m["rule_cell"]["template_sha256"] = sha((REPO / m["rule_cell"]["template"]).read_bytes())
+    root = world(tmp_path / "w", m)
+    if tedit:
+        set_template(root, m, tedit)
+    code, log = wave(root, KindsFake(root), "run", "--until", "preflight")
+    assert code == 3, log
+    err = preflight_error(root, m)
+    assert needle in err, err
+    assert not (root / "out/waves" / m["wave"] / "receipts" / "02-register.json").exists()
+
+
+def test_raw_rule_flag_guard_allows_free_flags_and_names_unmapped_ic_rules(tmp_path):
+    """Ruling E2-8: a flag no rule owns stays free by every route (here constants.set nav.flags adding --cadence);
+    an IC rule the exe lists but COMPOSITION_FLAGS does not map stops every kind by name (review N1: a missed MR-4);
+    the guard needs both tables."""
+    m = load_fixture("new-nav-rule.json")
+    m["rule_cell"]["constants"] = {"set": {"nav.flags": NAV_SET + ["--cadence", "5"]}}
+    root = world(tmp_path / "free", m)
+    code, log = wave(root, KindsFake(root), "run", "--until", "preflight")
+    assert code == 0, log
+    more = dict(ic_table(), rules=ic_table()["rules"] + [{"id": "theme-cov-hedge-v1", "params_schema": {}}])
+    for name in ("new-signal.json", "new-nav-rule.json", "new-horizon.json"):
+        m = load_fixture(name)
+        root = world(tmp_path / name[:-5], m)
+        code, log = wave(root, KindsFake(root, ic=more), "run", "--until", "preflight")
+        assert code == 3, (name, log)
+        assert "the IC exe's rule table lists ['theme-cov-hedge-v1'], which wave_kinds.COMPOSITION_FLAGS does not " \
+               "map" in preflight_error(root, m), name
+    m = load_fixture("new-signal.json")
+    root = world(tmp_path / "noic", m)
+    code, log = wave(root, KindsFake(root, ic={}), "run", "--until", "preflight")
+    assert code == 3 and "the IC exe's rule table could not be read" in preflight_error(root, m), log
 
 
 def test_leverage_wave_refuses_a_value_outside_the_nav_table(tmp_path):
@@ -519,6 +619,7 @@ def test_verify_plan_line_states_the_rule_cell_refusal(tmp_path):
     root = F.build(tmp_path / "v1")
     code, log = wave(root, KindsFake(root), "plan")
     assert code == 0 and verify_lines(log) == [V1_VERIFY_LINE], log
+    assert not [line for line in log if "--list-rules" in line or "E2-8" in line]   # ruling E2-8 is v2 only
     refusal = ("(a cell without a ref construction, e.g. a rule cell, is refused when the two NAVs' exes differ or "
                "only one is recorded, by receipt or exes_sha256 pin (ruling W1-I2 (a)); with one, differing, the "
                "cell's ref must have run on the cell's exe)")
