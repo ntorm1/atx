@@ -131,6 +131,14 @@ TEST(ResearchFieldsAlSigRussell, IndexesStageRule) {
   EXPECT_FALSE(with_rule("sp500-proxy-v1"));
   EXPECT_FALSE(with_rule(nlohmann::json::array({"sp500-proxy-v1"})));
   EXPECT_FALSE(with_rule(nullptr));
+  // A list: other families pass beside the declared rule; another Russell version never does
+  // (re-review N3: which version built the rows would be ambiguous).
+  EXPECT_TRUE(with_rule(nlohmann::json::array({"sp500-proxy-v1", "russell-proxy-v1"})));
+  EXPECT_FALSE(with_rule(nlohmann::json::array({"russell-proxy-v1", "russell-proxy-v2"})));
+  EXPECT_FALSE(with_rule(nlohmann::json::array({"russell-proxy-v2", "russell-proxy-v1"})));
+  EXPECT_FALSE(with_rule(
+      nlohmann::json::array({"russell-proxy-v1", "sp500-proxy-v1", "russell-proxy-v10"})));
+  EXPECT_FALSE(with_rule(nlohmann::json::array({"russell-proxy-v2"})));
 }
 
 TEST(ResearchFieldsAlSigRussell, MovesClosedForm) {

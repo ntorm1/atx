@@ -54,8 +54,9 @@ inline constexpr std::string_view kStageVisibilityRule =
 
 // The declared contract of one stage: its key (named in refusals), its schema and the rule keys
 // its manifest must carry. An empty clock_rule or rule and an absent staleness_days are not
-// checked. The manifest's rule must equal `rule` or be a list holding it (a stage built under
-// several rules). The views name static text (the readers' inline constexpr contracts).
+// checked. The manifest's rule must equal `rule` or be a list holding it and no other version of
+// its family ("russell-proxy-v1" beside "sp500-proxy-v1" passes, beside "russell-proxy-v2" does
+// not). The views name static text (the readers' inline constexpr contracts).
 struct StageContract {
   std::string_view key;
   std::string_view schema;
@@ -67,9 +68,9 @@ struct StageContract {
 class PinnedStage {
 public:
   // Err(InvalidArgument) for a manifest whose SHA-256 is not the request's pin (compared
-  // lower-case), larger than 64 MiB, not a complete manifest of the contract's schema, carrying a
-  // declared rule other than the contract's, or listing no files object; Err(IoError) when it
-  // cannot be read.
+  // lower-case), larger than 64 MiB, not a complete manifest of the contract's schema, whose
+  // declared rule keys do not name the contract's (StageContract above), or listing no files
+  // object; Err(IoError) when it cannot be read.
   [[nodiscard]] static core::Result<PinnedStage> open(const StageRequest &request,
                                                       const StageContract &contract);
 

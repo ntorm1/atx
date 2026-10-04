@@ -228,7 +228,9 @@ ThirteenfIndex index_thirteenf(std::span<const i64> quarter_days,
   out.unit_factor = first_rows(std::move(unit));
   std::vector<std::vector<std::pair<std::string, i64>>> maps(quarter_days.size());
   for (const CusipMapRow &r : cusips) {
-    if (r.cusip.empty()) { // a null CUSIP maps nothing (house build_13f: null -> unmapped)
+    // A null map CUSIP (decoded "") maps nothing. Stricter than house build_13f, whose
+    // pc.index_in (skip_nulls=False) would match a null holding CUSIP to a null map row.
+    if (r.cusip.empty()) {
       continue;
     }
     if (const auto q = quarter_index(quarter_days, r.period_day)) {

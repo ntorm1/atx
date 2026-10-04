@@ -35,8 +35,22 @@ constexpr u64 kStageManifestLimit = 64ULL << 20;
   return it != j.end() && it->is_string() ? it->get<std::string>() : std::string{};
 }
 
-// The manifest's rule names `rule`: it is that string, or a list holding it (a stage built under
-// several rules, e.g. the indexes stage's russell-proxy-v1 and sp500-proxy-v1).
+// The family of a versioned rule: "russell-proxy-v1" -> "russell-proxy-v". A rule without a
+// "-v<digits>" suffix is its own family (no other version can be recognised).
+[[nodiscard]] std::string_view rule_family(std::string_view rule) {
+  const auto v = rule.rfind("-v");
+  if (v == std::string_view::npos || v + 2 >= rule.size()) {
+    return rule;
+  }
+  const std::string_view digits = rule.substr(v + 2);
+  const bool numbered = std::all_of(digits.begin(), digits.end(),
+                                    [](char c) { return c >= '0' && c <= '9'; });
+  return numbered ? rule.substr(0, v + 2) : rule;
+}
+
+// The manifest's rule names `rule`: it is that string, or a list holding it and no other version
+// of its family (a stage built under several rules, e.g. the indexes stage's russell-proxy-v1 and
+// sp500-proxy-v1; never russell-proxy-v1 beside russell-proxy-v2: which one built the rows?).
 [[nodiscard]] bool names_rule(const Json &m, std::string_view rule) {
   const auto it = m.find("rule");
   if (it == m.end()) {
@@ -45,9 +59,23 @@ constexpr u64 kStageManifestLimit = 64ULL << 20;
   if (it->is_string()) {
     return it->get<std::string>() == rule;
   }
-  return it->is_array() && std::any_of(it->begin(), it->end(), [rule](const Json &r) {
-           return r.is_string() && r.get<std::string>() == rule;
-         });
+  if (!it->is_array()) {
+    return false;
+  }
+  const std::string_view family = rule_family(rule);
+  bool named = false;
+  for (const Json &r : *it) {
+    if (!r.is_string()) {
+      continue;
+    }
+    const std::string text = r.get<std::string>();
+    if (text == rule) {
+      named = true;
+    } else if (family != rule && std::string_view(text).starts_with(family)) {
+      return false; // another version of the declared rule's family
+    }
+  }
+  return named;
 }
 
 // The declared rule keys of the contract against the manifest's (Python pin_stage).

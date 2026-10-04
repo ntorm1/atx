@@ -127,7 +127,8 @@ std::optional<PositionRow> screen_holding(const QuarterFilers &filers,
       [](const std::pair<std::string, i64> &a, std::string_view key) {
         return std::string_view(a.first) < key;
       });
-  // A null CUSIP (decoded as "") is unmapped, as in house build_13f, whatever the map holds.
+  // A null holding CUSIP (decoded "") is never mapped, whatever the map holds: stricter than house
+  // build_13f, whose pc.index_in (skip_nulls=False) would match it to a null map row.
   if (!row.cusip.empty() && hit != map.end() && std::string_view(hit->first) == row.cusip) {
     sid = hit->second;
   }
