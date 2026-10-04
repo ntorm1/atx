@@ -3395,14 +3395,14 @@
       "builder": "russell_recon",
       "dtype": "f64",
       "first_session": null,
-      "formula_sha256": "c6c4b1aad89133cfd571ddba4207e2ac70d33b73918281ac7ad7d65dab83f1b8",
+      "formula_sha256": "787a8d870a1767eb6d6fcf5da58dcf613036a64d5df8df3153ec690048ffa699",
       "kind": "engine",
       "name": "russell_recon",
       "options": {
         "group": "russell_proxy"
       },
       "owner": "engine-only:DEC-5 (P9 lane AL-SIG)",
-      "point_in_time": true,
+      "point_in_time": false,
       "requires": [],
       "sources": [
         "indexes"
@@ -3414,8 +3414,10 @@
           -1.0,
           1.0
         ],
-        "non_pit_aspects": [],
-        "point_in_time": true,
+        "non_pit_aspects": [
+          "presence: the house indexes stage (atx-db alpha_panel.indexes, intervals) drops a member line of reconstitution R whose security_master last_session (its last trading date over the whole history) falls before R's effective_from, yet stamps every kept row available at the rank date 22:00 UTC; so inside R's event window (rank date + 2 sessions to the session before recon_date) a line that will delist before the effective date is missing from snapshot R and reads NaN instead of +1, -1 or 0: its NaN reveals the delisting 4 to 7 weeks early (survivorship look-ahead). The prior snapshot and the values of the lines present are point in time."
+        ],
+        "point_in_time": false,
         "source_columns": [
           "constituents.index_id",
           "constituents.security_id",

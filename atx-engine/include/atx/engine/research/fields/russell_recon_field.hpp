@@ -16,6 +16,12 @@
 // while date(t) < recon_date(R), NaN otherwise (session 0, before the first visible move, after the
 // reconstitution day). The rank date precedes the reconstitution by about seven weeks, so each
 // year has one window of about 30 sessions.
+//
+// Not point in time (ruling ALSIG-7): the house stage drops a member line whose last trading date
+// (known only later) precedes the effective date, while stamping the row available at the rank
+// date, so a NaN in the window can reveal a delisting weeks early. The spec declares
+// point_in_time false with a "presence" non_pit_aspects entry; the IC runner refuses a field so
+// marked, so the field feeds no trial while the entry stands.
 
 #include <filesystem>
 #include <optional>

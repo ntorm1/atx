@@ -55,7 +55,18 @@ constexpr f64 kNaN = std::numeric_limits<f64>::quiet_NaN();
                  "and R. "
                  "Rows available on or after the research seal are dropped. Formula id "
                  "russell-recon-r1k-r2k-move-v1.";
-  d.point_in_time = true;
+  // Ruling ALSIG-7 (re-review N1): the house stage's row set looks ahead, so presence is not point
+  // in time. The flag and the aspect keep the field out of every IC run (look-ahead guard).
+  d.point_in_time = false;
+  d.non_pit_aspects = {
+      "presence: the house indexes stage (atx-db alpha_panel.indexes, intervals) drops a member "
+      "line of reconstitution R whose security_master last_session (its last trading date over "
+      "the whole history) falls before R's effective_from, yet stamps every kept row available at "
+      "the rank date 22:00 UTC; so inside R's event window (rank date + 2 sessions to the session "
+      "before recon_date) a line that will delist before the effective date is missing from "
+      "snapshot R and reads NaN instead of +1, -1 or 0: its NaN reveals the delisting 4 to 7 "
+      "weeks early (survivorship look-ahead). The prior snapshot and the values of the lines "
+      "present are point in time."};
   d.domain = std::array<f64, 2>{-1.0, 1.0};
   s.caveats = {
       "a house proxy of the Russell lists (the official FTSE Russell lists are licensed and not "

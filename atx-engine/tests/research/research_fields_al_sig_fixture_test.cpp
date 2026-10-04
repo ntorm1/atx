@@ -118,7 +118,10 @@ TEST(ResearchFieldsAlSigFixture, CommittedRowsPinTheSpecs) {
     EXPECT_TRUE(row->kind == fields::FieldKind::Engine) << spec->name; // engine-only (DEC-5)
     EXPECT_EQ(row->builder, spec->name);
     EXPECT_TRUE(row->dtype == fields::FieldDtype::F64) << spec->name;
-    EXPECT_TRUE(row->point_in_time) << spec->name;
+    EXPECT_EQ(row->point_in_time, spec->definition.point_in_time) << spec->name;
+    // The flag and the aspects agree (the IC runner refuses a contradictory pair).
+    EXPECT_EQ(spec->definition.point_in_time, spec->definition.non_pit_aspects.empty())
+        << spec->name;
     const std::string formula = fields::formula_sha256(*spec).value();
     EXPECT_EQ(row->formula_sha256, std::optional<std::string>(formula))
         << spec->name << ": the committed fingerprint is not the kind's";
@@ -129,6 +132,14 @@ TEST(ResearchFieldsAlSigFixture, CommittedRowsPinTheSpecs) {
   }
   EXPECT_EQ(registry->find("gia_13f")->sources, (std::vector<std::string>{"thirteenf"}));
   EXPECT_EQ(registry->find("russell_recon")->sources, (std::vector<std::string>{"indexes"}));
+  // Ruling ALSIG-7: gia_13f is point in time; russell_recon's presence is not (the house stage's
+  // row set looks ahead to a delisting), declared as one "presence: ..." aspect.
+  EXPECT_TRUE(fields::gia_13f_spec().definition.point_in_time);
+  const fields::FieldDefinition &russell = fields::russell_recon_spec().definition;
+  EXPECT_FALSE(russell.point_in_time);
+  ASSERT_EQ(russell.non_pit_aspects.size(), 1U);
+  EXPECT_EQ(russell.non_pit_aspects[0].rfind("presence: ", 0), 0U);
+  EXPECT_NE(russell.non_pit_aspects[0].find("last_session"), std::string::npos);
 }
 
 TEST(ResearchFieldsAlSigFixture, BuildMatchesTheOracle) {
@@ -204,6 +215,17 @@ TEST(ResearchFieldsAlSigFixture, BuildMatchesTheOracle) {
   for (const Json &e : manifest.at("fields")) {
     EXPECT_EQ(e.at("producer").at("kind"), "engine") << e.at("name");
   }
+  // Ruling ALSIG-7: the manifest marks russell_recon not point in time, carrying its aspect. That
+  // entry is what the IC runner's look-ahead guard refuses (strategy_ic_admission.cpp), so the
+  // field cannot feed an IC run, hence no trial.
+  EXPECT_EQ(manifest.at("non_point_in_time_fields"), Json::array({"russell_recon"}));
+  const Json &gia_entry = manifest.at("fields")[0];
+  EXPECT_EQ(gia_entry.at("point_in_time"), true);
+  EXPECT_EQ(gia_entry.at("non_pit_aspects"), Json::array());
+  const Json &russell_entry = manifest.at("fields")[1];
+  EXPECT_EQ(russell_entry.at("point_in_time"), false);
+  EXPECT_EQ(russell_entry.at("non_pit_aspects"),
+            Json(fields::russell_recon_spec().definition.non_pit_aspects));
 }
 
 TEST(ResearchFieldsAlSigFixture, ReuseFollowsTheStagePin) {
