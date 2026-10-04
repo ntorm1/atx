@@ -3395,7 +3395,7 @@
       "builder": "russell_recon",
       "dtype": "f64",
       "first_session": null,
-      "formula_sha256": "cf77e5c01b96e372ad2a18b678001774d69dc9aa42389bed7760ff92249ac150",
+      "formula_sha256": "c6c4b1aad89133cfd571ddba4207e2ac70d33b73918281ac7ad7d65dab83f1b8",
       "kind": "engine",
       "name": "russell_recon",
       "options": {
@@ -3408,8 +3408,8 @@
         "indexes"
       ],
       "spec_text": {
-        "clock": "russell-proxy-rank-date-v1: reconstitution R (the indexes constituents rows of index r1000 or r2000 with recon_date R) is visible at V(R) = the maximum available_at (rank date 22:00 UTC) of its rows and of the prior reconstitution's rows; session t reads the latest R with V(R) < date(t-1) 22:00 UTC while date(t) < recon_date(R); session 0 -> NaN",
-        "definition": "Russell 1000 / 2000 reconstitution price pressure (Chang, Hong and Liskovich 2015, RFS 28(1)) on the house Russell proxy (indexes stage, rule russell-proxy-v1: ranked on the May rank day, the last business day of April from 2023, effective after the fourth Friday of June). snapshot(R) = the r1000 and r2000 rows with recon_date R; the prior reconstitution R' = the latest recon_date before R. Value of a line: +1 when in r1000 at R' and in r2000 at R (predicted R2000 addition, R1000 deletion), -1 when in r2000 at R' and in r1000 at R (predicted R1000 addition), 0 when in the same one of the two at R' and R. Rows available on or after the research seal are dropped. Formula id russell-recon-r1k-r2k-move-v1.",
+        "clock": "russell-proxy-rank-date-v1: reconstitution R (the indexes constituents rows of index R1000P or R2000P with recon_date R) is visible at V(R) = the maximum available_at (rank date 22:00 UTC) of its rows and of the prior reconstitution's rows; session t reads the latest R with V(R) < date(t-1) 22:00 UTC while date(t) < recon_date(R); session 0 -> NaN",
+        "definition": "Russell 1000 / 2000 reconstitution price pressure (Chang, Hong and Liskovich 2015, RFS 28(1)) on the house Russell proxy (indexes stage, rule russell-proxy-v1: ranked on the May rank day, the last business day of April from 2023, effective after the fourth Friday of June). snapshot(R) = the R1000P and R2000P rows with recon_date R; the prior reconstitution R' = the latest recon_date before R. Value of a line: +1 when in R1000P at R' and in R2000P at R (predicted R2000 addition, R1000 deletion), -1 when in R2000P at R' and in R1000P at R (predicted R1000 addition), 0 when in the same one of the two at R' and R. Rows available on or after the research seal are dropped. Formula id russell-recon-r1k-r2k-move-v1.",
         "domain": [
           -1.0,
           1.0
@@ -3423,7 +3423,7 @@
           "constituents.recon_date",
           "constituents.available_at"
         ],
-        "staleness": "NaN outside the event window (from the first session at which the reconstitution is visible to the last session dated before its recon_date); NaN for a line not in the r1000 or r2000 rows of both R and the prior reconstitution, for a line in both indexes of one snapshot, and at the first reconstitution of the stage (no prior snapshot)",
+        "staleness": "NaN outside the event window (from the first session at which the reconstitution is visible to the last session dated before its recon_date); NaN for a line not in the R1000P or R2000P rows of both R and the prior reconstitution, for a line in both indexes of one snapshot, and at the first reconstitution of the stage (no prior snapshot)",
         "units": "predicted Russell 1000 / 2000 boundary move of the line at the upcoming June reconstitution: +1 R1000 -> R2000, -1 R2000 -> R1000, 0 a line that stays in the R1000 or in the R2000"
       }
     }

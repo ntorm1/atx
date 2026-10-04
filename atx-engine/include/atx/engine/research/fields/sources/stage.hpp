@@ -54,7 +54,8 @@ inline constexpr std::string_view kStageVisibilityRule =
 
 // The declared contract of one stage: its key (named in refusals), its schema and the rule keys
 // its manifest must carry. An empty clock_rule or rule and an absent staleness_days are not
-// checked. The views name static text (the readers' inline constexpr contracts).
+// checked. The manifest's rule must equal `rule` or be a list holding it (a stage built under
+// several rules). The views name static text (the readers' inline constexpr contracts).
 struct StageContract {
   std::string_view key;
   std::string_view schema;

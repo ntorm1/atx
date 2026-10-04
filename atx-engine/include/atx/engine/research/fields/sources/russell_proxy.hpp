@@ -3,14 +3,16 @@
 // atx::engine::research::fields -- the Russell-proxy reader (P9 lane AL-SIG, ruling P18): the
 // atx-db alpha-panel indexes/ stage (schema atx.alpha-panel.indexes/v1, rule russell-proxy-v1,
 // atx-db/docs/datasets/indexes.md) read into one membership snapshot per Russell reconstitution.
+// The stage manifest's rule is the list of its two rules (russell-proxy-v1, sp500-proxy-v1); the
+// contract requires russell-proxy-v1 among them (stage.hpp).
 //
 // constituents.parquet holds one row per (index_id, security_id, recon_date): every member line of
 // a proxy index at each reconstitution, with the rank date's available_at (rank date 22:00 UTC).
-// A reconstitution's snapshot is its r1000 and r2000 rows (index ids declared below: another
-// spelling of the two is refused with the ids seen); its visibility is the maximum available_at of
-// its rows. Reader-side seal: a row available on or after the research seal is dropped and
-// counted. Rows of other indexes (r3000, sp500) are counted and ignored; a row with a null
-// security_id, recon_date or available_at is counted as unusable.
+// A reconstitution's snapshot is its R1000P and R2000P rows (the house proxy index ids, declared
+// below: a stage without a usable row of either is refused with the ids seen); its visibility is
+// the maximum available_at of its rows. Reader-side seal: a row available on or after the research
+// seal is dropped and counted. Rows of other indexes (R3000P, SP500P) are counted and ignored; a
+// row with a null security_id, recon_date or available_at is counted as unusable.
 
 #include <optional>
 #include <span>
@@ -28,9 +30,9 @@
 namespace atx::engine::research::fields {
 
 inline constexpr StageContract kIndexesStage{"indexes", "atx.alpha-panel.indexes/v1", "",
-                                             std::nullopt, ""};
-inline constexpr std::string_view kRussell1000Id = "r1000";
-inline constexpr std::string_view kRussell2000Id = "r2000";
+                                             std::nullopt, "russell-proxy-v1"};
+inline constexpr std::string_view kRussell1000Id = "R1000P";
+inline constexpr std::string_view kRussell2000Id = "R2000P";
 inline constexpr std::string_view kConstituentsFile = "constituents.parquet";
 
 // One constituents.parquet row (nulls as parquet_columns.hpp maps them).
@@ -63,8 +65,8 @@ struct RussellSnapshots {
   std::vector<std::string> index_ids; // every index id seen, ascending
 };
 
-// The snapshots of decoded rows (pure). Err(InvalidArgument) when no usable row is an r1000 or
-// r2000 row (the message lists the index ids seen).
+// The snapshots of decoded rows (pure). Err(InvalidArgument) when no usable row is an R1000P or
+// R2000P row (the message lists the index ids seen).
 [[nodiscard]] core::Result<RussellSnapshots> russell_snapshots(std::span<const RussellRow> rows);
 
 // Decodes the stage's constituents.parquet and builds its snapshots.

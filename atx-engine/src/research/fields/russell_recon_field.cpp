@@ -32,13 +32,13 @@ constexpr f64 kNaN = std::numeric_limits<f64>::quiet_NaN();
             "reconstitution: +1 R1000 -> R2000, -1 R2000 -> R1000, 0 a line that stays in the "
             "R1000 or in the R2000";
   d.clock = "russell-proxy-rank-date-v1: reconstitution R (the indexes constituents rows of index "
-            "r1000 or r2000 with recon_date R) is visible at V(R) = the maximum available_at (rank "
-            "date 22:00 UTC) of its rows and of the prior reconstitution's rows; session t reads "
-            "the latest R with V(R) < date(t-1) 22:00 UTC while date(t) < recon_date(R); session "
-            "0 -> NaN";
+            "R1000P or R2000P with recon_date R) is visible at V(R) = the maximum available_at "
+            "(rank date 22:00 UTC) of its rows and of the prior reconstitution's rows; session t "
+            "reads the latest R with V(R) < date(t-1) 22:00 UTC while date(t) < recon_date(R); "
+            "session 0 -> NaN";
   d.staleness = "NaN outside the event window (from the first session at which the "
                 "reconstitution is visible to the last session dated before its recon_date); NaN "
-                "for a line not in the r1000 or r2000 rows of both R and the prior "
+                "for a line not in the R1000P or R2000P rows of both R and the prior "
                 "reconstitution, for a line in both indexes of one snapshot, and at the first "
                 "reconstitution of the stage (no prior snapshot)";
   d.source_columns = {"constituents.index_id", "constituents.security_id",
@@ -47,11 +47,12 @@ constexpr f64 kNaN = std::numeric_limits<f64>::quiet_NaN();
   d.definition = "Russell 1000 / 2000 reconstitution price pressure (Chang, Hong and Liskovich "
                  "2015, RFS 28(1)) on the house Russell proxy (indexes stage, rule "
                  "russell-proxy-v1: ranked on the May rank day, the last business day of April "
-                 "from 2023, effective after the fourth Friday of June). snapshot(R) = the r1000 "
-                 "and r2000 rows with recon_date R; the prior reconstitution R' = the latest "
-                 "recon_date before R. Value of a line: +1 when in r1000 at R' and in r2000 at R "
-                 "(predicted R2000 addition, R1000 deletion), -1 when in r2000 at R' and in r1000 "
-                 "at R (predicted R1000 addition), 0 when in the same one of the two at R' and R. "
+                 "from 2023, effective after the fourth Friday of June). snapshot(R) = the R1000P "
+                 "and R2000P rows with recon_date R; the prior reconstitution R' = the latest "
+                 "recon_date before R. Value of a line: +1 when in R1000P at R' and in R2000P at R "
+                 "(predicted R2000 addition, R1000 deletion), -1 when in R2000P at R' and in "
+                 "R1000P at R (predicted R1000 addition), 0 when in the same one of the two at R' "
+                 "and R. "
                  "Rows available on or after the research seal are dropped. Formula id "
                  "russell-recon-r1k-r2k-move-v1.";
   d.point_in_time = true;
@@ -60,8 +61,9 @@ constexpr f64 kNaN = std::numeric_limits<f64>::quiet_NaN();
       "a house proxy of the Russell lists (the official FTSE Russell lists are licensed and not "
       "used): the proxy's own rank and band rules, no float adjustment, IPO and spin-off "
       "additions not modelled",
-      "the index ids r1000 and r2000 of the constituents file are declared, not discovered: "
-      "another spelling is refused with the ids seen"};
+      "the index ids R1000P and R2000P of the constituents file (atx-db indexes.md) are "
+      "declared, not discovered: a stage without a usable row of either is refused with the ids "
+      "seen"};
   return s;
 }
 

@@ -39,21 +39,21 @@ fields::RussellRow row(std::string index, i64 sid, i64 rank, i64 recon) {
   return fields::RussellRow{std::move(index), sid, rank, recon, mark_of(rank)};
 }
 
-// 2020: r1000 {1, 3}, r2000 {2, 4, 6}. 2021: r1000 {2, 3, 6}, r2000 {1, 4, 5, 6} (6 in both).
+// 2020: R1000P {1, 3}, R2000P {2, 4, 6}. 2021: R1000P {2, 3, 6}, R2000P {1, 4, 5, 6} (6 in both).
 // 2024: sealed. Plus other indexes and unusable rows.
 std::vector<fields::RussellRow> base_rows() {
   std::vector<fields::RussellRow> rows{
-      row("r1000", 1, kRank1, kRecon1), row("r1000", 3, kRank1, kRecon1),
-      row("r2000", 2, kRank1, kRecon1), row("r2000", 4, kRank1, kRecon1),
-      row("r2000", 6, kRank1, kRecon1), row("r3000", 1, kRank1, kRecon1),
-      row("r1000", 2, kRank2, kRecon2), row("r1000", 3, kRank2, kRecon2),
-      row("r1000", 6, kRank2, kRecon2), row("r2000", 1, kRank2, kRecon2),
-      row("r2000", 4, kRank2, kRecon2), row("r2000", 5, kRank2, kRecon2),
-      row("r2000", 6, kRank2, kRecon2), row("sp500", 3, kRank2, kRecon2),
-      row("r1000", 1, kRank3, kRecon3),          // available after the seal
-      row("r2000", -1, kRank2, kRecon2),         // null security_id
-      row("r1000", 7, kRank2, fields::kNullDay)}; // null recon_date
-  fields::RussellRow never = row("r2000", 8, kRank2, kRecon2);
+      row("R1000P", 1, kRank1, kRecon1), row("R1000P", 3, kRank1, kRecon1),
+      row("R2000P", 2, kRank1, kRecon1), row("R2000P", 4, kRank1, kRecon1),
+      row("R2000P", 6, kRank1, kRecon1), row("R3000P", 1, kRank1, kRecon1),
+      row("R1000P", 2, kRank2, kRecon2), row("R1000P", 3, kRank2, kRecon2),
+      row("R1000P", 6, kRank2, kRecon2), row("R2000P", 1, kRank2, kRecon2),
+      row("R2000P", 4, kRank2, kRecon2), row("R2000P", 5, kRank2, kRecon2),
+      row("R2000P", 6, kRank2, kRecon2), row("SP500P", 3, kRank2, kRecon2),
+      row("R1000P", 1, kRank3, kRecon3),          // available after the seal
+      row("R2000P", -1, kRank2, kRecon2),         // null security_id
+      row("R1000P", 7, kRank2, fields::kNullDay)}; // null recon_date
+  fields::RussellRow never = row("R2000P", 8, kRank2, kRecon2);
   never.available_ns = fields::kNeverNs; // null available_at
   rows.push_back(never);
   return rows;
@@ -69,7 +69,7 @@ TEST(ResearchFieldsAlSigRussell, SnapshotsFromRows) {
   EXPECT_EQ(s->counts.rows_other_index, 2U);
   EXPECT_EQ(s->counts.rows_sealed, 1U);
   EXPECT_EQ(s->counts.rows_unusable, 3U);
-  EXPECT_EQ(s->index_ids, (std::vector<std::string>{"r1000", "r2000", "r3000", "sp500"}));
+  EXPECT_EQ(s->index_ids, (std::vector<std::string>{"R1000P", "R2000P", "R3000P", "SP500P"}));
   ASSERT_EQ(s->recons.size(), 2U); // the sealed 2024 reconstitution is not one
   const auto &r1 = s->recons[0];
   EXPECT_EQ(r1.recon_day, kRecon1);
@@ -85,18 +85,52 @@ TEST(ResearchFieldsAlSigRussell, SnapshotsFromRows) {
 }
 
 TEST(ResearchFieldsAlSigRussell, UndeclaredIndexIdsAreRefused) {
-  const std::vector<fields::RussellRow> other{row("R1000", 1, kRank1, kRecon1),
-                                              row("russell2000", 2, kRank1, kRecon1)};
+  EXPECT_EQ(fields::kRussell1000Id, "R1000P"); // the house constituents ids (atx-db indexes.md)
+  EXPECT_EQ(fields::kRussell2000Id, "R2000P");
+  // The membership file's flag column names (r1000, r2000) are not constituents index ids.
+  const std::vector<fields::RussellRow> other{row("r1000", 1, kRank1, kRecon1),
+                                              row("r2000", 2, kRank1, kRecon1),
+                                              row("russell2000", 3, kRank1, kRecon1)};
   const auto refused = fields::russell_snapshots(other);
   ASSERT_FALSE(refused.has_value());
-  EXPECT_NE(refused.error().message().find("R1000, russell2000"), std::string::npos)
+  EXPECT_NE(refused.error().message().find("r1000, r2000, russell2000"), std::string::npos)
       << refused.error().message();
   EXPECT_FALSE(fields::russell_snapshots({}).has_value());
   // Declared ids whose rows are all sealed: no reconstitution, not a refusal.
   const auto sealed = fields::russell_snapshots(
-      std::vector<fields::RussellRow>{row("r1000", 1, kRank3, kRecon3)});
+      std::vector<fields::RussellRow>{row("R1000P", 1, kRank3, kRecon3)});
   ASSERT_TRUE(sealed.has_value());
   EXPECT_TRUE(sealed->recons.empty());
+}
+
+TEST(ResearchFieldsAlSigRussell, IndexesStageRule) {
+  // The fixture manifest carries the house stage's rule list; the contract needs russell-proxy-v1.
+  const fields::StageRequest fixture = support::al_sig_stage("indexes");
+  EXPECT_EQ(fields::kIndexesStage.rule, "russell-proxy-v1");
+  const auto opened = fields::PinnedStage::open(fixture, fields::kIndexesStage);
+  ASSERT_TRUE(opened.has_value()) << opened.error().message();
+  EXPECT_TRUE(opened->manifest().at("rule").is_array());
+  fields::StageContract other = fields::kIndexesStage;
+  other.rule = "russell-proxy-v2";
+  EXPECT_FALSE(fields::PinnedStage::open(fixture, other).has_value());
+  // A manifest whose rule is one string: equal passes, another rule or no rule is refused.
+  const auto dir = support::scratch("al_sig_indexes_rule");
+  const auto with_rule = [&dir](const nlohmann::json &rule) {
+    nlohmann::json m{{"schema", "atx.alpha-panel.indexes/v1"},
+                     {"status", "complete"},
+                     {"files", nlohmann::json::object()}};
+    if (!rule.is_null()) {
+      m["rule"] = rule;
+    }
+    const std::string text = m.dump();
+    support::write_bytes(dir / "manifest.json", text);
+    const fields::StageRequest request{dir, support::sha256_of(text)};
+    return fields::PinnedStage::open(request, fields::kIndexesStage).has_value();
+  };
+  EXPECT_TRUE(with_rule("russell-proxy-v1"));
+  EXPECT_FALSE(with_rule("sp500-proxy-v1"));
+  EXPECT_FALSE(with_rule(nlohmann::json::array({"sp500-proxy-v1"})));
+  EXPECT_FALSE(with_rule(nullptr));
 }
 
 TEST(ResearchFieldsAlSigRussell, MovesClosedForm) {
@@ -159,11 +193,11 @@ std::optional<usize> first_changed(const std::vector<fields::ReconMove> &a,
 } // namespace
 
 TEST(ResearchFieldsAlSigRussell, PlantedLeakProbeHasTeeth) {
-  // The plant: line 3 moves to r2000 in the 2021 snapshot (0 -> +1).
+  // The plant: line 3 moves to R2000P in the 2021 snapshot (0 -> +1).
   auto planted_rows = base_rows();
   for (auto &r : planted_rows) {
-    if (r.index_id == "r1000" && r.security_id == 3 && r.recon_day == kRecon2) {
-      r.index_id = "r2000";
+    if (r.index_id == "R1000P" && r.security_id == 3 && r.recon_day == kRecon2) {
+      r.index_id = "R2000P";
     }
   }
   const std::vector<i64> ids{1, 2, 3, 4};

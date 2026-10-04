@@ -7,8 +7,8 @@
 // twin).
 //
 // For each reconstitution R with a prior one R' (the latest recon_date before R), each role line:
-//   +1  in r1000 at R' and in r2000 at R  (predicted R2000 addition = R1000 deletion);
-//   -1  in r2000 at R' and in r1000 at R  (predicted R1000 addition = R2000 deletion);
+//   +1  in R1000P at R' and in R2000P at R  (predicted R2000 addition = R1000 deletion);
+//   -1  in R2000P at R' and in R1000P at R  (predicted R1000 addition = R2000 deletion);
 //    0  in the same one of the two at R' and at R;
 //   NaN otherwise (not a member of both snapshots, or in both indexes of one snapshot).
 // Clock russell-proxy-rank-date-v1: R is visible at V(R) = max(available_at of R's rows and of R''s

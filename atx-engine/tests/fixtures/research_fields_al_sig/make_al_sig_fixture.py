@@ -16,8 +16,8 @@ Layout under DIR:
   thirteenf/   manifest.json (atx.alpha-panel.thirteenf/v1), filings.parquet, filing_checks.parquet,
                cusip_map_pit.parquet, parts/source=YYYYqN/holdings.parquet; two poisoned parts (source=2023q4 and
                source=2024q1) are listed with a wrong SHA-256: opening either fails, which the sealed-part probe uses
-  indexes/     manifest.json (atx.alpha-panel.indexes/v1), constituents.parquet (r1000, r2000, r3000, sp500 rows; one
-               reconstitution past the seal)
+  indexes/     manifest.json (atx.alpha-panel.indexes/v1, the house rule list), constituents.parquet (R1000P, R2000P,
+               R3000P, SP500P rows, the house index ids; one reconstitution past the seal)
   expected/    gia_13f.f64, russell_recon.f64 (the oracle's date-major payloads) and counts.json (reader counts)
 
 Everything is synthetic and seeded; nothing real is read. Nothing here is a return, IC or NAV statistic of real data.
@@ -228,6 +228,11 @@ def write_thirteenf(root: Path, filings, rows, unit_rows) -> str:
 
 # ------------------------------------------------------------------------------------------------- Russell proxy data
 
+# The house constituents index ids and manifest rule list (atx-db docs/datasets/indexes.md, alpha_panel.indexes).
+R1000, R2000, R3000, SP500 = "R1000P", "R2000P", "R3000P", "SP500P"
+INDEXES_RULE = ["russell-proxy-v1", "sp500-proxy-v1"]
+ID_OF = {"r1000": R1000, "r2000": R2000}
+
 RECONS = [  # (rank date, recon date, {sid: index}) ; index "both" = a conflict row in r1000 and r2000
     (dt.date(2019, 5, 10), dt.date(2019, 6, 28), {101: "r1000", 102: "r2000", 103: "r1000", 104: "r2000", 106: "r2000",
                                                   107: "r1000"}),
@@ -243,11 +248,11 @@ def russell_rows() -> list:
     out = []   # (index_id, security_id, rank, recon, available)
     for rank, recon, members in RECONS:
         for sid, idx in members.items():
-            for index_id in (("r1000", "r2000") if idx == "both" else (idx,)):
+            for index_id in ((R1000, R2000) if idx == "both" else (ID_OF[idx],)):
                 out.append((index_id, sid, rank, recon, instant(rank, 22)))
-            out.append(("r3000", sid, rank, recon, instant(rank, 22)))
-        out.append(("sp500", 103, rank, recon, instant(rank, 22)))
-    out.append(("r2000", None, RECONS[2][0], RECONS[2][1], instant(RECONS[2][0], 22)))   # null id: unusable
+            out.append((R3000, sid, rank, recon, instant(rank, 22)))
+        out.append((SP500, 103, rank, recon, instant(rank, 22)))
+    out.append((R2000, None, RECONS[2][0], RECONS[2][1], instant(RECONS[2][0], 22)))   # null id: unusable
     return out
 
 
@@ -262,8 +267,7 @@ def write_indexes(root: Path) -> str:
                       "rank_date": pa.array([r[2] for r in rows], pa.date32()),
                       "recon_date": pa.array([r[3] for r in rows], pa.date32()),
                       "basis": ["rank"] * len(rows), "available_at": ts([r[4] for r in rows])})
-    return write_stage(root, "atx.alpha-panel.indexes/v1", {"rule": "russell-proxy-v1"},
-                       {"constituents.parquet": table})
+    return write_stage(root, "atx.alpha-panel.indexes/v1", {"rule": INDEXES_RULE}, {"constituents.parquet": table})
 
 
 # ------------------------------------------------------------------------------------------------------------- role
@@ -468,14 +472,14 @@ def oracle_gia(days, filings, rows, unit_rows):
 
 def oracle_russell(days):
     rows = russell_rows()
-    counts = {"rows_total": len(rows), "rows_other_index": sum(1 for r in rows if r[0] not in ("r1000", "r2000")),
-              "rows_unusable": sum(1 for r in rows if r[0] in ("r1000", "r2000") and r[1] is None)}
-    usable = [r for r in rows if r[0] in ("r1000", "r2000") and r[1] is not None]
+    counts = {"rows_total": len(rows), "rows_other_index": sum(1 for r in rows if r[0] not in (R1000, R2000)),
+              "rows_unusable": sum(1 for r in rows if r[0] in (R1000, R2000) and r[1] is None)}
+    usable = [r for r in rows if r[0] in (R1000, R2000) and r[1] is not None]
     counts["rows_sealed"] = sum(1 for r in usable if ns_of(r[4]) >= SEAL_NS)
     usable = [r for r in usable if ns_of(r[4]) < SEAL_NS]
     recons = sorted({r[3] for r in usable})
-    snap = {R: {"r1000": {r[1] for r in usable if r[3] == R and r[0] == "r1000"},
-                "r2000": {r[1] for r in usable if r[3] == R and r[0] == "r2000"},
+    snap = {R: {"r1000": {r[1] for r in usable if r[3] == R and r[0] == R1000},
+                "r2000": {r[1] for r in usable if r[3] == R and r[0] == R2000},
                 "vis": max(ns_of(r[4]) for r in usable if r[3] == R)} for R in recons}
     moves = []
     for a, b in zip(recons, recons[1:]):

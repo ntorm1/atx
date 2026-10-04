@@ -35,14 +35,29 @@ constexpr u64 kStageManifestLimit = 64ULL << 20;
   return it != j.end() && it->is_string() ? it->get<std::string>() : std::string{};
 }
 
+// The manifest's rule names `rule`: it is that string, or a list holding it (a stage built under
+// several rules, e.g. the indexes stage's russell-proxy-v1 and sp500-proxy-v1).
+[[nodiscard]] bool names_rule(const Json &m, std::string_view rule) {
+  const auto it = m.find("rule");
+  if (it == m.end()) {
+    return false;
+  }
+  if (it->is_string()) {
+    return it->get<std::string>() == rule;
+  }
+  return it->is_array() && std::any_of(it->begin(), it->end(), [rule](const Json &r) {
+           return r.is_string() && r.get<std::string>() == rule;
+         });
+}
+
 // The declared rule keys of the contract against the manifest's (Python pin_stage).
 [[nodiscard]] core::Status check_rules(const Json &m, const StageContract &c) {
   if (!c.clock_rule.empty() && string_member(m, "clock_rule") != c.clock_rule) {
     return core::Err(
         refused(c, "clock_rule differs from the declared " + std::string(c.clock_rule)));
   }
-  if (!c.rule.empty() && string_member(m, "rule") != c.rule) {
-    return core::Err(refused(c, "rule differs from the declared " + std::string(c.rule)));
+  if (!c.rule.empty() && !names_rule(m, c.rule)) {
+    return core::Err(refused(c, "rule does not name the declared " + std::string(c.rule)));
   }
   if (c.staleness_days) {
     const auto it = m.find("staleness_days");
