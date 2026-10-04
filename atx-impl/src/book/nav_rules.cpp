@@ -53,7 +53,8 @@ constexpr std::array<std::string_view, 5> fixed_rate_rules{"aim-partial-v6", "sp
 constexpr std::array<std::string_view, 5> two_speed_refuses{"per-name-v1", "aim-partial-v6",
                                                             "spo-v1", "spo-v2", "spo-v3"};
 
-constexpr std::array<Row, 3> trade_rates{{
+// The kind tables (size-deduced: a lane appends one Row at the end, Ruling W3-9).
+constexpr Row trade_rates[] = {
     {"aim-partial-v5", Kind::TradeRate, "--rule aim-partial-v5", aim_partial_v5_params, none,
      other_rules,
      "aim-partial-v5: every member moves theta (--trade-fraction) of its gap toward aim = L x "
@@ -67,9 +68,12 @@ constexpr std::array<Row, 3> trade_rates{{
      "the NAV half of the composition rule two-speed-v1 (named in rules as two-speed-v1, which "
      "sets --two-speed two-speed-v1 on both exes): a virtual fast sleeve at theta_f = 1 - "
      "2^(-C/5) at cadence C, the slow remainder at theta_s = .05, netted"},
-}};
+};
 
-constexpr std::array<Row, 5> cost_laws{{
+// cost-sqrt-v2's legacy spelling (Ruling C3-3): the switch the v7 seam has always read.
+constexpr std::array<std::string_view, 1> cost_sqrt_v2_aliases{"--cost-v2"};
+
+constexpr Row cost_laws[] = {
     {"flat-bps-v1", Kind::CostLaw, "", no_params, none, none,
      "S1 linear-6bps-stale5-v1: 6 bps per dollar traded (engine FlatBpsCost); a fixed scenario of "
      "every run, not a flag"},
@@ -85,10 +89,12 @@ constexpr std::array<Row, 5> cost_laws{{
      "with cost-sqrt-v2"},
     {cost_sqrt_v2_id, Kind::CostLaw, "--cost-law cost-sqrt-v2", no_params, none, none,
      "cost model v2: the ko-invariance-v1 and fim-live-v1 stress books beside S2 (S1, S2, S3 "
-     "unchanged); byte for byte the run --cost-v2 gives (one of the two, never both)"},
-}};
+     "unchanged); byte for byte the run --cost-v2 gives (one of the two, never both)",
+     cost_sqrt_v2_aliases},
+};
 
-// The target slot (K-P9-7 kind target): empty in this build.
+// The target slot (K-P9-7 kind target): empty in this build (COV-MV replaces this line with a
+// size-deduced table holding mv-aim-v1).
 constexpr std::span<const Row> targets{};
 
 Json row_json(const Row& r) {
@@ -96,15 +102,22 @@ Json row_json(const Row& r) {
   for (const auto key : r.required) required.push_back(std::string(key));
   Json incompatible = Json::array();
   for (const auto id : r.incompatible) incompatible.push_back(std::string(id));
-  return Json{{"id", std::string(r.id)},
-              {"kind", std::string(kind_name(r.kind))},
-              {"x-flag", r.x_flag.empty() ? Json(nullptr) : Json(std::string(r.x_flag))},
-              {"params_schema", Json{{"type", "object"},
-                                     {"additionalProperties", false},
-                                     {"required", std::move(required)},
-                                     {"properties", r.params()}}},
-              {"incompatible", std::move(incompatible)},
-              {"description", std::string(r.description)}};
+  Json row{{"id", std::string(r.id)},
+           {"kind", std::string(kind_name(r.kind))},
+           {"x-flag", r.x_flag.empty() ? Json(nullptr) : Json(std::string(r.x_flag))},
+           {"params_schema", Json{{"type", "object"},
+                                  {"additionalProperties", false},
+                                  {"required", std::move(required)},
+                                  {"properties", r.params()}}},
+           {"incompatible", std::move(incompatible)},
+           {"description", std::string(r.description)}};
+  // Ruling C3-3: only a row with a legacy spelling carries the key.
+  if (!r.x_flag_aliases.empty()) {
+    Json aliases = Json::array();
+    for (const auto alias : r.x_flag_aliases) aliases.push_back(std::string(alias));
+    row["x-flag-aliases"] = std::move(aliases);
+  }
+  return row;
 }
 } // namespace
 

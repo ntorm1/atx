@@ -156,6 +156,7 @@ co::Result<NavSummary> summarize_nav(const NavReplayResult& result,
     const f64 n = static_cast<f64>(net.n);
     s.observations = net.n; s.net_sharpe = net.sharpe(); s.gross_sharpe = gross.sharpe();
     s.mean_daily_net = net.mean; s.ann_mean = net.mean * 252;
+    s.ann_mean_gross = gross.mean * 252; // P9 C3 (PRE-7): ann_mean's rows, before costs/financing
     s.ann_vol = net.sd() * std::sqrt(252.0);
     s.final_nav = days.back().pretrade_nav;
     s.total_net_return = s.final_nav / days.front().pretrade_nav - 1;

@@ -26,10 +26,26 @@
 // rule, not a spec edit. leverage_range [lo, hi] is the aim-partial-v5 leverage range
 // (aim_leverage_min / aim_leverage_max, [1, 2]): a wider range is refused (owner decision
 // OD-P9-3); a narrower one is checked against the run's aim_leverage (default 1) and refused with
-// calibrate_gross (PM6-6's correction is bounded by [1, 2]).
+// calibrate_gross (PM6-6's correction is bounded by [1, 2]) and with construction_grid (its
+// variants set their own --aim-leverage). The range bounds the aim-leverage PARAMETER L, not the
+// book's realised gross leverage L_t: under a leverage rule L_t moves around L (vol-target-v1
+// runs L_t in [1, L], risk-target-v1 in [.8 L, 1.25 L], i.e. up to 2.5 at L = 2; Ruling C3-4: a
+// cell whose rule can realise more than L states its cap on realised leverage in its
+// registration).
+//
+// Print-only options (no weight, trade, cost or NAV value depends on them): stage_timers, and
+// ann_mean_gross (Rulings PRE-7 / PRE-7a; --ann-mean-gross): each scenario of summary.json gains
+// ann_mean_gross = 252 x the mean of the book's daily gross_return over the return rows that
+// ann_mean averages (the same rows and the same running mean; summarize_nav). Absent, every
+// output byte is the run without the option.
+//
+// The file is JSON with each key once per object: a repeated key is refused (the parser would
+// keep the last value while a reader of the pinned file sees the first).
 //
 // CLI (dispatch, from dispatch_nav_replay before any other flag but --list-rules):
-//   nav --spec NAVSPEC.json [--output NEWDIR]   the spec's run (--output replaces options.output)
+//   nav --spec NAVSPEC.json [--output NEWDIR]   the spec's run (--output replaces options.output);
+//                                                the console's first line names the schema, the
+//                                                path and the SHA-256 of the bytes parsed
 //   nav <flags> --print-spec                     prints the NavSpec of <flags>; nothing runs
 //
 // Appending a key (AL-CLOCK, COV-MV; Ruling W3-9): one Key row in nav_spec.cpp's table, beside
@@ -68,7 +84,8 @@ struct Key {
 // The command line of a NavSpec (no verb; keys in table order). InvalidArgument for any shape,
 // key, type or constant the header refuses.
 [[nodiscard]] atx::core::Result<std::vector<std::string>> to_args(const nlohmann::json& spec);
-// A spec file: at most max_spec_bytes, JSON, then to_args's checks.
+// A spec file: at most max_spec_bytes, JSON with no key repeated inside an object, then
+// to_args's checks.
 [[nodiscard]] atx::core::Result<nlohmann::json> read(const std::string& path);
 // The constants block at today's values.
 [[nodiscard]] nlohmann::json constants_json();

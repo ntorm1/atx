@@ -295,6 +295,7 @@ target_link_libraries(atx-impl-strategy PUBLIC atx-engine-research-composition)
 # the numpy mean of the S2 gross, the 4-decimal correction, the summary record).
 target_sources(atx-impl-strategy PRIVATE src/strategy_nav_calibrate.cpp)
 # P9 lane B2 (cross-lane append): the IC stage's trial ledger moved down to atx-engine-research-ledger;
-# src/trial_ledger.{hpp,cpp} re-export it, so atx-impl-core links the library. (P9 C3 at the merge:
-# trial_ledger.cpp and its users, stage_equity_ic / stage_equity_universe, are atx-impl-pipeline's.)
+# src/trial_ledger.{hpp,cpp} re-export it, so atx-impl-pipeline links the library (P9 C3:
+# trial_ledger.cpp and its users, stage_equity_ic / stage_equity_universe, are pipeline TUs;
+# atx-impl-core is INTERFACE).
 target_link_libraries(atx-impl-pipeline PUBLIC atx::engine-research-ledger)

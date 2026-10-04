@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <ostream>
+#include <set>
 #include <stdexcept>
 #include <system_error>
 #include <nlohmann/json.hpp>
@@ -87,6 +88,8 @@ constexpr Key table[] = {
     {"daily_turnover_mean_max", "--daily-turnover-mean-max", Type::Real, no_choices},
     {"daily_turnover_p95_max", "--daily-turnover-p95-max", Type::Real, no_choices},
     {"stage_timers", "--stage-timers", Type::Switch, no_choices},
+    // P9 C3 (Rulings PRE-7 / PRE-7a): print-only, summary.json's scenarios gain ann_mean_gross
+    {"ann_mean_gross", "--ann-mean-gross", Type::Switch, no_choices},
     // P9 C2: PM6-6 in one process
     {"calibrate_gross", "--calibrate-gross", Type::Real, no_choices},
     {"calibrate_tolerance", "--calibrate-tolerance", Type::Real, no_choices},
@@ -256,7 +259,8 @@ bool pinned_constant(const std::string& key) {
          key == "capacity_multiples";
 }
 // leverage_range (header): inside [1, 2]; narrower only around the run's aim_leverage and
-// without calibrate_gross.
+// without calibrate_gross or construction_grid (either one moves the aim leverage after this
+// check: PM6-6's correction, the grid variants' --aim-leverage).
 co::Status check_leverage_range(const Json& range, const Json& options) {
   if (!range.is_array() || range.size() != 2 || !range.at(0).is_number() ||
       !range.at(1).is_number())
@@ -274,6 +278,9 @@ co::Status check_leverage_range(const Json& range, const Json& options) {
   if (options.contains("calibrate_gross"))
     return bad("calibrate_gross corrects inside [1, 2] only; a narrower "
                "constants.leverage_range is refused with it");
+  if (options.contains("construction_grid"))
+    return bad("construction_grid variants set their own --aim-leverage, which this range does "
+               "not check; a narrower constants.leverage_range is refused with it");
   return co::Ok();
 }
 // The constants block (header).
@@ -293,6 +300,57 @@ co::Status check_constants(const Json& spec, const Json& options) {
     }
   }
   return co::Ok();
+}
+
+// The spec file's bytes (at most max_spec_bytes).
+co::Result<std::string> read_text(const std::string& path) {
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(path, ec);
+  if (ec || size > max_spec_bytes)
+    return bad("the spec file is missing or above 1 MiB: " + path);
+  std::string text(static_cast<usize>(size), '\0');
+  std::ifstream file(path, std::ios::binary);
+  if (!file || !file.read(text.data(), static_cast<std::streamsize>(size)))
+    return co::Err(co::ErrorCode::IoError, "nav spec: read " + path);
+  return co::Ok(std::move(text));
+}
+// The spec text as JSON. A key repeated inside one object is refused: the parser keeps the last
+// value while a reader of the pinned file sees the first (review C3 R-1). The duplicate-key
+// callback of atx-engine/src/eval/trial_epoch.cpp: one key set per open object.
+co::Result<Json> parse_spec(const std::string& text, const std::string& path) {
+  std::vector<std::set<std::string>> objects;
+  std::string duplicate;
+  const auto unique_keys = [&objects, &duplicate](int, Json::parse_event_t event, Json& value) {
+    if (event == Json::parse_event_t::object_start) {
+      objects.emplace_back();
+    } else if (event == Json::parse_event_t::object_end) {
+      if (!objects.empty()) objects.pop_back();
+    } else if (event == Json::parse_event_t::key && duplicate.empty() && !objects.empty() &&
+               !objects.back().insert(value.get<std::string>()).second) {
+      duplicate = value.get<std::string>();
+    }
+    return true;
+  };
+  auto doc = Json::parse(text, unique_keys, false);
+  if (doc.is_discarded()) return bad("the spec file is not JSON: " + path);
+  if (!duplicate.empty())
+    return bad("duplicate key \"" + duplicate + "\" in " + path +
+               " (a key appears once per object: JSON keeps the last value, a reader the first)");
+  return co::Ok(std::move(doc));
+}
+// A spec file read once: its document (checked by to_args) and the SHA-256 of the very bytes
+// parsed (review C3 S-4: the printed digest describes what the run read).
+struct SpecFile {
+  Json doc;
+  std::string sha256;
+};
+co::Result<SpecFile> load(const std::string& path) {
+  ATX_TRY(const auto text, read_text(path));
+  SpecFile out;
+  ATX_TRY(out.doc, parse_spec(text, path));
+  ATX_TRY_VOID(to_args(out.doc));
+  ATX_TRY(out.sha256, co::sha256_hex(text));
+  return co::Ok(std::move(out));
 }
 } // namespace
 
@@ -346,18 +404,8 @@ co::Result<std::vector<std::string>> to_args(const Json& spec) {
 }
 
 co::Result<Json> read(const std::string& path) {
-  std::error_code ec;
-  const auto size = std::filesystem::file_size(path, ec);
-  if (ec || size > max_spec_bytes)
-    return bad("the spec file is missing or above 1 MiB: " + path);
-  std::string text(static_cast<usize>(size), '\0');
-  std::ifstream file(path, std::ios::binary);
-  if (!file || !file.read(text.data(), static_cast<std::streamsize>(size)))
-    return co::Err(co::ErrorCode::IoError, "nav spec: read " + path);
-  auto doc = Json::parse(text, nullptr, false);
-  if (doc.is_discarded()) return bad("the spec file is not JSON: " + path);
-  ATX_TRY_VOID(to_args(doc));
-  return co::Ok(std::move(doc));
+  ATX_TRY(auto spec, load(path));
+  return co::Ok(std::move(spec.doc));
 }
 
 Json constants_json() {
@@ -411,20 +459,19 @@ int dispatch(int argc, char** argv, std::ostream& out, std::ostream& err) {
         << key << ")\n";
     return 2;
   }
-  auto doc = read(path);
-  if (!doc) {
-    err << doc.error().to_string() << '\n';
+  auto spec_file = load(path);
+  if (!spec_file) {
+    err << spec_file.error().to_string() << '\n';
     return 2;
   }
-  if (!output.empty()) (*doc)["options"]["output"] = output;
-  auto args = to_args(*doc);
+  auto& doc = spec_file->doc;
+  if (!output.empty()) doc["options"]["output"] = output;
+  auto args = to_args(doc);
   if (!args) {
     err << args.error().to_string() << '\n';
     return 2;
   }
-  const auto sha = co::sha256_file(path);
-  out << "nav spec: " << schema << ' ' << path << " sha256 " << (sha ? *sha : std::string("?"))
-      << '\n';
+  out << "nav spec: " << schema << ' ' << path << " sha256 " << spec_file->sha256 << '\n';
   std::vector<std::string> tokens{argv[0]};
   tokens.insert(tokens.end(), args->begin(), args->end());
   std::vector<char*> pointers;

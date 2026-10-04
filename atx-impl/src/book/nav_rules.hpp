@@ -12,7 +12,7 @@
 //   cost-law    flat-bps-v1 and sqrt-impact-v1 (the fixed scenarios S1 / S2, S3 of every run; no
 //               flag), ko-invariance-v1 and fim-live-v1 (the v2 stress laws; no flag of their own),
 //               cost-sqrt-v2 (--cost-law cost-sqrt-v2: both v2 stress books, the run --cost-v2
-//               gives)
+//               gives; x-flag-aliases ["--cost-v2"])
 //   target      none in this build: the slot of the desired-target rules (--target-rule ID); lane
 //               COV-MV appends mv-aim-v1 (row here, handler in strategy_nav_v7.cpp)
 //
@@ -23,9 +23,15 @@
 // rule cannot be named on its own (a fixed scenario law, or a law another row's flag turns on).
 // params_schema is a closed JSON Schema object (additionalProperties false) whose defaults are
 // the exe's own (TargetReplayConfig{}, nav_rate_*).
+// x-flag-aliases (Ruling C3-3; only on a row that has one, so every other row keeps its shape and
+// C1's leverage rows their bytes): the legacy spellings that turn the same rule on, byte for byte
+// the x-flag's run (cost-sqrt-v2: ["--cost-v2"]); a research wave treats an alias as the owned
+// flag it stands for (D3's E2-8 guard).
 //
-// Appending a rule (AL-CLOCK, COV-MV; Ruling W3-9): one Row in the kind's table in
-// nav_rules.cpp, one parser entry where its flag is read (nav_spec.cpp keeps its NavSpec key).
+// Appending a rule (AL-CLOCK, COV-MV; Ruling W3-9): one Row at the end of the kind's table in
+// nav_rules.cpp (the trade-rate and cost-law tables are size-deduced; the empty target slot
+// becomes a table of its own), one parser entry where its flag is read (nav_spec.cpp keeps its
+// NavSpec key). The registry tests check C3's rows by lookup and as a prefix of their kind.
 
 #include <span>
 #include <string>
@@ -46,6 +52,7 @@ struct Row {
   std::span<const std::string_view> required;
   std::span<const std::string_view> incompatible;
   std::string_view description;
+  std::span<const std::string_view> x_flag_aliases{}; // empty: the row prints no such key
 };
 
 // The registries C3 owns (the leverage rows are risk_target's).

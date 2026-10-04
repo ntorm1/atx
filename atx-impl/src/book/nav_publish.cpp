@@ -75,6 +75,8 @@ co::Result<Json> publish_scenario(const NavRun& run, const std::filesystem::path
           timed_digest(run.times, [&] { return co::sha256_file(events.string()); }));
   auto entry = scenario_summary(sc, k == nav_primary_scenario_index, tiered, result, summary,
                                 daily_sha, events_sha);
+  // P9 C3 (Rulings PRE-7 / PRE-7a): print-only, under --ann-mean-gross alone.
+  if (run.ann_mean_gross) entry["ann_mean_gross"] = summary.ann_mean_gross;
   if (construction) {
     std::vector<ConstructionDay> decisions;
     for (const auto& d : result.days)

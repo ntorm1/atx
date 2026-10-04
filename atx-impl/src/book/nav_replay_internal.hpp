@@ -641,6 +641,10 @@ struct NavRun {
   // directory only; the recipe never records it (the decide path's recipe pin stays the plain
   // run's at the final leverage).
   const Json* calibration{};
+  // P9 C3 (PRE-7a, --ann-mean-gross): each scenario of summary.json gains ann_mean_gross. The
+  // main directory only (the capacity directory's run leaves it false); the recipe never
+  // records it.
+  bool ann_mean_gross{};
 };
 // The summary's warm_start record; null without a warm start. Called after the replay
 // accepted the input (warm_start_sessions <= decision_begin). The role rows of the first

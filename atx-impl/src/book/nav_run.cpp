@@ -410,7 +410,8 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
                      all_summaries.subspan(main_books),
                      v7::installed() ? &records : nullptr,
                      false,
-                     calibration_record.is_null() ? nullptr : &calibration_record};
+                     calibration_record.is_null() ? nullptr : &calibration_record,
+                     emit.ann_mean_gross};
     // Console provenance only: the cache changes no published byte, so no file records it.
     if (base.liquidity_cache) progress << "nav replay: shared execution liquidity cache on\n";
     if (!label.is_null())
@@ -515,7 +516,9 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
                        all_results.subspan(main_books),
                        all_summaries.subspan(main_books),
                        v7::installed() ? &records : nullptr,
-                       false};
+                       false,
+                       nullptr,
+                       emit.ann_mean_gross};
       ATX_TRY_VOID(publish_nav(run, progress));
       const auto dir = root / variant.id;
       ATX_TRY(auto recipe_sha, timed_digest(timed, [&] {

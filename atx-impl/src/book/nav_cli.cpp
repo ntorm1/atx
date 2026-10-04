@@ -35,12 +35,15 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
     std::set<std::string> seen;
     for (int i = 1; i < argc; ++i) {
       const std::string key = argv[i];
-      // v6/v8 switches take no value; repeated, they are a usage error like any flag.
-      if (key == "--locate-in-aim" || key == "--liquidity-cache" || key == "--stage-timers") {
+      // v6/v8 switches take no value; repeated, they are a usage error like any flag. P9 C3
+      // (PRE-7a): --ann-mean-gross, print-only like --stage-timers.
+      if (key == "--locate-in-aim" || key == "--liquidity-cache" || key == "--stage-timers" ||
+          key == "--ann-mean-gross") {
         if (!seen.insert(key).second) throw std::invalid_argument("duplicate/missing flag");
-        bool& on = key == "--stage-timers" ? emit.stage_timers
-                   : key == "--locate-in-aim" ? execution.locate_in_aim
-                                              : execution.liquidity_cache;
+        bool& on = key == "--stage-timers"     ? emit.stage_timers
+                   : key == "--ann-mean-gross" ? emit.ann_mean_gross
+                   : key == "--locate-in-aim"  ? execution.locate_in_aim
+                                               : execution.liquidity_cache;
         on = true;
         continue;
       }
@@ -109,7 +112,10 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "--construction-grid or an spo rule)] "
                "[--spec NAVSPEC.json [--output NEWDIR] (P9 C3: the run of one atx.nav-spec/v1 "
                "file, typed options and constants; it holds every other flag) | --print-spec "
-               "(the NavSpec of the given flags, then exit)]\n"
+               "(the NavSpec of the given flags, then exit)] "
+               "[--ann-mean-gross (P9 C3, print-only: every scenario of summary.json gains "
+               "ann_mean_gross = 252 x the mean daily gross_return over ann_mean's return rows, "
+               "before trade costs and financing; nothing else changes)]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
                "PRIMARY, S3 modeled-1bn-terminal-adverse-v1); costs/borrow are not flags.\n"
                "Without --fields: flat-300-v0 financing only. With the pinned role fields "
