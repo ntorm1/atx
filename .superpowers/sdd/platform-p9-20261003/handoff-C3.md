@@ -66,6 +66,15 @@ Fix round 1: `fix1-gtest-f-named.log` (32/33, the red fixed), `fix1-gtest-g-name
 FAILs), `fix1-nav-identity.py` (tiny-world NAV driver) + `fix1-nav-optin-l.log` (opt-in tree check, PASS), canary
 logs `mega-p9-c3-{f,g,j,l}-canary.log`. Receipts and build logs stay in `build-equity/` (`mega-p9-c3-*`).
 
+## Disk
+
+After the docs commit `5911a63e` the lane deleted by name the object trees of `build-equity` (CMakeFiles, atx-core,
+atx-engine, atx-impl, atx-tsdb, bin, lib, tests and the tree files) and of `build-equity-rel` (same names), about
+4.5 GB; kept: `build-equity/mega-p9-c3-*` receipts / build / cache-stats / canary logs, `c3-build-*.out`,
+`c3-configure-*.log`, both `vcpkg-manifest-install.log`, and the two dirs that are not the lane's
+(`build-equity/audits/`, `build-equity/v8-interim3-pitch-render-run2/`). Scratch `%TEMP%/c3-navid-l` deleted;
+`%TEMP%/c3-navid-dry` (12 MB) is left: its deletion was part of the refused command.
+
 ## Root at merge (full list: report "Fix round 1 / Root at merge")
 
 1. Scoped re-review of fix round 1, then merge; both presets, the nine targets of the report's item 1, `-Canary`;
