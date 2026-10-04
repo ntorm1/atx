@@ -19,6 +19,7 @@
 #include "atx/core/sha256.hpp"
 #include "atx/engine/book/target_tracking.hpp"
 #include "atx/engine/cost/borrow_tiers.hpp"
+#include "atx/engine/data/research_window.hpp"
 #include "atx/engine/risk/cov_container.hpp"
 #include "strategy_risk_model.hpp"
 #include "strategy_spo_v3.hpp"
@@ -750,6 +751,11 @@ co::Result<RiskStore> RiskStore::open(const std::string& directory,
       if (model.factors() != risk_factors || model.groups() != risk_industry_slots ||
           model.dense() != risk_styles || model.date_count() != store.dates_)
         return co::Err(co::ErrorCode::InvalidArgument, "spo-v1: risk model container geometry");
+      // cov-design I-4: a container reaching the research seal needs its unseal record.
+      if (model.header().last_session_ns >= atx::engine::data::kSealBeginNs && !model.unsealed())
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "spo-v1: the risk model container reaches the research seal without an "
+                       "unseal record");
       for (usize t = 0; t < store.dates_; ++t) {
         const auto& e = model.index()[t];
         const bool forecast = (e.flags & er::cov::date_forecast) != 0;

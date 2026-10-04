@@ -9,8 +9,11 @@
 #include <bit>
 #include <cmath>
 #include <cstddef>
+#include <iostream>
 #include <optional>
 #include <span>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -75,7 +78,8 @@ TEST(CovTruncation, PerturbedFutureLeavesThePastUnchanged) {
     const auto v = first_violation(full, log, cut);
     EXPECT_FALSE(v.has_value()) << rk::recipe_id(recipe) << ": " << violation_text(v);
     usize differing = 0;
-    for (usize t = cut + 1; t < planted_dates; ++t) differing += full.blocks[t] != log.blocks[t] ? 1U : 0U;
+    for (usize t = cut + 1; t < planted_dates; ++t)
+      differing += full.blocks[t] != log.blocks[t] ? 1U : 0U;
     EXPECT_GT(differing, 0U) << rk::recipe_id(recipe) << ": the perturbation must reach the future";
     EXPECT_NE(full.blocks[cut + 1], log.blocks[cut + 1]) << rk::recipe_id(recipe);
   }
@@ -117,10 +121,18 @@ TEST(CovTruncation, DetectsAPlantedLeak) {
     for (usize r = 0; r < view.rows; ++r)
       exposed = exposed || view.exposures_f32[r * rk::style_count + value_style] != 0.0F;
     EXPECT_TRUE(exposed);
+    // Input side (review S2): a leaky estimator INPUT -- each name's value descriptor is its mean
+    // return over the whole axis -- flows through run_risk_model (standardisation, regression,
+    // forecasts) and the harness reports a session through the cut.
+    const auto input_full = run_blocks(base_panel().with_future_mean_return_value(), cfg);
+    const auto input_cut = run_blocks(truncated.with_future_mean_return_value(), cfg);
+    const auto w = first_violation(input_full, input_cut, cut);
+    ASSERT_TRUE(w.has_value()) << rk::recipe_id(recipe) << ": the input-side leak was missed";
+    EXPECT_LE(*w, cut);
   }
 }
 
-// ---- CovEigen (S2b) ------------------------------------------------------------------------------
+// ---- CovEigen (S2b) ----------------------------------------------------------------------------
 // F = Q diag(lambda) Q' with lambda geometric in [1e-6, 1e-4] (ascending) and Q a seeded rotation.
 std::vector<f64> planted_block(usize m, u64 seed, std::vector<f64>* truth_values = nullptr) {
   Normal rng{seed};
@@ -199,7 +211,8 @@ TEST(CovEigen, SmallEigenfactorsInflatedLargeNearOne) {
   std::vector<f64> mean_gamma(m, 0.0);
   constexpr usize sessions = 8;
   for (usize s = 0; s < sessions; ++s) {
-    const auto e = rk::eigen_adjust_block(block, m, 60.0, probe_session + static_cast<i64>(s) * day_ns, cfg);
+    const auto e =
+        rk::eigen_adjust_block(block, m, 60.0, probe_session + static_cast<i64>(s) * day_ns, cfg);
     ASSERT_EQ(e.outcome, rk::EigenOutcome::Adjusted);
     ASSERT_EQ(e.gamma.size(), m);
     for (usize k = 0; k < m; ++k) mean_gamma[k] += e.gamma[k] / static_cast<f64>(sessions);
@@ -217,9 +230,11 @@ TEST(CovEigen, SmallEigenfactorsInflatedLargeNearOne) {
   EXPECT_GT(mean_gamma.front(), mean_gamma.back());
   EXPECT_NEAR(mean_gamma.back(), 1.0, 0.1);           // the largest near one
   // Short history: fewer than K + 1 effective observations keeps the block.
-  const auto short_history = rk::eigen_adjust_block(block, m, static_cast<f64>(m), probe_session, cfg);
+  const auto short_history =
+      rk::eigen_adjust_block(block, m, static_cast<f64>(m), probe_session, cfg);
   EXPECT_EQ(short_history.outcome, rk::EigenOutcome::ShortHistory);
-  EXPECT_TRUE(same_bits(std::span<const f64>(short_history.covariance), std::span<const f64>(block)));
+  EXPECT_TRUE(
+      same_bits(std::span<const f64>(short_history.covariance), std::span<const f64>(block)));
   // A non-positive eigenvalue is refused by the kernel, the block kept.
   // Off-diagonal 2e-5, diagonal 1e-5: eigenvalue -1e-5 (m - 1 times), not positive definite.
   std::vector<f64> singular(m * m, 2e-5);
@@ -227,6 +242,16 @@ TEST(CovEigen, SmallEigenfactorsInflatedLargeNearOne) {
   const auto refused = rk::eigen_adjust_block(singular, m, 60.0, probe_session, cfg);
   EXPECT_EQ(refused.outcome, rk::EigenOutcome::Refused);
   EXPECT_TRUE(same_bits(std::span<const f64>(refused.covariance), std::span<const f64>(singular)));
+  // A workspace above the budget is told apart (review S3): K^2 128 + T K 64 = 51,200 bytes here.
+  auto tight = cfg;
+  tight.eigen_max_bytes = 51'199;
+  const auto budget = rk::eigen_adjust_block(block, m, 60.0, probe_session, tight);
+  EXPECT_EQ(budget.outcome, rk::EigenOutcome::BudgetRefused);
+  EXPECT_TRUE(same_bits(std::span<const f64>(budget.covariance), std::span<const f64>(block)));
+  tight.eigen_max_bytes = 51'200;
+  EXPECT_EQ(rk::eigen_adjust_block(block, m, 60.0, probe_session, tight).outcome,
+            rk::EigenOutcome::Adjusted);
+  EXPECT_STREQ(rk::eigen_outcome_name(rk::EigenOutcome::BudgetRefused), "refused_budget");
 }
 
 TEST(CovEigen, SeededPerSessionAndWorkerInvariant) {
@@ -238,21 +263,26 @@ TEST(CovEigen, SeededPerSessionAndWorkerInvariant) {
   // Other sessions' draws in between do not move session t's adjustment.
   const auto other = rk::eigen_adjust_block(block, m, 45.0, probe_session + day_ns, cfg);
   const auto again = rk::eigen_adjust_block(block, m, 45.0, probe_session, cfg);
-  EXPECT_TRUE(same_bits(std::span<const f64>(again.covariance), std::span<const f64>(reference.covariance)));
+  EXPECT_TRUE(same_bits(std::span<const f64>(again.covariance),
+                        std::span<const f64>(reference.covariance)));
   EXPECT_TRUE(same_bits(std::span<const f64>(again.gamma), std::span<const f64>(reference.gamma)));
   // The session's own stream: another session draws differently.
-  EXPECT_FALSE(same_bits(std::span<const f64>(other.covariance), std::span<const f64>(reference.covariance)));
-  EXPECT_NE(rk::eigen_session_seed(7, probe_session), rk::eigen_session_seed(7, probe_session + day_ns));
+  EXPECT_FALSE(same_bits(std::span<const f64>(other.covariance),
+                         std::span<const f64>(reference.covariance)));
+  EXPECT_NE(rk::eigen_session_seed(7, probe_session),
+            rk::eigen_session_seed(7, probe_session + day_ns));
   // 1 and 4 concurrent workers give the same bytes.
   std::vector<rk::EigenBlock> results(4);
   {
     std::vector<std::thread> workers;
     for (usize w = 0; w < results.size(); ++w)
-      workers.emplace_back([&, w] { results[w] = rk::eigen_adjust_block(block, m, 45.0, probe_session, cfg); });
+      workers.emplace_back(
+          [&, w] { results[w] = rk::eigen_adjust_block(block, m, 45.0, probe_session, cfg); });
     for (auto& w : workers) w.join();
   }
   for (const auto& r : results) {
-    EXPECT_TRUE(same_bits(std::span<const f64>(r.covariance), std::span<const f64>(reference.covariance)));
+    EXPECT_TRUE(
+        same_bits(std::span<const f64>(r.covariance), std::span<const f64>(reference.covariance)));
     EXPECT_TRUE(same_bits(std::span<const f64>(r.gamma), std::span<const f64>(reference.gamma)));
   }
 }
@@ -368,7 +398,8 @@ TEST(CovEigen, ResultIsPositiveDefinite) {
   EXPECT_GT(adjusted, 100U);
   for (u64 seed = 1; seed <= 6; ++seed) {
     constexpr usize m = 12;
-    const auto e = rk::eigen_adjust_block(planted_block(m, seed), m, 40.0, probe_session, small_config(rk::RiskRecipe::CovV1));
+    const auto e = rk::eigen_adjust_block(planted_block(m, seed), m, 40.0, probe_session,
+                                          small_config(rk::RiskRecipe::CovV1));
     ASSERT_EQ(e.outcome, rk::EigenOutcome::Adjusted);
     const Eigen::LLT<Eigen::MatrixXd> llt(as_matrix(e.covariance, m));
     EXPECT_EQ(llt.info(), Eigen::Success) << seed;
@@ -393,7 +424,8 @@ TEST(CovEigen, LowersTrueRiskOfTheEstimatedMinVariancePortfolio) {
   f64 raw = 0, adjusted = 0;
   for (usize trial = 0; trial < trials; ++trial) {
     Normal rng{1000 + trial};
-    Eigen::MatrixXd sample = Eigen::MatrixXd::Zero(static_cast<Eigen::Index>(m), static_cast<Eigen::Index>(m));
+    Eigen::MatrixXd sample =
+        Eigen::MatrixXd::Zero(static_cast<Eigen::Index>(m), static_cast<Eigen::Index>(m));
     for (usize s = 0; s < draws; ++s) {
       Eigen::VectorXd z(static_cast<Eigen::Index>(m));
       for (Eigen::Index a = 0; a < z.size(); ++a) z[a] = rng();
@@ -420,6 +452,9 @@ constexpr usize random_books = 4;
 struct Formed final : rk::RiskSink {
   const rk::BiasHarness* harness{};
   usize sessions_with_minvar{}, complete_violations{}, sum_violations{}, excluded_incomplete{};
+  // Review S7: sessions whose minvar book is not exactly the complete set, and forecast sessions
+  // with >= 2 complete names but no extended book (the harness counts the latter itself).
+  usize set_mismatches{}, unformed{};
   std::vector<std::vector<std::pair<usize, f64>>> minvar; // per session
   co::Status on_day(const rk::RiskDay& d) override {
     constexpr usize kf = rk::factor_count;
@@ -441,35 +476,129 @@ struct Formed final : rk::RiskSink {
     minvar.emplace_back(mv.begin(), mv.end());
     std::vector<u8> held(d.eligible.size(), 0);
     for (const auto& entry : mv) held[entry.first] = 1;
+    usize complete_names = 0;
+    bool same_set = true;
     if (d.forecast)
-      for (usize i = 0; i < d.eligible.size(); ++i)
-        if (d.eligible[i] && d.industry_slot[i] != rk::no_exposure && !complete(i) && !held[i])
+      for (usize i = 0; i < d.eligible.size(); ++i) {
+        const bool c = complete(i);
+        complete_names += c ? 1U : 0U;
+        same_set = same_set && c == (held[i] != 0);
+        if (d.eligible[i] && d.industry_slot[i] != rk::no_exposure && !c && !held[i])
           ++excluded_incomplete;
-    if (mv.empty()) return co::Ok();
+      }
+    if (mv.empty()) {
+      unformed += d.forecast && complete_names >= 2 ? 1U : 0U;
+      return co::Ok();
+    }
     ++sessions_with_minvar;
+    set_mismatches += same_set ? 0U : 1U;
     f64 sum = 0;
     for (const auto& [i, w] : mv) { complete_violations += complete(i) ? 0U : 1U; sum += w; }
     sum_violations += std::abs(sum - 1.0) < 1e-9 ? 0U : 1U;
     for (usize q = 0; q < rk::optimized_portfolios; ++q) {
       const auto w = harness->formed(random_books + 1 + q);
       f64 net = 0, gross = 0;
-      for (const auto& [i, x] : w) { complete_violations += complete(i) ? 0U : 1U; net += x; gross += std::abs(x); }
-      if (!w.empty()) sum_violations += (std::abs(net) < 1e-9 && std::abs(gross - 1.0) < 1e-9) ? 0U : 1U;
+      for (const auto& [i, x] : w) {
+        complete_violations += complete(i) ? 0U : 1U;
+        net += x;
+        gross += std::abs(x);
+      }
+      if (w.empty()) continue;
+      sum_violations += (std::abs(net) < 1e-9 && std::abs(gross - 1.0) < 1e-9) ? 0U : 1U;
     }
     return co::Ok();
   }
 };
+// Per session: the number of eigenvalues of the forecast factor block (finite diagonal) below
+// 1e-6 x its largest -- ranks sitting at the eigenvalue floor (a numerically null direction).
+struct NullRanks final : rk::RiskSink {
+  std::vector<usize> per_session;
+  co::Status on_day(const rk::RiskDay& d) override {
+    constexpr usize kf = rk::factor_count;
+    std::vector<usize> keep;
+    for (usize k = 0; k < kf; ++k)
+      if (std::isfinite(d.covariance[k * kf + k])) keep.push_back(k);
+    usize null = 0;
+    if (!keep.empty()) {
+      const auto m = static_cast<Eigen::Index>(keep.size());
+      Eigen::MatrixXd f(m, m);
+      for (Eigen::Index a = 0; a < m; ++a)
+        for (Eigen::Index b = 0; b < m; ++b)
+          f(a, b) = d.covariance[keep[static_cast<usize>(a)] * kf + keep[static_cast<usize>(b)]];
+      const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(f, Eigen::EigenvaluesOnly);
+      const f64 top = eig.eigenvalues().maxCoeff();
+      for (Eigen::Index k = 0; k < m; ++k) null += eig.eigenvalues()[k] < 1e-6 * top ? 1U : 0U;
+    }
+    per_session.push_back(null);
+    return co::Ok();
+  }
+};
+// The eigen family per rank: full-sample b and T per series with observations; a series whose
+// rank sat at the floor on any formation session is excluded (and counted); the pooled b and the
+// USE4 band 1 +- sqrt(2/T) (cov-design 2.8) per series and for the pooled family.
+struct RankTable {
+  std::vector<std::string> name;
+  std::vector<f64> b;
+  std::vector<usize> obs;
+  usize excluded{}, kept{}, in_band{}, pooled_n{};
+  f64 pooled{};
+  [[nodiscard]] f64 pooled_band() const { return std::sqrt(2.0 / static_cast<f64>(pooled_n)); }
+  [[nodiscard]] f64 share_in_band() const {
+    return kept ? static_cast<f64>(in_band) / static_cast<f64>(kept) : 0.0;
+  }
+  [[nodiscard]] std::string text() const {
+    std::ostringstream out;
+    out.setf(std::ios::fixed);
+    out.precision(3);
+    for (usize k = 0; k < b.size(); ++k)
+      out << ' ' << name[k] << '=' << b[k] << " (T " << obs[k] << ')';
+    out << " | pooled " << pooled << " +- " << pooled_band() << " (N " << pooled_n << "), in band "
+        << in_band << '/' << kept << ", excluded at the floor " << excluded;
+    return out.str();
+  }
+};
+RankTable eigen_ranks(const rk::BiasHarness& h, std::span<const i64> sessions,
+                      const std::vector<usize>& null_ranks) {
+  RankTable table;
+  std::vector<f64> pooled;
+  for (const auto& s : h.series()) {
+    if (s.family != "eigen" || s.z.empty()) continue;
+    const usize rank = std::stoul(s.name.substr(6));
+    bool at_floor = false;
+    for (const i64 session : s.sessions) {
+      const auto t = static_cast<usize>(
+          std::lower_bound(sessions.begin(), sessions.end(), session) - sessions.begin());
+      at_floor = at_floor || (t > 0 && rank < null_ranks[t - 1]);
+    }
+    if (at_floor) { ++table.excluded; continue; }
+    for (usize j = 0; j < s.z.size(); ++j)
+      EXPECT_EQ(std::bit_cast<u64>(s.z[j]), std::bit_cast<u64>(s.realized[j] / s.forecast_vol[j]));
+    const f64 b = rk::bias_statistic(s.z);
+    table.name.push_back(s.name);
+    table.b.push_back(b);
+    table.obs.push_back(s.z.size());
+    ++table.kept;
+    table.in_band += std::abs(b - 1.0) <= std::sqrt(2.0 / static_cast<f64>(s.z.size())) ? 1U : 0U;
+    pooled.insert(pooled.end(), s.z.begin(), s.z.end());
+  }
+  table.pooled = rk::bias_statistic(pooled);
+  table.pooled_n = pooled.size();
+  return table;
+}
+RankTable run_eigen_family(const rk::RiskPanel& panel, const rk::RiskModelConfig& cfg) {
+  rk::BiasHarness harness(panel, random_books, 7, {}, rk::BiasFamilies::Extended);
+  NullRanks nulls;
+  std::array<rk::RiskSink*, 2> sinks{&harness, &nulls};
+  const auto status = rk::run_risk_model(panel, cfg, sinks);
+  if (!status) throw std::runtime_error(status.error().to_string());
+  return eigen_ranks(harness, panel.sessions, nulls.per_session);
+}
 const rk::BiasSeries* find_series(const rk::BiasHarness& h, const std::string& name) {
   for (const auto& s : h.series())
     if (s.name == name) return &s;
   return nullptr;
 }
 
-// The eigen family on the planted panel under both recipes: z = realised / forecast vol on every
-// observation, the pooled b finite and bounded, and S2b (atx-cov-v1) moves it toward 1 -- the
-// eigenportfolios of a short-history sample covariance under-forecast (b > 1 under atx-risk-v1.1),
-// which is what the simulated adjustment corrects. (The planted industries obey the cap
-// constraint, so the block has near-singular directions: the band is loose, not USE4's.)
 f64 pooled_eigen_b(const rk::BiasHarness& h, std::vector<f64>& pooled, usize& series) {
   for (const auto& s : h.series()) {
     if (s.family != "eigen") continue;
@@ -480,8 +609,37 @@ f64 pooled_eigen_b(const rk::BiasHarness& h, std::vector<f64>& pooled, usize& se
   }
   return rk::bias_statistic(pooled);
 }
+// Review R1 / ruling COV-R1. (1) The band (cov-design 2.8, 5.3: b in 1 +- sqrt(2/T)) on a
+// well-posed planted model (BandPanel under band_config: a well-conditioned factor block, S2b's
+// simulated length equal to the estimator's effective sample): under atx-cov-v1 the pooled family
+// b lies in its band and at least the nominal 95% of the ranks lie in theirs; atx-risk-v1.1 on the
+// same panel misses the pooled band (small eigenfactors under-forecast) -- the teeth. Ranks at the
+// eigenvalue floor are excluded and counted (at most one). (2) The churn panel (cap-constrained
+// industries whose constraint direction moves at each membership change, the short-HL small_config)
+// keeps the relative check, S2b lowers the family's b; its per-rank b is printed as a diagnostic.
 TEST(CovBias, EigenFamilyInBandOnAPlantedModel) {
+  {
+    const BandPanel band(500, 300, 29);
+    const auto panel_band = band.panel();
+    const auto cov = run_eigen_family(panel_band, band_config(rk::RiskRecipe::CovV1));
+    const auto v11 = run_eigen_family(panel_band, band_config(rk::RiskRecipe::RiskV11));
+    std::cout << "[eigen b per rank] band panel atx-cov-v1:" << cov.text() << '\n'
+              << "[eigen b per rank] band panel atx-risk-v1.1:" << v11.text() << '\n';
+    EXPECT_LE(cov.excluded, 1U);
+    EXPECT_GE(cov.kept, BandPanel::factors - 1);
+    ASSERT_GT(cov.pooled_n, 2000U);
+    EXPECT_LE(std::abs(cov.pooled - 1.0), cov.pooled_band()) << cov.text();
+    EXPECT_GE(cov.share_in_band(), 0.95) << cov.text();
+    EXPECT_GT(v11.pooled, 1.0 + v11.pooled_band()) << v11.text();
+    EXPECT_GE(cov.share_in_band(), v11.share_in_band());
+  }
   const auto panel = base_panel().panel();
+  {
+    const auto cov = run_eigen_family(panel, small_config(rk::RiskRecipe::CovV1));
+    const auto v11 = run_eigen_family(panel, small_config(rk::RiskRecipe::RiskV11));
+    std::cout << "[eigen b per rank] churn panel atx-cov-v1:" << cov.text() << '\n'
+              << "[eigen b per rank] churn panel atx-risk-v1.1:" << v11.text() << '\n';
+  }
   rk::BiasHarness harness(panel, random_books, 7, {}, rk::BiasFamilies::Extended);
   rk::BiasHarness unadjusted(panel, random_books, 7, {}, rk::BiasFamilies::Extended);
   std::array<rk::RiskSink*, 1> extra{&harness}, extra_v11{&unadjusted};
@@ -524,6 +682,8 @@ TEST(CovBias, MinVarAndOptimizedUseCompleteForecastsOnly) {
   (void)run_blocks(base_panel(), cfg, 0.0, extra);
   EXPECT_GT(formed.sessions_with_minvar, 60U);
   EXPECT_EQ(formed.complete_violations, 0U);
+  EXPECT_EQ(formed.set_mismatches, 0U); // the book holds exactly the complete names
+  EXPECT_EQ(formed.unformed, harness.extended_unformed()); // never silent
   EXPECT_EQ(formed.sum_violations, 0U);
   EXPECT_GT(formed.excluded_incomplete, 0U); // names without a complete forecast were left out
   const auto* minvar = find_series(harness, "minvar");
@@ -579,20 +739,91 @@ TEST(CovBias, V1FamiliesBytesUnchanged) {
   std::array<rk::RiskSink*, 2> extra{&v1, &extended};
   (void)run_blocks(base_panel(), small_config(rk::RiskRecipe::CovV1), 0.0, extra);
   ASSERT_EQ(v1.series().size(), random_books + rk::factor_count);
-  ASSERT_EQ(extended.series().size(), random_books + 2 * rk::factor_count + 1 + rk::optimized_portfolios);
+  ASSERT_EQ(extended.series().size(),
+            random_books + 2 * rk::factor_count + 1 + rk::optimized_portfolios);
   for (usize j = 0; j < v1.series().size(); ++j) {
     const auto& a = v1.series()[j];
     const auto& b = extended.series()[j];
     EXPECT_EQ(a.family, b.family);
     EXPECT_EQ(a.name, b.name);
     EXPECT_EQ(a.sessions, b.sessions) << a.name;
-    EXPECT_TRUE(same_bits(std::span<const f64>(a.forecast_vol), std::span<const f64>(b.forecast_vol))) << a.name;
-    EXPECT_TRUE(same_bits(std::span<const f64>(a.realized), std::span<const f64>(b.realized))) << a.name;
+    EXPECT_TRUE(
+        same_bits(std::span<const f64>(a.forecast_vol), std::span<const f64>(b.forecast_vol)))
+        << a.name;
+    EXPECT_TRUE(same_bits(std::span<const f64>(a.realized), std::span<const f64>(b.realized)))
+        << a.name;
     EXPECT_TRUE(same_bits(std::span<const f64>(a.z), std::span<const f64>(b.z))) << a.name;
     EXPECT_EQ(a.missing_returns, b.missing_returns);
     EXPECT_EQ(a.warmup_excluded, b.warmup_excluded);
     EXPECT_EQ(a.dropped_factor_exposures, b.dropped_factor_exposures);
     EXPECT_EQ(a.uncovered_name_returns, b.uncovered_name_returns);
+  }
+}
+
+// Review S7: on a hand-built session (6 names; market, two industries and the size style forecast)
+// the Woodbury minvar and optimized books equal the dense V^-1 = (X F X' + D)^-1 books to 1e-10.
+TEST(CovBias, MinVarAndOptimizedEqualTheDenseInverseOnSmallN) {
+  constexpr usize n = 6, kf = rk::factor_count;
+  const std::vector<i64> sessions = weekday_sessions(2);
+  std::vector<u64> ids;
+  for (usize i = 0; i < n; ++i) ids.push_back(500 + 3 * i);
+  rk::RiskPanel panel;
+  panel.dates = 2; panel.instruments = n; panel.sessions = sessions; panel.ids = ids;
+  const std::array<usize, 4> factor{0, rk::industry_factor(0), rk::industry_factor(1),
+                                    rk::style_factor(static_cast<usize>(rk::Style::Size))};
+  const std::array<f64, 16> f_small{4e-4, 1e-5, -2e-5, 3e-5, 1e-5, 2e-4, 4e-5, 0.0,
+                                    -2e-5, 4e-5, 3e-4, -1e-5, 3e-5, 0.0, -1e-5, 1e-4};
+  std::vector<f64> cov(kf * kf, missing), ret(kf, missing), gamma(kf, missing);
+  for (usize a = 0; a < 4; ++a)
+    for (usize b = 0; b < 4; ++b) cov[factor[a] * kf + factor[b]] = f_small[a * 4 + b];
+  std::vector<f64> specific{2e-4, 3e-4, 1.5e-4, 4e-4, 2.5e-4, 1e-4},
+      styles(n * rk::style_count, 0.0);
+  const std::array<f64, n> size{-1.2, 0.3, 0.8, -0.4, 1.5, -0.9};
+  for (usize i = 0; i < n; ++i) styles[i * rk::style_count] = size[i];
+  std::vector<u8> slot{0, 0, 0, 1, 1, 1}, eligible(n, 1), structural(kf, 0), flags(n, 0);
+  rk::RiskDay day;
+  day.date = 0; day.session = sessions[0]; day.fitted = true; day.forecast = true;
+  day.factor_return = ret; day.covariance = cov; day.specific_variance = specific;
+  day.industry_slot = slot; day.eligible = eligible; day.styles = styles;
+  day.factor_structural = structural; day.eigen_gamma = gamma; day.specific_flags = flags;
+  rk::BiasHarness harness(panel, 0, 7, {}, rk::BiasFamilies::Extended);
+  ASSERT_TRUE(harness.on_day(day));
+  EXPECT_EQ(harness.extended_unformed(), 0U);
+  // The dense oracle.
+  constexpr auto en = static_cast<Eigen::Index>(n);
+  Eigen::MatrixXd x = Eigen::MatrixXd::Zero(en, 4), f(4, 4);
+  for (usize i = 0; i < n; ++i) {
+    x(static_cast<Eigen::Index>(i), 0) = 1.0;
+    x(static_cast<Eigen::Index>(i), 1 + slot[i]) = 1.0;
+    x(static_cast<Eigen::Index>(i), 3) = size[i];
+  }
+  for (Eigen::Index a = 0; a < 4; ++a)
+    for (Eigen::Index b = 0; b < 4; ++b) f(a, b) = f_small[static_cast<usize>(a * 4 + b)];
+  Eigen::MatrixXd v = x * f * x.transpose();
+  for (usize i = 0; i < n; ++i)
+    v(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(i)) += specific[i];
+  const Eigen::LLT<Eigen::MatrixXd> llt(v);
+  ASSERT_EQ(llt.info(), Eigen::Success);
+  const Eigen::VectorXd ones_inverse = llt.solve(Eigen::VectorXd::Ones(en));
+  const auto expect_book = [&](usize book, const Eigen::VectorXd& w, const char* what) {
+    const auto held = harness.formed(book);
+    ASSERT_EQ(held.size(), n) << what;
+    for (usize i = 0; i < n; ++i) {
+      EXPECT_EQ(held[i].first, i) << what;
+      EXPECT_NEAR(held[i].second, w[static_cast<Eigen::Index>(i)],
+                  1e-10 * std::abs(w[static_cast<Eigen::Index>(i)]) + 1e-14) << what << ' ' << i;
+    }
+  };
+  expect_book(0, ones_inverse / ones_inverse.sum(), "minvar");
+  for (usize q = 0; q < rk::optimized_portfolios; q += 7) {
+    Eigen::VectorXd alpha(en);
+    for (usize i = 0; i < n; ++i)
+      alpha[static_cast<Eigen::Index>(i)] =
+          rk::random_score(7 ^ rk::optimized_seed_salt, q, ids[i]);
+    const Eigen::VectorXd tilt = llt.solve(alpha);
+    Eigen::VectorXd w = tilt - (tilt.sum() / ones_inverse.sum()) * ones_inverse;
+    w /= w.cwiseAbs().sum();
+    expect_book(1 + q, w, "optimized");
   }
 }
 } // namespace

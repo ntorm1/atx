@@ -471,9 +471,13 @@ public:
   [[nodiscard]] Json eigen_sessions() const {
     Json out = Json::object();
     for (const EigenOutcome o : {EigenOutcome::Adjusted, EigenOutcome::ShortHistory,
-                                 EigenOutcome::Refused, EigenOutcome::NotRun})
+                                 EigenOutcome::Refused, EigenOutcome::BudgetRefused,
+                                 EigenOutcome::NotRun})
       out[eigen_outcome_name(o)] = eigen_[static_cast<usize>(o)];
     return out;
+  }
+  [[nodiscard]] usize eigen_budget_refusals() const {
+    return eigen_[static_cast<usize>(EigenOutcome::BudgetRefused)];
   }
   // The structural factor audit (F2): every factor ever forecast structurally with its count of
   // such sessions and the first and last; sessions with a structural factor, those whose
@@ -527,7 +531,7 @@ private:
   usize residual_sessions_{};
   f64 min_scale_{1.0};
   usize forecasts_{}, fitted_{};
-  std::array<usize, 4> eigen_{}; // per EigenOutcome
+  std::array<usize, 5> eigen_{}; // per EigenOutcome
   i64 first_forecast_{-1};
   f64 r2_sum_{};
   std::vector<u8> last_slot_, last_eligible_;
@@ -799,6 +803,7 @@ co::Status write_bias(const std::filesystem::path& dir, const BiasHarness& harne
                       "dollar-neutral (minus (1'V^-1 alpha / 1'V^-1 1) V^-1 1), gross 1, same "
                       "names"},
         {"optimized_portfolios", optimized_portfolios},
+        {"unformed_sessions", harness.extended_unformed()},
         {"qlike", "mean(z^2 - ln z^2) over the family's ok series' finite nonzero z, pooled"},
         {"mrad", "per series mean |b - 1| over its rolling-window b (63, 252), then the mean "
                  "over the family's ok series (asset-level = per series, ruling COV-3)"}};
@@ -1138,6 +1143,13 @@ co::Status run(const RiskArgs& a, std::ostream& progress) {
   // An invariant refusal (F3) returns here: no manifest.json is written, the output is void (a
   // container stays `.partial`).
   ATX_TRY_VOID(run_risk_model(panel, cfg, sinks));
+  // An atx-cov-v1 run whose kernel workspace exceeded --max-bytes on some session would be
+  // atx-risk-v1.1 there: refused (review S3), no manifest.
+  if (files_sink.eigen_budget_refusals() > 0)
+    return co::Err(co::ErrorCode::OutOfRange,
+                   "risk: the atx-cov-v1 eigen adjustment's workspace exceeds the budget on " +
+                       std::to_string(files_sink.eigen_budget_refusals()) +
+                       " sessions; raise --max-bytes");
   Json files = Json::object();
   ATX_TRY_VOID(files_sink.close(files));
   ManifestExtras extras;
@@ -1276,10 +1288,12 @@ co::Result<LegacyComparison> compare_container_to_legacy(const std::string& dire
     std::ifstream in(base / "manifest.json", std::ios::binary);
     m = Json::parse(in);
   } catch (const std::exception& e) {
-    return co::Err(co::ErrorCode::ParseError, std::string("cov-diff --legacy: manifest: ") + e.what());
+    return co::Err(co::ErrorCode::ParseError,
+                   std::string("cov-diff --legacy: manifest: ") + e.what());
   }
   if (!m.contains("container") || !m.at("container").is_object())
-    return co::Err(co::ErrorCode::InvalidArgument, "cov-diff --legacy: the manifest names no container");
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "cov-diff --legacy: the manifest names no container");
   const auto& c = m.at("container");
   const auto pin = er::cov_parse_hex(c.at("root_sha256").get<std::string>());
   if (!pin) return co::Err(co::ErrorCode::InvalidArgument, "cov-diff --legacy: container root pin");
@@ -1297,12 +1311,14 @@ co::Result<LegacyComparison> compare_container_to_legacy(const std::string& dire
     return differ(0, "geometry");
   if (file.date_count() != dates) return differ(0, "date count");
   constexpr u64 cells = u64{factor_count} * factor_count;
-  const bool exposures = fs::exists(base / "style_exposures.f32") && fs::exists(base / "industry_slot.u8");
+  const bool exposures =
+      fs::exists(base / "style_exposures.f32") && fs::exists(base / "industry_slot.u8");
   std::ifstream cov_in(base / "factor_covariance.f64", std::ios::binary);
   std::ifstream spec_in(base / "specific_variance.f64", std::ios::binary);
   std::ifstream style_in, slot_in;
   if (!cov_in || !spec_in)
-    return co::Err(co::ErrorCode::IoError, "cov-diff --legacy: factor_covariance.f64 / specific_variance.f64");
+    return co::Err(co::ErrorCode::IoError,
+                   "cov-diff --legacy: factor_covariance.f64 / specific_variance.f64");
   out.compared = {"factor_covariance.f64", "specific_variance.f64"};
   if (exposures) {
     style_in.open(base / "style_exposures.f32", std::ios::binary);
@@ -1314,7 +1330,8 @@ co::Result<LegacyComparison> compare_container_to_legacy(const std::string& dire
   {
     std::ifstream csv(base / "diagnostics.csv", std::ios::binary);
     std::string line;
-    if (!std::getline(csv, line)) return co::Err(co::ErrorCode::ParseError, "cov-diff --legacy: diagnostics.csv");
+    if (!std::getline(csv, line))
+      return co::Err(co::ErrorCode::ParseError, "cov-diff --legacy: diagnostics.csv");
     while (std::getline(csv, line)) {
       if (line.empty()) continue;
       i64 key = 0;
@@ -1329,7 +1346,8 @@ co::Result<LegacyComparison> compare_container_to_legacy(const std::string& dire
   std::vector<f64> specific(names), legacy_specific(names), covariance(cells), legacy_cov(cells);
   std::vector<f32> styles(names * style_count), legacy_styles(names * style_count);
   for (usize t = 0; t < dates; ++t) {
-    if (file.index()[t].as_of_session_ns != sessions[t]) return differ(sessions[t], "diagnostics.csv");
+    if (file.index()[t].as_of_session_ns != sessions[t])
+      return differ(sessions[t], "diagnostics.csv");
     ATX_TRY(const auto view, file.view(t));
     ATX_TRY_VOID(scatter_cov_block(view, names, slot, specific, styles, covariance));
     const auto same = [](const auto& a, const auto& b) {
@@ -1387,7 +1405,8 @@ int dispatch_cov_info(int argc, char** argv, std::ostream& out, std::ostream& er
       << "recipe_sha256 " << er::cov_hex(file->recipe_sha256()) << '\n'
       << "role_sha256 " << er::cov_hex(file->role_sha256()) << '\n'
       << "inputs_sha256 " << er::cov_hex(file->inputs_sha256()) << '\n'
-      << "index,as_of_ns,cutoff_ns,history_first_ns,rows,priced,unforecast,flags,block_sha256,status\n";
+      << "index,as_of_ns,cutoff_ns,history_first_ns,rows,priced,unforecast,flags,block_sha256,"
+         "status\n";
   usize bad = 0;
   for (usize t = 0; t < file->date_count(); ++t) {
     const auto& e = file->index()[t];
@@ -1443,9 +1462,11 @@ int dispatch_cov_diff(int argc, char** argv, std::ostream& out, std::ostream& er
     err << "usage: cov-diff A B [--through SESSION] | cov-diff --legacy DIR\n";
     return 2;
   }
-  const auto a = er::CovModelFile::open(paths[0], std::nullopt, er::VerifyMode::Full, max_container_bytes);
+  const auto a =
+      er::CovModelFile::open(paths[0], std::nullopt, er::VerifyMode::Full, max_container_bytes);
   if (!a) { err << "cov-diff: " << paths[0] << ": " << a.error().to_string() << '\n'; return 2; }
-  const auto b = er::CovModelFile::open(paths[1], std::nullopt, er::VerifyMode::Full, max_container_bytes);
+  const auto b =
+      er::CovModelFile::open(paths[1], std::nullopt, er::VerifyMode::Full, max_container_bytes);
   if (!b) { err << "cov-diff: " << paths[1] << ": " << b.error().to_string() << '\n'; return 2; }
   const auto d = er::first_difference(*a, *b, through.value_or(std::numeric_limits<i64>::max()));
   if (!d.differs) {

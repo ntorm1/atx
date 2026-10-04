@@ -165,6 +165,7 @@ const char* eigen_outcome_name(EigenOutcome o) noexcept {
   case EigenOutcome::Adjusted: return "adjusted";
   case EigenOutcome::ShortHistory: return "short_history";
   case EigenOutcome::Refused: return "refused";
+  case EigenOutcome::BudgetRefused: return "refused_budget";
   }
   return "unknown";
 }
@@ -185,6 +186,13 @@ EigenBlock eigen_adjust_block(std::span<const f64> block, usize m, f64 effective
   // identify K eigenfactors (the kernel's t > K), so the block stays as it is.
   if (!(effective >= static_cast<f64>(m + 1))) {
     out.outcome = EigenOutcome::ShortHistory;
+    return out;
+  }
+  // The kernel's own workspace rule (eigen_adjust.cpp: K^2 128 + T K 64 bytes within the budget,
+  // T = round(n_eff)), checked here so a budget refusal is told apart from a numerical one.
+  const u64 sims_t = static_cast<u64>(std::floor(effective + 0.5)), budget = cfg.eigen_max_bytes;
+  if (m > budget / 128 / m || sims_t > (budget - u64{m} * m * 128) / 64 / m) {
+    out.outcome = EigenOutcome::BudgetRefused;
     return out;
   }
   atx::core::linalg::MatX f(ix(m), ix(m));
@@ -218,7 +226,8 @@ EigenBlock eigen_adjust_block(std::span<const f64> block, usize m, f64 effective
 co::Status validate_config(const RiskModelConfig& c) {
   if (c.eigen_simulations > 10'000 || !std::isfinite(c.eigen_amplification) ||
       c.eigen_amplification < 0 || c.eigen_max_bytes == 0)
-    return co::Err(co::ErrorCode::InvalidArgument, "risk model: invalid eigen adjustment constants");
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "risk model: invalid eigen adjustment constants");
   const bool ok = c.vol_halflife > 0 && c.correlation_halflife > 0 && c.nw_halflife > 0 &&
       c.vra_halflife > 0 && c.specific_halflife > 0 && c.variance_nw_lags <= 20 &&
       c.correlation_nw_lags <= 20 && c.specific_nw_lags <= 20 && c.vra_min_dates > 0 &&
@@ -1225,12 +1234,14 @@ BiasHarness::BiasHarness(const RiskPanel& panel, usize random_portfolios, u64 se
     return std::string(width - std::min(width, name.size()), '0') + name;
   };
   for (usize q = 0; q < random_; ++q)
-    series_.push_back(BiasSeries{"random", "random-" + padded(q, 3), {}, {}, {}, {}, 0, 0, 0, 0, 0});
+    series_.push_back(
+        BiasSeries{"random", "random-" + padded(q, 3), {}, {}, {}, {}, 0, 0, 0, 0, 0});
   for (usize k = 0; k < factor_count; ++k)
     series_.push_back(BiasSeries{"factor", factor_name(k), {}, {}, {}, {}, 0, 0, 0, 0, 0});
   if (extended) {
     for (usize k = 0; k < factor_count; ++k)
-      series_.push_back(BiasSeries{"eigen", "eigen-" + padded(k, 2), {}, {}, {}, {}, 0, 0, 0, 0, 0});
+      series_.push_back(
+          BiasSeries{"eigen", "eigen-" + padded(k, 2), {}, {}, {}, {}, 0, 0, 0, 0, 0});
     series_.push_back(BiasSeries{"minvar", "minvar", {}, {}, {}, {}, 0, 0, 0, 0, 0});
     for (usize q = 0; q < optimized_portfolios; ++q)
       series_.push_back(
@@ -1408,14 +1419,15 @@ void BiasHarness::form_extended(const RiskDay& day) {
   const usize m = block.size();
   if (m == 0) return;
   Eigen::MatrixXd f(ix(m), ix(m));
+  bool finite = true; // a forecast block is finite by construction: otherwise nothing is formed
   for (usize a = 0; a < m; ++a)
     for (usize b = 0; b < m; ++b) {
       const f64 c = day.covariance[block[a] * kf + block[b]];
-      if (!std::isfinite(c)) return; // a forecast block is finite by construction: refuse to form
-      f(ix(a), ix(b)) = c;
+      finite = finite && std::isfinite(c);
+      f(ix(a), ix(b)) = std::isfinite(c) ? c : 0.0;
     }
   const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(f);
-  if (eig.info() == Eigen::Success && eig.eigenvalues().minCoeff() > 0) {
+  if (finite && eig.info() == Eigen::Success && eig.eigenvalues().minCoeff() > 0) {
     eigen_.factors = block;
     eigen_.values.assign(eig.eigenvalues().data(), eig.eigenvalues().data() + m);
     eigen_.vectors.assign(m * m, 0.0);
@@ -1431,10 +1443,12 @@ void BiasHarness::form_extended(const RiskDay& day) {
       continue;
     bool complete = column[0] != npos && column[industry_factor(slot)] != npos;
     for (usize s = 0; complete && s < style_count; ++s)
-      if (day.styles[i * style_count + s] != 0.0 && column[style_factor(s)] == npos) complete = false;
+      if (day.styles[i * style_count + s] != 0.0 && column[style_factor(s)] == npos)
+        complete = false;
     if (complete) names.push_back(i);
   }
   if (names.size() < 2) return;
+  if (!finite) { ++extended_unformed_; return; }
   const usize u = names.size();
   Eigen::MatrixXd x = Eigen::MatrixXd::Zero(ix(u), ix(m));
   Eigen::VectorXd dinv(ix(u));
@@ -1450,11 +1464,11 @@ void BiasHarness::form_extended(const RiskDay& day) {
   }
   // V^-1 v = D^-1 (v - X C^-1 X' D^-1 v), C = F^-1 + X' D^-1 X (Woodbury).
   const Eigen::LLT<Eigen::MatrixXd> f_llt(f);
-  if (f_llt.info() != Eigen::Success) return;
+  if (f_llt.info() != Eigen::Success) { ++extended_unformed_; return; }
   const Eigen::MatrixXd f_inverse = f_llt.solve(Eigen::MatrixXd::Identity(ix(m), ix(m)));
   const Eigen::MatrixXd capacitance = f_inverse + x.transpose() * dinv.asDiagonal() * x;
   const Eigen::LLT<Eigen::MatrixXd> c_llt(capacitance);
-  if (c_llt.info() != Eigen::Success) return;
+  if (c_llt.info() != Eigen::Success) { ++extended_unformed_; return; }
   const auto apply_inverse = [&](const Eigen::VectorXd& v) -> Eigen::VectorXd {
     const Eigen::VectorXd scaled = dinv.cwiseProduct(v);
     const Eigen::VectorXd c = c_llt.solve(x.transpose() * scaled);
@@ -1462,9 +1476,10 @@ void BiasHarness::form_extended(const RiskDay& day) {
   };
   const Eigen::VectorXd ones_inverse = apply_inverse(Eigen::VectorXd::Ones(ix(u)));
   const f64 ones_mass = ones_inverse.sum();
-  if (!(std::isfinite(ones_mass) && ones_mass > 0)) return;
+  if (!(std::isfinite(ones_mass) && ones_mass > 0)) { ++extended_unformed_; return; }
   auto& minvar = held_[random_];
-  for (usize r = 0; r < u; ++r) minvar.weights.emplace_back(names[r], ones_inverse[ix(r)] / ones_mass);
+  for (usize r = 0; r < u; ++r)
+    minvar.weights.emplace_back(names[r], ones_inverse[ix(r)] / ones_mass);
   apply_forecast(minvar, forecast_vol(day, minvar));
   Eigen::VectorXd alpha(ix(u));
   for (usize q = 0; q < optimized_portfolios; ++q) {
@@ -1506,9 +1521,10 @@ CovDenseRow cov_dense_row(const RiskDay& d, std::span<const u64> ids, i64 histor
   s.row_flags.assign(d.eligible.size(), u8{0});
   for (usize i = 0; i < s.row_flags.size(); ++i) {
     const u8 sf = i < d.specific_flags.size() ? d.specific_flags[i] : u8{0};
-    s.row_flags[i] = static_cast<u8>((d.eligible[i] ? cv::row_eligible : u8{0}) |
-                                     ((sf & specific_structural) ? cv::row_structural_specific : u8{0}) |
-                                     ((sf & specific_bounded) ? cv::row_bounded : u8{0}));
+    s.row_flags[i] =
+        static_cast<u8>((d.eligible[i] ? cv::row_eligible : u8{0}) |
+                        ((sf & specific_structural) ? cv::row_structural_specific : u8{0}) |
+                        ((sf & specific_bounded) ? cv::row_bounded : u8{0}));
   }
   const auto count = [](usize c) { return static_cast<f64>(c); };
   s.diag.fill(nan);

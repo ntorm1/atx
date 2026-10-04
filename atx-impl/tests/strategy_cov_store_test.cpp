@@ -19,6 +19,7 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
+#include "atx/engine/data/research_window.hpp"
 #include "../src/strategy_nav_replay.hpp"
 #include "../src/strategy_nav_v7.hpp"
 #include "../src/strategy_risk_target.hpp"
@@ -199,7 +200,8 @@ TEST(CovStore, RiskSliceFromContainerEqualsDirectory) {
     EXPECT_EQ(a.slot, b.slot) << d;
     EXPECT_TRUE(same_bits(std::span<const f64>(a.styles), std::span<const f64>(b.styles))) << d;
     EXPECT_TRUE(same_bits(std::span<const f64>(a.specific), std::span<const f64>(b.specific))) << d;
-    EXPECT_TRUE(same_bits(std::span<const f64>(a.covariance), std::span<const f64>(b.covariance))) << d;
+    EXPECT_TRUE(same_bits(std::span<const f64>(a.covariance), std::span<const f64>(b.covariance)))
+        << d;
     EXPECT_EQ(a.nan_covariance_entries, b.nan_covariance_entries) << d;
   }
   EXPECT_GT(forecast, 20U);
@@ -243,12 +245,12 @@ TEST(CovStore, VolAndRiskTargetRecordsUnchanged) {
       if (!scaler) throw std::runtime_error("no scaler");
       r.records = rt::records_csv(scaler->records(), law);
       for (const auto& day : result->days)
-        r.days.push_back({std::bit_cast<u64>(day.pretrade_nav), std::bit_cast<u64>(day.posttrade_nav),
-                          std::bit_cast<u64>(day.net_return), std::bit_cast<u64>(day.traded_dollars),
-                          std::bit_cast<u64>(day.trade_cost_dollars),
-                          std::bit_cast<u64>(day.planned_gross), std::bit_cast<u64>(day.planned_net),
-                          std::bit_cast<u64>(day.long_dollars), std::bit_cast<u64>(day.short_dollars),
-                          static_cast<u64>(day.fills)});
+        r.days.push_back(
+            {std::bit_cast<u64>(day.pretrade_nav), std::bit_cast<u64>(day.posttrade_nav),
+             std::bit_cast<u64>(day.net_return), std::bit_cast<u64>(day.traded_dollars),
+             std::bit_cast<u64>(day.trade_cost_dollars), std::bit_cast<u64>(day.planned_gross),
+             std::bit_cast<u64>(day.planned_net), std::bit_cast<u64>(day.long_dollars),
+             std::bit_cast<u64>(day.short_dollars), static_cast<u64>(day.fills)});
       return r;
     };
     const Replay a = replay(shared_legacy), b = replay(shared_packed);
@@ -308,8 +310,11 @@ TEST(CovStore, RefusesRoleGeometryOrRootMismatch) {
     ASSERT_TRUE(small_root);
     m = original;
     const auto bytes = fs::file_size(dir.path / "store" / "small.atxcov");
-    m["files"]["small.atxcov"] = Json{{"sha256", sha_of(dir.path / "store" / "small.atxcov")}, {"bytes", bytes}};
-    m["container"] = Json{{"file", "small.atxcov"}, {"format", "atx.cov-container/1.0"}, {"bytes", bytes},
+    m["files"]["small.atxcov"] =
+        Json{{"sha256", sha_of(dir.path / "store" / "small.atxcov")}, {"bytes", bytes}};
+    m["container"] = Json{{"file", "small.atxcov"},
+                          {"format", "atx.cov-container/1.0"},
+                          {"bytes", bytes},
                           {"file_sha256", m["files"]["small.atxcov"]["sha256"]},
                           {"root_sha256", er::cov_hex(*small_root)}};
     const auto small_sha = write_json(dir.path / "store" / "manifest.json", m);
@@ -318,6 +323,25 @@ TEST(CovStore, RefusesRoleGeometryOrRootMismatch) {
     EXPECT_NE(refused.error().to_string().find("geometry"), std::string::npos)
         << refused.error().to_string();
   }
+}
+
+// cov-design I-4 (review S4): a container whose last session reaches the research seal without an
+// unseal record is refused on the read path (the legacy path, which has no such record, is not).
+TEST(CovStore, RefusesAContainerReachingTheSealWithoutUnseal) {
+  const fx::Directory dir;
+  const fx::Role role(30, 6, 9);
+  std::vector<i64> sessions(role.sessions.begin(), role.sessions.end());
+  const i64 shift = atx::engine::data::kSealBeginNs - sessions.back();
+  for (auto& s : sessions) s += shift; // the last session is the seal's first day
+  const std::string pin(64, 'f');
+  const std::vector<u8> forecast(role.d, u8{1});
+  fs::create_directories(dir.path / "sealed");
+  (void)fx::write_risk_model(dir.path / "sealed", sessions, role.n, forecast, pin, 3);
+  const auto sha = add_container(dir.path / "sealed");
+  const auto refused = sp::RiskStore::open((dir.path / "sealed").string(), sha, pin);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().to_string().find("seal"), std::string::npos)
+      << refused.error().to_string();
 }
 
 TEST(CovStore, LegacyManifestTakesTheLegacyPath) {
@@ -334,7 +358,8 @@ TEST(CovStore, LegacyManifestTakesTheLegacyPath) {
   EXPECT_EQ(slice.slot.size(), role.n);
   // The legacy path still hashes its payloads: a changed covariance file is refused.
   {
-    std::fstream f(dir.path / "factor_covariance.f64", std::ios::binary | std::ios::in | std::ios::out);
+    std::fstream f(dir.path / "factor_covariance.f64",
+                   std::ios::binary | std::ios::in | std::ios::out);
     f.seekp(8);
     const char flip = 0x5A;
     f.write(&flip, 1);
@@ -347,18 +372,22 @@ TEST(CovDiff, ThroughSessionReportsTheFirstDifferingBlock) {
   constexpr usize cut = 270;
   const Directory dir;
   const auto base = write_role_and_fields(dir.path / "base", verb_panel());
-  const auto perturbed = write_role_and_fields(dir.path / "perturbed", verb_panel().perturb_after(cut, 9));
+  const auto perturbed =
+      write_role_and_fields(dir.path / "perturbed", verb_panel().perturb_after(cut, 9));
   std::string error;
   ASSERT_EQ(run_risk_verb(base, dir.path / "a", error, {"--emit-container"}), 0) << error;
   ASSERT_EQ(run_risk_verb(perturbed, dir.path / "b", error, {"--emit-container"}), 0) << error;
-  const auto a = (dir.path / "a" / "model.atxcov").string(), b = (dir.path / "b" / "model.atxcov").string();
+  const auto a = (dir.path / "a" / "model.atxcov").string(),
+             b = (dir.path / "b" / "model.atxcov").string();
   const std::string through = std::to_string(verb_panel().sessions[cut]);
   std::string out;
-  EXPECT_EQ(run_tool(rk::dispatch_cov_diff, {"cov-diff", a, b, "--through", through}, out), 0) << out;
+  EXPECT_EQ(run_tool(rk::dispatch_cov_diff, {"cov-diff", a, b, "--through", through}, out), 0)
+      << out;
   EXPECT_EQ(run_tool(rk::dispatch_cov_diff, {"cov-diff", a, a}, out), 0) << out;
   ASSERT_EQ(run_tool(rk::dispatch_cov_diff, {"cov-diff", a, b}, out), 1) << out;
   const std::string next = std::to_string(verb_panel().sessions[cut + 1]);
-  EXPECT_NE(out.find("block " + std::to_string(cut + 1) + " session " + next), std::string::npos) << out;
+  EXPECT_NE(out.find("block " + std::to_string(cut + 1) + " session " + next), std::string::npos)
+      << out;
   // cov-info opens both and lists every block.
   EXPECT_EQ(run_tool(rk::dispatch_cov_info, {"cov-info", a, "--verify", "lazy"}, out), 0) << out;
   EXPECT_NE(out.find("sessions 300"), std::string::npos) << out;
@@ -369,12 +398,14 @@ TEST(CovDiff, LegacyModeComparesBitForBit) {
   VerbCase c;
   const auto out_dir = c.run("out", {"--emit-exposures", "all", "--emit-container"});
   std::string out;
-  ASSERT_EQ(run_tool(rk::dispatch_cov_diff, {"cov-diff", "--legacy", out_dir.string()}, out), 0) << out;
+  ASSERT_EQ(run_tool(rk::dispatch_cov_diff, {"cov-diff", "--legacy", out_dir.string()}, out), 0)
+      << out;
   EXPECT_NE(out.find("legacy equal"), std::string::npos) << out;
   // One forecast specific variance changed in its last bit: the first difference is named.
   const usize names = verb_panel().n, last = verb_panel().d - 1;
   {
-    std::fstream f(out_dir / "specific_variance.f64", std::ios::binary | std::ios::in | std::ios::out);
+    std::fstream f(out_dir / "specific_variance.f64",
+                   std::ios::binary | std::ios::in | std::ios::out);
     std::vector<f64> row(names);
     f.seekg(static_cast<std::streamoff>(last * names * sizeof(f64)));
     f.read(reinterpret_cast<char*>(row.data()), static_cast<std::streamsize>(names * sizeof(f64)));
@@ -383,10 +414,14 @@ TEST(CovDiff, LegacyModeComparesBitForBit) {
     *it = std::bit_cast<f64>(std::bit_cast<u64>(*it) ^ 1ULL);
     f.seekp(static_cast<std::streamoff>(last * names * sizeof(f64)));
     // SAFETY: char writes the object representation of the f64 row.
-    f.write(reinterpret_cast<const char*>(row.data()), static_cast<std::streamsize>(names * sizeof(f64)));
+    f.write(reinterpret_cast<const char*>(row.data()),
+            static_cast<std::streamsize>(names * sizeof(f64)));
   }
-  ASSERT_EQ(run_tool(rk::dispatch_cov_diff, {"cov-diff", "--legacy", out_dir.string()}, out), 1) << out;
-  EXPECT_NE(out.find("specific_variance.f64 at session " + std::to_string(verb_panel().sessions[last])),
-            std::string::npos) << out;
+  ASSERT_EQ(run_tool(rk::dispatch_cov_diff, {"cov-diff", "--legacy", out_dir.string()}, out), 1)
+      << out;
+  EXPECT_NE(
+      out.find("specific_variance.f64 at session " + std::to_string(verb_panel().sessions[last])),
+      std::string::npos)
+      << out;
 }
 } // namespace

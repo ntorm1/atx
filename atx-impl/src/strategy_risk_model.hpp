@@ -147,6 +147,9 @@ enum class EigenOutcome : atx::u8 {
   Adjusted,     // the kernel ran (simulations 0: the block unchanged, gammas 1)
   ShortHistory, // fewer than K+1 effective observations (K = the block's size)
   Refused,      // the kernel refused (a non-positive eigenvalue, an invalid simulation)
+  // The kernel's workspace (eigen_adjust_v2: K^2 128 + T K 64 bytes, T = round(n_eff)) exceeds
+  // eigen_max_bytes; counted apart (review S3), and the risk verb refuses such a run.
+  BudgetRefused,
 };
 [[nodiscard]] const char* eigen_outcome_name(EigenOutcome o) noexcept;
 // splitmix64(recipe_seed XOR the session key's bits): the session's own stream, so block t
@@ -441,9 +444,9 @@ enum class SeriesStatus : atx::u8 { Ok = 0, Refused, Empty };
 //  - "eigen": the eigenportfolios of F_{t-1} (the forecast factor block, VRA included), one series
 //    per ascending eigenvalue rank k (eigen-00 ..): z = u_k' f_t / sqrt(lambda_k); a factor of the
 //    block without a return at t counts 0 and is reported;
-//  - "minvar": the fully invested minimum-variance book V_{t-1}^{-1} 1 / 1'V^{-1}1 over the eligible
-//    names with a complete forecast (an exposure row, a finite positive specific variance and a
-//    forecast for every factor they load), V = X F X' + D applied by Woodbury (never N x N);
+//  - "minvar": the fully invested minimum-variance book V_{t-1}^{-1} 1 / 1'V^{-1}1 over the
+//    eligible names with a complete forecast (an exposure row, a finite positive specific variance
+//    and a forecast for every factor they load), V = X F X' + D applied by Woodbury (never N x N);
 //  - "optimized": optimized_portfolios seeded random-alpha books V^{-1} alpha projected
 //    dollar-neutral (V^{-1} alpha - (1'V^{-1} alpha / 1'V^{-1} 1) V^{-1} 1), scaled to gross 1,
 //    over the same names; alpha_i = random_score(seed XOR optimized_seed_salt, q, id_i).
@@ -464,6 +467,9 @@ public:
   [[nodiscard]] Weights formed(atx::usize book) const {
     return book < held_.size() ? Weights(held_[book].weights) : Weights{};
   }
+  // Extended: forecast sessions with >= 2 complete-forecast names whose minvar / optimized books
+  // could not be formed (a non-finite block entry, a failed Cholesky, a non-positive 1'V^-1 1).
+  [[nodiscard]] atx::usize extended_unformed() const noexcept { return extended_unformed_; }
 
 private:
   enum class Excluded : atx::u8 { None = 0, FactorExposure, UncoveredName };
@@ -505,6 +511,7 @@ private:
   std::vector<atx::f64> scores_;            // random x instruments
   std::vector<atx::f64> optimized_scores_;  // Extended: optimized_portfolios x instruments
   Eigenportfolios eigen_;
+  atx::usize extended_unformed_{};
   atx::usize unmatched_book_rows_{};        // book rows outside the role: on_day refuses
 };
 // Deterministic N(0, 1) score of (seed, portfolio, instrument id) (splitmix64 + Box-Muller).

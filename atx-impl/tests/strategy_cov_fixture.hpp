@@ -32,6 +32,7 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <Eigen/Dense>
 #include <nlohmann/json.hpp>
 #include "atx/core/error.hpp"
 #include "atx/core/sha256.hpp"
@@ -128,7 +129,8 @@ struct CovPanel {
         member[k] = (i % 9 == 4 && (t / 25) % 2 == 1) ? u8{0} : u8{1};
         industry[k] = static_cast<u8>(industry_of(i));
         cap[k] = caps[i] * (1.0 + 0.001 * static_cast<f64>(t % 7));
-        value[k] = (i + t) % 11 == 0 ? std::numeric_limits<f32>::quiet_NaN() : static_cast<f32>(v[i]);
+        value[k] =
+            (i + t) % 11 == 0 ? std::numeric_limits<f32>::quiet_NaN() : static_cast<f32>(v[i]);
         earnings[k] = static_cast<f32>(e[i]);
         volume[k] = 2e5 * (1.0 + 0.1 * static_cast<f64>(i % 5));
         const bool first = t == 0 || !present[k - n];
@@ -230,6 +232,25 @@ struct CovPanel {
     }
     return out;
   }
+  // The input-side planted leak (review S2): every present cell's value descriptor replaced by its
+  // name's mean simple return over the panel's WHOLE session axis (a per-name statistic of the
+  // future, so standardisation does not remove it); NaN for a name without a return.
+  [[nodiscard]] CovPanel with_future_mean_return_value() const {
+    CovPanel out = *this;
+    for (usize i = 0; i < n; ++i) {
+      f64 sum = 0;
+      usize count = 0;
+      for (usize t = 1; t < d; ++t) {
+        const usize a = (t - 1) * n + i, b = t * n + i;
+        if (present[a] && present[b]) { sum += close[b] / close[a] - 1.0; ++count; }
+      }
+      const f32 mean = count ? static_cast<f32>(sum / static_cast<f64>(count))
+                             : std::numeric_limits<f32>::quiet_NaN();
+      for (usize t = 0; t < d; ++t)
+        if (present[t * n + i]) out.value[t * n + i] = mean;
+    }
+    return out;
+  }
   // The full-sample mean of the value descriptor (every session: the planted leak's statistic).
   [[nodiscard]] f64 full_sample_value_mean() const {
     f64 sum = 0;
@@ -237,6 +258,69 @@ struct CovPanel {
     for (const f32 x : value)
       if (std::isfinite(x)) { sum += static_cast<f64>(x); ++count; }
     return count ? sum / static_cast<f64>(count) : 0.0;
+  }
+};
+
+// A well-posed planted model for the eigen family's band (review R1, ruling COV-R1): every name in
+// the residual industry slot (no cap-constraint null direction among several industries), equal
+// caps (size is degenerate, so off), six descriptor styles with fixed N(0, 1) exposures (value,
+// earnings_yield, profitability, asset_growth, leverage and si_ratio -> short_interest), factor
+// returns i.i.d. N(0, Sigma) with Sigma = Q diag(lambda) Q' (lambda geometric over two decades,
+// Q a seeded rotation), specific noise sd 1%. Every member present on every session.
+struct BandPanel {
+  static constexpr usize styles = 6, factors = 1 + styles;
+  usize d{}, n{};
+  std::vector<i64> sessions;
+  std::vector<u64> ids;
+  std::vector<f64> close, raw, volume, cap;
+  std::vector<u8> present, member;
+  std::array<std::vector<f32>, rk::descriptor_count> descriptors;
+  BandPanel(usize dates, usize names, u64 seed)
+      : d(dates), n(names), sessions(weekday_sessions(dates)), close(dates * names),
+        raw(dates * names), volume(dates * names, 3e5), cap(dates * names, 2e9),
+        present(dates * names, 1), member(dates * names, 1) {
+    Normal rng{seed};
+    const auto e = [](usize k) { return static_cast<Eigen::Index>(k); };
+    Eigen::MatrixXd g(e(factors), e(factors));
+    for (Eigen::Index a = 0; a < g.rows(); ++a)
+      for (Eigen::Index b = 0; b < g.cols(); ++b) g(a, b) = rng();
+    const Eigen::HouseholderQR<Eigen::MatrixXd> qr(g);
+    const Eigen::MatrixXd q = qr.householderQ();
+    Eigen::VectorXd lambda(e(factors));
+    for (usize k = 0; k < factors; ++k)
+      lambda[e(k)] = 2e-6 * std::pow(100.0, static_cast<f64>(k) / static_cast<f64>(factors - 1));
+    const Eigen::MatrixXd sigma = q * lambda.asDiagonal() * q.transpose();
+    const Eigen::MatrixXd root = Eigen::LLT<Eigen::MatrixXd>(sigma).matrixL();
+    std::vector<f64> x(names * styles);
+    for (f64& v : x) v = rng();
+    for (usize s = 0; s < styles; ++s) {
+      descriptors[s].assign(dates * names, 0.0F);
+      for (usize t = 0; t < dates; ++t)
+        for (usize i = 0; i < names; ++i)
+          descriptors[s][t * names + i] = static_cast<f32>(x[i * styles + s]);
+    }
+    Eigen::VectorXd draw(e(factors));
+    for (usize i = 0; i < names; ++i) ids.push_back(1000 + 2 * i);
+    for (usize t = 0; t < dates; ++t) {
+      for (Eigen::Index a = 0; a < draw.size(); ++a) draw[a] = rng();
+      const Eigen::VectorXd f = root * draw;
+      for (usize i = 0; i < names; ++i) {
+        const usize k = t * names + i;
+        f64 r = f[0];
+        for (usize s = 0; s < styles; ++s) r += x[i * styles + s] * f[e(1 + s)];
+        r += 0.01 * rng();
+        close[k] = t == 0 ? 50.0 : close[k - names] * (1.0 + r);
+        raw[k] = close[k];
+      }
+    }
+  }
+  [[nodiscard]] rk::RiskPanel panel() const {
+    rk::RiskPanel p;
+    p.dates = d; p.instruments = n; p.sessions = sessions; p.ids = ids;
+    p.close = close; p.raw_close = raw; p.volume = volume; p.present = present; p.member = member;
+    p.cap = cap;
+    for (usize s = 0; s < styles; ++s) p.descriptors[s] = descriptors[s];
+    return p;
   }
 };
 
@@ -250,6 +334,18 @@ inline rk::RiskModelConfig small_config(rk::RiskRecipe recipe) {
   c.structural_history = 30; c.beta_window = 40; c.min_beta_pairs = 20;
   c.momentum_window = 40; c.momentum_skip = 5; c.adv_window = 10;
   c.min_regression_names = 60;
+  return c;
+}
+// The band configuration (BandPanel): the factor variances' half-life equal to the correlation
+// half-life (42) and no Newey-West lags, so S2b's simulated length (the Kish count of those
+// weights) is the effective sample of every entry of F; the VRA off (lambda^2 = 1: stage S2c is
+// not under test); the price styles (beta, residual vol, momentum, liquidity) out of reach.
+inline rk::RiskModelConfig band_config(rk::RiskRecipe recipe) {
+  rk::RiskModelConfig c = small_config(recipe);
+  c.vol_halflife = 42; c.correlation_halflife = 42;
+  c.variance_nw_lags = 0; c.correlation_nw_lags = 0;
+  c.vra_min_dates = 1'000'000;
+  c.beta_window = 4096; c.min_beta_pairs = 4096; c.momentum_window = 4096; c.adv_window = 4096;
   return c;
 }
 
@@ -327,7 +423,8 @@ inline er::CovBlockView parse_block(const std::vector<u8>& bytes) {
 }
 template <class T>
 bool same_bits(std::span<const T> a, std::span<const T> b) {
-  return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(T)) == 0);
+  return a.size() == b.size() &&
+         (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(T)) == 0);
 }
 // Two blocks equal after projecting rows by instrument id (the role index may shift).
 inline bool same_by_id(const std::vector<u8>& a_bytes, const std::vector<u8>& b_bytes) {
@@ -342,7 +439,8 @@ inline bool same_by_id(const std::vector<u8>& a_bytes, const std::vector<u8>& b_
     std::map<u64, Row> out;
     for (usize r = 0; r < v.rows; ++r) {
       std::vector<u32> x(rk::style_count);
-      std::memcpy(x.data(), v.exposures_f32.data() + r * rk::style_count, rk::style_count * sizeof(f32));
+      std::memcpy(x.data(), v.exposures_f32.data() + r * rk::style_count,
+                  rk::style_count * sizeof(f32));
       out[v.ids[r]] = Row{v.group[r], std::bit_cast<u64>(v.specific[r]), std::move(x),
                           v.row_flags.empty() ? u8{0} : v.row_flags[r]};
     }
@@ -370,7 +468,8 @@ Json write_payload(const fs::path& file, const std::vector<T>& values) {
   std::ofstream out(file, std::ios::binary);
   const auto bytes = std::as_bytes(std::span(values));
   // SAFETY: char writes the object representation of contiguous arithmetic fixture data.
-  out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  out.write(reinterpret_cast<const char*>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()));
   out.close();
   if (!out) throw std::runtime_error("fixture payload write");
   return Json{{"bytes", bytes.size()}, {"sha256", co::sha256_file(file.string()).value()}};
@@ -420,7 +519,8 @@ inline Pinned write_role_and_fields(const fs::path& dir, const CovPanel& p) {
   std::vector<f64> industry(cells), be(cells, missing), ni(cells, missing);
   for (usize k = 0; k < cells; ++k) {
     industry[k] = p.industry[k] ? static_cast<f64>(p.industry[k]) : missing;
-    if (std::isfinite(p.value[k]) && std::isfinite(p.cap[k])) be[k] = static_cast<f64>(p.value[k]) * p.cap[k];
+    if (std::isfinite(p.value[k]) && std::isfinite(p.cap[k]))
+      be[k] = static_cast<f64>(p.value[k]) * p.cap[k];
     if (std::isfinite(p.earnings[k]) && std::isfinite(p.cap[k]))
       ni[k] = static_cast<f64>(p.earnings[k]) * p.cap[k] * 0.1;
   }
@@ -497,7 +597,8 @@ inline std::string add_container(const fs::path& dir) {
     }
   }
   er::CovContainerSpec spec = memory_spec();
-  spec.role_sha256 = er::cov_parse_hex(m.at("role").at("manifest_sha256").get<std::string>()).value();
+  spec.role_sha256 =
+      er::cov_parse_hex(m.at("role").at("manifest_sha256").get<std::string>()).value();
   auto writer = er::CovContainerWriter::create((dir / "model.atxcov").string(), spec);
   if (!writer) throw std::runtime_error(writer.error().to_string());
   std::vector<u64> ids(names);
@@ -509,7 +610,8 @@ inline std::string add_container(const fs::path& dir) {
   for (usize t = 0; t < dates; ++t) {
     std::memcpy(c.data(), cov.data() + t * kf * kf * sizeof(f64), kf * kf * sizeof(f64));
     std::memcpy(s.data(), spec_bytes.data() + t * names * sizeof(f64), names * sizeof(f64));
-    std::memcpy(x.data(), style_bytes.data() + t * names * ks * sizeof(f32), names * ks * sizeof(f32));
+    std::memcpy(x.data(), style_bytes.data() + t * names * ks * sizeof(f32),
+                names * ks * sizeof(f32));
     std::memcpy(slot.data(), slots.data() + t * names, names);
     rk::CovDenseRow row;
     row.date = t; row.session = sessions[t]; row.history_first = sessions[t];
@@ -525,8 +627,11 @@ inline std::string add_container(const fs::path& dir) {
   const auto bytes = fs::file_size(dir / "model.atxcov");
   const auto sha = co::sha256_file((dir / "model.atxcov").string()).value();
   m["files"]["model.atxcov"] = Json{{"sha256", sha}, {"bytes", bytes}};
-  m["container"] = Json{{"file", "model.atxcov"}, {"format", std::string(er::cov::format_name)},
-                        {"bytes", bytes}, {"file_sha256", sha}, {"root_sha256", er::cov_hex(*root)}};
+  m["container"] = Json{{"file", "model.atxcov"},
+                        {"format", std::string(er::cov::format_name)},
+                        {"bytes", bytes},
+                        {"file_sha256", sha},
+                        {"root_sha256", er::cov_hex(*root)}};
   return write_json(dir / "manifest.json", m);
 }
 } // namespace atx_cov_test
