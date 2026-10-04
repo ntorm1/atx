@@ -353,11 +353,12 @@ TEST(EvalEdges, HouseNormPpfIsThePythonBisectionForAnyN) {
   ASSERT_EQ(h["n"].back().get<usize>(), 1'000'000U);
   usize same = 0;
   usize total = 0;
-  f64 acklam_worst = 0.0;
+  std::string differs;
   for (const Json &q : h["norm_ppf"]) {
-    const f64 n = static_cast<f64>(q["n"].get<usize>());
-    const f64 p_hi = 1.0 - 1.0 / n;
-    const f64 p_lo = 1.0 - 1.0 / (n * std::numbers::e);
+    const usize n = q["n"].get<usize>();
+    const f64 nf = static_cast<f64>(n);
+    const f64 p_hi = 1.0 - 1.0 / nf;
+    const f64 p_lo = 1.0 - 1.0 / (nf * std::numbers::e);
     EXPECT_EQ(p_hi, q["p_hi"].get<f64>()) << n; // the same probabilities as the Python
     EXPECT_EQ(p_lo, q["p_lo"].get<f64>()) << n;
     for (const auto &[p, key] : {std::pair<f64, const char *>{p_hi, "ppf_hi"},
@@ -365,13 +366,35 @@ TEST(EvalEdges, HouseNormPpfIsThePythonBisectionForAnyN) {
       const f64 want = q[key].get<f64>();
       const f64 got = atx::engine::eval::house_norm_ppf(p);
       expect_tied(got, q[key], 1e-12, std::string(key) + " N " + std::to_string(n));
-      same += got == want ? 1U : 0U;
       ++total;
-      acklam_worst = std::fmax(acklam_worst, rel_diff(atx::engine::eval::norm_ppf(p), want));
+      if (got == want) {
+        ++same;
+      } else {
+        std::ostringstream s;
+        s.precision(17);
+        s << " " << key << "@N=" << n << " engine " << got << " Python " << want;
+        differs += s.str();
+      }
     }
   }
-  std::printf("[ house_norm_ppf ] %zu of %zu quantiles bit-equal to the Python; Acklam worst rel %.3e\n",
-              same, total, acklam_worst);
+  // The engine's SR* (Acklam + Halley quantile) on the same grid: what the house rows took before.
+  f64 acklam_worst = 0.0;
+  usize acklam_n = 0;
+  for (const Json &m : h["direct"]) {
+    for (const Json &row : m["rows"]) {
+      const usize n = row["n"].get<usize>();
+      const f64 d = rel_diff(
+          atx::engine::eval::expected_max_sharpe(n, m["variance"].get<f64>()),
+          row["sr0_daily"].get<f64>());
+      if (d > acklam_worst) {
+        acklam_worst = d;
+        acklam_n = n;
+      }
+    }
+  }
+  std::printf("[ house_norm_ppf ] %zu of %zu quantiles bit-equal to the Python;%s\n"
+              "[ house_norm_ppf ] the Acklam SR* (before B2-9) worst rel %.3e at N %zu\n",
+              same, total, differs.empty() ? " all" : differs.c_str(), acklam_worst, acklam_n);
   EXPECT_GT(acklam_worst, 1e-12); // the grid reaches where the engine quantile misses (review S1)
   EXPECT_TRUE(std::isnan(atx::engine::eval::house_norm_ppf(1.0)));
   EXPECT_TRUE(std::isnan(atx::engine::eval::house_norm_ppf(0.0)));
