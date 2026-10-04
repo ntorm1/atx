@@ -157,6 +157,13 @@ TEST(ResearchFieldsAlSigThirteenf, RowScreen) {
   const auto unmapped = screen({"a", "C9", "SH", "", 1.0, 1.0});
   ASSERT_TRUE(unmapped.has_value());
   EXPECT_EQ(unmapped->sid, -1);
+  // A null CUSIP (decoded "") stays unmapped even if the map held a null-CUSIP row (review S2).
+  fields::ThirteenfQuarter with_null = quarter;
+  with_null.cusip_sid = {{"", 999}, {"C1", 101}, {"C2", 102}};
+  const auto null_cusip =
+      fields::screen_holding(filers, with_null, fields::HoldingRow{"a", "", "SH", "", 1.0, 1.0});
+  ASSERT_TRUE(null_cusip.has_value());
+  EXPECT_EQ(null_cusip->sid, -1);
   EXPECT_FALSE(screen({"z", "C1", "SH", "", 1.0, 1.0}).has_value());     // not effective
   EXPECT_FALSE(screen({"a", "C1", "PRN", "", 1.0, 1.0}).has_value());    // principal amount
   EXPECT_FALSE(screen({"a", "C1", "SH", "CALL", 1.0, 1.0}).has_value()); // an option

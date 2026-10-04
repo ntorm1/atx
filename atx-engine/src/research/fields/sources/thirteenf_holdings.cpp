@@ -127,7 +127,8 @@ std::optional<PositionRow> screen_holding(const QuarterFilers &filers,
       [](const std::pair<std::string, i64> &a, std::string_view key) {
         return std::string_view(a.first) < key;
       });
-  if (hit != map.end() && std::string_view(hit->first) == row.cusip) {
+  // A null CUSIP (decoded as "") is unmapped, as in house build_13f, whatever the map holds.
+  if (!row.cusip.empty() && hit != map.end() && std::string_view(hit->first) == row.cusip) {
     sid = hit->second;
   }
   return PositionRow{filers.filer[k], sid, row.shares, row.value * filers.factor[k]};
