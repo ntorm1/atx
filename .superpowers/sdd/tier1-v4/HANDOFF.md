@@ -2,6 +2,23 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
+**CURRENT: NO root actual job remains live. Further heavy data builds held after
+two consecutive external low-commit stops; continue active engineering/reviews.**
+Retry27343 ended stopped_low_commit14.1s/123,453,440bytes, exit137/no cap,
+freecommit0.6847GiB. No blind third retry. Guard22068/child24980/actual312 ended;
+matching runtime command scan empty. Guarded read-only inspectionv2 passed2s/
+63,905,792bytes under0.2GiB: unchanged physical snapshot, no batch0 admission,
+no finalmanifest/pointer, stable partialattempt bytes. Retained writer lock
+contains312 (3bytes/SHA865736a1c30a82dc67aba820360a01b1d9d0da5643234cd07c4d60b06eb530c5).
+Do not automatically remove/retry; a later actual resume requires a documented
+host-resource basis and exact dead-owner archive procedure. Existing first-stop
+archive is preserved. The successful-financial-progress helper is NOT RUN and
+its current v2 guard prerequisite fails by design; no financial unit is admitted.
+Root previous21ownedcheckpoint artifacts committed0ce394ed; latest second-stop
+helper/evidence and ledger will be committed separately. Active lanes: Task16
+newgolden delivery, Task17 native reader/catalog integration, Task10 fixround1.
+Gold remains absent/unpublished and atx-impl acceptance unrun. Goal stays active.
+
 **LATEST root actual job: financial pilot retry27343, logs ...b0000-v2.*.**
 Pilot60945 ended host-lowcommit207s/553,648,128bytes, exit137/no cap,
 free commit0.6852GiB. No native error. Guard18400/child21564/actual24076 dead;
