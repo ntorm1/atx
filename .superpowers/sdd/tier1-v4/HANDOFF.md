@@ -2,8 +2,74 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
+**LATEST (2026-10-04): root LIVE serial batches10..17 session25720, R19.**
+This checkpoint supersedes every historical live-session statement below.
+Batches0..11 completed native replay and independent two-pass root admission.
+Single-batch9 retry55669 ended0:58.2s/365,297,664peakbytes,1,410,539rows,
+receiptSHAb36f4df7424a4c8e07f5f37cfe405889b998c1b5f939a35bda23573dd9bbacc6.
+No prior evidence replaced. Batch10passed59.2s/388,677,632bytes;
+batch11passed56.1s/398,966,784bytes. Keep live25720 owned through completion.
+Chunk66577 ended at batch9: stopped_low_commit57.2s, peak370,270,208bytes,
+host free commit0.6808GiB, exit137, no cap hit. No batch9 native receipt was
+published; both recorded PIDs absent. Retained failedv1 logs and attempt evidence.
+Windows commit headroom recovered to about4.7GB before explicitly starting
+single batch9attempt2 under the unchanged0.8GiB guard. No automatic retry loop.
+Operational wrapper supports separately numbered single-batch lowcommit retries;
+receipt audit binds the exact successful command/stdout/code/source as before.
+Frozen producer685a7550 and contract unchanged; Task16 cap remains5/5.
+
+Task13 R2cb318dd9 independently Approved in review-T13-native-r2-findings.md;
+I1/I6closed, total2/5fixrounds. Full source task remains0PASS/3FAIL. Original
+author's static native source-qualification plan accepted. It prepares bounded
+metadata helper for root AFTERchunkends; continues originalclock/class/currency/
+cadence/carry native readers offline. No source/datajobs granted to agents.
+Task12 conditional native financial/price proof and exact pre2023 return path
+implemented offline; initial full checkpoint/report/commit not yet submitted.
+Root task12-price-identity-metadata-v1.json completed2s/68,141,056bytes: raw
+TickerHistory hasclose/closeUnadjPr but no currency/class columns; identities
+andsecurity_master metadata exist, economic meanings remain unqualified.
+No actual return evaluation, HTTP or consumer acceptance. Root operational
+helpers/newreviews/Task12audit JSONs/HANDOFF/progress uncommitted after5a110c87.
+
+Historical extraction checkpoint (superseded):
+Started after real batch0 passed43.0s/389,029,888 peak bytes. Its immutable receipt
+SHA601026f84182cfb7a728265df9cc56bbf50dd4bac626965facc2a2778a3e0855,
+2,470,572bytes;1,449,686 source rows/110 ZIP members. Independent root guarded
+receipt audit5s/35,663,872bytes rechecked actual source/code twice and matched
+successful exact native command/stdout/receipt. Batch1 also passed52.1s/
+389,799,936bytes,1,447,545rows; SHA87ddd829e78bea5b2195a6cf2c3cb104a53df9a1a35f267979b942ddb8b1dde0.
+Each native batch uses0.8GiB guard and independent audit0.3GiB serially. Wrapper
+`t16-extract-run-bounded-v1.ps1` stops on any failure, never replaces receipts.
+Keep session owned/poll until completion; no other actualdatajob or scratch cleanup.
+Reviewed code685a7550 and contract frozen; final cumulativeTask16round5 Approved
+in review-T16-extract-r5-findings.md. No sixthfix. Full85 receipts/admission and
+all financial units remain incomplete; no whole-source/economic/productionPASS.
+
+Task13 round1 commit8f80ae3f under scoped review by t16_release_foundation;
+18covering tests19.85s, allactualgatesFAIL. Task12 initial continuation commits
+faa18387/11892c26/a2f97138 are incomplete, not yet submittedasfulltaskreview;
+author t12_terminal_events implementing full financialnative readers/publication.
+Root task12-original-shape-v1.json proves Avon original byte identity/layout only:
+Jan3closing, alternative0.300ADS or0.600ordinaryshare election, fractional cash,
+preferredcashnotpayable. No native SGML acceptanceheader. Semantics/basisunknown.
+Root queued actualmetadata-footer audit of prices/year=2020/prices.parquet,
+C.TICKERHISTORY, identity/link_table andsecurity_master/lines AFTERchunkends.
+Rootnewhelpers/reviews/task12auditJSONs/HANDOFF/progress uncommitted after5a110c87.
+
 **Current checkpoint, 2026-10-04 about01:45 UTC: no root live data job.**
 This paragraph supersedes all historical LIVE entries below.
+
+Update about02:00 UTC: Task16 finalfix685a7550 is under independent review by
+t16_release_foundation, no realpilot yet. Task13 author fixes I1-I5 round1/5.
+FreshGPT6.1Sol t12_terminal_events owns new native terminal/M&A module only;
+static/offline implementation while root controls actualjobs. Metadata-only
+candidate audit proved original2267 rawMNA count =1669continuedfalse+598true;
+retainall2267 and qualify legacy continuation from native evidence. No return
+columns read. Task12 audithelper+JSON and these latest ledger edits uncommitted
+after root5a110c87 (23ownedartifacts). Agents neverreceiveautomaticdataslotgrant.
+Task16agent cleanup of pytest233/234 was automatically rejected `blocked by
+policy`, no further reason; those syntheticcache directories remain untouched,
+with command/response in its report and user notified. No root job is live now.
 
 - Source freeze session42951 ended low-commit1502.7s/647,417,856 peak bytes,
   returncode137, no cap hit. Host free commit0.3095GiB. No fund snapshot/units.

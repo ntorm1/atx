@@ -1,0 +1,88 @@
+{
+  "status": "NATIVE_SOURCE_SHAPE_ONLY",
+  "prior_audit_sha256": "f021dedf6d5911a0a99a0ade3ee050b99fc1731493fc06fb46124f1abc2e3996",
+  "catalog_row_unqualified": {
+    "cik": 8868,
+    "accession": "0000950157-20-000022",
+    "form": "8-K",
+    "items": "1.02,2.01,3.01,3.03,5.01,5.02,5.03,9.01",
+    "filing_date": "2020-01-03",
+    "event_date": "2020-01-03",
+    "available_at": "2020-01-03 22:24:06",
+    "acceptance_clock": "file_et",
+    "vintage_risk": null,
+    "is_amendment": false,
+    "doc_source": "sec_events",
+    "source_doc": "form8-k.htm",
+    "doc_sha256": "2db7aba232e1ed2e5d2c5aa16e3a8a3fed3d89889f80a79cdc5fba7f64fbce4d",
+    "url": "https://www.sec.gov/Archives/edgar/data/8868/000095015720000022/form8-k.htm",
+    "file_type": "8-K",
+    "file_description": "CURRENT REPORT",
+    "qids": [
+      "merger"
+    ]
+  },
+  "object_path": "C:\\atx\\atx-db\\data\\raw\\sec_events\\objects\\2d\\2db7aba232e1ed2e5d2c5aa16e3a8a3fed3d89889f80a79cdc5fba7f64fbce4d.gz",
+  "stored_sha256": "ff608acc47a48c887caaf48c6d0696aeb94a75613d24ef5f9031faaa002495e5",
+  "original_sha256": "2db7aba232e1ed2e5d2c5aa16e3a8a3fed3d89889f80a79cdc5fba7f64fbce4d",
+  "original_bytes": 68181,
+  "normalized_sha256": "4afbeddcb2f9127705796218a46cb76f5f0f6769c050225e93fe5d63b23d584a",
+  "native_acceptance_header_present": false,
+  "native_submission_cik_header_present": false,
+  "header": "false0000008868--12-3100000088682020-01-032020-01-03\nUNITED STATES\nSECURITIES AND EXCHANGE COMMISSION\nWASHINGTON, D.C. 20549\nFORM 8-K\nCURRENT REPORT\nPursuant to Section 13 or 15(d) of the\nSecurities Exchange Act of 1934\nDate of Report (Date of Earliest Event Reported): January 3, 2020\nAVON PRODUCTS, INC.\n(Exact Name of Registrant as Specified in its Charter)\nNew York | | 1-4881 | | 13-0544597 |\n(State or Other Jurisdiction of Incorporation) | | (Commission File Number) | | (IRS Employer Identification No.) |\nBuilding 6, Chiswick Park\nLondon W4 5HR\nUnited Kingdom\n(Address of Principal Executive Offices) (Zip Code)\n+44-1604-232425\n(Registrant's Telephone Number, Including Area Code)\nCheck the appropriate box below if the Form 8-K filing is intended to simultaneously satisfy the filing obligation of the registrant under any of the following provisions (see General Instruction A.2 below):\n\u2610 | Written communications pursuant to Rule 425 under the Securities Act (17 CFR 230.425) |\n\u2610 | Soliciting material pursuant to Rule 14a-12 under the Exchange Act (17 CFR 240.14a-12) |\n\u2610 | Pre-commencement communications pursuant to Rule 14d-2(b) under the Exchange Act (17 CFR 240.14d-2(b)) |\n\u2610 | Pre-",
+  "terms_snippets": [
+    {
+      "start": 1937,
+      "end": 3076,
+      "text": "r revised financial accounting standards provided pursuant to Section 13(a) of the Exchange Act. \u2610\nItem 1.02 Termination of a Material Definitive Agreement.\nIn connection with the consummation of the Transactions (as defined below), on January 3, 2020, the EUR 200.0 million multicurrency revolving facility agreement, dated as of February 12, 2019, among, inter alios, Avon Products, Inc., a New York corporation (the \"Company\"), Avon International Capital, p.l.c., an indirect wholly-owned English subsidiary of the Company, as borrower, certain other subsidiaries of the Company, as guarantors, the financial institutions from time to time party thereto, as lenders, Citibank Europe plc, UK Branch, as agent, and Citibank, N.A., London Branch, as common security agent, was automatically canceled in accordance with its terms.\nItem 2.01 Completion of Acquisition or Disposition of Assets.\nOn January 3, 2020, the Company consummated the previously announced business combination pursuant to the Agreement and Plan of Mergers, dated as of May 22, 2019 (as amended, the \"Merger Agreement\"), among the Company, Natura Cosm\u00e9ticos S.A., a Br"
+    },
+    {
+      "start": 4084,
+      "end": 5224,
+      "text": "rent became wholly owned direct subsidiaries of HoldCo (collectively, the \"Transactions\").\nPursuant to the Merger Agreement, as a result of the First Merger and the Second Merger, each share of common stock, par value $0.25 per share, of the Company (the \"Company Common Stock\") issued and outstanding immediately prior to the effective time of the First Merger (the \"First Effective Time\") (other than as provided in the Merger Agreement) was automatically converted into the ultimate right to receive (a) 0.300 validly issued and allotted, fully paid-up American Depositary Shares of HoldCo (\"HoldCo ADS\") against the deposit of two shares of common stock of HoldCo (\"HoldCo Shares\"), subject to adjustment in accordance with the Merger Agreement, and any cash in lieu of fractional HoldCo ADSs (the \"Common Stock Consideration\") or (b) 0.600 validly issued and allotted, fully paid-up HoldCo Shares in lieu of the Common Stock Consideration, subject to adjustment in accordance with the Merger Agreement, and any cash in lieu of fractional HoldCo Shares, in which case any and all HoldCo Shares delivered to such holders who have elected"
+    },
+    {
+      "start": 5370,
+      "end": 6514,
+      "text": "ovided that each share of Series C Preferred Stock, par value $1.00 per share, of the Company (the \"Company Preferred Stock\") issued and outstanding immediately prior to the First Effective Time was to be automatically converted into the right to receive an amount in cash without interest equal to the Stated Value (as defined in the Company's certificate of incorporation) (the \"Preferred Stock Consideration\"). As previously disclosed, the holder of all outstanding shares of the Company Preferred Stock elected to convert all of its shares of Company Preferred Stock to Company Common Stock. Such conversion was consummated prior to, and no shares of Company Preferred Stock were outstanding immediately prior to, the First Effective Time and, therefore, no Preferred Stock Consideration will be payable in connection with the Transactions.\nFollowing the closing of the Transactions, the shares of Company Common Stock, which previously traded under the ticker symbol \"AVP\" on the New York Stock Exchange (the \"NYSE\") will be suspended from trading on the NYSE prior to the opening of the market on January 6, 2020 and are in the process of"
+    },
+    {
+      "start": 9531,
+      "end": 10670,
+      "text": "eflected in the Company's public disclosures.\nItem 3.01 Notice of Delisting or Failure to Satisfy a Continued Listing Rule or Standard; Transfer of Listing.\nIn connection with the consummation of the Transactions, the Company notified the NYSE that trading in Company Common Stock should be suspended and listing of Company Common Stock on the NYSE should be removed. Trading in Company Common Stock on the NYSE will be suspended prior to the opening of the market on January 6, 2020. The Company also requested that the NYSE file with the SEC an application on Form 25 to delist and deregister the Company Common Stock under Section 12(b) of the Securities Exchange Act of 1934, as amended (the \"Exchange Act\"). In addition, the Company intends to file with the SEC a Form 15 requesting that the reporting obligations of the Company under Sections 13 and 15(d) of the Exchange Act be suspended.\nItem 3.03 Material Modification to Rights of Security Holders.\nConversion of Company Common Stock\nAs described in Item 2.01 above, pursuant to the terms of the Merger Agreement, as a result of the First Merger and the Second Merger, each share"
+    },
+    {
+      "start": 10702,
+      "end": 11846,
+      "text": "omatically converted into the ultimate right to receive the Common Stock Consideration.\nAt the First Effective Time, holders of Company Common Stock immediately prior to the First Effective Time ceased to have any rights as shareholders of the Company other than the ultimate right to the Common Stock Consideration.\nThe information set forth in Item 2.01 of this Current Report on Form 8-K is incorporated by reference herein.\nEquity-Based Compensation\nPursuant to the Merger Agreement and subsequent agreement by and among the parties to the Merger Agreement, shortly prior to or upon the closing of the Transactions:\n| | each outstanding award of restricted stock units with respect to Company Common Stock that was subject solely to time-based vesting (\"Company RSUs\") was converted into an award of nominal exercise price stock options to purchase HoldCo Shares or HoldCo ADSs that automatically exercise upon vesting (\"HoldCo Options\"), with the number of HoldCo Shares or HoldCo ADSs subject to such award (rounded up to the nearest whole number) equal to (A) the number of shares of Company Common Stock subject to such award of Company"
+    },
+    {
+      "start": 12288,
+      "end": 13432,
+      "text": "th respect to such award of HoldCo Options; |\n| | each outstanding award of performance-contingent restricted stock units with respect to Company Common Stock (\"Company PSUs\") was converted into an award of HoldCo Options that is subject solely to time-based vesting, with the number of HoldCo Shares or HoldCo ADSs subject to such award (rounded up to the nearest whole number) equal to (A) the number of shares of Company Common Stock subject to such award of Company PSUs immediately prior to the closing of the Transactions (with performance goals for open performance measurement periods deemed attained at target level and performance goals for closed performance measurement periods deemed attained based on actual performance) multiplied by the Exchange Ratio, plus (B) a number of HoldCo Shares or HoldCo ADSs necessary to gross up the award holder for the exercise price of such HoldCo Options and the taxes associated with such gross-up, and with the terms and conditions (including service-based vesting conditions but not performance-based vesting conditions) applicable to such award of Company PSUs continuing in full force and e"
+    },
+    {
+      "start": 13660,
+      "end": 14804,
+      "text": "ck\") equal to the number of shares of Company Common Stock subject to such award of Company Restricted Stock immediately prior to the closing of the Transactions multiplied by the Exchange Ratio, with the terms and conditions (including service-based vesting conditions) applicable to such award of Company Restricted Stock continuing in full force and effect with respect to such award of HoldCo Restricted Stock; |\n| | each outstanding award of stock options to purchase shares of Company Common Stock (\"Company Options\"), whether or not then vested or exercisable, was automatically canceled in exchange for the right to receive an amount in cash, without interest, equal to (A) the number of shares of Company Common Stock subject to such Company Option immediately prior to the Closing of the Transactions multiplied by (B) the excess, if any, of the per share cash-out price over the exercise price per share of such Company Option; and |\n| | each outstanding award of stock appreciation rights with respect to Company Common Stock (\"Company SARs\"), whether or not then vested or exercisable, was automatically canceled in exchange for th"
+    },
+    {
+      "start": 15945,
+      "end": 17084,
+      "text": "ompany's Current Report on Form 8-K filed with the SEC on November 5, 2019, and is incorporated by reference herein.\nItem 5.01 Changes in Control of Registrant.\nAs a result of the consummation of the Transactions, pursuant to the Merger Agreement, a change of control of the Company occurred and the Company became a wholly owned direct subsidiary of HoldCo.\nThe information set forth in Item 2.01, Item 3.03 and Item 5.02 of this Current Report on Form 8-K is incorporated by reference herein.\nItem 5.02 Departure of Directors or Certain Officers; Election of Directors; Appointment of Certain Officers; Compensatory Arrangements of Certain Officers.\nIn connection with the Transactions and pursuant to the Merger Agreement, each member of the board of directors of the Company resigned as of the First Effective Time. The members of the Company's board of directors immediately prior to the First Effective Time were: Jose Armario, W. Don Cornwell, Chan W. Galbato, Nancy Killefer, Susan J. Kropf, Helen McCluskey, Andrew G. McMaster, Jr., James A. Mitarotonda, Michael F. Sanford, Lenard Tessler and Jan Zijderveld.\nAs of the First Effe"
+    },
+    {
+      "start": 17332,
+      "end": 18471,
+      "text": "n December 13, 2019, the following individuals were appointed to the board of directors of HoldCo: W. Don Cornwell, Nancy Killefer and Andrew G. McMaster, Jr., effective as of the consummation of the Transactions.\nIn connection with the Transactions, Jan Zijderveld ceased to be the Chief Executive Officer of the Company as of the First Effective Time and Angela Cretu was appointed the Chief Executive Officer of the Company, effective as of January 3, 2020. Prior to such appointment, Ms. Cretu has served as Group Vice President and General Manager, Central Europe, of the Company.\nOn January 3, 2020, prior to the First Effective Time, the Company issued a press release announcing the departure of Jan Zijderveld as Chief Executive Officer of the Company effective upon the consummation of the Transactions. A copy of that press release is attached hereto as Exhibit 99.1 and incorporated herein by reference.\nOn January 3, 2020, prior to the First Effective Time, HoldCo issued a press release announcing, among other things, the expected consummation of the Transactions and the appointment of Ms. Cretu as Chief Executive Officer "
+    },
+    {
+      "start": 18695,
+      "end": 19834,
+      "text": "Form 8-K is incorporated by reference herein.\nItem 5.03 Amendments to Articles of Incorporation or Bylaws; Change in Fiscal Year.\nIn connection with, and immediately following the consummation of the Transactions, on January 3, 2020, the Company's certificate of incorporation and bylaws were amended and restated to be substantially similar to the certificate of incorporation and bylaws of Merger Sub II in effect prior to the consummation of the Transactions. Differences between the Company's Amended and Restated Certificate of Incorporation and Amended and Restated Bylaws, on the one hand, and the certificate of incorporation and bylaws of Merger Sub II prior to the consummation of the Transactions, on the other hand, reflect, among other things, that the Company remained a New York corporation named Avon Products, Inc. after consummation of the Transactions. Copies of the Company's Amended and Restated Certificate of Incorporation and Amended and Restated Bylaws are filed as Exhibits 3.1 and 3.2, respectively, to this Current Report on Form 8-K and are incorporated by reference herein.\nItem 9.01 Financial Statements and "
+    }
+  ],
+  "returns_computed": false,
+  "http_attempts": 0,
+  "qualification": "Source-layout/terms leads only. No native clock, class mapping, settlement-price basis, exactDLRET or gate certification."
+}
