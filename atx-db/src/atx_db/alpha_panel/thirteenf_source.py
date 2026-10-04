@@ -153,6 +153,7 @@ def inspect_ledgers(files:list[Path], *, max_records:int=100000,
         before=C.file_identity(path)
         records=bytes_read=unknown=matched=0
         candidates=[]
+        known_leads=[]
         exceptions=[]
         complete=True
         with path.open("rb") as stream:
@@ -197,12 +198,17 @@ def inspect_ledgers(files:list[Path], *, max_records:int=100000,
                 classification="13F_LEAD" if is_13f else "OTHER_FORM" if forms and all(v in {"10-K","10-K/A","10-Q","10-Q/A","8-K","8-K/A","3","3/A","4","4/A","5","5/A","NPORT-P","NPORT-P/A"} for v in forms) else "UNKNOWN"
                 matched+=is_13f
                 unknown+=classification=="UNKNOWN"
+                candidate={"record":records,"classification":classification,"metadata":metadata,
+                           "referenced_paths_status":"UNVALIDATED_CONFIGURED_ROOTS"}
+                if is_13f and len(known_leads)<256:
+                    known_leads.append(candidate)
                 if classification!="OTHER_FORM" and len(candidates)<max_candidates:
-                    candidates.append({"record":records,"classification":classification,"metadata":metadata,"referenced_paths_status":"UNVALIDATED_CONFIGURED_ROOTS"})
+                    candidates.append(candidate)
         if C.file_identity(path)!=before:
             raise RuntimeError("ledger changed during inspection")
         reports.append({"file":before,"records_read":records,"bytes_read":bytes_read,
             "13f_lead_records":matched,"unknown_records":unknown,"candidates":candidates,
+            "known_13f_leads":known_leads,"known_13f_lead_bound_reached":matched>len(known_leads),
             "candidate_bound_reached":matched+unknown>len(candidates),
             "scan_complete":complete,"exceptions":exceptions})
     return {"schema":"atx.thirteenf-ledger-leads/v1","files":reports,

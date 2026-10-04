@@ -88,3 +88,20 @@ def test_ledger_unknown_forms_paths_and_truncation_are_explicit(tmp_path):
     assert not report["scan_complete"] and report["exceptions"][0]["reason"]=="record_or_byte_bound"
     report=inspect_ledgers([ledger],max_bytes=12)["files"][0]
     assert not report["scan_complete"] and report["bytes_read"]==13
+
+
+def test_known_13f_leads_survive_unknown_sample_saturation(tmp_path):
+    from atx_db.alpha_panel.thirteenf_source import inspect_ledgers
+    ledger=tmp_path / "ledger.jsonl"
+    rows=[dict(url="https://www.sec.gov/Archives/opaque") for _ in range(3)]
+    rows+= [dict(form="13F-HR",path="original-1.gz"),dict(form="13F-NT",path="original-2.gz")]
+    ledger.write_text("".join(json.dumps(row)+"\n" for row in rows))
+    report=inspect_ledgers([ledger],max_candidates=1)["files"][0]
+    assert report["candidate_bound_reached"] and report["candidates"][0]["classification"]=="UNKNOWN"
+    assert report["unknown_records"]==3 and report["13f_lead_records"]==2
+    assert [row["record"] for row in report["known_13f_leads"]]==[4,5]
+    assert not report["known_13f_lead_bound_reached"] and report["scan_complete"]
+    ledger.write_text("".join(json.dumps(dict(form="13F-HR"))+"\n" for _ in range(257)))
+    report=inspect_ledgers([ledger],max_candidates=1)["files"][0]
+    assert len(report["known_13f_leads"])==256 and report["known_13f_lead_bound_reached"]
+    assert report["13f_lead_records"]==257 and report["scan_complete"]

@@ -67,3 +67,5 @@ are reconciled. Original archive retrieval clock remains unknown, never inferred
 from filesystem mtime. No acquisition or network is involved.
 
 `inspect-ledgers --file PATH` (one or two explicit ledgers) is streaming metadata-only discovery: <=100000 records/file, <=64MiB read/file, <=256KiB record, <=2000 emitted candidates. Missing/unrecognized forms remain UNKNOWN; malformed and bound stops remain explicit incomplete scans. Relative/outside candidate paths are retained as UNVALIDATED_CONFIGURED_ROOTS and no referenced object is read, hashed, or accessed over network. Ledger source identity is checked before/after; no source content digest is claimed. Candidate limits do not imply absence or original retention.
+
+Known 13F leads also have an independent `known_13f_leads` list bounded at256 per ledger, so earlier UNKNOWN sample saturation cannot hide known leads. `known_13f_lead_bound_reached` reports truncation independently; full `13f_lead_records` and `unknown_records` counts and complete-scan status are preserved. This metadata list is still neither original retention nor source qualification.
