@@ -114,3 +114,28 @@ repository trailer. Report complete source/API/formula/clock contracts, proof
 dependencies, native equivalence, exclusions and remaining actual gates.
 Independent helper review must exclude its author. Later combined Task17 review
 must separately cover Task17-owned wiring and cite independent helper coverage.
+
+## Scoped transaction efficiencies (same R26 repair2/5)
+
+Complete large-source/code/product inventories must be authenticated before and
+after one consumption transaction, including errors/early close, without a
+whole-source rehash for every small row batch or point lookup. Keep copied fixed
+bindings and no successful consumption proof on incomplete/error exit. Original
+typed replay/admission remains mandatory; this changes orchestration only.
+
+The shared helper may expose an explicit-connection vendor price scope/point API
+for Task17 NativeWindows. Project exactly mna_price_native_v2.read_vendor_price
+112-166 over a fully authenticated original vendor relation, reuse unchanged
+read_economic, and preserve full original schema, exact SID/date and ticker/date
+duplicate/NULL ambiguity, finite positive Decimal close, rawUSD economics and
+all source/dated clock maxima. Bind original bytes before/finally the whole
+transaction. No persistent diagnostic cache, callerParquet substitution, frozen
+function/global override or final native M&A replay shortcut. Prove full typed
+source-shaped native equivalence and mutation/early-close refusal.
+
+Original NYSE calendar source metadata for fixture design is now in
+nyse-calendar-source-leads-v1.md and nyse-calendar-structure-preflight-v1.json.
+The five root-captured original HTML pages are unqualified: date-only clocks,
+weekday authority and complete amendments remain open. Implement a reachable
+original HTML table/covered-year/dated amendment route; generated self-declared
+CSV/JSON proof is not original authority. No author source job follows.

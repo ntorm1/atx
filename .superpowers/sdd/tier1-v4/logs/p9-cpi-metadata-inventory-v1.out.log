@@ -1,0 +1,1 @@
+{"status": "CONFIGURED_CPI_METADATA_LEADS_ONLY", "database": "C:\\atx\\atx-db\\data\\warehouse.duckdb", "exists": false, "database_opened": false, "series_metadata_rows": 0, "source_metadata_rows": 0, "gate_promotion": false}

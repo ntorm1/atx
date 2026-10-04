@@ -2,16 +2,73 @@
 
 ## Current: continuation stopped; eight retained, seven independently audited
 
+LATEST operational state: root has NO actual job live. Observerv8/72039 PASSED
+the original31sample/300s scheduling condition (mincommit3.6207GiB,
+minphysical2.7781GiB; guard300.2s/27,586,560B, finer mincommit3.2745GiB).
+Reviewed recoveryv5 completed4s/98,217,984B and safely archived the exact
+five-byte23988 lock; all native members remained byte-bound. DO NOT repeat it.
+Audit7v1 was then refused_low_disk BEFORE child/start/result:34.8474GiB free
+versus unchanged40GiB floor. Retain that refusal; next audit uses newtagv2 only
+after resource admission. No new semantic unit credit. Creator8 and reviewed
+sequential creator9..15 are NOTRUN. After successfulaudit7, singlecreator8 must
+succeed with exact guard/result/start/code bindings before scheduler9..15.
+
+Readinessv10 is the latest independently PASS/PASS checkpoint. V9 preserved
+all46old contracts/statuses/observation prefixes and13P9 groups but review found
+one inherited current-named retained-file list still0..2 (also stale in v8).
+Rejectedv9 and earlier versions are preserved unchanged. V10 corrects only
+that current frontier to0..7 plus version/correction metadata; all46complete
+requirement records/observations and13P9groups stay identical to v9. Eight
+retained/seven audited/pending7/NOT_PRODUCTION_READY are consistent. Review:
+review-readiness-v9-findings.md, whose final PASS applies ONLY to v10.
+
+Exception helper655be56e review found per-small-batch wholeZIP+99part rehashes,
+a27.2TB static lower bound. Correctiona70d298f independently PASS/PASS:
+complete checks before/finally one bounded consumption, copied bindings and
+early-close mutation refusal, two focused final-code regressions. Frozen native
+producers unchanged. t16 is making the analogous private family-text iterator
+repair while Task1 remains repair2/5; t15 resumes shared market helper. t17
+removes per-golden-unit accounting replay/per-window source rechecks under full
+transaction checks; golden transaction node1PASS4.25s/guard6s129,712,128B.
+Typed native ratio projection fixture now1PASS2.10s/guard3s185,430,016B:
+full typed schema and duplicate-preserving EXCEPT ALL match native SQL over
+real source-shaped file-backed128MB state/splits, redirected state refused.
+The redundant SQL-text-only test was withdrawn without execution.
+Market helper will expose a transaction-scoped native vendor point projection
+to avoid scanning/hashing3.6GB per price; unchanged native economic/schema/
+identity/duplicate/NULL/Decimal/clock checks and oracle coverage remain required.
+t16's two new family fixtures were refused before child under their unchanged
+0.6GiB/40GiB command:36.5227/36.5223GiB free. No PASS or scratch claimed.
+
+Disk preflightv4 completed46s/25,735,168B metadata-only: pytest tree319,600files
+and partial workspace scan bounded at45s. Large installed gRPC libraries are
+foreign; no ownership/deletion proof for large old pytest outputs. No deletion
+followed. Previously blocked233/234 remain untouched. Latest C free remained
+below40GiB; do not turn metadata size/date/PID leads into cleanup authorization.
+
+Configured CPI metadata probe completed1s/37,687,296B: default
+data/warehouse.duckdb absent; no DB opened or initialized, no global absence
+claim. Five official NYSE publisher pages captured373,063B in5nonSEC attempts,
+no redirects/retries, guard5s/37,662,720B. Clockpreflight1s/25,595,904B finds
+date-only labels; all publicationUTC/clockqualification remainNULL/false.
+Structurepreflight1s/26,402,816B records original holidaytable tags/factualcells
+and a short mourningclosureclause for author fixtures. Weekday authority/full
+amendment inventory/source rights/archive clocks remain unproved. See
+nyse-calendar-source-leads-v1.md; original HTML stays in data, not Git.
+
+The detailed interruption/earlier observation history follows; this latest block
+supersedes its live-job/unrecovered-lock descriptions.
+
 Session34458 is TERMINAL, stopped_low_commit/137 after346.8s with622,317,568B
 peak and no job cap hit; host free commit reached0.648GiB. Inspectionv5 completed
 3s/64,163,840B and preserved all71 native files (28,907,620B), unchanged snapshot,
 admissions0..7 and batch8's partial start. Unit7 remains provisional pending a
-separate successful native audit. Dead owner23988's five-byte lock has NOT been
-recovered; no root actual job is live at this checkpoint. No final publication.
+separate successful native audit. At that inspection, dead23988's five-byte lock
+had not yet been recovered; it was subsequently archived as recorded above.
 
 The new one-unit creator and orphan-lock v5 recovery are independently PASS/PASS
 in review-financial-unit-create-v1.md, including corrected reparse ancestor
-checks. Neither has run. Recovery requires a qualifying new host window, then
+checks. At that review neither had run. Recovery required a qualifying new host window, then
 the reviewed native audit7; only afterward may creator8 run. compute_new keeps
 all original double derivation/source/typed checks while avoiding repeated
 startup replay of earlier units. The final original whole85 validation remains.
@@ -33,11 +90,21 @@ helper brief is dispatched to t15 after helper freeze and v8 review; core
 price/calendar, shares and liquidity admission must not depend on borrow.
 Ownership exception helper655be56e is frozen and assigned independent review
 to t16. Historical readinessv8 independently PASS/PASS; its46 contracts and13
-P9 groups are unchanged. New root observer session93181 now samples a fresh
-original300s window; it is not yet an eligible result. Task1 P9 repair2/5's exact PIT/A.4/source selection now13PASS2.18s
+P9 groups are unchanged. Observer93181/v7 completed301.4s/27,828,224B but FAILED:
+sampled mincommit2.8557GiB, guard finer min2.6707GiB. Subsequent named text-loop
+metadata audit completed1s/27,037,696B with recovered mincommit5.0517GiB.
+At the earlier checkpoint observer72039/v8 was sampling the original300s window;
+its subsequent successful result is above. Task1 P9 repair2/5's exact PIT/A.4/source selection now13PASS2.18s
 (guard4s/104,247,296B), and four release tests PASS1.44s
 (guard3s/111,734,784B). T17's four source-envelope/clock/unit/manager cases passed
 in two2-case invocations. These are engineering checks, not actual source gates.
+
+Named text-loop audit recovered eight terminal child records from945,136B
+stdout: seven low-commit stops and one73758.9s completion, versus six wrapper
+exits.517 guard state updates are not separate attempts. This supports continued
+execution beyond old text checkpoints but does not close the original shared
+budget interval/all-attempt inventory; HTTP hold unchanged. See
+sec-text-loop-metadata-findings-v1.md. No financial restart has occurred.
 
 ## Historical: seven checked units before continuation34458
 

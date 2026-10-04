@@ -1,0 +1,1312 @@
+{
+  "status": "ORIGINAL_CALENDAR_TABLE_STRUCTURE_LEADS_ONLY",
+  "records": [
+    {
+      "path": "C:\\atx\\atx-db\\data\\raw\\source_intake\\nyse_calendar_v1\\calendar-2017.html",
+      "source_sha256": "9268af8e57686552525f6b2b647616db55927aa0d52dd0c3491316c9a184bc5d",
+      "publisher_titles": [
+        "NYSE Group Announces 2018, 2019 and 2020 Holiday and Early Closings Calendar"
+      ],
+      "holiday_tables": [
+        {
+          "start_tag": "<table class=\"bwtablemarginb\" cellspacing=\"0\">",
+          "rows": [
+            [
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwnowrap bwpadr0 bwvertalignb bwalignl bwsinglebottom\">",
+                "text": "HOLIDAY"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwnowrap bwpadr0 bwvertalignb bwalignl bwsinglebottom\">",
+                "text": "2018"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwnowrap bwpadr0 bwvertalignb bwalignl bwsinglebottom\">",
+                "text": "2019"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwnowrap bwpadr0 bwvertalignb bwalignl bwsinglebottom\">",
+                "text": "2020"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "New Year\u2019s Day"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, January 1"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Tuesday, January 1"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Wednesday, January 1"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Martin Luther King, Jr. Day"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, January 15"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, January 21"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, January 20"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Washington's Birthday"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, February 19"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, February 18"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, February 17"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Good Friday"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Friday, March 30"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Friday, April 19"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Friday, April 10"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Memorial Day"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, May 28"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, May 27"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, May 25"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Independence Day"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Wednesday, July 4*"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Thursday, July 4*"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwnowrap bwpadr0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Friday, July 3(July 4 holiday observed)"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Labor Day"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, September 3"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, September 2"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, September 7"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Thanksgiving Day"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Thursday, November 22**"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Thursday, November 28**"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Thursday, November 26**"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl\">",
+                "text": "Christmas Day"
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl\">",
+                "text": "Tuesday, December 25***"
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl\">",
+                "text": "Wednesday, December 25***"
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl\">",
+                "text": "Friday, December 25***"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              }
+            ]
+          ]
+        }
+      ],
+      "closure_structure": [],
+      "weekday_phrase_matches": [],
+      "weekday_authority_established": false,
+      "clock_qualified": false
+    },
+    {
+      "path": "C:\\atx\\atx-db\\data\\raw\\source_intake\\nyse_calendar_v1\\calendar-2019.html",
+      "source_sha256": "35a6a8277d07b3f3f68013f117faef99b2eb1a066b6d8b52aeecb45276dee877",
+      "publisher_titles": [
+        "NYSE Group Announces 2020, 2021 and 2022 Holiday and Early Closings Calendar"
+      ],
+      "holiday_tables": [
+        {
+          "start_tag": "<table class=\"bwtablemarginb\" cellspacing=\"0\">",
+          "rows": [
+            [
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwnowrap bwpadr0 bwvertalignb bwalignl bwsinglebottom\">",
+                "text": "HOLIDAY"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwnowrap bwpadr0 bwvertalignb bwalignl bwsinglebottom\">",
+                "text": "2020"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwnowrap bwpadr0 bwvertalignb bwalignl bwsinglebottom\">",
+                "text": "2021"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwnowrap bwpadr0 bwvertalignb bwalignl bwsinglebottom\">",
+                "text": "2022"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwnowrap bwpadr0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "New Year\u2019s Day"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwnowrap bwpadr0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Wednesday, January 1"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwnowrap bwpadr0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Friday, January 1"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwnowrap bwpadr0 bwvertalignt bwalignl bwsinglebottom\" style=\"text-align: left;\">",
+                "text": "--"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Martin Luther King, Jr. Day"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, January 20"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, January 18"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, January 17"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Washington's Birthday"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, February 17"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, February 15"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, February 21"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Good Friday"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Friday, April 10"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Friday, April 2"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Friday, April 15"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Memorial Day"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, May 25"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, May 31"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, May 30"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Independence Day"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Friday, July 3 (July 4 holiday observed)"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, July 5 (July 4 holiday observed)"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, July 4"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Labor Day"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, September 7"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, September 6"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Monday, September 5"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Thanksgiving Day"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Thursday, November 26*"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Thursday, November 25*"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom\">",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl bwsinglebottom\">",
+                "text": "Thursday, November 24*"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl\">",
+                "text": "Christmas Day"
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl\">",
+                "text": "Friday, December 25**"
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl\">",
+                "text": "Friday, December 24 (Christmas holiday observed)"
+              },
+              {
+                "start_tag": "<td>",
+                "text": ""
+              },
+              {
+                "start_tag": "<td class=\"bwpadl0 bwvertalignt bwalignl\">",
+                "text": "Monday, December 26 (Christmas holiday observed)"
+              }
+            ]
+          ]
+        }
+      ],
+      "closure_structure": [],
+      "weekday_phrase_matches": [],
+      "weekday_authority_established": false,
+      "clock_qualified": false
+    },
+    {
+      "path": "C:\\atx\\atx-db\\data\\raw\\source_intake\\nyse_calendar_v1\\calendar-2020.html",
+      "source_sha256": "eaee87dca06a2e6ac009e4010096dc7d12a9d496e5696f2f4d558fef31c56164",
+      "publisher_titles": [
+        "NYSE Group Announces 2021, 2022 and 2023 Holiday and Early Closings Calendar"
+      ],
+      "holiday_tables": [
+        {
+          "start_tag": "<table cellspacing=\"0\" class=\"bwtablemarginb bwblockalignl\">",
+          "rows": [
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignb bwtopsingle bwsinglebottom bwleftsingle bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "HOLIDAY"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignb bwtopsingle bwsinglebottom bwrightsingle bwpadl0 bwpadr0 bwalignc\" rowspan=\"1\" colspan=\"1\">",
+                "text": "2021"
+              },
+              {
+                "start_tag": "<td class=\"bwtopsingle bwsinglebottom bwrightsingle bwpadl0 bwpadr0 bwvertalignb bwalignc\" rowspan=\"1\" colspan=\"1\">",
+                "text": "2022"
+              },
+              {
+                "start_tag": "<td class=\"bwtopsingle bwsinglebottom bwrightsingle bwpadl0 bwpadr0 bwvertalignb bwalignc\" rowspan=\"1\" colspan=\"1\">",
+                "text": "2023"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "New Year\u2019s Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Friday, January 1"
+              },
+              {
+                "start_tag": "<td class=\"bwsinglebottom bwrightsingle bwpadl0 bwpadr0 bwvertalignt\" rowspan=\"1\" colspan=\"1\">",
+                "text": "\u2014"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, January 2 (New Year\u2019s Day holiday observed)"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Martin Luther King, Jr. Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, January 18"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, January 17"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, January 16"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Washington's Birthday"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, February 15"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, February 21"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, February 20"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Good Friday"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Friday, April 2"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Friday, April 15"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Friday, April 7"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Memorial Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, May 31"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, May 30"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, May 29"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Independence Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, July 5 (July 4 holiday observed)"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, July 4"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Tuesday, July 4*"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Labor Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, September 6"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, September 5"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, September 4"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Thanksgiving Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Thursday, November 25**"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Thursday, November 24**"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Thursday, November 23**"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Christmas Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Friday, December 24 (Christmas holiday observed)"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, December 26 (Christmas holiday observed)"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0\" rowspan=\"1\" colspan=\"1\">",
+                "text": "Monday, December 25"
+              }
+            ]
+          ]
+        }
+      ],
+      "closure_structure": [],
+      "weekday_phrase_matches": [],
+      "weekday_authority_established": false,
+      "clock_qualified": false
+    },
+    {
+      "path": "C:\\atx\\atx-db\\data\\raw\\source_intake\\nyse_calendar_v1\\calendar-2021.html",
+      "source_sha256": "70e632b8a8b636abc01195b7a39b8d588397ab0cb9caf53f5ca971ac2a0a4a1b",
+      "publisher_titles": [
+        "NYSE Group Announces 2022, 2023 and 2024 Holiday and Early Closings Calendar"
+      ],
+      "holiday_tables": [
+        {
+          "start_tag": "<table cellspacing=\"0\" class=\"bwtablemarginb bwblockalignl\">",
+          "rows": [
+            [
+              {
+                "start_tag": "<td class=\"bwtopsingle bwsinglebottom bwleftsingle bwrightsingle bwvertalignt bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "HOLIDAY"
+              },
+              {
+                "start_tag": "<td class=\"bwtopsingle bwsinglebottom bwrightsingle bwpadr0 bwvertalignt bwpadl0 bwalignc\" colspan=\"1\" rowspan=\"1\">",
+                "text": "2022"
+              },
+              {
+                "start_tag": "<td class=\"bwtopsingle bwsinglebottom bwrightsingle bwpadr0 bwvertalignt bwpadl0 bwalignc\" colspan=\"1\" rowspan=\"1\">",
+                "text": "2023"
+              },
+              {
+                "start_tag": "<td class=\"bwtopsingle bwsinglebottom bwrightsingle bwpadr0 bwvertalignt bwpadl0 bwalignc\" colspan=\"1\" rowspan=\"1\">",
+                "text": "2024"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "New Year\u2019s Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl0 bwalignc\" colspan=\"1\" rowspan=\"1\">",
+                "text": "\u2014*"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, January 2 (New Year\u2019s Day holiday observed)"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, January 1"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Martin Luther King, Jr. Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, January 17"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, January 16"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, January 15"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Washington's Birthday"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, February 21"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, February 20"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, February 19"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Good Friday"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Friday, April 15"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Friday, April 7"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Friday, March 29"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Memorial Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, May 30"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, May 29"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, May 27"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Juneteenth National Independence Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, June 20 (Juneteenth holiday observed)"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, June 19"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Wednesday, June 19"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Independence Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, July 4"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Tuesday, July 4**"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Thursday, July 4**"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Labor Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, September 5"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, September 4"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, September 2"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Thanksgiving Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Thursday, November 24***"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Thursday, November 23***"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Thursday, November 28***"
+              }
+            ],
+            [
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwleftsingle bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Christmas Day"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, December 26 (Christmas holiday observed)"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Monday, December 25"
+              },
+              {
+                "start_tag": "<td class=\"bwvertalignt bwsinglebottom bwrightsingle bwpadl1\" colspan=\"1\" rowspan=\"1\">",
+                "text": "Wednesday, December 25****"
+              }
+            ]
+          ]
+        }
+      ],
+      "closure_structure": [],
+      "weekday_phrase_matches": [],
+      "weekday_authority_established": false,
+      "clock_qualified": false
+    },
+    {
+      "path": "C:\\atx\\atx-db\\data\\raw\\source_intake\\nyse_calendar_v1\\mourning-2018.html",
+      "source_sha256": "5c0fed4b5a9122ad1859862086c04b67a7979b17a5fc4e3b1c29291136035062",
+      "publisher_titles": [
+        "New York Stock Exchange to Honor President George H. W. Bush"
+      ],
+      "holiday_tables": [],
+      "closure_structure": [
+        {
+          "tag": "p",
+          "matched_clause": "will be closed on Wednesday, December 5, 2018",
+          "closure_date": "2018-12-05",
+          "full_paragraph_sha256": "e818b8b20c30a95b88e5dee317c169444fedc4d804f24c4e73a8765fbc459426",
+          "full_paragraph_omitted": true
+        }
+      ],
+      "weekday_phrase_matches": [],
+      "weekday_authority_established": false,
+      "clock_qualified": false
+    }
+  ],
+  "gate_promotion": false,
+  "network_attempts": 0,
+  "qualification": "Actual original HTML table tags and factual date cells for source-shaped parser design. No whole article is reproduced. Only a short closure clause and full-paragraph digest are emitted. Normal-weekday authority, complete amendment inventory and original publication UTC remain unproved; no generated proof, backdated clock or calendar admission."
+}

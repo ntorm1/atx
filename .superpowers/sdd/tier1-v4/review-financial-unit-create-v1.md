@@ -91,3 +91,30 @@ no-delete unique archive semantics and all earlier gate boundaries remain intact
 Static function/call-site rereview only; no recovery, source/hash or fixture job.
 Root's successful qualifying host window and separate audit7 remain mandatory;
 this approval grants no native admission/publication/source quality.
+
+## Scoped sequential creation controller review
+
+Spec PASS; quality PASS. No new findings in
+`t17-financial-unit-creation-controller-v1.ps1` (static review only, NOTRUN).
+The fixed sequence is batches9..15, with unique no-overwrite attempt paths,
+the original .8GiB/heavy/40GiB guard, and immediate refusal after any failed
+guard or mismatched outcome; there is no retry or unchecked continuation.
+Acceptance binds the exact interpreter/script/batch/tag command, original guard
+version and receipt, typed completed/zero/no-cap outcome, resource settings and
+absence of test overrides. The Decimal-or-Double predicate retains exact .8
+equality and rejects strings. Result/start/frontier bindings identify exactly
+one new native double-replay-admitted unit, unchanged creator bytes before and
+after, and explicitly false publication/source certification/gate promotion and
+prior-unit semantic credit. Actual original compute/checks remain in the
+separately reviewed Python creator; the scheduler does not replace them.
+
+Root must first authenticate successful audit7 and creator8 guard/results as
+the stated operational prerequisites. The unchanged creator independently
+requires the exact next-unit prefix, so this controller cannot skip a missing
+unit. Scheduler success does not assert separate admit_unit replay of newly
+created units, prior-unit qualification, or final whole85 validation; original
+whole85 replay/merge/evidence/publication checks remain required.
+
+Covering command: `Get-Content .superpowers/sdd/tier1-v4/t17-financial-unit-creation-controller-v1.ps1`;
+exit0, 1.50s. No source/data/hash/metadata/controller/fixture job or index action
+was performed. Approval is confined to this static orchestration boundary.

@@ -1,0 +1,20 @@
+{
+    "status":  "ORPHAN_LOCK_PRESERVED_AFTER_DEAD_OWNER_CHECK",
+    "source":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\.writer.lock",
+    "destination":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\_interrupted_locks\\r17_20261004_002-pid23988-runtime-b0007-b0014-v1-lowcommit.lock",
+    "bytes":  5,
+    "sha256":  "0ab4580b4fac8de5c6528dfbd63a64110bcd9742c19c80a5b6247ca8307af11a",
+    "guard_receipt_sha256":  "87bf8ab1a24f313da18b8bc008525fd125348675b4995616ed3adb2b0a41b4db",
+    "candidate_inspection_sha256":  "6090f38683aadb68a5409cf850ff339447a2a26db87ac9f0b4a69616cd4aaf95",
+    "retained_admission_batch_ids":  [
+                                         0,
+                                         1,
+                                         2,
+                                         3,
+                                         4,
+                                         5,
+                                         6,
+                                         7
+                                     ],
+    "qualification":  "Only five-byte dead-owner lock archived. Failed attempts and sources remain unchanged. No unit admitted; next native build must perform complete ordinary source/code/unit validation."
+}

@@ -1,0 +1,155 @@
+{
+  "status": "FIVE_NYSE_PUBLISHER_CAPTURES_NOT_SOURCE_ADMISSION",
+  "non_sec_attempts": 5,
+  "sec_attempts": 0,
+  "landing": "C:\\atx\\atx-db\\data\\raw\\source_intake\\nyse_calendar_v1",
+  "records": [
+    {
+      "attempt": 1,
+      "url": "https://ir.theice.com/press/news-details/2017/NYSE-Group-Announces-2018-2019-and-2020-Holiday-and-Early-Closings-Calendar/default.aspx",
+      "started_at_utc": "2026-10-04T17:27:19.652395+00:00",
+      "redirects_allowed": false,
+      "retries": 0,
+      "qualified": false,
+      "status_code": 200,
+      "headers": {
+        "Date": "Sun, 04 Oct 2026 17:27:21 GMT",
+        "ETag": "\"ac642e16b39a1739f6df326fed18bb1a\"",
+        "Content-Type": "text/html; charset=utf-8"
+      },
+      "path": "C:\\atx\\atx-db\\data\\raw\\source_intake\\nyse_calendar_v1\\calendar-2017.html",
+      "bytes": 80852,
+      "sha256": "9268af8e57686552525f6b2b647616db55927aa0d52dd0c3491316c9a184bc5d",
+      "publisher_meta": [
+        {
+          "key": "og:title",
+          "content": "NYSE Group Announces 2018, 2019 and 2020 Holiday and Early Closings Calendar"
+        },
+        {
+          "key": "twitter:title",
+          "content": "NYSE Group Announces 2018, 2019 and 2020 Holiday and Early Closings Calendar"
+        }
+      ],
+      "completed": true,
+      "finished_at_utc": "2026-10-04T17:27:20.188666+00:00"
+    },
+    {
+      "attempt": 2,
+      "url": "https://ir.theice.com/press/news-details/2019/NYSE-Group-Announces-2020-2021-and-2022-Holiday-and-Early-Closings-Calendar/default.aspx",
+      "started_at_utc": "2026-10-04T17:27:20.704338+00:00",
+      "redirects_allowed": false,
+      "retries": 0,
+      "qualified": false,
+      "status_code": 200,
+      "headers": {
+        "Date": "Sun, 04 Oct 2026 17:27:21 GMT",
+        "ETag": "\"26720738610210f68bd04c2e8e7c90d1\"",
+        "Content-Type": "text/html; charset=utf-8"
+      },
+      "path": "C:\\atx\\atx-db\\data\\raw\\source_intake\\nyse_calendar_v1\\calendar-2019.html",
+      "bytes": 82684,
+      "sha256": "35a6a8277d07b3f3f68013f117faef99b2eb1a066b6d8b52aeecb45276dee877",
+      "publisher_meta": [
+        {
+          "key": "og:title",
+          "content": "NYSE Group Announces 2020, 2021 and 2022 Holiday and Early Closings Calendar"
+        },
+        {
+          "key": "twitter:title",
+          "content": "NYSE Group Announces 2020, 2021 and 2022 Holiday and Early Closings Calendar"
+        }
+      ],
+      "completed": true,
+      "finished_at_utc": "2026-10-04T17:27:20.765100+00:00"
+    },
+    {
+      "attempt": 3,
+      "url": "https://ir.theice.com/press/news-details/2020/NYSE-Group-Announces-2021-2022-and-2023-Holiday-and-Early-Closings-Calendar/default.aspx",
+      "started_at_utc": "2026-10-04T17:27:21.770138+00:00",
+      "redirects_allowed": false,
+      "retries": 0,
+      "qualified": false,
+      "status_code": 200,
+      "headers": {
+        "Date": "Sun, 04 Oct 2026 17:27:22 GMT",
+        "ETag": "\"43b074df2fbaef31e71e4fa13e551ac0\"",
+        "Content-Type": "text/html; charset=utf-8"
+      },
+      "path": "C:\\atx\\atx-db\\data\\raw\\source_intake\\nyse_calendar_v1\\calendar-2020.html",
+      "bytes": 69652,
+      "sha256": "eaee87dca06a2e6ac009e4010096dc7d12a9d496e5696f2f4d558fef31c56164",
+      "publisher_meta": [
+        {
+          "key": "og:title",
+          "content": "NYSE Group Announces 2021, 2022 and 2023 Holiday and Early Closings Calendar"
+        },
+        {
+          "key": "twitter:title",
+          "content": "NYSE Group Announces 2021, 2022 and 2023 Holiday and Early Closings Calendar"
+        }
+      ],
+      "completed": true,
+      "finished_at_utc": "2026-10-04T17:27:21.851796+00:00"
+    },
+    {
+      "attempt": 4,
+      "url": "https://ir.theice.com/press/news-details/2021/NYSE-Group-Announces-2022-2023-and-2024-Holiday-and-Early-Closings-Calendar/default.aspx",
+      "started_at_utc": "2026-10-04T17:27:22.826942+00:00",
+      "redirects_allowed": false,
+      "retries": 0,
+      "qualified": false,
+      "status_code": 200,
+      "headers": {
+        "Date": "Sun, 04 Oct 2026 17:27:23 GMT",
+        "ETag": "\"aee506359462f0953b576c6b4ac64342\"",
+        "Content-Type": "text/html; charset=utf-8"
+      },
+      "path": "C:\\atx\\atx-db\\data\\raw\\source_intake\\nyse_calendar_v1\\calendar-2021.html",
+      "bytes": 72051,
+      "sha256": "70e632b8a8b636abc01195b7a39b8d588397ab0cb9caf53f5ca971ac2a0a4a1b",
+      "publisher_meta": [
+        {
+          "key": "og:title",
+          "content": "NYSE Group Announces 2022, 2023 and 2024 Holiday and Early Closings Calendar"
+        },
+        {
+          "key": "twitter:title",
+          "content": "NYSE Group Announces 2022, 2023 and 2024 Holiday and Early Closings Calendar"
+        }
+      ],
+      "completed": true,
+      "finished_at_utc": "2026-10-04T17:27:22.885018+00:00"
+    },
+    {
+      "attempt": 5,
+      "url": "https://ir.theice.com/press/news-details/2018/New-York-Stock-Exchange-to-Honor-President-George-H-W-Bush/default.aspx",
+      "started_at_utc": "2026-10-04T17:27:23.873807+00:00",
+      "redirects_allowed": false,
+      "retries": 0,
+      "qualified": false,
+      "status_code": 200,
+      "headers": {
+        "Date": "Sun, 04 Oct 2026 17:27:24 GMT",
+        "ETag": "\"da9f637cf462c09d91ac32d21b367995\"",
+        "Content-Type": "text/html; charset=utf-8"
+      },
+      "path": "C:\\atx\\atx-db\\data\\raw\\source_intake\\nyse_calendar_v1\\mourning-2018.html",
+      "bytes": 67824,
+      "sha256": "5c0fed4b5a9122ad1859862086c04b67a7979b17a5fc4e3b1c29291136035062",
+      "publisher_meta": [
+        {
+          "key": "og:title",
+          "content": "New York Stock Exchange to Honor President George H. W. Bush"
+        },
+        {
+          "key": "twitter:title",
+          "content": "New York Stock Exchange to Honor President George H. W. Bush"
+        }
+      ],
+      "completed": true,
+      "finished_at_utc": "2026-10-04T17:27:23.930066+00:00"
+    }
+  ],
+  "gate_promotion": false,
+  "qualification": "Five exact public publisher URLs only, no retries or redirects, durable attempt reservations, <=1request/second and <=2MiB per response. Current captured bytes and HTTP/header/body metadata are source leads. Publication UTC, complete historical weekday/holiday/revision coverage, source vintage and product admission must be independently authenticated; current retrieval time or date-only publication text must not be backdated into a release clock."
+}
