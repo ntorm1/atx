@@ -237,3 +237,6 @@ target_link_libraries(atx-impl-core PUBLIC atx-engine-research-composition)
 # P9 lane C2: nav --calibrate-gross, Ruling PM6-6 in one process (strategy_nav_calibrate.hpp:
 # the numpy mean of the S2 gross, the 4-decimal correction, the summary record).
 target_sources(atx-impl-core PRIVATE src/strategy_nav_calibrate.cpp)
+# P9 lane B2 (cross-lane append): the IC stage's trial ledger moved down to atx-engine-research-ledger;
+# src/trial_ledger.{hpp,cpp} re-export it, so atx-impl-core links the library.
+target_link_libraries(atx-impl-core PUBLIC atx::engine-research-ledger)

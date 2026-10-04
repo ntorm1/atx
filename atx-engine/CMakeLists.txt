@@ -491,3 +491,59 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
 endif()
 add_executable(atx-research-composition EXCLUDE_FROM_ALL src/research/composition/composition_main.cpp)
 target_link_libraries(atx-research-composition PRIVATE atx::engine-research-composition atx_warnings)
+
+# Platform P9 B2 (migration slice 8, DEC-6, K-P9-5). The research ledger library: the hash chain of
+# the trial ledger (chain_head, the one copy of the rule; carry SQL-7), its read + verify, the
+# trial-counting rules (N, N_tot, the window variance V), era pooling and the IC stage's trial
+# ledger moved down from atx-impl (atx-impl keeps a thin re-export header and links this). It needs
+# atx::core, nlohmann_json and header-only engine pieces (data/research_window.hpp,
+# research/numpy_reduce.hpp) only. Not EXCLUDE_FROM_ALL: atx-impl-core links it.
+add_library(atx-engine-research-ledger ${ATX_LIB_TYPE}
+    src/research/ledger/chain.cpp
+    src/research/ledger/era_pool.cpp
+    src/research/ledger/json_line.cpp
+    src/research/ledger/ledger_file.cpp
+    src/research/ledger/trial_counts.cpp
+    src/research/ledger/trial_ledger.cpp)
+add_library(atx::engine-research-ledger ALIAS atx-engine-research-ledger)
+target_include_directories(atx-engine-research-ledger
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>)
+target_compile_features(atx-engine-research-ledger PUBLIC cxx_std_20)
+target_link_libraries(atx-engine-research-ledger
+    PUBLIC
+        atx::core
+        nlohmann_json::nlohmann_json
+    PRIVATE
+        atx_warnings)
+# The eval verb's library (`atx-research-eval`, K-P9-5): the house moments / PSR / MinTRL / DSR rows
+# over eval/deflated_sharpe(_house).hpp and min_trl.hpp, numpy's default_rng, the paired dSR (CBB,
+# Memmel, Ledoit-Wolf), the house ONC, the CSCV report over the ONE engine CSCV (eval/pbo.cpp, hence
+# the private atx::engine link) and the conditional (winner's curse) estimate. EXCLUDE_FROM_ALL.
+add_library(atx-engine-research-eval ${ATX_LIB_TYPE} EXCLUDE_FROM_ALL
+    src/research/eval/conditional.cpp
+    src/research/eval/cscv_report.cpp
+    src/research/eval/eval_cli.cpp
+    src/research/eval/eval_report.cpp
+    src/research/eval/eval_series.cpp
+    src/research/eval/house_moments.cpp
+    src/research/eval/numpy_rng.cpp
+    src/research/eval/onc_house.cpp
+    src/research/eval/paired.cpp)
+add_library(atx::engine-research-eval ALIAS atx-engine-research-eval)
+target_include_directories(atx-engine-research-eval
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>)
+target_compile_features(atx-engine-research-eval PUBLIC cxx_std_20)
+target_link_libraries(atx-engine-research-eval
+    PUBLIC
+        atx::core
+        atx::engine-research-ledger
+        nlohmann_json::nlohmann_json
+    PRIVATE
+        atx::engine
+        atx_warnings)
+add_executable(atx-research-eval EXCLUDE_FROM_ALL src/research/eval/eval_main.cpp)
+target_link_libraries(atx-research-eval PRIVATE atx::engine-research-eval atx_warnings)
