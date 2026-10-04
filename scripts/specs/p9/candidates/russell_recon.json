@@ -17,14 +17,14 @@
   "formula": "russell_recon (engine-only C++ kind, atx-engine russell_recon_field.hpp, formula id russell-recon-r1k-r2k-move-v1): on the house Russell proxy (atx-db indexes stage, rule russell-proxy-v1), +1 for a line in the R1000 at the prior reconstitution and in the R2000 at the upcoming one (predicted R2000 addition), -1 for the reverse move, 0 for a line that stays; read from the session after the rank date's 22:00 UTC visibility to the last session before the reconstitution day",
   "domain": "NaN outside the yearly event window (about 30 sessions, rank date to the June reconstitution), for a line not in both proxy snapshots or in both indexes of one, and before the stage's second reconstitution (2019; the proxy holds 2018-06 on)",
   "deviation": "house proxy of the Russell lists (official lists unlicensed): its own rank and band rules, no float adjustment, IPO and spin-off additions not modelled; every predicted boundary crosser is signed, not only those near the rank-1000 cutoff of the CHL discontinuity; window from the proxy's rank date (May, the last business day of April from 2023) to the day before the reconstitution, where CHL hold May to July; one variant, nothing tuned",
-  "notes": "horizon class medium, half-life 21 sessions (PM8-5: the price pressure builds over the window and the CHL effect reverts after the reconstitution, so the field is NaN from the reconstitution day); bar of lit section 3.0 argued from the mechanism, not measured: rho to the book about 0 (lit 3.1 F8: index-flow demand at one yearly date, spanned by no theme), small breadth (the boundary crossers, tens of lines a year), so the gain is small (+.00 to +.02 lit section 6) and the string also serves root as a do-no-harm trade-filter input",
+  "notes": "horizon class medium, half-life 21 sessions (PM8-5: the price pressure builds over the window and the CHL effect reverts after the reconstitution, so the field is NaN from the reconstitution day); bar of lit section 3.0 (net SR_c >= .4 and rho <= .1 to the book), both halves argued from the literature, nothing measured: the rho half is met, rho to the book about 0 (lit 3.1 F8: index-flow demand at one yearly date, spanned by no theme); the SR_c half cannot be argued a priori: the trade is live about 30 sessions a year on the boundary crossers only (tens of lines a year), CHL measure the discontinuity on 1996-2012 and its post-2015 size is unverified (lit section 2.3 [verify]), the comparable S&P 500 addition effect fell below 1% (Greenwood-Sammon 2025, lit [57]), and lit section 6 puts the book gain at +.00 to +.02; so, by ruling ALSIG-5, the string stays registered but is withdrawn from the trial queue (status dropped, no wave) and the field remains a do-no-harm trade-filter input for root",
   "lane": "AL-SIG",
   "report": "task-AL-SIG-report.md",
   "source_sample_end": 2012,
   "predicted_mechanism": "benchmark weight jumps for a line that crosses from the Russell 1000 to the Russell 2000 and falls for the reverse move, so index-fund demand pushes the predicted R2000 additions up and the predicted R1000 additions down before the June reconstitution",
   "data_class": "H",
   "schema": "atx.wave-candidate/v1",
-  "status": "proposed",
+  "status": "dropped",
   "wave": null,
   "history": [
     {
@@ -32,6 +32,12 @@
       "at": "2026-10-03",
       "by": "AL-SIG",
       "note": "P9 lane AL-SIG (lit section 3.1 F8 [56] [57], section 6 row russell_recon); blind registration, trials 0"
+    },
+    {
+      "status": "dropped",
+      "at": "2026-10-03",
+      "by": "AL-SIG (PM ruling ALSIG-5)",
+      "note": "ruling ALSIG-5: withdrawn from the trial queue, registration kept; net SR_c >= .4 cannot be argued a priori from the literature (notes); never pinned without a new PM ruling"
     }
   ]
 }

@@ -7,7 +7,11 @@ a candidate reads exactly its field, an engine-only row of the committed field r
 the field; a blocked registration names no field the registry holds and is not in the queue. At most 10 strings.
 
 Ruling ALSIG-2: rank(gia_13f) is not registered (lit section 3.1 F3 estimates rho .15 to the themes, above the .1
-bar of lit section 3.0): it is in neither the queue nor the blocked set. Its engine-only field stays a registry row.
+bar of lit section 3.0): it is in neither the queue nor the blocked set. Its engine-only field stays a registry row
+(ruling ALSIG-6).
+Ruling ALSIG-5: rank(russell_recon) argues both halves of the bar; net SR_c >= .4 cannot be argued a priori, so it
+stays registered but is withdrawn from the trial queue (proposed -> dropped, no wave: a final status, never pinned).
+Ruling ALSIG-4: hf_crowd stays a blocked registration, never queued without a new PM ruling (its notes say so).
 
 Run: "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider
      scripts/tests/test_p9_al_sig_registrations.py
@@ -33,6 +37,7 @@ REGISTRY = ROOT / "atx-engine" / "tools" / "field_registry.json"
 CANDIDATES = ("russell_recon",)
 FIELDS = ("gia_13f", "russell_recon")      # the lane's engine-only registry rows
 EXCLUDED_BY_BAR = ("gia_13f",)             # ruling ALSIG-2
+WITHDRAWN = ("russell_recon",)             # ruling ALSIG-5: registered, out of the trial queue
 BLOCKED_IDS = ("lazy_prices", "hf_crowd")
 HORIZON = re.compile(r"horizon class (fast|medium|slow), half-life (\d+) sessions \(PM8-5")
 
@@ -71,9 +76,28 @@ def test_candidate_is_a_valid_queue_registration(cid):
     assert cid in docs, f"{QUEUE}/{cid}.json is missing"
     doc = docs[cid]
     assert Q.doc_problems(cid, doc) == []
-    assert doc["status"] == Q.PROPOSED and doc["wave"] is None
-    assert [h["status"] for h in doc["history"]] == [Q.PROPOSED]
+    want = [Q.PROPOSED, Q.DROPPED] if cid in WITHDRAWN else [Q.PROPOSED]
+    assert doc["status"] == want[-1] and doc["wave"] is None
+    assert [h["status"] for h in doc["history"]] == want
     check_registration(cid, doc)
+
+
+@pytest.mark.parametrize("cid", WITHDRAWN)
+def test_string_held_by_the_bar_is_out_of_the_trial_queue(cid):
+    doc = queue_docs()[cid]
+    # Withdrawn (dropped with no wave) is final: no queue transition leads out of it, so it is never pinned.
+    assert doc["status"] == Q.DROPPED and doc["wave"] is None and Q.NEXT.get(Q.DROPPED, ()) == ()
+    with pytest.raises(Q.QueueError):
+        Q.transition(doc, Q.PINNED, "pm", "2026-10-03")
+    assert "ALSIG-5" in doc["history"][-1]["note"]
+    # Both halves of the lit section 3.0 bar are argued in the notes: the rho half and the SR_c half.
+    assert "rho <= .1" in doc["notes"] and "SR_c >= .4" in doc["notes"]
+    assert "cannot be argued a priori" in doc["notes"]
+
+
+def test_the_lane_leaves_nothing_in_the_trial_queue():
+    lane = [d for d in Q.load(ROOT, QUEUE).values() if isinstance(d, dict) and d.get("lane") == "AL-SIG"]
+    assert lane and all(d["status"] not in (Q.PROPOSED, Q.PINNED) for d in lane)
 
 
 def test_candidates_pass_the_queue_checks_together():
@@ -111,6 +135,8 @@ def test_blocked_registration(cid):
     # No field exists yet: not a registry row, and not a queue candidate a wave could pin.
     assert cid not in field_rows()
     assert cid not in Q.load(ROOT, QUEUE)
+    if cid == "hf_crowd":                                   # ruling ALSIG-4, recorded in the registration
+        assert "ALSIG-4" in doc["notes"] and "never queued without a new PM ruling" in doc["notes"]
 
 
 @pytest.mark.parametrize("cid", EXCLUDED_BY_BAR)

@@ -17,7 +17,7 @@
   "formula": "hf_crowd (to be an engine-only C++ kind, DEC-5, reusing lane AL-SIG's 13F reader): the share of a stock's 13F-reported holdings held by hedge-fund filers (Form ADV private-fund advisers joined to the 13F filer CIK), quarterly on the 13F clock of gia_13f; higher = more crowded among hedge funds",
   "domain": "NaN until the Form ADV join exists; then on the 13F stage's clock (13F from 2013q2)",
   "deviation": "the field is not built: the 13F books are in house, the hedge-fund flag of a filer is not (lit section 3.1 F2); BHL identify about 1,500 hedge funds directly, the house would use the Form ADV private-fund flag",
-  "notes": "horizon class slow, half-life 63 sessions (PM8-5: quarterly holdings, the ownership_flow theme's); data class P; blocked_on_data: the Form ADV private-fund flag joined to the 13F filer CIK (lit section 6 row hf_crowd, P9DATA -> P9SIG); rho about .2 to momentum and inst_best_ideas (lit 3.1 F2), above the .1 bar, check against inst_best_ideas before any screen",
+  "notes": "horizon class slow, half-life 63 sessions (PM8-5: quarterly holdings, the ownership_flow theme's); data class P; blocked_on_data: the Form ADV private-fund flag joined to the 13F filer CIK (lit section 6 row hf_crowd, P9DATA -> P9SIG); rho about .2 to momentum and inst_best_ideas (lit 3.1 F2), above the .1 bar, check against inst_best_ideas before any screen; PM ruling ALSIG-4: it stays a blocked_on_data registration and is never queued without a new PM ruling on the bar",
   "lane": "AL-SIG",
   "report": "task-AL-SIG-report.md",
   "source_sample_end": 2016,
