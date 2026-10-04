@@ -475,3 +475,81 @@ point.
   and within 2 ulps on the last (one ulp of erfc, UCRT vs CPython, at one midpoint flips one halving).
 - The engine's Acklam + Halley `norm_ppf` misses the bisection SR* by 5.5e-12 relative at N = 1e6; a house row of record
   uses the bisection (B2-9).
+
+### B2-10 (every P9 cell names and pins its engine verb)
+
+Ruling B2-10 answers the open `exes.eval` question above. (a) No pinned v8 spec is edited and nothing is derived for
+them; a v1 manifest keeps today's behaviour (the verb recorded in `nav_summ_run` only) and its plan lines stay
+byte-identical. (b) Root adds `exes.eval` to the lineage parent specs in the W1-I2 (b) re-pin commit. (c) This lane:
+a v2 cell must name and pin the verb, and verify refuses it otherwise.
+
+**Commit `8fb17ad6`** (`fix(b2): a v2 wave cell must name and pin its engine verb (ruling B2-10 (c))`), on top of the
+deletion commit `598d2199` and the report commit `8cb206c3`. The identity merge point `1b25b9a4` does not move. The
+post-identity part root merges after its identity run is now `598d2199` + `8fb17ad6` (the commits between them and
+after them touch only the sprint dir).
+
+What and where:
+- `scripts/wave_stage_record.py`, new `eval_problem(w, done)`, called by `verify` beside `exe_problem`. For a manifest
+  of schema `atx.research-wave/v2` it refuses, fail closed:
+  - a locked cell spec without `exes.eval` or without its pin `exes_sha256.eval` (`lock --exes` writes both); the
+    message names the missing key(s): "the v2 cell spec <spec> lacks exes.eval and exes_sha256.eval: ...";
+  - a cell with no `summ.json` rows;
+  - a `summ.json` row or `pbo.json` whose `nav_summ_run.engine_exe_sha256` is another hash or absent; the message names
+    both hashes: "... its statistics come from the engine verb <got> ..., not the cell spec's exes_sha256 pin of
+    exes.eval <path> <pin> ...".
+  The refusal joins verify's other problems: StageError "verify: ...: stop for the PM's ruling". A v1 manifest:
+  `eval_problem` is None, so verify, its receipt and its plan line are as before.
+- `scripts/cycle_verdict.py`: the verdict's loop over the summ rows and the pbo.json moves into
+  `check_summ_verb(cycle_dir, summ, pbo, verb)`, which `scoring_blocks` and `eval_problem` both call (one rule).
+- `lock --exes` already pins an `exes.eval` the spec names (deletion commit: `effective_exes` keeps an explicit
+  `exes.eval`; a template inherits its parent's after root's re-pin, and its pin goes into `change.set`). Nothing new
+  there.
+- No C++ change.
+
+Tests, `scripts/tests/test_wave_eval_verb.py` (new). This tree has no v2 manifest (lane E2 adds `wave_kinds.py`), so
+each test runs the fixture's wave as v1 on fakes, then calls verify with the manifest's `schema` set to
+`atx.research-wave/v2`, the one key `wave_kinds.is_v2` reads:
+1. `test_a_v2_cell_without_exes_eval_is_refused_at_verify`: refused naming `exes.eval and exes_sha256.eval`; named but
+   unpinned, refused naming `exes_sha256.eval`; named, pinned and the summ on that verb: verify passes.
+2. `test_a_v2_cell_whose_summ_ran_on_another_verb_is_refused`: refused naming both hashes; also refused: a summ naming
+   no verb, a pbo.json of another verb, no summ rows.
+3. `test_a_v1_manifest_plans_and_verifies_as_before`: `eval_problem` is None, the verify plan line equals the deletion
+   commit's literally and is in the wave's plan, verify passes with a summ of another verb, and the wave's result is
+   judged and recorded. No expected value was edited anywhere.
+
+Evidence (`b2-evidence/fix1-b2-10-pytest-scripts.log`). `"C:/Program Files/Python312/python.exe" -m pytest -q -p
+no:cacheprovider --basetemp <scratch>`, `PYTHONDONTWRITEBYTECODE=1`, no ATX_EQUITY_BIN:
+- `test_wave_eval_verb`, `test_cycle_scoring`, `test_wave_driver`, `test_wave_review`, `test_wave_review_minor`,
+  `test_wave_hardening`, `test_research_wave`, `test_wave_scoreboard`, `test_research_cycle`: 173 passed, 3 skipped (the
+  host skips of the lane's first report), 2 deselected.
+- `test_no_python_mirror`: 7 passed (separate invocation).
+- Deselected: `test_cycle_scoring`'s two tests that run the real nav_summ (`test_verdict_dsr_is_the_ledger_variance...`,
+  `test_the_summ_runs_the_named_verb...`). They need the built verb, and this round's build tree was deleted after the
+  report (DISK). Both passed at `598d2199` with it. This commit changes their code path only by moving the loop into
+  `check_summ_verb`, and `test_wave_eval_verb` exercises that helper on every refusal branch. Root re-runs them with
+  its build.
+- v1 plan bytes: `research_wave.py plan` of the fixture's v1 manifest under the `598d2199` scripts (a `git archive`
+  export) and under `8fb17ad6` give the same 32 lines, byte for byte once the checkout's root path is normalized (the
+  plan prints absolute script paths); scratch, deleted.
+
+Cross-lane hunks for root (E2's files, ruling B2-8), lines as at `8fb17ad6`. On E2's split (`05a0fcd1`) both files
+keep their paths; `verify` there has the same `problems = [p for p in [exe_problem(exe, pins)] if p]` line:
+- `scripts/wave_stage_record.py`:
+  - line 12: `import cycle_verdict as CV`;
+  - lines 27-28: `V2_SCHEMA = "atx.research-wave/v2"`. On E2's split, drop it and test `SK.kind(w) is None` (or
+    `wave_kinds.is_v2(w.manifest)`) in `eval_problem` instead;
+  - `verify`, line 47: `eval_problem(w, done)` joins `exe_problem(exe, pins)` in the `problems` list;
+  - lines 84-110: `eval_problem`, placed after `exe_problem`.
+- `scripts/cycle_verdict.py`: lines 98-106, `check_summ_verb` (after `check_verb`); `scoring_blocks`, line 119, the
+  `verb` block calls it.
+- New `scripts/tests/test_wave_eval_verb.py` (B2's, on E2's `wave_fixture`). On E2's split, a real v2 manifest of a
+  kind can replace the schema flip.
+- Optional, E2's text: `V2_EXE_TEXT` (the v2 verify plan line, ruling E2-6) could state this refusal. I did not touch
+  it: this tree has no v2 plan line, and it changes v2 plan bytes.
+
+Notes for root:
+- A v2 wave whose driver does not lock its cell specs with `--exes` (`driver.lock_exes` false) has no
+  `exes_sha256.eval` pin, so every cell is refused at verify (fail closed, as ruled). E2's v2 manifest does not require
+  `driver.lock_exes`; the lock comes from the wave config or the template's `change.set`.
+- The judge stage's `--bundle` runs nav_summ with its default verb. `bundle.json`'s `nav_summ_run` names that verb but
+  is not compared with the pin (outside B2-10 (c)'s text; P10 note).
