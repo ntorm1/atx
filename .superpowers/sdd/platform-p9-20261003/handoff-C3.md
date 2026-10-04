@@ -5,8 +5,18 @@ Contract: `C:/atx-wt/pool-2/.superpowers/sdd/platform-p9-20261003/resume4-dispat
 
 ## State
 
-- Part A (C++): DONE. Part B (C2-11 Python pm6-6 retirement, C2-9, C2-10, W3-6): PENDING: root had no E2 merge
-  (root head `ab189471` = S2R + B2 identity part, merged into this branch at `9dace914`).
+- Part A (C++): DONE; review `99b676f7` CHANGES_REQUIRED; **fix round 1 DONE_WITH_CONCERNS** (`9a7c490f` code +
+  tests, then the docs commit; the round was stopped after build j and resumed by a fresh agent, no code changed on
+  resume): R-1 (duplicate JSON keys refused), R-2 (narrower `leverage_range` refused with `construction_grid`), C3-3
+  (`x-flag-aliases ["--cost-v2"]` on `cost-sqrt-v2` only), PRE-7 / PRE-7a (print-only `--ann-mean-gross`, NavSpec
+  key `ann_mean_gross`), S-1, S-3 (as a recorded deviation, C3-6), S-4, S-5, S-7, part of S-6. Not done: the rest of
+  S-6 (other lanes' comments, "on next touch"). Debug l and Release j: named 33 / 33, whole target-tests 390 / 390,
+  canary 15 each; teeth k: six mutations, each caught by its own test. Concern: the explicit before / after exe
+  comparison (pre-round vs post-round NAV, flag absent) was NOT run: the worktree switch to `99b676f7` it needed was
+  refused by the permission system (report "Permission refusals"). Next: a scoped re-review of the fix round, then
+  root's merge (report "Fix round 1 / Root at merge", summary below).
+- Part B (C2-11 Python pm6-6 retirement, C2-9, C2-10, W3-6): PENDING, not started: it waits for E2 in root (C3-2)
+  (root head `ab189471` = S2R + B2 identity part, merged into this branch at `9dace914`; no newer root merged).
 - Commits: `4e958185` wip(c3) functional work; `7e4c9dc4` move-only split (alone); `9dace914` merge root
   `ab189471` (CMake tail conflict: B2's ledger link -> atx-impl-pipeline); then the CMake guard commit
   (`atx-impl-core` INTERFACE takes no sources), then the report commit.
@@ -37,13 +47,52 @@ Contract: `C:/atx-wt/pool-2/.superpowers/sdd/platform-p9-20261003/resume4-dispat
 - p9-c3-d (Release, -Canary): refused by the stale-PCH trap (ccache PCH vs the fresh `deps/equity-rel`).
 - p9-c3-e (Release, -Canary, `CCACHE_RECACHE=1` after deleting the six `cmake_pch.cxx.{pch,obj}` by name):
   776 s, 299 TUs; target-tests 387/387; canary 15 passed.
-- Next free tag: p9-c3-f. Build trees deleted after the report (a resumed round configures afresh; expect the
-  stale-PCH trap on the first Release build: same remedy).
+- Fix round 1: p9-c3-f (Debug, fresh tree, 359 TUs, 443 s; canary 15; one red in a new test of mine, fixed),
+  p9-c3-g (Debug: named 33/33, whole target-tests 390/390, canary 15), p9-c3-h (Release: the stale-PCH trap again,
+  nothing tested), p9-c3-i (refused at memory admission, nothing built, no receipt), p9-c3-j (Release at clean
+  `9a7c490f` after deleting the six `cmake_pch.cxx.{pch,obj}` by name, `CCACHE_RECACHE=1`: 274 TUs, 1082 s, canary
+  15; named 33 / 33, whole 390 / 390 run on resume), p9-c3-k (Debug, test target only, six teeth mutations: 5 named
+  tests fail as intended, 28 pass; reverted), p9-c3-l (Debug at `9a7c490f`, code clean: 12 TUs, canary 15, named
+  33 / 33, whole 390 / 390).
+- Next free tag: p9-c3-m. Build object trees: see "Disk" (a resumed round configures afresh; expect the stale-PCH
+  trap on the first Release build: same remedy).
 
 ## Logs
 
 `c3-logs/` here: gtest-a-named (18/18), gtest-a-whole, gtest-b-whole, gtest-c-whole (387/387 each), canary logs.
+Fix round 1: `fix1-gtest-f-named.log` (32/33, the red fixed), `fix1-gtest-g-named.log` (33/33),
+`fix1-gtest-g-whole.log` (390/390), `fix1-gtest-j-named.log` (33/33), `fix1-gtest-j-whole.log` (390/390, Release),
+`fix1-gtest-l-named.log` (33/33), `fix1-gtest-l-whole.log` (390/390, Debug), `fix1-teeth-k-named.log` (5 intended
+FAILs), `fix1-nav-identity.py` (tiny-world NAV driver) + `fix1-nav-optin-l.log` (opt-in tree check, PASS), canary
+logs `mega-p9-c3-{f,g,j,l}-canary.log`. Receipts and build logs stay in `build-equity/` (`mega-p9-c3-*`).
+
+## Root at merge (full list: report "Fix round 1 / Root at merge")
+
+1. Scoped re-review of fix round 1, then merge; both presets, the nine targets of the report's item 1, `-Canary`;
+   named filter 33 / 33, whole target-tests 390, `atx-impl-tests` once, canary 15 on the unchanged goldens.
+2. X-5 and Y-F0: `nav <argv> --print-spec` (byte-preserving redirect, never PowerShell 5.1 `>`), then the argv run and
+   the `nav --spec` run into two new dirs: every file byte-identical.
+3. Release = Debug NAV on X-5 (G-P3 NAV half): equal except `summary.json` `producer` (`engine_git_sha`,
+   `build_type`).
+4. Flag-absent identity against the pre-C3 reference (without `--ann-mean-gross`): equal except
+   `producer.engine_git_sha` (check the fields manifests for a `seal` block: without one stdout gains the P13 legacy
+   line). The tiny-world before / after the lane could not run: `c3-logs/fix1-nav-identity.py old --bin <pre-merge
+   bin>` then `new --bin <merged bin>`, `RESULT PASS`.
+5. Wall time: the five research exes' build time on a fresh tag vs the pre-C3 receipt (F-10); X-5 NAV wall time
+   before / after the 14-TU split, Debug and Release.
+6. SQL2-CLS: `atx.nav-spec/v1` into `atx-engine/schemas/research_store/classes.json` (the only new schema literal of
+   C3; this round adds none).
+7. W3-8 kind-fixture flip (root post-merge, D3 owns the kind files): `new-cost-model.json` out of
+   `SCHEMA_ONLY_FIXTURES`; run the 10 tiny-world kinds against the real `nav --list-rules --json`; D3's E2-8 guard
+   reads `x-flag-aliases` (`--cost-v2` = `--cost-law cost-sqrt-v2`, ruling C3-3).
+8. The opt-in (PRE-7a): flag `--ann-mean-gross`, NavSpec key `options.ann_mean_gross`; every P9 cell and its
+   reference name it alike at the wave-3 P9-B0; with it only `summary.json` changes, by one `ann_mean_gross` key per
+   scenario (a grid manifest's `summary_file_sha256` follows). New optional keys: scenario `ann_mean_gross` in
+   `atx.dsl-nav-replay-summary/v1`, row `x-flag-aliases` in `atx.nav-rules/v1`.
+9. `atx-impl-core` is INTERFACE: retarget any root list / append naming it; W1-I2 re-pin of lineage parents at P9-B0.
 
 ## Open questions
 
-- none (part B is pending by the dispatch rule, not by a question)
+- The explicit before / after exe check (flag absent, pre-round vs post-round) is root's at merge (item 4) unless the
+  owner allows the refused worktree switch (report "Permission refusals").
+- Part B is pending by the dispatch rule, not by a question.
