@@ -41,7 +41,8 @@ struct ThemeErcFit {
   atx::f64 dispersion{};                          // max_t |c_t / mean(c) - 1|
   atx::f64 cap{};                                 // 1 / (2T)
   atx::usize cap_passes{};                        // capping passes run (0: no member above the cap)
-  std::vector<atx::f64> uncapped;                 // per member: a_k * b_theme(k), when traced (P9 D2)
+  std::vector<atx::f64> uncapped;                 // per member: a_k * b_theme(k), when traced
+                                                  // (P9 D2)
   std::vector<atx::engine::combine::GroupCapPass> passes; // the cap's passes, when traced (P9 D2)
 };
 // Members in input order: share[k] finite >= 0, theme[k] < themes, every theme with at least one
