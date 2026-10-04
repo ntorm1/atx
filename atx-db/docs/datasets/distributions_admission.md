@@ -100,3 +100,30 @@ Required actual task gates remain declaration>=90%,cash agreement within1%on>=95
 200distinct buybackchecks>=95%. No fixtures, metadata, source hash or Boolean match claim
 closes these gates. Class/clock certification, actual full vendor/universe cash denominator,
 calendar admission and rate carry policy remain blocking Task4R11 prerequisites.
+
+## Conditional semantic reader continuation
+
+`distributions_qualification.py` supplies concrete offline semantic primitives:
+original SEC index Accepted/full-submission acceptance header with accession and
+DST-aware NewYork-to-UTC conversion (ambiguous/nonexistent wall clocks reject);
+original inline-DEI same-context title/symbol/issuer/context-identifier matching
+(legal-entity/co-registrant contexts and ADR/preferred classes reject); exact native
+declaration replay; unique dated symbol/CIK/security linkage with no future evidence;
+and conditional fixed regular USD event rate using the explicit native cadence.
+
+A positive fixture produces2.4USD/share/year from0.60regular quarterly on the proved
+native class. Quote currency remains separately unqualified. Carry requires explicit
+`effective through` validity parsed from that native declaration; missing validity
+never invents forever carry or a120/365day expiry. No-pay/cancellation/variable policies
+are native parsed tombstones. Future declarations are filtered by availability and
+cannot rewrite earlier state.
+
+These functions are not yet wired into production admission. Every original declaration,
+class/index object and dated line inventory still must be independently admitted by the
+bounded original-byte/replay adapter, including complete event inventory through each
+cutoff. Calling the standalone list-based state helper does not prove that inventory is
+complete. Existing production admission therefore retains its honest NULL fallback until
+those concrete ancillary input adapters and original proofs are available. This is an
+implemented conditional path, not actual-source qualification or task-completion evidence.
+Native index/body or original notesZIPmember proofs are required before transformed
+SUB/DEI/cover values are promoted; source timestamps and hashes alone cannot substitute.

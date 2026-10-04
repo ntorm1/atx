@@ -253,3 +253,62 @@ FinalR2covering result:**6passed,16deselected in18.03s** after current module co
 and reader-code identities. `git diff --check` passes for owned paths. R2commits only
 distribution/buyback source, directly covering test, corresponding docs/registry and
 this forced-added report; no shared/foreign/frozen producers were edited.
+
+## Full-task source dependency continuation after scopedR2approval
+
+R2engineering checkpoint cb318dd9was independently Approved in
+review-T13-native-r2-findings.md. This continuation is not a new repair round;
+total repairs remain2/5. Original full Task13source obligations/gates remain incomplete.
+
+Root authorized new exact-path metadata helper
+`.superpowers/sdd/tier1-v4/t13-native-chain-preflight-v1.py`. Lane created it but did
+not run it. It requires external ATX_GUARD_JOB, refuses output overwrite, uses no
+glob/recursive source discovery, caps12files and8MiBfooter/file, reads final8bytes
+then Parquet metadata only, and outputs explicit missing/schema/rowcount/groups/stat
+bytes/native-reader paths. Zero payload/value/return rows, full-source hashes andHTTP.
+Root inspected/ran under0.3GiBguard:1.0s/45,813,760peakbytes,0HTTP, all12paths exist;
+only generated task13-native-chain-preflight-v1.json was read by this lane.
+
+Root-reported footer rows:SECfilings18,647,938(544,988,422bytes/72groups),
+cover992,162(52,120,466bytes/33groups),vendor_events262,560(4,596,662bytes/2groups),
+calendar3642;2019q4/2020q1SUB12664/13561,TXT_DEI302483/343432,
+NUM_DEI7536/11221,DIM115800/195139. Metadata is layout evidence only; no class,
+currency, original acceptance, cadence, carry, prior history or gate was qualified.
+
+New owned private module `distributions_qualification.py` implements concrete native
+semantic readers/conditional functions, with positive and refusal offline fixtures:
+original index Accepted or full SEC header clock checks accession and converts
+NewYork/DST toUTC, rejecting ambiguous/nonexistent times; original inline-DEI title and
+symbol must share a real context whose identifier matches unique native issuerCIK,
+excluding co-registrant/ADR/preferred contexts; replay exact affirmative per-share
+native regular USD declaration/cadence; require one dated symbol/CIK/security mapping
+and no future class/link evidence; then produce an event-level native fixed-rate
+annualization. Positive fixture0.60quarterly→2.4USD/share/year demonstrates a real
+conditional path rather than permanentlyNULLstub. Quote-currency parity remains false
+and separate from native dividend currency. Missing/unknown/variable/special inputs
+cannot qualify. Explicit source `effective through` validity supports bounded carry;
+missing validity cannot invent persistence/expiry. Parsed no-pay/cancellation/variable
+tombstones and availability filtering prevent future statements rewriting earlier state.
+
+These standalone semantic functions are not yet wired into production admission.
+Native original declaration+index/header+DEI objects, exact independently admitted line
+evidence and complete event inventory through cutoff must be supplied and validated by
+new ancillary admission adapters before production fallbackNULLcan be replaced. In
+particular, calling a list-based state helper does not certify inventory completeness.
+Transformed notesSUB/DEI/cover rows alone do not establish original ZIPmember/source
+proof; no arbitrary Boolean/metadata/hash assertion was used to qualify actual sources.
+Exact source-dependency plan with local native paths/columns was sent to root before
+implementation; next root audit must establish a few retained native semantic chains
+before concrete ancillary adapters are admitted. Full180daypriorhistory and every
+member-line/vendor/universe cash denominator remain required, not partial successes.
+
+Covering command fromC:/atx/atx-db, requiredPYTHONPATH/OPENBLAS_NUM_THREADS=1:
+
+```powershell
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_distributions_qualification.py -q
+```
+
+Result:**5passed in0.29s**, offline original-format fixtures only. No unchanged suites
+or actual source/data/hash/HTTP jobs ran. No shared/foreign/Task12/Task16producer edits.
+Actual gates remain0PASS/3FAIL; independently checked buybacks0/200; all actual yearly
+coverage and full source-publication/class/currency/history/gate measurements remain open.
