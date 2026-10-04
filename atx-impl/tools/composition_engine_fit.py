@@ -50,7 +50,7 @@ import numpy as np
 
 import composition_rules  # this directory: module_fingerprint (review S-3)
 
-SUPPORTED =("ew-theme-std-v1", "ew-theme-std-aim-v1", "ic-shrink-v1", "ic-shrink-aim-v1")
+SUPPORTED = ("ew-theme-std-v1", "ew-theme-std-aim-v1", "ic-shrink-v1", "ic-shrink-aim-v1")
 STD_COMPOSITIONS = ("ew-theme-std-v1", "ew-theme-std-aim-v1")
 FACTOR_SCHEMA = "atx.factor-series/v1"
 FIT_SPEC_SCHEMA = "atx.composition-fit-spec/v1"

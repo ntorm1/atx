@@ -55,10 +55,12 @@ Python CM-5 change and `--engine-fit`.
   6. The agreement record goes into the summary and `provenance.engine_fit`.
 - The admission table stays the Python screen's. B1's comparator holds it to P12.
 - A gap larger than P12 refuses before anything is published.
-- Supported: the single-window prior path with ew-theme-std-v1 / -aim-v1 / ic-shrink-v1 / -aim-v1, each with or
-  without `--theme-erc`, `--theme-tsmom`, `--theme-resid` and `--two-speed`. Refused before any compute: other
-  compositions (ew-theme-aim-v2 included), the train orientation, era pools, and the option flags without
-  `--engine-fit`.
+- Supported (corrected in fix round 1, review R-2): the single-window prior path with ew-theme-std-v1 / -aim-v1 /
+  ic-shrink-v1 / -aim-v1, each with or without `--theme-erc`, `--theme-tsmom`, `--theme-resid` (with or without
+  `--theme-resid-parent`, either side fitted with or without the flag; ruling D2-R2) and `--two-speed`. Refused before
+  any compute: ew-theme-v1, ew-theme-aim-v1, ew-theme-aim-v2 and ew-theme-v6 (no C++ fit), the train orientation,
+  era pools, and the option flags without `--engine-fit`. Before fix round 1, `--theme-resid-parent` under the flag
+  could not run (every child refused).
 - Real executables on the fitter's synthetic world (aim_world; the factor directory is the fitter's own series):
 
   | Case | factor diff | admission diff | fit diff | Bytes vs flag absent |
@@ -224,3 +226,92 @@ All four D1 minors are fixed (above).
   untracked and git-ignored.
 - The lane's scratchpad files and the pool's `__pycache__` directories were deleted. Root rebuilds pool-20 from
   configure if it builds there.
+
+## Fix round 1 (review `61a808c6`: R-1, R-2, S-1..S-8; rulings D2-R2, D2-S4, D2-5..D2-8)
+
+| | |
+|---|---|
+| Outcome | DONE for the fix round; the lane stays DONE_WITH_CONCERNS only for the P10 notes below |
+| Commits | `9c09b694` WIP fix round (owner stop), `57df8298` handoff, then this commit (report, one comment reflow, one whitespace fix) |
+| Build | `p9-d2-e` (below); no rebuild in the resumed session |
+| Not split | `9c09b694` stays one commit (no history rewrite, as D2-4); the themes are listed per item below |
+
+### Required
+
+| # | State | What changed | Evidence |
+|---|---|---|---|
+| R-1 | fixed | `strategy_marginal_pair_cache.cpp`: `pair_sources` gains `atx-engine/include/atx/engine/combine/group_rerank.hpp` (3 paths). Re-pinned by the recipe with no version bump (bits unchanged; S2-1 precedent): `df589a889927852b86815920e6ed59a37ea0b44d026d9ffb97ae73f2aa37c7bc`, equal to the reviewer's independent recompute. `MarginalIc.PairCacheSourcesPinned` asserts 3 sources and that the last is `group_rerank.hpp`; the test comment no longer claims "no include closure". | `evidence-D2/fr1-gtest-pair-cache-pin.log` (1/1), `fr1-gtest-strategy-ic.log` (195/195) |
+| R-2 | fixed (ruling D2-R2: a flag-aware check, not an up-front refusal) | `composition_resid.parent_check(..., engine_fit=False) -> bool`. Engine mode applies when the re-fit runs `--engine-fit` or the parent carries `provenance.engine_fit`. In that mode `provenance.engine_fit` and the ic-shrink annotations `ic_source` / `ic_admission_max_abs_diff` (D2-S4) are set aside on both sides, and the rest is compared by `composition_engine_fit.compare_values(parent, child)`: decisions, keys, lengths and strings exactly; floats to 1e-12 x max(1, abs(parent)) (ruling D2-8: the parent is the reference). The admission tables stay exact, as without the flag. The refusal names `--engine-fit on {the parent / this re-fit}` plus the count and paths of the differing values. Engine mode also writes `provenance.resid.parent_check_engine_fit` (the comparison the file passed). With the flag absent on both sides, the path, the message and the `PARENT_CHECK` text are unchanged (byte-exact check as before). | `test_composition_engine_fit.py::EngineFitResidParent`, 5 tests: engine parent + engine child; engine parent + plain child; plain parent + engine child (the C++-valued second pass passes and its values are written); plain + plain byte-exact as before; a fitter change (ic-shrink intensity 0.25) refused in the Python pass before any exe runs or any output is written |
+
+### Suggested
+
+| # | State | What changed / reason |
+|---|---|---|
+| S-1 | fixed | `compare_admission_csv`: every row must have the header's length (no `zip` truncation). A non-finite cell must match the other side's text exactly. An unparsable float cell counts as a difference, and an empty file as a shape difference. Tested in `Comparisons`. |
+| S-2 | fixed | `_read` / `_json` turn a missing or non-JSON executable output into the refusal. `run_exe` turns `TimeoutExpired` / `OSError` into the refusal. `kernels` wraps `_kernels` and turns Key/Type/Value/Index/AttributeError into the refusal. The screen manifest must be an object and its `counts` a dict. |
+| S-3 | fixed | `provenance.engine_fit` (and the summary) gain `admission_exe_sha256`, `composition_exe_sha256` and `producer_fingerprint` = `module_fingerprint(composition_engine_fit, ("verify", "kernels", "check_written"))`. Test `test_provenance_names_the_producing_code`. |
+| S-4 | fixed (ruling D2-S4) | Under the flag, `provenance.ic_shrink` gets `ic_source = IC_SOURCE_ENGINE` (the ICs are the C++ fit's; admission.json keeps the Python train_mean) and `ic_admission_max_abs_diff`. `kernels` refuses a C++ IC further than P12 from the admission train_mean. `admission.json` is unchanged. Test `test_ic_shrink_states_its_ics_are_the_cpp_values` (a 1e-9 shift is refused). |
+| S-5 | fixed | `parent_check` refuses a parent whose provenance sub-block carries `module_sha256` (a pre-D2 parent): "fitted before P9 lane D2: its provenance blocks [...] name their code by module_sha256, which CM-5 / ruling D2-2 replaced by producer_fingerprint ...; refit the parent cell with this fitter, then re-run this cell against the new parent file". The new `"pre-d2"` case in `test_composition_resid.py::...test_a_re_fit_that_is_not_the_parent_cells_file_is_refused` builds a real pre-D2 shape (`std.module_sha256`, `script_sha256` in the weights and the admission, a recomputed `admission_sha256`). It passes with no fixture change. Texts: the `parent_check` docstring and the `--theme-resid-parent` help now name `producer_fingerprint`. `PARENT_CHECK` is not changed: it is the v8 rule's registered text and an output string (`provenance.resid.parent_check`), so changing it would move flag-absent R-11 bytes. The code comment beside `FITTER_IDENTITY_KEYS` states the equivalence. |
+| S-6 | partly fixed; the rest is **not in P9 (ruling D2-7, P10 note)** | Done: the `attach*` / `apply` writers joined `PRODUCERS` (ic_shrink, theme_erc, theme_tsmom: `attach`; resid: `attach`, `apply`; rules: `attach_std`), and `composition_engine_fit` joined `LOCAL_MODULES`. These additions move the `producer_fingerprint` values; still only the four ruled CM-5 / D2-2 keys differ from the X-5 reference. Not done: the fitter-wide cross-module fingerprint (`OUTPUT_PRODUCERS` hashes imports, not cross-module reads; finding FD-2). It changes the store identity shape under pinned records, and the per-module `producer_fingerprint` (D2-2) covers the stale-module risk. **P10 note:** a cross-module edit (for example to `era_pool`, `composition_two_speed` or `composition_engine_fit`) that changes a fit without touching a fingerprinted closure would reuse a stale record; none is known. Not a regression: the old whole-file `script_sha256` had the same gap. |
+| S-7 | done | (a) gtest logs kept: `evidence-D2/fr1-gtest-{research-composition,strategy-ic,strategy-target,combine,pair-cache-pin}.log`. (b) `RealExecutables` ran here with both exe env vars set: it passed (inside the 264 below; no skip). The root step is added below. |
+| S-8 | fixed (report only) | `fit_max_pure_rel_diff_by_block` (abs(a-b)/abs(a) over finite non-zero floats, per block: parent, theme_erc, theme_tsmom, weights) is in the summary and in `provenance.engine_fit`. The tolerance is still the ruled P12. |
+
+### Ordered items
+
+- D2-5: the horizon_stats row of `scripts/tests/test_no_python_mirror.py` names `P10`, with a comment giving the reason (the module is in the factor-record key; a named G-P5 exception). The guard now prints "34 mirrored rule function(s) in 13 row(s) left for P9 lanes" (was 37 in 14).
+- D2-6: no line over 100 columns remains in the new engine files (`composition_cli.{hpp,cpp}`, `ew_theme_std.{hpp,cpp}`, `fit.{hpp,cpp}`, `weights_schema.hpp`, `research_composition_fit_test.cpp`) or in D2's new lines of `strategy_ic_rules*.cpp`, `strategy_ic_runner.cpp` and `strategy_ic_theme_tsmom.hpp`. One slip was found and fixed in the resumed session: a 112-column comment at `strategy_ic_theme_tsmom.hpp:5`, reflowed after build p9-d2-e (comment only; no code token changed). The remaining long added lines are all in the moved files (`ic_shrink`, `theme_erc`, `theme_resid`, `theme_tsmom` .hpp / .cpp; 34 lines), left as D2-6 rules.
+- D2-4: the WIP commits stay unsplit.
+- Slip: `SUPPORTED =(` became `SUPPORTED = (` in `composition_engine_fit.py` (whitespace only; the AST is unchanged, so no fingerprint moves).
+
+### Build and tests (fix round 1)
+
+- Build `p9-d2-e` (`scripts/research-build.ps1`, equity-dev): exit 0, 783 s, 363 TUs, 18 links, Jobs 2.
+  - Receipt `build-equity/mega-p9-d2-e-receipt.json`. Source: `61a808c6` plus 14 dirty entries, which are exactly commit `9c09b694`. Every C++ file of `9c09b694` was last written before the build started.
+  - Targets: `atx-engine-research-composition-tests`, `atx-research-composition`, `atx-research-admission`, `atx-equity-strategy-ic`, `atx-impl-strategy-ic-tests`, `atx-equity-strategy-targets`, `atx-impl-strategy-target-tests`, `atx-engine-combine-tests`.
+  - Exe SHA-256 prefixes: composition `a074ca53`, admission `bf7e7142`, targets `dcca3362`.
+- gtests, on the real exes of p9-d2-e:
+  - research-composition 10/10;
+  - strategy-ic 195/195, including `MarginalIc.PairCacheSourcesPinned`;
+  - strategy-target 325/325;
+  - combine 243/243 (the CHECK lines in its log are death tests).
+- pytest: explicit paths, `-p no:cacheprovider`, own `--basetemp`, `PYTHONDONTWRITEBYTECODE=1`. `ATX_RESEARCH_ADMISSION_EXE`, `ATX_RESEARCH_COMPOSITION_EXE` and `ATX_EQUITY_TARGETS_EXE` were set to the p9-d2-e exes.
+  - `atx-impl/tools`: **264 passed, 0 skipped, 39 subtests passed** (184 s; `evidence-D2/fr1-pytest-tools.log`).
+    - Files: `test_fit_composition_weights{,_store,_pool}.py`, `test_composition_{engine_fit,fit_fixture,ic_shrink,resid,rules,theme_erc,theme_tsmom,two_speed}.py`, `test_fit_composition_rule_plugins.py`, `test_factor_series_admission.py`.
+    - Per file, in that order: 97, 5, 40, 20, 4, 17, 23, 13, 15, 11, 3, 8, 8.
+  - `scripts/tests/test_no_python_mirror.py`, in a separate invocation: **7 passed** (`evidence-D2/fr1-pytest-no-python-mirror.log`).
+  - No red. No expected value was edited.
+- `ruff --select F --line-length 120` and an AST parse are clean on the changed Python.
+
+### Root merge items (restated, with fix-round changes)
+
+1. **E2 flip** (E2 merges first). `scripts/tests/test_wave_kinds.py:247-251` and `:311-312` assert that D1's interim schemas refuse `{}`. The line numbers are at E2's `5ca50ef5`; re-locate them at E2's final head. Under D2's closed `params_schema` the composition fixture is accepted, so these asserts flip in E2's file:
+   - `rule_flags([{"name": "ew-theme-std-v1"}], {"ic": ic_table(False)}) == []`;
+   - `checked_params("two-speed-v1", {}, row) == {"rule": "two-speed-v1"}` still holds;
+   - `new-combination-rule.json` passes the spec stage.
+2. **Refit check for pre-D2 `--theme-resid-parent` files.** A parent weights file fitted before D2 (a provenance block with `module_sha256`) is now refused with the S-5 message.
+   - Root checks whether any P9 R-11 cell's parent (the `scripts/specs/v8/r11.json` derivation) points at such a file.
+   - If one does, refit the parent cell's argv with the merged fitter (0 trials, no statistic read). The child's `--theme-resid-parent-sha256` pin is then the new file's SHA-256.
+   - R-11 cells under `--engine-fit` can run after the merge (R-2 fixed). The review's "do not run until R-2 is fixed" lifts once root's merge verification passes.
+3. Build the targets in "How root verifies" plus `atx-impl-tests` (never built by the lane), and run the anchored filters. `MarginalIc.PairCacheSourcesPinned` must pass with 3 sources.
+4. **S-7:** run the following and read 20 passed, no skip (`RealExecutables` included):
+   `ATX_RESEARCH_ADMISSION_EXE=<bin>/atx-research-admission.exe ATX_RESEARCH_COMPOSITION_EXE=<bin>/atx-research-composition.exe python -m pytest -q -p no:cacheprovider atx-impl/tools/test_composition_engine_fit.py`
+5. X-5 identity:
+   - Flag absent: only the four ruled CM-5 / D2-2 keys differ (table above).
+   - Flag present: as above. `provenance.engine_fit` now also carries the exe SHA-256s, `producer_fingerprint` and `fit_max_pure_rel_diff_by_block`.
+   - With an ic-shrink composition, `provenance.ic_shrink` also carries `ic_source` / `ic_admission_max_abs_diff`.
+   - With a resid parent in engine mode, `provenance.resid.parent_check_engine_fit` is added.
+6. AL-COMB rebases on this head (P17 / ALCOMB-5) with closed `params_schema` rows. The SQL2-CLS literals are as in "Merge requests" item 3.
+
+### Open notes (P10)
+
+- S-6: the fitter-wide cross-module fingerprint (ruling D2-7).
+- horizon_stats.py retirement (ruling D2-5; a named G-P5 exception).
+
+### Disk (fix round 1)
+
+Deleted by name right after this commit, in `C:/atx-wt/pool-20/build-equity` (about 2.9 GB):
+
+- directories `atx-core`, `atx-engine`, `atx-impl`, `atx-tsdb`, `bin`, `lib`, `tests`, `CMakeFiles`;
+- files `CMakeCache.txt`, `build.ninja`, `.ninja_deps`, `.ninja_log`, `cmake_install.cmake`, `CTestTestfile.cmake`, `compile_commands.json`, `CPackConfig.cmake`, `CPackSourceConfig.cmake`, `spdlog.pc`.
+
+Kept: `mega-p9-d2-{a..e}-*`, `vcpkg-manifest-install.log`, `audits/`, `v8-interim3-pitch-render-run2/`. Also deleted: the pool's `__pycache__` directories and this session's two pytest basetemp directories. Root rebuilds pool-20 from configure if it builds there.
