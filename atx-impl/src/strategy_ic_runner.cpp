@@ -2,6 +2,7 @@
 #include "strategy_ic_composition.hpp"
 #include "strategy_ic_detail.hpp"
 #include "strategy_ic_rules.hpp"
+#include "strategy_ic_theme_hedge.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -442,6 +443,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     ATX_TRY(auto stages,composition_stages(pinned,role.session_keys));
     ATX_TRY(auto created,IcComposition::create_from_stages(cc,candidates,effective,stages));
     composition.emplace(std::move(created));
+    // theme-cov-hedge-v1 (P9 lane AL-COMB): the role's session returns for its stage; else nothing.
+    ATX_TRY_VOID(attach_theme_hedge(pinned,role,*composition));
   }
   // One key per candidate (empty = cache off); directories are created on write.
   const bool signal_cache=!cache.keys.empty();
@@ -694,6 +697,10 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     result["planned_target_proxy"]={{"total_turnover",combined->total_planned_turnover},
         {"deployment_turnover",combined->deployment_turnover},{"deployment_date",combined->deployment_date},
         {"initial_deployment_included",true},{"actual_trades_or_costs",false}};
+    // P9 lane AL-COMB (ruling ALCOMB-5 S-3): theme-cov-hedge-v1's hedge ratios per theme and block
+    // and mom-volman-v1's scale per block; nothing unless those rules run.
+    ATX_TRY_VOID(add_theme_hedge_trace(pinned,role.session_keys,*combined,result));
+    ATX_TRY_VOID(add_mom_volman_trace(pinned,result));
   }
   if (save) {
     result["combined_artifact"]=std::move(saved);

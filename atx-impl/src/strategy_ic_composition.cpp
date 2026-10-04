@@ -10,6 +10,7 @@
 #include <utility>
 #include "atx/engine/combine/group_rerank.hpp"
 #include "atx/engine/parallel/det_pool.hpp"
+#include "strategy_ic_theme_hedge.hpp"
 #include "strategy_ic_theme_resid.hpp"
 
 namespace atx::impl::strategy {
@@ -30,8 +31,11 @@ bool safe_name(const std::string& s) {
   });
 }
 // The validated shape of a stage list: the grouping's rule (redistribute without a grouping),
-// whether there is a grouping and whether sleeves are built.
-struct StagePlan { IcThemeRule rule{IcThemeRule::redistribute}; bool grouped{}, sleeves{}; };
+// whether there is a grouping, whether sleeves are built and whether the themes are hedged.
+struct StagePlan {
+  IcThemeRule rule{IcThemeRule::redistribute};
+  bool grouped{}, sleeves{}, hedge{};
+};
 co::Result<StagePlan> stage_plan(std::span<const IcStageKind> kinds) {
   StagePlan plan;
   bool standardise = false, residualise = false, rides = false;
@@ -57,6 +61,9 @@ co::Result<StagePlan> stage_plan(std::span<const IcStageKind> kinds) {
       case IcStageKind::sleeves:
         rides = plan.sleeves = true;
         break;
+      case IcStageKind::hedge:
+        rides = plan.hedge = true;
+        break;
     }
   }
   const bool redistribute = !kinds.empty() && kinds.front() == IcStageKind::redistribute;
@@ -65,6 +72,9 @@ co::Result<StagePlan> stage_plan(std::span<const IcStageKind> kinds) {
     return co::Err(co::ErrorCode::InvalidArgument, "IC composition: stages must be one theme "
                    "grouping (redistribute or standardise), then on standardise residualise, or "
                    "schedule and/or sleeves");
+  if (plan.sleeves && plan.hedge) // theme-cov-hedge-v1 (P9 AL-COMB) hedges the blend, not sleeves
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC composition: a theme hedge stage and a sleeves stage are exclusive");
   return co::Ok(plan);
 }
 // f64 planes per theme: redistribute keeps a blend and a present-weight plane,
@@ -137,7 +147,15 @@ co::Result<u64> ic_composition_stage_bytes(usize dates, usize names, usize count
   if (!plan.grouped && themes)
     return co::Err(co::ErrorCode::InvalidArgument,
                    "IC composition: themes without a grouping stage");
-  return ic_composition_working_bytes(dates, names, count, themes, plan.rule, plan.sleeves);
+  ATX_TRY(const u64 bytes,
+          ic_composition_working_bytes(dates, names, count, themes, plan.rule, plan.sleeves));
+  if (!plan.hedge) return co::Ok(bytes);
+  // theme-cov-hedge-v1 (P9 AL-COMB): session returns, the hedged plane, the kernel's scratch and
+  // the printed hedge ratios.
+  ATX_TRY(const u64 hedge, theme_hedge_working_bytes(dates, names, themes));
+  if (hedge > std::numeric_limits<u64>::max() - bytes)
+    return co::Err(co::ErrorCode::OutOfRange, "IC composition: working bytes overflow");
+  return co::Ok(bytes + hedge);
 }
 
 struct IcComposition::Impl {
@@ -161,6 +179,10 @@ struct IcComposition::Impl {
   bool residualise{}; // theme-resid-v1 on the std planes (theme index = registered-order position)
   std::vector<IcThemeBlock> schedule; // theme-tsmom-v1 mass schedule on the std planes (empty: W_theme throughout)
   std::vector<u8> sleeve_of;          // two-speed-v1: per theme index 1 fast, 0 slow (empty: no sleeves)
+  // theme-cov-hedge-v1 (P9 AL-COMB): on (a hedge stage or set_theme_hedge) and the role's session
+  // returns set_theme_hedge took (empty until then; finish refuses a hedge without them).
+  bool hedge{};
+  std::vector<f64> hedge_returns;
   IcCompositionResult result;
   usize next{};
   bool finished{};
@@ -277,6 +299,8 @@ co::Result<IcComposition> IcComposition::create_from_stages(const IcCompositionC
       ATX_TRY_VOID(composition.schedule_theme_masses(stage.blocks));
     if (stage.kind == IcStageKind::sleeves)
       ATX_TRY_VOID(composition.set_theme_sleeves(stage.fast));
+    // theme-cov-hedge-v1: the runner attaches the role's returns next (set_theme_hedge).
+    if (stage.kind == IcStageKind::hedge) composition.impl_->hedge = true;
   }
   return co::Ok(std::move(composition));
 }
@@ -440,6 +464,29 @@ co::Status IcComposition::set_theme_sleeves(std::span<const u8> fast) {
   return co::Ok();
 }
 
+co::Status IcComposition::set_theme_hedge(std::vector<f64> session_returns) {
+  if (!impl_ || impl_->finished)
+    return co::Err(co::ErrorCode::InvalidArgument, "IC composition: theme hedge after finish");
+  auto& p = *impl_;
+  if (p.std_mass.empty() || p.residualise || !p.sleeve_of.empty())
+    return co::Err(co::ErrorCode::InvalidArgument, "IC composition: a theme hedge "
+                   "(theme-cov-hedge-v1) needs the standardise rule without theme sleeves");
+  if (session_returns.size() != p.member.size())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC composition: theme hedge returns need one value per date and name");
+  ATX_TRY(const u64 bytes, ic_composition_working_bytes(p.cfg.dates, p.cfg.instruments,
+                                                        p.candidates.size(), p.std_mass.size(),
+                                                        IcThemeRule::standardise, false));
+  ATX_TRY(const u64 hedge,
+          theme_hedge_working_bytes(p.cfg.dates, p.cfg.instruments, p.std_mass.size()));
+  if (bytes > p.cfg.max_working_bytes || hedge > p.cfg.max_working_bytes - bytes)
+    return co::Err(co::ErrorCode::OutOfRange,
+                   "IC composition: working budget exceeded (theme hedge)");
+  p.hedge = true;
+  p.hedge_returns = std::move(session_returns);
+  return co::Ok();
+}
+
 co::Result<IcCompositionResult> IcComposition::finish() {
   if (!impl_ || impl_->finished || impl_->next != impl_->candidates.size())
     return co::Err(co::ErrorCode::InvalidArgument, "IC composition: incomplete/finished input");
@@ -459,6 +506,18 @@ co::Result<IcCompositionResult> IcComposition::finish() {
   // theme-resid-v1 instead residualises the re-ranked planes in index order per date.
   if (p.residualise) {
     ATX_TRY_VOID(add_theme_residualised(p.std_plane, p.std_mass, p.cfg.instruments, out.signal, p.row));
+  } else if (p.hedge) {
+    // theme-cov-hedge-v1 (P9 AL-COMB): each theme's re-rank hedged on its own sleeve's covariance
+    // loading, times the mass in force (W_theme before the first block), themes in index order; a
+    // date before the hedge ratio's first estimate adds the re-rank itself, as the branches below.
+    // The hedge ratios per theme and block go to the result (the runner prints them).
+    if (p.hedge_returns.empty() || !p.sleeve_of.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "IC composition: a theme hedge needs its session returns and no theme "
+                     "sleeves");
+    ATX_TRY_VOID(add_theme_hedged(p.std_plane, p.std_mass, p.schedule, p.hedge_returns,
+                                  p.cfg.instruments, out.signal, &out.hedge_block,
+                                  &out.hedge_ratio));
   } else if (p.schedule.empty()) {
     for (usize t = 0; t < p.std_plane.size(); ++t)
       ATX_TRY_VOID(cb::add_group_rerank(p.std_plane[t], p.cfg.instruments, 0, p.cfg.dates, p.std_mass[t],
@@ -508,6 +567,7 @@ co::Result<IcCompositionResult> IcComposition::finish() {
   }
   std::vector<IcThemeBlock>().swap(p.schedule);
   std::vector<std::vector<f64>>().swap(p.std_plane);
+  std::vector<f64>().swap(p.hedge_returns);
   for (usize d = 0; d < p.cfg.dates; ++d)
     out.contribution_fraction[d] = out.eligible_names[d]
       ? out.contribution_fraction[d] / static_cast<f64>(out.eligible_names[d]) : 0;

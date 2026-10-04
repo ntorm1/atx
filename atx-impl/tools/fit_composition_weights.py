@@ -218,6 +218,8 @@ import composition_theme_erc  # noqa: E402  (v8 X, lane XCOMB: --theme-erc theme
 import composition_theme_tsmom  # noqa: E402  (v8 Y, lane YCOMB: --theme-tsmom theme-tsmom-v1, theme schedule)
 import composition_two_speed  # noqa: E402  (v8 Y-5, lane YCOMB: --two-speed two-speed-v1, fast/slow sleeves)
 import composition_engine_fit  # noqa: E402  (P9 D2: --engine-fit, the C++ admission check and fit values)
+import composition_mom_volman  # noqa: E402  (P9 AL-COMB: --mom-volman mom-volman-v1, momentum mass schedule)
+import composition_theme_hedge  # noqa: E402  (P9 AL-COMB: --theme-hedge theme-cov-hedge-v1, spec block only)
 
 RULE_ID = "mv-shrink-0.9-nonneg-v1"
 # Root preregistration (before any v3 measurement): the same fit with a net mean vector,
@@ -270,7 +272,8 @@ POOLED_THEME_RESID = (composition_resid.RULE_ID,)
 # P9 lane D1: the modifier rules (each a flag on a prior parent fit, in its own module), in argparse order; the ones
 # that check their parents (check_args(args, prior, pooled, error)) run in this order, after theme-resid-v1's checks
 # (composition_resid.PRIOR_ONLY and require_resid_order). A new modifier is one module appended here.
-PARENT_CHECKED_MODIFIERS = (composition_theme_erc, composition_theme_tsmom, composition_two_speed)
+PARENT_CHECKED_MODIFIERS = (composition_theme_erc, composition_theme_tsmom, composition_two_speed,
+                            composition_mom_volman, composition_theme_hedge)  # P9 AL-COMB: the last two
 MODIFIER_MODULES = (composition_resid,) + PARENT_CHECKED_MODIFIERS
 AIM_FIT_SERIES = ("none (aim-scaled equal theme weights from TRAIN signal-rank second moments); diagnostic uses "
                   "s_k*f over ALL TRAIN scored decisions, flat decisions 0")
@@ -2604,6 +2607,15 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
         if getattr(args, "two_speed", None) is not None:  # v8 Y-5 (YCOMB): the spec block only (check_args ran)
             composition_two_speed.attach(document, error=FitError)
             summary["two_speed"] = document[composition_two_speed.BLOCK]
+        if getattr(args, "mom_volman", None) is not None:  # P9 AL-COMB: the recorded momentum sleeve (check_args ran)
+            volman = composition_mom_volman.schedule(
+                [ids[k] for k in active], [themes[k] for k in active], weights, matrix, decision_sessions, train_mask,
+                composition_theme_erc.RULE_ID if erc is not None else args.composition, error=FitError)
+            composition_mom_volman.attach(document, volman)
+            summary["mom_volman"] = volman.summary
+        if getattr(args, "theme_hedge", None) is not None:  # P9 AL-COMB: the spec block only (check_args ran)
+            composition_theme_hedge.attach(document, error=FitError)
+            summary["theme_hedge"] = document[composition_theme_hedge.BLOCK]
         # v8 R-11 --theme-resid (theme order: PRIOR_THEMES, Ruling PM4-11; --theme-resid-parent: finding R6B-O-5);
         # absent: no change
         composition_resid.apply(args, document, summary, PRIOR_THEMES, FitError, parent=resid_parent,

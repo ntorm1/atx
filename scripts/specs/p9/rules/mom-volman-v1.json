@@ -1,0 +1,108 @@
+{
+  "schema": "atx.p9-rule-registration/v1",
+  "id": "mom-volman-v1",
+  "cell": "P9-M",
+  "table": "composition (K-P9-6: atx-equity-strategy-ic --list-rules --json, block theme_schedule shared with theme-tsmom-v1, stage schedule)",
+  "lane": "AL-COMB",
+  "report": "task-AL-COMB-report.md",
+  "status": "proposed",
+  "citation": "Barroso and Santa-Clara (2015), Momentum has its moments, Journal of Financial Economics 116(1), 111-120 (lit [18]); real-time form: Cederburg, O'Doherty, Wang and Yan (2020), On the performance of volatility-managed portfolios, Journal of Financial Economics 138(1), 95-117 (lit [17]); Daniel and Moskowitz (2016), Momentum crashes, Journal of Financial Economics 122(2) (lit [19])",
+  "hypothesis": "mom-volman-v1",
+  "claim": "momentum's own realised volatility forecasts its next-month volatility but not its mean, so scaling WML to a constant volatility by its six-month realised volatility lifts its Sharpe from .53 to .97 (BSC); volatility management fails in real time for about half of 103 strategies, momentum among the exceptions (Cederburg et al.; lit section 1.6)",
+  "source_sample_end": 2016,
+  "source_sample_basis": "the rule's real-time form is Cederburg et al.'s, whose samples 'end in December 2016' (read on 2026-10-03 in the text of lit [17]'s URL); the hypothesis's own source, Barroso and Santa-Clara, ends 2011:12 (sample 1927:03 - 2011:12); the later end is registered because it is the last published sample in which the registered real-time form was tested; both lie before the house window",
+  "predicted_mechanism": "the momentum sleeve's volatility clusters and is unrelated to its next-month mean, so holding the price_momentum theme's mass inversely to its trailing six-month realised volatility, against the running mean of those estimates, cuts momentum-crash variance at about the same momentum return",
+  "data_class": "H",
+  "house_form": "the price_momentum theme's mass in the composition, W_pm x target_b / sigma_b per block, as a theme_schedule rule beside theme-tsmom-v1 (lit section 6 row 7: 'add a vol-schedule rule there'; atx-impl strategy_ic_mom_volman.cpp; the fitter records the sleeve as theme-tsmom-v1's step 1 forms it, composition_mom_volman.py)",
+  "constants": [
+    {
+      "name": "lookback",
+      "value": 126,
+      "why": "Barroso and Santa-Clara's six months of daily returns (their sigma-hat is the realised variance of the preceding 126 daily WML returns, squared returns without a mean)"
+    },
+    {
+      "name": "lag",
+      "value": 2,
+      "why": "the house's decision -> fill -> return clock: the sleeve's value at decision d is realised at d + 2, so block j reads only d <= j - 2"
+    },
+    {
+      "name": "step",
+      "value": 21,
+      "why": "one month of decisions: BSC rebalance monthly; the house's monthly step (theme-tsmom-v1's)"
+    },
+    {
+      "name": "target",
+      "value": "running mean of the sleeve's own estimates sigma_0 .. sigma_b",
+      "why": "Cederburg et al.'s real-time constant: BSC's full-sample target is look-ahead; the running mean uses only estimates known at the block"
+    },
+    {
+      "name": "cap",
+      "value": "none",
+      "why": "BSC scale without a cap; a cap would be a second constant with no published value (stated as a concern in the lane report: a low-volatility block can scale the momentum mass up without bound)"
+    }
+  ],
+  "fixed_choices": [
+    "only the price_momentum theme's mass moves; every other theme keeps the parent's W_t",
+    "the sleeve is theme-tsmom-v1's step-1 sleeve of the price_momentum theme over the parent fit's role decisions (sum over its members of (w_k / W_t) s_k f_k(d), flat 0, 0 outside the TRAIN mask)",
+    "block b starts at decision 127 + 21 b; before the first block the parent's masses; the masses ride the theme schedule theme-tsmom-v1 uses, so the two schedules exclude each other",
+    "a block whose scale target / sigma is not finite is refused with the rule's name (no cap: a tiny positive sigma gives a large finite scale, accepted; review S-1, Ruling ALCOMB-4)",
+    "the schedule is fixed on the fit's TRAIN sleeve (Ruling ALCOMB-4): a role outside those sessions keeps the parent's masses before the first recorded block and the last block's after it",
+    "the sleeve is recorded by the fitter's Python pass on the final weights; --engine-fit is refused with --mom-volman (the C++ composition fit records no momentum sleeve; lane D3 adds it, Ruling ALCOMB-7; each P9 cell uses the fit mode of its P9-B0 parent reference)",
+    "the IC exe prints sigma_b, target_b and scale_b per block in each scored role's summary entry (composition_schedule_trace; Ruling ALCOMB-5, review S-3)"
+  ],
+  "predictions": {
+    "registered_before_any_read": "the momentum sleeve's realised volatility falls and its Sharpe rises after scaling (plan section 5.2 P9-M prints both); book effect small: price_momentum holds about .057 of the weight after ERC (lit section 1.6)",
+    "expected_effect": "+.01 to +.03 net Sharpe [est] (lit section 6 row 7)"
+  },
+  "fitter_flag": {
+    "fit": {
+      "--mom-volman": "mom-volman-v1"
+    }
+  },
+  "fitter_flag_note": "the wave stage derives it from wave_kinds.COMPOSITION_FLAGS (lane E2's table; the entry above is AL-COMB's merge request for root), never from a template's change.flags (Ruling ALCOMB-1, F-8)",
+  "manifest_fragment": {
+    "schema": "atx.research-wave/v2",
+    "kind": "rule",
+    "rule_cell": {
+      "template": "scripts/specs/p9/templates/mom-volman.json",
+      "template_sha256": "7e9b26c1bc4a6453447ccbf9fee2612ecb50a293330f239cfc93d035e45db6fb",
+      "name": "mom-volman-v1",
+      "source_sample_end": 2016,
+      "predicted_mechanism": "the momentum sleeve's volatility clusters and is unrelated to its next-month mean, so holding the price_momentum theme's mass inversely to its trailing six-month realised volatility, against the running mean of those estimates, cuts momentum-crash variance at about the same momentum return",
+      "data_class": "H"
+    },
+    "rules": [
+      {
+        "name": "mom-volman-v1",
+        "params": {}
+      }
+    ]
+  },
+  "manifest_note": "paste into the P9-M atx.research-wave/v2 manifest (K-P9-9) beside root's own keys (wave, parent, fields, acceptance pm7-34, gross_match pm6-6, budget, ledger, expect, out_dir); params {} = every registered constant (D2's K-P9-9 params_schema: absent = the registered value). template_sha256 is the template file's SHA-256 at this lane's commit (LF bytes; scripts/specs/** text eol=lf, R0-7-EOL); root re-pins it when it sets the template's parent",
+  "requires": [
+    "the PM reads Y-2 (theme-tsmom-v1) first and rules mom-volman-v1 distinct from Y-2 and Y-1 before any P9-M read (plan DEC-16, lit section 7 restatement risk)",
+    "the PM registers P9-M (plan section 5.2)",
+    "lane AL-COMB's combined round (Rulings ALCOMB-5 / ALCOMB-5a: D2's head merged into the lane) reviewed and merged by root",
+    "lane D3 delivers the C++ producer of the sleeve's realised volatility and Sharpe before and after scaling (the IC exe writes the sleeve's daily series, atx-research-eval prints them; Ruling ALCOMB-6), else PRE round 2 cuts that line from the template before P9-M is registered (the prediction above is then not printed)"
+  ],
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-03",
+      "by": "AL-COMB",
+      "note": "P9 lane AL-COMB (lit section 1.6 [16]-[19], section 6 row 7; plan DEC-16); blind registration, one variant, no grid, trials 0"
+    },
+    {
+      "status": "proposed",
+      "at": "2026-10-04",
+      "by": "AL-COMB",
+      "note": "combined round (Ruling ALCOMB-5): the finite-scale refusal (S-1), the printed scale per block (S-3), the --engine-fit refusal (D2's flag) and the ALCOMB-4 TRAIN-schedule limit recorded in fixed_choices; template_sha256 re-pinned to the edited template; no constant, prediction or rule step changed; trials 0"
+    },
+    {
+      "status": "proposed",
+      "at": "2026-10-04",
+      "by": "AL-COMB",
+      "note": "Rulings ALCOMB-6 / ALCOMB-7: the sleeve vol / Sharpe printed line made conditional on lane D3 in the template and in requires; the --engine-fit refusal note names D3 and the per-cell fit mode; template_sha256 re-pinned; no constant, prediction or rule step changed; trials 0"
+    }
+  ]
+}

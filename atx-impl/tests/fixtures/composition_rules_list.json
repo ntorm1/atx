@@ -162,7 +162,9 @@
       "id": "theme-resid-v1",
       "incompatible": [
         "theme-tsmom-v1",
-        "two-speed-v1"
+        "mom-volman-v1",
+        "two-speed-v1",
+        "theme-cov-hedge-v1"
       ],
       "params_schema": {
         "additionalProperties": false,
@@ -191,7 +193,8 @@
       "block_key": "theme_schedule",
       "id": "theme-tsmom-v1",
       "incompatible": [
-        "theme-resid-v1"
+        "theme-resid-v1",
+        "mom-volman-v1"
       ],
       "params_schema": {
         "additionalProperties": false,
@@ -229,10 +232,53 @@
       "working_bytes": "none beyond the standardise planes (the block masses)"
     },
     {
+      "block_key": "theme_schedule",
+      "id": "mom-volman-v1",
+      "incompatible": [
+        "theme-resid-v1",
+        "theme-tsmom-v1"
+      ],
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "lag": {
+            "const": 2,
+            "type": "integer"
+          },
+          "lookback": {
+            "const": 126,
+            "type": "integer"
+          },
+          "rule": {
+            "const": "mom-volman-v1",
+            "type": "string"
+          },
+          "step": {
+            "const": 21,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "recipe_key": "composition_schedule",
+      "recipe_sha256": "ae1f81c424a3e536a83354cef473904cdfd2b355f36b819c28475187bbfb93c5",
+      "requires_any": [
+        "ew-theme-std-v1",
+        "ic-shrink-v1",
+        "ic-shrink-aim-v1",
+        "theme-erc-v1"
+      ],
+      "stage": "schedule",
+      "verified": false,
+      "version": "v1",
+      "working_bytes": "none beyond the standardise planes (the block masses)"
+    },
+    {
       "block_key": "theme_sleeves",
       "id": "two-speed-v1",
       "incompatible": [
-        "theme-resid-v1"
+        "theme-resid-v1",
+        "theme-cov-hedge-v1"
       ],
       "params_schema": {
         "additionalProperties": false,
@@ -256,6 +302,52 @@
       "verified": false,
       "version": "v1",
       "working_bytes": "two f64 dates x names sleeve planes and one f64 per date (the fast share)"
+    },
+    {
+      "block_key": "theme_hedge",
+      "id": "theme-cov-hedge-v1",
+      "incompatible": [
+        "theme-resid-v1",
+        "two-speed-v1"
+      ],
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "lag": {
+            "const": 2,
+            "type": "integer"
+          },
+          "lookback": {
+            "const": 252,
+            "type": "integer"
+          },
+          "min_pairs": {
+            "const": 126,
+            "type": "integer"
+          },
+          "rule": {
+            "const": "theme-cov-hedge-v1",
+            "type": "string"
+          },
+          "step": {
+            "const": 21,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "recipe_key": "composition_hedge",
+      "recipe_sha256": "cd6abb04e0bfd8c80572b09c3d030bee3d9d75a771a9e43ae086248564849c1c",
+      "requires_any": [
+        "ew-theme-std-v1",
+        "ic-shrink-v1",
+        "ic-shrink-aim-v1",
+        "theme-erc-v1"
+      ],
+      "stage": "hedge",
+      "verified": false,
+      "version": "v1",
+      "working_bytes": "the role's session returns and one hedged plane (f64 dates x names each), a presence byte per cell and the kernel's per-name window sums"
     }
   ],
   "schema": "atx.composition-rules/v1"

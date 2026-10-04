@@ -191,3 +191,11 @@ target_sources(atx-impl-strategy-ic-tests PRIVATE strategy_ic_rules_test.cpp)
 # P9 lane C2: nav --calibrate-gross (CalibrateGross.*) beside the NAV replay tests;
 # atx-impl-tests compiles it through its *_test.cpp glob.
 target_sources(atx-impl-strategy-target-tests PRIVATE strategy_nav_calibrate_test.cpp)
+
+# P9 lane AL-COMB: rule theme-cov-hedge-v1 (the rule, its stage and its engine kernel; the kernel's
+# test is also globbed into atx-engine-combine-tests) and schedule mom-volman-v1 in the focused IC
+# target; atx-impl-tests already compiles the two rule tests through its *_test.cpp glob.
+target_sources(atx-impl-strategy-ic-tests PRIVATE
+    strategy_ic_theme_hedge_test.cpp
+    strategy_ic_mom_volman_test.cpp
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/combine/combine_char_cov_hedge_test.cpp")
