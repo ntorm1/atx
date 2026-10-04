@@ -27,6 +27,55 @@ def fixture_con():
     return con
 
 
+def test_r21_actual_source_only_factor_producer_feeds_later_native_risk(tmp_path,monkeypatch):
+    import math,hashlib
+    import pyarrow.parquet as pq
+    first=dt.date(2022,12,30);feature=dt.date(2024,1,2)
+    dates=[first+dt.timedelta(days=i) for i in range((feature-first).days+1) if (first+dt.timedelta(days=i)).weekday()<5]
+    dates=[d for d in dates if d!=dt.date(2024,1,1)]
+    def create():
+        con=fixture_con();con.execute('ALTER TABLE t6_rf ADD COLUMN available_at TIMESTAMPTZ')
+        for i,date in enumerate(dates):
+            con.execute('INSERT INTO t6_calendar VALUES(?)',[date])
+            con.execute('INSERT INTO t6_universe(session_date,security_id,cik,me,exchcd_like,univ_all_common,univ_r3000p) VALUES(?,1,1,100,1,true,true)',[date])
+            con.execute('INSERT INTO t6_prices VALUES(?,1,?,false,10)',[date,.01*math.sin(i*.17)+.001])
+            con.execute("INSERT INTO t6_cap_quality VALUES(1,?,TIMESTAMP '1900-01-01',TIMESTAMP '1900-01-01',true,true,'fixture','independently_verified','e','s','m')",[date])
+            con.execute("INSERT INTO t6_rf VALUES('D',?,.0001,?)",[date,dt.datetime.combine(date,dt.time(22),dt.UTC)])
+        return con
+    monkeypatch.setattr(N.C,'connect',lambda **kw:create())
+    monkeypatch.setattr(N,'setup',lambda con,spec:{'fixture':'offline-r21'})
+    monkeypatch.setattr(N,'setup_check',lambda spec:None)
+    spec={'release':{},'sources':{'eg_training':None}}
+    manifest=N.native_factors(spec,tmp_path/'factors_predictor_history',construction_asof=feature)
+    obj=json.loads(manifest.read_text())
+    assert obj['stage']=='factors_predictor_history' and obj['purpose']=='historical_predictor_source_only'
+    table=pq.read_table(manifest.parent/next(p for p in obj['files'] if '2023-12' in p)).to_pylist()
+    assert any(r['MktRF'] is not None and r['session_date'].year==2023 for r in table)
+    assert all(r['session_date']<feature for r in table)
+    assert next(r for r in table if r['freq']=='D' and r['session_date']==dt.date(2023,12,29))['MktRF'] is None  # RF equals pinned previous-session cutoff
+    with pytest.raises(ValueError,match='distinct'):
+        N.native_factors(spec,tmp_path/'factors',construction_asof=feature)
+    # Fixture source admission is mocked, while native production, receipts,
+    # source-purpose consumer binding, risk SQL/regression and publication run.
+    original=create
+    def risk_con():
+        con=original()
+        con.execute('CREATE TABLE t6_liquidity(security_id BIGINT,session_date DATE,available_at TIMESTAMP,adv_21 DOUBLE,adv_63 DOUBLE,spread_cs_21 DOUBLE,amihud_21 DOUBLE)')
+        con.execute('CREATE TABLE t6_borrow(security_id BIGINT,session_date DATE,cutoff_utc TIMESTAMPTZ,si_to_io DOUBLE,si_shares DOUBLE,ftd_quantity DOUBLE,on_threshold_list BOOLEAN,si_to_io_available_at TIMESTAMPTZ,si_available_at TIMESTAMPTZ,ftd_available_at TIMESTAMPTZ,threshold_available_at TIMESTAMPTZ,ftd_settlement_date DATE,threshold_list_date DATE)')
+        con.execute('CREATE TABLE t6_industry(cik BIGINT,available_at TIMESTAMP,ff49_no BIGINT)')
+        con.execute('CREATE TABLE t6_ratios_state(cik BIGINT,available_at TIMESTAMP,be_q0 DOUBLE,at_q0 DOUBLE,at_q4 DOUBLE,debt_at DOUBLE,gprof DOUBLE,datadate DATE)')
+        return con
+    monkeypatch.setattr(N.C,'connect',lambda **kw:risk_con())
+    risk_spec={**spec,'own_factors':{'stage':obj['stage'],'manifest':str(manifest),'sha256':hashlib.sha256(manifest.read_bytes()).hexdigest()}}
+    output=N.native_risk(risk_spec,tmp_path/'risk',feature,feature)
+    result=json.loads(output.read_text())
+    row=pq.read_table(output.parent/next(iter(result['files']))).to_pylist()[0]
+    assert row['beta_252']==pytest.approx(1)
+    assert row['ivol_capm_252']<1e-12
+    assert result['gate_status']['exposure_coverage']=='FAIL'
+    with pytest.raises(ValueError):F.bind_snapshot(manifest,risk_spec['own_factors']['sha256'],'factors')
+
+
 def test_annual_latest_visible_vintage_and_prior_year():
     con=fixture_con()
     con.execute("INSERT INTO t6_funda(cik,datadate,available_at,accession,seq,\"at\",sale,cogs) VALUES (1,'2020-12-31','2021-03-01','a',10,20,100,50),(1,'2020-12-31','2021-07-01','a',100,200,1000,500),(1,'2019-12-31','2020-03-01','b',8,10,80,40)")

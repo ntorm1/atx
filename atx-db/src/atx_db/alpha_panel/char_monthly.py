@@ -87,7 +87,7 @@ def native_month(con,date):
     if buffer:con.executemany(f"INSERT INTO cm_output VALUES({placeholders})",buffer)
     # Cross sections gather only their small dependency sets, never the wide month.
     for f in REGISTRY:
-        if f.implementation!="cross_section" or f.return_derived and date>=dt.date(2023,1,1):continue
+        if f.implementation!="cross_section":continue
         columns=",".join(f'"{d}"' for d in f.dependencies)
         records=N.records(con,f"SELECT security_id,cik,univ_all_common,{columns} FROM cm_output")
         rows=[{**r,"values":{d:r[d] for d in f.dependencies},"reasons":{}} for r in records]
@@ -118,7 +118,7 @@ def validate_unit(con,relation,date,population=None):
         if any(expected_flags[sid] is not value for sid,value in con.execute(f"SELECT security_id,{p} FROM {relation}").fetchall()):raise RuntimeError("monthly universe flags differ")
     for f in REGISTRY:
         clock_sql=f"TRY_CAST(json_extract_string(source_clocks,'$.{f.name}') AS TIMESTAMPTZ)"
-        forbidden=(date>=dt.date(2023,1,1) and f.return_derived) or f.implementation=="unsupported"
+        forbidden=f.implementation=="unsupported"
         condition=f'''("{f.name}" IS NOT NULL AND (NOT isfinite("{f.name}") OR source_available_at IS NULL OR {clock_sql} IS NULL OR {clock_sql}>source_available_at OR {clock_sql}>=available_at OR {'true' if forbidden else 'false'})) OR ("{f.name}" IS NULL AND json_extract_string(quality_reasons,'$.{f.name}') IS NULL)'''
         if con.execute(f"SELECT count(*) FROM {relation} WHERE {condition}").fetchone()[0]:raise RuntimeError(f"feature value/clock/missingness violation:{f.name}")
     counts={}
@@ -146,13 +146,13 @@ def coverage(receipts):
 
 
 def gates(evidence):
-    qualified=sum(BY_NAME[n].implementation!="unsupported" and any(evidence[f"{y}/{p}"]["fields"][n]["numerator"]>0 for y in range(2020,2023) for p in POPS) for n in JKP153)
+    qualified=sum(BY_NAME[n].implementation!="unsupported" and any(evidence[f"{y}/{p}"]["fields"][n]["numerator"]>0 for y in range(2020,2026) for p in POPS) for n in JKP153)
     result={"implemented_original153":{"pass":qualified>=150,"measured":qualified,
              "implemented_kernel_count":sum(BY_NAME[n].implementation!="unsupported" for n in JKP153),"denominator":153,"required":150,
              "meaning":"implemented original formulas with at least one independently qualified input observation; executor count alone does not establish economic validity"}}
     for family,threshold in (("accounting",.9),("price",.97)):
         # All original fields retain denominator, including unimplemented fields
-        # and return-derived nulls in the original 2023--2025 gate years.
+        # and missing/unqualified trailing histories in all original gate years.
         features=[BY_NAME[n] for n in JKP153 if (BY_NAME[n].implementation!="market")== (family=="accounting")]
         cells=[evidence[f"{y}/univ_r3000p"]["fields"][f.name] for y in range(2020,2026) for f in features]
         measured=min((c["coverage"] for c in cells if c["coverage"] is not None),default=None)

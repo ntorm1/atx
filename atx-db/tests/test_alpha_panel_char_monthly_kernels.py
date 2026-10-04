@@ -43,14 +43,14 @@ def test_gap_currency_staleness_and_no_current_cap_substitution():
     assert K.yearly_values([current],dt.date(2024,3,31),{})[1]=="missing_or_stale_annual"
 
 
-def test_holdout_product_null_and_full_unchanged_fields():
+def test_r21_later_missing_history_not_calendar_blanket_and_full_fields():
     values,reasons=K.compute([annual()],[],[],[],dt.date(2023,1,31),{"me":100})
     assert set(values)=={f.name for f in REGISTRY}
     assert values["be_me"]==.6
     for f in REGISTRY:
         if f.return_derived:
             assert values[f.name] is None
-            assert reasons[f.name]=="holdout_return_product_prohibited"
+            assert reasons[f.name]!="holdout_return_product_prohibited"
 
 
 def test_quarter_exact_calendar_ytd_and_sue():

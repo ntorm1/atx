@@ -25,7 +25,21 @@ def test_future_and_duplicate_observations_rejected():
 def test_latest_missing_factor_history_remains_missing():
     result = R.exposure(dt.date(2025, 1, 1), [])
     assert result['beta_252'] is None
-    assert result['risk_missing_reason'] == 'own_factor_history_ends_2022'
+    assert result['risk_missing_reason'] == 'missing_qualified_trailing_history'
+
+
+def test_r21_later_exposure_uses_strictly_available_trailing_observations():
+    day=dt.date(2023,12,31);cutoff=dt.datetime(2023,12,29,22,tzinfo=dt.UTC)
+    x=np.linspace(-.03,.03,252)
+    history=[{'session_date':dt.date(2023,1,1)+dt.timedelta(days=i),'ret':.002+1.5*v,'RF':0,
+              'MktRF':v,'SMB':np.sin(i),'HML':np.cos(i),'RMW':np.sin(i*.3),'CMA':np.cos(i*.2),
+              'factor_available_at':cutoff-dt.timedelta(days=1)} for i,v in enumerate(x)]
+    assert R.exposure(day,history,cutoff=cutoff)['beta_252']==pytest.approx(1.5)
+    with pytest.raises(ValueError,match='unavailable'):R.exposure(day,[{**history[0],'factor_available_at':cutoff}],cutoff=cutoff)
+    with pytest.raises(ValueError,match='future'):R.exposure(day,[{**history[0],'session_date':day}],cutoff=cutoff)
+    unknown=[{**r,'factor_available_at':None} for r in history]
+    assert R.exposure(day,unknown,cutoff=cutoff)['beta_252'] is None
+    assert R.exposure(day,history[:199],cutoff=cutoff)['beta_252'] is None
 
 
 def test_styles_keep_missing_values():

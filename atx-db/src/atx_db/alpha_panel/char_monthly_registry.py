@@ -244,13 +244,13 @@ def _registry():
 
 REGISTRY = _registry()
 BY_NAME = {f.name:f for f in REGISTRY}
-FREEZE = {"version":"char-monthly-v1-frozen-r18-window2", "original153":list(JKP153),
+FREEZE = {"version":"char-monthly-v1-frozen-r21-construction", "original153":list(JKP153),
           "primitive_definitions":PRIMITIVES,
           "registry":[f.record() for f in REGISTRY], "coverage_years":list(range(2020,2026)),
           "coverage_populations":["member_equity","univ_all_common","univ_r3000p"],
           "gates":{"implemented_original153":150,"accounting_coverage":0.90,"price_coverage":0.97,
                    "jkp_rho":0.70,"jkp_matched_share":0.70,"jkp_sign_share":0.90,"osap_median_rho":0.60,"ratios_rho":0.99},
-          "holdout":{"return_statistics_end_exclusive":"2023-01-01","complete_label_window":True},
+          "holdout":{"evaluation_end_exclusive":"2023-01-01","complete_forward_label_end_exclusive":"2023-01-01","complete_label_window":True,"historical_predictor_construction":"all feature years; strict feature-date/source-clock and complete qualified trailing history, R21 owner clarification"},
           "trials":{"primary":"Task16 predeclared family unchanged; this whole registry exploratory", "no_outcome_selection":True},
           "normalization":"natural raw values; composite signs from predeclared economics; no winsorization",
           "ratio_comparison":"exact admitted final monthly inventory and original72dates; every original eligible member must have compatible independently pinned annual/fiscal/currency/cap/vintage/definition proof or gate FAIL",

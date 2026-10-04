@@ -87,3 +87,42 @@ Exact focused command prefix: `$env:PYTHONPATH='C:/atx/atx-db/src'; $env:OPENBLA
 | `-k independent_secondary` after separating unresolved issuer counts | 1passed34deselected,1.01s |
 
 Meaningful cases:30 complete known primaries form a paired month; adding one unknown common issuer blocks it with31 full/common rows,30 primaries,1 keyed unknown and zero pairs. Missing window for the middle issuer also blocks the formation. Independently proved secondary/exclusion states are retained; secondary-without-primary is a separate unresolved issuer. Jan15–Jan15 intervals, missing/wrong calendar boundary, wrong start date/security, missing intermediate day, missing corporate-action identity, changed source bytes and inconsistent compound all refuse. Missing window/intermediate return and unsupported terminal treatment stay missing. Post2022 label dates refuse before reconstruction. All evidence is synthetic engineering behavior, not financial/source/economic proof. Actual original gates remain FAIL/unmeasured and no production PASS or predictive claim is made.
+
+## R21 owner requirement adjustment: construction purpose separation (2026-10-03)
+
+Owner cutoff clarification is evaluation and complete forward labels only. This
+requirement adjustment preserves the two prior repair rounds and all original
+formulas, directions, numerical gates, coverage years/populations/denominators,
+source-quality predicates and complete-history requirements. No actual source,
+metadata, hash inventory, HTTP, construction or return measurement job ran. All
+actual gates remain unmeasured/FAIL and production admission remains held.
+Independent review is required before an actual producer run.
+
+Focused synthetic commands used OPENBLAS_NUM_THREADS=1, PYTHONPATH=C:/atx/atx-db/src,
+`atx-db/.venv/Scripts/python.exe -m pytest <file> -n0 -o addopts='' -p no:cacheprovider -q`,
+DuckDB128MB/one thread. No broad unchanged test suite was rerun.
+
+Task7 semantic SHA256: caf3bc45efda101fa4f5f96831093858388d27c71c45d836392b0fa4b00caa16.
+All five generated char_monthly formula/registry/requirements/config/trial
+artifacts are re-frozen before measurements. Later return-derived construction
+uses only feature-date-bounded observations, strict source/factor availability
+and complete qualified trailing history. Original 2020--2025 observations now
+feed the original153 qualified-formula gate; threshold/denominator unchanged.
+char_monthly_evidence and Task8 char_replication files are untouched. Original
+120 holding months2013--2022, formation axes2012Dec--2022Nov, minimum60 retained,
+full153 and independent admitted OSAP overlap inventory remain binding.
+
+Tests: test_alpha_panel_char_monthly_native.py `-k r21`:1passed,12deselected,2.98s;
+actual native 2023 trailing momentum, source equality masking and factor-clock
+equality rejection with missing complete current history.
+test_alpha_panel_char_monthly_kernels.py `-k r21`:1passed,15deselected,.39s; later
+missing history retains nulls/reasons without superseded calendar blanket.
+test_alpha_panel_char_monthly_evidence.py
+`-k 'boundary or holdout or complete_monthly and heldout'`:4passed,31deselected,.42s;
+2023 evaluation and complete forward windows crossing2023 still refuse.
+No predictive or economic measurement claims follow these fixture checks.
+
+Current final source inventory, full history, source clocks/quality, coverage and
+all actual economic gates remain root-coordinated dependencies, honestly FAIL.
+Task8 author was notified of both final semantic digests before its final
+contract integration; independent review approval is still pending.

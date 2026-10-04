@@ -1,13 +1,15 @@
 {
-  "stage": "factors",
-  "path": "factors/{manifest.generation}/*.parquet",
-  "manifest_path": "factors/manifest.json",
+  "asof_macro_sql": "CREATE OR REPLACE MACRO factors_asof(ts) AS TABLE SELECT * FROM factors WHERE available_at < CAST(ts AS TIMESTAMPTZ);",
+  "config_sha256": "0d38a84b7a12825511686956ac52f87bd24769ee8741477cdb425e61b5a4f4b0",
   "files_from_manifest": true,
+  "historical_factor_source_contract": "factors_predictor_history purpose; frozen same native kernels; explicit construction_asof ceiling, no evaluation/forward labels; independently clocked RF required; risk consumes source availability strictly before previous-session cutoff",
   "keys": [
     "freq",
     "session_date"
   ],
-  "schema_id": "atx.alpha-panel.factors/v1",
+  "manifest_path": "factors/manifest.json",
+  "path": "factors/{manifest.generation}/*.parquet",
   "registration_status": "ready_for_Task17_manifest_generation_resolver",
-  "asof_macro_sql": "CREATE OR REPLACE MACRO factors_asof(ts) AS TABLE SELECT * FROM factors WHERE available_at < CAST(ts AS TIMESTAMPTZ);"
+  "schema_id": "atx.alpha-panel.factors/v1",
+  "stage": "factors"
 }

@@ -81,7 +81,7 @@ def quality_sql_at(clock: str) -> str:
 
 
 def assert_price_keys(con):
-    if con.execute("SELECT 1 FROM t6_prices WHERE session_date<DATE '2023-01-01' GROUP BY security_id,session_date HAVING count(*)>1 LIMIT 1").fetchone():
+    if con.execute("SELECT 1 FROM t6_prices GROUP BY security_id,session_date HAVING count(*)>1 LIMIT 1").fetchone():
         raise ValueError('duplicate/overlapping price line session')
 
 
@@ -90,8 +90,8 @@ def cap_basis_sql(column='me') -> str:
     return f"(bool_and(coalesce(isfinite({column}) AND {column}>0,false)) AND coalesce(isfinite(sum({column})) AND sum({column})>0,false))"
 
 
-def issuer_period_sql(start: dt.date, end: dt.date, formation: dt.date, cutoff: dt.datetime) -> str:
-    if end >= dt.date(2023,1,1) or start > end or formation >= start:
+def issuer_period_sql(start: dt.date, end: dt.date, formation: dt.date, cutoff: dt.datetime, *, construction_asof=None) -> str:
+    if (construction_asof is None and end >= dt.date(2023,1,1)) or (construction_asof is not None and end>=construction_asof) or start > end or formation >= start:
         raise ValueError('invalid factor period/holdout boundary')
     tau = cutoff.astimezone(dt.UTC).replace(tzinfo=None).isoformat()
     # Never filter using present membership. Quality is an independently audited
@@ -104,7 +104,7 @@ def issuer_period_sql(start: dt.date, end: dt.date, formation: dt.date, cutoff: 
     bars AS (SELECT g.security_id,g.session_date,p.ret,p.ret_guarded,p.close,
       count(p.security_id) OVER(PARTITION BY g.security_id,g.session_date) AS n
       FROM grid g LEFT JOIN t6_prices p USING(security_id,session_date)
-      WHERE g.session_date<DATE '2023-01-01'),
+      WHERE g.session_date<DATE '{construction_asof or dt.date(2023,1,1)}'),
     r AS (SELECT security_id, CASE WHEN bool_or(n>1) THEN error('duplicate price session')
       WHEN bool_or(n=0 OR coalesce(ret_guarded,true) OR ret IS NULL OR ret< -1) THEN NULL
       WHEN bool_or(ret=-1) THEN -1 ELSE exp(sum(ln(1+ret)))-1 END AS ret FROM bars GROUP BY security_id),

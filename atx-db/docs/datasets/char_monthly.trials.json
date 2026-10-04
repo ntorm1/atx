@@ -274,6 +274,7 @@
     "zero_trades_21d": 1,
     "zero_trades_252d": 1
   },
+  "evaluation_end_exclusive": "2023-01-01",
   "exploratory_candidates": [
     "be_me",
     "at_me",
@@ -541,6 +542,7 @@
     "ceq_iss_5y"
   ],
   "formation_audit": "fixed key/cik alignment; independently pinned reviewed primary/secondary/exclusion proofs and source/evidence clocks; matching issuer cap; unknown classification blocks whole formation with keyed full population counts; protected values never overwritten",
+  "historical_predictor_construction": "all feature years; strict feature-date/source-clock and complete qualified trailing history, R21 owner clarification",
   "input_product_names": [
     "calendar",
     "universe",
@@ -566,8 +568,8 @@
     "window": "all admitted calendar sessions with pinned price/corporate-action evidence and complete total-return compound equal to label"
   },
   "primary_candidates": "Task16 separately committed predeclared family; no substitution or selection in this module",
-  "prohibit_post2022_aggregate_return_or_return_regression_products": true,
-  "registry_sha256": "b6f915e588129b4f5320a3cf84985fd5838380a56655f38510daafd9f7eccbe9",
+  "prohibit_post2022_evaluation_or_complete_forward_labels": true,
+  "registry_sha256": "caf3bc45efda101fa4f5f96831093858388d27c71c45d836392b0fa4b00caa16",
   "replication": {
     "all_outcomes_reported": true,
     "cap_nyse_percentile": 0.8,
@@ -742,6 +744,5 @@
     ]
   },
   "require_entire_label_window_before_boundary": true,
-  "return_statistics_end_exclusive": "2023-01-01",
-  "version": "task7-predeclared-v1-r18-window2"
+  "version": "task7-predeclared-v1-r21-construction"
 }

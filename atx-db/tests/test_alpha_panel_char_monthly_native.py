@@ -77,7 +77,7 @@ def test_delayed_restatement_and_equal_cutoff_exclusion(con):
     assert N.accounting(con,10,date,"funda")[0][0]["at"] is None
 
 
-def test_holdout_native_and_original_coverage_grid(con):
+def test_missing_history_native_and_original_coverage_grid(con):
     date=fixture(con,dt.date(2023,5,31))
     out=M.native_month(con,date)
     assert con.execute("SELECT count(*) FROM cm_output WHERE ret_12_1 IS NOT NULL OR ivol_capm_21d IS NOT NULL").fetchone()[0]==0
@@ -123,3 +123,22 @@ def test_public_generation_rejects_self_consistent_abbreviated_window(con,tmp_pa
     monkeypatch.setattr(N,"admit",lambda *args:{})
     monkeypatch.setattr(N,"months",lambda *args:[dt.date(2022,6,30)])
     with pytest.raises(ValueError,match="inventory incomplete"):M.validate_generation(tmp_path,generation,con)
+
+
+def test_r21_native_2023_trailing_predictor_and_strict_clocks(con):
+    date=fixture(con,dt.date(2023,6,30));tau=N.clock(date);source=tau-dt.timedelta(days=1)
+    for i in range(13):
+        n=2022*12+5+i;y,m=divmod(n,12)
+        end=(dt.date(y+1,1,1) if m==11 else dt.date(y,m+2,1))-dt.timedelta(days=1)
+        while end.weekday()>=5:end-=dt.timedelta(days=1)
+        if end!=date:con.execute('INSERT INTO cm_calendar VALUES(?)',[end])
+        con.execute('INSERT INTO cm_monthly_market VALUES(1,?,?,?,1000,100,1,true,.01)',[end,source,source])
+    bars,monthly,_=N.price_history(con,1,date)
+    from atx_db.alpha_panel import char_monthly_kernels as K
+    assert K.market('ret_12_1',bars,monthly,date,{})==pytest.approx(1.01**11-1)
+    M.native_month(con,date)
+    assert con.execute('SELECT ret_12_1 FROM cm_output WHERE security_id=1').fetchone()[0]==pytest.approx(1.01**11-1)
+    con.execute('UPDATE cm_monthly_market SET source_available_at=? WHERE month_end=?',[tau,date])
+    assert N.price_history(con,1,date)[1][-1]['ret'] is None
+    con.execute('UPDATE cm_monthly_market SET source_available_at=?,available_at=? WHERE month_end=?',[source,tau,date])
+    with pytest.raises(K.Missing,match='current_month'):K.market('ret_12_1',*N.price_history(con,1,date)[:2],date,{})

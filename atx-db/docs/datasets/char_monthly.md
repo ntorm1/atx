@@ -98,7 +98,7 @@ Native source schemas are the current clean `compustat_std.py`, `ratios.py`,
 | primitive_quality | cik, datadate, accession, item, snapshot_available_at, available_at, source_available_at, certified, unit |
 | cap_quality | security_id, session_date, available_at, source_available_at, certified, membership_certified, currency |
 | price_quality | security_id, session_date, available_at, source_available_at, shares, close_adjusted, high_adjusted, price_certified, return_certified, corwin_schultz_spread; optional independently certified first_observation |
-| prices | security_id, session_date, close, volume, ret (only pre2023 return values selected) |
+| prices | security_id, session_date, close, volume, ret (strictly eligible source-qualified trailing observations) |
 | daily_factors | session_date, available_at, rf, mkt_rf, smb, hml, q_size, q_ia, q_roe |
 | monthly_factors | month_end, available_at, rf, mkt_rf, smb, hml |
 | monthly_market | security_id, month_end, available_at, source_available_at, shares_adjusted, issuer_me, dividend_dollars, return_certified, ret |
@@ -134,7 +134,7 @@ groups 2048. Monthly receipts bind exact source/config/code/window hashes and
 independent keys/flags/counts. Resume revalidates every completed unit. Incomplete
 or changed candidates never replace the atomic pointer. Validation checks exact
 schema, every file and receipt, complete month inventory, strict row/feature clocks,
-unsupported/holdout nulls, source rechecks and regenerated full coverage/gates.
+unsupported/missing-history nulls, source rechecks and regenerated full coverage/gates.
 Never delete another writer's lock; a failed writer's recovery requires controller ownership.
 
 ## Evidence and current coverage
@@ -143,8 +143,9 @@ Coverage is per feature, year 2020--2025, on all three independent populations;
 every missing/unsupported feature retains the original eligible-cell denominator.
 The accounting >=90% and price >=97% gates use the worst original feature/year
 on `univ_r3000p`. Unknown membership is reported separately. All six years and
-original 153 names remain binding. Post2022 return-derived products are prohibited
-and explicitly null, which can legitimately fail original price coverage.
+original 153 names remain binding. Historical return predictors may be constructed in every feature year using strict
+source clocks and complete qualified trailing history. Evaluation and complete
+forward labels remain strictly before 2023; missing history still fails coverage.
 
 | Years | Population | Actual coverage |
 |---|---|---|

@@ -91,7 +91,10 @@ def setup(con, spec: dict) -> dict:
                 raise ValueError('explicit French daily/monthly RF files required')
             daily=S.parquet_relation([manifest.parent/item['frequency_files']['D']])
             monthly=S.parquet_relation([manifest.parent/item['frequency_files']['M']])
-            con.execute(f"CREATE OR REPLACE TEMP VIEW t6_rf AS SELECT 'D' AS freq,date AS session_date,rf FROM {daily} UNION ALL SELECT 'M',month,rf FROM {monthly}")
+            dc={r[0] for r in con.execute('DESCRIBE '+daily).fetchall()};mc={r[0] for r in con.execute('DESCRIBE '+monthly).fetchall()}
+            dclock='available_at' if 'available_at' in dc else 'CAST(NULL AS TIMESTAMPTZ)'
+            mclock='available_at' if 'available_at' in mc else 'CAST(NULL AS TIMESTAMPTZ)'
+            con.execute(f"CREATE OR REPLACE TEMP VIEW t6_rf AS SELECT 'D' AS freq,date AS session_date,rf,{dclock} AS available_at FROM {daily} UNION ALL SELECT 'M',month,rf,{mclock} FROM {monthly}")
         if name=='funda':
             columns={r[0] for r in con.execute('DESCRIBE t6_funda').fetchall()}
             absent=[k for k in ('revt','drc','drlt') if k not in columns]
@@ -207,18 +210,19 @@ def native_training(con,formation,dates):
             yield {**r,'fit_month':first,'fit_cutoff':_cutoff(fitday)}
 
 
-def sessions(con) -> list[dt.date]:
-    return [r[0] for r in con.execute("SELECT DISTINCT session_date FROM (SELECT session_date FROM t6_calendar UNION ALL SELECT session_date FROM t6_prices) WHERE session_date<DATE '2023-01-01' ORDER BY session_date").fetchall()]
+def sessions(con,construction_asof=None) -> list[dt.date]:
+    ceiling=construction_asof or dt.date(2023,1,1)
+    return [r[0] for r in con.execute("SELECT DISTINCT session_date FROM (SELECT session_date FROM t6_calendar UNION ALL SELECT session_date FROM t6_prices) WHERE session_date<? ORDER BY session_date",[ceiling]).fetchall()]
 
 
 def _cutoff(day):
     return dt.datetime.combine(day,dt.time(22),dt.UTC)
 
 
-def issuer_period(con, first, last, formation):
+def issuer_period(con, first, last, formation, *, construction_asof=None):
     if formation is None:
         return []
-    data = list(rows(con,S.issuer_period_sql(first,last,formation,_cutoff(formation))))
+    data = list(rows(con,S.issuer_period_sql(first,last,formation,_cutoff(formation),construction_asof=construction_asof)))
     if len(data)>20000:
         raise ValueError('issuer cross-section limit exceeded')
     return data
@@ -247,7 +251,7 @@ def signal_history(con, formation: dt.date, months: int, skip: int) -> dict:
     sql = f"""WITH grid AS (SELECT u.security_id,c.session_date FROM
       (SELECT security_id FROM t6_universe WHERE session_date=DATE '{formation}' AND univ_all_common) u
       CROSS JOIN t6_calendar c WHERE c.session_date>=DATE '{start}' AND c.session_date<DATE '{nextmonth}'
-        AND c.session_date<DATE '2023-01-01'),
+        AND c.session_date<=DATE '{formation}'),
     bars AS (SELECT g.*,p.ret,p.ret_guarded,count(p.security_id) OVER(PARTITION BY g.security_id,g.session_date) AS n
       FROM grid g LEFT JOIN t6_prices p USING(security_id,session_date)),
     m AS (SELECT security_id,date_trunc('month',session_date) AS month,
@@ -255,7 +259,7 @@ def signal_history(con, formation: dt.date, months: int, skip: int) -> dict:
         WHEN bool_or(n=0 OR coalesce(ret_guarded,true) OR ret IS NULL OR ret< -1) THEN NULL
         WHEN bool_or(ret=-1) THEN -1 ELSE exp(sum(ln(1+ret)))-1 END AS ret
       FROM bars WHERE session_date>=DATE '{start}' AND session_date<DATE '{nextmonth}'
-        AND session_date<DATE '2023-01-01' GROUP BY 1,2),
+        AND session_date<=DATE '{formation}' GROUP BY 1,2),
     u AS (SELECT * FROM t6_universe WHERE session_date=DATE '{formation}' AND univ_all_common),
     r AS (SELECT security_id,CASE WHEN count(ret)={months} THEN
       CASE WHEN bool_or(ret=-1) THEN -1 ELSE exp(sum(ln(1+ret)))-1 END END AS value FROM m GROUP BY 1)
@@ -326,7 +330,7 @@ def native_betas(con,formation,dates):
         LEFT JOIN LATERAL (SELECT * FROM ({S.quality_sql_at("CAST(c.prev AS TIMESTAMP)+INTERVAL 22 HOUR")}) a
           WHERE a.session_date=u.session_date AND a.security_id=u.security_id) q ON true
         WHERE c.session_date BETWEEN DATE '{keep[0]}' AND DATE '{formation}'
-          AND c.session_date<DATE '2023-01-01' AND u.univ_all_common AND u.cik IS NOT NULL),
+          AND c.session_date<=DATE '{formation}' AND u.univ_all_common AND u.cik IS NOT NULL),
       issuer AS (SELECT session_date,cik,CASE WHEN {S.cap_basis_sql()} THEN sum(me) END AS me,CASE WHEN {S.cap_basis_sql()} AND bool_and(coalesce(certified,false))
         AND count(ret)=count(*) AND NOT bool_or(ret_guarded) THEN sum(me*ret)/sum(me) END AS ret
         FROM line GROUP BY 1,2),
@@ -347,26 +351,33 @@ def native_betas(con,formation,dates):
     return output
 
 
-def native_factors(spec: dict,destination: Path):
+def native_factors(spec: dict,destination: Path, *, construction_asof=None,max_new_months=None):
     from . import _factor_sources as sources
+    if construction_asof is not None and destination.name!='factors_predictor_history':raise ValueError('distinct factors_predictor_history output required')
     con = C.connect(memory='350MB',threads=1,db_file='task6-factors.duckdb')
     try:
+        if construction_asof is not None and construction_asof<=F.START:raise ValueError('positive historical construction span required')
+        if max_new_months is not None and (construction_asof is None or max_new_months<1):raise ValueError('positive source-only month budget required')
         identity = setup(con,spec)
-        dates = sessions(con)
+        dates = sessions(con,construction_asof)
+        construction_cutoff=_cutoff(max((d for d in dates if d<construction_asof),default=F.START)) if construction_asof else None
         ends = {}
         for d in dates:
             ends[d.year,d.month] = d
-        identity.update(config_sha256=F.config_hash(),kind='factors',
+        kind='factors_predictor_history' if construction_asof else 'factors'
+        identity.update(config_sha256=F.config_hash(),kind=kind,construction_asof=str(construction_asof) if construction_asof else None,
             code=code_identity())
         with publisher_lock(destination):
-            generation = Generation(destination,'factors',identity,FACTOR_SCHEMA)
+            generation = Generation(destination,kind,identity,FACTOR_SCHEMA)
             required = []
-            for year in range(2013,2023):
-                for month in range(1,13):
+            new=0
+            months=sorted({(d.year,d.month) for d in dates if d>=F.START}) if construction_asof else [(y,m) for y in range(2013,2023) for m in range(1,13)]
+            for year,month in months:
                     unit = f'month={year:04d}-{month:02d}'
                     required.append(unit)
                     if generation.done(unit):
                         continue
+                    if max_new_months is not None and new>=max_new_months:return {'status':'partial','generation':str(generation.path),'published':False}
                     first = dt.date(year,month,1)
                     last = ends.get((year,month))
                     prior = max((d for d in dates if d<first),default=None)
@@ -401,13 +412,18 @@ def native_factors(spec: dict,destination: Path):
                         eg_labels=labels(pd,eg,'eg')
                         beta_values=native_betas(con,prior,dates)
                     results = []
-                    periods = [('M',first,last)] + [('D',d,d) for d in dates if d.year==year and d.month==month]
+                    complete_last=con.execute("SELECT max(session_date) FROM t6_calendar WHERE year(session_date)=? AND month(session_date)=?",[year,month]).fetchone()[0]
+                    monthly=[] if construction_asof and (complete_last is None or complete_last>=construction_asof) else [('M',first,last)]
+                    periods = monthly + [('D',d,d) for d in dates if d.year==year and d.month==month]
                     for freq,start,end in periods:
                         stamp = end or dt.date(year,month,28)
                         lagday = prior if freq=='M' else max((d for d in dates if d<start),default=None)
-                        data = issuer_period(con,start,end,lagday) if end else []
+                        data = issuer_period(con,start,end,lagday,construction_asof=construction_asof) if end else []
                         match=(f"date_trunc('month',session_date)=date_trunc('month',DATE '{stamp}')" if freq=='M' else f"session_date=DATE '{stamp}'")
-                        rf_rows = list(rows(con,f"SELECT rf FROM t6_rf WHERE freq='{freq}' AND {match}"))
+                        rf_cols={r[0] for r in con.execute('DESCRIBE t6_rf').fetchall()}
+                        clock_guard=f" AND available_at<TIMESTAMPTZ '{construction_cutoff.isoformat()}'" if construction_asof and 'available_at' in rf_cols else ' AND false' if construction_asof else ''
+                        rf_select='rf,CAST(available_at AS TIMESTAMPTZ) AS available_at' if construction_asof and 'available_at' in rf_cols else 'rf'
+                        rf_rows = list(rows(con,f"SELECT {rf_select} FROM t6_rf WHERE freq='{freq}' AND {match}"+clock_guard))
                         rf = rf_rows[0]['rf'] if len(rf_rows)==1 else None
                         eligible = [F.Stock(r['cik'],r['me'],r['ret'],r['nyse'],{},_cutoff(lagday),True) for r in data if r['certified']]
                         values = dict.fromkeys(F.FACTORS)
@@ -428,13 +444,15 @@ def native_factors(spec: dict,destination: Path):
                             current.get(r['cik'],{}).get('ret'),r['nyse'],{'beta':beta_values.get(r['cik'])},
                             _cutoff(prior),True) for r in (pd if prior else []) if r['certified']]
                         values['BAB']=F.bab(bab_stocks,rf)
-                        results.append({'freq':freq,'session_date':stamp,'available_at':_cutoff(stamp),
+                        available=max(_cutoff(stamp),rf_rows[0]['available_at']) if construction_asof and len(rf_rows)==1 else _cutoff(stamp)
+                        results.append({'freq':freq,'session_date':stamp,'available_at':available,
                             'n_universe':len(data),'n_qualified':len(eligible),
                             'missing_reason':None if all(v is not None for v in values.values()) else
                                 'missing_qualified_history_or_required_portfolio_leg',**values})
                     generation.write(unit,results)
+                    new+=1
             setup_check(spec)
-            return generation.publish(required,{'schema_id':'atx.alpha-panel.factors/v1',
+            return generation.publish(required,{'schema_id':'atx.alpha-panel.factors/v1','purpose':'historical_predictor_source_only' if construction_asof else 'pre2023_factor_evaluation_source','construction_asof':str(construction_asof) if construction_asof else None,
                 'config':F.CONFIG,'config_sha256':F.config_hash(),
                 'input_manifests_sha256':{k:v['sha256'] for k,v in spec['release'].items()},
                 'gate_status':{'real_benchmark_gates':'FAIL_unmeasured','q_BAB_source_history':'FAIL_unmeasured'}})
@@ -530,11 +548,12 @@ def require_factor_lineage(own,spec,source_identity):
     if own.get('input_manifests_sha256')!=expected:
         raise ValueError('stale or missing own-factor release lineage')
     identity=own.get('input_identity',{})
-    base={k:v for k,v in identity.items() if k not in ('config_sha256','kind','code')}
-    if base!=source_identity or identity.get('config_sha256')!=F.config_hash() or identity.get('kind')!='factors':
+    base={k:v for k,v in identity.items() if k not in ('config_sha256','kind','code','construction_asof')}
+    if base!=source_identity or identity.get('config_sha256')!=F.config_hash() or identity.get('kind') not in ('factors','factors_predictor_history'):
         raise ValueError('stale or missing own-factor selected-source lineage')
     if identity.get('code')!=code_identity():
         raise ValueError('stale or missing own-factor code lineage')
+    if identity.get('kind')=='factors_predictor_history' and (own.get('stage')!='factors_predictor_history' or own.get('purpose')!='historical_predictor_source_only' or not identity.get('construction_asof') or own.get('construction_asof')!=identity['construction_asof']):raise ValueError('historical own-factor purpose/asof mismatch')
 
 
 def native_risk(spec,destination,start,end):
@@ -553,12 +572,15 @@ def native_risk(spec,destination,start,end):
         identity=setup(con,spec)
         f=spec['own_factors']
         manifest=Path(f['manifest'])
-        own=F.bind_snapshot(manifest,f['sha256'],'factors')
+        own_stage=f.get('stage','factors')
+        if own_stage not in ('factors','factors_predictor_history'):raise ValueError('unsupported historical own-factor source')
+        own=F.bind_snapshot(manifest,f['sha256'],own_stage)
+        if own_stage=='factors_predictor_history' and own.get('purpose')!='historical_predictor_source_only':raise ValueError('own-factor historical source purpose required')
         if own.get('config_sha256')!=F.config_hash():
             raise ValueError('risk factor snapshot has stale formula configuration')
         require_factor_lineage(own,spec,identity)
         factor_source_identity=dict(identity)
-        con.execute(f"CREATE TEMP VIEW t6_own_factors AS SELECT * FROM {S.parquet_relation([manifest.parent/p for p in own['files'] if p.endswith('.parquet')])} WHERE freq='D' AND session_date<DATE '2023-01-01'")
+        con.execute(f"CREATE TEMP VIEW t6_own_factors AS SELECT * FROM {S.parquet_relation([manifest.parent/p for p in own['files'] if p.endswith('.parquet')])} WHERE freq='D'")
         all_dates=[r[0] for r in con.execute('SELECT DISTINCT session_date FROM (SELECT session_date FROM t6_calendar UNION ALL SELECT session_date FROM t6_universe UNION ALL SELECT session_date FROM t6_member_equity) ORDER BY session_date').fetchall()]
         dates=[d for d in all_dates if start<=d<=end]
         identity.update(own_factors=f['sha256'],config_sha256=F.config_hash(),kind='risk_inputs',start=str(start),end=str(end),
@@ -580,35 +602,36 @@ def native_risk(spec,destination,start,end):
                 if len(primitive)>20000:
                     raise ValueError('bounded risk cross-section exceeded')
                 exposures={}
-                if day<=F.END:
-                    keep=[d for d in all_dates if d<=previous][-252:]
-                    if keep:
-                        sql=f"""SELECT p.security_id,p.session_date,CASE WHEN p.ret_guarded THEN NULL ELSE p.ret END AS ret,rf.rf AS RF,
-                          f.MktRF,f.SMB,f.HML,f.RMW,f.CMA FROM t6_prices p
-                          LEFT JOIN t6_own_factors f ON f.session_date=p.session_date AND f.available_at<TIMESTAMPTZ '{cutoff.isoformat()}'
-                          LEFT JOIN t6_rf rf ON rf.session_date=p.session_date AND rf.freq='D'
-                          WHERE p.session_date BETWEEN DATE '{keep[0]}' AND DATE '{previous}'
-                            AND p.session_date<DATE '2023-01-01'
-                            AND p.security_id IN(SELECT security_id FROM t6_universe WHERE session_date=DATE '{day}')
-                          ORDER BY p.security_id,p.session_date"""
-                        active,hist=None,[]
-                        def flush():
-                            if active is not None:
-                                clean=[{k:(v if v is not None else float('nan')) for k,v in r.items()} for r in hist]
-                                ff=R.exposure(previous,clean)
-                                capm=R.regress([r['ret'] for r in clean],[[r['MktRF']] for r in clean],[r['RF'] for r in clean])
-                                exposures[active]={**ff,'ivol_capm_252':capm['idio_vol'],
-                                    'volatility':float(__import__('numpy').std([r['ret'] for r in clean[-21:]],ddof=1)) if len(clean)>=21 and all(math.isfinite(r['ret']) for r in clean[-21:]) else None}
-                        for r in rows(con,sql):
-                            if r['security_id']!=active:
-                                flush()
-                                active,hist=r['security_id'],[]
-                            hist.append(r)
-                            if len(hist)>252:
-                                raise ValueError('duplicate price session or oversized exposure window')
-                        flush()
+                keep=[d for d in all_dates if d<=previous][-252:]
+                if keep:
+                    rf_cols={r[0] for r in con.execute('DESCRIBE t6_rf').fetchall()}
+                    rf_guard=f" AND rf.available_at<TIMESTAMPTZ '{cutoff.isoformat()}'" if 'available_at' in rf_cols else ' AND false' if day.year>=2023 else ''
+                    sql=f"""SELECT p.security_id,p.session_date,CASE WHEN p.ret_guarded THEN NULL ELSE p.ret END AS ret,rf.rf AS RF,
+                      f.MktRF,f.SMB,f.HML,f.RMW,f.CMA,f.available_at AS factor_available_at FROM t6_prices p
+                      LEFT JOIN t6_own_factors f ON f.session_date=p.session_date AND f.available_at<TIMESTAMPTZ '{cutoff.isoformat()}'
+                      LEFT JOIN t6_rf rf ON rf.session_date=p.session_date AND rf.freq='D'{rf_guard}
+                      WHERE p.session_date BETWEEN DATE '{keep[0]}' AND DATE '{previous}'
+                        AND p.session_date<DATE '{day}'
+                        AND p.security_id IN(SELECT security_id FROM t6_universe WHERE session_date=DATE '{day}')
+                      ORDER BY p.security_id,p.session_date"""
+                    active,hist=None,[]
+                    def flush():
+                        if active is not None:
+                            clean=[{k:(v if v is not None or k.endswith('available_at') else float('nan')) for k,v in r.items()} for r in hist]
+                            ff=R.exposure(day,clean,cutoff=cutoff)
+                            capm=R.regress([r['ret'] for r in clean],[[r['MktRF']] for r in clean],[r['RF'] for r in clean])
+                            exposures[active]={**ff,'ivol_capm_252':capm['idio_vol'],
+                                'volatility':float(__import__('numpy').std([r['ret'] for r in clean[-21:]],ddof=1)) if len(clean)>=21 and all(math.isfinite(r['ret']) for r in clean[-21:]) else None}
+                    for r in rows(con,sql):
+                        if r['security_id']!=active:
+                            flush()
+                            active,hist=r['security_id'],[]
+                        hist.append(r)
+                        if len(hist)>252:
+                            raise ValueError('duplicate price session or oversized exposure window')
+                    flush()
                 output=[]
-                momentum=signal_history(con,previous,11,1) if day<=F.END else {}
+                momentum=signal_history(con,previous,11,1)
                 for row in primitive:
                     ex=exposures.get(row['security_id'],{})
                     qualified=bool(row['cap_qualified'] and row['me'] is not None and row['me']>0)
@@ -632,7 +655,7 @@ def native_risk(spec,destination,start,end):
                         r[style]=v
                 generation.write(unit,output)
             setup_check(spec)
-            require_factor_lineage(F.bind_snapshot(manifest,f['sha256'],'factors'),spec,factor_source_identity)
+            require_factor_lineage(F.bind_snapshot(manifest,f['sha256'],own_stage),spec,factor_source_identity)
             # Measure output nulls on every member cell, including incomplete rows.
             files=[generation.path/v['path'] for v in generation.state['units'].values()]
             view=S.parquet_relation(files)

@@ -26,8 +26,8 @@ Accounting/classification/liquidity/borrow use clocks strictly before the preced
 session 22 UTC. Accounting max age400 days, liquidity10, FTD60 and threshold10.
 Daily exposure return windows contain no future observations; guarded vendor returns
 are missing. Own factors are exact manifest/config-bound products, never benchmark
-history substitutes. No post2022 risk regressions or return-derived momentum/volatility
-are constructed under GC2; latest nonreturn primitives can publish. Missing factor
+history substitutes. Historical regressions and momentum/volatility are permitted under R21 with
+qualified complete trailing inputs; evaluation and forward labels remain pre2023. Missing factor
 history stays missing. Coverage includes those missing cells on full universe/year
 denominators, including every year 2020-2025, so latest completeness gates can FAIL.
 
@@ -51,7 +51,8 @@ eligible share classes. Current-day ME cannot change these inputs. Borrow fields
 are individually masked unless their SI/ratio/FTD/threshold clock is strictly before
 the cutoff; emitted component clocks remain internal source-lineage evidence.
 Own return history ends at the previous session and factor rows must themselves be
-strictly available before the cutoff. Post-2022 return statistics remain missing.
+strictly available before the cutoff. Later historical predictors retain the same strict cutoff. Unknown factor/RF
+availability cannot certify a later regression.
 
 Coverage joins independently selected immutable all_common, r3000p and member_equity
 expected cells to published output, preserving absent cells and days as failures.

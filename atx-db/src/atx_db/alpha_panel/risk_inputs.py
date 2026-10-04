@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 import numpy as np
 
-from .factors import END
 
 FF5 = ('MktRF', 'SMB', 'HML', 'RMW', 'CMA')
 STYLES = ('size', 'value', 'momentum', 'volatility', 'liquidity', 'growth', 'leverage', 'quality')
@@ -40,23 +39,28 @@ def regress(stock_returns, factor_returns, rf, *, minimum=200):
             'n_obs': n}
 
 
-def exposure(session: dt.date, observations: list[dict]) -> dict:
+def exposure(session: dt.date, observations: list[dict], *, cutoff=None) -> dict:
     if len(observations) > 252:
         raise ValueError('bounded lookback required')
     dates = [r['session_date'] for r in observations]
-    if dates != sorted(set(dates)) or any(d > session for d in dates):
+    if dates != sorted(set(dates)) or any(d >= session for d in dates):
         raise ValueError('duplicate/unsorted/future predictor observations')
-    # Exposures are non-return products, but no prohibited return statistic is computed after 2022.
-    if session > END:
-        return {'beta_252': None, 'ff5_betas': [None]*5, 'ivol_ff5_252': None,
-                'risk_missing_reason': 'own_factor_history_ends_2022',
-                'available_at': dt.datetime.combine(session, dt.time(22), dt.UTC)}
+    if not observations:return {'beta_252':None,'ff5_betas':[None]*5,'ivol_ff5_252':None,'n_obs_capm':0,'n_obs_ff5':0,'risk_missing_reason':'missing_qualified_trailing_history','available_at':dt.datetime.combine(session,dt.time(22),dt.UTC)}
+    if observations and cutoff is None:raise ValueError('pinned previous-session cutoff required')
+    cutoff=cutoff or dt.datetime.combine(session-dt.timedelta(days=1),dt.time(22),dt.UTC)
+    if cutoff.tzinfo is None or cutoff>dt.datetime.combine(session-dt.timedelta(days=1),dt.time(22),dt.UTC):raise ValueError('invalid historical predictor cutoff')
+    for row in observations:
+        for key in ('available_at','source_available_at','factor_available_at'):
+            clock=row.get(key)
+            if clock is not None and (clock.tzinfo is None or clock>=cutoff):raise ValueError('unavailable historical predictor observation')
+    observations=[r if r.get('factor_available_at') is not None else {**r,**dict.fromkeys(FF5,float('nan'))} for r in observations]
     returns = [r.get('ret', np.nan) for r in observations]
     rf = [r.get('RF', np.nan) for r in observations]
     capm = regress(returns, [[r.get('MktRF', np.nan)] for r in observations], rf)
     ff = regress(returns, [[r.get(k, np.nan) for k in FF5] for r in observations], rf)
     return {'beta_252': capm['betas'][0], 'ff5_betas': ff['betas'], 'ivol_ff5_252': ff['idio_vol'],
             'n_obs_capm': capm['n_obs'], 'n_obs_ff5': ff['n_obs'],
+            'risk_missing_reason':None if capm['betas'][0] is not None else 'missing_qualified_trailing_history',
             'available_at': dt.datetime.combine(session, dt.time(22), dt.UTC)}
 
 
@@ -93,8 +97,9 @@ def pack(row: dict) -> dict:
         out[field] = item['value']
     history = []
     for r in row['observations']:
-        history.append({**r, 'session_date': dt.date.fromisoformat(r['session_date'])})
-    out.update(exposure(day, history))
+        history.append({**r, 'session_date': dt.date.fromisoformat(r['session_date']),
+                        **{key:dt.datetime.fromisoformat(r[key]) if isinstance(r.get(key),str) else r.get(key) for key in ('available_at','source_available_at','factor_available_at')}})
+    out.update(exposure(day, history,cutoff=cutoff))
     out['missing_primitives'] = missing
     out['cap_quality'] = row.get('cap_quality', 'uncertified')
     if out['cap_quality'] != 'exact_source_certified':

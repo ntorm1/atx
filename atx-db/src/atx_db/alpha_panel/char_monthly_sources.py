@@ -157,23 +157,22 @@ def price_history(con,sid,date):
     bars=records(con,f"""WITH grid AS (SELECT session_date FROM cm_calendar WHERE session_date<=? ORDER BY session_date DESC LIMIT 1260),
         qual AS (SELECT * FROM cm_price_quality WHERE security_id=? AND available_at<?
           QUALIFY row_number() OVER(PARTITION BY session_date ORDER BY available_at DESC)=1),
-        factors AS (SELECT * FROM cm_daily_factors WHERE session_date<DATE '2023-01-01' AND available_at<?
+        factors AS (SELECT * FROM cm_daily_factors WHERE session_date<=? AND available_at<?
           QUALIFY row_number() OVER(PARTITION BY session_date ORDER BY available_at DESC)=1)
         SELECT g.session_date,p.close,p.volume,q.shares,q.close_adjusted,q.high_adjusted,
           q.price_certified,q.return_certified,q.corwin_schultz_spread,q.source_available_at,q.available_at AS quality_available_at,{first_sql} AS first_observation,
-          CASE WHEN g.session_date<DATE '2023-01-01' THEN p.ret END AS ret,
-          CASE WHEN g.session_date<DATE '2023-01-01' THEN p.ret-f.rf END AS ret_exc,
+          p.ret AS ret,p.ret-f.rf AS ret_exc,
           f.mkt_rf,f.smb,f.hml,f.q_size,f.q_ia,f.q_roe,f.available_at AS factor_available_at
         FROM grid g LEFT JOIN cm_prices p ON p.security_id=? AND p.session_date=g.session_date
-        LEFT JOIN qual q ON q.session_date=g.session_date LEFT JOIN factors f ON f.session_date=g.session_date ORDER BY g.session_date""",[date,sid,tau,tau,sid])
-    monthly=records(con,"""WITH factors AS (SELECT * FROM cm_monthly_factors WHERE month_end<DATE '2023-01-01' AND available_at<?
+        LEFT JOIN qual q ON q.session_date=g.session_date LEFT JOIN factors f ON f.session_date=g.session_date ORDER BY g.session_date""",[date,sid,tau,date,tau,sid])
+    monthly=records(con,"""WITH factors AS (SELECT * FROM cm_monthly_factors WHERE month_end<=? AND available_at<?
         QUALIFY row_number() OVER(PARTITION BY month_end ORDER BY available_at DESC)=1),
       data AS (SELECT * FROM cm_monthly_market WHERE security_id=? AND month_end<=? AND available_at<?
         QUALIFY row_number() OVER(PARTITION BY security_id,month_end ORDER BY available_at DESC)=1 ORDER BY month_end DESC LIMIT 241)
       SELECT d.month_end,d.shares_adjusted,d.issuer_me,d.dividend_dollars,d.available_at,d.source_available_at,
-        CASE WHEN d.month_end<DATE '2023-01-01' AND d.return_certified THEN d.ret END AS ret,
-        CASE WHEN d.month_end<DATE '2023-01-01' AND d.return_certified THEN d.ret-f.rf END AS ret_exc,
-        f.mkt_rf,f.smb,f.hml,f.available_at AS factor_available_at FROM data d LEFT JOIN factors f USING(month_end) ORDER BY month_end""",[tau,sid,date,tau])
+        CASE WHEN d.return_certified THEN d.ret END AS ret,
+        CASE WHEN d.return_certified THEN d.ret-f.rf END AS ret_exc,
+        f.mkt_rf,f.smb,f.hml,f.available_at AS factor_available_at FROM data d LEFT JOIN factors f USING(month_end) ORDER BY month_end""",[date,tau,sid,date,tau])
     # A sequence of observed rows is not an exact month grid.
     calendar_months=set(months(con,dt.date(date.year-21,1,1),date))
     verified=[]

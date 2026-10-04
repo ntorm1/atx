@@ -38,7 +38,9 @@ Daily and monthly stock returns are aggregated separately. Long-short daily spre
 are never compounded into monthly factors. Missing formed members/legs remain null.
 Raw vendor delisting/vintage limitations remain source qualification gaps.
 
-All own aggregate return inputs are bounded strictly before 2023 before aggregation.
+The default factors evaluation source is bounded strictly before 2023.
+The separate factors_predictor_history stage uses the same frozen kernels solely
+for trailing predictor inputs, with explicit construction_asof and purpose.
 The benchmark validator requires all 120 months 2013-01..2022-12, reports missing
 months as FAIL, and never shrinks the window. Thresholds are frozen in configuration.
 
@@ -129,3 +131,11 @@ monthly signals, EG fiscal/training ME and BAB issuer/market history cannot comp
 from surviving classes. SQL predicates explicitly map unknown validity to false;
 NULL-skipping aggregate behavior cannot certify the remaining class. Invalid basis
 has `quality_reason=invalid_eligible_constituent_me` in the period adapter.
+
+R21 source-only construction uses `--construction-asof YYYY-MM-DD` and optional
+`--max-new-months N`, with output directory `factors_predictor_history`. Immutable
+month receipts resume only the same pinned as-of generation. RF requires a known
+clock strictly before the pinned prior-session cutoff; factor availability includes
+that RF clock. Unknown RF clocks leave return factors missing. This path provides
+no performance assessment, replication or forward labels. Actual gates remain
+unmeasured and FAIL; no production source-quality claim is made.

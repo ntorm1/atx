@@ -267,3 +267,46 @@ R15 universe_release_v1 foundation is under independent repair; final explicit
 versioned source adapter/generation binding, production source-quality/cap audit,
 member_equity/history/accounting/training gaps and actual memory/gate measurements
 remain held dependencies. No legacy universe snapshot is accepted by this report.
+
+## R21 owner requirement adjustment: construction purpose separation (2026-10-03)
+
+Owner cutoff clarification is evaluation and complete forward labels only. This
+requirement adjustment preserves the two prior repair rounds and all original
+formulas, directions, numerical gates, coverage years/populations/denominators,
+source-quality predicates and complete-history requirements. No actual source,
+metadata, hash inventory, HTTP, construction or return measurement job ran. All
+actual gates remain unmeasured/FAIL and production admission remains held.
+Independent review is required before an actual producer run.
+
+Focused synthetic commands used OPENBLAS_NUM_THREADS=1, PYTHONPATH=C:/atx/atx-db/src,
+`atx-db/.venv/Scripts/python.exe -m pytest <file> -n0 -o addopts='' -p no:cacheprovider -q`,
+DuckDB128MB/one thread. No broad unchanged test suite was rerun.
+
+Task6 config SHA256: 0d38a84b7a12825511686956ac52f87bd24769ee8741477cdb425e61b5a4f4b0.
+Default `factors` evaluation stays 2013--2022. New explicit
+`factors_predictor_history` purpose uses the same native frozen formula kernels,
+construction_asof, bounded resumable month receipts and distinct immutable output.
+Source-only lineage cannot bind as the evaluation stage. RF has an independent
+availability clock strictly before the admitted calendar prior-session cutoff;
+unknown/equal RF clocks leave factor inputs missing. Factor availability includes
+the RF clock, and risk joins it strictly before its own pinned previous-session
+cutoff. Later trailing predictors retain original 252/200 history requirements,
+source quality and full original coverage denominators.
+
+Tests: test_alpha_panel_factor_native.py `-k r21`: final1passed,34deselected,9.23s.
+This runs actual native source-factor publication/receipts and native 2024 risk
+consumer/regression/publication with only synthetic source admission mocked;
+beta252=1 and CAPM residual volatility?0 are fixture mechanics, not alpha claims.
+It checks equality RF cutoff missingness, exclusion of future observations and
+refusal of evaluation output/binding. Coverage correctly FAILS missing original
+fundamental/FF5 ingredients. test_alpha_panel_risk_inputs.py
+`-k 'r21 or latest_missing or future'`:3passed,3deselected,.27s; eligible later
+252-row regression, equality/future rejection, unknown factor clock and 199-row
+history remain missing. An initial empty-history regression-shape failure was
+fixed with explicit missing-history output before the passing rerun.
+test_alpha_panel_factors.py `-k 'holdout or benchmark_post'`:2passed,8deselected,.30s;
+post2022 evaluation boundaries remain sealed.
+
+Actual authoritative RF clock availability, economic/source qualification and
+complete upstream history remain external admission dependencies. No fallback
+reference factor or fabricated RF public clock was introduced.

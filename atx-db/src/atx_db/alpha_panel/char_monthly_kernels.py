@@ -375,7 +375,6 @@ def compute(annual,quarter,bars,monthly,date,cap,sector=None,annual_vintages=Non
     result,reasons={},{}
     for f in REGISTRY:
         try:
-            if f.return_derived and date>=dt.date(2023,1,1):raise Missing("holdout_return_product_prohibited")
             if f.implementation=="unsupported":raise Missing(f.unsupported_reason)
             if f.implementation=="cross_section":raise Missing("pending_same_date_cross_section")
             if f.implementation in ("expression","special","quarterly") and sector in ("bank","insurer") and any(d in f.dependencies for d in ("gp","cogs","inv","ca","cl","cowc","ebit","ebitda","op","ope","cop")):

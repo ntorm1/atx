@@ -25,7 +25,7 @@ START = dt.date(2013, 1, 1)
 FACTORS = ('MktRF', 'SMB', 'HML', 'RMW', 'CMA', 'UMD', 'STREV', 'LTREV',
            'q_ME', 'q_IA', 'q_ROE', 'q_EG', 'BAB')
 CONFIG = {
-    'rule': 'task6-frozen-v3-review2', 'start': str(START), 'end': str(END),
+    'rule': 'task6-frozen-v4-r21-construction', 'start': str(START), 'end': str(END),
     'universe': 'univ_all_common', 'breakpoints': 'NYSE issuer ME median; signal 30/70',
     'accounting_formation': 'June annual; previous fiscal year visible before formation cutoff',
     'price_formation': 'monthly; UMD months -12:-2; STREV -1; LTREV -60:-13',
@@ -50,7 +50,8 @@ CONFIG = {
         'leverage':'debt_at','quality':'gprof'},
     'style_normalization': 'sample z score over certified all_common; no clipping',
     'staleness_days': {'accounting':400,'liquidity':10,'FTD':60,'threshold':10},
-    'risk_holdout': 'all regressions missing after2022; latest nonreturn primitives allowed',
+    'risk_holdout': 'evaluation and complete forward labels end before2023; historical predictors in all feature years use strictly eligible past source-qualified returns/factors, no benchmark fallback',
+    'historical_factor_source': 'factors_predictor_history purpose; frozen same native kernels; explicit construction_asof ceiling, no evaluation/forward labels; independently clocked RF required; risk consumes source availability strictly before previous-session cutoff',
     'source_schema': 'provisional inspected native schema; missing REVT remainsmissing, no SALE substitution',
     'references': [
         'https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/f-f_5_factors_2x3.html',
@@ -341,14 +342,17 @@ def main():
     parser.add_argument('--native-spec', type=Path, required=True)
     parser.add_argument('--phase',choices=('build','validate'),default='build')
     parser.add_argument('--destination', type=Path, required=True)
+    parser.add_argument('--construction-asof',type=dt.date.fromisoformat,help='source-only own-factor history strictly before this feature date; separate stage, no evaluation')
+    parser.add_argument('--max-new-months',type=int,help='bounded resumable source-only construction budget')
     args = parser.parse_args()
     if not os.environ.get('ATX_GUARD_JOB'):
         raise RuntimeError('native data CLI requires run_memory_guarded.py')
     from ._factor_native import native_factors,validate_benchmarks
     spec=json.loads(args.native_spec.read_text(encoding='utf-8'))
     if args.phase=='build':
-        native_factors(spec,args.destination)
+        native_factors(spec,args.destination,construction_asof=args.construction_asof,max_new_months=args.max_new_months)
     else:
+        if args.construction_asof:raise ValueError('source-only construction cannot invoke evaluation')
         validate_benchmarks(spec,args.destination)
 
 
