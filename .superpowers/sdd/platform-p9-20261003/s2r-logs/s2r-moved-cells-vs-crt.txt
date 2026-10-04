@@ -1,0 +1,8 @@
+power(close, 0.5)        cell 407 x=64.11951492293045 (405007a621eb57b2)
+    ucrtbase  pow = 402003d29c0e45f7   ucrtbased pow = 402003d29c0e45f8   dump Debug ae = 402003d29c0e45f8   correctly-rounded ref = 402003d29c0e45f8
+close ^ 3                cell 296 x=48.35577838645668 (40482d8a256b3a40)
+    ucrtbase  pow = 40fb9ad699a495e3   ucrtbased pow = 40fb9ad699a495e4   dump Debug ae = 40fb9ad699a495e4
+signedpower(returns, 2)  cell 186 x=-0.018337234963998306 (bf92c6ff01e0b500)
+    ucrtbase  pow = bf360968bb885c9b   ucrtbased pow = bf360968bb885c9a   dump Debug ae = bf360968bb885c9a   correctly-rounded ref = bf360968bb885c9b
+signedpower(returns, 2)  cell 201 x=-0.00932336049217719 (bf8318204338c500)
+    ucrtbase  pow = bf16c97100b18c2d   ucrtbased pow = bf16c97100b18c2c   dump Debug ae = bf16c97100b18c2c   correctly-rounded ref = bf16c97100b18c2d
