@@ -354,3 +354,229 @@ kept (owner question pending).
 Head `6673f8d1` + the docs commit that adds this section. Next free build tag **p9-1x**. Known-red now: pytest
 `scripts/tests/test_research_mine.py::test_fields_are_the_rule_applied_to_the_registry` (E2) and Release
 `BookNormalScore.*` x2 (C2); no new red. Resume notes: `handoff-root-m2b.md`.
+
+## M2c: OD-A3-6F deletion, S2 merge (2026-10-04)
+
+Agent: fresh root for step group M2c (dispatch after R4-1). Head at dispatch `4497784b`. Python
+`"C:/Program Files/Python312/python.exe"`; every pytest `-B -q -rs -p no:cacheprovider`, `PYTHONDONTWRITEBYTECODE=1`,
+explicit paths, own `--basetemp` in the session scratchpad. Evidence: `m2c-logs/` (this dir): gtest logs, receipts,
+exe SHA-256 lists (`exe-sha256-{debug,release}.txt`, so every log names the binary it ran), comparison outputs and the
+four scratch scripts used (`m2c-logs/tools/`: `digests.py`, `pathlen.py`, `cmp.py`, `rerun.py`).
+
+**Status: BLOCKED on one item** (a Release red outside the known-red set, below). Every other item in the step group
+is done. Nothing is half-merged and no process of mine is running.
+
+### OD-A3-6F (owner decision): A3 TRAIN identity outputs deleted
+
+- Checked first: `git grep p9-a3-train` over the tree finds only sprint docs (`handoff-root-m2a.md`,
+  `handoff-root-m2b.md`, this report). `rg` over every `*.json/yaml/toml/jsonl/py/ps1` outside `build-equity*` finds
+  nothing. Inside `build-equity/`, only the five dirs' own start, receipt and spec files name them. No spec, pin, test
+  or fixture reads them.
+- Deleted by name in `build-equity/`: `p9-a3-train-py` (381 MiB, 7 files), `p9-a3-train-py-run` (4 files),
+  `p9-a3-train-engine` (381 MiB, 11 files), `p9-a3-train-engine-run` (4 files), `p9-a3-train-identity` (196 KiB,
+  1 file). About 762 MiB freed.
+
+### S2 (`2ed2fc18`, pool-18): MERGED; re-proved except one Release red (BLOCKED)
+
+- **Ledger:** `Task S2: complete` at `2ed2fc18`. Review APPROVE `98c85cc9`; fix round 1 `110fd735` / `80d81b26`;
+  re-review APPROVE `8314fb59`. Rulings applied: S2-1 (digests), S2-2 (capabilities), S2-3, S2-4 / W1-I1 (path), S2-5
+  (long lines stay), S2-6 (stale imputed entries), SQL2-CLS, DISK-2, M1d-NOTE-3.
+- **Docs:** `task-S2-report.md`, `task-S2-review.md`, `handoff-S2.md` and `s2-evidence/` arrived with the merge. Their
+  blobs are the lane's; the working copies differ from pool-18's only in CRLF. `task-S2-rereview-1.md` was committed on
+  the lane after `2ed2fc18` (at `8314fb59`); it is copied in here and added with `-f`.
+- **Merge:** `git merge --no-ff 2ed2fc18` -> **`f6444417`** (merge base `1239a5ff`; 31 files). **No conflict.** The
+  shared tails the review expected (`strategy_ic_rules.cpp`, `strategy_ic_runner.cpp`, `composition_rules_list.json`,
+  `strategy_ic_admission.cpp`, `strategy_ic_detail.hpp`, `strategy_ic_runner_test.cpp`) auto-merged. D2 and AL-COMB
+  are not merged yet, so their overlap is still to come.
+- **Digests (S2-1, step 3):** recomputed from git blobs with the tripwire recipe (`strategy_ic_runner_test.cpp:2230-2256`:
+  per listed path `path\n<len>\n<text>`, CRLF -> LF, SHA-256). Output in `m2c-logs/source-digests.txt`:
+
+  | tree | `dsl_vm_sources` | `ic_result_sources` |
+  |---|---|---|
+  | base `1239a5ff` | 34 files, `fcf8021e` = pin | 11, `2d758bff` = pin |
+  | lane `2ed2fc18` | 35, `5bcd55c7` = pin | 11, `dd3c6011` = pin |
+  | root before merge `4497784b` | 34, `fcf8021e` = pin | 11, `2d758bff` = pin |
+  | merged `f6444417` (HEAD and working tree) | 35, **`5bcd55c7`** = pin | 11, **`dd3c6011`** = pin |
+
+  No other merged lane touched a digested source: for both lists, the merged tree's digest equals the lane's. Both
+  tripwire gtests are green in Debug and Release.
+- **S2-2 (`exe_capabilities`):** append-only.
+  - `strategy_ic_rules.cpp` goes from 5 to 8 entries, still sorted. The five existing ones (`eval-mode-audit-exact`,
+    `list-rules`, `marginal`, `no-composition`, `theme-registry`) are unchanged.
+  - Added: `ic-hac-rule`, `label-terminal`, `min-coverage`. Array size 8 = entry count.
+  - The K-P9-6 fixture `composition_rules_list.json` gains exactly the same three lines. No other file pins the list
+    (`git grep`).
+- **Builds** (all through `scripts/research-build.ps1`). The targets are exactly the lane report's: `atx-engine-alpha-tests,
+  atx-engine-factory-tests, atx-impl-strategy-ic-tests, atx-impl-strategy-mine-tests, atx-equity-strategy-ic,
+  atx-equity-strategy-targets`.
+
+  | tag | preset | source / dirty | result | warnings | canary |
+  |---|---|---|---|---|---|
+  | **p9-1x** | equity-dev | `f6444417` / 5 (docs, untracked PNGs) | exit 0, 1,142.9 s, 203 TUs, 8 links | **0** (log scanned whole; the one `NativeCommandError` line is CMake's `GLOB mismatch!` re-glob notice on stderr for the new `alpha_op_traits_test.cpp`) | check: digests equal, but **failed the 15 s first-run wall limit** (23.2 s; host at 100 % CPU from other sessions). Re-check alone: **15 passed in 12.29 s** |
+  | **p9-1y** | equity-rel | `f6444417` / 5 | exit 0, 1,048.4 s, 216 TUs, 9 links | **0** (same re-glob notice only) | check: **15 passed in 10.93 s** (5 Release digests) |
+  | **p9-1z** | equity-rel | `f6444417` / 5 | `atx-shm-worker` only (test prerequisite; slip below), exit 0, 17.0 s, 1 TU | 0 | - |
+
+- **gtests.** Logs are `m2c-logs/{debug,release}-*.log`. The anchored S2 / fix-round filter is
+  `IcScreen.*:IcLabels.*:IcLabelTerminal.*:StrategyIcRunner.AuditExactEvalModeIsRecordedAndCachedUnderItsOwnIdentity:StrategyIcRunner.*SourcesPinnedToSemanticsVersion`.
+  It covers the re-review's Suggested 1 plus every test the fix round `110fd735..2ed2fc18` added or extended.
+
+  | binary | Debug (p9-1x) | Release (p9-1y) | lane |
+  |---|---|---|---|
+  | ic-tests, S2 filter | **28 / 28** (incl. new `IcLabels.TerminalImputedPairsPassBothReturnGuards`, `IcLabelTerminal.AbsurdTerminalReturnIsGuardedOnTheLabelRole`; extended `LabelRoleRefusals`, `FrozenTrainResumeBindsTheLabelRolePins`, `MissingExitIcIsCachedUnderItsOwnScope`, `AuditExact...OwnIdentity`; both source pins) | **28 / 28** | - |
+  | `atx-impl-strategy-ic-tests` whole | **204 / 204** | **204 / 204** | 204 |
+  | `atx-impl-strategy-mine-tests` whole | **44 / 44** (golden `0x889874a3b9b29c55` at 1 and 4 workers: `SignalFitnessDefaults.*` 2 / 2) | **44 / 44** (same 2 / 2) | 44 |
+  | `atx-engine-alpha-tests` whole | **782 / 782** (OpSig 3, AlphaVmSlotReuse 6, AlphaVmBandParity 4, AlphaVmTruncation 4) | 781 run: 779 passed; 1 skipped (`AlphaVm_ZeroAlloc.WarmDispatchLoop...`, "requires the MSVC CRT debug heap", by design); **1 FAILED: `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned`**. (782 vs 781: `AlphaSlotPoolDeathTest.OverAcquire_Aborts` is Debug-only.) | 782 (Debug) |
+  | `atx-engine-factory-tests` whole | **396 / 396** (M1d 392 + IcScreen 2 + IcLabels 2) | first run 389 passed / 7 failed; after p9-1z **396 / 396** | - |
+
+- **Release red (STOP item): `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned`**
+  (`release-atx-engine-alpha-tests-whole.log:803-822`).
+  - Release prints `vm_audit_exact=0xeeae40c4a6d7d93b vm_research_fast=0x24c97b5bfeab6518 oracle=0xeeae40c4a6d7d93b`.
+  - The pins (`alpha_lit_golden_test.cpp:54-56`) are `0x971c3da60ca89aa3 / 0xe9e7128fd5359900 / 0x971c3da60ca89aa3`.
+    Debug reproduces them (green).
+  - All three asserts fail in Release, **including the oracle's**.
+
+  My attribution is by code reading, not by a pre-S2 Release build: the red is pre-existing, Release-only, and not
+  caused by S2.
+  1. The pins were captured on the Debug build `mega-v7-w2` (W2 sprint, `41894ea4`, 2026-09-28;
+     `platform-20260928/progress.md:279`). `atx-engine-alpha-tests` was never built in Release before this step: this
+     Release tree had built only the IC / targets exes and the ic, target, w1-cost and w1-foundation test targets
+     (p9-1j, p9-1n, p9-1o, p9-1q). So no earlier Release run of this test
+     exists.
+  2. The oracle (`evaluate_reference`) misses its pin too.
+     - S2 changes the oracle in one place only: the grouped-op predicate (`oracle.cpp:321`, hand list ->
+       `detail::needs_group_operand`).
+     - `OpSig.PredicatesAgree` pins that predicate equal to the old hand list for every opcode, and it is green in
+       Release.
+     - The oracle's other includes (`bytecode.hpp`, `panel.hpp`, `registry.hpp`, where S2 changed a comment) carry no
+       numeric change from S2.
+     - So the Release oracle digest does not depend on S2, and the Release VM equals it (`vm_audit_exact == oracle`).
+       The failure is a Release-vs-Debug floating-point difference against a golden pinned on Debug (the M1c-RED class).
+  3. On real data, S2 moves no Release bit: 67 / 67 candidate signals are byte-identical between the pre-S2 and post-S2
+     Release exes (cold-u pair below).
+
+  Not fixed; no expected value edited. Options for the PM:
+  - (a) Rule it a known red (Release-only, Debug-pinned golden) and pin Release digests beside the Debug ones.
+  - (b) Make the battery contraction-free (C2-RED precedent).
+  - (c) Attribute it empirically first: build `atx-engine-alpha-tests` in Release at `4497784b` (needs a detached
+    checkout in pool-2 or a pool lease) and run the filter.
+
+  Any other Release-only exposure stays unknown until the wave-2 Release suite runs.
+- **Slip (environment, fixed and logged).**
+  - Seven Release factory tests failed: `CascadeTrialCount.SeqEqualsParallelAtRealN`,
+    `FactoryOos.{WalkForwardSeqParallel, PriceScaleGate_SeqEqualsParallel, DsrSubwindows_SeqEqualsParallel,
+    CascadeGate_SeqEqualsParallel, AdmitLadder_SharedHelper_SeqEqualsParallel}` and
+    `RobustnessBatteryFullWire.SerialParallelAgreeWithFullBattery`.
+  - Each failed with `CHECK failed: Factory::gather_mine_scores: mine shard reported a fault` / SEH `0xc000001d`.
+  - Cause: the documented missing-`atx-shm-worker` case (`atx-engine/plans/p6/TRACKER.md:61-63`). The Debug bin has
+    the worker; the Release bin did not.
+  - Fix: p9-1z built the worker. The seven now pass (`release-factory-seqpar-after-shm-worker.log`), and the whole
+    factory binary passes 396 / 396 (`release-atx-engine-factory-tests-whole-2.log`). No code change.
+- **pytest:**
+  - `atx-impl/tools/test_fit_composition_rule_plugins.py`: **8 passed** (lane 8).
+  - `scripts/tests/test_cycle_e2e.py` (canary, `ATX_CANARY_REQUIRED=1`): Debug **15 passed**, Release **15 passed**
+    (lane 15, Debug only).
+  - Store suite (next item): 43 passed under each of two seeds.
+- **SQL2-CLS: nothing to add.**
+  - The merge adds no `atx.<name>/v<n>` literal. Its diff names only `atx.composition-rules/v1`,
+    `atx.dsl-candidate-signal/v2` and `atx.research-role-fields/v1`, all already registered. The guard
+    `test_every_schema_literal_is_registered` is green.
+  - Store suite `atx-engine/tools/test_research_store_{classes,blind,identity,fixtures}.py test_research_store.py`:
+    **43 passed, 131 subtests** under `PYTHONHASHSEED` 0 and 1 (FixtureChain ran).
+  - Fixture chain (`atx-research-store` p9-1u `3b955ba1`, rel and abs `--root`, `m2c-logs/fixture-chain.log`): init,
+    catalog, digest and verify all exit 0; `files_seen 28 verified 25 declared 0 skipped 4`;
+    **`catalog_digest d32f7655...4e69`** (= expected); `research_store_identity.py` total checked 12, mismatches 0.
+  - No `classes.json` commit.
+- **X-5 u / w flag-absent identity against the P9-B0 references** (step 4 i).
+  - Exe: Debug p9-1x ic `73a6b4fd`. Argv: the reference receipt's, with only `--output` changed (`rerun.py` asserts the
+    substitution). Bounded runner, reference limits, admission wait <= 3,600 s, 0 trials.
+  - Compared by SHA-256 and JSON leaf path only (`cmp.py` prints no value). Volatile: timing leaves (`wall_seconds`,
+    `hash_seconds`, `stage_seconds/*`) and the M1d-NOTE-3 cache strings.
+
+  | run | vs | wall / peak | payload files | outside the volatile list |
+  |---|---|---|---|---|
+  | u `p9-m2c-yf0-u` | `p9-b0-yf0-u` | 13.3 s / 530 MiB | `orientations.json` `d0d16f30`, `recipe.json` `b9b4029c`, `train_daily_ic.csv` `c8714175` **same** | `summary.json`: **`/roles/0/ic_cache_bytes` only** (277,276,744 -> 277,276,800); `train_candidates.jsonl`: none |
+  | w `p9-m2c-yf0-w` | `p9-b0-yf0-w` | 85.8 s / 1,436 MiB | all 10 payloads **same** (`train_combined.json` `e13fbc4d`, `.f64` `70d863f9`, planned targets `cb744a74`, ...) | `summary.json`: **`/roles/0/ic_cache_bytes` only** (+56); `train_candidates.jsonl`: none |
+
+  - Cache: both runs warm on `mega-candidate-cache-v8-lo3`: 67 / 67 signal hits and 67 / 67 IC-result hits. Scope
+    `ic1_b479dd191f59cbff` and identity `dslvm1_clang18.1` are unchanged, so the existing entries hit and the IC cache
+    key did not move.
+  - **`ic_cache_bytes` (+56 B in both build types; for the PM).**
+    - It is a memory-accounting leaf, not a payload, key, recipe or decision: `labels.bytes()` =
+      `sizeof(ic_screen_detail::Cache)` + label arrays (`ic_screen.cpp:366`).
+    - It grows by exactly the S2-1 fields: `IcScreenConfig` `min_coverage` (8) + `hac_rule` (8 padded),
+      `Cache::terminal` (8 padded), and `ResearchIcCoverage::terminal_imputed_pairs` x 4 (32). Total 56.
+    - The lane's "summary minus timings" claim missed this leaf. I treat it as explained, not as an identity miss.
+    - The wave-2 P9-B0 list must carry `/roles/*/ic_cache_bytes`, or the re-based references must be taken after S2.
+- **Cold u before / after S2 (step 4 i, E-24), and Release identity of the banded VM on real data.**
+  - Argv: Y-F0 u (library v8ysb, fields v15, `--workers 4`, `--no-composition`), with `--candidate-cache` pointing at
+    a fresh empty dir. Release; cap 600 s / 3,072 MiB.
+  - Before: the pre-S2 Release exe still on disk (`ea370cec`, p9-1n at `506ea123`), run before p9-1y replaced it.
+    After: p9-1y `bf0ad802`. The two runs were about 40 minutes apart on the same busy host.
+
+  | run | exe | wall | peak | admission wait |
+  |---|---|---|---|---|
+  | `p9-m2c-cold-u-old` | `ea370cec` (pre-S2) | **163.7 s** | 1,617 MiB | 0 s |
+  | `p9-m2c-cold-u-new` | `bf0ad802` (S2) | **93.7 s** (-42.8 %) | 1,616 MiB | 155.6 s (a compiler elsewhere) |
+
+  - New vs old outputs (`cmp-cold-u-new-vs-old.txt`):
+    - `orientations.json`, `recipe.json` and `train_daily_ic.csv` are identical, and equal the P9-B0 Debug reference
+      (`d0d16f30` / `b9b4029c` / `c8714175`).
+    - `summary.json` differs only at timing leaves, the cache-dir path strings (two DIR names) and
+      `/roles/0/ic_cache_bytes` (+56, as above).
+    - `train_candidates.jsonl` differs at timing leaves only.
+  - Cache entries (`cmp-cold-caches-new-vs-old.txt`): 201 / 201 files.
+    - **67 / 67 signal payloads byte-identical.**
+    - Sidecars differ only at `/engine_git_sha`.
+    - IC-result entries differ only at `/recorded/engine_git_sha`, which is outside the hashed record.
+  - Peak memory is unchanged at 4 workers, so the per-worker as-of scratch (review Suggested 5) does not show at the P9
+    worker count.
+  - Both cold caches (2 x 4.47 GB) were deleted by name afterwards.
+- **S2-4 / W1-I1 path margin (step 4 ii; measurement only, `s2-4-path-margin.txt`).**
+  - Release + audit-exact cache root: `dslvm1_clang18.1_opt_md_ndebug_xs13.0.0_audit` (45 chars). The Release identity
+    was read from the cold run's summary.
+  - The deepest file is the IC-result entry `ROOT\<role sha64>\fp_<16>\ic1_<16>\<id>.<dsl16>.json`
+    (`strategy_ic_runner.cpp:497,539`). The `.<16 hex>.partial` name (25 chars) is never longer than the final name for ids
+    of 3+ chars.
+  - Measured from pool-2:
+    - Real entries on disk, rebased onto the audit root: `mega-candidate-cache-v8-lo3` is **251** chars
+      (`value_composite_v49`, a field candidate), so **1 char over 250** and 8 under 259.
+      `mega-candidate-cache-v8-lo1` is 247 (3 to spare).
+    - Current parent `lib-v8ysb-gm.json` (and `lib-v8ys*`): deepest **250** (`earn_surprise_comp`, field candidate),
+      margin **0**. `lib-v8x4*`: 251.
+    - v6 / v7-era specs: up to 255. Their caches are absent, so unseen ids are counted as field candidates.
+  - Rule: deepest = len(cache dir) + 175 + len(id) for a field candidate (+155 for a base one). With the lo3 root
+    (57 chars), a field candidate's id must be <= 18 chars to stay <= 250. A pool with a two-digit number adds 1.
+  - Effect of E2's plan-time refusal (W1-I1, > 250): it would refuse an audit-exact Release cell over lo3 from pool-2
+    for `value_composite_v49`, and pass the current parent at exactly 250.
+  - The 24-char AL / PRE id budget in W1-I1 does not fit the lo3 root. Field candidates with 24-char ids need a cache
+    dir of <= 51 chars.
+- **S2-6:** no `imputed-v1` IC-result entry exists under the spec caches.
+  - lo3 holds one IC scope dir name (`ic1_b479dd191f59cbff`, in 93 dirs). It equals the flag-absent scope the P9-B0
+    runs record.
+  - lo1 holds one (`ic1_710caa717cb3193d`).
+  - No file in either cache names `label_terminal`, and neither has a `dslvm*` or `_audit` root. Nothing deleted.
+- **P13 (review "root must check" 3):**
+  - The live X-5 / Y fields manifests `train-2020-2023-lo3-fields-v13` and `-v15` carry `seal.exclusive_end`
+    `2024-01-01`, which binds. The runs above passed admission.
+  - FYI: 10 v6 / v7-era manifests (`recent-fast-*-fields-*`) carry `2025-01-01`, and the IC runner now refuses them.
+    Only superseded specs name them: `v61*.json`, `v70*.json`, `v71.json`, `v7u-lo3.json` (and
+    `fund_industry_ic_v71.recipe.json`).
+- **Not run:** the `hygiene` preset the original review lists. `research-build.ps1` builds only equity-dev and
+  equity-rel, and raw cmake is forbidden.
+- **DISK-2 (pool-18):** nothing to delete. `build-equity/` holds only `mega-p9-s2-*` receipts and logs (3.0 MB total
+  with `audits/` and `v8-interim3-pitch-render-run2/`). The object tree was already gone. The `build/` lease stub is not
+  touched.
+- **Blind rule: one slip of mine.** While checking the old cold u's progress, I printed the tail of its `stdout.log`.
+  It showed one candidate's screen-reason label (a classification string, no number). No return / IC / Sharpe /
+  turnover / NAV statistic was read. Every later check read receipts, SHAs and JSON paths only.
+- **Trial ledger:** 0 trials. `build-equity/trials.jsonl` is 133 lines, `27e40f9f`, at the start and at the end.
+
+### M2c status
+
+Code head `f6444417` (the S2 merge); the docs commit that adds this section sits on top. Next free build tag **p9-2a**
+(p9-1x, p9-1y and p9-1z used). Known-red now:
+- pytest `test_fields_are_the_rule_applied_to_the_registry` (E2);
+- Release `BookNormalScore.*` x2 (C2);
+- **Release `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` (new, awaiting a ruling).**
+
+Resume notes: `handoff-root-m2c.md`.

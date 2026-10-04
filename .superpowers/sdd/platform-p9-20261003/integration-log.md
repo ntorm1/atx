@@ -502,3 +502,26 @@ Base `c7ef4e3d`. Detail: `root-wave2-merge-report.md` section M2b; logs `m2b-log
 | lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
 |---|---|---|---|---|---|---|---|---|
 | AL-SIG | `ebb081ab` | `b1406e14` + SQL2-CLS `6673f8d1` (`atx.p9-blocked-registration/v1` -> new class `blocked-registration`; `atx.alpha-panel.indexes/v1` -> legacy_allow, the guard's actual red) | 7, A2 shared tail vs A3 (both CMake tails, `build_spec.hpp`, `registry.hpp`, `registry.cpp` kind table 9+2=11, `research_fields_cli.cpp` known keys, `research_fields_registry_test.cpp` KindLookup); all kept both, A3 first; `field_registry.json` auto-merged, `ok 94` + round-trip | **p9-1w** `atx-engine-research-fields-tests, atx-research-fields`, 124.0 s, 24 TUs | 0 | AlSig+Registry 33p; whole target 92/92 (M1a-RED pair OK); supplementary ic `NonPointInTimeFieldsAndUnflaggedManifestsAreRefused` 1p (p9-1p exe) | tools 39p; scripts 16p; engine-path 11p + vendor-engine 9p (real exe); candidates validate 1 valid; store suite 43p/131 sub x2 seeds, FixtureChain ran; theme pins 31p | ALSIG-9 admission refusal read (`strategy_ic_admission.cpp:297-315, 398-406`); fixture chain `d32f7655...4e69` (28/25/0/4), identity 12/0, rel = abs; M-2 seam holds (13 themes, no new theme); DISK-2 pool-13: already clean (0 B); ledger 133 / `27e40f9f` |
+
+### M2c: OD-A3-6F, S2, 2026-10-04 (BLOCKED on one Release red)
+
+Base `4497784b`. Detail: `root-wave2-merge-report.md` section M2c; logs `m2c-logs/`. OD-A3-6F: the five
+`build-equity/p9-a3-train-*` dirs deleted by name after a reference grep found no reader (about 762 MiB).
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| S2 | `2ed2fc18` (re-review `8314fb59`) | `f6444417` (no SQL2-CLS commit: no new literal) | none (IC runner / rules / admission / detail / test tails auto-merged) | **p9-1x** equity-dev and **p9-1y** equity-rel, each `atx-engine-alpha-tests, atx-engine-factory-tests, atx-impl-strategy-ic-tests, atx-impl-strategy-mine-tests, atx-equity-strategy-ic, atx-equity-strategy-targets` (1,142.9 s / 203 TUs; 1,048.4 s / 216 TUs); **p9-1z** equity-rel `atx-shm-worker` (slip: Release test prerequisite) | 0 / 0 / 0 | Debug: S2 filter 28p, ic 204/204, mine 44/44 (golden 1 + 4 workers), alpha 782/782, factory 396/396. Release: S2 filter 28p, ic 204/204, mine 44/44 (golden 1 + 4), factory 396/396 after p9-1z (first 389/7: missing `atx-shm-worker`), alpha 779p / 1 skip (CRT debug heap) / **1 FAILED `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned`** (Debug-pinned golden; Release oracle misses too; attributed pre-existing by code reading; ruling needed) | plugins 8p; canary Debug 15p (p9-1x canary: digests equal, 15 s first-run wall missed on a busy host; re-check 15p in 12.29 s), Release 15p; store suite 43p/131 sub x2 seeds (guard green) | digests `dsl_vm` `5bcd55c7` (35), `ic_result` `dd3c6011` (11) on the merged tree = lane = pin; `exe_capabilities` append-only 5 -> 8 sorted; fixture chain `d32f7655...4e69` (28/25/0/4), identity 12/0, rel = abs; X-5 u / w vs P9-B0: all payloads byte-identical, summary only timing + `/roles/0/ic_cache_bytes` (+56 B = sizeof growth of the S2-1 fields), 67/67 signal + IC hits; cold Release u pre- vs post-S2: payloads + 67/67 signal payloads byte-identical; path margin Release + audit-exact: lo3 251 (-1 vs 250), parent `lib-v8ysb-gm` 250 (0); S2-6 no imputed entry; P13 live manifests v13 / v15 seal `2024-01-01`; DISK-2 pool-18: already clean (0 B); ledger 133 / `27e40f9f` |
+
+#### S2 speed claims against the wave-1 table (M1d walls; same argv where named)
+
+| measurement | wave-1 (M1d) | M2c before S2 | M2c after S2 | note |
+|---|---|---|---|---|
+| Release cold u, 4 workers, fresh cache | 160.5 s / 1,693 MiB (X-5 family v8x3b argv) | **163.7 s** / 1,617 MiB (Y-F0 argv, exe `ea370cec`) | **93.7 s** / 1,616 MiB (exe `bf0ad802`) | the only like-for-like S2 measurement: same argv and host, about 40 min apart; -42.8 % wall, peak unchanged (E-24 claim holds: banded cold u faster, not slower) |
+| Debug warm u (Y-F0, lo3 cache) | 20.2 s / 530 MiB (P9-B0) | - | 13.3 s / 530 MiB | 67/67 hits on both sides: the VM does not run, so the wall is host noise, not an S2 effect |
+| Debug warm w (Y-F0, lo3 cache) | 133.8 s / 1,435 MiB (P9-B0) | - | 85.8 s / 1,436 MiB | same: signals loaded from cache; composition only |
+| tiny_world canary, Debug | 15 passed (M1d p9-1m) | - | 12.29 s for 15 (re-check); 23.2 s first run under p9-1x on a 100 % CPU host | host load, not code |
+| tiny_world canary, Release | 15 passed (M1d p9-1o) | - | 10.93 s for 15 (p9-1y) | - |
+
+Next free build tag **p9-2a**. Known-red after M2c: pytest `test_fields_are_the_rule_applied_to_the_registry` (E2),
+Release `BookNormalScore.*` x2 (C2), Release `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` (new; ruling
+pending).

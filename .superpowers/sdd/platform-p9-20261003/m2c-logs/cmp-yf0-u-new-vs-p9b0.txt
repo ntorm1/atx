@@ -1,0 +1,9 @@
+same   orientations.json d0d16f30
+same   recipe.json b9b4029c
+DIFF   summary.json 9d12221b vs 3dc62395: 141 leaves, 140 allowed, 1 outside
+         OUTSIDE /roles/*/ic_cache_bytes
+         allowed path classes: ['/roles/*/candidates/*/stage_seconds/ic', '/roles/*/candidates/*/wall_seconds', '/roles/*/hash_seconds', '/roles/*/stage_seconds/fields_verify', '/roles/*/stage_seconds/ic', '/roles/*/stage_seconds/label_preparation', '/roles/*/stage_seconds/load', '/roles/*/wall_seconds']
+DIFF   train_candidates.jsonl 0918c37c vs 8f8ac168: 134 leaves, 134 allowed, 0 outside
+         allowed path classes: ['/stage_seconds/ic', '/wall_seconds']
+same   train_daily_ic.csv c8714175
+TOTAL outside the list: 1
