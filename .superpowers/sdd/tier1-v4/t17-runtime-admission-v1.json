@@ -1,0 +1,157 @@
+{
+  "status": "RUNTIME_AND_CANONICAL_SNAPSHOT_IDENTITIES_VERIFIED",
+  "generation": "r17_20261004_002",
+  "expected_snapshot_sha256": "baf8f5cc238e9b2c38ab6583463fa0d23166928b645a348137eb5e43d0092f3d",
+  "snapshot_physical_identity": {
+    "sha256": "c73f6293a5785c185567b01c443747aa2c7294614b45bfdaf2b8016ec9807a0c",
+    "bytes": 10411360
+  },
+  "expected_runtime_code_sha256": "e50412ff21622ca3710420baec9c6fc982ac8cb0ba7fe22347c2269b185a8594",
+  "expected_contract_sha256": "45ea46d78385ad7969551cce8accd511f6c2d3c93e6b4b5bb70e4cdb20eaf49e",
+  "expected_admission_sha256": "168b3ff61f4580066db74624bf58efb803993e8d2a0f1060daf4dfec1024ab1f",
+  "runtime": {
+    "version": "fund-release-runtime-r23-v1",
+    "contract_path": "C:\\atx\\atx-db\\docs\\datasets\\fund_release_runtime.execution.json",
+    "contract_identity": {
+      "sha256": "45ea46d78385ad7969551cce8accd511f6c2d3c93e6b4b5bb70e4cdb20eaf49e",
+      "bytes": 1462
+    },
+    "contract": {
+      "version": "fund-release-runtime-r23-v1",
+      "native_version": "fund-batch-release-v1",
+      "semantic_producer": "fundamentals_v11",
+      "required_batches": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84
+      ],
+      "preparation_units": 144,
+      "duckdb": {
+        "memory": "256MB",
+        "threads": 1,
+        "file_backed": true,
+        "timezone": "UTC"
+      },
+      "guard": {
+        "maximum_bytes": 1073741824,
+        "initial_actual_gib": 0.8
+      },
+      "minimum_free_disk_bytes": 42949672960,
+      "native_protocol": "complete frozen fund-batch-release-v1; no omitted replay or gates",
+      "runtime_proof": "outside exact native generation inventory; caller-pinned code and contract",
+      "readiness": "NOT_PRODUCTION_READY",
+      "source_quality_certified": false
+    },
+    "code": {
+      "C:\\atx\\atx-db\\src\\atx_db\\alpha_panel\\fund_release_runtime.py": {
+        "sha256": "1ded9097534e54253fded2e155798cba5049366be2fce9d89058476d6ec2e8e3",
+        "bytes": 15250
+      },
+      "C:\\atx\\atx-db\\src\\atx_db\\alpha_panel\\privatefund_runtime_resources.py": {
+        "sha256": "952b5830fccbd9c8a86759d090c81a74a0d512684a07a868b94759bb3f7f487d",
+        "bytes": 3080
+      }
+    }
+  },
+  "evidence": {
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\snapshot.json": {
+      "sha256": "c73f6293a5785c185567b01c443747aa2c7294614b45bfdaf2b8016ec9807a0c",
+      "bytes": 10411360
+    },
+    "C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-extract-admission-r19-v1.json": {
+      "sha256": "168b3ff61f4580066db74624bf58efb803993e8d2a0f1060daf4dfec1024ab1f",
+      "bytes": 23601
+    },
+    "C:\\atx\\atx-db\\docs\\datasets\\fund_release_runtime.execution.json": {
+      "sha256": "45ea46d78385ad7969551cce8accd511f6c2d3c93e6b4b5bb70e4cdb20eaf49e",
+      "bytes": 1462
+    },
+    "C:\\atx\\.superpowers\\sdd\\tier1-v4\\t17-runtime-admission-v1.py": {
+      "sha256": "191a2358807f0ca2dc2e97aff477361c979875ce29d7c01fc6ad20fec2e3e5d2",
+      "bytes": 3002
+    }
+  },
+  "qualification": "Code/config and prior physical snapshot identity only. Native build must still freeze/recheck complete current sources, independently replay financial units and validate all original gates. No financial admission or production acceptance."
+}

@@ -1,0 +1,39 @@
+{
+    "status":  "OWNED_ENDED_UNIVERSE_SCRATCH_REMOVED",
+    "target":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001",
+    "files":  [
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\release-33b8c246db514c44bbb26f627d2aceba.duckdb",
+                      "bytes":  565194752,
+                      "modified_utc":  "2026-10-04T11:39:08.4209425Z"
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\release-1c7f00891b7948a2a875d99802d6a017.duckdb",
+                      "bytes":  1365520384,
+                      "modified_utc":  "2026-10-04T11:59:46.9945607Z"
+                  }
+              ],
+    "logical_bytes_removed":  1930715136,
+    "drive_free_before_bytes":  51830976512,
+    "drive_free_after_bytes":  53761241088,
+    "drive_free_delta_bytes":  1930264576,
+    "protected_sha256":  {
+                             "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2018\\receipt.json":  "3abbab2e5bae371cbad9be1d87ce57239d1e5484e8366f9dca6edd30670802c3",
+                             "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2019\\receipt.json":  "a58c99fe850526028cd650df849ce99ccf9c569bfc71b43f001f2ade8bc5ab12",
+                             "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2021\\receipt.json":  "d272bdd6c1c9aef24dabe8038f3f07093c3a7a3eb147217db13630f76138db43",
+                             "C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-reader-binding-v1.json":  "71e10cad2f2096fd3922da949051e962b9710d1e6973e3c47f80ae5a2af64d6c",
+                             "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2022\\receipt.json":  "091bb2ff6c938922b8b9a620b9bd8296a10c650ea5fa9e60919590ad0a81cf87",
+                             "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2020\\universe.parquet":  "2ea32dc97af0e73cf987ddf12ad470102c34cc700ad62a5b8afd80b7536032ed",
+                             "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2021\\universe.parquet":  "da8ee5674cfa42789ec75f6ec133d40fc7701676cf51c3029adeda8d5d33bc7e",
+                             "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2018\\universe.parquet":  "7507327b9e2f986da79324ae1a40a758a0c242e706428cbd93532fda680598e4",
+                             "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2019\\universe.parquet":  "1147bf44443978d7158b2c0488996bfb5a7165f4ffad8b0f4c77b4c2ca112104",
+                             "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2022\\universe.parquet":  "318e9ac50963ff8b39cb24ff2073fcd8d4380d658d7d679249ccefb379ac5881",
+                             "C:\\atx\\.superpowers\\sdd\\tier1-v4\\t16-universe-progress-audit-v2.json":  "b00a0c5f69557a075e5168634b815b0e00b63546bdb6a8b74c71e3a129ec78df",
+                             "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\snapshot.json":  "cab98a7472ad3224be6c85b7f0aef73d4088b50b9326c8cbe202dfe91a2d1d02",
+                             "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-universe-r15-resume-20261004-v2.receipt.json":  "14d361f690ab4123c994e74a3371f5ccc8950960ab8192d76d31f3fa3f5366b2",
+                             "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2020\\receipt.json":  "5314e6e9b4b53c938a95b05c0bd73976ae97c53e2d9c41b38a839584a05d5e83",
+                             "C:\\atx\\.superpowers\\sdd\\tier1-v4\\t16-universe-progress-audit-v1.json":  "b00f45730b0b5394dce53459a125fc4ae744f635269d9897b41c769df692ce7a",
+                             "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-universe-r15-resume-20261004-v2.out.log":  "fdfcde98fee09ff35c380d6668a87d6d9998b7c02d58a3370c4adc26d75396db"
+                         },
+    "qualification":  "Only the ended named universe generation scratch database/spill directory removed. All source and admitted output/receipt bytes retained and checked before/after. No readiness or economic gate change."
+}

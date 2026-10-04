@@ -1,0 +1,137 @@
+{
+  "status": "FIVE_BOUNDED_NATIVE_YEARS_IDENTITIES_VERIFIED",
+  "years": [
+    {
+      "year": 2018,
+      "rows": 2006722,
+      "sessions": 251,
+      "payload": {
+        "sha256": "7507327b9e2f986da79324ae1a40a758a0c242e706428cbd93532fda680598e4",
+        "bytes": 18114598
+      },
+      "receipt": {
+        "sha256": "3abbab2e5bae371cbad9be1d87ce57239d1e5484e8366f9dca6edd30670802c3",
+        "bytes": 113473
+      }
+    },
+    {
+      "year": 2019,
+      "rows": 2110686,
+      "sessions": 252,
+      "payload": {
+        "sha256": "1147bf44443978d7158b2c0488996bfb5a7165f4ffad8b0f4c77b4c2ca112104",
+        "bytes": 21673327
+      },
+      "receipt": {
+        "sha256": "a58c99fe850526028cd650df849ce99ccf9c569bfc71b43f001f2ade8bc5ab12",
+        "bytes": 114073
+      }
+    },
+    {
+      "year": 2020,
+      "rows": 2192161,
+      "sessions": 253,
+      "payload": {
+        "sha256": "2ea32dc97af0e73cf987ddf12ad470102c34cc700ad62a5b8afd80b7536032ed",
+        "bytes": 22376842
+      },
+      "receipt": {
+        "sha256": "5314e6e9b4b53c938a95b05c0bd73976ae97c53e2d9c41b38a839584a05d5e83",
+        "bytes": 114524
+      }
+    },
+    {
+      "year": 2021,
+      "rows": 2616995,
+      "sessions": 252,
+      "payload": {
+        "sha256": "da8ee5674cfa42789ec75f6ec133d40fc7701676cf51c3029adeda8d5d33bc7e",
+        "bytes": 25935412
+      },
+      "receipt": {
+        "sha256": "d272bdd6c1c9aef24dabe8038f3f07093c3a7a3eb147217db13630f76138db43",
+        "bytes": 114325
+      }
+    },
+    {
+      "year": 2022,
+      "rows": 2765910,
+      "sessions": 251,
+      "payload": {
+        "sha256": "318e9ac50963ff8b39cb24ff2073fcd8d4380d658d7d679249ccefb379ac5881",
+        "bytes": 28976507
+      },
+      "receipt": {
+        "sha256": "091bb2ff6c938922b8b9a620b9bd8296a10c650ea5fa9e60919590ad0a81cf87",
+        "bytes": 113878
+      }
+    }
+  ],
+  "missing_years": [
+    2023,
+    2024,
+    2025,
+    2026
+  ],
+  "evidence": {
+    "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-universe-r15-resume-20261004-v2.receipt.json": {
+      "sha256": "14d361f690ab4123c994e74a3371f5ccc8950960ab8192d76d31f3fa3f5366b2",
+      "bytes": 2172
+    },
+    "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\t16-universe-r15-resume-20261004-v2.out.log": {
+      "sha256": "fdfcde98fee09ff35c380d6668a87d6d9998b7c02d58a3370c4adc26d75396db",
+      "bytes": 174
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\snapshot.json": {
+      "sha256": "cab98a7472ad3224be6c85b7f0aef73d4088b50b9326c8cbe202dfe91a2d1d02",
+      "bytes": 114178
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2018\\receipt.json": {
+      "sha256": "3abbab2e5bae371cbad9be1d87ce57239d1e5484e8366f9dca6edd30670802c3",
+      "bytes": 113473
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2018\\universe.parquet": {
+      "sha256": "7507327b9e2f986da79324ae1a40a758a0c242e706428cbd93532fda680598e4",
+      "bytes": 18114598
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2019\\receipt.json": {
+      "sha256": "a58c99fe850526028cd650df849ce99ccf9c569bfc71b43f001f2ade8bc5ab12",
+      "bytes": 114073
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2019\\universe.parquet": {
+      "sha256": "1147bf44443978d7158b2c0488996bfb5a7165f4ffad8b0f4c77b4c2ca112104",
+      "bytes": 21673327
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2020\\receipt.json": {
+      "sha256": "5314e6e9b4b53c938a95b05c0bd73976ae97c53e2d9c41b38a839584a05d5e83",
+      "bytes": 114524
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2020\\universe.parquet": {
+      "sha256": "2ea32dc97af0e73cf987ddf12ad470102c34cc700ad62a5b8afd80b7536032ed",
+      "bytes": 22376842
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2021\\receipt.json": {
+      "sha256": "d272bdd6c1c9aef24dabe8038f3f07093c3a7a3eb147217db13630f76138db43",
+      "bytes": 114325
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2021\\universe.parquet": {
+      "sha256": "da8ee5674cfa42789ec75f6ec133d40fc7701676cf51c3029adeda8d5d33bc7e",
+      "bytes": 25935412
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2022\\receipt.json": {
+      "sha256": "091bb2ff6c938922b8b9a620b9bd8296a10c650ea5fa9e60919590ad0a81cf87",
+      "bytes": 113878
+    },
+    "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001\\year=2022\\universe.parquet": {
+      "sha256": "318e9ac50963ff8b39cb24ff2073fcd8d4380d658d7d679249ccefb379ac5881",
+      "bytes": 28976507
+    },
+    "C:\\atx\\.superpowers\\sdd\\tier1-v4\\t16-universe-progress-audit-v1.json": {
+      "sha256": "b00f45730b0b5394dce53459a125fc4ae744f635269d9897b41c769df692ce7a",
+      "bytes": 3727
+    }
+  },
+  "native_run_seconds": 918.5,
+  "native_peak_bytes": 540585984,
+  "qualification": "Current complete input-byte recheck and output/footer/receipt identities only. Native job performed full typed keys/counters replay. Original source/economic gates and full publication remain open."
+}

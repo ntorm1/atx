@@ -2,6 +2,80 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
+**LATEST root actual job: financial pilot retry27343, logs ...b0000-v2.*.**
+Pilot60945 ended host-lowcommit207s/553,648,128bytes, exit137/no cap,
+free commit0.6852GiB. No native error. Guard18400/child21564/actual24076 dead;
+guarded inspection t17-interruption-inspection-v1.json records no batch0 admission,
+no finalmanifest/pointer, unchanged physical snapshot and two-pass attempt inventory.
+Root archived the exact5byte orphan lock under _interrupted_locks after dead-owner,
+matching-writer, resolved-path/reparse and evidence checks (7.1s/84,258,816bytes).
+Failed attempts retained. Single explicit retry27343 uses --heavy and the same
+0.8GiB/40GiB/native pins; no blind retry loop. Prepared progress audit now targets
+successful v2 only; do not run it on the failed v1. No competing actual job.
+
+Task13 finalR5 ab81c710 independently APPROVED, all scoped I1-I4 addressed;
+review-T13-native-qualified-r5-findings.md. Whole-task cap5/5, actual0PASS/3FAIL,
+0/200 handchecks and source/history/vendor-cash requirements remain open.
+Task10 initial86956a29 submitted12ownedfiles, config9acd5af90a3383d38106fd0ec2b132e4d93e0b8a1cbfe208492258f8e881bcb3;
+Independent initial review Needs changes: all explicit table candidates rejected,
+ambiguous latest evidence loses comparator IDs and permits stale fallback, and
+feature replay omits absent-source issuer rows. Original author now Task10 fix1/5;
+review-T10-native-findings.md. Full actual0PASS/7FAIL-unmeasured unchanged.
+Task17 original author continues full native reader/catalog integration offline,
+coordinating new tier1_native_readers.admit(name,spec,con) with golden author.
+Do not modify reviewed runtime/source producer code while actual pins are live.
+
+**CURRENT root actual job: financial pilot60945 (Task17 reviewed runtime).**
+logs/t17-runtime-pilot-b0000-v1.*, max-new-batches1, generationr17_20261004_002,
+0.8GiB guard and40GiB disk floor. No competing data job. Runtime6bab983f plus
+documentation fixd847a7ce independently approved; Task17 repair1/5 remains.
+Root identity bridge t17-runtime-admission-v1.json passed3s/90,951,680bytes:
+physical snapshotc73f6293a5785c185567b01c443747aa2c7294614b45bfdaf2b8016ec9807a0c
+(10,411,360bytes), canonical snapshot
+baf8f5cc238e9b2c38ab6583463fa0d23166928b645a348137eb5e43d0092f3d.
+Runtime code inventorye50412ff21622ca3710420baec9c6fc982ac8cb0ba7fe22347c2269b185a8594,
+contract45ea46d78385ad7969551cce8accd511f6c2d3c93e6b4b5bb70e4cdb20eaf49e,
+external85 extraction admission168b3ff61f4580066db74624bf58efb803993e8d2a0f1060daf4dfec1024ab1f.
+Root t17-financial-progress-audit-v1.py is prepared, NOT RUN; run only if pilot
+finishes successfully and its exact native result matches the bounded contract.
+
+Universe60982 ENDED success918.5s/540,585,984bytes, no cap. Root audit60517
+completed30.1s/65,826,816bytes: unchanged2018-2020 plus new2021/2022 identities,
+full current input recheck, no manifest/pointer; missing2023-2026.
+2021:2,616,995rows/252sessions,25,935,412bytes,
+SHAda8ee5674cfa42789ec75f6ec133d40fc7701676cf51c3029adeda8d5d33bc7e.
+2022:2,765,910rows/251sessions,28,976,507bytes,
+SHA318e9ac50963ff8b39cb24ff2073fcd8d4380d658d7d679249ccefb379ac5881.
+Cleanupv4 removed only ended owned _tmp/universe-release-r15_20261003_001
+scratch after audit/dead-writer/reparse/protected-byte checks:1,930,715,136logical
+bytes,1,930,264,576observed free gain;6.1s/91,758,592bytes. All four observed
+cleanup gains total6,678,642,688bytes. Sources/candidates/foreign caches retained.
+
+Task13 final round5/5 ab81c710 submitted21targetedpasses; independent scoped
+review now /root/t12_terminal_events, report review-T13-native-qualified-r5-findings.md
+pending. PriorR4 I4 addressed, I1 original HTML deleted/quoted scope remained;
+R5 binds strict original DOM semantics, actual0PASS/3FAIL unchanged.
+Fresh /root/t16_golden_delivery implements remaining original golden delivery
+under task16-golden-continuation-brief.md. This is not another frozen-producer
+repair; Task16 cumulative cap5/5 unchanged, no new component allowance. Task10
+is finishing its initial native checkpoint. Full Task17 must close precise
+missing reader-admission interfaces raised by golden integration, as brief notes.
+
+Root checkpoint f46cb514 records the verified universe years through 2020.
+Task8 fix round2 commit097f7dbb is independently APPROVED in
+review-T8-native-r2-findings.md: I1/I2 addressed, M1 stays addressed; actual
+0PASS/4FAIL-unmeasured remains. Task13 fix round4 commit2782f085 is now with
+independent reviewer /root/t12_terminal_events, same remaining I1/I4 scope.
+Task17 runtime initial6bab983f review found one Important integration defect:
+the documented c73f snapshot SHA is physical bytes, while the adapter expects
+the canonical native digest. Original author is correcting docs/admission
+instructions in whole-task round1/5; actual run waits for scoped review.
+Root prepared t17-runtime-admission-v1.py (NOT RUN) to verify the known physical
+snapshot and obtain its canonical digest with independent two-pass identity
+checks; it must run only after the live universe job and its audit finish.
+Task10 native implementation is completing final fixtures/report before review.
+No other actual job and no additional cleanup while universe60982 is live.
+
 **LATEST: root owns universe continuationv2 session60982, max-new-years2.**
 Previous79177 completed556.3s/518,057,984peakbytes, no cap; native result missing
 only2021-2026. Independent t16-universe-progress-audit-v1.json passed28s/

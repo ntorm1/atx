@@ -9,6 +9,19 @@ validation/publication/recovery check. Never mutate frozen Task16/Task5/common
 code, monkeypatch globals or reset Task16's exhausted5/5 repair counter.
 This precursor does not complete the catalog/parity/fullTask17 obligations.
 
+Golden continuation source-interface dependencies (reported by Task16; inspect
+exact current code before correction): final standardized_v11/ratios_v11 readers
+need full immutable admission persisting the qualified final fundamental leaf;
+Task9 immutable phase publication needs a complete public reader replay interface.
+Task7 char_monthly has a full native validator/source admission and independently
+replays monthly products, but refuses the missing final standardized dependency.
+Task11 source qualification remains incomplete. These dependencies must remain
+explicit in the catalog and be implemented/closed where engineering is missing;
+golden NULL exclusions do not fulfill required source/feature coverage. Preserve
+Task17 whole-task repair counter1/5 and all frozen upstream producer caps. Native
+adapters must retain original source/PIT/schema/code/actual-byte validation;
+no arbitrary caller-manifest qualification or changed financial gates.
+
 Owner extension: read `owner-coverage-addendum.md`; catalog 13F bronze-to-gold completeness and profitability/growth primitive/feature coverage, preserving all explained and unexplained gaps.
 
 Deliverable: `atx-db/docs/TIER1_V4_PRODUCT_CATALOG.md` — one section per dataset family (§1 map rows): stage,
