@@ -78,3 +78,58 @@ explicit paths only (PY-HYG), `--basetemp` in the session scratchpad (deleted af
   `*.cmake`, `spdlog.pc`; ~1.75 GB). Kept: `mega-p9-sql1-{a,b,c,d}-*` receipts and logs, `vcpkg-manifest-install.log`,
   the git-tracked `audits/` and `v8-interim3-pitch-render-run2/`. pool-21 `git status` clean.
 - **Trial ledger:** 0 trials.
+
+### SQL2 (`cfe2de87`, pool-23): MERGED
+
+- **Ledger:** `Task SQL2: complete` (review APPROVE at `e835b434`; fix round SQL2-FIX1; re-review APPROVE at
+  `cfe2de87`, rereview commit `33367944`). Root at merge: rebuild from the committed head (the lane's p9-sql2-d
+  receipt was built from the uncommitted fix tree), 27 gtests + 43 pytests + fixture digest `d32f7655`; then the
+  SQL2-CLS guard on the merged tree. Ruling SQL2-S7 (root-path seal check narrowing) and N3 are SQL3 carry items.
+- **Docs:** `task-SQL2-report.md`, `task-SQL2-review.md` and `handoff-SQL2.md` are committed on the lane branch at
+  `cfe2de87` and arrive with the merge; `task-SQL2-rereview-1.md` (lane commit `33367944`, after the merge SHA)
+  is copied here (docs commit).
+- **Merge:** `git merge --no-ff cfe2de87` -> **`1300fd6a`** (merge bases `1a5b051d` and `1239a5ff`; 77 files,
+  +11,376 / -0 against HEAD). One conflict, `atx-engine/tests/CMakeLists.txt`: HEAD's side empty after SQL1's
+  block, SQL2's `atx-engine-research-catalog-tests` block taken. `atx-engine/CMakeLists.txt` auto-merged (SQL2's
+  `atx-engine-research-catalog` library + `atx-research-store` exe block at the tail, both `EXCLUDE_FROM_ALL`, no
+  PCH). Every file of the merge is SQL2-owned (catalog headers / sources / tests / fixtures, `classes.json`,
+  `research_store_identity.py` + three test files, three docs) except the two CMake tails. `git diff --stat
+  1239a5ff cfe2de87 -- atx-impl scripts` is empty (flag-absent).
+- **Build p9-1u** (equity-dev, source `1300fd6a`, dirty 2 = `progress.md` + png): SQL2's
+  `atx-engine-research-catalog, atx-engine-research-catalog-tests, atx-research-store` + SQL1's three -> **exit 0,
+  91.4 s, 21 TUs, 3 links, 4 jobs, free 3,438 MiB; 0 warning lines, 0 error lines.** Executables
+  `atx-research-store` **`3b955ba1...9757`**, `atx-engine-research-catalog-tests` `8923c962...63e3`; SQL1's
+  `atx-core-tests` / `atx-engine-research-store-tests` unchanged (same SHA as p9-1t, not rebuilt). Catalog TU
+  compile times (`.ninja_log`, -j4): `records_ops.cpp` **23.9 s** (the only TU that instantiates the descriptor
+  templates; review R2), `json_text.cpp` 13.4 s, `catalog.cpp` 12.6 s, the others 6.0-11.1 s.
+- **Hygiene (PCH-off):** the 21 catalog / catalog-test TUs carry no PCH flag in `build-equity/build.ninja` (no PCH
+  entry in the CMake block), so their own includes are what p9-1u compiled.
+- **gtests (Debug, p9-1u):** `atx-engine-research-catalog-tests --gtest_filter=ResearchCatalog*:SealGuard*:StoreCli*`
+  **27 passed** (exit 0, 10.0 s; whole binary also 27); SQL1's again: `ResearchStore*` 27 passed, `Db*` 44 passed.
+  The gtest temp root `%TEMP%/atx_research_catalog_tests` is absent afterwards.
+- **SQL2-CLS (classes guard):** on the merged head `1300fd6a` the guard
+  `test_every_schema_literal_is_registered` failed on exactly one literal: `atx.nav-rules/v1`
+  (`atx-impl/src/strategy_nav_replay.{hpp,cpp}`, C1's `--list-rules` contract; 1 failed / 4 passed, 90 subtests).
+  Commit **`1892a183`**: the literal joins the `nav-output` class (its writer's class; precedent
+  `atx.composition-rules/v1` in `fit-output`). Nothing else missing.
+- **pytest** (on `1892a183`, after `atx-research-store` was built; `-rs`: no skips):
+
+  | command | result | exit |
+  |---|---|---|
+  | `PYTHONHASHSEED=0 -m pytest atx-engine/tools/test_research_store_{classes,blind,identity,fixtures}.py test_research_store.py` | **43 passed**, 129 subtests | 0 |
+  | same, `PYTHONHASHSEED=1` | **43 passed**, 129 subtests | 0 |
+  | `-k FixtureChain test_research_store_identity.py` | 1 passed (ran, not skipped) | 0 |
+
+- **Fixture chain** (`atx-research-store` p9-1u, scratch catalog, run twice: relative and absolute `--root`):
+  `init` 0; `catalog` 0, `files_seen 28 verified 25 declared 0 skipped 4`, `catalog_digest
+  d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69`; `digest` 0, same value; `verify --pins` 0;
+  `research_store_identity.py` **total checked 12 mismatches 0**, exit 0. Both spellings identical. **Digest = the
+  expected `d32f7655...4e69`** (unchanged by the SQL2-CLS row, as predicted: the registry is not hashed and no fixture
+  carries `atx.nav-rules/v1`). Recorded here as the canary golden (review R3).
+- **Slips fixed:** none.
+- **Not run (outside M2a; for the PM):** the real-tree bounded catalog run (review R4: `--root .`, `skipped_path`
+  counts by reason, duplicate id / tag check) and SQL1's opt-in X-5 identity run (`cache init`, cold and warm, then
+  delete the index); the full `atx-engine/tools` suite (wave-2 gate).
+- **DISK-2:** pool-23's object tree was already deleted by the lane (only receipts, logs and the git-tracked
+  `audits/` / `v8-interim3-pitch-render-run2/` remain); nothing deleted by me.
+- **Trial ledger:** 0 trials (133 lines, `27e40f9f`).
