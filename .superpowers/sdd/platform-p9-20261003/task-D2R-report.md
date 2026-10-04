@@ -133,6 +133,20 @@ argv path (`fcw.main(argv)`, so the new parser parses it).
   depends on the seed.
 - No red outside the known-red set.
 
+## Evidence (`evidence-D2R/`, beside this report)
+
+- pytest logs:
+  - pre-fix: `pre-scripts-tests.log`, `pre-tools-tests.log`;
+  - post-fix: `post-scripts-tests-s{0,1}.log`, `post-tools-tests-s{0,1}.log`, `post-mirror-s{0,1}.log`;
+  - the stage-chain run was read from the console (9 passed).
+- Scan results:
+  - static: `scan-static-pre.json`, `scan-static-post.json`;
+  - dynamic: `hook-tools-pre-summary.txt`, `hook-scripts-pre-summary.txt`. The raw hook logs, about 680 KB, were not
+    kept.
+- Identity: `identity-pre2.json`, `identity-post2.json`.
+- Tools: `tools/scan_static.py`, `tools/identity.py`, `tools/hook_summary.py` and `tools/d2r_scan_hook.py`. The hook is
+  named `sitecustomize.py` in a dir on `PYTHONPATH` when used, and is inert without `D2R_SCAN_LOG`.
+
 ## What root re-runs at merge
 
 1. Whole `scripts/tests` under one seed (ROOT-1). Expected: the two e27b tests green, and only
