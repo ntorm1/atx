@@ -1,0 +1,13 @@
+{
+  "as_of_applicability": "Pinned exact-axis f64 bundle; PIT field clocks come from complete native panel replay",
+  "as_of_macro_sql": null,
+  "keys": [
+    "bundle",
+    "field"
+  ],
+  "path": "golden_export/generations/<independently-reviewed-generation>",
+  "schema_id": "atx.research-role-fields/v1",
+  "source_quality_certified": false,
+  "stage": "golden_export",
+  "status": "REGISTRATION_ONLY_ACTUAL_PUBLICATION_PENDING"
+}

@@ -1,0 +1,14 @@
+{
+  "as_of_applicability": "Immutable inference report, not a source feature table; config and every full contributing window strictly pre2023",
+  "as_of_macro_sql": null,
+  "keys": [
+    "candidate",
+    "horizon",
+    "endpoint"
+  ],
+  "path": "golden_evaluation/generations/<independently-reviewed-generation>",
+  "schema_id": "atx.golden-evaluation/v1",
+  "source_quality_certified": false,
+  "stage": "golden_evaluation",
+  "status": "REGISTRATION_ONLY_ACTUAL_PUBLICATION_PENDING"
+}
