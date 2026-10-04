@@ -196,3 +196,32 @@ Final owned implementation identities (SHA-256):
 - `atx-db/tests/test_private_tier1_ownership_exception_sources.py`: 17401 bytes, `78552567c8825212c4405e526e0264631798f32cfbc1931a1f915cb63cfc69d7`.
 
 Final self-review: source owner authentication cannot truncate fractional identifiers; full native 99-part axis and unchanged Q schema are preserved. Exact positive main/history/public replay and original reference/owner refusals are covered across the disclosed code versions; final strict-owner positive and fractional-owner checks passed. Reader payload/source mutation, bounded original history read, CRC, pinned plan, complete 99-part refusal and key conflict paths are covered. Last three singleton v2 tests all completed exit0 below60s without cap/hits. No fixture or actual author job remains live. Independent helper review is pending Task16; no author independent PASS or actual source/economic gate promotion is asserted.
+
+## Independent review I1 correction, same R26 round2/5
+
+Independent helper review of655be56e found one Important issue: per-batch complete source hashing. Corrected iter_exception_rows to authenticate all original/code/product dependencies once before and once after one bounded consumption transaction. A deep copy captures the independently pinned binding across suspension. The finally block covers normal exhaustion, explicit early close and exceptions; interrupted consumption produces no successful complete-consumption proof. Batch1..64 bounds and full native public admission replay are unchanged. No per-batch archive/99-part rehash remains.
+
+Only two focused final-code tests were rerun. The synthetic transaction-cost fixture contains173rows in87two-row batches and instruments actual helper identity calls, asserting exactlytwo checks for every original dependency. This is iterator instrumentation, not native source admission. The separate unchanged full native main/history/99-part fixture mutates an original partition after the first yielded row and confirms explicit close refuses it; its instrumented complete checks count istwo. All earlier source/replay results remain version-specific as above.
+
+| Receipt | Exit | Seconds | Peak bytes | Cap/hits | Result |
+|---|---:|---:|---:|---|---|
+| t17-ownership-helper-i1-many-collect-v1 | 0 | 2.0 | 59768832 | False/0 | 1 test collected in 0.39s |
+
+Exact child command: `[".venv/Scripts/python.exe", "-m", "pytest", "--collect-only", "-q", "-n0", "-o", "addopts=", "-p", "no:cacheprovider", "tests/test_private_tier1_ownership_exception_sources.py::test_public_many_batches_hash_whole_dependencies_only_twice"]`. Original ordinary guard prefix and artifact paths are unchanged from the preceding command inventory.
+
+| t17-ownership-helper-i1-many-v1 | 0 | 4.0 | 107823104 | False/0 | 1 passed in 2.16s |
+
+Exact child command: `[".venv/Scripts/python.exe", "-m", "pytest", "-q", "-n0", "-o", "addopts=", "-p", "no:cacheprovider", "tests/test_private_tier1_ownership_exception_sources.py::test_public_many_batches_hash_whole_dependencies_only_twice"]`. Original ordinary guard prefix and artifact paths are unchanged from the preceding command inventory.
+
+| t17-ownership-helper-i1-close-collect-v1 | 0 | 2.0 | 56131584 | False/0 | 1 test collected in 0.46s |
+
+Exact child command: `[".venv/Scripts/python.exe", "-m", "pytest", "--collect-only", "-q", "-n0", "-o", "addopts=", "-p", "no:cacheprovider", "tests/test_private_tier1_ownership_exception_sources.py::test_public_read_rechecks_original_source_on_early_close"]`. Original ordinary guard prefix and artifact paths are unchanged from the preceding command inventory.
+
+| t17-ownership-helper-i1-close-v1 | 0 | 28.0 | 132542464 | False/0 | 1 passed in 26.11s |
+
+Exact child command: `[".venv/Scripts/python.exe", "-m", "pytest", "-q", "-n0", "-o", "addopts=", "-p", "no:cacheprovider", "tests/test_private_tier1_ownership_exception_sources.py::test_public_read_rechecks_original_source_on_early_close"]`. Original ordinary guard prefix and artifact paths are unchanged from the preceding command inventory.
+
+Corrected final identity `atx-db/src/atx_db/alpha_panel/private_tier1_ownership_exception_sources.py`: 29078bytes/SHA256`3cd3b6a5256fcf88d4a898b231f9f155bd24519e915fe1fe2a785dfc0d7491b3`.
+Corrected final identity `atx-db/tests/test_private_tier1_ownership_exception_sources.py`: 19320bytes/SHA256`2cac154f8a5623947fd7cf9131f06264e24e0a06e8c680f0a4703c837ee89655`.
+
+Author self-review: full hashes remain before/after the entire consumption, including early close/error, stable copied external binding prevents changed caller expectations during suspension, and no producer/public-clock/source-quality gate changed. No actual source job or unchanged broad suite ran. Correction awaiting independent Task16 scoped rereview; this report does not independently approve its own implementation.

@@ -225,12 +225,44 @@ def test_complete_reader_detects_payload_mutation_during_replay(tmp_path,connect
         H.read_exception_inventory(connection,root,output,admission['manifest_sha256'],admission['plan_sha256'])
 
 
-def test_public_read_rechecks_original_source_on_early_close(tmp_path,connection):
+def test_public_read_rechecks_original_source_on_early_close(tmp_path,connection,monkeypatch):
     root=tmp_path/'sources';plan,_=fixture(root)
     admission=H.build_exception_inventory(connection,root,tmp_path/'generation',plan,H.digest(plan))
+    checks=[];original_check=H._check
+    def checked(*args):
+        checks.append(1);return original_check(*args)
+    monkeypatch.setattr(H,'_check',checked)
     rows=H.iter_exception_rows(admission,batch_size=2);next(rows)
     with (root/'task11-submissions-inventory-part0098-v1.jsonl').open('a') as sink:sink.write('mutation\n')
     with pytest.raises(ValueError,match='changed pinned source'):rows.close()
+    assert len(checks)==2
+
+
+def test_public_many_batches_hash_whole_dependencies_only_twice(tmp_path,monkeypatch):
+    """Transaction-cost instrumentation only; this is not native source admission."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    root=tmp_path/'sources';root.mkdir();generation=tmp_path/'generation';generation.mkdir()
+    plan={'schema':H.SCHEMA,'first_filing_date':'2019-01-01','files':{},
+          'code':{str(Path(m.__file__).resolve()):H.identity(m.__file__) for m in (A,C,Q,H)}}
+    for role in ('archive','directory','directory_receipt','prior_audit','metadata_audit'):
+        path=root/(role+'.fixture');path.write_bytes(b'bounded instrumentation original')
+        plan[role]=path.name;plan['files'][path.name]=H.identity(path)
+    write_json(generation/'source-plan.json',plan)
+    pq.write_table(pa.table({'row':range(173)}),generation/'submissions_inventory.parquet')
+    files={p.name:H.identity(p) for p in generation.iterdir()}
+    write_json(generation/'manifest.json',{'files':files})
+    admission={'generation':str(generation),'source_root':str(root),
+               'manifest_sha256':H.identity(generation/'manifest.json')['sha256'],
+               'plan_sha256':H.digest(plan),'dependency_pins':plan['files'],'code':plan['code']}
+    identities=[];original_identity=H.identity
+    def identified(path):
+        identities.append(Path(path).resolve());return original_identity(path)
+    monkeypatch.setattr(H,'identity',identified)
+    rows=list(H.iter_exception_rows(admission,batch_size=2))
+    assert rows==[{'row':i} for i in range(173)]
+    assert identities.count((root/plan['archive']).resolve())==2
+    assert all(identities.count((root/name).resolve())==2 for name in plan['files'])
 
 
 def test_replay_requires_file_backed_bounded_connection(tmp_path,connection):

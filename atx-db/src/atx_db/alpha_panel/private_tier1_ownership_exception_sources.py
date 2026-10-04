@@ -6,6 +6,7 @@ two original exception mains use this separate 5 MiB source working unit.
 from __future__ import annotations
 
 import datetime as dt
+import copy
 import hashlib
 import json
 import os
@@ -395,22 +396,30 @@ def read_exception_inventory(con,source_root,generation,expected_manifest_sha256
 
 
 def iter_exception_rows(admission,batch_size=32):
-    """Recheck all original/code/payload dependencies around complete public reads."""
+    """Authenticate one bounded consumption transaction before and after it.
+
+    Completion, explicit close and errors all perform the final integrity check.
+    An interrupted iterator produces no successful complete-consumption proof.
+    Whole originals are hashed twice per transaction, never per output batch.
+    """
     import pyarrow.parquet as pq
     if not 1<=batch_size<=64:raise ValueError('bounded public batch required')
-    generation=Path(admission['generation'])
+    # Keep the externally pinned binding stable throughout suspended iteration;
+    # mutation of the caller's admission cannot replace the final expectations.
+    bound=copy.deepcopy(admission)
+    generation=Path(bound['generation'])
     def check():
-        if identity(generation/'manifest.json')['sha256']!=admission['manifest_sha256']:raise ValueError('stale supplemental admission')
+        if identity(generation/'manifest.json')['sha256']!=bound['manifest_sha256']:raise ValueError('stale supplemental admission')
         manifest=_json(generation/'manifest.json',8*1024*1024)
         if {p.name for p in generation.iterdir()}!=set(manifest['files'])|{'manifest.json'}:
             raise ValueError('orphan supplemental generation during consumption')
         for name,pin in manifest['files'].items():
             if identity(member(generation,name))!=pin:raise ValueError('changed supplemental payload')
         plan=_json(generation/'source-plan.json',8*1024*1024)
-        if plan['files']!=admission['dependency_pins'] or plan['code']!=admission['code']:raise ValueError('changed supplemental dependencies')
-        _check(admission['source_root'],plan,admission['plan_sha256'])
+        if plan['files']!=bound['dependency_pins'] or plan['code']!=bound['code']:raise ValueError('changed supplemental dependencies')
+        _check(bound['source_root'],plan,bound['plan_sha256'])
     check()
     try:
         for batch in pq.ParquetFile(generation/'submissions_inventory.parquet').iter_batches(batch_size=batch_size):
-            check();yield from batch.to_pylist();check()
+            yield from batch.to_pylist()
     finally:check()
