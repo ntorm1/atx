@@ -11,6 +11,26 @@
 # an INTERFACE library over both, so the atx-impl exe and every test exe keep linking one name.
 # A new research source goes into atx-impl-strategy (target_sources on the INTERFACE
 # atx-impl-core would compile nothing).
+# P9 C3 (task 1, move-only): strategy_nav_replay.cpp split at the reviewed seams (validation,
+# liquidity, MARK, EXECUTE, DECIDE, the session loop, summaries, writers, loaders, lockstep, run,
+# publication, the command line, the decide-path seams); book/nav_replay_internal.hpp holds what
+# they share. They keep strategy_nav_replay.cpp's Debug /O2 flag set (below).
+set(_atx_nav_book_sources
+    src/book/nav_validate.cpp
+    src/book/nav_liquidity.cpp
+    src/book/nav_mark.cpp
+    src/book/nav_execute.cpp
+    src/book/nav_decide.cpp
+    src/book/nav_session.cpp
+    src/book/nav_summarize.cpp
+    src/book/nav_write.cpp
+    src/book/nav_load.cpp
+    src/book/nav_lockstep.cpp
+    src/book/nav_run.cpp
+    src/book/nav_publish.cpp
+    src/book/nav_cli.cpp
+    src/book/nav_deploy.cpp
+)
 add_library(atx-impl-strategy ${ATX_LIB_TYPE}
     src/artifacts.cpp
     src/serialize_panel.cpp
@@ -43,7 +63,7 @@ add_library(atx-impl-strategy ${ATX_LIB_TYPE}
     src/strategy_mine_trials.cpp
     src/strategy_target_replay.cpp
     src/strategy_price_exposures.cpp
-    src/strategy_nav_replay.cpp
+    ${_atx_nav_book_sources}
     # v7 daily decide path: deploy manifest, decide verb (the NAV replay's own DECIDE)
     src/strategy_live.cpp
     # v7 W4: f64 holdings layout + reader, share orders, broker reconciliation
@@ -133,7 +153,7 @@ set_source_files_properties(src/trial_ledger.cpp PROPERTIES SKIP_PRECOMPILE_HEAD
 # clang-cl /Ob0 leaves -fno-inline behind even after /O2 /Ob2; explicitly clear
 # it with the public clang driver option. LLVM ignores the inherited /RTC1.
 if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set_property(SOURCE src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp src/strategy_nav_replay.cpp
+    set_property(SOURCE src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp ${_atx_nav_book_sources}
         src/strategy_ic_library.cpp src/strategy_ic_admission.cpp src/strategy_ic_signal_cache.cpp
         src/strategy_ic_result_cache.cpp src/strategy_ic_shrink.cpp
         src/strategy_ic_theme_resid.cpp src/strategy_ic_theme_erc.cpp src/strategy_ic_theme_tsmom.cpp
@@ -141,7 +161,7 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
         src/strategy_cost_v2.cpp src/strategy_nav_v7.cpp src/strategy_risk_model.cpp src/strategy_risk_verb.cpp
         src/strategy_spo.cpp src/strategy_spo_v3.cpp
         APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
-    set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp src/strategy_nav_replay.cpp
+    set_source_files_properties(src/strategy_ic_runner.cpp src/strategy_ic_composition.cpp src/strategy_target_replay.cpp src/strategy_price_exposures.cpp ${_atx_nav_book_sources}
         src/strategy_ic_library.cpp src/strategy_ic_admission.cpp src/strategy_ic_signal_cache.cpp
         src/strategy_ic_result_cache.cpp src/strategy_ic_shrink.cpp
         src/strategy_ic_theme_resid.cpp src/strategy_ic_theme_erc.cpp src/strategy_ic_theme_tsmom.cpp

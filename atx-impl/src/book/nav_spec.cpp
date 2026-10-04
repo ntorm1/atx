@@ -123,7 +123,7 @@ tl::unexpected<co::Error> bad(const std::string& what) {
   return co::Err(co::ErrorCode::InvalidArgument, "nav spec: " + what);
 }
 
-// The command line's numbers (strategy_nav_replay.cpp parse_real / parse_integer): the whole
+// The command line's numbers (book/nav_run.cpp parse_real / parse_integer): the whole
 // token, else refused; a NavSpec number is finite.
 co::Result<f64> real_of(const std::string& value) {
   try {
