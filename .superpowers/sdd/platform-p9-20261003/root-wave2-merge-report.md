@@ -995,3 +995,15 @@ Expected: the same file set; every file byte-identical except `summary.json` and
 differ only at timing leaves (`.../stage_seconds/*`, `.../wall_seconds`, `/roles/*/hash_seconds`), the M2c precedent's
 classes. No `composition_hedge_trace` / `composition_schedule_trace` key (neither block is present). Anything else is a
 stop, to be attributed to C2 (`stats_ext.hpp`; run-time norm_ppf values claimed unchanged) or AL-COMB.
+
+#### Expected substitution list for the AL-COMB flag-absent fitter identity (written before the run)
+
+Re-review item 5, second half, on the fitter's synthetic fixture (M2d's `m2d-logs/tools/d2_flag_absent_fixture.py`:
+`aim_world`, two themes, registry absent; 9 cases std-erc, std-erc-tsmom, shrink, shrink-erc, shrink-tsmom, std,
+std-aim-resid, the R-11 child of std, ew-theme), neither `--theme-hedge` nor `--mom-volman`, 0 trials. Old = the
+tools of `a25453be` (root after C2, before AL-COMB; `git archive` of `atx-impl/tools`, `atx-engine/tools`,
+`research_window.json`); new = the merged head's. Expected, per case: the same exit code and file set;
+`admission.csv` identical; `admission.json` differs only in the value of `$.inputs.producer_fingerprint`;
+`composition_weights.json` only in the values of `$.provenance.producer_fingerprint` and
+`$.provenance.admission_sha256`, plus, in the R-11 child only, `$.provenance.resid.parent_weights_sha256` (its parent
+file moved). Every `$.provenance.<block>.producer_fingerprint` unchanged. Anything else is a stop.
