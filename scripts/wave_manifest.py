@@ -16,7 +16,8 @@ One wave is one cell on the current book, declared before anything is measured:
                                                  a rule wave: a cell template on the parent with its registered constants
    "acceptance": {"rule": "pm7-34", "printed": [criterion, ...]},
    "sign_rule": "pm7-35",                         (library waves)
-   "gross_match": "pm6-6" | "none",
+   "gross_match": "pm6-6" | "pm6-6-engine" | "none",  (wave_rules.GROSS_MATCH; pm6-6-engine: P9 C2, nav
+                                                       --calibrate-gross inside the NAV exe)
    "budget": {"id": ID, "admission_cap": N?, "admission_cycle_prefix": TEXT? | "admission_cycle_prefixes": [TEXT]?,
               "admission_origin": CLASS?, "construction_cap": N?}
                                           the hand count: admission lines of cycles with the prefix, or with any of

@@ -315,7 +315,9 @@ def test_rule_flags_from_the_tables():
     # ruling E2-8: "=value" stripped, an argparse abbreviation refused; a free flag stays free
     assert WK.raw_rule_flags({"fit": {"--theme-erc=theme-erc-v1": True, "--theme-er": "x", "--min-names": "1"}}, {},
                              tables) == ["fit --theme-er (abbreviates ['--theme-erc'])", "fit --theme-erc=theme-erc-v1"]
-    assert WK.abbreviated("--the", WK.table_flags(tables)["fit"]) == ["--theme-erc", "--theme-resid", "--theme-tsmom"]
+    # the committed IC table lists AL-COMB's theme-cov-hedge-v1 (root merge, ruling E2-14), MR-4 maps --theme-hedge
+    assert WK.abbreviated("--the", WK.table_flags(tables)["fit"]) == ["--theme-erc", "--theme-hedge", "--theme-resid",
+                                                                      "--theme-tsmom"]
     assert WK.abbreviated("--", {"--x"}) == [] and WK.abbreviated("--theme-erc", {"--theme-erc"}) == []
     # ruling E2-8 (review N1): an IC rule COMPOSITION_FLAGS does not map is named (ruling E2-12: a synthetic id no
     # lane can register, so MR-4's real rows never make it mapped)
@@ -544,6 +546,9 @@ E2_10_PROBES = [  # (fixture, manifest edit, template edit, the refusal's text):
      "rule_cell.constants.set nav: the cell's nav.leverage would be '5.0' where the parent has '1.1474'"),
     ("new-universe.json", None, lambda t: t["change"].update(unset=["nav.leverage"]),
      "rule_cell.template change.unset nav.leverage = '(unset)': the cell's nav.leverage would be None"),
+    # review E2 S4: research_spec.resolve iterates a dict-typed unset by key; its route is named as a list's
+    ("new-universe.json", None, lambda t: t["change"].update(unset={"nav.leverage": True}),
+     "rule_cell.template change.unset nav.leverage = '(unset)': the cell's nav.leverage would be None"),
     ("leverage-change.json", lambda m: m.update(rule_cell={"template": RULE_NAV, "template_sha256": ""}),
      lambda t: t["change"]["set"].update({"nav.leverage": "1.5"}),                # overridden silently: refused
      "rule_cell.template change.set nav.leverage = '1.5': the cell's nav.leverage would be '2.0' where "
@@ -625,6 +630,268 @@ def test_leverage_wave_refuses_a_value_outside_the_nav_table(tmp_path):
     assert code == 0, log
     pre = json.loads((root / "out/waves" / m["wave"] / "receipts" / "01-preflight.json").read_text())["outputs"]
     assert pre["kind"]["leverage"] == {"value": m["leverage"]["value"], "bounds": [1.0, 2.0]}
+
+
+def probe(tmp_path: Path, name: str, edit, tedit, *args: str, **fake) -> tuple[int, list[str], Path, dict]:
+    """The fixture ``name`` with the manifest edit ``edit`` and the template edit ``tedit`` in a fake world, run with
+    ``args`` (default: up to preflight)."""
+    m = load_fixture(name)
+    if edit:
+        edit(m)
+    if m.get("rule_cell") and not m["rule_cell"].get("template_sha256"):
+        m["rule_cell"]["template_sha256"] = sha((REPO / m["rule_cell"]["template"]).read_bytes())
+    root = world(tmp_path / "w", m)
+    if tedit:
+        set_template(root, m, tedit)
+    code, log = wave(root, KindsFake(root, **fake), *(args or ("run", "--until", "preflight")))
+    return code, log, root, m
+
+
+def tpl_set(**sets):
+    """A template edit adding ``sets`` to its change.set (the template may have none yet)."""
+    return lambda t: t["change"].setdefault("set", {}).update(sets)
+
+
+def stopped_at_preflight(code: int, log: list[str], root: Path, m: dict, *needles: str) -> str:
+    assert code == 3, log
+    err = preflight_error(root, m)
+    assert all(n in err for n in needles), err
+    assert not (root / "out/waves" / m["wave"] / "receipts" / "02-register.json").exists()
+    return err
+
+
+# ------------------------------------------------------------------ ruling E2-14 (review E2 R3a): the match flags
+CAL = "--calibrate-gross"
+R3A_PROBES = [   # (fixture, manifest edit, template edit, the route and token the refusal names)
+    ("new-horizon.json", lambda m: (gross_none(m), constants(flags={"nav": {CAL: "0.95"}})(m)), None,
+     "rule_cell.constants.flags nav --calibrate-gross (reads as ['--calibrate-gross'])"),
+    ("new-combination-rule.json", None, lambda t: t["change"].update(flags={"nav": {CAL: "0.95"}}),
+     "rule_cell.template change.flags nav --calibrate-gross (reads as ['--calibrate-gross'])"),
+    ("new-universe.json", constants(set={"nav.flags": NAV_SET + [CAL, "0.95"]}), None,
+     "rule_cell.constants.set nav.flags: the cell's nav.flags carries ['--calibrate-gross']"),
+    ("new-horizon.json", lambda m: (gross_none(m), m["horizon"]["flags"]["nav"].update({CAL: "0.95"})), None,
+     "horizon.flags nav --calibrate-gross (reads as ['--calibrate-gross'])"),
+    ("leverage-change.json", lambda m: m.update(rule_cell={"template": RULE_NAV, "template_sha256": "", "constants": {
+        "flags": {"nav": {CAL: "0.95"}}}}), None, "rule_cell.constants.flags nav --calibrate-gross"),
+    # spellings: case and =value, a single dash, an abbreviation of both, a free flag's value slot
+    ("new-nav-rule.json", lambda m: (m.update(gross_match="pm6-6"), constants(flags={"nav": {
+        "--Calibrate-Gross=0.95": True}})(m)), None, "rule_cell.constants.flags nav --Calibrate-Gross=0.95"),
+    ("new-nav-rule.json", constants(set={"nav.flags": NAV_SET + ["-calibrate-tolerance", "0.001"]}), None,
+     "rule_cell.constants.set nav.flags: the cell's nav.flags carries ['-calibrate-tolerance']"),
+    ("new-horizon.json", constants(flags={"nav": {"--calib": "0.95"}}), None,
+     "rule_cell.constants.flags nav --calib (reads as ['--calibrate-gross', '--calibrate-tolerance'])"),
+    ("new-nav-rule.json", constants(flags={"nav": {"--cadence": CAL}}), None,
+     "rule_cell.constants.flags nav --cadence --calibrate-gross"),
+    ("new-nav-rule.json", constants(flags={"nav": {"--cadence": {"5": CAL}}}), None,       # a parent-value map
+     "rule_cell.constants.flags nav --cadence {'5': '--calibrate-gross'}"),
+    # any section; a whole nav section; the template's own sets
+    ("new-combination-rule.json", constants(set={"fit.flags": [CAL, "0.95"]}), None,
+     "rule_cell.constants.set fit.flags: the cell's fit.flags carries ['--calibrate-gross']"),
+    ("new-horizon.json", constants(set={"nav": nav_cell(flags=NAV_SET + [CAL, "0.95"])}), None,
+     "rule_cell.constants.set nav: the cell's nav.flags carries ['--calibrate-gross']"),
+    ("new-universe.json", None, tpl_set(**{"nav.flags": NAV_SET + ["--calibrate-tolerance=0.01"]}),
+     "rule_cell.template change.set nav.flags: the cell's nav.flags carries ['--calibrate-tolerance=0.01']"),
+]
+
+
+@pytest.mark.parametrize("name, edit, tedit, needle", R3A_PROBES)
+def test_match_flags_are_the_gross_match_stages_own(tmp_path, name, edit, tedit, needle):
+    """Ruling E2-14 (review E2 R3a): P9 C2's nav --calibrate-gross / --calibrate-tolerance make the NAV exe publish
+    its run at an L' it picks itself, so only the gross-match stage (pm6-6-engine) puts them on an argv. From any
+    other route (an option map key or value, constants.set, the template's change.set / change.flags, horizon.flags, a
+    whole section), in any v2 kind with a rule cell, any section and any spelling (case, =value, a single dash, an
+    abbreviation), preflight refuses them (exit 3, before register), naming the token and the route. Each probe passed
+    preflight at d2cea6a6 (the merge of root into the lane)."""
+    stopped_at_preflight(*probe(tmp_path, name, edit, tedit), needle, "ruling E2-14", "pm6-6-engine")
+
+
+def test_match_flags_inherited_from_the_parent_are_refused(tmp_path):
+    """Ruling E2-14: a parent spec whose lists carry a match flag (a run recipe named as a parent instead of its cell
+    of record) would put it on the cell's argv: refused in a library kind (add-alpha's copy of the parent's lists) and
+    in a rule kind, naming the parent spec; the match flag's helper reads every spelling and no free flag or value."""
+    for name in ("new-signal.json", "new-horizon.json"):
+        m = load_fixture(name)
+        root = world(tmp_path / name[:-5], m)
+        spec = json.loads((root / F.PARENT).read_text())
+        spec["nav"]["flags"] += [CAL, "0.95"]
+        F.write_json(root, F.PARENT, spec)
+        F.git(root, "commit", "-q", "-am", "a parent carrying a match flag")
+        code, log = wave(root, KindsFake(root), "run", "--until", "preflight")
+        stopped_at_preflight(code, log, root, m, f"the parent spec {F.PARENT} nav.flags (the cell inherits it): the "
+                             "cell's nav.flags carries ['--calibrate-gross']", "ruling E2-14")
+    reads = WK.match_flag_reads
+    assert reads(CAL) == reads(CAL + "=0.9") == reads("-Calibrate-Gross") == [CAL]
+    assert reads("--CALIBRATE-TOL") == ["--calibrate-tolerance"] and reads("--calib") == list(WK.MATCH_FLAGS)
+    for free in ("--cadence", "--capacity-curve", "0.95", "-0.5", "--", "-", "--calibrate-grossx", None, 1.5):
+        assert reads(free) == [], free
+
+
+TRADE_RATE = nav_row("zz-trade-rate-v0", "--trade-rate zz-trade-rate-v0", {}, [], [])   # C3's rows: not yet listed
+
+
+@pytest.mark.parametrize("mode", ["pm6-6", "pm6-6-engine"])
+def test_the_match_stage_still_writes_its_own_leverage(tmp_path, mode):
+    """Ruling E2-14: the reservation leaves the gross-match stage's own write alone, in both modes, on P9-C's shape
+    (ruling E2-13 (b)): a kind rule wave naming a NAV rule that is no leverage rule (a synthetic trade-rate row), the
+    template keeping the parent's --aim-leverage {leverage}, the gross mismatched. Preflight passes; L' (4 decimals)
+    reaches the cell of record's nav.leverage and so its --aim-leverage. Python pm6-6: the -gm copy. Engine (P9 C2):
+    the run recipe -cal at the cell's L carries --calibrate-gross G_parent and --calibrate-tolerance (the match stage
+    writes them after preflight); the cell of record -gm is the plain recipe at L' (no --calibrate-*), and verify pins
+    its digest (C2 R4, merged with root)."""
+    m = load_fixture("new-nav-rule.json")
+    m.update(gross_match=mode, rules=[{"name": TRADE_RATE["id"]}])
+    root = world(tmp_path / mode, m)
+    fake = KindsFake(root, nav=dict(NAV_TABLE, rules=NAV_TABLE["rules"] + [TRADE_RATE]),
+                     gross_per_l={f"p9k-rule-nav-{m['wave']}": 0.9604 / 1.1474})
+    code, log = wave(root, fake, "run", "--until", "verify")
+    assert code == 0, log
+    receipts = root / "out/waves" / m["wave"] / "receipts"
+    pre = json.loads((receipts / "01-preflight.json").read_text())["outputs"]["kind"]
+    assert pre["flags"] == {"nav": {"--trade-rate": TRADE_RATE["id"]}}
+    mt = json.loads((receipts / "06-match.json").read_text())["outputs"]
+    lev = mt["leverage"]
+    assert mt["corrected"] is True and lev != "1.1474" and lev == f"{float(lev):.4f}"
+    record = mt.get("record_spec") or mt["cell_spec"]
+    assert record.endswith("-gm.json")
+    nav = RC.load_spec(root / record)["nav"]
+    assert nav["leverage"] == lev and nav["flags"][:2] == NAV_SET and "--trade-rate" in nav["flags"]
+    assert not [f for f in nav["flags"] if WK.match_flag_reads(f)]
+    if mode == "pm6-6":
+        assert "record_spec" not in mt
+        return
+    run = RC.load_spec(root / mt["cell_spec"])["nav"]                       # the run recipe: the cell's L, calibrating
+    assert mt["engine"] is True and mt["cell_spec"].endswith("-cal.json") and run["leverage"] == "1.1474"
+    assert run["flags"][run["flags"].index(CAL) + 1] == repr(mt["g_parent"]) and "--calibrate-tolerance" in run["flags"]
+    verify = json.loads((receipts / "07-verify.json").read_text())["inputs"]
+    assert verify["match.record_spec_digest"] == mt["record_spec_digest"]
+
+
+# ------------------------------------------------------------------ ruling E2-15: the reference side of a cell
+REF_OK = {"output": "out/ref-k", "combined": "library"}      # a reference construction with no flags / L of its own
+E2_15_ROUTES = [   # (fixture, manifest edit, template edit, the route the refusal names): ruling E2-15 (b)
+    ("new-horizon.json", constants(set={"ref": REF_OK}), None, "rule_cell.constants.set ref"),
+    ("new-combination-rule.json", constants(set={"ref.leverage": "1.1474"}), None,
+     "rule_cell.constants.set ref.leverage"),
+    ("new-horizon.json", constants(flags={"ref": {"--cadence": "5"}}), None, "rule_cell.constants.flags ref"),
+    ("new-universe.json", None, tpl_set(**{"ref.flags": NAV_SET}), "rule_cell.template change.set ref.flags"),
+    ("new-universe.json", None, lambda t: t["change"].update(unset=["ref"]), "rule_cell.template change.unset ref"),
+    ("new-universe.json", None, lambda t: t["change"].update(unset={"ref.leverage": True}),
+     "rule_cell.template change.unset ref.leverage"),
+    ("new-universe.json", None, lambda t: t["change"].update(flags={"ref": {"--cadence": "5"}}),
+     "rule_cell.template change.flags ref"),
+    ("new-universe.json", None, lambda t: t.update(ref=REF_OK), "rule_cell.template ref (a literal top-level key)"),
+    ("leverage-change.json", lambda m: m.update(rule_cell={"template": RULE_NAV, "template_sha256": "", "constants": {
+        "set": {"ref": REF_OK}}}), None, "rule_cell.constants.set ref"),
+    ("new-universe.json", constants(set={"ref": dict(REF_OK, output="out/ref-other")}), tpl_set(ref=REF_OK),
+     "rule_cell.constants.set ref"),                     # replacing the template's own block is a manifest route
+]
+
+
+@pytest.mark.parametrize("name, edit, tedit, route", E2_15_ROUTES)
+def test_a_cell_may_not_set_its_ref_section(tmp_path, name, edit, tedit, route):
+    """Ruling E2-15 (b) (review E2 S1): the reference of a v2 cell is half of its paired test, so no route adds,
+    replaces, unsets or edits its ref section (constants.set / .flags, the template's change.set ref.* / change.unset /
+    change.flags, a literal key, in every kind with a rule cell); it comes only from the lineage parent's cell of record
+    or the template's own pinned block (change.set ref, whole). Refused at preflight naming key and route; the
+    constants.set ref probe passed preflight and spec at d2cea6a6."""
+    stopped_at_preflight(*probe(tmp_path, name, edit, tedit), f"{route}: a cell may not add, replace or edit its ref "
+                         "section by any route (ruling E2-15 (b))")
+
+
+E2_15_SIDE = [   # (the template's own ref block, what the refusal says): ruling E2-15 (a)
+    (dict(REF_OK, leverage="5.0"), "rule_cell.template change.set ref: the cell's ref.leverage would be '5.0' where "
+     "the parent has '1.1474'; the reference side is judged as the cell's (ruling E2-15 (a))"),
+    (dict(REF_OK, flags=NAV_SET + ["--vol-target", "vol-target-v1"]),
+     "rule_cell.template change.set ref: the cell's ref.flags adds token(s) ['--vol-target']"),
+    (dict(REF_OK, flags=["--aim-leverage", "5.0"]),
+     "rule_cell.template change.set ref: the cell's ref.flags gives token(s) ['--aim-leverage'] other values"),
+    (dict(REF_OK, flags=NAV_SET + ["--Vol-Tar", "vol-target-v1"]),
+     "rule_cell.template change.set ref: the cell's ref.flags adds token(s) ['--Vol-Tar']"),
+    (dict(REF_OK, flags=NAV_SET + [CAL, "0.95"]),
+     "rule_cell.template change.set ref: the cell's ref.flags carries ['--calibrate-gross']"),
+]
+
+
+@pytest.mark.parametrize("ref, needle", E2_15_SIDE)
+def test_the_reference_side_is_guarded_as_the_cell(tmp_path, ref, needle):
+    """Ruling E2-15 (a): the template's own ref block is allowed, and its resolved side (research_cycle's ref_step: the
+    cell's nav with the ref's own rule / leverage / flags) is judged as the cell's: E2-10 on its leverage, E2-8 on its
+    flags (another value of an owned flag, an unnamed rule, a case variant), E2-14 on the match flags. Review S1's
+    probe (a ref at L 5.0 with an unnamed --vol-target) passed preflight and spec at d2cea6a6."""
+    stopped_at_preflight(*probe(tmp_path, "new-combination-rule.json", gross_none, tpl_set(ref=ref)), needle)
+
+
+def test_the_templates_own_ref_block_is_allowed(tmp_path):
+    """Ruling E2-15 (b): the template's own pinned ref block with no flags or leverage of its own runs the cell's
+    construction; the wave passes preflight and the spec stage writes the cell with it."""
+    code, log, root, _ = probe(tmp_path, "new-combination-rule.json", gross_none, tpl_set(ref=REF_OK),
+                               "run", "--until", "spec")
+    assert code == 0, log
+    assert RC.load_spec(root / cell_of(root)["cell_spec"])["ref"] == REF_OK
+
+
+def nav_receipt(root: Path, run_dir: str, exe: str) -> None:
+    """A completed NAV run receipt recording ``exe`` as its executable_sha256 (test_wave_driver's helper's layout)."""
+    F.write_json(root, f"{run_dir}/receipt.json", {"outcome": "completed", "exit_code": 0, "wall_seconds": 2.0,
+                                                   "sampled_peak_tree_rss_bytes": 3 << 20, "executable_sha256": exe})
+
+
+@pytest.mark.parametrize("route, parent_exe, refused", [
+    ("none", "a" * 64, "W1-I2"),                   # no ref: refused as before (the control)
+    ("constants", "a" * 64, "E2-15 (b)"),          # the manifest sets a ref: stops at preflight, never reaches verify
+    ("template", "a" * 64, "E2-15 (c)"),           # the template's own ref, run on the cell's exe: still refused
+    ("template", "b" * 64, None),                  # like with like: the ref does not refuse a sound pair
+])
+def test_w1_i2_a_holds_through_a_ref(tmp_path, route, parent_exe, refused):
+    """Ruling E2-15 (c): W1-I2 (a) refuses a rule cell whose paired parent NAV was made by another NAV exe through
+    every ref route. summ pairs a rule cell with the parent's NAV (inputs.reference_cell), never with its ref, so a
+    ref that ran on the cell's exe proves nothing about that pair. The probe at d2cea6a6 (parent NAV by exe a, the
+    cell's NAV and its ref by exe b): verify exit 4 without a ref, exit 0 (nav_exe ref "ran") with a ref set by
+    constants.set or by the template's own block."""
+    m = load_fixture("new-horizon.json")
+    gross_none(m)
+    if route == "constants":
+        constants(set={"ref": REF_OK})(m)
+    root = world(tmp_path / route, m)
+    if route == "template":
+        set_template(root, m, tpl_set(ref=REF_OK))
+    fake = KindsFake(root)
+    nav_receipt(root, f"{F.PARENT_NAV}-run", parent_exe)
+    code, log = wave(root, fake, "run", "--until", "match")
+    if route == "constants":
+        stopped_at_preflight(code, log, root, m, "ruling E2-15 (b)")
+        return
+    assert code == 0, log
+    receipts = root / "out/waves" / m["wave"] / "receipts"
+    mt = json.loads((receipts / "06-match.json").read_text())["outputs"]
+    nav_receipt(root, f"{mt['nav']}-run", "b" * 64)
+    spec = RC.load_spec(root / mt["cell_spec"])
+    if route == "template":
+        assert spec["ref"] == REF_OK
+        nav_receipt(root, f"{RC.Cycle(spec, RC.Resolver(root), verify=False).out(REF_OK['output'])}-run", "b" * 64)
+    code, log = wave(root, fake, "run", "--until", "verify")
+    if refused:
+        assert code == 4, log
+        text = json.loads((receipts / "07-verify.failed-1.json").read_text())["error"]
+        assert f"rule cell: its paired parent NAV was made by NAV exe {'a' * 64}" in text and refused in text, text
+    else:
+        assert code == 0, log
+        exe = json.loads((receipts / "07-verify.json").read_text())["outputs"]["nav_exe"]
+        assert exe == {"parent": "b" * 64, "cell": "b" * 64, "equal": True, "ref": "ran"}
+
+
+def test_non_finite_params_are_refused_at_preflight(tmp_path):
+    """Review E2 S2: json.loads reads NaN / Infinity, and NaN passes every minimum / maximum comparison: a non-finite
+    number is refused by the params_schema check (fixed-v1's aim_leverage NaN passed preflight at ea7d9dde)."""
+    for v in (float("nan"), float("inf"), float("-inf")):
+        got = WK.schema_problems(v, LEVERAGE, "p")
+        assert len(got) == 1 and got[0].startswith(f"p: {v!r} is not a finite number"), got
+    assert WK.schema_problems(2.0, LEVERAGE, "p") == [] and WK.schema_problems(1, LEVERAGE, "p") == []
+    for label, v in (("nan", float("nan")), ("inf", float("inf"))):
+        code, log, root, m = probe(tmp_path / label, "new-nav-rule.json",
+                                   lambda m, v=v: m.update(rules=[{"name": "fixed-v1", "params": {"aim_leverage": v}}]),
+                                   None)
+        stopped_at_preflight(code, log, root, m, f"rules.fixed-v1.aim_leverage: {v!r} is not a finite number")
 
 
 def test_field_wave_builds_then_registers_on_the_build(tmp_path):
@@ -724,9 +991,10 @@ def test_verify_plan_line_states_the_rule_cell_refusal(tmp_path):
     code, log = wave(root, KindsFake(root), "plan")
     assert code == 0 and verify_lines(log) == [V1_VERIFY_LINE], log
     assert not [line for line in log if "--list-rules" in line or "E2-8" in line]   # ruling E2-8 is v2 only
-    refusal = ("(a cell without a ref construction, e.g. a rule cell, is refused when the two NAVs' exes differ or "
-               "only one is recorded, by receipt or exes_sha256 pin (ruling W1-I2 (a)); with one, differing, the "
-               "cell's ref must have run on the cell's exe)")
+    refusal = ("(a rule cell, with or without its template's own ref construction (ruling E2-15 (c)), or a library "
+               "cell without one is refused when the two NAVs' exes differ or only one is recorded, by receipt or "
+               "exes_sha256 pin (ruling W1-I2 (a)); a library cell with one, differing, its ref must have run on the "
+               "cell's exe)")
     for name in ("new-nav-rule.json", "new-combination-rule.json", "leverage-change.json", "new-signal.json"):
         root = world(tmp_path / name[:-5], load_fixture(name))
         code, log = wave(root, KindsFake(root), "plan")

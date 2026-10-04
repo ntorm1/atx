@@ -45,10 +45,16 @@ parent's lists with only the derived flags applied. The IC table may list no com
 map (unmapped_ic_rules: its flags could not be guarded). A token is matched as norm_option reads it (single dash,
 case). nav.leverage (LEVERAGE_KEY) is fixed-v1's aim_leverage (ruling E2-10): only kind leverage (leverage.value,
 inside the table's range and at most LEVERAGE_MAX) and the gross-match stage (L') set it; any other route is refused.
+MATCH_FLAGS (ruling E2-14, review E2 R3a) are the gross-match stage's own: ``nav --calibrate-gross G_P`` makes the NAV
+exe publish its run at an L' it chooses itself, so no flag list of any v2 cell may carry them, in any section, route or
+spelling (match_flag_reads); only the match stage of MATCH_STAGE writes them, into its run recipe, after preflight.
+The reference side (ruling E2-15): a cell's ``ref`` comes only from its lineage parent's cell of record or from the
+template's own pinned ``change.set ref`` block (REF_KEY), whose resolved side is guarded as the cell's.
 """
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import re
 
@@ -93,6 +99,11 @@ NAME_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,63}")
 PLACEHOLDER_RE = re.compile(r"[A-Z][A-Z0-9_]*")     # "--risk-target S" / "SIGMA": a param's value, not a constant
 LEVERAGE_KEY = "nav.leverage"                       # fixed-v1's aim_leverage: research_cycle puts it in {leverage}
 LEVERAGE_MAX = 2.0                                  # ruling E2-10 / OD-P9-3: no P9 leverage wave above it
+# P9 C2's nav --calibrate-gross G_P [--calibrate-tolerance T]: the exe moves the leverage to L' itself. Only the match
+# stage of gross_match MATCH_STAGE puts them on an argv (wave_stage_cell.calibrated_doc, after preflight; E2-14 / R3a)
+MATCH_FLAGS = ("--calibrate-gross", "--calibrate-tolerance")
+MATCH_STAGE = "pm6-6-engine"
+REF_KEY = "ref"                                     # ruling E2-15: only the template's own change.set ref sets it
 
 
 class KindError(ValueError):
@@ -281,6 +292,9 @@ def schema_problems(value, schema: dict, where: str) -> list[str]:
                        ("additionalProperties", (bool, dict))):
         if key in schema and not isinstance(schema[key], kinds):
             return [f"{where}: schema {key} {schema[key]!r} is not a JSON-Schema {key} (refused, not ignored)"]
+    if type(value) is float and not math.isfinite(value):      # review E2 S2: json.loads reads NaN / Infinity, and
+        return [f"{where}: {value!r} is not a finite number (NaN and Infinity are no JSON numbers; a range "
+                "check cannot bound them)"]                     # NaN passes every minimum / maximum comparison
     if t is not None:
         ok = (type(value) is int if t == "integer" else
               type(value) in (int, float) if t == "number" else
@@ -467,6 +481,15 @@ def norm_option(token):
         return token
     head, eq, value = (token if token.startswith("--") else "-" + token).partition("=")
     return head.casefold() + eq + value
+
+
+def match_flag_reads(token) -> list[str]:
+    """The MATCH_FLAGS ``token`` reads as (ruling E2-14, review E2 R3a): the token as norm_option reads it (a single
+    dash, another case), ``=value`` stripped, equal to one or a proper prefix of one (an abbreviation); [] for a value
+    or any other option."""
+    norm = norm_option(token)
+    head = norm.split("=", 1)[0] if isinstance(norm, str) else ""
+    return [f for f in MATCH_FLAGS if head.startswith("--") and len(head) > 2 and f.startswith(head)]
 
 
 def abbreviated(token: str, flags) -> list[str]:

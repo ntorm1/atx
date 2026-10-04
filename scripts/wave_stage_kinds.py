@@ -6,7 +6,9 @@ are those of before.
   preflight  every kind: both rule tables (the IC exe's --list-rules --json, the NAV exe's nav --list-rules --json),
              their stdout SHA-256 recorded, and ruling E2-8's raw-rule-flag guard (rule_flag_guard: no flag a rule
              owns reaches the cell's resolved flag lists but through rules, by any route or spelling; every IC rule
-             mapped in COMPOSITION_FLAGS; ruling E2-10: nav.leverage set or changed only by kind leverage). Kind
+             mapped in COMPOSITION_FLAGS; ruling E2-10: nav.leverage set or changed only by kind leverage; ruling
+             E2-14: no --calibrate-gross / --calibrate-tolerance but the pm6-6-engine match stage's; ruling E2-15: the
+             ref section only from the template's own pinned block, its resolved side judged as the cell's). Kind
              rule: every named rule validated and its flags derived (wave_kinds.rule_flags). Kind leverage: the value
              inside the NAV exe's fixed-v1 aim_leverage range (refused when the table lists none) and at most 2.0.
              Kind walk-forward: refused (schema only, lane D3)
@@ -124,8 +126,8 @@ def raw_routes(w: Wave) -> tuple[dict, dict]:
     const, change = rc.get("constants") or {}, (template or {}).get("change") or {}
     maps = {"rule_cell.constants.flags": const.get("flags"), "rule_cell.template change.flags": change.get("flags"),
             "horizon.flags": (m.get("horizon") or {}).get("flags") if k == "horizon" else None}
-    unset_keys = change.get("unset")
-    unset = unset_keys if isinstance(unset_keys, list) else []
+    unset_keys = change.get("unset")         # review E2 S4: research_spec.resolve iterates a dict-typed unset by key
+    unset = list(unset_keys) if isinstance(unset_keys, (list, dict)) else []
     sets = {"rule_cell.constants.set": const.get("set") if isinstance(const.get("set"), dict) else {},
             "rule_cell.template change.set": change.get("set") if isinstance(change.get("set"), dict) else {},
             "rule_cell.template change.unset": {x: "(unset)" for x in unset if isinstance(x, str)}}
@@ -157,13 +159,18 @@ def occurrences(flags: list, option: str) -> list:
     return RC.argparse_values([WK.norm_option(t) for t in flags], option)
 
 
+def map_values(value) -> list:
+    """The values an option map entry can put on a flag list: the value, or each of a parent-value map's."""
+    return list(value.values()) if isinstance(value, dict) else [value]
+
+
 def touching(section: str, option: str, maps: dict, sets: dict) -> list[str]:
     """The raw routes that can have changed ``option`` in ``section``'s flag lists: an option map entry whose key or
-    value is it (or a prefix of it; review E2 S3: "--cadence --vol-target" puts it in a value slot), a set / unset key
-    replacing the section, its flags or ic.w_flags."""
-    out = [f"{r} {section} {key} {value}" if option_tokens([value], option) else f"{r} {section} {key}"
+    value is it (or a prefix of it; review E2 S3: "--cadence --vol-target" puts it in a value slot; a parent-value
+    map's values too), a set / unset key replacing the section, its flags or ic.w_flags."""
+    out = [f"{r} {section} {key} {value}" if option_tokens(map_values(value), option) else f"{r} {section} {key}"
            for r, ops in maps.items() if isinstance(ops.get(section), dict) for key, value in ops[section].items()
-           if option_tokens([key], option) or option_tokens([value], option)]
+           if option_tokens([key], option) or option_tokens(map_values(value), option)]
     lists = (f"{section}.flags",) + (("ic.w_flags",) if section == "ic" else ())
     return out + [f"{r} {key}" for r, ks in sets.items() for key in ks
                   if key == section or key in lists or any(key.startswith(k + ".") for k in lists)]
@@ -179,8 +186,12 @@ def rule_flag_guard(w: Wave, parent: dict, tables: dict, derived: dict) -> list[
     owned option of its flag lists the occurrences (argparse_values: exact, ``=value``, abbreviations) of the
     ``parent``'s lists with only the derived flags applied; a difference is refused with the route that made it.
     Tokens are read as WK.norm_option reads them (a single dash, another case: ruling E2-10). (4) Ruling E2-10: the
-    cell's nav.leverage (leverage_refusal). A library kind's cell is add-alpha's copy of the parent's flag lists and
-    nav, so (3) and (4) have nothing to compare there."""
+    cell's nav.leverage (leverage_refusal). (5) Ruling E2-14 (review R3a): no option map and no flag list carries the
+    gross-match stage's own flags (match_flag_map_hits, read before resolving; match_flag_list_hits; one refusal,
+    match_flag_refusal). (6) Ruling E2-15: no route but the template's own pinned block sets the
+    ref section (ref_refusal), and its resolved side (its own flags in (3), its own leverage in (4), its flags in (5))
+    is judged as the cell's. A library kind's cell is add-alpha's copy of the parent's flag lists and nav, so (3), (4)
+    and (6) have nothing to compare there; (5) reads the parent's lists, which that cell inherits."""
     problems = [f"the {t.upper()} exe's rule table could not be read: the raw-rule-flag guard needs both tables "
                 "(ruling E2-8)" for t in ("ic", "nav") if tables.get(t) is None]
     unmapped = WK.unmapped_ic_rules(tables)
@@ -197,10 +208,17 @@ def rule_flag_guard(w: Wave, parent: dict, tables: dict, derived: dict) -> list[
                             "rules, never write its flags; its params are checked against its params_schema)")
             reported |= {(s, f) for s in ops if isinstance(ops[s], dict) for t in ops[s] if isinstance(t, str)
                          for f in owned.get(s, set()) if option_tokens([t], f)}
-    if kind(w) in WK.LIBRARY_KINDS or kind(w) in WK.SCHEMA_ONLY:
-        return problems                             # no rule cell: add-alpha copies the parent's flag lists
+    if kind(w) in WK.SCHEMA_ONLY:
+        return problems
+    if kind(w) in WK.LIBRARY_KINDS:                 # no rule cell: add-alpha copies the parent's flag lists and nav
+        try:
+            return problems + match_flag_refusal(match_flag_list_hits(w, parent, None, maps, sets, set()))
+        except (research_spec.TemplateError, KeyError, TypeError) as exc:
+            return problems + [f"the parent's flag lists cannot be read for the match-flag guard (ruling E2-14): {exc}"]
+    match_hits, match_named = match_flag_map_hits(maps)
     try:
         rc, template, tpath = base_rule_cell(w)
+        problems += ref_refusal(maps, sets, template)     # ruling E2-15 (b), before resolve refuses a literal key
         sets_k, flags_k = kind_constants(w, parent, derived)
         doc = WS.rule_cell_doc(template or {}, tpath, w.manifest["parent"]["spec"],
                                WK.merged_constants(rc, sets_k, flags_k), w.manifest["wave"])
@@ -215,9 +233,17 @@ def rule_flag_guard(w: Wave, parent: dict, tables: dict, derived: dict) -> list[
                 changes += [(s, label, opt, occurrences(flags, opt), occurrences(want_lists[label], opt),
                              option_tokens(flags, opt), option_tokens(want_lists[label], opt))
                             for opt in sorted(owned[s])]
+        ref_flags = (ref_side(cell) or {}).get("flags")   # ruling E2-15 (a): a ref's own flags, judged as nav.flags
+        if isinstance(ref_flags, list) and "nav" in owned:
+            want = flag_lists(base, "nav")["nav.flags"]
+            changes += [("nav", "ref.flags", opt, occurrences(ref_flags, opt), occurrences(want, opt),
+                         option_tokens(ref_flags, opt), option_tokens(want, opt)) for opt in sorted(owned["nav"])]
+        match_hits += match_flag_list_hits(w, parent, cell, maps, sets, match_named)
     except (research_spec.TemplateError, RC.CycleError, KeyError, TypeError) as exc:
-        return problems + [f"the rule cell cannot be resolved for the raw-rule-flag guard (ruling E2-8): {exc}"]
-    problems += leverage_refusal(w, parent, cell, sets_k, sets)
+        return problems + match_flag_refusal(match_hits) + [f"the rule cell cannot be resolved for the raw-rule-flag "
+                                                            f"guard (ruling E2-8): {exc}"]
+    problems += match_flag_refusal(match_hits)
+    problems += leverage_refusal(w, parent, cell, sets_k, sets, maps)
     grouped: dict = {}
     for s, label, opt, got, want, toks, base_toks in changes:
         if got == want or (s, opt) in reported:
@@ -226,7 +252,8 @@ def rule_flag_guard(w: Wave, parent: dict, tables: dict, derived: dict) -> list[
         removed = sorted({t for t in base_toks if base_toks.count(t) > toks.count(t)})
         what = (f"adds token(s) {added}" if added else f"drops token(s) {removed}" if removed else
                 f"gives token(s) {sorted(set(toks))} other values")
-        via = ", ".join(touching(s, opt, maps, sets) or ["the resolved cell (no raw route names it)"])
+        routes = ref_routes(maps, sets) if label.startswith(WK.REF_KEY + ".") else touching(s, opt, maps, sets)
+        via = ", ".join(routes or ["the resolved cell (no raw route names it)"])
         grouped.setdefault((via, label, what), []).append(f"{opt} {got} (the parent's with only the named rules: "
                                                           f"{want})")
     for (via, label, what), opts in grouped.items():
@@ -236,26 +263,141 @@ def rule_flag_guard(w: Wave, parent: dict, tables: dict, derived: dict) -> list[
     return problems
 
 
-def leverage_refusal(w: Wave, parent: dict, cell: dict, sets_k: dict, sets: dict) -> list[str]:
+def leverage_refusal(w: Wave, parent: dict, cell: dict, sets_k: dict, sets: dict, maps: dict | None = None
+                     ) -> list[str]:
     """Ruling E2-10 (review E2 R2c): nav.leverage is a rule parameter, fixed-v1's aim_leverage (research_cycle puts
     it in --aim-leverage {leverage}, after the flag lists are compared). Only a kind leverage wave (leverage.value,
     range-checked at preflight, at most WK.LEVERAGE_MAX) or the gross-match stage (the -gm copy at L', written by
     match after preflight) sets it. Refused: any raw set / unset key nav.leverage in any kind (in a leverage wave
     leverage.value would silently override it), and a resolved rule cell whose nav.leverage differs from the parent's
-    (any other kind) or from leverage.value (kind leverage), by whatever route (a whole nav section set, a template)."""
+    (any other kind) or from leverage.value (kind leverage), by whatever route (a whole nav section set, a template).
+    Ruling E2-15 (a): the reference side alike: a ref's own leverage (research_cycle's ref_step runs the ref NAV at
+    ref.leverage, else at nav.leverage, already judged) must be the leverage the cell side must have."""
     k = kind(w)
     want = sets_k.get(WK.LEVERAGE_KEY) if k == "leverage" else (parent.get("nav") or {}).get("leverage")
     got = (cell.get("nav") or {}).get("leverage")
     raw = [f"{r} {key} = {value!r}" for r, ks in sets.items() for key, value in ks.items()
            if key == WK.LEVERAGE_KEY or key.startswith(WK.LEVERAGE_KEY + ".")]
-    if not raw and str(got) == str(want):
-        return []
-    via = raw or [f"{r} nav" for r, ks in sets.items() if "nav" in ks] or ["the resolved cell (no raw route names it)"]
-    return [f"{', '.join(via)}: the cell's {WK.LEVERAGE_KEY} would be {got!r} where "
-            f"{'leverage.value gives' if k == 'leverage' else 'the parent has'} {want!r}; {WK.LEVERAGE_KEY} is a rule "
-            "parameter (fixed-v1's aim_leverage, --aim-leverage {leverage}) that only a kind leverage wave "
+    where = f"{'leverage.value gives' if k == 'leverage' else 'the parent has'} {want!r}"
+    rule = ("is a rule parameter (fixed-v1's aim_leverage, --aim-leverage {leverage}) that only a kind leverage wave "
             f"(leverage.value, inside the NAV table's range, at most {WK.LEVERAGE_MAX}) or the gross-match stage (L') "
-            f"sets (ruling E2-10: kind {k} may not set or change it)"]
+            f"sets (ruling E2-10: kind {k} may not set or change it")
+    out = []
+    if raw or str(got) != str(want):
+        via = (raw or [f"{r} nav" for r, ks in sets.items() if "nav" in ks] or
+               ["the resolved cell (no raw route names it)"])
+        out.append(f"{', '.join(via)}: the cell's {WK.LEVERAGE_KEY} would be {got!r} where {where}; "
+                   f"{WK.LEVERAGE_KEY} {rule})")
+    ref = ref_side(cell) or {}
+    if "leverage" in ref and str(ref["leverage"]) != str(want):
+        via = ref_routes(maps or {}, sets) or ["the resolved cell (no raw route names it)"]
+        out.append(f"{', '.join(via)}: the cell's ref.leverage would be {ref['leverage']!r} where {where}; the "
+                   f"reference side is judged as the cell's (ruling E2-15 (a)) and its leverage {rule})")
+    return out
+
+
+def ref_side(cell: dict) -> dict | None:
+    """The resolved cell's own ref section (its reference construction), None without one."""
+    ref = cell.get(WK.REF_KEY)
+    return ref if isinstance(ref, dict) else None
+
+
+TEMPLATE_REF = f"rule_cell.template change.set {WK.REF_KEY}"    # the template's own pinned ref block (E2-15)
+
+
+def ref_routes(maps: dict, sets: dict) -> list[str]:
+    """The raw routes that add, replace, unset or edit the cell's ref section: a set / unset key ``ref`` or ``ref.*``
+    and an option map's ``ref`` section (a ref's flags)."""
+    return ([f"{r} {key}" for r, ks in sets.items() for key in ks
+             if key == WK.REF_KEY or key.startswith(WK.REF_KEY + ".")] +
+            [f"{r} {WK.REF_KEY}" for r, ops in maps.items() if WK.REF_KEY in ops])
+
+
+def ref_refusal(maps: dict, sets: dict, template: dict | None) -> list[str]:
+    """Ruling E2-15 (b) (review E2 S1): the reference of a v2 cell is half of its paired test, so a cell may not add,
+    replace or edit its ref section by any route: rule_cell.constants.set / .flags, the template's change.set ``ref.*``
+    / change.unset / change.flags, a literal top-level ``ref``. It comes only from the lineage parent's cell of record
+    (research_spec.resolve drops the parent's own ref) or from the template's own pinned block, its change.set ``ref``
+    whole (TEMPLATE_REF; the manifest pins the template's bytes), whose resolved side the E2-8 / E2-10 guards judge
+    as the cell's (ruling E2-15 (a))."""
+    bad = [x for x in ref_routes(maps, sets) if x != TEMPLATE_REF]
+    if isinstance(template, dict) and WK.REF_KEY in template:
+        bad.append(f"rule_cell.template {WK.REF_KEY} (a literal top-level key)")
+    if not bad:
+        return []
+    return [f"{', '.join(bad)}: a cell may not add, replace or edit its {WK.REF_KEY} section by any route (ruling "
+            "E2-15 (b)): the reference of a v2 cell comes only from its lineage parent's cell of record or from the "
+            f"template's own pinned block ({TEMPLATE_REF}, whole); a wave that needs another reference names that "
+            "cell as its lineage parent"]
+
+
+def match_flag_map_hits(maps: dict) -> tuple[list[str], set]:
+    """Ruling E2-14 (review E2 R3a): (the option map entries whose key or value, a parent-value map's too, reads as a
+    WK.MATCH_FLAGS flag, the sections they name). Read before the cell is resolved: research_spec.apply_flags refuses
+    some of them (a single dash, a parent value the map lacks) without naming the match flag."""
+    hits, named = [], set()
+    for r, ops in maps.items():
+        for s, sec in ops.items():
+            for key, value in (sec.items() if isinstance(sec, dict) else ()):
+                if WK.match_flag_reads(key):
+                    hits.append(f"{r} {s} {key} (reads as {WK.match_flag_reads(key)})")
+                    named.add(s)
+                elif any(WK.match_flag_reads(v) for v in map_values(value)):
+                    hits.append(f"{r} {s} {key} {value}")
+                    named.add(s)
+    return hits, named
+
+
+def match_flag_refusal(hits: list[str]) -> list[str]:
+    """Ruling E2-14's refusal of ``hits`` (match_flag_map_hits, match_flag_list_hits); [] without one."""
+    if not hits:
+        return []
+    return [f"{'; '.join(hits)}: {list(WK.MATCH_FLAGS)} are the gross-match stage's own NAV flags (the exe would "
+            "publish its NAV at an L' it picks itself, a leverage no wave registered): only the match stage of "
+            f"gross_match {WK.MATCH_STAGE} puts them on an argv, in its run recipe after preflight (ruling E2-14, "
+            "review E2 R3a; ruling E2-10: only kind leverage or the gross-match stage sets the leverage)"]
+
+
+def match_flag_list_hits(w: Wave, parent: dict, cell: dict | None, maps: dict, sets: dict, named: set) -> list[str]:
+    """Ruling E2-14 (review E2 R3a): WK.MATCH_FLAGS (P9 C2's nav --calibrate-gross / --calibrate-tolerance: the NAV
+    exe publishes its run at an L' it picks itself) are the gross-match stage's own: only the match stage of
+    gross_match WK.MATCH_STAGE writes them, into its run recipe, after preflight (never read by this guard). Besides
+    the option maps (match_flag_map_hits; their ``named`` sections are not reported twice), every token of the cell's
+    flag lists (every section, the w pass's list, a ref's own flags) that reads as one (WK.match_flag_reads: case,
+    single dash, ``=value``, abbreviation), whatever put it there (constants.set, change.set / unset, a whole section,
+    the parent's lists it inherits), as "route: the cell's <list> carries [tokens]". ``cell`` None: a library kind,
+    whose cell is add-alpha's copy of the ``parent``'s lists."""
+    hits: list[str] = []
+    src = parent if cell is None else cell
+    lists = {label: flags for s in WK.FLAG_SECTIONS for label, flags in flag_lists(src, s).items()}
+    ref_flags = (ref_side(cell) or {}).get("flags") if cell is not None else None
+    if isinstance(ref_flags, list):
+        lists[f"{WK.REF_KEY}.flags"] = ref_flags
+    inherited = {label: flags for s in WK.FLAG_SECTIONS for label, flags in flag_lists(parent, s).items()}
+    seen = set()
+    for label, flags in lists.items():
+        section = label.split(".", 1)[0]
+        toks = [t for t in flags if WK.match_flag_reads(t)]
+        if not toks or section in named or (section, tuple(toks)) in seen:     # ic.w_flags: ic.flags + the w map
+            continue
+        seen.add((section, tuple(toks)))
+        if cell is None or [t for t in inherited.get(label, []) if WK.match_flag_reads(t)] == toks:
+            via = [f"the parent spec {w.manifest['parent']['spec']} {label} (the cell inherits it)"]
+        elif section == WK.REF_KEY:
+            via = ref_routes(maps, sets)
+        else:
+            via = sorted({x for t in toks for f in WK.match_flag_reads(t) for x in touching(section, f, maps, sets)})
+        hits.append(f"{', '.join(via or ['the resolved cell (no raw route names it)'])}: the cell's {label} carries "
+                    f"{toks}")
+    return hits
+
+
+def rule_cell_kind(w: Wave) -> bool:
+    """A v2 kind whose cell is a rule cell, a template on the parent (rule, horizon, role, leverage): its paired
+    reference is always the parent's NAV (summ --reference inputs.reference_cell), never a ref construction, so verify
+    judges it by ruling W1-I2 (a) whatever its ref phase (ruling E2-15 (c))."""
+    k = kind(w)
+    return k is not None and k not in WK.LIBRARY_KINDS and k not in WK.SCHEMA_ONLY
 
 
 def preflight_kind_plan(w: Wave) -> list[str]:
@@ -276,6 +418,9 @@ def preflight_kind_plan(w: Wave) -> list[str]:
     lines.append("#   then: ruling E2-8: every IC rule mapped in COMPOSITION_FLAGS; no rule's flag in the cell's "
                  "resolved flag lists but through rules (constants / template flags and sets, spellings, "
                  "abbreviations)")
+    lines.append(f"#   then: ruling E2-14: no {' / '.join(WK.MATCH_FLAGS)} in any flag list (the {WK.MATCH_STAGE} match "
+                 "stage's own); ruling E2-15: no ref section but the template's own pinned block, its resolved side "
+                 "judged as the cell's")
     return lines
 
 
