@@ -1,0 +1,105 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = AlphaLitGolden_ExistingOps.DISABLED_*
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from AlphaLitGolden_ExistingOps
+[ RUN      ] AlphaLitGolden_ExistingOps.DISABLED_PerRowDigestDump
+[lit-input] open             0x237a7689d710ae21
+[lit-input] high             0xa3b130cb069e2606
+[lit-input] low              0x7e757a54b37074e1
+[lit-input] close            0x29b0b926a12d98cc
+[lit-input] volume           0x9cd1f48b57e17bd6
+[lit-input] vwap             0x96351ffcf604460c
+[lit-input] returns          0xfa74d25c270a2632
+[lit-input] IndClass.sector  0x81e62c0ed9833383
+[lit-input] fund             0xe758fe82b2b27103
+[lit-row] 00 ae=0x3e6de5e16481089d rf=0x3e6de5e16481089d oracle=0x3e6de5e16481089d  abs(close - open)
+[lit-row] 01 ae=0x900bb084285323c3 rf=0x900bb084285323c3 oracle=0x900bb084285323c3  sign(close - open)
+[lit-row] 02 ae=0xba4f980f8a8d6c9d rf=0xba4f980f8a8d6c9d oracle=0xba4f980f8a8d6c9d  log(volume)
+[lit-row] 03 ae=0x91d5ce79a2a84f66 rf=0x91d5ce79a2a84f66 oracle=0x91d5ce79a2a84f66  sigmoid(returns * 10)
+[lit-row] 04 ae=0xbe4122d4eff75bea rf=0xbe4122d4eff75bea oracle=0xbe4122d4eff75bea  tanh(returns * 10)
+[lit-row] 05 ae=0x09a2ac7a73e0e54f rf=0x09a2ac7a73e0e54f oracle=0x09a2ac7a73e0e54f  power(close, 0.5)
+[lit-row] 06 ae=0x1ac423675703ed2c rf=0x1ac423675703ed2c oracle=0x1ac423675703ed2c  signedpower(returns, 2)
+[lit-row] 07 ae=0x68625a0f8c4e3140 rf=0x68625a0f8c4e3140 oracle=0x68625a0f8c4e3140  min(open, close)
+[lit-row] 08 ae=0x120ef44425ec9476 rf=0x120ef44425ec9476 oracle=0x120ef44425ec9476  max(open, close)
+[lit-row] 09 ae=0xf8db6fe1d5b47074 rf=0xf8db6fe1d5b47074 oracle=0xf8db6fe1d5b47074  rank(close)
+[lit-row] 10 ae=0x922dabd665711d86 rf=0x922dabd665711d86 oracle=0x922dabd665711d86  zscore(volume)
+[lit-row] 11 ae=0xd48a7ae289437b5d rf=0xd48a7ae289437b5d oracle=0xd48a7ae289437b5d  scale(returns, 2)
+[lit-row] 12 ae=0x4114d3052d0bc191 rf=0x4114d3052d0bc191 oracle=0x4114d3052d0bc191  normalize(close)
+[lit-row] 13 ae=0x602eedca3d8b63a9 rf=0x602eedca3d8b63a9 oracle=0x602eedca3d8b63a9  winsorize(returns, 2)
+[lit-row] 14 ae=0xfd9a1f80b0099047 rf=0xfd9a1f80b0099047 oracle=0xfd9a1f80b0099047  indneutralize(close, IndClass.sector)
+[lit-row] 15 ae=0x185f33a1e73e8694 rf=0x185f33a1e73e8694 oracle=0x185f33a1e73e8694  group_neutralize(returns, IndClass.sector)
+[lit-row] 16 ae=0xcc3fe8291a56fc4b rf=0xcc3fe8291a56fc4b oracle=0xcc3fe8291a56fc4b  group_rank(volume, IndClass.sector)
+[lit-row] 17 ae=0x6759fe0e2a984e6c rf=0x6759fe0e2a984e6c oracle=0x6759fe0e2a984e6c  group_zscore(close, IndClass.sector)
+[lit-row] 18 ae=0x24a4bef7f7e4d3a3 rf=0x24a4bef7f7e4d3a3 oracle=0x24a4bef7f7e4d3a3  group_count(close, IndClass.sector)
+[lit-row] 19 ae=0x4faaf5020259023f rf=0x4faaf5020259023f oracle=0x4faaf5020259023f  group_mean(close, IndClass.sector)
+[lit-row] 20 ae=0x0c6fd1f652ef98f2 rf=0x0c6fd1f652ef98f2 oracle=0x0c6fd1f652ef98f2  group_scale(returns, IndClass.sector)
+[lit-row] 21 ae=0xfd9a1f80b0099047 rf=0xfd9a1f80b0099047 oracle=0xfd9a1f80b0099047  cs_residualize(close, IndClass.sector)
+[lit-row] 22 ae=0xb5ea3c3f2185b538 rf=0xb5ea3c3f2185b538 oracle=0xb5ea3c3f2185b538  cs_residualize(close, IndClass.sector, volume)
+[lit-row] 23 ae=0x5b38bcabd0cc0159 rf=0x5b38bcabd0cc0159 oracle=0x5b38bcabd0cc0159  quantile(close, 4)
+[lit-row] 24 ae=0x270a72ae82362a26 rf=0x270a72ae82362a26 oracle=0x270a72ae82362a26  reverse(close)
+[lit-row] 25 ae=0x773753bc91d66c2e rf=0x773753bc91d66c2e oracle=0x773753bc91d66c2e  vec_sum(returns)
+[lit-row] 26 ae=0x4231cd8723fe5f92 rf=0x4231cd8723fe5f92 oracle=0x4231cd8723fe5f92  vec_avg(returns)
+[lit-row] 27 ae=0x36d1433cc26068f3 rf=0x36d1433cc26068f3 oracle=0x36d1433cc26068f3  delay(close, 3)
+[lit-row] 28 ae=0x50143d3b7190bedd rf=0x50143d3b7190bedd oracle=0x50143d3b7190bedd  delta(close, 3)
+[lit-row] 29 ae=0xe153770e31165907 rf=0xe153770e31165907 oracle=0xe153770e31165907  ts_sum(returns, 5)
+[lit-row] 30 ae=0xfefe1e565d1aa244 rf=0x3f136fe14e7bd225 oracle=0xfefe1e565d1aa244  ts_mean(close, 5)
+[lit-row] 31 ae=0xf6d5edce466103b3 rf=0x1b3d0fb606ebcc4c oracle=0xf6d5edce466103b3  stddev(returns, 6)
+[lit-row] 32 ae=0x209840ccee1723a7 rf=0x51e1795189dcbec0 oracle=0x209840ccee1723a7  ts_std(close, 6)
+[lit-row] 33 ae=0xc142168f645c85df rf=0x2584bb0a03b35f4c oracle=0xc142168f645c85df  ts_var(returns, 6)
+[lit-row] 34 ae=0x968708d0e76b7c68 rf=0x968708d0e76b7c68 oracle=0x968708d0e76b7c68  ts_min(low, 4)
+[lit-row] 35 ae=0xc3838f655a1a5798 rf=0xc3838f655a1a5798 oracle=0xc3838f655a1a5798  ts_max(high, 4)
+[lit-row] 36 ae=0x333069e787ae23ef rf=0x333069e787ae23ef oracle=0x333069e787ae23ef  ts_argmin(close, 5)
+[lit-row] 37 ae=0xf22a8bd5086030d3 rf=0xf22a8bd5086030d3 oracle=0xf22a8bd5086030d3  ts_argmax(close, 5)
+[lit-row] 38 ae=0x1349a0e7c1beb232 rf=0x1349a0e7c1beb232 oracle=0x1349a0e7c1beb232  ts_rank(close, 7)
+[lit-row] 39 ae=0x6ae4618b407ae62b rf=0x797d175dbe3618d0 oracle=0x6ae4618b407ae62b  correlation(close, volume, 8)
+[lit-row] 40 ae=0x91d97f91115e1c2f rf=0x340ef65ab95bfcd3 oracle=0x91d97f91115e1c2f  covariance(close, volume, 8)
+[lit-row] 41 ae=0x37489f0c237338e2 rf=0x37489f0c237338e2 oracle=0x37489f0c237338e2  product(1 + returns, 4)
+[lit-row] 42 ae=0xe71ce877f4e8720a rf=0x0bc1f09bea0561df oracle=0xe71ce877f4e8720a  decay_linear(close, 5)
+[lit-row] 43 ae=0x94e62b1c2706cc6c rf=0x94e62b1c2706cc6c oracle=0x94e62b1c2706cc6c  ema(close, 6)
+[lit-row] 44 ae=0x17ae959cd9dd404e rf=0x72def5de7ccd5bc0 oracle=0x17ae959cd9dd404e  wma(close, 6)
+[lit-row] 45 ae=0xe593c9fd159501c1 rf=0xe593c9fd159501c1 oracle=0xe593c9fd159501c1  skew(returns, 8)
+[lit-row] 46 ae=0x3bf1d5583c762635 rf=0x3bf1d5583c762635 oracle=0x3bf1d5583c762635  kurt(returns, 9)
+[lit-row] 47 ae=0x23f1111e2471d57e rf=0x23f1111e2471d57e oracle=0x23f1111e2471d57e  med(close, 5)
+[lit-row] 48 ae=0xad55d1b1e38c0258 rf=0xad55d1b1e38c0258 oracle=0xad55d1b1e38c0258  mad(close, 5)
+[lit-row] 49 ae=0x45faf47ea7bfff9e rf=0x067fae28a7eca235 oracle=0x45faf47ea7bfff9e  slope(close, 6)
+[lit-row] 50 ae=0x210e38aecd84b201 rf=0x496bfb7f7aed3437 oracle=0x210e38aecd84b201  rsquare(close, 6)
+[lit-row] 51 ae=0x880590b71b57ecc0 rf=0x266dbcde1eeb973c oracle=0x880590b71b57ecc0  resid(close, 6)
+[lit-row] 52 ae=0x9d547be92df21ea9 rf=0x1d12cf17291b52a5 oracle=0x9d547be92df21ea9  ts_zscore(fund, 5)
+[lit-row] 53 ae=0xdd8c29674a81ba6f rf=0xdd8c29674a81ba6f oracle=0xdd8c29674a81ba6f  ts_backfill(returns, 5)
+[lit-row] 54 ae=0x0ab95817292a38b2 rf=0x46240b3bcdcd44e6 oracle=0x0ab95817292a38b2  ts_av_diff(close, 5)
+[lit-row] 55 ae=0xf95b3a6f67bf2b5c rf=0xf95b3a6f67bf2b5c oracle=0xf95b3a6f67bf2b5c  ts_quantile(close, 7)
+[lit-row] 56 ae=0x909c9697cf872b3e rf=0x909c9697cf872b3e oracle=0x909c9697cf872b3e  ts_scale(close, 7)
+[lit-row] 57 ae=0x1c4002ecafb950e7 rf=0x1c4002ecafb950e7 oracle=0x1c4002ecafb950e7  ts_count_nans(returns, 6)
+[lit-row] 58 ae=0x248b9a0a09160417 rf=0x248b9a0a09160417 oracle=0x248b9a0a09160417  ts_skew(close, 8)
+[lit-row] 59 ae=0x0dc394d8e206e130 rf=0x0dc394d8e206e130 oracle=0x0dc394d8e206e130  ts_kurt(close, 9)
+[lit-row] 60 ae=0x62ad3a09a713f267 rf=0xe1d0f49c63daed28 oracle=0x62ad3a09a713f267  ts_corr(close, open, 6)
+[lit-row] 61 ae=0x6a4a6e5e2617597b rf=0x9f7ad6a06f930fab oracle=0x6a4a6e5e2617597b  ts_regression(close, vwap, 7)
+[lit-row] 62 ae=0x448b1f9478c4f5e3 rf=0xbce534ae2880b714 oracle=0x448b1f9478c4f5e3  ts_decay_exp(close, 6, 0.7)
+[lit-row] 63 ae=0x469268766a655b1f rf=0x469268766a655b1f oracle=0x469268766a655b1f  ts_moment(returns, 6, 3)
+[lit-row] 64 ae=0x78ccf4b7d28a22eb rf=0x78ccf4b7d28a22eb oracle=0x78ccf4b7d28a22eb  ts_entropy(returns, 10, 4)
+[lit-row] 65 ae=0x557f3af4f8273acc rf=0x557f3af4f8273acc oracle=0x557f3af4f8273acc  trade_when(volume > ts_mean(volume, 5), rank(returns), returns < -0.02)
+[lit-row] 66 ae=0x29f0e79e95f507ee rf=0x29f0e79e95f507ee oracle=0x29f0e79e95f507ee  hump(rank(close), 0.05)
+[lit-row] 67 ae=0x18ce830762db77a0 rf=0x18ce830762db77a0 oracle=0x18ce830762db77a0  kalman_level(close, 0.01, 1.0)
+[lit-row] 68 ae=0x314a4b54a37d074f rf=0x314a4b54a37d074f oracle=0x314a4b54a37d074f  ou_filter(close, 0.2, 50)
+[lit-row] 69 ae=0x270a72ae82362a26 rf=0x270a72ae82362a26 oracle=0x270a72ae82362a26  split2(close).lo
+[lit-row] 70 ae=0x9865790e84fbad5f rf=0x9865790e84fbad5f oracle=0x9865790e84fbad5f  kalman(close, vwap, 0.5, 1.0).beta
+[lit-row] 71 ae=0x2bbc94f2654cb6ef rf=0x2bbc94f2654cb6ef oracle=0x2bbc94f2654cb6ef  kalman(close, vwap, 0.5, 1.0).resid
+[lit-row] 72 ae=0x1f6b7325be5c1701 rf=0x1f6b7325be5c1701 oracle=0x1f6b7325be5c1701  ou_theta(close, 10)
+[lit-row] 73 ae=0x1f3cd3e87f428c60 rf=0x1f3cd3e87f428c60 oracle=0x1f3cd3e87f428c60  ou_halflife(close, 10)
+[lit-row] 74 ae=0xfadd531b2f2af878 rf=0xfadd531b2f2af878 oracle=0xfadd531b2f2af878  ou_mean(close, 10)
+[lit-row] 75 ae=0x7561b273b02f42e8 rf=0x7561b273b02f42e8 oracle=0x7561b273b02f42e8  ou_zscore(close, 10)
+[lit-row] 76 ae=0x120ef44425ec9476 rf=0x120ef44425ec9476 oracle=0x120ef44425ec9476  (close > open) ? close : open
+[lit-row] 77 ae=0xe861a530a707cdaa rf=0xe861a530a707cdaa oracle=0xe861a530a707cdaa  ((close < open) && (volume >= 100000)) ? 1 : 0
+[lit-row] 78 ae=0xbd4958ec355e7b7d rf=0xbd4958ec355e7b7d oracle=0xbd4958ec355e7b7d  ((close <= open) || !(volume != 100000)) ? high : low
+[lit-row] 79 ae=0x52aa051b1aabf653 rf=0x52aa051b1aabf653 oracle=0x52aa051b1aabf653  (close == open) ? 1 : 0
+[lit-row] 80 ae=0xac0f5c5c636c3da7 rf=0xac0f5c5c636c3da7 oracle=0xac0f5c5c636c3da7  close / open - 1
+[lit-row] 81 ae=0x8bd3569f4bce8270 rf=0x8bd3569f4bce8270 oracle=0x8bd3569f4bce8270  -close + high * low
+[lit-row] 82 ae=0x658d57967a56a764 rf=0x658d57967a56a764 oracle=0x658d57967a56a764  close ^ 2
+[lit-row] 83 ae=0x08df520382234cfe rf=0x08df520382234cfe oracle=0x08df520382234cfe  close ^ 3
+[       OK ] AlphaLitGolden_ExistingOps.DISABLED_PerRowDigestDump (95 ms)
+[----------] 1 test from AlphaLitGolden_ExistingOps (95 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (96 ms total)
+[  PASSED  ] 1 test.

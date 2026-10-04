@@ -1,0 +1,29 @@
+atx-impl/strategies/libraries/v71.json: 0 expression strings, 0 with an affected op
+atx-impl/strategies/libraries/v80.json: 0 expression strings, 0 with an affected op
+atx-impl/strategies/libraries/v81.json: 0 expression strings, 0 with an affected op
+atx-impl/strategies/libraries/v8x2.json: 0 expression strings, 0 with an affected op
+atx-impl/strategies/libraries/v8x2b.json: 0 expression strings, 0 with an affected op
+atx-impl/strategies/libraries/v8x3.json: 0 expression strings, 0 with an affected op
+atx-impl/strategies/libraries/v8x3b.json: 0 expression strings, 0 with an affected op
+atx-impl/strategies/libraries/v8x4.json: 0 expression strings, 0 with an affected op
+atx-impl/strategies/libraries/v8x4b.json: 0 expression strings, 0 with an affected op
+atx-impl/strategies/libraries/v8x7.json: 0 expression strings, 0 with an affected op
+atx-impl/strategies/libraries/v8x7b.json: 0 expression strings, 0 with an affected op
+atx-impl/strategies/libraries/v8ys.json: 0 expression strings, 0 with an affected op
+atx-impl/strategies/libraries/v8ysb.json: 0 expression strings, 0 with an affected op
+scripts/specs/p9/blocked/hf_crowd.json: 1 expression strings, 0 with an affected op
+scripts/specs/p9/blocked/lazy_prices.json: 1 expression strings, 0 with an affected op
+scripts/specs/p9/candidates/russell_recon.json: 4 expression strings, 0 with an affected op
+scripts/specs/v8/lib-v8ysb-gm.json: 0 expression strings, 0 with an affected op
+scripts/specs/v8/lib-v8ysb.json: 0 expression strings, 0 with an affected op
+scripts/specs/v9/mine-c1.json: 0 expression strings, 0 with an affected op
+total expression strings scanned: 6
+
+== v8ysb (67 members) resolved via atx-impl/strategies/alphas/registry.json
+members without a registry dsl: []
+  cbop_f49: ops=['power'] caret=[]
+      group_rank(decay_linear((((cfo_ttm + (power(xrd_ttm, (1 - ts_count_nans(xrd_ttm, 1))) - ts_count_nans(xrd_ttm, 1))) / at) + (0 * log(at))), 21), grp_ff12f49)
+  res_mom_12_1: ops=['signedpower'] caret=[]
+      rank(decay_linear(delay((((ts_sum(((close / delay(close, 1)) - 1), 231) / stddev(((close / delay(close, 1)) - 1), 231)) - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 231) * (ts_sum(mkt_ret, 231) / stddev(mkt_ret, 231)))) / signedpower(abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 231) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 231)))), 0.5)), 21), 21))
+  op_rd: ops=['power'] caret=[]
+      group_rank(decay_linear((((oi_ttm + (power(xrd_ttm, (1 - ts_count_nans(xrd_ttm, 1))) - ts_count_nans(xrd_ttm, 1))) / at) + (0 * log(at))), 21), grp_ff12)

@@ -1,0 +1,19 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = AlphaLitGolden_ExistingOps.*
+[==========] Running 2 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 2 tests from AlphaLitGolden_ExistingOps
+[ RUN      ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned
+[lit-golden] vm_audit_exact=0x971c3da60ca89aa3 vm_research_fast=0xe9e7128fd5359900 oracle=0x971c3da60ca89aa3
+[       OK ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned (239 ms)
+[ DISABLED ] AlphaLitGolden_ExistingOps.DISABLED_PerRowDigestDump
+[ RUN      ] AlphaLitGolden_ExistingOps.BatteryCoversEveryPreW2NamedOp
+[       OK ] AlphaLitGolden_ExistingOps.BatteryCoversEveryPreW2NamedOp (0 ms)
+[----------] 2 tests from AlphaLitGolden_ExistingOps (240 ms total)
+
+[----------] Global test environment tear-down
+[==========] 2 tests from 1 test suite ran. (241 ms total)
+[  PASSED  ] 2 tests.
+
+  YOU HAVE 1 DISABLED TEST
+

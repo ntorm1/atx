@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib> // _dupenv_s / std::free (the diagnostic dump; std::getenv trips /WX)
 #include <cstring>
 #include <limits>
 #include <random>
@@ -226,6 +227,60 @@ TEST(AlphaLitGolden_ExistingOps, EveryPreW2OpcodeDigestIsPinned) {
   EXPECT_EQ(d.vm_ae, kGoldenVmAuditExact);
   EXPECT_EQ(d.vm_rf, kGoldenVmResearchFast);
   EXPECT_EQ(d.oracle, kGoldenOracle);
+}
+
+// DIAGNOSTIC (P9 S2R, M2c-RED): the pinned test above folds every row into one digest, so a
+// mismatch says only THAT a bit moved. This dump says WHERE: one line per input column and one
+// per battery row (that row alone, each path from the FNV offset basis). Diff the output of two
+// builds (e.g. Debug vs Release) to name the moved column / opcode / eval mode. Disabled, so it
+// never counts in a suite total; run it with
+//   --gtest_also_run_disabled_tests --gtest_filter=AlphaLitGolden_ExistingOps.DISABLED_*
+// With ATX_LIT_GOLDEN_CELLS=1 it also prints every cell's bits ([lit-cell] row cell ae rf oracle).
+TEST(AlphaLitGolden_ExistingOps, DISABLED_PerRowDigestDump) {
+  constexpr std::uint64_t kBasis = 1469598103934665603ULL;
+  char *env = nullptr;
+  std::size_t env_len = 0;
+  const bool cells = _dupenv_s(&env, &env_len, "ATX_LIT_GOLDEN_CELLS") == 0 && env != nullptr &&
+                     std::string_view{env} == "1";
+  std::free(env);
+  const Panel panel = golden_panel();
+  for (atx::usize f = 0; f < panel.num_fields(); ++f) {
+    const auto col = panel.field_all(static_cast<atx::engine::alpha::FieldId>(f));
+    // Copied so the digest is the same fnv_cells fold as the battery rows.
+    const std::vector<atx::f64> v(col.begin(), col.end());
+    std::printf("[lit-input] %-16s 0x%016llx\n", panel.field_name(f).c_str(),
+                static_cast<unsigned long long>(fnv_cells(kBasis, v)));
+  }
+  const auto &rows = existing_ops();
+  for (atx::usize k = 0; k < rows.size(); ++k) {
+    const Program prog = compile_ok(rows[k]);
+    Engine ae{panel};
+    auto a = ae.evaluate(prog);
+    Engine rf{panel};
+    rf.set_eval_mode(EvalMode::ResearchFast);
+    auto r = rf.evaluate(prog);
+    auto o = atx::engine::alpha::evaluate_reference(prog, panel);
+    ASSERT_TRUE(a.has_value() && r.has_value() && o.has_value()) << rows[k];
+    const auto &va = a.value().alphas.front().values;
+    const auto &vr = r.value().alphas.front().values;
+    const auto &vo = o.value().alphas.front().values;
+    std::printf("[lit-row] %02zu ae=0x%016llx rf=0x%016llx oracle=0x%016llx  %.*s\n", k,
+                static_cast<unsigned long long>(fnv_cells(kBasis, va)),
+                static_cast<unsigned long long>(fnv_cells(kBasis, vr)),
+                static_cast<unsigned long long>(fnv_cells(kBasis, vo)),
+                static_cast<int>(rows[k].size()), rows[k].data());
+    for (atx::usize c = 0; cells && c < va.size(); ++c) {
+      std::uint64_t ba = 0;
+      std::uint64_t br = 0;
+      std::uint64_t bo = 0;
+      std::memcpy(&ba, &va[c], sizeof(ba));
+      std::memcpy(&br, &vr[c], sizeof(br));
+      std::memcpy(&bo, &vo[c], sizeof(bo));
+      std::printf("[lit-cell] %02zu %03zu %016llx %016llx %016llx\n", k, c,
+                  static_cast<unsigned long long>(ba), static_cast<unsigned long long>(br),
+                  static_cast<unsigned long long>(bo));
+    }
+  }
 }
 
 // Each battery row is a distinct expression and exercises the op it names.
