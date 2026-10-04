@@ -300,6 +300,38 @@ def test_contract_cli_is_offline(capsys):
     assert json.loads(capsys.readouterr().out)==R.CONTRACT
 
 
+@pytest.mark.parametrize('damage',['none','version','empty','extra','path','hash','rows','sources','source_hash','link_table_missing'])
+def test_exact_identity_outputs_manifest_adapter(tmp_path,monkeypatch,damage):
+    from atx_db.alpha_panel import identity_links as I
+    directory=tmp_path/'identity';directory.mkdir()
+    links=directory/'links.parquet';link_table=directory/'link_table.parquet'
+    pq.write_table(pa.table({'cik':[42]}),links);pq.write_table(pa.table({'cik':[43]}),link_table)
+    sources={}
+    for name,attribute in [('security_company_links','LINKS_SRC'),('security_permanent_ids','PERM_IDS_SRC'),('r4_manifest','R4_MANIFEST')]:
+        source=tmp_path/(name+'.fixture');source.write_text(name)
+        monkeypatch.setattr(I,attribute,source)
+        sources[name]={**R.identity(source),'path':str(source),'mtime_ns':source.stat().st_mtime_ns}
+    manifest=directory/'manifest.json'
+    output={**R.identity(links),'path':str(links),'mtime_ns':links.stat().st_mtime_ns,'rows':1}
+    doc={'stage':'I','code_version':I.CODE_VERSION,'rule':I.RULE,'outputs':{'links.parquet':output},'sources':sources}
+    if damage=='version':doc['code_version']='unknown'
+    if damage=='empty':doc['outputs']={}
+    if damage=='extra':doc['outputs']['extra.parquet']=output
+    if damage=='path':output['path']=str(link_table)
+    if damage=='hash':output['sha256']='0'*64
+    if damage=='rows':output['rows']=2
+    if damage=='sources':doc['sources'].pop('r4_manifest')
+    if damage=='source_hash':doc['sources']['r4_manifest']['sha256']='0'*64
+    R.C.write_json_atomic(manifest,doc)
+    monkeypatch.setattr(R,'reader_contract',lambda root:{'identity_manifest':{'paths':[manifest]},'links_prepare':{'paths':[links]},'links_validation':{'paths':[link_table]}})
+    def product(path):return {'source':'fixture','clock':'unqualified source clock','admission':'byte fixture only','files':{str(path):R.identity(path)}}
+    products={'identity_manifest':product(manifest),'links_prepare':product(links),'links_validation':product(link_table)}
+    if damage=='link_table_missing':products.pop('links_validation')
+    if damage=='none':assert R.check_products(tmp_path,products)==products
+    else:
+        with pytest.raises(ValueError):R.check_products(tmp_path,products)
+
+
 @pytest.mark.parametrize('damage',['status','quality','source_backed','code','units'])
 def test_public_validation_rejects_abbreviated_qualification_before_sources(tmp_path,con,damage):
     stage=tmp_path/R.STAGE;generation=R._generation(stage,'g')

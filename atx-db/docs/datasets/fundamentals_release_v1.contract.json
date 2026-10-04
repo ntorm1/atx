@@ -134,5 +134,19 @@
   },
   "cutoff_events": 200,
   "cutoff_seed": 20260929,
-  "return_statistics": "none; financial coverage only, no return evaluation"
+  "return_statistics": "none; financial coverage only, no return evaluation",
+  "identity_manifest_adapter": {
+    "stage": "I",
+    "code_version": "identity-links-v1",
+    "rule": "r4-links-asof-v1",
+    "outputs": [
+      "links.parquet"
+    ],
+    "sources": [
+      "security_company_links",
+      "security_permanent_ids",
+      "r4_manifest"
+    ],
+    "qualification": "bytes and declared inventory only; source/clock quality uncertified"
+  }
 }

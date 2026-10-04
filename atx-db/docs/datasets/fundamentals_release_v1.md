@@ -27,11 +27,14 @@ The exact native readers are:
 | prices | all root/prices/year=*/*.parquet, nonempty exact inventory |
 | prices_history | all root/prices_history/year=*/prices.parquet, nonempty exact inventory |
 | members | all six root/_tmp/panel_member/year=2020..2025.parquet |
-| identity_manifest / filings_manifest / reference_manifest | exact native manifest plus every declared file rehashed |
+| identity_manifest | exact Stage I identity-links-v1 outputs/sources adapter; links output and all three native source pins rechecked |
+| filings_manifest / reference_manifest | exact native manifest plus every declared file rehashed |
 
 Native preparation verification preserves the existing 144 units: exact FSDS source inventory/full SHA, actual preparation code, dependencies, SQL and output SHA are verified through the reviewed `fund_prepare_cache` machinery before and after work. Missing, abbreviated or changed preparation fails. Source archive membership is replanned using native ZIP metadata; all original 85 batches and all 256 extraction files (plan plus data/receipt/statistics for each batch) are mandatory. Full admission independently reconstructs both extraction Parquets directly from the pinned archive and compares typed values, all member/error populations and native counters. This avoids blessing a legacy extraction receipt based on size/mtime or rewritten SHA alone.
 
-Actual code inventory includes the native seven `fundamentals.MODULES`, `fund_validate`, `fund_asof`, this adapter, `reference_classifications.py`, `statement_map_seed.py`, and the frozen contract JSON. Any source, selection, preparation, code, configuration or binding-file change invalidates continuation.
+The identity adapter accepts only stage `I`, code_version `identity-links-v1`, rule `r4-links-asof-v1`, exactly `outputs['links.parquet']`, and exactly sources `security_company_links`, `security_permanent_ids`, `r4_manifest` at current native producer paths. Output absolute path, SHA/size/mtime and Parquet row count must match the declaration and independently pinned preparation reader. Every declared source path, SHA/size/mtime is checked. Independently selected `identity/link_table.parquet` remains mandatory; the Stage I outputs declaration does not cover or substitute it. Unknown schemas, empty/subset/extra outputs or sources, content/path/count changes and reader mismatch fail. Producer validation/clock descriptions do not certify source clocks or economics; qualification remains explicit and false. Generic `outputs` fallback is forbidden.
+
+Actual code inventory includes the native seven `fundamentals.MODULES`, `fund_validate`, `fund_asof`, this adapter, `identity_links.py` (known source path/schema contract), `reference_classifications.py`, `statement_map_seed.py`, and the frozen contract JSON. Any source, selection, preparation, code, configuration or binding-file change invalidates continuation.
 
 ## Units, types, clocks and population
 

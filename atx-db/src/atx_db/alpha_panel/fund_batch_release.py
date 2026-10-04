@@ -45,6 +45,9 @@ CONTRACT = {
     'exit_years':list(range(2020,2026)), 'exit_targets':V.EXIT_FIELDS,
     'cutoff_events':V.CUTOFF_EVENTS,'cutoff_seed':V.CUTOFF_SEED,
     'return_statistics': 'none; financial coverage only, no return evaluation',
+    'identity_manifest_adapter': {'stage':'I','code_version':'identity-links-v1','rule':'r4-links-asof-v1',
+        'outputs':['links.parquet'],'sources':['security_company_links','security_permanent_ids','r4_manifest'],
+        'qualification':'bytes and declared inventory only; source/clock quality uncertified'},
 }
 
 
@@ -94,7 +97,7 @@ def sql(paths):
 
 def code_paths():
     directory=Path(F.__file__).parent
-    paths=[directory/(name+'.py') for name in (*F.MODULES,'fund_validate','fund_asof','fund_batch_release')]
+    paths=[directory/(name+'.py') for name in (*F.MODULES,'fund_validate','fund_asof','fund_batch_release','identity_links')]
     return sorted(set(paths+[directory.parent/'reference_classifications.py',directory.parent/'statement_map_seed.py',contract_path()]))
 
 
@@ -154,7 +157,12 @@ def check_products(root,products):
             if identity(path)!=files[str(path)]:
                 raise ValueError('reader bytes changed: '+str(path))
         if name.endswith('_manifest'):
-            doc=read(selected[0]);members=doc.get('files')
+            doc=read(selected[0])
+            if name=='identity_manifest':
+                check_identity_manifest(selected[0],doc,products)
+                pinned[name]=item
+                continue
+            members=doc.get('files')
             if not isinstance(members,dict) or not members:
                 raise ValueError('empty producer inventory: '+name)
             for relative,pin in members.items():
@@ -162,6 +170,37 @@ def check_products(root,products):
                     raise ValueError('producer member mismatch')
         pinned[name]=item
     return pinned
+
+
+def check_identity_manifest(path,doc,products):
+    """Exact native Stage I contract; never a generic files/outputs fallback."""
+    from . import identity_links as I
+    if any(doc.get(k)!=v for k,v in {'stage':'I','code_version':I.CODE_VERSION,'rule':I.RULE}.items()) or 'files' in doc:
+        raise ValueError('unsupported identity manifest schema')
+    outputs=doc.get('outputs');sources=doc.get('sources')
+    if not isinstance(outputs,dict) or set(outputs)!={'links.parquet'}:
+        raise ValueError('incomplete/extra identity output inventory')
+    expected_sources={'security_company_links':I.LINKS_SRC,'security_permanent_ids':I.PERM_IDS_SRC,'r4_manifest':I.R4_MANIFEST}
+    if not isinstance(sources,dict) or set(sources)!=set(expected_sources):
+        raise ValueError('incomplete/extra identity source inventory')
+    target=_member(Path(path).parent,'links.parquet')
+    pin=outputs['links.parquet']
+    _identity_declared_pin(target,pin)
+    if type(pin.get('rows')) is not int or pin['rows']<0 or pq.ParquetFile(target).metadata.num_rows!=pin['rows']:
+        raise ValueError('identity output row count mismatch')
+    if products['links_prepare']['files']!={str(target):{k:pin[k] for k in ('sha256','bytes')}}:
+        raise ValueError('identity output differs from independently selected preparation reader')
+    # link_table is a different actual reader and remains mandatory in check_products.
+    for name,source in expected_sources.items():_identity_declared_pin(source,sources[name])
+
+
+def _identity_declared_pin(path,pin):
+    if not isinstance(pin,dict) or not {'path','sha256','bytes','mtime_ns'}<=set(pin) or _path(pin['path'])!=_path(path):
+        raise ValueError('identity declared path/pin mismatch')
+    if type(pin['bytes']) is not int or type(pin['mtime_ns']) is not int or pin['mtime_ns']<0:
+        raise ValueError('identity declared pin types invalid')
+    if identity(path)!={k:pin[k] for k in ('sha256','bytes')} or Path(path).stat().st_mtime_ns!=pin['mtime_ns']:
+        raise ValueError('identity declared content mismatch')
 
 
 def _clone(module,overrides):
