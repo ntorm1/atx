@@ -260,8 +260,8 @@ every arm, A included.
     chain.
   - With S4, `build` keeps the receipt entry `validation` (`seal`, `expected`, `got`, `pass`; `:351-354`) and goes on.
     The entry is written to `P_<arm>/identity/manifest.json` (`:347`).
-  - Without S4, arms B2 and B12 stop at Stage I whenever path (b) moves a link visible before 2025-01-01, which is
-    exactly when they would be non-zero; arm A stops whenever r4 does not reproduce (D0).
+  - Without S4, arms B2 and B12 stop at Stage I whenever path (b) changes one of those counts before 2025-01-01, as
+    almost any link it moves does; arm A stops whenever r4 does not reproduce them (D0).
   - S4 is used only in the diff arms of this check-only rebuild.
 - **S4 is the only check relaxed, and only in this check-only rebuild. No input pin or hash guard is relaxed.**
   - New work, out and root directories satisfy the pin guards (`identity_links.py:740-741`, `:1249-1250`).
@@ -313,14 +313,16 @@ every arm, A included.
 - **Provenance.** Our tree cannot tie the published bridge `identity-bridge-v2-pit` to `dec03454` (it holds only the
   bridge's SHA-256 pin and its rule string); please name the atx-db commit that built it.
 - Also print these fields of the published manifests (JSON reads only), each code hash beside the SHA-256 of the same
-  file at `dec03454`. The alpha-panel `code` fields hold `sha256`, `sha256_lf` and `git_head` per module
+  file at `dec03454`. The alpha-panel `code` fields hold `sha256` and `sha256_lf` per module and one `git_head`
   (`alpha_panel/common.py:130-147`).
   - the export `manifest.json` `code` (`identity_table.py:214`);
   - `identity/link_table_manifest.json` `code` (`identity_table.py:165`);
   - `identity/manifest.json` `code_version` and `sources` (`alpha_panel/identity_links.py:326`, `:341`);
   - the r4 `manifest.json` `code_sha256` and `code_files` (`identity_links.py:1177-1178`).
   - `identity/backfill_manifest.json` and `identity/name_manifest.json` record no code identity
-    (`identity_backfill.py:178`, `identity_names.py:158`). For those two stages the named commit is the only tie.
+    (`identity_backfill.py:178`, `identity_names.py:158`), and Stage I records only the label `code_version`
+    (`alpha_panel/identity_links.py:52`) and its input hashes (`:296-301`). For these three stages the named commit is
+    the only tie.
 
 **The diffs.** Each B arm is compared with arm A, and B12 also with B1 (the clean measure of path (b)). In a
 comparison "X vs Y", "A" in the rows below means Y and "B" means X.
@@ -359,7 +361,7 @@ comparison "X vs Y", "A" in the rows below means Y and "B" means X.
 | 8 | pit rows with `start` and `available_at` before 2024-01-01: in A only / in B only | | | | |
 | 9 | pit rows with `start` before 2024-01-01 and `available_at` on or after it: in A only / in B only | | | | |
 | 10 | panel-member line-sessions 2018-2023 whose panel CIK differs, per year (path (b) also moves the strict CIKs in `link_table`) | | | | |
-| 11 | sanity, per B arm: `backfill_rows`; `symbol_snapshot_match` items; `name_tier`; Stage I seal-2025 validation `got` (S4). B1's equals A's (same rehearsal output); B2's and B12's differ from `expected` by construction whenever path (b) moves a link visible before 2025-01-01 | B1 | B2 | B12 | n/a |
+| 11 | sanity, per B arm: `backfill_rows`; `symbol_snapshot_match` items; `name_tier`; Stage I seal-2025 validation `got` (S4). B1's equals A's, and B12's equals B2's (same rehearsal output); B2's differs from A's whenever path (b) changes one of the counts before 2025-01-01. Equal counts do not show that path (b) moved nothing | B1 | B2 | B12 | n/a |
 
 **How to read the result.**
 - **Zero.** Rows 1-4, 7 and 8 are zero for B12 vs A, D0 is clean (arm A's S4 `pass` included), and the sanity checks
