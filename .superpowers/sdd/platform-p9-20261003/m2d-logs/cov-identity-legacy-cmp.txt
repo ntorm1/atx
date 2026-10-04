@@ -1,0 +1,18 @@
+files only in ref: []
+files only in new: []
+EQUAL bias.csv ffa065114d1bf56a ffa065114d1bf56a
+EQUAL bias_summary.json 484aab34d141bca5 484aab34d141bca5
+EQUAL diagnostics.csv ca94f5c9ce4080f7 ca94f5c9ce4080f7
+EQUAL exposures_last.csv ae5d3b418ec27bd3 ae5d3b418ec27bd3
+EQUAL factor_covariance.f64 9d9c62a29e8d5f3c 9d9c62a29e8d5f3c
+EQUAL factor_returns.csv 5dc6f148cb3f822c 5dc6f148cb3f822c
+EQUAL factor_structural.u8 f63df1a49200ff8c f63df1a49200ff8c
+EQUAL industry_slot.u8 9b7cca179d9bb8a9 9b7cca179d9bb8a9
+EQUAL specific_variance.f64 a7792a53ec2c20a1 a7792a53ec2c20a1
+EQUAL style_exposures.f32 8ae6c18599aafc05 8ae6c18599aafc05
+manifest paths only in ref: []
+manifest paths only in new: 0 under top-level keys [] files.* added: []
+manifest paths whose value differs: ['$.producer.engine_git_sha', '$.producer.executable_sha256']
+   $.producer.engine_git_sha "807af678a690272a3964f59534c1f331c7a10c41" -> "4c9dfd9dc660170d5085a3786eea91f4571fda57-dirty"
+   $.producer.executable_sha256 "8967952c5c2054170d02466f121fc66122a2b3daa34d7bb99fe63a94a7eed258" -> "efb21faddb5a9471fb4c63d89c6bdc01de5a69e6e6748a8cbaa4d8152146b602"
+manifest files entries self-consistent: checked 10

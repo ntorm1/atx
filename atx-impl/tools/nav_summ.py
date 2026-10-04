@@ -113,17 +113,29 @@ Era pools (platform v8 H-1; opt-in, without --pool nothing above moves):
   --era-of TRIAL_ID      a one-era history pool (sessions before TRAIN) with --ledger: the trial_id of the TRAIN cell
                          it re-reads, required (review P-1). Its line carries era_of: an era line, adding no trial,
                          never read as a TRAIN cell; refused for a pool of two or more eras or one inside TRAIN.
+
+Engine statistics (platform P9 B2, contract K-P9-5; opt-in, without the flag nothing above moves):
+  --engine-stats [EXE]   every statistic of record (net moments, paired dSR with Memmel SE / CBB / Ledoit-Wolf, the
+                         DSR rows, PSR and MinTRL, ONC effective N, CSCV PBO, the ledger DSR, DSR_tot and DSR_hand) is
+                         computed by the engine verb atx-research-eval (default EXE: build-equity/bin of this checkout)
+                         on the same net series, written as session_ns,net_return CSVs to a private temp dir. The
+                         verb's JSON blocks carry the Python dicts' keys; the printed lines and --json keys are the
+                         same (values agree to 1e-12, the P12 tolerance). --pbo-max-splits is refused (the engine CSCV
+                         is exhaustive). Ledgers are read, never written, by the verb.
 """
 from __future__ import annotations
 
 import argparse
+import atexit
 import csv
 import hashlib
 import json
 import math
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -143,6 +155,119 @@ LEVERAGE_GATE_BASIS = ("all_rows: the R6' mechanics gate (ruled D1/R6') reads me
                        "mean_net_leverage_all_rows; mean_gross_leverage / mean_net_leverage are return-row means "
                        "(previous close), kept for continuity")
 RAMP_ROWS = 63  # v6 prereg C4: the theta-ramp rows dropped from the post-ramp (L calibration) means
+ENGINE_EXE = Path(__file__).resolve().parents[2] / "build-equity" / "bin" / "atx-research-eval.exe"
+
+
+class EngineStats:
+    """--engine-stats (P9 B2, K-P9-5): the statistics of record from the engine verb ``atx-research-eval``.
+
+    Each method returns the dict the Python statistic it stands for returns (the same keys; NaN where the Python holds
+    NaN, the verb's null), read from the verb's JSON document. Nothing here computes a statistic: the series go to the
+    verb as ``session_ns,net_return`` CSVs (Python repr, read back exactly) in a private temp dir removed at exit."""
+
+    PAIRED_EXTRA = ("se", "p_one", "p_two", "reference")      # K-P9-5 mirrors of the lw block
+    PAIRED_NAN = ("sr", "sr_reference", "dsr", "rho", "memmel_se")
+    PBO_EXTRA = ("labels", "common_sessions_ns", "engine")
+
+    def __init__(self, exe: str):
+        self.exe = Path(exe).resolve()
+        if not self.exe.is_file():
+            raise SystemExit(f"nav_summ: --engine-stats: no executable {self.exe} (build atx-research-eval)")
+        self.sha256 = hashlib.sha256(self.exe.read_bytes()).hexdigest()   # ruling B2-R3: the producer of record
+        self.dir = Path(tempfile.mkdtemp(prefix="nav_summ_engine_"))
+        atexit.register(shutil.rmtree, self.dir, True)
+        self._csv: dict[int, tuple[dict, str]] = {}
+
+    def csv(self, nets: dict) -> str:
+        """The CSV of a net series (session_ns -> net, file order), written once per series object."""
+        hit = self._csv.get(id(nets))
+        if hit is not None and hit[0] is nets:
+            return hit[1]
+        path = self.dir / f"s{len(self._csv)}.csv"
+        path.write_text("session_ns,net_return\n" + "".join(f"{int(s)},{float(v)!r}\n" for s, v in nets.items()),
+                        encoding="ascii")
+        self._csv[id(nets)] = (nets, str(path))
+        return str(path)
+
+    def run(self, cells: list[dict], *extra) -> dict:
+        """The verb's document for these cells (labels c0, c1, ... in order) and options."""
+        argv = [str(self.exe)]
+        for k, nets in enumerate(cells):
+            argv += ["--daily", f"c{k}={self.csv(nets)}"]
+        argv += [str(a) for a in extra] + ["--json"]
+        done = subprocess.run(argv, capture_output=True, text=True, check=False)
+        if done.returncode != 0:
+            raise SystemExit(f"nav_summ: --engine-stats: {done.stderr.strip() or f'exit {done.returncode}'}")
+        return json.loads(done.stdout)
+
+    def moments_of(self, nets: dict) -> dict:
+        return self.run([nets])["cells"][0]["net_moments"]
+
+    def paired_of(self, nets: dict, ref_nets: dict, args, one_sided: bool = False) -> dict | None:
+        """nav_summ's paired block of a cell against its reference (None below 3 common sessions); ``args`` carries
+        draws, block and seed."""
+        doc = self.run([nets], "--paired", self.csv(ref_nets), "--draws", args.draws, "--block", args.block,
+                       "--seed", args.seed, *(["--one-sided"] if one_sided else []))
+        p = doc["cells"][0]["paired"]
+        if p is None:
+            return None
+        for key in self.PAIRED_EXTRA:
+            p.pop(key, None)
+        omr = p.pop("one_minus_rho", None)
+        # ruling B2-R1 (c): a degenerate pair (1 - rho < 1e-6) keeps its refused SE / t / p as null (printed "na")
+        # and says so with its 1 - rho; any other pair carries the Python's keys only
+        degenerate = bool(p.pop("degenerate", False))
+        nan = float("nan")
+        for key in self.PAIRED_NAN:
+            if not (degenerate and key == "memmel_se"):
+                p[key] = nan if p[key] is None else p[key]
+        p["cbb_ci95"] = [nan if v is None else v for v in p["cbb_ci95"]]
+        for key in ("dsr_population", "se"):
+            if not (degenerate and key == "se"):
+                p["lw"][key] = nan if p["lw"][key] is None else p["lw"][key]
+        if degenerate:
+            p.update(degenerate=True, one_minus_rho=omr)
+        return p
+
+    def deflated_rows(self, cells: list[dict], n: int) -> list[dict]:
+        return [c["dsr"]["cross"] for c in self.run(cells, "--dsr-n", n)["cells"]]
+
+    def psr_of(self, nets: dict, benchmarks: list[float], alpha: float) -> dict:
+        doc = self.run([nets], "--psr-benchmarks", ",".join(repr(float(b)) for b in benchmarks),
+                       "--psr-alpha", repr(float(alpha)))
+        return doc["cells"][0]["psr"]
+
+    def effective(self, cells: list[dict], names: list, series: list[dict], args) -> tuple[dict, list[dict]]:
+        """(effective_trials of the series with their names, per cell (effective-N DSR row, Lo null row))."""
+        extra = ["--onc", "--onc-init", args.onc_init, "--onc-seed", args.onc_seed, "--dsr-n", args.dsr_n]
+        for k, nets in enumerate(series):
+            extra += ["--onc-series", f"s{k}={self.csv(nets)}"]
+        doc = self.run(cells, *extra)
+        eff = doc["onc"]
+        eff["clusters"] = [[names[int(label[1:])] for label in cl] for cl in eff["clusters"]]
+        return eff, [(c["dsr"]["onc"], c["dsr"]["lo"]) for c in doc["cells"]]
+
+    def cscv(self, series: list[dict], blocks: int) -> tuple[dict, list[int]]:
+        """(the CSCV PBO block as cscv_pbo returns it, the first and last common session)."""
+        extra = ["--pbo", "--pbo-blocks", blocks]
+        for k, nets in enumerate(series):
+            extra += ["--pbo-series", f"s{k}={self.csv(nets)}"]
+        res = self.run(series[:1], *extra)["pbo"]
+        common = [int(s) for s in res["common_sessions_ns"]]
+        for key in self.PBO_EXTRA:
+            res.pop(key, None)
+        res["logits"] = np.array(res["logits"], dtype=np.float64)
+        return res, common
+
+    def ledger_rows_of(self, cells: list[dict], ledger: str, window: str, trial_ids: list[str],
+                       history: list[bool], missing: str = "empty", hands: list[tuple[str, dict]] = ()) -> dict:
+        """The verb's document with the ledger blocks (house_v1, tot per cell; the hand rows)."""
+        extra = ["--ledger", ledger, "--ledger-missing", missing, "--window-id", window]
+        for k, (tid, hist) in enumerate(zip(trial_ids, history)):
+            extra += ["--trial", f"c{k}={tid}"] + (["--history", f"c{k}"] if hist else [])
+        for tid, nets in hands:
+            extra += ["--hand", f"{tid}={self.csv(nets)}"]
+        return self.run(cells, *extra)
 
 
 def fmt(v, spec: str) -> str:
@@ -560,10 +685,16 @@ def git_head(where: Path) -> str | None:
     return head if done.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", head) else None
 
 
-def run_provenance(argv: list[str], warnings: list[str]) -> dict:
+def run_provenance(argv: list[str], warnings: list[str], engine: "EngineStats | None" = None) -> dict:
+    """nav_summ_run. With an engine (P9 ruling B2-R3) also the verb that computed the statistics: engine_exe (its
+    path) and engine_exe_sha256 (the bytes it ran, hashed when the verb was opened)."""
     script = Path(__file__).resolve()
-    return {"argv": list(argv), "script": str(script), "script_sha256": hashlib.sha256(script.read_bytes()).hexdigest(),
-            "git_head": git_head(script.parent), "warnings": list(warnings)}
+    out = {"argv": list(argv), "script": str(script),
+           "script_sha256": hashlib.sha256(script.read_bytes()).hexdigest(), "git_head": git_head(script.parent),
+           "warnings": list(warnings)}
+    if engine is not None:
+        out.update(engine_exe=str(engine.exe), engine_exe_sha256=engine.sha256)
+    return out
 
 
 # ------------------------------------------------------------------ validation kit (platform v8 V-1)
@@ -643,8 +774,14 @@ def bundle(base: Path, final: Path, args) -> dict:
         scen = scenario_of(load_summary(d), args.scenario)["scenario"]
         daily = load_daily(d, scen)
         nets[tag], tables[tag], scenarios[tag] = net_series(daily), year_table(daily), scen
-    a, b = align(nets["final"], nets["base"])
-    paired = paired_stats(a, b, args.draws, args.block, args.seed, one_sided=True)
+    engine = getattr(args, "engine", None)
+    if engine:
+        paired = engine.paired_of(nets["final"], nets["base"], args, one_sided=True)
+        if paired is None:
+            raise SystemExit("nav_summ: --bundle: need >= 3 sessions common to BASE and FINAL")
+    else:
+        a, b = align(nets["final"], nets["base"])
+        paired = paired_stats(a, b, args.draws, args.block, args.seed, one_sided=True)
     common = sorted(set(nets["final"]) & set(nets["base"]))
     years = []
     for y in sorted({BI.session_date(s).year for s in common}):
@@ -663,13 +800,21 @@ def bundle(base: Path, final: Path, args) -> dict:
             "year_table": tables, "verdict": verdict}
 
 
+def print_degenerate(p: dict) -> None:
+    """The engine's degenerate-pair line (ruling B2-R1 (c): 1 - rho < 1e-6, SE / t / p refused); nothing otherwise."""
+    if p.get("degenerate"):
+        print(f"   paired: degenerate pair (1 - rho {fmt(p.get('one_minus_rho'), '.1e')} < 1e-06): Memmel SE, t and the "
+              "LW CI and p are refused (ruling B2-R1)")
+
+
 def print_bundle(res: dict) -> None:
     p, lw, v = res["paired"], res["paired"]["lw"], res["verdict"]
     print(f"== bundle {res['final']} vs {res['base']} [{res['scenarios']['final']}]: dSR(net) {p['dsr']:+.3f} = SR "
           f"{p['sr']:+.3f} - SR {p['sr_reference']:+.3f} | rho {fmt(p['rho'], '.3f')} | T {p['sessions']} | Memmel SE "
-          f"{p['memmel_se']:.3f} | CBB 95% [{p['cbb_ci95'][0]:+.3f}, {p['cbb_ci95'][1]:+.3f}] | LW studentized 95% "
-          f"[{fmt(lw['ci95'][0], '+.3f')}, {fmt(lw['ci95'][1], '+.3f')}] p two-sided {fmt(lw['p_value'], '.4f')} "
+          f"{fmt(p['memmel_se'], '.3f')} | CBB 95% [{p['cbb_ci95'][0]:+.3f}, {p['cbb_ci95'][1]:+.3f}] | LW studentized "
+          f"95% [{fmt(lw['ci95'][0], '+.3f')}, {fmt(lw['ci95'][1], '+.3f')}] p two-sided {fmt(lw['p_value'], '.4f')} "
           f"one-sided {fmt(lw['p_one_sided'], '.4f')} ({p['draws']} draws, block {p['block']}, seed {p['seed']})")
+    print_degenerate(p)
     print(f"   verdict {'PASS' if v['pass'] else 'FAIL'}: dSR > 0 {v['dsr_positive']}; one-sided p "
           f"{fmt(v['p_one_sided'], '.4f')} < {v['alpha']}")
     for y in res["years"]:
@@ -699,10 +844,17 @@ def analyse(d: Path, args, weights: list[dict], ref_nets: dict | None) -> tuple[
                        weighted_standalone_turnover=w["weighted_standalone_turnover"], tau_book=tau_book,
                        weights_sha256=w["sha256"])
     nets = net_series(daily)
-    out["net_moments"] = net_moments(np.array(list(nets.values()), dtype=np.float64))
+    engine = getattr(args, "engine", None)
+    out["net_moments"] = (engine.moments_of(nets) if engine else
+                          net_moments(np.array(list(nets.values()), dtype=np.float64)))
     if ref_nets is not None:
-        a, b = align(nets, ref_nets)
-        out["paired"] = paired_stats(a, b, args.draws, args.block, args.seed)
+        if engine:
+            out["paired"] = engine.paired_of(nets, ref_nets, args)
+            if out["paired"] is None:
+                raise SystemExit(f"nav_summ: {d}: need >= 3 sessions in common with the reference (paired dSR)")
+        else:
+            a, b = align(nets, ref_nets)
+            out["paired"] = paired_stats(a, b, args.draws, args.block, args.seed)
     if getattr(args, "year_table", False):
         out["year_table"] = year_table(daily)
     return out, nets
@@ -747,6 +899,9 @@ def paired_or_note(nets: dict, ref_nets: dict, args) -> dict:
     a, b = align(nets, ref_nets)
     if a.size < 3:
         return {"paired_note": f"paired skipped: {a.size} session(s) in common with the reference (3 needed)"}
+    engine = getattr(args, "engine", None)
+    if engine:
+        return {"paired": engine.paired_of(nets, ref_nets, args)}
     return {"paired": paired_stats(a, b, args.draws, args.block, args.seed)}
 
 
@@ -777,7 +932,9 @@ def analyse_pool(dirs: list[str], ids: list[str], args, weights: list[dict], ref
                            weighted_standalone_turnover=w["weighted_standalone_turnover"],
                            tau_book=row["tau_gmv_mean"], weights_sha256=w["sha256"])
         nets = net_series(daily)
-        row["net_moments"] = net_moments(np.array(list(nets.values()), dtype=np.float64))
+        engine = getattr(args, "engine", None)
+        row["net_moments"] = (engine.moments_of(nets) if engine else
+                              net_moments(np.array(list(nets.values()), dtype=np.float64)))
         if getattr(args, "year_table", False):
             row["year_table"] = year_table(daily)
     if ref_nets is not None:
@@ -841,10 +998,11 @@ def print_analysis(r: dict, reference: str | None) -> None:
     if p:
         lw = p["lw"]
         print(f"   paired vs {reference}: dSR(net) {p['dsr']:+.3f} = SR {p['sr']:+.3f} - SR {p['sr_reference']:+.3f} | "
-              f"rho {fmt(p['rho'], '.3f')} | T {p['sessions']} | Memmel SE {p['memmel_se']:.3f} t {fmt(p['t'], '+.2f')} | "
-              f"CBB 95% [{p['cbb_ci95'][0]:+.3f}, {p['cbb_ci95'][1]:+.3f}] | LW studentized 95% "
+              f"rho {fmt(p['rho'], '.3f')} | T {p['sessions']} | Memmel SE {fmt(p['memmel_se'], '.3f')} t "
+              f"{fmt(p['t'], '+.2f')} | CBB 95% [{p['cbb_ci95'][0]:+.3f}, {p['cbb_ci95'][1]:+.3f}] | LW studentized 95% "
               f"[{fmt(lw['ci95'][0], '+.3f')}, {fmt(lw['ci95'][1], '+.3f')}] p {fmt(lw['p_value'], '.3f')} "
               f"(dSR_pop {lw['dsr_population']:+.3f}; {p['draws']} draws, block {p['block']}, seed {p['seed']})")
+        print_degenerate(p)
     q = r.get("deflated")
     if q:
         print(f"   deflated SR (N={q['n']}): DSR {fmt(q['dsr'], '.4f')} | SR {fmt(q['sr_daily'], '+.5f')}/session "
@@ -958,10 +1116,12 @@ def integrity(args, argv, results, analysed) -> None:
                            "appended": rec["trial_id"] in added_ids}
         print(f"== ledger {args.ledger}: appended {len(added)}, skipped {len(skipped)} already ledgered "
               f"(kind {args.ledger_kind})")
+    engine = getattr(args, "engine", None)
     if args.psr:
         for d, r in zip(labels, results):
-            r["psr"] = BI.psr_report(np.array(list(nets_by[d].values()), dtype=np.float64), args.psr_benchmarks,
-                                     args.psr_alpha)
+            r["psr"] = (engine.psr_of(nets_by[d], args.psr_benchmarks, args.psr_alpha) if engine else
+                        BI.psr_report(np.array(list(nets_by[d].values()), dtype=np.float64), args.psr_benchmarks,
+                                      args.psr_alpha))
     eff = None
     if args.effective_n:
         if args.effective_n == "dirs":
@@ -970,12 +1130,18 @@ def integrity(args, argv, results, analysed) -> None:
             records = BI.ledger_read(Path(args.effective_n))
             names, series = BI.ledger_net_series(
                 records, lambda rec: net_series(load_daily_csv(Path(rec["series"]["path"]))))
-        _, mat = BI.align_many(series)
-        eff = BI.effective_trials(mat, names, n_init=args.onc_init, seed=args.onc_seed)
-        for r in results:
-            r["deflated_effective_n"] = dict(BI.effective_n_dsr(r["net_moments"], eff), clusters=eff["clusters"],
-                                             source=args.effective_n)
-            r["deflated_lo_null"] = BI.lo_null_dsr(r["net_moments"], args.dsr_n)
+        if engine:
+            eff, rows = engine.effective([nets_by[d] for d in labels], names, series, args)
+            for r, (e, lo) in zip(results, rows):
+                r["deflated_effective_n"] = dict(e, clusters=eff["clusters"], source=args.effective_n)
+                r["deflated_lo_null"] = lo
+        else:
+            _, mat = BI.align_many(series)
+            eff = BI.effective_trials(mat, names, n_init=args.onc_init, seed=args.onc_seed)
+            for r in results:
+                r["deflated_effective_n"] = dict(BI.effective_n_dsr(r["net_moments"], eff),
+                                                 clusters=eff["clusters"], source=args.effective_n)
+                r["deflated_lo_null"] = BI.lo_null_dsr(r["net_moments"], args.dsr_n)
     for d, r in zip(labels, results):
         if "deflated_effective_n" in r or "psr" in r:
             print(f"== integrity {d}")
@@ -989,18 +1155,20 @@ def integrity(args, argv, results, analysed) -> None:
         series = [nets_by[c] if c in nets_by else
                   net_series(load_daily(Path(c), scenario_of(load_summary(Path(c)), args.scenario)["scenario"]))
                   for c in cells]
-        common, mat = BI.align_many(series)
-        res = BI.cscv_pbo(mat, blocks=args.pbo_blocks, max_splits=args.pbo_max_splits or None, seed=args.seed)
+        if engine:
+            res, common = engine.cscv(series, args.pbo_blocks)
+        else:
+            common, mat = BI.align_many(series)
+            res = BI.cscv_pbo(mat, blocks=args.pbo_blocks, max_splits=args.pbo_max_splits or None, seed=args.seed)
         print_pbo(res, cells, common)
         if args.pbo_json:
             doc = dict(res, logits=res["logits"].tolist(), cells=cells,
                        common_sessions=[BI.session_date(common[0]).isoformat(), BI.session_date(common[-1]).isoformat()],
-                       nav_summ_run=run_provenance(argv, []))
+                       nav_summ_run=run_provenance(argv, [], getattr(args, "engine", None)))
             Path(args.pbo_json).write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if getattr(args, "dsr_ledger", None):
-        records = BI.ledger_read(Path(args.dsr_ledger))
-        present = {r.get("trial_id") for r in records if r.get("kind") == "construction"}
         wid = BI.window_id()
+        tids, histories = [], []
         for d, r in zip(labels, results):
             history = False
             if "pool" in r and d not in args.dirs:   # the pooled row: its pooled trial_id (task H-1)
@@ -1009,11 +1177,22 @@ def integrity(args, argv, results, analysed) -> None:
                 history = min(nets_by[d]) < BI.research_window().TRAIN_BEGIN_NS   # a history read (Ruling E-41)
             else:
                 tid = BI.trial_id("construction", BI.sha256_file(Path(d) / f"daily_{r['scenario']}.csv"))
-            r["deflated_ledger"] = ledger_dsr(r["net_moments"], records, tid in present, wid, history)
+            tids.append(tid)
+            histories.append(history)
+        if engine:
+            doc = engine.ledger_rows_of([nets_by[d] for d in labels], args.dsr_ledger, wid, tids, histories)
+            rows = [c["dsr"]["house_v1"] for c in doc["cells"]]
+        else:
+            records = BI.ledger_read(Path(args.dsr_ledger))
+            present = {r.get("trial_id") for r in records if r.get("kind") == "construction"}
+            rows = [ledger_dsr(r["net_moments"], records, tid in present, wid, history)
+                    for r, tid, history in zip(results, tids, histories)]
+        for d, r, row in zip(labels, results, rows):
+            r["deflated_ledger"] = row
             print(f"== ledger DSR {d}")
             print_ledger_dsr(r["deflated_ledger"])
     if getattr(args, "dsr_total", None):
-        dsr_total_block(args, results)
+        dsr_total_block(args, results, nets_by)
     if args.ledger_n:
         records = BI.ledger_read(Path(args.ledger_n))
         for line in BI.appendix_a(records, args.ledger_n):
@@ -1022,8 +1201,8 @@ def integrity(args, argv, results, analysed) -> None:
             print(BI.appendix_a_v8(records))
 
 
-def ledgered_book(d: Path, scenario: str | None) -> tuple[str, dict]:
-    """(construction trial_id, net moments) of a --dsr-hand NAV dir. A dir without summary.json or the scenario's
+def ledgered_book_series(d: Path, scenario: str | None) -> tuple[str, dict]:
+    """(construction trial_id, net series) of a --dsr-hand NAV dir. A dir without summary.json or the scenario's
     daily CSV is refused before anything is computed."""
     if not (d / "summary.json").is_file():
         raise SystemExit(f"nav_summ: --dsr-hand {d}: no summary.json")
@@ -1031,14 +1210,49 @@ def ledgered_book(d: Path, scenario: str | None) -> tuple[str, dict]:
     daily = d / f"daily_{scen}.csv"
     if not daily.is_file():
         raise SystemExit(f"nav_summ: --dsr-hand {d}: no {daily.name}")
-    nets = np.array(list(net_series(load_daily(d, scen)).values()), dtype=np.float64)
-    return BI.trial_id("construction", BI.sha256_file(daily)), net_moments(nets)
+    return BI.trial_id("construction", BI.sha256_file(daily)), net_series(load_daily(d, scen))
 
 
-def dsr_total_block(args, results: list[dict]) -> None:
+def ledgered_book(d: Path, scenario: str | None) -> tuple[str, dict]:
+    """(construction trial_id, net moments) of a --dsr-hand NAV dir (``ledgered_book_series``)."""
+    tid, nets = ledgered_book_series(d, scenario)
+    return tid, net_moments(np.array(list(nets.values()), dtype=np.float64))
+
+
+def dsr_total_engine(args, results: list[dict], nets_by: dict) -> None:
+    """dsr_total_block's lines and rows from the engine verb (--engine-stats): one call for the listed dirs, then
+    one per --dsr-hand book, so the order of the printed lines and refusals is the Python's."""
+    engine, wid, path = args.engine, BI.window_id(), str(Path(args.dsr_total))
+    tids = [BI.trial_id("construction", BI.sha256_file(Path(d) / f"daily_{r['scenario']}.csv"))
+            for d, r in zip(args.dirs, results)]
+    doc = engine.ledger_rows_of([nets_by[d] for d in args.dirs], path, wid, tids, [False] * len(tids), "refuse")
+    led = doc["ledger"]
+    ledger = {"path": led["path"], "records": range(led["lines"]), "chain_head": led["chain_head"]}
+    head = {"ledger": led["path"], "lines": led["lines"], "chain_head": led["chain_head"]}
+    for d, r, tid, cell in zip(args.dirs, results, tids, doc["cells"]):
+        r["deflated_total"] = dict(head, trial_id=tid, **cell["dsr"]["tot"])
+        for line in DT.format_book(d, r["net_moments"], ledger, r["deflated_total"]):
+            print(line)
+    hands = []
+    for h in args.dsr_hand:
+        tid, nets = ledgered_book_series(Path(h), args.scenario)
+        row = engine.ledger_rows_of([nets], path, wid, [tid], [False], "refuse", [(tid, nets)])["hand"][0]
+        row.pop("path", None)
+        moments = row.pop("net_moments")
+        hands.append(dict(row, dir=h, net_moments=moments))
+        for line in DT.format_hand(h, moments, row):
+            print(line)
+    for r in results[:len(args.dirs)]:
+        r["deflated_total"]["hand"] = hands
+
+
+def dsr_total_block(args, results: list[dict], nets_by: dict | None = None) -> None:
     """--dsr-total / --dsr-hand (v8x-prereg.md section 4). Prints the total-count DSR and the v8-count value of every
     listed dir, then DSR_hand of each --dsr-hand book; adds r["deflated_total"] to every listed row (the --dsr-hand
     rows under "hand")."""
+    if getattr(args, "engine", None) and nets_by is not None:
+        dsr_total_engine(args, results, nets_by)
+        return
     try:
         ledger = DT.read_ledger(Path(args.dsr_total))
     except ValueError as exc:
@@ -1121,6 +1335,9 @@ def main(argv=None) -> int:
                     help="the reference's era NAV dirs, pooled, for the pooled row's paired dSR (default --reference)")
     ap.add_argument("--era-of", default=None, metavar="TRIAL_ID",
                     help="a one-era history --pool with --ledger: the trial_id of the TRAIN cell it re-reads (P-1)")
+    ap.add_argument("--engine-stats", nargs="?", const=str(ENGINE_EXE), default=None, metavar="EXE",
+                    help="statistics of record from the engine verb atx-research-eval (K-P9-5; default EXE "
+                         "build-equity/bin/atx-research-eval.exe of this checkout)")
     argv = list(sys.argv[1:] if argv is None else argv)
     args = ap.parse_args(argv)
     v8 = args.protocol == "v8"
@@ -1155,6 +1372,9 @@ def main(argv=None) -> int:
         ap.error("--bundle-json needs --bundle BASE FINAL")
     if not 0 < args.bundle_alpha < 0.5:
         ap.error("--bundle-alpha in (0, 0.5)")
+    if args.engine_stats and args.pbo_max_splits:
+        ap.error("--engine-stats: the engine CSCV is exhaustive; --pbo-max-splits has no engine twin")
+    args.engine = EngineStats(args.engine_stats) if args.engine_stats else None
     weights = load_weights(args.weights)
     ref_nets = None
     if args.reference:
@@ -1172,7 +1392,9 @@ def main(argv=None) -> int:
     names = list(args.dirs) + ([results[-1]["dir"]] if args.pool else [])
     warnings = []
     if results:
-        for r, q in zip(results, dsr_rows([r["net_moments"] for r in results], args.dsr_n)):
+        rows = (args.engine.deflated_rows([nets for _, nets in analysed], args.dsr_n) if args.engine else
+                dsr_rows([r["net_moments"] for r in results], args.dsr_n))
+        for r, q in zip(results, rows):
             r["deflated"] = q
         warnings = listing_warnings(names, results, [nets for _, nets in analysed], args.dsr_n)
     for w in warnings:
@@ -1187,7 +1409,7 @@ def main(argv=None) -> int:
             print_year_table(r["year_table"])
     integrity(args, argv, results, analysed)
     if args.json:
-        run = run_provenance(argv, warnings)
+        run = run_provenance(argv, warnings, args.engine)
         for r in results:
             r["nav_summ_run"] = run
         Path(args.json).write_text(json.dumps(results, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1195,7 +1417,7 @@ def main(argv=None) -> int:
         res = bundle(Path(args.bundle[0]), Path(args.bundle[1]), args)
         print_bundle(res)
         if args.bundle_json:
-            doc = dict(res, protocol=args.protocol, nav_summ_run=run_provenance(argv, []))
+            doc = dict(res, protocol=args.protocol, nav_summ_run=run_provenance(argv, [], args.engine))
             Path(args.bundle_json).write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0
 

@@ -357,14 +357,15 @@ Json rule_row(const char* id, const char* flag, Json properties, Json required,
 }
 } // namespace
 
+// P9 C2 (carried C1 minor): aim_leverage carries its default (1, --aim-leverage's), so no rule
+// lists it as required; a manifest that omits it gets the default, as the command line does.
 Json leverage_rules_json() {
   Json rows = Json::array();
   rows.push_back(rule_row("fixed-v1", "--aim-leverage", Json{{"aim_leverage", leverage_cap()}},
-                          Json::array({"aim_leverage"}),
-                          Json::array({"vol-target-v1", "risk-target-v1"})));
+                          Json::array(), Json::array({"vol-target-v1", "risk-target-v1"})));
   rows.push_back(rule_row("vol-target-v1", "--vol-target vol-target-v1",
                           store_properties(Json{{"aim_leverage", leverage_cap()}}),
-                          Json::array({"aim_leverage", "risk_model", "risk_model_sha256"}),
+                          Json::array({"risk_model", "risk_model_sha256"}),
                           Json::array({"risk-target-v1", "aim-partial-v6", "spo-v1", "spo-v2",
                                        "spo-v3"})));
   Json risk = store_properties(Json{{"aim_leverage", leverage_cap()}});
@@ -377,8 +378,7 @@ Json leverage_rules_json() {
                              Json{{"minimum", 1}, {"maximum", 10000},
                                   {"default", eb::risk_target_default_cadence}});
   rows.push_back(rule_row("risk-target-v1", "--risk-target S", std::move(risk),
-                          Json::array({"aim_leverage", "sigma_star", "risk_model",
-                                       "risk_model_sha256"}),
+                          Json::array({"sigma_star", "risk_model", "risk_model_sha256"}),
                           Json::array({"vol-target-v1", "aim-partial-v6", "spo-v1", "spo-v2"})));
   return rows;
 }

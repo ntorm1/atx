@@ -327,7 +327,9 @@ struct OpSig {
   atx::u8 max_arity{};          // max operand count; == min_arity for fixed-arity
   OpCode opcode{OpCode::Const}; // the VM instruction this op compiles to
   DType out_dtype{DType::F64};  // result element type
-  bool lookahead_safe{true};    // causal rail; all built-ins are true
+  // Causal rail. P9 S2: a Library row's value is DERIVED from its opcode's family
+  // (op_traits.hpp op_lookahead_safe); a register_op row keeps false if it declared it.
+  bool lookahead_safe{true};
   // Trailing defaults for optional args: defaults[k] is the literal value
   // supplied for argument (min_arity + k) when the call omits it. Only the
   // first (max_arity - min_arity) entries are meaningful. A NaN sentinel means

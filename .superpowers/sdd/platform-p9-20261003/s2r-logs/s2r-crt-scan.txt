@@ -1,0 +1,35 @@
+--- FMA3 enable = 1 (both DLLs); N = 200000 per function
+    exp                    differing 0
+    log                    differing 0
+    tanh                   differing 571
+    sqrt                   differing 0
+    log1p                  differing 0
+    expm1                  differing 0
+    log2                   differing 0
+    cbrt                   differing 0
+    pow(x, 0.5)            differing 401
+    pow(x, 2)              differing 366
+    pow(x, 3)              differing 385
+    pow(x, 0.3)            differing 366
+    pow(x, 1.5)            differing 387
+    pow(x, y) y~U(-3,3)    differing 371
+--- FMA3 enable = 0 (both DLLs); N = 200000 per function
+    exp                    differing 0
+    log                    differing 0
+    tanh                   differing 0
+    sqrt                   differing 0
+    log1p                  differing 0
+    expm1                  differing 0
+    log2                   differing 0
+    cbrt                   differing 0
+    pow(x, 0.5)            differing 389
+    pow(x, 2)              differing 393
+    pow(x, 3)              differing 404
+    pow(x, 0.3)            differing 316
+    pow(x, 1.5)            differing 366
+    pow(x, y) y~U(-3,3)    differing 396
+tanh (FMA3 default): 599 differing of 200000 on U(-5,5); |x| range of differing inputs: [0.2501, 2.0329]
+tanh on U(-0.5,0.5): 211 differing of 200000
+pow(x, 1.0) exact (== x) in both DLLs: 200000 / 200000
+pow(x, 0.0) exact (== 1) in both DLLs: 200000 / 200000
+pow(NaN, 0): 1.0 1.0  pow(NaN, 1) is NaN: True True

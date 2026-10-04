@@ -1,0 +1,87 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "789d7e91334141165784a6f6fe0dbc12f07ef079",
+  "started_utc": "2026-10-04T17:15:11.766606+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+    "--library",
+    "atx-impl/strategies/fund_industry_ic_v8x3b.json",
+    "--library-sha256",
+    "32f8d69f669fccfca8c150df11ee9615a6f2d6ef59537c87e3de2a24cdd04a54",
+    "--train",
+    "build-equity/train-2020-2023-lo3/manifest.json",
+    "--train-sha256",
+    "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+    "--train-fields",
+    "build-equity/train-2020-2023-lo3-fields-v13",
+    "--train-fields-sha256",
+    "e5f7f28c465a92885d55d55a439eb2f217b9f5f15d51017b4293ebc55935e9b2",
+    "--output",
+    "build-equity/p9-m2e-alcomb-x5-w-pre",
+    "--max-memory-mib",
+    "3072",
+    "--min-names",
+    "1000",
+    "--workers",
+    "4",
+    "--save-combined",
+    "--candidate-cache",
+    "build-equity/mega-candidate-cache-v8-lo3",
+    "--composition-weights",
+    "build-equity/mega-weights-v8x-theme-erc/composition_weights.json",
+    "--composition-weights-sha256",
+    "8310da2c05aa8e46573aaa2f7660a8a635b5f6c44c6f758c495c3d719710d699"
+  ],
+  "executable_sha256": "ba1232edf47bc060fab18f0d54bd9315666b917de6b2c79e7715fcd0e9485814",
+  "argv_sha256": "af9d11f2640f0e4ee7a362a84f376eebf58c41a53a4cd5aebb4b9f3078ef4170",
+  "attempt": 1,
+  "build_type": "Debug",
+  "bindings": [],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 2048,
+    "min_free_mib": 512,
+    "admission_wait_seconds": 3600.0
+  },
+  "sampled_peak_tree_rss_bytes": 1438093312,
+  "minimum_system_free_bytes": 2806562816,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    ".superpowers/sdd/platform-p9-20261003/al-data/atx-db-request.md",
+    ".superpowers/sdd/platform-p9-20261003/al-data/builder-designs.md",
+    ".superpowers/sdd/platform-p9-20261003/al-data/task-AL-DATA-report.md",
+    ".superpowers/sdd/platform-p9-20261003/progress.md",
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png"
+  ],
+  "admission": {
+    "wait_seconds": 3600.0,
+    "need_free_mib": 2560,
+    "host_budget_mib": null,
+    "claims_dir": null,
+    "waited_seconds": 0.016,
+    "checks": 1,
+    "free_mib": 4179,
+    "claimed_by_others_mib": null
+  },
+  "wall_seconds": 51.921999999991385,
+  "owned_processes": [
+    {
+      "pid": 3888,
+      "create_time": 1791134111.7918766
+    },
+    {
+      "pid": 11068,
+      "create_time": 1791134111.807052
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "f7699296c3e68b2d3533962a0ba6e8bc2c50d992579c7156b425d8a7c0b5ee7a",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

@@ -1,0 +1,338 @@
+{
+ "cases": {
+  "ew-theme": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.inputs.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.inputs.script_sha256"
+     ],
+     "paths_value_differs": []
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.provenance.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.provenance.script_sha256"
+     ],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "shrink": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.inputs.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.inputs.script_sha256"
+     ],
+     "paths_value_differs": []
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.provenance.ic_shrink.producer_fingerprint",
+      "$.provenance.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.provenance.ic_shrink.module_sha256",
+      "$.provenance.script_sha256"
+     ],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "shrink-erc": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.inputs.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.inputs.script_sha256"
+     ],
+     "paths_value_differs": []
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.provenance.ic_shrink.producer_fingerprint",
+      "$.provenance.producer_fingerprint",
+      "$.provenance.theme_erc.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.provenance.ic_shrink.module_sha256",
+      "$.provenance.script_sha256",
+      "$.provenance.theme_erc.module_sha256"
+     ],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "shrink-tsmom": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.inputs.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.inputs.script_sha256"
+     ],
+     "paths_value_differs": []
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.provenance.ic_shrink.producer_fingerprint",
+      "$.provenance.producer_fingerprint",
+      "$.provenance.theme_tsmom.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.provenance.ic_shrink.module_sha256",
+      "$.provenance.script_sha256",
+      "$.provenance.theme_tsmom.module_sha256"
+     ],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "std": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.inputs.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.inputs.script_sha256"
+     ],
+     "paths_value_differs": []
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.provenance.producer_fingerprint",
+      "$.provenance.std.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.provenance.script_sha256",
+      "$.provenance.std.module_sha256"
+     ],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "std-aim-resid": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.inputs.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.inputs.script_sha256"
+     ],
+     "paths_value_differs": []
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.provenance.producer_fingerprint",
+      "$.provenance.resid.producer_fingerprint",
+      "$.provenance.std.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.provenance.resid.module_sha256",
+      "$.provenance.script_sha256",
+      "$.provenance.std.module_sha256"
+     ],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "std-erc": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.inputs.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.inputs.script_sha256"
+     ],
+     "paths_value_differs": []
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.provenance.producer_fingerprint",
+      "$.provenance.std.producer_fingerprint",
+      "$.provenance.theme_erc.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.provenance.script_sha256",
+      "$.provenance.std.module_sha256",
+      "$.provenance.theme_erc.module_sha256"
+     ],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "std-erc-tsmom": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.inputs.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.inputs.script_sha256"
+     ],
+     "paths_value_differs": []
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.provenance.producer_fingerprint",
+      "$.provenance.std.producer_fingerprint",
+      "$.provenance.theme_erc.producer_fingerprint",
+      "$.provenance.theme_tsmom.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.provenance.script_sha256",
+      "$.provenance.std.module_sha256",
+      "$.provenance.theme_erc.module_sha256",
+      "$.provenance.theme_tsmom.module_sha256"
+     ],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "std-resid-child": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.inputs.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.inputs.script_sha256"
+     ],
+     "paths_value_differs": []
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [
+      "$.provenance.producer_fingerprint",
+      "$.provenance.resid.producer_fingerprint",
+      "$.provenance.std.producer_fingerprint"
+     ],
+     "paths_only_old": [
+      "$.provenance.resid.module_sha256",
+      "$.provenance.script_sha256",
+      "$.provenance.std.module_sha256"
+     ],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256",
+      "$.provenance.resid.parent_weights_sha256"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  }
+ },
+ "codes": {
+  "new": {
+   "ew-theme": 0,
+   "shrink": 0,
+   "shrink-erc": 0,
+   "shrink-tsmom": 0,
+   "std": 0,
+   "std-aim-resid": 0,
+   "std-erc": 0,
+   "std-erc-tsmom": 0,
+   "std-resid-child": 0
+  },
+  "old": {
+   "ew-theme": 0,
+   "shrink": 0,
+   "shrink-erc": 0,
+   "shrink-tsmom": 0,
+   "std": 0,
+   "std-aim-resid": 0,
+   "std-erc": 0,
+   "std-erc-tsmom": 0,
+   "std-resid-child": 0
+  }
+ }
+}

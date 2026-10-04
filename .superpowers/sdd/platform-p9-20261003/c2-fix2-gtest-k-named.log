@@ -1,0 +1,54 @@
+﻿Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = CalibrateGross.*:NavBookRule.*:BookNormalScore.*
+[==========] Running 19 tests from 3 test suites.
+[----------] Global test environment set-up.
+[----------] 7 tests from CalibrateGross
+[ RUN      ] CalibrateGross.NumpyMeanIsNumpysMeanAtEverySize
+[       OK ] CalibrateGross.NumpyMeanIsNumpysMeanAtEverySize (2 ms)
+[ RUN      ] CalibrateGross.FourDecimalsAndTheStepArePm66
+[       OK ] CalibrateGross.FourDecimalsAndTheStepArePm66 (0 ms)
+[ RUN      ] CalibrateGross.WithinToleranceOnePass
+[       OK ] CalibrateGross.WithinToleranceOnePass (282 ms)
+[ RUN      ] CalibrateGross.OneCorrectionMatchesTwoProcess
+[       OK ] CalibrateGross.OneCorrectionMatchesTwoProcess (1184 ms)
+[ RUN      ] CalibrateGross.RefusesOutsideRange
+[       OK ] CalibrateGross.RefusesOutsideRange (206 ms)
+[ RUN      ] CalibrateGross.TieredRunReusesTheConstructionByteForByte
+[       OK ] CalibrateGross.TieredRunReusesTheConstructionByteForByte (892 ms)
+[ RUN      ] CalibrateGross.ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage
+[       OK ] CalibrateGross.ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage (2459 ms)
+[----------] 7 tests from CalibrateGross (5028 ms total)
+
+[----------] 7 tests from NavBookRule
+[ RUN      ] NavBookRule.GridOfLeveragesInOnePassEqualsThreeSingleRuns
+[       OK ] NavBookRule.GridOfLeveragesInOnePassEqualsThreeSingleRuns (109 ms)
+[ RUN      ] NavBookRule.VolTargetOnBookWorkersEqualsSerialAndTheSeamInjectsTheRule
+[       OK ] NavBookRule.VolTargetOnBookWorkersEqualsSerialAndTheSeamInjectsTheRule (87 ms)
+[ RUN      ] NavBookRule.RefusedOutsideAimPartialV5AndOnTheDecidePath
+[       OK ] NavBookRule.RefusedOutsideAimPartialV5AndOnTheDecidePath (77 ms)
+[ RUN      ] NavBookRule.RefusedWithoutTheStoreOrOutsideTheParameterRanges
+[       OK ] NavBookRule.RefusedWithoutTheStoreOrOutsideTheParameterRanges (53 ms)
+[ RUN      ] NavBookRule.ListRulesJsonCarriesTheLeverageRows
+[       OK ] NavBookRule.ListRulesJsonCarriesTheLeverageRows (1 ms)
+[ RUN      ] NavBookRule.AimLeverageIsOptionalWithItsDefault
+[       OK ] NavBookRule.AimLeverageIsOptionalWithItsDefault (1 ms)
+[ RUN      ] NavBookRule.CliGridAndBookWorkersEqualTheStandaloneRunsByteForByte
+[       OK ] NavBookRule.CliGridAndBookWorkersEqualTheStandaloneRunsByteForByte (1183 ms)
+[----------] 7 tests from NavBookRule (1514 ms total)
+
+[----------] 5 tests from BookNormalScore
+[ RUN      ] BookNormalScore.FourDistinctNamesAreThePublishedQuantiles
+[       OK ] BookNormalScore.FourDistinctNamesAreThePublishedQuantiles (0 ms)
+[ RUN      ] BookNormalScore.TiesShareTheMeanRankAndMirrorsAreOpposite
+[       OK ] BookNormalScore.TiesShareTheMeanRankAndMirrorsAreOpposite (0 ms)
+[ RUN      ] BookNormalScore.FixtureTellsWrongRulesApart
+[       OK ] BookNormalScore.FixtureTellsWrongRulesApart (0 ms)
+[ RUN      ] BookNormalScore.NormPpfOfALiteralIsItsRunTimeValue
+[       OK ] BookNormalScore.NormPpfOfALiteralIsItsRunTimeValue (0 ms)
+[ RUN      ] BookNormalScore.ShortRowsWriteNothingAndRefusalsWriteNothing
+[       OK ] BookNormalScore.ShortRowsWriteNothingAndRefusalsWriteNothing (0 ms)
+[----------] 5 tests from BookNormalScore (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 19 tests from 3 test suites ran. (6543 ms total)
+[  PASSED  ] 19 tests.

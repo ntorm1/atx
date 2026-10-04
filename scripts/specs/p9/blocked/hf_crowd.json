@@ -1,0 +1,37 @@
+{
+  "id": "hf_crowd",
+  "dsl": "rank(hf_crowd)",
+  "dsl_sha256": "1881f8ce51cf988c371f07eb4818a592d35edc1fd1b6a37a08e75c910c0ae157",
+  "theme": "ownership_flow",
+  "tier": "C+",
+  "prior_sign": 1,
+  "citation": "Brown, Howard and Lundblad (2022, RFS 35(7)) Crowded trades and tail risk",
+  "origin": "prior",
+  "hypothesis": "hf_crowd",
+  "kind": "add",
+  "fields": [
+    "hf_crowd"
+  ],
+  "prior_sign_source": "Brown-Howard-Lundblad 2022",
+  "form": "R(x)",
+  "formula": "hf_crowd (to be an engine-only C++ kind, DEC-5, reusing lane AL-SIG's 13F reader): the share of a stock's 13F-reported holdings held by hedge-fund filers (Form ADV private-fund advisers joined to the 13F filer CIK), quarterly on the 13F clock of gia_13f; higher = more crowded among hedge funds",
+  "domain": "NaN until the Form ADV join exists; then on the 13F stage's clock (13F from 2013q2)",
+  "deviation": "the field is not built: the 13F books are in house, the hedge-fund flag of a filer is not (lit section 3.1 F2); BHL identify about 1,500 hedge funds directly, the house would use the Form ADV private-fund flag",
+  "notes": "horizon class slow, half-life 63 sessions (PM8-5: quarterly holdings, the ownership_flow theme's); data class P; blocked_on_data: the Form ADV private-fund flag joined to the 13F filer CIK (lit section 6 row hf_crowd, P9DATA -> P9SIG); rho about .2 to momentum and inst_best_ideas (lit 3.1 F2), above the .1 bar, check against inst_best_ideas before any screen; PM ruling ALSIG-4: it stays a blocked_on_data registration and is never queued without a new PM ruling on the bar; AL-DATA (W3-18, ALD-5, 2026-10-04): design written, not built; the 2004-2016 source sample overlaps the OD-3 block; the house source would be the atx-db thirteenf_filer_type stage (filer_type_pit), which has no point-in-time fund-type input before 2023; the Form ADV join is deferred (al-data/atx-db-request.md, B2 dropped); design al-data/builder-designs.md section 2",
+  "lane": "AL-SIG",
+  "report": "task-AL-SIG-report.md",
+  "source_sample_end": 2016,
+  "predicted_mechanism": "the stocks most crowded among hedge-fund longs carry the risk of a joint fire sale, and the crowded longs earn the highest returns as compensation for that tail risk",
+  "data_class": "P",
+  "schema": "atx.p9-blocked-registration/v1",
+  "status": "blocked_on_data",
+  "blocked_on": "a hedge-fund flag per 13F filer: the SEC Form ADV private-fund adviser data joined to the 13F filer CIK",
+  "history": [
+    {
+      "status": "blocked_on_data",
+      "at": "2026-10-03",
+      "by": "AL-SIG",
+      "note": "P9 lane AL-SIG (lit section 3.1 F2 [46]); registered blind, not a candidate: no field exists, so it is not in the queue"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+run p9-m2e-c2-x5-cal: outcome completed exit 0 wall 44.95299999999406 s peak 591 MiB exe 90cb34a7 argv e4e33be6 source 4d0583cf git clean in the code pathspec
+yes p9-m2e-c2-x5-cal completed, exit 0
+run p9-m2e-c2-x5-gm: outcome completed exit 0 wall 47.38999999999942 s peak 591 MiB exe 90cb34a7 argv b418d020 source 4d0583cf git clean in the code pathspec
+yes p9-m2e-c2-x5-gm completed, exit 0
+run p9-m2e-c2-x5-engine: outcome completed exit 0 wall 63.70299999999406 s peak 639 MiB exe 90cb34a7 argv 8dd67744 source 4d0583cf git clean in the code pathspec
+yes p9-m2e-c2-x5-engine completed, exit 0
+yes 1 p9-m2e-c2-x5-gm vs p9-c1-s2-x5-nav: same file set (27 files)
+yes 1 p9-m2e-c2-x5-gm vs p9-c1-s2-x5-nav: every file but summary.json byte-identical (26); differing: []
+  summary.json paths differing: ['CHANGED /producer/engine_git_sha']
+yes 1 summary.json differs only at /producer/engine_git_sha
+yes 2 Python: calibration at L 1.1414 is outside .005 (corrected)
+yes 2 Python: L' = matched_leverage(1.1414, G_P, G_cal) = 1.1720 (registered -gm L 1.1720)
+yes 2 Python: the -gm run at L' is within .005 of G_parent (matched)
+yes 3 p9-m2e-c2-x5-engine vs p9-m2e-c2-x5-gm: same file set
+yes 3 p9-m2e-c2-x5-engine vs p9-m2e-c2-x5-gm: every file but summary.json byte-identical (26); differing: []
+  summary.json paths differing: ['ADDED /calibration/construction_reused', 'ADDED /calibration/corrected', 'ADDED /calibration/gross', 'ADDED /calibration/gross_requested', 'ADDED /calibration/leverage', 'ADDED /calibration/leverage_requested', 'ADDED /calibration/matched', 'ADDED /calibration/rule', 'ADDED /calibration/target', 'ADDED /calibration/tolerance']
+yes 3 summary.json differs only by the added /calibration
+yes 4 calibration keys = ['construction_reused', 'corrected', 'gross', 'gross_requested', 'leverage', 'leverage_requested', 'matched', 'rule', 'target', 'tolerance']
+yes 4 target == G_parent (bit)
+yes 4 tolerance == 0.005
+yes 4 leverage_requested == 1.1414
+yes 4 gross_requested == Python G_cal (mechanics of the L 1.1414 run, bit)
+yes 4 corrected true (Python: corrected)
+yes 4 leverage == float(Python L') within 1e-12 relative (rel 0.0)
+yes 4 gross == Python G of the -gm run (bit)
+yes 4 gross == mechanics G of the engine NAV (bit)
+yes 4 matched true (Python: matched)
+  construction_reused = True (read, not compared)
+  rule = "P9 C2, Ruling PM6-6 in one process: pass 1 replays the primary S2 book alone at leverage_requested; gross_requested = the numpy mean of its daily gross_leverage over every row (nav_summ mean_gross_leverage_all_rows); |gross_requested - target| <= tolerance keeps the leverage, else ONE correction leverage = leverage_requested x target / gross_requested written with 4 decimals (refused outside [1, 2]); the published run is the plain run at leverage (recipe.json and every other file its bytes), gross its S2 book's all-rows mean and matched = |gross - target| <= tolerance (false: the match stage stops); construction_reused: pass 2 replayed pass 1's shared construction (provenance only)"
+RESULT: HOLDS

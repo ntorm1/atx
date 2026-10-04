@@ -1,0 +1,644 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 243 tests from 44 test suites.
+[----------] Global test environment set-up.
+[----------] 1 test from CombinedSignalSourceDeathTest
+[ RUN      ] CombinedSignalSourceDeathTest.DuplicateConstituentCannotInvalidateEarlierBorrow
+[11:05:37.778] [C] [combined_source.hpp:209] CHECK failed: std::adjacent_find(identities.begin(), identities.end()) == identities.end()
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[       OK ] CombinedSignalSourceDeathTest.DuplicateConstituentCannotInvalidateEarlierBorrow (150 ms)
+[----------] 1 test from CombinedSignalSourceDeathTest (150 ms total)
+
+[----------] 1 test from ConvictionDeathTest
+[ RUN      ] ConvictionDeathTest.NanDsrAborts
+[11:05:37.816] [C] [conviction.cpp:58] CHECK failed: std::isfinite(dsr.dsr)
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[       OK ] ConvictionDeathTest.NanDsrAborts (33 ms)
+[----------] 1 test from ConvictionDeathTest (33 ms total)
+
+[----------] 1 test from CrowdingDeathTest
+[ RUN      ] CrowdingDeathTest.SizeMismatch_Aborts
+[11:05:37.850] [C] [crowding.cpp:44] CHECK failed: capacity.size() == n
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[       OK ] CrowdingDeathTest.SizeMismatch_Aborts (33 ms)
+[----------] 1 test from CrowdingDeathTest (33 ms total)
+
+[----------] 1 test from RegimeCombineDeathTest
+[ RUN      ] RegimeCombineDeathTest.Blend_PosteriorSizeMismatch_Aborts
+[11:05:37.879] [C] [regime_combiner.cpp:24] CHECK failed: posterior.size() == per_regime.size()
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[       OK ] RegimeCombineDeathTest.Blend_PosteriorSizeMismatch_Aborts (28 ms)
+[----------] 1 test from RegimeCombineDeathTest (28 ms total)
+
+[----------] 18 tests from CombinedSignalSource
+[ RUN      ] CombinedSignalSource.LinearBlend_KnownWeights_HandComputed
+[       OK ] CombinedSignalSource.LinearBlend_KnownWeights_HandComputed (0 ms)
+[ RUN      ] CombinedSignalSource.RankAverage_MeanOfCrossSectionalRanks
+[       OK ] CombinedSignalSource.RankAverage_MeanOfCrossSectionalRanks (0 ms)
+[ RUN      ] CombinedSignalSource.RankAverage_NaNCell_SkippedPerConstituent
+[       OK ] CombinedSignalSource.RankAverage_NaNCell_SkippedPerConstituent (0 ms)
+[ RUN      ] CombinedSignalSource.LinearBlend_NaNConstituent_SkippedAndRenormalized
+[       OK ] CombinedSignalSource.LinearBlend_NaNConstituent_SkippedAndRenormalized (0 ms)
+[ RUN      ] CombinedSignalSource.LinearBlend_AllNaNCell_IsNaN
+[       OK ] CombinedSignalSource.LinearBlend_AllNaNCell_IsNaN (0 ms)
+[ RUN      ] CombinedSignalSource.RankAverage_AllNaNCell_IsNaN
+[       OK ] CombinedSignalSource.RankAverage_AllNaNCell_IsNaN (0 ms)
+[ RUN      ] CombinedSignalSource.MaxLookback_IsMaxOverConstituents
+[       OK ] CombinedSignalSource.MaxLookback_IsMaxOverConstituents (0 ms)
+[ RUN      ] CombinedSignalSource.SingleConstituent_NegativeWeight_SignFlips
+[       OK ] CombinedSignalSource.SingleConstituent_NegativeWeight_SignFlips (0 ms)
+[ RUN      ] CombinedSignalSource.SingleConstituent_PositiveWeight_PassesThrough
+[       OK ] CombinedSignalSource.SingleConstituent_PositiveWeight_PassesThrough (0 ms)
+[ RUN      ] CombinedSignalSource.DollarNeutralWeights_GrossRenorm_Finite
+[       OK ] CombinedSignalSource.DollarNeutralWeights_GrossRenorm_Finite (0 ms)
+[ RUN      ] CombinedSignalSource.ZeroGrossSurvivingSet_IsNaN
+[       OK ] CombinedSignalSource.ZeroGrossSurvivingSet_IsNaN (0 ms)
+[ RUN      ] CombinedSignalSource.RunsInRealBacktestLoop_MatchesPhase2SingleAlpha
+[       OK ] CombinedSignalSource.RunsInRealBacktestLoop_MatchesPhase2SingleAlpha (8 ms)
+[ RUN      ] CombinedSignalSource.RealLoop_RepeatRun_IsByteIdentical
+[       OK ] CombinedSignalSource.RealLoop_RepeatRun_IsByteIdentical (16 ms)
+[ RUN      ] CombinedSignalSource.V2MissingCoverageDoesNotAmplifyAnOpinionAndDateHasUnitVariance
+[       OK ] CombinedSignalSource.V2MissingCoverageDoesNotAmplifyAnOpinionAndDateHasUnitVariance (0 ms)
+[ RUN      ] CombinedSignalSource.V2RankTiesAreEqualAndMissingConstituentIsNeutral
+[       OK ] CombinedSignalSource.V2RankTiesAreEqualAndMissingConstituentIsNeutral (0 ms)
+[ RUN      ] CombinedSignalSource.V2FiniteExtremesRemainFiniteAndConstantOpinionsAreZero
+[       OK ] CombinedSignalSource.V2FiniteExtremesRemainFiniteAndConstantOpinionsAreZero (0 ms)
+[ RUN      ] CombinedSignalSource.V2ZeroWeightAndReciprocalScalesCannotEraseActiveContributions
+[       OK ] CombinedSignalSource.V2ZeroWeightAndReciprocalScalesCannotEraseActiveContributions (0 ms)
+[ RUN      ] CombinedSignalSource.V2UnrepresentableWeightedRangeReturnsAnError
+[       OK ] CombinedSignalSource.V2UnrepresentableWeightedRangeReturnsAnError (0 ms)
+[----------] 18 tests from CombinedSignalSource (26 ms total)
+
+[----------] 16 tests from AlphaCombiner
+[ RUN      ] AlphaCombiner.EqualWeightUniform
+[       OK ] AlphaCombiner.EqualWeightUniform (0 ms)
+[ RUN      ] AlphaCombiner.RankAverageUniform
+[       OK ] AlphaCombiner.RankAverageUniform (0 ms)
+[ RUN      ] AlphaCombiner.IcWeightedProportionalToWindowSharpe
+[       OK ] AlphaCombiner.IcWeightedProportionalToWindowSharpe (0 ms)
+[ RUN      ] AlphaCombiner.IcWeightedNegativeSharpeClippedToZero
+[       OK ] AlphaCombiner.IcWeightedNegativeSharpeClippedToZero (0 ms)
+[ RUN      ] AlphaCombiner.ShrinkageMvIdenticalAlphasEqualWeights
+[       OK ] AlphaCombiner.ShrinkageMvIdenticalAlphasEqualWeights (0 ms)
+[ RUN      ] AlphaCombiner.ShrinkageMvAntiCorrelatedEqualSharpeEqualWeights
+[       OK ] AlphaCombiner.ShrinkageMvAntiCorrelatedEqualSharpeEqualWeights (0 ms)
+[ RUN      ] AlphaCombiner.ShrinkageMvSingularScmRescuedByShrinkage
+[       OK ] AlphaCombiner.ShrinkageMvSingularScmRescuedByShrinkage (0 ms)
+[ RUN      ] AlphaCombiner.ShrinkageMvFixedIntensityRespected
+[       OK ] AlphaCombiner.ShrinkageMvFixedIntensityRespected (0 ms)
+[ RUN      ] AlphaCombiner.ShrinkageMvWellConditionedInverseVarianceTilt
+[       OK ] AlphaCombiner.ShrinkageMvWellConditionedInverseVarianceTilt (0 ms)
+[ RUN      ] AlphaCombiner.BoundedRegressionRespectsWeightBound
+[       OK ] AlphaCombiner.BoundedRegressionRespectsWeightBound (0 ms)
+[ RUN      ] AlphaCombiner.FitWindowTruncationInvariant
+[       OK ] AlphaCombiner.FitWindowTruncationInvariant (0 ms)
+[ RUN      ] AlphaCombiner.SingleAlphaWeightIsOne
+[       OK ] AlphaCombiner.SingleAlphaWeightIsOne (0 ms)
+[ RUN      ] AlphaCombiner.SingleAlphaEqualWeightIsOne
+[       OK ] AlphaCombiner.SingleAlphaEqualWeightIsOne (0 ms)
+[ RUN      ] AlphaCombiner.EmptyPoolReturnsErr
+[       OK ] AlphaCombiner.EmptyPoolReturnsErr (0 ms)
+[ RUN      ] AlphaCombiner.WindowTooShortReturnsErr
+[       OK ] AlphaCombiner.WindowTooShortReturnsErr (0 ms)
+[ RUN      ] AlphaCombiner.WindowBeyondPeriodsReturnsErr
+[       OK ] AlphaCombiner.WindowBeyondPeriodsReturnsErr (0 ms)
+[----------] 16 tests from AlphaCombiner (1 ms total)
+
+[----------] 1 test from ConvictionScaffold
+[ RUN      ] ConvictionScaffold.HeadersCompileAndLink
+[       OK ] ConvictionScaffold.HeadersCompileAndLink (0 ms)
+[----------] 1 test from ConvictionScaffold (0 ms total)
+
+[----------] 9 tests from Conviction
+[ RUN      ] Conviction.MonotoneInDsr
+[       OK ] Conviction.MonotoneInDsr (0 ms)
+[ RUN      ] Conviction.MonotoneInPboDown
+[       OK ] Conviction.MonotoneInPboDown (0 ms)
+[ RUN      ] Conviction.MonotoneInStability
+[       OK ] Conviction.MonotoneInStability (0 ms)
+[ RUN      ] Conviction.HeadScratcherHalvesExplained
+[       OK ] Conviction.HeadScratcherHalvesExplained (0 ms)
+[ RUN      ] Conviction.PartlyExplainedMultiplier
+[       OK ] Conviction.PartlyExplainedMultiplier (0 ms)
+[ RUN      ] Conviction.BoundsAndStabilityClamp
+[       OK ] Conviction.BoundsAndStabilityClamp (0 ms)
+[ RUN      ] Conviction.DeterministicTwoRunsEqual
+[       OK ] Conviction.DeterministicTwoRunsEqual (0 ms)
+[ RUN      ] Conviction.AllPerfectIsOne
+[       OK ] Conviction.AllPerfectIsOne (0 ms)
+[ RUN      ] Conviction.RenormalizedWeightTripleWithinTolerance
+[       OK ] Conviction.RenormalizedWeightTripleWithinTolerance (0 ms)
+[----------] 9 tests from Conviction (0 ms total)
+
+[----------] 8 tests from CombineCovTargets
+[ RUN      ] CombineCovTargets.Lw2020MatchesReferenceWhenCBelowOne
+[       OK ] CombineCovTargets.Lw2020MatchesReferenceWhenCBelowOne (0 ms)
+[ RUN      ] CombineCovTargets.Lw2020MatchesReferenceNullSpaceVariantWhenCAboveOne
+[       OK ] CombineCovTargets.Lw2020MatchesReferenceNullSpaceVariantWhenCAboveOne (2 ms)
+[ RUN      ] CombineCovTargets.Lw2003ConstCorrMatchesReference
+[       OK ] CombineCovTargets.Lw2003ConstCorrMatchesReference (0 ms)
+[ RUN      ] CombineCovTargets.Lw2004IdentityMatchesInTreeIntensity
+[       OK ] CombineCovTargets.Lw2004IdentityMatchesInTreeIntensity (0 ms)
+[ RUN      ] CombineCovTargets.Lw2020BeatsLw2004OnSpikedModel
+[       OK ] CombineCovTargets.Lw2020BeatsLw2004OnSpikedModel (341 ms)
+[ RUN      ] CombineCovTargets.RmtClipPreservesVariancesAndIsSymmetric
+[       OK ] CombineCovTargets.RmtClipPreservesVariancesAndIsSymmetric (12 ms)
+[ RUN      ] CombineCovTargets.EstimateCovarianceDispatchesEveryTarget
+[       OK ] CombineCovTargets.EstimateCovarianceDispatchesEveryTarget (3 ms)
+[ RUN      ] CombineCovTargets.RejectsTooFewRowsAndNonFinite
+[       OK ] CombineCovTargets.RejectsTooFewRowsAndNonFinite (0 ms)
+[----------] 8 tests from CombineCovTargets (361 ms total)
+
+[----------] 7 tests from Crowding
+[ RUN      ] Crowding.TwoPerfectCopies_Halved
+[       OK ] Crowding.TwoPerfectCopies_Halved (0 ms)
+[ RUN      ] Crowding.ThreePerfectCopies_Thirded
+[       OK ] Crowding.ThreePerfectCopies_Thirded (0 ms)
+[ RUN      ] Crowding.UncorrelatedSignals_Unchanged
+[       OK ] Crowding.UncorrelatedSignals_Unchanged (0 ms)
+[ RUN      ] Crowding.Passthrough_PenaltyZeroCapZero
+[       OK ] Crowding.Passthrough_PenaltyZeroCapZero (0 ms)
+[ RUN      ] Crowding.CapacityFloor_ScalesName
+[       OK ] Crowding.CapacityFloor_ScalesName (0 ms)
+[ RUN      ] Crowding.CapacityZero_ZeroesWeight
+[       OK ] Crowding.CapacityZero_ZeroesWeight (0 ms)
+[ RUN      ] Crowding.TwoRuns_ByteIdentical
+[       OK ] Crowding.TwoRuns_ByteIdentical (0 ms)
+[----------] 7 tests from Crowding (0 ms total)
+
+[----------] 4 tests from AlphaGateMarginalIc
+[ RUN      ] AlphaGateMarginalIc.DefaultConfigUnchanged
+[       OK ] AlphaGateMarginalIc.DefaultConfigUnchanged (0 ms)
+[ RUN      ] AlphaGateMarginalIc.ReplacesCorrelationScreen
+[       OK ] AlphaGateMarginalIc.ReplacesCorrelationScreen (0 ms)
+[ RUN      ] AlphaGateMarginalIc.UnsuppliedMarginalIcFailsClosed
+[       OK ] AlphaGateMarginalIc.UnsuppliedMarginalIcFailsClosed (0 ms)
+[ RUN      ] AlphaGateMarginalIc.FloorsStillRunFirst
+[       OK ] AlphaGateMarginalIc.FloorsStillRunFirst (0 ms)
+[----------] 4 tests from AlphaGateMarginalIc (0 ms total)
+
+[----------] 8 tests from Correlation
+[ RUN      ] Correlation.HandComputedPearson
+[       OK ] Correlation.HandComputedPearson (0 ms)
+[ RUN      ] Correlation.PerfectNegative
+[       OK ] Correlation.PerfectNegative (0 ms)
+[ RUN      ] Correlation.NaNGapsPairwiseComplete
+[       OK ] Correlation.NaNGapsPairwiseComplete (0 ms)
+[ RUN      ] Correlation.NaNGapHandValueNonTrivial
+[       OK ] Correlation.NaNGapHandValueNonTrivial (0 ms)
+[ RUN      ] Correlation.FewerThanTwoValidPairsReturnsZero
+[       OK ] Correlation.FewerThanTwoValidPairsReturnsZero (0 ms)
+[ RUN      ] Correlation.ZeroVarianceLegReturnsZero
+[       OK ] Correlation.ZeroVarianceLegReturnsZero (0 ms)
+[ RUN      ] Correlation.AllNaNReturnsZero
+[       OK ] Correlation.AllNaNReturnsZero (0 ms)
+[ RUN      ] Correlation.MismatchedLengthAbortsInDebug
+[11:05:38.304] [C] [correlation.hpp:78] CHECK failed: a.size() == b.size()
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[       OK ] Correlation.MismatchedLengthAbortsInDebug (31 ms)
+[----------] 8 tests from Correlation (32 ms total)
+
+[----------] 12 tests from AlphaGate
+[ RUN      ] AlphaGate.BelowSharpeRejectsSharpe
+[       OK ] AlphaGate.BelowSharpeRejectsSharpe (0 ms)
+[ RUN      ] AlphaGate.BelowFitnessRejectsFitness
+[       OK ] AlphaGate.BelowFitnessRejectsFitness (0 ms)
+[ RUN      ] AlphaGate.AboveTurnoverRejectsTurnover
+[       OK ] AlphaGate.AboveTurnoverRejectsTurnover (0 ms)
+[ RUN      ] AlphaGate.FailsSharpeAndTurnoverReturnsSharpeBeforeTurnover
+[       OK ] AlphaGate.FailsSharpeAndTurnoverReturnsSharpeBeforeTurnover (0 ms)
+[ RUN      ] AlphaGate.EmptyPoolAcceptsFirstAlpha
+[       OK ] AlphaGate.EmptyPoolAcceptsFirstAlpha (0 ms)
+[ RUN      ] AlphaGate.PerfectCopyRejectsCorrelated
+[       OK ] AlphaGate.PerfectCopyRejectsCorrelated (0 ms)
+[ RUN      ] AlphaGate.AntiCorrelatedRejectsCorrelatedByMagnitude
+[       OK ] AlphaGate.AntiCorrelatedRejectsCorrelatedByMagnitude (0 ms)
+[ RUN      ] AlphaGate.OrthogonalCandidateAccepts
+[       OK ] AlphaGate.OrthogonalCandidateAccepts (0 ms)
+[ RUN      ] AlphaGate.MaxOverPoolUsesStrictestMember
+[       OK ] AlphaGate.MaxOverPoolUsesStrictestMember (0 ms)
+[ RUN      ] AlphaGate.NaNGapPoolCorrComputedOverOverlapOnly
+[       OK ] AlphaGate.NaNGapPoolCorrComputedOverOverlapOnly (0 ms)
+[ RUN      ] AlphaGate.AllNaNCandidateAcceptsViaZeroCorr
+[       OK ] AlphaGate.AllNaNCandidateAcceptsViaZeroCorr (0 ms)
+[ RUN      ] AlphaGate.BoundaryAtMaxPoolCorrAccepts
+[       OK ] AlphaGate.BoundaryAtMaxPoolCorrAccepts (0 ms)
+[----------] 12 tests from AlphaGate (0 ms total)
+
+[----------] 3 tests from AlphaGateNetCost
+[ RUN      ] AlphaGateNetCost.OffPathZeroCostPreservesVerdict
+[       OK ] AlphaGateNetCost.OffPathZeroCostPreservesVerdict (0 ms)
+[ RUN      ] AlphaGateNetCost.OnPathCostAdjustedFitnessFlips
+[       OK ] AlphaGateNetCost.OnPathCostAdjustedFitnessFlips (0 ms)
+[ RUN      ] AlphaGateNetCost.TwiceRunSameVerdict
+[       OK ] AlphaGateNetCost.TwiceRunSameVerdict (0 ms)
+[----------] 3 tests from AlphaGateNetCost (0 ms total)
+
+[----------] 3 tests from AlphaGateHoldFloor
+[ RUN      ] AlphaGateHoldFloor.OffPathZeroPreservesVerdict
+[       OK ] AlphaGateHoldFloor.OffPathZeroPreservesVerdict (0 ms)
+[ RUN      ] AlphaGateHoldFloor.OnPathHoldingFloorFlips
+[       OK ] AlphaGateHoldFloor.OnPathHoldingFloorFlips (0 ms)
+[ RUN      ] AlphaGateHoldFloor.TwiceRunSameVerdict
+[       OK ] AlphaGateHoldFloor.TwiceRunSameVerdict (0 ms)
+[----------] 3 tests from AlphaGateHoldFloor (0 ms total)
+
+[----------] 5 tests from GroupErc
+[ RUN      ] GroupErc.TwoGroupsAreInverseVolatilityWhateverTheCorrelation
+[       OK ] GroupErc.TwoGroupsAreInverseVolatilityWhateverTheCorrelation (2 ms)
+[ RUN      ] GroupErc.EquicorrelatedGroupsAreInverseVolatility
+[       OK ] GroupErc.EquicorrelatedGroupsAreInverseVolatility (1 ms)
+[ RUN      ] GroupErc.ContributionsAreEqualOnAGeneralCovariance
+[       OK ] GroupErc.ContributionsAreEqualOnAGeneralCovariance (2 ms)
+[ RUN      ] GroupErc.OneGroupRepeatsAndConvergence
+[       OK ] GroupErc.OneGroupRepeatsAndConvergence (5 ms)
+[ RUN      ] GroupErc.RefusesBadShapesAndValues
+[       OK ] GroupErc.RefusesBadShapesAndValues (0 ms)
+[----------] 5 tests from GroupErc (12 ms total)
+
+[----------] 5 tests from GroupRerank
+[ RUN      ] GroupRerank.CenteredTiedRanksFollowTheBlockFormula
+[       OK ] GroupRerank.CenteredTiedRanksFollowTheBlockFormula (0 ms)
+[ RUN      ] GroupRerank.AccumulateReplacesTheSentinelThenSums
+[       OK ] GroupRerank.AccumulateReplacesTheSentinelThenSums (0 ms)
+[ RUN      ] GroupRerank.RerankAddsWeightedRanksOverPresentNamesOnly
+[       OK ] GroupRerank.RerankAddsWeightedRanksOverPresentNamesOnly (0 ms)
+[ RUN      ] GroupRerank.EveryGroupEntersWithTheSameDispersion
+[       OK ] GroupRerank.EveryGroupEntersWithTheSameDispersion (0 ms)
+[ RUN      ] GroupRerank.RefusesBadShapesRangesAndWeights
+[       OK ] GroupRerank.RefusesBadShapesRangesAndWeights (0 ms)
+[----------] 5 tests from GroupRerank (0 ms total)
+
+[----------] 6 tests from GroupResidualise
+[ RUN      ] GroupResidualise.TwoGroupsMatchTheClosedFormAndAreOrthogonal
+[       OK ] GroupResidualise.TwoGroupsMatchTheClosedFormAndAreOrthogonal (0 ms)
+[ RUN      ] GroupResidualise.TwoRegressorsMatchCramerAndAreOrthogonal
+[       OK ] GroupResidualise.TwoRegressorsMatchCramerAndAreOrthogonal (0 ms)
+[ RUN      ] GroupResidualise.DependentColumnsAreSkipped
+[       OK ] GroupResidualise.DependentColumnsAreSkipped (0 ms)
+[ RUN      ] GroupResidualise.SpannedDependentBecomesExactlyZero
+[       OK ] GroupResidualise.SpannedDependentBecomesExactlyZero (0 ms)
+[ RUN      ] GroupResidualise.NoRegressorIsTheDemeanedVector
+[       OK ] GroupResidualise.NoRegressorIsTheDemeanedVector (0 ms)
+[ RUN      ] GroupResidualise.RefusesBadShapesNonFiniteValuesAndTolerances
+[       OK ] GroupResidualise.RefusesBadShapesNonFiniteValuesAndTolerances (0 ms)
+[----------] 6 tests from GroupResidualise (0 ms total)
+
+[----------] 4 tests from GroupShrink
+[ RUN      ] GroupShrink.SharesShrinkTowardTheGroupMeanFloorAndNormalise
+[       OK ] GroupShrink.SharesShrinkTowardTheGroupMeanFloorAndNormalise (0 ms)
+[ RUN      ] GroupShrink.IntensityRunsFromProportionalToEqualShares
+[       OK ] GroupShrink.IntensityRunsFromProportionalToEqualShares (0 ms)
+[ RUN      ] GroupShrink.PositiveMinimumKeepsEveryMember
+[       OK ] GroupShrink.PositiveMinimumKeepsEveryMember (0 ms)
+[ RUN      ] GroupShrink.RefusesBadShapesAndValues
+[       OK ] GroupShrink.RefusesBadShapesAndValues (0 ms)
+[----------] 4 tests from GroupShrink (0 ms total)
+
+[----------] 3 tests from GroupCap
+[ RUN      ] GroupCap.ExcessGoesProRataToTheOtherGroups
+[       OK ] GroupCap.ExcessGoesProRataToTheOtherGroups (0 ms)
+[ RUN      ] GroupCap.RepeatsToAFixedPoint
+[       OK ] GroupCap.RepeatsToAFixedPoint (0 ms)
+[ RUN      ] GroupCap.ToleranceInfeasibleCapsAndRefusals
+[       OK ] GroupCap.ToleranceInfeasibleCapsAndRefusals (0 ms)
+[----------] 3 tests from GroupCap (0 ms total)
+
+[----------] 6 tests from CombineHrp
+[ RUN      ] CombineHrp.HandWorkedThreeAssetExample
+[       OK ] CombineHrp.HandWorkedThreeAssetExample (0 ms)
+[ RUN      ] CombineHrp.DiagonalCovarianceIsInverseVariance
+[       OK ] CombineHrp.DiagonalCovarianceIsInverseVariance (0 ms)
+[ RUN      ] CombineHrp.QuasiDiagGroupsCorrelatedBlocksAndWeightsArePositive
+[       OK ] CombineHrp.QuasiDiagGroupsCorrelatedBlocksAndWeightsArePositive (0 ms)
+[ RUN      ] CombineHrp.NcoReproducesMinVarianceOnBlockDiagonal
+[       OK ] CombineHrp.NcoReproducesMinVarianceOnBlockDiagonal (0 ms)
+[ RUN      ] CombineHrp.HrpCombinerOrientsNegativeEdgeShort
+[       OK ] CombineHrp.HrpCombinerOrientsNegativeEdgeShort (0 ms)
+[ RUN      ] CombineHrp.RejectsInvalidCovariance
+[       OK ] CombineHrp.RejectsInvalidCovariance (0 ms)
+[----------] 6 tests from CombineHrp (1 ms total)
+
+[----------] 6 tests from CombineSignalCubeConsumer
+[ RUN      ] CombineSignalCubeConsumer.ExactStatisticsAndBothFitMethodsPreserveBits
+[       OK ] CombineSignalCubeConsumer.ExactStatisticsAndBothFitMethodsPreserveBits (5 ms)
+[ RUN      ] CombineSignalCubeConsumer.InvalidMaturityRecipeShapeAndBudgetFailBeforeFit
+[       OK ] CombineSignalCubeConsumer.InvalidMaturityRecipeShapeAndBudgetFailBeforeFit (1 ms)
+[ RUN      ] CombineSignalCubeConsumer.ExistingWalkForwardReusesMatureRowsWithExactParity
+[       OK ] CombineSignalCubeConsumer.ExistingWalkForwardReusesMatureRowsWithExactParity (11 ms)
+[ RUN      ] CombineSignalCubeConsumer.CachedWalkForwardCannotReadUnmaturedFutureLabels
+[       OK ] CombineSignalCubeConsumer.CachedWalkForwardCannotReadUnmaturedFutureLabels (5 ms)
+[ RUN      ] CombineSignalCubeConsumer.DelayedCacheWalkForwardMatchesLegacyEmbargoAndRejectsMismatch
+[       OK ] CombineSignalCubeConsumer.DelayedCacheWalkForwardMatchesLegacyEmbargoAndRejectsMismatch (19 ms)
+[ RUN      ] CombineSignalCubeConsumer.CubeAdapterUsesPrequantizationExactStatsAndExplicitLossyOptIn
+[       OK ] CombineSignalCubeConsumer.CubeAdapterUsesPrequantizationExactStatsAndExplicitLossyOptIn (145 ms)
+[----------] 6 tests from CombineSignalCubeConsumer (189 ms total)
+
+[----------] 13 tests from CombineMarginalRankIc
+[ RUN      ] CombineMarginalRankIc.CentredTiedRanksMatchCompositionArithmetic
+[       OK ] CombineMarginalRankIc.CentredTiedRanksMatchCompositionArithmetic (0 ms)
+[ RUN      ] CombineMarginalRankIc.NoRegressorsGivesMarginalEqualToRaw
+[       OK ] CombineMarginalRankIc.NoRegressorsGivesMarginalEqualToRaw (25 ms)
+[ RUN      ] CombineMarginalRankIc.CandidateInsideRegressorSpanIsSpannedZero
+[       OK ] CombineMarginalRankIc.CandidateInsideRegressorSpanIsSpannedZero (24 ms)
+[ RUN      ] CombineMarginalRankIc.PoolPlusNoiseHasZeroMarginalWithin2Se
+[       OK ] CombineMarginalRankIc.PoolPlusNoiseHasZeroMarginalWithin2Se (119 ms)
+[ RUN      ] CombineMarginalRankIc.PlantedOrthogonalRecovered
+[       OK ] CombineMarginalRankIc.PlantedOrthogonalRecovered (116 ms)
+[ RUN      ] CombineMarginalRankIc.SummaryIsBartlettHacOfCompactedSeries
+[       OK ] CombineMarginalRankIc.SummaryIsBartlettHacOfCompactedSeries (0 ms)
+[ RUN      ] CombineMarginalRankIc.PairwiseCorrelationAveragesDefinedDates
+[       OK ] CombineMarginalRankIc.PairwiseCorrelationAveragesDefinedDates (0 ms)
+[ RUN      ] CombineMarginalRankIc.RefusesBadShapesAndBounds
+[       OK ] CombineMarginalRankIc.RefusesBadShapesAndBounds (0 ms)
+[ RUN      ] CombineMarginalRankIc.AcceptsThirtyFourRegressors
+[       OK ] CombineMarginalRankIc.AcceptsThirtyFourRegressors (2 ms)
+[ RUN      ] CombineMarginalRankIc.CompactedNamesKeepBits
+[       OK ] CombineMarginalRankIc.CompactedNamesKeepBits (1 ms)
+[ RUN      ] CombineMarginalRankIc.PairDayValuesThenAccumulateIsAddDate
+[       OK ] CombineMarginalRankIc.PairDayValuesThenAccumulateIsAddDate (1 ms)
+[ RUN      ] CombineMarginalRankIc.RestrictToKeepsListedPairs
+[       OK ] CombineMarginalRankIc.RestrictToKeepsListedPairs (1 ms)
+[ RUN      ] CombineMarginalRankIc.SeededPairsEqualComputedPairs
+[       OK ] CombineMarginalRankIc.SeededPairsEqualComputedPairs (1 ms)
+[----------] 13 tests from CombineMarginalRankIc (296 ms total)
+
+[----------] 3 tests from CombineMethodEnumLayout
+[ RUN      ] CombineMethodEnumLayout.FrozenIndicesRuntimeCheck
+[       OK ] CombineMethodEnumLayout.FrozenIndicesRuntimeCheck (0 ms)
+[ RUN      ] CombineMethodEnumLayout.CombinerConfigDefaultsAreInert
+[       OK ] CombineMethodEnumLayout.CombinerConfigDefaultsAreInert (0 ms)
+[ RUN      ] CombineMethodEnumLayout.FitRejectsStackAndRegimeStackAsStageDispatched
+[       OK ] CombineMethodEnumLayout.FitRejectsStackAndRegimeStackAsStageDispatched (0 ms)
+[----------] 3 tests from CombineMethodEnumLayout (0 ms total)
+
+[----------] 12 tests from AlphaMetrics
+[ RUN      ] AlphaMetrics.SharpeKnownValueExcludesStructuralZero
+[       OK ] AlphaMetrics.SharpeKnownValueExcludesStructuralZero (0 ms)
+[ RUN      ] AlphaMetrics.StructuralZeroIsExcludedFromMoments
+[       OK ] AlphaMetrics.StructuralZeroIsExcludedFromMoments (0 ms)
+[ RUN      ] AlphaMetrics.FitnessMatchesHandFormula
+[       OK ] AlphaMetrics.FitnessMatchesHandFormula (0 ms)
+[ RUN      ] AlphaMetrics.DrawdownKnownPeakTroughRecovery
+[       OK ] AlphaMetrics.DrawdownKnownPeakTroughRecovery (0 ms)
+[ RUN      ] AlphaMetrics.ZeroVolatilityGivesZeroSharpe
+[       OK ] AlphaMetrics.ZeroVolatilityGivesZeroSharpe (0 ms)
+[ RUN      ] AlphaMetrics.ZeroTurnoverGivesZeroFitnessAndFiniteMarginHolding
+[       OK ] AlphaMetrics.ZeroTurnoverGivesZeroFitnessAndFiniteMarginHolding (0 ms)
+[ RUN      ] AlphaMetrics.ZeroTurnoverAndZeroReturnsGivesZeroFitness
+[       OK ] AlphaMetrics.ZeroTurnoverAndZeroReturnsGivesZeroFitness (0 ms)
+[ RUN      ] AlphaMetrics.HoldingDaysIsReciprocalOfTurnover
+[       OK ] AlphaMetrics.HoldingDaysIsReciprocalOfTurnover (0 ms)
+[ RUN      ] AlphaMetrics.TurnoverKnownValuePinsTradeInConvention
+[       OK ] AlphaMetrics.TurnoverKnownValuePinsTradeInConvention (0 ms)
+[ RUN      ] AlphaMetrics.LengthOneStreamHasNoReturnObservations
+[       OK ] AlphaMetrics.LengthOneStreamHasNoReturnObservations (0 ms)
+[ RUN      ] AlphaMetrics.AllNaNStreamGivesNaNMetrics
+[       OK ] AlphaMetrics.AllNaNStreamGivesNaNMetrics (0 ms)
+[ RUN      ] AlphaMetrics.EmptyStreamHasNaNMomentsAndZeroDrawdown
+[       OK ] AlphaMetrics.EmptyStreamHasNaNMomentsAndZeroDrawdown (0 ms)
+[----------] 12 tests from AlphaMetrics (1 ms total)
+
+[----------] 4 tests from AlphaMetricsWithTurnover
+[ RUN      ] AlphaMetricsWithTurnover.NullptrReturnsIdenticalMetrics
+[       OK ] AlphaMetricsWithTurnover.NullptrReturnsIdenticalMetrics (0 ms)
+[ RUN      ] AlphaMetricsWithTurnover.OutVectorReturnsIdenticalMetrics
+[       OK ] AlphaMetricsWithTurnover.OutVectorReturnsIdenticalMetrics (0 ms)
+[ RUN      ] AlphaMetricsWithTurnover.OutVectorMatchesHandComputedPerPeriodTurnover
+[       OK ] AlphaMetricsWithTurnover.OutVectorMatchesHandComputedPerPeriodTurnover (0 ms)
+[ RUN      ] AlphaMetricsWithTurnover.LargerPanelByteIdentity
+[       OK ] AlphaMetricsWithTurnover.LargerPanelByteIdentity (0 ms)
+[----------] 4 tests from AlphaMetricsWithTurnover (0 ms total)
+
+[----------] 6 tests from CombineOrthogonalize
+[ RUN      ] CombineOrthogonalize.ResidualIsWeightedOrthogonalToExposuresAndPool
+[       OK ] CombineOrthogonalize.ResidualIsWeightedOrthogonalToExposuresAndPool (0 ms)
+[ RUN      ] CombineOrthogonalize.RankDeficientIndustryDummiesStillProject
+[       OK ] CombineOrthogonalize.RankDeficientIndustryDummiesStillProject (0 ms)
+[ RUN      ] CombineOrthogonalize.LowdinIsOrthonormalAndOrderIndependent
+[       OK ] CombineOrthogonalize.LowdinIsOrthonormalAndOrderIndependent (0 ms)
+[ RUN      ] CombineOrthogonalize.LowdinRejectsCollinear
+[       OK ] CombineOrthogonalize.LowdinRejectsCollinear (0 ms)
+[ RUN      ] CombineOrthogonalize.MarginalIcZeroForCopyPositiveForNewEdge
+[       OK ] CombineOrthogonalize.MarginalIcZeroForCopyPositiveForNewEdge (5 ms)
+[ RUN      ] CombineOrthogonalize.RejectsShapeMismatch
+[       OK ] CombineOrthogonalize.RejectsShapeMismatch (0 ms)
+[----------] 6 tests from CombineOrthogonalize (7 ms total)
+
+[----------] 8 tests from RegimeCombine
+[ RUN      ] RegimeCombine.SingleRegime_ByteIdenticalToAlphaCombiner
+[       OK ] RegimeCombine.SingleRegime_ByteIdenticalToAlphaCombiner (0 ms)
+[ RUN      ] RegimeCombine.Blend_ConvexHandComputed
+[       OK ] RegimeCombine.Blend_ConvexHandComputed (0 ms)
+[ RUN      ] RegimeCombine.Blend_PosteriorExtremes
+[       OK ] RegimeCombine.Blend_PosteriorExtremes (0 ms)
+[ RUN      ] RegimeCombine.Blend_PreservesDimension
+[       OK ] RegimeCombine.Blend_PreservesDimension (0 ms)
+[ RUN      ] RegimeCombine.RegimeConditioning_SegmentsHistory
+[       OK ] RegimeCombine.RegimeConditioning_SegmentsHistory (0 ms)
+[ RUN      ] RegimeCombine.PosteriorPath_TruncationInvariant
+[       OK ] RegimeCombine.PosteriorPath_TruncationInvariant (3 ms)
+[ RUN      ] RegimeCombine.TwoRuns_ByteIdentical
+[       OK ] RegimeCombine.TwoRuns_ByteIdentical (0 ms)
+[ RUN      ] RegimeCombine.UnderPopulatedRegime_FallsBackToGlobal
+[       OK ] RegimeCombine.UnderPopulatedRegime_FallsBackToGlobal (0 ms)
+[----------] 8 tests from RegimeCombine (5 ms total)
+
+[----------] 1 test from CombineScaffold
+[ RUN      ] CombineScaffold.NamespaceCompilesAndLinks
+[       OK ] CombineScaffold.NamespaceCompilesAndLinks (0 ms)
+[----------] 1 test from CombineScaffold (0 ms total)
+
+[----------] 12 tests from SignalCombiner
+[ RUN      ] SignalCombiner.StoreZScoresEachDateRow
+[       OK ] SignalCombiner.StoreZScoresEachDateRow (0 ms)
+[ RUN      ] SignalCombiner.FamaMacBethRecoversPlantedWeights
+[       OK ] SignalCombiner.FamaMacBethRecoversPlantedWeights (1 ms)
+[ RUN      ] SignalCombiner.FamaMacBethRidgeShrinksTowardZero
+[       OK ] SignalCombiner.FamaMacBethRidgeShrinksTowardZero (3 ms)
+[ RUN      ] SignalCombiner.TruncationInvarianceAllMethods
+[       OK ] SignalCombiner.TruncationInvarianceAllMethods (19 ms)
+[ RUN      ] SignalCombiner.GrinoldKahnOrthogonalIcsGiveMeanOverVariance
+[       OK ] SignalCombiner.GrinoldKahnOrthogonalIcsGiveMeanOverVariance (0 ms)
+[ RUN      ] SignalCombiner.IcirEwmaDownWeightsPureNoise
+[       OK ] SignalCombiner.IcirEwmaDownWeightsPureNoise (5 ms)
+[ RUN      ] SignalCombiner.KakushadzeResidualIsOrthogonalToLambdaAndClusters
+[       OK ] SignalCombiner.KakushadzeResidualIsOrthogonalToLambdaAndClusters (1 ms)
+[ RUN      ] SignalCombiner.KakushadzeRegressionMatchesNaDimRidgeFormula
+[       OK ] SignalCombiner.KakushadzeRegressionMatchesNaDimRidgeFormula (2 ms)
+[ RUN      ] SignalCombiner.KakushadzeFewAlphasFollowsOwnExpectedReturn
+[       OK ] SignalCombiner.KakushadzeFewAlphasFollowsOwnExpectedReturn (4 ms)
+[ RUN      ] SignalCombiner.KakushadzeFactorRegimeAutoPicksPlantedFactors
+[       OK ] SignalCombiner.KakushadzeFactorRegimeAutoPicksPlantedFactors (32 ms)
+[ RUN      ] SignalCombiner.RejectsBadWindowsAndEmptyStore
+[       OK ] SignalCombiner.RejectsBadWindowsAndEmptyStore (0 ms)
+[ RUN      ] SignalCombiner.AcceptanceSignalSpaceBeatsPnlShrinkageMvOos
+[zoo OOS IR/day] FMB=0.3456 GK=0.3325 KY=0.3268 PnL-ShrinkageMv=0.3324
+[       OK ] SignalCombiner.AcceptanceSignalSpaceBeatsPnlShrinkageMvOos (6131 ms)
+[----------] 12 tests from SignalCombiner (6205 ms total)
+
+[----------] 6 tests from CombineSignalCube
+[ RUN      ] CombineSignalCube.ExactStatisticsMatchLegacyBeforeQuantization
+[       OK ] CombineSignalCube.ExactStatisticsMatchLegacyBeforeQuantization (112 ms)
+[ RUN      ] CombineSignalCube.Float32StatisticsAreExplicitAndRoundedOnce
+[       OK ] CombineSignalCube.Float32StatisticsAreExplicitAndRoundedOnce (150 ms)
+[ RUN      ] CombineSignalCube.IncompleteWritesNeverPublishAndExistingOutputsAreProtected
+[       OK ] CombineSignalCube.IncompleteWritesNeverPublishAndExistingOutputsAreProtected (31 ms)
+[ RUN      ] CombineSignalCube.RejectsTamperingTruncationAndChunkPathSubstitution
+[       OK ] CombineSignalCube.RejectsTamperingTruncationAndChunkPathSubstitution (169 ms)
+[ RUN      ] CombineSignalCube.MembershipMaturityAndUnavailableValuesAreNotZeroFilled
+[       OK ] CombineSignalCube.MembershipMaturityAndUnavailableValuesAreNotZeroFilled (41 ms)
+[ RUN      ] CombineSignalCube.GeometryBudgetsAndQuantizerCannotSilentlyOverflow
+[       OK ] CombineSignalCube.GeometryBudgetsAndQuantizerCannotSilentlyOverflow (2 ms)
+[----------] 6 tests from CombineSignalCube (508 ms total)
+
+[----------] 8 tests from AlphaStore
+[ RUN      ] AlphaStore.EmptyStoreHasNoPeriodsNoAlphasNoMatrix
+[       OK ] AlphaStore.EmptyStoreHasNoPeriodsNoAlphasNoMatrix (0 ms)
+[ RUN      ] AlphaStore.InsertSizeGetRoundTrip
+[       OK ] AlphaStore.InsertSizeGetRoundTrip (0 ms)
+[ RUN      ] AlphaStore.AlphaIdStableAcrossGrowth
+[       OK ] AlphaStore.AlphaIdStableAcrossGrowth (0 ms)
+[ RUN      ] AlphaStore.PnlMatrixIsAlphaMajorRowMajor2x3
+[       OK ] AlphaStore.PnlMatrixIsAlphaMajorRowMajor2x3 (0 ms)
+[ RUN      ] AlphaStore.PeriodCountMismatchOnSecondInsertReturnsErr
+[       OK ] AlphaStore.PeriodCountMismatchOnSecondInsertReturnsErr (0 ms)
+[ RUN      ] AlphaStore.SingleAlphaBoundary
+[       OK ] AlphaStore.SingleAlphaBoundary (0 ms)
+[ RUN      ] AlphaStore.AllNaNStreamStoredVerbatim
+[       OK ] AlphaStore.AllNaNStreamStoredVerbatim (0 ms)
+[ RUN      ] AlphaStore.IngestStreamsRoundTrip
+[       OK ] AlphaStore.IngestStreamsRoundTrip (0 ms)
+[----------] 8 tests from AlphaStore (0 ms total)
+
+[----------] 4 tests from CombineHacTstat
+[ RUN      ] CombineHacTstat.ColumnTstats_Ma20NullRejectionFallsFromIidToNearNominal
+[CombineHacTstat] MA(20) null, T=500, 600 columns: |t|>1.96 rate NW-auto 0.1333, IID 0.6717 (nominal 0.05)
+[       OK ] CombineHacTstat.ColumnTstats_Ma20NullRejectionFallsFromIidToNearNominal (332 ms)
+[ RUN      ] CombineHacTstat.KakushadzeAndFamaMacBethTstats_AreHacOfTheirColumns
+[CombineHacTstat] Kakushadze alpha-return t: NW-auto 3.042 vs IID 8.133
+[       OK ] CombineHacTstat.KakushadzeAndFamaMacBethTstats_AreHacOfTheirColumns (3 ms)
+[ RUN      ] CombineHacTstat.IcirEwma_TstatIsIidOverSqrtVifAndFarBelowIid
+[CombineHacTstat] ICIR-EWMA on an h=21 overlapping IC: t IID 8.487 -> HAC 2.506 (VIF 11.47)
+[       OK ] CombineHacTstat.IcirEwma_TstatIsIidOverSqrtVifAndFarBelowIid (17 ms)
+[ RUN      ] CombineHacTstat.MarginalIc_TstatIsHacOfTheMarginalIcSeries
+[CombineHacTstat] marginal_ic t: site 1.3430, NW-auto on rebuilt series 1.3430, IID 4.5506
+[       OK ] CombineHacTstat.MarginalIc_TstatIsHacOfTheMarginalIcSeries (11 ms)
+[----------] 4 tests from CombineHacTstat (365 ms total)
+
+[----------] 2 tests from CombineHacTstatStoreWinsor
+[ RUN      ] CombineHacTstatStoreWinsor.ZScore_StaysWithinTheLimit_V1ReproducesTheOldRow
+[CombineHacTstatStoreWinsor] winsor 3: max |z| ZScore 3.0000, ZScoreRestandardizeV1 4.2426
+[       OK ] CombineHacTstatStoreWinsor.ZScore_StaysWithinTheLimit_V1ReproducesTheOldRow (0 ms)
+[ RUN      ] CombineHacTstatStoreWinsor.IcMatrix_WinsorizedReturnsTameAnOutlier_RawV1Reproduces
+[CombineHacTstatStoreWinsor] IC clean 0.3963, raw-with-outlier -0.1039, winsorized 0.1191
+[       OK ] CombineHacTstatStoreWinsor.IcMatrix_WinsorizedReturnsTameAnOutlier_RawV1Reproduces (0 ms)
+[----------] 2 tests from CombineHacTstatStoreWinsor (0 ms total)
+
+[----------] 6 tests from CombineInferenceConfig
+[ RUN      ] CombineInferenceConfig.PublicCombinersRestoreLegacyInferenceAndRawReturns
+[       OK ] CombineInferenceConfig.PublicCombinersRestoreLegacyInferenceAndRawReturns (11 ms)
+[ RUN      ] CombineInferenceConfig.DeclaredHorizonCalibratesOverlappingNull
+[CombineInferenceConfig] MA(20) null, n=1750, reps=2000, rejection=0.0630
+[CombineInferenceConfig] paired obsolete Uniform/NW-plugin: rejected=141, fallbacks=0, average lag=30.98; HH lag=20
+[       OK ] CombineInferenceConfig.DeclaredHorizonCalibratesOverlappingNull (4509 ms)
+[ RUN      ] CombineInferenceConfig.HorizonChangesWeightedHaircutAndValidatesBoundary
+[       OK ] CombineInferenceConfig.HorizonChangesWeightedHaircutAndValidatesBoundary (16 ms)
+[ RUN      ] CombineInferenceConfig.UnsupportedOverlapDoesNotCreateInfiniteSignificance
+[       OK ] CombineInferenceConfig.UnsupportedOverlapDoesNotCreateInfiniteSignificance (0 ms)
+[ RUN      ] CombineInferenceConfig.UnequalDecayWeightsUseDirectSandwichVariance
+[       OK ] CombineInferenceConfig.UnequalDecayWeightsUseDirectSandwichVariance (11 ms)
+[ RUN      ] CombineInferenceConfig.LegacyRawTwoAlphaWeightsMatchClosedForm
+[       OK ] CombineInferenceConfig.LegacyRawTwoAlphaWeightsMatchClosedForm (5 ms)
+[----------] 6 tests from CombineInferenceConfig (4555 ms total)
+
+[----------] 5 tests from CombineWalkForward
+[ RUN      ] CombineWalkForward.EmbargoCadenceAndRollingWindow
+[       OK ] CombineWalkForward.EmbargoCadenceAndRollingWindow (1 ms)
+[ RUN      ] CombineWalkForward.PointInTimeNoFutureRows
+[       OK ] CombineWalkForward.PointInTimeNoFutureRows (58 ms)
+[ RUN      ] CombineWalkForward.HysteresisSuppressesReadoption
+[       OK ] CombineWalkForward.HysteresisSuppressesReadoption (7 ms)
+[ RUN      ] CombineWalkForward.HysteresisIsScaleInvariantAcrossMethods
+[       OK ] CombineWalkForward.HysteresisIsScaleInvariantAcrossMethods (265 ms)
+[ RUN      ] CombineWalkForward.RejectsBadConfig
+[       OK ] CombineWalkForward.RejectsBadConfig (1 ms)
+[----------] 5 tests from CombineWalkForward (334 ms total)
+
+[----------] 3 tests from CombineDecayFit
+[ RUN      ] CombineDecayFit.ExactExponentialIsRecovered
+[       OK ] CombineDecayFit.ExactExponentialIsRecovered (0 ms)
+[ RUN      ] CombineDecayFit.SignFlipTruncatesAndFlatIsInfinite
+[       OK ] CombineDecayFit.SignFlipTruncatesAndFlatIsInfinite (0 ms)
+[ RUN      ] CombineDecayFit.LaggedIcOfAr1SignalRecoversHalfLife
+[       OK ] CombineDecayFit.LaggedIcOfAr1SignalRecoversHalfLife (80 ms)
+[----------] 3 tests from CombineDecayFit (80 ms total)
+
+[----------] 2 tests from GateVerdictLayout
+[ RUN      ] GateVerdictLayout.HistogramIndicesAreFrozen
+[       OK ] GateVerdictLayout.HistogramIndicesAreFrozen (0 ms)
+[ RUN      ] GateVerdictLayout.EnumeratorCountIsEight
+[       OK ] GateVerdictLayout.EnumeratorCountIsEight (0 ms)
+[----------] 2 tests from GateVerdictLayout (0 ms total)
+
+[----------] 1 test from GateDeflationSentinels
+[ RUN      ] GateDeflationSentinels.DefaultsAreInert
+[       OK ] GateDeflationSentinels.DefaultsAreInert (0 ms)
+[----------] 1 test from GateDeflationSentinels (0 ms total)
+
+[----------] 6 tests from AlphaGateDsr
+[ RUN      ] AlphaGateDsr.OffPathZeroFloorPreservesVerdict
+[       OK ] AlphaGateDsr.OffPathZeroFloorPreservesVerdict (0 ms)
+[ RUN      ] AlphaGateDsr.OnPathBelowFloorRejects
+[       OK ] AlphaGateDsr.OnPathBelowFloorRejects (0 ms)
+[ RUN      ] AlphaGateDsr.OnPathAboveFloorPasses
+[       OK ] AlphaGateDsr.OnPathAboveFloorPasses (0 ms)
+[ RUN      ] AlphaGateDsr.InertSentinelClearsAnyFloor
+[       OK ] AlphaGateDsr.InertSentinelClearsAnyFloor (0 ms)
+[ RUN      ] AlphaGateDsr.TwiceRunSameVerdict
+[       OK ] AlphaGateDsr.TwiceRunSameVerdict (0 ms)
+[ RUN      ] AlphaGateDsr.SeqEqualsParallel
+[       OK ] AlphaGateDsr.SeqEqualsParallel (1 ms)
+[----------] 6 tests from AlphaGateDsr (2 ms total)
+
+[----------] 6 tests from AlphaGatePbo
+[ RUN      ] AlphaGatePbo.OffPathUnitCeilingPreservesVerdict
+[       OK ] AlphaGatePbo.OffPathUnitCeilingPreservesVerdict (0 ms)
+[ RUN      ] AlphaGatePbo.OnPathAboveCeilingRejects
+[       OK ] AlphaGatePbo.OnPathAboveCeilingRejects (0 ms)
+[ RUN      ] AlphaGatePbo.OnPathBelowCeilingPasses
+[       OK ] AlphaGatePbo.OnPathBelowCeilingPasses (0 ms)
+[ RUN      ] AlphaGatePbo.InertSentinelClearsAnyCeiling
+[       OK ] AlphaGatePbo.InertSentinelClearsAnyCeiling (0 ms)
+[ RUN      ] AlphaGatePbo.TwiceRunSameVerdict
+[       OK ] AlphaGatePbo.TwiceRunSameVerdict (0 ms)
+[ RUN      ] AlphaGatePbo.SeqEqualsParallel
+[       OK ] AlphaGatePbo.SeqEqualsParallel (0 ms)
+[----------] 6 tests from AlphaGatePbo (0 ms total)
+
+[----------] 5 tests from AlphaGateSplit
+[ RUN      ] AlphaGateSplit.OffPathFlagFalsePreservesVerdict
+[       OK ] AlphaGateSplit.OffPathFlagFalsePreservesVerdict (0 ms)
+[ RUN      ] AlphaGateSplit.OnPathUnstableRejects
+[       OK ] AlphaGateSplit.OnPathUnstableRejects (0 ms)
+[ RUN      ] AlphaGateSplit.InertFlagNeverRejectsUnstable
+[       OK ] AlphaGateSplit.InertFlagNeverRejectsUnstable (0 ms)
+[ RUN      ] AlphaGateSplit.TwiceRunSameVerdict
+[       OK ] AlphaGateSplit.TwiceRunSameVerdict (0 ms)
+[ RUN      ] AlphaGateSplit.SeqEqualsParallel
+[       OK ] AlphaGateSplit.SeqEqualsParallel (0 ms)
+[----------] 5 tests from AlphaGateSplit (0 ms total)
+
+[----------] 1 test from AlphaGateDeflationOrder
+[ RUN      ] AlphaGateDeflationOrder.DsrBeforePboBeforeSplit
+[       OK ] AlphaGateDeflationOrder.DsrBeforePboBeforeSplit (0 ms)
+[----------] 1 test from AlphaGateDeflationOrder (0 ms total)
+
+[----------] 1 test from RegimeStackWire
+[ RUN      ] RegimeStackWire.PitPosteriorBlendBeatsFlatFitOutOfSample
+[RegimeStackWire] oos_mean_regime=0.005 oos_mean_flat=0.0025 oos_sharpe_regime=5 oos_sharpe_flat=2.49946
+[       OK ] RegimeStackWire.PitPosteriorBlendBeatsFlatFitOutOfSample (12 ms)
+[----------] 1 test from RegimeStackWire (12 ms total)
+
+[----------] Global test environment tear-down
+[==========] 243 tests from 44 test suites ran. (13259 ms total)
+[  PASSED  ] 243 tests.

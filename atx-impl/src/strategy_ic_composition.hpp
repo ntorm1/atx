@@ -43,6 +43,11 @@ struct IcCompositionResult {
   // NaN, as `signal` is built) and per date the fast themes' share of the theme mass in force
   // over the themes with a present member at that date (0 when none has one; Ruling PM8-16 #9).
   std::vector<atx::f64> sleeve_fast, sleeve_slow, sleeve_fast_share;
+  // theme-cov-hedge-v1 (P9 lane AL-COMB; empty unless set_theme_hedge ran): the date index of each
+  // hedge block start and, per theme index, the hedge ratio h in force from it to the next block
+  // start (add_theme_hedged; the IC runner prints them, ruling ALCOMB-5 S-3).
+  std::vector<atx::usize> hedge_block;
+  std::vector<std::vector<atx::f64>> hedge_ratio;
 };
 // Conservative owned allocation envelope, including result + scratch and bounded
 // candidate strings. Excludes caller Panel, VM, labels and incoming signal.
@@ -59,9 +64,12 @@ struct IcCompositionResult {
 // One theme grouping first (redistribute: ew-theme-v6's within-theme-v1; standardise:
 // ew-theme-std-v1's per-date rule, which every theme_standardise row runs), then on standardise
 // either residualise (theme-resid-v1) or schedule (theme-tsmom-v1) and/or sleeves
-// (two-speed-v1). Each kind at most once, in this enum's order; no stage = the pinned (or
-// default) weights path.
-enum class IcStageKind : atx::u8 { redistribute, standardise, residualise, schedule, sleeves };
+// (two-speed-v1), or schedule and/or hedge (theme-cov-hedge-v1, P9 lane AL-COMB; not with
+// sleeves). Each kind at most once, in this enum's order; no stage = the pinned (or default)
+// weights path.
+enum class IcStageKind : atx::u8 {
+  redistribute, standardise, residualise, schedule, sleeves, hedge
+};
 struct IcStage {
   IcStageKind kind{};
   std::vector<IcThemeBlock> blocks; // schedule only: the blocks schedule_theme_masses takes
@@ -77,7 +85,8 @@ struct IcCompositionStages {
 };
 // ic_composition_working_bytes of a staged composition: the grouping's rule (residualise when a
 // residualise stage rides on standardise), `themes` the grouping's theme count (0 without one) and
-// the sleeve planes iff a sleeves stage is present. The model is the composition's peak: one
+// the sleeve planes iff a sleeves stage is present, plus theme_hedge_working_bytes iff a hedge
+// stage is (strategy_ic_theme_hedge.hpp). The model is the composition's peak: one
 // theme plane set per theme beside the blend (the worst single candidate's VM slots are admitted
 // by the caller, strategy_ic_admission.cpp). Refuses (InvalidArgument) a malformed stage order
 // and themes without a grouping stage, as create_from_stages does.
@@ -172,6 +181,16 @@ class IcComposition {
   // (InvalidArgument) under another rule, after finish or on a malformed flag row; OutOfRange when
   // the planes exceed the working budget. Nothing is kept on refusal.
   [[nodiscard]] atx::core::Status set_theme_sleeves(std::span<const atx::u8> fast);
+  // theme-cov-hedge-v1 (P9 lane AL-COMB, strategy_ic_theme_hedge.hpp): optional, before finish,
+  // IcThemeRule::standardise only, without theme sleeves. `session_returns` (taken; dates x names,
+  // date-major): each name's valid simple return over the sessions (s - 1, s], NaN when invalid.
+  // finish then adds, per theme and date, the mass in force times the theme's hedged re-rank
+  // (add_theme_hedged) in place of its re-rank; a date before the hedge ratio's first estimate adds
+  // the re-rank itself, bit for bit. A composition created from a stage list with a hedge stage
+  // refuses finish until this is called. Refuses (InvalidArgument) under another rule, with
+  // sleeves, after finish or on a shape mismatch; OutOfRange when the hedge's planes exceed the
+  // working budget. Nothing is kept on refusal.
+  [[nodiscard]] atx::core::Status set_theme_hedge(std::vector<atx::f64> session_returns);
  private:
   struct Impl;
   explicit IcComposition(std::unique_ptr<Impl>);

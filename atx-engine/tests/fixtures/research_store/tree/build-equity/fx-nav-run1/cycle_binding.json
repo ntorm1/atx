@@ -1,0 +1,7 @@
+{
+  "schema": "atx.cycle-nav-binding/v1",
+  "output": "build-equity/fx-nav",
+  "spec_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "spec_rule": "spec-digest-v1",
+  "argv_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

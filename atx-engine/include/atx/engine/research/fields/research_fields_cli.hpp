@@ -9,7 +9,9 @@
 // Without --registry (the engine path of prepare_research_fields_engine.py; unchanged contract):
 // SPEC is atx.research-fields-spec/v1
 //   {"schema", "role": {"dir", "manifest_sha256"}, "output_dir", "fields": [name, ...],
-//    "finra": dir (required with si_shares / si_dtc)}
+//    "finra": dir (required with si_shares / si_dtc),
+//    "price_source": the role's vendor TickerHistory3 parquet (required with the vendor-panel
+//    kinds, registry.hpp; optional key, P9 A3: a spec without it parses and builds as before)}
 // and each field name names its builder kind (registry.hpp). Every field is written to
 // output_dir/<name>.f64, created exclusively (an existing file is never replaced). After the last
 // field closes, RECEIPT (atx.research-fields-receipt/v1) is created exclusively: one entry per
@@ -17,9 +19,10 @@
 // formula_sha256, sources, coverage (member quantiles included; for the FINRA fields the
 // vintage_risk block), source_checks (sealed rows counted under rows_sealed_dropped) and extra
 // (FINRA) -- plus the engine identity {name, fields, exe_sha256, git_sha, build_type} (K-P9-3), the
-// spec's SHA-256 and the research window. A run that fails leaves no receipt: here the receipt is the publish-last
-// marker of a complete build. prepare_research_fields_engine.py reads it, writes the manifest
-// entries from it and stamps each engine entry's producer block from its engine identity.
+// spec's SHA-256 and the research window. A run that fails leaves no receipt: here the receipt is
+// the publish-last marker of a complete build. prepare_research_fields_engine.py reads it, writes
+// the manifest entries from it and stamps each engine entry's producer block from its engine
+// identity.
 //
 // With --registry (contract K-P9-1, schema atx.field-registry/v1): SPEC is
 // atx.research-fields-spec/v2, the v1 keys plus an optional "reuse": {"dir", "manifest_sha256"?};

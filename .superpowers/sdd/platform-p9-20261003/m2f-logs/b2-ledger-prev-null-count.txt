@@ -1,0 +1,1 @@
+trial ledger lines 133: prev_sha256 key absent 37, null 0, non-null (chained) 96

@@ -1,0 +1,14 @@
+{
+  "files": {
+    "constituents.parquet": {
+      "bytes": 3448,
+      "sha256": "223b7cc96e375e0bfb848232e06f53d9ed4fdfb78795ca45568a12f7ba9a1cb4"
+    }
+  },
+  "rule": [
+    "russell-proxy-v1",
+    "sp500-proxy-v1"
+  ],
+  "schema": "atx.alpha-panel.indexes/v1",
+  "status": "complete"
+}

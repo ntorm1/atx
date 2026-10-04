@@ -1,0 +1,32 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = AlphaLitGolden_ExistingOps.*
+[==========] Running 3 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 3 tests from AlphaLitGolden_ExistingOps
+[ RUN      ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned
+[lit-golden] vm_audit_exact=0x971c3da60ca89aa3 vm_research_fast=0xe9e7128fd5359900 oracle=0x971c3da60ca89aa3
+[       OK ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned (246 ms)
+[ RUN      ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeVmMatchesOracle
+atx-engine\tests\alpha\alpha_lit_golden_test.cpp(386): error: Expected equality of these values:
+  tolerance_mismatch(vr1, va)
+    Which is: "cell 145 (t=12, j=1): 0000000000000000 (0) vs 7ff8000000000000 (nan)"
+  ""
+ResearchFast outside its 1e-9 contract
+Google Test trace:
+atx-engine\tests\alpha\alpha_lit_golden_test.cpp(358): ts_zscore(fund, 5)
+
+[  FAILED  ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeVmMatchesOracle (203 ms)
+[ DISABLED ] AlphaLitGolden_ExistingOps.DISABLED_PerRowDigestDump
+[ RUN      ] AlphaLitGolden_ExistingOps.BatteryCoversEveryPreW2NamedOp
+[       OK ] AlphaLitGolden_ExistingOps.BatteryCoversEveryPreW2NamedOp (0 ms)
+[----------] 3 tests from AlphaLitGolden_ExistingOps (450 ms total)
+
+[----------] Global test environment tear-down
+[==========] 3 tests from 1 test suite ran. (451 ms total)
+[  PASSED  ] 2 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeVmMatchesOracle
+
+ 1 FAILED TEST
+  YOU HAVE 1 DISABLED TEST
+

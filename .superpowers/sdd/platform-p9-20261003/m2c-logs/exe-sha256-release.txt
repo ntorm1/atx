@@ -1,0 +1,9 @@
+Release exes (build-equity-rel/bin, p9-1y / p9-1z, source f6444417) used by every release-* log in this dir:
+6cbbb270e4dce2a77c8127ae2f672df72e2317ff381903be86d81bb0c1e5c62d  atx-engine-alpha-tests.exe
+0b272c77924090a24909dc214d2b967815d09f1d99da94ae942b56da4bedcee6  atx-engine-factory-tests.exe
+75229f9f7ff37b49312ef07125aa1fffbb8a696a816643896185be49452ae4a9  atx-impl-strategy-ic-tests.exe
+3a7e10113d9d2f73728fb8383df45c026bee1c6eff45169a7c7a3018c05e8369  atx-impl-strategy-mine-tests.exe
+bf0ad80256c4afc4f084b623b4ea47dd1aef49d85248822e9f379050df2bc81d  atx-equity-strategy-ic.exe
+dd4fc00126399a6274827dfacf540f0dec4ed35681827c1d202ebfeca983a835  atx-equity-strategy-targets.exe
+eaa49257930aa984ecf465f37a6bffc14bfa19e39c5a21133678061369d3c1fd  atx-shm-worker.exe
+pre-S2 Release IC exe used by p9-m2c-cold-u-old: ea370cecbc67d8481491b45f874d8df48a7efcda2ab2500170a3f01d6d01f051 (p9-1n, 506ea123)

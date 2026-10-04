@@ -1,0 +1,140 @@
+{
+ "generator": "atx-engine/tests/fixtures/research_ledger/generate_research_ledger.py",
+ "ledger": {
+  "blank_physical_line": 12,
+  "file": "ledger.jsonl",
+  "old_window_id": "ledger-fx-v0",
+  "sha256": "a597493d25813a2f184b7349f86b56ffc1ea7f66e705a22d7e2234f830a1260c",
+  "unchained": 5,
+  "window_id": "ledger-fx-v1"
+ },
+ "schema": "atx.research-ledger-fixture/v1",
+ "values": {
+  "campaign_registry_count": 40,
+  "construction_ids": [
+   "0000000000000001",
+   "0000000000000002",
+   "0000000000000005",
+   "0000000000000006",
+   "0000000000000007",
+   "0000000000000008",
+   "0000000000000009",
+   "000000000000000a",
+   "000000000000000b",
+   "000000000000000c",
+   "000000000000000e",
+   "000000000000000f",
+   "0000000000000010",
+   "0000000000000011"
+  ],
+  "dsr_variance": {
+   "ledger-fx-v0": {
+    "cells": 1,
+    "legacy_cells": 3,
+    "legacy_variance_sr": 0.0018386243386243387,
+    "n": 12,
+    "variance_source": "sample variance (ddof 1) of 1 per-session S2 net SRs ledgered on ledger-fx-v0 (re-runs and new cells; defect-rule exclusions left out)",
+    "variance_sr": null,
+    "window_id": "ledger-fx-v0"
+   },
+   "ledger-fx-v1": {
+    "cells": 5,
+    "legacy_cells": 3,
+    "legacy_variance_sr": 0.0018386243386243387,
+    "n": 12,
+    "variance_source": "sample variance (ddof 1) of 5 per-session S2 net SRs ledgered on ledger-fx-v1 (re-runs and new cells; defect-rule exclusions left out)",
+    "variance_sr": 0.00047817460317460303,
+    "window_id": "ledger-fx-v1"
+   }
+  },
+  "excluded_lines": [
+   10
+  ],
+  "history_read_lines": [
+   15,
+   16
+  ],
+  "identities": {
+   "pool_label": "pool:navs/e1,navs/e2",
+   "pooled_sha256_one": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "pooled_sha256_two": "f17be929f2bdeac038ce591c8a20b3368bc27506aab73ddfbde47408b36c05f2",
+   "pooled_trial_id_two": "ae5f0d3d24ca4bb3",
+   "trial_id_admission_b": "75470914279bf59a",
+   "trial_id_construction_a": "c7e66614482ebe47"
+  },
+  "invalid_ids": [
+   "0000000000000008",
+   "000000000000000a"
+  ],
+  "ledger_head": "c0e7cd0eb942ff218c11f3e99b2c826ae41387443f42f967482dbc7ba16425bd",
+  "ledger_n": {
+   "admission_in": 7,
+   "construction_in": 14,
+   "construction_out": 15
+  },
+  "lines": 20,
+  "prefix_heads": [
+   "bad7b3fc76a72bb30f840535c953c52a5e1040af1959cd600ab05efc5f573cd4",
+   "db4b42c82a7d82f3ef84d7c79480f275f1cc047ae61a813fd6db8f03a20457dd",
+   "91081569d96a3f6ef47dade963c2a1435c5480699577cc5416a9bb5df3d4fa80",
+   "a51c217ea117f5d81da00f184bd59d9d1ec314e1ff09c115fab95f2cabcd007c",
+   "30444389473d51434261a0320d24a41f3b87bbeb20653d6ebc67f80cb8067db2",
+   "b5352d78d715f963077beb67a6182bdc8e090a605c6da3d8d7fb3ddb853431c4",
+   "fac7cdec0d35584b7e58d7a69cb64254c1235c947b4a16ccad80011fecd24296",
+   "8a6f691d3820b497555055c1f358c51ee12084f92e15aaa4537b5d3c4f38461e",
+   "21aca8d9d9e2b9b6ae5849c10cf3b14b3b61f9b8e199e581bdcafcc34b44fa35",
+   "7c0a40c4455fbf0641017c4d621cfde2abe5ab98978617747b7bb428bed2ab07",
+   "fe3dba42666be3e4daa1cab0737dd79143d4c9131fe4ba03f326aa129a2b4e37",
+   "5deb40efbb5a36fb7660415a1988c968698d7cd4c958b2f20fe9094451905cc7",
+   "94e78d6ea0733406835e5f2dc1354ae0d35674f53dd01c79cf890c18f51fe4e1",
+   "e798981a04851a3455df1d47ca3fc70766ab7b429598fdaa21c5b2d94afdb250",
+   "d07fd86f77339d190f7b730e493933e390411059bf2f80195c5a54cc6db307dd",
+   "8d9f06cf08741ef901e4888ef189eb1df4d1166512a90bcc94bd8e36be6edfc6",
+   "396eca38d68ad5e2c01872189af64138c4e6606e24099190b43804b0845772b8",
+   "9d19d39ae925b58cd18acd26b7c4c8dd8f7ed7361f6eb2f7061ce777072f5162",
+   "525b0312479a77a15d1eb9330c6aba762584940876b8e9885910962fcdcc02e3",
+   "c0e7cd0eb942ff218c11f3e99b2c826ae41387443f42f967482dbc7ba16425bd"
+  ],
+  "prefix_length": {
+   "0000000000000001": 1,
+   "0000000000000006": 7,
+   "000000000000000a": 11,
+   "000000000000000b": 13,
+   "000000000000000c": 14,
+   "0000000000000010": 18,
+   "0000000000000011": 20,
+   "ffffffffffffffff": null
+  },
+  "trial_breakdown": {
+   "by_kind": {
+    "admission": 5,
+    "construction": 14
+   },
+   "campaign_registry": 40,
+   "ledger_trials": 19,
+   "n_tot": 59
+  },
+  "trial_counts": [
+   1,
+   1,
+   5,
+   2,
+   1,
+   0,
+   1,
+   1,
+   1,
+   0,
+   1,
+   0,
+   0,
+   1,
+   0,
+   0,
+   0,
+   1,
+   0,
+   3
+  ]
+ }
+}

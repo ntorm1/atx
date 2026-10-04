@@ -1,0 +1,8 @@
+Debug exes (build-equity/bin, p9-1x, source f6444417) used by every Debug log in this dir:
+eb4754a5bcff84713df7f8612fd86b4e703444f5bec94884f1f7994a7daf1d8c  atx-engine-alpha-tests.exe
+df82db10658fffed8f6cab89dae62cd39144bba09ceaffd76ebd09742a966856  atx-engine-factory-tests.exe
+7ebef90cd57da8f6dbba085b476569876f450f8447642258fc58c0ee682b62b3  atx-impl-strategy-ic-tests.exe
+43b8fe9cd0890d2886bd793e28c4abe63d74fd9a973bb7d0fb07fccb8007c2fd  atx-impl-strategy-mine-tests.exe
+73a6b4fdff079434aa334447161e36b1929cb0dcc3202aed3b2cb575b9c519ed  atx-equity-strategy-ic.exe
+37b3bed35f17976eabd9ed575190f7b54c210270aac64486bb1e08437dd12b05  atx-equity-strategy-targets.exe
+3b955ba10b10c7c8ae5eaded03e4024f57e4fbcf8b8683e8d8078e038bde9757  atx-research-store.exe

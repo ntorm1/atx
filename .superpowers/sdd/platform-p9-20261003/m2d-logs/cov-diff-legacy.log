@@ -1,0 +1,2 @@
+legacy equal: 1405 sessions factor_covariance.f64 specific_variance.f64 style_exposures.f32 industry_slot.u8
+cov-diff --legacy exit 0

@@ -164,16 +164,16 @@ document (composition_resid.apply); one era equals the single window for each.
 v8 X (lane XCOMB) ``--theme-erc theme-erc-v1`` (composition_theme_erc; single window, --composition ew-theme-std-v1 or
 ic-shrink-v1, not with --theme-resid): the parent's pre-cap within-theme shares times equal-risk-contribution theme
 shares of the theme sleeves' TRAIN covariance, then the member cap 1/(2T); the block and provenance.theme_erc replace
-the parent's block and provenance.rule. Absent: every byte as before (but script_sha256).
+the parent's block and provenance.rule. Absent: every byte as before (but producer_fingerprint).
 v8 Y (lane YCOMB) ``--theme-tsmom theme-tsmom-v1`` (composition_theme_tsmom; single window, --composition
 ew-theme-std-v1 or ic-shrink-v1 with or without --theme-erc, not with --theme-resid): a walk-forward theme mass
 schedule (every 21 decisions from decision 254, a theme whose sleeve's trailing 252-decision return is not positive
 gets mass 0); the top-level theme_schedule block and provenance.theme_tsmom are added, weights, signs, the
-theme_standardise block and provenance.rule stay the parent's. Absent: every byte as before (but script_sha256).
+theme_standardise block and provenance.rule stay the parent's. Absent: every byte as before (but producer_fingerprint).
 v8 Y-5 (lane YCOMB) ``--two-speed two-speed-v1`` (composition_two_speed; single window, a standardised composition,
 not with --theme-resid): writes only the spec block theme_sleeves {rule: two-speed-v1} (Ruling PM8-12: the rule is the
 IC runner's and the engine's); the w pass then saves the fast and slow sleeves and nav --two-speed trades them.
-Absent: every byte as before (but script_sha256).
+Absent: every byte as before (but producer_fingerprint).
 Exit codes: 0 complete; 1 refused (nothing published); 3 incomplete (rerun); 4 admission published,
 no weights (nothing admitted or no positive weight). Numpy only, single-threaded BLAS.
 """
@@ -217,6 +217,9 @@ import composition_resid  # noqa: E402  (v8 R-11: --theme-resid theme-resid-v1, 
 import composition_theme_erc  # noqa: E402  (v8 X, lane XCOMB: --theme-erc theme-erc-v1, ERC theme shares)
 import composition_theme_tsmom  # noqa: E402  (v8 Y, lane YCOMB: --theme-tsmom theme-tsmom-v1, theme schedule)
 import composition_two_speed  # noqa: E402  (v8 Y-5, lane YCOMB: --two-speed two-speed-v1, fast/slow sleeves)
+import composition_engine_fit  # noqa: E402  (P9 D2: --engine-fit, the C++ admission check and fit values)
+import composition_mom_volman  # noqa: E402  (P9 AL-COMB: --mom-volman mom-volman-v1, momentum mass schedule)
+import composition_theme_hedge  # noqa: E402  (P9 AL-COMB: --theme-hedge theme-cov-hedge-v1, spec block only)
 
 RULE_ID = "mv-shrink-0.9-nonneg-v1"
 # Root preregistration (before any v3 measurement): the same fit with a net mean vector,
@@ -269,7 +272,8 @@ POOLED_THEME_RESID = (composition_resid.RULE_ID,)
 # P9 lane D1: the modifier rules (each a flag on a prior parent fit, in its own module), in argparse order; the ones
 # that check their parents (check_args(args, prior, pooled, error)) run in this order, after theme-resid-v1's checks
 # (composition_resid.PRIOR_ONLY and require_resid_order). A new modifier is one module appended here.
-PARENT_CHECKED_MODIFIERS = (composition_theme_erc, composition_theme_tsmom, composition_two_speed)
+PARENT_CHECKED_MODIFIERS = (composition_theme_erc, composition_theme_tsmom, composition_two_speed,
+                            composition_mom_volman, composition_theme_hedge)  # P9 AL-COMB: the last two
 MODIFIER_MODULES = (composition_resid,) + PARENT_CHECKED_MODIFIERS
 AIM_FIT_SERIES = ("none (aim-scaled equal theme weights from TRAIN signal-rank second moments); diagnostic uses "
                   "s_k*f over ALL TRAIN scored decisions, flat decisions 0")
@@ -349,7 +353,8 @@ SUMMARY_LIMIT = 16 << 20  # a runner summary.json grows with the library; bounde
 # sidecars recorded by exactly these engine builds; every other identity lives in DIR/<identity>/.
 LEGACY_VM_IDENTITY = "dslvm1_clang18.1"
 LEGACY_ENGINE_SHAS = ("429cbe43d275a49ad3cae89dfa8aa591846a2e4f", "6d85ac2a8b7aca6f28cea0e651cdcfc55d77aa29")
-# This file's SHA-256: provenance in the outputs only. Store records bind the producer fingerprints below instead.
+# This file's SHA-256: the stdout summary only (P9 lane D2, CM-5). Output bytes and store records bind the producer
+# fingerprints below instead, so an edit outside the code that writes them moves no output byte.
 SCRIPT_SHA256 = hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
 TAU_LIMIT, RHO_LIMIT = 0.70, 0.70
 MIN_FIT_DAYS, MIN_COMMON_DAYS = 250, 250
@@ -368,6 +373,9 @@ HORIZON_PRODUCERS = ("theta_book_returns",)  # in horizon_stats.py: its code is 
 CONTEXT_PRODUCERS = ("Context",)
 AIM_PRODUCERS = ("aim_record", "Context")
 AIM_ERA_PRODUCERS = ("era_aim_part", "Context")
+# P9 lane D2 (CM-5): the writing functions of admission.json and composition_weights.json. Their producer fingerprint
+# (inputs.producer_fingerprint, provenance.producer_fingerprint) replaces the whole-file script_sha256 in the outputs.
+OUTPUT_PRODUCERS = ("fit", "fit_prior")
 # Alpha registry (task A-1, atx.alpha-registry/v1): when present, its themes table is the admissible theme list.
 REGISTRY_PATH = Path(__file__).resolve().parents[1] / "strategies" / "alphas" / "registry.json"
 REGISTRY_SCHEMA = "atx.alpha-registry/v1"
@@ -2037,6 +2045,7 @@ def fit(args, log=None) -> tuple[int, dict]:
     require_resid_order(args)  # v8 R-11, finding R6C-4: the registry's themes are PRIOR_THEMES, before any compute
     for modifier in PARENT_CHECKED_MODIFIERS:  # v8 X / Y / Y-5: --theme-erc, --theme-tsmom, --two-speed's parents
         modifier.check_args(args, prior, pooled(args), FitError)
+    composition_engine_fit.check_args(args, prior, pooled(args), FitError)  # P9 D2 --engine-fit; absent: no change
     resid_parent = load_resid_parent(args)  # v8 R-11, finding R6B-O-5: pinned before anything is computed
     require((recipe_path is None) == (recipe_sha is None), "--recipe and --recipe-sha256 go together")
     netcost = args.composition == NETCOST_RULE_ID
@@ -2078,12 +2087,12 @@ def fit(args, log=None) -> tuple[int, dict]:
     hold_mask = (decision_sessions >= HOLD_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
     train_mask = (decision_sessions >= FIT_BEGIN_NS) & (decision_sessions < TRAIN_END_NS)
     report_f_theta = getattr(args, "report_f_theta", False)
-    script_sha = SCRIPT_SHA256
+    producer = producer_fingerprint(OUTPUT_PRODUCERS)  # CM-5: not this file's SHA-256 (that is in the summary only)
     inputs = {"library_sha256": args.library_sha256, "train_manifest_sha256": args.train_sha256,
               "role_source_sha256": role.source_sha256, "orientations_sha256": args.orientations_sha256,
               "orientations_recipe_sha256": orientation_recipe, "runner_summary_sha256": args.runner_summary_sha256,
               "vm_identity": layout.vm_identity, "fields_manifest_sha256": layout.fields_sha,
-              "script_sha256": script_sha, "semantics_tag": SEMANTICS_TAG, "context_sha256": context_sha}
+              "producer_fingerprint": producer, "semantics_tag": SEMANTICS_TAG, "context_sha256": context_sha}
     cache_entry = ["base" if e["fields_manifest_sha256"] is None else "fields" for e in entries]
     window = role.window()
     if pooled(args):  # v8 H-1: the other eras, then the pooled prior fit (the anchor = the --train role, last)
@@ -2218,7 +2227,7 @@ def fit(args, log=None) -> tuple[int, dict]:
             "role_source_sha256": role.source_sha256, "orientations_sha256": args.orientations_sha256,
             "orientations_recipe_sha256": orientation_recipe, "runner_summary_sha256": args.runner_summary_sha256,
             "vm_identity": layout.vm_identity, "fields_manifest_sha256": layout.fields_sha,
-            "script_sha256": script_sha,
+            "producer_fingerprint": producer,
             "semantics_tag": SEMANTICS_TAG, "context_sha256": context_sha, "window": window,
             "neutralization_refused_decisions": records[0]["context_refused"],
             "used_rows_unrefused": records[0]["context_used_rows_unrefused"],
@@ -2246,7 +2255,9 @@ def fit(args, log=None) -> tuple[int, dict]:
 # ---------------------------------------------------------------- prior weight rules (P9 lane D1)
 class PriorFitInputs(NamedTuple):
     """What a prior weight rule reads, as fit_prior holds it: the fitted members ``active`` (admission order) and the
-    per-candidate ``ids``, ``themes``, ``tiers``, admission ``rows`` and aim records ``aims`` (None unless ``aim``)."""
+    per-candidate ``ids``, ``themes``, ``tiers``, admission ``rows`` and aim records ``aims`` (None unless ``aim``).
+    ``engine`` (P9 lane D2, --engine-fit, ruling D2-1): the C++ fit's parent values for the ew-theme-std and ic-shrink
+    rules (composition_engine_fit.EngineKernels.parent), written in place of the Python's; None: the Python's."""
     active: list
     ids: list
     themes: list
@@ -2254,6 +2265,7 @@ class PriorFitInputs(NamedTuple):
     rows: list
     aims: list | None
     aim: bool
+    engine: object = None
 
 
 class PriorFit(NamedTuple):
@@ -2266,6 +2278,20 @@ class PriorFit(NamedTuple):
     fit_series: str
     parent: object = None
     v6_detail: object = None
+
+
+class Composed(NamedTuple):
+    """fit_prior's composition stage (P9 lane D2: run once, or twice under --engine-fit): the weights document and what
+    the summary and the --engine-fit check read."""
+    document: dict
+    weights: np.ndarray
+    theme_table: dict
+    std: object
+    erc: object
+    tsmom: object
+    v6_detail: object
+    weighted_tau: float
+    conflicts: list
 
 
 class PriorWeightRule(NamedTuple):
@@ -2313,7 +2339,8 @@ def _v6_fit(x: PriorFitInputs) -> PriorFit:
 def _std_fit(x: PriorFitInputs) -> PriorFit:  # v8 R-1 (and R-3's gains): rules in composition_rules.py
     std = composition_rules.ew_theme_std([x.ids[k] for k in x.active], [x.themes[k] for k in x.active],
                                          [x.tiers[k] for k in x.active], error=FitError,
-                                         gains=[x.aims[k]["gain"] for k in x.active] if x.aim else None)  # type: ignore[index]
+                                         gains=[x.aims[k]["gain"] for k in x.active] if x.aim else None,  # type: ignore[index]
+                                         engine=x.engine)
     return PriorFit(std.weights, std.theme_table, std.text, std.fit_series, parent=std)
 
 
@@ -2327,7 +2354,8 @@ def _aim_v2_fit(x: PriorFitInputs) -> PriorFit:  # v8 R-3 on ew-theme-v1 (E-27a/
 def _ic_shrink_fit(x: PriorFitInputs) -> PriorFit:  # v8 R-10: the admission rows' train_mean are the ICs
     std = composition_ic_shrink.ic_shrink([x.ids[k] for k in x.active], [x.themes[k] for k in x.active],
                                           [x.rows[k]["train_mean"] for k in x.active], error=FitError,
-                                          gains=[x.aims[k]["gain"] for k in x.active] if x.aim else None)  # type: ignore[index]
+                                          gains=[x.aims[k]["gain"] for k in x.active] if x.aim else None,  # type: ignore[index]
+                                          engine=x.engine)
     return PriorFit(std.weights, std.theme_table, std.text, std.fit_series, parent=std)
 
 
@@ -2478,106 +2506,156 @@ def fit_prior(args, library: list[dict], priors: dict, runner_signs: list[int], 
     # P9 lane D1: the prior weight rule table (PRIOR_WEIGHT_RULES) in place of the v8 if/elif; ``std`` is the parent
     # fit theme-erc-v1 and the block attach read, ``v6_detail`` ew-theme-v6's (each None for the other rules).
     rule = prior_weight_rule(args.composition)
-    prior_fit = rule.fit(PriorFitInputs(active, ids, themes, tiers, rows, aims, aim))
-    weights, theme_table, composition_text, fit_series = (prior_fit.weights, prior_fit.theme_table, prior_fit.text,
-                                                         prior_fit.fit_series)
-    std, v6_detail = prior_fit.parent, prior_fit.v6_detail
-    if rule.empty_reason is not None and not float(np.sum(weights)) > 0:  # ew-theme-v6: every member sat in a dropped
-        publish_directory(out, files)                                       # theme: admission table only
+    matrix = np.vstack([prior_signs[k] * zero_filled[k] for k in active])
+
+    def compose(engine: composition_engine_fit.EngineKernels | None = None) -> Composed | None:
+        """The composition over ``active`` and its weights document (None: ew-theme-v6 left every weight zero). P9 lane
+        D2 (ruling D2-1): ``engine``, under --engine-fit, the C++ fit's values written in place of the Python rule
+        functions' own (composition_engine_fit.kernels); None (the flag absent, and the pass the flag checks): the
+        Python's."""
+        prior_fit = rule.fit(PriorFitInputs(active, ids, themes, tiers, rows, aims, aim,
+                                            None if engine is None else engine.parent))
+        weights, theme_table, composition_text, fit_series = (prior_fit.weights, prior_fit.theme_table,
+                                                             prior_fit.text, prior_fit.fit_series)
+        std, v6_detail = prior_fit.parent, prior_fit.v6_detail
+        if rule.empty_reason is not None and not float(np.sum(weights)) > 0:
+            return None
+        erc = None
+        if getattr(args, "theme_erc", None) is not None:  # v8 X (XCOMB) theme-erc-v1 on the parent (check_args ran)
+            erc = composition_theme_erc.theme_erc(std, [ids[k] for k in active], [themes[k] for k in active], matrix,
+                                                  train_mask, args.composition, error=FitError,
+                                                  engine=None if engine is None else engine.erc)
+            weights, theme_table, composition_text, fit_series = (erc.weights, erc.theme_table, erc.text,
+                                                                 erc.fit_series)
+        for k, w in zip(active, weights):
+            weight_rows[k]["weight"] = float(w)
+        if v6:  # theme' tables carry their own member lists (merged themes); dropped members are marked
+            for k, row in enumerate(weight_rows):
+                row["theme_v6"] = V6_MERGED_THEMES.get(themes[k], themes[k])
+                if k in active and row["theme_v6"] in V6_DROPPED_THEMES:
+                    row["status"] = "fitted-theme-dropped-v6"
+        else:
+            for theme, entry in theme_table.items():
+                entry["admitted"] = [ids[k] for k in active if themes[k] == theme]
+        weighted_tau = float(sum(row["weight"] * row["tau"] for row in weight_rows))
+        conflicts = [row["id"] for row in weight_rows if row["weight"] > 0 and row["runner_sign"] != row["sign"]]
+        document = {
+            "schema": WEIGHTS_SCHEMA,
+            "library_sha256": args.library_sha256,
+            "train_manifest_sha256": args.train_sha256,
+            "signs": {row["id"]: row["sign"] for row in weight_rows if row["sign"] != 0},
+            "weights": {row["id"]: row["weight"] for row in weight_rows},
+            "provenance": {
+                "rule": args.composition,
+                "composition": composition_text,
+                "themes": theme_table, "themes_present": sorted(theme_table),
+                "themes_declared": sorted(set(themes)),
+                "themes_preregistered": list(V4_THEMES) + [t for t in priors["appended_themes"] if t in themes],
+                "screen": screen, "orientation": "prior", "admission_sha256": admission_sha,
+                "signs": f"{screen}: s_k=prior_sign=+1 embedded in the DSL; no flips; apply-pinned-signs",
+                "prior_metadata_source": priors["source"], "recipe_sha256": priors["recipe_sha256"],
+                "fit_series": fit_series,
+                "factor": FACTOR_SEMANTICS, "neutralization": CONTEXT_SEMANTICS,
+                "turnover": "tau=mean_d(sum_i|q(d)_i-q(d-1)_i|);consecutive-scored-TRAIN-decisions;"
+                            "deployment-excluded;no-price-drift",
+                "tau_limit": V4_TAU_LIMIT, "tau_flagged": [row["id"] for row in weight_rows if row["tau_over_limit"]],
+                "weighted_standalone_turnover": weighted_tau,
+                "library_sha256": args.library_sha256, "role_manifest_sha256": args.train_sha256,
+                "role_source_sha256": inputs["role_source_sha256"], "orientations_sha256": args.orientations_sha256,
+                "orientations_recipe_sha256": inputs["orientations_recipe_sha256"],
+                "runner_summary_sha256": args.runner_summary_sha256, "vm_identity": inputs["vm_identity"],
+                "fields_manifest_sha256": inputs["fields_manifest_sha256"],
+                "producer_fingerprint": inputs["producer_fingerprint"],
+                "semantics_tag": SEMANTICS_TAG, "context_sha256": inputs["context_sha256"], "window": window,
+                "neutralization_refused_decisions": records[0]["context_refused"],
+                "used_rows_unrefused": records[0]["context_used_rows_unrefused"],
+                "fitted_candidates": len(active), "sign_conflicts_weighted": conflicts,
+                "blend_in_sample_TRAIN_diagnostic": factor_stats(weights @ matrix),
+                "candidates": weight_rows,
+            },
+        }
+        if v2:
+            document["provenance"].update(
+                cost_tau_limit=V42_COST_TAU_LIMIT,
+                cost_rejected=[row["id"] for row in weight_rows if row["status"] == "reject_turnover_cost"])
+        if aim:  # ew-theme-v1 bytes carry no aim key
+            document["provenance"]["aim"] = aim_provenance(ids, themes, aims, active, weights,  # type: ignore[arg-type]
+                                                           decision_sessions, train_mask)
+        if v6:  # ew-theme-v1 / ew-theme-aim-v1 bytes carry neither key and stay schema v1
+            document["schema"] = WEIGHTS_SCHEMA_V2
+            document["theme_redistribution"] = {
+                "rule": V6_REDISTRIBUTION, "composition": V6_RULE_ID,
+                "themes": {row["id"]: row["theme_v6"] for row in weight_rows if row["weight"] > 0}}
+            document["provenance"]["v6"] = v6_provenance(v6_detail, theme_table, admission_sha, args, inputs,
+                                                         priors["recipe_sha256"])
+        if args.composition in composition_rules.STD_RULES:  # schema v2, theme_standardise block, provenance.std
+            composition_rules.attach_std(document, std)
+        if args.composition in composition_ic_shrink.RULES:  # schema v2, its theme_standardise, provenance.ic_shrink
+            composition_ic_shrink.attach(document, std)
+        if erc is not None:  # v8 X (XCOMB): the theme-erc-v1 block replaces the parent's; provenance.theme_erc
+            composition_theme_erc.attach(document, erc)
+            summary["theme_erc"] = {"parent_rule": args.composition,
+                                    "theme_shares": erc.provenance["theme_shares"]}
+        tsmom = None
+        if getattr(args, "theme_tsmom", None) is not None:  # v8 Y (YCOMB): the schedule on the final weights
+            tsmom = composition_theme_tsmom.schedule(
+                [ids[k] for k in active], [themes[k] for k in active], weights, matrix, decision_sessions, train_mask,
+                composition_theme_erc.RULE_ID if erc is not None else args.composition, error=FitError,
+                engine=None if engine is None else engine.tsmom)
+            composition_theme_tsmom.attach(document, tsmom)
+            summary["theme_tsmom"] = tsmom.summary
+        if getattr(args, "two_speed", None) is not None:  # v8 Y-5 (YCOMB): the spec block only (check_args ran)
+            composition_two_speed.attach(document, error=FitError)
+            summary["two_speed"] = document[composition_two_speed.BLOCK]
+        if getattr(args, "mom_volman", None) is not None:  # P9 AL-COMB: the recorded momentum sleeve (check_args ran)
+            volman = composition_mom_volman.schedule(
+                [ids[k] for k in active], [themes[k] for k in active], weights, matrix, decision_sessions, train_mask,
+                composition_theme_erc.RULE_ID if erc is not None else args.composition, error=FitError)
+            composition_mom_volman.attach(document, volman)
+            summary["mom_volman"] = volman.summary
+        if getattr(args, "theme_hedge", None) is not None:  # P9 AL-COMB: the spec block only (check_args ran)
+            composition_theme_hedge.attach(document, error=FitError)
+            summary["theme_hedge"] = document[composition_theme_hedge.BLOCK]
+        # v8 R-11 --theme-resid (theme order: PRIOR_THEMES, Ruling PM4-11; --theme-resid-parent: finding R6B-O-5);
+        # absent: no change
+        composition_resid.apply(args, document, summary, PRIOR_THEMES, FitError, parent=resid_parent,
+                                admission=files[OUTPUT_ADMISSION])
+        if pool is not None:  # v8 H-1
+            document["provenance"]["pool"] = pool["block"]
+        return Composed(document, weights, theme_table, std, erc, tsmom, v6_detail, weighted_tau, conflicts)
+
+    built = compose()
+    if built is None:  # ew-theme-v6: every member sat in a dropped theme: admission table only
+        publish_directory(out, files)
         summary.update(status="published-without-weights", reason=rule.empty_reason,
                        files={n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())},
                        seconds=round(time.perf_counter() - started, 2))
         return EXIT_NO_WEIGHTS, summary
-    erc = None
-    if getattr(args, "theme_erc", None) is not None:  # v8 X (XCOMB) theme-erc-v1 on the parent fit (check_args ran)
-        erc = composition_theme_erc.theme_erc(std, [ids[k] for k in active], [themes[k] for k in active],
-                                              np.vstack([prior_signs[k] * zero_filled[k] for k in active]),
-                                              train_mask, args.composition, error=FitError)
-        weights, theme_table, composition_text, fit_series = erc.weights, erc.theme_table, erc.text, erc.fit_series
-    for k, w in zip(active, weights):
-        weight_rows[k]["weight"] = float(w)
-    if v6:  # theme' tables carry their own member lists (merged themes); dropped members are marked
-        for k, row in enumerate(weight_rows):
-            row["theme_v6"] = V6_MERGED_THEMES.get(themes[k], themes[k])
-            if k in active and row["theme_v6"] in V6_DROPPED_THEMES:
-                row["status"] = "fitted-theme-dropped-v6"
-    else:
-        for theme, entry in theme_table.items():
-            entry["admitted"] = [ids[k] for k in active if themes[k] == theme]
-    matrix = np.vstack([prior_signs[k] * zero_filled[k] for k in active])
-    weighted_tau = float(sum(row["weight"] * row["tau"] for row in weight_rows))
-    conflicts = [row["id"] for row in weight_rows if row["weight"] > 0 and row["runner_sign"] != row["sign"]]
-    document = {
-        "schema": WEIGHTS_SCHEMA,
-        "library_sha256": args.library_sha256,
-        "train_manifest_sha256": args.train_sha256,
-        "signs": {row["id"]: row["sign"] for row in weight_rows if row["sign"] != 0},
-        "weights": {row["id"]: row["weight"] for row in weight_rows},
-        "provenance": {
-            "rule": args.composition,
-            "composition": composition_text,
-            "themes": theme_table, "themes_present": sorted(theme_table),
-            "themes_declared": sorted(set(themes)),
-            "themes_preregistered": list(V4_THEMES) + [t for t in priors["appended_themes"] if t in themes],
-            "screen": screen, "orientation": "prior", "admission_sha256": admission_sha,
-            "signs": f"{screen}: s_k=prior_sign=+1 embedded in the DSL; no flips; apply-pinned-signs",
-            "prior_metadata_source": priors["source"], "recipe_sha256": priors["recipe_sha256"],
-            "fit_series": fit_series,
-            "factor": FACTOR_SEMANTICS, "neutralization": CONTEXT_SEMANTICS,
-            "turnover": "tau=mean_d(sum_i|q(d)_i-q(d-1)_i|);consecutive-scored-TRAIN-decisions;"
-                        "deployment-excluded;no-price-drift",
-            "tau_limit": V4_TAU_LIMIT, "tau_flagged": [row["id"] for row in weight_rows if row["tau_over_limit"]],
-            "weighted_standalone_turnover": weighted_tau,
-            "library_sha256": args.library_sha256, "role_manifest_sha256": args.train_sha256,
-            "role_source_sha256": inputs["role_source_sha256"], "orientations_sha256": args.orientations_sha256,
-            "orientations_recipe_sha256": inputs["orientations_recipe_sha256"],
-            "runner_summary_sha256": args.runner_summary_sha256, "vm_identity": inputs["vm_identity"],
-            "fields_manifest_sha256": inputs["fields_manifest_sha256"], "script_sha256": inputs["script_sha256"],
-            "semantics_tag": SEMANTICS_TAG, "context_sha256": inputs["context_sha256"], "window": window,
-            "neutralization_refused_decisions": records[0]["context_refused"],
-            "used_rows_unrefused": records[0]["context_used_rows_unrefused"],
-            "fitted_candidates": len(active), "sign_conflicts_weighted": conflicts,
-            "blend_in_sample_TRAIN_diagnostic": factor_stats(weights @ matrix),
-            "candidates": weight_rows,
-        },
-    }
-    if v2:
-        document["provenance"].update(
-            cost_tau_limit=V42_COST_TAU_LIMIT,
-            cost_rejected=[row["id"] for row in weight_rows if row["status"] == "reject_turnover_cost"])
-    if aim:  # ew-theme-v1 bytes carry no aim key
-        document["provenance"]["aim"] = aim_provenance(ids, themes, aims, active, weights,  # type: ignore[arg-type]
-                                                       decision_sessions, train_mask)
-    if v6:  # ew-theme-v1 / ew-theme-aim-v1 bytes carry neither key and stay schema v1
-        document["schema"] = WEIGHTS_SCHEMA_V2
-        document["theme_redistribution"] = {
-            "rule": V6_REDISTRIBUTION, "composition": V6_RULE_ID,
-            "themes": {row["id"]: row["theme_v6"] for row in weight_rows if row["weight"] > 0}}
-        document["provenance"]["v6"] = v6_provenance(v6_detail, theme_table, admission_sha, args, inputs,
-                                                     priors["recipe_sha256"])
-    if args.composition in composition_rules.STD_RULES:  # schema v2, theme_standardise block, provenance.std
-        composition_rules.attach_std(document, std)
-    if args.composition in composition_ic_shrink.RULES:  # schema v2, its theme_standardise, provenance.ic_shrink
-        composition_ic_shrink.attach(document, std)
-    if erc is not None:  # v8 X (XCOMB): the theme-erc-v1 block replaces the parent's; provenance.theme_erc
-        composition_theme_erc.attach(document, erc)
-        summary["theme_erc"] = {"parent_rule": args.composition,
-                                "theme_shares": erc.provenance["theme_shares"]}
-    if getattr(args, "theme_tsmom", None) is not None:  # v8 Y (YCOMB): the schedule on the final weights (check_args ran)
-        tsmom = composition_theme_tsmom.schedule(
-            [ids[k] for k in active], [themes[k] for k in active], weights, matrix, decision_sessions, train_mask,
-            composition_theme_erc.RULE_ID if erc is not None else args.composition, error=FitError)
-        composition_theme_tsmom.attach(document, tsmom)
-        summary["theme_tsmom"] = tsmom.summary
-    if getattr(args, "two_speed", None) is not None:  # v8 Y-5 (YCOMB): the spec block only (check_args ran)
-        composition_two_speed.attach(document, error=FitError)
-        summary["two_speed"] = document[composition_two_speed.BLOCK]
-    # v8 R-11 --theme-resid (theme order: PRIOR_THEMES, Ruling PM4-11; --theme-resid-parent: finding R6B-O-5); absent:
-    # no change
-    composition_resid.apply(args, document, summary, PRIOR_THEMES, FitError, parent=resid_parent,
-                            admission=files[OUTPUT_ADMISSION])
-    if pool is not None:  # v8 H-1
-        document["provenance"]["pool"] = pool["block"]
+    if getattr(args, "engine_fit", False):  # P9 D2 (ruling D2-1): the C++ must agree, then its values are written
+        std = built.std
+        check, kernels = composition_engine_fit.verify(args, composition_engine_fit.FitterState(
+            library_ids=ids, factors=factors, taus=list(taus), decision_sessions=decision_sessions,
+            role_sha256=args.train_sha256, screen=screen, admission_bytes=files[OUTPUT_ADMISSION],
+            admission_csv=admission_csv(candidates, V4_CSV_COLUMNS), admitted=admission["admitted"],
+            counts=admission["counts"], sign_conflicts=admission["sign_conflicts"], composition=args.composition,
+            members=[ids[k] for k in active], themes=[themes[k] for k in active],
+            signs=[prior_signs[k] for k in active],
+            tiers=([std.provenance["source_tiers"][ids[k]] for k in active]
+                   if args.composition in composition_rules.STD_RULES else None),
+            tier_scores=(std.provenance["tier_scores"] if args.composition in composition_rules.STD_RULES else None),
+            gains=[aims[k]["gain"] for k in active] if aim else None,  # type: ignore[index]
+            ics=[rows[k]["train_mean"] for k in active], parent=std, erc=built.erc, tsmom=built.tsmom,
+            resid_order=(built.document[composition_resid.BLOCK]["order"]
+                         if composition_resid.BLOCK in built.document else None),
+            registered_themes=list(PRIOR_THEMES), weights=np.asarray(built.weights, dtype=np.float64),
+            train_decisions=int(np.sum(train_mask))), FitError)
+        built = compose(kernels)
+        require(built is not None, "--engine-fit: the C++ fit left every weight zero")
+        composition_engine_fit.check_written(built.weights, kernels, FitError)
+        built.document["provenance"][composition_engine_fit.PROVENANCE_KEY] = check
+        summary["engine_fit"] = check
+    document, theme_table = built.document, built.theme_table
+    weighted_tau, conflicts, v6_detail = built.weighted_tau, built.conflicts, built.v6_detail
     files[OUTPUT_WEIGHTS] = canonical_bytes(document)
     require(len(files[OUTPUT_WEIGHTS]) <= METADATA_LIMIT, "output: weights JSON exceeds the runner's 1 MiB bound")
     for eid, role_sha in (pool or {}).get("roles", {}).items():  # each era's runner binds the file to its own role
@@ -2636,7 +2714,7 @@ def v6_provenance(detail: dict, theme_table: dict, admission_sha: str, args, inp
                    "runner_summary_sha256": args.runner_summary_sha256, "admission_sha256": admission_sha,
                    "role_source_sha256": inputs["role_source_sha256"],
                    "fields_manifest_sha256": inputs["fields_manifest_sha256"], "vm_identity": inputs["vm_identity"],
-                   "script_sha256": inputs["script_sha256"], "context_sha256": inputs["context_sha256"]},
+                   "producer_fingerprint": inputs["producer_fingerprint"], "context_sha256": inputs["context_sha256"]},
     }
 
 
@@ -2727,6 +2805,7 @@ def parse_args(argv):
     p.add_argument("--era-id", default=None, help="v8 H-1: the era id of the --train role (the anchor, last era)")
     for modifier in MODIFIER_MODULES:  # --theme-resid (R-11), --theme-erc (X), --theme-tsmom (Y), --two-speed (Y-5)
         modifier.add_argument(p)
+    composition_engine_fit.add_argument(p)  # P9 D2: --engine-fit (ruling D2-1: the C++ fit's values; absent: no change)
     return p.parse_args(argv)
 
 
@@ -2740,7 +2819,8 @@ def main(argv=None) -> int:
     except FitError as exc:
         print(f"fit_composition_weights: {exc}", file=sys.stderr)
         return EXIT_REFUSED
-    print(json.dumps(summary, sort_keys=True))
+    # CM-5: this file's SHA-256 is in the stdout summary (the run's receipt), not in the output bytes.
+    print(json.dumps(dict(summary, script_sha256=SCRIPT_SHA256), sort_keys=True))
     return code
 
 

@@ -1,0 +1,80 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "f64444176ae6cdde8ca1591057c4041f6e6fda5e",
+  "started_utc": "2026-10-04T14:16:48.340012+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+    "--library",
+    "atx-impl/strategies/fund_industry_ic_v8ysb.json",
+    "--library-sha256",
+    "41010b0bbc662922e6e873057e1fc39d046d6f01a0a5124dd8a601c25a1308f5",
+    "--train",
+    "build-equity/train-2020-2023-lo3/manifest.json",
+    "--train-sha256",
+    "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+    "--train-fields",
+    "build-equity/train-2020-2023-lo3-fields-v15",
+    "--train-fields-sha256",
+    "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09",
+    "--output",
+    "build-equity/p9-m2c-yf0-u",
+    "--max-memory-mib",
+    "2560",
+    "--min-names",
+    "1000",
+    "--workers",
+    "4",
+    "--no-composition",
+    "--candidate-cache",
+    "build-equity/mega-candidate-cache-v8-lo3"
+  ],
+  "executable_sha256": "73a6b4fdff079434aa334447161e36b1929cb0dcc3202aed3b2cb575b9c519ed",
+  "argv_sha256": "44eb608f06fccc45cd1df136cd5d8ead01590bfeb9ed5680cb0fbc79eab36ee4",
+  "attempt": 1,
+  "build_type": "Debug",
+  "bindings": [],
+  "limits": {
+    "seconds": 300.0,
+    "max_rss_mib": 2560,
+    "min_free_mib": 512,
+    "admission_wait_seconds": 3600.0
+  },
+  "sampled_peak_tree_rss_bytes": 556281856,
+  "minimum_system_free_bytes": 4227022848,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    ".superpowers/sdd/platform-p9-20261003/progress.md",
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png"
+  ],
+  "admission": {
+    "wait_seconds": 3600.0,
+    "need_free_mib": 3072,
+    "host_budget_mib": null,
+    "claims_dir": null,
+    "waited_seconds": 0.016,
+    "checks": 1,
+    "free_mib": 4793,
+    "claimed_by_others_mib": null
+  },
+  "wall_seconds": 13.26600000000326,
+  "owned_processes": [
+    {
+      "pid": 12324,
+      "create_time": 1791123408.3726077
+    },
+    {
+      "pid": 7664,
+      "create_time": 1791123408.4039962
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "c2a6a70eef3967f383506aa3a7ebe352080e2f51db192f339e48bcc932681c98",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

@@ -18,8 +18,13 @@
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
 #include "../src/strategy_ic_composition.hpp"
+#include "../src/strategy_ic_mom_volman.hpp"
 #include "../src/strategy_ic_rules.hpp"
 #include "../src/strategy_ic_runner.hpp"
+#include "../src/strategy_ic_shrink.hpp"
+#include "../src/strategy_ic_theme_erc.hpp"
+#include "../src/strategy_ic_theme_hedge.hpp"
+#include "../src/strategy_ic_theme_tsmom.hpp"
 
 namespace {
 using namespace atx;
@@ -80,19 +85,23 @@ icd::PinnedWeights standardised(std::vector<const icd::CompositionRule*> rules) 
 
 // Every rule the v8 runner admitted is one row, in the v8 parse order, the rows of one block key
 // adjacent; each row's metadata is complete and consistent (ids it names are rows, incompatible
-// pairs list each other, its params schema is a JSON object schema naming its own id).
+// pairs list each other, its params schema is a closed JSON object schema).
 TEST(CompositionRules, TableCoversEveryRule) {
   const auto rules = icd::composition_rules();
+  // P9 lane AL-COMB registered mom-volman-v1 (a second theme_schedule row) and theme-cov-hedge-v1
+  // (parsed last); the v8 rows keep their order and metadata.
   const std::vector<std::string_view> ids{"within-theme-v1", "ew-theme-std-v1", "ic-shrink-v1",
                                           "ic-shrink-aim-v1", "theme-erc-v1", "theme-resid-v1",
-                                          "theme-tsmom-v1", "two-speed-v1"};
+                                          "theme-tsmom-v1", "mom-volman-v1", "two-speed-v1",
+                                          "theme-cov-hedge-v1"};
   const std::vector<std::string_view> stages{"redistribute", "standardise", "standardise",
                                              "standardise", "standardise", "residualise",
-                                             "schedule", "sleeves"};
+                                             "schedule", "schedule", "sleeves", "hedge"};
   const std::vector<std::string_view> keys{"composition_redistribution", "composition_standardise",
                                            "composition_standardise", "composition_standardise",
                                            "composition_standardise", "composition_residualise",
-                                           "composition_schedule", "composition_sleeves"};
+                                           "composition_schedule", "composition_schedule",
+                                           "composition_sleeves", "composition_hedge"};
   ASSERT_EQ(rules.size(), ids.size());
   std::vector<std::string_view> blocks;
   for (usize r = 0; r < rules.size(); ++r) {
@@ -106,11 +115,16 @@ TEST(CompositionRules, TableCoversEveryRule) {
     EXPECT_FALSE(rule.working_bytes.empty());
     EXPECT_TRUE(icd::find_rule(rule.id) == &rule);
     if (blocks.empty() || blocks.back() != rule.block_key) blocks.push_back(rule.block_key);
+    // params_schema (ruling D1-PSCHEMA, P9 lane D2): a closed object of the row's own rule key and
+    // its registered constants, none required (ParamsSchemaConstantsAreTheRegisteredOnes pins each
+    // const).
     const auto schema = Json::parse(rule.params_schema.begin(), rule.params_schema.end());
     EXPECT_EQ(schema.at("type"), "object");
-    EXPECT_EQ(schema.at("properties").at("rule").at("const"), std::string(rule.id));
-    const auto& required = schema.at("required");
-    EXPECT_TRUE(std::find(required.begin(), required.end(), "rule") != required.end());
+    EXPECT_EQ(schema.at("additionalProperties"), false);
+    EXPECT_TRUE(schema.at("properties").is_object());
+    EXPECT_FALSE(schema.contains("required"));
+    EXPECT_EQ(schema.at("properties").at("rule"),
+              (Json{{"type", "string"}, {"const", std::string(rule.id)}}));
     for (const auto other : rule.incompatible) {
       const auto* o = icd::find_rule(other);
       ASSERT_TRUE(o != nullptr) << other;
@@ -126,7 +140,7 @@ TEST(CompositionRules, TableCoversEveryRule) {
   }
   EXPECT_EQ(blocks, (std::vector<std::string_view>{"theme_redistribution", "theme_standardise",
                                                    "theme_residualise", "theme_schedule",
-                                                   "theme_sleeves"}));
+                                                   "theme_sleeves", "theme_hedge"}));
   // A block key's rows share its parse; a row whose block records fit inputs verifies them.
   for (const auto& rule : rules)
     if (rule.block_key == "theme_standardise")
@@ -136,10 +150,12 @@ TEST(CompositionRules, TableCoversEveryRule) {
   EXPECT_TRUE(row("theme-erc-v1")->verify != nullptr);
   EXPECT_TRUE(row("ew-theme-std-v1")->verify == nullptr);
   // The redistribution and every standardisation exclude each other; a rider needs a
-  // standardisation and theme-resid-v1 excludes the two other riders.
+  // standardisation and theme-resid-v1 excludes the other riders (the two v8 ones and, P9 lane
+  // AL-COMB, mom-volman-v1 and theme-cov-hedge-v1).
   EXPECT_EQ(row("within-theme-v1")->incompatible.size(), 4U);
-  EXPECT_EQ(row("theme-resid-v1")->incompatible.size(), 2U);
-  for (const auto* id : {"theme-resid-v1", "theme-tsmom-v1", "two-speed-v1"})
+  EXPECT_EQ(row("theme-resid-v1")->incompatible.size(), 4U);
+  for (const auto* id : {"theme-resid-v1", "theme-tsmom-v1", "mom-volman-v1", "two-speed-v1",
+                         "theme-cov-hedge-v1"})
     EXPECT_EQ(row(id)->requires_any.size(), 4U) << id;
   // Finding R6B-C-5: only ew-theme-std-v1 switches the re-rank off (R-1's identity device on
   // ew-theme-v1 weights), and ew-theme-std-aim-v1 (a fitter rule, not a row) writes its block.
@@ -392,7 +408,8 @@ TEST(CompositionRules, ListRulesJsonPinned) {
   EXPECT_EQ(listing->at("schema"), "atx.composition-rules/v1");
   const auto& caps = listing->at("capabilities");
   EXPECT_TRUE(std::is_sorted(caps.begin(), caps.end()));
-  for (const auto* cap : {"list-rules", "marginal", "no-composition", "theme-registry"})
+  for (const auto* cap : {"list-rules", "marginal", "no-composition", "theme-registry",
+                          "ic-hac-rule", "label-terminal", "min-coverage"}) // + P9 S2 (S2-2)
     EXPECT_TRUE(std::find(caps.begin(), caps.end(), cap) != caps.end()) << cap;
   const auto rules = icd::composition_rules();
   ASSERT_EQ(listing->at("rules").size(), rules.size());
@@ -416,6 +433,87 @@ TEST(CompositionRules, ListRulesJsonPinned) {
   EXPECT_EQ(cli({"atx-equity-strategy-ic", "--list-rules", "--yaml"}, printed), 2);
   EXPECT_EQ(cli({"atx-equity-strategy-ic", "--list-rules", "--json", "--plan-only"}, printed), 2);
   EXPECT_TRUE(printed.empty());
+  // P9 lane D2 (D1 review minor): only argv[1..2] select the verb; a --list-rules elsewhere is the
+  // general parse's (an option value, or an unknown option), never the listing.
+  EXPECT_EQ(cli({"atx-equity-strategy-ic", "--plan-only", "--json", "--list-rules"}, printed), 2);
+  EXPECT_TRUE(printed.empty());
+  // An option value spelled --list-rules: the ordinary run, refused here for its missing inputs.
+  EXPECT_NE(cli({"atx-equity-strategy-ic", "--plan-only", "--output", "--list-rules"}, printed), 0);
+  EXPECT_EQ(printed.find("atx.composition-rules/v1"), std::string::npos);
+}
+
+// P9 lane D2 (ruling D1-PSCHEMA): each row's params_schema describes the params a K-P9-9 wave
+// manifest rule entry may carry -- a closed object of the row's own rule key and the rule's
+// registered constants, each a typed const equal to the C++ constant it restates (a constant
+// edited without its schema fails).
+TEST(CompositionRules, ParamsSchemaConstantsAreTheRegisteredOnes) {
+  const std::vector<std::pair<std::string_view, Json>> registered{
+      {"within-theme-v1", Json::object()},
+      {"ew-theme-std-v1", Json::object()},
+      {"ic-shrink-v1", {{"intensity", st::ic_shrink_intensity}, {"floor", st::ic_shrink_floor}}},
+      {"ic-shrink-aim-v1",
+       {{"intensity", st::ic_shrink_intensity}, {"floor", st::ic_shrink_floor}}},
+      {"theme-erc-v1",
+       {{"sweeps", st::theme_erc_sweeps}, {"dispersion", st::theme_erc_dispersion}}},
+      {"theme-resid-v1", Json::object()},
+      {"theme-tsmom-v1",
+       {{"lookback", st::theme_tsmom_lookback}, {"lag", st::theme_tsmom_lag},
+        {"step", st::theme_tsmom_step}}},
+      // P9 lane AL-COMB: the two rows it registered.
+      {"mom-volman-v1",
+       {{"lookback", st::mom_volman_lookback}, {"lag", st::mom_volman_lag},
+        {"step", st::mom_volman_step}}},
+      {"two-speed-v1", Json::object()},
+      {"theme-cov-hedge-v1",
+       {{"lookback", st::theme_hedge_lookback}, {"lag", st::theme_hedge_lag},
+        {"step", st::theme_hedge_step}, {"min_pairs", st::theme_hedge_min_pairs}}}};
+  ASSERT_EQ(icd::composition_rules().size(), registered.size());
+  for (const auto& [id, constants] : registered) {
+    SCOPED_TRACE(std::string(id));
+    const auto* rule = row(id);
+    ASSERT_TRUE(rule != nullptr);
+    const auto schema = Json::parse(rule->params_schema.begin(), rule->params_schema.end());
+    const auto& properties = schema.at("properties");
+    EXPECT_EQ(properties.size(), constants.size() + 1);
+    EXPECT_EQ(properties.at("rule").at("const"), std::string(id));
+    for (auto it = constants.begin(); it != constants.end(); ++it) {
+      ASSERT_TRUE(properties.contains(it.key())) << it.key();
+      const auto& property = properties.at(it.key());
+      EXPECT_EQ(property.at("const").get<f64>(), it->get<f64>()) << it.key();
+      EXPECT_EQ(property.at("type").get<std::string>(),
+                it->is_number_float() ? "number" : "integer")
+          << it.key();
+    }
+  }
+}
+
+// P9 lane D2 (D1 review minor): two-speed-v1 refuses a weighted theme that has a registered
+// half-life but is not a theme of the theme table (reachable only through --theme-registry).
+TEST(CompositionRules, TwoSpeedRefusesAThemeOutsideTheTable) {
+  icd::Library lib;
+  lib.candidates.push_back(icd::Candidate{"a", "fam", "sha-a", {}, {}});
+  lib.candidates.push_back(icd::Candidate{"b", "fam", "sha-b", {}, {}});
+  const Json doc{{"schema", "atx.dsl-composition-weights/v2"},
+                 {"theme_standardise",
+                  {{"rule", "ew-theme-std-v1"},
+                   {"rerank", true},
+                   {"themes", {{"a", "value"}, {"b", "reversal_seasonality"}}}}},
+                 {"theme_sleeves", {{"rule", "two-speed-v1"}}},
+                 {"provenance", {{"rule", "ew-theme-std-v1"}}}};
+  const auto builtin = icd::builtin_theme_table();
+  icd::PinnedWeights accepted;
+  accepted.values = {.5, .5};
+  ASSERT_TRUE(icd::parse_composition_rules(doc, icd::RuleInputs{lib, builtin}, accepted));
+  EXPECT_EQ(accepted.sleeve_fast_themes, (std::vector<std::string>{"reversal_seasonality"}));
+  icd::ThemeTable value_only;
+  value_only.names = {"value"};
+  icd::PinnedWeights refused;
+  refused.values = {.5, .5};
+  const auto status = icd::parse_composition_rules(doc, icd::RuleInputs{lib, value_only}, refused);
+  ASSERT_FALSE(status);
+  EXPECT_EQ(status.error().message(),
+            "IC runner: theme_sleeves: weighted theme reversal_seasonality is not a theme of the "
+            "theme table (two-speed-v1)");
 }
 
 // The ordered stage list: create_from_stages is create under the grouping's rule followed by

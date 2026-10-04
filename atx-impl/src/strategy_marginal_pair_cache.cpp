@@ -31,12 +31,16 @@ constexpr u64 shard_limit = 16ULL << 20; // one shard (every pair of 256 candida
 constexpr usize max_shards = 4096;        // shards read per key
 // Tripwire for kPairwiseRowCorrelationVersion: an edit to these files must be a conscious
 // bump-or-repin decision (the IC caches' source-pin recipe: SHA-256 over, per path in order,
-// "<path>\n<bytes>\n<text>" with the text CRLF->LF normalised).
-constexpr std::array<std::string_view, 2> pair_sources{
+// "<path>\n<bytes>\n<text>" with the text CRLF->LF normalised). P9 lane D2 (ruling P8):
+// centred_tied_ranks calls group_rerank.hpp's for_each_centered_rank, so that header computes pair
+// bits too and is the third source; the same sort and rank expression keep every pair's bits, so
+// the digest was re-pinned without a version bump (the S1-PIN / S2-1 precedent).
+constexpr std::array<std::string_view, 3> pair_sources{
     "atx-engine/include/atx/engine/combine/marginal_rank_ic.hpp",
-    "atx-engine/src/combine/marginal_rank_ic.cpp"};
+    "atx-engine/src/combine/marginal_rank_ic.cpp",
+    "atx-engine/include/atx/engine/combine/group_rerank.hpp"};
 constexpr std::string_view pair_sources_sha256 =
-    "88f97f24745c9a5a675b07232fd82d980e9c6e27b38c4c0b44519e48be6b39f3";
+    "df589a889927852b86815920e6ed59a37ea0b44d026d9ffb97ae73f2aa37c7bc";
 
 co::Error fail(co::ErrorCode code, const std::string& message) {
   return co::Error{code, "marginal pair cache: " + message};
