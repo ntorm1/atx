@@ -480,3 +480,13 @@ Disk: only my scratchpad logs deleted; the build trees are kept for wave-2 merge
 **wave-1 gate met (known-reds only).** Plan §4.3 phase-1 exit: wave-1 merged yes; G-P4 yes; G-P8 yes; G-P3 IC half
 yes; P9-B0 pinned yes; suite gate yes (known-reds only). Next free build tag **p9-1s**. 0 trials (133 lines,
 `27e40f9f`).
+
+## P9 wave-2 merges
+
+### M2a: SQL1, SQL2, A3, 2026-10-03
+
+Base `632060d1` (wave-1 gate met). Detail: `root-wave2-merge-report.md` section M2a.
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| SQL1 | `1a5b051d` | `d31c5367` + N1 fix `8d4cc52c` | `atx-engine/tests/CMakeLists.txt` tail (B1 + SQL1), both kept | p9-1s FAILED (root tree lacked test group `store`; reconfigured +store); **p9-1t** `atx-core-tests, atx-engine-research-store, atx-engine-research-store-tests, atx-engine-store-tests, atx-engine-library-tests, atx-impl-tests`, 331.9 s, 82 TUs | 0 | Db* 44p; ResearchStore* 27p; engine-store 40p; library 66p/2 disabled; impl StoreDiscover+Provenance+ProvenanceDigest 23p | SQL1 4 files x2 seeds 31p each; record-store consumers 166p | flag-absent: `20443022..1a5b051d -- atx-impl scripts` empty; PCH-off satisfied in equity-dev (no PCH flags on the SQL1 TUs) |
