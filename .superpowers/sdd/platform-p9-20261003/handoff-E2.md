@@ -1,89 +1,89 @@
-# Handoff: lane E2 (P9), fix round 1, stopped by the owner
+# Handoff: lane E2 (P9), fix round 3, stopped by the owner
 
-- Pool: `C:/atx-wt/pool-17`. Branch: `feat/p9-e2-20261003`. Base: `1239a5ff`.
-- Code head: `fe140597` (`wip(e2): fix round 1 ...`). This file is committed on top of it; see `git log -1`.
-- Review being fixed: `.superpowers/sdd/platform-p9-20261003/task-E2-review.md` (`780a4934`): CHANGES_REQUIRED, R1 + R2,
-  S1-S9. The PM also added W1-I1 and W1-I2 (a) (rulings in pool-2 `progress.md`, details in `wave1-whole-review.md`
-  I-1 / I-2).
-- About 85% of fix round 1 is done. Every required item is in the wip commit with tests. Still to do: the full-suite
-  re-run under two seeds, the "Fix round 1" report section and the final commit.
-- No process of this lane is running (checked: no python with pool-17 or e2f- in its command line).
+- Pool: `C:/atx-wt/pool-17`. Branch: `feat/p9-e2-20261003`. Lane base: `1239a5ff`.
+- Code head: `daaa483c` (`wip(e2): fix round 3 ...`). This file is committed on top of it; see `git log -1`.
+- History, all on the branch, nothing squashed:
+  - Round 1 (`05a0fcd1`) and round 2 (`d0054b32`) are complete and reported in `task-E2-report.md`
+    ("## Fix round 1", "## Fix round 2").
+  - Round 2 was re-reviewed in `task-E2-rereview-2.md` (`558070e5`): CHANGES_REQUIRED (R2c + S1-S3).
+- Round 3 status: the code and tests for every item are committed in `daaa483c`. NOT done:
+  - the full suites after these changes;
+  - the "## Fix round 3" report section;
+  - the final `fix(e2): ...` commit.
+- No process of this lane is running. The round-3 suite run was stopped minutes after its start, at the owner stop
+  (both PIDs killed, nothing else of mine runs).
 
-## State per item (all committed in `fe140597`)
-| item | state | where | test |
+## Rulings that bind round 3
+All are in pool-2 `progress.md`:
+- **E2-8:** one raw-rule-flag guard on the resolved flag lists, every v2 kind.
+- **E2-9:** N4 fixed; N3 one line; N5 is a P10 note; `allow_abbrev` goes to D3.
+- **E2-10:** `nav.leverage` is a rule parameter. Only kind leverage (range-checked against the NAV table, never above
+  2.0, OD-P9-3) or the gross-match stage (L') sets it. Any other kind that sets or changes it, by any route, is
+  refused at preflight. The three Suggested items are fixed in the same round.
+- **E2-11:** SPO: nothing to do. `--risk-model` stays reserved; SPO rows are an optional C3 carry. The report needs
+  one sentence on this.
+- **E2-12:** the unmapped-IC-rule example must be an id no lane can register.
+
+## State per item of round 3 (all in `daaa483c`)
+| item | state | where | test (all in `scripts/tests/`) |
 |---|---|---|---|
-| R1 seal scan of the builds | DONE | `wave_stage_kinds.BUILDS` / `build_bases`; `wave_seal.wave_logs` adds `<out_dir>/builds/<what>-run<k>`; `run_build` refuses a name outside BUILDS; the verify plan line names the builds for v2 field / role waves only (v1 plan bytes unchanged) | `test_wave_kinds.py::test_build_logs_are_seal_scanned`: a field wave whose fake build log says 2024-06-28 gives verify exit 4, naming the log; a clean log passes |
-| R2 raw rule flags | DONE | `wave_kinds.table_flags` / `raw_rule_flags` (the named rules' derived flags plus every table rule's flags: composition flags, NAV x-flag, param x-flags); preflight checks both `rule_cell.constants.flags` and the template's `change.flags`; `owned_flags` removed (superseded) | `test_rule_wave_refuses_raw_rule_flags` (3 params: the named rule's `--aim-leverage`, an unnamed `--vol-target`, `--theme-erc`; constants and template; `--cadence` still allowed); `test_rule_flags_from_the_tables` |
-| W1-I1 path length | DONE | `cycle/phases.py` `CACHE_*`, `deepest_cache_path`, `cache_path_problem`, `library_ids`, `Cycle.cache_problem` / `cache_path_check` (called in `steps()` before u; exit 2); wave `wave_stage_preflight.cache_path_check` (exit 3, before register); facade re-exports. Layout taken from the C++ (see the comment block): Release identity `dslvm1_clang18.1_opt_md_ndebug_xs13.0.0` (40 chars with its `/`), `_audit` +6 under `--eval-mode audit-exact`, fp_ level always counted, `.partial` leaf. The exe prints no identity, so this is a documented bound. Applied only while the spec's IC exe is on disk (only the exe writes the cache) | `test_wave_driver.py::test_cache_path_bound_w1_i1`: under the v8 cache of pool-2 the path is 226 + len(id), matching the review's derivation, so ids <= 24 pass and <= 18 with audit; the cycle and the wave refuse; nothing is refused without the exe; CAND_ID_RE stays at 64 |
-| W1-I2 (a) parent exe | DONE | `wave_stage_record.exe_problem`: for `ref == "none"` (a rule cell) it refuses when the receipts' exes differ, when the pins name two NAV exes, or when only one side records an exe; it passes only when neither does (synthetic). Both hashes are in the message | `test_rule_cell_parent_nav_from_another_exe_is_refused` (5 params, full fake rule wave to verify); `test_lock_exes_pins_and_verify_compares`: the old "rule cell: recorded only" assertion is replaced by the ruled refusal |
-| S1 unwritable claims dir | DONE | `run_bounded_research.ClaimsDirError` (a PermissionError for the whole wait with no lock on disk); `reclaim` returns True only when it removed the lock | added to `test_claims_lock_failures_are_admission_waits` |
-| S2 replay on interrupt | DONE | `Wave.side_by_side` replays its buffers in `finally` | none new (the existing judge-order test passes) |
-| S3 schema type list / malformed keywords | DONE | `wave_kinds.schema_problems` | `test_schema_subset` |
-| S4 placeholder regex | DONE | `PLACEHOLDER_RE = [A-Z][A-Z0-9_]*` | `test_schema_subset` |
-| S5 normalised field.output | DONE | `wave_kinds._norm` (drops `.`, case-blind) | `test_v2_refusals` (+2 rows) |
-| S6 build reuse | DONE (receipt part) | `run_build` reuses an existing output only when this wave's last `<what>` run completed it with this command's argv_sha256, else exit 3. Not done: the role manifest seal / end check (the role builder enforces it; its manifest layout is the builder's) | `test_field_wave_builds_then_registers_on_the_build` (+2 refusals); KindsFake receipts now carry argv_sha256 |
-| S7 report plan changes | DONE | `task-E2-report.md` "How root verifies" item 5 now lists the sticky-pin plan change | - |
-| S8 in_code copy | NOT DONE, by choice | moving it into `research_tree` is a cross-lane edit to a shared module (import cycle wave_manifest <-> wave_kinds). Report it as not fixed | - |
-| S9 missing tests | DONE | leverage bounds, persistent PermissionError, build seal scan | `test_leverage_wave_refuses_a_value_outside_the_nav_table` and the tests above |
+| E2-10 `nav.leverage` (R2c) | DONE | `wave_stage_kinds.leverage_refusal` (called from `rule_flag_guard` after the cell is resolved). A raw set / unset key `nav.leverage` in any kind is refused, and so is a resolved cell whose `nav.leverage` differs from the parent's (from `leverage.value` for kind leverage); the message names key, value and route. `preflight_kind` (leverage): refused when the NAV table lists no fixed-v1 range, and above `wave_kinds.LEVERAGE_MAX` = 2.0. `raw_routes` now returns `{route: {key: value}}` | `test_wave_kinds.py::test_nav_leverage_is_set_only_by_a_leverage_wave` (7 probes: 5.0 on horizon / rule / role, gross none and pm6-6, whole `nav` section, `change.unset`, raw key in a leverage wave); `::test_leverage_wave_cap_and_table_and_the_matched_l_prime` (1.5 passes, 2.5 refused by the cap on a table allowing 3, no fixed-v1 refused, a pm6-6 horizon cell publishes its L' in the `-gm` copy) |
+| S1 N3 test with teeth | DONE | `test_wave_driver.py::test_cache_path_bound_w1_i1`, new last block: the parent gets its own shorter `ic.cache "c"` (not on the shared stores), and the bound is set between the two depths | mutation checked: with N3's line reverted to `cell = spec` the test fails `assert 0 == 3`; the line was restored (no diff) |
+| S2 case / single-dash spellings | DONE | `wave_kinds.norm_option` (single `-` -> `--`, option name case-folded). Used by `abbreviated`, `raw_rule_flags`, `wave_stage_kinds.option_tokens` and `occurrences` (argparse_values on normalised lists) | 3 rows added to `E2_8_PROBES` in `test_wave_kinds.py` (`--Vol-Target` by set, `-theme-erc` by flag map, `-theme-erc` by set) |
+| S3 route message | DONE | `wave_stage_kinds.touching` names a flag-map entry whose VALUE is the token ("`rule_cell.constants.flags nav --cadence --vol-target`") | 1 row in `E2_8_PROBES` |
+| E2-12 unmapped example | DONE | `test_wave_kinds.py` `UNMAPPED = "zz-unmapped-rule-v0"`, used in `test_rule_flags_from_the_tables` (plus `assert UNMAPPED not in WK.COMPOSITION_FLAGS`) and in `test_raw_rule_flag_guard_allows_free_flags_and_names_unmapped_ic_rules`; no `theme-cov-hedge` left in scripts/ | not re-run after this edit (literal swap) |
+| E2-11 | report sentence only | - | - |
 
-Cross-lane-ish test edit: `scripts/tests/test_research_spec.py` (E2-owned) gains the fixture `stand_in_ic`, which lifts
-`CACHE_PATH_MAX` for the 3 add-alpha tests on `v8_root`. Their IC exe is a stand-in (`bin/ic.cmd`) that writes no cache,
-and pytest tmp roots are deeper than any pool, so W1-I1 would refuse the committed v7.1 / v8 ids there. No assertion
-was changed.
+### Mutation check
+`wave_kinds.py` and `wave_stage_kinds.py` were stashed back to `d0054b32`. The 12 new round-3 tests failed (4 spelling /
+route probes, 7 leverage probes, the cap test), each preflight passing. The stash was popped clean.
 
-## Tests run (this round)
-- `scripts/tests` full, PYTHONHASHSEED=0, before the `stand_in_ic` fixture: 4 failed / 429 passed / 4 skipped. The 4
-  were the 3 v8_root add-alpha tests plus `test_the_whole_file_passes_with_a_generated_spec_present`, which re-runs them.
-- After the fixture: `test_research_spec.py` 87 passed. `test_wave_kinds.py` 49 passed. The targeted test_wave_driver
-  tests passed: cache_path_bound, parent_nav (x5), lock_exes, claims_lock, launch_waits, two_launches, adopt_never,
-  judge_records, k_p9_10.
-- NOT run after the fix: the full `scripts/tests` under seeds 0 and 1, and `atx-engine/tools/test_stage_chain.py`
-  (separate invocation; its stage_chain is untouched this round).
+## Tests run after the round-3 code
+- `test_wave_kinds.py` (whole file) + `test_wave_driver.py -k cache_path_bound`, PYTHONHASHSEED=0: 75 passed. This ran
+  BEFORE the E2-12 edit.
+- Mutation runs as above.
+- NOT run:
+  - `scripts/tests` full under seeds 0 and 1;
+  - `atx-engine/tools/test_stage_chain.py` under seeds 0 and 1;
+  - `test_wave_kinds.py` after the E2-12 edit.
+- Expected after round 3: scripts/tests 446 + 12 = 458 passed, 4 skipped (the 4 live-input gates). The test_wave_kinds
+  count goes 62 -> 74. The test_wave_driver count is unchanged (28; the W1-I1 test was extended, not added).
 
 ## Next steps (in order)
-1. Full suite, explicit paths, as SEPARATE invocations (conftest window trap), each with its own `--basetemp` in the
-   scratchpad:
-   `PYTHONHASHSEED=0 "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider -rfEs scripts/tests`
-   then `... atx-engine/tools/test_stage_chain.py`; repeat with `PYTHONHASHSEED=1`. About 15-22 min per seed. Expect
-   0 failed. A red: fix it, never edit an expected value to fit.
-2. Append "## Fix round 1" to `task-E2-report.md`: the table above, evidence (commands, exit codes, tails), decisions
-   (below), the S6 role-seal and S8 reasons, the W1-I1 margin finding (below). Commit as `fix(e2): ...` (squash nothing),
-   `git add -f` the report, trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-3. Delete own scratch by name in the session scratchpad: `e2f-pt-s0`, `e2f-pt-spec`, `e2fix-w`, `e2fix_try_verify.py`,
-   `e2fix_pathlen.py`, `e2f-seed0.log`, plus the new run dirs. Delete `__pycache__` under `scripts/`, `scripts/cycle/`,
-   `scripts/tests/`, `scripts/tests/fixtures/`, `atx-engine/tools/`, `atx-impl/tools/`.
-4. Final message to the PM: status, head SHA, test summary.
-
-## Decisions (for the report)
-- W1-I1 is gated on the IC exe being on disk. Reason: only the exe writes the cache, so nothing is computed without it
-  (refused before any compute holds). It also keeps hash-only plans and fake-tool fixtures as before. The cycle check
-  needs the library on disk (its ids); a hash-only plan skips it.
-- W1-I1 bound is conservative: the fp_ level is counted for every candidate (base candidates do not have it), and the
-  Release identity is used for every build (the Debug identity adds no level).
-- W1-I2 (a) is keyed on `ref == "none"` (no reference construction), which is broader than "rule cell" by name: a
-  library cell without a ref phase has the same exposure.
-- verify_plan text for v1 manifests is unchanged (plan identity). For rule waves the text still says "recorded", but
-  the code now refuses: flag this to root as a known stale plan line, or change it with root's OK.
-
-## Findings for the PM / root
-- **W1-I1 margin is tight on committed specs** (scratch scan over every committed cell spec with an IC pass, Release
-  bound): longest id `seasonality_same_month` (22 chars), worst spec `scripts/specs/v70-lo3.json`
-  (`build-equity/mega-candidate-cache-v70-lo3`): 249 at `C:/atx-wt/pool-2`, **250 at `C:/atx-wt/pool-17`** (equal to
-  the bound, so not refused), 239 at `C:/atx`. A pool path one character longer (e.g. `pool-100`), or any longer cache
-  dir, refuses those committed specs at plan once the IC exe is built there. Root's plan-identity run in pool-2 stays
-  within the bound. Note this in the report.
-- The ruling's "AL / PRE ids <= 24 chars" matches exactly: under the v8 cache in pool-2 the bound admits 24 (18 with
-  audit-exact).
-
-## Open questions
-1. The W1-I1 exe-on-disk gate: acceptable? The alternative (always check) refuses every fake-tool fixture with
-   candidate ids in deep pytest roots.
-2. Should verify_plan's NAV-exe text change for rule waves (changes `research_wave.py plan` bytes for v1 rule
-   manifests)?
-3. S6 role-manifest seal check: wanted in this lane, or leave it to the builder?
+1. Re-run the edited file first (about 75 s), with a basetemp of your own in the session scratchpad:
+   ```
+   PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider -rfEs --basetemp=<scratch>/e2f3-k scripts/tests/test_wave_kinds.py
+   ```
+   Expect 74 passed.
+2. Full suites, SEPARATE invocations, one after the other (about 16 min per seed), each with its own `--basetemp`:
+   ```
+   PYTHONHASHSEED=0 ... -m pytest -q -p no:cacheprovider -rfEs --basetemp=<scratch>/e2f3-s0 scripts/tests
+   PYTHONHASHSEED=0 ... -m pytest -q -p no:cacheprovider -rfEs --basetemp=<scratch>/e2f3-c0 atx-engine/tools/test_stage_chain.py
+   ```
+   Then the same pair with `PYTHONHASHSEED=1` (`e2f3-s1`, `e2f3-c1`). Log to `.superpowers/sdd/platform-p9-20261003/logs/`.
+   A PowerShell `*>>` log is UTF-16: normalise it to UTF-8 after. A red is fixed, never by editing an expected value.
+3. Append "## Fix round 3" to `task-E2-report.md`, same shape as round 2:
+   - the table above;
+   - evidence (commands, exit codes, tails), the mutation checks;
+   - E2-11's sentence: no v2 wave hands an SPO cell a new risk model in P9; `--risk-model` stays reserved to the
+     table's rules, and SPO rows are an optional C3 carry;
+   - E2-12;
+   - decisions:
+     - the explicit `nav.leverage` check replaces the reviewer's `{leverage}` substitution idea (leverage reaches the
+       argv only through `{leverage}`, so the key check covers every route with a clearer message);
+     - library kinds copy the parent's nav (add-alpha), so they have no route to it;
+     - a raw `nav.leverage` in a leverage wave is refused because `leverage.value` would override it silently.
+4. Commit as `fix(e2): ...` on top (squash nothing). `git add -f` the report. Trailer exactly
+   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+5. Delete your own scratch by name. This session's round-3 scratch was already deleted at the stop.
 
 ## Traps
-- `rtk` rewrites grep/git output: use `rtk proxy <cmd>` or the Grep tool. Never run `scripts/tests` and any
-  `atx-engine/tools` test in one pytest session.
+- `rtk` rewrites git / grep output: use `rtk proxy <cmd>` or the Grep tool.
+- Never run `scripts/tests` and any `atx-engine/tools` test in one pytest session (conftest window bind: 31 false
+  reds).
+- A combined PowerShell command that writes a file with .NET and then runs `git checkout -- file` was denied by the
+  permission system. Use the Edit tool or `git stash push -- <files>` / `git stash pop` for mutation checks.
 - Failed-stage messages go to stderr; tests read them from `receipts/NN-<stage>.failed-1.json` ["error"].
-- Blind rule: no 2020-2023 return / IC / NAV outputs; the seal tests use synthetic post-2024 text (ruling T2-SYN).
+- Blind rule: synthetic fake worlds only; nothing dated 2024 or later is opened, and no 2020-2023 output is read.
+- v1 plan bytes must stay unchanged. The guard and the plan lines are v2 only (`kind` is None for v1);
+  `test_verify_plan_line_states_the_rule_cell_refusal` asserts no `--list-rules` / E2-8 line in a v1 plan.
