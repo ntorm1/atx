@@ -133,3 +133,84 @@ explicit paths only (PY-HYG), `--basetemp` in the session scratchpad (deleted af
 - **DISK-2:** pool-23's object tree was already deleted by the lane (only receipts, logs and the git-tracked
   `audits/` / `v8-interim3-pitch-render-run2/` remain); nothing deleted by me.
 - **Trial ledger:** 0 trials (133 lines, `27e40f9f`).
+
+### A3 (`a217fd7e` then flip `50cb1571`, pool-12): MERGED (post-flip re-checks NOT run: owner stop)
+
+- **Ledger:** `Task A3: complete` (review APPROVE `56474bbf`, A3-RED confirmed; fix round A3-FIX1; re-review APPROVE
+  `a8d2fbd0`). Root items: merge `a217fd7e` first (binding build), S-R1 four comments as a slip, TRAIN identity,
+  read `rows_sealed_value_decoded`, N-1 (v15 list must include `ceq_iss_5y`), flip `50cb1571` only after identity.
+- **Docs:** `task-A3-report.md`, `task-A3-review.md`, `handoff-A3.md`, `a3-build/*` receipts and
+  `a3-red-evidence.*` arrive with the `a217fd7e` merge; `task-A3-rereview-1.md` (lane commit `a8d2fbd0`) copied.
+- **Merge 1:** `git merge --no-ff a217fd7e` -> **`ff1637ac`** (merge base `1239a5ff`; 55 files). Two list-tail
+  conflicts, both kept (HEAD first, one blank line): `atx-engine/CMakeLists.txt` (SQL2's catalog block, then A3's
+  `target_sources(atx-engine-research-fields ...)` four sources) and `atx-engine/tests/CMakeLists.txt` (SQL2's
+  catalog-tests block, then A3's three test files). Registry at this merge = pre-flip blob `793a3081` (owner suffix
+  only on the six rows; 3 engine rows).
+- **Slip S-R1:** **`08b0695d`** comments only: `research_fields_vendor_panel_test.cpp:4` (tradingDate statistics),
+  `:767` (every value-derived statistic; `rows_in_file` / `rows_keys_decoded` count the file by design),
+  `vendor_panel.hpp:19` (only sealed and off-calendar drops counted), `:22` (decoded with the chunk, released
+  unread). Lines <= 100 columns.
+- **Build p9-1v** (binding run; source `08b0695d`, dirty 2): first launch refused by the memory gate (free 2,613,
+  commit 2,260 < 2,500; a lane's clang-cl was running; no receipt written, tag reused); waited for the gate; then
+  `atx-engine-research-fields, atx-engine-research-fields-tests, atx-research-fields` -> **exit 0, 79.9 s, 20 TUs,
+  3 links; 0 warning / 0 error lines.** Exes: `atx-research-fields` **`b2c30d47...5543`**,
+  `atx-engine-research-fields-tests` `48b3b0b0...5281`.
+- **gtests (Debug, p9-1v):** whole target **66 passed / 66** (13 suites); M1a-RED anchors
+  `ResearchFieldsWriter.QuantilesPartitionLikeNumpy:ResearchFieldsVolumeMean.*` **7 passed** (both former M1a-RED
+  gtests OK: the pair is resolved); A3 filter (VendorPanel / VendorFields / VendorFixture / NyseCalendar / FactorBreak)
+  **19 passed**.
+- **pytest, pre-flip tree, real exe** (`ATX_RESEARCH_FIELDS_EXE` = p9-1v, each file its own session, `-rs`):
+  `test_vendor_engine_path.py` 8p; `test_research_fields_engine_path.py` 11p; `test_vendor_panel_fixture.py` 3p;
+  `test_research_fields_fixture.py` 2p; `test_field_registry.py` 35p; `test_no_new_python_builder.py` 4p; all
+  exit 0, no skips (= the lane's pre-flip counts). Known-red check: `scripts/tests/test_research_mine.py::
+  test_fields_are_the_rule_applied_to_the_registry` still fails (E2's M1a-RED; unchanged by A3).
+- **TRAIN identity** (run before the flip merged): registry entry `prepare_research_fields.py --registry <scratch
+  copy of the flip blob 5d2954ec> --fields ret_overnight,ret_intraday,ceq_iss_5y,open_adj,high_adj,low_adj --role
+  build-equity/train-2020-2023-lo3 --role-sha256 e1c67101... --tickerhistory/--price-source TickerHistory3.parquet
+  --max-rss-mib 2048 --max-seconds 580`, no `--reuse`; run A without, run B with `--engine-exe
+  build-equity/bin/atx-research-fields.exe` (p9-1v); both through `run_bounded_research.py --seconds 600
+  --max-rss-mib 2048 --min-free-mib 512` with binds (builder, registry modules, engine shim, price / ohlc modules, flip
+  registry, role manifest; + exe for B). Launcher `a3-train-run.ps1`, comparer `a3_compare.py` (session scratch).
+  - **Field list (deviation, for the PM):** v15's 84-name list **includes `ceq_iss_5y` (N-1 holds)**. It was not
+    used as-is: v15's argv reuses (`--reuse v15a`), and any reuse prior carries the six Python entries
+    (`prepare_research_fields.py:2864` skips only engine-produced priors), so the engine would never run; a
+    no-reuse 84-field build is far beyond the host budget. The six were computed in v10 (price three, with
+    `ceq_iss_5y`) and v14 (bars, alone). Same history shown empirically: the run's `source_checks.ohlc` equals
+    v15's (10/10 paths) and `source_checks.price` equals v15's on all 18 shared paths (v15 adds only the 9
+    `/market/*` paths of its market fields).
+  - Run A `p9-a3-train-py`: completed, exit 0, **44.7 s, peak tree RSS 542 MiB**, min free 2,892; receipt
+    `3fce2e4a...31e6`; manifest `a1c0acf9...12e2`; stderr = the expected "computed by the Python builder" note.
+  - Run B `p9-a3-train-engine`: completed, exit 0, **168.2 s, peak tree RSS 950 MiB**, min free 2,622; receipt
+    `66bec77d...e73b`; manifest `566daad4...ed3a`; two engine calls (price three, bars three), receipts complete.
+
+  | field | v15 pin | py (entry = files = disk) | engine (entry = files = disk) | py = engine = v15 |
+  |---|---|---|---|---|
+  | ret_overnight | `1a41d3853685c8de` | same | same | **yes** |
+  | ret_intraday | `f6cf5eb3e386fbf6` | same | same | **yes** |
+  | ceq_iss_5y | `88301a7bed081cb8` | same | same | **yes** |
+  | open_adj | `13e4ba544690018d` | same | same | **yes** |
+  | high_adj | `e7d4100c7e5fb787` | same | same | **yes** |
+  | low_adj | `e9a3a7b29a7d6f65` | same | same | **yes** |
+
+  Manifest py vs engine: **54 JSON paths differ, all under `fields[0..5].producer`** (Python `module` /
+  `code_*` vs engine `kind` / `exe_sha256` / `git_sha` / `build_type` / `receipt_sha256`); **0 outside**.
+  Engine producer: `kind engine`, `exe_sha256 b2c30d47...` = p9-1v, `build_type Debug`, `git_sha
+  08b0695d...-dirty`. `seal.exclusive_end` 2024-01-01 both. **Identity holds.**
+  - **Seal counts (S-1; engine receipts `engine_fields/*.receipt.json`, every field identical):** 262 row groups,
+    `row_groups_pruned_sealed 0`, `rows_in_row_groups_pruned_sealed 0`, `row_groups_values_decoded 262`,
+    `rows_in_file 32,323,644`, `rows_sealed_dropped 7,592,840`, **`rows_sealed_value_decoded 7,592,840`**. On the
+    real file no row group is prunable (each spans the seal), so every sealed row's value chunk is decoded and released
+    unread (the A3-FIX1 behaviour); the row-group push-down saves nothing on TickerHistory3. For the PM (A4).
+- **Merge 2 (flip):** `git merge --no-ff 50cb1571` -> **`1c90011a`** (2 files: `field_registry.json` -> blob
+  `5d2954ec`, nine engine rows; the pin test in `test_vendor_engine_path.py`). No conflict.
+- **NOT done (owner stop arrived right after the flip merge):** post-flip registry `check` (`ok 92` expected) and
+  the field-registry pytest (`test_field_registry.py` 35p, `test_vendor_engine_path.py` 9p,
+  `test_research_fields_engine_path.py` 11p with the real exe); pool-12 DISK-2 deletion. Exact commands in
+  `handoff-root-m2a.md`.
+- **Trial ledger:** 0 trials (133 lines, `27e40f9f`).
+
+### M2a status at owner stop
+
+Head `1c90011a` + this docs commit. Next free build tag **p9-1w**. Root tree change: `build-equity` reconfigured
+with test group `store` added. Known-red now: `test_fields_are_the_rule_applied_to_the_registry` (E2) and M1c-RED x2
+Release (C2); the two M1a-RED gtests are green. Resume notes: `handoff-root-m2a.md`.
