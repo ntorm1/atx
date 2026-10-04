@@ -21,7 +21,11 @@
 //
 // A run upserts: rows of files no longer on disk stay until `catalog --rebuild` (a fresh
 // store). The catalog digest covers the non-volatile tables, so a run over the same tree from
-// scratch, in any walk order, reproduces it.
+// scratch, in any walk order, reproduces it. Rows keyed by a document value are one file each:
+// two files claiming one candidate `id` or one build-receipt `Tag` refuse the run
+// (Err(PermissionDenied) naming both files) in every walk order, never last-writer-wins.
+// A root whose absolute path holds a year token 2024-2099 is refused before anything is opened
+// (seal_guard.hpp sealed_root).
 
 #include <filesystem>
 #include <optional>
@@ -64,16 +68,20 @@ struct CatalogOptions {
 struct CatalogReport {
   std::string catalog_run_id;
   std::string catalog_digest;
+  // Distinct paths the run catalogued or listed: verified + declared + skipped, less the
+  // `unparsed` skips (such a file is catalogued and listed, counted once); a seal-named
+  // directory is one listed path.
   i64 files_seen{};
   i64 files_verified{};
   i64 files_declared{};
-  i64 files_skipped{};
+  i64 files_skipped{}; // skipped_path rows of this run
   f64 seconds{};
   bool checkpointed{}; // wal_checkpoint(TRUNCATE) completed (a concurrent reader blocks it)
 };
 
 // One catalog run over `opt.root` into `db` (a catalog store). Err as the store reports it;
-// Err(PermissionDenied) when a trial ledger's catalogued lines changed (append-only).
+// Err(PermissionDenied) for a sealed root, when a trial ledger's catalogued lines changed
+// (append-only), or when two files claim one candidate id / build tag.
 [[nodiscard]] core::Result<CatalogReport> run_catalog(core::db::Database &db,
                                                       const ClassRegistry &registry,
                                                       const CatalogOptions &opt);
@@ -94,8 +102,9 @@ struct IngestOneReport {
 
 // `ingest --class C --path P`: one file, by the named class, in one BEGIN IMMEDIATE;
 // idempotent (the same file gives the same rows). Err(InvalidArgument) for an unknown class;
-// Err(PermissionDenied) for a path outside the root, a sealed path or a file over 16 MiB
-// (never opened); Err(NotFound) for a missing file.
+// Err(PermissionDenied) for a sealed root, a path outside the root, a sealed path, a file over
+// 16 MiB (never opened) or a candidate id / build tag another catalogued file holds;
+// Err(NotFound) for a missing file.
 [[nodiscard]] core::Result<IngestOneReport> ingest_one(core::db::Database &db,
                                                        const ClassRegistry &registry,
                                                        const IngestOneOptions &opt);

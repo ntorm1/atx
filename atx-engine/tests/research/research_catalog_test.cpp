@@ -2,9 +2,11 @@
 // row counts, digest reproducibility and order independence, pins (ok / declared / stale /
 // missing / unresolved), declared vs verified payloads, unparsed JSON, line ends, idempotent
 // ingest, the append-only trial ledger index and its chain-head seam, the records group schema
-// fixture, the classifier, and the legacy record-store import of `cache init --import`.
+// fixture, the classifier, the legacy record-store import of `cache init --import`, and the
+// refusal of two files claiming one candidate id or build tag.
 
 #include <filesystem>
+#include <initializer_list>
 #include <optional>
 #include <span>
 #include <string>
@@ -84,7 +86,9 @@ TEST(ResearchCatalog, IngestsSyntheticTree) {
   EXPECT_EQ(c.report.files_verified, 25);
   EXPECT_EQ(c.report.files_declared, 2);
   EXPECT_EQ(c.report.files_skipped, 4);
-  EXPECT_EQ(c.report.files_seen, 31);
+  // Distinct paths (fix round 1, S5): 25 verified + 2 declared + 4 skipped, less the one
+  // unparsed file (build-equity/fx-nav/extra_nan.json is both verified and skipped `unparsed`).
+  EXPECT_EQ(c.report.files_seen, 30);
   EXPECT_EQ(c.report.catalog_digest, t::digest_of(c.db));
   // Typed columns hold identities, never statistics; documents keep key order and line ends.
   EXPECT_EQ(t::scalar_text(c.db, "SELECT outcome FROM run;"), "completed");
@@ -229,6 +233,61 @@ TEST(ResearchCatalog, UnparsedJsonCataloguedAsArtifact) {
   ASSERT_TRUE(report) << report.error().to_string();
   EXPECT_TRUE(report->unparsed);
   EXPECT_EQ(t::rows(c.db, "run"), 1); // no typed row from an unparsed file
+}
+
+TEST(ResearchCatalog, DuplicateKeyAcrossFilesRefusedInEveryOrder) {
+  // Fix round 1 (S4): two files claiming one candidate id (or one build tag) refuse the run in
+  // both walk orders, naming both files; never last-writer-wins.
+  const auto tree = t::tree_copy();
+  const std::string v8 = "scripts/specs/v8/candidates/fx_alpha_a.json";
+  const std::string p9 = "scripts/specs/p9/candidates/fx_alpha_a.json";
+  std::filesystem::create_directories((tree / p9).parent_path());
+  t::write_bytes(tree / p9, t::read_bytes(tree / v8));
+  for (const bool reverse : {false, true}) {
+    auto db = t::open_new(t::temp_dir(reverse ? "db-reverse" : "db-forward") / "catalog.sqlite");
+    cat::CatalogOptions opt = t::options(tree);
+    opt.reverse_walk = reverse;
+    auto refused = cat::run_catalog(db, t::registry(), opt);
+    ASSERT_FALSE(refused) << "reverse " << reverse;
+    EXPECT_EQ(refused.error().code(), ErrorCode::PermissionDenied);
+    const std::string why = refused.error().message();
+    EXPECT_NE(why.find("candidate id 'fx_alpha_a'"), std::string::npos) << why;
+    EXPECT_NE(why.find(p9), std::string::npos) << why;
+    EXPECT_NE(why.find(v8), std::string::npos) << why;
+  }
+
+  // A single-file ingest of the second claimant into a catalog that holds the first: refused,
+  // the stored row untouched; re-ingesting the holder itself stays idempotent.
+  std::filesystem::remove(tree / p9);
+  auto db = t::open_new(t::temp_dir("db") / "catalog.sqlite");
+  (void)t::run(db, t::options(tree));
+  t::write_bytes(tree / p9, t::read_bytes(tree / v8));
+  cat::IngestOneOptions one;
+  one.root = tree;
+  one.class_id = "wave-candidate";
+  one.path = p9;
+  auto second = cat::ingest_one(db, t::registry(), one);
+  ASSERT_FALSE(second);
+  EXPECT_EQ(second.error().code(), ErrorCode::PermissionDenied);
+  EXPECT_EQ(t::scalar_text(db, "SELECT path FROM candidate WHERE id = 'fx_alpha_a';"), v8);
+  one.path = v8;
+  auto same = cat::ingest_one(db, t::registry(), one);
+  EXPECT_TRUE(same) << same.error().to_string();
+  std::filesystem::remove(tree / p9);
+
+  // The same tag in build-equity/ and build-equity-rel/ (both seed globs).
+  const std::string dev = "build-equity/mega-fx-1-receipt.json";
+  const std::string rel = "build-equity-rel/mega-fx-1-receipt.json";
+  std::filesystem::create_directories((tree / rel).parent_path());
+  t::write_bytes(tree / rel, t::read_bytes(tree / dev));
+  auto tag_db = t::open_new(t::temp_dir("db-tag") / "catalog.sqlite");
+  auto tag = cat::run_catalog(tag_db, t::registry(), t::options(tree));
+  ASSERT_FALSE(tag);
+  EXPECT_EQ(tag.error().code(), ErrorCode::PermissionDenied);
+  EXPECT_NE(tag.error().message().find("build_receipt tag 'fx-1'"), std::string::npos)
+      << tag.error().message();
+  EXPECT_NE(tag.error().message().find(dev), std::string::npos) << tag.error().message();
+  EXPECT_NE(tag.error().message().find(rel), std::string::npos) << tag.error().message();
 }
 
 TEST(ResearchCatalog, CrlfAndLfDetected) {

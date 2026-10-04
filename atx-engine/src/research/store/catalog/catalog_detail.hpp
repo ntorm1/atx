@@ -137,6 +137,14 @@ void ingest_build_receipt(const FamilyInput &in, IngestResult &out);
 [[nodiscard]] core::Status delete_where(core::db::Database &db, std::string_view table,
                                         std::string_view column, std::string_view value);
 
+// Before a file's row keyed by a document value (candidate `id`, build_receipt `tag`) is
+// written: Ok when no row holds `key` or the row's `path` is `path`; Err(PermissionDenied)
+// naming both files otherwise (two files claiming one key would make the walk order pick the
+// row). `table` / `column` are fixed identifiers of this library.
+[[nodiscard]] core::Status claim_key(core::db::Database &db, std::string_view table,
+                                     std::string_view column, std::string_view key,
+                                     std::string_view path);
+
 // ---------------------------------------------------------------------------------------------
 //  Pins (pins.cpp). Each appends the holder's pins; target paths are path_keys inside the
 //  root, or nullopt (unresolved).

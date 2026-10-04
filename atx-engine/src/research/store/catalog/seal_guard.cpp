@@ -117,6 +117,15 @@ std::filesystem::path normal_root(const std::filesystem::path &root) {
   return fs_path(trim_trailing_slash(utf8_path(abs.lexically_normal())));
 }
 
+bool sealed_root(const std::filesystem::path &root) {
+  return has_sealed_year(utf8_path(normal_root(root)));
+}
+
+std::string sealed_root_message(const std::filesystem::path &root) {
+  return "the root " + utf8_path(normal_root(root)) +
+         " holds a year token 2024-2099: nothing under it is opened (seal)";
+}
+
 std::optional<std::string> root_relative(const std::filesystem::path &root, std::string_view text) {
   if (text.empty()) {
     return std::nullopt;

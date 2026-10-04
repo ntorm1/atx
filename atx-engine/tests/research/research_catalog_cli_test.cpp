@@ -1,6 +1,7 @@
 // The atx-research-store command line, in process (P9 SQL2; sql-design 3.9): exit codes, ordered
 // query output, and `schema --json` as the exact text a created store keeps in
-// store_info('schema_json') (what Python's generic accessor reads, ruling SQL-10).
+// store_info('schema_json') (what Python's generic accessor reads, ruling SQL-10); fix round 1:
+// a sealed --root / import DIR, `--rebuild` of a foreign file, a duplicate candidate id.
 
 #include <algorithm>
 #include <filesystem>
@@ -126,6 +127,87 @@ TEST(StoreCli, ExitCodes) {
                  (cache_dir / "absent.json").string()})
                 .code,
             cat::kExitError);
+}
+
+TEST(StoreCli, SealedRootRefusedBeforeAnythingIsRead) {
+  // Fix round 1 (S2, S3). The sealed tree holds a broken class registry exactly where the CLI
+  // looks for one (<root>/atx-engine/schemas/research_store/classes.json): a refusal (3) instead
+  // of the registry error (4) shows the seal check ran before anything under the root was read.
+  const auto sealed = t::tree_copy("v8-2024-oos");
+  const auto clean = t::tree_copy("v8-oos");
+  for (const auto &tree : {sealed, clean}) {
+    const auto registry = tree / "atx-engine" / "schemas" / "research_store" / "classes.json";
+    std::filesystem::create_directories(registry.parent_path());
+    t::write_bytes(registry, "{not json");
+  }
+  const auto db = t::temp_dir("db") / "catalog.sqlite";
+  EXPECT_EQ(cli({"catalog", "--catalog", db.string(), "--root", clean.string()}).code,
+            cat::kExitError); // control: the registry is read, and is broken
+  std::filesystem::remove(db);
+  const CliRun refused = cli({"catalog", "--catalog", db.string(), "--root", sealed.string()});
+  EXPECT_EQ(refused.code, cat::kExitRefusal) << refused.err;
+  EXPECT_NE(refused.err.find("year token"), std::string::npos) << refused.err;
+  EXPECT_EQ(cli({"catalog", "--catalog", db.string(), "--root",
+                 (sealed / "scripts").string(), "--rebuild"})
+                .code,
+            cat::kExitRefusal);
+  EXPECT_FALSE(std::filesystem::exists(db));
+  ASSERT_EQ(cli({"init", "--catalog", db.string()}).code, cat::kExitOk);
+  EXPECT_EQ(cli({"ingest", "--catalog", db.string(), "--root", sealed.string(), "--class",
+                 "run-receipt", "--path", "build-equity/fx-nav-run1/receipt.json"})
+                .code,
+            cat::kExitRefusal);
+
+  // cache init --import reads DIR: refused, and no index is made. Without --import nothing
+  // under DIR is read, so creating the index stays allowed.
+  const auto cache = t::temp_dir("fit-work-2024");
+  EXPECT_EQ(cli({"cache", "init", cache.string(), "--import"}).code, cat::kExitRefusal);
+  EXPECT_FALSE(std::filesystem::exists(cache / "index.sqlite"));
+  EXPECT_EQ(cli({"cache", "init", cache.string()}).code, cat::kExitOk);
+  const auto clean_cache = t::temp_dir("fit-work");
+  const CliRun imported = cli({"cache", "init", clean_cache.string(), "--import"});
+  EXPECT_EQ(imported.code, cat::kExitOk) << imported.err;
+  EXPECT_NE(imported.out.find("imported 0 present 0 rejected 0 sealed 0\n"), std::string::npos)
+      << imported.out;
+}
+
+TEST(StoreCli, RebuildOpensTheOldCatalogLikeEveryVerb) {
+  // Fix round 1 (S6): `catalog --rebuild` maps a failure to open the old catalog exactly as the
+  // other verbs do (a foreign store is a refusal), and leaves the file in place.
+  const auto tree = t::tree_copy();
+  const std::string classes = ATX_RESEARCH_STORE_CLASSES_FILE;
+  const auto cache_dir = t::temp_dir("cache");
+  ASSERT_EQ(cli({"cache", "init", cache_dir.string()}).code, cat::kExitOk);
+  const auto text = t::temp_dir("text") / "catalog.sqlite";
+  t::write_bytes(text, "not a SQLite store");
+  for (const auto &foreign : {cache_dir / "index.sqlite", text}) {
+    const int digest = cli({"digest", "--catalog", foreign.string()}).code;
+    const CliRun rebuild = cli({"catalog", "--catalog", foreign.string(), "--root",
+                                tree.string(), "--classes", classes, "--rebuild"});
+    EXPECT_EQ(rebuild.code, digest) << foreign.string() << ": " << rebuild.err;
+    EXPECT_NE(rebuild.code, cat::kExitOk);
+    EXPECT_TRUE(std::filesystem::exists(foreign)) << foreign.string();
+  }
+  EXPECT_EQ(t::read_bytes(text), "not a SQLite store");
+  // The cache index (a foreign application_id) is the refusal the review named.
+  EXPECT_EQ(cli({"catalog", "--catalog", (cache_dir / "index.sqlite").string(), "--root",
+                 tree.string(), "--classes", classes, "--rebuild"})
+                .code,
+            cat::kExitRefusal);
+}
+
+TEST(StoreCli, DuplicateCandidateIdIsARefusal) {
+  // Fix round 1 (S4) at the CLI: two files claiming one candidate id exit 3, naming both.
+  const auto tree = t::tree_copy();
+  const auto dup = tree / "scripts" / "specs" / "p9" / "candidates" / "fx_alpha_a.json";
+  std::filesystem::create_directories(dup.parent_path());
+  t::write_bytes(dup, t::read_bytes(tree / "scripts/specs/v8/candidates/fx_alpha_a.json"));
+  const std::string db = (t::temp_dir("db") / "catalog.sqlite").string();
+  const CliRun r = cli({"catalog", "--catalog", db, "--root", tree.string(), "--classes",
+                        ATX_RESEARCH_STORE_CLASSES_FILE});
+  EXPECT_EQ(r.code, cat::kExitRefusal) << r.err;
+  EXPECT_NE(r.err.find("scripts/specs/p9/candidates/fx_alpha_a.json"), std::string::npos) << r.err;
+  EXPECT_NE(r.err.find("scripts/specs/v8/candidates/fx_alpha_a.json"), std::string::npos) << r.err;
 }
 
 TEST(StoreCli, QueryRowsOrderedByKey) {

@@ -46,6 +46,30 @@ core::Status delete_where(core::db::Database &db, std::string_view table, std::s
   return core::Ok();
 }
 
+core::Status claim_key(core::db::Database &db, std::string_view table, std::string_view column,
+                       std::string_view key, std::string_view path) {
+  ATX_TRY(core::db::Statement stmt, db.prepare("SELECT path FROM " + std::string{table} +
+                                               " WHERE " + std::string{column} + " = ?1;"));
+  ATX_TRY_VOID(stmt.bind(1, key));
+  ATX_TRY(const core::db::Statement::Step step, stmt.step());
+  if (step == core::db::Statement::Step::Done) {
+    return core::Ok();
+  }
+  ATX_TRY(std::string held, stmt.checked_text(0));
+  if (held == path) {
+    return core::Ok();
+  }
+  std::string other{path};
+  if (other < held) {
+    std::swap(held, other);
+  }
+  return core::Err(core::ErrorCode::PermissionDenied,
+                   std::string{table} + " " + std::string{column} + " '" + std::string{key} +
+                       "' is claimed by two files, " + held + " and " + other +
+                       ": one key, one file (else the walk order would pick the row); "
+                       "investigate, then catalog --rebuild");
+}
+
 } // namespace detail
 
 std::span<const GroupOps *const> catalog_groups() noexcept {
@@ -351,7 +375,12 @@ public:
     run.files_verified = verified_;
     run.files_declared = declared_;
     run.files_skipped = static_cast<i64>(skips_.size());
-    run.files_seen = verified_ + declared_ + run.files_skipped;
+    // Distinct paths: an unparsed file is both catalogued (verified) and listed (skipped
+    // `unparsed`), so it is counted once; a seal-named directory is one listed path.
+    const auto unparsed = std::count_if(skips_.begin(), skips_.end(), [](const auto &entry) {
+      return entry.second.reason == "unparsed";
+    });
+    run.files_seen = verified_ + declared_ + run.files_skipped - static_cast<i64>(unparsed);
     ATX_TRY(std::string digest, catalog_digest(db_, catalog_groups()));
     run.catalog_digest = digest;
     run.seconds =
@@ -707,6 +736,9 @@ private:
 
 core::Result<CatalogReport> run_catalog(Database &db, const ClassRegistry &registry,
                                         const CatalogOptions &opt) {
+  if (sealed_root(opt.root)) {
+    return core::Err(core::ErrorCode::PermissionDenied, sealed_root_message(opt.root));
+  }
   Walk walk{db, registry, opt};
   return walk.run();
 }
@@ -716,6 +748,9 @@ core::Result<IngestOneReport> ingest_one(Database &db, const ClassRegistry &regi
   const ClassInfo *cls = registry.find(opt.class_id);
   if (cls == nullptr) {
     return core::Err(core::ErrorCode::InvalidArgument, "unknown class " + opt.class_id);
+  }
+  if (sealed_root(opt.root)) {
+    return core::Err(core::ErrorCode::PermissionDenied, sealed_root_message(opt.root));
   }
   IngestContext ctx;
   ctx.root = normal_root(opt.root);

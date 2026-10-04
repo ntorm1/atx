@@ -66,20 +66,33 @@ struct Candidate {
   return out;
 }
 
-// <dir>/<kind>/*.json (partition "") and <dir>/<root>/<kind>/*.json (partition <root>).
-[[nodiscard]] std::vector<Candidate> candidates(const std::filesystem::path &dir) {
+// <dir>/<kind>/*.json (partition "") and <dir>/<root>/<kind>/*.json (partition <root>). Seal
+// backstop (seal_guard.hpp): a partition or kind directory whose name holds a standalone year
+// token 2024-2099 is never listed or descended into; `sealed` counts them. File names are not
+// free text (legacy_row opens only 64-hex names), so the names checked here are the only free
+// path text below `dir`.
+[[nodiscard]] std::vector<Candidate> candidates(const std::filesystem::path &dir, i64 &sealed) {
   std::vector<Candidate> out;
   for (const std::filesystem::path &first : children(dir, true)) {
     const std::string first_name = utf8_path(first.filename());
     if (first_name == "objects") {
       continue;
     }
+    if (has_sealed_year(first_name)) {
+      ++sealed;
+      continue;
+    }
     for (const std::filesystem::path &file : children(first, false)) {
       out.push_back(Candidate{file, std::string{}, first_name});
     }
     for (const std::filesystem::path &second : children(first, true)) {
+      const std::string second_name = utf8_path(second.filename());
+      if (has_sealed_year(second_name)) {
+        ++sealed;
+        continue;
+      }
       for (const std::filesystem::path &file : children(second, false)) {
-        out.push_back(Candidate{file, first_name, utf8_path(second.filename())});
+        out.push_back(Candidate{file, first_name, second_name});
       }
     }
   }
@@ -93,6 +106,11 @@ struct Candidate {
 
 // The row of one legacy file, or nullopt when record_store would not accept the file.
 [[nodiscard]] core::Result<std::optional<RecordRow>> legacy_row(const Candidate &c) {
+  // record_store names a record file by the SHA-256 of its canonical {kind, key}: any other
+  // name is rejected unopened (the stem check below would reject it after opening).
+  if (!detail::is_sha256(utf8_path(c.file.stem()))) {
+    return std::optional<RecordRow>{};
+  }
   std::error_code ec;
   const auto size = std::filesystem::file_size(c.file, ec);
   if (ec || size > kMaxOpenBytes) {
@@ -205,9 +223,12 @@ struct Candidate {
 
 core::Result<CacheImportReport> import_legacy_records(Database &cache,
                                                       const std::filesystem::path &dir) {
+  if (sealed_root(dir)) {
+    return core::Err(core::ErrorCode::PermissionDenied, sealed_root_message(dir));
+  }
   CacheImportReport report;
   std::vector<RecordRow> rows;
-  for (const Candidate &c : candidates(dir)) {
+  for (const Candidate &c : candidates(dir, report.sealed)) {
     ATX_TRY(std::optional<RecordRow> row, legacy_row(c));
     if (!row) {
       ++report.rejected;

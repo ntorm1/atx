@@ -12,6 +12,7 @@ Run: python -m pytest -q -p no:cacheprovider atx-engine/tools/test_research_stor
 """
 from __future__ import annotations
 
+import copy
 import datetime
 import json
 import re
@@ -75,6 +76,38 @@ def load(path: Path = REGISTRY) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+WILDCARD = re.compile(r"[*?\[]")
+
+
+def shared_literal_problems(registry: dict) -> list:
+    """Why the classes sharing a schema literal could shadow one another ([] when they cannot).
+
+    One writer may stamp one schema on two file names (run_bounded_research.py: start.json and receipt.json). Such a
+    literal may sit in several classes only when every glob of every such class ends in a literal file name (no
+    ``*``, ``?`` or ``[`` in its last segment) and no file name (lower-cased: the catalog folds case) belongs to two
+    of them. Then no path matches two of those classes, so the first-match rule never makes a later one dead.
+    """
+    owners: dict = {}
+    for c in registry["classes"]:
+        for literal in [*c["schemas"], *c.get("registers", [])]:
+            owners.setdefault(literal, []).append(c)
+    problems = []
+    for literal, classes in sorted(owners.items()):
+        if len(classes) < 2:
+            continue
+        holder: dict = {}
+        for c in classes:
+            if not c["globs"]:
+                problems.append(f"{literal}: class {c['id']} has no globs")
+            for glob in c["globs"]:
+                name = glob.rsplit("/", 1)[-1].lower()
+                if WILDCARD.search(name):
+                    problems.append(f"{literal}: class {c['id']} glob {glob!r} names no literal file")
+                elif holder.setdefault(name, c["id"]) != c["id"]:
+                    problems.append(f"{literal}: file name {name!r} in classes {holder[name]} and {c['id']}")
+    return problems
+
+
 class ClassRegistryGuard(unittest.TestCase):
     def test_every_schema_literal_is_registered(self):
         missing = unregistered(scan(REPO), load(), datetime.date.today())
@@ -109,7 +142,6 @@ class ClassRegistryGuard(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(registry["classes"][-1]["id"], "other")
         self.assertEqual(registry["classes"][-1]["globs"], ["**"])
-        owners: dict = {}
         for c in registry["classes"]:
             with self.subTest(cls=c["id"]):
                 for key in ("id", "label", "globs", "schemas", "format", "ingest", "render", "writer", "pinned_by",
@@ -118,21 +150,32 @@ class ClassRegistryGuard(unittest.TestCase):
                 self.assertIn(c["format"], ("json", "jsonl", "bytes"))
                 for literal in [*c["schemas"], *c.get("registers", [])]:
                     self.assertRegex(literal, f"^{LITERAL.pattern}$")
-                    owners.setdefault(literal, []).append(c)
-        # One writer may stamp one schema on two file names (run_bounded_research.py: start.json and receipt.json).
-        # Such a literal is shared only by classes whose globs name the file (no catch-all) and do not overlap, so
-        # the first-match rule can never make the later class dead.
-        for literal, classes in owners.items():
-            if len(classes) < 2:
-                continue
-            with self.subTest(shared=literal):
-                seen: set = set()
-                for c in classes:
-                    globs = set(c["globs"])
-                    self.assertTrue(globs, f"{literal}: class {c['id']} has no globs")
-                    self.assertFalse(globs & {"**", "**/*.json"}, f"{literal}: class {c['id']} has a catch-all glob")
-                    self.assertFalse(globs & seen, f"{literal}: class {c['id']} repeats a glob of another class")
-                    seen |= globs
+        self.assertEqual(shared_literal_problems(registry), [])
+
+    def test_shared_literal_needs_disjoint_literal_file_names(self):
+        # Fix round 1 (S1): the review's probes, each a class sharing atx.bounded-research-run/v1 placed ahead of
+        # run-receipt, and more; every one could shadow run-receipt or run-start and must be reported.
+        registry = load()
+        literal = "atx.bounded-research-run/v1"
+        self.assertEqual(sorted(c["id"] for c in registry["classes"] if literal in c["schemas"]),
+                         ["run-receipt", "run-start"])
+        at = next(i for i, c in enumerate(registry["classes"]) if c["id"] == "run-receipt")
+
+        def with_probe(globs: list) -> dict:
+            planted = copy.deepcopy(registry)
+            planted["classes"].insert(at, {"id": "probe", "globs": globs, "schemas": [literal]})
+            return planted
+
+        for globs in (["build-equity/**"], ["**/*receipt.json"], ["**/*"], ["**/*.json"], ["**"],
+                      ["**/receipt.json"], ["build-equity/x/START.json"], ["**/rec?ipt.json"], ["**/[rs]tart.json"],
+                      ["**/finish.json", "**/*.json"], []):
+            with self.subTest(globs=globs):
+                self.assertNotEqual(shared_literal_problems(with_probe(globs)), [])
+        # A third class with its own literal file name cannot shadow either: allowed.
+        self.assertEqual(shared_literal_problems(with_probe(["**/finish.json"])), [])
+        # Unshared literals are not constrained (catch-all globs are the norm there).
+        self.assertEqual(shared_literal_problems({"classes": [{"id": "a", "globs": ["**/*.json"],
+                                                               "schemas": ["atx.a/v1"]}]}), [])
 
     def test_planted_unregistered_literal_fails(self):
         registry = load()

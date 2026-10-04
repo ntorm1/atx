@@ -2,8 +2,9 @@
 
 // atx::engine::research::store::catalog -- the `atx-research-store` command line (P9 SQL2;
 // sql-design section 3.9). Exit codes: 0 ok, 2 usage, 3 refusal (a stale or missing pin under
-// --strict, a sealed / oversized / outside-root path, a foreign or newer store, a changed
-// trial-ledger line), 4 error.
+// --strict, a sealed / oversized / outside-root path, a sealed --root or `cache init --import`
+// DIR, a foreign or newer store (also as the target of `catalog --rebuild`), a changed
+// trial-ledger line, two files claiming one candidate id or build tag), 4 error.
 //
 //   init --catalog DB
 //   catalog --catalog DB --root R [--specs GLOB]... [--ledger L]... [--include P]...
@@ -46,13 +47,18 @@ inline constexpr int kExitError = 4;
 struct CacheImportReport {
   i64 imported{};
   i64 present{};  // a row with this key existed already (kept)
-  i64 rejected{}; // not a valid record-store file (schema, kind, key or content SHA-256)
+  i64 rejected{}; // not a valid record-store file (name, schema, kind, key or content SHA-256)
+  i64 sealed{};   // partition / kind directories never opened (a year token 2024-2099)
 };
 
 // `cache init DIR --import`: every legacy record-store file under `dir` (<dir>/<kind>/<sha>.json,
 // partition "", and <dir>/<root>/<kind>/<sha>.json, partition <root>) that record_store.py's
 // checks accept becomes a `record` row exactly as record_store.py writes one (compact canonical
 // key, compact body in insertion order, bodies over 1 MiB in objects/<c[0:2]>/<c>.json).
+// Seal (fail closed): Err(PermissionDenied) when `dir` itself holds a standalone year token
+// 2024-2099 (seal_guard.hpp sealed_root), before anything is read; a partition or kind
+// directory so named is skipped unopened (`sealed`); a file whose stem is not 64 lower-case hex
+// is rejected unopened.
 [[nodiscard]] core::Result<CacheImportReport>
 import_legacy_records(core::db::Database &cache, const std::filesystem::path &dir);
 

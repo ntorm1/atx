@@ -158,6 +158,7 @@ void ingest_candidate(const FamilyInput &in, IngestResult &out) {
   }
   out.writes.emplace_back([row = std::move(row), events = std::move(events)](
                               core::db::Database &db) -> core::Status {
+    ATX_TRY_VOID(claim_key(db, "candidate", "id", row.id, row.path));
     ATX_TRY_VOID(delete_where(db, "candidate_event", "id", row.id));
     ATX_TRY_VOID(upsert(db, row));
     for (const CandidateEventRow &e : events) {

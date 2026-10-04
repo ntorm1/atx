@@ -262,9 +262,16 @@ int cmd_catalog(const Args &a, std::ostream &out, std::ostream &err) {
   if (!path || !root) {
     return usage(err, "catalog needs --catalog DB and --root R");
   }
+  // Fail closed before anything is touched: no rebuild, no registry read under a sealed root.
+  if (sealed_root(fs_path(*root))) {
+    err << "atx-research-store: " << sealed_root_message(fs_path(*root)) << "\n";
+    return kExitRefusal;
+  }
   if (a.flag("--rebuild")) {
+    // Opening the old catalog fails as any open does (a foreign or non-store file is a
+    // refusal); a store in use is a refusal; a file that cannot be removed is an error.
     if (auto s = remove_catalog(*path); !s) {
-      return fail(err, s.error(), refusal_or_error(s.error()));
+      return open_failure(err, s.error());
     }
   }
   auto registry = registry_for(a, fs_path(*root));
@@ -307,6 +314,10 @@ int cmd_ingest(const Args &a, std::ostream &out, std::ostream &err) {
     return usage(err, "ingest needs --catalog DB --class C --path P");
   }
   const std::string root = a.one("--root").value_or(std::string{"."});
+  if (sealed_root(fs_path(root))) {
+    err << "atx-research-store: " << sealed_root_message(fs_path(root)) << "\n";
+    return kExitRefusal;
+  }
   auto registry = registry_for(a, fs_path(root));
   if (!registry) {
     return fail(err, registry.error(), kExitError);
@@ -449,6 +460,11 @@ int cmd_cache(const Args &a, std::ostream &out, std::ostream &err) {
       err << "atx-research-store: " << a.positional[2] << " is not a directory\n";
       return kExitRefusal;
     }
+    // --import reads the files under DIR: a sealed DIR is refused before the index is made.
+    if (a.flag("--import") && sealed_root(dir)) {
+      err << "atx-research-store: " << sealed_root_message(dir) << "\n";
+      return kExitRefusal;
+    }
     auto db = create_cache(dir);
     if (!db) {
       return open_failure(err, db.error());
@@ -461,10 +477,10 @@ int cmd_cache(const Args &a, std::ostream &out, std::ostream &err) {
     if (a.flag("--import")) {
       auto report = import_legacy_records(*db, dir);
       if (!report) {
-        return fail(err, report.error(), kExitError);
+        return fail(err, report.error(), refusal_or_error(report.error()));
       }
       out << "imported " << report->imported << " present " << report->present << " rejected "
-          << report->rejected << "\n";
+          << report->rejected << " sealed " << report->sealed << "\n";
     }
     return kExitOk;
   }

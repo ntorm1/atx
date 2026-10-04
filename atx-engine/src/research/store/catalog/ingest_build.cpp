@@ -57,6 +57,7 @@ void ingest_build_receipt(const FamilyInput &in, IngestResult &out) {
   }
   out.writes.emplace_back([row = std::move(row), exes = std::move(exes)](
                               core::db::Database &db) -> core::Status {
+    ATX_TRY_VOID(claim_key(db, "build_receipt", "tag", row.tag, row.path));
     ATX_TRY_VOID(delete_where(db, "build_exe", "tag", row.tag));
     ATX_TRY_VOID(upsert(db, row));
     for (const BuildExeRow &e : exes) {
