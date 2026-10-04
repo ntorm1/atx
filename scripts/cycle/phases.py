@@ -60,6 +60,65 @@ def exe_capabilities(exe: str, root: Path, env: dict | None = None) -> frozenset
     return frozenset(c for c in caps if isinstance(c, str))
 
 
+# Ruling W1-I1 (whole-wave-1 review I-1): the deepest file the IC exe writes under --candidate-cache, in the exe's
+# layout (atx-impl/src/strategy_ic_signal_cache.cpp cache_root and cache_key, strategy_ic_result_cache.cpp
+# ic_cache_scope, strategy_ic_runner.cpp: the IC-result entry beside the signal entry it scores):
+#   <cache dir>/<vm identity>/<role sha256>/fp_<16 hex>/ic<v>_<16 hex>/<id>.<dsl sha256 16>.json
+# plus PartialFile's ".<16 hex>.partial" in the same dir (written first, then hard-linked). The exe prints no vm
+# identity, so CACHE_VM_IDENTITY is a documented bound taken from the source: vm_identity() = "dslvm1"
+# (dsl_vm_semantics_version 1) + "_clang18.1" (vm_compiler) + "" (vm_fp_flavor: no preset sets FMA / AVX2 / fast-math)
+# + "_opt_md_ndebug_xs13.0.0" (build_flavor_suffix of the equity-rel build, S1), plus "_audit" under --eval-mode
+# audit-exact (lane S2). The Debug (legacy) identity adds no level at all, so the Release bound is applied to every
+# build (a Debug pass never admits an id its Release pass cannot write), and fp_<16> is counted for every candidate
+# (only a field candidate has it). A compiler, xsimd, flavour or semantics-version change lengthens the identity:
+# update these constants with it.
+CACHE_VM_IDENTITY = "dslvm1_clang18.1_opt_md_ndebug_xs13.0.0"
+CACHE_AUDIT_TOKEN, CACHE_AUDIT_MODE = "_audit", "audit-exact"
+CACHE_HEX16 = "0" * 16
+CACHE_ROLE_LEVEL = "0" * 64                      # the role manifest's SHA-256
+CACHE_FIELD_LEVEL = "fp_" + CACHE_HEX16          # a field candidate's field-key dir
+CACHE_IC_LEVEL = "ic1_" + CACHE_HEX16            # ic_result_semantics_version 1
+CACHE_PARTIAL = "." + CACHE_HEX16 + ".partial"
+CACHE_PATH_MAX = 250                             # ruling W1-I1: refused above (Windows MAX_PATH 260, less a margin)
+
+
+def deepest_cache_path(cache_dir: str, cid: str, audit: bool = False) -> str:
+    """The deepest path the IC exe writes for candidate ``cid`` under the absolute cache dir ``cache_dir`` (the
+    layout above, at its Release / audit-exact bound)."""
+    leaf = max(f"{cid}.{CACHE_HEX16}.json", CACHE_PARTIAL, key=len)
+    identity = CACHE_VM_IDENTITY + (CACHE_AUDIT_TOKEN if audit else "")
+    return "/".join([cache_dir.rstrip("/\\"), identity, CACHE_ROLE_LEVEL, CACHE_FIELD_LEVEL, CACHE_IC_LEVEL, leaf])
+
+
+def cache_path_problem(cache_dir: str, ids, audit: bool = False) -> str | None:
+    """Ruling W1-I1: why the candidate ids ``ids`` cannot be scored under the absolute cache dir ``cache_dir`` (the
+    longest id's deepest_cache_path is over CACHE_PATH_MAX characters), else None."""
+    ids = [i for i in ids if isinstance(i, str) and i]
+    if not ids:
+        return None
+    cid = max(ids, key=len)
+    path = deepest_cache_path(cache_dir, cid, audit)
+    if len(path) <= CACHE_PATH_MAX:
+        return None
+    prefix = len(deepest_cache_path(cache_dir, "", audit)) - len(CACHE_PARTIAL)     # up to the entry's own name
+    room = CACHE_PATH_MAX - prefix - len(f".{CACHE_HEX16}.json")
+    too_long = sorted(i for i in ids if len(deepest_cache_path(cache_dir, i, audit)) > CACHE_PATH_MAX)
+    return (f"IC cache path too long (ruling W1-I1): candidate id(s) {too_long} would write IC cache files of up to "
+            f"{len(path)} characters (> {CACHE_PATH_MAX}), e.g. {path}; under this cache dir"
+            f"{' (audit-exact)' if audit else ''} an id may have at most {max(room, 0)} characters: shorten the id "
+            "before it is registered, or run from a shorter root / ic.cache (the Release layout is the bound for "
+            "every build)")
+
+
+def library_ids(doc) -> list[str]:
+    """The candidate ids of a library document ({"candidates": [{"id": ...} | "id", ...]}); [] for anything else."""
+    cands = doc.get("candidates") if isinstance(doc, dict) else None
+    if not isinstance(cands, list):
+        return []
+    return [c.get("id") if isinstance(c, dict) else c for c in cands
+            if isinstance(c.get("id") if isinstance(c, dict) else c, str)]
+
+
 class Cycle:
     def __init__(self, spec: dict, res: Resolver, *, suffix: str | None = None, attempts: dict | None = None,
                  reuse_fields: str | None = None, ledger: str | None = None, spec_path: Path | None = None,
@@ -138,6 +197,32 @@ class Cycle:
     def cache_dir(self) -> str:
         ic = self.spec["ic"]
         return self.out(ic["cache"], keyed=False) if "cache" in ic else self.derived_root("candidate-cache")
+
+    def cache_problem(self, ids) -> str | None:
+        """Ruling W1-I1: cache_path_problem of the candidate ids ``ids`` under this cycle's IC cache dir, as the exe
+        resolves it from the root (its cwd); the audit-exact token counts when an IC pass asks for it. Only the IC
+        exe writes that cache, so the check applies while the spec's IC exe is on disk, i.e. always before it can
+        run; without it (a hash-only plan in a tree with no build, a fixture with fake tools) nothing can be written
+        and nothing is refused."""
+        if not self.res.path(effective_exes(self.spec).get("ic") or "").is_file():
+            return None
+        ic = self.spec["ic"]
+        flag_sets = [ic["flags"]] + ([research_spec.apply_flags(ic["flags"], ic.get("w_flags") or {}, "ic.w_flags")]
+                                     if "w_output" in ic else [])
+        audit = any(option_value(f, "--eval-mode") == CACHE_AUDIT_MODE for f in flag_sets)
+        return cache_path_problem(os.path.abspath(self.res.path(self.cache_dir())), ids, audit)
+
+    def cache_path_check(self, lib: str) -> None:
+        """Ruling W1-I1, before any compute (plan and run): refuse a library whose candidate ids would write IC cache
+        files longer than CACHE_PATH_MAX characters (cache_problem). Nothing to check while the library is not on
+        disk or not JSON (a hash-only plan; the pins and the exe judge it)."""
+        try:
+            ids = library_ids(self.res.read_json(lib))
+        except ValueError:
+            return
+        problem = self.cache_problem(ids) if ids else None
+        if problem:
+            raise CycleError(f"{lib}: {problem}", EXIT_USAGE)
 
     def fit_work_dir(self) -> str:
         fit = self.spec["fit"]
@@ -476,6 +561,7 @@ class Cycle:
             out.append(self.ref_step(fdm, role_m, role_sha))
         u_out = ""
         if "ic" in s:
+            self.cache_path_check(lib)                   # ruling W1-I1: before any phase runs
             ic = s["ic"]
             base = self.out(ic["u_output"])
             n, state, note = self.ic_attempt("u", base)

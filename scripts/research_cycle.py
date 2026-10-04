@@ -23,7 +23,8 @@ from cycle.compare import _first_diff, _lines, compare, compare_files, compare_k
 from cycle.gate import (admission_trials, check_recorded_heads, copy_ledger, fields_check, gate,  # noqa: E402,F401
                         ledger_state, write_verdict)
 from cycle.lock import lock, lock_exes, lock_inputs, lock_pin  # noqa: E402,F401
-from cycle.phases import Cycle, Step, exe_capabilities, window_id  # noqa: E402,F401
+from cycle.phases import (CACHE_PATH_MAX, Cycle, Step, cache_path_problem, deepest_cache_path,  # noqa: E402,F401
+                          exe_capabilities, library_ids, window_id)
 from cycle.resolver import Resolver, placeholder  # noqa: E402,F401
 from cycle.spec import (ATTEMPT_PHASES, BUILDS, CAP_KEYS, CAPACITY_FILES, CAPACITY_FLAG,  # noqa: E402,F401
                         COMPARE_MODES, COMPARE_SUFFIX, DEFAULT_OUT_ROOT, DSR_FROM_LEDGER, ERA_PHASES, EXE_NAMES,

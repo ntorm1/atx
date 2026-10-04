@@ -161,12 +161,14 @@ class Wave:
                 return fn(*args)
             finally:
                 self._local.buffer = None
-        with ThreadPoolExecutor(max_workers=max(1, len(calls))) as pool:
-            jobs = [pool.submit(job, buf, *call) for buf, call in zip(buffers, calls)]
-            wait(jobs)
-        for buf in buffers:
-            for record, args in buf:
-                record(*args)
+        try:
+            with ThreadPoolExecutor(max_workers=max(1, len(calls))) as pool:
+                jobs = [pool.submit(job, buf, *call) for buf, call in zip(buffers, calls)]
+                wait(jobs)
+        finally:                # review E2 S2: an interrupt still writes the records of the commands that ran
+            for buf in buffers:
+                for record, args in list(buf):
+                    record(*args)
         return [j.result() for j in jobs]
 
     def buffered(self, record, *args) -> bool:

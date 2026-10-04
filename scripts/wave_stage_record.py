@@ -14,6 +14,7 @@ import wave_queue
 import wave_result
 import wave_rules as WR
 import wave_seal
+import wave_stage_kinds as SK
 import wave_steps as WS
 from wave_context import Wave
 from wave_stage_cell import last_completed, nav_series, read_once, reader_plan, refuse_stale_code, unbound
@@ -65,15 +66,29 @@ def verify(w: Wave, done: dict, log) -> dict:
 
 
 def exe_problem(exe: dict, pins: dict | None) -> str | None:
-    """Verify's NAV exe refusal (P9 OR-2): the cell's NAV ran on another exe than the parent's (their completed run
-    receipts differ, or the specs' exes_sha256 pins name two NAV exes) and the cell spec's reference construction did
-    not run on the cell's exe; None otherwise (a rule cell has no ref phase: recorded only)."""
+    """Verify's NAV exe refusal; None when the cell is judged like with like.
+
+    A cell with a reference construction (P9 OR-2): refused when its NAV ran on another exe than the parent's (their
+    completed run receipts differ, or the specs' exes_sha256 pins name two NAV exes) and the reference construction
+    did not run on the cell's exe.
+    A cell without one (a rule cell, ``ref`` "none"; ruling W1-I2 (a), DEC-20): its paired parent NAV is the parent's
+    own, so it must have been made by the cell's NAV exe. Refused, fail closed, when the receipts' exes differ, when
+    the pins name two NAV exes, or when only one side records its exe (no proof of a like-with-like pair). Nothing is
+    refused only when neither NAV records an exe: no NAV the bounded runner made (synthetic fixtures)."""
     moved = "nav" in ((pins or {}).get("differ") or [])
+    pin_text = (f" (exes_sha256 pins: cell {((pins or {}).get('cell') or {}).get('nav')}, parent "
+                f"{((pins or {}).get('parent') or {}).get('nav')})") if moved else ""
+    if exe["ref"] == "none":
+        one_sided = exe["equal"] is None and bool(exe["cell"]) != bool(exe["parent"])
+        if not (exe["equal"] is False or moved or one_sided):
+            return None
+        return (f"rule cell: its paired parent NAV was made by NAV exe {exe['parent'] or '(unrecorded)'} and the "
+                f"cell's NAV by {exe['cell'] or '(unrecorded)'}{pin_text}: a paired test compares like with like "
+                "(DEC-20, ruling W1-I2): the parent spec must name a NAV made by the cell's exe (root re-pins it, "
+                "W1-I2 (b))")
     if not ((exe["equal"] is False or moved) and exe["ref"] in ("missing", "unknown")):
         return None
-    return (f"the cell's NAV exe {exe['cell']} differs from the parent NAV's {exe['parent']}"
-            + (f" (exes_sha256 pins: cell {pins['cell'].get('nav')}, parent {pins['parent'].get('nav')})" if moved
-               else "") +
+    return (f"the cell's NAV exe {exe['cell']} differs from the parent NAV's {exe['parent']}" + pin_text +
             " and the cell spec's reference construction did not run on it (no completed ref run with that exe)")
 
 
@@ -103,9 +118,10 @@ def nav_exe(w: Wave, done: dict) -> dict:
 
 
 def verify_plan(w: Wave, done: dict) -> list[str]:
+    builds = ", the field / role builds" if SK.kind(w) in ("field", "role") else ""   # review E2 R1 (v1: as before)
     return ["#   mechanics rule v8-mech on the mechanics keys; C-13 binding of the cell's NAV; NAV exe sha256 of the parent "
             "vs the cell (recorded; differing, the cell's ref must have run on the cell's exe); seal scan of every log "
-            "the wave produced (run dirs of the screen, the cell and its -gm copy, readers, consoles)"]
+            f"the wave produced (run dirs of the screen, the cell and its -gm copy, readers{builds}, consoles)"]
 
 
 # ------------------------------------------------------------------ judge

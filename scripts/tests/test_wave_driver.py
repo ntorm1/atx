@@ -11,10 +11,13 @@
   test_launch_waits_for_free_memory       F-5 (a): bounded launch admission (free memory, no compiler, host claims)
   test_two_launches_never_overcommit      review E1 major: two simultaneous admits never count the same free memory
   test_adopt_never_kills_the_child        re-review 1 N2: adopt under the lock, retried; a failure only warns
-  test_claims_lock_failures_are_admission_waits  E1 minor: a claims-lock problem is an admission wait, not runner-error
+  test_claims_lock_failures_are_admission_waits  E1 minor: a claims-lock problem is an admission wait, not runner-error;
+                                          an unwritable claims dir is reported as such (review E2 S1)
   test_parallel_steps_under_host_budget   OR section 5: ref || u, card || marginal, the judge's summ || bundle || book
   test_judge_records_in_call_order        E1 minor: the side-by-side judge records consoles and processes in call order
+  test_cache_path_bound_w1_i1             ruling W1-I1: the deepest IC cache path refused over 250 chars, before compute
   test_lock_exes_pins_and_verify_compares OR-2: lock --exes writes exes_sha256, runs check it, verify compares
+  test_rule_cell_parent_nav_from_another_exe_is_refused  ruling W1-I2 (a): a rule cell's paired parent NAV's exe
   test_receipt_digest_time_free           OR section 3: content digests (no time keys); the manifest's record date
   test_code_reuse_keyed_on_import_closure E1-REUSE (b): the code key covers the in-repo import closure
   test_reader_reuse_keyed_on_code_and_verdict_per_run  OR section 3: code-keyed reuse; per-run verdict copies
@@ -767,6 +770,26 @@ def test_claims_lock_failures_are_admission_waits(tmp_path, monkeypatch):
     monkeypatch.undo()
     assert len(refused) == 2 and held.mine.exists() and not lock.exists() and "refused" not in block
     held.release()
+    # review E2 S1: a PermissionError for the whole wait with no lock on disk is an unwritable claims dir, reported as
+    # such (ClaimsDirError: the runner records runner-error), not as a held lock nor a retryable admission timeout
+    def denied(path, flags, *rest):
+        if Path(path) == lock:
+            raise PermissionError(13, "Access is denied", str(path))
+        return real_open(path, flags, *rest)
+    monkeypatch.setattr(RB.os, "open", denied)
+    with pytest.raises(RB.ClaimsDirError, match="the claims dir is not writable"):
+        RB.admit(admit_args(tmp_path, host_budget_mib=12000, admission_wait_seconds=0.3), tmp_path / "o",
+                 available=lambda: 8 << 30, compilers=lambda: [], owner=(me.pid, me.create_time()))
+    monkeypatch.undo()
+    assert not issubclass(RB.ClaimsDirError, RB.LockTimeout) and not lock.exists()
+    # reclaim reports only a lock it removed: a dead holder's lock that cannot be deleted stays "held" (it exists)
+    lock.write_text(json.dumps({"pid": me.pid, "create_time": me.create_time() - 3600}))
+    monkeypatch.setattr(RB, "remove", lambda p: None)
+    assert RB.HostClaims.reclaim(lock) is False and RB.HostClaims.reclaim(claims / "absent.lock") is False
+    with pytest.raises(RB.LockTimeout, match="held for 0.2 s"):
+        RB.HostClaims(claims, 12000, (me.pid, me.create_time())).acquire_lock(0.2)
+    monkeypatch.undo()
+    assert RB.HostClaims.reclaim(lock) is True and not lock.exists()
 
 
 def gated_executor(names: set[str], seen: list[str]):
@@ -887,6 +910,62 @@ def test_judge_records_in_call_order(tmp_path):
     assert [c[4:].split("-")[0] for c in numbered] == ["the", "bundle", "book"]
 
 
+# ------------------------------------------------------------------ ruling W1-I1: the IC cache path bound
+def test_cache_path_bound_w1_i1(tmp_path):
+    """Ruling W1-I1 (whole-wave-1 review I-1): before any compute, research_cycle (plan and run) and the wave's
+    preflight refuse candidate ids whose deepest IC cache file would be over 250 characters. The layout is the exe's
+    at its Release bound (cycle/phases.py CACHE_*): under the v8 cache of root's tree it is 226 + len(id), the review's
+    independent derivation, so ids of up to 24 characters fit there (the ruling's AL / PRE bound), 18 with
+    audit-exact. The id regex stays at 64. Nothing is refused while the IC exe is not on disk (it alone writes the
+    cache) or the library is not."""
+    v8 = "C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo3"
+    for n in (1, 18, 24, 25, 33):
+        assert len(RC.deepest_cache_path(v8, "x" * n)) == 226 + max(n, 3)       # (".<16>.partial" below 3)
+        assert len(RC.deepest_cache_path(v8, "x" * n, audit=True)) == 232 + max(n, 3)
+    assert RC.deepest_cache_path(v8, "abc").split("/")[-5:] == [
+        "dslvm1_clang18.1_opt_md_ndebug_xs13.0.0", "0" * 64, "fp_" + "0" * 16, "ic1_" + "0" * 16, f"abc.{'0' * 16}.json"]
+    assert RC.cache_path_problem(v8, ["a_b", "x" * 24]) is None
+    problem = RC.cache_path_problem(v8, ["a_b", "x" * 25, "y" * 30])
+    assert "candidate id(s) ['" + "x" * 25 + "', '" + "y" * 30 + "']" in problem and "256 characters (> 250)" in problem
+    assert "at most 24 characters" in problem
+    assert RC.cache_path_problem(v8, ["x" * 19], audit=True) and "at most 18" in RC.cache_path_problem(
+        v8, ["x" * 19], audit=True)
+    assert RC.cache_path_problem(v8, []) is None and WM.CAND_ID_RE.pattern.endswith("{0,63}")
+    assert RC.library_ids({"candidates": [{"id": "a"}, "b", {"x": 1}, 3]}) == ["a", "b"] and RC.library_ids([]) == []
+    # research_cycle: a deep (pytest) root admits no id at all; plan refuses with exit 2 before anything runs
+    root, sp = T.make_root(tmp_path / "c")
+    (root / "lib" / "lib.json").write_text(json.dumps({"candidates": [{"id": "new_alpha"}]}))
+    deep = len(RC.deepest_cache_path(str(root / "out" / "CC"), "new_alpha"))
+    assert deep > RC.CACHE_PATH_MAX
+    with pytest.raises(RC.CycleError, match=r"IC cache path too long \(ruling W1-I1\)") as e:
+        T.cycle_of(root, sp).steps()
+    assert e.value.code == RC.EXIT_USAGE and "lib/lib.json" in str(e.value) and "['new_alpha']" in str(e.value)
+    assert RC.main(["plan", str(sp), "--root", str(root)]) == RC.EXIT_USAGE and T.calls(root) == []
+    doc = json.loads(sp.read_text())
+    doc["ic"]["flags"] = ["--workers", "4", "--eval-mode", "audit-exact"]
+    sp.write_text(json.dumps(doc))
+    with pytest.raises(RC.CycleError, match=r"\(audit-exact\)"):
+        T.cycle_of(root, sp).steps()
+    (root / "bin" / "ic.exe").unlink()                           # no IC exe: nothing can write the cache
+    assert any(s.phase == "u" for s in T.cycle_of(root, sp).steps())
+    (root / "bin" / "ic.exe").write_bytes(b"ic")
+    (root / "lib" / "lib.json").write_text('{"lib": 1}')        # no candidate list (or no library): nothing to check
+    assert any(s.phase == "u" for s in T.cycle_of(root, sp).steps())
+    # the wave: with the parent's IC exe on disk, preflight refuses (exit 3) before register writes a registration;
+    # the fixture's fake world has no IC exe, so every other wave test runs as before
+    root = F.build(tmp_path / "w")
+    (root / "bin").mkdir()
+    (root / "bin" / "ic.exe").write_bytes(b"ic")
+    fake = F.FakeCycle(root, ADMIT_ALL)
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lambda s: None) == 3
+    err = json.loads((root / "out/waves/w1/receipts/01-preflight.failed-1.json").read_text())["error"]
+    assert "IC cache path too long (ruling W1-I1)" in err and "'alpha_a'" in err
+    assert not any("add-alpha" in a for a in fake.calls)
+    (root / "bin" / "ic.exe").unlink()
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "preflight"], executor=fake,
+                              log=lambda s: None) == 0
+
+
 # ------------------------------------------------------------------ OR-2: exes pinned by lock, compared by verify
 def test_lock_exes_pins_and_verify_compares(tmp_path):
     """P9 OR-2: `lock --exes` writes exes_sha256 (the SHA-256 of every exe the cell runs; a template's into
@@ -965,10 +1044,64 @@ def test_lock_exes_pins_and_verify_compares(tmp_path):
     assert "exes_sha256 pins: cell " + b in WR.exe_problem({"equal": None, "ref": "missing", "cell": b,
                                                              "parent": a}, pins)
     assert WR.exe_problem({"equal": None, "ref": "ran", "cell": b, "parent": a}, pins) is None
-    assert WR.exe_problem({"equal": None, "ref": "none", "cell": b, "parent": a}, pins) is None   # a rule cell
     assert WR.exe_problem({"equal": True, "ref": "missing", "cell": a, "parent": a}, None) is None
     assert "differs from the parent NAV's" in WR.exe_problem({"equal": False, "ref": "missing", "cell": b,
                                                               "parent": a}, None)
+    # a rule cell (no ref phase): ruling W1-I2 (a) refuses pins naming two NAV exes (it was recorded only before)
+    assert "exes_sha256 pins: cell " + b in WR.exe_problem({"equal": None, "ref": "none", "cell": b, "parent": a},
+                                                           pins)
+
+
+def rule_wave_root(path: Path) -> Path:
+    """test_research_wave's rule wave: a NAV-only rule cell on the fixture's parent (its paired parent NAV is the
+    parent's own, PARENT_NAV)."""
+    path.mkdir(parents=True)
+    tpl = {"schema": "atx.research-cycle-template/v1", "name": "x-rule", "description": "rule cell",
+           "parent": None, "nominal_parent": "lib-p0.json",
+           "change": {"set": {"nav.output": "out/nav-x-rule"}, "flags": {"nav": {"--rule-x": None}}}}
+    F.write_json(path, "scripts/specs/v8/x-rule.json", tpl)
+    rule = {"template": "scripts/specs/v8/x-rule.json", "template_sha256": sha((path / "scripts/specs/v8/x-rule.json")
+                                                                               .read_bytes()),
+            "name": "x-rule-w1", "constants": {"flags": {"nav": {"--rule-x": "v1"}}}}
+    return F.build(path, drop=("candidates", "sign_rule", "library"), rule_cell=rule)
+
+
+def nav_receipt(root: Path, run_dir: str, exe: str | None) -> None:
+    """A completed NAV run receipt, recording ``exe`` as its executable_sha256 (None: no such key, a synthetic NAV)."""
+    doc = {"outcome": "completed", "exit_code": 0, "wall_seconds": 2.0, "sampled_peak_tree_rss_bytes": 3 << 20}
+    F.write_json(root, f"{run_dir}/receipt.json", dict(doc, **({"executable_sha256": exe} if exe else {})))
+
+
+@pytest.mark.parametrize("parent_exe, cell_exe, refused", [
+    ("a" * 64, "a" * 64, False),       # like with like
+    ("a" * 64, "b" * 64, True),        # the parent NAV is an old build's (W1-I2: C1 changed NAV bytes)
+    ("a" * 64, None, True),            # one side unrecorded: no proof of a like-with-like pair (fail closed)
+    (None, "b" * 64, True),
+    (None, None, False),               # neither recorded: no runner-made NAV (synthetic), as before
+])
+def test_rule_cell_parent_nav_from_another_exe_is_refused(tmp_path, parent_exe, cell_exe, refused):
+    """Ruling W1-I2 (a) (DEC-20: a paired test compares like with like): verify refuses a rule cell (no reference
+    construction) whose paired parent NAV was made by another NAV exe than the cell's NAV, naming both hashes; it
+    used to record the difference only. Part (b), re-pinning the parent specs to the P9-B0 references, is root's."""
+    root = rule_wave_root(tmp_path / "w")
+    nav_receipt(root, f"{F.PARENT_NAV}-run", parent_exe)
+    fake = F.FakeCycle(root, {})
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "match"], executor=fake,
+                              log=lambda s: None) == 0
+    nav_receipt(root, "out/nav-x-rule-run", cell_exe)                 # the cell's calibration run (FakeCycle's dir)
+    lines: list[str] = []
+    code = research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "verify"], executor=fake,
+                              log=lines.append)
+    receipts = root / "out/waves/w1/receipts"
+    if refused:
+        assert code == 4, lines
+        text = json.loads((receipts / "07-verify.failed-1.json").read_text())["error"]
+        assert "rule cell: its paired parent NAV was made by NAV exe " in text and "W1-I2" in text
+        assert (parent_exe or "(unrecorded)") in text and (cell_exe or "(unrecorded)") in text
+    else:
+        assert code == 0, lines
+        exe = json.loads((receipts / "07-verify.json").read_text())["outputs"]["nav_exe"]
+        assert exe == {"parent": parent_exe, "cell": cell_exe, "equal": True if parent_exe else None, "ref": "none"}
 
 
 # ------------------------------------------------------------------ OR section 3: determinism and stale reuse

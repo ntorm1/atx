@@ -78,7 +78,7 @@ SCHEMA_KEYWORDS = {"type", "const", "enum", "required", "properties", "additiona
                    "maxItems", "minProperties", "pattern", "minimum", "maximum", "exclusiveMinimum",
                    "exclusiveMaximum", "default", "x-flag", "description"}
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,63}")
-PLACEHOLDER_RE = re.compile(r"[A-Z]")                # "--risk-target S": S is a param's value, not a constant
+PLACEHOLDER_RE = re.compile(r"[A-Z][A-Z0-9_]*")     # "--risk-target S" / "SIGMA": a param's value, not a constant
 
 
 class KindError(ValueError):
@@ -95,6 +95,11 @@ def _rel(v) -> bool:
 
 def _argv(v) -> bool:
     return isinstance(v, list) and all(isinstance(x, str) and x for x in v)
+
+
+def _norm(v: str) -> str:
+    """A root-relative path as one comparable string ("./a/b/", "a\\b" and "A/b" are "a/b"; Windows is case-blind)."""
+    return "/".join(p for p in Path(v).parts if p not in ("", ".")).casefold()
 
 
 def in_code(value: str) -> bool:
@@ -211,7 +216,7 @@ def field_problems(m: dict) -> list[str]:
         return ["field must be {rows: [registry row names] (distinct, non-empty), output: a root-relative dir, "
                 "registry?, builder_args?, seconds?, max_rss_mib?}"]
     out = _builder_args_problems(f.get("builder_args", []), "field.builder_args") + _caps_problems(f, "field")
-    if f["output"].rstrip("/") == str(m.get("fields", {}).get("dir", "")).rstrip("/"):
+    if _norm(f["output"]) == _norm(str(m.get("fields", {}).get("dir", ""))):      # review E2 S5: ./x, x/, X
         out.append("field.output is the wave's fields dir: the build writes a new dir")
     if in_code(f["output"]):
         out.append("field.output lies inside the code pathspec: a build output would dirty it")
@@ -256,6 +261,12 @@ def schema_problems(value, schema: dict, where: str) -> list[str]:
     out = []
     types = {"object": dict, "array": list, "string": str, "boolean": bool}
     t = schema.get("type")
+    if t is not None and (not isinstance(t, str) or t not in ("integer", "number", *types)):   # review E2 S3
+        return [f"{where}: schema type {t!r} not supported (refused, not ignored)"]
+    for key, kinds in (("properties", dict), ("required", list), ("items", dict), ("enum", list),
+                       ("additionalProperties", (bool, dict))):
+        if key in schema and not isinstance(schema[key], kinds):
+            return [f"{where}: schema {key} {schema[key]!r} is not a JSON-Schema {key} (refused, not ignored)"]
     if t is not None:
         ok = (type(value) is int if t == "integer" else
               type(value) in (int, float) if t == "number" else
@@ -397,10 +408,36 @@ def rule_flags(rules: list[dict], tables: dict) -> tuple[dict, list[str]]:
     return flags, out
 
 
-def owned_flags(flags: dict, template: dict) -> list[str]:
-    """The rule flags the template's change.flags sets itself (review F-8: refused, the rules block owns them)."""
-    tf = ((template or {}).get("change") or {}).get("flags") or {}
-    return sorted(f"{s} {f}" for s, ops in flags.items() for f in ops if f in (tf.get(s) or {}))
+def table_flags(tables: dict) -> dict:
+    """{section: {flag}} every rule of the exes' tables turns on, named by the manifest or not: each composition
+    row's fitter (and NAV) flags (COMPOSITION_FLAGS), each NAV row's x-flag (its first token) and its params'
+    x-flags (K-P9-7)."""
+    out: dict = {}
+    for row in (tables.get("ic") or {}).get("rules") or []:
+        rid = row.get("id") if isinstance(row, dict) else None
+        for section, ops in ((COMPOSITION_FLAGS.get(rid) or {}) if isinstance(rid, str) else {}).items():
+            out.setdefault(section, set()).update(ops)
+    for row in (tables.get("nav") or {}).get("rules") or []:
+        if not isinstance(row, dict):
+            continue
+        tokens = str(row.get("x-flag") or "").split()
+        props = (row.get("params_schema") or {}).get("properties") if isinstance(row.get("params_schema"), dict) \
+            else None
+        flags = tokens[:1] + [p.get("x-flag") for p in (props or {}).values() if isinstance(p, dict)]
+        out.setdefault("nav", set()).update(f for f in flags if isinstance(f, str) and f)
+    return out
+
+
+def raw_rule_flags(given: dict, derived: dict, tables: dict) -> list[str]:
+    """The "section flag" entries of ``given`` (rule_cell.constants.flags, a template's change.flags) that a rule
+    owns: one the named rules derive (``derived``) or one any rule of the exes' tables turns on (table_flags), named
+    or not (review E2 R2, F-8: a rule is named in rules and its params checked by its params_schema; a raw flag would
+    run it unchecked)."""
+    owned = table_flags(tables)
+    for section, ops in (derived or {}).items():
+        owned.setdefault(section, set()).update(ops)
+    return sorted(f"{s} {f}" for s, ops in (given or {}).items() if isinstance(ops, dict)
+                  for f in ops if f in owned.get(s, set()))
 
 
 # ------------------------------------------------------------------ the cell's constants

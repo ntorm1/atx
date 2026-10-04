@@ -1159,6 +1159,15 @@ def v71_seed_registry() -> bytes:
     return RA.G.encode_data(seed)
 
 
+@pytest.fixture
+def stand_in_ic(monkeypatch):
+    """v8_root's IC exe is a stand-in (bin/ic.cmd -> fake_ic.py, plan-only) that writes no candidate cache, and pytest's
+    tmp roots are far deeper than a pool's: the ruling W1-I1 cache-path bound (cycle/phases.py CACHE_PATH_MAX, pinned
+    by test_wave_driver.test_cache_path_bound_w1_i1) would refuse the committed v7.1 / v8 ids here. A cycle that runs
+    on it lifts the bound; nothing else changes."""
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", 10 ** 6)
+
+
 def v8_root(tmp_path: Path) -> tuple[Path, Path]:
     """A root with base-lo1.json (its tools re-pointed at the fake ones of test_research_cycle.py, the IC exe at the
     fake --plan-only one), locked on stand-ins of its inputs (fake_root's unlocked copy, re-pinned to the stand-ins'
@@ -1237,6 +1246,7 @@ def test_derive_name_substitutes_the_parent_token_else_appends():
     assert not RA.shared_stores({"fit": {"work_dir": "build-equity/mega-fit-work-v70"}}) and not RA.shared_stores({})
 
 
+@pytest.mark.usefixtures("stand_in_ic")
 def test_add_alpha_on_a_v8_base_spec_screens_and_runs(tmp_path):
     root, parent = v8_root(tmp_path)
     outs = parent_cell(root, parent)
@@ -1277,6 +1287,7 @@ def test_add_alpha_on_a_v8_base_spec_screens_and_runs(tmp_path):
                                                                    "cycle_verdict.json").is_file()
 
 
+@pytest.mark.usefixtures("stand_in_ic")
 def test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_exceptions(tmp_path, capsys, authored_v8):
     root, base = v8_root(tmp_path)
     tpl = json.loads((authored_v8 / "r4-hold-band.json").read_text(encoding="utf-8"))
@@ -1357,6 +1368,7 @@ def test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_excep
         RC.compare_files(RC.Resolver(root), check)
 
 
+@pytest.mark.usefixtures("stand_in_ic")
 def test_add_alpha_child_of_a_labelled_parent_labels_its_ref_and_nav(tmp_path):
     """Review F-8: the child of a labelled parent (inputs.label_role, e.g. B0c) reproduces the parent's NAV in its ref
     phase and compares it byte for byte with the parent's labelled S2 daily CSV; so ref (and nav) carry --label-role and

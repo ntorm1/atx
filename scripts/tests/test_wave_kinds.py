@@ -7,14 +7,19 @@ fixtures (scripts/specs/p9/kinds/, gate G-P2). Synthetic worlds only (wave_fixtu
                                                       section 6 rows are covered; template pins are the files' SHA-256
   test_v1_manifests_keep_their_validation             v8 wave manifests: the problems of before (none, or the head's)
   test_v2_refusals                                    each kind's block, cross-kind blocks, F-8 raw rule flags
-  test_schema_subset                                  params_schema keywords; an unknown keyword is refused
+  test_schema_subset                                  params_schema keywords; an unknown keyword, type or malformed
+                                                      keyword value is refused (S3); placeholders (S4)
   test_rule_flags_from_the_tables                     composition flags (COMPOSITION_FLAGS), NAV x-flags, both / neither
                                                       tables, bad params; D1's committed table refuses manifest params
-                                                      until D2's schema (D1-PSCHEMA)
+                                                      until D2's schema (D1-PSCHEMA); raw rule flags (R2)
   test_every_fixture_plans_in_a_fake_world            `wave plan` exits 0 on each fixture re-rooted into the fake world
   test_rule_kinds_write_the_derived_constants         rule (IC and NAV rows), horizon, leverage without a template: the
                                                       cell the spec stage writes carries the derived flags and names
-  test_field_wave_builds_then_registers_on_the_build  the register stage builds the fields dir, add-alpha uses it
+  test_rule_wave_refuses_raw_rule_flags               review E2 R2: constants.flags / change.flags setting a rule's flag
+  test_leverage_wave_refuses_a_value_outside_the_nav_table  review E2 S9: fixed-v1's aim_leverage range at preflight
+  test_field_wave_builds_then_registers_on_the_build  the register stage builds the fields dir, add-alpha uses it; an
+                                                      output this wave's build did not make is refused (S6)
+  test_build_logs_are_seal_scanned                    review E2 R1: the builds' logs are in verify's seal scan
   test_role_wave_builds_role_and_fields               the cell's inputs.role and fields dir are the builds'
   test_walk_forward_is_schema_only                    plan prints it; preflight refuses to run it
 """
@@ -32,10 +37,14 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import research_cycle as RC  # noqa: E402
+import research_tree as RT  # noqa: E402
 import research_wave  # noqa: E402
 import wave_fixture as F  # noqa: E402
 import wave_kinds as WK  # noqa: E402
 import wave_manifest as WM  # noqa: E402
+import wave_seal  # noqa: E402
+import wave_stage_kinds as SK  # noqa: E402
+from wave_context import Wave  # noqa: E402
 
 REPO = HERE.parents[1]
 KINDS_DIR = REPO / "scripts" / "specs" / "p9" / "kinds"
@@ -131,7 +140,8 @@ class KindsFake(F.FakeCycle):
                                                               "fields": [{"name": n} for n in names]})
         else:
             F.write_json(self.root, f"{cmd[cmd.index('--out') + 1]}/manifest.json", {"dates": 300})
-        F.write_json(self.root, f"{run_dir}/receipt.json", {"outcome": "completed", "exit_code": 0})
+        F.write_json(self.root, f"{run_dir}/receipt.json", {"outcome": "completed", "exit_code": 0,   # K-P9-10
+                                                            "argv_sha256": RT.argv_sha256(cmd[1:])})
         return self.ok(argv)
 
 
@@ -206,6 +216,8 @@ def test_v1_manifests_keep_their_validation():
     ("new-horizon.json", lambda m: m["horizon"].update(days=7), "horizon must be"),
     ("new-horizon.json", lambda m: m["horizon"].update(flags={}), "horizon must be"),
     ("new-field.json", lambda m: m["field"].update(output="scripts/fields-x"), "inside the code pathspec"),
+    ("new-field.json", lambda m: m["field"].update(output="./fields/"), "is the wave's fields dir"),   # review S5
+    ("new-field.json", lambda m: m["field"].update(output="Fields"), "is the wave's fields dir"),
     ("new-field.json", lambda m: m["field"].update(builder_args=["--reuse", "x"]), "may not set ['--reuse']"),
     ("new-field.json", lambda m: m["field"].update(seconds=601), "seconds"),
     ("new-universe.json", lambda m: m["role"].update(builder_args=["role", "--out", "x"]), "may not set ['--out']"),
@@ -239,6 +251,19 @@ def test_schema_subset():
     assert WK.schema_problems({"a": 1, "c": 1}, s, "p") == ["p: unknown key 'c'"]
     assert WK.schema_problems({"a": 1, "b": ["x", "y", "z"]}, s, "p") == ["p.b: 3 items (allowed 0..2)"]
     assert "not supported" in WK.schema_problems({}, {"oneOf": []}, "p")[0]           # refused, never ignored
+    # review E2 S3: a type list or an unknown type is a problem (no crash); a malformed keyword value is refused
+    assert "schema type ['string', 'null'] not supported" in WK.schema_problems("x", {"type": ["string", "null"]},
+                                                                               "p")[0]
+    assert "not supported" in WK.schema_problems(1, {"type": "float"}, "p")[0]
+    for bad in ({"type": "object", "properties": []}, {"required": "a"}, {"items": []}, {"enum": "ab"},
+                {"additionalProperties": "no"}):
+        assert "refused, not ignored" in WK.schema_problems({}, bad, "p")[0], bad
+    # review E2 S4: a multi-letter placeholder is a param's value, never emitted literally
+    row = {"x-flag": "--risk-target SIGMA", "params_schema": {"properties": {"sigma": {"x-flag": "--risk-target"}}}}
+    with pytest.raises(WK.KindError, match="needs a param value"):
+        WK.nav_flags("r", {}, row)
+    assert WK.nav_flags("r", {"sigma": 0.1}, row) == {"nav": {"--risk-target": "0.1"}}
+    assert WK.nav_flags("v", {}, {"x-flag": "--vol-target vol-target-v1"}) == {"nav": {"--vol-target": "vol-target-v1"}}
     for row in json.loads(IC_FIXTURE.read_text(encoding="utf-8"))["rules"]:            # D1's schemas use the subset
         assert not [p for p in WK.schema_problems({}, row["params_schema"], row["id"]) if "not supported" in p]
     for row in NAV_TABLE["rules"]:
@@ -270,8 +295,16 @@ def test_rule_flags_from_the_tables():
     assert got == ["rules.ew-theme-std-v1: missing ['rerank', 'themes']"]
     two_speed = next(r for r in d1_table()["rules"] if r["id"] == "two-speed-v1")
     assert WK.checked_params("two-speed-v1", {}, two_speed) == {"rule": "two-speed-v1"}
-    template = {"change": {"flags": {"fit": {"--two-speed": "two-speed-v1"}}}}
-    assert WK.owned_flags({"fit": {"--two-speed": "two-speed-v1"}}, template) == ["fit --two-speed"]
+    # review E2 R2: a raw rule flag (named rule's, or any table rule's x-flag / param x-flag / composition flag)
+    derived = {"fit": {"--two-speed": "two-speed-v1"}}
+    assert WK.raw_rule_flags({"fit": {"--two-speed": "two-speed-v1"}}, derived, {}) == ["fit --two-speed"]
+    assert WK.raw_rule_flags({"nav": {"--vol-target": "vol-target-v1", "--risk-model": "r", "--cadence": "5"},
+                              "fit": {"--theme-erc": "theme-erc-v1", "--min-names": "100"}}, {}, tables) == \
+        ["fit --theme-erc", "nav --risk-model", "nav --vol-target"]       # not named; --cadence / --min-names: free
+    assert WK.raw_rule_flags({"nav": {"--risk-target": "0.1", "--aim-leverage": "2.0"}}, {}, tables) == \
+        ["nav --aim-leverage", "nav --risk-target"]
+    assert WK.table_flags(tables)["nav"] >= {"--aim-leverage", "--vol-target", "--risk-target", "--risk-model",
+                                             "--risk-model-sha256", "--two-speed"}
 
 
 # ------------------------------------------------------------------ the fixtures in a fake world
@@ -333,6 +366,62 @@ def test_rule_wave_refuses_a_name_no_table_lists(tmp_path):
     assert code == 3                                                 # D1's schemas, before D2's (D1-PSCHEMA)
 
 
+def preflight_error(root: Path, m: dict) -> str:
+    return json.loads((root / "out/waves" / m["wave"] / "receipts" / "01-preflight.failed-1.json").read_text())["error"]
+
+
+@pytest.mark.parametrize("flags, owned", [
+    ({"nav": {"--aim-leverage": "2.0"}}, "['nav --aim-leverage']"),                 # the named rule's own x-flag
+    ({"nav": {"--vol-target": "vol-target-v1"}}, "['nav --vol-target']"),            # a rule the manifest never names
+    ({"fit": {"--theme-erc": "theme-erc-v1"}}, "['fit --theme-erc']"),               # a composition rule's flag
+])
+def test_rule_wave_refuses_raw_rule_flags(tmp_path, flags, owned):
+    """Review E2 R2 (F-8, D1-PSCHEMA): rule_cell.constants.flags (and the template's change.flags) may not set a flag
+    a rule of the exes' tables owns, whether the manifest names that rule or not: preflight refuses (exit 3) instead
+    of merged_constants silently overriding it, or the rule running with no params_schema check. A flag no rule owns
+    stays allowed."""
+    m = load_fixture("new-nav-rule.json")
+    m["rule_cell"] = dict(m["rule_cell"], constants={"flags": flags})
+    root = world(tmp_path / "c", m)
+    code, log = wave(root, KindsFake(root), "run", "--until", "preflight")
+    assert code == 3, log
+    err = preflight_error(root, m)
+    assert f"rule_cell.constants.flags sets {owned}, which the exes' rules own" in err
+    tpl = json.loads((KINDS_DIR / "templates" / "rule-nav.json").read_text())   # the same flags in the template
+    m = load_fixture("new-nav-rule.json")
+    root = world(tmp_path / "t", m)
+    tpl["change"]["flags"] = flags
+    F.write_json(root, m["rule_cell"]["template"], tpl)
+    m["rule_cell"]["template_sha256"] = sha((root / m["rule_cell"]["template"]).read_bytes())
+    F.write_json(root, F.MANIFEST, rerooted(m, root))
+    F.git(root, "commit", "-q", "-am", "a template writing a rule flag")
+    code, log = wave(root, KindsFake(root), "run", "--until", "preflight")
+    assert code == 3 and f"rule_cell.template change.flags sets {owned}" in preflight_error(root, m), log
+    m = load_fixture("new-nav-rule.json")                            # a flag no rule owns: allowed
+    m["rule_cell"] = dict(m["rule_cell"], constants={"flags": {"nav": {"--cadence": "5"}}})
+    root = world(tmp_path / "ok", m)
+    code, log = wave(root, KindsFake(root), "run", "--until", "preflight")
+    assert code == 0, log
+
+
+def test_leverage_wave_refuses_a_value_outside_the_nav_table(tmp_path):
+    """Review E2 S9: a leverage wave's value outside the NAV exe's fixed-v1 aim_leverage range is refused at preflight
+    (exit 3); inside it is accepted and recorded with the bounds."""
+    m = load_fixture("leverage-change.json")
+    m["leverage"] = dict(m["leverage"], value="2.5")                 # NAV_TABLE: aim_leverage in [1, 2]
+    root = world(tmp_path / "out", m)
+    code, log = wave(root, KindsFake(root), "run", "--until", "preflight")
+    assert code == 3, log
+    assert "leverage.value 2.5 lies outside the NAV exe's fixed-v1 aim_leverage range [1.0, 2.0]" in \
+        preflight_error(root, m)
+    m = load_fixture("leverage-change.json")
+    root = world(tmp_path / "in", m)
+    code, log = wave(root, KindsFake(root), "run", "--until", "preflight")
+    assert code == 0, log
+    pre = json.loads((root / "out/waves" / m["wave"] / "receipts" / "01-preflight.json").read_text())["outputs"]
+    assert pre["kind"]["leverage"] == {"value": m["leverage"]["value"], "bounds": [1.0, 2.0]}
+
+
 def test_field_wave_builds_then_registers_on_the_build(tmp_path):
     root = world(tmp_path, load_fixture("new-field.json"))
     fake = KindsFake(root)
@@ -347,6 +436,69 @@ def test_field_wave_builds_then_registers_on_the_build(tmp_path):
     assert reg["build"]["fields"]["manifest_sha256"] == sha((root / "fields-k-field/manifest.json").read_bytes())
     code, log = wave(root, fake, "run", "--until", "register")      # resumed: nothing builds twice
     assert code == 0 and len([c for c in fake.calls if c[1:2] and Path(c[1]).name == "run_bounded_research.py"]) == 1
+    # review E2 S6: an existing output is reused only as this wave's last build of it with this command made it
+    m = load_fixture("new-field.json")
+    other = world(tmp_path / "other", m)
+    F.write_json(other, "fields-k-field/manifest.json", {"status": "complete", "seal": {"exclusive_end": "2024-01-01"},
+                                                         "fields": [{"name": n} for n in ("a", "b", "vol_126")]})
+    code, log = wave(other, KindsFake(other), "run", "--until", "register")   # made elsewhere (no run of this wave)
+    failed = other / "out/waves/k-field/receipts/02-register.failed-1.json"
+    assert code == 3 and "last fields run (none) did not complete it" in json.loads(failed.read_text())["error"], log
+    receipt = root / "out/waves/k-field/builds/fields-run1/receipt.json"
+    receipt.write_text(json.dumps(dict(json.loads(receipt.read_text()), argv_sha256="0" * 64)))
+    (root / "out/waves/k-field/receipts/02-register.json").unlink()   # the stage runs again
+    code, log = wave(root, fake, "run", "--until", "register")      # another command made it: refused
+    failed = root / "out/waves/k-field/receipts/02-register.failed-1.json"
+    assert code == 3 and "fields-run1) did not complete it" in json.loads(failed.read_text())["error"], log
+
+
+class SealedBuild(KindsFake):
+    """KindsFake whose builds print ``log`` to their run dir's stdout.log (what the bounded runner captures)."""
+
+    def __init__(self, root: Path, log: str, **kw):
+        super().__init__(root, **kw)
+        self.log = log
+
+    def build(self, argv: list[str], cmd: list[str]):
+        done = super().build(argv, cmd)
+        F.write(self.root, f"{argv[argv.index('--output') + 1]}/stdout.log", self.log)
+        return done
+
+
+def test_build_logs_are_seal_scanned(tmp_path):
+    """Review E2 R1: the field and role builds' run dirs (<out_dir>/builds/<what>-run<k>, wave_stage_kinds.BUILDS) are
+    in the seal scan (wave_seal.wave_logs, which verify and record read): a build log naming a date at or after the
+    seal is a hit, and verify refuses the wave (synthetic post-seal text, ruling T2-SYN); a clean build log is scanned
+    and verify passes. Every build name run_build accepts is a scanned base."""
+    m = load_fixture("new-field.json")
+    w = None
+    build_log = f"out/waves/{m['wave']}/builds/fields-run1/stdout.log"
+    for label, text, hits in (("clean", "fields read through 2023-12-29\n", 0),
+                              ("sealed", "fields read through 2024-06-28\n", 1)):
+        root = world(tmp_path / label, m)
+        fake = SealedBuild(root, text)
+        fake.admission = {"p9k_vol": ("admitted", 1)}                # the screen admits the wave's string
+        code, log = wave(root, fake, "run", "--until", "register")
+        assert code == 0, log
+        w = Wave(F.MANIFEST, root, executor=fake, log=lambda s: None)
+        logs = wave_seal.wave_logs(w, {})
+        assert build_log in logs, logs
+        seal = wave_seal.scan(w, logs)
+        assert seal["tokens_at_or_after_seal"] == hits
+        assert [h["file"] for h in seal["where"]] == ([build_log] if hits else [])
+        code, log = wave(root, fake, "run", "--until", "verify")
+        receipts = root / "out/waves" / m["wave"] / "receipts"
+        if hits:
+            assert code == 4, log
+            failed = json.loads((receipts / "07-verify.failed-1.json").read_text())
+            assert build_log in json.dumps(failed) and "at or after the seal" in json.dumps(failed)
+        else:
+            assert code == 0, log
+            scanned = json.loads((receipts / "07-verify.json").read_text())["outputs"]["seal_scan"]
+            assert scanned["tokens_at_or_after_seal"] == 0 and scanned["files"] >= len(logs)
+    assert [Path(b).name for b in SK.build_bases(w)] == list(SK.BUILDS) == ["fields", "role", "role-fields"]
+    with pytest.raises(SK.StageError, match="not one of"):
+        SK.run_build(w, "other", "x", [], ["python"], {"seconds": 1, "max_rss_mib": 64})
 
 
 def test_role_wave_builds_role_and_fields(tmp_path):

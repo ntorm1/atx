@@ -93,6 +93,11 @@ class LockTimeout(RuntimeError):
     wait runs out, then AdmissionTimeout; adopt: the claim is written without the lock)."""
 
 
+class ClaimsDirError(RuntimeError):
+    """The claims lock cannot be created although nothing holds it (the claims dir is not writable): a configuration
+    error, reported as such (runner-error), never as a held lock or a retryable admission wait (review E2 S1)."""
+
+
 def live_owned(owned: dict) -> list[psutil.Process]:
     for process in list(owned.values()):
         try:
@@ -216,18 +221,23 @@ class HostClaims:
         """Create ``<dir>/claims.lock`` (O_CREAT | O_EXCL) naming this owner, waiting at most ``seconds`` (at least one
         try); raises LockTimeout. On Windows a lock being removed (or held open by a scanner) refuses the create with
         PermissionError: held, like FileExistsError (E1 review minor). A held lock is reclaimed (``reclaim``) when its
-        holder is dead or when it is still unreadable LOCK_STALE_SECONDS after its last write."""
+        holder is dead or when it is still unreadable LOCK_STALE_SECONDS after its last write. A PermissionError that
+        lasts the whole wait while no lock exists is no held lock: the claims dir is not writable (ClaimsDirError, a
+        configuration error; review E2 S1)."""
         self.dir.mkdir(parents=True, exist_ok=True)
         lock, end, reclaims = self.dir / CLAIMS_LOCK, time.monotonic() + seconds, 0
         while True:
             try:
                 fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 break
-            except (FileExistsError, PermissionError):
+            except (FileExistsError, PermissionError) as exc:
                 if reclaims < LOCK_RECLAIMS and self.reclaim(lock):
                     reclaims += 1                          # removed: create it again at once
                     continue
                 if time.monotonic() > end:
+                    if isinstance(exc, PermissionError) and not lock.exists():
+                        raise ClaimsDirError(f"cannot create the host claims lock {lock} ({exc}) and no lock holds "
+                                             "it: the claims dir is not writable (--host-claims)") from exc
                     raise LockTimeout(f"host claims lock {lock} held for {seconds:g} s") from None
                 time.sleep(0.05)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -238,20 +248,22 @@ class HostClaims:
     def reclaim(lock: Path) -> bool:
         """Remove the claims lock ``lock`` when its holder is dead (a killed runner's lock), or when it is unreadable
         and was last written more than LOCK_STALE_SECONDS ago (a runner killed between its create and its write; a
-        live holder writes at once). True when the caller should create it again now (removed, or already gone)."""
+        live holder writes at once). True only when this call removed it (the caller creates it again at once); a
+        lock already gone, or one the remove could not delete, is False (the caller waits)."""
         try:
             held = json.loads(lock.read_text(encoding="utf-8"))
             dead = not is_alive(int(held["pid"]), float(held["create_time"]))
         except FileNotFoundError:
-            return True
+            return False
         except (OSError, ValueError, KeyError, TypeError):
             try:                                           # being written (held), or abandoned
                 dead = time.time() - lock.stat().st_mtime > LOCK_STALE_SECONDS
             except OSError:
                 return False
-        if dead:
-            remove(lock)
-        return dead
+        if not dead:
+            return False
+        remove(lock)
+        return not lock.exists()
 
     def try_claim(self, mib: int, need: int, output: str, available, lock_seconds: float = LOCK_WAIT_SECONDS) -> dict:
         """Under the claims lock (waited for at most ``lock_seconds``; LockTimeout): claim ``mib`` when (a) the live
@@ -330,7 +342,8 @@ def admit(args, output: Path, *, available=lambda: psutil.virtual_memory().avail
     inside the claims lock, net of the memory the other live claims have yet to allocate, together with a claim of
     max_rss_mib under the host budget (HostClaims.try_claim: two simultaneous launches never both count the same free
     memory). A claims lock held past min(LOCK_WAIT_SECONDS, the wait left) is one more refused check, so it ends as
-    AdmissionTimeout (retryable), never as a runner-error. Returns (the receipt's admission block, the claims holding
+    AdmissionTimeout (retryable), never as a runner-error; an unwritable claims dir is ClaimsDirError (a configuration
+    error: runner-error, not retried). Returns (the receipt's admission block, the claims holding
     this process's claim, or None); raises AdmissionTimeout (its ``block``) when the wait runs out. ``owner``: the
     claiming process (default this one)."""
     need = args.max_rss_mib + args.min_free_mib

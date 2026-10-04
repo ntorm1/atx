@@ -5,7 +5,8 @@ are those of before.
 
   preflight  kind rule: both rule tables (the IC exe's --list-rules --json, the NAV exe's nav --list-rules --json),
              their stdout SHA-256 recorded; every named rule validated and its flags derived (wave_kinds.rule_flags);
-             the template's own change.flags may not set them (F-8). Kind leverage: the value inside the NAV exe's
+             neither the template's change.flags nor rule_cell.constants.flags may set a rule's flag, named or not
+             (F-8, review E2 R2: wave_kinds.raw_rule_flags). Kind leverage: the value inside the NAV exe's
              fixed-v1 aim_leverage range when the table lists it. Kind walk-forward: refused (schema only, lane D3)
   register   kind field: the fields builder on the parent's role (prepare_research_fields.py --registry R --fields
              <the wave's fields + the rows> --reuse <the wave's fields dir>) into field.output under the bounded
@@ -23,6 +24,7 @@ import time
 import research_cycle as RC
 from research_common import free_run_dir
 import research_spec
+import research_tree
 from wave_context import Wave
 import wave_kinds as WK
 from wave_stage_util import EXIT_PIN, StageError
@@ -74,10 +76,13 @@ def preflight_kind(w: Wave, spec: dict) -> tuple[dict, list[str]]:
             flags, more = WK.rule_flags(m["rules"], tables)
             problems += more
             template = w.read_json(m["rule_cell"]["template"]) if w.exists(m["rule_cell"]["template"]) else None
-            owned = WK.owned_flags(flags, template or {})
-            if owned:
-                problems.append(f"rule_cell.template sets {owned} in change.flags, which the named rules own (review "
-                                "F-8: name the rule in rules, never write its flags)")
+            given = {"rule_cell.template change.flags": ((template or {}).get("change") or {}).get("flags"),
+                     "rule_cell.constants.flags": (m["rule_cell"].get("constants") or {}).get("flags")}
+            for where, raw in given.items():        # review E2 R2: the named rules' flags and every table rule's
+                owned = WK.raw_rule_flags(raw or {}, flags, tables)
+                if owned:
+                    problems.append(f"{where} sets {owned}, which the exes' rules own (review F-8: name the rule in "
+                                    "rules, never write its flags; its params are checked against its params_schema)")
             out["flags"] = flags
         else:
             bounds, value = WK.leverage_bounds(tables), float(m["leverage"]["value"])
@@ -107,6 +112,15 @@ def preflight_kind_plan(w: Wave) -> list[str]:
 
 
 # ------------------------------------------------------------------ register: the builds
+BUILDS = ("fields", "role", "role-fields")   # each build's run dirs: <out_dir>/builds/<what>-run<k> (run_build)
+
+
+def build_bases(w: Wave) -> list[str]:
+    """The run-dir bases of every build a v2 wave can run (BUILDS; Wave.run_dirs lists their -run<k> dirs): the seal
+    scan reads their logs (review E2 R1: a build reads real data)."""
+    return [w.wave_path("builds", what) for what in BUILDS]
+
+
 def build_caps(block: dict) -> dict:
     return {"seconds": block.get("seconds", WK.BUILD_CAPS["seconds"]),
             "max_rss_mib": block.get("max_rss_mib", WK.BUILD_CAPS["max_rss_mib"])}
@@ -164,9 +178,22 @@ def built(w: Wave, out: str, what: str, names: list[str] | None = None) -> dict:
 
 
 def run_build(w: Wave, what: str, out: str, binds: list[str], command: list[str], caps: dict) -> str | None:
-    """Run one build under the bounded runner (skipped when its output's manifest exists: a resumed stage)."""
+    """Run one build under the bounded runner. ``what`` is one of BUILDS (its run dirs are what the seal scan reads).
+    An output whose manifest exists is reused (a resumed stage) only when this wave's last <what> run completed it
+    with this command (its receipt's argv_sha256, K-P9-10); any other existing output is refused, never shared
+    (review E2 S6: another manifest's build, or one made with other rows / pins)."""
+    if what not in BUILDS:
+        raise StageError(f"build {what}: not one of {BUILDS} (the seal scan would not read its logs)", EXIT_PIN)
     if w.exists(f"{out}/manifest.json"):
-        w.log(f"   build {what}: {out}/manifest.json exists (resumed)")
+        runs = w.run_dirs(w.wave_path("builds", what))
+        r = w.read_json(f"{runs[-1]}/receipt.json") if runs else None
+        want = research_tree.argv_sha256(command[1:])
+        if not (isinstance(r, dict) and r.get("outcome") == "completed" and r.get("exit_code") == 0 and
+                r.get("argv_sha256") == want):
+            raise StageError(f"build {what}: {out}/manifest.json exists but this wave's last {what} run "
+                             f"({runs[-1] if runs else 'none'}) did not complete it with this command (argv sha256 "
+                             f"{want}): name a new output, or move that one aside", EXIT_PIN)
+        w.log(f"   build {what}: {out}/manifest.json exists, built by {runs[-1]} (resumed)")
         return None
     run_dir = free_run_dir(w.wave_path("builds", what), w.exists)
     w.run(bounded(w, run_dir, binds, command, caps), f"build {what}")

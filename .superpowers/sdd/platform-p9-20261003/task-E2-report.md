@@ -165,8 +165,12 @@ Identity (flag absent = byte-identical):
 3. After the eol=lf checkout, re-check the spec pins (blobs unchanged; working-tree bytes may change on Windows).
 4. The real IC exe's `--list-rules --json` capabilities include list-rules, marginal, no-composition and
    theme-registry.
-5. Intended argv change (Ruling E2-1): a resumed cell with an existing `-run2+` IC / NAV / fit dir now plans
-   `--attempt k` in its runner head. That is the only plan change.
+5. Intended plan changes: (a) Ruling E2-1: a resumed cell with an existing `-run2+` IC / NAV / fit dir now plans
+   `--attempt k` in its runner head. (b) Sticky pins (fa7d5805, review S7): a wave whose parent spec pins
+   `exes_sha256` now locks every spec it writes with `lock --exes --write` even without `driver.lock_exes`, which
+   adds those lines and pins to a v1 wave's plan and run. No committed spec pins `exes_sha256` today, so no committed
+   manifest moves. (c) Fix round 1 adds refusals only (W1-I1, W1-I2 (a), R2): a plan within the bounds is unchanged;
+   a v2 field / role wave's verify plan line names its builds.
 
 Post-merge items (Ruling E2-2/3; the exes these need are not in this base):
 - After D2's merge (D2 re-pins `atx-impl/tests/fixtures/composition_rules_list.json`) and C1's merge, with the exes

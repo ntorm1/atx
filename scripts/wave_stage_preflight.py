@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 
 import cycle_admission
+import research_cycle as RC
 import research_ledger
 from research_common import ledger_view
 import research_spec
@@ -36,6 +37,22 @@ def preflight_inputs(w: Wave, done: dict) -> dict:
 
 def sealed_years(text: str) -> list[str]:
     return sorted({y for y in YEAR.findall(text) if int(y) >= RW.FIRST_SEALED_YEAR})
+
+
+def cache_path_check(w: Wave, spec: dict) -> list[str]:
+    """Ruling W1-I1 at preflight, before the register stage writes a registration: the wave's candidate ids and the
+    parent library's against the parent's IC cache dir (a cell keeps it: add-alpha copies the spec), as research_cycle
+    checks every cell it plans. [] when the parent runs no IC pass or its cache dir cannot be derived (other checks
+    refuse that)."""
+    if "ic" not in spec:
+        return []
+    ids = [c.get("id") for c in w.manifest.get("candidates") or [] if isinstance(c, dict)]
+    try:
+        ids += RC.library_ids(w.read_json(spec["inputs"]["library"]["path"]))
+        problem = RC.Cycle(spec, RC.Resolver(w.root), verify=False).cache_problem(ids)
+    except (ValueError, KeyError, RC.CycleError):
+        return []
+    return [problem] if problem else []
 
 
 def admission_trial_id(cid: str, dsl_sha: str, role_sha: str | None) -> str:
@@ -176,6 +193,7 @@ def preflight(w: Wave, done: dict, log) -> dict:
             problems.append(f"rule_cell.template {rc['template']} is not the pinned cell template")
     kind, more = SK.preflight_kind(w, spec)                        # v2 only (contract K-P9-9): {} for v1
     problems += more
+    problems += cache_path_check(w, spec)                          # ruling W1-I1 (nothing when within the bound)
     if problems:
         raise StageError("preflight refused: " + "; ".join(problems), EXIT_PIN)
     log(f"   preflight: manifest commit {(commit or '')[:12]}, parent {outs['name']} (L {outs['leverage']}), fields "
