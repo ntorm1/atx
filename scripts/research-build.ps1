@@ -22,7 +22,8 @@
   -Canary (P9 G-P8) runs the tiny_world canary after a successful build: scripts\tests\test_cycle_e2e.py under
   pytest with ATX_EQUITY_BIN = <BuildDir>\bin, ATX_EQUITY_BUILD_TYPE = the preset's build type (equity-dev Debug,
   equity-rel Release) and ATX_CANARY_REQUIRED = 1 (a missing prerequisite fails instead of skipping). The tag must
-  build both canary executables (atx-equity-strategy-ic, atx-equity-strategy-targets), so the canary qualifies
+  build every canary executable (atx-equity-strategy-ic, atx-equity-strategy-targets and the engine eval verb
+  atx-research-eval, whose statistics the cycle's summ step reads from the same bin; P9 B2), so the canary qualifies
   exactly what this tag built. -CanaryRecord records that build type's goldens instead
   (test_cycle_e2e.py --record; root commits scripts\tests\fixtures\tiny_world_goldens.json afterwards). Output:
   build-equity\mega-<Tag>-canary.log; the receipt gains a Canary block {Mode, BuildType, Bin, ExitCode, Log,
@@ -69,7 +70,7 @@ $builder = Join-Path $root 'scripts\atx-build.ps1'
 $receiptDir = Join-Path $root 'build-equity'
 # The canary (P9 G-P8): the build type of each preset's tree and the executables the tiny_world cycle runs.
 $canaryBuildTypes = @{ 'equity-dev' = 'Debug'; 'equity-rel' = 'Release' }
-$canaryExes = @('atx-equity-strategy-ic', 'atx-equity-strategy-targets')
+$canaryExes = @('atx-equity-strategy-ic', 'atx-equity-strategy-targets', 'atx-research-eval')
 $canaryTest = 'scripts\tests\test_cycle_e2e.py'
 $runCanary = $Canary.IsPresent -or $CanaryRecord.IsPresent
 

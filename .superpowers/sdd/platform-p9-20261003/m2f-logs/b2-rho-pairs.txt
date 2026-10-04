@@ -1,0 +1,41 @@
+B2-R1 (d) rho of the X-5 / Y-F0 pairs (nav_summ's paired series; no return statistic)
+
+X-5 (pinned)
+  child  build-equity/p9-c1-s2-x5-nav  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 75a54774b417  return rows 1005
+  parent build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v8x3b  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 7b407f56c7f4  return rows 1005
+  T (common sessions) 1005
+  rho (numpy corrcoef) 0.9202746809672834
+  1 - rho (from numpy rho) 0.07972531903271662
+  1 - rho (stable form)    0.07972531903271692
+  B2-R1 tolerance for paired floats 1e-12 / (1 - rho) = 1.254e-11
+  class: paired test defined (1 - rho >= 1e-6)
+
+Y-F0 (pinned)
+  child  build-equity/p9-b0-yf0-nav  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 e7eb57201ea5  return rows 1005
+  parent build-equity/p9-c1-s2-x5-nav  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 75a54774b417  return rows 1005
+  T (common sessions) 1005
+  rho (numpy corrcoef) 0.9556041703496023
+  1 - rho (from numpy rho) 0.04439582965039768
+  1 - rho (stable form)    0.044395829650397775
+  B2-R1 tolerance for paired floats 1e-12 / (1 - rho) = 2.252e-11
+  class: paired test defined (1 - rho >= 1e-6)
+
+X-5 (as ledgered)
+  child  build-equity/mega-nav-v8x-theme-erc-L1.1720  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 529062d6f06f  return rows 1005
+  parent build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v8x3b  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 7b407f56c7f4  return rows 1005
+  T (common sessions) 1005
+  rho (numpy corrcoef) 0.9202746809672834
+  1 - rho (from numpy rho) 0.07972531903271662
+  1 - rho (stable form)    0.07972531903271692
+  B2-R1 tolerance for paired floats 1e-12 / (1 - rho) = 1.254e-11
+  class: paired test defined (1 - rho >= 1e-6)
+
+Y-F0 (as ledgered)
+  child  build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 73b69bcceb12  return rows 1005
+  parent build-equity/mega-nav-v8x-theme-erc-L1.1720  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 529062d6f06f  return rows 1005
+  T (common sessions) 1005
+  rho (numpy corrcoef) 0.9556041703496023
+  1 - rho (from numpy rho) 0.04439582965039768
+  1 - rho (stable form)    0.044395829650397775
+  B2-R1 tolerance for paired floats 1e-12 / (1 - rho) = 2.252e-11
+  class: paired test defined (1 - rho >= 1e-6)

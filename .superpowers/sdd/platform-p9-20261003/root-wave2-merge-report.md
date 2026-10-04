@@ -995,3 +995,340 @@ Expected: the same file set; every file byte-identical except `summary.json` and
 differ only at timing leaves (`.../stage_seconds/*`, `.../wall_seconds`, `/roles/*/hash_seconds`), the M2c precedent's
 classes. No `composition_hedge_trace` / `composition_schedule_trace` key (neither block is present). Anything else is a
 stop, to be attributed to C2 (`stats_ext.hpp`; run-time norm_ppf values claimed unchanged) or AL-COMB.
+
+#### Expected substitution list for the AL-COMB flag-absent fitter identity (written before the run)
+
+Re-review item 5, second half, on the fitter's synthetic fixture (M2d's `m2d-logs/tools/d2_flag_absent_fixture.py`:
+`aim_world`, two themes, registry absent; 9 cases std-erc, std-erc-tsmom, shrink, shrink-erc, shrink-tsmom, std,
+std-aim-resid, the R-11 child of std, ew-theme), neither `--theme-hedge` nor `--mom-volman`, 0 trials. Old = the
+tools of `a25453be` (root after C2, before AL-COMB; `git archive` of `atx-impl/tools`, `atx-engine/tools`,
+`research_window.json`); new = the merged head's. Expected, per case: the same exit code and file set;
+`admission.csv` identical; `admission.json` differs only in the value of `$.inputs.producer_fingerprint`;
+`composition_weights.json` only in the values of `$.provenance.producer_fingerprint` and
+`$.provenance.admission_sha256`, plus, in the R-11 child only, `$.provenance.resid.parent_weights_sha256` (its parent
+file moved). Every `$.provenance.<block>.producer_fingerprint` unchanged. Anything else is a stop.
+
+#### AL-COMB: MERGED and verified
+
+- **Ledger:** `Task AL-COMB: complete` (re-review 1 of the combined round APPROVE at `efb7ab2e`, 0 Required, 3
+  Suggested); rulings P17, ALCOMB-1..ALCOMB-9, ALCOMB-5a, E2-12, W1-MIN, CLS-1, SQL2-CLS read. Not here, as briefed:
+  MR-4 (the two `COMPOSITION_FLAGS` rows wait for E2's merge; E2-12 removed the test coupling) and the Q5 zero-trial
+  diagnostic (wave-2 gate, before P9-H is registered).
+- **Merge:** `9d518317` = `git merge --no-ff efb7ab2e`. One conflict, the `atx-impl/tests/CMakeLists.txt` tail (C2's
+  `strategy_nav_calibrate_test.cpp` vs AL-COMB's three IC test sources): both kept, HEAD's block first. Auto-merged
+  and read: `strategy_ic_rules.cpp` (**`exe_capabilities` unchanged: S2's 8 entries, sorted, size = count**; AL-COMB
+  adds no capability), `strategy_ic_runner.cpp` (MR-2's include, `attach_theme_hedge` after the composition and the two
+  trace calls after `planned_target_proxy`, beside S2's label-terminal code and D2's), `strategy_ic_detail.hpp` (MR-5),
+  `atx-impl/CMakeLists.txt` (AL-COMB's two sources before D2's link and C2's source), the K-P9-6 fixture
+  `composition_rules_list.json` and `strategy_ic_rules_test.cpp`. **Cross-lane edits accepted as listed:** MR-1..MR-3
+  (ALCOMB-3) with their ALCOMB-5 S-3 extensions (`IcCompositionResult::hedge_block` / `hedge_ratio`, the third
+  argument of `theme_hedge_working_bytes`, the two trace calls) and MR-5 (`PinnedWeights` volman / hedge fields): all
+  inert without the blocks (identity below). The report, review and handoff came with the merge;
+  `task-AL-COMB-rereview-1.md` (lane commit `098e6ccd`, after the merged SHA) copied from its blob and
+  `evidence-AL-COMB/` (17 logs, git-ignored in the lane) copied from pool-19 (`git add -f`).
+- **eol=lf for the template pins:** `2ee62800` adds lane E2's three R0-7-EOL `.gitattributes` lines byte for byte (E2
+  `88122c8a`, also E2's tip; identical text, so E2's merge sees the same change) -- `scripts/specs/** text eol=lf`.
+  No blob moved (every `scripts/specs` blob was `i/lf`); the 18 CRLF working copies (13 old + AL-COMB's five) were
+  rewritten from their blobs and re-staged (no content change): now 94 / 94 `i/lf w/lf attr/text`, tree clean. Both
+  registrations then pass `wave_manifest.rule_cell_problems` / `registration_problems` with **pin = disk = blob**:
+  theme-cov-hedge `7c6778bb`, mom-volman `7e9b26c1` (`m2e-logs/alcomb-registration-pins.txt`). Side effect, intended
+  by R0-7-EOL: every other spec under `scripts/specs` now hashes on disk as its blob does in an LF checkout.
+- **Build p9-2f** (equity-dev; source `2ee62800`, 8 dirty entries = the four PNGs, `progress.md` and the AL-DATA
+  agent's three files, no code): `atx-engine-combine-tests, atx-impl-strategy-ic-tests, atx-equity-strategy-ic,
+  atx-impl-tests` -> **exit 0, 110.0 s, 36 TUs (ccache hits of the lane's identical sources), 5 links, Jobs 4, 0
+  warnings**. Exe prefixes: combine-tests `1ef0b46a`, ic-tests `f535167a`, ic `c5015605`, impl-tests `6e14bb54`
+  (`m2e-logs/mega-p9-2f-receipt.json`). Debug only, as the lane's verification (no Release item is named for AL-COMB).
+- **gtests** (Debug, p9-2f; logs `m2e-logs/alcomb-gt-*.log`):
+
+  | binary | filter | result |
+  |---|---|---|
+  | atx-engine-combine-tests | `CharCovHedge.*` | **5 passed** |
+  | atx-engine-combine-tests | whole | **248 passed** |
+  | atx-impl-strategy-ic-tests | `CharCovHedge.*:ThemeHedgeRule.*:MomVolman.*:CompositionRules.*:StrategyIcComposition.*:ThemeTsmom*:TwoSpeed*:ThemeResid*:StrategyIcRunner.*:MarginalIc.PairCacheSourcesPinned` | **111 passed** (= the lane's; `ListRulesJsonPinned`, `ParamsSchemaConstantsAreTheRegisteredOnes` included) |
+  | atx-impl-strategy-ic-tests | whole | **226 passed** (M2d 206 + AL-COMB's) |
+  | atx-impl-tests | `ThemeHedgeRule.*:MomVolman.*:CompositionRules.*` (never built by the lane) | **23 passed** |
+
+- **K-P9-6 live check:** `atx-equity-strategy-ic --list-rules --json` (p9-2f) **JSON-equal to the merged fixture**
+  (`m2e-logs/alcomb-list-rules-vs-fixture.log`): 10 rules, mom-volman-v1 incompatible {theme-resid-v1,
+  theme-tsmom-v1}, theme-cov-hedge-v1 {theme-resid-v1, two-speed-v1}; capabilities 8, sorted. No regeneration needed.
+- **pytest** (separate invocations; `m2e-logs/alcomb-pyt-*.log`): from `atx-impl/tools` with the p9-2a
+  `ATX_RESEARCH_ADMISSION_EXE` / `ATX_RESEARCH_COMPOSITION_EXE` (no engine source of either changed since p9-2a but
+  COV's unreferenced `cov_container.cpp`), `test_composition_{theme_hedge,mom_volman,theme_tsmom,two_speed,rules,
+  theme_erc,resid,ic_shrink,engine_fit,fit_fixture}.py test_fit_composition_rule_plugins.py` **133 passed, 39
+  subtests, 0 skipped** (the lane: 132 + 1 real-exe skip); `test_fit_composition_weights{,_pool,_store}.py` **142
+  passed**; guards `scripts/tests/test_no_python_mirror.py scripts/tests/test_no_versioned_scripts.py` **11 passed**
+  (G-P5 34 in 13 rows: AL-COMB adds no mirror).
+- **SQL2-CLS:** `e1c16051`. The guard did not trip (it scans code literals; these two live only in spec JSON), but
+  the ruling registers them: `rule-registration` (`**/rules/*.json`, `atx.p9-rule-registration/v1`) and
+  `diagnostic-spec` (`**/diagnostics/*.json`, `atx.p9-diagnostic-spec/v1`), beside `blocked-registration` (CLS-1
+  precedent), `spec_doc` ingest. **Slip fixed before the commit:** my first draft gave the diagnostic row
+  `spec_kind: diagnostic`; a scratch catalog over `scripts/specs` refused it (`spec_doc.kind` CHECK: spec, template,
+  wave-manifest, candidate, library, recipe, registry, window, field-registry, other), which the fixture chain could not
+  show (no such file in the fixture tree); now `other` (rule registrations: `candidate`, as the blocked ones). The
+  scratch catalog then classifies the four files into the two rows (`m2e-logs/alcomb-sql2cls-classify.txt`). Store
+  suite **43 passed, 133 subtests** under `PYTHONHASHSEED` 0 and 1 (M2d: 131; the two new rows); fixture chain
+  rel and abs: `files_seen 28 verified 25 declared 0 skipped 4`, **`catalog_digest d32f7655...4e69`**, `verify --pins`
+  0, identity 12 / 0 (`m2e-logs/alcomb-sql2cls-fixture-chain.log`).
+- **W1-MIN M-2 (theme-table seam): holds.** AL-COMB does not touch `atx-impl/strategies/alphas/registry.json` or
+  `builtin_registry_themes`; on the merged head the registry's 13 themes equal the built-in 13-name prefix in order
+  (`strategy_ic_rules.hpp:43`), and mom-volman's `price_momentum` is in it; the two 13-theme pins
+  (`test_composition_resid.py`, `test_fit_composition_rule_plugins.py`) are in the 133 above.
+- **Flag-absent X-5 w identity (list `789d7e91` first): HOLDS** (`m2e-logs/alcomb-x5-w-cmp.txt`; receipts
+  `m2e-logs/receipt-p9-m2e-alcomb-x5-w-{pre,post}.json`). Pre: exe `ba1232ed` (p9-2a), 51.9 s, 1,371 MiB; post: exe
+  `c5015605` (p9-2f), 67.6 s, 1,372 MiB; both "clean in the code pathspec". 10 of 12 files byte-identical
+  (`train_combined.json` `2a442f56` = the combined SHA X-5's NAV argv pins, so also equal to X-5's v8 w output);
+  `summary.json` (239 leaves) and `train_candidates.jsonl` (230) differ only at timing leaves; no trace key. So
+  neither C2's `stats_ext.hpp` nor AL-COMB moved a w byte.
+- **Flag-absent fitter identity (list `60bd542b` first): HOLDS** on all 9 fixture cases
+  (`m2e-logs/alcomb-flag-absent-fixture{.json,-verdict.txt}`): exit codes equal, file sets equal, `admission.csv`
+  identical, differences exactly the listed values; OUTPUT fingerprint `d0153b259e951b66` -> `d28a30895ad1393e` (=
+  the lane's). The X-5 real-data fit re-run belongs to the wave-2 P9-B0 re-fit (as at M2d); its list gains nothing new
+  from AL-COMB (the same CM-5 keys).
+- **For the E2 merge (not done here):** MR-4 (`COMPOSITION_FLAGS` gains `theme-cov-hedge-v1: {fit: {--theme-hedge:
+  theme-cov-hedge-v1}}` and `mom-volman-v1: {fit: {--mom-volman: mom-volman-v1}}`), then E2's `scripts/tests` on this
+  fixture; `.gitattributes` will merge clean (identical lines).
+- **For the wave-2 gate / PRE:** the Q5 diagnostic (`scripts/specs/p9/diagnostics/al-comb-q5-style-variance.json`);
+  ALCOMB-4 / -6 / -7 / -9 prereg lines; re-pin `template_sha256` when root sets a template's `parent` or PRE cuts the
+  ALCOMB-6 sentence.
+- **DISK-2 (pool-19):** nothing to delete: the lane had deleted its object tree (2.7 MB left: receipts, logs,
+  `audits/`, `v8-interim3-pitch-render-run2/`, `vcpkg-manifest-install.log`; no `deps/`). Mine: the two X-5 w outputs
+  (`build-equity/p9-m2e-alcomb-x5-w-{pre,post}`, 95 MB each) are deleted by name after this commit, receipts kept.
+- **Trial ledger:** 0 trials (133 lines, `27e40f9f`).
+
+### M2e status
+
+Both merges done and verified; nothing half-merged; no build, test or run of mine is running (the only process left is
+C3's lease keeper, 24052, the pool's durable owner by design). **Code head `e1c16051`** (C2 merge `a25453be`, AL-COMB
+merge `9d518317`, eol `2ee62800`, SQL2-CLS `e1c16051`); the docs commits sit on top. Build tags used: p9-2d
+(equity-dev), p9-2e (equity-rel), p9-2f (equity-dev). **Next free build tag p9-2g.** No new red; no identity miss.
+
+- **Concern (C2 root item (ii)):** the deletion of `wave_rules.py:110-119` was not done: it retires the Python `pm6-6`
+  match mode (fixture default, direct tests, G-P5 row) in files E2 is rewriting, a designed change; left to C3
+  with C2-9 and S14 (`wave3-carry.md:221` already lists it there). Its precondition, the gm-pair identity, now holds.
+- **Known-red now:** pytest `test_fields_are_the_rule_applied_to_the_registry` (E2); Release
+  `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` (M2c-RED-2 / OD5-2; S2R's split makes it a visible
+  Release skip). **Release `BookNormalScore.*` x2 cleared** (M1c-RED).
+- **Pools:** pool-15 released (C1's record) and leased to C3 (`feat/p9-c3-20261004` at `e1c16051`, run id
+  `p9-c3-20261004`, keeper alive); `pools.md`. pool-19 unchanged (T1's record, clean), for AL-CLOCK later.
+- **Disk freed (mine):** 212 MB of identity outputs (`p9-m2e-c2-x5-{cal,gm}` 22 MB, `p9-m2e-alcomb-x5-w-{pre,post}`
+  190 MB) plus my session scratch; kept: `p9-m2e-c2-x5-engine` (11 MB) and every run receipt. Lane pools 15 / 19 had
+  already deleted their object trees (DISK-2: nothing left to delete).
+
+Trial ledger at the end: 133 lines, sha256 `27e40f9f...` (0 trials). Resume notes: `handoff-root-m2e2.md`.
+
+## M2f: S2R merge, B2 identity part (2026-10-04)
+
+Agent: root for step group M2f (dispatch R5-2), from `handoff-root-m2e2.md`. Evidence: `m2f-logs/` (this dir), scratch
+scripts in `m2f-logs/tools/`. Trial ledger at the start: 133 lines, `27e40f9f`. Python
+`"C:/Program Files/Python312/python.exe"`; gtests through `m2f-logs/tools/gt.sh` (the M2e runner, logs to `m2f-logs/`).
+
+### S2R (`048b01c6`, pool-18; light review APPROVE `d92a20ee`)
+
+- **Ledger:** `Task S2R: complete` (light review APPROVE at `048b01c6`, 0 Required, 5 Suggested); rulings M2c-RED-1,
+  M2c-RED-2, OD5-2, S2R-1, S2R-2, S2R-3 read. S-1 / S-2 are P10 notes (S2R-3); S-3 is this root slip; S-4 is answered
+  below; S-5 is the optional wave-2-gate diagnostic.
+- **Merge:** `0f7a84b1` = `git merge --no-ff 048b01c6`, **no conflict** (the lane's merge of root `f6444417` was its
+  base; root has not touched `alpha_lit_golden_test.cpp` since `2ed2fc18`). Code: that one test file (+236 / -6);
+  everything else is sprint-dir docs, logs and tools that came with the merge (the report, handoff, `s2r-logs/` 30
+  files, equal to pool-18's modulo CRLF). `task-S2R-review.md` (lane commit `d92a20ee`, after the merged SHA) copied
+  from its blob (`git add -f`; blob `847e2de7` = lane blob).
+- **No golden digest changed:** the test file's 64-bit hex constants before (`HEAD^1`) and after the merge: every
+  pre-merge constant is present with at least its count; the only added occurrence is the canonical NaN
+  `0x7ff8000000000000` (the reviewer's finding). The merge touches no other code file, no fixture, no pin source; both
+  `StrategyIcRunner.*SourcesPinnedToSemanticsVersion` pass in both builds (`dsl_vm` / `ic_result` pins hold).
+- **Build p9-2g** (equity-dev; source `0f7a84b1`, 10 dirty entries = four PNGs, `progress.md`, four `al-data/*.md`, the
+  S-3 report edit: no code): `atx-engine-alpha-tests, atx-impl-strategy-ic-tests` -> **exit 0, 13.3 s, 1 TU, 1 link,
+  Jobs 4, 0 warnings**. alpha-tests `8b767814`, ic-tests `f535167a` (unchanged since p9-2f).
+- **Build p9-2h** (equity-rel; same source and targets; the tree reconfigured itself on CMake's GLOB check,
+  ConfiguredProvenance `0f7a84b1...-dirty`; no stale-PCH refusal) -> **exit 0, 123.2 s, 31 TUs, 3 links, Jobs 3, 0
+  warnings** (the log's one stderr record is the "GLOB mismatch!" notice). alpha-tests `875ed9c7`, ic-tests `1e070302`.
+- **gtests** (logs `m2f-logs/s2r-{dbg,rel}-*.log`):
+
+  | binary | filter | Debug (p9-2g) | Release (p9-2h) |
+  |---|---|---|---|
+  | atx-engine-alpha-tests | `AlphaLitGolden_ExistingOps.*` | **3 passed** (pinned, VmMatchesOracle, Battery) | **2 passed, 1 skipped** (the pinned test) |
+  | atx-engine-alpha-tests | whole | **783 passed, 0 skipped, 0 failed** (1 disabled) | **780 passed, 2 skipped, 0 failed** (1 disabled) |
+  | atx-impl-strategy-ic-tests | S2 filter (`IcScreen.*:IcLabels.*:IcLabelTerminal.*:StrategyIcRunner.AuditExactEval...:StrategyIcRunner.*SourcesPinnedToSemanticsVersion`) | **28 passed** | **28 passed** |
+  | atx-impl-strategy-ic-tests | whole | **226 passed** | **226 passed** |
+
+  - The two Release skips are exactly `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` and
+    `AlphaVm_ZeroAlloc.WarmDispatchLoop_BoundedByOutputsAndSizeIndependent`; the skip text names the CRT `pow`
+    difference (`ucrtbased.dll` /MDd vs `ucrtbase.dll`), the three rows and "Ruling M2c-RED-2".
+  - `EveryPreW2OpcodeVmMatchesOracle` **passes in both builds** (root's Debug run of the merged tree is the Debug proof
+    the lane's `02eae2ab-dirty` receipt could not give).
+  - Prints: Debug `vm_audit_exact=0x971c3da60ca89aa3 vm_research_fast=0xe9e7128fd5359900 oracle=0x971c3da60ca89aa3`
+    (= the pins); Release `0xeeae40c4a6d7d93b / 0x24c97b5bfeab6518 / 0xeeae40c4a6d7d93b` (= the values the review and
+    M2c-RED name: no UCRT or kernel change).
+  - Debug 783 vs Release 782 tests: the Debug-only death test `AlphaSlotPoolDeathTest.OverAcquire_Aborts` (present
+    in the Debug log, absent from the Release log; review S-4).
+  - IC whole is 226, not the lane's 204: root's head carries AL-COMB's 22 IC tests (M2e: 226); the S2 filter is the
+    lane's 28.
+- **UCRT (M2c-RED-2 (d) record, not a P9-B0):** `C:\Windows\System32\ucrtbase.dll` 10.0.26100.7623, 1,373,280 B,
+  SHA-256 `2c08e77f...65ef` = S2R's measurement (`m2f-logs/ucrtbase-m2f.txt`).
+- **S2R-1 / S2R-2 scan on the merged tree** (review item 5; the lane's `s2r1_scan.py` with its root path set to
+  pool-2, `m2f-logs/tools/s2r1_scan_root.py`, output `m2f-logs/s2r1-scan-root.txt`): book candidates using a split op
+  5 (`res_mom_12_1`, `smax`, `iv_rv_spread`, `qmj_safety`, `smax5`; all `stddev`), the same 5 as the lane; P9 strings
+  0 over all of `scripts/specs/p9/` (now incl. `rules/`, `templates/`, `diagnostics/`); the one textual match is the
+  prose "OLS slope (intercept included)" in `rules/theme-cov-hedge-v1.json` `fixed_choices[2]`, not a DSL call.
+- **Slip S-3 fixed in place** (Ruling S2R-3): `task-S2R-report.md` 12.3 now reads "The P9 DSL strings are
+  `rank(russell_recon)`, `rank(lazy_prices)` and `rank(hf_crowd)` (blocked, no field); none uses a time-series op", with
+  a bracketed note naming the old wording and `scripts/specs/p9/blocked/hf_crowd.json:3`. Conclusion unchanged.
+- **Known-red change:** the Release lit-golden red is now a **named Release skip, 0 failed** (M2c-RED-2 (c) / OD5-2).
+- **DISK-2 (pool-18):** see below (end of M2f).
+- **Trial ledger:** 0 trials.
+
+### B2 identity part (`1b25b9a4`, pool-14; re-review 1: identity part sound, post-identity part CHANGES_REQUIRED)
+
+#### B2-R1 (d): rho of the X-5 / Y-F0 pairs, measured and logged before the identity run
+
+Tool `m2f-logs/tools/b2_rho.py` (nav_summ's own paired series: primary scenario, `load_daily` with the seal refusal,
+`net_series`, `align`; no mean / SD / Sharpe / return printed); output `m2f-logs/b2-rho-pairs.txt`. Pairs = each
+cell against its parent, on the pinned references; the ledgered dirs give the same series (same rho to the last bit):
+
+| pair | child | parent | T | rho (numpy) | 1 - rho (stable form) | 1e-12 / (1 - rho) | class |
+|---|---|---|---|---|---|---|---|
+| X-5 | `p9-c1-s2-x5-nav` (X-5's Debug reference since C1) | X-3 `mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v8x3b` (X-5's locked `reference_cell` `e342db4f`) | 1,005 | 0.9202746809672834 | 0.0797253190327169 | 1.254e-11 | paired test defined |
+| Y-F0 | `p9-b0-yf0-nav` (P9-B0) | X-5 `p9-c1-s2-x5-nav` (as ledgered: `mega-nav-v8x-theme-erc-L1.1720`, Y-F0's `reference_cell` `a03937cf`) | 1,005 | 0.9556041703496023 | 0.0443958296503978 | 2.252e-11 | paired test defined |
+
+Both pairs are far above the B2-R1 (c) bound (1 - rho >= 1e-6 by four to five orders of magnitude): neither needs a
+prereg fallback. (Not measured: any P9 pair; a leverage-only child such as X-10 vs Y-F0 is the case to measure at PRE.)
+
+#### Expected difference list for the B2 TRAIN identity (written and committed before the run)
+
+Real data (TRAIN 2020-2023, sealed role; `load_daily` refuses any session at or after the seal), 0 trials (nav_summ is
+never given `--ledger`; the read-only ledger flags get a byte copy), no statistic read by me: stdout is compared by
+bytes and the JSON by the comparator; a stdout line is printed only if it differs (B2-7).
+
+- **Pairs** (the reference is never among the dirs, B2-4 / B2-6): **X5** = dirs `[build-equity/p9-c1-s2-x5-nav]`,
+  `--reference build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v8x3b`; **YF0** = dirs
+  `[build-equity/p9-b0-yf0-nav]`, `--reference build-equity/p9-c1-s2-x5-nav`.
+- **argv** (B2 report, "How root verifies" item 3): `atx-impl/tools/nav_summ.py <child> --reference <parent> --protocol
+  v8 --psr --dsr-ledger L --dsr-total L --json build-equity/p9-m2f-b2-identity/<pair>-<mode>.json`, L = a byte copy
+  of `build-equity/trials.jsonl` (133 lines, `27e40f9f`) in the session scratchpad, bound in each receipt (`--bind`).
+- **Runs, per pair:** **P** = the argv as written (the Python statistics at the identity point); **Erel** = plus
+  `--engine-stats build-equity-rel/bin/atx-research-eval.exe` (p9-2j `a57a2090`, the build type of record, M2c-RED-2
+  (e)); **Edbg** = plus `--engine-stats build-equity/bin/atx-research-eval.exe` (p9-2i `bd8b5e08`). Each through
+  `scripts/run_bounded_research.py --seconds 600 --max-rss-mib 2048` (RUN-1) into
+  `build-equity/p9-m2f-b2-<pair>-<mode>-run`; Python 3.12, numpy 1.26.4; source = the commit carrying this list.
+- **Expected** (comparator `m2f-logs/tools/b2_identity_cmp.py`, output `m2f-logs/b2-identity-cmp.txt`; anything else
+  is reported, and a decision-field difference stops the merge item):
+  1. Every run exits 0 within its limits.
+  2. Erel and Edbg stdout **byte-equal** to P's; stderr equal (expected empty). Erel vs Edbg likewise.
+  3. `--json` rows with `nav_summ_run` popped: equal structure, keys, ints and strings; floats within 1e-12 relative,
+     inside `paired` within 1e-12 / (1 - rho) (X5 1.254e-11, YF0 2.252e-11); `p_value`, `p_one_sided`,
+     `valid_draws`, `cbb_valid_draws` exact (the lane's `test_nav_summ_engine.close`). No `degenerate` /
+     `one_minus_rho` key (both pairs non-degenerate).
+  4. `nav_summ_run` of Erel / Edbg names `engine_exe` and an `engine_exe_sha256` equal to that file's SHA-256; P's
+     names none.
+  5. **B2-7:** every differing stdout line is listed in this report with every differing JSON float leaf (both
+     values, relative difference) and the decision-field check (counts, p-values, flags, N byte-equal); it goes to the
+     PM, never auto-accepted. A bootstrap-count difference (threshold touch) likewise.
+  6. Printed for the record: float leaves bit-equal vs within tolerance per comparison, largest relative difference.
+  7. Trial ledger unchanged after all runs (133 lines, `27e40f9f`).
+
+#### B2 identity part: MERGED and verified; TRAIN identity HOLDS (0 B2-7 lines)
+
+- **Ledger:** `Task B2 (identity part): complete at 1b25b9a4`; rulings B2-1..B2-12, B2-R1..B2-R3, SQL2-CLS, CLS-1,
+  RUN-1, M2c-RED-2 (e) read. **Not merged (B2-12):** the post-identity part `598d2199` (deletion) / `8fb17ad6` (B2-10)
+  / `26fe8d50`, `4bed5c43` (docs): the lane redoes it after E2's merge (re-review R1 / R2 and B2-11); the Python
+  statistics of record stay in root until then.
+- **Merge:** `c2416d62` = `git merge --no-ff 1b25b9a4` (lane base `1239a5ff`). Three conflicts, all CMake tails,
+  both sides kept, HEAD's block first: `atx-engine/CMakeLists.txt` (SQL2 catalog / A3 / AL-SIG / D2 composition vs
+  B2's `atx-engine-research-ledger` + `atx-engine-research-eval` libraries and the `atx-research-eval` exe),
+  `atx-engine/tests/CMakeLists.txt` (SQL1 / SQL2 / A3 / AL-SIG / D2 test targets vs B2's ledger / eval test targets),
+  `atx-impl/CMakeLists.txt` (AL-COMB sources, D2 link, C2 source vs B2's `atx-impl-core PUBLIC
+  atx::engine-research-ledger`). Auto-merged and read: `scripts/wave_stage_record.py` (C2's R4 two lines and B2's
+  `ledger-head.json` writer in `record()`, both in E2's file: reconcile both at E2's merge). Root had touched none of
+  B2's other files since `1239a5ff` (`trial_ledger.{hpp,cpp}`, `pbo.*`, `nav_summ.py`, `backtest_integrity.py`,
+  `test_trial_ledger_rules.py`). The lane's report / review / handoff / `b2-evidence/` came with the merge at their
+  `1b25b9a4` state; the current ones (report with fix round 1 and B2-10, handoff, `task-B2-rereview-1.md`, 20
+  `b2-evidence/` files) copied from the lane head's blobs `4bed5c43` (`git add -f`; pool-14 otherwise untouched).
+- **Build p9-2i** (equity-dev; source `c2416d62`, 9 dirty entries = PNGs, `progress.md`, `al-data/`: no code; the
+  tree reconfigured itself, ConfiguredProvenance `c2416d62...-dirty`): `atx-engine-research-ledger-tests,
+  atx-engine-research-eval-tests, atx-research-eval, atx-impl-tests, atx-equity-strategy-ic` (the report's "How root
+  verifies" item 1 plus p9-b2-b's IC exe, which links the moved trial ledger) -> **exit 0, 122.4 s, 38 TUs, 10 links,
+  Jobs 3, 0 warnings**. ledger-tests `8c5a6065`, eval-tests `25c14b28`, verb `bd8b5e08`, impl-tests `237e5826`, IC
+  `6c2e2e2e`.
+- **Build p9-2j** (equity-rel; same source and targets) -> **exit 0, 128.1 s, 46 TUs, 10 links, Jobs 4, 0 warnings**.
+  ledger-tests `bfe2afc3`, eval-tests `e0a51398`, verb `a57a2090`, impl-tests `6a1eb722`, IC `fccaa07e`.
+  (The lane's verb hash `15eebd7d` is another tree's link; not comparable.)
+- **gtests** (logs `m2f-logs/b2-{dbg,rel}-*.log`), Debug and Release alike: `atx-engine-research-eval-tests`
+  `EvalVerb.*:ResearchEvalRng.*:Conditional.*:EvalEdges.*` **24 passed** (= whole target);
+  `atx-engine-research-ledger-tests` `ResearchLedger*` **16 passed** (= whole); `atx-impl-tests` `TrialLedger*`
+  **24 passed** (the moved code through the re-export; re-review check 7).
+- **pytest at the identity point** (`m2f-logs/tools/pyt.sh`: explicit paths, `-p no:cacheprovider`, own
+  `--basetemp`, `ATX_ENGINE_STATS_REQUIRED=1`, `ATX_EQUITY_BIN` = the build type's bin), each with the Debug and with
+  the Release verb: tools set (`test_nav_summ_engine`, `test_nav_summ`, `_pool`, `_v8`, `test_dsr_total`,
+  `test_backtest_integrity`, `test_book_diagnostics` + the three fixture tests `research_ledger`,
+  `research_eval_edges`, `eval_tie`) **109 passed, 1 skipped** (the root-only real-data test); scripts set
+  (`test_no_python_mirror`, `test_research_ledger`, `test_cycle_scoring`) **17 passed** (G-P5 "34 mirrored rule
+  function(s) in 13 row(s)": root's count; B2 deletes its rows only post-identity). The skipped root-only test,
+  `test_nav_summ_v8.py::test_legacy_n37_numbers_reproduced`, run separately with `ATX_EQUITY_ROOT` = pool-2's
+  `build-equity` (Python nav_summ on the v7.1 cells vs `mega-nav-v71-summ-n37.json` / `-pbo-n37.json`, a ledger copy
+  in tmp): **1 passed** (flag-absent identity of the merged `nav_summ.py` on real cells).
+- **TRAIN identity (list `ea52989a` first, rho before it): HOLDS** (`m2f-logs/b2-identity-cmp.txt`; receipts
+  `m2f-logs/receipt-p9-m2f-b2-{x5,yf0}-{p,erel,edbg}.json`). All six runs `completed`, exit 0, source `ea52989a`
+  (clean in the code pathspec), ledger copy bound `27e40f9f`; wall 0.8-1.9 s; sampled peak RSS: Python 620 / 481 MiB,
+  verb runs 51-59 MiB (cap 2,048).
+
+  | comparison | stdout (31 lines) | stderr | JSON (`nav_summ_run` popped) | float leaves bit-equal / within tolerance | largest rel. difference |
+  |---|---|---|---|---|---|
+  | X5 Erel vs P | byte-equal | equal | 0 problems | 76 / 13 | 5.0e-14 |
+  | X5 Edbg vs P | byte-equal | equal | 0 problems | 76 / 13 | 5.0e-14 |
+  | X5 Edbg vs Erel | byte-equal | equal | 0 problems | 89 / 0 | 0 |
+  | YF0 Erel vs P | byte-equal | equal | 0 problems | 78 / 11 | 5.9e-15 |
+  | YF0 Edbg vs P | byte-equal | equal | 0 problems | 78 / 11 | 5.9e-15 |
+  | YF0 Edbg vs Erel | byte-equal | equal | 0 problems | 89 / 0 | 0 |
+
+  - The comparison covers the paired block (dSR, Memmel SE, t, CBB CI and valid draws, the LW block with its
+    p-values), PSR / MinTRL, the deflated rows, the ledger DSR and DSR_tot (row keys `paired`, `psr`, `deflated`,
+    `deflated_ledger`, `deflated_total`, `net_moments`, `year_table`, ...). Every decision field (p-values, valid
+    draws, N) is equal; no `degenerate` / `one_minus_rho` key; the largest difference is about 20x inside the 1e-12
+    tolerance (and the paired tolerance is 1.25e-11 / 2.25e-11).
+  - **B2-7: 0 boundary lines** (no printed line differs), so nothing goes to the PM under B2-7; no bootstrap-count
+    difference.
+  - Each verb run's `nav_summ_run` names its `engine_exe` with `engine_exe_sha256` = the file's SHA-256 (Release
+    `a57a2090`, Debug `bd8b5e08`); the Python runs name none. The Debug and Release verbs agree to the bit on both
+    pairs.
+  - One deviation from the written list, in my expectation only: stderr was not empty but the same 145 bytes in all
+    six runs (nav_summ's existing warning that the recipe's default `--dsr-n` 10 makes V[SR_n] come from the listed
+    dirs); the check (equality) holds. The stdout of both cells also carries nav_summ's existing `WARNING CSV tau
+    mean ... != summary ...` line, in P and E alike: a boolean check (no value printed) finds it in all five dirs,
+    the ledgered v8 X-3 / X-5 / Y-F0 NAVs included (`m2f-logs/tau-warning-presence.txt`): long-standing, not a merge
+    effect, outside this identity.
+  - Trial ledger after the runs: 133 lines, `27e40f9f` (no `--ledger` given).
+- **Re-review check 8** (count only): the ledger of record has 0 lines with `"prev_sha256": null` (37 without the
+  key, 96 chained; `m2f-logs/b2-ledger-prev-null-count.txt`), so B2's S2 change (a null prev folds as unchained)
+  moves no recorded head on real data.
+- **`$canaryExes` += `atx-research-eval`** (merge request 1): `42f42a07`, help text with it; dry runs: a `-Canary` tag
+  without the verb is refused naming it ("missing: atx-research-eval"), with it the plan prints; no receipt written.
+  The canary itself needs the verb only once the post-identity part lands.
+- **SQL2-CLS:** `ba5e6e5d`. The guard on the merge was red on exactly `atx.ledger-head/v1` and `atx.research-eval/v1`
+  (`m2f-logs/b2-sql2cls-guard-before.log`). Rows: `ledger-head` (R6, `**/ledger-head.json`) and `eval-output` (O6,
+  `**/*.json` + schema) of their own (CLS-1 precedent); `atx.research-ledger-fixture/v1` and
+  `atx.research-eval-edges-fixture/v1` into `test-golden` (the re-review's addition; beside
+  `research-admission-fixture` / `factors-verb-fixture`). Store suite **43 passed, 135 subtests** under
+  `PYTHONHASHSEED` 0 and 1 (guard green; 133 + the two rows); fixture chain rel and abs: `files_seen 28 verified 25
+  declared 0 skipped 4`, **`catalog_digest d32f7655...4e69`**, verify 0, identity 12 / 0
+  (`m2f-logs/b2-sql2cls-fixture-chain.log`); a scratch catalog classifies a `ledger-head.json` and an eval document
+  into the two rows (`m2f-logs/b2-sql2cls-classify.txt`).
+- **Not done (post-identity, B2-12):** re-review checks 3 (the named-verb test exists only in `598d2199`) and 5 (hunk
+  placement onto E2's split).
+- **Trial ledger:** 0 trials.
+
+### DISK-2 and M2f status
+
+- **pool-18 (S2R):** nothing to delete: the lane deleted its object trees (left: `build-equity/` 3.2 MB of receipts,
+  logs, `audits/`, `v8-interim3-pitch-render-run2/`; the lease script's 0.5 MB `build/` configure stub, left as at
+  pool-15 in M2e; no `deps/`, no `build-equity-rel/`). pool-14 not touched (lane B2 continues there). No lease
+  released.
+- **Mine:** kept (tiny, evidence): `build-equity/p9-m2f-b2-identity/` (52 KB, the six JSONs) and the six run dirs
+  (21 KB each); scratch (ledger copy, catalogs, pytest temp dirs) deleted by name.
+- **Code head `42f42a07`** (S2R merge `0f7a84b1`; B2 identity merge `c2416d62`; SQL2-CLS `ba5e6e5d`; canary
+  `42f42a07`). Build tags used: p9-2g (equity-dev), p9-2h (equity-rel), p9-2i (equity-dev), p9-2j (equity-rel).
+  **Next free build tag p9-2k.** No new red; no identity miss; nothing half-merged.
+- **Known-red now:** pytest `test_fields_are_the_rule_applied_to_the_registry` (E2). Release
+  `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` is a **named Release skip, 0 failed** (M2c-RED-2 /
+  OD5-2), not a red.
+
+Trial ledger at the end: 133 lines, sha256 `27e40f9f...` (0 trials). Resume notes: `handoff-root-m2f.md`.

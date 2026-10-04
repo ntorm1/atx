@@ -67,7 +67,8 @@ reference_sharpe(std::span<const f64> row, std::span<const usize> subset, usize 
 
 [[nodiscard]] atx::core::Result<f64>
 legacy_split(std::span<const f64> perf, usize n, usize periods, usize width,
-              std::span<const usize> selected, Scratch& scratch, PboResult& result) {
+              std::span<const usize> selected, Scratch& scratch, PboResult& result,
+              PboSplitTrace* trace) {
   usize winner = 0;
   f64 best = 0.0;
   for (usize c = 0; c < n; ++c) {
@@ -78,6 +79,8 @@ legacy_split(std::span<const f64> perf, usize n, usize periods, usize width,
     if (c == 0U || in > best) { winner = c; best = in; }
   }
   atx::core::stats::partial_rank<f64>(scratch.legacy_oos, scratch.legacy_rank);
+  if (trace != nullptr)
+    *trace = PboSplitTrace{winner, scratch.legacy_rank[winner], best, scratch.legacy_oos[winner]};
   return Ok(rank_logit(scratch.legacy_rank[winner], n));
 }
 
@@ -158,7 +161,7 @@ cache_blocks(std::span<const f64> perf, usize n, usize periods, usize splits, us
 [[nodiscard]] atx::core::Result<f64>
 cached_split(std::span<const f64> perf, usize n, usize periods, usize splits, usize width,
               std::span<const usize> selected, std::span<const BlockMoments> blocks,
-              Scratch& scratch, PboResult& result) {
+              Scratch& scratch, PboResult& result, PboSplitTrace* trace) {
   const usize observations = selected.size() * width;
   for (usize c = 0; c < n; ++c) {
     const auto row_blocks = blocks.subspan(c * splits, splits);
@@ -193,13 +196,16 @@ cached_split(std::span<const f64> perf, usize n, usize periods, usize splits, us
     const f64 candidate = scratch.oos_score[c].value, best = scratch.oos_score[winner].value;
     if (candidate < best || (candidate == best && c < winner)) ++rank;
   }
+  if (trace != nullptr)
+    *trace = PboSplitTrace{winner, rank, scratch.is_score[winner].value,
+                           scratch.oos_score[winner].value};
   return Ok(rank_logit(rank, n));
 }
-} // namespace
 
-atx::core::Result<PboResult>
-pbo_cscv_checked(std::span<const atx::f64> perf, atx::usize n_candidates,
-                 atx::usize n_splits, PboRule rule) {
+// The one CSCV walk behind pbo_cscv_checked and pbo_cscv_traced; `trace` may be null.
+[[nodiscard]] atx::core::Result<PboResult>
+run_cscv(std::span<const atx::f64> perf, atx::usize n_candidates, atx::usize n_splits,
+         PboRule rule, std::vector<PboSplitTrace>* trace) {
   const usize n = n_candidates, splits = n_splits;
   if (n < 2U) return Err(ErrorCode::InvalidArgument, "pbo_cscv: n_candidates must be >= 2");
   if (perf.size() % n != 0U)
@@ -237,20 +243,38 @@ pbo_cscv_checked(std::span<const atx::f64> perf, atx::usize n_candidates,
   for (usize i = 0; i < half; ++i) selected[i] = i;
   PboResult result{0.0, {}, 0.0}; result.rule = rule;
   result.split_logits.reserve(split_count);
+  if (trace != nullptr) { trace->clear(); trace->reserve(split_count); }
   usize below_or_at = 0;
   f64 logit_sum = 0.0;
   do {
     complement(selected, splits, scratch.oos);
+    PboSplitTrace step{};
+    PboSplitTrace* const step_out = trace != nullptr ? &step : nullptr;
     auto evaluated = rule == PboRule::LegacyGatherV1
-        ? legacy_split(perf, n, periods, width, selected, scratch, result)
-        : cached_split(perf, n, periods, splits, width, selected, blocks, scratch, result);
+        ? legacy_split(perf, n, periods, width, selected, scratch, result, step_out)
+        : cached_split(perf, n, periods, splits, width, selected, blocks, scratch, result,
+                       step_out);
     if (!evaluated) return Err(evaluated.error());
     const f64 lambda = *evaluated;
     result.split_logits.push_back(lambda); logit_sum += lambda;
     if (lambda <= 0.0) ++below_or_at;
+    if (trace != nullptr) trace->push_back(step);
   } while (detail::next_combination(selected, splits));
   result.pbo = static_cast<f64>(below_or_at) / static_cast<f64>(split_count);
   result.mean_logit = logit_sum / static_cast<f64>(split_count);
   return Ok(std::move(result));
+}
+} // namespace
+
+atx::core::Result<PboResult>
+pbo_cscv_checked(std::span<const atx::f64> perf, atx::usize n_candidates,
+                 atx::usize n_splits, PboRule rule) {
+  return run_cscv(perf, n_candidates, n_splits, rule, nullptr);
+}
+
+atx::core::Result<PboResult>
+pbo_cscv_traced(std::span<const atx::f64> perf, atx::usize n_candidates, atx::usize n_splits,
+                PboRule rule, std::vector<PboSplitTrace> &trace) {
+  return run_cscv(perf, n_candidates, n_splits, rule, &trace);
 }
 } // namespace atx::engine::eval
