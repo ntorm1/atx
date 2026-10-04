@@ -51,8 +51,10 @@ A_SEED, N_SEED, CSCV_SEED = 20261003, 777, 4242
 T, DRAWS, BLOCK, SEED = 750, 999, 21, 20260929
 SHIFT = 0.0
 DEGENERATE = 1e-6                     # ruling B2-R1 (c): 1 - rho below this is refused
-# target 1 - rho per case: the ruling's 5e-4 / 5e-5 / 1e-6 boundary (both sides) and the review's 5e-6 / 5e-9 / 6e-13
-TARGETS = (("omr_5e-4", 5e-4), ("omr_5e-5", 5e-5), ("omr_5e-6", 5e-6), ("omr_1.02e-6", 1.02e-6),
+# target 1 - rho per case: the ruling's 5e-4 / 5e-5 / 1e-6 boundary (both sides) and the review's 5e-6 / 5e-9 / 6e-13.
+# 5e-4 is nudged 0.1% to 5.005e-4: at exactly 5e-4, rho = 0.9995 sits on the rounding boundary of nav_summ's 3-decimal
+# rho print, where a 1e-16 difference flips the printed digit (no tolerance can keep a printed boundary byte-equal).
+TARGETS = (("omr_5e-4", 5.005e-4), ("omr_5e-5", 5e-5), ("omr_5e-6", 5e-6), ("omr_1.02e-6", 1.02e-6),
            ("omr_0.98e-6", 0.98e-6), ("omr_5e-9", 5e-9), ("omr_6e-13", 6e-13))
 CSCV_T, CSCV_BLOCKS, CSCV_CONSTANT = 240, 8, 0.001
 CSCV_DRIFTS = (0.0004, -0.0002, 0.0001, 0.0003, -0.0001)
