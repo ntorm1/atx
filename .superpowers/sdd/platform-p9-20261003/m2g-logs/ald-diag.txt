@@ -1,0 +1,18 @@
+ALD-DIAG (OD5-1 (iii), ALD-10): universe and delisting metadata of the sealed role; no return statistic
+role build-equity/train-2020-2023-lo3/manifest.json  sha256 e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4
+universe linked-operating-v3  sessions 1405 (2018-06-01 .. 2023-12-29)  instruments 5922
+delisting stage rule delisting-rule-r-v1; returns_applied False
+payloads hash-verified: sessions.i64 ids.u64 member.u8 (close / raw_close / volume never opened)
+
+year     names  delisted<=2023-12-01   share  unclassified(>2023-12-01)  delisted by cause (mna, performance, non_common, unknown, unknown_unlinked)
+2020      2420                    83   0.034                          0  (82, 1, 0, 0, 0)
+2021      2540                   103   0.041                          0  (97, 1, 0, 5, 0)
+2022      2325                   106   0.046                          0  (102, 1, 0, 3, 0)
+2023      2186                    95   0.0432 (within 30 days of the seal)  (88, 2, 0, 5, 0)
+
+distinct universe names 2020-2023: 3256; universe exits through a delisting 2020-2023: 387 classified + 2 unclassified
+context: universe-exit terminations with a last session before 2020 (warm-up): 152
+context: terminations of lines NOT universe members at their last session (not universe exits), by year: 2018 7, 2019 40, 2020 77, 2021 66, 2022 104, 2023 155
+context: the stage's counts block: continued_not_terminations 152, rows_available_on_or_after_2025_dropped 3, rows_on_role_in_window 1145, rows_total 9727, terminations 990
+context: delist_code values outside the five causes: none
+check: member.u8 == 1 at the last session for 541 of 541 universe-exit events; 0 not a member; 0 without a role session / id

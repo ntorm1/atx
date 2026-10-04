@@ -57,6 +57,28 @@ Start state: trial ledger 133 lines, `27e40f9f6314585e...` (checked 2026-10-04 1
   distribution of `delist_code` / `cause_basis`, the `last_session` range, the count of `kept_member_at_last_session`,
   the stage's `counts` block and the role's rule texts (metadata only; no value key).
 
+**Result** (run `build-equity/p9-m2g-ald-diag-run`: completed, exit 0, 0.5 s, peak 31 MiB; source `3fd0bf98`, code
+pathspec clean; evidence `m2g-logs/ald-diag.txt`, `m2g-logs/receipt-p9-m2g-ald-diag.json`). Role sessions 1405
+(2018-06-01 .. 2023-12-29), 5922 instruments; payloads hash-verified; the seal check passed (no session >= 2024-01-01).
+
+| year | names in the role universe | universe exits through a delisting, last session <= 2023-12-01 | share of the year's names | by cause (mna / performance / non_common / unknown / unknown_unlinked) | unclassified (last session > 2023-12-01) |
+|---|---|---|---|---|---|
+| 2020 | 2,420 | 83 | .034 | 82 / 1 / 0 / 0 / 0 | 0 |
+| 2021 | 2,540 | 103 | .041 | 97 / 1 / 0 / 5 / 0 | 0 |
+| 2022 | 2,325 | 106 | .046 | 102 / 1 / 0 / 3 / 0 | 0 |
+| 2023 | 2,186 | 95 | .043 | 88 / 2 / 0 / 5 / 0 | 2 (within 30 days of the seal) |
+
+- 2020-2023: 3,256 distinct universe names; 387 classified delisting exits + 2 unclassified. Lower bound (ALD-10).
+- Context: 152 universe-exit terminations in the warm-up (last session before 2020); terminations of lines that were
+  NOT universe members at their last session (not universe exits): 2018 7, 2019 40, 2020 77, 2021 66, 2022 104,
+  2023 155; the stage's counts: terminations 990, continued (not terminations) 152, rows on the role in the window
+  1,145, rows total 9,727, rows available on or after the stage's cutoff dropped 3; no `delist_code` outside the five
+  causes.
+- Check: all 541 universe-exit events have `member.u8 == 1` at their last session (0 mismatches).
+- Reading (for the prereg line beside the OD5-1 flag; gates nothing): the role keeps its pre-2024 delistings (about
+  3.4-4.6% of each year's names exit through a delisting), but almost all are M&A; performance delistings of universe
+  members are 1-2 a year (5 in 2020-2023), so the universe holds few failure exits.
+
 ## Item 3. rho of the leverage-only pairs (B2-13)
 
 **Pre-run list (committed before the run).**
@@ -76,6 +98,22 @@ Start state: trial ledger 133 lines, `27e40f9f6314585e...` (checked 2026-10-04 1
 - Run: `run_bounded_research.py --output build-equity/p9-m2g-b2-13-rho-run --seconds 600 --max-rss-mib 2048 -- python
   .../b2_13_rho.py build-equity-rel/bin/atx-research-eval.exe`.
 
+**Result** (run `build-equity/p9-m2g-b2-13-rho-run`: completed, exit 0, 1.1 s, peak 51 MiB; evidence
+`m2g-logs/b2-13-rho.txt`, `m2g-logs/receipt-p9-m2g-b2-13-rho.json`). Verb `a57a2090...`; T = 1005 common sessions in
+every pair; scenario `modeled-1bn-stale5-v1+swap-fin-v1`.
+
+| pair | rho (verb) | 1 - rho (verb, stable form) | class |
+|---|---|---|---|
+| X-10 vs Y-F0 (P9-B0 `p9-b0-x10-nav` vs `p9-b0-yf0-nav`) | 0.9994863034956717 | 5.13696504329025e-4 | paired test defined (1 - rho >= 1e-6) |
+| Y-1 vs X-10 (P9-B0 `p9-b0-y1-nav` vs `p9-b0-x10-nav`) | 0.9947113980219977 | 5.288601978002812e-3 | paired test defined |
+| X-10 vs Y-F0 (as ledgered) | 0.9994863034956717 | 5.13696504329025e-4 | paired test defined |
+| Y-1 vs X-10 (as ledgered) | 0.9947113980219977 | 5.288601978002812e-3 | paired test defined |
+
+- Cross-check: numpy corrcoef differs from the verb by 4.4e-16 / 3.3e-16; the stable forms agree to the last digit.
+- B2-R1 tolerances for paired floats: 1.947e-9 (X-10 vs Y-F0), 1.891e-10 (Y-1 vs X-10).
+- Neither pair is degenerate: the B2-13 fallback ("na" paired SE / t / p) is not triggered. X-10 vs Y-F0 is the
+  closest pair measured so far (1 - rho 5.1e-4, two orders above the 1e-6 bound).
+
 ## Item 4. COV: S9, COV-7, D-COV, COV report steps 4 and 5
 
 ### 4 (a) S9 (COV-9)
@@ -83,6 +121,9 @@ Start state: trial ledger 133 lines, `27e40f9f6314585e...` (checked 2026-10-04 1
 **Pre-run list.** Reads the role manifest `build-equity/train-2020-2023-lo3/manifest.json` (pin `e1c67101...95f4`):
 `universe.delisting.returns_applied` and the per-event `returns_applied` flags. Prints the boolean, the key list and the
 count of events with `returns_applied` true. No value of any event is printed. Before every COV run below.
+
+**Result: S9 HOLDS.** `universe.delisting.returns_applied = false`; events with `returns_applied` true: 0 of 990
+(`m2g-logs/cov-s9.txt`, tool `m2g-logs/tools/s9_check.py`). (No real-data COV run followed: 4 (b) missed.)
 
 ### 4 (b) COV-7: Debug = Release container bytes on the lane fixture
 
@@ -117,7 +158,38 @@ count of events with `returns_applied` true. No value of any event is printed. B
   `/files/model.atxcov/sha256`).
 - A difference outside the ranges of criterion 2, or a non-zero `cov-diff`, is an identity miss: item 4 (c) stops.
 
+**Result: IDENTITY MISS (both recipes). Item 4 (b) stops; 4 (c) is not run (COV-7: "if Debug and Release differ, the
+Release ruling is void and the run waits").** Evidence `m2g-logs/cov7.txt`, `m2g-logs/cov7-attribution.txt`, tool
+`m2g-logs/tools/cov7.py`; outputs kept in `build-equity/p9-m2g-cov7/` (synthetic, 0.2 GB).
+- Builds: Debug risk exe p9-2k `94b5a5e7` (1 TU, 9 s, 0 warnings); Release risk exe p9-2l `a31a0f96` and Release
+  targets exe p9-2l `53ca5dd4` (2 TUs, 9 s; first attempt refused by the memory gate, no receipt, retried when lane
+  C3's Release build in pool-15 had finished). Fixture extracted by the Debug test exe `ecb229ca` (p9-2d):
+  role manifest `c93324e7...648d`, fields manifest `7e0cc52b...68c7`; copy re-verified; the test passed.
+- atx-risk-v1.1: `cov-diff` exit 1 with BOTH exes: "first difference at block 2 session 1546560000000000000 (block)".
+  Same size (14,786,944 bytes); 55,258 bytes differ: META 63 (only `/producer/executable_sha256`), header root 32,
+  trailer root 32, and outside the allowed ranges **Blocks 45,796 and BlockHashes 9,335**. Payloads: factor covariance
+  31,552 of 32,556 finite cells differ (from the first forecast session, index 63; 79% of sessions), ULP distance
+  median 17, max relative 1.5e-9; specific variance 7,928 of 9,504 (from session 252), median 4 ULP, max rel 2.8e-15;
+  no NaN-pattern difference; `diagnostics.csv` and the bias files differ too (`style_exposures.f32`,
+  `industry_slot.u8`, `factor_returns.csv`, `factor_structural.u8`, `exposures_last.csv` are identical).
+- atx-cov-v1: the same picture: `cov-diff` exit 1 at block 2 with both exes; Blocks 49,934, BlockHashes 9,342 bytes;
+  factor covariance 98% of finite cells differ (median 24 ULP, max rel 3.3e-11).
+- Each build is deterministic run to run (Debug twice and Release twice: every payload and the container identical),
+  so the difference is between builds, not between runs.
+- Attribution NOT done (stop rule); what the synthetic outputs show: the WLS factor returns and the exposures agree
+  bit for bit (`factor_returns.csv`, `style_exposures.f32`, `industry_slot.u8` identical); `diagnostics.csv` first
+  differs at `bias_factor` (row 65), `lambda2_factor` (96), then the specific columns (252+); the container's first
+  differing block is index 2 (a block field that `diagnostics.csv` does not carry). So the variance / EWMA / VRA
+  arithmetic moves, not the regression. Candidates, by reading only: the CRT transcendental functions (`ucrtbased`
+  vs `ucrtbase`, the M2c-RED-2 class) or a different reduction order between the Debug and Release code paths.
+- Consequence: no D-COV, no COV report step 4 (Y-1 NAV through the container store), no step 5 (`atx-cov-v1` on
+  TRAIN) in this step group; no `atx-cov-v1` store exists for W3-10 to pin. The Debug-built stores of record
+  (`v8-risk-lo3-v10`, the kept `p9-m2d-cov-risk-container`) are untouched; a Release rebuild of the atx-risk-v1.1 store
+  would NOT be byte-identical to them (same finding, atx-risk-v1.1 recipe). Needs a PM ruling (see the handoff).
+
 ### 4 (c) D-COV (cov-design section 5.3, COV report "What the churn-panel small-rank bias means", COV-5, COV-11)
+
+**NOT RUN: 4 (b) missed.** The list below stays as written for the re-run once the PM rules on COV-7.
 
 **Pre-run list (committed before the runs).**
 - Gate: runs only if 4 (b) holds. S9 checked before each run.
@@ -147,6 +219,8 @@ count of events with `returns_applied` true. No value of any event is printed. B
   this section after the run.
 
 ### 4 (c) COV report step 4: Y-1 NAV through the container store vs its P9-B0 reference
+
+**NOT RUN: 4 (b) missed** (the brief gates steps 4 and 5 on COV-7). The list stays for the re-run.
 
 **Pre-run list (substitution list written before the run).**
 - Run: the P9-B0 Y-1 argv (`build-equity/p9-b0-y1-nav-run/receipt.json`: `nav ... --vol-target vol-target-v1
@@ -183,6 +257,11 @@ count of events with `returns_applied` true. No value of any event is printed. B
   `build-equity/p9-q5-risk`), step 3 `book_diagnostics.py run --only G-2a` (output
   `build-equity/p9-q5-diagnostics/diagnostics-v8-g2a.json`), each through the bounded runner (`--max-rss-mib 2048`;
   the spec's 2560 cap for G-2a is replaced by RUN-1's 2048 unless admission refuses), argv as the spec gives it.
+- Added after COV-7's result, before any Q5 run: the Release risk verb is not bit-identical to the Debug one (4 (b)),
+  so steps 2 and 3 are repeated once with the Debug risk exe p9-2k (`build-equity/p9-q5-risk-dbg`,
+  `build-equity/p9-q5-diagnostics-dbg/diagnostics-v8-g2a.json`) as a cross-check; only q, q_lit, the five column
+  shares and the session counts are compared (absolute differences printed). The Release figures are the ones of
+  record (M2c-RED-2 (e)); this is atx-risk-v1.1, which COV-7 does not gate.
 - Reads (tool `m2g-logs/tools/q5_read.py`): from the G-2a JSON only `complete_sessions`, `incomplete_sessions` and
   `style_share_of_summed_variance` for the columns size, residual_vol, liquidity (q) and beta, leverage (q_lit).
 - Prints: q (sum over size, residual_vol, liquidity) with each column's share beside it; q_lit (adds beta and

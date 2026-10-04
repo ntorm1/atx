@@ -1,0 +1,46 @@
+B2-13 rho of the leverage-only pairs (engine eval verb on nav_summ's paired series; no return statistic)
+verb C:\atx-wt\pool-2\build-equity-rel\bin\atx-research-eval.exe  sha256 a57a2090999c0f71557ebf93bd952337395bc8cd9cd107d641f4b8e4452e38d9
+
+X-10 vs Y-F0 (pinned, P9-B0)
+  child     build-equity/p9-b0-x10-nav  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 66be2a023638
+  reference build-equity/p9-b0-yf0-nav  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 e7eb57201ea5
+  T (common sessions) verb 1005 / aligned 1005
+  rho (verb)              0.9994863034956717
+  1 - rho (verb, stable)  0.000513696504329025
+  verb degenerate flag    False
+  cross-check: rho (numpy corrcoef) 0.9994863034956712; 1 - rho (stable form, numpy) 0.0005136965043290253; |rho verb - numpy| 4.441e-16
+  B2-R1 tolerance for paired floats 1e-12 / (1 - rho) = 1.947e-09
+  class: paired test defined (1 - rho >= 1e-6)
+
+Y-1 vs X-10 (pinned, P9-B0)
+  child     build-equity/p9-b0-y1-nav  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 9f17aebfe08b
+  reference build-equity/p9-b0-x10-nav  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 66be2a023638
+  T (common sessions) verb 1005 / aligned 1005
+  rho (verb)              0.9947113980219977
+  1 - rho (verb, stable)  0.005288601978002812
+  verb degenerate flag    False
+  cross-check: rho (numpy corrcoef) 0.9947113980219974; 1 - rho (stable form, numpy) 0.005288601978002812; |rho verb - numpy| 3.331e-16
+  B2-R1 tolerance for paired floats 1e-12 / (1 - rho) = 1.891e-10
+  class: paired test defined (1 - rho >= 1e-6)
+
+X-10 vs Y-F0 (as ledgered)
+  child     build-equity/mega-nav-v8x-theme-erc-L2.0-v8ysb  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 e783eb740e9e
+  reference build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 73b69bcceb12
+  T (common sessions) verb 1005 / aligned 1005
+  rho (verb)              0.9994863034956717
+  1 - rho (verb, stable)  0.000513696504329025
+  verb degenerate flag    False
+  cross-check: rho (numpy corrcoef) 0.9994863034956712; 1 - rho (stable form, numpy) 0.0005136965043290253; |rho verb - numpy| 4.441e-16
+  B2-R1 tolerance for paired floats 1e-12 / (1 - rho) = 1.947e-09
+  class: paired test defined (1 - rho >= 1e-6)
+
+Y-1 vs X-10 (as ledgered)
+  child     build-equity/mega-nav-v8y-vol-target-L2.0  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 d6d145ef5a97
+  reference build-equity/mega-nav-v8x-theme-erc-L2.0-v8ysb  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 e783eb740e9e
+  T (common sessions) verb 1005 / aligned 1005
+  rho (verb)              0.9947113980219977
+  1 - rho (verb, stable)  0.005288601978002812
+  verb degenerate flag    False
+  cross-check: rho (numpy corrcoef) 0.9947113980219974; 1 - rho (stable form, numpy) 0.005288601978002812; |rho verb - numpy| 3.331e-16
+  B2-R1 tolerance for paired floats 1e-12 / (1 - rho) = 1.891e-10
+  class: paired test defined (1 - rho >= 1e-6)
