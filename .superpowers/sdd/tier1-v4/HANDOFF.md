@@ -1,6 +1,45 @@
 # tier1-v4 controller handoff
 
-## Current: seven independently checked financial units; continuation34458
+## Current: continuation stopped; eight retained, seven independently audited
+
+Session34458 is TERMINAL, stopped_low_commit/137 after346.8s with622,317,568B
+peak and no job cap hit; host free commit reached0.648GiB. Inspectionv5 completed
+3s/64,163,840B and preserved all71 native files (28,907,620B), unchanged snapshot,
+admissions0..7 and batch8's partial start. Unit7 remains provisional pending a
+separate successful native audit. Dead owner23988's five-byte lock has NOT been
+recovered; no root actual job is live at this checkpoint. No final publication.
+
+The new one-unit creator and orphan-lock v5 recovery are independently PASS/PASS
+in review-financial-unit-create-v1.md, including corrected reparse ancestor
+checks. Neither has run. Recovery requires a qualifying new host window, then
+the reviewed native audit7; only afterward may creator8 run. compute_new keeps
+all original double derivation/source/typed checks while avoiding repeated
+startup replay of earlier units. The final original whole85 validation remains.
+
+Host observationv6 completed300.4s/27,574,272B but FAILED scheduling eligibility:
+31-sample minimum free commit1.8192GiB; guard's finer sampling minimum1.2648GiB.
+Keep the original300s/31sample minimum3GiB commit/1GiB physical condition.
+Later exact successful-audit scratch cleanup completed5s/217,423,872B with
+minimum3.7734GiB commit/3.3993GiB physical. Only four closed12,288B audit3..6
+databases were removed:49,152logicalB and40,960observed free gain. All71 native
+files, snapshot, lock and evidence identities remained unchanged. Original
+sources, failed-attempt scratch and foreign caches are retained. Combined five
+cleanups observed6,678,683,648B free gain; latest cleanup alone was small.
+
+Market metadata preflight completed1s/42,160,128B;12 of13 named manifests exist,
+but fundamentals_release_v1/current.json is absent. Legacy declarations and
+stat-only source/product sizes confer no admission. The acyclic shared market
+helper brief is dispatched to t15 after helper freeze and v8 review; core
+price/calendar, shares and liquidity admission must not depend on borrow.
+Ownership exception helper655be56e is frozen and assigned independent review
+to t16. Historical readinessv8 independently PASS/PASS; its46 contracts and13
+P9 groups are unchanged. New root observer session93181 now samples a fresh
+original300s window; it is not yet an eligible result. Task1 P9 repair2/5's exact PIT/A.4/source selection now13PASS2.18s
+(guard4s/104,247,296B), and four release tests PASS1.44s
+(guard3s/111,734,784B). T17's four source-envelope/clock/unit/manager cases passed
+in two2-case invocations. These are engineering checks, not actual source gates.
+
+## Historical: seven checked units before continuation34458
 
 This supersedes earlier live-job statements. Native continuation86809 completed
 successfully:661.3s,624,939,008peakbytes, exit0/no cap or stop, unchanged0.8GiB
@@ -35,14 +74,14 @@ contracts/statuses and13required P9 appendix groups. It validates all four exact
 successful commands/results/start/code bindings and adds no gate PASS. t15
 independent metadata review pending after exception-helper freeze.
 
-Root sole actual session34458 now runs unchanged R23 build max-new-batches8,
+At this historical checkpoint root session34458 ran unchanged R23 build max-new-batches8,
 targeting7..14 under0.8GiB/heavy/40GiBfloor with unique
 logs/t17-runtime-b0007-b0014-v1.*. Its retained frontier is not yet inspected;
 do not count any unit beyond6. Larger scheduling chunks reduce repeated prior
 replay without changing native per-unit checkpoints or validation. Do not rerun
 the completed audits or launch another actual data job.
 
-No cleanup has run since the four previously recorded safe cleanups. Code-only
+At this historical checkpoint no cleanup had run after the first four. Code-only
 P9-B3 CPI preflight found configured CPIAUCSL/observation-date+23h loader cannot
 establish requested NSA/release-clock contract; actual in-house source inventory
 remains pending. Existing macro code and all source/evaluation gates unchanged.
