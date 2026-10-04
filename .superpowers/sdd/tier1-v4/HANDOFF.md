@@ -1,5 +1,43 @@
 # tier1-v4 controller handoff
 
+## Live continuation checkpoint (2026-10-04 15:30 UTC)
+
+This supersedes the job/lock statements below. Root sole actual session80177 is
+running unchanged R23 `build --max-new-batches0`, replaying retained units0/1/2,
+under0.8GiB/heavy/40GiB disk floor. It is not yet a successful result; credit
+remains one independently checked unit. Unique logs:
+`logs/t17-runtime-replay-b0000-b0002-v1.*`. No new batches requested.
+
+Observerv5 completed300.6s/27,807,744bytes; all31samples passed the original
+condition (min4.728GiBcommit/3.1085physical), faster guard4.1854/2.5573. Exact
+dead-owner10544 recoveryv4 then completed and preserved the five-byte lock in
+`_interrupted_locks/r17_20261004_002-pid10544-runtime-continuation-v1-lowcommit.lock`.
+Do not rerun the recovery script. Sources, retained0/1/2 and partial attempts remain.
+
+Controller replay-plan review initially found an evidence-binding defect; it was
+fixed before any recovery/replay and independently PASS/PASS. Auditv4 now binds
+each unit to the independently pinned pre-replay inspection and actual complete
+frontier before/after checks, plus exact recovery and replay receipts. It does
+not substitute current file hashes for native typed replay. Auditv4 is NOT RUN;
+run only after successful session80177. Original auditv3 remains NOT RUN and is
+inapplicable to these attempts. Small evidence pin job records inspectionv4
+SHA945ca1845869df47904a1ed24bd4371bac078a155d23c7fd2817398c46759746.
+
+Exception metadata audit14487 passed9s/40,316,928bytes and independent review.
+Mains CIK19617/1665650 are4,636,526/4,452,571bytes; prefix histories70/53. No
+member payload decoded or reference/source gate passed. Exact source helper is
+now assigned to t15 using r26-ownership-exception-helper-brief.md; t16 must review
+its owned implementation independently. Frozen4MiB producer policy is unchanged.
+
+Notes helper1607b771 is frozen (exact3paths) with final native replay1PASS15.27s,
+386,498,560peakbytes, source/item/context2PASS3.26s and prior positiveR12 tests.
+Actual original source/nine-proof gates remain open; combined review pending.
+t16 now owns new short helper/test/report per r26-short-source-helper-brief.md.
+t17 owns all main wiring/full daily/factor/ownership/event qualification, same
+R26 round2/5. Every helper receives independent review; t15 cannot review its
+own new exception implementation. All actual release/evaluation/consumer gates
+and readinessv6 unchanged until new audited results exist.
+
 ## Current checkpoint — completed work and next steps
 
 This supersedes the interim job states below. The full goal remains active;

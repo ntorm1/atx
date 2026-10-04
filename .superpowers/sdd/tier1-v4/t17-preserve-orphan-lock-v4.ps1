@@ -19,6 +19,8 @@ function Assert-OwnersAbsent {
     if ($writers.Count) { throw 'Matching native writer active' }
 }
 Assert-OwnersAbsent
+$inspectionSha = '945ca1845869df47904a1ed24bd4371bac078a155d23c7fd2817398c46759746'
+if ((Get-Item -LiteralPath $inspectionPath).Length -ne 15890 -or (Get-FileHash -LiteralPath $inspectionPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $inspectionSha) { throw 'Independently pinned interruption inspection changed' }
 $inspection = Get-Content -LiteralPath $inspectionPath -Raw | ConvertFrom-Json
 if ((Get-FileHash -LiteralPath $guardPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $guardSha -or $inspection.guard.sha256 -ne $guardSha) { throw 'Stopped-owner receipt differs from independent inspection' }
 if ($inspection.status -ne 'HOST_STOPPED_FINANCIAL_CONTINUATION_INSPECTED' -or $inspection.lock_text -ne '10544' -or ($inspection.retained_admission_batch_ids -join ',') -ne '0,1,2' -or $inspection.final_manifest_exists -or $inspection.current_pointer_exists) { throw 'Unexpected candidate checkpoint' }
@@ -57,6 +59,7 @@ foreach ($entry in $inspection.native_members.PSObject.Properties) {
     if ((Get-Item -LiteralPath $memberPath).Length -ne $entry.Value.bytes -or (Get-FileHash -LiteralPath $memberPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.Value.sha256) { throw 'Inspected native member changed' }
 }
 Assert-OwnersAbsent
+if ((Get-FileHash -LiteralPath $inspectionPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $inspectionSha -or (Get-FileHash -LiteralPath $guardPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $guardSha) { throw 'Recovery evidence changed during member checks' }
 if ((Get-Content -LiteralPath $lockPath -Raw) -ne '10544' -or (Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $lockSha) { throw 'Lock changed before preservation' }
 $null = New-Item -ItemType Directory -Path $archive -Force
 Move-Item -LiteralPath $lockPath -Destination $destination
@@ -64,7 +67,7 @@ if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvar
 $record = [pscustomobject]@{
     status='ORPHAN_LOCK_PRESERVED_AFTER_DEAD_OWNER_CHECK'; source=$lockPath; destination=$destination;
     bytes=5; sha256=$lockSha; guard_receipt_sha256=$guardSha;
-    candidate_inspection_sha256=(Get-FileHash -LiteralPath $inspectionPath -Algorithm SHA256).Hash.ToLowerInvariant();
+    candidate_inspection_sha256=$inspectionSha;
     retained_admission_batch_ids=@(0,1,2);
     qualification='Only five-byte dead-owner lock archived. Failed attempts and sources remain unchanged. No unit admitted; next native build must perform complete ordinary source/code/unit validation.'
 }
