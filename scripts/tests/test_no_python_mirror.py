@@ -53,21 +53,25 @@ ALLOWLIST = (
      "new in B2 (atx-research-eval paired block, K-P9-5)", "B2"),
     ("atx-impl/tools/dsr_total.py", ("dsr_at", "ledger_rows"), STATS,
      "new in B2 (research/ledger + eval/deflated_sharpe.hpp house_v1)", "B2"),
+    # P9 ruling D2-3: ew-theme-aim-v2 and the theme-resid diagnostics had no C++ path at D2's merge, so the
+    # composition_*.py deletion (and with it these rows) moved to lane D3; D2 wired the C++ fit behind --engine-fit.
     ("atx-impl/tools/composition_rules.py",
      ("ew_theme_std", "ew_theme_aim_v2", "tier_weights", "member_cap", "theme_gain_weights"), COMPOSITION,
-     "atx-impl/src/strategy_ic_composition.cpp over engine combine/group_rerank.hpp", "D2"),
+     "atx-impl/src/strategy_ic_composition.cpp over engine combine/group_rerank.hpp", "D3"),
     ("atx-impl/tools/composition_resid.py", ("centred_tied_ranks", "tie_block_means"), COMPOSITION,
-     "atx-impl/src/strategy_ic_theme_resid.cpp over engine combine/group_residualise.hpp", "D2"),
+     "atx-impl/src/strategy_ic_theme_resid.cpp over engine combine/group_residualise.hpp", "D3"),
     ("atx-impl/tools/composition_theme_erc.py", ("erc_shares", "theme_erc"), COMPOSITION,
-     "atx-impl/src/strategy_ic_theme_erc.cpp over engine combine/group_erc.hpp", "D2"),
+     "atx-impl/src/strategy_ic_theme_erc.cpp over engine combine/group_erc.hpp", "D3"),
     ("atx-impl/tools/composition_ic_shrink.py", ("shrunk_shares", "ic_shrink"), COMPOSITION,
-     "atx-impl/src/strategy_ic_shrink.cpp over engine combine/group_shrink.hpp", "D2"),
+     "atx-impl/src/strategy_ic_shrink.cpp over engine combine/group_shrink.hpp", "D3"),
     ("atx-impl/tools/fit_composition_weights.py", ("newey_west_t", "screen_v4"),
      "admission screen and its Newey-West t (composition review table row 7)",
-     "new in B1 (atx-engine research/admission on eval/hac.hpp); the fitter is wired to it by D2", "D2"),
+     "new in B1 (atx-engine research/admission on eval/hac.hpp); the fitter is wired to it by D2", "D3"),
+    # P9 ruling D2-5: horizon_stats.py stays through P9 (its code is part of every factor record's key, so removing
+    # it would move keys under pinned records): a named G-P5 exception, retired in P10.
     ("atx-impl/tools/horizon_stats.py", ("theta_weights", "ic_theta", "theta_book_returns"),
      "aim-partial theta of strategy_target_replay.cpp (G-P5 names horizon_stats.py; plan section 2.2 names no owner: "
-     "D2 owns the fitter that imports it)", "atx-impl/src/strategy_target_replay.cpp", "D2"),
+     "D2 owns the fitter that imports it)", "atx-impl/src/strategy_target_replay.cpp", "P10"),
     ("scripts/wave_rules.py", ("matched_leverage", "gross_matches"), "gross-match rule PM6-6 (wave_rules.py:110-119)",
      "new in C2 (atx-equity-strategy-targets nav --calibrate-gross)", "C2"),
     ("scripts/wave_rules.py", ("sign_pm7_35",), "PM7-35 sign rule (P9 ruling P9: kept in wave 1)",

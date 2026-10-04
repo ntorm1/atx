@@ -2959,6 +2959,7 @@ TEST(IcAdmission, PlanPrintsRequiredBytesOverCap) {
   ASSERT_TRUE(within) << within.error().to_string();
   const auto admitted=Json::parse(within_log.str());
   EXPECT_FALSE(admitted.contains("admission"));
+  EXPECT_TRUE(admitted.at("candidates").is_array()); // the K1 rows (contract K1)
   ASSERT_EQ(admitted.at("roles").size(),2U);
   for (const auto& row:admitted.at("roles")) {
     EXPECT_FALSE(row.contains("within_budget")); EXPECT_FALSE(row.contains("memory_terms"));
@@ -2975,6 +2976,8 @@ TEST(IcAdmission, PlanPrintsRequiredBytesOverCap) {
       << message;
   const auto plan=Json::parse(log.str());
   EXPECT_EQ(plan.at("admission"),"refused-required-bytes-exceed-max-working-bytes");
+  // P9 lane D2: a refused plan carries no K1 rows, so it never reloads as a K1 plan.
+  EXPECT_FALSE(plan.contains("candidates"));
   EXPECT_EQ(plan.at("max_working_bytes"),required-1);
   EXPECT_EQ(plan.at("candidate_count"),admitted.at("candidate_count"));
   ASSERT_EQ(plan.at("roles").size(),2U);
