@@ -51,7 +51,7 @@ def test_original_accepted_index_clock_and_DST_ambiguity(tmp_path):
     for cik,local in ((1,'2018-03-01 07:00:00'),(2,'2018-11-04 01:30:00')):
         accession=f'{cik:010d}-18-000001'
         path=f'{cik}.index.htm'
-        (tmp_path/path).write_text(f'<html><div>Accepted</div><div>{local}</div></html>')
+        (tmp_path/path).write_text(f'<html><div>SEC Accession No. {accession}</div><div>CIK: {cik:010d}</div><div>Accepted</div><div>{local}</div></html>')
         receipt=f'{cik}.receipt.json'
         url=f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession.replace('-','')}/{accession}-index.htm"
         (tmp_path/receipt).write_text(json.dumps(dict(http_status=200,error=None,url=url,**N.pin(tmp_path/path))))

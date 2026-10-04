@@ -201,3 +201,85 @@ Final frozen checks total14passed across five serialized per-file invocations;
 no fixture or actual data process remains live. Commit is restricted to the13
 explicit owned paths listed above; the required legacy coauthor trailer is
 preserved. Exact commit identity is reported to root after index coordination.
+
+## Whole-task repair round1/5 — findings1–7
+
+Initial commit9ac8af9551d1675f546ef135ba7bec4c97d48e45 received independent
+NEEDS CHANGES in review-T15-text-native-findings.md. This is one whole-task
+round addressing all seven Important findings; actual gates are unchanged.
+
+1. Complete DF lineage: raw cohort closure/clock/digest and encoded histogram
+   closure/clock/digest are separate. Prior raw DF inputs qualify each encoded
+   histogram and remain dependencies of later calibration. Missing2018 prevents
+   falsely qualified2020; late2018 cannot vanish from2020availability.
+2. Original fitting cohort: raw vocabularies below MIN_WORDS50 do not enter
+   DF tokens/denominator, and eligible selection occurs before latest-year
+   selection as in original tokenize_pass/_load_year; a later short document
+   cannot displace an earlier eligible one. Full source census/provenance and published member/
+   linked-filer denominators retain short and excluded documents.
+3. Interrupted activation: retained immutable intent pins target manifest/plan
+   and previous pointer bytes/value. Rename-before-pointer retry independently
+   authenticates manifest AND transition, replays source, rejects intervening
+   activation and completes only that exact transition. Previous pointer is
+   retained as rollback history; process-kill locks still require reconciliation.
+4. Public consumption: admission adds source_root/runtime; each bounded batch
+   and finally rechecks immutable manifest/plan/product plus full source/code/
+   runtime inventory. Explicit close also rejects changed dependencies. Caller
+   must close an iterator on early stop; full original replay is unchanged.
+5. Accepted identity: original body must name exact accession and filer/archive
+   owner CIKs. Both must correspond to original submissions records; absent/
+   conflicting semantic or owner-chain evidence leaves the clock unknown.
+6. PIT identity: retain actual available_at, strict/dated/name tiers, effective
+   intervals and strict monthly22UTC cutoff. One distinct supported CIK must
+   agree with supplied member CIK; NULL members resolve through this identity.
+   Ambiguous/conflicting/unresolved cells stay in full populations; unresolved
+   member identity blocks TNIC gate qualification, rather than shrinking proof.
+7. Working sets: streaming word counts reject oversized current/EX13 text before
+   token/profile allocation; current+retained profiles checked before publication.
+   Original SIC bytes16MiB, receipt1MB and all accession indexes5MB bounds apply
+   before reads. TNIC vocabulary input has explicit word/character bounds.
+
+Focused commands from C:/atx/atx-db, PYTHONPATH=C:/atx/atx-db/src and
+OPENBLAS_NUM_THREADS=1: `.venv/Scripts/python.exe -m pytest tests/FILE -n0
+-o addopts='' -p no:cacheprovider -q`. All synthetic, file-backed128MB/one thread;
+serialized root-allocated lane, producer code frozen during each invocation.
+
+| FILE | Result | Findings |
+| --- | --- | --- |
+| test_tnic_native_lineage.py | First freeze3passed15.20s; final3passed13.60s |1/2; reviewer missing/late2018 repro and forty short raw filings; final adds later short displacement |
+| test_text_native_activation.py |1passed6.83s|3; failed pointer, independent transition, intervening pointer, exact recovery/history |
+| test_text_native_dependency_reads.py |1passed4.25s|4; original source, helper code, runtime mutation and explicit early close |
+| test_text_native_source_admission.py |First freeze4passed5.40s; final4passed3.12s|5/6/7; wrong page/accession/owner, NULL/ambiguous/future/backfill cells, oversized current/SIC/EX13 |
+| test_text_native_identity_chain.py |Final2passed8.80s|5/6; missing original owner record and full text coverage of NULL-CIK members |
+
+First nine checks passed; no unchanged broad suite was rerun. Static follow-up
+tightened original submission owner correspondence, original eligible-before-
+latest selection, and bounded source reads after that first freeze. The final
+nine covering tests above passed on the final producer code. Unchanged activation
+and public-consumption kernels retain their focused first-freeze evidence; the
+final identity publication also exercises full replay/activation. There are11
+distinct passing focused tests over seven serialized per-file invocations, all
+under60seconds; repeated cases are not new tests. Independent review remains
+pending. Existing
+fixture Accepted bodies/tier clocks were upgraded to semantic native-shaped
+evidence; synthetic evidence remains incapable of qualifying actual sources.
+No actual HTTP/source/warehouse/data job occurred in repair. Source/PIT/population,
+runtime/code/immutable identities, actual95%/90%yearly gates, field mapping and
+independent review remain the original open dependencies.
+
+Final self-review: filter lineage keeps raw DF source qualification separate from
+SIC histogram qualification, carries all necessary source clocks, and preserves
+full original short/excluded records. Original owner correspondence is enforced
+after original issuer census derivation; no caller archive owner alone qualifies.
+Bounded consumption rechecks runtime and code as well as source/product bytes;
+explicit close is the documented early-termination contract. Activation intent
+retains previous pointer identity/value for precise recovery and rollback audit.
+No new mandatory source, lower95/90threshold, fallback gate credit or R21 return
+evaluation was introduced. Actual corpus performance remains unmeasured.
+
+Repair commit includes only the three native modules, two updated original native
+fixtures, five new focused test files, two dataset docs and this report (13paths).
+Registry schemas/product keys are unchanged. The separate read-only SEC budget
+analysis report is not part of this repair commit. Git diff whitespace check
+passed; root explicitly allocated the index lane. Commit identity follows in
+the completion message; no actual gate is promoted by code/tests/commit.

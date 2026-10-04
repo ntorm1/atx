@@ -25,6 +25,28 @@ independently captured checkpoint SHA256 and replays completed units. Publicatio
 uses an exclusive lock, atomic directory rename then atomic activation pointer;
 interruptions preserve prior activation. A retained lock after a process kill
 requires controller reconciliation; no automatic stale lock removal occurs.
+An immutable `transitions/<generation>.json` intent pins the exact target and
+previous pointer bytes/value as rollback history. A retry after rename requires
+both independently expected manifest and `expected_activation_transition_sha256`;
+it completes only that transition and rejects an intervening activation.
+
+Native identity retains `available_at` and accepts strict/dated/name relationships
+effective on the monthly cell and known strictly before that cell's22UTC cutoff.
+Exactly one distinct supported CIK must agree with any supplied member CIK;
+otherwise the original cell remains ambiguous/conflicting/unresolved. Supported
+identity resolves NULL member CIKs for text coverage. All cells remain in coverage;
+unresolved identity cells prevent TNIC gate qualification.
+Accepted clocks additionally require the original index's semantic accession and
+filer/archive-owner CIKs plus corresponding original submissions records. A
+transport receipt alone cannot qualify the clock.
+
+Public admission includes source_root/runtime and complete source/code pins.
+`iter_native_rows` rechecks the immutable plan, original dependencies, actual code
+and runtime before/after each bounded batch and in finally on explicit early
+close/downstream failure. Callers must close an iterator when stopping early.
+Current text and replacement EX13 are capped before token/profile allocation;
+current plus retained issuer profiles cannot exceed500000words. SIC originals
+are bounded16MiB; all original accession indexes are bounded5MB.
 
 | Columns | Type/unit | Definition/source/clock |
 |---|---|---|

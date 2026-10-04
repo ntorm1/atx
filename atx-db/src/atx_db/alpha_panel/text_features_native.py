@@ -44,7 +44,13 @@ def _filing_rows(con):
             yield dict(zip(fields, values))
 
 
-def _profile(root, record, originals, plan):
+def _word_bound(text,maximum):
+    for index,_ in enumerate(TF.WORD_RE.finditer(text.lower()),1):
+        if index>maximum:
+            raise ValueError('bounded current issuer profile working set exceeded')
+
+
+def _profile(root, record, originals, plan,word_budget=500_000):
     original = originals.get((record["cik"], record["accession"]))
     if record["reason"] or not record["primary_document"] or not original:
         return {}, {}, record["reason"] or "original_primary_bytes_missing"
@@ -54,18 +60,25 @@ def _profile(root, record, originals, plan):
     path = N.member(root, original["path"])
     if path.stat().st_size > FT.MAX_DOC_BYTES:
         return {}, {}, "oversized_original_document"
-    raw = path.read_bytes()
+    raw = N.bounded_bytes(root,original['path'],FT.MAX_DOC_BYTES)
     text = FT.html_to_text(raw)
+    _word_bound(text,word_budget)
     if not TF.words(text):
         return {}, {}, "empty_original_document"
     sections, diagnostics = FT.extract_sections(text, record["form"])
     wanted=[name for name,section in sections.items() if 'by_reference' in section.flags]
     if wanted:
         for exhibit,path in N.authenticated_exhibits(root,plan=plan,original=original):
-            found=FT.extract_titled(FT.html_to_text(path.read_bytes()),wanted)
+            exhibit_text=FT.html_to_text(N.bounded_bytes(root,exhibit['path'],FT.MAX_DOC_BYTES))
+            _word_bound(exhibit_text,word_budget)
+            found=FT.extract_titled(exhibit_text,wanted)
             for name,section in found.items():
                 if 'by_reference' in sections[name].flags or len(section.text)>len(sections[name].text):
                     sections[name]=section
+    remaining=word_budget
+    for section in sections.values():
+        _word_bound(section.text,remaining)
+        remaining-=sum(1 for _ in TF.WORD_RE.finditer(section.text.lower()))
     profiles = {}
     flags = {}
     for name, section in sections.items():
@@ -96,7 +109,10 @@ def _text_rows(root, con, plan):
             history=[(r,d) for r,d in history if not r['report_date'] or (report-r['report_date']).days<=550]
         if sum(p['words'] for r,d in history for p in d.get('profiles',{}).values())>500_000:
             raise ValueError('issuer profile unit exceeds bounded 500000-word working set')
-        doc, sections, reason = _profile(root, record, originals,plan)
+        retained=sum(p['words'] for r,d in history for p in d.get('profiles',{}).values())
+        doc, sections, reason = _profile(root, record, originals,plan,500_000-retained)
+        if retained+sum(p['words'] for p in doc.get('profiles',{}).values())>500_000:
+            raise ValueError('bounded current issuer profile working set exceeded')
         report = record["report_date"]
         family = FT.form_family(record["form"])
         candidates = [(r,d) for r,d in history if report and r["report_date"] and
@@ -238,15 +254,16 @@ def _coverage(con):
         denominator=con.execute("SELECT count(DISTINCT f.cik) FROM nt_inventory f JOIN nt_links l ON f.cik=l.cik AND year(f.filing_date)=l.y WHERE year(f.filing_date)=? AND f.form IN ("+FT._quote_list(FT.FORMS_10K)+")",[year]).fetchone()[0]
         numerator=con.execute("SELECT count(*) FROM nt_peer_firms WHERE year=? AND n_peers>0",[year]).fetchone()[0]
         members=con.execute("SELECT count(*) FROM nt_members WHERE year(session_date)=?",[year]).fetchone()[0]
+        unresolved=con.execute("SELECT count(*) FROM nt_members WHERE year(session_date)=? AND identity_reason IS NOT NULL",[year]).fetchone()[0]
         # Monthly member cells obey strict same-month-end 22:00 cutoff. Member
         # input must be monthly full population; daily mode is a separate plan.
         usable=con.execute("SELECT count(*) FROM nt_members m JOIN LATERAL (SELECT * FROM nt_text t WHERE t.cik=m.cik AND t.available_at < CAST(m.session_date AS TIMESTAMPTZ)+INTERVAL 22 HOUR AND t.form NOT LIKE '%/A' ORDER BY t.available_at DESC,t.accession DESC LIMIT 1) t ON true WHERE year(m.session_date)=? AND t.reason IS NULL AND t.filing_date>=m.session_date-INTERVAL 400 DAY AND t.business_words>0 AND t.risk_words>0 AND t.mdna_words>0 AND t.business_sim_cosine IS NOT NULL AND t.risk_sim_cosine IS NOT NULL AND t.mdna_sim_cosine IS NOT NULL",[year]).fetchone()[0]
         result.append({"year":year,"linked_10k_filers":denominator,"strict_reproduced_peer_filers":numerator,
-                       "member_cells":members,"text_cells":usable,"text_share":usable/members if members else None,
+                       "member_cells":members,"unresolved_identity_cells":unresolved,"text_cells":usable,"text_share":usable/members if members else None,
                        "tnic_share":numerator/denominator if denominator else None,
                        "text_gate":"NOT_APPLICABLE" if year==2019 else ("PASS" if members and usable/members>=.90 else "FAIL"),
-                       "tnic_gate":"PASS" if denominator and numerator/denominator>=.95 else "FAIL",
-                       "tnic_reason":None if denominator and numerator/denominator>=.95 else "strict_reproduced_tnic3_coverage_below_95_percent"})
+                       "tnic_gate":"PASS" if not unresolved and denominator and numerator/denominator>=.95 else "FAIL",
+                       "tnic_reason":'native_PIT_identity_unresolved' if unresolved else (None if denominator and numerator/denominator>=.95 else "strict_reproduced_tnic3_coverage_below_95_percent")})
         result[-1]['other_universes']={}
         for (universe,) in con.execute('SELECT DISTINCT universe FROM nt_universe_cells ORDER BY universe').fetchall():
             denominator_other=con.execute('SELECT count(*) FROM nt_universe_cells WHERE universe=? AND year(session_date)=?',[universe,year]).fetchone()[0]
@@ -279,11 +296,17 @@ def publish_native(source_root,output_root,plan,expected_plan_sha256,**options):
 
 
 def _publish_locked(root,output,staging,generation,plan,expected_plan_sha256,options):
+    transition=output/'transitions'/f'{generation.name}.json'
+    expected_transition=options.pop('expected_activation_transition_sha256',None)
     if generation.exists():
         expected=options.pop("expected_manifest_sha256",None)
         if not expected:
             raise ValueError("existing generation requires independent manifest identity")
         read_native_generation(root,generation,expected,expected_plan_sha256)
+        if not expected_transition or not transition.exists() or N.pin(transition)['sha256']!=expected_transition:
+            raise ValueError('independently authenticated activation transition required')
+        intent=json.loads(transition.read_text())
+        _complete_activation(output,generation,expected,expected_plan_sha256,intent)
         return generation
     independent_output=options.pop('expected_manifest_sha256',None)
     manifest=_materialize(root,staging,plan,expected_plan_sha256,**options)
@@ -291,11 +314,37 @@ def _publish_locked(root,output,staging,generation,plan,expected_plan_sha256,opt
     if independent_output and manifest_sha!=independent_output:
         raise ValueError('new native output differs from independently expected manifest')
     read_native_generation(root,staging,manifest_sha,expected_plan_sha256)
+    active=output/'active.json'
+    intent={'schema':'atx.text-native-activation/v1','generation':generation.name,
+            'manifest_sha256':manifest_sha,'source_plan_sha256':expected_plan_sha256,
+            'previous_identity':N.pin(active) if active.exists() else None,
+            'previous_pointer':json.loads(active.read_text()) if active.exists() else None}
+    if transition.exists():
+        if not expected_transition or N.pin(transition)['sha256']!=expected_transition or json.loads(transition.read_text())!=intent:
+            raise ValueError('stale activation transition')
+    else:
+        transition.parent.mkdir(parents=True,exist_ok=True)
+        C.write_json_atomic(transition,intent)
     generation.parent.mkdir(parents=True,exist_ok=True)
     os.rename(staging,generation)
-    # Atomic pointer is the last operation; failure preserves prior activation.
-    C.write_json_atomic(output/"active.json",{"generation":generation.name,"manifest_sha256":manifest_sha})
+    _complete_activation(output,generation,manifest_sha,expected_plan_sha256,intent)
     return generation
+
+
+def _complete_activation(output,generation,manifest_sha,plan_sha,intent):
+    if any(intent.get(k)!=v for k,v in {'schema':'atx.text-native-activation/v1',
+            'generation':generation.name,'manifest_sha256':manifest_sha,'source_plan_sha256':plan_sha}.items()):
+        raise ValueError('activation transition target mismatch')
+    active=output/'active.json'
+    target={'generation':generation.name,'manifest_sha256':manifest_sha}
+    if active.exists() and json.loads(active.read_text())==target:
+        return
+    current=N.pin(active) if active.exists() else None
+    if current!=intent['previous_identity']:
+        raise ValueError('intervening activation differs from authenticated transition')
+    if active.exists() and json.loads(active.read_text())!=intent['previous_pointer']:
+        raise ValueError('activation rollback history mismatch')
+    C.write_json_atomic(active,target)
 
 
 def read_native_generation(source_root,generation,expected_manifest_sha256,expected_plan_sha256):
@@ -326,7 +375,7 @@ def read_native_generation(source_root,generation,expected_manifest_sha256,expec
     N.check_plan(root,plan,expected_plan_sha256)
     if N.pin(manifest_path)["sha256"] != expected_manifest_sha256:
         raise ValueError("native manifest changed during replay")
-    return {"generation":str(generation),"manifest_sha256":expected_manifest_sha256,
+    return {"generation":str(generation),"source_root":str(root),"runtime":plan['runtime'],"manifest_sha256":expected_manifest_sha256,
             "source_plan_sha256":expected_plan_sha256,"status":manifest["gate_status"],
             "products":{name:str(generation/name) for name in manifest["files"]},
             "coverage":manifest["coverage"],"dependencies":plan["files"],"code":plan["code"]}
@@ -339,15 +388,26 @@ def iter_native_rows(admission,product,batch_size=32):
         raise ValueError("invalid bounded native product reader")
     path=Path(admission["products"][product])
     generation=Path(admission["generation"])
-    if N.pin(generation/"manifest.json")["sha256"]!=admission["manifest_sha256"]:
-        raise ValueError("stale reader admission")
-    manifest=json.loads((generation/"manifest.json").read_text())
-    if N.pin(path)!=manifest["files"][product]:
-        raise ValueError("changed native product before reading")
-    for batch in pq.ParquetFile(path).iter_batches(batch_size=batch_size):
-        yield from batch.to_pylist()
-    if N.pin(path)!=manifest["files"][product]:
-        raise ValueError("changed native product while reading")
+    def recheck():
+        if N.pin(generation/"manifest.json")["sha256"]!=admission["manifest_sha256"]:
+            raise ValueError("stale reader admission")
+        manifest=json.loads((generation/"manifest.json").read_text())
+        if N.pin(generation/'source-plan.json')!=manifest['metadata_files']['source-plan.json']:
+            raise ValueError('changed admitted source plan')
+        plan=json.loads((generation/'source-plan.json').read_text())
+        if (plan['files'],plan['code'],plan['runtime'])!=(admission['dependencies'],admission['code'],admission['runtime']):
+            raise ValueError('changed full admission dependencies')
+        N.check_plan(admission['source_root'],plan,admission['source_plan_sha256'])
+        if N.pin(path)!=manifest["files"][product]:
+            raise ValueError("changed native product while reading")
+    recheck()
+    try:
+        for batch in pq.ParquetFile(path).iter_batches(batch_size=batch_size):
+            recheck()
+            yield from batch.to_pylist()
+            recheck()
+    finally:
+        recheck()  # Also runs on generator.close(), downstream failure or early stop.
 
 
 def main(argv=None):
@@ -362,6 +422,7 @@ def main(argv=None):
     parser.add_argument('--generation')
     parser.add_argument('--expected-manifest-sha256')
     parser.add_argument('--expected-checkpoint-sha256')
+    parser.add_argument('--expected-activation-transition-sha256')
     parser.add_argument('--unit-size',type=int,default=32)
     args=parser.parse_args(argv)
     if args.phase=='publish':
@@ -370,6 +431,7 @@ def main(argv=None):
         plan=json.loads(Path(args.plan).read_text())
         generation=publish_native(args.source_root,args.output_root,plan,args.expected_plan_sha256,
              unit_size=args.unit_size,expected_checkpoint_sha256=args.expected_checkpoint_sha256,
+             expected_activation_transition_sha256=args.expected_activation_transition_sha256,
              **({'expected_manifest_sha256':args.expected_manifest_sha256} if args.expected_manifest_sha256 else {}))
         result={'generation':str(generation),'manifest_sha256':N.pin(generation/'manifest.json')['sha256']}
     else:

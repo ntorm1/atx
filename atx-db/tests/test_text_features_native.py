@@ -35,7 +35,7 @@ def native(tmp_path):
             (root/receipt).write_text(json.dumps(dict(http_status=200,error=None,url=url,accession=accession,**identity)))
             originals.append(dict(cik=cik,accession=accession,path=name,receipt=receipt,url=url))
             index_path=f'{cik}-{year}.index.htm'
-            (root/index_path).write_text(f'<html><div>Accepted</div><div>{year}-03-01 07:00:00</div></html>')
+            (root/index_path).write_text(f'<html><div>SEC Accession No. {accession}</div><div>CIK: {cik:010d}</div><div>Accepted</div><div>{year}-03-01 07:00:00</div></html>')
             index_receipt=f'{cik}-{year}.index.receipt.json'
             index_url=f"{FT.ARCHIVES}/{cik}/{accession.replace('-','')}/{accession}-index.htm"
             (root/index_receipt).write_text(json.dumps(dict(http_status=200,error=None,url=index_url,**N.pin(root/index_path))))
@@ -49,7 +49,7 @@ def native(tmp_path):
         for year in (2019,2020):
             members.append(dict(session_date=dt.date(year,6,30),security_id=cik,cik=cik,member_equity=True))
     pq.write_table(pa.Table.from_pylist(members),root/'members.parquet')
-    pq.write_table(pa.Table.from_pylist([dict(security_id=c,cik=c,valid_from=dt.date(2018,1,1),valid_to=dt.date(2026,12,31),link_tier='native') for c in (1,2)]),root/'identity.parquet')
+    pq.write_table(pa.Table.from_pylist([dict(security_id=c,cik=c,valid_from=dt.date(2018,1,1),valid_to=dt.date(2026,12,31),link_tier='strict',available_at=dt.datetime(2018,1,1,tzinfo=dt.timezone.utc)) for c in (1,2)]),root/'identity.parquet')
     review=dict(complete_submissions_census=True,complete_native_members=True,accepted_identity=True,original_sec_records=True,free_commercial_use=True)
     for kind in ('submissions','members','identity'):
         name=kind+'-evidence.json'

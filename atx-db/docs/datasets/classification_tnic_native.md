@@ -24,6 +24,12 @@ by independently pinned receipt URL/body hashes/bytes and explicit observed
 UTC timestamp. Select the latest source observation strictly before next
 calendar year. A2026snapshot cannot qualify historical calibration. Missing
 SIC or unknown source clocks leave calibration missing, with reasons.
+DF fitting first excludes raw vocabularies below the original50word minimum;
+short-document inventory/provenance and publication denominators remain intact.
+Each encoded histogram retains the prior raw DF corpus qualification, provenance
+and latest clock. Subsequent calibration cannot forget a missing/late filter
+dependency. Complete current/previous raw cohorts and prior encoded histogram
+lineage participate in availability and source digest; year labels are not clocks.
 
 | Columns | Type/unit | Definition/source/clock |
 |---|---|---|

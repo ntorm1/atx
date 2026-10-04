@@ -49,6 +49,29 @@ def member(root, relative):
     return path
 
 
+def bounded_bytes(root,relative,maximum):
+    path=member(root,relative)
+    if path.stat().st_size>maximum:
+        raise ValueError('bounded original source bytes exceeded: '+relative)
+    with path.open('rb') as handle:
+        raw=handle.read(maximum+1)
+    if len(raw)>maximum:
+        raise ValueError('bounded original source bytes exceeded: '+relative)
+    return raw
+
+
+def index_identity(raw,cik,accession,owner):
+    """Authenticate original semantic accession and all co-registrant CIKs."""
+    text=FT.html_to_text(raw)
+    accessions=set(re.findall(r'\b\d{10}-\d{2}-\d{6}\b',text))
+    ciks={int(value) for value in re.findall(r'\bCIK\s*[:#]?\s*(\d{1,10})\b',text,re.I)}
+    return accessions=={accession} and {int(cik),int(owner)}<=ciks
+
+
+def receipt_json(root,relative):
+    return json.loads(bounded_bytes(root,relative,1_000_000).decode('utf-8'))
+
+
 def sql_files(root, files):
     if not files:
         raise ValueError("complete source file inventory required")
@@ -136,13 +159,15 @@ def acceptance_proofs(root,plan):
             raise ValueError('duplicate original acceptance index proof')
         owner=int(proof.get('archives_cik',proof['cik']))
         url=f"{FT.ARCHIVES}/{owner}/{proof['accession'].replace('-','')}/{proof['accession']}-index.htm"
-        receipt=json.loads(member(root,proof['receipt']).read_text())
+        receipt=receipt_json(root,proof['receipt'])
         identity=plan['files'][proof['index_path']]
         if receipt.get('url')!=url or receipt.get('http_status')!=200 or receipt.get('error') or any(receipt.get(k)!=identity[k] for k in ('sha256','bytes')):
             raise ValueError('original accepted-clock index receipt mismatch')
-        if member(root,proof['index_path']).stat().st_size>5_000_000:
-            raise ValueError('bounded original acceptance index exceeded')
-        text=FT.html_to_text(member(root,proof['index_path']).read_bytes())
+        raw=bounded_bytes(root,proof['index_path'],5_000_000)
+        if not index_identity(raw,key[0],key[1],owner):
+            result[key]=None
+            continue
+        text=FT.html_to_text(raw)
         times=re.findall(r'\bAccepted\s+(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})\b',text)
         if len(times)!=1:
             result[key]=None
@@ -169,17 +194,21 @@ def derive_population(root, plan, con):
         raise ValueError('full independent universe yearly population mismatch')
     if con.execute('SELECT count(*) FROM (SELECT universe,session_date,security_id,count(*) n FROM nt_universe_cells GROUP BY 1,2,3 HAVING n<>1)').fetchone()[0]:
         raise ValueError('orphan duplicate native universe cell')
-    con.execute(f"CREATE TABLE nt_identity AS SELECT security_id,cik,valid_from,valid_to,link_tier FROM {sql_files(root, plan['identity'])}")
+    con.execute(f"CREATE TABLE nt_identity AS SELECT security_id,cik,valid_from,valid_to,link_tier,CAST(available_at AS TIMESTAMPTZ) available_at FROM {sql_files(root, plan['identity'])}")
     if con.execute("SELECT count(*) FROM (SELECT session_date,security_id,count(*) n FROM nt_members GROUP BY ALL HAVING n<>1)").fetchone()[0]:
         raise ValueError("duplicate native member cells")
-    con.execute("CREATE TABLE nt_links AS SELECT DISTINCT year(session_date) y,cik FROM nt_members WHERE cik IS NOT NULL UNION SELECT DISTINCT year(m.session_date) y,l.cik FROM nt_members m JOIN nt_identity l ON m.security_id=l.security_id AND m.session_date BETWEEN l.valid_from AND l.valid_to WHERE l.cik IS NOT NULL")
+    for table in ('nt_members','nt_universe_cells'):
+        con.execute(f"CREATE TABLE {table}_resolved AS SELECT m.* EXCLUDE(cik),m.cik member_cik,CASE WHEN l.n=1 AND (m.cik IS NULL OR m.cik=l.cik) THEN l.cik END cik,CASE WHEN l.n>1 THEN 'ambiguous_native_identity' WHEN l.n=1 AND m.cik IS NOT NULL AND m.cik<>l.cik THEN 'member_identity_conflict' WHEN coalesce(l.n,0)=0 THEN 'unresolved_native_PIT_identity' END identity_reason FROM {table} m LEFT JOIN LATERAL (SELECT count(DISTINCT i.cik) n,min(i.cik) cik FROM nt_identity i WHERE i.security_id=m.security_id AND m.session_date BETWEEN i.valid_from AND i.valid_to AND i.link_tier IN ('strict','dated','name') AND i.available_at<CAST(m.session_date AS TIMESTAMPTZ)+INTERVAL 22 HOUR AND i.cik IS NOT NULL) l ON true")
+        con.execute(f'DROP TABLE {table}')
+        con.execute(f'ALTER TABLE {table}_resolved RENAME TO {table}')
+    con.execute("CREATE TABLE nt_links AS SELECT DISTINCT year(session_date) y,cik FROM nt_members WHERE cik IS NOT NULL")
     con.execute("CREATE TABLE nt_filings(cik BIGINT, accession VARCHAR,form VARCHAR,filing_date DATE,report_date DATE,available_at TIMESTAMPTZ,primary_document VARCHAR,source_path VARCHAR,source_index BIGINT,reason VARCHAR,acceptance_clock VARCHAR,vintage_risk VARCHAR)")
     proved=acceptance_proofs(root,plan)
     for source in plan["submissions"]:
         if member(root,source['path']).stat().st_size>16*1024*1024:
             raise ValueError('bounded original submissions unit exceeds16MiB')
-        raw = json.loads(member(root, source["path"]).read_text(encoding="utf-8"))
-        receipt=json.loads(member(root,source['receipt']).read_text())
+        raw = json.loads(bounded_bytes(root,source['path'],16*1024*1024).decode('utf-8'))
+        receipt=receipt_json(root,source['receipt'])
         identity=plan['files'][source['path']]
         if receipt.get('http_status')!=200 or receipt.get('error') or receipt.get('url')!=source['url'] or any(receipt.get(k)!=identity[k] for k in ('sha256','bytes')):
             raise ValueError('original submissions receipt mismatch')
@@ -215,6 +244,14 @@ def derive_population(root, plan, con):
             vintage='submission_clock_disagrees_with_original_index' if clock and raw_clock and clock not in (raw_clock,raw_et) else None
             reason = "amendment_excluded" if form.endswith("/A") else ("unknown_acceptance_clock" if clock is None else None)
             con.execute("INSERT INTO nt_filings VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", [cik,rows["accessionNumber"][index],form,filed,dt.date.fromisoformat(report) if report else None,clock,rows["primaryDocument"][index],source["path"],index,reason,'native_original_sec_index_et' if clock else None,vintage])
+    # Page semantics plus original issuer/owner submissions authenticate the
+    # co-registrant chain. A caller's archives_cik cannot establish it alone.
+    for proof in plan.get('acceptance_proofs',[]):
+        cik,accession=int(proof['cik']),proof['accession']
+        owner=int(proof.get('archives_cik',cik))
+        n=con.execute('SELECT count(DISTINCT cik) FROM nt_filings WHERE accession=? AND cik IN (?,?)',[accession,cik,owner]).fetchone()[0]
+        if n!=len({cik,owner}):
+            con.execute("UPDATE nt_filings SET available_at=NULL,acceptance_clock=NULL,reason=CASE WHEN reason='amendment_excluded' THEN reason ELSE 'unknown_acceptance_owner_chain' END WHERE cik=? AND accession=?",[cik,accession])
     # Overlap between recent and historical submissions is permitted only for
     # exactly equal native values; disagreements never select a longest row.
     if con.execute("SELECT count(*) FROM (SELECT cik,accession,count(DISTINCT (form,filing_date,report_date,available_at,primary_document,reason)) n FROM nt_filings GROUP BY ALL HAVING n<>1)").fetchone()[0]:
@@ -253,7 +290,7 @@ def derive_corpus_closure(root,plan,con):
         if year not in range(2018,2027) or quarter not in range(1,5):
             raise ValueError('invalid original SEC index cohort')
         expected_url=f'https://www.sec.gov/Archives/edgar/full-index/{year}/QTR{quarter}/master.idx'
-        receipt=json.loads(member(root,index['receipt']).read_text())
+        receipt=receipt_json(root,index['receipt'])
         identity=plan['files'][index['path']]
         if receipt.get('url')!=expected_url or receipt.get('http_status')!=200 or receipt.get('error') or any(receipt.get(k)!=identity[k] for k in ('sha256','bytes')):
             raise ValueError('original complete SEC census receipt mismatch')
@@ -296,7 +333,7 @@ def original_map(root, plan):
         key = (int(original["cik"]), original["accession"])
         if key in out:
             raise ValueError("duplicate original document binding")
-        receipt = json.loads(member(root, original["receipt"]).read_text(encoding="utf-8"))
+        receipt = receipt_json(root,original['receipt'])
         expected = plan["files"][original["path"]]
         if receipt.get("http_status") != 200 or receipt.get("error") or receipt.get("sha256") != expected["sha256"] or receipt.get("bytes") != expected["bytes"]:
             raise ValueError("original bytes disagree with SEC receipt")
@@ -311,19 +348,22 @@ def authenticated_exhibits(root,plan,original):
     if not original.get('exhibits'):
         return
     index_url=f"{FT.ARCHIVES}/{int(original.get('archives_cik',original['cik']))}/{original['accession'].replace('-','')}/{original['accession']}-index.htm"
-    index_receipt=json.loads(member(root,original['index_receipt']).read_text())
+    index_receipt=receipt_json(root,original['index_receipt'])
     def check(receipt,path,url):
         identity=plan['files'][path]
         if receipt.get('http_status')!=200 or receipt.get('error') or receipt.get('url')!=url or any(receipt.get(k)!=identity[k] for k in ('sha256','bytes')):
             raise ValueError('original exhibit/index receipt mismatch')
     check(index_receipt,original['index_path'],index_url)
-    allowed=FT.exhibit_links(member(root,original['index_path']).read_bytes())
+    raw=bounded_bytes(root,original['index_path'],5_000_000)
+    if not index_identity(raw,original['cik'],original['accession'],original.get('archives_cik',original['cik'])):
+        raise ValueError('original exhibit index semantic identity mismatch')
+    allowed=FT.exhibit_links(raw)
     if len(original['exhibits'])>4:
         raise ValueError('bounded EX-13 inventory exceeds four original documents')
     for exhibit in original['exhibits']:
         if exhibit['url'] not in allowed or not exhibit['url'].startswith(FT.ARCHIVES+'/'):
             raise ValueError('exhibit not typed EX-13 on original accession index')
-        receipt=json.loads(member(root,exhibit['receipt']).read_text())
+        receipt=receipt_json(root,exhibit['receipt'])
         check(receipt,exhibit['path'],exhibit['url'])
         path=member(root,exhibit['path'])
         if path.stat().st_size>FT.MAX_DOC_BYTES:

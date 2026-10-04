@@ -35,8 +35,8 @@ def _sic_sources(root,plan,con):
     for item in plan.get("sic_sources",[]):
         if item["path"] not in plan["files"] or item["receipt"] not in plan["files"]:
             raise ValueError("unbound SIC original/vintage receipt")
-        raw=json.loads(N.member(root,item["path"]).read_text())
-        receipt=json.loads(N.member(root,item["receipt"]).read_text())
+        raw=json.loads(N.bounded_bytes(root,item["path"],16*1024*1024).decode('utf-8'))
+        receipt=json.loads(N.bounded_bytes(root,item["receipt"],1_000_000).decode('utf-8'))
         identity=plan["files"][item["path"]]
         if receipt.get("http_status")!=200 or receipt.get("error") or any(receipt.get(k)!=identity[k] for k in ("sha256","bytes")):
             raise ValueError("SIC original source receipt mismatch")
@@ -51,14 +51,23 @@ def build_native(con,output,root,plan):
     if str(Path(T.__file__).resolve()) not in plan['code']:
         raise ValueError("legacy reproduced TNIC code pin required")
     _sic_sources(root,plan,con)
-    con.execute("CREATE TABLE nt_peer_candidates AS SELECT t.*,year(t.filing_date) y FROM nt_text t WHERE t.form IN ("+FT._quote_list(FT.FORMS_10K)+") QUALIFY row_number() OVER (PARTITION BY t.cik,year(t.filing_date) ORDER BY t.filing_date DESC,t.accession DESC)=1")
-    con.execute("CREATE TABLE nt_tokens(y INTEGER,cik BIGINT,accession VARCHAR,word VARCHAR)")
-    cursor=con.cursor().execute("SELECT y,cik,accession,business_vocabulary FROM nt_peer_candidates ORDER BY y,cik")
+    con.execute("CREATE TABLE nt_full_cohort AS SELECT t.*,year(t.filing_date) y FROM nt_text t WHERE t.form IN ("+FT._quote_list(FT.FORMS_10K)+")")
+    con.execute("CREATE TABLE nt_raw_tokens(y INTEGER,cik BIGINT,accession VARCHAR,word VARCHAR)")
+    cursor=con.cursor().execute("SELECT y,cik,accession,business_vocabulary FROM nt_full_cohort ORDER BY y,cik,accession")
     while row:=cursor.fetchone():
         y,cik,accession,words=row
+        if len(words)>500_000 or sum(map(len,words))>FT.MAX_DOC_BYTES:
+            raise ValueError('bounded native TNIC vocabulary exceeded')
         vocabulary=T.vocabulary_words(' '.join(words))
+        if len(vocabulary)<T.MIN_WORDS:
+            continue  # Original tokenize_pass excludes short raw documents from DF.
         for offset in range(0,len(vocabulary),64):
-            con.executemany("INSERT INTO nt_tokens VALUES (?,?,?,?)",[(y,cik,accession,word) for word in vocabulary[offset:offset+64]])
+            con.executemany("INSERT INTO nt_raw_tokens VALUES (?,?,?,?)",[(y,cik,accession,word) for word in vocabulary[offset:offset+64]])
+    # Original tokenize_pass applies MIN_WORDS before _load_year picks latest.
+    # A latest short document remains inventory but cannot displace an earlier
+    # eligible original document in fitting. Unknown source blocks cohort proof.
+    con.execute("CREATE TABLE nt_peer_candidates AS SELECT c.* FROM nt_full_cohort c QUALIFY row_number() OVER (PARTITION BY c.cik,c.y ORDER BY EXISTS(SELECT 1 FROM nt_raw_tokens t WHERE t.y=c.y AND t.cik=c.cik AND t.accession=c.accession) DESC,c.filing_date DESC,c.accession DESC)=1")
+    con.execute('CREATE TABLE nt_tokens AS SELECT t.* FROM nt_raw_tokens t JOIN nt_peer_candidates c USING(y,cik,accession)')
     con.execute("CREATE TABLE nt_common AS SELECT y,word FROM nt_tokens GROUP BY y,word HAVING count(DISTINCT accession) > .25*(SELECT count(DISTINCT accession) FROM nt_tokens a WHERE a.y=nt_tokens.y)")
     con.execute("CREATE TABLE nt_kept AS SELECT t.* FROM nt_tokens t WHERE NOT EXISTS (SELECT 1 FROM nt_common p WHERE p.y=CASE WHEN t.y=2018 THEN 2018 ELSE t.y-1 END AND p.word=t.word)")
     con.execute("CREATE TABLE nt_encoded AS SELECT c.y,c.cik,c.accession,c.available_at,coalesce(list(t.word ORDER BY t.word) FILTER(WHERE t.word IS NOT NULL),[]::VARCHAR[]) vocabulary FROM nt_peer_candidates c LEFT JOIN nt_kept t ON t.y=c.y AND t.cik=c.cik GROUP BY ALL")
@@ -66,19 +75,25 @@ def build_native(con,output,root,plan):
     con.execute("CREATE TABLE nt_years(year INTEGER,calibrated_on INTEGER,threshold DOUBLE,available_at TIMESTAMPTZ,corpus_sha256 VARCHAR,calibration_reason VARCHAR,docs BIGINT)")
     con.execute('CREATE TABLE nt_best(year INTEGER,cik BIGINT,best_score DOUBLE)')
     previous_hist=previous_share=previous_clock=previous_digest=None
+    prior_raw_clock=prior_raw_digest=None
     for year in range(2018,2027):
         hist=np.zeros(T.HIST_BINS,dtype=np.int64)
         corpus=[]
-        cursor=con.cursor().execute("SELECT e.cik,e.accession,e.available_at,e.vocabulary,s.sic,s.available_at,c.business_vocabulary FROM nt_encoded e JOIN nt_peer_candidates c ON c.y=e.y AND c.cik=e.cik LEFT JOIN LATERAL (SELECT * FROM nt_sic s WHERE s.cik=e.cik AND s.available_at < make_date(e.y+1,1,1) ORDER BY available_at DESC LIMIT 1) s ON true WHERE e.y=? ORDER BY e.cik",[year])
+        cursor=con.cursor().execute("SELECT c.cik,c.accession,c.available_at,coalesce(e.vocabulary,[]::VARCHAR[]),s.sic,s.available_at,c.business_vocabulary FROM nt_full_cohort c LEFT JOIN nt_encoded e ON c.y=e.y AND c.cik=e.cik AND c.accession=e.accession LEFT JOIN LATERAL (SELECT * FROM nt_sic s WHERE s.cik=c.cik AND s.available_at < make_date(c.y+1,1,1) ORDER BY available_at DESC LIMIT 1) s ON true WHERE c.y=? ORDER BY c.cik,c.accession",[year])
         sic=[]
         clocks=[]
         closure=con.execute('SELECT complete,available_at,source_sha256 FROM nt_source_closure WHERE y=?',[year]).fetchone()
-        missing=not closure or not closure[0] or not closure[1] or bool(con.execute("SELECT count(*) FROM nt_peer_candidates WHERE y=? AND (reason IS NOT NULL OR business_reason IS NOT NULL OR available_at IS NULL)",[year]).fetchone()[0])
+        missing=not closure or not closure[0] or not closure[1] or bool(con.execute("SELECT count(*) FROM nt_full_cohort WHERE y=? AND (reason IS NOT NULL OR business_reason IS NOT NULL OR available_at IS NULL)",[year]).fetchone()[0])
+        source_missing=missing
+        raw_clocks=[]
         if closure and closure[1]:
             clocks.append(closure[1])
+            raw_clocks.append(closure[1])
         while row:=cursor.fetchone():
             cik,accession,clock,vocabulary,industry,sic_clock,raw_vocabulary=row
             corpus.append(N.digest([cik,accession,clock,vocabulary,raw_vocabulary,industry,sic_clock]))
+            if clock:
+                raw_clocks.append(clock)
             eligible=len(vocabulary)>=T.MIN_WORDS
             if eligible:
                 sic.append(industry)
@@ -96,9 +111,12 @@ def build_native(con,output,root,plan):
         corpus_clock=max(clocks) if clocks and not missing else None
         corpus_digest=N.digest([closure,corpus])
         tau=T.threshold_from_hist(previous_hist,previous_share) if previous_hist is not None and previous_share is not None and previous_clock else None
-        available=max(corpus_clock,previous_clock) if corpus_clock and previous_clock else None
+        filter_clock=corpus_clock if year==2018 else prior_raw_clock
+        encoded_clock=max(corpus_clock,filter_clock) if corpus_clock and filter_clock else None
+        encoded_digest=N.digest([corpus_digest,corpus_digest if year==2018 else prior_raw_digest])
+        available=max(encoded_clock,previous_clock) if encoded_clock and previous_clock else None
         reason=None if tau is not None and available else 'prior_year_corpus_or_SIC_clock_unqualified'
-        combined=N.digest([previous_digest,corpus_digest])
+        combined=N.digest([previous_digest,encoded_digest])
         top={}
         for a,b,aa,bb,score,pair_clock in _pairs(con,year):
             hist[min(T.HIST_BINS-1,int(score*T.HIST_BINS))]+=1
@@ -122,7 +140,9 @@ def build_native(con,output,root,plan):
                     for score,peer,accession,peer_accession in candidates:
                         con.execute('INSERT INTO nt_pairs VALUES (?,?,?,?,?,?,?,?,?,?)',[year,cik,peer,accession,peer_accession,score,available,tau,T.FALLBACK_BASIS,combined])
         con.execute("INSERT INTO nt_years VALUES (?,?,?,?,?,?,?)",[year,year-1,tau,available,combined,reason,len(corpus)])
-        previous_hist,previous_share,previous_clock,previous_digest=hist,share,corpus_clock,corpus_digest
+        previous_hist,previous_share,previous_clock,previous_digest=hist,share,encoded_clock,encoded_digest
+        prior_raw_clock=max(raw_clocks) if raw_clocks and not source_missing else None
+        prior_raw_digest=corpus_digest
     con.execute("CREATE TABLE nt_peer_firms AS SELECT l.y AS year,l.cik,c.accession,c.filing_date,c.available_at filing_available_at,CASE WHEN c.reason IS NULL AND c.business_reason IS NULL THEN len(e.vocabulary) ELSE NULL END vocabulary_words,y.threshold,CASE WHEN y.calibration_reason IS NULL THEN count(p.peer_cik) FILTER(WHERE p.peer_basis='reproduced_tnic3_df25_sic3') ELSE NULL END n_peers,CASE WHEN y.calibration_reason IS NULL THEN count(p.peer_cik) FILTER(WHERE p.peer_basis='reproduced_tnic3_df25_sic3' AND p.available_at<=c.available_at) ELSE NULL END n_peers_own_clock,CASE WHEN y.calibration_reason IS NULL THEN count(p.peer_cik) FILTER(WHERE p.peer_basis='nearest5_fallback') ELSE NULL END n_fallback_peers,CASE WHEN y.calibration_reason IS NULL THEN coalesce(sum(p.score) FILTER(WHERE p.peer_basis='reproduced_tnic3_df25_sic3'),0) ELSE NULL END total_similarity,CASE WHEN y.calibration_reason IS NULL THEN coalesce(b.best_score,0) ELSE NULL END best_score,max(y.available_at) available_at,y.calibration_reason reason,'reproduced_tnic3_df25_sic3' peer_basis,'historical_SIC_source_and_full_original_census_snapshot' vintage_risk FROM (SELECT DISTINCT year(f.filing_date) y,f.cik FROM nt_inventory f JOIN nt_links l ON l.cik=f.cik AND l.y=year(f.filing_date) WHERE f.form IN ("+FT._quote_list(FT.FORMS_10K)+")) l LEFT JOIN nt_pairs p ON p.year=l.y AND p.cik=l.cik JOIN nt_years y ON y.year=l.y JOIN nt_peer_candidates c ON c.y=l.y AND c.cik=l.cik JOIN nt_encoded e ON e.y=l.y AND e.cik=l.cik LEFT JOIN nt_best b ON b.year=l.y AND b.cik=l.cik GROUP BY l.y,l.cik,c.accession,c.filing_date,c.available_at,e.vocabulary,c.reason,c.business_reason,y.threshold,y.calibration_reason,b.best_score")
     for name,table,order in (('pairs','nt_pairs','year,cik,peer_cik'),('firms','nt_peer_firms','year,cik'),('years','nt_years','year')):
         C.copy_to_parquet(con,f"SELECT * FROM {table} ORDER BY {order}",output/f"classification_tnic/{name}.parquet",row_group_size=4096)
