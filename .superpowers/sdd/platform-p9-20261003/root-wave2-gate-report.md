@@ -273,6 +273,50 @@ Release ruling is void and the run waits").** Evidence `m2g-logs/cov7.txt`, `m2g
   hold realised book returns: not opened), any NAV / return / IC / Sharpe / turnover figure. The runner's stdout logs
   of steps 2 and 3 are not opened (only receipts: outcome, exit code, wall, peak).
 
+**Result** (evidence `m2g-logs/q5.txt`, `m2g-logs/q5-holdings-identity.txt`, `m2g-logs/q5-risk-dbg-vs-rel-sha.txt`,
+receipts `m2g-logs/receipt-p9-*q5*.json`, `receipt-p9-b0-yf0-nav-hrun.json`; every run completed, exit 0, within
+2,048 MiB).
+- Step 0: `p9-b0-yf0-nav-hrun` (Release targets p9-2l `53ca5dd4`, 27.4 s, peak 583 MiB): **inside the list**: 26 of 27
+  files byte-identical to `p9-b0-yf0-nav`; `summary.json` differs only at `/producer/build_type` and
+  `/producer/engine_git_sha`. Holdings `build-equity/p9-b0-yf0-nav-h` (holdings.f64 162 MB). (Also the G-P3 NAV-half
+  evidence for Y-F0: Release NAV = Debug outside `producer`.)
+- Step 1 `book-csv` (4.0 s, 396 MiB): `build-equity/p9-q5-book.csv` sha256 `8f756fa2...c6c0`, 1,927,595 rows, 1,005
+  sessions. Step 2 `risk --book-weights` Release (`a31a0f96`, 20.7 s, 615 MiB) -> `build-equity/p9-q5-risk`; Debug
+  cross-check (`94b5a5e7`, 49.2 s, 642 MiB) -> `build-equity/p9-q5-risk-dbg`. Step 3 G-2a (6.1 s, 356 / 364 MiB).
+- **q = +0.0502** (size +0.0334, residual_vol +0.0275, liquidity -0.0107); **q_lit = +0.0671** (adds beta +0.0091,
+  leverage +0.0078). Sessions complete 1,005, incomplete 0. Spec arithmetic bound on the SR factor: 1 / sqrt(1 - q) =
+  1.0261; 1 / sqrt(1 - q_lit) = 1.0353. Against the spec's reading line ("q well below .05 argues against
+  registering P9-H"; the lit's +.05 to +.15 needs q of about .05 to .15 removed): q is at the .05 edge, q_lit below
+  .10. Decides nothing; the PM rules P9-H with these printed.
+- Ex-ante vol ratio (ALCOMB-9 (b)): **not produced** (Q5 reads one book): PRE cuts it unless G-2a is registered on
+  both books.
+- Debug cross-check: every printed share identical (G-2a rounds to 10 significant digits). Note for COV-7: the two
+  TRAIN atx-risk-v1.1 stores themselves differ (factor covariance 99% of finite cells, median 52 ULP, max rel 1.1e-8;
+  specific variance 98%, median 13 ULP, max rel 3.6e-13; NaN patterns equal; exposures, slots, factor returns
+  identical); the Debug store's `factor_covariance.f64` / `specific_variance.f64` equal the store of record
+  `v8-risk-lo3-v10`'s (`9d9c62a2...`, `a7792a53...`, the M2d comparison), the Release store's do not. So COV-7's miss
+  is the same on real data, at a size that does not reach G-2a's printed digits.
+
 ## Item 6. S2R-DIAG (S2R-2)
 
-Pre-run list or skip reason: written below before any run.
+**Pre-run list (committed before the run).**
+- Cost check: AuditExact ran at 1.18x ResearchFast in v8 H-2 (platform-v8 progress, integration 8); the cold Release
+  ResearchFast u is 94-164 s (M2c), so a cold Release AuditExact u is expected at about 2-4 min (< 15 min).
+- Path check (PATH-1 / S2-4): a fresh cache dir `build-equity/s2rd` (`C:\atx-wt\pool-2\build-equity\s2rd`, 34
+  chars, <= 51); root + Release audit identity dir `dslvm1_clang18.1_opt_md_ndebug_xs13.0.0_audit\` = 81 chars; the
+  longest relative entry path in the lo3 cache is 147 chars; longest expected path 228 < 250. No existing cache is
+  renamed or written.
+- Run (Release IC exe `build-equity-rel/bin/atx-equity-strategy-ic.exe`, p9-2j `fccaa07e`; bounded `--seconds 1200
+  --max-rss-mib 2048 --min-free-mib 512 --build-type Release --admission-wait-seconds 3600`): the P9-B0 u argv
+  (`build-equity/p9-b0-yf0-u-run/receipt.json`) with `--output build-equity/p9-m2g-s2rd-u`, `--candidate-cache
+  build-equity/s2rd` and `--eval-mode audit-exact` appended. Everything else verbatim (library `41010b0b...`, role
+  `e1c67101...`, fields v15 `26fee5ce...`, `--no-composition`, `--workers 4`, `--max-memory-mib 2560`).
+- Reads (tool `m2g-logs/tools/s2r_diag.py`): only the `smax` and `smax5` signal payloads and sidecars of the two
+  caches: ResearchFast = the P9-B0 u's entries in `build-equity/mega-candidate-cache-v8-lo3` (Debug VM identity, the
+  entries `p9-b0-yf0-u` hit); AuditExact = the new `_audit` entries in `build-equity/s2rd`; each payload checked
+  against its sidecar SHA-256; both sidecars must agree on role, geometry, DSL SHA-256 and id.
+- Prints per candidate: the count of (name, day) cells NaN under AuditExact and finite under ResearchFast, over all
+  role sessions and over the score window; context: finite AE & NaN RF, both NaN, both finite (counts only).
+- May NOT print: any signal value, and nothing of the u pass's own outputs (`orientations.json`,
+  `train_daily_ic.csv`, `summary.json`, `train_candidates.jsonl` hold IC statistics: not opened); no return, IC,
+  Sharpe or NAV statistic. The runner's stdout log is not opened (receipt only).

@@ -1,0 +1,12 @@
+factor_covariance.f64 rel 776c0011772c5077 dbg 9d9c62a29e8d5f3c DIFF
+specific_variance.f64 rel 315a0f33d8ff4ab4 dbg a7792a53ec2c20a1 DIFF
+style_exposures.f32 rel 8ae6c18599aafc05 dbg 8ae6c18599aafc05 SAME
+industry_slot.u8 rel 9b7cca179d9bb8a9 dbg 9b7cca179d9bb8a9 SAME
+factor_structural.u8 rel f63df1a49200ff8c dbg f63df1a49200ff8c SAME
+factor_returns.csv rel 5dc6f148cb3f822c dbg 5dc6f148cb3f822c SAME
+diagnostics.csv rel 3b8a016b465a5d3d dbg ca94f5c9ce4080f7 DIFF
+exposures_last.csv rel ae5d3b418ec27bd3 dbg ae5d3b418ec27bd3 SAME
+bias.csv rel d2e5b85ef1f6b670 dbg 640b5e5c13802f4e DIFF
+bias_summary.json rel d83bacffcacbf68e dbg 73eb2bcddc315c3f DIFF
+TRAIN factor_covariance.f64: finite cells 3170423, differing 3138271 (98.9859%); NaN-pattern mismatches 0; NaN cells with other bits 0; first differing session index 126; sessions with a difference 91.0%; ULP median 52 max 73742314; max rel 1.140e-08
+TRAIN specific_variance.f64: finite cells 5303177, differing 5185010 (97.7718%); NaN-pattern mismatches 0; NaN cells with other bits 0; first differing session index 315; sessions with a difference 77.6%; ULP median 13 max 2357; max rel 3.560e-13
