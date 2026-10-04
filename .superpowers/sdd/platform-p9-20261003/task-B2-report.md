@@ -4,6 +4,9 @@
 
 **Fix round 1 (end of file) supersedes the SHAs below: identity merge point `1b25b9a4`, deletion commit `598d2199`.**
 
+**Post-identity redo (last section): BLOCKED at the merge of root by a permission refusal. PRE-15 and the cheap
+Suggested items are done in `fe152fca`; B2-11, R1 / R2, the G-P5 placement and D2R-2 (b) are pending.**
+
 DONE_WITH_CONCERNS. Pool `C:/atx-wt/pool-14`, branch `feat/p9-b2-20261003`, base `1239a5ff`. Resumed from
 `handoff-B2.md` (about 45%: ledger and eval libraries coded, nothing built).
 
@@ -666,3 +669,63 @@ more line per dir: `   DSR_hand (N_tot - M=<n>, ruling PRE-15): DSR <x> vs SR0 <
    conflicts above; `scripts/cycle/{cli,spec,phases}.py` (B2-R3 placement); `scripts/wave_stage_record.py`
    (`eval_problem`, `verify`, `bundle_once`); `scripts/wave_steps.py` (`bundle_argv`); `scripts/tests/test_research_spec.py`
    (D2R-2 (b), the e27b `--protocol` cases, on D2R's version); a test file for B2-11 on E2's fixtures.
+
+### Evidence (pre-merge branch; logs in `b2-evidence/redo-*`)
+
+Builds (`scripts/research-build.ps1`, pool-14, target-scoped; trees configured fresh by `scripts/atx-build.ps1
+configure -Preset <preset>`; receipts `build-equity/mega-p9-b2-{f,g,h}-*`):
+
+| tag | preset | source | dirty | targets | result |
+|---|---|---|---|---|---|
+| `p9-b2-f` | equity-dev (Debug) | `fe152fca` | 0 | `atx-research-eval`, `atx-engine-research-eval-tests`, `atx-engine-research-ledger-tests` | exit 0, 226 TUs, 12 links, 262 s, first try; verb `4bcfce3e871a324f30f3e1816e897dd9b21b8d7978f51722f03f5f646de58ee2` |
+| `p9-b2-g` | equity-dev | `fe152fca` + the teeth mutation | 2 | the verb, the eval tests | exit 0, 1 TU (mutation build, reverted after) |
+| `p9-b2-h` | equity-rel (Release) | `1f6d5e4b` (C++ = `fe152fca`) | 0 | as `p9-b2-f` | exit 0, 226 TUs, 493 s; verb `ee89fceb69b313b65f318d60043c56a82dddfb4900edcff78877be833e65b75b` |
+
+`atx-impl-tests` (`TrialLedger*`) was not built: no atx-impl C++ changed since the identity point root merged, and the
+tree is pre-merge; the follow-up runs it on the merged tree.
+
+gtests (whole targets):
+
+| target | Debug `p9-b2-f` | Release `p9-b2-h` |
+|---|---|---|
+| `atx-engine-research-eval-tests` (EvalVerb, ResearchEvalRng, Conditional, EvalEdges) | 26 / 26 passed (24 before + 2 new) | 26 / 26 passed |
+| `atx-engine-research-ledger-tests` (ResearchLedgerChain, ResearchLedger) | 16 / 16 passed | 16 / 16 passed |
+
+The B2-9 quantile line prints "33 of 34 bit-equal" in Debug (the 6-ulp `ppf_lo` at N = 1e4) and "34 of 34" in Release:
+erfc of the Debug and Release C runtimes differs by one ulp there (the COVR class (i) finding). The Acklam worst is
+5.509e-12 at N 1e6 in both.
+
+pytest (`"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider --basetemp <scratch>`,
+`PYTHONDONTWRITEBYTECODE=1`, explicit paths, separate invocations; no exit 3221225794 in any run):
+
+| suite | env | result | log |
+|---|---|---|---|
+| tools + fixtures: `test_nav_summ_engine`, `test_nav_summ`, `_pool`, `_v8`, `test_dsr_total`, `test_backtest_integrity`, `test_book_diagnostics`, `test_trial_ledger_rules`, `test_mega_report_v8`, `_v8_render`, `_pitch3`, the eval_tie / research_ledger / research_eval_edges fixture tests | Debug verb, seed 0 | 274 passed, 1 skipped | `redo-pytest-f-tools-s0.log` |
+| the same | Release verb, seed 1 | 274 passed, 1 skipped (`test_nav_summ_v8.py:72`, root-only: ATX_EQUITY_ROOT) | `redo-pytest-h-tools-s1.log` |
+| `scripts/tests` | Debug verb as ATX_EQUITY_BIN, seed 0 | 377 passed, 3 skipped, 2 failed (below) | `redo-pytest-f-scripts-s0.log` |
+| `scripts/tests` | the same, seed 1 | 377 passed, 3 skipped, 2 failed (the same two) | `redo-pytest-f-scripts-s1.log` |
+| `scripts/tests/test_cycle_e2e.py` | without ATX_EQUITY_BIN, seeds 0 and 1 | 14 passed, 1 skipped (host skip) each | `redo-pytest-f-e2e-nobin-s{0,1}.log` |
+| `atx-engine/tools/test_stage_chain.py` | seeds 0 and 1 | 9 passed each | `redo-pytest-f-chain-s{0,1}.log` |
+| `scripts/tests/test_no_python_mirror.py` | - | 7 passed; G-P5: 19 functions in 8 rows left (the B2 rows were retired by `598d2199`; no row retired this round) | `redo-pytest-f-mirror.log` |
+
+The two `scripts/tests` failures, attributed (neither is in code this round touched; `git diff --stat 4bed5c43
+fe152fca -- scripts atx-impl/strategies` is empty):
+- `test_research_mine.py::test_fields_are_the_rule_applied_to_the_registry`: E2's former red, "cleared at E2's merge".
+  This branch does not hold E2's merge (item 1).
+- `test_cycle_e2e.py::test_cycle_e2e_goldens_...`: my run's environment. I set ATX_EQUITY_BIN to pool-14's bin, which
+  holds only the eval verb, so the canary ran and stopped on "executable was not found" (the IC exe). Without
+  ATX_EQUITY_BIN it is a host skip (row above), as in root's ROOT-1 runs.
+
+The e27b tests pass on this tree, which does not hold D2's fitter flag.
+
+Teeth (`redo-teeth-pre15.log`): `eval_report.cpp:198` mutated to `dsr_at_json(m, n_tot, ...)` (M not left out),
+build `p9-b2-g`. Then `EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns` FAILED, and `test_dsr_total.py` failed 3 of 9:
+- the closed form;
+- the campaign-free ledger;
+- the frozen `dsr_at` tie.
+
+The mutation was reverted by hand (the code tree is clean, `git status` shows only sprint-dir docs). No refusal was
+added this round, so there are no refusal teeth to show.
+
+Blind and data rules: synthetic and fixture data only. No 2020-2023 statistic and nothing dated 2024 or later was
+opened. The trial ledger in pool-2 was not opened. `atx-impl/tools/test_holdout_gate.py` was not run (resume6).
