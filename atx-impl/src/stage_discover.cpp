@@ -85,8 +85,9 @@ namespace {
 // It contains ONLY config-parameter key/value pairs — NO wall-clock timestamps —
 // so two same-config runs produce the identical string (required by the round-
 // trip test and the determinism contract). Stored in PipelineRunRow.config_json
-// (run-DB metadata); it never enters panel.bin or the discover search digest
-// (S6-5 tripwire). Hand-rolled (no JSON dependency exists in this layer; the only
+// (run-DB metadata) and, when a non-legacy recipe is active, in the
+// <alpha_out>/_config.json sidecar (write_config_sidecar); it never enters
+// panel.bin, the discover search digest or _manifest.txt (S6-5 tripwire). Hand-rolled (no JSON dependency exists in this layer; the only
 // nlohmann copy is vendored deep inside databento third-party — not pulled in).
 //
 // S6-PROVENANCE-SUBSET: covers the admission/scoring + seed/search knobs below.
@@ -252,6 +253,45 @@ namespace {
     kv_d("gross_leverage", cfg.gross_leverage);
     os << '}';
     return os.str();
+}
+
+// The discover config JSON as an on-disk sidecar, `<alpha_out>/_config.json`
+// (P9 Ruling M1d-RED-1b). It is due exactly when a non-legacy recipe is active:
+// the condition under which _manifest.txt used to carry a `config_json=` line.
+// It lives beside the manifest, not in it: _manifest.txt must stay byte-identical
+// across config_json-only differences
+// (AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest), while the recipe stays
+// recorded next to the output. The content is the build_config_json() object plus
+// '\n', written in binary mode. When no sidecar is due, a stale one left by an
+// earlier run into the same directory is removed: it would otherwise pair this
+// run's manifest with another run's configuration.
+[[nodiscard]] bool config_sidecar_due(const RunConfig& cfg) {
+    return cfg.cpcv_rule != atx::engine::eval::CpcvRule::ObservationV1 ||
+           cfg.ic_screen.rule != atx::engine::factory::IcScreenRule::DisabledV1 ||
+           cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1;
+}
+
+[[nodiscard]] atx::core::Status write_config_sidecar(const RunConfig& cfg,
+                                                     const char* stage) {
+    const std::filesystem::path path =
+        std::filesystem::path{cfg.alpha_out} / "_config.json";
+    if (!config_sidecar_due(cfg)) {
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        if (ec) {
+            return atx::core::Err(atx::core::ErrorCode::IoError,
+                std::string(stage) + ": cannot remove stale config sidecar: " + path.string());
+        }
+        return atx::core::Ok();
+    }
+    std::ofstream out{path, std::ios::binary | std::ios::trunc};
+    out << build_config_json(cfg) << '\n';
+    out.close();
+    if (!out) {
+        return atx::core::Err(atx::core::ErrorCode::IoError,
+            std::string(stage) + ": cannot write config sidecar: " + path.string());
+    }
+    return atx::core::Ok();
 }
 
 } // namespace
@@ -957,11 +997,8 @@ atx::core::Result<StageResult> run_discover_gated(
                 "discover (gated): cannot write manifest: " + manifest_path);
         }
         mf << "gated=1\n";
-        if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1 ||
-            cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1 ||
-            cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
-            mf << "config_json=" << build_config_json(cfg) << '\n';
-        }
+        // The config JSON goes to the _config.json sidecar, not into the manifest.
+        ATX_TRY_VOID(write_config_sidecar(cfg, "discover (gated)"));
         if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1) {
             const auto& meta = rep.cpcv_metadata;
             mf << "cpcv_rule=" << eval::cpcv_rule_name(cfg.cpcv_rule) << '\n';
@@ -1438,11 +1475,8 @@ atx::core::Result<StageResult> run_discover_window(const RunConfig& cfg, atx::us
         mf << "seed="          << cfg.seed             << '\n';
         mf << "count="         << n                    << '\n';
         mf << "search_digest=" << to_hex16(res.digest) << '\n';
-        if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1 ||
-            cfg.ic_screen.rule != factory::IcScreenRule::DisabledV1 ||
-            cfg.pbo_rule != atx::engine::eval::PboRule::LegacyGatherV1) {
-            mf << "config_json=" << build_config_json(cfg) << '\n';
-        }
+        // The config JSON goes to the _config.json sidecar, not into the manifest.
+        ATX_TRY_VOID(write_config_sidecar(cfg, "discover"));
         if (cfg.cpcv_rule != eval::CpcvRule::ObservationV1) {
             const auto& meta = res.cpcv_metadata;
             mf << "cpcv_rule=" << eval::cpcv_rule_name(cfg.cpcv_rule) << '\n';
