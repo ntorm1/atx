@@ -38,12 +38,19 @@ namespace {
 // links: weakly_canonical follows the existing prefix through junctions and symlinks, so a
 // link to a share is seen as the share. A final-path "\\?\" prefix is dropped ("\\?\UNC\" is
 // a share). Invalid UTF-8 or an unresolvable path is an error, never a throw
-// (std::filesystem::path throws on invalid UTF-8 on MSVC).
+// (std::filesystem::path throws on invalid UTF-8 on MSVC). The path is made absolute first:
+// weakly_canonical of a relative path whose first element does not exist stays relative
+// (empty root name), which would skip the share and network-drive checks (SQL1-N1).
 [[nodiscard]] Result<std::wstring> resolved_root(std::string_view text) {
   try {
     std::error_code ec;
-    const std::filesystem::path resolved = std::filesystem::weakly_canonical(
+    const std::filesystem::path abs = std::filesystem::absolute(
         std::filesystem::path{std::u8string{text.begin(), text.end()}}, ec);
+    if (ec) {
+      return Err(ErrorCode::IoError,
+                 "store path cannot be made absolute: " + std::string{text} + ": " + ec.message());
+    }
+    const std::filesystem::path resolved = std::filesystem::weakly_canonical(abs, ec);
     if (ec) {
       return Err(ErrorCode::IoError,
                  "store path cannot be resolved: " + std::string{text} + ": " + ec.message());

@@ -157,6 +157,22 @@ TEST(DbConnection, RefusesUncPath) {
     ASSERT_FALSE(opened) << path;
     EXPECT_EQ(opened.error().code(), ErrorCode::InvalidArgument) << path;
   }
+
+  // SQL1-N1: a relative path whose first element does not exist yet (a bare file name, as the
+  // init verbs pass) is made absolute before the network checks; from a local cwd it opens and
+  // lands under the cwd.
+  const auto local = store_path("relative");
+  std::error_code error;
+  const auto saved = std::filesystem::current_path(error);
+  ASSERT_FALSE(error) << error.message();
+  std::filesystem::current_path(local.parent_path(), error);
+  ASSERT_FALSE(error) << error.message();
+  auto relative =
+      db::open_with_policy(local.filename().string(), db::OpenMode::ReadWriteCreate, policy());
+  std::filesystem::current_path(saved, error);
+  ASSERT_TRUE(relative) << relative.error().to_string();
+  EXPECT_TRUE(relative->created);
+  EXPECT_TRUE(std::filesystem::exists(local));
 }
 
 TEST(DbConnection, NewFilePageSizeThenWal) {
