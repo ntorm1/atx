@@ -42,11 +42,11 @@ fitter's inputs are the parent's.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-from pathlib import Path
 
 import numpy as np
+
+import composition_rules  # this directory: module_fingerprint (ruling D2-2)
 
 RULE_ID = "theme-resid-v1"
 BLOCK = "theme_residualise"
@@ -96,8 +96,13 @@ def _require(condition, message: str, error: type[Exception]) -> None:
         raise error(message)
 
 
-def module_sha256() -> str:
-    return hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
+PRODUCERS = ("attach",)  # the writer of the theme_residualise block and provenance.resid (ruling D2-2)
+
+
+def producer_fingerprint() -> str:
+    """provenance.resid's code identity (ruling D2-2: composition_rules.module_fingerprint; module_sha256, the whole
+    file's SHA-256, before P9 lane D2)."""
+    return composition_rules.module_fingerprint(__file__, PRODUCERS)
 
 
 # ---------------------------------------------------------------- the weights file
@@ -157,7 +162,7 @@ def attach(document: dict, registered, error: type[Exception] = ResidError) -> d
                    "(strategy_ic_theme_resid.cpp, IcThemeRule::residualise)"),
         "diagnostic": ("provenance.blend_in_sample_TRAIN_diagnostic excludes the per-session re-rank and "
                        "residualisation"),
-        "module_sha256": module_sha256()}
+        "producer_fingerprint": producer_fingerprint()}
     return document
 
 

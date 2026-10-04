@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Fitter flag ``--engine-fit`` (P9 lane D2, DEC-7 / CM rows 1-5b): the fitter runs the C++ admission screen
-(``atx-research-admission screen``, lane B1) and the C++ composition fit (``atx-research-composition fit``, lane D2) on
-the K-P9-4 factor series of the same role and library, and refuses unless both agree with its own Python values.
-The output bytes stay the Python fitter's (byte-identical to the run without the flag); the agreement is recorded in
-the stdout summary only (``engine_fit``). Retiring the Python mirrors is a later slice (the prepared deletion commit).
+"""Fitter flag ``--engine-fit`` (P9 lane D2, DEC-7 / CM rows 1-5b, ruling D2-1): the fitter runs the C++ admission
+screen (``atx-research-admission screen``, lane B1) and the C++ composition fit (``atx-research-composition fit``, lane
+D2) on the K-P9-4 factor series of the same role and library, and refuses unless both agree with its own Python values
+under ruling P12's tolerance. On agreement the weights file carries the C++ fit's values: the fitter composes the
+document a second time with every fitted number (ICs, shrunk ICs, shares, theme means, covariance, ERC shares and
+contributions, uncapped and capped weights, cap passes, tsmom parent masses, trailing sums and block masses) taken
+from composition_fit.json in place of the Python rule functions' own (``kernels``; the composition modules' ``engine``
+arguments), so every number derived from them (theme tables, the blend diagnostic, the weighted turnover) is derived
+from the C++ values. The agreement goes into the stdout summary and the document (``provenance.engine_fit``). The
+admission table stays the Python screen's (B1's comparator holds it to P12). Flag absent: nothing here runs and the
+output bytes are the Python fitter's. A C++ / Python gap beyond P12 is a refusal, not a tolerance change.
 
     --engine-fit --engine-factors DIR --admission-exe EXE --composition-exe EXE
 
@@ -46,6 +52,8 @@ FACTOR_TOLERANCE = 1e-12  # K-P9-4: absolute, as test_factor_series_admission.co
 P12_TOLERANCE = 1e-12     # Ruling P12: relative to max(1, |reference|)
 ADMISSION_FLOAT_COLUMNS = ("redundant_rho", "tau", "train_mean", "train_sharpe", "hac_t", "max_abs_rho")
 EXE_SECONDS = 3600
+PROVENANCE_KEY = "engine_fit"  # the weights file's provenance.engine_fit (flag present only)
+WRITTEN = "atx-research-composition fit (C++): every fitted number of the weights file; the admission table: Python"
 REFUSED = (f"--engine-fit runs the single-window prior path with --composition {', '.join(SUPPORTED)} (with or without "
            "--theme-erc / --theme-tsmom / --theme-resid / --two-speed) and needs --engine-factors, --admission-exe and "
            "--composition-exe; refused under --era")
@@ -96,10 +104,10 @@ def _require(condition, message: str, error: type[Exception]) -> None:
 
 def add_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--engine-fit", action="store_true",
-                        help="P9 D2: also run the C++ admission screen and composition fit on --engine-factors and "
-                             "refuse unless both agree with the Python values (decisions exactly, floats to 1e-12 "
-                             "relative); the output bytes are the Python fitter's either way, the agreement is in the "
-                             "stdout summary (engine_fit)")
+                        help="P9 D2 (ruling D2-1): also run the C++ admission screen and composition fit on "
+                             "--engine-factors, refuse unless both agree with the Python values (decisions exactly, "
+                             "floats to 1e-12 relative), then write the C++ fit's values; the agreement is in the "
+                             "summary and provenance.engine_fit; absent: output bytes unchanged")
     parser.add_argument("--engine-factors", type=Path, default=None,
                         help="--engine-fit: the K-P9-4 factor series directory of the --train role and the library "
                              "(atx-equity-strategy-targets factors)")
@@ -315,8 +323,8 @@ def compare_values(want, got, where: str = "$", tolerance: float = P12_TOLERANCE
     return out, worst[0]
 
 
-def check_fit(args, state: FitterState, work: Path, error: type[Exception]) -> dict:
-    """Check 3: the C++ fit of the fitted members equals the fitter's values."""
+def check_fit(args, state: FitterState, work: Path, error: type[Exception]) -> tuple[dict, dict]:
+    """Check 3: the C++ fit of the fitted members equals the fitter's values. Returns (summary keys, C++ document)."""
     spec_bytes = (json.dumps(fit_spec(state), sort_keys=True, indent=1, allow_nan=False) + "\n").encode("utf-8")
     spec = work / "composition_fit_spec.json"
     spec.write_bytes(spec_bytes)
@@ -324,23 +332,88 @@ def check_fit(args, state: FitterState, work: Path, error: type[Exception]) -> d
     run_exe([args.composition_exe, "fit", "--factors", args.engine_factors, "--spec", spec, "--output", out], error)
     raw = (out / FIT_FILE).read_bytes()
     got = json.loads(raw)
-    _require(got.get("schema") == FIT_SCHEMA and got.get("status") == "complete", f"{FIT_FILE}: not a complete "
-                                                                                  f"{FIT_SCHEMA} document", error)
+    _require(isinstance(got, dict) and got.get("schema") == FIT_SCHEMA and got.get("status") == "complete",
+             f"{FIT_FILE}: not a complete {FIT_SCHEMA} document", error)
     want = expected_fit(state)
     differ, worst = compare_values(want, {k: got.get(k) for k in want})
     _require(not differ, f"the C++ fit differs from the fitter's ({len(differ)}): {differ[:20]}", error)
-    return {"composition_fit_sha256": hashlib.sha256(raw).hexdigest(),
-            "fit_spec_sha256": hashlib.sha256(spec_bytes).hexdigest(), "fit_max_rel_float_diff": worst,
-            "blocks": sorted(k for k in ("theme_erc", "theme_tsmom", "theme_resid") if k in want)}
+    return ({"composition_fit_sha256": hashlib.sha256(raw).hexdigest(),
+             "fit_spec_sha256": hashlib.sha256(spec_bytes).hexdigest(), "fit_max_rel_float_diff": worst,
+             "blocks": sorted(k for k in ("theme_erc", "theme_tsmom", "theme_resid") if k in want)}, got)
 
 
-def verify(args, state: FitterState, error: type[Exception] = EngineFitError) -> dict:
-    """Checks 1-3 in order (the first refusal stops); the summary block on agreement. Nothing is written beside the
-    output: the C++ outputs live in a temporary directory and are named by their SHA-256."""
-    summary = {"status": "agree", "factor_tolerance_abs": FACTOR_TOLERANCE, "p12_tolerance_rel": P12_TOLERANCE}
+# ---------------------------------------------------------------- the C++ values written (ruling D2-1)
+class EngineKernels(NamedTuple):
+    """The C++ fit's values in the shapes the composition modules' ``engine`` arguments take. ``parent``: for
+    ew-theme-std rules theme_gain_weights' (weights, uncapped, passes, cap), for ic-shrink rules a dict (ic, shrunk,
+    shares, means, equal, uncapped, weights, passes); ``erc`` (theme_erc): (within-theme shares, covariance,
+    rule_weights' dict) or None; ``tsmom`` (schedule): {parent, blocks: [(trailing, masses, themes off)]} or None;
+    ``weights`` the final member weights (fitter member order)."""
+    parent: object
+    erc: tuple | None
+    tsmom: dict | None
+    weights: list
+
+
+def _floats(values) -> list:
+    return [float(x) for x in values]
+
+
+def _passes(rows: list, index: dict) -> list:
+    """composition_fit.json cap_iterations ({capped: ids, excess_by_theme}) as composition_rules.member_cap's passes
+    ({capped: member indices ascending, excess_by_theme: {theme: excess} ascending})."""
+    return [{"capped": sorted(index[cid] for cid in p["capped"]),
+             "excess_by_theme": {t: float(p["excess_by_theme"][t]) for t in sorted(p["excess_by_theme"])}}
+            for p in rows]
+
+
+def kernels(got: dict, state: FitterState) -> EngineKernels:
+    """The C++ document ``got`` (check_fit agreed with it) in the composition modules' engine shapes."""
+    index = {cid: k for k, cid in enumerate(state.members)}
+    p = got["parent"]
+    weights = np.asarray(_floats(p["weights"]), dtype=np.float64)
+    uncapped = np.asarray(_floats(p["weights_before_cap"]), dtype=np.float64)
+    passes = _passes(p["cap_iterations"], index)
+    if state.composition in STD_COMPOSITIONS:
+        parent: object = (weights, uncapped, passes, float(p["cap"]))
+    else:
+        parent = {"ic": _floats(p["ic"]), "shrunk": _floats(p["shrunk_ic"]),
+                  "shares": _floats(p["within_theme_shares"]),
+                  "means": {t: float(x) for t, x in p["theme_mean_ic"].items()},
+                  "equal": list(p["equal_share_themes"]), "uncapped": uncapped, "weights": weights, "passes": passes}
+    erc = None
+    if state.erc is not None:
+        e = got["theme_erc"]
+        erc = (_floats(e["within_theme_shares"]), [_floats(row) for row in e["covariance"]],
+               {"theme_shares": _floats(e["theme_shares"]), "contributions": _floats(e["risk_contributions"]),
+                "dispersion": float(e["dispersion"]),
+                "uncapped": np.asarray(_floats(e["weights_before_cap"]), dtype=np.float64),
+                "weights": np.asarray(_floats(e["weights"]), dtype=np.float64),
+                "passes": _passes(e["cap_iterations"], index), "cap": float(e["cap"])})
+    tsmom = None
+    if state.tsmom is not None:
+        s = got["theme_tsmom"]
+        tsmom = {"parent": _floats(s["parent_masses"]),
+                 "blocks": [(_floats(b["trailing"]), _floats(b["masses"]), int(b["themes_off"])) for b in s["blocks"]]}
+    return EngineKernels(parent, erc, tsmom, _floats(got["weights"]))
+
+
+def verify(args, state: FitterState, error: type[Exception] = EngineFitError) -> tuple[dict, EngineKernels]:
+    """Checks 1-3 in order (the first refusal stops). On agreement: (the summary block, which the fitter also writes as
+    provenance.engine_fit; the C++ values to write, ``kernels``). Nothing is written beside the output: the C++ outputs
+    live in a temporary directory and are named by their SHA-256."""
+    summary = {"status": "agree", "written": WRITTEN, "factor_tolerance_abs": FACTOR_TOLERANCE,
+               "p12_tolerance_rel": P12_TOLERANCE}
     summary.update(check_factor_series(Path(args.engine_factors), state, error))
     with tempfile.TemporaryDirectory(prefix="engine-fit-") as tmp:
         work = Path(tmp)
         summary.update(check_admission(args, state, work, error))
-        summary.update(check_fit(args, state, work, error))
-    return summary
+        fit_keys, got = check_fit(args, state, work, error)
+        summary.update(fit_keys)
+    return summary, kernels(got, state)
+
+
+def check_written(written_weights, engine: EngineKernels, error: type[Exception] = EngineFitError) -> None:
+    """The weights the second composition wrote are the C++ fit's final weights bit for bit (fitter member order)."""
+    _require([float(w) for w in written_weights] == engine.weights,
+             "the composed weights are not the C++ fit's final weights", error)

@@ -37,9 +37,7 @@ ic-shrink-aim-v1).
 """
 from __future__ import annotations
 
-import hashlib
 import math
-from pathlib import Path
 
 import numpy as np
 
@@ -85,8 +83,13 @@ AIM_FIT_SERIES = ("TRAIN mean of s_k*f_k per member (the admission train_mean) s
                   "flat decisions 0, without the per-date theme re-rank")
 
 
-def module_sha256() -> str:
-    return hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
+PRODUCERS = ("ic_shrink",)  # the writer of provenance.ic_shrink (ruling D2-2)
+
+
+def producer_fingerprint() -> str:
+    """provenance.ic_shrink's code identity (ruling D2-2: composition_rules.module_fingerprint; module_sha256, the whole
+    file's SHA-256, before P9 lane D2)."""
+    return composition_rules.module_fingerprint(__file__, PRODUCERS)
 
 
 def _require(condition, message: str, error: type[Exception]) -> None:
@@ -118,11 +121,14 @@ def shrunk_shares(themes: list[str], ics: list[float], intensity: float = INTENS
 
 def ic_shrink(ids: list[str], themes: list[str], ics: list[float],
               error: type[Exception] = composition_rules.RuleError,
-              gains: list[float] | None = None) -> composition_rules.StdFit:
+              gains: list[float] | None = None, engine: dict | None = None) -> composition_rules.StdFit:
     """ic-shrink-v1 weights over the members that take part (admitted, non-degenerate), in input order, with the theme
     table, the runner block and provenance (composition_rules.StdFit, attached by ``attach``). With ``gains`` (the
     parent's aim gains, same order) the variant ic-shrink-aim-v1: the shares times the gains, renormalised inside each
-    theme by composition_rules.tier_weights (the E-27a mechanism), then the same cap."""
+    theme by composition_rules.tier_weights (the E-27a mechanism), then the same cap. ``engine`` (the fitter's
+    --engine-fit, ruling D2-1): the C++ fit's ICs (its admission train_mean), shrunk ICs, shares, theme means,
+    equal-share themes, uncapped weights, weights and cap passes (composition_engine_fit.kernels), written in place of
+    this function's own; None: computed here."""
     rule = RULE_ID if gains is None else AIM_RULE_ID
     _require(len(ids) == len(themes) == len(ics) and ids, f"{rule}: members, themes and ICs differ in length or "
                                                           "are empty", error)
@@ -135,15 +141,20 @@ def ic_shrink(ids: list[str], themes: list[str], ics: list[float],
     present = list(dict.fromkeys(themes))          # first appearance: the runner's theme order
     _require(len(present) <= MAX_THEMES, f"{rule}: at most {MAX_THEMES} themes", error)
     ics = [float(x) for x in ics]
-    shrunk, shares, means, equal = shrunk_shares(themes, ics)
     n_themes = len(present)
-    if gains is None:
-        uncapped = np.array([a / n_themes for a in shares], dtype=np.float64)
-    else:  # E-27a: the aim rules' own function, each theme 1/T before the cap
-        gains = [float(g) for g in gains]
-        uncapped = composition_rules.tier_weights(themes, [a * g for a, g in zip(shares, gains)])
+    gains = None if gains is None else [float(g) for g in gains]
     cap = 1.0 / (2 * n_themes)
-    weights, passes = composition_rules.member_cap(uncapped, themes, cap, error)
+    if engine is None:
+        shrunk, shares, means, equal = shrunk_shares(themes, ics)
+        if gains is None:
+            uncapped = np.array([a / n_themes for a in shares], dtype=np.float64)
+        else:  # E-27a: the aim rules' own function, each theme 1/T before the cap
+            uncapped = composition_rules.tier_weights(themes, [a * g for a, g in zip(shares, gains)])
+        weights, passes = composition_rules.member_cap(uncapped, themes, cap, error)
+    else:
+        ics, shrunk, shares = engine["ic"], engine["shrunk"], engine["shares"]
+        means, equal = engine["means"], engine["equal"]
+        uncapped, weights, passes = engine["uncapped"], engine["weights"], engine["passes"]
     capped = {k for it in passes for k in it["capped"]}
     theme_table = {}
     for t in sorted(present):
@@ -185,7 +196,7 @@ def ic_shrink(ids: list[str], themes: list[str], ics: list[float],
                    f"the ew-theme-std-v1 per-date re-rank, unchanged; the rule table re-applies {rule} to "
                    "ic_shrink.members and refuses a weight off by more than runner_tolerance_absolute "
                    "(strategy_ic_admission.cpp, strategy_ic_shrink.cpp)"),
-        "module_sha256": module_sha256()}
+        "producer_fingerprint": producer_fingerprint()}
     if gains is None:
         return composition_rules.StdFit(weights=weights, theme_table=theme_table, block=block, provenance=provenance,
                                         text=COMPOSITION_TEXT, fit_series=FIT_SERIES, ids=list(ids))
