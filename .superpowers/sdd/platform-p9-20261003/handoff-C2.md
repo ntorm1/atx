@@ -1,5 +1,8 @@
 # Lane C2 hand-off: fix round 1 (owner stop, 2026-10-04)
 
+**Superseded (RESUME 4): fix round 1 is complete; see `task-C2-report.md` "## Fix round 1". The state below is the
+stop-time record only.**
+
 The round-0 stop-time design record this file held is in git (`git show 08297183:.superpowers/sdd/platform-p9-20261003/handoff-C2.md`).
 
 - Pool `C:/atx-wt/pool-15`, branch `feat/p9-c2-20261003`, base `ad406718`. Review `task-C2-review.md` (commit

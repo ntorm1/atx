@@ -289,7 +289,11 @@ class FakeCycle:
             return self.ok(args, self.gate_exit)
         nav = c.out(spec["nav"]["output"])
         if "--stop-after" in args and args[args.index("--stop-after") + 1] == "w":
-            return self.ok(args)                       # P9 C2 engine mode: the cell's inputs, no NAV
+            w_out = f"{c.out(spec['ic']['w_output'])}-1"     # P9 C2 engine mode: the cell's inputs, no NAV
+            if not (self.root / w_out / "summary.json").is_file():
+                write_json(self.root, f"{w_out}/summary.json", {"status": "complete"})
+                write_json(self.root, f"{w_out}/train_combined.json", {"combined": spec["name"]})
+            return self.ok(args)
         if "--stop-after" in args:
             base = spec["name"][:-3] if spec["name"].endswith("-gm") else spec["name"]
             per_l = self.gross_per_l.get(base, 0.9862 / 1.1474)
