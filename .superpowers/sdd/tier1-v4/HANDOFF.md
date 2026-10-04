@@ -2,13 +2,42 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
-**CURRENT: No root job is live. Heavy financial builds remain held: the completed
-host observation failed its predeclared scheduling condition.**
+**CURRENT: Financial pilot v3 ended without any admitted financial batch.**
+Session44681 stopped_low_commit after60.9s, peak126,025,728bytes, exit137,
+no process-cap hit, freecommit0.7GiB. Guard6424/child10692/native7732 are dead;
+matching runtime process scan is empty. Guarded read-only inspection3923 passed
+4.1s/63,463,424bytes under0.2GiB: physical snapshotc73f unchanged, no batch0
+admission/finalmanifest/current pointer, retained attempts stable in two passes.
+Evidence: t17-interruption-inspection-v3.json and unique v3 guard logs.
+The exact orphan lock7732 (4bytes, SHA61f4a24677e07919033f02398ced57278bae7c0a475a54af9128d142577536cb)
+remains preserved; any later resume requires dead-owner recovery and normal
+full native validation. No fourth financial retry or new observer loop this turn.
+Root inventory59077 also ended stopped_low_commit24.3s/49,414,144bytes, no cap,
+exit137, freecommit0.7095GiB. Part0001 has only an80,360byte partial and no
+completed output/receipt; part0000 remains the sole completed partition.
+Guard10812/child12324 are absent. No actual job is live; further actual jobs held.
+Task16 finishes the current synthetic test lane, then Task15, then Task17;
+authors may continue code/docs while new test launches are held to avoid overlap.
+
+Prior v3 scheduling decision (the attempted build is now terminal):
+R25 task-25-host-reschedule-ruling.md supersedes only the controller-added3GiB
+waiting heuristic using the enforced guard's existing0.8cap+1GiBreserve rule.
+The completed five-minute window's guard minimum2.1808GiB exceeded1.8GiB;
+its prior3GiBtest remains recorded false. All original process/commit/physical/
+disk/FIFO/one-heavy limits and financial/source/release gates remain unchanged.
+New v3 logs: logs/t17-runtime-pilot-b0000-v3.*, generationr17_20261004_002,
+max-new-batches1, existing runtime/code/contract/extraction/canonical snapshot
+pins,0.8GiBguard,--heavy,40GiBfloor. Admission observed2.7711GiBfreecommit.
+The prepared financial-progress audit remains NOT RUN: no successful native
+financial candidate exists. Another stop ended this turn's retry attempts.
+
+Prior resource evidence:
 New observation54435 completed302.3s/26,566,656bytes under0.1GiBguard, no cap.
 All31samples are in logs/host-headroom-window-v2.json: minimumcommit2.2642GiB,
 physical1.4105GiB; condition3GiBcommit/1GiBphysical NOT met. The guard sampled a
-lower transientcommit2.1808GiB. No third financial pilot was launched, no threshold
-lowered. Observer was justified by recovered4.6969GiB/no live guards after the
+lower transientcommit2.1808GiB. At that checkpoint no third financial pilot had
+launched; the later R25 decision is above. Observer was justified by
+recovered4.6969GiB/no live guards after the
 prior0.4012GiBstop, but recovery was not sustained for the required window.
 Later small read-only SEC ledger audits17502/5386 both completed successfully;
 they are not financial rescheduling evidence. Every future actual job remains
@@ -23,9 +52,9 @@ SHA865736a1c30a82dc67aba820360a01b1d9d0da5643234cd07c4d60b06eb530c5.
 Guarded recovery passed5.0s/89,972,736bytes after dead-owner, matching-writer,
 path/reparse and evidence checks. Both failed attempts and lock archives remain.
 The five-minute host observer itself stopped after3.1s/26,697,728bytes for
-freecommit0.4012GiB (no cap). No completed observation window exists and the
-predeclared scheduling condition is NOT established. No blind third pilot or
-observer retry. Resume requires new stable resource evidence, unchanged guards,
+freecommit0.4012GiB (no cap). At that checkpoint no completed window existed;
+the subsequent completed window and its failed3GiB condition are recorded above.
+Resume requires new stable resource evidence, unchanged guards,
 unique receipts and ordinary complete native validation. The financial-progress
 helper is NOT RUN; its v2-success prerequisite fails and must be retargeted only
 after a successful future native attempt. Financial units admitted: zero.
