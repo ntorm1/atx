@@ -186,3 +186,83 @@ and logs. Pytest temp roots removed by the tests.
    goldens file (S2: equal at 1239a5ff vs 4cb9265a, Debug).
 3. P9 S2: source pins `dsl_vm` `5bcd55c7...` (35 files) and `ic_result` `bd13574c...` re-pinned
    without a semantics bump (S2-1).
+
+## Fix round 1 (PM ruling S2-FIX1)
+
+Code `110fd735` (fix) and `80d81b26` (tests), on the review commit `98c85cc9`. Review items (3) (to
+the prereg) and (5) (noted for C3) are left as ruled.
+
+1. **Return guard on the label role.** `ResearchIcTerminal` gains `label_bad_return_prefix`: the
+   label panel's excluded-return prefix (`research_return_guard` run on the loaded label role, same
+   shape as the scored one). Under `imputed-v1`, a straddling pair is guard-excluded when either the
+   scored guard or the label guard flags a return in (entry, exit]. The terminal step T = L+1 is now
+   checked: an absurd imputed return (|log r| > 1.5, or adjusted vs raw drift > .10) is excluded
+   and counted in `guard_excluded_pairs`, never scored. The builder's Shumway set {0, -.30, -.55}
+   passes (|log .45| = .80; the builder writes `raw[T]` and `close[T]` with the same factor).
+   `prepare_research_ic` refuses an imputed-v1 terminal whose label guard is missing, has the wrong
+   shape, or decreases. The runner frees the label guard after prepare. Concern 2 of the original
+   report is resolved by this item.
+2. **Terminations only.** `bind_label_role` computes each name's last scored-present session
+   `last[i]` and refuses label-only presence anywhere except `d == last[i] + 1`:
+   "IC runner: label role adds presence that is not a termination (date d, instrument i); a label
+   role may only add the session after a name's last scored session". It also binds `raw_close`
+   bitwise on scored-present cells, because the label guard reads `raw_close`. Under the flag only,
+   the recipe `labels` string appends
+   `;label-role-adds-only-the-session-after-each-name's-last-scored-session;imputed-exit-return-guard:scored-role-and-label-role(terminal-step)`,
+   and the admission memory term grows by 4 B/cell for the label guard.
+3. **Validation-only resume pin (item 4).** At `7ccf81e8` the empty TRAIN pin was not actually
+   written. A validation-only run erases TRAIN from the scored `roles` before the pin loop, so the
+   recipe already held `{"validation": <pin>}` only. This is now explicit: the pin loop refuses a
+   scored role without a label-role pin (Internal: "scored <role> role without a label role pin").
+   `IcLabelTerminal.FrozenTrainResumeBindsTheLabelRolePins` asserts the resumed recipe's
+   `label_role_manifest_sha256` is exactly `{"validation": pin}`, and that the resumed `recipe.json`
+   SHA equals the train-free run's.
+4. **Tests (items 6 and 7).**
+   - Engine `IcLabels.TerminalImputedPairsPassBothReturnGuards` (L=7, T=8). (A) A scored-role bad
+     return at session 6, present in both guards: only entries >= 6 impute. (B) A bad terminal step
+     in the label guard only: every h-straddling pair is guard-excluded. It also checks the
+     refusals: a scored guard with no label guard, and a decreasing label guard.
+   - Impl `IcLabelTerminal.AbsurdTerminalReturnIsGuardedOnTheLabelRole` patches the label role's
+     `close` and `raw_close` at (420, 0) to 5% of (419, 0). It expects `terminal_imputed_pairs` 0,
+     `guard_excluded_pairs` up by {5, 21, 33}, and IC bitwise equal to `missing_exit_v1`.
+   - `IcLabelTerminal.LabelRoleRefusals` adds a doubled label role (presence at T+1), which is
+     refused at "(date 421, instrument 0)".
+   - The audit test plants the ResearchFast sidecar under the `_audit` root and expects
+     "candidate cache entry mismatch: volume_level". It then restores the sidecar and the rerun
+     is OK.
+   - `IcLabelTerminal.MissingExitIcIsCachedUnderItsOwnScope` plants the default-scope IC record
+     into the `missing_exit_v1` scope and expects "candidate IC cache entry mismatch:
+     volume_level". It then restores the record, and the served run hits 2.
+5. **Long lines (item 8).** The six engine-test lines are wrapped. The engine test now adds no
+   line over 100 columns versus base `1239a5ff`. Five new dense-idiom lines in `ic_screen.cpp`,
+   which the review did not list, are left alone: `ic_screen.cpp` is in `ic_result_sources`, so
+   wrapping them would move the pin again.
+
+**Digests.** `ic_result_sources` was re-pinned again under S2-1:
+`bd13574c...` -> `dd3c601163029c1dc31a80ebbe155437a0d688a6731c84658637aac2913a94c2` (11 files;
+`ic_research.hpp` and `ic_screen.cpp` changed). `dsl_vm_sources` is unchanged at `5bcd55c7...` (35
+files). Both were recomputed at `80d81b26` with the recipe and equal the pins. No expected output
+hash was edited.
+
+**Builds.** These went through `scripts/research-build.ps1`, equity-dev, with the memory gate.
+- `p9-s2-fix1-a`: source `98c85cc9` plus the 7 working-tree entries, exit 0, 365 TUs, 458 s.
+- `p9-s2-fix1-b`: source `80d81b26`, DirtyEntries 0, exit 0, 7 TUs, 27 s.
+
+Receipts and logs are `build-equity/mega-p9-s2-fix1-{a,b}-*`. The only warnings are third-party:
+`/MP`, and databento `getenv`. The tree was configured at `98c85cc9-dirty`, so that is the stamped
+provenance; the fix-b receipt pins the exact source.
+
+**Tests at `80d81b26`.**
+- `atx-impl-strategy-ic-tests`: 204/204.
+- `atx-engine-alpha-tests`: 782/782.
+- `atx-impl-strategy-mine-tests`: 44/44. `SignalFitnessDefaults` holds golden `0x889874a3b9b29c55`
+  at 1 and 4 workers.
+- pytest `atx-impl/tools/test_fit_composition_rule_plugins.py`: 8 passed.
+
+**Flag-absent identity.** The tiny_world canary was re-run with the `80d81b26` Debug exes against
+the base `1239a5ff` Debug record, with `ATX_CANARY_REQUIRED=1`. Result: 15 passed. The goldens file
+was restored byte-exact and the tree is clean. The log is
+`s2-evidence/canary-head-80d81b26-debug-check.log`.
+
+**Hygiene.** No child processes remain. `s2-scratch/` is deleted, and the object tree is deleted
+again per DISK-2, keeping receipts and logs.
