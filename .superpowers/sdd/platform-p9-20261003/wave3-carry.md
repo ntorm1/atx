@@ -474,3 +474,12 @@ merged in pool-2 `b1406e14`).
   re-review 2, S10); COV-MV checks per-row group values itself, the container reader does not (S11).
 - Added after drafting (B2-10, required for PRE and every P9 cell template): each P9 cell spec / v2 manifest names
   `exes.eval`; verify refuses a v2 cell without it.
+- Added after drafting (required unless marked): C3: C2-10 (digest re-check of the cell of record immediately before
+  `wave_result.build`), C2-9 (plan-time refusal of a manifest that needs gross matching without `gross_match`), E2-11
+  (SPO rows in the NAV rule table: optional). D3: E2-9 (`allow_abbrev=False` in the fitter's argparse), ALCOMB-6 (IC exe
+  writes the momentum sleeve's daily series before / after scaling; `atx-research-eval` prints vol / Sharpe from it),
+  ALCOMB-7 (the C++ fit records the mom-volman sleeve so `--engine-fit --mom-volman` runs). SQL3: waits for B2's
+  post-identity redo (B2-12). PRE: B2-11 (`exes.eval` named and pinned per cell; hash compared at the judge), M2c-RED-2
+  (record `ucrtbase.dll` version + SHA-256 at P9-B0 and before each cell; all runs of record on Release exes), EXE-FREEZE,
+  PATH-1 (eval mode of a cell = its reference's), ALCOMB-7 (fit mode of a cell = its reference's), ALD-6 (identity-bridge
+  line: no cell and no OD-3 read before the owner's answer), W3-15 (P9-S lapsed), COV-11 (D-COV read in both directions).

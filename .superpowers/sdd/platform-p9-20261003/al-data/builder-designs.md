@@ -1,161 +1,219 @@
-# AL-DATA: builder designs for the gated families (doc-only, Ruling W3-18)
+# AL-DATA: builder designs for the gated families (doc-only, W3-18; fix round 1)
 
-Nothing here is built or registered by this lane. Each design is ready for a P10 lane once its data lands, but only
-the designs marked **build** should be built.
+This lane builds and registers nothing. Under ruling ALD-4, **no family clears the bar**, so nothing here is built by
+default in P10.
+- The designs stay ready in case the PM or the owner overrides that.
+- The borrow-fee path (section 4a) is realism, not a signal. It is built only if the owner buys OD-P9-4 / -5 and the
+  PM queues it.
 
 ## How each design is laid out
 
-Every design has five parts:
-
-1. **Registry row.** The house shape (K-P9-1, `atx-engine/tools/field_registry.json`, as in the `gia_13f` /
-   `russell_recon` rows): `name`, `kind: engine`, `builder`, `dtype`, `point_in_time`, `spec_text {units, clock,
-   staleness, source_columns, definition, domain, non_pit_aspects}`, `requires[]`, `options{group}`, `sources[]`,
-   `first_session`, `owner`. `formula_sha256` is computed by the C++ at build time. Every id is at most 24 characters
-   (W1-I1).
-2. **The K-P9-11 keys.**
-   - `source_sample_end` comes from the paper. A value that cannot be verified is left out (ALSIG-1).
-   - `predicted_mechanism` and `data_class` (H / W / P / N, lit §3.1) complete them.
-3. **The planted-leak probe** the builder's gtest must contain. It must have teeth: a clock that is wrong by one
-   session must fail it.
+1. **Registry row** in the house shape (K-P9-1, `atx-engine/tools/field_registry.json`, as in the `gia_13f` /
+   `russell_recon` rows). `formula_sha256` is computed by the C++. Every id is at most 24 characters.
+2. **K-P9-11 keys.** `source_sample_end` is taken from the paper, and a value that cannot be verified is left out
+   (ALSIG-1). `predicted_mechanism` and `data_class` complete them.
+3. **Planted-leak probe** with teeth.
 4. **Capacity class.**
-5. **Bar verdict.**
+5. **Bar verdict** (section 0).
 
-Constants are fixed from the paper or by a stated mechanical argument. There is one variant per hypothesis and no
-grid.
+Constants are fixed from the paper or by a stated mechanical argument. There is one variant and no grid.
 
-**The bar.** The bar is lit §3.0: net SR_c >= .4 **and** rho <= .1 to the book, with both halves argued before any
-data is read. Recent rulings applied it like this:
-- ALSIG-2: `gia_13f` has rho .15, so it was excluded and not registered.
-- ALSIG-4: `hf_crowd` has rho .2, so it stays blocked and is never queued without a new ruling.
-- ALSIG-5: `russell_recon` has rho about 0, but its SR_c could not be argued, so it was dropped.
+## 0. The bar under ruling ALD-4, with every band derived
 
-At book SR 1.77, a member with SR_c .4 adds +.045 at rho 0 and +.014 at rho .1 (lit §3.0 table).
+**Bar** (lit §3.0): net SR_c >= .4 **and** rho <= .1 to the book, both argued before any data.
+- The rho values are the literature review's rho to *themes* (lit §3.1, [est]). They are used as rho to the book by
+  the convention of ALSIG-2 / ALSIG-4.
+- The book figures quoted in this file are SR_b 1.77 (lit §3.0) and X-4's -.058 (lit §0.1). Both come from the public
+  literature review, not from any output.
 
-## Verdict summary
+**Formulas used for every band.**
+- Annual return = 12 x the monthly figure, or 52 x the weekly figure.
+- Gross SR = annual return / annual volatility sigma.
+- Cost drag in SR units = 2 · T · c / sigma, where:
+  - T = one-way turnover of each leg per year;
+  - c = one-way cost per dollar traded;
+  - 2 = two legs.
+- **Post-publication factor h = 1 - .58 = .42.** Lit §2.5, from McLean-Pontiff 2016 [32], where the lit tags it [mem].
+  - Ruling ALD-4 applies h to the literature's return whenever TRAIN lies entirely after the source's publication,
+    unless post-publication sample evidence is cited.
+  - Costs are not haircut.
+- Net SR_c = h x gross - drag when ALD-4 applies; otherwise gross - drag.
 
-| family | field (builder id) | rho to themes (lit §3.1) | SR_c argued a priori | verdict | build? |
-|---|---|---|---|---|---|
-| F1 Lazy Prices | `lazy_prices` | <= .1 | about .4-.65 net, centre about .5 [est, below]; decay after publication unverified | **clears on paper**, narrowly | **build** when B1 lands |
-| F2 hedge-fund crowding | `hf_crowd` | .2 | not argued | fails the rho half (ALSIG-4) | no |
-| F10 intangible value (replace of `bm`) | `bm_int` | .7 to value; HML_INT vs HML_FF correlation .76 [EKP] | the difference portfolio has SR .32 over 1975-2018 [EKP], pre-cost | fails both halves | no |
-| F4 put-call parity signal (+ F6, one hypothesis by PM rule) | `pcp_spread` | .3 | predictability "decreases over the sample period" [CW abstract]; weekly turnover | fails both halves | no |
-| F5 option / stock volume | `os_ratio` | .2 | - | fails the rho half | no |
-| F4 / OD-P9-5 borrow fee (realism) | `borrow_fee_implied` | n/a: a cost-model input, not a signal | n/a | outside the bar | **build** if OD-P9-4 or -5 is bought |
+### F1 Lazy Prices (`lazy_prices`)
 
-**Only F1 clears on paper.** Its SR_c half rests on the in-sample size of the effect. TRAIN (2020-2023) falls entirely
-after the paper's publication (JF 2020), and lit §7 and §8 Q4 leave decay after publication unverified. If the
-in-sample Sharpe (centre about .55, gross [est]) decays by more than about a quarter, F1 falls below .4 [arith: .55 x
-.73 = .40].
+**Publication.** JF 75(3), June 2020. TRAIN's first five months precede the issue, but the working paper circulated
+before TRAIN (review n2). ALD-4 names F1, so h applies. No post-publication sample is cited: lit §7 and §8 Q4 leave
+it open.
+
+| quantity | value | derivation |
+|---|---|---|
+| return | 4.08-6.96% a year | value-weighted 34-58 bps/month [V8L, lit §3.1] x 12 |
+| sigma | 8-12% a year | [est]: no volatility in the lit or in the abstract |
+| gross SR | .34 / .87 / centre .55 | 4.08 / 12; 6.96 / 8; 5.52 / 10 |
+| drag | 0 to .05 | T 0-2 per leg per year [est: a name's similarity changes only at its own filings, at most 4 a year, and CMN's drift lasts 3-18 months]; c up to .125% [est]: 2 x 2 x .00125 / .10 = .05 |
+| net, no haircut | .29-.87, centre .50 | .34 - .05; .87 - 0; .55 - .05 |
+| **net, ALD-4** | **.09-.37, centre .18** | .42 x .34 - .05 = .09; .42 x .87 = .37; .42 x .55 - .05 = .18. ALD-4's own .12-.37 applies .42 to the net band; the verdict is the same |
+| what it would take to clear | gross >= .95-1.07 | (.4 + drag) / .42, which is above the top of the stated band |
+| rho | <= .1 | lit §3.1 F1: passes |
+
+**Verdict: fails the SR half.** `lazy_prices` stays `blocked_on_data` and is never queued without a new PM ruling,
+the same as `hf_crowd`.
+
+### F2 hedge-fund crowding (`hf_crowd`)
+
+- **rho .2 > .1** (lit §3.1 F2). It fails on that alone (ALSIG-4).
+- **SR half: not derivable.**
+  - The literature gives a direction only ("the most crowded long portfolios have the highest returns") and a
+    book-level guess (+.02 to +.04, lit §6).
+  - Back-solving that guess would be circular, so it is not used.
+  - Publication: RFS 35(7), 2022. TRAIN is not entirely after it, so h does not apply.
+- **Data.** The house stage has no point-in-time fund-type input before 2023 (section 2).
+- **Verdict: fails.**
+
+### F4 put-call parity signal (`pcp_spread`); F5 (`os_ratio`); F6
+
+- **F4.**
+  - rho .3, so it fails.
+  - Return: "50 basis points per week" (CW abstract) = 26% a year in sample. CW was published in JFQA in 2010, so
+    TRAIN lies entirely after it: x .42 = 10.9% a year.
+  - Cost: a weekly rebalance with T = 26 per leg per year [est: half of each leg replaced weekly] and c = .125% gives
+    2 x 26 x .00125 = 6.5% a year, so about 4.4% a year net.
+  - sigma is not given, so no SR can be derived. CW also report that predictability decays within their own sample.
+- **F5.** rho .2, so it fails. 1.47%/month (lit §3.1) = 17.6% a year; JFE 2012, so x .42 = 7.4% a year. The same
+  weekly cost of 6.5% a year leaves about .9% a year. sigma is not given.
+- **F6.** rho .3, so it fails. The literature gives no magnitude ([mem]).
+- **Verdict: all fail.**
+
+### F10 intangible value (`bm_int`, a replace of `bm`)
+
+- **The SR half is enough to decide.**
+  - The replace acts through the difference portfolio, long HML_INT and short HML_FF.
+  - EKP (NBER w28056 rev. 2021) give "2.11% annually, with a standard deviation of only 6.53%", so SR = .323, and the
+    paper states "0.32 over the full sample" (1975-2018), before costs.
+  - .32 < .4 before any haircut.
+  - The NBER working paper is dated November 2020 and the CFR article 2022. TRAIN is not entirely after publication,
+    so h is not required. If it were applied, .32 x .42 = .14.
+  - The annual-rebalance cost would lower it further; it is not quantified here.
+- **The 2007-2018 figure (.62)** is a sub-window. The bar is read on the full-sample figure, as for F1.
+- **rho.** The rho of the difference portfolio to the book has no literature number and is not used. The add
+  framing's .7 / .76 (HML_INT vs HML_FF, 76.2%) does not apply to a replace.
+- **Verdict: fails.**
+
+### Summary
+
+| family | field | rho (theme, as book) | net SR_c a priori (derived above) | verdict |
+|---|---|---|---|---|
+| F1 | `lazy_prices` | <= .1 | .09-.37 (ALD-4) | **fails** (SR); never queued without a new ruling |
+| F2 | `hf_crowd` | .2 | not derivable | fails (rho; ALSIG-4) |
+| F4 (+F6) | `pcp_spread` | .3 | not derivable; about 4.4% a year net return | fails (rho) |
+| F5 | `os_ratio` | .2 | not derivable; about .9% a year net return | fails (rho) |
+| F10 | `bm_int` | n/a (replace) | .32 gross, full sample | fails (SR) |
+| realism | `borrow_fee_implied` | n/a | n/a | outside the bar |
 
 ---
 
-## 1. `lazy_prices` (F1, Cohen-Malloy-Nguyen 2020 JF 75(3) [39]): BUILD when ask B1 lands
+## 1. `lazy_prices` (F1, Cohen-Malloy-Nguyen 2020 JF 75(3) [39]): designed, NOT built (ALD-4)
 
-**Registry row**
+**Registry row (ready)**
 
 ```json
 {"name": "lazy_prices", "kind": "engine", "builder": "lazy_prices", "dtype": "f64", "point_in_time": true,
  "requires": [], "options": {"group": "sec_text"}, "sources": ["text"], "first_session": null,
- "owner": "engine-only:DEC-5 (P10 lane, design AL-DATA)",
+ "owner": "engine-only:DEC-5 (not built: ALD-4)",
  "spec_text": {
   "units": "cosine similarity in [0, 1] of the full primary document of the line's latest original 10-K or 10-Q to its original filing of the same form family and fiscal period one fiscal year earlier (1 = unchanged; CMN's non-changers are high)",
-  "clock": "text-filing-asof-v1: a text row is visible at V = available_at (authenticated EDGAR acceptance, UTC); session t reads, for the line's CIK on the session's role row, the original 10-K / 10-Q row with the latest available_at < date(t-1) 22:00 UTC; NULL available_at never visible; session 0 -> NaN",
-  "staleness": "date(t) - date(V) > 400 days -> NaN (stage staleness_days 400); the latest visible filing without a finite doc_sim_cosine -> NaN (no skip-back to an older filing)",
+  "clock": "text-filing-asof-v1: a text row is visible at V = available_at (authenticated EDGAR acceptance, UTC); session t reads, for the line's CIK on the session's role row, the original 10-K / 10-Q row with the latest available_at < date(t-1) 22:00 UTC; NULL available_at never visible; a row whose prior_available_at >= available_at -> NaN (counted); a row stamped on or after the research seal is refused; session 0 -> NaN",
+  "staleness": "date(t) - date(V) > 400 days -> NaN (stage staleness_days 400); the latest visible filing without a finite doc_sim_cosine -> NaN (no skip-back)",
   "source_columns": ["text.cik", "text.accession", "text.form", "text.fiscal_period", "text.report_date", "text.available_at", "text.prior_accession", "text.prior_available_at", "text.doc_sim_cosine"],
-  "definition": "Lazy Prices (Cohen, Malloy and Nguyen 2020, JF 75(3)). Value of a line at session t = doc_sim_cosine of its CIK's latest visible original periodic report: term-frequency cosine (house tokenizer, no stemming, no stop words) of the full primary document against the issuer's original filing of the same form family and fiscal period one fiscal year earlier, accepted strictly earlier, gap 180-550 days. Amendments are never the current or the prior filing. Every line of the CIK carries the value. Stage parts dated on or after the research seal are never opened. Formula id lazy-prices-doc-cosine-v1.",
+  "definition": "Lazy Prices (Cohen, Malloy and Nguyen 2020, JF 75(3)), fixed before data (ALD-1): value = doc_sim_cosine of the line's CIK's latest visible original periodic report, the term-frequency cosine of the full primary document against the issuer's original filing of the same form family and fiscal period one fiscal year earlier, accepted strictly earlier, gap 180-550 days. Amendments are never current or prior. Every line of the CIK carries the value. Stage parts dated on or after the seal are never opened. Formula id lazy-prices-doc-cosine-v1.",
   "domain": [0.0, 1.0], "non_pit_aspects": [], "point_in_time": true}}
 ```
 
 **Builder.**
-- `sources/text.hpp` / `text.cpp`: a `PinnedStage` reader with contract `{"text", "atx.alpha-panel.text-features/v2",
-  "<clock rule>", 400, "text-features-v2"}`. It reads only the listed columns, and only from parts whose year is
-  before the seal (the counter mirrors `holdings_parts_not_read_sealed`).
-- `lazy_prices_field.cpp`: one kernel. It sorts rows by (cik, available_at, accession) and runs an as-of walk over
-  `previous_session_marks()`. Lines map to their CIK through the role row's `cik`.
-- The lane confirms the CIK column of A3's vendor panel source before coding.
+- A `sources/text.hpp` / `.cpp` reader on `PinnedStage`, with a counter of sealed parts not opened.
+- One kernel TU: an as-of walk over `previous_session_marks()`.
+- The lane confirms the CIK column of A3's vendor panel before coding.
 
 **K-P9-11 keys.**
-- `source_sample_end`: **2014**. CMN's sample is 1995-2014; the AL-SIG round-0 reviewer checked it against the paper
-  (`task-AL-SIG-report.md:245`). The source is clean for OD-3.
-- `predicted_mechanism`: unchanged from the blocked registration: "investors under-react to changes in the text of
-  annual and quarterly reports, so firms whose filings barely change outperform the changers ...".
-- `data_class`: **P**.
+- `source_sample_end`: 2014 (CMN 1995-2014, checked by the AL-SIG round-0 reviewer).
+- `predicted_mechanism`: as registered.
+- `data_class`: P.
 
-**Planted-leak probe** (`ResearchFieldsLazyPrices.PlantedLeakProbeHasTeeth`; synthetic stage written by pyarrow,
-independent numpy oracle):
+**Planted-leak probe** (`ResearchFieldsLazyPrices.PlantedLeakProbeHasTeeth`; pyarrow fixture, numpy oracle):
 
-| case | planted row | what must hold |
+| case | planted row(s) | what must hold |
 |---|---|---|
-| (a) clock boundary | filing A accepted exactly at 2021-03-01 22:00:00 UTC; filing B (another CIK) at 21:59:59 | A is **not** visible at session 2021-03-02 (strict `<` against date(t-1) 22:00) and is visible at 2021-03-03; B is visible at 2021-03-02 |
-| (b) future sentinel | a 2022 filing with `doc_sim_cosine` = 0.123456 | no session before that filing's V reads 0.123456 |
-| (c) amendment | a 10-K/A accepted after A, with similarity 0.0 | it never appears in any value, as current or as prior |
+| (a) clock boundary | filing A accepted exactly at 2021-03-01 22:00:00 UTC; filing B at 21:59:59 | A is not visible at 2021-03-02 and is visible at 2021-03-03; B is visible at 2021-03-02 |
+| (b) future sentinel | a filing with `doc_sim_cosine` = 0.123456 | it is never read before its V |
+| (c) amendment | a 10-K/A | never current or prior |
 | (d) null clock | a row with NULL `available_at` | never used |
-| (e) sealed part | a `year=2024` part listed in the fixture manifest | never opened (counted); the build succeeds |
+| (e) sealed part | a `year=2024` part | never opened (counted) |
+| (f) inverted prior | a row with `prior_available_at >= available_at` | NaN (counted), never its value |
+| (g) row-level seal | a row stamped 2024-01-01 00:00 UTC inside a `year=2023` part | the build is **refused** (as `research_fields_gold.py:28-29`: "refused, never dropped silently") |
 
-Teeth: the oracle run with `<=` in place of `<`, or with the mark of session t in place of t-1, must break (a), and
-the test asserts that it does (the AL-SIG probe pattern).
+Teeth: the oracle with `<=` in place of `<`, or with the mark of t or t-2 in place of t-1, breaks (a).
 
-**Capacity.** Slow: filings arrive quarterly, the drift lasts 3-18 months, and the registered half-life is 126
-sessions. It raises capacity (lit §4.3).
+**Capacity.** Slow (half-life 126 sessions).
 
-**Bar.**
-- rho <= .1 (lit §3.1 F1). The `filing_events` theme overlaps only partly.
-- SR_c: CMN's value-weighted alpha is 34-58 bps/month for up to 18 months [V8L], i.e. 4.1-7.0% a year.
-  - At 8-12% annual volatility for a value-weighted quintile long/short on a slow non-style characteristic [est], the
-    gross Sharpe is .34-.87, centre about .55.
-  - Turnover is at most once per filing, so the cost drag is small (< .05 [est]). That gives net SR_c about .4-.65.
-  - The lit §6 book-level gain of +.03 to +.06 at rho .1 back-solves to SR_c .50-.64 [arith, lit §3.0 formula].
-- Clears on paper, with the decay-after-publication caveat above.
-
-**Registration.** Amend `scripts/specs/p9/blocked/lazy_prices.json`, never a second id. The text is in section 5.
+**Bar.** Fails (section 0).
 
 ---
 
-## 2. `hf_crowd` (F2, Brown-Howard-Lundblad 2022 RFS 35(7) [46]): designed, NOT to be built
+## 2. `hf_crowd` (F2, Brown-Howard-Lundblad 2022 RFS 35(7) [46]): designed, NOT built
 
-**Registry row (ready, not built)**
+**Source correction (review M4).** The house already has stage `thirteenf_filer_type` (main
+`alpha_panel/filer_type.py:1-25`, `adv.py:1-26`). It gives:
+- a dated `filer_type` per (13F filer CIK, quarter), with value `hedge_fund` among the types;
+- `filer_type_pit`, which repeats the rules on evidence published by the 13F deadline only, with no bulk Schedule D
+  and no later roster (`filer_type.py:20-24`).
+
+Its clocks matter here:
+- Bulk Schedule D rows are available at the zip's Last-Modified, 2025-09-26 / 2026-05-01 (`adv-bulk-publication-v1`,
+  `adv.py:25-26`). Schedule D gross asset value is therefore invisible to TRAIN.
+- Monthly rosters carry private-fund counts by type only from 2023 (`adv.py:9-10`).
+
+So the earlier GAV-share definition has no point-in-time input inside TRAIN before 2023. The design now reads the
+house stage.
+
+**Registry row (ready)**
 
 ```json
 {"name": "hf_crowd", "kind": "engine", "builder": "hf_crowd", "dtype": "f64", "point_in_time": true,
- "requires": [], "options": {"group": "13f_holders"}, "sources": ["thirteenf", "adv_filer_type"],
+ "requires": [], "options": {"group": "13f_holders"}, "sources": ["thirteenf", "thirteenf_filer_type"],
  "first_session": null, "owner": "engine-only:DEC-5 (not built: ALSIG-4)",
  "spec_text": {
-  "units": "share in [0, 1] of the line's mapped 13F position value held by hedge-fund filers",
-  "clock": "13f-quarter-adv-asof-v1: quarter P visible at V(P) (stage 13f-filed-plus-46h-v1, as gia_13f); a filer's type at P from the latest adv_filer_type vintage of each of its CRDs with available_at < V(P); session t reads the latest P with V(P) < date(t-1) 22:00 UTC, P <= date(t) and date(t) - P <= 150 days; session 0 -> NaN",
-  "staleness": "date(t) - P > 150 days -> NaN (stage staleness_days 150); fewer than 5 13F holders -> NaN",
-  "source_columns": ["filings.filer_cik", "filings.available_at", "holdings.*  (as gia_13f)", "adv_filer_type.filer_cik", "adv_filer_type.available_at", "adv_filer_type.raum_usd", "adv_filer_type.hedge_fund_gav_usd", "adv_filer_type.withdrawn"],
-  "definition": "Hedge-fund crowding (Brown, Howard and Lundblad 2022). Positions of quarter P as gia_13f's position rows (13f-asof45-effective-v1, F13_ROWS_RULE, CUSIP map at P). Filer k is a hedge-fund filer at P iff the sum over its CRDs of hedge_fund_gav_usd >= 0.5 x the sum of raum_usd, over each CRD's latest vintage with available_at < V(P) (a majority of regulatory AUM in hedge funds: a mechanical cut). Value = sum over hedge-fund filers of value_k(i) / sum over all filers of value_k(i); NaN with fewer than 5 holders (gia_13f's minimum). Formula id hf-crowd-adv-share-v1.",
+  "units": "share in [0, 1] of the line's mapped 13F position value held by filers typed hedge_fund",
+  "clock": "13f-quarter-filer-type-pit-v1: quarter P visible at V(P) (13f-filed-plus-46h-v1, as gia_13f); a filer's type at P = its thirteenf_filer_type filer_type_pit label for P, used only when that label's available_at < V(P); session t reads the latest P with V(P) < date(t-1) 22:00 UTC, P <= date(t), date(t) - P <= 150 days; session 0 -> NaN",
+  "staleness": "date(t) - P > 150 days -> NaN; fewer than 5 13F holders -> NaN",
+  "source_columns": ["filings.filer_cik", "filings.available_at", "holdings.* (as gia_13f)", "thirteenf_filer_type.filer_cik", "thirteenf_filer_type.period", "thirteenf_filer_type.filer_type_pit", "thirteenf_filer_type.available_at"],
+  "definition": "Hedge-fund crowding (Brown, Howard and Lundblad 2022): value = sum over filers k with filer_type_pit = hedge_fund of value_k(i) / sum over all filers of value_k(i), positions as gia_13f's position rows; unclassified filers count in the denominator only; NaN with fewer than 5 holders. Formula id hf-crowd-filer-type-pit-v1.",
   "domain": [0.0, 1.0], "non_pit_aspects": [], "point_in_time": true}}
 ```
 
+The column names of `thirteenf_filer_type` (`period`, `filer_type_pit`) must be confirmed against the stage before
+coding.
+
 **K-P9-11 keys.**
-- `source_sample_end`: **2016**. BHL's sample is about 1,500 hedge funds over 2004-2016, checked by the AL-SIG
-  round-0 reviewer. The sample overlaps the OD-3 block, so the source is **contaminated**.
-- `predicted_mechanism`: unchanged from the blocked registration.
-- `data_class`: **P**.
+- `source_sample_end`: 2016 (BHL 2004-2016). The sample overlaps the OD-3 block, so the source is contaminated.
+- `predicted_mechanism`: as registered.
+- `data_class`: P.
 
-**Planted-leak probe.**
+**Probe.**
+- A filer whose `filer_type_pit` changes between quarters.
+- A label stamped at V(P) + 1 ns is never used for P.
+- A filer typed only through bulk Schedule D (stamped 2025) is never `hedge_fund` inside TRAIN.
+- Sealed parts are never opened.
+- Teeth: using the non-PIT `filer_type` fails the bulk case.
 
-| case | planted rows | what must hold |
-|---|---|---|
-| vintage flip | adviser A is not a hedge-fund filer in vintage v1 (available 2020-04-01) and is one in v2 (available 2021-04-01) | 2020q4 (V around 2021-02-16) classifies A by v1; 2021q1 classifies it by v2 |
-| late vintage | a vintage stamped V(P) + 1 ns | never used for P |
-| withdrawn adviser | an adviser with ADV-W in 2022-06 | still classified for its 2020-2021 quarters |
-| sealed parts | 13F and ADV parts dated 2024 or later | never opened |
+**Capacity.** Slow.
 
-Teeth: classifying every quarter by each adviser's last vintage must fail the test.
-
-**Capacity.** Slow: quarterly, registered half-life 63 sessions.
-
-**Bar.** Fails the rho half (.2 > .1). Ruling ALSIG-4 stands: the string stays `blocked_on_data` and is never queued
-without a new PM ruling. Its mechanism (pay for tail risk from crowded selling) also adds negative skew to the book.
-**Do not build.** Ask B2 is scheduled last.
+**Bar.** Fails (section 0; ALSIG-4).
 
 ---
 
-## 3. `bm_int` (F10, Eisfeldt-Kim-Papanikolaou 2022 CFR 11(2) [47]), a `replace` of `bm`: designed, NOT to be built
+## 3. `bm_int` (F10, Eisfeldt-Kim-Papanikolaou 2022 CFR 11(2) [47]), a replace of `bm`: designed, NOT built
 
-**Registry row (ready, not built)**
+**Registry row (ready)**
 
 ```json
 {"name": "bm_int", "kind": "engine", "builder": "bm_int", "dtype": "f64", "point_in_time": true,
@@ -165,140 +223,137 @@ without a new PM ruling. Its mechanism (pay for tail risk from crowded selling) 
   "units": "intangible-adjusted book-to-market (ratio), ranked within FF12 as bm",
   "clock": "funda-asof-v1: per (cik, datadate) the latest compustat_std funda vintage with available_at < date(t-1) 22:00 UTC; fiscal year T = the latest datadate with a visible annual row; a year's CPI-U average visible after the release of its December value; the bm term from the same session",
   "staleness": "bm's staleness; and date(t) - datadate(T) > 400 days -> NaN",
-  "source_columns": ["funda.cik", "funda.datadate", "funda.available_at", "funda.xsga", "funda.gdwl", "funda.fin_template", "cpi.value", "cpi.available_at"],
-  "definition": "Intangible value (Eisfeldt, Kim and Papanikolaou 2022, baseline): bm_int = bm + (INT_T - GDWL_T) / ME, ME = bm's denominator on the same row, so book equity, ME, coverage and the FF12 ranking stay bm's (one change, PM7-14). INT by perpetual inventory on real SG&A (xsga / CPI-U average of the fiscal year): INT_T = (1 - 0.2) INT_(T-1) + SGA_T, INT_0 = SGA_1 / (0.1 + 0.2) at the first visible fiscal year (delta .2, g .1: EKP section 2.1), reflated to year-T dollars; GDWL_T = gdwl of year T (0 when NaN). A gap year (xsga NaN between visible years) -> NaN (missing is not zero, EKP). Templates without an SG&A line (fin_template bank or insurer): INT = GDWL = 0, so bm_int = bm. Formula id intangible-bm-ekp-v1.",
+  "source_columns": ["funda.cik", "funda.datadate", "funda.available_at", "funda.xsga", "funda.xrd", "funda.gdwl", "funda.fin_template", "cpi.value", "cpi.available_at"],
+  "definition": "Intangible value (EKP 2022 baseline): bm_int = bm + (INT_T - GDWL_T) / ME, ME = bm's denominator on the same row (book equity, ME, coverage and FF12 ranking stay bm's: one change, PM7-14). SGA_T = xsga_T + xrd_T when xrd is reported as a separate element (house XBRL items: fund_items.py:93, :104), else xsga_T, so the flow matches EKP's Compustat XSGA, which includes R&D. INT by perpetual inventory on real SGA (deflated by the fiscal year's CPI-U average): INT_T = (1 - 0.2) INT_(T-1) + SGA_T, INT_0 = SGA_1 / (0.1 + 0.2) at the first visible fiscal year (delta .2, g .1: EKP section 2.1), reflated to year-T dollars; GDWL_T = gdwl of year T (0 when NaN). A gap year (xsga NaN between visible years) -> NaN. Templates without an SG&A line (bank, insurer): INT = GDWL = 0, so bm_int = bm. Formula id intangible-bm-ekp-v1.",
   "domain": null, "non_pit_aspects": [], "point_in_time": true}}
 ```
 
-**Constants.** Verified this lane from NBER w28056 (revision of November 2021):
-- "INT_it = (1 − δ)INT_it−1 + SG&A_it", with "INT_i0 = SG&A_i1/(g + δ)", "g = 0.1" and "δ = 0.2";
-- SG&A is "real SG&A expenditure, calculated by deflating xsga by the consumer price index";
-- B_INT subtracts goodwill.
+**Open point.** The B3 convention report (`atx-db-request.md` B3 (iii)) decides whether some issuers' filed SG&A
+element already includes R&D. If so, the `+ xrd` rule must name how those issuers are detected before any data is
+read.
 
-The reflation step and the exact book-equity line are [verify against the CFR appendix]. The design keeps the house
-`bm` book equity by construction, so only the INT - GDWL term is new.
+**Verified constants** (NBER w28056 rev. Nov 2021): delta .2, g .1, `INT_i0 = SG&A_i1/(g + δ)`, CPI deflation,
+goodwill subtracted, and the sample "January 1975 to December 2018". The reflation step is [verify against the CFR
+appendix].
 
 **K-P9-11 keys.**
-- `source_sample_end`: **2018**. NBER w28056 rev. 2021 says "The sample is from January 1975 to December 2018". The
-  typeset CFR text was not read; this is the same standard as AL-SIG's WYZ check. The sample includes 2015-2018, so
-  the source is **contaminated** for OD-3.
-- `predicted_mechanism`: "book equity omits the capitalised SG&A stock (organisation capital), so B/M misprices
-  intangible-intensive firms; adding the stock to book value ranks value more accurately within industries and the
-  corrected value premium is larger".
-- `data_class`: **W**.
+- `source_sample_end`: 2018. The sample includes 2015-2018, so the source is contaminated; that is a flag for OD-3,
+  not a bar criterion.
+- `predicted_mechanism`: "book equity omits the capitalised SG&A stock, so B/M misprices intangible-intensive firms;
+  adding it ranks value more accurately within industries and the corrected value premium is larger".
+- `data_class`: W.
 
-**Planted-leak probe.**
+**Probe.**
+- A FY2019 `xsga` restated from 100 to 1000 (restatement available 2021-02-25): every earlier session uses 100.
+- A CPI value released after the mark is not used.
+- A `year=2024` part is never opened.
+- Teeth: a clock-blind as-of read breaks the first case.
 
-| case | planted rows | what must hold |
-|---|---|---|
-| restatement | FY2019 `xsga` = 100 (available 2020-02-20), restated to 1000 (available 2021-02-25) | every session before the restatement becomes visible uses 100 |
-| CPI release | a CPI value released after the mark | not used |
-| sealed part | a `year=2024` funda part | never opened |
+**Capacity.** Slow.
 
-Teeth: an as-of read that ignores the clock (latest vintage over all time) must break the first case.
-
-**Capacity.** Slow (annual).
-
-**Bar. Fails.**
-- As an add, rho is .7 to value (lit) and HML_INT vs HML_FF correlation is 76% (EKP).
-- As a replace, the change acts through the difference portfolio (long HML_INT, short HML_FF). EKP give its Sharpe as
-  "0.32 over the full sample" (1975-2018, before costs), below .4.
-- Their .62 "in data since 2007" is a sub-window that overlaps OD-3.
-- Novy-Marx-Medhat [38] find it spanned by profitability, and X-4 (an FF49 value member change) lost -.058 (lit §0.1).
-
-**Do not build.** Record it as excluded by the bar and do not register it (ALSIG-2 precedent). Ask B3 stays a
-platform item.
+**Bar.** Fails the SR half (section 0).
 
 ---
 
-## 4. Option-implied borrow and put-call parity (F4 [50][51], with F5 [54] and F6 [55]): signals NOT built; fee path BUILD if data is bought
+## 4. Option-implied borrow and put-call parity (F4 [50][51], with F5 [54] and F6 [55])
 
-**Data.** OD-P9-4 (strike-level end-of-day options: ORATS strikes or OPRA) or OD-P9-5 (securities lending). These are
-purchases, not atx-db asks, but they land under the same rules C1-C6 as ask B (`atx-db-request.md`).
+**Data.** OD-P9-4 (strike-level end-of-day options) or OD-P9-5 (securities lending). Choosing between them is the
+owner's money decision (ALD-2). Either one lands under rules C1-C6 of `atx-db-request.md`.
 
-| route | per (`security_id`, date) columns | adds |
+| route | per (`security_id`, date) | fills |
 |---|---|---|
-| options | per (expiry, strike): call / put bid, ask, mid, vendor IV, open interest, volume; underlying close; risk-free curve; point-in-time dividend forecast; `snapshot_time`; `available_at` (the snapshot instant, or delivery if later) | `fee_bps` (implied); data for F4-F6 |
-| lending | indicative fee (bps), utilisation, lendable value, on-loan value; `available_at` = vendor publication | `fee_bps` (observed) **and** `locate_dollars` (from lendable supply) |
+| options | per (expiry, strike): call / put bid, ask, mid, IV, open interest, volume; underlying close; risk-free curve; point-in-time dividend forecast; `snapshot_time`; `available_at` | `fee_bps` (implied) |
+| lending | fee (bps), utilisation, lendable, on-loan; `available_at` = vendor publication | `fee_bps` and `locate_dollars` |
 
-**History.**
-- TRAIN needs 2019-12-01 to 2023-12-29.
-- The OD-3 block needs 2014-10-01 onward. OD-P9-4 as written covers only 2018-2023, so OD-3's 2015-2017 would run on
-  the flat fee. Either buy 2014-2023, or the prereg states that OD-3 uses a different cost model.
+**History.** TRAIN needs 2019-12-01 to 2023-12-29. The OD-3 block needs 2014-10 onward, or the prereg states that
+OD-3 runs on the flat fee.
 
-### 4a. `borrow_fee_implied`: the realism path (not a signal; outside the bar)
+### 4a. `borrow_fee_implied`: realism (outside the bar)
 
 - **Registry row.**
-  - `name`, `builder`: `borrow_fee_implied`; `sources`: `["options"]` or `["sec_lending"]`; `group`: `borrow`.
-  - `units`: annual borrow fee in bps on short dollars.
-  - `clock`: the latest snapshot with `available_at < date(t-1) 22:00 UTC`. It is stamped by the publication instant,
-    never by the trade date.
+  - `name` / `builder`: `borrow_fee_implied`; `sources`: `["options"]` or `["sec_lending"]`; `group`: `borrow`.
+  - `units`: annual bps on short dollars.
+  - `clock`: the latest snapshot with `available_at < date(t-1) 22:00 UTC`, stamped by its publication instant, never
+    by the trade date.
   - `definition` (options route): the implied fee h from put-call parity on near-ATM, short-dated pairs, solving
     C - P = S·e^(-hT) - PV(div) - K·e^(-rT); the median across pairs; `fee_bps = max(h, 0) x 1e4`.
-    - The moneyness and tenor cut-offs are fixed from Muravyev-Pearson-Pollet 2025 [51] [verify] before any read.
-    - If those cannot be verified, the lane fixes one set blind, with the mechanical argument that short-dated
-      near-ATM pairs minimise early-exercise bias.
+    - Moneyness and tenor cut-offs are fixed from [51] [verify] before any read, or else blind, with the
+      early-exercise argument.
   - Lending route: the observed fee.
-  - A name without data gets NaN, which maps to `default_fee_bps`.
 - **Use.**
-  - The fee goes into `BorrowSchedule::fee_bps` (`atx-engine/include/atx/engine/book/borrow_schedule.hpp:58-79`;
-    `FeeOnceV2`, `rebate_bps` 0).
+  - The fee goes into `BorrowSchedule::fee_bps` (`borrow_schedule.hpp:58-79`; `FeeOnceV2`, `rebate_bps` 0).
+  - **A cell with no data gets `default_fee_bps` written into it by the builder.** `fee()` returns the grid cell
+    (`:77-79`), and validation rejects a non-finite or negative fee (`:85-86`, `:102`).
   - The lending route also fills `locate_dollars`.
   - It sits behind a flag; with the flag absent, today's flat fee is byte-identical.
-  - It is registered as a cost-model protocol change, not a hypothesis. It lowers modelled net Sharpe by about .06-.10
-    (lit §0 item 5).
+  - It is registered as a cost-model protocol change.
 - **Probe.**
-  - A sentinel fee spike on day d (available d 20:30 UTC) must not reach the grid row of any session at or before d.
-  - A lending fee for date d published at d+1 06:00 UTC must be stamped at its publication.
-  - Teeth: stamping by trade date must fail.
-  - Parts dated 2024 or later are never opened.
-- **Capacity.** n/a (cost model). It makes every capacity curve more realistic.
+  - A fee spike on day d (available d 20:30 UTC) reaches no grid row at or before d.
+  - A lending fee published at d+1 06:00 UTC is stamped at its publication.
+  - Teeth: stamping by trade date fails.
+  - Sealed parts are never opened.
 
 ### 4b. `pcp_spread` (F4, with F6 as one hypothesis): NOT built
 
-- **Definition (Cremers-Weinbaum).** Per name-day, the open-interest-weighted mean over matched pairs (same strike,
-  same expiry) of IV_call - IV_put; long high, short low, held about a week.
+- **Definition (CW).** Per name-day, the open-interest-weighted mean over matched pairs of IV_call - IV_put; long high,
+  short low, held about a week.
 - **K-P9-11 keys.**
-  - `source_sample_end`: **unverified**. The CW abstract (Cambridge Core) states no years, SSRN 968237 refused access,
-    and lit §5.2(b) only places F4-F5 at "2005-2010". It is left out (ALSIG-1).
+  - `source_sample_end`: unverified. The abstract states no years and SSRN returned 403, so it is left out (ALSIG-1).
   - `data_class`: N.
-- **Bar. Fails both halves.**
-  - rho is .3 to short_interest (lit §3.1).
-  - The abstract itself says "the degree of predictability decreases over the sample period ... consistent with
-    mispricing during the earlier years of the study, with a gradual reduction of the mispricing over time".
-  - Weekly turnover takes net far below gross.
-- F6 (An-Ang-Bali-Cakici, change in call IV minus change in put IV) has rho .3. F5 `os_ratio` (Johnson-So) has rho
-  .2. Both fail the rho half.
-- **Capacity.** Fast (1-4 weeks); it lowers capacity (lit §4.3).
-- **Do not build** any of F4-F6 as signals. Because the signals are out, OD-P9-4 versus -5 is a realism choice only
-  (PM question 6 in the report).
+- **Capacity.** Fast.
+- **Bar.** Fails (section 0). F5 `os_ratio` and F6 also fail.
 
 ---
 
-## 5. Amendment text for the two existing blocked registrations (not applied: this lane writes only `al-data/`)
+## 5. Spec amendments for root (ALD-2, ALD-3, ALD-4; not applied by this lane)
 
-wave3-carry requires these files to be amended, with no duplicate id across the queue directories. Whoever applies
-the text runs `scripts/tests/test_p9_al_sig_registrations.py` afterwards; it pins these documents, including the
-ALSIG-4 note. Neither `dsl` nor `dsl_sha256` changes. No new id is proposed: `bm_int` and `pcp_spread` are excluded by
-the bar and not registered.
+Root applies these in one spec commit at the wave-2 gate (ALD-2). No `dsl` or `dsl_sha256` changes. No new id is
+proposed: `bm_int`, `pcp_spread` and `os_ratio` are excluded by the bar and not registered (ALD-1).
 
-`scripts/specs/p9/blocked/lazy_prices.json`: replace three keys and append one history entry.
+**5.1 `scripts/specs/p9/blocked/lazy_prices.json`.** Replace four keys and append one history entry.
 
 ```json
-"formula": "lazy_prices (engine-only C++ kind, DEC-5; design .superpowers/sdd/platform-p9-20261003/al-data/builder-designs.md section 1): term-frequency cosine of the full primary document of a firm's latest original 10-K or 10-Q to its original filing of the same form family and fiscal period one fiscal year earlier (higher = fewer changes: the non-changers CMN buy), visible from its EDGAR acceptance under the house stage rule, 400-day staleness",
+"formula": "lazy_prices (engine-only C++ kind, DEC-5; design .superpowers/sdd/platform-p9-20261003/al-data/builder-designs.md section 1): term-frequency cosine of the full primary document of a firm's latest original 10-K or 10-Q to its original filing of the same form family and fiscal period one fiscal year earlier (higher = fewer changes: the non-changers CMN buy), visible from its EDGAR acceptance under the house stage rule, 400-day staleness; fixed before data (ALD-1)",
 "domain": "[0, 1]; NaN without a same-period prior-year original, past 400 days, or where the text landing does not cover the line",
-"blocked_on": "atx-db ask al-data/atx-db-request.md B1 (10-K and 10-Q text accepted 2012-2023 with full-document cosine, year-partitioned, coverage gate), then the engine kind",
+"blocked_on": "atx-db ask al-data/atx-db-request.md B1 (low priority) and a new PM ruling on the bar (ALD-4)",
+"notes": "<existing notes>; PM ruling ALD-4: on post-publication expectations (literature return x (1 - .58)) the a-priori net SR_c is .09-.37 < .4, so it fails the bar; it stays a blocked_on_data registration and is never queued without a new PM ruling",
 "history": [ ...existing entry...,
   {"status": "blocked_on_data", "at": "2026-10-04", "by": "AL-DATA",
-   "note": "W3-18 doc-only lane: design and atx-db ask written; bar on paper: clears (rho <= .1; SR_c argued from CMN's value-weighted alpha), decay after publication unverified; no field, not in the queue"}]
+   "note": "ALD-4: fails the SR half of the bar (net SR_c .09-.37 after the post-publication base rate); never queued without a new PM ruling; design al-data/builder-designs.md section 1"}]
 ```
 
-`scripts/specs/p9/blocked/hf_crowd.json`: append one history entry only.
+**5.2 `scripts/specs/p9/blocked/hf_crowd.json`.** Append one history entry. If you prefer to change `formula` to the
+section 2 definition, change only that, blind.
 
 ```json
 {"status": "blocked_on_data", "at": "2026-10-04", "by": "AL-DATA",
- "note": "W3-18: design written, not to be built: rho .2 fails the bar (ALSIG-4); the 2004-2016 source sample overlaps the OD-3 block; Form ADV ask deferred (al-data/atx-db-request.md B2)"}
+ "note": "W3-18 / ALD-5: design written, not built: rho .2 fails the bar (ALSIG-4); the 2004-2016 source sample overlaps the OD-3 block; source would be the house thirteenf_filer_type stage (filer_type_pit), which has no point-in-time fund-type input before 2023"}
 ```
 
-If the schema refuses a second history entry with the same status, put the same text in `notes` instead. That
-fallback is the applier's call; it changes nothing that is hashed.
+If the schema refuses a second history entry with the same status, the same text goes in `notes`.
+
+**5.3 `russell_recon`: a second `non_pit_aspects` entry (ALD-3).** This is a C++ and registry change, not a JSON spec
+edit.
+- (i) Append the text below as the **second** element of `d.non_pit_aspects` in `make_russell_recon_spec()`
+  (`atx-engine/src/research/fields/russell_recon_field.cpp:61-69`). Keep the ALSIG-7 entry first.
+- (ii) Re-derive the `russell_recon` row of `atx-engine/tools/field_registry.json` through the AL-SIG round-trip (parse
+  the C++ literal, `field_registry.validate`, `field_registry.dump`, `--check`). The fingerprint moves; the field was
+  never built, so it stays at revision 1.
+- (iii) `research_fields_al_sig_fixture_test.cpp:140` pins `non_pit_aspects.size() == 1U`. It becomes `2U`, and
+  `:141-142` keep checking element 0. This is a deliberate rule change under ruling ALD-3, not an edit to make a test
+  pass.
+- (iv) Root builds `atx-engine-research-fields-tests` + `atx-research-fields` through `research-build.ps1` and runs
+  `ResearchFieldsAlSig*:ResearchFieldsRegistry*`, `test_p9_al_sig_registrations.py` and `test_field_registry.py`.
+
+The aspect text, verbatim:
+
+> values: the house indexes stage (atx-db alpha_panel.indexes, snapshot) selects members on the rank-date panel
+> through security_type, is_adr, is_adr_likely, is_lp and is_operating, and the panel takes security_type from the
+> Nasdaq Trader directory snapshot of 2026-09-18 whenever the dated FINRA type is stale, unknown or
+> common_unverified, and ORs that snapshot's ETF flag into is_etf, which gates is_operating (alpha_panel.panel
+> SECURITY_FLAGS, OPERATING_FLAGS); the snapshot covers only lines still trading in September 2026, so a line's
+> membership in R1000P or R2000P at a 2018-2023 rank date, the company ranks and the p1000 breakpoint, and therefore
+> the line's +1, -1 or 0 or its NaN, can depend on its survival to 2026 and on its 2026 classification (post-seal
+> information).
+
+The prefix `values:` follows the house aspect labels. The entry also moves presence, as its text says.

@@ -1,161 +1,229 @@
-# Lane AL-DATA report (doc-only, Ruling W3-18)
+# Lane AL-DATA report (doc-only, Ruling W3-18; fix round 1 applied)
 
 ## Outcome
 
-DONE_WITH_CONCERNS. The lane produced the written atx-db request and four builder designs. It built nothing and
-registered nothing.
-- No gated data has landed: OD-P9-4..6 cannot be executed (ledger :16), and P9-S lapsed at 0 (W3-15).
-- Concern 1: the required amendment of the two blocked registrations is given as text but not applied, because this
-  lane writes only `al-data/`.
-- Concern 2: only one family clears the bar on paper, and only narrowly.
+DONE_WITH_CONCERNS after fix round 1.
+
+- **What was produced.** The atx-db request and the gated-family designs. Nothing is built or registered, and no data
+  has landed (ledger :16; W3-15).
+- **Under ALD-4, no family clears the bar.** `lazy_prices` now fails as well.
+- **The ALD-3 trace does not close.**
+  - Neither the accepted book (the 67 candidates of `lib-v8ysb-gm`) nor the role `train-2020-2023-lo3` reads the
+    indexes stage or the directory snapshot directly.
+  - Both read the atx-db identity bridge `identity-bridge-v2-pit`. Its strict tier is built by a step that reads the
+    2026 directory, so whether they depend on it **cannot be told from source**.
+  - Ruling ALD-3 says the PM stops if a dependence is found; this answer is "cannot tell", with a stated way to settle
+    it (Consumers section).
 
 ## Branch / SHA / pool
 
-- No pool, no branch and no commit (W3-18). The files are left untracked.
-- Everything was read at pool-2 HEAD `f6444417` (`feat/platform-p9-20261003`).
-- atx-db source was read only with `git show <ref>:<path>` at `main` = `dec03454` and `feat/tier1-v3-warehouse` =
-  `0e2fa077`. The pool-2 tree has no `atx-db/src/atx_db/alpha_panel/` package, and `C:/atx` was not read.
+- No pool, no branch, no commit (W3-18). The files are untracked.
+- Read at pool-2 HEAD `f6444417`.
+- atx-db source was read only through `git -C C:/atx-wt/pool-2 show` at `dec03454` (main), `0e2fa077`, `c0eb2f74` and
+  `75efb231` (the warehouse branch over time; the cited files are identical across them).
 
-## Files written
+## Files
 
 1. `C:/atx-wt/pool-2/.superpowers/sdd/platform-p9-20261003/al-data/atx-db-request.md`
-   - Part A: ALSIG-7, with file and line citations, the exact point-in-time rule (R1-R6), the planted test, and the
-     acceptance checks.
-   - Part B: the three OD-P9-6 asks, each with columns, keys, availability stamp, history depth and acceptance check.
-     Common rules C1-C6 include partitioning by year so that a TRAIN build never opens a part stamped 2024 or later.
+   - Part A: four look-ahead channels, rules R1-R8, the fixture test, receipt-based acceptance.
+   - B1 / B3: low priority, corrected.
+   - B2: dropped, with one deferral line (ALD-5).
 2. `C:/atx-wt/pool-2/.superpowers/sdd/platform-p9-20261003/al-data/builder-designs.md`
-   - Four one-page designs in the house registry shape: `lazy_prices`, `hf_crowd`, `bm_int`, and option borrow /
-     put-call parity (`borrow_fee_implied` and `pcp_spread`).
-   - Each has its K-P9-11 keys, planted-leak probe, capacity class and bar verdict.
-   - Section 5 holds the blocked-registration amendment text.
+   - Section 0: the bar under ALD-4, with every band derived.
+   - Sections 1-4: the designs.
+   - Section 5: spec amendments for root, including the second `russell_recon` aspect.
 3. `C:/atx-wt/pool-2/.superpowers/sdd/platform-p9-20261003/al-data/task-AL-DATA-report.md` (this file).
 
-## Required items (wave3-carry "AL-DATA")
+## Required items (wave3-carry "AL-DATA", as amended by ALD-1..5)
 
 | item | result |
 |---|---|
-| OD-P9-4..6 not executable: build nothing; a one-page design per family | Done: `builder-designs.md` sections 1-4. No code. |
-| ALSIG-7: the request to the atx-db owner | Done: request part A. It also covers two more look-ahead channels found in the same `intervals()`: `effective_to` = `last_session` on rows stamped at the rank date, and the `recon_summary` add / delete counts. The existing atx-db test pins the first of these at `test_alpha_panel_indexes.py:72`. |
-| ALSIG-4: `hf_crowd` stays blocked and is never queued | Held. The design is marked "not to be built", and ask B2 is deferred to last. |
-| Amend `scripts/specs/p9/blocked/{lazy_prices,hf_crowd}.json`; no duplicate id | **Not applied** (doc-only, W3-18). The exact text is in `builder-designs.md` section 5. No new id is proposed. |
-| K-P9-11 keys; `source_sample_end` from the paper; unverifiable rows left out; ids at most 24 characters | See the table below. All ids are 6-18 characters. |
-
-The `source_sample_end` values:
-
-| field | value | source |
-|---|---|---|
-| `lazy_prices` | 2014 | CMN, checked by the AL-SIG reviewer |
-| `hf_crowd` | 2016 | BHL, checked by the AL-SIG reviewer |
-| `bm_int` | 2018 | **verified this lane**: NBER w28056 rev. Nov 2021, "The sample is from January 1975 to December 2018" |
-| `pcp_spread` | left out | **unverified**: the CW abstract states no years and SSRN returned 403 |
+| OD-P9-4..6 not executable: build nothing; a design per family | Done (designs sections 1-4). No code. |
+| ALSIG-7 request | Done, now with four channels: presence, `effective_to`, `recon_summary`, and directory eligibility (ALD-3). |
+| ALSIG-4: `hf_crowd` never queued | Held. The source is corrected to the house `thirteenf_filer_type`. |
+| Amend `blocked/{lazy_prices,hf_crowd}.json`; no duplicate id | Text in designs section 5, applied by root (ALD-2). `lazy_prices` now carries the ALD-4 never-queued note. |
+| `russell_recon` second `non_pit_aspects` entry (ALD-3) | Text and procedure in designs section 5.3, applied by root. It needs a build, because it edits the C++ spec literal and the gtest at `:140`. |
+| K-P9-11 keys; `source_sample_end` from the paper; ids at most 24 characters | `lazy_prices` 2014; `hf_crowd` 2016; `bm_int` 2018 (verified); `pcp_spread` left out (unverified). All ids are 6-18 characters. |
+| ALD-3 consumer trace | Done (below). |
+| ALD-4 bar arithmetic | Done (designs section 0). |
+| ALD-5: B2 dropped; B1 / B3 low priority with the numbers | Done. |
 
 ## Evidence
 
-All of the following was read-only.
-- Ledger: grep of `progress.md`.
-- Sprint files: the carry, the AL-SIG report and re-review, the plan, and the literature review.
-- atx-db source via `git show`: `indexes.py`, `security_master.py`, `common.py`, `filing_text.py`, `text_features.py`,
-  `tests/test_alpha_panel_indexes.py`, `docs/datasets/{text_native,compustat_std}.md`, and `compustat_std.py` (grep).
-- Engine headers in pool-2: `sources/{stage,thirteenf,russell_proxy}.hpp`, `russell_recon_field.cpp`,
-  `book/borrow_schedule.hpp`, and the `field_registry.json` rows.
-- Web: the EKP NBER PDF (the WebFetch tool saved it to its own session tool-results directory, not the sprint dir) and
-  the CW Cambridge abstract.
+- **Read only.**
+  - Ledger grep; review; plan; literature review.
+  - Specs: `scripts/specs/v8/lib-v8ysb-gm.json`, `base-lo3.json`, and the library and recipe JSON they pin.
+  - `atx-engine/tools/field_registry.json` and engine / tools source.
+  - atx-db source through `git show` / `git grep`.
+  - The EKP NBER PDF (saved by WebFetch in round 0).
+- **Not done:**
+  - no build, no pytest, no git write;
+  - no atx-db data, no `build-equity/` file (including manifests), nothing dated 2024 or later;
+  - no 2020-2023 return / IC / Sharpe / NAV output.
+- **Book statistics quoted.** Two public figures from the literature review: SR_b 1.77 (lit §3.0) and X-4 -.058 (lit
+  §0.1). The rest are published literature figures (CMN, EKP, CW, Johnson-So).
 
-What was not done:
-- no build, no pytest, no git command that writes;
-- no atx-db data opened;
-- no 2020-2023 return / IC / Sharpe / NAV output read. The only Sharpe ratios read are published literature figures
-  (EKP, 1975-2018).
+## Consumers (ALD-3 trace; pool-2 tree at `f6444417`; specs, registry and source only)
 
-Disk freed: none, because nothing was built or created outside `al-data/`.
+Method:
+- grep over `atx-engine`, `atx-impl`, `scripts`, `atx-core` and `atx-tsdb` for:
+  - `indexes/`, `constituents`, `membership.parquet`, `recon_summary`;
+  - `R1000P`-`SP500P`, `r1000`-`sp500`, `univ_r3000`;
+  - `directory_*`, `security_type(_basis)`, `is_etf`, `is_operating`, `member_equity`, `is_common`, `is_adr`, `is_lp`,
+    `delisting_date`, `line_types`;
+- then every hit was read, and every registry row of the parent's field list was checked for its `sources`.
 
-## Bar verdicts (detail in `builder-designs.md`)
+### The indexes stage
 
-- **Clears on paper (narrowly): F1 `lazy_prices`.**
-  - rho <= .1.
-  - SR_c is about .4-.65 net, centre about .5 [est], taken from CMN's value-weighted 34-58 bps/month.
-  - It is slow, raises capacity, and its source sample is clean for OD-3.
-  - Risk: TRAIN falls entirely after publication, and decay after publication is unverified.
-- **Fail and should not be built:**
-  - F2 `hf_crowd`: rho .2 (ALSIG-4); its source sample is also contaminated for OD-3.
-  - F10 `bm_int`: rho .7 / .76. As a replace, the difference portfolio has SR .32 over 1975-2018 (EKP, before costs),
-    and the source is contaminated.
-  - F4 / F6 `pcp_spread`: rho .3, and predictability decays even within the authors' own sample.
-  - F5 `os_ratio`: rho .2.
-- **Outside the bar: `borrow_fee_implied`.** It is a cost-model input. Build it if OD-P9-4 or -5 is bought.
+| consumer | file:line | reads | can a value differ from what was knowable at its stamp? |
+|---|---|---|---|
+| engine kind `russell_recon` (reader + kernel) | `atx-engine/include/atx/engine/research/fields/sources/russell_proxy.hpp:32-36`; `src/research/fields/sources/russell_proxy.cpp:82-89`; `russell_recon_field.cpp:102-120` | constituents `index_id, security_id, rank_date, recon_date, available_at` | **yes**, through channel 1 (presence) and channel 4 (eligibility). It reads neither `effective_to` nor `recon_summary` |
+| registry row `russell_recon` | `atx-engine/tools/field_registry.json` (`sources ["indexes"]`, `point_in_time: false`, one aspect) | - | declared non-PIT; the second aspect is pending (designs 5.3) |
+| string `rank(russell_recon)` | `scripts/specs/p9/candidates/russell_recon.json` (`dropped`, final) | - | no trial |
+| IC admission guard | `atx-impl/src/strategy_ic_admission.cpp:583-586` | the manifest's `non_pit_aspects` | refuses the field |
+| fixtures / tests / class list | `atx-engine/tests/fixtures/research_fields_al_sig/indexes/`; `research_fields_al_sig_{russell,fixture}_test.cpp`; `atx-engine/schemas/research_store/classes.json:54` | synthetic / schema id | n/a |
 
-## Blocked on which owner decision
+No role builder, universe builder, Python field builder or other registry row reads the indexes stage.
 
-| deliverable | blocked on |
-|---|---|
-| ALSIG-7 stage fix, and through it a point-in-time `russell_recon` field | the atx-db owner (request A); not an OD |
-| `lazy_prices` kind + registration amendment | OD-P9-6 ask B1 (text landing) |
-| pinned, year-partitioned `compustat_std` (platform part) | OD-P9-6 ask B3 |
-| `hf_crowd` | OD-P9-6 ask B2 **and** a new PM ruling on the rho bar (ALSIG-4) |
-| `borrow_fee_implied` (realism) | OD-P9-4 or OD-P9-5 purchase |
-| `bm_int`, `pcp_spread`, `os_ratio` | nothing: excluded by the bar |
+### The directory snapshot (directly, or through the panel flags derived from it)
+
+| consumer | file:line | reads | differs from knowable? |
+|---|---|---|---|
+| `russell_recon`, through index eligibility | atx-db `indexes.py:156-159` (main); `panel.py:226-236`, `:259-262` | panel `security_type`, `is_adr`, `is_lp`, `is_operating` | **yes** (channel 4) |
+| field `is_common` (Python, `lake`) | `atx-engine/tools/prepare_research_fields.py:271-277`, `:1450-1469`; registry row `is_common` (`point_in_time: false`, aspect `values`) | research lake `line_types.security_type`, built by atx-db `research/spine.py:815-852` from the 2026-09-18 directory | **yes**; already declared static and non-PIT, and refused by the IC guard |
+| gold field `gp_hl_spread_21` | `atx-engine/tools/research_fields_gold.py:120-126` ("member_equity rows only" at `:125`); off by default, registered only through `prepare_research_fields_xdata.py` (`research_fields_gold.py:1-6`) | atx-db gold stage; `member_equity` = member AND `is_operating` (`panel.py:259-263`), and `is_operating` is gated by `is_etf`, which includes `directory_etf` (`:236`) | **yes**, through presence |
+| `regsho_threshold_days63`, `exch_up_365d` (the `security_master` readers) | `research_fields_holdings.py:69-70`, `:937`, `:1136` | `finra_names.parquet` only: `security_id, available_at, dissemination_date, market_class` | **no**: dated FINRA rows. The directory columns are in `lines.parquet`, which they do not read |
+| identity bridge `identity-bridge-v2-pit` (role universe `linked-operating-v3`; every field with source `identity_bridge`) | `atx-engine/tools/prepare_recent_research.py:29-35`, `:130-135`; `prepare_research_fields.py:1554-1558`, `:1675-1681`; `scripts/specs/v8/base-lo3.json` `inputs.identity_bridge` | `links.parquet`: `sr_id, cik, start, end_incl, available_at, primary, class_status` | **cannot tell** (below) |
+
+**The bridge in detail** (atx-db main `dec03454`):
+- `identity-bridge-v2-pit` = the strict and name tiers. The 2026-snapshot backfill tier is excluded
+  (`alpha_panel/identity_table.py:25-29`, `:172-176`).
+- Its `class_status` comes from the vendor ticker suffix or the FINRA issue name, both dated (`:16-17`, `:107-116`).
+- Panel `is_operating` is loaded into `core` (`:65`) but not used in the link days (`:68-85`).
+- **But** the strict tier is the r4 links (`:3`), and the r4 rehearsal builder `identity_links.build_rehearsal` reads
+  two 2026 snapshots: the Nasdaq directory and the SEC company-ticker list (`identity_links.py:840-852`).
+  - The directory's classes feed the bridge's class guards and rule-5 history (`market_owner_bridge.py:1748`,
+    `:1842-1845`).
+  - Current-ticker links carry a modelled availability (`:1770-1810`).
+- This bounded read cannot settle whether any strict-tier link the role or the fields read (start before 2024-01-01)
+  exists, or is absent, because of the 2026 directory.
+
+**What would tell.** Any one of these:
+- (a) The atx-db owner confirms which build produced the r4 rows in `identity/links_combined.parquet`, and whether its
+  class guards can create or remove a link.
+- (b) A rebuild-diff in atx-db: rebuild the strict tier with an empty directory and diff the `links.parquet` rows with
+  `start < 2024-01-01`. Zero differing rows means no dependence. The same diff with a dated ticker history in place of
+  the 2026 company-ticker file settles the second snapshot.
+- (c) A follow-up full read of `_with_class_guards`, `_rule5_classifier` and `_with_reconstructed_history` in
+  `market_owner_bridge.py`.
+
+### The answer
+
+**Accepted book.** Parent `scripts/specs/v8/lib-v8ysb-gm.json`:
+- 84-field `fields.list`;
+- library `atx-impl/strategies/fund_industry_ic_v8ysb.json`, with **67 candidates** over 58 fields (all in the list,
+  plus the role payload's `close`, `raw_close` and `volume`);
+- recipe `fund_industry_ic_v8ysb.recipe.v2.json`.
+
+| source | dependence | evidence |
+|---|---|---|
+| indexes stage | **no** | No listed field has `indexes` among its registry `sources`; only `russell_recon` does, and it is not listed. The library and recipe text contain none of the index or directory terms. |
+| directory snapshot, directly | **no** | `is_common` and the gold fields are not listed. The two listed `security_master` fields read `finra_names` only. |
+| directory snapshot, through `identity-bridge-v2-pit` | **cannot tell from source** | 35 of the 84 fields name source `identity_bridge` and 17 name `sec_identity_bridge` (50 in all). See "the bridge in detail". |
+
+**Role `train-2020-2023-lo3`** (universe `linked-operating-v3`):
+
+| source | dependence | evidence |
+|---|---|---|
+| indexes stage | **no** | `prepare_recent_research.py` reads the vendor projection, the identity bridge, `sic_events` and the `delisting` stage, and no indexes stage. |
+| directory snapshot, directly | **no** | No panel type flag is read. The `delisting` stage reads no directory or type flag: a `git grep` of `delisting.py` returns none. |
+| directory snapshot, through its pinned bridge `identity-bridge-v2-pit` | **cannot tell from source** | Same as the book. |
+
+## Bar verdicts (designs section 0)
+
+| family | net SR_c | verdict |
+|---|---|---|
+| F1 `lazy_prices` | .09-.37 after the post-publication base rate (.29-.87 before) | **fails**; never queued without a new PM ruling |
+| F2 `hf_crowd` | not derivable | fails on rho .2 |
+| F4 / F6 `pcp_spread` | - | fails on rho .3 |
+| F5 `os_ratio` | - | fails on rho .2 |
+| F10 `bm_int` | difference-portfolio SR .32 (full sample, pre-cost) | fails |
+| `borrow_fee_implied` | - | outside the bar (realism) |
 
 ## Recommended P10 queue
 
-1. **ALSIG-7 stage fix** (atx-db owner). It is small, and it protects every consumer of the Russell / S&P proxies.
-   Afterwards the engine re-pins v2 and drops the `russell_recon` aspect; the string stays `dropped`.
-2. **B1 text landing**, then the `lazy_prices` kind, then the registration amendment. This is the only family that
-   clears on paper, it is clean for OD-3, and it is slow.
-3. **Realism data** (OD-P9-5 preferred, else -4), then `borrow_fee_implied` into `BorrowSchedule` as a flagged
-   cost-model protocol.
-4. **B3 platform part** (pinned, year-partitioned `compustat_std`) for every fundamentals field. `bm_int` itself is
-   not queued.
-5. **B2 Form ADV**, only after a new PM ruling on the rho bar. Otherwise never.
-
-## Deviations
-
-- The blocked-registration amendment is text only, not applied (see the required-items table).
-- The brief asked for line citations "in the pool-2 copy" of the atx-db source. The pool-2 tree lacks the package, so
-  the lines are cited at committed refs read from pool-2. Line numbers differ between `main` and the warehouse branch,
-  and both are given.
+1. **Part A of the request:** the four indexes channels, including R7 for the directory. If R7 (a) is chosen, the same
+   restriction is worth applying to every panel consumer of `security_type` / `is_etf`.
+2. **Settle the bridge question** with one of (a) / (b) / (c) above, before the OD-3 read.
+3. **Realism data** (the owner's money decision, ALD-2), then `borrow_fee_implied` as a flagged cost-model protocol,
+   if the PM queues it.
+4. **B3 platform part**, then B1, both low priority.
+5. **Nothing from AL-DATA's signal families** by default (ALD-4).
 
 ## Open risks
 
-- F1's SR_c half is an estimate (the 8-12% volatility is assumed). A decay after publication of more than about 25%
-  fails it.
-- CMN's "full-document cosine is the headline measure" is from memory and marked [verify].
-- The Form ADV per-filing archive depth, and the CIK item in ADV Item 1, are marked [verify].
-- The 85% / 95% acceptance gates in asks B2 and B3 are proposals, not house constants.
+- The bridge dependence is unresolved, and it touches the role and 50 of the 84 book fields.
+- F1's sigma (8-12%), turnover and cost are [est]. The band is shown with its derivation; a lower sigma would raise
+  the band but not past .4 unless gross reaches about .95.
+- The column names of `thirteenf_filer_type` (`period`, `filer_type_pit`) still need confirming against the stage.
+- The `bm_int` "+ xrd" rule depends on the B3 convention report.
 
 ## Ledger candidates
 
-- atx-db `indexes.intervals()` has two more look-ahead channels besides ALSIG-7's presence leak:
-  - `effective_to` = `last_session` on rows stamped at the rank date (the 2023 reconstitution embeds facts from 2024
-    and later);
-  - `recon_summary` add / delete counts, through `alive_prev`.
-  The atx-db test `test_alpha_panel_indexes.py:72` pins the first.
-- EKP 2022 (CFR 11(2)): the sample is January 1975 to December 2018 (NBER w28056 rev. 2021). The baseline is decay
-  .2, g .1, INT_0 = SGA_1/(g+decay), 100% of real SG&A, and B_INT = BE - GDWL + INT. HML_INT minus HML_FF has SR .32
-  over the full sample and .62 since 2007; the HML_INT / HML_FF correlation is 76%. The CW 2010 abstract states no
-  sample years.
-- The atx-db text landing (`filing_text` / `text_features`, and `text_native` on the warehouse branch) covers
-  10-K / 20-F only, from 2018 (`text_native`: 2019-2026, unqualified). It has no 10-Q and no full-document similarity.
-  The legacy scope selects CIKs by 2019-2026 membership.
+- atx-db `indexes`: four non-PIT channels.
+  - `intervals()` drop (ALSIG-7);
+  - `effective_to` = `last_session` on rank-date rows, which also depends on the data's extent;
+  - `recon_summary` counts, with lake `"clock": None`;
+  - `snapshot()` eligibility through panel `security_type` / `is_etf` from the 2026-09-18 directory (`panel.py:226-236`).
+- `identity-bridge-v2-pit`'s strict (r4) tier is built by `identity_links.build_rehearsal`, which reads the 2026
+  Nasdaq directory and the SEC company-ticker snapshot (`identity_links.py:840-852`). Whether its links depend on them
+  is open.
+- EKP 2022: Jan 1975-Dec 2018; delta .2, g .1; HML_INT minus HML_FF is 2.11% a year at 6.53% sd, SR .32 (.62 since
+  2007). House `xsga` is XBRL SG&A with `xrd` a separate element (`fund_items.py:93`, `:104`), unlike Compustat XSGA.
 
 ## Questions for the PM
 
-- **Q1.** Hand the request over as written? Recommend: send A and B1 now and B3 as a platform item; mark B2 deferred
-  until the rho bar is re-ruled.
-- **Q2.** Lazy Prices measure: full-document cosine (needs a new atx-db column) or MD&A cosine (exists today)?
-  Recommend: fix full-document cosine now, before any data; fall back to MD&A only if the owner declines, ruled before
-  arrival.
-- **Q3.** Apply a decay-after-publication haircut to F1's SR_c half? Recommend: no, for consistency with
-  ALSIG-2/4/5. PRE prints the decay risk as the downside of F1's prediction, and lit §8 Q4's replication search runs
-  before registration.
-- **Q4.** May the engine kind read atx-db's per-filing similarity (a rule-pinned stage feature) instead of recomputing
-  it in C++ (PM8-12)? Recommend: yes. The clock, staleness and cross-section stay in C++, and the full documents stay
-  in atx-db.
-- **Q5.** Record `bm_int` and `pcp_spread` as excluded by the bar and leave them unregistered? Recommend: yes, by the
-  ALSIG-2 precedent.
-- **Q6.** OD-P9-4 versus -5, now that the option signals fail the bar? Recommend: choose on realism alone.
-  - Prefer OD-P9-5, which fills both the fee grid and the locate grid, if it is priced comparably.
-  - Buy 2014-2023, or the prereg states that OD-3 runs on the flat fee.
-- **Q7.** Who applies the blocked-registration amendment (section 5)? Recommend: root, in its next docs commit, after
-  `test_p9_al_sig_registrations.py` passes.
-- **Q8.** The two extra index look-ahead channels? Recommend: keep them in the request (done) and add no engine aspect,
-  because `russell_recon` reads neither column. Root greps for other house readers of `effective_to` before v2 lands.
+- **Q1.** Does the "cannot tell" answer on the identity bridge trigger the ALD-3 stop? Recommend: treat it as a
+  finding for the owner. Ask for check (b), the rebuild-diff, before the OD-3 read. The P9 cells may proceed, because
+  their parents read the same bridge and the comparison is like with like; the OD-3 read waits for (b).
+- **Q2.** Panel `delisting_date` is a static future fact on every panel row, and no traced consumer reads it. Add it to
+  the request as a note only? Recommend: yes, as written. No engine action.
+- **Q3.** Which R7 option should the request prefer? Recommend (a): restrict to dated FINRA evidence. It is cheap, and
+  it makes channel 4 provably closed through the receipt key `directory_decided_on_rank` = 0.
+
+## Fix round 1 (review `al-data/task-AL-DATA-review.md`: 6 major, 12 minor, 3 nit; rulings ALD-3, ALD-4, ALD-5)
+
+| finding | status | where / what |
+|---|---|---|
+| **M1** "no 2024+ fact under R1-R3" was false (directory eligibility) | Fixed | Request A.2 channel 4, R7, and the TRAIN claim scoped to `intervals()`; A.6 conditional; designs 5.3 second aspect; Consumers trace (ALD-3) |
+| **M2** the `counts_on_recon` check could not be run and proved nothing | Fixed | A.5: new receipt keys `rank_vintage_rows_on_recon` (compared with `counts_on_recon`), `exit_rows`, `directory_decided_on_rank` |
+| **M3** incomplete fixture | Fixed | A.4: business-day calendar 2020-05-01..2022-12-30; R1 members X / W / V; R2's `(additions, deletions)` asserted `(3, 0)` vs `(2, 1)`; "alive" = the last data session |
+| **M4** B2 ignored `thirteenf_filer_type` | Fixed | B2 dropped (ALD-5), one line naming the stage; designs section 2 now reads `thirteenf_filer_type.filer_type_pit` and states the pre-2023 gap |
+| **M5** house `xsga` does not include R&D | Fixed | B3 (iii) is now a convention report, not a gate; designs section 3: SGA = `xsga + xrd` when R&D is a separate element |
+| **M6** F1's band had no derivation | Fixed | Designs section 0: every band derived; under ALD-4, F1 is .09-.37 and fails |
+| m1 lead wording | Fixed | A.2 channel 1: one session to about 7 / 8 weeks (Russell), about 3 weeks (SP500P) |
+| m2 citations | Fixed | Main test `:62-77` / `:72`; `text_native` at `c0eb2f74`; SHAs pinned |
+| m3 channel-3 wording; lake clock | Fixed | A.2 channel 3; R4 asks for the `recon_summary` clock |
+| m4 R2 depends on the data extent | Fixed | R2 takes the schedule constant whatever the data; A.4 assertion 5 truncates the data extent |
+| m5 R3 keyed on `last_session` | Fixed | R3 is triggered by `delisting_date` or `last_session < cal[-1]` |
+| m6 R4 / R5 | Fixed | R4 uses separate vintage rows; R5 builds only from vintages stamped at or before its own stamp |
+| m7 B1 population | Fixed | B1 extends `text_native`: the complete cohort of original 10-K / 10-Q filings 2012-2023; layout is the owner's choice, partitioned by year |
+| m8 coverage denominator | Fixed | B1 (iii) excludes first filings and 20-F / 40-F; (ii) measures landing completeness |
+| m9 `lazy_prices` probe gaps | Fixed | Designs section 1, cases (f) inverted prior and (g) row-level seal |
+| m10 NaN fee | Fixed | Designs 4a: the builder writes `default_fee_bps`; cites `borrow_schedule.hpp:77-79`, `:85-86`, `:102` |
+| m11 `bm_int` wording and R&D | Fixed | Designs sections 0 and 3: SR half only; .62 set aside by the full-sample rule; R&D added |
+| m12 book statistics sentence | Fixed | Evidence names SR_b 1.77 and X-4 -.058 as lit-review figures |
+| n1 13F seal analogy | Fixed | C3 says "analogous" and gives the quarter rule |
+| n2 JF issue date | Fixed | Designs section 0, F1: June 2020; the working paper circulated before TRAIN (review n2) |
+| n3 theme rho vs book rho | Fixed | Designs section 0 bar note |
+| ALD-3 trace | Done, with one open answer | The Consumers section. The bridge's strict tier is "cannot tell", with three ways to settle it |
+| ALD-4 | Done | F1 fails; `lazy_prices` gets the never-queued note (designs 5.1) |
+| ALD-5 | Done | B2 is one line; B1 / B3 marked low priority with the numbers |
+| ALD-6 | Done | Request item **A0** added as the first item of part A: the identity-bridge strict (r4) tier. It covers the source evidence, why it matters, the rebuild-diff check (both 2026 snapshots empty; rows with `start < 2024-01-01`; counts by year and column), the identifiers and point-in-time rule if non-zero, and the acceptance test. Nothing else renumbered. |
+
+Not fixed: nothing in the review is left undone.
+- The bridge question is a new open item from the trace, not a review finding.
+- Claims that could not be supported were removed rather than softened:
+  - "usually excludes R&D" became the cited element split;
+  - the circular back-solve is no longer used as an argument;
+  - the CW sample end stays unverified.
