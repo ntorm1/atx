@@ -157,7 +157,7 @@ TEST(ResearchLedger, ReaderRefusesWhatThePythonRefuses) {
   const auto read = [](const std::string &line) {
     return lg::ledger_from_lines("fixture-ledger.jsonl", lg::split_lines(line + "\n"));
   };
-  for (const std::string bad :
+  for (const std::string &bad :
        {"\xEF\xBB\xBF" + head + R"("trial_id":"t1"})", head + "\"trial_id\":\"t\xE2\x80\xA8\"}",
         head + "\"trial_id\":\"t\xE2\x80\xA9\"}", head + "\"trial_id\":\"t\xC2\x85\"}",
         head + "\"trial_id\":\"t1\",\r\"count\":1}", head + R"("trial_id":"t1","defect":"x"})",
@@ -166,7 +166,7 @@ TEST(ResearchLedger, ReaderRefusesWhatThePythonRefuses) {
     ASSERT_FALSE(r.has_value()) << bad;
     EXPECT_EQ(r.error().code(), atx::core::ErrorCode::ParseError) << bad;
   }
-  for (const std::string ok :
+  for (const std::string &ok :
        {head + R"("trial_id":"t1","defect":null})", head + R"("trial_id":"t1","defect":""})",
         head + R"("trial_id":"t1","defect":[]})", head + R"("trial_id":"t1","defect":0})",
         head + R"("trial_id":"t1","defect":{"invalid":true}})"}) {
