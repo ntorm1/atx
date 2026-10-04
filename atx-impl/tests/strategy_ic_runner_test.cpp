@@ -3058,6 +3058,20 @@ TEST(StrategyIcRunner, AuditExactEvalModeIsRecordedAndCachedUnderItsOwnIdentity)
   EXPECT_EQ(fast_cold.log.find("IC cache-hit"),std::string::npos);
   for (const auto* file:{"train_daily_ic.csv","validation_daily_ic.csv"})
     EXPECT_EQ(file_sha(dir.path/"fast_cold"/file),file_sha(dir.path/"fast"/file)) << file;
+  // Fix round 1 (review S2 #7): a stale sidecar planted under the audit root (the ResearchFast
+  // entry's) is refused as a foreign entry, never served; restored, the audit run hits again.
+  const auto audit_entry=cache_entry(dir.path/"cold"/"summary.json","train","volume_level");
+  const auto fast_entry=cache_entry(dir.path/"fast_cold"/"summary.json","train","volume_level");
+  ASSERT_NE(audit_entry.sidecar.string(),fast_entry.sidecar.string());
+  const auto kept_sidecar=file_bytes(audit_entry.sidecar); ASSERT_FALSE(kept_sidecar.empty());
+  ASSERT_TRUE(write_bytes(audit_entry.sidecar,file_bytes(fast_entry.sidecar)));
+  const auto stale=run_named(dir,cached,"stale"); EXPECT_FALSE(stale.ok);
+  EXPECT_NE(stale.error.find("candidate cache entry mismatch: volume_level"),std::string::npos)
+      << stale.error;
+  ASSERT_TRUE(write_bytes(audit_entry.sidecar,kept_sidecar));
+  const auto restored=run_named(dir,cached,"restored"); ASSERT_TRUE(restored.ok) << restored.error;
+  EXPECT_EQ(file_sha(dir.path/"restored"/"train_daily_ic.csv"),
+            file_sha(dir.path/"audit"/"train_daily_ic.csv"));
   const auto cli=[&](const std::string& mode) {
     std::vector<std::string> args{"atx-equity-strategy-ic","--library",cfg.library_path,"--library-sha256",
         cfg.library_sha256,"--train",cfg.train_manifest,"--train-sha256",cfg.train_sha256,"--min-names","3",
@@ -4571,6 +4585,17 @@ TEST(IcLabelTerminal, LabelRoleRefusals) {
   EXPECT_NE(refused.error.find("label role differs from the scored role on a cell the role presents"),
             std::string::npos) << refused.error;
   EXPECT_EQ(refused.log.find("IC eval-start"),std::string::npos);
+  // Fix round 1 (review S2 #2): added presence that is not a termination -- here a second session
+  // after instrument 0's last scored session 419 -- refuses once both are loaded.
+  auto doubled=cfg; const auto doubled_dir=dir.path/"label_doubled";
+  ASSERT_TRUE(role(doubled_dir,17683,doubled.train_label_role_sha256,1,
+                   absent_from(kTerminalSession+2)));
+  doubled.train_label_role=(doubled_dir/"manifest.json").string();
+  ASSERT_TRUE(returns_applied(doubled.train_label_role,true,doubled.train_label_role_sha256));
+  const auto twice=run_named(dir,doubled,"doubled"); EXPECT_FALSE(twice.ok);
+  EXPECT_NE(twice.error.find("label role adds presence that is not a termination "
+                             "(date 421, instrument 0)"),std::string::npos) << twice.error;
+  EXPECT_EQ(twice.log.find("IC eval-start"),std::string::npos);
   // The same label role pinned with the flag runs.
   const auto accepted=run_named(dir,cfg,"accepted"); ASSERT_TRUE(accepted.ok) << accepted.error;
   // CLI: the flag and its pins parse; another rule value refuses (run_ic, exit 1).
@@ -4578,6 +4603,54 @@ TEST(IcLabelTerminal, LabelRoleRefusals) {
                         "--train-label-role-sha256",cfg.train_label_role_sha256}),0);
   EXPECT_EQ(ic_cli(cfg,{"--label-terminal","imputed-v2","--train-label-role",cfg.train_label_role,
                         "--train-label-role-sha256",cfg.train_label_role_sha256}),1);
+}
+// One f64 cell of a role payload (little-endian, as payload() writes it).
+f64 read_cell(const std::filesystem::path& path,usize cell) {
+  const auto bytes=file_bytes(path); u64 bits=0;
+  for (usize b=0;b<8;++b) bits|=static_cast<u64>(static_cast<u8>(bytes.at(cell*8+b)))<<(8*b);
+  return std::bit_cast<f64>(bits);
+}
+// Rewrites one f64 cell of role payload `file` and re-pins its receipt in the role manifest.
+bool patch_cell(const std::filesystem::path& role_dir,const std::string& file,usize cell,f64 value,
+                std::string& sha) {
+  auto bytes=file_bytes(role_dir/file); if (bytes.size()<(cell+1)*8) return false;
+  const auto bits=std::bit_cast<u64>(value);
+  for (usize b=0;b<8;++b) bytes[cell*8+b]=static_cast<char>((bits>>(8*b))&0xFFU);
+  if (!write_bytes(role_dir/file,bytes)) return false;
+  const auto digest=core::sha256_file((role_dir/file).string()); if (!digest) return false;
+  auto manifest=read_json(role_dir/"manifest.json"); manifest["files"][file]["sha256"]=*digest;
+  return json_file(role_dir/"manifest.json",manifest,sha);
+}
+// Fix round 1 (review S2 #1): the terminal step is return-guarded on the label role. A label role
+// whose termination close (and raw close) is 5% of the last close (r = -0.95, |log(1 + r)| = 3.0 >
+// 1.5) has every straddling pair guard-excluded and none imputed: its labels, so its IC, are the
+// missing-exit-v1 ones. The fixture's own termination (a tiny return) imputes as before.
+TEST(IcLabelTerminal, AbsurdTerminalReturnIsGuardedOnTheLabelRole) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(terminal_fixture(dir,cfg));
+  const auto label_dir=std::filesystem::path(cfg.train_label_role).parent_path();
+  const usize last=(kTerminalSession-1)*N,terminal=kTerminalSession*N; // instrument 0
+  for (const std::string file:{"close.f64","raw_close.f64"})
+    ASSERT_TRUE(patch_cell(label_dir,file,terminal,read_cell(label_dir/file,last)*.05,
+                           cfg.train_label_role_sha256));
+  const auto absurd=run_named(dir,cfg,"absurd"); ASSERT_TRUE(absurd.ok) << absurd.error;
+  const auto role_result=read_json(dir.path/"absurd"/"summary.json").at("roles").at(0);
+  const std::array<u64,3> straddling{5,21,33};
+  ASSERT_EQ(role_result.at("candidates").size(),2U);
+  for (usize c=0;c<2;++c) {
+    const auto& row=role_result.at("candidates").at(c);
+    for (usize k=0;k<3;++k) {
+      const auto& now=row.at("horizons").at(k);
+      const auto& before=row.at("ic_missing_exit_v1").at("horizons").at(k);
+      EXPECT_EQ(now.at("coverage").at("terminal_imputed_pairs"),0) << c << k;
+      const auto& guarded=now.at("coverage").at("guard_excluded_pairs");
+      EXPECT_EQ(guarded.get<u64>()-before.at("coverage").at("guard_excluded_pairs").get<u64>(),
+                straddling[k]) << c << k;
+      EXPECT_EQ(now.at("coverage").at("finite_label_pairs"),
+                before.at("coverage").at("finite_label_pairs")) << c << k;
+      EXPECT_EQ(now.at("rank"),before.at("rank")) << c << k;
+      EXPECT_EQ(now.at("pearson"),before.at("pearson")) << c << k;
+    }
+  }
 }
 // Frozen TRAIN: a --label-terminal source records both roles' label role pins; a validation-only
 // resume must carry the flag, may omit TRAIN's pin (taken from the source, its role never opened)
@@ -4605,6 +4678,12 @@ TEST(IcLabelTerminal, FrozenTrainResumeBindsTheLabelRolePins) {
   const auto freed=run_named(dir,train_free,"train_free"); ASSERT_TRUE(freed.ok) << freed.error;
   EXPECT_EQ(file_sha(dir.path/"train_free"/"validation_daily_ic.csv"),
             file_sha(dir.path/"source"/"validation_daily_ic.csv"));
+  // Fix round 1 (review S2 #4): a resume records only its scored role's pin; the unscored TRAIN's
+  // (optional, empty or not) is never written, so both resumes write the same recipe bytes.
+  EXPECT_EQ(read_json(dir.path/"resumed"/"recipe.json").at("label_role_manifest_sha256"),
+            Json({{"validation",cfg.validation_label_role_sha256}}));
+  EXPECT_EQ(file_sha(dir.path/"train_free"/"recipe.json"),
+            file_sha(dir.path/"resumed"/"recipe.json"));
   auto other=resume; other.train_label_role_sha256=std::string(64,'1');
   expect_early_refusal(dir,other,"other_pin","frozen TRAIN label role pin differs");
   auto dropped=resume; dropped.label_terminal.clear();
@@ -4675,6 +4754,18 @@ TEST(IcLabelTerminal, MissingExitIcIsCachedUnderItsOwnScope) {
     EXPECT_EQ(file_bytes(entry.path()),it->second) << entry.path();
   }
   EXPECT_EQ(still,2U);
+  // Fix round 1 (review S2 #7): a stale record planted in the missing-exit-v1 scope (the
+  // flag-absent run's record of the same signal) is refused, never served; restored, it serves.
+  const auto legacy_entry=signal_dir/legacy_subdirectory/(level_stem()+".json");
+  const auto kept_record=file_bytes(legacy_entry); ASSERT_FALSE(kept_record.empty());
+  ASSERT_TRUE(write_bytes(legacy_entry,file_bytes(default_dir/(level_stem()+".json"))));
+  const auto planted=run_named(dir,cfg,"planted"); EXPECT_FALSE(planted.ok);
+  EXPECT_NE(planted.error.find("candidate IC cache entry mismatch: volume_level"),std::string::npos)
+      << planted.error;
+  ASSERT_TRUE(write_bytes(legacy_entry,kept_record));
+  const auto served=run_named(dir,cfg,"served"); ASSERT_TRUE(served.ok) << served.error;
+  EXPECT_EQ(read_json(dir.path/"served"/"summary.json").at("roles").at(0).at("candidate_cache")
+                .at("ic_results").at("missing_exit_v1").at("hits"),2);
   // --no-composition: both IC results cached, so no payload is loaded (each is tampered at equal
   // size: a load would refuse on its SHA-256).
   for (const std::string id:{"volume_level","volume_rank"}) {
