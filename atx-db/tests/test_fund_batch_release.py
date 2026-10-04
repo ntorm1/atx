@@ -183,9 +183,46 @@ def test_pointer_pin_lock_transaction_and_rollback(tmp_path,con,monkeypatch):
     R.C.write_json_atomic(stage/'pointer-transaction.json',tx)
     with pytest.raises(ValueError,match='transaction'):R.resolve_current(stage)
     R.recover(stage,con)
-    assert R.resolve_current(stage).name=='b' and admitted[-2:]==['b','a']
+    assert R.resolve_current(stage).name=='b' and admitted==['a','b']
     R.C.write_json_atomic(R.resolve_current(stage)/'manifest.json',{'generation':'tampered'})
     with pytest.raises(ValueError,match='identity'):R.resolve_current(stage)
+
+
+@pytest.mark.parametrize('damage',['none','old_manifest','new_manifest','old_path','new_admission','old_during_admission'])
+def test_recovery_source_refresh_preserves_stale_previous_identity(tmp_path,con,monkeypatch,damage):
+    stage=tmp_path/R.STAGE
+    pointers={}
+    for name in ('old','new'):
+        generation=R._generation(stage,name);generation.mkdir(parents=True)
+        R.C.write_json_atomic(generation/'manifest.json',{'generation':name})
+        pointers[name]={'generation':name,'manifest':R.identity(generation/'manifest.json')}
+    R.C.write_json_atomic(stage/'current.json',pointers['old'])
+    tx={'version':R.VERSION,'current':pointers['new'],'previous':pointers['old']}
+    if damage=='old_path':tx['previous']={**pointers['old'],'generation':'../old'}
+    R.C.write_json_atomic(stage/'pointer-transaction.json',tx)
+    if damage in ('old_manifest','new_manifest'):
+        name=damage.split('_')[0]
+        R.C.write_json_atomic(R._generation(stage,name)/'manifest.json',{'tampered':True})
+    admitted=[]
+    def validate(s,g,c):
+        admitted.append(g.name)
+        if g.name=='old' or damage=='new_admission':raise ValueError('stale source/code snapshot')
+        if damage=='old_during_admission':
+            R.C.write_json_atomic(R._generation(stage,'old')/'manifest.json',{'tampered':True})
+    monkeypatch.setattr(R,'validate_generation',validate)
+    if damage=='none':
+        R.recover(stage,con)
+        assert admitted==['new'] and R.resolve_current(stage).name=='new'
+        assert R.read(stage/'previous.json')==pointers['old']
+        assert not (stage/'pointer-transaction.json').exists()
+        # Identity-preserved stale previous still cannot become current.
+        with pytest.raises(ValueError,match='stale source/code'):R.rollback(stage,con)
+        assert admitted==['new','old'] and R.resolve_current(stage).name=='new'
+    else:
+        with pytest.raises(ValueError):R.recover(stage,con)
+        assert (stage/'pointer-transaction.json').exists()
+        assert R.read(stage/'current.json')==pointers['old']
+    assert not (stage/'.writer.lock').exists()
 
 
 def test_private_native_validator_root_and_std_manifest(tmp_path):

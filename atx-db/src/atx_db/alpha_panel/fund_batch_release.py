@@ -659,13 +659,27 @@ def rollback(stage,con):
 def recover(stage,con):
     with writer_lock(stage):
         tx=read(stage/'pointer-transaction.json')
-        if tx.get('version')!=VERSION:raise ValueError('unsupported pointer transaction')
-        for target in (tx['current'],tx['previous']):
-            if target is not None:
-                generation=_generation(stage,target['generation'])
-                if identity(generation/'manifest.json')!=target['manifest']:raise ValueError('transaction identity mismatch')
-                validate_generation(stage,generation,con)
+        if set(tx)!={'version','current','previous'} or tx.get('version')!=VERSION:raise ValueError('unsupported pointer transaction')
+        generation=_transaction_target(stage,tx['current'])
+        if tx['previous'] is not None:_transaction_target(stage,tx['previous'])
+        # Refreshing code or sources can legitimately stale the retained generation.
+        # Its pointer is preserved as identity evidence; actually using it via
+        # rollback still requires full admission against the current sources/code.
+        validate_generation(stage,generation,con)
+        _transaction_target(stage,tx['current'])
+        if tx['previous'] is not None:_transaction_target(stage,tx['previous'])
         _finish_pointer(stage,tx)
+
+
+def _transaction_target(stage,target):
+    if not isinstance(target,dict) or set(target)!={'generation','manifest'}:
+        raise ValueError('unsupported transaction target')
+    generation=_generation(stage,target['generation'])
+    if generation.resolve()!=stage.resolve()/'generations'/generation.name:
+        raise ValueError('transaction target escapes rooted generation location')
+    if identity(generation/'manifest.json')!=target['manifest']:
+        raise ValueError('transaction identity mismatch')
+    return generation
 
 
 def main(argv=None):

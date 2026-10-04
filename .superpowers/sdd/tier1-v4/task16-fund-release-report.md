@@ -66,3 +66,13 @@ Final-generation CLI/native financial checker integration has not been exercised
 ## Owned files and handoff
 
 Only: new fund_batch_release.py; test_fund_batch_release.py; fundamentals_release_v1.md/.registry.json/.contract.json; this separate Task16 fund release report. No live exec job or subprocess remains at handoff. Required next step is independent review of this initial component before a controller-exclusive actual-source run; no actual build or consumer use is authorized by this report.
+
+## Fix round1/5: source-refresh recovery (Important I1)
+
+Independent review of9dfaeb6c found that recovery fully admitted both the intended new generation and the retained previous generation. Legitimate source/code refresh can make the old generation stale, preventing recovery of a valid new target and retaining the journal. Recovery now fully admits only the intended current generation. It independently checks exact transaction structure, rooted generation locations and manifest SHA/size for both pointers before admission, then rechecks both identities after admission before completing the journal. The old pointer is retained as identity evidence, not certified for consumption. Rollback still performs full admission of its actual target and refuses stale sources/code.
+
+Focused changed-source fixture proves the new target alone is admitted, recovery publishes it and preserves the stale previous pointer, and a subsequent attempt to roll back to the old target fails full admission without changing current. Corruption fixtures prove old/new manifest changes, an escaping old generation path, a failing new target admission and old-manifest changes during new admission retain the journal and leave the current pointer unchanged. Existing writer-lock/transaction/rollback fixture is updated to require one full target admission in recovery.
+
+Command: `$env:OPENBLAS_NUM_THREADS='1'; atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_fund_batch_release.py -n 0 -o addopts='' -q -k 'pointer_pin or recovery_source_refresh'` — **7passed26deselected1.59s**, each synthetic DuckDB128MB/one thread/UTC. No unchanged broad suite was rerun. No actual-source/data/hash/HTTP/build/return job was launched; no live exec remains. Configuration/formulas/85-unit/coverage denominators are unchanged; current code identity necessarily changes and must be bound by future new candidates. Actual gates remain0PASS/9pending or unmeasured; full Task16 and consumer use remain held for independent re-review.
+
+Owned changes in this round: fund_batch_release.py, test_fund_batch_release.py, fundamentals_release_v1.md and this report only. No universe, release_inputs, producer, Task5 or Task6 file was edited.
