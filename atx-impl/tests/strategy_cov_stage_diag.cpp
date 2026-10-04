@@ -58,8 +58,9 @@
 #define NOMINMAX
 #endif
 // NOLINTBEGIN(misc-include-cleaner) -- windows.h is the Win32 umbrella; tlhelp32 the module walk.
-#include <tlhelp32.h>
 #include <windows.h>
+// tlhelp32.h needs windows.h first (a separate include block keeps clang-format from sorting it).
+#include <tlhelp32.h>
 // NOLINTEND(misc-include-cleaner)
 #endif
 
@@ -178,7 +179,7 @@ std::vector<Slot> crt_imports(const char *name) {
   if (snap == INVALID_HANDLE_VALUE)
     return out;
   MODULEENTRY32W me{};
-  me.dwSize = sizeof(me);
+  me.dwSize = static_cast<DWORD>(sizeof(me));
   for (BOOL ok = Module32FirstW(snap, &me); ok; ok = Module32NextW(snap, &me)) {
     BYTE *base = me.modBaseAddr;
     const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
@@ -433,15 +434,16 @@ TEST(CovStageDigest, DISABLED_DumpPerStageOnTheLaneFixture) {
     while (std::getline(names, fn, ',')) {
       const FARPROC target = GetProcAddress(crt, fn.c_str());
       ASSERT_TRUE(target != nullptr) << fn;
+      const auto address = reinterpret_cast<ULONG_PTR>(target);
       usize count = 0;
       for (const auto &s : crt_imports(fn.c_str())) {
         const ULONG_PTR old = s.slot->u1.Function;
-        ASSERT_TRUE(write_slot(s.slot, reinterpret_cast<ULONG_PTR>(target))) << fn;
+        ASSERT_TRUE(write_slot(s.slot, address)) << fn;
         rebound.push_back({s.slot, old});
         ++count;
       }
       dump.line("meta/swap/" + fn, std::to_string(count) + " slot(s) -> " +
-                                       module_of(reinterpret_cast<const void *>(target)));
+                                       module_of(reinterpret_cast<const void *>(address)));
     }
   }
 #else
@@ -465,7 +467,7 @@ TEST(CovStageDigest, DISABLED_DumpPerStageOnTheLaneFixture) {
   // LaggedEwma's decay 2^(-1/H) (strategy_risk_model.cpp, LaggedEwma constructor; Model builds
   // factor_fast HL vol, factor_nw HL nw, factor_corr HL corr, spec_fast HL specific, spec_nw HL
   // nw), update_vra's VRA and Kish decays (HL vra, HL corr), and push's lag weights pow(d, l).
-  const rk::RiskModelConfig defaults;
+  const rk::RiskModelConfig defaults{};
   const std::array<std::pair<const char *, usize>, 5> half_lives{
       {{"vol", defaults.vol_halflife},
        {"nw", defaults.nw_halflife},
