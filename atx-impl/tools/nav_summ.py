@@ -170,9 +170,10 @@ class EngineStats:
     PBO_EXTRA = ("labels", "common_sessions_ns", "engine")
 
     def __init__(self, exe: str):
-        self.exe = Path(exe)
+        self.exe = Path(exe).resolve()
         if not self.exe.is_file():
             raise SystemExit(f"nav_summ: --engine-stats: no executable {self.exe} (build atx-research-eval)")
+        self.sha256 = hashlib.sha256(self.exe.read_bytes()).hexdigest()   # ruling B2-R3: the producer of record
         self.dir = Path(tempfile.mkdtemp(prefix="nav_summ_engine_"))
         atexit.register(shutil.rmtree, self.dir, True)
         self._csv: dict[int, tuple[dict, str]] = {}
@@ -212,12 +213,20 @@ class EngineStats:
             return None
         for key in self.PAIRED_EXTRA:
             p.pop(key, None)
+        omr = p.pop("one_minus_rho", None)
+        # ruling B2-R1 (c): a degenerate pair (1 - rho < 1e-6) keeps its refused SE / t / p as null (printed "na")
+        # and says so with its 1 - rho; any other pair carries the Python's keys only
+        degenerate = bool(p.pop("degenerate", False))
         nan = float("nan")
         for key in self.PAIRED_NAN:
-            p[key] = nan if p[key] is None else p[key]
+            if not (degenerate and key == "memmel_se"):
+                p[key] = nan if p[key] is None else p[key]
         p["cbb_ci95"] = [nan if v is None else v for v in p["cbb_ci95"]]
         for key in ("dsr_population", "se"):
-            p["lw"][key] = nan if p["lw"][key] is None else p["lw"][key]
+            if not (degenerate and key == "se"):
+                p["lw"][key] = nan if p["lw"][key] is None else p["lw"][key]
+        if degenerate:
+            p.update(degenerate=True, one_minus_rho=omr)
         return p
 
     def deflated_rows(self, cells: list[dict], n: int) -> list[dict]:
@@ -676,10 +685,16 @@ def git_head(where: Path) -> str | None:
     return head if done.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", head) else None
 
 
-def run_provenance(argv: list[str], warnings: list[str]) -> dict:
+def run_provenance(argv: list[str], warnings: list[str], engine: "EngineStats | None" = None) -> dict:
+    """nav_summ_run. With an engine (P9 ruling B2-R3) also the verb that computed the statistics: engine_exe (its
+    path) and engine_exe_sha256 (the bytes it ran, hashed when the verb was opened)."""
     script = Path(__file__).resolve()
-    return {"argv": list(argv), "script": str(script), "script_sha256": hashlib.sha256(script.read_bytes()).hexdigest(),
-            "git_head": git_head(script.parent), "warnings": list(warnings)}
+    out = {"argv": list(argv), "script": str(script),
+           "script_sha256": hashlib.sha256(script.read_bytes()).hexdigest(), "git_head": git_head(script.parent),
+           "warnings": list(warnings)}
+    if engine is not None:
+        out.update(engine_exe=str(engine.exe), engine_exe_sha256=engine.sha256)
+    return out
 
 
 # ------------------------------------------------------------------ validation kit (platform v8 V-1)
@@ -785,13 +800,21 @@ def bundle(base: Path, final: Path, args) -> dict:
             "year_table": tables, "verdict": verdict}
 
 
+def print_degenerate(p: dict) -> None:
+    """The engine's degenerate-pair line (ruling B2-R1 (c): 1 - rho < 1e-6, SE / t / p refused); nothing otherwise."""
+    if p.get("degenerate"):
+        print(f"   paired: degenerate pair (1 - rho {fmt(p.get('one_minus_rho'), '.1e')} < 1e-06): Memmel SE, t and the "
+              "LW CI and p are refused (ruling B2-R1)")
+
+
 def print_bundle(res: dict) -> None:
     p, lw, v = res["paired"], res["paired"]["lw"], res["verdict"]
     print(f"== bundle {res['final']} vs {res['base']} [{res['scenarios']['final']}]: dSR(net) {p['dsr']:+.3f} = SR "
           f"{p['sr']:+.3f} - SR {p['sr_reference']:+.3f} | rho {fmt(p['rho'], '.3f')} | T {p['sessions']} | Memmel SE "
-          f"{p['memmel_se']:.3f} | CBB 95% [{p['cbb_ci95'][0]:+.3f}, {p['cbb_ci95'][1]:+.3f}] | LW studentized 95% "
-          f"[{fmt(lw['ci95'][0], '+.3f')}, {fmt(lw['ci95'][1], '+.3f')}] p two-sided {fmt(lw['p_value'], '.4f')} "
+          f"{fmt(p['memmel_se'], '.3f')} | CBB 95% [{p['cbb_ci95'][0]:+.3f}, {p['cbb_ci95'][1]:+.3f}] | LW studentized "
+          f"95% [{fmt(lw['ci95'][0], '+.3f')}, {fmt(lw['ci95'][1], '+.3f')}] p two-sided {fmt(lw['p_value'], '.4f')} "
           f"one-sided {fmt(lw['p_one_sided'], '.4f')} ({p['draws']} draws, block {p['block']}, seed {p['seed']})")
+    print_degenerate(p)
     print(f"   verdict {'PASS' if v['pass'] else 'FAIL'}: dSR > 0 {v['dsr_positive']}; one-sided p "
           f"{fmt(v['p_one_sided'], '.4f')} < {v['alpha']}")
     for y in res["years"]:
@@ -975,10 +998,11 @@ def print_analysis(r: dict, reference: str | None) -> None:
     if p:
         lw = p["lw"]
         print(f"   paired vs {reference}: dSR(net) {p['dsr']:+.3f} = SR {p['sr']:+.3f} - SR {p['sr_reference']:+.3f} | "
-              f"rho {fmt(p['rho'], '.3f')} | T {p['sessions']} | Memmel SE {p['memmel_se']:.3f} t {fmt(p['t'], '+.2f')} | "
-              f"CBB 95% [{p['cbb_ci95'][0]:+.3f}, {p['cbb_ci95'][1]:+.3f}] | LW studentized 95% "
+              f"rho {fmt(p['rho'], '.3f')} | T {p['sessions']} | Memmel SE {fmt(p['memmel_se'], '.3f')} t "
+              f"{fmt(p['t'], '+.2f')} | CBB 95% [{p['cbb_ci95'][0]:+.3f}, {p['cbb_ci95'][1]:+.3f}] | LW studentized 95% "
               f"[{fmt(lw['ci95'][0], '+.3f')}, {fmt(lw['ci95'][1], '+.3f')}] p {fmt(lw['p_value'], '.3f')} "
               f"(dSR_pop {lw['dsr_population']:+.3f}; {p['draws']} draws, block {p['block']}, seed {p['seed']})")
+        print_degenerate(p)
     q = r.get("deflated")
     if q:
         print(f"   deflated SR (N={q['n']}): DSR {fmt(q['dsr'], '.4f')} | SR {fmt(q['sr_daily'], '+.5f')}/session "
@@ -1140,7 +1164,7 @@ def integrity(args, argv, results, analysed) -> None:
         if args.pbo_json:
             doc = dict(res, logits=res["logits"].tolist(), cells=cells,
                        common_sessions=[BI.session_date(common[0]).isoformat(), BI.session_date(common[-1]).isoformat()],
-                       nav_summ_run=run_provenance(argv, []))
+                       nav_summ_run=run_provenance(argv, [], getattr(args, "engine", None)))
             Path(args.pbo_json).write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if getattr(args, "dsr_ledger", None):
         wid = BI.window_id()
@@ -1385,7 +1409,7 @@ def main(argv=None) -> int:
             print_year_table(r["year_table"])
     integrity(args, argv, results, analysed)
     if args.json:
-        run = run_provenance(argv, warnings)
+        run = run_provenance(argv, warnings, args.engine)
         for r in results:
             r["nav_summ_run"] = run
         Path(args.json).write_text(json.dumps(results, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1393,7 +1417,7 @@ def main(argv=None) -> int:
         res = bundle(Path(args.bundle[0]), Path(args.bundle[1]), args)
         print_bundle(res)
         if args.bundle_json:
-            doc = dict(res, protocol=args.protocol, nav_summ_run=run_provenance(argv, []))
+            doc = dict(res, protocol=args.protocol, nav_summ_run=run_provenance(argv, [], args.engine))
             Path(args.bundle_json).write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0
 
