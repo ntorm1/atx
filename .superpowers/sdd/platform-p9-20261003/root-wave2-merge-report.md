@@ -701,3 +701,26 @@ task-AL-DATA-report}.md`; `git add -f`, no cache path). `disk-audit.md` (also un
 - **DISK-2 (pool-20):** nothing to delete; the lane had already deleted its object tree (2.7 MB left: receipts, logs,
   `audits/`, `v8-interim3-pitch-render-run2/`).
 - **Trial ledger:** 0 trials (133 lines, `27e40f9f`).
+
+### COV (`c8ff4f1c`, pool-24, base `ad406718`; re-review 2 APPROVE `75428364`)
+
+#### Expected substitution list for the COV flag-absent identity (written before the run)
+
+Real data, 0 trials, compared by file SHA-256 and JSON path only (no statistic read). Reference = the R-8 store of
+record `build-equity/v8-risk-lo3-v10` (receipt `v8-risk-lo3-v10-run`, exe `8967952c...`, engine git `807af678`).
+Both runs are the reference receipt's argv with only `--output` changed (`m2d-logs/tools/rerun.py`), through
+`run_bounded_research.py`, Debug, `--seconds 600 --max-rss-mib 8192` (brief: <= 600 s, <= 8,192 MiB), exe =
+p9-2b `atx-equity-strategy-risk`. S9 checked first: role `train-2020-2023-lo3` (`e1c67101...`)
+`universe.delisting.returns_applied == false` (`m2d-logs/cov-s9-role-delisting.txt`).
+
+1. `p9-m2d-cov-risk-legacy` (no new flag): every `manifest.files` entry (bias.csv, bias_summary.json,
+   diagnostics.csv, exposures_last.csv, factor_covariance.f64, factor_returns.csv, factor_structural.u8,
+   industry_slot.u8, specific_variance.f64, style_exposures.f32) byte-identical to the reference (SHA-256 of the
+   file and the manifest entry); `manifest.json` equal to the reference's at every JSON path except
+   `$.producer.executable_sha256` and `$.producer.engine_git_sha`.
+2. `p9-m2d-cov-risk-container` (the same argv plus `--emit-container`): every file of 1 byte-identical to 1;
+   `manifest.json` equal to 1's except the added `$.container` (and everything under it) and the added
+   `$.files["model.atxcov"]`; `atx-equity-strategy-risk cov-diff --legacy build-equity/p9-m2d-cov-risk-container`
+   exits 0 (plan section 4.2).
+
+Any other difference is a stop.
