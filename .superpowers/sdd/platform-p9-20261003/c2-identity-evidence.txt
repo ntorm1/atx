@@ -1,0 +1,10 @@
+# P9 C2 M1c-RED identity evidence (pool-15, 2026-10-04T00:07:28Z)
+
+## run-time norm_ppf, committed (contraction-free) vs pre-fix (8f91f897~1), c2-ppf-identity.cpp
+Release flags (/O2 /DNDEBUG -MD): evaluated 19999999 mismatched 0
+Debug flags (/Od /RTC1 -MDd):    evaluated 19999999 mismatched 0
+Control, /arch:AVX2 (FMA at run time, the rel-avx2 caveat): evaluated 19999999 mismatched 7864564
+
+## strategy_target_replay.cpp objects (the NAV path's only norm_ppf caller), each tree's flags, PCH off, c2-mk-identity.py + c2-fndiff.py
+Release: functions 2087 / 2087; differing 1; fused multiply-add instructions 0    ?norm_ppf@eval@engine@atx@@YANN@Z 
+Debug (/O2 TU): functions 2691 / 2691; differing 1; fused multiply-add instructions 0    ?norm_ppf@eval@engine@atx@@YANN@Z 

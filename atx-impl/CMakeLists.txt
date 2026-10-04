@@ -221,3 +221,22 @@ if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL
     set_property(SOURCE src/strategy_ic_rules.cpp APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/strategy_ic_rules.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
+# P9 lane AL-COMB: composition rules theme-cov-hedge-v1 (over engine combine/char_cov_hedge.hpp) and
+# mom-volman-v1 (a theme_schedule rule), with the IC TUs' flag set as strategy_ic_rules.cpp above.
+target_sources(atx-impl-core PRIVATE src/strategy_ic_theme_hedge.cpp src/strategy_ic_mom_volman.cpp)
+if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_property(SOURCE src/strategy_ic_theme_hedge.cpp src/strategy_ic_mom_volman.cpp
+        APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
+    set_source_files_properties(src/strategy_ic_theme_hedge.cpp src/strategy_ic_mom_volman.cpp
+        PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+endif()
+# P9 lane D2: the composition rules' kernels moved down to atx-engine-research-composition (migration plan
+# section 1); strategy_ic_{shrink,theme_erc,theme_tsmom,theme_resid}.hpp and strategy_two_speed.hpp are thin
+# includes of it, and the IC runner's verify and composition call it.
+target_link_libraries(atx-impl-core PUBLIC atx-engine-research-composition)
+# P9 lane C2: nav --calibrate-gross, Ruling PM6-6 in one process (strategy_nav_calibrate.hpp:
+# the numpy mean of the S2 gross, the 4-decimal correction, the summary record).
+target_sources(atx-impl-core PRIVATE src/strategy_nav_calibrate.cpp)
+# P9 lane B2 (cross-lane append): the IC stage's trial ledger moved down to atx-engine-research-ledger;
+# src/trial_ledger.{hpp,cpp} re-export it, so atx-impl-core links the library.
+target_link_libraries(atx-impl-core PUBLIC atx::engine-research-ledger)

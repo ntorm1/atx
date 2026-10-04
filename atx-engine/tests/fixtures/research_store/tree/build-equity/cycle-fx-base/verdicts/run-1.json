@@ -1,0 +1,34 @@
+{
+  "schema": "atx.cycle-verdict/v1",
+  "cycle": "fx-base",
+  "mode": "run",
+  "spec_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "admission": [
+    {
+      "id": "fx_alpha_a",
+      "admitted": true
+    }
+  ],
+  "marginal": [],
+  "phases": [
+    {
+      "name": "nav",
+      "seconds": 1.5,
+      "peak_mib": 50
+    }
+  ],
+  "paired": {
+    "dsr": 0.5,
+    "se": 0.25,
+    "cbb_ci": [
+      0.125,
+      0.875
+    ],
+    "lw_p": 0.5
+  },
+  "ledger": {
+    "path": "build-equity/trials.jsonl",
+    "head": "8b1e9fe0f97c38ebdea46e1b7f26ce1c9262b74c5f6caae7b39f3341d803f008",
+    "lines": 5
+  }
+}

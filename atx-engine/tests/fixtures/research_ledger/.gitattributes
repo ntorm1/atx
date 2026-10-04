@@ -1,0 +1,3 @@
+# Research ledger rules fixture (P9 lane B2): ledger.jsonl is pinned by SHA-256 in expected.json. No end-of-line
+# conversion on checkout or commit.
+* -text

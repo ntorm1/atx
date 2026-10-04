@@ -1,0 +1,26 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = AlphaLitGolden_ExistingOps.*
+[==========] Running 3 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 3 tests from AlphaLitGolden_ExistingOps
+[ RUN      ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned
+[lit-golden] vm_audit_exact=0xeeae40c4a6d7d93b vm_research_fast=0x24c97b5bfeab6518 oracle=0xeeae40c4a6d7d93b
+..\atx-engine\tests\alpha\alpha_lit_golden_test.cpp(333): Skipped
+Ruling M2c-RED-2: the pins are a Debug-CRT golden on this host (ucrtbased.dll, /MDd). This build links another CRT (Release: ucrtbase.dll), whose std::pow differs from ucrtbased.dll's by 1 ULP on ~0.2% of arguments (rows power(close, 0.5), signedpower(returns, 2), close ^ 3). Correctness runs in every build: EveryPreW2OpcodeVmMatchesOracle.
+
+[  SKIPPED ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned (17 ms)
+[ RUN      ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeVmMatchesOracle
+[       OK ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeVmMatchesOracle (20 ms)
+[ DISABLED ] AlphaLitGolden_ExistingOps.DISABLED_PerRowDigestDump
+[ RUN      ] AlphaLitGolden_ExistingOps.BatteryCoversEveryPreW2NamedOp
+[       OK ] AlphaLitGolden_ExistingOps.BatteryCoversEveryPreW2NamedOp (0 ms)
+[----------] 3 tests from AlphaLitGolden_ExistingOps (38 ms total)
+
+[----------] Global test environment tear-down
+[==========] 3 tests from 1 test suite ran. (38 ms total)
+[  PASSED  ] 2 tests.
+[  SKIPPED ] 1 test, listed below:
+[  SKIPPED ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned
+
+  YOU HAVE 1 DISABLED TEST
+

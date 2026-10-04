@@ -23,7 +23,9 @@ import test_fit_composition_weights as tfw  # noqa: E402  (its synthetic fitter 
 
 # Shared with atx-impl/tests/strategy_ic_theme_tsmom_test.cpp (ThemeTsmom.SharedFixtureMasses).
 FIXTURE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "theme_tsmom_v1.json"
-HEADER = Path(__file__).resolve().parents[1] / "src" / "strategy_ic_theme_tsmom.hpp"
+# P9 lane D2: the constants moved to the engine composition library (atx-impl's header is a thin include of it).
+HEADER = (Path(__file__).resolve().parents[2] / "atx-engine" / "include" / "atx" / "engine" / "research" /
+          "composition" / "theme_tsmom.hpp")
 STD_ARGS = dict(screen="v4-prior-v1", orientation="prior", composition="ew-theme-std-v1")
 ERC_ARGS = dict(STD_ARGS, theme_erc="theme-erc-v1")
 TSMOM_ARGS = dict(ERC_ARGS, theme_tsmom="theme-tsmom-v1")
@@ -129,11 +131,11 @@ class FitterEndToEnd(unittest.TestCase):
         cls.spy = {}
         real = ct.schedule
 
-        def spy(ids_, themes, weights, matrix, sessions, mask, parent_rule, error=ct.TsmomError):
+        def spy(ids_, themes, weights, matrix, sessions, mask, parent_rule, error=ct.TsmomError, engine=None):
             cls.spy.setdefault(parent_rule, dict(ids=list(ids_), themes=list(themes), weights=[float(w) for w in weights],
                                                  matrix=np.array(matrix), sessions=np.array(sessions),
                                                  mask=np.array(mask)))
-            return real(ids_, themes, weights, matrix, sessions, mask, parent_rule, error)
+            return real(ids_, themes, weights, matrix, sessions, mask, parent_rule, error, engine=engine)
 
         with unittest.mock.patch.object(cr, "REGISTRY_PATH", cls.root / "no-registry.json"):
             cls.erc_code, _ = fcw.fit(cls.fx.args(cls.root / "erc", **ERC_ARGS))

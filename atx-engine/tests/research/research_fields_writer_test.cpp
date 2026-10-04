@@ -133,11 +133,22 @@ TEST(ResearchFieldsWriter, QuantilesPartitionLikeNumpy) {
   std::vector<f64> unsorted{4.0, 1.0, 3.0, 2.0};
   fields::numpy_quantiles(unsorted, probabilities, out);
   EXPECT_EQ(out, (std::vector<f64>{1.003, 1.03, 2.5, 3.9699999999999998, 3.997}));
+  // numpy's _lerp writes a + (b - a) * gamma, then overwrites it with b - (b - a) * (1 - gamma)
+  // where gamma >= 0.5. One value: every probability has previous = next = -1 and gamma = 1, so the
+  // overwrite branch gives -0.0 - 0.0 = -0.0 (numpy 1.26.4: np.quantile([-0.0], p) is -0.0 at all
+  // five). Two values: gamma < 0.5 keeps -0.0 + 0.0 = +0.0, gamma >= 0.5 keeps -0.0.
   std::vector<f64> one{kNegZero};
   fields::numpy_quantiles(one, probabilities, out);
   for (const f64 x : out) {
-    EXPECT_TRUE(support::same_bits(x, 0.0)); // _lerp(-0.0, -0.0, gamma >= 1) is +0.0
+    EXPECT_TRUE(support::same_bits(x, kNegZero));
   }
+  std::vector<f64> two{kNegZero, kNegZero};
+  fields::numpy_quantiles(two, probabilities, out);
+  EXPECT_TRUE(support::same_bits(out[0], 0.0));
+  EXPECT_TRUE(support::same_bits(out[1], 0.0));
+  EXPECT_TRUE(support::same_bits(out[2], kNegZero));
+  EXPECT_TRUE(support::same_bits(out[3], kNegZero));
+  EXPECT_TRUE(support::same_bits(out[4], kNegZero));
 }
 
 TEST(ResearchFieldsWriter, RoundedFractionIsPythonRound) {

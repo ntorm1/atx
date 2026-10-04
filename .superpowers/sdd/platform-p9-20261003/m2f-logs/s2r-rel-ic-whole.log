@@ -1,0 +1,608 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 226 tests from 33 test suites.
+[----------] Global test environment set-up.
+[----------] 7 tests from StrategyIcComposition
+[ RUN      ] StrategyIcComposition.Actual48DslArtifactRunsWithBoundedLookbackAndCausalMask
+[       OK ] StrategyIcComposition.Actual48DslArtifactRunsWithBoundedLookbackAndCausalMask (81 ms)
+[ RUN      ] StrategyIcComposition.FixedFamilyBudgetsNeutralMissingAndPlannedExitAccounting
+[       OK ] StrategyIcComposition.FixedFamilyBudgetsNeutralMissingAndPlannedExitAccounting (0 ms)
+[ RUN      ] StrategyIcComposition.UnorientedAndConstantSignalsCannotInventPositions
+[       OK ] StrategyIcComposition.UnorientedAndConstantSignalsCannotInventPositions (0 ms)
+[ RUN      ] StrategyIcComposition.FuturePayloadAndMembershipDoNotChangePrefix
+[       OK ] StrategyIcComposition.FuturePayloadAndMembershipDoNotChangePrefix (0 ms)
+[ RUN      ] StrategyIcComposition.AdmissionPrecedesAllocationAndIncompleteInputRefuses
+[       OK ] StrategyIcComposition.AdmissionPrecedesAllocationAndIncompleteInputRefuses (0 ms)
+[ RUN      ] StrategyIcComposition.PooledAddMatchesSerialBitsForEveryWorkerCount
+[       OK ] StrategyIcComposition.PooledAddMatchesSerialBitsForEveryWorkerCount (2 ms)
+[ RUN      ] StrategyIcComposition.WithinThemeRedistributionKeepsMissingMassInTheme
+[       OK ] StrategyIcComposition.WithinThemeRedistributionKeepsMissingMassInTheme (0 ms)
+[----------] 7 tests from StrategyIcComposition (85 ms total)
+
+[----------] 13 tests from CompositionV8
+[ RUN      ] CompositionV8.OneMemberThemeHasSameDispersionAsOthers
+[       OK ] CompositionV8.OneMemberThemeHasSameDispersionAsOthers (0 ms)
+[ RUN      ] CompositionV8.MemberCapRedistributes
+[       OK ] CompositionV8.MemberCapRedistributes (0 ms)
+[ RUN      ] CompositionV8.StandardiseNeedsThemesAndPinnedWeights
+[       OK ] CompositionV8.StandardiseNeedsThemesAndPinnedWeights (0 ms)
+[ RUN      ] CompositionV8.RuleOneIsTheWeightedMeanOfSignedMemberRanks
+[       OK ] CompositionV8.RuleOneIsTheWeightedMeanOfSignedMemberRanks (0 ms)
+[ RUN      ] CompositionV8.IdentityWithReRankAndCapOffIsEwThemeV1
+[       OK ] CompositionV8.IdentityWithReRankAndCapOffIsEwThemeV1 (310 ms)
+[ RUN      ] CompositionV8.ThemeStandardiseRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] CompositionV8.ThemeStandardiseRefusalsPrecedeAnyPayloadOrOutput (175 ms)
+[ RUN      ] CompositionV8.IcShrinkRunsTheStandardisationUnchangedAndRecordsItsRule
+[       OK ] CompositionV8.IcShrinkRunsTheStandardisationUnchangedAndRecordsItsRule (226 ms)
+[ RUN      ] CompositionV8.IcShrinkRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] CompositionV8.IcShrinkRefusalsPrecedeAnyPayloadOrOutput (194 ms)
+[ RUN      ] CompositionV8.IcShrinkAimRunsTheStandardisationUnchangedAndRecordsItsRule
+[       OK ] CompositionV8.IcShrinkAimRunsTheStandardisationUnchangedAndRecordsItsRule (296 ms)
+[ RUN      ] CompositionV8.IcShrinkAimRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] CompositionV8.IcShrinkAimRefusalsPrecedeAnyPayloadOrOutput (218 ms)
+[ RUN      ] CompositionV8.RecordedRuleMustWriteTheStandardiseBlockBeforeAnyPayloadOrOutput
+[       OK ] CompositionV8.RecordedRuleMustWriteTheStandardiseBlockBeforeAnyPayloadOrOutput (259 ms)
+[ RUN      ] CompositionV8.ThemeErcRunsTheStandardisationUnchangedAndRecordsItsRule
+[       OK ] CompositionV8.ThemeErcRunsTheStandardisationUnchangedAndRecordsItsRule (379 ms)
+[ RUN      ] CompositionV8.ThemeErcRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] CompositionV8.ThemeErcRefusalsPrecedeAnyPayloadOrOutput (398 ms)
+[----------] 13 tests from CompositionV8 (2462 ms total)
+
+[----------] 9 tests from ThemeResid
+[ RUN      ] ThemeResid.TwoThemesMatchTheClosedForm
+[       OK ] ThemeResid.TwoThemesMatchTheClosedForm (0 ms)
+[ RUN      ] ThemeResid.ThreeThemesEqualTheRegisteredRule
+[       OK ] ThemeResid.ThreeThemesEqualTheRegisteredRule (1 ms)
+[ RUN      ] ThemeResid.FirstThemeIsTheStandardisedCompositeBitForBit
+[       OK ] ThemeResid.FirstThemeIsTheStandardisedCompositeBitForBit (0 ms)
+[ RUN      ] ThemeResid.EnvelopeAddsOnlyTheRegressionScratch
+[       OK ] ThemeResid.EnvelopeAddsOnlyTheRegressionScratch (0 ms)
+[ RUN      ] ThemeResid.TiedCompositeStaysTiedAfterResidualisation
+[       OK ] ThemeResid.TiedCompositeStaysTiedAfterResidualisation (0 ms)
+[ RUN      ] ThemeResid.UnequalTieBlocksBesideSingletonsPinTheBlockMean
+[       OK ] ThemeResid.UnequalTieBlocksBesideSingletonsPinTheBlockMean (0 ms)
+[ RUN      ] ThemeResid.NoTieCompositeIsTheRegisteredRuleBitForBit
+[       OK ] ThemeResid.NoTieCompositeIsTheRegisteredRuleBitForBit (0 ms)
+[ RUN      ] ThemeResid.SmallCaseSeparatesTheRegisteredRegressors
+[       OK ] ThemeResid.SmallCaseSeparatesTheRegisteredRegressors (0 ms)
+[ RUN      ] ThemeResid.KernelRefusesMismatchedShapes
+[       OK ] ThemeResid.KernelRefusesMismatchedShapes (0 ms)
+[----------] 9 tests from ThemeResid (2 ms total)
+
+[----------] 6 tests from GroupResidualise
+[ RUN      ] GroupResidualise.TwoGroupsMatchTheClosedFormAndAreOrthogonal
+[       OK ] GroupResidualise.TwoGroupsMatchTheClosedFormAndAreOrthogonal (0 ms)
+[ RUN      ] GroupResidualise.TwoRegressorsMatchCramerAndAreOrthogonal
+[       OK ] GroupResidualise.TwoRegressorsMatchCramerAndAreOrthogonal (0 ms)
+[ RUN      ] GroupResidualise.DependentColumnsAreSkipped
+[       OK ] GroupResidualise.DependentColumnsAreSkipped (0 ms)
+[ RUN      ] GroupResidualise.SpannedDependentBecomesExactlyZero
+[       OK ] GroupResidualise.SpannedDependentBecomesExactlyZero (0 ms)
+[ RUN      ] GroupResidualise.NoRegressorIsTheDemeanedVector
+[       OK ] GroupResidualise.NoRegressorIsTheDemeanedVector (0 ms)
+[ RUN      ] GroupResidualise.RefusesBadShapesNonFiniteValuesAndTolerances
+[       OK ] GroupResidualise.RefusesBadShapesNonFiniteValuesAndTolerances (0 ms)
+[----------] 6 tests from GroupResidualise (0 ms total)
+
+[----------] 51 tests from StrategyIcRunner
+[ RUN      ] StrategyIcRunner.FreezesTrainSignsAndReportsCombinedIcWithoutBookReturns
+[       OK ] StrategyIcRunner.FreezesTrainSignsAndReportsCombinedIcWithoutBookReturns (187 ms)
+[ RUN      ] StrategyIcRunner.PlanOnlyPinsMetadataAndNeverLoadsPayload
+[       OK ] StrategyIcRunner.PlanOnlyPinsMetadataAndNeverLoadsPayload (115 ms)
+[ RUN      ] StrategyIcRunner.InsufficientHorizonProducesNullRatherThanZeroMean
+[       OK ] StrategyIcRunner.InsufficientHorizonProducesNullRatherThanZeroMean (188 ms)
+[ RUN      ] StrategyIcRunner.SharedVmWorkersPreserveSignalsOrientationsAndPlannedTargets
+[       OK ] StrategyIcRunner.SharedVmWorkersPreserveSignalsOrientationsAndPlannedTargets (265 ms)
+[ RUN      ] StrategyIcRunner.WorkerBoundsAndAdditionalMemoryAreAdmittedBeforePayload
+[       OK ] StrategyIcRunner.WorkerBoundsAndAdditionalMemoryAreAdmittedBeforePayload (115 ms)
+[ RUN      ] StrategyIcRunner.FrozenTrainValidationMatchesUninterruptedWithoutTrainPayload
+[       OK ] StrategyIcRunner.FrozenTrainValidationMatchesUninterruptedWithoutTrainPayload (263 ms)
+[ RUN      ] StrategyIcRunner.FrozenTrainIdentityMethodAndSignsRefuseBeforeValidationPayload
+[       OK ] StrategyIcRunner.FrozenTrainIdentityMethodAndSignsRefuseBeforeValidationPayload (283 ms)
+[ RUN      ] StrategyIcRunner.SavesExactPreTargetBlendSupportAndPinnedAxesOnlyWhenRequested
+[       OK ] StrategyIcRunner.SavesExactPreTargetBlendSupportAndPinnedAxesOnlyWhenRequested (262 ms)
+[ RUN      ] StrategyIcRunner.AscendingVmArenaDemandMatchesRetainedMaximumArena
+[       OK ] StrategyIcRunner.AscendingVmArenaDemandMatchesRetainedMaximumArena (378 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheColdAndWarmRunsReproduceUncachedOutputsExactly
+[       OK ] StrategyIcRunner.CandidateCacheColdAndWarmRunsReproduceUncachedOutputsExactly (511 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheResumesStoppedRunAndAdoptsOnlyIdenticalOrphans
+[       OK ] StrategyIcRunner.CandidateCacheResumesStoppedRunAndAdoptsOnlyIdenticalOrphans (414 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheRefusesTamperedOrForeignEntriesWithoutOverwrite
+[       OK ] StrategyIcRunner.CandidateCacheRefusesTamperedOrForeignEntriesWithoutOverwrite (356 ms)
+[ RUN      ] StrategyIcRunner.PinnedDefaultCompositionWeightsReproduceDefaultBlendBytes
+[       OK ] StrategyIcRunner.PinnedDefaultCompositionWeightsReproduceDefaultBlendBytes (354 ms)
+[ RUN      ] StrategyIcRunner.UnequalPinnedWeightsChangeBlendAndRecipeWhileZeroWeightStaysScored
+[       OK ] StrategyIcRunner.UnequalPinnedWeightsChangeBlendAndRecipeWhileZeroWeightStaysScored (334 ms)
+[ RUN      ] StrategyIcRunner.InvalidCompositionWeightsRefuseBeforeAnyPayloadOrOutput
+[       OK ] StrategyIcRunner.InvalidCompositionWeightsRefuseBeforeAnyPayloadOrOutput (245 ms)
+[ RUN      ] StrategyIcRunner.ThemeRedistributionRefusalsAndSchemaGatePrecedeAnyPayloadOrOutput
+[       OK ] StrategyIcRunner.ThemeRedistributionRefusalsAndSchemaGatePrecedeAnyPayloadOrOutput (286 ms)
+[ RUN      ] StrategyIcRunner.ThemeRedistributionIsRecordedInRecipeSummaryAndCombinedOnlyWhenPinned
+[       OK ] StrategyIcRunner.ThemeRedistributionIsRecordedInRecipeSummaryAndCombinedOnlyWhenPinned (478 ms)
+[ RUN      ] StrategyIcRunner.ValidationOnlyResumeComposesCandidateCacheAndTrainBoundWeights
+[       OK ] StrategyIcRunner.ValidationOnlyResumeComposesCandidateCacheAndTrainBoundWeights (427 ms)
+[ RUN      ] StrategyIcRunner.ExtraFieldsResolveByNameAndMatchHandComputedSignals
+[       OK ] StrategyIcRunner.ExtraFieldsResolveByNameAndMatchHandComputedSignals (537 ms)
+[ RUN      ] StrategyIcRunner.UnreferencedFieldsAreNeverOpenedOrAdmitted
+[       OK ] StrategyIcRunner.UnreferencedFieldsAreNeverOpenedOrAdmitted (270 ms)
+[ RUN      ] StrategyIcRunner.FieldBindingRefusalsPrecedeRolePayloadAndOutput
+[       OK ] StrategyIcRunner.FieldBindingRefusalsPrecedeRolePayloadAndOutput (248 ms)
+[ RUN      ] StrategyIcRunner.GrpFieldsBindAsGroupClassifiersAndExcludeNaNLabels
+[       OK ] StrategyIcRunner.GrpFieldsBindAsGroupClassifiersAndExcludeNaNLabels (569 ms)
+[ RUN      ] StrategyIcRunner.AbsentFieldOptionsLeaveRecipeAndOutputsUnchanged
+[       OK ] StrategyIcRunner.AbsentFieldOptionsLeaveRecipeAndOutputsUnchanged (345 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheKeyChangesOnlyForCandidatesReadingAChangedFieldPayload
+[       OK ] StrategyIcRunner.CandidateCacheKeyChangesOnlyForCandidatesReadingAChangedFieldPayload (735 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheChangedDslUnderSameIdIsANewEntry
+[       OK ] StrategyIcRunner.CandidateCacheChangedDslUnderSameIdIsANewEntry (369 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheReadsV1EntriesInPlaceThroughKnownManifests
+[       OK ] StrategyIcRunner.CandidateCacheReadsV1EntriesInPlaceThroughKnownManifests (1584 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheWritesFitWithinTheDeepestCommittedPath
+[       OK ] StrategyIcRunner.CandidateCacheWritesFitWithinTheDeepestCommittedPath (611 ms)
+[ RUN      ] StrategyIcRunner.CacheReportAccountsHitsMissesAndUnreferencedEntries
+[       OK ] StrategyIcRunner.CacheReportAccountsHitsMissesAndUnreferencedEntries (234 ms)
+[ RUN      ] StrategyIcRunner.LibraryDeclaringMktRetRunsOnlyWhenFieldsSupplyIt
+[       OK ] StrategyIcRunner.LibraryDeclaringMktRetRunsOnlyWhenFieldsSupplyIt (295 ms)
+[ RUN      ] StrategyIcRunner.RealV2LibraryDeclaringMktRetPlansOnlyWithPinnedFields
+[       OK ] StrategyIcRunner.RealV2LibraryDeclaringMktRetPlansOnlyWithPinnedFields (135 ms)
+[ RUN      ] StrategyIcRunner.PlanOnlyPrintsCandidateRows
+[       OK ] StrategyIcRunner.PlanOnlyPrintsCandidateRows (145 ms)
+[ RUN      ] StrategyIcRunner.FrozenTrainResumeBindsResearchFieldPins
+[       OK ] StrategyIcRunner.FrozenTrainResumeBindsResearchFieldPins (356 ms)
+[ RUN      ] StrategyIcRunner.NonPointInTimeFieldsAndUnflaggedManifestsAreRefused
+[       OK ] StrategyIcRunner.NonPointInTimeFieldsAndUnflaggedManifestsAreRefused (226 ms)
+[ RUN      ] StrategyIcRunner.PinnedSignOppositeToIcOrientationFlipsOnlyThatBlendContribution
+[       OK ] StrategyIcRunner.PinnedSignOppositeToIcOrientationFlipsOnlyThatBlendContribution (391 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheIsScopedByVmIdentityAndRefusesForeignSidecars
+[       OK ] StrategyIcRunner.CandidateCacheIsScopedByVmIdentityAndRefusesForeignSidecars (445 ms)
+[ RUN      ] StrategyIcRunner.CandidateCachePayloadBytesAreIdenticalAcrossVmWorkers
+[       OK ] StrategyIcRunner.CandidateCachePayloadBytesAreIdenticalAcrossVmWorkers (380 ms)
+[ RUN      ] StrategyIcRunner.ExtraFieldsResideOnlyWhileReferencedAndReloadExactly
+[       OK ] StrategyIcRunner.ExtraFieldsResideOnlyWhileReferencedAndReloadExactly (859 ms)
+[ RUN      ] StrategyIcRunner.ExtraFieldsAreMaskedByRolePresence
+[       OK ] StrategyIcRunner.ExtraFieldsAreMaskedByRolePresence (372 ms)
+[ RUN      ] StrategyIcRunner.FieldDefinitionsMustMatchAcrossRoles
+[       OK ] StrategyIcRunner.FieldDefinitionsMustMatchAcrossRoles (180 ms)
+[ RUN      ] StrategyIcRunner.FieldsOptionMustNameTheDirectory
+[       OK ] StrategyIcRunner.FieldsOptionMustNameTheDirectory (146 ms)
+[ RUN      ] StrategyIcRunner.CandidateCachePreflightRefusesBeforeRolePayload
+[       OK ] StrategyIcRunner.CandidateCachePreflightRefusesBeforeRolePayload (317 ms)
+[ RUN      ] StrategyIcRunner.VmSourcesPinnedToSemanticsVersion
+[       OK ] StrategyIcRunner.VmSourcesPinnedToSemanticsVersion (13 ms)
+[ RUN      ] StrategyIcRunner.IcSourcesPinnedToSemanticsVersion
+[       OK ] StrategyIcRunner.IcSourcesPinnedToSemanticsVersion (3 ms)
+[ RUN      ] StrategyIcRunner.ValidationWeightsMustNameTheFrozenTrainOrientations
+[       OK ] StrategyIcRunner.ValidationWeightsMustNameTheFrozenTrainOrientations (356 ms)
+[ RUN      ] StrategyIcRunner.ValidationOnlyChecksFieldDefinitionsAgainstFrozenTrain
+[       OK ] StrategyIcRunner.ValidationOnlyChecksFieldDefinitionsAgainstFrozenTrain (410 ms)
+[ RUN      ] StrategyIcRunner.IcResultCacheHitsReproduceUncachedOutputsExactly
+[       OK ] StrategyIcRunner.IcResultCacheHitsReproduceUncachedOutputsExactly (946 ms)
+[ RUN      ] StrategyIcRunner.IcResultCacheRefusesTamperedOrForeignEntriesAndKeysSettings
+[       OK ] StrategyIcRunner.IcResultCacheRefusesTamperedOrForeignEntriesAndKeysSettings (621 ms)
+[ RUN      ] StrategyIcRunner.CacheMissOnRoleChange
+[       OK ] StrategyIcRunner.CacheMissOnRoleChange (387 ms)
+[ RUN      ] StrategyIcRunner.AdmissionReportsRequiredBytes
+[       OK ] StrategyIcRunner.AdmissionReportsRequiredBytes (91 ms)
+[ RUN      ] StrategyIcRunner.AuditExactEvalModeIsRecordedAndCachedUnderItsOwnIdentity
+[       OK ] StrategyIcRunner.AuditExactEvalModeIsRecordedAndCachedUnderItsOwnIdentity (500 ms)
+[ RUN      ] StrategyIcRunner.DelistingReturnsRoleIsRefusedBeforeAnyPayloadOrOutput
+[       OK ] StrategyIcRunner.DelistingReturnsRoleIsRefusedBeforeAnyPayloadOrOutput (128 ms)
+[----------] 51 tests from StrategyIcRunner (18695 ms total)
+
+[----------] 3 tests from NoComposition
+[ RUN      ] NoComposition.SkipsBlendAndCombinedRows
+[       OK ] NoComposition.SkipsBlendAndCombinedRows (323 ms)
+[ RUN      ] NoComposition.MemberRowsByteIdenticalToDefault
+[       OK ] NoComposition.MemberRowsByteIdenticalToDefault (319 ms)
+[ RUN      ] NoComposition.HitWithIcResultIsNotLoaded
+[       OK ] NoComposition.HitWithIcResultIsNotLoaded (285 ms)
+[----------] 3 tests from NoComposition (928 ms total)
+
+[----------] 4 tests from FieldCaps
+[ RUN      ] FieldCaps.Admits200RowManifestWith40Referenced
+[       OK ] FieldCaps.Admits200RowManifestWith40Referenced (1785 ms)
+[ RUN      ] FieldCaps.AdmitsA100RowManifestOfPublishedRowWidth
+[       OK ] FieldCaps.AdmitsA100RowManifestOfPublishedRowWidth (294 ms)
+[ RUN      ] FieldCaps.RefusesLibraryReferencing257Fields
+[       OK ] FieldCaps.RefusesLibraryReferencing257Fields (5128 ms)
+[ RUN      ] FieldCaps.V71FieldPlanUnchanged
+[       OK ] FieldCaps.V71FieldPlanUnchanged (1522 ms)
+[----------] 4 tests from FieldCaps (8731 ms total)
+
+[----------] 1 test from Workers
+[ RUN      ] Workers.OutputsByteIdenticalAt4And8And16
+[       OK ] Workers.OutputsByteIdenticalAt4And8And16 (532 ms)
+[----------] 1 test from Workers (532 ms total)
+
+[----------] 1 test from IcAdmission
+[ RUN      ] IcAdmission.PlanPrintsRequiredBytesOverCap
+[       OK ] IcAdmission.PlanPrintsRequiredBytesOverCap (93 ms)
+[----------] 1 test from IcAdmission (93 ms total)
+
+[----------] 4 tests from ThemeResidRunner
+[ RUN      ] ThemeResidRunner.ResidualisesInTheBlockOrderAndRecordsTheRule
+[       OK ] ThemeResidRunner.ResidualisesInTheBlockOrderAndRecordsTheRule (687 ms)
+[ RUN      ] ThemeResidRunner.ThreeThemeCycleIsTheRegisteredRule
+[       OK ] ThemeResidRunner.ThreeThemeCycleIsTheRegisteredRule (237 ms)
+[ RUN      ] ThemeResidRunner.BlockRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] ThemeResidRunner.BlockRefusalsPrecedeAnyPayloadOrOutput (250 ms)
+[ RUN      ] ThemeResidRunner.RidesOnEveryRerankTrueRuleOfTheTable
+[       OK ] ThemeResidRunner.RidesOnEveryRerankTrueRuleOfTheTable (221 ms)
+[----------] 4 tests from ThemeResidRunner (1397 ms total)
+
+[----------] 2 tests from ThemeTsmomRunner
+[ RUN      ] ThemeTsmomRunner.SwitchesThemesAtTheBlockSessionAndRecordsTheRule
+[       OK ] ThemeTsmomRunner.SwitchesThemesAtTheBlockSessionAndRecordsTheRule (539 ms)
+[ RUN      ] ThemeTsmomRunner.BlockRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] ThemeTsmomRunner.BlockRefusalsPrecedeAnyPayloadOrOutput (203 ms)
+[----------] 2 tests from ThemeTsmomRunner (743 ms total)
+
+[----------] 2 tests from TwoSpeedRunner
+[ RUN      ] TwoSpeedRunner.SavesTheSleevesBesideAnUnchangedBlend
+[       OK ] TwoSpeedRunner.SavesTheSleevesBesideAnUnchangedBlend (610 ms)
+[ RUN      ] TwoSpeedRunner.BlockRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] TwoSpeedRunner.BlockRefusalsPrecedeAnyPayloadOrOutput (209 ms)
+[----------] 2 tests from TwoSpeedRunner (820 ms total)
+
+[----------] 1 test from ThemeRegistryRunner
+[ RUN      ] ThemeRegistryRunner.RegistryOrderIsTheRegisteredOrder
+[       OK ] ThemeRegistryRunner.RegistryOrderIsTheRegisteredOrder (506 ms)
+[----------] 1 test from ThemeRegistryRunner (506 ms total)
+
+[----------] 1 test from IcMethodOptions
+[ RUN      ] IcMethodOptions.RecordedOnlyWhenGivenPrintBothHacRulesAndKeyTheIcCache
+[       OK ] IcMethodOptions.RecordedOnlyWhenGivenPrintBothHacRulesAndKeyTheIcCache (498 ms)
+[----------] 1 test from IcMethodOptions (498 ms total)
+
+[----------] 5 tests from IcLabelTerminal
+[ RUN      ] IcLabelTerminal.ImputedRunPrintsBothIcsCountsImputedPairsAndRecordsThePin
+[       OK ] IcLabelTerminal.ImputedRunPrintsBothIcsCountsImputedPairsAndRecordsThePin (267 ms)
+[ RUN      ] IcLabelTerminal.LabelRoleRefusals
+[       OK ] IcLabelTerminal.LabelRoleRefusals (389 ms)
+[ RUN      ] IcLabelTerminal.AbsurdTerminalReturnIsGuardedOnTheLabelRole
+[       OK ] IcLabelTerminal.AbsurdTerminalReturnIsGuardedOnTheLabelRole (281 ms)
+[ RUN      ] IcLabelTerminal.FrozenTrainResumeBindsTheLabelRolePins
+[       OK ] IcLabelTerminal.FrozenTrainResumeBindsTheLabelRolePins (301 ms)
+[ RUN      ] IcLabelTerminal.MissingExitIcIsCachedUnderItsOwnScope
+[       OK ] IcLabelTerminal.MissingExitIcIsCachedUnderItsOwnScope (559 ms)
+[----------] 5 tests from IcLabelTerminal (1799 ms total)
+
+[----------] 1 test from IcFieldsSeal
+[ RUN      ] IcFieldsSeal.ManifestSealMustBeThisBuildsOrAbsent
+[       OK ] IcFieldsSeal.ManifestSealMustBeThisBuildsOrAbsent (344 ms)
+[----------] 1 test from IcFieldsSeal (344 ms total)
+
+[----------] 15 tests from MarginalIc
+[ RUN      ] MarginalIc.PoolPlusNoiseHasZeroMarginalWithin2Se
+[       OK ] MarginalIc.PoolPlusNoiseHasZeroMarginalWithin2Se (295 ms)
+[ RUN      ] MarginalIc.PlantedOrthogonalRecovered
+[       OK ] MarginalIc.PlantedOrthogonalRecovered (285 ms)
+[ RUN      ] MarginalIc.StreamsByDateUnder600MiB
+[       OK ] MarginalIc.StreamsByDateUnder600MiB (243 ms)
+[ RUN      ] MarginalIc.RefusesInputsNotBoundToThePool
+[       OK ] MarginalIc.RefusesInputsNotBoundToThePool (203 ms)
+[ RUN      ] MarginalIc.DelistingReturnsRoleIsRefused
+[       OK ] MarginalIc.DelistingReturnsRoleIsRefused (219 ms)
+[ RUN      ] MarginalIc.StandardisedThemesComeFromTheWeightsBlock
+[       OK ] MarginalIc.StandardisedThemesComeFromTheWeightsBlock (614 ms)
+[ RUN      ] MarginalIc.CandidatesSubsetEqualsFullRows
+[       OK ] MarginalIc.CandidatesSubsetEqualsFullRows (338 ms)
+[ RUN      ] MarginalIc.CompactedRowsEqual
+[       OK ] MarginalIc.CompactedRowsEqual (890 ms)
+[ RUN      ] MarginalIc.PairCacheHitEqualsCompute
+[       OK ] MarginalIc.PairCacheHitEqualsCompute (383 ms)
+[ RUN      ] MarginalIc.ThirtyThreeThemes
+[       OK ] MarginalIc.ThirtyThreeThemes (2305 ms)
+[ RUN      ] MarginalIc.BandsByteIdenticalAt1And4
+[       OK ] MarginalIc.BandsByteIdenticalAt1And4 (675 ms)
+[ RUN      ] MarginalIc.ExcludeSelfDropsTheMembersOwnTerm
+[       OK ] MarginalIc.ExcludeSelfDropsTheMembersOwnTerm (301 ms)
+[ RUN      ] MarginalIc.VerifiedDigestsSkipTheRehash
+[       OK ] MarginalIc.VerifiedDigestsSkipTheRehash (322 ms)
+[ RUN      ] MarginalIc.PairCacheSourcesPinned
+[       OK ] MarginalIc.PairCacheSourcesPinned (0 ms)
+[ RUN      ] MarginalIc.CacheRootsNeverShareAcrossBuilds
+[       OK ] MarginalIc.CacheRootsNeverShareAcrossBuilds (465 ms)
+[----------] 15 tests from MarginalIc (7547 ms total)
+
+[----------] 1 test from IcIdentity
+[ RUN      ] IcIdentity.BuildTokenSeparatesCaches
+[       OK ] IcIdentity.BuildTokenSeparatesCaches (0 ms)
+[----------] 1 test from IcIdentity (0 ms total)
+
+[----------] 5 tests from IcShrinkV1
+[ RUN      ] IcShrinkV1.RegisteredConstants
+[       OK ] IcShrinkV1.RegisteredConstants (0 ms)
+[ RUN      ] IcShrinkV1.WeightsFollowTheWrittenRule
+[       OK ] IcShrinkV1.WeightsFollowTheWrittenRule (0 ms)
+[ RUN      ] IcShrinkV1.SharedFixtureFractions
+[       OK ] IcShrinkV1.SharedFixtureFractions (0 ms)
+[ RUN      ] IcShrinkV1.FixtureTellsWrongRulesApart
+[       OK ] IcShrinkV1.FixtureTellsWrongRulesApart (0 ms)
+[ RUN      ] IcShrinkV1.RefusesBadInputsAndAnInfeasibleCap
+[       OK ] IcShrinkV1.RefusesBadInputsAndAnInfeasibleCap (0 ms)
+[----------] 5 tests from IcShrinkV1 (0 ms total)
+
+[----------] 4 tests from IcShrinkAimV1
+[ RUN      ] IcShrinkAimV1.RegisteredId
+[       OK ] IcShrinkAimV1.RegisteredId (0 ms)
+[ RUN      ] IcShrinkAimV1.WeightsFollowTheWrittenRule
+[       OK ] IcShrinkAimV1.WeightsFollowTheWrittenRule (0 ms)
+[ RUN      ] IcShrinkAimV1.FixtureTellsWrongRulesApart
+[       OK ] IcShrinkAimV1.FixtureTellsWrongRulesApart (0 ms)
+[ RUN      ] IcShrinkAimV1.RefusesBadGainsAndNamesTheVariant
+[       OK ] IcShrinkAimV1.RefusesBadGainsAndNamesTheVariant (0 ms)
+[----------] 4 tests from IcShrinkAimV1 (0 ms total)
+
+[----------] 4 tests from GroupShrink
+[ RUN      ] GroupShrink.SharesShrinkTowardTheGroupMeanFloorAndNormalise
+[       OK ] GroupShrink.SharesShrinkTowardTheGroupMeanFloorAndNormalise (0 ms)
+[ RUN      ] GroupShrink.IntensityRunsFromProportionalToEqualShares
+[       OK ] GroupShrink.IntensityRunsFromProportionalToEqualShares (0 ms)
+[ RUN      ] GroupShrink.PositiveMinimumKeepsEveryMember
+[       OK ] GroupShrink.PositiveMinimumKeepsEveryMember (0 ms)
+[ RUN      ] GroupShrink.RefusesBadShapesAndValues
+[       OK ] GroupShrink.RefusesBadShapesAndValues (0 ms)
+[----------] 4 tests from GroupShrink (0 ms total)
+
+[----------] 3 tests from GroupCap
+[ RUN      ] GroupCap.ExcessGoesProRataToTheOtherGroups
+[       OK ] GroupCap.ExcessGoesProRataToTheOtherGroups (0 ms)
+[ RUN      ] GroupCap.RepeatsToAFixedPoint
+[       OK ] GroupCap.RepeatsToAFixedPoint (0 ms)
+[ RUN      ] GroupCap.ToleranceInfeasibleCapsAndRefusals
+[       OK ] GroupCap.ToleranceInfeasibleCapsAndRefusals (0 ms)
+[----------] 3 tests from GroupCap (0 ms total)
+
+[----------] 5 tests from ThemeErcV1
+[ RUN      ] ThemeErcV1.RegisteredConstants
+[       OK ] ThemeErcV1.RegisteredConstants (0 ms)
+[ RUN      ] ThemeErcV1.SharedFixtureFractions
+[       OK ] ThemeErcV1.SharedFixtureFractions (0 ms)
+[ RUN      ] ThemeErcV1.WeightsFollowTheWrittenRule
+[       OK ] ThemeErcV1.WeightsFollowTheWrittenRule (0 ms)
+[ RUN      ] ThemeErcV1.FixtureTellsWrongRulesApart
+[       OK ] ThemeErcV1.FixtureTellsWrongRulesApart (1 ms)
+[ RUN      ] ThemeErcV1.RefusesBadInputsAndNamesTheRule
+[       OK ] ThemeErcV1.RefusesBadInputsAndNamesTheRule (0 ms)
+[----------] 5 tests from ThemeErcV1 (3 ms total)
+
+[----------] 5 tests from GroupErc
+[ RUN      ] GroupErc.TwoGroupsAreInverseVolatilityWhateverTheCorrelation
+[       OK ] GroupErc.TwoGroupsAreInverseVolatilityWhateverTheCorrelation (1 ms)
+[ RUN      ] GroupErc.EquicorrelatedGroupsAreInverseVolatility
+[       OK ] GroupErc.EquicorrelatedGroupsAreInverseVolatility (0 ms)
+[ RUN      ] GroupErc.ContributionsAreEqualOnAGeneralCovariance
+[       OK ] GroupErc.ContributionsAreEqualOnAGeneralCovariance (1 ms)
+[ RUN      ] GroupErc.OneGroupRepeatsAndConvergence
+[       OK ] GroupErc.OneGroupRepeatsAndConvergence (2 ms)
+[ RUN      ] GroupErc.RefusesBadShapesAndValues
+[       OK ] GroupErc.RefusesBadShapesAndValues (0 ms)
+[----------] 5 tests from GroupErc (5 ms total)
+
+[----------] 7 tests from ThemeTsmom
+[ RUN      ] ThemeTsmom.RegisteredConstants
+[       OK ] ThemeTsmom.RegisteredConstants (0 ms)
+[ RUN      ] ThemeTsmom.MassesClosedForm
+[       OK ] ThemeTsmom.MassesClosedForm (0 ms)
+[ RUN      ] ThemeTsmom.MassesRefuseBeforeAnyWrite
+[       OK ] ThemeTsmom.MassesRefuseBeforeAnyWrite (0 ms)
+[ RUN      ] ThemeTsmom.SharedFixtureMasses
+[       OK ] ThemeTsmom.SharedFixtureMasses (0 ms)
+[ RUN      ] ThemeTsmom.ScheduleRepeatingTheParentMassesIsTheBlendBitForBit
+[       OK ] ThemeTsmom.ScheduleRepeatingTheParentMassesIsTheBlendBitForBit (0 ms)
+[ RUN      ] ThemeTsmom.ABlockSwitchesAThemeOffFromItsFirstDateOnly
+[       OK ] ThemeTsmom.ABlockSwitchesAThemeOffFromItsFirstDateOnly (0 ms)
+[ RUN      ] ThemeTsmom.ScheduleRefusalsKeepNothing
+[       OK ] ThemeTsmom.ScheduleRefusalsKeepNothing (0 ms)
+[----------] 7 tests from ThemeTsmom (0 ms total)
+
+[----------] 18 tests from IcScreen
+[ RUN      ] IcScreen.EquivalenceV3PoweredEstimatesProtectDeclaredEffectsAcrossEveryMetric
+[       OK ] IcScreen.EquivalenceV3PoweredEstimatesProtectDeclaredEffectsAcrossEveryMetric (0 ms)
+[ RUN      ] IcScreen.EquivalenceV3RemovesOnlyV2DirectionalVetoAndKeepsQuarterHeuristic
+[       OK ] IcScreen.EquivalenceV3RemovesOnlyV2DirectionalVetoAndKeepsQuarterHeuristic (0 ms)
+[ RUN      ] IcScreen.DisabledHasNoDenseCacheAndNeverScreensSignal
+[       OK ] IcScreen.DisabledHasNoDenseCacheAndNeverScreensSignal (0 ms)
+[ RUN      ] IcScreen.SimdMatchesIndependentPairwiseOracleWithTiesMissingAndTails
+[       OK ] IcScreen.SimdMatchesIndependentPairwiseOracleWithTiesMissingAndTails (0 ms)
+[ RUN      ] IcScreen.SharedDateRanksHandleEqualCountDifferentNamesAndScratchReuse
+[       OK ] IcScreen.SharedDateRanksHandleEqualCountDifferentNamesAndScratchReuse (0 ms)
+[ RUN      ] IcScreen.DelayedMatureLabelsUseDecisionMembershipAndReturnGuardOnly
+[       OK ] IcScreen.DelayedMatureLabelsUseDecisionMembershipAndReturnGuardOnly (0 ms)
+[ RUN      ] IcScreen.InvalidShapesModesBudgetsAndScratchBindingReturnErrors
+[       OK ] IcScreen.InvalidShapesModesBudgetsAndScratchBindingReturnErrors (0 ms)
+[ RUN      ] IcScreen.PreparedCacheRequiresMatchingResolvedGeometryAndRecipe
+[       OK ] IcScreen.PreparedCacheRequiresMatchingResolvedGeometryAndRecipe (0 ms)
+[ RUN      ] IcScreen.ShortSparseAndConstantCandidatesPassThrough
+[       OK ] IcScreen.ShortSparseAndConstantCandidatesPassThrough (0 ms)
+[ RUN      ] IcScreen.PairCoverageUsesOriginalDecisionEligibleNames
+[       OK ] IcScreen.PairCoverageUsesOriginalDecisionEligibleNames (0 ms)
+[ RUN      ] IcScreen.AlternatingNullIsRejectedWithoutAFullBacktest
+[       OK ] IcScreen.AlternatingNullIsRejectedWithoutAFullBacktest (2 ms)
+[ RUN      ] IcScreen.RetainsWeakInverseLongHorizonAndRegimeCohorts
+[       OK ] IcScreen.RetainsWeakInverseLongHorizonAndRegimeCohorts (49 ms)
+[ RUN      ] IcScreen.EquivalenceV3ActualScreenUsesSmallDeclaredMarginAndRetainsBoundarySignals
+[       OK ] IcScreen.EquivalenceV3ActualScreenUsesSmallDeclaredMarginAndRetainsBoundarySignals (27 ms)
+[ RUN      ] IcScreen.StrictMonotoneTransformPreservesRankPathAndDecision
+[       OK ] IcScreen.StrictMonotoneTransformPreservesRankPathAndDecision (1 ms)
+[ RUN      ] IcScreen.BoundedNoisyDistinctHorizonQualificationReportsActualCohorts
+ic-screen-cohort,synthetic-only,not-general-recall,dates=512,names=96,floor=0.02,confidence=3.5
+ic-screen-cohort,null,h=126,effect=0,seed=701,reject=0,mean=0.00191919,hac_se=0.00514299,bound=0.0199197
+ic-screen-cohort,null,h=126,effect=0,seed=702,reject=0,mean=-0.00384749,hac_se=0.00496484,bound=0.0212244
+ic-screen-cohort,null,h=126,effect=0,seed=703,reject=0,mean=-0.00214498,hac_se=0.00519015,bound=0.0203105
+ic-screen-cohort,null,h=126,effect=0,seed=704,reject=0,mean=-0.000557327,hac_se=0.0055167,bound=0.0198658
+ic-screen-cohort,null,h=126,effect=0,seed=705,reject=0,mean=0.000374259,hac_se=0.00494436,bound=0.0176795
+ic-screen-cohort,null,h=126,effect=0,seed=706,reject=0,mean=0.00456621,hac_se=0.00535158,bound=0.0232967
+ic-screen-cohort,weak,h=5,effect=0.002,seed=810,reject=0,mean=0.014828,hac_se=0.00460647,bound=0.0309507
+ic-screen-cohort,weak,h=5,effect=0.005,seed=820,reject=0,mean=0.0121191,hac_se=0.00447624,bound=0.0277859
+ic-screen-cohort,inverse,h=5,effect=-0.005,seed=820,reject=0,mean=-0.0121191,hac_se=0.00447624,bound=0.0277859
+ic-screen-cohort,regime,h=5,effect=0,seed=830,reject=0,mean=0.000606153,hac_se=0.00582561,bound=0.0209958
+ic-screen-cohort,weak,h=21,effect=0.002,seed=811,reject=0,mean=-0.00346341,hac_se=0.00490254,bound=0.0206223
+ic-screen-cohort,weak,h=21,effect=0.005,seed=821,reject=0,mean=0.00860928,hac_se=0.00477127,bound=0.0253087
+ic-screen-cohort,inverse,h=21,effect=-0.005,seed=821,reject=0,mean=-0.00860928,hac_se=0.00477127,bound=0.0253087
+ic-screen-cohort,regime,h=21,effect=0,seed=831,reject=0,mean=-0.00115735,hac_se=0.00969599,bound=0.0350933
+ic-screen-cohort,weak,h=63,effect=0.002,seed=812,reject=0,mean=0.00721514,hac_se=0.00474762,bound=0.0238318
+ic-screen-cohort,weak,h=63,effect=0.005,seed=822,reject=0,mean=0.00525044,hac_se=0.00559064,bound=0.0248177
+ic-screen-cohort,inverse,h=63,effect=-0.005,seed=822,reject=0,mean=-0.00525044,hac_se=0.00559064,bound=0.0248177
+ic-screen-cohort,regime,h=63,effect=0,seed=832,reject=0,mean=-0.000153397,hac_se=0.0130074,bound=0.0456793
+ic-screen-cohort,weak,h=126,effect=0.002,seed=813,reject=0,mean=0.00689476,hac_se=0.00534923,bound=0.0256171
+ic-screen-cohort,weak,h=126,effect=0.005,seed=823,reject=0,mean=0.0013157,hac_se=0.00527863,bound=0.0197909
+ic-screen-cohort,inverse,h=126,effect=-0.005,seed=823,reject=0,mean=-0.0013157,hac_se=0.00527863,bound=0.0197909
+ic-screen-cohort,regime,h=126,effect=0,seed=833,reject=0,mean=-0.00318327,hac_se=0.0152172,bound=0.0564433
+ic-screen-cohort,positive,h=126,effect=0.01,seed=840,reject=0,mean=0.00195161,hac_se=0.00558137,bound=0.0214864
+ic-screen-cohort,positive,h=126,effect=0.02,seed=841,reject=0,mean=0.0206056,hac_se=0.00511616,bound=0.0385122
+ic-screen-cohort,totals,null_rejected=0/6,effect_retained=18/18
+[       OK ] IcScreen.BoundedNoisyDistinctHorizonQualificationReportsActualCohorts (223 ms)
+[ RUN      ] IcScreen.WiderNoisyCohortReportsRejectionAndWeakSignalRetention
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=701,reject=0,mean=-0.0010463,hac_se=0.00210824
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=702,reject=0,mean=0.00253007,hac_se=0.00231782
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=703,reject=0,mean=0.00406921,hac_se=0.0022434
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=704,reject=0,mean=-0.00187277,hac_se=0.00216682
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=705,reject=0,mean=-0.00119696,hac_se=0.00226809
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=706,reject=0,mean=0.0008332,hac_se=0.00231983
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=707,reject=0,mean=0.0030767,hac_se=0.00227316
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=708,reject=0,mean=0.0041939,hac_se=0.00234417
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=709,reject=0,mean=0.00273501,hac_se=0.00235341
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=710,reject=0,mean=0.00319623,hac_se=0.0022865
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=711,reject=0,mean=0.00223926,hac_se=0.00243348
+ic-screen-wide,dates=512,names=512,h=126,effect=0,seed=712,reject=0,mean=0.00359897,hac_se=0.00224588
+ic-screen-wide,dates=512,names=512,h=5,effect=0.002,seed=810,reject=0,mean=0.00489888,hac_se=0.00206554
+ic-screen-wide,dates=512,names=512,h=5,effect=0.005,seed=820,reject=0,mean=0.00710932,hac_se=0.00197035
+ic-screen-wide,dates=512,names=512,h=5,effect=-0.005,seed=850,reject=0,mean=-0.00799899,hac_se=0.00200046
+ic-screen-wide,dates=512,names=512,h=21,effect=0.002,seed=811,reject=0,mean=0.00398664,hac_se=0.00217852
+ic-screen-wide,dates=512,names=512,h=21,effect=0.005,seed=821,reject=0,mean=0.00391064,hac_se=0.00189344
+ic-screen-wide,dates=512,names=512,h=21,effect=-0.005,seed=851,reject=0,mean=-0.00455267,hac_se=0.00274143
+ic-screen-wide,dates=512,names=512,h=63,effect=0.002,seed=812,reject=0,mean=0.00272085,hac_se=0.00201285
+ic-screen-wide,dates=512,names=512,h=63,effect=0.005,seed=822,reject=0,mean=0.00570783,hac_se=0.00217439
+ic-screen-wide,dates=512,names=512,h=63,effect=-0.005,seed=852,reject=0,mean=-0.00842921,hac_se=0.0022507
+ic-screen-wide,dates=512,names=512,h=126,effect=0.002,seed=813,reject=0,mean=0.00190962,hac_se=0.00225536
+ic-screen-wide,dates=512,names=512,h=126,effect=0.005,seed=823,reject=0,mean=0.00359041,hac_se=0.00232686
+ic-screen-wide,dates=512,names=512,h=126,effect=-0.005,seed=853,reject=0,mean=-0.00914023,hac_se=0.00235215
+ic-screen-wide,totals,null_rejected=0/12,weak_retained=12/12,synthetic-only
+[       OK ] IcScreen.WiderNoisyCohortReportsRejectionAndWeakSignalRetention (1313 ms)
+[ RUN      ] IcScreen.MinCoverageConfig
+[       OK ] IcScreen.MinCoverageConfig (3 ms)
+[ RUN      ] IcScreen.HacRuleNamedSelectableAndReproduced
+[       OK ] IcScreen.HacRuleNamedSelectableAndReproduced (4 ms)
+[----------] 18 tests from IcScreen (1628 ms total)
+
+[----------] 2 tests from IcLabels
+[ RUN      ] IcLabels.TerminalImputedClosedForm
+[       OK ] IcLabels.TerminalImputedClosedForm (0 ms)
+[ RUN      ] IcLabels.TerminalImputedPairsPassBothReturnGuards
+[       OK ] IcLabels.TerminalImputedPairsPassBothReturnGuards (0 ms)
+[----------] 2 tests from IcLabels (0 ms total)
+
+[----------] 5 tests from ResearchIc
+[ RUN      ] ResearchIc.LegacyFourHorizonSeriesRemainBitIdentical
+[       OK ] ResearchIc.LegacyFourHorizonSeriesRemainBitIdentical (1 ms)
+[ RUN      ] ResearchIc.EndpointPresenceAndCandidatePairsAreCountedWithoutFutureMembership
+[       OK ] ResearchIc.EndpointPresenceAndCandidatePairsAreCountedWithoutFutureMembership (0 ms)
+[ RUN      ] ResearchIc.ShortLongHorizonIsUnavailableAndNeverRejected
+[       OK ] ResearchIc.ShortLongHorizonIsUnavailableAndNeverRejected (0 ms)
+[ RUN      ] ResearchIc.DateParallelTwoAndFourWorkersPreserveEverySeriesAndHacBit
+[       OK ] ResearchIc.DateParallelTwoAndFourWorkersPreserveEverySeriesAndHacBit (64 ms)
+[ RUN      ] ResearchIc.ParallelAdmissionRefusesUnboundedWorkersMismatchedPoolAndAggregateBudget
+[       OK ] ResearchIc.ParallelAdmissionRefusesUnboundedWorkersMismatchedPoolAndAggregateBudget (1 ms)
+[----------] 5 tests from ResearchIc (66 ms total)
+
+[----------] 13 tests from CombineMarginalRankIc
+[ RUN      ] CombineMarginalRankIc.CentredTiedRanksMatchCompositionArithmetic
+[       OK ] CombineMarginalRankIc.CentredTiedRanksMatchCompositionArithmetic (0 ms)
+[ RUN      ] CombineMarginalRankIc.NoRegressorsGivesMarginalEqualToRaw
+[       OK ] CombineMarginalRankIc.NoRegressorsGivesMarginalEqualToRaw (8 ms)
+[ RUN      ] CombineMarginalRankIc.CandidateInsideRegressorSpanIsSpannedZero
+[       OK ] CombineMarginalRankIc.CandidateInsideRegressorSpanIsSpannedZero (6 ms)
+[ RUN      ] CombineMarginalRankIc.PoolPlusNoiseHasZeroMarginalWithin2Se
+[       OK ] CombineMarginalRankIc.PoolPlusNoiseHasZeroMarginalWithin2Se (18 ms)
+[ RUN      ] CombineMarginalRankIc.PlantedOrthogonalRecovered
+[       OK ] CombineMarginalRankIc.PlantedOrthogonalRecovered (18 ms)
+[ RUN      ] CombineMarginalRankIc.SummaryIsBartlettHacOfCompactedSeries
+[       OK ] CombineMarginalRankIc.SummaryIsBartlettHacOfCompactedSeries (0 ms)
+[ RUN      ] CombineMarginalRankIc.PairwiseCorrelationAveragesDefinedDates
+[       OK ] CombineMarginalRankIc.PairwiseCorrelationAveragesDefinedDates (0 ms)
+[ RUN      ] CombineMarginalRankIc.RefusesBadShapesAndBounds
+[       OK ] CombineMarginalRankIc.RefusesBadShapesAndBounds (0 ms)
+[ RUN      ] CombineMarginalRankIc.AcceptsThirtyFourRegressors
+[       OK ] CombineMarginalRankIc.AcceptsThirtyFourRegressors (0 ms)
+[ RUN      ] CombineMarginalRankIc.CompactedNamesKeepBits
+[       OK ] CombineMarginalRankIc.CompactedNamesKeepBits (0 ms)
+[ RUN      ] CombineMarginalRankIc.PairDayValuesThenAccumulateIsAddDate
+[       OK ] CombineMarginalRankIc.PairDayValuesThenAccumulateIsAddDate (0 ms)
+[ RUN      ] CombineMarginalRankIc.RestrictToKeepsListedPairs
+[       OK ] CombineMarginalRankIc.RestrictToKeepsListedPairs (0 ms)
+[ RUN      ] CombineMarginalRankIc.SeededPairsEqualComputedPairs
+[       OK ] CombineMarginalRankIc.SeededPairsEqualComputedPairs (0 ms)
+[----------] 13 tests from CombineMarginalRankIc (54 ms total)
+
+[----------] 8 tests from CompositionRules
+[ RUN      ] CompositionRules.TableCoversEveryRule
+[       OK ] CompositionRules.TableCoversEveryRule (0 ms)
+[ RUN      ] CompositionRules.RecipeTextPinned
+[       OK ] CompositionRules.RecipeTextPinned (0 ms)
+[ RUN      ] CompositionRules.IncompatiblePairRefused
+[       OK ] CompositionRules.IncompatiblePairRefused (0 ms)
+[ RUN      ] CompositionRules.ThemeTableFromRegistry
+[       OK ] CompositionRules.ThemeTableFromRegistry (8 ms)
+[ RUN      ] CompositionRules.ListRulesJsonPinned
+[       OK ] CompositionRules.ListRulesJsonPinned (1 ms)
+[ RUN      ] CompositionRules.ParamsSchemaConstantsAreTheRegisteredOnes
+[       OK ] CompositionRules.ParamsSchemaConstantsAreTheRegisteredOnes (0 ms)
+[ RUN      ] CompositionRules.TwoSpeedRefusesAThemeOutsideTheTable
+[       OK ] CompositionRules.TwoSpeedRefusesAThemeOutsideTheTable (0 ms)
+[ RUN      ] CompositionRules.StageListIsTheV8CallSequence
+[       OK ] CompositionRules.StageListIsTheV8CallSequence (0 ms)
+[----------] 8 tests from CompositionRules (11 ms total)
+
+[----------] 9 tests from ThemeHedgeRule
+[ RUN      ] ThemeHedgeRule.RegisteredConstantsAndRow
+[       OK ] ThemeHedgeRule.RegisteredConstantsAndRow (0 ms)
+[ RUN      ] ThemeHedgeRule.FlagAbsentIdentity
+[       OK ] ThemeHedgeRule.FlagAbsentIdentity (0 ms)
+[ RUN      ] ThemeHedgeRule.BlockParseAndRefusals
+[       OK ] ThemeHedgeRule.BlockParseAndRefusals (0 ms)
+[ RUN      ] ThemeHedgeRule.BeforeTheFirstEstimateTheHedgeIsTheParent
+[       OK ] ThemeHedgeRule.BeforeTheFirstEstimateTheHedgeIsTheParent (0 ms)
+[ RUN      ] ThemeHedgeRule.AddThemeHedgedIsTheMassTimesTheKernel
+[       OK ] ThemeHedgeRule.AddThemeHedgedIsTheMassTimesTheKernel (0 ms)
+[ RUN      ] ThemeHedgeRule.StageWiringAndRefusals
+[       OK ] ThemeHedgeRule.StageWiringAndRefusals (3 ms)
+[ RUN      ] ThemeHedgeRule.TheTraceIsTheKernelRatioAtEachBlockStart
+[       OK ] ThemeHedgeRule.TheTraceIsTheKernelRatioAtEachBlockStart (1 ms)
+[ RUN      ] ThemeHedgeRule.SummaryTracePrintsTheHedgeRatiosPerBlock
+[       OK ] ThemeHedgeRule.SummaryTracePrintsTheHedgeRatiosPerBlock (1 ms)
+[ RUN      ] ThemeHedgeRule.SessionReturnsAreTheGuardedIntervalReturns
+[       OK ] ThemeHedgeRule.SessionReturnsAreTheGuardedIntervalReturns (0 ms)
+[----------] 9 tests from ThemeHedgeRule (7 ms total)
+
+[----------] 6 tests from MomVolman
+[ RUN      ] MomVolman.RegisteredConstants
+[       OK ] MomVolman.RegisteredConstants (0 ms)
+[ RUN      ] MomVolman.StepVarianceClosedForm
+[       OK ] MomVolman.StepVarianceClosedForm (0 ms)
+[ RUN      ] MomVolman.ScheduleFromTheWeightsFile
+[       OK ] MomVolman.ScheduleFromTheWeightsFile (0 ms)
+[ RUN      ] MomVolman.SharedParseAndRefusals
+[       OK ] MomVolman.SharedParseAndRefusals (2 ms)
+[ RUN      ] MomVolman.TinyVolatilityGivesAFiniteScaleAndOverflowIsRefused
+[       OK ] MomVolman.TinyVolatilityGivesAFiniteScaleAndOverflowIsRefused (0 ms)
+[ RUN      ] MomVolman.SummaryTracePrintsTheScalePerBlock
+[       OK ] MomVolman.SummaryTracePrintsTheScalePerBlock (0 ms)
+[----------] 6 tests from MomVolman (3 ms total)
+
+[----------] 5 tests from CharCovHedge
+[ RUN      ] CharCovHedge.ClosedForm2Names
+[       OK ] CharCovHedge.ClosedForm2Names (0 ms)
+[ RUN      ] CharCovHedge.ClosedFormFiveNames
+[       OK ] CharCovHedge.ClosedFormFiveNames (0 ms)
+[ RUN      ] CharCovHedge.WindowSumsAreTheTrailingWindowOls
+[       OK ] CharCovHedge.WindowSumsAreTheTrailingWindowOls (0 ms)
+[ RUN      ] CharCovHedge.FutureReturnDoesNotChangePast
+[       OK ] CharCovHedge.FutureReturnDoesNotChangePast (0 ms)
+[ RUN      ] CharCovHedge.RefusesBadInputAndCountsScratch
+[       OK ] CharCovHedge.RefusesBadInputAndCountsScratch (0 ms)
+[----------] 5 tests from CharCovHedge (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 226 tests from 33 test suites ran. (46975 ms total)
+[  PASSED  ] 226 tests.

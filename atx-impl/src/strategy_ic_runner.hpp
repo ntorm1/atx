@@ -33,9 +33,32 @@ struct IcRunnerConfig {
   bool no_composition{false};
   // Cost measurement (platform v8 task H-2, --eval-mode audit-exact): every candidate is
   // evaluated under the VM's AuditExact mode instead of ResearchFast, and the recipe's "vm"
-  // names it. Refused with --candidate-cache, whose entries are keyed on ResearchFast. False:
-  // the runner is unchanged.
+  // names it. P9 S2: allowed with --candidate-cache, whose signal entries then live under their
+  // own identity token (vm_identity(true): the ResearchFast identity + "_audit", its own cache
+  // root, eval_mode keyed and matched), so the two tiers never share an entry. False: the runner
+  // is unchanged (the default switch is a P9-B0 ruling, not this flag).
   bool audit_exact{false};
+  // P9 S2 (DS-4, --min-coverage F): IcScreenConfig::min_coverage, in (0, 1]. The default .8 is
+  // the former hard-coded gate: the recipe, the IC-result scope and every output keep their bytes.
+  // Any other value is recorded in the recipe and keys the IC-result cache.
+  atx::f64 min_coverage{0.8};
+  // P9 S2 (--ic-hac-rule bartlett-2h-v1|horizon-aware-v3; empty: absent). Absent, the screen's
+  // own HAC rule and no byte changes. Present, the recipe records it, a non-default rule keys the
+  // IC-result cache, and every printed estimate carries a "hac" block with its standard error and
+  // lag under BOTH rules (the other recomputed from the same daily series).
+  std::string ic_hac_rule;
+  // P9 S2 (DS-3, --label-terminal imputed-v1; empty: today's labels, no byte changes). Each scored
+  // role then needs its pinned label role (--train-label-role / --validation-label-role with their
+  // SHA-256): the role builder's --delisting-returns build of that role (universe.delisting.
+  // returns_applied true), read as a label-only price column. Its imputed close prices a name's
+  // termination session, so a name that terminates inside a label's horizon exits there
+  // (LabelTerminalRule::ImputedV1) instead of having no label; the signal role-refusal (E-10)
+  // stays for every signal and field. The run scores with the imputed labels, prints each
+  // candidate's IC under today's labels beside them ("ic_missing_exit_v1"), the missing-exit share
+  // and the imputed-pair count, and records the rule and the label pins in the recipe.
+  std::string label_terminal;
+  std::string train_label_role, train_label_role_sha256;
+  std::string validation_label_role, validation_label_role_sha256;
   // Optional reusable raw DSL signals under ROOT = DIR[/<vm-identity>] (the
   // <vm-identity> level is omitted only for the legacy identity dslvm1_clang18.1).
   // Content-keyed layout (atx.dsl-candidate-signal/v2, written by this runner):

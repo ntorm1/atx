@@ -1,0 +1,47 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 16 tests from 3 test suites.
+[----------] Global test environment set-up.
+[----------] 10 tests from EvalVerb
+[ RUN      ] EvalVerb.TieMomentsAndPsr
+[       OK ] EvalVerb.TieMomentsAndPsr (1309 ms)
+[ RUN      ] EvalVerb.TieDsrCrossLoAndHouse
+[       OK ] EvalVerb.TieDsrCrossLoAndHouse (4 ms)
+[ RUN      ] EvalVerb.TieOncAndEffectiveNDsr
+[       OK ] EvalVerb.TieOncAndEffectiveNDsr (0 ms)
+[ RUN      ] EvalVerb.TiePbo
+[       OK ] EvalVerb.TiePbo (0 ms)
+[ RUN      ] EvalVerb.TiePaired
+[       OK ] EvalVerb.TiePaired (0 ms)
+[ RUN      ] EvalVerb.TieNormPpf
+[       OK ] EvalVerb.TieNormPpf (0 ms)
+[ RUN      ] EvalVerb.JsonSchema
+[       OK ] EvalVerb.JsonSchema (0 ms)
+[ RUN      ] EvalVerb.HandRowIsThePrefixState
+[       OK ] EvalVerb.HandRowIsThePrefixState (2010 ms)
+[ RUN      ] EvalVerb.CliWritesTheDocumentAndRefuses
+[       OK ] EvalVerb.CliWritesTheDocumentAndRefuses (89 ms)
+[ RUN      ] EvalVerb.ProtocolDefaultsFollowNavSumm
+[       OK ] EvalVerb.ProtocolDefaultsFollowNavSumm (0 ms)
+[----------] 10 tests from EvalVerb (3747 ms total)
+
+[----------] 3 tests from ResearchEvalRng
+[ RUN      ] ResearchEvalRng.CbbStartsAreDefaultRngIntegers
+[       OK ] ResearchEvalRng.CbbStartsAreDefaultRngIntegers (28 ms)
+[ RUN      ] ResearchEvalRng.OncDrawsAreTheRecordedPicks
+[       OK ] ResearchEvalRng.OncDrawsAreTheRecordedPicks (84 ms)
+[ RUN      ] ResearchEvalRng.ReplayedPicksGiveTheRecordedClustersAndSilhouettes
+[       OK ] ResearchEvalRng.ReplayedPicksGiveTheRecordedClustersAndSilhouettes (46 ms)
+[----------] 3 tests from ResearchEvalRng (160 ms total)
+
+[----------] 3 tests from Conditional
+[ RUN      ] Conditional.ClosedFormNormalCase
+[       OK ] Conditional.ClosedFormNormalCase (5 ms)
+[ RUN      ] Conditional.UnselectedCellsAreListedNotSummed
+[       OK ] Conditional.UnselectedCellsAreListedNotSummed (0 ms)
+[ RUN      ] Conditional.RefusesANonPositiveSe
+[       OK ] Conditional.RefusesANonPositiveSe (0 ms)
+[----------] 3 tests from Conditional (5 ms total)
+
+[----------] Global test environment tear-down
+[==========] 16 tests from 3 test suites ran. (3914 ms total)
+[  PASSED  ] 16 tests.

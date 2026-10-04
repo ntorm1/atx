@@ -83,6 +83,8 @@ COMPOSITION_FLAGS = {
     "theme-resid-v1": {"fit": {"--theme-resid": "theme-resid-v1"}},
     "theme-tsmom-v1": {"fit": {"--theme-tsmom": "theme-tsmom-v1"}},
     "two-speed-v1": {"fit": {"--two-speed": "two-speed-v1"}, "nav": {"--two-speed": "two-speed-v1"}},
+    "theme-cov-hedge-v1": {"fit": {"--theme-hedge": "theme-cov-hedge-v1"}},     # MR-4 (AL-COMB)
+    "mom-volman-v1": {"fit": {"--mom-volman": "mom-volman-v1"}},                # MR-4 (AL-COMB)
 }
 SCHEMA_KEYWORDS = {"type", "const", "enum", "required", "properties", "additionalProperties", "items", "minItems",
                    "maxItems", "minProperties", "pattern", "minimum", "maximum", "exclusiveMinimum",

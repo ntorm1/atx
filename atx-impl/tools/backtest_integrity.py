@@ -1015,6 +1015,7 @@ def pin_rerun(before: dict, rec: dict) -> dict:
 
 
 CHAIN_GENESIS = "0" * 64
+CHAIN_RULE = "atx-ledger-chain-fold/v1"   # P9 B2: the name of this chain rule (research/ledger chain.hpp kChainRule)
 
 
 def line_sha256(line: str) -> str:
@@ -1033,10 +1034,11 @@ def fold_head(head: str, line: str) -> str:
 
 
 def chain_head(lines: list[str]) -> str:
-    """The chain head after the given non-blank line texts, in order (the head of a ledger holding exactly them)."""
+    """The chain head after the given non-blank line texts, in order (the head of a ledger holding exactly them). A line
+    is chained when its prev_sha256 is present and not null, the reader's test (``_walk``; P9 review B2 S2)."""
     head = CHAIN_GENESIS
     for line in lines:
-        head = line_sha256(line) if "prev_sha256" in json.loads(line) else fold_head(head, line)
+        head = line_sha256(line) if json.loads(line).get("prev_sha256") is not None else fold_head(head, line)
     return head
 
 

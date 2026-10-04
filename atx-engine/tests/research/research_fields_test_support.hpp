@@ -54,7 +54,9 @@ template <class T> std::string bytes_of(const std::vector<T> &values) {
 
 inline bool same_bits(f64 a, f64 b) { return std::bit_cast<u64>(a) == std::bit_cast<u64>(b); }
 
-// A role of `days` sessions (calendar days) and `ids`; member / present / volume are date-major.
+// A role of `days` sessions (calendar days) and `ids`; member / present / volume (and close /
+// raw_close, written only when non-empty) are date-major. source_sha256: the vendor file the role
+// was projected from (the vendor-panel kinds check it).
 struct TinyRole {
   std::vector<i64> days;
   std::vector<u64> ids;
@@ -62,6 +64,9 @@ struct TinyRole {
   std::vector<u8> present;
   std::vector<f64> volume;
   i64 score_begin{0};
+  std::vector<f64> close{};
+  std::vector<f64> raw_close{};
+  std::string source_sha256 = std::string(64, '0');
 };
 
 // Writes the role payload and its manifest under `dir` (created); returns the manifest's SHA-256.
@@ -71,12 +76,18 @@ inline std::string write_role(const fs::path &dir, const TinyRole &role) {
   for (const i64 d : role.days) {
     sessions.push_back(d * kDayNs);
   }
-  const std::vector<std::pair<std::string, std::string>> files{
-      {"ids.u64", bytes_of(role.ids)},
-      {"member.u8", bytes_of(role.member)},
-      {"present.u8", bytes_of(role.present)},
-      {"sessions.i64", bytes_of(sessions)},
-      {"volume.f64", bytes_of(role.volume)}};
+  std::vector<std::pair<std::string, std::string>> files;
+  if (!role.close.empty()) {
+    files.emplace_back("close.f64", bytes_of(role.close));
+  }
+  files.emplace_back("ids.u64", bytes_of(role.ids));
+  files.emplace_back("member.u8", bytes_of(role.member));
+  files.emplace_back("present.u8", bytes_of(role.present));
+  if (!role.raw_close.empty()) {
+    files.emplace_back("raw_close.f64", bytes_of(role.raw_close));
+  }
+  files.emplace_back("sessions.i64", bytes_of(sessions));
+  files.emplace_back("volume.f64", bytes_of(role.volume));
   std::string entries;
   for (const auto &[name, blob] : files) {
     write_bytes(dir / name, blob);
@@ -89,7 +100,7 @@ inline std::string write_role(const fs::path &dir, const TinyRole &role) {
       std::to_string(role.days.size()) + ",\"instruments\":" + std::to_string(role.ids.size()) +
       ",\"instrument_namespace\":\"spiderrock.securityID\",\"score_begin\":" +
       std::to_string(role.score_begin) + ",\"score_end\":" + std::to_string(role.days.size()) +
-      ",\"source_sha256\":\"" + std::string(64, '0') + "\",\"files\":{" + entries + "}}\n";
+      ",\"source_sha256\":\"" + role.source_sha256 + "\",\"files\":{" + entries + "}}\n";
   write_bytes(dir / "manifest.json", manifest);
   return sha256_of(manifest);
 }

@@ -1,0 +1,21 @@
+identity dir: dslvm1_clang18.1_opt_md_ndebug_xs13.0.0_audit (45 chars)
+spec-bound deepest IC-result entry per spec (layout from the on-disk cache; unseen = counted as field), top 8 of 23 specs with an ic.cache:
+  255  margin to 250: -5  scripts/specs/v70-lo3.json  cache=build-equity/mega-candidate-cache-v70-lo3  deepest id=seasonality_same_month (22, unseen)
+  251  margin to 250: -1  scripts/specs/v8/lib-v8x4b.json  cache=build-equity/mega-candidate-cache-v8-lo3  deepest id=value_composite_v49 (19, field)
+  251  margin to 250: -1  scripts/specs/v8/lib-v8x4.json  cache=build-equity/mega-candidate-cache-v8-lo3  deepest id=value_composite_v49 (19, field)
+  251  margin to 250: -1  scripts/specs/v71.json  cache=build-equity/mega-candidate-cache-v71  deepest id=seasonality_same_month (22, unseen)
+  251  margin to 250: -1  scripts/specs/v70.json  cache=build-equity/mega-candidate-cache-v70  deepest id=seasonality_same_month (22, unseen)
+  251  margin to 250: -1  scripts/specs/v61.json  cache=build-equity/mega-candidate-cache-v61  deepest id=seasonality_same_month (22, unseen)
+  251  margin to 250: -1  scripts/specs/v61-ops.json  cache=build-equity/mega-candidate-cache-v61  deepest id=seasonality_same_month (22, unseen)
+  250  margin to 250: +0  scripts/specs/v8/lib-v8ysb.json  cache=build-equity/mega-candidate-cache-v8-lo3  deepest id=earn_surprise_comp (18, field)
+  250  margin to 250: +0  scripts/specs/v8/lib-v8ysb-gm.json  cache=build-equity/mega-candidate-cache-v8-lo3  deepest id=earn_surprise_comp (18, field)
+  250  margin to 250: +0  scripts/specs/v8/lib-v8ys.json  cache=build-equity/mega-candidate-cache-v8-lo3  deepest id=earn_surprise_comp (18, field)
+real entries on disk, rebased (Debug = legacy identity, so DIR\<rel>):
+  build-equity/mega-candidate-cache-v61: absent
+  build-equity/mega-candidate-cache-v70: absent
+  build-equity/mega-candidate-cache-v70-lo3: absent
+  build-equity/mega-candidate-cache-v71: absent
+  build-equity/mega-candidate-cache-v8-lo1: longest 247 (margin to 250: +3; to MAX_PATH 259: +12)
+     C:\atx-wt\pool-2\build-equity\mega-candidate-cache-v8-lo1\dslvm1_clang18.1_opt_md_ndebug_xs13.0.0_audit\2ff9d7711bdaa2d669cc096f4874f7f4705309e53572fd12dad3c0a4d7ac1e53\fp_2f4194d53fe138ff\ic1_710caa717cb3193d\issuance_vendor.ff4ac4adac6298e4.json
+  build-equity/mega-candidate-cache-v8-lo3: longest 251 (margin to 250: -1; to MAX_PATH 259: +8)
+     C:\atx-wt\pool-2\build-equity\mega-candidate-cache-v8-lo3\dslvm1_clang18.1_opt_md_ndebug_xs13.0.0_audit\e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4\fp_d5d08ec919167bd4\ic1_b479dd191f59cbff\value_composite_v49.09fb156c56c6de79.json

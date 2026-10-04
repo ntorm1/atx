@@ -14,6 +14,8 @@ so a new ruling is a new entry here (reviewed code), never prose.
   criteria     printed (or deciding, under v8-prereg-5) comparisons of the cell's book with its parent's
   gross match  (match) Ruling PM6-6: a calibration run at the parent's L; |G - G_parent| <= .005 stands, else ONE
                correction L' = L x G_parent / G (4 decimals) and the matched run must be within .005 (else a stop)
+    pm6-6-engine  the same rule inside the nav exe (P9 C2, P15: nav --calibrate-gross G_parent): the run stage stops
+               after the w phase and the match stage runs ONE NAV, which calibrates and publishes at the final L
   mechanics    (verify) the v8 cell limits on the S2 daily CSV: all-rows gross in [.90, 1.05], |all-rows net| <= .02,
                tau mean <= .20, tau p95 <= .30, the NAV's accounting errors within its own tolerance
 """
@@ -104,7 +106,8 @@ def _num(x) -> bool:
 
 
 # ------------------------------------------------------------------ gross matching (match)
-GROSS_MATCH = {"pm6-6": {"tolerance": 0.005, "corrections": 1}, "none": None}
+GROSS_MATCH = {"pm6-6": {"tolerance": 0.005, "corrections": 1}, "none": None,
+               "pm6-6-engine": {"tolerance": 0.005, "corrections": 1, "engine": True}}  # P9 C2 (P15)
 
 
 def matched_leverage(leverage: str | float, g_parent: float, g_cal: float) -> str:

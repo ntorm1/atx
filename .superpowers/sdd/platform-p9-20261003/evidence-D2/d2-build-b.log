@@ -1,0 +1,64 @@
+﻿{
+    "Source":  "a17319fb37d571f4e5b1ec755e542428a228679e",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  0,
+    "ConfiguredProvenance":  "a17319fb37d571f4e5b1ec755e542428a228679e",
+    "Jobs":  4,
+    "FreeMiB":  3630,
+    "CommitMiB":  3512,
+    "Targets":  [
+                    "atx-equity-strategy-ic",
+                    "atx-impl-strategy-ic-tests",
+                    "atx-engine-combine-tests"
+                ],
+    "ExitCode":  1,
+    "WallSeconds":  927.57142709999994,
+    "CompiledTUs":  280,
+    "Links":  6,
+    "Tag":  "p9-d2-b",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-20\\build-equity",
+    "Executables":  {
+
+                    }
+}
+[1/288] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+[2/288] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+[3/288] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+[4/288] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+[5/288] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+[6/288] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+[7/288] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+[8/288] Building CXX object atx-tsdb\CMakeFiles\atx-tsdb.dir\src\builder.cpp.obj
+[9/288] Building CXX object atx-tsdb\CMakeFiles\atx-tsdb.dir\src\mapping.cpp.obj
+[10/288] Building CXX object atx-tsdb\CMakeFiles\atx-tsdb.dir\src\load_parquet.cpp.obj
+[11/288] Building CXX object atx-tsdb\CMakeFiles\atx-tsdb.dir\src\version.cpp.obj
+[12/288] Building CXX object atx-tsdb\CMakeFiles\atx-tsdb.dir\src\segment_reader.cpp.obj
+[13/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\ic_screen.cpp.obj
+[14/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\target_tracking.cpp.obj
+[15/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\role_panel.cpp.obj
+[16/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\combine\orthogonalize.cpp.obj
+[17/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\combine\marginal_rank_ic.cpp.obj
+[18/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\cmake_pch.cxx.obj
+[19/288] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\cmake_pch.cxx.obj
+[20/288] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-test-pch.dir\cmake_pch.cxx.obj
+[21/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\claims_state.cpp.obj
+[22/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\security_transition.cpp.obj
+[23/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\replay.cpp.obj
+[24/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\canonical.cpp.obj
+[25/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\crossover.cpp.obj
+[26/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\engine.cpp.obj
+[27/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\fitness.cpp.obj
+[28/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\execution_objective.cpp.obj
+[29/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\factory.cpp.obj
+[30/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\execution_cash_claim.cpp.obj
+[31/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\genome.cpp.obj
+[32/288] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_ic_runner.cpp.obj
+[33/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\execution_stock_transition.cpp.obj
+[34/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\op_catalog.cpp.obj
+[35/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\mutation.cpp.obj
+[36/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\param_search.cpp.obj
+[37/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\cpcv.cpp.obj
+[38/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\cpcv_date.cpp.obj
+[39/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\constraints.cpp.obj
+[40/288] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\pool_view.cpp.obj

@@ -1,0 +1,61 @@
+{
+  "schema": "atx.wave-result/v1",
+  "wave": "fx-w1",
+  "kind": "rule",
+  "description": "synthetic wave",
+  "manifest": {
+    "path": "scripts/specs/v8/waves/fx-w1.json",
+    "sha256": "fa573e0d97d13fe202f422b954a17fefdd99203c31b49a71f8fede7df88e7026",
+    "commit": null
+  },
+  "library": null,
+  "template": "scripts/specs/v8/fx-tmpl.json",
+  "parent": {
+    "spec": "scripts/specs/v8/fx-base.json",
+    "library": "lib-fx"
+  },
+  "screen": null,
+  "stats": {
+    "cell": {
+      "placeholder": 1.0
+    }
+  },
+  "paired": {
+    "dsr": 0.5
+  },
+  "dsr": null,
+  "pbo": null,
+  "verdict": {
+    "accepted": false,
+    "reason": "placeholder"
+  },
+  "ledger": {
+    "path": "build-equity/trials.jsonl",
+    "lines_before": 3,
+    "lines_after": 5,
+    "head": "8b1e9fe0f97c38ebdea46e1b7f26ce1c9262b74c5f6caae7b39f3341d803f008",
+    "n_before": 3,
+    "n_after": 4,
+    "trial_id": "fx-t5",
+    "admission_lines": []
+  },
+  "next_parent": {
+    "spec": "scripts/specs/v8/fx-base.json",
+    "library": "lib-fx"
+  },
+  "timings": [
+    {
+      "phase": "nav",
+      "run_dir": "build-equity/fx-nav-run1",
+      "outcome": "completed",
+      "exit_code": 0,
+      "seconds": 12.345678901234567,
+      "peak_mib": 50,
+      "executable_sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+    }
+  ],
+  "receipts": {
+    "01-preflight": "511cc0a58c030c9a30ff5a74f023361ecc199413ec3988e8e70599921d03e710",
+    "02-run": "3c35aed504d61fc3c57d4c56fe6107b88ac8909ff82bcf3d827b195c38bfc10e"
+  }
+}

@@ -73,6 +73,35 @@ inline constexpr atx::f64 kAcklamD[4] = {
 inline constexpr atx::f64 kAcklamPLow = 0.02425;
 inline constexpr atx::f64 kAcklamPHigh = 1.0 - kAcklamPLow; // 0.97575
 
+// One Horner step acc * x + c, rounded twice: the product, then the sum.
+//
+// Why not the plain expression `acc * x + c`: clang-cl's default FP model (/fp:precise, i.e.
+// -ffp-contract=on) emits it as llvm.fmuladd. On the x86-64 baseline (no FMA) a run-time
+// fmuladd lowers to mulsd + addsd (two roundings), but when the optimizer folds a call whose
+// argument is a compile-time constant it folds fmuladd as a FUSED multiply-add (one rounding).
+// norm_ppf(10.0 / 12.0) then differed in the last bit between a folded literal and the same
+// call at run time (M1c-RED, Release only). Here the product is its own full expression, so
+// contraction cannot fuse it with the sum: a folded step and a run-time step are the same
+// two-rounding value, on every build and every target ISA. On a non-FMA build every
+// run-time result is bit-identical to the old expression (lowered fmuladd is mul then add).
+[[nodiscard]] inline atx::f64 mul_add_unfused(atx::f64 acc, atx::f64 x, atx::f64 c) noexcept {
+  const atx::f64 product = acc * x;
+  return product + c;
+}
+
+// Horner evaluation, highest-order coefficient first:
+// (((coef[0] x + coef[1]) x + coef[2]) ...) x + coef[N-1], every step mul_add_unfused (the same
+// rounding sequence as the nested expression with an unfused multiply and add).
+template <std::size_t N>
+[[nodiscard]] inline atx::f64 horner_unfused(const atx::f64 (&coef)[N], atx::f64 x) noexcept {
+  static_assert(N >= 1U, "horner_unfused: at least one coefficient");
+  atx::f64 acc = coef[0];
+  for (std::size_t k = 1U; k < N; ++k) {
+    acc = mul_add_unfused(acc, x, coef[k]);
+  }
+  return acc;
+}
+
 } // namespace detail
 
 // ===========================================================================
@@ -93,30 +122,35 @@ inline constexpr atx::f64 kAcklamPHigh = 1.0 - kAcklamPLow; // 0.97575
 //  ≈ 1.959963985. p outside (0, 1) is a precondition violation; the rational
 //  forms degenerate there (the caller — DSR/PBO — only ever passes interior
 //  probabilities), so no runtime guard is emitted on this pure hot path.
+//
+//  Build invariance (M1c-RED): every polynomial is evaluated contraction-free
+//  (detail::horner_unfused), so the polynomials give the same bits whether the optimizer
+//  folds a call at compile time or it runs, in Debug and Release alike. The remaining
+//  arithmetic has no multiply feeding an add (divisions and exp/erfc/log/sqrt only); a
+//  folded call still rests on the compiler's exp/erfc/log/sqrt agreeing with the run-time
+//  CRT's (they do at the points BookNormalScore.NormPpfOfALiteralIsItsRunTimeValue pins).
 // ===========================================================================
 [[nodiscard]] inline atx::f64 norm_ppf(atx::f64 p) noexcept {
-  const atx::f64 *a = detail::kAcklamA;
-  const atx::f64 *b = detail::kAcklamB;
-  const atx::f64 *c = detail::kAcklamC;
-  const atx::f64 *d = detail::kAcklamD;
+  using detail::horner_unfused;
+  using detail::mul_add_unfused;
 
   atx::f64 x = 0.0;
   if (p < detail::kAcklamPLow) {
     // Lower tail: q = sqrt(-2 ln p).
     const atx::f64 q = std::sqrt(-2.0 * std::log(p));
-    x = (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
-        ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0);
+    x = horner_unfused(detail::kAcklamC, q) /
+        mul_add_unfused(horner_unfused(detail::kAcklamD, q), q, 1.0);
   } else if (p <= detail::kAcklamPHigh) {
     // Central region: q = p - 0.5, r = q².
     const atx::f64 q = p - 0.5;
     const atx::f64 r = q * q;
-    x = (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
-        (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0);
+    x = horner_unfused(detail::kAcklamA, r) * q /
+        mul_add_unfused(horner_unfused(detail::kAcklamB, r), r, 1.0);
   } else {
     // Upper tail: q = sqrt(-2 ln(1-p)); negated lower-tail form.
     const atx::f64 q = std::sqrt(-2.0 * std::log(1.0 - p));
-    x = -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
-        ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0);
+    x = -horner_unfused(detail::kAcklamC, q) /
+        mul_add_unfused(horner_unfused(detail::kAcklamD, q), q, 1.0);
   }
 
   // One Halley step: refine x against the true CDF. e = Φ(x) - p; u scales the

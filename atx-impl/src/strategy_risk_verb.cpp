@@ -8,6 +8,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -21,8 +22,10 @@
 #include <span>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
 #include "atx/engine/data/research_window.hpp"
@@ -35,7 +38,11 @@ namespace {
 using namespace atx;
 namespace co = atx::core;
 namespace rw = atx::engine::data;
+namespace er = atx::engine::risk;
 using Json = nlohmann::json;
+constexpr const char* container_file = "model.atxcov";
+// The mapping bound of the cov tools and the store (a TRAIN container is ~10^8 bytes).
+constexpr u64 max_container_bytes = 64ULL << 30;
 constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
 constexpr u64 max_manifest_bytes = 16ULL << 20;
 constexpr usize max_dates = 4096, max_names = 20000;
@@ -401,6 +408,7 @@ public:
     write_binary(specific_, d.specific_variance);
     write_binary(structural_, d.factor_structural);
     structural_stats(d);
+    ++eigen_[static_cast<usize>(d.eigen)];
     forecasts_ += d.forecast ? 1U : 0U;
     if (d.forecast && first_forecast_ < 0) first_forecast_ = d.session;
     if (d.fitted) { r2_sum_ += d.r2; ++fitted_; }
@@ -458,6 +466,19 @@ public:
         {"fitted_sessions", fitted_},
         {"mean_r2", fitted_ ? Json(r2_sum_ / static_cast<f64>(fitted_)) : Json(nullptr)}};
   }
+  // atx-cov-v1 S2b per session (never silent): adjusted, short of K+1 effective observations,
+  // refused by the kernel, or not run (no fully observed block).
+  [[nodiscard]] Json eigen_sessions() const {
+    Json out = Json::object();
+    for (const EigenOutcome o : {EigenOutcome::Adjusted, EigenOutcome::ShortHistory,
+                                 EigenOutcome::Refused, EigenOutcome::BudgetRefused,
+                                 EigenOutcome::NotRun})
+      out[eigen_outcome_name(o)] = eigen_[static_cast<usize>(o)];
+    return out;
+  }
+  [[nodiscard]] usize eigen_budget_refusals() const {
+    return eigen_[static_cast<usize>(EigenOutcome::BudgetRefused)];
+  }
   // The structural factor audit (F2): every factor ever forecast structurally with its count of
   // such sessions and the first and last; sessions with a structural factor, those whose
   // structural terms needed a scale s < 1 (and the smallest s); forecast sessions where a
@@ -510,6 +531,7 @@ private:
   usize residual_sessions_{};
   f64 min_scale_{1.0};
   usize forecasts_{}, fitted_{};
+  std::array<usize, 5> eigen_{}; // per EigenOutcome
   i64 first_forecast_{-1};
   f64 r2_sum_{};
   std::vector<u8> last_slot_, last_eligible_;
@@ -568,7 +590,7 @@ public:
           {"style", e.session >= 0 ? Json(style_names[e.style]) : Json(nullptr)},
           {"session_ns", e.session >= 0 ? Json(e.session) : Json(nullptr)}};
     };
-    return Json{{"model", risk_model_id},
+    return Json{{"model", recipe_id(cfg_.recipe)},
         {"specific_variance_bound", cfg_.max_specific_variance},
         {"invariant", "every forecast daily specific variance lies in (0, "
                       "specific_variance_bound) or the run is refused naming the instrument and "
@@ -665,7 +687,9 @@ Json family_exclusions(const std::vector<const BiasSeries*>& family,
 // USE4 Appendix A summary of one family over its ok series: full-sample b per series against
 // 1 +- sqrt(2/T) and the kurtosis-widened band (pooled kurtosis of those series' z), and
 // rolling 63/252 windows; plus the family's exclusion counts and status.
-Json family_summary(const std::vector<const BiasSeries*>& all) {
+// Extended (--bias-families extended) adds the family's QLIKE (pooled over its ok series) and
+// MRAD (per series over its rolling b, then the mean over the ok series; ruling COV-3).
+Json family_summary(const std::vector<const BiasSeries*>& all, bool extended) {
   std::vector<const BiasSeries*> family;
   Json out = family_exclusions(all, family);
   usize missing = 0, uncovered = 0;
@@ -713,6 +737,21 @@ Json family_summary(const std::vector<const BiasSeries*>& all) {
   out["rolling"] = std::move(rolling);
   out["missing_returns"] = missing;
   out["uncovered_book_names"] = uncovered;
+  if (extended) {
+    Json deviation = Json::object();
+    for (const usize window : {usize{63}, usize{252}}) {
+      f64 total = 0; usize series = 0;
+      for (const auto* s : family) {
+        const f64 v = mrad(s->z, window);
+        if (std::isfinite(v)) { total += v; ++series; }
+      }
+      deviation[std::to_string(window)] =
+          Json{{"mean", series ? Json(total / static_cast<f64>(series)) : Json(nullptr)},
+               {"series", series}};
+    }
+    out["qlike"] = finite_or_null(qlike(pooled));
+    out["mrad"] = std::move(deviation);
+  }
   return out;
 }
 
@@ -732,8 +771,9 @@ co::Status write_bias(const std::filesystem::path& dir, const BiasHarness& harne
   }
   csv.close();
   if (!csv) return co::Err(co::ErrorCode::IoError, "risk: bias.csv");
+  const bool extended = harness.families() == BiasFamilies::Extended;
   Json fam = Json::object();
-  for (const auto& [name, family] : families) fam[name] = family_summary(family);
+  for (const auto& [name, family] : families) fam[name] = family_summary(family, extended);
   summary = Json{{"schema", "atx.risk-bias/v2"},
       {"definition", "z_t = realized return over (t-1, t] / forecast vol at t-1 (x'Fx + sum "
                      "w^2 D); bias statistic b = sample SD of z over a window of T; band 1 +- "
@@ -752,6 +792,21 @@ co::Status write_bias(const std::filesystem::path& dir, const BiasHarness& harne
       {"max_dropped_share", max_dropped_share},
       {"families", std::move(fam)},
       {"risk_model_robustness", robustness}};
+  if (extended)
+    summary["extended_families"] = Json{
+        {"eigen", "the eigenportfolios of F_{t-1} (the forecast factor block, VRA included), one "
+                  "series per ascending eigenvalue rank: z = u_k'f_t / sqrt(lambda_k); a block "
+                  "factor without a return counts 0 (missing_returns)"},
+        {"minvar", "the fully invested V^-1 1 / 1'V^-1 1 over the eligible names with a complete "
+                   "forecast (V = X F X' + D by Woodbury)"},
+        {"optimized", "optimized_portfolios seeded random-alpha books V^-1 alpha made "
+                      "dollar-neutral (minus (1'V^-1 alpha / 1'V^-1 1) V^-1 1), gross 1, same "
+                      "names"},
+        {"optimized_portfolios", optimized_portfolios},
+        {"unformed_sessions", harness.extended_unformed()},
+        {"qlike", "mean(z^2 - ln z^2) over the family's ok series' finite nonzero z, pooled"},
+        {"mrad", "per series mean |b - 1| over its rolling-window b (63, 252), then the mean "
+                 "over the family's ok series (asset-level = per series, ruling COV-3)"}};
   const std::string text = summary.dump(2) + "\n";
   std::ofstream js(dir / "bias_summary.json", std::ios::binary);
   js << text;
@@ -764,7 +819,21 @@ co::Status write_bias(const std::filesystem::path& dir, const BiasHarness& harne
   return co::Ok();
 }
 
+Json recipe_v11_json(const RiskModelConfig& c);
+// The recipe block: atx-risk-v1.1's (every byte unchanged under RiskV11); atx-cov-v1 = the same
+// with `model` atx-cov-v1 and the S2b block (brief COV item 2, verbatim values).
 Json recipe_json(const RiskModelConfig& c) {
+  Json r = recipe_v11_json(c);
+  if (c.recipe != RiskRecipe::CovV1) return r;
+  r["model"] = cov_model_id;
+  r["eigen_adjustment"] = Json{{"method", "menchero-wang-orr simulated (USE4 B7)"},
+      {"amplification", c.eigen_amplification}, {"simulations", c.eigen_simulations},
+      {"seed", c.eigen_seed},
+      {"simulated_length", "kish effective count of the HL-504 weights"},
+      {"seed_rule", "per session"}};
+  return r;
+}
+Json recipe_v11_json(const RiskModelConfig& c) {
   Json factors = Json::array();
   for (usize k = 0; k < factor_count; ++k) factors.push_back(factor_name(k));
   return Json{{"model", risk_model_id},
@@ -849,6 +918,11 @@ struct RiskArgs {
   usize random{64};
   u64 seed{7}, max_bytes{1'400'000'000ULL};
   ExposureEmit emit{ExposureEmit::Last};
+  // P9 COV (all absent = every byte as before). --max-bytes also bounds the atx-cov-v1 kernel's
+  // workspace when given (ruling COV-2); absent, the kernel's default.
+  RiskRecipe recipe{RiskRecipe::RiskV11};
+  BiasFamilies families{BiasFamilies::V1};
+  bool emit_container{}, max_bytes_given{};
 };
 
 co::Status check_args(const RiskArgs& a) {
@@ -906,24 +980,43 @@ void print_structural(std::ostream& progress, const Json& s) {
            << s.at("min_correlation_scale") << "); forecast sessions with an unforecast exposed "
            << "factor " << s.at("forecast_sessions_with_unforecast_exposure") << '\n';
 }
-Json risk_manifest(const RiskArgs& a, const Inputs& in, usize book_rows, const RiskModelConfig& cfg,
-                   const Json& bias, Json run_stats, Json structural, Json robustness,
-                   Json files) {
+Json descriptors_used_json(const Inputs& in) {
   Json descriptors_used = Json::array();
   for (usize d = 0; d < descriptor_count; ++d)
     if (!in.descriptors[d].empty()) descriptors_used.push_back(descriptor_names[d]);
+  return descriptors_used;
+}
+Json seal_json(const RiskArgs& a, const Inputs& in) {
+  return Json{{"begin", std::string(rw::kSealBeginDate)},
+              {"role_last_session_ns", in.sessions.back()},
+              {"unseal_owner", a.unseal.empty() ? Json(nullptr) : Json(a.unseal)}};
+}
+// P9 COV extras of the manifest: the atx-cov-v1 S2b session counts (CovV1 only), the extended
+// bias families (extended only) and the container block (--emit-container only). Empty = none.
+struct ManifestExtras {
+  Json eigen, container;
+};
+Json risk_manifest(const RiskArgs& a, const Inputs& in, usize book_rows, const RiskModelConfig& cfg,
+                   const Json& bias, Json run_stats, Json structural, Json robustness,
+                   Json files, ManifestExtras extras) {
+  Json descriptors_used = descriptors_used_json(in);
+  Json bias_block{{"schema", bias.at("schema")}, {"random_portfolios", a.random},
+                  {"seed", a.seed}, {"max_dropped_share", max_dropped_share},
+                  {"families", bias.at("families")}};
+  if (a.families == BiasFamilies::Extended) {
+    bias_block["family_set"] = "extended";
+    bias_block["optimized_portfolios"] = optimized_portfolios;
+  }
   // The directory schema is unchanged (readers such as spo-v1 RiskStore accept it); the model
   // that filled it is `model` (v1 pins stay valid as v1 data directories).
-  return Json{{"schema", "atx.risk-model/v1"}, {"status", "complete"}, {"model", risk_model_id},
+  Json m{{"schema", "atx.risk-model/v1"}, {"status", "complete"}, {"model", recipe_id(cfg.recipe)},
       {"role", {{"path", a.role}, {"manifest_sha256", a.role_sha}}},
       {"fields", {{"path", a.fields}, {"manifest_sha256", a.fields_sha},
                   {"fields_used", in.fields_used}}},
       {"book_weights", a.book.empty() ? Json(nullptr)
                                       : Json{{"path", a.book}, {"sha256", a.book_sha},
                                              {"rows", book_rows}}},
-      {"seal", {{"begin", std::string(rw::kSealBeginDate)},
-                {"role_last_session_ns", in.sessions.back()},
-                {"unseal_owner", a.unseal.empty() ? Json(nullptr) : Json(a.unseal)}}},
+      {"seal", seal_json(a, in)},
       {"producer", producer_json()},
       {"geometry", {{"dates", in.dates}, {"instruments", in.names}, {"factors", factor_count},
                     {"styles", style_count}}},
@@ -935,9 +1028,7 @@ Json risk_manifest(const RiskArgs& a, const Inputs& in, usize book_rows, const R
                                "non-members get exposures and specific risk, never enter a fit"}}},
       {"cap_rule", in.cap_rule}, {"descriptors_used", std::move(descriptors_used)},
       {"unavailable", in.unavailable}, {"recipe", recipe_json(cfg)},
-      {"bias_harness", {{"schema", bias.at("schema")}, {"random_portfolios", a.random},
-                        {"seed", a.seed}, {"max_dropped_share", max_dropped_share},
-                        {"families", bias.at("families")}}},
+      {"bias_harness", std::move(bias_block)},
       {"run", std::move(run_stats)},
       {"structural_factors", std::move(structural)},
       {"robustness", std::move(robustness)},
@@ -954,11 +1045,77 @@ Json risk_manifest(const RiskArgs& a, const Inputs& in, usize book_rows, const R
                    {"industry_slot.u8", "(--emit-exposures all) dates x instruments, FF49 id - 1, "
                                         "49 residual, 255 no exposure row"}}},
       {"files", std::move(files)}};
+  if (!extras.eigen.is_null()) m["eigen_adjustment"] = std::move(extras.eigen);
+  if (!extras.container.is_null()) m["container"] = std::move(extras.container);
+  return m;
 }
+
+// The container's inputs record (canonical JSON; its SHA-256 is the header's inputs_sha256): the
+// fields pin and the fields used, the descriptors used and the book weights pin. Paths are left
+// out so the container does not depend on where its inputs sit.
+Json container_inputs(const RiskArgs& a, const Inputs& in) {
+  return Json{{"fields", {{"manifest_sha256", a.fields_sha}, {"fields_used", in.fields_used}}},
+              {"descriptors_used", descriptors_used_json(in)},
+              {"cap_rule", in.cap_rule},
+              {"book_weights", a.book.empty() ? Json(nullptr) : Json{{"sha256", a.book_sha}}}};
+}
+co::Result<er::CovContainerSpec> container_spec(const RiskArgs& a, const Inputs& in,
+                                                const RiskModelConfig& cfg) {
+  er::CovContainerSpec spec;
+  spec.groups = cov_groups;
+  spec.dense = cov_dense;
+  spec.f32_exposures = true; // the same bits as style_exposures.f32
+  spec.unsealed = !a.unseal.empty() && in.sessions.back() >= seal_begin_ns;
+  const auto role = er::cov_parse_hex(a.role_sha);
+  if (!role) return co::Err(co::ErrorCode::InvalidArgument, "risk: role pin is not lowercase hex");
+  spec.role_sha256 = *role;
+  const Json recipe = recipe_json(cfg), inputs = container_inputs(a, in);
+  spec.recipe_json = recipe.dump();
+  spec.inputs_json = inputs.dump();
+  Json diag = Json::array();
+  for (const char* name : cov_diag_names()) diag.push_back(name);
+  for (usize k = 0; k < factor_count; ++k) spec.factor_names.push_back(factor_name(k));
+  spec.meta_json = Json{{"format", std::string(er::cov::format_name)},
+      {"model", recipe_id(cfg.recipe)}, {"recipe", recipe}, {"inputs", inputs},
+      {"role", {{"manifest_sha256", a.role_sha}}}, {"seal", seal_json(a, in)},
+      {"producer", producer_json()}, {"diag_names", std::move(diag)},
+      {"row_rule", "rows = every instrument with an exposure row, a specific variance other than "
+                   "the default quiet NaN, or a style whose f32 bits are not +0; priced rows (slot "
+                   "< 50, finite positive specific) first, each part in ascending role index; "
+                   "group = slot + 1, 0 without a row"},
+      {"stamp", "as_of = data_cutoff = the session (the model at its close); history_first = the "
+                "first session whose return entered an estimator, else the session"}}.dump();
+  return co::Ok(std::move(spec));
+}
+
+// One block per session into the container (K-P9-12), the legacy dense row narrowed exactly as
+// the per-session files (cov_dense_row, cov_block_of).
+class ContainerSink final : public RiskSink {
+public:
+  ContainerSink(er::CovContainerWriter writer, std::span<const u64> ids)
+      : writer_(std::move(writer)), ids_(ids) {}
+  co::Status on_day(const RiskDay& d) override {
+    if (d.returns_entered && !history_first_) history_first_ = d.session;
+    const CovDenseRow row = cov_dense_row(d, ids_, history_first_.value_or(d.session), day_);
+    ATX_TRY(const auto block, cov_block_of(row, block_));
+    return writer_.append(block);
+  }
+  [[nodiscard]] co::Result<er::Sha256Bytes> finalize() { return writer_.finalize(); }
+
+private:
+  er::CovContainerWriter writer_;
+  std::span<const u64> ids_;
+  std::optional<i64> history_first_;
+  CovDayScratch day_;
+  CovBlockScratch block_;
+};
 
 co::Status run(const RiskArgs& a, std::ostream& progress) {
   ATX_TRY_VOID(check_args(a));
-  const RiskModelConfig cfg{};
+  RiskModelConfig config{};
+  config.recipe = a.recipe;
+  if (a.recipe == RiskRecipe::CovV1 && a.max_bytes_given) config.eigen_max_bytes = a.max_bytes;
+  const RiskModelConfig& cfg = config;
   ATX_TRY_VOID(validate_config(cfg));
   Inputs in;
   ATX_TRY_VOID(load_role(a.role, a.role_sha, a.max_bytes, in));
@@ -973,18 +1130,53 @@ co::Status run(const RiskArgs& a, std::ostream& progress) {
   const RiskPanel panel = panel_of(in);
   FileSink files_sink(dir, panel, a.emit);
   RobustnessSink robust_sink(panel, cfg);
-  BiasHarness harness(panel, a.random, a.seed, book);
-  std::array<RiskSink*, 3> sinks{&files_sink, &robust_sink, &harness};
-  // An invariant refusal (F3) returns here: no manifest.json is written, the output is void.
+  BiasHarness harness(panel, a.random, a.seed, book, a.families);
+  std::vector<RiskSink*> sinks{&files_sink, &robust_sink, &harness};
+  std::optional<ContainerSink> container;
+  if (a.emit_container) {
+    ATX_TRY(auto spec, container_spec(a, in, cfg));
+    ATX_TRY(auto writer,
+            er::CovContainerWriter::create((dir / container_file).string(), std::move(spec)));
+    container.emplace(std::move(writer), in.ids);
+    sinks.push_back(&*container);
+  }
+  // An invariant refusal (F3) returns here: no manifest.json is written, the output is void (a
+  // container stays `.partial`).
   ATX_TRY_VOID(run_risk_model(panel, cfg, sinks));
+  // An atx-cov-v1 run whose kernel workspace exceeded --max-bytes on some session would be
+  // atx-risk-v1.1 there: refused (review S3), no manifest.
+  if (files_sink.eigen_budget_refusals() > 0)
+    return co::Err(co::ErrorCode::OutOfRange,
+                   "risk: the atx-cov-v1 eigen adjustment's workspace exceeds the budget on " +
+                       std::to_string(files_sink.eigen_budget_refusals()) +
+                       " sessions; raise --max-bytes");
   Json files = Json::object();
   ATX_TRY_VOID(files_sink.close(files));
+  ManifestExtras extras;
+  if (cfg.recipe == RiskRecipe::CovV1)
+    extras.eigen = Json{{"sessions", files_sink.eigen_sessions()},
+        {"max_working_bytes", cfg.eigen_max_bytes},
+        {"max_working_bytes_source", a.max_bytes_given ? "--max-bytes" : "kernel default"},
+        {"rule", "a session whose fully observed block cannot be adjusted (fewer than K+1 "
+                 "effective observations, a kernel refusal) keeps the unadjusted block and is "
+                 "counted here; the container's date flag eigen_adjusted marks the adjusted ones"}};
+  if (container) {
+    ATX_TRY(const auto root, container->finalize());
+    container.reset();
+    const auto path = dir / container_file;
+    ATX_TRY(auto sha, co::sha256_file(path.string()));
+    const auto bytes = std::filesystem::file_size(path);
+    files[container_file] = Json{{"sha256", sha}, {"bytes", bytes}};
+    extras.container = Json{{"file", container_file},
+        {"format", std::string(er::cov::format_name)}, {"bytes", bytes}, {"file_sha256", sha},
+        {"root_sha256", er::cov_hex(root)}};
+  }
   const Json robustness = robust_sink.json();
   Json bias;
   ATX_TRY_VOID(write_bias(dir, harness, robustness, files, bias));
   const Json structural = files_sink.structural_json();
   const Json manifest = risk_manifest(a, in, book.size(), cfg, bias, files_sink.run_stats(),
-                                      structural, robustness, std::move(files));
+                                      structural, robustness, std::move(files), std::move(extras));
   std::ofstream out(dir / "manifest.json", std::ios::binary);
   out << manifest.dump(2) << '\n';
   out.close();
@@ -1011,8 +1203,14 @@ int dispatch_risk_model(int argc, char** argv, std::ostream& out, std::ostream& 
                "[--emit-exposures none|last|all] [--max-bytes 1400000000] [--unseal OWNER (a "
                "role reaching the research seal "
             << rw::kSealBeginDate << " (" << rw::kResearchWindowId
-            << "), the hidden sample, is refused without it)]\n";
+            << "), the hidden sample, is refused without it)] [--recipe atx-risk-v1.1|atx-cov-v1] "
+               "[--emit-container] [--bias-families v1|extended]\n";
         return 0;
+      }
+      if (key == "--emit-container") { // valueless
+        if (!seen.insert(key).second) throw std::invalid_argument("duplicate flag " + key);
+        a.emit_container = true;
+        continue;
       }
       if (!seen.insert(key).second || i + 1 >= argc)
         throw std::invalid_argument("duplicate/missing flag " + key);
@@ -1033,8 +1231,16 @@ int dispatch_risk_model(int argc, char** argv, std::ostream& out, std::ostream& 
       else if (key == "--book-weights-sha256") a.book_sha = value;
       else if (key == "--random-portfolios") a.random = static_cast<usize>(integer());
       else if (key == "--seed") a.seed = integer();
-      else if (key == "--max-bytes") a.max_bytes = integer();
-      else if (key == "--unseal") {
+      else if (key == "--max-bytes") { a.max_bytes = integer(); a.max_bytes_given = true; }
+      else if (key == "--recipe") {
+        if (value == risk_model_id) a.recipe = RiskRecipe::RiskV11;
+        else if (value == cov_model_id) a.recipe = RiskRecipe::CovV1;
+        else throw std::invalid_argument("--recipe atx-risk-v1.1|atx-cov-v1");
+      } else if (key == "--bias-families") {
+        if (value == "v1") a.families = BiasFamilies::V1;
+        else if (value == "extended") a.families = BiasFamilies::Extended;
+        else throw std::invalid_argument("--bias-families v1|extended");
+      } else if (key == "--unseal") {
         if (value.empty()) throw std::invalid_argument("--unseal needs an owner name");
         a.unseal = value;
       } else if (key == "--emit-exposures") {
@@ -1051,5 +1257,225 @@ int dispatch_risk_model(int argc, char** argv, std::ostream& out, std::ostream& 
     err << "risk: " << e.what() << '\n';
     return 2;
   }
+}
+
+// ---- cov-info / cov-diff (P9 COV, K-P9-12) ----------------------------------------------------
+namespace {
+const char* date_flag_text(u32 flags) {
+  static thread_local std::string text;
+  text.clear();
+  const std::pair<u32, const char*> names[] = {{er::cov::date_forecast, "forecast"},
+      {er::cov::date_factor_complete, "factor_complete"}, {er::cov::date_structural, "structural"},
+      {er::cov::date_eigen_adjusted, "eigen_adjusted"}, {er::cov::date_vra, "vra"}};
+  for (const auto& [bit, name] : names)
+    if (flags & bit) { if (!text.empty()) text += '|'; text += name; }
+  return text.empty() ? "-" : text.c_str();
+}
+// Exactly `bytes` bytes at `offset` of an open file.
+bool read_at(std::ifstream& file, u64 offset, void* out, u64 bytes) {
+  file.seekg(static_cast<std::streamoff>(offset));
+  // SAFETY: char writes the object representation of the caller's trivially copyable buffer.
+  file.read(static_cast<char*>(out), static_cast<std::streamsize>(bytes));
+  return file && static_cast<u64>(file.gcount()) == bytes;
+}
+} // namespace
+
+co::Result<LegacyComparison> compare_container_to_legacy(const std::string& directory) {
+  namespace fs = std::filesystem;
+  const fs::path base(directory);
+  Json m;
+  try {
+    std::ifstream in(base / "manifest.json", std::ios::binary);
+    m = Json::parse(in);
+  } catch (const std::exception& e) {
+    return co::Err(co::ErrorCode::ParseError,
+                   std::string("cov-diff --legacy: manifest: ") + e.what());
+  }
+  if (!m.contains("container") || !m.at("container").is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "cov-diff --legacy: the manifest names no container");
+  const auto& c = m.at("container");
+  const auto pin = er::cov_parse_hex(c.at("root_sha256").get<std::string>());
+  if (!pin) return co::Err(co::ErrorCode::InvalidArgument, "cov-diff --legacy: container root pin");
+  const usize dates = m.at("geometry").at("dates").get<usize>();
+  const usize names = m.at("geometry").at("instruments").get<usize>();
+  ATX_TRY(const auto file, er::CovModelFile::open((base / c.at("file").get<std::string>()).string(),
+                                                  *pin, er::VerifyMode::Full, max_container_bytes));
+  LegacyComparison out;
+  out.sessions = file.date_count();
+  const auto differ = [&](i64 session, const char* what) {
+    out.equal = false; out.session = session; out.what = what;
+    return co::Ok(out);
+  };
+  if (file.factors() != factor_count || file.groups() != cov_groups || file.dense() != cov_dense)
+    return differ(0, "geometry");
+  if (file.date_count() != dates) return differ(0, "date count");
+  constexpr u64 cells = u64{factor_count} * factor_count;
+  const bool exposures =
+      fs::exists(base / "style_exposures.f32") && fs::exists(base / "industry_slot.u8");
+  std::ifstream cov_in(base / "factor_covariance.f64", std::ios::binary);
+  std::ifstream spec_in(base / "specific_variance.f64", std::ios::binary);
+  std::ifstream style_in, slot_in;
+  if (!cov_in || !spec_in)
+    return co::Err(co::ErrorCode::IoError,
+                   "cov-diff --legacy: factor_covariance.f64 / specific_variance.f64");
+  out.compared = {"factor_covariance.f64", "specific_variance.f64"};
+  if (exposures) {
+    style_in.open(base / "style_exposures.f32", std::ios::binary);
+    slot_in.open(base / "industry_slot.u8", std::ios::binary);
+    out.compared.emplace_back("style_exposures.f32");
+    out.compared.emplace_back("industry_slot.u8");
+  }
+  std::vector<i64> sessions;
+  {
+    std::ifstream csv(base / "diagnostics.csv", std::ios::binary);
+    std::string line;
+    if (!std::getline(csv, line))
+      return co::Err(co::ErrorCode::ParseError, "cov-diff --legacy: diagnostics.csv");
+    while (std::getline(csv, line)) {
+      if (line.empty()) continue;
+      i64 key = 0;
+      const auto parsed = std::from_chars(line.data(), line.data() + line.size(), key);
+      if (parsed.ec != std::errc{} || parsed.ptr == line.data() + line.size() || *parsed.ptr != ',')
+        return co::Err(co::ErrorCode::ParseError, "cov-diff --legacy: diagnostics.csv row");
+      sessions.push_back(key);
+    }
+  }
+  if (sessions.size() != dates) return differ(0, "diagnostics.csv");
+  std::vector<u8> slot(names), legacy_slot(names);
+  std::vector<f64> specific(names), legacy_specific(names), covariance(cells), legacy_cov(cells);
+  std::vector<f32> styles(names * style_count), legacy_styles(names * style_count);
+  for (usize t = 0; t < dates; ++t) {
+    if (file.index()[t].as_of_session_ns != sessions[t])
+      return differ(sessions[t], "diagnostics.csv");
+    ATX_TRY(const auto view, file.view(t));
+    ATX_TRY_VOID(scatter_cov_block(view, names, slot, specific, styles, covariance));
+    const auto same = [](const auto& a, const auto& b) {
+      return std::memcmp(a.data(), b.data(), a.size() * sizeof(a[0])) == 0;
+    };
+    if (!read_at(cov_in, t * cells * sizeof(f64), legacy_cov.data(), cells * sizeof(f64)))
+      return co::Err(co::ErrorCode::IoError, "cov-diff --legacy: factor_covariance.f64 extent");
+    if (!same(covariance, legacy_cov)) return differ(sessions[t], "factor_covariance.f64");
+    if (!read_at(spec_in, t * names * sizeof(f64), legacy_specific.data(), names * sizeof(f64)))
+      return co::Err(co::ErrorCode::IoError, "cov-diff --legacy: specific_variance.f64 extent");
+    if (!same(specific, legacy_specific)) return differ(sessions[t], "specific_variance.f64");
+    if (!exposures) continue;
+    if (!read_at(style_in, t * names * style_count * sizeof(f32), legacy_styles.data(),
+                 names * style_count * sizeof(f32)))
+      return co::Err(co::ErrorCode::IoError, "cov-diff --legacy: style_exposures.f32 extent");
+    if (!same(styles, legacy_styles)) return differ(sessions[t], "style_exposures.f32");
+    if (!read_at(slot_in, t * names, legacy_slot.data(), names))
+      return co::Err(co::ErrorCode::IoError, "cov-diff --legacy: industry_slot.u8 extent");
+    if (!same(slot, legacy_slot)) return differ(sessions[t], "industry_slot.u8");
+  }
+  out.equal = true;
+  return co::Ok(out);
+}
+
+int dispatch_cov_info(int argc, char** argv, std::ostream& out, std::ostream& err) {
+  std::string path;
+  er::VerifyMode mode = er::VerifyMode::Full;
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view key = argv[i];
+    if (key == "--verify" && i + 1 < argc) {
+      const std::string_view value = argv[++i];
+      if (value == "full") mode = er::VerifyMode::Full;
+      else if (value == "lazy") mode = er::VerifyMode::Lazy;
+      else { err << "cov-info: --verify full|lazy\n"; return 2; }
+    } else if (path.empty() && !key.starts_with("--")) {
+      path = std::string(key);
+    } else {
+      err << "usage: cov-info FILE [--verify full|lazy]\n";
+      return 2;
+    }
+  }
+  if (path.empty()) { err << "usage: cov-info FILE [--verify full|lazy]\n"; return 2; }
+  const auto file = er::CovModelFile::open(path, std::nullopt, mode, max_container_bytes);
+  if (!file) { err << "cov-info: " << file.error().to_string() << '\n'; return 1; }
+  const auto& h = file->header();
+  out << "format " << er::cov::format_name << " (major " << h.major << ", minor " << h.minor
+      << "), " << file->file_bytes() << " bytes, verify "
+      << (mode == er::VerifyMode::Full ? "full" : "lazy") << '\n'
+      << "geometry K " << h.factor_count << " G " << h.group_count << " S " << h.dense_count
+      << " max_rows " << h.max_rows << " exposures " << (file->f32_exposures() ? "f32" : "f64")
+      << (file->unsealed() ? " unsealed" : "") << '\n'
+      << "sessions " << file->date_count() << " [" << h.first_session_ns << ", "
+      << h.last_session_ns << "]\n"
+      << "root_sha256 " << er::cov_hex(file->root_sha256()) << '\n'
+      << "recipe_sha256 " << er::cov_hex(file->recipe_sha256()) << '\n'
+      << "role_sha256 " << er::cov_hex(file->role_sha256()) << '\n'
+      << "inputs_sha256 " << er::cov_hex(file->inputs_sha256()) << '\n'
+      << "index,as_of_ns,cutoff_ns,history_first_ns,rows,priced,unforecast,flags,block_sha256,"
+         "status\n";
+  usize bad = 0;
+  for (usize t = 0; t < file->date_count(); ++t) {
+    const auto& e = file->index()[t];
+    const auto view = file->view(t);
+    const auto hash = file->block_sha256(t);
+    bad += view ? 0U : 1U;
+    out << t << ',' << e.as_of_session_ns << ',' << e.data_cutoff_ns << ',' << e.history_first_ns
+        << ',' << e.rows << ',' << e.priced_rows << ',' << e.unforecast_factors << ','
+        << date_flag_text(e.flags) << ',' << (hash ? er::cov_hex(*hash) : std::string("?")) << ','
+        << (view ? "ok" : view.error().to_string()) << '\n';
+  }
+  return bad ? 1 : 0;
+}
+
+int dispatch_cov_diff(int argc, char** argv, std::ostream& out, std::ostream& err) {
+  std::vector<std::string> paths;
+  std::string legacy;
+  std::optional<i64> through;
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view key = argv[i];
+    if (key == "--legacy" && i + 1 < argc && legacy.empty()) {
+      legacy = argv[++i];
+    } else if (key == "--through" && i + 1 < argc && !through) {
+      const std::string_view value = argv[++i];
+      i64 session = 0;
+      const auto parsed = std::from_chars(value.data(), value.data() + value.size(), session);
+      if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) {
+        err << "cov-diff: --through SESSION (ns)\n";
+        return 2;
+      }
+      through = session;
+    } else if (!key.starts_with("--")) {
+      paths.emplace_back(key);
+    } else {
+      err << "cov-diff: unknown flag " << key << '\n';
+      return 2;
+    }
+  }
+  if (!legacy.empty()) {
+    if (!paths.empty() || through) {
+      err << "usage: cov-diff --legacy DIR\n";
+      return 2;
+    }
+    const auto r = compare_container_to_legacy(legacy);
+    if (!r) { err << "cov-diff --legacy: " << r.error().to_string() << '\n'; return 2; }
+    out << "legacy " << (r->equal ? "equal" : "differs") << ": " << r->sessions << " sessions";
+    for (const auto& name : r->compared) out << ' ' << name;
+    if (!r->equal) out << "; first difference " << r->what << " at session " << r->session;
+    out << '\n';
+    return r->equal ? 0 : 1;
+  }
+  if (paths.size() != 2) {
+    err << "usage: cov-diff A B [--through SESSION] | cov-diff --legacy DIR\n";
+    return 2;
+  }
+  const auto a =
+      er::CovModelFile::open(paths[0], std::nullopt, er::VerifyMode::Full, max_container_bytes);
+  if (!a) { err << "cov-diff: " << paths[0] << ": " << a.error().to_string() << '\n'; return 2; }
+  const auto b =
+      er::CovModelFile::open(paths[1], std::nullopt, er::VerifyMode::Full, max_container_bytes);
+  if (!b) { err << "cov-diff: " << paths[1] << ": " << b.error().to_string() << '\n'; return 2; }
+  const auto d = er::first_difference(*a, *b, through.value_or(std::numeric_limits<i64>::max()));
+  if (!d.differs) {
+    out << "equal through "
+        << (through ? std::to_string(*through) : std::string("the last session")) << '\n';
+    return 0;
+  }
+  out << "first difference at block " << d.index << " session " << d.session << " (" << d.what
+      << ")\n";
+  return 1;
 }
 } // namespace atx::impl::strategy::risk

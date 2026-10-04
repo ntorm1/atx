@@ -1,0 +1,39 @@
+{
+  "schema": "atx.research-cycle-spec/v1",
+  "name": "fx-base",
+  "description": "synthetic fixture spec",
+  "inputs": {
+    "library": {
+      "path": "atx-impl/strategies/libraries/lib-fx.json",
+      "sha256": "a09710c8f5c47ec9ea11d78ccf2da12ace49a05a23c32fdbd81d76ff30842e61"
+    },
+    "role": {
+      "dir": "build-equity/fx-role",
+      "path": "build-equity/fx-role/role.json",
+      "sha256": "8d75449cd974f3cd729787684fe9a8e24dba5734882188c155a6adc38625eb59"
+    },
+    "reference_daily": {
+      "path": "build-equity/fx-nav/daily_missing.csv",
+      "sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+    },
+    "unlocked": {
+      "path": "build-equity/fx-nav/summary.json",
+      "sha256": null
+    }
+  },
+  "fields": {
+    "output": "build-equity/fx-fields",
+    "manifest_sha256": "7e8efb58e4f6c3876cc41d7d7b1bbcaa9cb0e1d02b78086f0184703108f03ce0",
+    "list": [
+      "f1",
+      "f2"
+    ]
+  },
+  "nav": {
+    "output": "build-equity/fx-nav",
+    "rule": "fixture"
+  },
+  "summ": {
+    "ledger": "build-equity/trials.jsonl"
+  }
+}

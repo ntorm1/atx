@@ -1,0 +1,40 @@
+{
+    "Source":  "2ee62800d7043e6009bb6a045cb54b053bcc2d1b",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  8,
+    "ConfiguredProvenance":  "2ee62800d7043e6009bb6a045cb54b053bcc2d1b-dirty",
+    "Jobs":  4,
+    "FreeMiB":  4284,
+    "CommitMiB":  6044,
+    "Targets":  [
+                    "atx-engine-combine-tests",
+                    "atx-impl-strategy-ic-tests",
+                    "atx-equity-strategy-ic",
+                    "atx-impl-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  109.97800099999999,
+    "CompiledTUs":  36,
+    "Links":  5,
+    "Tag":  "p9-2f",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity",
+    "Executables":  {
+                        "atx-engine-combine-tests":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-combine-tests.exe",
+                                                         "Sha256":  "1ef0b46aee5a8a89c59ca3d4926fcd34a3ec845b509ec51fbc45c9c72d328343"
+                                                     },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "f535167a3a9d9a04502c37fcc328753d07bb8c8655a38797db8bfd32030c0cc1"
+                                                       },
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "c5015605a4dadb54169995e2b3b04fec4274c06d05d487f9a81f8fbc7bae0e8f"
+                                                   },
+                        "atx-impl-tests":  {
+                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-tests.exe",
+                                               "Sha256":  "6e14bb54f7a0652dd59b220c0195e59e9c936565c7d665e13fda8a6027a0cf9c"
+                                           }
+                    }
+}

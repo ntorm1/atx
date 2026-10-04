@@ -232,4 +232,67 @@ TEST(BookReplayCost, RejectsAmbiguousOrMisShapedConfiguration) {
   EXPECT_NE(rejected.error().message().find("liquidity"), std::string::npos);
 }
 
+// ---- P9 C1 (DEC-11, NV-3 vs DS-1): the Debug / Release probe of the modeled cost -------------
+// Under the registered square-root law (delta .5) cost_fraction is (half spread + commission)
+// 1e-4 + (Y sigma) sqrt(|x| / ADV): +, *, / and sqrt are correctly rounded (IEEE 754), so every
+// conforming build and C runtime yields the same bits. The expected bits were computed in
+// Python (binary64, math.sqrt correctly rounded) in this operation order, independently of
+// any C runtime. Root runs this suite in the Debug and the Release build: green in both means
+// the modeled cost columns cannot differ between them; a failure in one build names the
+// non-exact operation (std::pow was the only one on this path before the fix).
+inline atx::u64 probe_bits(atx::f64 x) { return std::bit_cast<atx::u64>(x); }
+struct ProbeCase {
+  atx::f64 abs_dollars, adv, vol;
+  atx::u64 fraction_bits;
+};
+// S2's law (strategy_nav_replay.cpp fixed_nav_scenarios: Y .6, delta .5, 1% ADV cap,
+// commission 1 bps) on a 5 bps half-spread row.
+inline book::SqrtImpactCost s2_law() {
+  return book::SqrtImpactCost::create({0.6, 0.5}, 0.01, 1.0).value();
+}
+
+TEST(ReplayCostSqrt, CostFractionBitsArePinnedOnFixedInputs) {
+  const auto model = s2_law();
+  constexpr ProbeCase cases[] = {
+      {12345.678, 9876543.21, 0.0173, 0x3f4fafafc9462708ULL},
+      {10000.0, 3000000.0, 0.021, 0x3f55bfc6c2766bdaULL},
+      {777.25, 123456700.0, 0.0091, 0x3f441c166228fbe5ULL},
+      {250000.0, 25000000.0, 0.05, 0x3f6d7dbf487fcb92ULL},
+      {31.4159, 271828.18, 0.033, 0x3f4aa2c2223aba99ULL},
+  };
+  for (const auto& c : cases) {
+    const book::LiquidityRow row{c.adv, c.vol, 5.0};
+    EXPECT_EQ(probe_bits(model.cost_fraction(c.abs_dollars, row)), c.fraction_bits)
+        << c.abs_dollars << " on ADV " << c.adv << ", sigma " << c.vol;
+  }
+}
+
+// cost() of a capped request (fill = .01 x ADV, cost = fill x cost_fraction(fill)) and the
+// unrationed cost of the whole request (requested x cost_fraction(requested)), bit for bit.
+TEST(ReplayCostSqrt, CappedFillCostAndUnrationedCostBitsArePinned) {
+  const auto model = s2_law();
+  const book::LiquidityRow row{3000000.0, 0.021, 5.0};
+  const auto charged = model.cost(0, 0, -50000.0, row);
+  EXPECT_EQ(probe_bits(charged.filled_dollars), probe_bits(-30000.0));
+  EXPECT_EQ(probe_bits(charged.cost_dollars), 0x404be66666666667ULL);
+  EXPECT_EQ(probe_bits(model.unrationed_cost(0, 0, 50000.0, row)), 0x405bd54a245c0bbfULL);
+}
+
+// Any other exponent keeps std::pow (delta 1: the linear law, to std::pow's rounding), and delta
+// .5 is the square root (the old std::pow(x, .5) call agrees with it to rounding).
+TEST(ReplayCostSqrt, OtherExponentsKeepPowAndHalfIsTheSquareRoot) {
+  const auto linear = book::SqrtImpactCost::create({0.6, 1.0}, 0.01, 1.0).value();
+  const book::LiquidityRow row{9876543.21, 0.0173, 5.0};
+  // 0x3f441601c96ed8c2: (5 + 1) 1e-4 + .6 x .0173 x (12345.678 / 9876543.21) in binary64.
+  EXPECT_DOUBLE_EQ(linear.cost_fraction(12345.678, row),
+                   std::bit_cast<atx::f64>(0x3f441601c96ed8c2ULL));
+  const auto model = s2_law();
+  const atx::f64 participation = 12345.678 / 9876543.21;
+  const atx::f64 via_pow = 6.0e-4 + 0.6 * 0.0173 * std::pow(participation, 0.5);
+  EXPECT_NEAR(model.cost_fraction(12345.678, row), via_pow, 1e-18);
+  // Unusable rows stay NaN (the replay's no-fill signal), under either exponent.
+  EXPECT_TRUE(std::isnan(model.cost_fraction(1.0, book::LiquidityRow{0.0, 0.02, 5.0})));
+  EXPECT_TRUE(std::isnan(linear.cost_fraction(-1.0, row)));
+}
+
 } // namespace atx_test_l8_e2e_replay_cost

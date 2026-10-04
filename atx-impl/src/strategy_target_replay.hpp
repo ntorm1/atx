@@ -23,6 +23,9 @@ enum class TargetNeutralize : atx::u8 {
   return id == TargetNeutralize::PriceRiskIndV1 || id == TargetNeutralize::PriceRiskIndV2;
 }
 inline constexpr const char* industry_group_field = "grp_ff12";
+// aim-partial-v5's aim_leverage range (validate_target_config; P9 C2 --calibrate-gross refuses a
+// correction outside it).
+inline constexpr atx::f64 aim_leverage_min = 1.0, aim_leverage_max = 2.0;
 // price-risk-ind-v2 exposure windows (v6 C5, review F7): slower vol and log ADV; the
 // beta window is price-risk-v1's (252).
 inline constexpr atx::usize price_risk_ind_v2_vol_window = 126;

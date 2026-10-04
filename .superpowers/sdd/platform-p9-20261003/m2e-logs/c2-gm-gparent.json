@@ -1,0 +1,6 @@
+{
+ "parent": "build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v8x3b",
+ "summary_sha256": "e342db4faee76302c6953bf949ad55f3586442ea96600bd9379600519beb5bec",
+ "reader": "scripts/wave_readers.py mechanics",
+ "g_parent_repr": "0.9861733264491478"
+}

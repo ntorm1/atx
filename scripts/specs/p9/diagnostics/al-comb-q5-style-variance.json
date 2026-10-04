@@ -1,0 +1,79 @@
+{
+  "schema": "atx.p9-diagnostic-spec/v1",
+  "id": "al-comb-q5-style-variance",
+  "lane": "AL-COMB",
+  "report": "task-AL-COMB-report.md",
+  "question": "lit section 8 Q5: which atx-risk-v1.1 style columns carry no theme, and what share of the book's ex-ante variance sits on them alone? That share bounds what a DMRS-style hedge (theme-cov-hedge-v1, cell P9-H) can remove (lit section 8 Q5; plan section 2.4 AL-COMB (3); risk register 'DMRS does not translate').",
+  "when": "root runs it between wave 2 and the P9 cells, before the PM registers P9-H; its numbers are printed in the P9 prereg (plan section 2.4 AL-COMB (3), wave2-carry AL-COMB)",
+  "trials": 0,
+  "ledger": "none: no --ledger on any step, nothing appended to any trials ledger; descriptive only (v8-prereg rule 8, as book_diagnostics.py declares): it gates, selects and re-weights nothing",
+  "blind": "reads the book's holdings (positions) and the risk model's ex-ante forecasts only; prints variance shares, never a realised return, IC, Sharpe, turnover or NAV number; nothing dated 2024-01-01 or later (the role and fields are the parent's TRAIN 2020-2023 inputs; book_diagnostics refuses sealed rows)",
+  "book": {
+    "cell": "the NAV cell of the parent P9-H will be registered on: the last accepted cell when root runs this (nominal: X-5, scripts/specs/v8/x-theme-erc.json, the nominal parent of scripts/specs/p9/templates/theme-cov-hedge.json); root names the cell and its resolved outputs ($N NAV dir, $ROLE role dir, $FIELDS fields dir) in integration-log.md before the run",
+    "holdings": "$N-h: the cell's --emit-holdings output (f64). If the cell ran without it, re-run its exact NAV argv with --emit-holdings $N-h --output $N-hrun; every daily CSV, summary.json, recipe.json and v7_extras.json must equal the cell's byte for byte (holdings are an observer; task-G-report.md step 1, the B0c precedent in platform-v8 integration-log.md 'B0c diagnostics'); the re-run is not ledgered"
+  },
+  "risk_store": {
+    "used": "atx-risk-v1.1: the risk verb's output with --book-weights and --emit-exposures all (book_diagnostics.py G-2a reads its geometry: market, 50 industry slots, 11 styles)",
+    "allowed": "K-P9-12 lets either risk store serve; the COV store (atx-cov-v1, .atxcov) has no G-2a reader today (book_diagnostics.py reads only atx-risk-v1.1), so using it needs a reader first (not in AL-COMB's scope)"
+  },
+  "steps": [
+    {
+      "id": "book-csv",
+      "argv": "\"$PY\" atx-impl/tools/book_diagnostics.py book-csv --holdings $N-h --role $ROLE/manifest.json --role-sha256 $ROLE_SHA --output build-equity/p9-q5-book.csv",
+      "note": "prints the book file's SHA-256 ($BOOK_SHA)"
+    },
+    {
+      "id": "risk",
+      "argv": "build-equity/bin/atx-equity-strategy-risk.exe risk --role $ROLE/manifest.json --role-sha256 $ROLE_SHA --fields $FIELDS/manifest.json --fields-sha256 $FIELDS_SHA --output build-equity/p9-q5-risk --book-weights build-equity/p9-q5-book.csv --book-weights-sha256 $BOOK_SHA --emit-exposures all",
+      "note": "the B0c argv form (about 36 s, 640 MiB on lo3); the bias harness's own book verdict is not read (G-2a reads the variance split)"
+    },
+    {
+      "id": "g2a",
+      "argv": "\"$PY\" scripts/run_bounded_research.py --seconds 600 --max-rss-mib 2560 --min-free-mib 512 --output build-equity/p9-q5-g2a-run --bind atx-impl/tools/book_diagnostics.py -- \"$PY\" atx-impl/tools/book_diagnostics.py run --only G-2a --risk build-equity/p9-q5-risk --output build-equity/p9-q5-diagnostics/diagnostics-v8-g2a.json",
+      "note": "E-18's caps for a diagnostic step; schema atx.book-diagnostics/v1; every session must be complete (incomplete_sessions printed)"
+    }
+  ],
+  "columns": {
+    "source": "atx-impl/tools/book_diagnostics.py RISK_STYLE_NAMES (atx-risk-v1.1) against the theme texts of atx-impl/strategies/alphas/registry.json (themes), read 2026-10-03 at 1239a5ff",
+    "no_theme": {
+      "size": "no theme ranks on market capitalisation",
+      "residual_vol": "no theme ranks on residual volatility (low_risk's scaled MAX and MAX5 are per unit of volatility, not volatility)",
+      "liquidity": "no theme ranks on a liquidity level (price_volume correlates dollar liquidity with volume, a time-series structure, not a level)"
+    },
+    "named_by_a_theme": {
+      "beta": "low_risk: QMJ safety (low beta) and betting against correlation",
+      "leverage": "low_risk: QMJ safety (low leverage)",
+      "momentum": "price_momentum",
+      "value": "value",
+      "earnings_yield": "value (earnings yield)",
+      "profitability": "profitability_quality",
+      "asset_growth": "investment_issuance",
+      "short_interest": "short_interest"
+    },
+    "lit_upper_bound": [
+      "size",
+      "beta",
+      "residual_vol",
+      "liquidity",
+      "leverage"
+    ]
+  },
+  "prints": {
+    "primary": "q = the sum over the no_theme columns (size, residual_vol, liquidity) of G-2a's style_share_of_summed_variance (Euler contributions x_k (F x)_k over the summed daily ex-ante variance; a column may be negative), with each column's own share beside it",
+    "upper_bound": "q_lit = the same sum over lit_upper_bound (adds beta and leverage, which low_risk names)",
+    "context": "G-2a's share_of_summed_variance (market, industry, style, specific), mean_share, mean_ex_ante_vol_annual, complete_sessions / incomplete_sessions, mean_uncovered_gross, by_year"
+  },
+  "reading": {
+    "decides": "nothing by itself: the PM rules P9-H's registration with q and q_lit printed in the prereg",
+    "arithmetic": "a hedge that removes at most a share q of the book's variance at unchanged alpha raises the Sharpe ratio by at most the factor 1 / sqrt(1 - q): q .02 -> 1.010, .05 -> 1.026, .10 -> 1.054, .20 -> 1.118, .34 -> 1.231. Lit section 1.1's +.05 to +.15 [est] needs about 1.03 to 1.09 at the book's Sharpe (1.77, the figure lit section 7 uses), i.e. q of about .05 to .15 removed; q (primary) well below .05 argues against registering P9-H, q_lit is the most the lit's own list allows",
+    "caveat": "DMRS's hedge removes each theme's unpriced loading on its own factor, which the style columns approximate only (lit section 7 'DMRS is the largest claim'); the bound is lit Q5's framing, recorded as stated, not a derivation"
+  },
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-03",
+      "by": "AL-COMB",
+      "note": "P9 lane AL-COMB deliverable (3); zero trials; written blind (no output of 2020-2023 read)"
+    }
+  ]
+}

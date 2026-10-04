@@ -1,0 +1,37 @@
+{
+  "id": "lazy_prices",
+  "dsl": "rank(lazy_prices)",
+  "dsl_sha256": "bcbe26531652330687140a926af23649bad865053207846c26ac5faa288be2f9",
+  "theme": "filing_events",
+  "tier": "C+",
+  "prior_sign": 1,
+  "citation": "Cohen, Malloy and Nguyen (2020, JF 75(3)) Lazy prices",
+  "origin": "prior",
+  "hypothesis": "lazy_prices",
+  "kind": "add",
+  "fields": [
+    "lazy_prices"
+  ],
+  "prior_sign_source": "Cohen-Malloy-Nguyen 2020",
+  "form": "R(x)",
+  "formula": "lazy_prices (to be an engine-only C++ kind, DEC-5): the textual similarity of a firm's latest 10-K or 10-Q to its prior filing of the same type (higher = fewer changes: the non-changers CMN buy), held from the session after the filing is visible until the next filing of the type",
+  "domain": "NaN without two filings of one type in the text landing; blocked until the landing completes",
+  "deviation": "the field is not built: the atx-db text landing holds about 7% of 10-K / 10-Q (lit section 3.1 F1); no field name, kind or constant is chosen beyond the paper's similarity sign until it lands",
+  "notes": "horizon class slow, half-life 126 sessions (PM8-5: CMN's 3-18 month drift, the filing_events theme's); data class P; blocked_on_data: the 10-K / 10-Q text landing and its engine reader (lit section 6 row lazy_prices, P9DATA -> P9SIG); rho to the themes .1 or less (lit 3.1 F1)",
+  "lane": "AL-SIG",
+  "report": "task-AL-SIG-report.md",
+  "source_sample_end": 2014,
+  "predicted_mechanism": "investors under-react to changes in the text of annual and quarterly reports, so firms whose filings barely change outperform the changers over the following months as the news the changes carry is slowly priced",
+  "data_class": "P",
+  "schema": "atx.p9-blocked-registration/v1",
+  "status": "blocked_on_data",
+  "blocked_on": "the atx-db 10-K / 10-Q text landing (about 7% landed at the literature review) and an engine reader of it",
+  "history": [
+    {
+      "status": "blocked_on_data",
+      "at": "2026-10-03",
+      "by": "AL-SIG",
+      "note": "P9 lane AL-SIG (lit section 3.1 F1 [39]); registered blind, not a candidate: no field exists, so it is not in the queue"
+    }
+  ]
+}

@@ -243,9 +243,17 @@ public:
   // geometry 62 factors / 11 styles, the per-date files of --emit-exposures all
   // (factor_covariance.f64, specific_variance.f64, style_exposures.f32, industry_slot.u8)
   // and diagnostics.csv, each with the manifest's SHA-256 and byte size. Refuses otherwise.
+  // P9 COV (K-P9-12): a manifest with a `container` block (risk --emit-container) is read from
+  // its atx.cov-container instead: mapped with Full verification at the manifest's root_sha256,
+  // its role pin equal to role_sha256, geometry 62 / 50 / 11, one block per date whose session
+  // and forecast flag equal diagnostics.csv's; the four legacy payloads are not hashed (not
+  // read). read(d) then rebuilds the same dense RiskSlice from block d (bit for bit). Without the
+  // block, today's path, unchanged.
   [[nodiscard]] static atx::core::Result<RiskStore> open(const std::string& directory,
                                                          const std::string& manifest_sha256,
                                                          const std::string& role_sha256);
+  // True when the store reads an atx.cov-container (P9 COV).
+  [[nodiscard]] bool container() const noexcept { return container_ != nullptr; }
   [[nodiscard]] atx::usize dates() const noexcept { return dates_; }
   [[nodiscard]] atx::usize instruments() const noexcept { return instruments_; }
   [[nodiscard]] std::span<const atx::i64> sessions() const noexcept { return sessions_; }
@@ -259,10 +267,12 @@ public:
   [[nodiscard]] atx::core::Status read(atx::usize d, RiskSlice& out) const;
 
 private:
+  struct Container; // the mapped atx::engine::risk::CovModelFile (strategy_spo.cpp)
   std::string directory_, manifest_sha256_;
   atx::usize dates_{}, instruments_{};
   std::vector<atx::i64> sessions_;
   std::vector<atx::u8> forecast_;
+  std::shared_ptr<const Container> container_; // null: the legacy per-session files
 };
 
 // ---- one book's rebalance decision in the replay -----------------------------------------

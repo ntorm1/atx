@@ -256,6 +256,8 @@ def record(w: Wave, done: dict, log) -> dict:
     path, md = w.wave_path(wave_result.RESULT), w.wave_path(wave_result.LOG)
     sha = w.write_json(path, doc)
     w.path(md).write_text(wave_result.log_section(doc), encoding="utf-8", newline="\n")
+    head_path = w.wave_path(LEDGER_HEAD)       # P9 B2 (OR-5): the ledger head the wave recorded, copied with the result
+    w.write_json(head_path, ledger_head_doc(w, ledger))
     try:
         queued = wave_queue.record_wave(w.root, m, doc,      # P9 OR section 3: the manifest's date when it has one
                                         WM.driver(m, "record_date") or dt.date.today().isoformat())
@@ -267,12 +269,27 @@ def record(w: Wave, done: dict, log) -> dict:
     if (m.get("record") or {}).get("copy_to"):
         dst = w.path(f"{m['record']['copy_to'].rstrip('/')}/{m['wave']}")
         dst.mkdir(parents=True, exist_ok=True)
-        for rel in (path, md):
+        for rel in (path, md, head_path):
             shutil.copyfile(w.path(rel), dst / Path(rel).name)
             copies.append(w.rel(dst / Path(rel).name))
-    log(f"   {path} ({sha[:12]}); log section {md}; N {ledger['n_before']} -> {ledger['n_after']}")
+    log(f"   {path} ({sha[:12]}); log section {md}; N {ledger['n_before']} -> {ledger['n_after']}; ledger head "
+        f"{str(ledger['head'])[:16]} ({ledger['lines_after']} lines) -> {head_path}")
     return {"wave_result": path, "wave_result_sha256": sha, "log_section": md, "copies": copies, "ledger": ledger,
+            "ledger_head": head_path,
             "verdict": doc["verdict"], "next_parent": doc["next_parent"], "queue": {"set": queued, "commit": commit}}
+
+
+LEDGER_HEAD = "ledger-head.json"
+
+
+def ledger_head_doc(w: Wave, ledger: dict) -> dict:
+    """The trial ledger's chain head after the wave (P9 B2, OR-5; carry SQL-7): the head backtest_integrity's reader
+    verified (the rule research/ledger's chain_head implements, named by CHAIN_RULE), the line count it covers and the
+    wave. SQL4's verify --ledger matches such a recorded head against a prefix of the ledger."""
+    bi = research_ledger.backtest_integrity()
+    return {"schema": "atx.ledger-head/v1", "wave": w.manifest["wave"], "ledger": ledger["path"],
+            "lines": ledger["lines_after"], "head_sha256": ledger["head"], "rule": bi.CHAIN_RULE,
+            "n": ledger["n_after"]}
 
 
 def record_plan(w: Wave, done: dict) -> list[str]:
@@ -287,6 +304,8 @@ def verify_inputs(w: Wave, done: dict) -> dict:
     now: dict = {"readers": reader_digests(w, list(mt["readers"]))}
     if mt.get("spec_digest"):
         now["spec_digest"] = w.spec_digest(mt["cell_spec"]) if w.exists(mt["cell_spec"]) else None
+    if mt.get("record_spec"):           # P9 C2 (review R4): engine mode's cell of record, what next_parent names
+        now["record_spec_digest"] = w.spec_digest(mt["record_spec"]) if w.exists(mt["record_spec"]) else None
     return pinned("match", mt, now)
 
 
