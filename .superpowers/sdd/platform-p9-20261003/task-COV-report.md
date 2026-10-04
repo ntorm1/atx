@@ -292,3 +292,137 @@ manifest's `container` / `files["model.atxcov"]`), `CovEigen.RecipeV11IsBitIdent
   (eigen_adjust.cpp /Od).
 - The role's adjusted close is a back-adjusted level (vendor anchor after d); risk-model reads are same-line ratios of
   rows <= t, exact up to f64 rounding -- real-data truncation proofs must truncate the role payload, not rebuild it.
+
+## Fix round 1 (review `task-COV-review.md` at `535fb057`: CHANGES_REQUIRED, R1 + R2; ruling COV-R1)
+
+Status: **R1 and R2 fixed; band met on a well-posed planted panel (no kernel defect).** No test renamed, no band
+loosened, no expected hash edited.
+
+### R1 -- the band is asserted (ruling COV-R1)
+
+New planted panel `BandPanel` (`atx-impl/tests/strategy_cov_fixture.hpp`) with `band_config`:
+- Well-conditioned factor block: every name in the residual industry slot (no cap-constraint null direction among
+  several industries), equal caps (size degenerate, so off), six descriptor styles with fixed N(0, 1) exposures;
+  factor returns i.i.d. N(0, Sigma), Sigma = Q diag(lambda) Q', lambda geometric 2e-6 .. 2e-4 (two decades), Q a seeded
+  rotation; specific sd 1%; every member present every session. 500 sessions x 300 names, seed 29.
+- Variance half-life consistent with the simulated effective count: `vol_halflife = correlation_halflife = 42`,
+  variance / correlation Newey-West lags 0, so S2b's simulated length (the Kish count of those weights) is the
+  effective sample of every entry of F. VRA off (`vra_min_dates` 1,000,000: S2c is not under test); price styles out of
+  reach (windows 4096). The recipe code is unchanged; only the fixture's windows differ.
+
+`CovBias.EigenFamilyInBandOnAPlantedModel` now asserts on that panel, with the design's band (cov-design 2.8 / 5.3,
+b in 1 +- sqrt(2/T)): under atx-cov-v1 ranks at the eigenvalue floor (< 1e-6 x max) excluded and counted (<= 1),
+>= 6 ranks kept, pooled N > 2000, **|pooled b - 1| <= sqrt(2/N)**, **share of ranks in their band >= 0.95**; teeth:
+atx-risk-v1.1 on the same panel has pooled b > 1 + sqrt(2/N), and cov's in-band share >= v1.1's. The churn
+(cap-constrained, short-HL) panel keeps the relative checks (0.5 < b < 3, b_v11 > 1, b < b_v11, QLIKE / MRAD) and
+prints per-rank b as a diagnostic.
+
+Planted-panel result (`cov-evidence/cov-gt-cov-all-f1.log`, T = 469 per rank):
+
+| panel / recipe | eigen-00 .. eigen-06 | pooled b +- band (N) | ranks in band | at floor |
+|---|---|---|---|---|
+| band / atx-cov-v1 | 1.014 0.994 1.011 1.009 0.990 1.000 1.005 | **1.003 +- 0.025** (3283) | **7/7** | 0 |
+| band / atx-risk-v1.1 | 1.111 1.060 1.060 1.049 1.013 1.015 0.993 | 1.043 +- 0.025 (3283), outside | 6/7 | 0 |
+
+Churn-panel diagnostic (T = 119; eigen-12 T = 109):
+
+| recipe | eigen-00 .. eigen-12 | pooled b +- band (N) | in band |
+|---|---|---|---|
+| atx-cov-v1 | 6.074 2.152 1.497 1.255 1.124 1.287 0.969 1.178 1.101 0.925 0.925 0.861 0.769 | 2.056 +- 0.036 (1537) | 5/13 |
+| atx-risk-v1.1 | 7.123 2.431 1.689 1.323 1.112 1.226 1.017 1.253 1.033 0.949 0.815 0.821 0.673 | 2.327 +- 0.036 (1537) | 4/13 |
+
+Reading: on the churn panel the excess sits in the smallest ranks (eigen-00 at 6-7, the cap-constraint direction that
+moves at every membership change) plus the short variance HL (21) against the Kish length of HL 504 (review S8);
+S2b lowers every small rank. On the well-posed panel the same kernel puts every rank in band. History kept: the first
+version's `b < 2.0` failed at 2.056 (above, Decisions), then the relative restatement, now replaced by this band.
+
+### R2 -- overflow-safe bounds (`atx-engine/src/risk/cov_container.cpp`)
+
+- `parse_cov_block` array table: `size == 0 || offset_in_block > bytes.size() || count > (bytes.size() -
+  offset_in_block) / size` (no underflow; a refused array never forms a span). `previous_end = offset + count * size`
+  is computed only after that check, so it is <= the block size and cannot wrap.
+- Section extents: `offset > data_end || bytes > data_end - offset`.
+- Section table: `section_table_offset > data_end || section_count * 64 > data_end - section_table_offset`.
+- Section sizes: `elem == 0 || bytes % elem != 0 || count != bytes / elem` (no `count * elem` product).
+- Block walk: `block_bytes > blocks_end - next_block` before `next_block += block_bytes`; the final check is
+  `next_block == blocks_end` (`blocks_end` computed once from the already-bounded section).
+
+New tests (engine): `RiskCovContainer.ParseBlockRefusesArrayBoundsThatWrapOrLeaveTheBlock` (direct `parse_cov_block`:
+offset past the block, offset `SIZE_MAX - 63`, count `SIZE_MAX / 8` and `SIZE_MAX`, plus a tight buffer accepted and
+refused one byte short) and `RiskCovContainer.RefusesSectionTableAndBlockSizesThatWrap` (section-table offset near
+2^64; an index `block_bytes` that wraps, at t = 0 and t = 2, under Full and Lazy with the root re-hashed so only the
+bounds check can refuse; META bytes near 2^64). All refuse with a ParseError, none reaches UB.
+
+### Suggested findings
+
+Done:
+- **S2** input-side leak: `CovPanel::with_future_mean_return_value()` replaces each name's value descriptor by its
+  own full-axis mean return; it flows through `run_risk_model`, survives standardisation, and
+  `CovTruncation.DetectsAPlantedLeak` now requires the comparator to find it (both recipes), beside the sink-side leak.
+- **S3** budget refusal counted apart: `EigenOutcome::BudgetRefused` (manifest / summary name `refused_budget`),
+  checked before the kernel from the same workspace rule (K^2 128 + T K 64 <= budget, overflow-safe); the risk verb
+  refuses a run with any such session ("risk: the atx-cov-v1 eigen adjustment's workspace exceeds the budget on N
+  sessions; raise --max-bytes"). Test: 51,199 bytes refused / 51,200 adjusted at the boundary.
+- **S4** seal on the read path: `RiskStore::open` refuses a container with `last_session_ns >= kSealBeginNs` and no
+  unseal record (`CovStore.RefusesAContainerReachingTheSealWithoutUnseal`). Cross-section edit: one more include in
+  `strategy_spo.cpp` (`atx/engine/data/research_window.hpp`, outside the RiskStore section; the check itself is
+  inside it).
+- **S6** reflow: the new engine files (`cov_container.{hpp,cpp}`, `risk_cov_container_test.cpp`, the bench) are
+  clang-formatted with the repo `.clang-format` and have 0 lines over 100 columns; the new impl tests 0; the owning
+  impl sources are back to their base counts (`strategy_risk_model.cpp` 13, `.hpp` 1, `strategy_risk_verb.cpp` 16 --
+  all base lines).
+- **S7** books: `CovBias.MinVarAndOptimizedUseCompleteForecastsOnly` asserts held == complete set (0 mismatches);
+  new `CovBias.MinVarAndOptimizedEqualTheDenseInverseOnSmallN` (6 names, Woodbury minvar / optimized weights against
+  a dense V^-1 to 1e-10); `BiasHarness::extended_unformed()` counts sessions whose extended books could not be formed
+  (non-finite block entry, failed LLT, non-positive 1'V^-1 1) and `bias_summary.json` records it as
+  `extended_families.unformed_sessions`.
+
+Left, with reason:
+- **S1** (rename `RecipeV11IsBitIdenticalToToday` / `VolAndRiskTargetRecordsUnchanged`): the names are the brief's
+  acceptance contract and ruling COV-R1 says no rename; the base-anchored proof is root step 2 (real data, flag
+  absent) -- unchanged.
+- **S5** (Debug S2b cost on TRAIN): root note, not lane code; plan the cov-design 6 Q4 Release ruling for step 5 and
+  check Release-vs-Debug byte identity of `eigen_adjust_v2` on the synthetic fixture first.
+- **S8** (simulated length = Kish of HL 504 vs variance HL 84): by design in the brief; changing it is a new recipe id
+  (COV-5). The churn-panel table above is the evidence for D-COV's reading and the P10 recipe candidate.
+- **S9** (`universe.delisting.returns_applied`): copying it into the manifest changes V11 manifest bytes (breaks root
+  step 2's identity) and refusing is a new policy on the registered verb; R-8 / Y-1 roles have it false. Left to
+  root / PM.
+
+Manifest / summary additions, under atx-cov-v1 / extended only (flag-absent bytes unchanged,
+`CovRecipe.FlagsAbsentOutputsUnchanged` and `CovBias.V1FamiliesBytesUnchanged` pass):
+`eigen_adjustment.sessions.refused_budget`, `extended_families.unformed_sessions`.
+
+### Bench
+
+`ATX_BUILD_BENCH` is OFF in equity-dev, so the bench target does not exist in the lane tree. Done instead: a
+syntax-only compile (`clang-cl /Zs`) of `atx-engine/bench/risk_cov_container_bench.cpp` with the exact flags of its
+engine neighbour `cov_container.cpp` from `compile_commands.json` (`/W4 /WX /permissive- -std:c++20`) plus
+google-benchmark's headers -> exit 0 (the checker was validated on a deliberately broken probe, exit 1). Not linked or
+run: root step 6 (`rel`, `ATX_BUILD_BENCH=ON`) still owns that.
+
+### Builds and tests
+
+| tag | targets | exit | wall s | TUs |
+|---|---|---|---|---|
+| p9-cov-f | atx-engine-risk-tests, atx-impl-strategy-target-tests, atx-equity-strategy-risk | 1 ("could not load cache": the object tree had been deleted under DISK-2; tag spent) | 5 | 0 |
+| p9-cov-g | same, after `atx-build.ps1 configure -Preset equity-dev` | 0 | 721 | 369 (fresh tree) |
+
+Only warnings in p9-cov-g: clang-cl's `/MP unused` driver note on dependency TUs and two pre-existing third-party
+`getenv` deprecations in `databento-cpp` (fresh tree recompiles them); none in lane code. Receipts and UTF-8 logs:
+`cov-evidence/mega-p9-cov-{f,g}-{receipt.json,build.log}`, `cov-f.log`, `cov-g.log`, `cov-configure-f1.log`.
+
+Tests (Debug, equity-dev, p9-cov-g executables):
+- `atx-engine-risk-tests --gtest_filter=RiskCovContainer.*` -> **20 passed**.
+- `atx-engine-risk-tests --gtest_filter=Risk*:-RiskQpAugment.MatchesDenseOracleAcrossBattery` -> **430 passed, 1
+  skipped** (`RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery`), 0 failed (`cov-gt-engine-risk-f1.log`).
+- `atx-impl-strategy-target-tests --gtest_filter=CovTruncation.*:CovEigen.*:CovRecipe.*:CovStore.*:CovBias.*:CovDiff.*`
+  -> **28 passed**, 0 failed (180 s; `cov-gt-cov-all-f1.log`).
+- Unchanged filter `RiskWls.*:RiskEwma.*:RiskBias.*:RiskModel.*:RiskVerb.*:RiskRobust.*:RiskTarget.*:VolTarget.*:NavBookRule.*:Spo*:NavV7Hook.*`
+  -> **104 passed**, 0 failed (`cov-gt-regress-f1.log`).
+
+New test names this round: `RiskCovContainer.ParseBlockRefusesArrayBoundsThatWrapOrLeaveTheBlock`,
+`RiskCovContainer.RefusesSectionTableAndBlockSizesThatWrap`, `CovBias.MinVarAndOptimizedEqualTheDenseInverseOnSmallN`,
+`CovStore.RefusesAContainerReachingTheSealWithoutUnseal`.
+
+Root's verification list above is unchanged; root step 1's counts become 20 (`RiskCovContainer.*`) and 28 (`Cov*`).
