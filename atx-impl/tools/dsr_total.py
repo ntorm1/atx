@@ -11,7 +11,8 @@ ledger of record. A trial that is not counted could raise the Sharpe ratio witho
   V     = dsr_variance(records, window_id)["variance_sr"]   the ddof-1 variance of s2_net_sr / sqrt(252) over the
                                                 construction lines scored on the research window (book cells only;
                                                 defect-rule exclusions and history lines are left out)
-  SR0, DSR the house DSR at (N, V) (per-session units)
+  SR0   = expected_max_sr(V, N)
+  DSR   = deflated_sharpe(SR, T, skew, kurtosis, SR0)   (per-session units; backtest_integrity)
 
 Rows:
 - ``tot``: N_tot of the whole ledger. This is DSR_tot, the value the X gate reads.
@@ -21,9 +22,8 @@ Rows:
   hand-written book H-F this is DSR_hand (PM7-2). The same rule gives any ledgered book's value at its own ledger
   state, for example V8-F's.
 
-Platform P9 B2 (K-P9-5): the rows are computed by the engine verb atx-research-eval (dsr.tot and hand of its document;
-research/ledger trial_breakdown, dsr_variance, ledger_n and eval house_dsr), which nav_summ.py calls. What stays here
-is the ledger read for --dsr-total, the N_tot breakdown and prefix rules the readers share, and the printed lines.
+The functions are pure over ledger records and net moments, except ``read_ledger``. nav_summ.py reads the NAV
+directories (flags --dsr-total and --dsr-hand). Without those flags nothing here runs.
 """
 from __future__ import annotations
 
@@ -70,6 +70,33 @@ def trial_breakdown(records: list[dict]) -> dict:
             "n_tot": sum(counts) + m}
 
 
+def dsr_at(moments: dict, n: int, variance: float | None) -> dict:
+    """SR0 and DSR of one book at N trials and cross-trial variance V (per-session units). Values are None when V is
+    undefined (fewer than two cells on the window), when the series has no defined moments, or when N < 2."""
+    row = {"n": n, "sr0_daily": None, "sr0_annual": None, "dsr": None}
+    sr, t, skew, kurt = moments["sr_daily"], moments["sessions"], moments["skew"], moments["kurtosis"]
+    if variance is None or sr is None or skew is None or kurt is None or t < 2 or n < 2:
+        return row
+    sr0 = BI.expected_max_sr(variance, n)
+    row.update(sr0_daily=sr0, sr0_annual=sr0 * math.sqrt(BI.ANNUAL),
+               dsr=BI.deflated_sharpe(sr, t, skew, kurt, sr0))
+    return row
+
+
+def ledger_rows(moments: dict, records: list[dict], in_ledger: bool, window_id: str) -> dict:
+    """The ``tot`` and ``v8`` rows of one book over these ledger lines, with N_tot's parts and V.
+
+    ``in_ledger`` says whether the book has a construction line among ``records``. When it has none, both counts add
+    1 for the book itself, as ledger_n does."""
+    v = BI.dsr_variance(records, window_id)
+    parts = trial_breakdown(records)
+    n_tot = parts["n_tot"] + (0 if in_ledger else 1)
+    n_c = BI.ledger_n(records, in_ledger)
+    return {"window_id": window_id, "in_ledger": in_ledger, "variance_sr": v["variance_sr"], "cells_in_v": v["cells"],
+            "variance_source": v["variance_source"], "parts": parts,
+            "tot": dsr_at(moments, n_tot, v["variance_sr"]), "v8": dsr_at(moments, n_c, v["variance_sr"])}
+
+
 def construction_ids(records: list[dict]) -> set:
     return {r.get("trial_id") for r in records if r.get("kind") == CONSTRUCTION}
 
@@ -82,6 +109,16 @@ def prefix_length(records: list[dict], trial_id: str) -> int:
             return k + 1
     raise ValueError(f"--dsr-hand: trial {trial_id} has no construction line in the ledger (DSR_hand is read on the "
                      "ledger prefix that ends at the book's own line; ledger the book first)")
+
+
+def hand_row(moments: dict, ledger: dict, trial_id: str, window_id: str) -> dict:
+    """DSR_hand: the book's total-count DSR on the ledger prefix that ends at its own construction line (PM7-2).
+
+    N_tot, V and the chain head are all taken from that prefix. Every line after it is left out, the campaign line
+    of an X campaign that ran after H-F included."""
+    k = prefix_length(ledger["records"], trial_id)
+    rows = ledger_rows(moments, ledger["records"][:k], True, window_id)
+    return dict(rows, trial_id=trial_id, prefix_lines=k, prefix_chain_head=BI.chain_head(ledger["lines"][:k]))
 
 
 def parts_text(rows: dict) -> str:

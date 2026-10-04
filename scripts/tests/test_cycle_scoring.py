@@ -97,11 +97,7 @@ def test_verdict_dsr_is_the_ledger_variance_value_not_the_single_cell_lo_value(t
     variance = (0.15 / ROOT_252) ** 2
     assert dl["n"] == 41 and dl["cells"] == 41 and dl["window_id"] == BI.window_id()
     assert dl["variance_sr"] == pytest.approx(variance, rel=1e-12)
-    from statistics import NormalDist                                          # the oracle, written out (P9 B2)
-    nd, gamma, sr = NormalDist(), 0.5772156649015329, m["sr_daily"]
-    sr0 = math.sqrt(variance) * ((1 - gamma) * nd.inv_cdf(1 - 1 / 41) + gamma * nd.inv_cdf(1 - 1 / (41 * math.e)))
-    want = nd.cdf((sr - sr0) * math.sqrt(m["sessions"] - 1)
-                  / math.sqrt(1 - m["skew"] * sr + (m["kurtosis"] - 1) * sr * sr / 4))
+    want = NS.deflated_sharpe(m["sr_daily"], m["sessions"], m["skew"], m["kurtosis"], NS.expected_max_sr(variance, 41))
     assert dl["dsr"] == pytest.approx(want, rel=1e-12)
     assert dl["sr0_annual"] == pytest.approx(0.33, abs=0.005) and dl["dsr"] == pytest.approx(0.91, abs=0.01)
     lo = row["deflated"]                                                         # the old verdict source

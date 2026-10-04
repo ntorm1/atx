@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import subprocess
 from pathlib import Path
 
@@ -17,47 +18,101 @@ import pytest
 
 import backtest_integrity as BI
 import nav_summ as NS
-from test_nav_summ import SCEN, T0, DAY, longhand_dsr, p12_equal, write_nav, write_weights  # noqa: F401  (shared writers)
+from test_nav_summ import SCEN, T0, DAY, write_nav, write_weights  # noqa: F401  (shared synthetic NAV writer)
 
 BASE_BLOB = "d5fc56aa6baa4e31a9fd362c25e259e84a8297a6"  # nav_summ.py at cdc9c2a8 (platform v7 base, pre-L2)
 
 
 # ------------------------------------------------------------------ PSR / MinTRL
+def test_psr_known_answers():
+    sr, t = 0.08, 750
+    assert BI.psr(sr, sr, t, -1.0, 10.0) == pytest.approx(0.5, abs=1e-15)
+    # normal returns: skew 0, kurtosis 3 -> denominator 1 + SR^2 / 2
+    want = BI.norm_cdf((sr - 0.02) * math.sqrt(t - 1) / math.sqrt(1 + sr * sr / 2))
+    assert BI.psr(sr, 0.02, t, 0.0, 3.0) == pytest.approx(want, rel=1e-14)
+    assert BI.psr(sr, 0.0, 1, 0.0, 3.0) is None
+    assert BI.psr(1.0, 0.0, 100, 5.0, 3.0) is None  # 1 - 5 + 0.5 < 0: undefined, never a number
+
+
+def test_min_trl_literature_example_and_consistency():
+    """literature-v7 S5: SR 1.18 ann, skew -1.32, kurtosis 13.5 -> ~550 days vs SR* 0 and ~1,640 vs SR* .5."""
+    sr = 1.18 / math.sqrt(252)
+    t0 = BI.min_trl(sr, 0.0, -1.32, 13.5)
+    t5 = BI.min_trl(sr, 0.5 / math.sqrt(252), -1.32, 13.5)
+    assert 540 < t0 < 555 and 1630 < t5 < 1660, (t0, t5)
+    # at T = MinTRL the PSR is exactly 1 - alpha
+    assert BI.psr(sr, 0.0, t0, -1.32, 13.5) == pytest.approx(0.95, abs=1e-9)
+    assert BI.min_trl(sr, sr, 0.0, 3.0) is None and BI.min_trl(sr, sr + 0.01, 0.0, 3.0) is None
+    rep = BI.psr_report(np.r_[np.full(50, 0.002), np.full(50, -0.001)], (0.0, 0.5))
+    assert [b["sr_star_annual"] for b in rep["benchmarks"]] == [0.0, 0.5]
+    assert rep["benchmarks"][0]["min_trl_years"] == pytest.approx(rep["benchmarks"][0]["min_trl_sessions"] / 252)
+
+
+def test_lo_null_equals_nav_summ_single_dir_rule():
+    rng = np.random.default_rng(3)
+    x = 0.0004 + 0.003 * rng.standard_t(4, size=754)
+    m = NS.net_moments(x)
+    legacy = NS.dsr_rows([m], 29)[0]
+    lo = BI.lo_null_dsr(m, 29)
+    assert lo["dsr"] == legacy["dsr"] and lo["sr0_daily"] == legacy["sr0_daily"]
+    assert lo["variance_source"] == legacy["variance_source"]
+    assert BI.moments(x) == m
+
+
 # ------------------------------------------------------------------ CSCV PBO
-def columns(r) -> list[dict]:
-    """The columns of a (T, N) matrix as net series (session_ns -> net), the engine verb's input."""
-    r = np.asarray(r, dtype=np.float64)
-    return [{T0 + k: float(v) for k, v in enumerate(r[:, j])} for j in range(r.shape[1])]   # 1 ns apart
-
-
-def engine_pbo(r) -> dict:
-    """CSCV PBO of the matrix's columns by the engine verb (P9 B2: backtest_integrity.cscv_pbo is retired)."""
-    return NS.engine_of(None).cscv(columns(r), BI.PBO_BLOCKS)[0]
-
-
-def engine_effective(r, names: list, seed: int = BI.DEFAULT_SEED) -> dict:
-    """effective_trials of the matrix's columns by the engine verb (house ONC, n_init 10)."""
-    from types import SimpleNamespace
-    cols = columns(r)
-    args = SimpleNamespace(onc_init=10, onc_seed=seed, dsr_n=10)
-    return NS.engine_of(None).effective(cols[:1], names, cols, args)[0]
+def test_cscv_vectorised_equals_literal_reference():
+    rng = np.random.default_rng(11)
+    r = 0.001 * rng.normal(size=(8 * 12 + 3, 5)) + np.array([0.0, 1e-4, 2e-4, -1e-4, 5e-5])
+    got = BI.cscv_pbo(r, blocks=8)
+    ref = BI.cscv_pbo_reference(r, blocks=8)
+    assert got["splits"] == got["splits_total"] == math.comb(8, 4) == len(ref)
+    np.testing.assert_allclose(got["logits"], ref, rtol=0, atol=1e-12)
+    assert got["pbo"] == pytest.approx(np.mean(np.array(ref) <= 0), abs=0)
+    assert got["dropped_tail_sessions"] == 3 and got["block_width"] == 12 and got["exhaustive"]
+    dist = got["logit_distribution"]
+    assert sum(dist["splits"]) == got["splits"] and len(dist["logit"]) == 5
+    for k, c in enumerate(dist["splits"]):  # every split's logit is the logit of its rank
+        assert c == int(np.sum(np.isclose(got["logits"], dist["logit"][k], rtol=0, atol=1e-12)))
 
 
 def test_cscv_iid_cells_pbo_near_half_and_dominant_cell_zero():
     pbos = []
     for seed in range(4):
         rng = np.random.default_rng(100 + seed)
-        pbos.append(engine_pbo(rng.normal(size=(16 * 40, 10)))["pbo"])
+        pbos.append(BI.cscv_pbo(rng.normal(size=(16 * 40, 10)))["pbo"])
     assert 0.35 < np.mean(pbos) < 0.65, pbos            # iid: the IS winner's OOS rank is uniform -> PBO ~ 1/2
     rng = np.random.default_rng(7)
     r = rng.normal(size=(16 * 40, 10))
     r[:, 6] += 0.6                                       # strictly dominant in every block
-    res = engine_pbo(r)
+    res = BI.cscv_pbo(r)
     assert res["pbo"] == 0.0 and res["splits"] == 12870 and res["winner_counts"][6] == 12870
     assert res["prob_winner_oos_loss"] == 0.0 and res["logit_mean"] > 0
 
 
+def test_cscv_seeded_subsample_is_flagged_and_deterministic():
+    rng = np.random.default_rng(5)
+    r = rng.normal(size=(16 * 20, 6))
+    a = BI.cscv_pbo(r, max_splits=500, seed=9)
+    b = BI.cscv_pbo(r, max_splits=500, seed=9)
+    assert a["splits"] == 500 and a["splits_total"] == 12870 and not a["exhaustive"] and a["seed"] == 9
+    np.testing.assert_array_equal(a["logits"], b["logits"])
+    full = BI.cscv_pbo(r)
+    assert full["exhaustive"] and full["seed"] is None
+    with pytest.raises(ValueError):
+        BI.cscv_pbo(r, blocks=15)
+    with pytest.raises(ValueError):
+        BI.cscv_pbo(np.full((64, 4), np.nan))
+
+
 # ------------------------------------------------------------------ ONC / effective N
+def test_silhouette_matches_hand_calculation():
+    x = np.array([[0.0], [1.0], [10.0], [11.0], [30.0]])
+    s = BI.silhouette_samples(x, np.array([0, 0, 1, 1, 2]))
+    assert s[0] == pytest.approx((10.5 - 1.0) / 10.5)
+    assert s[2] == pytest.approx((min(9.5, 20.0) - 1.0) / 9.5)
+    assert s[4] == 0.0                                   # a singleton's silhouette is 0 (sklearn)
+
+
 def block_series(sizes, t=1500, noise=0.35, seed=1, drift=None):
     rng = np.random.default_rng(seed)
     cols, truth = [], []
@@ -72,18 +127,32 @@ def block_series(sizes, t=1500, noise=0.35, seed=1, drift=None):
 def test_onc_recovers_block_structure_deterministically():
     r, truth = block_series([4, 5, 6, 3])
     names = [f"s{i}" for i in range(r.shape[1])]
-    eff = engine_effective(r, names, seed=4)
+    eff = BI.effective_trials(r, names, seed=4)
     assert eff["n_eff"] == 4
     want = sorted(sorted(n for n, g in zip(names, truth) if g == k) for k in range(4))
     assert sorted(sorted(c) for c in eff["clusters"]) == want
-    again = engine_effective(r, names, seed=4)
+    again = BI.effective_trials(r, names, seed=4)
     assert again["clusters"] == eff["clusters"] and again["variance_sr"] == eff["variance_sr"]
-    assert engine_effective(r[:, :2], names[:2])["n_eff"] == 2      # < 3 series: each its own cluster
+    assert BI.effective_trials(r[:, :2], names[:2])["n_eff"] == 2      # < 3 series: each its own cluster
+
+
+def test_effective_n_dsr_consistent_with_cluster_variance():
+    r, _ = block_series([6, 6, 5], drift=[0.3, 0.05, -0.1], seed=8)
+    names = [f"c{i}" for i in range(r.shape[1])]
+    eff = BI.effective_trials(r, names)
+    k = eff["n_eff"]
+    srs = [BI.moments(BI.ivp_series(r, [names.index(m) for m in cl]))["sr_daily"] for cl in eff["clusters"]]
+    assert eff["cluster_sr_daily"] == srs and eff["variance_sr"] == pytest.approx(np.var(srs, ddof=1), rel=1e-15)
+    cell = BI.moments(r[:, 0])
+    row = BI.effective_n_dsr(cell, eff)
+    sr0 = BI.expected_max_sr(eff["variance_sr"], k)
+    assert row["sr0_daily"] == sr0 and row["n_eff"] == k
+    assert row["dsr"] == BI.deflated_sharpe(cell["sr_daily"], cell["sessions"], cell["skew"], cell["kurtosis"], sr0)
     # identical cells collapse: 20 near-copies of one series -> far fewer clusters than trials
     rng = np.random.default_rng(2)
     base = rng.normal(size=800)
     dup = np.column_stack([base + 0.05 * rng.normal(size=800) for _ in range(20)])
-    assert engine_effective(0.001 * dup, [str(i) for i in range(20)])["n_eff"] < 20
+    assert BI.effective_trials(dup, [str(i) for i in range(20)])["n_eff"] < 20
 
 
 # ------------------------------------------------------------------ ledger
@@ -177,11 +246,7 @@ def test_nav_summ_integrity_options_end_to_end(tmp_path, capsys, monkeypatch):
     for r in rows:
         e, lo, q = r["deflated_effective_n"], r["deflated_lo_null"], r["deflated"]
         assert e["n_trials"] == 5 and lo["n"] == 5 and q["n"] == 5 and r["ledger"]["appended"]
-        m = r["net_moments"]
-        lo_v = (1 + m["sr_daily"] ** 2 / 2) / m["sessions"]          # Lo (2002), written out (the test's oracle)
-        assert lo["variance_sr"] == pytest.approx(lo_v, rel=1e-12)
-        assert lo["dsr"] == pytest.approx(longhand_dsr(m["sr_daily"], m["sessions"], m["skew"], m["kurtosis"], lo_v,
-                                                       5)[1], abs=1e-12)
+        assert lo["dsr"] == BI.lo_null_dsr(r["net_moments"], 5)["dsr"]
     pbo = json.loads(Path("pbo.json").read_text())
     assert len(pbo["logits"]) == 12870 and pbo["cells"] == dirs
     # the ledger as the trial source gives the same N_eff as the dirs themselves
@@ -226,4 +291,4 @@ def test_legacy_output_byte_identical_to_the_v7_base(tmp_path, capsys):
         assert set(new) == set(old_row)
         for key in old_row:
             if key != "nav_summ_run":
-                assert p12_equal(json.loads(json.dumps(new[key])), json.loads(json.dumps(old_row[key]))), key
+                assert json.dumps(new[key], sort_keys=True) == json.dumps(old_row[key], sort_keys=True), key
