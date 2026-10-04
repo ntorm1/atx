@@ -26,14 +26,21 @@ using namespace atx;
 using Json = nlohmann::json;
 constexpr usize D = 480, N = 8;
 constexpr i64 day = 86'400'000'000'000LL;
+// The scratch name is short on purpose (P9 M1d-RED-2). A Release build nests its
+// candidate-cache identity directory (dslvm1_clang18.1_opt_md_ndebug_xs13.0.0, 40
+// characters; Debug has none) below the cache root, and with the former
+// "atx-strategy-ic-runner-<ns stamp>-<n>" name the deepest ".partial" reached 262
+// characters, over Windows MAX_PATH. "icr-<6 digits>-<n>" is at most ~14 characters.
+// The temp root is already private to this process (atx-test-scratch); the stamp only
+// separates leftovers, and create_directory settles any collision.
 struct Directory {
   std::filesystem::path path;
   Directory() {
     static std::atomic<unsigned> sequence{};
-    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count() % 1'000'000;
     for (unsigned a = 0; a < 32; ++a) {
       auto candidate = std::filesystem::temp_directory_path() /
-          ("atx-strategy-ic-runner-" + std::to_string(stamp) + "-" + std::to_string(sequence.fetch_add(1)));
+          ("icr-" + std::to_string(stamp) + "-" + std::to_string(sequence.fetch_add(1)));
       if (std::filesystem::create_directory(candidate)) { path = std::move(candidate); break; }
     }
   }
