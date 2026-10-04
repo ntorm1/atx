@@ -11,6 +11,10 @@ them under the rulings' rules:
              (degenerate: SE / t / p null) and the Python value is recorded for the record only.
   cscv       B2-R2: five generated candidates and one constant 0.001 series, 240 sessions, 8 blocks. Python:
              backtest_integrity.cscv_pbo (exhaustive). The constant candidate's Sharpe is 0 in every split.
+  house_dsr  B2-9: the house DSR rows at N from 2 to 1e6 (HOUSE_N). Python: norm_ppf (bisection) at 1 - 1/N and
+             1 - 1/(N e); expected_max_sr and deflated_sharpe at each moment set and V of ``direct``; and the verb's
+             rows on two generated cells (the reference a and HOUSE_SEED's cell at HOUSE_DRIFT): nav_summ.dsr_rows
+             (cross) and backtest_integrity.lo_null_dsr (lo) at dsr_n = N. Tied within 1e-12 relative for every N.
 
   python generate_research_eval_edges.py --write    regenerate expected.json (a deliberate fixture change)
   python generate_research_eval_edges.py --check    recompute the values from the committed parameters (exit 0 = tied)
@@ -58,6 +62,15 @@ TARGETS = (("omr_5e-4", 5.005e-4), ("omr_5e-5", 5e-5), ("omr_5e-6", 5e-6), ("omr
            ("omr_0.98e-6", 0.98e-6), ("omr_5e-9", 5e-9), ("omr_6e-13", 6e-13))
 CSCV_T, CSCV_BLOCKS, CSCV_CONSTANT = 240, 8, 0.001
 CSCV_DRIFTS = (0.0004, -0.0002, 0.0001, 0.0003, -0.0001)
+# ruling B2-9: the trial counts N of the house DSR tie, 2 to 1e6 (the recorded N_tot are 13..233; a mined campaign's
+# registry count can pass 1e4), and the second cell of the verb rows
+HOUSE_N = (2, 3, 4, 5, 7, 10, 13, 41, 100, 233, 1000, 4097, 10000, 33333, 100000, 314159, 1000000)
+HOUSE_SEED, HOUSE_DRIFT = 9090, -0.0002
+# (label, per-session SR, sessions, skew, raw kurtosis, V): a v8 verdict book against the window variance of SD .15
+# annual, the same book against Lo's single-cell variance, and a fat-tailed short book
+HOUSE_DIRECT = (("window", 0.06, 1006, -0.3, 4.5, (0.15 / math.sqrt(252)) ** 2),
+                ("lo", 0.06, 1006, -0.3, 4.5, (1.0 + 0.06 * 0.06 / 2.0) / 1006),
+                ("fat", 0.11, 252, -1.2, 9.0, (0.4 / math.sqrt(252)) ** 2))
 
 
 def uniforms(seed: int, n: int) -> list[float]:
@@ -135,6 +148,28 @@ def cscv_case() -> dict:
             "seed": CSCV_SEED, "python": plain(r)}
 
 
+def house_cell() -> np.ndarray:
+    return np.array([((u - 0.5) * 0.02) + HOUSE_DRIFT for u in uniforms(HOUSE_SEED, T)])
+
+
+def house_dsr_case() -> dict:
+    """Ruling B2-9: the Python house DSR at every N of HOUSE_N, directly and as the verb's cross / lo rows."""
+    ppf = [{"n": n, "p_hi": 1.0 - 1.0 / n, "ppf_hi": NS.norm_ppf(1.0 - 1.0 / n),
+            "p_lo": 1.0 - 1.0 / (n * math.e), "ppf_lo": NS.norm_ppf(1.0 - 1.0 / (n * math.e))} for n in HOUSE_N]
+    direct = []
+    for label, sr, t, skew, kurt, v in HOUSE_DIRECT:
+        rows = []
+        for n in HOUSE_N:
+            sr0 = NS.expected_max_sr(v, n)
+            rows.append({"n": n, "sr0_daily": sr0, "dsr": NS.deflated_sharpe(sr, t, skew, kurt, sr0)})
+        direct.append({"label": label, "sr_daily": sr, "sessions": t, "skew": skew, "kurtosis": kurt, "variance": v,
+                       "rows": rows})
+    ma, mb = NS.net_moments(reference()), NS.net_moments(house_cell())
+    verb = [{"n": n, "cross": NS.dsr_rows([ma, mb], n), "lo": BI.lo_null_dsr(ma, n)} for n in HOUSE_N]
+    return plain({"n": list(HOUSE_N), "seed": HOUSE_SEED, "drift": HOUSE_DRIFT, "norm_ppf": ppf, "direct": direct,
+                  "verb_moments": [ma, mb], "verb": verb})
+
+
 def document(eps_by_name: dict[str, float]) -> dict:
     cases = [paired_case(n, t, eps_by_name[n], SHIFT) for n, t in TARGETS]
     cases.append(paired_case("self", None, 0.0, 0.0))
@@ -144,7 +179,7 @@ def document(eps_by_name: dict[str, float]) -> dict:
             "paired": {"sessions": T, "draws": DRAWS, "block": BLOCK, "seed": SEED, "one_sided": True,
                        "degenerate_below": DEGENERATE, "tolerance": "1e-12 / (1 - rho) relative (ruling B2-R1 (b))",
                        "cases": cases},
-            "cscv": cscv_case()}
+            "cscv": cscv_case(), "house_dsr": house_dsr_case()}
 
 
 def encode(doc) -> bytes:

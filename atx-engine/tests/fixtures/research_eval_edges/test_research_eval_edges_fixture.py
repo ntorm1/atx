@@ -1,7 +1,7 @@
 """The Python side of the eval verb's edge-case fixture (P9 lane B2 fix round 1; gtest EvalEdges.*).
 
 Pins expected.json to today's Python statistics of record on the committed parameters, so the engine is tied to them
-under rulings B2-R1 (paired conditioning) and B2-R2 (constant CSCV candidate).
+under rulings B2-R1 (paired conditioning), B2-R2 (constant CSCV candidate) and B2-9 (house DSR rows for any N).
 
   "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider
       atx-engine/tests/fixtures/research_eval_edges/test_research_eval_edges_fixture.py
@@ -46,6 +46,19 @@ def test_the_generator_is_exact_ieee():
     a = G.reference()
     assert a.dtype == np.float64 and a.size == G.T
     assert np.array_equal(G.cell(0.0, 0.0), a)
+
+
+def test_the_house_dsr_grid_spans_n_2_to_a_million():
+    """Ruling B2-9: the house DSR tie runs N from 2 to 1e6, every row defined, the DSR spread over (0, 1)."""
+    h = EXPECTED["house_dsr"]
+    assert h["n"] == list(G.HOUSE_N) and h["n"][0] == 2 and h["n"][-1] == 10 ** 6
+    assert [q["n"] for q in h["norm_ppf"]] == h["n"] and [v["n"] for v in h["verb"]] == h["n"]
+    dsr = [r["dsr"] for m in h["direct"] for r in m["rows"]]
+    assert len(dsr) == 3 * len(h["n"]) and all(d is not None and 0.0 < d < 1.0 for d in dsr)
+    assert min(dsr) < 0.01 and max(dsr) > 0.9
+    for m in h["direct"]:   # SR* grows with N
+        sr0 = [r["sr0_daily"] for r in m["rows"]]
+        assert sr0 == sorted(sr0) and sr0[0] > 0.0
 
 
 def test_the_cscv_grid_has_one_constant_candidate_that_never_wins():

@@ -1,29 +1,36 @@
-// Platform P9 B2 fix round 1 (rulings B2-R1, B2-R2): the eval verb on the inputs where a port of
-// the Python statistics cannot, or did not, match them bit for bit (fixtures/research_eval_edges,
+// Platform P9 B2 fix round 1 (rulings B2-R1, B2-R2, B2-9): the eval verb on the inputs where a port
+// of the Python statistics cannot, or did not, match them bit for bit (fixtures/research_eval_edges,
 // written by its generator from today's Python):
 //   - paired cells at a stated 1 - rho: with 1 - rho >= 1e-6 every float ties within
 //     1e-12 / (1 - rho) and the counts are equal; below 1e-6 the pair is refused as degenerate.
 //   - a CSCV grid with a constant nonzero candidate: its Sharpe is 0 in every split, as in Python.
+//   - the house DSR rows at N from 2 to 1e6: the bisection quantile, SR* and the DSR tie within
+//     1e-12 for every N (the engine's Acklam quantile did not, past N = 1e3).
 // The series are regenerated here bit for bit (each step one IEEE double operation), so no series
 // file is committed.
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include "atx/core/types.hpp"
+#include "atx/engine/eval/deflated_sharpe_house.hpp"
+#include "atx/engine/eval/stats_ext.hpp"
 #include "atx/engine/research/eval/cscv_report.hpp"
 #include "atx/engine/research/eval/eval_report.hpp"
 #include "atx/engine/research/eval/paired.hpp"
@@ -298,6 +305,138 @@ TEST(EvalEdges, CscvConstantCandidateHasSharpeZero) {
   for (usize k = 0; k < r->logit_quantiles.size(); ++k) {
     expect_tied(r->logit_quantiles[k], py["logit_quantiles"][q[k]], 1e-12, q[k]);
   }
+}
+
+// ---------------------------------------------------------------------------- ruling B2-9
+const Json &house() { return fixture()["house_dsr"]; }
+
+f64 rel_diff(f64 got, f64 want) {
+  return std::fabs(got - want) / std::fmax(std::fabs(want), std::fabs(got));
+}
+
+// The tie rule over a Python dict: every key of `want` in `got`, floats within 1e-12 relative,
+// integers, strings and nulls exact (extra engine keys allowed).
+void tie_json(const Json &want, const Json &got, const std::string &path,
+              std::vector<std::string> &bad) {
+  if (want.is_object()) {
+    for (const auto &[k, v] : want.items()) {
+      if (!got.is_object() || !got.contains(k)) {
+        bad.push_back(path + "." + k + ": missing");
+        continue;
+      }
+      tie_json(v, got[k], path + "." + k, bad);
+    }
+    return;
+  }
+  if (want.is_number_float()) {
+    const f64 w = want.get<f64>();
+    const f64 g = got.is_number() ? got.get<f64>() : std::numeric_limits<f64>::quiet_NaN();
+    if (!(std::fabs(g - w) <= std::fmax(1e-12 * std::fmax(std::fabs(w), std::fabs(g)), 1e-300))) {
+      std::ostringstream s;
+      s.precision(17);
+      s << path << ": engine " << g << " Python " << w;
+      bad.push_back(s.str());
+    }
+    return;
+  }
+  if (want != got) {
+    bad.push_back(path + ": engine " + got.dump() + " Python " + want.dump());
+  }
+}
+
+// The house quantile is the Python bisection: at 1 - 1/N and 1 - 1/(N e), N from 2 to 1e6, it
+// ties the Python value (in fact it is the same double); the engine's Acklam + Halley quantile,
+// which the house rows used before, misses 1e-12 on this grid.
+TEST(EvalEdges, HouseNormPpfIsThePythonBisectionForAnyN) {
+  const Json &h = house();
+  ASSERT_EQ(h["n"].front().get<usize>(), 2U);
+  ASSERT_EQ(h["n"].back().get<usize>(), 1'000'000U);
+  usize same = 0;
+  usize total = 0;
+  f64 acklam_worst = 0.0;
+  for (const Json &q : h["norm_ppf"]) {
+    const f64 n = static_cast<f64>(q["n"].get<usize>());
+    const f64 p_hi = 1.0 - 1.0 / n;
+    const f64 p_lo = 1.0 - 1.0 / (n * std::numbers::e);
+    EXPECT_EQ(p_hi, q["p_hi"].get<f64>()) << n; // the same probabilities as the Python
+    EXPECT_EQ(p_lo, q["p_lo"].get<f64>()) << n;
+    for (const auto &[p, key] : {std::pair<f64, const char *>{p_hi, "ppf_hi"},
+                                 std::pair<f64, const char *>{p_lo, "ppf_lo"}}) {
+      const f64 want = q[key].get<f64>();
+      const f64 got = atx::engine::eval::house_norm_ppf(p);
+      expect_tied(got, q[key], 1e-12, std::string(key) + " N " + std::to_string(n));
+      same += got == want ? 1U : 0U;
+      ++total;
+      acklam_worst = std::fmax(acklam_worst, rel_diff(atx::engine::eval::norm_ppf(p), want));
+    }
+  }
+  std::printf("[ house_norm_ppf ] %zu of %zu quantiles bit-equal to the Python; Acklam worst rel %.3e\n",
+              same, total, acklam_worst);
+  EXPECT_GT(acklam_worst, 1e-12); // the grid reaches where the engine quantile misses (review S1)
+  EXPECT_TRUE(std::isnan(atx::engine::eval::house_norm_ppf(1.0)));
+  EXPECT_TRUE(std::isnan(atx::engine::eval::house_norm_ppf(0.0)));
+}
+
+// SR* and the DSR of house_dsr (every house row's formula) at each moment set and V, N 2 to 1e6.
+TEST(EvalEdges, HouseDsrTiesThePythonForAnyN) {
+  usize checked = 0;
+  for (const Json &m : house()["direct"]) {
+    const std::string label = m["label"].get<std::string>();
+    for (const Json &row : m["rows"]) {
+      const usize n = row["n"].get<usize>();
+      const atx::engine::eval::HouseDsr d = atx::engine::eval::house_dsr(
+          m["sr_daily"].get<f64>(), m["sessions"].get<usize>(), m["skew"].get<f64>(),
+          m["kurtosis"].get<f64>(), n, m["variance"].get<f64>());
+      const std::string what = label + " N " + std::to_string(n);
+      expect_tied(d.sr0_daily, row["sr0_daily"], 1e-12, what + " sr0");
+      expect_opt_tied(d.dsr, row["dsr"], 1e-12, what + " dsr");
+      ++checked;
+    }
+  }
+  EXPECT_EQ(checked, 3U * house()["n"].size());
+}
+
+// End to end: the verb's cross and lo rows at --dsr-n N on two generated cells.
+TEST(EvalEdges, VerbHouseRowsTieThePythonForAnyN) {
+  const fs::path dir = fs::temp_directory_path() / "atx_research_eval_house";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir);
+  const Json &h = house();
+  std::vector<f64> b;
+  for (const f64 u : uniforms(h["seed"].get<u64>(), reference().size())) {
+    b.push_back(scaled(u, 0.02, h["drift"].get<f64>()));
+  }
+  std::vector<fs::path> csv;
+  for (const std::vector<f64> &x : {reference(), b}) {
+    std::string text = "session_ns,net_return\n";
+    for (usize t = 0; t < x.size(); ++t) {
+      std::ostringstream row;
+      row.precision(17);
+      row << (1'577'923'200'000'000'000LL + static_cast<i64>(t)) << "," << x[t] << "\n";
+      text += row.str();
+    }
+    csv.push_back(dir / ("cell" + std::to_string(csv.size()) + ".csv"));
+    std::ofstream f(csv.back(), std::ios::binary | std::ios::trunc);
+    f << text;
+  }
+  std::vector<std::string> bad;
+  for (const Json &v : h["verb"]) {
+    ev::EvalRequest rq;
+    rq.daily.push_back(ev::LabeledPath{"a", csv[0].string()});
+    rq.daily.push_back(ev::LabeledPath{"b", csv[1].string()});
+    rq.dsr_n = v["n"].get<usize>();
+    const auto doc = ev::evaluate(rq);
+    ASSERT_TRUE(doc.has_value()) << doc.error().to_string();
+    const std::string at = "N " + std::to_string(rq.dsr_n);
+    for (usize k = 0; k < 2U; ++k) {
+      tie_json(h["verb_moments"][k], (*doc)["cells"][k]["net_moments"], at + " moments", bad);
+      tie_json(v["cross"][k], (*doc)["cells"][k]["dsr"]["cross"], at + " cross", bad);
+    }
+    tie_json(v["lo"], (*doc)["cells"][0]["dsr"]["lo"], at + " lo", bad);
+  }
+  EXPECT_TRUE(bad.empty()) << bad.size() << " difference(s), first: " << bad.front();
+  fs::remove_all(dir, ec);
 }
 
 } // namespace
