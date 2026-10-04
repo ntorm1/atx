@@ -1,0 +1,41 @@
+{
+  "clock_recipe": "modeled-session+22h-mark+23h-decision-v1",
+  "dates": 41,
+  "files": {
+    "close.f64": {
+      "bytes": 19680,
+      "sha256": "67d159420abe0c26cfb713852b900f7a2383aa2bfc04f5053e7fef2ca95a8fae"
+    },
+    "ids.u64": {
+      "bytes": 480,
+      "sha256": "b787c033ddc20d83bc72a747fa088d7e2df1af7b09d0a8d294583403075690ac"
+    },
+    "member.u8": {
+      "bytes": 2460,
+      "sha256": "936ec2ac5b054d565afd696012f28a727bd36b2175835110ba93474b33300612"
+    },
+    "present.u8": {
+      "bytes": 2460,
+      "sha256": "e8147a23a285f9d4ad3813530863b6ad2d38110b5d3a73852766e50f78c252f9"
+    },
+    "raw_close.f64": {
+      "bytes": 19680,
+      "sha256": "334e492ec930dddb692752f3c474b073733e99d80fd2ff4e104c90166040f156"
+    },
+    "sessions.i64": {
+      "bytes": 328,
+      "sha256": "e766d89b56f54058be5e3f57c3a41a79130e8baa5d73a4c2662bcfa98ff624f0"
+    },
+    "volume.f64": {
+      "bytes": 19680,
+      "sha256": "3bc30b9884d67d04911f4643d3d635d5a1815ad0a72d9e88022ea31d7e0354b0"
+    }
+  },
+  "instrument_namespace": "spiderrock.securityID",
+  "instruments": 60,
+  "schema": "atx.recent-research-role/v1",
+  "score_begin": 10,
+  "score_end": 41,
+  "source_sha256": "49c8ba00a8281cbef20cf1edddec5530057aef84b671deb57cec9b391e1a192d",
+  "status": "complete"
+}

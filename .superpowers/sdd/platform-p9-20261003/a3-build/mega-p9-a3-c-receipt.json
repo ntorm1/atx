@@ -1,0 +1,31 @@
+{
+    "Source":  "51f8158b5df7f12149d3d13344d0f5c3e0d22ee2",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  11,
+    "ConfiguredProvenance":  "83d066643b75275585302b9da2415a5ac1f5d952-dirty",
+    "Jobs":  4,
+    "FreeMiB":  3930,
+    "CommitMiB":  4109,
+    "Targets":  [
+                    "atx-engine-research-fields",
+                    "atx-engine-research-fields-tests",
+                    "atx-research-fields"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  61.016206499999996,
+    "CompiledTUs":  13,
+    "Links":  3,
+    "Tag":  "p9-a3-c",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-12\\build-equity",
+    "Executables":  {
+                        "atx-engine-research-fields-tests":  {
+                                                                 "Path":  "C:\\atx-wt\\pool-12\\build-equity\\bin\\atx-engine-research-fields-tests.exe",
+                                                                 "Sha256":  "d7cba13220ca9993fce3b9c389d2a20fc507ed76dd1c495e8bd62e4ffd4a6b8e"
+                                                             },
+                        "atx-research-fields":  {
+                                                    "Path":  "C:\\atx-wt\\pool-12\\build-equity\\bin\\atx-research-fields.exe",
+                                                    "Sha256":  "562a6ec3c0b653ebf7ba56e807b6df2d3e794da4b9fc6de8df150577c2f59e63"
+                                                }
+                    }
+}

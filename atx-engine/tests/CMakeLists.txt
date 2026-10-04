@@ -474,3 +474,10 @@ target_compile_definitions(atx-engine-research-catalog-tests PRIVATE
     "ATX_RESEARCH_STORE_CLASSES_FILE=\"${CMAKE_CURRENT_SOURCE_DIR}/../schemas/research_store/classes.json\"")
 gtest_discover_tests(atx-engine-research-catalog-tests DISCOVERY_MODE PRE_TEST
     TEST_PREFIX "atx-engine-research-catalog-tests." PROPERTIES LABELS atx_research)
+
+# P9 lane A3 (cross-lane append, ruling P2): the vendor panel, factor-break-v1, NYSE calendar and vendor-panel field
+# gtests join the research-fields test target (fixture under fixtures/research_fields/vendor).
+target_sources(atx-engine-research-fields-tests PRIVATE
+    research/research_fields_vendor_panel_test.cpp
+    research/research_fields_vendor_fields_test.cpp
+    research/research_fields_vendor_fixture_test.cpp)

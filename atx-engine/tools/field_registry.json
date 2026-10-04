@@ -2115,7 +2115,7 @@
       "options": {
         "group": "price_open"
       },
-      "owner": "builder:FIELD_MODULES",
+      "owner": "builder:FIELD_MODULES; engine-shim:prepare_research_fields_engine",
       "point_in_time": true,
       "requires": [],
       "sources": [
@@ -2149,7 +2149,7 @@
       "options": {
         "group": "price_open"
       },
-      "owner": "builder:FIELD_MODULES",
+      "owner": "builder:FIELD_MODULES; engine-shim:prepare_research_fields_engine",
       "point_in_time": true,
       "requires": [],
       "sources": [
@@ -2183,7 +2183,7 @@
       "options": {
         "group": "price_ceq"
       },
-      "owner": "builder:FIELD_MODULES",
+      "owner": "builder:FIELD_MODULES; engine-shim:prepare_research_fields_engine",
       "point_in_time": true,
       "requires": [],
       "sources": [
@@ -2678,7 +2678,7 @@
       "options": {
         "group": "ohlc_bar"
       },
-      "owner": "shim:prepare_research_fields_ohlc",
+      "owner": "shim:prepare_research_fields_ohlc; engine-shim:prepare_research_fields_engine",
       "point_in_time": true,
       "requires": [],
       "sources": [
@@ -2714,7 +2714,7 @@
       "options": {
         "group": "ohlc_bar"
       },
-      "owner": "shim:prepare_research_fields_ohlc",
+      "owner": "shim:prepare_research_fields_ohlc; engine-shim:prepare_research_fields_engine",
       "point_in_time": true,
       "requires": [],
       "sources": [
@@ -2750,7 +2750,7 @@
       "options": {
         "group": "ohlc_bar"
       },
-      "owner": "shim:prepare_research_fields_ohlc",
+      "owner": "shim:prepare_research_fields_ohlc; engine-shim:prepare_research_fields_engine",
       "point_in_time": true,
       "requires": [],
       "sources": [

@@ -11,12 +11,16 @@
 // records them as sources. A kind's build writes output_dir/<name>.f64 through a FieldWriter and
 // returns the payload record, its sources and its own entry blocks (FINRA: source_checks,
 // coverage.vintage_risk, extra). An input that several kinds read is loaded once per run into
-// BuildContext::sources (the FINRA dissemination schedule; wave 2 adds the shared vendor panel
-// there, K-P9-2 source half).
+// BuildContext::sources: the FINRA dissemination schedule, and the shared vendor panel (K-P9-2
+// source half, sources/vendor_panel.hpp), loaded by the first vendor kind of the run with the union
+// of every vendor plan's request (BuildContext::plans) so the vendor file is hashed and scanned
+// once.
 //
 // Registered kinds, in table order: si_shares and si_dtc (finra_asof_field.hpp), vol_126
-// (volume_mean_field.hpp). Each builds exactly its own field and accepts only the option
-// {"group": <its spec group>} (the producer group a registry row records), or no option.
+// (volume_mean_field.hpp), then the vendor-panel kinds ret_overnight, ret_intraday, ceq_iss_5y,
+// open_adj, high_adj, low_adj (vendor_fields.hpp; they need the spec's price_source). Each builds
+// exactly its own field and accepts only the option {"group": <its spec group>} (the producer group
+// a registry row records), or no option.
 //
 // plan_fields: without a registry, a field name names its kind (the ported builders' fields, in
 // spec order). With a registry (K-P9-1), each field must be a row of kind engine whose builder is a
@@ -39,6 +43,7 @@
 #include "atx/engine/research/fields/field_writer.hpp"
 #include "atx/engine/research/fields/finra_asof_field.hpp"
 #include "atx/engine/research/fields/role_axes.hpp"
+#include "atx/engine/research/fields/sources/vendor_panel.hpp"
 
 namespace atx::engine::research::fields {
 
@@ -55,12 +60,14 @@ struct FieldPlan {
 // Inputs read once per run and shared by every kind that needs them.
 struct SharedSources {
   std::optional<DisseminationSchedule> finra_schedule;
+  std::optional<VendorPanel> vendor_panel;
 };
 
 struct BuildContext {
   const BuildSpec &spec;
   const RoleAxes &role;
   SharedSources sources;
+  std::span<const FieldPlan> plans{}; // every plan this run builds (a shared source's union)
 };
 
 struct KindOutput {

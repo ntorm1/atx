@@ -210,12 +210,13 @@ class CommittedRegistry(unittest.TestCase):
         """si_shares, si_dtc, vol_126: kind python at A1 (A2's P5 flip makes them engine rows named by their own
         BuilderKind ids); either way the formula is engine.py's identity check and the owner names the engine shim."""
         doc = {row["name"]: row for row in fr.load()["fields"]}
-        for name in engine.ENGINE_FIELDS:
-            row = doc[name]
-            self.assertIn((row["kind"], row["builder"]), (("python", row["builder"]), ("engine", name)))
-            self.assertIn("engine-shim", row["owner"])
-            self.assertEqual(row["formula_sha256"],
-                             tool.formula_id(name, tool.spec_definition(name, engine.price.LAG_SESSIONS)))
+        with every_module():   # P9 A3 routes the ohlc shim's bar fields too: their specs need the module bound
+            for name in engine.ENGINE_FIELDS:
+                row = doc[name]
+                self.assertIn((row["kind"], row["builder"]), (("python", row["builder"]), ("engine", name)))
+                self.assertIn("engine-shim", row["owner"])
+                self.assertEqual(row["formula_sha256"],
+                                 tool.formula_id(name, tool.spec_definition(name, engine.lag_of(name))))
         self.assertEqual((doc["si_shares"]["options"], doc["vol_126"]["options"]),
                          ({"group": "finra"}, {"group": "price_volume"}))
 
