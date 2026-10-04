@@ -1,4 +1,24 @@
 # tier1-v4 controller handoff
+## Latest completed inventory and active work (2026-10-04 14:30 UTC)
+
+Supersedes interim89250state below: nativeall99partitions completed. Final
+part98cleanexit0trippedwrapper'sexit2-onlycheck; independentv4audit authenticates
+both documented return cases, alloriginal bytes and complete directory axis.
+Latest task11-submissions-progress-v4.json:985,667main/5,251history traversed,
+278,228distinctaccessions,0duplicates,terminalexhaustiontrue;16.0s/84,922,368B.
+Two >4MiBmainexceptionsCIK19617/1665650remain. Directoryhistorytotal5,374;
+originalclock/body/history/cohort/economic qualification isstillfalse.
+
+Task15reviewhassevenImportant; originalauthoractivefixround1/5 withtargeted
+checks, noactualsourcegatespassed. Task17activeR26repair2/5 nowdelegatesnew
+private_tier1_family_sources.py/directtest/helperreporttoTask16author; Task17
+retainswiring. Helperfixturescurrent, Task15finalcoveringchecksnext.
+Rootsolehostobserver39006nowactiveafterfresh4.8006commit/3.4887physical;
+original300s/31sample3GiBcommit+1GiBphysicalconditionunchanged. No newfinancial
+pilot/recoveryyet. Financialunits0, gold/evaluation/consumerreleaseabsent.
+SECsmallmetadataauditfindsnoqualifiedHTTPchildintervals; twocommandmatches
+arepytest/ruffonly. Newrequestsremainheld; seesec-command-metadata-audit-v1.json.
+
 ## Latest checkpoint (2026-10-04, supersedes historical state below)
 
 Task15 initial9ac8af95 is committed (14 focused tests pass), under independent
@@ -874,36 +894,36 @@ Paste the prompt below into the next parent (controller) agent.
 ---
 
 You are the controller for the atx-db tier1-v4 plan. Owner goal: build `C:\atx\atx-db` into a Tier-1 competitor to
-S&P Global Compustat and FactSet â€” datasets, metrics, ratios and golden panels of high value to US equity quant
+S&P Global Compustat and FactSet Ã¢â‚¬â€ datasets, metrics, ratios and golden panels of high value to US equity quant
 long/short teams on a large cross-sectional universe, primarily data since 2020-01-01. Use subagent-driven
 development (superpowers:subagent-driven-development) and keep your own context lean: hand artifacts over as files,
 never paste diffs or reports into your context.
 
 ## Read first (in order, nothing else until these are read)
 
-1. Ledger `C:/atx/.superpowers/sdd/tier1-v4/progress.md` â€” rulings (S1-S3, P1-P6, T1-b, T2-a, T3-a/b), task states,
+1. Ledger `C:/atx/.superpowers/sdd/tier1-v4/progress.md` Ã¢â‚¬â€ rulings (S1-S3, P1-P6, T1-b, T2-a, T3-a/b), task states,
    deferred minors. Trust it and `git log` over any recollection.
 2. Plan `C:/atx/docs/superpowers/plans/2026-10-02-tier1-v4-quant-datasets.md` (17 tasks; Global Constraints GC1-GC9).
-3. Spec `C:/atx/.superpowers/sdd/tier1-v4/gap-analysis.md` Â§2 (items 1-13 = binding deliverables + gates) â€” skim; the
+3. Spec `C:/atx/.superpowers/sdd/tier1-v4/gap-analysis.md` Ã‚Â§2 (items 1-13 = binding deliverables + gates) Ã¢â‚¬â€ skim; the
    briefs cite it.
 4. This file's state table below; then each in-flight task's report "Stopped at" section.
 
 ## Workspace and tooling (all in `C:/atx/.superpowers/sdd/tier1-v4/`)
 
 - `task-N-brief.md` (already extracted for N = 1..17), `task-N-report.md` (implementer writes), `global-constraints.md`.
-- `IMPLEMENTER.md` â€” shared implementer contract; dispatch = one line of context + brief path + "read IMPLEMENTER.md"
+- `IMPLEMENTER.md` Ã¢â‚¬â€ shared implementer contract; dispatch = one line of context + brief path + "read IMPLEMENTER.md"
   + interfaces from earlier tasks + rulings + report path. Implementers: opus, background, named (e.g. `t6-factors`).
-- `REVIEWER.md` â€” shared reviewer contract; reviewers: sonnet, background; give brief, GC file, report, package path,
+- `REVIEWER.md` Ã¢â‚¬â€ shared reviewer contract; reviewers: sonnet, background; give brief, GC file, report, package path,
   and 2-4 named risks. Scoped re-review after each fix round (sonnet): findings list + fix package; verdict per finding
   ADDRESSED / NOT ADDRESSED + new breakage only.
-- `pkg.sh TAG SHA...` â€” per-commit review package (`review-TAG.diff`). Lanes commit concurrently on one branch, so
+- `pkg.sh TAG SHA...` Ã¢â‚¬â€ per-commit review package (`review-TAG.diff`). Lanes commit concurrently on one branch, so
   never use BASE..HEAD; collect the task's commit SHAs from the implementer reply.
-- `foreign-dirty-files.txt` â€” 87 paths with another session's uncommitted edits (panel.py, characteristics.py,
-  labels.py, ic_eval.py, export_impl.py, gold*.py, silver_refresh.py, top-level atx_db/fundamentals.py, â€¦). Never
+- `foreign-dirty-files.txt` Ã¢â‚¬â€ 87 paths with another session's uncommitted edits (panel.py, characteristics.py,
+  labels.py, ic_eval.py, export_impl.py, gold*.py, silver_refresh.py, top-level atx_db/fundamentals.py, Ã¢â‚¬Â¦). Never
   edit or stage them (Ruling S2). Do not resume the foreign gold chain (Ruling P4).
-- Fix loop per SDD: Important/Critical â†’ resume the original implementer (rounds 1-3) with findings verbatim â†’ scoped
-  re-review â†’ ledger line `Task N: fix round R/5 (...)`; minors â†’ ledger `Task N: minor (deferred): ...`;
-  completion â†’ `Task N: complete (commits a..b, review clean)`.
+- Fix loop per SDD: Important/Critical Ã¢â€ â€™ resume the original implementer (rounds 1-3) with findings verbatim Ã¢â€ â€™ scoped
+  re-review Ã¢â€ â€™ ledger line `Task N: fix round R/5 (...)`; minors Ã¢â€ â€™ ledger `Task N: minor (deferred): ...`;
+  completion Ã¢â€ â€™ `Task N: complete (commits a..b, review clean)`.
 
 ## Environment rules
 
@@ -911,8 +931,8 @@ never paste diffs or reports into your context.
   worktrees). Commits: `git add <paths> && git commit -m "..." -- <paths>`, trailer
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Never `git add -A`.
 - Host memory tight (commit free ~3.2 GB; a separate platform-v8 C++ session holds pools 12-16). Every data job under
-  `../.superpowers/sdd/tier1-parity/run_memory_guarded.py` â‰¤ 1.0 GiB; â‰¤ 3 implementer lanes (Ruling P2b).
-- Holdout D6 strict (Ruling P3): no return statistic on dates â‰¥ 2023-01-01.
+  `../.superpowers/sdd/tier1-parity/run_memory_guarded.py` Ã¢â€°Â¤ 1.0 GiB; Ã¢â€°Â¤ 3 implementer lanes (Ruling P2b).
+- Holdout D6 strict (Ruling P3): no return statistic on dates Ã¢â€°Â¥ 2023-01-01.
 - Registry rule (P1): lanes write `atx-db/docs/datasets/<stage>.md` + `<stage>.registry.json` stubs; only Task 17
   edits `atx_db/stagelake/*`, `DATA_DICTIONARY.md`, `PARITY_SCORECARD.md`.
 
@@ -920,13 +940,13 @@ never paste diffs or reports into your context.
 
 | task | state | commits | next action |
 |---|---|---|---|
-| 1 market infra runs | COMPLETE (review clean after fix round 1) | ee353557..3afb9687 | â€” |
-| 2 universe | implemented, DONE_WITH_CONCERNS (4 PASS / 1 FAIL French NYSE 46/60 mo) | b2d3b470, 8791f4cd, bf0ad7fa | review was running (t2-review); findings should be in `review-T2-r0-findings.md` â€” if absent, re-dispatch the review with `review-T2-r0.diff`. Then fix loop. |
-| 3 compustat_std | fix round 1 in progress when stopped (3 Important: vintage rows for restated quarters/annual comparatives; funda leaks 10-Q rows + fyr resets; `mibt`/`niadj` naming) + Ruling T3-b rdq metric | d9c48999, bda46f04 (+ any fix commits) | read report "Fix round 1"/"Stopped at"; finish fix â†’ scoped re-review of the fix commits |
+| 1 market infra runs | COMPLETE (review clean after fix round 1) | ee353557..3afb9687 | Ã¢â‚¬â€ |
+| 2 universe | implemented, DONE_WITH_CONCERNS (4 PASS / 1 FAIL French NYSE 46/60 mo) | b2d3b470, 8791f4cd, bf0ad7fa | review was running (t2-review); findings should be in `review-T2-r0-findings.md` Ã¢â‚¬â€ if absent, re-dispatch the review with `review-T2-r0.diff`. Then fix loop. |
+| 3 compustat_std | fix round 1 in progress when stopped (3 Important: vintage rows for restated quarters/annual comparatives; funda leaks 10-Q rows + fyr resets; `mibt`/`niadj` naming) + Ruling T3-b rdq metric | d9c48999, bda46f04 (+ any fix commits) | read report "Fix round 1"/"Stopped at"; finish fix Ã¢â€ â€™ scoped re-review of the fix commits |
 | 4 ratios | implementing when stopped | see report | finish after Task 3 fix lands (it was warned of schema changes: funda annual-only, restated vintage rows, mibt/niadj renames); then review |
 | 9 EA actuals + calendar v2 + SUE | implementing when stopped | see report | resume per report; also re-measures Task 3 rdq share (same-ET-date rule) |
 | 14 segments + notes | implementing when stopped (commits 7ec056a3, 146a7766 seen) | see report | finish gates/report; then review |
-| 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17 | not started | â€” | order below |
+| 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17 | not started | Ã¢â‚¬â€ | order below |
 
 Stopped agents were told: finish the current command, commit tested work, write a "Stopped at" section with the
 exact resume command. Check `git status` for any uncommitted non-foreign files they left and decide (finish via a
@@ -935,23 +955,23 @@ resumed/fresh implementer, never commit them yourself).
 ## Open issues to rule on / carry
 
 - **Exchange-map defect (from Task 2):** `alpha_panel/security_master.py` `EXCHANGE_BY_CLASS` lacks FINRA class SC
-  (Nasdaq Capital Market) and BZX â†’ NULL exchange in the panel and share_exchange_history â†’ Task 1's `market_index`
+  (Nasdaq Capital Market) and BZX Ã¢â€ â€™ NULL exchange in the panel and share_exchange_history Ã¢â€ â€™ Task 1's `market_index`
   all_common and `indexes` proxies drop those lines (the R2000 proxy holds no Nasdaq CM stock). `universe/` patches
   it locally. Recommended: a small follow-up task (security_master.py mapping + identity_v3 codes/market_index/indexes
-  rebuild, then universe rebuild) â€” panel itself is foreign, so apply the mapping in the codes builder, not panel.
-- Task 3 FAIL routing (T3-a): rdq residual â†’ Task 9; sum4 residual (v10 Q4 derivation) + balance identity
-  (mezzanine) â†’ Task 5, which rebuilds compustat_std and ratios on fundamentals_v11 and re-measures.
+  rebuild, then universe rebuild) Ã¢â‚¬â€ panel itself is foreign, so apply the mapping in the codes builder, not panel.
+- Task 3 FAIL routing (T3-a): rdq residual Ã¢â€ â€™ Task 9; sum4 residual (v10 Q4 derivation) + balance identity
+  (mezzanine) Ã¢â€ â€™ Task 5, which rebuilds compustat_std and ratios on fundamentals_v11 and re-measures.
 - Task 2 French NYSE FAIL: 2018 months (shares_daily coverage), 2020-06 (vendor short), 2021-11..2022-08 +5-7%
-  (SPAC boom suspected â€” reviewer was asked to check SPAC treatment).
+  (SPAC boom suspected Ã¢â‚¬â€ reviewer was asked to check SPAC treatment).
 - Owner decisions outstanding from tier1-v3 (`atx-db/docs/TIER1_V3_STATUS.md` "Owner actions"): merge branch to main,
   panel ME from market_shares, S2.1 denominator, consumer research lake restore. Foreign gold chain resume belongs to
   the owner.
 
 ## Remaining order
 
-Lane A: Task 2 fix loop â†’ exchange-map follow-up â†’ Task 6 (factors/risk; needs 2 + 3).
-Lane B: Task 3 fix loop â†’ Task 4 â†’ Task 5 (v11 + rebuild 3/4).
-Lane C: Task 14 â†’ Task 9 â†’ Task 10 (needs 9) â†’ 11 â†’ 12 â†’ 13 â†’ 15 (sequential; they share events_sources.py).
-Then Task 7 â†’ Task 8 (needs 2, 3, 6), Task 16 golden panels (needs most), Task 17 catalog/scorecard (last).
+Lane A: Task 2 fix loop Ã¢â€ â€™ exchange-map follow-up Ã¢â€ â€™ Task 6 (factors/risk; needs 2 + 3).
+Lane B: Task 3 fix loop Ã¢â€ â€™ Task 4 Ã¢â€ â€™ Task 5 (v11 + rebuild 3/4).
+Lane C: Task 14 Ã¢â€ â€™ Task 9 Ã¢â€ â€™ Task 10 (needs 9) Ã¢â€ â€™ 11 Ã¢â€ â€™ 12 Ã¢â€ â€™ 13 Ã¢â€ â€™ 15 (sequential; they share events_sources.py).
+Then Task 7 Ã¢â€ â€™ Task 8 (needs 2, 3, 6), Task 16 golden panels (needs most), Task 17 catalog/scorecard (last).
 Final: whole-branch review on opus with the ledger's deferred minors, one fix wave, then
 superpowers:finishing-a-development-branch (merge is the owner's call).

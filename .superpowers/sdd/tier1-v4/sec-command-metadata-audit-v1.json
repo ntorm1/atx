@@ -1,0 +1,164 @@
+{
+  "status": "NAMED_RETAINED_EXECUTION_METADATA_INVENTORIED_NOT_BUDGET_CERTIFICATION",
+  "roots": [
+    {
+      "path": "C:\\atx\\atx-db\\data\\raw\\sec_text\\_logs",
+      "exists": true
+    },
+    {
+      "path": "C:\\atx\\atx-db\\data\\raw\\sec_events\\_logs",
+      "exists": false
+    },
+    {
+      "path": "C:\\atx\\atx-db\\data\\raw\\sec-earnings-release\\_logs",
+      "exists": false
+    },
+    {
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\events",
+      "exists": true
+    },
+    {
+      "path": "C:\\atx\\.superpowers\\sdd\\tier1-v3",
+      "exists": true
+    },
+    {
+      "path": "C:\\atx\\.superpowers\\sdd\\tier1-parity",
+      "exists": true
+    }
+  ],
+  "visited_entries": 1551,
+  "bytes_read_including_recheck": 1402173,
+  "executions": [
+    {
+      "path": "C:\\atx\\.superpowers\\sdd\\tier1-parity\\reported-eps-source-focused1-memory.json",
+      "command": [
+        "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "-n",
+        "0",
+        "tests/test_reported_quarter_eps_source.py",
+        "tests/test_sec_submissions_bulk.py",
+        "tests/test_press_release.py"
+      ],
+      "status": "failed",
+      "returncode": 1,
+      "child_pid": 19008,
+      "guard_pid": null,
+      "run_seconds": null,
+      "admitted_at_utc": null,
+      "requested_at_utc": null,
+      "stop_reason": null,
+      "job_limit_gb": 2.0,
+      "scope": "named retained child only; invocation inventory not certified complete"
+    },
+    {
+      "path": "C:\\atx\\.superpowers\\sdd\\tier1-parity\\reported-eps-source-ruff1-memory.json",
+      "command": [
+        "C:\\atx\\atx-db\\.venv\\Scripts\\python.exe",
+        "-m",
+        "ruff",
+        "check",
+        "scripts/measure_tier1_readiness.py",
+        "scripts/refresh_sec_earnings_release_facts.py",
+        "scripts/warehouse_activate.py",
+        "src/atx_db/activation.py",
+        "src/atx_db/jobs.py",
+        "src/atx_db/press_release.py",
+        "src/atx_db/sec_submissions.py",
+        "src/atx_db/migrations/bodies_0320.py",
+        "src/atx_db/migrations/registry.py",
+        "tests/test_reported_quarter_eps_source.py",
+        "tests/test_sec_submissions_bulk.py"
+      ],
+      "status": "failed",
+      "returncode": 1,
+      "child_pid": 8624,
+      "guard_pid": null,
+      "run_seconds": null,
+      "admitted_at_utc": null,
+      "requested_at_utc": null,
+      "stop_reason": null,
+      "job_limit_gb": 2.0,
+      "scope": "named retained child only; invocation inventory not certified complete"
+    }
+  ],
+  "scripts": [
+    {
+      "path": "C:\\atx\\atx-db\\data\\raw\\sec_text\\_logs\\fetch_loop.sh",
+      "selected_execution_lines": [
+        {
+          "line": 2,
+          "text": "# Relaunch the resumable filing_text fetch under the memory guard after a guard stop (137, host low commit) or a"
+        },
+        {
+          "line": 4,
+          "text": "cd C:/atx/atx-db || exit 2"
+        },
+        {
+          "line": 5,
+          "text": "export PYTHONPATH=C:/atx/atx-db/src OPENBLAS_NUM_THREADS=1"
+        },
+        {
+          "line": 6,
+          "text": "G=../.superpowers/sdd/tier1-parity/run_memory_guarded.py"
+        },
+        {
+          "line": 9,
+          "text": "for i in $(seq 1 60); do"
+        },
+        {
+          "line": 11,
+          "text": "    .venv/Scripts/python.exe -m atx_db.alpha_panel.filing_text --phase \"$PHASE\" --threads \"${THREADS:-5}\" --reland >> \"$LOG\" 2>&1"
+        },
+        {
+          "line": 16,
+          "text": "  sleep 90"
+        }
+      ],
+      "executed_by_audit": false
+    }
+  ],
+  "skipped": [
+    {
+      "path": "C:\\atx\\.superpowers\\sdd\\tier1-parity\\activation-companyfacts-archive20-process-check.json",
+      "reason": "byte_bound",
+      "bytes": 3982667
+    },
+    {
+      "path": "C:\\atx\\.superpowers\\sdd\\tier1-parity\\companyfacts-archive20-headroom-recovery.json",
+      "reason": "byte_bound",
+      "bytes": 2457315
+    },
+    {
+      "path": "C:\\atx\\.superpowers\\sdd\\tier1-parity\\production-measurement-prepass2-fix1.json",
+      "reason": "byte_bound",
+      "bytes": 269006
+    },
+    {
+      "path": "C:\\atx\\.superpowers\\sdd\\tier1-parity\\tier1-interim-sep24-1.json",
+      "reason": "byte_bound",
+      "bytes": 271365
+    }
+  ],
+  "pins": {
+    "C:\\atx\\atx-db\\data\\raw\\sec_text\\_logs\\fetch_loop.sh": {
+      "bytes": 893,
+      "sha256": "a8f7b0565fd473ec97b4ed1a145dcddd946ebc8070aee4f3e1ba46e1a9a14f49"
+    },
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\reported-eps-source-focused1-memory.json": {
+      "bytes": 500,
+      "sha256": "00ab19539f85be261e87d42d4a29f3338495b860bbd68b02a4433f963c7ba82e"
+    },
+    "C:\\atx\\.superpowers\\sdd\\tier1-parity\\reported-eps-source-ruff1-memory.json": {
+      "bytes": 815,
+      "sha256": "a7aad3e456b1240e37d9f16d4c14034ce8c4714a7b52b688faeef2b8d78842d5"
+    }
+  },
+  "complete_invocation_inventory": false,
+  "budget_upper_bound": null,
+  "remaining_budget_granted": 0,
+  "network_attempts": 0,
+  "source_bodies_read": 0,
+  "qualification": "Named small retained metadata only. Missing children, unguarded producers, rate-lock coverage, baseline interval and hidden attempts remain unresolved. Neither file timestamps nor first/last outcome receipts establish process lifetime. No historical cap, source integrity or acquisition permission is inferred."
+}
