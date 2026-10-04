@@ -88,17 +88,34 @@ enum class SectionKind : atx::u32 {
 inline constexpr atx::u32 section_required = 1U << 0U;
 inline constexpr atx::u32 section_in_root = 1U << 1U;
 
-enum class Dtype : atx::u32 { U8 = 1, U16 = 2, U32 = 3, U64 = 4, I64 = 5, F32 = 6, F64 = 7, Utf8 = 8 };
+enum class Dtype : atx::u32 {
+  U8 = 1,
+  U16 = 2,
+  U32 = 3,
+  U64 = 4,
+  I64 = 5,
+  F32 = 6,
+  F64 = 7,
+  Utf8 = 8
+};
 [[nodiscard]] constexpr atx::u64 dtype_bytes(Dtype d) noexcept {
   switch (d) {
-  case Dtype::U8: return 1;
-  case Dtype::U16: return 2;
-  case Dtype::U32: return 4;
-  case Dtype::U64: return 8;
-  case Dtype::I64: return 8;
-  case Dtype::F32: return 4;
-  case Dtype::F64: return 8;
-  case Dtype::Utf8: return 1;
+  case Dtype::U8:
+    return 1;
+  case Dtype::U16:
+    return 2;
+  case Dtype::U32:
+    return 4;
+  case Dtype::U64:
+    return 8;
+  case Dtype::I64:
+    return 8;
+  case Dtype::F32:
+    return 4;
+  case Dtype::F64:
+    return 8;
+  case Dtype::Utf8:
+    return 1;
   }
   return 0;
 }
@@ -221,30 +238,27 @@ static_assert(std::is_trivially_copyable_v<CovFileHeader> &&
               std::is_trivially_copyable_v<CovSectionEntry> &&
               std::is_trivially_copyable_v<CovDateIndexEntry> &&
               std::is_trivially_copyable_v<CovBlockHeader> &&
-              std::is_trivially_copyable_v<CovArrayEntry> && std::is_trivially_copyable_v<CovTrailer>);
+              std::is_trivially_copyable_v<CovArrayEntry> &&
+              std::is_trivially_copyable_v<CovTrailer>);
 static_assert(std::is_standard_layout_v<CovFileHeader> && std::is_standard_layout_v<CovTrailer> &&
               std::is_standard_layout_v<CovSectionEntry> &&
               std::is_standard_layout_v<CovDateIndexEntry> &&
-              std::is_standard_layout_v<CovBlockHeader> && std::is_standard_layout_v<CovArrayEntry>);
+              std::is_standard_layout_v<CovBlockHeader> &&
+              std::is_standard_layout_v<CovArrayEntry>);
 // Field offsets (cov-design 4.3-4.6), pinned so a reordering fails the build.
-static_assert(offsetof(CovFileHeader, major) == 8 && offsetof(CovFileHeader, minor) == 10 &&
-              offsetof(CovFileHeader, header_bytes) == 12 &&
-              offsetof(CovFileHeader, endian_tag) == 16 && offsetof(CovFileHeader, flags) == 20 &&
-              offsetof(CovFileHeader, file_bytes) == 24 &&
-              offsetof(CovFileHeader, section_count) == 32 &&
-              offsetof(CovFileHeader, date_count) == 36 &&
-              offsetof(CovFileHeader, section_table_offset) == 40 &&
-              offsetof(CovFileHeader, factor_count) == 48 &&
-              offsetof(CovFileHeader, group_count) == 52 &&
-              offsetof(CovFileHeader, dense_count) == 56 &&
-              offsetof(CovFileHeader, max_rows) == 60 &&
-              offsetof(CovFileHeader, first_session_ns) == 64 &&
-              offsetof(CovFileHeader, last_session_ns) == 72 &&
-              offsetof(CovFileHeader, recipe_sha256) == 80 &&
-              offsetof(CovFileHeader, role_sha256) == 112 &&
-              offsetof(CovFileHeader, inputs_sha256) == 144 &&
-              offsetof(CovFileHeader, reserved) == 176 &&
-              offsetof(CovFileHeader, root_sha256) == 224);
+static_assert(
+    offsetof(CovFileHeader, major) == 8 && offsetof(CovFileHeader, minor) == 10 &&
+    offsetof(CovFileHeader, header_bytes) == 12 && offsetof(CovFileHeader, endian_tag) == 16 &&
+    offsetof(CovFileHeader, flags) == 20 && offsetof(CovFileHeader, file_bytes) == 24 &&
+    offsetof(CovFileHeader, section_count) == 32 && offsetof(CovFileHeader, date_count) == 36 &&
+    offsetof(CovFileHeader, section_table_offset) == 40 &&
+    offsetof(CovFileHeader, factor_count) == 48 && offsetof(CovFileHeader, group_count) == 52 &&
+    offsetof(CovFileHeader, dense_count) == 56 && offsetof(CovFileHeader, max_rows) == 60 &&
+    offsetof(CovFileHeader, first_session_ns) == 64 &&
+    offsetof(CovFileHeader, last_session_ns) == 72 &&
+    offsetof(CovFileHeader, recipe_sha256) == 80 && offsetof(CovFileHeader, role_sha256) == 112 &&
+    offsetof(CovFileHeader, inputs_sha256) == 144 && offsetof(CovFileHeader, reserved) == 176 &&
+    offsetof(CovFileHeader, root_sha256) == 224);
 static_assert(offsetof(CovSectionEntry, flags) == 4 && offsetof(CovSectionEntry, offset) == 8 &&
               offsetof(CovSectionEntry, bytes) == 16 && offsetof(CovSectionEntry, count) == 24 &&
               offsetof(CovSectionEntry, dtype) == 32 && offsetof(CovSectionEntry, align) == 36 &&
@@ -262,10 +276,10 @@ static_assert(offsetof(CovDateIndexEntry, data_cutoff_ns) == 8 &&
 static_assert(offsetof(CovBlockHeader, as_of) == 8 && offsetof(CovBlockHeader, cutoff) == 16 &&
               offsetof(CovBlockHeader, rows) == 24 && offsetof(CovBlockHeader, priced) == 28 &&
               offsetof(CovBlockHeader, factors) == 32 && offsetof(CovBlockHeader, groups) == 36 &&
-              offsetof(CovBlockHeader, dense) == 40 &&
-              offsetof(CovBlockHeader, array_count) == 44);
+              offsetof(CovBlockHeader, dense) == 40 && offsetof(CovBlockHeader, array_count) == 44);
 static_assert(offsetof(CovArrayEntry, dtype) == 4 &&
-              offsetof(CovArrayEntry, offset_in_block) == 8 && offsetof(CovArrayEntry, count) == 16);
+              offsetof(CovArrayEntry, offset_in_block) == 8 &&
+              offsetof(CovArrayEntry, count) == 16);
 static_assert(offsetof(CovTrailer, file_bytes) == 8 && offsetof(CovTrailer, root_sha256) == 16 &&
               offsetof(CovTrailer, zero) == 48);
 
@@ -311,9 +325,9 @@ struct CovBlockInput {
 // append rules a block can check on its own: geometry, the row rule (priced rows first, each part
 // in strictly ascending role index, rows >= P not priced), groups <= G, cutoff <= as_of and
 // history_first <= cutoff. InvalidArgument on a violation. `out` is resized to the block length.
-[[nodiscard]] atx::core::Status encode_cov_block(const CovContainerSpec& spec,
-                                                 const CovBlockInput& block,
-                                                 std::vector<atx::u8>& out);
+[[nodiscard]] atx::core::Status encode_cov_block(const CovContainerSpec &spec,
+                                                 const CovBlockInput &block,
+                                                 std::vector<atx::u8> &out);
 
 // ---- reader view ----------------------------------------------------------------------------
 // Spans into the reader's mapping (or the caller's bytes for parse_cov_block): valid while it
@@ -344,8 +358,8 @@ struct CovBlockView {
 struct CovViewScratch {
   std::vector<atx::f64> exposures, covariance;
 };
-[[nodiscard]] atx::engine::book::FactorRiskView factor_risk_view(const CovBlockView& v,
-                                                                 CovViewScratch& scratch);
+[[nodiscard]] atx::engine::book::FactorRiskView factor_risk_view(const CovBlockView &v,
+                                                                 CovViewScratch &scratch);
 
 // ---- writer -------------------------------------------------------------------------------------
 // Streaming writer: creates `<path>.partial` exclusively, reserves the header, appends one block
@@ -356,15 +370,15 @@ struct CovViewScratch {
 // a writer destroyed before finalize() leaves only the `.partial` file. Move-only.
 class CovContainerWriter {
 public:
-  [[nodiscard]] static atx::core::Result<CovContainerWriter> create(const std::string& path,
+  [[nodiscard]] static atx::core::Result<CovContainerWriter> create(const std::string &path,
                                                                     CovContainerSpec spec);
-  CovContainerWriter(CovContainerWriter&&) noexcept;
-  CovContainerWriter& operator=(CovContainerWriter&&) noexcept;
-  CovContainerWriter(const CovContainerWriter&) = delete;
-  CovContainerWriter& operator=(const CovContainerWriter&) = delete;
+  CovContainerWriter(CovContainerWriter &&) noexcept;
+  CovContainerWriter &operator=(CovContainerWriter &&) noexcept;
+  CovContainerWriter(const CovContainerWriter &) = delete;
+  CovContainerWriter &operator=(const CovContainerWriter &) = delete;
   ~CovContainerWriter();
 
-  [[nodiscard]] atx::core::Status append(const CovBlockInput& block);
+  [[nodiscard]] atx::core::Status append(const CovBlockInput &block);
   // Writes the file and renames it; returns the root. A second call is refused.
   [[nodiscard]] atx::core::Result<Sha256Bytes> finalize();
   [[nodiscard]] atx::usize blocks() const noexcept;
@@ -383,9 +397,9 @@ enum class VerifyMode : atx::u8 {
 // One difference between two containers (first_difference).
 struct CovDifference {
   bool differs{};
-  atx::usize index{};   // block index of the first difference (when differs)
-  atx::i64 session{};   // its session (when differs)
-  std::string what;     // "geometry", "sessions", "block" or "missing block"
+  atx::usize index{}; // block index of the first difference (when differs)
+  atx::i64 session{}; // its session (when differs)
+  std::string what;   // "geometry", "sessions", "block" or "missing block"
 };
 
 // Read-only, memory-mapped container. Immutable after open except the lazy verification flags
@@ -403,17 +417,18 @@ public:
   // priced <= rows <= max_rows, no unknown flag), the factor names, then per `mode`: Full hashes
   // every block now on `workers` threads (0: up to 8, by the hardware) over a fixed partition.
   // ParseError on structure and hashes, InvalidArgument on a root pin mismatch.
-  [[nodiscard]] static atx::core::Result<CovModelFile> open(
-      const std::string& path, std::optional<Sha256Bytes> root_pin, VerifyMode mode,
-      atx::u64 max_bytes, atx::usize workers = 0);
+  [[nodiscard]] static atx::core::Result<CovModelFile> open(const std::string &path,
+                                                            std::optional<Sha256Bytes> root_pin,
+                                                            VerifyMode mode, atx::u64 max_bytes,
+                                                            atx::usize workers = 0);
 
-  CovModelFile(CovModelFile&&) noexcept;
-  CovModelFile& operator=(CovModelFile&&) noexcept;
-  CovModelFile(const CovModelFile&) = delete;
-  CovModelFile& operator=(const CovModelFile&) = delete;
+  CovModelFile(CovModelFile &&) noexcept;
+  CovModelFile &operator=(CovModelFile &&) noexcept;
+  CovModelFile(const CovModelFile &) = delete;
+  CovModelFile &operator=(const CovModelFile &) = delete;
   ~CovModelFile();
 
-  [[nodiscard]] const CovFileHeader& header() const noexcept;
+  [[nodiscard]] const CovFileHeader &header() const noexcept;
   [[nodiscard]] atx::usize date_count() const noexcept;
   [[nodiscard]] atx::u32 factors() const noexcept;
   [[nodiscard]] atx::u32 groups() const noexcept;
@@ -424,11 +439,11 @@ public:
   [[nodiscard]] atx::u64 file_bytes() const noexcept;
   [[nodiscard]] std::span<const CovDateIndexEntry> index() const noexcept;
   [[nodiscard]] std::string_view meta_json() const noexcept;
-  [[nodiscard]] const std::vector<std::string>& factor_names() const noexcept;
-  [[nodiscard]] const Sha256Bytes& root_sha256() const noexcept;
-  [[nodiscard]] const Sha256Bytes& recipe_sha256() const noexcept;
-  [[nodiscard]] const Sha256Bytes& role_sha256() const noexcept;
-  [[nodiscard]] const Sha256Bytes& inputs_sha256() const noexcept;
+  [[nodiscard]] const std::vector<std::string> &factor_names() const noexcept;
+  [[nodiscard]] const Sha256Bytes &root_sha256() const noexcept;
+  [[nodiscard]] const Sha256Bytes &recipe_sha256() const noexcept;
+  [[nodiscard]] const Sha256Bytes &role_sha256() const noexcept;
+  [[nodiscard]] const Sha256Bytes &inputs_sha256() const noexcept;
   // The stored hash of block t (OutOfRange past the end).
   [[nodiscard]] atx::core::Result<Sha256Bytes> block_sha256(atx::usize t) const;
 
@@ -454,11 +469,11 @@ private:
 // hash; a block present in one file only (through the session) is a difference. Recipe, role and
 // inputs are not compared (a truncated role is another role): the prefix property is a statement
 // about blocks.
-[[nodiscard]] CovDifference first_difference(const CovModelFile& a, const CovModelFile& b,
+[[nodiscard]] CovDifference first_difference(const CovModelFile &a, const CovModelFile &b,
                                              atx::i64 through_session);
 
 // Lowercase hex of a digest, and its parse (nullopt unless 64 lowercase hex digits).
-[[nodiscard]] std::string cov_hex(const Sha256Bytes& digest);
+[[nodiscard]] std::string cov_hex(const Sha256Bytes &digest);
 [[nodiscard]] std::optional<Sha256Bytes> cov_parse_hex(std::string_view hex);
 
 } // namespace atx::engine::risk

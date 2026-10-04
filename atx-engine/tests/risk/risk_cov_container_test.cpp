@@ -46,52 +46,56 @@ struct Directory {
     const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
     path = fs::temp_directory_path() /
            ("atx_cov_" + std::to_string(tick) + "_" + std::to_string(counter.fetch_add(1)));
-    if (!fs::create_directory(path)) throw std::runtime_error("fixture directory");
+    if (!fs::create_directory(path))
+      throw std::runtime_error("fixture directory");
   }
   ~Directory() {
     std::error_code ec;
     fs::remove_all(path, ec);
   }
-  Directory(const Directory&) = delete;
-  Directory& operator=(const Directory&) = delete;
+  Directory(const Directory &) = delete;
+  Directory &operator=(const Directory &) = delete;
 };
 
-std::vector<u8> read_file(const fs::path& path) {
+std::vector<u8> read_file(const fs::path &path) {
   std::ifstream in(path, std::ios::binary | std::ios::ate);
-  if (!in) throw std::runtime_error("read " + path.string());
+  if (!in)
+    throw std::runtime_error("read " + path.string());
   std::vector<u8> out(static_cast<usize>(in.tellg()));
   in.seekg(0);
   // SAFETY: char reads the object representation of a byte buffer.
-  in.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
+  in.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(out.size()));
   return out;
 }
-void write_file(const fs::path& path, const std::vector<u8>& bytes) {
+void write_file(const fs::path &path, const std::vector<u8> &bytes) {
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   // SAFETY: char writes the object representation of a byte buffer.
-  out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-  if (!out) throw std::runtime_error("write " + path.string());
+  out.write(reinterpret_cast<const char *>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()));
+  if (!out)
+    throw std::runtime_error("write " + path.string());
 }
-template <class T>
-T get(const std::vector<u8>& bytes, u64 offset) {
+template <class T> T get(const std::vector<u8> &bytes, u64 offset) {
   T out{};
   std::memcpy(&out, bytes.data() + offset, sizeof(T));
   return out;
 }
-template <class T>
-void put(std::vector<u8>& bytes, u64 offset, const T& value) {
+template <class T> void put(std::vector<u8> &bytes, u64 offset, const T &value) {
   std::memcpy(bytes.data() + offset, &value, sizeof(T));
 }
 er::Sha256Bytes sha(std::span<const std::span<const u8>> parts) {
   co::Sha256 h;
-  for (const auto p : parts) EXPECT_TRUE(h.update(std::as_bytes(p)));
+  for (const auto p : parts)
+    EXPECT_TRUE(h.update(std::as_bytes(p)));
   const auto raw = h.finalize().value();
   er::Sha256Bytes out{};
-  for (usize i = 0; i < out.size(); ++i) out[i] = std::to_integer<u8>(raw[i]);
+  for (usize i = 0; i < out.size(); ++i)
+    out[i] = std::to_integer<u8>(raw[i]);
   return out;
 }
 // The root of cov-design 4.7 recomputed independently of the writer, stored in the header and the
 // trailer (so a test can change one field and leave only that field wrong).
-void rehash_root(std::vector<u8>& bytes) {
+void rehash_root(std::vector<u8> &bytes) {
   const auto h = get<er::CovFileHeader>(bytes, 0);
   const u64 table = h.section_table_offset, entries = h.section_count;
   std::vector<std::span<const u8>> parts{std::span<const u8>(bytes).first(224),
@@ -120,12 +124,26 @@ struct Owned {
   u32 priced{}, date{}, flags{};
   [[nodiscard]] er::CovBlockInput input(bool f32, bool optional = true) const {
     er::CovBlockInput b;
-    b.as_of_session_ns = as_of; b.data_cutoff_ns = cutoff; b.history_first_ns = first;
-    b.role_date_index = date; b.flags = flags; b.priced_rows = priced;
-    b.ids = ids; b.role_index = role; b.group = group; b.specific = specific; b.factor_cov = cov;
-    if (f32) b.exposures_f32 = x32; else b.exposures_f64 = x64;
+    b.as_of_session_ns = as_of;
+    b.data_cutoff_ns = cutoff;
+    b.history_first_ns = first;
+    b.role_date_index = date;
+    b.flags = flags;
+    b.priced_rows = priced;
+    b.ids = ids;
+    b.role_index = role;
+    b.group = group;
+    b.specific = specific;
+    b.factor_cov = cov;
+    if (f32)
+      b.exposures_f32 = x32;
+    else
+      b.exposures_f64 = x64;
     if (optional) {
-      b.factor_return = fret; b.factor_flags = fflags; b.row_flags = rflags; b.diag = diag;
+      b.factor_return = fret;
+      b.factor_flags = fflags;
+      b.row_flags = rflags;
+      b.diag = diag;
       b.eigen_gamma = gamma;
     }
     return b;
@@ -137,7 +155,10 @@ u64 mix(u64 x) {
   x = (x ^ (x >> 27U)) * 0x94d049bb133111ebULL;
   return x ^ (x >> 31U);
 }
-f64 uniform(u64& s) { s = mix(s); return static_cast<f64>(s >> 11U) * 0x1.0p-53; }
+f64 uniform(u64 &s) {
+  s = mix(s);
+  return static_cast<f64>(s >> 11U) * 0x1.0p-53;
+}
 constexpr u64 nan_payload = 0x7FF80000DEADBEEFULL;
 constexpr u32 nan_payload32 = 0x7FC0BEEFU;
 Owned make_block(u32 t, u32 rows, u64 seed, bool complete = true) {
@@ -164,9 +185,11 @@ Owned make_block(u32 t, u32 rows, u64 seed, bool complete = true) {
     }
   }
   std::vector<f64> v(factors);
-  for (auto& x : v) x = 1e-3 * (uniform(s) - 0.5);
+  for (auto &x : v)
+    x = 1e-3 * (uniform(s) - 0.5);
   for (u32 a = 0; a < factors; ++a)
-    for (u32 b = 0; b < factors; ++b) o.cov.push_back(v[a] * v[b] + (a == b ? 1e-5 : 0.0));
+    for (u32 b = 0; b < factors; ++b)
+      o.cov.push_back(v[a] * v[b] + (a == b ? 1e-5 : 0.0));
   if (!complete) {
     const u32 k = factors - 1; // the last dense factor unforecast: its row and column NaN
     for (u32 a = 0; a < factors; ++a) {
@@ -176,17 +199,22 @@ Owned make_block(u32 t, u32 rows, u64 seed, bool complete = true) {
   }
   for (u32 k = 0; k < factors; ++k) {
     o.fret.push_back(1e-3 * (uniform(s) - 0.5));
-    o.fflags.push_back(static_cast<u8>(std::isfinite(o.cov[k * factors + k]) ? cov::factor_forecast : 0));
+    o.fflags.push_back(
+        static_cast<u8>(std::isfinite(o.cov[k * factors + k]) ? cov::factor_forecast : 0));
     o.gamma.push_back(1.0 + 0.1 * uniform(s));
   }
-  for (usize d = 0; d < cov::diag_count; ++d) o.diag.push_back(d < 4 ? uniform(s) : std::bit_cast<f64>(nan_payload));
+  for (usize d = 0; d < cov::diag_count; ++d)
+    o.diag.push_back(d < 4 ? uniform(s) : std::bit_cast<f64>(nan_payload));
   o.flags = cov::date_forecast | cov::date_vra;
   return o;
 }
 er::CovContainerSpec make_spec(bool f32) {
   er::CovContainerSpec s;
-  s.groups = groups; s.dense = dense; s.f32_exposures = f32;
-  for (u32 k = 0; k < factors; ++k) s.factor_names.push_back("f" + std::to_string(k));
+  s.groups = groups;
+  s.dense = dense;
+  s.f32_exposures = f32;
+  for (u32 k = 0; k < factors; ++k)
+    s.factor_names.push_back("f" + std::to_string(k));
   s.role_sha256.fill(0xAB);
   s.recipe_json = R"({"model":"synthetic"})";
   s.inputs_json = R"({"fields":"synthetic"})";
@@ -195,14 +223,15 @@ er::CovContainerSpec make_spec(bool f32) {
 }
 std::vector<Owned> make_blocks(u32 count, u64 seed, u32 rows = 12) {
   std::vector<Owned> out;
-  for (u32 t = 0; t < count; ++t) out.push_back(make_block(t, rows + t % 3, seed, t % 2 == 0));
+  for (u32 t = 0; t < count; ++t)
+    out.push_back(make_block(t, rows + t % 3, seed, t % 2 == 0));
   return out;
 }
 // Writes the blocks to `path`; returns the root.
-er::Sha256Bytes write(const fs::path& path, const std::vector<Owned>& blocks, bool f32) {
+er::Sha256Bytes write(const fs::path &path, const std::vector<Owned> &blocks, bool f32) {
   auto w = er::CovContainerWriter::create(path.string(), make_spec(f32));
   EXPECT_TRUE(w) << w.error().to_string();
-  for (const auto& b : blocks) {
+  for (const auto &b : blocks) {
     const auto s = w->append(b.input(f32));
     EXPECT_TRUE(s) << s.error().to_string();
   }
@@ -210,45 +239,49 @@ er::Sha256Bytes write(const fs::path& path, const std::vector<Owned>& blocks, bo
   EXPECT_TRUE(root) << root.error().to_string();
   return *root;
 }
-co::Result<er::CovModelFile> open(const fs::path& path, er::VerifyMode mode = er::VerifyMode::Full,
+co::Result<er::CovModelFile> open(const fs::path &path, er::VerifyMode mode = er::VerifyMode::Full,
                                   std::optional<er::Sha256Bytes> pin = std::nullopt,
                                   usize workers = 0) {
   return er::CovModelFile::open(path.string(), pin, mode, max_bytes, workers);
 }
-template <class T>
-std::vector<u64> bits_of(std::span<const T> v) {
+template <class T> std::vector<u64> bits_of(std::span<const T> v) {
   std::vector<u64> out;
   for (const T x : v) {
-    if constexpr (sizeof(T) == 8) out.push_back(std::bit_cast<u64>(x));
-    else if constexpr (sizeof(T) == 4) out.push_back(std::bit_cast<u32>(x));
-    else out.push_back(static_cast<u64>(x));
+    if constexpr (sizeof(T) == 8)
+      out.push_back(std::bit_cast<u64>(x));
+    else if constexpr (sizeof(T) == 4)
+      out.push_back(std::bit_cast<u32>(x));
+    else
+      out.push_back(static_cast<u64>(x));
   }
   return out;
 }
-template <class T>
-std::vector<u64> bits_of(const std::vector<T>& v) { return bits_of(std::span<const T>(v)); }
+template <class T> std::vector<u64> bits_of(const std::vector<T> &v) {
+  return bits_of(std::span<const T>(v));
+}
 // The data offset of block t's array `id` (from its array table).
-u64 array_offset(const std::vector<u8>& bytes, const er::CovDateIndexEntry& e, cov::ArrayId id) {
+u64 array_offset(const std::vector<u8> &bytes, const er::CovDateIndexEntry &e, cov::ArrayId id) {
   const auto h = get<er::CovBlockHeader>(bytes, e.block_offset);
   for (u32 a = 0; a < h.array_count; ++a) {
     const auto entry = get<er::CovArrayEntry>(bytes, e.block_offset + 48 + 24ULL * a);
-    if (entry.id == static_cast<u32>(id)) return e.block_offset + entry.offset_in_block;
+    if (entry.id == static_cast<u32>(id))
+      return e.block_offset + entry.offset_in_block;
   }
   throw std::runtime_error("array not found");
 }
-std::vector<er::CovDateIndexEntry> index_of(const std::vector<u8>& bytes) {
+std::vector<er::CovDateIndexEntry> index_of(const std::vector<u8> &bytes) {
   const auto h = get<er::CovFileHeader>(bytes, 0);
   for (u32 s = 0; s < h.section_count; ++s) {
     const auto e = get<er::CovSectionEntry>(bytes, h.section_table_offset + 64ULL * s);
-    if (e.kind != static_cast<u32>(cov::SectionKind::DateIndex)) continue;
+    if (e.kind != static_cast<u32>(cov::SectionKind::DateIndex))
+      continue;
     std::vector<er::CovDateIndexEntry> out(e.count);
     std::memcpy(out.data(), bytes.data() + e.offset, e.bytes);
     return out;
   }
   throw std::runtime_error("no index");
 }
-template <class T>
-bool parse_error(const co::Result<T>& r) {
+template <class T> bool parse_error(const co::Result<T> &r) {
   return !r && r.error().code() == co::ErrorCode::ParseError;
 }
 
@@ -268,7 +301,7 @@ TEST(RiskCovContainer, RoundTripIsBitExact) {
     EXPECT_EQ(file->meta_json(), make_spec(f32).meta_json);
     for (usize t = 0; t < blocks.size(); ++t) {
       SCOPED_TRACE(t);
-      const auto& b = blocks[t];
+      const auto &b = blocks[t];
       const auto v = file->view(t);
       ASSERT_TRUE(v) << v.error().to_string();
       EXPECT_EQ(v->as_of, b.as_of);
@@ -279,14 +312,16 @@ TEST(RiskCovContainer, RoundTripIsBitExact) {
       EXPECT_EQ(bits_of(v->group), bits_of(b.group));
       EXPECT_EQ(bits_of(v->specific), bits_of(b.specific)); // NaN payloads included
       EXPECT_EQ(bits_of(v->factor_cov), bits_of(b.cov));
-      if (f32) EXPECT_EQ(bits_of(v->exposures_f32), bits_of(b.x32));
-      else EXPECT_EQ(bits_of(v->exposures_f64), bits_of(b.x64));
+      if (f32)
+        EXPECT_EQ(bits_of(v->exposures_f32), bits_of(b.x32));
+      else
+        EXPECT_EQ(bits_of(v->exposures_f64), bits_of(b.x64));
       EXPECT_EQ(bits_of(v->factor_return), bits_of(b.fret));
       EXPECT_EQ(bits_of(v->diag), bits_of(b.diag));
       EXPECT_EQ(bits_of(v->eigen_gamma), bits_of(b.gamma));
       EXPECT_EQ(bits_of(v->factor_flags), bits_of(b.fflags));
       EXPECT_EQ(bits_of(v->row_flags), bits_of(b.rflags));
-      const auto& e = file->index()[t];
+      const auto &e = file->index()[t];
       EXPECT_EQ(e.role_date_index, b.date);
       EXPECT_EQ(e.history_first_ns, b.first);
       // date_factor_complete is the writer's, from the covariance (even blocks are complete).
@@ -323,10 +358,12 @@ TEST(RiskCovContainer, HeaderLayoutIsPinned) {
   const auto bytes = read_file(dir.path / "m.atxcov");
   const std::array<u8, 8> magic{0x89, 0x43, 0x4F, 0x56, 0x0D, 0x0A, 0x1A, 0x0A};
   EXPECT_TRUE(std::equal(magic.begin(), magic.end(), bytes.begin()));
-  EXPECT_EQ(get<u16>(bytes, 8), 1U);   // major
-  EXPECT_EQ(get<u16>(bytes, 10), 0U);  // minor
+  EXPECT_EQ(get<u16>(bytes, 8), 1U);  // major
+  EXPECT_EQ(get<u16>(bytes, 10), 0U); // minor
   EXPECT_EQ(get<u32>(bytes, 12), 4096U);
-  EXPECT_EQ(bytes[16], 0x04); EXPECT_EQ(bytes[17], 0x03); EXPECT_EQ(bytes[18], 0x02);
+  EXPECT_EQ(bytes[16], 0x04);
+  EXPECT_EQ(bytes[17], 0x03);
+  EXPECT_EQ(bytes[18], 0x02);
   EXPECT_EQ(bytes[19], 0x01); // endian tag 0x01020304, little-endian on disk
   EXPECT_EQ(get<u32>(bytes, 20), cov::flag_complete | cov::flag_f32_exposures);
   EXPECT_EQ(get<u64>(bytes, 24), bytes.size());
@@ -342,32 +379,38 @@ TEST(RiskCovContainer, HeaderLayoutIsPinned) {
   EXPECT_EQ(get<i64>(bytes, 72), blocks.back().as_of);
   EXPECT_EQ(get<er::Sha256Bytes>(bytes, 112), make_spec(true).role_sha256);
   EXPECT_EQ(get<er::Sha256Bytes>(bytes, 224), root);
-  for (usize i = 176; i < 224; ++i) EXPECT_EQ(bytes[i], 0U) << i;   // reserved
-  for (usize i = 256; i < 4096; ++i) ASSERT_EQ(bytes[i], 0U) << i; // header padding
+  for (usize i = 176; i < 224; ++i)
+    EXPECT_EQ(bytes[i], 0U) << i; // reserved
+  for (usize i = 256; i < 4096; ++i)
+    ASSERT_EQ(bytes[i], 0U) << i; // header padding
   // The recipe and inputs digests are SHA-256 of the canonical texts.
   const std::string recipe = make_spec(true).recipe_json;
   const std::array<std::span<const u8>, 1> parts{
-      std::span<const u8>(reinterpret_cast<const u8*>(recipe.data()), recipe.size())};
+      std::span<const u8>(reinterpret_cast<const u8 *>(recipe.data()), recipe.size())};
   EXPECT_EQ(get<er::Sha256Bytes>(bytes, 80), sha(parts));
   // Section table: kinds 1..5 ascending, 64 bytes each; META etc. 64-aligned; BLOCKS at 4096.
   for (u32 s = 0; s < 5; ++s) {
     const auto e = get<er::CovSectionEntry>(bytes, table + 64ULL * s);
     EXPECT_EQ(e.kind, s + 1);
     EXPECT_EQ(e.offset % (e.kind == 5 ? 4096U : 64U), 0U);
-    if (e.kind == 5) { EXPECT_EQ(e.offset, 4096U); EXPECT_EQ(e.offset + e.bytes, table); }
+    if (e.kind == 5) {
+      EXPECT_EQ(e.offset, 4096U);
+      EXPECT_EQ(e.offset + e.bytes, table);
+    }
   }
   // Block 0: magic, header fields, the array table (11 arrays: 48 + 264 = 312 -> 320).
   EXPECT_EQ(std::string(bytes.begin() + 4096, bytes.begin() + 4104), "COVBLK01");
   EXPECT_EQ(get<i64>(bytes, 4096 + 8), blocks[0].as_of);
   EXPECT_EQ(get<u32>(bytes, 4096 + 24), static_cast<u32>(blocks[0].ids.size()));
   EXPECT_EQ(get<u32>(bytes, 4096 + 44), 11U);
-  EXPECT_EQ(get<u32>(bytes, 4096 + 48), 1U);          // IDS first
-  EXPECT_EQ(get<u64>(bytes, 4096 + 48 + 8), 320U);    // ... at 320
+  EXPECT_EQ(get<u32>(bytes, 4096 + 48), 1U);                                // IDS first
+  EXPECT_EQ(get<u64>(bytes, 4096 + 48 + 8), 320U);                          // ... at 320
   EXPECT_EQ(get<u32>(bytes, 4096 + 48 + 24 * 6), 7U | cov::array_optional); // FACTOR_RETURN
   // Trailer.
   const u64 end = bytes.size();
   EXPECT_EQ(std::string(bytes.begin() + static_cast<std::ptrdiff_t>(end - 64),
-                        bytes.begin() + static_cast<std::ptrdiff_t>(end - 56)), "COVEND01");
+                        bytes.begin() + static_cast<std::ptrdiff_t>(end - 56)),
+            "COVEND01");
   EXPECT_EQ(get<u64>(bytes, end - 56), end);
   EXPECT_EQ(get<er::Sha256Bytes>(bytes, end - 48), root);
   auto copy = bytes;
@@ -380,21 +423,25 @@ TEST(RiskCovContainer, ArraysAre64ByteAlignedAndBlocksPageAligned) {
   write(dir.path / "m.atxcov", make_blocks(6, 19, 37), false);
   const auto file = open(dir.path / "m.atxcov");
   ASSERT_TRUE(file);
-  const auto aligned = [](const void* p, usize a) {
+  const auto aligned = [](const void *p, usize a) {
     return reinterpret_cast<std::uintptr_t>(p) % a == 0;
   };
   for (usize t = 0; t < file->date_count(); ++t) {
-    const auto& e = file->index()[t];
+    const auto &e = file->index()[t];
     EXPECT_EQ(e.block_offset % 4096, 0U);
     EXPECT_EQ(e.block_bytes % 4096, 0U);
     const auto v = file->view(t);
     ASSERT_TRUE(v);
-    for (const void* p : {static_cast<const void*>(v->ids.data()), static_cast<const void*>(v->role_index.data()),
-                          static_cast<const void*>(v->group.data()), static_cast<const void*>(v->exposures_f64.data()),
-                          static_cast<const void*>(v->specific.data()), static_cast<const void*>(v->factor_cov.data()),
-                          static_cast<const void*>(v->factor_return.data()), static_cast<const void*>(v->factor_flags.data()),
-                          static_cast<const void*>(v->row_flags.data()), static_cast<const void*>(v->diag.data()),
-                          static_cast<const void*>(v->eigen_gamma.data())})
+    for (const void *p :
+         {static_cast<const void *>(v->ids.data()), static_cast<const void *>(v->role_index.data()),
+          static_cast<const void *>(v->group.data()),
+          static_cast<const void *>(v->exposures_f64.data()),
+          static_cast<const void *>(v->specific.data()),
+          static_cast<const void *>(v->factor_cov.data()),
+          static_cast<const void *>(v->factor_return.data()),
+          static_cast<const void *>(v->factor_flags.data()),
+          static_cast<const void *>(v->row_flags.data()), static_cast<const void *>(v->diag.data()),
+          static_cast<const void *>(v->eigen_gamma.data())})
       EXPECT_TRUE(aligned(p, 64)) << t;
   }
 }
@@ -453,7 +500,8 @@ TEST(RiskCovContainer, RefusesIncompleteFlag) {
   EXPECT_NE(r.error().message().find("incomplete"), std::string::npos);
   // A writer dropped before finalize leaves only its .partial, which is refused.
   {
-    auto w = er::CovContainerWriter::create((dir.path / "dropped.atxcov").string(), make_spec(true));
+    auto w =
+        er::CovContainerWriter::create((dir.path / "dropped.atxcov").string(), make_spec(true));
     ASSERT_TRUE(w);
     const auto blocks = make_blocks(2, 31);
     ASSERT_TRUE(w->append(blocks[0].input(true)));
@@ -582,35 +630,46 @@ TEST(RiskCovContainer, RefusesNonAscendingSessionsAndCutoffAfterAsOf) {
 
 // The writer's tail rebuilt with one extra section (kind 9) after BLOCK_HASHES: the table grows to
 // six entries and the metadata sections are moved after it (64-aligned), then the root.
-std::vector<u8> with_extra_section(const std::vector<u8>& bytes, u32 flags) {
+std::vector<u8> with_extra_section(const std::vector<u8> &bytes, u32 flags) {
   auto h = get<er::CovFileHeader>(bytes, 0);
   const u64 table = h.section_table_offset;
   std::vector<er::CovSectionEntry> entries;
   for (u32 s = 0; s < h.section_count; ++s)
     entries.push_back(get<er::CovSectionEntry>(bytes, table + 64ULL * s));
   er::CovSectionEntry extra{};
-  extra.kind = 9; extra.flags = flags; extra.bytes = 16; extra.count = 16;
-  extra.dtype = static_cast<u32>(cov::Dtype::U8); extra.align = 64;
+  extra.kind = 9;
+  extra.flags = flags;
+  extra.bytes = 16;
+  extra.count = 16;
+  extra.dtype = static_cast<u32>(cov::Dtype::U8);
+  extra.align = 64;
   entries.push_back(extra);
   std::vector<u8> out(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(table));
   out.resize(table + 64 * entries.size(), 0);
   std::vector<std::vector<u8>> payloads;
-  for (auto& e : entries) {
-    if (e.kind == 5) { payloads.emplace_back(); continue; }
-    payloads.emplace_back(e.kind == 9 ? std::vector<u8>(16, 0x5A)
-                                      : std::vector<u8>(bytes.begin() + static_cast<std::ptrdiff_t>(e.offset),
-                                                        bytes.begin() + static_cast<std::ptrdiff_t>(e.offset + e.bytes)));
+  for (auto &e : entries) {
+    if (e.kind == 5) {
+      payloads.emplace_back();
+      continue;
+    }
+    payloads.emplace_back(
+        e.kind == 9
+            ? std::vector<u8>(16, 0x5A)
+            : std::vector<u8>(bytes.begin() + static_cast<std::ptrdiff_t>(e.offset),
+                              bytes.begin() + static_cast<std::ptrdiff_t>(e.offset + e.bytes)));
     e.offset = cov::align_up(out.size(), 64);
     out.resize(e.offset, 0);
     out.insert(out.end(), payloads.back().begin(), payloads.back().end());
   }
   out.resize(cov::align_up(out.size(), 64) + 64, 0);
-  for (usize s = 0; s < entries.size(); ++s) put(out, table + 64 * s, entries[s]);
+  for (usize s = 0; s < entries.size(); ++s)
+    put(out, table + 64 * s, entries[s]);
   h.section_count = static_cast<u32>(entries.size());
   h.file_bytes = out.size();
   put(out, 0, h);
   er::CovTrailer t{};
-  t.magic = cov::trailer_magic; t.file_bytes = out.size();
+  t.magic = cov::trailer_magic;
+  t.file_bytes = out.size();
   put(out, out.size() - 64, t);
   rehash_root(out);
   return out;
@@ -649,7 +708,8 @@ TEST(RiskCovContainer, AtOrBeforeNeverReturnsAFutureCutoff) {
   std::vector<Owned> blocks;
   for (const u32 day : {0U, 2U, 3U, 7U}) {
     auto b = make_block(day, 10, 59);
-    if (day == 3) b.cutoff = b.as_of - day_ns;
+    if (day == 3)
+      b.cutoff = b.as_of - day_ns;
     blocks.push_back(b);
   }
   write(dir.path / "m.atxcov", blocks, true);
@@ -660,7 +720,8 @@ TEST(RiskCovContainer, AtOrBeforeNeverReturnsAFutureCutoff) {
     // The latest block whose as_of (hence cutoff) is at or before s, by brute force.
     std::optional<usize> expect;
     for (usize t = 0; t < blocks.size(); ++t)
-      if (blocks[t].as_of <= s && blocks[t].cutoff <= s) expect = t;
+      if (blocks[t].as_of <= s && blocks[t].cutoff <= s)
+        expect = t;
     if (!expect) {
       EXPECT_FALSE(got) << s;
       EXPECT_EQ(got.error().code(), co::ErrorCode::InvalidArgument);
@@ -671,7 +732,8 @@ TEST(RiskCovContainer, AtOrBeforeNeverReturnsAFutureCutoff) {
     EXPECT_LE(got->as_of, s);
     EXPECT_EQ(got->as_of, blocks[*expect].as_of) << s;
     const auto exact = file->exact(s);
-    const bool listed = std::any_of(blocks.begin(), blocks.end(), [&](const Owned& b) { return b.as_of == s; });
+    const bool listed =
+        std::any_of(blocks.begin(), blocks.end(), [&](const Owned &b) { return b.as_of == s; });
     EXPECT_EQ(static_cast<bool>(exact), listed) << s;
   }
 }
@@ -686,7 +748,8 @@ TEST(RiskCovContainer, PrefixRunsShareBlockHashes) {
   const auto full = open(dir.path / "full.atxcov");
   const auto cut = open(dir.path / "cut.atxcov");
   ASSERT_TRUE(full && cut);
-  for (usize t = 0; t < prefix.size(); ++t) EXPECT_EQ(*full->block_sha256(t), *cut->block_sha256(t)) << t;
+  for (usize t = 0; t < prefix.size(); ++t)
+    EXPECT_EQ(*full->block_sha256(t), *cut->block_sha256(t)) << t;
   const auto same = er::first_difference(*full, *cut, blocks[3].as_of);
   EXPECT_FALSE(same.differs);
   const auto beyond = er::first_difference(*full, *cut, blocks[5].as_of);
@@ -729,7 +792,8 @@ TEST(RiskCovContainer, FactorRiskViewIsZeroCopyOnPricedRows) {
   EXPECT_TRUE(scratch.exposures.empty() && scratch.covariance.empty());
   // The kernel prices a book over the view as over the dense rows.
   std::vector<f64> w(v->priced);
-  for (usize i = 0; i < w.size(); ++i) w[i] = (i % 2 ? 1.0 : -1.0) / static_cast<f64>(w.size());
+  for (usize i = 0; i < w.size(); ++i)
+    w[i] = (i % 2 ? 1.0 : -1.0) / static_cast<f64>(w.size());
   const auto variance = atx::engine::book::factor_variance(m, w);
   ASSERT_TRUE(variance) << variance.error().to_string();
   std::vector<f64> e(factors, 0.0);
@@ -737,12 +801,14 @@ TEST(RiskCovContainer, FactorRiskViewIsZeroCopyOnPricedRows) {
   for (usize i = 0; i < w.size(); ++i) {
     e[0] += w[i];
     e[v->group[i]] += w[i];
-    for (u32 c = 0; c < dense; ++c) e[1 + groups + c] += w[i] * v->exposures_f64[i * dense + c];
+    for (u32 c = 0; c < dense; ++c)
+      e[1 + groups + c] += w[i] * v->exposures_f64[i * dense + c];
     specific += v->specific[i] * w[i] * w[i];
   }
   f64 systematic = 0;
   for (u32 a = 0; a < factors; ++a)
-    for (u32 b = 0; b < factors; ++b) systematic += e[a] * v->factor_cov[a * factors + b] * e[b];
+    for (u32 b = 0; b < factors; ++b)
+      systematic += e[a] * v->factor_cov[a * factors + b] * e[b];
   EXPECT_NEAR(*variance, systematic + specific, 1e-15);
   // f32: exposures widened into scratch; an incomplete covariance copied with NaN -> 0.
   const auto v32 = f32_file->view(1);
@@ -764,7 +830,8 @@ TEST(RiskCovContainer, WriterRefusesOutOfOrderAppendAndBadRowOrder) {
   ASSERT_TRUE(w);
   EXPECT_FALSE(er::CovContainerWriter::create(path, make_spec(true))); // .partial exists
   const auto good = make_block(1, 12, 71);
-  auto unpriced_first = good; // the last priced row's specific turned NaN: an unpriced row in [0, P)
+  auto unpriced_first =
+      good; // the last priced row's specific turned NaN: an unpriced row in [0, P)
   unpriced_first.specific[good.priced - 1] = std::numeric_limits<f64>::quiet_NaN();
   EXPECT_FALSE(w->append(unpriced_first.input(true)));
   auto priced_late = good; // an unpriced row made priced after P
@@ -793,7 +860,8 @@ TEST(RiskCovContainer, WriterRefusesOutOfOrderAppendAndBadRowOrder) {
   EXPECT_TRUE(fs::exists(path));
   EXPECT_FALSE(fs::exists(path + ".partial"));
   EXPECT_FALSE(er::CovContainerWriter::create(path, make_spec(true))); // the final file exists
-  auto empty = er::CovContainerWriter::create((dir.path / "empty.atxcov").string(), make_spec(true));
+  auto empty =
+      er::CovContainerWriter::create((dir.path / "empty.atxcov").string(), make_spec(true));
   ASSERT_TRUE(empty);
   EXPECT_FALSE(empty->finalize()); // no block
   auto names = make_spec(true);
@@ -805,7 +873,8 @@ TEST(RiskCovContainer, FullVerifyIsWorkerCountInvariant) {
   const Directory dir;
   write(dir.path / "m.atxcov", make_blocks(9, 73), true);
   for (const usize workers : {1U, 2U, 3U, 4U, 8U, 16U})
-    EXPECT_TRUE(open(dir.path / "m.atxcov", er::VerifyMode::Full, std::nullopt, workers)) << workers;
+    EXPECT_TRUE(open(dir.path / "m.atxcov", er::VerifyMode::Full, std::nullopt, workers))
+        << workers;
   auto bytes = read_file(dir.path / "m.atxcov");
   const auto idx = index_of(bytes);
   bytes[array_offset(bytes, idx[7], cov::ArrayId::Ids)] ^= 0x10;
@@ -814,8 +883,86 @@ TEST(RiskCovContainer, FullVerifyIsWorkerCountInvariant) {
   for (const usize workers : {1U, 2U, 3U, 4U, 8U, 16U}) {
     const auto r = open(dir.path / "bad.atxcov", er::VerifyMode::Full, std::nullopt, workers);
     ASSERT_TRUE(parse_error(r)) << workers;
-    EXPECT_NE(r.error().message().find("block 3 "), std::string::npos) << workers << ' '
-                                                                       << r.error().to_string();
+    EXPECT_NE(r.error().message().find("block 3 "), std::string::npos)
+        << workers << ' ' << r.error().to_string();
   }
+}
+
+// Review R2 (fix round 1): offsets and sizes read from the file are compared against the remaining
+// length, never summed, so a malformed but hash-consistent block or file is a ParseError and no
+// span can leave the buffer. parse_cov_block is public, so it is called directly here.
+TEST(RiskCovContainer, ParseBlockRefusesArrayBoundsThatWrapOrLeaveTheBlock) {
+  const auto owned = make_block(0, 12, 5);
+  std::vector<u8> block;
+  ASSERT_TRUE(er::encode_cov_block(make_spec(true), owned.input(true), block));
+  ASSERT_TRUE(er::parse_cov_block(block, factors, groups, dense, true));
+  constexpr u64 entry0 = sizeof(er::CovBlockHeader); // the first array entry (Ids)
+  const auto first = get<er::CovArrayEntry>(block, entry0);
+  const auto refused = [&](u64 offset, u64 count, const char *what) {
+    auto bad = block;
+    auto e = first;
+    e.offset_in_block = offset;
+    e.count = count;
+    put(bad, entry0, e);
+    EXPECT_TRUE(parse_error(er::parse_cov_block(bad, factors, groups, dense, true))) << what;
+  };
+  const u64 past = cov::align_up(block.size() + 64, cov::array_align);
+  refused(past, first.count, "array offset past the block");
+  refused(past, 0, "array offset past the block, no elements");
+  refused(std::numeric_limits<u64>::max() - 63, first.count, "offset near SIZE_MAX");
+  refused(first.offset_in_block, std::numeric_limits<u64>::max() / 8, "count near SIZE_MAX / 8");
+  refused(first.offset_in_block, std::numeric_limits<u64>::max(), "count SIZE_MAX");
+  // The last array ending exactly at the block's end is still accepted geometry-wise: shrink the
+  // block to its arrays' end (the zero padding is the hash's business, not the parser's).
+  const auto h = get<er::CovBlockHeader>(block, 0);
+  u64 end = 0;
+  for (u32 a = 0; a < h.array_count; ++a) {
+    const auto e = get<er::CovArrayEntry>(block, entry0 + 24ULL * a);
+    const u64 size = e.dtype == static_cast<u32>(cov::Dtype::U8) ? 1U
+                     : e.dtype == static_cast<u32>(cov::Dtype::U32) ||
+                             e.dtype == static_cast<u32>(cov::Dtype::F32)
+                         ? 4U
+                         : 8U;
+    end = std::max(end, e.offset_in_block + e.count * size);
+  }
+  std::vector<u8> tight(block.begin(), block.begin() + static_cast<std::ptrdiff_t>(end));
+  EXPECT_TRUE(er::parse_cov_block(tight, factors, groups, dense, true));
+  tight.pop_back();
+  EXPECT_TRUE(parse_error(er::parse_cov_block(tight, factors, groups, dense, true)));
+}
+
+TEST(RiskCovContainer, RefusesSectionTableAndBlockSizesThatWrap) {
+  const Directory dir;
+  write(dir.path / "m.atxcov", make_blocks(3, 61), true);
+  const auto bytes = read_file(dir.path / "m.atxcov");
+  // A page-aligned section-table offset near 2^64: offset + count x 64 would wrap below the file.
+  auto table = bytes;
+  auto h = get<er::CovFileHeader>(bytes, 0);
+  h.section_table_offset = std::numeric_limits<u64>::max() - (cov::page_bytes - 1);
+  put(table, 0, h);
+  write_file(dir.path / "table.atxcov", table);
+  EXPECT_TRUE(parse_error(open(dir.path / "table.atxcov")));
+  // An index entry whose block size wraps next_block (root recomputed: only the bound refuses).
+  const u64 table_at = get<u64>(bytes, 40);
+  const auto index = get<er::CovSectionEntry>(bytes, table_at + 128);
+  ASSERT_EQ(index.kind, 3U);
+  for (const usize t : {usize{0}, usize{2}}) {
+    auto wrapped = bytes;
+    auto e = get<er::CovDateIndexEntry>(bytes, index.offset + 64ULL * t);
+    e.block_bytes = std::numeric_limits<u64>::max() - (cov::page_bytes - 1);
+    put(wrapped, index.offset + 64ULL * t, e);
+    rehash_root(wrapped);
+    write_file(dir.path / "wrapped.atxcov", wrapped);
+    EXPECT_TRUE(parse_error(open(dir.path / "wrapped.atxcov"))) << t;
+    EXPECT_TRUE(parse_error(open(dir.path / "wrapped.atxcov", er::VerifyMode::Lazy))) << t;
+  }
+  // A metadata section whose byte count is near 2^64.
+  auto huge = bytes;
+  auto meta = get<er::CovSectionEntry>(bytes, table_at);
+  meta.bytes = std::numeric_limits<u64>::max() - 63;
+  meta.count = meta.bytes;
+  put(huge, table_at, meta);
+  write_file(dir.path / "huge.atxcov", huge);
+  EXPECT_TRUE(parse_error(open(dir.path / "huge.atxcov")));
 }
 } // namespace
