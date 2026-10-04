@@ -582,6 +582,29 @@ TEST(NavBookRule, ListRulesJsonCarriesTheLeverageRows) {
   EXPECT_NE(help.str().find("--list-rules"), std::string::npos);
 }
 
+// P9 C2 (carried C1 minor): every leverage rule's aim_leverage carries its default 1 and is not
+// required (it was listed as required while defaulted); the rule-specific keys stay required.
+TEST(NavBookRule, AimLeverageIsOptionalWithItsDefault) {
+  std::vector<std::string> args{"nav", "--list-rules", "--json"};
+  std::vector<char*> argv;
+  for (auto& a : args) argv.push_back(a.data());
+  std::ostringstream out, err;
+  ASSERT_EQ(st::dispatch_nav_replay(static_cast<int>(argv.size()), argv.data(), out, err), 0);
+  const auto contract = Json::parse(out.str());
+  ASSERT_EQ(contract.at("rules").size(), 3U);
+  for (const auto& row : contract.at("rules")) {
+    const auto& schema = row.at("params_schema");
+    const auto& required = schema.at("required");
+    EXPECT_EQ(std::find(required.begin(), required.end(), Json("aim_leverage")), required.end())
+        << row.at("id");
+    EXPECT_EQ(schema.at("properties").at("aim_leverage").at("default"), 1) << row.at("id");
+  }
+  const auto& risk = contract.at("rules").at(2).at("params_schema").at("required");
+  EXPECT_EQ(risk, Json::array({"sigma_star", "risk_model", "risk_model_sha256"}));
+  EXPECT_EQ(contract.at("rules").at(1).at("params_schema").at("required"),
+            Json::array({"risk_model", "risk_model_sha256"}));
+}
+
 // The command line (dispatch_nav_replay -> dispatch_nav_v7 -> the replay): a construction grid
 // at --aim-leverage 1.0, 1.5 and 2.0 under --vol-target publishes <output>/<id>/ byte for byte
 // the directory of each standalone run (recipe, daily, events, the v7 files, vol_target.csv,

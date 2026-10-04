@@ -1599,6 +1599,20 @@ TEST(SpoV3, CapacityDeclarationWithoutAdvHoldKeepsTheBaseBytes) {
   cfg.target.adv_hold_q = 0;
   v7::configure(cfg);
   EXPECT_EQ(manifest_sentence(), base_sentence);
+  // P9 C2 (carried C1 minor): summary.json's v7 declarations carry the same sentence, keyed off
+  // the replay's configs like the holdings manifest (pinned here directly, not only through it).
+  const auto summary_sentence = [] {
+    Json summary = Json::object();
+    v7::extend_summary(summary);
+    return summary.at("v7").at("declarations").at("capacity_spo_v3").get<std::string>();
+  };
+  EXPECT_EQ(summary_sentence(), base_sentence);
+  cfg.target.adv_hold_q = 0.1;
+  v7::configure(cfg);
+  EXPECT_EQ(summary_sentence(), capped_sentence);
+  cfg.target.adv_hold_q = 0;
+  v7::configure(cfg);
+  EXPECT_EQ(summary_sentence(), base_sentence);
 }
 
 // Ruling E-37 (review N-2): theta (--trade-fraction) has no effect on spo-v3 -- H is the
