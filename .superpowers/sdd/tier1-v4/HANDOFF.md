@@ -2,24 +2,48 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
-**CURRENT: NO root actual job remains live. Further heavy data builds held after
-two consecutive external low-commit stops; continue active engineering/reviews.**
+**CURRENT: No root actual job remains live. Heavy builds remain held after two
+external low-commit stops and a stopped host observation. Engineering continues.**
 Retry27343 ended stopped_low_commit14.1s/123,453,440bytes, exit137/no cap,
-freecommit0.6847GiB. No blind third retry. Guard22068/child24980/actual312 ended;
-matching runtime command scan empty. Guarded read-only inspectionv2 passed2s/
-63,905,792bytes under0.2GiB: unchanged physical snapshot, no batch0 admission,
-no finalmanifest/pointer, stable partialattempt bytes. Retained writer lock
-contains312 (3bytes/SHA865736a1c30a82dc67aba820360a01b1d9d0da5643234cd07c4d60b06eb530c5).
-Do not automatically remove/retry; a later actual resume requires a documented
-host-resource basis and exact dead-owner archive procedure. Existing first-stop
-archive is preserved. The successful-financial-progress helper is NOT RUN and
-its current v2 guard prerequisite fails by design; no financial unit is admitted.
-Root previous21ownedcheckpoint artifacts committed0ce394ed; latest second-stop
-helper/evidence and ledger will be committed separately. Active lanes: Task16
-newgolden delivery, Task17 native reader/catalog integration, Task10 fixround1.
-Gold remains absent/unpublished and atx-impl acceptance unrun. Goal stays active.
+freecommit0.6847GiB. Guard22068/child24980/actual312 ended; matching runtime
+scan empty. Inspectionv2 passed2s/63,905,792bytes under0.2GiB: unchanged
+physical snapshot, no batch0 admission, finalmanifest or pointer, stable attempts.
+The exact three-byte orphan lock312 was subsequently archived under
+_interrupted_locks/r17_20261004_002-pid312-runtime-pilot-v2-lowcommit.lock;
+SHA865736a1c30a82dc67aba820360a01b1d9d0da5643234cd07c4d60b06eb530c5.
+Guarded recovery passed5.0s/89,972,736bytes after dead-owner, matching-writer,
+path/reparse and evidence checks. Both failed attempts and lock archives remain.
+The five-minute host observer itself stopped after3.1s/26,697,728bytes for
+freecommit0.4012GiB (no cap). No completed observation window exists and the
+predeclared scheduling condition is NOT established. No blind third pilot or
+observer retry. Resume requires new stable resource evidence, unchanged guards,
+unique receipts and ordinary complete native validation. The financial-progress
+helper is NOT RUN; its v2-success prerequisite fails and must be retargeted only
+after a successful future native attempt. Financial units admitted: zero.
 
-**LATEST root actual job: financial pilot retry27343, logs ...b0000-v2.*.**
+Task10 repair1/5 committed312c42f6, eight repair/13legacy/one frozen-artifact
+checks passed. Independent scoped rereview PASS for spec and quality: I1-I3
+addressed, no new Important findings (review-T10-native-r1-findings.md). Config
+94358ee94edc83b699bf00cc64216d61eac1a63b89cdf92d39cfa96adca26a33.
+Actual0PASS/7FAIL-unmeasured and manual0/300 unchanged. Task16 golden delivery
+and Task17 full native reader/catalog integration remain active, with frozen
+native producers/runtime untouched. Golden labels must implement conditional
+native5/21/63-session price/action/terminal replay, not an all-NULL placeholder.
+Missing actual proofs remain explicit NULL; missing implementation stays open.
+
+Primary public SpiderRock documentation review is recorded in
+vendor-dictionary-review-v1.json. Current Upcoming dictionaries clarify prices,
+total-return factors and ex-dividend dates; they do not qualify local historical
+bytes, clocks, currency/share basis, complete event history or terminal proceeds.
+No SEC request or actual return measurement occurred; no source gate is promoted.
+
+Latest gold-readiness-preflight-v2 still records no gold/golden_panel publication,
+no completion manifest for partial panel_goldready, and no consumer acceptance.
+Root checkpoints0ce394ed/139b0c9f/37900a73 preserve prior evidence. Four guarded
+cleanups observed6,678,642,688bytes freed; sources/foreign caches remain. Goal is
+active. Earlier chronological entries below describe superseded checkpoints.
+
+**Prior financial attempts: pilot60945 and retry27343, both ended.**
 Pilot60945 ended host-lowcommit207s/553,648,128bytes, exit137/no cap,
 free commit0.6852GiB. No native error. Guard18400/child21564/actual24076 dead;
 guarded inspection t17-interruption-inspection-v1.json records no batch0 admission,
@@ -33,16 +57,16 @@ successful v2 only; do not run it on the failed v1. No competing actual job.
 Task13 finalR5 ab81c710 independently APPROVED, all scoped I1-I4 addressed;
 review-T13-native-qualified-r5-findings.md. Whole-task cap5/5, actual0PASS/3FAIL,
 0/200 handchecks and source/history/vendor-cash requirements remain open.
-Task10 initial86956a29 submitted12ownedfiles, config9acd5af90a3383d38106fd0ec2b132e4d93e0b8a1cbfe208492258f8e881bcb3;
-Independent initial review Needs changes: all explicit table candidates rejected,
-ambiguous latest evidence loses comparator IDs and permits stale fallback, and
-feature replay omits absent-source issuer rows. Original author now Task10 fix1/5;
-review-T10-native-findings.md. Full actual0PASS/7FAIL-unmeasured unchanged.
+Task10 initial86956a29 independent review found three Important defects:
+explicit table candidates rejected, ambiguous latest evidence loses comparator
+IDs and permits stale fallback, and feature replay omits absent-source issuer
+rows. Repair1/5 is now committed312c42f6 with scoped independent PASS above.
+Full actual0PASS/7FAIL-unmeasured unchanged.
 Task17 original author continues full native reader/catalog integration offline,
 coordinating new tier1_native_readers.admit(name,spec,con) with golden author.
 Do not modify reviewed runtime/source producer code while actual pins are live.
 
-**CURRENT root actual job: financial pilot60945 (Task17 reviewed runtime).**
+**Historical launch record: financial pilot60945 (now ended).**
 logs/t17-runtime-pilot-b0000-v1.*, max-new-batches1, generationr17_20261004_002,
 0.8GiB guard and40GiB disk floor. No competing data job. Runtime6bab983f plus
 documentation fixd847a7ce independently approved; Task17 repair1/5 remains.
