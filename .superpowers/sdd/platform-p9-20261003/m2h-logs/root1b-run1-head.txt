@@ -1,0 +1,1 @@
+head 59893e9f9e443693f224dca2bd1aeb3b5d232a54 tracked changes:  M .superpowers/sdd/platform-p9-20261003/next-goal-prompt.md  M .superpowers/sdd/platform-p9-20261003/progress.md 

@@ -583,3 +583,16 @@ trials: `build-equity/trials.jsonl` 133 lines `27e40f9f` at start and end.
 
 Next free build tag **p9-2m**. Known-red unchanged: pytest `test_fields_are_the_rule_applied_to_the_registry` (E2);
 Release lit-golden is a named skip (M2c-RED-2 / OD5-2). New open item (not a test red): COV-7 identity miss.
+
+### M2h: E2, 2026-10-04 (merged by the stopped root agent; verified and recorded by a fresh root, Ruling M2H-1)
+
+Base `2fbef84e` (housekeeping docs). Code head `59893e9f`. Detail: `handoff-root-m2h.md`; logs `m2h-logs/` (the
+stopped agent's `e2-*` / `root1-*`, this agent's `root1b-*` / `m2h2-*`; pre-run list `m2h2-prerun.md`). Zero trials:
+`build-equity/trials.jsonl` 133 lines `27e40f9f` at start and end.
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| E2 | `80c322ef` (re-review 4 APPROVE `dd857198`, 0 Required; contains root `42f42a07`) | `430c29e8` (of `dd857198`) + E2-18 slip `1dd0ac46` (S2: `wave_stage_kinds.py:421` rewrapped, string unchanged) + SQL2-CLS `59893e9f` (`atx.research-wave/v2` -> wave-manifest) | 0 conflicted files | none (Python lane; no C++ / CMake change from the exes' sources `c2416d62` / `3fd0bf98` to HEAD); real exes used: Release IC p9-2j `fccaa07e`, NAV p9-2l `53ca5dd4` | n/a | none | `scripts/tests` seed 0 **510p / 4s / 2f** (this agent; the two e27b known reds, 0 exit 0xC0000142), seed 1 510p / 4s / 2f (stopped agent, same head); the stopped agent's seed-0 run (339p / 173f, 152 `git init` + 9 HARD-STOP at exit 3221225794) is VOID (ENV-1); `test_fields_are_the_rule_applied_to_the_registry` passes by name (E2's red cleared); stage chain 9/9 both seeds (stopped agent); `test_research_store_identity.py` 16p both seeds; SQL2-CLS: guard 1 fail before / 5p after, store suite 43p both seeds, fixture chain `d32f7655...4e69` (stopped agent); Release live canary `test_cycle_e2e.py` 15p | live-table check PASS on both trees, MR-4 rows included (stopped agent); MR-4 + C2 S13 at HEAD as the lane placed them (5+/2- in 2 files, lane head = HEAD on both); engine match on real exes (tiny world, P9-C shape with a free `--trade-fraction` constant for the gross change): exe calibration record complete, `leverage_requested` 1.12 = cell L, `target` = G_parent, L 1.12 -> **L' 1.0606**, G 1.0419 -> 0.98778 vs G_parent 0.98669, reader G = exe G bit for bit, cell of record plain at 1.0606 (argv `--aim-leverage 1.0606`, no `--calibrate-*`), verify passes and pins `record_spec_digest`; literal `aim_leverage` 1.5 stops at match, exit 3 (`:374`); **O1 (E2-16)**: template-set `ref.leverage` after match = **1.0606 under `pm6-6`** (L'; its `-gm` run then refuses at the ref phase, exit 3) and **1.12 under `pm6-6-engine`** (the cell's own L; ref NAV ran at 1.12); W1-I1 worst `v70-lo3` 249 (margin 1), none refused, canary `%TEMP%` margin 8 (2 audit-exact) |
+
+Next free build tag **p9-2m**. Known-red at `59893e9f`: the two e27b tests of `test_research_spec.py` (cleared by D2R's
+merge); Release lit-golden is a named skip (OD5-2).

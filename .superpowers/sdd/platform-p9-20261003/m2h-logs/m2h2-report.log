@@ -1,0 +1,60 @@
+===== wave eng0 (root p9-m2h-tw-eng0)
+receipts: ['01-preflight.json', '02-register.json', '03-screen.json', '04-spec.json', '05-run.json', '06-match.json', '07-verify.failed-1.json', '07-verify.json']
+match.outputs: {"mode": "pm6-6-engine", "tolerance": 0.005, "g_parent": 0.986692308059862, "g_calibration": 1.0419426343712663, "leverage_calibration": "1.12", "corrected": true, "leverage": "1.0606", "g_cell": 0.9877841486160911, "cell_spec": "scripts/specs/p9/kinds/templates/rule-composition-m2h-eng0-cal.json", "record_spec": "scripts/specs/p9/kinds/templates/rule-composition-m2h-eng0-gm.json", "record_spec_digest": "ae9b138cf4195bb0519d18b78fdf013f7bb3e185cb93b8843517d7bf23f28fae", "engine": true}
+match.outputs.calibration (the exe's summary.json record): {"construction_reused": true, "corrected": true, "gross": 0.9877841486160911, "gross_requested": 1.0419426343712663, "leverage": 1.0606, "leverage_requested": 1.12, "matched": true, "target": 0.986692308059862, "tolerance": 0.005}
+leverage check (:374): leverage_requested 1.12 == cell L 1.12 -> True ; target == G_parent -> True
+mechanics G bit-equal: reader g_cell 0.9877841486160911 exe calibration.gross 0.9877841486160911 -> True
+verify.inputs match.record_spec_digest: ae9b138cf4195bb0519d18b78fdf013f7bb3e185cb93b8843517d7bf23f28fae == match.outputs.record_spec_digest -> True
+failed receipt 07-verify.failed-1.json: verify: 2 date token(s) at or after the seal 2024-01-01 in ['waves/m2h-eng0/consoles/007-mechanics-reader.log', 'waves/m2h-eng0/consoles/012-mechanics-reader.log'] (inspect: a data date is a seal breach; a token that is not one is allowed by ruling: research_wave.py run ... --seal-allow TOKEN=RULING): stop for the PM's ruling (the cell ran; no ledger line was written)
+spec rule-composition-m2h-eng0-cal.json: nav.leverage 1.12; nav.output tiny-nav-k-rule-gm; match flags on nav.flags ['--calibrate-gross', '--calibrate-tolerance']; ref None; ref has own flags None; EFFECTIVE ref leverage None
+spec rule-composition-m2h-eng0-gm.json: nav.leverage 1.0606; nav.output tiny-nav-k-rule-gm; match flags on nav.flags []; ref None; ref has own flags None; EFFECTIVE ref leverage None
+spec rule-composition-m2h-eng0.json: nav.leverage 1.12; nav.output tiny-nav-k-rule; match flags on nav.flags []; ref None; ref has own flags None; EFFECTIVE ref leverage None
+ran tiny-nav-k-rule-gm-run: outcome completed; --aim-leverage 1.12; --trade-fraction .10; --calibrate-gross 0.986692308059862; --calibrate-tolerance 0.005; exe 53ca5dd4
+tiny-nav-k-rule-gm/summary.json calibration: {"construction_reused": true, "corrected": true, "gross": 0.9877841486160911, "gross_requested": 1.0419426343712663, "leverage": 1.0606, "leverage_requested": 1.12, "matched": true, "rule": "P9 C2, Ruling PM6-6 in one process: pass 1 replays the primary S2 book alone at leverage_requested; gross_requested = the numpy mean of its daily gross_leverage over every row (nav_summ mean_gross_leverage_all_rows); |gross_requested - target| <= tolerance keeps the leverage, else ONE correction leverage = leverage_requested x target / gross_requested written with 4 decimals (refused outside [1, 2]); the published run is the plain run at leverage (recipe.json and every other file its bytes), gross its S2 book's all-rows mean and matched = |gross - target| <= tolerance (false: the match stage stops); construction_reused: pass 2 replayed pass 1's shared construction (provenance only)", "target": 0.986692308059862, "tolerance": 0.005}
+   plan: # phase fields [pinned; done; as built, manifest sha256 395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac (pinned)] -> fields
+   plan: # phase u [bounded; done] -> tiny-u-1 (receipt tiny-u-run1)
+   plan: # phase fit [bounded; done] -> tiny-weights-k-rule (receipt tiny-weights-k-rule-run1)
+   plan: # phase card [bounded; done] -> tiny-cards-k-rule (receipt tiny-cards-k-rule-run)
+   plan: # phase w [bounded; done] -> tiny-w-k-rule-1 (receipt tiny-w-k-rule-run1)
+   plan: # phase nav [bounded; done] -> tiny-nav-k-rule-gm (receipt tiny-nav-k-rule-gm-run)
+cell of record rule-composition-m2h-eng0-gm.json planned NAV argv: --aim-leverage 1.0606; --trade-fraction .10; match flags []
+plan exit 0
+===== wave eng (root p9-m2h-tw-eng)
+receipts: ['01-preflight.json', '02-register.json', '03-screen.json', '04-spec.json', '05-run.json', '06-match.json', '07-verify.failed-1.json', '07-verify.json']
+match.outputs: {"mode": "pm6-6-engine", "tolerance": 0.005, "g_parent": 0.986692308059862, "g_calibration": 1.0419426343712663, "leverage_calibration": "1.12", "corrected": true, "leverage": "1.0606", "g_cell": 0.9877841486160911, "cell_spec": "scripts/specs/p9/kinds/templates/m2h-rule-ref-m2h-eng-cal.json", "record_spec": "scripts/specs/p9/kinds/templates/m2h-rule-ref-m2h-eng-gm.json", "record_spec_digest": "521632f9c56821ef0c367d09c7d184c8818907e70d8311760729c756216af6a6", "engine": true}
+match.outputs.calibration (the exe's summary.json record): {"construction_reused": true, "corrected": true, "gross": 0.9877841486160911, "gross_requested": 1.0419426343712663, "leverage": 1.0606, "leverage_requested": 1.12, "matched": true, "target": 0.986692308059862, "tolerance": 0.005}
+leverage check (:374): leverage_requested 1.12 == cell L 1.12 -> True ; target == G_parent -> True
+mechanics G bit-equal: reader g_cell 0.9877841486160911 exe calibration.gross 0.9877841486160911 -> True
+verify.inputs match.record_spec_digest: 521632f9c56821ef0c367d09c7d184c8818907e70d8311760729c756216af6a6 == match.outputs.record_spec_digest -> True
+failed receipt 07-verify.failed-1.json: verify: 2 date token(s) at or after the seal 2024-01-01 in ['waves/m2h-eng/consoles/007-mechanics-reader.log', 'waves/m2h-eng/consoles/012-mechanics-reader.log'] (inspect: a data date is a seal breach; a token that is not one is allowed by ruling: research_wave.py run ... --seal-allow TOKEN=RULING): stop for the PM's ruling (the cell ran; no ledger line was written)
+spec m2h-rule-ref-m2h-eng-cal.json: nav.leverage 1.12; nav.output tiny-nav-m2h-gm; match flags on nav.flags ['--calibrate-gross', '--calibrate-tolerance']; ref {'output': 'tiny-ref-m2h', 'leverage': '1.12'}; ref has own flags True; EFFECTIVE ref leverage 1.12
+spec m2h-rule-ref-m2h-eng-gm.json: nav.leverage 1.0606; nav.output tiny-nav-m2h-gm; match flags on nav.flags []; ref {'output': 'tiny-ref-m2h', 'leverage': '1.12'}; ref has own flags False; EFFECTIVE ref leverage 1.12
+spec m2h-rule-ref-m2h-eng.json: nav.leverage 1.12; nav.output tiny-nav-m2h; match flags on nav.flags []; ref {'output': 'tiny-ref-m2h', 'leverage': None}; ref has own flags False; EFFECTIVE ref leverage 1.12
+ran tiny-nav-m2h-gm-run: outcome completed; --aim-leverage 1.12; --trade-fraction .10; --calibrate-gross 0.986692308059862; --calibrate-tolerance 0.005; exe 53ca5dd4
+ran tiny-ref-m2h-run: outcome completed; --aim-leverage 1.12; --trade-fraction .10; --calibrate-gross None; --calibrate-tolerance None; exe 53ca5dd4
+tiny-nav-m2h-gm/summary.json calibration: {"construction_reused": true, "corrected": true, "gross": 0.9877841486160911, "gross_requested": 1.0419426343712663, "leverage": 1.0606, "leverage_requested": 1.12, "matched": true, "rule": "P9 C2, Ruling PM6-6 in one process: pass 1 replays the primary S2 book alone at leverage_requested; gross_requested = the numpy mean of its daily gross_leverage over every row (nav_summ mean_gross_leverage_all_rows); |gross_requested - target| <= tolerance keeps the leverage, else ONE correction leverage = leverage_requested x target / gross_requested written with 4 decimals (refused outside [1, 2]); the published run is the plain run at leverage (recipe.json and every other file its bytes), gross its S2 book's all-rows mean and matched = |gross - target| <= tolerance (false: the match stage stops); construction_reused: pass 2 replayed pass 1's shared construction (provenance only)", "target": 0.986692308059862, "tolerance": 0.005}
+   plan: # phase fields [pinned; done; as built, manifest sha256 395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac (pinned)] -> fields
+   plan: # phase ref [bounded; done] -> tiny-ref-m2h (receipt tiny-ref-m2h-run)
+cell of record m2h-rule-ref-m2h-eng-gm.json planned NAV argv: --aim-leverage 1.12; --trade-fraction .10; match flags []
+   plan: # phase u [bounded; done] -> tiny-u-1 (receipt tiny-u-run1)
+   plan: # phase fit [bounded; done] -> tiny-weights-m2h (receipt tiny-weights-m2h-run1)
+   plan: # phase card [bounded; done] -> tiny-cards-m2h (receipt tiny-cards-m2h-run)
+   plan: # phase w [bounded; done] -> tiny-w-m2h-1 (receipt tiny-w-m2h-run1)
+   plan: # phase nav [bounded; done] -> tiny-nav-m2h-gm (receipt tiny-nav-m2h-gm-run)
+cell of record m2h-rule-ref-m2h-eng-gm.json planned NAV argv: --aim-leverage 1.0606; --trade-fraction .10; match flags []
+plan exit 0
+===== wave py (root p9-m2h-tw-py)
+receipts: ['01-preflight.json', '02-register.json', '03-screen.json', '04-spec.json', '05-run.json', '06-match.failed-1.json']
+failed receipt 06-match.failed-1.json: matched run (--stop-after nav): exit 3 ("C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/p9/kinds/templates/m2h-rule-ref-m2h-py-gm.json --stop-after nav --root C:/atx-wt/pool-2/build-equity/p9-m2h-tw-py) ccf8971cf02b669c1e8e272fe66fbebe68e763f0f30e3f10eddde [locked, verified]
+# pin reference_admission: tiny-weights/admission.json ed4ccba45c914a8268a6285c427fdd529
+spec m2h-rule-ref-m2h-py-gm.json: nav.leverage 1.0606; nav.output tiny-nav-m2h-L1.0606; match flags on nav.flags []; ref {'output': 'tiny-ref-m2h', 'leverage': None}; ref has own flags False; EFFECTIVE ref leverage 1.0606
+spec m2h-rule-ref-m2h-py.json: nav.leverage 1.12; nav.output tiny-nav-m2h; match flags on nav.flags []; ref {'output': 'tiny-ref-m2h', 'leverage': None}; ref has own flags False; EFFECTIVE ref leverage 1.12
+ran tiny-nav-m2h-run: outcome completed; --aim-leverage 1.12; --trade-fraction .10; --calibrate-gross None; --calibrate-tolerance None; exe 53ca5dd4
+ran tiny-ref-m2h-run: outcome completed; --aim-leverage 1.12; --trade-fraction .10; --calibrate-gross None; --calibrate-tolerance None; exe 53ca5dd4
+===== wave pin (root p9-m2h-tw-pin)
+receipts: ['01-preflight.json', '02-register.json', '03-screen.json', '04-spec.json', '05-run.json', '06-match.failed-1.json']
+failed receipt 06-match.failed-1.json: gross match (engine): the calibration ran at L 1.5 toward 0.986692308059862, not the cell's L 1.12 toward G_parent 0.986692308059862
+spec rule-nav-m2h-pin-cal.json: nav.leverage 1.12; nav.output tiny-nav-k-navrule-gm; match flags on nav.flags ['--calibrate-gross', '--calibrate-tolerance']; ref None; ref has own flags None; EFFECTIVE ref leverage None
+spec rule-nav-m2h-pin.json: nav.leverage 1.12; nav.output tiny-nav-k-navrule; match flags on nav.flags []; ref None; ref has own flags None; EFFECTIVE ref leverage None
+ran tiny-nav-k-navrule-gm-run: outcome completed; --aim-leverage 1.5; --trade-fraction .05; --calibrate-gross 0.986692308059862; --calibrate-tolerance 0.005; exe 53ca5dd4
+tiny-nav-k-navrule-gm/summary.json calibration: {"construction_reused": true, "corrected": true, "gross": 0.9913070907528031, "gross_requested": 1.315205577210762, "leverage": 1.1253, "leverage_requested": 1.5, "matched": true, "rule": "P9 C2, Ruling PM6-6 in one process: pass 1 replays the primary S2 book alone at leverage_requested; gross_requested = the numpy mean of its daily gross_leverage over every row (nav_summ mean_gross_leverage_all_rows); |gross_requested - target| <= tolerance keeps the leverage, else ONE correction leverage = leverage_requested x target / gross_requested written with 4 decimals (refused outside [1, 2]); the published run is the plain run at leverage (recipe.json and every other file its bytes), gross its S2 book's all-rows mean and matched = |gross - target| <= tolerance (false: the match stage stops); construction_reused: pass 2 replayed pass 1's shared construction (provenance only)", "target": 0.986692308059862, "tolerance": 0.005}
