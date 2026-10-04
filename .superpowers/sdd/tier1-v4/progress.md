@@ -75,6 +75,78 @@ Branch `feat/tier1-v3-warehouse`, start HEAD a3e02c6e. Workspace `.superpowers/s
 
 ## Controller resume 2026-10-03
 
+- Root fundreader two-passbyteauditv2 completed16s/.061GiB,50uniquefiles/
+  3,774,103,103bytes includingarchive/knownidentityparents; twoidenticalpasses,
+  zero producer-byte mismatches. Bindingv1 prepared14950bytes/12products/30reader
+  files SHA8c63e1ba186a81c70c9f620ebd14cb9a4e4cbdd36b9faf44e5154dd5546894b3.
+  Scopedbindingreviewpending; actualnative85extract/preparation/unitreplay/gates
+  unmeasured. BYTE_MATCH_ONLY doesnotcertifyeconomic/source/PITcorrectness.
+
+- Task16aggregatefix4/5: exactidentitymanifestadapterb0b58ba1 had relativepath
+  contractviolation; freshGPT6.1Sol/root/t16_fund_round4 fixed189fe919,16focused
+  cases3.32s, independentlyApproved. OneTask16fixroundremains. Actualrootbyte
+  auditv2 supports exactStageI outputs/threeparents independently and runs under
+  .3guard (session22180atlaunch), no binding/buildyet. Originalv1schemafailure
+  preserved, notweakenedtoemptyinventories.
+- Task7 initialreview32cdf42d has sixImportant andoneMinor: auditrowoverwrites
+  immutablefeatures; ratioidentity/economicbasis gaps; seasonaloffbyone/history;
+  rmax5denominatorunqualified/minhistory; NULLclocks/shortpublicwindow; replication
+  periodandOSAPpopulationcontract. Originalauthorfixround1/5. RulingR18 task-7-
+  evaluation-ruling.md freezes120holdingmonths2013-01..2022-12 and priorlastsession
+  formationaxis,minimum60retained, before anyactualreturns. Fulloriginaloutcomes
+  andOSAPindependentlyadmittedoverlaprequired; missingearlyhistoryremainsFAIL.
+  Cost: additionalhistoricalsourceadmission and fullTask8evidence work; nogatewaiver.
+- RootTask11retrospectivepart0000 completed20s/.0583GiB,10,000main/1,328history/
+  7,336filings,oneexplicitoversizeCIK19617 exception,childexit2 expectedpartial.
+  ArchiveSHA702fbcd8...7165unchanged; lastCIK0000731762.json; throughfullCIKaxis;
+  first2019. Fullinventoryandactualarchivepublicretrievalclockremainunqualified.
+  AuthorapprovedDESIGNoriginal->positions/clock-unitruleproof/nativeeventchain,
+  ownsnewthirteenf_native.py; no actualjob/HTTPgrant. Quality/sourcefreeze released.
+
+- Latest2026-10-04: root44250 existing-unit replay stoppedlowcommit307.3s/.472GiB,
+  freecommit.5177,exit137/no caphit; no rootjobremains. Hold furtherlonguniverse
+  retries, retaincandidate andinspect thirdorphanlockbeforewriting. Fundamental
+  byteauditv1 failedfast3s/.0556GiB because knownidentity-links-v1manifest uses
+  outputs notfiles; guardedshape/declarationinspectionretained. Originalauthor
+  owns exactschema integrationcorrection, no emptyinventorywaiver. Task16 aggregate
+  fixcount3/5 includinguniverse1,fundrecovery1,newintegration1.
+- Task11discoverycc1babe3 scopedApproved; guardedv3bothledgerscomplete0knownleads,
+  all55,536recordsUNKNOWN/0exceptions. Sixhistoricalleads retractedhashfalsepositives.
+  No originalsourceabsence/completenessclaim. AggregateTask11fixcount4/5 (native2,
+  bridge1,discovery1); authorcontinuesoriginalmissingnativeassemblydesignonly.
+- Task7 originalfullnativecheckpoint32cdf42d submitted264registry/152original
+  executors/33fixtures; independentfullinitialreviewrunning. Actualcoverage,
+  formula/sourcequalification,replication/ratiosgatesremainpending/failed.
+
+- 2026-10-04 controller continuation: user-requested cleanup removed four exact,
+  owned, obsolete scratch targets:3,175,142,016logicalbytes; observed free-space
+  increase2,580,697,088bytes. Current144preparation units and candidate2018/2019
+  actual payload SHA/size reverified afterward17.1s/.1076GiB exit0. Raw sources,
+  extracts, outputs, evidence and foreign caches retained. See disk-cleanup-report-v1.md.
+- Task16 universe continuation2019v2 stopped hostlowcommit461.8s/.4776GiB,
+  exit137/no caphit, after2019receipt existed.2019payload2,110,686rows/21,673,327bytes,
+  SHA1147bf44443978d7158b2c0488996bfb5a7165f4ffad8b0f4c77b4c2ca112104.
+  Both unit bytes intact; no publication or unsealed directory. Dead writer17684
+  lock preserved after exactguard/PID/path/receipt/hash checks. New guarded root
+  session44250 validates existing units via --max-new-years0; no new-year request,
+  originalguard.8GiB unchanged. Rootmustpolluntilend; no competingdatajobs.
+- Task16fund9dfaeb6c initial review oneImportantrecovery blocker; fixround1/5
+  82608d6b independently Approved: newtarget fulladmission, retainedold rooted
+  manifest identity only, fullrollbackadmission preserved.7fixtures1.59s. Actual
+  gates0PASS/9pending. Reader metadata preflight30files/1,775,519,411bytes and
+  retained1,409,212,553byte companyfactsarchive, no missinginputs. Two-passbyte
+  audit/helper and explicitbindinghelper prepared; waitfordataslotbeforerunning.
+- Task11nativef7649472 scopedApproved; sourcebridgec6f40804 had exactURLidentity
+  and concurrentoverwrite defects. Fixround1/5 77ffa6e5 independently Approved,
+ 20fixtures2.29s. Knownlead listing61aa083a scopedApproved,7fixtures.58s. Root
+  fulltwoledger scans38,433+17,103records/23,741,584bytes found sixapparentleads,
+  allactuallySHA256suffix13f falsepositives. Rootretractedsourceleadclaim and
+  dispatchedsourceclassifierfix cc1babe3 (18fixtures1.26s), independentreviewpending.
+  ZeroHTTP/no sourceobjects admitted; fullsource/financial/ownershipgates open.
+- Readinessv3 dependency/explicit-generation command corrections scopedApproved,
+  all46originalrequirements/categories/thresholds/statusespreserved. Fullrevision/
+  releaseapprovalpending. Consumercontractv2 unchanged; no actualreturnevaluation.
+
 - Reconciled HEAD fd9d67b7 on feat/tier1-v3-warehouse. Task 2 findings absent; review package exists. Task 3 fix edits remain uncommitted in compustat_std.py and its test; its report has no fix/stopped section. Task 4 WIP commit fd9d67b7 exists, report absent. Task 14 commits 7ec056a3, 146a7766, 95a03266 exist, report absent. Task 9 report 4c939ca2 records orientation only, no data fetch or implementation.
 - Ruling R1: owner now requests gpt-6.1-sol implementers, superseding P5 and historical Opus implementation wording. Use gpt-6.1-sol implementers and task reviewers, fresh contexts with artifact pointers; final review uses the most capable available model under the SDD skill. Preserve at most three agent/data lanes and <=1 GiB guards — cost if wrong: extra review/fix time.
 - Ruling R2: preserve this plan's existing workspace and extracted briefs; continue on the explicitly requested main working tree. Historical foreign files remain read-only. Codebase graph tools are not exposed in this runtime (tool discovery returned none), so targeted source reads/searches are the fallback until they become available — cost if wrong: slower discovery.
@@ -155,6 +227,18 @@ Branch `feat/tier1-v3-warehouse`, start HEAD a3e02c6e. Workspace `.superpowers/s
 - Task5 original-source audit uses2SECattempts/8,299,830rawbytes; remaining10of12unused. Durable counters/receipts in raw/sec_fundamentals_depth. Flowserve2018/2020 originalstatements corroborate3.832666bn/3.728134bn sales; retainedFSDS mainISline selects contractual concept while genericRevenues has noIS/CIpresentation. Uniform own-filing presentation rule implemented, no sign/size or issuer preference. All20Task3 PIT/delayed-clock regressions PASS49.90s after source-duration/history integration; ratios tests pending, no publishedstage rewrite. Controller also flagged taxonomy/namespace identity preservation and forbids uncertified notes_wide tax fallback.
 
 ## Release objective recovery (2026-10-03)
+
+- 23:58UTC: firstrevieweduniverse2018completed464.5s/.4713GiB,2,006,722keys/
+  251sessions; byteinspectionmatches, nofinalpointer. First2019continuation stopped
+  lowcommit276.1s/.4693GiB, no cap; unchanged2018/no2019payload. DeadPID2664lock
+  preserved afterguard/process/path/hashinspection; noactivewriterbypass. Root
+  currentlyowns LIVE continuation14718 (guard11020/stub4316), .8cap/maxnew1.
+- Task11 round1 9dfce082 closedI2-I4; monthlycalendar-daybug fixedround2f7649472,
+  scopedApproved3.12sfixture. Fullnative/provenancefamiliescontinue, noactualjobs.
+  Task16fundadmission andTask7nativecharacteristics remainofflineactive.
+- Readinessv3/explicitgenerationhelper scopedApproved;46thresholds/statuses and
+  fullfailurepopulation preserved. Currentpointer CLI notmisrepresented ascaller-
+  pinnedgeneration. Realfullvalidation/predictive/consumer/finalreviewallpending.
 
 - 23:35UTC: universefoundation864c6233 +root52productbinding independently
   scopedApproved; rootowns LIVE firstyearcandidate job8796 (.8cap, guard16336,

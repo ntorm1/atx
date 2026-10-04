@@ -1,0 +1,19 @@
+{
+  "admission_scope": "Root build already checked exact keys/schema/clocks and replayed native counters; this inspection rechecks bytes only. Eight years and all final gates remain missing.",
+  "current_pointer_exists": false,
+  "final_manifest_exists": false,
+  "generation": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001",
+  "panel_keys_sha256": "d01d795b68b69dc717ff792ee1304d7e9bbc8d08eec270178fa019db58d9ec4b",
+  "payload": {
+    "bytes": 18114598,
+    "sha256": "7507327b9e2f986da79324ae1a40a758a0c242e706428cbd93532fda680598e4"
+  },
+  "readiness": "NOT_PRODUCTION_READY",
+  "receipt_sha256": "3abbab2e5bae371cbad9be1d87ce57239d1e5484e8366f9dca6edd30670802c3",
+  "rows": 2006722,
+  "sessions": 251,
+  "snapshot_sha256": "ef2754a933fc38b2a3dba1cd50a33d6f359d15846ee5d470cb4d9022335319c7",
+  "source_quality_certified": false,
+  "status": "PARTIAL_CANDIDATE_UNIT_BYTE_MATCH",
+  "year": 2018
+}

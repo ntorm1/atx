@@ -1,0 +1,36 @@
+{
+  "code_version": "identity-links-v1",
+  "outputs": {
+    "links.parquet": {
+      "bytes": 109855,
+      "mtime_ns": 1790550766177298900,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\identity\\links.parquet",
+      "rows": 7186,
+      "sha256": "75b71f531bb446db1117bd03c332e34f68ec5194cbc621a84e26b01c84bef6fe"
+    }
+  },
+  "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\identity\\manifest.json",
+  "qualification": "Producer declarations only; referenced files not read or qualified by this inspection.",
+  "sha256": "0df3dc103b49f8494002b48983c6895a30f707b4a75eb61f6d6c1f9f169f2e76",
+  "sources": {
+    "r4_manifest": {
+      "bytes": 202018,
+      "mtime_ns": 1790521662204308400,
+      "path": "C:\\atx\\atx-db\\data\\research\\identity_rehearsal\\session8-phased-r4\\manifest.json",
+      "sha256": "ac9bcda74b01badf507351a53b8b078c733ce00a7cc01a0dcf33d68935a6bc28"
+    },
+    "security_company_links": {
+      "bytes": 1205178,
+      "mtime_ns": 1790521660351980200,
+      "path": "C:\\atx\\atx-db\\data\\research\\identity_rehearsal\\session8-phased-r4\\phases\\export-001\\security_company_links.part-0000.parquet",
+      "sha256": "f0645a1ac572a846c974d74d21f6883fa7bad5402d0c92515b08e70d51125ffa"
+    },
+    "security_permanent_ids": {
+      "bytes": 214858,
+      "mtime_ns": 1790521660228690300,
+      "path": "C:\\atx\\atx-db\\data\\research\\identity_rehearsal\\session8-phased-r4\\phases\\export-001\\security_permanent_ids.part-0000.parquet",
+      "sha256": "2538d82ccb95a7e7bc7a76d15491236f19a5a15f10a4d37ae3adcc4adcc84a16"
+    }
+  },
+  "stage": "I"
+}

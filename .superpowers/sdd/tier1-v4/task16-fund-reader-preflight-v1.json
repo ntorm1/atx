@@ -1,0 +1,237 @@
+{
+  "file_count": 30,
+  "logical_bytes": 1775519411,
+  "missing": [],
+  "paths": {
+    "archive": {
+      "bytes": 1409212553,
+      "exists": true,
+      "mtime_ns": 1789862816183070700,
+      "path": "C:\\atx\\atx-db\\data\\cache\\companyfacts.zip"
+    },
+    "extract_root": {
+      "exists": true,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_work\\cf"
+    },
+    "fsds_root": {
+      "exists": true,
+      "path": "C:\\atx\\atx-db\\data\\staging\\fsds-v2"
+    },
+    "prep_root": {
+      "exists": true,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_work"
+    },
+    "root": {
+      "exists": true,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1"
+    }
+  },
+  "products": {
+    "calendar": [
+      {
+        "bytes": 19323,
+        "exists": true,
+        "mtime_ns": 1790549921224730500,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\calendar.parquet"
+      }
+    ],
+    "eight_k": [
+      {
+        "bytes": 30617919,
+        "exists": true,
+        "mtime_ns": 1790636425244871500,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\sec_filings\\eight_k_items.parquet"
+      }
+    ],
+    "filings_manifest": [
+      {
+        "bytes": 58357,
+        "exists": true,
+        "mtime_ns": 1790637610908096000,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\sec_filings\\manifest.json"
+      }
+    ],
+    "fx": [
+      {
+        "bytes": 689980,
+        "exists": true,
+        "mtime_ns": 1790724167223405800,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\reference\\fx_daily.parquet"
+      }
+    ],
+    "identity_manifest": [
+      {
+        "bytes": 4871,
+        "exists": true,
+        "mtime_ns": 1790550768478009400,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\identity\\manifest.json"
+      }
+    ],
+    "links_prepare": [
+      {
+        "bytes": 109855,
+        "exists": true,
+        "mtime_ns": 1790550766177298900,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\identity\\links.parquet"
+      }
+    ],
+    "links_validation": [
+      {
+        "bytes": 1098632,
+        "exists": true,
+        "mtime_ns": 1790634109366245200,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\identity\\link_table.parquet"
+      }
+    ],
+    "members": [
+      {
+        "bytes": 1692340,
+        "exists": true,
+        "mtime_ns": 1790556581912261200,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\panel_member\\year=2020.parquet"
+      },
+      {
+        "bytes": 2048866,
+        "exists": true,
+        "mtime_ns": 1790556584521218300,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\panel_member\\year=2021.parquet"
+      },
+      {
+        "bytes": 2193685,
+        "exists": true,
+        "mtime_ns": 1790556587330275100,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\panel_member\\year=2022.parquet"
+      },
+      {
+        "bytes": 1831317,
+        "exists": true,
+        "mtime_ns": 1790556589989487200,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\panel_member\\year=2023.parquet"
+      },
+      {
+        "bytes": 1828615,
+        "exists": true,
+        "mtime_ns": 1790556592829689100,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\panel_member\\year=2024.parquet"
+      },
+      {
+        "bytes": 1972511,
+        "exists": true,
+        "mtime_ns": 1790556595543330500,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\panel_member\\year=2025.parquet"
+      }
+    ],
+    "prices": [
+      {
+        "bytes": 102730114,
+        "exists": true,
+        "mtime_ns": 1790551086703399700,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2018\\prices.parquet"
+      },
+      {
+        "bytes": 109568958,
+        "exists": true,
+        "mtime_ns": 1790551096914366600,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2019\\prices.parquet"
+      },
+      {
+        "bytes": 115897797,
+        "exists": true,
+        "mtime_ns": 1790551107471432300,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2020\\prices.parquet"
+      },
+      {
+        "bytes": 137394473,
+        "exists": true,
+        "mtime_ns": 1790551118371476700,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2021\\prices.parquet"
+      },
+      {
+        "bytes": 147619457,
+        "exists": true,
+        "mtime_ns": 1790551128609866200,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2022\\prices.parquet"
+      },
+      {
+        "bytes": 139417307,
+        "exists": true,
+        "mtime_ns": 1790551139076720000,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2023\\prices.parquet"
+      },
+      {
+        "bytes": 141057749,
+        "exists": true,
+        "mtime_ns": 1790551151590327600,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2024\\prices.parquet"
+      },
+      {
+        "bytes": 166353418,
+        "exists": true,
+        "mtime_ns": 1790551163375051000,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2025\\prices.parquet"
+      },
+      {
+        "bytes": 131233575,
+        "exists": true,
+        "mtime_ns": 1790551175347929600,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2026\\prices.parquet"
+      }
+    ],
+    "prices_history": [
+      {
+        "bytes": 62711611,
+        "exists": true,
+        "mtime_ns": 1790635754966513100,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices_history\\year=2012\\prices.parquet"
+      },
+      {
+        "bytes": 84116928,
+        "exists": true,
+        "mtime_ns": 1790635764918647400,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices_history\\year=2013\\prices.parquet"
+      },
+      {
+        "bytes": 102387827,
+        "exists": true,
+        "mtime_ns": 1790635774104121000,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices_history\\year=2014\\prices.parquet"
+      },
+      {
+        "bytes": 90626694,
+        "exists": true,
+        "mtime_ns": 1790635787037797800,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices_history\\year=2015\\prices.parquet"
+      },
+      {
+        "bytes": 99327386,
+        "exists": true,
+        "mtime_ns": 1790635800432954500,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices_history\\year=2016\\prices.parquet"
+      },
+      {
+        "bytes": 100792158,
+        "exists": true,
+        "mtime_ns": 1790635811761399100,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices_history\\year=2017\\prices.parquet"
+      }
+    ],
+    "reference_manifest": [
+      {
+        "bytes": 40537,
+        "exists": true,
+        "mtime_ns": 1790724168510676100,
+        "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\reference\\manifest.json"
+      }
+    ],
+    "statement_seed": [
+      {
+        "bytes": 77151,
+        "exists": true,
+        "mtime_ns": 1790388785355316700,
+        "path": "C:\\atx\\atx-db\\src\\atx_db\\seeds\\statement_map.csv"
+      }
+    ]
+  },
+  "qualification": "No payload hashes, schema/key proof, original source qualification or gates.",
+  "status": "METADATA_ONLY_NOT_ADMITTED"
+}

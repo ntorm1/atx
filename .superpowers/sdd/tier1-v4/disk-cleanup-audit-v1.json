@@ -1,0 +1,1235 @@
+{
+  "authenticated_current_preparation_units": 144,
+  "candidate_total_logical_bytes": 3175142016,
+  "protected": [
+    "Raw/source archives and ledgers",
+    "Current144preparation units",
+    "Extract data/receipts",
+    "All universe generations/receipts/snapshots",
+    "Completed batch outputs",
+    "Foreign and active caches"
+  ],
+  "root": "C:\\atx\\atx-db\\data\\alpha_panel\\v1",
+  "status": "AUDIT_ONLY_NO_DELETION",
+  "targets": [
+    {
+      "dependency_mentions": [],
+      "eligible_for_explicit_removal": true,
+      "exists": true,
+      "files": [
+        {
+          "bytes": 450113536,
+          "mtime_ns": 1791071840699671600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\release-1d2fd70968434dba92bcb575404954c0.duckdb"
+        },
+        {
+          "bytes": 222105,
+          "mtime_ns": 1791071840790309400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\release-1d2fd70968434dba92bcb575404954c0.duckdb.wal"
+        },
+        {
+          "bytes": 288370688,
+          "mtime_ns": 1791070960787853900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\release-56cb82e52377442c811ff3eb175c061e.duckdb"
+        },
+        {
+          "bytes": 12314910,
+          "mtime_ns": 1791070960910690000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\release-56cb82e52377442c811ff3eb175c061e.duckdb.wal"
+        },
+        {
+          "bytes": 379334656,
+          "mtime_ns": 1791070610979356500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\release-f9feea90725a4b7f804035104068fd4a.duckdb"
+        },
+        {
+          "bytes": 996671488,
+          "mtime_ns": 1791070998978365100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2664\\duckdb_temp_storage_DEFAULT-0.tmp"
+        },
+        {
+          "bytes": 4063232,
+          "mtime_ns": 1791070983690681800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2664\\duckdb_temp_storage_S128K-0.tmp"
+        },
+        {
+          "bytes": 1802240,
+          "mtime_ns": 1791070965335185600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2664\\duckdb_temp_storage_S160K-0.tmp"
+        },
+        {
+          "bytes": 196608,
+          "mtime_ns": 1791070964719875300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2664\\duckdb_temp_storage_S192K-0.tmp"
+        },
+        {
+          "bytes": 229376,
+          "mtime_ns": 1791070962122953500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2664\\duckdb_temp_storage_S224K-0.tmp"
+        },
+        {
+          "bytes": 63242240,
+          "mtime_ns": 1791070998987368200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2664\\duckdb_temp_storage_S32K-0.tmp"
+        },
+        {
+          "bytes": 110755840,
+          "mtime_ns": 1791070998985368800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2664\\duckdb_temp_storage_S64K-0.tmp"
+        },
+        {
+          "bytes": 27033600,
+          "mtime_ns": 1791070997561645500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2664\\duckdb_temp_storage_S96K-0.tmp"
+        }
+      ],
+      "logical_bytes": 2334350519,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001",
+      "reason": "Scratch databases/spills from three ended root universe runs; each new connection uses a new UUID and does not resume these databases.",
+      "reparse_points": []
+    },
+    {
+      "dependency_mentions": [],
+      "eligible_for_explicit_removal": true,
+      "exists": true,
+      "files": [
+        {
+          "bytes": 27275264,
+          "mtime_ns": 1791064386929214200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\release-universe-load-diagnostic-v1.duckdb"
+        }
+      ],
+      "logical_bytes": 27275264,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\release-universe-load-diagnostic-v1.duckdb",
+      "reason": "Completed read-only source-load diagnostic; rows/logs/receipts retained separately, never a producer input.",
+      "reparse_points": []
+    },
+    {
+      "dependency_mentions": [],
+      "eligible_for_explicit_removal": false,
+      "exists": false,
+      "files": [],
+      "logical_bytes": 0,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\release-universe-load-diagnostic-v1.duckdb.wal",
+      "reason": "Associated ended diagnostic WAL, if any.",
+      "reparse_points": []
+    },
+    {
+      "dependency_mentions": [],
+      "eligible_for_explicit_removal": true,
+      "exists": true,
+      "files": [
+        {
+          "bytes": 204484608,
+          "mtime_ns": 1791065102519169800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\release-universe-year-diagnostic-v1.duckdb"
+        }
+      ],
+      "logical_bytes": 204484608,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\release-universe-year-diagnostic-v1.duckdb",
+      "reason": "Completed read-only year diagnostic superseded by authenticated2018unit; diagnostic receipt retained.",
+      "reparse_points": []
+    },
+    {
+      "dependency_mentions": [],
+      "eligible_for_explicit_removal": false,
+      "exists": false,
+      "files": [],
+      "logical_bytes": 0,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\release-universe-year-diagnostic-v1.duckdb.wal",
+      "reason": "Associated ended diagnostic WAL, if any.",
+      "reparse_points": []
+    },
+    {
+      "dependency_mentions": [],
+      "eligible_for_explicit_removal": true,
+      "exists": true,
+      "files": [
+        {
+          "bytes": 6756,
+          "mtime_ns": 1791061948341454500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0000.json"
+        },
+        {
+          "bytes": 7177490,
+          "mtime_ns": 1790722617430559200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0000.parquet"
+        },
+        {
+          "bytes": 6717,
+          "mtime_ns": 1791061948343472700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0001.json"
+        },
+        {
+          "bytes": 7115894,
+          "mtime_ns": 1790722627936538200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0001.parquet"
+        },
+        {
+          "bytes": 7089,
+          "mtime_ns": 1791061948345492000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0002.json"
+        },
+        {
+          "bytes": 7189149,
+          "mtime_ns": 1790722636353693700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0002.parquet"
+        },
+        {
+          "bytes": 6034,
+          "mtime_ns": 1791061948348748200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0003.json"
+        },
+        {
+          "bytes": 7133675,
+          "mtime_ns": 1790722644167592600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0003.parquet"
+        },
+        {
+          "bytes": 6499,
+          "mtime_ns": 1791061948350748400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0004.json"
+        },
+        {
+          "bytes": 7023044,
+          "mtime_ns": 1790722652503002100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0004.parquet"
+        },
+        {
+          "bytes": 6389,
+          "mtime_ns": 1791061948353746200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0005.json"
+        },
+        {
+          "bytes": 7004040,
+          "mtime_ns": 1790722660672428900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0005.parquet"
+        },
+        {
+          "bytes": 7078,
+          "mtime_ns": 1791061948355746800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0006.json"
+        },
+        {
+          "bytes": 7015185,
+          "mtime_ns": 1790722668107400200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0006.parquet"
+        },
+        {
+          "bytes": 6765,
+          "mtime_ns": 1791061948357749100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0007.json"
+        },
+        {
+          "bytes": 7093695,
+          "mtime_ns": 1790722676709352900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0007.parquet"
+        },
+        {
+          "bytes": 6847,
+          "mtime_ns": 1791061948368140800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0008.json"
+        },
+        {
+          "bytes": 7237461,
+          "mtime_ns": 1790722686914990300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0008.parquet"
+        },
+        {
+          "bytes": 8696,
+          "mtime_ns": 1791061948370160600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0009.json"
+        },
+        {
+          "bytes": 6935035,
+          "mtime_ns": 1790722694783848600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0009.parquet"
+        },
+        {
+          "bytes": 8729,
+          "mtime_ns": 1791061948372176100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0010.json"
+        },
+        {
+          "bytes": 7133716,
+          "mtime_ns": 1790722702130045700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0010.parquet"
+        },
+        {
+          "bytes": 9358,
+          "mtime_ns": 1791061948375706900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0011.json"
+        },
+        {
+          "bytes": 7055709,
+          "mtime_ns": 1790722709802278300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0011.parquet"
+        },
+        {
+          "bytes": 6655,
+          "mtime_ns": 1791061948377750100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0012.json"
+        },
+        {
+          "bytes": 6892229,
+          "mtime_ns": 1790722717057289700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0012.parquet"
+        },
+        {
+          "bytes": 8274,
+          "mtime_ns": 1791061948380773300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0013.json"
+        },
+        {
+          "bytes": 7165871,
+          "mtime_ns": 1790722726284276400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0013.parquet"
+        },
+        {
+          "bytes": 9723,
+          "mtime_ns": 1791061948382468300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0014.json"
+        },
+        {
+          "bytes": 6986464,
+          "mtime_ns": 1790722734827468900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0014.parquet"
+        },
+        {
+          "bytes": 8979,
+          "mtime_ns": 1791061948384983700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0015.json"
+        },
+        {
+          "bytes": 7115085,
+          "mtime_ns": 1790722742137631400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0015.parquet"
+        },
+        {
+          "bytes": 9436,
+          "mtime_ns": 1791061948387012700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0016.json"
+        },
+        {
+          "bytes": 7235345,
+          "mtime_ns": 1790722749647000400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0016.parquet"
+        },
+        {
+          "bytes": 10321,
+          "mtime_ns": 1791061948390014000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0017.json"
+        },
+        {
+          "bytes": 7224189,
+          "mtime_ns": 1790722757104171100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0017.parquet"
+        },
+        {
+          "bytes": 9378,
+          "mtime_ns": 1791061948392012000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0018.json"
+        },
+        {
+          "bytes": 7114608,
+          "mtime_ns": 1790722767968430200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0018.parquet"
+        },
+        {
+          "bytes": 10327,
+          "mtime_ns": 1791061948393012800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0019.json"
+        },
+        {
+          "bytes": 6949400,
+          "mtime_ns": 1790722780281680700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0019.parquet"
+        },
+        {
+          "bytes": 9938,
+          "mtime_ns": 1791061948396055200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0020.json"
+        },
+        {
+          "bytes": 7125948,
+          "mtime_ns": 1790722792250194400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0020.parquet"
+        },
+        {
+          "bytes": 9246,
+          "mtime_ns": 1791061948400128900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0021.json"
+        },
+        {
+          "bytes": 7211632,
+          "mtime_ns": 1790722801848438600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0021.parquet"
+        },
+        {
+          "bytes": 9319,
+          "mtime_ns": 1791061948407247100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0022.json"
+        },
+        {
+          "bytes": 7178355,
+          "mtime_ns": 1790722813372371800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0022.parquet"
+        },
+        {
+          "bytes": 9901,
+          "mtime_ns": 1791061948415351100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0023.json"
+        },
+        {
+          "bytes": 7285953,
+          "mtime_ns": 1790722823109439700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0023.parquet"
+        },
+        {
+          "bytes": 8872,
+          "mtime_ns": 1791061948417972500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0024.json"
+        },
+        {
+          "bytes": 7026607,
+          "mtime_ns": 1790722833752073200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0024.parquet"
+        },
+        {
+          "bytes": 9217,
+          "mtime_ns": 1791061948420970900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0025.json"
+        },
+        {
+          "bytes": 7217413,
+          "mtime_ns": 1790722842344178600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0025.parquet"
+        },
+        {
+          "bytes": 9434,
+          "mtime_ns": 1791061948422973000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0026.json"
+        },
+        {
+          "bytes": 7013936,
+          "mtime_ns": 1790722850265426500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0026.parquet"
+        },
+        {
+          "bytes": 10581,
+          "mtime_ns": 1791061948424968800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0027.json"
+        },
+        {
+          "bytes": 7214197,
+          "mtime_ns": 1790722859113264200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0027.parquet"
+        },
+        {
+          "bytes": 9067,
+          "mtime_ns": 1791061948426972100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0028.json"
+        },
+        {
+          "bytes": 7041403,
+          "mtime_ns": 1790722869106799100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0028.parquet"
+        },
+        {
+          "bytes": 9108,
+          "mtime_ns": 1791061948430546300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0029.json"
+        },
+        {
+          "bytes": 7160283,
+          "mtime_ns": 1790722880069391400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0029.parquet"
+        },
+        {
+          "bytes": 9694,
+          "mtime_ns": 1791061948431238800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0030.json"
+        },
+        {
+          "bytes": 7135233,
+          "mtime_ns": 1790722889765114300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0030.parquet"
+        },
+        {
+          "bytes": 10313,
+          "mtime_ns": 1791061948435266900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0031.json"
+        },
+        {
+          "bytes": 7074919,
+          "mtime_ns": 1790722898836893100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0031.parquet"
+        },
+        {
+          "bytes": 9057,
+          "mtime_ns": 1791061948437284300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0032.json"
+        },
+        {
+          "bytes": 7228603,
+          "mtime_ns": 1790722910070403100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0032.parquet"
+        },
+        {
+          "bytes": 8887,
+          "mtime_ns": 1791061948439300700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0033.json"
+        },
+        {
+          "bytes": 6996696,
+          "mtime_ns": 1790722919233129500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0033.parquet"
+        },
+        {
+          "bytes": 8882,
+          "mtime_ns": 1791061948441317900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0034.json"
+        },
+        {
+          "bytes": 7045461,
+          "mtime_ns": 1790722930735934800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0034.parquet"
+        },
+        {
+          "bytes": 11482,
+          "mtime_ns": 1791061948444364900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0035.json"
+        },
+        {
+          "bytes": 7080485,
+          "mtime_ns": 1790722940494305400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0035.parquet"
+        },
+        {
+          "bytes": 12718,
+          "mtime_ns": 1791061948450261800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0036.json"
+        },
+        {
+          "bytes": 7232350,
+          "mtime_ns": 1790722949394372700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0036.parquet"
+        },
+        {
+          "bytes": 12559,
+          "mtime_ns": 1791061948452262400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0037.json"
+        },
+        {
+          "bytes": 7242033,
+          "mtime_ns": 1790722956078043600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0037.parquet"
+        },
+        {
+          "bytes": 12227,
+          "mtime_ns": 1791061948455260000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0038.json"
+        },
+        {
+          "bytes": 7318432,
+          "mtime_ns": 1790722962767701700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0038.parquet"
+        },
+        {
+          "bytes": 11081,
+          "mtime_ns": 1791061948458259400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0039.json"
+        },
+        {
+          "bytes": 6998878,
+          "mtime_ns": 1790722969553605900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0039.parquet"
+        },
+        {
+          "bytes": 11895,
+          "mtime_ns": 1791061948460260000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0040.json"
+        },
+        {
+          "bytes": 7212658,
+          "mtime_ns": 1790722977021559600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0040.parquet"
+        },
+        {
+          "bytes": 12083,
+          "mtime_ns": 1791061948463259200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0041.json"
+        },
+        {
+          "bytes": 7037008,
+          "mtime_ns": 1790722988599038100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0041.parquet"
+        },
+        {
+          "bytes": 11584,
+          "mtime_ns": 1791061948464647000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0042.json"
+        },
+        {
+          "bytes": 7182658,
+          "mtime_ns": 1790722999882227200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0042.parquet"
+        },
+        {
+          "bytes": 12878,
+          "mtime_ns": 1791061948466659700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0043.json"
+        },
+        {
+          "bytes": 7284082,
+          "mtime_ns": 1790723011205201300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0043.parquet"
+        },
+        {
+          "bytes": 14425,
+          "mtime_ns": 1791061948470686000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0044.json"
+        },
+        {
+          "bytes": 7186192,
+          "mtime_ns": 1790723021293980000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0044.parquet"
+        },
+        {
+          "bytes": 12193,
+          "mtime_ns": 1791061948472701500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0045.json"
+        },
+        {
+          "bytes": 7181477,
+          "mtime_ns": 1790723030172737700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0045.parquet"
+        },
+        {
+          "bytes": 12253,
+          "mtime_ns": 1791061948474721400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0046.json"
+        },
+        {
+          "bytes": 7187420,
+          "mtime_ns": 1790723038095872200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0046.parquet"
+        },
+        {
+          "bytes": 13371,
+          "mtime_ns": 1791061948478756400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0047.json"
+        },
+        {
+          "bytes": 7345853,
+          "mtime_ns": 1790723045133825100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0047.parquet"
+        },
+        {
+          "bytes": 10894,
+          "mtime_ns": 1791061948481014200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0048.json"
+        },
+        {
+          "bytes": 7084267,
+          "mtime_ns": 1790723052416563100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0048.parquet"
+        },
+        {
+          "bytes": 12440,
+          "mtime_ns": 1791061948483029300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0049.json"
+        },
+        {
+          "bytes": 7089723,
+          "mtime_ns": 1790723060415843700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0049.parquet"
+        },
+        {
+          "bytes": 14714,
+          "mtime_ns": 1791061948524288800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0050.json"
+        },
+        {
+          "bytes": 7405011,
+          "mtime_ns": 1790723070734676400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0050.parquet"
+        },
+        {
+          "bytes": 12290,
+          "mtime_ns": 1791061948527307100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0051.json"
+        },
+        {
+          "bytes": 7328420,
+          "mtime_ns": 1790723081509602000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0051.parquet"
+        },
+        {
+          "bytes": 15156,
+          "mtime_ns": 1791061948529305800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0052.json"
+        },
+        {
+          "bytes": 7099929,
+          "mtime_ns": 1790723089374130700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0052.parquet"
+        },
+        {
+          "bytes": 14469,
+          "mtime_ns": 1791061948532303700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0053.json"
+        },
+        {
+          "bytes": 7172116,
+          "mtime_ns": 1790723100983260200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0053.parquet"
+        },
+        {
+          "bytes": 13995,
+          "mtime_ns": 1791061948535307700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0054.json"
+        },
+        {
+          "bytes": 7425296,
+          "mtime_ns": 1790723112572696300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0054.parquet"
+        },
+        {
+          "bytes": 13493,
+          "mtime_ns": 1791061948537305900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0055.json"
+        },
+        {
+          "bytes": 7190226,
+          "mtime_ns": 1790723120428514300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0055.parquet"
+        },
+        {
+          "bytes": 16890,
+          "mtime_ns": 1791061948539309200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0056.json"
+        },
+        {
+          "bytes": 7408484,
+          "mtime_ns": 1790723129833789100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0056.parquet"
+        },
+        {
+          "bytes": 15132,
+          "mtime_ns": 1791061948541819200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0057.json"
+        },
+        {
+          "bytes": 7297679,
+          "mtime_ns": 1790723138901345600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0057.parquet"
+        },
+        {
+          "bytes": 16042,
+          "mtime_ns": 1791061948543833700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0058.json"
+        },
+        {
+          "bytes": 7354895,
+          "mtime_ns": 1790723148893253600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0058.parquet"
+        },
+        {
+          "bytes": 13499,
+          "mtime_ns": 1791061948546363500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0059.json"
+        },
+        {
+          "bytes": 7246774,
+          "mtime_ns": 1790723161027223800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0059.parquet"
+        },
+        {
+          "bytes": 16674,
+          "mtime_ns": 1791061948548363100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0060.json"
+        },
+        {
+          "bytes": 7348333,
+          "mtime_ns": 1790723169752763900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0060.parquet"
+        },
+        {
+          "bytes": 15545,
+          "mtime_ns": 1791061948551366900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0061.json"
+        },
+        {
+          "bytes": 7312342,
+          "mtime_ns": 1790723176459961000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0061.parquet"
+        },
+        {
+          "bytes": 19179,
+          "mtime_ns": 1791061948553367300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0062.json"
+        },
+        {
+          "bytes": 7325394,
+          "mtime_ns": 1790723187315252400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0062.parquet"
+        },
+        {
+          "bytes": 15960,
+          "mtime_ns": 1791061948555553200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0063.json"
+        },
+        {
+          "bytes": 7264811,
+          "mtime_ns": 1790723196673076600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0063.parquet"
+        },
+        {
+          "bytes": 15245,
+          "mtime_ns": 1791061948568515700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0064.json"
+        },
+        {
+          "bytes": 7136463,
+          "mtime_ns": 1790723209080443900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0064.parquet"
+        },
+        {
+          "bytes": 14235,
+          "mtime_ns": 1791061948590636500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0065.json"
+        },
+        {
+          "bytes": 7119393,
+          "mtime_ns": 1790723219841069900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0065.parquet"
+        },
+        {
+          "bytes": 17925,
+          "mtime_ns": 1791061948594667900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0066.json"
+        },
+        {
+          "bytes": 7071358,
+          "mtime_ns": 1790723231370227300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0066.parquet"
+        },
+        {
+          "bytes": 15016,
+          "mtime_ns": 1791061948597266400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0067.json"
+        },
+        {
+          "bytes": 6965045,
+          "mtime_ns": 1790723240660392300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0067.parquet"
+        },
+        {
+          "bytes": 15333,
+          "mtime_ns": 1791061948599787300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0068.json"
+        },
+        {
+          "bytes": 6957621,
+          "mtime_ns": 1790723251697080700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0068.parquet"
+        },
+        {
+          "bytes": 13715,
+          "mtime_ns": 1791061948601816900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0069.json"
+        },
+        {
+          "bytes": 6971726,
+          "mtime_ns": 1790723261878283800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0069.parquet"
+        },
+        {
+          "bytes": 15157,
+          "mtime_ns": 1791061948602816200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0070.json"
+        },
+        {
+          "bytes": 6794879,
+          "mtime_ns": 1790723271866369800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0070.parquet"
+        },
+        {
+          "bytes": 16715,
+          "mtime_ns": 1791061948608900300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0071.json"
+        },
+        {
+          "bytes": 6877763,
+          "mtime_ns": 1790723281039067900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0071.parquet"
+        },
+        {
+          "bytes": 16730,
+          "mtime_ns": 1791061948610925100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0072.json"
+        },
+        {
+          "bytes": 6956766,
+          "mtime_ns": 1790723291973707800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0072.parquet"
+        },
+        {
+          "bytes": 16870,
+          "mtime_ns": 1791061948614389800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0073.json"
+        },
+        {
+          "bytes": 6879609,
+          "mtime_ns": 1790723303420012300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0073.parquet"
+        },
+        {
+          "bytes": 16454,
+          "mtime_ns": 1791061948617538400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0074.json"
+        },
+        {
+          "bytes": 6939391,
+          "mtime_ns": 1790723314339301500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0074.parquet"
+        },
+        {
+          "bytes": 17027,
+          "mtime_ns": 1791061948619556800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0075.json"
+        },
+        {
+          "bytes": 6963968,
+          "mtime_ns": 1790723325784092200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0075.parquet"
+        },
+        {
+          "bytes": 19163,
+          "mtime_ns": 1791061948637468800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0076.json"
+        },
+        {
+          "bytes": 7031429,
+          "mtime_ns": 1790723337654533200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0076.parquet"
+        },
+        {
+          "bytes": 20507,
+          "mtime_ns": 1791061948650135100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0077.json"
+        },
+        {
+          "bytes": 6823145,
+          "mtime_ns": 1790723345719693100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0077.parquet"
+        },
+        {
+          "bytes": 23585,
+          "mtime_ns": 1791061948652153300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0078.json"
+        },
+        {
+          "bytes": 6824454,
+          "mtime_ns": 1790723356349444500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0078.parquet"
+        },
+        {
+          "bytes": 24792,
+          "mtime_ns": 1791061948654171500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0079.json"
+        },
+        {
+          "bytes": 6829872,
+          "mtime_ns": 1790723366110219000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0079.parquet"
+        },
+        {
+          "bytes": 29161,
+          "mtime_ns": 1791061948658211100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0080.json"
+        },
+        {
+          "bytes": 6777259,
+          "mtime_ns": 1790723373257689200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0080.parquet"
+        },
+        {
+          "bytes": 37940,
+          "mtime_ns": 1791061948659726800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0081.json"
+        },
+        {
+          "bytes": 6800671,
+          "mtime_ns": 1790723382310557200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0081.parquet"
+        },
+        {
+          "bytes": 45154,
+          "mtime_ns": 1791061948661766400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0082.json"
+        },
+        {
+          "bytes": 6776602,
+          "mtime_ns": 1790723390606864400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0082.parquet"
+        },
+        {
+          "bytes": 70610,
+          "mtime_ns": 1791061948664903000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0083.json"
+        },
+        {
+          "bytes": 6432268,
+          "mtime_ns": 1790723399782601000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0083.parquet"
+        },
+        {
+          "bytes": 67924,
+          "mtime_ns": 1791061948667554900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0084.json"
+        },
+        {
+          "bytes": 1956856,
+          "mtime_ns": 1790723403380300400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\batch-0084.parquet"
+        },
+        {
+          "bytes": 8872,
+          "mtime_ns": 1791061948668574800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\cf\\plan.json"
+        },
+        {
+          "bytes": 1498035,
+          "mtime_ns": 1791061986224518000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\class_shares.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791061986235878100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\class_shares.parquet.sha256"
+        },
+        {
+          "bytes": 704736,
+          "mtime_ns": 1791062026412922200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pos_sums.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062026418633700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pos_sums.parquet.sha256"
+        },
+        {
+          "bytes": 5691,
+          "mtime_ns": 1791062026594039300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2009q2.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062026616791400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2009q2.parquet.sha256"
+        },
+        {
+          "bytes": 10308,
+          "mtime_ns": 1791062027024261700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2009q3.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062027033002800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2009q3.parquet.sha256"
+        },
+        {
+          "bytes": 10903,
+          "mtime_ns": 1791062027431448500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2009q4.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062027441113000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2009q4.parquet.sha256"
+        },
+        {
+          "bytes": 10793,
+          "mtime_ns": 1791062027828101700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2010q1.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062027840071700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2010q1.parquet.sha256"
+        },
+        {
+          "bytes": 11193,
+          "mtime_ns": 1791062028292135900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2010q2.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062028300539900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2010q2.parquet.sha256"
+        },
+        {
+          "bytes": 19758,
+          "mtime_ns": 1791062029060363500,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2010q3.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062029064824800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2010q3.parquet.sha256"
+        },
+        {
+          "bytes": 20417,
+          "mtime_ns": 1791062029751721000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2010q4.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062029758718900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2010q4.parquet.sha256"
+        },
+        {
+          "bytes": 20348,
+          "mtime_ns": 1791062030624282100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2011q1.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062030631927000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2011q1.parquet.sha256"
+        },
+        {
+          "bytes": 22640,
+          "mtime_ns": 1791062031467900000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2011q2.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062031474785300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2011q2.parquet.sha256"
+        },
+        {
+          "bytes": 77323,
+          "mtime_ns": 1791062033499821900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2011q3.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062033524995300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2011q3.parquet.sha256"
+        },
+        {
+          "bytes": 82272,
+          "mtime_ns": 1791062035820250300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2011q4.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062035837231900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2011q4.parquet.sha256"
+        },
+        {
+          "bytes": 81454,
+          "mtime_ns": 1791062038744357700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2012q1.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062038787397100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2012q1.parquet.sha256"
+        },
+        {
+          "bytes": 98109,
+          "mtime_ns": 1791062042157575000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2012q2.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062042188660600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2012q2.parquet.sha256"
+        },
+        {
+          "bytes": 87089,
+          "mtime_ns": 1791062044543002300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2012q3.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062044564969800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2012q3.parquet.sha256"
+        },
+        {
+          "bytes": 88434,
+          "mtime_ns": 1791062047173496800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2012q4.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062047199884000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2012q4.parquet.sha256"
+        },
+        {
+          "bytes": 76140,
+          "mtime_ns": 1791062049337251600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2013q1.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062049350629700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2013q1.parquet.sha256"
+        },
+        {
+          "bytes": 97427,
+          "mtime_ns": 1791062051905714600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2013q2.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062051919715400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2013q2.parquet.sha256"
+        },
+        {
+          "bytes": 88217,
+          "mtime_ns": 1791062054399768800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2013q3.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062054411938300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2013q3.parquet.sha256"
+        },
+        {
+          "bytes": 86347,
+          "mtime_ns": 1791062056643712800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2013q4.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791062056679292000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2013q4.parquet.sha256"
+        },
+        {
+          "bytes": 0,
+          "mtime_ns": 1791062056803398600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\pre_flags\\2014q1.parquet.partial"
+        },
+        {
+          "bytes": 6112079,
+          "mtime_ns": 1791061949589098100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\sub_clock.parquet"
+        },
+        {
+          "bytes": 64,
+          "mtime_ns": 1791061949594096200,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z\\sub_clock.parquet.sha256"
+        }
+      ],
+      "logical_bytes": 609031625,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_interrupted_work-r2-20261003T211353Z",
+      "reason": "Obsolete unauthenticated interrupted derived preparation, superseded by separately verified144units; raw FSDS/archive/extract inputs preserved.",
+      "reparse_points": []
+    }
+  ]
+}

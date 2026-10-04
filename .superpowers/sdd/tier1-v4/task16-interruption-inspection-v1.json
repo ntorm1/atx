@@ -1,0 +1,38 @@
+{
+  "current_pointer_exists": false,
+  "final_manifest_exists": false,
+  "generation": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001",
+  "members": {
+    "snapshot.json": {
+      "bytes": 114178,
+      "sha256": "cab98a7472ad3224be6c85b7f0aef73d4088b50b9326c8cbe202dfe91a2d1d02"
+    },
+    "year=2018/receipt.json": {
+      "bytes": 113473,
+      "receipt": {
+        "payload": {
+          "bytes": 18114598,
+          "sha256": "7507327b9e2f986da79324ae1a40a758a0c242e706428cbd93532fda680598e4"
+        },
+        "rows": 2006722,
+        "snapshot_sha256": "ef2754a933fc38b2a3dba1cd50a33d6f359d15846ee5d470cb4d9022335319c7",
+        "year": 2018
+      },
+      "sha256": "3abbab2e5bae371cbad9be1d87ce57239d1e5484e8366f9dca6edd30670802c3"
+    },
+    "year=2018/universe.parquet": {
+      "bytes": 18114598,
+      "sha256": "7507327b9e2f986da79324ae1a40a758a0c242e706428cbd93532fda680598e4"
+    }
+  },
+  "qualification": "SHA inventory only, no resume admission or completion claim.",
+  "readiness": "NOT_PRODUCTION_READY",
+  "stage_files": {
+    ".writer.lock": {
+      "bytes": 4,
+      "sha256": "141dc5ae59a81abaaeeb12e46e5e9a173dd6530e671bf9462300c867303ffe65",
+      "text": "2664"
+    }
+  },
+  "status": "INTERRUPTED_CANDIDATE_READ_ONLY_INVENTORY"
+}

@@ -1,0 +1,233 @@
+{
+  "archive": {
+    "bytes": 1409212553,
+    "path": "C:\\atx\\atx-db\\data\\cache\\companyfacts.zip",
+    "sha256": "ee099c7394a357f1996c728b7362f25158613b34f2ab1ad270cffc1befb917b6"
+  },
+  "external_evidence": {
+    "byte_audit": {
+      "bytes": 47563,
+      "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-fund-reader-byte-audit-v2.json",
+      "sha256": "f79359357521d829b20d617bf7fceb97a28286d747d08f075f3ec187f62f1b16"
+    },
+    "preflight": {
+      "bytes": 7458,
+      "path": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-fund-reader-preflight-v1.json",
+      "sha256": "39fcb67423bcbfc77516767843afcf8dd3a1676dee50e2ed5b5f6038d36f5de7"
+    }
+  },
+  "extract_root": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_work\\cf",
+  "fsds_root": "C:\\atx\\atx-db\\data\\staging\\fsds-v2",
+  "prep_root": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_v11\\_work",
+  "products": {
+    "calendar": {
+      "admission": "BYTE_MATCH_ONLY for an isolated NOT_PRODUCTION_READY candidate. Source economics, original gates and downstream consumer use remain unqualified.",
+      "clock": "Retained native clocks must be replayed and independently qualified; this byte evidence grants no point-in-time or public-availability certification.",
+      "files": {
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\calendar.parquet": {
+          "bytes": 19323,
+          "sha256": "dd9cb6958d8a4a84de1f6a4ac44d07a8f8e8f9ad8d6ebed477e30d89675fa44e"
+        }
+      },
+      "source": "Explicit actual native reader calendar; independently measured two-pass actual bytes and producer declarations in C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-fund-reader-byte-audit-v2.json"
+    },
+    "eight_k": {
+      "admission": "BYTE_MATCH_ONLY for an isolated NOT_PRODUCTION_READY candidate. Source economics, original gates and downstream consumer use remain unqualified.",
+      "clock": "Retained native clocks must be replayed and independently qualified; this byte evidence grants no point-in-time or public-availability certification.",
+      "files": {
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\sec_filings\\eight_k_items.parquet": {
+          "bytes": 30617919,
+          "sha256": "a27523791ef71e695cc842815c8358d1b760d48c340d9050659da6f58cc6c1e5"
+        }
+      },
+      "source": "Explicit actual native reader eight_k; independently measured two-pass actual bytes and producer declarations in C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-fund-reader-byte-audit-v2.json"
+    },
+    "filings_manifest": {
+      "admission": "BYTE_MATCH_ONLY for an isolated NOT_PRODUCTION_READY candidate. Source economics, original gates and downstream consumer use remain unqualified.",
+      "clock": "Retained native clocks must be replayed and independently qualified; this byte evidence grants no point-in-time or public-availability certification.",
+      "files": {
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\sec_filings\\manifest.json": {
+          "bytes": 58357,
+          "sha256": "5190fe99e4c2f1f13218d966a67d06995d51b7a31a73151dad2686e829aed693"
+        }
+      },
+      "source": "Explicit actual native reader filings_manifest; independently measured two-pass actual bytes and producer declarations in C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-fund-reader-byte-audit-v2.json"
+    },
+    "fx": {
+      "admission": "BYTE_MATCH_ONLY for an isolated NOT_PRODUCTION_READY candidate. Source economics, original gates and downstream consumer use remain unqualified.",
+      "clock": "Retained native clocks must be replayed and independently qualified; this byte evidence grants no point-in-time or public-availability certification.",
+      "files": {
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\reference\\fx_daily.parquet": {
+          "bytes": 689980,
+          "sha256": "c49b057a3048406ba65146191d605bd63e6dc95f8600fed8b9ac1b2cc47b034c"
+        }
+      },
+      "source": "Explicit actual native reader fx; independently measured two-pass actual bytes and producer declarations in C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-fund-reader-byte-audit-v2.json"
+    },
+    "identity_manifest": {
+      "admission": "BYTE_MATCH_ONLY for an isolated NOT_PRODUCTION_READY candidate. Source economics, original gates and downstream consumer use remain unqualified.",
+      "clock": "Retained native clocks must be replayed and independently qualified; this byte evidence grants no point-in-time or public-availability certification.",
+      "files": {
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\identity\\manifest.json": {
+          "bytes": 4871,
+          "sha256": "0df3dc103b49f8494002b48983c6895a30f707b4a75eb61f6d6c1f9f169f2e76"
+        }
+      },
+      "source": "Explicit actual native reader identity_manifest; independently measured two-pass actual bytes and producer declarations in C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-fund-reader-byte-audit-v2.json"
+    },
+    "links_prepare": {
+      "admission": "BYTE_MATCH_ONLY for an isolated NOT_PRODUCTION_READY candidate. Source economics, original gates and downstream consumer use remain unqualified.",
+      "clock": "Retained native clocks must be replayed and independently qualified; this byte evidence grants no point-in-time or public-availability certification.",
+      "files": {
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\identity\\links.parquet": {
+          "bytes": 109855,
+          "sha256": "75b71f531bb446db1117bd03c332e34f68ec5194cbc621a84e26b01c84bef6fe"
+        }
+      },
+      "source": "Explicit actual native reader links_prepare; independently measured two-pass actual bytes and producer declarations in C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-fund-reader-byte-audit-v2.json"
+    },
+    "links_validation": {
+      "admission": "BYTE_MATCH_ONLY for an isolated NOT_PRODUCTION_READY candidate. Source economics, original gates and downstream consumer use remain unqualified.",
+      "clock": "Retained native clocks must be replayed and independently qualified; this byte evidence grants no point-in-time or public-availability certification.",
+      "files": {
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\identity\\link_table.parquet": {
+          "bytes": 1098632,
+          "sha256": "7e23fa9767682138504438e2f320699200f36bf322b01c37bdf72583df38e035"
+        }
+      },
+      "source": "Explicit actual native reader links_validation; independently measured two-pass actual bytes and producer declarations in C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-fund-reader-byte-audit-v2.json"
+    },
+    "members": {
+      "admission": "BYTE_MATCH_ONLY for an isolated NOT_PRODUCTION_READY candidate. Source economics, original gates and downstream consumer use remain unqualified.",
+      "clock": "Retained native clocks must be replayed and independently qualified; this byte evidence grants no point-in-time or public-availability certification.",
+      "files": {
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\panel_member\\year=2020.parquet": {
+          "bytes": 1692340,
+          "sha256": "844e4649053c32984efeeb36f02d81a4d4259e7f1bd888deed58a76d3bc239d5"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\panel_member\\year=2021.parquet": {
+          "bytes": 2048866,
+          "sha256": "b980e2c05dbf073c6191d5a7a2e026f006d734af20ec0380a8b41bcd2601e475"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\panel_member\\year=2022.parquet": {
+          "bytes": 2193685,
+          "sha256": "08e10103c7eccc9f68a2880e2355f16ad237610c638951d72b60774c28d314a8"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\panel_member\\year=2023.parquet": {
+          "bytes": 1831317,
+          "sha256": "cdf75e2dfaf2b94cfab80b42d02aad8e2f8e673b6052761a6068b21071db5c71"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\panel_member\\year=2024.parquet": {
+          "bytes": 1828615,
+          "sha256": "99dc66199c54a2425d4ae316a195d61da2c388edcba75b0d3f3c81a7aa764e7f"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\panel_member\\year=2025.parquet": {
+          "bytes": 1972511,
+          "sha256": "70e321a522997e9ad24ad3263bcac3ef3f58c88c356290965da126bb48471079"
+        }
+      },
+      "source": "Explicit actual native reader members; independently measured two-pass actual bytes and producer declarations in C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-fund-reader-byte-audit-v2.json"
+    },
+    "prices": {
+      "admission": "BYTE_MATCH_ONLY for an isolated NOT_PRODUCTION_READY candidate. Source economics, original gates and downstream consumer use remain unqualified.",
+      "clock": "Retained native clocks must be replayed and independently qualified; this byte evidence grants no point-in-time or public-availability certification.",
+      "files": {
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2018\\prices.parquet": {
+          "bytes": 102730114,
+          "sha256": "620b85e12887d02baf33503a8526f3a2e71735e2a39228679bc4a4437f48602d"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2019\\prices.parquet": {
+          "bytes": 109568958,
+          "sha256": "2ba52d8bf9ee61a7a96b3a92c52721410c2b7001c93908ffea19d110d1b3348a"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2020\\prices.parquet": {
+          "bytes": 115897797,
+          "sha256": "6301e23701738b8f5383d31a43eacc8462dd9cfa41799005c45110484e8ea5e0"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2021\\prices.parquet": {
+          "bytes": 137394473,
+          "sha256": "7ea65d8bb8b4d183d0700e438a26877644831ac5beb0abe8f5edd586386260d1"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2022\\prices.parquet": {
+          "bytes": 147619457,
+          "sha256": "dbaddbc8688ae9aca3f260b86d5667a9f45685f4c91dce861d97a3713dc0025c"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2023\\prices.parquet": {
+          "bytes": 139417307,
+          "sha256": "bb695bd0c5f245aa237956529b019d5a3e7d9d9eac4488a2dc174ab3c4c03984"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2024\\prices.parquet": {
+          "bytes": 141057749,
+          "sha256": "3418a1811f26f3ac0937315464e1cc3511184ac050a43ef9fc2c9cd86221d724"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2025\\prices.parquet": {
+          "bytes": 166353418,
+          "sha256": "c4051a8f1f36554f43f98effbd0ffff752abb80d61340eb2d7bf5fff5efabc3d"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices\\year=2026\\prices.parquet": {
+          "bytes": 131233575,
+          "sha256": "44aedff35a0dae629028eab0342b9c358aed3f1113edc9f068b5868be4883b66"
+        }
+      },
+      "source": "Explicit actual native reader prices; independently measured two-pass actual bytes and producer declarations in C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-fund-reader-byte-audit-v2.json"
+    },
+    "prices_history": {
+      "admission": "BYTE_MATCH_ONLY for an isolated NOT_PRODUCTION_READY candidate. Source economics, original gates and downstream consumer use remain unqualified.",
+      "clock": "Retained native clocks must be replayed and independently qualified; this byte evidence grants no point-in-time or public-availability certification.",
+      "files": {
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices_history\\year=2012\\prices.parquet": {
+          "bytes": 62711611,
+          "sha256": "ba166c305b1e350ede3e7936d97c25c9f61991bc8554f333ea208f5c65546670"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices_history\\year=2013\\prices.parquet": {
+          "bytes": 84116928,
+          "sha256": "f3e3be6939003a8ea308fda326a7b03ad6eb6db2d65c794fceedf70bde77e25e"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices_history\\year=2014\\prices.parquet": {
+          "bytes": 102387827,
+          "sha256": "98d355436401326447173a1d7552c3fbef826452505eab39a2505495de9c6dbc"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices_history\\year=2015\\prices.parquet": {
+          "bytes": 90626694,
+          "sha256": "7bd3527ef7c97ddf045deeeb37304ad5b9c530583d7f16cc5ee46d7cf01006a3"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices_history\\year=2016\\prices.parquet": {
+          "bytes": 99327386,
+          "sha256": "7359d67b3d6ec8c1d8dd6a59aa5e858b744b7ce2fdbca55e163421b22bb073ca"
+        },
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\prices_history\\year=2017\\prices.parquet": {
+          "bytes": 100792158,
+          "sha256": "c5cd485f3b694b48447d442c28537802f79fd717ab1af15b63b0f92715026092"
+        }
+      },
+      "source": "Explicit actual native reader prices_history; independently measured two-pass actual bytes and producer declarations in C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-fund-reader-byte-audit-v2.json"
+    },
+    "reference_manifest": {
+      "admission": "BYTE_MATCH_ONLY for an isolated NOT_PRODUCTION_READY candidate. Source economics, original gates and downstream consumer use remain unqualified.",
+      "clock": "Retained native clocks must be replayed and independently qualified; this byte evidence grants no point-in-time or public-availability certification.",
+      "files": {
+        "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\reference\\manifest.json": {
+          "bytes": 40537,
+          "sha256": "2f09dcbc1b737add7567d97ab1621d64b40b410fa767edacc75126797ddda2e7"
+        }
+      },
+      "source": "Explicit actual native reader reference_manifest; independently measured two-pass actual bytes and producer declarations in C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-fund-reader-byte-audit-v2.json"
+    },
+    "statement_seed": {
+      "admission": "BYTE_MATCH_ONLY for an isolated NOT_PRODUCTION_READY candidate. Source economics, original gates and downstream consumer use remain unqualified.",
+      "clock": "Retained native clocks must be replayed and independently qualified; this byte evidence grants no point-in-time or public-availability certification.",
+      "files": {
+        "C:\\atx\\atx-db\\src\\atx_db\\seeds\\statement_map.csv": {
+          "bytes": 77151,
+          "sha256": "dbdf27af9001a1f433580e8a4f364dbf92434f72f3a6eb5031c4d4e4fe1be495"
+        }
+      },
+      "source": "Explicit actual native reader statement_seed; independently measured two-pass actual bytes and producer declarations in C:\\atx\\.superpowers\\sdd\\tier1-v4\\task16-fund-reader-byte-audit-v2.json"
+    }
+  },
+  "readiness": "NOT_PRODUCTION_READY",
+  "root": "C:\\atx\\atx-db\\data\\alpha_panel\\v1",
+  "semantic_producer": "fundamentals_v11",
+  "source_quality_certified": false,
+  "version": "fund-batch-release-v1"
+}

@@ -2,6 +2,127 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
+Latest checkpoint supersedes statuses below: NO rootlivejob. Task16fundidentity
+integration189fe919 independentlyApproved, cumulativeTask16fixcount4/5. Root
+two-passfundreaderbyteauditv2 completed16s/65,531,904bytepeak,50uniquefiles/
+3,774,103,103bytes,2identicalpasses/0declaredmismatches. Binding prepared (notnative
+admitted) task16-fund-reader-binding-v1.json SHA8c63e1ba186a81c70c9f620ebd14cb9a4e4cbdd36b9faf44e5154dd5546894b3,
+14950bytes/12products/30readerfiles. /root/t16_release_foundation reviewingbinding
+only now. Whole85extract replay/preparation/nativefundunits/gatesallpending.
+
+Task7reviewhasI1-I6/M1 inreview-T7-native-findings.md. Originalauthor/root/t7_characteristics
+fixround1/5; R18task-7-evaluation-ruling.md freezes120holdingmonths2013-2022 and
+priorlastsessionformations,60minimumpairedmonths, no actualreturnmeasurements.
+IndependentOSAPmappingfile/contract/full153mappedorexcluded inventoryrequired;
+missingmetadata refuses evaluation. Exactfinalratios+economicbasis required.
+
+Task11rootpart0000retrospectiveinventorycompleted20s/.0583GiB,10kmain+1328history,
+7336filings, oneCIK19617member>4MiB exception; endCIK0000731762.json, fullthrough
+CIK9999999999.json, sourcearchiveunchanged, NULLretrievalclock/incompleteinventory.
+Author/root/t11_ownership implementingapprovednewthirteenf_native.py original
+admission/position/immutableCLI, noactualjobs. Source/qualityfreeze released.
+
+Latest checkpoint (2026-10-04): NO root live data job. session44250 ended
+stopped_low_commit307.3s,506,802,176bytepeak(.472GiB),freecommit.5177,exit137/no
+caphit. Existing-unit replay did not complete. Furtherlonguniverse retries held.
+Third orphan writerlock remains toinspect beforeanyfuturewriter; candidate
+unchanged was verified beforethis read/replay-onlyjob, notpostjobyet.
+
+Fundbyteauditv1 failed3s/.0556GiB atnativeidentitymanifestshape beforefullhashpass:
+identity-links-v1 stageI uses outputs/3sources, notfiles. Rootguardedmetadata
+inspection task16-fund-manifest-shape-v1.json and task16-identity-manifest-pins-v1.json
+pin originalmanifest SHA0df3dc103b49f8494002b48983c6895a30f707b4a75eb61f6d6c1f9f169f2e76.
+Author/root/t6_factors designingexactknownschemaadapter (notemptyfallback), then
+independentreview. No binding exists; bindinghelper preparedonly. Cumulative
+Task16fixdispatches universe1+fundrecovery1+thisintegration1 =3/5, no capreset.
+
+Task7 checkpoint32cdf42d (264registry/152originalexecutors/33fixtures) nowunder
+fullinitialindependentreview by/root/t16_release_foundation; realgatesunmeasured.
+Task11classifiercc1babe3 scopedApproved; rootv3ledger scancomplete,0knownleads;
+all38,433+17,103records UNKNOWN, noexceptions. Notproof13Fbronzeabsent.
+/root/t11_ownership nextnativeassemblyDESIGNonly; noactualjobgrant. Cumulative
+Task11fixrounds native2+bridge1+discovery1 =4/5. Onefinalfixroundremains; original
+unfinisheddeliverableimplementationcontinues, no sixthfixallowed.
+
+Historical checkpoint: ROOT LIVE DATA JOB session44250, logs/t16-existing-units-
+admit-v1.*, .8GiB unchangedguard, native universe_release build samegeneration/
+bindings with --max-new-years0. This is existing2018/2019 normal replay admission
+only; no new year computation requested. Keepowneduntilcompletion, no competing
+datajobs. Dead17684lock preserved with checkedguard/PIDs/paths/hash and both
+candidate receipt identities; logs/t16-preserved-orphan-lock-v2.json,5bytes/SHA
+856b9705dbec4a9e18627d0b8fe8d0119ce617f1da16df462c362f459568f049.
+
+Task16fund82608d6b now independently scopedApproved. Metadata-onlyfundreader
+preflight completed:30files/1,775,519,411bytes, no missingmandatoryinputs; retained
+companyfacts.zip1,409,212,553bytes. task16-fund-reader-preflight-v1.json. New
+t16-fund-reader-byte-audit-v1.py PREPARED NOTRUN; waituntildataslotreleased.
+
+Bridge77ffa6e5 and knownleadlist61aa083a scopedApproved by/root/t16_release_foundation.
+Rootv2ledgerjobcompleted, but ALL SIXLEADS ARE FALSEPOSITIVE SHA256suffix13f,
+not13F originals (actualURLs10K/earnings/search). Rootdispatched author
+/root/t11_ownership semantic-field classifierfix1, no actualjob. Sixleadclaims
+beloware historical/retracted; originalsourcecompletenessunproven. Task7author
+expectsfullcodecommitsoon,264total/153originalcatalog,152executable/eq_durunsupported.
+
+Latest2026-10-04 after00:20UTC: NO root live data job. This supersedes all
+historical LIVE statements below. session14718 ended lowcommit461.8s/.4776GiB,
+exit137/no caphit. Cleanup postverification50364 completed17.1s/.1076GiB exit0.
+Candidate now has byte-verified2018 AND2019 receipts/payloads, no unsealed year
+directories/no finalmanifest/pointer. 2019 has2,110,686rows, payload
+1147bf44443978d7158b2c0488996bfb5a7165f4ffad8b0f4c77b4c2ca112104,
+receipt a58c99fe850526028cd650df849ce99ccf9c569bfc71b43f001f2ade8bc5ab12.
+Normal replay admission remains required. Retained.writer.lock PID17684 is dead;
+guard11020/stub4316 also dead. Preserve lock with exact receipts/path/hash before
+new continuation; no blind retry or bypass. Frozen universe code864c6233 unchanged.
+
+USER CLEANUP: removed3,175,142,016logicalbytes from four audited obsolete owned
+scratch targets; observedC:freegain2,580,697,088bytes. All144currentprep and both
+candidate units verified after. disk-cleanup-report-v1.md and audit/apply/verify
+artifacts/logs record exactpaths. The old _interrupted_work-r2-20261003T211353Z is
+now intentionally deleted; current prep/rawsources/extracts/outputs retained.
+
+Task16fundrelease9dfaeb6c independent reviewNeedsfixes oneImportantrecovery of
+validnewtarget blockedbyexpectedstaleoldsource. Originalauthor/root/t6_factors
+fixround1 commit82608d6b,7tests1.59s; scopedre-review pending. Task11sourcebridge
+c6f40804 reviewedNeedsfixes URLsubstring andpublicationoverwrite races; original
+author/root/t11_ownership fixinground1, earliernativeI1-I4remainclosed. Task7
+/root/t7_characteristics completesfullcode/offlinecheckpoint:153originalcatalog,
+152executablequalifiedsynthetic,eq_durunsupported; actualgatesunmeasured.
+
+Ledger-only Task11 interface scopedApproved; root actual twoledgerinspection
+completed3s/.0487GiB exit0, zeroHTTP. 38,433+17,103records,2+4known13Fleads, no
+exceptions/fullscans. First2,000UNKNOWNcandidatesperfile filledoutputcap before
+knownleads, so sixknown lead metadata require boundedfollowup. Report
+task11-ledger-leads-v1.json, logs sameprefix. Source.py freeze released.
+
+Latest at23:58UTC: ROOT LIVE JOB session14718, guard11020/stub4316, logs/t16-
+universe-year2019-v2.*, .8cap, samecandidate/binding/maxnew1. Keepaliveuntilend;
+no competingdatajobs. First2018completed464.5s/.4713GiB;2,006,722keys/251sessions,
+payload7507327b9e2f986da79324ae1a40a758a0c242e706428cbd93532fda680598e4,
+receipt3abbab2e5bae371cbad9be1d87ce57239d1e5484e8366f9dca6edd30670802c3.
+No finalmanifest/pointer. First2019continuation35195 stoppedlowcommit276.1s/.4693GiB,
+freecommit.5467, no cap. Guardedinspection4.2s verifiedunchanged2018/no2019payload;
+orphanwriterPID2664wasdead alongwithguard20924/stub24780. Exactcheckedlock moved
+to stage/_interrupted_locks/r15_20261003_001-pid2664-lowcommit.lock withsameSHA;
+logs/t16-preserved-orphan-lock-v1.json. This is inspectedrecovery, no bypass of
+activewriter orinput/unitvalidation. Actualcauseofhostpressureunproven; ownagent
+accidentallyusedpytest-n4once thenworkersended/allfuturecallsnowexplicit-n0.
+
+Task11 fixround1 9dfce082 leftmonthendsessionissue; round2f7649472 now scoped
+Approved (review-T11-native-r2-findings.md,3.12sfixture). FullTask11 stillpending;
+originalauthorcontinuesnativeposition/provenance/filer/stakes/NPORT/insiderwork.
+Bounded2ledger source-recovery helperdesignapproved, noactualgrant yet. Task16
+fundreleaseauthor/root/t6_factors has18offlinecases andcompletesfullcheckpoint;
+Task7/root/t7_characteristics implements153original/ownerextras registry plus
+nativeadapters, no actualreturn/source jobs. Threeauthorsactive, rootownsdata.
+
+readiness-matrix-v3.json is currentdependency/commanddraft, scoped reviewed in
+review-readiness-v3-r1-findings.md: all46thresholds/statusesunchanged. Explicit
+t16-validate-generation-v1.py binds generation+independentmanifestSHA anddoesfull
+validation; bare nativeCLIvalidate resolvescurrentpointer andignores--generation.
+No actualfullcandidatevalidationyet. Consumercontractv2unchanged; fullrelease
+review/acceptance remainpending. Rootmustsavev3reviewmetadata/commitlatestrecords.
+
 Latest at23:35UTC: ROOT LIVE DATA JOB session8796, guard16336/stub26312/actual
 python22236, logs/t16-universe-year2018-v1.*, .8GiB unchanged cap. First reviewed
 universe_release_v1 candidate r15_20261003_001, --max-new-years1. Native CPU active;

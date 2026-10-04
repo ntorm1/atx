@@ -16,6 +16,13 @@ Owner extensions: read `task-16-evaluation-addendum.md` and `owner-coverage-adde
 
 R15 release foundation dependency: read task-2-cap-ruling.md and review-T2-r5-prebuild-findings.md. Before golden materialization, implement independent complete reader-input snapshots and typed exact universe-key admission around the existing year/classification engine, with a separate immutable universe_release_v1 candidate generation and authenticated bounded continuation. Do not edit Task2 modules or trust their generic cache certification. Carry every original gate/denominator/French failure and require independent review before a real build. This precursor is not full Task16 completion; golden panels, labels/evaluation, source admission, consumer export and acceptance remain required.
 
+R17 fundamental release integration: read task-5-release-admission-ruling.md.
+Separate fund_batch_release.py must bind complete source/code/preparation and
+fresh immutable85batch attempts; legacy parts remain unqualified, no sixth Task5
+producer repair. Preserve logical and physical fundamentals_v11 names and every
+original financial gate. Standardized v11 readers must persist the explicit
+validated generation leaf dependency; no fallback to old stage paths.
+
 R9 source consistency: before final golden materialization, require quiescent completed producers and verify the actual input file SHA/size set against each recorded manifest. Stable manifest hashes alone are insufficient after an interrupted partition rewrite. Recheck input snapshot integrity before accepting/publishing evidence; fail on changed or inconsistent inputs and rebuild on a complete snapshot. Source-certified segment partitions and unverified tagged structures must remain distinguishable in gold eligibility/quality metadata.
 
 R12 binding implementation dependency: read `task-14-cap-ruling.md` and review-T14-r5-findings.md. Implement fail-closed notes/segment admission, not a documentation-only warning. Flat source_verified_reportable and source_declared_external_revenue flags are insufficient. Initially pin and inspect the nine reviewed curated proof rows; exclude automatic list proofs and applied external selections, unverified geography and ambiguous tax_dtl notes from certified gold. Test proof/period/source-SHA mismatches, future automatic additions, source-context/bridge incompatibility and amendment carry. Certified segment coverage remains low and gates remain FAIL; never change denominators or call this a parser fix.
