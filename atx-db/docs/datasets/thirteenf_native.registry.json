@@ -1,0 +1,9 @@
+{
+  "stage": "thirteenf_native",
+  "path": "explicit-generation/positions.parquet",
+  "keys": ["accession", "position_index"],
+  "schema_id": "atx.thirteenf-native-originals/v1",
+  "admission": "diagnostic_only_unqualified_actual_originals",
+  "public_clock": "NULL_pending_independent_documentary_rules",
+  "release_bindings": ["universe_release_v1", "fundamentals_release_v1/fundamentals_v11"]
+}
