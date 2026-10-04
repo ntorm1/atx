@@ -176,3 +176,48 @@ def test_original_xml_entities_wrong_counts_and_missing_clock_are_keyed_diagnost
     assert "original_acceptance_missing" in result["exceptions"]
     assert "original_cover_table_count_or_value_unreconciled" in result["exceptions"]
     assert result["source_qualified"] is False
+
+
+@pytest.mark.parametrize("suffix,valid",[
+    ("000000000120000001/complete.txt",True),
+    ("0000000001-20-000001.txt",True),
+    ("000000000120000001.txt",True),
+    ("000000000120000001999/complete.txt",False),
+    ("prefix000000000120000001/complete.txt",False),
+    ("prefix0000000001-20-000001.txt",False)])
+def test_original_url_accession_is_exact_component_or_submission_filename(suffix,valid):
+    from atx_db.alpha_panel.thirteenf_quality import original_submission_evidence
+    result=original_submission_evidence(b"",dict(accession="000000000120000001",form="13F-HR"),
+        dict(url="https://www.sec.gov/Archives/edgar/data/1/"+suffix))
+    assert ("original_sec_url_accession_unproven" not in result["exceptions"])==valid
+
+
+@pytest.mark.parametrize("collision",["output","receipt","interruption"])
+def test_original_publication_atomically_refuses_collisions_and_preserves_forensics(tmp_path,monkeypatch,collision):
+    import os
+    from atx_db.alpha_panel.thirteenf_quality import _publish_original_bridge
+    output=tmp_path / "bridge.jsonl"
+    partial=tmp_path / "bridge.jsonl.partial"
+    receipt=tmp_path / "bridge.jsonl.receipt.json"
+    receipt_partial=tmp_path / "bridge.jsonl.receipt.json.partial"
+    partial.write_bytes(b"new evidence")
+    real_link=os.link
+    def competing_link(source,target):
+        if target==output and collision=="output":
+            output.write_bytes(b"other output")
+        if target==receipt:
+            if collision=="receipt":
+                receipt.write_bytes(b"other receipt")
+            elif collision=="interruption":
+                raise InterruptedError("fixture publication interrupted")
+        return real_link(source,target)
+    monkeypatch.setattr(os,"link",competing_link)
+    with pytest.raises((FileExistsError,InterruptedError)):
+        _publish_original_bridge(partial,output,{"gate_status":"UNQUALIFIED"})
+    assert partial.read_bytes()==b"new evidence" and receipt_partial.exists()
+    if collision=="output":
+        assert output.read_bytes()==b"other output" and not receipt.exists()
+    elif collision=="receipt":
+        assert output.read_bytes()==b"new evidence" and receipt.read_bytes()==b"other receipt"
+    else:
+        assert output.read_bytes()==b"new evidence" and not receipt.exists()

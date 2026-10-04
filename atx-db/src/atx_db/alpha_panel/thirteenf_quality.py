@@ -230,7 +230,10 @@ def original_submission_evidence(raw:bytes, expected:dict[str,Any], retained:dic
     if digest!=retained.get("sha256"):
         reasons.append("original_digest_mismatch")
     url=urlparse(str(retained.get("url", "")))
-    if url.scheme!="https" or url.hostname not in {"www.sec.gov","sec.gov"} or not url.path.startswith("/Archives/") or accession not in url.path.replace("-",""):
+    directory=re.fullmatch(r"/Archives/edgar/data/\d+/(\d{18})/[^/]+",url.path)
+    submission=re.fullmatch(r"/Archives/edgar/data/\d+/(\d{10}-\d{2}-\d{6}|\d{18})\.txt",url.path)
+    exact_accession=(directory and directory.group(1)==accession) or (submission and accession_key(submission.group(1))==accession)
+    if url.scheme!="https" or url.hostname not in {"www.sec.gov","sec.gov"} or not exact_accession:
         reasons.append("original_sec_url_accession_unproven")
     try:
         fetched=dt.datetime.fromisoformat(retained["fetched_at"].replace("Z","+00:00"))
@@ -330,6 +333,29 @@ def original_submission_evidence(raw:bytes, expected:dict[str,Any], retained:dic
         source_url=retained.get("url"),retrieval_clock=retained.get("fetched_at"))
 
 
+def _publish_original_bridge(partial:Path,output:Path,receipt:dict[str,Any]) -> None:
+    """Atomic no-clobber links; receipt is the final publication commit marker.
+
+    Two filesystem names cannot be committed in one operation. An interruption
+    after output installation leaves an uncommitted output and both forensic
+    partials. Never roll back by deleting possibly changed publication evidence.
+    """
+    import os
+    receipt_path=output.with_suffix(output.suffix+".receipt.json")
+    receipt_partial=receipt_path.with_suffix(receipt_path.suffix+".partial")
+    with receipt_partial.open("x",encoding="utf-8") as sink:
+        json.dump(receipt,sink,sort_keys=True)
+        sink.write("\n")
+        sink.flush()
+        os.fsync(sink.fileno())
+    # Hard-link creation refuses an existing destination atomically on NTFS and
+    # POSIX. No replacing rename or last-second existence check is used.
+    os.link(partial,output)
+    os.link(receipt_partial,receipt_path)
+    partial.unlink()
+    receipt_partial.unlink()
+
+
 def bridge_originals(evidence:Path, roots:list[Path], output:Path, *, max_records:int=1000,
                      max_object_bytes:int=8*1024*1024) -> dict[str,Any]:
     """Immutable bounded actual-byte diagnostics from explicitly retained paths.
@@ -395,12 +421,11 @@ def bridge_originals(evidence:Path, roots:list[Path], output:Path, *, max_record
             records+=1
     if C.file_identity(evidence)!=source_identity or C.sha256_file(evidence)!=source_hash:
         raise RuntimeError("original evidence manifest changed")
-    partial.replace(output)
     receipt=dict(schema="atx.thirteenf-original-bridge/v1",records=records,bound_reached=bounded,
-        input_manifest_sha256=source_hash,input_identity=source_identity,output_sha256=C.sha256_file(output),
+        input_manifest_sha256=source_hash,input_identity=source_identity,output_sha256=C.sha256_file(partial),
         source_completeness="UNQUALIFIED_ORIGINAL_DIAGNOSTICS",gate_status="UNQUALIFIED",
         limits="No clock timezone/unit/shared-manager/omission closure or full inventory admission")
-    C.write_json_atomic(output.with_suffix(output.suffix+".receipt.json"),receipt)
+    _publish_original_bridge(partial,output,receipt)
     return receipt
 
 
