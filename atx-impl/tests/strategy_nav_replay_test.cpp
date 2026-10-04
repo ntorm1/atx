@@ -3517,3 +3517,83 @@ TEST(CalibrateGross, TieredRunReusesTheConstructionByteForByte) {
     EXPECT_TRUE(calibrate_file_bytes(dir.path / "calibrated-holdings" / name) ==
                 calibrate_file_bytes(dir.path / "second-holdings" / name)) << name;
 }
+
+// P9 C2 fix round 1 (review S2): with X-5's construction keys (price-risk-v1 neutralization,
+// locate-in-aim, the delta order basis, the liquidity cache) pass 2 replays the recorded
+// construction; where the construction reads the leverage or a state pass 1 does not form
+// (adv-hold-v1's cap; --emit-holdings with a declared hold band) pass 2 forms it again
+// (construction_reused false). Every case publishes the plain run at L' byte for byte (summary.json
+// with calibration dropped; the holdings directory too).
+TEST(CalibrateGross, ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage) {
+  Panel p(48, 12);
+  randomize_rows(p, 23, 0);
+  for (f64& v : p.volume) v *= 1e5; // liquid enough that the $1bn books fill (absent: NaN stays)
+  const auto f = random_fields(p, 31);
+  const char* const names[] = {"x5-keys", "adv-hold", "hold-band-holdings"};
+  for (int c = 0; c < 3; ++c) {
+    SCOPED_TRACE(names[c]);
+    Directory dir;
+    auto a = write_artifact(dir.path, p);
+    const auto pin = write_fields(dir.path, a, p, f, [](Json&) {});
+    auto& target = a.cfg.target;
+    target.rule = st::TargetReplayRule::AimPartialV5;
+    target.cadence = 3;
+    target.trade_fraction = 0.25;
+    st::NavExecutionOptions execution;
+    const bool holdings = c == 2;
+    if (c == 0) {
+      const auto daily = construction_daily();
+      target.neutralize = daily.neutralize;
+      target.price_risk = daily.price_risk;
+      execution.locate_in_aim = true;
+      execution.order_basis = st::NavOrderBasis::Delta;
+      execution.liquidity_cache = true;
+    } else if (c == 1) {
+      target.adv_hold_q = 0.5;
+    } else {
+      target.hold_band = 0.5;
+    }
+    std::ostringstream progress;
+    const auto run = [&](const std::string& name, f64 leverage, f64 gross, bool emit) {
+      auto cfg = a.cfg;
+      cfg.output_directory = (dir.path / name).string();
+      cfg.target.aim_leverage = leverage;
+      st::NavEmitOptions out;
+      if (emit) out.holdings_directory = (dir.path / (name + "-holdings")).string();
+      st::NavCalibrateOptions calibrate;
+      calibrate.target_gross = gross;
+      calibrate.tolerance = 1e-6;
+      return st::run_nav_replay(cfg, st::NavTurnoverLimits{}, pin, st::NavRateOptions{},
+                                execution, out, calibrate, progress);
+    };
+    const f64 off = std::numeric_limits<f64>::quiet_NaN();
+    const auto first = run("first", 1.5, off, false);
+    ASSERT_TRUE(first) << first.error().to_string();
+    const f64 g = calibrate_gross_of(dir.path / "first");
+    ASSERT_GT(g, 1e-3) << "the fixture's books must build";
+    const f64 gross = g * 1.1;
+    const auto corrected = st::leverage_4_decimals(1.5 * gross / g); // the exe's L x G_P / G
+    ASSERT_TRUE(corrected);
+    const auto second = run("second", *corrected, off, holdings);
+    ASSERT_TRUE(second) << second.error().to_string();
+    const auto calibrated = run("calibrated", 1.5, gross, holdings);
+    ASSERT_TRUE(calibrated) << calibrated.error().to_string();
+    for (const char* tail : {"", "-holdings"}) {
+      if (*tail && !holdings) continue;
+      const auto mine = dir.path / (std::string("calibrated") + tail);
+      const auto theirs = dir.path / (std::string("second") + tail);
+      const auto files = calibrate_tree(mine);
+      EXPECT_EQ(files, calibrate_tree(theirs)) << tail;
+      for (const auto& file : files)
+        if (file != "summary.json")
+          EXPECT_TRUE(calibrate_file_bytes(mine / file) == calibrate_file_bytes(theirs / file))
+              << tail << ' ' << file;
+    }
+    auto summary = read_json(dir.path / "calibrated" / "summary.json");
+    const auto calibration = summary.at("calibration");
+    summary.erase("calibration");
+    EXPECT_EQ(summary, read_json(dir.path / "second" / "summary.json"));
+    EXPECT_EQ(calibration.at("corrected"), true);
+    EXPECT_EQ(calibration.at("construction_reused").get<bool>(), c == 0);
+  }
+}

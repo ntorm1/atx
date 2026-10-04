@@ -592,6 +592,8 @@ TEST(NavBookRule, AimLeverageIsOptionalWithItsDefault) {
   ASSERT_EQ(st::dispatch_nav_replay(static_cast<int>(argv.size()), argv.data(), out, err), 0);
   const auto contract = Json::parse(out.str());
   ASSERT_EQ(contract.at("rules").size(), 3U);
+  const auto& caps = contract.at("capabilities"); // P9 C2 (review S7)
+  EXPECT_NE(std::find(caps.begin(), caps.end(), Json("calibrate-gross-pm6-6")), caps.end());
   for (const auto& row : contract.at("rules")) {
     const auto& schema = row.at("params_schema");
     const auto& required = schema.at("required");

@@ -18,6 +18,7 @@
 #include <iterator>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 #include <gtest/gtest.h>
@@ -126,19 +127,39 @@ struct Verb {
   }
 };
 
-// numpy's mean (0.0 + the pairwise sum, / n), bit for bit, at sizes on both sides of numpy's
-// 8-wide unroll and 128-value block (values from numpy 1.26.4); at 129 and 1023 a running sum
-// would differ.
-TEST(CalibrateGross, NumpyMeanIsNumpysPairwiseMean) {
-  const std::array<std::pair<usize, u64>, 5> expected{{{5U, 0x3ff00837765f0148ULL},
-                                                       {100U, 0x3ff0cb5cb1af5fc7ULL},
-                                                       {129U, 0x3ff106eecbe02916ULL},
-                                                       {1000U, 0x3ff8041bbb2f80a5ULL},
-                                                       {1023U, 0x3ff8335aa3d1c806ULL}}};
-  for (const auto& [n, bits] : expected) {
-    std::vector<f64> values(n);
-    for (usize k = 0; k < n; ++k) values[k] = 1.0 + static_cast<f64>(k) / 997.0;
-    EXPECT_EQ(bit_pattern(st::numpy_mean(values)), bits) << n;
+// numpy 1.26.4's float64 mean, bit for bit, at every size class (Ruling C2-R3): both sides of
+// the 8-wide unroll, the 128-value pairwise block and the 8192-value ufunc buffer (8193, 16385,
+// 20001, 40000: several buffers, the blocks added in order). FIXTURE: every bit pattern below is
+// float(np.array(series, dtype=np.float64).mean()) printed by
+// .superpowers/sdd/platform-p9-20261003/c2-numpy-mean-fixture.py (numpy 1.26.4, Python 3.12),
+// which also checks the C++ model against numpy on 400 random series (0 differ). The series are
+// the same doubles here and there: ramp[k] = 1 + k / 997, hash[k] = 0.5 + ((k x 2654435761) mod
+// 1000003) / 1000003 (exact integers, one correctly rounded division). Without the buffer blocks
+// (one pairwise sum of all n values) ramp at 8193 and hash at 40000 differ.
+struct NumpyMeanCase {
+  const char* series;
+  usize n;
+  u64 bits;
+};
+constexpr std::array<NumpyMeanCase, 20> numpy_mean_fixture{{
+    {"ramp", 5U, 0x3ff00837765f0148ULL},     {"ramp", 129U, 0x3ff106eecbe02916ULL},
+    {"ramp", 1023U, 0x3ff8335aa3d1c806ULL},  {"ramp", 8192U, 0x40146e69469ca140ULL},
+    {"ramp", 8193U, 0x40146eecbe029154ULL},  {"ramp", 9000U, 0x40160d5a205a6215ULL},
+    {"ramp", 16384U, 0x40226eab024f994aULL}, {"ramp", 16385U, 0x40226eecbe029155ULL},
+    {"ramp", 20001U, 0x40260f67fdf22268ULL}, {"ramp", 40000U, 0x40350f472018a663ULL},
+    {"hash", 5U, 0x3fee943cdfbb8372ULL},     {"hash", 129U, 0x3ff04c23b6a8bc70ULL},
+    {"hash", 1023U, 0x3ff00c2bbeff8959ULL},  {"hash", 8192U, 0x3ff00290ebafee3cULL},
+    {"hash", 8193U, 0x3ff002934237f08cULL},  {"hash", 9000U, 0x3ff00278f924c22fULL},
+    {"hash", 16384U, 0x3ff000830cf0e680ULL}, {"hash", 16385U, 0x3ff00065767d209bULL},
+    {"hash", 20001U, 0x3ff000fb91a42b2aULL}, {"hash", 40000U, 0x3ff0007189d79deeULL}}};
+TEST(CalibrateGross, NumpyMeanIsNumpysMeanAtEverySize) {
+  for (const auto& c : numpy_mean_fixture) {
+    const bool ramp = std::string_view(c.series) == "ramp";
+    std::vector<f64> values(c.n);
+    for (usize k = 0; k < c.n; ++k)
+      values[k] = ramp ? 1.0 + static_cast<f64>(k) / 997.0
+                       : 0.5 + static_cast<f64>((u64{k} * 2654435761ULL) % 1000003ULL) / 1000003.0;
+    EXPECT_EQ(bit_pattern(st::numpy_mean(values)), c.bits) << c.series << ' ' << c.n;
   }
   EXPECT_TRUE(std::isnan(st::numpy_mean({})));
 }

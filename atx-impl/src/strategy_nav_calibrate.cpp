@@ -1,5 +1,6 @@
 #include "strategy_nav_calibrate.hpp"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
@@ -14,6 +15,9 @@ using Json = nlohmann::json;
 
 // numpy's PW_BLOCKSIZE and unroll factor (numpy/core/src/umath/loops_utils.h.src, 1.26).
 constexpr usize pairwise_block = 128, pairwise_unroll = 8;
+// numpy's default ufunc buffer (NPY_BUFSIZE): np.add.reduce hands its inner loop at most this many
+// values at a time, so the pairwise sum restarts every 8192 values and the blocks add in order.
+constexpr usize reduce_buffer = 8192;
 
 constexpr const char* calibration_rule =
     "P9 C2, Ruling PM6-6 in one process: pass 1 replays the primary S2 book alone at "
@@ -64,14 +68,18 @@ co::Status validate_calibrate(const NavCalibrateOptions& options) {
 
 f64 numpy_mean(std::span<const f64> values) noexcept {
   if (values.empty()) return std::numeric_limits<f64>::quiet_NaN();
-  // np.add.reduce starts from the identity 0.0 and adds the pairwise sum of every value.
-  const f64 sum = 0.0 + pairwise_sum(values.data(), values.size());
+  // np.add.reduce starts from the identity 0.0 and adds, block after block of reduce_buffer
+  // values, each block's pairwise sum (Ruling C2-R3: numpy 1.26.4 at every n, fixture-pinned).
+  f64 sum = 0.0;
+  for (usize lo = 0; lo < values.size(); lo += reduce_buffer)
+    sum += pairwise_sum(values.data() + lo, std::min(reduce_buffer, values.size() - lo));
   return sum / static_cast<f64>(values.size());
 }
 
 co::Result<f64> leverage_4_decimals(f64 x) {
   if (!std::isfinite(x))
-    return co::Err(co::ErrorCode::OutOfRange, "nav calibrate: the corrected leverage is not finite");
+    return co::Err(co::ErrorCode::OutOfRange,
+                   "nav calibrate: the corrected leverage is not finite");
   std::array<char, 64> text{};
   const auto printed =
       std::to_chars(text.data(), text.data() + text.size(), x, std::chars_format::fixed, 4);

@@ -186,6 +186,6 @@ target_sources(atx-impl-strategy-target-tests PRIVATE strategy_factors_verb_test
 # target; atx-impl-tests already compiles it through its *_test.cpp glob.
 target_sources(atx-impl-strategy-ic-tests PRIVATE strategy_ic_rules_test.cpp)
 
-# P9 lane C2: nav --calibrate-gross (CalibrateGross.*) beside the NAV replay tests; atx-impl-tests compiles it
-# through its *_test.cpp glob.
+# P9 lane C2: nav --calibrate-gross (CalibrateGross.*) beside the NAV replay tests;
+# atx-impl-tests compiles it through its *_test.cpp glob.
 target_sources(atx-impl-strategy-target-tests PRIVATE strategy_nav_calibrate_test.cpp)

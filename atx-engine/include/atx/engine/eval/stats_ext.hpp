@@ -81,8 +81,8 @@ inline constexpr atx::f64 kAcklamPHigh = 1.0 - kAcklamPLow; // 0.97575
 // argument is a compile-time constant it folds fmuladd as a FUSED multiply-add (one rounding).
 // norm_ppf(10.0 / 12.0) then differed in the last bit between a folded literal and the same
 // call at run time (M1c-RED, Release only). Here the product is its own full expression, so
-// contraction cannot fuse it with the sum: the folded value and the run-time value are the
-// same two-rounding value, on every build and every target ISA. On a non-FMA build every
+// contraction cannot fuse it with the sum: a folded step and a run-time step are the same
+// two-rounding value, on every build and every target ISA. On a non-FMA build every
 // run-time result is bit-identical to the old expression (lowered fmuladd is mul then add).
 [[nodiscard]] inline atx::f64 mul_add_unfused(atx::f64 acc, atx::f64 x, atx::f64 c) noexcept {
   const atx::f64 product = acc * x;
@@ -124,9 +124,11 @@ template <std::size_t N>
 //  probabilities), so no runtime guard is emitted on this pure hot path.
 //
 //  Build invariance (M1c-RED): every polynomial is evaluated contraction-free
-//  (detail::horner_unfused), so a call the optimizer folds at compile time returns the
-//  same bits as the same call at run time, in Debug and Release alike. The remaining
-//  arithmetic has no multiply feeding an add (divisions and exp/erfc/log/sqrt only).
+//  (detail::horner_unfused), so the polynomials give the same bits whether the optimizer
+//  folds a call at compile time or it runs, in Debug and Release alike. The remaining
+//  arithmetic has no multiply feeding an add (divisions and exp/erfc/log/sqrt only); a
+//  folded call still rests on the compiler's exp/erfc/log/sqrt agreeing with the run-time
+//  CRT's (they do at the points BookNormalScore.NormPpfOfALiteralIsItsRunTimeValue pins).
 // ===========================================================================
 [[nodiscard]] inline atx::f64 norm_ppf(atx::f64 p) noexcept {
   using detail::horner_unfused;

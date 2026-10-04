@@ -25,12 +25,15 @@
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
+#include "strategy_target_replay.hpp" // aim_leverage_min / aim_leverage_max
 
 namespace atx::impl::strategy {
 
 inline constexpr atx::f64 nav_calibrate_default_tolerance = 0.005; // Ruling PM6-6
-// The aim-partial-v5 leverage range (validate_target_config): a correction outside is refused.
-inline constexpr atx::f64 nav_calibrate_leverage_min = 1.0, nav_calibrate_leverage_max = 2.0;
+// The aim-partial-v5 leverage range (validate_target_config's, one constant): a correction outside
+// is refused.
+inline constexpr atx::f64 nav_calibrate_leverage_min = aim_leverage_min;
+inline constexpr atx::f64 nav_calibrate_leverage_max = aim_leverage_max;
 
 // CLI --calibrate-gross G_P (finite > 0) --calibrate-tolerance T (finite > 0, default .005).
 // target_gross NaN: off (the default; the run is the plain run, every byte unchanged).
@@ -42,10 +45,11 @@ struct NavCalibrateOptions {
 // Off, or G_P and T finite and > 0; else InvalidArgument.
 [[nodiscard]] atx::core::Status validate_calibrate(const NavCalibrateOptions& options);
 
-// numpy's float64 ndarray.mean(): 0.0 + the pairwise sum (blocks of 8 accumulators up to 128
-// values, split at n/2 rounded down to a multiple of 8 above), divided by n. NaN when empty.
-// Bit for bit what nav_summ.construction_stats computes from a daily CSV (17 significant digits,
-// so every value round-trips).
+// numpy 1.26's contiguous float64 ndarray.mean(): 0.0, then += the pairwise sum (8 accumulators
+// up to 128 values, split at n/2 rounded down to a multiple of 8 above) of each 8192-value block
+// (the ufunc buffer) in order, divided by n. NaN when empty. Bit for bit what
+// nav_summ.construction_stats computes from a daily CSV (17 significant digits, so every value
+// round-trips), at every n (Ruling C2-R3; numpy-generated fixture in the gtests).
 [[nodiscard]] atx::f64 numpy_mean(std::span<const atx::f64> values) noexcept;
 
 // x written as Python f"{x:.4f}" (correctly rounded, ties to even) and parsed back; OutOfRange

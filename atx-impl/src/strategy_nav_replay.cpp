@@ -1311,7 +1311,8 @@ void record_construction(ConstructionTape& tape, usize t, bool cadence,
                          const Construction& shared, const BorrowTiers& tiers,
                          const SharedDecision& decided) {
   tape.decisions.push_back({t, cadence, decided.rebalance, decided.census, decided.construction});
-  if (cadence) tape.desired.insert(tape.desired.end(), shared.desired.begin(), shared.desired.end());
+  if (cadence)
+    tape.desired.insert(tape.desired.end(), shared.desired.begin(), shared.desired.end());
   if (tiers.active) {
     tape.tier.insert(tape.tier.end(), tiers.tier.begin(), tiers.tier.end());
     tape.missing.insert(tape.missing.end(), tiers.missing.begin(), tiers.missing.end());
