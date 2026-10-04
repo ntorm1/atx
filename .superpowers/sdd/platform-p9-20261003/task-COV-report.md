@@ -491,7 +491,9 @@ How to read it:
     geometry" under Full and under Lazy.
 - **Teeth.** Each refusal is asserted by its message. On the old code (read, not built) the same inputs are refused
   later, by other checks with other messages: the file by "factor names: K NUL-terminated names expected", the block by
-  "array dtype or count", the encoder by "factor covariance is not K x K". So the test fails on the old code.
+  "array dtype or count", the encoder by "exposures are not rows x dense in the file's dtype" (`check_block` checks
+  the exposures before the covariance). So the test fails on the old code. [Corrected by root at merge, M2d,
+  re-review 2 S12: this line first named "factor covariance is not K x K".]
 - **Consequence.** K is now bounded at 8,193 on every container path, so `factor_risk_view` cannot report
   2^32 - 1 groups. Through a container, `book::check_model`'s usize `k * k` (`atx-engine/src/book/risk_target.cpp:35`)
   can no longer wrap. That line is pre-existing and outside COV's files: a note for the engine owner (root item 5).

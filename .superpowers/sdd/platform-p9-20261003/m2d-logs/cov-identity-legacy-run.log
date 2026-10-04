@@ -1,0 +1,77 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "70104732c30b0c8da6090272bd8866345f70f2cd",
+  "started_utc": "2026-10-04T15:46:45.426780+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-risk.exe",
+    "risk",
+    "--role",
+    "build-equity/train-2020-2023-lo3/manifest.json",
+    "--role-sha256",
+    "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+    "--fields",
+    "build-equity/train-2020-2023-lo3-fields-v10/manifest.json",
+    "--fields-sha256",
+    "a4a060ae29c10080ca89b4b29335709558c2ae4842bd29db0398b23a43070809",
+    "--output",
+    "build-equity/p9-m2d-cov-risk-legacy",
+    "--emit-exposures",
+    "all"
+  ],
+  "executable_sha256": "efb21faddb5a9471fb4c63d89c6bdc01de5a69e6e6748a8cbaa4d8152146b602",
+  "argv_sha256": "f8e98fa03d30caecf179b1bfd6c8259eaf320022528350e6dfffe8c8377532c5",
+  "attempt": 1,
+  "build_type": "Debug",
+  "bindings": [],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 2048,
+    "min_free_mib": 512,
+    "admission_wait_seconds": 3600.0
+  },
+  "sampled_peak_tree_rss_bytes": 641507328,
+  "minimum_system_free_bytes": 2933186560,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    ".superpowers/sdd/platform-p9-20261003/al-data/atx-db-request.md",
+    ".superpowers/sdd/platform-p9-20261003/al-data/builder-designs.md",
+    ".superpowers/sdd/platform-p9-20261003/al-data/task-AL-DATA-report.md",
+    ".superpowers/sdd/platform-p9-20261003/progress.md",
+    ".superpowers/sdd/platform-p9-20261003/task-COV-report.md",
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png"
+  ],
+  "admission": {
+    "wait_seconds": 3600.0,
+    "need_free_mib": 2560,
+    "host_budget_mib": null,
+    "claims_dir": null,
+    "waited_seconds": 0.016,
+    "checks": 1,
+    "free_mib": 3908,
+    "claimed_by_others_mib": null
+  },
+  "wall_seconds": 54.296999999991385,
+  "owned_processes": [
+    {
+      "pid": 1936,
+      "create_time": 1791128805.4581697
+    },
+    {
+      "pid": 14868,
+      "create_time": 1791128805.471352
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "d6c20913232608c3f17855e5b066efa2a2abc27f0cf660a672c2c407ae9363e7",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}
+substituted: [(11, 'build-equity/v8-risk-lo3-v10', 'build-equity/p9-m2d-cov-risk-legacy')] appended: []
+C:\Program Files\Python312\python.exe scripts/run_bounded_research.py --output build-equity/p9-m2d-cov-risk-legacy-run --seconds 600 --max-rss-mib 2048 --min-free-mib 512 --build-type Debug --admission-wait-seconds 3600 -- C:\atx-wt\pool-2\build-equity\bin\atx-equity-strategy-risk.exe risk --role build-equity/train-2020-2023-lo3/manifest.json --role-sha256 e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4 --fields build-equity/train-2020-2023-lo3-fields-v10/manifest.json --fields-sha256 a4a060ae29c10080ca89b4b29335709558c2ae4842bd29db0398b23a43070809 --output build-equity/p9-m2d-cov-risk-legacy --emit-exposures all
+exit 0

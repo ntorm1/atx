@@ -724,3 +724,93 @@ p9-2b `atx-equity-strategy-risk`. S9 checked first: role `train-2020-2023-lo3` (
    exits 0 (plan section 4.2).
 
 Any other difference is a stop.
+
+#### COV: MERGED and verified
+
+- **Ledger:** `Task COV: complete` (re-review 2 APPROVE, 0 Required, 3 Suggested); rulings COV-1..COV-11, COV-R1
+  read. COV-11: S10 / S11 are COV-MV's required carry (not done here); S12 is a root slip.
+- **Merge:** `694b4b95` = `git merge --no-ff c8ff4f1c`, **no conflict**. The two named cross-lane appends merged with
+  both sides kept: `atx-engine/CMakeLists.txt` (`src/risk/cov_container.cpp` beside `specific_risk.cpp`) and the
+  `atx-impl-strategy-target-tests` source tail in `atx-impl/tests/CMakeLists.txt` (C2 is not merged yet, so its tail
+  lines meet COV's at C2's merge). `cov-design.md` / `cov-plan-amendment.md` already equal on both sides. The report,
+  review, re-review 1, handoff and `cov-evidence/` came with the merge; `task-COV-rereview-2.md` copied in from pool-24.
+- **Slip S12 (COV-11):** `task-COV-report.md:494` named the old encoder refusal "factor covariance is not K x K";
+  corrected to "exposures are not rows x dense in the file's dtype" (`check_block` checks the exposures first,
+  `cov_container.cpp:110` before `:112`), with a marked root note. Committed with the docs.
+- **SQL2-CLS:** no new literal (the lane's report: the container format name `atx.cov-container/1.0` is not an
+  `atx.<name>/v<n>` schema). Guard on the merged head: 5 passed, 92 subtests; no commit. Fixture chain re-run anyway
+  (`m2d-logs/cov-fixture-chain.log`, rel and abs): `files_seen 28 verified 25 declared 0 skipped 4`,
+  `catalog_digest d32f7655...4e69`, `verify --pins` 0, identity 12 / 0.
+- **Build p9-2b** (equity-dev; source `4c9dfd9d` = the COV merge plus the D2 docs commit, 5 dirty entries, docs
+  only): `atx-engine, atx-engine-risk-tests, atx-impl-strategy-target-tests, atx-equity-strategy-risk,
+  atx-equity-strategy-targets` -> **exit 0, 269.4 s, 82 TUs, 6 links, Jobs 4, 0 warnings**. Exe SHA-256 prefixes:
+  risk `efb21fad`, targets `3fa29f2b`, engine-risk-tests `3d52efaa`, target-tests `dff75bd9` (receipt
+  `m2d-logs/mega-p9-2b-receipt.json`).
+- **gtests** (Debug, p9-2b; logs `m2d-logs/cov-gt-*.log`):
+
+  | target | filter | result |
+  |---|---|---|
+  | atx-engine-risk-tests | `RiskCovContainer.*` | **21 passed** |
+  | atx-engine-risk-tests | `Risk*:-RiskQpAugment.MatchesDenseOracleAcrossBattery` | **431 passed, 1 skipped** (`RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery`, nightly), 135 s |
+  | atx-impl-strategy-target-tests | `CovTruncation.*:CovEigen.*:CovRecipe.*:CovStore.*:CovBias.*:CovDiff.*` | **29 passed**, 188 s |
+  | atx-impl-strategy-target-tests | unchanged `RiskWls.*:RiskEwma.*:RiskBias.*:RiskModel.*:RiskVerb.*:RiskRobust.*:RiskTarget.*:VolTarget.*:NavBookRule.*:Spo*:NavV7Hook.*` | **104 passed** |
+
+- **S9 (COV-9):** role `build-equity/train-2020-2023-lo3/manifest.json` (`e1c67101...`):
+  `universe.delisting.returns_applied = false`, and 0 of its 990 events carry `returns_applied: true`
+  (`m2d-logs/cov-s9-role-delisting.txt`). Checked before both COV runs below.
+- **Flag-absent identity (real data, 0 trials; the list above was committed first, `70104732`):**
+  - Limits amendment (no output byte depends on it): the first launch with `--max-rss-mib 8192` waited about 10 min
+    in the runner's admission, which needs free memory >= peak + floor (8,704 MiB, never free on this host); I
+    stopped my two processes (no exe had launched) and deleted that run dir by name. Both runs then used
+    `--seconds 600 --max-rss-mib 2048` (within the brief's <= 8,192), argv unchanged.
+  - 1 `p9-m2d-cov-risk-legacy`: completed, exit 0, **54.3 s, peak 612 MiB** (reference 31.2 s on the v8 exe). All
+    10 payload files **byte-identical** to `v8-risk-lo3-v10` (and the manifest's `files` entries self-consistent);
+    `manifest.json` differs **only** at `$.producer.engine_git_sha` (`807af678` -> `4c9dfd9d-dirty`) and
+    `$.producer.executable_sha256` (`8967952c` -> `efb21fad`), as listed (`m2d-logs/cov-identity-legacy-cmp.txt`).
+  - 2 `p9-m2d-cov-risk-container` (`--emit-container`): completed, exit 0, **53.6 s, peak 625 MiB**. The 10 legacy
+    files byte-identical to 1; one file added, `model.atxcov`; `manifest.json` = 1's plus `$.container`
+    (`bytes, file, file_sha256, format, root_sha256`) and `$.files["model.atxcov"]` (`bytes, sha256`), no other path
+    (`m2d-logs/cov-identity-container-cmp.txt`). **`atx-equity-strategy-risk cov-diff --legacy
+    build-equity/p9-m2d-cov-risk-container` exit 0**: "legacy equal: 1405 sessions factor_covariance.f64
+    specific_variance.f64 style_exposures.f32 industry_slot.u8" (`m2d-logs/cov-diff-legacy.log`).
+  - So the default recipe on the merged build reproduces the store of record bit for bit, and the container carries
+    the same bytes as the legacy files for every session.
+- **Bench (root step 6):** built and run once, no gate (`m2d-logs/cov-bench.log`, `cov-bench-list.txt`). The Release tree `build-equity-rel` was reconfigured with `ATX_BUILD_BENCH=ON` through `atx-build.ps1 configure -Preset equity-rel -Bench` (FetchContent fetched google-benchmark v1.9.0 into `deps/equity-rel`, 12 MB), **p9-2c** equity-rel `atx-engine-bench` -> exit 0, 162.9 s, 57 TUs, 0 warnings, exe `8b34199d` (`m2d-logs/mega-p9-2c-receipt.json`); then reconfigured back to `ATX_BUILD_BENCH=OFF` (cache otherwise unchanged: `ATX_TEST_GROUPS all`, Release). The `equity-rel` tree stands in for the report's `rel` preset (same build type; `rel` has no tree in pool-2). `--benchmark_filter=CovContainer --benchmark_repetitions=5`, 32 benchmarks, 204 s, SHA-256 backend `x86-sha-ni`, warm cache only. Medians against cov-design 4.12 (N = names, f32 / f64):
+
+  | benchmark | N 3000 f32 | N 5627 f32 | N 3000 f64 | N 5627 f64 | 4.12 target | met |
+  |---|---|---|---|---|---|---|
+  | Write (excl. estimation) | 509 ms, 691 MiB/s | 1,059 ms, 561 MiB/s | 1,248 ms, 600 MiB/s | 2,037 ms, 609 MiB/s | >= 300 MB/s | yes |
+  | OpenLazy | 211 us | 225 us | 217 us | 211 us | <= 2 ms | yes |
+  | OpenFull, default workers | 115 ms | 206 ms | 187 ms | 338 ms (2.0 GiB/s) | <= 0.5 s for 402 MiB (SHA-NI) | yes |
+  | OpenFull, 1 worker | 338 ms | 566 ms | 554 ms | 960 ms (single-thread rate ~ 0.7 GiB/s) | printed | - |
+  | FirstTouch (lazy verify + view) | 404 us | 612 us | 568 us | 1,038 us | <= 1 ms | yes, except N 5627 f64 (1.04 ms, 4 % over) |
+  | View (verified block) | 0.079 us | 0.076 us | 0.082 us | 0.071 us | <= 5 us | yes |
+  | LegacyStoreOpen (emulation) | 310 ms | 558 ms | 455 ms | 688 ms | ratio only | open-full is faster than legacy open in every shape (the design's only blocking case does not occur) |
+  | LegacyStoreRead (emulation) | 424 us | 636 us | 494 us | 799 us | ratio only | - |
+
+- **Not now (ruled):** D-COV and the COV-7 Debug = Release container identity (wave-2 gate steps). Also left for the
+  wave-2 gate: report step 4 (Y-1's NAV read through the container store vs its P9-B0 reference; the container dir
+  `p9-m2d-cov-risk-container` is kept for it, 968 MB) and step 5 (`atx-cov-v1` on TRAIN, Release, after COV-7).
+- **Engine owner note (report root item 5):** `atx-engine/src/book/risk_target.cpp:35` computes `k * k` in usize
+  (pre-existing); unreachable through a container now that K <= 8,193.
+- **DISK-2 (pool-24):** nothing to delete; the lane had already deleted its object tree (2.9 MB left: receipts, logs,
+  `audits/`, `v8-interim3-pitch-render-run2/`). Mine: `build-equity/p9-m2d-cov-risk-legacy` (481 MB, a byte copy of
+  the store of record's payloads) deleted by name after the comparison; its run receipt kept.
+- **Blind-rule disclosures (FYI, no ruling asked):** (a) my first S9 read printed the role manifest's
+  `universe.delisting` block; the preview showed three 2018 delisting events' metadata (cause codes, imputed
+  constants), no 2020-2023 statistic; the output was discarded and the check re-run printing only the flag. (b) One
+  print of the reference manifest's `run` block showed the risk model's `mean_r2` (a factor-regression fit
+  diagnostic, not a return / IC / Sharpe / turnover / NAV statistic). Every comparison above is SHA / JSON path only.
+- **Trial ledger:** 0 trials (133 lines, `27e40f9f`).
+
+### M2d status
+
+Both merges done and verified; nothing half-merged; no process of mine running. Code head `694b4b95` (the COV merge);
+the docs commits sit on top. Build tags used: p9-2a, p9-2b (equity-dev), p9-2c (equity-rel bench). Next free build tag
+**p9-2d**. No new red. Known-red now (unchanged):
+- pytest `test_fields_are_the_rule_applied_to_the_registry` (E2);
+- Release `BookNormalScore.*` x2 (C2);
+- Release `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` (M2c-RED; lane S2R).
+
+Trial ledger at the end: `build-equity/trials.jsonl` 133 lines, sha256 `27e40f9f...` (0 trials). Resume notes:
+`handoff-root-m2d.md`.
