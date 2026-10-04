@@ -1,0 +1,5 @@
+whole document JSON-equal: True
+capabilities: ['eval-mode-audit-exact', 'ic-hac-rule', 'label-terminal', 'list-rules', 'marginal', 'min-coverage', 'no-composition', 'theme-registry'] sorted: True count: 8
+ids: ['within-theme-v1', 'ew-theme-std-v1', 'ic-shrink-v1', 'ic-shrink-aim-v1', 'theme-erc-v1', 'theme-resid-v1', 'theme-tsmom-v1', 'mom-volman-v1', 'two-speed-v1', 'theme-cov-hedge-v1']
+mom-volman-v1 schedule theme_schedule incompatible ['theme-resid-v1', 'theme-tsmom-v1']
+theme-cov-hedge-v1 hedge theme_hedge incompatible ['theme-resid-v1', 'two-speed-v1']

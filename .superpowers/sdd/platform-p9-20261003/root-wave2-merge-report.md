@@ -1007,3 +1007,90 @@ tools of `a25453be` (root after C2, before AL-COMB; `git archive` of `atx-impl/t
 `composition_weights.json` only in the values of `$.provenance.producer_fingerprint` and
 `$.provenance.admission_sha256`, plus, in the R-11 child only, `$.provenance.resid.parent_weights_sha256` (its parent
 file moved). Every `$.provenance.<block>.producer_fingerprint` unchanged. Anything else is a stop.
+
+#### AL-COMB: MERGED and verified
+
+- **Ledger:** `Task AL-COMB: complete` (re-review 1 of the combined round APPROVE at `efb7ab2e`, 0 Required, 3
+  Suggested); rulings P17, ALCOMB-1..ALCOMB-9, ALCOMB-5a, E2-12, W1-MIN, CLS-1, SQL2-CLS read. Not here, as briefed:
+  MR-4 (the two `COMPOSITION_FLAGS` rows wait for E2's merge; E2-12 removed the test coupling) and the Q5 zero-trial
+  diagnostic (wave-2 gate, before P9-H is registered).
+- **Merge:** `9d518317` = `git merge --no-ff efb7ab2e`. One conflict, the `atx-impl/tests/CMakeLists.txt` tail (C2's
+  `strategy_nav_calibrate_test.cpp` vs AL-COMB's three IC test sources): both kept, HEAD's block first. Auto-merged
+  and read: `strategy_ic_rules.cpp` (**`exe_capabilities` unchanged: S2's 8 entries, sorted, size = count**; AL-COMB
+  adds no capability), `strategy_ic_runner.cpp` (MR-2's include, `attach_theme_hedge` after the composition and the two
+  trace calls after `planned_target_proxy`, beside S2's label-terminal code and D2's), `strategy_ic_detail.hpp` (MR-5),
+  `atx-impl/CMakeLists.txt` (AL-COMB's two sources before D2's link and C2's source), the K-P9-6 fixture
+  `composition_rules_list.json` and `strategy_ic_rules_test.cpp`. **Cross-lane edits accepted as listed:** MR-1..MR-3
+  (ALCOMB-3) with their ALCOMB-5 S-3 extensions (`IcCompositionResult::hedge_block` / `hedge_ratio`, the third
+  argument of `theme_hedge_working_bytes`, the two trace calls) and MR-5 (`PinnedWeights` volman / hedge fields): all
+  inert without the blocks (identity below). The report, review and handoff came with the merge;
+  `task-AL-COMB-rereview-1.md` (lane commit `098e6ccd`, after the merged SHA) copied from its blob and
+  `evidence-AL-COMB/` (17 logs, git-ignored in the lane) copied from pool-19 (`git add -f`).
+- **eol=lf for the template pins:** `2ee62800` adds lane E2's three R0-7-EOL `.gitattributes` lines byte for byte (E2
+  `88122c8a`, also E2's tip; identical text, so E2's merge sees the same change) -- `scripts/specs/** text eol=lf`.
+  No blob moved (every `scripts/specs` blob was `i/lf`); the 18 CRLF working copies (13 old + AL-COMB's five) were
+  rewritten from their blobs and re-staged (no content change): now 94 / 94 `i/lf w/lf attr/text`, tree clean. Both
+  registrations then pass `wave_manifest.rule_cell_problems` / `registration_problems` with **pin = disk = blob**:
+  theme-cov-hedge `7c6778bb`, mom-volman `7e9b26c1` (`m2e-logs/alcomb-registration-pins.txt`). Side effect, intended
+  by R0-7-EOL: every other spec under `scripts/specs` now hashes on disk as its blob does in an LF checkout.
+- **Build p9-2f** (equity-dev; source `2ee62800`, 8 dirty entries = the four PNGs, `progress.md` and the AL-DATA
+  agent's three files, no code): `atx-engine-combine-tests, atx-impl-strategy-ic-tests, atx-equity-strategy-ic,
+  atx-impl-tests` -> **exit 0, 110.0 s, 36 TUs (ccache hits of the lane's identical sources), 5 links, Jobs 4, 0
+  warnings**. Exe prefixes: combine-tests `1ef0b46a`, ic-tests `f535167a`, ic `c5015605`, impl-tests `6e14bb54`
+  (`m2e-logs/mega-p9-2f-receipt.json`). Debug only, as the lane's verification (no Release item is named for AL-COMB).
+- **gtests** (Debug, p9-2f; logs `m2e-logs/alcomb-gt-*.log`):
+
+  | binary | filter | result |
+  |---|---|---|
+  | atx-engine-combine-tests | `CharCovHedge.*` | **5 passed** |
+  | atx-engine-combine-tests | whole | **248 passed** |
+  | atx-impl-strategy-ic-tests | `CharCovHedge.*:ThemeHedgeRule.*:MomVolman.*:CompositionRules.*:StrategyIcComposition.*:ThemeTsmom*:TwoSpeed*:ThemeResid*:StrategyIcRunner.*:MarginalIc.PairCacheSourcesPinned` | **111 passed** (= the lane's; `ListRulesJsonPinned`, `ParamsSchemaConstantsAreTheRegisteredOnes` included) |
+  | atx-impl-strategy-ic-tests | whole | **226 passed** (M2d 206 + AL-COMB's) |
+  | atx-impl-tests | `ThemeHedgeRule.*:MomVolman.*:CompositionRules.*` (never built by the lane) | **23 passed** |
+
+- **K-P9-6 live check:** `atx-equity-strategy-ic --list-rules --json` (p9-2f) **JSON-equal to the merged fixture**
+  (`m2e-logs/alcomb-list-rules-vs-fixture.log`): 10 rules, mom-volman-v1 incompatible {theme-resid-v1,
+  theme-tsmom-v1}, theme-cov-hedge-v1 {theme-resid-v1, two-speed-v1}; capabilities 8, sorted. No regeneration needed.
+- **pytest** (separate invocations; `m2e-logs/alcomb-pyt-*.log`): from `atx-impl/tools` with the p9-2a
+  `ATX_RESEARCH_ADMISSION_EXE` / `ATX_RESEARCH_COMPOSITION_EXE` (no engine source of either changed since p9-2a but
+  COV's unreferenced `cov_container.cpp`), `test_composition_{theme_hedge,mom_volman,theme_tsmom,two_speed,rules,
+  theme_erc,resid,ic_shrink,engine_fit,fit_fixture}.py test_fit_composition_rule_plugins.py` **133 passed, 39
+  subtests, 0 skipped** (the lane: 132 + 1 real-exe skip); `test_fit_composition_weights{,_pool,_store}.py` **142
+  passed**; guards `scripts/tests/test_no_python_mirror.py scripts/tests/test_no_versioned_scripts.py` **11 passed**
+  (G-P5 34 in 13 rows: AL-COMB adds no mirror).
+- **SQL2-CLS:** `e1c16051`. The guard did not trip (it scans code literals; these two live only in spec JSON), but
+  the ruling registers them: `rule-registration` (`**/rules/*.json`, `atx.p9-rule-registration/v1`) and
+  `diagnostic-spec` (`**/diagnostics/*.json`, `atx.p9-diagnostic-spec/v1`), beside `blocked-registration` (CLS-1
+  precedent), `spec_doc` ingest. **Slip fixed before the commit:** my first draft gave the diagnostic row
+  `spec_kind: diagnostic`; a scratch catalog over `scripts/specs` refused it (`spec_doc.kind` CHECK: spec, template,
+  wave-manifest, candidate, library, recipe, registry, window, field-registry, other), which the fixture chain could not
+  show (no such file in the fixture tree); now `other` (rule registrations: `candidate`, as the blocked ones). The
+  scratch catalog then classifies the four files into the two rows (`m2e-logs/alcomb-sql2cls-classify.txt`). Store
+  suite **43 passed, 133 subtests** under `PYTHONHASHSEED` 0 and 1 (M2d: 131; the two new rows); fixture chain
+  rel and abs: `files_seen 28 verified 25 declared 0 skipped 4`, **`catalog_digest d32f7655...4e69`**, `verify --pins`
+  0, identity 12 / 0 (`m2e-logs/alcomb-sql2cls-fixture-chain.log`).
+- **W1-MIN M-2 (theme-table seam): holds.** AL-COMB does not touch `atx-impl/strategies/alphas/registry.json` or
+  `builtin_registry_themes`; on the merged head the registry's 13 themes equal the built-in 13-name prefix in order
+  (`strategy_ic_rules.hpp:43`), and mom-volman's `price_momentum` is in it; the two 13-theme pins
+  (`test_composition_resid.py`, `test_fit_composition_rule_plugins.py`) are in the 133 above.
+- **Flag-absent X-5 w identity (list `789d7e91` first): HOLDS** (`m2e-logs/alcomb-x5-w-cmp.txt`; receipts
+  `m2e-logs/receipt-p9-m2e-alcomb-x5-w-{pre,post}.json`). Pre: exe `ba1232ed` (p9-2a), 51.9 s, 1,371 MiB; post: exe
+  `c5015605` (p9-2f), 67.6 s, 1,372 MiB; both "clean in the code pathspec". 10 of 12 files byte-identical
+  (`train_combined.json` `2a442f56` = the combined SHA X-5's NAV argv pins, so also equal to X-5's v8 w output);
+  `summary.json` (239 leaves) and `train_candidates.jsonl` (230) differ only at timing leaves; no trace key. So
+  neither C2's `stats_ext.hpp` nor AL-COMB moved a w byte.
+- **Flag-absent fitter identity (list `60bd542b` first): HOLDS** on all 9 fixture cases
+  (`m2e-logs/alcomb-flag-absent-fixture{.json,-verdict.txt}`): exit codes equal, file sets equal, `admission.csv`
+  identical, differences exactly the listed values; OUTPUT fingerprint `d0153b259e951b66` -> `d28a30895ad1393e` (=
+  the lane's). The X-5 real-data fit re-run belongs to the wave-2 P9-B0 re-fit (as at M2d); its list gains nothing new
+  from AL-COMB (the same CM-5 keys).
+- **For the E2 merge (not done here):** MR-4 (`COMPOSITION_FLAGS` gains `theme-cov-hedge-v1: {fit: {--theme-hedge:
+  theme-cov-hedge-v1}}` and `mom-volman-v1: {fit: {--mom-volman: mom-volman-v1}}`), then E2's `scripts/tests` on this
+  fixture; `.gitattributes` will merge clean (identical lines).
+- **For the wave-2 gate / PRE:** the Q5 diagnostic (`scripts/specs/p9/diagnostics/al-comb-q5-style-variance.json`);
+  ALCOMB-4 / -6 / -7 / -9 prereg lines; re-pin `template_sha256` when root sets a template's `parent` or PRE cuts the
+  ALCOMB-6 sentence.
+- **DISK-2 (pool-19):** nothing to delete: the lane had deleted its object tree (2.7 MB left: receipts, logs,
+  `audits/`, `v8-interim3-pitch-render-run2/`, `vcpkg-manifest-install.log`; no `deps/`). Mine: the two X-5 w outputs
+  (`build-equity/p9-m2e-alcomb-x5-w-{pre,post}`, 95 MB each) are deleted by name after this commit, receipts kept.
+- **Trial ledger:** 0 trials (133 lines, `27e40f9f`).
