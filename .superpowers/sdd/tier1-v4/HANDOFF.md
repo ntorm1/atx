@@ -1,4 +1,51 @@
 # tier1-v4 controller handoff
+
+## Current checkpoint — completed work and next steps
+
+This supersedes the interim job states below. The full goal remains active;
+no gold panel, complete financial publication or consumer release is ready.
+
+- Batch0 is admitted and independently checked in
+  `t17-financial-progress-audit-v2.json`: native192.3s/583,569,408 bytes;
+  root audit26.0s/151,269,376 bytes. One of85 financial units is counted.
+  All85 extraction units remain admitted; financial/source-economic gates stay open.
+- Continuation94538 ended `stopped_low_commit` after573.5s, peak617,504,768 bytes,
+  no process-cap hit. Host free commit fell to0.4323GiB. Root inspectionv4 passed
+  2s/63,860,736 bytes: native admission files0,1,2 survived, with no final manifest
+  or current pointer. Batches1/2 remain provisional pending current full native
+  source/typed replay. Only batch0 has the prior independent root audit.
+- No root job is live. Guard8860/child4624/native owner10544 are absent; matching
+  native writer scan is empty. The new five-byte lock10544 remains preserved,
+  SHA5173a948f060ec7c42e5588c5ea03fffbf71d105dae50f2415e8cfc7e3c9dab7.
+  Inspect/recover the exact dead owner before future native work. The prepared
+  financial auditv3 was NOT RUN and expects a successful five-unit continuation;
+  it cannot certify this interrupted run. No immediate heavy retry is authorized.
+- Observerv4 passed the original31-sample/300s scheduling test: sampled minima
+  3.5228GiB commit/2.2586GiB physical; faster guard minimum2.9519GiB commit.
+  The old v3 lock7732 was archived successfully after exact checks. Its recovery
+  script HAS RUN and is historical; do not reuse it for the new lock.
+- Inventory auditv4 verifies all99 partitions and985,667 main entries,
+  278,228 distinct CIK-accessions, zero duplicates and terminal exhaustion.
+  Two oversized main files (CIK19617/1665650) and history/body/clock/cohort
+  qualification remain open. Native clean terminal exit0 is valid; the wrapper's
+  exit2-only assumption caused its final shell error, which v4 audit resolved.
+- Task15 repair1 `dab239f5` independently passes spec/quality, all seven findings
+  addressed,11 distinct focused tests. Actual source/95% TNIC/90% text gates are
+  still unmeasured. Task17 can use its finalized conditional R1 interface.
+- Task17 R26 repair2/5 is active. Helper `75efb231` awaits combined independent
+  review. Its author now owns only the new notes source helper/direct test/report;
+  Task17 owns wiring. The smallest private original item SQL projection is
+  authorized because the frozen producer has no connection-taking entrypoint;
+  preserve all original semantics, fixed source paths and R12 nine-proof rules.
+- Readinessv6 independently passes spec and quality review, including the terminal
+  stop update. All46 contracts/statuses/prior observations are preserved and34
+  additions promote no gates. SEC HTTP remains held for incomplete attempt accounting.
+
+Continue code and independent review while heavy jobs are held. Preserve foreign
+files, original caps, one actual-job slot and serialized offline fixtures. No
+new cleanup ran here; earlier safe cleanup freed6.68GB, and blocked/foreign caches
+remain untouched. The final whole-branch review/fix wave is unconsumed.
+
 ## Latest completed inventory and active work (2026-10-04 14:30 UTC)
 
 Supersedes interim89250state below: nativeall99partitions completed. Final
