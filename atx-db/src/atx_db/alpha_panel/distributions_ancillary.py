@@ -24,7 +24,7 @@ def records(admitted: dict, role: str) -> dict:
     return result
 
 
-def qualify(event: dict, native_text: str, doc: dict, admitted: dict, pins: dict) -> dict:
+def qualify(event: dict, native_text: str, native_blob: bytes, doc: dict, admitted: dict, pins: dict) -> dict:
     key = (doc["accession"], doc["source_sha256"])
     clocks, classes = records(admitted, "clock"), records(admitted, "class")
     if key not in clocks or key not in classes:
@@ -37,8 +37,17 @@ def qualify(event: dict, native_text: str, doc: dict, admitted: dict, pins: dict
     class_clock_blob, _ = N.native_document(classes[key]["class_clock_document"], pins)
     if clocks[key]["clock_document"]["accession"] != doc["accession"] or classes[key]["class_clock_document"]["accession"] != class_doc["accession"]:
         raise ValueError("ancillary original accession chain conflict")
+    for clock_record, member in ((clocks[key]["clock_document"], doc),
+                                 (classes[key]["class_clock_document"], class_doc)):
+        base = f"https://www.sec.gov/Archives/edgar/data/{member['cik']}/"
+        accession = member["accession"]
+        supported = {base + accession.replace("-", "") + "/" + accession + "-index.html",
+                     base + accession + ".txt"}
+        if clock_record["source_url"] not in supported:
+            return {"reason": "native_chain_unqualified:original_clock_URI_filing_conflict"}
     try:
-        publication = Q.accepted_clock(clock_blob, doc["accession"])
+        publication = Q.accepted_clock(clock_blob, doc["accession"], issuer=doc["cik"],
+            member_url=doc["source_url"], member_blob=native_blob)
         native_classes = Q.native_classes(class_blob)
     except ValueError as error:
         return {"reason": "native_chain_unqualified:" + str(error)}
@@ -69,7 +78,7 @@ def qualify(event: dict, native_text: str, doc: dict, admitted: dict, pins: dict
         qualified = Q.qualify({**event, "cik": doc["cik"]}, native_text,
             declaration_accession=doc["accession"], declaration_clock=clock_blob,
             class_document=class_blob, class_accession=class_doc["accession"], class_clock=class_clock_blob,
-            line_rows=lines)
+            line_rows=lines, declaration_url=doc["source_url"], declaration_document=native_blob, class_url=class_doc["source_url"])
     except ValueError as error:
         return {"reason": "native_chain_unqualified:" + str(error)}
     N.recheck(pins)

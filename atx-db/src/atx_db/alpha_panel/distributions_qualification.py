@@ -10,20 +10,68 @@ from zoneinfo import ZoneInfo
 from . import distributions as D
 
 
-def accepted_clock(blob: bytes, accession: str) -> dt.datetime:
-    """Original SEC index/header clock, explicit accession, DST ambiguity rejects."""
+def timezone_paths() -> list:
+    """Explicit package TZif and compiled normalizer; ambient TZPATH is unused."""
+    import tzdata
+    import zoneinfo
+    import _zoneinfo
+    import zoneinfo._common
+    import _strptime
+    import sys
+    from pathlib import Path
+    return [Path(tzdata.__file__).parent / "zoneinfo/America/New_York",
+            Path(zoneinfo.__file__), Path(zoneinfo._common.__file__), Path(_zoneinfo.__file__),
+            Path(dt.__file__), Path(_strptime.__file__), Path(sys.executable)]
+
+
+def accepted_clock(blob: bytes, accession: str, *, issuer: int,
+                   member_url: str, member_blob: bytes) -> dt.datetime:
+    """Narrow authoritative original index/full-submission identity and membership."""
+    from lxml import html
+    from urllib.parse import urlparse
+    import _zoneinfo
+    import io
+    if ZoneInfo is not _zoneinfo.ZoneInfo:
+        raise ValueError("timezone normalizer entrypoint changed")
+    if not re.fullmatch(r"\d{10}-\d{2}-\d{6}", accession):
+        raise ValueError("native accession format unsupported")
+    uri = urlparse(member_url)
+    prefix = f"/Archives/edgar/data/{issuer}/{accession.replace('-', '')}/"
+    if uri.scheme != "https" or uri.hostname != "www.sec.gov" or not uri.path.startswith(prefix) or uri.query or uri.fragment:
+        raise ValueError("native SEC member URI/issuer/accession conflict")
     text = blob.decode("utf-8")
-    if accession not in text:
-        raise ValueError("clock accession not present in original")
-    match = re.search(r"Accepted</div>\s*<div[^>]*>(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})</div>", text)
-    if match:
-        local = dt.datetime.fromisoformat(match[1])
+    if "<SEC-DOCUMENT>" in text or "<SEC-HEADER>" in text:
+        header = text.split("<DOCUMENT>", 1)[0]
+        accessions = re.findall(r"<ACCESSION-NUMBER>\s*([^\s<]+)", header)
+        ciks = re.findall(r"CENTRAL INDEX KEY:\s*(\d+)|<CENTRAL-INDEX-KEY>\s*(\d+)", header)
+        stamps = re.findall(r"<ACCEPTANCE-DATETIME>(\d{14})", header)
+        if accessions != [accession] or len(ciks) != 1 or int(ciks[0][0] or ciks[0][1]) != issuer or len(stamps) != 1:
+            raise ValueError("authoritative native accession/issuer/clock conflict")
+        documents = re.findall(r"<DOCUMENT>(.*?)</DOCUMENT>", text, re.S)
+        matching = [part for part in documents if re.findall(r"<FILENAME>\s*([^\s<]+)", part) == [uri.path.rsplit('/', 1)[-1]]]
+        bodies = re.findall(r"<TEXT>(.*?)</TEXT>", matching[0], re.S) if len(matching) == 1 else []
+        if len(bodies) != 1 or bodies[0].encode().strip() != member_blob.strip():
+            raise ValueError("native submission document membership conflict")
+        local = dt.datetime.strptime(stamps[0], "%Y%m%d%H%M%S")
     else:
-        match = re.search(r"<ACCEPTANCE-DATETIME>(\d{14})", text)
-        if not match:
-            raise ValueError("original acceptance clock missing")
-        local = dt.datetime.strptime(match[1], "%Y%m%d%H%M%S")
-    zone = ZoneInfo("America/New_York")
+        try:
+            tree = html.fromstring(blob)
+        except html.etree.ParserError as error:
+            raise ValueError("unsupported native index layout") from error
+        headings = tree.xpath("//*[@id='secNum']")
+        authoritative = [" ".join(node.text_content().split()) for node in headings]
+        cik_links = tree.xpath("//*[contains(concat(' ', normalize-space(@class), ' '), ' companyInfo ')]//a/@href")
+        native_ciks = [int(value) for link in cik_links for value in re.findall(r"[?&]CIK=(\d+)(?:&|$)", link)]
+        stamps = tree.xpath("//div[normalize-space(.)='Accepted']/following-sibling::div[1]/text()")
+        members = tree.xpath("//table[contains(concat(' ', normalize-space(@class), ' '), ' tableFile ')]//a/@href")
+        if authoritative != ["SEC Accession No. " + accession] or native_ciks != [issuer] or len(stamps) != 1:
+            raise ValueError("authoritative native accession/issuer/clock conflict")
+        if members.count(uri.path) + members.count(member_url) != 1:
+            raise ValueError("native index document membership conflict")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", stamps[0].strip()):
+            raise ValueError("unsupported native acceptance timestamp")
+        local = dt.datetime.fromisoformat(stamps[0].strip())
+    zone = ZoneInfo.from_file(io.BytesIO(timezone_paths()[0].read_bytes()), key="America/New_York")
     values = {local.replace(tzinfo=zone, fold=fold).astimezone(dt.timezone.utc)
               for fold in (0, 1) if local.replace(tzinfo=zone, fold=fold).astimezone(dt.timezone.utc).astimezone(zone).replace(tzinfo=None) == local}
     if len(values) != 1:
@@ -71,7 +119,7 @@ def native_classes(blob: bytes) -> list[dict]:
 
 def qualify(event: dict, native_text: str, *, declaration_accession: str, declaration_clock: bytes,
             class_document: bytes, class_accession: str, class_clock: bytes,
-            line_rows: list[dict]) -> dict:
+            line_rows: list[dict], declaration_url: str, declaration_document: bytes, class_url: str) -> dict:
     """Source-backed fixed regular rate on an exact native common class/dated line.
 
     Caller must independently admit every original blob and complete line rows.
@@ -85,8 +133,15 @@ def qualify(event: dict, native_text: str, *, declaration_accession: str, declar
         raise ValueError("fixed regular cadence/currency not established")
     if re.search(r"variable\s+(?:cash\s+)?dividend|dividend\s+policy.{0,80}(?:net\s+income|profit)|one.third\s+of", native_text, re.I | re.S):
         raise ValueError("variable-income policy cannot create fixed indicated rate")
-    publication = accepted_clock(declaration_clock, declaration_accession)
-    class_publication = accepted_clock(class_clock, class_accession)
+    if re.search(r"subject\s+to|\bconditional\b|\bcontingent\b|\bif\b|\bunless\b|provided\s+that|pending\s+.{0,40}approv|dependent\s+on|upon\s+.{0,40}approv", native_text, re.I):
+        raise ValueError("conditional declaration cannot create fixed indicated rate")
+    local_cadences = re.findall(r"\b(monthly|quarterly|semiannual|semi-annual|annual)\s+(?:regular\s+)?cash\s+dividend\b", event["evidence"], re.I)
+    if len(local_cadences) != 1 or local_cadences[0].lower() != event["declared_cadence"]:
+        raise ValueError("dividend-local cadence missing/ambiguous")
+    publication = accepted_clock(declaration_clock, declaration_accession, issuer=event["cik"],
+                                 member_url=declaration_url, member_blob=declaration_document)
+    class_publication = accepted_clock(class_clock, class_accession, issuer=event["cik"],
+                                       member_url=class_url, member_blob=class_document)
     classes = [row for row in native_classes(class_document)
                if re.match(re.escape(event["security_class"]) + r"(?:\b|,)", row["title"], re.I)]
     matches = []
@@ -102,6 +157,8 @@ def qualify(event: dict, native_text: str, *, declaration_accession: str, declar
     if event.get("cik") is not None and event["cik"] != klass["cik"]:
         raise ValueError("declaration/native class issuer conflict")
     available = max(publication, class_publication, line["available_at"])
+    if event.get("declare_date") is None or event["declare_date"] > publication.date() or event["declare_date"] > available.date():
+        raise ValueError("native acceptance precedes declaration date or chronology is unknown")
     validity = re.search(r"effective\s+through\s+(" + D.DATE + r")", event["evidence"], re.I)
     valid_until = dt.datetime.combine(D._date(validity[1]), dt.time(22), D.UTC) if validity else None
     return {**event, "security_id": line["security_id"], "cik": klass["cik"],
@@ -152,3 +209,20 @@ def rate_asof(events: list[dict], security_id: int, cutoff: dt.datetime) -> floa
     if len(latest) != 1 or latest[0].get("policy_state", "unknown") != "fixed_regular_declaration":
         return None
     return carry(latest[0], cutoff)
+
+
+# Loaded normalizer identities supplement independently pinned on-disk implementations.
+import zoneinfo._common as _zoneinfo_common
+_COMMON_LOADER = _zoneinfo_common.load_data
+_COMPILED_ZONEINFO = ZoneInfo
+_CLOCK_CODE = accepted_clock.__code__
+_TZPATH_CODE = timezone_paths.__code__
+
+
+def assert_runtime() -> None:
+    import _zoneinfo
+    if (_zoneinfo_common.load_data is not _COMMON_LOADER
+            or ZoneInfo is not _COMPILED_ZONEINFO or _zoneinfo.ZoneInfo is not _COMPILED_ZONEINFO
+            or getattr(accepted_clock, "__code__", None) is not _CLOCK_CODE
+            or getattr(timezone_paths, "__code__", None) is not _TZPATH_CODE):
+        raise ValueError("timezone normalizer entrypoint changed")

@@ -137,3 +137,32 @@ reader modules are pinned before/after; public replay independently compares eve
 Complete global carry/cancellation/variable-policy inventory, native prior history, quote
 currency and vendor cash denominator remain open. Source-parsed explicit validity is exposed;
 conditional event qualification never certifies persistent state or any actual gate.
+
+
+## Qualification contract refreeze: repair round3
+
+Rule native-distributions-v4 retains physical schema v3. Fixed status and cadence must
+attach to the dividend phrase; contingent/conditional/unsupported clauses cannot qualify.
+A meeting's annual cadence is unrelated. Native declaration date must be known and cannot
+follow either reconstructed acceptance or final availability.
+
+Native clock proof now requires one authoritative original SEC accession and issuer plus
+exact original document membership. Supported index layout uses secNum accession,
+companyInfo CIK, a single Accepted value, and tableFile document URI. Member receipt URI
+must be https://www.sec.gov/Archives/edgar/data/<CIK>/<undashed-accession>/<filename>.
+The clock object's URI must be that accession's -index.html or original full-submission
+.txt. Supported SGML requires unique header accession/CIK/acceptance and a unique matching
+DOCUMENT FILENAME/TEXT body matching admitted member bytes. Related prose cannot supply
+identity. Unsupported, conflicting, repeated or swapped identities remain NULL/reasons.
+
+NewYork normalization reads explicit tzdata/zoneinfo/America/New_York TZif bytes through
+compiled ZoneInfo.from_file. Independently expected complete code pins now include that
+actual TZif, compiled _zoneinfo, zoneinfo and its _common loader, datetime/_strptime and
+Python executable. Loaded clock/path/class/loader entrypoints are checked too. Every
+identity is rechecked before/after producer and independent public replay. Ambient
+TZPATH/cache cannot change this normalization. Changed admitted TZif or normalizer rejects;
+missing proof never falls back to ambient timezone assumptions. All old admissions must
+be independently refreshed for the new complete code identities.
+
+Actual source clocks/class proofs, global prior-history/cancellation inventory, quote
+currency, full vendor member cash denominator and numerical gates remain unqualified.

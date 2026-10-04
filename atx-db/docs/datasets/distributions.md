@@ -59,3 +59,9 @@ this proves bytes only, not declarations, class mappings, acceptance or fixed ca
 Schema v3 exposes quote_currency_qualified (false), rate_carry_status, source_valid_until
 (UTC) and class_context. Qualified event availability uses native acceptance and dated
 line evidence; otherwise matching receipt floor. Full persistent carry remains open.
+
+Rule v4 qualification rejects contingent declarations and conflicting dividend-local
+cadence. Original accession/issuer and member URI/body bind the acceptance clock;
+related-accession prose never qualifies. Final clock cannot precede the native declaration.
+Explicit admitted TZif/normalizer identities replace ambient timezone normalization.
+See the refrozen admission contract; actual0PASS/3FAIL status is unchanged.

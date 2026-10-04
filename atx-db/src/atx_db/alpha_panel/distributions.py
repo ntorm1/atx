@@ -18,7 +18,7 @@ from typing import Any
 
 from . import common as C
 
-RULE = "native-distributions-v3"
+RULE = "native-distributions-v4"
 SCHEMA = "atx.alpha-panel.distributions/v3"
 UTC = dt.timezone.utc
 CADENCE = {"monthly": 12, "quarterly": 4, "semiannual": 2, "semi-annual": 2, "annual": 1}
@@ -68,8 +68,8 @@ def extract_declarations(text: str) -> list[dict[str, Any]]:
         else:
             continue
         special = True if re.search(r"\b(?:special|one-time|extraordinary)\b", sentence, re.I) else (
-            False if re.search(r"\bregular\b", sentence, re.I) else None)
-        cadence_match = re.search(r"\b(monthly|quarterly|semiannual|semi-annual|annual)\b", sentence, re.I)
+            False if re.search(r"\bregular\s+(?:(?:monthly|quarterly|semiannual|semi-annual|annual)\s+)?cash\s+dividend\b|\b(?:monthly|quarterly|semiannual|semi-annual|annual)\s+regular\s+cash\s+dividend\b", sentence, re.I) else None)
+        cadence_match = re.search(r"\b(?:regular\s+)?(monthly|quarterly|semiannual|semi-annual|annual)\s+(?:regular\s+)?cash\s+dividend\b", sentence, re.I)
         cadence = cadence_match.group(1).lower() if cadence_match else None
         dates = {}
         for name, cue in (("declare_date", r"(?:declared|declares|approved)\s+on"), ("record_date", r"(?:record\s+(?:on|as\s+of)|record\s+date(?:\s+of)?)"),
@@ -176,7 +176,7 @@ def replay_rows(admission_path: Path, expected_sha256: str) -> tuple[list[dict[s
             if event["declare_date"] and event["declare_date"] > available.date():
                 raise ValueError("future declaration cannot be available earlier")
             event["indicated_annual_dividend_rate"] = None
-            qualification = A.qualify(event, text, doc, admitted, pinned) if event["kind"] == "cash_dividend" else {"reason": "not_fixed_cash_declaration"}
+            qualification = A.qualify(event, text, blob, doc, admitted, pinned) if event["kind"] == "cash_dividend" else {"reason": "not_fixed_cash_declaration"}
             qualified = qualification.get("qualified", {})
             if qualified:
                 event = qualified

@@ -341,3 +341,57 @@ buyback handchecks0/200. Full vendor cash denominator, coverage/amount, native a
 quote currency and complete prior-history proofs remain unmeasured. Task13/Task4R11
 incomplete. Actual modelGPT6.1Sol. Commit requires explicit owned paths and git add -f
 for ignored report/helper; all foreign changes preserved.
+
+
+## Repair round3/5: native qualification boundary
+
+Scoped baseline cda1e08b; original findings read from review-T13-native-qualified-findings.md.
+I1: fixed regular status/cadence now attach to the cash-dividend phrase. Unrelated annual
+meeting cadence is ignored; conflicting/unsupported cadence and contingent conditions
+remain NULL. Conditional, earnings-target and conflicting cases exercise production and
+independent public replay; forged positive rates are rejected by full row replay.
+I2: accepted_clock requires an authoritative original accession/issuer and exact SEC
+member URI. Index secNum/companyInfo/Accepted/tableFile and original SGML header plus
+unique FILENAME/TEXT membership are supported narrowly. Related-accession prose, wrong
+issuer/header, repeated clocks, swapped URI or unequal member body remain unqualified.
+Ancillary original clock receipt URI must identify the actual accession index/full submission.
+Positive fixtures now contain real-format accession/header/issuer/filing-member identities;
+fixture metadata never substitutes for that native authority.
+I3: declared date is rechecked against reconstructed native acceptance and final availability;
+unknown/future declaration chronology refuses qualification. The production future-date
+fixture has valid earlier price/link rows so missing mapping cannot mask the boundary.
+I4: explicit actual tzdata NewYork TZif replaces ambient TZPATH/cache. Independently expected
+complete identities include TZif, compiled _zoneinfo, zoneinfo/_common, datetime/_strptime,
+Python executable; loaded clock/path/class/loader entrypoints are also verified. Before/after
+pins apply to producer and public replay. Changed TZif or entrypoint rejects unchanged
+admission. Ambient TZPATH changes produce the same qualified UTC clock. Rule refrozen to
+native-distributions-v4, unchanged physical schema v3; independently refresh all old code pins.
+
+Covering offline commands, fromC:/atx/atx-db, with PYTHONPATH=C:/atx/atx-db/src and
+OPENBLAS_NUM_THREADS=1; DuckDB128MB/1thread:
+
+```text
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_distributions_qualification.py -q -k 'not production'
+7passed12deselected0.59s
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_distributions_qualification.py -q -k 'production and (positive or annual_meeting or conditional or earnings)'
+4passed15deselected22.87s
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_distributions_qualification.py -q -k 'production and (conflicting_cadence or future_date or wrong_header or wrong_issuer)'
+4passed15deselected25.85s
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_distributions_qualification.py -q -k 'production and (multiple_clocks or swapped_member or tzif_drift or normalizer_drift)'
+4passed15deselected16.74s
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_alpha_panel_distributions.py -q -k 'native_declaration_dates_rate_and_provenance or increase_new_amount_and_ambiguous_classes or original_gzip_admission_duplicates_and_stale_code'
+3passed19deselected2.78s
+```
+
+Final commands cover19qualification tests plus3affected extraction/admission tests. An
+initial combined qualification invocation was interrupted before completion to keep the
+fixture jobs bounded; it is not counted as PASS. Earlier intermediate commands likewise
+are not substitutes for these final-source results. No source/data/hash/HTTP audit or live
+job ran; runtime-package identities and temporary synthetic originals only. No shared,
+foreign, Task12 or frozen Task16 edits. Explicit owned path commit; ignored report git add -f.
+
+Actual Task13 remains incomplete:0PASS/3FAIL-unmeasured, native buyback handchecks0/200.
+Full global prior-history/cancellation/carry admission, historical quote currency, complete
+vendor member-line cash denominator, declaration>=90%, amount within1%on>=95%, and200native
+buybackchecks>=95% remain required. No thresholds/denominators changed. This is repair
+round3/5, not a cap reset. Actual modelGPT6.1Sol; legacy co-author trailer preserved.
