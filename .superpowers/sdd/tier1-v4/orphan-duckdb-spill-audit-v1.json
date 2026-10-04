@@ -1,0 +1,890 @@
+{
+    "status":  "AUDITED_DISPOSABLE_ORPHAN_DUCKDB_SPILL_ONLY",
+    "authorization":  "User requested unnecessary artifacts/temp cache cleanup; only proven orphan native spill blocks",
+    "producer_path":  "C:\\atx\\atx-db\\src\\atx_db\\alpha_panel\\common.py",
+    "producer_sha256":  "9411975069075772e123bf570e85420681de830787191cdbcd358c7d9a110172",
+    "controller_sha256":  "ee70cd4f5a486534fb5f9bd019a6203b9955f2837d0bc918fd386e5dc71fa2b5",
+    "owner_pids":  [
+                       10616,
+                       14368,
+                       16792,
+                       17328,
+                       18448,
+                       1880,
+                       20004,
+                       21160,
+                       22460,
+                       22916,
+                       25892,
+                       25924,
+                       4552,
+                       9864
+                   ],
+    "interpretation":  "common.connect48-74 assigns this exact per-process temp_directory; these blocks are ephemeral query spill, not DuckDB database/WAL, originals, source members, admitted units, Parquet, TSV or retained failure logs.",
+    "files":  [
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-10616\\duckdb_temp_storage_DEFAULT-0.tmp",
+                      "owner_pid":  10616,
+                      "bytes":  446169088,
+                      "last_write_utc_ticks":  639265934028025230,
+                      "creation_utc_ticks":  639265933689802856
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-10616\\duckdb_temp_storage_S128K-0.tmp",
+                      "owner_pid":  10616,
+                      "bytes":  4587520,
+                      "last_write_utc_ticks":  639265933904539007,
+                      "creation_utc_ticks":  639265933689812854
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-10616\\duckdb_temp_storage_S160K-0.tmp",
+                      "owner_pid":  10616,
+                      "bytes":  983040,
+                      "last_write_utc_ticks":  639265933912510033,
+                      "creation_utc_ticks":  639265933690175685
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-10616\\duckdb_temp_storage_S192K-0.tmp",
+                      "owner_pid":  10616,
+                      "bytes":  196608,
+                      "last_write_utc_ticks":  639265933902831721,
+                      "creation_utc_ticks":  639265933696642472
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-10616\\duckdb_temp_storage_S224K-0.tmp",
+                      "owner_pid":  10616,
+                      "bytes":  229376,
+                      "last_write_utc_ticks":  639265933866726672,
+                      "creation_utc_ticks":  639265933690048898
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-10616\\duckdb_temp_storage_S32K-0.tmp",
+                      "owner_pid":  10616,
+                      "bytes":  45318144,
+                      "last_write_utc_ticks":  639265934027985151,
+                      "creation_utc_ticks":  639265933690263957
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-10616\\duckdb_temp_storage_S64K-0.tmp",
+                      "owner_pid":  10616,
+                      "bytes":  67960832,
+                      "last_write_utc_ticks":  639265934028005203,
+                      "creation_utc_ticks":  639265933690119737
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-10616\\duckdb_temp_storage_S96K-0.tmp",
+                      "owner_pid":  10616,
+                      "bytes":  11796480,
+                      "last_write_utc_ticks":  639265934025701368,
+                      "creation_utc_ticks":  639265933690155679
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-14368\\duckdb_temp_storage_DEFAULT-0.tmp",
+                      "owner_pid":  14368,
+                      "bytes":  714342400,
+                      "last_write_utc_ticks":  639265918165358173,
+                      "creation_utc_ticks":  639265916401783950
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-14368\\duckdb_temp_storage_S128K-0.tmp",
+                      "owner_pid":  14368,
+                      "bytes":  5636096,
+                      "last_write_utc_ticks":  639265918165328105,
+                      "creation_utc_ticks":  639265916401906420
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-14368\\duckdb_temp_storage_S160K-0.tmp",
+                      "owner_pid":  14368,
+                      "bytes":  9175040,
+                      "last_write_utc_ticks":  639265918165215094,
+                      "creation_utc_ticks":  639265916401916425
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-14368\\duckdb_temp_storage_S192K-0.tmp",
+                      "owner_pid":  14368,
+                      "bytes":  983040,
+                      "last_write_utc_ticks":  639265918164613865,
+                      "creation_utc_ticks":  639265918111638835
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-14368\\duckdb_temp_storage_S32K-0.tmp",
+                      "owner_pid":  14368,
+                      "bytes":  48300032,
+                      "last_write_utc_ticks":  639265918165368137,
+                      "creation_utc_ticks":  639265916401951758
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-14368\\duckdb_temp_storage_S64K-0.tmp",
+                      "owner_pid":  14368,
+                      "bytes":  101777408,
+                      "last_write_utc_ticks":  639265918165328105,
+                      "creation_utc_ticks":  639265916401813921
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-14368\\duckdb_temp_storage_S96K-0.tmp",
+                      "owner_pid":  14368,
+                      "bytes":  25460736,
+                      "last_write_utc_ticks":  639265918164929604,
+                      "creation_utc_ticks":  639265916401881111
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-16792\\duckdb_temp_storage_DEFAULT-0.tmp",
+                      "owner_pid":  16792,
+                      "bytes":  6291456,
+                      "last_write_utc_ticks":  639266641101122009,
+                      "creation_utc_ticks":  639266640544819788
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-16792\\duckdb_temp_storage_S32K-0.tmp",
+                      "owner_pid":  16792,
+                      "bytes":  1277952,
+                      "last_write_utc_ticks":  639266641101106853,
+                      "creation_utc_ticks":  639266640544882579
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-16792\\duckdb_temp_storage_S64K-0.tmp",
+                      "owner_pid":  16792,
+                      "bytes":  1769472,
+                      "last_write_utc_ticks":  639266641101046312,
+                      "creation_utc_ticks":  639266640544819788
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-16792\\duckdb_temp_storage_S96K-0.tmp",
+                      "owner_pid":  16792,
+                      "bytes":  196608,
+                      "last_write_utc_ticks":  639266641100218260,
+                      "creation_utc_ticks":  639266641100132114
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-17328\\duckdb_temp_storage_DEFAULT-0.tmp",
+                      "owner_pid":  17328,
+                      "bytes":  597950464,
+                      "last_write_utc_ticks":  639265933411356473,
+                      "creation_utc_ticks":  639265932532998416
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-17328\\duckdb_temp_storage_S128K-0.tmp",
+                      "owner_pid":  17328,
+                      "bytes":  3670016,
+                      "last_write_utc_ticks":  639265933408337307,
+                      "creation_utc_ticks":  639265932533126809
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-17328\\duckdb_temp_storage_S160K-0.tmp",
+                      "owner_pid":  17328,
+                      "bytes":  2621440,
+                      "last_write_utc_ticks":  639265933408301561,
+                      "creation_utc_ticks":  639265932533177146
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-17328\\duckdb_temp_storage_S192K-0.tmp",
+                      "owner_pid":  17328,
+                      "bytes":  2555904,
+                      "last_write_utc_ticks":  639265933398093895,
+                      "creation_utc_ticks":  639265933331422510
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-17328\\duckdb_temp_storage_S224K-0.tmp",
+                      "owner_pid":  17328,
+                      "bytes":  458752,
+                      "last_write_utc_ticks":  639265933379754815,
+                      "creation_utc_ticks":  639265933344224301
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-17328\\duckdb_temp_storage_S32K-0.tmp",
+                      "owner_pid":  17328,
+                      "bytes":  39157760,
+                      "last_write_utc_ticks":  639265933411336418,
+                      "creation_utc_ticks":  639265932533227909
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-17328\\duckdb_temp_storage_S64K-0.tmp",
+                      "owner_pid":  17328,
+                      "bytes":  71368704,
+                      "last_write_utc_ticks":  639265933408172326,
+                      "creation_utc_ticks":  639265932533126809
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-17328\\duckdb_temp_storage_S96K-0.tmp",
+                      "owner_pid":  17328,
+                      "bytes":  18186240,
+                      "last_write_utc_ticks":  639265933408521861,
+                      "creation_utc_ticks":  639265932533187193
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-18448\\duckdb_temp_storage_DEFAULT-0.tmp",
+                      "owner_pid":  18448,
+                      "bytes":  755499008,
+                      "last_write_utc_ticks":  639266494898951410,
+                      "creation_utc_ticks":  639266493675698154
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-18448\\duckdb_temp_storage_S128K-0.tmp",
+                      "owner_pid":  18448,
+                      "bytes":  131072,
+                      "last_write_utc_ticks":  639266494833386909,
+                      "creation_utc_ticks":  639266493675698154
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-18448\\duckdb_temp_storage_S160K-0.tmp",
+                      "owner_pid":  18448,
+                      "bytes":  491520,
+                      "last_write_utc_ticks":  639266494833417191,
+                      "creation_utc_ticks":  639266493675698154
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-18448\\duckdb_temp_storage_S192K-0.tmp",
+                      "owner_pid":  18448,
+                      "bytes":  393216,
+                      "last_write_utc_ticks":  639266494835554737,
+                      "creation_utc_ticks":  639266494403008622
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-18448\\duckdb_temp_storage_S32K-0.tmp",
+                      "owner_pid":  18448,
+                      "bytes":  46301184,
+                      "last_write_utc_ticks":  639266494898915249,
+                      "creation_utc_ticks":  639266493675767057
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-18448\\duckdb_temp_storage_S64K-0.tmp",
+                      "owner_pid":  18448,
+                      "bytes":  78249984,
+                      "last_write_utc_ticks":  639266494898971490,
+                      "creation_utc_ticks":  639266493675698154
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-18448\\duckdb_temp_storage_S96K-0.tmp",
+                      "owner_pid":  18448,
+                      "bytes":  20938752,
+                      "last_write_utc_ticks":  639266494898026615,
+                      "creation_utc_ticks":  639266493675698154
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-1880\\duckdb_temp_storage_DEFAULT-0.tmp",
+                      "owner_pid":  1880,
+                      "bytes":  84672512,
+                      "last_write_utc_ticks":  639264883202550036,
+                      "creation_utc_ticks":  639264881761198149
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-1880\\duckdb_temp_storage_S128K-0.tmp",
+                      "owner_pid":  1880,
+                      "bytes":  3932160,
+                      "last_write_utc_ticks":  639264883175132292,
+                      "creation_utc_ticks":  639264881761233232
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-1880\\duckdb_temp_storage_S160K-0.tmp",
+                      "owner_pid":  1880,
+                      "bytes":  1474560,
+                      "last_write_utc_ticks":  639264883175252299,
+                      "creation_utc_ticks":  639264881809081780
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-1880\\duckdb_temp_storage_S64K-0.tmp",
+                      "owner_pid":  1880,
+                      "bytes":  6291456,
+                      "last_write_utc_ticks":  639264883202219874,
+                      "creation_utc_ticks":  639264881761268369
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-1880\\duckdb_temp_storage_S96K-0.tmp",
+                      "owner_pid":  1880,
+                      "bytes":  7766016,
+                      "last_write_utc_ticks":  639264883202520035,
+                      "creation_utc_ticks":  639264881761931658
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-20004\\duckdb_temp_storage_DEFAULT-0.tmp",
+                      "owner_pid":  20004,
+                      "bytes":  702808064,
+                      "last_write_utc_ticks":  639266600248698859,
+                      "creation_utc_ticks":  639266599978633799
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-20004\\duckdb_temp_storage_S128K-0.tmp",
+                      "owner_pid":  20004,
+                      "bytes":  1310720,
+                      "last_write_utc_ticks":  639266600243715487,
+                      "creation_utc_ticks":  639266599978669093
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-20004\\duckdb_temp_storage_S160K-0.tmp",
+                      "owner_pid":  20004,
+                      "bytes":  2949120,
+                      "last_write_utc_ticks":  639266600242170498,
+                      "creation_utc_ticks":  639266599978697874
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-20004\\duckdb_temp_storage_S192K-0.tmp",
+                      "owner_pid":  20004,
+                      "bytes":  2555904,
+                      "last_write_utc_ticks":  639266600241716114,
+                      "creation_utc_ticks":  639266599979305709
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-20004\\duckdb_temp_storage_S32K-0.tmp",
+                      "owner_pid":  20004,
+                      "bytes":  64094208,
+                      "last_write_utc_ticks":  639266600248761528,
+                      "creation_utc_ticks":  639266599979003835
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-20004\\duckdb_temp_storage_S64K-0.tmp",
+                      "owner_pid":  20004,
+                      "bytes":  85655552,
+                      "last_write_utc_ticks":  639266600243826340,
+                      "creation_utc_ticks":  639266599978679064
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-20004\\duckdb_temp_storage_S96K-0.tmp",
+                      "owner_pid":  20004,
+                      "bytes":  27525120,
+                      "last_write_utc_ticks":  639266600248772053,
+                      "creation_utc_ticks":  639266599978643889
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-21160\\duckdb_temp_storage_DEFAULT-0.tmp",
+                      "owner_pid":  21160,
+                      "bytes":  343408640,
+                      "last_write_utc_ticks":  639265914755467885,
+                      "creation_utc_ticks":  639265914246775363
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-21160\\duckdb_temp_storage_S128K-0.tmp",
+                      "owner_pid":  21160,
+                      "bytes":  18481152,
+                      "last_write_utc_ticks":  639265914755467885,
+                      "creation_utc_ticks":  639265914246815734
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-21160\\duckdb_temp_storage_S160K-0.tmp",
+                      "owner_pid":  21160,
+                      "bytes":  5406720,
+                      "last_write_utc_ticks":  639265914754611065,
+                      "creation_utc_ticks":  639265914246860578
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-21160\\duckdb_temp_storage_S224K-0.tmp",
+                      "owner_pid":  21160,
+                      "bytes":  917504,
+                      "last_write_utc_ticks":  639265914491530006,
+                      "creation_utc_ticks":  639265914365754022
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-21160\\duckdb_temp_storage_S32K-0.tmp",
+                      "owner_pid":  21160,
+                      "bytes":  24084480,
+                      "last_write_utc_ticks":  639265914755237615,
+                      "creation_utc_ticks":  639265914246840418
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-21160\\duckdb_temp_storage_S64K-0.tmp",
+                      "owner_pid":  21160,
+                      "bytes":  44498944,
+                      "last_write_utc_ticks":  639265914755247608,
+                      "creation_utc_ticks":  639265914249965220
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-21160\\duckdb_temp_storage_S96K-0.tmp",
+                      "owner_pid":  21160,
+                      "bytes":  9732096,
+                      "last_write_utc_ticks":  639265914754990029,
+                      "creation_utc_ticks":  639265914246795575
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-22460\\duckdb_temp_storage_DEFAULT-0.tmp",
+                      "owner_pid":  22460,
+                      "bytes":  2883584,
+                      "last_write_utc_ticks":  639265912187172336,
+                      "creation_utc_ticks":  639265910535198077
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-22460\\duckdb_temp_storage_S32K-0.tmp",
+                      "owner_pid":  22460,
+                      "bytes":  65536,
+                      "last_write_utc_ticks":  639265912186763204,
+                      "creation_utc_ticks":  639265910535175571
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-22460\\duckdb_temp_storage_S64K-0.tmp",
+                      "owner_pid":  22460,
+                      "bytes":  1114112,
+                      "last_write_utc_ticks":  639265912187196498,
+                      "creation_utc_ticks":  639265910535146674
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-22460\\duckdb_temp_storage_S96K-0.tmp",
+                      "owner_pid":  22460,
+                      "bytes":  393216,
+                      "last_write_utc_ticks":  639265912187172336,
+                      "creation_utc_ticks":  639265910535355857
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-22916\\duckdb_temp_storage_DEFAULT-0.tmp",
+                      "owner_pid":  22916,
+                      "bytes":  2883584,
+                      "last_write_utc_ticks":  639266646778537186,
+                      "creation_utc_ticks":  639266646777224913
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-22916\\duckdb_temp_storage_S32K-0.tmp",
+                      "owner_pid":  22916,
+                      "bytes":  1310720,
+                      "last_write_utc_ticks":  639266646778602517,
+                      "creation_utc_ticks":  639266646777627041
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-22916\\duckdb_temp_storage_S64K-0.tmp",
+                      "owner_pid":  22916,
+                      "bytes":  393216,
+                      "last_write_utc_ticks":  639266646778592326,
+                      "creation_utc_ticks":  639266646777596859
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-22916\\duckdb_temp_storage_S96K-0.tmp",
+                      "owner_pid":  22916,
+                      "bytes":  196608,
+                      "last_write_utc_ticks":  639266646778117972,
+                      "creation_utc_ticks":  639266646778057349
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-25924\\duckdb_temp_storage_DEFAULT-0.tmp",
+                      "owner_pid":  25924,
+                      "bytes":  1048576000,
+                      "last_write_utc_ticks":  639265933364883807,
+                      "creation_utc_ticks":  639265931766718474
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-25924\\duckdb_temp_storage_DEFAULT-1.tmp",
+                      "owner_pid":  25924,
+                      "bytes":  94896128,
+                      "last_write_utc_ticks":  639265933365647526,
+                      "creation_utc_ticks":  639265932184082415
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-25924\\duckdb_temp_storage_S128K-0.tmp",
+                      "owner_pid":  25924,
+                      "bytes":  82706432,
+                      "last_write_utc_ticks":  639265933365791976,
+                      "creation_utc_ticks":  639265931766745375
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-25924\\duckdb_temp_storage_S160K-0.tmp",
+                      "owner_pid":  25924,
+                      "bytes":  53739520,
+                      "last_write_utc_ticks":  639265933364696197,
+                      "creation_utc_ticks":  639265931769191138
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-25924\\duckdb_temp_storage_S192K-0.tmp",
+                      "owner_pid":  25924,
+                      "bytes":  32636928,
+                      "last_write_utc_ticks":  639265933358321627,
+                      "creation_utc_ticks":  639265931768059293
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-25924\\duckdb_temp_storage_S224K-0.tmp",
+                      "owner_pid":  25924,
+                      "bytes":  15138816,
+                      "last_write_utc_ticks":  639265933320398358,
+                      "creation_utc_ticks":  639265931964420924
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-25924\\duckdb_temp_storage_S32K-0.tmp",
+                      "owner_pid":  25924,
+                      "bytes":  62914560,
+                      "last_write_utc_ticks":  639265933365503397,
+                      "creation_utc_ticks":  639265931767272579
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-25924\\duckdb_temp_storage_S64K-0.tmp",
+                      "owner_pid":  25924,
+                      "bytes":  53084160,
+                      "last_write_utc_ticks":  639265933365544016,
+                      "creation_utc_ticks":  639265931766726868
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-25924\\duckdb_temp_storage_S96K-0.tmp",
+                      "owner_pid":  25924,
+                      "bytes":  97124352,
+                      "last_write_utc_ticks":  639265933365698083,
+                      "creation_utc_ticks":  639265931766632301
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-4552\\duckdb_temp_storage_DEFAULT-0.tmp",
+                      "owner_pid":  4552,
+                      "bytes":  1001127936,
+                      "last_write_utc_ticks":  639266622087993349,
+                      "creation_utc_ticks":  639266620290903711
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-4552\\duckdb_temp_storage_S128K-0.tmp",
+                      "owner_pid":  4552,
+                      "bytes":  5505024,
+                      "last_write_utc_ticks":  639266622087310788,
+                      "creation_utc_ticks":  639266620290913702
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-4552\\duckdb_temp_storage_S160K-0.tmp",
+                      "owner_pid":  4552,
+                      "bytes":  2949120,
+                      "last_write_utc_ticks":  639266622086528254,
+                      "creation_utc_ticks":  639266620290998991
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-4552\\duckdb_temp_storage_S192K-0.tmp",
+                      "owner_pid":  4552,
+                      "bytes":  2162688,
+                      "last_write_utc_ticks":  639266622085765942,
+                      "creation_utc_ticks":  639266620298069800
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-4552\\duckdb_temp_storage_S224K-0.tmp",
+                      "owner_pid":  4552,
+                      "bytes":  458752,
+                      "last_write_utc_ticks":  639266622062783677,
+                      "creation_utc_ticks":  639266622062650682
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-4552\\duckdb_temp_storage_S32K-0.tmp",
+                      "owner_pid":  4552,
+                      "bytes":  89817088,
+                      "last_write_utc_ticks":  639266622087866151,
+                      "creation_utc_ticks":  639266620291221317
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-4552\\duckdb_temp_storage_S64K-0.tmp",
+                      "owner_pid":  4552,
+                      "bytes":  154796032,
+                      "last_write_utc_ticks":  639266622087973189,
+                      "creation_utc_ticks":  639266620290948988
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-4552\\duckdb_temp_storage_S96K-0.tmp",
+                      "owner_pid":  4552,
+                      "bytes":  30670848,
+                      "last_write_utc_ticks":  639266622087326196,
+                      "creation_utc_ticks":  639266620291221317
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-9864\\duckdb_temp_storage_DEFAULT-0.tmp",
+                      "owner_pid":  9864,
+                      "bytes":  45613056,
+                      "last_write_utc_ticks":  639264909865773027,
+                      "creation_utc_ticks":  639264909816434253
+                  },
+                  {
+                      "path":  "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\spill-9864\\duckdb_temp_storage_S32K-0.tmp",
+                      "owner_pid":  9864,
+                      "bytes":  720896,
+                      "last_write_utc_ticks":  639264909864839034,
+                      "creation_utc_ticks":  639264909816434253
+                  }
+              ],
+    "file_count":  80,
+    "logical_bytes":  7451869184,
+    "exclusive_read_handles_acquired":  80,
+    "protected_identities":  {
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0006\\attempt-fe86f1bff615487ebf5962d62f695f8d\\native\\catalog-0006.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "7d144e0313eeb8710251649a02b91b22ad517e9050404abfcafe75552bdcb18b",
+                                                                                                                                                                                                                                   "bytes":  945004
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0007\\attempt-5328c11de3224a44b70b43332e766aa2\\native\\batch-0007.json":  {
+                                                                                                                                                                                                                              "sha256":  "f021d75f2c0d186de0ceccc231d709733b14b9b7625f74c08b1ca84735e28d3e",
+                                                                                                                                                                                                                              "bytes":  1599
+                                                                                                                                                                                                                          },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0005\\attempt-4bad946e687445ff9f33a6d179f8b360\\native\\catalog-0005.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "27b2394565e460c7691e8b3524a88e1809281de5f4cd1a991cf11d5f65f3e718",
+                                                                                                                                                                                                                                   "bytes":  940711
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0002\\attempt-352ccb9f01fc4e23b6d38252689fc9e5\\native\\batch-0002.json":  {
+                                                                                                                                                                                                                              "sha256":  "92d51ecc92262aebd5d598b4a741787a39c3c8e8ca6eb74574e366d6971aa1c3",
+                                                                                                                                                                                                                              "bytes":  1704
+                                                                                                                                                                                                                          },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0001\\attempt-40cba0e5e7a74548b03e878a0c548625\\native\\batch-0001.json":  {
+                                                                                                                                                                                                                              "sha256":  "53e7ca4473efb3418d96b22e57d364fbbcebbf00b8146be115335bbb84bc6daa",
+                                                                                                                                                                                                                              "bytes":  1708
+                                                                                                                                                                                                                          },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0005\\attempt-4bad946e687445ff9f33a6d179f8b360\\native\\batch-0005.json":  {
+                                                                                                                                                                                                                              "sha256":  "44f1eecb850d2a69f27ad663bdfc315bb82a23c7603467f7238eefd551203ad0",
+                                                                                                                                                                                                                              "bytes":  1706
+                                                                                                                                                                                                                          },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-ed102977032d4a97b7590fb70a032ce6\\start.json":  {
+                                                                                                                                                                                                                 "sha256":  "29a681131cc8d1949dab8ac34a7bb2f095d450776c3dcf37884769aceb8cfcb4",
+                                                                                                                                                                                                                 "bytes":  259
+                                                                                                                                                                                                             },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0004\\attempt-5059745f8ee64cc5a01262f788083d83\\native\\events-0004.parquet":  {
+                                                                                                                                                                                                                                  "sha256":  "9e8a10dfbeedbd2263b50da5e5950e0e72751973f6537acb55e16ae6649ff9d2",
+                                                                                                                                                                                                                                  "bytes":  1027268
+                                                                                                                                                                                                                              },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0006\\attempt-fe86f1bff615487ebf5962d62f695f8d\\native\\events-0006.parquet":  {
+                                                                                                                                                                                                                                  "sha256":  "24eb0489fcae2ea6c50bf958183d4b338f90ad136fa6a7b363bdb230051ac2aa",
+                                                                                                                                                                                                                                  "bytes":  1023268
+                                                                                                                                                                                                                              },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0006\\attempt-fe86f1bff615487ebf5962d62f695f8d\\native\\batch-0006.json":  {
+                                                                                                                                                                                                                              "sha256":  "46e7bcd922f1ccf7c5d08d7993a3eb2864da88ca5ce5c0efe453eea5729337ca",
+                                                                                                                                                                                                                              "bytes":  1715
+                                                                                                                                                                                                                          },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\attempt-3f61958cfd30419b889f97ce3cc51901\\native\\catalog-0000.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "acf13e8a24b7addac8b0f235347335ee78d44dbd53990daa4c0473c675088419",
+                                                                                                                                                                                                                                   "bytes":  928804
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0007\\admission.json":  {
+                                                                                                                                                                           "sha256":  "89f30df3d4452f8e08a7aac985f646c6f3437d306be7284ee786c6dd0d5b3e8b",
+                                                                                                                                                                           "bytes":  1253
+                                                                                                                                                                       },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0005\\attempt-4bad946e687445ff9f33a6d179f8b360\\native\\history-0005.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "c6d31657f79542aa652ca96dfeace0dc613809b9bf5cf8a09d1e3c7e158d046b",
+                                                                                                                                                                                                                                   "bytes":  920902
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0002\\attempt-352ccb9f01fc4e23b6d38252689fc9e5\\start.json":  {
+                                                                                                                                                                                                                 "sha256":  "497cd34a29ed9d3d86c7f2374b80cea710afe41632e3ad6662e29c7c7ef7d525",
+                                                                                                                                                                                                                 "bytes":  259
+                                                                                                                                                                                                             },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0008\\attempt-6f6bc45c353148b5aaa74127b8b84573\\start.json":  {
+                                                                                                                                                                                                                 "sha256":  "6eb49b742674970a20ba8abde7dc3526e3976f7e692bbe4ef4fd4a00093eb043",
+                                                                                                                                                                                                                 "bytes":  259
+                                                                                                                                                                                                             },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0001\\admission.json":  {
+                                                                                                                                                                           "sha256":  "d62870055b6c6d4e49ef1e5befbcc70413f79d91593fd8918a7d6f119bb2055b",
+                                                                                                                                                                           "bytes":  1252
+                                                                                                                                                                       },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0004\\attempt-5059745f8ee64cc5a01262f788083d83\\native\\sic-0004.parquet":  {
+                                                                                                                                                                                                                               "sha256":  "510d33c78f09f6ce383bb74dfbf81e11eb80e43f0773cdcb6bca3ba502589cb6",
+                                                                                                                                                                                                                               "bytes":  56945
+                                                                                                                                                                                                                           },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0007\\attempt-5328c11de3224a44b70b43332e766aa2\\native\\sic-0007.parquet":  {
+                                                                                                                                                                                                                               "sha256":  "396efa7646d3c2969bdb22b455e0ad18c359b9fa9aa7e73c08dac06d6f22891d",
+                                                                                                                                                                                                                               "bytes":  59228
+                                                                                                                                                                                                                           },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0007\\attempt-5328c11de3224a44b70b43332e766aa2\\start.json":  {
+                                                                                                                                                                                                                 "sha256":  "4a3d05faf508709f3c276b64751e1c6a3749015ec50353a1c748f74c949a2496",
+                                                                                                                                                                                                                 "bytes":  259
+                                                                                                                                                                                                             },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0007\\attempt-5328c11de3224a44b70b43332e766aa2\\native\\events-0007.parquet":  {
+                                                                                                                                                                                                                                  "sha256":  "3c27b8f095db9840066d7a877f910b172a3ca774f165bde22c7988be953d792c",
+                                                                                                                                                                                                                                  "bytes":  1016816
+                                                                                                                                                                                                                              },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\attempt-3f61958cfd30419b889f97ce3cc51901\\native\\batch-0000.json":  {
+                                                                                                                                                                                                                              "sha256":  "9193ab58c1cb94a6aa951b8713ccaaad987a6b49931fa4a445770a374387a155",
+                                                                                                                                                                                                                              "bytes":  1764
+                                                                                                                                                                                                                          },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0006\\admission.json":  {
+                                                                                                                                                                           "sha256":  "6d16487fcceaf326a0abe9b213ad502fabbce06669ad2ab6e2132ca7098793e8",
+                                                                                                                                                                           "bytes":  1253
+                                                                                                                                                                       },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0005\\attempt-4bad946e687445ff9f33a6d179f8b360\\native\\sic-0005.parquet":  {
+                                                                                                                                                                                                                               "sha256":  "c2777cea639f815fbb76b7e831b9e2b2279bf98713a2247947e50a8e3df99c84",
+                                                                                                                                                                                                                               "bytes":  60364
+                                                                                                                                                                                                                           },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0001\\attempt-40cba0e5e7a74548b03e878a0c548625\\native\\catalog-0001.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "e09e58058e6ff47e05697d9fd8baea58f295b29c825767c39989e7b34dc00acd",
+                                                                                                                                                                                                                                   "bytes":  911780
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-ed102977032d4a97b7590fb70a032ce6\\native\\history-0003.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "ecef38dabb8224224d4d674460c11bbc1ddd816c90f81a1cb5810f18fe139aae",
+                                                                                                                                                                                                                                   "bytes":  846808
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0001\\attempt-40cba0e5e7a74548b03e878a0c548625\\native\\sic-0001.parquet":  {
+                                                                                                                                                                                                                               "sha256":  "2b7d9c8e4cc0b696b7fd935565c3d47d7dc09517f2343660360b6bcd260357ae",
+                                                                                                                                                                                                                               "bytes":  55600
+                                                                                                                                                                                                                           },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\attempt-3e85a973ecb0449baebab1faa2d98bad\\native\\batch-0000.json":  {
+                                                                                                                                                                                                                              "sha256":  "35f2cd65c7c4aa98e2c82b304a20c9510cbe963d4f3d195d7934ffcace335a4d",
+                                                                                                                                                                                                                              "bytes":  1765
+                                                                                                                                                                                                                          },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\admission.json":  {
+                                                                                                                                                                           "sha256":  "7fff6ad30d1829c9e5337ca12c5d19f0cf65f5bb9cd26af4d4b411d53ccaed8c",
+                                                                                                                                                                           "bytes":  1252
+                                                                                                                                                                       },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\attempt-3e85a973ecb0449baebab1faa2d98bad\\native\\sic-0000.parquet":  {
+                                                                                                                                                                                                                               "sha256":  "2dd59a029aafa43e6be1af1eb95faee0e5a8017c741b123a759b69fcaf529014",
+                                                                                                                                                                                                                               "bytes":  59314
+                                                                                                                                                                                                                           },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0002\\attempt-352ccb9f01fc4e23b6d38252689fc9e5\\native\\catalog-0002.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "7b1fec2497f9049c129a93479f55b39ffbfb32df9097086a8d7c6da5dbb14a0a",
+                                                                                                                                                                                                                                   "bytes":  933487
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\attempt-3e85a973ecb0449baebab1faa2d98bad\\native\\history-0000.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "d9a1eed4c6b768695c1a43aac83f2fdabfe4c28d4696a9ffd6afb56ecfe55825",
+                                                                                                                                                                                                                                   "bytes":  913757
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0005\\attempt-4bad946e687445ff9f33a6d179f8b360\\start.json":  {
+                                                                                                                                                                                                                 "sha256":  "e0875f8cb3745c5aea4854ae0f2196a8633b8a704c4c81dc68c2af8827ed5e60",
+                                                                                                                                                                                                                 "bytes":  259
+                                                                                                                                                                                                             },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-3b616f22819d45a58bde59cff79dbeab\\start.json":  {
+                                                                                                                                                                                                                 "sha256":  "5a92e705e0cfdd45775e78f789df37706f4754599c90d453b43d5ee5d5a9c74b",
+                                                                                                                                                                                                                 "bytes":  259
+                                                                                                                                                                                                             },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0004\\attempt-5059745f8ee64cc5a01262f788083d83\\start.json":  {
+                                                                                                                                                                                                                 "sha256":  "5534cbff512409af10218d7818530a67f8f3c82ea9bae5819289ce7a73b51270",
+                                                                                                                                                                                                                 "bytes":  259
+                                                                                                                                                                                                             },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\attempt-9bc52a1385ba43608306dc596572192d\\native\\history-0000.parquet.partial":  {
+                                                                                                                                                                                                                                           "sha256":  "ec66ef2e129ad64dbd14cd294a11d2379d8e482fb9971f59722875fe10c1e03d",
+                                                                                                                                                                                                                                           "bytes":  1103
+                                                                                                                                                                                                                                       },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-3b616f22819d45a58bde59cff79dbeab\\native\\catalog-0003.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "835a65114d11d9255dae738c8601528160f6d131da55058094efdd73f0dd0631",
+                                                                                                                                                                                                                                   "bytes":  859821
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0002\\attempt-352ccb9f01fc4e23b6d38252689fc9e5\\native\\sic-0002.parquet":  {
+                                                                                                                                                                                                                               "sha256":  "b51152c594d07a0fccb0536a1ed9ca689702949f19cf5828c1836b414dfa6b57",
+                                                                                                                                                                                                                               "bytes":  59480
+                                                                                                                                                                                                                           },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\admission.json":  {
+                                                                                                                                                                           "sha256":  "3eff09f6550aa13f7c3ec56b924128a5576c55c62ff033a8c5a96317386f6cfe",
+                                                                                                                                                                           "bytes":  1253
+                                                                                                                                                                       },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0002\\admission.json":  {
+                                                                                                                                                                           "sha256":  "7cd493a393ffcf8ca868d6cd598388331d93ac0fad62d78f38f88cf00b7bb5dc",
+                                                                                                                                                                           "bytes":  1253
+                                                                                                                                                                       },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\snapshot.json":  {
+                                                                                                                                                       "bytes":  10411360,
+                                                                                                                                                       "sha256":  "c73f6293a5785c185567b01c443747aa2c7294614b45bfdaf2b8016ec9807a0c"
+                                                                                                                                                   },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\attempt-3f61958cfd30419b889f97ce3cc51901\\native\\history-0000.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "d9a1eed4c6b768695c1a43aac83f2fdabfe4c28d4696a9ffd6afb56ecfe55825",
+                                                                                                                                                                                                                                   "bytes":  913757
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\attempt-3e85a973ecb0449baebab1faa2d98bad\\start.json":  {
+                                                                                                                                                                                                                 "sha256":  "e8cb0921667734a1017a452baa8ad3de9a7b3c151b1824128d82b7ad0544055f",
+                                                                                                                                                                                                                 "bytes":  259
+                                                                                                                                                                                                             },
+                                 "C:\\atx\\.superpowers\\sdd\\tier1-v4\\t17-interruption-inspection-v5.json":  {
+                                                                                                                   "bytes":  34026,
+                                                                                                                   "sha256":  "6090f38683aadb68a5409cf850ff339447a2a26db87ac9f0b4a69616cd4aaf95"
+                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-3b616f22819d45a58bde59cff79dbeab\\native\\batch-0003.json":  {
+                                                                                                                                                                                                                              "sha256":  "f8f34b02ab457a00e68d97dc3fde4ce2ba44903ff2a9f5c5afd49c5c3f787423",
+                                                                                                                                                                                                                              "bytes":  1633
+                                                                                                                                                                                                                          },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0004\\attempt-5059745f8ee64cc5a01262f788083d83\\native\\history-0004.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "d4de0a74cdabb2d5ef6329fdeb96db3466befe38df38eb52a16b23c9c913fda5",
+                                                                                                                                                                                                                                   "bytes":  931383
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0004\\attempt-5059745f8ee64cc5a01262f788083d83\\native\\catalog-0004.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "f35624db841f6c47d00ad276334eadf186fb011b1d133ff4ad2563430f4334e1",
+                                                                                                                                                                                                                                   "bytes":  937927
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\attempt-3e85a973ecb0449baebab1faa2d98bad\\native\\catalog-0000.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "acf13e8a24b7addac8b0f235347335ee78d44dbd53990daa4c0473c675088419",
+                                                                                                                                                                                                                                   "bytes":  928804
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-ed102977032d4a97b7590fb70a032ce6\\native\\events-0003.parquet":  {
+                                                                                                                                                                                                                                  "sha256":  "e76aab63ce5115443e3a8cc22f3438272659ca5d6ffbda065c410ab24fbbe6dc",
+                                                                                                                                                                                                                                  "bytes":  898601
+                                                                                                                                                                                                                              },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0001\\attempt-40cba0e5e7a74548b03e878a0c548625\\native\\events-0001.parquet":  {
+                                                                                                                                                                                                                                  "sha256":  "5931db2489bd3550f9c21ef14fcbc968dd0bd69e9c3f8ef092f62c7621652e18",
+                                                                                                                                                                                                                                  "bytes":  997535
+                                                                                                                                                                                                                              },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0004\\admission.json":  {
+                                                                                                                                                                           "sha256":  "e6ad778adb22df35d0b665263f16460db823b36f7cc108b31487f48d2472d6eb",
+                                                                                                                                                                           "bytes":  1253
+                                                                                                                                                                       },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0007\\attempt-5328c11de3224a44b70b43332e766aa2\\native\\history-0007.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "fa385518897e5b7dff4039854996744e4a101fd30b1161cf09bdfc040489d943",
+                                                                                                                                                                                                                                   "bytes":  951964
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0004\\attempt-5059745f8ee64cc5a01262f788083d83\\native\\batch-0004.json":  {
+                                                                                                                                                                                                                              "sha256":  "9787b709a4177a932261821b4fe8d56d4a1136ed4d00a07d290ff91cf189cded",
+                                                                                                                                                                                                                              "bytes":  1673
+                                                                                                                                                                                                                          },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0005\\attempt-4bad946e687445ff9f33a6d179f8b360\\native\\events-0005.parquet":  {
+                                                                                                                                                                                                                                  "sha256":  "fca7aa1ac58fe6b957244652a2c0d4c660787b118ef6382fcb085c4703f2ada9",
+                                                                                                                                                                                                                                  "bytes":  1021214
+                                                                                                                                                                                                                              },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0007\\attempt-5328c11de3224a44b70b43332e766aa2\\native\\catalog-0007.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "b68bc696b5eecf1fde436687a5f17581dd0852ac11bf940d69b6d78b3d2aad68",
+                                                                                                                                                                                                                                   "bytes":  920282
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0006\\attempt-fe86f1bff615487ebf5962d62f695f8d\\native\\sic-0006.parquet":  {
+                                                                                                                                                                                                                               "sha256":  "0c6c5e6f85e356ab35f682829d17100758954e3fe7f13c61fdc1827492cd0ab3",
+                                                                                                                                                                                                                               "bytes":  58390
+                                                                                                                                                                                                                           },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-ed102977032d4a97b7590fb70a032ce6\\native\\batch-0003.json":  {
+                                                                                                                                                                                                                              "sha256":  "60be760db9c93805599bc5cf9d3256bc2ba66f357f20e150ef0cf0d8850f6603",
+                                                                                                                                                                                                                              "bytes":  1633
+                                                                                                                                                                                                                          },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0006\\attempt-fe86f1bff615487ebf5962d62f695f8d\\native\\history-0006.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "5bc16fbd77fad343e026451d8e52e0492ff5fbdb3bb20763807fa23d57e41859",
+                                                                                                                                                                                                                                   "bytes":  967892
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\attempt-3f61958cfd30419b889f97ce3cc51901\\start.json":  {
+                                                                                                                                                                                                                 "sha256":  "1516a9338e93672ff9543f0c8d3ea0dd630a4a5e236ca867a4174d824ea015ce",
+                                                                                                                                                                                                                 "bytes":  259
+                                                                                                                                                                                                             },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\attempt-9bc52a1385ba43608306dc596572192d\\start.json":  {
+                                                                                                                                                                                                                 "sha256":  "5ea4f13d5f3e6116ee416cf681961a346927ef224346bf1bd8b30fffe8484cdf",
+                                                                                                                                                                                                                 "bytes":  259
+                                                                                                                                                                                                             },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0002\\attempt-352ccb9f01fc4e23b6d38252689fc9e5\\native\\history-0002.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "279a3ac084fd6b1aa291913a0efcbb1c48fc54dcef338d40c9f52736e5901104",
+                                                                                                                                                                                                                                   "bytes":  983080
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-ed102977032d4a97b7590fb70a032ce6\\native\\catalog-0003.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "835a65114d11d9255dae738c8601528160f6d131da55058094efdd73f0dd0631",
+                                                                                                                                                                                                                                   "bytes":  859821
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-3b616f22819d45a58bde59cff79dbeab\\native\\history-0003.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "ecef38dabb8224224d4d674460c11bbc1ddd816c90f81a1cb5810f18fe139aae",
+                                                                                                                                                                                                                                   "bytes":  846808
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0002\\attempt-352ccb9f01fc4e23b6d38252689fc9e5\\native\\events-0002.parquet":  {
+                                                                                                                                                                                                                                  "sha256":  "450a3cafdf8fba947af1b157999fde634846ba66cd3f2def045688243c50eb3a",
+                                                                                                                                                                                                                                  "bytes":  1036953
+                                                                                                                                                                                                                              },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\attempt-3f61958cfd30419b889f97ce3cc51901\\native\\sic-0000.parquet":  {
+                                                                                                                                                                                                                               "sha256":  "2dd59a029aafa43e6be1af1eb95faee0e5a8017c741b123a759b69fcaf529014",
+                                                                                                                                                                                                                               "bytes":  59314
+                                                                                                                                                                                                                           },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-3b616f22819d45a58bde59cff79dbeab\\native\\events-0003.parquet":  {
+                                                                                                                                                                                                                                  "sha256":  "e76aab63ce5115443e3a8cc22f3438272659ca5d6ffbda065c410ab24fbbe6dc",
+                                                                                                                                                                                                                                  "bytes":  898601
+                                                                                                                                                                                                                              },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\attempt-3e85a973ecb0449baebab1faa2d98bad\\native\\events-0000.parquet":  {
+                                                                                                                                                                                                                                  "sha256":  "e8762c26b5db7260f56251cfde31ea8c684cd3f97c60159cd40b0db3409e2144",
+                                                                                                                                                                                                                                  "bytes":  1015460
+                                                                                                                                                                                                                              },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0006\\attempt-fe86f1bff615487ebf5962d62f695f8d\\start.json":  {
+                                                                                                                                                                                                                 "sha256":  "a33ec0accf2640810a4877fa40e48bb88abc6155d8b26555f7f1a5307f0007e3",
+                                                                                                                                                                                                                 "bytes":  259
+                                                                                                                                                                                                             },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0001\\attempt-40cba0e5e7a74548b03e878a0c548625\\start.json":  {
+                                                                                                                                                                                                                 "sha256":  "24796e8cbcfc7e92dba0b803e09c81ef0169128e0adfcdc197c8ff1d294e1bc3",
+                                                                                                                                                                                                                 "bytes":  259
+                                                                                                                                                                                                             },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-3b616f22819d45a58bde59cff79dbeab\\native\\sic-0003.parquet":  {
+                                                                                                                                                                                                                               "sha256":  "8115560cf1f9fa304492147f2528ce3f959b4acc54d441ef3c36fc2d22aa7880",
+                                                                                                                                                                                                                               "bytes":  53174
+                                                                                                                                                                                                                           },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0005\\admission.json":  {
+                                                                                                                                                                           "sha256":  "189b2ca3775cabb27d647518c89c36ea354a17c16cb1bab13020c1b19a8d40e2",
+                                                                                                                                                                           "bytes":  1253
+                                                                                                                                                                       },
+                                 "C:\\atx\\atx-db\\src\\atx_db\\alpha_panel\\common.py":  {
+                                                                                              "bytes":  6868,
+                                                                                              "sha256":  "9411975069075772e123bf570e85420681de830787191cdbcd358c7d9a110172"
+                                                                                          },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0001\\attempt-40cba0e5e7a74548b03e878a0c548625\\native\\history-0001.parquet":  {
+                                                                                                                                                                                                                                   "sha256":  "a0865066549b896fe2bbf0eab73c565d15bfab113db470309da731da10986749",
+                                                                                                                                                                                                                                   "bytes":  907536
+                                                                                                                                                                                                                               },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0003\\attempt-ed102977032d4a97b7590fb70a032ce6\\native\\sic-0003.parquet":  {
+                                                                                                                                                                                                                               "sha256":  "8115560cf1f9fa304492147f2528ce3f959b4acc54d441ef3c36fc2d22aa7880",
+                                                                                                                                                                                                                               "bytes":  53174
+                                                                                                                                                                                                                           },
+                                 "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_002\\units\\batch-0000\\attempt-3f61958cfd30419b889f97ce3cc51901\\native\\events-0000.parquet":  {
+                                                                                                                                                                                                                                  "sha256":  "e8762c26b5db7260f56251cfde31ea8c684cd3f97c60159cd40b0db3409e2144",
+                                                                                                                                                                                                                                  "bytes":  1015460
+                                                                                                                                                                                                                              }
+                             },
+    "timestamp_utc":  "2026-10-04T18:13:21.1314728Z",
+    "free_before_bytes":  37081829376,
+    "gate_promotion":  false
+}

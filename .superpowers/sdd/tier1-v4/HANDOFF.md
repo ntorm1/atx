@@ -1,5 +1,31 @@
 # tier1-v4 controller handoff
 
+LATEST: exact orphan-spill cleanupv2 COMPLETED. All80native temporary files,
+7451869184logicalB/7451750400observedfreeB removed; emptydirs retained. Guard
+completed0/6s/190017536B under.4,no cap; all71financial members+snapshot+original
+producer/inspection identities unchanged before/after. Sevencleanup observed
+changes total14132310016B. FreshC45992775680B=42.83GiB, original40floor restored.
+V1Apply rejected1ImportantI1 pathname-replacementrace and NEVER RUN. V2 uses
+share-zero delete-capable nativehandles; exact-object disposition only after
+allApplychecks/start. Auditv2success6s/190435328B; realWindows exactadapter
+fixture3s/83329024B verifiesrename/readrefusal, unmarkedpreservation andmarked
+deletionwithunchangedpeer. Independentv2I1rereviewPASS/PASS in preserved
+review-orphan-duckdb-spill-cleanup-v1.md; seecleanup-ruling-v1 forfullrecord.
+Do NOT rerun completedcleanup. Root noactualjob live at this checkpoint.
+
+Observerv9/session36233 terminalcompleted301.2s/27578368B but schedulingFAILED:
+31samplesmincommit2.5589/minphysical1.6266 (guardfiner2.3148/1.5083).
+Original300s>=3commit/>=1physical unchanged. Observerv10/session17570 also
+terminalcompleted0: sample minimumcommit2.0901/physical1.2992; guard finer
+1.4216/1.0344, peak28008448B/no cap. Scheduling FAILED; no financial restart.
+T16heldfamily tests now1PASS each9.89s/7.99s, newprior-exit1PASS.15s; exact
+three-path family correction frozen7b6e9aac, independentT15review pending.
+T17Frenchsourcev2 now1PASS5.20s/guard6s142594048B, original.6/40floor.
+Root released sole fixture lane to T17 for new complete FRED original-source
+replay node; full outer/native implementation continues. Financialaudit7v2,
+creator8/9..15 stillNOTRUN. Eightretained/sevenaudited unchanged, readinessv10
+latestapproved, norelease-readygold. No new observer launched after v10.
+
 Latest continuation: no new financial unit/audit; root has no actual job live.
 Readinessv10 remains latest approved. New distributed NYSE originals captured:
 2Nasdaq200/337373B and2BLS403/2646B, four nonSEC attempts/no retry/redirect,

@@ -1,0 +1,69 @@
+{
+  "guard_version": "c58-m0-r1",
+  "command": [
+    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    "C:\\atx\\.superpowers\\sdd\\tier1-v4\\orphan-spill-handle-v2-fixture.ps1"
+  ],
+  "job_limit_gb": 0.3,
+  "job_cap_bytes": 322121728,
+  "heavy": false,
+  "allow_nested_guards": false,
+  "parent_job": null,
+  "status": "completed",
+  "guard_pid": 9320,
+  "receipt": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\orphan-spill-handle-v2-fixture.receipt.json",
+  "headroom": {
+    "physical_free_gb": 2.242,
+    "commit_free_gb": 3.5134,
+    "commit_free_bytes": 3772477440,
+    "commit_limit_gb": 23.692
+  },
+  "thresholds": {
+    "admission_reserve_gb": 1.0,
+    "slot_budget_gb": 2.0,
+    "stop_commit_gb": 0.75,
+    "stop_physical_gb": 0.25,
+    "thrash_seconds": 30.0,
+    "test_override": false,
+    "test_slot_dir": false
+  },
+  "native_peak_job_memory_gb": 0.0776,
+  "cap_hit": false,
+  "child_env_forced": {
+    "OPENBLAS_NUM_THREADS": "1",
+    "ATX_GUARD_JOB": "Local\\atx-memory-guard-9320-134356118058912538"
+  },
+  "admission": {
+    "slot_dir": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\slots",
+    "wait_limit_minutes": 10.0,
+    "requested_at_utc": "2026-10-04T18:23:26+00:00",
+    "reclaimed_slots": [],
+    "seq": 3958,
+    "last_reasons": [],
+    "last_detail": {
+      "effective_free_commit_gb": 3.453,
+      "free_commit_gb": 3.453,
+      "running_unclaimed_gb": 0.0,
+      "running_caps_gb": 0.0,
+      "running_jobs": 0,
+      "heavy_running": false,
+      "earlier_waiters": 0
+    },
+    "wait_seconds": 0.0,
+    "reasons_seen": [],
+    "admitted_at_utc": "2026-10-04T18:23:26+00:00"
+  },
+  "min_headroom": {
+    "commit_free_gb": 3.453,
+    "physical_free_gb": 1.9993
+  },
+  "child_pid": 21744,
+  "native_peak_job_memory_bytes": 83329024,
+  "cap_hit_events": 0,
+  "returncode": 0,
+  "run_seconds": 3.0
+}

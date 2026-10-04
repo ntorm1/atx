@@ -1,0 +1,73 @@
+{
+  "guard_version": "c58-m0-r1",
+  "command": [
+    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    "C:\\atx\\.superpowers\\sdd\\tier1-v4\\orphan-duckdb-spill-cleanup-v2.ps1",
+    "-Mode",
+    "Apply",
+    "-ReviewSha256",
+    "022af2590792e99cf5d6faec73ce0899b2283ef116d41f04cebdfed0cc9886f8"
+  ],
+  "job_limit_gb": 0.4,
+  "job_cap_bytes": 429494272,
+  "heavy": false,
+  "allow_nested_guards": false,
+  "parent_job": null,
+  "status": "completed",
+  "guard_pid": 16412,
+  "receipt": "C:\\atx\\.superpowers\\sdd\\tier1-v4\\logs\\orphan-duckdb-spill-apply-v2.receipt.json",
+  "headroom": {
+    "physical_free_gb": 2.245,
+    "commit_free_gb": 3.5544,
+    "commit_free_bytes": 3816505344,
+    "commit_limit_gb": 23.692
+  },
+  "thresholds": {
+    "admission_reserve_gb": 1.0,
+    "slot_budget_gb": 2.0,
+    "stop_commit_gb": 0.75,
+    "stop_physical_gb": 0.25,
+    "thrash_seconds": 30.0,
+    "test_override": false,
+    "test_slot_dir": false
+  },
+  "native_peak_job_memory_gb": 0.177,
+  "cap_hit": false,
+  "child_env_forced": {
+    "OPENBLAS_NUM_THREADS": "1",
+    "ATX_GUARD_JOB": "Local\\atx-memory-guard-16412-134356121132454586"
+  },
+  "admission": {
+    "slot_dir": "C:\\Users\\natha\\AppData\\Local\\atx-memory-guard\\slots",
+    "wait_limit_minutes": 10.0,
+    "requested_at_utc": "2026-10-04T18:28:33+00:00",
+    "reclaimed_slots": [],
+    "seq": 3966,
+    "last_reasons": [],
+    "last_detail": {
+      "effective_free_commit_gb": 3.5095,
+      "free_commit_gb": 3.5095,
+      "running_unclaimed_gb": 0.0,
+      "running_caps_gb": 0.0,
+      "running_jobs": 0,
+      "heavy_running": false,
+      "earlier_waiters": 0
+    },
+    "wait_seconds": 0.0,
+    "reasons_seen": [],
+    "admitted_at_utc": "2026-10-04T18:28:33+00:00"
+  },
+  "min_headroom": {
+    "commit_free_gb": 2.9561,
+    "physical_free_gb": 2.0597
+  },
+  "child_pid": 23504,
+  "native_peak_job_memory_bytes": 190017536,
+  "cap_hit_events": 0,
+  "returncode": 0,
+  "run_seconds": 6.0
+}
