@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 
 import cycle_resume as CR
+import cycle_verdict as CV
 import research_ledger
 import wave_manifest as WM
 import wave_queue
@@ -22,6 +23,8 @@ from wave_stage_preflight import ledger_state
 import research_cycle as RC
 from wave_stage_util import (EXIT_PIN, MARGINAL_KEYS, StageError, cyc, no_cell, phase_rows, pinned, reader_digests,
                              skipped, verdict_file)
+
+V2_SCHEMA = "atx.research-wave/v2"      # wave_kinds.SCHEMA_V2 on lane E2's split (ruling B2-10 (c): eval_problem)
 
 
 # ------------------------------------------------------------------ verify
@@ -41,7 +44,7 @@ def verify(w: Wave, done: dict, log) -> dict:
     digest = mt.get("spec_digest") or done["spec"]["spec_digest"]
     seal = wave_seal.scan(w, wave_seal.wave_logs(w, done), wave_seal.rulings(w, done))
     exe, pins = nav_exe(w, done), exes_pins(w, done)
-    problems = [p for p in [exe_problem(exe, pins)] if p]
+    problems = [p for p in [exe_problem(exe, pins), eval_problem(w, done)] if p]
     if not chk["pass"]:
         problems.append("mechanics FAIL (" + ", ".join(r["check"] for r in chk["rows"] if not r["pass"]) + ")")
     if not isinstance(binding, dict) or not binding.get("argv_sha256"):
@@ -76,6 +79,33 @@ def exe_problem(exe: dict, pins: dict | None) -> str | None:
             + (f" (exes_sha256 pins: cell {pins['cell'].get('nav')}, parent {pins['parent'].get('nav')})" if moved
                else "") +
             " and the cell spec's reference construction did not run on it (no completed ref run with that exe)")
+
+
+def eval_problem(w: Wave, done: dict) -> str | None:
+    """Ruling B2-10 (c): a v2 cell's statistics of record name their producer. Its locked spec names the engine verb
+    (exes.eval) and pins it (exes_sha256.eval, `lock --exes`), and every row of its summ.json and its pbo.json name
+    that pinned verb in nav_summ_run.engine_exe_sha256 (cycle_verdict.check_summ_verb, the verdict's own rule).
+    Refused, fail closed, otherwise: the message names the missing key, or both hashes. None for a v1 manifest
+    (ruling B2-10 (a): today's behaviour, the verb recorded only)."""
+    if w.manifest.get("schema") != V2_SCHEMA:
+        return None
+    rel = done["match"]["cell_spec"]
+    spec = w.load_spec(rel)
+    path, pin = RC.effective_exes(spec).get(CV.EVAL_KEY), (spec.get(RC.EXES_PIN) or {}).get(CV.EVAL_KEY)
+    missing = [key for key, value in (("exes.eval", path), (f"{RC.EXES_PIN}.eval", pin)) if not value]
+    if missing:
+        return (f"the v2 cell spec {rel} lacks {' and '.join(missing)}: every P9 cell names the engine verb of its "
+                "statistics and `lock --exes` pins it (ruling B2-10 (c))")
+    cycle_dir = w.outputs(rel)["cycle_dir"]
+    summ = w.read_json(f"{cycle_dir}/{CV.SUMM_JSON}")
+    if not isinstance(summ, list) or not summ:
+        return f"the v2 cell has no nav_summ --json rows ({cycle_dir}/{CV.SUMM_JSON}) to match to exes.eval {pin}"
+    try:
+        CV.check_summ_verb(cycle_dir, summ, w.read_json(f"{cycle_dir}/{CV.PBO_JSON}"),
+                           (pin, f"the cell spec's exes_sha256 pin of exes.eval {path}"))
+    except CV.VerdictError as exc:
+        return f"v2 cell (ruling B2-10 (c)): {exc}"
+    return None
 
 
 def exes_pins(w: Wave, done: dict) -> dict | None:

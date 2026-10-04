@@ -95,6 +95,15 @@ def check_verb(name: str, doc, verb: tuple[str, str]) -> None:
                            "verb is not reused (P9 ruling B2-R3; run the summ again)")
 
 
+def check_summ_verb(cycle_dir: str, summ: list, pbo, verb: tuple[str, str]) -> None:
+    """check_verb on every row of a cycle's summ.json and on its pbo.json (when there is one): the verdict's rule, and
+    the wave verify's for a v2 cell (wave_stage_record.eval_problem, ruling B2-10 (c))."""
+    for r in summ:
+        check_verb(f"{cycle_dir}/{SUMM_JSON} row {r.get('dir') if isinstance(r, dict) else r!r}", r, verb)
+    if pbo is not None:
+        check_verb(f"{cycle_dir}/{PBO_JSON}", pbo, verb)
+
+
 def scoring_blocks(res, cycle_dir: str, nav_out: str, verb: tuple[str, str] | None = None) -> dict:
     """paired, dsr and pbo from nav_summ's --json (a list of per-dir results: this cycle's NAV dir, else the last)
     and --pbo-json; {} when the summ wrote no JSON. With ``verb`` (verb_sha256) every row and the pbo.json must name
@@ -107,10 +116,7 @@ def scoring_blocks(res, cycle_dir: str, nav_out: str, verb: tuple[str, str] | No
     p = row.get("paired") or {}
     pbo = res.read_json(f"{cycle_dir}/{PBO_JSON}")
     if verb is not None:
-        for r in summ:
-            check_verb(f"{cycle_dir}/{SUMM_JSON} row {r.get('dir') if isinstance(r, dict) else r!r}", r, verb)
-        if pbo is not None:
-            check_verb(f"{cycle_dir}/{PBO_JSON}", pbo, verb)
+        check_summ_verb(cycle_dir, summ, pbo, verb)
     return {"paired": {"dsr": p.get("dsr"), "se": p.get("memmel_se"), "cbb_ci": p.get("cbb_ci95"),
                        "lw_p": (p.get("lw") or {}).get("p_value")},
             "dsr": dsr_block(row),
