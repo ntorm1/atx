@@ -2,9 +2,11 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
-**LATEST (2026-10-04): root owns live session79333, batches56..63, R19.**
+**LATEST (2026-10-04): root owns live session76964, batches72..79, R19.**
 This checkpoint supersedes every historical live-session statement below.
-Batches0..55 completed native replay and independent two-pass root admission.
+Batches0..71 completed native replay and independent two-pass root admission.
+Session3577 (64..71) ended0. Latest source continuation has admitted72..74.
+Session79333 (56..63) ended0; native jobs32-45s, peak373-399MB.
 Session52018 (48..55) ended0; native jobs32-50s, peak384-419MB.
 Session40057 also ended0. Immediately afterward goldreadinessmetadataaudit passed
 1s/24,838,144peakbytes under0.2GiB guard. gold-readiness-preflight-v1.json:
@@ -12,7 +14,13 @@ gold,golden_panel,characteristics,char_monthly,labels_goldready directories all
 ABSENT; panel_goldreadyexists with2018-2021dirs/refresh_progress/_receipts, no
 rootcompletionmanifest. No values/returnsread. Userstatusquestionanswered:
 no publishedgoldfeaturepanel orreadyatx-implgoldload; unfinishedintermediateonly.
-Keep session79333 owned until completion; no competing actual data jobs.
+Keep session76964 owned until completion; no competing actual data jobs.
+C: free now32,110,305,280bytes, below GC4 40GB threshold for >1GB landings.
+Cause not attributed to this task. No >1GB landing until sufficient free space.
+disk-space-preflight-v3.py prepared NOT RUN: guarded read-only bounded metadata
+inventory of atx-db/data plus exact own scratch, queued immediately after79.
+No deletion authority from size alone; protect sources/candidates/foreign caches.
+Root committed gold status evidence, latest ledger and Task12 R1 review a11bb591.
 Task12 fixround1 commit67a5f1ac submitted and scoped review now assigned to
 /root/t16_release_foundation, package review-T12-native-r1.diff1420lines.
 Author reports13focused and4positive cases passed; actual gates stay unmeasured.
@@ -25,9 +33,20 @@ threadlimit. Task8 may pin these for offline
 integration only; actual runs require final upstream approval.
 Task12 R1 review now Needs fixes: I1/I3/I4/I5 addressed, I2 selected quote
 still accepts explicitly negated surrounding original context. Report
-review-T12-native-r1-findings.md. Author currently independently reviewing
-Task13 continuation; finish that review before focused Task12 round2/5.
-Task13 review assigned /root/t12_terminal_events; no actual jobs granted.
+review-T12-native-r1-findings.md. Author finished independent Task13 review and
+now runs focused Task12 round2/5; no actual jobs granted.
+Task13 continuation review Needs fixes, four Important findings in
+review-T13-native-qualified-findings.md: conditional/cadence semantics,
+authoritative accession/document membership, final declaration chronology,
+unpinned native timezone/entrypoint. Original author round3/5 queued for lane.
+Task6/7 R21 independent review APPROVED in review-T6-T7-r21-findings.md;
+no new findings, actual source/economic gates remain open. Prior repair2/5each.
+Task8 initial native harness4738a7b4 committed9newfiles, config
+4db383560aff8770c50cb0f9fcd634e5b89d3fd74d35ddf21a887a3361601cfa.
+Independent review now assigned /root/t16_release_foundation using
+review-T8-native.diff1572lines. Author17native/9stats/6publication fixtures and
+2focused checks passed; actual0PASS/4FAIL-unmeasured. Task13 original author
+resumed fixround3/5 on all four native qualification findings, no actual jobs.
 
 Previousstatusauditpreparation (now completed):
 Session10527(32..39) ended0. User asks whether anygoldfeaturepanels are ready;
