@@ -31,6 +31,7 @@ def accepted_clock(blob: bytes, accession: str, *, issuer: int,
     from urllib.parse import urlparse
     import _zoneinfo
     import io
+    assert_runtime()
     if ZoneInfo is not _zoneinfo.ZoneInfo:
         raise ValueError("timezone normalizer entrypoint changed")
     if not re.fullmatch(r"\d{10}-\d{2}-\d{6}", accession):
@@ -76,6 +77,7 @@ def accepted_clock(blob: bytes, accession: str, *, issuer: int,
               for fold in (0, 1) if local.replace(tzinfo=zone, fold=fold).astimezone(dt.timezone.utc).astimezone(zone).replace(tzinfo=None) == local}
     if len(values) != 1:
         raise ValueError("ambiguous/nonexistent original acceptance wall clock")
+    assert_runtime()
     return values.pop()
 
 
@@ -133,8 +135,20 @@ def qualify(event: dict, native_text: str, *, declaration_accession: str, declar
         raise ValueError("fixed regular cadence/currency not established")
     if re.search(r"variable\s+(?:cash\s+)?dividend|dividend\s+policy.{0,80}(?:net\s+income|profit)|one.third\s+of", native_text, re.I | re.S):
         raise ValueError("variable-income policy cannot create fixed indicated rate")
-    if re.search(r"subject\s+to|\bconditional\b|\bcontingent\b|\bif\b|\bunless\b|provided\s+that|pending\s+.{0,40}approv|dependent\s+on|upon\s+.{0,40}approv", native_text, re.I):
-        raise ValueError("conditional declaration cannot create fixed indicated rate")
+    # Full original context must belong to a supported affirmative grammar. A
+    # substring match or a finite condition blacklist cannot establish scope.
+    # Additional prose (including separate qualifications/denials) is unknown.
+    supported = (
+        r"(?:At the annual meeting,\s+)?The board\s+"
+        r"(?:declared|declares|approved)\s+on\s+" + D.DATE +
+        r"\s+a\s+(?:regular\s+(?:monthly|quarterly|semiannual|semi-annual|annual)|"
+        r"(?:monthly|quarterly|semiannual|semi-annual|annual)\s+regular)"
+        r"\s+cash\s+dividend\s+of\s+(?:USD\s*|US\$|U\.S\.\s+dollars?\s*)"
+        r"\d+(?:\.\d+)?\s+per\s+share\s+of\s+(?:Class\s+[A-Z]\s+)?common\s+(?:stock|shares)"
+        r"(?:,\s+effective\s+through\s+" + D.DATE + r")?\."
+    )
+    if not re.fullmatch(supported, native_text.strip(), re.I):
+        raise ValueError("complete affirmative unconditional declaration context unsupported")
     local_cadences = re.findall(r"\b(monthly|quarterly|semiannual|semi-annual|annual)\s+(?:regular\s+)?cash\s+dividend\b", event["evidence"], re.I)
     if len(local_cadences) != 1 or local_cadences[0].lower() != event["declared_cadence"]:
         raise ValueError("dividend-local cadence missing/ambiguous")
@@ -214,6 +228,9 @@ def rate_asof(events: list[dict], security_id: int, cutoff: dt.datetime) -> floa
 # Loaded normalizer identities supplement independently pinned on-disk implementations.
 import zoneinfo._common as _zoneinfo_common
 _COMMON_LOADER = _zoneinfo_common.load_data
+_COMMON_LOADER_CODE = _COMMON_LOADER.__code__
+_HEADER_LOADER = _zoneinfo_common._TZifHeader.from_file.__func__
+_HEADER_LOADER_CODE = _HEADER_LOADER.__code__
 _COMPILED_ZONEINFO = ZoneInfo
 _CLOCK_CODE = accepted_clock.__code__
 _TZPATH_CODE = timezone_paths.__code__
@@ -222,7 +239,33 @@ _TZPATH_CODE = timezone_paths.__code__
 def assert_runtime() -> None:
     import _zoneinfo
     if (_zoneinfo_common.load_data is not _COMMON_LOADER
+            or _COMMON_LOADER.__code__ is not _COMMON_LOADER_CODE
+            or _zoneinfo_common._TZifHeader.from_file.__func__ is not _HEADER_LOADER
+            or _HEADER_LOADER.__code__ is not _HEADER_LOADER_CODE
             or ZoneInfo is not _COMPILED_ZONEINFO or _zoneinfo.ZoneInfo is not _COMPILED_ZONEINFO
             or getattr(accepted_clock, "__code__", None) is not _CLOCK_CODE
             or getattr(timezone_paths, "__code__", None) is not _TZPATH_CODE):
         raise ValueError("timezone normalizer entrypoint changed")
+
+
+def loaded_code_pins() -> dict[str, str]:
+    """Stable loaded TZif implementation identities for independent admission."""
+    import hashlib
+    import json
+    import types
+    assert_runtime()
+    def identity(value):
+        if isinstance(value, types.CodeType):
+            return {name: identity(getattr(value, name)) for name in (
+                "co_code", "co_consts", "co_names", "co_varnames", "co_freevars", "co_cellvars",
+                "co_argcount", "co_posonlyargcount", "co_kwonlyargcount", "co_nlocals",
+                "co_stacksize", "co_flags", "co_exceptiontable")}
+        if isinstance(value, bytes):
+            return ["bytes", value.hex()]
+        if isinstance(value, tuple):
+            return ["tuple", [identity(item) for item in value]]
+        return [type(value).__name__, repr(value)]
+    # marshal code-object serialization can change with string interning after
+    # first execution. Canonical code fields avoid that process-state artifact.
+    return {"runtime:zoneinfo." + name: hashlib.sha256(json.dumps(identity(function.__code__), sort_keys=True).encode()).hexdigest()
+            for name, function in (("load_data", _COMMON_LOADER), ("TZifHeader.from_file", _HEADER_LOADER))}

@@ -85,7 +85,10 @@ def test_policy_tombstones_and_future_declarations_do_not_rewrite_earlier_rate()
 
 
 @pytest.mark.parametrize("case", ["positive", "annual_meeting", "conditional", "earnings", "conflicting_cadence",
-    "future_date", "wrong_header", "wrong_issuer", "multiple_clocks", "swapped_member", "tzif_drift", "normalizer_drift"])
+    "only_when", "as_long_as", "false_declaration", "quoted_declaration", "separate_denial", "unknown_condition",
+    "future_date", "wrong_header", "wrong_issuer", "multiple_clocks", "swapped_member", "tzif_drift", "normalizer_drift",
+    "same_function_code_drift", "same_function_public_code_drift", "producer_after_replay_code_drift",
+    "public_after_replay_code_drift"])
 def test_production_ancillary_admission_replay_qualifies_and_missing_remains_null(tmp_path, monkeypatch, case):
     import json
     import pyarrow as pa
@@ -102,6 +105,12 @@ def test_production_ancillary_admission_replay_qualifies_and_missing_remains_nul
     if case == "annual_meeting": text = "At the annual meeting, " + text
     if case == "conditional": text = text[:-1] + ", subject to regulatory approval."
     if case == "earnings": text = text[:-1] + ", if earnings targets are achieved."
+    if case == "only_when": text = text[:-1] + ", only when earnings targets are achieved."
+    if case == "as_long_as": text = text[:-1] + ", as long as regulatory approval is granted."
+    if case == "false_declaration": text = "It is false that " + text
+    if case == "quoted_declaration": text = 'The disputed statement reads: "' + text + '"'
+    if case == "separate_denial": text += " This declaration is false."
+    if case == "unknown_condition": text = text[:-1] + ", assuming the lender consents."
     if case == "conflicting_cadence": text = text.replace("regular quarterly", "regular annual quarterly")
     if case == "future_date": text = text.replace("January 4, 2021", "January 8, 2021")
     if case == "tzif_drift":
@@ -162,6 +171,36 @@ def test_production_ancillary_admission_replay_qualifies_and_missing_remains_nul
         zone.write_bytes(b"changed TZif bytes")
     if case == "normalizer_drift":
         monkeypatch.setattr(Q, "ZoneInfo", lambda *args: dt.timezone.utc)
+    if case in {"same_function_code_drift", "same_function_public_code_drift",
+                "producer_after_replay_code_drift", "public_after_replay_code_drift"}:
+        # Freeze expected originals/code first. Change code on the same loaded
+        # function; all disk files, pointer identities and TZif remain intact.
+        if case in {"same_function_public_code_drift", "public_after_replay_code_drift"}:
+            D.build(catalog, [], admission_path=admission, expected_sha256=sha)
+            assert D.validate_product(target, admission, sha)["conditionally_qualified_events"] == 1
+        loader = Q._zoneinfo_common.load_data
+        def utc_loader(stream):
+            return (), (), (0,), (0,), ("UTC",), b"UTC0"
+        if case in {"producer_after_replay_code_drift", "public_after_replay_code_drift"}:
+            original_replay = D.replay_rows
+            def drift_after_replay(*args, **kwargs):
+                result = original_replay(*args, **kwargs)
+                monkeypatch.setattr(loader, "__code__", utc_loader.__code__)
+                return result
+            monkeypatch.setattr(D, "replay_rows", drift_after_replay)
+            with pytest.raises(ValueError, match="normalizer entrypoint"):
+                if case == "producer_after_replay_code_drift":
+                    D.build(catalog, [], admission_path=admission, expected_sha256=sha)
+                else:
+                    D.validate_product(target, admission, sha)
+            return
+        monkeypatch.setattr(loader, "__code__", utc_loader.__code__)
+        assert Q._zoneinfo_common.load_data is loader
+        with pytest.raises(ValueError, match="normalizer entrypoint"):
+            D.build(catalog, [], admission_path=admission, expected_sha256=sha)
+        with pytest.raises(ValueError, match="normalizer entrypoint"):
+            D.validate_product(target, admission, sha)
+        return
     if case in {"tzif_drift", "normalizer_drift"}:
         with pytest.raises(ValueError, match="code mismatch|normalizer entrypoint"):
             D.build(catalog, [], admission_path=admission, expected_sha256=sha)
@@ -229,3 +268,30 @@ def test_original_sgml_membership_positive_and_wrong_member_body():
     assert Q.accepted_clock(blob, DECL, **kwargs) == D.clock("2021-01-04T15:00:00Z")
     with pytest.raises(ValueError, match="membership"):
         Q.accepted_clock(blob, DECL, **{**kwargs,"member_blob":b"unrelated"})
+
+
+def test_same_loaded_parser_code_is_independently_pinned_and_rechecked(monkeypatch):
+    from atx_db.alpha_panel import distributions_native as N
+    pins = N.code_pins()
+    assert "runtime:zoneinfo.load_data" in pins
+    assert "runtime:zoneinfo.TZifHeader.from_file" in pins
+    N.recheck(pins)
+    loader = Q._zoneinfo_common.load_data
+    def utc_loader(stream):
+        return (), (), (0,), (0,), ("UTC",), b"UTC0"
+    monkeypatch.setattr(loader, "__code__", utc_loader.__code__)
+    assert Q._zoneinfo_common.load_data is loader
+    for operation in (N.code_pins, lambda: N.recheck(pins), lambda: Q.qualify(*inputs()[:2], **inputs()[2])):
+        with pytest.raises(ValueError, match="normalizer entrypoint"):
+            operation()
+
+
+def test_same_loaded_tzif_header_code_drift_is_rejected(monkeypatch):
+    from atx_db.alpha_panel import distributions_native as N
+    pins = N.code_pins()
+    header = Q._zoneinfo_common._TZifHeader.from_file.__func__
+    def changed_header(cls, stream):
+        return None
+    monkeypatch.setattr(header, "__code__", changed_header.__code__)
+    with pytest.raises(ValueError, match="normalizer entrypoint"):
+        N.recheck(pins)

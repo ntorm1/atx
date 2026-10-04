@@ -18,7 +18,7 @@ from typing import Any
 
 from . import common as C
 
-RULE = "native-distributions-v4"
+RULE = "native-distributions-v5"
 SCHEMA = "atx.alpha-panel.distributions/v3"
 UTC = dt.timezone.utc
 CADENCE = {"monthly": 12, "quarterly": 4, "semiannual": 2, "semi-annual": 2, "annual": 1}
@@ -261,9 +261,8 @@ def build(documents: Path, input_manifests: list[Path], *, admission_path: Path 
     if out.exists():
         raise FileExistsError("immutable product already exists")
     out.mkdir(parents=True)
-    for name, digest in pinned.items():
-        if C.sha256_file(Path(name)) != digest:
-            raise ValueError("input changed during replay")
+    from . import distributions_native as N
+    N.recheck(pinned)
     target = out / "distributions.parquet"
     pq.write_table(pa.Table.from_pylist(rows, schema=schema), target.with_suffix(".partial"), compression="zstd")
     target.with_suffix(".partial").replace(target)

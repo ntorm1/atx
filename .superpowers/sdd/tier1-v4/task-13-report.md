@@ -395,3 +395,83 @@ Full global prior-history/cancellation/carry admission, historical quote currenc
 vendor member-line cash denominator, declaration>=90%, amount within1%on>=95%, and200native
 buybackchecks>=95% remain required. No thresholds/denominators changed. This is repair
 round3/5, not a cap reset. Actual modelGPT6.1Sol; legacy co-author trailer preserved.
+
+## Fix round4/5: independently reviewed remaining I1 and I4
+
+Fresh implementer after checkpoint52bb3669; binding remaining findings from
+review-T13-native-qualified-r3-findings.md. I2/I3 were not reopened. No actual source,
+data, HTTP, metadata or economic measurement jobs; only offline synthetic originals.
+Graph discovery tools unavailable, so scoped source reads used the documented fallback.
+
+I1: qualification now fullmatches complete original text against a narrow supported
+affirmative unconditional declaration grammar, rather than adding condition keywords.
+Supported board declarations include declaration date, explicit regular dividend-local
+cadence, USD per-share amount/common class, optional explicit effective-through date,
+and the supported annual-meeting preface. Other original prose/context remains NULL
+with a reason, including only-when, as-long-as, false, quoted/disputed, separate denial
+and unknown-condition variants. Production and public full replay independently use
+the original admitted text; each negative also rejects a forged2.4positive output.
+Supported original2.4and unrelated annual-meeting positives remain qualified.
+
+I4: load_data and its TZifHeader.from_file dependency now freeze actual loaded code
+objects as well as function pointers. Independent code_sha256 includes stable canonical
+semantic loaded-code hashes under runtime:zoneinfo.load_data and
+runtime:zoneinfo.TZifHeader.from_file. Canonical fields include bytecode, recursive
+constants/code, names/locals/freevars/cellvars, argument counts, stack/flags and exception
+tables. Checks occur before/after native normalization and producer/public full replay;
+producer's former disk-only final check now uses the same complete recheck. Same-function
+UTC-loader code mutation under unchanged on-disk/TZif/source/admission pins rejects both
+producer and public replay. Injected mutation after replay also rejects both consumers.
+The original header loader same-function code drift has a direct rejection regression.
+
+Refrozen contract: native-distributions-v5, physical schema still
+atx.alpha-panel.distributions/v3. Existing independent admissions must be independently
+refrozen with the new full on-disk/loaded identities; no actual admission was rewritten.
+Full-text grammar intentionally leaves broader real filing layouts unsupported/NULL.
+No complete source history/carry or quote-currency claim follows from event qualification.
+
+Final covering commands from C:/atx/atx-db, environment
+PYTHONPATH=C:/atx/atx-db/src, OPENBLAS_NUM_THREADS=1; offline fixtures,
+DuckDB128MB/1thread, pytest-n0/no extra workers, each invocation below60seconds:
+
+```text
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_distributions_qualification.py -q -k 'production and (only_when or as_long_as or false_declaration or quoted_declaration)'
+4 passed, 24 deselected in 47.63s
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_distributions_qualification.py -q -k 'production and (separate_denial or unknown_condition or same_function_code_drift or same_function_public_code_drift)'
+4 passed, 27 deselected in 14.25s
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_distributions_qualification.py -q -k 'not production or producer_after_replay_code_drift or public_after_replay_code_drift or positive or annual_meeting'
+13 passed, 18 deselected in 21.33s
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_distributions_qualification.py -q -k 'production and (conditional or earnings or conflicting_cadence or future_date)'
+4 passed, 27 deselected in 40.41s
+.venv/Scripts/python.exe -m pytest -n0 -o addopts='' tests/test_alpha_panel_distributions.py -q -k 'native_declaration_dates_rate_and_provenance or increase_new_amount_and_ambiguous_classes or original_gzip_admission_duplicates_and_stale_code'
+3 passed, 19 deselected in 4.55s
+git diff --check -- atx-db/src/atx_db/alpha_panel/distributions.py atx-db/src/atx_db/alpha_panel/distributions_native.py atx-db/src/atx_db/alpha_panel/distributions_qualification.py atx-db/tests/test_distributions_qualification.py atx-db/docs/datasets/distributions.md
+exit0, no output
+```
+
+25 targeted qualification cases plus3 affected extraction/admission tests passed.
+First four-case command preceded test-only addition of after-replay/header cases;
+production code unchanged thereafter. Initial same command failed4cases in5.61s
+because producer treated runtime identity keys as paths; corrected complete recheck.
+Intermediate rerun failed1case/3passed in17.64s because marshal serialization changed
+with interning after execution; canonical code fields corrected that instability.
+Neither failed invocation is counted as PASS. Final commands above supersede them.
+
+Files changed: distributions.py, distributions_native.py,
+distributions_qualification.py, test_distributions_qualification.py,
+docs/datasets/distributions.md, this report. Sources landed0; actual publication rows,
+bytes/date span and disk growth not measured/no new real dataset. No shared/foreign,
+Task12, Task16 or root ledger edits. Self-review found unsupported layouts preserved
+NULL and before/after runtime checks retained; independent reviewer still required.
+
+| Original criterion | Status | Measured | Command/evidence |
+| --- | --- | --- | --- |
+| Declare date>=90% member-line cash dividends2020+ | FAIL | Unmeasured; full vendor/member-line denominator absent | No actual command authorized/run this round; unchanged prior gate |
+| Amounts within1% on>=95% | FAIL | Unmeasured; complete native/vendor comparison absent | No actual command authorized/run this round; unchanged prior gate |
+| Buyback200native handchecks>=95% | FAIL | 0/200 independently checked | No actual command authorized/run this round; unchanged prior gate |
+
+Actual gates remain0PASS/3FAIL; no synthetic counts replace original thresholds or
+denominators. Full global prior-history/cancellation/carry admission, historical quote
+currency, actual native acceptance proofs and Task4R11/downstream gate refresh remain
+open. Task13 remains incomplete despite scoped engineering fixes. Round4/5 cumulative;
+explicit owned-path commit with required legacy co-author trailer.

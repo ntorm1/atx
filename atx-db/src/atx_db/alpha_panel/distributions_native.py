@@ -29,14 +29,16 @@ def code_pins() -> dict[str, str]:
     paths += [Path(module.__file__) for module in (lxml.html, lxml.etree, pyarrow, pyarrow.lib, pyarrow._parquet, duckdb, _duckdb)]
     from . import distributions_qualification as Q
     paths += Q.timezone_paths()
-    return {str(path): C.sha256_file(path) for path in paths}
+    return {**{str(path): C.sha256_file(path) for path in paths}, **Q.loaded_code_pins()}
 
 
 def recheck(pins: dict[str, str]) -> None:
     from . import distributions_qualification as Q
     Q.assert_runtime()
+    loaded = Q.loaded_code_pins()
     for path, digest in pins.items():
-        if C.sha256_file(Path(path)) != digest:
+        actual = loaded.get(path) if path.startswith("runtime:") else C.sha256_file(Path(path))
+        if actual != digest:
             raise ValueError(f"admitted input/code changed: {path}")
 
 
