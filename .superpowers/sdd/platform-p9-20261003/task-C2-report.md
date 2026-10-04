@@ -234,9 +234,16 @@ The session scratch (`.../scratchpad/c2`, compiles, harness, logs) deleted by na
 2. (amended in fix round 1, Ruling C2-R3; the round-0 wording held only for n <= 8192) numpy 1.26.4's contiguous
    float64 `mean` = (0.0, then += the pairwise sum of each 8192-value block in order (the ufunc buffer); pairwise = 8
    accumulators up to 128 values, split n/2 down to x8) / n; one pairwise sum over all n differs above 8192 rows (ramp
-   at 8193), a first-element-initial reduction differs at any n; C++ `numpy_mean` reproduces it bit for bit at every n
+   at 8193), a first-element-initial reduction can differ from small n on (first miss ramp n = 17; re-review S12);
+   C++ `numpy_mean` reproduces it bit for bit at every n
    (`CalibrateGross.NumpyMeanIsNumpysMeanAtEverySize`, 20 numpy-printed cases up to n = 40000; model = numpy on 400
    random series).
+3. `nav --calibrate-gross` / `gross_match: pm6-6-engine`: PM6-6 in one load and one published NAV; the published
+   directory is the plain run's at the final L plus summary.json calibration.
+4. (fix round 1) ccache stale-PCH trap: a ccache-restored clang PCH embeds the include mtimes of the `deps/<preset>`
+   fetch that first built it; after `deps/<preset>` is deleted and fetched again every PCH consumer is refused ("...
+   has been modified since the precompiled header was built"). Delete the two `cmake_pch.cxx.{pch,obj}` (atx-engine,
+   atx-impl-core) by name and rebuild with `CCACHE_RECACHE=1` (p9-c2-i then -j; -l used it from the start).
 
 ## Fix round 1 (review `4545cec4` at `08297183`: R1, R2, R3, S1-S7; Rulings C2-R2, C2-R3, C2-4b, C2-6, C2-7)
 
@@ -328,7 +335,58 @@ test.cpp`, `atx-impl/tests/strategy_nav_replay_test.cpp`, `atx-impl/tests/strate
 
 - `WS.gm_doc`'s template branch does not pin a template-set ref at the cell's L (the plain branch does); the cell of
   record inherits that (Python parity, C2-R2). No template in `scripts/specs` sets a ref, so nothing runs it today.
+  (Fixed for the cell of record in fix round 2, S8; the Python mode's `gm_doc` keeps it.)
 - The cell of record's digest is recorded at match time; no later stage re-pins it (verify pins the run recipe's).
   The file is committed by the stage, and every later commit requires a clean tree, so an edit would show as dirty.
-3. `nav --calibrate-gross` / `gross_match: pm6-6-engine`: PM6-6 in one load and one published NAV; the published
-   directory is the plain run's at the final L plus summary.json calibration.
+  (Superseded by fix round 2: a COMMITTED edit passed; R4 pins it now.)
+
+## Fix round 2 (re-review `4df09dee` at `e68adf41`: R4, R5, S8-S13; Rulings C2-8, C2-9)
+
+**Outcome: DONE.** Both Required items fixed with tests; S8, S9, S11, S12 fixed; S10 and S13 not (reasons below).
+Code commit `bb75326d` (committed before the builds, so their receipts are of a committed source); this report, the
+logs and the ledger-candidate edits ride in the next commit. Ledger candidates above: 3 moved back into the list (fix
+round 1 had inserted its section inside it), 2 reworded (S12), 4 added (the PCH trap).
+
+| item | status | change | evidence |
+|---|---|---|---|
+| R4 cell of record unpinned after match | fixed | `scripts/wave_stage_record.py` `verify_inputs` (E2's file; accepted cross-lane edit, Ruling C2-8; 2 lines outside E2's hunks): in engine mode it also pins match's `record_spec_digest` against the `-gm` file now, so verify and every resume refuse a cell of record that changed after match; Python mode adds no key (its `-gm` is `cell_spec`, already pinned) | `test_engine_cell_of_record_is_pinned_after_match`: the reviewer's sequence (`--until match`, a committed edit of `lib-w1b-gm.json` nav.leverage to 1.9999, `run`) exits 3 `STALE: match recorded record_spec_digest`, no verify receipt, no wave result; the unedited path exits 0 with verify's input `match.record_spec_digest` = match's = the file's digest, and wave-result `cell.spec_digest` = that digest, next_parent = the record. Without the two lines the test fails (checked by reverting them in place, then restoring) |
+| R5 warm start under reuse | fixed | `CalibrateGross.ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage` gains case `x5-keys-warm-start`: the X-5 keys on `artifact_from(dir, p, 30)` with `--warm-start-sessions 18` (decisions from row 12). It asserts the contract, not the implementation: the calibrated run is the plain warm run at L' byte for byte (every file; summary.json but `calibration`), `corrected` true, `construction_reused` true, summary `warm_start.sessions` 18 / `score_begin_row` 30, the S2 daily CSV has the scored rows only. Every case (all four) now also pins the calibration record to the plain runs bit for bit: `gross_requested` = the plain run at L's all-rows G, `leverage` = L' (4 decimals of L x G_P / G), `gross` = the plain run at L''s G | green in Debug (k) and Release (l) |
+| S8 template-set ref in the record | fixed | `record_doc`'s template branch sets `change.set ref.leverage` = the cell's L when the resolved spec has a template-set ref without its own leverage (as `calibrated_doc` does); no template sets one today | R1 test: the record's sets carry `nav.leverage` L', `ref.leverage` L after the template's `ref`; a template without a ref gets only `nav.output` / `nav.leverage` |
+| S9 tape capacity vs `--max-bytes` | fixed | `strategy_nav_replay.cpp`: `reserve_construction` reserves the record's vectors at `construction_tape_bytes`' bound once when reuse is chosen (one `construction_decisions` helper now feeds both the bound and the reserve), so capacity cannot exceed the budget by a growth factor or a reallocation copy; values untouched (a failed reserve is caught and refused like any allocation) | the reuse cases of the test above and TieredRunReusesTheConstructionByteForByte green in both builds; no gtest of the budget branch (Ruling C2-8) |
+| S10 two-speed exclusion untested | not fixed | Ruling C2-8: coverage stays as reported; no planned P9 cell sets `--two-speed` (reviewer's table) | - |
+| S11 test-side copy of the ref merge | fixed | the R1 test builds the ref command through `research_cycle.Cycle.ref_step` itself (pins filled from the spec's inputs; `cycle_resume.step_args`, what the argv-only ref binding hashes): the run recipe's ref argv equals the cell's, carries no `--calibrate-*` and L 1.1474; the round-0 shape (no ref pins) does carry the calibrate flags | pytest |
+| S12 candidate 2 wording | fixed | "can differ from small n on (first miss ramp n = 17)" | - |
+| S13 exe-notes wording | not fixed | E2 rewords the Python branch's line in its own lane; aligning the engine branch here would conflict with E2's hunk: root aligns it at the keep-both merge (root item 4) | - |
+
+### Builds and tests (round 2)
+
+`scripts/research-build.ps1`, pool-15, one at a time after the host was idle and the gate admitted (`c2-fix2-gate-<t>.log`,
+receipts `build-equity/mega-p9-c2-<t>-receipt.json`); both trees configured again first through
+`scripts/atx-build.ps1 configure -Preset <preset>` (round 1 had deleted them):
+
+- **p9-c2-k** (equity-dev, `atx-impl-strategy-target-tests` + `atx-equity-strategy-targets`, source `bb75326d`):
+  exit 0, 289 s, 307 TUs, 10 links. DirtyEntries 1 = this report (S12 edit), no code file.
+- **p9-c2-l** (equity-rel, target tests, source `bb75326d`, `CCACHE_RECACHE=1` from the start: `deps/equity-rel` was
+  fetched again, so the PCH trap above would have fired): exit 0, 772 s, 306 TUs, 9 links, 4 jobs; no first-party
+  warning. DirtyEntries 1 = this report.
+
+gtests (logs `c2-fix2-gtest-<t>-{named,whole}.log`): Debug (k) `CalibrateGross.*:NavBookRule.*:BookNormalScore.*`
+**19/19**, whole binary **348/348**; Release (l) the same filter **19/19** (both M1c-RED tests green), whole binary
+**348/348**. No expected value edited.
+
+pytest (explicit paths, `-p no:cacheprovider`, own `--basetemp`): `scripts/tests/test_research_wave.py` **20 passed**
+(+1: R4; R1's test rewritten for S8 / S11); cwd `scripts/tests` the 8 wave suites **77 passed** (G-P5 line unchanged).
+
+### Root merge items (additions to fix round 1's list)
+
+1. Build from a clean tree at the merge SHA (the lane receipts carry 1 dirty sprint-doc entry; not merge evidence).
+2. Cross-lane edits to place: `scripts/wave_result.py` (round 1) and `scripts/wave_stage_record.py` `verify_inputs`
+   (round 2, R4: the `record_spec_digest` pin; outside E2's hunks). Align the engine branch's exe-notes log line in
+   `wave_stage_cell.py` with E2's new wording at the keep-both merge (S13).
+3. X-5 gm-pair identity run as listed in fix round 1, item 2: X-5 carries `--warm-start-sessions 60` and
+   `--max-bytes 1 GiB`, so it is also the real-data cover of R5 and S9; read `calibration.construction_reused`.
+4. Ruling C2-9 (with the deletion, not this lane): once root has run the identity and deleted the Python gross-match
+   rule, a manifest that needs gross matching and does not name `gross_match` is refused at plan with a message naming
+   the key and `pm6-6-engine`; no silent default; every P9 template names it; completed v1 waves are not re-run
+   through the driver (C3 carries the refusal if root's deletion commit cannot hold it).
+5. Ledger: candidates 1-4 above.
