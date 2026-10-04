@@ -1,0 +1,44 @@
+A = build-equity\p9-covr-out\dbg
+B = build-equity\p9-covr-out\rel
+fixture in/role: 8 files, differing none; manifest sha256 A c93324e72b0c4fcc B c93324e72b0c4fcc
+fixture in/fields: 5 files, differing none; manifest sha256 A 7e0cc52b06c9eabf B 7e0cc52b06c9eabf
+
+== v11
+  model.atxcov bytes A 14786944 B 14786944; whole file equal False
+  differing bytes 55255 by section {'header.root': 32, 'META': 60, 'BLOCK_HASHES': 9335, 'BLOCKS': 45796, 'trailer': 32}; META leaves differing ['/producer/executable_sha256']
+  date index entries differing: 0
+  first differing block / array: (2, 'DIAG')
+    DIAG           sessions differing 291 / 300  first 2
+    EIGEN_GAMMA    sessions differing   0 / 300  first -
+    EXPOSURES      sessions differing   0 / 300  first -
+    FACTOR_COV     sessions differing 237 / 300  first 63
+    FACTOR_FLAGS   sessions differing   0 / 300  first -
+    FACTOR_RETURN  sessions differing   0 / 300  first -
+    GROUP          sessions differing   0 / 300  first -
+    IDS            sessions differing   0 / 300  first -
+    ROLE_INDEX     sessions differing   0 / 300  first -
+    ROW_FLAGS      sessions differing   0 / 300  first -
+    SPECIFIC       sessions differing  48 / 300  first 252
+    DIAG slots differing (first session): eigen_effective@2, bias_factor@65, lambda2_factor@96, max_specific_variance@252, structural_sigma_upper@252, structural_sigma_lower@253, bias_specific@254, lambda2_specific@283
+    FACTOR_COV finite cells 32556, differing 31552; ULP median 17 max 7976655
+  other output files differing (10 compared): ['bias.csv', 'bias_summary.json', 'diagnostics.csv', 'factor_covariance.f64', 'specific_variance.f64']
+
+== covv1
+  model.atxcov bytes A 14787136 B 14787136; whole file equal False
+  differing bytes 59400 by section {'header.root': 32, 'META': 60, 'BLOCK_HASHES': 9342, 'BLOCKS': 49934, 'trailer': 32}; META leaves differing ['/producer/executable_sha256']
+  date index entries differing: 0
+  first differing block / array: (2, 'DIAG')
+    DIAG           sessions differing 292 / 300  first 2
+    EIGEN_GAMMA    sessions differing 237 / 300  first 63
+    EXPOSURES      sessions differing   0 / 300  first -
+    FACTOR_COV     sessions differing 237 / 300  first 63
+    FACTOR_FLAGS   sessions differing   0 / 300  first -
+    FACTOR_RETURN  sessions differing   0 / 300  first -
+    GROUP          sessions differing   0 / 300  first -
+    IDS            sessions differing   0 / 300  first -
+    ROLE_INDEX     sessions differing   0 / 300  first -
+    ROW_FLAGS      sessions differing   0 / 300  first -
+    SPECIFIC       sessions differing  48 / 300  first 252
+    DIAG slots differing (first session): eigen_effective@2, bias_factor@64, lambda2_factor@91, max_specific_variance@252, structural_sigma_upper@252, structural_sigma_lower@253, bias_specific@254, lambda2_specific@283
+    FACTOR_COV finite cells 32556, differing 31908; ULP median 24 max 276984
+  other output files differing (10 compared): ['bias.csv', 'bias_summary.json', 'diagnostics.csv', 'factor_covariance.f64', 'specific_variance.f64']

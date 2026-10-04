@@ -1,0 +1,137 @@
+A = debug.dump (debug)
+B = release.dump (release)
+  meta/build                   A: debug
+                               B: release
+  meta/bound/exp2              A: atx-impl-strategy-target-tests.exe -> C:\WINDOWS\SYSTEM32\ucrtbased.dll
+                               B: atx-impl-strategy-target-tests.exe -> C:\WINDOWS\System32\ucrtbase.dll
+  meta/bound/pow               A: atx-impl-strategy-target-tests.exe -> C:\WINDOWS\SYSTEM32\ucrtbased.dll
+                               B: atx-impl-strategy-target-tests.exe -> C:\WINDOWS\System32\ucrtbase.dll
+  meta/bound/exp               A: atx-impl-strategy-target-tests.exe -> C:\WINDOWS\SYSTEM32\ucrtbased.dll
+                               B: atx-impl-strategy-target-tests.exe -> C:\WINDOWS\System32\ucrtbase.dll
+  meta/bound/log               A: atx-impl-strategy-target-tests.exe -> C:\WINDOWS\SYSTEM32\ucrtbased.dll
+                               B: atx-impl-strategy-target-tests.exe -> C:\WINDOWS\System32\ucrtbase.dll
+  meta/bound/sin               A: atx-impl-strategy-target-tests.exe -> C:\WINDOWS\SYSTEM32\ucrtbased.dll
+                               B: atx-impl-strategy-target-tests.exe -> C:\WINDOWS\System32\ucrtbase.dll
+  meta/bound/cos               A: atx-impl-strategy-target-tests.exe -> C:\WINDOWS\SYSTEM32\ucrtbased.dll
+                               B: atx-impl-strategy-target-tests.exe -> C:\WINDOWS\System32\ucrtbase.dll
+  check/v11/replica_mismatches A: 0
+                               B: 0
+  check/covv1/replica_mismatches A: 0
+                               B: 0
+
+FIRST differing key in pipeline order: const/exp2/vol_hl84  (A 3fefbcae0646865c / B 3fefbcae0646865d)
+
+-- inputs / constants / isolated probes / verb
+  SAME  input/sessions                             A f605c590ac23ac36     B f605c590ac23ac36
+  SAME  input/ids                                  A 659ca74fc90922bd     B 659ca74fc90922bd
+  SAME  input/close                                A ef18641800f37c87     B ef18641800f37c87
+  SAME  input/raw_close                            A ef18641800f37c87     B ef18641800f37c87
+  SAME  input/volume                               A 9901681f1240831c     B 9901681f1240831c
+  SAME  input/cap                                  A d12449619e6a71fc     B d12449619e6a71fc
+  SAME  input/present                              A 39cd83a57ebeb17f     B 39cd83a57ebeb17f
+  SAME  input/member                               A 640e9c8581f2afc7     B 640e9c8581f2afc7
+  SAME  input/industry                             A 35b83472b08e636e     B 35b83472b08e636e
+  SAME  input/value                                A 932d7f6a4e6d666c     B 932d7f6a4e6d666c
+  SAME  input/earnings                             A b770115778f50f0d     B b770115778f50f0d
+  SAME  const/exp2_arg/vol_hl84                    A bf88618618618618     B bf88618618618618
+  DIFF  const/exp2/vol_hl84                        A 3fefbcae0646865c     B 3fefbcae0646865d
+  DIFF  const/pow_lag/vol_hl84/1                   A 3fefbcae0646865c     B 3fefbcae0646865d
+  DIFF  const/pow_lag/vol_hl84/2                   A 3fef79e9aca4c53d     B 3fef79e9aca4c53f
+  DIFF  const/pow_lag/vol_hl84/3                   A 3fef37b1c928bc83     B 3fef37b1c928bc85
+  DIFF  const/pow_lag/vol_hl84/4                   A 3feef605345339fd     B 3feef60534533a01
+  DIFF  const/pow_lag/vol_hl84/5                   A 3feeb4e2c912b2cb     B 3feeb4e2c912b2d0
+  SAME  const/exp2_arg/nw_hl252                    A bf70410410410410     B bf70410410410410
+  SAME  const/exp2/nw_hl252                        A 3fefe97f887a34a8     B 3fefe97f887a34a8
+  SAME  const/pow_lag/nw_hl252/1                   A 3fefe97f887a34a8     B 3fefe97f887a34a8
+  SAME  const/pow_lag/nw_hl252/2                   A 3fefd30ee39c7f34     B 3fefd30ee39c7f34
+  SAME  const/pow_lag/nw_hl252/3                   A 3fefbcae0646865c     B 3fefbcae0646865c
+  SAME  const/pow_lag/nw_hl252/4                   A 3fefa65ce55fc3bf     B 3fefa65ce55fc3bf
+  SAME  const/pow_lag/nw_hl252/5                   A 3fef901b75d77e64     B 3fef901b75d77e64
+  SAME  const/exp2_arg/corr_hl504                  A bf60410410410410     B bf60410410410410
+  DIFF  const/exp2/corr_hl504                      A 3feff4bdc935c3a0     B 3feff4bdc935c39f
+  DIFF  const/pow_lag/corr_hl504/1                 A 3feff4bdc935c3a0     B 3feff4bdc935c39f
+  DIFF  const/pow_lag/corr_hl504/2                 A 3fefe97f887a34aa     B 3fefe97f887a34a8
+  DIFF  const/pow_lag/corr_hl504/3                 A 3fefde453c688bca     B 3fefde453c688bc7
+  DIFF  const/pow_lag/corr_hl504/4                 A 3fefd30ee39c7f37     B 3fefd30ee39c7f33
+  DIFF  const/pow_lag/corr_hl504/5                 A 3fefc7dc7cb24280     B 3fefc7dc7cb2427b
+  SAME  const/exp2_arg/specific_hl84               A bf88618618618618     B bf88618618618618
+  DIFF  const/exp2/specific_hl84                   A 3fefbcae0646865c     B 3fefbcae0646865d
+  DIFF  const/pow_lag/specific_hl84/1              A 3fefbcae0646865c     B 3fefbcae0646865d
+  DIFF  const/pow_lag/specific_hl84/2              A 3fef79e9aca4c53d     B 3fef79e9aca4c53f
+  DIFF  const/pow_lag/specific_hl84/3              A 3fef37b1c928bc83     B 3fef37b1c928bc85
+  DIFF  const/pow_lag/specific_hl84/4              A 3feef605345339fd     B 3feef60534533a01
+  DIFF  const/pow_lag/specific_hl84/5              A 3feeb4e2c912b2cb     B 3feeb4e2c912b2d0
+  SAME  const/exp2_arg/vra_hl42                    A bf98618618618618     B bf98618618618618
+  SAME  const/exp2/vra_hl42                        A 3fef79e9aca4c53e     B 3fef79e9aca4c53e
+  SAME  const/pow_lag/vra_hl42/1                   A 3fef79e9aca4c53e     B 3fef79e9aca4c53e
+  SAME  const/pow_lag/vra_hl42/2                   A 3feef605345339ff     B 3feef605345339ff
+  SAME  const/pow_lag/vra_hl42/3                   A 3fee744964be278a     B 3fee744964be278a
+  SAME  const/pow_lag/vra_hl42/4                   A 3fedf4ad32216509     B 3fedf4ad32216509
+  SAME  const/pow_lag/vra_hl42/5                   A 3fed7727b6a05eb3     B 3fed7727b6a05eb3
+  SAME  iso/eigen_input_m10                        A d1c67087aff77a0b     B d1c67087aff77a0b
+  SAME  iso/eigen_output_m10                       A c940b51c1146bf33     B c940b51c1146bf33
+  SAME  iso/eigen_input_m30                        A bea18180f50c6f7b     B bea18180f50c6f7b
+  SAME  iso/eigen_output_m30                       A c936300a6a700442     B c936300a6a700442
+  SAME  check/v11/replica_mismatches               A 0                    B 0
+  SAME  check/covv1/replica_mismatches             A 0                    B 0
+  DIFF  iso/ewma_hl21_lags5                        A c6c5755cb5d8dd58     B b09525074ce7660c
+  SAME  iso/ewma_hl42_lags5                        A 542652bdce2387f1     B 542652bdce2387f1
+  DIFF  iso/ewma_hl84_lags5                        A da59e49368446a41     B 4fd4e65e0bdafb6b
+  SAME  iso/ewma_hl252_lags5                       A 57294d463f5be93d     B 57294d463f5be93d
+  DIFF  iso/ewma_hl504_lags5                       A 91479cc0d3ce5853     B 024198147ac98b2e
+  SAME  verb/role_sha256                           A c93324e72b0c4fcc1beafb2ebc41417f26b8fb684023b6f1f2cda5001cfa648d B c93324e72b0c4fcc1beafb2ebc41417f26b8fb684023b6f1f2cda5001cfa648d
+  SAME  verb/fields_sha256                         A 7e0cc52b06c9eabfc5ab6d0ea755152b84bdfbeda1bee1156a3c5075117d68c7 B 7e0cc52b06c9eabfc5ab6d0ea755152b84bdfbeda1bee1156a3c5075117d68c7
+  DIFF  verb/v11/model.atxcov                      A 8e5471a069b2db5dd457af5ee9fe7f758d7c93d69b373dca9449defa6b9003fb B 1813cee085f69cce4e0924d31bc561f72d39adb17e2bf6bcc2fb1dc486c42345
+  DIFF  verb/covv1/model.atxcov                    A cb6dfff57d5e9891df125497a3045299ddaf18e7b34fe5d02fa86452d5d27da7 B 1c82ef154959ff2a449d5baef695687bc476a6f7047867ecd4c3346185eb8487
+
+-- per-session stages (sessions differing / first differing session index), pipeline order
+  recipe v11:
+    x.slot                   differ   0 / 300   first -
+    x.eligible               differ   0 / 300   first -
+    x.styles                 differ   0 / 300   first -
+    f.return                 differ   0 / 300   first -
+    ewma.fast_var            differ 298 / 300   first 2
+    ewma.nw_zero_lag         differ   0 / 300   first -
+    ewma.nw_hac              differ   0 / 300   first -
+    ewma.corr                differ 298 / 300   first 2
+    vra.kish_n_eff           differ 280 / 300   first 2
+    vra.bias_factor          differ 201 / 300   first 65
+    vra.lambda2_factor       differ 204 / 300   first 84
+    F.serial_var             differ 237 / 300   first 63
+    F.raw                    differ 237 / 300   first 63
+    F.floor                  differ 237 / 300   first 63
+    F.eigen                  differ 237 / 300   first 63
+    F.eigen_gamma            differ   0 / 300   first -
+    F.final                  differ 237 / 300   first 63
+    F.structural_border      differ 173 / 300   first 63
+    D.bias_specific          differ  28 / 300   first 254
+    D.lambda2_specific       differ   8 / 300   first 273
+    D.structural_bounds      differ  47 / 300   first 252
+    D.specific_variance      differ  48 / 300   first 252
+    D.flags                  differ   0 / 300   first -
+    block                    differ 293 / 300   first 2
+  recipe covv1:
+    x.slot                   differ   0 / 300   first -
+    x.eligible               differ   0 / 300   first -
+    x.styles                 differ   0 / 300   first -
+    f.return                 differ   0 / 300   first -
+    ewma.fast_var            differ 298 / 300   first 2
+    ewma.nw_zero_lag         differ   0 / 300   first -
+    ewma.nw_hac              differ   0 / 300   first -
+    ewma.corr                differ 298 / 300   first 2
+    vra.kish_n_eff           differ 280 / 300   first 2
+    vra.bias_factor          differ 201 / 300   first 64
+    vra.lambda2_factor       differ 150 / 300   first 84
+    F.serial_var             differ 237 / 300   first 63
+    F.raw                    differ 237 / 300   first 63
+    F.floor                  differ 237 / 300   first 63
+    F.eigen                  differ 237 / 300   first 63
+    F.eigen_gamma            differ 237 / 300   first 63
+    F.final                  differ 237 / 300   first 63
+    F.structural_border      differ 173 / 300   first 63
+    D.bias_specific          differ  28 / 300   first 254
+    D.lambda2_specific       differ   8 / 300   first 273
+    D.structural_bounds      differ  47 / 300   first 252
+    D.specific_variance      differ  48 / 300   first 252
+    D.flags                  differ   0 / 300   first -
+    block                    differ 293 / 300   first 2

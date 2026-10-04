@@ -134,7 +134,10 @@ add_executable(atx-impl-strategy-target-tests EXCLUDE_FROM_ALL
     # platform v8 Y (YCOMB) rule Y-5: two-speed netted sleeves (engine kernel; NAV wiring is a follow-up)
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_two_speed_test.cpp"
     strategy_cov_model_test.cpp  # P9 COV: CovTruncation, CovEigen, CovBias
-    strategy_cov_store_test.cpp)  # P9 COV: CovRecipe, CovStore, CovDiff
+    strategy_cov_store_test.cpp  # P9 COV: CovRecipe, CovStore, CovDiff
+    # P9 COVR (ruling COV-12 (b)): DISABLED_ per-stage Debug-vs-Release digest diagnostic; not a
+    # *_test.cpp, so the atx-impl-tests glob does not take it.
+    strategy_cov_stage_diag.cpp)
 atx_impl_test_target_environment(atx-impl-strategy-target-tests)
 
 # Platform v8 H-3: the mining verb on its synthetic role, with the engine's signal-fitness
