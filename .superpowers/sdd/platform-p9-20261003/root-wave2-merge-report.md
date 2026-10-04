@@ -814,3 +814,55 @@ the docs commits sit on top. Build tags used: p9-2a, p9-2b (equity-dev), p9-2c (
 
 Trial ledger at the end: `build-equity/trials.jsonl` 133 lines, sha256 `27e40f9f...` (0 trials). Resume notes:
 `handoff-root-m2d.md`.
+
+## M2e: C2 merge, AL-COMB merge (2026-10-04)
+
+Agent: root for step group M2e, resumed after the owner stop (`handoff-root-m2e.md`; dispatch R5-1). Evidence:
+`m2e-logs/` (this dir), scratch scripts in `m2e-logs/tools/`.
+
+### C2 (`4d77d3db`, pool-15, base `ad406718`; re-review 2 APPROVE `1ea664f2`)
+
+#### Expected substitution list for the C2 X-5 gm-pair identity (written before the run)
+
+Real data, 0 trials, no return / NAV / Sharpe / turnover statistic read: files compared by SHA-256 and JSON path; the
+only values read are all-rows S2 gross leverages (mechanics, compared for bit equality, not printed) and the
+calibration record. Tool `m2e-logs/tools/c2_gm_pair.py`; output `m2e-logs/c2-gm-pair-cmp.txt`.
+
+- **Reference:** `build-equity/p9-c1-s2-x5-nav` = X-5 (`x-theme-erc-gm.json`, the cell of record at L 1.1720), the
+  Debug X-5 NAV reference since C1 (DEC-20 re-pin; exe `bf4b0ec2`, receipt `p9-c1-s2-x5-nav-run`, argv sha
+  `85a2ed98`; 27 files).
+- **G_parent:** `scripts/wave_readers.py mechanics` (the reader the match stage runs as `mech-parent`) of X-5's parent
+  X-3 NAV `build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v8x3b` (summary.json `e342db4f`,
+  the value locked in both X-5 specs), `mean_gross_leverage_all_rows`, kept as `repr` in `m2e-logs/c2-gm-gparent.json`.
+- **Runs** (each = the reference receipt's argv with only the named tokens substituted; exe = p9-2d
+  `atx-equity-strategy-targets` `90cb34a7`, Debug, source `a25453be`; `run_bounded_research.py --seconds 600
+  --max-rss-mib 2048` per RUN-1):
+  - P1 `p9-m2e-c2-x5-cal`: `--aim-leverage 1.1414` (the Python match's calibration run at the parent's L);
+  - P2 `p9-m2e-c2-x5-gm`: argv unchanged but `--output` (the Python match's matched run at L' = 1.1720);
+  - E `p9-m2e-c2-x5-engine`: `--aim-leverage 1.1414` plus `--calibrate-gross <repr(G_parent)> --calibrate-tolerance
+    0.005` appended (exactly what `wave_stage_cell.calibrated_doc` adds to the cell's nav flags).
+
+Expected (anything else is a stop):
+
+1. **Flag-absent (C2 report identity 1):** P2 vs the reference: the same 27 files; the 26 other than `summary.json`
+   byte-identical; `summary.json` differs only at `/producer/engine_git_sha` (the configure-time commit,
+   `1239a5ff...-dirty` -> `a25453be...-dirty`).
+2. **Python rule on P1 / P2** (`wave_rules`, the code the deletion in (ii) removes): `gross_matches("pm6-6", G_parent,
+   G_cal)` false (one correction); `matched_leverage("1.1414", G_parent, G_cal)` = `"1.1720"` (the registered -gm L);
+   `gross_matches("pm6-6", G_parent, G_P2)` true. (G_cal, G_P2 = the mechanics reader's all-rows gross of P1, P2.)
+3. **Engine vs Python (C2 report identity 2):** E vs P2: the same 27 files; the 26 other than `summary.json`
+   byte-identical (recipe.json is the plain run's at L'); `summary.json` equal at every JSON path except the added
+   `/calibration` (and the leaves under it). `/producer` equal (same exe, same tree).
+4. **Calibration record of E:** keys exactly `target, tolerance, leverage_requested, gross_requested, corrected,
+   leverage, gross, matched, construction_reused, rule`; `target` = G_parent (bit); `tolerance` 0.005;
+   `leverage_requested` 1.1414; `gross_requested` = G_cal (bit); `corrected` true; `leverage` = float(Python L')
+   within 1e-12 relative; `gross` = G_P2 (bit) = the mechanics reader on E itself (bit); `matched` true.
+   `construction_reused` is read and reported, not compared (X-5 sets none of the exclusions; false would mean pass 2
+   formed the construction again: same bytes, smaller wall gain).
+5. **Printed, not compared:** wall and peak RSS of P1 + P2 (two loads, two runs) against E (one load); E's peak
+   against the 2,048 MiB cap (S9: the tape is reserved up front).
+
+Not run, by design: the real-data engine *wave* (report item 2, second half). A wave runs the judge stage (book
+reader, trial ledger), which the 0-trial and blind rules forbid here; the wave layer is covered on the synthetic
+fixture by `test_engine_gross_match_is_the_python_match_in_one_nav` (`test_research_wave.py` 20 passed on the merged
+head, `m2e-logs/c2-pyt-research-wave.log`).
