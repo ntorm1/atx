@@ -1,0 +1,23 @@
+﻿Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[22:33:17.949] [C] [combined_source.hpp:209] CHECK failed: std::adjacent_find(identities.begin(), identities.end()) == identities.end()
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[22:33:17.987] [C] [conviction.cpp:58] CHECK failed: std::isfinite(dsr.dsr)
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[22:33:18.020] [C] [crowding.cpp:44] CHECK failed: capacity.size() == n
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[22:33:18.053] [C] [regime_combiner.cpp:24] CHECK failed: posterior.size() == per_regime.size()
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[22:33:18.564] [C] [correlation.hpp:78] CHECK failed: a.size() == b.size()
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[zoo OOS IR/day] FMB=0.3456 GK=0.3325 KY=0.3268 PnL-ShrinkageMv=0.3324
+[CombineHacTstat] MA(20) null, T=500, 600 columns: |t|>1.96 rate NW-auto 0.1333, IID 0.6717 (nominal 0.05)
+[CombineHacTstat] Kakushadze alpha-return t: NW-auto 3.042 vs IID 8.133
+[CombineHacTstat] ICIR-EWMA on an h=21 overlapping IC: t IID 8.487 -> HAC 2.506 (VIF 11.47)
+[CombineHacTstat] marginal_ic t: site 1.3430, NW-auto on rebuilt series 1.3430, IID 4.5506
+[CombineHacTstatStoreWinsor] winsor 3: max |z| ZScore 3.0000, ZScoreRestandardizeV1 4.2426
+[CombineHacTstatStoreWinsor] IC clean 0.3963, raw-with-outlier -0.1039, winsorized 0.1191
+[CombineInferenceConfig] MA(20) null, n=1750, reps=2000, rejection=0.0630
+[CombineInferenceConfig] paired obsolete Uniform/NW-plugin: rejected=141, fallbacks=0, average lag=30.98; HH lag=20
+[RegimeStackWire] oos_mean_regime=0.005 oos_mean_flat=0.0025 oos_sharpe_regime=5 oos_sharpe_flat=2.49946
+[==========] 243 tests from 44 test suites ran. (14821 ms total)
+[  PASSED  ] 243 tests.

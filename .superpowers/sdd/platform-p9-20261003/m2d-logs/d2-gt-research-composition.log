@@ -1,0 +1,30 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = ResearchComposition.*
+[==========] Running 10 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 10 tests from ResearchComposition
+[ RUN      ] ResearchComposition.NumpyPairwiseSumIsNumpys
+[       OK ] ResearchComposition.NumpyPairwiseSumIsNumpys (56 ms)
+[ RUN      ] ResearchComposition.ErcClosedFormTwoThemes
+[       OK ] ResearchComposition.ErcClosedFormTwoThemes (1 ms)
+[ RUN      ] ResearchComposition.SleeveCovarianceClosedForm
+[       OK ] ResearchComposition.SleeveCovarianceClosedForm (0 ms)
+[ RUN      ] ResearchComposition.CapTraceRecordsEveryPass
+[       OK ] ResearchComposition.CapTraceRecordsEveryPass (0 ms)
+[ RUN      ] ResearchComposition.TierRegradesAreRuleFive
+[       OK ] ResearchComposition.TierRegradesAreRuleFive (0 ms)
+[ RUN      ] ResearchComposition.ThemeResidOrderIsTheRegisteredOrder
+[       OK ] ResearchComposition.ThemeResidOrderIsTheRegisteredOrder (0 ms)
+[ RUN      ] ResearchComposition.FitEqualsPythonFixture
+[       OK ] ResearchComposition.FitEqualsPythonFixture (11 ms)
+[ RUN      ] ResearchComposition.FitRefusesMalformedSpecs
+[       OK ] ResearchComposition.FitRefusesMalformedSpecs (5 ms)
+[ RUN      ] ResearchComposition.CliPublishesTheFit
+[       OK ] ResearchComposition.CliPublishesTheFit (45 ms)
+[ RUN      ] ResearchComposition.WeightsSchemaIds
+[       OK ] ResearchComposition.WeightsSchemaIds (0 ms)
+[----------] 10 tests from ResearchComposition (122 ms total)
+
+[----------] Global test environment tear-down
+[==========] 10 tests from 1 test suite ran. (123 ms total)
+[  PASSED  ] 10 tests.

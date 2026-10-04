@@ -580,3 +580,124 @@ Code head `f6444417` (the S2 merge); the docs commit that adds this section sits
 - **Release `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` (new, awaiting a ruling).**
 
 Resume notes: `handoff-root-m2c.md`.
+
+## M2d: D2 merge, COV merge (2026-10-04)
+
+Agent: fresh root for step group M2d (dispatch after M2c-RED-1). Head at dispatch `f96f9399` (code head `f6444417`).
+Python `"C:/Program Files/Python312/python.exe"`; every pytest `-q -rs -p no:cacheprovider`,
+`PYTHONDONTWRITEBYTECODE=1`, explicit paths, own `--basetemp` in the session scratchpad; `scripts/tests` and the tools
+suites in separate invocations. Evidence: `m2d-logs/` (this dir): gtest / pytest logs, receipts, identity reports and
+the scratch scripts used (`m2d-logs/tools/`: `digests.py` (M2c's plus the pair-cache list),
+`d2_flag_absent_fixture.py`, `d2_flag_absent_identity.py`, `rerun.py` (M2c's plus `--append`)).
+
+**Housekeeping (before the merges):** docs commit `64069a3c` adds the PM's untracked files (`wave3-carry.md`,
+`briefs/brief-COV-MV.md`, `resume4-dispatch.md`, `main-merge-verify.md`, `al-data/{atx-db-request,builder-designs,
+task-AL-DATA-report}.md`; `git add -f`, no cache path). `disk-audit.md` (also untracked, not named) and the four
+`docs/plans/*.png` were left alone.
+
+### D2 (`49af0a52`, pool-20; re-review APPROVE `c55063ff`): MERGED and verified
+
+- **Ledger:** `Task D2: complete` (re-review 1 APPROVE, 0 Required, 5 Suggested); rulings D2-1..D2-9, D2-R2, D2-S4
+  read. D2-9: no second round; root fixes S-a and the report sentence as slips; the S-1 test, the S-2 refusal in
+  `check_factor_series` and strict types in engine-mode `parent_check` are D3's (not done here).
+- **Merge:** `61378337` = `git merge --no-ff 49af0a52`. Conflicts: the CMake tails of `atx-engine/CMakeLists.txt`
+  (SQL2 catalog library + A3 + AL-SIG field sources vs D2's composition library and exe) and
+  `atx-engine/tests/CMakeLists.txt` (SQL1 / SQL2 test targets + A3 + AL-SIG test sources vs D2's composition test
+  target): both sides kept, HEAD's blocks first. Auto-merged: `strategy_ic_rules.cpp`, `strategy_ic_runner.cpp`,
+  `composition_rules_list.json`, `strategy_ic_rules_test.cpp`, `strategy_ic_runner_test.cpp`. D2 adds no
+  capability: `exe_capabilities` stays S2's 8 entries, sorted, size = count. The lane's report and first review came
+  with the merge; `task-D2-rereview-1.md` and `evidence-D2/` (15 logs) copied in from pool-20 (`git add -f`).
+- **Slips (ruling D2-9):**
+  - `e129a7fa`: the three D2-added lines over 100 columns (re-review S-a: `ic_shrink.cpp:21` 105,
+    `theme_erc.hpp:44` 102, `theme_erc.cpp:25` 110) wrapped. Checked whitespace-only: the files' non-whitespace bytes
+    equal the merge's (the header gains one `//` for its continued trailing comment). The other long lines in those
+    files are verbatim moves from atx-impl (D2-6), confirmed line by line against `1239a5ff`.
+  - `task-D2-report.md:250` (S-1 row): "Tested in `Comparisons`" replaced by a marked correction (no S-1 test
+    exists; the re-reviewer's probe confirmed the behaviour; the test is D3's required carry). Committed with the docs.
+- **SQL2-CLS:** `c0446b19`. The guard failed on the merged head on two literals: `atx.composition-fit-spec/v1`
+  (`composition_cli.{hpp,cpp}`, `composition_engine_fit.py`) and `atx.composition-fit/v1` (`composition_cli.hpp`,
+  `composition_engine_fit.py`). Both join `fit-output` (precedent `atx.composition-rules/v1`,
+  `atx.research-admission/v1`); its writer text names `research/composition (D2)`. `atx.dsl-composition-weights/v3`
+  was already registered; `atx.composition-fit-fixture/v1` lives only in a test file (not scanned). After: guard green;
+  store suite `test_research_store_{classes,blind,identity,fixtures}.py test_research_store.py` **43 passed, 131
+  subtests** under `PYTHONHASHSEED` 0 and 1, no skip. **Fixture chain** (`atx-research-store` p9-1u `3b955ba1...`,
+  catalog sources unchanged; rel and abs `--root`; `m2d-logs/d2-sql2cls-fixture-chain.log`): `files_seen 28 verified 25
+  declared 0 skipped 4`, **`catalog_digest d32f7655...4e69`** (= expected), `digest` same, `verify --pins` 0,
+  `research_store_identity.py` total checked 12, mismatches 0.
+- **Build p9-2a** (equity-dev, `-Canary`; source `c0446b19`, 6 dirty entries = `progress.md`, the D2 report edit and
+  the four PNGs, no code): `atx-engine-research-composition-tests, atx-research-composition, atx-research-admission,
+  atx-equity-strategy-ic, atx-impl-strategy-ic-tests, atx-equity-strategy-targets, atx-impl-strategy-target-tests,
+  atx-engine-combine-tests, atx-impl-tests` -> **exit 0, 430.9 s, 135 TUs, 13 links, Jobs 4, 0 warnings**. It waited
+  (bounded, about 6 min) for two lane builds on the host (pool-19 AL-COMB, pool-18 S2R) to finish before starting.
+  Exe SHA-256 prefixes: composition `b0175bd1`, admission `411af33a`, ic `ba1232ed`, targets `2604e862`, ic-tests
+  `8a9045eb`, target-tests `f9d7d161`, combine-tests `58e3214b`, composition-tests `be73af8f`, impl-tests `b2e00d49`
+  (receipt `m2d-logs/mega-p9-2a-receipt.json`). **Canary (Debug, tiny world): 15 passed in 8.3 s** (goldens unchanged).
+- **gtests** (Debug, p9-2a; logs `m2d-logs/d2-gt-*.log`):
+
+  | target | filter | result |
+  |---|---|---|
+  | atx-engine-research-composition-tests | `ResearchComposition.*` | **10 passed** |
+  | atx-impl-strategy-ic-tests | `MarginalIc.PairCacheSourcesPinned` | **1 passed** (3 sources) |
+  | atx-impl-strategy-ic-tests | whole (CompositionRules, IcAdmission, IcShrinkV1, ThemeErcV1, ThemeTsmom, ThemeResid, MarginalIc, CombineMarginalRankIc, StrategyIcRunner, S2's) | **206 passed** (lane 195 at its base; S2 204 at M2c) |
+  | atx-impl-strategy-target-tests | whole (TwoSpeed and the rest) | **338 passed** (lane 325 at its base) |
+  | atx-engine-combine-tests | whole (GroupRerank and the rest) | **243 passed** |
+  | atx-impl-tests | whole (never built by the lane) | **1135 passed, 5 skipped** (real-data / opt-in gated: `Alpha101Orats.RankBySharpeRiskParity`, `.RankByOptimizerSharpe`, `AtxImplDiscover.W6_RediscoverLowVolCapacityAlpha`, `FundamentalZoo.RealDataIcReport`, `SingleAlphaCapacity.SweepAndVerify`), 0 failed, 717 s |
+
+- **pytest** (real exes of p9-2a: `ATX_RESEARCH_ADMISSION_EXE`, `ATX_RESEARCH_COMPOSITION_EXE`,
+  `ATX_EQUITY_TARGETS_EXE` set): `atx-impl/tools`, the lane's 13 files: **264 passed, 39 subtests, 0 skipped** (177 s;
+  includes S-7: `test_composition_engine_fit.py` 20 with `RealExecutables` run, no skip);
+  `scripts/tests/test_no_python_mirror.py` separately: **7 passed**.
+- **Root item (i), pair-cache pin:** recomputed from the merged tree (HEAD blobs and the work tree) with the tripwire
+  recipe: `pair_sources` 3 files `df589a88...` = pin (`m2d-logs/d2-source-digests.txt`). The pin was `88f97f24`
+  (2 files) at both `1239a5ff` and `f6444417`, so no other lane touched it. `dsl_vm` `5bcd55c7` (35) and `ic_result`
+  `dd3c6011` (11) unchanged on the merged tree (= M2c).
+- **Root item (ii), refit check:** **no P9 parent spec uses a pre-D2 `--theme-resid-parent` file.** `git grep` over
+  the tracked tree: the only spec naming `--theme-resid` is the v8 template `scripts/specs/v8/r11.json` (parent
+  derived at lock time, `nominal_parent r1-comp-v8.json`); no locked spec pins a resid parent. The P9 lineage parent
+  Y-F0 (`lib-v8ysb-gm.json`, also `lib-v8ysb.json`) fits `ew-theme-std-v1 --theme-erc theme-erc-v1`, no resid;
+  X-10 / Y-1 are NAV templates. Note: the P9-B0 fit reference `p9-b0-yf0-fit/composition_weights.json` is pre-D2 (key
+  names read: `provenance.std.module_sha256`, `provenance.theme_erc.module_sha256`), so an R-11-type P9 cell on Y-F0
+  would be refused by `parent_check` (S-5) until its parent file is post-D2. The wave-2 P9-B0 re-fit with the merged
+  fitter plus the W1-I2 (b) re-pin produces such a file; nothing to refit now (0 trials if ever needed).
+- **Root item (iii), flag-absent identity (synthetic, 0 trials, no statistic read):** the fitter run flag-absent with
+  the pre-D2 tools (`git archive f6444417` of `atx-impl/tools`, `atx-engine/tools`, `research_window.json`) and with
+  the merged head's, on the same inputs; every output compared by SHA-256 and JSON path.
+  - Tiny world (`m2d-logs/d2-flag-absent-tinyworld.json`; the canary's own fit argv `ew-theme-v1` on a u pass of the
+    tiny world; with three themes the standardised / shrink rules refuse the tiny world by the member cap):
+    `admission.csv` identical; `admission.json` differs only by `$.inputs.script_sha256` ->
+    `$.inputs.producer_fingerprint`; `composition_weights.json` only by `$.provenance.script_sha256` ->
+    `$.provenance.producer_fingerprint` and the value of `$.provenance.admission_sha256`.
+  - Fitter fixture (`m2d-logs/d2-flag-absent-fixture.json`; `aim_world` as `test_composition_engine_fit.World`, two
+    themes, registry absent), 9 cases, all exit 0 on both sides: std-erc (the Y-F0 form), std-erc-tsmom, shrink,
+    shrink-erc, shrink-tsmom, std, std-aim-resid, an R-11 child of `std` (`--theme-resid-parent` + pin), ew-theme.
+    In every case `admission.csv` is identical and the differences are exactly: admission.json
+    `inputs.script_sha256` -> `inputs.producer_fingerprint`; weights `provenance.script_sha256` ->
+    `provenance.producer_fingerprint`; `provenance.<block>.module_sha256` -> `provenance.<block>.producer_fingerprint`
+    for each block the case writes (std, ic_shrink, theme_erc, theme_tsmom, resid); the value of
+    `provenance.admission_sha256` (admission.json's bytes move with its CM-5 key); and, in the R-11 child, the value
+    of `provenance.resid.parent_weights_sha256` (its parent file moved). No other path; no file added or removed.
+  - So flag-absent outputs differ from the pre-D2 build only in the CM-5 / D2-2 keys and the two SHA values that hash
+    them. Decision bytes unchanged (the canary digests strip `inputs` / provenance: canary 15 passed).
+  - **Draft wave-2 P9-B0 substitution list, D2 part** (to be ruled before the P9-B0 run, not now). Fit outputs of
+    the Y-F0 re-fit (`ew-theme-std-v1 --theme-erc theme-erc-v1`):
+    1. `admission.json`: `$.inputs.script_sha256` (removed), `$.inputs.producer_fingerprint` (added);
+    2. `composition_weights.json`: `$.provenance.script_sha256` -> `$.provenance.producer_fingerprint`;
+       `$.provenance.std.module_sha256` -> `$.provenance.std.producer_fingerprint`;
+       `$.provenance.theme_erc.module_sha256` -> `$.provenance.theme_erc.producer_fingerprint`;
+       `$.provenance.admission_sha256` (value; consequence of 1);
+    3. for other lineage forms the same rename on `provenance.{std_identity,ic_shrink,theme_tsmom,resid}`, on
+       `provenance.v6.inputs.script_sha256` (v6 only), and the value of `provenance.resid.parent_weights_sha256` in
+       resid children;
+    4. downstream only if a pass reads the re-fit file. P9-B0 runs each reference argv with only `--output` changed,
+       so its w reads the reference weights and nothing cascades. If the W1-I2 (b) re-pin later points w at a post-D2
+       weights file, its SHA moves into w `recipe.json` / `summary.json` / `train_combined.json`
+       `composition_weights_sha256` (and `summary.json` `composition_weights.sha256`) and NAV `summary.json`
+       `composition_weights_sha256` / `source_bindings.composition_weights_sha256` (paths found in the P9-B0 w / NAV
+       references by key, no value read).
+- **Root item (iv):** superseded (ledger "Root item (replaces D2's ...)"); nothing done. E2 is not merged, so the
+  positive live-table check runs at E2's merge.
+- **Not done here:** the D2 report's X-5 real-data flag-absent / flag-present runs (the brief named the canary /
+  fixture for (iii); the X-5 re-fit belongs to the wave-2 P9-B0, with the list above).
+- **DISK-2 (pool-20):** nothing to delete; the lane had already deleted its object tree (2.7 MB left: receipts, logs,
+  `audits/`, `v8-interim3-pitch-render-run2/`).
+- **Trial ledger:** 0 trials (133 lines, `27e40f9f`).

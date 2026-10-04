@@ -525,3 +525,12 @@ Base `4497784b`. Detail: `root-wave2-merge-report.md` section M2c; logs `m2c-log
 Next free build tag **p9-2a**. Known-red after M2c: pytest `test_fields_are_the_rule_applied_to_the_registry` (E2),
 Release `BookNormalScore.*` x2 (C2), Release `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` (new; ruling
 pending).
+
+### M2d: D2, COV, 2026-10-04
+
+Base `f96f9399`. Detail: `root-wave2-merge-report.md` section M2d; logs `m2d-logs/`. Housekeeping docs commit
+`64069a3c` (PM's untracked docs).
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| D2 | `49af0a52` (re-review `c55063ff`) | `61378337` + D2-9 slip `e129a7fa` (3 long lines wrapped, whitespace only) + SQL2-CLS `c0446b19` (`atx.composition-fit-spec/v1`, `atx.composition-fit/v1` -> fit-output) | `atx-engine/CMakeLists.txt` and `atx-engine/tests/CMakeLists.txt` tails (SQL1 / SQL2 / A3 / AL-SIG vs D2), both kept; `exe_capabilities` untouched (8, sorted) | **p9-2a** equity-dev `-Canary`: `atx-engine-research-composition-tests, atx-research-composition, atx-research-admission, atx-equity-strategy-ic, atx-impl-strategy-ic-tests, atx-equity-strategy-targets, atx-impl-strategy-target-tests, atx-engine-combine-tests, atx-impl-tests` (430.9 s / 135 TUs) | 0 | ResearchComposition 10p; PairCacheSourcesPinned 1p; strategy-ic whole 206p; strategy-target whole 338p; combine whole 243p; atx-impl-tests whole 1135p / 5 skip (real-data gated) / 0 f; canary Debug 15p | `atx-impl/tools` 13 lane files with real exes 264p / 39 sub / 0 skip (S-7 incl.); `test_no_python_mirror.py` 7p; store suite 43p/131 sub x2 seeds | pair pin `df589a88` (3 files) recomputed = pin; `dsl_vm` / `ic_result` unchanged; fixture chain `d32f7655...4e69`, identity 12/0, rel = abs; refit check: no P9 parent uses a resid parent (only the v8 template r11.json names `--theme-resid`); flag-absent pre-D2 vs merged fitter on the tiny world (canary argv) and on aim_world (9 cases): only CM-5 / D2-2 key renames + `provenance.admission_sha256` (+ `resid.parent_weights_sha256` in a resid child); draft P9-B0 list in the report; report S-1 sentence corrected; item (iv) superseded; DISK-2 pool-20 already clean; ledger 133 / `27e40f9f` |

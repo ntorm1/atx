@@ -1,0 +1,7 @@
+﻿Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[spo-pin] weights=0xda6b6871e7e267c5 (54 diagnostics rows)
+[spo-pin] replay=0xaabdbb72f99a6e13 (40 days)
+[spo-v3-pin] v1 weights=0xda6b6871e7e267c5 replay=0xaabdbb72f99a6e13
+[spo-v3-pin] v2 weights=0xb039820b40d5cf24 (40 diagnostics rows) replay=0xd24b61721a7c698c (30 days)
+[==========] 325 tests from 54 test suites ran. (111011 ms total)
+[  PASSED  ] 325 tests.
