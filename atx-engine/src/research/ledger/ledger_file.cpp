@@ -36,9 +36,12 @@ namespace {
     return v.get<bool>();
   }
   if (v.is_number()) {
-    return v.get<f64>() != 0.0;
+    return v.get<f64>() != 0.0; // NaN is truthy in Python, and NaN != 0
   }
-  return !v.empty(); // string, array, object
+  if (v.is_string()) {
+    return !v.get_ref<const std::string &>().empty();
+  }
+  return !v.empty(); // array, object
 }
 
 // Review B2 S3: inputs the Python reader refuses and nlohmann would accept, refused here too so
