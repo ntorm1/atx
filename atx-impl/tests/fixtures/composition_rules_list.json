@@ -239,46 +239,22 @@
         "additionalProperties": false,
         "properties": {
           "lag": {
-            "const": 2
+            "const": 2,
+            "type": "integer"
           },
           "lookback": {
-            "const": 126
+            "const": 126,
+            "type": "integer"
           },
           "rule": {
-            "const": "mom-volman-v1"
-          },
-          "sessions": {
-            "items": {
-              "type": "integer"
-            },
-            "maxItems": 65536,
-            "minItems": 128,
-            "type": "array"
-          },
-          "sleeve": {
-            "items": {
-              "type": "number"
-            },
-            "maxItems": 65536,
-            "minItems": 128,
-            "type": "array"
+            "const": "mom-volman-v1",
+            "type": "string"
           },
           "step": {
-            "const": 21
-          },
-          "theme": {
-            "const": "price_momentum"
+            "const": 21,
+            "type": "integer"
           }
         },
-        "required": [
-          "rule",
-          "theme",
-          "lookback",
-          "lag",
-          "step",
-          "sessions",
-          "sleeve"
-        ],
         "type": "object"
       },
       "recipe_key": "composition_schedule",
@@ -335,28 +311,26 @@
         "additionalProperties": false,
         "properties": {
           "lag": {
-            "const": 2
+            "const": 2,
+            "type": "integer"
           },
           "lookback": {
-            "const": 252
+            "const": 252,
+            "type": "integer"
           },
           "min_pairs": {
-            "const": 126
+            "const": 126,
+            "type": "integer"
           },
           "rule": {
-            "const": "theme-cov-hedge-v1"
+            "const": "theme-cov-hedge-v1",
+            "type": "string"
           },
           "step": {
-            "const": 21
+            "const": 21,
+            "type": "integer"
           }
         },
-        "required": [
-          "rule",
-          "lookback",
-          "lag",
-          "step",
-          "min_pairs"
-        ],
         "type": "object"
       },
       "recipe_key": "composition_hedge",
