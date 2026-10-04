@@ -1,6 +1,6 @@
 # Native retained-original and position diagnostics
 
-Stage/schema: `atx.thirteenf-native-originals/v1`. This is the first native reader
+Stage/schema: `atx.thirteenf-native-originals/v2`. This is the first native reader
 piece; source/economic admission, dated security assembly and Task11 acceptance
 remain open. Every emitted position is observed raw evidence with NULL USD value,
 NULL public clock and false source qualification. No official documentary rule
@@ -53,9 +53,21 @@ every admission exception and unexpected receipt/original key.
 
 Outputs install by atomic no-clobber hard links. The final `manifest.json` is the
 commit marker; collision/interruption preserves partials and never overwrites or
-rolls back concurrent evidence. Validation checks output identities twice,
-typed/key axes, counts, expected denominator and position-parent integrity,
-and rejects any unsupported source qualification, computed USD or public clock.
+rolls back concurrent evidence. Version2 persists the full reproducible plan,
+its absolute current file identity, exact reader module inventory, documentary
+pins and consumed-original pins. Missing, abbreviated or stale inventories reject.
+Validation authenticates these identities before and after a bounded replay in
+an isolated temporary128MB/one-thread DuckDB; it never publishes replay products
+or modifies the original generation, attempt database, spill or source files.
+The replay independently reads authenticated expected/receipt/document/original
+inputs and derives expected keys, selected/bounded/missing states, observations,
+cover flags, full position values, exception/reject lineage and processing status.
+All published rows are compared as multisets and every column/order/type must
+match the replay schema; writer-provided hashes/counts alone are insufficient.
+Processing `complete` means the entire declared expected inventory was visited;
+it does not assert complete retained originals or qualified population. Bounded
+or empty inventories remain `partial`, and source completeness stays UNMEASURED.
+Validation also rejects unsupported qualification, computed USD or public clock.
 Structural PASS does not qualify economics, bronze completeness or coverage.
 
 Next native pieces must independently establish clock/unit/shared-manager/

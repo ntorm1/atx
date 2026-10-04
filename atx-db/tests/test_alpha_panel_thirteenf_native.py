@@ -188,3 +188,93 @@ def test_native_validator_requires_commit_and_detects_changed_output(tmp_path):
     (generation / "positions.parquet").write_bytes(b"changed output")
     with pytest.raises(ValueError,match="native_output_identity_mismatch"):
         N.validate(generation)
+
+@pytest.mark.parametrize("target", ["original", "document", "plan", "empty_code", "stale_code", "abbreviated_inputs", "consumed_pins", "missing_contract"])
+def test_validator_authenticates_complete_current_reader_contract(tmp_path, target):
+    plan_path, plan = _fixture(tmp_path)
+    N.build(plan_path)
+    generation = Path(plan["generation"])
+    manifest_path = generation / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    if target == "original":
+        Path(plan["originals"][0]["path"]).write_bytes(b"changed original")
+    elif target == "document":
+        Path(manifest["documentary_sources"][0]["path"]).write_text("changed document")
+    elif target == "plan":
+        plan["max_originals"] = 1
+        plan_path.write_text(json.dumps(plan))
+    elif target == "empty_code":
+        manifest["code"] = {}
+    elif target == "stale_code":
+        manifest["code"]["thirteenf_quality.py"]["sha256"] = "0" * 64
+    elif target == "missing_contract":
+        del manifest["reader_contract"]
+    elif target == "abbreviated_inputs":
+        manifest["reader_products"]["expected_inventory"] = {}
+    else:
+        manifest["consumed_originals"] = []
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises((ValueError, KeyError)):
+        N.validate(generation)
+
+
+@pytest.mark.parametrize("target", ["diagnostics", "position", "expected_key", "cover", "extra_schema", "status"])
+def test_validator_independently_replays_rows_even_when_writer_hashes_are_updated(tmp_path, target):
+    import pyarrow as pa
+    plan_path, plan = _fixture(tmp_path, max_originals=1)
+    plan["originals"].append(dict(plan["originals"][0], accession="000000000120000002"))
+    plan_path.write_text(json.dumps(plan))
+    N.build(plan_path)
+    generation = Path(plan["generation"])
+    manifest_path = generation / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert N.validate(generation)["status"] == "partial"
+    tables = {name: pq.read_table(generation / (name + ".parquet")) for name in ("admissions", "positions", "rejects")}
+    if target == "status":
+        manifest.update(status="complete", bound_reached=False)
+    elif target == "diagnostics":
+        rows = tables["admissions"].to_pylist()
+        for row in rows:
+            row["exceptions"] = []
+        tables["admissions"] = pa.Table.from_pylist(rows, schema=tables["admissions"].schema)
+        tables["rejects"] = tables["rejects"].slice(0, 0)
+    elif target == "extra_schema":
+        tables["positions"] = tables["positions"].append_column("fabricated", pa.array([1], type=pa.int64()))
+    else:
+        name = "positions" if target == "position" else "admissions"
+        rows = tables[name].to_pylist()
+        if target == "position":
+            rows[0]["shares_reported"] = 101
+        elif target == "expected_key":
+            rows[1]["accession"] = "000000000120999999"
+        else:
+            rows[0]["cover_reconciled"] = False
+        tables[name] = pa.Table.from_pylist(rows, schema=tables[name].schema)
+    for name, table in tables.items():
+        path = generation / (name + ".parquet")
+        pq.write_table(table, path)
+        manifest["counts"][name] = table.num_rows
+        manifest["files"][path.name] = dict(bytes=path.stat().st_size, sha256=N.C.sha256_file(path))
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="native_replay|native_exact_schema"):
+        N.validate(generation)
+
+
+def test_validation_does_not_modify_published_generation_and_checks_post_read_identity(tmp_path, monkeypatch):
+    plan_path, plan = _fixture(tmp_path)
+    N.build(plan_path)
+    generation = Path(plan["generation"])
+    before = {p.name: (p.stat().st_mtime_ns, N.C.sha256_file(p)) for p in generation.iterdir() if p.is_file()}
+    N.validate(generation)
+    assert before == {p.name: (p.stat().st_mtime_ns, N.C.sha256_file(p)) for p in generation.iterdir() if p.is_file()}
+    monkeypatch.setattr(N, "_publish_file", lambda *args: pytest.fail("validator must not publish"))
+    parse = N.original_submission_evidence
+    def mutate(raw, expected, receipt):
+        result = parse(raw, expected, receipt)
+        path = Path(plan["originals"][0]["path"])
+        original = path.read_bytes()
+        path.write_bytes(original.replace(b"100", b"101"))
+        return result
+    monkeypatch.setattr(N, "original_submission_evidence", mutate)
+    with pytest.raises(ValueError, match="consumed_file_current_identity|consumed_file_digest"):
+        N.validate(generation)

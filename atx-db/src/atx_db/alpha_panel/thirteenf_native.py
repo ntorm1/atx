@@ -21,7 +21,7 @@ import duckdb
 from . import common as C
 from .thirteenf_quality import accession_key, original_submission_evidence
 
-SCHEMA = "atx.thirteenf-native-originals/v1"
+SCHEMA = "atx.thirteenf-native-originals/v2"
 MAX_OBJECT = 8 * 1024 * 1024
 MAX_METADATA = 64 * 1024 * 1024
 MAX_RECORD = 256 * 1024
@@ -45,6 +45,8 @@ def _pin(item: dict[str, Any], roots: list[Path], maximum: int) -> dict[str, Any
     identity = C.file_identity(path)
     if identity["bytes"] > maximum or identity["bytes"] != item["bytes"]:
         raise ValueError("consumed_file_byte_identity_or_bound")
+    if "mtime_ns" in item and identity["mtime_ns"] != item["mtime_ns"]:
+        raise ValueError("consumed_file_current_identity_mismatch")
     digest = C.sha256_file(path)
     if digest != item["sha256"]:
         raise ValueError("consumed_file_digest_mismatch")
@@ -80,16 +82,23 @@ def _publish_file(con, query: str, path: Path) -> dict[str, Any]:
     return identity
 
 
-def build(plan_path: Path) -> dict[str, Any]:
+def _reader_code() -> dict[str, Any]:
+    identity = C.code_identity("thirteenf_native", "thirteenf_quality", "common")
+    identity.pop("git_head", None)  # Unrelated shared-tree commits are not reader changes.
+    return identity
+
+
+def build(plan_path: Path, *, _replay_directory: Path | None = None) -> dict[str, Any]:
     """Create one never-overwritten generation; manifest is its commit marker.
 
     A selection bound never changes the expected accession denominator. Missing
     retained records/objects and unsupported reader types are keyed diagnostics.
     A failed input identity leaves an uncommitted generation for inspection.
     """
+    plan_path = _rooted(plan_path.absolute(), [plan_path.absolute().parent.resolve(strict=True)])
     if plan_path.stat().st_size > MAX_OBJECT:
         raise ValueError("native_plan_byte_bound")
-    code_before = C.code_identity("thirteenf_native","thirteenf_quality","common")
+    code_before = _reader_code()
     plan_identity = C.file_identity(plan_path)
     plan_hash = C.sha256_file(plan_path)
     plan = C.read_json(plan_path)
@@ -132,7 +141,7 @@ def build(plan_path: Path) -> dict[str, Any]:
         if key in objects_by_accession:
             raise ValueError("duplicate_original_reader_key")
         objects_by_accession[key] = item
-    generation = Path(plan["generation"])
+    generation = _replay_directory or Path(plan["generation"])
     if not generation.is_absolute():
         raise ValueError("generation_path_must_be_absolute")
     generation.mkdir(parents=True, exist_ok=False)
@@ -240,16 +249,18 @@ def build(plan_path: Path) -> dict[str, Any]:
         cursor.close()
         for pin in [*pins.values(), *document_pins, *consumed_objects]:
             _pin(pin, roots, MAX_METADATA)
-        if C.code_identity("thirteenf_native","thirteenf_quality","common") != code_before:
+        if _reader_code() != code_before:
             raise RuntimeError("native_reader_code_changed_during_computation")
         if C.file_identity(plan_path) != plan_identity or C.sha256_file(plan_path) != plan_hash:
             raise RuntimeError("native_plan_changed_during_computation")
         files = {}
         for table, order in (("admissions","accession"),("positions","accession,position_index"),("rejects","accession,reason,source_kind")):
-            files[table+".parquet"] = _publish_file(con, f"SELECT * FROM {table} ORDER BY {order}", generation / (table+".parquet"))
+            if _replay_directory is None:
+                files[table+".parquet"] = _publish_file(con, f"SELECT * FROM {table} ORDER BY {order}", generation / (table+".parquet"))
         counts = {table: con.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in ("admissions","positions","rejects")}
         bounded=con.execute("SELECT count(*) FROM admissions WHERE list_contains(exceptions,'selected_original_bound_not_processed')").fetchone()[0]>0
         manifest = dict(schema=SCHEMA,status="partial" if bounded or not expected_count else "complete",gate_status="UNQUALIFIED",plan_sha256=plan_hash,
+            plan_identity=dict(plan_identity, sha256=plan_hash),reader_contract=plan,
             expected_accessions=expected_count,processed_originals=processed,counts=counts,files=files,
             bound_reached=bounded,
             source_completeness="UNMEASURED",contemporaneous_population_complete=False,
@@ -257,6 +268,8 @@ def build(plan_path: Path) -> dict[str, Any]:
             consumed_originals=consumed_objects,code=code_before,
             required_future_release_bindings=["universe_release_v1", "fundamentals_release_v1/fundamentals_v11"],
             limits="Observed raw positions are not admitted economics/PIT; full source/rule/cohort/release gates remain open")
+        if _replay_directory is not None:
+            return manifest
         partial = generation / "manifest.json.partial"
         with partial.open("x", encoding="utf-8") as sink:
             json.dump(manifest,sink,sort_keys=True)
@@ -288,10 +301,13 @@ def main(argv: list[str] | None = None) -> int:
 def validate(generation: Path) -> dict[str, Any]:
     """Read-only structural/output validator; never an economic admission.
 
-    A committed manifest is required. This currently rejects any persisted
-    qualification or computed USD/PIT clock: no source rule is supported yet.
+    A committed reproducible manifest and current exact source/code identities
+    are required. Replay uses only private temporary scratch and compares every
+    schema and row to native observations. No source rule is supported yet.
     """
     manifest_path=generation / "manifest.json"
+    if manifest_path.stat().st_size > MAX_METADATA:
+        raise ValueError("native_manifest_byte_bound")
     before=C.file_identity(manifest_path)
     manifest_hash=C.sha256_file(manifest_path)
     manifest=C.read_json(manifest_path)
@@ -304,11 +320,38 @@ def validate(generation: Path) -> dict[str, Any]:
     required={"admissions.parquet","positions.parquet","rejects.parquet"}
     if set(manifest["files"])!=required:
         raise ValueError("native_output_inventory_incomplete")
+    contract = manifest.get("reader_contract")
+    plan_pin = manifest.get("plan_identity")
+    if not isinstance(contract, dict) or not isinstance(plan_pin, dict):
+        raise ValueError("native_reproducible_plan_required")
+    if manifest.get("code") != _reader_code():
+        raise ValueError("native_reader_code_inventory_mismatch")
+    plan_path = Path(plan_pin["path"])
+    roots = [Path(path).resolve(strict=True) for path in contract["roots"]]
+    # The plan may live outside source roots, but must retain its exact absolute identity.
+    _pin(plan_pin, [plan_path.parent.resolve(strict=True)], MAX_OBJECT)
+    if C.read_json(plan_path) != contract or manifest.get("plan_sha256") != plan_pin["sha256"]:
+        raise ValueError("native_reader_contract_mismatch")
+    if Path(contract["generation"]).resolve() != generation.resolve():
+        raise ValueError("native_plan_generation_mismatch")
+    pinned = [*manifest["reader_products"].values(), *manifest["documentary_sources"],
+              *manifest["consumed_originals"]]
+    for pin in pinned:
+        _pin(pin, roots, MAX_METADATA)
     import tempfile
     with tempfile.TemporaryDirectory(prefix="t11-native-validate-") as temp:
+        replay_directory = Path(temp) / "replay"
+        replay = build(plan_path, _replay_directory=replay_directory)
+        # Derive inventory, selection, observations, diagnostics and status from authenticated
+        # native inputs, without reading any published rows or publishing replay products.
+        for key in replay.keys() - {"files"}:
+            if manifest.get(key) != replay[key]:
+                raise ValueError("native_replay_manifest_mismatch:" + key)
         con=duckdb.connect(config={"memory_limit":"128MB","threads":"1","temp_directory":temp})
         try:
             con.execute("SET TimeZone='UTC'")
+            replay_db = (replay_directory / "attempt.duckdb").as_posix().replace("'", "''")
+            con.execute(f"ATTACH '{replay_db}' AS replay (READ_ONLY)")
             for name in sorted(required):
                 path=generation / name
                 identity=manifest["files"][name]
@@ -318,6 +361,12 @@ def validate(generation: Path) -> dict[str, Any]:
                 escaped=path.as_posix().replace("'","''")
                 con.execute(f"CREATE VIEW {table} AS SELECT * FROM read_parquet('{escaped}',hive_partitioning=false)")
                 axes={row[0]:row[1] for row in con.execute(f"DESCRIBE {table}").fetchall()}
+                expected_axes = {row[0]: row[1] for row in con.execute(f"DESCRIBE replay.{table}").fetchall()}
+                if axes != expected_axes or list(axes) != list(expected_axes):
+                    raise ValueError("native_exact_schema_mismatch")
+                difference = con.execute(f"SELECT count(*) FROM ((SELECT * FROM {table} EXCEPT ALL SELECT * FROM replay.{table}) UNION ALL (SELECT * FROM replay.{table} EXCEPT ALL SELECT * FROM {table}))").fetchone()[0]
+                if difference:
+                    raise ValueError("native_replay_rows_mismatch:" + table)
                 required_axes={"accession":"VARCHAR"}
                 if table=="admissions":
                     required_axes.update(report_date="DATE",available_at="TIMESTAMP WITH TIME ZONE",
@@ -349,6 +398,11 @@ def validate(generation: Path) -> dict[str, Any]:
                     raise RuntimeError("native_output_changed_during_validation")
         finally:
             con.close()
+    for pin in pinned:
+        _pin(pin, roots, MAX_METADATA)
+    _pin(plan_pin, [plan_path.parent.resolve(strict=True)], MAX_OBJECT)
+    if manifest["code"] != _reader_code():
+        raise RuntimeError("native_reader_code_changed_during_validation")
     if C.file_identity(manifest_path)!=before or C.sha256_file(manifest_path)!=manifest_hash:
         raise RuntimeError("native_manifest_changed_during_validation")
     return dict(structural_status="PASS",gate_status="UNQUALIFIED",manifest_sha256=manifest_hash,

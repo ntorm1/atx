@@ -220,3 +220,49 @@ Focused command PYTHONPATH=C:/atx/atx-db/src OPENBLAS_NUM_THREADS=1 python -m py
 Controller retrospective inventory part0000:20.0s/.0583GiB childexit2 deliberateUNQUALIFIED_PARTITION;10000main+1328history,7336 13F records,lastCIK0000731762.json,oneCIK19617main>4MiB keyed exception. ArchiveSHA702fbcd8b4335bc649e9e4eab3a202f3effc314b43421664bfecb59365767165 unchanged; outputSHA82c0fce844469f9bc4d402557679a4fa023bb8e859a924868513d342ce8693b2. Source retrieval clock NULL; full retrospective scope incomplete. Rootv3 metadata ledgers:0known13F/55536UNKNOWN/0exceptions complete scans; no source-absence implication.
 
 Remaining completeTask11: actual independently evidenced documentary acceptance/unit/manager rules and authentic archive-member adapters, full original/cohort reconstruction, event dated security/shares/splits/type assembly, all-three-universe full-year coverage; dated filer typing, stakes original/group/security vintages/handchecks, NPORT full ownership vintages/source-quarter coverage, insider completequiescent-input build/p99.9, final R15/R17 bindings and real bounded operational/build qualification. All original source/economic gates remain unmeasured/open; no Task11 completion claim.
+
+## Native originals independent review aggregate fix round 5/5
+
+Final cumulative Task11 aggregate fix count:5/5 (native2, bridge1, discovery1,
+this native-original validator round1); no cap reset. Addressed native-original
+I1 and I2 in review-T11-native-originals-findings.md. Manifest schema v2 now
+retains the complete reproducible plan, its exact absolute SHA/size/mtime identity,
+all reader products/documentary/consumed-original identities, and exact current
+native/quality/common module SHA inventories. Git HEAD is deliberately excluded
+from reader identity because unrelated shared-tree commits do not alter readers.
+Old/abbreviated/stale manifests are rejected; input/code/plan identities are
+checked before and after validation and replay computation.
+
+Validator independently reconstructs native source observations in isolated
+128MB/one-thread disk-backed temporary scratch, without reading published rows
+as computation inputs or publishing replay files. It derives complete expected
+keys, selection bounds/missing states, cover/count/raw observations, positions,
+exception and reject lineage and status from pinned inputs, then compares every
+schema column/order/type and complete row multiset. A writer cannot erase
+exceptions/rejects or alter positions/keys/cover/status by updating its own hashes.
+Processing complete means all supplied expected rows were visited; it does not
+assert complete originals or qualified population. Missing positions/zeros,
+unknown rules/clocks/units remain unknown; qualification stays false and public
+clock/USD remain NULL. Generation files/attempt DB/spill/source files are read-only
+through validation; only temporary scratch is created and cleaned. No-clobber
+publication and interrupted forensic state behavior remain covered.
+
+Focused offline command (PowerShell from C:/atx):
+`$env:PYTHONPATH='C:/atx/atx-db/src'; $env:OPENBLAS_NUM_THREADS='1'; atx-db/.venv/Scripts/python.exe -m pytest -n0 -o addopts='' atx-db/tests/test_alpha_panel_thirteenf_native.py -q`.
+Intermediate verification:23 passed in19.58s; expanded cases25 passed in22.01s.
+Final verification after absolute-plan/manifest-bound tightening recorded below.
+Regressions cover changed original/document/plan, missing/stale code, abbreviated
+inputs/consumed pins/full contract, stripped exceptions+rejects with rewritten
+hashes/counts, wrong expected keys/positions/cover, added schema, false complete
+status, unchanged generation identities and mutation during read-only replay.
+
+Files owned/changed only: thirteenf_native.py, its fixture tests, dataset docs,
+registry stub and this report. No sources landed, actual data/source reads/hashes,
+HTTP, producer jobs, child agents or full suite. Original five Task11 acceptance
+criteria remain0 PASS/5 FAIL-UNMEASURED; source/economic/all-universe coverage,
+full native assembly, all other ownership pipelines and actual operational gates
+remain open exactly as listed in the previous native deliverable. Independent
+review and controller scheduling are still required before actual builds. This
+round makes the native diagnostic deliverable reviewable; fullTask11 IN_PROGRESS.
+
+Final exact focused command above:25 passed in18.86s; exit0. Owned-path git diff --check:exit0 (only Git CRLF notice). No own live jobs on return.
