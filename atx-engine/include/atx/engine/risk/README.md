@@ -39,6 +39,8 @@ Woodbury identity, so a solve is `O(iters·(M·K + K³))`, never `O(M²)`.
 | [shrinkage.hpp](atx-engine/include/atx/engine/risk/shrinkage.hpp) | Ledoit-Wolf constant-correlation shrinkage + Marchenko-Pastur clip (standalone). |
 | [specific_risk.hpp](atx-engine/include/atx/engine/risk/specific_risk.hpp) | Idiosyncratic diagonal `D` (EWMA + NW + structural blend). |
 | [eigen_adjust.hpp](atx-engine/include/atx/engine/risk/eigen_adjust.hpp) | Menchero-Wang-Orr Monte-Carlo eigenfactor de-biasing (seed-pinned). |
+| [cov_container.hpp](atx-engine/include/atx/engine/risk/cov_container.hpp) + [src/risk/cov_container.cpp](atx-engine/src/risk/cov_container.cpp) | `atx.cov-container` 1.0 (`model.atxcov`, K-P9-12): per-session stamped factor models in one file, streaming `CovContainerWriter`, memory-mapped `CovModelFile` (Full / Lazy block hashes under one root pin, `at_or_before` never past the cutoff), zero-copy `factor_risk_view`. |
+| recipe `atx-cov-v1` (atx-impl `strategy_risk_model.hpp`) | The P9 covariance of record: atx-risk-v1.1 plus S2b, `eigen_adjust_v2` on the fully observed factor block (amplification 1, 64 simulations, per-session seed, Kish count of the HL-504 weights); written to the container by `atx-equity-strategy-risk risk --recipe atx-cov-v1 --emit-container`. |
 | [psd_repair.hpp](atx-engine/include/atx/engine/risk/psd_repair.hpp) | Higham nearest-correlation + eigenvalue clip (standalone). |
 | [vol_regime.hpp](atx-engine/include/atx/engine/risk/vol_regime.hpp) | Volatility-regime λ² rescale of `F`,`D`. |
 | [dead_factor.hpp](atx-engine/include/atx/engine/risk/dead_factor.hpp) | Recycle retired alphas' holdings into orthogonal risk factors. |

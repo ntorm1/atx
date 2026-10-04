@@ -1,0 +1,18 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = CovBias.*
+[==========] Running 4 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 4 tests from CovBias
+[ RUN      ] CovBias.EigenFamilyInBandOnAPlantedModel
+[       OK ] CovBias.EigenFamilyInBandOnAPlantedModel (13053 ms)
+[ RUN      ] CovBias.MinVarAndOptimizedUseCompleteForecastsOnly
+[       OK ] CovBias.MinVarAndOptimizedUseCompleteForecastsOnly (12526 ms)
+[ RUN      ] CovBias.MissingReturnCountsZeroNeverRenormalised
+[       OK ] CovBias.MissingReturnCountsZeroNeverRenormalised (12790 ms)
+[ RUN      ] CovBias.V1FamiliesBytesUnchanged
+[       OK ] CovBias.V1FamiliesBytesUnchanged (12719 ms)
+[----------] 4 tests from CovBias (51091 ms total)
+
+[----------] Global test environment tear-down
+[==========] 4 tests from 1 test suite ran. (51091 ms total)
+[  PASSED  ] 4 tests.

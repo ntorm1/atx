@@ -1,0 +1,214 @@
+[atx-build] cmake --build C:\atx-wt\pool-24\build-equity --parallel 4 --target atx-impl-strategy-target-tests 
+atx-engine-risk-tests atx-equity-strategy-risk
+[0/2] Re-checking globbed directories...
+cmake.exe : -- GLOB mismatch!
+At C:\atx-wt\pool-24\scripts\atx-build.ps1:315 char:3
++   & $nativeTool.Source @innerArgs
++   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (-- GLOB mismatch!:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[1/2] Re-running CMake...
+-- Running vcpkg install
+Detecting compiler hash for triplet x64-windows...
+Compiler found: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.42.34433/bin/Hostx64/x64/cl.exe
+The following packages are already installed:
+  * abseil:x64-windows@20260107.1#3
+    arrow[core,parquet,json,filesystem,csv]:x64-windows@24.0.0#1
+  * boost-algorithm:x64-windows@1.91.0
+  * boost-align:x64-windows@1.91.0
+  * boost-array:x64-windows@1.91.0
+  * boost-assert:x64-windows@1.91.0
+  * boost-atomic:x64-windows@1.91.0
+  * boost-bind:x64-windows@1.91.0
+  * boost-charconv:x64-windows@1.91.0
+  * boost-chrono:x64-windows@1.91.0
+  * boost-cmake:x64-windows@1.91.0
+  * boost-compat:x64-windows@1.91.0
+  * boost-concept-check:x64-windows@1.91.0
+  * boost-config:x64-windows@1.91.0
+  * boost-container:x64-windows@1.91.0
+  * boost-container-hash:x64-windows@1.91.0
+  * boost-conversion:x64-windows@1.91.0
+  * boost-core:x64-windows@1.91.0
+  * boost-date-time:x64-windows@1.91.0
+  * boost-describe:x64-windows@1.91.0
+  * boost-detail:x64-windows@1.91.0
+  * boost-dynamic-bitset:x64-windows@1.91.0
+  * boost-exception:x64-windows@1.91.0
+  * boost-filesystem:x64-windows@1.91.0
+  * boost-function:x64-windows@1.91.0
+  * boost-function-types:x64-windows@1.91.0
+  * boost-functional:x64-windows@1.91.0
+  * boost-fusion:x64-windows@1.91.0
+  * boost-headers:x64-windows@1.91.0
+  * boost-integer:x64-windows@1.91.0
+  * boost-intrusive:x64-windows@1.91.0
+  * boost-io:x64-windows@1.91.0
+  * boost-iterator:x64-windows@1.91.0
+  * boost-lexical-cast:x64-windows@1.91.0
+  * boost-locale:x64-windows@1.91.0
+  * boost-math:x64-windows@1.91.0
+  * boost-move:x64-windows@1.91.0
+  * boost-mp11:x64-windows@1.91.0
+  * boost-mpl:x64-windows@1.91.0
+  * boost-multiprecision:x64-windows@1.91.0
+  * boost-numeric-conversion:x64-windows@1.91.0
+  * boost-optional:x64-windows@1.91.0
+  * boost-predef:x64-windows@1.91.0
+  * boost-preprocessor:x64-windows@1.91.0
+  * boost-random:x64-windows@1.91.0
+  * boost-range:x64-windows@1.91.0
+  * boost-ratio:x64-windows@1.91.0
+  * boost-regex:x64-windows@1.91.0
+  * boost-scope:x64-windows@1.91.0
+  * boost-scope-exit:x64-windows@1.91.0
+  * boost-smart-ptr:x64-windows@1.91.0
+  * boost-static-assert:x64-windows@1.91.0
+  * boost-system:x64-windows@1.91.0
+  * boost-thread:x64-windows@1.91.0
+  * boost-throw-exception:x64-windows@1.91.0
+  * boost-tokenizer:x64-windows@1.91.0
+  * boost-tuple:x64-windows@1.91.0
+  * boost-type-traits:x64-windows@1.91.0
+  * boost-typeof:x64-windows@1.91.0
+  * boost-uninstall:x64-windows@1.91.0
+  * boost-unordered:x64-windows@1.91.0
+  * boost-utility:x64-windows@1.91.0
+  * boost-uuid:x64-windows@1.91.0
+  * boost-variant2:x64-windows@1.91.0
+  * boost-winapi:x64-windows@1.91.0
+  * brotli:x64-windows@1.2.0
+  * bzip2[core,tool]:x64-windows@1.0.8#6
+  * gflags:x64-windows@2.3.0
+    gtest:x64-windows@1.17.0#2
+  * libevent[core,thread]:x64-windows@2.1.12+20230128#1
+  * lz4:x64-windows@1.10.0
+  * mimalloc:x64-windows@3.3.2
+    openssl:x64-windows@3.6.2
+  * rapidjson:x64-windows@2025-02-26
+  * re2:x64-windows@2025-11-05
+  * snappy:x64-windows@1.2.2#1
+  * thrift:x64-windows@0.23.0
+  * utf8proc:x64-windows@2.11.3
+  * vcpkg-boost:x64-windows@2025-03-29
+  * vcpkg-cmake:x64-windows@2024-04-23
+  * vcpkg-cmake-config:x64-windows@2024-05-23
+  * vcpkg-cmake-get-vars:x64-windows@2025-05-29
+  * xsimd:x64-windows@14.2.0
+  * zlib:x64-windows@1.3.2#1
+    zlib-ng:x64-windows@2.3.3
+    zstd:x64-windows@1.5.7
+zstd provides CMake targets:
+
+  find_package(zstd CONFIG REQUIRED)
+  target_link_libraries(main PRIVATE zstd::libzstd)
+
+openssl is compatible with built-in CMake targets:
+
+  find_package(OpenSSL REQUIRED)
+  target_link_libraries(main PRIVATE OpenSSL::SSL)
+  target_link_libraries(main PRIVATE OpenSSL::Crypto)
+
+The package arrow provides CMake targets:
+
+    find_package(Arrow CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE "$<IF:$<BOOL:${ARROW_BUILD_STATIC}>,Arrow::arrow_static,Arrow::arrow_shared>")
+
+    find_package(Parquet CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE "$<IF:$<BOOL:${ARROW_BUILD_STATIC}>,Parquet::parquet_static,Parquet::parquet_shared>")
+
+The package gtest is compatible with built-in CMake targets:
+
+    enable_testing()
+    
+    find_package(GTest CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE GTest::gtest GTest::gtest_main GTest::gmock GTest::gmock_main)
+    
+    add_test(AllTestsInMain main)
+
+zlib-ng provides CMake targets:
+
+  # this is heuristically generated, and may not be correct
+  find_package(zlib-ng CONFIG REQUIRED)
+  target_link_libraries(main PRIVATE zlib-ng::zlib)
+
+zlib-ng provides pkg-config modules:
+
+  # zlib-ng compression library
+  zlib-ng
+
+All requested installations completed successfully in: 2.71 ms
+-- Running vcpkg install - done
+-- Build spdlog: 1.14.1
+-- Build type: Debug
+-- Generating install
+-- xsimd v13.0.0
+-- Started CMake for databento v0.59.0...
+-- Added all header and implementation files.
+-- Using the multi-header code from C:/atx-cache/deps/json-src/include/
+-- Finished setting up include directories.
+-- Format the project using the `clang-format` target (i.e: cmake --build build --target clang-format).
+-- Finished building requirements for installing the package.
+-- Arrow version: 24.0.0
+-- Found the Arrow shared library: C:/atx-cache/vcpkg_installed/x64-windows/bin/arrow.dll
+-- Found the Arrow import library: C:/atx-cache/vcpkg_installed/x64-windows/lib/arrow.lib
+-- Found the Arrow static library: 
+-- Parquet version: 24.0.0
+-- Found the Parquet shared library: C:/atx-cache/vcpkg_installed/x64-windows/bin/parquet.dll
+-- Found the Parquet import library: C:/atx-cache/vcpkg_installed/x64-windows/lib/parquet.lib
+-- Found the Parquet static library: 
+-- atx-impl engine_git_sha: 98e0f31bcf2d99684a6a9d5dfcbf90e589ec7f18-dirty
+-- Configuring done (37.7s)
+-- Generating done (1.6s)
+-- Build files have been written to: C:/atx-wt/pool-24/build-equity
+[0/4] Re-checking globbed directories...
+[1/45] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[2/45] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[3/45] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[4/45] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[5/45] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[6/45] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[7/45] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[8/45] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\generated\build_provenance.cpp.obj
+[9/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-test-pch.dir\cmake_pch.cxx.obj
+[10/45] Linking CXX static library lib\spdlogd.lib
+[11/45] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_cov_container_test.cpp.obj
+[12/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-test-pch.dir\pch.cpp.obj
+[13/45] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_spo.cpp.obj
+[14/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_price_exposures_test.cpp.obj
+[15/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_target_replay_test.cpp.obj
+[16/45] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_risk_verb.cpp.obj
+[17/45] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_risk_model.cpp.obj
+[18/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_cost_v2_test.cpp.obj
+[19/45] Linking CXX static library lib\atx-impl-core.lib
+[20/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_nav_replay_test.cpp.obj
+[21/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_live_test.cpp.obj
+[22/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_spo_pin_test.cpp.obj
+[23/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_spo_test.cpp.obj
+[24/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_spo_v3_pin_test.cpp.obj
+[25/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_spo_v3_test.cpp.obj
+[26/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_risk_target_test.cpp.obj
+[27/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_norm_score_test.cpp.obj
+[28/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_risk_model_test.cpp.obj
+[29/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_vol_target_test.cpp.obj
+[30/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\__\__\atx-engine\tests\book\book_target_shaping_test.cpp.obj
+[31/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\__\__\atx-engine\tests\book\book_risk_target_test.cpp.obj
+[32/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\__\__\atx-engine\tests\book\book_inverse_vol_test.cpp.obj
+[33/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\__\__\atx-engine\tests\book\book_vol_target_test.cpp.obj
+[34/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\__\__\atx-engine\tests\book\book_normal_score_test.cpp.obj
+[35/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_two_speed_test.cpp.obj
+[36/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\__\__\atx-engine\tests\book\book_two_speed_test.cpp.obj
+[37/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_factors_verb_test.cpp.obj
+[38/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_cov_store_test.cpp.obj
+[39/45] Linking CXX executable bin\atx-engine-risk-tests.exe
+[40/45] Linking CXX executable bin\atx-equity-strategy-risk.exe
+[41/45] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_cov_model_test.cpp.obj
+[42/45] Linking CXX executable bin\atx-impl-strategy-target-tests.exe

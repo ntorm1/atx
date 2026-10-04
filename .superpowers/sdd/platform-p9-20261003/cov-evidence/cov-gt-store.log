@@ -1,0 +1,36 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = CovRecipe.*:CovStore.*:CovDiff.*
+[==========] Running 10 tests from 3 test suites.
+[----------] Global test environment set-up.
+[----------] 4 tests from CovRecipe
+[ RUN      ] CovRecipe.LegacyRecipeContainerEqualsDirectoryStore
+[       OK ] CovRecipe.LegacyRecipeContainerEqualsDirectoryStore (2202 ms)
+[ RUN      ] CovRecipe.FlagsAbsentOutputsUnchanged
+[       OK ] CovRecipe.FlagsAbsentOutputsUnchanged (4886 ms)
+[ RUN      ] CovRecipe.ManifestNamesTheContainerRoot
+[       OK ] CovRecipe.ManifestNamesTheContainerRoot (1766 ms)
+[ RUN      ] CovRecipe.CovV1RecipeRecorded
+[       OK ] CovRecipe.CovV1RecipeRecorded (58939 ms)
+[----------] 4 tests from CovRecipe (67794 ms total)
+
+[----------] 4 tests from CovStore
+[ RUN      ] CovStore.RiskSliceFromContainerEqualsDirectory
+[       OK ] CovStore.RiskSliceFromContainerEqualsDirectory (3022 ms)
+[ RUN      ] CovStore.VolAndRiskTargetRecordsUnchanged
+[       OK ] CovStore.VolAndRiskTargetRecordsUnchanged (508 ms)
+[ RUN      ] CovStore.RefusesRoleGeometryOrRootMismatch
+[       OK ] CovStore.RefusesRoleGeometryOrRootMismatch (270 ms)
+[ RUN      ] CovStore.LegacyManifestTakesTheLegacyPath
+[       OK ] CovStore.LegacyManifestTakesTheLegacyPath (106 ms)
+[----------] 4 tests from CovStore (3908 ms total)
+
+[----------] 2 tests from CovDiff
+[ RUN      ] CovDiff.ThroughSessionReportsTheFirstDifferingBlock
+[       OK ] CovDiff.ThroughSessionReportsTheFirstDifferingBlock (4587 ms)
+[ RUN      ] CovDiff.LegacyModeComparesBitForBit
+[       OK ] CovDiff.LegacyModeComparesBitForBit (2461 ms)
+[----------] 2 tests from CovDiff (7049 ms total)
+
+[----------] Global test environment tear-down
+[==========] 10 tests from 3 test suites ran. (78753 ms total)
+[  PASSED  ] 10 tests.
