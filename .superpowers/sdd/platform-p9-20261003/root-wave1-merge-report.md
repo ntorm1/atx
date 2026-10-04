@@ -967,3 +967,108 @@ every P9-B0 / adoption run dir (evidence, ~380 MiB), all pinned caches, referenc
 | (next) | this section, the integration-log close-out (G-P ticks, timings, disk) |
 
 Next free build tag: **p9-1p**. No process of mine left running (checked).
+
+### M1d fix (root fix agent, 2026-10-03, Rulings M1d-RED-1 / -RED-2 / -NOTE-3)
+
+Fresh root in pool-2 on `58fab573`. Scratch logs: session scratchpad (deleted at the end). 0 trials.
+
+**Status: STOP for a PM ruling on red 1.** Red 2 is fixed (Release `atx-impl-strategy-ic-tests` 193 / 193). Red 1 is
+not fixed and no code was changed for it: the ruled fix cannot turn the test green unless the test's expectation is
+edited, and the brief forbids that edit. So the wave-1 failure set is still outside the five named known-reds, by red 1
+only.
+
+#### Red 1: `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest`: the ruled fix cannot be applied as written
+
+Evidence (anchored Debug run, p9-1k `dd58e3ad`, before any change): the digest assertion passes
+(`provenance_digest_test.cpp:370`, `EXPECT_EQ(a.digest, b.digest)`). Only `:373` fails,
+`EXPECT_EQ(a.manifest, b.manifest)`. The two `_manifest.txt` files differ in exactly one line, `config_json={...}`,
+which differs only at `"field_cardinality_max":12` vs `999`.
+
+- The discover stage digest is `fnv1a64` over the admitted DSL strings joined with `'\n'` (`stage_discover.cpp:1116`
+  gated, `:1483` window). config_json has never been part of that input. "Exclude it from the digest input" is
+  therefore already true, and the code change it implies is a no-op.
+- The test's contract is stricter: it requires the manifest bytes themselves to be invariant across
+  config_json-only differences. A `config_json=` line whose JSON carries `field_cardinality_max` cannot be byte-identical
+  across 12 vs 999. "Keep the line" and "test green, expectation unedited" contradict each other.
+- Why the line is now always written: `_manifest.txt` gets it when `cpcv_rule != ObservationV1 || ic_screen.rule !=
+  DisabledV1 || pbo_rule != LegacyGatherV1` (`:960-964`, `:1441-1445`). Since `d060cd81`, `RunConfig::ic_screen`
+  defaults to `equivalence_ic_screen_config()` (`config.hpp:80-81`), and since `bb86d9de` (same day, which also added
+  the `pbo_rule` clause), `pbo_rule` defaults to `CachedMomentsV2` (`config.hpp:138`). Every default discover run
+  writes the line, the test fixture included. The merge report's attribution to `d060cd81` stands; `bb86d9de` is a
+  second trigger.
+- Pin grep (before any change, as the ruling asks): `search_digest|factory_digest|_manifest\.txt|run_discover|discover
+  digest|discover_digest|stage_discover` over the sprint dir, `docs/plans/2026-10-0*`, `scripts/tests` (incl.
+  `fixtures/*goldens*`, `*pins*`), `atx-impl/tools`, `atx-impl/strategies` and `atx-engine/tools`. The only hits are
+  `progress.md` (the ruling) and this report. `mine-c1.registered.json`'s `"discover"` key is a date window, not a
+  digest. No P9 pin, reference, spec or golden stores a discover digest or a discover manifest hash. No other gtest
+  asserts a `config_json=` manifest line (grep `config_json=`: only the two writers).
+
+Options for the PM (none applied):
+
+| option | change | test | effect |
+|---|---|---|---|
+| **A (recommended)** | test-only: compare the two manifests with the single `config_json=` line removed; also assert that line is present in both (and differs) | expectation edited | matches the ruling's intent: the line is kept, the digest and every other manifest byte stay invariant; no product or digest change |
+| B | code: move the line from `_manifest.txt` to a sidecar (`<alpha_out>/_config.json`) | unchanged, green | provenance stays on disk next to the manifest; every discover manifest since 2026-09-26 loses one line (no P9 pin reads one) |
+| C | code: drop the manifest line | unchanged, green | provenance survives only in the run-DB `pipeline_run.config_json` (`--run-db`); not recommended |
+
+#### Red 2: 7 Release-only `StrategyIcRunner.*` (MAX_PATH): fixed, test-only (`27e2e5b4`)
+
+`atx-impl/tests/strategy_ic_runner_test.cpp` `Directory`: the scratch dir name changed from
+`atx-strategy-ic-runner-<ns stamp>-<n>` to `icr-<stamp % 10^6>-<n>` (at most ~14 characters; at least 27 shorter on this
+host, where the ns stamp had 14 or more digits and now has at most 6). A comment explains why. Uniqueness is unchanged: the temp root is per process (`atx-test-scratch`), and the
+`create_directory` loop settles any collision. The Release cache root name (cache identity), the cache layout and OS
+long-path settings are untouched. The file is in two targets: `atx-impl-strategy-ic-tests`, and `atx-impl-tests`
+through its `*_test.cpp` glob. On this host, the longest failing path was 262 and is now at most ~235 (Release).
+`CandidateCacheWritesFitWithinTheDeepestCommittedPath` pads its cache dir to exactly 255 characters, ran (not skipped)
+and passed in Release.
+
+| tag | preset | targets | build | result |
+|---|---|---|---|---|
+| **p9-1p** | equity-dev | `atx-impl-strategy-ic-tests`, `atx-impl-tests` | 2 TUs, 2 links, 54.9 s, 0 warnings; ic-tests `61b3e64e`, impl-tests `4103152e` | ic-tests whole **193 / 193** (102 s) |
+| **p9-1q** | equity-rel | `atx-impl-strategy-ic-tests` | 1 TU, 1 link, 108.2 s, 0 warnings; ic-tests `46142c09` | the 7 anchored: **7 / 7**; whole **193 / 193**, 0 skipped (62 s) |
+
+#### Whole `atx-impl-tests` (Debug, p9-1p, once)
+
+1,130 tests (Debug, p9-1p `4103152e`, cwd `build-equity/bin`, 906 s): **1,123 passed, 6 skipped, 1 failed**:
+`AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest` (red 1, same assertion `:373`). All 51 `StrategyIcRunner.*`
+in this binary pass. The sixth skip, against M1d's five, is `TrialLedgerRepository.ExistingCp14Ledger_StillVerifies`.
+It skips unless the cwd is the repo root. Re-run anchored from the pool-2 root it **passed** (verify only; no tracked
+file changed). So the whole binary is 1,124 passed, 5 skipped, 1 failed: the same as M1d, with red 1 the only failure.
+
+#### Failure set after M1d fix
+
+| failure | build | named known-red? |
+|---|---|---|
+| `test_research_mine.py::test_fields_are_the_rule_applied_to_the_registry` | pytest, both seeds (M1d; not re-run: no Python touched) | yes (M1a-RED) |
+| `ResearchFieldsWriter.QuantilesPartitionLikeNumpy`, `ResearchFieldsVolumeMean.SumOrderIsNumpys` | Debug (not re-run: other targets) | yes (M1a-RED) |
+| `BookNormalScore.TiesShareTheMeanRankAndMirrorsAreOpposite`, `BookNormalScore.FixtureTellsWrongRulesApart` | Release (M1c; not re-run) | yes (M1c-RED) |
+| `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest` | Debug `atx-impl-tests` | **no**: red 1, awaiting the ruling above |
+| ~~7 x `StrategyIcRunner.*`~~ | Release | fixed (`27e2e5b4`) |
+
+Gate: **not met**, by red 1 only. G-P3 IC half is ticked under Ruling M1d-RED-2 ("ticked when Release is 193/193");
+red 1 is a discover-provenance test unrelated to G-P3. The PM can withhold the tick until the whole gate is met.
+
+#### Risk note for SQL3 (Ruling M1d-RED-2)
+
+Real-data Release cache paths keep only ~16 characters below MAX_PATH. The spec cache `mega-candidate-cache-v8-lo3` plus
+the Release identity dir `dslvm1_clang18.1_opt_md_ndebug_xs13.0.0\` reaches ~244 for the longest entry name; the
+M1d adoption DIR reached 233. A deeper cache directory, a longer candidate id or a longer identity token (compiler
+version, new flags) can cross 260. It then fails loudly (`IoError: candidate cache partial output`), not silently.
+SQL3 (caches into SQLite) should either keep the per-entry file depth bounded or document the remaining budget.
+
+#### Written volatile list for wave-2 P9-B0 (Ruling M1d-NOTE-3)
+
+In `train_candidates.jsonl`, each line may differ only at `/stage_seconds/*` (incl. `cache_load`, `cache_write`) and
+`/wall_seconds`, **plus** the per-candidate cache-state strings `/signal_cache` and `/ic_result_cache` (`"hit"` /
+`"miss"`, written only with `--candidate-cache`; `strategy_ic_runner.cpp:502-503`). These strings are timing-class
+(warm vs cold), outside identity. Everything else in a line is identity.
+
+#### Disk
+
+Deleted by name: my three scratchpad logs (`p9-1p-dbg-ictests.log`, `p9-1q-rel-ictests.log`,
+`p9-1p-dbg-impltests.log`). Test temp roots are removed by the gtest processes at exit. Kept: both build trees
+(`build-equity`, `build-equity-rel`) for the wave-2 merges, and the p9-1p / p9-1q receipts and logs.
+`build-equity/trials.jsonl` unchanged (133 lines, `27e40f9f`). Next free build tag **p9-1r**.
+
+Commits (first-parent, on `58fab573`): `27e2e5b4` test-only red-2 fix; then the docs commit with this section and the
+integration-log "M1d fix". `progress.md` (PM's file) was left uncommitted as found.

@@ -420,3 +420,43 @@ Free on C: 36,422,791,168 B before, 49,014,763,520 B after. Not touched: spec-pi
 (`mega-candidate-cache-v8-lo3` / `-lo1`), the lo3 hard-linked stores, risk dirs, reference outputs, `trials.jsonl`.
 Also removed: my pytest basetemp dirs (scratchpad) and one `.pyc` my canary run wrote. Kept: the P9-B0 references and
 the adoption run dirs (evidence). Next free build tag **p9-1p**.
+
+### M1d fix (root fix agent, 2026-10-03; detail in `root-wave1-merge-report.md` "M1d fix")
+
+**Status: STOP for a PM ruling on red 1. Red 2 is fixed.** 0 trials (133 lines, `27e40f9f`). No expected hash edited.
+
+| item | result |
+|---|---|
+| red 2: 7 Release `StrategyIcRunner.*` (MAX_PATH) | **fixed, test-only** `27e2e5b4`: the scratch name in `strategy_ic_runner_test.cpp` is now `icr-<6 digits>-<n>` (was `atx-strategy-ic-runner-<ns stamp>-<n>`); Release cache root, cache identity and OS long-path settings unchanged. p9-1p (equity-dev): ic-tests **193 / 193**. p9-1q (equity-rel): the 7 anchored 7 / 7, whole **193 / 193**, 0 skipped |
+| red 1: `AtxImplProvenanceDigest.ConfigJsonNotInDiscoverDigest` | **not fixed; ruling needed.** The stage digest (`fnv1a64` over the admitted DSL) never contained config_json; its assertion (`:370`) passes. Only `:373` fails: `_manifest.txt` byte-equality, broken by the `config_json=` line itself (`field_cardinality_max` 12 vs 999). Keeping the line and leaving the expectation unedited cannot both hold. Pin grep: no P9 pin, reference, spec or golden stores a discover digest or manifest hash. Options A (test compares manifests minus that one line; recommended) / B (move the line to a `_config.json` sidecar) / C (drop it) in the report |
+| whole `atx-impl-tests` (Debug, p9-1p) | 1,130 tests, 906 s: 1,123 passed / 6 skipped / **1 failed** (red 1 only); the extra skip `TrialLedgerRepository.ExistingCp14Ledger_StillVerifies` needs cwd = repo root and passed when re-run there (so 1,124 / 5 / 1 as at M1d); all 51 `StrategyIcRunner.*` pass |
+
+Failure set: M1a-RED (pytest `test_fields_are_the_rule_applied_to_the_registry`; gtests
+`ResearchFieldsWriter.QuantilesPartitionLikeNumpy`, `ResearchFieldsVolumeMean.SumOrderIsNumpys`), M1c-RED (Release
+`BookNormalScore.TiesShareTheMeanRankAndMirrorsAreOpposite`, `.FixtureTellsWrongRulesApart`), plus **red 1**. Wave-1
+gate "failure set within the five named known-reds": **not met** (red 1 only).
+
+#### Platform gates (G-P) after M1d fix
+
+| gate | state | evidence |
+|---|---|---|
+| G-P3 Release adopted, IC half | **ticked** (Ruling M1d-RED-2: "ticked when Release is 193/193") | M1d: u / w / marginal Release payloads = Debug, S1 refusal and adoption behaviour; now Release `atx-impl-strategy-ic-tests` 193 / 193 (p9-1q). Red 1 is discover provenance, outside G-P3; the PM can withhold the tick until the wave-1 gate is met |
+| G-P3 NAV half | shown on X-5 at M1c | wave-3 gate |
+| G-P4, G-P6, G-P8 | ticked (M1d) | unchanged |
+
+Plan §4.3 phase-1 exit: wave-1 merged yes; G-P4 yes; G-P8 yes; G-P3 IC half yes; P9-B0 pinned yes; suite gate
+pending red 1.
+
+**Risk for SQL3 (Ruling M1d-RED-2).** Real-data Release cache paths keep only ~16 characters below MAX_PATH. The spec
+cache `mega-candidate-cache-v8-lo3` plus `dslvm1_clang18.1_opt_md_ndebug_xs13.0.0\` reaches ~244 for the longest
+entry; the M1d adoption DIR reached 233. A deeper cache dir, a longer candidate id or a longer identity token crosses
+260 and fails loudly (`IoError: candidate cache partial output`). SQL3 should keep the per-entry depth bounded or
+record the budget.
+
+**Volatile list for wave-2 P9-B0 (Ruling M1d-NOTE-3), amending the u / w rows of the "P9-B0 substitution list"
+above.** In `train_candidates.jsonl`, each line may differ only at `/stage_seconds/*` (incl. `cache_load`,
+`cache_write`), `/wall_seconds`, **and `/signal_cache`, `/ic_result_cache`** (`"hit"` / `"miss"`, present only with
+`--candidate-cache`; `strategy_ic_runner.cpp:502-503`). These strings are timing-class (warm vs cold), outside identity.
+`summary.json` cache counters stay as listed per comparison (identical when both sides are warm on the same cache).
+
+Disk: only my scratchpad logs deleted; the build trees are kept for wave-2 merges. Next free build tag **p9-1r**.
