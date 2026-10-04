@@ -676,7 +676,7 @@ tests (`-k`), and wrote the file back byte for byte (SHA-256 checked; `git statu
 | T9 | `exe_problem` back to `ref == "none"` only | 1 failed (`w1_i2[template-a]`: verify exit 0) |
 | T10 | the non-finite check removed | 1 failed |
 | T11 | `change.unset` back to lists only | 2 failed (the two dict-typed rows) |
-| T12 | MR-4's `theme-cov-hedge-v1` row removed | 5 failed (the tables test; plan / spec of the fixtures stop on N1) |
+| T12 | MR-4's `theme-cov-hedge-v1` row removed | 5 failed: the tables test, and the 4 `--until spec` fixture runs of `test_rule_kinds_write_the_derived_constants`, which stop on N1 (the committed IC table lists the row) |
 | T13 | parent-value map values not read | 1 failed |
 | T14 | the literal top-level `ref` check removed | 1 failed (`resolve` still refuses the unknown key, without the E2-15 route) |
 
