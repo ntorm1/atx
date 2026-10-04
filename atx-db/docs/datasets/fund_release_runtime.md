@@ -71,8 +71,14 @@ Every runtime command requires:
 --execution-contract C:/atx/atx-db/docs/datasets/fund_release_runtime.execution.json
 --expected-contract-sha256 <independently-admitted-physical-contract-sha>
 --expected-runtime-code-sha256 <independently-admitted-code-inventory-digest>
---expected-snapshot-sha256 <independently-admitted-native-snapshot-digest>
+--expected-snapshot-sha256 <independently-admitted-canonical-native-snapshot-digest>
 ```
+
+`--expected-snapshot-sha256` means `fund_batch_release.digest(parsed_snapshot)`:
+SHA256 of sorted, compact JSON content. It does **not** mean the physical
+SHA256 of `snapshot.json`, whose native writer uses pretty JSON serialization.
+Preserve both identities with explicit labels. Never pass a physical snapshot
+file SHA as this canonical adapter pin.
 
 Build/continue uses `build --bindings <absolute-binding> --generation <id>
 --max-new-batches 1`; consumer validation uses `validate --root <absolute-root>`.
@@ -91,13 +97,41 @@ C:/atx/atx-db/.venv/Scripts/python.exe C:/atx/.superpowers/sdd/tier1-parity/run_
 ```
 
 The root-provided initial generation is `r17_20261004_002`; its independently
-admitted snapshot digest is
+admitted **physical snapshot.json file SHA256** is
 `c73f6293a5785c185567b01c443747aa2c7294614b45bfdaf2b8016ec9807a0c`.
+This physical identity is not the canonical digest accepted by the adapter.
+The actual canonical digest has not been obtained or independently admitted at
+this documentation checkpoint. Actual resume remains held until that admission
+and independent scoped re-review; the command above remains a template.
 The root-provided complete external extraction-admission SHA is
 `168b3ff61f4580066db74624bf58efb803993e8d2a0f1060daf4dfec1024ab1f`.
 These values were provided to the implementer, not remeasured here. Preserve the
 failed128MB pilot's native attempt and256MB diagnostic evidence; the latter
 grants no financial unit admission and cannot be moved into a native attempt.
+
+The root has prepared `.superpowers/sdd/tier1-v4/t17-runtime-admission-v1.py`
+to bridge these hash domains without changing the native protocol. It has not
+been executed by this implementer and is a controller evidence helper, not a
+product or validator. After root grants its sole actual-data slot and admits the
+reviewed helper, the proposed identity-admission command is:
+
+```powershell
+C:/atx/atx-db/.venv/Scripts/python.exe C:/atx/.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 10 --heavy --disk-path C:/atx --min-free-disk-gb 40 -- C:/atx/atx-db/.venv/Scripts/python.exe C:/atx/.superpowers/sdd/tier1-v4/t17-runtime-admission-v1.py
+```
+
+The helper must first compare the actual physical snapshot identity against the
+independently known `c73f...` literal, retain that full SHA/size identity, parse
+the unchanged snapshot and compute `fund_batch_release.digest(snapshot)`. It
+also checks independently expected extraction-admission/contract/code identities
+and rechecks every evidence file plus runtime code/contract before recording
+the result. Root must independently inspect and admit the successful guarded
+receipt and resulting `t17-runtime-admission-v1.json`; output existence or its
+own assertions alone cannot grant authority. Only then use its independently
+admitted `expected_snapshot_sha256` canonical value for the adapter, while
+retaining `snapshot_physical_identity` as separate evidence. No canonical value
+is supplied or guessed here. These identity checks grant no current-source or
+financial admission: the actual adapter still executes its complete native
+freeze, snapshot equality, unit replay, validators and original gates.
 
 For refreshed sources or a fresh generation, the independently reviewed original
 native CLI remains useful for source freeze with zero financial computation:
@@ -106,9 +140,14 @@ native CLI remains useful for source freeze with zero financial computation:
 C:/atx/atx-db/.venv/Scripts/python.exe C:/atx/.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 10 --heavy --disk-path C:/atx --min-free-disk-gb 40 -- C:/atx/atx-db/.venv/Scripts/python.exe -m atx_db.alpha_panel.fund_batch_release build --bindings <absolute-current-binding> --generation <new-id> --max-new-batches 0 --extract-admission <absolute-independent-admission> --expected-admission-sha256 <independently-admitted-sha>
 ```
 
-Independently inspect and admit the complete resulting source freeze and snapshot
-identity before supplying the adapter's expected snapshot pin. Do not infer that
-pin from an unreviewed candidate assertion. This zero-new native128MB freeze path
+Independently inspect and admit the complete resulting source freeze and physical
+snapshot file identity. Bind that independently admitted physical identity before
+deriving and separately admitting `fund_batch_release.digest(parsed_snapshot)`
+with before/after evidence checks; supply only that canonical content digest as
+the adapter's expected snapshot pin. The prepared helper above is specific to
+generation002 and its existing physical literal; refreshed generations need
+their own independently admitted identities and reviewed recipe. Do not infer
+authority from an unreviewed candidate assertion. This zero-new native128MB freeze path
 does not establish that the old128MB financial CLI is operationally accepted.
 
 Measured coverage2020–2025, actual native financial rows, financial gates and

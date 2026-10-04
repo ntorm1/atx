@@ -1,8 +1,9 @@
 # Task17 initial R23 runtime integration checkpoint
 
 Status: DONE_WITH_CONCERNS for the R23 engineering prerequisite only; full Task17
-is INCOMPLETE. Whole Task17 initial dispatch, repair count0; no component counter
-reset. Task16 remains at its exhausted5/5 cap. Independent review is required
+is INCOMPLETE. Initial checkpoint repair count0; current whole Task17 repair
+count1/5 (see Fix round1 below), with no component counter reset.
+Task16 remains at its exhausted5/5 cap. Independent scoped re-review is required
 before any actual adapter run. No actual source/data/hash/metadata/HTTP/return job
 was launched by this implementer, and no implementer subprocess remains alive.
 
@@ -55,13 +56,19 @@ resource helper3080bytes, SHA256
 Only owned code/config were hashed for these values. They are implementer
 measurements pending independent admission, not authority for an actual run.
 
-Parent supplied unchanged initial generation `r17_20261004_002` snapshotSHA
+Parent supplied unchanged initial generation `r17_20261004_002` **physical
+snapshot.json file SHA256**
 `c73f6293a5785c185567b01c443747aa2c7294614b45bfdaf2b8016ec9807a0c`
 and complete external extraction-admissionSHA
 `168b3ff61f4580066db74624bf58efb803993e8d2a0f1060daf4dfec1024ab1f`.
 These actual-source values were not read/rehashed by the implementer. All85
 extractions are parent-reported independently admitted; no financial unit has
 been independently admitted. Preserve failed128MB pilot/256MB diagnostic evidence.
+The physical snapshot file SHA is not the canonical parsed-content digest
+`fund_batch_release.digest(snapshot)` required by `--expected-snapshot-sha256`.
+No actual canonical digest has been obtained or independently admitted here;
+the initial operational handoff remains held pending root's guarded independent
+identity admission and scoped re-review. See Fix round1 for the correction.
 
 ## Exact verification commands and results
 
@@ -147,3 +154,56 @@ new-work selection is not a wall-time bound. Full-source resource limits and
 financial gates must be measured after independent review. The independent
 reviewer should scrutinize repeated orchestration and provenance trust boundaries
 before any actual adapter run. Full Task17 catalog/parity work remains REQUIRED.
+
+## Fix round1: I1 snapshot hash-domain documentation; whole Task17 repair1/5
+
+Independent initial review found Important I1: the root's supplied `c73f...`
+identity is the physical pretty-JSON snapshot file SHA, while the unchanged
+adapter requires the canonical parsed-content `fund_batch_release.digest`.
+The previous documentation mislabeled the physical identity as the adapter
+digest and would cause a safe refusal after freeze. Corrected both this report
+and `docs/datasets/fund_release_runtime.md`; runtime code, CLI behavior, native
+protocol, economic calculations, execution contract and code inventory remain
+unchanged. No component counter resets; frozen Task16 remains5/5.
+
+The operational option now explicitly names the canonical digest. Documentation
+preserves the root's separately admitted physical snapshot and extraction SHA
+and states that no actual canonical value has been obtained/admitted here.
+Actual resume remains held for scoped re-review and root's independent guarded
+identity admission. The root-prepared `t17-runtime-admission-v1.py` was read as
+code only, not executed or edited. The documented proposed recipe first binds
+the literal independently known physical snapshot SHA, parses unchanged bytes,
+computes the canonical digest, verifies runtime and extraction identities, then
+rechecks evidence in a second pass. Root must independently admit the guarded
+receipt and both labeled identities before using the helper's canonical
+`expected_snapshot_sha256`; output existence/assertions alone do not authorize
+it. Refreshed generations need their own independently admitted physical identity
+and reviewed canonical derivation, not the generation002 literal. Native source
+freeze/unit replay/public validation and every financial gate still execute.
+
+Docs-only correction: no code/interface behavior changed, no new pytest fixture
+was needed and unchanged author suites were not rerun. Covering checks ran from
+`C:/atx`, with the previously documented PYTHONPATH/OPENBLAS settings:
+
+```powershell
+atx-db/.venv/Scripts/python.exe -c "import hashlib,json; from pathlib import Path; from atx_db.alpha_panel import fund_batch_release as N,fund_release_runtime as A; sample={'binding':{'root':'offline-fixture'},'value':1}; physical=hashlib.sha256((json.dumps(sample,indent=2,sort_keys=True)+'\n').encode()).hexdigest(); canonical=N.digest(sample); assert physical!=canonical; doc=Path('atx-db/docs/datasets/fund_release_runtime.md').read_text(encoding='utf-8'); report=Path('.superpowers/sdd/tier1-v4/task-17-report.md').read_text(encoding='utf-8'); assert '--expected-snapshot-sha256 <independently-admitted-canonical-native-snapshot-digest>' in doc; assert '**physical snapshot.json file SHA256**' in doc; assert 'No canonical value\nis supplied or guessed here.' in doc; assert 'snapshot_physical_identity' in doc; assert 'independently\nadmitted' in doc; assert '**physical\nsnapshot.json file SHA256**' in report; assert 'No actual canonical digest has been obtained or independently admitted here' in report; assert N.digest(A.code_inventory())=='e50412ff21622ca3710420baec9c6fc982ac8cb0ba7fe22347c2269b185a8594'; assert N.identity(A.contract_path())=={'sha256':'45ea46d78385ad7969551cce8accd511f6c2d3c93e6b4b5bb70e4cdb20eaf49e','bytes':1462}; print('PASS: offline pretty-JSON physical SHA differs from canonical digest; documentation labels/held admission recipe and unchanged runtime/code contract pins verified')"
+git diff --check -- atx-db/docs/datasets/fund_release_runtime.md .superpowers/sdd/tier1-v4/task-17-report.md
+git diff --numstat -- atx-db/src/atx_db/alpha_panel/fund_release_runtime.py atx-db/src/atx_db/alpha_panel/privatefund_runtime_resources.py atx-db/docs/datasets/fund_release_runtime.execution.json
+```
+
+Results: Python exit0 with the quoted PASS output (offline illustrative
+physical/canonical hashes differ); diff check exit0; runtime/helper/contract diff
+numstat empty. Hash checks touched only owned code/config, not actual snapshot,
+source, extraction-admission or product bytes. No actual job, source hash,
+metadata job, cleanup, HTTP, financial or return run was launched. Root's live
+universe job was left untouched. Only the two owned documentation/report paths
+changed; all frozen/foreign paths and root's admission helper are unedited.
+
+| Round criterion | PASS/FAIL | Measured | Command |
+|---|---|---|---|
+| Physical/canonical documentation and held admission recipe | PASS | offline hash domains differ; explicit labels and canonical option placeholder | Python check above |
+| Runtime/native semantics and expected runtime identities unchanged | PASS | code digest e50412ff...8594; contract1462bytes/45ea46...49e; empty code/config diff | Python and numstat above |
+| Actual canonical snapshot identity admission | FAIL_PENDING |0actual canonical values measured/admitted by implementer | prepared helper not executed; root slot/review prerequisite |
+
+Full Task17 remains INCOMPLETE, original financial gates remain pending/open,
+and scoped independent re-review must precede any actual adapter run.
