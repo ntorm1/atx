@@ -388,22 +388,25 @@ atx::core::Result<std::shared_ptr<const Cache>> prepare_cache(
         if (missing_entry) continue;
         // MissingExitV1 (the default): no label. ImputedV1 (P9 S2): a name the label role
         // terminates inside (entry, end] exits at its imputed terminal close and holds cash after.
+        // The terminal session may be `end` itself, so `imputed` (not exit != end) picks the panel.
         usize exit = end;
+        bool imputed = false;
         if (missing_exit) {
           if (label_prices.empty()) continue;
           exit = terminal_session(panel, *terminal.label, entry, end, i);
           if (exit == kNoSession) continue;
+          imputed = true;
         }
         if (!bad.empty() && bad[exit*n+i]!=bad[entry*n+i]) { ++coverage.guard_excluded_pairs; continue; }
         const f64 decision = prices[d * n + i];
         const f64 from = prices[entry * n + i];
-        const f64 to = exit == end ? prices[end * n + i] : label_prices[exit * n + i];
+        const f64 to = imputed ? label_prices[exit * n + i] : prices[end * n + i];
         if (!std::isfinite(decision) || decision <= 0.0 || !std::isfinite(from) ||
             !std::isfinite(to) || from <= 0.0 || to <= 0.0) { ++coverage.invalid_price_pairs; continue; }
         const f64 ret = to / from - 1.0;
         if (!std::isfinite(ret)) { ++coverage.nonfinite_return_pairs; continue; }
         labels[i] = ret; ++data->names[k][row]; ++coverage.finite_label_pairs;
-        coverage.terminal_imputed_pairs+=exit != end;
+        coverage.terminal_imputed_pairs+=imputed;
       }
       rank_values(labels, std::span{data->ranks[k]}.subspan(row * n, n), order);
     }

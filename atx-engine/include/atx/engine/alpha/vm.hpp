@@ -827,7 +827,7 @@ private:
   // band, so every cell is written with the same arithmetic in the same order for any band split:
   // byte-identical at every pool size, and with no pool the one band [lo, hi) IS the serial call.
   struct BandScratch {
-    std::vector<atx::f64> lit_col;  // W2 Ts: the n_in input columns of one instrument (n_in * dates)
+    std::vector<atx::f64> lit_col;  // W2 Ts: one instrument's n_in input columns (n_in * dates)
     std::vector<atx::f64> lit_win;  // W2 Ts: one cell's gathered windows (n_in * d), n_in > 1
     detail::LitScratch lit;         // W2 sort / OLS rows / cs_resid_on regression rows
     detail::AsofScratch asof;       // v8 YOPS as-of rank rows / factor / window scratch
@@ -1534,7 +1534,8 @@ private:
     }
     const atx::usize d = detail::tsv_window_of(src_col(in, last));
     std::array<std::span<const atx::f64>, 1 + detail::kLitMaxReg> cols{};
-    // The typechecker bounds n_in by 1 + kMaxTsRegressors; the min keeps a hand-built param in range.
+    // The typechecker bounds n_in by 1 + kMaxTsRegressors; the min keeps a hand-built param in
+    // range.
     const atx::usize n_in = std::min(detail::lit_ts_inputs(in.op, in.param), cols.size());
     cols[0] = src_col(in, 0);
     if (in.op == OpCode::TsCorrMp) {
