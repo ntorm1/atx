@@ -124,7 +124,8 @@ def raw_routes(w: Wave) -> tuple[dict, dict]:
     const, change = rc.get("constants") or {}, (template or {}).get("change") or {}
     maps = {"rule_cell.constants.flags": const.get("flags"), "rule_cell.template change.flags": change.get("flags"),
             "horizon.flags": (m.get("horizon") or {}).get("flags") if k == "horizon" else None}
-    unset = change.get("unset") if isinstance(change.get("unset"), list) else []
+    unset_keys = change.get("unset")
+    unset = unset_keys if isinstance(unset_keys, list) else []
     sets = {"rule_cell.constants.set": const.get("set") if isinstance(const.get("set"), dict) else {},
             "rule_cell.template change.set": change.get("set") if isinstance(change.get("set"), dict) else {},
             "rule_cell.template change.unset": {x: "(unset)" for x in unset if isinstance(x, str)}}

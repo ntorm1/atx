@@ -589,8 +589,9 @@ def test_leverage_wave_cap_and_table_and_the_matched_l_prime(tmp_path):
     m["leverage"] = dict(m["leverage"], value="2.5")
     root = world(tmp_path / "cap", m)
     code, log = wave(root, KindsFake(root, nav=wide), "run", "--until", "preflight")
+    assert code == 3, log                                               # before the failed receipt is read
     err = preflight_error(root, m)
-    assert code == 3 and "leverage.value 2.5 is above 2.0, the P9 leverage cap (ruling E2-10" in err, log
+    assert "leverage.value 2.5 is above 2.0, the P9 leverage cap (ruling E2-10" in err, err
     assert "lies outside" not in err                                    # the table allows it: the cap refuses
     m["leverage"] = dict(m["leverage"], value="1.5")
     root = world(tmp_path / "nofixed", m)
