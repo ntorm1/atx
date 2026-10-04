@@ -1,0 +1,94 @@
+{
+  "status": "GOLD_PUBLICATION_METADATA_ONLY",
+  "stages": [
+    {
+      "stage": "gold",
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\gold",
+      "directory_exists": false,
+      "manifest_exists": false,
+      "value_rows_read": 0,
+      "data_payload_hashes_checked": false,
+      "status": "NO_ROOT_PUBLICATION_MANIFEST"
+    },
+    {
+      "stage": "golden_panel",
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\golden_panel",
+      "directory_exists": false,
+      "manifest_exists": false,
+      "value_rows_read": 0,
+      "data_payload_hashes_checked": false,
+      "status": "NO_ROOT_PUBLICATION_MANIFEST"
+    },
+    {
+      "stage": "characteristics",
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\characteristics",
+      "directory_exists": false,
+      "manifest_exists": false,
+      "value_rows_read": 0,
+      "data_payload_hashes_checked": false,
+      "status": "NO_ROOT_PUBLICATION_MANIFEST"
+    },
+    {
+      "stage": "char_monthly",
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\char_monthly",
+      "directory_exists": false,
+      "manifest_exists": false,
+      "value_rows_read": 0,
+      "data_payload_hashes_checked": false,
+      "status": "NO_ROOT_PUBLICATION_MANIFEST"
+    },
+    {
+      "stage": "panel_goldready",
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\panel_goldready",
+      "directory_exists": true,
+      "manifest_exists": false,
+      "value_rows_read": 0,
+      "data_payload_hashes_checked": false,
+      "immediate_entries": [
+        {
+          "name": "_receipts",
+          "directory": true,
+          "bytes": null
+        },
+        {
+          "name": "refresh_progress.json",
+          "directory": false,
+          "bytes": 57675
+        },
+        {
+          "name": "year=2018",
+          "directory": true,
+          "bytes": null
+        },
+        {
+          "name": "year=2019",
+          "directory": true,
+          "bytes": null
+        },
+        {
+          "name": "year=2020",
+          "directory": true,
+          "bytes": null
+        },
+        {
+          "name": "year=2021",
+          "directory": true,
+          "bytes": null
+        }
+      ],
+      "status": "NO_ROOT_PUBLICATION_MANIFEST"
+    },
+    {
+      "stage": "labels_goldready",
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\labels_goldready",
+      "directory_exists": false,
+      "manifest_exists": false,
+      "value_rows_read": 0,
+      "data_payload_hashes_checked": false,
+      "status": "NO_ROOT_PUBLICATION_MANIFEST"
+    }
+  ],
+  "scope": "Six exact canonical stage roots; immediate entries and root manifests only. No alternate root, generation payload, source/PIT/quality/evaluation or consumer certification.",
+  "feature_or_return_rows_read": 0,
+  "http_attempts": 0
+}
