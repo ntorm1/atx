@@ -1,0 +1,118 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 44 tests from 8 test suites.
+[----------] Global test environment set-up.
+[----------] 10 tests from StrategyMineRule
+[ RUN      ] StrategyMineRule.HurdleIsTheBonferroniValueOfThePlan
+[       OK ] StrategyMineRule.HurdleIsTheBonferroniValueOfThePlan (0 ms)
+[ RUN      ] StrategyMineRule.ShortlistIsByF2ThenHash
+[       OK ] StrategyMineRule.ShortlistIsByF2ThenHash (0 ms)
+[ RUN      ] StrategyMineRule.OverlapFactorIsRegisteredAndItsEstimatorIsTheVerbs
+[       OK ] StrategyMineRule.OverlapFactorIsRegisteredAndItsEstimatorIsTheVerbs (0 ms)
+[ RUN      ] StrategyMineRule.RhoIsGreedyAgainstMembersAndKeptCandidates
+[       OK ] StrategyMineRule.RhoIsGreedyAgainstMembersAndKeptCandidates (0 ms)
+[ RUN      ] StrategyMineRule.ConfirmIsOneSidedWithBenjaminiYekutieli
+[       OK ] StrategyMineRule.ConfirmIsOneSidedWithBenjaminiYekutieli (0 ms)
+[ RUN      ] StrategyMineRule.ConfirmReadNeedsItsFullWindow
+[       OK ] StrategyMineRule.ConfirmReadNeedsItsFullWindow (0 ms)
+[ RUN      ] StrategyMineRule.FactorsAreReadFromTheirBands
+[       OK ] StrategyMineRule.FactorsAreReadFromTheirBands (0 ms)
+[ RUN      ] StrategyMineRule.ConfirmFactorFollowsTheReadsThatReachIt
+[       OK ] StrategyMineRule.ConfirmFactorFollowsTheReadsThatReachIt (0 ms)
+[ RUN      ] StrategyMineRule.RhoStepRunsOverTheWholeShortlistThenCaps
+[       OK ] StrategyMineRule.RhoStepRunsOverTheWholeShortlistThenCaps (0 ms)
+[ RUN      ] StrategyMineRule.UndefinedRhoFailsTheCandidate
+[       OK ] StrategyMineRule.UndefinedRhoFailsTheCandidate (0 ms)
+[----------] 10 tests from StrategyMineRule (2 ms total)
+
+[----------] 3 tests from StrategyMine
+[ RUN      ] StrategyMine.TemplatesAreTheHouseSet
+[       OK ] StrategyMine.TemplatesAreTheHouseSet (0 ms)
+[ RUN      ] StrategyMine.WorkingBytesAreThePeakOfThePhases
+[       OK ] StrategyMine.WorkingBytesAreThePeakOfThePhases (0 ms)
+[ RUN      ] StrategyMine.RungFailuresAreTheirOwnTrialStatus
+[       OK ] StrategyMine.RungFailuresAreTheirOwnTrialStatus (1 ms)
+[----------] 3 tests from StrategyMine (2 ms total)
+
+[----------] 16 tests from StrategyMineCampaign
+[ RUN      ] StrategyMineCampaign.ModelTermsAreTheFixtureAllocations
+[       OK ] StrategyMineCampaign.ModelTermsAreTheFixtureAllocations (2805 ms)
+[ RUN      ] StrategyMineCampaign.MembersStreamByDateAsStored
+[       OK ] StrategyMineCampaign.MembersStreamByDateAsStored (604 ms)
+[ RUN      ] StrategyMineCampaign.PromotesThePlantedSignalsOnlyInFiveSeeds
+[       OK ] StrategyMineCampaign.PromotesThePlantedSignalsOnlyInFiveSeeds (20819 ms)
+[ RUN      ] StrategyMineCampaign.RulePinsOnTheTemplates
+[       OK ] StrategyMineCampaign.RulePinsOnTheTemplates (9359 ms)
+[ RUN      ] StrategyMineCampaign.RhoStepReadsTheWholeShortlistBeforeTheCap
+[       OK ] StrategyMineCampaign.RhoStepReadsTheWholeShortlistBeforeTheCap (4897 ms)
+[ RUN      ] StrategyMineCampaign.UndefinedRhoAgainstAMemberFails
+[       OK ] StrategyMineCampaign.UndefinedRhoAgainstAMemberFails (4589 ms)
+[ RUN      ] StrategyMineCampaign.PromotionSignalsDoNotDependOnTheEngine
+[       OK ] StrategyMineCampaign.PromotionSignalsDoNotDependOnTheEngine (21737 ms)
+[ RUN      ] StrategyMineCampaign.RhoBatchingNeverChangesThePromotion
+[       OK ] StrategyMineCampaign.RhoBatchingNeverChangesThePromotion (5971 ms)
+[ RUN      ] StrategyMineCampaign.SameSeedSameChainHeadAtOneAndFourWorkers
+[       OK ] StrategyMineCampaign.SameSeedSameChainHeadAtOneAndFourWorkers (16067 ms)
+[ RUN      ] StrategyMineCampaign.SharedRegistryLinesCountEachCampaignsOwnRecords
+[       OK ] StrategyMineCampaign.SharedRegistryLinesCountEachCampaignsOwnRecords (6923 ms)
+[ RUN      ] StrategyMineCampaign.RefusesAMissingBudgetOrOneBelowTheCapacity
+[       OK ] StrategyMineCampaign.RefusesAMissingBudgetOrOneBelowTheCapacity (338 ms)
+[ RUN      ] StrategyMineCampaign.RefusesABudgetAboveTheCeilingBeforeAnyPayload
+[       OK ] StrategyMineCampaign.RefusesABudgetAboveTheCeilingBeforeAnyPayload (341 ms)
+[ RUN      ] StrategyMineCampaign.RefusesACampaignWithoutTheBook
+[       OK ] StrategyMineCampaign.RefusesACampaignWithoutTheBook (370 ms)
+[ RUN      ] StrategyMineCampaign.RefusesSealedRolesAndWindowsPastTrain
+[       OK ] StrategyMineCampaign.RefusesSealedRolesAndWindowsPastTrain (684 ms)
+[ RUN      ] StrategyMineCampaign.RefusesBadWindowsAndBoundsBeforeAnyPayload
+[       OK ] StrategyMineCampaign.RefusesBadWindowsAndBoundsBeforeAnyPayload (350 ms)
+[ RUN      ] StrategyMineCampaign.RefusesADelistingReturnsRole
+[       OK ] StrategyMineCampaign.RefusesADelistingReturnsRole (896 ms)
+[----------] 16 tests from StrategyMineCampaign (96760 ms total)
+
+[----------] 2 tests from SignalFitnessDefaults
+[ RUN      ] SignalFitnessDefaults.ImplicitDefaultsKeepTheGoldenDigest
+[       OK ] SignalFitnessDefaults.ImplicitDefaultsKeepTheGoldenDigest (70 ms)
+[ RUN      ] SignalFitnessDefaults.ExplicitDefaultsKeepTheGoldenDigestAtEveryWorkerCount
+[       OK ] SignalFitnessDefaults.ExplicitDefaultsKeepTheGoldenDigestAtEveryWorkerCount (160 ms)
+[----------] 2 tests from SignalFitnessDefaults (231 ms total)
+
+[----------] 7 tests from SignalFitnessPath
+[ RUN      ] SignalFitnessPath.FunctorReplacesPoolFitnessAndFilesRejections
+[       OK ] SignalFitnessPath.FunctorReplacesPoolFitnessAndFilesRejections (7 ms)
+[ RUN      ] SignalFitnessPath.MaskReachesFullAndRungEngines
+[       OK ] SignalFitnessPath.MaskReachesFullAndRungEngines (7 ms)
+[ RUN      ] SignalFitnessPath.RebuiltEnginesKeepTheMaskAndTheRunAcrossGenerations
+[       OK ] SignalFitnessPath.RebuiltEnginesKeepTheMaskAndTheRunAcrossGenerations (35 ms)
+[ RUN      ] SignalFitnessPath.RungFailuresAreListedApartFromRacingRejections
+[       OK ] SignalFitnessPath.RungFailuresAreListedApartFromRacingRejections (12 ms)
+[ RUN      ] SignalFitnessPath.RefusesDateStridesLegacyOverlaysBadMasksAndFunctorErrors
+[       OK ] SignalFitnessPath.RefusesDateStridesLegacyOverlaysBadMasksAndFunctorErrors (6 ms)
+[ RUN      ] SignalFitnessPath.MaskAndCatalogueRefuseAProgressSink
+[       OK ] SignalFitnessPath.MaskAndCatalogueRefuseAProgressSink (85 ms)
+[ RUN      ] SignalFitnessPath.ProgramSlotBoundRefusesLargerProgramsBeforeEvaluation
+[       OK ] SignalFitnessPath.ProgramSlotBoundRefusesLargerProgramsBeforeEvaluation (9 ms)
+[----------] 7 tests from SignalFitnessPath (166 ms total)
+
+[----------] 1 test from OpCatalogCfgTest
+[ RUN      ] OpCatalogCfgTest.LiteratureRowsAndDenyListShapeTheSwapCatalogue
+[       OK ] OpCatalogCfgTest.LiteratureRowsAndDenyListShapeTheSwapCatalogue (87 ms)
+[----------] 1 test from OpCatalogCfgTest (87 ms total)
+
+[----------] 2 tests from ResearchIcAccessors
+[ RUN      ] ResearchIcAccessors.LabelsAreWhatEvaluateResearchIcCorrelates
+[       OK ] ResearchIcAccessors.LabelsAreWhatEvaluateResearchIcCorrelates (1 ms)
+[ RUN      ] ResearchIcAccessors.WindowRecipeFieldValues
+[       OK ] ResearchIcAccessors.WindowRecipeFieldValues (0 ms)
+[----------] 2 tests from ResearchIcAccessors (1 ms total)
+
+[----------] 3 tests from ResearchIcFitnessTest
+[ RUN      ] ResearchIcFitnessTest.PlantedSignalScoresAndIsRecorded
+[       OK ] ResearchIcFitnessTest.PlantedSignalScoresAndIsRecorded (20 ms)
+[ RUN      ] ResearchIcFitnessTest.CandidateSpannedByTheRegressorsIsScreened
+[       OK ] ResearchIcFitnessTest.CandidateSpannedByTheRegressorsIsScreened (15 ms)
+[ RUN      ] ResearchIcFitnessTest.PartlySpannedAndNegativeCandidatesScoreTheDirectMarginalT
+[       OK ] ResearchIcFitnessTest.PartlySpannedAndNegativeCandidatesScoreTheDirectMarginalT (45 ms)
+[----------] 3 tests from ResearchIcFitnessTest (81 ms total)
+
+[----------] Global test environment tear-down
+[==========] 44 tests from 8 test suites ran. (97335 ms total)
+[  PASSED  ] 44 tests.

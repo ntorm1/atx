@@ -1,0 +1,25 @@
+{
+    "Source":  "f64444176ae6cdde8ca1591057c4041f6e6fda5e",
+    "Preset":  "equity-rel",
+    "DirtyEntries":  5,
+    "ConfiguredProvenance":  "f64444176ae6cdde8ca1591057c4041f6e6fda5e-dirty",
+    "Jobs":  4,
+    "FreeMiB":  4812,
+    "CommitMiB":  4641,
+    "Targets":  [
+                    "atx-shm-worker"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  16.956951999999998,
+    "CompiledTUs":  1,
+    "Links":  1,
+    "Tag":  "p9-1z",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity-rel",
+    "Executables":  {
+                        "atx-shm-worker":  {
+                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-shm-worker.exe",
+                                               "Sha256":  "eaa49257930aa984ecf465f37a6bffc14bfa19e39c5a21133678061369d3c1fd"
+                                           }
+                    }
+}

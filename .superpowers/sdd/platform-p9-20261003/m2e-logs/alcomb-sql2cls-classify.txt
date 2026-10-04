@@ -1,0 +1,14 @@
+p9/blocked/hf_crowd.json -> blocked-registration
+p9/blocked/lazy_prices.json -> blocked-registration
+p9/candidates/russell_recon.json -> wave-candidate
+p9/diagnostics/al-comb-q5-style-variance.json -> diagnostic-spec
+p9/rules/mom-volman-v1.json -> rule-registration
+p9/rules/theme-cov-hedge-v1.json -> rule-registration
+p9/templates/mom-volman.json -> cycle-template
+p9/templates/theme-cov-hedge.json -> cycle-template
+v8/base-b0c.json -> cycle-template
+v8/base-lo1.json -> cycle-spec
+v8/base-lo3.json -> cycle-spec
+v8/lib-v8x3b-gm.json -> cycle-spec
+v8/r1-comp-v8.json -> cycle-template
+v8/x-theme-erc.json -> cycle-template

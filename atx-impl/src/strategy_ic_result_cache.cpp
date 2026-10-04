@@ -41,8 +41,14 @@ constexpr std::array<std::string_view,11> ic_result_sources{
     "atx-engine/src/factory/ic_screen.cpp"};
 // P9 S1 re-pinned WITHOUT a bump: ic_screen.{hpp,cpp} add ic_screen_build_flavor() and
 // build_flavor.hpp joins the closure; no scored bit changes (the build token is in ic_identity).
+// P9 S2 re-pinned WITHOUT a bump (ruling S2-1): IcScreenConfig::min_coverage (default .8, the old
+// constant), the named HAC rule (default Bartlett2hV1, the old arithmetic), LabelTerminalRule
+// (default MissingExitV1, the old labels) and estimate_daily_ic. At their defaults every scored
+// bit is unchanged; a non-default value is keyed in the IC-result scope (ic_cache_scope).
+// S2 fix round 1 re-pinned WITHOUT a bump (ruling S2-1 again): ResearchIcTerminal gains the label
+// panel's return-guard prefix, read only for an ImputedV1 exit (the flag-absent path is unchanged).
 constexpr std::string_view ic_result_sources_sha256=
-    "2d758bff0cfb5090c965d1dc3e4c9403ecdb8f0e29b3a84b243e4532c99615ed";
+    "dd3c601163029c1dc31a80ebbe155437a0d688a6731c84658637aac2913a94c2";
 } // namespace
 // FP build flavor, the IC kernel's SIMD width (its reduction order) and the build flavour token
 // (build type, NDEBUG, CRT, xsimd version), each reported by ic_screen.cpp's own TU (P9 S1, DS-1:
@@ -110,9 +116,12 @@ std::string series_hex(std::span<const f64> values) {
 }
 } // namespace
 // Hashes the membership (6.5 MB) and guard (26 MB) spans once per scored role.
+// P9 S2: the screen's coverage fraction, its HAC rule and the labels' terminal rule (with the
+// label role pin) are keyed only when they differ from the defaults, so a default run's key and
+// every IC entry cached before S2 keep their bytes (no cold pass).
 co::Result<IcCacheScope> ic_cache_scope(const Role& spec,const engine::data::StrategyRoleData& role,
     const ex::IcScreenConfig& ic,const ex::ResearchIcOptions& options,std::span<const u32> guard,
-    HashMeter& meter) {
+    const IcLabelScope& labels,HashMeter& meter) {
   const auto hashing=std::chrono::steady_clock::now();
   ATX_TRY(auto member_sha,co::sha256_hex(std::as_bytes(std::span<const u8>(role.decision_member))));
   ATX_TRY(auto guard_sha,co::sha256_hex(std::as_bytes(guard)));
@@ -130,6 +139,14 @@ co::Result<IcCacheScope> ic_cache_scope(const Role& spec,const engine::data::Str
       {"require_endpoint_presence",options.require_endpoint_presence},
       {"price_field",std::string(ic_price_field)},{"decision_member_sha256",std::move(member_sha)},
       {"return_guard_sha256",std::move(guard_sha)}};
+  if (ic.min_coverage!=ex::kDefaultIcMinCoverage) key["min_coverage_bits"]=bits_hex(ic.min_coverage);
+  if (ic.hac_rule!=ex::IcHacRule::Bartlett2hV1)
+    key["hac_rule"]=std::string(ex::ic_hac_rule_name(ic.hac_rule));
+  if (labels.terminal) {
+    key["label_terminal"]=std::string(ex::label_terminal_rule_name(*labels.terminal));
+    if (*labels.terminal==ex::LabelTerminalRule::ImputedV1)
+      key["label_role_manifest_sha256"]=labels.label_role_sha;
+  }
   ATX_TRY(auto key_sha,co::sha256_hex(key.dump()));
   auto directory="ic"+std::to_string(ic_result_semantics_version)+"_"+key_sha.substr(0,16);
   return co::Ok(IcCacheScope{std::move(key),std::move(directory)});
@@ -148,12 +165,16 @@ Json ic_result_record(const ex::ResearchIcResult& result,const IcSeries& daily) 
   for (const auto& h:result.screen.horizons)
     horizons.push_back({{"horizon",h.horizon},{"enough_evidence",h.enough_evidence},
         {"pearson",estimate_record(h.pearson)},{"rank",estimate_record(h.rank)}});
-  for (const auto& c:result.coverage)
-    coverage.push_back({{"mature_dates",c.mature_dates},{"structural_tail_dates",c.structural_tail_dates},
+  for (const auto& c:result.coverage) {
+    Json row{{"mature_dates",c.mature_dates},{"structural_tail_dates",c.structural_tail_dates},
         {"decision_eligible_pairs",c.decision_eligible_pairs},{"finite_label_pairs",c.finite_label_pairs},
         {"paired_signal_pairs",c.paired_signal_pairs},{"missing_entry_pairs",c.missing_entry_pairs},
         {"missing_exit_pairs",c.missing_exit_pairs},{"guard_excluded_pairs",c.guard_excluded_pairs},
-        {"invalid_price_pairs",c.invalid_price_pairs},{"nonfinite_return_pairs",c.nonfinite_return_pairs}});
+        {"invalid_price_pairs",c.invalid_price_pairs},{"nonfinite_return_pairs",c.nonfinite_return_pairs}};
+    // P9 S2: written only when nonzero (an imputed-v1 scope), so every other record keeps its bytes.
+    if (c.terminal_imputed_pairs!=0) row["terminal_imputed_pairs"]=c.terminal_imputed_pairs;
+    coverage.push_back(std::move(row));
+  }
   for (usize k=0;k<result.active_horizons && k<daily.rank.size();++k) {
     pearson.push_back(series_hex(daily.pearson[k])); rank.push_back(series_hex(daily.rank[k]));
   }
@@ -230,6 +251,9 @@ std::optional<CachedIc> decode_ic_record(const Json& r,const ex::ResearchIcScrat
     cov.guard_excluded_pairs=in.count(c,"guard_excluded_pairs");
     cov.invalid_price_pairs=in.count(c,"invalid_price_pairs");
     cov.nonfinite_return_pairs=in.count(c,"nonfinite_return_pairs");
+    // P9 S2: absent means zero (ic_result_record writes it only when nonzero).
+    if (c.is_object() && c.contains("terminal_imputed_pairs"))
+      cov.terminal_imputed_pairs=in.count(c,"terminal_imputed_pairs");
   }
   for (usize k=0;k<active;++k) {
     in.values(r.at("pearson_series").at(k),scratch.pearson_series(k).size(),out.pearson[k]);

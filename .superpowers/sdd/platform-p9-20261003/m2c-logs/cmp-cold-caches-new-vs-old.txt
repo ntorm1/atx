@@ -1,0 +1,4 @@
+files 201 201 one-sided 0
+signal payloads .f64: 67 byte-identical: 67
+signal sidecars: 67 differing leaf paths (path: count): {'/engine_git_sha': 67}
+IC-result entries: 67 differing leaf paths (path: count): {'/recorded/engine_git_sha': 67}

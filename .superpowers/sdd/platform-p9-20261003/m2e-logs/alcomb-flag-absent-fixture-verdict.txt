@@ -1,0 +1,13 @@
+codes equal: True
+ew-theme | admission.csv=; admission.json:['$.inputs.producer_fingerprint']; composition_weights.json:['$.provenance.admission_sha256', '$.provenance.producer_fingerprint']
+shrink | admission.csv=; admission.json:['$.inputs.producer_fingerprint']; composition_weights.json:['$.provenance.admission_sha256', '$.provenance.producer_fingerprint']
+shrink-erc | admission.csv=; admission.json:['$.inputs.producer_fingerprint']; composition_weights.json:['$.provenance.admission_sha256', '$.provenance.producer_fingerprint']
+shrink-tsmom | admission.csv=; admission.json:['$.inputs.producer_fingerprint']; composition_weights.json:['$.provenance.admission_sha256', '$.provenance.producer_fingerprint']
+std | admission.csv=; admission.json:['$.inputs.producer_fingerprint']; composition_weights.json:['$.provenance.admission_sha256', '$.provenance.producer_fingerprint']
+std-aim-resid | admission.csv=; admission.json:['$.inputs.producer_fingerprint']; composition_weights.json:['$.provenance.admission_sha256', '$.provenance.producer_fingerprint']
+std-erc | admission.csv=; admission.json:['$.inputs.producer_fingerprint']; composition_weights.json:['$.provenance.admission_sha256', '$.provenance.producer_fingerprint']
+std-erc-tsmom | admission.csv=; admission.json:['$.inputs.producer_fingerprint']; composition_weights.json:['$.provenance.admission_sha256', '$.provenance.producer_fingerprint']
+std-resid-child | admission.csv=; admission.json:['$.inputs.producer_fingerprint']; composition_weights.json:['$.provenance.admission_sha256', '$.provenance.producer_fingerprint', '$.provenance.resid.parent_weights_sha256']
+RESULT: HOLDS
+old weights provenance.producer_fingerprint d0153b259e951b66 admission inputs.producer_fingerprint d0153b259e951b66
+new weights provenance.producer_fingerprint d28a30895ad1393e admission inputs.producer_fingerprint d28a30895ad1393e

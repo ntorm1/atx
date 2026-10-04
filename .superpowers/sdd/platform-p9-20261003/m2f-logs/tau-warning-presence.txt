@@ -1,0 +1,6 @@
+nav_summ 'WARNING CSV tau mean != summary' (|diff| > 1e-9) present per dir (boolean only; no value printed)
+  build-equity/p9-c1-s2-x5-nav: True
+  build-equity/mega-nav-v8x-theme-erc-L1.1720: True
+  build-equity/p9-b0-yf0-nav: True
+  build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb: True
+  build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1414-v8x3b: True

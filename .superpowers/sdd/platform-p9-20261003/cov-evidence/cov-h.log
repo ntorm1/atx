@@ -1,0 +1,446 @@
+﻿admitted free=4128 commit=5636 at 2026-10-04T08:01:19.0883252-04:00
+[atx-build] cmake --preset equity-dev
+Preset CMake variables:
+
+  ATX_EQUITY_ONLY="ON"
+  ATX_SHARED_LIBS="OFF"
+  ATX_UNITY_BUILD="OFF"
+  ATX_USE_PCH="ON"
+  CMAKE_BUILD_TYPE="Debug"
+  CMAKE_CXX_COMPILER="clang-cl"
+  CMAKE_C_COMPILER="clang-cl"
+  CMAKE_EXPORT_COMPILE_COMMANDS="ON"
+  CMAKE_MSVC_DEBUG_INFORMATION_FORMAT="Embedded"
+  CMAKE_POLICY_DEFAULT_CMP0141="NEW"
+  CMAKE_TOOLCHAIN_FILE="C:\Users\natha\vcpkg/scripts/buildsystems/vcpkg.cmake"
+  VCPKG_INSTALLED_DIR="C:/atx-cache/vcpkg_installed"
+  VCPKG_TARGET_TRIPLET="x64-windows"
+
+Preset environment variables:
+
+  CCACHE_BASEDIR="C:/atx-wt/pool-24"
+  CCACHE_IGNOREOPTIONS="-ffile-prefix-map=* /clang:-ffile-prefix-map=*"
+  CCACHE_NOHASHDIR="1"
+  CCACHE_SLOPPINESS="pch_defines,time_macros,include_file_mtime,include_file_ctime"
+  SCCACHE_BASEDIR="C:/atx-wt/pool-24"
+
+-- Running vcpkg install
+Detecting compiler hash for triplet x64-windows...
+Compiler found: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.42.34433/bin/Hostx64/x64/cl.exe
+The following packages are already installed:
+  * abseil:x64-windows@20260107.1#3
+    arrow[core,parquet,json,filesystem,csv]:x64-windows@24.0.0#1
+  * boost-algorithm:x64-windows@1.91.0
+  * boost-align:x64-windows@1.91.0
+  * boost-array:x64-windows@1.91.0
+  * boost-assert:x64-windows@1.91.0
+  * boost-atomic:x64-windows@1.91.0
+  * boost-bind:x64-windows@1.91.0
+  * boost-charconv:x64-windows@1.91.0
+  * boost-chrono:x64-windows@1.91.0
+  * boost-cmake:x64-windows@1.91.0
+  * boost-compat:x64-windows@1.91.0
+  * boost-concept-check:x64-windows@1.91.0
+  * boost-config:x64-windows@1.91.0
+  * boost-container:x64-windows@1.91.0
+  * boost-container-hash:x64-windows@1.91.0
+  * boost-conversion:x64-windows@1.91.0
+  * boost-core:x64-windows@1.91.0
+  * boost-date-time:x64-windows@1.91.0
+  * boost-describe:x64-windows@1.91.0
+  * boost-detail:x64-windows@1.91.0
+  * boost-dynamic-bitset:x64-windows@1.91.0
+  * boost-exception:x64-windows@1.91.0
+  * boost-filesystem:x64-windows@1.91.0
+  * boost-function:x64-windows@1.91.0
+  * boost-function-types:x64-windows@1.91.0
+  * boost-functional:x64-windows@1.91.0
+  * boost-fusion:x64-windows@1.91.0
+  * boost-headers:x64-windows@1.91.0
+  * boost-integer:x64-windows@1.91.0
+  * boost-intrusive:x64-windows@1.91.0
+  * boost-io:x64-windows@1.91.0
+  * boost-iterator:x64-windows@1.91.0
+  * boost-lexical-cast:x64-windows@1.91.0
+  * boost-locale:x64-windows@1.91.0
+  * boost-math:x64-windows@1.91.0
+  * boost-move:x64-windows@1.91.0
+  * boost-mp11:x64-windows@1.91.0
+  * boost-mpl:x64-windows@1.91.0
+  * boost-multiprecision:x64-windows@1.91.0
+  * boost-numeric-conversion:x64-windows@1.91.0
+  * boost-optional:x64-windows@1.91.0
+  * boost-predef:x64-windows@1.91.0
+  * boost-preprocessor:x64-windows@1.91.0
+  * boost-random:x64-windows@1.91.0
+  * boost-range:x64-windows@1.91.0
+  * boost-ratio:x64-windows@1.91.0
+  * boost-regex:x64-windows@1.91.0
+  * boost-scope:x64-windows@1.91.0
+  * boost-scope-exit:x64-windows@1.91.0
+  * boost-smart-ptr:x64-windows@1.91.0
+  * boost-static-assert:x64-windows@1.91.0
+  * boost-system:x64-windows@1.91.0
+  * boost-thread:x64-windows@1.91.0
+  * boost-throw-exception:x64-windows@1.91.0
+  * boost-tokenizer:x64-windows@1.91.0
+  * boost-tuple:x64-windows@1.91.0
+  * boost-type-traits:x64-windows@1.91.0
+  * boost-typeof:x64-windows@1.91.0
+  * boost-uninstall:x64-windows@1.91.0
+  * boost-unordered:x64-windows@1.91.0
+  * boost-utility:x64-windows@1.91.0
+  * boost-uuid:x64-windows@1.91.0
+  * boost-variant2:x64-windows@1.91.0
+  * boost-winapi:x64-windows@1.91.0
+  * brotli:x64-windows@1.2.0
+  * bzip2[core,tool]:x64-windows@1.0.8#6
+  * gflags:x64-windows@2.3.0
+    gtest:x64-windows@1.17.0#2
+  * libevent[core,thread]:x64-windows@2.1.12+20230128#1
+  * lz4:x64-windows@1.10.0
+  * mimalloc:x64-windows@3.3.2
+    openssl:x64-windows@3.6.2
+  * rapidjson:x64-windows@2025-02-26
+  * re2:x64-windows@2025-11-05
+  * snappy:x64-windows@1.2.2#1
+  * thrift:x64-windows@0.23.0
+  * utf8proc:x64-windows@2.11.3
+  * vcpkg-boost:x64-windows@2025-03-29
+  * vcpkg-cmake:x64-windows@2024-04-23
+  * vcpkg-cmake-config:x64-windows@2024-05-23
+  * vcpkg-cmake-get-vars:x64-windows@2025-05-29
+  * xsimd:x64-windows@14.2.0
+  * zlib:x64-windows@1.3.2#1
+    zlib-ng:x64-windows@2.3.3
+    zstd:x64-windows@1.5.7
+zstd provides CMake targets:
+
+  find_package(zstd CONFIG REQUIRED)
+  target_link_libraries(main PRIVATE zstd::libzstd)
+
+openssl is compatible with built-in CMake targets:
+
+  find_package(OpenSSL REQUIRED)
+  target_link_libraries(main PRIVATE OpenSSL::SSL)
+  target_link_libraries(main PRIVATE OpenSSL::Crypto)
+
+The package arrow provides CMake targets:
+
+    find_package(Arrow CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE "$<IF:$<BOOL:${ARROW_BUILD_STATIC}>,Arrow::arrow_static,Arrow::arrow_shared>")
+
+    find_package(Parquet CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE "$<IF:$<BOOL:${ARROW_BUILD_STATIC}>,Parquet::parquet_static,Parquet::parquet_shared>")
+
+The package gtest is compatible with built-in CMake targets:
+
+    enable_testing()
+    
+    find_package(GTest CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE GTest::gtest GTest::gtest_main GTest::gmock GTest::gmock_main)
+    
+    add_test(AllTestsInMain main)
+
+zlib-ng provides CMake targets:
+
+  # this is heuristically generated, and may not be correct
+  find_package(zlib-ng CONFIG REQUIRED)
+  target_link_libraries(main PRIVATE zlib-ng::zlib)
+
+zlib-ng provides pkg-config modules:
+
+  # zlib-ng compression library
+  zlib-ng
+
+All requested installations completed successfully in: 2.6 ms
+-- Running vcpkg install - done
+-- The C compiler identification is Clang 18.1.8 with MSVC-like command-line
+-- The CXX compiler identification is Clang 18.1.8 with MSVC-like command-line
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- atx: compiler cache enabled (C:/atx-cache/bin/ccache.exe)
+-- Build spdlog: 1.14.1
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Failed
+-- Looking for pthread_create in pthreads
+-- Looking for pthread_create in pthreads - not found
+-- Looking for pthread_create in pthread
+-- Looking for pthread_create in pthread - not found
+-- Found Threads: TRUE
+-- Build type: Debug
+-- Generating install
+-- xsimd v13.0.0
+-- Started CMake for databento v0.59.0...
+-- Added all header and implementation files.
+-- Found OpenSSL: optimized;C:/atx-cache/vcpkg_installed/x64-windows/lib/libcrypto.lib;debug;C:/atx-cache/vcpkg_installed/x64-windows/debug/lib/libcrypto.lib (found version "3.6.2")
+-- Using the multi-header code from C:/atx-cache/deps/json-src/include/
+admitted free=3760 commit=5360 at 2026-10-04T08:04:04.9412329-04:00
+[atx-build] cmake --preset equity-dev
+Preset CMake variables:
+
+  ATX_EQUITY_ONLY="ON"
+  ATX_SHARED_LIBS="OFF"
+  ATX_UNITY_BUILD="OFF"
+  ATX_USE_PCH="ON"
+  CMAKE_BUILD_TYPE="Debug"
+  CMAKE_CXX_COMPILER="clang-cl"
+  CMAKE_C_COMPILER="clang-cl"
+  CMAKE_EXPORT_COMPILE_COMMANDS="ON"
+  CMAKE_MSVC_DEBUG_INFORMATION_FORMAT="Embedded"
+  CMAKE_POLICY_DEFAULT_CMP0141="NEW"
+  CMAKE_TOOLCHAIN_FILE="C:\Users\natha\vcpkg/scripts/buildsystems/vcpkg.cmake"
+  VCPKG_INSTALLED_DIR="C:/atx-cache/vcpkg_installed"
+  VCPKG_TARGET_TRIPLET="x64-windows"
+
+Preset environment variables:
+
+  CCACHE_BASEDIR="C:/atx-wt/pool-24"
+  CCACHE_IGNOREOPTIONS="-ffile-prefix-map=* /clang:-ffile-prefix-map=*"
+  CCACHE_NOHASHDIR="1"
+  CCACHE_SLOPPINESS="pch_defines,time_macros,include_file_mtime,include_file_ctime"
+  SCCACHE_BASEDIR="C:/atx-wt/pool-24"
+
+-- Running vcpkg install
+Detecting compiler hash for triplet x64-windows...
+Compiler found: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.42.34433/bin/Hostx64/x64/cl.exe
+The following packages are already installed:
+  * abseil:x64-windows@20260107.1#3
+    arrow[core,parquet,json,filesystem,csv]:x64-windows@24.0.0#1
+  * boost-algorithm:x64-windows@1.91.0
+  * boost-align:x64-windows@1.91.0
+  * boost-array:x64-windows@1.91.0
+  * boost-assert:x64-windows@1.91.0
+  * boost-atomic:x64-windows@1.91.0
+  * boost-bind:x64-windows@1.91.0
+  * boost-charconv:x64-windows@1.91.0
+  * boost-chrono:x64-windows@1.91.0
+  * boost-cmake:x64-windows@1.91.0
+  * boost-compat:x64-windows@1.91.0
+  * boost-concept-check:x64-windows@1.91.0
+  * boost-config:x64-windows@1.91.0
+  * boost-container:x64-windows@1.91.0
+  * boost-container-hash:x64-windows@1.91.0
+  * boost-conversion:x64-windows@1.91.0
+  * boost-core:x64-windows@1.91.0
+  * boost-date-time:x64-windows@1.91.0
+  * boost-describe:x64-windows@1.91.0
+  * boost-detail:x64-windows@1.91.0
+  * boost-dynamic-bitset:x64-windows@1.91.0
+  * boost-exception:x64-windows@1.91.0
+  * boost-filesystem:x64-windows@1.91.0
+  * boost-function:x64-windows@1.91.0
+  * boost-function-types:x64-windows@1.91.0
+  * boost-functional:x64-windows@1.91.0
+  * boost-fusion:x64-windows@1.91.0
+  * boost-headers:x64-windows@1.91.0
+  * boost-integer:x64-windows@1.91.0
+  * boost-intrusive:x64-windows@1.91.0
+  * boost-io:x64-windows@1.91.0
+  * boost-iterator:x64-windows@1.91.0
+  * boost-lexical-cast:x64-windows@1.91.0
+  * boost-locale:x64-windows@1.91.0
+  * boost-math:x64-windows@1.91.0
+  * boost-move:x64-windows@1.91.0
+  * boost-mp11:x64-windows@1.91.0
+  * boost-mpl:x64-windows@1.91.0
+  * boost-multiprecision:x64-windows@1.91.0
+  * boost-numeric-conversion:x64-windows@1.91.0
+  * boost-optional:x64-windows@1.91.0
+  * boost-predef:x64-windows@1.91.0
+  * boost-preprocessor:x64-windows@1.91.0
+  * boost-random:x64-windows@1.91.0
+  * boost-range:x64-windows@1.91.0
+  * boost-ratio:x64-windows@1.91.0
+  * boost-regex:x64-windows@1.91.0
+  * boost-scope:x64-windows@1.91.0
+  * boost-scope-exit:x64-windows@1.91.0
+  * boost-smart-ptr:x64-windows@1.91.0
+  * boost-static-assert:x64-windows@1.91.0
+  * boost-system:x64-windows@1.91.0
+  * boost-thread:x64-windows@1.91.0
+  * boost-throw-exception:x64-windows@1.91.0
+  * boost-tokenizer:x64-windows@1.91.0
+  * boost-tuple:x64-windows@1.91.0
+  * boost-type-traits:x64-windows@1.91.0
+  * boost-typeof:x64-windows@1.91.0
+  * boost-uninstall:x64-windows@1.91.0
+  * boost-unordered:x64-windows@1.91.0
+  * boost-utility:x64-windows@1.91.0
+  * boost-uuid:x64-windows@1.91.0
+  * boost-variant2:x64-windows@1.91.0
+  * boost-winapi:x64-windows@1.91.0
+  * brotli:x64-windows@1.2.0
+  * bzip2[core,tool]:x64-windows@1.0.8#6
+  * gflags:x64-windows@2.3.0
+    gtest:x64-windows@1.17.0#2
+  * libevent[core,thread]:x64-windows@2.1.12+20230128#1
+  * lz4:x64-windows@1.10.0
+  * mimalloc:x64-windows@3.3.2
+    openssl:x64-windows@3.6.2
+  * rapidjson:x64-windows@2025-02-26
+  * re2:x64-windows@2025-11-05
+  * snappy:x64-windows@1.2.2#1
+  * thrift:x64-windows@0.23.0
+  * utf8proc:x64-windows@2.11.3
+  * vcpkg-boost:x64-windows@2025-03-29
+  * vcpkg-cmake:x64-windows@2024-04-23
+  * vcpkg-cmake-config:x64-windows@2024-05-23
+  * vcpkg-cmake-get-vars:x64-windows@2025-05-29
+  * xsimd:x64-windows@14.2.0
+  * zlib:x64-windows@1.3.2#1
+    zlib-ng:x64-windows@2.3.3
+    zstd:x64-windows@1.5.7
+zstd provides CMake targets:
+
+  find_package(zstd CONFIG REQUIRED)
+  target_link_libraries(main PRIVATE zstd::libzstd)
+
+openssl is compatible with built-in CMake targets:
+
+  find_package(OpenSSL REQUIRED)
+  target_link_libraries(main PRIVATE OpenSSL::SSL)
+  target_link_libraries(main PRIVATE OpenSSL::Crypto)
+
+The package arrow provides CMake targets:
+
+    find_package(Arrow CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE "$<IF:$<BOOL:${ARROW_BUILD_STATIC}>,Arrow::arrow_static,Arrow::arrow_shared>")
+
+    find_package(Parquet CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE "$<IF:$<BOOL:${ARROW_BUILD_STATIC}>,Parquet::parquet_static,Parquet::parquet_shared>")
+
+The package gtest is compatible with built-in CMake targets:
+
+    enable_testing()
+    
+    find_package(GTest CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE GTest::gtest GTest::gtest_main GTest::gmock GTest::gmock_main)
+    
+    add_test(AllTestsInMain main)
+
+zlib-ng provides CMake targets:
+
+  # this is heuristically generated, and may not be correct
+  find_package(zlib-ng CONFIG REQUIRED)
+  target_link_libraries(main PRIVATE zlib-ng::zlib)
+
+zlib-ng provides pkg-config modules:
+
+  # zlib-ng compression library
+  zlib-ng
+
+All requested installations completed successfully in: 2.8 ms
+-- Running vcpkg install - done
+-- Build spdlog: 1.14.1
+-- Build type: Debug
+-- Generating install
+-- xsimd v13.0.0
+-- Started CMake for databento v0.59.0...
+-- Added all header and implementation files.
+-- Using the multi-header code from C:/atx-cache/deps/json-src/include/
+-- Finished setting up include directories.
+-- Format the project using the `clang-format` target (i.e: cmake --build build --target clang-format).
+-- Finished building requirements for installing the package.
+-- Arrow version: 24.0.0
+-- Found the Arrow shared library: C:/atx-cache/vcpkg_installed/x64-windows/bin/arrow.dll
+-- Found the Arrow import library: C:/atx-cache/vcpkg_installed/x64-windows/lib/arrow.lib
+-- Found the Arrow static library: 
+-- Parquet version: 24.0.0
+-- Found the Parquet shared library: C:/atx-cache/vcpkg_installed/x64-windows/bin/parquet.dll
+-- Found the Parquet import library: C:/atx-cache/vcpkg_installed/x64-windows/lib/parquet.lib
+-- Found the Parquet static library: 
+-- atx-impl engine_git_sha: e9fc366815d846804c9962465563b29b8a70d17d
+-- Configuring done (41.7s)
+-- Generating done (2.0s)
+CMake Warning:
+  Manually-specified variables were not used by the project:
+System.Management.Automation.RemoteException
+    CMAKE_TOOLCHAIN_FILE
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+-- Build files have been written to: C:/atx-wt/pool-24/build-equity
+{
+    "Source":  "e9fc366815d846804c9962465563b29b8a70d17d",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  0,
+    "ConfiguredProvenance":  "e9fc366815d846804c9962465563b29b8a70d17d",
+    "Jobs":  4,
+    "FreeMiB":  3410,
+    "CommitMiB":  3704,
+    "Targets":  [
+                    "atx-engine-risk-tests",
+                    "atx-impl-strategy-target-tests",
+                    "atx-equity-strategy-risk"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  606.39279279999994,
+    "CompiledTUs":  369,
+    "Links":  11,
+    "Tag":  "p9-cov-h",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-24\\build-equity",
+    "Executables":  {
+                        "atx-engine-risk-tests":  {
+                                                      "Path":  "C:\\atx-wt\\pool-24\\build-equity\\bin\\atx-engine-risk-tests.exe",
+                                                      "Sha256":  "bd85b4c798a08bf8f163e60cb8a6a5f8ac1a013f46a39657cce2579015ad6484"
+                                                  },
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-24\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "23ef46dbc3a49a4ec4b0c7f1f9b1226551d4d0108c8e0f7be4577aaac5aeb826"
+                                                           },
+                        "atx-equity-strategy-risk":  {
+                                                         "Path":  "C:\\atx-wt\\pool-24\\build-equity\\bin\\atx-equity-strategy-risk.exe",
+                                                         "Sha256":  "e7b65c9bc4ca253e33e02772538a4dea7e08dabf612c922df670bf45d9812283"
+                                                     }
+                    }
+}
+[1/383] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+[2/383] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+[3/383] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+[4/383] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+[5/383] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+[6/383] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+[7/383] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\cmake_pch.cxx.obj
+[8/383] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+[9/383] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\cmake_pch.cxx.obj
+[12/383] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\decimal.cpp.obj
+[13/383] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\datetime.cpp.obj
+[14/383] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\core.cpp.obj
+[15/383] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\sha256.cpp.obj
+[16/383] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\symbol.cpp.obj
+[17/383] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\io\zip_reader.cpp.obj
+[18/383] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\io\parquet_writer.cpp.obj
+[19/383] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\io\parquet.cpp.obj
+[20/383] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\db\sqlite.cpp.obj
+[21/383] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\external\dbn.cpp.obj
+[22/383] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\external\databento.cpp.obj
+[23/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\batch.cpp.obj
+[24/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\datetime.cpp.obj
+[25/383] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\external\databento_pull.cpp.obj
+[26/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn.cpp.obj
+[27/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn_encoder.cpp.obj
+[28/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn_decoder.cpp.obj
+[29/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn_store.cpp.obj
+[30/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\buffer.cpp.obj
+[31/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\dbn_buffer_decoder.cpp.obj
+[32/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\http_client.cpp.obj
+[33/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\http_stream_reader.cpp.obj
+[34/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\live_connection.cpp.obj
+[35/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\json_helpers.cpp.obj
+[36/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\scoped_fd.cpp.obj
+[37/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\sha256_hasher.cpp.obj
+[38/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\tcp_client.cpp.obj
+[39/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\tcp_readable.cpp.obj
+[40/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\zstd_stream.cpp.obj
+[41/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\enums.cpp.obj
+[42/383] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\flag_set.cpp.obj
+research-build exit 0 at 2026-10-04T08:15:18.4577446-04:00

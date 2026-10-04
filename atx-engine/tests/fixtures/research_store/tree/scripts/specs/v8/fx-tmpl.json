@@ -1,0 +1,23 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "fx-tmpl",
+  "description": "synthetic template",
+  "parent": "scripts/specs/v8/fx-base.json",
+  "change": {
+    "set": {
+      "nav.output": "build-equity/fx-nav-b"
+    },
+    "inputs": {
+      "extra": {
+        "path": "C:\\elsewhere\\not-in-the-tree\\extra.json",
+        "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/fx-nav/summary.json",
+      "sha256": "3f8c9fd951d3ea83e7034d06975efd65e46ae5f71edfda4071dbd4d1a53e5c4b"
+    }
+  }
+}

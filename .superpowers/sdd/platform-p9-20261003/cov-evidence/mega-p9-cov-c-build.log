@@ -1,0 +1,97 @@
+[atx-build] cmake --build C:\atx-wt\pool-24\build-equity --parallel 4 --target atx-equity-strategy-risk
+[0/2] Re-checking globbed directories...
+[1/89] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[2/89] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[3/89] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[4/89] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[5/89] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[6/89] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[7/89] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[8/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_ic_library.cpp.obj
+[9/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_ic_admission.cpp.obj
+[10/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_ic_runner.cpp.obj
+[11/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_ic_signal_cache.cpp.obj
+[12/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_ic_result_cache.cpp.obj
+[13/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_ic_composition.cpp.obj
+[14/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_ic_shrink.cpp.obj
+[15/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_ic_theme_resid.cpp.obj
+[16/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_ic_theme_erc.cpp.obj
+[17/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_ic_theme_tsmom.cpp.obj
+[18/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_ic_two_speed.cpp.obj
+[19/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_target_replay.cpp.obj
+[20/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_price_exposures.cpp.obj
+[21/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_cost_v2.cpp.obj
+[22/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\cmake_pch.cxx.obj
+[23/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\config.cpp.obj
+[24/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_nav_v7.cpp.obj
+[25/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\artifacts.cpp.obj
+[26/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\serialize_panel.cpp.obj
+[27/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\dispatch.cpp.obj
+[28/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\panel_pipeline.cpp.obj
+[29/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\panel_artifact.cpp.obj
+[30/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_data_provenance.cpp.obj
+[31/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_risk_model.cpp.obj
+[32/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_nav_replay.cpp.obj
+[33/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_research_role.cpp.obj
+[34/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_runner.cpp.obj
+[35/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_marginal_ic.cpp.obj
+[36/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_mine_ledger.cpp.obj
+[37/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_mine_pinned_file.cpp.obj
+[38/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_mine_pool.cpp.obj
+[39/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_mine_rule.cpp.obj
+[40/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_mine.cpp.obj
+[41/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_holdings.cpp.obj
+[42/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_live.cpp.obj
+[43/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_orders.cpp.obj
+[44/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_mine_promote.cpp.obj
+[45/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_mine_trials.cpp.obj
+[46/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_reconcile.cpp.obj
+[47/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_risk_target.cpp.obj
+[48/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_vol_target.cpp.obj
+[49/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_spo_v3.cpp.obj
+[50/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\serialize_genome.cpp.obj
+[51/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_load.cpp.obj
+[52/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_regime.cpp.obj
+[53/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_spo.cpp.obj
+[54/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\asof_field.cpp.obj
+[55/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_panel.cpp.obj
+[56/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\append_history_panel.cpp.obj
+[57/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_augment.cpp.obj
+[58/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_risk_verb.cpp.obj
+[59/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\store_progress_sink.cpp.obj
+[60/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_sweep.cpp.obj
+[61/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_discover.cpp.obj
+[62/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_riskmodel.cpp.obj
+[63/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_report.cpp.obj
+[64/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_optimize.cpp.obj
+[65/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_combine.cpp.obj
+[66/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\replay_diagnostics.cpp.obj
+[67/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\replay_report.cpp.obj
+[68/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\equity_baseline_views.cpp.obj
+[69/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\equity_allocation.cpp.obj
+[70/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\trial_ledger.cpp.obj
+[71/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\preference_source.cpp.obj
+[72/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\prereg.cpp.obj
+[73/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_equity_book.cpp.obj
+[74/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_equity_ic.cpp.obj
+[75/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_equity_universe.cpp.obj
+[76/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_equity_baseline.cpp.obj
+[77/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\generated\build_provenance.cpp.obj
+[78/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_exposures_verb.cpp.obj
+[79/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_marginal_pair_cache.cpp.obj
+[80/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_factors_verb.cpp.obj
+[81/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_ic_rules.cpp.obj
+[82/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_run.cpp.obj
+[83/89] Linking CXX static library lib\spdlogd.lib
+[84/89] Building CXX object atx-impl\CMakeFiles\atx-equity-strategy-risk.dir\tools\equity_strategy_risk.cpp.obj
+[85/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_equity_mine.cpp.obj
+[86/89] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\stage_metabook.cpp.obj
+[87/89] Linking CXX static library lib\atx-impl-core.lib
+[88/89] Linking CXX executable bin\atx-equity-strategy-risk.exe

@@ -18,7 +18,8 @@ co::Error ruled(std::string_view rule,const co::Error& error) {
 } // namespace
 
 co::Result<IcShrinkFit> ic_shrink_weights(std::span<const atx::f64> ic,std::span<const atx::usize> theme,
-                                          atx::usize themes,std::span<const atx::f64> gains,bool trace) {
+                                          atx::usize themes,std::span<const atx::f64> gains,
+                                          bool trace) {
   const bool aim=!gains.empty();
   const std::string rule(aim?ic_shrink_aim_rule:ic_shrink_rule);
   if (ic.empty() || ic.size()>max_members || themes==0 || themes>max_themes)

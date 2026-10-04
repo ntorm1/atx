@@ -135,6 +135,14 @@ prepare_ic_screen_scratch(const IcScreenCache& cache);
     std::span<const atx::f64> signal, const IcScreenCache& cache, IcScreenScratch& scratch);
 [[nodiscard]] std::string_view ic_screen_reason_name(IcScreenReason reason) noexcept;
 [[nodiscard]] std::string_view ic_screen_rule_name(IcScreenRule rule) noexcept;
+// P9 S2: "bartlett-2h-v1" / "horizon-aware-v3" (IcScreenConfig::hac_rule).
+[[nodiscard]] std::string_view ic_hac_rule_name(IcHacRule rule) noexcept;
+// P9 S2: one horizon's mean-IC estimate of a daily IC series (NaN = no IC that date) under
+// `config` (its hac_rule, min_coverage, min_dates and confidence multiplier), exactly as screen_ic
+// computes it before classification. Lets a caller print a series' standard error under a second
+// HAC rule beside the one it scored with. Allocates one influence buffer of daily.size().
+[[nodiscard]] IcScreenEstimate estimate_daily_ic(std::span<const atx::f64> daily,
+                                                 atx::usize horizon, const IcScreenConfig& config);
 [[nodiscard]] atx::usize ic_screen_simd_width() noexcept;
 // P9 S1 (DS-1): the build flavour of the TU that scores IC (atx/engine/build_flavor.hpp), so
 // the IC-result cache identity takes FP flags, assertions, CRT and xsimd version from here.

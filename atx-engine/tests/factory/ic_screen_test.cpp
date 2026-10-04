@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -15,6 +16,8 @@
 
 #include "atx/core/types.hpp"
 #include "atx/engine/alpha/panel.hpp"
+#include "atx/engine/eval/hac.hpp"
+#include "atx/engine/factory/ic_research.hpp"
 #include "atx/engine/factory/ic_screen.hpp"
 
 namespace {
@@ -647,3 +650,464 @@ TEST(IcScreen, WiderNoisyCohortReportsRejectionAndWeakSignalRetention) {
   // assert a desired quota. Statistical uncertainty and economic value remain.
 }
 } // namespace
+
+// ---- P9 lane S2: the IC method options (min_coverage, the HAC rule, the label terminal rule) ----
+// A named namespace: this file joins unity batches beside other unnamed-namespace fixtures.
+namespace atx_test_ic_screen_s2 {
+using atx::f64;
+using atx::u64;
+using atx::u8;
+using atx::usize;
+namespace ex = atx::engine::factory;
+namespace hac = atx::engine::eval::hac;
+using atx::engine::alpha::Panel;
+constexpr f64 kS2NaN = std::numeric_limits<f64>::quiet_NaN();
+
+// Deterministic noise in [-1, 1) from a cell index (no RNG state, so each fixture is a pure
+// function of its geometry).
+f64 s2_noise(usize k) {
+  u64 x = static_cast<u64>(k) * 0x9e3779b97f4a7c15ULL + 0x632be59bd9b4e019ULL;
+  x = (x ^ (x >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+  x = (x ^ (x >> 27U)) * 0x94d049bb133111ebULL;
+  x ^= x >> 31U;
+  return static_cast<f64>(x >> 11U) * 0x1.0p-52 - 1.0;
+}
+
+// A positive random-walk close panel with every cell present (unless `mask` says otherwise).
+std::vector<f64> s2_close(usize dates, usize names) {
+  std::vector<f64> close(dates * names, 100.0);
+  for (usize d = 1; d < dates; ++d)
+    for (usize i = 0; i < names; ++i)
+      close[d * names + i] = close[(d - 1U) * names + i] * std::exp(0.01 * s2_noise(d * names + i));
+  return close;
+}
+
+atx::core::Result<Panel> s2_panel(usize dates, usize names, std::vector<f64> close,
+                                  std::vector<u8> mask = {}, std::string_view field = "close") {
+  std::vector<std::vector<f64>> columns;
+  columns.push_back(std::move(close));
+  return Panel::create(dates, names, {std::string(field)}, std::move(columns), std::move(mask));
+}
+
+ex::IcScreenConfig s2_config() {
+  ex::IcScreenConfig cfg;
+  cfg.rule = ex::IcScreenRule::ConservativeV2;
+  cfg.horizons = {1, 2, 3, 4};
+  cfg.min_names = 3;
+  cfg.min_dates = 8;
+  return cfg;
+}
+
+bool same_bits(f64 a, f64 b) { return std::bit_cast<u64>(a) == std::bit_cast<u64>(b); }
+
+bool same_series(std::span<const f64> a, std::span<const f64> b) {
+  return a.size() == b.size() &&
+         (a.empty() || std::memcmp(a.data(), b.data(), a.size_bytes()) == 0);
+}
+
+void expect_same_estimate(const ex::IcScreenEstimate& a, const ex::IcScreenEstimate& b) {
+  EXPECT_EQ(a.valid_dates, b.valid_dates);
+  EXPECT_EQ(a.calendar_dates, b.calendar_dates);
+  EXPECT_EQ(a.hac_lag, b.hac_lag);
+  EXPECT_TRUE(same_bits(a.mean, b.mean));
+  EXPECT_TRUE(same_bits(a.standard_error, b.standard_error));
+  EXPECT_TRUE(same_bits(a.upper_abs_ic, b.upper_abs_ic));
+  EXPECT_TRUE(same_bits(a.max_segment_abs_ic, b.max_segment_abs_ic));
+  EXPECT_EQ(a.defined, b.defined);
+  EXPECT_EQ(a.suggestive_direction, b.suggestive_direction);
+}
+
+struct S2Scored {
+  ex::ResearchIcResult result;
+  std::array<std::vector<f64>, 4> pearson, rank;
+};
+
+// One research IC pass of `signal` under `cfg` (all four horizons, endpoint presence required),
+// with the return guard `bad` (empty: none).
+atx::core::Result<S2Scored> s2_score(const Panel& p, const ex::IcScreenConfig& cfg,
+                                     std::span<const f64> signal,
+                                     const ex::ResearchIcTerminal& terminal = {},
+                                     std::span<const atx::u32> bad = {}) {
+  ATX_TRY(auto cache, ex::prepare_research_ic(p, cfg, {4, true, 1}, {}, bad, "close", terminal));
+  ATX_TRY(auto scratch, ex::prepare_research_ic_scratch(cache));
+  ATX_TRY(auto result, ex::evaluate_research_ic(signal, cache, scratch));
+  S2Scored out{std::move(result), {}, {}};
+  for (usize k = 0; k < 4U; ++k) {
+    out.pearson[k].assign(scratch.pearson_series(k).begin(), scratch.pearson_series(k).end());
+    out.rank[k].assign(scratch.rank_series(k).begin(), scratch.rank_series(k).end());
+  }
+  return atx::core::Ok(std::move(out));
+}
+
+// DS-4: the coverage fraction of every gate is IcScreenConfig::min_coverage, in (0, 1], default .8
+// (the former constant). It keys the prepared cache and moves the gates, never the daily series.
+TEST(IcScreen, MinCoverageConfig) {
+  EXPECT_EQ(ex::kDefaultIcMinCoverage, 0.8);
+  EXPECT_EQ(ex::IcScreenConfig{}.min_coverage, ex::kDefaultIcMinCoverage);
+  constexpr usize dates = 160, names = 10;
+  auto p = s2_panel(dates, names, s2_close(dates, names));
+  ASSERT_TRUE(p);
+  const auto cfg = s2_config();
+  constexpr f64 kInf = std::numeric_limits<f64>::infinity();
+  for (const f64 bad : {0.0, -0.25, 1.0 + 1e-12, 1.5, kS2NaN, kInf}) {
+    auto refused = cfg;
+    refused.min_coverage = bad;
+    EXPECT_FALSE(ex::prepare_ic_screen(*p, refused)) << bad;
+    EXPECT_FALSE(ex::prepare_research_ic(*p, refused, {4, true, 1})) << bad;
+  }
+  for (const f64 good : {1.0, 0.5, 1e-9}) {
+    auto accepted = cfg;
+    accepted.min_coverage = good;
+    EXPECT_TRUE(ex::prepare_ic_screen(*p, accepted)) << good;
+  }
+  // The prepared cache binds the fraction (and the HAC rule).
+  auto prepared = ex::prepare_ic_screen(*p, cfg);
+  ASSERT_TRUE(prepared);
+  EXPECT_TRUE(ex::ic_screen_cache_matches(*prepared, *p, cfg));
+  auto other = cfg;
+  other.min_coverage = 0.5;
+  EXPECT_FALSE(ex::ic_screen_cache_matches(*prepared, *p, other));
+  other = cfg;
+  other.hac_rule = ex::IcHacRule::HorizonAwareV3;
+  EXPECT_FALSE(ex::ic_screen_cache_matches(*prepared, *p, other));
+
+  // Date-level gate: the signal is absent on 3 of every 10 decision dates, so each daily series
+  // has ~70% valid dates (every quarter segment too): undefined at .8, defined at .5.
+  std::vector<f64> signal(dates * names);
+  for (usize d = 0; d < dates; ++d)
+    for (usize i = 0; i < names; ++i)
+      signal[d * names + i] = d % 10U < 3U ? kS2NaN : s2_noise(7919U + d * names + i);
+  auto half = cfg;
+  half.min_coverage = 0.5;
+  const auto strict = s2_score(*p, cfg, signal);
+  const auto loose = s2_score(*p, half, signal);
+  ASSERT_TRUE(strict);
+  ASSERT_TRUE(loose);
+  for (usize k = 0; k < 4U; ++k) {
+    SCOPED_TRACE(k);
+    // Every paired row passes both row gates (all names paired): the series are the same bits.
+    EXPECT_TRUE(same_series(strict->pearson[k], loose->pearson[k]));
+    EXPECT_TRUE(same_series(strict->rank[k], loose->rank[k]));
+    for (const auto* e : {&strict->result.screen.horizons[k].pearson,
+                          &strict->result.screen.horizons[k].rank}) {
+      const auto share = static_cast<f64>(e->valid_dates) / static_cast<f64>(e->calendar_dates);
+      EXPECT_GT(share, 0.5);
+      EXPECT_LT(share, 0.8);
+      EXPECT_FALSE(e->defined);
+    }
+    EXPECT_TRUE(loose->result.screen.horizons[k].pearson.defined);
+    EXPECT_TRUE(loose->result.screen.horizons[k].rank.defined);
+  }
+  EXPECT_EQ(strict->result.screen.reason, ex::IcScreenReason::InsufficientEvidence);
+
+  // Row-level gate: on every date 3 of the 10 eligible names lack a signal (7 paired): every row
+  // is refused at .8 (7 < 8) and scored at .5.
+  for (usize d = 0; d < dates; ++d)
+    for (usize i = 0; i < names; ++i)
+      signal[d * names + i] = i < 3U ? kS2NaN : s2_noise(104729U + d * names + i);
+  const auto rows_strict = s2_score(*p, cfg, signal);
+  const auto rows_loose = s2_score(*p, half, signal);
+  ASSERT_TRUE(rows_strict);
+  ASSERT_TRUE(rows_loose);
+  for (usize k = 0; k < 4U; ++k) {
+    SCOPED_TRACE(k);
+    ASSERT_FALSE(rows_strict->rank[k].empty());
+    for (usize d = 0; d < rows_strict->rank[k].size(); ++d) {
+      EXPECT_TRUE(std::isnan(rows_strict->rank[k][d])) << d;
+      EXPECT_TRUE(std::isfinite(rows_loose->rank[k][d])) << d;
+    }
+    EXPECT_EQ(rows_strict->result.screen.horizons[k].rank.valid_dates, 0U);
+    EXPECT_TRUE(rows_loose->result.screen.horizons[k].rank.defined);
+  }
+}
+
+// DSL/IC review §3: the screen's HAC rule is named and selectable. Bartlett2hV1 (the default)
+// keeps the pre-S2 arithmetic bit for bit; HorizonAwareV3 is eval/hac.hpp's mean_tstat on the
+// same calendar-preserving influence series, scaled by T / n; estimate_daily_ic reproduces both.
+TEST(IcScreen, HacRuleNamedSelectableAndReproduced) {
+  EXPECT_EQ(ex::IcScreenConfig{}.hac_rule, ex::IcHacRule::Bartlett2hV1);
+  EXPECT_EQ(ex::ic_hac_rule_name(ex::IcHacRule::Bartlett2hV1), "bartlett-2h-v1");
+  EXPECT_EQ(ex::ic_hac_rule_name(ex::IcHacRule::HorizonAwareV3), "horizon-aware-v3");
+  EXPECT_EQ(ex::ic_hac_rule_name(static_cast<ex::IcHacRule>(u8{9})), "unknown");
+  constexpr usize dates = 300, names = 24;
+  auto p = s2_panel(dates, names, s2_close(dates, names));
+  ASSERT_TRUE(p);
+  auto cfg = s2_config();
+  cfg.horizons = {1, 3, 5, 10};
+  auto unknown = cfg;
+  unknown.hac_rule = static_cast<ex::IcHacRule>(u8{7});
+  EXPECT_FALSE(ex::prepare_research_ic(*p, unknown, {4, true, 1}));
+  auto aware = cfg;
+  aware.hac_rule = ex::IcHacRule::HorizonAwareV3;
+  // A signal with calendar gaps (every 11th decision date absent), so T != n.
+  std::vector<f64> signal(dates * names);
+  for (usize d = 0; d < dates; ++d)
+    for (usize i = 0; i < names; ++i)
+      signal[d * names + i] = d % 11U == 4U ? kS2NaN : s2_noise(31U + d * names + i);
+  const auto bartlett = s2_score(*p, cfg, signal);
+  const auto horizon = s2_score(*p, aware, signal);
+  ASSERT_TRUE(bartlett);
+  ASSERT_TRUE(horizon);
+  usize defined = 0;
+  for (usize k = 0; k < 4U; ++k) {
+    const usize h = cfg.horizons[k];
+    SCOPED_TRACE(h);
+    EXPECT_TRUE(same_series(bartlett->pearson[k], horizon->pearson[k]));
+    EXPECT_TRUE(same_series(bartlett->rank[k], horizon->rank[k]));
+    const std::array<std::pair<const std::vector<f64>*, bool>, 2> metrics{
+        {{&bartlett->pearson[k], false}, {&bartlett->rank[k], true}}};
+    for (const auto& [series, is_rank] : metrics) {
+      const std::span<const f64> daily(*series);
+      const auto& b = is_rank ? bartlett->result.screen.horizons[k].rank
+                              : bartlett->result.screen.horizons[k].pearson;
+      const auto& a = is_rank ? horizon->result.screen.horizons[k].rank
+                              : horizon->result.screen.horizons[k].pearson;
+      expect_same_estimate(ex::estimate_daily_ic(daily, h, cfg), b);
+      expect_same_estimate(ex::estimate_daily_ic(daily, h, aware), a);
+      // The independent recomputation, in the screen's order of operations.
+      f64 sum = 0.0;
+      usize n = 0;
+      for (const f64 v : daily)
+        if (std::isfinite(v)) {
+          sum += v;
+          ++n;
+        }
+      ASSERT_GT(n, 0U);
+      ASSERT_LT(n, daily.size());
+      const f64 mean = sum / static_cast<f64>(n);
+      std::vector<f64> work(daily.size());
+      for (usize d = 0; d < daily.size(); ++d)
+        work[d] = std::isfinite(daily[d]) ? daily[d] - mean : 0.0;
+      const auto t_over_n = [&](f64 se) {
+        return se * static_cast<f64>(daily.size()) / static_cast<f64>(n);
+      };
+      EXPECT_TRUE(same_bits(b.mean, mean));
+      EXPECT_TRUE(same_bits(a.mean, mean));
+      ASSERT_TRUE(b.defined);
+      ASSERT_TRUE(a.defined);
+      ++defined;
+      const usize lag = std::max(h * 2U, hac::newey_west_rule_of_thumb_lag(daily.size()));
+      const auto hac_se = hac::mean_inference(work, hac::Kernel::BartlettV1, lag, true);
+      const auto iid_se = hac::mean_inference(work, hac::Kernel::BartlettV1, 0U, true);
+      EXPECT_EQ(b.hac_lag, lag);
+      EXPECT_TRUE(same_bits(b.standard_error, std::max(t_over_n(hac_se.se), t_over_n(iid_se.se))));
+      const auto v3 = hac::mean_tstat(work, hac::TStatRule::HorizonAwareV3, h);
+      ASSERT_TRUE(v3.defined);
+      EXPECT_EQ(a.hac_lag, v3.lag);
+      EXPECT_TRUE(same_bits(a.standard_error, t_over_n(v3.se)));
+      EXPECT_TRUE(same_bits(a.upper_abs_ic,
+                            std::abs(mean) + cfg.confidence_multiplier * t_over_n(v3.se)));
+    }
+  }
+  EXPECT_EQ(defined, 8U);
+}
+
+// DSL/IC review §7 item 3 (LabelTerminalRule::ImputedV1). Name 0 leaves the scored panel after
+// session L; the label-only panel prices it once more at L+1 (a role built with delisting returns:
+// close[L] x (1 + r)). A decision whose holding [entry, entry + h] straddles L then has the label
+// close_label[L+1] / close[entry] - 1 (exit at the imputed terminal close, cash after) instead of
+// none; every other pair keeps its MissingExitV1 label bit for bit. Name 3's one-session hole has
+// no label-panel price, so its missing exits stay missing. The terminal session may be the
+// horizon's own end session (entry = L, h = 1): its label still reads the label panel's close.
+TEST(IcLabels, TerminalImputedClosedForm) {
+  constexpr usize dates = 14, names = 5, last = 7;
+  constexpr f64 r = -0.4;
+  std::vector<f64> close = s2_close(dates, names);
+  std::vector<u8> scored_mask(dates * names, u8{1});
+  for (usize d = last + 1U; d < dates; ++d) {
+    scored_mask[d * names] = u8{0};
+    close[d * names] = kS2NaN;
+  }
+  scored_mask[4U * names + 3U] = u8{0};
+  close[4U * names + 3U] = kS2NaN;
+  std::vector<f64> label_close = close;
+  std::vector<u8> label_mask = scored_mask;
+  const f64 terminal_close = close[last * names] * (1.0 + r);
+  label_close[(last + 1U) * names] = terminal_close;
+  label_mask[(last + 1U) * names] = u8{1};
+  auto scored = s2_panel(dates, names, close, scored_mask);
+  auto label = s2_panel(dates, names, label_close, label_mask);
+  ASSERT_TRUE(scored);
+  ASSERT_TRUE(label);
+  const auto cfg = s2_config();
+  std::vector<f64> signal(dates * names);
+  for (usize k = 0; k < signal.size(); ++k) signal[k] = s2_noise(5U + k);
+
+  const ex::ResearchIcTerminal imputed{ex::LabelTerminalRule::ImputedV1, &*label, "close"};
+  auto legacy_cache = ex::prepare_research_ic(*scored, cfg, {4, true, 1});
+  auto imputed_cache =
+      ex::prepare_research_ic(*scored, cfg, {4, true, 1}, {}, {}, "close", imputed);
+  // MissingExitV1 named explicitly, with a label panel beside it, ignores that panel.
+  auto named_cache = ex::prepare_research_ic(
+      *scored, cfg, {4, true, 1}, {}, {}, "close",
+      ex::ResearchIcTerminal{ex::LabelTerminalRule::MissingExitV1, &*label, "close"});
+  ASSERT_TRUE(legacy_cache);
+  ASSERT_TRUE(imputed_cache);
+  ASSERT_TRUE(named_cache);
+  const auto legacy = s2_score(*scored, cfg, signal);
+  const auto with_terminal = s2_score(*scored, cfg, signal, imputed);
+  ASSERT_TRUE(legacy);
+  ASSERT_TRUE(with_terminal);
+  for (usize k = 0; k < 4U; ++k) {
+    const usize h = cfg.horizons[k];
+    SCOPED_TRACE(h);
+    const auto old_labels = legacy_cache->labels(k);
+    const auto new_labels = imputed_cache->labels(k);
+    EXPECT_TRUE(same_series(old_labels, named_cache->labels(k)));
+    ASSERT_EQ(old_labels.size(), new_labels.size());
+    ASSERT_EQ(imputed_cache->first_date(), 0U);
+    usize imputed_cells = 0;
+    for (usize row = 0; row < imputed_cache->label_rows(k); ++row) {
+      const usize entry = row + cfg.execution_delay;
+      for (usize i = 0; i < names; ++i) {
+        const usize cell = row * names + i;
+        const bool straddles = i == 0U && entry <= last && last < entry + h;
+        if (!straddles) {
+          EXPECT_TRUE(same_bits(old_labels[cell], new_labels[cell])) << row << ',' << i;
+          continue;
+        }
+        ++imputed_cells;
+        EXPECT_TRUE(std::isnan(old_labels[cell])) << row;
+        EXPECT_TRUE(same_bits(new_labels[cell], terminal_close / close[entry * names] - 1.0))
+            << row;
+      }
+    }
+    // Closed form: decisions d with entry = d + 1 in [L - h + 1, L], one per bar of the horizon.
+    EXPECT_EQ(imputed_cells, h);
+    const auto& before = legacy->result.coverage[k];
+    const auto& after = with_terminal->result.coverage[k];
+    EXPECT_EQ(before.terminal_imputed_pairs, 0U);
+    EXPECT_EQ(after.terminal_imputed_pairs, static_cast<u64>(h));
+    EXPECT_EQ(after.finite_label_pairs - before.finite_label_pairs, after.terminal_imputed_pairs);
+    // A subset of the missing exits, which the rule does not recount; name 3's hole stays missing.
+    EXPECT_EQ(after.missing_exit_pairs, before.missing_exit_pairs);
+    EXPECT_EQ(after.missing_entry_pairs, before.missing_entry_pairs);
+    EXPECT_EQ(after.decision_eligible_pairs, before.decision_eligible_pairs);
+    EXPECT_GT(after.missing_exit_pairs, after.terminal_imputed_pairs);
+    EXPECT_EQ(after.guard_excluded_pairs + after.invalid_price_pairs + after.nonfinite_return_pairs,
+              0U);
+  }
+  EXPECT_EQ(ex::label_terminal_rule_name(ex::LabelTerminalRule::MissingExitV1), "missing-exit-v1");
+  EXPECT_EQ(ex::label_terminal_rule_name(ex::LabelTerminalRule::ImputedV1), "imputed-v1");
+
+  // Geometry and binding refusals: no label panel, other axes, no price field, unknown rule.
+  EXPECT_FALSE(ex::prepare_research_ic(*scored, cfg, {4, true, 1}, {}, {}, "close",
+                                       ex::ResearchIcTerminal{ex::LabelTerminalRule::ImputedV1,
+                                                              nullptr, "close"}));
+  auto longer = s2_panel(dates + 1U, names, s2_close(dates + 1U, names));
+  auto wider = s2_panel(dates, names + 1U, s2_close(dates, names + 1U));
+  auto renamed = s2_panel(dates, names, label_close, label_mask, "px");
+  ASSERT_TRUE(longer);
+  ASSERT_TRUE(wider);
+  ASSERT_TRUE(renamed);
+  for (const Panel* other : {&*longer, &*wider, &*renamed}) {
+    EXPECT_FALSE(ex::prepare_research_ic(*scored, cfg, {4, true, 1}, {}, {}, "close",
+                                         ex::ResearchIcTerminal{ex::LabelTerminalRule::ImputedV1,
+                                                                other, "close"}));
+  }
+  EXPECT_FALSE(ex::prepare_research_ic(
+      *scored, cfg, {4, true, 1}, {}, {}, "close",
+      ex::ResearchIcTerminal{static_cast<ex::LabelTerminalRule>(u8{9}), &*label, "close"}));
+}
+
+// Fix round 1 (review S2 #1, #6): an imputed pair passes the return guard of BOTH roles over
+// (entry, T]: the scored guard (its steps up to L) and the label role's (which alone sees the
+// terminal step L -> T). The fixture of TerminalImputedClosedForm (L = 7, T = 8) with
+//   (A) one bad scored return on name 0 at session 6 (in both guards, as the label role's guard
+//       computes it on the same cells): a straddling pair imputes only when entry >= 6, else it is
+//       guard-excluded, and every other label is the guarded MissingExitV1 label;
+//   (B) a bad terminal step in the label guard alone: every straddling pair is guard-excluded and
+//       nothing is imputed.
+// A guard given without the label guard, or a decreasing label guard, refuses.
+TEST(IcLabels, TerminalImputedPairsPassBothReturnGuards) {
+  constexpr usize dates = 14, names = 5, last = 7, bad_session = 6;
+  std::vector<f64> close = s2_close(dates, names);
+  std::vector<u8> scored_mask(dates * names, u8{1});
+  for (usize d = last + 1U; d < dates; ++d) {
+    scored_mask[d * names] = u8{0};
+    close[d * names] = kS2NaN;
+  }
+  std::vector<f64> label_close = close;
+  std::vector<u8> label_mask = scored_mask;
+  const f64 terminal_close = close[last * names] * 0.7;
+  label_close[(last + 1U) * names] = terminal_close;
+  label_mask[(last + 1U) * names] = u8{1};
+  auto scored = s2_panel(dates, names, close, scored_mask);
+  auto label = s2_panel(dates, names, label_close, label_mask);
+  ASSERT_TRUE(scored);
+  ASSERT_TRUE(label);
+  const auto cfg = s2_config();
+  std::vector<f64> signal(dates * names);
+  for (usize k = 0; k < signal.size(); ++k) signal[k] = s2_noise(11U + k);
+  // Prefix guards of name 0: one bad return counted from session `from` on.
+  const auto guard_from = [&](usize from) {
+    std::vector<atx::u32> bad(dates * names, 0U);
+    for (usize d = from; d < dates; ++d) bad[d * names] = 1U;
+    return bad;
+  };
+  const auto scored_bad = guard_from(bad_session);
+  const std::vector<atx::u32> clean(dates * names, 0U);
+  const auto terminal_bad = guard_from(last + 1U);
+  const auto with = [&](std::span<const atx::u32> label_bad) {
+    return ex::ResearchIcTerminal{ex::LabelTerminalRule::ImputedV1, &*label, "close", label_bad};
+  };
+  const auto legacy_a = s2_score(*scored, cfg, signal, {}, scored_bad);
+  const auto imputed_a = s2_score(*scored, cfg, signal, with(scored_bad), scored_bad);
+  const auto legacy_b = s2_score(*scored, cfg, signal, {}, clean);
+  const auto imputed_b = s2_score(*scored, cfg, signal, with(terminal_bad), clean);
+  ASSERT_TRUE(legacy_a);
+  ASSERT_TRUE(imputed_a);
+  ASSERT_TRUE(legacy_b);
+  ASSERT_TRUE(imputed_b);
+  auto cache_a = ex::prepare_research_ic(*scored, cfg, {4, true, 1}, {}, scored_bad, "close",
+                                         with(scored_bad));
+  auto legacy_cache_a = ex::prepare_research_ic(*scored, cfg, {4, true, 1}, {}, scored_bad);
+  ASSERT_TRUE(cache_a);
+  ASSERT_TRUE(legacy_cache_a);
+  for (usize k = 0; k < 4U; ++k) {
+    const usize h = cfg.horizons[k];
+    SCOPED_TRACE(h);
+    // The straddling entries [L - h + 1, L]: imputed from the bad session on, guarded before it.
+    usize kept = 0, guarded = 0;
+    for (usize entry = last + 1U - h; entry <= last; ++entry) {
+      if (entry >= bad_session) ++kept;
+      else ++guarded;
+    }
+    // (A)
+    const auto& a0 = legacy_a->result.coverage[k];
+    const auto& a1 = imputed_a->result.coverage[k];
+    EXPECT_EQ(a1.terminal_imputed_pairs, static_cast<u64>(kept));
+    EXPECT_EQ(a1.guard_excluded_pairs - a0.guard_excluded_pairs, static_cast<u64>(guarded));
+    EXPECT_EQ(a1.finite_label_pairs - a0.finite_label_pairs, static_cast<u64>(kept));
+    const auto old_labels = legacy_cache_a->labels(k);
+    const auto new_labels = cache_a->labels(k);
+    ASSERT_EQ(old_labels.size(), new_labels.size());
+    for (usize row = 0; row < cache_a->label_rows(k); ++row) {
+      const usize entry = row + cfg.execution_delay;
+      for (usize i = 0; i < names; ++i) {
+        const usize cell = row * names + i;
+        if (i == 0U && entry <= last && last < entry + h && entry >= bad_session) {
+          EXPECT_TRUE(same_bits(new_labels[cell], terminal_close / close[entry * names] - 1.0))
+              << row;
+        } else {
+          EXPECT_TRUE(same_bits(old_labels[cell], new_labels[cell])) << row << ',' << i;
+        }
+      }
+    }
+    // (B)
+    const auto& b0 = legacy_b->result.coverage[k];
+    const auto& b1 = imputed_b->result.coverage[k];
+    EXPECT_EQ(b1.terminal_imputed_pairs, 0U);
+    EXPECT_EQ(b1.guard_excluded_pairs - b0.guard_excluded_pairs, static_cast<u64>(h));
+    EXPECT_EQ(b1.finite_label_pairs, b0.finite_label_pairs);
+    EXPECT_TRUE(same_series(legacy_b->rank[k], imputed_b->rank[k]));
+  }
+  // Refusals: a scored guard without the label guard; a decreasing label guard.
+  EXPECT_FALSE(ex::prepare_research_ic(*scored, cfg, {4, true, 1}, {}, scored_bad, "close",
+                                       with({})));
+  auto decreasing = terminal_bad;
+  decreasing[(dates - 1U) * names] = 0U;
+  EXPECT_FALSE(ex::prepare_research_ic(*scored, cfg, {4, true, 1}, {}, clean, "close",
+                                       with(decreasing)));
+}
+} // namespace atx_test_ic_screen_s2

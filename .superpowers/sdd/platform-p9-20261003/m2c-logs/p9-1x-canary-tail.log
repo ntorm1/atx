@@ -1,0 +1,7 @@
+(tail of build-equity/mega-p9-1x-canary.log; the digest assertion passed, the run failed only the 15 s first-run wall limit on a busy host)
+>           _live_cycle(root)
+        assert got == dict(entry["outputs"], primary_scenario=entry["primary_scenario"])
+>       assert seconds < limit, f"first run took {seconds:.1f} s (limit {limit} s)"
+E       AssertionError: first run took 23.2 s (limit 15.0 s)
+E       assert 23.15768940000271 < 15.0
+1 failed, 14 passed in 34.16s

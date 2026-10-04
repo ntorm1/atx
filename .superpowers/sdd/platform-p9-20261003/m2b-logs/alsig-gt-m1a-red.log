@@ -1,0 +1,17 @@
+﻿Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = ResearchFieldsWriter.QuantilesPartitionLikeNumpy:ResearchFieldsVolumeMean.SumOrderIsNumpys
+[==========] Running 2 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 1 test from ResearchFieldsWriter
+[ RUN      ] ResearchFieldsWriter.QuantilesPartitionLikeNumpy
+[       OK ] ResearchFieldsWriter.QuantilesPartitionLikeNumpy (0 ms)
+[----------] 1 test from ResearchFieldsWriter (0 ms total)
+
+[----------] 1 test from ResearchFieldsVolumeMean
+[ RUN      ] ResearchFieldsVolumeMean.SumOrderIsNumpys
+[       OK ] ResearchFieldsVolumeMean.SumOrderIsNumpys (0 ms)
+[----------] 1 test from ResearchFieldsVolumeMean (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 2 tests from 2 test suites ran. (0 ms total)
+[  PASSED  ] 2 tests.

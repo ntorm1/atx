@@ -128,6 +128,18 @@ co::Status composition_standardise(const Json& doc,const RuleInputs& in,PinnedWe
 co::Status composition_residualise(const Json& doc,const RuleInputs& in,PinnedWeights& pinned);
 co::Status composition_schedule(const Json& doc,const RuleInputs& in,PinnedWeights& pinned);
 co::Status composition_sleeves(const Json& doc,const RuleInputs& in,PinnedWeights& pinned);
+// P9 lane AL-COMB: the theme_schedule rows' shared parse (theme-tsmom-v1 and mom-volman-v1;
+// strategy_ic_mom_volman.cpp) and theme-cov-hedge-v1's (strategy_ic_theme_hedge.cpp).
+co::Status composition_schedule_rules(const Json& doc,const RuleInputs& in,PinnedWeights& pinned);
+co::Status composition_hedge(const Json& doc,const RuleInputs& in,PinnedWeights& pinned);
+// P9 lane AL-COMB (ruling ALCOMB-5 S-3): what a scored role's summary entry prints for the two
+// rules, nothing when the rule's block is absent. composition_hedge_trace: the theme names and,
+// per hedge block, its date index, session and each theme's hedge ratio h (the composition's
+// hedge_block / hedge_ratio; Internal on a shape that does not match the pinned themes).
+// composition_schedule_trace: mom-volman-v1's sigma, target and scale per block, by first session.
+co::Status add_theme_hedge_trace(const PinnedWeights& pinned,std::span<const i64> sessions,
+                                 const IcCompositionResult& combined,Json& result);
+co::Status add_mom_volman_trace(const PinnedWeights& pinned,Json& result);
 co::Status verify_ic_shrink(const Json& block,const Library& lib,const std::vector<f64>& weights);
 co::Status verify_ic_shrink_aim(const Json& block,const Library& lib,const std::vector<f64>& weights);
 co::Status verify_theme_erc(const Json& block,const Library& lib,const std::vector<f64>& weights);

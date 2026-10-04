@@ -1,0 +1,82 @@
+{
+  "engine": {
+    "build_type": "Debug",
+    "exe_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "git_sha": "fixture",
+    "name": "atx-research-fields"
+  },
+  "fields": [
+    {
+      "dtype": "<f8",
+      "file": "f1.f64",
+      "formula_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "name": "f1",
+      "producer": {
+        "build_type": "Debug",
+        "exe_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "git_sha": "fixture",
+        "kind": "engine",
+        "receipt_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "sha256": "dce49e857b4c065671d6fe4c184dde71192e93fd0a0b988896f9e9efb54332e1",
+      "sources": [
+        {
+          "bytes": 1,
+          "path": "C:\\elsewhere\\not-in-the-tree\\src.parquet",
+          "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        {
+          "bytes": 1,
+          "path": "build-equity/fx-sources/src.json",
+          "sha256": "11c21a963c249489403b9595316eff82a6b778cd5b1425b1899f23eab6d7ba71"
+        }
+      ]
+    },
+    {
+      "dtype": "<f8",
+      "file": "f2.f64",
+      "name": "f2",
+      "producer": {
+        "code_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+        "module": "prepare_research_fields"
+      },
+      "reused_from": {
+        "manifest_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+        "path": "build-equity/fx-fields-old"
+      },
+      "sha256": "ed38c1e1fa7d457b3925a47d61edf501633a4df14f7e219c6bb156aefb344e5f",
+      "sources": [
+        {
+          "bytes": 1,
+          "path": "build-equity/fx-role/role.json",
+          "sha256": "8d75449cd974f3cd729787684fe9a8e24dba5734882188c155a6adc38625eb59"
+        }
+      ]
+    }
+  ],
+  "files": {
+    "f1.f64": {
+      "bytes": 16777224,
+      "sha256": "dce49e857b4c065671d6fe4c184dde71192e93fd0a0b988896f9e9efb54332e1"
+    },
+    "f2.f64": {
+      "bytes": 16777232,
+      "sha256": "ed38c1e1fa7d457b3925a47d61edf501633a4df14f7e219c6bb156aefb344e5f"
+    }
+  },
+  "receipt_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "registry": {
+    "path": "atx-engine/tools/field_registry.json",
+    "sha256": "04cb490ec424e4599fdf13dc237bc8086a6bd87fbb36db04c1ebd5fb2a909e86"
+  },
+  "role": {
+    "manifest_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "path": "build-equity/fx-role"
+  },
+  "schema": "atx.research-role-fields/v1",
+  "seal": {
+    "exclusive_end": "2024-01-01",
+    "rule": "placeholder"
+  },
+  "status": "complete"
+}

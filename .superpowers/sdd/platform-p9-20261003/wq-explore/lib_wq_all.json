@@ -1,0 +1,3290 @@
+{
+ "schema": "atx.dsl-ic-library/v1",
+ "id": "wq_explore_all",
+ "fields": [
+  {
+   "name": "close",
+   "basis": "as the primary library / fields-v15 manifest"
+  },
+  {
+   "name": "raw_close",
+   "basis": "as the primary library / fields-v15 manifest"
+  },
+  {
+   "name": "volume",
+   "basis": "as the primary library / fields-v15 manifest"
+  },
+  {
+   "name": "open_adj",
+   "basis": "as the primary library / fields-v15 manifest"
+  },
+  {
+   "name": "high_adj",
+   "basis": "as the primary library / fields-v15 manifest"
+  },
+  {
+   "name": "low_adj",
+   "basis": "as the primary library / fields-v15 manifest"
+  },
+  {
+   "name": "me_company",
+   "basis": "as the primary library / fields-v15 manifest"
+  },
+  {
+   "name": "grp_ff12",
+   "basis": "as the primary library / fields-v15 manifest"
+  },
+  {
+   "name": "grp_ff49",
+   "basis": "as the primary library / fields-v15 manifest"
+  },
+  {
+   "name": "grp_sic2",
+   "basis": "as the primary library / fields-v15 manifest"
+  }
+ ],
+ "families": [
+  {
+   "id": "wq_raw",
+   "description": "Kakushadze (2016) alphas as printed (exploratory)"
+  },
+  {
+   "id": "wq_house",
+   "description": "the same in the house form rank(decay_linear(x, 5 | 21))"
+  }
+ ],
+ "candidates": [
+  {
+   "id": "wq001",
+   "family": "wq_raw",
+   "dsl": "(rank(ts_argmax(signedpower(((((close / delay(close, 1)) - 1) < 0) ? stddev(((close / delay(close, 1)) - 1), 20) : (close * (raw_close / close))), 2), 5)) - 0.5)",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#1"
+  },
+  {
+   "id": "wq001h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((rank(ts_argmax(signedpower(((((close / delay(close, 1)) - 1) < 0) ? stddev(((close / delay(close, 1)) - 1), 20) : (close * (raw_close / close))), 2), 5)) - 0.5), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#1"
+  },
+  {
+   "id": "wq002",
+   "family": "wq_raw",
+   "dsl": "(-1 * correlation(rank(delta(log(volume), 2)), rank(((close - open_adj) / open_adj)), 6))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#2"
+  },
+  {
+   "id": "wq002h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((-1 * correlation(rank(delta(log(volume), 2)), rank(((close - open_adj) / open_adj)), 6)), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#2"
+  },
+  {
+   "id": "wq003",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * correlation(rank((open_adj * (raw_close / close))), rank(volume), 10))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#3"
+  },
+  {
+   "id": "wq003h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * correlation(rank((open_adj * (raw_close / close))), rank(volume), 10)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#3"
+  },
+  {
+   "id": "wq004",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * ts_rank(rank((low_adj * (raw_close / close))), 9))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#4"
+  },
+  {
+   "id": "wq004h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * ts_rank(rank((low_adj * (raw_close / close))), 9)), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#4"
+  },
+  {
+   "id": "wq005",
+   "family": "wq_raw",
+   "dsl": "(rank(((open_adj - (ts_sum((((high_adj + low_adj) + close) / 3), 10) / 10)) * (raw_close / close))) * ((0 - 1) * abs(rank(((close - (((high_adj + low_adj) + close) / 3)) * (raw_close / close))))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#5"
+  },
+  {
+   "id": "wq005h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((rank(((open_adj - (ts_sum((((high_adj + low_adj) + close) / 3), 10) / 10)) * (raw_close / close))) * ((0 - 1) * abs(rank(((close - (((high_adj + low_adj) + close) / 3)) * (raw_close / close)))))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#5"
+  },
+  {
+   "id": "wq006",
+   "family": "wq_raw",
+   "dsl": "(-1 * correlation(open_adj, volume, 10))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#6"
+  },
+  {
+   "id": "wq006h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((-1 * correlation(open_adj, volume, 10)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#6"
+  },
+  {
+   "id": "wq007",
+   "family": "wq_raw",
+   "dsl": "((ts_mean((raw_close * volume), 20) < volume) ? ((-1 * ts_rank(abs(delta(close, 7)), 60)) * sign(delta(close, 7))) : (-1 * 1))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#7"
+  },
+  {
+   "id": "wq007h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((ts_mean((raw_close * volume), 20) < volume) ? ((-1 * ts_rank(abs(delta(close, 7)), 60)) * sign(delta(close, 7))) : (-1 * 1)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#7"
+  },
+  {
+   "id": "wq008",
+   "family": "wq_raw",
+   "dsl": "(-1 * rank((((ts_sum(open_adj, 5) * ts_sum(((close / delay(close, 1)) - 1), 5)) - delay((ts_sum(open_adj, 5) * ts_sum(((close / delay(close, 1)) - 1), 5)), 10)) * (raw_close / close))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#8"
+  },
+  {
+   "id": "wq008h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((-1 * rank((((ts_sum(open_adj, 5) * ts_sum(((close / delay(close, 1)) - 1), 5)) - delay((ts_sum(open_adj, 5) * ts_sum(((close / delay(close, 1)) - 1), 5)), 10)) * (raw_close / close)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#8"
+  },
+  {
+   "id": "wq009",
+   "family": "wq_raw",
+   "dsl": "((0 < ts_min(delta(close, 1), 5)) ? (delta(close, 1) * (raw_close / close)) : ((ts_max(delta(close, 1), 5) < 0) ? (delta(close, 1) * (raw_close / close)) : (-1 * (delta(close, 1) * (raw_close / close)))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#9"
+  },
+  {
+   "id": "wq009h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 < ts_min(delta(close, 1), 5)) ? (delta(close, 1) * (raw_close / close)) : ((ts_max(delta(close, 1), 5) < 0) ? (delta(close, 1) * (raw_close / close)) : (-1 * (delta(close, 1) * (raw_close / close))))), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#9"
+  },
+  {
+   "id": "wq010",
+   "family": "wq_raw",
+   "dsl": "rank(((0 < ts_min(delta(close, 1), 4)) ? (delta(close, 1) * (raw_close / close)) : ((ts_max(delta(close, 1), 4) < 0) ? (delta(close, 1) * (raw_close / close)) : (-1 * (delta(close, 1) * (raw_close / close))))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#10"
+  },
+  {
+   "id": "wq010h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(rank(((0 < ts_min(delta(close, 1), 4)) ? (delta(close, 1) * (raw_close / close)) : ((ts_max(delta(close, 1), 4) < 0) ? (delta(close, 1) * (raw_close / close)) : (-1 * (delta(close, 1) * (raw_close / close)))))), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#10"
+  },
+  {
+   "id": "wq011",
+   "family": "wq_raw",
+   "dsl": "((rank((ts_max(((((high_adj + low_adj) + close) / 3) - close), 3) * (raw_close / close))) + rank((ts_min(((((high_adj + low_adj) + close) / 3) - close), 3) * (raw_close / close)))) * rank(delta(volume, 3)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#11"
+  },
+  {
+   "id": "wq011h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((rank((ts_max(((((high_adj + low_adj) + close) / 3) - close), 3) * (raw_close / close))) + rank((ts_min(((((high_adj + low_adj) + close) / 3) - close), 3) * (raw_close / close)))) * rank(delta(volume, 3))), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#11"
+  },
+  {
+   "id": "wq012",
+   "family": "wq_raw",
+   "dsl": "(sign(delta(volume, 1)) * (-1 * (delta(close, 1) * (raw_close / close))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#12"
+  },
+  {
+   "id": "wq012h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((sign(delta(volume, 1)) * (-1 * (delta(close, 1) * (raw_close / close)))), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#12"
+  },
+  {
+   "id": "wq013",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * rank(covariance(rank((close * (raw_close / close))), rank(volume), 5)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#13"
+  },
+  {
+   "id": "wq013h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * rank(covariance(rank((close * (raw_close / close))), rank(volume), 5))), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#13"
+  },
+  {
+   "id": "wq014",
+   "family": "wq_raw",
+   "dsl": "((-1 * rank(delta(((close / delay(close, 1)) - 1), 3))) * correlation(open_adj, volume, 10))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#14"
+  },
+  {
+   "id": "wq014h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((-1 * rank(delta(((close / delay(close, 1)) - 1), 3))) * correlation(open_adj, volume, 10)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#14"
+  },
+  {
+   "id": "wq015",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * ts_sum(rank(correlation(rank((high_adj * (raw_close / close))), rank(volume), 3)), 3))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#15"
+  },
+  {
+   "id": "wq015h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * ts_sum(rank(correlation(rank((high_adj * (raw_close / close))), rank(volume), 3)), 3)), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#15"
+  },
+  {
+   "id": "wq016",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * rank(covariance(rank((high_adj * (raw_close / close))), rank(volume), 5)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#16"
+  },
+  {
+   "id": "wq016h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * rank(covariance(rank((high_adj * (raw_close / close))), rank(volume), 5))), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#16"
+  },
+  {
+   "id": "wq017",
+   "family": "wq_raw",
+   "dsl": "(((-1 * rank(ts_rank(close, 10))) * rank((delta(delta(close, 1), 1) * (raw_close / close)))) * rank(ts_rank((volume / ts_mean((raw_close * volume), 20)), 5)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#17"
+  },
+  {
+   "id": "wq017h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((((-1 * rank(ts_rank(close, 10))) * rank((delta(delta(close, 1), 1) * (raw_close / close)))) * rank(ts_rank((volume / ts_mean((raw_close * volume), 20)), 5))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#17"
+  },
+  {
+   "id": "wq018",
+   "family": "wq_raw",
+   "dsl": "(-1 * rank((((stddev(abs((close - open_adj)), 5) + (close - open_adj)) * (raw_close / close)) + correlation(close, open_adj, 10))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#18"
+  },
+  {
+   "id": "wq018h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((-1 * rank((((stddev(abs((close - open_adj)), 5) + (close - open_adj)) * (raw_close / close)) + correlation(close, open_adj, 10)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#18"
+  },
+  {
+   "id": "wq019",
+   "family": "wq_raw",
+   "dsl": "((-1 * sign(((close - delay(close, 7)) + delta(close, 7)))) * (1 + rank((1 + ts_sum(((close / delay(close, 1)) - 1), 250)))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#19"
+  },
+  {
+   "id": "wq019h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((-1 * sign(((close - delay(close, 7)) + delta(close, 7)))) * (1 + rank((1 + ts_sum(((close / delay(close, 1)) - 1), 250))))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#19"
+  },
+  {
+   "id": "wq020",
+   "family": "wq_raw",
+   "dsl": "(((-1 * rank(((open_adj - delay(high_adj, 1)) * (raw_close / close)))) * rank(((open_adj - delay(close, 1)) * (raw_close / close)))) * rank(((open_adj - delay(low_adj, 1)) * (raw_close / close))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#20"
+  },
+  {
+   "id": "wq020h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((((-1 * rank(((open_adj - delay(high_adj, 1)) * (raw_close / close)))) * rank(((open_adj - delay(close, 1)) * (raw_close / close)))) * rank(((open_adj - delay(low_adj, 1)) * (raw_close / close)))), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#20"
+  },
+  {
+   "id": "wq021",
+   "family": "wq_raw",
+   "dsl": "((((ts_sum(close, 8) / 8) + stddev(close, 8)) < (ts_sum(close, 2) / 2)) ? (-1 * 1) : (((ts_sum(close, 2) / 2) < ((ts_sum(close, 8) / 8) - stddev(close, 8))) ? 1 : (((1 < (volume / ts_mean((raw_close * volume), 20))) || ((volume / ts_mean((raw_close * volume), 20)) == 1)) ? 1 : (-1 * 1))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#21"
+  },
+  {
+   "id": "wq021h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((((ts_sum(close, 8) / 8) + stddev(close, 8)) < (ts_sum(close, 2) / 2)) ? (-1 * 1) : (((ts_sum(close, 2) / 2) < ((ts_sum(close, 8) / 8) - stddev(close, 8))) ? 1 : (((1 < (volume / ts_mean((raw_close * volume), 20))) || ((volume / ts_mean((raw_close * volume), 20)) == 1)) ? 1 : (-1 * 1)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#21"
+  },
+  {
+   "id": "wq022",
+   "family": "wq_raw",
+   "dsl": "(-1 * (delta(correlation(high_adj, volume, 5), 5) * rank((stddev(close, 20) * (raw_close / close)))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#22"
+  },
+  {
+   "id": "wq022h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((-1 * (delta(correlation(high_adj, volume, 5), 5) * rank((stddev(close, 20) * (raw_close / close))))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#22"
+  },
+  {
+   "id": "wq023",
+   "family": "wq_raw",
+   "dsl": "(((ts_sum(high_adj, 20) / 20) < high_adj) ? (-1 * (delta(high_adj, 2) * (raw_close / close))) : 0)",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#23"
+  },
+  {
+   "id": "wq023h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((((ts_sum(high_adj, 20) / 20) < high_adj) ? (-1 * (delta(high_adj, 2) * (raw_close / close))) : 0), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#23"
+  },
+  {
+   "id": "wq024",
+   "family": "wq_raw",
+   "dsl": "((((delta((ts_sum(close, 100) / 100), 100) / delay(close, 100)) < 0.05) || ((delta((ts_sum(close, 100) / 100), 100) / delay(close, 100)) == 0.05)) ? (-1 * ((close - ts_min(close, 100)) * (raw_close / close))) : (-1 * (delta(close, 3) * (raw_close / close))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#24"
+  },
+  {
+   "id": "wq024h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((((delta((ts_sum(close, 100) / 100), 100) / delay(close, 100)) < 0.05) || ((delta((ts_sum(close, 100) / 100), 100) / delay(close, 100)) == 0.05)) ? (-1 * ((close - ts_min(close, 100)) * (raw_close / close))) : (-1 * (delta(close, 3) * (raw_close / close)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#24"
+  },
+  {
+   "id": "wq025",
+   "family": "wq_raw",
+   "dsl": "rank(((((((0 - 1) * ((close / delay(close, 1)) - 1)) * ts_mean((raw_close * volume), 20)) * (((high_adj + low_adj) + close) / 3)) * (high_adj - close)) * power((raw_close / close), 2)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#25"
+  },
+  {
+   "id": "wq025h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(rank(((((((0 - 1) * ((close / delay(close, 1)) - 1)) * ts_mean((raw_close * volume), 20)) * (((high_adj + low_adj) + close) / 3)) * (high_adj - close)) * power((raw_close / close), 2))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#25"
+  },
+  {
+   "id": "wq026",
+   "family": "wq_raw",
+   "dsl": "(-1 * ts_max(correlation(ts_rank(volume, 5), ts_rank(high_adj, 5), 5), 3))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#26"
+  },
+  {
+   "id": "wq026h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((-1 * ts_max(correlation(ts_rank(volume, 5), ts_rank(high_adj, 5), 5), 3)), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#26"
+  },
+  {
+   "id": "wq027",
+   "family": "wq_raw",
+   "dsl": "((0.5 < rank((ts_sum(correlation(rank(volume), rank(((((high_adj + low_adj) + close) / 3) * (raw_close / close))), 6), 2) / 2))) ? (0 - 1) : 1)",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#27"
+  },
+  {
+   "id": "wq027h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0.5 < rank((ts_sum(correlation(rank(volume), rank(((((high_adj + low_adj) + close) / 3) * (raw_close / close))), 6), 2) / 2))) ? (0 - 1) : 1), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#27"
+  },
+  {
+   "id": "wq028",
+   "family": "wq_raw",
+   "dsl": "scale(((correlation(ts_mean((raw_close * volume), 20), low_adj, 5) + (((high_adj + low_adj) / 2) * (raw_close / close))) - (close * (raw_close / close))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#28"
+  },
+  {
+   "id": "wq028h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(scale(((correlation(ts_mean((raw_close * volume), 20), low_adj, 5) + (((high_adj + low_adj) / 2) * (raw_close / close))) - (close * (raw_close / close)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#28"
+  },
+  {
+   "id": "wq029",
+   "family": "wq_raw",
+   "dsl": "(ts_min(rank(rank(scale(log(ts_sum(ts_min(rank(rank(((0 - 1) * rank((delta(close, 5) * (raw_close / close)))))), 2), 1))))), 5) + ts_rank(delay(((0 - 1) * ((close / delay(close, 1)) - 1)), 6), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#29"
+  },
+  {
+   "id": "wq029h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((ts_min(rank(rank(scale(log(ts_sum(ts_min(rank(rank(((0 - 1) * rank((delta(close, 5) * (raw_close / close)))))), 2), 1))))), 5) + ts_rank(delay(((0 - 1) * ((close / delay(close, 1)) - 1)), 6), 5)), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#29"
+  },
+  {
+   "id": "wq030",
+   "family": "wq_raw",
+   "dsl": "(((1.0 - rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2)))) + sign((delay(close, 2) - delay(close, 3)))))) * ts_sum(volume, 5)) / ts_sum(volume, 20))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#30"
+  },
+  {
+   "id": "wq030h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((((1.0 - rank(((sign((close - delay(close, 1))) + sign((delay(close, 1) - delay(close, 2)))) + sign((delay(close, 2) - delay(close, 3)))))) * ts_sum(volume, 5)) / ts_sum(volume, 20)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#30"
+  },
+  {
+   "id": "wq031",
+   "family": "wq_raw",
+   "dsl": "((rank(rank(rank(decay_linear(((0 - 1) * rank(rank((delta(close, 10) * (raw_close / close))))), 10)))) + rank((((0 - 1) * delta(close, 3)) * (raw_close / close)))) + sign(scale(correlation(ts_mean((raw_close * volume), 20), low_adj, 12))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#31"
+  },
+  {
+   "id": "wq031h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((rank(rank(rank(decay_linear(((0 - 1) * rank(rank((delta(close, 10) * (raw_close / close))))), 10)))) + rank((((0 - 1) * delta(close, 3)) * (raw_close / close)))) + sign(scale(correlation(ts_mean((raw_close * volume), 20), low_adj, 12)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#31"
+  },
+  {
+   "id": "wq032",
+   "family": "wq_raw",
+   "dsl": "(scale((((ts_sum(close, 7) / 7) - close) * (raw_close / close))) + (20 * scale(correlation((((high_adj + low_adj) + close) / 3), delay(close, 5), 230))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#32"
+  },
+  {
+   "id": "wq032h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((scale((((ts_sum(close, 7) / 7) - close) * (raw_close / close))) + (20 * scale(correlation((((high_adj + low_adj) + close) / 3), delay(close, 5), 230)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#32"
+  },
+  {
+   "id": "wq033",
+   "family": "wq_raw",
+   "dsl": "rank((-1 * power((1 - (open_adj / close)), 1)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#33"
+  },
+  {
+   "id": "wq033h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(rank((-1 * power((1 - (open_adj / close)), 1))), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#33"
+  },
+  {
+   "id": "wq034",
+   "family": "wq_raw",
+   "dsl": "rank(((1 - rank((stddev(((close / delay(close, 1)) - 1), 2) / stddev(((close / delay(close, 1)) - 1), 5)))) + (1 - rank((delta(close, 1) * (raw_close / close))))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#34"
+  },
+  {
+   "id": "wq034h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(rank(((1 - rank((stddev(((close / delay(close, 1)) - 1), 2) / stddev(((close / delay(close, 1)) - 1), 5)))) + (1 - rank((delta(close, 1) * (raw_close / close)))))), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#34"
+  },
+  {
+   "id": "wq035",
+   "family": "wq_raw",
+   "dsl": "((ts_rank(volume, 32) * (1 - ts_rank(((close + high_adj) - low_adj), 16))) * (1 - ts_rank(((close / delay(close, 1)) - 1), 32)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#35"
+  },
+  {
+   "id": "wq035h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((ts_rank(volume, 32) * (1 - ts_rank(((close + high_adj) - low_adj), 16))) * (1 - ts_rank(((close / delay(close, 1)) - 1), 32))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#35"
+  },
+  {
+   "id": "wq036",
+   "family": "wq_raw",
+   "dsl": "(((((2.21 * rank(correlation((close - open_adj), delay(volume, 1), 15))) + (0.7 * rank(((open_adj - close) * (raw_close / close))))) + (0.73 * rank(ts_rank(delay(((0 - 1) * ((close / delay(close, 1)) - 1)), 6), 5)))) + rank(abs(correlation((((high_adj + low_adj) + close) / 3), ts_mean((raw_close * volume), 20), 6)))) + (0.6 * rank(((((ts_sum(close, 200) / 200) - open_adj) * (close - open_adj)) * power((raw_close / close), 2)))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#36"
+  },
+  {
+   "id": "wq036h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((((((2.21 * rank(correlation((close - open_adj), delay(volume, 1), 15))) + (0.7 * rank(((open_adj - close) * (raw_close / close))))) + (0.73 * rank(ts_rank(delay(((0 - 1) * ((close / delay(close, 1)) - 1)), 6), 5)))) + rank(abs(correlation((((high_adj + low_adj) + close) / 3), ts_mean((raw_close * volume), 20), 6)))) + (0.6 * rank(((((ts_sum(close, 200) / 200) - open_adj) * (close - open_adj)) * power((raw_close / close), 2))))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#36"
+  },
+  {
+   "id": "wq037",
+   "family": "wq_raw",
+   "dsl": "(rank(correlation(delay((open_adj - close), 1), close, 200)) + rank(((open_adj - close) * (raw_close / close))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#37"
+  },
+  {
+   "id": "wq037h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((rank(correlation(delay((open_adj - close), 1), close, 200)) + rank(((open_adj - close) * (raw_close / close)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#37"
+  },
+  {
+   "id": "wq038",
+   "family": "wq_raw",
+   "dsl": "((-1 * rank(ts_rank(close, 10))) * rank((close / open_adj)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#38"
+  },
+  {
+   "id": "wq038h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((-1 * rank(ts_rank(close, 10))) * rank((close / open_adj))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#38"
+  },
+  {
+   "id": "wq039",
+   "family": "wq_raw",
+   "dsl": "((-1 * rank(((delta(close, 7) * (raw_close / close)) * (1 - rank(decay_linear((volume / ts_mean((raw_close * volume), 20)), 9)))))) * (1 + rank(ts_sum(((close / delay(close, 1)) - 1), 250))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#39"
+  },
+  {
+   "id": "wq039h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((-1 * rank(((delta(close, 7) * (raw_close / close)) * (1 - rank(decay_linear((volume / ts_mean((raw_close * volume), 20)), 9)))))) * (1 + rank(ts_sum(((close / delay(close, 1)) - 1), 250)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#39"
+  },
+  {
+   "id": "wq040",
+   "family": "wq_raw",
+   "dsl": "((-1 * rank((stddev(high_adj, 10) * (raw_close / close)))) * correlation(high_adj, volume, 10))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#40"
+  },
+  {
+   "id": "wq040h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((-1 * rank((stddev(high_adj, 10) * (raw_close / close)))) * correlation(high_adj, volume, 10)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#40"
+  },
+  {
+   "id": "wq041",
+   "family": "wq_raw",
+   "dsl": "((power((high_adj * low_adj), 0.5) - (((high_adj + low_adj) + close) / 3)) * (raw_close / close))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#41"
+  },
+  {
+   "id": "wq041h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((power((high_adj * low_adj), 0.5) - (((high_adj + low_adj) + close) / 3)) * (raw_close / close)), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#41"
+  },
+  {
+   "id": "wq042",
+   "family": "wq_raw",
+   "dsl": "(rank((((((high_adj + low_adj) + close) / 3) - close) * (raw_close / close))) / rank((((((high_adj + low_adj) + close) / 3) + close) * (raw_close / close))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#42"
+  },
+  {
+   "id": "wq042h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((rank((((((high_adj + low_adj) + close) / 3) - close) * (raw_close / close))) / rank((((((high_adj + low_adj) + close) / 3) + close) * (raw_close / close)))), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#42"
+  },
+  {
+   "id": "wq043",
+   "family": "wq_raw",
+   "dsl": "(ts_rank((volume / ts_mean((raw_close * volume), 20)), 20) * ts_rank((-1 * delta(close, 7)), 8))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#43"
+  },
+  {
+   "id": "wq043h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((ts_rank((volume / ts_mean((raw_close * volume), 20)), 20) * ts_rank((-1 * delta(close, 7)), 8)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#43"
+  },
+  {
+   "id": "wq044",
+   "family": "wq_raw",
+   "dsl": "(-1 * correlation(high_adj, rank(volume), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#44"
+  },
+  {
+   "id": "wq044h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((-1 * correlation(high_adj, rank(volume), 5)), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#44"
+  },
+  {
+   "id": "wq045",
+   "family": "wq_raw",
+   "dsl": "(-1 * ((rank(((ts_sum(delay(close, 5), 20) / 20) * (raw_close / close))) * correlation(close, volume, 2)) * rank(correlation(ts_sum(close, 5), ts_sum(close, 20), 2))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#45"
+  },
+  {
+   "id": "wq045h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((-1 * ((rank(((ts_sum(delay(close, 5), 20) / 20) * (raw_close / close))) * correlation(close, volume, 2)) * rank(correlation(ts_sum(close, 5), ts_sum(close, 20), 2)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#45"
+  },
+  {
+   "id": "wq046",
+   "family": "wq_raw",
+   "dsl": "((0.25 < ((((delay(close, 20) - delay(close, 10)) / 10) - ((delay(close, 10) - close) / 10)) * (raw_close / close))) ? (-1 * 1) : ((((((delay(close, 20) - delay(close, 10)) / 10) - ((delay(close, 10) - close) / 10)) * (raw_close / close)) < 0) ? 1 : ((-1 * 1) * ((close - delay(close, 1)) * (raw_close / close)))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#46"
+  },
+  {
+   "id": "wq046h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0.25 < ((((delay(close, 20) - delay(close, 10)) / 10) - ((delay(close, 10) - close) / 10)) * (raw_close / close))) ? (-1 * 1) : ((((((delay(close, 20) - delay(close, 10)) / 10) - ((delay(close, 10) - close) / 10)) * (raw_close / close)) < 0) ? 1 : ((-1 * 1) * ((close - delay(close, 1)) * (raw_close / close))))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#46"
+  },
+  {
+   "id": "wq047",
+   "family": "wq_raw",
+   "dsl": "((((rank(((1 / close) / (raw_close / close))) * volume) / ts_mean((raw_close * volume), 20)) * ((high_adj * rank(((high_adj - close) * (raw_close / close)))) / (ts_sum(high_adj, 5) / 5))) - rank((((((high_adj + low_adj) + close) / 3) - delay((((high_adj + low_adj) + close) / 3), 5)) * (raw_close / close))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#47"
+  },
+  {
+   "id": "wq047h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((((rank(((1 / close) / (raw_close / close))) * volume) / ts_mean((raw_close * volume), 20)) * ((high_adj * rank(((high_adj - close) * (raw_close / close)))) / (ts_sum(high_adj, 5) / 5))) - rank((((((high_adj + low_adj) + close) / 3) - delay((((high_adj + low_adj) + close) / 3), 5)) * (raw_close / close)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#47"
+  },
+  {
+   "id": "wq048",
+   "family": "wq_raw",
+   "dsl": "(indneutralize(((correlation(delta(close, 1), delta(delay(close, 1), 1), 250) * delta(close, 1)) / close), grp_sic2) / ts_sum(power((delta(close, 1) / delay(close, 1)), 2), 250))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#48"
+  },
+  {
+   "id": "wq048h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((indneutralize(((correlation(delta(close, 1), delta(delay(close, 1), 1), 250) * delta(close, 1)) / close), grp_sic2) / ts_sum(power((delta(close, 1) / delay(close, 1)), 2), 250)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#48"
+  },
+  {
+   "id": "wq049",
+   "family": "wq_raw",
+   "dsl": "((((((delay(close, 20) - delay(close, 10)) / 10) - ((delay(close, 10) - close) / 10)) * (raw_close / close)) < (-1 * 0.1)) ? 1 : ((-1 * 1) * ((close - delay(close, 1)) * (raw_close / close))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#49"
+  },
+  {
+   "id": "wq049h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((((((delay(close, 20) - delay(close, 10)) / 10) - ((delay(close, 10) - close) / 10)) * (raw_close / close)) < (-1 * 0.1)) ? 1 : ((-1 * 1) * ((close - delay(close, 1)) * (raw_close / close)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#49"
+  },
+  {
+   "id": "wq050",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * ts_max(rank(correlation(rank(volume), rank(((((high_adj + low_adj) + close) / 3) * (raw_close / close))), 5)), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#50"
+  },
+  {
+   "id": "wq050h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * ts_max(rank(correlation(rank(volume), rank(((((high_adj + low_adj) + close) / 3) * (raw_close / close))), 5)), 5)), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#50"
+  },
+  {
+   "id": "wq051",
+   "family": "wq_raw",
+   "dsl": "((((((delay(close, 20) - delay(close, 10)) / 10) - ((delay(close, 10) - close) / 10)) * (raw_close / close)) < (-1 * 0.05)) ? 1 : ((-1 * 1) * ((close - delay(close, 1)) * (raw_close / close))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#51"
+  },
+  {
+   "id": "wq051h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((((((delay(close, 20) - delay(close, 10)) / 10) - ((delay(close, 10) - close) / 10)) * (raw_close / close)) < (-1 * 0.05)) ? 1 : ((-1 * 1) * ((close - delay(close, 1)) * (raw_close / close)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#51"
+  },
+  {
+   "id": "wq052",
+   "family": "wq_raw",
+   "dsl": "(((((-1 * ts_min(low_adj, 5)) + delay(ts_min(low_adj, 5), 5)) * (raw_close / close)) * rank(((ts_sum(((close / delay(close, 1)) - 1), 240) - ts_sum(((close / delay(close, 1)) - 1), 20)) / 220))) * ts_rank(volume, 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#52"
+  },
+  {
+   "id": "wq052h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((((((-1 * ts_min(low_adj, 5)) + delay(ts_min(low_adj, 5), 5)) * (raw_close / close)) * rank(((ts_sum(((close / delay(close, 1)) - 1), 240) - ts_sum(((close / delay(close, 1)) - 1), 20)) / 220))) * ts_rank(volume, 5)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#52"
+  },
+  {
+   "id": "wq053",
+   "family": "wq_raw",
+   "dsl": "(-1 * delta((((close - low_adj) - (high_adj - close)) / (close - low_adj)), 9))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#53"
+  },
+  {
+   "id": "wq053h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((-1 * delta((((close - low_adj) - (high_adj - close)) / (close - low_adj)), 9)), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#53"
+  },
+  {
+   "id": "wq054",
+   "family": "wq_raw",
+   "dsl": "((-1 * ((low_adj - close) * power(open_adj, 5))) / ((low_adj - high_adj) * power(close, 5)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#54"
+  },
+  {
+   "id": "wq054h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((-1 * ((low_adj - close) * power(open_adj, 5))) / ((low_adj - high_adj) * power(close, 5))), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#54"
+  },
+  {
+   "id": "wq055",
+   "family": "wq_raw",
+   "dsl": "(-1 * correlation(rank(((close - ts_min(low_adj, 12)) / (ts_max(high_adj, 12) - ts_min(low_adj, 12)))), rank(volume), 6))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#55"
+  },
+  {
+   "id": "wq055h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((-1 * correlation(rank(((close - ts_min(low_adj, 12)) / (ts_max(high_adj, 12) - ts_min(low_adj, 12)))), rank(volume), 6)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#55"
+  },
+  {
+   "id": "wq056",
+   "family": "wq_raw",
+   "dsl": "(0 - (1 * (rank((ts_sum(((close / delay(close, 1)) - 1), 10) / ts_sum(ts_sum(((close / delay(close, 1)) - 1), 2), 3))) * rank((((close / delay(close, 1)) - 1) * me_company)))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#56"
+  },
+  {
+   "id": "wq056h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((0 - (1 * (rank((ts_sum(((close / delay(close, 1)) - 1), 10) / ts_sum(ts_sum(((close / delay(close, 1)) - 1), 2), 3))) * rank((((close / delay(close, 1)) - 1) * me_company))))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#56"
+  },
+  {
+   "id": "wq057",
+   "family": "wq_raw",
+   "dsl": "(0 - ((1 * ((close - (((high_adj + low_adj) + close) / 3)) / decay_linear(rank(ts_argmax(close, 30)), 2))) * (raw_close / close)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#57"
+  },
+  {
+   "id": "wq057h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((0 - ((1 * ((close - (((high_adj + low_adj) + close) / 3)) / decay_linear(rank(ts_argmax(close, 30)), 2))) * (raw_close / close))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#57"
+  },
+  {
+   "id": "wq058",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * ts_rank(decay_linear(correlation(indneutralize(((((high_adj + low_adj) + close) / 3) * (raw_close / close)), grp_ff12), volume, 3), 7), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#58"
+  },
+  {
+   "id": "wq058h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * ts_rank(decay_linear(correlation(indneutralize(((((high_adj + low_adj) + close) / 3) * (raw_close / close)), grp_ff12), volume, 3), 7), 5)), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#58"
+  },
+  {
+   "id": "wq059",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * ts_rank(decay_linear(correlation(indneutralize(((((((high_adj + low_adj) + close) / 3) * 0.728317) + ((((high_adj + low_adj) + close) / 3) * 0.271683)) * (raw_close / close)), grp_ff49), volume, 4), 16), 8))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#59"
+  },
+  {
+   "id": "wq059h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * ts_rank(decay_linear(correlation(indneutralize(((((((high_adj + low_adj) + close) / 3) * 0.728317) + ((((high_adj + low_adj) + close) / 3) * 0.271683)) * (raw_close / close)), grp_ff49), volume, 4), 16), 8)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#59"
+  },
+  {
+   "id": "wq060",
+   "family": "wq_raw",
+   "dsl": "(0 - (1 * ((2 * scale(rank(((((close - low_adj) - (high_adj - close)) / (high_adj - low_adj)) * volume)))) - scale(rank(ts_argmax(close, 10))))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#60"
+  },
+  {
+   "id": "wq060h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((0 - (1 * ((2 * scale(rank(((((close - low_adj) - (high_adj - close)) / (high_adj - low_adj)) * volume)))) - scale(rank(ts_argmax(close, 10)))))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#60"
+  },
+  {
+   "id": "wq061",
+   "family": "wq_raw",
+   "dsl": "((rank((((((high_adj + low_adj) + close) / 3) - ts_min((((high_adj + low_adj) + close) / 3), 16)) * (raw_close / close))) < rank(correlation((((high_adj + low_adj) + close) / 3), ts_mean((raw_close * volume), 180), 18))) ? 1 : 0)",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#61"
+  },
+  {
+   "id": "wq061h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((rank((((((high_adj + low_adj) + close) / 3) - ts_min((((high_adj + low_adj) + close) / 3), 16)) * (raw_close / close))) < rank(correlation((((high_adj + low_adj) + close) / 3), ts_mean((raw_close * volume), 180), 18))) ? 1 : 0), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#61"
+  },
+  {
+   "id": "wq062",
+   "family": "wq_raw",
+   "dsl": "((rank(correlation((((high_adj + low_adj) + close) / 3), ts_sum(ts_mean((raw_close * volume), 20), 22), 10)) < rank((((rank((open_adj * (raw_close / close))) + rank((open_adj * (raw_close / close)))) < (rank((((high_adj + low_adj) / 2) * (raw_close / close))) + rank((high_adj * (raw_close / close))))) ? 1 : 0))) ? (0 - 1) : 0)",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#62"
+  },
+  {
+   "id": "wq062h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((rank(correlation((((high_adj + low_adj) + close) / 3), ts_sum(ts_mean((raw_close * volume), 20), 22), 10)) < rank((((rank((open_adj * (raw_close / close))) + rank((open_adj * (raw_close / close)))) < (rank((((high_adj + low_adj) / 2) * (raw_close / close))) + rank((high_adj * (raw_close / close))))) ? 1 : 0))) ? (0 - 1) : 0), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#62"
+  },
+  {
+   "id": "wq063",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * (rank(decay_linear(delta(indneutralize((close * (raw_close / close)), grp_ff49), 2), 8)) - rank(decay_linear(correlation((((((high_adj + low_adj) + close) / 3) * 0.318108) + (open_adj * 0.681892)), ts_sum(ts_mean((raw_close * volume), 180), 37), 14), 12))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#63"
+  },
+  {
+   "id": "wq063h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * (rank(decay_linear(delta(indneutralize((close * (raw_close / close)), grp_ff49), 2), 8)) - rank(decay_linear(correlation((((((high_adj + low_adj) + close) / 3) * 0.318108) + (open_adj * 0.681892)), ts_sum(ts_mean((raw_close * volume), 180), 37), 14), 12)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#63"
+  },
+  {
+   "id": "wq064",
+   "family": "wq_raw",
+   "dsl": "((rank(correlation(ts_sum(((open_adj * 0.178404) + (low_adj * 0.821596)), 13), ts_sum(ts_mean((raw_close * volume), 120), 13), 17)) < rank((delta(((((high_adj + low_adj) / 2) * 0.178404) + ((((high_adj + low_adj) + close) / 3) * 0.821596)), 4) * (raw_close / close)))) ? (0 - 1) : 0)",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#64"
+  },
+  {
+   "id": "wq064h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((rank(correlation(ts_sum(((open_adj * 0.178404) + (low_adj * 0.821596)), 13), ts_sum(ts_mean((raw_close * volume), 120), 13), 17)) < rank((delta(((((high_adj + low_adj) / 2) * 0.178404) + ((((high_adj + low_adj) + close) / 3) * 0.821596)), 4) * (raw_close / close)))) ? (0 - 1) : 0), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#64"
+  },
+  {
+   "id": "wq065",
+   "family": "wq_raw",
+   "dsl": "((rank(correlation(((open_adj * 0.00817205) + ((((high_adj + low_adj) + close) / 3) * 0.99182795)), ts_sum(ts_mean((raw_close * volume), 60), 9), 6)) < rank(((open_adj - ts_min(open_adj, 14)) * (raw_close / close)))) ? (0 - 1) : 0)",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#65"
+  },
+  {
+   "id": "wq065h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((rank(correlation(((open_adj * 0.00817205) + ((((high_adj + low_adj) + close) / 3) * 0.99182795)), ts_sum(ts_mean((raw_close * volume), 60), 9), 6)) < rank(((open_adj - ts_min(open_adj, 14)) * (raw_close / close)))) ? (0 - 1) : 0), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#65"
+  },
+  {
+   "id": "wq066",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * (rank((decay_linear(delta((((high_adj + low_adj) + close) / 3), 4), 7) * (raw_close / close))) + ts_rank(decay_linear(((((low_adj * 0.96633) + (low_adj * 0.03367)) - (((high_adj + low_adj) + close) / 3)) / (open_adj - ((high_adj + low_adj) / 2))), 11), 7)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#66"
+  },
+  {
+   "id": "wq066h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * (rank((decay_linear(delta((((high_adj + low_adj) + close) / 3), 4), 7) * (raw_close / close))) + ts_rank(decay_linear(((((low_adj * 0.96633) + (low_adj * 0.03367)) - (((high_adj + low_adj) + close) / 3)) / (open_adj - ((high_adj + low_adj) / 2))), 11), 7))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#66"
+  },
+  {
+   "id": "wq067",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * power(rank(((high_adj - ts_min(high_adj, 2)) * (raw_close / close))), rank(correlation(indneutralize(((((high_adj + low_adj) + close) / 3) * (raw_close / close)), grp_ff12), indneutralize(ts_mean((raw_close * volume), 20), grp_sic2), 6))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#67"
+  },
+  {
+   "id": "wq067h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * power(rank(((high_adj - ts_min(high_adj, 2)) * (raw_close / close))), rank(correlation(indneutralize(((((high_adj + low_adj) + close) / 3) * (raw_close / close)), grp_ff12), indneutralize(ts_mean((raw_close * volume), 20), grp_sic2), 6)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#67"
+  },
+  {
+   "id": "wq068",
+   "family": "wq_raw",
+   "dsl": "((ts_rank(correlation(rank((high_adj * (raw_close / close))), rank(ts_mean((raw_close * volume), 15)), 9), 14) < rank((delta(((close * 0.518371) + (low_adj * 0.481629)), 1) * (raw_close / close)))) ? (0 - 1) : 0)",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#68"
+  },
+  {
+   "id": "wq068h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((ts_rank(correlation(rank((high_adj * (raw_close / close))), rank(ts_mean((raw_close * volume), 15)), 9), 14) < rank((delta(((close * 0.518371) + (low_adj * 0.481629)), 1) * (raw_close / close)))) ? (0 - 1) : 0), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#68"
+  },
+  {
+   "id": "wq069",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * power(rank(ts_max(delta(indneutralize(((((high_adj + low_adj) + close) / 3) * (raw_close / close)), grp_ff49), 3), 5)), ts_rank(correlation(((close * 0.490655) + ((((high_adj + low_adj) + close) / 3) * 0.509345)), ts_mean((raw_close * volume), 20), 5), 9)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#69"
+  },
+  {
+   "id": "wq069h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * power(rank(ts_max(delta(indneutralize(((((high_adj + low_adj) + close) / 3) * (raw_close / close)), grp_ff49), 3), 5)), ts_rank(correlation(((close * 0.490655) + ((((high_adj + low_adj) + close) / 3) * 0.509345)), ts_mean((raw_close * volume), 20), 5), 9))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#69"
+  },
+  {
+   "id": "wq070",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * power(rank((delta((((high_adj + low_adj) + close) / 3), 1) * (raw_close / close))), ts_rank(correlation(indneutralize((close * (raw_close / close)), grp_ff49), ts_mean((raw_close * volume), 50), 18), 18)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#70"
+  },
+  {
+   "id": "wq070h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * power(rank((delta((((high_adj + low_adj) + close) / 3), 1) * (raw_close / close))), ts_rank(correlation(indneutralize((close * (raw_close / close)), grp_ff49), ts_mean((raw_close * volume), 50), 18), 18))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#70"
+  },
+  {
+   "id": "wq071",
+   "family": "wq_raw",
+   "dsl": "max(ts_rank(decay_linear(correlation(ts_rank(close, 3), ts_rank(ts_mean((raw_close * volume), 180), 12), 18), 4), 16), ts_rank(decay_linear(power(rank((((low_adj + open_adj) - ((((high_adj + low_adj) + close) / 3) + (((high_adj + low_adj) + close) / 3))) * (raw_close / close))), 2), 16), 4))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#71"
+  },
+  {
+   "id": "wq071h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(max(ts_rank(decay_linear(correlation(ts_rank(close, 3), ts_rank(ts_mean((raw_close * volume), 180), 12), 18), 4), 16), ts_rank(decay_linear(power(rank((((low_adj + open_adj) - ((((high_adj + low_adj) + close) / 3) + (((high_adj + low_adj) + close) / 3))) * (raw_close / close))), 2), 16), 4)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#71"
+  },
+  {
+   "id": "wq072",
+   "family": "wq_raw",
+   "dsl": "(rank(decay_linear(correlation(((high_adj + low_adj) / 2), ts_mean((raw_close * volume), 40), 9), 10)) / rank(decay_linear(correlation(ts_rank((((high_adj + low_adj) + close) / 3), 4), ts_rank(volume, 19), 7), 3)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#72"
+  },
+  {
+   "id": "wq072h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((rank(decay_linear(correlation(((high_adj + low_adj) / 2), ts_mean((raw_close * volume), 40), 9), 10)) / rank(decay_linear(correlation(ts_rank((((high_adj + low_adj) + close) / 3), 4), ts_rank(volume, 19), 7), 3))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#72"
+  },
+  {
+   "id": "wq073",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * max(rank((decay_linear(delta((((high_adj + low_adj) + close) / 3), 5), 3) * (raw_close / close))), ts_rank(decay_linear(((delta(((open_adj * 0.147155) + (low_adj * 0.852845)), 2) / ((open_adj * 0.147155) + (low_adj * 0.852845))) * (0 - 1)), 3), 17)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#73"
+  },
+  {
+   "id": "wq073h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * max(rank((decay_linear(delta((((high_adj + low_adj) + close) / 3), 5), 3) * (raw_close / close))), ts_rank(decay_linear(((delta(((open_adj * 0.147155) + (low_adj * 0.852845)), 2) / ((open_adj * 0.147155) + (low_adj * 0.852845))) * (0 - 1)), 3), 17))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#73"
+  },
+  {
+   "id": "wq074",
+   "family": "wq_raw",
+   "dsl": "((rank(correlation(close, ts_sum(ts_mean((raw_close * volume), 30), 37), 15)) < rank(correlation(rank((((high_adj * 0.0261661) + ((((high_adj + low_adj) + close) / 3) * 0.9738339)) * (raw_close / close))), rank(volume), 11))) ? (0 - 1) : 0)",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#74"
+  },
+  {
+   "id": "wq074h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((rank(correlation(close, ts_sum(ts_mean((raw_close * volume), 30), 37), 15)) < rank(correlation(rank((((high_adj * 0.0261661) + ((((high_adj + low_adj) + close) / 3) * 0.9738339)) * (raw_close / close))), rank(volume), 11))) ? (0 - 1) : 0), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#74"
+  },
+  {
+   "id": "wq075",
+   "family": "wq_raw",
+   "dsl": "((rank(correlation((((high_adj + low_adj) + close) / 3), volume, 4)) < rank(correlation(rank((low_adj * (raw_close / close))), rank(ts_mean((raw_close * volume), 50)), 12))) ? 1 : 0)",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#75"
+  },
+  {
+   "id": "wq075h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((rank(correlation((((high_adj + low_adj) + close) / 3), volume, 4)) < rank(correlation(rank((low_adj * (raw_close / close))), rank(ts_mean((raw_close * volume), 50)), 12))) ? 1 : 0), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#75"
+  },
+  {
+   "id": "wq076",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * max(rank((decay_linear(delta((((high_adj + low_adj) + close) / 3), 1), 12) * (raw_close / close))), ts_rank(decay_linear(ts_rank(correlation(low_adj, ts_mean((raw_close * volume), 81), 8), 20), 17), 19)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#76"
+  },
+  {
+   "id": "wq076h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * max(rank((decay_linear(delta((((high_adj + low_adj) + close) / 3), 1), 12) * (raw_close / close))), ts_rank(decay_linear(ts_rank(correlation(low_adj, ts_mean((raw_close * volume), 81), 8), 20), 17), 19))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#76"
+  },
+  {
+   "id": "wq077",
+   "family": "wq_raw",
+   "dsl": "min(rank((decay_linear(((((high_adj + low_adj) / 2) + high_adj) - ((((high_adj + low_adj) + close) / 3) + high_adj)), 20) * (raw_close / close))), rank(decay_linear(correlation(((high_adj + low_adj) / 2), ts_mean((raw_close * volume), 40), 3), 6)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#77"
+  },
+  {
+   "id": "wq077h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(min(rank((decay_linear(((((high_adj + low_adj) / 2) + high_adj) - ((((high_adj + low_adj) + close) / 3) + high_adj)), 20) * (raw_close / close))), rank(decay_linear(correlation(((high_adj + low_adj) / 2), ts_mean((raw_close * volume), 40), 3), 6))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#77"
+  },
+  {
+   "id": "wq078",
+   "family": "wq_raw",
+   "dsl": "power(rank(correlation(ts_sum(((low_adj * 0.352233) + ((((high_adj + low_adj) + close) / 3) * 0.647767)), 20), ts_sum(ts_mean((raw_close * volume), 40), 20), 7)), rank(correlation(rank(((((high_adj + low_adj) + close) / 3) * (raw_close / close))), rank(volume), 6)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#78"
+  },
+  {
+   "id": "wq078h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(power(rank(correlation(ts_sum(((low_adj * 0.352233) + ((((high_adj + low_adj) + close) / 3) * 0.647767)), 20), ts_sum(ts_mean((raw_close * volume), 40), 20), 7)), rank(correlation(rank(((((high_adj + low_adj) + close) / 3) * (raw_close / close))), rank(volume), 6))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#78"
+  },
+  {
+   "id": "wq079",
+   "family": "wq_raw",
+   "dsl": "((rank(delta(indneutralize((((close * 0.60733) + (open_adj * 0.39267)) * (raw_close / close)), grp_ff12), 1)) < rank(correlation(ts_rank((((high_adj + low_adj) + close) / 3), 4), ts_rank(ts_mean((raw_close * volume), 150), 9), 15))) ? 1 : 0)",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#79"
+  },
+  {
+   "id": "wq079h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((rank(delta(indneutralize((((close * 0.60733) + (open_adj * 0.39267)) * (raw_close / close)), grp_ff12), 1)) < rank(correlation(ts_rank((((high_adj + low_adj) + close) / 3), 4), ts_rank(ts_mean((raw_close * volume), 150), 9), 15))) ? 1 : 0), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#79"
+  },
+  {
+   "id": "wq080",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * power(sign(rank(delta(indneutralize((((open_adj * 0.868128) + (high_adj * 0.131872)) * (raw_close / close)), grp_ff49), 4))), ts_rank(correlation(high_adj, ts_mean((raw_close * volume), 10), 5), 6)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#80"
+  },
+  {
+   "id": "wq080h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * power(sign(rank(delta(indneutralize((((open_adj * 0.868128) + (high_adj * 0.131872)) * (raw_close / close)), grp_ff49), 4))), ts_rank(correlation(high_adj, ts_mean((raw_close * volume), 10), 5), 6))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#80"
+  },
+  {
+   "id": "wq081",
+   "family": "wq_raw",
+   "dsl": "((rank(log(product(rank(power(rank(correlation((((high_adj + low_adj) + close) / 3), ts_sum(ts_mean((raw_close * volume), 10), 50), 8)), 4)), 15))) < rank(correlation(rank(((((high_adj + low_adj) + close) / 3) * (raw_close / close))), rank(volume), 5))) ? (0 - 1) : 0)",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#81"
+  },
+  {
+   "id": "wq081h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((rank(log(product(rank(power(rank(correlation((((high_adj + low_adj) + close) / 3), ts_sum(ts_mean((raw_close * volume), 10), 50), 8)), 4)), 15))) < rank(correlation(rank(((((high_adj + low_adj) + close) / 3) * (raw_close / close))), rank(volume), 5))) ? (0 - 1) : 0), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#81"
+  },
+  {
+   "id": "wq082",
+   "family": "wq_raw",
+   "dsl": "(-1 * min(rank((decay_linear(delta(open_adj, 1), 14) * (raw_close / close))), ts_rank(decay_linear(correlation(indneutralize(volume, grp_ff12), ((open_adj * 0.634196) + (open_adj * (1 - 0.634196))), 17), 6), 13)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#82"
+  },
+  {
+   "id": "wq082h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((-1 * min(rank((decay_linear(delta(open_adj, 1), 14) * (raw_close / close))), ts_rank(decay_linear(correlation(indneutralize(volume, grp_ff12), ((open_adj * 0.634196) + (open_adj * (1 - 0.634196))), 17), 6), 13))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#82"
+  },
+  {
+   "id": "wq083",
+   "family": "wq_raw",
+   "dsl": "(((rank(delay(((high_adj - low_adj) / (ts_sum(close, 5) / 5)), 2)) * rank(rank(volume))) / (((high_adj - low_adj) / (ts_sum(close, 5) / 5)) / ((((high_adj + low_adj) + close) / 3) - close))) * (raw_close / close))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#83"
+  },
+  {
+   "id": "wq083h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((((rank(delay(((high_adj - low_adj) / (ts_sum(close, 5) / 5)), 2)) * rank(rank(volume))) / (((high_adj - low_adj) / (ts_sum(close, 5) / 5)) / ((((high_adj + low_adj) + close) / 3) - close))) * (raw_close / close)), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#83"
+  },
+  {
+   "id": "wq084",
+   "family": "wq_raw",
+   "dsl": "signedpower(ts_rank(((((high_adj + low_adj) + close) / 3) - ts_max((((high_adj + low_adj) + close) / 3), 15)), 21), (delta(close, 5) * (raw_close / close)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#84"
+  },
+  {
+   "id": "wq084h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(signedpower(ts_rank(((((high_adj + low_adj) + close) / 3) - ts_max((((high_adj + low_adj) + close) / 3), 15)), 21), (delta(close, 5) * (raw_close / close))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#84"
+  },
+  {
+   "id": "wq085",
+   "family": "wq_raw",
+   "dsl": "power(rank(correlation(((high_adj * 0.876703) + (close * (1 - 0.876703))), ts_mean((raw_close * volume), 30), 9)), rank(correlation(ts_rank(((high_adj + low_adj) / 2), 3), ts_rank(volume, 10), 7)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#85"
+  },
+  {
+   "id": "wq085h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(power(rank(correlation(((high_adj * 0.876703) + (close * (1 - 0.876703))), ts_mean((raw_close * volume), 30), 9)), rank(correlation(ts_rank(((high_adj + low_adj) / 2), 3), ts_rank(volume, 10), 7))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#85"
+  },
+  {
+   "id": "wq086",
+   "family": "wq_raw",
+   "dsl": "((ts_rank(correlation(close, ts_sum(ts_mean((raw_close * volume), 20), 15), 6), 20) < rank((((open_adj + close) - ((((high_adj + low_adj) + close) / 3) + open_adj)) * (raw_close / close)))) ? (0 - 1) : 0)",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#86"
+  },
+  {
+   "id": "wq086h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((ts_rank(correlation(close, ts_sum(ts_mean((raw_close * volume), 20), 15), 6), 20) < rank((((open_adj + close) - ((((high_adj + low_adj) + close) / 3) + open_adj)) * (raw_close / close)))) ? (0 - 1) : 0), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#86"
+  },
+  {
+   "id": "wq087",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * max(rank((decay_linear(delta(((close * 0.369701) + ((((high_adj + low_adj) + close) / 3) * 0.630299)), 2), 3) * (raw_close / close))), ts_rank(decay_linear(abs(correlation(ts_mean((raw_close * volume), 81), close, 13)), 5), 14)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#87"
+  },
+  {
+   "id": "wq087h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * max(rank((decay_linear(delta(((close * 0.369701) + ((((high_adj + low_adj) + close) / 3) * 0.630299)), 2), 3) * (raw_close / close))), ts_rank(decay_linear(abs(correlation(ts_mean((raw_close * volume), 81), close, 13)), 5), 14))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#87"
+  },
+  {
+   "id": "wq088",
+   "family": "wq_raw",
+   "dsl": "min(rank(decay_linear(((rank((open_adj * (raw_close / close))) + rank((low_adj * (raw_close / close)))) - (rank((high_adj * (raw_close / close))) + rank((close * (raw_close / close))))), 8)), ts_rank(decay_linear(correlation(ts_rank(close, 8), ts_rank(ts_mean((raw_close * volume), 60), 21), 8), 7), 3))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#88"
+  },
+  {
+   "id": "wq088h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(min(rank(decay_linear(((rank((open_adj * (raw_close / close))) + rank((low_adj * (raw_close / close)))) - (rank((high_adj * (raw_close / close))) + rank((close * (raw_close / close))))), 8)), ts_rank(decay_linear(correlation(ts_rank(close, 8), ts_rank(ts_mean((raw_close * volume), 60), 21), 8), 7), 3)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#88"
+  },
+  {
+   "id": "wq089",
+   "family": "wq_raw",
+   "dsl": "(ts_rank(decay_linear(correlation((low_adj * 1.0), ts_mean((raw_close * volume), 10), 7), 6), 4) - ts_rank(decay_linear(delta(indneutralize(((((high_adj + low_adj) + close) / 3) * (raw_close / close)), grp_ff49), 3), 10), 15))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#89"
+  },
+  {
+   "id": "wq089h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((ts_rank(decay_linear(correlation((low_adj * 1.0), ts_mean((raw_close * volume), 10), 7), 6), 4) - ts_rank(decay_linear(delta(indneutralize(((((high_adj + low_adj) + close) / 3) * (raw_close / close)), grp_ff49), 3), 10), 15)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#89"
+  },
+  {
+   "id": "wq090",
+   "family": "wq_raw",
+   "dsl": "(-1 * power(rank(((close - ts_max(close, 4)) * (raw_close / close))), ts_rank(correlation(indneutralize(ts_mean((raw_close * volume), 40), grp_sic2), low_adj, 5), 3)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#90"
+  },
+  {
+   "id": "wq090h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((-1 * power(rank(((close - ts_max(close, 4)) * (raw_close / close))), ts_rank(correlation(indneutralize(ts_mean((raw_close * volume), 40), grp_sic2), low_adj, 5), 3))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#90"
+  },
+  {
+   "id": "wq091",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * (ts_rank(decay_linear(decay_linear(correlation(indneutralize((close * (raw_close / close)), grp_ff49), volume, 10), 16), 4), 5) - rank(decay_linear(correlation((((high_adj + low_adj) + close) / 3), ts_mean((raw_close * volume), 30), 4), 3))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#91"
+  },
+  {
+   "id": "wq091h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * (ts_rank(decay_linear(decay_linear(correlation(indneutralize((close * (raw_close / close)), grp_ff49), volume, 10), 16), 4), 5) - rank(decay_linear(correlation((((high_adj + low_adj) + close) / 3), ts_mean((raw_close * volume), 30), 4), 3)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#91"
+  },
+  {
+   "id": "wq092",
+   "family": "wq_raw",
+   "dsl": "min(ts_rank(decay_linear((((((high_adj + low_adj) / 2) + close) < (low_adj + open_adj)) ? 1 : 0), 15), 19), ts_rank(decay_linear(correlation(rank((low_adj * (raw_close / close))), rank(ts_mean((raw_close * volume), 30)), 8), 7), 7))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#92"
+  },
+  {
+   "id": "wq092h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(min(ts_rank(decay_linear((((((high_adj + low_adj) / 2) + close) < (low_adj + open_adj)) ? 1 : 0), 15), 19), ts_rank(decay_linear(correlation(rank((low_adj * (raw_close / close))), rank(ts_mean((raw_close * volume), 30)), 8), 7), 7)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#92"
+  },
+  {
+   "id": "wq093",
+   "family": "wq_raw",
+   "dsl": "(ts_rank(decay_linear(correlation(indneutralize(((((high_adj + low_adj) + close) / 3) * (raw_close / close)), grp_ff49), ts_mean((raw_close * volume), 81), 17), 20), 8) / rank((decay_linear(delta(((close * 0.524434) + ((((high_adj + low_adj) + close) / 3) * 0.475566)), 3), 16) * (raw_close / close))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#93"
+  },
+  {
+   "id": "wq093h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((ts_rank(decay_linear(correlation(indneutralize(((((high_adj + low_adj) + close) / 3) * (raw_close / close)), grp_ff49), ts_mean((raw_close * volume), 81), 17), 20), 8) / rank((decay_linear(delta(((close * 0.524434) + ((((high_adj + low_adj) + close) / 3) * 0.475566)), 3), 16) * (raw_close / close)))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#93"
+  },
+  {
+   "id": "wq094",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * power(rank((((((high_adj + low_adj) + close) / 3) - ts_min((((high_adj + low_adj) + close) / 3), 12)) * (raw_close / close))), ts_rank(correlation(ts_rank((((high_adj + low_adj) + close) / 3), 20), ts_rank(ts_mean((raw_close * volume), 60), 4), 18), 3)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#94"
+  },
+  {
+   "id": "wq094h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * power(rank((((((high_adj + low_adj) + close) / 3) - ts_min((((high_adj + low_adj) + close) / 3), 12)) * (raw_close / close))), ts_rank(correlation(ts_rank((((high_adj + low_adj) + close) / 3), 20), ts_rank(ts_mean((raw_close * volume), 60), 4), 18), 3))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#94"
+  },
+  {
+   "id": "wq095",
+   "family": "wq_raw",
+   "dsl": "((rank(((open_adj - ts_min(open_adj, 12)) * (raw_close / close))) < ts_rank(power(rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 40), 19), 12)), 5), 11)) ? 1 : 0)",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#95"
+  },
+  {
+   "id": "wq095h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((rank(((open_adj - ts_min(open_adj, 12)) * (raw_close / close))) < ts_rank(power(rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 40), 19), 12)), 5), 11)) ? 1 : 0), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#95"
+  },
+  {
+   "id": "wq096",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * max(ts_rank(decay_linear(correlation(rank(((((high_adj + low_adj) + close) / 3) * (raw_close / close))), rank(volume), 4), 4), 8), ts_rank(decay_linear(ts_argmax(correlation(ts_rank(close, 7), ts_rank(ts_mean((raw_close * volume), 60), 4), 4), 13), 14), 13)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#96"
+  },
+  {
+   "id": "wq096h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * max(ts_rank(decay_linear(correlation(rank(((((high_adj + low_adj) + close) / 3) * (raw_close / close))), rank(volume), 4), 4), 8), ts_rank(decay_linear(ts_argmax(correlation(ts_rank(close, 7), ts_rank(ts_mean((raw_close * volume), 60), 4), 4), 13), 14), 13))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#96"
+  },
+  {
+   "id": "wq097",
+   "family": "wq_raw",
+   "dsl": "((0 - 1) * (rank(decay_linear(delta(indneutralize((((low_adj * 0.721001) + ((((high_adj + low_adj) + close) / 3) * 0.278999)) * (raw_close / close)), grp_ff49), 3), 20)) - ts_rank(decay_linear(ts_rank(correlation(ts_rank(low_adj, 8), ts_rank(ts_mean((raw_close * volume), 60), 17), 5), 19), 16), 7)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#97"
+  },
+  {
+   "id": "wq097h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear(((0 - 1) * (rank(decay_linear(delta(indneutralize((((low_adj * 0.721001) + ((((high_adj + low_adj) + close) / 3) * 0.278999)) * (raw_close / close)), grp_ff49), 3), 20)) - ts_rank(decay_linear(ts_rank(correlation(ts_rank(low_adj, 8), ts_rank(ts_mean((raw_close * volume), 60), 17), 5), 19), 16), 7))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#97"
+  },
+  {
+   "id": "wq098",
+   "family": "wq_raw",
+   "dsl": "(rank(decay_linear(correlation((((high_adj + low_adj) + close) / 3), ts_sum(ts_mean((raw_close * volume), 5), 26), 5), 7)) - rank(decay_linear(ts_rank(ts_argmin(correlation(rank((open_adj * (raw_close / close))), rank(ts_mean((raw_close * volume), 15)), 21), 9), 7), 8)))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#98"
+  },
+  {
+   "id": "wq098h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((rank(decay_linear(correlation((((high_adj + low_adj) + close) / 3), ts_sum(ts_mean((raw_close * volume), 5), 26), 5), 7)) - rank(decay_linear(ts_rank(ts_argmin(correlation(rank((open_adj * (raw_close / close))), rank(ts_mean((raw_close * volume), 15)), 21), 9), 7), 8))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#98"
+  },
+  {
+   "id": "wq099",
+   "family": "wq_raw",
+   "dsl": "(-1 * ((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#99"
+  },
+  {
+   "id": "wq099h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((-1 * ((rank(correlation(low_adj, volume, 6)) > rank(correlation(ts_sum(((high_adj + low_adj) / 2), 19), ts_sum(ts_mean((raw_close * volume), 60), 19), 8))) ? 1 : 0)), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#99"
+  },
+  {
+   "id": "wq100",
+   "family": "wq_raw",
+   "dsl": "(0 - (1 * (((1.5 * scale(indneutralize(indneutralize(rank(((((close - low_adj) - (high_adj - close)) / (high_adj - low_adj)) * volume)), grp_sic2), grp_sic2))) - scale(indneutralize((correlation(close, rank(ts_mean((raw_close * volume), 20)), 5) - rank(ts_argmin(close, 30))), grp_sic2))) * (volume / ts_mean((raw_close * volume), 20)))))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#100"
+  },
+  {
+   "id": "wq100h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((0 - (1 * (((1.5 * scale(indneutralize(indneutralize(rank(((((close - low_adj) - (high_adj - close)) / (high_adj - low_adj)) * volume)), grp_sic2), grp_sic2))) - scale(indneutralize((correlation(close, rank(ts_mean((raw_close * volume), 20)), 5) - rank(ts_argmin(close, 30))), grp_sic2))) * (volume / ts_mean((raw_close * volume), 20))))), 21))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#100"
+  },
+  {
+   "id": "wq101",
+   "family": "wq_raw",
+   "dsl": "(((close - open_adj) * (raw_close / close)) / (((high_adj - low_adj) * (raw_close / close)) + 0.001))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#101"
+  },
+  {
+   "id": "wq101h",
+   "family": "wq_house",
+   "dsl": "rank(decay_linear((((close - open_adj) * (raw_close / close)) / (((high_adj - low_adj) * (raw_close / close)) + 0.001)), 5))",
+   "horizons": [
+    5,
+    21,
+    63
+   ],
+   "sign_policy": "train-rank-ic21",
+   "theme": "price_volume",
+   "tier": "C+",
+   "tier_rank": 6,
+   "prior_sign": 1,
+   "citation": "Kakushadze (2016, arXiv:1601.00991) 101 Formulaic Alphas, Alpha#101"
+  }
+ ]
+}

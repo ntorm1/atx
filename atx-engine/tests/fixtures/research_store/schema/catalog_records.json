@@ -1,0 +1,1792 @@
+{
+  "name": "catalog_records",
+  "db": "catalog",
+  "version": 1,
+  "tables": [
+    {
+      "name": "run",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "run_dir"
+      ],
+      "columns": [
+        {
+          "name": "run_dir",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "receipt_schema",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "source_sha",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "executable_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": true,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "argv_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": true,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "attempt",
+          "type": "int",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "build_type",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "role_id",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "outcome",
+          "type": "text",
+          "nullable": false,
+          "indexed": true,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "exit_code",
+          "type": "int",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "git_state",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "error",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "limits",
+          "type": "json",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "admission",
+          "type": "json",
+          "nullable": true,
+          "indexed": false,
+          "volatile": true,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "dirty_outside",
+          "type": "json",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "store",
+          "type": "json",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "started_utc",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": true,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "wall_seconds",
+          "type": "real",
+          "nullable": true,
+          "indexed": false,
+          "volatile": true,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "sampled_peak_tree_rss_bytes",
+          "type": "int",
+          "nullable": true,
+          "indexed": false,
+          "volatile": true,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "minimum_system_free_bytes",
+          "type": "int",
+          "nullable": true,
+          "indexed": false,
+          "volatile": true,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "owned_processes",
+          "type": "json",
+          "nullable": true,
+          "indexed": false,
+          "volatile": true,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "ownership_scope",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "logs",
+          "type": "json",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "key_order",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "extra",
+          "type": "json",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "file_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE run(run_dir TEXT NOT NULL CHECK(instr(run_dir, '\\') = 0 AND substr(run_dir, 1, 1) <> '/' AND ('/' || run_dir || '/') NOT GLOB '*/../*'), receipt_schema TEXT NOT NULL, source_sha TEXT, executable_sha256 TEXT CHECK(length(executable_sha256) = 64 AND executable_sha256 NOT GLOB '*[^0-9a-f]*'), argv_sha256 TEXT CHECK(length(argv_sha256) = 64 AND argv_sha256 NOT GLOB '*[^0-9a-f]*'), attempt INTEGER, build_type TEXT, role_id TEXT, outcome TEXT NOT NULL, exit_code INTEGER, git_state TEXT, error TEXT, limits TEXT CHECK(json_valid(limits)), admission TEXT CHECK(json_valid(admission)), dirty_outside TEXT CHECK(json_valid(dirty_outside)), store TEXT CHECK(json_valid(store)), started_utc TEXT, wall_seconds REAL, sampled_peak_tree_rss_bytes INTEGER, minimum_system_free_bytes INTEGER, owned_processes TEXT CHECK(json_valid(owned_processes)), ownership_scope TEXT, logs TEXT CHECK(json_valid(logs)), key_order TEXT NOT NULL CHECK(json_valid(key_order)), extra TEXT CHECK(json_valid(extra)), file_sha256 TEXT NOT NULL CHECK(length(file_sha256) = 64 AND file_sha256 NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(run_dir)) STRICT, WITHOUT ROWID;",
+        "CREATE INDEX ix_run_executable_sha256 ON run(executable_sha256);",
+        "CREATE INDEX ix_run_argv_sha256 ON run(argv_sha256);",
+        "CREATE INDEX ix_run_outcome ON run(outcome);"
+      ]
+    },
+    {
+      "name": "run_command",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "run_dir",
+        "ord"
+      ],
+      "columns": [
+        {
+          "name": "run_dir",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "ord",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "arg",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE run_command(run_dir TEXT NOT NULL CHECK(instr(run_dir, '\\') = 0 AND substr(run_dir, 1, 1) <> '/' AND ('/' || run_dir || '/') NOT GLOB '*/../*'), ord INTEGER NOT NULL, arg TEXT NOT NULL, PRIMARY KEY(run_dir, ord)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "run_binding",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "run_dir",
+        "ord"
+      ],
+      "columns": [
+        {
+          "name": "run_dir",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "ord",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "path",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE run_binding(run_dir TEXT NOT NULL CHECK(instr(run_dir, '\\') = 0 AND substr(run_dir, 1, 1) <> '/' AND ('/' || run_dir || '/') NOT GLOB '*/../*'), ord INTEGER NOT NULL, path TEXT NOT NULL, sha256 TEXT NOT NULL CHECK(length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(run_dir, ord)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "run_start",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "run_dir"
+      ],
+      "columns": [
+        {
+          "name": "run_dir",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "file_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "doc",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE run_start(run_dir TEXT NOT NULL CHECK(instr(run_dir, '\\') = 0 AND substr(run_dir, 1, 1) <> '/' AND ('/' || run_dir || '/') NOT GLOB '*/../*'), file_sha256 TEXT NOT NULL CHECK(length(file_sha256) = 64 AND file_sha256 NOT GLOB '*[^0-9a-f]*'), doc TEXT NOT NULL CHECK(json_valid(doc)), PRIMARY KEY(run_dir)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "stage_receipt",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "state_dir",
+        "file_name"
+      ],
+      "columns": [
+        {
+          "name": "state_dir",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "file_name",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "stage_index",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "stage",
+          "type": "text",
+          "nullable": false,
+          "indexed": true,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "schema",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "chain",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "inputs",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "outputs",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "started_utc",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": true,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "seconds",
+          "type": "real",
+          "nullable": false,
+          "indexed": false,
+          "volatile": true,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "extra",
+          "type": "json",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "file_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE stage_receipt(state_dir TEXT NOT NULL CHECK(instr(state_dir, '\\') = 0 AND substr(state_dir, 1, 1) <> '/' AND ('/' || state_dir || '/') NOT GLOB '*/../*'), file_name TEXT NOT NULL, stage_index INTEGER NOT NULL, stage TEXT NOT NULL, status TEXT NOT NULL, schema TEXT NOT NULL, chain TEXT NOT NULL, inputs TEXT NOT NULL CHECK(json_valid(inputs)), outputs TEXT NOT NULL CHECK(json_valid(outputs)), started_utc TEXT NOT NULL, seconds REAL NOT NULL, extra TEXT CHECK(json_valid(extra)), file_sha256 TEXT NOT NULL CHECK(length(file_sha256) = 64 AND file_sha256 NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(state_dir, file_name)) STRICT, WITHOUT ROWID;",
+        "CREATE INDEX ix_stage_receipt_stage ON stage_receipt(stage);"
+      ]
+    },
+    {
+      "name": "cycle_binding",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "run_dir"
+      ],
+      "columns": [
+        {
+          "name": "run_dir",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "schema",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "output",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "spec_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "spec_rule",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "argv_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "key_order",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "extra",
+          "type": "json",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "file_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE cycle_binding(run_dir TEXT NOT NULL CHECK(instr(run_dir, '\\') = 0 AND substr(run_dir, 1, 1) <> '/' AND ('/' || run_dir || '/') NOT GLOB '*/../*'), schema TEXT NOT NULL, output TEXT NOT NULL CHECK(instr(output, '\\') = 0 AND substr(output, 1, 1) <> '/' AND ('/' || output || '/') NOT GLOB '*/../*'), spec_sha256 TEXT CHECK(length(spec_sha256) = 64 AND spec_sha256 NOT GLOB '*[^0-9a-f]*'), spec_rule TEXT, argv_sha256 TEXT CHECK(length(argv_sha256) = 64 AND argv_sha256 NOT GLOB '*[^0-9a-f]*'), key_order TEXT NOT NULL CHECK(json_valid(key_order)), extra TEXT CHECK(json_valid(extra)), file_sha256 TEXT NOT NULL CHECK(length(file_sha256) = 64 AND file_sha256 NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(run_dir)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "cycle_verdict",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "path"
+      ],
+      "columns": [
+        {
+          "name": "path",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "schema",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "cycle",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "mode",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "spec_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "ledger_path",
+          "type": "relpath",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "ledger_head",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "ledger_lines",
+          "type": "int",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "doc",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "file_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE cycle_verdict(path TEXT NOT NULL CHECK(instr(path, '\\') = 0 AND substr(path, 1, 1) <> '/' AND ('/' || path || '/') NOT GLOB '*/../*'), schema TEXT NOT NULL, cycle TEXT NOT NULL, mode TEXT NOT NULL, spec_sha256 TEXT CHECK(length(spec_sha256) = 64 AND spec_sha256 NOT GLOB '*[^0-9a-f]*'), ledger_path TEXT CHECK(instr(ledger_path, '\\') = 0 AND substr(ledger_path, 1, 1) <> '/' AND ('/' || ledger_path || '/') NOT GLOB '*/../*'), ledger_head TEXT CHECK(length(ledger_head) = 64 AND ledger_head NOT GLOB '*[^0-9a-f]*'), ledger_lines INTEGER, doc TEXT NOT NULL CHECK(json_valid(doc)), file_sha256 TEXT NOT NULL CHECK(length(file_sha256) = 64 AND file_sha256 NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(path)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "wave_result",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "path"
+      ],
+      "columns": [
+        {
+          "name": "path",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "schema",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "wave",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "kind",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "manifest_path",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "manifest_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "accepted",
+          "type": "bool",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "ledger_head",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "n_before",
+          "type": "int",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "n_after",
+          "type": "int",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "trial_id",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "next_parent_spec",
+          "type": "relpath",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "doc",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "file_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE wave_result(path TEXT NOT NULL CHECK(instr(path, '\\') = 0 AND substr(path, 1, 1) <> '/' AND ('/' || path || '/') NOT GLOB '*/../*'), schema TEXT NOT NULL, wave TEXT NOT NULL, kind TEXT NOT NULL, manifest_path TEXT NOT NULL CHECK(instr(manifest_path, '\\') = 0 AND substr(manifest_path, 1, 1) <> '/' AND ('/' || manifest_path || '/') NOT GLOB '*/../*'), manifest_sha256 TEXT NOT NULL CHECK(length(manifest_sha256) = 64 AND manifest_sha256 NOT GLOB '*[^0-9a-f]*'), accepted INTEGER CHECK(accepted IN (0, 1)), ledger_head TEXT CHECK(length(ledger_head) = 64 AND ledger_head NOT GLOB '*[^0-9a-f]*'), n_before INTEGER, n_after INTEGER, trial_id TEXT, next_parent_spec TEXT CHECK(instr(next_parent_spec, '\\') = 0 AND substr(next_parent_spec, 1, 1) <> '/' AND ('/' || next_parent_spec || '/') NOT GLOB '*/../*'), doc TEXT NOT NULL CHECK(json_valid(doc)), file_sha256 TEXT NOT NULL CHECK(length(file_sha256) = 64 AND file_sha256 NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(path)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "wave_timing",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "path",
+        "ord"
+      ],
+      "columns": [
+        {
+          "name": "path",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "ord",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "phase",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "run_dir",
+          "type": "relpath",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "outcome",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "exit_code",
+          "type": "int",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "seconds",
+          "type": "real",
+          "nullable": true,
+          "indexed": false,
+          "volatile": true,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "peak_mib",
+          "type": "int",
+          "nullable": true,
+          "indexed": false,
+          "volatile": true,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "executable_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE wave_timing(path TEXT NOT NULL CHECK(instr(path, '\\') = 0 AND substr(path, 1, 1) <> '/' AND ('/' || path || '/') NOT GLOB '*/../*'), ord INTEGER NOT NULL, phase TEXT NOT NULL, run_dir TEXT CHECK(instr(run_dir, '\\') = 0 AND substr(run_dir, 1, 1) <> '/' AND ('/' || run_dir || '/') NOT GLOB '*/../*'), outcome TEXT, exit_code INTEGER, seconds REAL, peak_mib INTEGER, executable_sha256 TEXT CHECK(length(executable_sha256) = 64 AND executable_sha256 NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(path, ord)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "spec_doc",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "path"
+      ],
+      "columns": [
+        {
+          "name": "path",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "kind",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": [
+            "spec",
+            "template",
+            "wave-manifest",
+            "candidate",
+            "library",
+            "recipe",
+            "registry",
+            "window",
+            "field-registry",
+            "other"
+          ]
+        },
+        {
+          "name": "schema",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "file_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "git_tracked",
+          "type": "bool",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "parent",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "doc",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE spec_doc(path TEXT NOT NULL CHECK(instr(path, '\\') = 0 AND substr(path, 1, 1) <> '/' AND ('/' || path || '/') NOT GLOB '*/../*'), kind TEXT NOT NULL CHECK(kind IN ('spec', 'template', 'wave-manifest', 'candidate', 'library', 'recipe', 'registry', 'window', 'field-registry', 'other')), schema TEXT, file_sha256 TEXT NOT NULL CHECK(length(file_sha256) = 64 AND file_sha256 NOT GLOB '*[^0-9a-f]*'), git_tracked INTEGER NOT NULL CHECK(git_tracked IN (0, 1)), parent TEXT, doc TEXT NOT NULL CHECK(json_valid(doc)), PRIMARY KEY(path)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "pin",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "holder_path",
+        "pointer"
+      ],
+      "columns": [
+        {
+          "name": "holder_path",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "pointer",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "pin_kind",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": [
+            "input",
+            "locked",
+            "fields-manifest",
+            "rule-template",
+            "exe",
+            "binding",
+            "receipt-binding",
+            "receipt-log",
+            "spec-digest",
+            "ledger-head",
+            "wave-manifest",
+            "stage-receipt",
+            "field-payload",
+            "field-registry",
+            "field-source"
+          ]
+        },
+        {
+          "name": "target_path",
+          "type": "text",
+          "nullable": true,
+          "indexed": true,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "target_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": true,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE pin(holder_path TEXT NOT NULL CHECK(instr(holder_path, '\\') = 0 AND substr(holder_path, 1, 1) <> '/' AND ('/' || holder_path || '/') NOT GLOB '*/../*'), pointer TEXT NOT NULL, pin_kind TEXT NOT NULL CHECK(pin_kind IN ('input', 'locked', 'fields-manifest', 'rule-template', 'exe', 'binding', 'receipt-binding', 'receipt-log', 'spec-digest', 'ledger-head', 'wave-manifest', 'stage-receipt', 'field-payload', 'field-registry', 'field-source')), target_path TEXT, target_sha256 TEXT NOT NULL CHECK(length(target_sha256) = 64 AND target_sha256 NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(holder_path, pointer)) STRICT, WITHOUT ROWID;",
+        "CREATE INDEX ix_pin_target_path ON pin(target_path);",
+        "CREATE INDEX ix_pin_target_sha256 ON pin(target_sha256);"
+      ]
+    },
+    {
+      "name": "trial_line",
+      "version": 1,
+      "since": 1,
+      "append_only": true,
+      "volatile": false,
+      "key": [
+        "ledger_path",
+        "seq"
+      ],
+      "columns": [
+        {
+          "name": "ledger_path",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "seq",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "line",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "line_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "schema",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "kind",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "cell",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "trial_id",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "count",
+          "type": "int",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "prev_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE trial_line(ledger_path TEXT NOT NULL CHECK(instr(ledger_path, '\\') = 0 AND substr(ledger_path, 1, 1) <> '/' AND ('/' || ledger_path || '/') NOT GLOB '*/../*'), seq INTEGER NOT NULL, line TEXT NOT NULL, line_sha256 TEXT NOT NULL CHECK(length(line_sha256) = 64 AND line_sha256 NOT GLOB '*[^0-9a-f]*'), schema TEXT, kind TEXT, cell TEXT, trial_id TEXT, count INTEGER, prev_sha256 TEXT CHECK(length(prev_sha256) = 64 AND prev_sha256 NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(ledger_path, seq)) STRICT, WITHOUT ROWID;",
+        "CREATE TRIGGER trial_line_no_update BEFORE UPDATE ON trial_line BEGIN SELECT RAISE(ABORT, 'trial_line is append-only'); END;",
+        "CREATE TRIGGER trial_line_no_delete BEFORE DELETE ON trial_line BEGIN SELECT RAISE(ABORT, 'trial_line is append-only'); END;"
+      ]
+    },
+    {
+      "name": "ledger_state",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "ledger_path"
+      ],
+      "columns": [
+        {
+          "name": "ledger_path",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "lines",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "file_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "head_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "head_rule",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE ledger_state(ledger_path TEXT NOT NULL CHECK(instr(ledger_path, '\\') = 0 AND substr(ledger_path, 1, 1) <> '/' AND ('/' || ledger_path || '/') NOT GLOB '*/../*'), lines INTEGER NOT NULL, file_sha256 TEXT NOT NULL CHECK(length(file_sha256) = 64 AND file_sha256 NOT GLOB '*[^0-9a-f]*'), head_sha256 TEXT CHECK(length(head_sha256) = 64 AND head_sha256 NOT GLOB '*[^0-9a-f]*'), head_rule TEXT, PRIMARY KEY(ledger_path)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "field_manifest",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "path"
+      ],
+      "columns": [
+        {
+          "name": "path",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "schema",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "role_manifest_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "seal_exclusive_end",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "registry_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "engine_exe_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "file_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "doc",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE field_manifest(path TEXT NOT NULL CHECK(instr(path, '\\') = 0 AND substr(path, 1, 1) <> '/' AND ('/' || path || '/') NOT GLOB '*/../*'), schema TEXT NOT NULL, status TEXT, role_manifest_sha256 TEXT CHECK(length(role_manifest_sha256) = 64 AND role_manifest_sha256 NOT GLOB '*[^0-9a-f]*'), seal_exclusive_end TEXT, registry_sha256 TEXT CHECK(length(registry_sha256) = 64 AND registry_sha256 NOT GLOB '*[^0-9a-f]*'), engine_exe_sha256 TEXT CHECK(length(engine_exe_sha256) = 64 AND engine_exe_sha256 NOT GLOB '*[^0-9a-f]*'), file_sha256 TEXT NOT NULL CHECK(length(file_sha256) = 64 AND file_sha256 NOT GLOB '*[^0-9a-f]*'), doc TEXT NOT NULL CHECK(json_valid(doc)), PRIMARY KEY(path)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "field_entry",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "path",
+        "name"
+      ],
+      "columns": [
+        {
+          "name": "path",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "ord",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "file",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "dtype",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "producer_key",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "formula_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "reused_from",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE field_entry(path TEXT NOT NULL CHECK(instr(path, '\\') = 0 AND substr(path, 1, 1) <> '/' AND ('/' || path || '/') NOT GLOB '*/../*'), name TEXT NOT NULL, ord INTEGER NOT NULL, file TEXT NOT NULL, sha256 TEXT CHECK(length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'), dtype TEXT, producer_key TEXT CHECK(length(producer_key) = 64 AND producer_key NOT GLOB '*[^0-9a-f]*'), formula_sha256 TEXT CHECK(length(formula_sha256) = 64 AND formula_sha256 NOT GLOB '*[^0-9a-f]*'), reused_from TEXT, PRIMARY KEY(path, name)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "candidate",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "id"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "path",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "wave",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "dsl_sha256",
+          "type": "sha256",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "file_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "doc",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE candidate(id TEXT NOT NULL, path TEXT NOT NULL CHECK(instr(path, '\\') = 0 AND substr(path, 1, 1) <> '/' AND ('/' || path || '/') NOT GLOB '*/../*'), status TEXT NOT NULL, wave TEXT, dsl_sha256 TEXT CHECK(length(dsl_sha256) = 64 AND dsl_sha256 NOT GLOB '*[^0-9a-f]*'), file_sha256 TEXT NOT NULL CHECK(length(file_sha256) = 64 AND file_sha256 NOT GLOB '*[^0-9a-f]*'), doc TEXT NOT NULL CHECK(json_valid(doc)), PRIMARY KEY(id)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "candidate_event",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "id",
+        "ord"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "ord",
+          "type": "int",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "at",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "by",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "wave",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "note",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE candidate_event(id TEXT NOT NULL, ord INTEGER NOT NULL, status TEXT NOT NULL, at TEXT NOT NULL, by TEXT NOT NULL, wave TEXT, note TEXT, PRIMARY KEY(id, ord)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "build_receipt",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "tag"
+      ],
+      "columns": [
+        {
+          "name": "tag",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "path",
+          "type": "relpath",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "preset",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "source",
+          "type": "text",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "exit_code",
+          "type": "int",
+          "nullable": true,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "wall_seconds",
+          "type": "real",
+          "nullable": true,
+          "indexed": false,
+          "volatile": true,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "file_sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "doc",
+          "type": "json",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE build_receipt(tag TEXT NOT NULL, path TEXT NOT NULL CHECK(instr(path, '\\') = 0 AND substr(path, 1, 1) <> '/' AND ('/' || path || '/') NOT GLOB '*/../*'), preset TEXT, source TEXT, exit_code INTEGER, wall_seconds REAL, file_sha256 TEXT NOT NULL CHECK(length(file_sha256) = 64 AND file_sha256 NOT GLOB '*[^0-9a-f]*'), doc TEXT NOT NULL CHECK(json_valid(doc)), PRIMARY KEY(tag)) STRICT, WITHOUT ROWID;"
+      ]
+    },
+    {
+      "name": "build_exe",
+      "version": 1,
+      "since": 1,
+      "append_only": false,
+      "volatile": false,
+      "key": [
+        "tag",
+        "target"
+      ],
+      "columns": [
+        {
+          "name": "tag",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "target",
+          "type": "text",
+          "nullable": false,
+          "indexed": false,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        },
+        {
+          "name": "sha256",
+          "type": "sha256",
+          "nullable": false,
+          "indexed": true,
+          "volatile": false,
+          "since": 1,
+          "allowed": []
+        }
+      ],
+      "ddl": [
+        "CREATE TABLE build_exe(tag TEXT NOT NULL, target TEXT NOT NULL, sha256 TEXT NOT NULL CHECK(length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'), PRIMARY KEY(tag, target)) STRICT, WITHOUT ROWID;",
+        "CREATE INDEX ix_build_exe_sha256 ON build_exe(sha256);"
+      ]
+    }
+  ],
+  "views": [
+    {
+      "name": "pin_status",
+      "sql": "CREATE VIEW pin_status AS SELECT p.holder_path AS holder_path, p.pointer AS pointer, p.pin_kind AS pin_kind, p.target_path AS target_path, p.target_sha256 AS target_sha256, a.sha256 AS artifact_sha256, a.sha_source AS sha_source, CASE WHEN p.target_path IS NULL OR (p.pin_kind = 'field-source' AND a.path_key IS NULL) THEN 'unresolved' WHEN a.path_key IS NULL THEN 'missing' WHEN a.sha256 <> p.target_sha256 THEN 'stale' WHEN a.sha_source = 'declared' THEN 'declared' ELSE 'ok' END AS state FROM pin AS p LEFT JOIN artifact AS a ON a.path_key = p.target_path;"
+    }
+  ]
+}

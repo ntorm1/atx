@@ -22,7 +22,8 @@ co::Error refused(const char* what) {
 } // namespace
 
 co::Result<ThemeErcFit> theme_erc_weights(std::span<const atx::f64> share,std::span<const atx::usize> theme,
-                                          atx::usize themes,std::span<const atx::f64> covariance,bool trace) {
+                                          atx::usize themes,std::span<const atx::f64> covariance,
+                                          bool trace) {
   if (share.empty() || share.size()>max_members || themes==0 || themes>max_themes || theme.size()!=share.size())
     return co::Err(refused("1..256 members in 1..32 themes, one theme per member"));
   std::vector<atx::f64> total(themes,0.0);

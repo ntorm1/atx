@@ -1,0 +1,25 @@
+{
+    "Source":  "16233715583587237a9997e354f124adf5546570",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  7,
+    "ConfiguredProvenance":  "ad406718e3d1929c9f27bf308d590c3e0e11b621-dirty",
+    "Jobs":  4,
+    "FreeMiB":  4006,
+    "CommitMiB":  4847,
+    "Targets":  [
+                    "atx-equity-strategy-risk"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  333.85778439999996,
+    "CompiledTUs":  85,
+    "Links":  3,
+    "Tag":  "p9-cov-c",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-24\\build-equity",
+    "Executables":  {
+                        "atx-equity-strategy-risk":  {
+                                                         "Path":  "C:\\atx-wt\\pool-24\\build-equity\\bin\\atx-equity-strategy-risk.exe",
+                                                         "Sha256":  "23de22515d806aad170e6b41f0d9f86d308bede85ff3982075dfff0ab54d8384"
+                                                     }
+                    }
+}

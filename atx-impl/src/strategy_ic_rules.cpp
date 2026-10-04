@@ -12,8 +12,10 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "strategy_ic_mom_volman.hpp"
 #include "strategy_ic_shrink.hpp"
 #include "strategy_ic_theme_erc.hpp"
+#include "strategy_ic_theme_hedge.hpp"
 #include "strategy_ic_theme_tsmom.hpp"
 #include "strategy_two_speed.hpp"
 
@@ -395,8 +397,14 @@ constexpr std::string_view grouping_bytes="one f64 dates x names plane per theme
 constexpr std::array<std::string_view,4> standardise_ids{theme_standardise_rule,ic_shrink_rule,
     ic_shrink_aim_rule,theme_erc_rule};
 constexpr std::array<std::string_view,1> redistribute_ids{theme_redistribution_rule};
-constexpr std::array<std::string_view,2> resid_excludes{theme_tsmom_rule,two_speed_rule};
-constexpr std::array<std::string_view,1> resid_ids{theme_residualise_rule};
+// theme-resid-v1 excludes every other rider; the two theme_schedule rules share one block; the
+// hedge and the sleeves exclude each other (P9 lane AL-COMB: mom-volman-v1, theme-cov-hedge-v1).
+constexpr std::array<std::string_view,4> resid_excludes{theme_tsmom_rule,mom_volman_rule,
+    two_speed_rule,theme_hedge_rule};
+constexpr std::array<std::string_view,2> tsmom_excludes{theme_residualise_rule,mom_volman_rule};
+constexpr std::array<std::string_view,2> volman_excludes{theme_residualise_rule,theme_tsmom_rule};
+constexpr std::array<std::string_view,2> sleeves_excludes{theme_residualise_rule,theme_hedge_rule};
+constexpr std::array<std::string_view,2> hedge_excludes{theme_residualise_rule,two_speed_rule};
 // params_schema (progress.md ruling D1-PSCHEMA, P9 lane D2): the JSON Schema of the `params` a
 // K-P9-9 wave-manifest rule entry {name: <id>, params: {...}} may carry for the row. The params are
 // the row's own rule key (`rule`, the id: the key every K-P9-6 block names its rule by; lane E2's
@@ -435,10 +443,23 @@ constexpr std::string_view tsmom_params_schema=
 constexpr std::string_view sleeves_params_schema=
     R"({"type":"object","additionalProperties":false,)"
     R"("properties":{"rule":{"type":"string","const":"two-speed-v1"}}})";
+// P9 lane AL-COMB: the registered constants of mom-volman-v1 (strategy_ic_mom_volman.hpp) and
+// theme-cov-hedge-v1 (strategy_ic_theme_hedge.hpp) in the same form; each block's parse checks
+// the block the fitter writes (composition_volman, composition_hedge).
+constexpr std::string_view volman_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"rule":{"type":"string","const":"mom-volman-v1"},)"
+    R"("lookback":{"type":"integer","const":126},"lag":{"type":"integer","const":2},)"
+    R"("step":{"type":"integer","const":21}}})";
+constexpr std::string_view hedge_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"rule":{"type":"string","const":"theme-cov-hedge-v1"},)"
+    R"("lookback":{"type":"integer","const":252},"lag":{"type":"integer","const":2},)"
+    R"("step":{"type":"integer","const":21},"min_pairs":{"type":"integer","const":126}}})";
 // Parse order: theme_redistribution, theme_standardise (four rows; the recorded-rule check runs
-// with them), theme_residualise, theme_schedule, theme_sleeves -- the v8 runner's order, so every
-// refusal is the one it gave.
-constexpr std::array<CompositionRule,8> rule_table{{
+// with them), theme_residualise, theme_schedule (two rows, one shared parse), theme_sleeves -- the
+// v8 runner's order, so every refusal is the one it gave -- then theme_hedge (P9 lane AL-COMB).
+constexpr std::array<CompositionRule,10> rule_table{{
     {.id=theme_redistribution_rule, .version="v1", .block_key="theme_redistribution",
      .stage=IcStageKind::redistribute, .parse=&composition_themes, .verify=nullptr,
      .recipe_key="composition_redistribution", .recipe_text=redistribute_text,
@@ -485,23 +506,44 @@ constexpr std::array<CompositionRule,8> rule_table{{
      .rerank_off=false, .also_written_by={}, .identity_source={}},
     // theme-tsmom-v1 (Y-2, strategy_ic_theme_tsmom.cpp): the theme masses in force per date
     {.id=theme_tsmom_rule, .version="v1", .block_key="theme_schedule",
-     .stage=IcStageKind::schedule, .parse=&composition_schedule, .verify=nullptr,
+     .stage=IcStageKind::schedule, .parse=&composition_schedule_rules, .verify=nullptr,
      .recipe_key="composition_schedule", .recipe_text={},
      .working_bytes="none beyond the standardise planes (the block masses)",
-     .params_schema=tsmom_params_schema, .incompatible=resid_ids, .requires_any=standardise_ids,
+     .params_schema=tsmom_params_schema, .incompatible=tsmom_excludes,
+     .requires_any=standardise_ids,
+     .rerank_off=false, .also_written_by={}, .identity_source={}},
+    // mom-volman-v1 (P9 AL-COMB, strategy_ic_mom_volman.cpp): the price_momentum mass per block
+    {.id=mom_volman_rule, .version="v1", .block_key="theme_schedule",
+     .stage=IcStageKind::schedule, .parse=&composition_schedule_rules, .verify=nullptr,
+     .recipe_key="composition_schedule", .recipe_text={},
+     .working_bytes="none beyond the standardise planes (the block masses)",
+     .params_schema=volman_params_schema, .incompatible=volman_excludes,
+     .requires_any=standardise_ids,
      .rerank_off=false, .also_written_by={}, .identity_source={}},
     // two-speed-v1 (Y-5, strategy_ic_two_speed.cpp): the fast and slow sleeves beside the blend
     {.id=two_speed_rule, .version="v1", .block_key="theme_sleeves",
      .stage=IcStageKind::sleeves, .parse=&composition_sleeves, .verify=nullptr,
      .recipe_key="composition_sleeves", .recipe_text={},
      .working_bytes="two f64 dates x names sleeve planes and one f64 per date (the fast share)",
-     .params_schema=sleeves_params_schema, .incompatible=resid_ids, .requires_any=standardise_ids,
+     .params_schema=sleeves_params_schema, .incompatible=sleeves_excludes,
+     .requires_any=standardise_ids,
+     .rerank_off=false, .also_written_by={}, .identity_source={}},
+    // theme-cov-hedge-v1 (P9 AL-COMB, strategy_ic_theme_hedge.cpp over engine
+    // combine/char_cov_hedge.hpp): each theme's re-rank hedged on its own sleeve's loading
+    {.id=theme_hedge_rule, .version="v1", .block_key="theme_hedge",
+     .stage=IcStageKind::hedge, .parse=&composition_hedge, .verify=nullptr,
+     .recipe_key="composition_hedge", .recipe_text={},
+     .working_bytes="the role's session returns and one hedged plane (f64 dates x names each), a "
+                    "presence byte per cell and the kernel's per-name window sums",
+     .params_schema=hedge_params_schema, .incompatible=hedge_excludes,
+     .requires_any=standardise_ids,
      .rerank_off=false, .also_written_by={}, .identity_source={}},
 }};
 // What the exe offers beyond the v7 CLI (the envelope's capabilities; lane E2 reads them in place
-// of the --help probe, research_cycle.py exe_capabilities). Sorted.
-constexpr std::array<std::string_view,5> exe_capabilities{"eval-mode-audit-exact","list-rules",
-    "marginal","no-composition","theme-registry"};
+// of the --help probe, research_cycle.py exe_capabilities). Sorted. P9 S2 (ruling S2-2) adds the
+// IC method options ic-hac-rule, label-terminal and min-coverage.
+constexpr std::array<std::string_view,8> exe_capabilities{"eval-mode-audit-exact","ic-hac-rule",
+    "label-terminal","list-rules","marginal","min-coverage","no-composition","theme-registry"};
 // A pair of present rows that list each other is refused, naming both blocks (the v8 runner's
 // "theme_redistribution and theme_standardise are exclusive").
 co::Status refuse_incompatible(std::span<const CompositionRule* const> present) {
@@ -591,6 +633,7 @@ std::string_view stage_name(IcStageKind kind) noexcept {
     case IcStageKind::residualise: return "residualise";
     case IcStageKind::schedule: return "schedule";
     case IcStageKind::sleeves: return "sleeves";
+    case IcStageKind::hedge: return "hedge";
   }
   return {};
 }

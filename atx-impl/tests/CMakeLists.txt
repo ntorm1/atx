@@ -132,7 +132,9 @@ add_executable(atx-impl-strategy-target-tests EXCLUDE_FROM_ALL
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_vol_target_test.cpp"
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_normal_score_test.cpp"
     # platform v8 Y (YCOMB) rule Y-5: two-speed netted sleeves (engine kernel; NAV wiring is a follow-up)
-    "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_two_speed_test.cpp")
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_two_speed_test.cpp"
+    strategy_cov_model_test.cpp  # P9 COV: CovTruncation, CovEigen, CovBias
+    strategy_cov_store_test.cpp)  # P9 COV: CovRecipe, CovStore, CovDiff
 atx_impl_test_target_environment(atx-impl-strategy-target-tests)
 
 # Platform v8 H-3: the mining verb on its synthetic role, with the engine's signal-fitness
@@ -185,3 +187,15 @@ target_sources(atx-impl-strategy-target-tests PRIVATE strategy_factors_verb_test
 # --list-rules envelope and the ordered stage list (strategy_ic_rules.hpp) in the focused IC
 # target; atx-impl-tests already compiles it through its *_test.cpp glob.
 target_sources(atx-impl-strategy-ic-tests PRIVATE strategy_ic_rules_test.cpp)
+
+# P9 lane C2: nav --calibrate-gross (CalibrateGross.*) beside the NAV replay tests;
+# atx-impl-tests compiles it through its *_test.cpp glob.
+target_sources(atx-impl-strategy-target-tests PRIVATE strategy_nav_calibrate_test.cpp)
+
+# P9 lane AL-COMB: rule theme-cov-hedge-v1 (the rule, its stage and its engine kernel; the kernel's
+# test is also globbed into atx-engine-combine-tests) and schedule mom-volman-v1 in the focused IC
+# target; atx-impl-tests already compiles the two rule tests through its *_test.cpp glob.
+target_sources(atx-impl-strategy-ic-tests PRIVATE
+    strategy_ic_theme_hedge_test.cpp
+    strategy_ic_mom_volman_test.cpp
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/combine/combine_char_cov_hedge_test.cpp")

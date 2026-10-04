@@ -1,0 +1,41 @@
+{
+ "new_tree": "C:\\atx-wt\\pool-2",
+ "old_tree": "C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\f8ac1e90-4887-4233-8a57-a65e55d3abf8\\scratchpad\\m2d\\old-tree",
+ "variants": {
+  "A-ew-theme": {
+   "compare": {
+    "files": {
+     "admission.csv": {
+      "identical": true
+     },
+     "admission.json": {
+      "identical": false,
+      "paths_only_new": [
+       "$.inputs.producer_fingerprint"
+      ],
+      "paths_only_old": [
+       "$.inputs.script_sha256"
+      ],
+      "paths_value_differs": []
+     },
+     "composition_weights.json": {
+      "identical": false,
+      "paths_only_new": [
+       "$.provenance.producer_fingerprint"
+      ],
+      "paths_only_old": [
+       "$.provenance.script_sha256"
+      ],
+      "paths_value_differs": [
+       "$.provenance.admission_sha256"
+      ]
+     }
+    },
+    "only_new": [],
+    "only_old": []
+   },
+   "new_exit": 0,
+   "old_exit": 0
+  }
+ }
+}
