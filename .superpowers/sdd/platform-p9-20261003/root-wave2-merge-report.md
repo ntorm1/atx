@@ -976,3 +976,22 @@ type first on PATH).
   (`build-equity/p9-m2e-c2-x5-{cal,gm}`, 11 MB each; P2 is a byte copy of the reference but `producer`) are deleted by
   name after this commit, receipts kept; E (`p9-m2e-c2-x5-engine`, 11 MB, the first engine-calibrated X-5 NAV) is kept.
 - **Trial ledger:** 0 trials (133 lines, `27e40f9f`).
+
+### AL-COMB (`efb7ab2e`, pool-19, base `1239a5ff` + D2 `49af0a52` merged in; re-review 1 APPROVE `098e6ccd`)
+
+#### Expected substitution list for the AL-COMB flag-absent X-5 w identity (written before either run)
+
+The re-review's item 5 (the lane could not run it: X-5's role inputs are not in pool-19). Real data, 0 trials;
+compared by file SHA-256 and JSON leaf path only (`m2c-logs/tools/cmp.py`), nothing printed. Both runs = X-5's w argv
+(`build-equity/mega-v8xw-train-theme-erc-run1/receipt.json`: library `fund_industry_ic_v8x3b.json` `32f8d69f`, role
+lo3 `e1c67101`, fields v13, X-5's `composition_weights.json` `8310da2c`, candidate cache `mega-candidate-cache-v8-lo3`,
+`--save-combined`) with only `--output` changed, through `run_bounded_research.py`, Debug, `--seconds 600
+--max-rss-mib 2048` (RUN-1; the w pass peaked at 1,372-1,436 MiB before):
+
+- `p9-m2e-alcomb-x5-w-pre`: the IC exe in `build-equity/bin` now = p9-2a `ba1232ed` (root before C2 and AL-COMB);
+- `p9-m2e-alcomb-x5-w-post`: the p9-2f IC exe (C2 + AL-COMB merged).
+
+Expected: the same file set; every file byte-identical except `summary.json` and `train_candidates.jsonl`, which may
+differ only at timing leaves (`.../stage_seconds/*`, `.../wall_seconds`, `/roles/*/hash_seconds`), the M2c precedent's
+classes. No `composition_hedge_trace` / `composition_schedule_trace` key (neither block is present). Anything else is a
+stop, to be attributed to C2 (`stats_ext.hpp`; run-time norm_ppf values claimed unchanged) or AL-COMB.
