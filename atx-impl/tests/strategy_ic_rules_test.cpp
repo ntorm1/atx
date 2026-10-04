@@ -20,6 +20,9 @@
 #include "../src/strategy_ic_composition.hpp"
 #include "../src/strategy_ic_rules.hpp"
 #include "../src/strategy_ic_runner.hpp"
+#include "../src/strategy_ic_shrink.hpp"
+#include "../src/strategy_ic_theme_erc.hpp"
+#include "../src/strategy_ic_theme_tsmom.hpp"
 
 namespace {
 using namespace atx;
@@ -106,13 +109,16 @@ TEST(CompositionRules, TableCoversEveryRule) {
     EXPECT_FALSE(rule.working_bytes.empty());
     EXPECT_TRUE(icd::find_rule(rule.id) == &rule);
     if (blocks.empty() || blocks.back() != rule.block_key) blocks.push_back(rule.block_key);
-    // params_schema (ruling D1-PSCHEMA, P9 lane D2): a closed object of the rule's registered
-    // constants, none required (ParamsSchemaConstantsAreTheRegisteredOnes pins each const).
+    // params_schema (ruling D1-PSCHEMA, P9 lane D2): a closed object of the row's own rule key and
+    // its registered constants, none required (ParamsSchemaConstantsAreTheRegisteredOnes pins each
+    // const).
     const auto schema = Json::parse(rule.params_schema.begin(), rule.params_schema.end());
     EXPECT_EQ(schema.at("type"), "object");
     EXPECT_EQ(schema.at("additionalProperties"), false);
     EXPECT_TRUE(schema.at("properties").is_object());
     EXPECT_FALSE(schema.contains("required"));
+    EXPECT_EQ(schema.at("properties").at("rule"),
+              (Json{{"type", "string"}, {"const", std::string(rule.id)}}));
     for (const auto other : rule.incompatible) {
       const auto* o = icd::find_rule(other);
       ASSERT_TRUE(o != nullptr) << other;
@@ -428,8 +434,9 @@ TEST(CompositionRules, ListRulesJsonPinned) {
 }
 
 // P9 lane D2 (ruling D1-PSCHEMA): each row's params_schema describes the params a K-P9-9 wave
-// manifest rule entry may carry -- a closed object of the rule's registered constants, each a
-// typed const equal to the C++ constant it restates (a constant edited without its schema fails).
+// manifest rule entry may carry -- a closed object of the row's own rule key and the rule's
+// registered constants, each a typed const equal to the C++ constant it restates (a constant
+// edited without its schema fails).
 TEST(CompositionRules, ParamsSchemaConstantsAreTheRegisteredOnes) {
   const std::vector<std::pair<std::string_view, Json>> registered{
       {"within-theme-v1", Json::object()},
@@ -449,7 +456,8 @@ TEST(CompositionRules, ParamsSchemaConstantsAreTheRegisteredOnes) {
     ASSERT_TRUE(rule != nullptr);
     const auto schema = Json::parse(rule->params_schema.begin(), rule->params_schema.end());
     const auto& properties = schema.at("properties");
-    EXPECT_EQ(properties.size(), constants.size());
+    EXPECT_EQ(properties.size(), constants.size() + 1);
+    EXPECT_EQ(properties.at("rule").at("const"), std::string(id));
     for (auto it = constants.begin(); it != constants.end(); ++it) {
       ASSERT_TRUE(properties.contains(it.key())) << it.key();
       const auto& property = properties.at(it.key());

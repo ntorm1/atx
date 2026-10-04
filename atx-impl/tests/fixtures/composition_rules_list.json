@@ -18,7 +18,12 @@
       ],
       "params_schema": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "rule": {
+            "const": "within-theme-v1",
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "recipe_key": "composition_redistribution",
@@ -37,7 +42,12 @@
       ],
       "params_schema": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "rule": {
+            "const": "ew-theme-std-v1",
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "recipe_key": "composition_standardise",
@@ -64,6 +74,10 @@
           "intensity": {
             "const": 0.5,
             "type": "number"
+          },
+          "rule": {
+            "const": "ic-shrink-v1",
+            "type": "string"
           }
         },
         "type": "object"
@@ -92,6 +106,10 @@
           "intensity": {
             "const": 0.5,
             "type": "number"
+          },
+          "rule": {
+            "const": "ic-shrink-aim-v1",
+            "type": "string"
           }
         },
         "type": "object"
@@ -117,6 +135,10 @@
             "const": 1e-10,
             "type": "number"
           },
+          "rule": {
+            "const": "theme-erc-v1",
+            "type": "string"
+          },
           "sweeps": {
             "const": 10000,
             "type": "integer"
@@ -141,7 +163,12 @@
       ],
       "params_schema": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "rule": {
+            "const": "theme-resid-v1",
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "recipe_key": "composition_residualise",
@@ -174,6 +201,10 @@
             "const": 252,
             "type": "integer"
           },
+          "rule": {
+            "const": "theme-tsmom-v1",
+            "type": "string"
+          },
           "step": {
             "const": 21,
             "type": "integer"
@@ -202,7 +233,12 @@
       ],
       "params_schema": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "rule": {
+            "const": "two-speed-v1",
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "recipe_key": "composition_sleeves",
