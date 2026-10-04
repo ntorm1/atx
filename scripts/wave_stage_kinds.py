@@ -6,9 +6,10 @@ are those of before.
   preflight  every kind: both rule tables (the IC exe's --list-rules --json, the NAV exe's nav --list-rules --json),
              their stdout SHA-256 recorded, and ruling E2-8's raw-rule-flag guard (rule_flag_guard: no flag a rule
              owns reaches the cell's resolved flag lists but through rules, by any route or spelling; every IC rule
-             mapped in COMPOSITION_FLAGS). Kind rule: every named rule validated and its flags derived
-             (wave_kinds.rule_flags). Kind leverage: the value inside the NAV exe's fixed-v1 aim_leverage range when
-             the table lists it. Kind walk-forward: refused (schema only, lane D3)
+             mapped in COMPOSITION_FLAGS; ruling E2-10: nav.leverage set or changed only by kind leverage). Kind
+             rule: every named rule validated and its flags derived (wave_kinds.rule_flags). Kind leverage: the value
+             inside the NAV exe's fixed-v1 aim_leverage range (refused when the table lists none) and at most 2.0.
+             Kind walk-forward: refused (schema only, lane D3)
   register   kind field: the fields builder on the parent's role (prepare_research_fields.py --registry R --fields
              <the wave's fields + the rows> --reuse <the wave's fields dir>) into field.output under the bounded
              runner; kind role: the role builder (prepare_recent_research.py ... --out role.output) then the fields
@@ -78,11 +79,17 @@ def preflight_kind(w: Wave, spec: dict) -> tuple[dict, list[str]]:
         flags, more = WK.rule_flags(m["rules"], tables)
         problems += more
         out["flags"] = flags
-    elif k == "leverage":
+    elif k == "leverage":                           # ruling E2-10: range-checked against the table, at most 2.0
         bounds, value = WK.leverage_bounds(tables), float(m["leverage"]["value"])
-        if bounds is not None and not bounds[0] <= value <= bounds[1]:
+        if bounds is None:
+            problems.append("the NAV exe's rule table lists no fixed-v1 aim_leverage range: leverage.value "
+                            f"{m['leverage']['value']} cannot be range-checked (ruling E2-10)")
+        elif not bounds[0] <= value <= bounds[1]:
             problems.append(f"leverage.value {m['leverage']['value']} lies outside the NAV exe's fixed-v1 "
                             f"aim_leverage range {list(bounds)}")
+        if value > WK.LEVERAGE_MAX:
+            problems.append(f"leverage.value {m['leverage']['value']} is above {WK.LEVERAGE_MAX}, the P9 leverage cap "
+                            "(ruling E2-10, OD-P9-3)")
         out["leverage"] = {"value": m["leverage"]["value"], "bounds": list(bounds) if bounds else None}
     problems += rule_flag_guard(w, spec, tables, flags)
     return out, problems
@@ -107,9 +114,9 @@ def kind_constants(w: Wave, parent: dict, derived: dict) -> tuple[dict, dict]:
 
 
 def raw_routes(w: Wave) -> tuple[dict, dict]:
-    """({route: option map}, {route: the dotted keys it sets or unsets}) of the manifest's and the template's raw
-    inputs to the rule cell (FLAG_MAP_ROUTES, SET_ROUTES); empty for a library kind (add-alpha copies the parent's
-    flag lists: no route can set one) and a schema-only kind."""
+    """({route: option map}, {route: {dotted key: the value it sets, or "(unset)"}}) of the manifest's and the
+    template's raw inputs to the rule cell (FLAG_MAP_ROUTES, SET_ROUTES); empty for a library kind (add-alpha copies
+    the parent's flag lists and nav: no route can set one) and a schema-only kind."""
     k, m = kind(w), w.manifest
     if k in WK.LIBRARY_KINDS or k in WK.SCHEMA_ONLY:
         return {}, {}
@@ -117,11 +124,12 @@ def raw_routes(w: Wave) -> tuple[dict, dict]:
     const, change = rc.get("constants") or {}, (template or {}).get("change") or {}
     maps = {"rule_cell.constants.flags": const.get("flags"), "rule_cell.template change.flags": change.get("flags"),
             "horizon.flags": (m.get("horizon") or {}).get("flags") if k == "horizon" else None}
-    sets = {"rule_cell.constants.set": list(const.get("set") or {}),
-            "rule_cell.template change.set": list(change.get("set") or {}),
-            "rule_cell.template change.unset": list(change.get("unset") or [])}
+    unset = change.get("unset") if isinstance(change.get("unset"), list) else []
+    sets = {"rule_cell.constants.set": const.get("set") if isinstance(const.get("set"), dict) else {},
+            "rule_cell.template change.set": change.get("set") if isinstance(change.get("set"), dict) else {},
+            "rule_cell.template change.unset": {x: "(unset)" for x in unset if isinstance(x, str)}}
     return ({r: v for r, v in maps.items() if isinstance(v, dict) and v},
-            {r: [x for x in v if isinstance(x, str)] for r, v in sets.items() if v})
+            {r: {x: val for x, val in v.items() if isinstance(x, str)} for r, v in sets.items() if v})
 
 
 def flag_lists(spec: dict, section: str) -> dict:
@@ -136,16 +144,25 @@ def flag_lists(spec: dict, section: str) -> dict:
 
 
 def option_tokens(flags: list, option: str) -> list[str]:
-    """The tokens of ``flags`` argparse reads as ``option`` (cycle.spec.argparse_values: exact, ``=value``, prefix)."""
-    return [t for t in flags if isinstance(t, str) and t.startswith("--") and len(t) > 2 and
-            option[2:].startswith(t[2:].split("=", 1)[0])]
+    """The tokens of ``flags`` (as written) argparse reads as ``option`` (cycle.spec.argparse_values: exact,
+    ``=value``, prefix), each matched as WK.norm_option reads it (a single dash, another case: ruling E2-10)."""
+    norm = [(t, WK.norm_option(t)) for t in flags]
+    return [t for t, n in norm if isinstance(n, str) and n.startswith("--") and len(n) > 2 and
+            option[2:].startswith(n[2:].split("=", 1)[0])]
+
+
+def occurrences(flags: list, option: str) -> list:
+    """argparse_values of ``option`` in ``flags`` with every token read as WK.norm_option reads it."""
+    return RC.argparse_values([WK.norm_option(t) for t in flags], option)
 
 
 def touching(section: str, option: str, maps: dict, sets: dict) -> list[str]:
-    """The raw routes that can have changed ``option`` in ``section``'s flag lists: an option map naming it (or a
-    prefix of it), a set / unset key replacing the section, its flags or ic.w_flags."""
-    out = [f"{r} {section} {t}" for r, ops in maps.items()
-           for t in option_tokens(list(ops.get(section) or {}), option)]
+    """The raw routes that can have changed ``option`` in ``section``'s flag lists: an option map entry whose key or
+    value is it (or a prefix of it; review E2 S3: "--cadence --vol-target" puts it in a value slot), a set / unset key
+    replacing the section, its flags or ic.w_flags."""
+    out = [f"{r} {section} {key} {value}" if option_tokens([value], option) else f"{r} {section} {key}"
+           for r, ops in maps.items() if isinstance(ops.get(section), dict) for key, value in ops[section].items()
+           if option_tokens([key], option) or option_tokens([value], option)]
     lists = (f"{section}.flags",) + (("ic.w_flags",) if section == "ic" else ())
     return out + [f"{r} {key}" for r, ks in sets.items() for key in ks
                   if key == section or key in lists or any(key.startswith(k + ".") for k in lists)]
@@ -160,7 +177,9 @@ def rule_flag_guard(w: Wave, parent: dict, tables: dict, derived: dict) -> list[
     constants, constants.set, the template's change.set / unset and flag maps, research_spec.resolve), gives every
     owned option of its flag lists the occurrences (argparse_values: exact, ``=value``, abbreviations) of the
     ``parent``'s lists with only the derived flags applied; a difference is refused with the route that made it.
-    A library kind's cell is add-alpha's copy of the parent's flag lists, so (3) has nothing to compare there."""
+    Tokens are read as WK.norm_option reads them (a single dash, another case: ruling E2-10). (4) Ruling E2-10: the
+    cell's nav.leverage (leverage_refusal). A library kind's cell is add-alpha's copy of the parent's flag lists and
+    nav, so (3) and (4) have nothing to compare there."""
     problems = [f"the {t.upper()} exe's rule table could not be read: the raw-rule-flag guard needs both tables "
                 "(ruling E2-8)" for t in ("ic", "nav") if tables.get(t) is None]
     unmapped = WK.unmapped_ic_rules(tables)
@@ -192,11 +211,12 @@ def rule_flag_guard(w: Wave, parent: dict, tables: dict, derived: dict) -> list[
         for s in sorted(owned):
             want_lists = flag_lists(base, s)
             for label, flags in flag_lists(cell, s).items():
-                changes += [(s, label, opt, RC.argparse_values(flags, opt), RC.argparse_values(want_lists[label], opt),
+                changes += [(s, label, opt, occurrences(flags, opt), occurrences(want_lists[label], opt),
                              option_tokens(flags, opt), option_tokens(want_lists[label], opt))
                             for opt in sorted(owned[s])]
     except (research_spec.TemplateError, RC.CycleError, KeyError, TypeError) as exc:
         return problems + [f"the rule cell cannot be resolved for the raw-rule-flag guard (ruling E2-8): {exc}"]
+    problems += leverage_refusal(w, parent, cell, sets_k, sets)
     grouped: dict = {}
     for s, label, opt, got, want, toks, base_toks in changes:
         if got == want or (s, opt) in reported:
@@ -213,6 +233,28 @@ def rule_flag_guard(w: Wave, parent: dict, tables: dict, derived: dict) -> list[
                         "(ruling E2-8: a rule's flag comes only from rules, never from constants.set / change.set / a "
                         "flag map, another spelling or an abbreviation)")
     return problems
+
+
+def leverage_refusal(w: Wave, parent: dict, cell: dict, sets_k: dict, sets: dict) -> list[str]:
+    """Ruling E2-10 (review E2 R2c): nav.leverage is a rule parameter, fixed-v1's aim_leverage (research_cycle puts
+    it in --aim-leverage {leverage}, after the flag lists are compared). Only a kind leverage wave (leverage.value,
+    range-checked at preflight, at most WK.LEVERAGE_MAX) or the gross-match stage (the -gm copy at L', written by
+    match after preflight) sets it. Refused: any raw set / unset key nav.leverage in any kind (in a leverage wave
+    leverage.value would silently override it), and a resolved rule cell whose nav.leverage differs from the parent's
+    (any other kind) or from leverage.value (kind leverage), by whatever route (a whole nav section set, a template)."""
+    k = kind(w)
+    want = sets_k.get(WK.LEVERAGE_KEY) if k == "leverage" else (parent.get("nav") or {}).get("leverage")
+    got = (cell.get("nav") or {}).get("leverage")
+    raw = [f"{r} {key} = {value!r}" for r, ks in sets.items() for key, value in ks.items()
+           if key == WK.LEVERAGE_KEY or key.startswith(WK.LEVERAGE_KEY + ".")]
+    if not raw and str(got) == str(want):
+        return []
+    via = raw or [f"{r} nav" for r, ks in sets.items() if "nav" in ks] or ["the resolved cell (no raw route names it)"]
+    return [f"{', '.join(via)}: the cell's {WK.LEVERAGE_KEY} would be {got!r} where "
+            f"{'leverage.value gives' if k == 'leverage' else 'the parent has'} {want!r}; {WK.LEVERAGE_KEY} is a rule "
+            "parameter (fixed-v1's aim_leverage, --aim-leverage {leverage}) that only a kind leverage wave "
+            f"(leverage.value, inside the NAV table's range, at most {WK.LEVERAGE_MAX}) or the gross-match stage (L') "
+            f"sets (ruling E2-10: kind {k} may not set or change it)"]
 
 
 def preflight_kind_plan(w: Wave) -> list[str]:

@@ -50,6 +50,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import wave_fixture as F  # noqa: E402
 import cycle.phases as CP  # noqa: E402
+import research_add_alpha as AA  # noqa: E402
 import cycle_resume as CR  # noqa: E402
 import research_cycle as RC  # noqa: E402
 import research_tree as RT  # noqa: E402
@@ -985,6 +986,33 @@ def test_cache_path_bound_w1_i1(tmp_path, monkeypatch):
     (root / "out/waves/w1/receipts/01-preflight.json").unlink()
     monkeypatch.setattr(CP, "CACHE_PATH_MAX", wdeep - 1)
     (root / "bin" / "ic.exe").unlink()                                        # no IC exe: nothing refused
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "preflight"], executor=fake,
+                              log=lambda s: None) == 0
+    # review E2 S1 (N3): a parent off the shared stores with its own, shorter ic.cache; add-alpha's cell drops it, so
+    # the cell's derived dir decides: with the bound between the two depths, preflight refuses (the parent's dir
+    # would have passed), and passes at the derived depth
+    root = F.build(tmp_path / "n3")
+    (root / "bin").mkdir()
+    (root / "bin" / "ic.exe").write_bytes(b"ic")
+    doc = json.loads((root / F.PARENT).read_text())
+    doc["ic"]["cache"] = "c"
+    F.write_json(root, F.PARENT, doc)
+    F.git(root, "commit", "-q", "-am", "the parent names its own IC cache dir")
+    parent = RC.load_spec(root / F.PARENT)
+    assert not AA.shared_stores(parent)
+    pc = RC.Cycle(parent, RC.Resolver(root), verify=False)
+    pdeep = len(RC.deepest_cache_path(os.path.abspath(pc.res.path(pc.cache_dir())), "alpha_a"))
+    cc = RC.Cycle(dict(parent, ic={k: v for k, v in parent["ic"].items() if k != "cache"}), RC.Resolver(root),
+                  verify=False)
+    cdeep = len(RC.deepest_cache_path(os.path.abspath(cc.res.path(cc.cache_dir())), "alpha_a"))
+    assert pdeep < cdeep                                                      # the derived dir is the deeper one
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", cdeep - 1)
+    fake = F.FakeCycle(root, ADMIT_ALL)
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "preflight"], executor=fake,
+                              log=lambda s: None) == 3
+    err = json.loads((root / "out/waves/w1/receipts/01-preflight.failed-1.json").read_text())["error"]
+    assert f"up to {cdeep} characters (> {cdeep - 1})" in err
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", cdeep)
     assert research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "preflight"], executor=fake,
                               log=lambda s: None) == 0
 

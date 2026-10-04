@@ -42,7 +42,9 @@ than through rules. An option map (rule_cell.constants.flags, the template's cha
 name one, with ``=value`` stripped or as an argparse abbreviation (raw_rule_flags); and the cell's RESOLVED flag lists
 (after constants.set, change.set / unset and the flag maps) must give every owned option the occurrences of the
 parent's lists with only the derived flags applied. The IC table may list no composition row COMPOSITION_FLAGS does not
-map (unmapped_ic_rules: its flags could not be guarded).
+map (unmapped_ic_rules: its flags could not be guarded). A token is matched as norm_option reads it (single dash,
+case). nav.leverage (LEVERAGE_KEY) is fixed-v1's aim_leverage (ruling E2-10): only kind leverage (leverage.value,
+inside the table's range and at most LEVERAGE_MAX) and the gross-match stage (L') set it; any other route is refused.
 """
 from __future__ import annotations
 
@@ -87,6 +89,8 @@ SCHEMA_KEYWORDS = {"type", "const", "enum", "required", "properties", "additiona
                    "exclusiveMaximum", "default", "x-flag", "description"}
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,63}")
 PLACEHOLDER_RE = re.compile(r"[A-Z][A-Z0-9_]*")     # "--risk-target S" / "SIGMA": a param's value, not a constant
+LEVERAGE_KEY = "nav.leverage"                       # fixed-v1's aim_leverage: research_cycle puts it in {leverage}
+LEVERAGE_MAX = 2.0                                  # ruling E2-10 / OD-P9-3: no P9 leverage wave above it
 
 
 class KindError(ValueError):
@@ -452,10 +456,21 @@ def owned_flags(tables: dict, derived: dict) -> dict:
     return owned
 
 
+def norm_option(token):
+    """An option token as the raw-rule-flag guard matches it (ruling E2-10, review E2 S2): a leading single "-" made
+    "--" and the option name (before "=") case-folded, so "-theme-erc" and "--Vol-Target" count as the owned
+    "--theme-erc" / "--vol-target" at preflight (the exes and the fitter would only refuse them at run); any other
+    token (a value, "--", "-") unchanged."""
+    if not isinstance(token, str) or len(token) < 2 or not token.startswith("-") or token == "--":
+        return token
+    head, eq, value = (token if token.startswith("--") else "-" + token).partition("=")
+    return head.casefold() + eq + value
+
+
 def abbreviated(token: str, flags) -> list[str]:
-    """The flags of ``flags`` that ``token`` (``=value`` stripped) is a proper prefix of: what argparse's allow_abbrev
-    reads it as (ruling E2-8: such a token is refused as an abbreviation)."""
-    head = token.split("=", 1)[0]
+    """The flags of ``flags`` that ``token`` (``=value`` stripped, norm_option) is a proper prefix of: what argparse's
+    allow_abbrev reads it as (ruling E2-8: such a token is refused as an abbreviation)."""
+    head = norm_option(token).split("=", 1)[0]
     return sorted(f for f in flags if len(head) > 2 and head.startswith("--") and f != head and f.startswith(head))
 
 
@@ -472,7 +487,7 @@ def raw_rule_flags(given: dict, derived: dict, tables: dict) -> list[str]:
         for f in (ops if isinstance(ops, dict) else {}):
             if not isinstance(f, str):
                 continue
-            if f.split("=", 1)[0] in owned.get(s, set()):
+            if norm_option(f).split("=", 1)[0] in owned.get(s, set()):
                 out.append(f"{s} {f}")
             elif abbreviated(f, owned.get(s, set())):
                 out.append(f"{s} {f} (abbreviates {abbreviated(f, owned.get(s, set()))})")

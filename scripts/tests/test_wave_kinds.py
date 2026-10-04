@@ -19,6 +19,8 @@ fixtures (scripts/specs/p9/kinds/, gate G-P2). Synthetic worlds only (wave_fixtu
   test_raw_rule_flags_refused_on_the_resolved_cell    ruling E2-8 (R2b, N2): set / unset routes, =value, abbreviations,
                                                       every template kind; the message names token and route
   test_raw_rule_flag_guard_allows_free_flags_and_names_unmapped_ic_rules  E2-8: --cadence free; N1 unmapped IC rule
+  test_nav_leverage_is_set_only_by_a_leverage_wave    ruling E2-10 (R2c): nav.leverage by any route, any other kind
+  test_leverage_wave_cap_and_table_and_the_matched_l_prime  E2-10: [1, 2] passes, > 2.0 and no table refused; L'
   test_leverage_wave_refuses_a_value_outside_the_nav_table  review E2 S9: fixed-v1's aim_leverage range at preflight
   test_field_wave_builds_then_registers_on_the_build  the register stage builds the fields dir, add-alpha uses it; an
                                                       output this wave's build did not make is refused (S6)
@@ -58,6 +60,7 @@ OR6_ROWS = {"new-signal.json": "add", "replaced-signal.json": "replace", "new-fi
             "new-cost-model.json": "rule", "new-universe.json": "role", "new-horizon.json": "horizon",
             "walk-forward.json": "walk-forward"}
 SCHEMA_ONLY_FIXTURES = ("new-cost-model.json", "walk-forward.json")      # wave 3: lanes C3 and D3
+UNMAPPED = "zz-unmapped-rule-v0"   # ruling E2-12: a synthetic IC rule id no lane registers (never in COMPOSITION_FLAGS)
 
 
 def sha(data: bytes) -> str:
@@ -314,10 +317,12 @@ def test_rule_flags_from_the_tables():
                              tables) == ["fit --theme-er (abbreviates ['--theme-erc'])", "fit --theme-erc=theme-erc-v1"]
     assert WK.abbreviated("--the", WK.table_flags(tables)["fit"]) == ["--theme-erc", "--theme-resid", "--theme-tsmom"]
     assert WK.abbreviated("--", {"--x"}) == [] and WK.abbreviated("--theme-erc", {"--theme-erc"}) == []
-    # ruling E2-8 (review N1): an IC rule COMPOSITION_FLAGS does not map is named
+    # ruling E2-8 (review N1): an IC rule COMPOSITION_FLAGS does not map is named (ruling E2-12: a synthetic id no
+    # lane can register, so MR-4's real rows never make it mapped)
     assert WK.unmapped_ic_rules(tables) == [] and WK.unmapped_ic_rules({}) == []
-    more = dict(ic_table(), rules=ic_table()["rules"] + [{"id": "theme-cov-hedge-v1"}])
-    assert WK.unmapped_ic_rules({"ic": more}) == ["theme-cov-hedge-v1"]
+    assert UNMAPPED not in WK.COMPOSITION_FLAGS
+    more = dict(ic_table(), rules=ic_table()["rules"] + [{"id": UNMAPPED}])
+    assert WK.unmapped_ic_rules({"ic": more}) == [UNMAPPED]
 
 
 # ------------------------------------------------------------------ the fixtures in a fake world
@@ -457,6 +462,16 @@ E2_8_PROBES = [   # (fixture, manifest edit, template edit, the refusal's text):
     ("leverage-change.json", lambda m: m.update(rule_cell={"template": RULE_NAV, "template_sha256": "", "constants": {
         "set": {"nav.flags": NAV_SET + ["--two-speed", "two-speed-v1"]}}}), None,
      "rule_cell.constants.set nav.flags: the cell's nav.flags adds token(s) ['--two-speed']"),
+    # ruling E2-10 / review E2 S2: another case and a single dash count as the owned flag at preflight
+    ("new-nav-rule.json", constants(set={"nav.flags": NAV_SET + ["--Vol-Target", "vol-target-v1"]}), None,
+     "rule_cell.constants.set nav.flags: the cell's nav.flags adds token(s) ['--Vol-Target']"),
+    ("new-nav-rule.json", constants(flags={"fit": {"-theme-erc": "theme-erc-v1"}}), None,
+     "rule_cell.constants.flags sets ['fit -theme-erc'], which the exes' rules own"),
+    ("new-combination-rule.json", constants(set={"fit.flags": ["-theme-erc", "x"]}), None,
+     "rule_cell.constants.set fit.flags: the cell's fit.flags adds token(s) ['-theme-erc']"),
+    # review E2 S3: a flag in a free flag's value slot is refused with the map entry that put it there named
+    ("new-nav-rule.json", constants(flags={"nav": {"--cadence": "--vol-target"}}), None,
+     "rule_cell.constants.flags nav --cadence --vol-target: the cell's nav.flags adds token(s) ['--vol-target']"),
 ]
 
 
@@ -491,18 +506,106 @@ def test_raw_rule_flag_guard_allows_free_flags_and_names_unmapped_ic_rules(tmp_p
     root = world(tmp_path / "free", m)
     code, log = wave(root, KindsFake(root), "run", "--until", "preflight")
     assert code == 0, log
-    more = dict(ic_table(), rules=ic_table()["rules"] + [{"id": "theme-cov-hedge-v1", "params_schema": {}}])
+    more = dict(ic_table(), rules=ic_table()["rules"] + [{"id": UNMAPPED, "params_schema": {}}])
     for name in ("new-signal.json", "new-nav-rule.json", "new-horizon.json"):
         m = load_fixture(name)
         root = world(tmp_path / name[:-5], m)
         code, log = wave(root, KindsFake(root, ic=more), "run", "--until", "preflight")
         assert code == 3, (name, log)
-        assert "the IC exe's rule table lists ['theme-cov-hedge-v1'], which wave_kinds.COMPOSITION_FLAGS does not " \
+        assert f"the IC exe's rule table lists ['{UNMAPPED}'], which wave_kinds.COMPOSITION_FLAGS does not " \
                "map" in preflight_error(root, m), name
     m = load_fixture("new-signal.json")
     root = world(tmp_path / "noic", m)
     code, log = wave(root, KindsFake(root, ic={}), "run", "--until", "preflight")
     assert code == 3 and "the IC exe's rule table could not be read" in preflight_error(root, m), log
+
+
+def gross_none(m: dict) -> None:
+    m["gross_match"] = "none"
+
+
+def nav_cell(**over) -> dict:
+    """The fake parent's nav section (wave_fixture.cell_spec) with ``over``."""
+    return dict(F.cell_spec("p0", F.PARENT_NAV, reference_nav="out/nav-base")["nav"], **over)
+
+
+E2_10_PROBES = [  # (fixture, manifest edit, template edit, the refusal's text): review E2 R2c, the 5.0 probe
+    ("new-horizon.json", lambda m: (gross_none(m), constants(set={"nav.leverage": "5.0"})(m)), None,
+     "rule_cell.constants.set nav.leverage = '5.0': the cell's nav.leverage would be '5.0' where the parent has "
+     "'1.1474'"),
+    ("new-combination-rule.json", lambda m: (gross_none(m), constants(set={"nav.leverage": "5.0"})(m)), None,
+     "rule_cell.constants.set nav.leverage = '5.0': the cell's nav.leverage would be '5.0' where the parent has "
+     "'1.1474'"),
+    ("new-universe.json", gross_none, lambda t: t["change"]["set"].update({"nav.leverage": "5.0"}),
+     "rule_cell.template change.set nav.leverage = '5.0': the cell's nav.leverage would be '5.0'"),
+    ("new-universe.json", None, lambda t: t["change"]["set"].update({"nav.leverage": "5.0"}),    # pm6-6 as well
+     "rule_cell.template change.set nav.leverage = '5.0': the cell's nav.leverage would be '5.0'"),
+    ("new-horizon.json", constants(set={"nav": nav_cell(leverage="5.0")}), None,                 # a whole nav section
+     "rule_cell.constants.set nav: the cell's nav.leverage would be '5.0' where the parent has '1.1474'"),
+    ("new-universe.json", None, lambda t: t["change"].update(unset=["nav.leverage"]),
+     "rule_cell.template change.unset nav.leverage = '(unset)': the cell's nav.leverage would be None"),
+    ("leverage-change.json", lambda m: m.update(rule_cell={"template": RULE_NAV, "template_sha256": ""}),
+     lambda t: t["change"]["set"].update({"nav.leverage": "1.5"}),                # overridden silently: refused
+     "rule_cell.template change.set nav.leverage = '1.5': the cell's nav.leverage would be '2.0' where "
+     "leverage.value gives '2.0'"),
+]
+
+
+@pytest.mark.parametrize("name, edit, tedit, needle", E2_10_PROBES)
+def test_nav_leverage_is_set_only_by_a_leverage_wave(tmp_path, name, edit, tedit, needle):
+    """Ruling E2-10 (review E2 R2c): nav.leverage is fixed-v1's aim_leverage (research_cycle substitutes it into
+    --aim-leverage {leverage}), a rule parameter. Any kind but leverage that sets or changes it, by constants.set, the
+    template's change.set / unset or a whole nav section, with gross_match "none" or pm6-6, is refused at preflight
+    (exit 3, before register), naming the key, the value and the route; in a leverage wave a raw nav.leverage (which
+    leverage.value would override) is refused too. The 5.0 probes passed preflight and spec at d0054b32."""
+    m = load_fixture(name)
+    if edit:
+        edit(m)
+    if m.get("rule_cell") and not m["rule_cell"].get("template_sha256"):
+        m["rule_cell"]["template_sha256"] = sha((REPO / m["rule_cell"]["template"]).read_bytes())
+    root = world(tmp_path / "w", m)
+    if tedit:
+        set_template(root, m, tedit)
+    code, log = wave(root, KindsFake(root), "run", "--until", "preflight")
+    assert code == 3, log
+    err = preflight_error(root, m)
+    assert needle in err and "ruling E2-10" in err, err
+    assert not (root / "out/waves" / m["wave"] / "receipts" / "02-register.json").exists()
+
+
+def test_leverage_wave_cap_and_table_and_the_matched_l_prime(tmp_path):
+    """Ruling E2-10: a leverage wave inside the table's [1, 2] passes; above 2.0 it is refused even when the NAV table
+    would allow more (OD-P9-3); a NAV table with no fixed-v1 range refuses it (nothing to range-check against). The
+    gross-match stage still publishes its L' (a v2 horizon cell at pm6-6, mismatched calibration -> the -gm copy at
+    L', written after preflight)."""
+    m = load_fixture("leverage-change.json")
+    m["leverage"] = dict(m["leverage"], value="1.5")
+    root = world(tmp_path / "ok", m)
+    code, log = wave(root, KindsFake(root), "run", "--until", "spec")
+    assert code == 0, log
+    assert json.loads((root / cell_of(root)["cell_spec"]).read_text())["change"]["set"]["nav.leverage"] == "1.5"
+    wide = json.loads(json.dumps(NAV_TABLE))
+    wide["rules"][0]["params_schema"]["properties"]["aim_leverage"]["maximum"] = 3
+    m["leverage"] = dict(m["leverage"], value="2.5")
+    root = world(tmp_path / "cap", m)
+    code, log = wave(root, KindsFake(root, nav=wide), "run", "--until", "preflight")
+    err = preflight_error(root, m)
+    assert code == 3 and "leverage.value 2.5 is above 2.0, the P9 leverage cap (ruling E2-10" in err, log
+    assert "lies outside" not in err                                    # the table allows it: the cap refuses
+    m["leverage"] = dict(m["leverage"], value="1.5")
+    root = world(tmp_path / "nofixed", m)
+    code, log = wave(root, KindsFake(root, nav=dict(NAV_TABLE, rules=NAV_TABLE["rules"][1:])), "run", "--until",
+                     "preflight")
+    assert code == 3 and "lists no fixed-v1 aim_leverage range" in preflight_error(root, m), log
+    m = load_fixture("new-horizon.json")                                # gross matching: L' published
+    root = world(tmp_path / "gm", m)
+    fake = KindsFake(root, gross_per_l={f"p9k-horizon-{m['wave']}": 0.9604 / 1.1474})
+    code, log = wave(root, fake, "run", "--until", "match")
+    assert code == 0, log
+    got = json.loads((root / "out/waves" / m["wave"] / "receipts" / "06-match.json").read_text())["outputs"]
+    assert got["corrected"] is True and got["cell_spec"].endswith("-gm.json") and got["leverage"] != "1.1474"
+    gm = json.loads((root / got["cell_spec"]).read_text())
+    assert gm["change"]["set"]["nav.leverage"] == got["leverage"]
 
 
 def test_leverage_wave_refuses_a_value_outside_the_nav_table(tmp_path):
