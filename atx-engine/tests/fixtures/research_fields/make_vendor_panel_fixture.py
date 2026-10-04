@@ -13,7 +13,9 @@ Layout under DIR:
               cumulReturnFactor float64, shares int64. Row groups: one of 2010 rows (before every axis window), the
               2014-2022 rows (ROW_GROUP_ROWS per group), one straddling the research seal (2023-12-27 .. 2024-01-03)
               and one wholly sealed (2024-02). The sealed rows are synthetic seal probes: the Python reader decodes and
-              drops them, the engine never decodes the sealed group (nor the straddling group's values).
+              drops them; the engine never decodes the sealed group, and here not the straddling group's values
+              either, since none of its pre-seal rows is selected (a straddling group that keeps a pre-seal row has
+              its value chunks decoded whole, sealed rows included, and drops those unread: vendor_panel.hpp).
   role/       atx.recent-research-role/v1: sessions (the NYSE rule sessions 2020-12-01 .. 2021-01-29), ids 1001..1060,
               member, present (the vendor row's unique key and observation contract), volume.f64, close.f64 (vendor
               close x cumulReturnFactor of the same row), raw_close.f64; source_sha256 = th.parquet's SHA-256

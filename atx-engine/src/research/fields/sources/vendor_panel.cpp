@@ -189,15 +189,20 @@ struct ScanWindow {
 };
 
 // The rows of one row group that reach the panel, by key only (no value column is decoded here).
+// A sealed row is dropped first, by its date alone: it is counted (`sealed`, and the run's
+// rows_sealed_dropped) and nothing else of it is looked at, so it reaches no other statistic.
 [[nodiscard]] std::vector<Selected> select_rows(const arrow::Date32Array &dates,
                                                 const arrow::Int64Array &ids,
-                                                const ScanWindow &w, VendorScanStats &stats) {
+                                                const ScanWindow &w, VendorScanStats &stats,
+                                                u64 &sealed) {
   std::vector<Selected> out;
   const i64 n = dates.length();
   for (i64 i = 0; i < n; ++i) {
     const i64 day = dates.IsNull(i) ? -1 : static_cast<i64>(dates.Value(i));
     if (day >= w.seal) {
       ++stats.rows_sealed_dropped;
+      ++sealed;
+      continue;
     }
     if (day < w.first || day > w.last) {
       continue;
@@ -296,13 +301,19 @@ struct Scan {
   ATX_TRY(const auto ids, chunk_of(*keys, kId, rows, arrow::Type::INT64));
   ++stats.row_groups_keys_decoded;
   stats.rows_keys_decoded += static_cast<u64>(rows);
+  u64 sealed = 0;
   // SAFETY: chunk_of checked each chunk's type id (DATE32, INT64).
   const auto selected = select_rows(static_cast<const arrow::Date32Array &>(*dates),
                                     static_cast<const arrow::Int64Array &>(*ids), scan.window,
-                                    stats);
+                                    stats, sealed);
   if (selected.empty()) {
     return core::Ok(); // no surviving row: the value columns are never decoded
   }
+  // A column chunk decodes whole: in a group straddling the seal the sealed rows' values are
+  // decoded with it. Only the surviving rows' indexes are read below and the chunks are released
+  // when this function returns, so a sealed value reaches nothing; the count records that it was
+  // decoded.
+  stats.rows_sealed_value_decoded += sealed;
   ATX_TRY(const auto values, read_row_group(scan.reader, group, scan.value_leaves));
   ATX_TRY(const auto columns, value_columns(*values, scan.schema, scan.request, rows));
   ++stats.row_groups_values_decoded;

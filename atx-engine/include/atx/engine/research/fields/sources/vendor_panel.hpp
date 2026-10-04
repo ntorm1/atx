@@ -16,7 +16,12 @@
 //      pages are never decompressed or decoded), nor is one wholly outside the axis window and
 //      before the seal; in a read row group the key columns (tradingDate, securityID) are decoded
 //      first, sealed rows and rows off the window, the role's lines or the axis calendar are
-//      dropped (and counted) by key, and the value columns are decoded only when a row survives;
+//      dropped (and counted) by key, and the value columns are decoded only when a row survives.
+//      A parquet column chunk is the unit of decode, so a group that straddles the seal and keeps
+//      a surviving pre-seal row has its value chunks decoded whole, its sealed rows' values
+//      included: those values are dropped at decode, never read (only the surviving rows' indexes
+//      are), so none reaches an observation, a matrix, a statistic or a message;
+//      rows_sealed_value_decoded counts them;
 //   4. applies the observation contract once (finite positive cumulReturnFactor, finite positive
 //      close, finite volume >= 0, a unique (tradingDate, securityID) key: duplicate keys are
 //      quarantined to NaN in every matrix), runs factor-break-v1 once (factor_break.hpp) and
@@ -92,6 +97,10 @@ struct VendorScanStats {
   // Every row dated on or after the seal (Python rows_on_or_after_seal_skipped): the rows of the
   // pruned sealed groups plus the sealed rows of a read group, dropped by key (values never used).
   u64 rows_sealed_dropped{};
+  // Of those, the sealed rows of a read group whose value chunks were decoded (it straddles the
+  // seal and kept a pre-seal row): decoded with their chunk, dropped unread. 0 when no sealed
+  // value was decoded at all.
+  u64 rows_sealed_value_decoded{};
   u64 rows_selected{};
   u64 rows_off_calendar{};
   u64 duplicate_keys_quarantined{};

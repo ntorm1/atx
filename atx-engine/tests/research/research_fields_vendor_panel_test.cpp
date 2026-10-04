@@ -1,19 +1,29 @@
 // The shared vendor panel (P9 lane A3; contract K-P9-2, source half): the NYSE rule calendar and
 // the extended axis it reads, factor-break-v1 in closed form, one hash and one scan per build
-// whatever the number of vendor kinds (HashOnce), and the seal pushed down so far that a sealed row
-// group is never read and a sealed row's values are never decoded (SealPushDown).
+// whatever the number of vendor kinds (HashOnce), and the seal pushed down:
+//   - a row group whose dates all fall on or after the seal is never read (SealPushDown);
+//   - a row group straddling the seal has its keys decoded and its sealed rows dropped by date;
+//     its value chunks are decoded only when a pre-seal row survives (SealPushDown: none does);
+//   - when one does, the value chunks decode whole (a parquet column chunk is the unit of
+//     decode), the sealed rows' values included, and those values reach nothing: no observation,
+//     matrix, statistic or output, and rows_sealed_value_decoded counts them
+//     (SealedValuesOfAStraddlingGroupReachNothing).
 //
 // The vendor inputs are the synthetic fixture of make_vendor_panel_fixture.py
 // (fixtures/research_fields/vendor): its pytest re-runs the Python builder on them and must
-// reproduce every committed byte.
+// reproduce every committed byte. The straddle test writes its own synthetic parquet; its rows
+// dated after the seal are synthetic seal probes (ruling T2-SYN).
 #include <gtest/gtest.h>
 
+#include <arrow/builder.h>
 #include <arrow/io/file.h>
 #include <arrow/memory_pool.h>
 #include <arrow/result.h>
 #include <arrow/status.h>
 #include <arrow/table.h>
+#include <arrow/type.h>
 #include <parquet/arrow/reader.h>
+#include <parquet/arrow/writer.h>
 #include <parquet/file_reader.h>
 #include <parquet/metadata.h>
 #include <parquet/schema.h>
@@ -22,8 +32,10 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <fstream>
 #include <ios>
@@ -197,6 +209,107 @@ bool read_fails(const fs::path &path, int group, const std::vector<int> &leaves)
   } catch (const std::exception &) {
     return true;
   }
+}
+
+// One synthetic TickerHistory3 row (the fixture's column types).
+struct VendorRow {
+  i64 day{};
+  i64 id{};
+  f32 open{};
+  f32 high{};
+  f32 low{};
+  f32 close{};
+  f64 volume{};
+  f64 factor{};
+  i64 shares{};
+};
+
+// `rows` as one parquet row group with column statistics (the writer's default).
+void write_vendor_parquet(const fs::path &path, const std::vector<VendorRow> &rows) {
+  arrow::Date32Builder date;
+  arrow::Int64Builder id;
+  arrow::FloatBuilder open;
+  arrow::FloatBuilder high;
+  arrow::FloatBuilder low;
+  arrow::FloatBuilder close;
+  arrow::DoubleBuilder volume;
+  arrow::DoubleBuilder factor;
+  arrow::Int64Builder shares;
+  for (const VendorRow &r : rows) {
+    ASSERT_TRUE(date.Append(static_cast<std::int32_t>(r.day)).ok());
+    ASSERT_TRUE(id.Append(r.id).ok());
+    ASSERT_TRUE(open.Append(r.open).ok());
+    ASSERT_TRUE(high.Append(r.high).ok());
+    ASSERT_TRUE(low.Append(r.low).ok());
+    ASSERT_TRUE(close.Append(r.close).ok());
+    ASSERT_TRUE(volume.Append(r.volume).ok());
+    ASSERT_TRUE(factor.Append(r.factor).ok());
+    ASSERT_TRUE(shares.Append(r.shares).ok());
+  }
+  const auto schema = arrow::schema(
+      {arrow::field("tradingDate", arrow::date32()), arrow::field("securityID", arrow::int64()),
+       arrow::field("open", arrow::float32()), arrow::field("high", arrow::float32()),
+       arrow::field("low", arrow::float32()), arrow::field("close", arrow::float32()),
+       arrow::field("volume", arrow::float64()),
+       arrow::field("cumulReturnFactor", arrow::float64()),
+       arrow::field("shares", arrow::int64())});
+  const auto table = arrow::Table::Make(
+      schema, {date.Finish().ValueOrDie(), id.Finish().ValueOrDie(), open.Finish().ValueOrDie(),
+               high.Finish().ValueOrDie(), low.Finish().ValueOrDie(),
+               close.Finish().ValueOrDie(), volume.Finish().ValueOrDie(),
+               factor.Finish().ValueOrDie(), shares.Finish().ValueOrDie()});
+  const auto sink = arrow::io::FileOutputStream::Open(path.string()).ValueOrDie();
+  const arrow::Status written =
+      parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), sink, 1 << 20);
+  ASSERT_TRUE(written.ok()) << written.ToString();
+  ASSERT_TRUE(sink->Close().ok());
+}
+
+// A role on `days` with lines {1, 2} (every cell a member and present, close and raw close 10),
+// projected from `parquet` (its SHA-256 is the role's source_sha256).
+fields::RoleAxes straddle_role(const fs::path &dir, const std::vector<i64> &days,
+                               const fs::path &parquet) {
+  support::TinyRole r;
+  r.days = days;
+  r.ids = {1, 2};
+  r.member.assign(days.size() * 2, 1);
+  r.present.assign(days.size() * 2, 1);
+  r.volume.assign(days.size() * 2, 100.0);
+  r.close.assign(days.size() * 2, 10.0);
+  r.raw_close.assign(days.size() * 2, 10.0);
+  r.source_sha256 = support::sha256_of(support::read_bytes(parquet));
+  const std::string sha = support::write_role(dir, r);
+  return fields::RoleAxes::load(dir, sha).value();
+}
+
+bool same_f32(f32 a, f32 b) {
+  return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+}
+
+// Every matrix cell of two panels on the same axis and lines, bit for bit.
+bool same_matrices(const fields::VendorPanel &a, const fields::VendorPanel &b) {
+  if (a.rows() != b.rows() || a.lines() != b.lines()) {
+    return false;
+  }
+  for (usize line = 0; line < a.lines(); ++line) {
+    if (a.first_above(line) != b.first_above(line)) {
+      return false;
+    }
+    for (usize row = 0; row < a.rows(); ++row) {
+      const bool same =
+          support::same_bits(a.factor(row, line), b.factor(row, line)) &&
+          same_f32(a.close(row, line), b.close(row, line)) &&
+          same_f32(a.shares(row, line), b.shares(row, line)) &&
+          same_f32(a.price_open(row, line), b.price_open(row, line)) &&
+          same_f32(a.bar_open(row, line), b.bar_open(row, line)) &&
+          same_f32(a.bar_high(row, line), b.bar_high(row, line)) &&
+          same_f32(a.bar_low(row, line), b.bar_low(row, line));
+      if (!same) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 } // namespace
@@ -512,10 +625,13 @@ TEST(ResearchFieldsVendorPanel, HashOnce) {
   EXPECT_FALSE((*plans)[1].kind->build((*plans)[1], fresh).has_value());
 }
 
-// The seal pushed down: the wholly sealed row group's column chunks and the value chunks of the
-// group straddling the seal are overwritten with 0xFF (the footer is kept), so any decode of a
-// sealed row's value fails. The panel still loads, its sealed rows counted exactly as the Python
-// reader counts the rows it decodes and drops, and the six fields stay byte-identical.
+// The seal pushed down, in the fixture's layout (its straddling group keeps no row the panel
+// selects: its pre-seal rows lie after the role): the wholly sealed row group's column chunks and
+// the straddling group's value chunks are overwritten with 0xFF (the footer is kept), so a reader
+// that decodes them fails. The panel still loads, so it never decodes the sealed group at all nor
+// the straddling group's values; its sealed rows are counted exactly as the Python reader counts
+// the rows it decodes and drops, and the six fields stay byte-identical. A straddling group that
+// does keep a pre-seal row is SealedValuesOfAStraddlingGroupReachNothing's case.
 TEST(ResearchFieldsVendorPanel, SealPushDown) {
   const auto dir = support::scratch("vendor_seal");
   const Copied c = copy_fixture(dir);
@@ -557,6 +673,7 @@ TEST(ResearchFieldsVendorPanel, SealPushDown) {
                 s.row_groups_pruned_outside_window,
             s.row_groups);
   EXPECT_LT(s.row_groups_values_decoded, s.row_groups_keys_decoded); // the straddling group
+  EXPECT_EQ(s.rows_sealed_value_decoded, 0U); // no sealed value was decoded at all
   EXPECT_EQ(s.rows_selected, checks.at("rows_selected").get<u64>());
   const fs::path out = dir / "out";
   fs::create_directories(out);
@@ -565,4 +682,103 @@ TEST(ResearchFieldsVendorPanel, SealPushDown) {
     ASSERT_TRUE(built.has_value()) << name << ": " << built.error().message();
   }
   expect_payloads_equal_python(out);
+}
+
+// A row group straddling the seal that keeps pre-seal rows (one group: the role's four sessions,
+// then sealed rows). Its value chunks decode whole, so the sealed rows' values are decoded with
+// them; they must reach nothing. The sealed rows are poisoned so that any use would show: a sealed
+// holiday (off the calendar), a twice-written sealed key (a duplicate), an id off the role, shares
+// above the A9 ceiling (C-81), non-observations and absurd bars. The teeth: the same poison dated
+// inside the window moves the statistics and the matrices.
+TEST(ResearchFieldsVendorPanel, SealedValuesOfAStraddlingGroupReachNothing) {
+  const auto dir = support::scratch("vendor_seal_straddle");
+  const std::vector<i64> days{day(2023, 12, 26), day(2023, 12, 27), day(2023, 12, 28),
+                              day(2023, 12, 29)};
+  std::vector<VendorRow> clean;
+  for (const i64 d : days) {
+    for (const i64 id : {i64{1}, i64{2}}) {
+      clean.push_back(VendorRow{d, id, 10.1F, 11.0F, 9.0F, 10.0F, 100.0, 1.0, 1000});
+    }
+  }
+  // The poison on (holiday, dup, last): five rows.
+  const auto poison = [](i64 holiday, i64 dup, i64 last) {
+    const VendorRow bad{0, 1, 1e30F, 1e30F, -1.0F, -5.0F, -1.0, 1e300, 200'000'000};
+    std::vector<VendorRow> out(3, bad);
+    out[0].day = holiday;
+    out[1].day = dup;
+    out[2].day = dup;
+    out.push_back(VendorRow{dup, 3, 10.0F, 11.0F, 9.0F, 10.0F, 100.0, 1.0, 1000});
+    out.push_back(VendorRow{last, 2, 10.0F, 11.0F, 9.0F, 10.0F, 100.0, 1.0, 200'000'000});
+    return out;
+  };
+  const auto with = [&clean](const std::vector<VendorRow> &extra) {
+    std::vector<VendorRow> rows = clean;
+    rows.insert(rows.end(), extra.begin(), extra.end());
+    std::stable_sort(rows.begin(), rows.end(),
+                     [](const VendorRow &a, const VendorRow &b) { return a.day < b.day; });
+    return rows;
+  };
+  const std::vector<VendorRow> sealed =
+      poison(day(2024, 1, 1), day(2024, 1, 2), day(2024, 1, 3)); // all on or after the seal
+  const std::vector<VendorRow> inside =
+      poison(day(2023, 12, 25), day(2023, 12, 28), day(2023, 12, 29)); // the teeth
+  struct Case {
+    const char *name;
+    std::vector<VendorRow> rows;
+  };
+  const std::array<Case, 3> cases{{{"clean", clean}, {"sealed", with(sealed)},
+                                   {"inside", with(inside)}}};
+  std::vector<fields::VendorPanel> panels;
+  for (const Case &c : cases) {
+    const fs::path parquet = dir / (std::string(c.name) + ".parquet");
+    write_vendor_parquet(parquet, c.rows);
+    const auto role = straddle_role(dir / c.name, days, parquet);
+    auto panel = fields::VendorPanel::load(parquet, role, union_request());
+    ASSERT_TRUE(panel.has_value()) << c.name << ": " << panel.error().message();
+    panels.push_back(std::move(*panel));
+    // The six fields build on every panel (their payloads are compared through the matrices).
+    const fs::path out = dir / (std::string(c.name) + "_out");
+    fs::create_directories(out);
+    for (const std::string_view name : fields::vendor_field_names()) {
+      const auto built = fields::build_vendor_field(name, panels.back(), role, out);
+      ASSERT_TRUE(built.has_value()) << c.name << " " << name << ": " << built.error().message();
+    }
+    for (const std::string_view name : fields::vendor_field_names()) {
+      const std::string file = std::string(name) + ".f64";
+      if (std::string(c.name) == "sealed") { // the sealed rows changed no payload byte
+        EXPECT_EQ(support::read_bytes(out / file), support::read_bytes(dir / "clean_out" / file))
+            << name;
+      }
+    }
+  }
+  const fields::VendorScanStats &a = panels[0].stats();
+  const fields::VendorScanStats &s = panels[1].stats();
+  const fields::VendorScanStats &t = panels[2].stats();
+  // What happened to the sealed rows: one straddling group, keys and values decoded, its five
+  // sealed rows dropped by date and counted as decoded with their chunks.
+  EXPECT_EQ(s.row_groups, 1U);
+  EXPECT_EQ(s.row_groups_pruned_sealed, 0U);
+  EXPECT_EQ(s.row_groups_keys_decoded, 1U);
+  EXPECT_EQ(s.row_groups_values_decoded, 1U);
+  EXPECT_EQ(s.rows_sealed_dropped, 5U);
+  EXPECT_EQ(s.rows_sealed_value_decoded, 5U);
+  EXPECT_EQ(a.rows_sealed_dropped, 0U);
+  EXPECT_EQ(a.rows_sealed_value_decoded, 0U);
+  // ... and reached nothing: every other statistic and every matrix cell is the clean file's.
+  EXPECT_EQ(s.rows_selected, a.rows_selected);
+  EXPECT_EQ(s.rows_off_calendar, a.rows_off_calendar);
+  EXPECT_EQ(s.duplicate_keys_quarantined, a.duplicate_keys_quarantined);
+  EXPECT_EQ(s.shares_rows_above_a9_ceiling, a.shares_rows_above_a9_ceiling);
+  EXPECT_EQ(s.shares_lines_withheld_c81, a.shares_lines_withheld_c81);
+  EXPECT_EQ(panels[1].repaired_steps(), panels[0].repaired_steps());
+  EXPECT_EQ(panels[1].kept_gap_steps(), panels[0].kept_gap_steps());
+  EXPECT_TRUE(same_matrices(panels[1], panels[0]));
+  // The teeth: the same poison inside the window is seen everywhere it would be.
+  EXPECT_EQ(t.rows_sealed_dropped, 0U);
+  EXPECT_EQ(t.rows_off_calendar, 1U);            // the holiday
+  // (dup, line 1): the clean row and two copies; (last, line 2): the clean row and the poison row.
+  EXPECT_EQ(t.duplicate_keys_quarantined, 2U);
+  EXPECT_EQ(t.shares_rows_above_a9_ceiling, 3U); // the two copies and line 2's last row
+  EXPECT_EQ(t.shares_lines_withheld_c81, 2U);
+  EXPECT_FALSE(same_matrices(panels[2], panels[0]));
 }

@@ -213,6 +213,7 @@ struct Specs {
            {"row_groups_values_decoded", s.row_groups_values_decoded},
            {"rows_keys_decoded", s.rows_keys_decoded},
            {"rows_sealed_dropped", s.rows_sealed_dropped},
+           {"rows_sealed_value_decoded", s.rows_sealed_value_decoded},
            {"rows_selected", s.rows_selected},
            {"rows_off_calendar", s.rows_off_calendar},
            {"duplicate_keys_quarantined", s.duplicate_keys_quarantined},
