@@ -1115,3 +1115,64 @@ merge `9d518317`, eol `2ee62800`, SQL2-CLS `e1c16051`); the docs commits sit on 
   already deleted their object trees (DISK-2: nothing left to delete).
 
 Trial ledger at the end: 133 lines, sha256 `27e40f9f...` (0 trials). Resume notes: `handoff-root-m2e2.md`.
+
+## M2f: S2R merge, B2 identity part (2026-10-04)
+
+Agent: root for step group M2f (dispatch R5-2), from `handoff-root-m2e2.md`. Evidence: `m2f-logs/` (this dir), scratch
+scripts in `m2f-logs/tools/`. Trial ledger at the start: 133 lines, `27e40f9f`. Python
+`"C:/Program Files/Python312/python.exe"`; gtests through `m2f-logs/tools/gt.sh` (the M2e runner, logs to `m2f-logs/`).
+
+### S2R (`048b01c6`, pool-18; light review APPROVE `d92a20ee`)
+
+- **Ledger:** `Task S2R: complete` (light review APPROVE at `048b01c6`, 0 Required, 5 Suggested); rulings M2c-RED-1,
+  M2c-RED-2, OD5-2, S2R-1, S2R-2, S2R-3 read. S-1 / S-2 are P10 notes (S2R-3); S-3 is this root slip; S-4 is answered
+  below; S-5 is the optional wave-2-gate diagnostic.
+- **Merge:** `0f7a84b1` = `git merge --no-ff 048b01c6`, **no conflict** (the lane's merge of root `f6444417` was its
+  base; root has not touched `alpha_lit_golden_test.cpp` since `2ed2fc18`). Code: that one test file (+236 / -6);
+  everything else is sprint-dir docs, logs and tools that came with the merge (the report, handoff, `s2r-logs/` 30
+  files, equal to pool-18's modulo CRLF). `task-S2R-review.md` (lane commit `d92a20ee`, after the merged SHA) copied
+  from its blob (`git add -f`; blob `847e2de7` = lane blob).
+- **No golden digest changed:** the test file's 64-bit hex constants before (`HEAD^1`) and after the merge: every
+  pre-merge constant is present with at least its count; the only added occurrence is the canonical NaN
+  `0x7ff8000000000000` (the reviewer's finding). The merge touches no other code file, no fixture, no pin source; both
+  `StrategyIcRunner.*SourcesPinnedToSemanticsVersion` pass in both builds (`dsl_vm` / `ic_result` pins hold).
+- **Build p9-2g** (equity-dev; source `0f7a84b1`, 10 dirty entries = four PNGs, `progress.md`, four `al-data/*.md`, the
+  S-3 report edit: no code): `atx-engine-alpha-tests, atx-impl-strategy-ic-tests` -> **exit 0, 13.3 s, 1 TU, 1 link,
+  Jobs 4, 0 warnings**. alpha-tests `8b767814`, ic-tests `f535167a` (unchanged since p9-2f).
+- **Build p9-2h** (equity-rel; same source and targets; the tree reconfigured itself on CMake's GLOB check,
+  ConfiguredProvenance `0f7a84b1...-dirty`; no stale-PCH refusal) -> **exit 0, 123.2 s, 31 TUs, 3 links, Jobs 3, 0
+  warnings** (the log's one stderr record is the "GLOB mismatch!" notice). alpha-tests `875ed9c7`, ic-tests `1e070302`.
+- **gtests** (logs `m2f-logs/s2r-{dbg,rel}-*.log`):
+
+  | binary | filter | Debug (p9-2g) | Release (p9-2h) |
+  |---|---|---|---|
+  | atx-engine-alpha-tests | `AlphaLitGolden_ExistingOps.*` | **3 passed** (pinned, VmMatchesOracle, Battery) | **2 passed, 1 skipped** (the pinned test) |
+  | atx-engine-alpha-tests | whole | **783 passed, 0 skipped, 0 failed** (1 disabled) | **780 passed, 2 skipped, 0 failed** (1 disabled) |
+  | atx-impl-strategy-ic-tests | S2 filter (`IcScreen.*:IcLabels.*:IcLabelTerminal.*:StrategyIcRunner.AuditExactEval...:StrategyIcRunner.*SourcesPinnedToSemanticsVersion`) | **28 passed** | **28 passed** |
+  | atx-impl-strategy-ic-tests | whole | **226 passed** | **226 passed** |
+
+  - The two Release skips are exactly `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` and
+    `AlphaVm_ZeroAlloc.WarmDispatchLoop_BoundedByOutputsAndSizeIndependent`; the skip text names the CRT `pow`
+    difference (`ucrtbased.dll` /MDd vs `ucrtbase.dll`), the three rows and "Ruling M2c-RED-2".
+  - `EveryPreW2OpcodeVmMatchesOracle` **passes in both builds** (root's Debug run of the merged tree is the Debug proof
+    the lane's `02eae2ab-dirty` receipt could not give).
+  - Prints: Debug `vm_audit_exact=0x971c3da60ca89aa3 vm_research_fast=0xe9e7128fd5359900 oracle=0x971c3da60ca89aa3`
+    (= the pins); Release `0xeeae40c4a6d7d93b / 0x24c97b5bfeab6518 / 0xeeae40c4a6d7d93b` (= the values the review and
+    M2c-RED name: no UCRT or kernel change).
+  - Debug 783 vs Release 782 tests: the Debug-only death test `AlphaSlotPoolDeathTest.OverAcquire_Aborts` (present
+    in the Debug log, absent from the Release log; review S-4).
+  - IC whole is 226, not the lane's 204: root's head carries AL-COMB's 22 IC tests (M2e: 226); the S2 filter is the
+    lane's 28.
+- **UCRT (M2c-RED-2 (d) record, not a P9-B0):** `C:\Windows\System32\ucrtbase.dll` 10.0.26100.7623, 1,373,280 B,
+  SHA-256 `2c08e77f...65ef` = S2R's measurement (`m2f-logs/ucrtbase-m2f.txt`).
+- **S2R-1 / S2R-2 scan on the merged tree** (review item 5; the lane's `s2r1_scan.py` with its root path set to
+  pool-2, `m2f-logs/tools/s2r1_scan_root.py`, output `m2f-logs/s2r1-scan-root.txt`): book candidates using a split op
+  5 (`res_mom_12_1`, `smax`, `iv_rv_spread`, `qmj_safety`, `smax5`; all `stddev`), the same 5 as the lane; P9 strings
+  0 over all of `scripts/specs/p9/` (now incl. `rules/`, `templates/`, `diagnostics/`); the one textual match is the
+  prose "OLS slope (intercept included)" in `rules/theme-cov-hedge-v1.json` `fixed_choices[2]`, not a DSL call.
+- **Slip S-3 fixed in place** (Ruling S2R-3): `task-S2R-report.md` 12.3 now reads "The P9 DSL strings are
+  `rank(russell_recon)`, `rank(lazy_prices)` and `rank(hf_crowd)` (blocked, no field); none uses a time-series op", with
+  a bracketed note naming the old wording and `scripts/specs/p9/blocked/hf_crowd.json:3`. Conclusion unchanged.
+- **Known-red change:** the Release lit-golden red is now a **named Release skip, 0 failed** (M2c-RED-2 (c) / OD5-2).
+- **DISK-2 (pool-18):** see below (end of M2f).
+- **Trial ledger:** 0 trials.

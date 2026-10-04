@@ -399,8 +399,10 @@ Both production consumers default to ResearchFast:
 
 - **`ts_zscore` (the ruled split): 0 book candidates, 0 P9 strings.**
 - **`ts_var`, `slope`, `rsquare`, `resid`: 0 / 0.** `qmj_safety` matches "slope" only in its `notes.deviation` prose.
-- **P9 strings: 0.** The only P9 DSL strings are `rank(russell_recon)` and `rank(lazy_prices)`, which use no
-  time-series op. `hf_crowd` has no DSL yet.
+- **P9 strings: 0.** The P9 DSL strings are `rank(russell_recon)`, `rank(lazy_prices)` and `rank(hf_crowd)`
+  (blocked, no field); none uses a time-series op. [Root M2f, slip S-3 / Ruling S2R-3: this sentence first said
+  "`hf_crowd` has no DSL yet"; `scripts/specs/p9/blocked/hf_crowd.json:3` carries `"dsl": "rank(hf_crowd)"`. The
+  conclusion is unchanged.]
 - **`stddev` (the TsStd form of the same Welford cause): 5 book candidates.**
 
 | id | fragment | input | can the input be flat over the window? | effect if flat |

@@ -553,3 +553,11 @@ docs commit `20bc5f5f` (status-5, next-goal-prompt, progress.md, AL-DATA edits, 
 Next free build tag **p9-2g**. Known-red after M2e: pytest `test_fields_are_the_rule_applied_to_the_registry` (E2);
 Release `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` (M2c-RED-2 / OD5-2: a visible Release skip once
 S2R's split merges). Release `BookNormalScore.*` x2 cleared by C2.
+
+### M2f: S2R, B2 identity part, 2026-10-04
+
+Base `3e283275` (code `e1c16051`). Detail: `root-wave2-merge-report.md` section M2f; logs `m2f-logs/`.
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| S2R | `048b01c6` (light review APPROVE `d92a20ee`; contains root `f6444417`) | `0f7a84b1` (no SQL2-CLS: test-only lane) | none | **p9-2g** equity-dev and **p9-2h** equity-rel, each `atx-engine-alpha-tests, atx-impl-strategy-ic-tests` (13.3 s / 1 TU; 123.2 s / 31 TUs) | 0 / 0 | Debug: alpha 783p / 0 skip / 0 fail, lit-golden 3p (prints = pins), S2 filter 28p, IC whole 226p; Release: alpha **780p / 2 skip / 0 fail** (`EveryPreW2OpcodeDigestIsPinned` with the M2c-RED-2 CRT `pow` message, `WarmDispatchLoop_BoundedByOutputsAndSizeIndependent`), prints `0xeeae40c4...` / `0x24c97b5b...` / `0xeeae40c4...`, S2 filter 28p, IC whole 226p; `EveryPreW2OpcodeVmMatchesOracle` green in both | none (C++ test lane) | no pin moved (hex constants pre / post: only the canonical NaN added); source-digest pins hold; UCRT `2c08e77f` unchanged; S2R-1 scan on the merged tree: 5 `stddev` book candidates, 0 P9 strings; slip S-3 (`hf_crowd` has a DSL string) fixed in the report; Release lit-golden known-red is now a named skip |
