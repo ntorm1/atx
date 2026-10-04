@@ -1,0 +1,23 @@
+{
+  "after": "CIK0001197850.json",
+  "archive_retrieval_clock": null,
+  "archive_sha256": "702fbcd8b4335bc649e9e4eab3a202f3effc314b43421664bfecb59365767165",
+  "archive_source_url": "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip",
+  "bound_reached": true,
+  "code_sha256": {
+    "submissions_archive": "12d48c0334fa0013726200967809f9fb0cb2eee75113debd8cd78d0eba89f09f",
+    "thirteenf_quality": "02a04d7e4dfe8221cb0d65c076ecd506fa049ff2dc3e75628aee6702e7dbd5c5"
+  },
+  "counts": {
+    "filings": 354,
+    "history_members": 14,
+    "main_members": 10000
+  },
+  "exceptions": [],
+  "first_filing_date": "2019-01-01",
+  "last_main_member": "CIK0001209222.json",
+  "output_sha256": "620d8460e3012808d9d40370d265dfa6159a950bc65133d74aea2f5a341e864d",
+  "schema": "atx.thirteenf-submissions-inventory-partition/v1",
+  "source_completeness": "UNQUALIFIED_PARTITION",
+  "through": "CIK9999999999.json"
+}
