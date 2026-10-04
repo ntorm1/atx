@@ -91,10 +91,12 @@ Expansion X (v8x-prereg.md section 4, precondition P5; Rulings PM7-1, PM7-2, PM7
   --dsr-total LEDGER     total-count DSR of every listed dir. N_tot = every trial the defect rule counts in LEDGER (any
                          kind) + the mining campaigns' registry counts (+1 for a dir not in the ledger). V[SR] is the
                          ddof-1 variance from dsr_variance (construction cells on the current window). The v8-count
-                         value (N = the construction trials, as --dsr-ledger) is printed beside it. A missing ledger is
-                         refused.
-  --dsr-hand DIR         with --dsr-total; repeatable. DSR_hand of a ledgered book: N_tot and V of the ledger prefix
-                         that ends at DIR's own construction line. A dir that is missing or not ledgered is refused.
+                         value (N = the construction trials, as --dsr-ledger) is printed beside it, and DSR_hand at
+                         N = N_tot - M (P9 ruling PRE-15: the campaigns' registry counts M left out, the same V; JSON
+                         deflated_total.tot_minus_m). A missing ledger is refused.
+  --dsr-hand DIR         with --dsr-total; repeatable. DSR_hand of a ledgered book by the prefix rule (v8x PM7-2;
+                         printed "prefix rule"): N_tot and V of the ledger prefix that ends at DIR's own construction
+                         line. A dir that is missing or not ledgered is refused.
 
 Era pools (platform v8 H-1; opt-in, without --pool nothing above moves):
   --pool DIR ... [--pool-ids ID,...] [--pool-reference DIR ...]
@@ -1098,7 +1100,8 @@ def main(argv=None) -> int:
     ap.add_argument("--dsr-total", default=None, metavar="LEDGER",
                     help="total-count DSR: N_tot = every trial of LEDGER + campaign registry counts (v8x-prereg)")
     ap.add_argument("--dsr-hand", action="append", default=[], metavar="DIR",
-                    help="with --dsr-total: DSR_hand of a ledgered book on the ledger prefix ending at its line")
+                    help="with --dsr-total: DSR_hand of a ledgered book by the prefix rule (the ledger prefix ending "
+                         "at its line)")
     ap.add_argument("--bundle", nargs=2, default=None, metavar=("BASE", "FINAL"),
                     help="cumulative paired test FINAL vs BASE with its verdict")
     ap.add_argument("--bundle-alpha", type=float, default=BUNDLE_ALPHA)

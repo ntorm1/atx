@@ -17,9 +17,12 @@ Rows:
 - ``tot``: N_tot of the whole ledger. This is DSR_tot, the value the X gate reads.
 - ``v8``: N = ledger_n(records, ...), the construction count of v8 rule 3, with the same V. This is the value
   ``nav_summ --dsr-ledger`` prints.
-- ``hand``: N_tot and V of the ledger prefix that ends at a named book's own construction line. Applied to the last
-  hand-written book H-F this is DSR_hand (PM7-2). The same rule gives any ledgered book's value at its own ledger
-  state, for example V8-F's.
+- ``tot_minus_m`` (P9 ruling PRE-15): DSR_hand at N = N_tot - M, the whole ledger's trials by the defect rule (+ 1 when
+  not yet ledgered) without the mining campaigns' registry counts M, with the same V: v8y's YP-2 reading ("what
+  dropping the campaigns gives"), printed for every --dsr-total dir.
+- ``hand`` (the prefix rule, v8x PM7-2): N_tot and V of the ledger prefix that ends at a named book's own construction
+  line. Applied to the last hand-written book H-F this was v8x's DSR_hand. The same rule gives any ledgered book's
+  value at its own ledger state, for example V8-F's. Printed labelled "prefix rule" beside the PRE-15 row.
 
 Platform P9 B2 (K-P9-5): the rows are computed by the engine verb atx-research-eval (dsr.tot and hand of its document;
 research/ledger trial_breakdown, dsr_variance, ledger_n and eval house_dsr), which nav_summ.py calls. What stays here
@@ -101,21 +104,32 @@ def variance_text(rows: dict) -> str:
     return f"V[SR] {fmt(rows['variance_sr'], '.3e')} from {rows['cells_in_v']} cells ledgered on {rows['window_id']}"
 
 
+def hand_parts_text(rows: dict) -> str:
+    """N_tot - M's parts: the trials by the defect rule, without the campaigns' registry counts (PRE-15)."""
+    p = rows["parts"]
+    kinds = " + ".join(f"{kind} {n}" for kind, n in p["by_kind"].items()) or "no ledger trial"
+    own = "" if rows["in_ledger"] else " + 1 (this cell, not yet ledgered)"
+    return f"{kinds}{own}; campaign registry {p['campaign_registry']} left out"
+
+
 def format_book(label: str, moments: dict, ledger: dict, rows: dict) -> list[str]:
-    """The printed lines of one book's ``tot`` and ``v8`` rows (one block per --dsr-total dir)."""
-    t, v8 = rows["tot"], rows["v8"]
+    """The printed lines of one book's ``tot``, ``v8`` and ``tot_minus_m`` rows (one block per --dsr-total dir)."""
+    t, v8, h = rows["tot"], rows["v8"], rows["tot_minus_m"]
     return [f"== total-count DSR {label} (ledger {ledger['path']}, {len(ledger['records'])} lines, chain head "
             f"{ledger['chain_head'][:16]})",
             f"   DSR_tot (N_tot={t['n']}): DSR {fmt(t['dsr'], '.4f')} vs SR0 {fmt(t['sr0_annual'], '.3f')} ann | "
             f"N_tot = {parts_text(rows)} | {variance_text(rows)} | {moments_text(moments)}",
             f"   DSR_v8 (N_c={v8['n']}, v8 rule 3 as --dsr-ledger): DSR {fmt(v8['dsr'], '.4f')} vs SR0 "
-            f"{fmt(v8['sr0_annual'], '.3f')} ann | same V"]
+            f"{fmt(v8['sr0_annual'], '.3f')} ann | same V",
+            f"   DSR_hand (N_tot - M={h['n']}, ruling PRE-15): DSR {fmt(h['dsr'], '.4f')} vs SR0 "
+            f"{fmt(h['sr0_annual'], '.3f')} ann | N_tot - M = {hand_parts_text(rows)} | same V"]
 
 
 def format_hand(label: str, moments: dict, row: dict) -> list[str]:
-    """The printed lines of one --dsr-hand book."""
+    """The printed lines of one --dsr-hand book: the prefix rule (v8x PM7-2), labelled as such beside PRE-15's row."""
     t = row["tot"]
-    return [f"== DSR_hand {label}: ledger prefix of {row['prefix_lines']} lines ending at its construction line "
-            f"{row['trial_id']} (chain head {row['prefix_chain_head'][:16]})",
-            f"   DSR_hand (N_tot={t['n']}): DSR {fmt(t['dsr'], '.4f')} vs SR0 {fmt(t['sr0_annual'], '.3f')} ann | "
-            f"N_tot = {parts_text(row)} | {variance_text(row)} | {moments_text(moments)}"]
+    return [f"== DSR_hand (prefix rule) {label}: ledger prefix of {row['prefix_lines']} lines ending at its "
+            f"construction line {row['trial_id']} (chain head {row['prefix_chain_head'][:16]})",
+            f"   DSR_hand (prefix rule, N_tot={t['n']}): DSR {fmt(t['dsr'], '.4f')} vs SR0 "
+            f"{fmt(t['sr0_annual'], '.3f')} ann | N_tot = {parts_text(row)} | {variance_text(row)} | "
+            f"{moments_text(moments)}"]

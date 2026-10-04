@@ -161,6 +161,20 @@ def test_total_count_and_dsr_are_the_closed_form(book, capsys):
             f"{BI.window_id()} | ") in out
     assert "   DSR_tot (N_tot=150): " in out and "+ campaign registry 132 + 1 (this cell, not yet ledgered) |" in out
     assert f"   DSR_v8 (N_c=7, v8 rule 3 as --dsr-ledger): DSR {xf0['v8']['dsr']:.4f} vs SR0 " in out
+    # P9 ruling PRE-15: DSR_hand at N = N_tot - M (the campaign's registry count left out), the same V
+    assert (xf0["tot_minus_m"]["n"], new["tot_minus_m"]["n"]) == (149 - REGISTRY_COUNT, 150 - REGISTRY_COUNT)
+    for key, nets in (("XF0", nets_of(8, 0.0006)), ("NEW", nets_of(9, 0.0006))):
+        row = (xf0 if key == "XF0" else new)["tot_minus_m"]
+        want = oracle(nets, row["n"], v)
+        assert row["sr0_annual"] == pytest.approx(want["sr0"] * ROOT, rel=1e-9)
+        assert row["dsr"] == pytest.approx(want["dsr"], rel=1e-9)
+    assert xf0["tot"]["dsr"] < xf0["tot_minus_m"]["dsr"]          # fewer trials deflate less
+    assert (f"   DSR_hand (N_tot - M=17, ruling PRE-15): DSR {xf0['tot_minus_m']['dsr']:.4f} vs SR0 "
+            f"{xf0['tot_minus_m']['sr0_annual']:.3f} ann | N_tot - M = admission 10 + construction 7; campaign "
+            "registry 132 left out | same V") in out
+    assert ("   DSR_hand (N_tot - M=18, ruling PRE-15): DSR " in out
+            and "N_tot - M = admission 10 + construction 7 + 1 (this cell, not yet ledgered); campaign registry 132 "
+                "left out | same V" in out)
 
 
 def test_the_v8_count_value_is_the_dsr_ledger_value(book, capsys):
@@ -190,6 +204,30 @@ def test_a_campaign_line_changes_n_tot_and_nothing_else(book, capsys):
     assert a["tot"]["dsr"] < b["tot"]["dsr"]
     nets = nets_of(8, 0.0006)
     assert b["tot"]["dsr"] == pytest.approx(oracle(nets, 149 - REGISTRY_COUNT, a["variance_sr"])["dsr"], rel=1e-9)
+    # P9 ruling PRE-15 (v8y YP-2): DSR_hand at N_tot - M is what dropping the campaign gives, to the bit; without a
+    # campaign it is DSR_tot
+    assert a["tot_minus_m"] == b["tot"] and b["tot_minus_m"] == b["tot"]
+
+
+def test_dsr_hand_at_n_tot_minus_m_ties_v8ys_dsr_at(book, capsys):
+    """P9 ruling PRE-15: v8y's DSR_hand was ``dsr_total.dsr_at(moments, N_tot - M, V)`` (YP-2), code lane B2 retired;
+    the verb's row ties its frozen copy (fixtures/eval_tie/frozen_statistics.py) within 1e-12 on the same series, for a
+    ledgered book and a new one."""
+    spec = importlib.util.spec_from_file_location("b2_frozen_statistics_pre15", FROZEN)
+    frozen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(frozen)
+    d, ledger = book["dirs"], book["ledger"]
+    rows, _ = run_json(book["tmp"], [str(d["XF0"]), str(d["NEW"]), "--dsr-total", str(ledger)], capsys)
+    records = BI.ledger_read(ledger)
+    parts, v = frozen.trial_breakdown(records), BI.dsr_variance(records, BI.window_id())["variance_sr"]
+    assert parts["campaign_registry"] == REGISTRY_COUNT
+    for key, own, row in (("XF0", 0, rows[0]), ("NEW", 1, rows[1])):
+        x = np.array(list(NS.net_series(NS.load_daily(d[key], SCEN)).values()), dtype=np.float64)
+        n = parts["n_tot"] + own - parts["campaign_registry"]
+        want, got = frozen.dsr_at(frozen.net_moments(x), n, v), row["deflated_total"]["tot_minus_m"]
+        assert got["n"] == want["n"] == n == parts["ledger_trials"] + own
+        for k in ("dsr", "sr0_daily", "sr0_annual"):
+            assert got[k] == pytest.approx(want[k], rel=1e-12, abs=1e-300), (key, k)
 
 
 def engine_tot(ledger: Path, nets: list[float], tid: str) -> dict:
@@ -238,9 +276,11 @@ def test_dsr_hand_reads_the_prefix_ending_at_the_books_own_line(book, capsys):
     assert BI.ledger_head(cut) == hf["prefix_chain_head"]
     assert b0["tot"]["n"] == 4 and b0["cells_in_v"] == 2          # B0's own ledger state (V8-F's use of the rule)
     assert hf["trial_id"] == BI.trial_id("construction", BI.sha256_file(d["HF"] / f"daily_{SCEN}.csv"))
-    assert (f"== DSR_hand {d['HF']}: ledger prefix of 16 lines ending at its construction line {hf['trial_id']} "
-            f"(chain head {hf['prefix_chain_head'][:16]})") in out
-    assert "   DSR_hand (N_tot=13): DSR " in out
+    # P9 ruling PRE-15: the prefix rule stays, labelled as such, and has no N_tot - M row of its own
+    assert "tot_minus_m" not in hf and "tot_minus_m" not in b0
+    assert (f"== DSR_hand (prefix rule) {d['HF']}: ledger prefix of 16 lines ending at its construction line "
+            f"{hf['trial_id']} (chain head {hf['prefix_chain_head'][:16]})") in out
+    assert "   DSR_hand (prefix rule, N_tot=13): DSR " in out
     assert "N_tot = admission 7 + construction 6 + campaign registry 0 |" in out
 
 
@@ -350,7 +390,8 @@ def test_the_flags_only_add_lines_and_one_json_key(book, capsys):
     extra, out_extra = run_json(book["tmp"], base + ["--dsr-total", ledger, "--dsr-hand", str(d["HF"])], capsys)
     added = ("== total-count DSR ", "   DSR_tot ", "   DSR_v8 ", "== DSR_hand ", "   DSR_hand ")
     kept = [line for line in out_extra.splitlines() if not line.startswith(added)]
-    assert kept == out_plain.splitlines() and len(out_extra.splitlines()) - len(kept) == 2 * 3 + 2
+    # per dir: the header, DSR_tot, DSR_v8 and PRE-15's DSR_hand (N_tot - M); then the --dsr-hand book's two lines
+    assert kept == out_plain.splitlines() and len(out_extra.splitlines()) - len(kept) == 2 * 4 + 2
     assert [set(a) - set(b) for a, b in zip(extra, plain)] == [{"deflated_total"}] * 2
     for a, b in zip(without_run(extra), without_run(plain)):
         a.pop("deflated_total")

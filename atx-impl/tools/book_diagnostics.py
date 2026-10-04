@@ -551,6 +551,16 @@ def engine_memmel(cell: dict, base: dict) -> float | None:
     return value if value is not None and math.isfinite(value) else None
 
 
+def engine_producer(delays: dict) -> dict | None:
+    """The engine verb G-3c's Memmel SEs came from, as nav_summ_run names it ({engine_exe, engine_exe_sha256}; review B2
+    re-review 1 S5): nav_summ's default verb, the one engine_memmel opens; None when signal_lag asked it for nothing
+    (its rule: a delay with both Sharpe ratios (delta), rho and a common session)."""
+    if not any(r["delta"] is not None and r["rho"] is not None and r["sessions"] for r in delays.values()):
+        return None
+    eng = NS.engine_of(None)
+    return {"engine_exe": str(eng.exe), "engine_exe_sha256": eng.sha256}
+
+
 # ================================================================================================= G-3d
 def average_linkage(dist: np.ndarray) -> list[tuple[int, int, float, int]]:
     """UPGMA on a distance matrix: merges (a, b, height, size) with clusters numbered as in scipy (leaves 0..K-1,
@@ -1413,7 +1423,8 @@ def run_g3c(src: Sources) -> dict:
     for k, cell in lagged.items():
         require(cell["scenario"]["scenario"] == base["scenario"]["scenario"],
                 f"--lagged {k}: primary scenario differs from the base cell's")
-    res = {"delays": signal_lag(NS.net_series(base["daily"]), {k: NS.net_series(v["daily"]) for k, v in lagged.items()}),
+    delays = signal_lag(NS.net_series(base["daily"]), {k: NS.net_series(v["daily"]) for k, v in lagged.items()})
+    res = {"delays": delays, "engine": engine_producer(delays),
            "base_scenario": base["scenario"]["scenario"],
            "combined_sha256": {"base": base["summary"].get("combined_sha256"),
                                **{str(k): v["summary"].get("combined_sha256") for k, v in lagged.items()}}}

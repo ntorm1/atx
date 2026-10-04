@@ -12,6 +12,11 @@ rulings' rules. Since lane B2's deletion the Python is the retired code's verbat
              (degenerate: SE / t / p null) and the Python value is recorded for the record only.
   cscv       B2-R2: five generated candidates and one constant 0.001 series, 240 sessions, 8 blocks. Python:
              cscv_pbo (exhaustive). The constant candidate's Sharpe is 0 in every split.
+  cscv_wins  B2-R2, re-review 1 S7: four candidates that all drift negative, then the constant 0.001 series and a
+             zero series (both Sharpe 0 in every split), same sessions and blocks. The constant wins the splits where
+             every other candidate's in-sample Sharpe is negative; it ties the zero column in and out of sample, and
+             the tie keeps the lower index (Python's first maximum and its OOS rank rule), so the zero column never
+             wins.
   house_dsr  B2-9: the house DSR rows at N from 2 to 1e6 (HOUSE_N). Python: norm_ppf (bisection) at 1 - 1/N and
              1 - 1/(N e); expected_max_sr and deflated_sharpe at each moment set and V of ``direct``; and the verb's
              rows on two generated cells (the reference a and HOUSE_SEED's cell at HOUSE_DRIFT): dsr_rows (cross)
@@ -61,6 +66,7 @@ TARGETS = (("omr_5e-4", 5.005e-4), ("omr_5e-5", 5e-5), ("omr_5e-6", 5e-6), ("omr
            ("omr_0.98e-6", 0.98e-6), ("omr_5e-9", 5e-9), ("omr_6e-13", 6e-13))
 CSCV_T, CSCV_BLOCKS, CSCV_CONSTANT = 240, 8, 0.001
 CSCV_DRIFTS = (0.0004, -0.0002, 0.0001, 0.0003, -0.0001)
+CSCV_WIN_SEED, CSCV_WIN_DRIFTS = 5151, (-0.0002, -0.0001, -0.0003, -0.00015)   # re-review 1 S7
 # ruling B2-9: the trial counts N of the house DSR tie, 2 to 1e6 (the recorded N_tot are 13..233; a mined campaign's
 # registry count can pass 1e4), and the second cell of the verb rows
 HOUSE_N = (2, 3, 4, 5, 7, 10, 13, 41, 100, 233, 1000, 4097, 10000, 33333, 100000, 314159, 1000000)
@@ -147,6 +153,20 @@ def cscv_case() -> dict:
             "seed": CSCV_SEED, "python": plain(r)}
 
 
+def cscv_wins_matrix() -> np.ndarray:
+    cols = [[((u - 0.5) * 0.02) + d for u in uniforms(CSCV_WIN_SEED + c, CSCV_T)]
+            for c, d in enumerate(CSCV_WIN_DRIFTS)]
+    cols += [[CSCV_CONSTANT] * CSCV_T, [0.0] * CSCV_T]
+    return np.array(cols).T
+
+
+def cscv_wins_case() -> dict:
+    r = FS.cscv_pbo(cscv_wins_matrix(), blocks=CSCV_BLOCKS)
+    r = dict(r, logits=[float(x) for x in r["logits"]])
+    return {"sessions": CSCV_T, "blocks": CSCV_BLOCKS, "constant": CSCV_CONSTANT, "drifts": list(CSCV_WIN_DRIFTS),
+            "seed": CSCV_WIN_SEED, "columns": "drifts, then the constant, then 0.0", "python": plain(r)}
+
+
 def house_cell() -> np.ndarray:
     return np.array([((u - 0.5) * 0.02) + HOUSE_DRIFT for u in uniforms(HOUSE_SEED, T)])
 
@@ -178,7 +198,7 @@ def document(eps_by_name: dict[str, float]) -> dict:
             "paired": {"sessions": T, "draws": DRAWS, "block": BLOCK, "seed": SEED, "one_sided": True,
                        "degenerate_below": DEGENERATE, "tolerance": "1e-12 / (1 - rho) relative (ruling B2-R1 (b))",
                        "cases": cases},
-            "cscv": cscv_case(), "house_dsr": house_dsr_case()}
+            "cscv": cscv_case(), "cscv_wins": cscv_wins_case(), "house_dsr": house_dsr_case()}
 
 
 def encode(doc) -> bytes:
