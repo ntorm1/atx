@@ -266,6 +266,8 @@ class DeclaredRule(unittest.TestCase):
         self.assertIsNotNone(listed)
         cpp = tuple(re.findall(r'"([a-z0-9_]+)"', listed.group(1)))
         self.assertEqual(cpp[:len(fcw.PRIOR_THEMES)], fcw.PRIOR_THEMES)
+        # Pins today's 13 themes on purpose (D1 review minor, P9 lane D2): the first theme a lane registers updates
+        # this tuple and test_fit_composition_rule_plugins' list-of-record check in the same commit.
         self.assertEqual(cpp, cres.FROZEN_PREFIX + ("filing_events", "price_volume", "merger_arbitrage"))
         self.assertEqual(cres.registered_order(cpp), cpp)
 
