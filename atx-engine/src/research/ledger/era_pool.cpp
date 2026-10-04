@@ -1,7 +1,6 @@
 #include "atx/engine/research/ledger/era_pool.hpp"
 
 #include <array>
-#include <set>
 #include <utility>
 
 #include "atx/core/sha256.hpp"
@@ -80,114 +79,6 @@ std::string iso_date_from_days(i64 days) {
   const i64 month = mp < 10 ? mp + 3 : mp - 9;
   const i64 year = yoe + era * 400 + (month <= 2 ? 1 : 0);
   return zero_pad(year, 4U) + "-" + zero_pad(month, 2U) + "-" + zero_pad(day, 2U);
-}
-
-core::Status check_era_id(std::string_view id) {
-  bool ok = !id.empty();
-  for (const char c : id) {
-    const bool word = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
-                      c == '_';
-    ok = ok && word;
-  }
-  if (!ok) {
-    return core::Err(refuse("era id '" + std::string(id) +
-                            "' must match [A-Za-z0-9_]+ (it names files)"));
-  }
-  return core::Ok();
-}
-
-core::Status check_era_windows(std::span<const EraWindow> windows, i64 train_begin_ns,
-                               i64 train_end_ns, i64 seal_ns) {
-  std::set<std::string> seen;
-  const EraWindow *prev = nullptr;
-  for (const EraWindow &w : windows) {
-    ATX_TRY_VOID(check_era_id(w.id));
-    if (!seen.insert(w.id).second) {
-      return core::Err(refuse("era " + w.id + ": duplicate id"));
-    }
-    if (!(w.begin_ns < w.end_ns)) {
-      return core::Err(refuse("era " + w.id + ": empty window"));
-    }
-    if (w.end_ns > seal_ns) {
-      return core::Err(refuse("era " + w.id +
-                              ": window ends after the research seal; refusing (sealed)"));
-    }
-    if (w.begin_ns < train_begin_ns && train_begin_ns < w.end_ns) {
-      return core::Err(refuse("era " + w.id +
-                              ": window straddles the TRAIN begin (an era is history before "
-                              "TRAIN or lies inside TRAIN)"));
-    }
-    if (w.begin_ns >= train_begin_ns && w.end_ns > train_end_ns) {
-      return core::Err(refuse("era " + w.id + ": a TRAIN era ends after the TRAIN end"));
-    }
-    if (prev != nullptr) {
-      if (w.begin_ns < prev->begin_ns) {
-        return core::Err(refuse("era " + w.id + ": eras are not in date order (" + prev->id +
-                                " begins later)"));
-      }
-      if (w.begin_ns < prev->end_ns) {
-        return core::Err(refuse("era " + w.id + ": window overlaps era " + prev->id));
-      }
-    }
-    prev = &w;
-  }
-  if (prev == nullptr) {
-    return core::Err(refuse("no era"));
-  }
-  return core::Ok();
-}
-
-core::Result<std::vector<usize>> segment_starts(std::span<const EraSessions> eras) {
-  std::vector<usize> starts;
-  usize row = 0;
-  bool have_last = false;
-  i64 last = 0;
-  for (const EraSessions &era : eras) {
-    if (era.sessions.empty()) {
-      return core::Err(refuse("era " + era.id + ": no session"));
-    }
-    for (usize k = 1; k < era.sessions.size(); ++k) {
-      if (era.sessions[k] <= era.sessions[k - 1U]) {
-        return core::Err(refuse("era " + era.id + ": sessions are not strictly increasing"));
-      }
-    }
-    if (have_last && era.sessions.front() <= last) {
-      return core::Err(refuse("era " + era.id +
-                              ": its first session is not after the previous era's last "
-                              "(overlap or order)"));
-    }
-    starts.push_back(row);
-    row += era.sessions.size();
-    last = era.sessions.back();
-    have_last = true;
-  }
-  if (starts.empty()) {
-    return core::Err(refuse("no era"));
-  }
-  return core::Ok(std::move(starts));
-}
-
-core::Result<f64> weighted_mean(std::span<const f64> values, std::span<const f64> weights) {
-  if (values.empty() || values.size() != weights.size()) {
-    return core::Err(refuse("weighted_mean: one weight per value"));
-  }
-  if (values.size() == 1U) {
-    return core::Ok(values[0]);
-  }
-  f64 total = 0.0;
-  bool negative = false;
-  for (const f64 w : weights) {
-    total += w;
-    negative = negative || w < 0.0;
-  }
-  if (!(total > 0.0) || negative) {
-    return core::Err(refuse("weighted_mean: weights must be >= 0 with a positive sum"));
-  }
-  f64 acc = 0.0;
-  for (usize i = 0; i < values.size(); ++i) {
-    acc += values[i] * weights[i];
-  }
-  return core::Ok(acc / total);
 }
 
 core::Result<std::string> pooled_sha256(std::span<const std::string> parts) {

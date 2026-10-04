@@ -149,4 +149,31 @@ TEST(ResearchLedger, TrialIdentitiesEqualPython) {
   EXPECT_EQ(lg::pool_label(dirs), id["pool_label"].get<std::string>());
 }
 
+// Review B2 S3: the reader refuses what the Python reader refuses (json.loads on a BOM,
+// str.splitlines on a raw CR / NEL / U+2028 / U+2029, invalid_ids on a truthy non-object
+// defect) and reads what it reads (a falsy defect of any type).
+TEST(ResearchLedger, ReaderRefusesWhatThePythonRefuses) {
+  const std::string head = R"({"schema":"atx.trial-ledger/v1","kind":"construction",)";
+  const auto read = [](const std::string &line) {
+    return lg::ledger_from_lines("fixture-ledger.jsonl", lg::split_lines(line + "\n"));
+  };
+  for (const std::string bad :
+       {"\xEF\xBB\xBF" + head + R"("trial_id":"t1"})", head + "\"trial_id\":\"t\xE2\x80\xA8\"}",
+        head + "\"trial_id\":\"t\xE2\x80\xA9\"}", head + "\"trial_id\":\"t\xC2\x85\"}",
+        head + "\"trial_id\":\"t1\",\r\"count\":1}", head + R"("trial_id":"t1","defect":"x"})",
+        head + R"("trial_id":"t1","defect":[1]})", head + R"("trial_id":"t1","defect":2})"}) {
+    const auto r = read(bad);
+    ASSERT_FALSE(r.has_value()) << bad;
+    EXPECT_EQ(r.error().code(), atx::core::ErrorCode::ParseError) << bad;
+  }
+  for (const std::string ok :
+       {head + R"("trial_id":"t1","defect":null})", head + R"("trial_id":"t1","defect":""})",
+        head + R"("trial_id":"t1","defect":[]})", head + R"("trial_id":"t1","defect":0})",
+        head + R"("trial_id":"t1","defect":{"invalid":true}})"}) {
+    const auto r = read(ok);
+    ASSERT_TRUE(r.has_value()) << ok << " " << r.error().to_string();
+    EXPECT_EQ(r->records.size(), 1U);
+  }
+}
+
 } // namespace

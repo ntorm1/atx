@@ -7,10 +7,11 @@
 // re-implement the rule (G-P5). The ledger's bytes and append format are unchanged (SQL-9).
 //
 // THE RULE (kChainRule). The head starts at 64 zeros. For each non-blank line, in file order:
-//   * a CHAINED line (its top-level JSON object has the key "prev_sha256"): head =
-//     line_sha256(line), the SHA-256 of the line's UTF-8 bytes without its line end;
-//   * an UNCHAINED (legacy, pre-v8) line: head = fold_head(head, line) = SHA-256 of the ASCII
-//     text head + line_sha256(line).
+//   * a CHAINED line (its top-level JSON object has a non-null "prev_sha256", the reader's
+//     test; review B2 S2): head = line_sha256(line), the SHA-256 of the line's UTF-8 bytes
+//     without its line end;
+//   * an UNCHAINED (legacy, pre-v8; prev_sha256 absent or null) line: head =
+//     fold_head(head, line) = SHA-256 of the ASCII text head + line_sha256(line).
 // So the first chained line pins every legacy line before it and each chained line pins the
 // whole prefix. The rule applies to ANY prefix of the file: chain_head(lines[0..k)) is the
 // head a verdict recorded when the ledger held those k lines.
@@ -55,7 +56,7 @@ struct ChainHead {
 [[nodiscard]] core::Result<std::string> line_sha256(std::string_view line);
 // The head after an unchained line: SHA-256 of head + line_sha256(line).
 [[nodiscard]] core::Result<std::string> fold_head(std::string_view head, std::string_view line);
-// Whether the line's top-level JSON object has the key prev_sha256. ParseError when the line
+// Whether the line's top-level JSON object has a non-null prev_sha256. ParseError when the line
 // is not a JSON object.
 [[nodiscard]] core::Result<bool> is_chained_line(std::string_view line);
 

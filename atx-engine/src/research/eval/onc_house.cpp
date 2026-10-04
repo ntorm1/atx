@@ -255,7 +255,8 @@ using Clusters = std::vector<std::vector<usize>>;
 
 // One level of backtest_integrity.onc (members: the trial ids of this level's rows). The
 // recursion re-clusters a strict subset of the members, so its depth is below n.
-[[nodiscard]] core::Result<OncPartition> onc_level(const std::vector<f64> &c, const Members &members,
+[[nodiscard]] core::Result<OncPartition> onc_level(const std::vector<f64> &c,
+                                                   const Members &members,
                                                    std::optional<usize> max_k, usize n_init,
                                                    KmeansDraws &draws) {
   const usize n = members.size();

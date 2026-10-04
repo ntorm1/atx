@@ -142,6 +142,33 @@ TEST(ResearchLedgerChain, VerifyAcceptsTheChainAndRefusesEachBreak) {
   EXPECT_FALSE(lg::verify_chain(edited).has_value());
 }
 
+// Review B2 S2: a legacy line written with "prev_sha256": null is unchained for the chain-head
+// function as for the reader's walk, so the head a verdict records and the verified head agree.
+TEST(ResearchLedgerChain, ANullPrevLineFoldsInEveryRule) {
+  std::vector<std::string> lines = {
+      legacy(1), R"({"schema":"atx.trial-ledger/v1","kind":"construction","trial_id":"t2",)"
+                 R"("count":1,"prev_sha256":null})"};
+  const auto mid = lg::chain_head(lines);
+  ASSERT_TRUE(mid.has_value());
+  const auto fold1 = lg::fold_head(lg::kChainGenesis, lines[0]);
+  ASSERT_TRUE(fold1.has_value());
+  const auto fold2 = lg::fold_head(*fold1, lines[1]);
+  ASSERT_TRUE(fold2.has_value());
+  EXPECT_EQ(mid->head_sha256, *fold2);
+  const auto link = lg::is_chained_line(lines[1]);
+  ASSERT_TRUE(link.has_value());
+  EXPECT_FALSE(*link);
+  lines.push_back(chained(0, mid->head_sha256));
+  const auto verified = lg::verify_chain(lines);
+  ASSERT_TRUE(verified.has_value()) << verified.error().to_string();
+  const auto head = lg::chain_head(lines);
+  const auto heads = lg::prefix_heads(lines);
+  ASSERT_TRUE(head.has_value() && heads.has_value());
+  EXPECT_EQ(head->head_sha256, verified->head_sha256);
+  EXPECT_EQ(heads->back(), verified->head_sha256);
+  EXPECT_EQ((*heads)[1], *fold2);
+}
+
 TEST(ResearchLedgerChain, ANonObjectLineIsAParseError) {
   const std::vector<std::string> lines = {legacy(1), "not json"};
   const auto head = lg::chain_head(lines);

@@ -103,7 +103,7 @@ const Inputs &inputs() {
       rec["schema"] = std::string(atx::engine::research::ledger::kLedgerSchema); // ruling B2-3
       jsonl += rec.dump() + "\n";
     }
-    out.ledger = out.dir / "trials.jsonl";
+    out.ledger = out.dir / "fixture-ledger.jsonl"; // never the ledger of record (review B2 S10)
     write_bytes(out.ledger, jsonl);
     return out;
   }();

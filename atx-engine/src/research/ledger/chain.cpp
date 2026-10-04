@@ -26,11 +26,19 @@ using Json = nlohmann::json;
   return core::Ok(std::move(value));
 }
 
+// A line is chained when it carries a non-null prev_sha256: the reader's test (verify_chain,
+// backtest_integrity._walk), so a legacy line written with "prev_sha256": null folds in every
+// rule (review B2 S2).
+[[nodiscard]] bool chained(const Json &rec) {
+  const auto link = rec.find("prev_sha256");
+  return link != rec.end() && !link->is_null();
+}
+
 // One step of the rule: the head after `line` given the head before it.
 [[nodiscard]] core::Result<std::string> next_head(const std::string &head, std::string_view line,
                                                   usize physical_line) {
   ATX_TRY(const Json rec, line_object(line, physical_line));
-  if (rec.contains("prev_sha256")) {
+  if (chained(rec)) {
     return line_sha256(line);
   }
   return fold_head(head, line);
@@ -62,7 +70,7 @@ core::Result<std::string> fold_head(std::string_view head, std::string_view line
 
 core::Result<bool> is_chained_line(std::string_view line) {
   ATX_TRY(const Json rec, line_object(line, 1U));
-  return core::Ok(rec.contains("prev_sha256"));
+  return core::Ok(chained(rec));
 }
 
 core::Result<ChainHead> chain_head(std::span<const std::string> lines) {
