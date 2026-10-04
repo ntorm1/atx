@@ -2106,11 +2106,11 @@
       }
     },
     {
-      "builder": "research_fields_price",
+      "builder": "ret_overnight",
       "dtype": "f64",
       "first_session": null,
       "formula_sha256": "e5248a03c54fe2692da408af3d9bc7c7314276c76133ea45536db0e987bb0f88",
-      "kind": "python",
+      "kind": "engine",
       "name": "ret_overnight",
       "options": {
         "group": "price_open"
@@ -2140,11 +2140,11 @@
       }
     },
     {
-      "builder": "research_fields_price",
+      "builder": "ret_intraday",
       "dtype": "f64",
       "first_session": null,
       "formula_sha256": "63f2284abb392b05c6f476f9766ed870a5934e7fe064459905dedbbaa6ae22c6",
-      "kind": "python",
+      "kind": "engine",
       "name": "ret_intraday",
       "options": {
         "group": "price_open"
@@ -2174,11 +2174,11 @@
       }
     },
     {
-      "builder": "research_fields_price",
+      "builder": "ceq_iss_5y",
       "dtype": "f64",
       "first_session": null,
       "formula_sha256": "ad3068dd2fbf4a211ba9c3e49879fdb23eefdceb822efdeb35a72e592a0c0878",
-      "kind": "python",
+      "kind": "engine",
       "name": "ceq_iss_5y",
       "options": {
         "group": "price_ceq"
@@ -2669,11 +2669,11 @@
       }
     },
     {
-      "builder": "research_fields_ohlc",
+      "builder": "open_adj",
       "dtype": "f64",
       "first_session": null,
       "formula_sha256": "2853374e5b363a271750784d853cbffd55981e445320d9290e14fdda15b9592f",
-      "kind": "python",
+      "kind": "engine",
       "name": "open_adj",
       "options": {
         "group": "ohlc_bar"
@@ -2705,11 +2705,11 @@
       }
     },
     {
-      "builder": "research_fields_ohlc",
+      "builder": "high_adj",
       "dtype": "f64",
       "first_session": null,
       "formula_sha256": "9a4e3fba2365f0e6eca11271c0f97f085d3aa754c05b1851f05caf5b4008c625",
-      "kind": "python",
+      "kind": "engine",
       "name": "high_adj",
       "options": {
         "group": "ohlc_bar"
@@ -2741,11 +2741,11 @@
       }
     },
     {
-      "builder": "research_fields_ohlc",
+      "builder": "low_adj",
       "dtype": "f64",
       "first_session": null,
       "formula_sha256": "00069d88559cc77d2db42b9b21697f8da2d4e88b77c8af0c555618a0623b7209",
-      "kind": "python",
+      "kind": "engine",
       "name": "low_adj",
       "options": {
         "group": "ohlc_bar"
