@@ -1,0 +1,264 @@
+{
+  "status": "BOUNDED_RETAINED_ORIGINAL_FEASIBILITY_ONLY",
+  "catalog_sha256": "a76d19d7458481fcd67de4f7397617234f34b98843b2449c291628564690bf64",
+  "catalog_rows_scanned": 51384,
+  "eligible_counts": [
+    {
+      "year": 2020,
+      "form": "8-K",
+      "doc_source": "landed_v2",
+      "rows": 2036
+    },
+    {
+      "year": 2020,
+      "form": "8-K",
+      "doc_source": "sec_events",
+      "rows": 710
+    },
+    {
+      "year": 2020,
+      "form": "8-K/A",
+      "doc_source": "sec_events",
+      "rows": 8
+    },
+    {
+      "year": 2021,
+      "form": "8-K",
+      "doc_source": "landed_v2",
+      "rows": 1931
+    },
+    {
+      "year": 2021,
+      "form": "8-K",
+      "doc_source": "sec_events",
+      "rows": 1006
+    },
+    {
+      "year": 2021,
+      "form": "8-K/A",
+      "doc_source": "sec_events",
+      "rows": 43
+    },
+    {
+      "year": 2022,
+      "form": "8-K",
+      "doc_source": "landed_v2",
+      "rows": 1848
+    },
+    {
+      "year": 2022,
+      "form": "8-K",
+      "doc_source": "sec_events",
+      "rows": 918
+    },
+    {
+      "year": 2022,
+      "form": "8-K/A",
+      "doc_source": "sec_events",
+      "rows": 35
+    },
+    {
+      "year": 2023,
+      "form": "8-K",
+      "doc_source": "landed_v2",
+      "rows": 1831
+    },
+    {
+      "year": 2023,
+      "form": "8-K",
+      "doc_source": "sec_events",
+      "rows": 932
+    },
+    {
+      "year": 2023,
+      "form": "8-K/A",
+      "doc_source": "sec_events",
+      "rows": 42
+    },
+    {
+      "year": 2024,
+      "form": "8-K",
+      "doc_source": "landed_v2",
+      "rows": 1762
+    },
+    {
+      "year": 2024,
+      "form": "8-K",
+      "doc_source": "sec_events",
+      "rows": 900
+    },
+    {
+      "year": 2024,
+      "form": "8-K/A",
+      "doc_source": "sec_events",
+      "rows": 30
+    },
+    {
+      "year": 2025,
+      "form": "8-K",
+      "doc_source": "landed_v2",
+      "rows": 1734
+    },
+    {
+      "year": 2025,
+      "form": "8-K",
+      "doc_source": "sec_events",
+      "rows": 1171
+    },
+    {
+      "year": 2025,
+      "form": "8-K/A",
+      "doc_source": "sec_events",
+      "rows": 47
+    },
+    {
+      "year": 2026,
+      "form": "8-K",
+      "doc_source": "landed_v2",
+      "rows": 1256
+    },
+    {
+      "year": 2026,
+      "form": "8-K",
+      "doc_source": "sec_events",
+      "rows": 5644
+    },
+    {
+      "year": 2026,
+      "form": "8-K/A",
+      "doc_source": "sec_events",
+      "rows": 74
+    }
+  ],
+  "selected": [
+    {
+      "stratum": "8-K:landed_v2",
+      "catalog_row": {
+        "cik": 16160,
+        "accession": "0000016160-20-000007",
+        "form": "8-K",
+        "items": "2.02,9.01",
+        "filing_date": "2020-01-06",
+        "event_date": "2020-01-06",
+        "available_at": "2020-01-06 11:37:31",
+        "acceptance_clock": "file_utc",
+        "vintage_risk": null,
+        "is_amendment": false,
+        "doc_source": "landed_v2",
+        "source_doc": "calm2q20pressrelease.htm",
+        "doc_sha256": "bca214bc5fc720a716e5b8131b9f41acb166598ab3b3203cd2c7f75a51ebd463",
+        "url": null,
+        "file_type": null,
+        "file_description": null,
+        "qids": []
+      },
+      "status": "ORIGINAL_BYTES_MATCH_ONLY",
+      "ledger_identity": {
+        "path": "C:\\atx\\atx-db\\data\\raw\\sec-earnings-release\\units-done.jsonl",
+        "bytes": 25852490,
+        "sha256": "c86e64229f319c0e42d6def3fa7aedaa503dc7a4cf171fed6d6fce57d7b75405"
+      },
+      "matching_receipts": [
+        {
+          "line": 8305,
+          "line_sha256": "a862a76815e77b0212173b8bfc367d02d36bed15851f68bb82a58133bf50eb03",
+          "record": {
+            "accession": "0000016160-20-000007",
+            "cik": "0000016160",
+            "document_sha256": "bca214bc5fc720a716e5b8131b9f41acb166598ab3b3203cd2c7f75a51ebd463",
+            "done_at": "2026-09-26T22:23:56+00:00",
+            "exhibit": "calm2q20pressrelease.htm",
+            "exhibit_type": "EX-99.1",
+            "outcome": "document_ok",
+            "pid": 11544,
+            "selector": "ex99.1-else-lowest-numbered-ex99/v1",
+            "skipped": [],
+            "unit": "https://www.sec.gov/Archives/edgar/data/16160/000001616020000007/0000016160-20-000007-index.html"
+          }
+        }
+      ],
+      "object_path": "C:\\atx\\atx-db\\data\\raw\\sec-earnings-release\\objects\\bc\\bca214bc5fc720a716e5b8131b9f41acb166598ab3b3203cd2c7f75a51ebd463.gz",
+      "stored_bytes": 10280,
+      "stored_sha256": "a58331ebb7b1a0183f2b043f5e131530806b7fed4cc75dc08de58208b0ed7272",
+      "original_sha256": "bca214bc5fc720a716e5b8131b9f41acb166598ab3b3203cd2c7f75a51ebd463",
+      "original_bytes": 216833,
+      "storage_encoding": "gzip",
+      "normalized_utf8_sha256": "aea4cd33e4bbddc134005809f66f52e547bc7bd21891c5c427caa7e1ddb038d9",
+      "normalized_characters": 13148,
+      "header": "EX-99.1 2 calm2q20pressrelease.htm EX-99.1 Document\nExhibit 99.1\n| | Contacts: | Dolph Baker, Chairman and CEO |\n| | | Max P. Bowman, Vice President and CFO |\n| | | (601) 948-6813 |\nCAL-MAINE FOODS REPORTS SECOND QUARTER FISCAL 2020 RESULTS\nJACKSON, Miss. (January 6, 2020) - Cal-Maine Foods, Inc. (NASDAQ: CALM) today reported results for the second quarter (thirteen weeks) ended November 30, 2019.",
+      "keyword_snippets": [
+        "ons and continue to serve our valued customers,\" added Baker.\nPursuant to Cal-Maine Foods' variable dividend policy, for each quarter for which the Company reports net income, the Company pays a cash dividend to shareholders in an amount equal to one-third of such quarterly income. Following a quarter for which the Company does not report net income, the Company will not pay a dividend with respect to that quarter or for a subsequent profitable quarter until the Company is profitable",
+        "dividend policy, for each quarter for which the Company reports net income, the Company pays a cash dividend to shareholders in an amount equal to one-third of such quarterly income. Following a quarter for which the Company does not report net income, the Company will not pay a dividend with respect to that quarter or for a subsequent profitable quarter until the Company is profitable on a cumulative basis computed from the date of the last quarter for which a dividend was paid. The",
+        "e. Following a quarter for which the Company does not report net income, the Company will not pay a dividend with respect to that quarter or for a subsequent profitable quarter until the Company is profitable on a cumulative basis computed from the date of the last quarter for which a dividend was paid. Therefore, the Company will not pay a dividend with respect to the second quarter of fiscal 2020.\nSelected operating statistics for the second quarter and year-to-date of fiscal 2020 ",
+        " Company is profitable on a cumulative basis computed from the date of the last quarter for which a dividend was paid. Therefore, the Company will not pay a dividend with respect to the second quarter of fiscal 2020.\nSelected operating statistics for the second quarter and year-to-date of fiscal 2020 compared with the prior-year period are shown below:\n| 13 Weeks Ended | | | | 26 Weeks Ended | | |\n| November 30, 2019 | | December 1, 2018 | | November 30, 2019 | | December 1, 2018 |\nD",
+        "m the date of the last quarter for which a dividend was paid. Therefore, the Company will not pay a dividend with respect to the second quarter of fiscal 2020.\nSelected operating statistics for the second quarter and year-to-date of fiscal 2020 compared with the prior-year period are shown below:\n| 13 Weeks Ended | | | | 26 Weeks Ended | | |\n| November 30, 2019 | | December 1, 2018 | | November 30, 2019 | | December 1, 2018 |\nDozen Eggs Sold (000) | 261,026 | | | 262,263 | | | | 515,"
+      ],
+      "clock_class_currency_cadence": "UNQUALIFIED"
+    },
+    {
+      "stratum": "8-K:sec_events",
+      "catalog_row": {
+        "cik": 8868,
+        "accession": "0000950157-20-000022",
+        "form": "8-K",
+        "items": "1.02,2.01,3.01,3.03,5.01,5.02,5.03,9.01",
+        "filing_date": "2020-01-03",
+        "event_date": "2020-01-03",
+        "available_at": "2020-01-03 22:24:06",
+        "acceptance_clock": "file_et",
+        "vintage_risk": null,
+        "is_amendment": false,
+        "doc_source": "sec_events",
+        "source_doc": "form8-k.htm",
+        "doc_sha256": "2db7aba232e1ed2e5d2c5aa16e3a8a3fed3d89889f80a79cdc5fba7f64fbce4d",
+        "url": "https://www.sec.gov/Archives/edgar/data/8868/000095015720000022/form8-k.htm",
+        "file_type": "8-K",
+        "file_description": "CURRENT REPORT",
+        "qids": [
+          "merger"
+        ]
+      },
+      "status": "ORIGINAL_BYTES_MATCH_ONLY",
+      "ledger_identity": {
+        "path": "C:\\atx\\atx-db\\data\\raw\\sec_events\\fetch-ledger.jsonl",
+        "bytes": 7531446,
+        "sha256": "fe3c65b0bfc9e53823b52a89c074a4add2cded8cf5d444149641e363bee0cdf4"
+      },
+      "matching_receipts": [
+        {
+          "line": 14725,
+          "line_sha256": "8973e87b815c1995b62fa90cf33af531519ef3896598fde817242b4e25887c33",
+          "record": {
+            "bytes": 68181,
+            "error": null,
+            "fetched_at": "2026-09-30T01:13:02.259+00:00",
+            "pid": 15176,
+            "rate_lock": "C:\\atx\\atx-db\\data\\cache\\.sec_rate.lock",
+            "sha256": "2db7aba232e1ed2e5d2c5aa16e3a8a3fed3d89889f80a79cdc5fba7f64fbce4d",
+            "status": 200,
+            "url": "https://www.sec.gov/Archives/edgar/data/8868/000095015720000022/form8-k.htm",
+            "user_agent": "atx-db/0.1 atx-research@example.com"
+          }
+        }
+      ],
+      "object_path": "C:\\atx\\atx-db\\data\\raw\\sec_events\\objects\\2d\\2db7aba232e1ed2e5d2c5aa16e3a8a3fed3d89889f80a79cdc5fba7f64fbce4d.gz",
+      "stored_bytes": 10042,
+      "stored_sha256": "ff608acc47a48c887caaf48c6d0696aeb94a75613d24ef5f9031faaa002495e5",
+      "original_sha256": "2db7aba232e1ed2e5d2c5aa16e3a8a3fed3d89889f80a79cdc5fba7f64fbce4d",
+      "original_bytes": 68181,
+      "storage_encoding": "gzip",
+      "normalized_utf8_sha256": "4afbeddcb2f9127705796218a46cb76f5f0f6769c050225e93fe5d63b23d584a",
+      "normalized_characters": 23205,
+      "header": "false0000008868--12-3100000088682020-01-032020-01-03\nUNITED STATES\nSECURITIES AND EXCHANGE COMMISSION\nWASHINGTON, D.C. 20549\nFORM 8-K\nCURRENT REPORT\nPursuant to Section 13 or 15(d) of the\nSecurities Exchange Act of 1934\nDate of Report (Date of Earliest Event Reported): January 3, 2020\nAVON PRODUCTS, INC.\n(Exact Name of Registrant as Specified in its Charter)\nNew York | | 1-4881 | | 13-0544597 |\n(S",
+      "keyword_snippets": [],
+      "clock_class_currency_cadence": "UNQUALIFIED"
+    },
+    {
+      "stratum": "10-Q:sec_events",
+      "status": "NO_ELIGIBLE_CATALOG_ROW"
+    }
+  ],
+  "stored_plus_decoded_bytes": 305336,
+  "http_attempts": 0,
+  "qualification": "Original byte/source-layout feasibility only; no declaration population, source-clock/class certification, handcheck or gate PASS."
+}

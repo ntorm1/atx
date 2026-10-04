@@ -2,6 +2,117 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
+**Current checkpoint, 2026-10-04 about01:45 UTC: no root live data job.**
+This paragraph supersedes all historical LIVE entries below.
+
+- Source freeze session42951 ended low-commit1502.7s/647,417,856 peak bytes,
+  returncode137, no cap hit. Host free commit0.3095GiB. No fund snapshot/units.
+  R19 `task-16-extract-resume-ruling.md` dispatches fresh GPT-6.1 Sol agent
+  `/root/t16_extract_round5` for final cumulative Task16 fix5/5: bounded native
+  extraction replay receipts with independently supplied expected admission SHA.
+  Force full replay remains available; no weakened source or financial gate.
+  Agent owns fund_batch_release/private tests/docs/report only, no actual data IO.
+- Cleanupv2 completed and verified:1,506,857,694 logical bytes removed; observed
+  free-space gain1,506,844,672. Combined observed gains of both cleanup operations
+  total4,087,541,760 bytes. All144 preparation units,85 restored stats and candidate
+  files unchanged. `disk-cleanup-report-v2.md` records exact evidence. Orphan locks
+ 2676 and23584 are preserved in each stage's `_interrupted_locks`; no active writer
+  lock remains from these attempts. No identical long universe/fund retry.
+- Task7 round2 commit706fdf75 independently Approved; I7/I8 closed, cumulative2/5.
+  Full actual source/evaluation gates remain unmeasured. Details in
+  `review-T7-native-r2-findings.md` and report. Current semantic SHA b6f915e5...7eccbe9.
+- Task13 initial539ee6ff has19 offline cases and0PASS/3actualFAIL; reviewer
+  `/root/t16_release_foundation` reviewing `review-T13-native.diff`. Author
+  `/root/t13_distributions` is idle. Root actual zero-HTTP schema+original audits
+  found51,384 catalog rows/23,958 eligible2020+8K rows, no10Q rows in this catalog.
+  Two deterministic originals match rawSHA,305,336 total stored/decoded bytes.
+  `task13-original-feasibility-v1.json` is source-layout evidence only. Cal-Maine's
+  sampled release states no Q2 dividend under a variable-income policy; it is not
+  a declared fixed rate. Native original adapter, class/clock qualification and
+  full dividend denominator/200buyback handchecks remain required.
+- Root bookkeeping/recovery/audit files since de2ae14e need explicit-path commit.
+  All foreign files remain untouched. SEC shared all-attempt budget unresolved;
+  no new requests granted. No actual predictive or consumer acceptance evidence.
+
+Current checkpoint, 2026-10-04 01:27 UTC (supersedes the historical entries below):
+
+- Root data session **42951 is live**: fundamentals source freeze v2, generation
+  `r17_20261004_001`, `--max-new-batches 0`, unchanged 0.8 GiB guard. Guard17596,
+  Python stub7272, actual Python23584. Peak647,417,856 bytes, no cap event or error;
+  source ZIP/extraction replay is still computing. Poll to completion before any
+  other data job or cleanup of active scratch. No financial batch is requested.
+- Task7 fix round2/5 addresses missing formation classification and incomplete
+  monthly labels (I7/I8). Original author is finishing its report/commit; new
+  semantic freeze b6f915e588129b4f5320a3cf84985fd5838380a56655f38510daafd9f7eccbe9.
+  Independent scoped review remains pending. Actual return gates remain unmeasured.
+- Task13 `/root/t13_distributions` is newly dispatched for original distributions,
+  indicated dividend rates and buybacks. Its owned files are initially clean.
+  Static implementation/offline fixtures only while root holds the data slot;
+  no new source requests, data audits, or edits to Task4/7/16/shared/foreign files.
+  This supplies the already recorded R11 Task4 dividend dependency. Task9 is idle;
+  no other lane-C source writer is active and events_sources.py stays read-only.
+- Task11 native admission fix ab6c2ca8 is independently approved, cumulative
+  fix5/5. Full Task11 remains incomplete. Acquisition plan9662a140 is committed;
+  it grants no requests and the shared SEC attempt budget remains unresolved.
+- User cleanup removed 3,175,142,016 logical bytes from four audited obsolete
+  owned paths; observed C: free-space gain was 2,580,697,088 bytes. Later source
+  recovery restored 9,261,380 essential missing stats bytes and jobs create new
+  scratch. Do not describe the initial gain as current net disk usage. Current
+  sources, 144 preparation units and candidate evidence were preserved.
+- Task16 cumulative fix count is4/5; Task2 and Task5 are capped at5. Do not reset
+  these counts when naming a component. Candidate universe replay remains held
+  after three host-pressure stops; third orphan lock still needs inspection.
+
+Next: finish source freeze, review Task7 round2, audit only ended owned scratch,
+then record actual source and candidate identities before any continuation.
+No production-readiness or predictive-quality claim is supported yet.
+
+Latest nativeTask11review: ab6c2ca8 independentlyApproved forI1/I2, finalaggregate
+fix5/5. Source/code/planidentity andfullboundedparser/diagnosticreplay nowchecked.
+Nativepieceonlyapproved; allfullTask11otherpipelines/sourceeconomicgatesopen.
+No sixthfixifnewdefects; applycapruling. Rootfundfreeze42951stillLIVEatlatestpoll
+01:06:45UTC,peak.5736GiB,commitfree2.2329/currentminimum.977; nooutput/error yet.
+Otheractiveagents: Task7fixround1author, originalTask11staticacquisitionplanonly.
+Reviewer/root/t16_release_foundation idle. Keepownjobuntilend; noforeignprocesskill.
+
+Latest: ROOT LIVE DATA JOB session42951, guard17596/stub7272 atlaunch,
+logs/t16-fund-freeze-v2.*, reviewedcode/binding/samegeneration/maxnewbatches0.
+Keepowned/polluntilend, no competingdatajob. Firstfreeze18s/.1129GiB failed
+missing85stats sidecars. Guardedlayoutaudit provesretainedv10full256files vs
+v11only171, sameplanSHA; rootverifiedall171sharedbytesbeforeafterandcopiedonly
+85absentstats9,261,380bytes withnooverwrite,12.1s/.0436GiB exit0. This is input
+recovery before independentarchive replay, not financialbatchadmission. See
+task16-fund-freeze-recovery-v1.md. Usercleanupnet remainsabout3.17GBlogicalminus
+9.3MBrestoration andsubsequentnative scratch; originalremoveddatawasobsoleteprep,
+not these retainedv10stats. Fullcurrent144prep preserved.
+
+Task11native2d695f03 reviewfoundI1stale/abbreviatedsourcecodeplanaccepted,I2self-
+assertedexpectedkeys/positions/diagnostics. FreshGPT6.1Sol/root/t11_native_round5
+ownsFINALaggregatefix5/5 onlynativepiece/tests/docs/report. Originalauthor
+/root/t11_ownership ownsonlyseparatesourceacquisitionPLANfile/staticcodeanalysis,
+nooverlappingedits/data/HTTP. Task7originalauthorfixround1finishing. Reviewerseat
+/root/t16_release_foundation idlefornextcheckpoint. Sourcefinancialactualgatesopen.
+
+Latest: NO rootlivejob. session46376 completedfailed atcheck_extract inventory
+beforefinancialcomputation: ValueError incomplete/unsupportedextractioninventory,
+peak.1129GiB/no memorycap. Guard logs/t16-fund-freeze-v1.*. Exactretainedextract
+layout inspectionrequired; no workaround, sourcefilemove orretryuntilreconciled.
+No candidate snapshot orunits claimed. Fulltrace preserved. Details beloware
+historical launchcontext, supersededbythis failure.
+
+Historical launch: session46376, logs/t16-fund-freeze-v1.*, .8GiBguard,
+fund_batch_release build generationr17_20261004_001 withreviewedbindingv1 and
+--max-new-batches0. Source/archive/preparation nativefreeze only; nonewfinancial
+batchrequested. Keepowneduntilend, nocompetingdatajobs. Code189fe919frozen,
+binding independentlyApproved inreview-T16-fund-binding-v1-findings.md. Root
+bookkeeping/evidence cleanup commitde2ae14e preserves42ownedfiles, foreignedits
+notstaged. Latestrootreview/handoffupdatesmayuncommitted.
+
+Task11nativeoriginals firstpiece2d695f03 nowunderindependentreview by
+/root/t16_release_foundation; sourcefalse/NULLpublicclocks/units absentofficial
+ruleproof, fullTask11remainingassembly/gatesopen. Authoridleawaitsreview. Task7
+fixround1continuesoffline. Task16aggregatecap4/5 andTask11cap4/5 unchanged.
+
 Latest checkpoint supersedes statuses below: NO rootlivejob. Task16fundidentity
 integration189fe919 independentlyApproved, cumulativeTask16fixcount4/5. Root
 two-passfundreaderbyteauditv2 completed16s/65,531,904bytepeak,50uniquefiles/

@@ -75,6 +75,32 @@ Branch `feat/tier1-v3-warehouse`, start HEAD a3e02c6e. Workspace `.superpowers/s
 
 ## Controller resume 2026-10-03
 
+- Latest2026-10-04 about01:45UTC: no root live data job. Sourcefreeze42951 ended stopped_low_commit1502.7s/647,417,856bytes,exit137,no cap event; freecommit0.3095GiB. No snapshot or financial unit. RulingR19 task-16-extract-resume-ruling.md advances final cumulative Task16 fix5/5 to fresh GPT-6.1 Sol t16_extract_round5 for bounded exact native extraction receipts, independent caller expected admission hashes, full85 requirement and forced replay. No identical long retry or guard relaxation; review pending.
+- Task7 fix round2/5 commit706fdf75 independently Approved by t16_release_foundation: I7 complete unknown population and I8 complete monthly windows addressed, no new findings. Source semantics/actual gates remain unmeasured. review-T7-native-r2-findings.md records scoped result; no unchanged tests rerun.
+- Cleanupv2 audited ended scratch9s/116,305,920bytes, removed1,506,857,694 logical bytes in5s/97,071,104bytes, observed1,506,844,672 free-space gain. Postverification10s/116,121,600bytes preserves144prep/85stats/exactcandidatefiles. Dead2676/23584locks archived with identity, no oldwriterlock remains. Combined observed gainsv1+v2=4,087,541,760bytes; see disk-cleanup-report-v2.md. Initial helper attempts refused safely and changed no target; retained logs record omitted failed-status allowlist and transient PID observation.
+- Task13 initial539ee6ff submitted for full independent engineering review;19offlinecases1.93s, actual0PASS/3FAIL. Root catalogpreflight2s/123,408,384bytes and originalfeasibility4s/141,127,680bytes both exit0/zeroHTTP. Full51,384catalog rows,23,958eligible2020+8K(/A), no10Q inthiscatalog; absence elsewhere unproven. Two deterministicoriginals305,336stored+decodedbytes matchsourceSHAs. Cal-Maine sample isvariablepolicy/noQ2payment, Avon samplemerger; no declaredrate/clock/class proof. Source adapter/native200handchecks/fullcash-event denominator remain required, no gatewaiver.
+
+- 2026-10-04 01:27 UTC: native fundamentals source freeze v2 remains live in root session42951, peak647,417,856 bytes under unchanged0.8GiB guard, no cap event/error. Full85 extraction batches are reconstructed from ZIP and compared as typed multisets. This is source validation with max-new-batches0, not financial computation or source-economic certification. Root retains exclusive actual-data slot until completion.
+- Task7 fix round2/5 author reports I7/I8 corrections ready and is finishing the commit/report; independent re-review pending. Unknown formation classification must block the full month and partial monthly return intervals must be rejected. R18 now explicitly pins the prior-close start mark and all holding-month sessions before any actual return measurement.
+- Task13 initial implementation dispatched to fresh GPT-6.1 Sol agent t13_distributions. This advances the already recorded R11 Task4 indicated-dividend dependency. Own corporate_actions/events_buyback/new distributions modules and private tests/docs only; baseline clean. Task9 is idle and events_sources remains read-only, preserving the lane-C shared-file constraint. Root data-slot hold permits static work and bounded offline fixtures only; real audits/builds and all HTTP remain held. Original three gates and full member-line dividend denominator remain unchanged.
+- Task11 acquisition plan9662a140 is committed. It separates retained official bulk data from original EDGAR documents, proposes a bounded pilot only after source-budget admission, and grants no requests. Shared60000 all-attempt budget remains unreconciled; no endpoint was fetched or live-verified.
+- Cleanup follow-through: preserve essential9,261,380 restored extraction-stat bytes and all active scratch. The completed obsolete-path removal measured3,175,142,016 logical bytes and2,580,697,088 actual free-space gain at that time; later job disk use prevents claiming this as current net gain. Audit ended new universe scratch only after the live fundamentals job ends.
+
+- Task11aggregatefinalfix5/5 ab6c2ca8 independentlyApproved: bothnativepublic
+  identityandsemanticreplayfindingsclosed,25fixtures18.86s. No sixthlocalfix;
+  fullTask11remainingnative/source/economic/gatesstillopen. No new actualjobgrant.
+  Rootfundfreeze42951liveat01:06UTC,peak.5736GiB, no finalresult yet.
+
+- Nativefundsourcefreezev1 failed18s/.1129GiB due85missingstats, nofinancialbatch
+  computed. Layoutaudit2s/.0559GiB foundretainedv10all256, v11only171,sameplanSHA.
+  Root recoveryverified171sharedSHA/sizebeforeafterandcopied85absentstats9,261,380
+  byteswithnoclobber12.1s/.0436GiB exit0. Secondsourcefreeze42951under.8guard same
+  code/binding/generation,maxnew0 nowliveatlaunch. Fullarchive/nativereplayrequired.
+- Task11originalsfirstpiece2d695f03 reviewNeedsfixes twoImportantpublicvalidator
+  source/code/planidentity andindependentexpectedpopulation/nativeobservations/
+  diagnostics. Fresh/root/t11_native_round5 ownsfinalaggregatefix5/5; nofurther
+  localfixroundafterreview. OriginalauthoronlystaticacquisitionPLANseparatefile.
+
 - Root fundreader two-passbyteauditv2 completed16s/.061GiB,50uniquefiles/
   3,774,103,103bytes includingarchive/knownidentityparents; twoidenticalpasses,
   zero producer-byte mismatches. Bindingv1 prepared14950bytes/12products/30reader

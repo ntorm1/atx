@@ -1,0 +1,173 @@
+{
+  "authenticated_current_preparation_units": 144,
+  "candidate_evidence": {
+    "fundamentals_release_v1": {
+      "directory": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\generations\\r17_20261004_001",
+      "files": {},
+      "manifest_exists": false
+    },
+    "universe_release_v1": {
+      "directory": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\generations\\r15_20261003_001",
+      "files": {
+        "snapshot.json": {
+          "bytes": 114178,
+          "sha256": "cab98a7472ad3224be6c85b7f0aef73d4088b50b9326c8cbe202dfe91a2d1d02"
+        },
+        "year=2018\\receipt.json": {
+          "bytes": 113473,
+          "sha256": "3abbab2e5bae371cbad9be1d87ce57239d1e5484e8366f9dca6edd30670802c3"
+        },
+        "year=2018\\universe.parquet": {
+          "bytes": 18114598,
+          "sha256": "7507327b9e2f986da79324ae1a40a758a0c242e706428cbd93532fda680598e4"
+        },
+        "year=2019\\receipt.json": {
+          "bytes": 114073,
+          "sha256": "a58c99fe850526028cd650df849ce99ccf9c569bfc71b43f001f2ade8bc5ab12"
+        },
+        "year=2019\\universe.parquet": {
+          "bytes": 21673327,
+          "sha256": "1147bf44443978d7158b2c0488996bfb5a7165f4ffad8b0f4c77b4c2ca112104"
+        }
+      },
+      "manifest_exists": false
+    }
+  },
+  "candidate_total_logical_bytes": 1506857694,
+  "ended_runs": {
+    "t16-existing-units-admit-v1": {
+      "child_pid": 21664,
+      "guard_pid": 18216,
+      "sha256": "c511376df6d0f4baea5a3f08b62d0427ebd9475d201a92cedf1bcefa98f4773c",
+      "status": "stopped_low_commit"
+    },
+    "t16-fund-freeze-v1": {
+      "child_pid": 25608,
+      "guard_pid": 17024,
+      "sha256": "f4bcc51d99954654bf62ecc9339f96fd07b9cabecc094cc239c958a8f47ce5c5",
+      "status": "failed"
+    },
+    "t16-fund-freeze-v2": {
+      "child_pid": 7272,
+      "guard_pid": 17596,
+      "sha256": "4a45932f6577bd70b9afc86d95325c682d8e57fa15f52f8bca3491ed2fd63d96",
+      "status": "stopped_low_commit"
+    }
+  },
+  "retained_locks": {
+    "fundamentals_release_v1": {
+      "bytes": 5,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\.writer.lock",
+      "pid": 23584,
+      "sha256": "01f186fa9609dddec4a43fe278d3632af1232d1a97c7f777cd29280211988e7c"
+    },
+    "universe_release_v1": {
+      "bytes": 4,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\universe_release_v1\\.writer.lock",
+      "pid": 2676,
+      "sha256": "914a319c0ac806f2423d78ce789997efe86cc45d1174ba71df9db9b39b8102f1"
+    }
+  },
+  "root": "C:\\atx\\atx-db\\data\\alpha_panel\\v1",
+  "status": "AUDIT_ONLY_NO_DELETION",
+  "targets": [
+    {
+      "dependency_mentions": [],
+      "eligible_for_explicit_removal": true,
+      "exists": true,
+      "files": [
+        {
+          "bytes": 296759296,
+          "mtime_ns": 1791074023335091000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\release-008d2459162940dcac20a55231ece482.duckdb"
+        },
+        {
+          "bytes": 12314833,
+          "mtime_ns": 1791073986417922100,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\release-008d2459162940dcac20a55231ece482.duckdb.wal"
+        },
+        {
+          "bytes": 984875008,
+          "mtime_ns": 1791074024788771000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2676\\duckdb_temp_storage_DEFAULT-0.tmp"
+        },
+        {
+          "bytes": 3801088,
+          "mtime_ns": 1791074024744153600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2676\\duckdb_temp_storage_S128K-0.tmp"
+        },
+        {
+          "bytes": 2293760,
+          "mtime_ns": 1791073992336111000,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2676\\duckdb_temp_storage_S160K-0.tmp"
+        },
+        {
+          "bytes": 589824,
+          "mtime_ns": 1791074024789412800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2676\\duckdb_temp_storage_S192K-0.tmp"
+        },
+        {
+          "bytes": 229376,
+          "mtime_ns": 1791073987578042800,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2676\\duckdb_temp_storage_S224K-0.tmp"
+        },
+        {
+          "bytes": 64225280,
+          "mtime_ns": 1791074024797468400,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2676\\duckdb_temp_storage_S32K-0.tmp"
+        },
+        {
+          "bytes": 113311744,
+          "mtime_ns": 1791074024783050300,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2676\\duckdb_temp_storage_S64K-0.tmp"
+        },
+        {
+          "bytes": 27131904,
+          "mtime_ns": 1791074024788048700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001\\spill-2676\\duckdb_temp_storage_S96K-0.tmp"
+        }
+      ],
+      "logical_bytes": 1505532113,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\universe-release-r15_20261003_001",
+      "reason": "Read/replay-only scratch from ended existing-unit admission; no durable unit is stored here.",
+      "reparse_points": []
+    },
+    {
+      "dependency_mentions": [],
+      "eligible_for_explicit_removal": true,
+      "exists": true,
+      "files": [
+        {
+          "bytes": 1301005,
+          "mtime_ns": 1791077248301923600,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\fund-release-extract-verify\\extract-wum_fu20\\batch-0033.parquet.partial"
+        }
+      ],
+      "logical_bytes": 1301005,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\_tmp\\fund-release-extract-verify",
+      "reason": "Interrupted temporary ZIP reconstruction peers; unsealed and never accepted as source or financial units.",
+      "reparse_points": []
+    },
+    {
+      "dependency_mentions": [],
+      "eligible_for_explicit_removal": true,
+      "exists": true,
+      "files": [
+        {
+          "bytes": 12288,
+          "mtime_ns": 1791075747088041900,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\_spill\\fund-release-4b4b2ee87713479d96ee0d9aa6bfe985.duckdb"
+        },
+        {
+          "bytes": 12288,
+          "mtime_ns": 1791075320548793700,
+          "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\_spill\\fund-release-8e8b9a0da6fb4f52aa42a1355295d0e5.duckdb"
+        }
+      ],
+      "logical_bytes": 24576,
+      "path": "C:\\atx\\atx-db\\data\\alpha_panel\\v1\\fundamentals_release_v1\\_spill",
+      "reason": "Private DuckDB database and spill from ended root source-freeze jobs; connections use new UUID databases.",
+      "reparse_points": []
+    }
+  ]
+}

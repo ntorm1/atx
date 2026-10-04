@@ -15,6 +15,21 @@ Retain minimum60 monthly paired observations and every120 requested outcome
 slots; unavailable early history remains explicit missing/FAIL. This neither
 grants post2022 returns nor replaces Task16's separate predictive configuration.
 
+Complete monthly label convention for replication: formation/start mark is the
+prior month's final actual session close; entry_date denotes the first
+contributing return session in the holding month and exit_date its final actual
+session. The admitted calendar must establish all three boundaries. This is a
+benchmark close-to-close total-return series, not a claim of an executable trade
+at the formation close or a net-profitability result. Pin that start-mark basis
+and the complete intermediate price/corporate-action observations in the label
+producer contract. An arbitrary intra-month interval is not a monthly label.
+Source-proven terminal events require explicit dated proceeds and residual-month
+cash/conversion treatment under the pinned benchmark convention; without that
+proof, retain the missing label and fail the affected formation. Never extend
+one-day returns, assume missing terminal proceeds, or invent zero residual returns.
+This clarifies the previously underspecified construction before any real return
+measurement; Task16 executable forward-label/consumer contracts remain separate.
+
 The original specification requires JKP matched factors and OSAP overlapping
 signals. Freeze independent name/convention mappings from authoritative registry
 and benchmark metadata before returns; publish all153 original outcomes plus
