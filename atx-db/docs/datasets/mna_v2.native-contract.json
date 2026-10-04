@@ -2,15 +2,164 @@
   "schema_id": "atx.alpha-panel.events.mna.native-admission/v2",
   "status": "contract_specification_not_source_certification",
   "authority": "independently_reviewed_immutable_caller_pins",
-  "objects": ["source_id", "sha256", "accession", "cik", "fetched_at", "available_at", "clock_basis"],
-  "reader_code_complete_keys": ["mna_native_v2", "mna_vintages_v2", "terminal_mna_v2"],
-  "clock_basis": ["native_sec_acceptance", "native_sec_bulk_acceptance", "retrieval_floor"],
-  "bulk_clock_objects": ["source_id", "sha256", "cik", "accession", "available_at", "fetched_at"],
+  "objects": [
+    "source_id",
+    "sha256",
+    "accession",
+    "cik",
+    "fetched_at",
+    "available_at",
+    "clock_basis"
+  ],
+  "reader_code_complete_keys": [
+    "mna_native_v2",
+    "mna_vintages_v2",
+    "terminal_mna_v2",
+    "mna_financial_v2",
+    "mna_price_native_v2",
+    "mna_exact_v2",
+    "mna_publish_v2",
+    "common"
+  ],
+  "clock_basis": [
+    "native_sec_acceptance",
+    "native_sec_bulk_acceptance",
+    "retrieval_floor"
+  ],
+  "bulk_clock_objects": [
+    "source_id",
+    "sha256",
+    "cik",
+    "accession",
+    "available_at",
+    "fetched_at"
+  ],
   "bulk_clock_semantics_required": "matching_independently_pinned_original_native_sgml_acceptance",
-  "document_output_keys": ["accession", "source_id", "available_at"],
-  "document_output_schema": ["accession", "source_id", "available_at", "consideration_type", "cash_per_share", "stock_ratio", "status", "evidence", "reasons"],
-  "financial_admission_required": ["original_completion_source", "native_completion_date", "native_settlement_date", "target_security_and_share_class", "acquirer_security_and_share_class", "per_target_share_units", "explicit_currency", "signed_split_fx_price_basis", "target_last_session_close_native_replay", "acquirer_terminal_date_close_native_replay", "full2267_candidate_inventory", "independent_handcheck_inventory"],
-  "publication_requires": ["before_compute_code_binding", "after_compute_code_recheck", "complete_inventory_reconciliation", "public_full_schema_key_native_replay", "immutable_no_overwrite_publication", "input_manifests_sha256", "all_gate_results"],
-  "not_implemented": ["native_financial_admission", "price_basis_admission", "actual_immutable_publication"],
-  "never_certifies": ["self_asserted_boolean", "self_hash_receipt", "metadata_item_completion", "issuer_primary_line_mapping"]
+  "document_output_keys": [
+    "accession",
+    "source_id",
+    "available_at"
+  ],
+  "document_output_schema": [
+    "accession",
+    "source_id",
+    "available_at",
+    "consideration_type",
+    "cash_per_share",
+    "stock_ratio",
+    "status",
+    "evidence",
+    "reasons"
+  ],
+  "financial_admission_required": [
+    "original_completion_source",
+    "native_completion_date",
+    "native_settlement_date",
+    "target_security_and_share_class",
+    "acquirer_security_and_share_class",
+    "per_target_share_units",
+    "explicit_currency",
+    "signed_split_fx_price_basis",
+    "target_last_session_close_native_replay",
+    "acquirer_terminal_date_close_native_replay",
+    "full2267_candidate_inventory",
+    "independent_handcheck_inventory"
+  ],
+  "publication_requires": [
+    "before_compute_code_binding",
+    "after_compute_code_recheck",
+    "complete_inventory_reconciliation",
+    "public_full_schema_key_native_replay",
+    "immutable_no_overwrite_publication",
+    "input_manifests_sha256",
+    "all_gate_results"
+  ],
+  "not_implemented": [],
+  "never_certifies": [
+    "self_asserted_boolean",
+    "self_hash_receipt",
+    "metadata_item_completion",
+    "issuer_primary_line_mapping"
+  ],
+  "semantic_contract_id": "mna-native-common-raw-usd-v2-initial1",
+  "financial_output_schema": [
+    "accession",
+    "source_id",
+    "source_sha256",
+    "available_at",
+    "announce_date",
+    "termination_date",
+    "completion_date",
+    "settlement_date",
+    "target_name",
+    "target_share_class",
+    "acquirer_name",
+    "acquirer_share_class",
+    "consideration_type",
+    "cash_per_share",
+    "cash_currency",
+    "stock_ratio",
+    "status",
+    "consideration_clauses",
+    "reasons"
+  ],
+  "terminal_output_keys": [
+    "security_id",
+    "last_session",
+    "candidate_available_at"
+  ],
+  "vendor_original_columns": [
+    "securityID",
+    "tradingDate",
+    "ticker_tk",
+    "close"
+  ],
+  "economic_proof_required": [
+    "original_authoritative_sha256",
+    "exact_issuer_class_ticker_quote",
+    "explicit_USD_per_share_quote",
+    "unadjusted_traded_close_definition",
+    "unchanged_conversion_split_FX_quote",
+    "exact_dated_validity_quote",
+    "conservative_retrieval_floor"
+  ],
+  "producer_contract_required": [
+    "expected_contract_sha256",
+    "complete_reader_code_pins",
+    "full_original_candidate_parquet_sha256_and_replay",
+    "complete_original_SEC_receipt_pins_and_replay",
+    "complete_original_input_manifest_bytes",
+    "complete_native_document_inventory",
+    "optional_per_key_price_economic_pins",
+    "frozen_return_policy",
+    "independently_pinned_manual_review_corpus"
+  ],
+  "return_policies": [
+    "value-only",
+    "pre2023-native-qualified"
+  ],
+  "external_prerequisites_unavailable": [
+    "independently_qualified_actual_economic_sources",
+    "actual_complete_original_admission_contract",
+    "independent_actual_200_deal_review_corpus",
+    "actual_guarded_resource_measurement",
+    "actual_gated_publication"
+  ],
+  "unsupported": [
+    "ADS_or_ordinary_elections",
+    "unqualified_fractional_cash",
+    "contingent_or_adjustable_terms",
+    "nonUSD_FX_conversion",
+    "split_normalized_price_basis",
+    "ambiguous_native_party_or_class",
+    "multiple_submission_documents",
+    "nonUTF8_originals"
+  ],
+  "metadata_feasibility": {
+    "full_denominator": 2267,
+    "pre2023_ceiling_numerator": 1003,
+    "ceiling": 0.44243493603881784,
+    "unchanged_exact_gate": 0.8,
+    "is_return_measurement": false
+  }
 }

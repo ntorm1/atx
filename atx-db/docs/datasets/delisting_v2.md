@@ -1,14 +1,11 @@
 M&A terminal events v2 (engineering preview)
 ===========================================
 
-Status: native document replay and offline qualification core implemented;
-financial native reader/admission and actual immutable stage publication remain
-open. No certified v2 Parquet/manifest has been published. The legacy v1 stage
-and foreign label modules are preserved.
+Status: initial engineering checkpoint ready for independent review. Native financial/price/economic readers, conditional exact returns, immutable publication and public full native replay are implemented. Actual original economic proofs and actual gated publication remain open. No certified actual v2 stage has been published; legacy v1 and foreign labels are preserved.
 
 `mna_native_v2.py` consumes original bytes, not parsed rows. An independently
 reviewed immutable caller contract must pin the complete object inventory,
-source SHA256, accession/CIK, expected code SHA256 for all three v2 modules,
+source SHA256, accession/CIK, expected code SHA256 for all native readers and producer modules,
 UTC retrieval and availability clocks. The public validator verifies the full
 schema, unique keys and every output value by native replay. Native SEC full
 submission identity and acceptance headers are matched exactly; a submission
@@ -25,7 +22,7 @@ native document clock. Later terms or statuses never overwrite earlier rows.
 The parser retains unparseable/ambiguous candidates; it never treats Item 2.01,
 Form 25, issuer primary-line metadata or a caller boolean as financial proof.
 
-Terminal keys: `(security_id, last_session, available_at)`; UTC clock is the
+Terminal keys: `(security_id, last_session, candidate_available_at)` preserve original candidate vintages; `available_at` is the
 maximum of event, terms, native completion, target and acquirer price clocks.
 Daily PIT cutoff requires the previous independently admitted exchange session
 at 22:00 UTC, strictly less; no calendar-day substitution. Monthly consumers
@@ -36,12 +33,14 @@ Staleness: event vintage, no arbitrary carryforward of status or terms.
 |---|---|---|
 | security_id | integer | Independently qualified target line, not issuer primary line |
 | last_session | date | Last target close session in complete candidate inventory |
+| candidate_available_at | UTC timestamp | Original admitted candidate vintage clock |
 | available_at | UTC timestamp | Latest admitted input availability |
+| legacy_continued | boolean | Original heuristic, retained even when source conversion resolves it |
 | deal_id | text nullable | Original-source deal identity |
-| proceeds_per_share | decimal, currency/target share nullable | Cash or acquirer terminal close times conversion ratio plus cash; conditional qualification only |
+| proceeds_per_share | double, currency/target share nullable | Cash or acquirer terminal close times conversion ratio plus cash; conditional qualification only |
 | currency | text nullable | Explicit native currency; dollar symbol alone is ambiguous |
-| dlret | decimal nullable | Qualified proceeds / target last close minus one, strictly pre2023 only |
-| dlret_exact | boolean | False until native financial and price replay admission implemented |
+| dlret | double nullable | Qualified proceeds / target last close minus one, strictly pre2023 only |
+| dlret_exact | boolean | True only after original native financial/class/price/basis replay under frozen pre2023 policy |
 | dlret_imputed | boolean | False; no invented zero or imputed exact return |
 | reason | string array | Every unresolved provenance/class/unit/clock/value condition |
 | source_ids | string array | Retained original source identities |
@@ -70,8 +69,25 @@ the numeric gate denominator. No gate has been relaxed.
 | Exact DLRET >=80% of2267 | FAIL | Unmeasured; financial admission/returns not run |
 | Per-year/universe2020-2025 coverage | FAIL | Unmeasured |
 
-Known limits: minimal rules support unambiguous literal cash and Parent/Acquirer
-stock clauses only; all deal statuses stay unknown absent financial native
-completion admission. UTF-8 originals only; other encodings remain unsupported.
+Known limits: strict named-party monetary/date sentence grammar, UTF8 originals, common/rawUSD unchanged conversion basis, conservatively rejected ambiguity. Real source economic documentation is absent. Full actual resources are unmeasured; large original vendor files are streamed/hashed per replay, so controller must measure bounded throughput before a full price job.
 No actual source acquisition, HTTP, source/hash scans or data builds were done
 by this implementation lane.
+
+
+Native financial and price contract
+-----------------------------------
+`mna_financial_v2` retains literal announcement/completion/termination/settlement dates separately, named common-stock target/acquirer parties, cashUSD or stock ratios and all original consideration clauses. Filing-item codes never certify status. Unambiguous announcement terms can be extracted while terminal completion is unresolved; later documents retain later clocks. Avon-style ADS/ordinary-share elections, fractional cash, preferred cash that was not payable, adjustable or multiple share clauses remain keyed unsupported with NULL terms.
+
+`mna_price_native_v2` consumes original vendor Parquet with complete schema/SHA pins and native securityID/tradingDate/ticker_tk/close. It streams32768-row batches and refuses duplicate SID/date or ambiguous ticker/date identities. It uses raw close; adjusted/prior/return columns never supply the target mark. Original identity is checked before and after streaming. Price availability is at least session22:00UTC plus all evidence clocks.
+
+The separate original authoritative economic evidence must supply exact issuer/common-class/ticker, explicit USD-per-share, raw unadjusted traded-close definition, unchanged conversion terms covering split/FX, and exact dated validity quotations. Every quote and typed field is checked against the independently pinned original. Economic evidence uses a conservative pinned retrieval floor. Only common-share rawUSD unchanged-conversion basis is supported. Other FX/split/ADS cases stay unsupported; source footers, primary flags and code comments never supply these proofs. The root-audited TickerHistory3 lacks currency/class/unit fields; actual economic proof sources remain absent.
+
+`mna_exact_v2.replay_exact` reconstructs terms/prices from original sources and complete independent expected pins; caller-created Terms/Price/Evidence objects are not proof. A frozen value-only policy calculates qualified proceeds without dividing by target close. A frozen pre2023-native-qualified policy conditionally computes proceeds/target-last-close minus1, only when all dated source/class/unit/currency/basis checks pass. A source-proven completed common-share conversion can resolve the legacy continuation heuristic without deleting its candidate or original flag. Residual-month cash/conversion and complete forward labels remain separate unimplemented consumer proof, consistent with R18.
+
+`mna_publish_v2` requires an independently reviewed immutable contract pinned by expected SHA. It verifies the full original candidate Parquet (all raw M&A2020+, including continued), full source/receipt inventories (exact SEC URL, source SHA/bytes/retrieval clock), complete original input-manifest bytes, all reader/code identities before/after native compute and candidate/source links. Optional per-key native economic/price admissions bind their original sources and frozen return policy. Public validation reconstructs every full-schema row from originals, checks nonnull unique keys and rejects altered rows even if their hashes are updated.
+
+Publication uses128MB/one-thread DuckDB, atomic Parquet and publish-last manifest under <output-root>/<contract-SHA>. Existing builds are validated/reused, never overwritten. Complete pending builds resume after full native replay; incomplete evidence remains retained. The root must run real jobs under the guard.
+
+The independent manual review contract pins original review bytes, reviewer, frozen candidate keys and every expected native financial field/source SHA. Boolean correct flags or declared success counts are rejected. Missing/failed cases remain in the frozen denominator. Numeric gates retain200 handchecks>=95%, qualified consideration>=80% and exactDLRET>=80% of2267. Source-only parsing is diagnostic. All actual coverage by year/universe remains unmeasured.
+
+Constraint feasibility (metadata only): pre2023 raw M&A counts207+394+402=1003. The unchanged full2267 denominator and strict pre2023-only exact-return policy cap the possible numerator at1003/2267=44.24%, below80% even with perfect sources. Complete windows can reduce it further. This is a constraint conflict, not measured coverage or permission to change the holdout/denominator.

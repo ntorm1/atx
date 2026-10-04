@@ -1,12 +1,21 @@
 {
   "stage": "delisting/events-v2",
   "path": "delisting/v2/<immutable-build-id>/events.parquet",
-  "keys": ["security_id", "last_session", "available_at"],
+  "keys": [
+    "security_id",
+    "last_session",
+    "candidate_available_at"
+  ],
   "schema_id": "atx.alpha-panel.delisting.events/v2",
-  "status": "engineering_preview_unpublished",
+  "status": "initial_engineering_review_ready_actual_unpublished",
   "as_of_macro_sql": "SELECT * FROM read_parquet('<immutable-admitted-path>') WHERE available_at < t QUALIFY row_number() OVER (PARTITION BY security_id,last_session ORDER BY available_at DESC)=1",
   "original_mna_denominator": 2267,
-  "required_gates": {"handcheck_n": 200, "handcheck_precision": 0.95, "consideration_coverage": 0.8, "exact_dlret_coverage": 0.8},
+  "required_gates": {
+    "handcheck_n": 200,
+    "handcheck_precision": 0.95,
+    "consideration_coverage": 0.8,
+    "exact_dlret_coverage": 0.8
+  },
   "native_financial_admission_required": true,
   "return_window_end_exclusive": "2023-01-01"
 }
