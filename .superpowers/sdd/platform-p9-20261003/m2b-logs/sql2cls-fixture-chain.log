@@ -1,0 +1,91 @@
+== rel root=atx-engine/tests/fixtures/research_store/tree
+catalog C:/Users/natha/AppData/Local/Temp/claude/c--atx/f8ac1e90-4887-4233-8a57-a65e55d3abf8/scratchpad/m2b/chain/cat-rel.sqlite: schema atx.store-schema/v1 (catalog_core, catalog_records)
+init 0
+catalog_run 2026-10-04T12:24:24.590316Z
+files_seen 28 verified 25 declared 0 skipped 4
+catalog_digest d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69
+seconds 0.153743
+checkpoint ok
+catalog 0
+d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69
+digest 0
+artifacts verified 25
+artifacts declared 0
+pins ok 14
+pins declared 0
+pins stale 0
+pins missing 5
+pins unresolved 10
+pin exe unresolved 1
+pin field-payload missing 4
+pin field-registry ok 1
+pin field-source ok 1
+pin field-source unresolved 2
+pin fields-manifest ok 2
+pin input missing 1
+pin input ok 2
+pin input unresolved 1
+pin ledger-head unresolved 2
+pin locked ok 1
+pin receipt-binding ok 1
+pin receipt-binding unresolved 1
+pin receipt-log ok 2
+pin rule-template ok 1
+pin spec-digest unresolved 3
+pin stage-receipt ok 2
+pin wave-manifest ok 1
+missing build-equity/fx-fields/manifest.json#/fields/0/sha256 (field-payload) -> build-equity/fx-fields/f1.f64 pinned dce49e857b4c065671d6fe4c184dde71192e93fd0a0b988896f9e9efb54332e1 catalogued none
+missing build-equity/fx-fields/manifest.json#/fields/1/sha256 (field-payload) -> build-equity/fx-fields/f2.f64 pinned ed38c1e1fa7d457b3925a47d61edf501633a4df14f7e219c6bb156aefb344e5f catalogued none
+missing build-equity/fx-fields/manifest.json#/files/f1.f64/sha256 (field-payload) -> build-equity/fx-fields/f1.f64 pinned dce49e857b4c065671d6fe4c184dde71192e93fd0a0b988896f9e9efb54332e1 catalogued none
+missing build-equity/fx-fields/manifest.json#/files/f2.f64/sha256 (field-payload) -> build-equity/fx-fields/f2.f64 pinned ed38c1e1fa7d457b3925a47d61edf501633a4df14f7e219c6bb156aefb344e5f catalogued none
+missing scripts/specs/v8/fx-base.json#/inputs/reference_daily/sha256 (input) -> build-equity/fx-nav/daily_missing.csv pinned 7777777777777777777777777777777777777777777777777777777777777777 catalogued none
+verify 0
+class trial-ledger checked 1 mismatches 0
+total checked 12 mismatches 0
+identity 0
+== abs root=C:/atx-wt/pool-2/atx-engine/tests/fixtures/research_store/tree
+catalog C:/Users/natha/AppData/Local/Temp/claude/c--atx/f8ac1e90-4887-4233-8a57-a65e55d3abf8/scratchpad/m2b/chain/cat-abs.sqlite: schema atx.store-schema/v1 (catalog_core, catalog_records)
+init 0
+catalog_run 2026-10-04T12:24:26.704698Z
+files_seen 28 verified 25 declared 0 skipped 4
+catalog_digest d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69
+seconds 0.125287
+checkpoint ok
+catalog 0
+d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69
+digest 0
+artifacts verified 25
+artifacts declared 0
+pins ok 14
+pins declared 0
+pins stale 0
+pins missing 5
+pins unresolved 10
+pin exe unresolved 1
+pin field-payload missing 4
+pin field-registry ok 1
+pin field-source ok 1
+pin field-source unresolved 2
+pin fields-manifest ok 2
+pin input missing 1
+pin input ok 2
+pin input unresolved 1
+pin ledger-head unresolved 2
+pin locked ok 1
+pin receipt-binding ok 1
+pin receipt-binding unresolved 1
+pin receipt-log ok 2
+pin rule-template ok 1
+pin spec-digest unresolved 3
+pin stage-receipt ok 2
+pin wave-manifest ok 1
+missing build-equity/fx-fields/manifest.json#/fields/0/sha256 (field-payload) -> build-equity/fx-fields/f1.f64 pinned dce49e857b4c065671d6fe4c184dde71192e93fd0a0b988896f9e9efb54332e1 catalogued none
+missing build-equity/fx-fields/manifest.json#/fields/1/sha256 (field-payload) -> build-equity/fx-fields/f2.f64 pinned ed38c1e1fa7d457b3925a47d61edf501633a4df14f7e219c6bb156aefb344e5f catalogued none
+missing build-equity/fx-fields/manifest.json#/files/f1.f64/sha256 (field-payload) -> build-equity/fx-fields/f1.f64 pinned dce49e857b4c065671d6fe4c184dde71192e93fd0a0b988896f9e9efb54332e1 catalogued none
+missing build-equity/fx-fields/manifest.json#/files/f2.f64/sha256 (field-payload) -> build-equity/fx-fields/f2.f64 pinned ed38c1e1fa7d457b3925a47d61edf501633a4df14f7e219c6bb156aefb344e5f catalogued none
+missing scripts/specs/v8/fx-base.json#/inputs/reference_daily/sha256 (input) -> build-equity/fx-nav/daily_missing.csv pinned 7777777777777777777777777777777777777777777777777777777777777777 catalogued none
+verify 0
+class trial-ledger checked 1 mismatches 0
+total checked 12 mismatches 0
+identity 0
+identity rel exit 0

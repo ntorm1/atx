@@ -134,7 +134,7 @@ explicit paths only (PY-HYG), `--basetemp` in the session scratchpad (deleted af
   `audits/` / `v8-interim3-pitch-render-run2/` remain); nothing deleted by me.
 - **Trial ledger:** 0 trials (133 lines, `27e40f9f`).
 
-### A3 (`a217fd7e` then flip `50cb1571`, pool-12): MERGED (post-flip re-checks NOT run: owner stop)
+### A3 (`a217fd7e` then flip `50cb1571`, pool-12): MERGED (post-flip re-checks green in M2b)
 
 - **Ledger:** `Task A3: complete` (review APPROVE `56474bbf`, A3-RED confirmed; fix round A3-FIX1; re-review APPROVE
   `a8d2fbd0`). Root items: merge `a217fd7e` first (binding build), S-R1 four comments as a slip, TRAIN identity,
@@ -203,10 +203,22 @@ explicit paths only (PY-HYG), `--basetemp` in the session scratchpad (deleted af
     unread (the A3-FIX1 behaviour); the row-group push-down saves nothing on TickerHistory3. For the PM (A4).
 - **Merge 2 (flip):** `git merge --no-ff 50cb1571` -> **`1c90011a`** (2 files: `field_registry.json` -> blob
   `5d2954ec`, nine engine rows; the pin test in `test_vendor_engine_path.py`). No conflict.
-- **NOT done (owner stop arrived right after the flip merge):** post-flip registry `check` (`ok 92` expected) and
-  the field-registry pytest (`test_field_registry.py` 35p, `test_vendor_engine_path.py` 9p,
-  `test_research_fields_engine_path.py` 11p with the real exe); pool-12 DISK-2 deletion. Exact commands in
-  `handoff-root-m2a.md`.
+- **Post-flip re-checks (run in M2b, 2026-10-04, head `56060f84` = `c7ef4e3d` + HYG-1; logs `m2b-logs/a3-*`):**
+  - Registry check from `atx-engine/tools`, fresh interpreter, repository window (no conftest bind):
+    `d = fr.load(); fr.bind(vars(b), d); fr.check(vars(b), d); assert fr.dump(fr.regenerate(vars(b), d)) == file`
+    -> **`ok 92`**, round-trip holds, **9 engine rows** (3 wave-1 + 6 A3). File sha256 `ffbce95d...67fb` (200,436 B),
+    blob `5d2954ec` = the flip blob. Note: the handoff's literal command passed `fr.python_modules(d)` (module
+    *names*) to `bind_modules`, which takes module objects; `fr.bind(ns, doc)` is the wave-1 recipe and imports them.
+  - pytest, real exe (`ATX_RESEARCH_FIELDS_EXE` = p9-1v `b2c30d47...5543`), each file its own session, `-q -rs -p
+    no:cacheprovider`, `PYTHONDONTWRITEBYTECODE=1`: `atx-engine/tools/test_field_registry.py` **35 passed**;
+    `atx-engine/tests/fixtures/research_fields/test_vendor_engine_path.py` **9 passed**;
+    `atx-engine/tests/fixtures/research_fields/test_research_fields_engine_path.py` **11 passed**; no skips.
+    (Slip, mine: the first launch of the last two errored at fixture setup because the `--basetemp` parent did not
+    exist (`WinError 3` in `pathlib.mkdir`, 0 tests run); created the parent and re-ran; counts above are the re-run.)
+- **DISK-2 (pool-12):** nothing to delete: pool-12's `build-equity` object tree was already gone (2.6 MB left = the
+  keep-list exactly: `mega-p9-a3-{a..e}-*` receipts / build / cache-stats logs, `a3-fix1-configure.log`, git-tracked
+  `audits/`, `v8-interim3-pitch-render-run2/`). pool-12's `build/` (580 KB lease-configure stub) not touched.
+  The TRAIN identity outputs `build-equity/p9-a3-train-*` in pool-2 are kept (owner question pending, RESUME 4).
 - **Trial ledger:** 0 trials (133 lines, `27e40f9f`).
 
 ### M2a status at owner stop
@@ -214,3 +226,131 @@ explicit paths only (PY-HYG), `--basetemp` in the session scratchpad (deleted af
 Head `1c90011a` + this docs commit. Next free build tag **p9-1w**. Root tree change: `build-equity` reconfigured
 with test group `store` added. Known-red now: `test_fields_are_the_rule_applied_to_the_registry` (E2) and M1c-RED x2
 Release (C2); the two M1a-RED gtests are green. Resume notes: `handoff-root-m2a.md`.
+
+## M2b: HYG-1, A3 post-flip checks, AL-SIG (2026-10-04)
+
+Agent: fresh root for step group M2b (dispatch R4-1). Head at dispatch `c7ef4e3d`. Python
+`"C:/Program Files/Python312/python.exe"`; every pytest `-B -q -rs -p no:cacheprovider`, `PYTHONDONTWRITEBYTECODE=1`,
+explicit paths, own `--basetemp` in the session scratchpad. Evidence logs: `m2b-logs/` (this dir), including a copy of
+the p9-1w receipt.
+
+### HYG-1 (Ruling HYG-1)
+
+- Unstaged the 609 staged `wq-explore/.mypy_cache` paths (`git restore --staged`; never committed) and deleted both
+  cache dirs by name (`wq-explore/.mypy_cache`, `tools/.mypy_cache`).
+- Finding: `tools/.mypy_cache` was not only on disk but **committed** (129 files, added by the PM session-2 handoff
+  commit `749f9ac2`). Deleting it left 129 tracked deletions, so the deletion is recorded in its own commit
+  **`56060f84`** `chore(sdd): drop the committed tools/.mypy_cache from the sprint dir (HYG-1)`. No `.mypy_cache`
+  path is tracked after it.
+- Index clean afterwards except what I staged myself; the four untracked PNGs under `docs/plans/` left alone.
+
+### A3 post-flip checks
+
+Result written into the A3 section above (M2a): registry `ok 92` + round-trip (9 engine rows, blob `5d2954ec`);
+real-exe pytest `test_field_registry.py` 35p, `test_vendor_engine_path.py` 9p, `test_research_fields_engine_path.py`
+11p. DISK-2 pool-12: object tree already gone, keep-list intact, 0 B freed. `build-equity/p9-a3-train-*` in pool-2
+kept (owner question pending).
+
+### AL-SIG (`ebb081ab`, pool-13): MERGED
+
+- **Ledger:** `Task AL-SIG: complete` at `ebb081ab` (review CHANGES_REQUIRED `1c649035`; fix round 1; re-review
+  APPROVE `3f9980d0`; fix round 2 = N1-N4 + ALSIG-7 / -8 with no third re-review, Ruling ALSIG-9: root re-proves).
+  Rulings applied: ALSIG-FLIP (merge after A3: done, A3 incl. flip is in), ALSIG-2 / -4 / -5 / -6 / -7 / -8 (lane
+  side; K1 `--plan-only` withdrawn, not run), W1-MIN M-2 (seam check below), SQL2-CLS.
+- **Docs:** `task-AL-SIG-report.md`, `task-AL-SIG-review.md`, `task-AL-SIG-rereview-1.md`, `handoff-AL-SIG.md` are
+  committed on the lane branch and arrived with the merge (blobs = `ebb081ab`'s; nothing to copy).
+- **Merge:** `git merge --no-ff ebb081ab` -> **`b1406e14`** (merge base `1239a5ff`; 66 files, +6,095 / -26 against
+  the pre-merge head). Seven conflicts, all on the A2 shared tail that A3 and AL-SIG both extended; every one
+  resolved by keeping both sides, A3 (HEAD) first:
+  - `atx-engine/CMakeLists.txt`, `atx-engine/tests/CMakeLists.txt`: both `target_sources` blocks (A3's vendor panel,
+    then AL-SIG's stage readers / kinds; one blank line between).
+  - `build_spec.hpp`: `price_source`, then `thirteenf` / `indexes` (`StageRequest` auto-merged).
+  - `registry.hpp`: the kind-list doc comment merged into one sentence (vendor kinds, then AL-SIG's); both includes
+    (`sources/stage.hpp`, `sources/vendor_panel.hpp`); `SharedSources` = `finra_schedule`, `vendor_panel`,
+    `thirteenf`, `indexes`.
+  - `registry.cpp`: both include sets; kind table **9 + 2 = 11** (si_shares, si_dtc, vol_126, the six vendor kinds,
+    gia_13f, russell_recon). `engine_field_names()` returns `builder_kind_ids()`, so the v1 name list follows.
+  - `research_fields_cli.cpp`: `is_known_key` accepts `price_source` and `thirteenf` / `indexes`; AL-SIG's
+    `sha256_pin` / `pinned_dir` refactor of `parse_reuse` kept; all four `check_stage_pins` call sites present.
+  - `research_fields_registry_test.cpp`: `KindLookup` expects the 11 ids in table order; A3's `spec_of` helper now
+    also sets both stage requests (it already set `price_source`), so every kind plans.
+  - `field_registry.json` auto-merged. Round-trip check from `atx-engine/tools` (fresh interpreter, repository
+    window): **`ok 94`**, `dump(regenerate(file)) == file`, 11 engine rows (A2's 3 + A3's 6 + gia_13f +
+    russell_recon), `russell_recon` `point_in_time` false with 1 `non_pit_aspects` entry, `gia_13f` true with none;
+    sha256 `d9e0d802...7758` (207,464 B).
+- **Build p9-1w** (equity-dev; source `b1406e14`, dirty 7 = three sprint-dir docs + four untracked PNGs, no code):
+  `atx-engine-research-fields-tests, atx-research-fields` (exactly the lane report's targets) -> **exit 0, 124.0 s,
+  24 TUs, 3 links, 3 jobs, free 3,362 MiB; 0 warning / 0 error lines** (log UTF-16, scanned whole). Exes:
+  `atx-research-fields` **`84390f36...417e`**, `atx-engine-research-fields-tests` `183bde0f...d0b4`.
+- **gtests (Debug, p9-1w):** `--gtest_filter=ResearchFieldsAlSig*:ResearchFieldsRegistry*` **33 passed** (= the lane's
+  33); the whole target **92 / 92 passed, 17 suites** (A3's 66 + AL-SIG's 26; Fixture, Cli, Manifest included); the
+  former M1a-RED pair `ResearchFieldsWriter.QuantilesPartitionLikeNumpy` and `ResearchFieldsVolumeMean.SumOrderIsNumpys`
+  **both OK** (the lane's 70/72 target red is gone with A3 in).
+- **pytest** (each line its own session):
+
+  | command | result | exit |
+  |---|---|---|
+  | `atx-engine/tools/test_field_registry.py test_no_new_python_builder.py` | **39 passed** | 0 |
+  | `scripts/tests/test_p9_al_sig_registrations.py scripts/tests/test_wave_queue.py` | **16 passed** | 0 |
+  | `ATX_RESEARCH_FIELDS_EXE`=p9-1w, `fixtures/research_fields/test_research_fields_engine_path.py` | **11 passed**, no skip | 0 |
+  | same exe, `fixtures/research_fields/test_vendor_engine_path.py` (A3's registry pin; shared registry file) | **9 passed** | 0 |
+  | `scripts/research_cycle.py candidates validate --dir scripts/specs/p9/candidates` | `candidates: 1 valid` | 0 |
+
+- **ALSIG-9, admission refusal read** (`atx-impl/src/strategy_ic_admission.cpp`; AL-SIG does not touch it; last
+  changed by D1 `b1764d22`):
+  - `:297-315` `non_pit_aspects(row, where)`: an entry without a boolean `point_in_time` and an array
+    `non_pit_aspects`, with an empty or non-string aspect, or with `point_in_time == !aspects.empty()`, refuses the
+    whole fields manifest (`lacks point_in_time/non_pit_aspects flags`, `malformed`, `contradicts`). It runs for every
+    manifest row (`:389`) before the row joins `available`.
+  - `:398-406`: for every field a library declares (`lib.declared_extra`; referenced fields are a subset), a non-empty
+    `non_pit_aspects` returns `InvalidArgument` "library field '<name>' is not point-in-time in the pinned <role>
+    fields manifest (non_pit_aspects: ...); refusing look-ahead". No flag or override bypasses it.
+  - Chain to `russell_recon`: the engine manifest copies the spec's flag and aspect into the entry and lists the field
+    under `non_point_in_time_fields` (pinned by `ResearchFieldsAlSigFixture.BuildMatchesTheOracle`, passed above), so
+    a library declaring `russell_recon` is refused at admission. Queue side: `rank(russell_recon)` is `dropped`
+    (final), pinned by `test_non_point_in_time_field_feeds_no_trial` (passed above).
+  - Supplementary: the existing `atx-impl-strategy-ic-tests.exe` (built p9-1p from `58fab573`; admission source
+    unchanged since, only a test scratch path moved in M1d-RED-2) passes
+    `StrategyIcRunner.NonPointInTimeFieldsAndUnflaggedManifestsAreRefused` (1/1), which asserts both refusal texts. Not
+    rebuilt (not a lane target).
+- **SQL2-CLS** (commit **`6673f8d1`**, `classes.json` only):
+  - The guard `test_every_schema_literal_is_registered` on `b1406e14` failed on exactly one literal, and it was
+    **not** the one the ledger names: `atx.alpha-panel.indexes/v1` (`russell_proxy.hpp`, the atx-db Russell-proxy
+    stage schema the reader checks). The guard scans only Python / C++ code, so `atx.p9-blocked-registration/v1`
+    (JSON specs and a test file only) was never flagged.
+  - Added both: `atx.alpha-panel.indexes/v1` as a dated `legacy_allow` row, same form, reason and expiry (2027-03-31)
+    as its already-listed sibling `atx.alpha-panel.thirteenf/v1` (read, never written by the engine);
+    `atx.p9-blocked-registration/v1` as its own class row `blocked-registration` (label I4, after `wave-candidate`;
+    glob `**/blocked/*.json`, `spec_doc` kind `candidate`, render null, writer human, pinned by git). Why a row of its
+    own: `wave-candidate`'s glob `**/candidates/*.json` never matches `blocked/`; its typed `candidate` ingest would
+    put blocked registrations into the wave queue's table (whose statuses cannot be `blocked_on_data`); its render rule
+    would claim byte identity for hand-written files. **For the PM:** this is a class choice, not only a literal; if
+    the PM wants another home it is a one-line move (no fixture carries the literal).
+  - After: guard green; store suite `test_research_store_{classes,blind,identity,fixtures}.py test_research_store.py`
+    **43 passed, 131 subtests** under `PYTHONHASHSEED` 0 and 1 (M2a: 129; +1 subtest each for the new class row and
+    legacy row); `-k FixtureChain` 1 passed (ran).
+  - **Fixture chain** (`atx-research-store` p9-1u `3b955ba1...`, catalog sources unchanged since; scratch catalogs;
+    relative and absolute `--root`): `init` 0; `catalog` 0, `files_seen 28 verified 25 declared 0 skipped 4`,
+    **`catalog_digest d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69`** (= expected); `digest` 0,
+    same value; `verify --pins` 0; `research_store_identity.py` **total checked 12 mismatches 0**, exit 0. Both
+    spellings identical.
+- **W1-MIN M-2 (theme-table seam):** holds at this merge. AL-SIG touches no `atx-impl` file and not `registry.json`;
+  the registry's `themes` equal the 13-name built-in prefix (`strategy_ic_rules.hpp:43`) in order; its three
+  registrations use existing themes (`russell_recon` ownership_flow, `hf_crowd` ownership_flow, `lazy_prices`
+  filing_events). The two pytests that pin the 13 themes (`atx-impl/tools/test_composition_resid.py`,
+  `test_fit_composition_rule_plugins.py`) **31 passed, 17 subtests**. The seam stays open for AL-COMB.
+- **ALSIG-3 (carried, not a merge item):** `prepare_research_fields_engine.ENGINE_FIELDS` does not route the two
+  engine-only rows; `russell_recon` / `gia_13f` build only through `atx-research-fields build --registry` with a v2
+  spec carrying `indexes` / `thirteenf`.
+- **DISK-2 (pool-13):** nothing to delete: the lane had already deleted its object tree; `build-equity` holds only
+  `mega-p9-alsig-{a..d}-*` receipts / logs, `audits/`, `v8-interim3-pitch-render-run2/` (2.6 MB). `build/` (580 KB
+  lease stub) not touched.
+- **Slips:** none in lane code. Mine: the first A3 post-flip pytest launch had a missing `--basetemp` parent
+  (fixture-setup error, 0 tests run; re-run green).
+- **Trial ledger:** 0 trials (133 lines, `27e40f9f`), checked before the merge and at the end.
+
+### M2b status
+
+Head `6673f8d1` + the docs commit that adds this section. Next free build tag **p9-1x**. Known-red now: pytest
+`scripts/tests/test_research_mine.py::test_fields_are_the_rule_applied_to_the_registry` (E2) and Release
+`BookNormalScore.*` x2 (C2); no new red. Resume notes: `handoff-root-m2b.md`.
