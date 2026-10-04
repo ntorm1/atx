@@ -2,12 +2,28 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
-**LATEST: no root data job is live; diagnostic75979 ended0.**
+**LATEST: root owns universe continuationv2 session60982, max-new-years2.**
+Previous79177 completed556.3s/518,057,984peakbytes, no cap; native result missing
+only2021-2026. Independent t16-universe-progress-audit-v1.json passed28s/
+65,794,048bytes, recheckscompletecurrentinputs + snapshot/output/footer/receipt
+identities twice. 2018/2019 unchanged;2020new2,192,161rows/253sessions,
+payloadSHA2ea32dc97af0e73cf987ddf12ad470102c34cc700ad62a5b8afd80b7536032ed.
+No finalmanifest/currentpointer or economicPASS. Newv2target2021/2022,
+logs/t16-universe-r15-resume-20261004-v2.*, same.8GiB/40GiBdiskfloor;
+Keep session60982 owned through completion; no other actual data jobs.
+
+Previous first continuation:
+Command universe_release build --bindings task16-reader-binding-v1.json
+--generation r15_20261003_001 --max-new-years1;0.8GiB guard/40GiBdiskfloor,
+logs/t16-universe-r15-resume-20261004-v1.*. Revalidate retained2018/2019 then
+attempt one next year, original full2018-2026inventory/gates unchanged.
+No competing datajob. Financial diagnostic75979 ended0 as below.
 256MB DuckDB nativebatch diagnostic passed70.1s/557,416,448peakbytes within.8GiB,
 sourcebefore24s/nativebatch45.39s/after69.02s;2,919,100outputbytes, noadmission.
 R23 task-23-fund-runtime-ruling.md routes explicit pinned256MB runtime adapter
 to Task17 integration, same frozen nativefunctions/allchecks, no monkeypatch
-or sixthTask16fix. Task17briefupdated; dispatch queued until slotfree.
+or sixthTask16fix. FreshGPT6.1Sol /root/t17_runtime_integration now implements
+initialTask17 runtime prerequisite, fullcatalog/parity responsibilities preserved.
 All85 source batches admitted; assembly4s/53,673,984bytes produced external
 task16-extract-admission-r19-v1.json physicalSHA
 168b3ff61f4580066db74624bf58efb803993e8d2a0f1060daf4dfec1024ab1f,
@@ -38,13 +54,20 @@ passed as above. Foreign/unknowngeneric caches and blockedpytest233/234 untouche
 
 Task13 round3 52bb3669 review Needs fixes: I2/I3 addressed, I1 unsupported
 condition/negation and I4 samefunction__code__ timezone drift remain. Fresh
-GPT6.1Sol /root/t13_fix_round4 owns cumulative4/5; originalauthor idle.
-Task8 /root/t16_extract_round5 fixesround1 finalpublicationrestart/M1sourcegate.
+GPT6.1Sol /root/t13_fix_round4 submitted cumulative4/5 commit2782f085;
+25qualification+3extraction/admission passes, eachinvocation<60s. Package
+review-T13-native-qualified-r4.diff514lines prepared; independentreviewqueued.
+Originalauthor/freshround4author idle, no actualgatespassed.
+Task8 round1commit3b896c5f reviewed Needsfixes(review-T8-native-r1-findings.md):
+M1closed, I1partial/newI2 targetmanifestcorruption blocks authenticatedpriorpair
+rollback aftermixedpointerhardstop. Originalauthor nowfixesround2/5, onlyscopeI1/I2.
+Task13R4review remainsqueued; Task17runtime andTask10initialimplementationrunning.
 Task10 /root/t7_characteristics implements initialguidance; R22 now binding
 task-22-guidance-units-ruling.md: primaryguid_surprise comparableEPS/strict
 priorissueclose only, revenueguidance/revisionsretained, no inventedrevenuenormalizer.
-No actualevaluation/sourceHTTP/agentdatajobs. Rootuncommittednewreviews,
-sourceadmission/cleanupmetadata/helpers/R22/latestledger still needexplicitcommit.
+No actualevaluation/sourceHTTP/agentdatajobs. Root14owned checkpoint artifacts
+committedf07b9986; physical externaladmission SHA independently confirmedunchanged
+aftergitcommit. Latestuniverse scheduling is notyetcommitted.
 
 **LATEST (2026-10-04): root owns live session9237, batches80..84, R19.**
 This checkpoint supersedes every historical live-session statement below.
