@@ -42,6 +42,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
 
+#include "atx/engine/alpha/op_traits.hpp"
 #include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/alpha/registry.hpp"
 
@@ -62,14 +63,13 @@ struct TypeInfo {
 namespace detail {
 
 // ----- opcode family predicates -----------------------------------------
+// P9 S2: every family predicate below reads the one per-opcode table (op_traits.hpp).
 
 // The shift temporal family (lookback = d + max(child)): these reference the
 // value `d` bars ago without a window reduction. v8 group_delay (a Group shift)
 // belongs here for the factory's window-literal classification; its rails and
 // lookback come from analyze_formulaic_call, which analyze_call routes first.
-[[nodiscard]] inline bool is_shift_ts(OpCode op) noexcept {
-  return op == OpCode::TsDelay || op == OpCode::TsDelta || op == OpCode::GroupDelay;
-}
+[[nodiscard]] inline bool is_shift_ts(OpCode op) noexcept { return is_shift_op(op); }
 
 // The rolling-window temporal family (lookback = (d-1) + max(child)): every
 // time-series op that reduces over a trailing window of `d` bars. EMA/WMA are
@@ -83,44 +83,16 @@ namespace detail {
   return is_shift_ts(op) || is_rolling_ts(op);
 }
 
-// True if `op` is a cross-sectional op (the Cs* family). These reduce within a
-// single date (lookback += 0) and require a non-scalar primary operand.
-[[nodiscard]] inline bool is_cross_section(OpCode op) noexcept {
-  switch (op) {
-  case OpCode::CsRank:
-  case OpCode::CsZscore:
-  case OpCode::CsScale:
-  case OpCode::CsNormalize:
-  case OpCode::CsWinsorize:
-  case OpCode::CsDemeanG:
-  case OpCode::CsNeutG:
-  case OpCode::CsRankG:
-  case OpCode::CsZscoreG:
-  case OpCode::CsCountG:
-  case OpCode::CsMeanG:
-  case OpCode::CsScaleG:
-  case OpCode::CsResidualize:
-  case OpCode::CsQuantile:
-  case OpCode::CsVecSum:
-  case OpCode::CsVecAvg:
-  case OpCode::CsBucket:  // W2
-  case OpCode::CsResidOn: // W2
-  case OpCode::CsSumG:    // v8 YOPS group_sum
-    return true;
-  default:
-    return false;
-  }
-}
+// True if `op` is a cross-sectional op (the Cs* family, W2 bucket / cs_resid_on,
+// v8 group_sum). These reduce within a single date (lookback += 0) and require a
+// non-scalar primary operand.
+[[nodiscard]] inline bool is_cross_section(OpCode op) noexcept { return is_cross_section_op(op); }
 
 // The group-aware cross-sectional ops: their 2nd argument must carry a Group
 // classifier dtype (the four neutralize/rank/zscore variants + the P3b-2
 // group aggregates group_count/group_mean/group_scale + S3.1 cs_residualize +
 // v8 group_sum).
-[[nodiscard]] inline bool needs_group_arg(OpCode op) noexcept {
-  return op == OpCode::CsDemeanG || op == OpCode::CsNeutG || op == OpCode::CsRankG ||
-         op == OpCode::CsZscoreG || op == OpCode::CsCountG || op == OpCode::CsMeanG ||
-         op == OpCode::CsScaleG || op == OpCode::CsResidualize || op == OpCode::CsSumG;
-}
+[[nodiscard]] inline bool needs_group_arg(OpCode op) noexcept { return needs_group_operand(op); }
 
 // ----- scalar-literal operand slots (W0-A0 / A-03) -------------------------
 

@@ -3015,23 +3015,70 @@ TEST(IcAdmission, PlanPrintsRequiredBytesOverCap) {
             std::string::npos);
 }
 // Task H-2: --eval-mode audit-exact evaluates every candidate under the VM's AuditExact mode and
-// names it in the recipe's vm; absent, the recipe keeps ResearchFast. It is refused with
-// --candidate-cache (entries keyed on ResearchFast) before any output, and the CLI takes no
-// other mode.
-TEST(StrategyIcRunner, AuditExactEvalModeIsRecordedAndRefusedWithTheCache) {
+// names it in the recipe's vm; absent, the recipe keeps ResearchFast. P9 S2 (brief S2) lifts its
+// refusal with --candidate-cache: its signal entries live under their own identity token
+// (<vm identity>_audit, its own cache root, AuditExact sidecars), so a warm audit run serves
+// exactly the uncached audit bytes and the two tiers never share an entry. The CLI takes no other
+// mode.
+TEST(StrategyIcRunner, AuditExactEvalModeIsRecordedAndCachedUnderItsOwnIdentity) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
   const auto fast=run_named(dir,cfg,"fast"); ASSERT_TRUE(fast.ok) << fast.error;
   auto exact=cfg; exact.audit_exact=true;
   const auto audit=run_named(dir,exact,"audit"); ASSERT_TRUE(audit.ok) << audit.error;
   EXPECT_EQ(read_json(dir.path/"fast"/"recipe.json").at("vm"),"ResearchFast;full-historical-asof-member-mask");
   EXPECT_EQ(read_json(dir.path/"audit"/"recipe.json").at("vm"),"AuditExact;full-historical-asof-member-mask");
-  auto cached=exact; cached.candidate_cache_directory=(dir.path/"cache").string();
-  const auto refused=run_named(dir,cached,"cached");
-  EXPECT_FALSE(refused.ok);
-  EXPECT_NE(refused.error.find("--eval-mode audit-exact is refused with --candidate-cache"),std::string::npos)
-      << refused.error;
-  EXPECT_TRUE(refused.log.empty());
-  EXPECT_FALSE(std::filesystem::exists(dir.path/"cached")); EXPECT_FALSE(std::filesystem::exists(dir.path/"cache"));
+  const auto identity=atx::impl::strategy::ic_cache_vm_identity().identity;
+  const auto cache=dir.path/"cache";
+  auto cached=exact; cached.candidate_cache_directory=cache.string();
+  const auto cold=run_named(dir,cached,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto warm=run_named(dir,cached,"warm"); ASSERT_TRUE(warm.ok) << warm.error;
+  // The audit entries sit under <identity>_audit and nowhere else.
+  EXPECT_TRUE(std::filesystem::is_directory(cache/(identity+"_audit")));
+  usize roots=0;
+  for (const auto& entry:std::filesystem::directory_iterator(cache)) {
+    ++roots; EXPECT_EQ(entry.path().filename().string(),identity+"_audit");
+  }
+  EXPECT_EQ(roots,1U);
+  for (const std::string name:{"cold","warm"}) {
+    const auto summary=read_json(dir.path/name/"summary.json");
+    ASSERT_EQ(summary.at("roles").size(),2U);
+    for (const auto& role_result:summary.at("roles")) {
+      const auto& signals=role_result.at("candidate_cache");
+      EXPECT_EQ(signals.at("vm_identity"),identity+"_audit") << name;
+      EXPECT_EQ(signals.at("hits"),name=="warm"?2:0) << name;
+    }
+    for (const auto* file:{"recipe.json","orientations.json","train_daily_ic.csv","validation_daily_ic.csv",
+                           "train_planned_targets.csv","validation_planned_targets.csv"})
+      EXPECT_EQ(file_sha(dir.path/name/file),file_sha(dir.path/"audit"/file)) << name << ' ' << file;
+  }
+  const auto sidecar=read_json(cache_entry(dir.path/"cold"/"summary.json","train","volume_level").sidecar);
+  EXPECT_EQ(sidecar.at("eval_mode"),"AuditExact;full-historical-asof-member-mask");
+  EXPECT_EQ(sidecar.at("vm_identity"),identity+"_audit");
+  // A ResearchFast run on the same directory shares nothing with the audit entries.
+  auto fast_cached=cfg; fast_cached.candidate_cache_directory=cache.string();
+  const auto fast_cold=run_named(dir,fast_cached,"fast_cold"); ASSERT_TRUE(fast_cold.ok) << fast_cold.error;
+  const auto fast_summary=read_json(dir.path/"fast_cold"/"summary.json");
+  for (const auto& role_result:fast_summary.at("roles")) {
+    EXPECT_EQ(role_result.at("candidate_cache").at("vm_identity"),identity);
+    EXPECT_EQ(role_result.at("candidate_cache").at("hits"),0);
+  }
+  EXPECT_EQ(fast_cold.log.find("IC cache-hit"),std::string::npos);
+  for (const auto* file:{"train_daily_ic.csv","validation_daily_ic.csv"})
+    EXPECT_EQ(file_sha(dir.path/"fast_cold"/file),file_sha(dir.path/"fast"/file)) << file;
+  // Fix round 1 (review S2 #7): a stale sidecar planted under the audit root (the ResearchFast
+  // entry's) is refused as a foreign entry, never served; restored, the audit run hits again.
+  const auto audit_entry=cache_entry(dir.path/"cold"/"summary.json","train","volume_level");
+  const auto fast_entry=cache_entry(dir.path/"fast_cold"/"summary.json","train","volume_level");
+  ASSERT_NE(audit_entry.sidecar.string(),fast_entry.sidecar.string());
+  const auto kept_sidecar=file_bytes(audit_entry.sidecar); ASSERT_FALSE(kept_sidecar.empty());
+  ASSERT_TRUE(write_bytes(audit_entry.sidecar,file_bytes(fast_entry.sidecar)));
+  const auto stale=run_named(dir,cached,"stale"); EXPECT_FALSE(stale.ok);
+  EXPECT_NE(stale.error.find("candidate cache entry mismatch: volume_level"),std::string::npos)
+      << stale.error;
+  ASSERT_TRUE(write_bytes(audit_entry.sidecar,kept_sidecar));
+  const auto restored=run_named(dir,cached,"restored"); ASSERT_TRUE(restored.ok) << restored.error;
+  EXPECT_EQ(file_sha(dir.path/"restored"/"train_daily_ic.csv"),
+            file_sha(dir.path/"audit"/"train_daily_ic.csv"));
   const auto cli=[&](const std::string& mode) {
     std::vector<std::string> args{"atx-equity-strategy-ic","--library",cfg.library_path,"--library-sha256",
         cfg.library_sha256,"--train",cfg.train_manifest,"--train-sha256",cfg.train_sha256,"--min-names","3",
@@ -4293,5 +4340,491 @@ TEST(ThemeRegistryRunner, RegistryOrderIsTheRegisteredOrder) {
   EXPECT_FALSE(no_sha.ok);
   EXPECT_NE(no_sha.error.find("bounded config"),std::string::npos) << no_sha.error;
   EXPECT_FALSE(std::filesystem::exists(dir.path/"no-sha"));
+}
+// ---- P9 lane S2: IC method options (--min-coverage, --ic-hac-rule, --label-terminal) and the
+// fields seal consumer (ruling P13) ----
+// A candidate row's IC block (what result_json prints), without the row's own bookkeeping.
+Json ic_block(const Json& candidate) {
+  Json out=Json::object();
+  for (const auto* key:{"reject","enough_evidence","reason","horizons"}) out[key]=candidate.at(key);
+  return out;
+}
+// A run refused before any payload or output.
+void expect_early_refusal(const Directory& dir,atx::impl::strategy::IcRunnerConfig attempt,
+                          const std::string& name,const std::string& reason) {
+  const auto run=run_named(dir,attempt,name);
+  EXPECT_FALSE(run.ok) << name;
+  EXPECT_NE(run.error.find(reason),std::string::npos) << name << ": " << run.error;
+  EXPECT_TRUE(run.log.empty()) << name;
+  EXPECT_FALSE(std::filesystem::exists(dir.path/name)) << name;
+}
+// The IC CLI on `cfg`'s TRAIN role in plan-only mode plus `extra` options: its exit code.
+int ic_cli(const atx::impl::strategy::IcRunnerConfig& cfg,const std::vector<std::string>& extra) {
+  std::vector<std::string> args{"atx-equity-strategy-ic","--library",cfg.library_path,"--library-sha256",
+      cfg.library_sha256,"--train",cfg.train_manifest,"--train-sha256",cfg.train_sha256,"--min-names","3",
+      "--min-dates","8","--plan-only"};
+  args.insert(args.end(),extra.begin(),extra.end());
+  std::vector<char*> argv; for (auto& arg:args) argv.push_back(arg.data());
+  std::ostringstream stdout_log,stderr_log;
+  return atx::impl::strategy::dispatch_ic(static_cast<int>(argv.size()),argv.data(),stdout_log,stderr_log);
+}
+// DS-4 / review §3: --min-coverage and --ic-hac-rule are recorded in the recipe only when given;
+// at their defaults they score the same bits under the same IC-result key, and --ic-hac-rule prints
+// every estimate's standard error and lag under both rules (the active one equal to the estimate).
+// A non-default value keys its own IC-result directory. Bad values refuse before any payload; the
+// CLI refuses an unparsable --min-coverage (exit 2).
+TEST(IcMethodOptions, RecordedOnlyWhenGivenPrintBothHacRulesAndKeyTheIcCache) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto plain=run_named(dir,cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  auto bartlett=cfg; bartlett.ic_hac_rule="bartlett-2h-v1";
+  const auto named=run_named(dir,bartlett,"named"); ASSERT_TRUE(named.ok) << named.error;
+  const auto plain_recipe=read_json(dir.path/"plain"/"recipe.json");
+  EXPECT_FALSE(plain_recipe.contains("min_coverage")); EXPECT_FALSE(plain_recipe.contains("ic_hac_rule"));
+  const auto named_recipe=read_json(dir.path/"named"/"recipe.json");
+  EXPECT_EQ(named_recipe.at("ic_hac_rule"),"bartlett-2h-v1"); EXPECT_FALSE(named_recipe.contains("min_coverage"));
+  for (const auto* file:{"train_daily_ic.csv","validation_daily_ic.csv","train_planned_targets.csv",
+                         "validation_planned_targets.csv"})
+    EXPECT_EQ(file_sha(dir.path/"named"/file),file_sha(dir.path/"plain"/file)) << file;
+  const auto plain_summary=read_json(dir.path/"plain"/"summary.json");
+  const auto named_summary=read_json(dir.path/"named"/"summary.json");
+  const auto plain_scope=plain_summary.at("roles").at(0).at("candidate_cache").at("ic_results");
+  usize printed=0;
+  for (usize r=0;r<2;++r) {
+    const auto& base_role=plain_summary.at("roles").at(r); const auto& role_result=named_summary.at("roles").at(r);
+    // The default rule keeps the IC-result key: the plain run's entries serve this run.
+    EXPECT_EQ(role_result.at("candidate_cache").at("ic_results").at("subdirectory"),
+              base_role.at("candidate_cache").at("ic_results").at("subdirectory")) << r;
+    EXPECT_EQ(role_result.at("candidate_cache").at("ic_results").at("hits"),2) << r;
+    for (usize c=0;c<role_result.at("candidates").size();++c) {
+      auto row=ic_block(role_result.at("candidates").at(c));
+      const auto base=ic_block(base_role.at("candidates").at(c));
+      for (usize k=0;k<row.at("horizons").size();++k)
+        for (const auto* metric:{"pearson","rank"}) {
+          auto& estimate=row["horizons"][k][metric];
+          const auto& expected=base.at("horizons").at(k).at(metric);
+          const auto block=estimate.at("hac");
+          EXPECT_EQ(block.at("rule"),"bartlett-2h-v1");
+          EXPECT_EQ(block.at("bartlett-2h-v1").at("standard_error"),expected.at("standard_error"));
+          EXPECT_EQ(block.at("bartlett-2h-v1").at("hac_lag"),expected.at("required_hac_lag"));
+          EXPECT_EQ(block.at("bartlett-2h-v1").at("inference_defined"),expected.at("inference_defined"));
+          EXPECT_TRUE(block.at("horizon-aware-v3").contains("standard_error"));
+          estimate.erase("hac"); ++printed;
+        }
+      EXPECT_EQ(row,base) << r << ' ' << c; // nothing else changes
+    }
+  }
+  EXPECT_EQ(printed,2U*2U*3U*2U);
+  // Non-default values: recorded, keyed (their own IC-result directory, a clean miss) and equal to
+  // an uncached run under the same value.
+  auto aware=cfg; aware.ic_hac_rule="horizon-aware-v3";
+  auto loose=cfg; loose.min_coverage=.5;
+  std::set<std::string> subdirectories{plain_scope.at("subdirectory").get<std::string>()};
+  for (const auto& [option,name]:{std::pair{&aware,std::string("aware")},std::pair{&loose,std::string("loose")}}) {
+    const auto run=run_named(dir,*option,name); ASSERT_TRUE(run.ok) << name << ": " << run.error;
+    const auto summary=read_json(dir.path/name/"summary.json");
+    const auto scope=summary.at("roles").at(0).at("candidate_cache").at("ic_results");
+    EXPECT_TRUE(subdirectories.insert(scope.at("subdirectory").get<std::string>()).second) << name;
+    EXPECT_EQ(scope.at("hits"),0) << name;
+    auto uncached=*option; uncached.candidate_cache_directory.clear();
+    const auto reference=run_named(dir,uncached,name+"_uncached"); ASSERT_TRUE(reference.ok) << reference.error;
+    for (const auto* file:{"recipe.json","orientations.json","train_daily_ic.csv","validation_daily_ic.csv"})
+      EXPECT_EQ(file_sha(dir.path/name/file),file_sha(dir.path/(name+"_uncached")/file)) << name << ' ' << file;
+    const auto recipe=read_json(dir.path/name/"recipe.json");
+    if (name=="aware") {
+      EXPECT_EQ(recipe.at("ic_hac_rule"),"horizon-aware-v3"); EXPECT_FALSE(recipe.contains("min_coverage"));
+      EXPECT_EQ(scope.at("key").at("hac_rule"),"horizon-aware-v3");
+      EXPECT_FALSE(scope.at("key").contains("min_coverage_bits"));
+      const auto& h21=summary.at("roles").at(0).at("candidates").at(0).at("horizons").at(1).at("rank");
+      EXPECT_EQ(h21.at("hac").at("rule"),"horizon-aware-v3");
+      EXPECT_EQ(h21.at("hac").at("horizon-aware-v3").at("standard_error"),h21.at("standard_error"));
+      EXPECT_EQ(h21.at("hac").at("horizon-aware-v3").at("hac_lag"),h21.at("required_hac_lag"));
+    } else {
+      EXPECT_EQ(recipe.at("min_coverage"),.5); EXPECT_FALSE(recipe.contains("ic_hac_rule"));
+      EXPECT_TRUE(scope.at("key").contains("min_coverage_bits")); EXPECT_FALSE(scope.at("key").contains("hac_rule"));
+      EXPECT_FALSE(summary.at("roles").at(0).at("candidates").at(0).at("horizons").at(1).at("rank").contains("hac"));
+    }
+  }
+  for (const f64 bad:{0.0,1.5,-.25,std::numeric_limits<f64>::quiet_NaN()}) {
+    auto refused=cfg; refused.min_coverage=bad;
+    expect_early_refusal(dir,refused,"bad_coverage","--min-coverage must be in (0, 1]");
+  }
+  auto unknown=cfg; unknown.ic_hac_rule="newey-west";
+  expect_early_refusal(dir,unknown,"bad_rule","--ic-hac-rule takes bartlett-2h-v1 or horizon-aware-v3");
+  EXPECT_EQ(ic_cli(cfg,{"--min-coverage",".5"}),0);
+  EXPECT_EQ(ic_cli(cfg,{"--ic-hac-rule","horizon-aware-v3"}),0);
+  for (const std::string value:{"abc","-0.5","+0.5","0.5x","nan","inf",""})
+    EXPECT_EQ(ic_cli(cfg,{"--min-coverage",value}),2) << value;
+  EXPECT_EQ(ic_cli(cfg,{"--min-coverage","1.5"}),1); // parsed, then refused by run_ic
+  EXPECT_EQ(ic_cli(cfg,{"--ic-hac-rule","newey-west"}),1);
+}
+// --label-terminal imputed-v1 fixtures: TRAIN's instrument 0 leaves the scored role after session
+// 419 (absent from 420); its label role, the role builder's --delisting-returns build of the same
+// role, also prices it at 420 (its imputed terminal close). TRAIN only.
+constexpr usize kTerminalSession=420;
+std::vector<usize> absent_from(usize first) {
+  std::vector<usize> out; for (usize d=first;d<D;++d) out.push_back(d*N); return out;
+}
+bool returns_applied(const std::string& manifest,bool applied,std::string& sha) {
+  auto j=read_json(manifest);
+  j["universe"]={{"id","linked-operating-v1"},{"delisting",{{"returns_applied",applied}}}};
+  return json_file(manifest,j,sha);
+}
+bool terminal_fixture(Directory& dir,atx::impl::strategy::IcRunnerConfig& cfg) {
+  if (!fixture(dir,cfg)) return false;
+  cfg.validation_manifest.clear(); cfg.validation_sha256.clear();
+  const auto scored=dir.path/"train_terminated",label=dir.path/"train_label";
+  if (!role(scored,17683,cfg.train_sha256,1,absent_from(kTerminalSession)) ||
+      !role(label,17683,cfg.train_label_role_sha256,1,absent_from(kTerminalSession+1))) return false;
+  cfg.train_manifest=(scored/"manifest.json").string();
+  cfg.train_label_role=(label/"manifest.json").string();
+  cfg.label_terminal="imputed-v1";
+  return returns_applied(cfg.train_label_role,true,cfg.train_label_role_sha256);
+}
+atx::impl::strategy::IcRunnerConfig without_terminal(atx::impl::strategy::IcRunnerConfig cfg) {
+  cfg.label_terminal.clear(); cfg.train_label_role.clear(); cfg.train_label_role_sha256.clear();
+  return cfg;
+}
+// DSL/IC review §7 item 3: scored under the imputed labels, every candidate (and the blend) also
+// prints its IC under today's labels -- a plain run's IC on the same role -- beside the imputed-pair
+// count and the missing-exit share; the recipe records the rule, the label definition and the
+// label role pin. The imputed pairs are, per horizon h, the decisions whose holding straddles 419:
+// h of them for h = 5 and 21, and all 33 mature rows for h = 63.
+TEST(IcLabelTerminal, ImputedRunPrintsBothIcsCountsImputedPairsAndRecordsThePin) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(terminal_fixture(dir,cfg));
+  auto plain_cfg=without_terminal(cfg);
+  const auto plain=run_named(dir,plain_cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  const auto imputed=run_named(dir,cfg,"imputed"); ASSERT_TRUE(imputed.ok) << imputed.error;
+  const auto plain_recipe=read_json(dir.path/"plain"/"recipe.json");
+  for (const auto* key:{"label_terminal","label_role_manifest_sha256"})
+    EXPECT_FALSE(plain_recipe.contains(key)) << key;
+  const auto recipe=read_json(dir.path/"imputed"/"recipe.json");
+  EXPECT_EQ(recipe.at("label_terminal"),"imputed-v1");
+  // The label definition gains the missing-exit clause; the default one has none.
+  EXPECT_EQ(plain_recipe.at("labels").get<std::string>().find("missing-exit:"),std::string::npos);
+  EXPECT_NE(recipe.at("labels").get<std::string>().find("missing-exit:first-label-role-only-session"),
+            std::string::npos);
+  EXPECT_EQ(recipe.at("label_role_manifest_sha256"),Json({{"train",cfg.train_label_role_sha256}}));
+  const auto base=read_json(dir.path/"plain"/"summary.json").at("roles").at(0);
+  const auto role_result=read_json(dir.path/"imputed"/"summary.json").at("roles").at(0);
+  EXPECT_FALSE(base.contains("label_terminal"));
+  const auto& block=role_result.at("label_terminal");
+  EXPECT_EQ(block.at("rule"),"imputed-v1");
+  EXPECT_EQ(block.at("label_role_manifest_sha256"),cfg.train_label_role_sha256);
+  EXPECT_GT(block.at("missing_exit_v1_ic_cache_bytes").get<u64>(),0U);
+  // The orientations agree, so the two blends are the same signal.
+  const auto signs=[](const std::filesystem::path& path) {
+    const auto artifact=read_json(path); Json out=Json::array();
+    for (const auto& row:artifact.at("candidates")) out.push_back(row.at("sign"));
+    return out;
+  };
+  ASSERT_EQ(signs(dir.path/"imputed"/"orientations.json"),signs(dir.path/"plain"/"orientations.json"));
+  const std::array<u64,3> straddling{5,21,33};
+  // The missing-exit-v1 IC beside the imputed one is the plain run's, once its two print-only
+  // coverage keys are checked and dropped.
+  const auto legacy_equals_plain=[&](Json legacy,const Json& expected,const Json& scored,const std::string& what) {
+    ASSERT_EQ(legacy.at("horizons").size(),3U) << what;
+    for (usize k=0;k<3;++k) {
+      auto& cov=legacy["horizons"][k]["coverage"];
+      const auto& now=scored.at("horizons").at(k).at("coverage");
+      EXPECT_EQ(cov.at("terminal_imputed_pairs"),0) << what << k;
+      EXPECT_DOUBLE_EQ(cov.at("missing_exit_share").get<f64>(),cov.at("missing_exit_pairs").get<f64>()/
+                       cov.at("decision_eligible_pairs").get<f64>()) << what << k;
+      EXPECT_EQ(now.at("terminal_imputed_pairs"),straddling[k]) << what << k;
+      EXPECT_EQ(now.at("finite_label_pairs").get<u64>()-cov.at("finite_label_pairs").get<u64>(),straddling[k])
+          << what << k;
+      EXPECT_EQ(now.at("missing_exit_pairs"),cov.at("missing_exit_pairs")) << what << k;
+      EXPECT_EQ(now.at("decision_eligible_pairs"),cov.at("decision_eligible_pairs")) << what << k;
+      EXPECT_DOUBLE_EQ(now.at("missing_exit_share").get<f64>(),cov.at("missing_exit_share").get<f64>()) << what << k;
+      cov.erase("terminal_imputed_pairs"); cov.erase("missing_exit_share");
+    }
+    EXPECT_EQ(legacy,ic_block(expected)) << what;
+  };
+  ASSERT_EQ(role_result.at("candidates").size(),2U);
+  for (usize c=0;c<2;++c) {
+    const auto& row=role_result.at("candidates").at(c);
+    legacy_equals_plain(row.at("ic_missing_exit_v1"),base.at("candidates").at(c),row,row.at("id").get<std::string>());
+  }
+  legacy_equals_plain(role_result.at("combined_ic_missing_exit_v1"),base.at("combined_ic"),
+                      role_result.at("combined_ic"),"__combined__");
+  // The imputed labels move the IC itself (some daily IC on the straddling rows changes).
+  EXPECT_NE(file_sha(dir.path/"imputed"/"train_daily_ic.csv"),file_sha(dir.path/"plain"/"train_daily_ic.csv"));
+}
+// The label role is admitted only as the role builder's --delisting-returns build of the scored
+// role (same axes, score window and sessions / ids receipts), with a pin on both sides of the flag;
+// each refusal precedes any payload or output. A label role that differs from the scored role on a
+// cell the role presents (it may only add presence) refuses once both are loaded.
+TEST(IcLabelTerminal, LabelRoleRefusals) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(terminal_fixture(dir,cfg));
+  auto bare=cfg; bare.train_label_role.clear(); bare.train_label_role_sha256.clear();
+  expect_early_refusal(dir,bare,"bare","needs a pinned label role for every scored role");
+  auto unflagged=cfg; unflagged.label_terminal.clear();
+  expect_early_refusal(dir,unflagged,"unflagged","--*-label-role is read only with --label-terminal imputed-v1");
+  auto unpinned=cfg; unpinned.train_label_role_sha256.clear();
+  expect_early_refusal(dir,unpinned,"unpinned","each --*-label-role needs its --*-label-role-sha256");
+  auto other_rule=cfg; other_rule.label_terminal="imputed-v2";
+  expect_early_refusal(dir,other_rule,"other_rule","--label-terminal takes imputed-v1");
+  auto wrong_pin=cfg; wrong_pin.train_label_role_sha256=std::string(64,'0');
+  expect_early_refusal(dir,wrong_pin,"wrong_pin","");
+  auto unapplied=cfg; ASSERT_TRUE(returns_applied(unapplied.train_label_role,false,unapplied.train_label_role_sha256));
+  expect_early_refusal(dir,unapplied,"unapplied",
+      "--train-label-role must be the role builder's --delisting-returns build of the train role");
+  ASSERT_TRUE(returns_applied(cfg.train_label_role,true,cfg.train_label_role_sha256));
+  // Another score window.
+  auto shifted=cfg; const auto shifted_dir=dir.path/"label_shifted";
+  std::filesystem::copy(dir.path/"train_label",shifted_dir,std::filesystem::copy_options::recursive);
+  auto manifest=read_json(shifted_dir/"manifest.json"); manifest["score_begin"]=400;
+  shifted.train_label_role=(shifted_dir/"manifest.json").string();
+  ASSERT_TRUE(json_file(shifted.train_label_role,manifest,shifted.train_label_role_sha256));
+  expect_early_refusal(dir,shifted,"shifted","--train-label-role score_begin differs from the pinned train role");
+  // Another session axis (a role a day later).
+  auto later=cfg; const auto later_dir=dir.path/"label_later";
+  ASSERT_TRUE(role(later_dir,17684,later.train_label_role_sha256,1,absent_from(kTerminalSession+1)));
+  later.train_label_role=(later_dir/"manifest.json").string();
+  ASSERT_TRUE(returns_applied(later.train_label_role,true,later.train_label_role_sha256));
+  expect_early_refusal(dir,later,"later","--train-label-role sessions.i64 differs from the pinned train role");
+  // Another close on cells the scored role presents: refused after both load, before scoring.
+  auto repriced=cfg; const auto repriced_dir=dir.path/"label_repriced";
+  ASSERT_TRUE(role(repriced_dir,17683,repriced.train_label_role_sha256,-1,absent_from(kTerminalSession+1)));
+  repriced.train_label_role=(repriced_dir/"manifest.json").string();
+  ASSERT_TRUE(returns_applied(repriced.train_label_role,true,repriced.train_label_role_sha256));
+  const auto refused=run_named(dir,repriced,"repriced"); EXPECT_FALSE(refused.ok);
+  EXPECT_NE(refused.error.find("label role differs from the scored role on a cell the role presents"),
+            std::string::npos) << refused.error;
+  EXPECT_EQ(refused.log.find("IC eval-start"),std::string::npos);
+  // Fix round 1 (review S2 #2): added presence that is not a termination -- here a second session
+  // after instrument 0's last scored session 419 -- refuses once both are loaded.
+  auto doubled=cfg; const auto doubled_dir=dir.path/"label_doubled";
+  ASSERT_TRUE(role(doubled_dir,17683,doubled.train_label_role_sha256,1,
+                   absent_from(kTerminalSession+2)));
+  doubled.train_label_role=(doubled_dir/"manifest.json").string();
+  ASSERT_TRUE(returns_applied(doubled.train_label_role,true,doubled.train_label_role_sha256));
+  const auto twice=run_named(dir,doubled,"doubled"); EXPECT_FALSE(twice.ok);
+  EXPECT_NE(twice.error.find("label role adds presence that is not a termination "
+                             "(date 421, instrument 0)"),std::string::npos) << twice.error;
+  EXPECT_EQ(twice.log.find("IC eval-start"),std::string::npos);
+  // The same label role pinned with the flag runs.
+  const auto accepted=run_named(dir,cfg,"accepted"); ASSERT_TRUE(accepted.ok) << accepted.error;
+  // CLI: the flag and its pins parse; another rule value refuses (run_ic, exit 1).
+  EXPECT_EQ(ic_cli(cfg,{"--label-terminal","imputed-v1","--train-label-role",cfg.train_label_role,
+                        "--train-label-role-sha256",cfg.train_label_role_sha256}),0);
+  EXPECT_EQ(ic_cli(cfg,{"--label-terminal","imputed-v2","--train-label-role",cfg.train_label_role,
+                        "--train-label-role-sha256",cfg.train_label_role_sha256}),1);
+}
+// One f64 cell of a role payload (little-endian, as payload() writes it).
+f64 read_cell(const std::filesystem::path& path,usize cell) {
+  const auto bytes=file_bytes(path); u64 bits=0;
+  for (usize b=0;b<8;++b) bits|=static_cast<u64>(static_cast<u8>(bytes.at(cell*8+b)))<<(8*b);
+  return std::bit_cast<f64>(bits);
+}
+// Rewrites one f64 cell of role payload `file` and re-pins its receipt in the role manifest.
+bool patch_cell(const std::filesystem::path& role_dir,const std::string& file,usize cell,f64 value,
+                std::string& sha) {
+  auto bytes=file_bytes(role_dir/file); if (bytes.size()<(cell+1)*8) return false;
+  const auto bits=std::bit_cast<u64>(value);
+  for (usize b=0;b<8;++b) bytes[cell*8+b]=static_cast<char>((bits>>(8*b))&0xFFU);
+  if (!write_bytes(role_dir/file,bytes)) return false;
+  const auto digest=core::sha256_file((role_dir/file).string()); if (!digest) return false;
+  auto manifest=read_json(role_dir/"manifest.json"); manifest["files"][file]["sha256"]=*digest;
+  return json_file(role_dir/"manifest.json",manifest,sha);
+}
+// Fix round 1 (review S2 #1): the terminal step is return-guarded on the label role. A label role
+// whose termination close (and raw close) is 5% of the last close (r = -0.95, |log(1 + r)| = 3.0 >
+// 1.5) has every straddling pair guard-excluded and none imputed: its labels, so its IC, are the
+// missing-exit-v1 ones. The fixture's own termination (a tiny return) imputes as before.
+TEST(IcLabelTerminal, AbsurdTerminalReturnIsGuardedOnTheLabelRole) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(terminal_fixture(dir,cfg));
+  const auto label_dir=std::filesystem::path(cfg.train_label_role).parent_path();
+  const usize last=(kTerminalSession-1)*N,terminal=kTerminalSession*N; // instrument 0
+  for (const std::string file:{"close.f64","raw_close.f64"})
+    ASSERT_TRUE(patch_cell(label_dir,file,terminal,read_cell(label_dir/file,last)*.05,
+                           cfg.train_label_role_sha256));
+  const auto absurd=run_named(dir,cfg,"absurd"); ASSERT_TRUE(absurd.ok) << absurd.error;
+  const auto role_result=read_json(dir.path/"absurd"/"summary.json").at("roles").at(0);
+  const std::array<u64,3> straddling{5,21,33};
+  ASSERT_EQ(role_result.at("candidates").size(),2U);
+  for (usize c=0;c<2;++c) {
+    const auto& row=role_result.at("candidates").at(c);
+    for (usize k=0;k<3;++k) {
+      const auto& now=row.at("horizons").at(k);
+      const auto& before=row.at("ic_missing_exit_v1").at("horizons").at(k);
+      EXPECT_EQ(now.at("coverage").at("terminal_imputed_pairs"),0) << c << k;
+      const auto& guarded=now.at("coverage").at("guard_excluded_pairs");
+      EXPECT_EQ(guarded.get<u64>()-before.at("coverage").at("guard_excluded_pairs").get<u64>(),
+                straddling[k]) << c << k;
+      EXPECT_EQ(now.at("coverage").at("finite_label_pairs"),
+                before.at("coverage").at("finite_label_pairs")) << c << k;
+      EXPECT_EQ(now.at("rank"),before.at("rank")) << c << k;
+      EXPECT_EQ(now.at("pearson"),before.at("pearson")) << c << k;
+    }
+  }
+}
+// Frozen TRAIN: a --label-terminal source records both roles' label role pins; a validation-only
+// resume must carry the flag, may omit TRAIN's pin (taken from the source, its role never opened)
+// but never differ from it, and binds the validation pin it scores with.
+TEST(IcLabelTerminal, FrozenTrainResumeBindsTheLabelRolePins) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  // Each label role: a copy of its role declaring applied delisting returns (it adds no session).
+  for (const std::string name:{"train","validation"}) {
+    std::filesystem::copy(dir.path/name,dir.path/(name+"_label"),std::filesystem::copy_options::recursive);
+    auto& path=name=="train"?cfg.train_label_role:cfg.validation_label_role;
+    auto& sha=name=="train"?cfg.train_label_role_sha256:cfg.validation_label_role_sha256;
+    path=(dir.path/(name+"_label")/"manifest.json").string();
+    ASSERT_TRUE(returns_applied(path,true,sha));
+  }
+  cfg.label_terminal="imputed-v1";
+  const auto source=run_named(dir,cfg,"source"); ASSERT_TRUE(source.ok) << source.error;
+  EXPECT_EQ(read_json(dir.path/"source"/"recipe.json").at("label_role_manifest_sha256"),
+            Json({{"train",cfg.train_label_role_sha256},{"validation",cfg.validation_label_role_sha256}}));
+  auto resume=cfg; resume.orientations_path=(dir.path/"source"/"orientations.json").string();
+  resume.orientations_sha256=file_sha(resume.orientations_path);
+  const auto resumed=run_named(dir,resume,"resumed"); ASSERT_TRUE(resumed.ok) << resumed.error;
+  EXPECT_EQ(file_sha(dir.path/"resumed"/"validation_daily_ic.csv"),
+            file_sha(dir.path/"source"/"validation_daily_ic.csv"));
+  auto train_free=resume; train_free.train_label_role.clear(); train_free.train_label_role_sha256.clear();
+  const auto freed=run_named(dir,train_free,"train_free"); ASSERT_TRUE(freed.ok) << freed.error;
+  EXPECT_EQ(file_sha(dir.path/"train_free"/"validation_daily_ic.csv"),
+            file_sha(dir.path/"source"/"validation_daily_ic.csv"));
+  // Fix round 1 (review S2 #4): a resume records only its scored role's pin; the unscored TRAIN's
+  // (optional, empty or not) is never written, so both resumes write the same recipe bytes.
+  EXPECT_EQ(read_json(dir.path/"resumed"/"recipe.json").at("label_role_manifest_sha256"),
+            Json({{"validation",cfg.validation_label_role_sha256}}));
+  EXPECT_EQ(file_sha(dir.path/"train_free"/"recipe.json"),
+            file_sha(dir.path/"resumed"/"recipe.json"));
+  auto other=resume; other.train_label_role_sha256=std::string(64,'1');
+  expect_early_refusal(dir,other,"other_pin","frozen TRAIN label role pin differs");
+  auto dropped=resume; dropped.label_terminal.clear();
+  dropped.train_label_role.clear(); dropped.train_label_role_sha256.clear();
+  dropped.validation_label_role.clear(); dropped.validation_label_role_sha256.clear();
+  expect_early_refusal(dir,dropped,"dropped","frozen TRAIN method/statistical settings/role pins differ");
+  auto no_validation_pin=resume;
+  no_validation_pin.validation_label_role.clear(); no_validation_pin.validation_label_role_sha256.clear();
+  expect_early_refusal(dir,no_validation_pin,"no_validation_pin","needs a pinned label role for every scored role");
+}
+// Ruling S2-3: with --candidate-cache the missing-exit-v1 IC beside --label-terminal is cached under
+// its own IC-result scope (keyed label_terminal = missing-exit-v1), apart from both the imputed
+// scope and the flag-absent one, which a label-terminal run never writes. A warm run hits both and
+// reproduces an uncached run; under --no-composition a candidate with both IC results cached is
+// never loaded, and one whose missing-exit-v1 entry is gone loads its signal again.
+TEST(IcLabelTerminal, MissingExitIcIsCachedUnderItsOwnScope) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(terminal_fixture(dir,cfg));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  auto plain_cfg=without_terminal(cfg);
+  const auto plain=run_named(dir,plain_cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  const auto plain_summary=dir.path/"plain"/"summary.json";
+  const auto plain_scope=read_json(plain_summary).at("roles").at(0).at("candidate_cache").at("ic_results");
+  const auto signal_dir=cache_entry(plain_summary,"train","volume_level").sidecar.parent_path();
+  const auto default_dir=signal_dir/plain_scope.at("subdirectory").get<std::string>();
+  std::vector<std::pair<std::filesystem::path,std::vector<char>>> default_entries;
+  for (const auto& entry:std::filesystem::directory_iterator(default_dir))
+    default_entries.emplace_back(entry.path(),file_bytes(entry.path()));
+  ASSERT_EQ(default_entries.size(),2U);
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto warm=run_named(dir,cfg,"warm"); ASSERT_TRUE(warm.ok) << warm.error;
+  auto uncached=cfg; uncached.candidate_cache_directory.clear();
+  const auto reference=run_named(dir,uncached,"uncached"); ASSERT_TRUE(reference.ok) << reference.error;
+  const auto reference_role=read_json(dir.path/"uncached"/"summary.json").at("roles").at(0);
+  std::string imputed_subdirectory,legacy_subdirectory;
+  for (const std::string name:{"cold","warm"}) {
+    const auto role_result=read_json(dir.path/name/"summary.json").at("roles").at(0);
+    const auto& scope=role_result.at("candidate_cache").at("ic_results");
+    const auto& legacy=scope.at("missing_exit_v1");
+    EXPECT_EQ(scope.at("key").at("label_terminal"),"imputed-v1");
+    EXPECT_EQ(scope.at("key").at("label_role_manifest_sha256"),cfg.train_label_role_sha256);
+    EXPECT_EQ(legacy.at("key").at("label_terminal"),"missing-exit-v1");
+    EXPECT_FALSE(legacy.at("key").contains("label_role_manifest_sha256"));
+    imputed_subdirectory=scope.at("subdirectory").get<std::string>();
+    legacy_subdirectory=legacy.at("subdirectory").get<std::string>();
+    const std::set<std::string> distinct{imputed_subdirectory,legacy_subdirectory,
+                                         plain_scope.at("subdirectory").get<std::string>()};
+    EXPECT_EQ(distinct.size(),3U) << name;
+    EXPECT_EQ(scope.at("hits"),name=="warm"?2:0) << name;
+    EXPECT_EQ(legacy.at("hits"),name=="warm"?2:0) << name;
+    for (usize c=0;c<2;++c) {
+      const auto& row=role_result.at("candidates").at(c);
+      EXPECT_EQ(row.at("ic_missing_exit_v1_result_cache"),name=="warm"?"hit":"miss") << name << c;
+      EXPECT_EQ(row.at("ic_missing_exit_v1"),reference_role.at("candidates").at(c).at("ic_missing_exit_v1"))
+          << name << c;
+      EXPECT_EQ(ic_block(row),ic_block(reference_role.at("candidates").at(c))) << name << c;
+    }
+    for (const auto* file:{"recipe.json","orientations.json","train_daily_ic.csv","train_planned_targets.csv"})
+      EXPECT_EQ(file_sha(dir.path/name/file),file_sha(dir.path/"uncached"/file)) << name << ' ' << file;
+  }
+  EXPECT_TRUE(std::filesystem::exists(signal_dir/legacy_subdirectory/(level_stem()+".json")));
+  // The flag-absent scope is untouched: the same two entries, byte for byte.
+  usize still=0;
+  for (const auto& entry:std::filesystem::directory_iterator(default_dir)) {
+    ++still;
+    const auto it=std::find_if(default_entries.begin(),default_entries.end(),
+                               [&](const auto& e) { return e.first==entry.path(); });
+    ASSERT_NE(it,default_entries.end()) << entry.path();
+    EXPECT_EQ(file_bytes(entry.path()),it->second) << entry.path();
+  }
+  EXPECT_EQ(still,2U);
+  // Fix round 1 (review S2 #7): a stale record planted in the missing-exit-v1 scope (the
+  // flag-absent run's record of the same signal) is refused, never served; restored, it serves.
+  const auto legacy_entry=signal_dir/legacy_subdirectory/(level_stem()+".json");
+  const auto kept_record=file_bytes(legacy_entry); ASSERT_FALSE(kept_record.empty());
+  ASSERT_TRUE(write_bytes(legacy_entry,file_bytes(default_dir/(level_stem()+".json"))));
+  const auto planted=run_named(dir,cfg,"planted"); EXPECT_FALSE(planted.ok);
+  EXPECT_NE(planted.error.find("candidate IC cache entry mismatch: volume_level"),std::string::npos)
+      << planted.error;
+  ASSERT_TRUE(write_bytes(legacy_entry,kept_record));
+  const auto served=run_named(dir,cfg,"served"); ASSERT_TRUE(served.ok) << served.error;
+  EXPECT_EQ(read_json(dir.path/"served"/"summary.json").at("roles").at(0).at("candidate_cache")
+                .at("ic_results").at("missing_exit_v1").at("hits"),2);
+  // --no-composition: both IC results cached, so no payload is loaded (each is tampered at equal
+  // size: a load would refuse on its SHA-256).
+  for (const std::string id:{"volume_level","volume_rank"}) {
+    const auto payload=cache_entry(dir.path/"cold"/"summary.json","train",id).payload;
+    auto bytes=file_bytes(payload); ASSERT_EQ(bytes.size(),D*N*sizeof(f64)) << id;
+    bytes[8*N*100]=static_cast<char>(bytes[8*N*100]^1); ASSERT_TRUE(write_bytes(payload,bytes));
+  }
+  auto screen=cfg; screen.no_composition=true;
+  const auto screened=run_named(dir,screen,"screen"); ASSERT_TRUE(screened.ok) << screened.error;
+  EXPECT_NE(screened.log.find("IC cache-hit volume_rank role=train layout=v2 payload=not-loaded ic_result=hit"),
+            std::string::npos) << screened.log;
+  EXPECT_EQ(read_json(dir.path/"screen"/"summary.json").at("roles").at(0).at("verify_bytes"),0);
+  // Without its missing-exit-v1 entry the candidate's signal must load (and here refuses).
+  ASSERT_TRUE(std::filesystem::remove(signal_dir/legacy_subdirectory/(level_stem()+".json")));
+  const auto rescore=run_named(dir,screen,"rescore"); EXPECT_FALSE(rescore.ok);
+  EXPECT_NE(rescore.error.find("candidate cache payload SHA256 mismatch: "+level_stem()+".f64"),std::string::npos)
+      << rescore.error;
+}
+// Ruling P13 (the IC half of the C++ seal consumer): a pinned fields manifest built under this
+// build's research seal (seal.exclusive_end 2024-01-01) is bound; one without a seal (or a seal block
+// without exclusive_end) is a legacy manifest, accepted and logged per role; a manifest built under
+// another seal, or with a malformed seal block, refuses before any payload or output.
+TEST(IcFieldsSeal, ManifestSealMustBeThisBuildsOrAbsent) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  const auto sealed=[&](const Json& block) {
+    auto out=cfg;
+    for (auto [directory,sha]:{std::pair{&out.train_fields_directory,&out.train_fields_sha256},
+                               std::pair{&out.validation_fields_directory,&out.validation_fields_sha256}}) {
+      const auto path=std::filesystem::path(*directory)/"manifest.json";
+      auto j=read_json(path);
+      if (block.is_null()) j.erase("seal"); else j["seal"]=block;
+      EXPECT_TRUE(json_file(path,j,*sha));
+    }
+    return out;
+  };
+  const auto absent=run_named(dir,cfg,"absent"); ASSERT_TRUE(absent.ok) << absent.error;
+  for (const std::string role_name:{"train","validation"})
+    EXPECT_NE(absent.log.find("IC fields-seal role="+role_name+" seal=absent accepted-as-legacy-manifest"),
+              std::string::npos) << absent.log;
+  auto matching=sealed({{"exclusive_end","2024-01-01"},{"window_id","research-window-v2"}});
+  const auto match=run_named(dir,matching,"match"); ASSERT_TRUE(match.ok) << match.error;
+  EXPECT_EQ(match.log.find("seal=absent"),std::string::npos);
+  for (const auto* file:{"train_daily_ic.csv","validation_daily_ic.csv"})
+    EXPECT_EQ(file_sha(dir.path/"match"/file),file_sha(dir.path/"absent"/file)) << file;
+  expect_early_refusal(dir,sealed({{"exclusive_end","2025-01-01"}}),"later_seal",
+      "fields manifest was built under the seal \"2025-01-01\"; this build's seal is 2024-01-01");
+  expect_early_refusal(dir,sealed({{"exclusive_end",20240101}}),"numeric_seal","fields manifest was built under the seal");
+  expect_early_refusal(dir,sealed("2024-01-01"),"flat_seal","fields manifest seal block is not an object");
+  auto keyless=sealed({{"window_id","research-window-v2"}});
+  const auto legacy=run_named(dir,keyless,"keyless"); ASSERT_TRUE(legacy.ok) << legacy.error;
+  EXPECT_NE(legacy.log.find("IC fields-seal role=train seal=absent accepted-as-legacy-manifest"),std::string::npos);
 }
 } // namespace

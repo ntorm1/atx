@@ -3,6 +3,8 @@
 #include <limits>
 #include <string>
 
+#include "atx/engine/alpha/op_traits.hpp" // P9 S2: lookahead_safe derived per opcode
+
 namespace atx::engine::alpha {
 
 namespace detail {
@@ -250,6 +252,11 @@ Library::Library() {
   ops_.assign(builtins.begin(), builtins.end());
   ops_.insert(ops_.end(), lit.begin(), lit.end());
   ops_.insert(ops_.end(), formulaic.begin(), formulaic.end());
+  // P9 S2: the causal rail is the opcode's family (op_traits.hpp), not the row literal; the
+  // static tables keep their `true` for layout, and every Library row carries the derived value.
+  for (OpSig &sig : ops_) {
+    sig.lookahead_safe = detail::op_lookahead_safe(sig.opcode);
+  }
 }
 
 atx::core::Status Library::register_op(const OpSig &sig) {
@@ -292,7 +299,10 @@ atx::core::Status Library::register_op(const OpSig &sig) {
                           std::string{"register_op: record op needs >=2 pins for '"} +
                               std::string{sig.name} + "'");
   }
-  ops_.push_back(sig);
+  // P9 S2: a user row is causal only if its opcode's family is; it may declare itself unsafe.
+  OpSig row = sig;
+  row.lookahead_safe = sig.lookahead_safe && detail::op_lookahead_safe(sig.opcode);
+  ops_.push_back(row);
   return atx::core::Ok();
 }
 

@@ -22,6 +22,7 @@ namespace ic_screen_detail {
 struct Cache {
   IcScreenConfig config;
   ResearchIcOptions options{4,false};
+  LabelTerminalRule terminal{LabelTerminalRule::MissingExitV1}; // P9 S2: the labels' exit rule
   std::array<ResearchIcCoverage,4> coverage{};
   atx::usize dates{};
   atx::usize instruments{};
@@ -60,8 +61,10 @@ using ic_screen_detail::RowScratch;
 using ic_screen_detail::Scratch;
 using Batch = xsimd::batch<f64>;
 constexpr f64 kNan = std::numeric_limits<f64>::quiet_NaN();
-constexpr f64 kMinCoverage = 0.8;
+// P9 S2 (DS-4): the coverage gates read IcScreenConfig::min_coverage (default
+// kDefaultIcMinCoverage, the former kMinCoverage = .8, so the default keeps every bit).
 constexpr f64 kDirectionalSe = 1.0; // weak evidence passes, even below the effect floor
+constexpr usize kNoSession = std::numeric_limits<usize>::max();
 
 [[nodiscard]] bool checked_add_bytes(atx::u64& total, usize count, atx::u64 width) noexcept {
   const auto n = static_cast<atx::u64>(count);
@@ -147,6 +150,10 @@ void rank_values(std::span<const f64> values, std::span<f64> ranks,
   if (active_horizons==0 || active_horizons>4)
     return Err(ErrorCode::InvalidArgument,"IC research: active horizon count");
   if (cfg.rule == IcScreenRule::DisabledV1) return Ok();
+  if (!std::isfinite(cfg.min_coverage) || cfg.min_coverage <= 0.0 || cfg.min_coverage > 1.0)
+    return Err(ErrorCode::InvalidArgument, "IC screen: min_coverage must be in (0, 1]");
+  if (cfg.hac_rule != IcHacRule::Bartlett2hV1 && cfg.hac_rule != IcHacRule::HorizonAwareV3)
+    return Err(ErrorCode::InvalidArgument, "IC screen: unknown HAC rule");
   if (panel.instruments() == 0 || panel.dates() == 0 ||
       panel.dates() > std::numeric_limits<usize>::max() / panel.instruments())
     return Err(ErrorCode::InvalidArgument, "IC screen: invalid panel geometry");
@@ -200,9 +207,14 @@ void rank_values(std::span<const f64> values, std::span<f64> ranks,
   for (const f64 v : daily) if (std::isfinite(v)) { sum += v; ++out.valid_dates; }
   if (out.valid_dates == 0U) return out;
   out.mean = sum / static_cast<f64>(out.valid_dates);
-  out.hac_lag = std::max(horizon * 2U, eval::hac::newey_west_rule_of_thumb_lag(daily.size()));
+  const bool horizon_aware = cfg.hac_rule == IcHacRule::HorizonAwareV3;
+  const usize rule_of_thumb = eval::hac::newey_west_rule_of_thumb_lag(daily.size());
+  // The lag the rule asks for (HorizonAwareV3 at h == 1 takes the data-driven Newey-West
+  // automatic lag below; its rule-of-thumb pilot stands in for this length check).
+  if (!horizon_aware) out.hac_lag = std::max(horizon * 2U, rule_of_thumb);
+  else out.hac_lag = horizon > 1U ? std::max(horizon - 1U, rule_of_thumb) : rule_of_thumb;
   if (out.valid_dates < cfg.min_dates || daily.size() <= out.hac_lag + 1U ||
-      static_cast<f64>(out.valid_dates) < kMinCoverage * static_cast<f64>(daily.size())) return out;
+      static_cast<f64>(out.valid_dates) < cfg.min_coverage * static_cast<f64>(daily.size())) return out;
   // Additional conservative heuristic: four fixed chronological segment means.
   // This is NOT a calibrated guarantee of regime-specific alpha recall. Sparse
   // segments cannot certify a practical null under either active rule.
@@ -212,21 +224,30 @@ void rank_values(std::span<const f64> values, std::span<f64> ranks,
     f64 segment = 0.0; usize count = 0;
     for (usize d = begin; d < end; ++d) if (std::isfinite(daily[d])) { segment += daily[d]; ++count; }
     if (count < std::max(usize{2}, cfg.min_dates / 4U) ||
-        static_cast<f64>(count) < kMinCoverage * static_cast<f64>(end - begin)) return out;
+        static_cast<f64>(count) < cfg.min_coverage * static_cast<f64>(end - begin)) return out;
     out.max_segment_abs_ic = std::max(out.max_segment_abs_ic, std::abs(segment / static_cast<f64>(count)));
   }
   auto work = influence.first(daily.size());
   for (usize d = 0; d < daily.size(); ++d)
     work[d] = std::isfinite(daily[d]) ? daily[d] - out.mean : 0.0;
-  const auto hac = eval::hac::mean_inference(work, eval::hac::Kernel::BartlettV1, out.hac_lag, true);
-  if (!hac.defined) return out;
-  out.standard_error = hac.se * static_cast<f64>(daily.size()) / static_cast<f64>(out.valid_dates);
-  // A second no-autocorrelation bound prevents estimated negative serial
-  // covariance from making a noisy signal look spuriously precise.
-  const auto iid = eval::hac::mean_inference(work, eval::hac::Kernel::BartlettV1, 0U, true);
-  if (!iid.defined) return out;
-  out.standard_error = std::max(out.standard_error,
-      iid.se * static_cast<f64>(daily.size()) / static_cast<f64>(out.valid_dates));
+  if (horizon_aware) {
+    // P9 S2: eval/hac.hpp's combine-path rule on the same influence series and scaling, no
+    // IID floor (that rule has none), the lag actually used recorded.
+    const auto hac = eval::hac::mean_tstat(work, eval::hac::TStatRule::HorizonAwareV3, horizon);
+    if (!hac.defined) return out;
+    out.hac_lag = hac.lag;
+    out.standard_error = hac.se * static_cast<f64>(daily.size()) / static_cast<f64>(out.valid_dates);
+  } else {
+    const auto hac = eval::hac::mean_inference(work, eval::hac::Kernel::BartlettV1, out.hac_lag, true);
+    if (!hac.defined) return out;
+    out.standard_error = hac.se * static_cast<f64>(daily.size()) / static_cast<f64>(out.valid_dates);
+    // A second no-autocorrelation bound prevents estimated negative serial
+    // covariance from making a noisy signal look spuriously precise.
+    const auto iid = eval::hac::mean_inference(work, eval::hac::Kernel::BartlettV1, 0U, true);
+    if (!iid.defined) return out;
+    out.standard_error = std::max(out.standard_error,
+        iid.se * static_cast<f64>(daily.size()) / static_cast<f64>(out.valid_dates));
+  }
   out.upper_abs_ic = std::abs(out.mean) + cfg.confidence_multiplier * out.standard_error;
   out.suggestive_direction = std::abs(out.mean) >= kDirectionalSe * out.standard_error;
   out.defined = std::isfinite(out.upper_abs_ic) && out.standard_error > 0.0;
@@ -240,7 +261,7 @@ void evaluate_row(std::span<const f64> signal, std::span<const f64> labels,
                   f64& pearson, f64& rank,atx::u64* paired=nullptr) noexcept {
   pearson = kNan; rank = kNan;
   const bool cached_admitted=cached_names >= cfg.min_names &&
-      static_cast<f64>(cached_names) >= kMinCoverage * static_cast<f64>(eligible);
+      static_cast<f64>(cached_names) >= cfg.min_coverage * static_cast<f64>(eligible);
   if (!cached_admitted && paired==nullptr) return; // exact old fast refusal path
   usize count = 0;
   bool same_names = true;
@@ -254,8 +275,8 @@ void evaluate_row(std::span<const f64> signal, std::span<const f64> labels,
   }
   if (paired!=nullptr) *paired+=static_cast<atx::u64>(count);
   if (!cached_admitted || count < cfg.min_names ||
-      static_cast<f64>(count) < kMinCoverage * static_cast<f64>(cached_names) ||
-      static_cast<f64>(count) < kMinCoverage * static_cast<f64>(eligible)) {
+      static_cast<f64>(count) < cfg.min_coverage * static_cast<f64>(cached_names) ||
+      static_cast<f64>(count) < cfg.min_coverage * static_cast<f64>(eligible)) {
     ranked_count = 0U;
     return;
   }
@@ -280,18 +301,60 @@ void evaluate_row(std::span<const f64> signal, std::span<const f64> labels,
 } // namespace
 
 namespace {
+// P9 S2 (LabelTerminalRule::ImputedV1): the first session in (entry, end] where the label role
+// prices instrument i while the scored role does not -- the termination session a role built with
+// delisting returns adds (present at T = L+1 at close[L] x (1 + r)) -- or kNoSession.
+[[nodiscard]] usize terminal_session(const alpha::Panel& role, const alpha::Panel& label,
+                                     usize entry, usize end, usize i) noexcept {
+  for (usize s = entry + 1U; s <= end; ++s)
+    if (!role.in_universe(s, i) && label.in_universe(s, i)) return s;
+  return kNoSession;
+}
+// ImputedV1's label-only price column and the label panel's return-guard prefix (both empty
+// otherwise), after the geometry checks. With a scored guard `bad`, the label guard is required
+// (fix round 1): it covers the terminal step L -> T, which the scored guard cannot see.
+struct TerminalInputs {
+  std::span<const f64> prices;
+  std::span<const atx::u32> bad;
+};
+atx::core::Result<TerminalInputs> terminal_inputs(const alpha::Panel& panel,
+                                                  std::span<const atx::u32> bad,
+                                                  const ResearchIcTerminal& terminal) {
+  if (terminal.rule == LabelTerminalRule::MissingExitV1) return Ok(TerminalInputs{});
+  if (terminal.rule != LabelTerminalRule::ImputedV1)
+    return Err(ErrorCode::InvalidArgument, "IC research: unknown label terminal rule");
+  if (terminal.label == nullptr || terminal.label->dates() != panel.dates() ||
+      terminal.label->instruments() != panel.instruments())
+    return Err(ErrorCode::InvalidArgument,
+               "IC research: imputed-v1 labels need a label panel on the scored panel's axes");
+  const auto label_bad = terminal.label_bad_return_prefix;
+  if (label_bad.size() != bad.size())
+    return Err(ErrorCode::InvalidArgument,
+               "IC research: imputed-v1 labels need the label panel's return guard beside the "
+               "scored one (same shape)");
+  const usize n = panel.instruments();
+  for (usize k = n; k < label_bad.size(); ++k)
+    if (label_bad[k] < label_bad[k - n])
+      return Err(ErrorCode::InvalidArgument,
+                 "IC research: the label panel's excluded-return prefix decreases");
+  ATX_TRY(const auto fid, terminal.label->field_id(terminal.price_field));
+  return Ok(TerminalInputs{terminal.label->field_all(fid), label_bad});
+}
 atx::core::Result<std::shared_ptr<const Cache>> prepare_cache(
     const alpha::Panel& panel, const IcScreenConfig& config, const ResearchIcOptions& options,
     std::span<const atx::u8> member, std::span<const atx::u32> bad,
-    std::string_view price_field) {
+    std::string_view price_field, const ResearchIcTerminal& terminal) {
   static_assert(max_research_ic_workers == 16, "keep the refusal text in step with the bound");
   if (options.workers == 0 || options.workers > max_research_ic_workers)
     return Err(ErrorCode::InvalidArgument, "IC research: workers must be explicit 1..16");
   const auto valid = validate(panel, config, member, bad,options.active_horizons);
   if (!valid) return Err(valid.error());
+  ATX_TRY(const auto imputing, terminal_inputs(panel, bad, terminal));
+  const std::span<const f64> label_prices = imputing.prices;
+  const std::span<const atx::u32> label_bad = imputing.bad;
   auto data = std::make_shared<Cache>();
   data->config = config; data->dates = panel.dates(); data->instruments = panel.instruments();
-  data->options=options;
+  data->options=options; data->terminal=terminal.rule;
   if (config.rule == IcScreenRule::DisabledV1) return Ok(std::shared_ptr<const Cache>{std::move(data)});
   auto& cfg = data->config;
   if (cfg.window_end == 0U) cfg.window_end = panel.dates();
@@ -341,15 +404,32 @@ atx::core::Result<std::shared_ptr<const Cache>> prepare_cache(
         const bool missing_entry=options.require_endpoint_presence && !panel.in_universe(entry,i);
         const bool missing_exit=options.require_endpoint_presence && !panel.in_universe(end,i);
         coverage.missing_entry_pairs+=missing_entry; coverage.missing_exit_pairs+=missing_exit;
-        if (missing_entry || missing_exit) continue;
-        if (!bad.empty() && bad[end*n+i]!=bad[entry*n+i]) { ++coverage.guard_excluded_pairs; continue; }
+        if (missing_entry) continue;
+        // MissingExitV1 (the default): no label. ImputedV1 (P9 S2): a name the label role
+        // terminates inside (entry, end] exits at its imputed terminal close and holds cash after.
+        // The terminal session may be `end` itself, so `imputed` (not exit != end) picks the panel.
+        usize exit = end;
+        bool imputed = false;
+        if (missing_exit) {
+          if (label_prices.empty()) continue;
+          exit = terminal_session(panel, *terminal.label, entry, end, i);
+          if (exit == kNoSession) continue;
+          imputed = true;
+        }
+        // An imputed exit is also guarded on the label panel (its terminal step L -> T).
+        if (!bad.empty() && (bad[exit*n+i]!=bad[entry*n+i] ||
+                             (imputed && label_bad[exit*n+i]!=label_bad[entry*n+i]))) {
+          ++coverage.guard_excluded_pairs; continue;
+        }
         const f64 decision = prices[d * n + i];
-        const f64 from = prices[entry * n + i], to = prices[end * n + i];
+        const f64 from = prices[entry * n + i];
+        const f64 to = imputed ? label_prices[exit * n + i] : prices[end * n + i];
         if (!std::isfinite(decision) || decision <= 0.0 || !std::isfinite(from) ||
             !std::isfinite(to) || from <= 0.0 || to <= 0.0) { ++coverage.invalid_price_pairs; continue; }
         const f64 ret = to / from - 1.0;
         if (!std::isfinite(ret)) { ++coverage.nonfinite_return_pairs; continue; }
         labels[i] = ret; ++data->names[k][row]; ++coverage.finite_label_pairs;
+        coverage.terminal_imputed_pairs+=imputed;
       }
       rank_values(labels, std::span{data->ranks[k]}.subspan(row * n, n), order);
     }
@@ -361,14 +441,15 @@ atx::core::Result<IcScreenCache> prepare_ic_screen(
     const alpha::Panel& panel,const IcScreenConfig& config,std::span<const atx::u8> member,
     std::span<const atx::u32> bad,std::string_view price_field) {
   IcScreenCache out;
-  ATX_TRY(out.data_,prepare_cache(panel,config,{4,false},member,bad,price_field));
+  ATX_TRY(out.data_,prepare_cache(panel,config,{4,false},member,bad,price_field,ResearchIcTerminal{}));
   return Ok(std::move(out));
 }
 atx::core::Result<ResearchIcCache> prepare_research_ic(
     const alpha::Panel& panel,const IcScreenConfig& config,const ResearchIcOptions& options,
-    std::span<const atx::u8> member,std::span<const atx::u32> bad,std::string_view price_field) {
+    std::span<const atx::u8> member,std::span<const atx::u32> bad,std::string_view price_field,
+    const ResearchIcTerminal& terminal) {
   ResearchIcCache out;
-  ATX_TRY(out.data_,prepare_cache(panel,config,options,member,bad,price_field));
+  ATX_TRY(out.data_,prepare_cache(panel,config,options,member,bad,price_field,terminal));
   return Ok(std::move(out));
 }
 
@@ -432,7 +513,8 @@ bool ic_screen_cache_matches(const IcScreenCache& cache, const alpha::Panel& pan
          prepared.maturity_end == maturity && prepared.min_names == config.min_names &&
          prepared.min_dates == config.min_dates && prepared.practical_abs_ic == config.practical_abs_ic &&
          prepared.confidence_multiplier == config.confidence_multiplier &&
-         prepared.max_cache_bytes == config.max_cache_bytes;
+         prepared.max_cache_bytes == config.max_cache_bytes &&
+         prepared.min_coverage == config.min_coverage && prepared.hac_rule == config.hac_rule;
 }
 
 namespace {
@@ -624,6 +706,25 @@ std::string_view ic_screen_rule_name(IcScreenRule rule) noexcept {
   case IcScreenRule::EquivalenceV3: return "equivalence-v3";
   }
   return "unknown";
+}
+std::string_view ic_hac_rule_name(IcHacRule rule) noexcept {
+  switch (rule) {
+  case IcHacRule::Bartlett2hV1: return "bartlett-2h-v1";
+  case IcHacRule::HorizonAwareV3: return "horizon-aware-v3";
+  }
+  return "unknown";
+}
+std::string_view label_terminal_rule_name(LabelTerminalRule rule) noexcept {
+  switch (rule) {
+  case LabelTerminalRule::MissingExitV1: return "missing-exit-v1";
+  case LabelTerminalRule::ImputedV1: return "imputed-v1";
+  }
+  return "unknown";
+}
+IcScreenEstimate estimate_daily_ic(std::span<const f64> daily, usize horizon,
+                                   const IcScreenConfig& config) {
+  std::vector<f64> influence(daily.size());
+  return estimate(daily, horizon, config, influence);
 }
 usize ic_screen_simd_width() noexcept { return Batch::size; }
 atx::engine::BuildFlavor ic_screen_build_flavor() noexcept { return ATX_ENGINE_BUILD_FLAVOR; }
