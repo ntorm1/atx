@@ -1,5 +1,24 @@
 # tier1-v4 controller handoff
 
+Latest continuation: no new financial unit/audit; root has no actual job live.
+Readinessv10 remains latest approved. New distributed NYSE originals captured:
+2Nasdaq200/337373B and2BLS403/2646B, four nonSEC attempts/no retry/redirect,
+guard7s/37982208B. Explicit Nasdaq minute-resolution publication labels parse
+2020-12-28T20Z and2021-12-27T14:30Z. Full10/11row holidaytables and2/3earlyclose
+paragraphs match ICE;2020sharedBWlinktrue,2021ICElinkabsent/false. Failed strict
+preflightv1 preserved;v2 emits comparison diagnostic, no source admission.
+Independent metadata reviewPASS/PASS in review-p9-source-intake-v2.md.
+AllICEclocksNULL/calendaradmittedfalse; fullweekday/amendments/rights open.
+
+Exact offline nativeuv unreachable-cache prune completed5s/129912832B:
+202files/4.1MiB reported removed,1875968B observed free change. Normal in-use
+checks preserved; noforce/ci/installedenv/source/unknownscratch deletion.
+Sixcleanup observations total6680559616B, not current free-space attribution.
+Disk remains<40GiB; financialaudit7v2/create8 and familyfixtures held.
+T17new French-source fixture failed at original internal40GiB floor, no native
+replay/materialization; nextattempt mustalso include outerdiskfloor.
+See p9-original-source-intake-v2-report.md and new diskpreflightv5 metadata.
+
 ## Current: continuation stopped; eight retained, seven independently audited
 
 LATEST operational state: root has NO actual job live. Observerv8/72039 PASSED

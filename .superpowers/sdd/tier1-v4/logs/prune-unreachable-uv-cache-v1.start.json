@@ -1,0 +1,24 @@
+{
+    "status":  "STARTED_NOT_SUCCESS",
+    "cache_path":  "C:\\Users\\natha\\AppData\\Local\\uv\\cache",
+    "operation":  "uv cache prune: unreachable objects only, normal in-use checks",
+    "authorization":  "Explicit user request to clean unnecessary artifacts and temporary caches",
+    "original_sources_targeted":  false,
+    "installed_environments_targeted":  false,
+    "force":  false,
+    "ci_mode":  false,
+    "network_allowed":  false,
+    "command":  [
+                    "C:\\Users\\natha\\.local\\bin\\uv.exe",
+                    "--offline",
+                    "--no-config",
+                    "--no-progress",
+                    "cache",
+                    "prune",
+                    "--cache-dir",
+                    "C:\\Users\\natha\\AppData\\Local\\uv\\cache"
+                ],
+    "uv_executable_sha256":  "c5a583d5f1f6d055fc1c32c87d8eceee90edc69a5b9af5da70811befdfc04880",
+    "started_at_utc":  "2026-10-04T18:01:38.0717749Z",
+    "free_before_bytes":  38096031744
+}
