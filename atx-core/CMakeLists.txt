@@ -76,6 +76,7 @@ add_library(atx-core ${ATX_LIB_TYPE}
     src/io/parquet_writer.cpp
     src/io/zip_reader.cpp
     src/db/sqlite.cpp
+    src/db/connection.cpp
     src/external/dbn.cpp
     src/external/databento.cpp
     src/external/databento_pull.cpp

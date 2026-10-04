@@ -47,6 +47,7 @@ add_executable(atx-core-tests
     frame_test.cpp
     parquet_test.cpp
     db_sqlite_test.cpp
+    db_connection_test.cpp
     dbn_test.cpp
     parquet_writer_test.cpp
     databento_test.cpp
