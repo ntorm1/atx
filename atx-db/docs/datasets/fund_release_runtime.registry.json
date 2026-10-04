@@ -1,0 +1,21 @@
+{
+  "stage": "fundamentals_release_v1",
+  "schema": "atx.fundamentals-release/v1",
+  "runtime_integration": "fund-release-runtime-r23-v1",
+  "module": "atx_db.alpha_panel.fund_release_runtime",
+  "execution_contract": "atx-db/docs/datasets/fund_release_runtime.execution.json",
+  "manifest": "fundamentals_release_v1/generations/<explicit-generation>/manifest.json",
+  "pointer": "fundamentals_release_v1/current.json",
+  "path": "fundamentals_release_v1/generations/<explicit-generation>/fundamentals_v11",
+  "semantic_producer": "fundamentals_v11",
+  "runtime_proof": "fundamentals_release_v1/runtime-provenance/<explicit-generation>.json",
+  "keys": {"events": ["cik", "accession"], "catalog": ["cik", "accession"], "sic": ["cik", "accession"], "history": ["cik", "item", "period_end", "fiscal_period", "accession"]},
+  "clock": "available_at",
+  "as_of_sql": "SELECT * FROM read_parquet('<explicit-generation>/fundamentals_v11/events.parquet') WHERE available_at < CAST(ts AS TIMESTAMP) QUALIFY row_number() OVER (PARTITION BY cik ORDER BY available_at DESC, accession DESC) = 1",
+  "consumer_binding": "Caller-pinned runtime contract/code/native snapshot; complete native public validation under file-backed256MB one-thread connection; preserve exact actual outer/native manifest and all output SHA/size with quiescent producers",
+  "source_quality_certified": false,
+  "status": "NOT_PRODUCTION_READY",
+  "registered": false,
+  "task": "Task17 R23 runtime checkpoint only; full catalog/stagelake/lake verify/parity pending",
+  "doc": "atx-db/docs/datasets/fund_release_runtime.md"
+}
