@@ -130,3 +130,74 @@ review of this helper and finalized Task15 code is still required. All original
 source/population/manual/statistical/consumer gates remain open; Task17 must wire
 individual native cell qualification and all required source-derived serving
 definitions. R21/pre2023 and original terminal/distribution conventions remain.
+
+## R26 round2 bounded text consumption efficiency correction
+
+Controller delegated this correction after Task17 identified that the frozen
+native text iterator rechecks the complete original source plan before and after
+every <=64-row batch. This stays within existing Task17 R26 repair2/5; Task15,
+Task16, the native producer and all economic/qualification gates are unchanged.
+
+The helper retains its original full `T.read_native_generation` admission and
+native derivation. `iter_rows` deep-copies the admitted binding, then performs
+every original native iterator invariant before/finally one bounded consumption:
+manifest identity, source-plan physical metadata pin, complete files/code/runtime
+equality, unchanged `filing_text_native.check_plan`, and selected product pin.
+Existing complete helper dependency/review/product checks and connection guard
+also remain before/finally. Arrow batches and typed `to_pylist` rows are unchanged;
+there is no per-batch complete-original scan. Final checks execute on close/error,
+and no successful consumption proof is minted for interrupted reads.
+
+Two new source-shaped direct regressions retain the original six-filing SEC
+fixture and its original submission/body/Accepted-index receipts, full immutable
+publication and actual native public replay. Six single-row batches must equal
+the complete typed product with exactly two `N.check_plan` calls; mutation of
+the suspended caller binding cannot redirect the copied reader. A separate
+early-close test mutates an original filing body and must refuse close after
+the second complete check. These are offline engineering evidence only; actual
+coverage/source/public-clock/economic/consumer proof stays pending. Focused
+final-code execution results follow; no fixture PASS is asserted without execution.
+
+Root authorized precisely these two singleton invocations, one at a time:
+
+```powershell
+$env:PYTHONPATH='C:/atx/atx-db/src'; $env:OPENBLAS_NUM_THREADS='1'; atx-db/.venv/Scripts/python.exe .superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.6 --wait-minutes 1 --disk-path C:/atx --min-free-disk-gb 40 -- atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_private_tier1_family_sources.py::test_text_many_batches_constant_checks_and_frozen_binding -n 0 -o addopts='' -p no:cacheprovider -q
+$env:PYTHONPATH='C:/atx/atx-db/src'; $env:OPENBLAS_NUM_THREADS='1'; atx-db/.venv/Scripts/python.exe .superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.6 --wait-minutes 1 --disk-path C:/atx --min-free-disk-gb 40 -- atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_private_tier1_family_sources.py::test_text_early_close_checks_original_source_mutation -n 0 -o addopts='' -p no:cacheprovider -q
+```
+
+Both were `refused_low_disk` before child launch, exit1/no cap hits: free
+36.52272033691406GiB and36.522274017333984GiB respectively, required40GiB.
+Receipts20261004T173719-24480.json and20261004T173728-9028.json under the
+original local guard receipt directory. Guard peaks14118912B/13996032B.
+No pytest ran, no test scratch was created, no sources were consumed and no
+guard or disk flag was changed. Lane returned immediately to root/Task17.
+Final covering execution and independent helper review remain pending; this
+correction does not supersede the prior fixture evidence or claim a new PASS.
+
+### Final changed-code covering attempts after independent disk recovery
+
+Root confirmed42.83GiB after its independently reviewed exact orphan-spill
+cleanup and authorized precisely the same two singleton commands above with
+unchanged flags; attempt tags `family-efficiency-many-v2` and
+`family-efficiency-close-v2`. No cleanup was performed by this helper author.
+
+* Many-batch:1PASS/9.89s, external guard11s, peak219705344B, no cap hits,
+  exit0; receipt20261004T183003-12452.json. All six original native typed
+  filing rows equal the immutable product across six one-row batches; complete
+  `N.check_plan` calls=2. Caller dependency/product mutation after first yield
+  cannot redirect or weaken the copied binding.
+* Early-close original-source mutation:1PASS/7.99s, external guard9s,
+  peak219930624B, no cap hits, exit0;
+  receipt20261004T183027-5136.json. Full original native admission and public
+  replay precede consumption; changing an original filing body during the
+  suspended read refuses close and executes the second complete native check.
+
+Both use the real file-backed128MB/one-thread/UTC consumer and original ordinary
+0.6GiB/40GiB flags, each under60s. No unchanged upstream suite, actual source,
+return or consumer job ran. The prior guard refusals remain NOTRUN history,
+distinct from these final-code covering results. No test temp path was printed
+or independently inventoried, so this report nominates no cleanup location;
+mutation/failure evidence is retained. Root/Task17 were notified immediately
+on terminal and the serialized lane released. The exact source/test/report are
+frozen for Task15 independent review within existing Task17 R26round2/5; these
+PASS results certify engineering only, not actual source or full goal acceptance.

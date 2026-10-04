@@ -7,6 +7,7 @@ and preserves their product semantics for catalog/golden consumers.
 from __future__ import annotations
 
 import contextlib
+import copy
 import dataclasses
 import datetime as dt
 import importlib
@@ -387,20 +388,48 @@ def iter_rows(admission, product, con, batch_size=32):
     """Native bounded products with full dependency pins around consumption."""
     if product not in admission['products'] or not 1 <= batch_size <= 64:
         raise ValueError('unsupported native product/batch size')
+    admission = copy.deepcopy(admission)
     name, spec = admission['family'], admission['spec']
     _guard(con, absolute(spec['root']))
     _recheck_admission(admission)
-    try:
+    def native_check():
         if name in ('text_features', 'classification_tnic'):
-            from . import text_features_native as T
-            yield from T.iter_native_rows(admission['validation'], product, batch_size=batch_size)
-        else:
-            import pyarrow.parquet as pq
-            for batch in pq.ParquetFile(admission['products'][product]).iter_batches(batch_size=batch_size):
-                yield from batch.to_pylist()
+            _text_consumption_check(admission['validation'], product)
+    native_check()
+    try:
+        import pyarrow.parquet as pq
+        for batch in pq.ParquetFile(admission['products'][product]).iter_batches(batch_size=batch_size):
+            yield from batch.to_pylist()
     finally:
-        _recheck_admission(admission)
-        _guard(con, absolute(spec['root']))
+        try:
+            native_check()
+        finally:
+            try:
+                _recheck_admission(admission)
+            finally:
+                _guard(con, absolute(spec['root']))
+
+
+def _text_consumption_check(admission, product):
+    """Original native iterator checks once per consumption, never per batch.
+
+    Full native derivation remains in _text/read_native_generation. This is only
+    the bounded read's immutable binding check; it grants no new qualification.
+    """
+    from . import filing_text_native as N
+    generation = Path(admission['generation'])
+    if N.pin(generation/'manifest.json')['sha256'] != admission['manifest_sha256']:
+        raise ValueError('stale reader admission')
+    manifest = json.loads(_blob(generation/'manifest.json'))
+    if N.pin(generation/'source-plan.json') != manifest['metadata_files']['source-plan.json']:
+        raise ValueError('changed admitted source plan')
+    plan = json.loads((generation/'source-plan.json').read_text())
+    if (plan['files'], plan['code'], plan['runtime']) != (admission['dependencies'], admission['code'], admission['runtime']):
+        raise ValueError('changed full admission dependencies')
+    N.check_plan(admission['source_root'], plan, admission['source_plan_sha256'])
+    path = generation/product
+    if Path(admission['products'][product]) != path or N.pin(path) != manifest['files'][product]:
+        raise ValueError('changed native product while reading')
 
 
 @contextlib.contextmanager

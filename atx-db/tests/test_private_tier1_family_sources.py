@@ -8,6 +8,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from atx_db.alpha_panel import private_tier1_family_sources as F
+from tests.test_text_features_native import native
 
 
 def write(root, name, blob):
@@ -37,6 +38,57 @@ def connection(root):
     con = duckdb.connect(str(root/'consumer.duckdb'))
     con.execute("SET memory_limit='128MB'; SET threads=1; SET TimeZone='UTC'")
     return con
+
+
+def text_admission(tmp_path, native, con):
+    from atx_db.alpha_panel import filing_text_native as N, text_features_native as T
+    source, output, plan = native
+    generation = T.publish_native(source, output, plan, N.digest(plan), unit_size=2)
+    spec = reviewed(tmp_path, 'text_features',
+                    {'source_root': str(source), 'expected_plan_sha256': N.digest(plan)},
+                    generation, F._text)
+    return F.admit('text_features', spec, con)
+
+
+def test_text_many_batches_constant_checks_and_frozen_binding(tmp_path, native, monkeypatch):
+    from atx_db.alpha_panel import filing_text_native as N
+    with connection(tmp_path) as con:
+        admission = text_admission(tmp_path, native, con)
+        expected = pq.read_table(admission['products']['text/features.parquet']).to_pylist()
+        calls = []
+        original = N.check_plan
+        def counted(*args, **kwargs):
+            calls.append(1)
+            return original(*args, **kwargs)
+        monkeypatch.setattr(N, 'check_plan', counted)
+        rows = F.iter_rows(admission, 'text/features.parquet', con, batch_size=1)
+        first = next(rows)
+        # Mutating the caller's dictionaries cannot redirect the suspended read
+        # or erase the independent final dependency checks.
+        admission['validation']['dependencies'].clear()
+        admission['dependency_pins'].clear()
+        admission['products']['text/features.parquet'] = tmp_path/'not-admitted.parquet'
+        assert [first, *rows] == expected
+        assert len(expected) == 6 and len(calls) == 2
+
+
+def test_text_early_close_checks_original_source_mutation(tmp_path, native, monkeypatch):
+    from atx_db.alpha_panel import filing_text_native as N
+    with connection(tmp_path) as con:
+        admission = text_admission(tmp_path, native, con)
+        calls = []
+        original = N.check_plan
+        def counted(*args, **kwargs):
+            calls.append(1)
+            return original(*args, **kwargs)
+        monkeypatch.setattr(N, 'check_plan', counted)
+        rows = F.iter_rows(admission, 'text/features.parquet', con, batch_size=1)
+        next(rows)
+        source = native[0]/'1-2018.htm'
+        source.write_bytes(source.read_bytes()+b' changed')
+        with pytest.raises(ValueError):
+            rows.close()
+        assert len(calls) == 2
 
 
 def terminal(root):
