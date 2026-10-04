@@ -45,8 +45,10 @@ constexpr std::array<std::string_view,11> ic_result_sources{
 // constant), the named HAC rule (default Bartlett2hV1, the old arithmetic), LabelTerminalRule
 // (default MissingExitV1, the old labels) and estimate_daily_ic. At their defaults every scored
 // bit is unchanged; a non-default value is keyed in the IC-result scope (ic_cache_scope).
+// S2 fix round 1 re-pinned WITHOUT a bump (ruling S2-1 again): ResearchIcTerminal gains the label
+// panel's return-guard prefix, read only for an ImputedV1 exit (the flag-absent path is unchanged).
 constexpr std::string_view ic_result_sources_sha256=
-    "bd13574c08a61e4c4ac92c351a84dc1face7e2910dd7c8a784f2f278adb29317";
+    "dd3c601163029c1dc31a80ebbe155437a0d688a6731c84658637aac2913a94c2";
 } // namespace
 // FP build flavor, the IC kernel's SIMD width (its reduction order) and the build flavour token
 // (build type, NDEBUG, CRT, xsimd version), each reported by ic_screen.cpp's own TU (P9 S1, DS-1:

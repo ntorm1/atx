@@ -56,7 +56,9 @@ Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,
   if (!cfg.label_terminal.empty()) {
     recipe["label_terminal"]=cfg.label_terminal;
     recipe["labels"]="close[d+1+h]/close[d+1]-1;strict-positive-observed-endpoints;role-maturity;"
-        "missing-exit:first-label-role-only-session-in-(d+1,d+1+h]-at-its-imputed-close-then-cash";
+        "missing-exit:first-label-role-only-session-in-(d+1,d+1+h]-at-its-imputed-close-then-cash;"
+        "label-role-adds-only-the-session-after-each-name's-last-scored-session;"
+        "imputed-exit-return-guard:scored-role-and-label-role(terminal-step)";
   }
   // Absent weights leave the recipe byte-identical; pinned weights change both
   // the method statement and the canonical hash. The candidate cache is not a
@@ -314,11 +316,11 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
   }
   term("label_bytes");
   // P9 S2 (--label-terminal imputed-v1; absent: no term, the bytes above): the pinned label role
-  // is resident beside the role while its labels prepare (role26, dropped before any VM), and
-  // today's labels stay prepared beside the imputed ones with their own row scratch, so each
-  // candidate also prints its IC under them (ic_missing_exit_v1).
+  // is resident beside the role while its labels prepare (role26 + its u32 return guard, fix
+  // round 1; dropped before any VM), and today's labels stay prepared beside the imputed ones
+  // with their own row scratch, so each candidate also prints its IC under them.
   if (!cfg.label_terminal.empty()) {
-    if (!b.add(cells,26)) return budget_refusal();
+    if (!b.add(cells,26+4)) return budget_refusal();
     for (u64 h:{5ULL,21ULL,63ULL}) {
       const auto mature=score_dates>h+1?score_dates-h-1:0;
       if (!b.add(mature*n,16) || !b.add(mature,32))
@@ -416,17 +418,38 @@ co::Status bind_label_role(const engine::data::StrategyRoleData& role,
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: label role axes differ from the scored role's");
   ATX_TRY(const auto scored_id,scored.field_id(ic_price_field));
   ATX_TRY(const auto priced_id,priced.field_id(ic_price_field));
+  // Fix round 1: raw_close too (the label role's return guard reads it on the terminal step).
+  ATX_TRY(const auto scored_raw_id,scored.field_id("raw_close"));
+  ATX_TRY(const auto priced_raw_id,priced.field_id("raw_close"));
   const auto scored_close=scored.field_all(scored_id),priced_close=priced.field_all(priced_id);
+  const auto scored_raw=scored.field_all(scored_raw_id),priced_raw=priced.field_all(priced_raw_id);
   const auto n=scored.instruments();
+  const auto same=[](f64 a,f64 b) { return std::bit_cast<u64>(a)==std::bit_cast<u64>(b); };
+  // Each name's last scored-present session (dates(): never present).
+  std::vector<usize> last(n,scored.dates());
+  for (usize d=scored.dates();d-->0;)
+    for (usize i=0;i<n;++i)
+      if (last[i]==scored.dates() && scored.in_universe(d,i)) last[i]=d;
+  const auto at=[](usize d,usize i) {
+    return "(date "+std::to_string(d)+", instrument "+std::to_string(i)+")";
+  };
   for (usize d=0;d<scored.dates();++d)
     for (usize i=0;i<n;++i) {
-      if (!scored.in_universe(d,i)) continue;
       const auto k=d*n+i;
-      if (!priced.in_universe(d,i) ||
-          std::bit_cast<u64>(scored_close[k])!=std::bit_cast<u64>(priced_close[k]))
+      if (!scored.in_universe(d,i)) {
+        // Fix round 1: the only presence a label role may add is a termination, the one session
+        // after the name's last scored session (the role builder's T = L + 1).
+        if (priced.in_universe(d,i) && (last[i]==scored.dates() || d!=last[i]+1))
+          return co::Err(co::ErrorCode::InvalidArgument,
+              "IC runner: label role adds presence that is not a termination "+at(d,i)+
+              "; a label role may only add the session after a name's last scored session");
+        continue;
+      }
+      if (!priced.in_universe(d,i) || !same(scored_close[k],priced_close[k]) ||
+          !same(scored_raw[k],priced_raw[k]))
         return co::Err(co::ErrorCode::InvalidArgument,"IC runner: label role differs from the scored role "
-            "on a cell the role presents (date "+std::to_string(d)+", instrument "+std::to_string(i)+
-            "); a label role may only add presence (its termination sessions)");
+            "on a cell the role presents "+at(d,i)+"; a label role may only add presence (its "
+            "termination sessions)");
     }
   return co::Ok();
 }

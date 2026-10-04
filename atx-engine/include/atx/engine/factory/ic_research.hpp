@@ -32,11 +32,15 @@ struct ResearchIcCoverage {
 //     MissingExitV1 (the caller binds the label panel to the scored one: equal axes, and equal
 //     close and presence wherever the scored panel is present). The label panel is read during
 //     preparation only: it never reaches a signal and need not outlive prepare_research_ic.
+//   With a return guard (bad_return_prefix), ImputedV1 also takes the label panel's own guard
+//   prefix, same shape (fix round 1): an imputed pair is excluded when the scored guard OR the
+//   label guard counts a bad return in (entry, T], so the terminal step L -> T is guarded too.
 enum class LabelTerminalRule : atx::u8 { MissingExitV1 = 0, ImputedV1 = 1 };
 struct ResearchIcTerminal {
   LabelTerminalRule rule{LabelTerminalRule::MissingExitV1};
   const alpha::Panel* label{nullptr}; // ImputedV1: the label-only panel (borrowed)
   std::string_view price_field{"close"};
+  std::span<const atx::u32> label_bad_return_prefix{}; // ImputedV1: the label panel's guard
 };
 [[nodiscard]] std::string_view label_terminal_rule_name(LabelTerminalRule rule) noexcept;
 struct ResearchIcResult {

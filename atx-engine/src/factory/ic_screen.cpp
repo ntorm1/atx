@@ -310,18 +310,35 @@ namespace {
     if (!role.in_universe(s, i) && label.in_universe(s, i)) return s;
   return kNoSession;
 }
-// The label-only price column of ImputedV1 (empty span otherwise), after the geometry check.
-atx::core::Result<std::span<const f64>> terminal_prices(const alpha::Panel& panel,
-                                                        const ResearchIcTerminal& terminal) {
-  if (terminal.rule == LabelTerminalRule::MissingExitV1) return Ok(std::span<const f64>{});
+// ImputedV1's label-only price column and the label panel's return-guard prefix (both empty
+// otherwise), after the geometry checks. With a scored guard `bad`, the label guard is required
+// (fix round 1): it covers the terminal step L -> T, which the scored guard cannot see.
+struct TerminalInputs {
+  std::span<const f64> prices;
+  std::span<const atx::u32> bad;
+};
+atx::core::Result<TerminalInputs> terminal_inputs(const alpha::Panel& panel,
+                                                  std::span<const atx::u32> bad,
+                                                  const ResearchIcTerminal& terminal) {
+  if (terminal.rule == LabelTerminalRule::MissingExitV1) return Ok(TerminalInputs{});
   if (terminal.rule != LabelTerminalRule::ImputedV1)
     return Err(ErrorCode::InvalidArgument, "IC research: unknown label terminal rule");
   if (terminal.label == nullptr || terminal.label->dates() != panel.dates() ||
       terminal.label->instruments() != panel.instruments())
     return Err(ErrorCode::InvalidArgument,
                "IC research: imputed-v1 labels need a label panel on the scored panel's axes");
+  const auto label_bad = terminal.label_bad_return_prefix;
+  if (label_bad.size() != bad.size())
+    return Err(ErrorCode::InvalidArgument,
+               "IC research: imputed-v1 labels need the label panel's return guard beside the "
+               "scored one (same shape)");
+  const usize n = panel.instruments();
+  for (usize k = n; k < label_bad.size(); ++k)
+    if (label_bad[k] < label_bad[k - n])
+      return Err(ErrorCode::InvalidArgument,
+                 "IC research: the label panel's excluded-return prefix decreases");
   ATX_TRY(const auto fid, terminal.label->field_id(terminal.price_field));
-  return Ok(terminal.label->field_all(fid));
+  return Ok(TerminalInputs{terminal.label->field_all(fid), label_bad});
 }
 atx::core::Result<std::shared_ptr<const Cache>> prepare_cache(
     const alpha::Panel& panel, const IcScreenConfig& config, const ResearchIcOptions& options,
@@ -332,7 +349,9 @@ atx::core::Result<std::shared_ptr<const Cache>> prepare_cache(
     return Err(ErrorCode::InvalidArgument, "IC research: workers must be explicit 1..16");
   const auto valid = validate(panel, config, member, bad,options.active_horizons);
   if (!valid) return Err(valid.error());
-  ATX_TRY(const auto label_prices, terminal_prices(panel, terminal));
+  ATX_TRY(const auto imputing, terminal_inputs(panel, bad, terminal));
+  const std::span<const f64> label_prices = imputing.prices;
+  const std::span<const atx::u32> label_bad = imputing.bad;
   auto data = std::make_shared<Cache>();
   data->config = config; data->dates = panel.dates(); data->instruments = panel.instruments();
   data->options=options; data->terminal=terminal.rule;
@@ -397,7 +416,11 @@ atx::core::Result<std::shared_ptr<const Cache>> prepare_cache(
           if (exit == kNoSession) continue;
           imputed = true;
         }
-        if (!bad.empty() && bad[exit*n+i]!=bad[entry*n+i]) { ++coverage.guard_excluded_pairs; continue; }
+        // An imputed exit is also guarded on the label panel (its terminal step L -> T).
+        if (!bad.empty() && (bad[exit*n+i]!=bad[entry*n+i] ||
+                             (imputed && label_bad[exit*n+i]!=label_bad[entry*n+i]))) {
+          ++coverage.guard_excluded_pairs; continue;
+        }
         const f64 decision = prices[d * n + i];
         const f64 from = prices[entry * n + i];
         const f64 to = imputed ? label_prices[exit * n + i] : prices[end * n + i];

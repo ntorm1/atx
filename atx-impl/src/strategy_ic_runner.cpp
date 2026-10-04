@@ -379,21 +379,25 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   std::string label_role_sha;
   ex::ResearchIcTerminal terminal_labels;
   std::optional<engine::data::StrategyRoleData> label_role;
+  std::vector<u32> label_guard; // fix round 1: the label role's own return guard (terminal step)
   if (terminal) {
     const auto pin=label_role_pin(cfg,spec.name);
     ATX_TRY(auto loaded,engine::data::read_strategy_role(pin.path,cfg.max_working_bytes));
     if (loaded.manifest_sha256!=pin.sha)
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: label role manifest changed after admission");
     ATX_TRY_VOID(bind_label_role(role,loaded));
+    ATX_TRY(label_guard,engine::data::research_return_guard(loaded));
     label_role.emplace(std::move(loaded));
     label_role_sha=pin.sha;
     terminal_labels.rule=ex::LabelTerminalRule::ImputedV1;
     terminal_labels.label=&label_role->panel;
     terminal_labels.price_field=ic_price_field;
+    terminal_labels.label_bad_return_prefix=label_guard;
   }
   ATX_TRY(auto labels,ex::prepare_research_ic(role.panel,ic,ic_options,role.decision_member,guard,
       ic_price_field,terminal_labels));
   label_role.reset(); terminal_labels.label=nullptr;
+  terminal_labels.label_bad_return_prefix={}; std::vector<u32>().swap(label_guard);
   ATX_TRY(auto scratch,ex::prepare_research_ic_scratch(labels));
   if (labels.bytes()>cfg.max_working_bytes || scratch.bytes()>cfg.max_working_bytes-labels.bytes())
     return co::Err(co::ErrorCode::Unavailable,"IC runner: actual IC cache/scratch exceeds admitted budget");
@@ -868,10 +872,17 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     }
     auto recipe=method_recipe(cfg,true,pinned_signs,&pinned);
     for (const auto& role:roles) recipe["role_manifest_sha256"][role.name]=role.sha;
-    // P9 S2: each scored role's label role pin (a frozen TRAIN's travels in frozen_train_recipe).
+    // P9 S2: each scored role's label role pin. `roles` holds only scored roles here (a
+    // validation-only run erased its frozen TRAIN above), so an unscored TRAIN's optional pin is
+    // never written, empty or not; its real pin travels in frozen_train_recipe (fix round 1).
     if (!cfg.label_terminal.empty())
-      for (const auto& role:roles)
-        recipe["label_role_manifest_sha256"][role.name]=label_role_pin(cfg,role.name).sha;
+      for (const auto& role:roles) {
+        const auto pin=label_role_pin(cfg,role.name).sha;
+        if (pin.empty())
+          return co::Err(co::ErrorCode::Internal,
+              "IC runner: scored "+role.name+" role without a label role pin");
+        recipe["label_role_manifest_sha256"][role.name]=pin;
+      }
     if (fields_pinned(cfg)) recipe["research_fields"]=fields_recipe(fields_pins(cfg),lib);
     if (validation_only) {
       recipe["role_manifest_sha256"]["train"]=cfg.train_sha256;
