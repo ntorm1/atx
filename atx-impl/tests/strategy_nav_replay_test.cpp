@@ -3523,17 +3523,23 @@ TEST(CalibrateGross, TieredRunReusesTheConstructionByteForByte) {
 // construction; where the construction reads the leverage or a state pass 1 does not form
 // (adv-hold-v1's cap; --emit-holdings with a declared hold band) pass 2 forms it again
 // (construction_reused false). Every case publishes the plain run at L' byte for byte (summary.json
-// with calibration dropped; the holdings directory too).
+// with calibration dropped; the holdings directory too), and its calibration record is the plain
+// runs' own: gross_requested = the S2 all-rows G of the plain run at L, leverage = L' (4 decimals of
+// L x G_P / G), gross = the plain run at L''s G, bit for bit. Fix round 2 (review R5): the X-5 keys
+// under a warm start (every X-5-lineage cell runs --warm-start-sessions): the record covers the
+// warm-up decisions too, and the contract is the same against the plain warm-started runs.
 TEST(CalibrateGross, ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage) {
   Panel p(48, 12);
   randomize_rows(p, 23, 0);
   for (f64& v : p.volume) v *= 1e5; // liquid enough that the $1bn books fill (absent: NaN stays)
   const auto f = random_fields(p, 31);
-  const char* const names[] = {"x5-keys", "adv-hold", "hold-band-holdings"};
-  for (int c = 0; c < 3; ++c) {
+  constexpr usize score_begin = 30, warm_sessions = 18; // the warm case: decisions from row 12
+  const char* const names[] = {"x5-keys", "adv-hold", "hold-band-holdings", "x5-keys-warm-start"};
+  for (int c = 0; c < 4; ++c) {
     SCOPED_TRACE(names[c]);
+    const bool warm = c == 3;
     Directory dir;
-    auto a = write_artifact(dir.path, p);
+    auto a = warm ? artifact_from(dir.path, p, score_begin) : write_artifact(dir.path, p);
     const auto pin = write_fields(dir.path, a, p, f, [](Json&) {});
     auto& target = a.cfg.target;
     target.rule = st::TargetReplayRule::AimPartialV5;
@@ -3541,13 +3547,14 @@ TEST(CalibrateGross, ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage) 
     target.trade_fraction = 0.25;
     st::NavExecutionOptions execution;
     const bool holdings = c == 2;
-    if (c == 0) {
+    if (c == 0 || warm) {
       const auto daily = construction_daily();
       target.neutralize = daily.neutralize;
       target.price_risk = daily.price_risk;
       execution.locate_in_aim = true;
       execution.order_basis = st::NavOrderBasis::Delta;
       execution.liquidity_cache = true;
+      if (warm) execution.warm_start_sessions = warm_sessions;
     } else if (c == 1) {
       target.adv_hold_q = 0.5;
     } else {
@@ -3594,6 +3601,18 @@ TEST(CalibrateGross, ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage) 
     summary.erase("calibration");
     EXPECT_EQ(summary, read_json(dir.path / "second" / "summary.json"));
     EXPECT_EQ(calibration.at("corrected"), true);
-    EXPECT_EQ(calibration.at("construction_reused").get<bool>(), c == 0);
+    EXPECT_EQ(calibration.at("construction_reused").get<bool>(), c == 0 || warm);
+    EXPECT_EQ(std::bit_cast<u64>(calibration.at("gross_requested").get<f64>()),
+              std::bit_cast<u64>(g));
+    EXPECT_EQ(std::bit_cast<u64>(calibration.at("leverage").get<f64>()),
+              std::bit_cast<u64>(*corrected));
+    EXPECT_EQ(std::bit_cast<u64>(calibration.at("gross").get<f64>()),
+              std::bit_cast<u64>(calibrate_gross_of(dir.path / "second")));
+    if (warm) { // the warm start ran (recorded as the plain warm run records it) on scored rows only
+      EXPECT_EQ(summary.at("warm_start").at("sessions"), warm_sessions);
+      EXPECT_EQ(summary.at("warm_start").at("score_begin_row"), score_begin);
+      const auto daily = "daily_" + summary.at("primary_scenario").get<std::string>() + ".csv";
+      EXPECT_EQ(lines(dir.path / "calibrated" / daily).size(), p.d - score_begin + 1);
+    }
   }
 }

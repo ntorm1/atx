@@ -1318,6 +1318,16 @@ void record_construction(ConstructionTape& tape, usize t, bool cadence,
     tape.missing.insert(tape.missing.end(), tiers.missing.begin(), tiers.missing.end());
   }
 }
+// The record's vectors reserved at construction_tape_bytes' bound once (review S9): the budget
+// bounds their capacity too (no growth factor, no reallocation copy while recording).
+void reserve_construction(ConstructionTape& tape, usize decisions, usize names, bool tiered) {
+  tape.decisions.reserve(decisions);
+  tape.desired.reserve(decisions * names);
+  if (tiered) {
+    tape.tier.reserve(decisions * names);
+    tape.missing.reserve(decisions * names);
+  }
+}
 // Decision t of the published pass from the record (Internal on any mismatch: the record is
 // of another calendar, so nothing may be restored from it).
 co::Status restore_construction(ConstructionTape& tape, usize t, bool cadence,
@@ -3474,6 +3484,10 @@ u64 payload_bytes(const AdmittedRun& a) {
          bytes_of(a.fields.industry) + bytes_of(a.label.close) + bytes_of(a.label.raw) +
          bytes_of(a.label.present);
 }
+// The decisions a construction record may hold: every session of the load plus the warm-up.
+usize construction_decisions(const NavReplayConfig& base, const AdmittedRun& admitted) {
+  return admitted.blend.end - admitted.blend.begin + base.warm_start_sessions;
+}
 // Whether pass 2 may replay pass 1's construction: the construction reads nothing that differs
 // between the passes (adv-hold-v1's cap reads L, two-speed-v1's F moves toward L and DECIDE reads
 // it, and the holdings export of a declared hold band reads the band state, which a restored
@@ -3490,8 +3504,7 @@ bool construction_reusable(const TargetReplayRunConfig& cfg, const NavReplayConf
                                                   blend.end - blend.begin, holdings);
   const u64 held = reserve + payload_bytes(admitted);
   if (cfg.target.max_working_bytes <= held) return false;
-  const usize decisions = blend.end - blend.begin + base.warm_start_sessions;
-  return construction_tape_bytes(decisions, blend.names, tiered) <=
+  return construction_tape_bytes(construction_decisions(base, admitted), blend.names, tiered) <=
          cfg.target.max_working_bytes - held;
 }
 // P9 C2 pass 1: the primary S2 book alone at the requested leverage (no other main book, no
@@ -3564,6 +3577,9 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     if (calibrate.on()) {
       const bool reuse = construction_reusable(cfg, requested, admitted, scenarios.size(), tiered,
                                                holdings);
+      if (reuse)
+        reserve_construction(tape, construction_decisions(requested, admitted), blend.names,
+                             tiered);
       ATX_TRY(calibration, calibration_pass(input, requested, scenarios, calibrate,
                                             reuse ? &tape : nullptr, stages));
       published.target.aim_leverage = calibration.step.leverage;

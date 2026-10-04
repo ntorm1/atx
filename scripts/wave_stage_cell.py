@@ -320,12 +320,17 @@ def calibrated_doc(doc: dict, resolved: dict, g_parent: float, tolerance: float,
 
 def record_doc(doc: dict, resolved: dict, leverage: str, nav_out: str, note: str) -> dict:
     """The engine mode's cell of record (Ruling C2-R2): the PLAIN recipe of the published book, gm_doc's copy at the
-    final L (no --calibrate-* flag; ref pinned at the cell's L as gm_doc pins it) with its NAV output the engine NAV
+    final L (no --calibrate-* flag; ref pinned at the cell's L as gm_doc pins it, a template-set ref too) with its NAV
+    output the engine NAV
     (``nav_out``, the run recipe's; the same name, so the same cycle dir). The exe published exactly the plain run at
     that L (summary.json adds calibration), so a child copying it reproduces the book without calibrating again."""
     out = WS.gm_doc(doc, resolved, leverage, note)
     if research_spec.is_template(doc):
-        out["change"]["set"]["nav.output"] = nav_out
+        sets = out["change"]["set"]
+        sets["nav.output"] = nav_out
+        ref = resolved.get("ref")       # review S8: a template-set ref stays at the cell's L, as in the run recipe
+        if isinstance(ref, dict) and "leverage" not in ref:
+            sets["ref.leverage"] = resolved["nav"]["leverage"]
     else:
         out["nav"] = dict(out["nav"], output=nav_out)
     return out

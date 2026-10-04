@@ -288,33 +288,73 @@ def test_engine_gross_match_is_the_python_match_in_one_nav(tmp_path):
     assert children["pm6-6-engine"]["flags"] == children["pm6-6"]["flags"] and no_calibrate(children["pm6-6"]["flags"])
 
 
-def test_engine_run_recipe_pins_the_reference_to_the_uncalibrated_construction():
+def test_engine_run_recipe_pins_the_reference_to_the_uncalibrated_construction(tmp_path):
     """Review R1: the ref phase inherits nav.rule / leverage / flags it does not set (research_cycle ref_step), so the
     run recipe pins ref.flags and ref.leverage to the cell's own: the reference construction's argv is the cell's, never
-    calibrated; the cell's nav carries the calibrate flags. A template that sets its own ref gets the same pins."""
+    calibrated; the cell's nav carries the calibrate flags. A template that sets its own ref gets the same pins, in the
+    run recipe and (review S8) in the cell of record. Review S11: the ref argv is research_cycle's own ref_step's."""
+    import cycle_resume
     import wave_stage_cell as WSC
     path = Path(__file__).resolve().parents[1] / "specs" / "v8" / "lib-v80.json"
     doc = json.loads(path.read_text(encoding="utf-8"))
     assert "flags" not in doc["ref"] and "leverage" not in doc["ref"]
 
-    def ref_nav(spec: dict) -> dict:     # research_cycle.Cycle.ref_step's merge, the keys nav_step reads of it
-        ref = spec["ref"]
-        nav = dict(spec["nav"], **{k: ref[k] for k in ("rule", "leverage", "flags") if k in ref})
-        return {k: nav[k] for k in ("rule", "leverage", "flags")}
+    def ref_argv(spec: dict) -> list[str]:  # the ref NAV command after its exe (what the argv-only ref binding hashes)
+        c = RC.Cycle(spec, RC.Resolver(tmp_path), verify=False)
+        c.pins = {k: (v["path"], v.get("sha256") or "0" * 64) for k, v in spec["inputs"].items() if "path" in v}
+        return cycle_resume.step_args(c.ref_step("f/manifest.json", "role/manifest.json", "1" * 64))
     cal = WSC.calibrated_doc(doc, doc, 0.9862, 0.005, "note.")
     assert cal["nav"]["flags"][-4:] == ["--calibrate-gross", "0.9862", "--calibrate-tolerance", "0.005"]
-    assert ref_nav(cal) == ref_nav(doc) and no_calibrate(ref_nav(cal)["flags"])
-    assert ref_nav(cal)["leverage"] == "1.1474" and cal["ref"]["output"] == doc["ref"]["output"]
+    argv = ref_argv(doc)
+    assert ref_argv(cal) == argv and no_calibrate(argv) and "1.1474" in argv
+    assert cal["ref"]["output"] == doc["ref"]["output"]
+    unpinned = dict(cal, ref={k: v for k, v in cal["ref"].items() if k not in ("flags", "leverage")})
+    assert not no_calibrate(ref_argv(unpinned))                                    # the round-0 recipe's ref
     tpl = {"schema": "atx.research-cycle-template/v1", "name": "x", "parent": "p.json",
            "change": {"set": {"nav.output": "out/nav-x", "ref": {"output": "out/ref-x", "combined": "c"}}}}
     resolved = dict(doc, ref={"output": "out/ref-x", "combined": "c"}, nav=dict(doc["nav"], output="out/nav-x"))
     sets = WSC.calibrated_doc(tpl, resolved, 0.9862, 0.005, "n.")["change"]["set"]
     assert sets["ref.flags"] == doc["nav"]["flags"] and sets["ref.leverage"] == "1.1474"
     assert list(sets)[:2] == ["nav.output", "ref"]          # applied after the template's own ref (dict order)
+    rec = WSC.record_doc(tpl, resolved, "1.1782", "out/nav-x-gm", "n.")["change"]["set"]     # S8
+    assert rec["nav.leverage"] == "1.1782" and rec["ref.leverage"] == "1.1474" and "ref.flags" not in rec
+    assert list(rec)[:2] == ["nav.output", "ref"]
     plain = dict(tpl, change={"set": {"nav.output": "out/nav-x"}})    # no ref of its own (resolve drops the parent's)
-    bare = {k: v for k, v in doc.items() if k != "ref"}
-    assert set(WSC.calibrated_doc(plain, dict(bare, nav=dict(doc["nav"], output="out/nav-x")), 0.9, 0.005,
-                                  "n.")["change"]["set"]) == {"nav.output"}
+    bare = dict({k: v for k, v in doc.items() if k != "ref"}, nav=dict(doc["nav"], output="out/nav-x"))
+    assert set(WSC.calibrated_doc(plain, bare, 0.9, 0.005, "n.")["change"]["set"]) == {"nav.output"}
+    assert set(WSC.record_doc(plain, bare, "1.1782", "out/nav-x-gm", "n.")["change"]["set"]) == {"nav.output",
+                                                                                             "nav.leverage"}
+
+
+def test_engine_cell_of_record_is_pinned_after_match(tmp_path, capsys):
+    """Review R4: verify pins the engine mode's cell of record (match's record_spec_digest) besides the run recipe, as
+    the Python mode's -gm is pinned: unedited, the wave runs to its result with the record's digest; a committed edit of
+    <cell>-gm.json after match (the reviewer's L 1.9999) is STALE before verify and no wave result names it."""
+    out = {}
+    for case in ("unedited", "edited"):
+        root = F.build(tmp_path / case, gross_match="pm6-6-engine")
+        fake = F.FakeCycle(root, ONE_DROPPED, gross_per_l={"w1b": 0.9604 / 1.1474}, dsr=0.05)
+        assert wave(root, fake, "run", "--until", "match")[0] == 0
+        match = json.loads((root / "out/waves/w1/receipts/06-match.json").read_text())["outputs"]
+        assert match["record_spec"] == "scripts/specs/v8/lib-w1b-gm.json"
+        if case == "edited":
+            doc = json.loads((root / match["record_spec"]).read_text())
+            doc["nav"]["leverage"] = "1.9999"
+            F.write_json(root, match["record_spec"], doc)
+            F.git(root, "commit", "-q", "-am", "edit the cell of record after match")
+        capsys.readouterr()
+        out[case] = (wave(root, fake, "run")[0], capsys.readouterr().err, root, match)
+    code, err, root, match = out["unedited"]
+    assert code == 0, err
+    verify = json.loads((root / "out/waves/w1/receipts/07-verify.json").read_text())["inputs"]
+    digest = F.research_spec.spec_digest(root / match["record_spec"], F.research_tree.REPO)
+    assert verify["match.record_spec_digest"] == match["record_spec_digest"] == digest
+    res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
+    assert res["cell"]["spec_digest"] == digest and res["next_parent"]["spec"] == match["record_spec"]
+    code, err, root, _ = out["edited"]
+    assert code == 3 and "STALE: match recorded record_spec_digest" in err
+    assert not (root / "out/waves/w1/receipts/07-verify.json").exists()
+    assert not (root / "out/waves/w1/wave-result.json").exists()
 
 
 def test_engine_match_pins_the_w_output_its_nav_reads(tmp_path, capsys):
