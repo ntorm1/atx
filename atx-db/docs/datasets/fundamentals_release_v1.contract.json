@@ -90,6 +90,17 @@
     84
   ],
   "preparation_units": 144,
+  "extract_validation": {
+    "version": "fund-extract-validation-v1",
+    "checks": [
+      "exact_typed_multiset",
+      "exact_schema",
+      "member_error_population",
+      "all_native_counters"
+    ],
+    "reuse": "caller-pinned-external-complete-inventory",
+    "default": "full-replay"
+  },
   "source_backed_only": true,
   "readiness": "NOT_PRODUCTION_READY",
   "qualification": "SOURCE_CODE_PREPARATION_BYTES_AND_REPLAY_BOUND",

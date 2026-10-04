@@ -32,10 +32,14 @@ SEMANTIC_STAGE = 'fundamentals_v11'
 VERSION = 'fund-batch-release-v1'
 REQUIRED = tuple(range(85))
 PREPARATION_UNITS = 144
+EXTRACT_VALIDATION = 'fund-extract-validation-v1'
+EXTRACT_CHECKS = ['exact_typed_multiset', 'exact_schema', 'member_error_population', 'all_native_counters']
 TABLES = ('events','sic','history','catalog')
 CONTRACT = {
     'version': VERSION, 'stage': STAGE, 'semantic_producer': SEMANTIC_STAGE,
     'required_batches': list(REQUIRED), 'preparation_units': PREPARATION_UNITS,
+    'extract_validation': {'version':EXTRACT_VALIDATION,'checks':EXTRACT_CHECKS,
+        'reuse':'caller-pinned-external-complete-inventory','default':'full-replay'},
     'source_backed_only': True, 'readiness': 'NOT_PRODUCTION_READY',
     'qualification': 'SOURCE_CODE_PREPARATION_BYTES_AND_REPLAY_BOUND',
     'source_quality_certified': False, 'legacy_import': 'forbidden',
@@ -246,9 +250,143 @@ def native_adapter(binding,output):
     return native,validator
 
 
-def check_extract(binding,con,verify_keys=True):
+def _absolute(value):
+    if not isinstance(value,(str,Path)) or not Path(value).is_absolute() or '..' in Path(value).parts:
+        raise ValueError('explicit absolute unambiguous path required')
+    return _path(value)
+
+
+def _sha(value):
+    return isinstance(value,str) and len(value)==64 and all(c in '0123456789abcdef' for c in value)
+
+
+def load_extract_admission(binding,path,expected_sha256):
+    if path is None:
+        if expected_sha256 is not None:raise ValueError('admission path required')
+        return None
+    path=_absolute(path)
+    if not _sha(expected_sha256):raise ValueError('caller expected admission SHA256 required')
+    for directory in (Path(binding['root'])/STAGE,Path(binding['extract_root']),Path(binding.get('prep_root',binding['extract_root']))):
+        if path.is_relative_to(directory.resolve()):raise ValueError('admission must be outside mutable candidate/extraction/preparation directories')
+    pin=identity(path)
+    if pin['sha256']!=expected_sha256:raise ValueError('external admission identity mismatch')
+    doc=read(path)
+    if set(doc)!={'version','receipts'} or doc['version']!=EXTRACT_VALIDATION or not isinstance(doc['receipts'],dict) or set(doc['receipts'])!={str(i) for i in REQUIRED}:
+        raise ValueError('incomplete/unsupported required 85 extraction admission inventory')
+    paths=[]
+    for item in doc['receipts'].values():
+        if not isinstance(item,dict) or set(item)!={'path','identity'}:
+            raise ValueError('abbreviated extraction admission pin')
+        paths.append(_absolute(item['path']))
+        pin=item['identity']
+        if not isinstance(pin,dict) or set(pin)!={'sha256','bytes'} or not _sha(pin['sha256']) or type(pin['bytes']) is not int or pin['bytes']<=0:
+            raise ValueError('invalid extraction admission identity')
+    if len(paths)!=len(set(paths)):raise ValueError('duplicate extraction admission receipt')
+    result={'path':str(path),'identity':identity(path),'document':doc}
+    if result['identity']['sha256']!=expected_sha256:raise ValueError('admission changed while reading')
+    return result
+
+
+def recheck_extract_admission(admission):
+    if identity(admission['path'])!=admission['identity'] or read(admission['path'])!=admission['document']:
+        raise ValueError('external extraction admission changed')
+    for item in admission['document']['receipts'].values():
+        if identity(_absolute(item['path']))!=item['identity']:
+            raise ValueError('extraction validation receipt identity mismatch')
+
+
+def extract_source(binding,bid,planned,pins):
+    root=_path(binding['extract_root']);archive=binding['archive']
+    return {'archive':{'path':str(_absolute(archive['path'])),**{k:archive[k] for k in ('sha256','bytes')}},
+        'extract_root':str(root),'plan':pins['plan.json'],
+        'members':[[{'name':m.filename,'bytes':m.file_size,'crc':m.CRC} for m in batch] for batch in planned],
+        'files':{f'batch-{bid:04d}'+suffix:pins[f'batch-{bid:04d}'+suffix] for suffix in ('.parquet','.stats.parquet','.json')},
+        'contract':CONTRACT,'code':{str(p.resolve()):identity(p) for p in code_paths()}}
+
+
+def extraction_result(binding,bid):
+    receipt=read(_path(binding['extract_root'])/f'batch-{bid:04d}.json')
+    return {'checks':EXTRACT_CHECKS,'member_rows':receipt['member_rows'],'counts':receipt['counts'],
+        'members':receipt['members'],'rows':receipt['rows'],'first_cik':receipt['first_cik'],
+        'last_cik':receipt['last_cik'],'uncompressed_bytes':receipt['uncompressed_bytes']}
+
+
+def admit_extract_receipt(binding,bid,planned,pins,admission):
+    item=admission['document']['receipts'][str(bid)];path=_absolute(item['path'])
+    if identity(path)!=item['identity']:raise ValueError('extraction validation receipt identity mismatch')
+    row=read(path)
+    expected={'version':EXTRACT_VALIDATION,'batch':bid,'source':extract_source(binding,bid,planned,pins),
+        'validation':extraction_result(binding,bid)}
+    if digest(row)!=digest(expected) or type(row.get('batch')) is not int:
+        raise ValueError('stale/abbreviated extraction validation receipt')
+    if identity(path)!=item['identity']:raise ValueError('extraction receipt changed during admission')
+
+
+def replay_extract(binding,con,bid,members):
+    root=_path(binding['extract_root']);archive=binding['archive'];stat=Path(archive['path']).stat()
+    receipt=read(root/f'batch-{bid:04d}.json')
+    scratch=Path(binding['root'])/'_tmp/fund-release-extract-verify';scratch.mkdir(parents=True,exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='extract-',dir=scratch) as tmp:
+        target=Path(tmp)
+        extractor=_clone(X,{'out_dir':lambda:target,'archive_identity':lambda:{'bytes':stat.st_size,'mtime_ns':stat.st_mtime_ns}})
+        with zipfile.ZipFile(archive['path']) as z:replay=extractor.extract_batch(z,bid,members)
+        for suffix in ('.parquet','.stats.parquet'):
+            original=root/f'batch-{bid:04d}{suffix}';peer=target/original.name
+            if pq.ParquetFile(original).schema_arrow!=pq.ParquetFile(peer).schema_arrow:
+                raise ValueError('extract archive replay schema mismatch')
+            difference=con.execute(f'SELECT count(*) FROM ((SELECT * FROM {sql([original])} EXCEPT ALL SELECT * FROM {sql([peer])}) UNION ALL (SELECT * FROM {sql([peer])} EXCEPT ALL SELECT * FROM {sql([original])}))').fetchone()[0]
+            if difference:raise ValueError('extract archive replay mismatch')
+        for key in ('member_rows','counts','members','rows','first_cik','last_cik','uncompressed_bytes'):
+            if replay[key]!=receipt.get(key):raise ValueError('extract archive member/error population mismatch')
+
+
+def _write_immutable(path,value):
+    """Publish a fully flushed file atomically; hard-link never replaces a peer."""
+    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    tmp=path.with_name(path.name+'.'+uuid.uuid4().hex+'.partial')
+    with tmp.open('x',encoding='utf-8') as stream:
+        json.dump(value,stream,sort_keys=True,indent=2);stream.write('\n');stream.flush();os.fsync(stream.fileno())
+    # Keep partial forensic evidence if exclusive publication fails.
+    os.link(tmp,path)
+    tmp.unlink()
+
+
+def validate_extract_batch(binding_path,bid,receipt_path,con):
+    if not os.environ.get('ATX_GUARD_JOB'):raise RuntimeError('data command requires external memory guard')
+    if type(bid) is not int or bid not in REQUIRED:raise ValueError('one exact required extraction batch required')
+    binding_path=_absolute(binding_path);receipt_path=_absolute(receipt_path)
+    if receipt_path.exists():raise ValueError('immutable extraction validation receipt already exists')
+    binding=read(binding_path)
+    if receipt_path.is_relative_to(_path(binding['extract_root'])):
+        raise ValueError('receipt must be outside extraction directory')
+    if read(contract_path())!=CONTRACT:raise ValueError('frozen contract differs from implementation')
+    # Cheap argument/bounds checks precede all expensive source work.
+    binding_pin=identity(binding_path)
+    before=check_extract(binding,con,verify_keys=False,_batch=bid)
+    with zipfile.ZipFile(binding['archive']['path']) as z:planned=X.plan(z)
+    source=extract_source(binding,bid,planned,before['files'])
+    attempt=receipt_path.parent/'attempts'/uuid.uuid4().hex
+    _write_immutable(attempt/'start.json',{'version':EXTRACT_VALIDATION,'batch':bid,'source':source,'binding':binding_pin})
+    replay_extract(binding,con,bid,planned[bid])
+    validation=extraction_result(binding,bid)
+    after=check_extract(binding,con,verify_keys=False,_batch=bid)
+    with zipfile.ZipFile(binding['archive']['path']) as z:after_plan=X.plan(z)
+    if before!=after or source!=extract_source(binding,bid,after_plan,after['files']) or binding_pin!=identity(binding_path):
+        raise ValueError('extraction source/code/binding changed during replay')
+    row={'version':EXTRACT_VALIDATION,'batch':bid,'source':source,'validation':validation}
+    _write_immutable(receipt_path,row)
+    return {'status':'one_batch_validated','batch':bid,'receipt':str(receipt_path),'identity':identity(receipt_path),
+        'whole_source_admitted':False}
+
+
+def check_extract(binding,con,verify_keys=True,admission=None,force_full_replay=False,_batch=None,expected_admission_sha256=None):
     """Every planned archive member and all 85 source batches remain explicit."""
     root=_path(binding['extract_root']);archive=binding['archive']
+    if admission is not None:
+        actual=load_extract_admission(binding,admission['path'],expected_admission_sha256)
+        if digest(actual)!=digest(admission):raise ValueError('extraction admission changed/substituted')
+        admission=actual
+    code_before={str(p.resolve()):identity(p) for p in code_paths()}
     if identity(archive['path'])!={k:archive[k] for k in ('sha256','bytes')}:
         raise ValueError('archive drift')
     plan=read(root/'plan.json')
@@ -261,74 +399,91 @@ def check_extract(binding,con,verify_keys=True):
     expected={'plan.json'}|{f'batch-{i:04d}{suffix}' for i in REQUIRED for suffix in ('.parquet','.json','.stats.parquet')}
     if {p.name for p in root.iterdir() if p.is_file()}!=expected:
         raise ValueError('incomplete/unsupported extraction inventory')
+    if admission is not None and set(admission['document']['receipts'])!={str(i) for i in REQUIRED}:
+        raise ValueError('incomplete required 85 extraction admission inventory')
+    all_ciks=[int(X.MEMBER_RE.search(m.filename).group(1)) for members in planned for m in members]
+    if len(all_ciks)!=len(set(all_ciks)):
+        raise ValueError('duplicate archive member population')
     pins={}
-    for name in sorted(expected):
+    selected=expected if _batch is None else {'plan.json'}|{f'batch-{_batch:04d}'+suffix for suffix in ('.parquet','.json','.stats.parquet')}
+    for name in sorted(selected):
         pins[name]=identity(root/name)
     for bid,members in enumerate(planned):
+        if _batch is not None and bid!=_batch:continue
         receipt=read(root/f'batch-{bid:04d}.json');path=root/f'batch-{bid:04d}.parquet'
         required_ciks=[int(X.MEMBER_RE.search(m.filename).group(1)) for m in members]
         rows=receipt.get('member_rows',[])
-        if receipt.get('batch_id')!=bid or receipt.get('code_version')!=X.CODE_VERSION or receipt.get('file')!=path.name:
+        if type(receipt.get('batch_id')) is not int or receipt.get('batch_id')!=bid or receipt.get('code_version')!=X.CODE_VERSION or receipt.get('file')!=path.name:
             raise ValueError('unsupported extract receipt')
         if [r.get('cik') for r in rows]!=required_ciks or len(required_ciks)!=len(set(required_ciks)):
             raise ValueError('extract member population mismatch')
         if pins[path.name]!={'sha256':receipt.get('parquet_sha256'),'bytes':receipt.get('parquet_bytes')}:
             raise ValueError('extract payload mismatch')
-        if any(type(r.get('rows')) is not int or r['rows']<0 for r in rows):
+        if any(type(r.get('cik')) is not int or type(r.get('rows')) is not int or r['rows']<0
+            or set(r) not in ({'cik','rows'},{'cik','rows','error'}) or 'error' in r and r['error'] is not True for r in rows):
             raise ValueError('invalid extract member counters')
+        counters=receipt.get('counts')
+        if not isinstance(counters,dict) or set(counters)!={'facts_seen_periodic','rows','drop_non_numeric','members_error'} or any(type(v) is not int or v<0 for v in counters.values()):
+            raise ValueError('invalid extract diagnostic counters')
+        for field,value in {'members':len(members),'first_cik':required_ciks[0],
+            'last_cik':required_ciks[-1],'uncompressed_bytes':sum(m.file_size for m in members)}.items():
+            if type(receipt.get(field)) is not int or receipt[field]!=value:
+                raise ValueError('extract member diagnostic mismatch')
         if verify_keys:
             con.execute('CREATE OR REPLACE TEMP VIEW release_cf AS SELECT * FROM '+sql([path]))
             counts=dict(con.execute('SELECT cik,count(*) FROM release_cf GROUP BY 1').fetchall())
             if any(counts.get(r['cik'],0)!=r['rows'] for r in rows) or set(counts)-set(required_ciks):
                 raise ValueError('extract typed member rows mismatch')
-        if sum(r['rows'] for r in rows)!=receipt.get('rows') or pq.ParquetFile(path).schema_arrow!=X.SCHEMA or pq.ParquetFile(path).metadata.num_rows!=receipt.get('rows'):
+        if type(receipt.get('rows')) is not int or receipt['rows']!=counters['rows'] or sum(r['rows'] for r in rows)!=receipt.get('rows') or pq.ParquetFile(path).schema_arrow!=X.SCHEMA or pq.ParquetFile(path).metadata.num_rows!=receipt.get('rows'):
             raise ValueError('extract schema/rows mismatch')
         # Archive size/mtime is not sufficient; current full SHA is independently pinned.
         stat=Path(archive['path']).stat()
         if any(receipt.get('archive',{}).get(k)!=value for k,value in {'bytes':stat.st_size,'mtime_ns':stat.st_mtime_ns}.items()):
             raise ValueError('extract archive identity mismatch')
         if verify_keys:
-            # The legacy extractor's size/mtime receipt is not source admission.
-            # Reconstruct both typed source products directly from pinned ZIP bytes.
-            scratch=Path(binding['root'])/'_tmp/fund-release-extract-verify'
-            scratch.mkdir(parents=True,exist_ok=True)
-            with tempfile.TemporaryDirectory(prefix='extract-',dir=scratch) as tmp:
-                target=Path(tmp)
-                extractor=_clone(X,{'out_dir':lambda:target,
-                    'archive_identity':lambda:{'bytes':stat.st_size,'mtime_ns':stat.st_mtime_ns}})
-                with zipfile.ZipFile(archive['path']) as z:
-                    replay=extractor.extract_batch(z,bid,members)
-                for suffix in ('.parquet','.stats.parquet'):
-                    original=root/f'batch-{bid:04d}{suffix}';peer=target/original.name
-                    if pq.ParquetFile(original).schema_arrow!=pq.ParquetFile(peer).schema_arrow:
-                        raise ValueError('extract archive replay schema mismatch')
-                    difference=con.execute(f'SELECT count(*) FROM ((SELECT * FROM {sql([original])} EXCEPT ALL SELECT * FROM {sql([peer])}) UNION ALL (SELECT * FROM {sql([peer])} EXCEPT ALL SELECT * FROM {sql([original])}))').fetchone()[0]
-                    if difference:raise ValueError('extract archive replay mismatch')
-                if replay['member_rows']!=rows or replay['counts']!=receipt.get('counts') or replay['members']!=receipt.get('members'):
-                    raise ValueError('extract archive member/error population mismatch')
+            if admission is None or force_full_replay:
+                replay_extract(binding,con,bid,members)
+            else:
+                admit_extract_receipt(binding,bid,planned,pins,admission)
+    if admission is not None:
+        recheck_extract_admission(admission)
+    if code_before!={str(p.resolve()):identity(p) for p in code_paths()} or identity(archive['path'])!={k:archive[k] for k in ('sha256','bytes')} or any(identity(root/name)!=pin for name,pin in pins.items()):
+        raise ValueError('extraction source/code changed during validation')
     return {'plan':plan,'files':pins,'archive':archive}
 
 
-def freeze(binding_path,con,verify_keys=True):
+def freeze(binding_path,con,verify_keys=True,extract_admission=None,expected_admission_sha256=None,force_full_replay=False):
     if read(contract_path())!=CONTRACT:raise ValueError('frozen contract differs from implementation')
     binding_path=_path(binding_path);binding=read(binding_path)
     if binding.get('version')!=VERSION or binding.get('semantic_producer')!=SEMANTIC_STAGE:
         raise ValueError('unsupported binding/semantic producer')
+    admission=load_extract_admission(binding,extract_admission,expected_admission_sha256)
     products=check_products(binding['root'],binding['products'])
     native,_=native_adapter(binding,Path(binding['prep_root']).parent/'fundamentals_v11')
     preparation=native._verify_preparation()
     if len(preparation['units'])!=PREPARATION_UNITS:
         raise ValueError('required preparation inventory is not 144 units')
-    extracted=check_extract(binding,con,verify_keys)
-    return {'version':VERSION,'contract':CONTRACT,'binding_path':str(binding_path),'binding_identity':identity(binding_path),
+    extracted=check_extract(binding,con,verify_keys,admission,force_full_replay,expected_admission_sha256=expected_admission_sha256)
+    result={'version':VERSION,'contract':CONTRACT,'binding_path':str(binding_path),'binding_identity':identity(binding_path),
         'binding':binding,'products':products,'extract':extracted,'preparation':preparation,
         'prepare_summary':identity(Path(binding['prep_root'])/'prepare.json'),
         'code':{str(p.resolve()):identity(p) for p in code_paths()}}
+    if admission is not None:result['extract_admission']=admission
+    return result
 
 
-def recheck(snapshot,con,full=False):
+def recheck(snapshot,con,full=False,extract_admission=None,expected_admission_sha256=None,force_full_replay=True):
     require_snapshot(snapshot)
-    if freeze(snapshot['binding_path'],con,verify_keys=full)!=snapshot:
+    pinned=snapshot.get('extract_admission')
+    if extract_admission is not None:
+        selected=load_extract_admission(snapshot['binding'],extract_admission,expected_admission_sha256)
+        if selected!=pinned:raise ValueError('extraction admission differs from frozen inventory')
+    elif expected_admission_sha256 is not None:raise ValueError('admission path required')
+    # Embedded candidate pins preserve identity only; caller pins alone authorize reuse.
+    if freeze(snapshot['binding_path'],con,verify_keys=full,
+        extract_admission=None if pinned is None else pinned['path'],
+        expected_admission_sha256=None if pinned is None else pinned['identity']['sha256'],
+        force_full_replay=force_full_replay or extract_admission is None)!=snapshot:
         raise ValueError('source/code/preparation snapshot changed')
 
 
@@ -569,7 +724,7 @@ def gate_status(evidence):
         'whole_dataset_acceptance':'FAIL_PENDING','Task4':'FAIL_OPEN_0_of_6','economic_source_quality':'FAIL_UNQUALIFIED'}
 
 
-def build(binding_path,generation_id,selected=REQUIRED,max_new_batches=None):
+def build(binding_path,generation_id,selected=REQUIRED,max_new_batches=None,extract_admission=None,expected_admission_sha256=None,force_full_replay=False):
     if not os.environ.get('ATX_GUARD_JOB'):raise RuntimeError('data command requires external memory guard')
     if not set(selected)<=set(REQUIRED) or max_new_batches is not None and (type(max_new_batches) is not int or max_new_batches<0):
         raise ValueError('invalid bounded work selection')
@@ -578,9 +733,9 @@ def build(binding_path,generation_id,selected=REQUIRED,max_new_batches=None):
         if (stage/'pointer-transaction.json').exists():raise ValueError('unfinished pointer transaction; recover first')
         generation=_generation(stage,generation_id)
         if (generation/'manifest.json').exists():raise ValueError('immutable completed generation')
-        con=C.connect(memory='300MB',threads=1,temp_dir=stage/'_spill',db_file='fund-release-'+uuid.uuid4().hex+'.duckdb')
+        con=C.connect(memory='128MB',threads=1,temp_dir=stage/'_spill',db_file='fund-release-'+uuid.uuid4().hex+'.duckdb')
         try:
-            snapshot=freeze(binding_path,con)
+            snapshot=freeze(binding_path,con,extract_admission=extract_admission,expected_admission_sha256=expected_admission_sha256,force_full_replay=force_full_replay)
             if (generation/'snapshot.json').exists():
                 if read(generation/'snapshot.json')!=snapshot:raise ValueError('stale generation')
             elif generation.exists() and any(generation.iterdir()):raise ValueError('unbound candidate directory')
@@ -611,13 +766,13 @@ def build(binding_path,generation_id,selected=REQUIRED,max_new_batches=None):
                 'gate_status':gate_status(evidence)}
             C.write_json_atomic(generation/'manifest.json',manifest)
             manifest_pin=identity(generation/'manifest.json')
-            validate_generation(stage,generation,con)
+            validate_generation(stage,generation,con,extract_admission,expected_admission_sha256,force_full_replay)
             _publish_pointer(stage,generation,manifest_pin)
             return {'status':'candidate_published','published':True,'readiness':'NOT_PRODUCTION_READY'}
         finally:con.close()
 
 
-def validate_generation(stage,generation,con):
+def validate_generation(stage,generation,con,extract_admission=None,expected_admission_sha256=None,force_full_replay=False):
     stage=_path(stage);generation=_path(generation)
     if stage.name!=STAGE or generation!=_generation(stage,generation.name).resolve():
         raise ValueError('unsupported generation location')
@@ -632,7 +787,7 @@ def validate_generation(stage,generation,con):
         raise ValueError('unsupported typed release qualification')
     if manifest.get('snapshot_sha256')!=digest(snapshot) or manifest.get('snapshot')!=identity(generation/'snapshot.json'):
         raise ValueError('changed snapshot')
-    recheck(snapshot,con,full=True)
+    recheck(snapshot,con,full=True,extract_admission=extract_admission,expected_admission_sha256=expected_admission_sha256,force_full_replay=force_full_replay)
     if set(manifest.get('units',{}))!={str(i) for i in REQUIRED}:raise ValueError('incomplete required 85-unit inventory')
     units={}
     for bid in REQUIRED:
@@ -725,22 +880,35 @@ def _transaction_target(stage,target):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=('contract','build','validate','rollback','recover'))
+    parser.add_argument('command',choices=('contract','validate-extract','build','validate','rollback','recover'))
     parser.add_argument('--bindings',type=Path);parser.add_argument('--generation');parser.add_argument('--root',type=Path)
     parser.add_argument('--max-new-batches',type=int)
+    parser.add_argument('--batch',type=int);parser.add_argument('--receipt',type=Path)
+    parser.add_argument('--extract-admission',type=Path);parser.add_argument('--expected-admission-sha256')
+    parser.add_argument('--force-full-replay',action='store_true')
     args=parser.parse_args(argv)
     if args.command=='contract':print(json.dumps(CONTRACT,indent=2));return
     if not os.environ.get('ATX_GUARD_JOB'):raise RuntimeError('data command requires external memory guard')
+    if args.command=='validate-extract':
+        if args.bindings is None or args.batch not in REQUIRED or args.receipt is None:
+            parser.error('validate-extract requires explicit bindings, one batch 0..84, and an immutable receipt path')
+        _absolute(args.bindings);_absolute(args.receipt)
+        if args.receipt.exists():raise ValueError('immutable extraction validation receipt already exists')
+        binding=read(args.bindings);stage=Path(binding['root'])/STAGE
+        con=C.connect(memory='128MB',threads=1,temp_dir=stage/'_spill',db_file='fund-extract-check-'+uuid.uuid4().hex+'.duckdb')
+        try:print(validate_extract_batch(args.bindings,args.batch,args.receipt,con))
+        finally:con.close()
+        return
     if args.command=='build':
         if args.bindings is None or args.generation is None:parser.error('build requires explicit bindings and generation')
-        print(build(args.bindings,args.generation,max_new_batches=args.max_new_batches));return
+        print(build(args.bindings,args.generation,max_new_batches=args.max_new_batches,extract_admission=args.extract_admission,expected_admission_sha256=args.expected_admission_sha256,force_full_replay=args.force_full_replay));return
     if args.root is None:parser.error('explicit root required')
     stage=args.root/STAGE
-    con=C.connect(memory='300MB',threads=1,temp_dir=stage/'_spill',db_file='fund-release-check-'+uuid.uuid4().hex+'.duckdb')
+    con=C.connect(memory='128MB',threads=1,temp_dir=stage/'_spill',db_file='fund-release-check-'+uuid.uuid4().hex+'.duckdb')
     try:
         if args.command=='rollback':rollback(stage,con)
         elif args.command=='recover':recover(stage,con)
-        else:validate_generation(stage,resolve_current(stage),con)
+        else:validate_generation(stage,resolve_current(stage),con,args.extract_admission,args.expected_admission_sha256,args.force_full_replay)
     finally:con.close()
 
 

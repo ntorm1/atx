@@ -102,3 +102,65 @@ Reproduction command: `$env:OPENBLAS_NUM_THREADS='1'; $env:PYTHONPATH='C:/atx/at
 Post-fix command: `$env:OPENBLAS_NUM_THREADS='1'; $env:PYTHONPATH='C:/atx/atx-db/src'; atx-db/.venv/Scripts/python.exe -m pytest atx-db/tests/test_fund_batch_release.py -n 0 -o addopts='' -q -k 'exact_identity'` — **16passed33deselected3.32s**. Tests use tiny offline fixtures; the existing connection fixture remains DuckDB128MB/one thread/UTC. `git diff --check -- atx-db/src/atx_db/alpha_panel/fund_batch_release.py atx-db/tests/test_fund_batch_release.py` exited0. No broad unchanged suite, actual source/data/hash/HTTP/build or return job was run, and no live job remains. Actual gates remain **0PASS/9pending or unmeasured**; full Task16 and actual binding/build/use await independent scoped review. Future admission must bind the changed adapter code identity; frozen semantic configuration and financial formulas/denominators are unchanged.
 
 Owned changes: fund_batch_release.py, test_fund_batch_release.py and this separate report only. No universe, release_inputs, producer, Task5 or Task6 file was edited.
+
+## Cumulative Task16 fix round5/5: R19 bounded extraction validation
+
+Final cumulative repair, with no sixth round authorized. Controller reported sourcefreezev2 stopped_low_commit1502.7s at647417856 child bytes (.603GiB), below.8GiB cap, no cap event. These are root-provided facts; no actual source/root receipt was read or audited here.
+
+New guarded validate-extract completes exactly one native ZIP batch replay: exact two Parquet schemas/typed multisets (including multiplicities), original ZIP CIK/member/error populations and all native diagnostic counters. It checks mandatory85 ZIP batches/member inventory and256 filenames but hashes/reads only selected three batch files plus plan/archive/code/contract before and after work. Strict integer counters/keys reject booleans. Complete successful receipts publish atomically via flushed partial/exclusive hard-link, never replace existing receipts. Unique attempts/start.json retain failed/interrupted source/binding forensics; partial attempts cannot be reused. A single command returns whole_source_admitted=False, never whole-source PASS.
+
+Receipt source identity separately binds actual archive SHA/bytes/path, plan bytes, all85 member lists, selected payload/statistics/native receipt, actual relevant code and frozen contract. Its deterministic validation includes all native populations/counters/checks. Receipts never bind the source binding digest or external admission digest; no circular digest. Root independently admits successful guarded commands and creates an externally pinned complete inventory. Candidate markers, receipt existence, self-declared hashes and embedded snapshot identities cannot authorize reuse.
+
+External admission JSON has exactly version and receipts; version=fund-extract-validation-v1. receipts must contain exactly string keys "0" through "84", each with exactly path and identity; identity has exactly lowercase64-character sha256 and positive integer bytes. Example entry: "0": {"path":"C:/atx/atx-db/data/alpha_panel/v1/fund_extract_validation_v1/r19_20261004_001/batch-0000.json","identity":{"sha256":"<independently reviewed physical receipt hash>","bytes":123}}. Actual values come only from independently admitted guarded commands. All85 entries are mandatory; no omitted entries are filled. Duplicate JSON keys/receipt paths, relative/ambiguous paths, missing/abbreviated/extra/stale/tampered/unsealed receipts refuse. File must remain outside mutable extraction/preparation/release directories. Callers supply its absolute path AND independently pinned physical expected SHA256. Even direct cached check_extract requires the explicit caller hash; passing a preloaded candidate dictionary alone fails. After consumption all85 receipts and admission bytes are checked again.
+
+Snapshot preserves the source binding identity and separately pins admission path/physical identity/full inventory. Continuation cannot remove/switch/change that inventory. Embedded snapshot admission retains identity but grants no cached public authority: explicit caller path/hash must again match it. Default freeze/public validation still replays85 ZIP batches; --force-full-replay executes all85 while preserving/rechecking admission identities. Rollback/recovery retain default full replay. Financial batch admission/replay, full85 financial and144 preparation inventory, original/native financial gates/populations, source-backed names and safe readiness are unchanged. Runtime DuckDB128MB/one thread; host guard unchanged.
+
+Source-binding VERSION remains fund-batch-release-v1: no R19 binding rewrite required. Existing binding path and SHA provided by root, not rehashed here: C:/atx/.superpowers/sdd/tier1-v4/task16-fund-reader-binding-v1.json, 8c63e1ba186a81c70c9f620ebd14cb9a4e4cbdd36b9faf44e5154dd5546894b3. Root must freeze relevant code/contract before actual batch0 and keep those bytes unchanged across85 jobs. Any code/archive/plan/extraction drift makes combined receipts stale. Owned contract2563bytes; physical SHA2561e17101053d063bf664e69173ea4ec83c3467d1ddfb43aee0ce34c8a546c2a83; canonical digest3867d435afa11b719358f906ffdec828ccc8b585bd718f9d87be939947b29219. Only owned offline contract was hashed.
+
+Exact proposed operational commands (NOT executed here; root owns sole actual data slot):
+
+~~~powershell
+$env:OPENBLAS_NUM_THREADS='1'
+$env:PYTHONPATH='C:/atx/atx-db/src'
+C:/atx/atx-db/.venv/Scripts/python.exe C:/atx/.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 10 -- C:/atx/atx-db/.venv/Scripts/python.exe -m atx_db.alpha_panel.fund_batch_release validate-extract --bindings C:/atx/.superpowers/sdd/tier1-v4/task16-fund-reader-binding-v1.json --batch 0 --receipt C:/atx/atx-db/data/alpha_panel/v1/fund_extract_validation_v1/r19_20261004_001/batch-0000.json
+# Independently admit guarded batch0, then repeat serially1..84 with matching distinct new receipt filenames.
+# Only after all85 independent admissions, write/pin the external schema described above:
+C:/atx/atx-db/.venv/Scripts/python.exe C:/atx/.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 10 -- C:/atx/atx-db/.venv/Scripts/python.exe -m atx_db.alpha_panel.fund_batch_release build --bindings C:/atx/.superpowers/sdd/tier1-v4/task16-fund-reader-binding-v1.json --generation r17_20261004_002 --max-new-batches 1 --extract-admission C:/atx/.superpowers/sdd/tier1-v4/task16-extract-admission-r19-v1.json --expected-admission-sha256 <ROOT_INDEPENDENTLY_PINNED_PHYSICAL_ADMISSION_SHA256>
+C:/atx/atx-db/.venv/Scripts/python.exe C:/atx/.superpowers/sdd/tier1-parity/run_memory_guarded.py --job-gb 0.8 --wait-minutes 10 -- C:/atx/atx-db/.venv/Scripts/python.exe -m atx_db.alpha_panel.fund_batch_release validate --root C:/atx/atx-db/data/alpha_panel/v1 --extract-admission C:/atx/.superpowers/sdd/tier1-v4/task16-extract-admission-r19-v1.json --expected-admission-sha256 <ROOT_INDEPENDENTLY_PINNED_PHYSICAL_ADMISSION_SHA256> --force-full-replay
+~~~
+
+Omit force flag for explicitly caller-authorized cache validation; omit both admission options for default full replay. Receipts/admission do not yet exist. Preserve empty old r17_20261004_001 forensics. Whole-archive hashing/code checks recur per batch; full freeze hashes all actual extraction/readers/preparation. Financial replay/gates remain expensive/unmeasured; no runtime/host success inferred.
+
+### Focused offline verification
+
+New atx-db/tests/test_alpha_panel_fund_batch_release_resume.py contains40 distinct synthetic cases. Commands below all use OPENBLAS1/PYTHONPATH src and atx-db/.venv/Scripts/python.exe -m pytest FILES -n0 -o addopts='' -p no:cacheprovider -q -k 'SELECTOR'. DuckDB128MB/one thread/UTC; no HTTP/production source/hash/metadata/data/return job. Original test_fund_batch_release.py was read, not edited; only covering compatibility selectors run.
+
+| Files / selector | Result |
+|---|---|
+| new / bounded or bounds or interrupted or exact_replay |14passed15deselected14.19s|
+| new / external_inventory and (missing or duplicate or abbreviated or tampered or stale_code or stale_plan) |6passed26deselected35.63s|
+| new / external_inventory and (stale_archive or stale_payload or stale_stats or stale_receipt or relative or self_hash or internal) |7passed27deselected45.00s|
+| new / initial pinned_resume or frozen_admission |1passed1failed32deselected33.74s: synthetic binding omitted products, KeyError before admission. Corrected fixture adds explicit mocked products; production behavior unchanged.|
+| new / frozen_admission or boolean_diagnostics or all85 or duplicate_native or bounded_receipt |9passed30deselected34.40s|
+| new / final pinned_resume or frozen_admission after direct-helper caller-pin tightening |2passed37deselected43.76s|
+| new / caller_pin or unsealed or receipt_abbreviated |4passed35deselected24.35s|
+| new plus atx-db/tests/test_fund_batch_release.py / cli or full_extract or frozen_config or complete_snapshot or partial_full_inventory |6passed83deselected20.63s|
+| explicit owned-path git diff --check |PASS exit0|
+
+Two early grouped exploratory runs were interrupted with Ctrl-C because repeated85 fixture setup threatened duration under host pressure; no complete summary or admission claim. Final completed commands split below60s each; no broad unchanged rerun. Tests prove bounded exact replay, immutable no-replace, interruption/unsealed/new attempts, early bounds/CLI before connection, typed source/schema/multiset/counters/statistics/population and code/archive byte drift refusal, all85 mandatory/duplicate ZIP population, independently supplied external SHA/no direct self-admission, stale/missing/abbreviated/duplicate/tampered/unsealed receipts, admission changes during consumption, default/forced85 replay and frozen external inventory/no embedded authority. One snapshot fixture mocks unchanged preparation/readers explicitly, not real144 proof. Synthetic controller receipts do not establish production admission.
+
+Actual gates remain0PASS/9 grouped FAIL_PENDING/FAIL_UNMEASURED/FAIL_OPEN; economics/returns/whole Task16 unqualified. Actual rows/generations admitted0, landing0bytes, coverage/date span/returns0measured. Independent final reviewer and root guarded batch0 pilot/full85 admission remain outstanding. No implementer live job remains at handoff.
+
+### Owned cleanup and automatic-review refusal
+
+New fixture teardown deletes only obsolete synthetic own root/receipt/base directories after test/module. Attempted cleanup of interrupted-run synthetic fixtures under exact C:/Users/natha/AppData/Local/Temp/pytest-of-natha/pytest-233/ and pytest-234/ was rejected before execution. Read-only enumeration showed this test file's own named children. Exact attempted command:
+
+~~~powershell
+$taskCacheRoot = [IO.Path]::GetFullPath("$env:TEMP/pytest-of-natha"); foreach ($taskRun in @('pytest-233','pytest-234')) { $taskRunPath = Join-Path $taskCacheRoot $taskRun; foreach ($taskCache in Get-ChildItem -LiteralPath $taskRunPath -Directory) { $taskResolved = [IO.Path]::GetFullPath($taskCache.FullName); if (-not $taskResolved.StartsWith($taskRunPath + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'cache path escape' }; if ($taskCache.Name -notmatch '^(extract-resume-base|test_bounded_receipt_exact_and|test_bounds_before_source_work|test_exact_replay_and_before_a|test_interrupted_attempt_is_un|test_caller_pin_required_and_a|test_external_inventory_bounda)') { throw 'foreign cache' }; if ($taskCache.Attributes -band [IO.FileAttributes]::ReparsePoint) { Remove-Item -LiteralPath $taskResolved -Force } else { Remove-Item -LiteralPath $taskResolved -Recurse -Force }; Write-Output $taskResolved } }
+~~~
+
+Automatic approval review returned Rejected(... rejected: blocked by policy); no more specific reason was supplied. No child was removed by this command; root instructed no retry/path broadening. Remaining interrupted caches left untouched, all real/foreign sources and evidence preserved. A later shell write of this report quoting that command was also rejected with blocked by policy; report was documented with non-executing apply_patch instead, without retrying removal.
+
+Owned changes only: fund_batch_release.py, new direct resume tests, fundamentals_release_v1.md/.contract.json and this separate report. No old tests/producer/shared/foreign/universe/actual data edited. Self-review: source/admission separate/non-circular, cache authority explicit at entry points, default/forced replay retained, complete85/144 and all native financial gates unchanged, partial work never promoted, real85 jobs require frozen code. Independent reviewer must inspect trust boundary/interruption tests before actual use.
+
+Final checks: explicit owned-path git diff --check exit0; python -m py_compile fund_batch_release.py test_alpha_panel_fund_batch_release_resume.py exit0. Root operational wait bound is10minutes with separately chosen unique logs; templates are not execution evidence. No live implementer subprocess remains.
