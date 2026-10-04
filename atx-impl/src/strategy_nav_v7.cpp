@@ -21,6 +21,7 @@
 #include "atx/core/sha256.hpp"
 #include "atx/engine/book/risk_target.hpp"
 #include "atx/engine/book/two_speed.hpp"
+#include "book/nav_rules.hpp" // P9 C3: --cost-law / --target-rule registry ids
 #include "strategy_risk_target.hpp"
 #include "strategy_spo_v3.hpp"
 #include "strategy_target_replay_detail.hpp"
@@ -143,6 +144,10 @@ bool risk_target_flag(std::string_view key) {
   return key == "--risk-target" || key == "--risk-target-bias" || key == "--risk-target-cadence";
 }
 // The store flags the risk target shares with the spo rules.
+// P9 C3 (K-P9-7): the flags whose value is a registry id (book/nav_rules.hpp).
+bool registry_flag(std::string_view key) {
+  return key == "--cost-law" || key == "--target-rule";
+}
 bool risk_model_flag(std::string_view key) {
   return key == "--risk-model" || key == "--risk-model-sha256";
 }
@@ -774,7 +779,7 @@ bool claims_nav_args(int argc, char** argv) {
     const std::string_view key = argv[i];
     if (key == "--cost-v2" || key == "--capacity-curve" || key == "--cost-shrink-kappa" ||
         key == "--band-b" || key == "--band-exponent" || key == "--rate-clip" || spo_flag(key) ||
-        risk_target_flag(key) || key == "--vol-target")
+        risk_target_flag(key) || key == "--vol-target" || registry_flag(key))
       return true;
     if (key == "--rule" && i + 1 < argc &&
         (std::string_view(argv[i + 1]) == "aim-partial-v6" || spo_rule(argv[i + 1])))
@@ -1000,6 +1005,9 @@ void append_help(std::ostream& out) {
   out << "v7 (lane L4; any of these adds <output>/v7_transfer_coefficient.csv and "
          "v7_extras.json before summary.json, which binds them): [--cost-v2 (stress books S2-KO "
          "modeled-1bn-ko-v1 and S2-FIM modeled-1bn-fim-v1 beside S1/S2/S3; S2 stays PRIMARY)] "
+         "[--cost-law ID (P9 C3, K-P9-7: a cost-law row of --list-rules by id; cost-sqrt-v2 is "
+         "--cost-v2, one of the two)] [--target-rule ID (P9 C3, K-P9-7: a target row of "
+         "--list-rules by id; none registered in this build)] "
          "[--capacity-curve (the capacity books S2 at NAV x .5,1,2,4,8 in the main lockstep, "
          "published into <output>/capacity, then <output>/capacity_curve.csv; with "
          "--adv-hold-q each capacity book's cap reads its multiple's NAV; fixed rate only; "
@@ -1083,8 +1091,32 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
       const std::string key = argv[i];
       if (key == "--cost-v2" || key == "--capacity-curve") {
-        if (!seen.insert(key).second) throw std::invalid_argument("duplicate flag " + key);
+        if (!seen.insert(key).second)
+          throw std::invalid_argument("duplicate flag " + key + (key == "--cost-v2"
+                                          ? " (--cost-law cost-sqrt-v2 is --cost-v2)" : ""));
         (key == "--cost-v2" ? o.stress : o.capacity) = true;
+        continue;
+      }
+      if (registry_flag(key)) { // P9 C3 (K-P9-7): a registry row by id (book/nav_rules.hpp)
+        if (!seen.insert(key).second || i + 1 >= argc)
+          throw std::invalid_argument("duplicate/missing value: " + key);
+        const std::string value = argv[++i];
+        const auto kind =
+            key == "--cost-law" ? nav_rules::Kind::CostLaw : nav_rules::Kind::Target;
+        const auto* row = nav_rules::find(kind, value);
+        if (!row || row->x_flag.empty()) {
+          const auto ids = nav_rules::flag_ids(kind);
+          throw std::invalid_argument("unknown " + key + ' ' + value + " (" +
+                                      (ids.empty() ? std::string("none registered") : ids) + ")");
+        }
+        // cost-sqrt-v2: the v2 stress books, byte for byte the run --cost-v2 gives (one of the
+        // two). A registered row without a handler here is refused, never silently ignored
+        // (lane COV-MV adds mv-aim-v1's handler with its target row).
+        if (value != nav_rules::cost_sqrt_v2_id)
+          throw std::invalid_argument(key + ' ' + value + " has no handler in this build");
+        if (!seen.insert("--cost-v2").second)
+          throw std::invalid_argument("--cost-law cost-sqrt-v2 is --cost-v2: give one of them");
+        o.stress = true;
         continue;
       }
       if (key == "--cost-shrink-kappa" || key == "--band-b" || key == "--band-exponent" ||

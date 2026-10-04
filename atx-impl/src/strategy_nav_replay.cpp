@@ -27,9 +27,12 @@
 #include "atx/core/sha256.hpp"
 #include "atx/engine/book/replay_cost.hpp"
 #include "atx/engine/cost/borrow_tiers.hpp"
+#include "atx/engine/data/research_window.hpp" // P9 C3 (P13): the fields manifest's seal
 #include "atx/engine/eval/hac.hpp"
 #include "atx/engine/parallel/det_pool.hpp"
 #include "atx/engine/parallel/lockstep_grid.hpp" // v8 D-1: books on a pool, grid spec
+#include "book/nav_rules.hpp" // P9 C3: K-P9-7, the one rule table
+#include "book/nav_spec.hpp"  // P9 C3: nav --spec / --print-spec
 #include "build_provenance.hpp"  // P9 C1: summary.json producer identity
 #include "strategy_holdings.hpp" // v7 W4: the f64 holdings layout
 #include "strategy_risk_target.hpp" // P9 C1: each book's leverage rule
@@ -2199,7 +2202,34 @@ struct LoadedFields {
   std::vector<f64> shares_out, si_shares;
   std::vector<f64> industry; // industry_group_field; the industry ids only
   Json binding; // recipe record; null when no fields
+  std::string seal; // P9 C3 (P13): "match" or "absent" (fields_seal); never published
 };
+// P9 C3 (Ruling P13, the NAV half of the C++ seal consumer; S2's IC half is
+// strategy_ic_admission.cpp fields_seal): "match" when the fields manifest's seal.exclusive_end is
+// this build's research seal, "absent" for a legacy manifest without one (no seal block, or a
+// block without exclusive_end), accepted and logged by the caller. A present exclusive_end that is
+// not this build's seal, or a malformed seal block, refuses before any payload is read.
+co::Result<std::string> fields_seal(const Json& manifest) {
+  const auto seal = manifest.find("seal");
+  if (seal == manifest.end()) return co::Ok(std::string("absent"));
+  if (!seal->is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: fields manifest seal block is not an object");
+  const auto recorded = seal->find("exclusive_end");
+  if (recorded == seal->end()) return co::Ok(std::string("absent"));
+  if (!recorded->is_string() || recorded->get<std::string>() != engine::data::kSealBeginDate)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: fields manifest was built under the seal " + recorded->dump() +
+                       "; this build's seal is " + std::string(engine::data::kSealBeginDate) +
+                       " (" + std::string(engine::data::kResearchWindowId) + ")");
+  return co::Ok(std::string("match"));
+}
+// Console only (the run's published bytes do not record it, so a legacy and a sealed manifest
+// with the same fields publish the same files).
+void log_fields_seal(const LoadedFields& fields, std::ostream& progress) {
+  if (fields.seal == "absent")
+    progress << "nav replay: fields-seal seal=absent accepted-as-legacy-manifest\n";
+}
 // One used field (used_field checks, payload SHA) and its recipe record in `used`.
 co::Result<std::vector<f64>> load_field(const Json& manifest, const std::filesystem::path& base,
                                         const std::string& name, u64 dates, u64 names,
@@ -2240,6 +2270,7 @@ co::Result<LoadedFields> load_fields(const NavFieldsPin& pin, const TargetReplay
   if (cells > budget / (count * sizeof(f64)))
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: fields workspace budget");
   LoadedFields out;
+  ATX_TRY(out.seal, fields_seal(m));
   Json used = Json::object();
   const auto base = std::filesystem::path(pin.manifest_path).parent_path();
   for (const char* field : financing_field_names) {
@@ -3561,6 +3592,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     ATX_TRY(auto admitted, admit_and_load(cfg, requested, fields, scenarios.size(), holdings,
                                           execution.label_role));
     times.loaded = StageTimes::Clock::now();
+    log_fields_seal(admitted.fields, progress); // P9 C3 (P13): a legacy manifest, logged
     const auto& blend = admitted.blend; const auto& loaded = admitted.fields;
     const auto& marks = admitted.label; // empty without --label-role: MARK reads the role
     auto view = blend.view();
@@ -3713,6 +3745,7 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
     ATX_TRY(auto admitted, admit_and_load(first, configs.front(), fields, books, false,
                                           execution.label_role));
     times.loaded = StageTimes::Clock::now();
+    log_fields_seal(admitted.fields, progress); // P9 C3 (P13): a legacy manifest, logged
     const auto& blend = admitted.blend; const auto& loaded = admitted.fields;
     const auto& marks = admitted.label; // v8 E-25: empty without --label-role
     auto view = blend.view();
@@ -3804,25 +3837,14 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
   }
 }
 
-namespace {
-// The nav rule contract (P9 C1, K-P9-7, Ruling P7): {schema, capabilities, rules}; this lane
-// lists the leverage rules (risk_target::leverage_rules_json).
-Json nav_rules_json() {
-  return Json{{"schema", nav_rules_schema},
-              {"capabilities", Json::array({"leverage-rule-per-book", "capacity-main-lockstep",
-                                            "summary-binds-extras", "producer-identity",
-                                            "sqrt-impact-exact", "calibrate-gross-pm6-6"})},
-              {"rules", risk_target::leverage_rules_json()}};
-}
-} // namespace
-
 int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& err) {
-  // P9 C1 (K-P9-7): `nav --list-rules [--json]`, before any other flag is read.
+  // P9 C1 (K-P9-7): `nav --list-rules [--json]`, before any other flag is read; P9 C3: the one
+  // table of every registry (book/nav_rules.hpp: leverage, trade-rate, cost-law, target).
   for (int i = 1; i < argc; ++i) {
     if (std::string_view(argv[i]) != "--list-rules") continue;
     bool json = false;
     for (int j = 1; j < argc; ++j) json = json || std::string_view(argv[j]) == "--json";
-    const Json rules = nav_rules_json();
+    const Json rules = nav_rules::table_json();
     if (json) {
       out << rules.dump(2) << '\n';
     } else {
@@ -3832,6 +3854,10 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
     }
     return 0;
   }
+  // P9 C3: nav --spec NAVSPEC.json [--output NEWDIR] runs the spec's command line through this
+  // dispatch; nav <flags> --print-spec prints the NavSpec of <flags> (book/nav_spec.hpp).
+  if (const int code = nav_spec::dispatch(argc, argv, out, err); code != nav_spec::not_spec)
+    return code;
   if (v7::claims_nav_args(argc, argv)) return v7::dispatch_nav_v7(argc, argv, out, err); // L4
   try {
     TargetReplayRunConfig cfg; NavTurnoverLimits limits; NavFieldsPin fields;
@@ -3912,7 +3938,10 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "mean gross; |G - G_P| > tolerance: ONE correction L' = L x G_P / G to 4 "
                "decimals, refused outside [1, 2]; the published run is the plain run at the "
                "final L plus summary.json calibration {..., matched}; aim-partial-v5, not with "
-               "--construction-grid or an spo rule)]\n"
+               "--construction-grid or an spo rule)] "
+               "[--spec NAVSPEC.json [--output NEWDIR] (P9 C3: the run of one atx.nav-spec/v1 "
+               "file, typed options and constants; it holds every other flag) | --print-spec "
+               "(the NavSpec of the given flags, then exit)]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
                "PRIMARY, S3 modeled-1bn-terminal-adverse-v1); costs/borrow are not flags.\n"
                "Without --fields: flat-300-v0 financing only. With the pinned role fields "

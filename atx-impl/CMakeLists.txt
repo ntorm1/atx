@@ -1,13 +1,20 @@
 # atx-impl: end-to-end equity alpha pipeline reference binary.
-# Split: a STATIC lib holds all logic so the test exe can link it (you cannot link
-# an executable target). The atx-impl exe is just main.cpp over the lib.
-add_library(atx-impl-core ${ATX_LIB_TYPE}
-    src/config.cpp
-    src/dispatch.cpp
+# Split: STATIC libs hold all logic so the test exes can link them (you cannot link
+# an executable target). The atx-impl exe is just main.cpp over them.
+#
+# P9 C3 (F-10): two libraries. atx-impl-strategy is the research path: the strategy_* verbs
+# (IC runner, marginal, mining, targets, NAV replay and its src/book/ files, risk model, spo)
+# and the few shared files they read (artifacts, serialize_panel, panel_artifact,
+# stage_data_provenance, the build provenance). The research exes (atx-equity-strategy*) link it
+# alone. atx-impl-pipeline is the pipeline: the stage_* files, config and dispatch, which the
+# research exes never call; it links atx-impl-strategy for those shared files. atx-impl-core is
+# an INTERFACE library over both, so the atx-impl exe and every test exe keep linking one name.
+# A new research source goes into atx-impl-strategy (target_sources on the INTERFACE
+# atx-impl-core would compile nothing).
+add_library(atx-impl-strategy ${ATX_LIB_TYPE}
     src/artifacts.cpp
     src/serialize_panel.cpp
     src/panel_artifact.cpp
-    src/panel_pipeline.cpp
     src/stage_data_provenance.cpp
     src/strategy_runner.cpp
     # IC runner (platform v8 B-3 split; shared internals in strategy_ic_detail.hpp)
@@ -56,6 +63,14 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/strategy_risk_target.cpp
     # platform v8 Y (YCOMB): vol-target-v1, the risk target scaler's second law (its text)
     src/strategy_vol_target.cpp
+    # P9 C3: the NAV rule registries (K-P9-7) and NavSpec (nav --spec)
+    src/book/nav_rules.cpp
+    src/book/nav_spec.cpp)
+
+add_library(atx-impl-pipeline ${ATX_LIB_TYPE}
+    src/config.cpp
+    src/dispatch.cpp
+    src/panel_pipeline.cpp
     src/serialize_genome.cpp
     src/stage_load.cpp
     src/stage_regime.cpp
@@ -87,20 +102,26 @@ add_library(atx-impl-core ${ATX_LIB_TYPE}
     src/stage_run.cpp
     # p8 S2: the fund:: mega-alpha meta-book seam (opt-in; never called from stage_run.cpp)
     src/stage_metabook.cpp)
-target_include_directories(atx-impl-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_compile_features(atx-impl-core PUBLIC cxx_std_20)
-target_link_libraries(atx-impl-core
-    PUBLIC  atx::core atx::engine atx::tsdb
-    PRIVATE atx_warnings nlohmann_json::nlohmann_json)
-find_package(Threads REQUIRED)
-target_link_libraries(atx-impl-core PRIVATE Threads::Threads)
 
-# Stable third-party/std headers only; pipeline/config headers stay outside the
-# PCH so an ordinary engine change does not invalidate this parse cache. PRIVATE
-# keeps it out of downstream targets, and hygiene still disables ATX_USE_PCH.
-if(ATX_USE_PCH)
-    target_precompile_headers(atx-impl-core PRIVATE pch.hpp)
-endif()
+find_package(Threads REQUIRED)
+foreach(_atx_impl_lib atx-impl-strategy atx-impl-pipeline)
+    target_include_directories(${_atx_impl_lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(${_atx_impl_lib} PUBLIC cxx_std_20)
+    target_link_libraries(${_atx_impl_lib}
+        PUBLIC  atx::core atx::engine atx::tsdb
+        PRIVATE atx_warnings nlohmann_json::nlohmann_json)
+    target_link_libraries(${_atx_impl_lib} PRIVATE Threads::Threads)
+    # Stable third-party/std headers only; pipeline/config headers stay outside the
+    # PCH so an ordinary engine change does not invalidate this parse cache. PRIVATE
+    # keeps it out of downstream targets, and hygiene still disables ATX_USE_PCH.
+    if(ATX_USE_PCH)
+        target_precompile_headers(${_atx_impl_lib} PRIVATE pch.hpp)
+    endif()
+endforeach()
+target_link_libraries(atx-impl-pipeline PUBLIC atx-impl-strategy)
+add_library(atx-impl-core INTERFACE)
+target_link_libraries(atx-impl-core INTERFACE atx-impl-pipeline atx-impl-strategy)
+
 # This TU intentionally changes CRT declarations before its first include to use
 # portable exclusive fopen("wx"). Preserve that local environment: force-including
 # the common PCH would parse the CRT before the source's suppression takes effect.
@@ -166,9 +187,11 @@ message(STATUS "atx-impl engine_git_sha: ${ATX_ENGINE_GIT_SHA}")
 # A changing command-line macro conflicts with clang-cl PCH reuse. Keep the
 # value in one tiny generated implementation, outside the stable PCH payload.
 # configure_file writes only when content changes, preserving no-op builds.
+# P9 C3: in atx-impl-strategy (the NAV summary's producer identity reads it; stage_discover
+# reaches it through atx-impl-pipeline's link).
 set(_atx_provenance_cpp "${CMAKE_CURRENT_BINARY_DIR}/generated/build_provenance.cpp")
 configure_file(src/build_provenance.cpp.in "${_atx_provenance_cpp}" @ONLY)
-target_sources(atx-impl-core PRIVATE "${_atx_provenance_cpp}")
+target_sources(atx-impl-strategy PRIVATE "${_atx_provenance_cpp}")
 set_source_files_properties("${_atx_provenance_cpp}" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 
 add_executable(atx-impl src/main.cpp)
@@ -176,54 +199,56 @@ target_link_libraries(atx-impl PRIVATE atx-impl-core atx_warnings)
 
 # Small supplied-DSL research entry point. Reuse the warm production libraries;
 # this does not require the broad pipeline main or a second compiler environment.
+# P9 C3: the research exes link atx-impl-strategy alone (no pipeline stage).
 add_executable(atx-equity-strategy EXCLUDE_FROM_ALL tools/equity_strategy.cpp)
-target_link_libraries(atx-equity-strategy PRIVATE atx-impl-core atx_warnings)
+target_link_libraries(atx-equity-strategy PRIVATE atx-impl-strategy atx_warnings)
 
 # Fast supplied-DSL screening and streaming composition share the warm core PCH.
 # Research options live in private sources, outside the pipeline config headers.
 add_executable(atx-equity-strategy-ic EXCLUDE_FROM_ALL tools/equity_strategy_ic.cpp)
-target_link_libraries(atx-equity-strategy-ic PRIVATE atx-impl-core atx_warnings)
+target_link_libraries(atx-equity-strategy-ic PRIVATE atx-impl-strategy atx_warnings)
 
 # Reuse a saved composition for portfolio iteration without reevaluating DSLs.
 add_executable(atx-equity-strategy-targets EXCLUDE_FROM_ALL tools/equity_strategy_targets.cpp)
-target_link_libraries(atx-equity-strategy-targets PRIVATE atx-impl-core atx_warnings)
+target_link_libraries(atx-equity-strategy-targets PRIVATE atx-impl-strategy atx_warnings)
 
 # atx-risk-v1 fundamental risk model + bias harness (platform v7 L4): the `risk` verb.
 add_executable(atx-equity-strategy-risk EXCLUDE_FROM_ALL tools/equity_strategy_risk.cpp)
-target_link_libraries(atx-equity-strategy-risk PRIVATE atx-impl-core atx_warnings)
+target_link_libraries(atx-equity-strategy-risk PRIVATE atx-impl-strategy atx_warnings)
 
 # Platform v8 H-3: the mining verb (built and self-tested; real campaigns only under OD-7).
 add_executable(atx-equity-strategy-mine EXCLUDE_FROM_ALL tools/equity_strategy_mine.cpp)
-target_link_libraries(atx-equity-strategy-mine PRIVATE atx-impl-core atx_warnings)
+target_link_libraries(atx-equity-strategy-mine PRIVATE atx-impl-strategy atx_warnings)
 
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 # Lane 9: real-data DSL alpha mining stage (equity-mine)
-target_sources(atx-impl-core PRIVATE src/stage_equity_mine.cpp)
+target_sources(atx-impl-pipeline PRIVATE src/stage_equity_mine.cpp)
 # platform v8 D-2: the `exposures` verb (contract K2) of atx-equity-strategy-targets
-target_sources(atx-impl-core PRIVATE src/strategy_exposures_verb.cpp)
+target_sources(atx-impl-strategy PRIVATE src/strategy_exposures_verb.cpp)
 # P9 S1: the marginal verb's pair cache (--pair-cache)
-target_sources(atx-impl-core PRIVATE src/strategy_marginal_pair_cache.cpp)
+target_sources(atx-impl-strategy PRIVATE src/strategy_marginal_pair_cache.cpp)
 # platform P9 B1: the `factors` verb (contract K-P9-4) of atx-equity-strategy-targets. Its per-candidate rank and
 # projection loops run over every decision of a full role, so the warm Debug tree gives this TU the same private
 # /O2 as the IC TUs above (Debug CRT, assertions and FP settings unchanged; no shared PCH under other flags).
-target_sources(atx-impl-core PRIVATE src/strategy_factors_verb.cpp)
+target_sources(atx-impl-strategy PRIVATE src/strategy_factors_verb.cpp)
 if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
     set_property(SOURCE src/strategy_factors_verb.cpp APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/strategy_factors_verb.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 # P9 lane D1: the IC runner's composition rule table and theme table (strategy_ic_rules.hpp,
-# contract K-P9-6), with the IC TUs' flag set (the Debug /O2 list above), so the inline variables
-# of strategy_ic_detail.hpp keep one definition.
-target_sources(atx-impl-core PRIVATE src/strategy_ic_rules.cpp)
+# contract K-P9-6), with the IC TUs' Debug /O2 flag set (the list above) for speed. (P9 C3, W1-MIN
+# M-5: the inline variables of strategy_ic_detail.hpp depend on ISA macros only, not on /O2, so
+# any TU may include that header; the flag set is a speed choice, not a one-definition rule.)
+target_sources(atx-impl-strategy PRIVATE src/strategy_ic_rules.cpp)
 if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
     set_property(SOURCE src/strategy_ic_rules.cpp APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
     set_source_files_properties(src/strategy_ic_rules.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 # P9 lane AL-COMB: composition rules theme-cov-hedge-v1 (over engine combine/char_cov_hedge.hpp) and
 # mom-volman-v1 (a theme_schedule rule), with the IC TUs' flag set as strategy_ic_rules.cpp above.
-target_sources(atx-impl-core PRIVATE src/strategy_ic_theme_hedge.cpp src/strategy_ic_mom_volman.cpp)
+target_sources(atx-impl-strategy PRIVATE src/strategy_ic_theme_hedge.cpp src/strategy_ic_mom_volman.cpp)
 if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
     set_property(SOURCE src/strategy_ic_theme_hedge.cpp src/strategy_ic_mom_volman.cpp
         APPEND PROPERTY COMPILE_OPTIONS /O2 /Ob2 /clang:-finline)
@@ -233,7 +258,7 @@ endif()
 # P9 lane D2: the composition rules' kernels moved down to atx-engine-research-composition (migration plan
 # section 1); strategy_ic_{shrink,theme_erc,theme_tsmom,theme_resid}.hpp and strategy_two_speed.hpp are thin
 # includes of it, and the IC runner's verify and composition call it.
-target_link_libraries(atx-impl-core PUBLIC atx-engine-research-composition)
+target_link_libraries(atx-impl-strategy PUBLIC atx-engine-research-composition)
 # P9 lane C2: nav --calibrate-gross, Ruling PM6-6 in one process (strategy_nav_calibrate.hpp:
 # the numpy mean of the S2 gross, the 4-decimal correction, the summary record).
-target_sources(atx-impl-core PRIVATE src/strategy_nav_calibrate.cpp)
+target_sources(atx-impl-strategy PRIVATE src/strategy_nav_calibrate.cpp)

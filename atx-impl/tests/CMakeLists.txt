@@ -199,3 +199,8 @@ target_sources(atx-impl-strategy-ic-tests PRIVATE
     strategy_ic_theme_hedge_test.cpp
     strategy_ic_mom_volman_test.cpp
     "${PROJECT_SOURCE_DIR}/atx-engine/tests/combine/combine_char_cov_hedge_test.cpp")
+
+# P9 lane C3: NavSpec (nav --spec) and the K-P9-7 registries (NavSpec.*, NavRules.*,
+# CostLawRegistry.*, TradeRateRegistry.*, TargetRegistry.*) beside the NAV replay tests;
+# atx-impl-tests compiles it through its *_test.cpp glob.
+target_sources(atx-impl-strategy-target-tests PRIVATE strategy_nav_spec_test.cpp)

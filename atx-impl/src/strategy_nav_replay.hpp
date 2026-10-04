@@ -726,8 +726,12 @@ struct NavEmitOptions {
 // it; not with --construction-grid).
 // P9 C1 (K-P9-7, Ruling P7): `nav --list-rules [--json]` prints the rule contract and exits 0
 // before any other flag is read: {"schema": "atx.nav-rules/v1", "capabilities": [...], "rules":
-// [{id, kind, params_schema, incompatible}]}; this lane lists the leverage rules (fixed-v1,
-// vol-target-v1, risk-target-v1). Without --json: one "<kind> <id>" line per rule.
+// [{id, kind, params_schema, incompatible}]}; C1 listed the leverage rules (fixed-v1,
+// vol-target-v1, risk-target-v1), P9 C3 adds the trade-rate, cost-law and target registries
+// (book/nav_rules.hpp). Without --json: one "<kind> <id>" line per rule.
+// P9 C3: `nav --spec NAVSPEC.json [--output NEWDIR]` runs one atx.nav-spec/v1 file and `nav
+// <flags> --print-spec` prints the NavSpec of <flags> (book/nav_spec.hpp), next after
+// --list-rules; P13: a --fields manifest built under another research seal is refused.
 inline constexpr const char* nav_rules_schema = "atx.nav-rules/v1";
 [[nodiscard]] int dispatch_nav_replay(int argc, char** argv, std::ostream& out,
                                       std::ostream& err);
