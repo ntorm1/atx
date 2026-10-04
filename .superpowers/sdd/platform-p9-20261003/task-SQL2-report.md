@@ -268,3 +268,111 @@ The working directory is `C:/atx-wt/pool-23` for every command. Python is `"C:/P
    seen / 25 verified / 0 declared / 4 skipped). It is the canary golden for every later `atx-research-store` build.
 2. `run_bounded_research.py` stamps `atx.bounded-research-run/v1` on both `start.json` and `receipt.json`. In
    `classes.json` a schema literal is unique per class except across glob-disjoint classes.
+
+---
+
+## Fix round 1 (PM ruling SQL2-FIX1; review `task-SQL2-review.md` at `1c993ab5`: APPROVE, six Suggested findings)
+
+### Outcome
+DONE. All six findings are fixed, each with its own test, in one commit: `bedd090a`. The head is the commit that
+appends this section. **The fixture-chain catalog digest did not move.** It is still
+`d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69`. Only the printed `files_seen` changed, from 29 to
+28 (S5). `catalog_run` is a volatile table, so it sits outside the digest.
+
+### What each finding became
+| # | fix | where | test |
+|---|---|---|---|
+| S1 | A schema literal that two or more classes share is allowed only when every glob of those classes ends in a literal file name (no `*`, `?` or `[` in its last segment), and no file name, lower-cased, belongs to two of the classes. Then no path can match two such classes, so the first-match rule can never make one dead. The old check compared glob strings only. | `test_research_store_classes.py` (`shared_literal_problems`); the `classes.json` description | `ClassRegistryGuard.test_shared_literal_needs_disjoint_literal_file_names`: the review's probes `build-equity/**`, `**/*receipt.json`, `**/*` and `**/*.json` all fail, as do `**`, `**/receipt.json`, `build-equity/x/START.json` (case folded), `**/rec?ipt.json`, `**/[rs]tart.json`, a mixed literal + catch-all, and empty globs. A third literal name (`**/finish.json`) passes. `test_registry_shape` asserts no problems on the real registry. |
+| S2 | `sealed_root(root)` is `has_sealed_year` over the root's absolute, lexically normal path. `run_catalog` and `ingest_one` return `Err(PermissionDenied)` for a sealed root. The `catalog` and `ingest` verbs check it first, before `--rebuild` and before the class registry under the root is read, and exit 3. A root below a sealed directory is refused as well. | `seal_guard.{hpp,cpp}`, `catalog.cpp`, `store_cli.cpp` | `SealGuard.SealedRootNeverOpened` (library: root and root/scripts refused, 0 artifact and 0 catalog_run rows). `StoreCli.SealedRootRefusedBeforeAnythingIsRead`: both trees hold a broken `classes.json` where the CLI looks for one. The clean tree exits 4 (the registry was read), the sealed tree exits 3, so the seal check runs first. No catalog file is created. |
+| S3 | `import_legacy_records` refuses a sealed DIR (`Err(PermissionDenied)`). A partition or kind directory whose name holds a year token is skipped without being listed or opened, and counted in the new `CacheImportReport::sealed`. A file whose stem is not 64 lower-case hex is rejected before it is opened. That leaves the DIR, partition and kind names as the only free path text below DIR, and all three are checked. The `cache init DIR --import` verb refuses a sealed DIR before it creates the index and exits 3; its output line gains `sealed N`. `cache init` without `--import` reads nothing and is unchanged. | `cache_index.cpp`, `store_cli.{hpp,cpp}` | `SealGuard.CacheImportNeverOpensSealedPaths`: two sealed dirs hold invalid decoys and count as `sealed 2`, not as rejected; `notes.json` is rejected; 2 records are imported; a sealed DIR is refused with 0 rows. The CLI half of `StoreCli.SealedRootRefusedBeforeAnythingIsRead` checks exit 3, no `index.sqlite`, and the exact `imported 0 present 0 rejected 0 sealed 0` line. |
+| S4 | `detail::claim_key` runs inside each write closure, before the `candidate` (`id`) or `build_receipt` (`tag`) upsert. If another path already holds the key, the write returns `Err(PermissionDenied)` naming both files in sorted order. The result is a refusal in every walk order and in `ingest`, never last-writer-wins. Re-ingesting the holder itself stays idempotent. The `catalog.hpp` "any walk order" claim now states this rule. This is a hard refusal (exit 3), the same class as the append-only ledger refusal. Build tags got the same rule because the review named them with S4, and `research-build.ps1` puts the tag in the receipt's file name. A duplicate can therefore only arise across `build-equity/` and `build-equity-rel/`. | `catalog.cpp`, `catalog_detail.hpp`, `ingest_spec.cpp`, `ingest_build.cpp`, `catalog.hpp` | `ResearchCatalog.DuplicateKeyAcrossFilesRefusedInEveryOrder` covers forward and reverse walks (both files named), single-file ingest of the second claimant (refused, stored row untouched), re-ingest of the holder (ok), and the same tag in `build-equity/` and `build-equity-rel/`. `StoreCli.DuplicateCandidateIdIsARefusal` covers exit 3 with both paths on stderr. |
+| S5 | `files_seen` = verified + declared + skipped - `unparsed` skips. It now counts distinct paths, and a seal-named directory counts as one listed path. The meaning is documented on `CatalogReport`. | `catalog.cpp`, `catalog.hpp` | `ResearchCatalog.IngestsSyntheticTree` expects `files_seen` 30, was 31. This is a deliberate semantic change ordered by S5, not a value fitted to make the test pass. The 30 is 25 + 2 + 4 - 1, where the one unparsed file is `build-equity/fx-nav/extra_nan.json`. The committed tree prints 28, was 29. |
+| S6 | `catalog --rebuild` maps a failure to open the old catalog with `open_failure`, exactly as every other verb maps open failures. A foreign store (cache index, foreign application_id: InvalidArgument) exits 3 and was 4 before. The file is left in place. | `store_cli.cpp` | `StoreCli.RebuildOpensTheOldCatalogLikeEveryVerb`: for a cache index and a plain text file, the `--rebuild` exit equals the `digest` exit, and both files remain. The cache index exits 3. A text file is NOTADB, which maps to IoError and exits 4 in every verb, `digest` included; that mapping is SQL1's and was not changed. |
+
+### Evidence (pool-23, after `bedd090a`)
+1. **Build** `powershell -NoProfile -File scripts\research-build.ps1 -Tag p9-sql2-d -Targets
+   "atx-engine-research-catalog,atx-engine-research-catalog-tests,atx-research-store"`.
+   - The dry run first showed `Admitted : True`, with FreeMiB 2683 and CommitMiB 3330.
+   - Result: exit=0, receipt `ExitCode 0`, `WallSeconds 94.66`, `CompiledTUs 26`.
+   - Warnings: the log has 7 `warning` lines. All 7 are clang-cl's `argument unused during compilation: '/MP'` on the
+     spdlog dependency TUs; 0 come from lane code.
+2. **gtests:** `build-equity/bin/atx-engine-research-catalog-tests.exe --gtest_filter='ResearchCatalog*:SealGuard*:StoreCli*'`
+   ```
+   [==========] Running 27 tests from 3 test suites.
+   [==========] 27 tests from 3 test suites ran. (13880 ms total)
+   [  PASSED  ] 27 tests.
+   exit=0
+   ```
+   That is 21 tests before plus 6 new: `ResearchCatalog.DuplicateKeyAcrossFilesRefusedInEveryOrder`,
+   `SealGuard.SealedRootNeverOpened`, `SealGuard.CacheImportNeverOpensSealedPaths`,
+   `StoreCli.SealedRootRefusedBeforeAnythingIsRead`, `StoreCli.RebuildOpensTheOldCatalogLikeEveryVerb` and
+   `StoreCli.DuplicateCandidateIdIsARefusal`.
+3. **pytest:** `PYTHONDONTWRITEBYTECODE=1`, `-p no:cacheprovider -rs`, over the same five files as before (classes,
+   blind, identity, SQL1 fixtures, SQL1 store).
+   ```
+   == PYTHONHASHSEED=0
+   43 passed, 129 subtests passed in 7.26s
+   exit=0
+   == PYTHONHASHSEED=1
+   43 passed, 129 subtests passed in 6.71s
+   exit=0
+   ```
+   - There were no skips, so `FixtureChain` ran against the new exe.
+   - +1 test (S1). The subtest count went 119 -> 129: the old shared-literal subtest became 11 probe subtests.
+   - The full 45-file `atx-engine/tools` suite was not re-run. Its only Python change is this test file, plus the
+     description string in `classes.json`.
+4. **Fixture chain** with the new exe, run twice from scratch, once with a relative and once with an absolute
+   `--root`:
+   ```
+   files_seen 28 verified 25 declared 0 skipped 4
+   catalog_digest d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69
+   catalog exit=0
+   total checked 12 mismatches 0
+   identity exit=0          (both runs identical)
+   ```
+5. **Flag-absent identity:** unchanged. No file under `atx-impl/` or `scripts/` was touched, both targets stay
+   `EXCLUDE_FROM_ALL`, and no CMake list changed in this round.
+
+### Notes for root
+- **Exit-code changes** (all are refusals that used to be errors or silent behaviour):
+  - `catalog --rebuild` on a foreign store: 4 -> 3.
+  - A duplicate candidate id or build tag: was last-writer-wins, now exit 3.
+  - A sealed `--root`: was opened, now exit 3.
+  - A sealed `cache init --import` DIR: was read, now exit 3.
+  - The import report line gains ` sealed N`; no caller parses it (checked).
+- **R1 (classes guard at the merge slots):** with S1, a class root adds in a SQL2-CLS commit must not reuse an
+  existing schema literal unless the file names are literal and disjoint. The pytest message names the conflict.
+- **Real-tree bounded run (R4):** a duplicate candidate id or build tag in the real tree now stops the run with exit
+  3, naming both files, instead of picking a row silently.
+  - Neither was checked on the real tree, because lanes do not open it.
+  - A duplicate build tag needs one receipt in each of `build-equity/` and `build-equity-rel/`.
+  - If the run stops this way, the remedy is to investigate the two files and then `catalog --rebuild`. A renamed
+    candidate file in an existing catalog also refuses until `--rebuild`, the same as an edited ledger line.
+- **Path premise of the root seal check:** it reads the whole absolute path. A checkout or temp directory whose own
+  path holds a standalone 2024-2099 token would therefore refuse every catalog (fail closed). Today's paths
+  (`C:/atx`, `C:/atx-wt/pool-N`, `%TEMP%`) hold none.
+- **Rebuild needed:** root builds the three targets anew. Pool-23's object tree is deleted (DISK-2), so this pool has
+  no binaries now.
+
+### Files changed in fix round 1 (all owned; no cross-lane edit)
+- `atx-engine/include/atx/engine/research/store/catalog/{catalog,seal_guard,store_cli}.hpp`
+- `atx-engine/src/research/store/catalog/{catalog.cpp,catalog_detail.hpp,cache_index.cpp,ingest_build.cpp,ingest_spec.cpp,seal_guard.cpp,store_cli.cpp}`
+- `atx-engine/tests/research/research_catalog_{test,seal_test,cli_test}.cpp`
+- `atx-engine/tools/test_research_store_classes.py`
+- `atx-engine/schemas/research_store/classes.json` (description string only)
+
+### Hygiene (fix round 1; DISK, DISK-2)
+- Deleted:
+  - `atx-db/src/atx_db/__pycache__/` (ignored; from the earlier full-suite run), as instructed;
+  - one `atx-engine/tools/__pycache__` from this round's chain run;
+  - the scratch chain DBs.
+- Deleted the untracked CMake / Ninja object tree of `build-equity/` (about 405 MB): `atx-core/`, `atx-engine/`,
+  `atx-impl/`, `atx-tsdb/`, `bin/`, `CMakeFiles/`, `lib/`, `tests/`, `build.ninja`, `.ninja_*`, `CMakeCache.txt`,
+  `compile_commands.json`, `*.cmake` and `spdlog.pc`.
+- Kept:
+  - the build receipts and logs `build-equity/mega-p9-sql2-{a,b,c,d}-*` and `vcpkg-manifest-install.log`;
+  - the 79 git-tracked files under `build-equity/` (`audits/**` and `v8-interim3-pitch-render-run2/{receipt.json,
+    stdout.log}`), which are part of the checkout and not object files. `git status` stays clean.
+- No `build-equity-rel/` exists in this pool.
+- The gtest temp root is absent. No pool-23 process is left running.
+- No data dated 2024 or later, and no real research output, was opened.
