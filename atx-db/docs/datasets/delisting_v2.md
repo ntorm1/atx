@@ -15,7 +15,8 @@ submission identity and acceptance headers are matched exactly; a submission
 with multiple documents is unsupported pending a pinned selection contract.
 HTML-only originals get retrieval floors unless joined to an independently
 pinned original SEC submissions recent entry with exact native issuer/accession
-and offset-bearing acceptanceDateTime. Catalog assertions never supply clocks.
+and matching native SGML acceptance. An ISO offset or Z alone does not establish
+the SEC bulk field's timezone semantics. Catalog assertions never supply clocks.
 Archived arrays without native issuer identity are unsupported. These checks establish document semantics only, not
 financial completion, party mapping or terminal returns.
 

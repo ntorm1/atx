@@ -44,10 +44,12 @@ class BulkClockPin:
     fetched_at: dt.datetime
 
 
-def read_bulk_clock(blob: bytes, pin: BulkClockPin) -> dt.datetime:
+def read_bulk_clock(blob: bytes, pin: BulkClockPin,
+                    matching_submission: tuple[bytes, NativePin] | None = None) -> dt.datetime:
     """Native SEC submissions recent-entry clock with exact issuer/accession.
 
-    Offset-bearing acceptanceDateTime is mandatory; filing/report dates or
+    A matching pinned native SGML acceptance is mandatory: syntactic Z/offset
+    alone does not prove the SEC bulk field's time-zone semantics. Filing/report dates or
     accession-derived timestamps never substitute. Archived arrays lacking
     native issuer identity are unsupported until their issuer binding is admitted.
     """
@@ -67,6 +69,15 @@ def read_bulk_clock(blob: bytes, pin: BulkClockPin) -> dt.datetime:
     clock = T.utc(dt.datetime.fromisoformat(raw.replace("Z", "+00:00")))
     if clock != T.utc(pin.available_at) or clock > T.utc(pin.fetched_at):
         raise ValueError("native bulk acceptance clock mismatch")
+    if matching_submission is None:
+        raise ValueError("bulk timezone semantics require matching native SGML acceptance")
+    submission, native_pin = matching_submission
+    if (native_pin.clock_basis != "native_sec_acceptance" or native_pin.cik != pin.cik
+        or native_pin.accession != pin.accession):
+        raise ValueError("bulk/native acceptance identity mismatch")
+    native_row = read_native(submission, native_pin, "independently-pinned-clock-crosscheck")
+    if native_row.available_at != clock:
+        raise ValueError("bulk/native timezone semantics mismatch")
     return clock
 
 
@@ -99,7 +110,7 @@ def code_pins() -> dict[str, str]:
 
 
 def read_native(blob: bytes, pin: NativePin, admission_id: str,
-                bulk_clock: tuple[bytes, BulkClockPin] | None = None) -> V.DealVintage:
+                bulk_clock: tuple[bytes, BulkClockPin, tuple[bytes, NativePin]] | None = None) -> V.DealVintage:
     if not admission_id or hashlib.sha256(blob).hexdigest() != pin.sha256:
         raise ValueError("independent native object identity mismatch")
     if not pin.source_id or not pin.accession or pin.cik <= 0:
@@ -130,10 +141,10 @@ def read_native(blob: bytes, pin: NativePin, admission_id: str,
     elif pin.clock_basis == "native_sec_bulk_acceptance":
         if bulk_clock is None:
             raise ValueError("independently pinned original SEC bulk clock required")
-        clock_blob, clock_pin = bulk_clock
+        clock_blob, clock_pin, matching_submission = bulk_clock
         if clock_pin.cik != pin.cik or clock_pin.accession != pin.accession:
             raise ValueError("native document/bulk clock issuer/accession mismatch")
-        if read_bulk_clock(clock_blob, clock_pin) != available or available > fetched:
+        if read_bulk_clock(clock_blob, clock_pin, matching_submission) != available or available > fetched:
             raise ValueError("native document/bulk acceptance mismatch")
     elif pin.clock_basis == "retrieval_floor":
         if available != fetched:
@@ -149,7 +160,7 @@ def read_native(blob: bytes, pin: NativePin, admission_id: str,
 
 def replay_native(objects: Mapping[str, bytes], pins: tuple[NativePin, ...], *,
                   admission_id: str, expected_code: Mapping[str, str],
-                  bulk_clocks: Mapping[str, tuple[bytes, BulkClockPin]] | None = None) -> list[V.DealVintage]:
+                  bulk_clocks: Mapping[str, tuple[bytes, BulkClockPin, tuple[bytes, NativePin]]] | None = None) -> list[V.DealVintage]:
     """Compute with code bound before, all objects pinned, and checked afterward."""
     before = code_pins()
     if dict(expected_code) != before:
@@ -169,7 +180,7 @@ def replay_native(objects: Mapping[str, bytes], pins: tuple[NativePin, ...], *,
 
 def validate_native_rows(rows: list[dict], objects: Mapping[str, bytes], pins: tuple[NativePin, ...], *,
                          admission_id: str, expected_code: Mapping[str, str],
-                         bulk_clocks: Mapping[str, tuple[bytes, BulkClockPin]] | None = None) -> None:
+                         bulk_clocks: Mapping[str, tuple[bytes, BulkClockPin, tuple[bytes, NativePin]]] | None = None) -> None:
     """Read-only public admission: full schema, keys, inventory and native replay."""
     names = {field.name for field in fields(V.DealVintage)}
     if any(set(row) != names for row in rows):

@@ -73,3 +73,15 @@ issuer identity remain unsupported. No catalog clock assertion or filing-date
 backdating. Focused command uses the same environment/pytest options with only
 tests/test_mna_native_v2.py;6passed in0.20s. Total23offline tests now (17terminal,
 6native). No actual source/data/return jobs. Financial admission still open.
+
+## Root clock-semantic correction
+
+Root identified ISOoffset/Z alone cannot certify SEC bulk timezone semantics.
+Read Task9 native prebuild review/report statically and kept the stronger
+requirement: bulk acceptance now must match separately pinned original SGML
+issuer/accession/acceptance, with its native ET-toUTC normalization. Missing
+native evidence rejects admission; HTML uses retrievalfloor instead. Added the
+negative case where syntactically validZ still fails without native evidence.
+Focused native pytest6passed in0.35s. Earlier one failed run was a fixture local
+variable shadowing its factory (TypeError), corrected before this passing run.
+No source/data jobs. Scope remains intermediate, financial admission open.

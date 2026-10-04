@@ -80,12 +80,23 @@ def test_bulk_native_clock_never_inherits_catalog_assertion():
     clock = dt.datetime(2020, 1, 3, 17, 30, tzinfo=UTC)
     pin = N.BulkClockPin("original-sec-submissions", hashlib.sha256(blob).hexdigest(), 1,
                          "0000000001-20-000001", clock, clock+dt.timedelta(days=1))
-    assert N.read_bulk_clock(blob, pin) == clock
+    submission = b'''<ACCEPTANCE-DATETIME>20200103123000
+ACCESSION NUMBER: 0000000001-20-000001
+FILER:
+ CENTRAL INDEX KEY: 0000000001
+</SEC-HEADER>
+<DOCUMENT><TEXT><p>Native clock fixture</p></TEXT></DOCUMENT>'''
+    native_pin = N.NativePin("matching-native-submission", hashlib.sha256(submission).hexdigest(),
+                             pin.accession, 1, pin.fetched_at, clock, "native_sec_acceptance")
+    matching = (submission, native_pin)
+    assert N.read_bulk_clock(blob, pin, matching) == clock
+    with pytest.raises(ValueError, match="timezone semantics"):
+        N.read_bulk_clock(blob, pin)
     html, docpin = native()
     docpin = replace(docpin, available_at=clock, fetched_at=clock+dt.timedelta(days=1),
                      clock_basis="native_sec_bulk_acceptance")
     rows = N.replay_native({docpin.source_id: html}, (docpin,), admission_id="fixture",
-                           expected_code=N.code_pins(), bulk_clocks={docpin.source_id: (blob, pin)})
+                           expected_code=N.code_pins(), bulk_clocks={docpin.source_id: (blob, pin, matching)})
     assert rows[0].available_at == clock
     with pytest.raises(ValueError, match="clock object inventory"):
         N.replay_native({docpin.source_id: html}, (docpin,), admission_id="fixture", expected_code=N.code_pins())
