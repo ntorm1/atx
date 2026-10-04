@@ -195,7 +195,9 @@ def check_identity_manifest(path,doc,products):
 
 
 def _identity_declared_pin(path,pin):
-    if not isinstance(pin,dict) or not {'path','sha256','bytes','mtime_ns'}<=set(pin) or _path(pin['path'])!=_path(path):
+    if (not isinstance(pin,dict) or not {'path','sha256','bytes','mtime_ns'}<=set(pin)
+        or not isinstance(pin['path'],str) or not Path(pin['path']).is_absolute()
+        or _path(pin['path'])!=_path(path)):
         raise ValueError('identity declared path/pin mismatch')
     if type(pin['bytes']) is not int or type(pin['mtime_ns']) is not int or pin['mtime_ns']<0:
         raise ValueError('identity declared pin types invalid')

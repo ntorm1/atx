@@ -300,7 +300,8 @@ def test_contract_cli_is_offline(capsys):
     assert json.loads(capsys.readouterr().out)==R.CONTRACT
 
 
-@pytest.mark.parametrize('damage',['none','version','empty','extra','path','hash','rows','sources','source_hash','link_table_missing'])
+@pytest.mark.parametrize('damage',['none','version','empty','extra','path','hash','rows','sources','source_hash','link_table_missing',
+    'output_relative','output_nonstring','security_company_links_relative','security_permanent_ids_relative','r4_manifest_relative','source_nonstring'])
 def test_exact_identity_outputs_manifest_adapter(tmp_path,monkeypatch,damage):
     from atx_db.alpha_panel import identity_links as I
     directory=tmp_path/'identity';directory.mkdir()
@@ -322,6 +323,15 @@ def test_exact_identity_outputs_manifest_adapter(tmp_path,monkeypatch,damage):
     if damage=='rows':output['rows']=2
     if damage=='sources':doc['sources'].pop('r4_manifest')
     if damage=='source_hash':doc['sources']['r4_manifest']['sha256']='0'*64
+    if damage=='output_relative':
+        monkeypatch.chdir(tmp_path)
+        output['path']='identity/links.parquet'
+    if damage=='output_nonstring':output['path']=None
+    if damage.endswith('_relative') and damage!='output_relative':
+        monkeypatch.chdir(tmp_path)
+        name=damage.removesuffix('_relative')
+        sources[name]['path']=name+'.fixture'
+    if damage=='source_nonstring':sources['r4_manifest']['path']=None
     R.C.write_json_atomic(manifest,doc)
     monkeypatch.setattr(R,'reader_contract',lambda root:{'identity_manifest':{'paths':[manifest]},'links_prepare':{'paths':[links]},'links_validation':{'paths':[link_table]}})
     def product(path):return {'source':'fixture','clock':'unqualified source clock','admission':'byte fixture only','files':{str(path):R.identity(path)}}
