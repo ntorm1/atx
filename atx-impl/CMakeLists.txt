@@ -141,6 +141,18 @@ endforeach()
 target_link_libraries(atx-impl-pipeline PUBLIC atx-impl-strategy)
 add_library(atx-impl-core INTERFACE)
 target_link_libraries(atx-impl-core INTERFACE atx-impl-pipeline atx-impl-strategy)
+# A source given to the INTERFACE atx-impl-core would compile into nothing: refused at configure,
+# after every block of this file (the appended tails included) has run.
+function(_atx_impl_core_takes_no_sources)
+    get_target_property(_atx_core_sources atx-impl-core SOURCES)
+    get_target_property(_atx_core_interface_sources atx-impl-core INTERFACE_SOURCES)
+    if(_atx_core_sources OR _atx_core_interface_sources)
+        message(FATAL_ERROR "atx-impl-core is an INTERFACE library (P9 C3): add "
+            "${_atx_core_sources} ${_atx_core_interface_sources} to atx-impl-strategy "
+            "(research) or atx-impl-pipeline (stages)")
+    endif()
+endfunction()
+cmake_language(DEFER CALL _atx_impl_core_takes_no_sources)
 
 # This TU intentionally changes CRT declarations before its first include to use
 # portable exclusive fopen("wx"). Preserve that local environment: force-including
