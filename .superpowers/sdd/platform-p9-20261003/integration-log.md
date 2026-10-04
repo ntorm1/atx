@@ -539,3 +539,12 @@ Base `f96f9399`. Detail: `root-wave2-merge-report.md` section M2d; logs `m2d-log
 Next free build tag **p9-2d**. Known-red after M2d (unchanged): pytest `test_fields_are_the_rule_applied_to_the_registry`
 (E2), Release `BookNormalScore.*` x2 (C2), Release `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned`
 (M2c-RED, lane S2R).
+
+### M2e: C2, AL-COMB, 2026-10-04
+
+Base `6960568f` (code `694b4b95`). Detail: `root-wave2-merge-report.md` section M2e; logs `m2e-logs/`. Housekeeping
+docs commit `20bc5f5f` (status-5, next-goal-prompt, progress.md, AL-DATA edits, engine-impl status).
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| C2 | `4d77d3db` (re-review 2 `1ea664f2`; base `ad406718`) | `a25453be` (no SQL2-CLS commit: no new literal, guard green) | `atx-impl/CMakeLists.txt` tail (D2's composition link vs C2's calibrate source), both kept; COV / C2 tails of `atx-impl/tests/CMakeLists.txt` and the E2-file lines auto-merged | **p9-2d** equity-dev and **p9-2e** equity-rel, each `atx-impl-strategy-target-tests, atx-equity-strategy-targets, atx-engine-eval-tests, atx-engine-book-tests, atx-impl-tests` (331.8 s / 114 TUs; 775.4 s / 253 TUs) | 0 / 0 | Debug and Release each: `CalibrateGross.*:NavBookRule.*:BookNormalScore.*` 19p; target-tests whole 377p; impl-tests `CalibrateGross.*` 7p; eval `*StatsExt*:*Deflated*:*MinTrl*` 10p; book `BookNormalScore.*:*DecayMonitor*` 13p. **M1c-RED cleared** (both Release `BookNormalScore` reds green) | `test_research_wave.py` 20p; eight wave suites 77p; classes guard 5p / 92 sub | **X-5 gm-pair identity HOLDS** (list `4d0583cf` first): -gm run vs `p9-c1-s2-x5-nav` 26/27 identical + `producer.engine_git_sha`; engine `nav --calibrate-gross` vs the Python -gm 26/27 identical + added `/calibration`; L' `1.1720` exact, gross bit-equal, `construction_reused` true; 92.3 s two-process vs 63.7 s one-process. (ii) deletion of `wave_rules.py:110-119` NOT done: it is the whole Python `pm6-6` mode (fixture default, direct tests, G-P5 row) in files E2 is rewriting: left to C3 with C2-9 and S14. (iv) no P9 reference under `rel` / `rel-avx2` (receipt scan). (v) fixture chain `d32f7655...4e69`, identity 12/0. S13 at E2's merge. DISK-2 pool-15 already clean; ledger 133 / `27e40f9f` |

@@ -1,0 +1,45 @@
+{
+    "Source":  "a25453be45d2693b2f56a2d9f3a626f19ed27a1f",
+    "Preset":  "equity-rel",
+    "DirtyEntries":  4,
+    "ConfiguredProvenance":  "a25453be45d2693b2f56a2d9f3a626f19ed27a1f-dirty",
+    "Jobs":  4,
+    "FreeMiB":  5243,
+    "CommitMiB":  4982,
+    "Targets":  [
+                    "atx-impl-strategy-target-tests",
+                    "atx-equity-strategy-targets",
+                    "atx-engine-eval-tests",
+                    "atx-engine-book-tests",
+                    "atx-impl-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  775.4137799,
+    "CompiledTUs":  253,
+    "Links":  10,
+    "Tag":  "p9-2e",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity-rel",
+    "Executables":  {
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "38bf32f65bbba3ea3e792e4a5300024bbec46798b91cc18424c36b72469619a6"
+                                                           },
+                        "atx-equity-strategy-targets":  {
+                                                            "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-targets.exe",
+                                                            "Sha256":  "cb2df40da838ed1e3c028eff1d1eda0635f79ffcd01462f5fe0499e04bae2f4e"
+                                                        },
+                        "atx-engine-eval-tests":  {
+                                                      "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-eval-tests.exe",
+                                                      "Sha256":  "e4edccb1464d303a1d374e485e42d8ecb54d4685c2c8676181e93109a85dde47"
+                                                  },
+                        "atx-engine-book-tests":  {
+                                                      "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-book-tests.exe",
+                                                      "Sha256":  "3032649c03ae7ffe10bfc79d27930af0cf092b74703a3a811a00adf9a24bb0b0"
+                                                  },
+                        "atx-impl-tests":  {
+                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-tests.exe",
+                                               "Sha256":  "b38952e9383599230c2ebd8e267654e0c0363917bf1b7bc30d790337207c0b02"
+                                           }
+                    }
+}

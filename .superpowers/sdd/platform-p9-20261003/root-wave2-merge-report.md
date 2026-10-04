@@ -866,3 +866,113 @@ Not run, by design: the real-data engine *wave* (report item 2, second half). A 
 reader, trial ledger), which the 0-trial and blind rules forbid here; the wave layer is covered on the synthetic
 fixture by `test_engine_gross_match_is_the_python_match_in_one_nav` (`test_research_wave.py` 20 passed on the merged
 head, `m2e-logs/c2-pyt-research-wave.log`).
+
+#### C2: MERGED and verified (root item (ii) left to C3, reasons below)
+
+Python `"C:/Program Files/Python312/python.exe"`; every pytest `-q -rs -p no:cacheprovider`,
+`PYTHONDONTWRITEBYTECODE=1`, explicit paths, own `--basetemp` in the session scratchpad; `scripts/tests` and the
+`atx-engine/tools` suite in separate invocations. gtests through `m2e-logs/tools/gt.sh` (vcpkg DLL dir of the build
+type first on PATH).
+
+- **Housekeeping (before the merge):** docs commit `20bc5f5f` adds, unedited, `status-5.md`, `next-goal-prompt.md`,
+  `progress.md` (LEDGER-1), the two modified `al-data/*.md` and `docs/plans/2026-10-04-p9-engine-impl-status.md`
+  (`git add -f`, no cache path). The four `docs/plans/*.png` and `disk-audit.md` left alone. Trial ledger at the
+  start: 133 lines, `27e40f9f`.
+- **Ledger:** `Task C2: complete` (re-review 2 APPROVE at `4d77d3db`, 0 Required, 1 Suggested = S14); rulings P15,
+  C2-1..C2-10, C2-R2, C2-R3, C2-4b, C2-RED, M1c-RED read. C2-10: S14 is C3's required carry (not done here).
+- **Merge:** `a25453be` = `git merge --no-ff 4d77d3db`. One conflict, the `atx-impl/CMakeLists.txt` tail (D2's
+  `target_link_libraries(atx-impl-core PUBLIC atx-engine-research-composition)` vs C2's
+  `target_sources(atx-impl-core PRIVATE src/strategy_nav_calibrate.cpp)`): both kept, HEAD's block first. Auto-merged:
+  the `atx-impl/tests/CMakeLists.txt` tail (COV's lines and C2's `strategy_nav_calibrate_test.cpp` both present), and
+  the two E2-file edits `scripts/wave_result.py` (round 1) and `scripts/wave_stage_record.py` (R4's two lines, C2-8;
+  E2 is not in root, so they wait for E2's merge to be reconciled). The report, review, re-review 1, handoff and the
+  `c2-fix*` / `c2-*` evidence came with the merge (checked equal to pool-15's files modulo CRLF);
+  `task-C2-rereview-2.md` (lane commit `1ea664f2`, after the merged SHA) copied in from the lane blob (`git add -f`).
+  pool-15's `c2-fix1/` holds only a `.mypy_cache` and was not copied.
+- **Build p9-2d** (equity-dev; source `a25453be`, 4 dirty entries = the four PNGs, no code; the tree reconfigured
+  itself on the CMake change, ConfiguredProvenance `a25453be...-dirty`): `atx-impl-strategy-target-tests,
+  atx-equity-strategy-targets, atx-engine-eval-tests, atx-engine-book-tests, atx-impl-tests` -> **exit 0, 331.8 s,
+  114 TUs, 8 links, Jobs 4, 0 warnings** (the log's one stderr line is CMake's "GLOB mismatch" reconfigure notice).
+  Exe SHA-256 prefixes: target-tests `ecb229ca`, targets `90cb34a7`, eval-tests `65f78372`, book-tests `ff3ddfce`,
+  impl-tests `eee53e02` (`m2e-logs/mega-p9-2d-receipt.json`).
+- **Build p9-2e** (equity-rel; same source and targets; no stale-PCH refusal: `deps/equity-rel` was not fetched again)
+  -> **exit 0, 775.4 s, 253 TUs, 10 links, Jobs 4, 0 warnings**. Exe prefixes: target-tests `38bf32f6`, targets
+  `cb2df40d`, eval-tests `e4edccb1`, book-tests `3032649c`, impl-tests `b38952e9`
+  (`m2e-logs/mega-p9-2e-receipt.json`).
+- **gtests** (logs `m2e-logs/c2-gt-{dbg,rel}-*.log`):
+
+  | binary | filter | Debug (p9-2d) | Release (p9-2e) |
+  |---|---|---|---|
+  | atx-impl-strategy-target-tests | `CalibrateGross.*:NavBookRule.*:BookNormalScore.*` | **19 passed** | **19 passed** |
+  | atx-impl-strategy-target-tests | whole | **377 passed** (= M2d's 338 + COV's 29 + C2's 10) | **377 passed** |
+  | atx-impl-tests | `CalibrateGross.*` (the glob's copy; never built by the lane) | **7 passed** | **7 passed** |
+  | atx-engine-eval-tests | `*StatsExt*:*Deflated*:*MinTrl*` | **10 passed** | **10 passed** |
+  | atx-engine-book-tests | `BookNormalScore.*:*DecayMonitor*` | **13 passed** | **13 passed** |
+
+  **M1c-RED cleared:** `BookNormalScore.TiesShareTheMeanRankAndMirrorsAreOpposite` and `.FixtureTellsWrongRulesApart`
+  pass in Release in both binaries that hold them (target-tests and book-tests), with
+  `NormPpfOfALiteralIsItsRunTimeValue`; no expected value edited (C2-RED). From this head, a Release run of a
+  `--rank-shape norm-score-v1` book is evidence again (M1c-RED Ruling's restriction lifted).
+- **pytest:** `scripts/tests/test_research_wave.py` **20 passed** (38 s); from `scripts/tests` the eight wave suites
+  (`test_no_python_mirror test_wave_driver test_wave_hardening test_wave_queue test_wave_review test_wave_review_minor
+  test_wave_scoreboard test_wave_speed`) **77 passed** (194 s; G-P5 line "34 mirrored rule function(s) in 13 row(s)",
+  = D2's count). Logs `m2e-logs/c2-pyt-*.log`.
+- **(i) X-5 gm-pair identity (real data, 0 trials; list committed first, `4d0583cf`): HOLDS** on every item
+  (`m2e-logs/c2-gm-pair-cmp.txt`; receipts `m2e-logs/receipt-p9-m2e-c2-x5-{cal,gm,engine}.json`). All three runs
+  exe `90cb34a7`, source `4d0583cf` (= the merge plus the list commit), "clean in the code pathspec":
+
+  | run | what | outcome | wall | peak RSS |
+  |---|---|---|---|---|
+  | P1 `p9-m2e-c2-x5-cal` | Python step 1, L 1.1414 | completed, exit 0 | 45.0 s | 591 MiB |
+  | P2 `p9-m2e-c2-x5-gm` | Python step 2, L 1.1720 | completed, exit 0 | 47.4 s | 591 MiB |
+  | E `p9-m2e-c2-x5-engine` | `nav --calibrate-gross`, L 1.1414 requested | completed, exit 0 | 63.7 s | 639 MiB (cap 2,048) |
+
+  1. P2 vs `p9-c1-s2-x5-nav`: 27 / 27 files, 26 byte-identical; `summary.json` differs only at
+     `/producer/engine_git_sha`. Flag-absent identity of the merged NAV exe on X-5 holds.
+  2. Python rule: the L 1.1414 calibration is outside .005 (corrected); `matched_leverage` gives **`1.1720`** = the
+     registered `x-theme-erc-gm.json` L; the -gm run is within .005 (matched).
+  3. E vs P2: 26 files byte-identical (recipe.json included: the plain run's at L'); `summary.json` differs only by
+     the added `/calibration` (10 leaves).
+  4. Calibration record: `target` = G_parent (bit), `tolerance` 0.005, `leverage_requested` 1.1414,
+     `gross_requested` = the Python reader's G of P1 (bit), `corrected` true, `leverage` = float("1.1720") (relative
+     difference 0.0), `gross` = the Python reader's G of P2 and of E (bit), `matched` true.
+     **`construction_reused` true** (S6 / S9 / R5 real-data cover: X-5 carries `--warm-start-sessions 60` and
+     `--max-bytes 1 GiB`; the console says "construction reused").
+  5. Wall: two processes 92.3 s (P1 + P2) vs one process 63.7 s; E's peak +48 MiB over a plain run (the tape,
+     reserved up front), far inside the cap.
+
+  G_parent travels in E's argv (its receipt), exactly as the engine match stage's run recipe carries it (the X-5
+  spec's description already states it to 10 digits); no other gross value was printed (E's console lines carry them
+  and were read only through a filter that masks the numbers). No return / NAV / Sharpe / turnover statistic was read.
+- **(ii) deletion of `wave_rules.py:110-119`: NOT done here; left to lane C3** (its carry already lists it as
+  "required (root, if still present)", `wave3-carry.md:221`). The two functions (`matched_leverage`,
+  `gross_matches`; lines 113-122 on the merged head) are not a self-contained block: they are the whole Python `pm6-6`
+  match mode. Callers on the merged head: `wave_stage_cell.match` (`:241`, `:245`, `:262`, the Python branch, which is
+  also the path of `gross_match: none`); `scripts/tests/wave_fixture.py:343` (`FakeCycle.calibrate`); the fixture's
+  default manifest is `"gross_match": "pm6-6"` (`wave_fixture.py:180`), so the wave suites run the Python mode by
+  default; `test_research_wave.py:77-84` asserts the two functions directly and `:236-288` compares the engine mode
+  with the Python mode; the G-P5 row `test_no_python_mirror.py:75-76` goes with them. Deleting the lines alone turns
+  those suites red; retiring the mode means removing `pm6-6` from `GROSS_MATCH`, a new `none` path, a new default
+  manifest and rewritten wave tests: a designed change (Ruling C2-10: "root does not hand-write designed checks")
+  inside files E2 is rewriting now (pool-17 fix round 3: `wave_stage_cell.py`, `wave_manifest.py`, the wave tests).
+  The identity it waits for now holds (above), so C3 can do it with C2-9 and S14. **C2-9's plan-time refusal likewise
+  goes to C3** (it depends on the deletion). No wave pytest re-run was needed (no commit).
+- **(iii) S13:** at E2's merge (as briefed).
+- **(iv) no P9 reference under the `rel` preset: holds** (`m2e-logs/c2-rel-preset-scan.txt`,
+  `m2e-logs/tools/rel_preset_scan.py`). pool-2's 105 build receipts: 74 equity-dev, 10 equity-rel, 21 without a
+  Preset field (pre-P9 `mega-build.ps1` era: v5 / v6 / t-series / sha-o2, which built `build-equity` only); none names
+  `rel` or `rel-avx2`. 643 bounded-run receipts: every executable is under `build-equity\bin`, `build-equity-rel\bin`,
+  the two M1b reference copies under `build-equity\`, or Python; none under `build-rel` / `build-rel-avx2`. Neither
+  tree exists in pool-2, and no `build-rel*` exists in any `C:/atx-wt/pool-*` or `C:/atx`.
+- **(v) SQL2-CLS: no commit** (C2 adds no `atx.<name>/v<n>` literal, as its report says). Guard
+  `atx-engine/tools/test_research_store_classes.py` on the merged head **5 passed, 92 subtests**. Fixture chain
+  (`atx-research-store` p9-1u `3b955ba1`, rel and abs `--root`, `m2e-logs/c2-fixture-chain.log`,
+  `m2e-logs/tools/fixture_chain.sh`): `files_seen 28 verified 25 declared 0 skipped 4`, **`catalog_digest
+  d32f7655...4e69`**, `digest` same, `verify --pins` 0, identity total checked 12, mismatches 0.
+- **Not run (by design):** the real-data engine wave (see the list). C2-4 was the lane's (C2-4b). The ledger
+  candidates 1-4 of the C2 report are the PM's to append.
+- **DISK-2 (pool-15):** nothing to delete: the lane had deleted its object trees (`build-equity/` 3.2 MB = receipts,
+  logs, `audits/`, `v8-interim3-pitch-render-run2/`; `deps/` empty; no `build-equity-rel/`). Mine: P1 and P2 outputs
+  (`build-equity/p9-m2e-c2-x5-{cal,gm}`, 11 MB each; P2 is a byte copy of the reference but `producer`) are deleted by
+  name after this commit, receipts kept; E (`p9-m2e-c2-x5-engine`, 11 MB, the first engine-calibrated X-5 NAV) is kept.
+- **Trial ledger:** 0 trials (133 lines, `27e40f9f`).

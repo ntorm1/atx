@@ -1,0 +1,24 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = CalibrateGross.*
+[==========] Running 7 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 7 tests from CalibrateGross
+[ RUN      ] CalibrateGross.NumpyMeanIsNumpysMeanAtEverySize
+[       OK ] CalibrateGross.NumpyMeanIsNumpysMeanAtEverySize (4 ms)
+[ RUN      ] CalibrateGross.FourDecimalsAndTheStepArePm66
+[       OK ] CalibrateGross.FourDecimalsAndTheStepArePm66 (0 ms)
+[ RUN      ] CalibrateGross.WithinToleranceOnePass
+[       OK ] CalibrateGross.WithinToleranceOnePass (337 ms)
+[ RUN      ] CalibrateGross.OneCorrectionMatchesTwoProcess
+[       OK ] CalibrateGross.OneCorrectionMatchesTwoProcess (1584 ms)
+[ RUN      ] CalibrateGross.RefusesOutsideRange
+[       OK ] CalibrateGross.RefusesOutsideRange (203 ms)
+[ RUN      ] CalibrateGross.TieredRunReusesTheConstructionByteForByte
+[       OK ] CalibrateGross.TieredRunReusesTheConstructionByteForByte (804 ms)
+[ RUN      ] CalibrateGross.ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage
+[       OK ] CalibrateGross.ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage (3438 ms)
+[----------] 7 tests from CalibrateGross (6375 ms total)
+
+[----------] Global test environment tear-down
+[==========] 7 tests from 1 test suite ran. (6376 ms total)
+[  PASSED  ] 7 tests.
