@@ -869,14 +869,16 @@ def test_r3_maps_the_parents_composition_to_its_aim_rule(tmp_path, authored_v8):
     RC.validate_spec(dict(v5, verdict=False, summ=dict(v8["summ"], extra=["--effective-n", "dirs"])))  # v7: as before
 
 
-# review R6B-C-4: Ruling E-27b reads the argv the tools parse, in every spelling argparse accepts (allow_abbrev is on in
-# the fitter and in nav_summ): "=", any unique prefix, a repeat (the last wins)
+# review R6B-C-4: Ruling E-27b reads the argv the tools parse, in every spelling argparse accepts: "=", a repeat (the
+# last wins) and, in nav_summ (allow_abbrev on), any unique prefix. Ruling D2R-1: the fitter sets allow_abbrev=False, so
+# it reads --composition only as the exact flag (two tokens or "="); a former abbreviation is a usage error in the fitter
+# itself (asserted below) and the guard still counts it (the safe side), so every case below is still refused
 V5_AIM = "ew-theme-aim-v1"
 COMPOSITION_SPELLINGS = {"pair": ["--composition", V5_AIM], "equals": [f"--composition={V5_AIM}"],
-                         "abbreviation": ["--compo", V5_AIM], "abbreviation-equals": [f"--compo={V5_AIM}"],
-                         "shortest": ["--c", V5_AIM], "repeat-last": ["--composition", "ew-theme-v1", "--composition",
-                                                                      V5_AIM],
+                         "repeat-last": ["--composition", "ew-theme-v1", "--composition", V5_AIM],
                          "repeat-first": ["--composition", V5_AIM, "--composition", "ew-theme-v1"]}
+COMPOSITION_ABBREVIATIONS = {"abbreviation": ["--compo", V5_AIM], "abbreviation-equals": [f"--compo={V5_AIM}"],
+                             "shortest": ["--c", V5_AIM]}
 PROTOCOL_SPELLINGS = {"pair": ["--protocol", "v8"], "equals": ["--protocol=v8"], "abbreviation": ["--proto", "v8"],
                       "abbreviation-equals": ["--prot=v8"], "shortest": ["--pr", "v8"]}
 FIT_REQUIRED = ["--library", "l", "--library-sha256", "0", "--train", "t", "--train-sha256", "0", "--orientations", "o",
@@ -913,19 +915,28 @@ def e27b_variant(doc: dict, composition: list | None = None, protocol: list | No
 
 
 def e27b_cases(doc: dict) -> list[tuple[str, dict]]:
-    return ([(f"composition {n}", e27b_variant(doc, sp)) for n, sp in COMPOSITION_SPELLINGS.items()]
+    compositions = {**COMPOSITION_SPELLINGS, **COMPOSITION_ABBREVIATIONS}         # the guard refuses both (D2R-1)
+    return ([(f"composition {n}", e27b_variant(doc, sp)) for n, sp in compositions.items()]
             + [(f"protocol {n}", e27b_variant(doc, ["--composition", V5_AIM], sp)) for n, sp in PROTOCOL_SPELLINGS.items()])
 
 
-def test_e27b_reads_what_the_fitter_and_nav_summ_parse():
+def test_e27b_reads_what_the_fitter_and_nav_summ_parse(capsys):
     """Every spelling of the cases is one the real parsers read as ew-theme-aim-v1 / --protocol v8 (so the guard must
-    see it), and the guard reads it."""
+    see it), and the guard reads it; a former abbreviation of --composition is a usage error in the fitter itself
+    (ruling D2R-1: allow_abbrev=False) and the guard still counts it."""
     sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
     import fit_composition_weights as fcw
     import nav_summ as NS
+    assert not tool_parser(fcw.main).allow_abbrev and tool_parser(NS.main).allow_abbrev
     for name, sp in COMPOSITION_SPELLINGS.items():
         assert fcw.parse_args(FIT_REQUIRED + sp).composition == ("ew-theme-v1" if name == "repeat-first" else V5_AIM)
         assert V5_AIM in RC.argparse_values(sp, "--composition"), name   # a repeat with v1 anywhere is refused too
+    capsys.readouterr()
+    for name, sp in COMPOSITION_ABBREVIATIONS.items():
+        with pytest.raises(SystemExit) as e:                             # the fitter reads no prefix (D2R-1)
+            fcw.parse_args(FIT_REQUIRED + sp)
+        assert e.value.code == 2 and "unrecognized arguments" in capsys.readouterr().err, name
+        assert RC.argparse_values(sp, "--composition") == [V5_AIM], name   # counted anyway (the safe side)
     parser = tool_parser(NS.main)
     for name, sp in PROTOCOL_SPELLINGS.items():
         assert parser.parse_args(sp).protocol == "v8" and RC.argparse_values(sp, "--protocol") == ["v8"], name
