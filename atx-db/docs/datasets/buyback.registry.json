@@ -1,0 +1,8 @@
+{
+  "stage": "events/buyback",
+  "path": "events/buyback.parquet",
+  "keys": ["accession", "source_sha256", "event_type", "execution_period", "evidence"],
+  "schema_id": "atx.alpha-panel.events.buyback/v2",
+  "asof_macro_sql": "SELECT * FROM buyback WHERE available_at < CAST(asof_date AS TIMESTAMP) - INTERVAL 1 DAY + INTERVAL 22 HOUR",
+  "gate_status": "FAIL: 0 actual native handchecks / 200 required"
+}

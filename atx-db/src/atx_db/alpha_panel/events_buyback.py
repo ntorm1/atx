@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -41,9 +42,9 @@ from typing import Any
 from . import common as C
 from .guidance import SCALE, find_values, _apply_scale
 
-EXTRACTOR_VERSION = "buyback-rules-v1"
+EXTRACTOR_VERSION = "buyback-rules-v2"
 TABLE = "buyback"
-SCHEMA = "atx.alpha-panel.events.buyback/v1"
+SCHEMA = "atx.alpha-panel.events.buyback/v2"
 
 BUYBACK_OBJ = re.compile(r"\b(?:re-?purchases?|buy-?backs?|buy\s+back)\b", re.IGNORECASE)
 #: An authorising act (a verb), or "new / additional [$X] share repurchase ..." (a noun phrase naming a new program).
@@ -283,7 +284,45 @@ OUT_COLUMNS = [
     ("acceptance_clock", "VARCHAR"), ("vintage_risk", "VARCHAR"), ("event_type", "VARCHAR"),
     ("amount_usd", "DOUBLE"), ("amount_shares", "DOUBLE"), ("total_after_usd", "DOUBLE"), ("evidence", "VARCHAR"),
     ("extractor_version", "VARCHAR"),
+    ("source_sha256", "VARCHAR"), ("execution_period", "VARCHAR"),
+    ("execution_shares", "DOUBLE"), ("execution_average_price", "DOUBLE"),
+    ("public_program_shares", "DOUBLE"), ("remaining_authorization_usd", "DOUBLE"),
 ]
+
+
+def extract_part_ii(text: str) -> list[dict[str, Any]]:
+    """Read a deliberately narrow native Part II Item 2 pipe table.
+
+    Units must explicitly be shares and USD. Values in millions or thousands are
+    rejected, as are unknown columns. Executions are never authorization events.
+    """
+    section = re.search(r"Part\s+II\b.*?Item\s+2\b(.*?)(?:\bItem\s+3\b|\Z)", text, re.I | re.S)
+    if not section:
+        return []
+    lines = section.group(1).splitlines()
+    expected = ["period", "total shares purchased", "average price paid per share (usd)",
+                "shares purchased under publicly announced plans", "remaining authorization (usd)"]
+    active = False
+    result = []
+    for line in lines:
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if [c.lower() for c in cells] == expected:
+            active = True
+            continue
+        if not active or len(cells) != 5 or cells[0].lower() == "total":
+            continue
+        if not re.fullmatch(r"[A-Za-z]+\s+20\d{2}", cells[0]):
+            continue
+        try:
+            numbers = [float(c.replace(",", "").replace("$", "")) for c in cells[1:]]
+        except ValueError:
+            continue
+        import math
+        if any(not math.isfinite(v) or v < 0 for v in numbers) or numbers[2] > numbers[0]:
+            continue
+        result.append(dict(zip(("execution_period", "execution_shares", "execution_average_price",
+                               "public_program_shares", "remaining_authorization_usd"), [cells[0], *numbers]), evidence=line.strip()))
+    return result
 
 
 def _tmp() -> Path:
@@ -301,10 +340,13 @@ def phase_parse(start: dt.date = dt.date(2019, 1, 1)) -> dict[str, Any]:
     from .guidance import peak_memory
 
     store = ES.open_store()
+    catalog_sha = C.sha256_file(ES.catalog_path())
 
     def pred(r: dict[str, Any]) -> bool:
-        if not r["form"] or not r["form"].startswith("8-K") or (r["filing_date"] or dt.date.min) < start:
+        if not r["form"] or not r["form"].startswith(("8-K", "10-Q")) or (r["filing_date"] or dt.date.min) < start:
             return False
+        if r["form"].startswith("10-Q"):
+            return (r["file_type"] or "").upper().startswith("10-Q")
         if r["doc_source"] == "landed_v2":
             return True
         q = r["qids"] or []
@@ -325,7 +367,8 @@ def phase_parse(start: dt.date = dt.date(2019, 1, 1)) -> dict[str, Any]:
         if not blob:
             stats["unreadable"] += 1
             continue
-        for a in extract_authorizations(ES.document_text(blob, r["source_doc"] or ""), r["filing_date"]):
+        text = ES.document_text(blob, r["source_doc"] or "")
+        for a in extract_authorizations(text, r["filing_date"]):
             k = (r["accession"], a.event_type, a.amount_usd, a.amount_shares, a.total_after_usd)
             if k in seen:
                 continue
@@ -336,15 +379,31 @@ def phase_parse(start: dt.date = dt.date(2019, 1, 1)) -> dict[str, Any]:
                         "acceptance_clock": r["acceptance_clock"], "vintage_risk": r["vintage_risk"],
                         "event_type": a.event_type, "amount_usd": a.amount_usd, "amount_shares": a.amount_shares,
                         "total_after_usd": a.total_after_usd, "evidence": a.evidence,
-                        "extractor_version": EXTRACTOR_VERSION})
+                        "extractor_version": EXTRACTOR_VERSION,
+                        "source_sha256": hashlib.sha256(blob if isinstance(blob, bytes) else blob.encode()).hexdigest()})
             stats["events"] += 1
+        if r["form"].startswith("10-Q"):
+            for execution in extract_part_ii(text):
+                key = (r["accession"], "execution", execution["execution_period"], execution["evidence"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                buf.append({**{k: r.get(k) for k in ("cik", "accession", "form", "items", "source_doc", "doc_source",
+                            "filing_date", "event_date", "available_at", "acceptance_clock", "vintage_risk")},
+                            **execution, "event_type": "execution", "extractor_version": EXTRACTOR_VERSION,
+                            "source_sha256": hashlib.sha256(blob if isinstance(blob, bytes) else blob.encode()).hexdigest()})
+                stats["events"] += 1
         if len(buf) >= 5000:
             writer.write_table(pa.Table.from_pylist(buf, schema=schema))
             buf.clear()
     if buf:
         writer.write_table(pa.Table.from_pylist(buf, schema=schema))
     writer.close()
+    if C.sha256_file(ES.catalog_path()) != catalog_sha:
+        raise ValueError("document catalog changed during buyback parse")
     os.replace(tmp, dest)
+    stats["catalog_sha256"] = catalog_sha
+    stats["parse_rows_sha256"] = C.sha256_file(dest)
     stats["peak_memory"] = peak_memory()
     C.write_json_atomic(_tmp() / "buyback_parse_receipt.json", stats)
     return stats
@@ -354,14 +413,20 @@ def phase_publish() -> dict[str, Any]:
     from . import events_common as EC
 
     receipt: dict[str, Any] = {"parse": C.read_json(_tmp() / "buyback_parse_receipt.json")}
-    con = C.connect(memory="300MB", threads=2)
+    parse_path = _tmp() / "buyback_rows.parquet"
+    if C.sha256_file(parse_path) != receipt["parse"]["parse_rows_sha256"]:
+        raise ValueError("buyback parsed rows changed")
+    pin_paths = [parse_path, C.build_root() / "fundamentals" / "events.parquet", EC.link_table_path(),
+                 C.build_root() / "fundamentals" / "manifest.json", C.build_root() / "identity" / "manifest.json"]
+    pinned = {str(p): C.sha256_file(p) for p in pin_paths}
+    con = C.connect(memory="128MB", threads=1)
     rows = (_tmp() / "buyback_rows.parquet").as_posix()
     fund = (C.build_root() / "fundamentals" / "events.parquet").as_posix()
     con.execute(f"""
         CREATE TABLE b AS
         SELECT r.*,
                -- earliest filing of the same (cik, type, amount) within 180 days is the announcement
-               NOT EXISTS (SELECT 1 FROM read_parquet('{rows}') o
+               r.event_type <> 'execution' AND NOT EXISTS (SELECT 1 FROM read_parquet('{rows}') o
                            WHERE o.cik = r.cik AND o.event_type = r.event_type
                              AND coalesce(o.amount_usd, -1) = coalesce(r.amount_usd, -1)
                              AND coalesce(o.amount_shares, -1) = coalesce(r.amount_shares, -1)
@@ -382,13 +447,20 @@ def phase_publish() -> dict[str, Any]:
         ASOF LEFT JOIN fx pb ON pb.cik = b.cik AND b.available_at > pb.clock_utc
         ASOF LEFT JOIN (SELECT * FROM fx) pa ON pa.cik = b.cik AND pa.clock_utc > b.available_at""")
     EC.attach_security(con, "b2", "b3", date_col="filing_date")
-    out = C.stage_dir(EC.STAGE) / f"{TABLE}.parquet"
+    code = C.code_identity("events_buyback", "guidance", "events_common", "events_sources", "common")
+    product_id = hashlib.sha256(json.dumps({"inputs": pinned, "code": {k: v for k, v in code.items() if k != "git_head"}}, sort_keys=True).encode()).hexdigest()
+    product = C.stage_dir(EC.STAGE) / "buyback_products" / product_id
+    if product.exists():
+        raise FileExistsError("immutable buyback product already exists")
+    product.mkdir(parents=True)
+    out = product / f"{TABLE}.parquet"
     receipt["rows"] = C.copy_to_parquet(con, """
         SELECT cik, security_id, link_tier, link_basis, is_member_issuer, accession, form, items, source_doc,
                doc_source, filing_date, event_date, available_at, acceptance_clock, vintage_risk, event_type,
                amount_usd, amount_shares, total_after_usd, first_announcement, xbrl_authorized_before,
                xbrl_remaining_before, xbrl_authorized_after, xbrl_remaining_after, xbrl_after_accession,
-               xbrl_after_available_at, evidence, extractor_version
+               xbrl_after_available_at, evidence, extractor_version, source_sha256, execution_period,
+               execution_shares, execution_average_price, public_program_shares, remaining_authorization_usd
         FROM b3 ORDER BY cik, available_at, accession""", out)
     o = out.as_posix()
     receipt["per_year"] = {str(y): {"rows": int(n), "first": int(f), "member_first": int(mf), "ciks": int(c),
@@ -406,8 +478,19 @@ def phase_publish() -> dict[str, Any]:
                                      OR abs(xbrl_authorized_after - coalesce(total_after_usd, -1)) <= 0.01 * amount_usd))
         FROM read_parquet('{o}') WHERE first_announcement""").fetchone()
     con.close()
+    for name, digest in pinned.items():
+        if C.sha256_file(Path(name)) != digest:
+            raise ValueError("buyback input changed during publication")
+    C.write_json_atomic(product / "manifest.json", {"schema": SCHEMA, "product_id": product_id,
+        "input_manifests_sha256": pinned, "file_sha256": C.sha256_file(out),
+        "gate_status": {"buyback_200_native_handchecks": "FAIL", "measured": 0, "required": 200}, **receipt})
+    import shutil
+    alias = C.stage_dir(EC.STAGE) / f"{TABLE}.parquet"
+    shutil.copyfile(out, alias.with_suffix(".partial"))
+    alias.with_suffix(".partial").replace(alias)
     EC.publish_table(TABLE, ("events_buyback", "guidance", "events_common", "events_sources", "common"), {
-        "schema": SCHEMA, "rule": __doc__, "extractor_version": EXTRACTOR_VERSION, **receipt})
+        "schema": SCHEMA, "rule": __doc__, "extractor_version": EXTRACTOR_VERSION,
+        "gate_status": {"buyback_200_native_handchecks": "FAIL", "measured": 0, "required": 200}, **receipt})
     return receipt
 
 

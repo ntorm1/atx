@@ -1,0 +1,10 @@
+{
+  "stage": "corporate_actions/distributions",
+  "path": "corporate_actions/distributions.parquet",
+  "keys": ["event_id"],
+  "schema_id": "atx.alpha-panel.distributions/v1",
+  "asof_macro_sql": "SELECT * FROM distributions WHERE available_at < CAST(asof_date AS TIMESTAMP) - INTERVAL 1 DAY + INTERVAL 22 HOUR",
+  "monthly_asof_sql": "SELECT * FROM distributions WHERE available_at < CAST(monthend_session AS TIMESTAMP) + INTERVAL 22 HOUR",
+  "gate_status": "FAIL: actual source evidence and coverage unmeasured",
+  "immutable_product_manifest": "corporate_actions/distributions_products/<content-id>/manifest.json"
+}
