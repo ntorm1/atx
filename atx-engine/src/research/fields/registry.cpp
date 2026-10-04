@@ -4,6 +4,10 @@
 #include <array>
 #include <utility>
 
+#include "atx/engine/research/fields/gia_13f_field.hpp"
+#include "atx/engine/research/fields/russell_recon_field.hpp"
+#include "atx/engine/research/fields/sources/russell_proxy.hpp"
+#include "atx/engine/research/fields/sources/thirteenf.hpp"
 #include "atx/engine/research/fields/vendor_fields.hpp"
 #include "atx/engine/research/fields/volume_mean_field.hpp"
 
@@ -226,7 +230,7 @@ using Paths = std::vector<std::filesystem::path>;
 }
 
 // The kind table. Its order is engine_field_names()' (research_fields_cli.hpp).
-constexpr std::array<BuilderKind, 9> kKinds{{
+constexpr std::array<BuilderKind, 11> kKinds{{
     {"si_shares", &parse_si_shares, &build_finra_kind},
     {"si_dtc", &parse_si_dtc, &build_finra_kind},
     {"vol_126", &parse_vol_126, &build_vol_126_kind},
@@ -236,6 +240,8 @@ constexpr std::array<BuilderKind, 9> kKinds{{
     {"open_adj", &parse_open_adj, &build_vendor_kind},
     {"high_adj", &parse_high_adj, &build_vendor_kind},
     {"low_adj", &parse_low_adj, &build_vendor_kind},
+    {"gia_13f", &parse_gia_13f_kind, &build_gia_13f_kind},             // lane AL-SIG (DEC-5)
+    {"russell_recon", &parse_russell_recon_kind, &build_russell_recon_kind}, // lane AL-SIG
 }};
 
 constexpr std::array<std::string_view, kKinds.size()> kKindIds = [] {
@@ -320,6 +326,27 @@ core::Result<std::vector<FieldPlan>> plan_fields(const BuildSpec &spec,
     std::stable_sort(plans.begin(), plans.end(), registered_before);
   }
   return core::Ok(std::move(plans));
+}
+
+core::Status check_kind_request(const FieldSpec &spec, std::string_view field,
+                                const nlohmann::json &options) {
+  return check_request(spec, field, options);
+}
+
+core::Status check_stage_pins(const BuildSpec &spec) {
+  if (spec.thirteenf) {
+    const auto stage = PinnedStage::open(*spec.thirteenf, kThirteenfStage);
+    if (!stage) {
+      return core::Err(stage.error());
+    }
+  }
+  if (spec.indexes) {
+    const auto stage = PinnedStage::open(*spec.indexes, kIndexesStage);
+    if (!stage) {
+      return core::Err(stage.error());
+    }
+  }
+  return core::Ok();
 }
 
 } // namespace atx::engine::research::fields
