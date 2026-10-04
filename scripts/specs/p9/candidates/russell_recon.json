@@ -37,7 +37,7 @@
       "status": "dropped",
       "at": "2026-10-03",
       "by": "AL-SIG (PM ruling ALSIG-5)",
-      "note": "ruling ALSIG-5: withdrawn from the trial queue, registration kept; net SR_c >= .4 cannot be argued a priori from the literature (notes); never pinned without a new PM ruling"
+      "note": "ruling ALSIG-5: withdrawn from the trial queue, registration kept; net SR_c >= .4 cannot be argued a priori from the literature (notes); dropped is final, so this document is never pinned: a re-test is a new variant with a PM ruling"
     }
   ]
 }

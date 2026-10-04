@@ -158,8 +158,7 @@ files are identical and the file lists are equal. Scratch was deleted.
    - Also check `ResearchFieldsFixture.*` and `ResearchFieldsCli.*`.
    - The expected result: a v1 or v2 spec without `thirteenf` / `indexes` builds byte-identically. The three ported
      kinds are untouched.
-4. K1 `--plan-only` of `rank(russell_recon)` (carry) on the fields build that will carry P9-S. `rank(gia_13f)` is no
-   longer a registered string.
+4. (Withdrawn by ruling ALSIG-8, fix round 2: no K1 `--plan-only` run of an AL-SIG string is a root item.)
 5. pytest: the four files above, plus `research_cycle.py candidates validate --dir scripts/specs/p9/candidates`.
 
 ## Decisions
@@ -256,7 +255,8 @@ New gtest `ResearchFieldsAlSigFixture.ReuseRefusesAWrongStagePin`:
 Cross-lane edits added in this round (all A2 files, minimal):
 - `registry.hpp`: one declaration appended at the tail.
 - `registry.cpp`: two includes and one function appended at the tail.
-- `research_fields_cli.cpp`: three `check_stage_pins` call lines, one per call site.
+- `research_fields_cli.cpp`: four `check_stage_pins` call lines, two per build function (`:372`, `:375`, `:396`,
+  `:413`; the count was corrected in fix round 2, re-review N4).
 
 There are no new files and no CMake change.
 
@@ -299,8 +299,7 @@ There are no new files and no CMake change.
 ### For root (updates to "How root verifies")
 
 - gtest filter `ResearchFieldsAlSig*:ResearchFieldsRegistry*` must now give **33** passed (was 31).
-- K1 `--plan-only` of `rank(russell_recon)` stays a root item (ALSIG-5), even though the string is now withdrawn from
-  the trial queue.
+- K1 `--plan-only` of `rank(russell_recon)`: withdrawn by ruling ALSIG-8 (fix round 2), not a root item.
 - Field changes:
   - The Russell reader now expects the house ids `R1000P` / `R2000P`.
   - It also expects a manifest `rule` list holding `russell-proxy-v1`.
@@ -310,3 +309,88 @@ There are no new files and no CMake change.
   `v8-interim3-pitch-render-run2/`.
 - Scratch: my two fix-round scratch scripts and the configure and build output files in the shared scratchpad were
   deleted by exact name, with no wildcard.
+
+## Fix round 2 (re-review `task-AL-SIG-rereview-1.md` at `3f9980d0`: APPROVE, findings N1-N4; rulings ALSIG-7 / -8)
+
+Outcome: N1 through N4 are done and ALSIG-8 is applied. The commits, on top of `3f9980d0`, are `6e52c328` (N1 /
+ALSIG-7) and `b8020fe1` (N2, N3). This report commit also carries the N4 nit in `russell_recon.json`.
+
+| finding / ruling | what was done | commit |
+|---|---|---|
+| **N1 / ALSIG-7**: the house indexes stage looks ahead | atx-db is untouched. The `russell_recon` spec now declares `point_in_time = false` with one `non_pit_aspects` entry (full text below) that states the look-ahead exactly. Its `presence: ` prefix follows the house aspect labels (`values` / `presence`). The registry row was re-derived through the round-trip: a scratch script parses the C++ spec literals, recomputes the fingerprint, checks the result with `field_registry.validate`, and writes it with `field_registry.dump`; a `--check` re-run reports no difference. The row's `point_in_time` is now `false` and its fingerprint is `787a8d87…a699`, still revision 1 because the field was never built. The `gia_13f` row is unchanged (`2e693083…`). | `6e52c328` |
+| N1: what stops the field from feeding a trial | The wave queue reads no field registry, so it cannot check field flags itself. **What enforces it** is described below the table. | `6e52c328` |
+| **N2**: house-parity comments | Both null-CUSIP comments now say the engine is *stricter* than house `build_13f`, whose `pc.index_in` with `skip_nulls=False` would match a null holding CUSIP to a null map row. The behaviour is unchanged. | `b8020fe1` |
+| **N3**: a rule list naming two Russell versions | `names_rule` (`stage.cpp`) now requires the list to hold the declared rule and **no other version of its family**. The family is the rule minus its `-v<digits>` suffix. `IndexesStageRule` gains these rows: `[sp500-proxy-v1, russell-proxy-v1]` passes; `[russell-proxy-v1, russell-proxy-v2]`, the reverse order, a list with `russell-proxy-v10`, and `[russell-proxy-v2]` are refused. | `b8020fe1` |
+| **N4**: nits | (a) The report's call-line count is corrected to four, two per build function. (b) `stage.hpp`'s `open()` contract wording now matches the rule check. (c) The `russell_recon` ALSIG-5 history note now reads "dropped is final, so this document is never pinned: a re-test is a new variant with a PM ruling". `candidates validate` still passes. | (a, c) report commit; (b) `b8020fe1` |
+| **ALSIG-8**: K1 `--plan-only` withdrawn | Removed from the report's root items: "How root verifies" item 4 and fix round 1's "For root". | report commit |
+
+The declared aspect, verbatim (the registry row's `spec_text.non_pit_aspects[0]`):
+
+> presence: the house indexes stage (atx-db alpha_panel.indexes, intervals) drops a member line of reconstitution R
+> whose security_master last_session (its last trading date over the whole history) falls before R's effective_from,
+> yet stamps every kept row available at the rank date 22:00 UTC; so inside R's event window (rank date + 2 sessions
+> to the session before recon_date) a line that will delist before the effective date is missing from snapshot R and
+> reads NaN instead of +1, -1 or 0: its NaN reveals the delisting 4 to 7 weeks early (survivorship look-ahead). The
+> prior snapshot and the values of the lines present are point in time.
+
+**What enforces "no trial" while the entry stands** (N1):
+1. **The IC runner (the binding guard).** `atx-impl/src/strategy_ic_admission.cpp:400-406` refuses, with no override, a
+   library field whose pinned fields-manifest entry carries a non-empty `non_pit_aspects` ("refusing look-ahead"). It
+   also refuses an entry whose `point_in_time` contradicts the aspects (`:302-315`).
+2. **The engine manifest carries the flags.** It copies the spec's `point_in_time` / `non_pit_aspects` into the entry
+   and lists the field under `non_point_in_time_fields` (`manifest.cpp`). `ResearchFieldsAlSigFixture.BuildMatchesTheOracle`
+   now pins that copy: `russell_recon` is `false` with the spec's aspect, `gia_13f` is `true` with `[]`, and
+   `non_point_in_time_fields == ["russell_recon"]`. `CommittedRowsPinTheSpecs` checks that the row flag equals the spec
+   flag, that the flag and the aspects agree, and that the aspect is `presence: …` naming `last_session`.
+3. **The queue.** `rank(russell_recon)` is already `dropped`, a final status (ALSIG-5). The new pytest
+   `test_non_point_in_time_field_feeds_no_trial[russell_recon]` pins the row's flag and the aspect text. It also pins
+   that no queue document of any lane that reads this lane's non-PIT row stands `proposed` or `pinned`.
+   `test_field_is_an_engine_only_registry_row` now checks `point_in_time == spec flag == (no aspects)` per field.
+
+Cross-lane: none new in this round. The edits are confined to AL-SIG files, the `russell_recon` row of
+`field_registry.json`, and the lane's own registration JSON.
+
+### Evidence (fix round 2)
+
+**Configure.** `powershell -NoProfile -File scripts\atx-build.ps1 configure -Preset equity-dev` exited 0:
+`-- Configuring done (23.4s)`.
+
+**Build.**
+- Command: `powershell -NoProfile -File scripts\research-build.ps1 -Tag p9-alsig-d -Targets
+  "atx-engine-research-fields-tests,atx-research-fields"`, exit 0.
+- Gate: the dry run admitted at 2730 MiB free; the build started at 2127 MiB free with `Jobs` 2. pool-24's build was
+  running at the same time.
+- Receipt: `"ExitCode": 0, "CompiledTUs": 94, "Links": 8, "WallSeconds": 132.29`, `Source` `3f9980d0` with
+  `DirtyEntries` 11 (every round-2 code edit).
+- The committed C++ (`6e52c328`, `b8020fe1`) is exactly what was built.
+- Executables: `atx-engine-research-fields-tests` `d8f70627…81c5`, `atx-research-fields` `472d9a5f…42a6`.
+- Warnings: only the two third-party databento `getenv` deprecations and clang-cl's `/MP` notice.
+
+**gtests.**
+- `atx-engine-research-fields-tests.exe --gtest_filter=ResearchFieldsAlSig*:ResearchFieldsRegistry* --gtest_brief=1`:
+  exit 0, `[==========] 33 tests from 5 test suites ran.` / `[  PASSED  ] 33 tests.`
+- The whole target: `72 tests from 12 test suites ran` / `[  PASSED  ] 70 tests.` The 2 failures are only the
+  M1a-RED pair that A3 owns (`ResearchFieldsWriter.QuantilesPartitionLikeNumpy`,
+  `ResearchFieldsVolumeMean.SumOrderIsNumpys`).
+
+**pytest.** Each run used `"C:/Program Files/Python312/python.exe" -B -m pytest -q -p no:cacheprovider`:
+- `scripts/tests/test_p9_al_sig_registrations.py scripts/tests/test_wave_queue.py`: exit 0, `16 passed`.
+- `atx-engine/tools/test_field_registry.py atx-engine/tools/test_no_new_python_builder.py`: exit 0, `39 passed`.
+- `ATX_RESEARCH_FIELDS_EXE=<pool-13>/build-equity/bin/atx-research-fields.exe` with
+  `atx-engine/tests/fixtures/research_fields/test_research_fields_engine_path.py` (`-rs`): exit 0, `11 passed`, no
+  skip.
+- `research_cycle.py candidates validate --dir scripts/specs/p9/candidates`: exit 0, `candidates: 1 valid`.
+- The registry round-trip `--check` reports `differs: []`.
+
+### For root (fix round 2)
+
+- **N1 carry.** A real `russell_recon` build now yields a manifest entry with `point_in_time: false`, and the IC
+  runner refuses that entry. Clearing it needs the stage owner's fix (keep the row and let `effective_to` carry the
+  delisting). After that, the aspect is removed and the row re-derived: a new fingerprint, and a revision bump if the
+  text alone does not show the change.
+- **Merge.** This round adds no new conflict surface beyond round 0 and round 1.
+- **gtest filter** `ResearchFieldsAlSig*:ResearchFieldsRegistry*`: 33 passed.
+- **K1 `--plan-only`:** none (ALSIG-8).
+- **Disk.** The `build-equity/` object tree was deleted again; only my own entries were removed, by name. The receipts
+  and logs `mega-p9-alsig-{a,b,c,d}-*` are kept, as are the pre-existing `audits/` and
+  `v8-interim3-pitch-render-run2/`. My round-2 scratch scripts and output files were deleted by exact name.
