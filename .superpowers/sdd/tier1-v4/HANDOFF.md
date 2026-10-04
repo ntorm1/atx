@@ -2,13 +2,44 @@
 
 ## Current release-objective recovery (2026-10-03, active)
 
-**LATEST (2026-10-04): root LIVE batches32..39, session10527, R19.**
+**LATEST (2026-10-04): root owns live session79333, batches56..63, R19.**
 This checkpoint supersedes every historical live-session statement below.
-Batches0..34 completed native replay and independent two-pass root admission.
+Batches0..55 completed native replay and independent two-pass root admission.
+Session52018 (48..55) ended0; native jobs32-50s, peak384-419MB.
+Session40057 also ended0. Immediately afterward goldreadinessmetadataaudit passed
+1s/24,838,144peakbytes under0.2GiB guard. gold-readiness-preflight-v1.json:
+gold,golden_panel,characteristics,char_monthly,labels_goldready directories all
+ABSENT; panel_goldreadyexists with2018-2021dirs/refresh_progress/_receipts, no
+rootcompletionmanifest. No values/returnsread. Userstatusquestionanswered:
+no publishedgoldfeaturepanel orreadyatx-implgoldload; unfinishedintermediateonly.
+Keep session79333 owned until completion; no competing actual data jobs.
+Task12 fixround1 commit67a5f1ac submitted and scoped review now assigned to
+/root/t16_release_foundation, package review-T12-native-r1.diff1420lines.
+Author reports13focused and4positive cases passed; actual gates stay unmeasured.
+Task6/7 R21 proposed semantic hashes now Task7 caf3bc45efda101fa4f5f96831093858388d27c71c45d836392b0fa4b00caa16
+and Task6 0d38a84b7a12825511686956ac52f87bd24769ee8741477cdb425e61b5a4f4b0.
+Full source-only historical factor producer to2024risk fixture passed; author
+commit cb114231 submitted, independent review still pending. Package
+review-T6-T7-r21.diff1699lines prepared; three idle reviewer dispatches hit
+threadlimit. Task8 may pin these for offline
+integration only; actual runs require final upstream approval.
+Task12 R1 review now Needs fixes: I1/I3/I4/I5 addressed, I2 selected quote
+still accepts explicitly negated surrounding original context. Report
+review-T12-native-r1-findings.md. Author currently independently reviewing
+Task13 continuation; finish that review before focused Task12 round2/5.
+Task13 review assigned /root/t12_terminal_events; no actual jobs granted.
+
+Previousstatusauditpreparation (now completed):
+Session10527(32..39) ended0. User asks whether anygoldfeaturepanels are ready;
+root answered noverifiedreadyrelease/consumeracceptance and promisedcurrent
+read-onlymanifestcheck. gold-readiness-preflight-v1.py PREPARED NOTRUN, queued
+immediately after40057 ends before furthernativechunks. Audit sixexactcanonical
+gold/golden_panel/characteristics/char_monthly/panel_goldready/labels_goldready
+rootmanifests+immediateentries only, no feature/returnrows orforeignwrites.
 Sessions9888(16..23) and51181(24..31) ended0; all eachnative+rootaudit succeeded.
 Recent nativebatches take27-34s,peakabout381-396MB; exactpins in per-batchlogs.
 Whole85source admission/financialgates remainincomplete. Never runanother
-actualjob while session10527 is live.
+actualjob while session40057 is live.
 
 **OWNER R21: cutoff applies to evaluation and forward labels only.**
 Explicituserreply allows historicalreturnfeatures and individualsourceDLRET
