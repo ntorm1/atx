@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
@@ -3615,4 +3616,87 @@ TEST(CalibrateGross, ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage) 
       EXPECT_EQ(lines(dir.path / "calibrated" / daily).size(), p.d - score_begin + 1);
     }
   }
+}
+
+namespace {
+// Every file under `a` (recursively: the capacity directory too) is under `b` with the same
+// bytes, and nothing else is.
+void expect_same_tree(const std::filesystem::path& a, const std::filesystem::path& b) {
+  const auto names = calibrate_tree(a);
+  ASSERT_FALSE(names.empty()) << a;
+  ASSERT_EQ(names, calibrate_tree(b)) << a << " vs " << b;
+  for (const auto& name : names)
+    EXPECT_TRUE(file_bytes(a / name) == file_bytes(b / name)) << name;
+}
+} // namespace
+
+// P9 C3, ruling P13 (the NAV half of the C++ seal consumer; S2's IC half is
+// IcFieldsSeal.ManifestSealMustBeThisBuildsOrAbsent): a --fields manifest built under this build's
+// research seal (seal.exclusive_end 2024-01-01) is bound; one without a seal (or a seal block
+// without exclusive_end) is a legacy manifest, accepted and logged; one built under another seal,
+// or with a malformed seal block, is refused before any output. The seal is never published: the
+// daily and event files of the sealed and the legacy run are the same bytes.
+TEST(NavFieldsSeal, ManifestSealMustBeThisBuildsOrAbsent) {
+  const auto p = publication_panel();
+  Fields f(p);
+  for (usize t = 0; t < p.d; ++t) f.set(p, t, 0, 1e6, 5e5);
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  const auto run = [&](const std::string& name, const Json& seal, std::string& log) {
+    const auto root = dir.path / ("seal-" + name);
+    EXPECT_TRUE(std::filesystem::create_directory(root)) << name;
+    const auto pin = write_fields(root, a, p, f, [&](Json& m) {
+      if (!seal.is_null()) m["seal"] = seal;
+    });
+    std::ostringstream out, err;
+    const int code = dispatch(nav_args(a, root / "nav", joined(v5_flags, {"--fields",
+                                       pin.manifest_path, "--fields-sha256",
+                                       pin.manifest_sha256})), out, err);
+    log = out.str() + err.str();
+    return code;
+  };
+  constexpr const char* legacy = "nav replay: fields-seal seal=absent accepted-as-legacy-manifest";
+  std::string log;
+  ASSERT_EQ(run("absent", nullptr, log), 0) << log;
+  EXPECT_NE(log.find(legacy), std::string::npos) << log;
+  ASSERT_EQ(run("match", Json{{"exclusive_end", "2024-01-01"}, {"window_id", "research-window-v2"}},
+                log), 0) << log;
+  EXPECT_EQ(log.find("seal=absent"), std::string::npos) << log;
+  for (const auto& name : file_names(dir.path / "seal-match" / "nav"))
+    if (name.rfind("daily_", 0) == 0 || name.rfind("events_", 0) == 0)
+      EXPECT_TRUE(file_bytes(dir.path / "seal-match" / "nav" / name) ==
+                  file_bytes(dir.path / "seal-absent" / "nav" / name)) << name;
+  ASSERT_EQ(run("keyless", Json{{"window_id", "research-window-v2"}}, log), 0) << log;
+  EXPECT_NE(log.find(legacy), std::string::npos) << log;
+  const std::vector<std::tuple<std::string, Json, std::string>> refused{
+      {"later", Json{{"exclusive_end", "2025-01-01"}},
+       "fields manifest was built under the seal \"2025-01-01\"; this build's seal is 2024-01-01"},
+      {"numeric", Json{{"exclusive_end", 20240101}}, "fields manifest was built under the seal"},
+      {"flat", Json("2024-01-01"), "fields manifest seal block is not an object"}};
+  for (const auto& [name, seal, message] : refused) {
+    EXPECT_EQ(run(name, seal, log), 1) << name;
+    EXPECT_NE(log.find(message), std::string::npos) << log;
+    EXPECT_FALSE(std::filesystem::exists(dir.path / ("seal-" + name) / "nav")) << name;
+  }
+}
+
+// P9 C3, W1-MIN M-1 (before any spec sets --book-workers): aim-partial-v6 with the v2 cost laws,
+// the capacity curve (its books in the main lockstep, per-multiple adv-hold caps) and adv-hold-v1
+// on a pool of 4 publishes every byte of the one-worker run, the capacity directory included.
+TEST(NavBookWorkers, V6CostV2CapacityAdvHoldOnFourEqualsOne) {
+  const auto p = noisy_panel(90, 12, 21);
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  const std::vector<std::string> v6{"--rule", "aim-partial-v6", "--cadence", "1",
+                                    "--trade-fraction", ".5", "--dust-multiple", ".1",
+                                    "--aim-leverage", "1.5", "--exit-rate", ".05", "--cost-v2",
+                                    "--capacity-curve", "--adv-hold-q", ".05"};
+  std::ostringstream out, err;
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "one", v6), out, err), 0) << err.str();
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "four", joined(v6, {"--book-workers", "4"})), out,
+                     err), 0) << err.str();
+  expect_same_tree(dir.path / "four", dir.path / "one");
+  EXPECT_TRUE(std::filesystem::exists(dir.path / "one" / "capacity" / "summary.json"));
+  EXPECT_TRUE(std::filesystem::exists(dir.path / "one" / "v7_extras.json"));
+  EXPECT_EQ(read_json(dir.path / "one" / "summary.json").at("rule").get<std::string>().rfind(
+                "aim-partial-v6", 0),
+            0U);
 }
