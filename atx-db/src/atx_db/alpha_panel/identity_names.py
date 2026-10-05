@@ -1,6 +1,6 @@
-"""Third-tier identity links for lines no strict or backfill link covers: FINRA issue name -> SEC filer.
+"""Name-tier identity links for days no known strict link covers: FINRA issue name -> SEC filer.
 
-Rule ``finra-name-match-v1`` (point in time):
+Rule ``finra-name-match-v2`` (point in time):
 1. For each FINRA short-interest row mapped to a security_id (stage S), take the settlement's
    ``issueName`` (FINRA truncates it to 30 characters). The name is public on the dissemination date.
 2. Stem both names: lower case, ``&`` -> ``and``, punctuation removed; the FINRA name is cut at the
@@ -12,7 +12,7 @@ Rule ``finra-name-match-v1`` (point in time):
 4. A match is an equal stem, or, when the FINRA name was truncated (30 characters) and its stem has at
    least 12 characters, an SEC stem that starts with it. It is accepted only when exactly one CIK matches.
 5. The link applies to sessions d with dissemination < d <= dissemination + 45 days, until the next
-   settlement of the line takes over, and only on days without a strict or backfill link.
+   settlement of the line takes over, and only on days without a strict link known by d 22:00.
 
 Output: ``identity/links_name_days.parquet`` (security_id, session_date, cik, available_at).
 """
@@ -74,8 +74,8 @@ def build() -> dict[str, Any]:
     raw_glob = (C.FINRA_SI_DIR / "raw" / "si_*.csv").as_posix()
     si = (root / "short_interest" / "si.parquet").as_posix()
     sub = (C.FSDS_DIR / "sub" / "*.parquet").as_posix()
-    combined_days = root / "_tmp" / "identity_days_strict_backfill.parquet"
-    receipt: dict[str, Any] = {"rule": "finra-name-match-v1"}
+    combined_days = root / "_tmp" / "identity_days_strict.parquet"
+    receipt: dict[str, Any] = {"rule": "finra-name-match-v2"}
     forms = ", ".join(f"'{f}'" for f in PERIODIC)
 
     con.execute(f"""
@@ -156,6 +156,8 @@ def build() -> dict[str, Any]:
     receipt["sample"] = [list(map(str, r)) for r in con.execute(
         "SELECT DISTINCT security_id, cik, issue_name FROM days ORDER BY random() LIMIT 25").fetchall()]
     C.write_json_atomic(root / "identity" / "name_manifest.json", receipt)
+    con.close()
+    (root / "_tmp" / "identity_names.duckdb").unlink(missing_ok=True)
     return receipt
 
 

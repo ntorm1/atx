@@ -7,6 +7,14 @@ SHA-256 of the producing code (raw and LF-normalised), plus git HEAD.
 
 ## U1: dated CIK link table (`identity/link_table.parquet`)
 
+The P9 fix publishes a separate `identity-bridge-v4-{strict,pit,all}` family; the historical v2 and v3
+exports remain preserved. Rule `identity-link-table-v4` computes strict/pit volume primaries and islands
+within each export's own tiers, with competitors known by session 22:00 UTC. Historical after-start
+links retain their own clocks and cannot compete before those clocks. `finra-name-match-v2` withholds
+name days only for eligible strict links. `snapshot-run-backfill-v2` adds `identity/links_pit.parquet`
+in the combined interval schema, while preserving combined, link-table and all-export precedence.
+These code changes have synthetic acceptance evidence; real v4 publication is a separate build task.
+
 The table has one row per maximal run of sessions on which a line keeps the same key. The key is (cik, link_tier,
 basis, is_issuer_primary, share_class). There are 172,926 rows, 11,435 lines and 8,644 CIKs, covering 2018-01-02 to
 2026-09-18.

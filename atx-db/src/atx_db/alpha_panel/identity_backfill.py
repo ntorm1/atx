@@ -4,7 +4,7 @@ The strict links (``identity/links.parquet``, rule r4-links-asof-v1) are point-i
 links; they leave ~40% of the 2024 top-3,000 members unlinked (Alphabet among them) because the r4
 rehearsal only admits dated reconstructed evidence. This module adds a clearly labelled second tier.
 
-Rule ``snapshot-run-backfill-v1``:
+Rule ``snapshot-run-backfill-v2``:
 1. Candidates: r4 ``current_ticker_verified`` P/J links open at the 2026-09-20 snapshot
    (``valid_until`` NULL): the SEC's current ticker -> CIK map verified against the vendor line.
 2. The line's final contiguous run: consecutive vendor sessions of the line with no gap longer than
@@ -22,6 +22,8 @@ issuer fields to strict links. ``available_at`` of a backfill link is the snapsh
 Outputs: ``identity/links_backfill.parquet`` (backfill intervals) and
 ``identity/links_combined.parquet`` (strict + backfill with re-derived primary), both with columns
 ``security_id, cik, start, end_incl, primary, tier, basis, available_at``.
+The additional ``identity/links_pit.parquet`` keeps strict and name links with known-strict
+precedence; its provisional primary is replaced by the bridge's own-tier volume rule.
 """
 
 from __future__ import annotations
@@ -57,7 +59,7 @@ def build() -> dict[str, Any]:
     sub = (C.FSDS_DIR / "sub" / "*.parquet").as_posix()
     cf = (C.COMPANYFACTS_DIR / "batch-*.parquet").as_posix()
     forms = ", ".join(f"'{f}'" for f in PERIODIC)
-    receipt: dict[str, Any] = {"rule": "snapshot-run-backfill-v1"}
+    receipt: dict[str, Any] = {"rule": "snapshot-run-backfill-v2"}
 
     con.execute(f"""
         CREATE OR REPLACE TABLE cand AS
@@ -129,6 +131,8 @@ def build() -> dict[str, Any]:
     """)
     C.copy_to_parquet(con, "SELECT security_id, session_date FROM strict_days UNION SELECT security_id, session_date FROM bf_days",
                       root / "_tmp" / "identity_days_strict_backfill.parquet")
+    C.copy_to_parquet(con, "SELECT security_id, session_date FROM strict_days WHERE available_at <= CAST(session_date AS TIMESTAMP) + INTERVAL 22 HOUR",
+                      root / "_tmp" / "identity_days_strict.parquet")
     names_path = root / "identity" / "links_name_days.parquet"
     name_union = ""
     if names_path.exists():
@@ -179,6 +183,24 @@ def build() -> dict[str, Any]:
 
     receipt["backfill_rows"] = compress("comb_days", "links_backfill.parquet", "tier = 'backfill'")
     receipt["combined_rows"] = compress("comb_days", "links_combined.parquet")
+    pit_names = ""
+    if names_path.exists():
+        pit_names = f"""
+            UNION ALL
+            SELECT n.security_id, n.session_date, c.sidx, n.cik, 'name', 'finra_name_match', n.available_at, 'P'
+            FROM read_parquet('{names_path.as_posix()}') n
+            JOIN (SELECT session_date, row_number() OVER (ORDER BY session_date) AS sidx FROM read_parquet('{cal}')) c
+              USING (session_date)
+            ANTI JOIN strict_days s ON s.security_id = n.security_id AND s.session_date = n.session_date
+              AND s.available_at <= CAST(s.session_date AS TIMESTAMP) + INTERVAL 22 HOUR
+        """
+    con.execute(f"""
+        CREATE OR REPLACE TABLE pit_days AS
+        SELECT security_id, session_date, sidx, cik, tier, basis, available_at, strict_primary AS "primary"
+        FROM strict_days
+        {pit_names}
+    """)
+    compress("pit_days", "links_pit.parquet")
     per_year = con.execute("""
         SELECT year(session_date) y, count(*) FILTER (WHERE tier NOT IN ('backfill', 'name')) strict_days,
                count(*) FILTER (WHERE tier = 'backfill') backfill_days, count(*) FILTER (WHERE tier = 'name') name_days,
@@ -188,6 +210,8 @@ def build() -> dict[str, Any]:
     receipt["line_days_by_year"] = {str(y): {"strict": int(a), "backfill": int(b), "name": int(c), "lines": int(n)}
                                     for y, a, b, c, n in per_year}
     C.write_json_atomic(root / "identity" / "backfill_manifest.json", receipt)
+    con.close()
+    (root / "_tmp" / "identity_backfill.duckdb").unlink(missing_ok=True)
     return receipt
 
 
