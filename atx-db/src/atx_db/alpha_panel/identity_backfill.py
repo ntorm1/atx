@@ -26,6 +26,7 @@ Outputs: ``identity/links_backfill.parquet`` (backfill intervals) and
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any
 
@@ -37,7 +38,16 @@ ALIVE_FROM = "2026-09-01"
 PERIODIC = ("10-K", "10-Q", "10-KT", "10-QT", "20-F", "40-F", "10-K/A", "10-Q/A", "20-F/A", "40-F/A")
 
 
+def _a0_s2() -> bool:
+    """Check-only A0 switch S2 (P9 request A0.3): ``ATX_A0_S2=1`` empties the candidate set; unset or 0 is off."""
+    value = os.environ.get("ATX_A0_S2", "0")
+    if value not in ("0", "1"):
+        raise ValueError("ATX_A0_S2 must be unset, 0 or 1")
+    return value == "1"
+
+
 def build() -> dict[str, Any]:
+    s2 = _a0_s2()
     root = C.build_root()
     con = C.connect(memory="600MB", threads=1, db_file="identity_backfill.duckdb")
     links = (C.IDENTITY_R4_DIR / "phases" / "export-001" / "security_company_links.part-0000.parquet").as_posix()
@@ -54,8 +64,10 @@ def build() -> dict[str, Any]:
         SELECT perm_security_id AS security_id, CAST(cik AS BIGINT) AS cik, link_primary AS snap_primary,
                available_at
         FROM read_parquet('{links}')
-        WHERE link_basis = 'current_ticker_verified' AND link_primary IN ('P', 'J') AND valid_until IS NULL
+        WHERE link_basis = 'current_ticker_verified' AND link_primary IN ('P', 'J') AND valid_until IS NULL{" AND FALSE" if s2 else ""}
     """)
+    if s2:  # same schema, no rows: neither pass writes a backfill day
+        receipt["a0_s2"] = True
     receipt["candidates"] = con.execute("SELECT count(*), count(DISTINCT security_id), count(DISTINCT cik) FROM cand").fetchone()
     # a line mapped to two CIKs at the snapshot is ambiguous
     con.execute("DELETE FROM cand WHERE security_id IN (SELECT security_id FROM cand GROUP BY 1 HAVING count(DISTINCT cik) > 1)")

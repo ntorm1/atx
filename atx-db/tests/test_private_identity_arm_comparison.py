@@ -178,3 +178,111 @@ def test_null_native_panel_end_refuses_permanent_coverage(connection,tmp_path):
     with pytest.raises(ValueError,match='Invalid native panel'):
         D.compare_arms(connection,**args)
     assert not (tmp_path/'result/counts.json').exists()
+
+
+def _window_oracle(a, b, dates, membership, window, buckets):
+    counts = collections.Counter(); observed = collections.defaultdict(collections.Counter)
+    eligible = collections.defaultdict(collections.Counter)
+    for sid in range(1, 18):
+        for date in dates:
+            ac, ap, acl, ae = oracle(a, sid, date); bc, bp, bcl, be = oracle(b, sid, date)
+            category = None
+            if len(ac) == 1 and len(bc) != 1: category = '1_a_only'
+            elif len(bc) == 1 and len(ac) != 1: category = '1_b_only'
+            elif len(ac) == len(bc) == 1:
+                if ac != bc: category = '2_cik'
+                elif ap != bp: category = '3_p_to_j' if ap else '3_j_to_p'
+                elif acl != bcl: category = '4_class'
+            side = None
+            if window.observed_at is not None:
+                side = 'at_or_after' if dt.datetime.combine(date, dt.time(22)) >= window.observed_at else 'before'
+            if category:
+                counts[category] += 1
+                if side: observed[side][category] += 1
+            if (sid, date) in membership:
+                bucket = next(label for label, lo, hi in buckets if lo <= date.year <= hi)
+                eligible[bucket]['a_only'] += int(ae and not be)
+                eligible[bucket]['b_only'] += int(be and not ae)
+                eligible[bucket]['a_total'] += int(ae)
+    return counts, observed, eligible
+
+
+def test_explicit_original_window_is_the_default(connection, tmp_path):
+    args, *_ = setup(connection, tmp_path)
+    default = D.compare_arms(connection, **args)
+    args['output'] = tmp_path / 'explicit'
+    explicit = D.compare_arms(connection, **args, window=D.Window())
+    for key in ('rows_1_4', 'row_5_distinct_sr_id', 'row_6_distinct_cik', 'row_7', 'row_8', 'row_9', 'row_10',
+                'complete_axis_cells', 'first_bridge_start', 'last_session'):
+        assert explicit[key] == default[key]
+    assert default['window']['last_session'] == '2023-12-29' and default['window']['cutoff'] == '2024-01-01'
+    assert default['window']['first_session'] is None and 'rows_1_4_by_observation' not in default
+    assert list(default['row_7']) == ['2017-2019', '2020', '2021', '2022', '2023']
+    assert list(default['row_10']) == [str(y) for y in range(2018, 2024)]
+
+
+def test_extended_window_bounds_sessions_rows_and_observation_clock(connection, tmp_path):
+    args, a, b, dates, membership = setup(connection, tmp_path)
+    buckets = (('2021', 2021, 2021), ('2022', 2022, 2022), ('2023', 2023, 2023), ('2024', 2024, 2024))
+    window = D.Window(first_session=dt.date(2021, 1, 5), last_session=dt.date(2024, 1, 2), cutoff=dt.date(2024, 1, 2),
+                      row_7_buckets=buckets, panel_from_year=2021, observed_at=dt.datetime(2021, 1, 5, 22))
+    result = D.compare_arms(connection, **args, window=window)
+    inside = [d for d in dates if window.first_session <= d <= window.last_session]
+    assert inside[0] == dt.date(2021, 1, 5) and inside[-1] == dt.date(2024, 1, 2)
+    counts, observed, eligible = _window_oracle(a, b, inside, membership, window, buckets)
+    assert result['rows_1_4'] == {k: counts.get(k, 0) for k in result['rows_1_4']}
+    assert sum(counts.values()) > 0 and set(observed) == {'at_or_after'}
+    assert result['rows_1_4_by_observation']['before'] == {k: 0 for k in result['rows_1_4']}
+    assert result['rows_1_4_by_observation']['at_or_after'] == {k: observed['at_or_after'].get(k, 0)
+                                                                 for k in result['rows_1_4']}
+    for label, values in result['row_7'].items():
+        assert values == {k: eligible[label][k] for k in values}
+    assert result['complete_axis_cells'] == 17 * len(inside)
+    assert list(result['row_10']) == ['2021', '2022', '2023', '2024'] and result['row_10']['2021'] == 1
+    assert result['window']['first_session'] == '2021-01-05' and result['last_session'] == '2024-01-02'
+    cutoff = dt.datetime(2024, 1, 2)
+    for number, late in (('8', False), ('9', True)):
+        keep = lambda r: (r['start'] < cutoff.date() and (r['available_at'] >= cutoff) == late and
+                          (r['end_incl'] is None or r['end_incl'] >= window.first_session))
+        ar = collections.Counter(tuple(r.values()) for r in a if keep(r))
+        br = collections.Counter(tuple(r.values()) for r in b if keep(r))
+        assert result['row_' + number] == {'a_only': sum((ar - br).values()), 'b_only': sum((br - ar).values())}
+    # available_at exactly at the cutoff is never readable inside the window: row 9, not row 8
+    assert result['row_9'] == {'a_only': 0, 'b_only': 1}
+    # a row ending the day before the window opens is outside rows 8/9 (only the open-ended row 14 remains)
+    args['output'] = tmp_path / 'later'
+    later = D.compare_arms(connection, **args, window=D.Window(
+        first_session=dt.date(2021, 1, 6), last_session=dt.date(2024, 1, 2), cutoff=dt.date(2024, 1, 2),
+        row_7_buckets=(('2022-2024', 2022, 2024),), panel_from_year=2022))
+    assert later['window']['start_session'] == '2022-01-03'
+    assert later['row_8'] == {'a_only': 0, 'b_only': 0} and later['row_9'] == {'a_only': 0, 'b_only': 0}
+    assert later['row_10'] == {'2022': 0, '2023': 0, '2024': 0}
+
+
+def test_observation_clock_splits_differences_at_the_session_mark(connection, tmp_path):
+    args, a, b, dates, membership = setup(connection, tmp_path)
+    window = D.Window(observed_at=dt.datetime(2021, 1, 4, 22))
+    result = D.compare_arms(connection, **args, window=window)
+    counts, observed, _ = _window_oracle(a, b, dates[:-1], membership, window, D.Window().row_7_buckets)
+    assert result['rows_1_4'] == counts
+    for side in ('before', 'at_or_after'):
+        assert result['rows_1_4_by_observation'][side] == {k: observed[side].get(k, 0) for k in result['rows_1_4']}
+    assert sum(observed['at_or_after'].values()) > 0
+    totals = collections.Counter()
+    for side in ('before', 'at_or_after'):
+        totals.update(result['row_7_by_observation'][side])
+    for key in ('a_only', 'b_only', 'a_total'):
+        assert totals[key] == sum(v[key] for v in result['row_7'].values())
+
+
+def test_window_refuses_uncovered_sessions_years_and_inverted_bounds(connection, tmp_path):
+    args, *_ = setup(connection, tmp_path)
+    for n, (window, message) in enumerate((
+            (D.Window(last_session=dt.date(2024, 1, 3), cutoff=dt.date(2024, 1, 4)), 'Calendar must cover'),
+            (D.Window(first_session=dt.date(2022, 1, 1), last_session=dt.date(2021, 12, 31)), 'window'),
+            (D.Window(first_session=dt.date(2020, 1, 1), last_session=dt.date(2024, 1, 2), cutoff=dt.date(2024, 1, 3),
+                      row_7_buckets=(('2020-2023', 2020, 2023),)), 'bucket'))):
+        args['output'] = tmp_path / f'refused-{n}'
+        with pytest.raises(ValueError, match=message):
+            D.compare_arms(connection, **args, window=window)
+        assert not (tmp_path / f'refused-{n}' / 'counts.json').exists()

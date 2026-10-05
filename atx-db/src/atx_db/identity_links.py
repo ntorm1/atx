@@ -1210,6 +1210,14 @@ def _connect(path: Path) -> duckdb.DuckDBPyConnection:
     return con
 
 
+def _a0_switch(name: str) -> bool:
+    """A check-only A0 switch (P9 request A0.3): unset or ``0`` is off, ``1`` is on."""
+    value = os.environ.get(name, "0")
+    if value not in ("0", "1"):
+        raise ValueError(f"{name} must be unset, 0 or 1")
+    return value == "1"
+
+
 def _retained_inputs(receipt: Path):
     from .identity_reconstruction import ReconstructionInputs, RetainedInput
 
@@ -1239,10 +1247,14 @@ def prepare_rehearsal_inputs(work: Path, receipt: Path, step: str) -> dict[str, 
     import pyarrow as pa
     import pyarrow.parquet as pq
 
+    # A0 S1 (check only): reconstruct without the 2026 SEC ticker snapshot; bound into the pin when on
+    s1 = _a0_switch("ATX_A0_S1")
     inputs = _retained_inputs(receipt)
     pin = {"version": PREPARATION_VERSION, "reconstruction_method": ir.METHOD,
            "reconstruction_code_sha256": file_sha256(Path(ir.__file__)), "params_digest": ir.ReconstructionParams().digest(),
            "inputs": {item.name: item.as_detail() for item in inputs.files()}}
+    if s1:
+        pin["a0_s1"] = True
     work.mkdir(parents=True, exist_ok=True)
     manifest_path = work / "preparation.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {"pin": pin, "steps": {}}
@@ -1285,7 +1297,7 @@ def prepare_rehearsal_inputs(work: Path, receipt: Path, step: str) -> dict[str, 
             output_dir = work / "evidence"
             output_dir.mkdir(exist_ok=True)
             for ordinal, batch in enumerate(ir.reconstruct_in_batches(con, lines, filings=filings,
-                    tickers=ir.read_sec_ticker_snapshot(inputs.company_tickers.path),
+                    tickers=() if s1 else ir.read_sec_ticker_snapshot(inputs.company_tickers.path),
                     ticker_observed_at=inputs.company_tickers.received_at, params=params, batch_size=250)):
                 rows = batch.evidence_rows(observed_at=inputs.companyfacts.received_at,
                     source_loaded_at=inputs.companyfacts.received_at, run_id="identity-rehearsal-preparation",

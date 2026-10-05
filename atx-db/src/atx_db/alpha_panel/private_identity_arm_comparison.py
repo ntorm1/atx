@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import copy
+from dataclasses import dataclass
+import datetime as dt
 import json
 from pathlib import Path
 import re
@@ -20,6 +22,32 @@ VERSION = 'p9-a0-arm-comparison-v1'
 CUTOFF = '2024-01-01'
 LAST_SESSION = '2023-12-29'
 PAIRS = {('B1', 'A'), ('B2', 'A'), ('B12', 'A'), ('B12', 'B1')}
+
+
+@dataclass(frozen=True)
+class Window:
+    """Consumer-view window of one comparison; the defaults are the request's original pre-2024 window.
+
+    first_session None starts at the bridge's first start (original); a date starts the session axis there and
+    keeps rows 8/9 to rows overlapping it. Rows 8/9 split at cutoff. Every session year needs a row 7 bucket.
+    observed_at (a removed source's observation clock) also splits rows 1-4 and 7 by session mark d 22:00:
+    before it a difference is a look-ahead; at or after it the source was public.
+    """
+    first_session: dt.date | None = None
+    last_session: dt.date = dt.date.fromisoformat(LAST_SESSION)
+    cutoff: dt.date = dt.date.fromisoformat(CUTOFF)
+    row_7_buckets: tuple[tuple[str, int, int], ...] = (
+        ('2017-2019', 2017, 2019), ('2020', 2020, 2020), ('2021', 2021, 2021), ('2022', 2022, 2022),
+        ('2023', 2023, 2023))
+    panel_from_year: int = 2018
+    observed_at: dt.datetime | None = None
+
+    def describe(self, start):
+        return {'first_session': self.first_session and self.first_session.isoformat(),
+                'start_session': start.isoformat(), 'last_session': self.last_session.isoformat(),
+                'cutoff': self.cutoff.isoformat(), 'row_7_buckets': [list(b) for b in self.row_7_buckets],
+                'panel_from_year': self.panel_from_year,
+                'observed_at': self.observed_at and self.observed_at.isoformat(sep=' ')}
 
 
 def _path(value):
@@ -79,9 +107,10 @@ def _parquet(files):
     return 'read_parquet([' + ','.join(_literal(_path(p).as_posix()) for p in files) + '], hive_partitioning=false)'
 
 
-def _state_sql(pit, calendar, year):
+def _state_sql(pit, calendar, year, last=LAST_SESSION, first=None):
     # Sparse states are sufficient: missing keys have zero qualifying CIKs.
     # No full security x session cross product or whole-panel Python object.
+    lower = f" AND c.session_date>=DATE '{first}'" if first else ''
     return f'''SELECT p.sr_id,c.session_date, count(DISTINCT p.cik)::BIGINT n_ciks,
         list_sort(list(DISTINCT p.cik)) ciks,
         CASE WHEN count(DISTINCT p.cik)=1 THEN min(p.cik) END cik,
@@ -91,7 +120,7 @@ def _state_sql(pit, calendar, year):
           bool_and(coalesce(p.class_status='common' OR
             (regexp_full_match(p.class_status,'[A-Z]') AND p.class_status NOT IN ('U','W','R')),false)) eligible
       FROM {pit} p JOIN {calendar} c ON c.session_date BETWEEN p.start AND coalesce(p.end_incl,DATE '9999-12-31')
-      WHERE year(c.session_date)={year} AND c.session_date<=DATE '{LAST_SESSION}'
+      WHERE year(c.session_date)={year} AND c.session_date<=DATE '{last}'{lower}
         AND p.available_at<=CAST(c.session_date AS TIMESTAMP)+INTERVAL 22 HOUR
         AND p."primary" IN ('P','J') AND coalesce(p.basis,'')<>'current_ticker_verified'
       GROUP BY p.sr_id,c.session_date'''
@@ -119,7 +148,8 @@ def _differences_sql(paired):
        END category FROM {paired}'''
 
 
-def _panel_sql(panel, members, year):
+def _panel_sql(panel, members, year, last=LAST_SESSION, first=None):
+    lower = f" AND m.session_date>=DATE '{first}'" if first else ''
     return f'''SELECT m.security_id sr_id,m.session_date,
          list_sort(list(DISTINCT p.cik) FILTER(WHERE p.cik IS NOT NULL)) ciks,
          count(DISTINCT p.cik) n_ciks
@@ -128,12 +158,14 @@ def _panel_sql(panel, members, year):
          AND CASE WHEN p.link_tier='backfill' THEN p.evidence_at ELSE p.available_at END
              <=CAST(m.session_date AS TIMESTAMP)+INTERVAL 22 HOUR
        WHERE m.member AND year(m.session_date)={year}
-         AND m.session_date<=DATE '{LAST_SESSION}'
+         AND m.session_date<=DATE '{last}'{lower}
        GROUP BY m.security_id,m.session_date'''
 
 
-def compare_arms(con, *, baseline, variant, calendar, members, pins, output):
+def compare_arms(con, *, baseline, variant, calendar, members, pins, output, window=None):
     """Produce rows1-10 and identifier-only parts for one of four fixed pairs.
+
+    ``window`` (:class:`Window`) bounds the consumer view; the default is the request's original window.
 
     baseline/variant are {arm, pit, link_table}; pins maps every exact consumed
     absolute path to its independently frozen SHA256. Membership has its entire
@@ -143,6 +175,10 @@ def compare_arms(con, *, baseline, variant, calendar, members, pins, output):
     """
     baseline, variant = copy.deepcopy(baseline), copy.deepcopy(variant)
     members, pins = tuple(members), copy.deepcopy(pins)
+    window = window or Window()
+    last, cutoff = window.last_session.isoformat(), window.cutoff.isoformat()
+    if window.first_session is not None and window.first_session > window.last_session:
+        raise ValueError('Comparison window starts after it ends')
     if (variant['arm'], baseline['arm']) not in PAIRS or not members:
         raise ValueError('A fixed P9 comparison and complete membership inventory required')
     directory = _path(output)
@@ -217,42 +253,75 @@ def compare_arms(con, *, baseline, variant, calendar, members, pins, output):
                 raise ValueError('Unknown membership flag cannot be treated as false')
             first = con.execute(f'SELECT min(start) FROM (SELECT start FROM {a} UNION ALL SELECT start FROM {b})').fetchone()[0]
             cal_lo, cal_hi = con.execute(f'SELECT min(session_date),max(session_date) FROM {cal}').fetchone()
-            if (first is None or first.year < 2017 or first.isoformat() > LAST_SESSION or cal_lo is None or
-                    cal_lo > first or cal_hi.isoformat() < LAST_SESSION):
-                raise ValueError('Calendar must cover the full original 2017-2023 bridge range')
+            original = 'Calendar must cover the full original 2017-2023 bridge range'
+            if first is None:
+                raise ValueError(original)
+            if window.first_session is None:
+                start, lower = first, None
+                if first.year < 2017:
+                    raise ValueError(original)
+            else:
+                # the axis holds calendar sessions only: start at the first one on or after the window start
+                opened = con.execute(f"SELECT min(session_date) FROM {cal} WHERE session_date>="
+                                     f"DATE '{window.first_session.isoformat()}'").fetchone()[0]
+                start, lower = max(first, opened or window.first_session), window.first_session.isoformat()
+            if start.isoformat() > last or cal_lo is None or cal_lo > start or cal_hi.isoformat() < last:
+                raise ValueError(original if window == Window() else
+                                 f'Calendar must cover the full comparison window {start}..{last}')
+            years = range(start.year, window.last_session.year + 1)
+            bucket_of = {}
+            for year in years:
+                labels = [label for label, lo, hi in window.row_7_buckets if lo <= year <= hi]
+                if len(labels) != 1:
+                    raise ValueError(f'Session year {year} needs exactly one row 7 bucket')
+                bucket_of[str(year)] = labels[0]
             axis_lines = _count(con, f'SELECT sr_id FROM {a} UNION SELECT sr_id FROM {b}')
-            axis_dates = _count(con, f'SELECT session_date FROM {cal} WHERE session_date>={_literal(first.isoformat())} '
-                f"AND session_date<=DATE '{LAST_SESSION}'")
+            axis_dates = _count(con, f'SELECT session_date FROM {cal} WHERE session_date>={_literal(start.isoformat())} '
+                f"AND session_date<=DATE '{last}'")
             row_differences = {}
-            for row, condition in (('8', f"start<DATE '{CUTOFF}' AND available_at<TIMESTAMP '{CUTOFF}'"),
-                                   ('9', f"start<DATE '{CUTOFF}' AND available_at>=TIMESTAMP '{CUTOFF}'")):
+            overlap = f" AND coalesce(end_incl,DATE '9999-12-31')>=DATE '{lower}'" if lower else ''
+            for row, condition in (('8', f"start<DATE '{cutoff}' AND available_at<TIMESTAMP '{cutoff}'{overlap}"),
+                                   ('9', f"start<DATE '{cutoff}' AND available_at>=TIMESTAMP '{cutoff}'{overlap}")):
                 selects = [f'SELECT * FROM {relation} WHERE {condition}' for relation in (a, b)]
                 row_differences[row] = {
                     'a_only': _count(con, selects[0] + ' EXCEPT ALL ' + selects[1]),
                     'b_only': _count(con, selects[1] + ' EXCEPT ALL ' + selects[0])}
             yearly, change_parts = {}, []
             mark = len(made)
-            for year in range(first.year, 2024):
-                sa = table('_a_state', _state_sql(a, cal, year))
-                sb = table('_b_state', _state_sql(b, cal, year))
+            categories = ('1_a_only','1_b_only','2_cik','3_p_to_j','3_j_to_p','4_class')
+            sides = ('before', 'at_or_after')
+            observed = (f"TIMESTAMP '{window.observed_at.isoformat(sep=' ')}'"
+                        if window.observed_at is not None else None)
+            for year in years:
+                sa = table('_a_state', _state_sql(a, cal, year, last, lower))
+                sb = table('_b_state', _state_sql(b, cal, year, last, lower))
                 paired = table('_paired', _pair_sql(sa, sb))
                 diff = view('_diff', _differences_sql(paired))
                 counts = dict(con.execute(f'SELECT category,count(*) FROM {diff} WHERE category IS NOT NULL GROUP BY 1').fetchall())
-                row7 = con.execute(f'''SELECT count(*) FILTER(WHERE d.a_eligible AND NOT d.b_eligible),
+                row7_sql = f'''SELECT count(*) FILTER(WHERE d.a_eligible AND NOT d.b_eligible),
                     count(*) FILTER(WHERE d.b_eligible AND NOT d.a_eligible),count(*) FILTER(WHERE d.a_eligible)
                     FROM {paired} d JOIN {member} m ON m.security_id=d.sr_id AND m.session_date=d.session_date
-                    WHERE m.member''').fetchone()
+                    WHERE m.member'''
+                row7 = con.execute(row7_sql).fetchone()
                 ambiguous = con.execute(f'''SELECT count(*) FILTER(WHERE a_n>1),count(*) FILTER(WHERE b_n>1),
                     count(*) FILTER(WHERE (a_n>1 OR b_n>1) AND a_ciks IS DISTINCT FROM b_ciks) FROM {paired}''').fetchone()
                 active = _count(con, f'SELECT 1 FROM {paired}')
                 dates = _count(con, f"SELECT 1 FROM {cal} WHERE year(session_date)={year} AND session_date>="
-                    f"DATE '{first.isoformat()}' AND session_date<=DATE '{LAST_SESSION}'")
-                entry = {'rows_1_4': {key: counts.get(key, 0) for key in
-                    ('1_a_only','1_b_only','2_cik','3_p_to_j','3_j_to_p','4_class')},
+                    f"DATE '{start.isoformat()}' AND session_date<=DATE '{last}'")
+                entry = {'rows_1_4': {key: counts.get(key, 0) for key in categories},
                     'row_7': dict(zip(('a_only','b_only','a_total'), row7, strict=True)),
                     'ambiguous_cells_a': ambiguous[0], 'ambiguous_cells_b': ambiguous[1],
                     'ambiguous_cik_set_changed': ambiguous[2], 'both_no_qualifying_cik': axis_lines*dates-active,
                     'row_10': None, 'panel_ambiguous_a': None, 'panel_ambiguous_b': None}
+                if observed:
+                    # the session mark d 22:00 against the removed source's observation clock
+                    side = (f"CASE WHEN CAST({{d}}session_date AS TIMESTAMP)+INTERVAL 22 HOUR>={observed} "
+                            "THEN 'at_or_after' ELSE 'before' END")
+                    split = {(s, c): n for s, c, n in con.execute(f"SELECT {side.format(d='')},category,count(*) "
+                             f'FROM {diff} WHERE category IS NOT NULL GROUP BY 1,2').fetchall()}
+                    entry['rows_1_4_by_observation'] = {s: {c: split.get((s, c), 0) for c in categories} for s in sides}
+                    entry['row_7_by_observation'] = {s: dict(zip(('a_only','b_only','a_total'), con.execute(
+                        f"{row7_sql} AND {side.format(d='d.')}='{s}'").fetchone(), strict=True)) for s in sides}
                 change_parts.append(emit(f'{year}-rows-1-4-identifiers.parquet',
                     f'SELECT sr_id,session_date,category,a_cik,b_cik,a_ciks,b_ciks FROM {diff} WHERE category IS NOT NULL'))
                 emit(f'{year}-row-7-identifiers.parquet', f'''SELECT d.sr_id,d.session_date,
@@ -261,9 +330,9 @@ def compare_arms(con, *, baseline, variant, calendar, members, pins, output):
                     WHERE m.member AND d.a_eligible<>d.b_eligible''')
                 emit(f'{year}-ambiguity-identifiers.parquet', f'''SELECT sr_id,session_date,a_ciks,b_ciks
                     FROM {paired} WHERE a_n>1 OR b_n>1''')
-                if year >= 2018:
-                    pa = table('_pa', _panel_sql(la, member, year))
-                    pb = table('_pb', _panel_sql(lb, member, year))
+                if year >= window.panel_from_year:
+                    pa = table('_pa', _panel_sql(la, member, year, last, lower))
+                    pb = table('_pb', _panel_sql(lb, member, year, last, lower))
                     entry['row_10'] = _count(con, f'SELECT 1 FROM {pa} a JOIN {pb} b USING(sr_id,session_date) '
                         'WHERE a.ciks IS DISTINCT FROM b.ciks')
                     entry['panel_ambiguous_a'] = _count(con, f'SELECT 1 FROM {pa} WHERE n_ciks>1')
@@ -276,22 +345,28 @@ def compare_arms(con, *, baseline, variant, calendar, members, pins, output):
             n_ciks = _count(con, cik_query)
             emit('rows-1-4-sr-id-list.parquet', f'SELECT DISTINCT sr_id FROM {changes}')
             emit('rows-1-4-cik-list.parquet', cik_query)
-            buckets = {key: {'a_only': 0, 'b_only': 0, 'a_total': 0}
-                       for key in ('2017-2019','2020','2021','2022','2023')}
-            totals = {key: 0 for key in ('1_a_only','1_b_only','2_cik','3_p_to_j','3_j_to_p','4_class')}
+            buckets = {label: {'a_only': 0, 'b_only': 0, 'a_total': 0} for label, _, _ in window.row_7_buckets}
+            totals = {key: 0 for key in categories}
+            by_side = {s: {key: 0 for key in categories} for s in sides}
+            row7_side = {s: {'a_only': 0, 'b_only': 0, 'a_total': 0} for s in sides}
             for year, entry in yearly.items():
-                bucket = year if int(year)>=2020 else '2017-2019'
                 for key, value in entry['row_7'].items():
-                    buckets[bucket][key] += value
+                    buckets[bucket_of[year]][key] += value
                 for key, value in entry['rows_1_4'].items():
                     totals[key] += value
+                for s in sides if observed else ():
+                    for key, value in entry['rows_1_4_by_observation'][s].items():
+                        by_side[s][key] += value
+                    for key, value in entry['row_7_by_observation'][s].items():
+                        row7_side[s][key] += value
             result = {'version': VERSION, 'status': 'CONDITIONAL_DIAGNOSTIC_COUNTS',
                 'comparison': variant['arm'] + ' vs ' + baseline['arm'], 'baseline': baseline, 'variant': variant,
                 'input_sha256': pins, 'mark_utc': '22:00:00', 'first_bridge_start': first.isoformat(),
-                'last_session': LAST_SESSION, 'complete_axis_cells': axis_lines*axis_dates,
+                'last_session': last, 'window': window.describe(start), 'complete_axis_cells': axis_lines*axis_dates,
                 'rows_1_4': totals, 'row_5_distinct_sr_id': n_ids, 'row_6_distinct_cik': n_ciks,
                 'row_7': buckets, 'row_8': row_differences['8'], 'row_9': row_differences['9'],
-                'row_10': {year: yearly.get(year,{}).get('row_10',0) for year in map(str,range(2018,2024))},
+                'row_10': {year: yearly.get(year,{}).get('row_10',0)
+                           for year in map(str,range(window.panel_from_year, window.last_session.year + 1))},
                 'yearly': yearly, 'files': outputs, 'D0_verified_here': False, 'sanity_verified_here': False,
                 'source_quality_certified': False, 'gate_promotion': False,
                 'qualification': 'Complete physical rows are compared, preserving multiplicities. '
@@ -300,6 +375,9 @@ def compare_arms(con, *, baseline, variant, calendar, members, pins, output):
                     'as distinct CIK sets without arbitrary selection. This kernel does not authenticate original source '
                     'coverage, same-code arms, D0, non-vacuity, row11 or producing-commit provenance. Those remain mandatory '
                     'before interpreting any zero. No later-evidence residual or held-fixed input is cleared.'}
+            if observed:
+                result['rows_1_4_by_observation'] = by_side
+                result['row_7_by_observation'] = row7_side
         finally:
             cleanup()
     # Completion only after original byte checks and SQL cleanup, including exceptions.
