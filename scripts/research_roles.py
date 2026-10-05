@@ -14,7 +14,25 @@ A spec (``atx.research-cycle-spec/v1``) may list ``roles`` instead of ``inputs.r
   universe        optional, as inputs.role.universe (checked against the manifest)
   fields_dir      optional: an as-built fields dir for this era (pinned by fields_manifest_sha256, as a single-role
                   fields.manifest_sha256); without it the era's fields are built by the spec's fields builder
-  lock            fills every null input, role and fields pin from the files (research_cycle.py lock)
+  label_dir       optional (OD-3 protocol T4): the era's own label role (pinned by label_manifest_sha256), which becomes
+                  that era's inputs.label_role (the NAV's --label-role pair, Ruling E-25). It is refused together with a
+                  spec-level inputs.label_role. With two or more roles a spec-level inputs.label_role is refused: a
+                  label role binds one role, so derived_spec would otherwise copy one era's labels into every era.
+  lock            fills every null input, role, fields, label and fit.carry pin from the files (research_cycle.py lock)
+
+fit.carry (OD-3 protocol T1, Ruling PM7-29 choice 1: "TRAIN admission, signs and weights are carried back unchanged; no
+re-admission, no re-fit on history"): {"weights": {path, sha256}, "admission": {path, sha256}}. It needs two or more
+roles, the last one being the role the weights were fitted on. The pooled fit step becomes atx-impl/tools/
+carry_weights.py, which publishes the same file names into fit.output: composition_weights.json is W's bytes (so the
+anchor reproduces the TRAIN book), and each other era gets composition_weights.<id>.json rebound to its own role with
+carried_from. Without fit.carry, and without label_dir, every plan, status and run line is unchanged.
+fit.carry.drop (P9 lane OD3P, Rulings PRE-20 / PRE-31; optional, {path, sha256}): the flagged-member list
+(scripts/specs/p9/od3/flagged_members.json) of the "clean-source book" line: carry_weights.py --drop-list pins each
+listed member's weight to 0 on the history eras, and the cycle refuses a nav / ref flag or nav rule that names a listed
+(flagged) rule. Without it the carry argv is the one above.
+
+A book that reads --risk-model (a nav or ref flag) is refused on a spec with a history role (Ruling PRE-10): no per-era
+risk store is built in P9, so the OD-3 read is on P9-F0h, the last accepted book that does not read the risk model.
 
 One role: exactly the single-role Cycle of the derived spec (inputs.role from the entry; fields as built when
 fields_dir is given): every plan, status and run line of a spec with inputs.role. A history role (end on or before the
@@ -50,8 +68,13 @@ import research_cycle as RC  # noqa: E402
 import research_window as rw  # noqa: E402
 
 ROLE_REQUIRED = ("id", "dir", "begin", "end")
-ROLE_OPTIONAL = ("manifest_sha256", "universe", "fields_dir", "fields_manifest_sha256")
-PIN_KEYS = ("manifest_sha256", "fields_manifest_sha256")
+ROLE_OPTIONAL = ("manifest_sha256", "universe", "fields_dir", "fields_manifest_sha256", "label_dir",
+                 "label_manifest_sha256")
+PIN_KEYS = ("manifest_sha256", "fields_manifest_sha256", "label_manifest_sha256")
+CARRY_KEYS = ("weights", "admission")                # fit.carry (OD-3 T1, PM7-29 choice 1)
+CARRY_OPTIONAL = ("drop",)                           # fit.carry.drop (OD3P, PRE-20 / PRE-31)
+CARRY_TOOL = "atx-impl/tools/carry_weights.py"
+RISK_MODEL_FLAG = "--risk-model"                     # PRE-10: no per-era risk store in P9
 PER_ERA = RC.ERA_PHASES                              # fields, u, w, nav: every era runs its own
 ORDER = ("fields", "check", "u", "fit", "gate", "w", "nav", "summ")
 ANCHOR_ONLY = ("static_check", "gate", "summ")       # sections the non-anchor eras' derived specs drop
@@ -97,7 +120,7 @@ def validate_roles(spec: dict, keep_fields: bool = False, reuse_fields: str | No
         unknown = sorted(set(r) - set(ROLE_REQUIRED) - set(ROLE_OPTIONAL))
         if unknown:
             raise usage(f"role {r.get('id')}: unknown key(s) {', '.join(unknown)}")
-        for key in ("dir", "universe", "fields_dir"):
+        for key in ("dir", "universe", "fields_dir", "label_dir"):
             if key in r and not (isinstance(r[key], str) and r[key]):
                 raise usage(f"role {r.get('id')}: {key} must be a non-empty string")
         for key in PIN_KEYS:
@@ -125,7 +148,51 @@ def validate_roles(spec: dict, keep_fields: bool = False, reuse_fields: str | No
             raise usage(f"{', '.join(refused)} are single-role; refused with {len(roles)} roles")
         if "ic" in spec and "fit" not in spec:
             raise usage("a cycle of two or more roles pools the eras in the fit: the spec needs fit")
+    labels = [r["id"] for r in roles if "label_dir" in r]
+    if labels and "label_role" in spec.get("inputs", {}):
+        raise usage(f"roles {', '.join(labels)} name their own label_dir: a spec-level inputs.label_role is refused")
+    if len(roles) > 1 and "label_role" in spec.get("inputs", {}):
+        raise usage("inputs.label_role binds one role; with two or more roles give each era its own label_dir")
+    if carry_of(spec) is not None and len(roles) < 2:
+        raise usage("fit.carry carries TRAIN weights to two or more roles (the last is the role they were fitted on)")
     return roles
+
+
+def carry_of(spec: dict) -> dict | None:
+    """fit.carry (OD-3 T1): {weights: {path, sha256}, admission: {path, sha256}[, drop: {path, sha256}]} checked, or
+    None when absent."""
+    carry = (spec.get("fit") or {}).get("carry")
+    if carry is None:
+        return None
+    if not isinstance(carry, dict) or not set(CARRY_KEYS) <= set(carry) <= set(CARRY_KEYS + CARRY_OPTIONAL) or \
+            not all(isinstance(carry[k], dict) and set(carry[k]) == {"path", "sha256"} and
+                    isinstance(carry[k]["path"], str) and carry[k]["path"] and
+                    (carry[k]["sha256"] is None or (isinstance(carry[k]["sha256"], str) and
+                                                    len(carry[k]["sha256"]) == 64)) for k in carry):
+        raise usage("fit.carry needs weights and admission (and optionally drop), each {path, sha256 (null until "
+                    "`lock`)}")
+    return carry
+
+
+def flag_names(flags) -> list[str]:
+    """The option names of an argv list (``--name`` and ``--name=value`` alike); other tokens skipped."""
+    return [str(t).split("=", 1)[0] for t in flags or [] if str(t).startswith("--")]
+
+
+def risk_model_reads(spec: dict) -> list[str]:
+    """Ruling PRE-10: the sections whose NAV argv reads a risk model (a nav or ref flag --risk-model...)."""
+    return [f"{section}.flags" for section in ("nav", "ref")
+            if any(name.startswith(RISK_MODEL_FLAG) for name in flag_names((spec.get(section) or {}).get("flags")))]
+
+
+def check_history_risk_model(spec: dict, roles: list[dict]) -> None:
+    """PRE-10: a book that reads --risk-model is refused on history (no per-era risk store is built in P9)."""
+    history = [r["id"] for r in roles if is_history(r)]
+    reads = risk_model_reads(spec) if history else []
+    if reads:
+        raise usage(f"role(s) {', '.join(history)} are history eras and {', '.join(reads)} read {RISK_MODEL_FLAG}: no "
+                    "per-era risk store is built in P9 (Ruling PRE-10); the OD-3 read is on P9-F0h, the last accepted "
+                    "book that does not read the risk model")
 
 
 def fields_pin(res: RC.Resolver, role: dict) -> str:
@@ -145,6 +212,10 @@ def derived_spec(spec: dict, role: dict, res: RC.Resolver, anchor: bool = True) 
     if role.get("universe"):
         item["universe"] = role["universe"]
     out["inputs"]["role"] = item
+    if role.get("label_dir"):                 # OD-3 T4: the era's own label role (the NAV's --label-role pair)
+        out["inputs"]["label_role"] = {"dir": role["label_dir"],
+                                       "path": f"{role['label_dir'].rstrip('/')}/manifest.json",
+                                       "sha256": role.get("label_manifest_sha256")}
     if role.get("fields_dir"):
         fields = {"output": role["fields_dir"], "manifest_sha256": fields_pin(res, role)}
         if "list" in spec.get("fields", {}):
@@ -184,6 +255,7 @@ def check_history_ledger(cycle: RC.Cycle, role: dict) -> None:
 def roles_cycle(spec: dict, res: RC.Resolver, **kw):
     """The cycle of a roles: spec: one role is its single-role Cycle; two or more a RolesCycle."""
     roles = validate_roles(spec, kw.get("keep_fields", False), kw.get("reuse_fields"))
+    check_history_risk_model(spec, roles)                          # PRE-10 (OD3P)
     if RC.option_value(spec.get("summ", {}).get("extra", []), "--era-of") is not None and (
             len(roles) > 1 or not is_history(roles[0])):
         raise usage("--era-of in summ.extra names the TRAIN cell of a history read on one role (review P-1); a pool "
@@ -219,13 +291,88 @@ class RolesCycle:
             self.eras.append(cycle)
         self.anchor = self.eras[-1]
         self.spec = self.anchor.spec
-        self.pins = {key: pin for key, pin in self.anchor.pins.items() if key != "role"}
+        per_era_labels = any("label_dir" in r for r in roles)       # OD-3 T4: the label pins are per era
+        self.pins = {key: pin for key, pin in self.anchor.pins.items()
+                     if key != "role" and not (per_era_labels and key == "label_role")}
         for cycle, role in zip(self.eras, roles):
             self.pins[f"role:{role['id']}"] = cycle.pins["role"]
             if role.get("fields_dir"):
                 rel = f"{role['fields_dir'].rstrip('/')}/manifest.json"
                 self.pins[f"fields:{role['id']}"] = (rel, fields_pin(res, role), "locked (fields_manifest_sha256)"
                                                      if role.get("fields_manifest_sha256") else UNLOCKED)
+            if role.get("label_dir"):
+                self.pins[f"label_role:{role['id']}"] = cycle.pins["label_role"]
+        self.carry = carry_of(spec)
+        if self.carry is not None:
+            self.check_carry(res)
+
+    def check_carry(self, res: RC.Resolver) -> None:
+        """OD-3 T1: the fit.carry pins (exit 3 on a missing file or a mismatch), and W fitted on the anchor role;
+        with fit.carry.drop (OD3P, PRE-31) no nav / ref flag or nav rule names a listed (flagged) rule."""
+        for key in [k for k in CARRY_KEYS + CARRY_OPTIONAL if k in self.carry]:
+            item = self.carry[key]
+            got = res.sha(item["path"])
+            if got is None:
+                raise RC.CycleError(f"fit.carry.{key} missing: {item['path']}", RC.EXIT_PIN)
+            if item["sha256"] is not None and item["sha256"] != got:
+                raise RC.CycleError(f"PIN MISMATCH fit.carry.{key}: {item['path']} is {got}, spec pins "
+                                    f"{item['sha256']}", RC.EXIT_PIN)
+            how = UNLOCKED if item["sha256"] is None else (
+                "locked, verified" if not res.hash_only(item["path"]) else "locked (hash-only)")
+            self.pins[f"carry:{key}"] = (item["path"], got, how)
+        doc = res.read_json(self.carry["weights"]["path"])
+        anchor_sha = self.anchor.pin("role")
+        if isinstance(doc, dict) and doc.get("train_manifest_sha256") != anchor_sha:
+            raise RC.CycleError(f"fit.carry.weights were fitted on role {doc.get('train_manifest_sha256')}, not on the "
+                                f"anchor role {anchor_sha} (the last role reproduces the TRAIN book)", RC.EXIT_PIN)
+        if "drop" in self.carry:
+            try:
+                drop = res.read_json(self.carry["drop"]["path"])
+            except ValueError as exc:
+                raise usage(f"fit.carry.drop is not JSON: {exc}") from exc
+            self.check_drop_rules(drop)
+
+    def check_drop_rules(self, drop) -> None:
+        """PRE-31: the clean-source line applies no flagged rule: no token of nav.rule, nav.flags or ref.flags is a
+        rule id the drop list names (``--x ID`` or ``--x=ID``). The list's own checks are carry_weights.py's."""
+        rules = set(drop.get("rules") or []) if isinstance(drop, dict) else set()
+        s = self.spec
+        tokens = [str(s.get("nav", {}).get("rule", ""))] + [
+            str(t).split("=", 1)[-1] for section in ("nav", "ref") for t in (s.get(section) or {}).get("flags") or []]
+        named = sorted(rules & set(tokens))
+        if named:
+            raise usage(f"fit.carry.drop names flagged rule(s) {', '.join(named)} and the spec applies them: the "
+                        "clean-source line applies no rule whose source_sample_end is 2015 or later (PRE-31)")
+
+    def carry_step(self) -> RC.Step:
+        """OD-3 T1: the fit phase of a fit.carry cycle; carry_weights.py publishes the fit's file names in fit.output."""
+        a = self.anchor
+        w_dir = fit_weights_dir(a)
+        run_dir = f"{w_dir}-run1"
+        weights, admission = self.carry["weights"]["path"], self.carry["admission"]["path"]
+        eras, binds = [], [weights, admission]
+        for cycle in self.eras[:-1]:
+            eras += ["--era", cycle.role_key, cycle.ipath("role"), cycle.pin("role")]
+            binds.append(cycle.ipath("role"))
+        binds.append(a.ipath("role"))
+        drop = []
+        if "drop" in self.carry:                   # OD3P (PRE-31): the clean-source line's flagged members
+            drop = ["--drop-list", self.carry["drop"]["path"], "--drop-list-sha256", self.pins["carry:drop"][1]]
+            binds.append(self.carry["drop"]["path"])
+        argv = a.runner(run_dir, binds, "fit") + [
+            a.py, a.tool(CARRY_TOOL), "--weights", weights, "--weights-sha256", self.pins["carry:weights"][1],
+            "--admission", admission, "--admission-sha256", self.pins["carry:admission"][1], *eras,
+            "--anchor", a.ipath("role"), a.pin("role"), "--output", w_dir, *drop]
+        note = "fit.carry: TRAIN admission and weights carried to every era, no re-fit (PM7-29)"
+        if drop:
+            note += "; the drop list's members weigh 0 on the history eras (PRE-31)"
+        if a.res.exists(f"{w_dir}/composition_weights.json"):
+            state = "done"
+        elif a.res.exists_dir(run_dir):
+            state, note = "failed", a.failure_note(run_dir) + "; never overwritten"
+        else:
+            state = "pending"
+        return RC.Step("fit", "bounded", argv, w_dir, run_dir, 1, state, note)
 
     def __getattr__(self, name: str):
         if name in ("anchor", "eras"):           # not yet set (during __init__): no recursion
@@ -247,7 +394,7 @@ class RolesCycle:
     def steps(self) -> list[RC.Step]:
         anchor = self.anchor
         per = {cycle.role_key: cycle.steps() for cycle in self.eras[:-1]}
-        if "fit" in anchor.spec:
+        if "fit" in anchor.spec and self.carry is None:
             anchor.fit_pool = self.fit_pool(per)
         if "summ" in anchor.spec:
             w_dir = fit_weights_dir(anchor)
@@ -255,6 +402,8 @@ class RolesCycle:
                                 for c in self.eras]
             anchor.summ_history = begins_before_train(self.roles)   # Ruling E-41: a history read adds 0 to N
         per[anchor.role_key] = anchor.steps()
+        if self.carry is not None:                 # OD-3 T1: the carry replaces the pooled fit
+            per[anchor.role_key] = [self.carry_step() if st.phase == "fit" else st for st in per[anchor.role_key]]
         out = []
         for phase in ORDER:
             owners = self.eras if phase in PER_ERA else [anchor]
@@ -279,6 +428,12 @@ def lock(spec: dict, root: Path, relock: bool = False) -> tuple[dict, list[str]]
         if role.get("fields_dir"):
             RC.lock_pin(res, role, "fields_manifest_sha256", f"{role['fields_dir'].rstrip('/')}/manifest.json",
                         f"fields {role['id']}", relock, notes)
+        if role.get("label_dir"):              # OD-3 T4
+            RC.lock_pin(res, role, "label_manifest_sha256", f"{role['label_dir'].rstrip('/')}/manifest.json",
+                        f"label role {role['id']}", relock, notes)
+    carry = carry_of(spec)
+    for key in [k for k in CARRY_KEYS + CARRY_OPTIONAL if k in carry] if carry is not None else ():   # OD-3 T1
+        RC.lock_pin(res, carry[key], "sha256", carry[key]["path"], f"fit.carry.{key}", relock, notes)
     for k, role in enumerate(roles):
         derived_spec(spec, role, res, k == len(roles) - 1)
     return spec, notes

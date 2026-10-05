@@ -481,6 +481,9 @@ def make_cycle(res: Resolver, *, spec_path: Path, **kw):
     if isinstance(raw, dict) and "roles" in raw:
         import research_roles  # noqa: PLC0415  (imports this module)
         return research_roles.roles_cycle(raw, res, spec_path=spec_path, **kw)
+    if isinstance(raw, dict) and isinstance(raw.get("fit"), dict) and "carry" in raw["fit"]:   # OD-3 T1 (OD3P)
+        raise CycleError("spec fit.carry carries TRAIN weights to history eras: it needs roles (research_roles.py)",
+                         EXIT_USAGE)
     return Cycle(load_spec(spec_path), res, spec_path=spec_path, **kw)
 
 
