@@ -1,0 +1,10 @@
+start 2026-10-05T00:38:58Z head 5c57c1ef84a37575ad2e9143092ab507ace6d96d
+ M .superpowers/sdd/platform-p9-20261003/progress.md
+ M .superpowers/sdd/platform-p9-20261003/resume6-addendum.md
+?? docs/plans/2026-10-02-x5-equity-curve.png
+?? docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png
+?? docs/plans/2026-10-03-wq-explore-equity-curve.png
+?? docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png
+ledger lines 133 sha256 27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554
+lane C3 pool-15 head 65ea74773c8c3aea87415af023866a593219bf6a
+C:              458G  395G   64G  87% /c
