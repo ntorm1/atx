@@ -433,7 +433,9 @@ COV run: `ccc73cd1...d811` (unchanged; every receipt's `executable_sha256` = it)
 
   Ranks in band: v1.1 10 of 51, atx-cov-v1 9 of 51 (equal to each store's own eigen `series_in_band`). Ranks reduced
   (positive): 39 of 51 (12 negative). Pooled eigen b, N 54,770, band .0060: v1.1 2370.9495, atx-cov-v1 2036.9591 (both above);
-  without eigen-00, N 53,681, band .0061: v1.1 705.8525, atx-cov-v1 667.9782 (both above). Read in both directions
+  without eigen-00, N 53,681, band .0061: v1.1 705.8525, atx-cov-v1 667.9782 (both above); **without structurally null
+  ranks (M2j, COV-13 (b), item 4 (e)): no rank of either recipe is structurally null, so the row's rank set is the
+  all-ranks set: N 54,770, band .0060: v1.1 2370.9495, atx-cov-v1 2036.9591 (= the all-ranks row).** Read in both directions
   (COV-11): below band = over-forecast / over-corrected in v1.1 at ranks 33, 43, 45-50 (8 ranks) and in atx-cov-v1 at
   ranks 32, 33, 46-50 (7 ranks). Fact for the reading, not an interpretation: ranks 00-02 have b above 1,000 in both
   recipes, so every pooled and mean eigen figure above (pooled b, `full b mean`, rolling b mean, QLIKE, MRAD) is
@@ -520,6 +522,32 @@ manifest's `run.forecast_sessions` (1,090 in both stores) and keeps only the for
 `run.forecast_sessions` dates (the forecast sessions; it prints how many earlier formed blocks it skips). The check
 stands as written: every per-rank count (all 51 ranks) must equal T_k of 4 (d), else Part B stops for the PM.
 Attempt 1's figures were read over a session set that is not the harness's and are not the result.
+
+**Result (attempt 2, after amendment 1 was committed in `438f0481`; output `m2j-logs/dcov-eig.txt`).** Both stores
+verified against their pins (manifest and both payloads). Session check: **EQUAL on all 51 ranks** in both stores
+(first forecast session index 315 = 1,405 - 1,090; 189 earlier blocks skipped; 1,089 scored sessions for ranks 00-47,
+948 / 817 / 733 for 48-50). Every scored session has at least one structural factor in its block.
+
+| store | rank | sessions | median lambda / session median | (i) structural | (ii) ind + market | (iii) style | (i) + (ii) | five largest median squared loadings | rule |
+|---|---|---|---|---|---|---|---|---|---|
+| v1.1 | 00 | 1,089 | 2.42e-08 | 0.0000 | 0.7009 | 0.2991 | **0.7009** | ind_ff39 .3029, style_momentum .1154, style_size .0407, ind_ff44 .0196, ind_ff9 .0191 | not null |
+| v1.1 | 01 | 1,089 | 4.80e-08 | 0.0000 | 0.8152 | 0.1848 | **0.8152** | ind_ff24 .2642, ind_ff39 .0853, ind_ff43 .0257, ind_ff48 .0194, style_leverage .0191 | not null |
+| v1.1 | 02 | 1,089 | 2.22e-02 | 0.0000 | 0.0364 | 0.9636 | **0.0364** | style_value .2165, style_leverage .1919, style_asset_growth .1862, style_profitability .0131, ind_ff36 .0053 | not null |
+| atx-cov-v1 | 00 | 1,089 | 2.58e-08 | 0.0000 | 0.6987 | 0.3013 | **0.6987** | ind_ff39 .2899, style_momentum .1143, style_size .0407, ind_ff24 .0261, ind_ff44 .0193 | not null |
+| atx-cov-v1 | 01 | 1,089 | 5.05e-08 | 0.0000 | 0.8095 | 0.1905 | **0.8095** | ind_ff24 .2589, ind_ff39 .0853, ind_ff43 .0258, ind_ff48 .0193, style_leverage .0182 | not null |
+| atx-cov-v1 | 02 | 1,089 | 2.45e-02 | 0.0000 | 0.0364 | 0.9636 | **0.0364** | style_value .2150, style_leverage .1895, style_asset_growth .1837, style_profitability .0130, ind_ff36 .0052 | not null |
+
+- **Reading rule (COV-13 (b)): no rank 00-02 is structurally null in either recipe** (median share (i) + (ii) .70 / .82 /
+  .04, below .99). Each stays in every pooled row and is printed as a finding: ranks 00 and 01 are near-null
+  directions (eigenvalue about 1e-8 of the session median) loading mostly on industries (ind_ff39, ind_ff24) with a
+  style share of about .2-.3 (momentum, size, leverage); rank 02 is a style direction (value, leverage, asset growth;
+  style share .96) at about .02 of the median eigenvalue. Structural factors carry a median share of 0 in all three.
+- **Third pooled eigen row** (`m2j-logs/dcov-eig-pooled.txt`, tool `pooled_row.py`): nothing is excluded, so the row's
+  rank set is the all-ranks set and, by the list's own pooling (sample SD of the pooled z), its value is the printed
+  all-ranks row exactly: N 54,770, band .0060, v1.1 2370.9495, atx-cov-v1 2036.9591 (appended under 4 (d)). For the
+  record, the per-rank formula of the pre-run list gives 2370.9309 / 2036.7154 on that set (residual +.0186 / +.2437
+  against the printed row; +.0429 / +.0612 on the without-eigen-00 row): the between-rank term of the z means.
+- Zero trials; no return, no bias statistic and no file other than the three listed was opened.
 
 ## Item 5. AL-COMB Q5 zero-trial diagnostic (`scripts/specs/p9/diagnostics/al-comb-q5-style-variance.json`)
 

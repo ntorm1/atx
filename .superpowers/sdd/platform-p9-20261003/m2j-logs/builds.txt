@@ -1,0 +1,4 @@
+2026-10-05T00:41:03Z p9-2p start preset equity-dev free 2906 commit 4409 recache 1 head 327c86b2
+2026-10-05T00:53:42Z p9-2p end exit 0 warning-lines 0 wall 764s
+2026-10-05T00:54:26Z p9-2q start preset equity-rel free 3845 commit 5041 recache 1 head 327c86b2
+2026-10-05T01:07:39Z p9-2q end exit 0 warning-lines 0 wall 800s

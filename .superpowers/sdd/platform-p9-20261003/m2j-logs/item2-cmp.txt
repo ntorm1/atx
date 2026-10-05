@@ -1,0 +1,18 @@
+### item 2: X-5 argv (Release p9-2q) vs p9-c1-s2-x5-nav (Debug bf4b0ec2)
+reference build-equity/p9-c1-s2-x5-nav (27 files)  new build-equity/p9-m2j-x5-argv (27 files)
+  DIFF summary.json: 2 leaf paths differ: ['/producer/build_type', '/producer/engine_git_sha']; outside the list: none
+  files byte-identical 26, differing 1
+VERDICT: inside the list
+exit 0
+### item 2: X-5 argv vs Release twin p9-c1-rel-x5-nav (93ea323e), allowed engine_git_sha only
+reference build-equity/p9-c1-rel-x5-nav (27 files)  new build-equity/p9-m2j-x5-argv (27 files)
+  DIFF summary.json: 1 leaf paths differ: ['/producer/engine_git_sha']; outside the list: none
+  files byte-identical 26, differing 1
+VERDICT: inside the list
+exit 0
+### item 2: Y-F0 argv (Release p9-2q) vs P9-B0 p9-b0-yf0-nav (Debug 407c34ad)
+reference build-equity/p9-b0-yf0-nav (27 files)  new build-equity/p9-m2j-yf0-argv (27 files)
+  DIFF summary.json: 2 leaf paths differ: ['/producer/build_type', '/producer/engine_git_sha']; outside the list: none
+  files byte-identical 26, differing 1
+VERDICT: inside the list
+exit 0
