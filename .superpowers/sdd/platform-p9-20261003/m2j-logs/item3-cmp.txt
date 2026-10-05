@@ -1,0 +1,28 @@
+### item 3: x5 spec run vs argv run (Release p9-2q, same exe), nothing allowed
+reference build-equity/p9-m2j-x5-argv (27 files)  new build-equity/p9-m2j-x5-spec (27 files)
+  files byte-identical 27, differing 0
+VERDICT: inside the list
+exit 0
+### x5 spec-run stdout line 'nav spec:' (only that line read) and the spec file's SHA-256
+nav spec: atx.nav-spec/v1 .superpowers/sdd/platform-p9-20261003/m2j-logs/x5.navspec.json sha256 53fd737d0aee52b4083a8bae6cf3052ad0c7a6579b3f7c608efa22e3aa7af67f
+53fd737d0aee52b4083a8bae6cf3052ad0c7a6579b3f7c608efa22e3aa7af67f *.superpowers/sdd/platform-p9-20261003/m2j-logs/x5.navspec.json
+### x5 spec run vs its reference (allowed: producer build_type, engine_git_sha)
+reference build-equity/p9-c1-s2-x5-nav (27 files)  new build-equity/p9-m2j-x5-spec (27 files)
+  DIFF summary.json: 2 leaf paths differ: ['/producer/build_type', '/producer/engine_git_sha']; outside the list: none
+  files byte-identical 26, differing 1
+VERDICT: inside the list
+exit 0
+### item 3: yf0 spec run vs argv run (Release p9-2q, same exe), nothing allowed
+reference build-equity/p9-m2j-yf0-argv (27 files)  new build-equity/p9-m2j-yf0-spec (27 files)
+  files byte-identical 27, differing 0
+VERDICT: inside the list
+exit 0
+### yf0 spec-run stdout line 'nav spec:' (only that line read) and the spec file's SHA-256
+nav spec: atx.nav-spec/v1 .superpowers/sdd/platform-p9-20261003/m2j-logs/yf0.navspec.json sha256 a793e1832d3421d51a8e25fff69a2f65e01b63a787bc1ec241832b1f5fa00bb4
+a793e1832d3421d51a8e25fff69a2f65e01b63a787bc1ec241832b1f5fa00bb4 *.superpowers/sdd/platform-p9-20261003/m2j-logs/yf0.navspec.json
+### yf0 spec run vs its reference (allowed: producer build_type, engine_git_sha)
+reference build-equity/p9-b0-yf0-nav (27 files)  new build-equity/p9-m2j-yf0-spec (27 files)
+  DIFF summary.json: 2 leaf paths differ: ['/producer/build_type', '/producer/engine_git_sha']; outside the list: none
+  files byte-identical 26, differing 1
+VERDICT: inside the list
+exit 0

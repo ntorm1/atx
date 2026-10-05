@@ -31,3 +31,10 @@ ledger `progress.md`; the blocks "RESUME 5" and "RESUME 6" hold the newest rulin
   bullet of "Hard rules") means: write a handoff file, report BLOCKED.
 - **Bounded real-data runs** (root only): `--seconds` <= 600, `--max-rss-mib 2048` (RUN-1, RUN-2).
 - **Commit trailer**, exactly: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+
+## Added during RESUME 6
+
+- **PERM-1.** A refused command is never retried as it was, and never replaced by another command with the same
+  effect. Only if the refusal's own message names an accepted form of the same action (for example a literal path
+  instead of a shell variable when deleting your own scratch) may you use exactly that form, once; report it in your
+  final message like a refusal. Anything else: stop that action and report it.
