@@ -509,6 +509,18 @@ Step group M2j (root, 2026-10-05). The reading rule is COV-13 (b)'s, fixed by th
   stops for the PM.
 - Output: `m2j-logs/dcov-eig.txt`, copied below with the reading.
 
+**Amendment 1 (written and committed after attempt 1, before attempt 2; the reading rule and every print are
+unchanged).** Attempt 1 (`m2j-logs/dcov-eig-attempt1.txt`, kept) failed the list's own session check: its per-rank
+counts were 1,278 (ranks 00-45), 1,215 (46), 1,152 (47), 948, 817, 733 (48-50) against T_k 1,089 for ranks 00-47 and
+948 / 817 / 733 for 48-50. Cause, by reading (a slip in the tool, not in the stores): `BiasHarness::form` returns before
+`form_extended` on a session without `day.forecast` (`strategy_risk_model.cpp:1377`), and `day.forecast` needs a
+specific-risk forecast as well as a factor block (`:1182`, `specific_names > 0`); the store keeps the finite factor
+blocks of the 189 sessions before the first specific forecast, which the tool counted. Fix: the tool reads the
+manifest's `run.forecast_sessions` (1,090 in both stores) and keeps only the formed blocks of the last
+`run.forecast_sessions` dates (the forecast sessions; it prints how many earlier formed blocks it skips). The check
+stands as written: every per-rank count (all 51 ranks) must equal T_k of 4 (d), else Part B stops for the PM.
+Attempt 1's figures were read over a session set that is not the harness's and are not the result.
+
 ## Item 5. AL-COMB Q5 zero-trial diagnostic (`scripts/specs/p9/diagnostics/al-comb-q5-style-variance.json`)
 
 **Pre-run list (committed before the runs; root names the cell here, as the spec requires).**
