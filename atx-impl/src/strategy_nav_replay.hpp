@@ -515,6 +515,10 @@ struct NavYear {
 struct NavSummary {
   atx::usize observations{};
   atx::f64 net_sharpe{}, gross_sharpe{}, mean_daily_net{}, ann_mean{}, ann_vol{}, cagr{};
+  // P9 C3 (Rulings PRE-7 / PRE-7a): 252 x the running mean of gross_return over the rows ann_mean
+  // averages (net_return = gross_return - trade_cost_return - borrow_return -
+  // long_financing_return, nav_mark.cpp); published only under NavEmitOptions::ann_mean_gross.
+  atx::f64 ann_mean_gross{};
   atx::f64 max_drawdown{}, total_net_return{}, final_nav{};
   bool hac_defined{};
   atx::f64 hac_t{}; // Bartlett lag 5, small-sample corrected; NaN when undefined
@@ -682,10 +686,18 @@ enum class NavHoldingsFormat : atx::u8 { F64 = 0, Csv = 1 };
 // summary.json stays reproducible byte for byte (the clocks read in the replay are
 // observation only: no published value depends on them); every other file is unchanged
 // either way.
+// ann_mean_gross (P9 C3, Rulings PRE-7 / PRE-7a; CLI --ann-mean-gross, NavSpec key
+// ann_mean_gross): print-only. Each scenario of the main summary.json (single run, calibrated
+// run, every grid variant) gains ann_mean_gross = NavSummary::ann_mean_gross, the gross annual
+// mean beside ann_mean (net). Off (default): no such key and every output byte is the run
+// without it; on: only summary.json changes, by that key (the recipe, the CSVs, the capacity
+// directory and the v7 files are unchanged; a grid manifest's summary_file_sha256 follows its
+// variant's summary.json).
 struct NavEmitOptions {
   std::string holdings_directory;
   NavHoldingsFormat format{NavHoldingsFormat::F64};
   bool stage_timers{};
+  bool ann_mean_gross{};
 };
 [[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
                                                const NavTurnoverLimits& limits,
@@ -726,8 +738,13 @@ struct NavEmitOptions {
 // it; not with --construction-grid).
 // P9 C1 (K-P9-7, Ruling P7): `nav --list-rules [--json]` prints the rule contract and exits 0
 // before any other flag is read: {"schema": "atx.nav-rules/v1", "capabilities": [...], "rules":
-// [{id, kind, params_schema, incompatible}]}; this lane lists the leverage rules (fixed-v1,
-// vol-target-v1, risk-target-v1). Without --json: one "<kind> <id>" line per rule.
+// [{id, kind, params_schema, incompatible}]}; C1 listed the leverage rules (fixed-v1,
+// vol-target-v1, risk-target-v1), P9 C3 adds the trade-rate, cost-law and target registries
+// (book/nav_rules.hpp). Without --json: one "<kind> <id>" line per rule.
+// P9 C3: `nav --spec NAVSPEC.json [--output NEWDIR]` runs one atx.nav-spec/v1 file and `nav
+// <flags> --print-spec` prints the NavSpec of <flags> (book/nav_spec.hpp), next after
+// --list-rules; P13: a --fields manifest built under another research seal is refused; the
+// valueless --ann-mean-gross (PRE-7a) is NavEmitOptions::ann_mean_gross (print-only).
 inline constexpr const char* nav_rules_schema = "atx.nav-rules/v1";
 [[nodiscard]] int dispatch_nav_replay(int argc, char** argv, std::ostream& out,
                                       std::ostream& err);

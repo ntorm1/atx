@@ -1,0 +1,94 @@
+merge 327c86b2c7c33ddb635ccb35c3065a8fa997ed77 parents 5c57c1ef84a37575ad2e9143092ab507ace6d96d 0dbfa45923a557593c1c04d5d324020341e3856d
+## files changed by the merge vs first parent (outside nothing filtered)
+ atx-impl/tests/strategy_nav_spec_test.cpp          |  764 ++++
+ atx-impl/tests/strategy_vol_target_test.cpp        |   11 +-
+ 54 files changed, 15578 insertions(+), 4248 deletions(-)
+## sprint-dir paths changed
+.superpowers/sdd/platform-p9-20261003/c3-logs/fix1-gtest-f-named.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/fix1-gtest-g-named.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/fix1-gtest-g-whole.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/fix1-gtest-j-named.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/fix1-gtest-j-whole.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/fix1-gtest-l-named.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/fix1-gtest-l-whole.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/fix1-nav-identity.py
+.superpowers/sdd/platform-p9-20261003/c3-logs/fix1-nav-optin-l.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/fix1-teeth-k-named.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/gtest-a-named.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/gtest-a-whole.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/gtest-b-whole.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/gtest-c-whole.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/gtest-e-rel-whole.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/mega-p9-c3-b-canary.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/mega-p9-c3-c-canary.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/mega-p9-c3-e-canary.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/mega-p9-c3-f-canary.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/mega-p9-c3-g-canary.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/mega-p9-c3-j-canary.log
+.superpowers/sdd/platform-p9-20261003/c3-logs/mega-p9-c3-l-canary.log
+.superpowers/sdd/platform-p9-20261003/handoff-C3.md
+.superpowers/sdd/platform-p9-20261003/task-C3-report.md
+.superpowers/sdd/platform-p9-20261003/task-C3-rereview-1.md
+.superpowers/sdd/platform-p9-20261003/task-C3-review.md
+## paths where merge differs from lane head (root-side changes since ab189471 kept)
+atx-engine/schemas/research_store/classes.json
+atx-engine/tools/stage_chain.py
+atx-engine/tools/test_stage_chain.py
+atx-impl/tests/CMakeLists.txt
+atx-impl/tests/strategy_cov_stage_diag.cpp
+atx-impl/tools/fit_composition_weights.py
+atx-impl/tools/test_fit_composition_weights.py
+scripts/cycle/__init__.py
+scripts/cycle/cli.py
+scripts/cycle/compare.py
+scripts/cycle/gate.py
+scripts/cycle/lock.py
+scripts/cycle/phases.py
+scripts/cycle/resolver.py
+scripts/cycle/spec.py
+scripts/cycle_resume.py
+scripts/research_common.py
+scripts/research_cycle.py
+scripts/research_spec.py
+scripts/run_bounded_research.py
+scripts/specs/p9/blocked/hf_crowd.json
+scripts/specs/p9/blocked/lazy_prices.json
+scripts/specs/p9/kinds/leverage-change.json
+scripts/specs/p9/kinds/new-combination-rule.json
+scripts/specs/p9/kinds/new-cost-model.json
+scripts/specs/p9/kinds/new-field.json
+scripts/specs/p9/kinds/new-horizon.json
+scripts/specs/p9/kinds/new-nav-rule.json
+scripts/specs/p9/kinds/new-signal.json
+scripts/specs/p9/kinds/new-universe.json
+scripts/specs/p9/kinds/replaced-signal.json
+scripts/specs/p9/kinds/templates/horizon.json
+scripts/specs/p9/kinds/templates/role.json
+scripts/specs/p9/kinds/templates/rule-composition.json
+scripts/specs/p9/kinds/templates/rule-cost.json
+scripts/specs/p9/kinds/templates/rule-nav.json
+scripts/specs/p9/kinds/walk-forward.json
+scripts/tests/test_no_python_mirror.py
+scripts/tests/test_research_cycle.py
+scripts/tests/test_research_mine.py
+## atx-impl/tests/CMakeLists.txt tail
+# --list-rules envelope and the ordered stage list (strategy_ic_rules.hpp) in the focused IC
+# target; atx-impl-tests already compiles it through its *_test.cpp glob.
+target_sources(atx-impl-strategy-ic-tests PRIVATE strategy_ic_rules_test.cpp)
+
+# P9 lane C2: nav --calibrate-gross (CalibrateGross.*) beside the NAV replay tests;
+# atx-impl-tests compiles it through its *_test.cpp glob.
+target_sources(atx-impl-strategy-target-tests PRIVATE strategy_nav_calibrate_test.cpp)
+
+# P9 lane AL-COMB: rule theme-cov-hedge-v1 (the rule, its stage and its engine kernel; the kernel's
+# test is also globbed into atx-engine-combine-tests) and schedule mom-volman-v1 in the focused IC
+# target; atx-impl-tests already compiles the two rule tests through its *_test.cpp glob.
+target_sources(atx-impl-strategy-ic-tests PRIVATE
+    strategy_ic_theme_hedge_test.cpp
+    strategy_ic_mom_volman_test.cpp
+    "${PROJECT_SOURCE_DIR}/atx-engine/tests/combine/combine_char_cov_hedge_test.cpp")
+
+# P9 lane C3: NavSpec (nav --spec) and the K-P9-7 registries (NavSpec.*, NavRules.*,
+# CostLawRegistry.*, TradeRateRegistry.*, TargetRegistry.*) beside the NAV replay tests;
+# atx-impl-tests compiles it through its *_test.cpp glob.
+target_sources(atx-impl-strategy-target-tests PRIVATE strategy_nav_spec_test.cpp)

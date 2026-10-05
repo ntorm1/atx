@@ -1,0 +1,112 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = NavSpec.*:NavRules.*:CostLawRegistry.*:TradeRateRegistry.*:TargetRegistry.*:NavFieldsSeal.*:NavBookWorkers.*:NavBookRule.*:NavAnnMeanGross.*:CalibrateGross.*:CovStore.*
+[==========] Running 33 tests from 11 test suites.
+[----------] Global test environment set-up.
+[----------] 2 tests from NavBookWorkers
+[ RUN      ] NavBookWorkers.PublishedBytesEqualOneWorker
+[       OK ] NavBookWorkers.PublishedBytesEqualOneWorker (434 ms)
+[ RUN      ] NavBookWorkers.V6CostV2CapacityAdvHoldOnFourEqualsOne
+[       OK ] NavBookWorkers.V6CostV2CapacityAdvHoldOnFourEqualsOne (1268 ms)
+[----------] 2 tests from NavBookWorkers (1704 ms total)
+
+[----------] 7 tests from CalibrateGross
+[ RUN      ] CalibrateGross.NumpyMeanIsNumpysMeanAtEverySize
+[       OK ] CalibrateGross.NumpyMeanIsNumpysMeanAtEverySize (3 ms)
+[ RUN      ] CalibrateGross.FourDecimalsAndTheStepArePm66
+[       OK ] CalibrateGross.FourDecimalsAndTheStepArePm66 (0 ms)
+[ RUN      ] CalibrateGross.WithinToleranceOnePass
+[       OK ] CalibrateGross.WithinToleranceOnePass (321 ms)
+[ RUN      ] CalibrateGross.OneCorrectionMatchesTwoProcess
+[       OK ] CalibrateGross.OneCorrectionMatchesTwoProcess (1405 ms)
+[ RUN      ] CalibrateGross.RefusesOutsideRange
+[       OK ] CalibrateGross.RefusesOutsideRange (221 ms)
+[ RUN      ] CalibrateGross.TieredRunReusesTheConstructionByteForByte
+[       OK ] CalibrateGross.TieredRunReusesTheConstructionByteForByte (801 ms)
+[ RUN      ] CalibrateGross.ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage
+[       OK ] CalibrateGross.ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage (2910 ms)
+[----------] 7 tests from CalibrateGross (5664 ms total)
+
+[----------] 1 test from NavFieldsSeal
+[ RUN      ] NavFieldsSeal.ManifestSealMustBeThisBuildsOrAbsent
+[       OK ] NavFieldsSeal.ManifestSealMustBeThisBuildsOrAbsent (421 ms)
+[----------] 1 test from NavFieldsSeal (421 ms total)
+
+[----------] 7 tests from NavBookRule
+[ RUN      ] NavBookRule.GridOfLeveragesInOnePassEqualsThreeSingleRuns
+[       OK ] NavBookRule.GridOfLeveragesInOnePassEqualsThreeSingleRuns (169 ms)
+[ RUN      ] NavBookRule.VolTargetOnBookWorkersEqualsSerialAndTheSeamInjectsTheRule
+[       OK ] NavBookRule.VolTargetOnBookWorkersEqualsSerialAndTheSeamInjectsTheRule (102 ms)
+[ RUN      ] NavBookRule.RefusedOutsideAimPartialV5AndOnTheDecidePath
+[       OK ] NavBookRule.RefusedOutsideAimPartialV5AndOnTheDecidePath (74 ms)
+[ RUN      ] NavBookRule.RefusedWithoutTheStoreOrOutsideTheParameterRanges
+[       OK ] NavBookRule.RefusedWithoutTheStoreOrOutsideTheParameterRanges (42 ms)
+[ RUN      ] NavBookRule.ListRulesJsonCarriesTheLeverageRows
+[       OK ] NavBookRule.ListRulesJsonCarriesTheLeverageRows (4 ms)
+[ RUN      ] NavBookRule.AimLeverageIsOptionalWithItsDefault
+[       OK ] NavBookRule.AimLeverageIsOptionalWithItsDefault (3 ms)
+[ RUN      ] NavBookRule.CliGridAndBookWorkersEqualTheStandaloneRunsByteForByte
+[       OK ] NavBookRule.CliGridAndBookWorkersEqualTheStandaloneRunsByteForByte (1472 ms)
+[----------] 7 tests from NavBookRule (1869 ms total)
+
+[----------] 5 tests from CovStore
+[ RUN      ] CovStore.RiskSliceFromContainerEqualsDirectory
+[       OK ] CovStore.RiskSliceFromContainerEqualsDirectory (2184 ms)
+[ RUN      ] CovStore.VolAndRiskTargetRecordsUnchanged
+[       OK ] CovStore.VolAndRiskTargetRecordsUnchanged (125 ms)
+[ RUN      ] CovStore.RefusesRoleGeometryOrRootMismatch
+[       OK ] CovStore.RefusesRoleGeometryOrRootMismatch (99 ms)
+[ RUN      ] CovStore.RefusesAContainerReachingTheSealWithoutUnseal
+[       OK ] CovStore.RefusesAContainerReachingTheSealWithoutUnseal (69 ms)
+[ RUN      ] CovStore.LegacyManifestTakesTheLegacyPath
+[       OK ] CovStore.LegacyManifestTakesTheLegacyPath (52 ms)
+[----------] 5 tests from CovStore (2532 ms total)
+
+[----------] 4 tests from NavSpec
+[ RUN      ] NavSpec.FlagsAndSpecSameConfig
+[       OK ] NavSpec.FlagsAndSpecSameConfig (47 ms)
+[ RUN      ] NavSpec.RefusesWhatItCannotType
+[       OK ] NavSpec.RefusesWhatItCannotType (1 ms)
+[ RUN      ] NavSpec.RefusesADuplicateKey
+[       OK ] NavSpec.RefusesADuplicateKey (69 ms)
+[ RUN      ] NavSpec.SpecRunPublishesTheFlagRunBytes
+[       OK ] NavSpec.SpecRunPublishesTheFlagRunBytes (1007 ms)
+[----------] 4 tests from NavSpec (1125 ms total)
+
+[----------] 2 tests from NavRules
+[ RUN      ] NavRules.OneTableEveryKindInOrder
+[       OK ] NavRules.OneTableEveryKindInOrder (7 ms)
+[ RUN      ] NavRules.LegacyAliasesOnTheirRowsOnly
+[       OK ] NavRules.LegacyAliasesOnTheirRowsOnly (4 ms)
+[----------] 2 tests from NavRules (12 ms total)
+
+[----------] 2 tests from CostLawRegistry
+[ RUN      ] CostLawRegistry.RowsAreTheReplaysLawsAndOneNameableSet
+[       OK ] CostLawRegistry.RowsAreTheReplaysLawsAndOneNameableSet (0 ms)
+[ RUN      ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte
+unknown file: error: C++ exception with description "[json.exception.type_error.304] cannot use at() with number" thrown in the test body.
+
+[  FAILED  ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte (424 ms)
+[----------] 2 tests from CostLawRegistry (424 ms total)
+
+[----------] 1 test from TradeRateRegistry
+[ RUN      ] TradeRateRegistry.RowsCarryTheParsersFlagsAndDefaults
+[       OK ] TradeRateRegistry.RowsCarryTheParsersFlagsAndDefaults (0 ms)
+[----------] 1 test from TradeRateRegistry (1 ms total)
+
+[----------] 1 test from TargetRegistry
+[ RUN      ] TargetRegistry.UnregisteredIdIsRefusedBeforeOutput
+[       OK ] TargetRegistry.UnregisteredIdIsRefusedBeforeOutput (44 ms)
+[----------] 1 test from TargetRegistry (44 ms total)
+
+[----------] 1 test from NavAnnMeanGross
+[ RUN      ] NavAnnMeanGross.PrintOnlyOptInAddsOneSummaryKey
+[       OK ] NavAnnMeanGross.PrintOnlyOptInAddsOneSummaryKey (1658 ms)
+[----------] 1 test from NavAnnMeanGross (1658 ms total)
+
+[----------] Global test environment tear-down
+[==========] 33 tests from 11 test suites ran. (15460 ms total)
+[  PASSED  ] 32 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte
+
+ 1 FAILED TEST

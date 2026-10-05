@@ -462,6 +462,53 @@ COV run: `ccc73cd1...d811` (unchanged; every receipt's `executable_sha256` = it)
 - **Deleted by name after C3 was recorded:** `build-equity/p9-m2i-dcov-v11-r2`, `build-equity/p9-m2i-dcov-covv1-r2`
   (980 MB each) and `build-equity/p9-m2g-cov7/` (163 MB); the `-r2-run` receipt dirs are kept.
 
+### 4 (e) M2j: D-COV-EIG (Ruling COV-13 (b); zero trials)
+
+Step group M2j (root, 2026-10-05). The reading rule is COV-13 (b)'s, fixed by the PM before this diagnostic existed.
+
+**Pre-run list (written and committed before the tool is run on either store).**
+- **Stores** (never deleted, never rewritten): `build-equity/p9-m2i-dcov-v11` (atx-risk-v1.1, `manifest.json`
+  `39736647...23c7`) and `build-equity/p9-m2i-dcov-covv1` (atx-cov-v1, `ea58691f...f0f3`), the M2i pins
+  (`handoff-root-m2i.md`). The tool refuses a store whose `manifest.json` SHA-256 is not its pin, or whose two
+  payloads read do not equal their `files` pins (SHA-256 and size).
+- **Tool** `m2j-logs/tools/eig_read.py` (read-only; checked before the run only on a synthetic store in the session
+  scratchpad). Per store it opens exactly `manifest.json` (factor names `recipe.factors`, `geometry`, `layouts`,
+  `model`, `files` pins), `factor_covariance.f64` (dates x 62 x 62 forecast factor blocks; the `RiskDay::covariance`
+  every sink receives, `strategy_risk_verb.cpp` `FileSink::on_day`) and `factor_structural.u8` (dates x 62 structural
+  flags). It never opens `bias.csv`, `bias_summary.json`, `factor_returns.csv`, `diagnostics.csv` or any other file:
+  no return, no realised value, no bias statistic.
+- **Eigenportfolios, as the eigen family forms them** (`strategy_risk_model.cpp` `BiasHarness::form_extended`): at
+  session t the block is the factors whose forecast variance is finite; it is formed only when every block entry is
+  finite and the smallest eigenvalue is > 0; ranks ascend by eigenvalue (eigen-00 = smallest; numpy `eigh`, the same
+  symmetric eigenproblem as Eigen's `SelfAdjointEigenSolver`). A block formed at t is scored at t + 1, so the sessions
+  read are the formed t with a next session; rank k exists at t when the block has more than k factors. The tool prints
+  the per-rank session count; it must equal T_k of 4 (d) (1,089 for ranks 00-47, 948 / 817 / 733 for 48 / 49 / 50),
+  else the session set is not the harness's and Part B stops for the PM.
+- **Per session, ranks 00, 01, 02:** r = eigenvalue / the median of that session's block eigenvalues; the unit
+  eigenvector's squared loadings (sum 1) split over a partition of the block: (i) factors flagged structural at t
+  (`factor_structural.u8` = 1); (ii) the industry block (`ind_ff1` .. `ind_ff49`, `ind_residual`) plus the market
+  factor (`market`, the model's country factor), not flagged at t; (iii) the style factors (`style_*`), not flagged at
+  t. (i) + (ii) is the share outside the unflagged styles, so no structural loading is counted twice.
+- **Prints per recipe and rank:** session count; median over sessions of r; median over sessions of share (i), (ii),
+  (iii) and of the per-session sum (i) + (ii); for information the medians of the unpartitioned industry + market share
+  and style share (structural members included); the five factor names with the largest median-over-sessions squared
+  loading (0 in a session where the factor is outside the block). Nothing else.
+- **Reading rule (COV-13 (b), applied as written):** a rank is "structurally null" iff its median over sessions of
+  share (i) + (ii) is at least .99. A structurally null rank is excluded from one more pooled eigen row, "without
+  structurally null ranks", printed beside the two rows of 4 (d) (all ranks; without eigen-00). A rank that fails the
+  rule stays in every pooled row and is printed as a finding. Ranks 03-50 are not read and stay in every row.
+- **The third pooled row** is computed from the per-rank values already printed in 4 (d) (`m2i-logs/dcov-read.txt`:
+  b_k, T_k): N = sum of T_k over the included ranks, band sqrt(2 / N), and the pooled b from the per-rank values as
+  sqrt(sum (T_k - 1) b_k^2 / (N - 1)). The 4 (d) rows pooled the eigen z series themselves (`dcov_read.py`: the sample
+  SD of the concatenated z); the two agree exactly only when every rank's z mean equals the pooled mean, and the
+  per-rank means are not printed (they live in `bias.csv`, which this step does not open). So the same formula is also
+  applied to the two existing rows' rank sets and its residual against their printed values is printed beside the new
+  row, to show the size of the between-rank term it omits.
+- **Stop:** if a store lacks what the rule needs (no structural flags, no factor names, eigenvectors not recoverable
+  from the blocks) or the session counts do not equal T_k, the tool's output says exactly what is missing and Part B
+  stops for the PM.
+- Output: `m2j-logs/dcov-eig.txt`, copied below with the reading.
+
 ## Item 5. AL-COMB Q5 zero-trial diagnostic (`scripts/specs/p9/diagnostics/al-comb-q5-style-variance.json`)
 
 **Pre-run list (committed before the runs; root names the cell here, as the spec requires).**
