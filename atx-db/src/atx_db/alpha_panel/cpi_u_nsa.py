@@ -1,5 +1,5 @@
 """Stage ``cpi_u_nsa`` (P9 AL-data request B3): monthly CPI-U, U.S. city average, all items, not seasonally adjusted
-(BLS ``CUUR0000SA0``; FRED/ALFRED ``CPIAUCNS``), one row per (reference month, vintage), stamped at the release instant.
+(BLS ``CUUR0000SA0``; FRED/ALFRED ``CPIAUCNS``), one row per (reference month, vintage), stamped at an evidenced conservative availability bound.
 
 Source. ALFRED (St. Louis Fed archival FRED) vintages of ``CPIAUCNS``: the download page lists every vintage date
 (the dates the series was published or revised); ``alfredgraph.csv`` returns one value column per requested vintage.
@@ -7,17 +7,19 @@ Every vintage from ``OBS_START`` on is landed (``VINTAGE_BATCH`` per request, 20
 already landed are never asked again). Cross-checks, not inputs: the latest
 FRED graph CSV and the keyless BLS API v1 (``CUUR0000SA0``, its latest three years).
 
-Rows (rule ``cpi-u-nsa-vintage-v1``). For each reference month from ``OBS_START``: a ``first_release`` row at the
+Rows (rule ``cpi-u-nsa-vintage-v2``). For each reference month from ``OBS_START``: a ``first_release`` row at the
 first selected vintage whose column holds the month, and a ``revision`` row at every later vintage whose value
 differs; an identical re-publication adds no row (counted). Nothing is overwritten. A month already present in the
 first selected vintage has no observable first release and is excluded and counted, never guessed; a value missing
 from a later vintage is reported (``vanished``). Reference months that no vintage holds are listed in
 ``coverage.missing_ref_months``.
 
-Clock (``alfred-vintage-date-0830-et-v1``): ``available_at`` = 08:30 America/New_York (the CPI release time) on the
-ALFRED vintage date, as naive UTC. ALFRED dates a vintage by the day the data were published; FRED cannot publish
-CPI before BLS does, so the stamp is never earlier than the release; it equals the release instant when the vintage
-date is the BLS release date. ``clock_basis`` records this per row.
+Clock (``alfred-vintage-bound-v2``): when landed authoritative ALFRED download help establishes that a vintage
+contains data as it existed on that past date, ``available_at`` is 00:00 UTC two calendar days later. This exceeds
+the end of that civil date at any offset from -12 through +14. It is a bound, not an intraday release instant.
+Without that evidence, use the actual response-observation timestamp, and label historical timing unavailable.
+Both first observations and archival revisions retain vintage_date; exact release_date is unknown. Delivery is
+PARTIAL for exact publication clocks, independently of C5/hash acceptance. Legacy cpi_u_nsa remains immutable.
 
 Parts ``parts/year=YYYY/cpi_u_nsa.parquet`` by the UTC year of ``available_at``; C5 manifest as in
 ``compustat_std_parts`` (written last; an existing stage directory is never replaced).
@@ -55,15 +57,19 @@ from . import common as C
 from . import compustat_std_parts as P
 from . import shortflow_common as S
 
-STAGE = "cpi_u_nsa"
-SCHEMA = "atx.alpha-panel.cpi-u-nsa/v1"
-RULE = "cpi-u-nsa-vintage-v1"
-CLOCK_RULE = "alfred-vintage-date-0830-et-v1"
+STAGE = "cpi_u_nsa_v2"
+LEGACY_STAGE = "cpi_u_nsa"
+SCHEMA = "atx.alpha-panel.cpi-u-nsa/v2"
+RULE = "cpi-u-nsa-vintage-v2"
+CLOCK_RULE = "alfred-vintage-bound-v2"
 STALENESS_DAYS = 100
 CONTRACT = {"schema": SCHEMA, "rule": RULE, "clock_rule": CLOCK_RULE, "staleness_days": STALENESS_DAYS}
 MODULES = ("cpi_u_nsa", "compustat_std_parts", "common", "shortflow_common")
 PART_FILE = "cpi_u_nsa.parquet"
-CLOCK_BASIS = "alfred_vintage_date_0830_et"
+CLOCK_BASIS = "alfred_civil_date_plus_two_days_utc_bound"
+OBSERVED_CLOCK_BASIS = "response_observed_at_historical_timing_unavailable"
+LEGACY_CONTRACT = {"schema": "atx.alpha-panel.cpi-u-nsa/v1", "rule": "cpi-u-nsa-vintage-v1",
+                   "clock_rule": "alfred-vintage-date-0830-et-v1", "staleness_days": STALENESS_DAYS}
 ALLOWED_HOSTS = frozenset({"api.bls.gov", "www.bls.gov", "fred.stlouisfed.org", "alfred.stlouisfed.org"})
 MAX_REQUESTS = 30
 MIN_INTERVAL_S = 1.1                              # <= 1 request/s
@@ -82,17 +88,18 @@ ET = ZoneInfo("America/New_York")
 RELEASE_ET = dt.time(8, 30)
 EXT = {"text/csv": "csv", "application/csv": "csv", "application/json": "json", "text/html": "html",
        "text/plain": "txt", "application/zip": "zip"}
-COLUMNS = ("series_id", "ref_month", "value", "vintage_date", "available_at", "vintage_kind", "clock_basis", "source")
+COLUMNS = ("series_id", "ref_month", "value", "vintage_date", "release_date", "available_at", "vintage_kind", "clock_basis", "source")
 
 RULE_TEXT = {
     "rows": ("per reference month from OBS_START: first_release at the first selected ALFRED vintage holding the "
              "month, a revision row at each later vintage with a different value; identical re-publications add no "
              "row; a month present in the first selected vintage is excluded (first release not observable)"),
-    "clock": ("available_at = 08:30 America/New_York on the ALFRED vintage date, as naive UTC; ALFRED dates a vintage "
-              "by its publication day, so the stamp is never earlier than the BLS release"),
+    "clock": ("PARTIAL exact publication clock: with authoritative civil-date evidence, available_at = "
+              "00:00 UTC two calendar days after vintage_date (a conservative bound for offsets -12..+14); "
+              "otherwise actual response-observation time, historical timing unavailable; exact release_date unknown"),
     "staleness": (f"a consumer treats a value as stale when the session is more than {STALENESS_DAYS} days after "
                   "the end of its reference month (normal gap to the next month's release about 45 days; "
-                  "coverage.observed_max_days_month_end_to_next_release records the measured maximum)"),
+                  "coverage.observed_max_days_month_end_to_next_vintage_date records the measured maximum)"),
     "values": "index level, 1982-84 = 100, as published (three decimals); never rebased",
 }
 
@@ -152,7 +159,8 @@ def fetch(key: str, url: str, params: dict[str, str] | None = None, raw: Path = 
     raw.mkdir(parents=True, exist_ok=True)
     (raw / (name + ".partial")).write_bytes(body)
     (raw / (name + ".partial")).replace(raw / name)
-    rec.update(http_status=status, file=name, bytes=len(body), sha256=hashlib.sha256(body).hexdigest(),
+    rec.update(http_status=status, file=name, observed_at=dt.datetime.now(dt.UTC).isoformat(),
+               bytes=len(body), sha256=hashlib.sha256(body).hexdigest(),
                content_type=hdr.get("content-type"), last_modified=hdr.get("last-modified"),
                location=hdr.get("location"))
     led.append(rec)
@@ -239,8 +247,45 @@ def merge_vintages(parsed) -> tuple[list[dt.date], dict[dt.date, list[float | No
     return allv, {m: [cell.get(v) for v in allv] for m, cell in sorted(by.items())}
 
 
+def vintage_bound(vintage_date: dt.date) -> dt.datetime:
+    """Controller CPI-1 bound; call only after proving civil-date availability semantics."""
+    return dt.datetime.combine(vintage_date + dt.timedelta(days=2), dt.time())
+
+
+def clock_evidence(raw: Path) -> tuple[bool, dict[str, Any]]:
+    """Re-verify landed authoritative help before using its civil-date semantics."""
+    rec = _landed(raw, "alfred_clock_downloadhelp_r1")
+    if rec and rec.get("url") == "https://alfred.stlouisfed.org/help/downloaddata":
+        import html
+
+        text = html.unescape(re.sub(r"<[^>]+>", " ", (raw / rec["file"]).read_text(encoding="utf-8")))
+        text = re.sub(r"\s+", " ", text)
+        premise = "A vintage date is a date in history used to download data as it actually existed on that past date."
+        if premise in text:
+            return True, {"status": "civil_date_semantics_verified", "source": _input(rec),
+                          "premise": "ALFRED download help defines vintage data as it existed on that past date",
+                          "bound": "00:00 UTC two calendar days after vintage_date; offsets -12..+14",
+                          "exact_release_time": "unproved", "delivery": "PARTIAL"}
+    return False, {"status": "civil_date_semantics_unverified", "delivery": "PARTIAL",
+                   "bound": "actual response observation timestamp", "historical_timing": "unavailable"}
+
+
+def response_observed_at(rec: dict[str, Any]) -> dt.datetime:
+    """Receipt observation instant, or legacy filename timestamp created after body retrieval.
+
+    fetched_at is request-start time and cannot alone establish value availability.
+    """
+    if rec.get("observed_at"):
+        return dt.datetime.fromisoformat(rec["observed_at"]).astimezone(dt.UTC).replace(tzinfo=None)
+    match = re.search(r"__(\d{8}T\d{12}Z)\.", rec.get("file", ""))
+    if not match:
+        raise RuntimeError("no proven response-observation timestamp in receipt")
+    return dt.datetime.strptime(match.group(1), "%Y%m%dT%H%M%S%fZ")
+
+
 def vintage_rows(vintages: list[dt.date], obs: dict[dt.date, list[float | None]],
-                 start: dt.date) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                 start: dt.date, clock_bounds: dict[dt.date, dt.datetime],
+                 clock_basis: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """First-release and revision rows per reference month on or after ``start`` (see the module doc)."""
     rows: list[dict[str, Any]] = []
     info: dict[str, Any] = {"unchanged_republications": 0, "vanished": [], "excluded_first_in_selection": []}
@@ -264,9 +309,9 @@ def vintage_rows(vintages: list[dt.date], obs: dict[dt.date, list[float | None]]
                 info["unchanged_republications"] += 1
                 continue
             rows.append({"series_id": BLS_SERIES, "ref_month": m, "value": x, "vintage_date": vintages[i],
-                         "available_at": release_instant(vintages[i]),
+                         "release_date": None, "available_at": clock_bounds[vintages[i]],
                          "vintage_kind": "first_release" if prev is None else "revision",
-                         "clock_basis": CLOCK_BASIS, "source": f"alfred:{FRED_SERIES}"})
+                         "clock_basis": clock_basis, "source": f"alfred:{FRED_SERIES}"})
             prev = x
     return rows, info
 
@@ -361,7 +406,7 @@ def _write_part(path: Path, rows: list[dict[str, Any]]) -> None:
     import pyarrow.parquet as pq
 
     schema = pa.schema([("series_id", pa.string()), ("ref_month", pa.date32()), ("value", pa.float64()),
-                        ("vintage_date", pa.date32()), ("available_at", pa.timestamp("us")),
+                        ("vintage_date", pa.date32()), ("release_date", pa.date32()), ("available_at", pa.timestamp("us")),
                         ("vintage_kind", pa.string()), ("clock_basis", pa.string()), ("source", pa.string())])
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".partial")
@@ -385,7 +430,13 @@ def build(raw: Path = RAW, obs_start: dt.date = OBS_START, stage: str = STAGE) -
         raise RuntimeError(f"{len(missing)} listed vintages not landed, e.g. {missing[:3]}")
     keep = [i for i, v in enumerate(vintages) if v >= obs_start]
     used = [vintages[i] for i in keep]
-    rows, info = vintage_rows(used, {m: [vals[i] for i in keep] for m, vals in obs.items()}, obs_start)
+    civil_proven, evidence = clock_evidence(raw)
+    if civil_proven:
+        bounds = {v: vintage_bound(v) for v in used}
+    else:
+        bounds = {v: min(response_observed_at(r) for r in recs if v in r["vintages"]) for v in used}
+    rows, info = vintage_rows(used, {m: [vals[i] for i in keep] for m, vals in obs.items()}, obs_start,
+                              bounds, CLOCK_BASIS if civil_proven else OBSERVED_CLOCK_BASIS)
     latest: dict[dt.date, float] = {}
     for r in rows:
         latest[r["ref_month"]] = r["value"]
@@ -398,6 +449,9 @@ def build(raw: Path = RAW, obs_start: dt.date = OBS_START, stage: str = STAGE) -
                                    .get("vintage_date", []) for v in x.split(",") if v]),
         "vintages_returned": len(r["vintages"]), "first_vintage": str(r["vintages"][0]),
         "last_vintage": str(r["vintages"][-1])} for r in recs}
+    if civil_proven:
+        proof = _landed(raw, "alfred_clock_downloadhelp_r1")
+        inputs[proof["file"]] = _input(proof)
     crosscheck: dict[str, Any] = {}
     for key, name, parse in (("fred_graph_latest", "fred_latest", _fred_values),
                              ("bls_api_v1_latest", "bls_api_v1", _bls_values)):
@@ -436,8 +490,9 @@ def build(raw: Path = RAW, obs_start: dt.date = OBS_START, stage: str = STAGE) -
                      "missing_ref_months": [str(m) for m in (_months(ordered[0], ordered[-1]) if ordered else [])
                                             if m not in first],
                      "primary_window_ref_months": sum(m >= PRIMARY_START for m in first),
-                     "observed_max_days_month_end_to_next_release": max(gaps) if gaps else None},
-        "crosscheck": crosscheck, "rule_text": RULE_TEXT,
+                     "observed_max_days_month_end_to_next_vintage_date": max(gaps) if gaps else None},
+        "crosscheck": crosscheck, "rule_text": RULE_TEXT, "clock_evidence": evidence,
+        "exact_clock_requirement": "PARTIAL",
         "built_at_utc": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
     }
     C.write_json_atomic(out / "manifest.json", manifest)
@@ -450,7 +505,8 @@ def build(raw: Path = RAW, obs_start: dt.date = OBS_START, stage: str = STAGE) -
 def accept(stage: str = STAGE) -> tuple[bool, list[str]]:
     """(i)+(iv) C5 self-check (``compustat_std_parts.check_stage``) plus coverage, cross-checks and the 2020+ rows."""
     d = C.build_root() / stage
-    chk = P.check_stage(d, CONTRACT)
+    contract = LEGACY_CONTRACT if stage == LEGACY_STAGE else CONTRACT
+    chk = P.check_stage(d, contract)
     m = C.read_json(d / "manifest.json")
     out = [f"$ python -m atx_db.alpha_panel.cpi_u_nsa accept --stage {stage}", "",
            "(i) C5 manifest self-check (engine PinnedStage contract; every listed file re-hashed)",
@@ -462,6 +518,13 @@ def accept(stage: str = STAGE) -> tuple[bool, list[str]]:
     out += [f"  {rel} rows={p['rows']} min={p['min']} max={p['max']} outside_year={p['outside_year']}"
             for rel, p in chk["parts"].items()]
     out += [f"  rows_outside_year={chk['rows_outside_year']}  (i)+(iv) {'PASS' if chk['ok'] else 'FAIL'}", ""]
+    if not chk["ok"]:
+        return False, out
+    out += ["exact publication-clock requirement: PARTIAL (C5 PASS is separate)",
+            "  clock evidence: " + json.dumps(m.get("clock_evidence", {"status": "legacy_unproved_0830_clock"})),
+            ("  legacy available_at uses unproved 08:30 stamps; preserved for provenance, superseded by cpi_u_nsa_v2"
+             if stage == LEGACY_STAGE else
+             "  release_date unknown; vintage_date retained; available_at is a bound, not an exact release instant")]
     cov = m["coverage"]
     out += [f"coverage: ref months {cov['first_ref_month']} .. {cov['latest_ref_month']} (latest vintage "
             f"{cov['latest_vintage']}; ALFRED page latest observation {cov['alfred_page_latest_observation']}); "
@@ -469,14 +532,15 @@ def accept(stage: str = STAGE) -> tuple[bool, list[str]]:
             f"the year of the latest vintage is partial",
             f"  missing ref months (no vintage holds them): {cov['missing_ref_months']}",
             f"  counts {m['counts']}", f"  excluded {m['excluded']}", f"  vanished {m['vanished']}",
-            f"  observed max days from month end to the next month's first release: "
-            f"{cov['observed_max_days_month_end_to_next_release']} (staleness_days {m['staleness_days']})",
+            f"  observed max days from month end to the next month's first vintage date: "
+            f"{cov.get('observed_max_days_month_end_to_next_vintage_date', cov.get('observed_max_days_month_end_to_next_release'))} "
+            f"(staleness_days {m['staleness_days']})",
             f"  network: {m['raw_ledger']['http_requests']} of {m['raw_ledger']['budget']} requests "
             f"(ledger {m['raw_ledger']['path']} sha256 {m['raw_ledger']['sha256']})"]
     out += [f"  crosscheck {name}: " + json.dumps(c, default=str) for name, c in m["crosscheck"].items()]
     con = C.connect(memory="200MB", threads=1)
     try:
-        src = "read_parquet([" + ", ".join(f"'{(d / rel).as_posix()}'" for rel in sorted(m["files"])) + "])"
+        src = "read_parquet([" + ", ".join(f"'{P._sql_path(d / rel)}'" for rel in sorted(m["files"])) + "])"
         sql = (f"SELECT year(ref_month), count(*) FILTER (WHERE vintage_kind = 'first_release'), "
                f"count(*) FILTER (WHERE vintage_kind = 'revision'), min(available_at), max(available_at), "
                f"string_agg(DISTINCT clock_basis, ',') FROM {src} WHERE ref_month >= DATE '{PRIMARY_START}' "
@@ -484,9 +548,9 @@ def accept(stage: str = STAGE) -> tuple[bool, list[str]]:
         out += ["", f"primary window {PRIMARY_START.year}+ by reference year", f"  sql: {sql}",
                 "  ref_year first_release revision min_available_at max_available_at clock_basis"]
         out += ["  " + " ".join(str(x) for x in r) for r in con.execute(sql).fetchall()]
-        sql = (f"SELECT ref_month, vintage_date, available_at, value, vintage_kind FROM {src} "
+        sql = (f"SELECT ref_month, vintage_date, available_at, value, vintage_kind, clock_basis FROM {src} "
                f"WHERE ref_month >= DATE '{PRIMARY_START}' ORDER BY ref_month, available_at")
-        out += ["", f"rows {PRIMARY_START}+ (ref_month vintage_date available_at_utc value kind)", f"  sql: {sql}"]
+        out += ["", f"rows {PRIMARY_START}+ (ref_month vintage_date available_at_utc value kind clock_basis)", f"  sql: {sql}"]
         out += ["  " + " ".join(str(x) for x in r) for r in con.execute(sql).fetchall()]
     finally:
         con.close()

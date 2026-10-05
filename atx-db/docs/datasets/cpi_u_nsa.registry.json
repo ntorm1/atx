@@ -5,10 +5,9 @@
   "module": "atx_db.alpha_panel.cpi_u_nsa",
   "args": [
     [
-      "build"
-    ],
-    [
-      "accept"
+      "accept",
+      "--stage",
+      "cpi_u_nsa"
     ]
   ],
   "inputs": [
@@ -42,5 +41,6 @@
       ],
       "doc": "Monthly CPI-U, U.S. city average, all items, not seasonally adjusted: BLS `CUUR0000SA0`, ALFRED/FRED `CPIAUCNS`, index level 1982-84=100. ALFRED download-page vintage dates and actual archival CSV columns provide the dated source. FRED latest and keyless BLS API are value cross-checks only; FRED graph requests with vintage_date were found to ignore it and provide no vintage proof."
     }
-  ]
+  ],
+  "inputs_note": "Preserved legacy artifact: unproved 08:30 clocks. Read-only provenance declaration, not approved exact PIT timing; corrected delivery is cpi_u_nsa_v2."
 }

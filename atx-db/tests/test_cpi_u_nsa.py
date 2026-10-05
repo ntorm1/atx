@@ -131,20 +131,20 @@ def test_parse_alfred_vintage_csv():
 
 def test_vintage_rows_keep_first_release_and_revision_never_overwritten():
     vint, obs = U.merge_vintages([U.parse_alfred_csv(CSV1), U.parse_alfred_csv(CSV2)])
-    rows, info = U.vintage_rows(vint, obs, start=D(2023, 12, 1))
+    rows, info = U.vintage_rows(vint, obs, clock_bounds={v: U.vintage_bound(v) for v in vint}, clock_basis=U.CLOCK_BASIS, start=D(2023, 12, 1))
     got = [(r["ref_month"], r["vintage_date"], r["value"], r["vintage_kind"]) for r in rows]
     assert got == [(D(2023, 12, 1), D(2024, 1, 11), 306.746, "first_release"),
                    (D(2023, 12, 1), D(2024, 2, 13), 306.75, "revision"),
                    (D(2024, 1, 1), D(2024, 2, 13), 308.417, "first_release"),
                    (D(2024, 2, 1), D(2024, 3, 12), 310.326, "first_release")]
-    assert rows[0]["available_at"] == T(2024, 1, 11, 13, 30) and rows[3]["available_at"] == T(2024, 3, 12, 12, 30)
+    assert rows[0]["available_at"] == T(2024, 1, 13) and rows[3]["available_at"] == T(2024, 3, 14)
     assert all(r["clock_basis"] == U.CLOCK_BASIS for r in rows)
     assert info["unchanged_republications"] == 2 and info["vanished"] == [] and info["excluded_first_in_selection"] == []
 
 
 def test_a_month_already_in_the_first_selected_vintage_is_excluded_not_guessed():
     vint, obs = U.parse_alfred_csv(CSV1)
-    rows, info = U.vintage_rows(vint, obs, start=D(2023, 10, 1))
+    rows, info = U.vintage_rows(vint, obs, clock_bounds={v: U.vintage_bound(v) for v in vint}, clock_basis=U.CLOCK_BASIS, start=D(2023, 10, 1))
     assert [r["ref_month"] for r in rows if r["vintage_kind"] == "first_release"] == [D(2023, 12, 1), D(2024, 1, 1)]
     assert info["excluded_first_in_selection"] == [D(2023, 10, 1), D(2023, 11, 1)]
 
@@ -152,7 +152,7 @@ def test_a_month_already_in_the_first_selected_vintage_is_excluded_not_guessed()
 def test_a_value_that_vanishes_from_a_later_vintage_is_reported():
     vint, obs = U.parse_alfred_csv("observation_date,CPIAUCNS_20231212,CPIAUCNS_20240111,CPIAUCNS_20240213\n"
                                    "2023-12-01,,306.746,\n")
-    rows, info = U.vintage_rows(vint, obs, start=D(2023, 12, 1))
+    rows, info = U.vintage_rows(vint, obs, clock_bounds={v: U.vintage_bound(v) for v in vint}, clock_basis=U.CLOCK_BASIS, start=D(2023, 12, 1))
     assert len(rows) == 1 and info["vanished"] == [(D(2023, 12, 1), D(2024, 2, 13))]
 
 
@@ -220,6 +220,8 @@ def _raw(raw):
     _land(raw, "alfred_vintages_2024-03-12_2024-03-12", CSV2)
     _land(raw, "fred_graph_latest", FRED)
     _land(raw, "bls_api_v1_latest", json.dumps(BLS), "application/json")
+    U.fetch("alfred_clock_downloadhelp_r1", "https://alfred.stlouisfed.org/help/downloaddata", raw=raw,
+            transport=FakeTransport(body=b"A vintage date is a date in history used to download data as it actually existed on that past date."))
 
 
 def test_build_writes_year_parts_under_a_c5_manifest(raw, root):
@@ -232,12 +234,12 @@ def test_build_writes_year_parts_under_a_c5_manifest(raw, root):
     assert m["coverage"]["latest_ref_month"] == "2024-02-01" and m["coverage"]["latest_vintage"] == "2024-03-12"
     assert m["coverage"]["missing_ref_months"] == []
     # 2023-12-31 -> 2024-02-13 (January's first release) is the longest wait for the next month
-    assert m["coverage"]["observed_max_days_month_end_to_next_release"] == [44, "2023-12-01"]
+    assert m["coverage"]["observed_max_days_month_end_to_next_vintage_date"] == [44, "2023-12-01"]
     assert m["crosscheck"]["fred_latest"]["mismatches"] == [] and m["crosscheck"]["fred_latest"]["compared"] == 3
     assert m["crosscheck"]["bls_api_v1"]["compared"] == 3
     assert m["crosscheck"]["bls_api_v1"]["mismatches"] == [
         {"ref_month": "2023-12-01", "alfred_latest": 306.75, "bls": 306.746}]
-    assert len(m["inputs"]) == 5 and all(v["sha256"] for v in m["inputs"].values())
+    assert len(m["inputs"]) == 6 and all(v["sha256"] for v in m["inputs"].values())
     chk = P.check_stage(stage, U.CONTRACT)
     assert chk["ok"], chk
     assert res["manifest_sha256"] == C.sha256_file(stage / "manifest.json")
@@ -260,3 +262,102 @@ def test_build_refuses_an_existing_stage_and_a_receipt_mismatch(raw, root):
     (raw / rec["file"]).write_text("tampered", encoding="utf-8")
     with pytest.raises(RuntimeError, match="sha256"):
         U.build(raw=raw, obs_start=D(2023, 12, 1), stage="cpi_u_nsa_other")
+
+
+def test_civil_date_bound_is_after_any_local_day_end_and_handles_year_dst_boundaries():
+    for date in [D(2023, 3, 12), D(2023, 11, 5), D(2023, 12, 31)]:
+        bound = U.vintage_bound(date).replace(tzinfo=dt.UTC)
+        for offset in [-12, 0, 14]:
+            local_end = dt.datetime.combine(date + dt.timedelta(days=1), dt.time(),
+                                            dt.timezone(dt.timedelta(hours=offset)))
+            assert bound > local_end.astimezone(dt.UTC)
+    assert U.vintage_bound(D(2023, 12, 31)) == T(2024, 1, 2)
+
+
+def test_civil_date_bound_requires_authoritative_landed_semantics(raw):
+    assert U.clock_evidence(raw)[0] is False
+    _land(raw, "alfred_clock_downloadhelp_r1", "A vintage date is a date in history used to download data as it actually existed on that past date.")
+    assert U.clock_evidence(raw)[0] is False  # wrong endpoint cannot prove semantics
+
+
+def test_build_falls_back_to_actual_response_observation_without_civil_date_proof(raw, root):
+    _raw(raw)
+    rec = U.ledger(raw).latest()["alfred_clock_downloadhelp_r1"]
+    (raw / rec["file"]).write_bytes(b"No date semantics here")
+    # A new valid receipt with uninformative help proves neither date nor release time.
+    U.fetch("alfred_clock_downloadhelp_r1", "https://alfred.stlouisfed.org/help/downloaddata", raw=raw,
+            transport=FakeTransport(body=b"No date semantics here"))
+    U.build(raw=raw, obs_start=D(2023, 12, 1))
+    m = C.read_json(root / U.STAGE / "manifest.json")
+    assert m["clock_evidence"]["historical_timing"] == "unavailable"
+    assert m["exact_clock_requirement"] == "PARTIAL"
+    import pyarrow.parquet as pq
+    rows = [r for rel in m["files"] for r in pq.read_table(root / U.STAGE / rel).to_pylist()]
+    assert all(r["clock_basis"] == U.OBSERVED_CLOCK_BASIS and r["release_date"] is None for r in rows)
+    observed = [U.response_observed_at(rec) for rec in U._batch_recs(raw)]
+    assert all(min(observed) <= r["available_at"] <= max(observed) for r in rows)
+
+
+def test_accept_stops_on_rejected_paths_before_coverage_sql(raw, root, monkeypatch):
+    _raw(raw)
+    U.build(raw=raw, obs_start=D(2023, 12, 1))
+    stage = root / U.STAGE
+    m = C.read_json(stage / "manifest.json")
+    m["files"] = {"../outside.parquet": {"bytes": 0, "sha256": "0" * 64}}
+    C.write_json_atomic(stage / "manifest.json", m)
+    original = C.connect
+    calls = []
+    def counted_connect(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(C, "connect", counted_connect)
+    ok, lines = U.accept()
+    assert not ok and "FAIL" in "\n".join(lines)
+    assert len(calls) == 1  # only self-check, no subsequent rejected-path query
+
+
+def test_corrected_build_does_not_overwrite_legacy_and_prints_partial(raw, root):
+    _raw(raw)
+    old = root / U.LEGACY_STAGE
+    old.mkdir(parents=True)
+    (old / "manifest.json").write_text("legacy", encoding="utf-8")
+    U.build(raw=raw, obs_start=D(2023, 12, 1))
+    assert (old / "manifest.json").read_text(encoding="utf-8") == "legacy"
+    ok, lines = U.accept()
+    assert ok and "exact publication-clock requirement: PARTIAL" in "\n".join(lines)
+
+
+def test_corrected_clock_partitions_by_bound_year_instead_of_vintage_year(raw, root, monkeypatch):
+    _land(raw, "alfred_downloaddata_page", PAGE, "text/html")
+    _land(raw, "alfred_vintages_2023-12-29_2023-12-31",
+          "observation_date,CPIAUCNS_20231229,CPIAUCNS_20231231\n2023-11-01,,307.051\n")
+    U.fetch("alfred_clock_downloadhelp_r1", "https://alfred.stlouisfed.org/help/downloaddata", raw=raw,
+            transport=FakeTransport(body=b"A vintage date is a date in history used to download data as it actually existed on that past date."))
+    monkeypatch.setattr(U, "alfred_page", lambda page: (D(2023, 11, 1), [D(2023, 12, 29), D(2023, 12, 31)]))
+    U.build(raw=raw, obs_start=D(2023, 11, 1))
+    m = C.read_json(root / U.STAGE / "manifest.json")
+    assert list(m["files"]) == ["parts/year=2024/cpi_u_nsa.parquet"]
+    import pyarrow.parquet as pq
+    row = pq.read_table(root / U.STAGE / next(iter(m["files"]))).to_pylist()[0]
+    assert row["vintage_date"] == D(2023, 12, 31) and row["available_at"] == T(2024, 1, 2)
+    assert row["release_date"] is None
+
+
+def test_legacy_acceptance_remains_readable_and_warns_its_clock_is_unproved(raw, root):
+    _raw(raw)
+    U.build(raw=raw, obs_start=D(2023, 12, 1), stage=U.LEGACY_STAGE)
+    stage = root / U.LEGACY_STAGE
+    m = C.read_json(stage / "manifest.json")
+    m.update(U.LEGACY_CONTRACT)
+    m["coverage"]["observed_max_days_month_end_to_next_release"] = m["coverage"].pop("observed_max_days_month_end_to_next_vintage_date")
+    m.pop("clock_evidence")
+    C.write_json_atomic(stage / "manifest.json", m)
+    ok, lines = U.accept(stage=U.LEGACY_STAGE)
+    assert ok and "legacy available_at uses unproved 08:30 stamps" in "\n".join(lines)
+
+
+def test_accept_quotes_a_verified_stage_path_containing_an_apostrophe(raw, root):
+    _raw(raw)
+    U.build(raw=raw, obs_start=D(2023, 12, 1), stage="cpi'v2")
+    ok, lines = U.accept(stage="cpi'v2")
+    assert ok and "PARTIAL" in "\n".join(lines)

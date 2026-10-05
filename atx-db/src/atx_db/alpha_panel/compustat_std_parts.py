@@ -361,7 +361,7 @@ def _oi_identity(lines, oi, need, rd_value, rd_below_sga, rel_tol) -> tuple[str,
 def classify_sga(lines: list[dict[str, Any]], rel_tol: float = 5e-4) -> tuple[str, str]:
     """(class, basis) for one filing's income-statement face lines ``{line, tag, value, plabel}``.
 
-    ``includes_rd``: an SG&A face label names R&D, or an R&D line directly below SG&A is not additive (the face
+    ``includes_rd``: an SG&A face label explicitly includes R&D, or an R&D line directly below SG&A is not additive (the face
     reconciles only without it). ``excludes_rd``: SG&A and R&D are both additive in a face identity: the contiguous
     block above an expense total sums to it, or a line above operating income minus the block between equals it.
     Anything else is ``unresolved`` with the reason; nothing is inferred from the numeric fields alone.
@@ -372,8 +372,20 @@ def classify_sga(lines: list[dict[str, Any]], rel_tol: float = 5e-4) -> tuple[st
     sga = [x for x in lines if x["tag"] in SGA_TAGS] or [x for x in lines if x["tag"] in SGA_FALLBACK_TAGS]
     if not sga:
         return "unresolved", "sga_not_on_face"
-    if any(RD_LABEL.search(x.get("plabel") or "") for x in sga):
-        return "includes_rd", "sga_face_label_names_rd"
+    labels = [x.get("plabel") or "" for x in sga if RD_LABEL.search(x.get("plabel") or "")]
+    if labels:
+        decisions = set()
+        for label in labels:
+            if re.search(r"\b(exclud(?:e|es|ing)|without|not\s+includ(?:e|ed|ing))\b.{0,50}(research|r\s*&\s*d)", label, re.I):
+                decisions.add("excludes_rd")
+            elif re.search(r"\b(includ(?:e|es|ed|ing))\b.{0,50}(research|r\s*&\s*d)", label, re.I):
+                decisions.add("includes_rd")
+            else:
+                decisions.add("unresolved")
+        if len(decisions) == 1 and "unresolved" not in decisions:
+            cls = decisions.pop()
+            return cls, "sga_face_label_explicit_" + cls
+        return "unresolved", "sga_face_label_ambiguous_rd"
     rd = [x for x in lines if x["tag"] in RD_TAGS]
     if not rd:
         return "unresolved", "rd_not_on_face"
@@ -406,14 +418,14 @@ def sga_sample_sql(stage_dir: Path, n: int, fsds: Path = C.FSDS_DIR) -> str:
     one present in the local FSDS, then the latest. Issuers with a target-period filing come first, each group
     ordered by md5 of the CIK."""
     return (f"WITH fs AS (SELECT DISTINCT adsh FROM read_parquet('{_sql_path(fsds / 'sub' / '*.parquet')}')), "
-            f"r AS (SELECT cik, accession, datadate, fyear, available_at, xsga, xrd, "
+            f"r AS (SELECT cik, accession, datadate, fyear, available_at, xsga, xrd, curcd, fx_converted, "
             f"available_at >= TIMESTAMP '{TARGET_FROM:%Y-%m-%d}' AS target, fs.adsh IS NOT NULL AS in_fsds "
             f"FROM {_parts(stage_dir)} LEFT JOIN fs ON fs.adsh = accession "
             "WHERE first_reported AND xrd > 0 AND xsga IS NOT NULL), "
             "pool AS (SELECT * FROM r QUALIFY row_number() OVER (PARTITION BY cik ORDER BY target DESC, in_fsds DESC, "
             "available_at DESC, accession DESC) = 1) "
             "SELECT cik, accession, datadate, fyear, available_at, xsga, xrd, target, in_fsds, "
-            "(SELECT count(*) FROM pool) AS pool_issuers, (SELECT count(*) FROM pool WHERE target) AS pool_target "
+            "(SELECT count(*) FROM pool) AS pool_issuers, (SELECT count(*) FROM pool WHERE target) AS pool_target, curcd, fx_converted "
             f"FROM pool ORDER BY target DESC, md5(CAST(cik AS VARCHAR)), cik LIMIT {int(n)}")
 
 
@@ -462,17 +474,23 @@ def sga_convention_sample(con, stage_dir: Path, fsds: Path = C.FSDS_DIR, n: int 
     picked = con.execute(sql).fetchall()
     faces = _fsds_face(con, fsds, [r[1] for r in picked])
     issuers = []
-    for cik, accession, datadate, fyear, available_at, xsga, xrd, target, in_fsds, _pool, _target in picked:
+    for cik, accession, datadate, fyear, available_at, xsga, xrd, target, in_fsds, _pool, _target, curcd, fx_converted in picked:
         lines = faces.get(accession, [])
         cls, basis = classify_sga(lines)
         face_sga = [x["value"] for x in lines if x["tag"] in SGA_TAGS] or \
             [x["value"] for x in lines if x["tag"] in SGA_FALLBACK_TAGS]
         face_sga_v = None if not face_sga or None in face_sga else sum(face_sga)
+        units = {x.get("uom") for x in lines if x["tag"] in SGA_TAGS + SGA_FALLBACK_TAGS}
+        comparison_basis = ("inapplicable_fx_converted" if fx_converted else
+                            "inapplicable_units_unknown_or_differ" if units != {curcd} or not curcd else
+                            "inapplicable_face_value_missing" if face_sga_v is None else "same_currency")
         issuers.append({"cik": int(cik), "accession": accession, "datadate": str(datadate), "fyear": int(fyear),
                         "available_at": str(available_at), "target": bool(target), "in_fsds": bool(in_fsds),
                         "xsga": xsga, "xrd": xrd, "class": cls, "basis": basis, "face_lines": len(lines),
                         "uom": next((x["uom"] for x in lines if x.get("uom")), None), "face_sga": face_sga_v,
-                        "xsga_equals_face_sga": None if face_sga_v is None else abs(face_sga_v - xsga) <= max(abs(xsga) * 5e-3, 1.0)})
+                        "curcd": curcd, "fx_converted": bool(fx_converted), "comparison_basis": comparison_basis,
+                        "xsga_equals_face_sga": (abs(face_sga_v - xsga) <= max(abs(xsga) * 5e-3, 1.0))
+                        if comparison_basis == "same_currency" else None})
     counts: dict[str, int] = {}
     for i in issuers:
         key = i["class"] if i["class"] != "unresolved" else f"unresolved:{i['basis']}"
@@ -508,6 +526,8 @@ def accept(stage: str = STAGE, fsds: Path = C.FSDS_DIR, n: int = SAMPLE_N) -> tu
         out.append(f"  {rel} rows={p['rows']} min={p['min']} max={p['max']} outside_year={p['outside_year']}")
     out.append(f"  rows_outside_year={chk['rows_outside_year']} rows_total={sum(p['rows'] for p in chk['parts'].values())}")
     out.append(f"  (i)+(iv) {'PASS' if chk['ok'] else 'FAIL'}")
+    if not chk["ok"]:
+        return False, out
     con = C.connect(memory="400MB", threads=2)
     try:
         end = data_end(con, d)
@@ -552,11 +572,11 @@ def accept(stage: str = STAGE, fsds: Path = C.FSDS_DIR, n: int = SAMPLE_N) -> tu
                 f"  pool issuers={smp['pool_issuers']} with a filing stamped >= {TARGET_FROM:%Y-%m-%d}="
                 f"{smp['pool_target_issuers']} sampled={smp['sampled']} sampled target-period filings="
                 f"{smp['sampled_target_filings']} classes={smp['counts']}",
-                "  cik accession fyear available_at in_fsds class basis face_lines uom xsga face_sga xsga_equals_face_sga xrd"]
+                "  cik accession fyear available_at in_fsds class basis face_lines uom xsga face_sga xsga_equals_face_sga xrd curcd fx_converted comparison_basis"]
         for i in smp["issuers"]:
             out.append(f"  {i['cik']} {i['accession']} {i['fyear']} {i['available_at']} {i['in_fsds']} {i['class']} "
                        f"{i['basis']} {i['face_lines']} {i['uom']} {i['xsga']} {i['face_sga']} "
-                       f"{i['xsga_equals_face_sga']} {i['xrd']}")
+                       f"{i['xsga_equals_face_sga']} {i['xrd']} {i['curcd']} {i['fx_converted']} {i['comparison_basis']}")
         hist = first_reported_issuers(con, d, prim)
         out += ["", f"history: issuers with a first-reported row per fiscal year, primary window {prim[0]}-{prim[-1]} "
                 "(all templates, every vintage stamp)", f"  sql: {first_reported_issuers_sql(d, prim)}",

@@ -254,7 +254,7 @@ def test_separate_face_lines_that_add_to_the_total_exclude_rd():
 def test_sga_label_naming_rd_includes_rd():
     lines = [L(4, "SellingGeneralAndAdministrativeExpense", 300.0,
                "Selling, general and administrative (including research and development)")]
-    assert P.classify_sga(lines) == ("includes_rd", "sga_face_label_names_rd")
+    assert P.classify_sga(lines) == ("includes_rd", "sga_face_label_explicit_includes_rd")
 
 
 def test_rd_shown_inside_sga_by_arithmetic_includes_rd():
@@ -416,3 +416,41 @@ def test_sga_sample_uses_the_filings_own_currency(root):
     finally:
         con.close()
     assert {i["accession"]: i["class"] for i in smp["issuers"]}["a-1"] == "excludes_rd"
+
+
+@pytest.mark.parametrize("label, expected", [
+    ("SG&A excluding research and development", "excludes_rd"),
+    ("SG&A not including R&D", "excludes_rd"),
+    ("SG&A including research and development", "includes_rd"),
+    ("SG&A and research and development", "unresolved"),
+])
+def test_sga_labels_distinguish_inclusion_exclusion_and_ambiguity(label, expected):
+    assert P.classify_sga([L(1, "SellingGeneralAndAdministrativeExpense", 100, label)])[0] == expected
+
+
+def test_accept_stops_on_rejected_paths_before_reading_them(root, monkeypatch):
+    m, stage = _built(root)
+    m["files"] = {"../outside.parquet": {"bytes": 0, "sha256": "0" * 64}}
+    C.write_json_atomic(stage / "manifest.json", m)
+    def rejected_parts(*args):
+        pytest.fail("accept must not read rejected manifest paths")
+    monkeypatch.setattr(P, "_parts", rejected_parts)
+    ok, lines = P.accept()
+    assert not ok and "FAIL" in "\n".join(lines)
+
+
+@pytest.mark.parametrize("curcd, converted, expected_basis, equal", [
+    ("USD", True, "inapplicable_fx_converted", None),
+    ("USD", False, "inapplicable_units_unknown_or_differ", None),
+    ("CNY", False, "same_currency", False),
+])
+def test_sga_sample_comparison_requires_matching_unconverted_units(root, monkeypatch, curcd, converted, expected_basis, equal):
+    _, stage = _built(root)
+    class SampleCon:
+        def execute(self, sql): return self
+        def fetchall(self): return [(1, "a-1", D(2022, 12, 31), 2022, T(2023, 1, 1), 100., 10., True, True, 1, 1, curcd, converted)]
+    monkeypatch.setattr(P, "_fsds_face", lambda *args: {"a-1": [dict(L(1, "SellingGeneralAndAdministrativeExpense", 700.), uom="CNY")]})
+    row = P.sga_convention_sample(SampleCon(), stage)["issuers"][0]
+    assert row["xsga_equals_face_sga"] is equal
+    assert row["comparison_basis"] == expected_basis
+    assert row["curcd"] == curcd and row["fx_converted"] == converted and row["uom"] == "CNY"
