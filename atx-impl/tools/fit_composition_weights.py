@@ -2758,7 +2758,9 @@ def aim_provenance(ids: list[str], themes: list[str], aims: list[dict], active: 
 
 
 def parse_args(argv):
-    p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    # P9 D2R (ruling D2R-1): no abbreviation of any flag is read. With argparse's default a unique prefix is read as the
+    # flag, so adding a flag changes what a prefix means (D2's --composition-exe made every --compo... ambiguous).
+    p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0], allow_abbrev=False)
     p.add_argument("--library", type=Path, required=True)
     p.add_argument("--library-sha256", required=True)
     p.add_argument("--train", type=Path, required=True, help="TRAIN role manifest.json")

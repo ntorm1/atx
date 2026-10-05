@@ -1,0 +1,155 @@
+D-COV read: v1.1 store build-equity/p9-m2i-dcov-v11 | atx-cov-v1 store build-equity/p9-m2i-dcov-covv1
+
+## Manifest blocks
+[atx-risk-v1.1] model = 'atx-risk-v1.1'
+[atx-risk-v1.1] recipe.eigen_adjustment = null
+[atx-risk-v1.1] eigen_adjustment.sessions = null
+[atx-risk-v1.1] manifest extended_families = null; bias_summary extended_families.unformed_sessions = 0
+[atx-risk-v1.1] container = {"bytes": 510677824, "file": "model.atxcov", "file_sha256": "cd48d5749dd7484ca69ae6b0b9df142b73e2beb64c814d3c143982ec59bb2ce3", "format": "atx.cov-container/1.0", "root_sha256": "b39a1b776639e7d0b88c70e8a43bb9f6c5e6dacb92a336a327234dfc5d312e1d"}
+[atx-risk-v1.1] bias_summary families present = ['eigen', 'factor', 'minvar', 'optimized', 'random']
+[atx-cov-v1] model = 'atx-cov-v1'
+[atx-cov-v1] recipe.eigen_adjustment = {"amplification": 1.0, "method": "menchero-wang-orr simulated (USE4 B7)", "seed": 7, "seed_rule": "per session", "simulated_length": "kish effective count of the HL-504 weights", "simulations": 64}
+[atx-cov-v1] eigen_adjustment.sessions = {"adjusted": 1279, "not_run": 126, "refused": 0, "refused_budget": 0, "short_history": 0}
+[atx-cov-v1] manifest extended_families = null; bias_summary extended_families.unformed_sessions = 0
+[atx-cov-v1] container = {"bytes": 510678016, "file": "model.atxcov", "file_sha256": "0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a", "format": "atx.cov-container/1.0", "root_sha256": "20919f7b338dfbd786994cbbcb506bdaabd9c3af3266d4394d4d2e07d90c9f8e"}
+[atx-cov-v1] bias_summary families present = ['eigen', 'factor', 'minvar', 'optimized', 'random']
+
+## Families (bias_summary.json), v1.1 | atx-cov-v1
+- random:
+    status                              ok |           ok
+    series_ok                           64 |           64
+    observations                     69696 |        69696
+    full b_mean                   0.960324 |     0.961080
+    full b_median                 0.961836 |     0.962379
+    series_in_band                      34 |           34
+    series_in_kurtosis_band             44 |           44
+    roll63 share_in_band          0.723162 |     0.723360
+    roll63 b_mean                 0.943122 |     0.943772
+    roll252 share_in_band         0.607156 |     0.610512
+    roll252 b_mean                0.936860 |     0.937419
+    qlike                         2.407976 |     2.407780
+    mrad63 mean                   0.132143 |     0.131998
+    mrad252 mean                  0.082374 |     0.082031
+    same observation count            True
+- factor:
+    status                              ok |           ok
+    series_ok                           51 |           51
+    observations                     51193 |        51193
+    full b_mean                   1.001641 |     1.004053
+    full b_median                 1.005017 |     1.018073
+    series_in_band                      27 |           25
+    series_in_kurtosis_band             36 |           35
+    roll63 share_in_band          0.636059 |     0.636434
+    roll63 b_mean                 0.974502 |     0.975995
+    roll252 share_in_band         0.576378 |     0.580870
+    roll252 b_mean                0.980258 |     0.981208
+    qlike                         2.514876 |     2.514399
+    mrad63 mean                   0.169266 |     0.169221
+    mrad252 mean                  0.094366 |     0.094858
+    same observation count            True
+- eigen:
+    status                              ok |           ok
+    series_ok                           51 |           51
+    observations                     54770 |        54770
+    full b_mean                 434.607878 |   379.781150
+    full b_median                 1.162860 |     1.121740
+    series_in_band                      10 |            9
+    series_in_kurtosis_band             48 |           48
+    roll63 share_in_band          0.434603 |     0.482445
+    roll63 b_mean               367.779677 |   331.780024
+    roll252 share_in_band         0.256761 |     0.284853
+    roll252 b_mean              430.534980 |   379.743706
+    qlike                     5621299.796336 | 4149159.760159
+    mrad63 mean                 361.500365 |   326.026563
+    mrad252 mean                421.871197 |   371.986220
+    same observation count            True
+- minvar:
+    status                              ok |           ok
+    series_ok                            1 |            1
+    observations                      1089 |         1089
+    full b_mean                   1.499463 |     1.474741
+    full b_median                 1.499463 |     1.474741
+    series_in_band                       0 |            0
+    series_in_kurtosis_band              0 |            0
+    roll63 share_in_band          0.506329 |     0.562804
+    roll63 b_mean                 1.336432 |     1.310989
+    roll252 share_in_band         0.196897 |     0.279236
+    roll252 b_mean                1.314513 |     1.290801
+    qlike                         3.194226 |     3.143016
+    mrad63 mean                   0.372525 |     0.357687
+    mrad252 mean                  0.317812 |     0.297358
+    same observation count            True
+- optimized:
+    status                              ok |           ok
+    series_ok                           32 |           32
+    observations                     34848 |        34848
+    full b_mean                   1.008111 |     1.007810
+    full b_median                 1.004457 |     1.004350
+    series_in_band                      23 |           23
+    series_in_kurtosis_band             26 |           27
+    roll63 share_in_band          0.740902 |     0.740750
+    roll63 b_mean                 0.992082 |     0.991814
+    roll252 share_in_band         0.769168 |     0.769391
+    roll252 b_mean                0.990011 |     0.989773
+    qlike                         2.431117 |     2.427071
+    mrad63 mean                   0.134080 |     0.134064
+    mrad252 mean                  0.060154 |     0.060116
+    same observation count            True
+
+## Eigen family per rank (bias.csv: family, name, z; session for alignment only)
+ranks 51; identical observations (same sessions and finite-z pattern per rank in both): True
+rank           T      band |     b v1.1  in direction v1.1                |   b cov-v1  in direction cov-v1              |  |b-1| reduction
+eigen-00    1089    0.0429 | 16074.6219   n above: under-forecast         | 13667.7331   n above: under-forecast         |       +2406.8888
+eigen-01    1089    0.0429 |  4802.5569   n above: under-forecast         |  4565.5452   n above: under-forecast         |        +237.0117
+eigen-02    1089    0.0429 |  1230.4744   n above: under-forecast         |  1079.8917   n above: under-forecast         |        +150.5827
+eigen-03    1089    0.0429 |     1.8387   n above: under-forecast         |     1.6799   n above: under-forecast         |          +0.1588
+eigen-04    1089    0.0429 |     1.6923   n above: under-forecast         |     1.5373   n above: under-forecast         |          +0.1550
+eigen-05    1089    0.0429 |     1.7420   n above: under-forecast         |     1.6582   n above: under-forecast         |          +0.0838
+eigen-06    1089    0.0429 |     1.6976   n above: under-forecast         |     1.5493   n above: under-forecast         |          +0.1483
+eigen-07    1089    0.0429 |     1.6226   n above: under-forecast         |     1.5702   n above: under-forecast         |          +0.0525
+eigen-08    1089    0.0429 |     1.5256   n above: under-forecast         |     1.4314   n above: under-forecast         |          +0.0942
+eigen-09    1089    0.0429 |     1.6104   n above: under-forecast         |     1.4994   n above: under-forecast         |          +0.1110
+eigen-10    1089    0.0429 |     1.5563   n above: under-forecast         |     1.4260   n above: under-forecast         |          +0.1303
+eigen-11    1089    0.0429 |     1.5363   n above: under-forecast         |     1.3884   n above: under-forecast         |          +0.1480
+eigen-12    1089    0.0429 |     1.3838   n above: under-forecast         |     1.3174   n above: under-forecast         |          +0.0664
+eigen-13    1089    0.0429 |     1.3362   n above: under-forecast         |     1.2963   n above: under-forecast         |          +0.0399
+eigen-14    1089    0.0429 |     1.3258   n above: under-forecast         |     1.2274   n above: under-forecast         |          +0.0984
+eigen-15    1089    0.0429 |     1.3030   n above: under-forecast         |     1.2265   n above: under-forecast         |          +0.0765
+eigen-16    1089    0.0429 |     1.3352   n above: under-forecast         |     1.2610   n above: under-forecast         |          +0.0742
+eigen-17    1089    0.0429 |     1.3218   n above: under-forecast         |     1.2462   n above: under-forecast         |          +0.0756
+eigen-18    1089    0.0429 |     1.3773   n above: under-forecast         |     1.2865   n above: under-forecast         |          +0.0908
+eigen-19    1089    0.0429 |     1.3108   n above: under-forecast         |     1.2384   n above: under-forecast         |          +0.0724
+eigen-20    1089    0.0429 |     1.3225   n above: under-forecast         |     1.2681   n above: under-forecast         |          +0.0544
+eigen-21    1089    0.0429 |     1.2136   n above: under-forecast         |     1.1690   n above: under-forecast         |          +0.0446
+eigen-22    1089    0.0429 |     1.2481   n above: under-forecast         |     1.2251   n above: under-forecast         |          +0.0230
+eigen-23    1089    0.0429 |     1.2400   n above: under-forecast         |     1.1790   n above: under-forecast         |          +0.0610
+eigen-24    1089    0.0429 |     1.1761   n above: under-forecast         |     1.1868   n above: under-forecast         |          -0.0107
+eigen-25    1089    0.0429 |     1.1629   n above: under-forecast         |     1.1150   n above: under-forecast         |          +0.0479
+eigen-26    1089    0.0429 |     1.1523   n above: under-forecast         |     1.1217   n above: under-forecast         |          +0.0306
+eigen-27    1089    0.0429 |     1.1432   n above: under-forecast         |     1.1135   n above: under-forecast         |          +0.0297
+eigen-28    1089    0.0429 |     1.1202   n above: under-forecast         |     1.0983   n above: under-forecast         |          +0.0219
+eigen-29    1089    0.0429 |     1.1196   n above: under-forecast         |     1.1035   n above: under-forecast         |          +0.0161
+eigen-30    1089    0.0429 |     1.0858   n above: under-forecast         |     1.0993   n above: under-forecast         |          -0.0136
+eigen-31    1089    0.0429 |     1.0962   n above: under-forecast         |     1.0598   n above: under-forecast         |          +0.0364
+eigen-32    1089    0.0429 |     0.9869   y in band                       |     0.9337   n below: over-forecast/over-corr.|          -0.0532
+eigen-33    1089    0.0429 |     0.8009   n below: over-forecast/over-corr.|     0.8837   n below: over-forecast/over-corr.|          +0.0828
+eigen-34    1089    0.0429 |     1.0167   y in band                       |     1.0515   n above: under-forecast         |          -0.0349
+eigen-35    1089    0.0429 |     1.0781   n above: under-forecast         |     1.0883   n above: under-forecast         |          -0.0102
+eigen-36    1089    0.0429 |     1.0251   y in band                       |     1.0255   y in band                       |          -0.0004
+eigen-37    1089    0.0429 |     1.0280   y in band                       |     1.0220   y in band                       |          +0.0060
+eigen-38    1089    0.0429 |     1.0393   y in band                       |     1.0761   n above: under-forecast         |          -0.0368
+eigen-39    1089    0.0429 |     0.9842   y in band                       |     0.9783   y in band                       |          -0.0060
+eigen-40    1089    0.0429 |     1.0003   y in band                       |     1.0222   y in band                       |          -0.0220
+eigen-41    1089    0.0429 |     0.9882   y in band                       |     1.0003   y in band                       |          +0.0115
+eigen-42    1089    0.0429 |     1.0015   y in band                       |     1.0261   y in band                       |          -0.0245
+eigen-43    1089    0.0429 |     0.9165   n below: over-forecast/over-corr.|     0.9630   y in band                       |          +0.0465
+eigen-44    1089    0.0429 |     0.9863   y in band                       |     0.9694   y in band                       |          -0.0169
+eigen-45    1089    0.0429 |     0.9437   n below: over-forecast/over-corr.|     1.0023   y in band                       |          +0.0540
+eigen-46    1089    0.0429 |     0.9113   n below: over-forecast/over-corr.|     0.9402   n below: over-forecast/over-corr.|          +0.0289
+eigen-47    1089    0.0429 |     0.7836   n below: over-forecast/over-corr.|     0.8009   n below: over-forecast/over-corr.|          +0.0172
+eigen-48     948    0.0459 |     0.7365   n below: over-forecast/over-corr.|     0.7536   n below: over-forecast/over-corr.|          +0.0171
+eigen-49     817    0.0495 |     0.7118   n below: over-forecast/over-corr.|     0.7521   n below: over-forecast/over-corr.|          +0.0403
+eigen-50     733    0.0522 |     0.8135   n below: over-forecast/over-corr.|     0.8004   n below: over-forecast/over-corr.|          -0.0131
+ranks in band: v1.1 10 of 51 | atx-cov-v1 9 of 51
+pooled, all ranks          N 54770  band 0.0060 | v1.1 b 2370.9495 (above: under-forecast) | atx-cov-v1 b 2036.9591 (above: under-forecast) | |b-1| reduction +333.9905
+pooled, without eigen-00   N 53681  band 0.0061 | v1.1 b 705.8525 (above: under-forecast) | atx-cov-v1 b 667.9782 (above: under-forecast) | |b-1| reduction +37.8743

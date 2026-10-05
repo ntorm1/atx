@@ -1,0 +1,40 @@
+A = build-equity\p9-covr-out\dbg
+B = build-equity\p9-covr-out\rel-swap-exp2
+fixture in/role: 8 files, differing none; manifest sha256 A c93324e72b0c4fcc B c93324e72b0c4fcc
+fixture in/fields: 5 files, differing none; manifest sha256 A 7e0cc52b06c9eabf B 7e0cc52b06c9eabf
+
+== v11
+  model.atxcov bytes A 14786944 B 14786944; whole file equal False
+  differing bytes 124 by section {'header.root': 32, 'META': 60, 'trailer': 32}; META leaves differing ['/producer/executable_sha256']
+  date index entries differing: 0
+  first differing block / array: none
+    DIAG           sessions differing   0 / 300  first -
+    EIGEN_GAMMA    sessions differing   0 / 300  first -
+    EXPOSURES      sessions differing   0 / 300  first -
+    FACTOR_COV     sessions differing   0 / 300  first -
+    FACTOR_FLAGS   sessions differing   0 / 300  first -
+    FACTOR_RETURN  sessions differing   0 / 300  first -
+    GROUP          sessions differing   0 / 300  first -
+    IDS            sessions differing   0 / 300  first -
+    ROLE_INDEX     sessions differing   0 / 300  first -
+    ROW_FLAGS      sessions differing   0 / 300  first -
+    SPECIFIC       sessions differing   0 / 300  first -
+  other output files differing (10 compared): none
+
+== covv1
+  model.atxcov bytes A 14787136 B 14787136; whole file equal False
+  differing bytes 124 by section {'header.root': 32, 'META': 60, 'trailer': 32}; META leaves differing ['/producer/executable_sha256']
+  date index entries differing: 0
+  first differing block / array: none
+    DIAG           sessions differing   0 / 300  first -
+    EIGEN_GAMMA    sessions differing   0 / 300  first -
+    EXPOSURES      sessions differing   0 / 300  first -
+    FACTOR_COV     sessions differing   0 / 300  first -
+    FACTOR_FLAGS   sessions differing   0 / 300  first -
+    FACTOR_RETURN  sessions differing   0 / 300  first -
+    GROUP          sessions differing   0 / 300  first -
+    IDS            sessions differing   0 / 300  first -
+    ROLE_INDEX     sessions differing   0 / 300  first -
+    ROW_FLAGS      sessions differing   0 / 300  first -
+    SPECIFIC       sessions differing   0 / 300  first -
+  other output files differing (10 compared): none

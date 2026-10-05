@@ -1,0 +1,18 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "p9k-role",
+  "description": "P9 kinds fixture (K-P9-9, G-P2 'new universe'): the wave's role block builds the role and its fields; the spec stage sets inputs.role and the fields dir; every downstream output renamed here.",
+  "parent": null,
+  "nominal_parent": "../../../../../tiny.json",
+  "change": {
+    "set": {
+      "ic.u_output": "tiny-u-k-role",
+      "fit.output": "tiny-weights-k-role",
+      "card.output": "tiny-cards-k-role",
+      "ic.w_output": "tiny-w-k-role",
+      "nav.output": "tiny-nav-k-role",
+      "ic.cache": "tiny-cache-k-role",
+      "fit.work_dir": "tiny-fit-work-k-role"
+    }
+  }
+}

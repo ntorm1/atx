@@ -1,0 +1,35 @@
+{
+    "Source":  "5afb5447e303e1515bf5dff9c91da49bc7897e59",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  5,
+    "ConfiguredProvenance":  "c2416d625d187bdf24eeeafcff51ec4c683dec3a-dirty",
+    "Jobs":  4,
+    "FreeMiB":  4510,
+    "CommitMiB":  5328,
+    "Targets":  [
+                    "atx-research-admission",
+                    "atx-research-composition",
+                    "atx-equity-strategy-targets"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  9.9424605,
+    "CompiledTUs":  1,
+    "Links":  1,
+    "Tag":  "p9-2m",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity",
+    "Executables":  {
+                        "atx-research-admission":  {
+                                                       "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-admission.exe",
+                                                       "Sha256":  "411af33a0def5a6c28983dbf1ffc2fbc324694e8ac2e6b24401b27b693c9fa26"
+                                                   },
+                        "atx-research-composition":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-composition.exe",
+                                                         "Sha256":  "b0175bd1eb503d675613ff732d38727a5a1222a40c8111d41e98ec47b169beda"
+                                                     },
+                        "atx-equity-strategy-targets":  {
+                                                            "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-targets.exe",
+                                                            "Sha256":  "c02717ef29380a56e213e9b03e0568d9c948504fc5d87c29a03fd7121254c44b"
+                                                        }
+                    }
+}

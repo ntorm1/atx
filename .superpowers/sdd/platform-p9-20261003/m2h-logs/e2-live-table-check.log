@@ -1,0 +1,44 @@
+== build-equity\bin
+PASS  IC envelope parses (atx.composition-rules/v1)
+PASS  NAV envelope parses (atx.nav-rules/v1)
+PASS  1. live IC listing == committed composition_rules_list.json (bytes, LF-normalised)
+PASS  1. live IC listing == committed composition_rules_list.json (JSON)
+PASS  1. E2's test table ic_table(False) == live
+INFO  2. D1_SCHEMAS[ew-theme-std-v1] == live params_schema: False (live {"additionalProperties": false, "properties": {"rule": {"const": "ew-theme-std-v1", "type": "string"}}, "type": "object"})
+INFO  2. D1_SCHEMAS[two-speed-v1] == live params_schema: False (live {"additionalProperties": false, "properties": {"rule": {"const": "two-speed-v1", "type": "string"}}, "type": "object"})
+PASS  3. unmapped_ic_rules(live) == []: []
+PASS  3. rule_flags(ew-theme-std-v1, live IC): ({'fit': {'--composition': 'ew-theme-std-v1'}}, [])
+PASS  3. MR-4 rule_flags(theme-cov-hedge-v1, live IC): ({'fit': {'--theme-hedge': 'theme-cov-hedge-v1'}}, [])
+PASS  3. MR-4 rule_flags(mom-volman-v1, live IC): ({'fit': {'--mom-volman': 'mom-volman-v1'}}, [])
+PASS  4. live fixed-v1 aim_leverage range [1, 2]: {'default': 1, 'maximum': 2, 'minimum': 1, 'type': 'number', 'x-flag': '--aim-leverage'}
+PASS  4. new-nav-rule.json rule_flags on the live tables: ({'nav': {'--aim-leverage': '1.5'}}, [])
+INFO  4. test NAV_TABLE[fixed-v1] vs live: required live [] vs test ['aim_leverage']
+INFO  4. test NAV_TABLE[vol-target-v1] vs live: incompatible; required live ['risk_model', 'risk_model_sha256'] vs test ['aim_leverage', 'risk_model', 'risk_model_sha256']
+INFO  4. test NAV_TABLE[risk-target-v1] vs live: incompatible; required live ['sigma_star', 'risk_model', 'risk_model_sha256'] vs test ['aim_leverage', 'sigma_star', 'risk_model', 'risk_model_sha256']; live-only params ['bias', 'cadence']
+INFO  4. live NAV ids ['fixed-v1', 'vol-target-v1', 'risk-target-v1']; capabilities ['leverage-rule-per-book', 'capacity-main-lockstep', 'summary-binds-extras', 'producer-identity', 'sqrt-impact-exact', 'calibrate-gross-pm6-6']
+PASS  5. new-combination-rule.json --until spec in the fake world on the live tables: exit 0: == stopped after spec
+PASS  5. leverage-change.json --until preflight in the fake world on the live tables: exit 0: == stopped after preflight
+PASS  5. new-nav-rule.json --until preflight in the fake world on the live tables: exit 0: == stopped after preflight
+== build-equity-rel\bin
+PASS  IC envelope parses (atx.composition-rules/v1)
+PASS  NAV envelope parses (atx.nav-rules/v1)
+PASS  1. live IC listing == committed composition_rules_list.json (bytes, LF-normalised)
+PASS  1. live IC listing == committed composition_rules_list.json (JSON)
+PASS  1. E2's test table ic_table(False) == live
+INFO  2. D1_SCHEMAS[ew-theme-std-v1] == live params_schema: False (live {"additionalProperties": false, "properties": {"rule": {"const": "ew-theme-std-v1", "type": "string"}}, "type": "object"})
+INFO  2. D1_SCHEMAS[two-speed-v1] == live params_schema: False (live {"additionalProperties": false, "properties": {"rule": {"const": "two-speed-v1", "type": "string"}}, "type": "object"})
+PASS  3. unmapped_ic_rules(live) == []: []
+PASS  3. rule_flags(ew-theme-std-v1, live IC): ({'fit': {'--composition': 'ew-theme-std-v1'}}, [])
+PASS  3. MR-4 rule_flags(theme-cov-hedge-v1, live IC): ({'fit': {'--theme-hedge': 'theme-cov-hedge-v1'}}, [])
+PASS  3. MR-4 rule_flags(mom-volman-v1, live IC): ({'fit': {'--mom-volman': 'mom-volman-v1'}}, [])
+PASS  4. live fixed-v1 aim_leverage range [1, 2]: {'default': 1, 'maximum': 2, 'minimum': 1, 'type': 'number', 'x-flag': '--aim-leverage'}
+PASS  4. new-nav-rule.json rule_flags on the live tables: ({'nav': {'--aim-leverage': '1.5'}}, [])
+INFO  4. test NAV_TABLE[fixed-v1] vs live: required live [] vs test ['aim_leverage']
+INFO  4. test NAV_TABLE[vol-target-v1] vs live: incompatible; required live ['risk_model', 'risk_model_sha256'] vs test ['aim_leverage', 'risk_model', 'risk_model_sha256']
+INFO  4. test NAV_TABLE[risk-target-v1] vs live: incompatible; required live ['sigma_star', 'risk_model', 'risk_model_sha256'] vs test ['aim_leverage', 'sigma_star', 'risk_model', 'risk_model_sha256']; live-only params ['bias', 'cadence']
+INFO  4. live NAV ids ['fixed-v1', 'vol-target-v1', 'risk-target-v1']; capabilities ['leverage-rule-per-book', 'capacity-main-lockstep', 'summary-binds-extras', 'producer-identity', 'sqrt-impact-exact', 'calibrate-gross-pm6-6']
+PASS  5. new-combination-rule.json --until spec in the fake world on the live tables: exit 0: == stopped after spec
+PASS  5. leverage-change.json --until preflight in the fake world on the live tables: exit 0: == stopped after preflight
+PASS  5. new-nav-rule.json --until preflight in the fake world on the live tables: exit 0: == stopped after preflight
+
+RESULT PASS

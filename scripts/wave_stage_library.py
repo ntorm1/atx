@@ -10,6 +10,8 @@ import research_add_alpha as AA
 import research_cycle as RC
 import wave_manifest as WM
 import wave_rules as WR
+import wave_kinds as WK
+import wave_stage_kinds as SK
 import wave_steps as WS
 from wave_context import Wave
 from wave_stage_util import (EXIT_PIN, MARGINAL_KEYS, ROW_KEYS, StageError, cyc, lib_spec, library_wave, lock_exes,
@@ -20,7 +22,7 @@ from wave_stage_util import (EXIT_PIN, MARGINAL_KEYS, ROW_KEYS, StageError, cyc,
 def add_alpha(w: Wave, c: dict, name: str) -> list[str]:
     m = w.manifest
     return WS.add_alpha_argv(w.python, c, parent=m["parent"]["library"], parent_spec=m["parent"]["spec"], name=name,
-                             fields_dir=m["fields"]["dir"], plan_out=w.wave_path("plans", name, f"{c['id']}.json"),
+                             fields_dir=SK.fields_dir(w, {}), plan_out=w.wave_path("plans", name, f"{c['id']}.json"),
                              root=w.root)
 
 
@@ -55,10 +57,13 @@ def add_alpha_files(w: Wave, name: str) -> set[str]:
 
 def register(w: Wave, done: dict, log) -> dict:
     if not library_wave(w):
+        if SK.kind(w) == "role":       # v2 kind role (K-P9-9): the role and its fields are built here
+            return {"build": SK.build(w)}
         return skipped("a rule wave registers no strings")
     m = w.manifest
     name, plans = m["library"], {}
     w.require_clean("register", add_alpha_files(w, name))
+    build = SK.build(w)                # v2 kind field: the fields dir the strings are registered on ({} otherwise)
     for c in m["candidates"]:
         w.run(add_alpha(w, c, name), f"add-alpha {c['id']}")
         plans[c["id"]] = w.sha(w.wave_path("plans", name, f"{c['id']}.json"))
@@ -74,13 +79,14 @@ def register(w: Wave, done: dict, log) -> dict:
     spec = lib_spec(name)
     if not w.exists(spec):
         raise StageError(f"add-alpha wrote no {spec}")
-    return {"library": name, "spec": spec, "spec_sha256": w.sha(spec), "commit": commit or w.head(), "plans": plans}
+    out = {"library": name, "spec": spec, "spec_sha256": w.sha(spec), "commit": commit or w.head(), "plans": plans}
+    return dict(out, build=build) if build else out
 
 
 def register_plan(w: Wave, done: dict) -> list[str]:
     if not library_wave(w):
-        return ["#   (rule wave: no strings to register)"]
-    lines = [WS.fmt_argv(add_alpha(w, c, w.manifest["library"])) for c in w.manifest["candidates"]]
+        return SK.build_plan(w) or ["#   (rule wave: no strings to register)"]
+    lines = SK.build_plan(w) + [WS.fmt_argv(add_alpha(w, c, w.manifest["library"])) for c in w.manifest["candidates"]]
     if w.manifest.get("marginal"):
         lines.append(f"#   then: marginal as ruled ({w.manifest['marginal']['ruling']}): {w.manifest['marginal']} "
                      "(the library spec rewritten, lock dry)")
@@ -147,10 +153,11 @@ def cell_out(w: Wave, done: dict, spec: str, kind: str, commit: str | None, libr
 
 def spec_stage(w: Wave, done: dict, log) -> dict:
     m = w.manifest
+    if SK.kind(w) in WK.SCHEMA_ONLY:   # preflight refuses it; never reached
+        raise StageError(f"kind {SK.kind(w)} is schema only (lane D3)", EXIT_PIN)
     if not library_wave(w):
-        rc = m["rule_cell"]
-        cell = WS.rule_cell_path(rc["template"], rc, m["wave"])
-        doc = WS.rule_cell_doc(w.read_json(rc["template"]), rc["template"], m["parent"]["spec"], rc, m["wave"])
+        cell = SK.cell_path(w)         # v2 kinds (K-P9-9): the template with the kind's derived constants
+        doc = SK.cell_doc(w, done, cell)
         w.require_clean("spec", {cell})
         if not w.exists(cell):            # a first write: the cell's NAV must be new (a template is used once)
             nav = w.outputs_of(doc, cell)["nav"]
@@ -197,10 +204,13 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
 
 def spec_plan(w: Wave, done: dict) -> list[str]:
     m = w.manifest
+    if SK.kind(w) in WK.SCHEMA_ONLY:
+        return [f"#   (kind {SK.kind(w)}: schema only until lane D3, no cell)"]
     if not library_wave(w):
-        rc = m["rule_cell"]
-        cell = WS.rule_cell_path(rc["template"], rc, m["wave"])
-        return [f"#   write {cell}: {rc['template']} with parent {m['parent']['spec']} and the constants",
+        _, _, template = SK.base_rule_cell(w)
+        cell = SK.cell_path(w)
+        return [f"#   write {cell}: {template} with parent {m['parent']['spec']} and the constants"
+                + (f" (kind {SK.kind(w)}: the derived constants, wave_kinds.py)" if SK.kind(w) else ""),
                 WS.fmt_argv(cyc(w,"lock", cell, "--write", *(["--exes"] if lock_exes(w) else []))),
                 "#   then: git add / commit -- " + cell]
     kept = ((done.get("screen") or {}).get("decision") or {}).get("kept")

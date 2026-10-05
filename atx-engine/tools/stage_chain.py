@@ -25,9 +25,10 @@ the record, never read for resume) and stops the chain; the next ``run`` retries
 
 Digest (``Chain(..., digest=)``): "file" (the default, as before) chains the previous receipt's file SHA-256 as the
 input ``previous_receipt_sha256``; "content" (P9 OR section 3) chains ``content_sha256``, the SHA-256 of its canonical
-JSON without the time keys (TIME_KEYS: started_utc, seconds), as ``previous_receipt_content_sha256``, so a chain re-run
-on the same inputs and outputs has the same digests whatever its timing. A chain keeps one rule: a receipt recorded
-under the other rule reads as stale.
+JSON without the time keys (TIME_KEYS: started_utc, seconds, wall_seconds, peak_mib, at any depth: the receipt's own
+and its outputs' phase and process rows), as ``previous_receipt_content_sha256``, so a chain re-run on the same inputs
+and outputs has the same digests whatever its timing. A chain keeps one rule: a receipt recorded under the other rule
+reads as stale.
 Standard library only.
 """
 from __future__ import annotations
@@ -44,7 +45,9 @@ from typing import Callable
 SCHEMA = "atx.stage-receipt/v1"
 PREV = "previous_receipt_sha256"          # the input every stage after the first carries
 PREV_CONTENT = "previous_receipt_content_sha256"   # its name under digest="content" (P9 OR section 3)
-TIME_KEYS = ("started_utc", "seconds")    # a receipt's time keys: out of its content digest
+# A receipt's time-valued keys, out of its content digest at any depth (review E1 minor: the stages' phase rows carry
+# seconds / peak_mib, driver.timings' process rows seconds, bounded receipts wall_seconds).
+TIME_KEYS = ("started_utc", "seconds", "wall_seconds", "peak_mib")
 DIGESTS = ("file", "content")
 LOCK = "chain.lock"                       # <state dir>/chain.lock while a run holds the state dir
 EXIT_STALE, EXIT_STOP = 3, 4
@@ -90,11 +93,19 @@ def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
+def time_free(value):
+    """``value`` without TIME_KEYS in any object at any depth (lists keep their order)."""
+    if isinstance(value, dict):
+        return {k: time_free(v) for k, v in value.items() if k not in TIME_KEYS}
+    if isinstance(value, list):
+        return [time_free(v) for v in value]
+    return value
+
+
 def content_sha256(path: Path) -> str:
-    """SHA-256 of a receipt's content keys: its canonical JSON without TIME_KEYS (P9 OR section 3)."""
+    """SHA-256 of a receipt's content keys: its canonical JSON without TIME_KEYS at any depth (P9 OR section 3)."""
     doc = json.loads(Path(path).read_text(encoding="utf-8"))
-    body = {k: v for k, v in doc.items() if k not in TIME_KEYS} if isinstance(doc, dict) else doc
-    return hashlib.sha256(canonical(body).encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical(time_free(doc)).encode("utf-8")).hexdigest()
 
 
 class Chain:

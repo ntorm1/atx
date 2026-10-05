@@ -1,0 +1,43 @@
+{
+  "schema": "atx.research-wave/v2",
+  "wave": "k-role",
+  "kind": "role",
+  "description": "P9 kinds fixture (contract K-P9-9, gate G-P2) on the tiny-world wave layout (scripts/tests/fixtures/tiny_world.py, seed 7: parent tiny.json, fields/, trials.jsonl): kind role (new universe): the role builder (prepare_recent_research.py role, Python) restricts tiny-world's role, the fields builder rebuilds the wave's fields on it, the cell runs the template on both.",
+  "parent": {
+    "spec": "tiny.json",
+    "library": "tiny_world_v1"
+  },
+  "fields": {
+    "dir": "fields",
+    "manifest_sha256": "395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac"
+  },
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": []
+  },
+  "gross_match": "pm6-6",
+  "budget": {
+    "id": "p9-kinds-fixture",
+    "construction_cap": 1000
+  },
+  "ledger": "trials.jsonl",
+  "expect": {
+    "n_before": 0
+  },
+  "out_dir": "waves/k-role",
+  "rule_cell": {
+    "template": "scripts/specs/p9/kinds/templates/role.json",
+    "template_sha256": "eb7ade251085444a7c04af3b95d74d35d519ebdf2700ca268be4e7afb02763ae"
+  },
+  "role": {
+    "builder_args": [
+      "role",
+      "--universe",
+      "linked-operating-v1",
+      "--base-role",
+      "role"
+    ],
+    "output": "role-k-role",
+    "fields_output": "fields-k-role"
+  }
+}

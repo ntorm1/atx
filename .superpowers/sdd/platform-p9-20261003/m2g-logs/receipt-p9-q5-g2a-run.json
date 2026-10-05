@@ -1,0 +1,59 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "1b8c4df2e5fd63898468ac7b0be784b417186bbc",
+  "started_utc": "2026-10-04T19:35:35.132390+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "atx-impl/tools/book_diagnostics.py",
+    "run",
+    "--only",
+    "G-2a",
+    "--risk",
+    "build-equity/p9-q5-risk",
+    "--output",
+    "build-equity/p9-q5-diagnostics/diagnostics-v8-g2a.json"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "argv_sha256": "ea737ace35e92ad24a802eaecb1d962102276a66709ae872df0777d5cb1a4de8",
+  "attempt": 1,
+  "build_type": null,
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\tools\\book_diagnostics.py",
+      "sha256": "2be3b164e449dfd5ac975de629797cee7d3a18e58af51313cc01bd2646d485a2"
+    }
+  ],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 2048,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 374272000,
+  "minimum_system_free_bytes": 3032625152,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    ".superpowers/sdd/platform-p9-20261003/progress.md",
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png"
+  ],
+  "wall_seconds": 6.125,
+  "owned_processes": [
+    {
+      "pid": 20456,
+      "create_time": 1791142535.138719
+    },
+    {
+      "pid": 22340,
+      "create_time": 1791142535.146132
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "a0edb7dabc1298116368d974ddf36fd37460ff06977f6e30993b1b92db8aa5f1",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

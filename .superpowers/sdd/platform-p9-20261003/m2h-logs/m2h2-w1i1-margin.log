@@ -1,0 +1,40 @@
+pool-2 root C:/atx-wt/pool-2 (16 chars); bound CACHE_PATH_MAX 250; 65 specs with an IC pass and a library on disk; 7 skipped
+margin	len(own layout)	len(Release)	audit	len(id)	id	spec	cache dir
+1	249	249	False	22	seasonality_same_month	scripts/specs/v70-lo3.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v70-lo3
+2	248	248	False	22	seasonality_same_month	scripts/specs/p9/templates/mom-volman.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo3
+2	248	248	False	22	seasonality_same_month	scripts/specs/p9/templates/theme-cov-hedge.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo3
+2	248	248	False	22	seasonality_same_month	scripts/specs/v8-rerun/w04-v61-c1-lo1.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo1
+2	248	248	False	22	seasonality_same_month	scripts/specs/v8-rerun/w04-v61-c2-lo1.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo1
+2	248	248	False	22	seasonality_same_month	scripts/specs/v8-rerun/w04-v61-c3-lo1.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo1
+2	248	248	False	22	seasonality_same_month	scripts/specs/v8-rerun/w04-v61-lo1.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo1
+2	248	248	False	22	seasonality_same_month	scripts/specs/v8-rerun/w04-v61-spo1-lo1.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo1
+2	248	248	False	22	seasonality_same_month	scripts/specs/v8-rerun/w04-v70-lo1.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo1
+2	248	248	False	22	seasonality_same_month	scripts/specs/v8-rerun/w04-v70-lo3.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo3
+2	248	248	False	22	seasonality_same_month	scripts/specs/v8-rerun/w04-v70-spo2-lo3.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo3
+2	248	248	False	22	seasonality_same_month	scripts/specs/v8/base-b0c.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo3
+2	248	248	False	22	seasonality_same_month	scripts/specs/v8/base-lo1.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo1
+2	248	248	False	22	seasonality_same_month	scripts/specs/v8/base-lo3.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo3
+2	248	248	False	22	seasonality_same_month	scripts/specs/v8/lib-v80.json	C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo3
+refused at pool-2 (margin < 0): []
+margin <= 2: [('scripts/specs/v70-lo3.json', 1), ('scripts/specs/p9/templates/mom-volman.json', 2), ('scripts/specs/p9/templates/theme-cov-hedge.json', 2), ('scripts/specs/v8-rerun/w04-v61-c1-lo1.json', 2), ('scripts/specs/v8-rerun/w04-v61-c2-lo1.json', 2), ('scripts/specs/v8-rerun/w04-v61-c3-lo1.json', 2), ('scripts/specs/v8-rerun/w04-v61-lo1.json', 2), ('scripts/specs/v8-rerun/w04-v61-spo1-lo1.json', 2), ('scripts/specs/v8-rerun/w04-v70-lo1.json', 2), ('scripts/specs/v8-rerun/w04-v70-lo3.json', 2), ('scripts/specs/v8-rerun/w04-v70-spo2-lo3.json', 2), ('scripts/specs/v8/base-b0c.json', 2), ('scripts/specs/v8/base-lo1.json', 2), ('scripts/specs/v8/base-lo3.json', 2), ('scripts/specs/v8/lib-v80.json', 2), ('scripts/specs/v8/lib-v81-gm.json', 2), ('scripts/specs/v8/lib-v81.json', 2), ('scripts/specs/v8/lib-v8x2.json', 2), ('scripts/specs/v8/lib-v8x2b.json', 2), ('scripts/specs/v8/lib-v8x3.json', 2), ('scripts/specs/v8/lib-v8x3b-gm.json', 2), ('scripts/specs/v8/lib-v8x3b.json', 2), ('scripts/specs/v8/lib-v8x4.json', 2), ('scripts/specs/v8/lib-v8x4b.json', 2), ('scripts/specs/v8/lib-v8x7.json', 2), ('scripts/specs/v8/lib-v8x7b-gm.json', 2), ('scripts/specs/v8/lib-v8x7b.json', 2), ('scripts/specs/v8/lib-v8ys.json', 2), ('scripts/specs/v8/lib-v8ysb-gm.json', 2), ('scripts/specs/v8/lib-v8ysb.json', 2), ('scripts/specs/v8/r1-comp-v8-gm.json', 2), ('scripts/specs/v8/r1-comp-v8.json', 2), ('scripts/specs/v8/r10.json', 2), ('scripts/specs/v8/r11.json', 2), ('scripts/specs/v8/r2-lib-v80.json', 2), ('scripts/specs/v8/r3-aim-gain-gm.json', 2), ('scripts/specs/v8/r3-aim-gain.json', 2), ('scripts/specs/v8/r4-hold-band.json', 2), ('scripts/specs/v8/r5-adv-hold.json', 2), ('scripts/specs/v8/r6-spo-v3-gm.json', 2), ('scripts/specs/v8/r6-spo-v3.json', 2), ('scripts/specs/v8/r7-lib-v81.json', 2), ('scripts/specs/v8/r8.json', 2), ('scripts/specs/v8/r9a.json', 2), ('scripts/specs/v8/r9b.json', 2), ('scripts/specs/v8/x-inv-vol-gm.json', 2), ('scripts/specs/v8/x-inv-vol.json', 2), ('scripts/specs/v8/x-leverage-L2.0.json', 2), ('scripts/specs/v8/x-theme-erc-gm.json', 2), ('scripts/specs/v8/x-theme-erc.json', 2), ('scripts/specs/v8/y-norm-score-y-3-gm.json', 2), ('scripts/specs/v8/y-norm-score-y-3.json', 2), ('scripts/specs/v8/y-norm-score.json', 2), ('scripts/specs/v8/y-theme-tsmom-y-2-gm.json', 2), ('scripts/specs/v8/y-theme-tsmom-y-2.json', 2), ('scripts/specs/v8/y-theme-tsmom.json', 2), ('scripts/specs/v8/y-two-speed-y-5-gm.json', 2), ('scripts/specs/v8/y-two-speed-y-5.json', 2), ('scripts/specs/v8/y-two-speed.json', 2), ('scripts/specs/v8/y-vol-target-y-1.json', 2), ('scripts/specs/v8/y-vol-target.json', 2)]
+--- tiny-world roots (ids planted_a etc.; ic.cache tiny-cache)
+C:/atx-wt/pool-2/build-equity/p9-m2h-tw/tiny-cache	audit False	len 228	margin 22
+C:/atx-wt/pool-2/build-equity/p9-m2h-tw/tiny-cache	audit True	len 234	margin 16
+C:/atx-wt/pool-2/build-equity/p9-m2h-tw-eng/tiny-cache	audit False	len 232	margin 18
+C:/atx-wt/pool-2/build-equity/p9-m2h-tw-eng/tiny-cache	audit True	len 238	margin 12
+C:/atx-wt/pool-2/build-equity/p9-m2h-tw-eng0/tiny-cache	audit False	len 233	margin 17
+C:/atx-wt/pool-2/build-equity/p9-m2h-tw-eng0/tiny-cache	audit True	len 239	margin 11
+C:/atx-wt/pool-2/build-equity/p9-m2h-tw-pin/tiny-cache	audit False	len 232	margin 18
+C:/atx-wt/pool-2/build-equity/p9-m2h-tw-pin/tiny-cache	audit True	len 238	margin 12
+C:/atx-wt/pool-2/build-equity/p9-m2h-tw-py/tiny-cache	audit False	len 231	margin 19
+C:/atx-wt/pool-2/build-equity/p9-m2h-tw-py/tiny-cache	audit True	len 237	margin 13
+C:/Users/natha/AppData/Local/Temp/tiny-world-xxxxxxxx/tiny-cache	audit False	len 242	margin 8
+C:/Users/natha/AppData/Local/Temp/tiny-world-xxxxxxxx/tiny-cache	audit True	len 248	margin 2
+--- skipped (no IC pass resolvable here)
+scripts/specs/p9/kinds/templates/horizon.json: template C:\atx-wt\pool-2\scripts\specs\p9\kinds\templates\horizon.json: parent spec ../../../../../
+scripts/specs/p9/kinds/templates/role.json: template C:\atx-wt\pool-2\scripts\specs\p9\kinds\templates\role.json: parent spec ../../../../../tin
+scripts/specs/p9/kinds/templates/rule-composition.json: template C:\atx-wt\pool-2\scripts\specs\p9\kinds\templates\rule-composition.json: parent spec ../../
+scripts/specs/p9/kinds/templates/rule-cost.json: template C:\atx-wt\pool-2\scripts\specs\p9\kinds\templates\rule-cost.json: parent spec ../../../../.
+scripts/specs/p9/kinds/templates/rule-nav.json: template C:\atx-wt\pool-2\scripts\specs\p9\kinds\templates\rule-nav.json: parent spec ../../../../..
+scripts/specs/tiny.json: library tiny_world_v1.json not on disk or no ids
+scripts/specs/v7u-lo3.json: library atx-impl/strategies/fund_industry_ic_LIB.json not on disk or no ids

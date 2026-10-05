@@ -14,10 +14,10 @@
   ],
   "prior_sign_source": "Cohen-Malloy-Nguyen 2020",
   "form": "R(x)",
-  "formula": "lazy_prices (to be an engine-only C++ kind, DEC-5): the textual similarity of a firm's latest 10-K or 10-Q to its prior filing of the same type (higher = fewer changes: the non-changers CMN buy), held from the session after the filing is visible until the next filing of the type",
-  "domain": "NaN without two filings of one type in the text landing; blocked until the landing completes",
-  "deviation": "the field is not built: the atx-db text landing holds about 7% of 10-K / 10-Q (lit section 3.1 F1); no field name, kind or constant is chosen beyond the paper's similarity sign until it lands",
-  "notes": "horizon class slow, half-life 126 sessions (PM8-5: CMN's 3-18 month drift, the filing_events theme's); data class P; blocked_on_data: the 10-K / 10-Q text landing and its engine reader (lit section 6 row lazy_prices, P9DATA -> P9SIG); rho to the themes .1 or less (lit 3.1 F1)",
+  "formula": "lazy_prices (engine-only C++ kind, DEC-5; design .superpowers/sdd/platform-p9-20261003/al-data/builder-designs.md section 1): term-frequency cosine of the full primary document of a firm's latest original 10-K or 10-Q to its original filing of the same form family and fiscal period one fiscal year earlier (higher = fewer changes: the non-changers CMN buy), visible from its EDGAR acceptance under the house stage rule, 400-day staleness; fixed before data (ALD-1)",
+  "domain": "[0, 1]; NaN without a same-period prior-year original, past 400 days, or where the text landing does not cover the line",
+  "deviation": "the field is not built: PM ruling ALD-4 (it fails the bar on paper); the definition was fixed before any data under PM ruling ALD-1 (full-document cosine of original filings, same-period prior-year comparator, 400-day staleness); the atx-db text landing held about 7% of 10-K / 10-Q at the literature review (lit section 3.1 F1)",
+  "notes": "horizon class slow, half-life 126 sessions (PM8-5: CMN's 3-18 month drift, the filing_events theme's); data class P; blocked_on_data: the 10-K / 10-Q text landing and its engine reader (lit section 6 row lazy_prices, P9DATA -> P9SIG); rho to the themes .1 or less (lit 3.1 F1); PM ruling ALD-4 (AL-DATA, 2026-10-04): on post-publication expectations (literature return x (1 - .58)) the a-priori net SR_c is .09-.37 < .4, so it fails the bar; it stays a blocked_on_data registration and is never queued without a new PM ruling; design al-data/builder-designs.md section 1",
   "lane": "AL-SIG",
   "report": "task-AL-SIG-report.md",
   "source_sample_end": 2014,
@@ -25,7 +25,7 @@
   "data_class": "P",
   "schema": "atx.p9-blocked-registration/v1",
   "status": "blocked_on_data",
-  "blocked_on": "the atx-db 10-K / 10-Q text landing (about 7% landed at the literature review) and an engine reader of it",
+  "blocked_on": "atx-db ask al-data/atx-db-request.md B1 (low priority) and a new PM ruling on the bar (ALD-4)",
   "history": [
     {
       "status": "blocked_on_data",

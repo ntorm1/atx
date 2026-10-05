@@ -566,3 +566,57 @@ Base `3e283275` (code `e1c16051`). Detail: `root-wave2-merge-report.md` section 
 Next free build tag **p9-2k**. Known-red after M2f: pytest `test_fields_are_the_rule_applied_to_the_registry` (E2).
 Release `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` is a named Release skip (0 failed; M2c-RED-2 /
 OD5-2).
+
+### M2g: wave-2 gate diagnostics, part 1 (GATE-EARLY; no merge), 2026-10-04
+
+Base `ab189471` (code `42f42a07`). Detail and every pre-run list: `root-wave2-gate-report.md`; logs `m2g-logs/`. Zero
+trials: `build-equity/trials.jsonl` 133 lines `27e40f9f` at start and end.
+
+| item | commits | build tag | runs (bounded, 2,048 MiB) | result |
+|---|---|---|---|---|
+| 1 AL-DATA | spec `30b9c9d2` (5.1 + 5.2, one commit); nits D-n1 / D-n2 in `3fd0bf98` | - | - | `al-data/*.md` already committed as they stood (`ab189471`); six "before" lines byte-identical to HEAD; `test_p9_al_sig_registrations.py` 11p before and after; 5.3 not applied (P10) |
+| 2 ALD-DIAG | list `3fd0bf98`, result `1b8c4df2` | - | `p9-m2g-ald-diag-run` 0.5 s | names / delisted <= 2023-12-01 / unclassified: 2020 2,420 / 83 / 0; 2021 2,540 / 103 / 0; 2022 2,325 / 106 / 0; 2023 2,186 / 95 / 2; almost all M&A (performance 5 in four years) |
+| 3 B2-13 rho | list `3fd0bf98`, result `1b8c4df2` | - | `p9-m2g-b2-13-rho-run` 1.1 s (Release verb `a57a2090`) | X-10 vs Y-F0 rho 0.9994863 (1 - rho 5.14e-4); Y-1 vs X-10 rho 0.9947114 (5.29e-3); pinned = ledgered; both paired-test defined |
+| 4 COV | list `3fd0bf98`, result `1b8c4df2` | **p9-2k** equity-dev `atx-equity-strategy-risk` (1 TU, 9 s) `94b5a5e7`; **p9-2l** equity-rel `atx-equity-strategy-risk, atx-equity-strategy-targets` (2 TUs, 9 s; first attempt refused at the memory gate, no receipt) `a31a0f96`, `53ca5dd4`; 0 warnings | COV-7 on the lane fixture (synthetic, direct) | (a) S9 holds; **(b) COV-7 IDENTITY MISS**: Debug vs Release container blocks differ for both recipes (cov-diff exit 1 at block 2; factor covariance median 17-24 ULP, max rel 1.5e-9; deterministic per build); **(c) not run**: no D-COV, no COV step 4, no step 5, no atx-cov-v1 store; PM ruling needed |
+| 5 Q5 | list `3fd0bf98` + amendment `1b8c4df2`, result `29adf2fa` | - | holdings re-run 27.4 s, book-csv 4.0 s, risk 20.7 s (Debug cross-check 49.2 s), G-2a 6.1 s | Y-F0 holdings re-run inside the list (26/27 identical, `summary.json` producer only); **q +0.0502, q_lit +0.0671**; ex-ante vol ratio not produced; Debug cross-check equal at G-2a's digits |
+| 6 S2R-DIAG | list `29adf2fa`, result final docs commit | - | `p9-m2g-s2rd-u` 94.6 s, peak 1,617 MiB (Release audit-exact u, fresh cache `build-equity/s2rd`) | `smax` 0, `smax5` 0 cells NaN under AuditExact and finite under ResearchFast (all sessions and score window) |
+
+Next free build tag **p9-2m**. Known-red unchanged: pytest `test_fields_are_the_rule_applied_to_the_registry` (E2);
+Release lit-golden is a named skip (M2c-RED-2 / OD5-2). New open item (not a test red): COV-7 identity miss.
+
+### M2h: E2, 2026-10-04 (merged by the stopped root agent; verified and recorded by a fresh root, Ruling M2H-1)
+
+Base `2fbef84e` (housekeeping docs). Code head `59893e9f`. Detail: `handoff-root-m2h.md`; logs `m2h-logs/` (the
+stopped agent's `e2-*` / `root1-*`, this agent's `root1b-*` / `m2h2-*`; pre-run list `m2h2-prerun.md`). Zero trials:
+`build-equity/trials.jsonl` 133 lines `27e40f9f` at start and end.
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| E2 | `80c322ef` (re-review 4 APPROVE `dd857198`, 0 Required; contains root `42f42a07`) | `430c29e8` (of `dd857198`) + E2-18 slip `1dd0ac46` (S2: `wave_stage_kinds.py:421` rewrapped, string unchanged) + SQL2-CLS `59893e9f` (`atx.research-wave/v2` -> wave-manifest) | 0 conflicted files | none (Python lane; no C++ / CMake change from the exes' sources `c2416d62` / `3fd0bf98` to HEAD); real exes used: Release IC p9-2j `fccaa07e`, NAV p9-2l `53ca5dd4` | n/a | none | `scripts/tests` seed 0 **510p / 4s / 2f** (this agent; the two e27b known reds, 0 exit 0xC0000142), seed 1 510p / 4s / 2f (stopped agent, same head); the stopped agent's seed-0 run (339p / 173f, 152 `git init` + 9 HARD-STOP at exit 3221225794) is VOID (ENV-1); `test_fields_are_the_rule_applied_to_the_registry` passes by name (E2's red cleared); stage chain 9/9 both seeds (stopped agent); `test_research_store_identity.py` 16p both seeds; SQL2-CLS: guard 1 fail before / 5p after, store suite 43p both seeds, fixture chain `d32f7655...4e69` (stopped agent); Release live canary `test_cycle_e2e.py` 15p | live-table check PASS on both trees, MR-4 rows included (stopped agent); MR-4 + C2 S13 at HEAD as the lane placed them (5+/2- in 2 files, lane head = HEAD on both); engine match on real exes (tiny world, P9-C shape with a free `--trade-fraction` constant for the gross change): exe calibration record complete, `leverage_requested` 1.12 = cell L, `target` = G_parent, L 1.12 -> **L' 1.0606**, G 1.0419 -> 0.98778 vs G_parent 0.98669, reader G = exe G bit for bit, cell of record plain at 1.0606 (argv `--aim-leverage 1.0606`, no `--calibrate-*`), verify passes and pins `record_spec_digest`; literal `aim_leverage` 1.5 stops at match, exit 3 (`:374`); **O1 (E2-16)**: template-set `ref.leverage` after match = **1.0606 under `pm6-6`** (L'; its `-gm` run then refuses at the ref phase, exit 3) and **1.12 under `pm6-6-engine`** (the cell's own L; ref NAV ran at 1.12); W1-I1 worst `v70-lo3` 249 (margin 1), none refused, canary `%TEMP%` margin 8 (2 audit-exact) |
+
+Next free build tag **p9-2m**. Known-red at `59893e9f`: the two e27b tests of `test_research_spec.py` (cleared by D2R's
+merge); Release lit-golden is a named skip (OD5-2).
+
+### M2i: D2R, COVR, item 4 re-run in Release (D-COV, COV steps 4 and 5, store pins), 2026-10-04
+
+Base `e8e424b9` (docs; code `59893e9f`). Code head **`c8ddf736`**. Detail: `handoff-root-m2i.md`, gate report item 4 (d)
+(pre-run list `f1d2a102`, committed before any run); logs `m2i-logs/`. Zero trials: `build-equity/trials.jsonl` 133
+lines `27e40f9f` at start and end.
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| D2R | `283043ce` (light review APPROVE `6d3eb19a`, 0 Required; contains root `d7f762cf`) | `5afb5447` (no SQL2-CLS: no new literal) | 0 conflicted files (E2's `test_research_spec.py` hunks and D2R's auto-merged) | **p9-2m** equity-dev `atx-research-admission, atx-research-composition, atx-equity-strategy-targets` (1 TU, 9.9 s; admission `411af33a` / composition `b0175bd1` no work = current, targets `c02717ef` rebuilt: replaces the stale p9-2d) | 0 | none (Python lane) | `test_research_spec.py` **87p / 0f** (both e27b tests green); 15 fitter / composition files with real exes (p9-2m) **286p / 0 skip / 39 sub** (the two exe-gated tests ran green); ROOT-1 `scripts/tests` seed 0 **512p / 4s / 0f**, stage chain 9p; 0 exit 0xC0000142 | report / review arrived with the merge (= lane blobs, CRLF only); known-red set now **empty** |
+| COVR | `494ec9b2` (light review APPROVE `0145a834`, 0 Required, 6 Suggested; contains root `d7f762cf`) | `c8ddf736` (test-only) | 0 | **p9-2n** equity-dev and **p9-2o** equity-rel, each `atx-impl-strategy-target-tests, atx-engine-risk-tests, atx-equity-strategy-risk` (7 TUs, 49 s; 63 TUs, 293 s); risk exe Debug `9f2c6934`, Release **`ccc73cd1`** | 0 / 0 | Debug 21 / 29 / 106 / 431 + 1 skip; Release 21 / 29 / 106 / 430 + 2 skips (the named two); 0 failed; `CovStageDigest.*`: 0 ran, 1 DISABLED in both | ROOT-1 `scripts/tests` seed 0 **512p / 4s / 0f**, stage chain 9p | diff = 2 test files, no pin; review S-2 / S-3 / S-6 applied as one-line doc slips in root's `task-COVR-report.md`; S-1 ruled by COVR-1; S-4 / S-5 P10 notes |
+
+| item 4 (d) | runs (bounded, `--seconds 600 --max-rss-mib 2048`, Release) | result |
+|---|---|---|
+| C1 S9 | before each COV run | holds x4 |
+| C2 D-COV v1.1 | `p9-m2i-dcov-v11` 47.1 s, 633 MiB | store kept, manifest `39736647...23c7` |
+| C2 / C6 D-COV atx-cov-v1 (= step 5) | `p9-m2i-dcov-covv1` **211.2 s, 601 MiB** | store kept, manifest `ea58691f...f0f3`; `recipe.eigen_adjustment` printed (a = 1, 64 sims, seed 7, Kish HL 504) |
+| C3 Release = Release | `-r2` repeats under affinity mask 1 (46.6 s, 181.3 s) | **holds**: 12 / 12 files byte-identical per recipe, roots equal |
+| C4 D-COV read | `dcov_read.py` | printed in gate report 4 (d) (risk-forecast accuracy only) |
+| C5 step 4 | Release NAV p9-2l `53ca5dd4` on the Debug-built container, 30.5 s | **holds**: 27 / 28 byte-identical, `summary.json` producer `build_type` / `engine_git_sha` only; COVR-1 reading: no `exp2` / `pow` / `exp` on the `--risk-model` read path |
+| C7 pins | `store_pins.py` | both stores' manifest / payload / container pins recorded; `-r2` dirs and `p9-m2g-cov7` deleted (2.1 GB) |
+
+Next free build tag **p9-2p**. Known-red set after M2i: **empty** (Release `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned`
+stays a named skip, OD5-2).

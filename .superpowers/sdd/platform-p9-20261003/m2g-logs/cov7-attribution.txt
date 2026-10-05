@@ -1,0 +1,18 @@
+v11 factor_covariance.f64: finite cells 32556, differing 31552 (96.9161%); NaN-pattern mismatches 0; first differing session index 63; sessions with a difference 79.0%; ULP distance median 17 max 7976655; max rel 1.542e-09
+v11 specific_variance.f64: finite cells 9504, differing 7928 (83.4175%); NaN-pattern mismatches 0; first differing session index 252; sessions with a difference 16.0%; ULP distance median 4 max 23; max rel 2.822e-15
+covv1 factor_covariance.f64: finite cells 32556, differing 31908 (98.0096%); NaN-pattern mismatches 0; first differing session index 63; sessions with a difference 79.0%; ULP distance median 24 max 276984; max rel 3.330e-11
+covv1 specific_variance.f64: finite cells 9504, differing 7928 (83.4175%); NaN-pattern mismatches 0; first differing session index 252; sessions with a difference 16.0%; ULP distance median 4 max 23; max rel 2.822e-15
+dbg repeat exit 0
+  dbg factor_covariance.f64 first 7232adf39331a847 repeat 7232adf39331a847 SAME
+  dbg specific_variance.f64 first ba8cb137def53fb6 repeat ba8cb137def53fb6 SAME
+  dbg diagnostics.csv first 16916a506a107631 repeat 16916a506a107631 SAME
+  dbg bias.csv first 3c2a39a5270663e7 repeat 3c2a39a5270663e7 SAME
+  dbg model.atxcov first 4c63e2bf8c8fa500 repeat 4c63e2bf8c8fa500 SAME
+rel repeat exit 0
+  rel factor_covariance.f64 first a527fda6c879b4ea repeat a527fda6c879b4ea SAME
+  rel specific_variance.f64 first 2f3c6af35eeb4d69 repeat 2f3c6af35eeb4d69 SAME
+  rel diagnostics.csv first c777e1a2e74d3d08 repeat c777e1a2e74d3d08 SAME
+  rel bias.csv first 05788b18082277fd repeat 05788b18082277fd SAME
+  rel model.atxcov first 4daa0074d9148132 repeat 4daa0074d9148132 SAME
+diagnostics.csv (synthetic, v1.1): first differing row index per column: {'bias_factor': 65, 'lambda2_factor': 96, 'max_specific_variance': 252, 'structural_sigma_upper': 252, 'structural_sigma_lower': 253, 'bias_specific': 254, 'lambda2_specific': 283}
+columns never differing: ['session', 'forecast', 'structural_names', 'specific_names', 'structural_factors', 'structural_correlation_scale', 'unforecast_exposed_factors', 'residual_names', 'fenced_values', 'unscaled_descriptors', 'styles_dropped', 'min_style_effective_names', 'min_style_dispersion', 'structural_bounded_names', 'structural_clamped_names']
