@@ -1,0 +1,12 @@
+### item 5 (G-P3 NAV half): X-5 Debug p9-2p (637f7069) vs Release p9-m2j-x5-argv (p9-2q adcf72d4), allowed /producer/build_type, /producer/engine_git_sha
+reference build-equity/p9-m2j-x5-argv (27 files)  new build-equity/p9-m2j-x5-dbg (27 files)
+  DIFF summary.json: 1 leaf paths differ: ['/producer/build_type']; outside the list: none
+  files byte-identical 26, differing 1
+VERDICT: inside the list
+exit 0
+### item 5: X-5 Debug p9-2p vs Debug reference p9-c1-s2-x5-nav (bf4b0ec2), allowed /producer/engine_git_sha only
+reference build-equity/p9-c1-s2-x5-nav (27 files)  new build-equity/p9-m2j-x5-dbg (27 files)
+  DIFF summary.json: 1 leaf paths differ: ['/producer/engine_git_sha']; outside the list: none
+  files byte-identical 26, differing 1
+VERDICT: inside the list
+exit 0

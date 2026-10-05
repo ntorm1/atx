@@ -1,0 +1,8 @@
+### item 5 NAV wall times before / after the 14-TU split (receipts only; host load not controlled; reported, not judged)
+X-5 Release pre-split: build-equity/p9-c1-rel-x5-nav-run wall_s 41.7 build_type Release exe 93ea323e outcome completed
+X-5 Release post-split: build-equity/p9-m2j-x5-argv-run wall_s 38.4 build_type Release exe adcf72d4 outcome completed
+X-5 Debug pre-split: build-equity/p9-c1-s2-x5-nav-run wall_s 62.6 build_type Debug exe bf4b0ec2 outcome completed
+X-5 Debug post-split: build-equity/p9-m2j-x5-dbg-run wall_s 84.2 build_type Debug exe 637f7069 outcome completed
+Y-F0 Release pre-split (same argv + --emit-holdings): build-equity/p9-b0-yf0-nav-hrun-run wall_s 27.4 build_type Release exe 53ca5dd4 outcome completed
+Y-F0 Release post-split: build-equity/p9-m2j-yf0-argv-run wall_s 35.8 build_type Release exe adcf72d4 outcome completed
+Y-F0 Debug pre-split (P9-B0 reference; no Debug post-split Y-F0 run): build-equity/p9-b0-yf0-nav-run wall_s 89.5 build_type Debug exe 407c34ad outcome completed
