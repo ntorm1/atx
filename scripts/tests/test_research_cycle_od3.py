@@ -1,5 +1,6 @@
 """research_roles.py for the OD-3 history read (v8-od3-protocol.md, gaps T1 and T4; P9 lane OD3P): fit.carry, per-era
-label roles, the clean-source drop list (fit.carry.drop, PRE-31) and the --risk-model refusal on history (PRE-10).
+label roles, the clean-source drop list (fit.carry.drop, PRE-31; OD3P-1: the IC exe's --absent-members on the history
+roles' IC passes, refused without capability absent-members-v1) and the --risk-model refusal on history (PRE-10).
 
 Run: "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider scripts/tests/test_research_cycle_od3.py
 
@@ -215,47 +216,198 @@ def test_one_role_keeps_a_spec_level_label_role(tmp_path):
     assert "--label-role" in nav.argv
 
 
-# ------------------------------------------------------------------ OD3P: fit.carry.drop (PRE-20, PRE-31)
+# ------------------------------------------------------------------ OD3P: fit.carry.drop (PRE-20, PRE-31, OD3P-1)
 DROP_LIST = {"schema": CW.DROP_SCHEMA, "source": {"path": "flags.md", "sha256": "33" * 32},
              "members": ["old_alpha"], "rules": ["theme-cov-hedge-v1", "mom-volman-v1"], "rules_pending": []}
+ABSENT = frozenset({"list-rules", RR.ABSENT_CAPABILITY})          # an IC exe envelope that offers the list
+ROLES_937 = "8081a6d0c598fe1fbb30a7405f6727fa0cddbdd7"            # research_roles.py at 937865f0 (pinned-0 design)
+LIST = "fit/flagged_members.json"
 
 
-def drop_root(tmp: Path) -> tuple[Path, Path, dict]:
-    """carry_root with a two-member book and fit.carry.drop naming one of them."""
-    root, sp, spec = carry_root(tmp)
-    doc = json.loads((root / "fit" / "composition_weights.json").read_bytes())
-    doc["weights"] = {"new_alpha": 1.0, "old_alpha": 0.5}
+def era_manifest(root: Path, name: str, begin: str, end: str) -> dict:
+    """A role manifest scoring inside [begin, end) (plan and fake run only: the fake pipeline reads no data)."""
+    doc = {"schema": "atx.recent-research-role/v1", "universe": {"id": "u-v1"}, "dates": 700, "score_begin": 400,
+           "score_start_ns": TR.TW.session_ns(dt.date.fromisoformat(begin) + dt.timedelta(days=1)),
+           "score_end_ns": TR.TW.session_ns(dt.date.fromisoformat(end))}
+    (root / name).mkdir()
+    (root / name / "manifest.json").write_text(json.dumps(doc))
+    return {"id": name.upper(), "dir": name, "begin": begin, "end": end, "universe": "u-v1"}
+
+
+def drop_root(tmp: Path, history: bool = True, drop: bool = True) -> tuple[Path, Path, dict]:
+    """A carry cycle of a history era E1 ([2015, 2017), before TRAIN) and the anchor E2 (2020, inside TRAIN) whose
+    W has two members, with fit.carry.drop naming one (history=False: carry_root's two TRAIN eras)."""
+    if not history:
+        root, sp, spec = carry_root(tmp)
+    else:
+        root = TR.make_root(tmp)
+        (root / "scripts" / "runner.py").write_text(FAKE_RUNNER)
+        (root / "behaviour.json").write_text(json.dumps({"nav_files": {}}))
+        roles = [era_manifest(root, "e1", "2015-01-01", "2017-01-01"), era_manifest(root, "e2", "2020-01-01",
+                                                                                     "2021-01-01")]
+        spec = TR.base_spec(roles=roles)
+        spec.pop("gate")
+        spec["summ"].pop("ledger")                                    # a history pool: no ledger line here
+        (root / "fit").mkdir()
+        (root / "fit" / "admission.json").write_text(json.dumps({"candidates": []}))
+        spec["fit"]["carry"] = {"weights": {"path": "fit/composition_weights.json", "sha256": None},
+                                "admission": {"path": "fit/admission.json", "sha256": None}}
+        sp = tmp / "spec.json"
+    anchor = spec["roles"][-1]["dir"]
+    doc = {"schema": "atx.dsl-composition-weights/v1", "library_sha256": RC.sha256_file(root / "lib/lib.json"),
+           "train_manifest_sha256": RC.sha256_file(root / anchor / "manifest.json"),
+           "weights": {"new_alpha": 1.0, "old_alpha": 0.5},
+           "provenance": {"rule": "ew-theme-v1", "weighted_standalone_turnover": 0.05}}
     (root / "fit" / "composition_weights.json").write_bytes(CW.canonical_bytes(doc))
-    (root / "fit" / "flagged_members.json").write_text(json.dumps(DROP_LIST))
-    spec["fit"]["carry"]["drop"] = {"path": "fit/flagged_members.json", "sha256": None}
+    (root / LIST).write_text(json.dumps(DROP_LIST))
+    if drop:
+        spec["fit"]["carry"]["drop"] = {"path": LIST, "sha256": None}
     sp.write_text(json.dumps(spec))
     return root, sp, spec
 
 
-def test_drop_list_reaches_the_carry_and_zeroes_its_members_on_history(tmp_path):
+def strip_absent(argv: list[str]) -> list[str]:
+    """argv without the OD3P-1 tokens: the runner's ``--bind LIST`` and the exe's two flags."""
+    out, k = [], 0
+    while k < len(argv):
+        if argv[k] == "--bind" and argv[k + 1] == LIST or argv[k] in (RR.ABSENT_FLAG, RR.ABSENT_SHA_FLAG):
+            k += 2
+            continue
+        out.append(argv[k])
+        k += 1
+    return out
+
+
+def test_drop_passes_the_absent_list_to_the_history_ic_passes_only(tmp_path):
     root, sp, _ = drop_root(tmp_path)
-    plan = RC.plan_lines(TR.cycle_of(root, sp))
-    assert any(line.startswith("# pin carry:drop: fit/flagged_members.json") for line in plan)
+    pin = RC.sha256_file(root / LIST)
+    plan = RC.plan_lines(TR.cycle_of(root, sp, capabilities=ABSENT))
+    assert any(line.startswith(f"# pin carry:drop: {LIST}") for line in plan)
+    steps = TR.cycle_of(root, sp, capabilities=ABSENT).steps()
+    by = {(st.phase, st.role): st for st in steps}
+    for phase in RR.ABSENT_PHASES:
+        argv = by[(phase, "E1")].argv                                  # the history era: list bound, flags at the end
+        assert argv[-4:] == [RR.ABSENT_FLAG, LIST, RR.ABSENT_SHA_FLAG, pin]
+        k = argv.index("--")
+        assert argv[k - 2:k] == ["--bind", LIST] and argv[k + 1] == "bin/ic.exe"
+        assert "OD3P-1" in by[(phase, "E1")].note
+        anchor = by[(phase, "E2")].argv                                # the TRAIN anchor: nothing
+        assert RR.ABSENT_FLAG not in anchor and LIST not in anchor
+    for key in (("nav", "E1"), ("fields", "E1"), ("nav", "E2")):
+        assert LIST not in by[key].argv
+    carry = by[("fit", None)].argv
+    assert carry[-4:] == ["--drop-list", LIST, "--drop-list-sha256", pin]
+    # the only change of the drop to the plan: those tokens on the history IC passes, and the carry's --drop-list
+    _, sp0, _ = drop_root(tmp_path / "plain", drop=False)
+    plain = TR.cycle_of(tmp_path / "plain" / "r", sp0, capabilities=ABSENT).steps()
+    assert [(s.phase, s.role) for s in steps] == [(s.phase, s.role) for s in plain]
+    for st, st0 in zip(steps, plain):
+        argv = [a.replace(str(tmp_path / "plain" / "r"), str(root)) for a in st0.argv]
+        if st.phase == "fit":                                          # the carry binds and reads the list too
+            assert strip_absent(st.argv) == argv + ["--drop-list", LIST, "--drop-list-sha256", pin]
+            assert st.argv[st.argv.index("--") - 2:st.argv.index("--")] == ["--bind", LIST]
+        else:
+            assert strip_absent(st.argv) == argv, (st.phase, st.role)
+            assert (st.argv != argv) == (st.role == "E1" and st.phase in RR.ABSENT_PHASES)
+
+
+def test_drop_runs_the_real_carry_and_the_carried_weights_are_train_bytes(tmp_path):
+    root, sp, _ = drop_root(tmp_path)
     log: list[str] = []
-    assert TR.run(root, sp, log) == RC.EXIT_OK, log[-5:]
-    carry = next(a for a in TR.argvs(root) if "carry_weights.py" in " ".join(a))
-    assert carry[-9:] == ["--anchor", "era2/manifest.json", RC.sha256_file(root / "era2/manifest.json"), "--output",
-                          "out/W", "--drop-list", "fit/flagged_members.json", "--drop-list-sha256",
-                          RC.sha256_file(root / "fit/flagged_members.json")]
+    assert TR.run(root, sp, log, capabilities=ABSENT, stop_after="w") == RC.EXIT_OK, log[-5:]
+    argvs = TR.argvs(root)
+    carry = next(a for a in argvs if "carry_weights.py" in " ".join(a))
+    assert carry[-4:] == ["--drop-list", LIST, "--drop-list-sha256", RC.sha256_file(root / LIST)]
     w = root / "out" / "W"
-    assert (w / "composition_weights.json").read_bytes() == (root / "fit/composition_weights.json").read_bytes()
+    train = (root / "fit/composition_weights.json").read_bytes()
+    assert (w / "composition_weights.json").read_bytes() == train
     e1 = json.loads((w / "composition_weights.E1.json").read_bytes())
-    assert e1["weights"] == {"new_alpha": 1.0, "old_alpha": 0.0}
-    assert e1["carried_from"]["drop"]["members"] == ["old_alpha"]
+    assert e1["weights"] == {"new_alpha": 1.0, "old_alpha": 0.5} and "drop" not in e1["carried_from"]   # OD3P-1
+    assert json.loads((w / "carry.json").read_bytes())["drop"]["members"] == ["old_alpha"]
+    wt = {a[a.index("--output") + 1]: a for a in argvs if "--composition-weights" in a}
+    assert wt["out/WT-E1-1"][-4:-2] == [RR.ABSENT_FLAG, LIST] and RR.ABSENT_FLAG not in wt["out/WT-E2-1"]
     # lock fills the drop pin; a changed list is a pin mismatch
     assert RC.main(["lock", str(sp), "--root", str(root), "--write"]) == 0
     spec = json.loads(sp.read_text())
-    assert spec["fit"]["carry"]["drop"]["sha256"] == RC.sha256_file(root / "fit/flagged_members.json")
-    assert TR.cycle_of(root, sp).pins["carry:drop"][2] == "locked, verified"
-    (root / "fit" / "flagged_members.json").write_text(json.dumps(dict(DROP_LIST, members=["new_alpha"])))
+    assert spec["fit"]["carry"]["drop"]["sha256"] == RC.sha256_file(root / LIST)
+    assert TR.cycle_of(root, sp, capabilities=ABSENT).pins["carry:drop"][2] == "locked, verified"
+    (root / LIST).write_text(json.dumps(dict(DROP_LIST, members=["new_alpha"])))
     with pytest.raises(RC.CycleError, match="PIN MISMATCH fit.carry.drop") as e:
-        TR.cycle_of(root, sp)
+        TR.cycle_of(root, sp, capabilities=ABSENT)
     assert e.value.code == RC.EXIT_PIN
+
+
+FAKE_IC = r'''
+import json, sys
+caps = ["list-rules"] + (["absent-members-v1"] if "OFFER" in __file__ else [])
+if sys.argv[1:] == ["--list-rules", "--json"]:
+    print(json.dumps({"schema": "atx.composition-rules/v1", "capabilities": caps, "rules": []}))
+    sys.exit(0)
+sys.exit(2)
+'''
+
+
+@pytest.mark.parametrize("exe", ["injected", "probe_without", "probe_with", "not_an_exe"])
+def test_drop_is_refused_when_the_ic_exe_lacks_the_capability(tmp_path, exe):
+    root, sp, spec = drop_root(tmp_path)
+    kw = {}
+    if exe == "injected":
+        kw["capabilities"] = frozenset({"list-rules", "no-composition", "marginal"})
+    elif exe.startswith("probe"):                       # the real probe: `<exe> --list-rules --json` (phases.py)
+        name = "fake_ic_OFFER.py" if exe == "probe_with" else "fake_ic.py"
+        (root / "bin" / name).write_text(FAKE_IC)
+        (root / "bin" / "ic.cmd").write_text(f'@"{sys.executable}" "%~dp0{name}" %*\n')
+        spec["exes"]["ic"] = "bin/ic.cmd"
+        sp.write_text(json.dumps(spec))
+    if exe == "probe_with":                             # the same spec plans when the exe offers it
+        steps = TR.cycle_of(root, sp).steps()
+        assert next(s for s in steps if s.phase == "w" and s.role == "E1").argv[-4] == RR.ABSENT_FLAG
+        return
+    with pytest.raises(RC.CycleError, match=RR.ABSENT_CAPABILITY) as e:
+        TR.cycle_of(root, sp, **kw).steps()
+    assert e.value.code == RC.EXIT_USAGE and "OD3P-1" in str(e.value) and "E1" in str(e.value)
+    assert RC.main(["plan", str(sp), "--root", str(root)]) == RC.EXIT_USAGE   # the CLI probes the exe: refused too
+    assert not (root / "out").exists()
+
+
+def test_drop_with_no_history_role_is_refused(tmp_path):
+    root, sp, spec = drop_root(tmp_path, history=False)                          # tiny_world: both eras in TRAIN
+    with pytest.raises(RC.CycleError, match="none of the roles E1, E2 is a history era") as e:
+        RR.roles_cycle(spec, RC.Resolver(root), spec_path=sp, capabilities=ABSENT)
+    assert e.value.code == RC.EXIT_USAGE
+    spec["fit"]["carry"].pop("drop")                                              # without the list it plans
+    RR.roles_cycle(spec, RC.Resolver(root), spec_path=sp, capabilities=ABSENT).steps()
+
+
+def test_drop_changes_only_the_history_ic_passes_against_the_pinned_zero_module(tmp_path):
+    """Identity with research_roles.py at 937865f0 (the pinned-0 design): a carry without drop plans the same steps;
+    with drop the steps differ only by the OD3P-1 tokens on the history roles' IC passes and the carry note."""
+    try:
+        text = subprocess.run(["git", "cat-file", "-p", ROLES_937], capture_output=True, check=True, cwd=HERE).stdout
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip(f"git history with the research_roles blob {ROLES_937[:8]} is unavailable")
+    path = tmp_path / "old" / "research_roles_937.py"
+    path.parent.mkdir()
+    path.write_bytes(text)
+    mod_spec = importlib.util.spec_from_file_location("research_roles_937", path)
+    old = importlib.util.module_from_spec(mod_spec)
+    mod_spec.loader.exec_module(old)
+    for drop in (False, True):
+        root, sp, spec = drop_root(tmp_path / f"d{int(drop)}", drop=drop)
+        new_c, old_c = (m.roles_cycle(json.loads(json.dumps(spec)), RC.Resolver(root), spec_path=sp,
+                                      capabilities=ABSENT) for m in (RR, old))
+        new_s, old_s = new_c.steps(), old_c.steps()
+        assert [(s.phase, s.role, s.output, s.state) for s in new_s] == [(s.phase, s.role, s.output, s.state)
+                                                                        for s in old_s]
+        for a, b in zip(new_s, old_s):
+            if drop and a.role == "E1" and a.phase in RR.ABSENT_PHASES:
+                assert strip_absent(a.argv) == b.argv and a.argv != b.argv
+            else:
+                assert a.argv == b.argv, (a.phase, a.role)
+            assert a.note == b.note or drop and (a.phase == "fit" or "OD3P-1" in a.note)
+        if not drop:
+            assert RC.plan_lines(new_c) == RC.plan_lines(old_c)
+            assert RC.status_lines(new_c) == RC.status_lines(old_c)
 
 
 @pytest.mark.parametrize("where", ["nav.rule", "nav.flags", "nav.flags=", "malformed"])

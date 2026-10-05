@@ -26,10 +26,15 @@ roles, the last one being the role the weights were fitted on. The pooled fit st
 carry_weights.py, which publishes the same file names into fit.output: composition_weights.json is W's bytes (so the
 anchor reproduces the TRAIN book), and each other era gets composition_weights.<id>.json rebound to its own role with
 carried_from. Without fit.carry, and without label_dir, every plan, status and run line is unchanged.
-fit.carry.drop (P9 lane OD3P, Rulings PRE-20 / PRE-31; optional, {path, sha256}): the flagged-member list
-(scripts/specs/p9/od3/flagged_members.json) of the "clean-source book" line: carry_weights.py --drop-list pins each
-listed member's weight to 0 on the history eras, and the cycle refuses a nav / ref flag or nav rule that names a listed
-(flagged) rule. Without it the carry argv is the one above.
+fit.carry.drop (P9 lane OD3P, Rulings PRE-20 / PRE-31 / OD3P-1; optional, {path, sha256}): the flagged-member list
+(scripts/specs/p9/od3/flagged_members.json) of the "clean-source book" line. A listed member is absent on history as
+the engine treats a member with no data (it adds nothing to the composite; its mass stays in its theme; the TRAIN
+weights are carried unchanged). The carry gets --drop-list (it checks and records the list; every weights byte is as
+without it), and every IC pass (u, w) of each history role gets ``--absent-members PATH --absent-members-sha256 PIN``
+(the list file and its pin) at the end of the IC exe's argv, the list bound by the runner; no TRAIN-window role gets
+them. Refused: an IC exe whose --list-rules --json envelope does not offer capability absent-members-v1 (fail closed,
+at plan time; od3p-absent-contract.md), a drop with no history role, and a nav / ref flag or nav rule that names a
+listed (flagged) rule. Without it the carry and IC argv are the ones above.
 
 A book that reads --risk-model (a nav or ref flag) is refused on a spec with a history role (Ruling PRE-10): no per-era
 risk store is built in P9, so the OD-3 read is on P9-F0h, the last accepted book that does not read the risk model.
@@ -74,6 +79,9 @@ PIN_KEYS = ("manifest_sha256", "fields_manifest_sha256", "label_manifest_sha256"
 CARRY_KEYS = ("weights", "admission")                # fit.carry (OD-3 T1, PM7-29 choice 1)
 CARRY_OPTIONAL = ("drop",)                           # fit.carry.drop (OD3P, PRE-20 / PRE-31)
 CARRY_TOOL = "atx-impl/tools/carry_weights.py"
+ABSENT_FLAG, ABSENT_SHA_FLAG = "--absent-members", "--absent-members-sha256"   # OD3P-1: the IC exe's absent list
+ABSENT_CAPABILITY = "absent-members-v1"              # ... offered in its --list-rules --json envelope
+ABSENT_PHASES = ("u", "w")                           # the IC passes of a history role that get it
 RISK_MODEL_FLAG = "--risk-model"                     # PRE-10: no per-era risk store in P9
 PER_ERA = RC.ERA_PHASES                              # fields, u, w, nav: every era runs its own
 ORDER = ("fields", "check", "u", "fit", "gate", "w", "nav", "summ")
@@ -331,6 +339,9 @@ class RolesCycle:
             except ValueError as exc:
                 raise usage(f"fit.carry.drop is not JSON: {exc}") from exc
             self.check_drop_rules(drop)
+            if not any(is_history(r) for r in self.roles):
+                raise usage(f"fit.carry.drop lists members absent on history (OD3P-1) and none of the roles "
+                            f"{', '.join(r['id'] for r in self.roles)} is a history era: the list would apply nowhere")
 
     def check_drop_rules(self, drop) -> None:
         """PRE-31: the clean-source line applies no flagged rule: no token of nav.rule, nav.flags or ref.flags is a
@@ -365,7 +376,8 @@ class RolesCycle:
             "--anchor", a.ipath("role"), a.pin("role"), "--output", w_dir, *drop]
         note = "fit.carry: TRAIN admission and weights carried to every era, no re-fit (PM7-29)"
         if drop:
-            note += "; the drop list's members weigh 0 on the history eras (PRE-31)"
+            note += ("; the drop list is checked and recorded, its members absent on the history roles' IC passes "
+                     "(OD3P-1)")
         if a.res.exists(f"{w_dir}/composition_weights.json"):
             state = "done"
         elif a.res.exists_dir(run_dir):
@@ -373,6 +385,28 @@ class RolesCycle:
         else:
             state = "pending"
         return RC.Step("fit", "bounded", argv, w_dir, run_dir, 1, state, note)
+
+    def absent_members(self, per: dict) -> None:
+        """OD3P-1: with fit.carry.drop, every IC pass (ABSENT_PHASES) of each history role passes the list to the IC
+        exe (ABSENT_FLAG PATH ABSENT_SHA_FLAG PIN, appended to the exe's argv) and the runner binds the list; a role
+        inside TRAIN gets nothing. Refused (exit 2, before any step runs) when the IC exe does not offer
+        ABSENT_CAPABILITY: an exe without it would read the list as an unknown option or, worse, ignore it."""
+        if self.carry is None or "drop" not in self.carry:
+            return
+        history = [c for c, r in zip(self.eras, self.roles) if is_history(r)]
+        if history and ABSENT_CAPABILITY not in self.anchor.capabilities():
+            raise RC.CycleError(
+                f"fit.carry.drop: the IC exe {self.anchor.spec['exes']['ic']} does not offer capability "
+                f"{ABSENT_CAPABILITY} (its --list-rules --json envelope), so the listed members cannot be absent on the "
+                f"history roles {', '.join(c.role_key for c in history)} (Ruling OD3P-1); refused, nothing runs. "
+                "Without the C++ producer the clean-source line is printed \"not read: no producer\"", RC.EXIT_USAGE)
+        path, pin = self.carry["drop"]["path"], self.pins["carry:drop"][1]
+        for cycle in history:
+            for st in per[cycle.role_key]:
+                if st.phase in ABSENT_PHASES and st.argv and "--" in st.argv:
+                    k = st.argv.index("--")
+                    st.argv = st.argv[:k] + ["--bind", path] + st.argv[k:] + [ABSENT_FLAG, path, ABSENT_SHA_FLAG, pin]
+                    st.note = "; ".join(x for x in (st.note, "fit.carry.drop: listed members absent (OD3P-1)") if x)
 
     def __getattr__(self, name: str):
         if name in ("anchor", "eras"):           # not yet set (during __init__): no recursion
@@ -404,6 +438,7 @@ class RolesCycle:
         per[anchor.role_key] = anchor.steps()
         if self.carry is not None:                 # OD-3 T1: the carry replaces the pooled fit
             per[anchor.role_key] = [self.carry_step() if st.phase == "fit" else st for st in per[anchor.role_key]]
+            self.absent_members(per)               # OD3P-1: fit.carry.drop on the history roles' IC passes
         out = []
         for phase in ORDER:
             owners = self.eras if phase in PER_ERA else [anchor]

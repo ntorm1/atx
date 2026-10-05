@@ -21,22 +21,20 @@ DIR the files the roles loop expects from a fit. The IC runner then applies the 
   admission.json                  the bytes of A, unchanged (the TRAIN roster that produced W).
   carry.json                      the record: inputs, anchor, and each era's role SHA and file SHA-256.
 
---drop-list (P9 lane OD3P; Rulings PRE-20, PRE-31: the "clean-source book" history line): L is an
+--drop-list (P9 lane OD3P; Rulings PRE-20, PRE-31, OD3P-1: the "clean-source book" history line): L is an
 ``atx.od3-flagged-members/v1`` document (scripts/specs/p9/od3/flagged_members.json): ``members``, the flagged member
 ids; ``rules``, the flagged rule ids; ``rules_pending``, rule ids whose flag is not yet known (must be empty);
-``source``, the file the list was copied from and its SHA-256. Each flagged member is treated as absent on history
-with TRAIN weights carried and no re-fit: in every --era file its weight is a pinned 0 (the IC runner needs a weight
-for every library candidate, strategy_ic_admission.cpp:667-670, and its composer skips a pinned zero,
-strategy_ic_composition.cpp:316-318); every other byte of the document is W's (the kept members' weights, the signs,
-the theme blocks), and ``carried_from`` gains a ``drop`` block {rule, list_sha256, source_sha256, members}. The anchor
-file stays W's bytes (the drop applies on history; the anchor reproduces the base book's TRAIN cell). Note: a pinned
-zero also leaves the theme's mass (the sum of its members' weights, strategy_ic_composition.cpp:256-257, 263-265);
-the composer's rule for a member with no data keeps the mass in the theme (task-OD3P-report.md, open question 1). The
-base is the clean-source book's TRAIN fit (PRE-31): it must apply no listed rule (no ``rule`` string of W is one).
-Refused with the list: an id that is not a member of the book (a key of W's ``weights``), a repeated id, a weights
-document that is not v1 / v2 or has no weights object, a ``theme_standardise`` rule other than ew-theme-std-v1 (the
-IC runner re-derives and verifies the member weights of ic-shrink-v1, ic-shrink-aim-v1 and theme-erc-v1 from their
-block, strategy_ic_rules.cpp:479-493, so it refuses a zeroed member), a non-empty ``rules_pending``, and no --era.
+``source``, the file the list was copied from and its SHA-256. Ruling OD3P-1: a listed member is absent on history
+exactly as the engine treats a member with no data on a date (it adds nothing to the composite and its mass stays in
+its theme); the IC exe applies that under ``--absent-members L --absent-members-sha256 S`` (capability
+absent-members-v1), which the roles cycle passes on the history roles' IC passes (research_roles.py, fit.carry.drop;
+od3p-absent-contract.md). This tool therefore changes no weight: with the list every weights file it publishes is the
+same bytes as without it (the carried weights, signs and theme blocks are TRAIN's, so theme-erc-v1 and ic-shrink
+bases, whose member weights the IC runner re-derives and verifies, are carried as they are), and only carry.json gains
+a ``drop`` record {rule, list_sha256, source_sha256, members, rules}. The base is the clean-source book's TRAIN fit
+(PRE-31): it must apply no listed rule (no ``rule`` string of W is one). Refused with the list: an id that is not a
+member of the book (a key of W's ``weights``), a repeated or malformed id, a weights document that is not v1 / v2 or
+has no weights object, a non-empty ``rules_pending``, and no --era (the list applies on the history eras only).
 Without --drop-list every output byte is as before.
 
 Everything is checked before anything is written; a refusal (exit 1) publishes nothing. Checks:
@@ -76,7 +74,6 @@ OUTPUT_RECORD = "carry.json"
 DROP_SCHEMA = "atx.od3-flagged-members/v1"           # the drop list (P9 OD3P, PRE-31)
 DROP_RULE = "drop-flagged-members-v1"
 WEIGHTS_SCHEMAS = ("atx.dsl-composition-weights/v1", "atx.dsl-composition-weights/v2")   # the IC runner's two
-ZERO_SAFE_STANDARDISE = ("ew-theme-std-v1",)          # the theme_standardise row without a weight verify
 MEMBER_ID = re.compile(r"[A-Za-z0-9_]+")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -155,8 +152,8 @@ def applied_rules(node) -> set[str]:
 
 
 def check_drop(doc: dict, drop: dict) -> None:
-    """The base book and the list agree (PRE-31): v1 / v2 weights, every listed id a member, no listed rule applied,
-    and a composition whose member weights the IC runner does not re-derive."""
+    """The base book and the list agree (PRE-31): v1 / v2 weights, every listed id a member, no listed rule applied.
+    No weight is changed (OD3P-1), so the theme_standardise rule is not a reason to refuse."""
     if doc.get("schema") not in WEIGHTS_SCHEMAS or not isinstance(doc.get("weights"), dict):
         raise CarryError(f"a drop list needs a weights object keyed by member id ({' or '.join(WEIGHTS_SCHEMAS)})")
     unknown = [m for m in drop["members"] if m not in doc["weights"]]
@@ -166,13 +163,6 @@ def check_drop(doc: dict, drop: dict) -> None:
     if flagged:
         raise CarryError(f"the base book applies flagged rule(s) {flagged}: the clean-source book is the last accepted "
                          "book of the lineage that applies no rule whose source_sample_end is 2015 or later (PRE-31)")
-    std = doc.get("theme_standardise")
-    rule = std.get("rule") if isinstance(std, dict) else None
-    if std is not None and rule not in ZERO_SAFE_STANDARDISE:
-        raise CarryError(f"theme_standardise rule {rule}: the IC runner re-derives and verifies its member weights "
-                         "from the block (strategy_ic_rules.cpp verify rows), so it refuses a pinned zero; dropping "
-                         "members of this book needs a runner-side absent-member rule (task-OD3P-report.md, open "
-                         "question 1)")
 
 
 def carry_files(weights: bytes, admission: bytes, eras: list[tuple[str, str]], anchor_sha: str,
@@ -199,23 +189,20 @@ def carry_files(weights: bytes, admission: bytes, eras: list[tuple[str, str]], a
         raise CarryError("each era is its own role: no era may share the anchor's or another era's role SHA")
     block = {"rule": RULE, "weights_sha256": sha256_bytes(weights), "admission_sha256": sha256_bytes(admission),
              "train_manifest_sha256": fitted_on}
-    era_doc = doc
     if drop is not None:
         if not eras:
             raise CarryError("a drop list applies on the history eras: give one or more --era")
         check_drop(doc, drop)
-        dropped = set(drop["members"])
-        block["drop"] = {"rule": DROP_RULE, "list_sha256": sha256_bytes(drop_bytes), "members": sorted(dropped),
-                         "source_sha256": drop["source_sha256"]}
-        era_doc = dict(doc, weights={k: (0.0 if k in dropped else v) for k, v in doc["weights"].items()})
     files = {OUTPUT_WEIGHTS: weights, OUTPUT_ADMISSION: admission}
     record = {"schema": SCHEMA, "rule": RULE, "weights_sha256": block["weights_sha256"],
               "admission_sha256": block["admission_sha256"], "anchor_role_sha256": anchor_sha, "eras": []}
-    if drop is not None:
-        record["drop"] = dict(block["drop"], rules=sorted(drop["rules"]))
+    if drop is not None:        # OD3P-1: recorded only; the IC exe's --absent-members applies it on history
+        record["drop"] = {"rule": DROP_RULE, "list_sha256": sha256_bytes(drop_bytes),
+                          "source_sha256": drop["source_sha256"], "members": sorted(drop["members"]),
+                          "rules": sorted(drop["rules"])}
     for eid, sha in eras:
         name = EP.era_weights_name(eid)
-        files[name] = canonical_bytes(dict(era_doc, train_manifest_sha256=sha, carried_from=block))
+        files[name] = canonical_bytes(dict(doc, train_manifest_sha256=sha, carried_from=block))
         record["eras"].append({"id": eid, "role_sha256": sha, "file": name, "sha256": sha256_bytes(files[name])})
     files[OUTPUT_RECORD] = canonical_bytes(record)
     return files

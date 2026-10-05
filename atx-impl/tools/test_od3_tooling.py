@@ -4,9 +4,11 @@ Run: "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider at
 
 T1  carry_weights.py: TRAIN admission and weights carried to history eras (PM7-29 choice 1). The tests of T1 are the
     xpre branch's (`f68058e2`), unchanged.
-OD3P --drop-list (Rulings PRE-20, PRE-31): the flagged members weigh a pinned 0 on the history eras, the kept members'
-    weights are TRAIN's byte for byte, the anchor file is TRAIN's; an id that is not a member is refused, and so are a
-    base that applies a listed rule and a composition whose weights the IC runner re-derives.
+OD3P --drop-list (Rulings PRE-20, PRE-31, OD3P-1): the list is checked and recorded in carry.json and changes no
+    weight: every weights file is the bytes of the carry without the list, for ew-theme-std, theme-erc and ic-shrink
+    bases alike (the IC exe's --absent-members applies the list on history, research_roles.py); an id that is not a
+    member, a repeated or malformed id, pending rules, a base that applies a listed rule and no --era are refused.
+    ALCLOCK-2: the committed list carries info-clock-rate-v1 in rules (2019) and mv-aim-v1 alone pending.
 Identity: without --drop-list, every published byte equals the branch tool's (blob 186655d9, sha256 5aebb3a7...).
 The branch's T2 / T5 tests (nav_summ) are re-done on the engine verb after lane B2's nav_summ is in root (T2 pending in
 task-OD3P-report.md); T3 is dropped (Ruling PRE-21).
@@ -157,37 +159,36 @@ def drop_argv(c: dict, out: Path, **kw) -> list[str]:
     return carry_argv(c, out, **kw) + ["--drop-list", str(c["l"]), "--drop-list-sha256", sha(c["l"].read_bytes())]
 
 
-def test_drop_pins_the_listed_members_to_zero_on_the_history_eras_only(book, capsys):
+STANDARDISE = {           # theme_standardise rows: ew-theme-std re-derives nothing; theme-erc / ic-shrink verify W
+    "ew-theme-std-v1": {"rule": "ew-theme-std-v1", "rerank": True, "themes": dict(THEMES)},
+    "theme-erc-v1": {"rule": "theme-erc-v1", "rerank": True, "themes": dict(THEMES),
+                     "theme_shares": {"value": 0.25, "momentum": 0.5, "quality": 0.25}},
+    "ic-shrink-v1": {"rule": "ic-shrink-v1", "rerank": True, "themes": dict(THEMES), "lambda": 0.5},
+}
+
+
+@pytest.mark.parametrize("base", sorted(STANDARDISE))
+def test_drop_carries_train_bytes_and_only_records_the_list(book, base, capsys):
+    """OD3P-1: the carry zeroes nothing; every weights file is the plain carry's bytes (so W's weights, signs and
+    theme blocks, and the runner's verify of a theme-erc / ic-shrink base, are untouched); carry.json gains the record."""
     c = book
+    c["w"].write_bytes(CW.canonical_bytes(book_doc(c["roles"]["E3"][1], theme_standardise=STANDARDISE[base])))
     plain, dropped = c["tmp"] / "PLAIN", c["tmp"] / "DROP"
     assert CW.main(carry_argv(c, plain)) == 0 and CW.main(drop_argv(c, dropped)) == 0
     capsys.readouterr()
+    files = sorted(p.name for p in dropped.iterdir())
+    assert files == sorted(p.name for p in plain.iterdir())
+    for name in files:
+        if name != "carry.json":                                                    # every weights byte: no drop
+            assert (dropped / name).read_bytes() == (plain / name).read_bytes(), name
     w_bytes = c["w"].read_bytes()
-    train = json.loads(w_bytes)
     assert (dropped / "composition_weights.json").read_bytes() == w_bytes          # the anchor: TRAIN's bytes
-    assert (dropped / "admission.json").read_bytes() == c["a"].read_bytes()
-    block = {"rule": CW.DROP_RULE, "list_sha256": sha(c["l"].read_bytes()), "members": ["b", "d"],
-             "source_sha256": "33" * 32}
-    train_lines = w_bytes.decode().splitlines()
     for era in ("E1", "E2"):
-        name = f"composition_weights.{era}.json"
-        era_doc, plain_doc = (json.loads((d / name).read_bytes()) for d in (dropped, plain))
-        assert era_doc["weights"]["b"] == era_doc["weights"]["d"] == 0.0           # dropped: a pinned zero
-        kept = {k: v for k, v in era_doc["weights"].items() if k not in ("b", "d")}
-        assert kept == {k: v for k, v in train["weights"].items() if k not in ("b", "d")}
-        era_lines = (dropped / name).read_bytes().decode().splitlines()
-        for k in kept:                                                               # kept: TRAIN's bytes
-            line = next(t for t in train_lines if t.startswith(f'    "{k}": '))
-            assert line in era_lines
-        assert era_doc["carried_from"]["drop"] == block
-        # every other byte is the plain carry's: signs, themes, provenance, the binding, the carried_from block
-        assert era_doc == dict(plain_doc, weights=dict(plain_doc["weights"], b=0.0, d=0.0),
-                               carried_from=dict(plain_doc["carried_from"], drop=block))
-        assert (dropped / name).read_bytes() == CW.canonical_bytes(era_doc)
+        doc = json.loads((dropped / f"composition_weights.{era}.json").read_bytes())
+        assert doc["weights"] == json.loads(w_bytes)["weights"] and "drop" not in doc["carried_from"]
     rec, rec_plain = (json.loads((d / "carry.json").read_bytes()) for d in (dropped, plain))
-    assert rec.pop("drop") == dict(block, rules=["mom-volman-v1", "theme-cov-hedge-v1"])
-    assert [(e["id"], e["role_sha256"], e["file"]) for e in rec.pop("eras")] == [
-        (e["id"], e["role_sha256"], e["file"]) for e in rec_plain.pop("eras")]
+    assert rec.pop("drop") == {"rule": CW.DROP_RULE, "list_sha256": sha(c["l"].read_bytes()), "members": ["b", "d"],
+                               "source_sha256": "33" * 32, "rules": ["mom-volman-v1", "theme-cov-hedge-v1"]}
     assert rec == rec_plain
 
 
@@ -202,7 +203,6 @@ def test_drop_pins_the_listed_members_to_zero_on_the_history_eras_only(book, cap
     ("pin", "drop list .* is .*, pinned"),
     ("flagged_rule_block", "applies flagged rule"),
     ("flagged_rule_provenance", "applies flagged rule"),
-    ("theme_erc", "re-derives and verifies"),
     ("v3", "weights object keyed by member id"),
     ("no_era", "one or more --era"),
 ])
@@ -229,8 +229,6 @@ def test_drop_refusals_publish_nothing(book, case, needle, capsys):
         doc["theme_schedule"] = {"rule": "mom-volman-v1", "blocks": []}
     elif case == "flagged_rule_provenance":
         doc["provenance"]["rule"] = "theme-cov-hedge-v1"
-    elif case == "theme_erc":
-        doc["theme_standardise"]["rule"] = "theme-erc-v1"
     elif case == "v3":
         doc["schema"] = "atx.dsl-composition-weights/v3"
     c["l"].write_text(json.dumps(lst), encoding="utf-8")
@@ -270,7 +268,12 @@ def test_the_committed_list_is_the_final_flag_list_of_its_source(tmp_path, capsy
     assert (len(flagged), len(unverified)) == (10, 2)
     assert doc["members"] == flagged + unverified                          # the 12 ids, in the file's order
     assert doc["classes"] == {"flagged": flagged, "flagged-unverified": unverified}
-    assert doc["rules"] == ["theme-cov-hedge-v1", "mom-volman-v1"]
+    # ALCLOCK-2: info-clock-rate-v1 registers source_sample_end 2019 and is flagged; mv-aim-v1 stays pending (root
+    # resolves it from COV-MV's registration before the read)
+    assert doc["rules"] == ["theme-cov-hedge-v1", "mom-volman-v1", "info-clock-rate-v1"]
+    assert doc["rule_source_sample_end"] == {"theme-cov-hedge-v1": 2017, "mom-volman-v1": 2016,
+                                             "info-clock-rate-v1": 2019}
+    assert doc["rules_pending"] == ["mv-aim-v1"]
     # as committed, the tool refuses it until root resolves the pending rules (PRE-31); resolved, it carries the book
     roles = {}
     for name in ("E1", "E3"):
@@ -295,8 +298,9 @@ def test_the_committed_list_is_the_final_flag_list_of_its_source(tmp_path, capsy
         assert CW.main(argv) == code
     assert "rules_pending" in capsys.readouterr().err
     era = json.loads((tmp_path / "out0" / "composition_weights.E1.json").read_bytes())
-    assert sorted(k for k, v in era["weights"].items() if v == 0.0) == sorted(doc["members"])
-    assert era["weights"]["keep_a"] == era["weights"]["keep_b"] == 1 / len(ids)
+    assert era["weights"] == {k: 1 / len(ids) for k in ids}                 # OD3P-1: no weight is changed
+    rec = json.loads((tmp_path / "out0" / "carry.json").read_bytes())
+    assert rec["drop"]["members"] == sorted(doc["members"]) and rec["drop"]["list_sha256"] == sha(resolved.read_bytes())
 
 
 # ------------------------------------------------------------------ identity: no --drop-list
