@@ -1060,7 +1060,9 @@ def float_list(text: str) -> list[float]:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    # ruling D2R-2 (b): no flag abbreviation (a prefix like --proto is a usage error, not --protocol): the same defect
+    # class as the fitter's (D2R-1) waits for the next prefix-sharing flag
+    ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0], allow_abbrev=False)
     ap.add_argument("dirs", nargs="*", help="NAV output directories (summary.json + daily_<scenario>.csv)")
     ap.add_argument("--weights", action="append", default=[], help="composition_weights.json (or its dir); repeatable")
     ap.add_argument("--reference", default=None, help="reference NAV dir for the paired dSR(net)")
