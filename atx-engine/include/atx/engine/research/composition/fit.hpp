@@ -168,4 +168,42 @@ struct CompositionFit {
 [[nodiscard]] atx::core::Result<CompositionFit> fit_composition(const FactorSeriesView& view,
                                                                 std::span<const std::string> ids,
                                                                 const FitSpec& spec);
+
+// ---- walk-forward-v1 (contract K-P9-8; P9 lane D3W, rulings D3-1 / D3-2) ---------------------
+// The same fit refitted on an expanding window. Rows sit at decision indices j = first,
+// first + step, ... < D; the window of row j is the TRAIN decisions d with d + lag <= j, and
+// `first` is the smallest j whose window holds min_decisions decisions. Each row is
+// fit_composition of the spec on its window (the view's TRAIN mask cut at j - lag), so no fitted
+// value of row j reads a factor value of a decision after j - lag (f(d) is realised at d + 2: lag
+// 2 is K-P9-8's "fitted on decisions <= d - 2"). The IC runner applies row j from the session of
+// decision j until the next row's; before the first row no fit exists and the book is flat (ruling
+// D3-1). Registered constants of walk-forward-v1: window expanding, lag 2, step 21 (plan 5.2),
+// min_decisions 21 (one step).
+inline constexpr std::string_view walk_forward_rule="walk-forward-v1";
+inline constexpr std::string_view walk_forward_expanding="expanding";
+inline constexpr atx::usize walk_forward_lag=2;
+inline constexpr atx::usize walk_forward_step=21;
+inline constexpr atx::usize walk_forward_min_decisions=21;
+inline constexpr atx::usize walk_forward_max_rows=4096;
+struct WalkForwardSpec {
+  std::string window{walk_forward_expanding};
+  atx::usize lag{walk_forward_lag};
+  atx::usize step{walk_forward_step};
+  atx::usize min_decisions{walk_forward_min_decisions};
+};
+struct WalkForwardRow {
+  atx::usize decision_index{};  // j
+  atx::i64 from_session{};      // the session of decision j: the row applies from it
+  atx::usize fit_decisions{};   // the window's TRAIN decisions
+  atx::usize last_fit_index{};  // the window's last TRAIN decision (<= j - lag)
+  atx::i64 last_fit_session{};
+  CompositionFit fit;           // the window's fit (fit.weights: per member, the spec's order)
+};
+// Err (InvalidArgument) on a window other than expanding, lag < 2, step 0, min_decisions < 2,
+// theme-tsmom-v1 or theme-resid-v1 in the spec (their own TRAIN-fitted schedule and order), a
+// series whose TRAIN decisions never fill a window, more than walk_forward_max_rows rows, or a row
+// whose fit refuses (the message names its decision index and session).
+[[nodiscard]] atx::core::Result<std::vector<WalkForwardRow>> fit_walk_forward(
+    const FactorSeriesView& view, std::span<const std::string> ids, const FitSpec& spec,
+    const WalkForwardSpec& wf);
 } // namespace atx::engine::research::composition

@@ -335,4 +335,64 @@ co::Result<CompositionFit> fit_composition(const FactorSeriesView& view,
   }
   return co::Ok(std::move(fit));
 }
+
+co::Result<std::vector<WalkForwardRow>> fit_walk_forward(const FactorSeriesView& view,
+                                                         std::span<const std::string> ids,
+                                                         const FitSpec& spec,
+                                                         const WalkForwardSpec& wf) {
+  const std::string rule(walk_forward_rule);
+  if (wf.window!=walk_forward_expanding)
+    return co::Err(refused(rule+": the window must be expanding: "+wf.window));
+  if (wf.lag<2U || wf.step==0U || wf.min_decisions<2U)
+    return co::Err(refused(rule+": lag >= 2 (K-P9-8: fitted on decisions <= d - 2), step >= 1 "
+                           "and min_decisions >= 2"));
+  if (spec.theme_tsmom || spec.theme_resid)
+    return co::Err(refused(rule+": refused with theme-tsmom-v1 and theme-resid-v1 (their schedule "
+                           "and order are fitted on the whole TRAIN window)"));
+  if (view.train.size()!=view.decisions || view.sessions.size()!=view.decisions)
+    return co::Err(refused("factor series geometry"));
+  // The first row: the smallest j whose window (TRAIN d with d + lag <= j) holds min_decisions.
+  usize first=view.decisions,filled=0;
+  for (usize j=wf.lag;j<view.decisions;++j) {
+    if (view.train[j-wf.lag]!=0U) ++filled;
+    if (filled>=wf.min_decisions) { first=j; break; }
+  }
+  if (first==view.decisions)
+    return co::Err(refused(rule+": the series' TRAIN decisions never fill a window of "+
+                           std::to_string(wf.min_decisions)+" decisions at lag "+
+                           std::to_string(wf.lag)));
+  const usize rows=(view.decisions-first-1U)/wf.step+1U;
+  if (rows>walk_forward_max_rows)
+    return co::Err(refused(rule+": "+std::to_string(rows)+" rows; at most "+
+                           std::to_string(walk_forward_max_rows)));
+  std::vector<WalkForwardRow> out;
+  out.reserve(rows);
+  std::vector<u8> mask(view.decisions,0U);
+  usize count=0,last=0;
+  usize cut=0; // decisions [0, cut) are in the window mask so far
+  for (usize b=0;b<rows;++b) {
+    const usize j=first+b*wf.step; // b * step <= D - first - 1: no overflow
+    for (;cut+wf.lag<=j;++cut) {
+      if (view.train[cut]==0U) continue;
+      mask[cut]=1U;
+      ++count;
+      last=cut;
+    }
+    const FactorSeriesView window{view.candidates,view.decisions,view.factors,view.sessions,mask};
+    auto fitted=fit_composition(window,ids,spec);
+    if (!fitted)
+      return co::Err(refused(rule+": the row at decision "+std::to_string(j)+" (session "+
+                             std::to_string(view.sessions[j])+") is refused: "+
+                             fitted.error().message()));
+    WalkForwardRow row;
+    row.decision_index=j;
+    row.from_session=view.sessions[j];
+    row.fit_decisions=count;
+    row.last_fit_index=last;
+    row.last_fit_session=view.sessions[last];
+    row.fit=std::move(*fitted);
+    out.push_back(std::move(row));
+  }
+  return co::Ok(std::move(out));
+}
 } // namespace atx::engine::research::composition

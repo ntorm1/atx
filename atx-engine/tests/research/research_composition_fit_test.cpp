@@ -519,3 +519,278 @@ TEST(ResearchComposition, WeightsSchemaIds) {
   EXPECT_EQ(rc::weights_schema_v2, "atx.dsl-composition-weights/v2");
   EXPECT_EQ(rc::weights_schema_v3, "atx.dsl-composition-weights/v3");
 }
+
+// ---- P9 lane D3W: walk-forward-v1 (contract K-P9-8, ruling D3-1) ------------------------------
+namespace {
+
+constexpr i64 first_session_ns = 1'578'441'600'000'000'000LL; // the fixture's first session
+constexpr i64 day_ns = 86'400'000'000'000LL;
+
+// `decisions` daily sessions, every one in TRAIN; candidate k's factor is a_k + b_k d (integers),
+// so every window sum is exact and the expanding mean over n decisions is a_k + b_k (n - 1) / 2,
+// a half-integer, bit for bit.
+Inputs linear_inputs(usize decisions, const std::vector<std::pair<f64, f64>> &ab) {
+  Inputs out;
+  for (usize k = 0; k < ab.size(); ++k) out.ids.push_back("c" + std::to_string(k));
+  out.decisions = decisions;
+  for (usize d = 0; d < decisions; ++d) {
+    out.sessions.push_back(first_session_ns + static_cast<i64>(d) * day_ns);
+    out.train.push_back(1U);
+    for (const auto &[a, b] : ab) out.factors.push_back(a + b * static_cast<f64>(d));
+  }
+  return out;
+}
+
+rc::FitSpec shrink_spec(const std::vector<std::pair<std::string, std::string>> &members) {
+  Json rows = Json::array();
+  for (const auto &[id, theme] : members) {
+    rows.push_back(Json{{"id", id}, {"theme", theme}, {"sign", 1}});
+  }
+  const Json doc{{"schema", "atx.composition-fit-spec/v1"},
+                 {"composition", "ic-shrink-v1"},
+                 {"members", rows}};
+  const auto spec = rc::parse_fit_spec(doc.dump());
+  EXPECT_TRUE(spec) << spec.error().to_string();
+  return spec ? *spec : rc::FitSpec{};
+}
+
+// A fixture case's spec with the schedule and the residual order switched off (walk-forward
+// refuses them).
+rc::FitSpec case_spec(usize index) {
+  Json spec = fixture().at("cases").at(index).at("spec");
+  spec["theme_tsmom"] = false;
+  spec["theme_resid"] = false;
+  const auto parsed = rc::parse_fit_spec(spec.dump());
+  EXPECT_TRUE(parsed) << parsed.error().to_string();
+  return parsed ? *parsed : rc::FitSpec{};
+}
+
+bool same_bits(const std::vector<f64> &a, const std::vector<f64> &b) {
+  if (a.size() != b.size()) return false;
+  for (usize i = 0; i < a.size(); ++i) {
+    if (std::bit_cast<u64>(a[i]) != std::bit_cast<u64>(b[i])) return false;
+  }
+  return true;
+}
+
+} // namespace
+
+// ic-shrink-v1 rows: each member's IC is the admission train_mean of its window, so on a linear
+// series row j holds the expanding mean over d = 0 .. j - lag in closed form; the row's weights
+// are fit_composition on that window; rows start at the first j whose window holds min_decisions
+// and step by `step`.
+TEST(WalkForward, ExpandingMeanClosedForm) {
+  const std::vector<std::pair<f64, f64>> ab{{1.0, 1.0}, {2.0, 0.0}, {3.0, 2.0}, {1.0, 3.0}};
+  const Inputs in = linear_inputs(60, ab);
+  const rc::FitSpec spec =
+      shrink_spec({{"c0", "value"}, {"c1", "value"}, {"c2", "low_risk"}, {"c3", "low_risk"}});
+  const rc::WalkForwardSpec wf{"expanding", 2, 5, 4};
+  const auto rows = rc::fit_walk_forward(in.view(), in.ids, spec, wf);
+  ASSERT_TRUE(rows) << rows.error().to_string();
+  // First row: j - 2 + 1 >= 4 decisions, so j = 5; then 10, ..., 55.
+  ASSERT_EQ(rows->size(), 11U);
+  for (usize r = 0; r < rows->size(); ++r) {
+    const auto &row = (*rows)[r];
+    const usize j = 5U + 5U * r;
+    const usize n = j - 1U;
+    SCOPED_TRACE("row " + std::to_string(r));
+    EXPECT_EQ(row.decision_index, j);
+    EXPECT_EQ(row.from_session, in.sessions[j]);
+    EXPECT_EQ(row.fit_decisions, n);
+    EXPECT_EQ(row.last_fit_index, j - 2U);
+    EXPECT_EQ(row.last_fit_session, in.sessions[j - 2U]);
+    ASSERT_EQ(row.fit.ic.size(), ab.size());
+    for (usize k = 0; k < ab.size(); ++k) {
+      const f64 closed = ab[k].first + ab[k].second * (static_cast<f64>(n) - 1.0) / 2.0;
+      EXPECT_EQ(std::bit_cast<u64>(row.fit.ic[k]), std::bit_cast<u64>(closed))
+          << k << ": " << row.fit.ic[k] << " vs " << closed;
+    }
+    Inputs window = in;
+    for (usize d = 0; d < window.decisions; ++d) window.train[d] = static_cast<u8>(d + 2U <= j);
+    const auto direct = rc::fit_composition(window.view(), window.ids, spec);
+    ASSERT_TRUE(direct) << direct.error().to_string();
+    EXPECT_TRUE(same_bits(row.fit.weights, direct->weights));
+  }
+  EXPECT_NE((*rows)[0].fit.ic[0], rows->back().fit.ic[0]); // the window expands
+}
+
+// Whatever the factors after decision j - lag, row j and every row before it are unchanged bit
+// for bit (ic-shrink-v1 alone, and theme-erc-v1 on ew-theme-std-v1 whose covariance reads every
+// window decision); a later row sees the change.
+TEST(WalkForward, NoRowUsesFutureDecisions) {
+  const Inputs in = inputs();
+  for (const usize index : {3U, 1U}) {
+    const rc::FitSpec spec = case_spec(index);
+    SCOPED_TRACE(fixture().at("cases").at(index).at("name").get<std::string>());
+    const rc::WalkForwardSpec wf{"expanding", 2, 21, 42};
+    const auto base = rc::fit_walk_forward(in.view(), in.ids, spec, wf);
+    ASSERT_TRUE(base) << base.error().to_string();
+    ASSERT_GE(base->size(), 4U);
+    const usize cut = (*base)[base->size() / 2U].decision_index;
+    Inputs moved = in;
+    for (usize d = cut - 1U; d < moved.decisions; ++d) {
+      for (usize c = 0; c < moved.ids.size(); ++c) {
+        f64 &f = moved.factors[d * moved.ids.size() + c];
+        if (std::isfinite(f)) f = -3.0 * f + 0.01 * static_cast<f64>(c + 1U);
+      }
+    }
+    const auto after = rc::fit_walk_forward(moved.view(), moved.ids, spec, wf);
+    ASSERT_TRUE(after) << after.error().to_string();
+    ASSERT_EQ(after->size(), base->size());
+    bool later_moved = false;
+    for (usize r = 0; r < base->size(); ++r) {
+      const auto &a = (*base)[r];
+      const auto &b = (*after)[r];
+      EXPECT_EQ(a.decision_index, b.decision_index);
+      EXPECT_EQ(a.fit_decisions, b.fit_decisions);
+      if (a.decision_index <= cut) {
+        EXPECT_TRUE(same_bits(a.fit.weights, b.fit.weights)) << "row " << r;
+        EXPECT_TRUE(same_bits(a.fit.covariance, b.fit.covariance)) << "row " << r;
+        EXPECT_TRUE(same_bits(a.fit.ic, b.fit.ic)) << "row " << r;
+      } else {
+        later_moved = later_moved || !same_bits(a.fit.weights, b.fit.weights);
+      }
+    }
+    EXPECT_TRUE(later_moved);
+  }
+}
+
+// Every refusal names the rule (or the row) before any row is published.
+TEST(WalkForward, RefusesBeforeAnyRow) {
+  const Inputs in = linear_inputs(60, {{1.0, 1.0}, {2.0, 0.0}});
+  const rc::FitSpec spec = shrink_spec({{"c0", "value"}, {"c1", "low_risk"}});
+  const auto refused = [&](const Inputs &x, const rc::FitSpec &s, const rc::WalkForwardSpec &wf,
+                           std::string_view needle) {
+    const auto rows = rc::fit_walk_forward(x.view(), x.ids, s, wf);
+    ASSERT_FALSE(rows) << needle;
+    EXPECT_NE(rows.error().message().find(needle), std::string::npos) << rows.error().message();
+  };
+  refused(in, spec, {"rolling", 2, 5, 4}, "the window must be expanding");
+  refused(in, spec, {"expanding", 1, 5, 4}, "lag >= 2");
+  refused(in, spec, {"expanding", 2, 0, 4}, "lag >= 2");
+  refused(in, spec, {"expanding", 2, 5, 1}, "lag >= 2");
+  rc::FitSpec tsmom = spec;
+  tsmom.theme_tsmom = true;
+  refused(in, tsmom, {}, "refused with theme-tsmom-v1 and theme-resid-v1");
+  rc::FitSpec resid = spec;
+  resid.theme_resid = true;
+  refused(in, resid, {}, "refused with theme-tsmom-v1 and theme-resid-v1");
+  refused(in, spec, {"expanding", 2, 5, 59}, "never fill a window of 59 decisions");
+  Inputs outside = in;
+  for (auto &t : outside.train) t = 0U;
+  refused(outside, spec, {"expanding", 2, 5, 4}, "never fill a window");
+  const Inputs long_series = linear_inputs(4200, {{1.0, 1.0}, {2.0, 0.0}});
+  refused(long_series, spec, {"expanding", 2, 1, 2}, "rows; at most 4096");
+  // c1 has no live decision before d = 20: the first row's ic-shrink-v1 fit refuses, by row.
+  Inputs late = in;
+  for (usize d = 0; d < 20U; ++d) late.factors[d * 2U + 1U] = std::numeric_limits<f64>::quiet_NaN();
+  refused(late, spec, {"expanding", 2, 5, 4}, "the row at decision 5 (session ");
+}
+
+// The verb: --walk-forward adds the rows (fit_walk_forward on the series, every decision of which
+// lies in TRAIN) and nothing else; the flag-absent document is that document without the block,
+// byte for byte; usage errors exit 2, refusals exit 1 and publish nothing.
+TEST(WalkForward, CliWritesTheRowsAndRefuses) {
+  const fs::path dir = scratch("walk_forward");
+  const Inputs in = inputs();
+  const fs::path factors = write_factor_dir(dir, in);
+  Json spec_json = fixture().at("cases").at(3).at("spec");
+  spec_json["theme_tsmom"] = false;
+  write_bytes(dir / "spec.json", spec_json.dump());
+  const std::string spec_path = (dir / "spec.json").string();
+  std::ostringstream o;
+  std::ostringstream e;
+  const fs::path out = dir / "fit_wf";
+  ASSERT_EQ(run_main({"fit", "--factors", factors.string(), "--spec", spec_path, "--output",
+                      out.string(), "--walk-forward", "expanding", "--lag", "2", "--step", "21",
+                      "--min-decisions", "21"},
+                     o, e),
+            0)
+      << e.str();
+  const Json doc = Json::parse(read_bytes(out / std::string(rc::kFitFile)));
+  const Json &wf = doc.at("walk_forward");
+  EXPECT_EQ(wf.at("rule").get<std::string>(), std::string(rc::walk_forward_rule));
+  EXPECT_EQ(wf.at("window").get<std::string>(), "expanding");
+  EXPECT_EQ(wf.at("lag").get<usize>(), 2U);
+  EXPECT_EQ(wf.at("step").get<usize>(), 21U);
+  EXPECT_EQ(wf.at("min_decisions").get<usize>(), 21U);
+  Inputs all = in;
+  all.train.assign(all.decisions, 1U);
+  const auto spec = rc::parse_fit_spec(spec_json.dump());
+  ASSERT_TRUE(spec);
+  const auto rows = rc::fit_walk_forward(all.view(), all.ids, *spec, rc::WalkForwardSpec{});
+  ASSERT_TRUE(rows) << rows.error().to_string();
+  ASSERT_EQ(wf.at("rows").size(), rows->size());
+  for (usize r = 0; r < rows->size(); ++r) {
+    const Json &row = wf.at("rows").at(r);
+    EXPECT_EQ(row.at("decision_index").get<usize>(), (*rows)[r].decision_index);
+    EXPECT_EQ(row.at("from_session").get<i64>(), (*rows)[r].from_session);
+    EXPECT_EQ(row.at("fit_decisions").get<usize>(), (*rows)[r].fit_decisions);
+    EXPECT_EQ(row.at("last_fit_index").get<usize>(), (*rows)[r].last_fit_index);
+    EXPECT_EQ(row.at("last_fit_session").get<i64>(), (*rows)[r].last_fit_session);
+    expect_values(row.at("weights"), (*rows)[r].fit.weights, true, "row " + std::to_string(r));
+  }
+  // The default min-decisions is the registered 21.
+  const fs::path defaulted = dir / "fit_wf_default";
+  ASSERT_EQ(run_main({"fit", "--factors", factors.string(), "--spec", spec_path, "--output",
+                      defaulted.string(), "--walk-forward", "expanding", "--lag", "2", "--step",
+                      "21"},
+                     o, e),
+            0)
+      << e.str();
+  EXPECT_EQ(read_bytes(defaulted / std::string(rc::kFitFile)),
+            read_bytes(out / std::string(rc::kFitFile)));
+  // Flag absent: the same document without the block, byte for byte.
+  const fs::path plain = dir / "fit_plain";
+  ASSERT_EQ(run_main({"fit", "--factors", factors.string(), "--spec", spec_path, "--output",
+                      plain.string()},
+                     o, e),
+            0)
+      << e.str();
+  Json stripped = doc;
+  stripped.erase("walk_forward");
+  EXPECT_EQ(read_bytes(plain / std::string(rc::kFitFile)), stripped.dump(2) + "\n");
+  // Usage: the counts only with --walk-forward, which needs --lag and --step; a count is digits.
+  const std::vector<std::string> base{"fit", "--factors", factors.string(), "--spec", spec_path,
+                                      "--output", (dir / "usage").string()};
+  const auto with = [&](std::vector<std::string> extra) {
+    std::vector<std::string> argv = base;
+    argv.insert(argv.end(), extra.begin(), extra.end());
+    return run_main(argv, o, e);
+  };
+  EXPECT_EQ(with({"--lag", "2", "--step", "21"}), 2);
+  EXPECT_EQ(with({"--min-decisions", "21"}), 2);
+  EXPECT_EQ(with({"--walk-forward", "expanding", "--step", "21"}), 2);
+  EXPECT_EQ(with({"--walk-forward", "expanding", "--lag", "2"}), 2);
+  EXPECT_EQ(with({"--walk-forward", "expanding", "--lag", "x", "--step", "21"}), 2);
+  EXPECT_EQ(with({"--walk-forward", "expanding", "--lag", "-2", "--step", "21"}), 2);
+  EXPECT_EQ(with({"--walk-forward", "expanding", "--lag", "2", "--step", ""}), 2);
+  EXPECT_FALSE(fs::exists(dir / "usage"));
+  // Refused by the fit: nothing published.
+  const auto refused = [&](std::vector<std::string> extra, const fs::path &spec_file,
+                           std::string_view needle) {
+    const fs::path target = dir / "refused";
+    std::vector<std::string> argv{"fit", "--factors", factors.string(), "--spec",
+                                  spec_file.string(), "--output", target.string()};
+    argv.insert(argv.end(), extra.begin(), extra.end());
+    std::ostringstream err;
+    EXPECT_EQ(run_main(argv, o, err), 1) << needle;
+    EXPECT_NE(err.str().find(needle), std::string::npos) << err.str();
+    EXPECT_FALSE(fs::exists(target)) << needle;
+  };
+  refused({"--walk-forward", "rolling", "--lag", "2", "--step", "21"}, dir / "spec.json",
+          "the window must be expanding");
+  refused({"--walk-forward", "expanding", "--lag", "1", "--step", "21"}, dir / "spec.json",
+          "lag >= 2");
+  refused({"--walk-forward", "expanding", "--lag", "2", "--step", "0"}, dir / "spec.json",
+          "lag >= 2");
+  refused({"--walk-forward", "expanding", "--lag", "2", "--step", "21", "--min-decisions", "1"},
+          dir / "spec.json", "lag >= 2");
+  refused({"--walk-forward", "expanding", "--lag", "2", "--step", "21", "--min-decisions", "999"},
+          dir / "spec.json", "never fill a window");
+  Json tsmom = spec_json;
+  tsmom["theme_tsmom"] = true;
+  write_bytes(dir / "tsmom.json", tsmom.dump());
+  refused({"--walk-forward", "expanding", "--lag", "2", "--step", "21"}, dir / "tsmom.json",
+          "refused with theme-tsmom-v1");
+}

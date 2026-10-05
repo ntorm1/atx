@@ -6,7 +6,10 @@
 #include <fstream>
 #include <ios>
 #include <new>
+#include <optional>
 #include <set>
+#include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -179,6 +182,37 @@ constexpr u64 kSpecLimit = 16ULL << 20;
   return doc;
 }
 
+// P9 lane D3W: the walk-forward rows, each row's final weights in member order.
+[[nodiscard]] Json walk_forward_json(const WalkForwardSpec& wf,
+                                     std::span<const WalkForwardRow> rows) {
+  Json out = Json::array();
+  for (const auto& row : rows) {
+    out.push_back(Json{{"decision_index", row.decision_index},
+                       {"from_session", row.from_session},
+                       {"fit_decisions", row.fit_decisions},
+                       {"last_fit_index", row.last_fit_index},
+                       {"last_fit_session", row.last_fit_session},
+                       {"weights", row.fit.weights}});
+  }
+  return Json{{"rule", std::string(walk_forward_rule)},
+              {"window", wf.window},
+              {"lag", wf.lag},
+              {"step", wf.step},
+              {"min_decisions", wf.min_decisions},
+              {"rows", std::move(out)}};
+}
+
+// A walk-forward count: decimal digits only, at most 9 of them (no sign, no blank).
+[[nodiscard]] std::optional<usize> count_value(std::string_view text) {
+  if (text.empty() || text.size() > 9U ||
+      !std::all_of(text.begin(), text.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+    return std::nullopt;
+  }
+  usize value = 0;
+  for (const char c : text) value = value * 10U + static_cast<usize>(c - '0');
+  return value;
+}
+
 [[nodiscard]] core::Result<bool> optional_bool(const Json& j, const char* key) {
   if (!j.contains(key)) return core::Ok(false);
   if (!j.at(key).is_boolean()) {
@@ -197,7 +231,8 @@ constexpr u64 kSpecLimit = 16ULL << 20;
 }
 
 [[nodiscard]] std::string usage() {
-  return "usage: atx-research-composition fit --factors DIR --spec FILE --output NEWDIR\n";
+  return "usage: atx-research-composition fit --factors DIR --spec FILE --output NEWDIR "
+         "[--walk-forward expanding --lag N --step N [--min-decisions N]]\n";
 }
 
 } // namespace
@@ -263,7 +298,8 @@ core::Result<FitSpec> parse_fit_spec(std::string_view text) {
 }
 
 core::Result<std::string> run_fit(const fs::path& factors_dir, const fs::path& spec_file,
-                                  const fs::path& output_dir) {
+                                  const fs::path& output_dir,
+                                  const std::optional<WalkForwardSpec>& walk_forward) {
   try {
     std::error_code ec;
     if (fs::exists(output_dir, ec) || ec) {
@@ -278,7 +314,12 @@ core::Result<std::string> run_fit(const fs::path& factors_dir, const fs::path& s
     const FactorSeriesView view{in.ids.size(), in.decisions, in.factors,
                                 in.decision_sessions_ns, mask};
     ATX_TRY(const CompositionFit fit, fit_composition(view, in.ids, spec));
-    const std::string document = fit_json(fit, spec, in, spec_sha256).dump(2) + "\n";
+    Json doc = fit_json(fit, spec, in, spec_sha256);
+    if (walk_forward) {
+      ATX_TRY(const auto rows, fit_walk_forward(view, in.ids, spec, *walk_forward));
+      doc["walk_forward"] = walk_forward_json(*walk_forward, rows);
+    }
+    const std::string document = doc.dump(2) + "\n";
     if (!fs::create_directory(output_dir, ec) || ec) {
       return core::Err(core::ErrorCode::AlreadyExists,
                        "atx-research-composition: output must not exist: " + output_dir.string());
@@ -308,6 +349,8 @@ int research_composition_main(std::span<const std::string_view> args, std::ostre
   }
   fs::path factors, spec, output;
   std::set<std::string_view> seen;
+  std::optional<std::string> window;
+  std::optional<usize> lag, step, min_decisions;
   for (usize i = 2; i < args.size(); i += 2) {
     const std::string_view key = args[i];
     if (i + 1 >= args.size() || !seen.insert(key).second) {
@@ -315,23 +358,47 @@ int research_composition_main(std::span<const std::string_view> args, std::ostre
       return 2;
     }
     const std::string_view value = args[i + 1];
+    const bool count = key == "--lag" || key == "--step" || key == "--min-decisions";
+    if (count && !count_value(value)) {
+      err << "atx-research-composition: " << key << " takes a count (decimal digits): " << value
+          << "\n"
+          << usage();
+      return 2;
+    }
     if (key == "--factors") {
       factors = fs::path(value);
     } else if (key == "--spec") {
       spec = fs::path(value);
     } else if (key == "--output") {
       output = fs::path(value);
+    } else if (key == "--walk-forward") {
+      window = std::string(value);
+    } else if (key == "--lag") {
+      lag = count_value(value);
+    } else if (key == "--step") {
+      step = count_value(value);
+    } else if (key == "--min-decisions") {
+      min_decisions = count_value(value);
     } else {
       err << "atx-research-composition: unknown argument " << key << " " << value << "\n"
           << usage();
       return 2;
     }
   }
-  if (factors.empty() || spec.empty() || output.empty()) {
+  // P9 lane D3W: --lag / --step / --min-decisions only with --walk-forward, which needs the first
+  // two (the values themselves are fit_walk_forward's to refuse).
+  if (factors.empty() || spec.empty() || output.empty() ||
+      (window.has_value() != lag.has_value()) || (window.has_value() != step.has_value()) ||
+      (!window && min_decisions)) {
     err << usage();
     return 2;
   }
-  const auto published = run_fit(factors, spec, output);
+  std::optional<WalkForwardSpec> walk_forward;
+  if (window) {
+    walk_forward = WalkForwardSpec{*window, *lag, *step,
+                                   min_decisions.value_or(walk_forward_min_decisions)};
+  }
+  const auto published = run_fit(factors, spec, output, walk_forward);
   if (!published) {
     err << published.error().to_string() << "\n";
     return 1;
