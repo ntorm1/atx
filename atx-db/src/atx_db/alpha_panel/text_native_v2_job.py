@@ -9,6 +9,7 @@ import json
 import math
 import os
 import shutil
+import subprocess
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -18,6 +19,8 @@ import pyarrow.parquet as pq
 
 from atx_db import sec_http
 from . import text_native_v2 as V
+from . import text_native_v2_acceptance as A
+from . import common as C
 
 SUPPORT_START = '2018-06-30'
 PRIMARY_START = '2020-01-01'
@@ -40,7 +43,7 @@ def atomic_json(path, value):
         json.dump(value, stream, sort_keys=True, separators=(',', ':'), allow_nan=False)
         stream.flush()
         os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    sec_http._retry_sharing(lambda: os.replace(temporary, path))
 
 
 def append_json(path, row):
@@ -56,23 +59,22 @@ class Transport:
     def __init__(self, ledger, max_transfer=MAX_TRANSFER):
         self.ledger, self.max_transfer = ledger, max_transfer
         self.transferred, self.attempts = 0, 0
+        self.first_attempt_at = None
         if ledger.exists():
-            for line in ledger.read_text(encoding='utf-8').splitlines():
-                row = json.loads(line)
-                if row['event'] == 'start':
-                    self.attempts += 1
-                else:
-                    self.transferred += row.get('bytes', 0)
-            # An interrupted streaming attempt has an unknown final byte count.
-            # The start reserves the entire response bound, so resume remains conservative.
-            starts, ends = {}, set()
-            for line in ledger.read_text(encoding='utf-8').splitlines():
-                row = json.loads(line)
-                if row['event'] == 'start':
-                    starts[row['attempt']] = row['maximum']
-                else:
-                    ends.add(row['attempt'])
-            self.transferred += sum(n for attempt, n in starts.items() if attempt not in ends)
+            unfinished = {}
+            with ledger.open(encoding='utf-8') as stream:
+                for line in stream:
+                    row = json.loads(line)
+                    if row['event'] == 'start':
+                        if self.first_attempt_at is None:
+                            self.first_attempt_at = row['fetched_at']
+                        self.attempts += 1
+                        unfinished[row['attempt']] = row['maximum']
+                    else:
+                        self.transferred += row.get('bytes', 0)
+                        unfinished.pop(row['attempt'], None)
+            # Interrupted streaming attempts reserve the entire response bound.
+            self.transferred += sum(unfinished.values())
         self.session = sec_http.sec_session(max_attempts=1)
 
     def get(self, url, maximum):
@@ -83,6 +85,8 @@ class Transport:
         self.attempts += 1
         receipt = {'event': 'start', 'attempt': self.attempts, 'url': url,
                    'maximum': maximum, 'fetched_at': dt.datetime.now(dt.UTC).isoformat()}
+        if self.first_attempt_at is None:
+            self.first_attempt_at = receipt['fetched_at']
         append_json(self.ledger, receipt)
         chunks, size, h = [], 0, hashlib.sha256()
         try:
@@ -207,15 +211,120 @@ def unpack_profile(profile):
     return profile
 
 
-def issuer_unit(output, cik, records, transport, interrupt_after=None):
+def load_fiscal_metadata(output, source, records):
+    path = output / 'fiscal-metadata.json'
+    if path.exists():
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        for filename, pin in saved['source_pins'].items():
+            if digest(Path(filename)) != pin:
+                raise ValueError('FSDS fiscal metadata source pin moved')
+        return saved
+    source_files = sorted(source.glob('*.parquet'))
+    if not source_files:
+        saved = {'source_pins': {}, 'records': {}, 'qualification': 'source_missing_no_inferred_fiscal_facts'}
+        atomic_json(path, saved)
+        return saved
+    con = C.connect(memory='200MB', threads=1, temp_dir=output / 'working' / 'fsds-spill')
+    try:
+        con.register('wanted_accessions', pa.table({'accession': [r['accession'] for r in records]}))
+        cursor = con.execute('''SELECT s.adsh,CAST(s.cik AS BIGINT) AS cik,s.form,
+                CAST(s.period AS VARCHAR) AS period,CAST(s.fy AS INTEGER) AS fy,s.fp,
+                CAST(s.filed AS VARCHAR) AS filed,CAST(s.accepted_utc AS VARCHAR) AS accepted_utc,s.filename
+            FROM read_parquet(?,filename=true) s
+            JOIN wanted_accessions w ON s.adsh=w.accession''', [(source / '*.parquet').as_posix()])
+        columns = [d[0] for d in cursor.description]
+        by_accession = defaultdict(list)
+        for values in cursor.fetchall():
+            row = dict(zip(columns, values))
+            by_accession[row['adsh']].append(row)
+        pins = {filename: digest(Path(filename))
+                for filename in {r['filename'] for rows in by_accession.values() for r in rows}}
+        saved = {'source_pins': pins, 'records': by_accession,
+                 'qualification': 'original_sec_sub_fiscal_facts_require_cik_accession_form_period_filed_clock_consistency'}
+        atomic_json(path, saved)
+        return saved
+    finally:
+        con.close()
+
+
+def cache_profile(output, cik, accession, profile):
+    if profile is None:
+        return None
+    encoded = json.dumps(pack_profile(profile), sort_keys=True, separators=(',', ':')).encode()
+    if len(encoded) > 64 * 1024**2:
+        raise ValueError('single_profile_scratch_bound_exceeded')
+    name = hashlib.sha256(encoded).hexdigest() + '.json.gz'
+    path = output / 'working' / 'profiles' / str(cik) / name
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(gzip.compress(encoded, mtime=0))
+    if sum(p.stat().st_size for p in path.parent.glob('*.json.gz')) > 256 * 1024**2:
+        raise ValueError('issuer_profile_scratch_bound_exceeded')
+    return {'profile_file': path.relative_to(output).as_posix(), 'pin': digest(path)}
+
+
+def cached_profile(output, reference):
+    if reference is None:
+        return None
+    path = output / reference['profile_file']
+    if output.resolve() not in path.resolve().parents or digest(path) != reference['pin']:
+        raise ValueError('profile checkpoint pin mismatch')
+    return unpack_profile(json.loads(gzip.decompress(path.read_bytes())))
+
+
+def cleanup_owned_profile(output, reference):
+    path = (output / reference['profile_file']).resolve()
+    allowed = (output / 'working' / 'profiles').resolve()
+    if not path.exists():
+        return  # A killed cleanup may already have removed this exact owned file.
+    if allowed not in path.parents or digest(path) != reference['pin']:
+        raise ValueError('profile cleanup target/pin mismatch')
+    try:
+        path.unlink()
+    except PermissionError as exc:
+        append_json(output / 'cleanup-refusals.jsonl', {'target': str(path), 'error': str(exc),
+                    'at': dt.datetime.now(dt.UTC).isoformat(), 'policy': 'D3_retained_no_alternate_attempt'})
+        raise
+
+
+def recover_partial_checkpoint(output, state_path, records):
+    """Finish an already-written same-target checkpoint; never refetch a saved partial."""
+    partial = state_path.with_suffix(state_path.suffix + '.partial')
+    if not partial.exists():
+        return
+    candidate = json.loads(partial.read_text(encoding='utf-8'))
+    existing = json.loads(state_path.read_text(encoding='utf-8')) if state_path.exists() else {'rows': []}
+    old, new = existing['rows'], candidate['rows']
+    if len(new) < len(old) or new[:len(old)] != old or len(new) > len(records):
+        raise ValueError('partial checkpoint is not an extension of owned filing prefix')
+    for row, record in zip(new, records):
+        if any(row.get(k) != record.get(k) for k in ('cik', 'accession', 'form', 'filing_date')):
+            raise ValueError('partial checkpoint census identity mismatch')
+    for reference in candidate.get('profile_files', {}).values():
+        cached_profile(output, reference)
+    sec_http._retry_sharing(lambda: os.replace(partial, state_path))
+
+
+def issuer_unit(output, cik, records, transport, interrupt_after=None, fiscal_metadata=None):
     """Atomic per-filing snapshot; atomic complete issuer unit; bodies never persisted."""
     unit = output / 'units' / f'{cik}.json'
     state_path = output / 'working' / f'{cik}.json'
-    if unit.exists():
+    if (output / 'cleanup-refusals.jsonl').exists():
+        raise RuntimeError('D3 cleanup refusal retained; no automatic alternate attempt')
+    if unit.exists() and not state_path.exists():
         return json.loads(unit.read_text(encoding='utf-8'))
+    recover_partial_checkpoint(output, state_path, records)
     state = json.loads(state_path.read_text(encoding='utf-8')) if state_path.exists() else {'rows': [], 'history': []}
+    state.setdefault('profile_files', {})
     completed = {r['accession'] for r in state['rows']}
-    history = [(r, unpack_profile(p)) for r, p in state['history']]
+    history = []
+    for row, stored in state['history']:
+        # Resume the initial pilot checkpoint without changing any completed row.
+        reference = (stored if stored is None or 'profile_file' in stored else
+                     cache_profile(output, cik, row['accession'], unpack_profile(stored)))
+        if reference:
+            state['profile_files'][reference['profile_file']] = reference
+        history.append((row, reference))
     for record in records:
         if record['accession'] in completed:
             continue
@@ -236,6 +345,7 @@ def issuer_unit(output, cik, records, transport, interrupt_after=None):
                 meta['doc_bytes'] = len(raw)
                 profile = V.profile_document(raw, record['form'])
                 del raw
+                meta = V.apply_fsds_fiscal(meta, (fiscal_metadata or {}).get(meta['accession'], []))
                 if meta['fiscal_period'] is None or meta['fiscal_year'] is None:
                     meta['reason'] = meta.get('reason') or 'original_fiscal_period_unproven'
         except Exception as exc:
@@ -244,20 +354,23 @@ def issuer_unit(output, cik, records, transport, interrupt_after=None):
         floor = dt.date.fromisoformat(record['filing_date']) - dt.timedelta(days=551)
         history = [(r, p) for r, p in history if r['filing_date'] >= floor.isoformat()]
         prior = V.select_prior(meta, [r for r, _ in history])
-        prior_profile = next((p for r, p in history if prior and r['accession'] == prior['accession']), None)
+        prior_reference = next((p for r, p in history if prior and r['accession'] == prior['accession']), None)
+        prior_profile = cached_profile(output, prior_reference)
         state['rows'].append(V.feature_row(meta, profile, prior, prior_profile))
-        if profile:
-            retained = sum(sum(p['tf'].values()) for _, p in history if p) + sum(profile['tf'].values())
-            if retained > 500_000:
-                raise ValueError('issuer_profile_word_bound_exceeded')
-        history.append((meta, profile))
-        state['history'] = [(r, pack_profile(p)) for r, p in history]
+        reference = cache_profile(output, cik, meta['accession'], profile)
+        if reference:
+            state['profile_files'][reference['profile_file']] = reference
+        history.append((meta, reference))
+        state['history'] = history
         atomic_json(state_path, state)
+        del profile, prior_profile
         print(json.dumps({'issuer': cik, 'completed_filings': len(state['rows']), 'requests': transport.attempts,
                           'transfer_bytes': transport.transferred}), flush=True)
         if interrupt_after and len(state['rows']) >= interrupt_after:
             raise InterruptedError('synthetic interruption')
     atomic_json(unit, state['rows'])
+    for reference in state['profile_files'].values():
+        cleanup_owned_profile(output, reference)
     # This is this worker's exact scratch file. Refusal propagates; no alternate cleanup.
     resolved = state_path.resolve()
     if output.resolve() not in resolved.parents:
@@ -271,14 +384,39 @@ def census_counts(records):
     return dict(sorted(counts.items()))
 
 
-def write_parts(output, rows):
+def prepare_rebuild(output, cik):
+    """Audit exact unpublished bytes; rebuild the same issuer without changing its census."""
+    if (output / 'manifest.json').exists():
+        raise ValueError('published generation is immutable')
+    marker = output / 'audit' / f'rebuild-{cik}.json'
+    if marker.exists():
+        return
+    copied = {}
+    state_path = output / 'working' / f'{cik}.json'
+    old_state = json.loads(state_path.read_text(encoding='utf-8')) if state_path.exists() else {}
+    for path in [output / 'units' / f'{cik}.json', state_path,
+                 state_path.with_suffix('.json.partial')]:
+        if path.exists():
+            destination = output / 'audit' / (path.parent.name + '-' + path.name)
+            if output.resolve() not in destination.resolve().parents or destination.exists():
+                raise ValueError('rebuild archive target escaped ownership or already exists')
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, destination)
+            copied[destination.relative_to(output).as_posix()] = digest(destination)
+    atomic_json(marker, {'issuer': cik, 'census_unchanged': True, 'preserved_bytes': copied,
+                         'reason': 'same_cohort_primary_link_and_original_fiscal_metadata_repair'})
+    atomic_json(state_path, {'rows': [], 'history': [], 'profile_files': old_state.get('profile_files', {})})
+
+
+def write_parts(output, rows, *, issuer=None):
     groups = defaultdict(list)
     for row in rows:
         public = {k: v for k, v in row.items() if k not in {'index_receipt', 'body_receipt'}}
         groups[V.year_part(row)].append(public)
     files = {}
     for year, part_rows in sorted(groups.items()):
-        path = output / 'parts' / f'year={year}' / 'features.parquet'
+        filename = 'features.parquet' if issuer is None else f'features-{issuer}.parquet'
+        path = output / 'parts' / f'year={year}' / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         # Keep clock fields UTC-aware and dates typed, including all-NULL groups.
         table = pa.Table.from_pylist(part_rows)
@@ -412,11 +550,14 @@ def run(args):
         return
     manifest_path = output / 'manifest.json'
     if manifest_path.exists():
+        if args.rebuild_issuer:
+            raise ValueError('published generation cannot be rebuilt')
+        from .text_native_v2_acceptance import verify_stage
         plan = json.loads((output / 'plan.json').read_text(encoding='utf-8'))
-        rows = []
-        for cik in plan['issuers']:
-            rows.extend(json.loads((output / 'units' / f'{cik}.json').read_text(encoding='utf-8')))
-        acceptance(output, rows, plan)
+        checks = verify_stage(output, plan, digest)
+        if args.evidence_output:
+            atomic_json(args.evidence_output, {'checks': checks, 'manifest_pin': digest(manifest_path),
+                'manifest': json.loads(manifest_path.read_text(encoding='utf-8'))})
         return
     output.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
@@ -444,36 +585,67 @@ def run(args):
     by_issuer = defaultdict(list)
     for record in plan['records']:
         by_issuer[record['cik']].append(record)
-    rows = []
+    fiscal = load_fiscal_metadata(output, args.fsds_sub_root.resolve(), plan['records'])
+    for cik in args.rebuild_issuer:
+        if cik not in plan['issuers']:
+            raise ValueError('rebuild issuer outside pinned pilot cohort')
+        prepare_rebuild(output, cik)
+    files, row_count, landed, null_clocks = {}, 0, 0, 0
+    gate_counts = {key: Counter() for key in ('eligible', 'finite', 'unknown')}
     for cik in plan['issuers']:
-        rows.extend(issuer_unit(output, cik, by_issuer[cik], transport))
-    files = write_parts(output, rows)
+        rows = issuer_unit(output, cik, by_issuer[cik], transport, fiscal_metadata=fiscal['records'])
+        files.update(write_parts(output, rows, issuer=cik))
+        row_count += len(rows)
+        landed += sum(bool(r.get('body_receipt')) for r in rows)
+        null_clocks += sum(not r.get('available_at') for r in rows)
+        unit_counts = A.issuer_counts(rows)
+        for key in gate_counts:
+            gate_counts[key].update(unit_counts[key])
+        del rows
     for path in [plan_path, output / 'requests.jsonl', *(output / 'units' / f'{cik}.json' for cik in plan['issuers'])]:
         files[path.relative_to(output).as_posix()] = digest(path)
+    for path in [output / 'fiscal-metadata.json', *(output / 'audit').glob('*.json'), *(output / 'audit').glob('*.partial')]:
+        files[path.relative_to(output).as_posix()] = digest(path)
     wall = time.monotonic() - started
-    landed = sum(bool(r.get('body_receipt')) for r in rows)
-    measured = {'run_seconds': wall, 'rows': len(rows), 'landed_bodies': landed,
+    elapsed = ((dt.datetime.now(dt.UTC) - dt.datetime.fromisoformat(transport.first_attempt_at)).total_seconds()
+               if transport.first_attempt_at else wall)
+    measured = {'run_seconds': wall, 'rows': row_count, 'landed_bodies': landed,
+                'total_elapsed_from_first_attempt_seconds': elapsed,
+                'timing_qualification': 'wall_time_includes_prior_attempts_engineering_interruptions_and_queue_waits',
                 'all_attempts': transport.attempts, 'all_attempt_bytes': transport.transferred,
-                'filings_per_second': landed / wall, 'bytes_per_filing': transport.transferred / landed if landed else None,
+                'filings_per_second': landed / elapsed, 'bytes_per_filing': transport.transferred / landed if landed else None,
                 'requests_per_filing': transport.attempts / landed if landed else None}
     disk = sum(p.stat().st_size for p in output.rglob('*') if p.is_file())
     measured['persistent_bytes'] = disk
-    measured['projected_full_persistent_bytes'] = disk / len(rows) * plan['census_originals'] if rows else None
-    measured['projected_full_seconds'] = wall / landed * plan['census_originals'] if landed else None
+    measured['raw_census_persistent_bytes'] = sum(p.stat().st_size for p in raw_root.rglob('*') if p.is_file())
+    measured['projected_full_persistent_bytes'] = disk / row_count * plan['census_originals'] if row_count else None
+    if measured['projected_full_persistent_bytes'] is not None:
+        measured['projected_full_persistent_bytes'] += measured['raw_census_persistent_bytes'] + 256 * 1024**2
+    measured['projected_full_seconds'] = elapsed / landed * plan['census_originals'] if landed else None
     measured['projected_full_transfer_bytes'] = transport.transferred / landed * plan['census_originals'] if landed else None
     if measured['projected_full_persistent_bytes'] is None or measured['projected_full_persistent_bytes'] >= 16_000_000_000:
         raise ValueError('whole-cohort persistent disk projection exceeds 16 GB')
+    comparator_gate = {}
+    for year in plan['census_by_filing_year']:
+        n = gate_counts['eligible'][year]
+        share = gate_counts['finite'][year] / n if n else None
+        comparator_gate[year] = {'eligible': n, 'finite': gate_counts['finite'][year],
+                                'unknown': gate_counts['unknown'][year], 'share': share,
+                                'status': 'PASS' if share is not None and share >= 0.9 and not gate_counts['unknown'][year] else 'FAIL'}
     manifest = {'schema': V.SCHEMA, 'status': 'complete', 'stage': 'text_native_v2',
                 'rule': V.RULE, 'clock_rule': V.CLOCK_RULE, 'staleness_days': 400, 'scope': args.mode,
                 'qualification': 'completed_materialization_only; pilot_not_full_cohort; acceptance_gates_separate',
                 'primary_start': PRIMARY_START, 'support_start': SUPPORT_START,
                 'source_horizon': plan['observed_source_horizon'], 'sources': plan['sources'],
-                'excluded_null_available_at': sum(not r.get('available_at') for r in rows),
+                'excluded_null_available_at': null_clocks,
+                'comparator_gate': {'minimum_share': 0.9, 'per_acceptance_year': comparator_gate},
                 'files': files, 'measurements': measured,
-                'code': {str(Path(m.__file__).name): digest(Path(m.__file__)) for m in (V, V.TF, V.FT, sec_http)},
+                'code': {str(Path(m.__file__).name): digest(Path(m.__file__)) for m in (V, V.TF, V.FT, sec_http, A, C)},
                 'producer_code': digest(Path(__file__))}
+    manifest['code']['git_head'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
     atomic_json(manifest_path, manifest)
-    checks = acceptance(output, rows, plan)
+    from .text_native_v2_acceptance import verify_stage
+    checks = verify_stage(output, plan, digest)
     # Immutable manifest contains gate qualification at creation. No later mutation.
     atomic_json(output / 'acceptance.json', checks)
     print(json.dumps({'manifest_pin': digest(manifest_path), 'measurements': measured}), flush=True)
@@ -490,6 +662,9 @@ def main():
     parser.add_argument('--issuers', type=int, default=3)
     parser.add_argument('--inspect', action='store_true', help='read-only evidence of incomplete pilot; no network')
     parser.add_argument('--evidence-output', type=Path)
+    parser.add_argument('--fsds-sub-root', type=Path, default=Path('atx-db/data/staging/fsds-v2/sub'))
+    parser.add_argument('--rebuild-issuer', action='append', type=int, default=[],
+                        help='preserve unpublished checkpoint bytes and rebuild this unchanged selected issuer')
     args = parser.parse_args()
     if args.mode == 'pilot' and (not 1 <= args.max_filings <= 2000 or not 0 < args.max_transfer <= MAX_TRANSFER or not 1 <= args.issuers <= 64):
         parser.error('pilot must be <=2000 filings and <=6GB; 1..64 whole issuers')

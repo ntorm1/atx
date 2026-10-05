@@ -98,3 +98,60 @@ Measured actual coverage: **unmeasured/FAIL**. Offline conditional text fixture:
 64max,40MiB source documents,16MiB submissions units,500000retained profile
 words per issuer; exceedances fail explicitly. Production runtime must run via
 the required memory guard. Scratch database files are isolated and never served.
+
+## B1 v2: full-primary 10-K / 10-Q pilot
+
+`text_native_v2` and `text_native_v2_job` provide a separate B1 path. The
+legacy native implementation above retains its existing contract. V2 uses the
+original quarterly SEC master-index census, including the current partial
+quarter, for 2020 onward plus necessary prior-year support from 2018-06-30.
+The source horizon and fetch clocks are measured and recorded separately;
+master-index dates are filing dates, not authenticated UTC acceptance instants.
+
+The deterministic pilot chooses complete issuers by SHA-256 ranking of
+`b1-v2-whole-issuer:CIK`, requires both families and every observed primary
+year, and includes all selected issuers' support filings within the unchanged
+2,000-filing / 6 GB all-attempt limits. This long-history sample is biased
+toward continuing filers and does not qualify full-cohort coverage. The full
+cohort itself has no issuer/fundamental/market selection.
+
+Each original filing's SEC detail page proves the accession, issuer,
+Accepted clock and period end; New York wall times are converted to UTC only
+when unambiguous. Original DEI `DocumentFiscalPeriodFocus` and
+`DocumentFiscalYearFocus` supply fiscal identity. Missing facts remain NULL
+with reasons. The unique prior must be an original of the same issuer/form
+family/fiscal period, one fiscal year earlier, accepted strictly earlier
+within 180–550 days. Filing/period gaps are also bounded and a changed year
+end is not inferred to be a comparable annual period. Amendments never match.
+
+`doc_sim_cosine` uses exact token-frequency counts over all visible primary
+document text, including all tables, with the existing lowercase tokenizer.
+Scripts/styles/inline-XBRL headers are excluded. Quarterly sections are Part I
+Item 2 MD&A and Part II Item 1A risk; a missing risk item stays NULL. Annual
+sections retain the existing extractor. Existing section length, readability,
+cosine, Jaccard, sentence-edit proxy and word-change columns accompany the
+full-document value; the edit proxy is not exact word edit distance.
+
+Bodies are discarded after parsing; per-filing URL/bytes/SHA-256/fetch-time
+receipts remain. Exact profiles are temporary issuer scratch (<=64 MiB
+serialized profile, <=256 MiB compressed issuer scratch); only the current
+and chosen prior are loaded together. An atomic checkpoint resumes completed
+filings, and completed issuer units avoid refetching. Parts are written under
+`parts/year=YYYY/features-CIK.parquet`; NULL clocks route to `year=null` and
+are counted/excluded from use. Acceptance reads one issuer/part at a time.
+
+The immutable pilot generation is
+`data/alpha_panel/v1/text_native_v2/pilot-20261005/`. A C5 `status: complete`
+describes only its completed materialization; explicit `scope: pilot`,
+comparator-gate results and qualification retain coverage failures. Schema
+`atx.alpha-panel.text-native/v2`, rule `text-native-full-primary-tf-v2`, clock
+`sec-original-index-accepted-utc-v1`, staleness 400 days, single-string rule
+and per-file byte/SHA-256 pins satisfy the C5 shape. A future full generation
+must have a different absent root and requires owner authorization.
+
+Every real job/read uses the host's heavy memory guard (<=1 GiB, shared slot,
+25 GiB disk floor); the committed SEC client and existing host limiter remain
+at <=5 requests/s. Server refusals stop the worker. Windows checkpoint sharing
+errors use only the existing bounded same-target write retry; rejected cleanup
+is retained without an alternate attempt. Measurements and exact acceptance
+output are in [b1-pilot.md](../p9-al-data/b1-pilot.md).

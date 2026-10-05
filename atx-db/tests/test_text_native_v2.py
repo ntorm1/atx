@@ -6,6 +6,7 @@ import pytest
 
 from atx_db.alpha_panel import text_native_v2 as V
 from atx_db.alpha_panel import text_native_v2_job as J
+from atx_db.alpha_panel import text_native_v2_acceptance as A
 
 
 def record(accession='now', year=2021, **changes):
@@ -74,6 +75,12 @@ def test_index_identity_clock_primary_and_report():
     assert meta['report_date'] == '2021-03-31'
     assert meta['primary_url'].endswith('/report.htm')
     assert V.index_metadata(raw, {**row, 'cik': 2}, 'https://www.sec.gov')['available_at'] is None
+    viewer = raw.replace(b'/Archives/edgar/data/1/000000000121000001/report.htm',
+                         b'/ixviewer/doc/action?doc=/Archives/edgar/data/1/000000000121000001/report.htm')
+    assert V.index_metadata(viewer, row, 'https://www.sec.gov/Archives/edgar/data/1/a-index.html')['primary_url'] == meta['primary_url']
+    secondary = b'<tr><td>13</td><td>10-Q PDF</td><td><a href="/Archives/edgar/data/1/000000000121000001/report.pdf">report.pdf</a></td><td>10-Q</td><td>123</td></tr>'
+    with_pdf = raw.replace(b'</table>', secondary + b'</table>')
+    assert V.index_metadata(with_pdf, row, 'https://www.sec.gov/Archives/edgar/data/1/a-index.html')['primary_url'] == meta['primary_url']
 
 
 def test_canonical_index_url_includes_accession_directory():
@@ -123,3 +130,109 @@ def test_year_parts_null_clock_kept_and_c5_check(tmp_path):
     checks = J.acceptance(tmp_path, rows, plan)
     assert checks['i_manifest_and_year_parts']['status'] == 'PASS'
     assert 'parts/year=null/features.parquet' in files
+
+
+def test_bounded_issuer_parts_replay_and_mutation_detection(tmp_path):
+    raw = b'<html><body>alpha beta</body></html>'
+    profile = V.profile_document(raw, '10-Q')
+    previous = record('prior', 2020)
+    current = record()
+    rows = [V.feature_row(previous, profile, None, None),
+            V.feature_row(current, profile, previous, profile)]
+    for row in rows:
+        row['body_receipt'] = {'bytes': 12}
+    files = J.write_parts(tmp_path, rows, issuer=1)
+    J.atomic_json(tmp_path / 'units' / '1.json', rows)
+    files['units/1.json'] = J.digest(tmp_path / 'units' / '1.json')
+    plan = {'scope': 'pilot', 'issuers': [1], 'records': rows, 'census_originals': 100,
+            'census_by_filing_year': {'2020': 50, '2021': 50}}
+    J.atomic_json(tmp_path / 'manifest.json', {'status': 'complete', 'rule': V.RULE,
+        'clock_rule': V.CLOCK_RULE, 'schema': V.SCHEMA, 'staleness_days': 400, 'scope': 'pilot', 'files': files})
+    checks = A.verify_stage(tmp_path, plan, J.digest, emit=False)
+    assert checks['i_manifest_and_year_parts']['status'] == 'PASS'
+    assert checks['iii_comparator_share']['2021']['share'] == 1
+    assert checks['iv_originals_strict_prior_clock']['status'] == 'PASS'
+    assert checks['ii_landed_over_census']['2021']['status'] == 'FAIL'
+    (tmp_path / 'units' / '1.json').write_text(json.dumps(rows) + '\n', encoding='utf-8')
+    assert A.verify_stage(tmp_path, plan, J.digest, emit=False)['i_manifest_and_year_parts']['status'] == 'FAIL'
+
+
+def test_unknown_earlier_period_does_not_remove_gate_denominator():
+    prior = record('prior', 2020, fiscal_period=None, fiscal_year=None)
+    current = record(body_receipt={'bytes': 12}, doc_sim_cosine=None)
+    stats = A.issuer_counts([prior, current])
+    assert stats['eligible']['2021'] == 1
+    assert stats['unknown']['2021'] == 1
+    assert stats['finite']['2021'] == 0
+
+
+def test_profile_scratch_pins_and_cleanup(tmp_path):
+    profile = V.profile_document(b'<html><body>alpha beta</body></html>', '10-Q')
+    reference = J.cache_profile(tmp_path, 1, 'accession', profile)
+    assert J.cached_profile(tmp_path, reference)['tf'] == Counter(alpha=1, beta=1)
+    path = tmp_path / reference['profile_file']
+    saved = path.read_bytes()
+    path.write_bytes(saved + b'mutation')
+    with pytest.raises(ValueError, match='pin mismatch'):
+        J.cached_profile(tmp_path, reference)
+    with pytest.raises(ValueError, match='pin mismatch'):
+        J.cleanup_owned_profile(tmp_path, reference)
+    path.write_bytes(saved)
+    J.cleanup_owned_profile(tmp_path, reference)
+    assert not path.exists()
+
+
+def test_transport_resume_reserves_unclosed_attempt(tmp_path, monkeypatch):
+    monkeypatch.setattr(J.sec_http, 'sec_session', lambda **kwargs: object())
+    ledger = tmp_path / 'receipts.jsonl'
+    J.append_json(ledger, {'event': 'start', 'attempt': 1, 'maximum': 100, 'fetched_at': '2020-01-01T00:00:00+00:00'})
+    J.append_json(ledger, {'event': 'end', 'attempt': 1, 'bytes': 40})
+    J.append_json(ledger, {'event': 'start', 'attempt': 2, 'maximum': 100, 'fetched_at': '2020-01-01T00:00:01+00:00'})
+    transport = J.Transport(ledger, 500)
+    assert transport.attempts == 2 and transport.transferred == 140
+    with pytest.raises(RuntimeError, match='transfer budget'):
+        transport.get('https://www.sec.gov/example', 400)
+
+
+def test_atomic_checkpoint_same_target_sharing_retry(tmp_path, monkeypatch):
+    target = tmp_path / 'owned.json'
+    original_replace = J.os.replace
+    calls = []
+    def replace(source, destination):
+        calls.append((source, destination))
+        if len(calls) < 3:
+            raise PermissionError('synthetic transient sharing refusal')
+        return original_replace(source, destination)
+    monkeypatch.setattr(J.os, 'replace', replace)
+    monkeypatch.setattr(J.sec_http.time, 'sleep', lambda seconds: None)
+    J.atomic_json(target, {'checkpoint': 1})
+    assert json.loads(target.read_text()) == {'checkpoint': 1}
+    assert len(calls) == 3 and all(destination == target for _, destination in calls)
+
+
+def test_fsds_fiscal_facts_require_original_identity_and_clock():
+    current = record(fiscal_period=None, fiscal_year=None, reason='original_fiscal_period_unproven')
+    row = {'adsh': 'now', 'cik': 1, 'form': '10-Q', 'period': '20210331', 'filed': '20210501',
+           'fp': 'Q1', 'fy': 2021, 'accepted_utc': '2021-05-01 20:00:00', 'filename': 'pinned-source.parquet'}
+    result = V.apply_fsds_fiscal(current, [row])
+    assert result['fiscal_period'] == 'Q1' and result['fiscal_year'] == 2021 and result['reason'] is None
+    assert result['fiscal_metadata_source_files'] == ['pinned-source.parquet']
+    for changes in ({'cik': 2}, {'adsh': 'other'}, {'accepted_utc': '2021-05-01 16:00:00'},
+                    {'period': '20210630'}, {'form': '10-Q/A'}, {'filed': '20210502'}):
+        assert V.apply_fsds_fiscal(current, [{**row, **changes}])['fiscal_period'] is None
+    assert V.apply_fsds_fiscal(current, [row, {**row, 'fp': 'Q2'}])['fiscal_period'] is None
+    assert V.apply_fsds_fiscal({**current, 'available_at': None}, [row])['fiscal_period'] is None
+
+
+def test_partial_checkpoint_recovery_preserves_prefix(tmp_path):
+    output = tmp_path
+    records = [record('one', 2020), record('two', 2021)]
+    path = output / 'working' / '1.json'
+    J.atomic_json(path, {'rows': records[:1], 'history': [], 'profile_files': {}})
+    partial = path.with_suffix('.json.partial')
+    partial.write_text(json.dumps({'rows': records, 'history': [], 'profile_files': {}}))
+    J.recover_partial_checkpoint(output, path, records)
+    assert json.loads(path.read_text())['rows'] == records and not partial.exists()
+    partial.write_text(json.dumps({'rows': [records[1]], 'history': [], 'profile_files': {}}))
+    with pytest.raises(ValueError, match='extension'):
+        J.recover_partial_checkpoint(output, path, records)

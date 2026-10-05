@@ -6,7 +6,7 @@ import html
 import re
 from collections import Counter
 from html.parser import HTMLParser
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
 from . import filing_text as FT
@@ -100,6 +100,44 @@ def fiscal_metadata(raw):
     return result
 
 
+def apply_fsds_fiscal(record, candidates):
+    """Same-accession SEC sub facts only, with original index clock/identity checks."""
+    out = dict(record)
+    if out.get('fiscal_period') is not None and out.get('fiscal_year') is not None:
+        out['fiscal_metadata_basis'] = 'original_primary_dei'
+        return out
+    if not out.get('available_at') or not out.get('report_date'):
+        return out
+    verified = []
+    for row in candidates:
+        try:
+            period = dt.datetime.strptime(str(row['period']).replace('-', '')[:8], '%Y%m%d').date().isoformat()
+            filed = dt.datetime.strptime(str(row['filed']).replace('-', '')[:8], '%Y%m%d').date().isoformat()
+            clock = dt.datetime.fromisoformat(row['accepted_utc'])
+            clock = clock.replace(tzinfo=dt.UTC) if clock.tzinfo is None else clock.astimezone(dt.UTC)
+            consistent = (int(row['cik']) == out['cik'] and row['adsh'] == out['accession'] and
+                          row['form'] == out['form'] and period == out['report_date'] and
+                          filed == out['filing_date'] and clock == dt.datetime.fromisoformat(out['available_at']) and
+                          row['fp'] in {'FY', 'Q1', 'Q2', 'Q3', 'Q4'} and int(row['fy']) > 1900)
+        except (ValueError, TypeError, KeyError):
+            consistent = False
+        if consistent:
+            verified.append(row)
+    values = {(r['fp'], int(r['fy'])) for r in verified}
+    if len(values) != 1:
+        return out
+    fp, fy = values.pop()
+    if ((out.get('fiscal_period') is not None and out['fiscal_period'] != fp) or
+            (out.get('fiscal_year') is not None and out['fiscal_year'] != fy)):
+        out['reason'] = 'original_dei_fsds_fiscal_identity_conflict'
+        return out
+    out.update(fiscal_period=fp, fiscal_year=fy, fiscal_metadata_basis='sec_fsds_sub_same_accession_clock_consistent',
+               fiscal_metadata_source_files=sorted({r['filename'] for r in verified}))
+    if out.get('reason') == 'original_fiscal_period_unproven':
+        out['reason'] = None
+    return out
+
+
 def accepted_utc(value):
     """Authenticated SEC index wall time; reject nonexistent or ambiguous ET instants."""
     try:
@@ -148,12 +186,16 @@ def index_metadata(raw, record, url):
     report = re.search(r'Period of Report\s*\n?\s*(\d{4}-\d{2}-\d{2})', text)
     parser = IndexPage()
     parser.feed(decoded)
-    links = []
-    for cells, hrefs in parser.rows:
-        if len(cells) >= 4 and cells[3] == record['form']:
-            links.extend(hrefs)
-    urls = {urljoin(url, link.replace('/ix?doc=', '')) for link in links
-            if '/Archives/edgar/data/' in link and not link.lower().endswith('.xml')}
+    original_rows = [(int(cells[0]), hrefs) for cells, hrefs in parser.rows
+                     if len(cells) >= 4 and cells[0].isdigit() and cells[3] == record['form']]
+    first_sequence = min((sequence for sequence, _ in original_rows), default=None)
+    links = [link for sequence, hrefs in original_rows if sequence == first_sequence for link in hrefs]
+    urls = set()
+    for link in links:
+        parsed = urlsplit(link)
+        original = parse_qs(parsed.query).get('doc', [link])[0]
+        if '/Archives/edgar/data/' in original and original.lower().endswith(('.htm', '.html', '.txt', '.xhtml')):
+            urls.add(urljoin(url, original))
     clock = accepted_utc(acceptance.group(1)) if acceptance else None
     expected = '/Archives/edgar/data/' + str(record['cik']) + '/' + accession.replace('-', '') + '/'
     primary = next(iter(urls)) if len(urls) == 1 else None
