@@ -11,14 +11,19 @@ are those of before.
              ref section only from the template's own pinned block, its resolved side judged as the cell's). Kind
              rule: every named rule validated and its flags derived (wave_kinds.rule_flags). Kind leverage: the value
              inside the NAV exe's fixed-v1 aim_leverage range (refused when the table lists none) and at most 2.0.
-             Kind walk-forward: refused (schema only, lane D3)
+             Kind walk-forward (P9 lane D3): its fitter flags derived (owned by the kind), the parent fitted under
+             --engine-fit without --theme-tsmom / --theme-resid / --era. Ruling C3-3: a NAV row's legacy spelling
+             (x-flag-aliases) is owned like its x-flag; ruling E2-17: inputs.* only by the kinds and keys of
+             wave_kinds.KIND_INPUTS (inputs_refusal)
   register   kind field: the fields builder on the parent's role (prepare_research_fields.py --registry R --fields
              <the wave's fields + the rows> --reuse <the wave's fields dir>) into field.output under the bounded
              runner; kind role: the role builder (prepare_recent_research.py ... --out role.output) then the fields
              builder on the new role (the wave's field names) into role.fields_output
   spec       the rule cell's constants: rule -> the derived flags; leverage -> nav.leverage and the renamed NAV
              output (a NAV-only template next to the parent spec when the manifest has no rule_cell); horizon -> its
-             flags and every output renamed -h<days>; role -> inputs.role and the fields dir of the build
+             flags and every output renamed -h<days>; role -> inputs.role and the fields dir of the build;
+             walk-forward -> its fitter flags and the fit, w and NAV outputs renamed -wf<lag>s<step> (the template
+             next to the parent spec)
 """
 from __future__ import annotations
 
@@ -81,6 +86,11 @@ def preflight_kind(w: Wave, spec: dict) -> tuple[dict, list[str]]:
         flags, more = WK.rule_flags(m["rules"], tables)
         problems += more
         out["flags"] = flags
+    elif k == "walk-forward":                       # P9 lane D3 (K-P9-8): the kind's own fitter flags, owned by it
+        flags = WK.walk_forward_flags(m["walk_forward"])
+        problems += WK.walk_forward_parent_problems(spec)
+        out["walk_forward"] = dict(m["walk_forward"])
+        out["flags"] = flags
     elif k == "leverage":                           # ruling E2-10: range-checked against the table, at most 2.0
         bounds, value = WK.leverage_bounds(tables), float(m["leverage"]["value"])
         if bounds is None:
@@ -112,6 +122,8 @@ def kind_constants(w: Wave, parent: dict, derived: dict) -> tuple[dict, dict]:
         return WK.leverage_set(parent, m["leverage"]["value"]), {}
     if k == "horizon":
         return WK.horizon_set(parent, m["horizon"]["days"]), m["horizon"]["flags"]
+    if k == "walk-forward":                         # P9 lane D3: the refit's outputs renamed, its fitter flags
+        return WK.walk_forward_set(parent, m["walk_forward"]), WK.walk_forward_flags(m["walk_forward"])
     return {}, {}
 
 
@@ -198,11 +210,14 @@ def rule_flag_guard(w: Wave, parent: dict, tables: dict, derived: dict) -> list[
     if unmapped:
         problems.append(f"the IC exe's rule table lists {unmapped}, which wave_kinds.COMPOSITION_FLAGS does not map: "
                         "their fitter flags cannot be guarded (ruling E2-8): add their rows (e.g. MR-4) first")
+    problems += WK.alias_problems(tables)           # ruling C3-3: an alias the guard cannot read stops the wave
     maps, sets = raw_routes(w)
     owned = WK.owned_flags(tables, derived)
+    exempt = alias_exempt(w, tables)                # ruling C3-3: the named row may change its own legacy spelling
+    owned["nav"] = owned.get("nav", set()) - exempt
     reported = set()
     for where, ops in maps.items():
-        raw = WK.raw_rule_flags(ops, derived, tables)
+        raw = WK.raw_rule_flags(ops, derived, tables, frozenset(exempt))
         if raw:
             problems.append(f"{where} sets {raw}, which the exes' rules own (review F-8, ruling E2-8: name the rule in "
                             "rules, never write its flags; its params are checked against its params_schema)")
@@ -244,6 +259,8 @@ def rule_flag_guard(w: Wave, parent: dict, tables: dict, derived: dict) -> list[
                                                             f"guard (ruling E2-8): {exc}"]
     problems += match_flag_refusal(match_hits)
     problems += leverage_refusal(w, parent, cell, sets_k, sets, maps)
+    problems += inputs_refusal(w, parent, cell, sets, template)      # ruling E2-17
+    problems += alias_beside_rule(w, cell, tables, derived)          # ruling C3-3: one of the two, never both
     grouped: dict = {}
     for s, label, opt, got, want, toks, base_toks in changes:
         if got == want or (s, opt) in reported:
@@ -294,6 +311,96 @@ def leverage_refusal(w: Wave, parent: dict, cell: dict, sets_k: dict, sets: dict
         out.append(f"{', '.join(via)}: the cell's ref.leverage would be {ref['leverage']!r} where {where}; the "
                    f"reference side is judged as the cell's (ruling E2-15 (a)) and its leverage {rule})")
     return out
+
+
+def named_rules(w: Wave) -> set:
+    """The rule ids a kind rule wave names in ``rules`` (none for every other kind)."""
+    if kind(w) != "rule":
+        return set()
+    return {r["name"] for r in w.manifest.get("rules") or [] if isinstance(r, dict) and isinstance(r.get("name"), str)}
+
+
+def alias_exempt(w: Wave, tables: dict) -> set:
+    """Ruling C3-3: the NAV aliases (x-flag-aliases) whose row the wave names in rules. Every other alias is an owned
+    flag of the guard: inherited unchanged from the lineage parent, never added, removed or changed by a raw route."""
+    named = named_rules(w)
+    return {alias for alias, rid in WK.flag_aliases(tables).items() if rid in named}
+
+
+def alias_beside_rule(w: Wave, cell: dict, tables: dict, derived: dict) -> list[str]:
+    """Ruling C3-3 (the row's description: "one of the two, never both"): a wave naming a row whose x-flag it derives
+    may not leave that row's legacy spelling on the cell's NAV flag list (the NAV exe would refuse the pair at run;
+    here it stops at preflight, naming both)."""
+    out = []
+    nav_flags = flag_lists(cell, "nav").get("nav.flags", []) if isinstance(cell.get("nav"), dict) else []
+    named, rows = named_rules(w), {}
+    for row in (tables.get("nav") or {}).get("rules") or []:
+        if isinstance(row, dict) and isinstance(row.get("id"), str):
+            rows[row["id"]] = row
+    for alias, rid in sorted(WK.flag_aliases(tables).items()):
+        tokens = str((rows.get(rid) or {}).get("x-flag") or "").split()
+        if rid not in named or not tokens or tokens[0] not in (derived or {}).get("nav", {}):
+            continue
+        if occurrences(nav_flags, alias):
+            out.append(f"rules names {rid}, which derives nav {tokens[0]}, but the cell's nav.flags still carry its "
+                       f"legacy spelling {alias} (ruling C3-3: one of the two, never both; drop {alias} in this wave)")
+    return out
+
+
+def inputs_routes(sets: dict, template: dict | None) -> dict:
+    """{inputs key ("*" for the whole section): [route]} of every raw route that sets, replaces or unsets an inputs.*
+    key: a set / unset key ``inputs`` or ``inputs.<k>[...]`` (rule_cell.constants.set, the template's change.set /
+    change.unset) and the template's change.inputs.<k>."""
+    out: dict = {}
+    for r, ks in sets.items():
+        for key in ks:
+            if key == "inputs":
+                out.setdefault("*", []).append(f"{r} inputs")
+            elif key.startswith("inputs."):
+                out.setdefault(key.split(".")[1], []).append(f"{r} {key}")
+    for key in (((template or {}).get("change") or {}).get("inputs") or {}):
+        out.setdefault(key, []).append(f"rule_cell.template change.inputs.{key}")
+    return out
+
+
+def inputs_changed(parent: dict, cell: dict) -> list[str]:
+    """The inputs keys whose resolved value in the cell is not the one every cell of this parent gets: the parent's
+    (its identity inputs dropped) for an ordinary key; for a derived key (research_spec.DERIVED: the paired reference
+    and pool) the parent's own output (research_spec.parent_references), compared by path and dir."""
+    p, c = parent.get("inputs") or {}, cell.get("inputs") or {}
+    skip = set(research_spec.IDENTITY_INPUTS) | set(research_spec.DERIVED)
+    out = {k for k in (set(p) | set(c)) - skip if p.get(k) != c.get(k)}
+    try:
+        refs = research_spec.parent_references(parent, "marginal" in cell, True)
+    except research_spec.TemplateError:
+        refs = {}
+    for k in set(research_spec.DERIVED) & set(c):
+        want, got = refs.get(k), c.get(k)
+        if not (isinstance(want, dict) and isinstance(got, dict) and
+                all(got.get(x) == want.get(x) for x in ("path", "dir"))):
+            out.add(k)
+    return sorted(out)
+
+
+def inputs_refusal(w: Wave, parent: dict, cell: dict, sets: dict, template: dict | None) -> list[str]:
+    """Ruling E2-17 (E2 re-review 4, O2): in a v2 wave inputs.* may be set or changed only by the kinds whose schema
+    defines an input change, and only the keys that kind names (WK.KIND_INPUTS: a role wave's inputs.role). Any other
+    kind, or another key, that sets or changes an inputs.* key by any route (rule_cell.constants.set, the template's
+    change.set / change.unset / change.inputs, a whole inputs section) is refused, naming key and route; a resolved
+    difference no raw route names is refused as "the resolved cell". Setting a key to its parent's value is still a
+    route that sets it: refused."""
+    k = kind(w)
+    allowed = set(WK.KIND_INPUTS.get(k, ()))
+    routes = inputs_routes(sets, template)
+    keys = sorted((set(routes) | set(inputs_changed(parent, cell))) - allowed)
+    if not keys:
+        return []
+    what = "; ".join(f"inputs.{key}" + (f" by {', '.join(routes[key])}" if key in routes else
+                                        " by the resolved cell (no raw route names it)") for key in keys)
+    kinds = ", ".join(f"{kk} ({', '.join('inputs.' + x for x in ks) or 'no key'})" for kk, ks in WK.KIND_INPUTS.items())
+    return [f"{what}: kind {k} may not set or change an inputs.* key (ruling E2-17: inputs.* changes only in the kinds "
+            f"whose schema defines one, and only the keys they name: {kinds}; a rule cell that also swaps its data is two "
+            "changes in one registered trial)"]
 
 
 def ref_side(cell: dict) -> dict | None:
@@ -415,6 +522,11 @@ def preflight_kind_plan(w: Wave) -> list[str]:
     if k in ("rule", "leverage"):
         lines.append(f"#   then: {'rules ' + str(m['rules']) if k == 'rule' else 'leverage ' + str(m['leverage'])} "
                      "validated against those tables (params_schema; flags derived)")
+    if k == "walk-forward":
+        wf = m["walk_forward"]
+        lines.append(f"#   then: walk_forward {wf}: the parent's fit refitted per block (fit flags "
+                     f"{WK.walk_forward_flags(wf)['fit']}; the parent must fit under {WK.WALK_FORWARD_PARENT_FIT}); "
+                     f"outputs renamed -{WK.walk_forward_token(wf)}; weights schema atx.dsl-composition-weights/v3")
     lines.append("#   then: ruling E2-8: every IC rule mapped in COMPOSITION_FLAGS; no rule's flag in the cell's "
                  "resolved flag lists but through rules (constants / template flags and sets, spellings, "
                  "abbreviations)")
@@ -579,6 +691,9 @@ def base_rule_cell(w: Wave) -> tuple[dict, dict | None, str]:
     """(rule_cell, its template document, the template path) as the manifest gives them; a leverage wave without a
     rule_cell gets the NAV-only template (wave_kinds.leverage_template; never written, only the cell is)."""
     m = w.manifest
+    if m.get("rule_cell") is None and kind(w) == "walk-forward":     # P9 lane D3: never a rule_cell
+        path, doc = WK.walk_forward_template(m["parent"]["spec"], m["wave"], m["walk_forward"])
+        return {"template": path, "name": doc["name"]}, doc, path
     if m.get("rule_cell") is None:
         path, doc = WK.leverage_template(m["parent"]["spec"], m["wave"], m["leverage"]["value"],
                                          m["leverage"].get("name"))

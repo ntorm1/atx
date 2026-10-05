@@ -2,7 +2,7 @@
   "schema": "atx.research-wave/v2",
   "wave": "k-walk-forward",
   "kind": "walk-forward",
-  "description": "P9 kinds fixture (contract K-P9-9, gate G-P2) on the tiny-world wave layout (scripts/tests/fixtures/tiny_world.py, seed 7: parent tiny.json, fields/, trials.jsonl): kind walk-forward (walk-forward refit): SCHEMA ONLY until lane D3 wires the fold driver (K-P9-8 weights v2: each row fitted on decisions <= d-2, expanding, every 21 decisions).",
+  "description": "P9 kinds fixture (contract K-P9-9, gate G-P2) on the tiny-world wave layout (scripts/tests/fixtures/tiny_world.py, seed 7: parent tiny.json, fields/, trials.jsonl): kind walk-forward (walk-forward refit, P9 lane D3, K-P9-8 = atx.dsl-composition-weights/v3): the parent's fit refitted per block of 21 decisions on the expanding window of decisions <= d-2; the parent must fit under --engine-fit (ruling ALCOMB-7).",
   "parent": {
     "spec": "tiny.json",
     "library": "tiny_world_v1"

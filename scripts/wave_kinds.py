@@ -25,8 +25,13 @@ unchanged in every byte it plans and writes; only a v2 manifest reaches this mod
                  fields_output, fields_args?, seconds?,      prepare_recent_research.py role ...), then the fields
                  max_rss_mib?}                               builder on the new role (the wave's field names); the cell
                                                              is the template with inputs.role and its fields set to them
-  walk-forward   walk_forward: {lag, step, ...}              schema only until lane D3 wires the fold driver: the plan
-                                                             prints it, preflight refuses to run it
+  walk-forward   walk_forward: {lag, step, window?,           P9 lane D3 (K-P9-8): the parent's construction with its fit
+                 min_decisions?}                             refitted walk-forward (the fitter's --walk-forward flags,
+                                                             walk_forward_flags; the C++ composition exe refits per block
+                                                             on the decisions <= d - lag; weights schema v3); no
+                                                             rule_cell: the spec stage writes the template next to the
+                                                             parent spec; fit, w and NAV outputs renamed -wf<lag>s<step>;
+                                                             the parent must fit under --engine-fit (ALCOMB-7)
 
 Rules (``rules``; K-P9-6, K-P9-7, ruling D1-PSCHEMA). Each name is a row of the IC exe's ``--list-rules --json``
 table (atx.composition-rules/v1) or of the NAV exe's ``nav --list-rules --json`` (atx.nav-rules/v1); a name in both,
@@ -50,6 +55,10 @@ exe publish its run at an L' it chooses itself, so no flag list of any v2 cell m
 spelling (match_flag_reads); only the match stage of MATCH_STAGE writes them, into its run recipe, after preflight.
 The reference side (ruling E2-15): a cell's ``ref`` comes only from its lineage parent's cell of record or from the
 template's own pinned ``change.set ref`` block (REF_KEY), whose resolved side is guarded as the cell's.
+A NAV row's legacy spellings (``x-flag-aliases``, ruling C3-3; flag_aliases) are owned flags of that row: inherited
+unchanged from the lineage parent, or changed only by a wave whose rules name the row. Ruling E2-17: ``inputs.*`` is set
+or changed only by the kinds and keys of KIND_INPUTS (wave_stage_kinds.inputs_refusal). P9 lane D3: kind walk-forward's
+fitter flags (KIND_FLAGS) are owned by that kind.
 """
 from __future__ import annotations
 
@@ -66,7 +75,20 @@ BLOCKS = {"rule": "rules", "leverage": "leverage", "horizon": "horizon", "field"
           "walk-forward": "walk_forward"}            # kind -> its block key (add / replace: candidates)
 LIBRARY_KINDS = ("add", "replace", "field")         # candidates
 TEMPLATE_KINDS = ("rule", "horizon", "role")        # rule_cell required (leverage: optional)
-SCHEMA_ONLY = ("walk-forward",)                     # lane D3 wires it (wave 3)
+SCHEMA_ONLY: tuple = ()                             # P9 lane D3 wired walk-forward (wave 3): none is left
+# P9 lane D3 (K-P9-8, contract atx.dsl-composition-weights/v3): kind walk-forward's own fitter flags (the composition
+# exe refits the fit per block of decisions; the fitter writes the per-date rows). Owned by the kind: every other v2
+# kind is refused a raw route to them, as a rule's flags (ruling E2-8 via table_flags)
+WALK_FORWARD_FLAGS = ("--walk-forward", "--walk-forward-lag", "--walk-forward-step", "--walk-forward-min-decisions")
+KIND_FLAGS = {"fit": frozenset(WALK_FORWARD_FLAGS)}
+WALK_FORWARD_WINDOWS = ("expanding",)
+WALK_FORWARD_PARENT_FIT = "--engine-fit"            # the per-date weights are the C++ fit's (ruling ALCOMB-7)
+WALK_FORWARD_REFUSED = ("--theme-tsmom", "--theme-resid", "--era")   # their own TRAIN schedules / pools: P10
+# Ruling E2-17: the inputs.* keys a v2 kind may set or change (the kinds whose schema defines an input change, and only
+# the keys that kind names: a role wave's inputs.role; field and horizon blocks name none today). Every other kind
+# setting or changing an inputs.* key, by any route, is refused at preflight (wave_stage_kinds.inputs_refusal)
+KIND_INPUTS = {"field": (), "role": ("role",), "horizon": ()}
+ALIASES_KEY = "x-flag-aliases"                      # ruling C3-3: a K-P9-7 row's legacy spellings of its x-flag
 WINDOWS = (5, 21, 63, 126, 252)                     # plan section 0.6: windows (here horizons) from this set
 HORIZON_OUTPUTS = (("ic", "u_output"), ("fit", "output"), ("card", "output"), ("marginal", "output"),
                    ("ic", "w_output"), ("nav", "output"), ("monitor", "output"))
@@ -151,10 +173,13 @@ def problems(m: dict) -> list[str]:
         out.append(f"kind {kind} is a library wave: candidates, no rule_cell")
     if kind in TEMPLATE_KINDS and (not has_r or has_c):
         out.append(f"kind {kind} is a rule wave: rule_cell, no candidates")
-    if kind in ("leverage",) + SCHEMA_ONLY and has_c:
+    if kind in ("leverage", "walk-forward") + SCHEMA_ONLY and has_c:
         out.append(f"kind {kind} has no candidates")
+    if kind == "walk-forward" and has_r:
+        out.append("kind walk-forward has no rule_cell (the spec stage writes its template next to the parent spec: "
+                   "the parent's construction, its fit refitted walk-forward)")
     if kind in SCHEMA_ONLY and has_r:
-        out.append(f"kind {kind} has no rule_cell (schema only until lane D3)")
+        out.append(f"kind {kind} has no rule_cell (schema only)")
     if kind not in ("add", "replace") and BLOCKS[kind] not in m:
         out.append(f"kind {kind} needs its block {BLOCKS[kind]}")
         return out
@@ -267,12 +292,75 @@ def role_problems(m: dict) -> list[str]:
 
 def walk_forward_problems(m: dict) -> list[str]:
     wf = m["walk_forward"]
+    ints = ("lag", "step", "min_decisions")
     if not (isinstance(wf, dict) and {"lag", "step"} <= set(wf) <= {"lag", "step", "window", "min_decisions"} and
-            all(type(v) is int and v > 0 for v in wf.values()) and wf["lag"] >= 2 and
-            wf.get("window", "expanding") in ("expanding",)):
+            all(type(wf[k]) is int and wf[k] > 0 for k in ints if k in wf) and wf["lag"] >= 2 and
+            wf.get("min_decisions", 2) >= 2 and wf.get("window", "expanding") in WALK_FORWARD_WINDOWS):
         return ["walk_forward must be {lag: >= 2 (contract K-P9-8: fitted on decisions <= d-2), step: > 0, "
-                "min_decisions?: > 0} (schema only until lane D3)"]
+                f"window?: {' | '.join(WALK_FORWARD_WINDOWS)}, min_decisions?: >= 2}}"]
     return []
+
+
+def walk_forward_flags(wf: dict) -> dict:
+    """The fitter flags of a walk-forward cell (K-P9-8, P9 lane D3): the composition exe refits the fit per block of
+    ``step`` decisions on the expanding window of decisions <= d - ``lag`` (atx-research-composition fit --walk-forward;
+    composition_engine_fit.add_argument). min_decisions only when the block names it (else the fitter's default)."""
+    ops = {"--walk-forward": wf.get("window", "expanding"), "--walk-forward-lag": str(wf["lag"]),
+           "--walk-forward-step": str(wf["step"])}
+    if "min_decisions" in wf:
+        ops["--walk-forward-min-decisions"] = str(wf["min_decisions"])
+    return {"fit": ops}
+
+
+def walk_forward_token(wf: dict) -> str:
+    """The output token of a walk-forward cell: wf<lag>s<step>[m<min_decisions>]."""
+    return f"wf{wf['lag']}s{wf['step']}" + (f"m{wf['min_decisions']}" if "min_decisions" in wf else "")
+
+
+WALK_FORWARD_OUTPUTS = (("fit", "output"), ("ic", "w_output"), ("nav", "output"))
+
+
+def walk_forward_set(parent: dict, wf: dict) -> dict:
+    """change.set of a walk-forward cell: the outputs downstream of the refit renamed -wf<lag>s<step>: the fit (the v3
+    weights), the weighted IC pass and the NAV. The u pass, card, marginal and monitor read only the parent's inputs and
+    the admission table (byte-identical under the refit), so they resume as the parent's."""
+    token = walk_forward_token(wf)
+    return {f"{s}.{k}": renamed(parent[s][k], token) for s, k in WALK_FORWARD_OUTPUTS
+            if isinstance(parent.get(s), dict) and isinstance(parent[s].get(k), str)}
+
+
+def walk_forward_parent_problems(parent: dict) -> list[str]:
+    """A walk-forward cell refits its parent's fit: the parent must fit under --engine-fit (the per-date weights are
+    the C++ composition fit's, and ruling ALCOMB-7: a cell's fit mode is its parent's) without --theme-tsmom,
+    --theme-resid or --era (their TRAIN-fitted schedules, orders and pools are not refitted; the fitter refuses them)."""
+    flags = (parent.get("fit") or {}).get("flags")
+    flags = flags if isinstance(flags, list) else []
+    norm = [norm_option(t).split("=", 1)[0] if isinstance(t, str) else t for t in flags]
+    out = []
+    if WALK_FORWARD_PARENT_FIT not in norm:
+        out.append(f"kind walk-forward refits the parent's fit with the C++ composition exe: the parent spec's fit.flags "
+                   f"must carry {WALK_FORWARD_PARENT_FIT} (ruling ALCOMB-7: the cell's fit mode is its parent's); "
+                   "name a parent fitted under it")
+    bad = sorted({f for f in WALK_FORWARD_REFUSED if f in norm})
+    if bad:
+        out.append(f"kind walk-forward is refused on a parent fitted with {bad} (their TRAIN-fitted schedules, orders "
+                   "and pools are not refitted per block; P10)")
+    return out
+
+
+def walk_forward_template(parent_spec: str, wave: str, wf: dict) -> tuple[str, dict]:
+    """(path, document) of the template a walk-forward wave writes next to the parent spec (never written: the spec
+    stage writes the cell): parent = the parent's file, change.set and change.flags filled in by the spec stage
+    (merged_constants with walk_forward_set / walk_forward_flags)."""
+    p = Path(parent_spec)
+    label = f"{p.stem}-{walk_forward_token(wf)}-{wave}"
+    doc = {"schema": "atx.research-cycle-template/v1", "name": label,
+           "description": f"wave {wave} (kind walk-forward, contract K-P9-9 / K-P9-8): {p.name}'s fit refitted "
+                          f"walk-forward ({wf.get('window', 'expanding')}, lag {wf['lag']}, step {wf['step']}"
+                          + (f", min_decisions {wf['min_decisions']}" if "min_decisions" in wf else "") +
+                          "), weights schema atx.dsl-composition-weights/v3; written by the wave's spec stage",
+           "parent": p.name, "change": {"set": {}}}
+    return (p.parent / f"{label}.json").as_posix(), doc
 
 
 # ------------------------------------------------------------------ JSON Schema (the subset the exes print)
@@ -446,8 +534,9 @@ def unmapped_ic_rules(tables: dict) -> list[str]:
 
 def table_flags(tables: dict) -> dict:
     """{section: {flag}} every rule of the exes' tables turns on, named by the manifest or not: each composition
-    row's fitter (and NAV) flags (COMPOSITION_FLAGS), each NAV row's x-flag (its first token) and its params'
-    x-flags (K-P9-7)."""
+    row's fitter (and NAV) flags (COMPOSITION_FLAGS), each NAV row's x-flag (its first token), its params' x-flags
+    (K-P9-7) and its legacy spellings (x-flag-aliases, ruling C3-3: an alias is the owned flag it stands for), and
+    the flags a v2 kind derives itself (KIND_FLAGS: walk-forward's, P9 lane D3)."""
     out: dict = {}
     for row in (tables.get("ic") or {}).get("rules") or []:
         rid = row.get("id") if isinstance(row, dict) else None
@@ -461,6 +550,47 @@ def table_flags(tables: dict) -> dict:
             else None
         flags = tokens[:1] + [p.get("x-flag") for p in (props or {}).values() if isinstance(p, dict)]
         out.setdefault("nav", set()).update(f for f in flags if isinstance(f, str) and f)
+    out.setdefault("nav", set()).update(flag_aliases(tables))
+    for section, flags in KIND_FLAGS.items():
+        out.setdefault(section, set()).update(flags)
+    return out
+
+
+def flag_aliases(tables: dict) -> dict:
+    """{alias: NAV row id} of every legacy spelling a K-P9-7 row lists in its ``x-flag-aliases`` (ruling C3-3; C3's
+    cost-sqrt-v2 lists --cost-v2). Ruling C3-3: the E2-8 guard reads each alias as the owned flag of its row, so in a
+    v2 wave an alias appears only as inherited unchanged from the lineage parent's cell of record; adding, removing or
+    changing it needs a rules entry naming the row (rule_flag_guard). Malformed fields: alias_problems."""
+    out: dict = {}
+    for row in (tables.get("nav") or {}).get("rules") or []:
+        if isinstance(row, dict) and isinstance(row.get("id"), str) and isinstance(row.get(ALIASES_KEY), list):
+            out.update({a: row["id"] for a in row[ALIASES_KEY] if _alias(a)})
+    return out
+
+
+def _alias(value) -> bool:
+    return isinstance(value, str) and value.startswith("--") and len(value) > 2 and value == norm_option(value) and \
+        "=" not in value and " " not in value
+
+
+def alias_problems(tables: dict) -> list[str]:
+    """Ruling C3-3, fail closed: a NAV row whose x-flag-aliases is not a non-empty list of distinct long options (or
+    names an alias another row also lists) could not be guarded, so the wave stops on it by name."""
+    out, seen = [], {}
+    for row in (tables.get("nav") or {}).get("rules") or []:
+        if not (isinstance(row, dict) and ALIASES_KEY in row):
+            continue
+        aliases = row[ALIASES_KEY]
+        if not (isinstance(aliases, list) and aliases and all(_alias(a) for a in aliases) and
+                len(set(aliases)) == len(aliases)):
+            out.append(f"the NAV exe's row {row.get('id')!r} lists {ALIASES_KEY} {aliases!r}, not a non-empty list of "
+                       "distinct long options: its legacy spelling cannot be guarded (ruling C3-3)")
+            continue
+        for a in aliases:
+            if a in seen and seen[a] != row.get("id"):
+                out.append(f"the NAV exe's rows {seen[a]!r} and {row.get('id')!r} both list the alias {a} (ruling "
+                           "C3-3: an alias stands for one row's flag)")
+            seen[a] = row.get("id")
     return out
 
 
@@ -499,14 +629,16 @@ def abbreviated(token: str, flags) -> list[str]:
     return sorted(f for f in flags if len(head) > 2 and head.startswith("--") and f != head and f.startswith(head))
 
 
-def raw_rule_flags(given: dict, derived: dict, tables: dict) -> list[str]:
+def raw_rule_flags(given: dict, derived: dict, tables: dict, exempt: frozenset = frozenset()) -> list[str]:
     """The "section token" entries of ``given`` (an option map: rule_cell.constants.flags, a template's change.flags,
     horizon.flags) that a rule owns: the token with any ``=value`` stripped is one the named rules derive
     (``derived``) or one any rule of the exes' tables turns on (table_flags), named or not; or the token is a proper
     prefix of such a flag, an argparse abbreviation, entered as "section token (abbreviates [...])" (review E2 R2 /
     R2b, ruling E2-8, F-8: a rule is named in rules and its params checked by its params_schema; a raw flag would run
-    it unchecked)."""
+    it unchecked). ``exempt``: the NAV aliases whose row the manifest names (ruling C3-3: the named row may add,
+    remove or change its own legacy spelling); they are not owned for this call."""
     owned = owned_flags(tables, derived)
+    owned["nav"] = owned.get("nav", set()) - set(exempt)
     out = []
     for s, ops in (given or {}).items():
         for f in (ops if isinstance(ops, dict) else {}):
