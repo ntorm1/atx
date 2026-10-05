@@ -2,6 +2,7 @@
 // P9 C3 (task 1, move-only): moved unchanged from strategy_nav_replay.cpp.
 
 #include "book/nav_replay_internal.hpp"
+#include "book/nav_spec.hpp" // parse_unique_keys (Ruling C3-7)
 
 namespace atx::impl::strategy {
 using namespace nav_book;
@@ -124,7 +125,15 @@ co::Result<GridSpec> read_grid(const std::string& path) {
     return co::Err(co::ErrorCode::IoError, "nav grid: grid file read");
   GridSpec spec;
   ATX_TRY(spec.sha256, co::sha256_hex(text));
-  const auto doc = Json::parse(text, nullptr, false);
+  // Ruling C3-7 (review C3 S-9): R-1's refusal on a file a NavSpec can name (construction_grid):
+  // the parser would run a repeated key's last value while a reader of the file sees the first.
+  std::string duplicate;
+  const auto doc = nav_spec::parse_unique_keys(text, duplicate);
+  if (!doc.is_discarded() && !duplicate.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav grid: duplicate key \"" + duplicate + "\" in " + path +
+                       " (a key appears once per object: JSON keeps the last value, a reader the "
+                       "first)");
   const auto is_string = [](const Json& j, const char* key) {
     return j.contains(key) && j.at(key).is_string();
   };

@@ -20,6 +20,7 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
+#include "atx/core/sha256.hpp"
 #include "../src/book/nav_rules.hpp"
 #include "../src/book/nav_spec.hpp"
 #include "../src/strategy_cost_v2.hpp"
@@ -37,6 +38,7 @@ namespace st = atx::impl::strategy;
 namespace ns = atx::impl::strategy::nav_spec;
 namespace nr = atx::impl::strategy::nav_rules;
 namespace v7 = atx::impl::strategy::v7;
+namespace co = atx::core;
 using Json = nlohmann::json;
 namespace fs = std::filesystem;
 
@@ -375,6 +377,47 @@ TEST(NavSpec, RefusesADuplicateKey) {
   EXPECT_NE(refused.error().to_string().find("unknown option schema"), std::string::npos);
 }
 
+// Ruling C3-7 (review C3 S-9): the construction-grid file (a file a NavSpec names, options
+// construction_grid) gets R-1's refusal. A key repeated inside one object (a flag twice in one
+// variant's flags, "variants" twice) is refused before any output, exit 1 as every grid-file
+// refusal, naming the key and the file: either file would otherwise run at the last value. The
+// same grid without the repetition runs.
+TEST(NavSpec, GridFileRefusesADuplicateKey) {
+  const Directory dir;
+  const Role role(40, 12, 53);
+  const auto in = write_run_inputs(dir.path, role);
+  const std::vector<std::string> v5{"--rule", "aim-partial-v5", "--cadence", "1",
+                                    "--trade-fraction", ".25", "--aim-leverage", "1.2"};
+  const auto run = [&](const fs::path& grid, const fs::path& output, std::ostream& out,
+                       std::ostream& err) {
+    std::vector<std::string> args{"nav"};
+    const std::vector<std::string> grid_flag{"--construction-grid", grid.string()};
+    for (const auto& t : joined(joined(pinned(in, output), v5), grid_flag)) args.push_back(t);
+    return nav(args, out, err);
+  };
+  const std::string head = R"({"schema": "atx.nav-construction-grid/v1", "variants": )";
+  const std::string one = R"([{"id": "a", "flags": {"--aim-leverage": "1.9"}}])";
+  const std::vector<std::pair<std::string, std::string>> repeated{
+      {"--aim-leverage",
+       head + R"([{"id": "a", "flags": {"--aim-leverage": "1.1", "--aim-leverage": "1.9"}}]})"},
+      {"variants", head + R"([], "variants": )" + one + "}"}};
+  for (size_t k = 0; k < repeated.size(); ++k) {
+    const auto& [key, text] = repeated[k];
+    const auto grid = write_text(dir.path / ("dup" + std::to_string(k) + ".json"), text);
+    const auto output = dir.path / ("out" + std::to_string(k));
+    std::ostringstream out, err;
+    EXPECT_EQ(run(grid, output, out, err), 1) << key;
+    EXPECT_NE(err.str().find("nav grid: duplicate key \"" + key + "\" in " + grid.string()),
+              std::string::npos)
+        << err.str();
+    EXPECT_FALSE(fs::exists(output)) << key;
+  }
+  const auto good = write_text(dir.path / "good.json", head + one + "}");
+  std::ostringstream out, err;
+  ASSERT_EQ(run(good, dir.path / "good", out, err), 0) << err.str();
+  EXPECT_TRUE(fs::exists(dir.path / "good" / "a" / "summary.json"));
+}
+
 // `nav --spec S.json` publishes byte for byte the directory of the flag run it renders, under
 // the v7 seam (aim-partial-v6, the v2 cost laws, the capacity curve, adv-hold-v1) and a plain
 // aim-partial-v5 run; `nav <flags> --print-spec` prints the NavSpec (with the constants block)
@@ -401,8 +444,15 @@ TEST(NavSpec, SpecRunPublishesTheFlagRunBytes) {
     EXPECT_EQ(doc.at("constants"), ns::constants_json());
     const auto file = dir.path / ("spec" + std::to_string(s) + ".json");
     write_json_file(file, doc);
-    ASSERT_EQ(nav({"nav", "--spec", file.string(), "--output", spec_dir.string()}, out, err), 0)
+    std::ostringstream spec_out; // review C3 S-12: the console's first line names the bytes read
+    ASSERT_EQ(nav({"nav", "--spec", file.string(), "--output", spec_dir.string()}, spec_out, err),
+              0)
         << err.str();
+    const auto digest = co::sha256_hex(bytes_of(file));
+    ASSERT_TRUE(digest);
+    const std::string line =
+        "nav spec: " + std::string(ns::schema) + ' ' + file.string() + " sha256 " + *digest + '\n';
+    EXPECT_EQ(spec_out.str().substr(0, line.size()), line) << spec_out.str();
     EXPECT_GE(expect_same_tree(spec_dir, flags_dir), 4U);
   }
   EXPECT_TRUE(fs::exists(dir.path / "spec0" / "capacity" / "summary.json"));

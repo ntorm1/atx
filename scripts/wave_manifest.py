@@ -16,8 +16,11 @@ One wave is one cell on the current book, declared before anything is measured:
                                                  a rule wave: a cell template on the parent with its registered constants
    "acceptance": {"rule": "pm7-34", "printed": [criterion, ...]},
    "sign_rule": "pm7-35",                         (library waves)
-   "gross_match": "pm6-6" | "pm6-6-engine" | "none",  (wave_rules.GROSS_MATCH; pm6-6-engine: P9 C2, nav
-                                                       --calibrate-gross inside the NAV exe)
+   "gross_match": "pm6-6-engine" | "none",       (wave_rules.GROSS_MATCH; pm6-6-engine: P9 C2, nav --calibrate-gross
+                                                 inside the NAV exe). Required, no default (P9 ruling C2-9: an absent
+                                                 key is refused at load naming pm6-6-engine, or "none" for a v2 kind
+                                                 leverage). "pm6-6" (the retired Python match, ruling C2-11) still
+                                                 validates, so a ledgered v1 manifest loads; preflight refuses to run it
    "budget": {"id": ID, "admission_cap": N?, "admission_cycle_prefix": TEXT? | "admission_cycle_prefixes": [TEXT]?,
               "admission_origin": CLASS?, "construction_cap": N?}
                                           the hand count: admission lines of cycles with the prefix, or with any of
@@ -254,10 +257,12 @@ def validate(m) -> list[str]:
         return [f"schema must be {SCHEMA} (or {wave_kinds.SCHEMA_V2}, contract K-P9-9)"]
     v2 = wave_kinds.is_v2(m)
     out = []
-    missing = [k for k in TOP_REQUIRED if k not in m]
+    missing = [k for k in TOP_REQUIRED if k not in m and k != "gross_match"]    # gross_match: its own line (C2-9)
     unknown = sorted(set(m) - set(TOP_REQUIRED) - set(TOP_OPTIONAL) - (set(V2_KEYS) if v2 else set()))
     if missing or unknown:
         out.append(f"manifest: missing {missing}, unknown {unknown}")
+    if m.get("gross_match") is None:
+        out.append(gross_match_missing(m))
     if not (isinstance(m.get("wave"), str) and ID_RE.fullmatch(m["wave"])):
         out.append(f"wave must match {ID_RE.pattern}")
     p = m.get("parent")
@@ -328,6 +333,17 @@ def validate(m) -> list[str]:
     if "b_suffix" in m and not (isinstance(m["b_suffix"], str) and re.fullmatch(r"[a-z0-9]{1,8}", m["b_suffix"])):
         out.append("b_suffix must be 1-8 lower-case letters or digits")
     return out + (wave_kinds.problems(m) if v2 else [])
+
+
+def gross_match_missing(m: dict) -> str:
+    """P9 ruling C2-9: a manifest without gross_match (or with null) is refused at load (plan exits 2), naming the key
+    and the value it needs; no stage picks a default, so the code that computes a published leverage is always the one
+    the manifest names. A v2 kind leverage needs "none" (wave_kinds: the change IS the leverage); every other wave
+    needs gross matching, in the NAV exe."""
+    if wave_kinds.is_v2(m) and m.get("kind") == "leverage":
+        return 'gross_match is missing: a kind leverage wave names "none" (ruling C2-9: no default)'
+    return ('gross_match is missing: the wave names "pm6-6-engine" (PM6-6 inside the NAV exe; ruling C2-9: no default, '
+            'the Python pm6-6 is retired, C2-11)')
 
 
 def candidates_problems(m: dict) -> list[str]:

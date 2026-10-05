@@ -87,6 +87,12 @@ struct Key {
 // A spec file: at most max_spec_bytes, JSON with no key repeated inside an object, then
 // to_args's checks.
 [[nodiscard]] atx::core::Result<nlohmann::json> read(const std::string& path);
+// `text` parsed as JSON, with the first key repeated inside one object written to `duplicate`
+// (cleared first; empty when every key appears once per object). The document is discarded
+// (is_discarded()) when `text` is not JSON. The parser keeps a repeated key's last value while a
+// reader of the file sees the first, so a caller refuses a non-empty `duplicate`: the spec file
+// (review C3 R-1) and the construction-grid file a spec can name (Ruling C3-7, read_grid).
+[[nodiscard]] nlohmann::json parse_unique_keys(const std::string& text, std::string& duplicate);
 // The constants block at today's values.
 [[nodiscard]] nlohmann::json constants_json();
 
