@@ -7,8 +7,11 @@
 // (^|\D)20(2[4-9]|[3-9]\d)(\D|$) over the '/'-separated path) is never opened, and a directory
 // so named is never descended into; it is listed by name (skipped_path, reason seal-name).
 // The root itself is checked too (sealed_root, fail closed): `catalog`, `ingest` and
-// `cache init --import` over a root whose absolute path holds such a token are refused before
-// anything under it (the class registry included) is opened.
+// `cache init --import` over a root whose path holds such a token are refused before anything
+// under it (the class registry included) is opened. The path checked is the part below the
+// repository top (the outermost ancestor holding a `.git` entry; P9 SQL3, ruling W3-4): the
+// top's own name and its ancestors are the host's environment. Without a `.git` ancestor the
+// whole absolute path is checked.
 // Size: a file over kMaxOpenBytes is never opened; its SHA-256 is the one a holder declares
 // (artifact.sha_source = declared), or it is listed (declared-only). Only --verify-payloads
 // hashes such a file (and still never a sealed one).
@@ -52,8 +55,12 @@ inline constexpr u64 kMaxOpenBytes = 16ULL * 1024ULL * 1024ULL;
 // `root` made absolute and lexically normal, without a trailing separator.
 [[nodiscard]] std::filesystem::path normal_root(const std::filesystem::path &root);
 
-// True when normal_root(root) holds a standalone year token 2024-2099 (the whole absolute
-// path: a parent directory so named seals everything under it).
+// True when normal_root(root) holds a standalone year token 2024-2099 below its repository top:
+// the outermost of normal_root(root) and its ancestors that holds a `.git` entry (file or
+// directory; outermost, so a `.git` planted in a sealed directory exempts nothing). A directory
+// so named between the top and the root seals everything under it. With no `.git` ancestor (or
+// a file-system error reading one) the whole absolute path is checked. The upward walk is
+// bounded by the path's own segments.
 [[nodiscard]] bool sealed_root(const std::filesystem::path &root);
 
 // The refusal text for a sealed root.

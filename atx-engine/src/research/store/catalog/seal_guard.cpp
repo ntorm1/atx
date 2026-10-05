@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 
 #include "atx/core/types.hpp"
 
@@ -34,6 +35,36 @@ namespace {
     text.pop_back();
   }
   return text;
+}
+
+// The most ancestors repo_top visits: far more segments than any path this host can name, so the
+// walk always ends at the file-system root first; the bound only makes the loop's end obvious.
+constexpr usize kMaxAncestors = 4096;
+
+// True when `dir` holds a `.git` entry (a directory in a clone, a file in a worktree). A file
+// system error reads as no entry, which keeps the whole-path check (fail closed).
+[[nodiscard]] bool holds_git_entry(const std::filesystem::path &dir) {
+  std::error_code ec;
+  const bool found = std::filesystem::exists(dir / ".git", ec);
+  return found && !ec;
+}
+
+// The OUTERMOST directory among `normal` and its ancestors that holds a `.git` entry, or nullopt.
+// Outermost, not nearest: a `.git` planted inside a sealed directory must not exempt it.
+[[nodiscard]] std::optional<std::filesystem::path> repo_top(const std::filesystem::path &normal) {
+  std::optional<std::filesystem::path> top;
+  std::filesystem::path dir = normal;
+  for (usize i = 0; i < kMaxAncestors; ++i) {
+    if (holds_git_entry(dir)) {
+      top = dir;
+    }
+    std::filesystem::path parent = dir.parent_path();
+    if (parent.empty() || parent == dir) {
+      break;
+    }
+    dir = std::move(parent);
+  }
+  return top;
 }
 
 } // namespace
@@ -118,7 +149,19 @@ std::filesystem::path normal_root(const std::filesystem::path &root) {
 }
 
 bool sealed_root(const std::filesystem::path &root) {
-  return has_sealed_year(utf8_path(normal_root(root)));
+  const std::filesystem::path normal = normal_root(root);
+  const std::optional<std::filesystem::path> top = repo_top(normal);
+  if (!top) {
+    return has_sealed_year(utf8_path(normal));
+  }
+  // SQL2-S7 (ruling W3-4): the repository top's own name and its ancestors are the host's
+  // environment (a dated sprint dir, a pytest-2024 temp dir); only the part below it is scanned.
+  const std::filesystem::path below = normal.lexically_relative(*top);
+  if (below.empty()) {
+    return has_sealed_year(utf8_path(normal)); // not expressible below the top: fail closed
+  }
+  const std::string rest = utf8_path(below);
+  return rest != "." && has_sealed_year(rest);
 }
 
 std::string sealed_root_message(const std::filesystem::path &root) {

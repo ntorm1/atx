@@ -81,6 +81,44 @@ TEST(SealGuard, SealedRootNeverOpened) {
   EXPECT_EQ(t::rows(db, "catalog_run"), 0);
 }
 
+TEST(SealGuard, RootTokenScannedOnlyBelowTheRepoTop) {
+  // SQL2-S7 (P9 SQL3, ruling W3-4): a root's year-token check covers only the part below its
+  // repository top, the OUTERMOST ancestor holding a `.git` entry; the top's own name and its
+  // ancestors are the host's environment. Without a `.git` ancestor the whole path is checked.
+  const auto env = t::temp_dir("env-2025");
+  const auto repo = env / "repo";
+  std::filesystem::copy(t::fixture("tree"), repo, std::filesystem::copy_options::recursive);
+  t::write_bytes(repo / ".git", "gitdir: ../elsewhere\n"); // a worktree's `.git` file
+  std::filesystem::create_directories(repo / "scripts");
+  EXPECT_FALSE(cat::sealed_root(repo));
+  EXPECT_FALSE(cat::sealed_root(repo / "scripts"));
+  // The verbs follow the narrowed check: a catalog run and an ingest under the top run.
+  auto db = t::open_new(t::temp_dir("db") / "catalog.sqlite");
+  auto report = cat::run_catalog(db, t::registry(), t::options(repo));
+  ASSERT_TRUE(report) << report.error().to_string();
+  cat::IngestOneOptions one;
+  one.root = repo;
+  one.class_id = "run-receipt";
+  one.path = "build-equity/fx-nav-run1/receipt.json";
+  auto ingested = cat::ingest_one(db, t::registry(), one);
+  ASSERT_TRUE(ingested) << ingested.error().to_string();
+  // A token below the top still seals, existing or not.
+  std::filesystem::create_directories(repo / "v8-2024-oos");
+  EXPECT_TRUE(cat::sealed_root(repo / "v8-2024-oos"));
+  EXPECT_TRUE(cat::sealed_root(repo / "v8-2024-oos" / "scripts"));
+  // A `.git` planted inside a sealed directory makes no new top (outermost wins).
+  std::filesystem::create_directories(repo / "x-2024" / ".git");
+  EXPECT_TRUE(cat::sealed_root(repo / "x-2024"));
+  EXPECT_TRUE(cat::sealed_root(repo / "x-2024" / "y"));
+  one.root = repo / "x-2024";
+  auto refused = cat::ingest_one(db, t::registry(), one);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), ErrorCode::PermissionDenied);
+  // No `.git` ancestor: the whole absolute path, as before (fail closed).
+  std::filesystem::create_directories(env / "norepo");
+  EXPECT_TRUE(cat::sealed_root(env / "norepo"));
+}
+
 TEST(SealGuard, CacheImportNeverOpensSealedPaths) {
   // Fix round 1 (S3): `cache init --import` over a sealed DIR is refused before anything is
   // read. Under a clean DIR a partition or kind directory with a year token is skipped unopened
