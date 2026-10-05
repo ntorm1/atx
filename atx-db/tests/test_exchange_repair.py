@@ -13,6 +13,12 @@ def test_sc_bzx_supported_unknown_stale_and_same_day_unmapped(tmp_path, monkeypa
     rows=pq.read_table(path).to_pylist()
     for r in rows:
         r.update(ni_ttm=1.0,ni_q=1.0,ret=0.01,ret_guarded=False,is_issuer_primary=True,member_equity=True)
+        # explicit dated provenance for the indexes v2 rank snapshot (R7 (a) / (d)): FINRA-named type, strict link
+        # where the panel has a CIK, and the issuer facts that link carries
+        r.update(security_type_basis='finra_name',directory_etf=False,finra_issue_name='Operating Inc',
+                 link_tier='strict' if r['cik'] is not None else None,
+                 filer_regime=None if r['cik'] is None else 'fpi_20f' if r['cik']==106 else 'domestic',
+                 sec_last_periodic_date=dt.date(2021,5,3) if r['cik'] is not None else None,sic=3571)
         if r['security_id'] in (2,4,5,11):r['exchange']=None
     pq.write_table(pa.Table.from_pylist(rows),path)
     names=[dict(security_id=s,dissemination_date=d,market_class=k,issue_name='Operating Inc')

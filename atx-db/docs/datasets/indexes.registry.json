@@ -1,55 +1,72 @@
 {
-  "stage": "indexes",
+  "stage": "indexes_v2",
+  "planned": true,
   "lane": "MKT",
-  "task": "tier1-v4 Tasks 2/2x fix round 1",
-  "schema": "atx.alpha-panel.indexes/v1",
+  "task": "P9 AL-DATA Task 6 (Path B; build in Task 7)",
+  "schema": "atx.alpha-panel.indexes/v2",
   "module": "atx_db.alpha_panel.indexes",
   "args": [
-    "build"
+    "build", "[--pit-links identity/links_pit.parquet]"
   ],
-  "manifest": "indexes/manifest.json",
+  "manifest": "indexes_v2/manifest.json",
+  "rule": ["russell-proxy-v2", "sp500-proxy-v2"],
+  "clock_rule": "index-vintage-mark-v2",
+  "staleness_days": 371,
+  "r7": {"r7_1": "a", "r7_2": "d"},
   "inputs": [
     "panel",
     "market_shares",
     "market_liquidity",
     "security_master"
   ],
+  "optional_inputs": ["identity/links_pit.parquet (links_combined schema; manifest pit_links, null when absent)"],
   "outputs": [
     {
-      "view": "indexes_constituents",
-      "glob": "indexes/constituents.parquet",
-      "keys": [
-        "index_id",
-        "security_id",
-        "recon_date"
-      ],
+      "view": "indexes_v2_constituents",
+      "glob": "indexes_v2/constituents/available_year=*/constituents.parquet",
+      "keys": ["index_id", "security_id", "recon_date"],
       "clock": "available_at",
       "vintage": "interval"
     },
     {
-      "view": "indexes_membership",
-      "glob": "indexes/membership/year=*/membership.parquet",
-      "keys": [
-        "session_date",
-        "security_id"
-      ],
+      "view": "indexes_v2_exits",
+      "glob": "indexes_v2/exits/available_year=*/exits.parquet",
+      "keys": ["index_id", "security_id", "recon_date"],
+      "clock": "available_at",
+      "vintage": "event"
+    },
+    {
+      "view": "indexes_v2_membership",
+      "glob": "indexes_v2/membership/available_year=*/membership.parquet",
+      "keys": ["session_date", "security_id"],
       "clock": "available_at",
       "vintage": "daily"
     },
     {
-      "view": "indexes_recon_summary",
-      "glob": "indexes/recon_summary.parquet",
-      "keys": [
-        "index_id",
-        "recon_date"
-      ],
-      "clock": null,
-      "vintage": "static"
+      "view": "indexes_v2_recon_summary",
+      "glob": "indexes_v2/recon_summary/available_year=*/recon_summary.parquet",
+      "keys": ["index_id", "recon_date"],
+      "clock": "available_at",
+      "vintage": "vintage"
     }
   ],
-  "as_of_sql": "CREATE MACRO indexes_membership_as_of(ts) AS TABLE SELECT * FROM indexes_membership WHERE available_at < CAST(ts AS TIMESTAMP)",
-  "as_of_usage": "SELECT security_id, r1000, r2000, r3000, sp500 FROM indexes_membership_as_of(lake_cutoff(DATE '2024-03-15')) WHERE session_date = DATE '2024-03-15'",
-  "registered": "already declared by the module LAKE_STAGES literal; stub records keys and as-of SQL",
+  "rank_clock": "rank date 22:00 UTC",
+  "effective": "effective_from = first NYSE session after recon_date (exchange_calendar nyse-sessions-v1, checked equal to the vendor calendar at build); effective_to = next scheduled recon_date",
+  "exit_clock": "22:00 UTC of the first session after last_session; trigger delisting_date or last_session < vendor end",
+  "membership_clock": "max(rank date 22:00 UTC, 22:00 UTC of the previous session)",
+  "as_of_sql": "CREATE MACRO indexes_v2_membership_as_of(ts) AS TABLE SELECT * FROM indexes_v2_membership WHERE available_at < CAST(ts AS TIMESTAMP)",
+  "as_of_usage": "SELECT security_id, r1000, r2000, r3000, sp500 FROM indexes_v2_membership_as_of(lake_cutoff(DATE '2024-03-15')) WHERE session_date = DATE '2024-03-15'",
+  "receipt_keys": ["counts_on_recon", "rank_vintage_rows_on_recon", "exit_rows", "directory_decided_on_rank", "backfill_cik_on_rank", "eligibility_on_rank", "coverage", "focus_2020_plus"],
+  "gate": "R2000 proxy companies in [1900, 2100] at every reconstitution (unchanged)",
+  "registered": "declared by the module LAKE_STAGES literal (indexes_v2 and the legacy indexes); stub records keys and as-of SQL",
   "doc": "atx-db/docs/datasets/indexes.md",
-  "exchange_rule": "NULL frozen-panel exchange repaired only from dated FINRA listing evidence, dissemination_date < d, age <=45 days, shared EXCHANGE_BY_CLASS; T1-b qualification preserved"
+  "exchange_rule": "NULL frozen-panel exchange repaired only from dated FINRA listing evidence, dissemination_date < d, age <=45 days, shared EXCHANGE_BY_CLASS (as v1)",
+  "legacy": {
+    "stage": "indexes",
+    "schema": "atx.alpha-panel.indexes/v1",
+    "manifest": "indexes/manifest.json",
+    "rule": ["russell-proxy-v1", "sp500-proxy-v1"],
+    "outputs": ["indexes/constituents.parquet", "indexes/membership/year=*/membership.parquet", "indexes/recon_summary.parquet (clock null)"],
+    "status": "published, immutable, never rebuilt; still read by universe and release_inputs"
+  }
 }
