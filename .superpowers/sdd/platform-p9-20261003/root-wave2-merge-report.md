@@ -1430,3 +1430,20 @@ brief, rulings C3-1 .. C3-10, PRE-7a, W3-8, SQL2-CLS, ROOT-1, EXE-CUR, SEAL-ALLO
   applies.
 - **Housekeeping (M2I-HK):** `build-equity/p9-m2i-cov-y1-nav` deleted by name. Never deleted: `p9-m2i-dcov-v11`,
   `p9-m2i-dcov-covv1`, `p9-m2d-cov-risk-container`.
+
+#### Results at the OWNER STOP (2026-10-05; nothing in flight was ended: no run of mine was running)
+
+| item | result | evidence |
+|---|---|---|
+| 1 builds | **p9-2p** equity-dev, source `327c86b2`, 130 TUs, 731 s, 0 warnings, canary 15 passed (Debug goldens); **p9-2q** equity-rel, same source, 132 TUs, 769 s, 0 warnings, canary 15 passed (Release goldens); `CCACHE_RECACHE=1`, no PCH refusal | `m2j-logs/builds.txt`, `mega-p9-2{p,q}-*` |
+| 1 gtests | named filter **33 / 33** Debug and Release; whole `atx-impl-strategy-target-tests` Debug **390 passed / 0 failed, 1 DISABLED** (COVR's diagnostic). NOT run: Release whole target-tests, whole `atx-impl-tests` (both builds) | `m2j-logs/gt-exits.txt`, `{dbg,rel}-gt-*.log` |
+| 2 flag-absent identity | **HOLDS**: X-5 (Release p9-2q `adcf72d4`, 38.4 s, 580 MiB) vs `p9-c1-s2-x5-nav`: 26 / 27 identical, `summary.json` only `/producer/build_type`, `/producer/engine_git_sha`; vs the Release twin `p9-c1-rel-x5-nav`: only `/producer/engine_git_sha`. Y-F0 (35.8 s, 582 MiB) vs P9-B0 `p9-b0-yf0-nav`: 26 / 27, the two producer keys only. Argv = reference but `--output` (token 14) | `item2-cmp.txt`, `nav-runs.txt`, receipts |
+| 3 `--spec` vs argv | **HOLDS**: `--print-spec` exit 0 for both (`atx.nav-spec/v1`; x5 spec `53fd737d0aee52b4083a8bae6cf3052ad0c7a6579b3f7c608efa22e3aa7af67f`, yf0 `a793e1832d3421d51a8e25fff69a2f65e01b63a787bc1ec241832b1f5fa00bb4`); spec runs 27 / 27 byte-identical to the argv runs; each spec run printed `nav spec: atx.nav-spec/v1 <path> sha256 <hex>` with hex = the file's SHA-256 | `item3-cmp.txt`, `x5.navspec.json`, `yf0.navspec.json` |
+| 4 opt-in | **NOT RUN** (owner stop) | - |
+| 5 Release = Debug, wall | **NOT RUN** (the Debug X-5 run). Release walls from receipts only: X-5 38.4 s after the split vs 41.7 s pre-split (`p9-c1-rel-x5-nav`); Y-F0 35.8 s vs 27.4 s (`p9-b0-yf0-nav-hrun`, + `--emit-holdings`); host load not controlled | receipts |
+| 6 SQL2-CLS | **NOT DONE** (`atx.nav-spec/v1` not yet in `classes.json`: the classes guard is expected red until it is) | - |
+| 7 W3-8 flip | **NOT DONE** | - |
+| 8 C3-5 probe | **NOT RUN** (script ready: `m2j-logs/tools/m2j_c3_probe.py`) | - |
+| 9 ROOT-1 | **NOT RUN** | - |
+| Part B D-COV-EIG | **DONE**: no rank 00-02 structurally null in either recipe; third pooled row = the all-ranks row (gate report 4 (d), 4 (e)) | `dcov-eig.txt`, `dcov-eig-pooled.txt` |
+| M2I-HK | **NOT DONE** (`p9-m2i-cov-y1-nav` still on disk) | - |

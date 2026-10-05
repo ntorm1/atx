@@ -1,0 +1,520 @@
+# C:\atx-wt\pool-2\build-equity\atx-impl\CMakeFiles\atx-impl-pipeline.dir\cmake_pch.cxx
+local_storage_write
+local_storage_write
+recache
+# C:\atx-wt\pool-2\build-equity\atx-impl\CMakeFiles\atx-impl-strategy.dir\cmake_pch.cxx
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\artifacts.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\serialize_panel.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\panel_artifact.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_data_provenance.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_ic_runner.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_runner.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_ic_library.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_ic_admission.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_ic_signal_cache.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_ic_result_cache.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_ic_shrink.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_ic_composition.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_ic_theme_erc.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_ic_theme_resid.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_ic_theme_tsmom.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_ic_two_speed.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_marginal_ic.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_research_role.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_mine_pinned_file.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_mine_ledger.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_mine_pool.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_mine_rule.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_mine.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_mine_promote.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_mine_trials.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_price_exposures.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_validate.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_liquidity.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_mark.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_target_replay.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_execute.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_decide.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_summarize.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_session.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_lockstep.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_load.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_write.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_cli.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_run.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_publish.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_deploy.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_live.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_orders.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_holdings.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_cost_v2.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_reconcile.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_nav_v7.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_risk_verb.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_spo.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_risk_model.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_vol_target.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_risk_target.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_rules.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_spo_v3.cpp
+local_storage_write
+local_storage_write
+recache
+# atx-impl\generated\build_provenance.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\book\nav_spec.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_exposures_verb.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_marginal_pair_cache.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_ic_theme_hedge.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_factors_verb.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_nav_calibrate.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\config.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_ic_rules.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\strategy_ic_mom_volman.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\panel_pipeline.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\serialize_genome.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_regime.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_load.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\asof_field.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\dispatch.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\append_history_panel.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_panel.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_augment.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\store_progress_sink.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_sweep.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_discover.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_riskmodel.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_combine.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_optimize.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\replay_diagnostics.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\replay_report.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_report.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\equity_baseline_views.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\equity_allocation.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\preference_source.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\trial_ledger.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_equity_book.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\prereg.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_equity_baseline.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_equity_universe.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_equity_ic.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_run.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\main.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tools\equity_strategy_ic.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_equity_mine.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\src\stage_metabook.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tools\equity_strategy_targets.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tools\equity_strategy_risk.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_cost_v2_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_nav_calibrate_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_cov_store_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_live_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_norm_score_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_nav_spec_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_nav_replay_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_risk_target_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_spo_pin_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_spo_v3_pin_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_spo_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_risk_model_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_two_speed_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_spo_v3_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_vol_target_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_cost_v2_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_live_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_nav_replay_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_spo_pin_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_spo_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_spo_v3_pin_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_spo_v3_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_risk_model_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_risk_target_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_norm_score_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_vol_target_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_two_speed_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_nav_calibrate_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_cov_store_test.cpp
+local_storage_write
+local_storage_write
+recache
+# ..\atx-impl\tests\strategy_nav_spec_test.cpp
+local_storage_write
+local_storage_write
+recache
