@@ -7,6 +7,7 @@ cwd = the root), so a test drives every stage with a fake and ``--dry-run`` prin
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, wait
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cycle_resume  # noqa: E402
+from research_common import RUN_SUFFIX, dirty_or_error, execute, free_run_dir  # noqa: E402
 import research_cycle as RC  # noqa: E402
 import research_spec  # noqa: E402
 import research_tree  # noqa: E402
@@ -27,10 +29,6 @@ if ENGINE_TOOLS not in sys.path:
 import stage_chain  # noqa: E402
 import wave_manifest as WM  # noqa: E402
 import wave_steps as WS  # noqa: E402
-
-
-def execute(argv: list[str], root: Path, env: dict | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
 
 
 class Wave:
@@ -45,6 +43,7 @@ class Wave:
         self._py: str | None = None
         self.seal_allow: dict[str, str] = {}     # research_wave.py --seal-allow TOKEN=RULING (wave_seal.py)
         self._console_lock = threading.Lock()   # the judge's side-by-side commands number their consoles in turn
+        self._local = threading.local()         # .buffer: the side_by_side call this thread runs keeps its records
         # P9 OR section 5: every command and git query of the stage running now, {what, seconds, exit_code} (in memory;
         # wave_stages.timed folds them into the stage's outputs under driver.timings)
         self.processes: list[dict] = []
@@ -82,10 +81,7 @@ class Wave:
 
     def free_run_dir(self, base: str) -> str:
         """<base>-run<k>, k the first number whose dir does not exist (the bounded runner never reuses a dir)."""
-        k = 1
-        while self.exists(f"{base}-run{k}"):
-            k += 1
-        return f"{base}-run{k}"
+        return free_run_dir(base, self.exists)
 
     # -------------------------------------------------------------- specs
     @property
@@ -125,23 +121,15 @@ class Wave:
                 "reference_nav": (spec["inputs"].get("reference_cell") or {}).get("dir")}
 
     def phase_bases(self, spec_rel: str) -> dict:
-        """{phase: output base} of a cell spec's bounded phases (their run dirs are ``<base>-run[<k>]``)."""
-        spec = self.load_spec(spec_rel)
-        c = RC.Cycle(spec, RC.Resolver(self.root), verify=False)
-        bases = {"u": c.out(spec["ic"]["u_output"]), "fit": c.out(spec["fit"]["output"], keyed=False),
-                 "w": c.out(spec["ic"]["w_output"]), "nav": c.out(spec["nav"]["output"])}
-        for key in ("card", "marginal", "ref", "monitor"):
-            if key in spec:
-                bases[key] = c.out(spec[key]["output"])
-        for phase in ("check", "summ"):
-            bases[phase] = f"{c.cycle_dir()}/{phase}"
-        return bases
+        """{phase: output base} of a cell spec's bounded phases (their run dirs are ``<base>-run[<k>]``): the cycle's
+        own naming (research_cycle Cycle.phase_bases, research_common.run_dir_of; OR section 4), never re-derived."""
+        return RC.Cycle(self.load_spec(spec_rel), RC.Resolver(self.root), verify=False).phase_bases()
 
     def run_dirs(self, base: str) -> list[str]:
         """The run dirs ``<base>-run`` and ``<base>-run<k>`` that exist (every attempt), in attempt order (-run, then
         k ascending: -run2 before -run10), each followed by its attempt sub-dirs ``attempt-k`` (P9 OR-4: research_cycle
         --auto-attempt's retries after a host refusal), k ascending: the timings rows and the seal scan read them all."""
-        p = self.path(f"{base}-run")
+        p = self.path(f"{base}{RUN_SUFFIX}")
         if not p.parent.is_dir():
             return []
         found = [d for d in p.parent.glob(p.name + "*")
@@ -158,8 +146,44 @@ class Wave:
         return self.path(rel).is_dir()
 
     # -------------------------------------------------------------- processes
-    def console(self, argv: list[str], what: str, done: subprocess.CompletedProcess) -> str:
-        """Keep a command's stdout and stderr under <out_dir>/consoles/ (the seal scan reads every one)."""
+    def side_by_side(self, calls: list[tuple]) -> list:
+        """Run each ``(fn, *args)`` of ``calls`` in its own thread (P9 OR section 5: the judge's summ || bundle || book
+        under the host memory budget). A call's records (note_process rows, consoles) go to its own buffer and are
+        written in call order once every call has ended (E1 review minor): the consoles' numbers and the order of
+        ``processes`` (so the judge receipt's content digest) are those of a serial run, whatever finishes first.
+        Driver log lines stay live (progress, not records). Returns the results in call order; the first failure, in
+        call order, is raised after every call has ended and every buffer is written."""
+        buffers: list[list] = [[] for _ in calls]
+
+        def job(buf: list, fn, *args):
+            self._local.buffer = buf
+            try:
+                return fn(*args)
+            finally:
+                self._local.buffer = None
+        try:
+            with ThreadPoolExecutor(max_workers=max(1, len(calls))) as pool:
+                jobs = [pool.submit(job, buf, *call) for buf, call in zip(buffers, calls)]
+                wait(jobs)
+        finally:                # review E2 S2: an interrupt still writes the records of the commands that ran
+            for buf in buffers:
+                for record, args in list(buf):
+                    record(*args)
+        return [j.result() for j in jobs]
+
+    def buffered(self, record, *args) -> bool:
+        """Inside a side_by_side call: keep ``record(*args)`` for the call-order write (True); else False."""
+        buf = getattr(self._local, "buffer", None)
+        if buf is None:
+            return False
+        buf.append((record, args))
+        return True
+
+    def console(self, argv: list[str], what: str, done: subprocess.CompletedProcess) -> str | None:
+        """Keep a command's stdout and stderr under <out_dir>/consoles/ (the seal scan reads every one); inside a
+        side_by_side call it is written, and numbered, when the calls have ended (None here)."""
+        if self.buffered(self.console, argv, what, done):
+            return None
         d = self.path(self.wave_path("consoles"))
         d.mkdir(parents=True, exist_ok=True)
         slug = "".join(ch if ch.isalnum() else "-" for ch in what.lower()).strip("-")[:48] or "command"
@@ -174,6 +198,8 @@ class Wave:
         return self.rel(p)
 
     def note_process(self, what: str, seconds: float, code) -> None:
+        if self.buffered(self.note_process, what, seconds, code):
+            return
         with self._console_lock:
             self.processes.append({"what": what, "seconds": round(seconds, 3), "exit_code": code})
 
@@ -202,10 +228,10 @@ class Wave:
 
     def dirty_code(self) -> list[str]:
         """Dirty paths inside the code pathspec (research_tree.CODE_PATHSPEC): what the bounded runner refuses."""
-        try:
-            return research_tree.dirty_paths(self.root)[0]
-        except (OSError, subprocess.CalledProcessError) as exc:
-            raise stage_chain.StageError(f"git status failed: {exc}") from exc
+        blocking, _, error = dirty_or_error(self.root)
+        if error is not None:
+            raise stage_chain.StageError(f"git status failed: {error}")
+        return blocking
 
     def committed(self, rel: str) -> str | None:
         """The last commit of a tracked, unmodified file; None when it is untracked or modified."""

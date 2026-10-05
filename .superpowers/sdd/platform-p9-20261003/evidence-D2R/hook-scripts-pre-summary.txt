@@ -1,0 +1,4 @@
+records 16, unique argvs 7, distinct option sets 6, tests 4, pids 2, hook errors 0
+calling files: {'test_research_spec.py': 16}
+records with a non-exact option token: 2
+  '--compo' ambiguous -> ['--composition', '--composition-exe']: 2 x, tests ['scripts/tests/test_research_spec.py::test_e27b_reads_what_the_fitter_and_nav_summ_parse']

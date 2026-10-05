@@ -1,0 +1,52 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "3fd0bf9820d6f07ee262aa1e6e7372f5c8924626",
+  "started_utc": "2026-10-04T19:24:33.437607+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    ".superpowers/sdd/platform-p9-20261003/m2g-logs/tools/b2_13_rho.py",
+    "build-equity-rel/bin/atx-research-eval.exe"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "argv_sha256": "56bedf84b465f345756e3730442625f53dc07bc419e12a00da33373f4e502f10",
+  "attempt": 1,
+  "build_type": null,
+  "bindings": [],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 2048,
+    "min_free_mib": 256
+  },
+  "sampled_peak_tree_rss_bytes": 53243904,
+  "minimum_system_free_bytes": 3937472512,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    ".superpowers/sdd/platform-p9-20261003/progress.md",
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png"
+  ],
+  "wall_seconds": 1.0789999999979045,
+  "owned_processes": [
+    {
+      "pid": 4584,
+      "create_time": 1791141873.4431624
+    },
+    {
+      "pid": 10716,
+      "create_time": 1791141873.4525523
+    },
+    {
+      "pid": 20436,
+      "create_time": 1791141874.2103915
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "0c5c7cf545a626e5f32dd385a91e6703433c98bdca5616947e7408d88ed0a18b",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

@@ -6,13 +6,17 @@ from __future__ import annotations
 import re
 
 import cycle_admission
+import research_add_alpha as AA
+import research_cycle as RC
 import research_ledger
+from research_common import ledger_view
 import research_spec
 import research_tree
 import wave_manifest as WM
 import wave_queue
 from wave_context import Wave
 from wave_stage_util import EXIT_PIN, StageError, library_wave
+import wave_stage_kinds as SK
 
 import research_window as RW   # atx-engine/tools (wave_context puts it on the path): the one source of the seal
 
@@ -27,13 +31,32 @@ def preflight_inputs(w: Wave, done: dict) -> dict:
     out = {"manifest_sha256": w.manifest_sha,
            "parent_spec_digest": w.spec_digest(parent) if w.exists(parent) else None,
            "fields_manifest_sha256": w.sha(f"{m['fields']['dir']}/manifest.json")}
-    if not library_wave(w):
+    if not library_wave(w) and m.get("rule_cell") is not None:     # v2 leverage / walk-forward: may have none
         out["template_sha256"] = w.sha(m["rule_cell"]["template"])
     return out
 
 
 def sealed_years(text: str) -> list[str]:
     return sorted({y for y in YEAR.findall(text) if int(y) >= RW.FIRST_SEALED_YEAR})
+
+
+def cache_path_check(w: Wave, spec: dict) -> list[str]:
+    """Ruling W1-I1 at preflight, before the register stage writes a registration: the wave's candidate ids and the
+    parent library's against the cell's IC cache dir, as research_cycle checks every cell it plans. A library wave's
+    cell is add-alpha's: it keeps the parent's ic.cache only on the shared stores, else its cache dir is derived
+    (research_add_alpha.shared_stores, review E2 N3); any other cell is checked on the parent's. [] when the parent
+    runs no IC pass or the cache dir cannot be derived (other checks refuse that)."""
+    if "ic" not in spec:
+        return []
+    ids = [c.get("id") for c in w.manifest.get("candidates") or [] if isinstance(c, dict)]
+    cell = spec if not library_wave(w) or AA.shared_stores(spec) else dict(spec, ic={k: v for k, v in spec["ic"].items()
+                                                                                     if k != "cache"})
+    try:
+        ids += RC.library_ids(w.read_json(spec["inputs"]["library"]["path"]))
+        problem = RC.Cycle(cell, RC.Resolver(w.root), verify=False).cache_problem(ids)
+    except (ValueError, KeyError, RC.CycleError):
+        return []
+    return [problem] if problem else []
 
 
 def admission_trial_id(cid: str, dsl_sha: str, role_sha: str | None) -> str:
@@ -87,15 +110,10 @@ def admission_new(w: Wave, records: list[dict], b: dict) -> list[str]:
 
 
 def ledger_state(w: Wave) -> tuple[list[dict], dict]:
-    bi = research_ledger.backtest_integrity()
-    p = w.path(w.manifest["ledger"])
     try:
-        records = bi.ledger_read(p)
-        head = bi.ledger_head(p)
+        return ledger_view(w.path(w.manifest["ledger"]), w.manifest["ledger"])
     except (OSError, ValueError) as exc:
         raise StageError(f"ledger {w.manifest['ledger']}: {exc}", EXIT_PIN) from exc
-    return records, {"path": w.manifest["ledger"], "lines": len(records), "head": head,
-                     "n": bi.ledger_n(records, True)}
 
 
 def budget_check(w: Wave, records: list[dict], n_before: int) -> tuple[dict, list[str]]:
@@ -130,6 +148,7 @@ def fields_check(w: Wave) -> tuple[dict, list[str]]:
         problems.append(f"fields {rel}: seal.exclusive_end {end!r} is not on or before the research seal "
                         f"{RW.SEAL_DATE} ({RW.WINDOW_ID})")
     names = [row.get("name") for row in doc.get("fields", []) if isinstance(row, dict)]
+    names += list((w.manifest.get("field") or {}).get("rows") or []) if SK.kind(w) == "field" else []
     for c in w.manifest.get("candidates") or []:
         miss = [x for x in c.get("fields", []) if x not in names]
         if miss:
@@ -171,11 +190,14 @@ def preflight(w: Wave, done: dict, log) -> dict:
     budget, more = budget_check(w, records, led["n"])
     problems += more
     problems += wave_queue.queue_check(w.root, m)
-    if not library_wave(w):
+    if not library_wave(w) and m.get("rule_cell") is not None:     # v2 leverage: the template is optional
         rc = m["rule_cell"]
         doc = w.read_json(rc["template"]) if w.exists(rc["template"]) else None
         if w.sha(rc["template"]) != rc["template_sha256"] or not research_spec.is_template(doc):
             problems.append(f"rule_cell.template {rc['template']} is not the pinned cell template")
+    kind, more = SK.preflight_kind(w, spec)                        # v2 only (contract K-P9-9): {} for v1
+    problems += more
+    problems += cache_path_check(w, spec)                          # ruling W1-I1 (nothing when within the bound)
     if problems:
         raise StageError("preflight refused: " + "; ".join(problems), EXIT_PIN)
     log(f"   preflight: manifest commit {(commit or '')[:12]}, parent {outs['name']} (L {outs['leverage']}), fields "
@@ -185,9 +207,10 @@ def preflight(w: Wave, done: dict, log) -> dict:
                            python=w.python),
             "fields": fields, "ledger": {"path": led["path"], "lines": led["lines"], "head": led["head"],
                                          "n_before": led["n"]},
-            "budget": budget, "window": {"id": RW.WINDOW_ID, "seal": RW.SEAL_DATE}}
+            "budget": budget, "window": {"id": RW.WINDOW_ID, "seal": RW.SEAL_DATE}, **({"kind": kind} if kind else {})}
 
 
 def preflight_plan(w: Wave, done: dict) -> list[str]:
     return [f"#   checks: manifest committed; parent {w.manifest['parent']['spec']} loads and has its NAV; fields pin; "
-            f"seal {RW.SEAL_DATE}; ledger chain, N == {w.manifest['expect']['n_before']}; budget; code pathspec clean"]
+            f"seal {RW.SEAL_DATE}; ledger chain, N == {w.manifest['expect']['n_before']}; budget; code pathspec "
+            "clean"] + SK.preflight_kind_plan(w)

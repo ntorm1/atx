@@ -1,0 +1,4 @@
+scratch catalog (atx-research-store p9-1u 3b955ba1, classes.json of the SQL2-CLS commit) over two committed v2 kind manifests, --root scripts/specs/p9 --include each:
+path	class	json_schema	spec_doc.kind	parent
+kinds/leverage-change.json	wave-manifest	atx.research-wave/v2	wave-manifest	tiny.json
+kinds/new-nav-rule.json	wave-manifest	atx.research-wave/v2	wave-manifest	tiny.json

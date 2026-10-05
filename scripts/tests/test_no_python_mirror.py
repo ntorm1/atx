@@ -80,6 +80,11 @@ ALLOWLIST = (
      "P9 list)", "new in B2 (atx-research-eval paired block)", "P10"),
     ("python/src/atxpy/pbo.py", ("cscv_pbo",), "atxpy's standalone pandas CSCV (outside the P9 list)",
      "atx-engine/include/atx/engine/eval/pbo.hpp (bound as atxpy._core.pbo_cscv)", "P10"),
+    # P9 wave-2 carry "A2 note" (preflight section 5 row 5), added by lane E2: the seal rule of a reused fields
+    # manifest is A1's Python and A2's C++; the Python builder keeps its copy until its fields move to C++ (P10)
+    ("atx-engine/tools/prepare_research_fields.py", ("require_research_seal",),
+     "seal rule of a reused fields manifest (A1 Python, A2 C++; preflight section 5 row 5)",
+     "atx-engine/include/atx/engine/research/fields/reuse.hpp", "P10"),
 )
 # The (module, symbol) pairs of ALLOWLIST at FROZEN_AT. The live rows must stay a subset (a retired pair cannot come
 # back, and a row cannot be swapped for a new one); the rule names to detect come from here, so retiring a row never
@@ -98,6 +103,7 @@ FROZEN_PAIRS = frozenset((module, symbol) for module, symbols in (
     ("scripts/wave_rules.py", "matched_leverage gross_matches sign_pm7_35"),
     ("atx-impl/tools/mega_report/data.py", "memmel_se"),
     ("python/src/atxpy/pbo.py", "cscv_pbo"),
+    ("atx-engine/tools/prepare_research_fields.py", "require_research_seal"),   # ruled row (wave-2 carry, A2 note)
 ) for symbol in symbols.split())
 # (module, symbol): wrappers that call the C++ core, checked to still do so.
 BINDINGS = {("python/src/atxpy/eval.py", "deflated_sharpe"): "_core.deflated_sharpe("}

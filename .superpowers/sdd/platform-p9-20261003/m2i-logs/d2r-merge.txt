@@ -1,0 +1,16 @@
+merge 5afb5447 parents: e8e424b94f323ab27052102255e1f4eced1d0e28 6d3eb19a01415d5b1f0aa644374880b91a782292
+diff e8e424b9..5afb5447 outside the sprint dir:
+ atx-impl/tools/fit_composition_weights.py      |  4 +-
+ atx-impl/tools/test_fit_composition_weights.py | 58 ++++++++++++++++++++++++++
+ scripts/tests/test_research_spec.py            | 27 ++++++++----
+ 3 files changed, 80 insertions(+), 9 deletions(-)
+lane head 6d3eb19a vs merge over code paths (expect empty: lane contains d7f762cf, root's code since then):
+ scripts/tests/test_research_spec.py | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+sprint copies vs lane pool-20 working files:
+task-D2R-report.md root e3cd9fe7970a7ce61e79dc8d10e929886f3dde0a9e85bebac3202c7f2a5c1b64 lane 15ca1afb2efd00acfa93d55dc8a4ce0d91ff9fc663b7db4fedc5c699c0576198 equal=NO
+task-D2R-review.md root cad9900a079717d814d3b80e03f2bf8a1b261ab20df5642cb639bd0e73f25279 lane 3877dd7c3ad665a2d329886965b3d590f7183a5f36aa74729dbcfadf563f8631 equal=NO
+note: the 16+/2- on test_research_spec.py between the lane head and the merge are root's E2 changes since d7f762cf
+  (git diff d7f762cf e8e424b9 on that file has the same stat); the D2R hunks came in unchanged (auto-merge, 0 conflicts).
+note: the report / review in the sprint dir arrived with the merge; equal to the lane's committed blobs at 6d3eb19a and
+  to pool-20's working files after CRLF -> LF (core.autocrlf true): report 15ca1afb..., review 3877dd7c... (LF sha256).

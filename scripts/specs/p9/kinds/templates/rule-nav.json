@@ -1,0 +1,12 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "p9k-rule-nav",
+  "description": "P9 kinds fixture (K-P9-9, G-P2 'new NAV rule'): NAV-only on the parent; the NAV rule and its params are named in the wave manifest's rules block (their flags come from the NAV exe's nav --list-rules table, x-flag).",
+  "parent": null,
+  "nominal_parent": "../../../../../tiny.json",
+  "change": {
+    "set": {
+      "nav.output": "tiny-nav-k-navrule"
+    }
+  }
+}

@@ -26,6 +26,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 import research_cycle as RC  # noqa: E402
+import cycle.phases as CP  # noqa: E402  (P9 E2 split: Cycle reads window_id from its own module)
+import cycle.spec as CS  # noqa: E402  (P9 E2 split: validate_spec reads INPUT_KEYS from its own module)
 import research_spec as RS  # noqa: E402
 import research_tree  # noqa: E402
 import test_research_cycle as T  # noqa: E402  (the fake tools and fixtures)
@@ -181,7 +183,7 @@ def label_role_input(monkeypatch):
     """Ruling E-25: lane R45 adds inputs.label_role to research_cycle (INPUT_KEYS and the NAV step's --label-role
     MANIFEST --label-role-sha256 SHA); until that merges the v8 specs are checked with the key registered here."""
     if "label_role" not in RC.INPUT_KEYS:
-        monkeypatch.setattr(RC, "INPUT_KEYS", RC.INPUT_KEYS + ("label_role",))
+        monkeypatch.setattr(CS, "INPUT_KEYS", CS.INPUT_KEYS + ("label_role",))
 
 
 def flat(node, pre: str = "") -> dict:
@@ -869,14 +871,16 @@ def test_r3_maps_the_parents_composition_to_its_aim_rule(tmp_path, authored_v8):
     RC.validate_spec(dict(v5, verdict=False, summ=dict(v8["summ"], extra=["--effective-n", "dirs"])))  # v7: as before
 
 
-# review R6B-C-4: Ruling E-27b reads the argv the tools parse, in every spelling argparse accepts (allow_abbrev is on in
-# the fitter and in nav_summ): "=", any unique prefix, a repeat (the last wins)
+# review R6B-C-4: Ruling E-27b reads the argv the tools parse, in every spelling argparse accepts: "=", a repeat (the
+# last wins) and, in nav_summ (allow_abbrev on), any unique prefix. Ruling D2R-1: the fitter sets allow_abbrev=False, so
+# it reads --composition only as the exact flag (two tokens or "="); a former abbreviation is a usage error in the fitter
+# itself (asserted below) and the guard still counts it (the safe side), so every case below is still refused
 V5_AIM = "ew-theme-aim-v1"
 COMPOSITION_SPELLINGS = {"pair": ["--composition", V5_AIM], "equals": [f"--composition={V5_AIM}"],
-                         "abbreviation": ["--compo", V5_AIM], "abbreviation-equals": [f"--compo={V5_AIM}"],
-                         "shortest": ["--c", V5_AIM], "repeat-last": ["--composition", "ew-theme-v1", "--composition",
-                                                                      V5_AIM],
+                         "repeat-last": ["--composition", "ew-theme-v1", "--composition", V5_AIM],
                          "repeat-first": ["--composition", V5_AIM, "--composition", "ew-theme-v1"]}
+COMPOSITION_ABBREVIATIONS = {"abbreviation": ["--compo", V5_AIM], "abbreviation-equals": [f"--compo={V5_AIM}"],
+                             "shortest": ["--c", V5_AIM]}
 PROTOCOL_SPELLINGS = {"pair": ["--protocol", "v8"], "equals": ["--protocol=v8"], "abbreviation": ["--proto", "v8"],
                       "abbreviation-equals": ["--prot=v8"], "shortest": ["--pr", "v8"]}
 FIT_REQUIRED = ["--library", "l", "--library-sha256", "0", "--train", "t", "--train-sha256", "0", "--orientations", "o",
@@ -913,19 +917,28 @@ def e27b_variant(doc: dict, composition: list | None = None, protocol: list | No
 
 
 def e27b_cases(doc: dict) -> list[tuple[str, dict]]:
-    return ([(f"composition {n}", e27b_variant(doc, sp)) for n, sp in COMPOSITION_SPELLINGS.items()]
+    compositions = {**COMPOSITION_SPELLINGS, **COMPOSITION_ABBREVIATIONS}         # the guard refuses both (D2R-1)
+    return ([(f"composition {n}", e27b_variant(doc, sp)) for n, sp in compositions.items()]
             + [(f"protocol {n}", e27b_variant(doc, ["--composition", V5_AIM], sp)) for n, sp in PROTOCOL_SPELLINGS.items()])
 
 
-def test_e27b_reads_what_the_fitter_and_nav_summ_parse():
+def test_e27b_reads_what_the_fitter_and_nav_summ_parse(capsys):
     """Every spelling of the cases is one the real parsers read as ew-theme-aim-v1 / --protocol v8 (so the guard must
-    see it), and the guard reads it."""
+    see it), and the guard reads it; a former abbreviation of --composition is a usage error in the fitter itself
+    (ruling D2R-1: allow_abbrev=False) and the guard still counts it."""
     sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
     import fit_composition_weights as fcw
     import nav_summ as NS
+    assert not tool_parser(fcw.main).allow_abbrev and tool_parser(NS.main).allow_abbrev
     for name, sp in COMPOSITION_SPELLINGS.items():
         assert fcw.parse_args(FIT_REQUIRED + sp).composition == ("ew-theme-v1" if name == "repeat-first" else V5_AIM)
         assert V5_AIM in RC.argparse_values(sp, "--composition"), name   # a repeat with v1 anywhere is refused too
+    capsys.readouterr()
+    for name, sp in COMPOSITION_ABBREVIATIONS.items():
+        with pytest.raises(SystemExit) as e:                             # the fitter reads no prefix (D2R-1)
+            fcw.parse_args(FIT_REQUIRED + sp)
+        assert e.value.code == 2 and "unrecognized arguments" in capsys.readouterr().err, name
+        assert RC.argparse_values(sp, "--composition") == [V5_AIM], name   # counted anyway (the safe side)
     parser = tool_parser(NS.main)
     for name, sp in PROTOCOL_SPELLINGS.items():
         assert parser.parse_args(sp).protocol == "v8" and RC.argparse_values(sp, "--protocol") == ["v8"], name
@@ -1157,6 +1170,15 @@ def v71_seed_registry() -> bytes:
     return RA.G.encode_data(seed)
 
 
+@pytest.fixture
+def stand_in_ic(monkeypatch):
+    """v8_root's IC exe is a stand-in (bin/ic.cmd -> fake_ic.py, plan-only) that writes no candidate cache, and pytest's
+    tmp roots are far deeper than a pool's: the ruling W1-I1 cache-path bound (cycle/phases.py CACHE_PATH_MAX, pinned
+    by test_wave_driver.test_cache_path_bound_w1_i1) would refuse the committed v7.1 / v8 ids here. A cycle that runs
+    on it lifts the bound; nothing else changes."""
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", 10 ** 6)
+
+
 def v8_root(tmp_path: Path) -> tuple[Path, Path]:
     """A root with base-lo1.json (its tools re-pointed at the fake ones of test_research_cycle.py, the IC exe at the
     fake --plan-only one), locked on stand-ins of its inputs (fake_root's unlocked copy, re-pinned to the stand-ins'
@@ -1235,6 +1257,7 @@ def test_derive_name_substitutes_the_parent_token_else_appends():
     assert not RA.shared_stores({"fit": {"work_dir": "build-equity/mega-fit-work-v70"}}) and not RA.shared_stores({})
 
 
+@pytest.mark.usefixtures("stand_in_ic")
 def test_add_alpha_on_a_v8_base_spec_screens_and_runs(tmp_path):
     root, parent = v8_root(tmp_path)
     outs = parent_cell(root, parent)
@@ -1275,6 +1298,7 @@ def test_add_alpha_on_a_v8_base_spec_screens_and_runs(tmp_path):
                                                                    "cycle_verdict.json").is_file()
 
 
+@pytest.mark.usefixtures("stand_in_ic")
 def test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_exceptions(tmp_path, capsys, authored_v8):
     root, base = v8_root(tmp_path)
     tpl = json.loads((authored_v8 / "r4-hold-band.json").read_text(encoding="utf-8"))
@@ -1355,6 +1379,7 @@ def test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_excep
         RC.compare_files(RC.Resolver(root), check)
 
 
+@pytest.mark.usefixtures("stand_in_ic")
 def test_add_alpha_child_of_a_labelled_parent_labels_its_ref_and_nav(tmp_path):
     """Review F-8: the child of a labelled parent (inputs.label_role, e.g. B0c) reproduces the parent's NAV in its ref
     phase and compares it byte for byte with the parent's labelled S2 daily CSV; so ref (and nav) carry --label-role and
@@ -1400,7 +1425,7 @@ def test_cache_gc_apply_with_the_v8_specs_keeps_the_shared_stores(tmp_path, monk
     """C-1: the v8 specs name the store base build-equity/fit-work; the fitter, the card and the monitor extend it with
     <role sha16>-<window id> themselves (the monitor reads every window of its role): --apply deletes none of it."""
     import research_gc
-    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    monkeypatch.setattr(CP, "window_id", lambda: "research-window-v2")
     root = tmp_path / "root"
     specs = [V8 / n for n in V8_SPECS + GENERATED]                                   # authored and add-alpha's
     named ={RC.load_spec(p)["fit"]["work_dir"] for p in specs} | {RC.load_spec(p)["ic"]["cache"] for p in specs}

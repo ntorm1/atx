@@ -702,6 +702,64 @@ class Refusals(unittest.TestCase):
         self.refuse(fx, "payload SHA close.f64")
 
 
+class ExactFlagsOnly(unittest.TestCase):
+    """Ruling D2R-1: the fitter's parser reads no abbreviation (allow_abbrev=False). With argparse's default a unique
+    prefix was read as its flag, so adding a flag changed what a prefix meant (--compo read --composition until D2 added
+    --composition-exe, then failed as ambiguous). Every prefix is a usage error; every exact flag still parses."""
+
+    REQUIRED = ["--library", "l", "--library-sha256", "0", "--train", "t", "--train-sha256", "0", "--orientations", "o",
+                "--orientations-sha256", "0", "--runner-summary", "s", "--runner-summary-sha256", "0", "--screen",
+                "v4-prior-v1", "--output", "w"]
+
+    def parser(self) -> argparse.ArgumentParser:
+        """The parser fcw.parse_args builds (spied at its parse_args, which runs unchanged)."""
+        seen, real = [], argparse.ArgumentParser.parse_args
+
+        def spy(parser, args=None, namespace=None):
+            seen.append(parser)
+            return real(parser, args, namespace)
+        with unittest.mock.patch.object(argparse.ArgumentParser, "parse_args", spy):
+            fcw.parse_args(self.REQUIRED)
+        return seen[0]
+
+    def exit_code(self, extra: list) -> tuple[object, str]:
+        """(SystemExit code or None when it parsed, stderr) of the fitter's parse of REQUIRED + extra."""
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                fcw.parse_args(self.REQUIRED + extra)
+        except SystemExit as stop:
+            return stop.code, err.getvalue()
+        return None, err.getvalue()
+
+    def test_an_abbreviated_flag_is_a_usage_error(self):
+        for extra in (["--compo", "ew-theme-v1"], ["--compo=ew-theme-v1"], ["--c", "ew-theme-v1"], ["--orient", "prior"],
+                      ["--orient=prior"], ["--composition-e", "c.exe"], ["--engine-f"], ["--max-sec", "5"],
+                      ["--report-f"], ["--h"]):
+            code, err = self.exit_code(extra)
+            self.assertEqual(code, 2, extra)
+            self.assertIn(f"unrecognized arguments: {' '.join(extra)}", err, extra)
+
+    def test_no_prefix_of_any_flag_is_read(self):
+        parser = self.parser()
+        self.assertFalse(parser.allow_abbrev)
+        longs = sorted(o for o in parser._option_string_actions if o.startswith("--"))
+        self.assertIn("--composition-exe", longs)
+        prefixes = sorted({o[:end] for o in longs for end in range(3, len(o))} - set(longs))
+        self.assertGreater(len(prefixes), len(longs))
+        self.assertEqual([p for p in prefixes if self.exit_code([p, "x"])[0] != 2], [])
+
+    def test_the_exact_flags_still_parse(self):
+        args = fcw.parse_args(self.REQUIRED + ["--composition", "ew-theme-aim-v1", "--orientation", "prior"])
+        self.assertEqual((args.composition, args.orientation, args.screen), ("ew-theme-aim-v1", "prior", "v4-prior-v1"))
+        args = fcw.parse_args(self.REQUIRED + ["--composition=ew-theme-v1", "--orientation=prior", "--engine-fit",
+                                               "--composition-exe", "c.exe", "--max-seconds=5"])
+        self.assertEqual((args.composition, args.orientation, args.engine_fit, args.composition_exe, args.max_seconds),
+                         ("ew-theme-v1", "prior", True, Path("c.exe"), 5.0))
+        default = fcw.parse_args(self.REQUIRED)
+        self.assertEqual((default.composition, default.orientation, default.engine_fit, default.composition_exe),
+                         (fcw.RULE_ID, "train", False, None))
+
 
 # ------------------------------------------------------------- T11: v3-admit-v1
 def screen_world(seed=21, names=60, score_begin=150):

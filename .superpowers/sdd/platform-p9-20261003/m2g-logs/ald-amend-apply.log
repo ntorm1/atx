@@ -1,0 +1,11 @@
+scripts/specs/p9/blocked/lazy_prices.json: HEAD blob == working tree bytes: True; CRLF in HEAD: False; BOM: False
+  line 17: before byte-identical: True
+  line 18: before byte-identical: True
+  line 19: before byte-identical: True
+  line 20: before byte-identical: True
+  line 28: before byte-identical: True
+  applied; parses; keys same and in order: True; changed keys: ['blocked_on', 'deviation', 'domain', 'formula', 'notes']
+scripts/specs/p9/blocked/hf_crowd.json: HEAD blob == working tree bytes: True; CRLF in HEAD: False; BOM: False
+  line 20: before byte-identical: True
+  applied; parses; keys same and in order: True; changed keys: ['notes']
+ALL BEFORE LINES BYTE-IDENTICAL

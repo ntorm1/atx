@@ -1,0 +1,35 @@
+store build-equity/p9-m2i-dcov-v11  model atx-risk-v1.1
+  manifest.json sha256 397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7 bytes 33768
+  bias.csv                 sha256 9e3248c6b889a48418c3d8303edc43faf5a605597e887dd175e3b18563535c8b bytes     29146445 listed-match True
+  bias_summary.json        sha256 7bd568c76a9dd972df0549c6a96becc5a17588c640cd394fc74a20a6cb52659f bytes        12863 listed-match True
+  diagnostics.csv          sha256 3b8a016b465a5d3dad53f776d9abb0b34759a5df2af9b44138f7f3416a7d2ff1 bytes       309600 listed-match True
+  exposures_last.csv       sha256 ae5d3b418ec27bd3db7e56cb958d25beb9f57710c2defa08eb5dd5f5fe0913e8 bytes       883364 listed-match True
+  factor_covariance.f64    sha256 776c0011772c50773653730909a798adc0236afb751e35a8ea34d6ea051b5506 bytes     43206560 listed-match True
+  factor_returns.csv       sha256 5dc6f148cb3f822cc04b51b710d26ab882c688628c853c617805bfb3e084e037 bytes      1575890 listed-match True
+  factor_structural.u8     sha256 f63df1a49200ff8c8a1023b978769f4ec4967f4bb579ce02abb0a430c7b68dcf bytes        87110 listed-match True
+  industry_slot.u8         sha256 9b7cca179d9bb8a9ed89b65dfe3296d0b5dc2d3912ccd28bc15234327d375204 bytes      8320410 listed-match True
+  model.atxcov             sha256 cd48d5749dd7484ca69ae6b0b9df142b73e2beb64c814d3c143982ec59bb2ce3 bytes    510677824 listed-match True
+  specific_variance.f64    sha256 315a0f33d8ff4ab474bd3dd7fc1b2fa64d0309c105bcb13dbb61bce67cac40d7 bytes     66563280 listed-match True
+  style_exposures.f32      sha256 8ae6c18599aafc055e9d5adb31351d00befddfd5bb40b42c39171d2a9d609fe8 bytes    366098040 listed-match True
+  container file model.atxcov format atx.cov-container/1.0 bytes 510677824
+  container root_sha256 b39a1b776639e7d0b88c70e8a43bb9f6c5e6dacb92a336a327234dfc5d312e1d
+  container file_sha256 cd48d5749dd7484ca69ae6b0b9df142b73e2beb64c814d3c143982ec59bb2ce3
+  files on disk not listed in `files`: none
+store build-equity/p9-m2i-dcov-covv1  model atx-cov-v1
+  manifest.json sha256 ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3 bytes 34534
+  bias.csv                 sha256 90016fdbef07ed1c4a03682fb79bd32a4ea70d31d522b37789a2575e709c1460 bytes     29147894 listed-match True
+  bias_summary.json        sha256 b340aed90b0dd5283679132cbed1f4997606e58b8e4df831b8ae920e5cddd28f bytes        12871 listed-match True
+  diagnostics.csv          sha256 338e3a4a171bb987f7f2e55686f34590adbf344179576a479a33767425e394fa bytes       309350 listed-match True
+  exposures_last.csv       sha256 ae5d3b418ec27bd3db7e56cb958d25beb9f57710c2defa08eb5dd5f5fe0913e8 bytes       883364 listed-match True
+  factor_covariance.f64    sha256 9bdd2a201b81554d59784c43035f101e92c6943476da789a5e1a3dc25e1ea7e5 bytes     43206560 listed-match True
+  factor_returns.csv       sha256 5dc6f148cb3f822cc04b51b710d26ab882c688628c853c617805bfb3e084e037 bytes      1575890 listed-match True
+  factor_structural.u8     sha256 f63df1a49200ff8c8a1023b978769f4ec4967f4bb579ce02abb0a430c7b68dcf bytes        87110 listed-match True
+  industry_slot.u8         sha256 9b7cca179d9bb8a9ed89b65dfe3296d0b5dc2d3912ccd28bc15234327d375204 bytes      8320410 listed-match True
+  model.atxcov             sha256 0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a bytes    510678016 listed-match True
+  specific_variance.f64    sha256 315a0f33d8ff4ab474bd3dd7fc1b2fa64d0309c105bcb13dbb61bce67cac40d7 bytes     66563280 listed-match True
+  style_exposures.f32      sha256 8ae6c18599aafc055e9d5adb31351d00befddfd5bb40b42c39171d2a9d609fe8 bytes    366098040 listed-match True
+  container file model.atxcov format atx.cov-container/1.0 bytes 510678016
+  container root_sha256 20919f7b338dfbd786994cbbcb506bdaabd9c3af3266d4394d4d2e07d90c9f8e
+  container file_sha256 0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a
+  files on disk not listed in `files`: none
+VERDICT: every listed payload matches its pin
