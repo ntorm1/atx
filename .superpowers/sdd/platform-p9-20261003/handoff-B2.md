@@ -1,5 +1,56 @@
 # Lane B2 handoff: post-identity redo, BLOCKED at the merge (permission refusal), 2026-10-04
 
+## Follow-up at the owner stop (2026-10-04; supersedes "Next round" below where they differ)
+
+**Head:** the docs commit that adds this section, on the merge commit `c37ec671`. **Root SHA merged:** `5c57c1ef`
+(`git merge feat/platform-p9-20261003`, plain; it holds E2's split, D2R and COVR). The merge is COMPLETE and committed;
+no rebase, no history rewritten. No permission refusal this round. Tree clean after this commit.
+
+**Conflict regions (ruling B2-14: each resolved by an Edit of that region; no checkout / restore / show-redirect):**
+
+| file | region | side kept / how combined | why |
+|---|---|---|---|
+| `scripts/research_cycle.py` | 1: module docstring (ours: the 186-line usage text; root: E2's 3-line shim text) | root's (E2's) text; ours removed in chunks by Edit | E2 moved the usage text to `scripts/cycle/cli.py`; ours = merge-base text + B2's `exes.eval` entry, which is re-placed in `cycle/cli.py` after `exes_sha256` |
+| `scripts/research_cycle.py` | 2: the module body (ours: the old 2,100-line code; root: E2's re-export imports) | root's re-exports, plus one line `from cycle.spec import EVAL_EXE  # noqa ...` | ours = merge-base code (E2 moved it to `scripts/cycle/**`) + B2-R3's hunks, each re-placed: `EVAL_EXE` after `EXE_NAMES` in `cycle/spec.py:81`; the `effective_exes` docstring and `names` line in `cycle/spec.py:417-425`; the three `summ_step` lines (`--engine-stats <exes.eval>`) in `cycle/phases.py:736-738` (+ `EVAL_EXE` in its `cycle.spec` import, `:21`). None dropped: `git diff 5c57c1ef c37ec671 -- scripts/research_cycle.py` is that one line |
+| `scripts/tests/test_no_python_mirror.py` | ALLOWLIST head | ours (the six B2 statistics rows stay deleted, one comment line) + root's D2-3 comment; root's D3 / P10 rows untouched | G-P5: the deletion commit `598d2199` retired them |
+| `scripts/wave_stage_record.py` | `verify`'s `problems` line | combined: `[exe_problem(exe, pins, SK.rule_cell_kind(w)), eval_problem(w, done)]` | root's E2-15 (c) argument and B2-10's check both kept (B2-11 below reduces `eval_problem`) |
+| sprint-dir `handoff-B2.md`, `task-B2-report.md` (2 regions) | root held an older copy of the lane's own docs | ours (the lane's newer text) | lane-owned records |
+
+Auto-merged: `scripts/tests/test_research_cycle.py` (B2-R3's exes dicts), `atx-engine/tests/CMakeLists.txt`. The merge
+also carries root's deletion of 129 tracked `.mypy_cache` files under the sprint dir's `tools/` (none added by me).
+
+**Pending items:**
+- G-P5 deletion on the merged tree: PARTLY. In the tree (`598d2199` merged; mirror rows retired by the resolution).
+  Not yet re-run on the merged tree: `test_no_python_mirror.py`, `test_nav_summ_engine.py::test_a_bin_without_the_verb_fails_closed`.
+- B2-11 (re-review 1 R1 + R2): NOT STARTED (design: report, "B2-11 / R1 / R2"). Where:
+  `wave_stage_record.py:27` drop `V2_SCHEMA`; `:104-128` `eval_problem` keeps only the spec key + pin check, keyed on
+  `wave_kinds.is_v2(w.manifest)` (import `wave_kinds as WK`); `:177` `bundle_once(w, base, cell, verb=None)`: for v2
+  refuse a verb on disk (`w.sha(path)`) != pin before the run, and after the run / on reuse
+  `CV.check_verb(out, doc, (pin, ...))` -> `StageError(..., EXIT_PIN)`; `:214` `judge` passes the cell's
+  (exes.eval, pin) to `bundle_once` in both branches and checks the cell's summ.json / pbo.json with
+  `CV.check_summ_verb` after `scored_verdict`; `:248` `judge_plan` passes the verb to `bundle_argv`;
+  `wave_steps.py:126` `bundle_argv(..., verb=None)` adds `--engine-stats <verb>` right after the script (v1 bytes
+  unchanged). Tests: rewrite `scripts/tests/test_wave_eval_verb.py` on a real v2 manifest via `test_wave_kinds.py`'s
+  `load_fixture` / `rerooted` / `world` / `wave` helpers (`:155-186`) in stage order; teeth by mutation.
+- R1 / R2: = B2-11, NOT STARTED.
+- PRE-15 survives the merge: YES by grep (`tot_minus_m` in `eval_report.cpp` x5, `nav_summ.py` x1, `dsr_total.py` x3;
+  "prefix rule" in `eval_report.cpp` x3, `nav_summ.py` x3); its tests not re-run on the merged tree.
+- D2R-2 (b): NOT STARTED (scan specs / templates / fixtures / drivers for abbreviated `nav_summ` flags first; then
+  `allow_abbrev=False` and the e27b `--protocol` cases on D2R's `test_research_spec.py`).
+
+**Tests actually run on the merged tree (before the merge commit; `PYTHONDONTWRITEBYTECODE=1`, `-p no:cacheprovider`, no
+ATX_EQUITY_BIN):** `test_research_cycle.py` + `test_wave_eval_verb.py` + `test_cycle_scoring.py`: 99 passed, 3 skipped,
+2 failed. The two failures are `test_cycle_scoring.py::test_verdict_dsr_is_the_ledger_variance_value_not_the_single_cell_lo_value`
+and `::test_the_summ_runs_the_named_verb_and_the_verdict_refuses_another`: `FileNotFoundError` for
+`build-equity/bin/atx-research-eval.exe` (no build tree in pool-14; they need the built verb). Suites are NOT known
+green: no full `scripts/tests` run, no stage chain, no tools suites, no build on the merged tree.
+
+**Next step for a fresh agent:** from this head (no re-merge unless root moved; if it did, `git merge
+feat/platform-p9-20261003` again): implement B2-11 as above; G-P5 checks; D2R-2 (b) last; then build Debug + Release
+(tags from `p9-b2-i`; the merge brought root's C++ changes, EXE-CUR), gtests eval / ledger / `TrialLedger*`, pytest
+`scripts/tests` seeds 0 and 1 with `ATX_EQUITY_BIN` unset or a full bin, stage chain, tools suites, mirror guard; then
+finish the report section "Post-identity redo" with the conflict table above.
+
 **Where:** pool-14, branch `feat/p9-b2-20261003`. Head: the docs commit that adds this file (code commit of the round
 `fe152fca`, on `4bed5c43`). History kept: `598d2199` (deletion) and `8fb17ad6` (B2-10) are on the branch; no rebase.
 Report: `task-B2-report.md`, section "Post-identity redo" (end of file).
