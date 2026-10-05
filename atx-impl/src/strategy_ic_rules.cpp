@@ -12,6 +12,7 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "atx/engine/research/composition/fit.hpp" // P9 lane D3W: walk-forward-v1's constants
 #include "strategy_ic_mom_volman.hpp"
 #include "strategy_ic_shrink.hpp"
 #include "strategy_ic_theme_erc.hpp"
@@ -20,6 +21,7 @@
 #include "strategy_two_speed.hpp"
 
 namespace atx::impl::strategy::ic_detail {
+namespace rc=atx::engine::research::composition;
 // ---- Theme table ---------------------------------------------------------------
 bool theme_name(const std::string& s) {
   return !s.empty() && s.size()<=64 && std::all_of(s.begin(),s.end(),[](char c) {
@@ -603,6 +605,65 @@ std::vector<IcStageKind> running_stage_kinds(const PinnedWeights& pinned) {
   for (const auto* rule:running_rules(pinned)) out.push_back(rule->stage);
   return out;
 }
+namespace {
+// The first session of the role at or after `from` (its date index; dates when none is).
+usize first_at_or_after(std::span<const i64> session_keys,i64 from) {
+  return static_cast<usize>(std::lower_bound(session_keys.begin(),session_keys.end(),from)-
+                            session_keys.begin());
+}
+// P9 lane D3W: the walk_forward rows of a v3 file and, on a standardise grouping, the masses in
+// force (composition_stages' comment).
+co::Status walk_forward_stages(const PinnedWeights& pinned,std::span<const i64> session_keys,
+                               IcCompositionStages& out) {
+  if (pinned.weight_rows.size()!=pinned.weight_from.size() || pinned.weight_rows.empty())
+    return co::Err(co::ErrorCode::Internal,"IC runner: walk_forward geometry");
+  out.weight_rows.reserve(pinned.weight_rows.size());
+  for (usize r=0;r<pinned.weight_rows.size();++r)
+    out.weight_rows.push_back({first_at_or_after(session_keys,pinned.weight_from[r]),
+                               pinned.weight_rows[r]});
+  if (pinned.std_themes.empty()) return co::Ok(); // the plain pinned path: per-date weights only
+  const bool volman=pinned.schedule==mom_volman_rule;
+  std::vector<usize> volman_begin;
+  if (volman) {
+    if (pinned.volman_scale.size()!=pinned.schedule_from.size() ||
+        pinned.volman_theme>=pinned.std_theme_count)
+      return co::Err(co::ErrorCode::Internal,"IC runner: mom-volman-v1 schedule geometry");
+    for (const i64 from:pinned.schedule_from)
+      volman_begin.push_back(first_at_or_after(session_keys,from));
+  }
+  std::vector<usize> bounds{0};
+  for (const auto& row:out.weight_rows) bounds.push_back(row.begin);
+  bounds.insert(bounds.end(),volman_begin.begin(),volman_begin.end());
+  std::sort(bounds.begin(),bounds.end());
+  bounds.erase(std::unique(bounds.begin(),bounds.end()),bounds.end());
+  IcStage stage; stage.kind=IcStageKind::schedule;
+  stage.blocks.reserve(bounds.size());
+  usize row=0,block=0; // rows (blocks) [0, row) begin at or before the boundary
+  for (const usize at:bounds) {
+    while (row<out.weight_rows.size() && out.weight_rows[row].begin<=at) ++row;
+    while (block<volman_begin.size() && volman_begin[block]<=at) ++block;
+    std::vector<f64> mass(pinned.std_theme_count,0.0);
+    if (row>0) {
+      const auto& w=out.weight_rows[row-1U].weights;
+      for (usize k=0;k<w.size();++k)
+        if (w[k]>0) mass[pinned.std_themes[k]]+=w[k];
+      if (block>0)
+        mass[pinned.volman_theme]=mass[pinned.volman_theme]*pinned.volman_scale[block-1U];
+    }
+    stage.blocks.push_back({at,std::move(mass)});
+  }
+  const auto scheduled=std::find_if(out.stages.begin(),out.stages.end(),
+      [](const IcStage& s) { return s.kind==IcStageKind::schedule; });
+  if (scheduled!=out.stages.end()) {
+    scheduled->blocks=std::move(stage.blocks);
+    return co::Ok();
+  }
+  const auto later=std::find_if(out.stages.begin(),out.stages.end(),
+      [](const IcStage& s) { return s.kind>IcStageKind::schedule; });
+  out.stages.insert(later,std::move(stage));
+  return co::Ok();
+}
+} // namespace
 co::Result<IcCompositionStages> composition_stages(const PinnedWeights& pinned,
                                                    std::span<const i64> session_keys) {
   IcCompositionStages out;
@@ -614,17 +675,108 @@ co::Result<IcCompositionStages> composition_stages(const PinnedWeights& pinned,
       if (pinned.schedule_mass.size()!=pinned.schedule_from.size())
         return co::Err(co::ErrorCode::Internal,"IC runner: theme schedule geometry");
       stage.blocks.reserve(pinned.schedule_from.size());
-      for (usize b=0;b<pinned.schedule_from.size();++b) {
-        const auto at=std::lower_bound(session_keys.begin(),session_keys.end(),
-                                       pinned.schedule_from[b]);
+      for (usize b=0;b<pinned.schedule_from.size();++b)
         stage.blocks.push_back(
-            {static_cast<usize>(at-session_keys.begin()),pinned.schedule_mass[b]});
-      }
+            {first_at_or_after(session_keys,pinned.schedule_from[b]),pinned.schedule_mass[b]});
     }
     if (rule->stage==IcStageKind::sleeves) stage.fast=pinned.sleeve_fast;
     out.stages.push_back(std::move(stage));
   }
+  if (!pinned.walk_forward.empty()) ATX_TRY_VOID(walk_forward_stages(pinned,session_keys,out));
   return co::Ok(std::move(out));
+}
+
+co::Status composition_walk_forward(const Json& j,const RuleInputs& in,PinnedWeights& pinned) {
+  const auto& lib=in.lib;
+  const auto refuse=[](const std::string& what) {
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+what);
+  };
+  if (!j.contains("walk_forward"))
+    return refuse("composition weights schema atx.dsl-composition-weights/v3 requires a "
+                  "walk_forward block");
+  const auto& block=j.at("walk_forward");
+  const auto at_least=[&block](const char* key,i64 least) {
+    return block.contains(key) && block.at(key).is_number_integer() &&
+           block.at(key).get<i64>()>=least;
+  };
+  const auto text=[&block](const char* key,std::string_view want) {
+    return block.contains(key) && block.at(key).is_string() &&
+           block.at(key).get_ref<const std::string&>()==want;
+  };
+  if (!block.is_object() || block.size()!=6U || !text("rule",rc::walk_forward_rule) ||
+      !text("window",rc::walk_forward_expanding) || !at_least("lag",2) || !at_least("step",1) ||
+      !at_least("min_decisions",2) || !block.contains("rows") || !block.at("rows").is_array() ||
+      block.at("rows").empty() || block.at("rows").size()>rc::walk_forward_max_rows)
+    return refuse("walk_forward must be {rule: walk-forward-v1, window: expanding, lag: >= 2, "
+                  "step: >= 1, min_decisions: >= 2, rows: [{from_session, weights: {id: "
+                  "weight}}, ...] (1..4096)}");
+  if (!pinned.themes.empty() || pinned.residualise || pinned.schedule==theme_tsmom_rule)
+    return refuse("walk_forward (walk-forward-v1) is refused with theme_redistribution, "
+                  "theme_residualise and theme-tsmom-v1 (their grouping, order and schedule are "
+                  "fitted on the whole TRAIN window)");
+  std::set<std::string> ids;
+  for (const auto& c:lib.candidates) ids.insert(c.id);
+  std::vector<i64> from;
+  std::vector<std::vector<f64>> rows;
+  for (const auto& row:block.at("rows")) {
+    if (!row.is_object() || row.size()!=2U || !row.contains("from_session") ||
+        !row.at("from_session").is_number_integer() || !row.contains("weights") ||
+        !row.at("weights").is_object())
+      return refuse("walk_forward row must be {from_session: integer, weights: {id: weight}}");
+    const i64 session=row.at("from_session").get<i64>();
+    if (!from.empty() && !(session>from.back()))
+      return refuse("walk_forward from_session must increase strictly");
+    const auto& weights=row.at("weights");
+    for (auto it=weights.begin();it!=weights.end();++it)
+      if (!ids.contains(it.key()))
+        return refuse("walk_forward weight for unknown candidate: "+it.key());
+    std::vector<f64> w;
+    w.reserve(lib.candidates.size());
+    for (const auto& c:lib.candidates) {
+      const auto it=weights.find(c.id);
+      if (it==weights.end()) return refuse("walk_forward weight missing: "+c.id);
+      const f64 x=it->is_number()?it->get<f64>():quiet_nan;
+      if (!std::isfinite(x) || x<0)
+        return refuse("walk_forward weight must be finite and >= 0: "+c.id);
+      w.push_back(x);
+    }
+    if (std::none_of(w.begin(),w.end(),[](f64 x) { return x>0; }))
+      return refuse("walk_forward row at from_session "+std::to_string(session)+
+                    " weights no candidate");
+    from.push_back(session);
+    rows.push_back(std::move(w));
+  }
+  // A candidate a row weights: its sign, and beyond the top-level weights its theme's index.
+  const bool grouped=!pinned.std_themes.empty();
+  std::vector<std::string> names(grouped?pinned.std_theme_count:0U);
+  if (grouped) {
+    const auto& listed=j.at("theme_standardise").at("themes");
+    for (usize k=0;k<lib.candidates.size();++k)
+      if (pinned.values[k]>0)
+        names[pinned.std_themes[k]]=listed.at(lib.candidates[k].id).get<std::string>();
+  }
+  for (usize k=0;k<lib.candidates.size();++k) {
+    if (std::none_of(rows.begin(),rows.end(),[k](const std::vector<f64>& w) { return w[k]>0; }))
+      continue;
+    const auto& id=lib.candidates[k].id;
+    if (!pinned.signs.empty() && pinned.signs[k]==0)
+      return refuse("composition sign missing for a candidate a walk_forward row weights: "+id);
+    if (!grouped || pinned.values[k]>0) continue;
+    const auto& listed=j.at("theme_standardise").at("themes");
+    const auto it=listed.find(id);
+    if (it==listed.end())
+      return refuse("theme missing for a candidate a walk_forward row weights: "+id);
+    const auto& theme=it->get_ref<const std::string&>();
+    const auto at=std::find(names.begin(),names.end(),theme);
+    if (at==names.end())
+      return refuse("walk_forward row weights "+id+" of theme "+theme+
+                    ", which no top-level weighted candidate has");
+    pinned.std_themes[k]=static_cast<usize>(at-names.begin());
+  }
+  pinned.walk_forward=std::string(rc::walk_forward_rule);
+  pinned.weight_from=std::move(from);
+  pinned.weight_rows=std::move(rows);
+  return co::Ok();
 }
 std::string_view stage_name(IcStageKind kind) noexcept {
   switch (kind) {

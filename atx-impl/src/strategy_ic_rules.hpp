@@ -110,8 +110,29 @@ struct CompositionRule {
 // The ordered stage list of the pinned weights for a role whose sessions are `session_keys`: each
 // theme-tsmom-v1 block starts at the first session at or after its from_session (a role after the
 // last block keeps the last block's masses). Borrows `pinned` (weights and themes).
+// P9 lane D3W (a v3 file's walk_forward rows): each row starts likewise at the first session at or
+// after its from_session (IcCompositionStages::weight_rows), and on a standardise grouping the
+// masses in force are a schedule stage: from date 0 zero masses until the first row, then per row
+// the theme sums of its weights (library order, as IcComposition::create sums std_mass), with
+// price_momentum's mass times the scale of the mom-volman-v1 block in force when that schedule is
+// pinned (the two boundary sets merged); that stage replaces the mom-volman-v1 one or is added
+// after the grouping.
 [[nodiscard]] co::Result<IcCompositionStages> composition_stages(const PinnedWeights& pinned,
                                                                  std::span<const i64> session_keys);
+// P9 lane D3W (contract K-P9-8): a schema-v3 file's walk_forward block, parsed after every rule
+// block: {"rule": "walk-forward-v1", "window": "expanding", "lag": >= 2, "step": >= 1,
+// "min_decisions": >= 2 (integers: the fit's flags, recorded), "rows": [{"from_session": integer,
+// "weights": {id: weight}}, ...]} with exactly these keys, 1..4096 rows, from_session strictly
+// increasing, each row naming every library id with a finite weight >= 0 and weighting at least
+// one. A row may weight a candidate the top-level weights leave at 0 (an ic-shrink-v1 member
+// floored on TRAIN but not on an early window): it then needs a pinned sign when the file pins
+// signs and, under a rerank-true theme_standardise, a themes entry naming the theme of a top-level
+// weighted candidate (whose composition index it takes). Refused with theme_redistribution,
+// theme_residualise and theme-tsmom-v1 (their grouping, order and schedule are fitted on the whole
+// TRAIN window). The top-level weights, signs and blocks keep every check they had. Fills
+// pinned.walk_forward, weight_from and weight_rows.
+[[nodiscard]] co::Status composition_walk_forward(const Json& doc,const RuleInputs& in,
+                                                  PinnedWeights& pinned);
 [[nodiscard]] std::string_view stage_name(IcStageKind kind) noexcept;
 // What a row writes into a method recipe, canonical: {"composition": recipe_text, "key":
 // recipe_key, "value": id}; recipe_sha256 is the SHA-256 of its compact dump.

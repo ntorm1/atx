@@ -144,6 +144,7 @@ co::Status composition_volman(const Json& j, const RuleInputs& in, PinnedWeights
   pinned.volman_sigma = std::move(sigma);
   pinned.volman_target = std::move(target);
   pinned.volman_scale = std::move(scale);
+  pinned.volman_theme = momentum; // P9 lane D3W: walk_forward rows scale this theme's row mass
   return co::Ok();
 }
 } // namespace
