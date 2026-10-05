@@ -1,0 +1,4 @@
+exes (Debug, p9-2m receipt, source 5afb5447):
+411af33a0def5a6c28983dbf1ffc2fbc324694e8ac2e6b24401b27b693c9fa26 */c/atx-wt/pool-2/build-equity/bin/atx-research-admission.exe
+b0175bd1eb503d675613ff732d38727a5a1222a40c8111d41e98ec47b169beda */c/atx-wt/pool-2/build-equity/bin/atx-research-composition.exe
+c02717ef29380a56e213e9b03e0568d9c948504fc5d87c29a03fd7121254c44b */c/atx-wt/pool-2/build-equity/bin/atx-equity-strategy-targets.exe

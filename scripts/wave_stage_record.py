@@ -3,7 +3,6 @@ scoring, bundle, book and verdict; the ledger re-read, wave-result.json, the log
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 from pathlib import Path
 import shutil
@@ -15,6 +14,7 @@ import wave_queue
 import wave_result
 import wave_rules as WR
 import wave_seal
+import wave_stage_kinds as SK
 import wave_steps as WS
 from wave_context import Wave
 from wave_stage_cell import last_completed, nav_series, read_once, reader_plan, refuse_stale_code, unbound
@@ -41,7 +41,7 @@ def verify(w: Wave, done: dict, log) -> dict:
     digest = mt.get("spec_digest") or done["spec"]["spec_digest"]
     seal = wave_seal.scan(w, wave_seal.wave_logs(w, done), wave_seal.rulings(w, done))
     exe, pins = nav_exe(w, done), exes_pins(w, done)
-    problems = [p for p in [exe_problem(exe, pins)] if p]
+    problems = [p for p in [exe_problem(exe, pins, SK.rule_cell_kind(w))] if p]
     if not chk["pass"]:
         problems.append("mechanics FAIL (" + ", ".join(r["check"] for r in chk["rows"] if not r["pass"]) + ")")
     if not isinstance(binding, dict) or not binding.get("argv_sha256"):
@@ -65,16 +65,36 @@ def verify(w: Wave, done: dict, log) -> dict:
     return out
 
 
-def exe_problem(exe: dict, pins: dict | None) -> str | None:
-    """Verify's NAV exe refusal (P9 OR-2): the cell's NAV ran on another exe than the parent's (their completed run
-    receipts differ, or the specs' exes_sha256 pins name two NAV exes) and the cell spec's reference construction did
-    not run on the cell's exe; None otherwise (a rule cell has no ref phase: recorded only)."""
+def exe_problem(exe: dict, pins: dict | None, rule_cell: bool = False) -> str | None:
+    """Verify's NAV exe refusal; None when the cell is judged like with like.
+
+    A cell with a reference construction (P9 OR-2): refused when its NAV ran on another exe than the parent's (their
+    completed run receipts differ, or the specs' exes_sha256 pins name two NAV exes) and the reference construction
+    did not run on the cell's exe.
+    A cell without one (a rule cell, ``ref`` "none"; ruling W1-I2 (a), DEC-20): its paired parent NAV is the parent's
+    own, so it must have been made by the cell's NAV exe. Refused, fail closed, when the receipts' exes differ, when
+    the pins name two NAV exes, or when only one side records its exe (no proof of a like-with-like pair). Nothing is
+    refused only when neither NAV records an exe: no NAV the bounded runner made (synthetic fixtures).
+    A v2 rule cell (``rule_cell``, wave_stage_kinds.rule_cell_kind; ruling E2-15 (c)) is judged as a cell without one
+    whatever its ref phase: its paired reference is the parent's NAV (summ --reference inputs.reference_cell), and a
+    ref construction of its template's own proves nothing about that pair (research_spec.resolve drops the parent's
+    compare), so a ref that ran does not lift W1-I2 (a)'s refusal."""
     moved = "nav" in ((pins or {}).get("differ") or [])
+    pin_text = (f" (exes_sha256 pins: cell {((pins or {}).get('cell') or {}).get('nav')}, parent "
+                f"{((pins or {}).get('parent') or {}).get('nav')})") if moved else ""
+    if exe["ref"] == "none" or rule_cell:
+        one_sided = exe["equal"] is None and bool(exe["cell"]) != bool(exe["parent"])
+        if not (exe["equal"] is False or moved or one_sided):
+            return None
+        own = "" if exe["ref"] == "none" else (f" (its template's own ref construction, ref {exe['ref']}, is not its "
+                                               "paired reference: ruling E2-15 (c))")
+        return (f"rule cell: its paired parent NAV was made by NAV exe {exe['parent'] or '(unrecorded)'} and the "
+                f"cell's NAV by {exe['cell'] or '(unrecorded)'}{pin_text}{own}: a paired test compares like with like "
+                "(DEC-20, ruling W1-I2): the parent spec must name a NAV made by the cell's exe (root re-pins it, "
+                "W1-I2 (b))")
     if not ((exe["equal"] is False or moved) and exe["ref"] in ("missing", "unknown")):
         return None
-    return (f"the cell's NAV exe {exe['cell']} differs from the parent NAV's {exe['parent']}"
-            + (f" (exes_sha256 pins: cell {pins['cell'].get('nav')}, parent {pins['parent'].get('nav')})" if moved
-               else "") +
+    return (f"the cell's NAV exe {exe['cell']} differs from the parent NAV's {exe['parent']}" + pin_text +
             " and the cell spec's reference construction did not run on it (no completed ref run with that exe)")
 
 
@@ -103,10 +123,24 @@ def nav_exe(w: Wave, done: dict) -> dict:
             "ref": "none" if "ref" not in bases else "unknown" if not cell else "ran" if ran else "missing"}
 
 
+V1_EXE_TEXT = "recorded; differing, the cell's ref must have run on the cell's exe"
+V2_EXE_TEXT = ("a rule cell, with or without its template's own ref construction (ruling E2-15 (c)), or a library cell "
+               "without one is refused when the two NAVs' exes differ or only one is recorded, by receipt or "
+               "exes_sha256 pin (ruling W1-I2 (a)); a library cell with one, differing, its ref must have run on the "
+               "cell's exe")
+
+
 def verify_plan(w: Wave, done: dict) -> list[str]:
+    """Verify's plan line. Ruling E2-6: a v1 manifest's line keeps its bytes (hash-only plan identity), although
+    exe_problem now refuses a v1 cell without a ref construction too (a known stale v1 line, task-E2-report.md); a v2
+    manifest's line states that refusal (keyed on the cell's ref phase, so every v2 kind: a library cell without a ref
+    is refused alike; a rule cell whatever its ref phase, ruling E2-15 (c))."""
+    k = SK.kind(w)
+    builds = ", the field / role builds" if k in ("field", "role") else ""   # review E2 R1 (v1: as before)
+    exe = V1_EXE_TEXT if k is None else V2_EXE_TEXT
     return ["#   mechanics rule v8-mech on the mechanics keys; C-13 binding of the cell's NAV; NAV exe sha256 of the parent "
-            "vs the cell (recorded; differing, the cell's ref must have run on the cell's exe); seal scan of every log "
-            "the wave produced (run dirs of the screen, the cell and its -gm copy, readers, consoles)"]
+            f"vs the cell ({exe}); seal scan of every log "
+            f"the wave produced (run dirs of the screen, the cell and its -gm copy, readers{builds}, consoles)"]
 
 
 # ------------------------------------------------------------------ judge
@@ -159,10 +193,10 @@ def judge(w: Wave, done: dict, log) -> dict:
     budget = WM.driver(m, "host_budget_mib")
     if budget:          # P9 OR section 5: none reads what another writes; each bounded process holds its claim
         log(f"   the cell's summ || bundle || book reader, side by side under the host memory budget {budget} MiB")
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            jobs = [pool.submit(score), pool.submit(bundle_once, w, parent_nav, nav),
-                    pool.submit(read_once, w, "book", "book", navs)]
-            _, bundle, read = [j.result() for j in jobs]        # the first failure, in this order, stops the stage
+        # records (consoles, process rows) in this call order, whatever finishes first; the first failure, in this
+        # order, stops the stage (Wave.side_by_side, E1 review minor)
+        _, bundle, read = w.side_by_side([(score,), (bundle_once, w, parent_nav, nav),
+                                          (read_once, w, "book", "book", navs)])
         vpath, v = scored_verdict(w, cell)
     else:
         score()

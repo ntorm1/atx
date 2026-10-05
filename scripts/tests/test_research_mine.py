@@ -44,6 +44,20 @@ EXCLUDED_BY_CLASS = {
     "ins_cluster_buy": "0/1 indicator", "k8_item_material_21": "0/1 indicator",
     "inst_n_holders": "count of 13F holders (scales with size)"}
 HELD_BY_V8_LIBRARY = ("ea_days_since", "inst_own_share")   # library-v8-draft E1 (R-2): read by the book once accepted
+# Prereg item 4 applies the rule "at the lock to the registry of record": the registry at the lock (H-F = X-5, commit
+# a5df67ae), i.e. the alphas of these `added_in` waves (`git show a5df67ae:atx-impl/strategies/alphas/registry.json`).
+# A wave registered after the lock (v8ys, Y-S: a5914373) is no part of that registry and cannot move the locked list
+# (the campaign ran in X batch 2); the rule's "read" is taken over the registry of record only.
+REGISTRY_OF_RECORD_WAVES = frozenset({"v4", "v6", "v61", "v70", "v71", "v80", "v81", "v8x2", "v8x3", "v8x4", "v8x7"})
+
+
+def registry_of_record() -> list[dict]:
+    """The registry alphas of prereg item 4's registry of record (REGISTRY_OF_RECORD_WAVES); every wave of it is still
+    in the live registry (a renamed wave would silently empty the rule's read set)."""
+    registry = json.loads((REPO / "atx-impl" / "strategies" / "alphas" / "registry.json").read_text(encoding="utf-8"))
+    alphas = registry["alphas"]
+    assert REGISTRY_OF_RECORD_WAVES <= {str(a.get("added_in", "")) for a in alphas}
+    return [a for a in alphas if str(a.get("added_in", "")) in REGISTRY_OF_RECORD_WAVES]
 
 
 def template() -> dict:
@@ -85,9 +99,8 @@ def test_the_live_spec_is_the_campaign_as_locked():
     every pin locked, the probe's cap at its workers, no open requires and nothing to fill; everything else is the
     template's."""
     live, reg = M.load(LIVE), template()
-    registry = json.loads((REPO / "atx-impl" / "strategies" / "alphas" / "registry.json").read_text(encoding="utf-8"))
     read_x = set()
-    for a in registry["alphas"]:
+    for a in registry_of_record():
         if str(a.get("added_in", "")).startswith("v8x"):
             read_x.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", a["dsl"]))
     assert live["fields"] == [f for f in reg["fields"] if f not in read_x] and len(live["fields"]) == 10
@@ -108,9 +121,8 @@ def test_fields_are_the_rule_applied_to_the_registry():
     """Prereg item 4: the mined fields are the fields v9 rows (the committed base-lo1 list) that no registry alpha
     reads, less the excluded classes and the two fields the v8.0 library wave adds; every one is a fields v9 row."""
     v9 = json.loads((REPO / "scripts" / "specs" / "v8" / "base-lo1.json").read_text(encoding="utf-8"))["fields"]["list"]
-    registry = json.loads((REPO / "atx-impl" / "strategies" / "alphas" / "registry.json").read_text(encoding="utf-8"))
     read, read_x = set(), set()
-    for a in registry["alphas"]:                # v8x prereg A3: the X members' fields leave the list at the lock (H-F)
+    for a in registry_of_record():              # v8x prereg A3: the X members' fields leave the list at the lock (H-F)
         (read_x if str(a.get("added_in", "")).startswith("v8x") else read).update(
             re.findall(r"[A-Za-z_][A-Za-z0-9_]*", a["dsl"]))
     rule = [f for f in v9 if f not in read and f not in EXCLUDED_BY_CLASS and f not in HELD_BY_V8_LIBRARY]

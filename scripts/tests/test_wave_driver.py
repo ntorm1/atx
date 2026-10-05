@@ -11,8 +11,13 @@
   test_launch_waits_for_free_memory       F-5 (a): bounded launch admission (free memory, no compiler, host claims)
   test_two_launches_never_overcommit      review E1 major: two simultaneous admits never count the same free memory
   test_adopt_never_kills_the_child        re-review 1 N2: adopt under the lock, retried; a failure only warns
+  test_claims_lock_failures_are_admission_waits  E1 minor: a claims-lock problem is an admission wait, not runner-error;
+                                          an unwritable claims dir is reported as such (review E2 S1)
   test_parallel_steps_under_host_budget   OR section 5: ref || u, card || marginal, the judge's summ || bundle || book
+  test_judge_records_in_call_order        E1 minor: the side-by-side judge records consoles and processes in call order
+  test_cache_path_bound_w1_i1             ruling W1-I1: the deepest IC cache path refused over 250 chars, before compute
   test_lock_exes_pins_and_verify_compares OR-2: lock --exes writes exes_sha256, runs check it, verify compares
+  test_rule_cell_parent_nav_from_another_exe_is_refused  ruling W1-I2 (a): a rule cell's paired parent NAV's exe
   test_receipt_digest_time_free           OR section 3: content digests (no time keys); the manifest's record date
   test_code_reuse_keyed_on_import_closure E1-REUSE (b): the code key covers the in-repo import closure
   test_reader_reuse_keyed_on_code_and_verdict_per_run  OR section 3: code-keyed reuse; per-run verdict copies
@@ -30,10 +35,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 
 import psutil
 import pytest
@@ -42,6 +49,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import wave_fixture as F  # noqa: E402
+import cycle.phases as CP  # noqa: E402
+import research_add_alpha as AA  # noqa: E402
 import cycle_resume as CR  # noqa: E402
 import research_cycle as RC  # noqa: E402
 import research_tree as RT  # noqa: E402
@@ -95,7 +104,8 @@ def research_cycle_calls(fake, verb: str | None = None) -> list[list[str]]:
 def test_receipt_k_p9_10_keys(tmp_path):
     """Contract K-P9-10: the bounded runner's start.json and receipt.json carry argv_sha256 (research_tree.argv_sha256
     of the command after its executable), attempt (--attempt, default 1), executable_sha256 and build_type
-    (--build-type Debug | Release, else null); an attempt outside 1..99 or another build type is a usage error."""
+    (--build-type Debug | Release, else null); an attempt outside 1..99 or another build type is a usage error.
+    research_cycle passes --attempt k for an attempt k >= 2 of its numbered run dirs (ruling E2-1)."""
     root = tmp_path / "r"
     root.mkdir()
     runner = str(HERE.parent / "run_bounded_research.py")
@@ -129,6 +139,32 @@ def test_receipt_k_p9_10_keys(tmp_path):
     u = step_of(rroot, sp, "u")
     k = u.argv.index("--")
     assert u.argv[u.argv.index("--build-type") + 1] == "Release" and u.argv.index("--build-type") < k
+    # E1 review minor, ruling E2-1: an attempt k >= 2 of the existing numberings (the IC passes' <out>-run<n>, the NAV's
+    # --attempt nav=k, the fit's <out>-run<j> passes) is the runner's --attempt k, right before its --output; k = 1
+    # keeps the argv of before; an OR-4 sub-dir (retarget) replaces the value, never adds a second --attempt
+    def head(st):
+        return st.argv[:st.argv.index("--")]
+
+    def attempt_of(st):
+        h = head(st)
+        return h[h.index("--attempt") + 1] if "--attempt" in h else None
+    numbered = {"u": 2, "fit": 2, "w": 3, "nav": 4}
+    cyc = T.cycle_of(rroot, sp, attempts=numbered)
+    steps = {st.phase: st for st in cyc.steps()}
+    assert {p: attempt_of(steps[p]) for p in numbered} == {p: str(n) for p, n in numbered.items()}
+    for p, n in numbered.items():
+        h = head(steps[p])
+        assert h.index("--attempt") + 2 == h.index("--output") and h[h.index("--output") + 1] == steps[p].run_dir
+        assert steps[p].run_dir.endswith(f"-run{n}"), (p, steps[p].run_dir)
+    plain = {st.phase: st for st in T.cycle_of(rroot, sp).steps()}
+    assert all(attempt_of(st) is None for st in plain.values() if st.argv and "--" in st.argv)
+    for p, n in numbered.items():   # one phase numbered: its runner head differs only by the run dir and the pair
+        one = next(st for st in T.cycle_of(rroot, sp, attempts={p: n}).steps() if st.phase == p)
+        h, i = head(one), head(one).index("--attempt")
+        assert h[:i] + h[i + 2:] == [one.run_dir if x == plain[p].run_dir else x for x in head(plain[p])], p
+    sub = f"{steps['u'].run_dir}/attempt-3"
+    cyc.retarget(steps["u"], sub, 3)
+    assert head(steps["u"]).count("--attempt") == 1 and attempt_of(steps["u"]) == "3" and steps["u"].run_dir == sub
 
 
 def test_resume_refuses_argv_mismatch(tmp_path):
@@ -299,6 +335,46 @@ def test_nav_only_template_after_ic_rebuild(tmp_path):
     assert not T.cycle_of(root, sp).inherited("u")                          # a plain spec inherits nothing
 
 
+def test_inherited_output_judged_by_the_ancestor_that_made_it(tmp_path):
+    """Review E1-N3 on a 3-level template chain G -> P -> C. G (pinned at the old IC exe) made u and w; root rebuilds
+    the IC exe; P, a NAV-only template of G locked on the rebuilt exes, reuses G's u and w (judged by G's pin); C, a
+    NAV-only template of P, keeps the same u and w and judges them by G's pin too, never by P's (its resolved pin of
+    the rebuilt exe): it runs. A G pin that the receipts do not match refuses C as well, naming the ancestor."""
+    for case in ("ancestor-pin-matches", "ancestor-pin-moved"):
+        root, sp = T.make_root(tmp_path / case)
+        pin_exes(sp, ic=b"ic", nav=b"nav")                                  # G's lock --exes, before it runs
+        assert T.run(root, sp) == RC.EXIT_OK
+        u, w = step_of(root, sp, "u"), step_of(root, sp, "w")
+        stamp_exe(root, u, "bin/ic.exe")
+        stamp_exe(root, w, "bin/ic.exe")
+        (root / "bin" / "ic.exe").write_bytes(b"ic rebuilt")                # root rebuilds the IC exe
+        p = nav_only_child(sp, **{RC.EXES_PIN: {"ic": sha(b"ic rebuilt"), "nav": sha(b"nav")}})
+        log: list[str] = []
+        assert T.run(root, p, log) == RC.EXIT_OK and f"   receipt exe: executable sha256 {sha(b'ic')} = the " \
+                                                     "parent's exes_sha256 pin of ic" in log
+        assert T.cycle_of(root, p).introducer("u")[1] == 1
+        c = sp.parent / "grandchild.json"                                    # its reference cell is P's NAV
+        c.write_text(json.dumps({"schema": RC.research_spec.TEMPLATE_SCHEMA, "name": "grandchild", "parent": p.name,
+                                 "change": {"set": {"nav.output": "out/N3"}}}))
+        cycle = T.cycle_of(root, c)
+        assert [cycle.introducer(x)[1] for x in ("fields", "u", "fit", "w", "nav")] == [2, 2, 2, 2, 0]
+        assert cycle.introducer("u")[0]["name"] == RC.load_spec(sp)["name"] and cycle.inherited("u")
+        if case == "ancestor-pin-moved":
+            pin_exes(sp, ic=b"another ic", nav=b"nav")
+            n = len(T.calls(root))
+            with pytest.raises(RC.CycleError, match=rf"HARD-STOP \[u\]: u output out/U-1 was made by an executable "
+                                                    rf"with sha256 {sha(b'ic')} .*the ancestor's \(2 templates up\) "
+                                                    rf"exes_sha256 pins ic {sha(b'another ic')}: refusing") as e:
+                T.run(root, c)
+            assert e.value.code == RC.EXIT_PIN and len(T.calls(root)) == n
+            continue
+        n, log = len(T.calls(root)), []
+        assert T.run(root, c, log) == RC.EXIT_OK                            # before E1-N3: exit 3 on P's pin
+        assert T.calls(root)[n] == "N3-run" and "== u: done (out/U-1)" in log
+        assert f"   receipt exe: executable sha256 {sha(b'ic')} = the ancestor's (2 templates up) exes_sha256 pin " \
+               "of ic" in log and not [x for x in log if x.startswith("   receipt exe NOTE:")]
+
+
 def test_run_stage_notes_unpinned_exe_reuse(tmp_path):
     """Ruling E1-REUSE-a2 in the wave: when a phase output the cell's calibration run reused was made by another
     executable than its exe has on disk now (a K-P9-10 receipt, no pin: research_cycle reused it), the run stage logs
@@ -323,7 +399,7 @@ def test_run_stage_notes_unpinned_exe_reuse(tmp_path):
     assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lines.append) == 0
     run = json.loads((root / "out/waves/w1/receipts/05-run.json").read_text())["outputs"]
     assert run["exe_notes"] == WU.exe_notes(w, [row])
-    assert sum("exe notes (reused on a rebuilt exe" in x for x in lines) == 1
+    assert sum("exe notes (made by another executable than the one on disk now" in x for x in lines) == 1
     res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
     assert res["cell"]["exe_notes"] == run["exe_notes"]
     assert sum(x.startswith("**Exe notes**") for x in (root / "out/waves/w1/wave-log.md").read_text().splitlines()) == 1
@@ -644,6 +720,80 @@ def test_adopt_never_kills_the_child(tmp_path, capsys):
             p.wait(30)
 
 
+def test_claims_lock_failures_are_admission_waits(tmp_path, monkeypatch):
+    """E1 review minor (HostClaims lock): a claims-lock problem is an admission wait (prelaunch-admission-timeout, an
+    AUTO_OUTCOMES refusal), never a runner-error. (a) PermissionError on the lock's create (Windows: a lock being
+    removed) is held, like FileExistsError; (b) a lock still unreadable LOCK_STALE_SECONDS after its last write (a
+    runner killed between create and write) is reclaimed, a fresh unreadable one is held; (c) the lock wait is bounded
+    by the admission's own wait left, and a held lock ends as AdmissionTimeout."""
+    me, claims = psutil.Process(), tmp_path / "claims"
+    args = admit_args(tmp_path, host_budget_mib=12000, admission_wait_seconds=1.0)
+    lock = claims / RB.CLAIMS_LOCK
+
+    def admit_now(a=args):
+        return RB.admit(a, tmp_path / "o", available=lambda: 8 << 30, compilers=lambda: [], clock=Clock(),
+                        sleep=lambda s: None, owner=(me.pid, me.create_time()))
+    # (b) abandoned: empty and written a minute ago -> reclaimed, admitted
+    claims.mkdir(parents=True)
+    lock.write_text("")
+    old = lock.stat().st_mtime - 60
+    os.utime(lock, (old, old))
+    block, held = admit_now()
+    assert held.mine.exists() and not lock.exists() and "refused" not in block
+    held.release()
+    # (b) being written: empty but fresh (mtime ahead of now) -> held; (c) bounded by the admission wait -> timeout
+    lock.write_text("")
+    ahead = lock.stat().st_mtime + 3600
+    os.utime(lock, (ahead, ahead))
+    started = time.monotonic()
+    with pytest.raises(RB.AdmissionTimeout, match="host claims lock") as e:
+        RB.admit(admit_args(tmp_path, host_budget_mib=12000, admission_wait_seconds=0.3), tmp_path / "o",
+                 available=lambda: 8 << 30, compilers=lambda: [], owner=(me.pid, me.create_time()))
+    assert time.monotonic() - started < RB.LOCK_WAIT_SECONDS / 2           # not the 30 s lock wait
+    assert lock.exists() and e.value.block["claimed_by_others_mib"] is None and RB.OUTCOME_ADMISSION in CR.AUTO_OUTCOMES
+    assert not list(claims.glob("*" + RB.CLAIM_SUFFIX))
+    # a live holder's readable lock: held the same way (this process holds it)
+    lock.write_text(json.dumps({"pid": me.pid, "create_time": me.create_time()}))
+    clock = Clock()
+    with pytest.raises(RB.AdmissionTimeout, match="host claims lock"):
+        RB.admit(args, tmp_path / "o", available=lambda: 8 << 30, compilers=lambda: [], clock=clock,
+                 sleep=clock.sleep, owner=(me.pid, me.create_time()))
+    lock.unlink()
+    # (a) the create refused with PermissionError twice (a lock being removed), then free: admitted
+    real_open, refused = RB.os.open, []
+
+    def flaky_open(path, flags, *rest):
+        if Path(path) == lock and len(refused) < 2:
+            refused.append(path)
+            raise PermissionError(13, "Access is denied", str(path))
+        return real_open(path, flags, *rest)
+    monkeypatch.setattr(RB.os, "open", flaky_open)
+    block, held = admit_now()
+    monkeypatch.undo()
+    assert len(refused) == 2 and held.mine.exists() and not lock.exists() and "refused" not in block
+    held.release()
+    # review E2 S1: a PermissionError for the whole wait with no lock on disk is an unwritable claims dir, reported as
+    # such (ClaimsDirError: the runner records runner-error), not as a held lock nor a retryable admission timeout
+    def denied(path, flags, *rest):
+        if Path(path) == lock:
+            raise PermissionError(13, "Access is denied", str(path))
+        return real_open(path, flags, *rest)
+    monkeypatch.setattr(RB.os, "open", denied)
+    with pytest.raises(RB.ClaimsDirError, match="the claims dir is not writable"):
+        RB.admit(admit_args(tmp_path, host_budget_mib=12000, admission_wait_seconds=0.3), tmp_path / "o",
+                 available=lambda: 8 << 30, compilers=lambda: [], owner=(me.pid, me.create_time()))
+    monkeypatch.undo()
+    assert not issubclass(RB.ClaimsDirError, RB.LockTimeout) and not lock.exists()
+    # reclaim reports only a lock it removed: a dead holder's lock that cannot be deleted stays "held" (it exists)
+    lock.write_text(json.dumps({"pid": me.pid, "create_time": me.create_time() - 3600}))
+    monkeypatch.setattr(RB, "remove", lambda p: None)
+    assert RB.HostClaims.reclaim(lock) is False and RB.HostClaims.reclaim(claims / "absent.lock") is False
+    with pytest.raises(RB.LockTimeout, match="held for 0.2 s"):
+        RB.HostClaims(claims, 12000, (me.pid, me.create_time())).acquire_lock(0.2)
+    monkeypatch.undo()
+    assert RB.HostClaims.reclaim(lock) is True and not lock.exists()
+
+
 def gated_executor(names: set[str], seen: list[str]):
     """An executor that makes the bounded steps whose run dirs are ``names`` meet at a barrier before they run: a
     pair that does not run at once times out there (BrokenBarrierError, the test fails)."""
@@ -715,12 +865,164 @@ def test_parallel_steps_under_host_budget(tmp_path):
     assert json.loads((root / "out/waves/w1/wave-result.json").read_text())["verdict"]["rule"] == "pm7-34"
 
 
+def judge_finishing_in(fake, order: list[str], finished: list[str]):
+    """An executor under which the judge's three side-by-side commands (the cell's summ run, the bundle, the book
+    reader) finish in ``order``: each waits for the one before it (a serial run would time out there)."""
+    ended = {name: threading.Event() for name in order}
+
+    def run(argv, root_, env=None):
+        tool = Path(argv[1]).name if argv[0] != "git" else "git"
+        score = tool == "research_cycle.py" and argv[2] == "run" and not {"--screen", "--stop-after"} & set(argv)
+        name = "summ" if score else "bundle" if "--bundle" in argv else \
+            "book" if tool == "run_bounded_research.py" and "book" in argv else None
+        if name is None:
+            return fake(argv, root_, env)
+        i = order.index(name)
+        assert i == 0 or ended[order[i - 1]].wait(30), f"{name}: {order[i - 1]} never ended (not side by side)"
+        try:
+            return fake(argv, root_, env)
+        finally:
+            finished.append(name)
+            ended[name].set()
+    return run
+
+
+def test_judge_records_in_call_order(tmp_path):
+    """E1 review minor (judge row order under a budget): under driver.host_budget_mib the judge runs the cell's summ,
+    the bundle and the book reader side by side (Wave.side_by_side); the consoles' numbers and the judge receipt's
+    process rows (with driver.timings) follow the call order, so a judge whose book reader finishes first records
+    exactly what one finishing in call order records."""
+    driver = {"admission_wait_seconds": 60, "host_budget_mib": 8192, "timings": True}
+    seen = {}
+    for label, order in (("in-order", ["summ", "bundle", "book"]), ("reversed", ["book", "bundle", "summ"])):
+        root = F.build(tmp_path / label, driver=driver)
+        finished: list[str] = []
+        ex = judge_finishing_in(F.FakeCycle(root, ADMIT_ALL), order, finished)
+        assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=ex, log=lambda s: None) == 0
+        assert finished == order
+        judge = json.loads((root / "out/waves/w1/receipts/08-judge.json").read_text())["outputs"]
+        consoles = sorted(p.name for p in (root / "out/waves/w1/consoles").glob("*.log"))
+        seen[label] = ([p["what"] for p in judge["processes"]], consoles)
+    assert seen["reversed"] == seen["in-order"]
+    whats, consoles = seen["in-order"]
+    first = [whats.index(w) for w in ("the cell's monitor and summ (nav_summ scores and ledgers the cell)",
+                                      "bundle (PM5-23)", "book reader")]
+    assert first == sorted(first)                                            # summ, then bundle, then book
+    numbered = [c for c in consoles if c[4:].startswith(("the-cell-s-monitor", "bundle--pm5-23", "book-reader"))]
+    assert [c[4:].split("-")[0] for c in numbered] == ["the", "bundle", "book"]
+
+
+# ------------------------------------------------------------------ ruling W1-I1: the IC cache path bound
+def test_cache_path_bound_w1_i1(tmp_path, monkeypatch):
+    """Ruling W1-I1 (whole-wave-1 review I-1): before any compute, research_cycle (plan and run) and the wave's
+    preflight refuse candidate ids whose deepest IC cache file would be over 250 characters. The layout is the exe's
+    at its Release bound (cycle/phases.py CACHE_*): under the v8 cache of root's tree it is 226 + len(id), the review's
+    independent derivation, so ids of up to 24 characters fit there (the ruling's AL / PRE bound), 18 with
+    audit-exact. The id regex stays at 64. Nothing is refused while the IC exe is not on disk (it alone writes the
+    cache) or the library is not. The refusal halves set CACHE_PATH_MAX from the computed deepest path (review E2 N4:
+    nothing depends on the length of pytest's --basetemp), with a fitting id as the positive case."""
+    v8 = "C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo3"
+    for n in (1, 18, 24, 25, 33):
+        assert len(RC.deepest_cache_path(v8, "x" * n)) == 226 + max(n, 3)       # (".<16>.partial" below 3)
+        assert len(RC.deepest_cache_path(v8, "x" * n, audit=True)) == 232 + max(n, 3)
+    assert RC.deepest_cache_path(v8, "abc").split("/")[-5:] == [
+        "dslvm1_clang18.1_opt_md_ndebug_xs13.0.0", "0" * 64, "fp_" + "0" * 16, "ic1_" + "0" * 16, f"abc.{'0' * 16}.json"]
+    assert RC.cache_path_problem(v8, ["a_b", "x" * 24]) is None
+    problem = RC.cache_path_problem(v8, ["a_b", "x" * 25, "y" * 30])
+    assert "candidate id(s) ['" + "x" * 25 + "', '" + "y" * 30 + "']" in problem and "256 characters (> 250)" in problem
+    assert "at most 24 characters" in problem
+    assert RC.cache_path_problem(v8, ["x" * 19], audit=True) and "at most 18" in RC.cache_path_problem(
+        v8, ["x" * 19], audit=True)
+    assert RC.cache_path_problem(v8, []) is None and WM.CAND_ID_RE.pattern.endswith("{0,63}")
+    assert RC.library_ids({"candidates": [{"id": "a"}, "b", {"x": 1}, 3]}) == ["a", "b"] and RC.library_ids([]) == []
+    # research_cycle: the bound is set from the cell's own deepest path (review E2 N4: the test does not depend on how
+    # deep pytest's tmp root is): an id that fits exactly passes; one character over, plan refuses with exit 2
+    # before anything runs
+    root, sp = T.make_root(tmp_path / "c")
+    (root / "lib" / "lib.json").write_text(json.dumps({"candidates": [{"id": "new_alpha"}]}))
+    c = T.cycle_of(root, sp)
+    deep = len(RC.deepest_cache_path(os.path.abspath(c.res.path(c.cache_dir())), "new_alpha"))
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", deep)
+    assert any(s.phase == "u" for s in T.cycle_of(root, sp).steps())          # fits: nothing refused
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", deep - 1)
+    with pytest.raises(RC.CycleError, match=r"IC cache path too long \(ruling W1-I1\)") as e:
+        T.cycle_of(root, sp).steps()
+    assert e.value.code == RC.EXIT_USAGE and "lib/lib.json" in str(e.value) and "['new_alpha']" in str(e.value)
+    assert f"{deep} characters (> {deep - 1})" in str(e.value)
+    assert RC.main(["plan", str(sp), "--root", str(root)]) == RC.EXIT_USAGE and T.calls(root) == []
+    doc = json.loads(sp.read_text())
+    doc["ic"]["flags"] = ["--workers", "4", "--eval-mode", "audit-exact"]
+    sp.write_text(json.dumps(doc))
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", deep)                           # fits the Release bound, not audit's
+    with pytest.raises(RC.CycleError, match=r"\(audit-exact\)"):
+        T.cycle_of(root, sp).steps()
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", deep + 6)                       # "_audit": 6 characters deeper
+    assert any(s.phase == "u" for s in T.cycle_of(root, sp).steps())
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", deep - 1)
+    (root / "bin" / "ic.exe").unlink()                           # no IC exe: nothing can write the cache
+    assert any(s.phase == "u" for s in T.cycle_of(root, sp).steps())
+    (root / "bin" / "ic.exe").write_bytes(b"ic")
+    (root / "lib" / "lib.json").write_text('{"lib": 1}')        # no candidate list (or no library): nothing to check
+    assert any(s.phase == "u" for s in T.cycle_of(root, sp).steps())
+    # the wave: with the parent's IC exe on disk, preflight refuses (exit 3) before register writes a registration
+    # when the cell's deepest path is one character over, and passes when it fits; the fixture's fake world has no IC
+    # exe, so every other wave test runs as before
+    root = F.build(tmp_path / "w")
+    (root / "bin").mkdir()
+    (root / "bin" / "ic.exe").write_bytes(b"ic")
+    parent = RC.load_spec(root / F.PARENT)
+    cell = dict(parent, ic={k: v for k, v in parent["ic"].items() if k != "cache"})   # add-alpha's cell (review N3)
+    pc = RC.Cycle(cell, RC.Resolver(root), verify=False)
+    wdeep = len(RC.deepest_cache_path(os.path.abspath(pc.res.path(pc.cache_dir())), "alpha_a"))
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", wdeep - 1)
+    fake = F.FakeCycle(root, ADMIT_ALL)
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lambda s: None) == 3
+    err = json.loads((root / "out/waves/w1/receipts/01-preflight.failed-1.json").read_text())["error"]
+    assert "IC cache path too long (ruling W1-I1)" in err and "'alpha_a'" in err
+    assert not any("add-alpha" in a for a in fake.calls)
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", wdeep)                          # fits: preflight passes, exe on disk
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "preflight"], executor=fake,
+                              log=lambda s: None) == 0
+    (root / "out/waves/w1/receipts/01-preflight.json").unlink()
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", wdeep - 1)
+    (root / "bin" / "ic.exe").unlink()                                        # no IC exe: nothing refused
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "preflight"], executor=fake,
+                              log=lambda s: None) == 0
+    # review E2 S1 (N3): a parent off the shared stores with its own, shorter ic.cache; add-alpha's cell drops it, so
+    # the cell's derived dir decides: with the bound between the two depths, preflight refuses (the parent's dir
+    # would have passed), and passes at the derived depth
+    root = F.build(tmp_path / "n3")
+    (root / "bin").mkdir()
+    (root / "bin" / "ic.exe").write_bytes(b"ic")
+    doc = json.loads((root / F.PARENT).read_text())
+    doc["ic"]["cache"] = "c"
+    F.write_json(root, F.PARENT, doc)
+    F.git(root, "commit", "-q", "-am", "the parent names its own IC cache dir")
+    parent = RC.load_spec(root / F.PARENT)
+    assert not AA.shared_stores(parent)
+    pc = RC.Cycle(parent, RC.Resolver(root), verify=False)
+    pdeep = len(RC.deepest_cache_path(os.path.abspath(pc.res.path(pc.cache_dir())), "alpha_a"))
+    cc = RC.Cycle(dict(parent, ic={k: v for k, v in parent["ic"].items() if k != "cache"}), RC.Resolver(root),
+                  verify=False)
+    cdeep = len(RC.deepest_cache_path(os.path.abspath(cc.res.path(cc.cache_dir())), "alpha_a"))
+    assert pdeep < cdeep                                                      # the derived dir is the deeper one
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", cdeep - 1)
+    fake = F.FakeCycle(root, ADMIT_ALL)
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "preflight"], executor=fake,
+                              log=lambda s: None) == 3
+    err = json.loads((root / "out/waves/w1/receipts/01-preflight.failed-1.json").read_text())["error"]
+    assert f"up to {cdeep} characters (> {cdeep - 1})" in err
+    monkeypatch.setattr(CP, "CACHE_PATH_MAX", cdeep)
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "preflight"], executor=fake,
+                              log=lambda s: None) == 0
+
+
 # ------------------------------------------------------------------ OR-2: exes pinned by lock, compared by verify
 def test_lock_exes_pins_and_verify_compares(tmp_path):
     """P9 OR-2: `lock --exes` writes exes_sha256 (the SHA-256 of every exe the cell runs; a template's into
     change.set); plan and run stop (exit 3) when an exe no longer hashes to its pin, and a re-lock re-pins it (noted
-    RELOCKED). Without --exes the lock writes what it wrote before. Under driver.lock_exes the wave locks every spec it
-    writes with --exes before the commit; verify records the parent's and the cell's pins and refuses a cell whose
+    RELOCKED). Without --exes the lock writes what it wrote before. Under driver.lock_exes (implied by a parent spec
+    that pins its exes) the wave locks every spec it writes with --exes before the commit; verify records the parent's and the cell's pins and refuses a cell whose
     pinned NAV exe moved without its reference construction on it."""
     root, sp = T.make_root(tmp_path / "c")
     plain, _ = RC.lock(sp, root)
@@ -772,6 +1074,14 @@ def test_lock_exes_pins_and_verify_compares(tmp_path):
     res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
     assert "exes_sha256" not in res and "exes_sha256" not in json.loads(
         (root / "out/waves/w1/receipts/07-verify.json").read_text())["outputs"]
+    # review E1 minor (sticky pins): a parent that pins its exes implies the key (its cells inherit the pins)
+    root = F.build(tmp_path / "wp")
+    F.write_json(root, F.PARENT, dict(json.loads((root / F.PARENT).read_text()), exes_sha256={"ic": ic, "nav": nav}))
+    F.git(root, "commit", "-q", "-am", "the parent pins its exes")
+    fake = F.FakeCycle(root, ADMIT_ALL)
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lambda s: None) == 0
+    assert [F.unrooted(a)[3:] for a in research_cycle_calls(fake, "lock") if "--exes" in a] == \
+        [["scripts/specs/v8/lib-w1.json", "--exes", "--write"]]
     # verify's record and refusal
     a, b = "a" * 64, "b" * 64
     F.write_json(root, F.PARENT, dict(F.cell_spec("p0", F.PARENT_NAV, reference_nav="out/nav-base"),
@@ -785,10 +1095,64 @@ def test_lock_exes_pins_and_verify_compares(tmp_path):
     assert "exes_sha256 pins: cell " + b in WR.exe_problem({"equal": None, "ref": "missing", "cell": b,
                                                              "parent": a}, pins)
     assert WR.exe_problem({"equal": None, "ref": "ran", "cell": b, "parent": a}, pins) is None
-    assert WR.exe_problem({"equal": None, "ref": "none", "cell": b, "parent": a}, pins) is None   # a rule cell
     assert WR.exe_problem({"equal": True, "ref": "missing", "cell": a, "parent": a}, None) is None
     assert "differs from the parent NAV's" in WR.exe_problem({"equal": False, "ref": "missing", "cell": b,
                                                               "parent": a}, None)
+    # a rule cell (no ref phase): ruling W1-I2 (a) refuses pins naming two NAV exes (it was recorded only before)
+    assert "exes_sha256 pins: cell " + b in WR.exe_problem({"equal": None, "ref": "none", "cell": b, "parent": a},
+                                                           pins)
+
+
+def rule_wave_root(path: Path) -> Path:
+    """test_research_wave's rule wave: a NAV-only rule cell on the fixture's parent (its paired parent NAV is the
+    parent's own, PARENT_NAV)."""
+    path.mkdir(parents=True)
+    tpl = {"schema": "atx.research-cycle-template/v1", "name": "x-rule", "description": "rule cell",
+           "parent": None, "nominal_parent": "lib-p0.json",
+           "change": {"set": {"nav.output": "out/nav-x-rule"}, "flags": {"nav": {"--rule-x": None}}}}
+    F.write_json(path, "scripts/specs/v8/x-rule.json", tpl)
+    rule = {"template": "scripts/specs/v8/x-rule.json", "template_sha256": sha((path / "scripts/specs/v8/x-rule.json")
+                                                                               .read_bytes()),
+            "name": "x-rule-w1", "constants": {"flags": {"nav": {"--rule-x": "v1"}}}}
+    return F.build(path, drop=("candidates", "sign_rule", "library"), rule_cell=rule)
+
+
+def nav_receipt(root: Path, run_dir: str, exe: str | None) -> None:
+    """A completed NAV run receipt, recording ``exe`` as its executable_sha256 (None: no such key, a synthetic NAV)."""
+    doc = {"outcome": "completed", "exit_code": 0, "wall_seconds": 2.0, "sampled_peak_tree_rss_bytes": 3 << 20}
+    F.write_json(root, f"{run_dir}/receipt.json", dict(doc, **({"executable_sha256": exe} if exe else {})))
+
+
+@pytest.mark.parametrize("parent_exe, cell_exe, refused", [
+    ("a" * 64, "a" * 64, False),       # like with like
+    ("a" * 64, "b" * 64, True),        # the parent NAV is an old build's (W1-I2: C1 changed NAV bytes)
+    ("a" * 64, None, True),            # one side unrecorded: no proof of a like-with-like pair (fail closed)
+    (None, "b" * 64, True),
+    (None, None, False),               # neither recorded: no runner-made NAV (synthetic), as before
+])
+def test_rule_cell_parent_nav_from_another_exe_is_refused(tmp_path, parent_exe, cell_exe, refused):
+    """Ruling W1-I2 (a) (DEC-20: a paired test compares like with like): verify refuses a rule cell (no reference
+    construction) whose paired parent NAV was made by another NAV exe than the cell's NAV, naming both hashes; it
+    used to record the difference only. Part (b), re-pinning the parent specs to the P9-B0 references, is root's."""
+    root = rule_wave_root(tmp_path / "w")
+    nav_receipt(root, f"{F.PARENT_NAV}-run", parent_exe)
+    fake = F.FakeCycle(root, {})
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "match"], executor=fake,
+                              log=lambda s: None) == 0
+    nav_receipt(root, "out/nav-x-rule-run", cell_exe)                 # the cell's calibration run (FakeCycle's dir)
+    lines: list[str] = []
+    code = research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "verify"], executor=fake,
+                              log=lines.append)
+    receipts = root / "out/waves/w1/receipts"
+    if refused:
+        assert code == 4, lines
+        text = json.loads((receipts / "07-verify.failed-1.json").read_text())["error"]
+        assert "rule cell: its paired parent NAV was made by NAV exe " in text and "W1-I2" in text
+        assert (parent_exe or "(unrecorded)") in text and (cell_exe or "(unrecorded)") in text
+    else:
+        assert code == 0, lines
+        exe = json.loads((receipts / "07-verify.json").read_text())["outputs"]["nav_exe"]
+        assert exe == {"parent": parent_exe, "cell": cell_exe, "equal": True if parent_exe else None, "ref": "none"}
 
 
 # ------------------------------------------------------------------ OR section 3: determinism and stale reuse

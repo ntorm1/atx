@@ -1,4 +1,5 @@
-"""The research wave manifest (``atx.research-wave/v1``) and the candidate registration it shares with the queue.
+"""The research wave manifest (``atx.research-wave/v1``; v2 = v1 plus a kind, wave_kinds.py, contract K-P9-9) and
+the candidate registration it shares with the queue.
 
 One wave is one cell on the current book, declared before anything is measured:
 
@@ -15,7 +16,8 @@ One wave is one cell on the current book, declared before anything is measured:
                                                  a rule wave: a cell template on the parent with its registered constants
    "acceptance": {"rule": "pm7-34", "printed": [criterion, ...]},
    "sign_rule": "pm7-35",                         (library waves)
-   "gross_match": "pm6-6" | "none",
+   "gross_match": "pm6-6" | "pm6-6-engine" | "none",  (wave_rules.GROSS_MATCH; pm6-6-engine: P9 C2, nav
+                                                       --calibrate-gross inside the NAV exe)
    "budget": {"id": ID, "admission_cap": N?, "admission_cycle_prefix": TEXT? | "admission_cycle_prefixes": [TEXT]?,
               "admission_origin": CLASS?, "construction_cap": N?}
                                           the hand count: admission lines of cycles with the prefix, or with any of
@@ -62,7 +64,8 @@ One wave is one cell on the current book, declared before anything is measured:
        "lock_exes": BOOL                         every cell spec the wave writes (the screen library, a b library, a
                                                  rule cell) is pinned with `lock --exes --write` before its commit: its
                                                  exes_sha256, checked by every run; verify records the parent's and the
-                                                 cell's pins (OR-2)
+                                                 cell's pins (OR-2). Implied when the parent spec carries exes_sha256
+                                                 (its derived cells inherit the pins: wave_stage_util.lock_exes)
        "receipt_digest": "file" | "content"      "content": the stage receipts are chained, and digested in
                                                  wave-result.json, over their content keys (no started_utc / seconds:
                                                  stage_chain.content_sha256; OR section 3); "file" = as before
@@ -97,6 +100,7 @@ from pathlib import Path
 import re
 
 import research_tree
+import wave_kinds
 import wave_rules
 import wave_steps
 
@@ -118,6 +122,7 @@ TOP_REQUIRED = ("schema", "wave", "parent", "fields", "acceptance", "gross_match
 TOP_OPTIONAL = ("description", "library", "candidates", "rule_cell", "sign_rule", "record", "b_suffix", "speed",
                 "marginal", "driver")
 SPEED_KEYS = ("reuse_screen_marginal", "screen_first")
+V2_KEYS = ("kind",) + tuple(wave_kinds.BLOCKS.values())   # atx.research-wave/v2 only (contract K-P9-9)
 # "driver": the wave driver's opt-in behaviours (P9 lane E1; each absent = that of before): a key maps to its value
 # check and the text of its refusal
 DRIVER_KEYS = {"auto_attempt": (lambda v: type(v) is bool, "true or false"),
@@ -166,10 +171,6 @@ def registration_problems(d: dict, where: str) -> list[str]:
 
 def dsl_sha256(dsl: str) -> str:
     return hashlib.sha256(dsl.encode("utf-8")).hexdigest()
-
-
-def file_sha256(path: Path) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def _rel(value) -> bool:
@@ -247,12 +248,14 @@ def registration(c: dict) -> dict:
 
 
 def validate(m) -> list[str]:
-    """Every problem of a wave manifest (empty: valid)."""
-    if not isinstance(m, dict) or m.get("schema") != SCHEMA:
-        return [f"schema must be {SCHEMA}"]
+    """Every problem of a wave manifest (empty: valid). A v2 manifest (contract K-P9-9, wave_kinds.py) is checked as a
+    v1 one for every shared key, then by its kind."""
+    if not isinstance(m, dict) or m.get("schema") not in (SCHEMA, wave_kinds.SCHEMA_V2):
+        return [f"schema must be {SCHEMA} (or {wave_kinds.SCHEMA_V2}, contract K-P9-9)"]
+    v2 = wave_kinds.is_v2(m)
     out = []
     missing = [k for k in TOP_REQUIRED if k not in m]
-    unknown = sorted(set(m) - set(TOP_REQUIRED) - set(TOP_OPTIONAL))
+    unknown = sorted(set(m) - set(TOP_REQUIRED) - set(TOP_OPTIONAL) - (set(V2_KEYS) if v2 else set()))
     if missing or unknown:
         out.append(f"manifest: missing {missing}, unknown {unknown}")
     if not (isinstance(m.get("wave"), str) and ID_RE.fullmatch(m["wave"])):
@@ -271,7 +274,7 @@ def validate(m) -> list[str]:
         out.append(f"out_dir {m['out_dir']!r} lies inside the code pathspec ({', '.join(research_tree.CODE_PATHSPEC)}): "
                    "receipts, readers and results would dirty it (choose a dir outside, e.g. under the build dir)")
     has_c, has_r = "candidates" in m, "rule_cell" in m
-    if has_c == has_r:
+    if has_c == has_r and not v2:          # v2: the kind says which (wave_kinds.problems)
         out.append("a wave has exactly one of candidates (a library wave) and rule_cell (a rule wave)")
     if has_c:
         out += candidates_problems(m)
@@ -324,7 +327,7 @@ def validate(m) -> list[str]:
     out += driver_problems(m.get("driver", {}))
     if "b_suffix" in m and not (isinstance(m["b_suffix"], str) and re.fullmatch(r"[a-z0-9]{1,8}", m["b_suffix"])):
         out.append("b_suffix must be 1-8 lower-case letters or digits")
-    return out
+    return out + (wave_kinds.problems(m) if v2 else [])
 
 
 def candidates_problems(m: dict) -> list[str]:

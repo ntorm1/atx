@@ -240,6 +240,228 @@ Release ruling is void and the run waits").** Evidence `m2g-logs/cov7.txt`, `m2g
   attribute the difference to the container path (Debug also differs) or to the build (Debug equal); reported, not
   re-run further.
 
+### 4 (d) M2i: item 4 re-run in Release (rulings COV-12, COVR-1, PRE-29, EXE-CUR, RUN-1 / RUN-2)
+
+Step group M2i (root, 2026-10-04), after the merges of D2R (`5afb5447`) and COVR (`c8ddf736`). COV-7's Debug = Release
+precondition is replaced by Release = Release (COV-12 (b), cause class (i): the C runtime's `exp2`, COVR report). Evidence
+`m2i-logs/` (tools `m2i-logs/tools/`).
+
+**Pre-run amendments (written and committed before any run below).** The lists 4 (a), 4 (c) D-COV and 4 (c) step 4
+stand as written, except:
+
+- **Exe of record (EXE-CUR, PRE-29).** Every COV run (both D-COV stores and both repeats) is written by ONE file:
+  Release `build-equity-rel/bin/atx-equity-strategy-risk.exe`, build tag **p9-2o** (preset equity-rel, source
+  `c8ddf736`, the COVR merge; receipt `build-equity/mega-p9-2o-receipt.json`), SHA-256 `ccc73cd10ddc0c4454de50a51f2624e8f38f440e1ea5b47b984cbab06444d811` (63 TUs, 0 warnings). Its SHA-256
+  is re-read before the first and after the last run, and each runner receipt records `executable_sha256`.
+- **UCRT record** (M2c-RED-2 (d), COVR 8.1) before the runs: `ucrtbase.dll` 10.0.26100.7623 `2C08E77F...65EF`;
+  `ucrtbased.dll` 10.0.22000.832 `19E79E91...F48D` (`m2i-logs/ucrt-before.txt`). The atx-cov-v1 store's bits depend on
+  `ucrtbase!exp2` (COVR); a store from another `ucrtbase` build is not expected to be byte-identical.
+- **Runner (COVR-1, RUN-1, RUN-2).** Every run: `"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py
+  --output <out>-run --seconds 600 --max-rss-mib 2048 --build-type Release --admission-wait-seconds 1800 -- <exe> risk
+  ...` (`--seconds 1800` of the D-COV list becomes 600). `covr_cmp.py` starts nothing (its compare logic is re-written
+  as `m2i-logs/tools/tree_cmp.py`, which reads outputs the runner wrote). A run that reaches the 600 s cap stops its
+  item: reported, not split.
+- **Output dirs** `build-equity/p9-m2i-*` (instead of `p9-m2g-*`).
+- **C1 = 4 (a)** unchanged (`m2g-logs/tools/s9_check.py` on `build-equity/train-2020-2023-lo3/manifest.json`, pin
+  `e1c67101...95f4`), run before each COV run.
+- **C2 = 4 (c) D-COV**, argv (the M2d step-3 argv of `p9-m2d-cov-risk-container` + `--bias-families extended` +
+  `--recipe`; no other flag):
+  `<exe> risk --role build-equity/train-2020-2023-lo3/manifest.json --role-sha256
+  e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4 --fields
+  build-equity/train-2020-2023-lo3-fields-v10/manifest.json --fields-sha256
+  a4a060ae29c10080ca89b4b29335709558c2ae4842bd29db0398b23a43070809 --output build-equity/p9-m2i-dcov-<v11|covv1>
+  --emit-exposures all --emit-container --bias-families extended --recipe <atx-risk-v1.1|atx-cov-v1>`; first
+  `atx-risk-v1.1` -> `p9-m2i-dcov-v11`, then `atx-cov-v1` -> `p9-m2i-dcov-covv1` (= COV report step 5). Wall and peak
+  from each receipt.
+- **C3 = Release = Release on TRAIN** (replaces Debug = Release, COV-12 (b)): each recipe once more, same exe, same
+  argv except `--output build-equity/p9-m2i-dcov-<v11|covv1>-r2` (run dir `-r2-run`), started as
+  `cmd /c start "" /b /wait /affinity 1 <python> scripts/run_bounded_research.py ...` (`m2i-logs/tools/aff1.cmd`; every
+  C2 / C3 run is driven by `m2i-logs/tools/dcov_run.sh`, which runs S9 first and copies the receipt) so the runner and
+  the exe run on one CPU (the mask is inherited; probed on this host: parent and child report `[0]`). `m2i-logs/tools/aff_probe.py`
+  records the exe's affinity while it runs. The estimator, S2b and the writer start no thread and have no worker knob
+  (COVR report 4), so mask 1 is the "1 CPU / 1 worker" leg; the first run (C2) is the "all CPUs" leg. Criterion
+  (`tree_cmp.py`, full SHA-256 of every file, printed): same file set and every output file byte-identical, incl. the
+  whole `model.atxcov`, its root and `manifest.json` with META (same exe). Any difference = identity miss: stop and
+  report; D-COV is then not read. The output path enters no output file (COVR: equal bytes across output dirs).
+- **C4 = the 4 (c) reads**, tool `m2i-logs/tools/dcov_read.py` (new: the `m2g-logs/tools/dcov_read.py` the list names
+  was never written; tried only on the synthetic COV-7 outputs before this list). Two amendments: (i) the manifest's
+  `extended_families` is null in the COV-7 outputs; `extended_families.unformed_sessions` is then read from
+  `bias_summary.json`; (ii) `bias.csv` is read in the columns `family`, `name`, `z` of the eigen family plus `session`,
+  a timestamp used only to check that both stores score the same observations per rank (never printed). Prints and
+  may-not-prints exactly as the list (no book family, no `realized_return` / `forecast_vol`, no NAV / return / IC /
+  Sharpe / turnover figure). Output `m2i-logs/dcov-read.txt`, copied below. COV-11: per-rank b is read in both
+  directions (b below 1 = over-forecast / over-corrected).
+- **C5 = step 4.** Run: the P9-B0 Y-1 argv with three tokens changed: `--output build-equity/p9-m2i-cov-y1-nav`,
+  `--risk-model build-equity/p9-m2d-cov-risk-container`, `--risk-model-sha256
+  9c12852ea0cd578d2cf968fc858ae7cb986c308f4b533824a34d273ca7e017c7`; runner `--output
+  build-equity/p9-m2i-cov-y1-nav-run --seconds 600 --max-rss-mib 2048 --build-type Release --admission-wait-seconds
+  1800`. Exe: Release `build-equity-rel/bin/atx-equity-strategy-targets.exe` p9-2l `53ca5dd4...` (source `3fd0bf98`).
+  EXE-CUR: `git diff 3fd0bf98..HEAD` over C++ / CMake lists only `atx-impl/tests/CMakeLists.txt` and
+  `atx-impl/tests/strategy_cov_stage_diag.cpp` (COVR), which belong only to the EXCLUDE_FROM_ALL test exe
+  `atx-impl-strategy-target-tests` (no flag, no other target; COVR review (b)); the diff over the files of the NAV
+  target is empty: current. Expected vs `build-equity/p9-b0-y1-nav` as the step-4 list (every file byte-identical except
+  `summary.json` at `/producer/build_type` and `/producer/engine_git_sha`); compared by `m2g-logs/tools/nav_cmp.py
+  build-equity/p9-b0-y1-nav build-equity/p9-m2i-cov-y1-nav --allow summary.json:/producer/build_type --allow
+  summary.json:/producer/engine_git_sha` (file SHA-256, JSON leaf paths, CSV shape and differing-cell counts; no value
+  printed). Checked by reading that the vol-target block names no risk-model path: `strategy_vol_target.cpp:29-41`
+  `parameters_json` has none (the `risk_model` directory block at `strategy_nav_v7.cpp:305-307` is the spo engine's
+  only). If anything else differs: the one Debug attribution run, same argv with `--output
+  build-equity/p9-m2i-cov-y1-nav-dbg`, runner `--build-type Debug`, Debug exe `build-equity/bin/
+  atx-equity-strategy-targets.exe` p9-2m `c02717ef...` (source `5afb5447`; built this step group, replacing the stale
+  p9-2d; no C++ / CMake change of its target since), compared the same way; then STOP and report (COV-12: the PM rules).
+- **C5, COVR-1 reading (written before step 4 runs): `exp2` / `pow` / `exp` on a non-exact input on the NAV exe's read
+  path of `--risk-model` (Y-1: `--vol-target vol-target-v1`, `--rule aim-partial-v5`, no `--two-speed`, no spo
+  rule).** Path read: `strategy_nav_v7.cpp:1333-1340` -> `spo::RiskStore::open` (`strategy_spo.cpp:657-772`: SHA-256
+  of the manifest, JSON parse, `diagnostics.csv` `stoll`, container `CovModelFile::open(..., VerifyMode::Full)` =
+  hash verification, index / flag checks) -> per decision `RiskStore::read` (`strategy_spo.cpp:782-828`:
+  `CovModelFile::view`, `scatter_cov_block` `strategy_risk_model.cpp:1623+` = copies and an f32 store, `isfinite`,
+  f32 -> f64 widening, all exact) -> the scaler `strategy_risk_target.cpp:111-162` -> `engine::book::vol_target_update`
+  (`vol_target.hpp:93-120`: sum, count, one division, `vol_target_leverage` clip) -> `gross_one_vol`
+  (`atx-engine/src/book/risk_target.cpp:120-131`: w / gross, `factor_variance` = products and sums,
+  `std::sqrt(periods_per_year * variance)`). **Found: none.** The only libm call on the path is `std::sqrt`, which
+  IEEE 754 requires correctly rounded in every CRT. Present elsewhere and NOT reached by Y-1: `std::exp2` in
+  `atx-engine/include/atx/engine/book/two_speed.hpp:49` (`two_speed_fast_theta`; `strategy_target_replay.cpp:82-83`,
+  `:650-651` and `strategy_risk_target.cpp:184-201` call it / `two_speed_carry` only when `--two-speed` is on);
+  `std::exp` / `std::log` in `strategy_spo.cpp:879-931` (`calibrate_gamma`, spo rules only); `std::log` of prices in
+  `strategy_target_replay.cpp:670-671` (every NAV run, not the risk-model path; Release = Debug on it is shown by the
+  M2g Q5 Y-F0 re-run, 26 / 27 files identical, `summary.json` producer only). The engine `exp2` sites the COVR review
+  names (`atx-engine/src/risk/cov_ewma.cpp:20`, `src/risk/vol_regime.cpp:65`, `include/.../risk/horizon.hpp:72`) are
+  included by no `atx-impl/src` file (of the four, only `book/two_speed.hpp` is). So a step-4 difference outside the
+  list would not be explained by a CRT transcendental on the container read path.
+- **C6 = step 5** is the atx-cov-v1 run of C2: wall, peak and the manifest's `recipe.eigen_adjustment` block printed.
+- **C7 = store pins** (W3-10 extended by PRE-29), `m2i-logs/tools/store_pins.py` on both D-COV stores: path, SHA-256 of
+  `manifest.json` and of every `files` payload (recomputed and checked against the listed value), the container block.
+  Both stores are kept and never deleted. After C3 is recorded, `build-equity/p9-m2i-dcov-v11-r2`,
+  `build-equity/p9-m2i-dcov-covv1-r2` (their `-r2-run` receipt dirs are kept; receipts copied to `m2i-logs/`) and
+  `build-equity/p9-m2g-cov7/` (COV-12 ruled; synthetic, regenerable) are deleted by name.
+- **Seal:** if a run stops on the run date's token, SEAL-ALLOW-3 applies after the per-hit check (sprint dir `tools/sealsrc.py`).
+
+**Results (pre-run list committed in `f1d2a102` before the first run; code head `c8ddf736`).** Every run: bounded
+runner, outcome `completed`, exit 0, no seal stop, no admission wait beyond the first check. Exe re-read after the last
+COV run: `ccc73cd1...d811` (unchanged; every receipt's `executable_sha256` = it). Logs: `m2i-logs/dcov-runs.txt`,
+`receipt-p9-m2i-*.json`, `cov-s9.txt`, `aff-probe-*.txt`, `c3-rel-eq-*.txt`, `dcov-read.txt`, `step4-*.txt`,
+`store-pins.txt`.
+
+- **C1 S9: HOLDS before each of the four COV runs** (`returns_applied = false`; 0 of 990 events true).
+- **C2 / C6 runs (all CPUs):**
+
+| run | recipe | wall (receipt) | peak tree RSS | argv sha256 |
+|---|---|---|---|---|
+| `p9-m2i-dcov-v11` | atx-risk-v1.1 | 47.1 s | 633 MiB | `c9eaedb6...` |
+| `p9-m2i-dcov-covv1` (= COV step 5) | atx-cov-v1 | **211.2 s** | **601 MiB** | `91283767...` |
+
+  Step 5's `recipe.eigen_adjustment` (manifest): `{"amplification": 1.0, "method": "menchero-wang-orr simulated (USE4
+  B7)", "seed": 7, "seed_rule": "per session", "simulated_length": "kish effective count of the HL-504 weights",
+  "simulations": 64}` (COV-5: every parameter the recipe's); `eigen_adjustment.sessions` `{"adjusted": 1279, "not_run":
+  126, "refused": 0, "refused_budget": 0, "short_history": 0}`. Neither run approached the 600 s cap.
+- **C3 Release = Release on TRAIN: HOLDS, both recipes.** Repeats under affinity mask 1 (probe: the exe and its parent
+  runner report `[0]` on a 16-CPU host): `p9-m2i-dcov-v11-r2` 46.6 s / 601 MiB, `p9-m2i-dcov-covv1-r2` 181.3 s / 601
+  MiB. `tree_cmp.py`: 12 of 12 files byte-identical in each pair, whole `model.atxcov` (510,677,824 / 510,678,016
+  bytes), `manifest.json` incl. META and the container root equal (v1.1 root `b39a1b77...2e1d`, atx-cov-v1 root
+  `20919f7b...9f8e`). Full per-file SHA-256: `m2i-logs/c3-rel-eq-v11.txt`, `c3-rel-eq-covv1.txt`. Not an identity
+  miss; D-COV is read.
+- **C4 D-COV (risk-forecast accuracy only; no book family exists, no NAV / return / IC / Sharpe / turnover figure).**
+  Same observations in both stores: every family's observation count equal; per eigen rank the same sessions and
+  finite-z pattern (51 ranks). Manifests: `extended_families` null in both; `bias_summary.json`
+  `extended_families.unformed_sessions` 0 in both. Families (`bias_summary.json`), v1.1 | atx-cov-v1:
+
+| family | status | series ok | obs | full b mean | full b median | in band | in kurt. band | roll63 share / b mean | roll252 share / b mean | QLIKE | MRAD 63 / 252 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| random | ok / ok | 64 / 64 | 69,696 | 0.9603 / 0.9611 | 0.9618 / 0.9624 | 34 / 34 | 44 / 44 | .7232 / .9431 \| .7234 / .9438 | .6072 / .9369 \| .6105 / .9374 | 2.4080 / 2.4078 | .1321 / .0824 \| .1320 / .0820 |
+| factor | ok / ok | 51 / 51 | 51,193 | 1.0016 / 1.0041 | 1.0050 / 1.0181 | 27 / 25 | 36 / 35 | .6361 / .9745 \| .6364 / .9760 | .5764 / .9803 \| .5809 / .9812 | 2.5149 / 2.5144 | .1693 / .0944 \| .1692 / .0949 |
+| eigen | ok / ok | 51 / 51 | 54,770 | 434.61 / 379.78 | 1.1629 / 1.1217 | 10 / 9 | 48 / 48 | .4346 / 367.78 \| .4824 / 331.78 | .2568 / 430.53 \| .2849 / 379.74 | 5,621,299.8 / 4,149,159.8 | 361.50 / 421.87 \| 326.03 / 371.99 |
+| minvar | ok / ok | 1 / 1 | 1,089 | 1.4995 / 1.4747 | 1.4995 / 1.4747 | 0 / 0 | 0 / 0 | .5063 / 1.3364 \| .5628 / 1.3110 | .1969 / 1.3145 \| .2792 / 1.2908 | 3.1942 / 3.1430 | .3725 / .3178 \| .3577 / .2974 |
+| optimized | ok / ok | 32 / 32 | 34,848 | 1.0081 / 1.0078 | 1.0045 / 1.0044 | 23 / 23 | 26 / 27 | .7409 / .9921 \| .7408 / .9918 | .7692 / .9900 \| .7694 / .9898 | 2.4311 / 2.4271 | .1341 / .0602 \| .1341 / .0601 |
+
+  Eigen family per rank (b = sample SD of z, ddof 1; T = 1,089 for ranks 00-47, 948 / 817 / 733 for ranks 48 / 49 / 50;
+  band sqrt(2 / T) = .0429 (.0459 / .0495 / .0522); "above" = under-forecast, "below" = over-forecast / over-corrected,
+  COV-11; reduction = |b_v1.1 - 1| - |b_cov - 1|, positive = atx-cov-v1 nearer 1):
+
+| rank | b v1.1 | b atx-cov-v1 | v1.1 | atx-cov-v1 | reduction |
+|---|---|---|---|---|---|
+| 00 | 16074.6219 | 13667.7331 | above | above | +2406.8888 |
+| 01 | 4802.5569 | 4565.5452 | above | above | +237.0117 |
+| 02 | 1230.4744 | 1079.8917 | above | above | +150.5827 |
+| 03 | 1.8387 | 1.6799 | above | above | +0.1588 |
+| 04 | 1.6923 | 1.5373 | above | above | +0.1550 |
+| 05 | 1.7420 | 1.6582 | above | above | +0.0838 |
+| 06 | 1.6976 | 1.5493 | above | above | +0.1483 |
+| 07 | 1.6226 | 1.5702 | above | above | +0.0525 |
+| 08 | 1.5256 | 1.4314 | above | above | +0.0942 |
+| 09 | 1.6104 | 1.4994 | above | above | +0.1110 |
+| 10 | 1.5563 | 1.4260 | above | above | +0.1303 |
+| 11 | 1.5363 | 1.3884 | above | above | +0.1480 |
+| 12 | 1.3838 | 1.3174 | above | above | +0.0664 |
+| 13 | 1.3362 | 1.2963 | above | above | +0.0399 |
+| 14 | 1.3258 | 1.2274 | above | above | +0.0984 |
+| 15 | 1.3030 | 1.2265 | above | above | +0.0765 |
+| 16 | 1.3352 | 1.2610 | above | above | +0.0742 |
+| 17 | 1.3218 | 1.2462 | above | above | +0.0756 |
+| 18 | 1.3773 | 1.2865 | above | above | +0.0908 |
+| 19 | 1.3108 | 1.2384 | above | above | +0.0724 |
+| 20 | 1.3225 | 1.2681 | above | above | +0.0544 |
+| 21 | 1.2136 | 1.1690 | above | above | +0.0446 |
+| 22 | 1.2481 | 1.2251 | above | above | +0.0230 |
+| 23 | 1.2400 | 1.1790 | above | above | +0.0610 |
+| 24 | 1.1761 | 1.1868 | above | above | -0.0107 |
+| 25 | 1.1629 | 1.1150 | above | above | +0.0479 |
+| 26 | 1.1523 | 1.1217 | above | above | +0.0306 |
+| 27 | 1.1432 | 1.1135 | above | above | +0.0297 |
+| 28 | 1.1202 | 1.0983 | above | above | +0.0219 |
+| 29 | 1.1196 | 1.1035 | above | above | +0.0161 |
+| 30 | 1.0858 | 1.0993 | above | above | -0.0136 |
+| 31 | 1.0962 | 1.0598 | above | above | +0.0364 |
+| 32 | 0.9869 | 0.9337 | in band | below | -0.0532 |
+| 33 | 0.8009 | 0.8837 | below | below | +0.0828 |
+| 34 | 1.0167 | 1.0515 | in band | above | -0.0349 |
+| 35 | 1.0781 | 1.0883 | above | above | -0.0102 |
+| 36 | 1.0251 | 1.0255 | in band | in band | -0.0004 |
+| 37 | 1.0280 | 1.0220 | in band | in band | +0.0060 |
+| 38 | 1.0393 | 1.0761 | in band | above | -0.0368 |
+| 39 | 0.9842 | 0.9783 | in band | in band | -0.0060 |
+| 40 | 1.0003 | 1.0222 | in band | in band | -0.0220 |
+| 41 | 0.9882 | 1.0003 | in band | in band | +0.0115 |
+| 42 | 1.0015 | 1.0261 | in band | in band | -0.0245 |
+| 43 | 0.9165 | 0.9630 | below | in band | +0.0465 |
+| 44 | 0.9863 | 0.9694 | in band | in band | -0.0169 |
+| 45 | 0.9437 | 1.0023 | below | in band | +0.0540 |
+| 46 | 0.9113 | 0.9402 | below | below | +0.0289 |
+| 47 | 0.7836 | 0.8009 | below | below | +0.0172 |
+| 48 | 0.7365 | 0.7536 | below | below | +0.0171 |
+| 49 | 0.7118 | 0.7521 | below | below | +0.0403 |
+| 50 | 0.8135 | 0.8004 | below | below | -0.0131 |
+
+  Ranks in band: v1.1 10 of 51, atx-cov-v1 9 of 51 (equal to each store's own eigen `series_in_band`). Ranks reduced
+  (positive): 39 of 51 (12 negative). Pooled eigen b, N 54,770, band .0060: v1.1 2370.9495, atx-cov-v1 2036.9591 (both above);
+  without eigen-00, N 53,681, band .0061: v1.1 705.8525, atx-cov-v1 667.9782 (both above). Read in both directions
+  (COV-11): below band = over-forecast / over-corrected in v1.1 at ranks 33, 43, 45-50 (8 ranks) and in atx-cov-v1 at
+  ranks 32, 33, 46-50 (7 ranks). Fact for the reading, not an interpretation: ranks 00-02 have b above 1,000 in both
+  recipes, so every pooled and mean eigen figure above (pooled b, `full b mean`, rolling b mean, QLIKE, MRAD) is
+  dominated by them; the COV report's note 1 expected one such near-null rank on the churn panel (eigen-00); TRAIN has
+  three. No eigenvector diagnostic exists to name the directions.
+- **C5 step 4: HOLDS.** COVR-1 reading above (no `exp2` / `pow` / `exp` on the read path). Release NAV exe p9-2l
+  `53ca5dd4...` reading the Debug-built container `p9-m2d-cov-risk-container`: run 30.5 s, peak 1,079 MiB; argv vs the
+  P9-B0 receipt: 52 tokens each, exactly the three listed tokens differ (indices 14, 45, 47). `nav_cmp.py`: 28 files on
+  both sides, **27 byte-identical**, `summary.json` differs at exactly `/producer/build_type` and
+  `/producer/engine_git_sha`: inside the list. No Debug attribution run was needed (none made).
+- **C7 store pins (W3-10, PRE-29).** Both stores written by Release `atx-equity-strategy-risk` p9-2o `ccc73cd1...d811`
+  (source `c8ddf736`), on role `train-2020-2023-lo3` (`e1c67101...95f4`) and fields `-v10` (`a4a060ae...0809`). Kept,
+  never deleted. Every listed payload re-hashed = its `files` pin; no unlisted file.
+  - **`build-equity/p9-m2i-dcov-v11`** (atx-risk-v1.1; P9-X in the Y-1 form and the wave-3 P9-B0's re-based Y-1 read
+    it, PRE-29): `manifest.json` `397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7`; container
+    `model.atxcov` root `b39a1b776639e7d0b88c70e8a43bb9f6c5e6dacb92a336a327234dfc5d312e1d`, file
+    `cd48d5749dd7484ca69ae6b0b9df142b73e2beb64c814d3c143982ec59bb2ce3` (510,677,824 bytes).
+  - **`build-equity/p9-m2i-dcov-covv1`** (atx-cov-v1; P9-MV and P9-V pin it, W3-10 / PRE-29): `manifest.json`
+    `ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3`; container root
+    `20919f7b338dfbd786994cbbcb506bdaabd9c3af3266d4394d4d2e07d90c9f8e`, file
+    `0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a` (510,678,016 bytes).
+  - Per-payload SHA-256 of both stores (11 payloads each): `m2i-logs/store-pins.txt` (equal across the two stores for
+    the recipe-independent payloads: exposures, slots, factor returns, structural flags, specific variance).
+  - Not byte-comparable with the Debug-built stores of record (`v8-risk-lo3-v10`, `p9-m2d-cov-risk-container`): COV-7 /
+    COVR, expected, not a red (COVR review item 6).
+- **Deleted by name after C3 was recorded:** `build-equity/p9-m2i-dcov-v11-r2`, `build-equity/p9-m2i-dcov-covv1-r2`
+  (980 MB each) and `build-equity/p9-m2g-cov7/` (163 MB); the `-r2-run` receipt dirs are kept.
+
 ## Item 5. AL-COMB Q5 zero-trial diagnostic (`scripts/specs/p9/diagnostics/al-comb-q5-style-variance.json`)
 
 **Pre-run list (committed before the runs; root names the cell here, as the spec requires).**
@@ -348,3 +570,7 @@ a limit only: the runner caps `--seconds` at 600 (its refusal: "require a comman
 
 Trial ledger at the end: 133 lines, `27e40f9f6314585e...` (unchanged; no step passed a ledger). UCRT
 `ucrtbase.dll` 10.0.26100.7623, SHA-256 `2c08e77f...65ef` (unchanged since M2f).
+
+M2i (item 4 (d)) end state: trial ledger 133 lines, `27e40f9f6314585e...` at start and end (no run passed a ledger;
+zero trials). UCRT `ucrtbase.dll` 10.0.26100.7623, `2c08e77f...65ef`, re-read after the runs: unchanged. Release risk
+exe p9-2o `ccc73cd1...d811` unchanged across the four COV runs.

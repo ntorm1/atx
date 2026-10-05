@@ -1,0 +1,75 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "f1d2a102657e967acb7dbf4ca2d8dc10497a5e58",
+  "started_utc": "2026-10-04T23:24:26.488949+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-risk.exe",
+    "risk",
+    "--role",
+    "build-equity/train-2020-2023-lo3/manifest.json",
+    "--role-sha256",
+    "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+    "--fields",
+    "build-equity/train-2020-2023-lo3-fields-v10/manifest.json",
+    "--fields-sha256",
+    "a4a060ae29c10080ca89b4b29335709558c2ae4842bd29db0398b23a43070809",
+    "--output",
+    "build-equity/p9-m2i-dcov-v11-r2",
+    "--emit-exposures",
+    "all",
+    "--emit-container",
+    "--bias-families",
+    "extended",
+    "--recipe",
+    "atx-risk-v1.1"
+  ],
+  "executable_sha256": "ccc73cd10ddc0c4454de50a51f2624e8f38f440e1ea5b47b984cbab06444d811",
+  "argv_sha256": "0dd24925302365ba48ca29f0b65a21a47cbb829b8c9b215103c847378ca31508",
+  "attempt": 1,
+  "build_type": "Release",
+  "bindings": [],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 2048,
+    "min_free_mib": 256,
+    "admission_wait_seconds": 1800.0
+  },
+  "sampled_peak_tree_rss_bytes": 630398976,
+  "minimum_system_free_bytes": 2437615616,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    ".superpowers/sdd/platform-p9-20261003/progress.md",
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png"
+  ],
+  "admission": {
+    "wait_seconds": 1800.0,
+    "need_free_mib": 2304,
+    "host_budget_mib": null,
+    "claims_dir": null,
+    "waited_seconds": 0.015,
+    "checks": 1,
+    "free_mib": 2699,
+    "claimed_by_others_mib": null
+  },
+  "wall_seconds": 46.578000000008615,
+  "owned_processes": [
+    {
+      "pid": 24932,
+      "create_time": 1791156266.5191183
+    },
+    {
+      "pid": 7632,
+      "create_time": 1791156266.6080248
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "435b838008862a39eff97cd1681656b398582ba8b28c2e9f987672b3e36d46b7",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

@@ -71,9 +71,10 @@ def run_stage(w: Wave, done: dict, log) -> dict:
             raise StageError(f"run: {cell} has no complete w output after --stop-after {ENGINE_STOP}")
         out = {"spec": cell, "nav": None, "engine": True, "spec_digest": w.spec_digest(cell), "w_combined": comb,
                "w_combined_sha256": w.sha(comb), "phases": phase_rows(w, cell)}
-        notes = exe_notes(w, out["phases"])
+        notes = exe_notes(w, out["phases"])     # ruling E1-REUSE-a2: outputs made by another exe than on disk now
         if notes:
-            log(f"   exe notes (reused on a rebuilt exe without an exes_sha256 pin, E1-REUSE-a2): {'; '.join(notes)}")
+            log(f"   exe notes (made by another executable than the one on disk now; judged by the exes_sha256 pin "
+                f"rule, E1-REUSE-a2): {'; '.join(notes)}")
             out["exe_notes"] = notes
         return out
     w.run(cyc(w,"run", cell, "--stop-after", "nav"), "calibration run (--stop-after nav)")
@@ -81,9 +82,10 @@ def run_stage(w: Wave, done: dict, log) -> dict:
     if not w.exists(f"{nav}/summary.json"):
         raise StageError(f"run: no NAV output {nav}/summary.json")
     out = {"spec": cell, "nav": nav, "summary_sha256": w.sha(f"{nav}/summary.json"), "phases": phase_rows(w, cell)}
-    notes = exe_notes(w, out["phases"])     # ruling E1-REUSE-a2: outputs reused on a rebuilt, unpinned exe
+    notes = exe_notes(w, out["phases"])     # ruling E1-REUSE-a2: outputs made by another exe than on disk now
     if notes:
-        log(f"   exe notes (reused on a rebuilt exe without an exes_sha256 pin, E1-REUSE-a2): {'; '.join(notes)}")
+        log(f"   exe notes (made by another executable than the one on disk now; judged by the exes_sha256 pin rule, "
+            f"E1-REUSE-a2): {'; '.join(notes)}")
         out["exe_notes"] = notes
     return out
 

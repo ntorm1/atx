@@ -1,0 +1,16 @@
+first build-equity/p9-m2i-dcov-covv1 (12 files) | repeat build-equity/p9-m2i-dcov-covv1-r2 (12 files)
+  EQUAL  bias.csv                       29147894 90016fdbef07ed1c4a03682fb79bd32a4ea70d31d522b37789a2575e709c1460 (same)
+  EQUAL  bias_summary.json                 12871 b340aed90b0dd5283679132cbed1f4997606e58b8e4df831b8ae920e5cddd28f (same)
+  EQUAL  diagnostics.csv                  309350 338e3a4a171bb987f7f2e55686f34590adbf344179576a479a33767425e394fa (same)
+  EQUAL  exposures_last.csv               883364 ae5d3b418ec27bd3db7e56cb958d25beb9f57710c2defa08eb5dd5f5fe0913e8 (same)
+  EQUAL  factor_covariance.f64          43206560 9bdd2a201b81554d59784c43035f101e92c6943476da789a5e1a3dc25e1ea7e5 (same)
+  EQUAL  factor_returns.csv              1575890 5dc6f148cb3f822cc04b51b710d26ab882c688628c853c617805bfb3e084e037 (same)
+  EQUAL  factor_structural.u8              87110 f63df1a49200ff8c8a1023b978769f4ec4967f4bb579ce02abb0a430c7b68dcf (same)
+  EQUAL  industry_slot.u8                8320410 9b7cca179d9bb8a9ed89b65dfe3296d0b5dc2d3912ccd28bc15234327d375204 (same)
+  EQUAL  manifest.json                     34534 ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3 (same)
+  EQUAL  model.atxcov                  510678016 0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a (same)
+  EQUAL  specific_variance.f64          66563280 315a0f33d8ff4ab474bd3dd7fc1b2fa64d0309c105bcb13dbb61bce67cac40d7 (same)
+  EQUAL  style_exposures.f32           366098040 8ae6c18599aafc055e9d5adb31351d00befddfd5bb40b42c39171d2a9d609fe8 (same)
+  first container root_sha256 20919f7b338dfbd786994cbbcb506bdaabd9c3af3266d4394d4d2e07d90c9f8e file_sha256 0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a
+  repeat container root_sha256 20919f7b338dfbd786994cbbcb506bdaabd9c3af3266d4394d4d2e07d90c9f8e file_sha256 0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a
+VERDICT: IDENTICAL (every file byte-equal)

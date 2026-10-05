@@ -1,0 +1,3 @@
+scripts/tests/test_research_spec.py::test_the_whole_file_passes_with_a_generated_spec_present
+scripts/tests/test_research_spec.py::test_e27b_reads_what_the_fitter_and_nav_summ_parse
+87 tests collected in 0.59s

@@ -1,0 +1,8 @@
+exp2(-1.0 / H): ucrtbase (Release) / ucrtbased (Debug) / correctly rounded
+  H=  10 x=bfb999999999999a rel 3feddb680117ab12 dbg 3feddb680117ab12 cr 3feddb680117ab12 SAME; rel==cr True, dbg==cr True
+  H=  21 x=bfa8618618618618 rel 3feef605345339ff dbg 3feef60534533a00 cr 3feef605345339ff DIFF; rel==cr True, dbg==cr False
+  H=  42 x=bf98618618618618 rel 3fef79e9aca4c53e dbg 3fef79e9aca4c53e cr 3fef79e9aca4c53e SAME; rel==cr True, dbg==cr True
+  H=  84 x=bf88618618618618 rel 3fefbcae0646865d dbg 3fefbcae0646865c cr 3fefbcae0646865d DIFF; rel==cr True, dbg==cr False
+  H= 252 x=bf70410410410410 rel 3fefe97f887a34a8 dbg 3fefe97f887a34a8 cr 3fefe97f887a34a8 SAME; rel==cr True, dbg==cr True
+  H= 504 x=bf60410410410410 rel 3feff4bdc935c39f dbg 3feff4bdc935c3a0 cr 3feff4bdc935c39f DIFF; rel==cr True, dbg==cr False
+scan H=1..2000: differ 1032; ucrtbase correctly rounded 1999/2000; ucrtbased correctly rounded 967/2000

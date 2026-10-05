@@ -1,0 +1,12 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "p9k-rule-cost",
+  "description": "P9 kinds fixture (K-P9-9, G-P2 'new cost model'; schema only until lane C3 lists cost-law rows in the NAV exe's table): NAV-only on the parent, the cost law named in the rules block.",
+  "parent": null,
+  "nominal_parent": "../../../../../tiny.json",
+  "change": {
+    "set": {
+      "nav.output": "tiny-nav-k-cost"
+    }
+  }
+}

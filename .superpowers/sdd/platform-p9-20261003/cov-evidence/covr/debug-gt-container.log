@@ -1,0 +1,52 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = RiskCovContainer.*
+[==========] Running 21 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 21 tests from RiskCovContainer
+[ RUN      ] RiskCovContainer.RoundTripIsBitExact
+[       OK ] RiskCovContainer.RoundTripIsBitExact (73 ms)
+[ RUN      ] RiskCovContainer.SameInputsSameBytes
+[       OK ] RiskCovContainer.SameInputsSameBytes (20 ms)
+[ RUN      ] RiskCovContainer.HeaderLayoutIsPinned
+[       OK ] RiskCovContainer.HeaderLayoutIsPinned (18 ms)
+[ RUN      ] RiskCovContainer.ArraysAre64ByteAlignedAndBlocksPageAligned
+[       OK ] RiskCovContainer.ArraysAre64ByteAlignedAndBlocksPageAligned (18 ms)
+[ RUN      ] RiskCovContainer.RefusesTruncatedFile
+[       OK ] RiskCovContainer.RefusesTruncatedFile (68 ms)
+[ RUN      ] RiskCovContainer.RefusesBadMagicOrMajorAndAcceptsHigherMinor
+[       OK ] RiskCovContainer.RefusesBadMagicOrMajorAndAcceptsHigherMinor (72 ms)
+[ RUN      ] RiskCovContainer.RefusesIncompleteFlag
+[       OK ] RiskCovContainer.RefusesIncompleteFlag (48 ms)
+[ RUN      ] RiskCovContainer.FullVerifyRefusesAFlippedBlockByte
+[       OK ] RiskCovContainer.FullVerifyRefusesAFlippedBlockByte (30 ms)
+[ RUN      ] RiskCovContainer.LazyVerifyRefusesAFlippedBlockByteOnFirstTouch
+[       OK ] RiskCovContainer.LazyVerifyRefusesAFlippedBlockByteOnFirstTouch (30 ms)
+[ RUN      ] RiskCovContainer.RefusesRootPinMismatch
+[       OK ] RiskCovContainer.RefusesRootPinMismatch (21 ms)
+[ RUN      ] RiskCovContainer.RefusesOverlappingOrMisalignedSections
+[       OK ] RiskCovContainer.RefusesOverlappingOrMisalignedSections (78 ms)
+[ RUN      ] RiskCovContainer.RefusesNonAscendingSessionsAndCutoffAfterAsOf
+[       OK ] RiskCovContainer.RefusesNonAscendingSessionsAndCutoffAfterAsOf (53 ms)
+[ RUN      ] RiskCovContainer.IgnoresUnknownOptionalSectionRefusesUnknownRequired
+[       OK ] RiskCovContainer.IgnoresUnknownOptionalSectionRefusesUnknownRequired (58 ms)
+[ RUN      ] RiskCovContainer.AtOrBeforeNeverReturnsAFutureCutoff
+[       OK ] RiskCovContainer.AtOrBeforeNeverReturnsAFutureCutoff (18 ms)
+[ RUN      ] RiskCovContainer.PrefixRunsShareBlockHashes
+[       OK ] RiskCovContainer.PrefixRunsShareBlockHashes (44 ms)
+[ RUN      ] RiskCovContainer.FactorRiskViewIsZeroCopyOnPricedRows
+[       OK ] RiskCovContainer.FactorRiskViewIsZeroCopyOnPricedRows (25 ms)
+[ RUN      ] RiskCovContainer.WriterRefusesOutOfOrderAppendAndBadRowOrder
+[       OK ] RiskCovContainer.WriterRefusesOutOfOrderAppendAndBadRowOrder (13 ms)
+[ RUN      ] RiskCovContainer.FullVerifyIsWorkerCountInvariant
+[       OK ] RiskCovContainer.FullVerifyIsWorkerCountInvariant (42 ms)
+[ RUN      ] RiskCovContainer.ParseBlockRefusesArrayBoundsThatWrapOrLeaveTheBlock
+[       OK ] RiskCovContainer.ParseBlockRefusesArrayBoundsThatWrapOrLeaveTheBlock (0 ms)
+[ RUN      ] RiskCovContainer.RefusesSectionTableAndBlockSizesThatWrap
+[       OK ] RiskCovContainer.RefusesSectionTableAndBlockSizesThatWrap (86 ms)
+[ RUN      ] RiskCovContainer.RefusesGeometryThatWrapsK
+[       OK ] RiskCovContainer.RefusesGeometryThatWrapsK (65 ms)
+[----------] 21 tests from RiskCovContainer (894 ms total)
+
+[----------] Global test environment tear-down
+[==========] 21 tests from 1 test suite ran. (896 ms total)
+[  PASSED  ] 21 tests.

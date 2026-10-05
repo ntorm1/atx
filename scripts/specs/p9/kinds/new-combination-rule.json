@@ -1,0 +1,38 @@
+{
+  "schema": "atx.research-wave/v2",
+  "wave": "k-rule",
+  "kind": "rule",
+  "description": "P9 kinds fixture (contract K-P9-9, gate G-P2) on the tiny-world wave layout (scripts/tests/fixtures/tiny_world.py, seed 7: parent tiny.json, fields/, trials.jsonl): kind rule (new combination rule): ew-theme-std-v1 named from the IC exe's composition rule table (K-P9-6); its fitter flag --composition ew-theme-std-v1 is written by the spec stage.",
+  "parent": {
+    "spec": "tiny.json",
+    "library": "tiny_world_v1"
+  },
+  "fields": {
+    "dir": "fields",
+    "manifest_sha256": "395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac"
+  },
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": []
+  },
+  "gross_match": "pm6-6",
+  "budget": {
+    "id": "p9-kinds-fixture",
+    "construction_cap": 1000
+  },
+  "ledger": "trials.jsonl",
+  "expect": {
+    "n_before": 0
+  },
+  "out_dir": "waves/k-rule",
+  "rule_cell": {
+    "template": "scripts/specs/p9/kinds/templates/rule-composition.json",
+    "template_sha256": "07c508a5988da67eeb96a54b184cc3db770dd29782cac5cf95f13ad6f064acde"
+  },
+  "rules": [
+    {
+      "name": "ew-theme-std-v1",
+      "params": {}
+    }
+  ]
+}

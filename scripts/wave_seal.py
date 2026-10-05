@@ -2,8 +2,9 @@
 research seal (research_window.SEAL_DATE). Counts, token forms and file names only; no log content is reported.
 
 The logs (``wave_logs``): every attempt's run dirs of each spec the wave ran (the screen library, the cell, its -gm
-copy: u, fit, w, card, marginal, ref, nav, monitor, check, summ), the wave's reader and bundle runs, and the console
-of every command the driver ran (<out_dir>/consoles/: add-alpha with its K1 plan, research_cycle, git). The verify
+copy: u, fit, w, card, marginal, ref, nav, monitor, check, summ), the wave's reader and bundle runs, a v2 field or
+role wave's builds (<out_dir>/builds/<what>-run<k>, wave_stage_kinds.BUILDS), and the console of every command the
+driver ran (<out_dir>/consoles/: add-alpha with its K1 plan, research_cycle, git). The verify
 stage scans them before any return is read; the record stage scans them again, after the judge's runs, before it
 writes the hidden-data line. Every attempt is scanned (a failed attempt may have read data before it failed).
 
@@ -26,6 +27,7 @@ import datetime as dt
 import re
 
 from wave_context import Wave
+from wave_stage_kinds import build_bases
 import research_window as RW   # atx-engine/tools (wave_context puts it on the path): the one source of the seal
 
 LOG_NAMES = ("stdout.log", "stderr.log")
@@ -76,6 +78,8 @@ def wave_logs(w: Wave, done: dict) -> list[str]:
         for base in w.phase_bases(spec).values():
             dirs += w.run_dirs(base)
     dirs += w.run_dirs(w.wave_path("bundle"))
+    for base in build_bases(w):        # a v2 field / role wave's builds (review E2 R1); none exist for v1
+        dirs += w.run_dirs(base)
     readers = w.path(w.wave_path("readers"))
     dirs += [w.rel(p) for p in sorted(readers.glob("*-run*")) if p.is_dir()] if readers.is_dir() else []
     files = {f"{d}/{n}" for d in dirs for n in LOG_NAMES if w.path(f"{d}/{n}").is_file()}
