@@ -105,3 +105,119 @@ atx-engine, atx-impl, atx-tsdb, bin, lib, tests and the tree files) and of `buil
 - The explicit before / after exe check (flag absent, pre-round vs post-round) is root's at merge (item 4) unless the
   owner allows the refused worktree switch (report "Permission refusals").
 - Part B is pending by the dispatch rule, not by a question.
+
+## C3b at the owner stop (2026-10-04)
+
+- **Head `65ea7477`** = merge of root `5c57c1ef` (`feat/platform-p9-20261003`: E2's split, C2's R4 lines as E2 placed
+  them, D2R, COVR) into part A's approved head `0dbfa459`. The merge was clean (no conflict). Its commit message is
+  git's default (no trailer); not amended (no history rewrite). Then this handoff commit. Tree clean.
+- **No code changed, no build, no test run** in C3b. The round stopped in the reading / design phase. Build trees:
+  none exist in pool-15 (part A deleted them); only `build-equity/mega-p9-c3-*` receipts and logs are kept.
+  Next free build tag: `p9-c3-m`.
+- Root at the stop: head `5c57c1ef`; no B2 redo merge and no C3 part A merge yet.
+
+### Per item of the C3b dispatch
+
+| item | state | what the next agent does (design as found) |
+|---|---|---|
+| 1 C2-11 retire Python `pm6-6` | not started (designed) | see "Design notes" (a)-(e) |
+| 2 C2-9 plan-time refusal | not started (designed) | (f) |
+| 3 C2-10 digest re-check before `wave_result.build` | not started (designed) | (g) |
+| 4 E2-16a `ref.leverage` test | not started (designed) | (h) |
+| 5 C3-7 `read_grid` duplicate key + S-12 | not started (designed) | (i) |
+| 6 D2R-2 (a) stale text | not started; waits for B2's merge in root | (j) |
+| 7 W3-6 PM7-35 Python copy | not started; **design gap found** | (k) |
+| optional S-13, C3-10, E2-11 | not started | S-13: one comment line in `atx-impl/src/book/nav_spec.hpp:30-34` |
+
+### Design notes (from the reading; file:line at `65ea7477`)
+
+(a) Scan of every committed file naming the Python mode (`git grep -I pm6-6`, `pm6-6-engine` excluded):
+- Ledgered v1 wave manifests, never edited: `scripts/specs/v8/waves/y-2.json:25`, `y-3.json:25`, `y-5.json:25`,
+  `y-s.json:23`, `y-s.head.json:11`; their results `.superpowers/sdd/platform-v8-20260929/waves/y-*/wave-result.json`.
+  The cells they ledgered (the `-gm` specs) are plain cycle specs with no `gross_match`: `research_cycle run` replays
+  them unchanged. `test_wave_kinds.py:203-207` (`test_v1_manifests_keep_their_validation`, D3's file) pins that these
+  manifests still VALIDATE, so the refusal belongs at preflight, not at load (plan / status of the old state dirs keep
+  working; a run is refused).
+- Pinned by the prereg (sha in `p9-prereg.md:685-686`), never edited: `scripts/specs/p9/rules/mom-volman-v1.json:81` and
+  `theme-cov-hedge-v1.json:75`: `manifest_note` text says "gross_match pm6-6" (stale text; the prereg itself names
+  `pm6-6-engine` for every cell, :200, :237, :253, :266). Report for the PM: a manifest that follows the note literally
+  is refused at preflight naming `pm6-6-engine`.
+- v2 kind fixtures, unpinned (no sha reference anywhere), not ledgered, D3's files (W3-8): `scripts/specs/p9/kinds/`
+  `new-combination-rule.json`, `new-cost-model.json`, `new-field.json`, `new-horizon.json`, `new-signal.json`,
+  `new-universe.json`, `replaced-signal.json`, `walk-forward.json` (line 18 each) -> `"pm6-6-engine"`: a one-line
+  cross-lane edit per file (list it). D3's pool-20 had not touched them at the stop.
+- Root's evidence tools that call the Python mode (not edited, listed for root): `m2e-logs/tools/c2_gm_pair.py:157-159`
+  (`WR.gross_matches`), `m2h-logs/m2h2-engine-o1.py:125` (variant "py"): after C3b only the engine variants run.
+(b) `scripts/wave_rules.py`: `GROSS_MATCH` (:109) loses `"pm6-6"`; delete `matched_leverage` / `gross_matches`
+  (:113-122); add a retired-name map `{"pm6-6": ...}` that `validate_names` (:177) still accepts (v1 validation
+  unchanged) and that preflight / run / match refuse with a message naming `pm6-6-engine` (C2-11) and, for a ledgered
+  v1 manifest, "replay from a copy that names pm6-6-engine (C2-9)". Module doc :15-18 updated.
+(c) `scripts/wave_stage_cell.py`: `match` (:229-269) keeps only mode `"none"` (read `mech-calibration`, return the same
+  uncorrected dict as today: byte-identical receipts) and the engine route; a retired mode raises `StageError(..., 3)`
+  in `run_stage` (:60) and `match` (a state dir whose preflight receipt predates the retirement); `match_plan`
+  (:406-421) and `run_plan` print the refusal for a retired mode; docstring :40-44. Preflight check in
+  `scripts/wave_stage_preflight.py:159-201` (`problems.append`, so the E2-14 R3a probe at `test_wave_kinds.py:677`
+  that sets `pm6-6` still finds its own needle among the problems).
+(d) Tests: `scripts/tests/wave_fixture.py:180` default -> `"pm6-6-engine"`; `FakeCycle.calibrate` (:343) computes the
+  fake exe's L' inline (`f"{lev * target / g1:.4f}"`, a test oracle: tests are outside the G-P5 scan). Then run the
+  wave suites and update every assertion that encoded the Python route (expected: `test_research_wave.py:77-84`
+  (delete), `:179-229` (cell spec becomes `-gm` / `run_spec` `-cal`, runs list `--stop-after w`), `:236-288` (replace by
+  a pinned-fixture test of the engine route, no Python comparison), and whatever `test_wave_driver.py`,
+  `test_wave_review*.py`, `test_wave_speed.py`, `test_wave_hardening.py`, `test_wave_queue.py`,
+  `test_wave_scoreboard.py` assert about the two-NAV route). In D3's `test_wave_kinds.py` (cross-lane, smallest
+  edits): `:732` parametrize -> `["pm6-6-engine"]` and drop the dead branch `:759-761`; `:606-614` read
+  `record_spec` (`-gm`) instead of `cell_spec`. G-P5: delete the row `scripts/tests/test_no_python_mirror.py:75-76`
+  (B2's redo deletes rows :44-55 of the same file: separate hunks).
+(e) New tests on REAL v2 manifests (load a `scripts/specs/p9/kinds/*.json` fixture and re-root it as
+  `test_wave_kinds.world` does; put them in a C3 file, e.g. `scripts/tests/test_wave_gross_match.py`, not in D3's):
+  `pm6-6` refused at preflight naming `pm6-6-engine` (exit 3, no register receipt); a ledgered v1 manifest still
+  validates; P9-C's shape (`test_the_match_stage_still_writes_its_own_leverage[pm6-6-engine]`) stays green; PRE-27:
+  wave 1 (engine, accepted) -> its `next_parent` (`-gm`, plain at L') named as a v2 wave's parent passes preflight and
+  calibrates at L'; naming the `-cal` recipe is refused (R3a). Teeth for each new refusal (mutation reverted).
+(f) C2-9: `gross_match` stays in `TOP_REQUIRED` (`scripts/wave_manifest.py:120`); when absent, `validate` emits one
+  dedicated message naming the key and `"pm6-6-engine"` (`"none"` for a v2 kind `leverage`, which must name none,
+  `wave_kinds.py:198`) instead of the generic missing-key line; at load = at `plan` (exit 2). Outside the kind files.
+(g) C2-10: the call site `scripts/wave_stage_record.py:262` is B2's file (B2's hunks are in `verify` / imports,
+  not `record`). Option chosen to avoid it: the re-check as the first act of `wave_result.build` (`scripts/
+  wave_result.py:35-50`, after `cell` is formed): recompute `w.spec_digest` of `cell.spec` and (engine) `cell.run_spec`
+  and refuse (`StageError`, exit 3, lazy import from `wave_stage_util` as `helper_rows` does) on a mismatch; no
+  wave-result is written. Test: a FakeCycle subclass whose judge call (`research_cycle run <-cal>` without
+  `--stop-after`) commits an edit of `-gm.json` (the S14 window is inside one chain run: on a later run verify's own
+  inputs already catch it). If the PM wants the call literally in `record()`, it is a 3-line move after B2 merges.
+(h) E2-16a: fixture `new-combination-rule.json` + the template's own `change.set ref` block (re-pinned, as
+  `test_wave_kinds.py:824-830` does), gross mismatched, run to verify: `RC.load_spec` of `record_spec` and of the
+  `-cal` run recipe both give `ref.leverage == "1.1474"` (pre-calibration) while the record's `nav.leverage == L'`.
+(i) C3-7: `atx-impl/src/book/nav_run.cpp:127` parses with `Json::parse(text, nullptr, false)`. Move the callback of
+  `parse_spec` (`book/nav_spec.cpp:320-340`) into one public function in `book/nav_spec.hpp` (e.g.
+  `parse_unique_keys(text, duplicate&)`), call it from both; `read_grid` refuses `nav grid: duplicate key "K" in PATH`
+  after the existing size / read checks (the grid sha is computed from the same bytes). Test (raw text, like
+  `NavSpec.RefusesADuplicateKey` :339): a grid file with `"--aim-leverage"` twice in one variant's flags, and `variants`
+  twice, refused (exit 2, no output dir); the same file without the repeat runs. S-12: in
+  `NavSpec.SpecRunPublishesTheFlagRunBytes` (:404) use a fresh stream and assert it holds
+  `"nav spec: atx.nav-spec/v1 " + file + " sha256 " + co::sha256_hex(bytes_of(file))` (`atx/core/sha256.hpp:56`).
+  Builds: Debug and Release of `atx-impl-strategy-target-tests,atx-equity-strategy-targets` (`-Canary`), named filter
+  of the report + the new test, whole target-tests, canary on both goldens.
+(j) D2R-2 (a): the text is now `scripts/cycle/spec.py:240-244` (`argparse_values` doc), `:264-269` (`validate_e27b`
+  doc), `:280-283` (refusal message). B2's redo re-places hunks in `scripts/cycle/spec.py` (`effective_exes`,
+  `EVAL_EXE`) and adds nav_summ `allow_abbrev=False` (D2R-2 (b)), after which all three statements are stale for both
+  tools. Do it only after B2's merge is in root (`git -C C:/atx-wt/pool-2 log --format=%s -20`), text only.
+(k) W3-6 design gap (stop condition for this item only): deleting `sign_pm7_35` (`scripts/wave_rules.py:35-57`, G-P5
+  row `test_no_python_mirror.py:77-78`) leaves the library wave's screen stage (`wave_stage_library.py:118`
+  `screen_decision`) with no sign rule. B1's predicate (`atx-engine/include/atx/engine/research/admission/
+  sign_rule.hpp:92` `pm7_35`) is reachable only inside `atx-research-admission screen`'s manifest
+  (`admission_cli.cpp:201-213`: `admitted_sign_stands` for admitted strings only, no replacement rule), which needs a
+  factor-series dir the wave does not produce. A deletion commit as written would refuse every library wave
+  (`sign_rule 'pm7-35' is not one of`). Needs a PM ruling on the route first, e.g. a verb on an exe the wave already
+  pins (the NAV exe: `pm7-35 --rows FILE` applying `adm::pm7_35(kPm735SignRule, ...)`, header-only) with its receipt,
+  then the deletion. Identity procedure for root, once a route exists: on the screen rows of every ledgered wave
+  (Y-2, Y-3, Y-5, Y-S `wave-result.json` `screen.rows`) and on the full decision table of
+  `research_admission_sign_test.cpp:46-75`, the C++ route's keep / drop equals `WR.sign_pm7_35` row for row; only then
+  root merges the deletion commit.
+
+### Next step for a fresh agent
+
+Resume on `65ea7477` (no re-merge needed unless root moved): implement (b)-(f) and (h), run the wave suites and fix the
+Python-route assertions, then (g); C++ (i) with a Debug build `p9-c3-m` while the Python suites run, Release after;
+`scripts/tests` whole under PYTHONHASHSEED 0 and 1 and `atx-engine/tools/test_stage_chain.py` separately; (j) only if
+B2 is in root; report (k) as the open design question. Then merge root's then-current head, re-run, write "## Part B
+(C3b)" in `task-C3-report.md`.
