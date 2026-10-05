@@ -1,0 +1,64 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "438f0481d19c7e7169bad6ead8cfb98ab8698794",
+  "started_utc": "2026-10-05T01:10:09.939403+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-targets.exe",
+    "nav",
+    "--spec",
+    ".superpowers/sdd/platform-p9-20261003/m2j-logs/x5.navspec.json",
+    "--output",
+    "build-equity/p9-m2j-x5-spec"
+  ],
+  "executable_sha256": "adcf72d4821de049f2e83db43759f3d28df4493504956739e1ed40f580656368",
+  "argv_sha256": "3930591f210d9c3f84d1eb04afff07123536714e6a5f18c672b210c329dab857",
+  "attempt": 1,
+  "build_type": "Release",
+  "bindings": [],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 2048,
+    "min_free_mib": 256,
+    "admission_wait_seconds": 1800.0
+  },
+  "sampled_peak_tree_rss_bytes": 610013184,
+  "minimum_system_free_bytes": 1348734976,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    ".superpowers/sdd/platform-p9-20261003/p9-prereg.md",
+    ".superpowers/sdd/platform-p9-20261003/progress.md",
+    ".superpowers/sdd/platform-p9-20261003/resume6-addendum.md",
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png"
+  ],
+  "admission": {
+    "wait_seconds": 1800.0,
+    "need_free_mib": 2304,
+    "host_budget_mib": null,
+    "claims_dir": null,
+    "waited_seconds": 0.047,
+    "checks": 1,
+    "free_mib": 2646,
+    "claimed_by_others_mib": null
+  },
+  "wall_seconds": 44.40600000000268,
+  "owned_processes": [
+    {
+      "pid": 13116,
+      "create_time": 1791162609.990455
+    },
+    {
+      "pid": 2880,
+      "create_time": 1791162610.0779445
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "34f6084d954c7bfa899710cdb953c7f0da4cac3691a674eb7e571f374dfb612b",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

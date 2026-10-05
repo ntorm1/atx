@@ -10,6 +10,9 @@
 //
 // CLI (the `nav` verb; any of these routes the run through dispatch_nav_v7):
 //   --cost-v2                 adds the S2-KO and S2-FIM stress books (S1/S2/S3 unchanged)
+//   --cost-law ID             P9 C3 (K-P9-7): a cost-law row by id (book/nav_rules.hpp);
+//                             cost-sqrt-v2 is --cost-v2 (one of the two)
+//   --target-rule ID          P9 C3 (K-P9-7): the target slot; no row in this build (COV-MV)
 //   --capacity-curve          the capacity books: S2 at NAV x {.5,1,2,4,8}, in the main lockstep
 //                             (P9 C1; before: a second pass), published into <output>/capacity,
 //                             then <output>/capacity_curve.csv

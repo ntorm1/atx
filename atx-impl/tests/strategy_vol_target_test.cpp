@@ -552,10 +552,12 @@ TEST(NavBookRule, ListRulesJsonCarriesTheLeverageRows) {
   ASSERT_TRUE(contract.at("capabilities").is_array());
   const auto& caps = contract.at("capabilities");
   EXPECT_NE(std::find(caps.begin(), caps.end(), Json("leverage-rule-per-book")), caps.end());
+  // P9 C3: the table also carries the trade-rate, cost-law and target rows (NavRules.*,
+  // strategy_nav_spec_test.cpp); the leverage rows come first, byte for byte C1's.
   std::vector<std::string> ids;
   for (const auto& row : contract.at("rules")) {
+    if (row.at("kind") != "leverage") continue;
     ids.push_back(row.at("id").get<std::string>());
-    EXPECT_EQ(row.at("kind"), "leverage") << ids.back();
     const auto& schema = row.at("params_schema");
     EXPECT_EQ(schema.at("type"), "object") << ids.back();
     EXPECT_FALSE(schema.at("additionalProperties").get<bool>()) << ids.back();
@@ -576,7 +578,9 @@ TEST(NavBookRule, ListRulesJsonCarriesTheLeverageRows) {
   EXPECT_EQ(risk.at("cadence").at("default"), eb::risk_target_default_cadence);
   std::ostringstream text, quiet;
   ASSERT_EQ(run({"nav", "--list-rules"}, text, quiet), 0);
-  EXPECT_EQ(text.str(), "leverage fixed-v1\nleverage vol-target-v1\nleverage risk-target-v1\n");
+  EXPECT_EQ(text.str().rfind("leverage fixed-v1\nleverage vol-target-v1\nleverage risk-target-v1\n",
+                             0),
+            0U);
   std::ostringstream help;
   ASSERT_EQ(run({"nav", "--help"}, help, quiet), 0);
   EXPECT_NE(help.str().find("--list-rules"), std::string::npos);
@@ -591,10 +595,11 @@ TEST(NavBookRule, AimLeverageIsOptionalWithItsDefault) {
   std::ostringstream out, err;
   ASSERT_EQ(st::dispatch_nav_replay(static_cast<int>(argv.size()), argv.data(), out, err), 0);
   const auto contract = Json::parse(out.str());
-  ASSERT_EQ(contract.at("rules").size(), 3U);
+  ASSERT_GE(contract.at("rules").size(), 3U); // P9 C3: then the other kinds' rows
   const auto& caps = contract.at("capabilities"); // P9 C2 (review S7)
   EXPECT_NE(std::find(caps.begin(), caps.end(), Json("calibrate-gross-pm6-6")), caps.end());
   for (const auto& row : contract.at("rules")) {
+    if (row.at("kind") != "leverage") continue;
     const auto& schema = row.at("params_schema");
     const auto& required = schema.at("required");
     EXPECT_EQ(std::find(required.begin(), required.end(), Json("aim_leverage")), required.end())

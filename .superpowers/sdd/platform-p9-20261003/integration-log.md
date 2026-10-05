@@ -620,3 +620,21 @@ lines `27e40f9f` at start and end.
 
 Next free build tag **p9-2p**. Known-red set after M2i: **empty** (Release `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned`
 stays a named skip, OD5-2).
+
+### M2j: C3 part A merge, D-COV-EIG, 2026-10-05 (stopped by the OWNER STOP at a clean point; partial)
+
+Base `5c57c1ef` (docs; code `c8ddf736`). Code head **`327c86b2`**. Detail: `handoff-root-m2j.md`, merge report "M2j"
+(pre-run lists `9c7aa654`, committed before any run), gate report items 4 (d) / 4 (e) (D-COV-EIG; amendment 1
+`438f0481` before attempt 2); logs `m2j-logs/`. Zero trials: `build-equity/trials.jsonl` 133 lines `27e40f9f` at start
+and end.
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| C3 part A | `0dbfa459` (re-review 1 APPROVE, 0 Required; merged by SHA, C3b continues on the branch) | `327c86b2` (no SQL2-CLS yet) | 0 | **p9-2p** equity-dev and **p9-2q** equity-rel, each the lane's nine targets `-Canary` (130 TUs, 731 s; 132 TUs, 769 s; `CCACHE_RECACHE=1`); NAV exe Debug `637f7069`, Release **`adcf72d4`** | 0 / 0 | named 33 / 33 Debug and Release; whole target-tests Debug 390p / 0f / 1 DISABLED; Release whole target-tests and `atx-impl-tests` NOT run | NOT run (ROOT-1 pending) | canary 15 / 15 both goldens; **item 2 holds** (X-5 vs `p9-c1-s2-x5-nav` and `p9-c1-rel-x5-nav`, Y-F0 vs `p9-b0-yf0-nav`: producer keys only); **item 3 holds** (`--spec` = argv 27 / 27 both cells; digests x5 `53fd737d`, yf0 `a793e183`); items 4, 5, 6 (SQL2-CLS), 7 (W3-8), 8 (C3-5 probe), 9 (ROOT-1) and M2I-HK NOT done |
+
+| Part B | result |
+|---|---|
+| D-COV-EIG (COV-13 (b)) | attempt 1 void (its session set failed the list's T_k check; slip in the tool, amended before attempt 2); attempt 2: session check equal on all 51 ranks; **no rank 00-02 structurally null in either recipe**; third pooled row = the all-ranks row (N 54,770) |
+
+Next free build tag **p9-2r**. Known-red set: empty, but the classes guard (`test_research_store_classes.py`) is
+expected to fail on `atx.nav-spec/v1` until SQL2-CLS lands (not run).

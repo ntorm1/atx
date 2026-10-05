@@ -1,0 +1,73 @@
+{
+    "Source":  "327c86b2c7c33ddb635ccb35c3065a8fa997ed77",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  6,
+    "ConfiguredProvenance":  "327c86b2c7c33ddb635ccb35c3065a8fa997ed77-dirty",
+    "Jobs":  3,
+    "FreeMiB":  2831,
+    "CommitMiB":  4165,
+    "Targets":  [
+                    "atx-impl-strategy-target-tests",
+                    "atx-impl-tests",
+                    "atx-equity-strategy-targets",
+                    "atx-equity-strategy-ic",
+                    "atx-equity-strategy",
+                    "atx-equity-strategy-risk",
+                    "atx-equity-strategy-mine",
+                    "atx-research-eval",
+                    "atx-impl"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  730.62020169999994,
+    "CompiledTUs":  130,
+    "Links":  10,
+    "Tag":  "p9-2p",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity",
+    "Executables":  {
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "975e0a018b967b86eabfe9758569aa2d1703a2c06b69cb1d372ca52aff9ef03b"
+                                                           },
+                        "atx-impl-tests":  {
+                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-tests.exe",
+                                               "Sha256":  "3d5f7efe2d91c899276214370d44292dc19c3d75a40561bf774ba6c618603675"
+                                           },
+                        "atx-equity-strategy-targets":  {
+                                                            "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-targets.exe",
+                                                            "Sha256":  "637f706987da395533342f51ede8cf894249a0fa1cfae9a1dc96217741338827"
+                                                        },
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "919569fb9983b8591bd4d345187f582da20dedecbcffd916ba57a6417741b6b0"
+                                                   },
+                        "atx-equity-strategy":  {
+                                                    "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy.exe",
+                                                    "Sha256":  "3dc162d9532ab5f0118325a7cbc2350bc79f1173475f4eb515ba94a84c2b86ba"
+                                                },
+                        "atx-equity-strategy-risk":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-risk.exe",
+                                                         "Sha256":  "a50bb015073d09de10c04eeb94766edd6b27aff4dc2b65b8c99ab22781b1465b"
+                                                     },
+                        "atx-equity-strategy-mine":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-mine.exe",
+                                                         "Sha256":  "1e9e0cda395f665f5ff48c5d3e48e64f6687503f540fbbff4e354f5a115c83bb"
+                                                     },
+                        "atx-research-eval":  {
+                                                  "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-eval.exe",
+                                                  "Sha256":  "bd8b5e08a984ebb60f6f1d22dd002452a82b9ec555d242e2ea84ab2f2c52128e"
+                                              },
+                        "atx-impl":  {
+                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl.exe",
+                                         "Sha256":  "fbdcf2c2fd8af5e0fada807e53bfccc9c66f32145620f69edf4380cd99dac818"
+                                     }
+                    },
+    "Canary":  {
+                   "Mode":  "check",
+                   "BuildType":  "Debug",
+                   "Bin":  "C:\\atx-wt\\pool-2\\build-equity\\bin",
+                   "ExitCode":  0,
+                   "Log":  "C:\\atx-wt\\pool-2\\build-equity\\mega-p9-2p-canary.log",
+                   "WallSeconds":  22.011060999999998
+               }
+}
