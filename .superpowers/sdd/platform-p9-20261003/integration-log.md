@@ -638,3 +638,22 @@ and end.
 
 Next free build tag **p9-2r**. Known-red set: empty, but the classes guard (`test_research_store_classes.py`) is
 expected to fail on `atx.nav-spec/v1` until SQL2-CLS lands (not run).
+
+### M2j finish (RESUME 7, R7-1), 2026-10-05 (BLOCKED at item 8 only: duplicate `--rule`, a stop for the PM)
+
+Start docs `4dc831ac` (code `327c86b2`); housekeeping docs `a15ad887`. Code head **`ebc918c3`** (SQL2-CLS). No lane
+merged, no build (EXE-CUR: 0 C++ / CMake files changed since `327c86b2`; exes p9-2p / p9-2q current). Detail: merge
+report "M2j finish"; logs `m2j-logs/`. Zero trials: `build-equity/trials.jsonl` 133 lines `27e40f9f` at start and end.
+
+| item | result |
+|---|---|
+| 4 opt-in (PRE-7a, C3-9) | **holds**: `--ann-mean-gross` adds exactly `/scenarios/0..4/ann_mean_gross` to `summary.json`; every other file byte-identical; strip = flag-absent bytes |
+| 5 Release = Debug | **holds**: X-5 Debug p9-2p vs Release p9-2q only `/producer/build_type`; vs `p9-c1-s2-x5-nav` only `/producer/engine_git_sha`; walls X-5 Rel 41.7 -> 38.4 s, Dbg 62.6 -> 84.2 s, Y-F0 Rel 27.4 -> 35.8 s (load not controlled) |
+| 1 rest | Release whole target-tests 390p / 0f / 1 DISABLED; whole `atx-impl-tests` Release and Debug 1,201p / 5 skip / 0f |
+| 6 SQL2-CLS | `ebc918c3`: `atx.nav-spec/v1` in `nav-output`; guard 1f -> 5p; store suite 43p seeds 0 and 1; fixture chain `d32f7655...4e69`, identity 12 / 0, rel = abs |
+| 9 ROOT-1 | `scripts/tests` seed 0 512p / 4 skip / 0f; stage chain 9p; ENV-1 hits 0 |
+| 8 C3-5 probe | **STOP**: the calibrated NAV argv carries `--rule aim-partial-v5` twice (`phases.py:829` from `nav.rule` + the row x-flag via `wave_kinds.py:385-399` / `research_spec.py:128`); NAV exe refused (exit 2); wave exit 4 at match |
+| M2I-HK | `p9-m2i-cov-y1-nav` deleted by literal path (12 MB) |
+| 7 W3-8 | not root's (W3-8a) |
+
+Next free build tag **p9-2r**. Known-red set: **empty**.
