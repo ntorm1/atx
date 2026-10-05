@@ -433,7 +433,9 @@ COV run: `ccc73cd1...d811` (unchanged; every receipt's `executable_sha256` = it)
 
   Ranks in band: v1.1 10 of 51, atx-cov-v1 9 of 51 (equal to each store's own eigen `series_in_band`). Ranks reduced
   (positive): 39 of 51 (12 negative). Pooled eigen b, N 54,770, band .0060: v1.1 2370.9495, atx-cov-v1 2036.9591 (both above);
-  without eigen-00, N 53,681, band .0061: v1.1 705.8525, atx-cov-v1 667.9782 (both above). Read in both directions
+  without eigen-00, N 53,681, band .0061: v1.1 705.8525, atx-cov-v1 667.9782 (both above); **without structurally null
+  ranks (M2j, COV-13 (b), item 4 (e)): no rank of either recipe is structurally null, so the row's rank set is the
+  all-ranks set: N 54,770, band .0060: v1.1 2370.9495, atx-cov-v1 2036.9591 (= the all-ranks row).** Read in both directions
   (COV-11): below band = over-forecast / over-corrected in v1.1 at ranks 33, 43, 45-50 (8 ranks) and in atx-cov-v1 at
   ranks 32, 33, 46-50 (7 ranks). Fact for the reading, not an interpretation: ranks 00-02 have b above 1,000 in both
   recipes, so every pooled and mean eigen figure above (pooled b, `full b mean`, rolling b mean, QLIKE, MRAD) is
@@ -461,6 +463,91 @@ COV run: `ccc73cd1...d811` (unchanged; every receipt's `executable_sha256` = it)
     COVR, expected, not a red (COVR review item 6).
 - **Deleted by name after C3 was recorded:** `build-equity/p9-m2i-dcov-v11-r2`, `build-equity/p9-m2i-dcov-covv1-r2`
   (980 MB each) and `build-equity/p9-m2g-cov7/` (163 MB); the `-r2-run` receipt dirs are kept.
+
+### 4 (e) M2j: D-COV-EIG (Ruling COV-13 (b); zero trials)
+
+Step group M2j (root, 2026-10-05). The reading rule is COV-13 (b)'s, fixed by the PM before this diagnostic existed.
+
+**Pre-run list (written and committed before the tool is run on either store).**
+- **Stores** (never deleted, never rewritten): `build-equity/p9-m2i-dcov-v11` (atx-risk-v1.1, `manifest.json`
+  `39736647...23c7`) and `build-equity/p9-m2i-dcov-covv1` (atx-cov-v1, `ea58691f...f0f3`), the M2i pins
+  (`handoff-root-m2i.md`). The tool refuses a store whose `manifest.json` SHA-256 is not its pin, or whose two
+  payloads read do not equal their `files` pins (SHA-256 and size).
+- **Tool** `m2j-logs/tools/eig_read.py` (read-only; checked before the run only on a synthetic store in the session
+  scratchpad). Per store it opens exactly `manifest.json` (factor names `recipe.factors`, `geometry`, `layouts`,
+  `model`, `files` pins), `factor_covariance.f64` (dates x 62 x 62 forecast factor blocks; the `RiskDay::covariance`
+  every sink receives, `strategy_risk_verb.cpp` `FileSink::on_day`) and `factor_structural.u8` (dates x 62 structural
+  flags). It never opens `bias.csv`, `bias_summary.json`, `factor_returns.csv`, `diagnostics.csv` or any other file:
+  no return, no realised value, no bias statistic.
+- **Eigenportfolios, as the eigen family forms them** (`strategy_risk_model.cpp` `BiasHarness::form_extended`): at
+  session t the block is the factors whose forecast variance is finite; it is formed only when every block entry is
+  finite and the smallest eigenvalue is > 0; ranks ascend by eigenvalue (eigen-00 = smallest; numpy `eigh`, the same
+  symmetric eigenproblem as Eigen's `SelfAdjointEigenSolver`). A block formed at t is scored at t + 1, so the sessions
+  read are the formed t with a next session; rank k exists at t when the block has more than k factors. The tool prints
+  the per-rank session count; it must equal T_k of 4 (d) (1,089 for ranks 00-47, 948 / 817 / 733 for 48 / 49 / 50),
+  else the session set is not the harness's and Part B stops for the PM.
+- **Per session, ranks 00, 01, 02:** r = eigenvalue / the median of that session's block eigenvalues; the unit
+  eigenvector's squared loadings (sum 1) split over a partition of the block: (i) factors flagged structural at t
+  (`factor_structural.u8` = 1); (ii) the industry block (`ind_ff1` .. `ind_ff49`, `ind_residual`) plus the market
+  factor (`market`, the model's country factor), not flagged at t; (iii) the style factors (`style_*`), not flagged at
+  t. (i) + (ii) is the share outside the unflagged styles, so no structural loading is counted twice.
+- **Prints per recipe and rank:** session count; median over sessions of r; median over sessions of share (i), (ii),
+  (iii) and of the per-session sum (i) + (ii); for information the medians of the unpartitioned industry + market share
+  and style share (structural members included); the five factor names with the largest median-over-sessions squared
+  loading (0 in a session where the factor is outside the block). Nothing else.
+- **Reading rule (COV-13 (b), applied as written):** a rank is "structurally null" iff its median over sessions of
+  share (i) + (ii) is at least .99. A structurally null rank is excluded from one more pooled eigen row, "without
+  structurally null ranks", printed beside the two rows of 4 (d) (all ranks; without eigen-00). A rank that fails the
+  rule stays in every pooled row and is printed as a finding. Ranks 03-50 are not read and stay in every row.
+- **The third pooled row** is computed from the per-rank values already printed in 4 (d) (`m2i-logs/dcov-read.txt`:
+  b_k, T_k): N = sum of T_k over the included ranks, band sqrt(2 / N), and the pooled b from the per-rank values as
+  sqrt(sum (T_k - 1) b_k^2 / (N - 1)). The 4 (d) rows pooled the eigen z series themselves (`dcov_read.py`: the sample
+  SD of the concatenated z); the two agree exactly only when every rank's z mean equals the pooled mean, and the
+  per-rank means are not printed (they live in `bias.csv`, which this step does not open). So the same formula is also
+  applied to the two existing rows' rank sets and its residual against their printed values is printed beside the new
+  row, to show the size of the between-rank term it omits.
+- **Stop:** if a store lacks what the rule needs (no structural flags, no factor names, eigenvectors not recoverable
+  from the blocks) or the session counts do not equal T_k, the tool's output says exactly what is missing and Part B
+  stops for the PM.
+- Output: `m2j-logs/dcov-eig.txt`, copied below with the reading.
+
+**Amendment 1 (written and committed after attempt 1, before attempt 2; the reading rule and every print are
+unchanged).** Attempt 1 (`m2j-logs/dcov-eig-attempt1.txt`, kept) failed the list's own session check: its per-rank
+counts were 1,278 (ranks 00-45), 1,215 (46), 1,152 (47), 948, 817, 733 (48-50) against T_k 1,089 for ranks 00-47 and
+948 / 817 / 733 for 48-50. Cause, by reading (a slip in the tool, not in the stores): `BiasHarness::form` returns before
+`form_extended` on a session without `day.forecast` (`strategy_risk_model.cpp:1377`), and `day.forecast` needs a
+specific-risk forecast as well as a factor block (`:1182`, `specific_names > 0`); the store keeps the finite factor
+blocks of the 189 sessions before the first specific forecast, which the tool counted. Fix: the tool reads the
+manifest's `run.forecast_sessions` (1,090 in both stores) and keeps only the formed blocks of the last
+`run.forecast_sessions` dates (the forecast sessions; it prints how many earlier formed blocks it skips). The check
+stands as written: every per-rank count (all 51 ranks) must equal T_k of 4 (d), else Part B stops for the PM.
+Attempt 1's figures were read over a session set that is not the harness's and are not the result.
+
+**Result (attempt 2, after amendment 1 was committed in `438f0481`; output `m2j-logs/dcov-eig.txt`).** Both stores
+verified against their pins (manifest and both payloads). Session check: **EQUAL on all 51 ranks** in both stores
+(first forecast session index 315 = 1,405 - 1,090; 189 earlier blocks skipped; 1,089 scored sessions for ranks 00-47,
+948 / 817 / 733 for 48-50). Every scored session has at least one structural factor in its block.
+
+| store | rank | sessions | median lambda / session median | (i) structural | (ii) ind + market | (iii) style | (i) + (ii) | five largest median squared loadings | rule |
+|---|---|---|---|---|---|---|---|---|---|
+| v1.1 | 00 | 1,089 | 2.42e-08 | 0.0000 | 0.7009 | 0.2991 | **0.7009** | ind_ff39 .3029, style_momentum .1154, style_size .0407, ind_ff44 .0196, ind_ff9 .0191 | not null |
+| v1.1 | 01 | 1,089 | 4.80e-08 | 0.0000 | 0.8152 | 0.1848 | **0.8152** | ind_ff24 .2642, ind_ff39 .0853, ind_ff43 .0257, ind_ff48 .0194, style_leverage .0191 | not null |
+| v1.1 | 02 | 1,089 | 2.22e-02 | 0.0000 | 0.0364 | 0.9636 | **0.0364** | style_value .2165, style_leverage .1919, style_asset_growth .1862, style_profitability .0131, ind_ff36 .0053 | not null |
+| atx-cov-v1 | 00 | 1,089 | 2.58e-08 | 0.0000 | 0.6987 | 0.3013 | **0.6987** | ind_ff39 .2899, style_momentum .1143, style_size .0407, ind_ff24 .0261, ind_ff44 .0193 | not null |
+| atx-cov-v1 | 01 | 1,089 | 5.05e-08 | 0.0000 | 0.8095 | 0.1905 | **0.8095** | ind_ff24 .2589, ind_ff39 .0853, ind_ff43 .0258, ind_ff48 .0193, style_leverage .0182 | not null |
+| atx-cov-v1 | 02 | 1,089 | 2.45e-02 | 0.0000 | 0.0364 | 0.9636 | **0.0364** | style_value .2150, style_leverage .1895, style_asset_growth .1837, style_profitability .0130, ind_ff36 .0052 | not null |
+
+- **Reading rule (COV-13 (b)): no rank 00-02 is structurally null in either recipe** (median share (i) + (ii) .70 / .82 /
+  .04, below .99). Each stays in every pooled row and is printed as a finding: ranks 00 and 01 are near-null
+  directions (eigenvalue about 1e-8 of the session median) loading mostly on industries (ind_ff39, ind_ff24) with a
+  style share of about .2-.3 (momentum, size, leverage); rank 02 is a style direction (value, leverage, asset growth;
+  style share .96) at about .02 of the median eigenvalue. Structural factors carry a median share of 0 in all three.
+- **Third pooled eigen row** (`m2j-logs/dcov-eig-pooled.txt`, tool `pooled_row.py`): nothing is excluded, so the row's
+  rank set is the all-ranks set and, by the list's own pooling (sample SD of the pooled z), its value is the printed
+  all-ranks row exactly: N 54,770, band .0060, v1.1 2370.9495, atx-cov-v1 2036.9591 (appended under 4 (d)). For the
+  record, the per-rank formula of the pre-run list gives 2370.9309 / 2036.7154 on that set (residual +.0186 / +.2437
+  against the printed row; +.0429 / +.0612 on the without-eigen-00 row): the between-rank term of the z means.
+- Zero trials; no return, no bias statistic and no file other than the three listed was opened.
 
 ## Item 5. AL-COMB Q5 zero-trial diagnostic (`scripts/specs/p9/diagnostics/al-comb-q5-style-variance.json`)
 
