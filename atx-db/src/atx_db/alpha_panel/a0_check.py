@@ -488,7 +488,82 @@ def recover_documents(review: Path, fetcher: Any, *, pinned: dict[str, str] | No
     return result
 
 
-def recover_inputs(base: Path, data_root: Path, ticker_source: Path) -> dict[str, Any]:
+def baseline_inputs_path(base: Path, baseline: str) -> Path:
+    if baseline not in ("historical", "repinned"):
+        raise ValueError(f"unknown A0 baseline: {baseline}")
+    return base / ("a0-inputs.json" if baseline == "historical" else "a0-inputs.repinned.json")
+
+
+def repin_documents(review: Path, fetcher: Any, dest: Path, pinned: dict[str, str]) -> dict[str, Any]:
+    """Separate delivery-body baseline; retain every reviewed event/clock/evidence field."""
+    original = C.read_json(review)
+    docs = {}
+    for row in original["assertions"]:
+        item = (row["document_path"], row["document_sha256"])
+        if docs.setdefault(row["document_url"], item) != item:
+            raise ValueError("conflicting original document pins")
+    if {os.path.normcase(Path(p).resolve()): h for p, h in docs.values()} != {
+            os.path.normcase(Path(p).resolve()): h for p, h in pinned.items()}:
+        raise ValueError("original review document pins differ from published build")
+    mapping_path = dest.with_suffix(".mapping.json")
+    if dest.exists() or mapping_path.exists():
+        if not (dest.exists() and mapping_path.exists()):
+            raise ValueError("incomplete immutable re-pinned baseline; use a new destination")
+        mapping = C.read_json(mapping_path)
+        verify_repinned_review(review, dest, mapping)
+        return mapping
+    mapping = {"baseline": "repinned", "original_review": {"path": str(review),
+               "sha256": C.sha256_file(review)}, "documents": [], "status": "complete",
+               "note": "Delivery-body re-pinning only; reviewed events, clocks and evidence unchanged. "
+                       "Historical-byte equivalence is not established; D0 must be measured."}
+    for url, (old_path, old_hash) in sorted(docs.items()):
+        response = fetcher.fetch(url)
+        path = fetcher.cache_path(url)
+        meta = C.read_json(path.with_name(path.name + ".meta.json"))
+        if response.status != 200 or meta.get("error") not in (None, "response_too_large"):
+            raise ValueError(f"re-pinning fetch failed: {url}, status={response.status}, error={meta.get('error')}")
+        digest = C.sha256_file(path)
+        if digest != response.sha256 or digest != meta["sha256"]:
+            raise ValueError(f"fetch receipt/body mismatch: {url}")
+        mapping["documents"].append({"url": url, "original_path": old_path, "original_sha256": old_hash,
+            "path": str(path), "sha256": digest, "bytes": path.stat().st_size,
+            "changed": old_hash != digest, "fetch_receipt": meta, "reused_cache": response.from_cache})
+        print(f"re-pin {len(mapping['documents'])}/{len(docs)} changed={old_hash != digest} {url}", flush=True)
+    replacement = json.loads(json.dumps(original))
+    by_url = {d["url"]: d for d in mapping["documents"]}
+    for row in replacement["assertions"]:
+        row["document_path"] = by_url[row["document_url"]]["path"]
+        row["document_sha256"] = by_url[row["document_url"]]["sha256"]
+    C.write_json_atomic(dest, replacement)
+    mapping["review"] = {"path": str(dest), "sha256": C.sha256_file(dest)}
+    C.write_json_atomic(mapping_path, mapping)
+    verify_repinned_review(review, dest, mapping)
+    return mapping
+
+
+def verify_repinned_review(original: Path, review: Path, mapping: dict[str, Any]) -> None:
+    """Admit only the separately pinned bytes and the original reviewed assertions."""
+    if C.sha256_file(original) != mapping["original_review"]["sha256"]:
+        raise ValueError("original review changed")
+    if C.sha256_file(review) != mapping["review"]["sha256"] or original.resolve() == review.resolve():
+        raise ValueError("re-pinned review changed or aliases original")
+    expected = C.read_json(original)
+    actual = C.read_json(review)
+    by_url = {d["url"]: d for d in mapping["documents"]}
+    if len(by_url) != len(mapping["documents"]) or set(by_url) != {r["document_url"] for r in expected["assertions"]}:
+        raise ValueError("re-pinned document mapping incomplete")
+    for row in expected["assertions"]:
+        d = by_url[row["document_url"]]
+        if (row["document_path"], row["document_sha256"]) != (d["original_path"], d["original_sha256"]):
+            raise ValueError("original document mapping changed")
+        if C.sha256_file(Path(d["path"])) != d["sha256"]:
+            raise ValueError("re-pinned delivery body changed")
+        row["document_path"], row["document_sha256"] = d["path"], d["sha256"]
+    if actual != expected:
+        raise ValueError("reviewed events, clocks or evidence changed during re-pinning")
+
+
+def recover_inputs(base: Path, data_root: Path, ticker_source: Path, *, baseline: str = "historical") -> dict[str, Any]:
     from ..historical_identity_sources import SecDocumentFetcher
 
     build_json = data_root / PUBLISHED_R4 / "build.json"
@@ -508,29 +583,56 @@ def recover_inputs(base: Path, data_root: Path, ticker_source: Path) -> dict[str
         raise ValueError(f"published build pins differ: {pins_ok}")
     documents = pin["document_review"]["documents"]
     fetcher = SecDocumentFetcher(data_root / DOCUMENT_CACHE, budget=len(documents) + FETCH_RETRY_ALLOWANCE)
-    recovered = recover_documents(review, fetcher, pinned=documents)
+    mapping = None
+    if baseline == "repinned":
+        dest = base / "review-baseline-repinned.json"
+        mapping = repin_documents(review, fetcher, dest, documents)
+        review = dest
+        recovered = {"status": "complete", "documents": len(mapping["documents"]),
+                     "matched": len(mapping["documents"]),
+                     "empty_bodies": sum(d["bytes"] == 0 for d in mapping["documents"]),
+                     "changed_bodies": sum(d["changed"] for d in mapping["documents"]),
+                     "fetch_ledger_requests": fetcher.requests_used}
+    else:
+        recovered = recover_documents(review, fetcher, pinned=documents)
     outcome = {"published_build": {"path": str(build_json), "sha256": C.sha256_file(build_json)},
                "receipt": {"path": str(receipt_path), "sha256": C.sha256_file(receipt_path)},
                "ticker_history": linked, "inputs_verified": verified,
                "ops_manifest": {"path": str(ops), "sha256": pin["ops_manifest_sha256"]},
-               "document_review": {"path": str(review), "sha256": pin["document_review"]["sha256"]},
+               "document_review": {"path": str(review), "sha256": C.sha256_file(review)},
                "document_cache": str(data_root / DOCUMENT_CACHE), "documents": recovered, "created_utc": _utc()}
+    outcome["baseline"] = baseline
+    if mapping is not None:
+        outcome["repinning"] = {"path": str(review.with_suffix(".mapping.json")),
+                                "sha256": C.sha256_file(review.with_suffix(".mapping.json")),
+                                "note": mapping["note"], "original_review": mapping["original_review"]}
     history = base / "recover-inputs" / f"{dt.datetime.now(dt.UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
     C.write_json_atomic(history, outcome)
-    C.write_json_atomic(base / "a0-inputs.json", outcome)
+    C.write_json_atomic(baseline_inputs_path(base, baseline), outcome)
     return outcome
 
 
-def preflight(base: Path, data_root: Path) -> dict[str, bool]:
+def preflight(base: Path, data_root: Path, *, baseline: str = "historical") -> dict[str, bool]:
     """Before any arm step: the recovered inputs still equal the published rehearsal's pins."""
-    inputs = C.read_json(base / "a0-inputs.json")
+    inputs = C.read_json(baseline_inputs_path(base, baseline))
     pin = C.read_json(data_root / PUBLISHED_R4 / "build.json")["pin"]
     review = Path(inputs["document_review"]["path"])
     docs = inputs["documents"]
+    review_ok = str(review) == pin["document_review"]["path"] and C.sha256_file(review) == pin["document_review"]["sha256"]
+    if inputs.get("baseline", "historical") != baseline:
+        raise ValueError("recovery baseline differs from explicit baseline selection")
+    if baseline == "repinned":
+        m = inputs["repinning"]
+        if C.sha256_file(Path(m["path"])) != m["sha256"]:
+            raise ValueError("re-pinning mapping changed")
+        mapping = C.read_json(Path(m["path"]))
+        if mapping["original_review"] != {k: pin["document_review"][k] for k in ("path", "sha256")}:
+            raise ValueError("re-pinning original review does not match published pin")
+        verify_repinned_review(Path(pin["document_review"]["path"]), review, mapping)
+        review_ok = C.sha256_file(review) == inputs["document_review"]["sha256"]
     return {"receipt_inputs_verbatim": C.read_json(Path(inputs["receipt"]["path"]))["inputs"] == pin["inputs"],
             "ops_manifest_sha256": C.sha256_file(Path(inputs["ops_manifest"]["path"])) == pin["ops_manifest_sha256"],
-            "document_review_pinned": str(review) == pin["document_review"]["path"]
-                                      and C.sha256_file(review) == pin["document_review"]["sha256"],
+            "document_review_pinned": review_ok,
             "documents_recovered": docs["status"] == "complete" and docs["matched"] == docs["documents"]
                                    == len(pin["document_review"]["documents"]),
             "ticker_history_present": Path(pin["inputs"]["ticker_history"]["path"]).is_file()}
@@ -556,7 +658,7 @@ def rehearsal_root(base: Path, arm: str) -> Path:
         n += 1
 
 
-def plan_steps(base: Path, commit: str, *, data_root: Path, inputs: dict[str, str]) -> list[dict[str, Any]]:
+def plan_steps(base: Path, commit: str, *, data_root: Path, inputs: dict[str, str], baseline: str = "historical") -> list[dict[str, Any]]:
     """Every step of ``run-arms`` in order: id, guard cap, environment overrides and the python argv."""
     from ..identity_links import REHEARSAL_PHASES
     from . import build
@@ -570,7 +672,7 @@ def plan_steps(base: Path, commit: str, *, data_root: Path, inputs: dict[str, st
                "PYTHONPATH": str(code / "atx-db" / "src"), "PYTHONDONTWRITEBYTECODE": "1", "OPENBLAS_NUM_THREADS": "1"}
         return {"id": step_id, "cap": cap, "env": env, "argv": ["-m", A0, *argv]}
 
-    steps = [step("preflight", 0.6, False, False, "preflight", *common, "--base", str(base))]
+    steps = [step("preflight", 0.6, False, False, "preflight", *common, "--base", str(base), "--baseline", baseline)]
     rehearsals = {}
     for arm in ("A", "B2"):
         _, s1, _ = ARMS[arm]
@@ -613,6 +715,10 @@ def ensure_export(repo: Path, sha: str, base: Path, record: dict[str, Any]) -> P
         arms = C.read_json(arms_path)
         if arms["commit"] != sha:
             raise SystemExit(f"{base} belongs to commit {arms['commit']}; use a new base directory")
+        if arms.get("baseline", "historical") != record.get("baseline", "historical") or arms.get("inputs") != record.get("inputs"):
+            raise SystemExit("arm baseline changed; use a new base directory")
+        if arms.get("recovery", {}).get("document_review") != record.get("recovery", {}).get("document_review") or arms.get("recovery", {}).get("repinning") != record.get("recovery", {}).get("repinning"):
+            raise SystemExit("arm input pins changed; use a new base directory")
         for rel, expected in arms["modules"].items():
             if _hashes((code / "atx-db" / "src" / rel).read_bytes()) != expected:
                 raise SystemExit(f"frozen export changed: {rel}")
@@ -648,13 +754,15 @@ def _step_env(step: dict[str, Any]) -> dict[str, str]:
     return {**env, **step["env"]}
 
 
-def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: Path, dry_run: bool) -> int:
+def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: Path, dry_run: bool, baseline: str = "historical") -> int:
     repo = C.PACKAGE_ROOT.parent
     sha = _git(repo, "rev-parse", "--verify", f"{commit}^{{commit}}").decode().strip()
-    inputs_path = base / "a0-inputs.json"
+    inputs_path = baseline_inputs_path(base, baseline)
     if not inputs_path.exists():
         raise SystemExit(f"{inputs_path} missing: run recover-inputs first")
     recovered = C.read_json(inputs_path)
+    if recovered.get("baseline", "historical") != baseline:
+        raise SystemExit("recovery baseline differs from explicit baseline selection")
     documents = recovered["documents"]
     blocked = (f"recover-inputs did not complete: {documents['status']} (mismatched {documents.get('mismatched_urls')}, "
                f"failed {documents.get('failed_urls')})" if documents["status"] != "complete" else None)
@@ -662,7 +770,7 @@ def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: P
         raise SystemExit(blocked)
     inputs = {"receipt": recovered["receipt"]["path"], "ops_manifest": recovered["ops_manifest"]["path"],
               "document_review": recovered["document_review"]["path"]}
-    steps = plan_steps(base, sha, data_root=data_root, inputs=inputs)
+    steps = plan_steps(base, sha, data_root=data_root, inputs=inputs, baseline=baseline)
     if dry_run:
         if blocked:
             print(f"a0 run-arms BLOCKED: {blocked}; the real run refuses until every pinned input verifies", flush=True)
@@ -680,7 +788,12 @@ def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: P
         raise SystemExit("run-arms is the controller: start it outside any guard (each step takes its own guard)")
     arms = {name: {"work": f"W_{r}", "rehearsal": rehearsal_root(base, r).name, "root": f"P_{name}",
                    "s1": s1, "s2": s2} for name, (r, s1, s2) in ARMS.items()}
-    code = ensure_export(repo, sha, base, {"arms": arms, "inputs": inputs, "python": str(python), "guard": str(guard)})
+    for arm in arms.values():
+        arm["baseline"] = baseline
+        arm["document_review"] = recovered["document_review"]
+        arm["repinning"] = recovered.get("repinning")
+        arm["original_document_review"] = (recovered.get("repinning") or {}).get("original_review", recovered["document_review"])
+    code = ensure_export(repo, sha, base, {"arms": arms, "inputs": inputs, "baseline": baseline, "recovery": recovered, "python": str(python), "guard": str(guard)})
     for s in steps:
         path = base / "steps" / f"{s['id']}.json"
         record = C.read_json(path) if path.exists() else {"id": s["id"], "commit": sha, "cap": s["cap"],
@@ -1034,6 +1147,8 @@ def report(base: Path, *, data_root: Path, out: Path | None = None, windows: tup
                              published_r4=published_r4, pit=pit),
             "provenance": provenance_section(published=published, published_r4=published_r4, pit=pit,
                                              repo=C.PACKAGE_ROOT.parent)}
+        results["baseline"] = arms_record.get("baseline", "historical")
+        results["recovery"] = arms_record.get("recovery")
         facts = collect_arm_facts(base)
         results["row_11"] = row_11(facts)
         results["sanity"] = sanity_lines(sanity_checks(base, facts))
@@ -1099,6 +1214,13 @@ def markdown(results: dict[str, Any]) -> str:
              f"{' (latest year partial)' if cov['pinned_calendar']['latest_year_partial'] else ''}; "
              f"observation clocks: S1 {cov['observation_clocks']['s1']}, S2 {cov['observation_clocks']['s2']}.", "",
              "## D0 (arm A vs published)", ""]
+    recovery = results.get("recovery") or {}
+    if recovery.get("repinning"):
+        note = recovery["repinning"]
+        original = note["original_review"]
+        current = recovery["document_review"]
+        lines[2:2] = [f"Baseline: repinned. Original review `{original['path']}` SHA-256 `{original['sha256']}`; "
+                      f"new review `{current['path']}` SHA-256 `{current['sha256']}`.", note["note"], ""]
     for kind in ("r4", "pit", "link_table"):
         r = d0[kind]
         lines.append(f"- {kind}: rebuilt only {r['rebuilt_only_rows']}, published only {r['published_only_rows']}, "
@@ -1177,8 +1299,10 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("recover-inputs")
     r.add_argument("--base", type=Path, default=BASE)
     r.add_argument("--data-root", type=Path, default=data)
+    r.add_argument("--baseline", choices=("historical", "repinned"), default="historical")
     r.add_argument("--ticker-source", type=Path, default=TICKER_SOURCE)
     a = sub.add_parser("run-arms")
+    a.add_argument("--baseline", choices=("historical", "repinned"), default="historical")
     a.add_argument("--commit", required=True)
     a.add_argument("--base", type=Path, default=BASE)
     a.add_argument("--data-root", type=Path, default=data)
@@ -1190,6 +1314,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--code-root", type=Path)
         p.add_argument("--data-root", type=Path)
         if name == "preflight":
+            p.add_argument("--baseline", choices=("historical", "repinned"), default="historical")
             p.add_argument("--base", type=Path, default=BASE)
         else:
             p.add_argument("--root", type=Path, required=True)
@@ -1206,17 +1331,17 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--pit-export")
     args = ap.parse_args(argv)
     if args.cmd == "recover-inputs":
-        outcome = recover_inputs(args.base, args.data_root, args.ticker_source)
+        outcome = recover_inputs(args.base, args.data_root, args.ticker_source, baseline=args.baseline)
         _print(outcome)
         return 0 if outcome["documents"]["status"] == "complete" else 1
     if args.cmd == "run-arms":
         return run_arms(args.base, args.commit, data_root=args.data_root, python=args.python, guard=args.guard,
-                        dry_run=args.dry_run)
+                        dry_run=args.dry_run, baseline=args.baseline)
     if args.cmd == "stage":
         return run_stage(args.root, args.r4, args.stage, data_root=args.data_root, code_root=args.code_root)
     if args.cmd == "preflight":
         _prelude(args.code_root, args.data_root)
-        checks = preflight(args.base, Path(args.data_root) if args.data_root else data)
+        checks = preflight(args.base, Path(args.data_root) if args.data_root else data, baseline=args.baseline)
         _print(checks)
         return 0 if all(checks.values()) else 1
     if args.cmd in ("seed", "unseed"):

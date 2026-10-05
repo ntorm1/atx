@@ -748,5 +748,95 @@ def test_report_writes_both_windows_from_tiny_arms(tmp_path):
     assert extended["b2_attribution_aid"]["stage_i_links"]["rows_in_a_only"] == 0
     text = (out / "a0-results.md").read_text(encoding="utf-8")
     assert "| # | count | B1 vs A | B2 vs A | B12 vs A | B12 vs B1 |" in text and "FAIL zero gate" in text
+    results["baseline"] = "repinned"
+    results["recovery"] = {"document_review": {"path": "new-review", "sha256": "new-hash"},
+                           "repinning": {"original_review": {"path": "original-review", "sha256": "old-hash"},
+                                         "note": "Historical-byte equivalence is not established"}}
+    text = a0.markdown(results)
+    assert "new-review" in text and "original-review" in text and "old-hash" in text and "new-hash" in text
+    assert "Historical-byte equivalence is not established" in text
     with pytest.raises(SystemExit, match="not empty"):
         a0.report(base, data_root=data, out=out)
+
+
+def test_repinned_review_preserves_events_and_rejects_content_changes(tmp_path):
+    url = "https://www.sec.gov/Archives/edgar/data/1/001/d.htm"
+    fetcher = FakeFetcher(tmp_path / "cache", {url: b"new delivery body"})
+    original = _review(tmp_path, fetcher, {url: b"old delivery body"})
+    payload = json.loads(original.read_text())
+    payload["assertions"][0].update(candidate_events=[{"available_at": "2020-01-02", "evidence": "reviewed"}])
+    original.write_text(json.dumps(payload))
+    blob = original.read_bytes()
+    fetch = fetcher.fetch
+    def with_receipt(url):
+        response = fetch(url)
+        response.from_cache = False
+        meta = {"status": 200, "sha256": response.sha256, "error": None, "fetched_at": "2026-10-05"}
+        response.path.with_name(response.path.name + ".meta.json").write_text(json.dumps(meta))
+        return response
+    fetcher.fetch = with_receipt
+    dest = tmp_path / "new-review.json"
+    pinned = {payload["assertions"][0]["document_path"]: payload["assertions"][0]["document_sha256"]}
+    mapping = a0.repin_documents(original, fetcher, dest, pinned)
+    assert original.read_bytes() == blob
+    assert mapping["documents"][0]["changed"]
+    assert json.loads(dest.read_text())["assertions"][0]["candidate_events"] == payload["assertions"][0]["candidate_events"]
+    assert a0.repin_documents(original, fetcher, dest, pinned) == mapping
+    assert len(fetcher.requests) == 1
+    amended = json.loads(dest.read_text())
+    amended["assertions"][0]["candidate_events"][0]["available_at"] = "2019-01-01"
+    dest.write_text(json.dumps(amended))
+    mapping["review"]["sha256"] = hashlib.sha256(dest.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="events, clocks or evidence"):
+        a0.verify_repinned_review(original, dest, mapping)
+    dest.write_text(json.dumps(json.loads(blob)))
+    with pytest.raises(ValueError, match="review changed"):
+        a0.repin_documents(original, fetcher, dest, pinned)
+
+
+def test_repinned_plan_uses_one_review_and_explicit_baseline(tmp_path):
+    base = tmp_path / "base"
+    inputs = {"receipt": "receipt", "ops_manifest": "ops", "document_review": "new-review"}
+    steps = a0.plan_steps(base, "f" * 40, data_root=tmp_path / "data", inputs=inputs, baseline="repinned")
+    assert steps[0]["argv"][-2:] == ["--baseline", "repinned"]
+    reviews = [s["argv"][s["argv"].index("--document-review") + 1] for s in steps if "--document-review" in s["argv"]]
+    assert len(reviews) == 12 and set(reviews) == {"new-review"}
+    assert a0.baseline_inputs_path(base, "historical") != a0.baseline_inputs_path(base, "repinned")
+
+
+def test_repin_accounts_for_oversized_and_stops_on_fetch_error(tmp_path):
+    urls = [f"https://www.sec.gov/Archives/edgar/data/1/{n:03d}/d.htm" for n in range(2)]
+    fetcher = FakeFetcher(tmp_path / "cache", {urls[0]: b"", urls[1]: b"body"})
+    original = _review(tmp_path, fetcher, {urls[0]: b"", urls[1]: b"old"})
+    pinned = {r["document_path"]: r["document_sha256"] for r in json.loads(original.read_text())["assertions"]}
+    fetch = fetcher.fetch
+    fail = True
+    def with_receipt(url):
+        response = fetch(url)
+        response.from_cache = False
+        error = "response_too_large" if url == urls[0] else ("network failure" if fail else None)
+        response.path.with_name(response.path.name + ".meta.json").write_text(json.dumps({
+            "status": 200, "sha256": response.sha256, "error": error}))
+        return response
+    fetcher.fetch = with_receipt
+    dest = tmp_path / "new-review.json"
+    with pytest.raises(ValueError, match="fetch failed"):
+        a0.repin_documents(original, fetcher, dest, pinned)
+    assert not dest.exists() and not dest.with_suffix(".mapping.json").exists()
+    fail = False
+    mapping = a0.repin_documents(original, fetcher, dest, pinned)
+    assert mapping["documents"][0]["bytes"] == 0
+    assert mapping["documents"][0]["fetch_receipt"]["error"] == "response_too_large"
+    fetcher.cache_path(urls[1]).write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="delivery body changed"):
+        a0.verify_repinned_review(original, dest, mapping)
+
+
+def test_run_arms_refuses_baseline_selection_mismatch(tmp_path, monkeypatch):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "a0-inputs.repinned.json").write_text(json.dumps({"baseline": "historical"}))
+    monkeypatch.setattr(a0, "_git", lambda *args: b"f" * 40)
+    with pytest.raises(SystemExit, match="baseline differs"):
+        a0.run_arms(base, "HEAD", data_root=tmp_path, python=Path(sys.executable), guard=tmp_path / "guard",
+                    dry_run=False, baseline="repinned")
