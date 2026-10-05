@@ -97,7 +97,7 @@ def check_verb(name: str, doc, verb: tuple[str, str]) -> None:
 
 def check_summ_verb(cycle_dir: str, summ: list, pbo, verb: tuple[str, str]) -> None:
     """check_verb on every row of a cycle's summ.json and on its pbo.json (when there is one): the verdict's rule, and
-    the wave verify's for a v2 cell (wave_stage_record.eval_problem, ruling B2-10 (c))."""
+    the wave judge's for a v2 cell (wave_stage_record.scored_verdict, ruling B2-11: at the stage that runs the summ)."""
     for r in summ:
         check_verb(f"{cycle_dir}/{SUMM_JSON} row {r.get('dir') if isinstance(r, dict) else r!r}", r, verb)
     if pbo is not None:
