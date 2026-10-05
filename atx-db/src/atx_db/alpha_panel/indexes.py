@@ -600,6 +600,9 @@ def build(pit_links: Path | None = None) -> dict[str, Any]:
     out = C.stage_dir(STAGE)
     if (out / "manifest.json").exists():
         raise RuntimeError(f"{out / 'manifest.json'} exists: a published stage is immutable (GC4)")
+    existing = sorted(out.rglob("*.parquet"))
+    if existing:
+        raise RuntimeError(f"existing output parts are immutable (GC4): {existing[0]}")
     pit = None
     if pit_links is not None:
         pit_links = Path(pit_links)
@@ -622,9 +625,6 @@ def build(pit_links: Path | None = None) -> dict[str, Any]:
             # A.5 keys; raises (before anything is written) unless every rank vintage holds its whole member set
             # and no directory type or backfill CIK decided a rank
             receipt.update(P.receipt(products, recons, snaps.eligibility(recons)))
-        for p in ("constituents", "exits", "recon_summary"):
-            for stale in out.glob(f"{p}/available_year=*/{p}.parquet"):   # an aborted build's parts (no manifest)
-                stale.unlink()
         schemas = _schemas()
         rows: dict[str, Any] = {}
         with C.timed(receipt, "write"):
@@ -641,8 +641,6 @@ def build(pit_links: Path | None = None) -> dict[str, Any]:
                     _append(con, pa, schemas["membership"], batch)
                     batch = []
             _append(con, pa, schemas["membership"], batch)
-            for stale in out.glob("membership/available_year=*/membership.parquet"):
-                stale.unlink()
             rows["membership"] = _write_parts(con, "membership_rows", "membership", out)
             through = con.execute("SELECT max(session_date) FROM membership_rows").fetchone()[0]
         summary = products["recon_summary"]
@@ -651,7 +649,8 @@ def build(pit_links: Path | None = None) -> dict[str, Any]:
         receipt["coverage"] = {
             "panel_first": days[0], "panel_last": days[-1], "vendor_data_end": data_end,
             "exchange_calendar_through": cal[-1], "membership_through": through,
-            "rank_dates": {"first": ranks[0][1] if ranks else None, "last": max(r[1] for r in ranks) if ranks else None},
+            "rank_dates": {"first": min(r[1] for r in ranks) if ranks else None,
+                           "last": max(r[1] for r in ranks) if ranks else None},
             "last_reconstitution": {i: str(max(s["recon_date"] for s in summary if s["index_id"] == i))
                                     for i in sorted({s["index_id"] for s in summary})},
             "note": "constituents rows of the last reconstitution of each index run to the next scheduled one; "

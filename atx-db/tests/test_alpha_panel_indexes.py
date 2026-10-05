@@ -390,6 +390,7 @@ def test_build_writes_year_parts_and_a_measured_manifest(lake):
     assert (e["v1_eligible_dropped_by_a"], e["backfill_cik_would_fail_operating"]) == (1, 1)
     assert e["selected_backfill_shrout_from_sec"] == 5 and e["backfill_left_unlinked"] == 5
     assert r["coverage"]["vendor_data_end"] == "2022-01-14" and r["coverage"]["membership_through"] == "2022-01-18"
+    assert r["coverage"]["rank_dates"]["first"] == "2021-02-26"
     assert r["focus_2020_plus"]["from"] == "2020-01-01" and receipt["exchange_calendar"]["match"] is True
     # rows: rank vintage at the rank mark; the exit of line 6 (last 2021-07-01) at 2021-07-02 22:00
     con = C.connect(memory="200MB", threads=1)
@@ -412,6 +413,20 @@ def test_build_writes_year_parts_and_a_measured_manifest(lake):
         con.close()
     with pytest.raises(RuntimeError, match="immutable"):
         X.build()
+
+
+@pytest.mark.parametrize("product", X.PRODUCTS)
+def test_build_refuses_existing_parts_without_a_manifest(lake, product):
+    _build_lake(lake)
+    part = lake / X.STAGE / product / "available_year=2021" / f"{product}.parquet"
+    part.parent.mkdir(parents=True, exist_ok=True)
+    original = b"existing protected artifact without a manifest"
+    part.write_bytes(original)
+    with pytest.raises(RuntimeError, match="existing.*immutable"):
+        X.build()
+    assert part.read_bytes() == original
+    assert list((lake / X.STAGE).rglob("*.parquet")) == [part]
+    assert not (lake / X.STAGE / "manifest.json").exists()
 
 
 def test_build_with_pit_links_records_them_and_relinks(lake):
