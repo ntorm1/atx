@@ -1332,3 +1332,118 @@ bytes and the JSON by the comparator; a stdout line is printed only if it differ
   OD5-2), not a red.
 
 Trial ledger at the end: 133 lines, sha256 `27e40f9f...` (0 trials). Resume notes: `handoff-root-m2f.md`.
+
+## Step group M2j: C3 part A merge, its root items, D-COV-EIG (2026-10-05)
+
+Root `C:/atx-wt/pool-2`, branch `feat/platform-p9-20261003`. Start: docs head `5c57c1ef` (code `c8ddf736`); trial ledger
+133 lines `27e40f9f` (`m2j-logs/start-state.txt`). Contract: `resume4-dispatch.md`, `resume6-addendum.md`, the M2j
+brief, rulings C3-1 .. C3-10, PRE-7a, W3-8, SQL2-CLS, ROOT-1, EXE-CUR, SEAL-ALLOW-3, COV-13, M2I-HK. Evidence
+`m2j-logs/`.
+
+### C3 part A (`0dbfa459`, pool-15; review `99b676f7` CHANGES_REQUIRED, fix round 1 `9a7c490f`, re-review 1 APPROVE `0dbfa459`)
+
+- **Merge `327c86b2`** (`git merge --no-ff 0dbfa459`, by SHA: lane C3b keeps working on that branch, now at
+  `65ea7477`, not merged). 0 conflicted files. Root-side changes since the lane's base `ab189471` are kept (E2, D2R,
+  COVR, the SQL2-CLS rows, AL-DATA spec amendments); COVR's `strategy_cov_stage_diag.cpp` line and C3's
+  `strategy_nav_spec_test.cpp` line both stand in `atx-impl/tests/CMakeLists.txt`. No root script or list names
+  `atx-impl-core` as a build target (only historical sprint-dir evidence does). The lane's report, handoff, two reviews
+  and `c3-logs/` arrived with the merge (lane blobs). `m2j-logs/c3-merge.txt`.
+- Pre-merge Release exes copied aside for the optional tiny-world before / after (`m2j-logs/prebin-rel.txt`: targets
+  p9-2l `53ca5dd4`, IC p9-2j `fccaa07e`, eval p9-2j `a57a2090`; session scratchpad `m2j/prebin-rel`).
+
+#### Pre-run list for items 2 - 5 (C3-6, PRE-7a, C3-9, G-P3 NAV half), written and committed before any NAV run
+
+- **Exes (EXE-CUR):** Release `build-equity-rel/bin/atx-equity-strategy-targets.exe` of tag **p9-2q** and Debug
+  `build-equity/bin/atx-equity-strategy-targets.exe` of tag **p9-2p** (`637f7069...`), both built from the merge
+  `327c86b2`; their SHA-256 are re-read by every run (receipt `executable_sha256`). Later M2j commits touch no C++ /
+  CMake file (SQL2-CLS: `classes.json`; W3-8: one test file), so both stay current.
+- **Runner (RUN-1, RUN-2):** every NAV run is `scripts/run_bounded_research.py --output build-equity/<out>-run
+  --seconds 600 --max-rss-mib 2048 --build-type <Release|Debug> --admission-wait-seconds 1800 -- <exe> nav ...`,
+  driven by `m2j-logs/tools/nav_run.py` (receipt copied to `m2j-logs/receipt-<out>.json`, one line per run in
+  `m2j-logs/nav-runs.txt` with the argv token diff against the reference receipt).
+- **References** (each written by a pre-C3 exe; argv = its receipt's `command` after the exe):
+  - **Y-F0:** the P9-B0 reference `build-equity/p9-b0-yf0-nav` (Debug `407c34ad`, receipt `p9-b0-yf0-nav-run`;
+    27 files).
+  - **X-5:** X-5 had no P9-B0 run (P9-B0 re-ran Y-F0, X-10 and Y-1); its NAV reference of record is the DEC-20 re-pin
+    of C1, `build-equity/p9-c1-s2-x5-nav` (Debug `bf4b0ec2`, receipt `p9-c1-s2-x5-nav-run`; 27 files), against which
+    M2e's C2 identity also held; its Release twin `p9-c1-rel-x5-nav` (Release `93ea323e`) is compared too. This is
+    what "X-5's P9-B0 reference" resolves to here.
+  - Both cells' `--fields` manifests (`-fields-v13`, `-fields-v15`) carry `seal.exclusive_end` 2024-01-01, so no
+    P13 legacy line is expected on stdout (stdout is not compared in any case).
+- **Item 2, flag-absent identity (C3-6):**
+  - `p9-m2j-x5-argv` (Release): the X-5 reference argv, only `--output` changed. Expected vs `p9-c1-s2-x5-nav`: the
+    same 27 files, 26 byte-identical; `summary.json` differs at most at `/producer/build_type` and
+    `/producer/engine_git_sha`. Vs `p9-c1-rel-x5-nav`: at most `/producer/engine_git_sha`.
+  - `p9-m2j-yf0-argv` (Release): the Y-F0 P9-B0 argv, only `--output` changed. Expected vs `p9-b0-yf0-nav`: 27 files,
+    26 byte-identical; `summary.json` at most `/producer/build_type`, `/producer/engine_git_sha`.
+- **Item 3, `--spec` vs argv:** `<Release exe> nav <reference argv verbatim> --print-spec` (prints, runs nothing;
+  stdout bytes written by Python to `m2j-logs/<x5|yf0>.navspec.json`, never a PowerShell redirect; exit code and
+  SHA-256 printed), then `p9-m2j-x5-spec` / `p9-m2j-yf0-spec` (Release): `nav --spec m2j-logs/<cell>.navspec.json
+  --output build-equity/<out>`. Expected vs the item-2 argv run of the same cell: every file byte-identical, no
+  exception (the spec run's console gains the line `nav spec: atx.nav-spec/v1 <path> sha256 <hex>`, whose hex must be
+  the spec file's SHA-256; only that line of its stdout is read). Recorded: the schema literal and the printed digest.
+- **Item 4, the opt-in (PRE-7a, C3-9):** `p9-m2j-x5-optin` (Release): the X-5 argv, `--output` changed, plus
+  `--ann-mean-gross`. Expected vs `p9-m2j-x5-argv` (`m2j-logs/tools/optin_cmp.py`): the same file set; every file but
+  the main `summary.json` byte-identical (incl. `capacity/summary.json`, which holds no such key); in `summary.json` the
+  differing leaf paths are exactly `/scenarios/<i>/ann_mean_gross`, one per scenario object, each on the opt-in side
+  only; deleting those lines gives the flag-absent file byte for byte. No value is printed.
+- **Item 5, Release = Debug (G-P3 NAV half):** `p9-m2j-x5-dbg` (Debug p9-2p): the X-5 argv, `--output` changed.
+  Expected vs `p9-m2j-x5-argv`: 26 of 27 byte-identical; `summary.json` at most `/producer/build_type`,
+  `/producer/engine_git_sha`. Vs `p9-c1-s2-x5-nav` (Debug): at most `/producer/engine_git_sha`.
+  NAV wall time before / after the 14-TU split, from receipts only: Release X-5 `p9-c1-rel-x5-nav` 41.7 s (pre-split)
+  vs `p9-m2j-x5-argv`; Debug X-5 `p9-c1-s2-x5-nav` 62.6 s (pre-split) vs `p9-m2j-x5-dbg`; Y-F0 Release pre-split
+  `p9-b0-yf0-nav-hrun` 27.4 s (same argv plus `--emit-holdings`) vs `p9-m2j-yf0-argv`. Host-load dependent; reported,
+  not judged.
+- **Compare:** `m2g-logs/tools/nav_cmp.py REF NEW --allow summary.json:/producer/build_type --allow
+  summary.json:/producer/engine_git_sha` (or no `--allow` where nothing may differ): file SHA-256, JSON leaf paths, CSV
+  shape and differing-cell counts; no value printed. Anything outside the list = identity miss: stop, PM rules (C3-6:
+  a miss returns the lane).
+
+#### Other root items (lists written before the step)
+
+- **Item 1:** builds p9-2p (equity-dev) and p9-2q (equity-rel) of the lane's nine targets, `-Canary`, through
+  `m2j-logs/tools/build.sh` (waits for no other ninja / clang-cl / lld-link on the host and the memory gate, up to 90
+  minutes; `CCACHE_RECACHE=1`, the lane-named stale-PCH remedy applied up front because the core split creates the new
+  PCH owners `atx-impl-strategy.dir` / `atx-impl-pipeline.dir`). Expected: 0 warnings; named filter 33 / 33; whole
+  `atx-impl-strategy-target-tests` 390 + COVR's one DISABLED test; whole `atx-impl-tests` (its base + C3's 13); canary
+  15 on the unchanged Debug and Release goldens.
+- **Item 6 SQL2-CLS:** guard `test_research_store_classes.py` before (expected: 1 fail naming `atx.nav-spec/v1`) and
+  after; `atx.nav-spec/v1` joins the `nav-output` class (artifact-only, beside `atx.nav-construction-grid/v1`, the other
+  NAV input file a NavSpec names; a NavSpec is not a cycle spec, so not `spec_doc`); store suite
+  `atx-engine/tools/test_research_store_{classes,blind,identity,fixtures}.py test_research_store.py` under
+  `PYTHONHASHSEED` 0 and 1; fixture chain (`m2f-logs/tools/fixture_chain.sh`, research-store exe p9-1u `3b955ba1`,
+  current: no atx-engine change) expected digest `d32f7655...4e69`, identity 12 / 0, rel = abs.
+- **Item 7 W3-8:** drop `new-cost-model` from `SCHEMA_ONLY_FIXTURES` in `scripts/tests/test_wave_kinds.py` and its
+  "SCHEMA ONLY" description; smallest edit, lines named in the handoff (D3 owns the file); then `test_wave_kinds.py`
+  (explicit path) and a check that no P9 template's `change.flags`, `rule_cell.constants.flags` or `horizon.flags`
+  names a flag the real NAV table now owns.
+- **Item 8 C3-5 probe** (`m2j-logs/tools/m2j_c3_probe.py`, a copy of `m2h-logs/m2h2-engine-o1.py`, lines marked M2j):
+  a fresh tiny world `build-equity/p9-m2j-tw` built with the p9-2q Release exes (substitutions 1, 2 and 4 of M2h as
+  documented in `handoff-root-m2h.md`; substitution 3, the free `--trade-fraction` constant, is replaced by C3's real
+  row), and wave `c3r`: kind rule, `gross_match pm6-6-engine`, template `rule-nav.json`, rules
+  `[{"name": "aim-partial-v5", "params": {"trade_fraction": 0.1}}]` (C3's trade-rate row whose x-flag is `--rule
+  aim-partial-v5`), `--until verify`. Reported: every `--rule` token of every NAV argv the wave ran (bounded-run
+  receipts) and of the cell of record's planned argv. A duplicate or conflicting `--rule` is a stop for the PM. Run
+  after Part B. Seal: SEAL-ALLOW-3 after the per-hit check printed by the script.
+- **Item 9 ROOT-1:** `scripts/tests` whole under `PYTHONHASHSEED=0` and `atx-engine/tools/test_stage_chain.py`,
+  separate invocations, `-p no:cacheprovider`, own `--basetemp`; expected 0 failed (known-red set empty); ENV-1
+  applies.
+- **Housekeeping (M2I-HK):** `build-equity/p9-m2i-cov-y1-nav` deleted by name. Never deleted: `p9-m2i-dcov-v11`,
+  `p9-m2i-dcov-covv1`, `p9-m2d-cov-risk-container`.
+
+#### Results at the OWNER STOP (2026-10-05; nothing in flight was ended: no run of mine was running)
+
+| item | result | evidence |
+|---|---|---|
+| 1 builds | **p9-2p** equity-dev, source `327c86b2`, 130 TUs, 731 s, 0 warnings, canary 15 passed (Debug goldens); **p9-2q** equity-rel, same source, 132 TUs, 769 s, 0 warnings, canary 15 passed (Release goldens); `CCACHE_RECACHE=1`, no PCH refusal | `m2j-logs/builds.txt`, `mega-p9-2{p,q}-*` |
+| 1 gtests | named filter **33 / 33** Debug and Release; whole `atx-impl-strategy-target-tests` Debug **390 passed / 0 failed, 1 DISABLED** (COVR's diagnostic). NOT run: Release whole target-tests, whole `atx-impl-tests` (both builds) | `m2j-logs/gt-exits.txt`, `{dbg,rel}-gt-*.log` |
+| 2 flag-absent identity | **HOLDS**: X-5 (Release p9-2q `adcf72d4`, 38.4 s, 580 MiB) vs `p9-c1-s2-x5-nav`: 26 / 27 identical, `summary.json` only `/producer/build_type`, `/producer/engine_git_sha`; vs the Release twin `p9-c1-rel-x5-nav`: only `/producer/engine_git_sha`. Y-F0 (35.8 s, 582 MiB) vs P9-B0 `p9-b0-yf0-nav`: 26 / 27, the two producer keys only. Argv = reference but `--output` (token 14) | `item2-cmp.txt`, `nav-runs.txt`, receipts |
+| 3 `--spec` vs argv | **HOLDS**: `--print-spec` exit 0 for both (`atx.nav-spec/v1`; x5 spec `53fd737d0aee52b4083a8bae6cf3052ad0c7a6579b3f7c608efa22e3aa7af67f`, yf0 `a793e1832d3421d51a8e25fff69a2f65e01b63a787bc1ec241832b1f5fa00bb4`); spec runs 27 / 27 byte-identical to the argv runs; each spec run printed `nav spec: atx.nav-spec/v1 <path> sha256 <hex>` with hex = the file's SHA-256 | `item3-cmp.txt`, `x5.navspec.json`, `yf0.navspec.json` |
+| 4 opt-in | **NOT RUN** (owner stop) | - |
+| 5 Release = Debug, wall | **NOT RUN** (the Debug X-5 run). Release walls from receipts only: X-5 38.4 s after the split vs 41.7 s pre-split (`p9-c1-rel-x5-nav`); Y-F0 35.8 s vs 27.4 s (`p9-b0-yf0-nav-hrun`, + `--emit-holdings`); host load not controlled | receipts |
+| 6 SQL2-CLS | **NOT DONE** (`atx.nav-spec/v1` not yet in `classes.json`: the classes guard is expected red until it is) | - |
+| 7 W3-8 flip | **NOT DONE** | - |
+| 8 C3-5 probe | **NOT RUN** (script ready: `m2j-logs/tools/m2j_c3_probe.py`) | - |
+| 9 ROOT-1 | **NOT RUN** | - |
+| Part B D-COV-EIG | **DONE**: no rank 00-02 structurally null in either recipe; third pooled row = the all-ranks row (gate report 4 (d), 4 (e)) | `dcov-eig.txt`, `dcov-eig-pooled.txt` |
+| M2I-HK | **NOT DONE** (`p9-m2i-cov-y1-nav` still on disk) | - |
