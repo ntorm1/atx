@@ -1,0 +1,161 @@
+[ bench    ] AlphaBatch mined-battery CSE lever (Debug build):
+[ bench    ]   panel            = 512 x 256 (131072 cells)
+[ bench    ]   alphas           = 24
+[ bench    ]   unique_nodes     = 41
+[ bench    ]   total_ast_nodes  = 156
+[ bench    ]   unique/total     = 0.262821
+[ bench    ]   cache_hits       = 115
+[ bench    ]   intern_attempts  = 156
+[ bench    ]   cache_hit_pct    = 73.7179
+[ bench    ]   num_slots        = 12
+[ bench    ] AlphaWidened battery CSE lever (Debug build):
+[ bench    ]   panel            = 256 x 128 (32768 cells)
+[ bench    ]   alphas           = 16
+[ bench    ]   unique_nodes     = 32
+[ bench    ]   total_ast_nodes  = 82
+[ bench    ]   unique/total     = 0.390244
+[ bench    ]   cache_hit_pct    = 60.9756
+[ bench    ]   num_slots        = 12
+[ bench    ] Executor speedup/knee (parallel_backtests, 256 alphas x 96p x 8i, Debug build; ms = median of 5 reps):
+[ bench    ] ThreadExecutor    w1=1.59ms(1.00x)  w2=0.70ms(2.27x)  w4=0.54ms(2.93x)  w8=0.70ms(2.28x)  knee=w4
+[ bench    ] ProcessExecutor   w1=184.63ms(1.00x)  w2=151.23ms(1.22x)  w4=95.79ms(1.93x)  w8=89.75ms(2.06x)  knee=w8
+[ bench    ]   determinism self-check: all 8 cells AGREE on result digest (0x2c08a03ea87fa10c)
+2026-10-04T11:53:26-04:00
+Running C:\atx-wt\pool-2\build-equity-rel\bin\atx-engine-bench.exe
+Run on (16 X 2496 MHz CPU s)
+CPU Caches:
+  L1 Data 48 KiB (x8)
+  L1 Instruction 32 KiB (x8)
+  L2 Unified 1280 KiB (x8)
+  L3 Unified 18432 KiB (x1)
+----------------------------------------------------------------------------------------------------------
+Benchmark                                                Time             CPU   Iterations UserCounters...
+----------------------------------------------------------------------------------------------------------
+BM_CovContainerWrite/3000/1/iterations:2_mean          516 ms          334 ms            5 bytes_per_second=680.914Mi/s sha256 x86-sha-ni
+BM_CovContainerWrite/3000/1/iterations:2_median        509 ms          328 ms            5 bytes_per_second=690.769Mi/s sha256 x86-sha-ni
+BM_CovContainerWrite/3000/1/iterations:2_stddev       41.2 ms         25.6 ms            5 bytes_per_second=50.1288Mi/s sha256 x86-sha-ni
+BM_CovContainerWrite/3000/1/iterations:2_cv           7.99 %          7.64 %             5 bytes_per_second=7.36% sha256 x86-sha-ni
+BM_CovContainerWrite/5627/1/iterations:2_mean         1189 ms          731 ms            5 bytes_per_second=549.613Mi/s sha256 x86-sha-ni
+BM_CovContainerWrite/5627/1/iterations:2_median       1059 ms          711 ms            5 bytes_per_second=560.575Mi/s sha256 x86-sha-ni
+BM_CovContainerWrite/5627/1/iterations:2_stddev        251 ms         74.4 ms            5 bytes_per_second=56.7772Mi/s sha256 x86-sha-ni
+BM_CovContainerWrite/5627/1/iterations:2_cv          21.14 %         10.18 %             5 bytes_per_second=10.33% sha256 x86-sha-ni
+BM_CovContainerWrite/3000/0/iterations:2_mean         1249 ms          589 ms            5 bytes_per_second=600.145Mi/s sha256 x86-sha-ni
+BM_CovContainerWrite/3000/0/iterations:2_median       1248 ms          586 ms            5 bytes_per_second=600.164Mi/s sha256 x86-sha-ni
+BM_CovContainerWrite/3000/0/iterations:2_stddev       50.4 ms         47.7 ms            5 bytes_per_second=48.8914Mi/s sha256 x86-sha-ni
+BM_CovContainerWrite/3000/0/iterations:2_cv           4.04 %          8.10 %             5 bytes_per_second=8.15% sha256 x86-sha-ni
+BM_CovContainerWrite/5627/0/iterations:2_mean         2050 ms         1014 ms            5 bytes_per_second=627.254Mi/s sha256 x86-sha-ni
+BM_CovContainerWrite/5627/0/iterations:2_median       2037 ms         1039 ms            5 bytes_per_second=609.115Mi/s sha256 x86-sha-ni
+BM_CovContainerWrite/5627/0/iterations:2_stddev       77.2 ms         79.9 ms            5 bytes_per_second=49.5842Mi/s sha256 x86-sha-ni
+BM_CovContainerWrite/5627/0/iterations:2_cv           3.77 %          7.88 %             5 bytes_per_second=7.90% sha256 x86-sha-ni
+BM_CovContainerOpenLazy/3000/1_mean                    212 us          202 us            5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/3000/1_median                  211 us          196 us            5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/3000/1_stddev                 10.8 us         8.39 us            5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/3000/1_cv                     5.12 %          4.16 %             5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/5627/1_mean                    225 us          223 us            5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/5627/1_median                  225 us          219 us            5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/5627/1_stddev                 15.4 us         16.0 us            5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/5627/1_cv                     6.84 %          7.19 %             5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/3000/0_mean                    215 us          211 us            5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/3000/0_median                  217 us          218 us            5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/3000/0_stddev                 5.84 us         10.9 us            5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/3000/0_cv                     2.72 %          5.17 %             5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/5627/0_mean                    214 us          211 us            5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/5627/0_median                  211 us          211 us            5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/5627/0_stddev                 5.52 us         7.18 us            5 sha256 x86-sha-ni
+BM_CovContainerOpenLazy/5627/0_cv                     2.58 %          3.40 %             5 sha256 x86-sha-ni
+BM_CovContainerOpenFull/3000/1/0_mean                  115 ms          106 ms            5 bytes_per_second=2.08492Gi/s sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/3000/1/0_median                115 ms          105 ms            5 bytes_per_second=2.10985Gi/s sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/3000/1/0_stddev               2.11 ms         3.39 ms            5 bytes_per_second=66.6625Mi/s sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/3000/1/0_cv                   1.84 %          3.19 %             5 bytes_per_second=3.12% sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/3000/1/1_mean                  347 ms          338 ms            5 bytes_per_second=673.24Mi/s sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/3000/1/1_median                338 ms          336 ms            5 bytes_per_second=674.705Mi/s sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/3000/1/1_stddev               20.2 ms         18.7 ms            5 bytes_per_second=37.5614Mi/s sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/3000/1/1_cv                   5.84 %          5.53 %             5 bytes_per_second=5.58% sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/5627/1/0_mean                  206 ms          189 ms            5 bytes_per_second=2.05909Gi/s sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/5627/1/0_median                206 ms          188 ms            5 bytes_per_second=2.0757Gi/s sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/5627/1/0_stddev               5.12 ms         3.49 ms            5 bytes_per_second=38.0223Mi/s sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/5627/1/0_cv                   2.48 %          1.85 %             5 bytes_per_second=1.80% sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/5627/1/1_mean                  572 ms          566 ms            5 bytes_per_second=705.314Mi/s sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/5627/1/1_median                566 ms          562 ms            5 bytes_per_second=708.504Mi/s sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/5627/1/1_stddev               16.4 ms         20.4 ms            5 bytes_per_second=25.1289Mi/s sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/5627/1/1_cv                   2.88 %          3.60 %             5 bytes_per_second=3.56% sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/3000/0/0_mean                  195 ms          173 ms            5 bytes_per_second=1.99039Gi/s sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/3000/0/0_median                187 ms          172 ms            5 bytes_per_second=1.99806Gi/s sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/3000/0/0_stddev               20.0 ms         5.09 ms            5 bytes_per_second=59.5827Mi/s sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/3000/0/0_cv                  10.26 %          2.95 %             5 bytes_per_second=2.92% sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/3000/0/1_mean                  561 ms          550 ms            5 bytes_per_second=639.864Mi/s sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/3000/0/1_median                554 ms          547 ms            5 bytes_per_second=643.033Mi/s sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/3000/0/1_stddev               16.2 ms         17.1 ms            5 bytes_per_second=19.4655Mi/s sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/3000/0/1_cv                   2.89 %          3.11 %             5 bytes_per_second=3.04% sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/5627/0/0_mean                  336 ms          303 ms            5 bytes_per_second=2.04261Gi/s sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/5627/0/0_median                338 ms          312 ms            5 bytes_per_second=1.97784Gi/s sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/5627/0/0_stddev               12.6 ms         14.0 ms            5 bytes_per_second=100.009Mi/s sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/5627/0/0_cv                   3.75 %          4.61 %             5 bytes_per_second=4.78% sha256 x86-sha-ni, default workers
+BM_CovContainerOpenFull/5627/0/1_mean                  966 ms          950 ms            5 bytes_per_second=667.039Mi/s sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/5627/0/1_median                960 ms          953 ms            5 bytes_per_second=664.035Mi/s sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/5627/0/1_stddev               36.2 ms         37.3 ms            5 bytes_per_second=26.1Mi/s sha256 x86-sha-ni, 1 worker
+BM_CovContainerOpenFull/5627/0/1_cv                   3.75 %          3.93 %             5 bytes_per_second=3.91% sha256 x86-sha-ni, 1 worker
+BM_CovContainerFirstTouch/3000/1_mean                  425 us          409 us            5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/3000/1_median                404 us          400 us            5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/3000/1_stddev               41.7 us         56.9 us            5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/3000/1_cv                   9.80 %         13.92 %             5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/5627/1_mean                  610 us          617 us            5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/5627/1_median                612 us          628 us            5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/5627/1_stddev               9.12 us         30.2 us            5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/5627/1_cv                   1.50 %          4.90 %             5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/3000/0_mean                  567 us          525 us            5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/3000/0_median                568 us          516 us            5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/3000/0_stddev               10.7 us         33.6 us            5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/3000/0_cv                   1.89 %          6.41 %             5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/5627/0_mean                 1066 us         1069 us            5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/5627/0_median               1038 us         1074 us            5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/5627/0_stddev                118 us         79.9 us            5 sha256 x86-sha-ni
+BM_CovContainerFirstTouch/5627/0_cv                  11.07 %          7.47 %             5 sha256 x86-sha-ni
+BM_CovContainerView/3000/1_mean                      0.079 us        0.078 us            5 sha256 x86-sha-ni
+BM_CovContainerView/3000/1_median                    0.079 us        0.077 us            5 sha256 x86-sha-ni
+BM_CovContainerView/3000/1_stddev                    0.002 us        0.002 us            5 sha256 x86-sha-ni
+BM_CovContainerView/3000/1_cv                         2.23 %          2.25 %             5 sha256 x86-sha-ni
+BM_CovContainerView/5627/1_mean                      0.076 us        0.074 us            5 sha256 x86-sha-ni
+BM_CovContainerView/5627/1_median                    0.076 us        0.074 us            5 sha256 x86-sha-ni
+BM_CovContainerView/5627/1_stddev                    0.004 us        0.005 us            5 sha256 x86-sha-ni
+BM_CovContainerView/5627/1_cv                         4.99 %          6.15 %             5 sha256 x86-sha-ni
+BM_CovContainerView/3000/0_mean                      0.082 us        0.080 us            5 sha256 x86-sha-ni
+BM_CovContainerView/3000/0_median                    0.082 us        0.080 us            5 sha256 x86-sha-ni
+BM_CovContainerView/3000/0_stddev                    0.019 us        0.016 us            5 sha256 x86-sha-ni
+BM_CovContainerView/3000/0_cv                        23.46 %         20.14 %             5 sha256 x86-sha-ni
+BM_CovContainerView/5627/0_mean                      0.075 us        0.074 us            5 sha256 x86-sha-ni
+BM_CovContainerView/5627/0_median                    0.071 us        0.071 us            5 sha256 x86-sha-ni
+BM_CovContainerView/5627/0_stddev                    0.007 us        0.006 us            5 sha256 x86-sha-ni
+BM_CovContainerView/5627/0_cv                         9.44 %          8.75 %             5 sha256 x86-sha-ni
+BM_CovContainerLegacyStoreOpen/3000/1_mean             316 ms          311 ms            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/3000/1_median           310 ms          312 ms            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/3000/1_stddev          35.5 ms         25.6 ms            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/3000/1_cv             11.25 %          8.22 %             5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/5627/1_mean             578 ms          566 ms            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/5627/1_median           558 ms          547 ms            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/5627/1_stddev          77.3 ms         61.9 ms            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/5627/1_cv             13.37 %         10.95 %             5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/3000/0_mean             424 ms          416 ms            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/3000/0_median           455 ms          445 ms            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/3000/0_stddev          52.9 ms         48.0 ms            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/3000/0_cv             12.49 %         11.54 %             5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/5627/0_mean             691 ms          678 ms            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/5627/0_median           688 ms          688 ms            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/5627/0_stddev          45.6 ms         45.0 ms            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreOpen/5627/0_cv              6.59 %          6.64 %             5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/3000/1_mean             428 us          420 us            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/3000/1_median           424 us          430 us            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/3000/1_stddev          51.6 us         46.8 us            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/3000/1_cv             12.04 %         11.15 %             5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/5627/1_mean             627 us          614 us            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/5627/1_median           636 us          614 us            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/5627/1_stddev          38.9 us         35.6 us            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/5627/1_cv              6.20 %          5.79 %             5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/3000/0_mean             445 us          435 us            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/3000/0_median           494 us          485 us            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/3000/0_stddev          85.2 us         83.7 us            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/3000/0_cv             19.16 %         19.25 %             5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/5627/0_mean             831 us          753 us            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/5627/0_median           799 us          732 us            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/5627/0_stddev           123 us         73.4 us            5 sha256 x86-sha-ni, emulation
+BM_CovContainerLegacyStoreRead/5627/0_cv             14.81 %          9.74 %             5 sha256 x86-sha-ni, emulation

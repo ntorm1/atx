@@ -1,0 +1,2578 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 783 tests from 314 test suites.
+[----------] Global test environment set-up.
+[----------] 1 test from AlphaSlotPoolDeathTest
+[ RUN      ] AlphaSlotPoolDeathTest.OverAcquire_Aborts
+[14:00:54.232] [C] [panel.hpp:222] CHECK failed: live_ < capacity_
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[       OK ] AlphaSlotPoolDeathTest.OverAcquire_Aborts (68 ms)
+[----------] 1 test from AlphaSlotPoolDeathTest (68 ms total)
+
+[----------] 1 test from AlphaBatch_BatchEqualsSingly
+[ RUN      ] AlphaBatch_BatchEqualsSingly.NAlphas_BatchMatchesPerAlphaEval_CellForCell
+[       OK ] AlphaBatch_BatchEqualsSingly.NAlphas_BatchMatchesPerAlphaEval_CellForCell (3 ms)
+[----------] 1 test from AlphaBatch_BatchEqualsSingly (3 ms total)
+
+[----------] 1 test from AlphaBatch_OrderIndependence
+[ RUN      ] AlphaBatch_OrderIndependence.TwoSubmissionOrders_SameHashAfterSortByName
+[       OK ] AlphaBatch_OrderIndependence.TwoSubmissionOrders_SameHashAfterSortByName (1 ms)
+[----------] 1 test from AlphaBatch_OrderIndependence (1 ms total)
+
+[----------] 4 tests from AlphaBatch_CseMetric
+[ RUN      ] AlphaBatch_CseMetric.SharedSubexpression_DedupHappens_CacheHitsNonZero
+[       OK ] AlphaBatch_CseMetric.SharedSubexpression_DedupHappens_CacheHitsNonZero (0 ms)
+[ RUN      ] AlphaBatch_CseMetric.BatchOfOne_EqualsSingleEval_NoCrossAlphaHits
+[       OK ] AlphaBatch_CseMetric.BatchOfOne_EqualsSingleEval_NoCrossAlphaHits (0 ms)
+[ RUN      ] AlphaBatch_CseMetric.FullyDisjointAlphas_UniqueEqualsTotal_NoHits
+[       OK ] AlphaBatch_CseMetric.FullyDisjointAlphas_UniqueEqualsTotal_NoHits (0 ms)
+[ RUN      ] AlphaBatch_CseMetric.IdenticalAlphas_CollapseToOneGraph_HeavyDedup
+[       OK ] AlphaBatch_CseMetric.IdenticalAlphas_CollapseToOneGraph_HeavyDedup (0 ms)
+[----------] 4 tests from AlphaBatch_CseMetric (1 ms total)
+
+[----------] 4 tests from AlphaBatch_Errors
+[ RUN      ] AlphaBatch_Errors.MalformedSource_PropagatesErr_NoThrow
+[       OK ] AlphaBatch_Errors.MalformedSource_PropagatesErr_NoThrow (0 ms)
+[ RUN      ] AlphaBatch_Errors.EmptyBatch_YieldsZeroRootProgram
+[       OK ] AlphaBatch_Errors.EmptyBatch_YieldsZeroRootProgram (0 ms)
+[ RUN      ] AlphaBatch_Errors.EmbeddedAssignment_RejectedNotSilentlyMerged
+[       OK ] AlphaBatch_Errors.EmbeddedAssignment_RejectedNotSilentlyMerged (0 ms)
+[ RUN      ] AlphaBatch_Errors.WellFormedBatch_MapsOneToOne_RootsMatchSrcCount
+[       OK ] AlphaBatch_Errors.WellFormedBatch_MapsOneToOne_RootsMatchSrcCount (0 ms)
+[----------] 4 tests from AlphaBatch_Errors (0 ms total)
+
+[----------] 5 tests from AlphaBindings
+[ RUN      ] AlphaBindings.ReferenceReusesBinding
+[       OK ] AlphaBindings.ReferenceReusesBinding (0 ms)
+[ RUN      ] AlphaBindings.ForwardReferenceIsFieldFallback
+[       OK ] AlphaBindings.ForwardReferenceIsFieldFallback (0 ms)
+[ RUN      ] AlphaBindings.SelfReferenceOnRhsIsField
+[       OK ] AlphaBindings.SelfReferenceOnRhsIsField (0 ms)
+[ RUN      ] AlphaBindings.BindingReferenceEmitsShadowWarning
+[       OK ] AlphaBindings.BindingReferenceEmitsShadowWarning (0 ms)
+[ RUN      ] AlphaBindings.NoBindingUseNoWarning
+[       OK ] AlphaBindings.NoBindingUseNoWarning (0 ms)
+[----------] 5 tests from AlphaBindings (0 ms total)
+
+[----------] 1 test from AlphaBytecode_Topo
+[ RUN      ] AlphaBytecode_Topo.EverySrcSlotProducedByEarlierInstr
+[       OK ] AlphaBytecode_Topo.EverySrcSlotProducedByEarlierInstr (0 ms)
+[----------] 1 test from AlphaBytecode_Topo (0 ms total)
+
+[----------] 2 tests from AlphaBytecode_SlotReuse
+[ RUN      ] AlphaBytecode_SlotReuse.DeepChain_PeakSlotsSmall
+[       OK ] AlphaBytecode_SlotReuse.DeepChain_PeakSlotsSmall (0 ms)
+[ RUN      ] AlphaBytecode_SlotReuse.PeakNeverExceedsNodeCount
+[       OK ] AlphaBytecode_SlotReuse.PeakNeverExceedsNodeCount (0 ms)
+[----------] 2 tests from AlphaBytecode_SlotReuse (0 ms total)
+
+[----------] 3 tests from AlphaBytecode_Free
+[ RUN      ] AlphaBytecode_Free.NeverFreedTwiceWithoutReacquire_NoDoubleFree
+[       OK ] AlphaBytecode_Free.NeverFreedTwiceWithoutReacquire_NoDoubleFree (0 ms)
+[ RUN      ] AlphaBytecode_Free.NoSlotReadAfterItsFree_NoUseAfterFree
+[       OK ] AlphaBytecode_Free.NoSlotReadAfterItsFree_NoUseAfterFree (0 ms)
+[ RUN      ] AlphaBytecode_Free.EveryProducedSlotEventuallyFreed
+[       OK ] AlphaBytecode_Free.EveryProducedSlotEventuallyFreed (0 ms)
+[----------] 3 tests from AlphaBytecode_Free (0 ms total)
+
+[----------] 4 tests from AlphaBytecode_Store
+[ RUN      ] AlphaBytecode_Store.OneStorePerRoot_WithSequentialOutputIndices
+[       OK ] AlphaBytecode_Store.OneStorePerRoot_WithSequentialOutputIndices (0 ms)
+[ RUN      ] AlphaBytecode_Store.TwoIdenticalAlphas_EmitOneStorePerRoot
+[       OK ] AlphaBytecode_Store.TwoIdenticalAlphas_EmitOneStorePerRoot (0 ms)
+[ RUN      ] AlphaBytecode_Store.StoreReadsItsRootSlot
+[       OK ] AlphaBytecode_Store.StoreReadsItsRootSlot (0 ms)
+[ RUN      ] AlphaBytecode_Store.RootThatIsAlsoInteriorChild_StoredOnceFreedAfterAllConsumers
+[       OK ] AlphaBytecode_Store.RootThatIsAlsoInteriorChild_StoredOnceFreedAfterAllConsumers (0 ms)
+[----------] 4 tests from AlphaBytecode_Store (0 ms total)
+
+[----------] 2 tests from AlphaBytecode_StrengthReduce
+[ RUN      ] AlphaBytecode_StrengthReduce.NoPowAndNoLiveConstTwo
+[       OK ] AlphaBytecode_StrengthReduce.NoPowAndNoLiveConstTwo (0 ms)
+[ RUN      ] AlphaBytecode_StrengthReduce.MulHasBothSrcEqual
+[       OK ] AlphaBytecode_StrengthReduce.MulHasBothSrcEqual (0 ms)
+[----------] 2 tests from AlphaBytecode_StrengthReduce (0 ms total)
+
+[----------] 1 test from AlphaBytecode_Lookback
+[ RUN      ] AlphaBytecode_Lookback.PropagatesRequiredLookback
+[       OK ] AlphaBytecode_Lookback.PropagatesRequiredLookback (0 ms)
+[----------] 1 test from AlphaBytecode_Lookback (0 ms total)
+
+[----------] 1 test from AlphaBytecode_Boundary
+[ RUN      ] AlphaBytecode_Boundary.SingleScalarAlpha_OneSlotStoredAndFreed
+[       OK ] AlphaBytecode_Boundary.SingleScalarAlpha_OneSlotStoredAndFreed (0 ms)
+[----------] 1 test from AlphaBytecode_Boundary (0 ms total)
+
+[----------] 1 test from AlphaBytecode_Const
+[ RUN      ] AlphaBytecode_Const.ImmediateValueCarriedOnInstr
+[       OK ] AlphaBytecode_Const.ImmediateValueCarriedOnInstr (0 ms)
+[----------] 1 test from AlphaBytecode_Const (0 ms total)
+
+[----------] 1 test from AlphaBytecode_Cse
+[ RUN      ] AlphaBytecode_Cse.SharedNode_EmittedOnce
+[       OK ] AlphaBytecode_Cse.SharedNode_EmittedOnce (0 ms)
+[----------] 1 test from AlphaBytecode_Cse (0 ms total)
+
+[----------] 2 tests from AlphaBytecode_Metric
+[ RUN      ] AlphaBytecode_Metric.DeepChain_PeakLiveSlotsIsThree
+[       OK ] AlphaBytecode_Metric.DeepChain_PeakLiveSlotsIsThree (0 ms)
+[ RUN      ] AlphaBytecode_Metric.SharedSubtree_PeakLiveSlotsIsThree
+[       OK ] AlphaBytecode_Metric.SharedSubtree_PeakLiveSlotsIsThree (0 ms)
+[----------] 2 tests from AlphaBytecode_Metric (0 ms total)
+
+[----------] 1 test from AlphaBytecode
+[ RUN      ] AlphaBytecode.MultiOutputCompilesOneComputeInstr
+[       OK ] AlphaBytecode.MultiOutputCompilesOneComputeInstr (0 ms)
+[----------] 1 test from AlphaBytecode (0 ms total)
+
+[----------] 1 test from AlphaConformance_Battery
+[ RUN      ] AlphaConformance_Battery.ExpressibleSubset_FastEqualsOracle_BitIdentical
+[       OK ] AlphaConformance_Battery.ExpressibleSubset_FastEqualsOracle_BitIdentical (3 ms)
+[----------] 1 test from AlphaConformance_Battery (3 ms total)
+
+[----------] 3 tests from AlphaConformance_HandValue
+[ RUN      ] AlphaConformance_HandValue.Alpha101_CloseOpenOverRange_ExactRational
+[       OK ] AlphaConformance_HandValue.Alpha101_CloseOpenOverRange_ExactRational (0 ms)
+[ RUN      ] AlphaConformance_HandValue.Alpha41_GeomMeanMinusVwap_ExactClosedForm
+[       OK ] AlphaConformance_HandValue.Alpha41_GeomMeanMinusVwap_ExactClosedForm (0 ms)
+[ RUN      ] AlphaConformance_HandValue.Rank_OrdinalPercentile_MatchesHandRank
+[       OK ] AlphaConformance_HandValue.Rank_OrdinalPercentile_MatchesHandRank (0 ms)
+[----------] 3 tests from AlphaConformance_HandValue (1 ms total)
+
+[----------] 1 test from AlphaConformance_Lock_IndNeutralize
+[ RUN      ] AlphaConformance_Lock_IndNeutralize.EqualsPerGroupDemean_AndGroupNeutralize
+[       OK ] AlphaConformance_Lock_IndNeutralize.EqualsPerGroupDemean_AndGroupNeutralize (0 ms)
+[----------] 1 test from AlphaConformance_Lock_IndNeutralize (0 ms total)
+
+[----------] 1 test from AlphaConformance_Lock_SignedPower
+[ RUN      ] AlphaConformance_Lock_SignedPower.IsSignTimesAbsPow_NotPlainPow
+[       OK ] AlphaConformance_Lock_SignedPower.IsSignTimesAbsPow_NotPlainPow (0 ms)
+[----------] 1 test from AlphaConformance_Lock_SignedPower (0 ms total)
+
+[----------] 5 tests from AlphaConformance_Lock_FloorWindow
+[ RUN      ] AlphaConformance_Lock_FloorWindow.FractionalWindow_FloorsTo8
+[       OK ] AlphaConformance_Lock_FloorWindow.FractionalWindow_FloorsTo8 (0 ms)
+[ RUN      ] AlphaConformance_Lock_FloorWindow.SubOneWindow_FloorsToZero_Rejected
+[       OK ] AlphaConformance_Lock_FloorWindow.SubOneWindow_FloorsToZero_Rejected (0 ms)
+[ RUN      ] AlphaConformance_Lock_FloorWindow.NegativeWindow_Rejected
+[       OK ] AlphaConformance_Lock_FloorWindow.NegativeWindow_Rejected (0 ms)
+[ RUN      ] AlphaConformance_Lock_FloorWindow.NonConstWindow_Rejected
+[       OK ] AlphaConformance_Lock_FloorWindow.NonConstWindow_Rejected (0 ms)
+[ RUN      ] AlphaConformance_Lock_FloorWindow.ArityThreeCorrelation_FloorsWindow
+[       OK ] AlphaConformance_Lock_FloorWindow.ArityThreeCorrelation_FloorsWindow (0 ms)
+[----------] 5 tests from AlphaConformance_Lock_FloorWindow (1 ms total)
+
+[----------] 1 test from AlphaConformance_Lock_MinPeriods
+[ RUN      ] AlphaConformance_Lock_MinPeriods.AnyNaNInWindow_ProducesNaN_FullWindowPolicy
+[       OK ] AlphaConformance_Lock_MinPeriods.AnyNaNInWindow_ProducesNaN_FullWindowPolicy (0 ms)
+[----------] 1 test from AlphaConformance_Lock_MinPeriods (0 ms total)
+
+[----------] 1 test from AlphaConformance_Lock_MinMax
+[ RUN      ] AlphaConformance_Lock_MinMax.ElementWise_VsTimeSeries_Disambiguated
+[       OK ] AlphaConformance_Lock_MinMax.ElementWise_VsTimeSeries_Disambiguated (0 ms)
+[----------] 1 test from AlphaConformance_Lock_MinMax (0 ms total)
+
+[----------] 2 tests from AlphaConformance_Meta
+[ RUN      ] AlphaConformance_Meta.OutOfBatteryList_IsExhaustive_Covers1To101_NoGaps
+[       OK ] AlphaConformance_Meta.OutOfBatteryList_IsExhaustive_Covers1To101_NoGaps (0 ms)
+[ RUN      ] AlphaConformance_Meta.InBatteryCount_AndOutOfBatteryCount_AreReported
+[       OK ] AlphaConformance_Meta.InBatteryCount_AndOutOfBatteryCount_AreReported (0 ms)
+[----------] 2 tests from AlphaConformance_Meta (0 ms total)
+
+[----------] 2 tests from Reverse
+[ RUN      ] Reverse.Field_EqualsNegationBitForBit
+[       OK ] Reverse.Field_EqualsNegationBitForBit (0 ms)
+[ RUN      ] Reverse.RankReversal_PercentilesSumToOne
+[       OK ] Reverse.RankReversal_PercentilesSumToOne (0 ms)
+[----------] 2 tests from Reverse (0 ms total)
+
+[----------] 6 tests from Quantile
+[ RUN      ] Quantile.FiveDistinctFiveBuckets_HandComputed
+[       OK ] Quantile.FiveDistinctFiveBuckets_HandComputed (0 ms)
+[ RUN      ] Quantile.TwoBuckets_MedianSplit
+[       OK ] Quantile.TwoBuckets_MedianSplit (0 ms)
+[ RUN      ] Quantile.DefaultWindow_EqualsFive
+[       OK ] Quantile.DefaultWindow_EqualsFive (0 ms)
+[ RUN      ] Quantile.SingletonValidSet_CentreBucket
+[       OK ] Quantile.SingletonValidSet_CentreBucket (0 ms)
+[ RUN      ] Quantile.DegenerateWindow_AllNaN
+[       OK ] Quantile.DegenerateWindow_AllNaN (0 ms)
+[ RUN      ] Quantile.RandomAndComposed_MatchesOracle
+[       OK ] Quantile.RandomAndComposed_MatchesOracle (1 ms)
+[----------] 6 tests from Quantile (2 ms total)
+
+[----------] 4 tests from VecReduce
+[ RUN      ] VecReduce.AllValid_SumAndAvgBroadcast
+[       OK ] VecReduce.AllValid_SumAndAvgBroadcast (0 ms)
+[ RUN      ] VecReduce.AvgMinusFromField_EqualsNormalize
+[       OK ] VecReduce.AvgMinusFromField_EqualsNormalize (0 ms)
+[ RUN      ] VecReduce.OutOfUniverse_ExcludedAndNaN
+[       OK ] VecReduce.OutOfUniverse_ExcludedAndNaN (0 ms)
+[ RUN      ] VecReduce.RandomAndComposed_MatchesOracle
+[       OK ] VecReduce.RandomAndComposed_MatchesOracle (0 ms)
+[----------] 4 tests from VecReduce (2 ms total)
+
+[----------] 1 test from CsResidualize_BoundaryPin
+[ RUN      ] CsResidualize_BoundaryPin.NoStyle_EqualsIndneutralizeBitForBit
+[       OK ] CsResidualize_BoundaryPin.NoStyle_EqualsIndneutralizeBitForBit (0 ms)
+[----------] 1 test from CsResidualize_BoundaryPin (0 ms total)
+
+[----------] 3 tests from CsResidualize_FWL
+[ RUN      ] CsResidualize_FWL.SingleGroupCovariate_HandComputedResidual
+[       OK ] CsResidualize_FWL.SingleGroupCovariate_HandComputedResidual (0 ms)
+[ RUN      ] CsResidualize_FWL.RandomPanelWithCovariate_MatchesOracle
+[       OK ] CsResidualize_FWL.RandomPanelWithCovariate_MatchesOracle (0 ms)
+[ RUN      ] CsResidualize_FWL.ConstantCovariatePerGroup_ReducesToDemean
+[       OK ] CsResidualize_FWL.ConstantCovariatePerGroup_ReducesToDemean (0 ms)
+[----------] 3 tests from CsResidualize_FWL (1 ms total)
+
+[----------] 1 test from CsResidualize_Nan
+[ RUN      ] CsResidualize_Nan.OutOfUniverseAndNaNCovariate_ExcludedNaN
+[       OK ] CsResidualize_Nan.OutOfUniverseAndNaNCovariate_ExcludedNaN (0 ms)
+[----------] 1 test from CsResidualize_Nan (0 ms total)
+
+[----------] 1 test from CsResidualize_Boundary
+[ RUN      ] CsResidualize_Boundary.SingletonAndOneByOne_MatchesOracle
+[       OK ] CsResidualize_Boundary.SingletonAndOneByOne_MatchesOracle (0 ms)
+[----------] 1 test from CsResidualize_Boundary (0 ms total)
+
+[----------] 4 tests from AlphaCs_Differential
+[ RUN      ] AlphaCs_Differential.EveryCrossSectionalOp_RandomPanel_MatchesOracle
+[       OK ] AlphaCs_Differential.EveryCrossSectionalOp_RandomPanel_MatchesOracle (2 ms)
+[ RUN      ] AlphaCs_Differential.NeutralizeAliasAndManySectors_MatchesOracle
+[       OK ] AlphaCs_Differential.NeutralizeAliasAndManySectors_MatchesOracle (1 ms)
+[ RUN      ] AlphaCs_Differential.LargeManyGroups_MatchesOracle
+[       OK ] AlphaCs_Differential.LargeManyGroups_MatchesOracle (14 ms)
+[ RUN      ] AlphaCs_Differential.NestedComposition_MatchesOracle
+[       OK ] AlphaCs_Differential.NestedComposition_MatchesOracle (0 ms)
+[----------] 4 tests from AlphaCs_Differential (18 ms total)
+
+[----------] 3 tests from AlphaCs_Group
+[ RUN      ] AlphaCs_Group.SignedZeroLabels_SameGroupAsOracle
+[       OK ] AlphaCs_Group.SignedZeroLabels_SameGroupAsOracle (0 ms)
+[ RUN      ] AlphaCs_Group.SingleMember_SingletonRankNaNZscore
+[       OK ] AlphaCs_Group.SingleMember_SingletonRankNaNZscore (0 ms)
+[ RUN      ] AlphaCs_Group.NaNGroupLabel_CellStaysNaN
+[       OK ] AlphaCs_Group.NaNGroupLabel_CellStaysNaN (0 ms)
+[----------] 3 tests from AlphaCs_Group (1 ms total)
+
+[----------] 4 tests from AlphaCs_Rank
+[ RUN      ] AlphaCs_Rank.DistinctValues_ExactPercentiles
+[       OK ] AlphaCs_Rank.DistinctValues_ExactPercentiles (0 ms)
+[ RUN      ] AlphaCs_Rank.AllEqual_DeterministicOrdinal
+[       OK ] AlphaCs_Rank.AllEqual_DeterministicOrdinal (0 ms)
+[ RUN      ] AlphaCs_Rank.OutOfUniverse_ExcludedAndNaN
+[       OK ] AlphaCs_Rank.OutOfUniverse_ExcludedAndNaN (0 ms)
+[ RUN      ] AlphaCs_Rank.AllNaNDate_AllNaN
+[       OK ] AlphaCs_Rank.AllNaNDate_AllNaN (0 ms)
+[----------] 4 tests from AlphaCs_Rank (0 ms total)
+
+[----------] 1 test from AlphaCs_Zscore
+[ RUN      ] AlphaCs_Zscore.KnownSet_MeanZeroSampleStd
+[       OK ] AlphaCs_Zscore.KnownSet_MeanZeroSampleStd (0 ms)
+[----------] 1 test from AlphaCs_Zscore (0 ms total)
+
+[----------] 2 tests from AlphaCs_Scale
+[ RUN      ] AlphaCs_Scale.UnitNorm_SumAbsIsOne
+[       OK ] AlphaCs_Scale.UnitNorm_SumAbsIsOne (0 ms)
+[ RUN      ] AlphaCs_Scale.ZeroL1Norm_StaysZeroNoInf
+[       OK ] AlphaCs_Scale.ZeroL1Norm_StaysZeroNoInf (0 ms)
+[----------] 2 tests from AlphaCs_Scale (0 ms total)
+
+[----------] 1 test from AlphaCs_IndNeutralize
+[ RUN      ] AlphaCs_IndNeutralize.PerGroupDemean_GroupSumsToZero
+[       OK ] AlphaCs_IndNeutralize.PerGroupDemean_GroupSumsToZero (0 ms)
+[----------] 1 test from AlphaCs_IndNeutralize (0 ms total)
+
+[----------] 1 test from AlphaCs_SectorField
+[ RUN      ] AlphaCs_SectorField.NaNSentinel_DroppedAndGroupsCorrect
+[       OK ] AlphaCs_SectorField.NaNSentinel_DroppedAndGroupsCorrect (0 ms)
+[----------] 1 test from AlphaCs_SectorField (0 ms total)
+
+[----------] 2 tests from AlphaCs_Boundary
+[ RUN      ] AlphaCs_Boundary.OneInstrument_SingletonSemantics
+[       OK ] AlphaCs_Boundary.OneInstrument_SingletonSemantics (0 ms)
+[ RUN      ] AlphaCs_Boundary.OneByOne_MatchesOracle
+[       OK ] AlphaCs_Boundary.OneByOne_MatchesOracle (0 ms)
+[----------] 2 tests from AlphaCs_Boundary (0 ms total)
+
+[----------] 2 tests from AlphaCs_GrpField
+[ RUN      ] AlphaCs_GrpField.NaNLabelExcludedFromGroupStatistics
+[       OK ] AlphaCs_GrpField.NaNLabelExcludedFromGroupStatistics (1 ms)
+[ RUN      ] AlphaCs_GrpField.TwoGroupingsWithNaNLabels_RandomPanel_MatchesOracle
+[       OK ] AlphaCs_GrpField.TwoGroupingsWithNaNLabels_RandomPanel_MatchesOracle (2 ms)
+[----------] 2 tests from AlphaCs_GrpField (4 ms total)
+
+[----------] 5 tests from AlphaDag_Cse
+[ RUN      ] AlphaDag_Cse.RepeatedRank_InternsOneNode
+[       OK ] AlphaDag_Cse.RepeatedRank_InternsOneNode (0 ms)
+[ RUN      ] AlphaDag_Cse.SharedSubtreeAcrossAlphas_Collapses
+[       OK ] AlphaDag_Cse.SharedSubtreeAcrossAlphas_Collapses (0 ms)
+[ RUN      ] AlphaDag_Cse.IdenticalConstants_Dedup
+[       OK ] AlphaDag_Cse.IdenticalConstants_Dedup (0 ms)
+[ RUN      ] AlphaDag_Cse.DistinctConstants_DoNotDedup
+[       OK ] AlphaDag_Cse.DistinctConstants_DoNotDedup (0 ms)
+[ RUN      ] AlphaDag_Cse.DollarSigil_IsSameFieldAsBare
+[       OK ] AlphaDag_Cse.DollarSigil_IsSameFieldAsBare (0 ms)
+[----------] 5 tests from AlphaDag_Cse (0 ms total)
+
+[----------] 2 tests from AlphaDag_Refcount
+[ RUN      ] AlphaDag_Refcount.SharedNode_CountsAllConsumers
+[       OK ] AlphaDag_Refcount.SharedNode_CountsAllConsumers (0 ms)
+[ RUN      ] AlphaDag_Refcount.MulOfSameChild_CountsTwice
+[       OK ] AlphaDag_Refcount.MulOfSameChild_CountsTwice (0 ms)
+[----------] 2 tests from AlphaDag_Refcount (0 ms total)
+
+[----------] 5 tests from AlphaDag_StrengthReduce
+[ RUN      ] AlphaDag_StrengthReduce.PowerOfTwoCall_LowersToMul
+[       OK ] AlphaDag_StrengthReduce.PowerOfTwoCall_LowersToMul (0 ms)
+[ RUN      ] AlphaDag_StrengthReduce.CaretTwo_LowersToMul
+[       OK ] AlphaDag_StrengthReduce.CaretTwo_LowersToMul (0 ms)
+[ RUN      ] AlphaDag_StrengthReduce.MulBothChildrenEqualX
+[       OK ] AlphaDag_StrengthReduce.MulBothChildrenEqualX (0 ms)
+[ RUN      ] AlphaDag_StrengthReduce.DroppedConstTwo_StaysUnreferenced
+[       OK ] AlphaDag_StrengthReduce.DroppedConstTwo_StaysUnreferenced (0 ms)
+[ RUN      ] AlphaDag_StrengthReduce.PowerOfThree_StaysPow
+[       OK ] AlphaDag_StrengthReduce.PowerOfThree_StaysPow (0 ms)
+[----------] 5 tests from AlphaDag_StrengthReduce (0 ms total)
+
+[----------] 3 tests from AlphaDag_Boundary
+[ RUN      ] AlphaDag_Boundary.SingleAlphaNoSharing_UniqueEqualsTotal
+[       OK ] AlphaDag_Boundary.SingleAlphaNoSharing_UniqueEqualsTotal (0 ms)
+[ RUN      ] AlphaDag_Boundary.FullyIdenticalAlphas_ShareEverything
+[       OK ] AlphaDag_Boundary.FullyIdenticalAlphas_ShareEverything (0 ms)
+[ RUN      ] AlphaDag_Boundary.Diamond_ApexInternedOnceWithRefcountTwoPlusStore
+[       OK ] AlphaDag_Boundary.Diamond_ApexInternedOnceWithRefcountTwoPlusStore (0 ms)
+[----------] 3 tests from AlphaDag_Boundary (0 ms total)
+
+[----------] 1 test from AlphaDag_Lookback
+[ RUN      ] AlphaDag_Lookback.PropagatesRequiredLookbackOntoDag
+[       OK ] AlphaDag_Lookback.PropagatesRequiredLookbackOntoDag (0 ms)
+[----------] 1 test from AlphaDag_Lookback (0 ms total)
+
+[----------] 1 test from AlphaDag_Const
+[ RUN      ] AlphaDag_Const.StoresLiteralValueOnNode
+[       OK ] AlphaDag_Const.StoresLiteralValueOnNode (0 ms)
+[----------] 1 test from AlphaDag_Const (0 ms total)
+
+[----------] 1 test from AlphaDag_Metric
+[ RUN      ] AlphaDag_Metric.SharedSubtree_DedupsThreeOfTenNodes
+[       OK ] AlphaDag_Metric.SharedSubtree_DedupsThreeOfTenNodes (0 ms)
+[----------] 1 test from AlphaDag_Metric (0 ms total)
+
+[----------] 1 test from AlphaDag
+[ RUN      ] AlphaDag.SharedComputeOnePinPerProjection
+[       OK ] AlphaDag.SharedComputeOnePinPerProjection (0 ms)
+[----------] 1 test from AlphaDag (0 ms total)
+
+[----------] 2 tests from ParseAdvField
+[ RUN      ] ParseAdvField.RecognizesPositiveWindows
+[       OK ] ParseAdvField.RecognizesPositiveWindows (0 ms)
+[ RUN      ] ParseAdvField.RejectsNonAdvAndDegenerate
+[       OK ] ParseAdvField.RejectsNonAdvAndDegenerate (0 ms)
+[----------] 2 tests from ParseAdvField (0 ms total)
+
+[----------] 5 tests from Datafields
+[ RUN      ] Datafields.DollarVolumeAndVwap_HandComputed
+[       OK ] Datafields.DollarVolumeAndVwap_HandComputed (0 ms)
+[ RUN      ] Datafields.LegacySuppliedVwap_OverridesProxy
+[       OK ] Datafields.LegacySuppliedVwap_OverridesProxy (0 ms)
+[ RUN      ] Datafields.Adv_EqualsTsMeanOfDollarVolume
+[       OK ] Datafields.Adv_EqualsTsMeanOfDollarVolume (0 ms)
+[ RUN      ] Datafields.OutOfUniverse_DerivedCellsAreNaN
+[       OK ] Datafields.OutOfUniverse_DerivedCellsAreNaN (0 ms)
+[ RUN      ] Datafields.MissingVolume_IsError
+[       OK ] Datafields.MissingVolume_IsError (0 ms)
+[----------] 5 tests from Datafields (0 ms total)
+
+[----------] 4 tests from DatafieldsVwapV2
+[ RUN      ] DatafieldsVwapV2.RawPriceBitsReplaceStaleProxyAndInvalidCellsStayMissing
+[       OK ] DatafieldsVwapV2.RawPriceBitsReplaceStaleProxyAndInvalidCellsStayMissing (0 ms)
+[ RUN      ] DatafieldsVwapV2.UnknownCloseBasisFailsAndExplicitRawOrLegacyIsAvailable
+[       OK ] DatafieldsVwapV2.UnknownCloseBasisFailsAndExplicitRawOrLegacyIsAvailable (0 ms)
+[ RUN      ] DatafieldsVwapV2.RejectsRaggedRawPriceAndGeometryBeforeReading
+[       OK ] DatafieldsVwapV2.RejectsRaggedRawPriceAndGeometryBeforeReading (0 ms)
+[ RUN      ] DatafieldsVwapV2.InstrumentSpecificFutureFactorRevisionCannotMoveVwapRank
+[       OK ] DatafieldsVwapV2.InstrumentSpecificFutureFactorRevisionCannotMoveVwapRank (0 ms)
+[----------] 4 tests from DatafieldsVwapV2 (0 ms total)
+
+[----------] 3 tests from CompileCache_SameAst_ByteIdenticalProgram
+[ RUN      ] CompileCache_SameAst_ByteIdenticalProgram.ColdCompileTwice
+[       OK ] CompileCache_SameAst_ByteIdenticalProgram.ColdCompileTwice (0 ms)
+[ RUN      ] CompileCache_SameAst_ByteIdenticalProgram.CachedEqualsCold
+[       OK ] CompileCache_SameAst_ByteIdenticalProgram.CachedEqualsCold (0 ms)
+[ RUN      ] CompileCache_SameAst_ByteIdenticalProgram.CachedTwiceIdentical
+[       OK ] CompileCache_SameAst_ByteIdenticalProgram.CachedTwiceIdentical (0 ms)
+[----------] 3 tests from CompileCache_SameAst_ByteIdenticalProgram (0 ms total)
+
+[----------] 1 test from CompileCache_DistinctAsts_EachHasOwnProgram
+[ RUN      ] CompileCache_DistinctAsts_EachHasOwnProgram.NDistinctSources
+[       OK ] CompileCache_DistinctAsts_EachHasOwnProgram.NDistinctSources (1 ms)
+[----------] 1 test from CompileCache_DistinctAsts_EachHasOwnProgram (1 ms total)
+
+[----------] 1 test from CompileCache_Digest_OutputUnchanged
+[ RUN      ] CompileCache_Digest_OutputUnchanged.ColdVsCachedEvalOnTinyPanel
+[       OK ] CompileCache_Digest_OutputUnchanged.ColdVsCachedEvalOnTinyPanel (0 ms)
+[----------] 1 test from CompileCache_Digest_OutputUnchanged (0 ms total)
+
+[----------] 1 test from CompileCache_Microbench
+[ RUN      ] CompileCache_Microbench.ColdVsWarmCompileTime
+[CompileCache microbench] 800 compiles × 4 sources (parse+analyze excluded)
+  cold (build_dag+linearize): 52546 ns/compile
+  warm (cache hit):           17671.1 ns/compile
+  speedup: 2.97355x
+[       OK ] CompileCache_Microbench.ColdVsWarmCompileTime (57 ms)
+[----------] 1 test from CompileCache_Microbench (57 ms total)
+
+[----------] 1 test from CsValidSet_KernelDirect_TiedValues
+[ RUN      ] CsValidSet_KernelDirect_TiedValues.RankTiebreakByAscendingIndex
+[       OK ] CsValidSet_KernelDirect_TiedValues.RankTiebreakByAscendingIndex (0 ms)
+[----------] 1 test from CsValidSet_KernelDirect_TiedValues (0 ms total)
+
+[----------] 1 test from CsValidSet_KernelDirect_IllConditioned
+[ RUN      ] CsValidSet_KernelDirect_IllConditioned.ZscoreReductionOrderIsAscendingIndex
+[       OK ] CsValidSet_KernelDirect_IllConditioned.ZscoreReductionOrderIsAscendingIndex (0 ms)
+[----------] 1 test from CsValidSet_KernelDirect_IllConditioned (0 ms total)
+
+[----------] 2 tests from CsValidSet_Engine_CrossDateStateIsolation
+[ RUN      ] CsValidSet_Engine_CrossDateStateIsolation.RankByteIdenticalPerDate
+[       OK ] CsValidSet_Engine_CrossDateStateIsolation.RankByteIdenticalPerDate (0 ms)
+[ RUN      ] CsValidSet_Engine_CrossDateStateIsolation.ZscoreByteIdenticalPerDate
+[       OK ] CsValidSet_Engine_CrossDateStateIsolation.ZscoreByteIdenticalPerDate (0 ms)
+[----------] 2 tests from CsValidSet_Engine_CrossDateStateIsolation (0 ms total)
+
+[----------] 3 tests from WeightScratch_Equivalence_ByteIdentical
+[ RUN      ] WeightScratch_Equivalence_ByteIdentical.RankTransformMultiDate
+[       OK ] WeightScratch_Equivalence_ByteIdentical.RankTransformMultiDate (0 ms)
+[ RUN      ] WeightScratch_Equivalence_ByteIdentical.ZScoreTransformMultiDate
+[       OK ] WeightScratch_Equivalence_ByteIdentical.ZScoreTransformMultiDate (0 ms)
+[ RUN      ] WeightScratch_Equivalence_ByteIdentical.RawTransformSingleValidInst
+[       OK ] WeightScratch_Equivalence_ByteIdentical.RawTransformSingleValidInst (0 ms)
+[----------] 3 tests from WeightScratch_Equivalence_ByteIdentical (0 ms total)
+
+[----------] 1 test from WeightScratch_StreamDigest_ByteIdentical
+[ RUN      ] WeightScratch_StreamDigest_ByteIdentical.FillAlphaStreamScratchMatchesOrig
+[       OK ] WeightScratch_StreamDigest_ByteIdentical.FillAlphaStreamScratchMatchesOrig (0 ms)
+[----------] 1 test from WeightScratch_StreamDigest_ByteIdentical (0 ms total)
+
+[----------] 1 test from WeightScratch_AllocBench_O1PerAlpha
+[ RUN      ] WeightScratch_AllocBench_O1PerAlpha.AllocVsScratchWallTime
+[WeightScratch microbench] 2000 calls × n=100
+  allocating overload:  38686.9 ns/call
+  scratch overload:     40301.2 ns/call
+  speedup: 0.959945x
+[       OK ] WeightScratch_AllocBench_O1PerAlpha.AllocVsScratchWallTime (158 ms)
+[----------] 1 test from WeightScratch_AllocBench_O1PerAlpha (158 ms total)
+
+[----------] 1 test from WeightScratch_AllocCount_O1AfterWarmup
+[ RUN      ] WeightScratch_AllocCount_O1AfterWarmup.NoReallocsAfterWarmupVariableLiveCounts
+[WeightScratch AllocCount] post-warmup dates=24  buffer reallocations=0 (expected 0)
+[       OK ] WeightScratch_AllocCount_O1AfterWarmup.NoReallocsAfterWarmupVariableLiveCounts (0 ms)
+[----------] 1 test from WeightScratch_AllocCount_O1AfterWarmup (0 ms total)
+
+[----------] 3 tests from EngineReset_ByteIdentity
+[ RUN      ] EngineReset_ByteIdentity.SameProgramTwice
+[       OK ] EngineReset_ByteIdentity.SameProgramTwice (0 ms)
+[ RUN      ] EngineReset_ByteIdentity.TwoDifferentPrograms
+[       OK ] EngineReset_ByteIdentity.TwoDifferentPrograms (0 ms)
+[ RUN      ] EngineReset_ByteIdentity.DifferentFieldSetsAfterReset
+[       OK ] EngineReset_ByteIdentity.DifferentFieldSetsAfterReset (0 ms)
+[----------] 3 tests from EngineReset_ByteIdentity (0 ms total)
+
+[----------] 1 test from EngineReset_NoRealloc_SameShape
+[ RUN      ] EngineReset_NoRealloc_SameShape.SlotPoolCapacityStableAcrossReset
+[EngineReset] pool_capacity before=3 after=3 (stable — no realloc)
+[       OK ] EngineReset_NoRealloc_SameShape.SlotPoolCapacityStableAcrossReset (0 ms)
+[----------] 1 test from EngineReset_NoRealloc_SameShape (0 ms total)
+
+[----------] 1 test from EngineReset_StateNoLeak
+[ RUN      ] EngineReset_StateNoLeak.RecurrenceOutputByteIdenticalAfterReset
+[       OK ] EngineReset_StateNoLeak.RecurrenceOutputByteIdenticalAfterReset (0 ms)
+[----------] 1 test from EngineReset_StateNoLeak (0 ms total)
+
+[----------] 1 test from EngineReset_PoolGrowth
+[ RUN      ] EngineReset_PoolGrowth.LargerSecondProgramGrowsPoolAndMatchesFresh
+[EngineReset] pool grew from cap=3 to cap=5 (large prog num_slots=5)
+[       OK ] EngineReset_PoolGrowth.LargerSecondProgramGrowsPoolAndMatchesFresh (0 ms)
+[----------] 1 test from EngineReset_PoolGrowth (0 ms total)
+
+[----------] 26 tests from TsTranspose_Unary_BitExact
+[ RUN      ] TsTranspose_Unary_BitExact.TsVar_WindowEdgesNanHolesTies
+[       OK ] TsTranspose_Unary_BitExact.TsVar_WindowEdgesNanHolesTies (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsStd_WindowEdgesNanHolesTies
+[       OK ] TsTranspose_Unary_BitExact.TsStd_WindowEdgesNanHolesTies (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsRank_TiesAndWindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsRank_TiesAndWindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsMed_TiesAndWindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsMed_TiesAndWindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsDelay_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsDelay_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsDelta_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsDelta_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsBackfill_NanHoles
+[       OK ] TsTranspose_Unary_BitExact.TsBackfill_NanHoles (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsCountNans_NanHoles
+[       OK ] TsTranspose_Unary_BitExact.TsCountNans_NanHoles (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsProduct_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsProduct_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsArgMin_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsArgMin_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsArgMax_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsArgMax_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsDecayLinear_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsDecayLinear_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsWma_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsWma_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsEma_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsEma_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsSkew_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsSkew_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsKurt_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsKurt_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsSlope_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsSlope_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsRsquare_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsRsquare_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsResid_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsResid_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsMad_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsMad_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsAvDiff_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsAvDiff_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsZscore_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsZscore_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsQuantile_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsQuantile_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsDecayExp_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsDecayExp_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsMoment_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsMoment_WindowEdges (0 ms)
+[ RUN      ] TsTranspose_Unary_BitExact.TsEntropy_WindowEdges
+[       OK ] TsTranspose_Unary_BitExact.TsEntropy_WindowEdges (0 ms)
+[----------] 26 tests from TsTranspose_Unary_BitExact (8 ms total)
+
+[----------] 3 tests from TsTranspose_Binary_BitExact
+[ RUN      ] TsTranspose_Binary_BitExact.TsCorr_WindowEdgesNanHoles
+[       OK ] TsTranspose_Binary_BitExact.TsCorr_WindowEdgesNanHoles (0 ms)
+[ RUN      ] TsTranspose_Binary_BitExact.TsCov_WindowEdgesNanHoles
+[       OK ] TsTranspose_Binary_BitExact.TsCov_WindowEdgesNanHoles (0 ms)
+[ RUN      ] TsTranspose_Binary_BitExact.TsRegression_WindowEdgesNanHoles
+[       OK ] TsTranspose_Binary_BitExact.TsRegression_WindowEdgesNanHoles (0 ms)
+[----------] 3 tests from TsTranspose_Binary_BitExact (1 ms total)
+
+[----------] 4 tests from TsTranspose_OU_BitExact
+[ RUN      ] TsTranspose_OU_BitExact.OuTheta_WindowEdgesNanHoles
+[       OK ] TsTranspose_OU_BitExact.OuTheta_WindowEdgesNanHoles (0 ms)
+[ RUN      ] TsTranspose_OU_BitExact.OuHalflife_WindowEdgesNanHoles
+[       OK ] TsTranspose_OU_BitExact.OuHalflife_WindowEdgesNanHoles (0 ms)
+[ RUN      ] TsTranspose_OU_BitExact.OuMean_WindowEdgesNanHoles
+[       OK ] TsTranspose_OU_BitExact.OuMean_WindowEdgesNanHoles (0 ms)
+[ RUN      ] TsTranspose_OU_BitExact.OuZscore_WindowEdgesNanHoles
+[       OK ] TsTranspose_OU_BitExact.OuZscore_WindowEdgesNanHoles (0 ms)
+[----------] 4 tests from TsTranspose_OU_BitExact (1 ms total)
+
+[----------] 1 test from TsTranspose_DigestUnchanged
+[ RUN      ] TsTranspose_DigestUnchanged.TsHeavyExpressionMatchesPerKernelOracle
+[       OK ] TsTranspose_DigestUnchanged.TsHeavyExpressionMatchesPerKernelOracle (0 ms)
+[----------] 1 test from TsTranspose_DigestUnchanged (0 ms total)
+
+[----------] 1 test from TsTranspose_AccessBench
+[ RUN      ] TsTranspose_AccessBench.StridedVsColumnExtractProductionScale
+[TsTranspose access A/B] dates=1024 instruments=512 window=20 (524288 cells/kernel)
+  TsVar  strided (old): 2052027 cells/s
+  TsVar  col-extract  : 1870718 cells/s  speedup=0.911644x
+  TsCorr strided (old): 711353 cells/s
+  TsCorr col-extract  : 835831 cells/s  speedup=1.17499x
+  TsDelay direct (shipped, baseline): 84667732 cells/s
+  TsDelay col-extract (EXCLUDED)    : 70710220 cells/s  ratio=0.83515x (extract would REGRESS delay — hence kept on direct path)
+[       OK ] TsTranspose_AccessBench.StridedVsColumnExtractProductionScale (3749 ms)
+[----------] 1 test from TsTranspose_AccessBench (3750 ms total)
+
+[----------] 2 tests from AlphaFormulaicOps_Differential
+[ RUN      ] AlphaFormulaicOps_Differential.EveryNewOpVmMatchesOracleCellForCell
+[       OK ] AlphaFormulaicOps_Differential.EveryNewOpVmMatchesOracleCellForCell (122 ms)
+[ RUN      ] AlphaFormulaicOps_Differential.SharedProgramMatchesOracleAndEveryVmPath
+[       OK ] AlphaFormulaicOps_Differential.SharedProgramMatchesOracleAndEveryVmPath (68 ms)
+[----------] 2 tests from AlphaFormulaicOps_Differential (191 ms total)
+
+[----------] 2 tests from AlphaFormulaicOps_Streaming
+[ RUN      ] AlphaFormulaicOps_Streaming.WarmThenStepMatchesBatchBitsAuditExact
+[       OK ] AlphaFormulaicOps_Streaming.WarmThenStepMatchesBatchBitsAuditExact (32 ms)
+[ RUN      ] AlphaFormulaicOps_Streaming.WarmThenStepMatchesBatchBitsResearchFast
+[       OK ] AlphaFormulaicOps_Streaming.WarmThenStepMatchesBatchBitsResearchFast (40 ms)
+[----------] 2 tests from AlphaFormulaicOps_Streaming (72 ms total)
+
+[----------] 1 test from AlphaFormulaicOps_Modes
+[ RUN      ] AlphaFormulaicOps_Modes.ResearchFastEqualsAuditExactForTheAsofFamily
+[       OK ] AlphaFormulaicOps_Modes.ResearchFastEqualsAuditExactForTheAsofFamily (12 ms)
+[----------] 1 test from AlphaFormulaicOps_Modes (12 ms total)
+
+[----------] 3 tests from AlphaFormulaicOps_GroupSum
+[ RUN      ] AlphaFormulaicOps_GroupSum.ClosedFormSumsNaNMembersAndEmptyGroups
+[       OK ] AlphaFormulaicOps_GroupSum.ClosedFormSumsNaNMembersAndEmptyGroups (0 ms)
+[ RUN      ] AlphaFormulaicOps_GroupSum.StressGroupSizesOneAndAllOverManyNames
+[       OK ] AlphaFormulaicOps_GroupSum.StressGroupSizesOneAndAllOverManyNames (8 ms)
+[ RUN      ] AlphaFormulaicOps_GroupSum.EqualsGroupMeanTimesCountOnTheFixture
+[       OK ] AlphaFormulaicOps_GroupSum.EqualsGroupMeanTimesCountOnTheFixture (3 ms)
+[----------] 3 tests from AlphaFormulaicOps_GroupSum (12 ms total)
+
+[----------] 1 test from AlphaFormulaicOps_GroupDelay
+[ RUN      ] AlphaFormulaicOps_GroupDelay.ShiftsLabelsAndFeedsGroupOps
+[       OK ] AlphaFormulaicOps_GroupDelay.ShiftsLabelsAndFeedsGroupOps (0 ms)
+[----------] 1 test from AlphaFormulaicOps_GroupDelay (0 ms total)
+
+[----------] 2 tests from AlphaFormulaicOps_AsofRank
+[ RUN      ] AlphaFormulaicOps_AsofRank.RebaseReRanksEveryPastSession
+[       OK ] AlphaFormulaicOps_AsofRank.RebaseReRanksEveryPastSession (0 ms)
+[ RUN      ] AlphaFormulaicOps_AsofRank.HandComputedCovarianceAndCorrelation
+[       OK ] AlphaFormulaicOps_AsofRank.HandComputedCovarianceAndCorrelation (0 ms)
+[----------] 2 tests from AlphaFormulaicOps_AsofRank (1 ms total)
+
+[----------] 1 test from AlphaFormulaicOps_Identity
+[ RUN      ] AlphaFormulaicOps_Identity.UnitFactorEqualsHouseCompositionBitForBit
+[       OK ] AlphaFormulaicOps_Identity.UnitFactorEqualsHouseCompositionBitForBit (60 ms)
+[----------] 1 test from AlphaFormulaicOps_Identity (60 ms total)
+
+[----------] 2 tests from AlphaFormulaicOps_Typecheck
+[ RUN      ] AlphaFormulaicOps_Typecheck.IllTypedCallsAreRefused
+[       OK ] AlphaFormulaicOps_Typecheck.IllTypedCallsAreRefused (0 ms)
+[ RUN      ] AlphaFormulaicOps_Typecheck.WellTypedCallsCarryTheirLookback
+[       OK ] AlphaFormulaicOps_Typecheck.WellTypedCallsCarryTheirLookback (0 ms)
+[----------] 2 tests from AlphaFormulaicOps_Typecheck (1 ms total)
+
+[----------] 1 test from AlphaFormulaicOps_Registry
+[ RUN      ] AlphaFormulaicOps_Registry.NewOpsResolveOutsideTheFactoryTables
+[       OK ] AlphaFormulaicOps_Registry.NewOpsResolveOutsideTheFactoryTables (0 ms)
+[----------] 1 test from AlphaFormulaicOps_Registry (0 ms total)
+
+[----------] 1 test from AlphaFormulaicOps_Frozen
+[ RUN      ] AlphaFormulaicOps_Frozen.ReportStringsArePinnedCompileAndMatchTheOracle
+[       OK ] AlphaFormulaicOps_Frozen.ReportStringsArePinnedCompileAndMatchTheOracle (810 ms)
+[----------] 1 test from AlphaFormulaicOps_Frozen (810 ms total)
+
+[----------] 1 test from AlphaImmediates
+[ RUN      ] AlphaImmediates.ConstStillWorksWithImmArray
+[       OK ] AlphaImmediates.ConstStillWorksWithImmArray (0 ms)
+[----------] 1 test from AlphaImmediates (0 ms total)
+
+[----------] 1 test from KalmanRef
+[ RUN      ] KalmanRef.MatchesNumpyReference
+[       OK ] KalmanRef.MatchesNumpyReference (0 ms)
+[----------] 1 test from KalmanRef (0 ms total)
+
+[----------] 17 tests from AlphaLexer_SingleToken
+[ RUN      ] AlphaLexer_SingleToken.Number_ProducesNumberToken
+[       OK ] AlphaLexer_SingleToken.Number_ProducesNumberToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.Ident_ProducesIdentToken
+[       OK ] AlphaLexer_SingleToken.Ident_ProducesIdentToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.Dollar_ProducesDollarToken
+[       OK ] AlphaLexer_SingleToken.Dollar_ProducesDollarToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.Plus_ProducesPlusToken
+[       OK ] AlphaLexer_SingleToken.Plus_ProducesPlusToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.Minus_ProducesMinusToken
+[       OK ] AlphaLexer_SingleToken.Minus_ProducesMinusToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.Star_ProducesStarToken
+[       OK ] AlphaLexer_SingleToken.Star_ProducesStarToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.Slash_ProducesSlashToken
+[       OK ] AlphaLexer_SingleToken.Slash_ProducesSlashToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.Caret_ProducesCaretToken
+[       OK ] AlphaLexer_SingleToken.Caret_ProducesCaretToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.Question_ProducesQuestionToken
+[       OK ] AlphaLexer_SingleToken.Question_ProducesQuestionToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.Colon_ProducesColonToken
+[       OK ] AlphaLexer_SingleToken.Colon_ProducesColonToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.LParen_ProducesLParenToken
+[       OK ] AlphaLexer_SingleToken.LParen_ProducesLParenToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.RParen_ProducesRParenToken
+[       OK ] AlphaLexer_SingleToken.RParen_ProducesRParenToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.Comma_ProducesCommaToken
+[       OK ] AlphaLexer_SingleToken.Comma_ProducesCommaToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.Assign_ProducesAssignToken
+[       OK ] AlphaLexer_SingleToken.Assign_ProducesAssignToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.Lt_ProducesLtToken
+[       OK ] AlphaLexer_SingleToken.Lt_ProducesLtToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.Gt_ProducesGtToken
+[       OK ] AlphaLexer_SingleToken.Gt_ProducesGtToken (0 ms)
+[ RUN      ] AlphaLexer_SingleToken.Bang_ProducesBangToken
+[       OK ] AlphaLexer_SingleToken.Bang_ProducesBangToken (0 ms)
+[----------] 17 tests from AlphaLexer_SingleToken (0 ms total)
+
+[----------] 12 tests from AlphaLexer_MultiCharOp
+[ RUN      ] AlphaLexer_MultiCharOp.Le_LessThanEqual_ProducesLeToken
+[       OK ] AlphaLexer_MultiCharOp.Le_LessThanEqual_ProducesLeToken (0 ms)
+[ RUN      ] AlphaLexer_MultiCharOp.Lt_Alone_ProducesLtNotLe
+[       OK ] AlphaLexer_MultiCharOp.Lt_Alone_ProducesLtNotLe (0 ms)
+[ RUN      ] AlphaLexer_MultiCharOp.Ge_GreaterThanEqual_ProducesGeToken
+[       OK ] AlphaLexer_MultiCharOp.Ge_GreaterThanEqual_ProducesGeToken (0 ms)
+[ RUN      ] AlphaLexer_MultiCharOp.Gt_Alone_ProducesGtNotGe
+[       OK ] AlphaLexer_MultiCharOp.Gt_Alone_ProducesGtNotGe (0 ms)
+[ RUN      ] AlphaLexer_MultiCharOp.EqEq_DoubleEqual_ProducesEqEqToken
+[       OK ] AlphaLexer_MultiCharOp.EqEq_DoubleEqual_ProducesEqEqToken (0 ms)
+[ RUN      ] AlphaLexer_MultiCharOp.Assign_SingleEqual_ProducesAssignNotEqEq
+[       OK ] AlphaLexer_MultiCharOp.Assign_SingleEqual_ProducesAssignNotEqEq (0 ms)
+[ RUN      ] AlphaLexer_MultiCharOp.BangEq_NotEqual_ProducesBangEqToken
+[       OK ] AlphaLexer_MultiCharOp.BangEq_NotEqual_ProducesBangEqToken (0 ms)
+[ RUN      ] AlphaLexer_MultiCharOp.Bang_Alone_ProducesBangNotBangEq
+[       OK ] AlphaLexer_MultiCharOp.Bang_Alone_ProducesBangNotBangEq (0 ms)
+[ RUN      ] AlphaLexer_MultiCharOp.AmpAmp_LogicalAnd_ProducesAmpAmpToken
+[       OK ] AlphaLexer_MultiCharOp.AmpAmp_LogicalAnd_ProducesAmpAmpToken (0 ms)
+[ RUN      ] AlphaLexer_MultiCharOp.PipePipe_LogicalOr_ProducesPipePipeToken
+[       OK ] AlphaLexer_MultiCharOp.PipePipe_LogicalOr_ProducesPipePipeToken (0 ms)
+[ RUN      ] AlphaLexer_MultiCharOp.LoneAmpersand_ProducesParseError
+[       OK ] AlphaLexer_MultiCharOp.LoneAmpersand_ProducesParseError (0 ms)
+[ RUN      ] AlphaLexer_MultiCharOp.LonePipe_ProducesParseError
+[       OK ] AlphaLexer_MultiCharOp.LonePipe_ProducesParseError (0 ms)
+[----------] 12 tests from AlphaLexer_MultiCharOp (0 ms total)
+
+[----------] 6 tests from AlphaLexer_Numbers
+[ RUN      ] AlphaLexer_Numbers.Integer_LexesCorrectly
+[       OK ] AlphaLexer_Numbers.Integer_LexesCorrectly (0 ms)
+[ RUN      ] AlphaLexer_Numbers.LeadingZeroDecimal_LexesCorrectly
+[       OK ] AlphaLexer_Numbers.LeadingZeroDecimal_LexesCorrectly (0 ms)
+[ RUN      ] AlphaLexer_Numbers.ScientificLower_LexesCorrectly
+[       OK ] AlphaLexer_Numbers.ScientificLower_LexesCorrectly (0 ms)
+[ RUN      ] AlphaLexer_Numbers.ScientificUpper_LexesCorrectly
+[       OK ] AlphaLexer_Numbers.ScientificUpper_LexesCorrectly (0 ms)
+[ RUN      ] AlphaLexer_Numbers.NegativeExponent_LexesCorrectly
+[       OK ] AlphaLexer_Numbers.NegativeExponent_LexesCorrectly (0 ms)
+[ RUN      ] AlphaLexer_Numbers.LargeInteger_LexesCorrectly
+[       OK ] AlphaLexer_Numbers.LargeInteger_LexesCorrectly (0 ms)
+[----------] 6 tests from AlphaLexer_Numbers (0 ms total)
+
+[----------] 1 test from AlphaLexer_DollarSigil
+[ RUN      ] AlphaLexer_DollarSigil.DollarClose_ProducesDollarThenIdent
+[       OK ] AlphaLexer_DollarSigil.DollarClose_ProducesDollarThenIdent (0 ms)
+[----------] 1 test from AlphaLexer_DollarSigil (0 ms total)
+
+[----------] 4 tests from AlphaLexer_Spans
+[ RUN      ] AlphaLexer_Spans.AllTokens_SpanTextMatchesSource
+[       OK ] AlphaLexer_Spans.AllTokens_SpanTextMatchesSource (0 ms)
+[ RUN      ] AlphaLexer_Spans.EndToken_SpanIsLenLen
+[       OK ] AlphaLexer_Spans.EndToken_SpanIsLenLen (0 ms)
+[ RUN      ] AlphaLexer_Spans.MultiCharOp_SpanCoversFullOperator
+[       OK ] AlphaLexer_Spans.MultiCharOp_SpanCoversFullOperator (0 ms)
+[ RUN      ] AlphaLexer_Spans.Number_SpanCoversFullNumberText
+[       OK ] AlphaLexer_Spans.Number_SpanCoversFullNumberText (0 ms)
+[----------] 4 tests from AlphaLexer_Spans (0 ms total)
+
+[----------] 4 tests from AlphaLexer_Ident
+[ RUN      ] AlphaLexer_Ident.IndClassSector_LexesAsIdentDotIdent
+[       OK ] AlphaLexer_Ident.IndClassSector_LexesAsIdentDotIdent (0 ms)
+[ RUN      ] AlphaLexer_Ident.UnderscoreStart_IsValidIdent
+[       OK ] AlphaLexer_Ident.UnderscoreStart_IsValidIdent (0 ms)
+[ RUN      ] AlphaLexer_Ident.AlphanumericAndUnderscore_IsValidIdent
+[       OK ] AlphaLexer_Ident.AlphanumericAndUnderscore_IsValidIdent (0 ms)
+[ RUN      ] AlphaLexer_Ident.TrailingDot_ProducesIdentThenDot
+[       OK ] AlphaLexer_Ident.TrailingDot_ProducesIdentThenDot (0 ms)
+[----------] 4 tests from AlphaLexer_Ident (0 ms total)
+
+[----------] 3 tests from AlphaLexer_ParseError
+[ RUN      ] AlphaLexer_ParseError.UnknownByte_ProducesParseError
+[       OK ] AlphaLexer_ParseError.UnknownByte_ProducesParseError (0 ms)
+[ RUN      ] AlphaLexer_ParseError.UnknownByteAtOffset7_MessageContainsOffset
+[       OK ] AlphaLexer_ParseError.UnknownByteAtOffset7_MessageContainsOffset (0 ms)
+[ RUN      ] AlphaLexer_ParseError.UnknownByteAtOffset3_MessageContainsOffset
+[       OK ] AlphaLexer_ParseError.UnknownByteAtOffset3_MessageContainsOffset (0 ms)
+[----------] 3 tests from AlphaLexer_ParseError (0 ms total)
+
+[----------] 3 tests from AlphaLexer_Boundary
+[ RUN      ] AlphaLexer_Boundary.EmptySource_ProducesJustEndToken
+[       OK ] AlphaLexer_Boundary.EmptySource_ProducesJustEndToken (0 ms)
+[ RUN      ] AlphaLexer_Boundary.TrailingWhitespace_OnlyPrecedingTokensPlusEnd
+[       OK ] AlphaLexer_Boundary.TrailingWhitespace_OnlyPrecedingTokensPlusEnd (0 ms)
+[ RUN      ] AlphaLexer_Boundary.LeadingWhitespace_SkippedCorrectly
+[       OK ] AlphaLexer_Boundary.LeadingWhitespace_SkippedCorrectly (0 ms)
+[----------] 3 tests from AlphaLexer_Boundary (0 ms total)
+
+[----------] 3 tests from AlphaLexer_Adjacent
+[ RUN      ] AlphaLexer_Adjacent.ALessEqualMinusB_LexesFourTokens
+[       OK ] AlphaLexer_Adjacent.ALessEqualMinusB_LexesFourTokens (0 ms)
+[ RUN      ] AlphaLexer_Adjacent.EqEqThenBang_LexesCorrectly
+[       OK ] AlphaLexer_Adjacent.EqEqThenBang_LexesCorrectly (0 ms)
+[ RUN      ] AlphaLexer_Adjacent.AmpAmpThenPipePipe_LexesCorrectly
+[       OK ] AlphaLexer_Adjacent.AmpAmpThenPipePipe_LexesCorrectly (0 ms)
+[----------] 3 tests from AlphaLexer_Adjacent (0 ms total)
+
+[----------] 2 tests from AlphaLexer_Expression
+[ RUN      ] AlphaLexer_Expression.SimpleArithmetic_LexesAllTokens
+[       OK ] AlphaLexer_Expression.SimpleArithmetic_LexesAllTokens (0 ms)
+[ RUN      ] AlphaLexer_Expression.TernaryExpr_LexesQuestionAndColon
+[       OK ] AlphaLexer_Expression.TernaryExpr_LexesQuestionAndColon (0 ms)
+[----------] 2 tests from AlphaLexer_Expression (0 ms total)
+
+[----------] 2 tests from AlphaLexer
+[ RUN      ] AlphaLexer.DotToken
+[       OK ] AlphaLexer.DotToken (0 ms)
+[ RUN      ] AlphaLexer.NumberDotNotSplit
+[       OK ] AlphaLexer.NumberDotNotSplit (0 ms)
+[----------] 2 tests from AlphaLexer (0 ms total)
+
+[----------] 3 tests from AlphaLitGolden_ExistingOps
+[ RUN      ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned
+[lit-golden] vm_audit_exact=0x971c3da60ca89aa3 vm_research_fast=0xe9e7128fd5359900 oracle=0x971c3da60ca89aa3
+[       OK ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned (181 ms)
+[ RUN      ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeVmMatchesOracle
+[       OK ] AlphaLitGolden_ExistingOps.EveryPreW2OpcodeVmMatchesOracle (178 ms)
+[ DISABLED ] AlphaLitGolden_ExistingOps.DISABLED_PerRowDigestDump
+[ RUN      ] AlphaLitGolden_ExistingOps.BatteryCoversEveryPreW2NamedOp
+[       OK ] AlphaLitGolden_ExistingOps.BatteryCoversEveryPreW2NamedOp (0 ms)
+[----------] 3 tests from AlphaLitGolden_ExistingOps (360 ms total)
+
+[----------] 2 tests from AlphaLitOps_Differential
+[ RUN      ] AlphaLitOps_Differential.EveryNewOpVmMatchesOracleCellForCell
+[       OK ] AlphaLitOps_Differential.EveryNewOpVmMatchesOracleCellForCell (273 ms)
+[ RUN      ] AlphaLitOps_Differential.SharedPackProgramMatchesOracleAndEveryVmPath
+[       OK ] AlphaLitOps_Differential.SharedPackProgramMatchesOracleAndEveryVmPath (61 ms)
+[----------] 2 tests from AlphaLitOps_Differential (335 ms total)
+
+[----------] 2 tests from AlphaLitOps_Streaming
+[ RUN      ] AlphaLitOps_Streaming.WarmThenStepMatchesBatchBitsAuditExact
+[       OK ] AlphaLitOps_Streaming.WarmThenStepMatchesBatchBitsAuditExact (37 ms)
+[ RUN      ] AlphaLitOps_Streaming.WarmThenStepMatchesBatchBitsResearchFast
+[       OK ] AlphaLitOps_Streaming.WarmThenStepMatchesBatchBitsResearchFast (38 ms)
+[----------] 2 tests from AlphaLitOps_Streaming (76 ms total)
+
+[----------] 1 test from AlphaLitOps_TopkMean
+[ RUN      ] AlphaLitOps_TopkMean.KnownWindowsAndNaNPolicy
+[       OK ] AlphaLitOps_TopkMean.KnownWindowsAndNaNPolicy (0 ms)
+[----------] 1 test from AlphaLitOps_TopkMean (0 ms total)
+
+[----------] 1 test from AlphaLitOps_CountIncreases
+[ RUN      ] AlphaLitOps_CountIncreases.ZerosSkipDecreaseOrNaNEndsTheRun
+[       OK ] AlphaLitOps_CountIncreases.ZerosSkipDecreaseOrNaNEndsTheRun (0 ms)
+[----------] 1 test from AlphaLitOps_CountIncreases (0 ms total)
+
+[----------] 2 tests from AlphaLitOps_MinPeriods
+[ RUN      ] AlphaLitOps_MinPeriods.PartialWindowsAndHolesFollowPandasRules
+[       OK ] AlphaLitOps_MinPeriods.PartialWindowsAndHolesFollowPandasRules (1 ms)
+[ RUN      ] AlphaLitOps_MinPeriods.FullValidWindowAgreesWithTheFullWindowOps
+[       OK ] AlphaLitOps_MinPeriods.FullValidWindowAgreesWithTheFullWindowOps (4 ms)
+[----------] 2 tests from AlphaLitOps_MinPeriods (6 ms total)
+
+[----------] 2 tests from AlphaLitOps_TsRegression
+[ RUN      ] AlphaLitOps_TsRegression.ExactLinearSeriesHasZeroResidualAndRecoveredSlopes
+[       OK ] AlphaLitOps_TsRegression.ExactLinearSeriesHasZeroResidualAndRecoveredSlopes (1 ms)
+[ RUN      ] AlphaLitOps_TsRegression.CollinearDesignIsNaN
+[       OK ] AlphaLitOps_TsRegression.CollinearDesignIsNaN (0 ms)
+[----------] 2 tests from AlphaLitOps_TsRegression (1 ms total)
+
+[----------] 1 test from AlphaLitOps_CsRegression
+[ RUN      ] AlphaLitOps_CsRegression.ResidualIsOrthogonalToEveryCovariate
+[       OK ] AlphaLitOps_CsRegression.ResidualIsOrthogonalToEveryCovariate (0 ms)
+[----------] 1 test from AlphaLitOps_CsRegression (0 ms total)
+
+[----------] 1 test from AlphaLitOps_Bucket
+[ RUN      ] AlphaLitOps_Bucket.EqualsQuantileScaledAndTiesShareABucket
+[       OK ] AlphaLitOps_Bucket.EqualsQuantileScaledAndTiesShareABucket (4 ms)
+[----------] 1 test from AlphaLitOps_Bucket (4 ms total)
+
+[----------] 1 test from AlphaLitOps_GroupCross
+[ RUN      ] AlphaLitOps_GroupCross.ProductLabelsAndGroupOpsOverThem
+[       OK ] AlphaLitOps_GroupCross.ProductLabelsAndGroupOpsOverThem (0 ms)
+[----------] 1 test from AlphaLitOps_GroupCross (0 ms total)
+
+[----------] 4 tests from AlphaLitOps_Typecheck
+[ RUN      ] AlphaLitOps_Typecheck.GroupWhereVectorRequiredIsRefused
+[       OK ] AlphaLitOps_Typecheck.GroupWhereVectorRequiredIsRefused (0 ms)
+[ RUN      ] AlphaLitOps_Typecheck.VectorWhereGroupRequiredIsRefused
+[       OK ] AlphaLitOps_Typecheck.VectorWhereGroupRequiredIsRefused (0 ms)
+[ RUN      ] AlphaLitOps_Typecheck.RecordsAndCountRailsAreRefused
+[       OK ] AlphaLitOps_Typecheck.RecordsAndCountRailsAreRefused (0 ms)
+[ RUN      ] AlphaLitOps_Typecheck.WellTypedNestingsAreAcceptedWithLookback
+[       OK ] AlphaLitOps_Typecheck.WellTypedNestingsAreAcceptedWithLookback (0 ms)
+[----------] 4 tests from AlphaLitOps_Typecheck (1 ms total)
+
+[----------] 1 test from AlphaLitOps_Parser
+[ RUN      ] AlphaLitOps_Parser.SurplusRegressorsFoldIntoPacksAndRoundTrip
+[       OK ] AlphaLitOps_Parser.SurplusRegressorsFoldIntoPacksAndRoundTrip (0 ms)
+[----------] 1 test from AlphaLitOps_Parser (0 ms total)
+
+[----------] 1 test from AlphaLitOps_Linearizer
+[ RUN      ] AlphaLitOps_Linearizer.PackConsumersCarryTheirBlockWidthsInParam
+[       OK ] AlphaLitOps_Linearizer.PackConsumersCarryTheirBlockWidthsInParam (0 ms)
+[----------] 1 test from AlphaLitOps_Linearizer (0 ms total)
+
+[----------] 1 test from AlphaLitOps_Registry
+[ RUN      ] AlphaLitOps_Registry.NewOpsResolveOutsideTheFactoryBuiltinTable
+[       OK ] AlphaLitOps_Registry.NewOpsResolveOutsideTheFactoryBuiltinTable (0 ms)
+[----------] 1 test from AlphaLitOps_Registry (0 ms total)
+
+[----------] 1 test from AlphaLitOps_Families
+[ RUN      ] AlphaLitOps_Families.ReportDslStringsCompileAndMatchTheOracle
+[       OK ] AlphaLitOps_Families.ReportDslStringsCompileAndMatchTheOracle (987 ms)
+[----------] 1 test from AlphaLitOps_Families (987 ms total)
+
+[----------] 7 tests from AlphaMember
+[ RUN      ] AlphaMember.ParsesMemberOnCall
+[       OK ] AlphaMember.ParsesMemberOnCall (0 ms)
+[ RUN      ] AlphaMember.MemberOnBinding
+[       OK ] AlphaMember.MemberOnBinding (0 ms)
+[ RUN      ] AlphaMember.IndClassStillField
+[       OK ] AlphaMember.IndClassStillField (0 ms)
+[ RUN      ] AlphaMember.PinTypechecks
+[       OK ] AlphaMember.PinTypechecks (0 ms)
+[ RUN      ] AlphaMember.UnknownPinRejected
+[       OK ] AlphaMember.UnknownPinRejected (0 ms)
+[ RUN      ] AlphaMember.RecordUsedAsScalarRejected
+[       OK ] AlphaMember.RecordUsedAsScalarRejected (0 ms)
+[ RUN      ] AlphaMember.RecordRootRejected
+[       OK ] AlphaMember.RecordRootRejected (0 ms)
+[----------] 7 tests from AlphaMember (0 ms total)
+
+[----------] 6 tests from AlphaKalmanReg
+[ RUN      ] AlphaKalmanReg.PinsResolve
+[       OK ] AlphaKalmanReg.PinsResolve (0 ms)
+[ RUN      ] AlphaKalmanReg.AllThreePinsResolve
+[       OK ] AlphaKalmanReg.AllThreePinsResolve (0 ms)
+[ RUN      ] AlphaKalmanReg.BadPinRejected
+[       OK ] AlphaKalmanReg.BadPinRejected (0 ms)
+[ RUN      ] AlphaKalmanReg.RejectsBadDelta
+[       OK ] AlphaKalmanReg.RejectsBadDelta (0 ms)
+[ RUN      ] AlphaKalmanReg.RejectsBadR
+[       OK ] AlphaKalmanReg.RejectsBadR (0 ms)
+[ RUN      ] AlphaKalmanReg.VmMatchesOracle
+[       OK ] AlphaKalmanReg.VmMatchesOracle (0 ms)
+[----------] 6 tests from AlphaKalmanReg (0 ms total)
+
+[----------] 4 tests from AlphaMultiSegmentPanel
+[ RUN      ] AlphaMultiSegmentPanel.UnionsInstrumentAxesAcrossDates
+[       OK ] AlphaMultiSegmentPanel.UnionsInstrumentAxesAcrossDates (14 ms)
+[ RUN      ] AlphaMultiSegmentPanel.WindowExcludesOutOfRangeDates
+[       OK ] AlphaMultiSegmentPanel.WindowExcludesOutOfRangeDates (14 ms)
+[ RUN      ] AlphaMultiSegmentPanel.NonexistentDirectoryIsInvalidArgument
+[       OK ] AlphaMultiSegmentPanel.NonexistentDirectoryIsInvalidArgument (0 ms)
+[ RUN      ] AlphaMultiSegmentPanel.WindowSelectsNoDatesIsInvalidArgument
+[       OK ] AlphaMultiSegmentPanel.WindowSelectsNoDatesIsInvalidArgument (4 ms)
+[----------] 4 tests from AlphaMultiSegmentPanel (33 ms total)
+
+[----------] 2 tests from AlphaMultiOutput
+[ RUN      ] AlphaMultiOutput.Split2ValuesAndDifferential
+[       OK ] AlphaMultiOutput.Split2ValuesAndDifferential (0 ms)
+[ RUN      ] AlphaMultiOutput.WarmEvaluateProducesSameResult
+[       OK ] AlphaMultiOutput.WarmEvaluateProducesSameResult (0 ms)
+[----------] 2 tests from AlphaMultiOutput (0 ms total)
+
+[----------] 3 tests from OpSwapStress
+[ RUN      ] OpSwapStress.EveryBucket_NoAbort_OracleEqualsVm
+[       OK ] OpSwapStress.EveryBucket_NoAbort_OracleEqualsVm (894 ms)
+[ RUN      ] OpSwapStress.RankNode_NeverSwapsToFiniteDefaultScalarOp
+[       OK ] OpSwapStress.RankNode_NeverSwapsToFiniteDefaultScalarOp (1 ms)
+[ RUN      ] OpSwapStress.KalmanLevelNode_IsSwapInert
+[       OK ] OpSwapStress.KalmanLevelNode_IsSwapInert (1 ms)
+[----------] 3 tests from OpSwapStress (897 ms total)
+
+[----------] 3 tests from OpSig
+[ RUN      ] OpSig.PredicatesAgree
+[       OK ] OpSig.PredicatesAgree (1 ms)
+[ RUN      ] OpSig.TableRowsFollowTheirFamily
+[       OK ] OpSig.TableRowsFollowTheirFamily (0 ms)
+[ RUN      ] OpSig.LookaheadSafeDerivedFromTheTable
+[       OK ] OpSig.LookaheadSafeDerivedFromTheTable (0 ms)
+[----------] 3 tests from OpSig (2 ms total)
+
+[----------] 2 tests from AlphaBrain_Differential
+[ RUN      ] AlphaBrain_Differential.AllThirteenOps_FastEqualsOracle_BitIdentical
+[       OK ] AlphaBrain_Differential.AllThirteenOps_FastEqualsOracle_BitIdentical (4 ms)
+[ RUN      ] AlphaBrain_Differential.NestedAndCompositePrograms_FastEqualsOracle
+[       OK ] AlphaBrain_Differential.NestedAndCompositePrograms_FastEqualsOracle (2 ms)
+[----------] 2 tests from AlphaBrain_Differential (7 ms total)
+
+[----------] 1 test from AlphaBrain_Sigmoid
+[ RUN      ] AlphaBrain_Sigmoid.KnownInputs_MatchClosedForm
+[       OK ] AlphaBrain_Sigmoid.KnownInputs_MatchClosedForm (0 ms)
+[----------] 1 test from AlphaBrain_Sigmoid (0 ms total)
+
+[----------] 1 test from AlphaBrain_Tanh
+[ RUN      ] AlphaBrain_Tanh.KnownInputs_MatchClosedForm
+[       OK ] AlphaBrain_Tanh.KnownInputs_MatchClosedForm (0 ms)
+[----------] 1 test from AlphaBrain_Tanh (0 ms total)
+
+[----------] 1 test from AlphaBrain_Normalize
+[ RUN      ] AlphaBrain_Normalize.ValidSetMeanIsZero
+[       OK ] AlphaBrain_Normalize.ValidSetMeanIsZero (0 ms)
+[----------] 1 test from AlphaBrain_Normalize (0 ms total)
+
+[----------] 1 test from AlphaBrain_Winsorize
+[ RUN      ] AlphaBrain_Winsorize.NoValidCellBeyondBound_AndDefaultIsFour
+[       OK ] AlphaBrain_Winsorize.NoValidCellBeyondBound_AndDefaultIsFour (0 ms)
+[----------] 1 test from AlphaBrain_Winsorize (0 ms total)
+
+[----------] 1 test from AlphaBrain_Group
+[ RUN      ] AlphaBrain_Group.CountMeanScale_PerGroupBroadcast
+[       OK ] AlphaBrain_Group.CountMeanScale_PerGroupBroadcast (0 ms)
+[----------] 1 test from AlphaBrain_Group (0 ms total)
+
+[----------] 1 test from AlphaBrain_TsZscore
+[ RUN      ] AlphaBrain_TsZscore.LinearRamp_MatchesHandMeanStd
+[       OK ] AlphaBrain_TsZscore.LinearRamp_MatchesHandMeanStd (0 ms)
+[----------] 1 test from AlphaBrain_TsZscore (0 ms total)
+
+[----------] 2 tests from AlphaBrain_TsBackfill
+[ RUN      ] AlphaBrain_TsBackfill.FillsGapFromLastValid_PastOnly
+[       OK ] AlphaBrain_TsBackfill.FillsGapFromLastValid_PastOnly (0 ms)
+[ RUN      ] AlphaBrain_TsBackfill.TruncationInvariant_PastOnly
+[       OK ] AlphaBrain_TsBackfill.TruncationInvariant_PastOnly (0 ms)
+[----------] 2 tests from AlphaBrain_TsBackfill (0 ms total)
+
+[----------] 1 test from AlphaBrain_TsQuantile
+[ RUN      ] AlphaBrain_TsQuantile.KnownWindow_IsMedian
+[       OK ] AlphaBrain_TsQuantile.KnownWindow_IsMedian (0 ms)
+[----------] 1 test from AlphaBrain_TsQuantile (0 ms total)
+
+[----------] 2 tests from AlphaBrain_TsScale
+[ RUN      ] AlphaBrain_TsScale.KnownWindow_InUnitInterval
+[       OK ] AlphaBrain_TsScale.KnownWindow_InUnitInterval (0 ms)
+[ RUN      ] AlphaBrain_TsScale.FlatWindow_IsZero
+[       OK ] AlphaBrain_TsScale.FlatWindow_IsZero (0 ms)
+[----------] 2 tests from AlphaBrain_TsScale (0 ms total)
+
+[----------] 1 test from AlphaBrain_TsAvDiff
+[ RUN      ] AlphaBrain_TsAvDiff.DeviationFromTrailingMean
+[       OK ] AlphaBrain_TsAvDiff.DeviationFromTrailingMean (0 ms)
+[----------] 1 test from AlphaBrain_TsAvDiff (0 ms total)
+
+[----------] 1 test from AlphaBrain_TsCountNans
+[ RUN      ] AlphaBrain_TsCountNans.CountsKnownGap_FullWindowOnly
+[       OK ] AlphaBrain_TsCountNans.CountsKnownGap_FullWindowOnly (0 ms)
+[----------] 1 test from AlphaBrain_TsCountNans (0 ms total)
+
+[----------] 5 tests from AlphaBrain_Boundary
+[ RUN      ] AlphaBrain_Boundary.AllNaNRowAndWindow_FastEqualsOracle
+[       OK ] AlphaBrain_Boundary.AllNaNRowAndWindow_FastEqualsOracle (0 ms)
+[ RUN      ] AlphaBrain_Boundary.OneInstrumentUniverse_FastEqualsOracle
+[       OK ] AlphaBrain_Boundary.OneInstrumentUniverse_FastEqualsOracle (0 ms)
+[ RUN      ] AlphaBrain_Boundary.SingleMemberGroups_FastEqualsOracle
+[       OK ] AlphaBrain_Boundary.SingleMemberGroups_FastEqualsOracle (0 ms)
+[ RUN      ] AlphaBrain_Boundary.WindowOne_FastEqualsOracle
+[       OK ] AlphaBrain_Boundary.WindowOne_FastEqualsOracle (0 ms)
+[ RUN      ] AlphaBrain_Boundary.WindowExceedsHistory_FastEqualsOracle
+[       OK ] AlphaBrain_Boundary.WindowExceedsHistory_FastEqualsOracle (1 ms)
+[----------] 5 tests from AlphaBrain_Boundary (4 ms total)
+
+[----------] 2 tests from AlphaOracle_Elementwise
+[ RUN      ] AlphaOracle_Elementwise.CloseOverOpenMinusOne_HandComputed
+[       OK ] AlphaOracle_Elementwise.CloseOverOpenMinusOne_HandComputed (0 ms)
+[ RUN      ] AlphaOracle_Elementwise.NaNSourceCell_PropagatesToResult
+[       OK ] AlphaOracle_Elementwise.NaNSourceCell_PropagatesToResult (0 ms)
+[----------] 2 tests from AlphaOracle_Elementwise (0 ms total)
+
+[----------] 1 test from AlphaOracle_Select
+[ RUN      ] AlphaOracle_Select.GreaterThanMask_SelectsPerCell
+[       OK ] AlphaOracle_Select.GreaterThanMask_SelectsPerCell (0 ms)
+[----------] 1 test from AlphaOracle_Select (0 ms total)
+
+[----------] 5 tests from AlphaOracle_Rank
+[ RUN      ] AlphaOracle_Rank.DistinctValues_PercentileRanks
+[       OK ] AlphaOracle_Rank.DistinctValues_PercentileRanks (0 ms)
+[ RUN      ] AlphaOracle_Rank.AllEqual_DeterministicOrdinalTieBreak
+[       OK ] AlphaOracle_Rank.AllEqual_DeterministicOrdinalTieBreak (0 ms)
+[ RUN      ] AlphaOracle_Rank.OutOfUniverseInstrument_IsNaNAndExcluded
+[       OK ] AlphaOracle_Rank.OutOfUniverseInstrument_IsNaNAndExcluded (0 ms)
+[ RUN      ] AlphaOracle_Rank.AllNaNDate_AllNaN
+[       OK ] AlphaOracle_Rank.AllNaNDate_AllNaN (0 ms)
+[ RUN      ] AlphaOracle_Rank.EmptyUniverseDay_AllNaN
+[       OK ] AlphaOracle_Rank.EmptyUniverseDay_AllNaN (0 ms)
+[----------] 5 tests from AlphaOracle_Rank (1 ms total)
+
+[----------] 2 tests from AlphaOracle_TsMean
+[ RUN      ] AlphaOracle_TsMean.Window2_WarmupNaNThenTrailing
+[       OK ] AlphaOracle_TsMean.Window2_WarmupNaNThenTrailing (0 ms)
+[ RUN      ] AlphaOracle_TsMean.NaNInWindow_ProducesNaN
+[       OK ] AlphaOracle_TsMean.NaNInWindow_ProducesNaN (0 ms)
+[----------] 2 tests from AlphaOracle_TsMean (0 ms total)
+
+[----------] 1 test from AlphaOracle_Delay
+[ RUN      ] AlphaOracle_Delay.Lag1_WarmupNaNThenShifted
+[       OK ] AlphaOracle_Delay.Lag1_WarmupNaNThenShifted (0 ms)
+[----------] 1 test from AlphaOracle_Delay (0 ms total)
+
+[----------] 1 test from AlphaOracle_TsDelta
+[ RUN      ] AlphaOracle_TsDelta.Window1_DiffOfAdjacent
+[       OK ] AlphaOracle_TsDelta.Window1_DiffOfAdjacent (0 ms)
+[----------] 1 test from AlphaOracle_TsDelta (0 ms total)
+
+[----------] 1 test from AlphaOracle_TsSum
+[ RUN      ] AlphaOracle_TsSum.Window2_TrailingSum
+[       OK ] AlphaOracle_TsSum.Window2_TrailingSum (0 ms)
+[----------] 1 test from AlphaOracle_TsSum (0 ms total)
+
+[----------] 1 test from AlphaOracle_TsStd
+[ RUN      ] AlphaOracle_TsStd.Window3_SampleDdof1
+[       OK ] AlphaOracle_TsStd.Window3_SampleDdof1 (0 ms)
+[----------] 1 test from AlphaOracle_TsStd (0 ms total)
+
+[----------] 1 test from AlphaOracle_Boundary
+[ RUN      ] AlphaOracle_Boundary.OneByOnePanel_ElementwiseScalar
+[       OK ] AlphaOracle_Boundary.OneByOnePanel_ElementwiseScalar (0 ms)
+[----------] 1 test from AlphaOracle_Boundary (0 ms total)
+
+[----------] 1 test from AlphaOracle_MultiRoot
+[ RUN      ] AlphaOracle_MultiRoot.TwoBindings_BothAlphasPopulated
+[       OK ] AlphaOracle_MultiRoot.TwoBindings_BothAlphasPopulated (0 ms)
+[----------] 1 test from AlphaOracle_MultiRoot (0 ms total)
+
+[----------] 1 test from AlphaOracle_Validate
+[ RUN      ] AlphaOracle_Validate.MissingField_ReturnsErr
+[       OK ] AlphaOracle_Validate.MissingField_ReturnsErr (0 ms)
+[----------] 1 test from AlphaOracle_Validate (0 ms total)
+
+[----------] 2 tests from AlphaOuRolling
+[ RUN      ] AlphaOuRolling.VmMatchesOracle
+[       OK ] AlphaOuRolling.VmMatchesOracle (0 ms)
+[ RUN      ] AlphaOuRolling.VmMatchesOracle_SingleOp_OuTheta
+[       OK ] AlphaOuRolling.VmMatchesOracle_SingleOp_OuTheta (0 ms)
+[----------] 2 tests from AlphaOuRolling (0 ms total)
+
+[----------] 4 tests from AlphaPanel_Create
+[ RUN      ] AlphaPanel_Create.AllValidUniverseEmpty_EveryCellInUniverse
+[       OK ] AlphaPanel_Create.AllValidUniverseEmpty_EveryCellInUniverse (0 ms)
+[ RUN      ] AlphaPanel_Create.FieldCountMismatch_ReturnsErr
+[       OK ] AlphaPanel_Create.FieldCountMismatch_ReturnsErr (0 ms)
+[ RUN      ] AlphaPanel_Create.RaggedColumn_ReturnsErr
+[       OK ] AlphaPanel_Create.RaggedColumn_ReturnsErr (0 ms)
+[ RUN      ] AlphaPanel_Create.UniverseWrongSize_ReturnsErr
+[       OK ] AlphaPanel_Create.UniverseWrongSize_ReturnsErr (0 ms)
+[----------] 4 tests from AlphaPanel_Create (0 ms total)
+
+[----------] 1 test from AlphaPanel_FieldCrossSection
+[ RUN      ] AlphaPanel_FieldCrossSection.KnownDate_ReturnsRow
+[       OK ] AlphaPanel_FieldCrossSection.KnownDate_ReturnsRow (0 ms)
+[----------] 1 test from AlphaPanel_FieldCrossSection (0 ms total)
+
+[----------] 1 test from AlphaPanel_FieldAll
+[ RUN      ] AlphaPanel_FieldAll.WholeField_IsDateMajor
+[       OK ] AlphaPanel_FieldAll.WholeField_IsDateMajor (0 ms)
+[----------] 1 test from AlphaPanel_FieldAll (0 ms total)
+
+[----------] 1 test from AlphaPanel_FieldId
+[ RUN      ] AlphaPanel_FieldId.UnknownName_ReturnsNotFound
+[       OK ] AlphaPanel_FieldId.UnknownName_ReturnsNotFound (0 ms)
+[----------] 1 test from AlphaPanel_FieldId (0 ms total)
+
+[----------] 1 test from AlphaPanel_Universe
+[ RUN      ] AlphaPanel_Universe.OutOfUniverseCell_ReadsFalse
+[       OK ] AlphaPanel_Universe.OutOfUniverseCell_ReadsFalse (0 ms)
+[----------] 1 test from AlphaPanel_Universe (0 ms total)
+
+[----------] 2 tests from AlphaPanel_Boundary
+[ RUN      ] AlphaPanel_Boundary.OneByOne_SingleCell
+[       OK ] AlphaPanel_Boundary.OneByOne_SingleCell (0 ms)
+[ RUN      ] AlphaPanel_Boundary.ZeroFields_AllowedShapeOnly
+[       OK ] AlphaPanel_Boundary.ZeroFields_AllowedShapeOnly (0 ms)
+[----------] 2 tests from AlphaPanel_Boundary (0 ms total)
+
+[----------] 1 test from AlphaSlotPool_Acquire
+[ RUN      ] AlphaSlotPool_Acquire.RoundTrip_RecyclesCapacity
+[       OK ] AlphaSlotPool_Acquire.RoundTrip_RecyclesCapacity (0 ms)
+[----------] 1 test from AlphaSlotPool_Acquire (0 ms total)
+
+[----------] 1 test from AlphaSlotPool_Column
+[ RUN      ] AlphaSlotPool_Column.DistinctSlots_AreIndependentlyWritable
+[       OK ] AlphaSlotPool_Column.DistinctSlots_AreIndependentlyWritable (0 ms)
+[----------] 1 test from AlphaSlotPool_Column (0 ms total)
+
+[----------] 1 test from AlphaSlotPool_Cells
+[ RUN      ] AlphaSlotPool_Cells.ReportsConfiguredGeometry
+[       OK ] AlphaSlotPool_Cells.ReportsConfiguredGeometry (0 ms)
+[----------] 1 test from AlphaSlotPool_Cells (0 ms total)
+
+[----------] 1 test from AlphaSignalSet_CrossSection
+[ RUN      ] AlphaSignalSet_CrossSection.SlicesAlphaRowByDate
+[       OK ] AlphaSignalSet_CrossSection.SlicesAlphaRowByDate (0 ms)
+[----------] 1 test from AlphaSignalSet_CrossSection (0 ms total)
+
+[----------] 1 test from AlphaPanel_Borrowed_MatchesOwned
+[ RUN      ] AlphaPanel_Borrowed_MatchesOwned.BorrowedReadSurface
+[       OK ] AlphaPanel_Borrowed_MatchesOwned.BorrowedReadSurface (0 ms)
+[----------] 1 test from AlphaPanel_Borrowed_MatchesOwned (0 ms total)
+
+[----------] 1 test from AlphaPanel_Borrowed_RaggedColumn_Errs
+[ RUN      ] AlphaPanel_Borrowed_RaggedColumn_Errs.BorrowedValidation
+[       OK ] AlphaPanel_Borrowed_RaggedColumn_Errs.BorrowedValidation (0 ms)
+[----------] 1 test from AlphaPanel_Borrowed_RaggedColumn_Errs (0 ms total)
+
+[----------] 1 test from AlphaPanel_BorrowedSurvivesPanelMove
+[ RUN      ] AlphaPanel_BorrowedSurvivesPanelMove.BorrowedMoveStable
+[       OK ] AlphaPanel_BorrowedSurvivesPanelMove.BorrowedMoveStable (0 ms)
+[----------] 1 test from AlphaPanel_BorrowedSurvivesPanelMove (0 ms total)
+
+[----------] 1 test from AlphaPanel_OwnedCopy_RepointsSpans
+[ RUN      ] AlphaPanel_OwnedCopy_RepointsSpans.OwnedCopySafe
+[       OK ] AlphaPanel_OwnedCopy_RepointsSpans.OwnedCopySafe (0 ms)
+[----------] 1 test from AlphaPanel_OwnedCopy_RepointsSpans (0 ms total)
+
+[----------] 2 tests from AlphaParser_Literal
+[ RUN      ] AlphaParser_Literal.SingleNumber_ProducesLiteral
+[       OK ] AlphaParser_Literal.SingleNumber_ProducesLiteral (0 ms)
+[ RUN      ] AlphaParser_Literal.BareIdent_ProducesField
+[       OK ] AlphaParser_Literal.BareIdent_ProducesField (0 ms)
+[----------] 2 tests from AlphaParser_Literal (0 ms total)
+
+[----------] 2 tests from AlphaParser_Field
+[ RUN      ] AlphaParser_Field.DollarSigil_SetsDollarFlag
+[       OK ] AlphaParser_Field.DollarSigil_SetsDollarFlag (0 ms)
+[ RUN      ] AlphaParser_Field.IndClassDotSector_IsOneField
+[       OK ] AlphaParser_Field.IndClassDotSector_IsOneField (0 ms)
+[----------] 2 tests from AlphaParser_Field (0 ms total)
+
+[----------] 5 tests from AlphaParser_Precedence
+[ RUN      ] AlphaParser_Precedence.AddMul_MulBindsTighter
+[       OK ] AlphaParser_Precedence.AddMul_MulBindsTighter (0 ms)
+[ RUN      ] AlphaParser_Precedence.UnaryNegPow_PowBindsTighterThanNeg
+[       OK ] AlphaParser_Precedence.UnaryNegPow_PowBindsTighterThanNeg (0 ms)
+[ RUN      ] AlphaParser_Precedence.CompareTernary_TernaryIsLoosest
+[       OK ] AlphaParser_Precedence.CompareTernary_TernaryIsLoosest (0 ms)
+[ RUN      ] AlphaParser_Precedence.LogicOrAnd_AndBindsTighter
+[       OK ] AlphaParser_Precedence.LogicOrAnd_AndBindsTighter (0 ms)
+[ RUN      ] AlphaParser_Precedence.Parens_OverridePrecedence
+[       OK ] AlphaParser_Precedence.Parens_OverridePrecedence (0 ms)
+[----------] 5 tests from AlphaParser_Precedence (0 ms total)
+
+[----------] 2 tests from AlphaParser_Assoc
+[ RUN      ] AlphaParser_Assoc.Power_IsRightAssociative
+[       OK ] AlphaParser_Assoc.Power_IsRightAssociative (0 ms)
+[ RUN      ] AlphaParser_Assoc.Sub_IsLeftAssociative
+[       OK ] AlphaParser_Assoc.Sub_IsLeftAssociative (0 ms)
+[----------] 2 tests from AlphaParser_Assoc (0 ms total)
+
+[----------] 4 tests from AlphaParser_Call
+[ RUN      ] AlphaParser_Call.OneArg_Rank
+[       OK ] AlphaParser_Call.OneArg_Rank (0 ms)
+[ RUN      ] AlphaParser_Call.TwoArgs_TsMean
+[       OK ] AlphaParser_Call.TwoArgs_TsMean (0 ms)
+[ RUN      ] AlphaParser_Call.ThreeArgs_Correlation
+[       OK ] AlphaParser_Call.ThreeArgs_Correlation (0 ms)
+[ RUN      ] AlphaParser_Call.Nested_RankOfTsCorr
+[       OK ] AlphaParser_Call.Nested_RankOfTsCorr (0 ms)
+[----------] 4 tests from AlphaParser_Call (0 ms total)
+
+[----------] 6 tests from AlphaParser_Variadic
+[ RUN      ] AlphaParser_Variadic.ScaleOmittedArg_MaterializesDefaultLiteralOne
+[       OK ] AlphaParser_Variadic.ScaleOmittedArg_MaterializesDefaultLiteralOne (0 ms)
+[ RUN      ] AlphaParser_Variadic.ScaleOneArg_StructurallyEqualsExplicitDefault
+[       OK ] AlphaParser_Variadic.ScaleOneArg_StructurallyEqualsExplicitDefault (0 ms)
+[ RUN      ] AlphaParser_Variadic.ScaleExplicitTwoArgs_ParsesUnchanged
+[       OK ] AlphaParser_Variadic.ScaleExplicitTwoArgs_ParsesUnchanged (0 ms)
+[ RUN      ] AlphaParser_Variadic.ScaleTooFewArgs_IsParseError
+[       OK ] AlphaParser_Variadic.ScaleTooFewArgs_IsParseError (0 ms)
+[ RUN      ] AlphaParser_Variadic.ScaleTooManyArgs_IsParseError
+[       OK ] AlphaParser_Variadic.ScaleTooManyArgs_IsParseError (0 ms)
+[ RUN      ] AlphaParser_Variadic.NanSentinelDefault_OmittedArgNotMaterialized
+[       OK ] AlphaParser_Variadic.NanSentinelDefault_OmittedArgNotMaterialized (0 ms)
+[----------] 6 tests from AlphaParser_Variadic (0 ms total)
+
+[----------] 3 tests from AlphaParser_Desugar
+[ RUN      ] AlphaParser_Desugar.Bang_BecomesNotUnary
+[       OK ] AlphaParser_Desugar.Bang_BecomesNotUnary (0 ms)
+[ RUN      ] AlphaParser_Desugar.SignedPower_StaysSpowCall_NotExpanded
+[       OK ] AlphaParser_Desugar.SignedPower_StaysSpowCall_NotExpanded (0 ms)
+[ RUN      ] AlphaParser_Desugar.Equality_ProducesCmpEqBinary
+[       OK ] AlphaParser_Desugar.Equality_ProducesCmpEqBinary (0 ms)
+[----------] 3 tests from AlphaParser_Desugar (0 ms total)
+
+[----------] 7 tests from AlphaParser_Fold
+[ RUN      ] AlphaParser_Fold.IntMul_FoldsToLiteral
+[       OK ] AlphaParser_Fold.IntMul_FoldsToLiteral (0 ms)
+[ RUN      ] AlphaParser_Fold.LogOfOne_FoldsToZero
+[       OK ] AlphaParser_Fold.LogOfOne_FoldsToZero (0 ms)
+[ RUN      ] AlphaParser_Fold.UnaryNegLiteral_Folds
+[       OK ] AlphaParser_Fold.UnaryNegLiteral_Folds (0 ms)
+[ RUN      ] AlphaParser_Fold.PowerOfLiterals_Folds
+[       OK ] AlphaParser_Fold.PowerOfLiterals_Folds (0 ms)
+[ RUN      ] AlphaParser_Fold.NestedArithmetic_FoldsFully
+[       OK ] AlphaParser_Fold.NestedArithmetic_FoldsFully (0 ms)
+[ RUN      ] AlphaParser_Fold.FieldOperand_DoesNotFold
+[       OK ] AlphaParser_Fold.FieldOperand_DoesNotFold (0 ms)
+[ RUN      ] AlphaParser_Fold.AbsOfField_DoesNotFold
+[       OK ] AlphaParser_Fold.AbsOfField_DoesNotFold (0 ms)
+[----------] 7 tests from AlphaParser_Fold (0 ms total)
+
+[----------] 8 tests from AlphaParser_Error
+[ RUN      ] AlphaParser_Error.UnknownOperator_IsParseError
+[       OK ] AlphaParser_Error.UnknownOperator_IsParseError (0 ms)
+[ RUN      ] AlphaParser_Error.ArityMismatch_IsParseError
+[       OK ] AlphaParser_Error.ArityMismatch_IsParseError (0 ms)
+[ RUN      ] AlphaParser_Error.TooFewArgs_IsParseError
+[       OK ] AlphaParser_Error.TooFewArgs_IsParseError (0 ms)
+[ RUN      ] AlphaParser_Error.UnbalancedParen_IsParseError
+[       OK ] AlphaParser_Error.UnbalancedParen_IsParseError (0 ms)
+[ RUN      ] AlphaParser_Error.TrailingComma_IsParseError
+[       OK ] AlphaParser_Error.TrailingComma_IsParseError (0 ms)
+[ RUN      ] AlphaParser_Error.MissingTernaryColon_IsParseError
+[       OK ] AlphaParser_Error.MissingTernaryColon_IsParseError (0 ms)
+[ RUN      ] AlphaParser_Error.DanglingOperator_IsParseError
+[       OK ] AlphaParser_Error.DanglingOperator_IsParseError (0 ms)
+[ RUN      ] AlphaParser_Error.TrailingTokens_IsParseError
+[       OK ] AlphaParser_Error.TrailingTokens_IsParseError (0 ms)
+[----------] 8 tests from AlphaParser_Error (0 ms total)
+
+[----------] 2 tests from AlphaParser_Boundary
+[ RUN      ] AlphaParser_Boundary.DeeplyNestedParens_ParsesToInner
+[       OK ] AlphaParser_Boundary.DeeplyNestedParens_ParsesToInner (0 ms)
+[ RUN      ] AlphaParser_Boundary.DeepArithmeticChain_Parses
+[       OK ] AlphaParser_Boundary.DeepArithmeticChain_Parses (0 ms)
+[----------] 2 tests from AlphaParser_Boundary (0 ms total)
+
+[----------] 2 tests from AlphaProgram_Assignment
+[ RUN      ] AlphaProgram_Assignment.SingleBinding_HasNamedRoot
+[       OK ] AlphaProgram_Assignment.SingleBinding_HasNamedRoot (0 ms)
+[ RUN      ] AlphaProgram_Assignment.MultipleBindings_AllParsed
+[       OK ] AlphaProgram_Assignment.MultipleBindings_AllParsed (0 ms)
+[----------] 2 tests from AlphaProgram_Assignment (0 ms total)
+
+[----------] 1 test from AlphaProgram_Boundary
+[ RUN      ] AlphaProgram_Boundary.EmptySource_ZeroRoots
+[       OK ] AlphaProgram_Boundary.EmptySource_ZeroRoots (0 ms)
+[----------] 1 test from AlphaProgram_Boundary (0 ms total)
+
+[----------] 2 tests from AlphaProgram_Error
+[ RUN      ] AlphaProgram_Error.MissingAssign_IsParseError
+[       OK ] AlphaProgram_Error.MissingAssign_IsParseError (0 ms)
+[ RUN      ] AlphaProgram_Error.MissingTarget_IsParseError
+[       OK ] AlphaProgram_Error.MissingTarget_IsParseError (0 ms)
+[----------] 2 tests from AlphaProgram_Error (0 ms total)
+
+[----------] 1 test from AlphaProof_Differential
+[ RUN      ] AlphaProof_Differential.Alpha101Battery_FastEqualsOracle_BitIdentical
+[       OK ] AlphaProof_Differential.Alpha101Battery_FastEqualsOracle_BitIdentical (5 ms)
+[----------] 1 test from AlphaProof_Differential (6 ms total)
+
+[----------] 1 test from AlphaProof_Determinism
+[ RUN      ] AlphaProof_Determinism.RepeatRunIdentical_FastEqualsOracle_MutationSensitive
+[       OK ] AlphaProof_Determinism.RepeatRunIdentical_FastEqualsOracle_MutationSensitive (6 ms)
+[----------] 1 test from AlphaProof_Determinism (6 ms total)
+
+[----------] 1 test from AlphaProof_NoLookahead
+[ RUN      ] AlphaProof_NoLookahead.TruncatedPanel_ReproducesEarlyRows_ByteIdentical
+[       OK ] AlphaProof_NoLookahead.TruncatedPanel_ReproducesEarlyRows_ByteIdentical (1 ms)
+[----------] 1 test from AlphaProof_NoLookahead (1 ms total)
+
+[----------] 1 test from AlphaProof_Bench
+[ RUN      ] AlphaProof_Bench.HighCseProgram_ReportsRatioAndThroughput
+[ bench    ] AlphaProof CSE/throughput (Debug build):
+[ bench    ]   panel            = 512 x 256 (131072 cells)
+[ bench    ]   alphas           = 24
+[ bench    ]   unique_nodes     = 41
+[ bench    ]   total_ast_nodes  = 156
+[ bench    ]   unique/total     = 0.262821
+[ bench    ]   num_slots        = 12
+[ bench    ]   ns/cell          = 126.849
+[ bench    ]   alphas/s         = 60.1453
+[       OK ] AlphaProof_Bench.HighCseProgram_ReportsRatioAndThroughput (2431 ms)
+[----------] 1 test from AlphaProof_Bench (2431 ms total)
+
+[----------] 1 test from AlphaKalmanLevel
+[ RUN      ] AlphaKalmanLevel.VmMatchesOracleAndHandMath
+[       OK ] AlphaKalmanLevel.VmMatchesOracleAndHandMath (0 ms)
+[----------] 1 test from AlphaKalmanLevel (0 ms total)
+
+[----------] 1 test from AlphaOuFilter
+[ RUN      ] AlphaOuFilter.VmMatchesOracleAndHandMath
+[       OK ] AlphaOuFilter.VmMatchesOracleAndHandMath (0 ms)
+[----------] 1 test from AlphaOuFilter (0 ms total)
+
+[----------] 3 tests from AlphaRegistry_Find
+[ RUN      ] AlphaRegistry_Find.KnownBuiltin_ReturnsRow
+[       OK ] AlphaRegistry_Find.KnownBuiltin_ReturnsRow (0 ms)
+[ RUN      ] AlphaRegistry_Find.UnknownName_ReturnsNullptr
+[       OK ] AlphaRegistry_Find.UnknownName_ReturnsNullptr (0 ms)
+[ RUN      ] AlphaRegistry_Find.EmptyName_ReturnsNullptr
+[       OK ] AlphaRegistry_Find.EmptyName_ReturnsNullptr (0 ms)
+[----------] 3 tests from AlphaRegistry_Find (0 ms total)
+
+[----------] 6 tests from AlphaRegistry_Mapping
+[ RUN      ] AlphaRegistry_Mapping.Correlation_MapsToTsCorr_Arity3
+[       OK ] AlphaRegistry_Mapping.Correlation_MapsToTsCorr_Arity3 (0 ms)
+[ RUN      ] AlphaRegistry_Mapping.Stddev_MapsToTsStd
+[       OK ] AlphaRegistry_Mapping.Stddev_MapsToTsStd (0 ms)
+[ RUN      ] AlphaRegistry_Mapping.SignedPower_MapsToSpow
+[       OK ] AlphaRegistry_Mapping.SignedPower_MapsToSpow (0 ms)
+[ RUN      ] AlphaRegistry_Mapping.IndNeutralize_MapsToCsDemeanG
+[       OK ] AlphaRegistry_Mapping.IndNeutralize_MapsToCsDemeanG (0 ms)
+[ RUN      ] AlphaRegistry_Mapping.GroupNeutralize_MapsToCsNeutG
+[       OK ] AlphaRegistry_Mapping.GroupNeutralize_MapsToCsNeutG (0 ms)
+[ RUN      ] AlphaRegistry_Mapping.Rank_MapsToCsRank_Arity1
+[       OK ] AlphaRegistry_Mapping.Rank_MapsToCsRank_Arity1 (0 ms)
+[----------] 6 tests from AlphaRegistry_Mapping (0 ms total)
+
+[----------] 1 test from AlphaRegistry_Dtype
+[ RUN      ] AlphaRegistry_Dtype.AbsFunction_OutDtypeIsF64
+[       OK ] AlphaRegistry_Dtype.AbsFunction_OutDtypeIsF64 (0 ms)
+[----------] 1 test from AlphaRegistry_Dtype (0 ms total)
+
+[----------] 1 test from AlphaRegistry_Lookahead
+[ RUN      ] AlphaRegistry_Lookahead.AllBuiltins_AreLookaheadSafe
+[       OK ] AlphaRegistry_Lookahead.AllBuiltins_AreLookaheadSafe (0 ms)
+[----------] 1 test from AlphaRegistry_Lookahead (0 ms total)
+
+[----------] 4 tests from AlphaRegistry_Shape
+[ RUN      ] AlphaRegistry_Shape.MinFunction_BroadcastsToMaxShape
+[       OK ] AlphaRegistry_Shape.MinFunction_BroadcastsToMaxShape (0 ms)
+[ RUN      ] AlphaRegistry_Shape.AbsFunction_PreservesArgShape
+[       OK ] AlphaRegistry_Shape.AbsFunction_PreservesArgShape (0 ms)
+[ RUN      ] AlphaRegistry_Shape.Rank_AlwaysCrossSection
+[       OK ] AlphaRegistry_Shape.Rank_AlwaysCrossSection (0 ms)
+[ RUN      ] AlphaRegistry_Shape.TsMean_AlwaysPanel
+[       OK ] AlphaRegistry_Shape.TsMean_AlwaysPanel (0 ms)
+[----------] 4 tests from AlphaRegistry_Shape (0 ms total)
+
+[----------] 7 tests from AlphaRegistry_Register
+[ RUN      ] AlphaRegistry_Register.NewOp_Succeeds
+[       OK ] AlphaRegistry_Register.NewOp_Succeeds (0 ms)
+[ RUN      ] AlphaRegistry_Register.DuplicateName_Fails
+[       OK ] AlphaRegistry_Register.DuplicateName_Fails (0 ms)
+[ RUN      ] AlphaRegistry_Register.EmptyName_Fails
+[       OK ] AlphaRegistry_Register.EmptyName_Fails (0 ms)
+[ RUN      ] AlphaRegistry_Register.NullShapeOf_Fails
+[       OK ] AlphaRegistry_Register.NullShapeOf_Fails (0 ms)
+[ RUN      ] AlphaRegistry_Register.VariadicWithFiniteDefault_Succeeds
+[       OK ] AlphaRegistry_Register.VariadicWithFiniteDefault_Succeeds (0 ms)
+[ RUN      ] AlphaRegistry_Register.OptionalCountExceedsDefaultsCapacity_Fails
+[       OK ] AlphaRegistry_Register.OptionalCountExceedsDefaultsCapacity_Fails (0 ms)
+[ RUN      ] AlphaRegistry_Register.MaxArityBelowMinArity_Fails
+[       OK ] AlphaRegistry_Register.MaxArityBelowMinArity_Fails (0 ms)
+[----------] 7 tests from AlphaRegistry_Register (0 ms total)
+
+[----------] 3 tests from AlphaRegistry_Arity
+[ RUN      ] AlphaRegistry_Arity.FixedOp_MinEqualsMax
+[       OK ] AlphaRegistry_Arity.FixedOp_MinEqualsMax (0 ms)
+[ RUN      ] AlphaRegistry_Arity.Scale_HasOptionalTrailingArg
+[       OK ] AlphaRegistry_Arity.Scale_HasOptionalTrailingArg (0 ms)
+[ RUN      ] AlphaRegistry_Arity.GroupNeutralize_StaysFixedArity2
+[       OK ] AlphaRegistry_Arity.GroupNeutralize_StaysFixedArity2 (0 ms)
+[----------] 3 tests from AlphaRegistry_Arity (0 ms total)
+
+[----------] 1 test from AlphaRegistry
+[ RUN      ] AlphaRegistry.Split2IsRecordWithTwoPins
+[       OK ] AlphaRegistry.Split2IsRecordWithTwoPins (0 ms)
+[----------] 1 test from AlphaRegistry (0 ms total)
+
+[----------] 2 tests from SlotPoolBlock
+[ RUN      ] SlotPoolBlock.ContiguousBlockThenRelease
+[       OK ] SlotPoolBlock.ContiguousBlockThenRelease (0 ms)
+[ RUN      ] SlotPoolBlock.SingleAcquireUnaffected
+[       OK ] SlotPoolBlock.SingleAcquireUnaffected (0 ms)
+[----------] 2 tests from SlotPoolBlock (0 ms total)
+
+[----------] 3 tests from KalmanLevelStep
+[ RUN      ] KalmanLevelStep.SeedAndOneUpdate
+[       OK ] KalmanLevelStep.SeedAndOneUpdate (0 ms)
+[ RUN      ] KalmanLevelStep.NanObsCarriesEstimate
+[       OK ] KalmanLevelStep.NanObsCarriesEstimate (0 ms)
+[ RUN      ] KalmanLevelStep.UnseededNanStaysUnseeded
+[       OK ] KalmanLevelStep.UnseededNanStaysUnseeded (0 ms)
+[----------] 3 tests from KalmanLevelStep (0 ms total)
+
+[----------] 2 tests from OuFilterStep
+[ RUN      ] OuFilterStep.PullsTowardMu
+[       OK ] OuFilterStep.PullsTowardMu (0 ms)
+[ RUN      ] OuFilterStep.UnseededNanStaysUnseeded
+[       OK ] OuFilterStep.UnseededNanStaysUnseeded (0 ms)
+[----------] 2 tests from OuFilterStep (0 ms total)
+
+[----------] 2 tests from KalmanRegStep
+[ RUN      ] KalmanRegStep.SeedAndOneStep
+[       OK ] KalmanRegStep.SeedAndOneStep (0 ms)
+[ RUN      ] KalmanRegStep.NanObsPredictOnlyOutputsNaN
+[       OK ] KalmanRegStep.NanObsPredictOnlyOutputsNaN (0 ms)
+[----------] 2 tests from KalmanRegStep (0 ms total)
+
+[----------] 2 tests from AlphaStatespaceE2E
+[ RUN      ] AlphaStatespaceE2E.KalmanOuPipeline
+[       OK ] AlphaStatespaceE2E.KalmanOuPipeline (0 ms)
+[ RUN      ] AlphaStatespaceE2E.NoLookAhead
+[       OK ] AlphaStatespaceE2E.NoLookAhead (0 ms)
+[----------] 2 tests from AlphaStatespaceE2E (1 ms total)
+
+[----------] 11 tests from AlphaStreams
+[ RUN      ] AlphaStreams.KnownValue_SingleAlpha_WeightsAndPnlExact
+[       OK ] AlphaStreams.KnownValue_SingleAlpha_WeightsAndPnlExact (0 ms)
+[ RUN      ] AlphaStreams.Anchor_CostsOff_MatchesFrictionlessLoopRun
+[       OK ] AlphaStreams.Anchor_CostsOff_MatchesFrictionlessLoopRun (6 ms)
+[ RUN      ] AlphaStreams.TwoAlphas_StreamsAreIndependent
+[       OK ] AlphaStreams.TwoAlphas_StreamsAreIndependent (0 ms)
+[ RUN      ] AlphaStreams.CostsOff_RecoversAnalytic_CostsOn_ChargesTurnover
+[       OK ] AlphaStreams.CostsOff_RecoversAnalytic_CostsOn_ChargesTurnover (0 ms)
+[ RUN      ] AlphaStreams.NanSignal_ZeroWeight_FlatSignal_FlatPnl
+[       OK ] AlphaStreams.NanSignal_ZeroWeight_FlatSignal_FlatPnl (0 ms)
+[ RUN      ] AlphaStreams.Boundary_OnePeriod
+[       OK ] AlphaStreams.Boundary_OnePeriod (0 ms)
+[ RUN      ] AlphaStreams.Boundary_OneInstrument
+[       OK ] AlphaStreams.Boundary_OneInstrument (0 ms)
+[ RUN      ] AlphaStreams.Accessors_SpansAreCorrectlyOffset
+[       OK ] AlphaStreams.Accessors_SpansAreCorrectlyOffset (0 ms)
+[ RUN      ] AlphaStreams.ShapeMismatch_ReturnsErr
+[       OK ] AlphaStreams.ShapeMismatch_ReturnsErr (0 ms)
+[ RUN      ] AlphaStreams.NoCloseField_ReturnsErr
+[       OK ] AlphaStreams.NoCloseField_ReturnsErr (0 ms)
+[ RUN      ] AlphaStreams.IndustryNeutralGroupMapZeroesPerGroup
+[       OK ] AlphaStreams.IndustryNeutralGroupMapZeroesPerGroup (0 ms)
+[----------] 11 tests from AlphaStreams (8 ms total)
+
+[----------] 1 test from AlphaTradeWhen_HandTrace
+[ RUN      ] AlphaTradeWhen_HandTrace.EnterHoldCloseReenter_MatchesByHand
+[       OK ] AlphaTradeWhen_HandTrace.EnterHoldCloseReenter_MatchesByHand (0 ms)
+[----------] 1 test from AlphaTradeWhen_HandTrace (0 ms total)
+
+[----------] 3 tests from AlphaTradeWhen_FirstDate
+[ RUN      ] AlphaTradeWhen_FirstDate.TriggerOnDateZero_Enters
+[       OK ] AlphaTradeWhen_FirstDate.TriggerOnDateZero_Enters (0 ms)
+[ RUN      ] AlphaTradeWhen_FirstDate.NoTriggerOnDateZero_IsNaN
+[       OK ] AlphaTradeWhen_FirstDate.NoTriggerOnDateZero_IsNaN (0 ms)
+[ RUN      ] AlphaTradeWhen_FirstDate.ExitDominatesTriggerOnDateZero_IsNaN
+[       OK ] AlphaTradeWhen_FirstDate.ExitDominatesTriggerOnDateZero_IsNaN (0 ms)
+[----------] 3 tests from AlphaTradeWhen_FirstDate (0 ms total)
+
+[----------] 1 test from AlphaTradeWhen_AllTrigger
+[ RUN      ] AlphaTradeWhen_AllTrigger.OutputEqualsAlphaEveryDate
+[       OK ] AlphaTradeWhen_AllTrigger.OutputEqualsAlphaEveryDate (0 ms)
+[----------] 1 test from AlphaTradeWhen_AllTrigger (0 ms total)
+
+[----------] 1 test from AlphaTradeWhen_AllExit
+[ RUN      ] AlphaTradeWhen_AllExit.OutputIsAllNaN
+[       OK ] AlphaTradeWhen_AllExit.OutputIsAllNaN (0 ms)
+[----------] 1 test from AlphaTradeWhen_AllExit (0 ms total)
+
+[----------] 1 test from AlphaTradeWhen_NaNTriggerExit
+[ RUN      ] AlphaTradeWhen_NaNTriggerExit.TreatedAsNotTriggeredNotExited_HoldsPrior
+[       OK ] AlphaTradeWhen_NaNTriggerExit.TreatedAsNotTriggeredNotExited_HoldsPrior (0 ms)
+[----------] 1 test from AlphaTradeWhen_NaNTriggerExit (0 ms total)
+
+[----------] 1 test from AlphaHump_KnownValue
+[ RUN      ] AlphaHump_KnownValue.SmallChangesSuppressed_LargePassThrough
+[       OK ] AlphaHump_KnownValue.SmallChangesSuppressed_LargePassThrough (0 ms)
+[----------] 1 test from AlphaHump_KnownValue (0 ms total)
+
+[----------] 1 test from AlphaHump_Boundary
+[ RUN      ] AlphaHump_Boundary.ExactlyThreshold_HoldsThenLargerChangePasses
+[       OK ] AlphaHump_Boundary.ExactlyThreshold_HoldsThenLargerChangePasses (0 ms)
+[----------] 1 test from AlphaHump_Boundary (0 ms total)
+
+[----------] 1 test from AlphaHump_FirstDate
+[ RUN      ] AlphaHump_FirstDate.EqualsXZero
+[       OK ] AlphaHump_FirstDate.EqualsXZero (0 ms)
+[----------] 1 test from AlphaHump_FirstDate (0 ms total)
+
+[----------] 1 test from AlphaHump_Default
+[ RUN      ] AlphaHump_Default.HumpXEqualsHumpX001
+[       OK ] AlphaHump_Default.HumpXEqualsHumpX001 (0 ms)
+[----------] 1 test from AlphaHump_Default (0 ms total)
+
+[----------] 1 test from AlphaHump_NaN
+[ RUN      ] AlphaHump_NaN.NaNInputPropagatesPerOracle
+[       OK ] AlphaHump_NaN.NaNInputPropagatesPerOracle (0 ms)
+[----------] 1 test from AlphaHump_NaN (0 ms total)
+
+[----------] 2 tests from AlphaTradeWhen_Differential
+[ RUN      ] AlphaTradeWhen_Differential.BothOps_FastEqualsOracle_BitIdentical
+[       OK ] AlphaTradeWhen_Differential.BothOps_FastEqualsOracle_BitIdentical (0 ms)
+[ RUN      ] AlphaTradeWhen_Differential.NestedAndComposite_FastEqualsOracle
+[       OK ] AlphaTradeWhen_Differential.NestedAndComposite_FastEqualsOracle (1 ms)
+[----------] 2 tests from AlphaTradeWhen_Differential (3 ms total)
+
+[----------] 1 test from AlphaTradeWhen_Causality
+[ RUN      ] AlphaTradeWhen_Causality.TruncationInvariant
+[       OK ] AlphaTradeWhen_Causality.TruncationInvariant (0 ms)
+[----------] 1 test from AlphaTradeWhen_Causality (0 ms total)
+
+[----------] 1 test from AlphaHump_Causality
+[ RUN      ] AlphaHump_Causality.TruncationInvariant
+[       OK ] AlphaHump_Causality.TruncationInvariant (0 ms)
+[----------] 1 test from AlphaHump_Causality (0 ms total)
+
+[----------] 1 test from AlphaTradeWhen_Determinism
+[ RUN      ] AlphaTradeWhen_Determinism.ReRunIsIdentical
+[       OK ] AlphaTradeWhen_Determinism.ReRunIsIdentical (0 ms)
+[----------] 1 test from AlphaTradeWhen_Determinism (0 ms total)
+
+[----------] 3 tests from AlphaTradeWhen_Boundary
+[ RUN      ] AlphaTradeWhen_Boundary.OneDate_FastEqualsOracle
+[       OK ] AlphaTradeWhen_Boundary.OneDate_FastEqualsOracle (0 ms)
+[ RUN      ] AlphaTradeWhen_Boundary.OneInstrument_FastEqualsOracle
+[       OK ] AlphaTradeWhen_Boundary.OneInstrument_FastEqualsOracle (0 ms)
+[ RUN      ] AlphaTradeWhen_Boundary.AllNaNInputs_FastEqualsOracle
+[       OK ] AlphaTradeWhen_Boundary.AllNaNInputs_FastEqualsOracle (0 ms)
+[----------] 3 tests from AlphaTradeWhen_Boundary (2 ms total)
+
+[----------] 1 test from AlphaTsBrain_Differential
+[ RUN      ] AlphaTsBrain_Differential.EveryNewOp_RandomPanel_MatchesOracle
+[       OK ] AlphaTsBrain_Differential.EveryNewOp_RandomPanel_MatchesOracle (3 ms)
+[----------] 1 test from AlphaTsBrain_Differential (3 ms total)
+
+[----------] 1 test from AlphaTsBrain_Regression
+[ RUN      ] AlphaTsBrain_Regression.ExactLinear_SlopeIsTwo
+[       OK ] AlphaTsBrain_Regression.ExactLinear_SlopeIsTwo (0 ms)
+[----------] 1 test from AlphaTsBrain_Regression (0 ms total)
+
+[----------] 1 test from AlphaTsBrain_DecayExp
+[ RUN      ] AlphaTsBrain_DecayExp.HandComputedWeights
+[       OK ] AlphaTsBrain_DecayExp.HandComputedWeights (0 ms)
+[----------] 1 test from AlphaTsBrain_DecayExp (0 ms total)
+
+[----------] 1 test from AlphaTsBrain_Moment
+[ RUN      ] AlphaTsBrain_Moment.SecondMoment_IsPopulationVariance
+[       OK ] AlphaTsBrain_Moment.SecondMoment_IsPopulationVariance (0 ms)
+[----------] 1 test from AlphaTsBrain_Moment (0 ms total)
+
+[----------] 2 tests from AlphaTsBrain_Entropy
+[ RUN      ] AlphaTsBrain_Entropy.FlatWindow_ZeroEntropy
+[       OK ] AlphaTsBrain_Entropy.FlatWindow_ZeroEntropy (0 ms)
+[ RUN      ] AlphaTsBrain_Entropy.UniformDistinct_LogD
+[       OK ] AlphaTsBrain_Entropy.UniformDistinct_LogD (0 ms)
+[----------] 2 tests from AlphaTsBrain_Entropy (0 ms total)
+
+[----------] 1 test from AlphaTsBrain_Rail
+[ RUN      ] AlphaTsBrain_Rail.NaNInWindow_AndWarmup_AreNaN
+[       OK ] AlphaTsBrain_Rail.NaNInWindow_AndWarmup_AreNaN (0 ms)
+[----------] 1 test from AlphaTsBrain_Rail (0 ms total)
+
+[----------] 1 test from AlphaTsBrain_Hparam
+[ RUN      ] AlphaTsBrain_Hparam.OutOfRange_Rejected
+[       OK ] AlphaTsBrain_Hparam.OutOfRange_Rejected (0 ms)
+[----------] 1 test from AlphaTsBrain_Hparam (0 ms total)
+
+[----------] 2 tests from AlphaTsDateMajor_Lookback
+[ RUN      ] AlphaTsDateMajor_Lookback.FullAndUnalignedRangesPreserveIndependentCellOracle
+[       OK ] AlphaTsDateMajor_Lookback.FullAndUnalignedRangesPreserveIndependentCellOracle (3 ms)
+[ RUN      ] AlphaTsDateMajor_Lookback.BlockOverlapCopiesBeforeWarmupAndPartialOverlapRejects
+[       OK ] AlphaTsDateMajor_Lookback.BlockOverlapCopiesBeforeWarmupAndPartialOverlapRejects (0 ms)
+[----------] 2 tests from AlphaTsDateMajor_Lookback (3 ms total)
+
+[----------] 1 test from AlphaTsDateMajor_Sum
+[ RUN      ] AlphaTsDateMajor_Sum.TiledSimdAndWorkerCutsMatchScalarCompensatedStateBits
+[       OK ] AlphaTsDateMajor_Sum.TiledSimdAndWorkerCutsMatchScalarCompensatedStateBits (23 ms)
+[----------] 1 test from AlphaTsDateMajor_Sum (23 ms total)
+
+[----------] 1 test from AlphaTsDateMajor_UnarySliding
+[ RUN      ] AlphaTsDateMajor_UnarySliding.TiledWorkerDispatchPreservesEachExistingLaneBits
+[       OK ] AlphaTsDateMajor_UnarySliding.TiledWorkerDispatchPreservesEachExistingLaneBits (7 ms)
+[----------] 1 test from AlphaTsDateMajor_UnarySliding (7 ms total)
+
+[----------] 6 tests from OuAr1Fit
+[ RUN      ] OuAr1Fit.PerfectLineGivesUnitSlope
+[       OK ] OuAr1Fit.PerfectLineGivesUnitSlope (0 ms)
+[ RUN      ] OuAr1Fit.MeanRevertingSlopeInUnitInterval
+[       OK ] OuAr1Fit.MeanRevertingSlopeInUnitInterval (0 ms)
+[ RUN      ] OuAr1Fit.TooFewPairsGivesNaN
+[       OK ] OuAr1Fit.TooFewPairsGivesNaN (0 ms)
+[ RUN      ] OuAr1Fit.NaNEndpointPairsSkipped
+[       OK ] OuAr1Fit.NaNEndpointPairsSkipped (0 ms)
+[ RUN      ] OuAr1Fit.ZeroVariancePredictorGivesNaN
+[       OK ] OuAr1Fit.ZeroVariancePredictorGivesNaN (0 ms)
+[ RUN      ] OuAr1Fit.EmptyWindowGivesNaN
+[       OK ] OuAr1Fit.EmptyWindowGivesNaN (0 ms)
+[----------] 6 tests from OuAr1Fit (0 ms total)
+
+[----------] 5 tests from OuDeriv
+[ RUN      ] OuDeriv.ThetaHalflifeMeanFromKnownB
+[       OK ] OuDeriv.ThetaHalflifeMeanFromKnownB (0 ms)
+[ RUN      ] OuDeriv.NonMeanRevertingGivesNaN
+[       OK ] OuDeriv.NonMeanRevertingGivesNaN (0 ms)
+[ RUN      ] OuDeriv.NegativeBGivesNaNForThetaAndZscore
+[       OK ] OuDeriv.NegativeBGivesNaNForThetaAndZscore (0 ms)
+[ RUN      ] OuDeriv.ZeroResidStdGivesNaNZscore
+[       OK ] OuDeriv.ZeroResidStdGivesNaNZscore (0 ms)
+[ RUN      ] OuDeriv.NaNBGivesNaNForAll
+[       OK ] OuDeriv.NaNBGivesNaNForAll (0 ms)
+[----------] 5 tests from OuDeriv (0 ms total)
+
+[----------] 1 test from TsOnlineSumFamily
+[ RUN      ] TsOnlineSumFamily.InfEntersAndLeaves_RecoversAndMatchesBatch
+[       OK ] TsOnlineSumFamily.InfEntersAndLeaves_RecoversAndMatchesBatch (0 ms)
+[----------] 1 test from TsOnlineSumFamily (0 ms total)
+
+[----------] 1 test from AlphaPairRouting_Production
+[ RUN      ] AlphaPairRouting_Production.FastBatchStreamingAndOracleAcrossHolesFlatnessAndReseeds
+[       OK ] AlphaPairRouting_Production.FastBatchStreamingAndOracleAcrossHolesFlatnessAndReseeds (532 ms)
+[----------] 1 test from AlphaPairRouting_Production (532 ms total)
+
+[----------] 1 test from AlphaDecayExpO1_Production
+[ RUN      ] AlphaDecayExpO1_Production.FiniteWindowInitializationRecoveryFactorsAndStreamingBits
+[       OK ] AlphaDecayExpO1_Production.FiniteWindowInitializationRecoveryFactorsAndStreamingBits (753 ms)
+[----------] 1 test from AlphaDecayExpO1_Production (753 ms total)
+
+[----------] 1 test from AlphaPairRouting_LegacyAndPrefix
+[ RUN      ] AlphaPairRouting_LegacyAndPrefix.FutureMutationPreservesOutputBitsAndLegacyPairArithmetic
+[       OK ] AlphaPairRouting_LegacyAndPrefix.FutureMutationPreservesOutputBitsAndLegacyPairArithmetic (112 ms)
+[----------] 1 test from AlphaPairRouting_LegacyAndPrefix (112 ms total)
+
+[----------] 1 test from AlphaPairRouting_Overflow
+[ RUN      ] AlphaPairRouting_Overflow.FiniteRawSumsWithOverflowedCenteringUseDirectClassification
+[       OK ] AlphaPairRouting_Overflow.FiniteRawSumsWithOverflowedCenteringUseDirectClassification (0 ms)
+[----------] 1 test from AlphaPairRouting_Overflow (0 ms total)
+
+[----------] 1 test from AlphaTs_Differential
+[ RUN      ] AlphaTs_Differential.EveryTimeSeriesOp_RandomPanel_MatchesOracle
+[       OK ] AlphaTs_Differential.EveryTimeSeriesOp_RandomPanel_MatchesOracle (12 ms)
+[----------] 1 test from AlphaTs_Differential (13 ms total)
+
+[----------] 1 test from AlphaTs_Delay
+[ RUN      ] AlphaTs_Delay.OneStep_WarmupNaNThenShifted
+[       OK ] AlphaTs_Delay.OneStep_WarmupNaNThenShifted (0 ms)
+[----------] 1 test from AlphaTs_Delay (0 ms total)
+
+[----------] 1 test from AlphaTs_Delta
+[ RUN      ] AlphaTs_Delta.OneStep_FirstDifference
+[       OK ] AlphaTs_Delta.OneStep_FirstDifference (0 ms)
+[----------] 1 test from AlphaTs_Delta (0 ms total)
+
+[----------] 1 test from AlphaTs_Mean
+[ RUN      ] AlphaTs_Mean.Window2_WarmupNaNThenTrailingMean
+[       OK ] AlphaTs_Mean.Window2_WarmupNaNThenTrailingMean (0 ms)
+[----------] 1 test from AlphaTs_Mean (0 ms total)
+
+[----------] 1 test from AlphaTs_Sum
+[ RUN      ] AlphaTs_Sum.Window3_TrailingSum
+[       OK ] AlphaTs_Sum.Window3_TrailingSum (0 ms)
+[----------] 1 test from AlphaTs_Sum (0 ms total)
+
+[----------] 2 tests from AlphaTs_ArgMax
+[ RUN      ] AlphaTs_ArgMax.KnownPeak_OneBasedFirstExtreme
+[       OK ] AlphaTs_ArgMax.KnownPeak_OneBasedFirstExtreme (0 ms)
+[ RUN      ] AlphaTs_ArgMax.TiedMax_FirstWins
+[       OK ] AlphaTs_ArgMax.TiedMax_FirstWins (0 ms)
+[----------] 2 tests from AlphaTs_ArgMax (0 ms total)
+
+[----------] 1 test from AlphaTs_Causality
+[ RUN      ] AlphaTs_Causality.TruncatedPanel_RowsUpToCutoffUnchanged
+[       OK ] AlphaTs_Causality.TruncatedPanel_RowsUpToCutoffUnchanged (2 ms)
+[----------] 1 test from AlphaTs_Causality (2 ms total)
+
+[----------] 2 tests from AlphaTs_NaNPolicy
+[ RUN      ] AlphaTs_NaNPolicy.NaNInWindow_PropagatesUntilWindowClears
+[       OK ] AlphaTs_NaNPolicy.NaNInWindow_PropagatesUntilWindowClears (0 ms)
+[ RUN      ] AlphaTs_NaNPolicy.ShortWindow_LeadingRowsNaN
+[       OK ] AlphaTs_NaNPolicy.ShortWindow_LeadingRowsNaN (0 ms)
+[----------] 2 tests from AlphaTs_NaNPolicy (0 ms total)
+
+[----------] 3 tests from AlphaTs_Boundary
+[ RUN      ] AlphaTs_Boundary.WindowExceedsDates_AllNaN
+[       OK ] AlphaTs_Boundary.WindowExceedsDates_AllNaN (0 ms)
+[ RUN      ] AlphaTs_Boundary.WindowOne_SingletonSemantics
+[       OK ] AlphaTs_Boundary.WindowOne_SingletonSemantics (0 ms)
+[ RUN      ] AlphaTs_Boundary.NestedTimeSeries_MatchesOracle
+[       OK ] AlphaTs_Boundary.NestedTimeSeries_MatchesOracle (0 ms)
+[----------] 3 tests from AlphaTs_Boundary (1 ms total)
+
+[----------] 1 test from AlphaTsOnline_WorstCaseError
+[ RUN      ] AlphaTsOnline_WorstCaseError.RollingFpOpsStayWithinTolerance
+[ online   ] realistic worst |VM-oracle| abs=0 rel=0
+[ online   ] extreme-1e9 (diagnostic) worst |VM-oracle| abs=0 rel=0
+[       OK ] AlphaTsOnline_WorstCaseError.RollingFpOpsStayWithinTolerance (996 ms)
+[----------] 1 test from AlphaTsOnline_WorstCaseError (996 ms total)
+
+[----------] 1 test from AlphaTsOnline_Adversarial
+[ RUN      ] AlphaTsOnline_Adversarial.HighMeanLowVar_VolumeScale_WithinTolerance
+[ online   ] ADVERSARIAL worst |VM-oracle| abs=0 rel=0 at ''
+[       OK ] AlphaTsOnline_Adversarial.HighMeanLowVar_VolumeScale_WithinTolerance (335 ms)
+[----------] 1 test from AlphaTsOnline_Adversarial (335 ms total)
+
+[----------] 1 test from AlphaTsOnline_Exact
+[ RUN      ] AlphaTsOnline_Exact.MinMaxScale_StayBitExact
+[       OK ] AlphaTsOnline_Exact.MinMaxScale_StayBitExact (14 ms)
+[----------] 1 test from AlphaTsOnline_Exact (14 ms total)
+
+[----------] 2 tests from AlphaTsOnline_NaNWindow
+[ RUN      ] AlphaTsOnline_NaNWindow.EnterLeaveGate_MatchesOracleExactly
+[       OK ] AlphaTsOnline_NaNWindow.EnterLeaveGate_MatchesOracleExactly (2 ms)
+[ RUN      ] AlphaTsOnline_NaNWindow.WindowExceedsDates_AllNaN
+[       OK ] AlphaTsOnline_NaNWindow.WindowExceedsDates_AllNaN (0 ms)
+[----------] 2 tests from AlphaTsOnline_NaNWindow (3 ms total)
+
+[----------] 1 test from AlphaTsOnline_Determinism
+[ RUN      ] AlphaTsOnline_Determinism.RepeatRunByteIdentical
+[       OK ] AlphaTsOnline_Determinism.RepeatRunByteIdentical (0 ms)
+[----------] 1 test from AlphaTsOnline_Determinism (0 ms total)
+
+[----------] 8 tests from AlphaTypecheck_Shape
+[ RUN      ] AlphaTypecheck_Shape.RankOfField_IsCrossSection
+[       OK ] AlphaTypecheck_Shape.RankOfField_IsCrossSection (0 ms)
+[ RUN      ] AlphaTypecheck_Shape.FieldPlusField_IsPanel
+[       OK ] AlphaTypecheck_Shape.FieldPlusField_IsPanel (0 ms)
+[ RUN      ] AlphaTypecheck_Shape.TsMean_IsPanel
+[       OK ] AlphaTypecheck_Shape.TsMean_IsPanel (0 ms)
+[ RUN      ] AlphaTypecheck_Shape.BareField_IsPanel
+[       OK ] AlphaTypecheck_Shape.BareField_IsPanel (0 ms)
+[ RUN      ] AlphaTypecheck_Shape.Literal_IsScalar
+[       OK ] AlphaTypecheck_Shape.Literal_IsScalar (0 ms)
+[ RUN      ] AlphaTypecheck_Shape.SelectWithPanelCondScalarBranches_IsPanel
+[       OK ] AlphaTypecheck_Shape.SelectWithPanelCondScalarBranches_IsPanel (0 ms)
+[ RUN      ] AlphaTypecheck_Shape.RankOfScalar_IsError
+[       OK ] AlphaTypecheck_Shape.RankOfScalar_IsError (0 ms)
+[ RUN      ] AlphaTypecheck_Shape.TsMeanOfScalar_IsError
+[       OK ] AlphaTypecheck_Shape.TsMeanOfScalar_IsError (0 ms)
+[----------] 8 tests from AlphaTypecheck_Shape (0 ms total)
+
+[----------] 15 tests from AlphaTypecheck_DType
+[ RUN      ] AlphaTypecheck_DType.Compare_ProducesMask
+[       OK ] AlphaTypecheck_DType.Compare_ProducesMask (0 ms)
+[ RUN      ] AlphaTypecheck_DType.FieldLeaf_IsF64
+[       OK ] AlphaTypecheck_DType.FieldLeaf_IsF64 (0 ms)
+[ RUN      ] AlphaTypecheck_DType.IndClassField_IsGroup
+[       OK ] AlphaTypecheck_DType.IndClassField_IsGroup (0 ms)
+[ RUN      ] AlphaTypecheck_DType.BareSectorField_IsGroup
+[       OK ] AlphaTypecheck_DType.BareSectorField_IsGroup (0 ms)
+[ RUN      ] AlphaTypecheck_DType.GroupRankWithBareSector_Ok
+[       OK ] AlphaTypecheck_DType.GroupRankWithBareSector_Ok (0 ms)
+[ RUN      ] AlphaTypecheck_DType.NotOfMask_IsMask
+[       OK ] AlphaTypecheck_DType.NotOfMask_IsMask (0 ms)
+[ RUN      ] AlphaTypecheck_DType.SelectWithMaskCond_IsF64
+[       OK ] AlphaTypecheck_DType.SelectWithMaskCond_IsF64 (0 ms)
+[ RUN      ] AlphaTypecheck_DType.Logical_RequiresMaskOperands
+[       OK ] AlphaTypecheck_DType.Logical_RequiresMaskOperands (0 ms)
+[ RUN      ] AlphaTypecheck_DType.IndNeutralizeWithGroup_Ok
+[       OK ] AlphaTypecheck_DType.IndNeutralizeWithGroup_Ok (0 ms)
+[ RUN      ] AlphaTypecheck_DType.ArithmeticOnMask_IsError
+[       OK ] AlphaTypecheck_DType.ArithmeticOnMask_IsError (0 ms)
+[ RUN      ] AlphaTypecheck_DType.IndNeutralizeWithNonGroup_IsError
+[       OK ] AlphaTypecheck_DType.IndNeutralizeWithNonGroup_IsError (0 ms)
+[ RUN      ] AlphaTypecheck_DType.SelectWithNonMaskCond_IsError
+[       OK ] AlphaTypecheck_DType.SelectWithNonMaskCond_IsError (0 ms)
+[ RUN      ] AlphaTypecheck_DType.NotOfNonMask_IsError
+[       OK ] AlphaTypecheck_DType.NotOfNonMask_IsError (0 ms)
+[ RUN      ] AlphaTypecheck_DType.NegOfMask_IsError
+[       OK ] AlphaTypecheck_DType.NegOfMask_IsError (0 ms)
+[ RUN      ] AlphaTypecheck_DType.CompareOfMask_IsError
+[       OK ] AlphaTypecheck_DType.CompareOfMask_IsError (0 ms)
+[----------] 15 tests from AlphaTypecheck_DType (1 ms total)
+
+[----------] 8 tests from AlphaTypecheck_Lookback
+[ RUN      ] AlphaTypecheck_Lookback.TsMeanOfDelta_Is14
+[       OK ] AlphaTypecheck_Lookback.TsMeanOfDelta_Is14 (0 ms)
+[ RUN      ] AlphaTypecheck_Lookback.TsSumOfTsMean_Is5
+[       OK ] AlphaTypecheck_Lookback.TsSumOfTsMean_Is5 (0 ms)
+[ RUN      ] AlphaTypecheck_Lookback.Delay_IsShiftAmount
+[       OK ] AlphaTypecheck_Lookback.Delay_IsShiftAmount (0 ms)
+[ RUN      ] AlphaTypecheck_Lookback.TsMean_IsWindowMinusOne
+[       OK ] AlphaTypecheck_Lookback.TsMean_IsWindowMinusOne (0 ms)
+[ RUN      ] AlphaTypecheck_Lookback.Correlation_IsWindowMinusOne
+[       OK ] AlphaTypecheck_Lookback.Correlation_IsWindowMinusOne (0 ms)
+[ RUN      ] AlphaTypecheck_Lookback.ElementWise_IsZero
+[       OK ] AlphaTypecheck_Lookback.ElementWise_IsZero (0 ms)
+[ RUN      ] AlphaTypecheck_Lookback.CrossSectional_AddsZero
+[       OK ] AlphaTypecheck_Lookback.CrossSectional_AddsZero (0 ms)
+[ RUN      ] AlphaTypecheck_Lookback.RequiredLookback_IsMaxOverRoots
+[       OK ] AlphaTypecheck_Lookback.RequiredLookback_IsMaxOverRoots (0 ms)
+[----------] 8 tests from AlphaTypecheck_Lookback (0 ms total)
+
+[----------] 6 tests from AlphaTypecheck_Window
+[ RUN      ] AlphaTypecheck_Window.ZeroWindow_IsError
+[       OK ] AlphaTypecheck_Window.ZeroWindow_IsError (0 ms)
+[ RUN      ] AlphaTypecheck_Window.NegativeWindow_IsError
+[       OK ] AlphaTypecheck_Window.NegativeWindow_IsError (0 ms)
+[ RUN      ] AlphaTypecheck_Window.NonLiteralWindow_IsError
+[       OK ] AlphaTypecheck_Window.NonLiteralWindow_IsError (0 ms)
+[ RUN      ] AlphaTypecheck_Window.FractionalWindow_IsFloored
+[       OK ] AlphaTypecheck_Window.FractionalWindow_IsFloored (0 ms)
+[ RUN      ] AlphaTypecheck_Window.SubOneWindow_FloorsToZero_IsError
+[       OK ] AlphaTypecheck_Window.SubOneWindow_FloorsToZero_IsError (0 ms)
+[ RUN      ] AlphaTypecheck_Window.OverMaxWindow_IsError
+[       OK ] AlphaTypecheck_Window.OverMaxWindow_IsError (0 ms)
+[----------] 6 tests from AlphaTypecheck_Window (0 ms total)
+
+[----------] 2 tests from AlphaTypecheck_Boundary
+[ RUN      ] AlphaTypecheck_Boundary.PureScalarExpr_OkScalarZeroLookback
+[       OK ] AlphaTypecheck_Boundary.PureScalarExpr_OkScalarZeroLookback (0 ms)
+[ RUN      ] AlphaTypecheck_Boundary.DeeplyNestedTs_AccumulatesLookback
+[       OK ] AlphaTypecheck_Boundary.DeeplyNestedTs_AccumulatesLookback (0 ms)
+[----------] 2 tests from AlphaTypecheck_Boundary (0 ms total)
+
+[----------] 11 tests from AlphaTypecheck
+[ RUN      ] AlphaTypecheck.KalmanLevelTypes
+[       OK ] AlphaTypecheck.KalmanLevelTypes (0 ms)
+[ RUN      ] AlphaTypecheck.KalmanLevelRejectsNonConstHparam
+[       OK ] AlphaTypecheck.KalmanLevelRejectsNonConstHparam (0 ms)
+[ RUN      ] AlphaTypecheck.KalmanLevelRejectsScalarPrimary
+[       OK ] AlphaTypecheck.KalmanLevelRejectsScalarPrimary (0 ms)
+[ RUN      ] AlphaTypecheck.OuFilterTypes
+[       OK ] AlphaTypecheck.OuFilterTypes (0 ms)
+[ RUN      ] AlphaTypecheck.KalmanLevelRejectsNegativeQ
+[       OK ] AlphaTypecheck.KalmanLevelRejectsNegativeQ (0 ms)
+[ RUN      ] AlphaTypecheck.KalmanLevelRejectsNonPositiveR
+[       OK ] AlphaTypecheck.KalmanLevelRejectsNonPositiveR (0 ms)
+[ RUN      ] AlphaTypecheck.OuFilterRejectsNegativeTheta
+[       OK ] AlphaTypecheck.OuFilterRejectsNegativeTheta (0 ms)
+[ RUN      ] AlphaTypecheck.OuZscoreRollingLookback
+[       OK ] AlphaTypecheck.OuZscoreRollingLookback (0 ms)
+[ RUN      ] AlphaTypecheck.OuHalflifeRejectsScalarPrimary
+[       OK ] AlphaTypecheck.OuHalflifeRejectsScalarPrimary (0 ms)
+[ RUN      ] AlphaTypecheck.OuThetaRollingLookback
+[       OK ] AlphaTypecheck.OuThetaRollingLookback (0 ms)
+[ RUN      ] AlphaTypecheck.OuMeanRollingLookback
+[       OK ] AlphaTypecheck.OuMeanRollingLookback (0 ms)
+[----------] 11 tests from AlphaTypecheck (0 ms total)
+
+[----------] 1 test from AlphaTypecheck_Required
+[ RUN      ] AlphaTypecheck_Required.MaxOverAllRoots
+[       OK ] AlphaTypecheck_Required.MaxOverAllRoots (0 ms)
+[----------] 1 test from AlphaTypecheck_Required (0 ms total)
+
+[----------] 6 tests from AlphaTypecheck_DTypeGuard
+[ RUN      ] AlphaTypecheck_DTypeGuard.ZscoreOfSector_IsError
+[       OK ] AlphaTypecheck_DTypeGuard.ZscoreOfSector_IsError (0 ms)
+[ RUN      ] AlphaTypecheck_DTypeGuard.TsMeanOfSector_IsError
+[       OK ] AlphaTypecheck_DTypeGuard.TsMeanOfSector_IsError (0 ms)
+[ RUN      ] AlphaTypecheck_DTypeGuard.ScaleOfSector_IsError
+[       OK ] AlphaTypecheck_DTypeGuard.ScaleOfSector_IsError (0 ms)
+[ RUN      ] AlphaTypecheck_DTypeGuard.ZscoreOfIndClassSector_IsError
+[       OK ] AlphaTypecheck_DTypeGuard.ZscoreOfIndClassSector_IsError (0 ms)
+[ RUN      ] AlphaTypecheck_DTypeGuard.IndNeutralizeCloseWithSector_Ok
+[       OK ] AlphaTypecheck_DTypeGuard.IndNeutralizeCloseWithSector_Ok (0 ms)
+[ RUN      ] AlphaTypecheck_DTypeGuard.ZscoreOfClose_Ok
+[       OK ] AlphaTypecheck_DTypeGuard.ZscoreOfClose_Ok (0 ms)
+[----------] 6 tests from AlphaTypecheck_DTypeGuard (0 ms total)
+
+[----------] 5 tests from AlphaTypecheck_GrpField
+[ RUN      ] AlphaTypecheck_GrpField.IsGroupField_SectorIndClassOrGrpPrefix
+[       OK ] AlphaTypecheck_GrpField.IsGroupField_SectorIndClassOrGrpPrefix (0 ms)
+[ RUN      ] AlphaTypecheck_GrpField.GrpFieldLeaf_IsGroup
+[       OK ] AlphaTypecheck_GrpField.GrpFieldLeaf_IsGroup (0 ms)
+[ RUN      ] AlphaTypecheck_GrpField.EveryGroupOpBindsGrpClassifier_Ok
+[       OK ] AlphaTypecheck_GrpField.EveryGroupOpBindsGrpClassifier_Ok (0 ms)
+[ RUN      ] AlphaTypecheck_GrpField.TwoGroupingsInOneProgram_Ok
+[       OK ] AlphaTypecheck_GrpField.TwoGroupingsInOneProgram_Ok (0 ms)
+[ RUN      ] AlphaTypecheck_GrpField.GrpFieldInNumericRole_IsError
+[       OK ] AlphaTypecheck_GrpField.GrpFieldInNumericRole_IsError (0 ms)
+[----------] 5 tests from AlphaTypecheck_GrpField (0 ms total)
+
+[----------] 13 tests from AlphaUnparse
+[ RUN      ] AlphaUnparse.RoundTripsLeafField
+[       OK ] AlphaUnparse.RoundTripsLeafField (0 ms)
+[ RUN      ] AlphaUnparse.RoundTripsBinaryOp
+[       OK ] AlphaUnparse.RoundTripsBinaryOp (0 ms)
+[ RUN      ] AlphaUnparse.RoundTripsConstAndWindow
+[       OK ] AlphaUnparse.RoundTripsConstAndWindow (0 ms)
+[ RUN      ] AlphaUnparse.RoundTripsFractionalConst
+[       OK ] AlphaUnparse.RoundTripsFractionalConst (0 ms)
+[ RUN      ] AlphaUnparse.RoundTripsNested
+[       OK ] AlphaUnparse.RoundTripsNested (0 ms)
+[ RUN      ] AlphaUnparse.RoundTripsRankAndCs
+[       OK ] AlphaUnparse.RoundTripsRankAndCs (0 ms)
+[ RUN      ] AlphaUnparse.RoundTripsUnaryNeg
+[       OK ] AlphaUnparse.RoundTripsUnaryNeg (0 ms)
+[ RUN      ] AlphaUnparse.RoundTripsUnaryNot
+[       OK ] AlphaUnparse.RoundTripsUnaryNot (0 ms)
+[ RUN      ] AlphaUnparse.RoundTripsCallHparamsKalman
+[       OK ] AlphaUnparse.RoundTripsCallHparamsKalman (0 ms)
+[ RUN      ] AlphaUnparse.RoundTripsCallHparamsOu
+[       OK ] AlphaUnparse.RoundTripsCallHparamsOu (0 ms)
+[ RUN      ] AlphaUnparse.RoundTripsSelectTernary
+[       OK ] AlphaUnparse.RoundTripsSelectTernary (0 ms)
+[ RUN      ] AlphaUnparse.WrongOrderFlipsHash
+[       OK ] AlphaUnparse.WrongOrderFlipsHash (0 ms)
+[ RUN      ] AlphaUnparse.AnonRootOverloadMatches
+[       OK ] AlphaUnparse.AnonRootOverloadMatches (0 ms)
+[----------] 13 tests from AlphaUnparse (0 ms total)
+
+[----------] 6 tests from AlphaVmSlotReuse
+[ RUN      ] AlphaVmSlotReuse.Catalogue_EveryRowAndOperator_HasAnEvaluatedVariant
+[       OK ] AlphaVmSlotReuse.Catalogue_EveryRowAndOperator_HasAnEvaluatedVariant (1760 ms)
+[ RUN      ] AlphaVmSlotReuse.Poisons_SpanEveryTargetSlot_DistinctFromAFreshPool
+[       OK ] AlphaVmSlotReuse.Poisons_SpanEveryTargetSlot_DistinctFromAFreshPool (0 ms)
+[ RUN      ] AlphaVmSlotReuse.EveryOp_DirtyPoolAuditExact_ByteEqualToAFreshEngine
+[       OK ] AlphaVmSlotReuse.EveryOp_DirtyPoolAuditExact_ByteEqualToAFreshEngine (716 ms)
+[ RUN      ] AlphaVmSlotReuse.EveryOp_DirtyPoolResearchFast_ByteEqualToAFreshEngine
+[       OK ] AlphaVmSlotReuse.EveryOp_DirtyPoolResearchFast_ByteEqualToAFreshEngine (718 ms)
+[ RUN      ] AlphaVmSlotReuse.EveryOp_DirtyPoolMaskedAuditExact_ByteEqualToAFreshEngine
+[       OK ] AlphaVmSlotReuse.EveryOp_DirtyPoolMaskedAuditExact_ByteEqualToAFreshEngine (709 ms)
+[ RUN      ] AlphaVmSlotReuse.EveryOp_DirtyPoolMaskedResearchFast_ByteEqualToAFreshEngine
+[       OK ] AlphaVmSlotReuse.EveryOp_DirtyPoolMaskedResearchFast_ByteEqualToAFreshEngine (693 ms)
+[----------] 6 tests from AlphaVmSlotReuse (4598 ms total)
+
+[----------] 4 tests from AlphaVmBandParity
+[ RUN      ] AlphaVmBandParity.EveryOp_Workers1_4_16AuditExact_ByteEqualToSerial
+[       OK ] AlphaVmBandParity.EveryOp_Workers1_4_16AuditExact_ByteEqualToSerial (3528 ms)
+[ RUN      ] AlphaVmBandParity.EveryOp_Workers1_4_16ResearchFast_ByteEqualToSerial
+[       OK ] AlphaVmBandParity.EveryOp_Workers1_4_16ResearchFast_ByteEqualToSerial (3729 ms)
+[ RUN      ] AlphaVmBandParity.EveryOp_Workers1_4_16MaskedAuditExact_ByteEqualToSerial
+[       OK ] AlphaVmBandParity.EveryOp_Workers1_4_16MaskedAuditExact_ByteEqualToSerial (3694 ms)
+[ RUN      ] AlphaVmBandParity.EveryOp_Workers1_4_16MaskedResearchFast_ByteEqualToSerial
+[       OK ] AlphaVmBandParity.EveryOp_Workers1_4_16MaskedResearchFast_ByteEqualToSerial (2998 ms)
+[----------] 4 tests from AlphaVmBandParity (13951 ms total)
+
+[----------] 4 tests from AlphaVmTruncation
+[ RUN      ] AlphaVmTruncation.EveryOp_PrefixPanelAuditExact_ByteEqualToFullPanelRows
+[       OK ] AlphaVmTruncation.EveryOp_PrefixPanelAuditExact_ByteEqualToFullPanelRows (223 ms)
+[ RUN      ] AlphaVmTruncation.EveryOp_PrefixPanelResearchFast_ByteEqualToFullPanelRows
+[       OK ] AlphaVmTruncation.EveryOp_PrefixPanelResearchFast_ByteEqualToFullPanelRows (234 ms)
+[ RUN      ] AlphaVmTruncation.EveryOp_PrefixPanelMaskedAuditExact_ByteEqualToFullPanelRows
+[       OK ] AlphaVmTruncation.EveryOp_PrefixPanelMaskedAuditExact_ByteEqualToFullPanelRows (221 ms)
+[ RUN      ] AlphaVmTruncation.EveryOp_PrefixPanelMaskedResearchFast_ByteEqualToFullPanelRows
+[       OK ] AlphaVmTruncation.EveryOp_PrefixPanelMaskedResearchFast_ByteEqualToFullPanelRows (210 ms)
+[----------] 4 tests from AlphaVmTruncation (891 ms total)
+
+[----------] 1 test from AlphaVm_Differential
+[ RUN      ] AlphaVm_Differential.EveryElementwiseOp_RandomPanel_MatchesOracle
+[       OK ] AlphaVm_Differential.EveryElementwiseOp_RandomPanel_MatchesOracle (2 ms)
+[----------] 1 test from AlphaVm_Differential (2 ms total)
+
+[----------] 1 test from AlphaVm_ScalarBroadcast
+[ RUN      ] AlphaVm_ScalarBroadcast.CloseTimes2Plus1_MatchesOracle
+[       OK ] AlphaVm_ScalarBroadcast.CloseTimes2Plus1_MatchesOracle (0 ms)
+[----------] 1 test from AlphaVm_ScalarBroadcast (0 ms total)
+
+[----------] 1 test from AlphaVm_SpecialValues
+[ RUN      ] AlphaVm_SpecialValues.SeededCells_MatchesOracle
+[       OK ] AlphaVm_SpecialValues.SeededCells_MatchesOracle (1 ms)
+[----------] 1 test from AlphaVm_SpecialValues (1 ms total)
+
+[----------] 1 test from AlphaVm_Universe
+[ RUN      ] AlphaVm_Universe.OutOfUniverseCells_AreNaNInBoth
+[       OK ] AlphaVm_Universe.OutOfUniverseCells_AreNaNInBoth (0 ms)
+[----------] 1 test from AlphaVm_Universe (0 ms total)
+
+[----------] 1 test from AlphaVm_ZeroAlloc
+[ RUN      ] AlphaVm_ZeroAlloc.WarmDispatchLoop_BoundedByOutputsAndSizeIndependent
+[       OK ] AlphaVm_ZeroAlloc.WarmDispatchLoop_BoundedByOutputsAndSizeIndependent (4 ms)
+[----------] 1 test from AlphaVm_ZeroAlloc (4 ms total)
+
+[----------] 4 tests from AlphaVm_Boundary
+[ RUN      ] AlphaVm_Boundary.OneByOnePanel_MatchesOracle
+[       OK ] AlphaVm_Boundary.OneByOnePanel_MatchesOracle (0 ms)
+[ RUN      ] AlphaVm_Boundary.AllNaNField_MatchesOracle
+[       OK ] AlphaVm_Boundary.AllNaNField_MatchesOracle (0 ms)
+[ RUN      ] AlphaVm_Boundary.BareField_MatchesOracle
+[       OK ] AlphaVm_Boundary.BareField_MatchesOracle (0 ms)
+[ RUN      ] AlphaVm_Boundary.TimeSeriesOp_Evaluates
+[       OK ] AlphaVm_Boundary.TimeSeriesOp_Evaluates (0 ms)
+[----------] 4 tests from AlphaVm_Boundary (0 ms total)
+
+[----------] 1 test from AlphaVm_Field
+[ RUN      ] AlphaVm_Field.UnknownField_ReturnsNotFound
+[       OK ] AlphaVm_Field.UnknownField_ReturnsNotFound (0 ms)
+[----------] 1 test from AlphaVm_Field (0 ms total)
+
+[----------] 1 test from AlphaVm_Bench
+[ RUN      ] AlphaVm_Bench.AddMulSelect_NsPerCell_Informational
+[ bench    ] add (1024x512, Debug build): 36.9977 ns/cell
+[ bench    ] mul (1024x512, Debug build): 36.0676 ns/cell
+[ bench    ] select (1024x512, Debug build): 79.5201 ns/cell
+[       OK ] AlphaVm_Bench.AddMulSelect_NsPerCell_Informational (1784 ms)
+[----------] 1 test from AlphaVm_Bench (1784 ms total)
+
+[----------] 1 test from VwapLegacyFixture
+[ RUN      ] VwapLegacyFixture.N128MatchesFrozenPreD0InputBytesAndDigest
+[vwap-fixture] dates=2520 instruments=128 fields=19 digest=75b4a957ff30e9c3
+[       OK ] VwapLegacyFixture.N128MatchesFrozenPreD0InputBytesAndDigest (1464 ms)
+[----------] 1 test from VwapLegacyFixture (1464 ms total)
+
+[----------] 2 tests from AlphaCrossSectionMembership
+[ RUN      ] AlphaCrossSectionMembership.EveryCsOpcodeMatchesAnActuallyReducedUniverse
+[       OK ] AlphaCrossSectionMembership.EveryCsOpcodeMatchesAnActuallyReducedUniverse (2 ms)
+[ RUN      ] AlphaCrossSectionMembership.OwnsAndValidatesMaskWithoutReusingUnmaskedCache
+[       OK ] AlphaCrossSectionMembership.OwnsAndValidatesMaskWithoutReusingUnmaskedCache (0 ms)
+[----------] 2 tests from AlphaCrossSectionMembership (3 ms total)
+
+[----------] 1 test from AlphaCsRankTies_Digest
+[ RUN      ] AlphaCsRankTies_Digest.OrdinalV1ReproducesPreW0DefaultRebaselines
+[w0a0-digest] rank (A-01)        old=0xa50ec3743580856b new=0xdd31545d3a5ad696
+[       OK ] AlphaCsRankTies_Digest.OrdinalV1ReproducesPreW0DefaultRebaselines (7 ms)
+[----------] 1 test from AlphaCsRankTies_Digest (7 ms total)
+
+[----------] 1 test from AlphaHumpWarmup_Digest
+[ RUN      ] AlphaHumpWarmup_Digest.StickyV1ReproducesPreW0DefaultRebaselines
+[w0a0-digest] hump (A-02)        old=0x0a9ce0c6fb27f23e new=0x3159e020352402f8
+[       OK ] AlphaHumpWarmup_Digest.StickyV1ReproducesPreW0DefaultRebaselines (3 ms)
+[----------] 1 test from AlphaHumpWarmup_Digest (3 ms total)
+
+[----------] 1 test from AlphaFlatWindow_Digest
+[ RUN      ] AlphaFlatWindow_Digest.NoneV1ReproducesPreW0DefaultRebaselines
+[w0a0-digest] flat (A-09)        old=0x1c75499cdd019337 new=0xc87fd2b6cc8ceb63
+[       OK ] AlphaFlatWindow_Digest.NoneV1ReproducesPreW0DefaultRebaselines (12 ms)
+[----------] 1 test from AlphaFlatWindow_Digest (12 ms total)
+
+[----------] 1 test from AlphaAuditExactParity_Digest
+[ RUN      ] AlphaAuditExactParity_Digest.OnlineV1ReproducesPreW0DefaultRebaselines
+[w0a0-digest] sum AuditExact     old=0xfbd765ddbfee7d5c new=0xda7bd655e7f69444
+[w0a0-digest] sum ResearchFast   old=0xfbd765ddbfee7d5c new=0xca905bf2dfb89bb4
+[       OK ] AlphaAuditExactParity_Digest.OnlineV1ReproducesPreW0DefaultRebaselines (8 ms)
+[----------] 1 test from AlphaAuditExactParity_Digest (8 ms total)
+
+[----------] 3 tests from AlphaCsRankTies_Row
+[ RUN      ] AlphaCsRankTies_Row.AllTiedRowRanksHalfForEveryName
+[       OK ] AlphaCsRankTies_Row.AllTiedRowRanksHalfForEveryName (1 ms)
+[ RUN      ] AlphaCsRankTies_Row.PartialTiesTakeTheAverageOrdinalPosition
+[       OK ] AlphaCsRankTies_Row.PartialTiesTakeTheAverageOrdinalPosition (0 ms)
+[ RUN      ] AlphaCsRankTies_Row.SignedZerosTie
+[       OK ] AlphaCsRankTies_Row.SignedZerosTie (0 ms)
+[----------] 3 tests from AlphaCsRankTies_Row (2 ms total)
+
+[----------] 1 test from AlphaCsRankTies_Group
+[ RUN      ] AlphaCsRankTies_Group.GroupRankAndQuantileShareTiedValues
+[       OK ] AlphaCsRankTies_Group.GroupRankAndQuantileShareTiedValues (1 ms)
+[----------] 1 test from AlphaCsRankTies_Group (1 ms total)
+
+[----------] 1 test from AlphaCsRankTies_Radix
+[ RUN      ] AlphaCsRankTies_Radix.WideTiedRowsMatchOracleAboveRadixThreshold
+[       OK ] AlphaCsRankTies_Radix.WideTiedRowsMatchOracleAboveRadixThreshold (33 ms)
+[----------] 1 test from AlphaCsRankTies_Radix (33 ms total)
+
+[----------] 1 test from AlphaCsRankTies_Differential
+[ RUN      ] AlphaCsRankTies_Differential.TieHeavyExpressionsMatchOracleAndStream
+[       OK ] AlphaCsRankTies_Differential.TieHeavyExpressionsMatchOracleAndStream (10 ms)
+[----------] 1 test from AlphaCsRankTies_Differential (10 ms total)
+
+[----------] 1 test from AlphaHumpWarmup_TsMean
+[ RUN      ] AlphaHumpWarmup_TsMean.FiniteFromT4
+[w0a0] hump(ts_mean(x,5),0.1): finite cells new=48 old=0 of 60
+[       OK ] AlphaHumpWarmup_TsMean.FiniteFromT4 (0 ms)
+[----------] 1 test from AlphaHumpWarmup_TsMean (0 ms total)
+
+[----------] 1 test from AlphaHumpWarmup_Nan
+[ RUN      ] AlphaHumpWarmup_Nan.NanInputEmitsNanAndCapBoundsStaleness
+[       OK ] AlphaHumpWarmup_Nan.NanInputEmitsNanAndCapBoundsStaleness (0 ms)
+[----------] 1 test from AlphaHumpWarmup_Nan (0 ms total)
+
+[----------] 1 test from AlphaHumpWarmup_Differential
+[ RUN      ] AlphaHumpWarmup_Differential.UniverseGapsMatchOracleAndStream
+[       OK ] AlphaHumpWarmup_Differential.UniverseGapsMatchOracleAndStream (6 ms)
+[----------] 1 test from AlphaHumpWarmup_Differential (7 ms total)
+
+[----------] 5 tests from AlphaTypecheckScalarLiteral_Analyze
+[ RUN      ] AlphaTypecheckScalarLiteral_Analyze.WinsorizeWithPanelScalarIsErr
+[       OK ] AlphaTypecheckScalarLiteral_Analyze.WinsorizeWithPanelScalarIsErr (0 ms)
+[ RUN      ] AlphaTypecheckScalarLiteral_Analyze.EveryScalarSlotRejectsNonLiteral
+[       OK ] AlphaTypecheckScalarLiteral_Analyze.EveryScalarSlotRejectsNonLiteral (0 ms)
+[ RUN      ] AlphaTypecheckScalarLiteral_Analyze.LiteralsAndDefaultsAccepted
+[       OK ] AlphaTypecheckScalarLiteral_Analyze.LiteralsAndDefaultsAccepted (0 ms)
+[ RUN      ] AlphaTypecheckScalarLiteral_Analyze.QuantileBucketCountMustFitInInt
+[       OK ] AlphaTypecheckScalarLiteral_Analyze.QuantileBucketCountMustFitInInt (0 ms)
+[ RUN      ] AlphaTypecheckScalarLiteral_Analyze.SlotPredicateCoversExactlyTheFourOps
+[       OK ] AlphaTypecheckScalarLiteral_Analyze.SlotPredicateCoversExactlyTheFourOps (0 ms)
+[----------] 5 tests from AlphaTypecheckScalarLiteral_Analyze (1 ms total)
+
+[----------] 1 test from AlphaFlatWindow_Zscore
+[ RUN      ] AlphaFlatWindow_Zscore.ConstantPointOneWindowIsNaNInVmAndOracle
+[w0a0] ts_zscore(fund, 3) on constant 0.1: legacy finite cells=114
+[w0a0] ts_zscore(fund, 5) on constant 0.1: legacy finite cells=0
+[w0a0] ts_zscore(fund, 7) on constant 0.1: legacy finite cells=102
+[w0a0] ts_zscore(fund, 10) on constant 0.1: legacy finite cells=93
+[w0a0] ts_zscore(fund, 20) on constant 0.1: legacy finite cells=63
+[w0a0] legacy ts_zscore noise: 372 finite cells, max |z| = 0.974679
+[       OK ] AlphaFlatWindow_Zscore.ConstantPointOneWindowIsNaNInVmAndOracle (4 ms)
+[----------] 1 test from AlphaFlatWindow_Zscore (5 ms total)
+
+[----------] 1 test from AlphaFlatWindow_Family
+[ RUN      ] AlphaFlatWindow_Family.FlatWindowsGuardStdCorrSlopeSkewRegression
+[w0a0] legacy flat corr finite cells=26, max |slope| = 1.421e-16
+[       OK ] AlphaFlatWindow_Family.FlatWindowsGuardStdCorrSlopeSkewRegression (15 ms)
+[----------] 1 test from AlphaFlatWindow_Family (15 ms total)
+
+[----------] 2 tests from AlphaFlatWindow_Guard
+[ RUN      ] AlphaFlatWindow_Guard.NonFlatWindowsAreBitIdenticalToLegacy
+[       OK ] AlphaFlatWindow_Guard.NonFlatWindowsAreBitIdenticalToLegacy (2 ms)
+[ RUN      ] AlphaFlatWindow_Guard.PredicateBoundary
+[       OK ] AlphaFlatWindow_Guard.PredicateBoundary (0 ms)
+[----------] 2 tests from AlphaFlatWindow_Guard (2 ms total)
+
+[----------] 2 tests from AlphaAuditExactParity_Sum
+[ RUN      ] AlphaAuditExactParity_Sum.TsSumTsMeanBitExactVsOracle
+[w0a0] AuditExact ts_sum/ts_mean: new mismatches=0, legacy online mismatches=27306 of 43200 cells
+[       OK ] AlphaAuditExactParity_Sum.TsSumTsMeanBitExactVsOracle (241 ms)
+[ RUN      ] AlphaAuditExactParity_Sum.OutputIndependentOfPanelStart
+[w0a0] panel-start dependence over 1192 cells: new=0, legacy=474
+[       OK ] AlphaAuditExactParity_Sum.OutputIndependentOfPanelStart (1 ms)
+[----------] 2 tests from AlphaAuditExactParity_Sum (243 ms total)
+
+[----------] 1 test from AlphaAuditExactParity_ResearchFast
+[ RUN      ] AlphaAuditExactParity_ResearchFast.NeumaierSlideTighterThanUncompensated
+[w0a0] ResearchFast max rel err vs compensated reference: neumaier=0.000e+00 uncompensated=2.771e-12
+[       OK ] AlphaAuditExactParity_ResearchFast.NeumaierSlideTighterThanUncompensated (54 ms)
+[----------] 1 test from AlphaAuditExactParity_ResearchFast (54 ms total)
+
+[----------] 1 test from AlphaAuditExactParity_Differential
+[ RUN      ] AlphaAuditExactParity_Differential.W0SurfaceBitExact
+[       OK ] AlphaAuditExactParity_Differential.W0SurfaceBitExact (62 ms)
+[----------] 1 test from AlphaAuditExactParity_Differential (62 ms total)
+
+[----------] 3 tests from WidenedConformance
+[ RUN      ] WidenedConformance.AllNewOps_OracleEqualsVm
+[       OK ] WidenedConformance.AllNewOps_OracleEqualsVm (19 ms)
+[ RUN      ] WidenedConformance.P1Corpus_Unperturbed
+[       OK ] WidenedConformance.P1Corpus_Unperturbed (10 ms)
+[ RUN      ] WidenedConformance.Alpha101Subset_FiniteAndConsistent
+[       OK ] WidenedConformance.Alpha101Subset_FiniteAndConsistent (16 ms)
+[----------] 3 tests from WidenedConformance (47 ms total)
+
+[----------] 13 tests from ClusterPanel
+[ RUN      ] ClusterPanel.BuildClusterPanel_TruncatedPanelAtT_SnapshotIdentical
+[       OK ] ClusterPanel.BuildClusterPanel_TruncatedPanelAtT_SnapshotIdentical (223 ms)
+[ RUN      ] ClusterPanel.BuildClusterPanel_BiasAuditHarness_TruncationInvariant
+[       OK ] ClusterPanel.BuildClusterPanel_BiasAuditHarness_TruncationInvariant (61 ms)
+[ RUN      ] ClusterPanel.BuildClusterPanel_Cadence_SnapshotDatesMatchStep
+[       OK ] ClusterPanel.BuildClusterPanel_Cadence_SnapshotDatesMatchStep (132 ms)
+[ RUN      ] ClusterPanel.BuildClusterPanel_OutOfUniverseInstrument_Unclustered
+[       OK ] ClusterPanel.BuildClusterPanel_OutOfUniverseInstrument_Unclustered (39 ms)
+[ RUN      ] ClusterPanel.BuildClusterPanel_RegimeShift_MembershipChangesAfterShift
+
+[  INFO ] ..\atx-engine\tests\alpha\cluster_panel_test.cpp(402):: pre n=2: 0 0 0 0 0 1 1 1 1 1 | post n=2: 0 0 0 0 1 1 1 1 1 1
+[       OK ] ClusterPanel.BuildClusterPanel_RegimeShift_MembershipChangesAfterShift (415 ms)
+[ RUN      ] ClusterPanel.BuildClusterPanel_ThreeBlockFixture_RecoversThreeBlocks
+[       OK ] ClusterPanel.BuildClusterPanel_ThreeBlockFixture_RecoversThreeBlocks (5 ms)
+[ RUN      ] ClusterPanel.BuildClusterPanel_SpongeSymAlgo_HonoredAndDeterministic
+[       OK ] ClusterPanel.BuildClusterPanel_SpongeSymAlgo_HonoredAndDeterministic (20 ms)
+[ RUN      ] ClusterPanel.BuildClusterPanel_CapmResidual_StripsCommonMarketFactor
+[       OK ] ClusterPanel.BuildClusterPanel_CapmResidual_StripsCommonMarketFactor (10 ms)
+[ RUN      ] ClusterPanel.BuildClusterPanel_BothCadences_Deterministic
+[       OK ] ClusterPanel.BuildClusterPanel_BothCadences_Deterministic (242 ms)
+[ RUN      ] ClusterPanel.BuildClusterPanel_TwoRuns_DigestEqual
+[       OK ] ClusterPanel.BuildClusterPanel_TwoRuns_DigestEqual (51 ms)
+[ RUN      ] ClusterPanel.BuildClusterPanel_PinnedDigest_MatchesGolden
+[       OK ] ClusterPanel.BuildClusterPanel_PinnedDigest_MatchesGolden (13 ms)
+[ RUN      ] ClusterPanel.BuildClusterPanel_DegenerateConfigs_GuardedOrErr
+[       OK ] ClusterPanel.BuildClusterPanel_DegenerateConfigs_GuardedOrErr (0 ms)
+[ RUN      ] ClusterPanel.BuildClusterPanel_EmptyUniverseWindow_AllUnclustered
+[       OK ] ClusterPanel.BuildClusterPanel_EmptyUniverseWindow_AllUnclustered (0 ms)
+[----------] 13 tests from ClusterPanel (1217 ms total)
+
+[----------] 8 tests from ClusterWiring
+[ RUN      ] ClusterWiring.GroupOpsOverClusterField_MatchOracleBitForBit
+[       OK ] ClusterWiring.GroupOpsOverClusterField_MatchOracleBitForBit (0 ms)
+[ RUN      ] ClusterWiring.ClusterFieldIsGroupTyped_NoTypecheckChange
+[       OK ] ClusterWiring.ClusterFieldIsGroupTyped_NoTypecheckChange (0 ms)
+[ RUN      ] ClusterWiring.UnclusteredCell_StaysNaNAndExcluded
+[       OK ] ClusterWiring.UnclusteredCell_StaysNaNAndExcluded (0 ms)
+[ RUN      ] ClusterWiring.BroadcastStepFunction_HoldsLabelsAndPreFirstIsNaN
+[       OK ] ClusterWiring.BroadcastStepFunction_HoldsLabelsAndPreFirstIsNaN (0 ms)
+[ RUN      ] ClusterWiring.SegmentBakedClusterColumn_RoundTrips
+[       OK ] ClusterWiring.SegmentBakedClusterColumn_RoundTrips (14 ms)
+[ RUN      ] ClusterWiring.OnlineClusterGroupMap_NeutralizesPerCluster
+[       OK ] ClusterWiring.OnlineClusterGroupMap_NeutralizesPerCluster (0 ms)
+[ RUN      ] ClusterWiring.OnlineGroupMap_UnclusteredIsSingleton
+[       OK ] ClusterWiring.OnlineGroupMap_UnclusteredIsSingleton (0 ms)
+[ RUN      ] ClusterWiring.BroadcastTwoRunsEqual_AndPinnedDigest
+[       OK ] ClusterWiring.BroadcastTwoRunsEqual_AndPinnedDigest (0 ms)
+[----------] 8 tests from ClusterWiring (15 ms total)
+
+[----------] 1 test from CsRadixRank_Key
+[ RUN      ] CsRadixRank_Key.SignedZerosShareOneKey
+[       OK ] CsRadixRank_Key.SignedZerosShareOneKey (0 ms)
+[----------] 1 test from CsRadixRank_Key (0 ms total)
+
+[----------] 6 tests from CsRadixRank_Argsort
+[ RUN      ] CsRadixRank_Argsort.MatchesStableSortOnNastyRows
+[       OK ] CsRadixRank_Argsort.MatchesStableSortOnNastyRows (5 ms)
+[ RUN      ] CsRadixRank_Argsort.PreservesNonAscendingInputOrderOnTies
+[       OK ] CsRadixRank_Argsort.PreservesNonAscendingInputOrderOnTies (0 ms)
+[ RUN      ] CsRadixRank_Argsort.RadixPathMatchesStableSortForcedAtEverySize
+[       OK ] CsRadixRank_Argsort.RadixPathMatchesStableSortForcedAtEverySize (2 ms)
+[ RUN      ] CsRadixRank_Argsort.NaNsGoLastInInputOrder
+[       OK ] CsRadixRank_Argsort.NaNsGoLastInInputOrder (0 ms)
+[ RUN      ] CsRadixRank_Argsort.MatchesStableSortOnSkewedAndTiedShapes
+[       OK ] CsRadixRank_Argsort.MatchesStableSortOnSkewedAndTiedShapes (37 ms)
+[ RUN      ] CsRadixRank_Argsort.MatchesStableSortOnShuffledInputOrder
+[       OK ] CsRadixRank_Argsort.MatchesStableSortOnShuffledInputOrder (4 ms)
+[----------] 6 tests from CsRadixRank_Argsort (50 ms total)
+
+[----------] 3 tests from CsRadixRank_Row
+[ RUN      ] CsRadixRank_Row.RankRowBitIdenticalToStableSortReference
+[       OK ] CsRadixRank_Row.RankRowBitIdenticalToStableSortReference (4 ms)
+[ RUN      ] CsRadixRank_Row.QuantileRowBitIdenticalToStableSortReference
+[       OK ] CsRadixRank_Row.QuantileRowBitIdenticalToStableSortReference (2 ms)
+[ RUN      ] CsRadixRank_Row.GroupRankBitIdenticalToPerGroupReference
+[       OK ] CsRadixRank_Row.GroupRankBitIdenticalToPerGroupReference (7 ms)
+[----------] 3 tests from CsRadixRank_Row (14 ms total)
+
+[----------] 2 tests from AlphaFusion_Battery
+[ RUN      ] AlphaFusion_Battery.EveryAlphaBitIdentical
+[       OK ] AlphaFusion_Battery.EveryAlphaBitIdentical (523 ms)
+[ RUN      ] AlphaFusion_Battery.UnionProgramBitIdenticalAndFuses
+[       OK ] AlphaFusion_Battery.UnionProgramBitIdenticalAndFuses (830 ms)
+[----------] 2 tests from AlphaFusion_Battery (1353 ms total)
+
+[----------] 4 tests from AlphaFusion_Shape
+[ RUN      ] AlphaFusion_Shape.PureElementwiseTreeIsOneKernel
+[       OK ] AlphaFusion_Shape.PureElementwiseTreeIsOneKernel (0 ms)
+[ RUN      ] AlphaFusion_Shape.NonElementwiseBoundariesStay
+[       OK ] AlphaFusion_Shape.NonElementwiseBoundariesStay (4 ms)
+[ RUN      ] AlphaFusion_Shape.SharedRootValueIsNotSwallowed
+[       OK ] AlphaFusion_Shape.SharedRootValueIsNotSwallowed (1 ms)
+[ RUN      ] AlphaFusion_Shape.NoElementwiseMeansNoKernels
+[       OK ] AlphaFusion_Shape.NoElementwiseMeansNoKernels (0 ms)
+[----------] 4 tests from AlphaFusion_Shape (6 ms total)
+
+[----------] 5 tests from IvFields
+[ RUN      ] IvFields.AddsThreeColumns
+[       OK ] IvFields.AddsThreeColumns (0 ms)
+[ RUN      ] IvFields.IdempotentOnRecall
+[       OK ] IvFields.IdempotentOnRecall (0 ms)
+[ RUN      ] IvFields.IvTermCorrectValues
+[       OK ] IvFields.IvTermCorrectValues (0 ms)
+[ RUN      ] IvFields.IvVrpCorrectValues
+[       OK ] IvFields.IvVrpCorrectValues (0 ms)
+[ RUN      ] IvFields.IvLoFallbackNEarnMissing
+[       OK ] IvFields.IvLoFallbackNEarnMissing (0 ms)
+[----------] 5 tests from IvFields (0 ms total)
+
+[----------] 5 tests from LiquidityFields
+[ RUN      ] LiquidityFields.AddsIlliqColumn
+[       OK ] LiquidityFields.AddsIlliqColumn (0 ms)
+[ RUN      ] LiquidityFields.IdempotentOnRecall
+[       OK ] LiquidityFields.IdempotentOnRecall (0 ms)
+[ RUN      ] LiquidityFields.IlliqCorrectValues
+[       OK ] LiquidityFields.IlliqCorrectValues (0 ms)
+[ RUN      ] LiquidityFields.MissingAdv20ReturnsError
+[       OK ] LiquidityFields.MissingAdv20ReturnsError (0 ms)
+[ RUN      ] LiquidityFields.NoSectorFallsBackToGlobal
+[       OK ] LiquidityFields.NoSectorFallsBackToGlobal (0 ms)
+[----------] 5 tests from LiquidityFields (0 ms total)
+
+[----------] 5 tests from MultiFamilySmoke
+[ RUN      ] MultiFamilySmoke.PriceReturnsFamily
+[       OK ] MultiFamilySmoke.PriceReturnsFamily (0 ms)
+[ RUN      ] MultiFamilySmoke.IvSurfaceFamily
+[       OK ] MultiFamilySmoke.IvSurfaceFamily (0 ms)
+[ RUN      ] MultiFamilySmoke.LiquidityFamily
+[       OK ] MultiFamilySmoke.LiquidityFamily (0 ms)
+[ RUN      ] MultiFamilySmoke.AugmentedPanelFieldCount
+[       OK ] MultiFamilySmoke.AugmentedPanelFieldCount (0 ms)
+[ RUN      ] MultiFamilySmoke.OffPathDigestUnchanged
+[       OK ] MultiFamilySmoke.OffPathDigestUnchanged (0 ms)
+[----------] 5 tests from MultiFamilySmoke (2 ms total)
+
+[----------] 3 tests from StreamingEngine_Batch
+[ RUN      ] StreamingEngine_Batch.Wq101BatteryBitExactAuditExact
+[       OK ] StreamingEngine_Batch.Wq101BatteryBitExactAuditExact (452 ms)
+[ RUN      ] StreamingEngine_Batch.Wq101BatteryBitExactResearchFast
+[       OK ] StreamingEngine_Batch.Wq101BatteryBitExactResearchFast (321 ms)
+[ RUN      ] StreamingEngine_Batch.ColdStartStepOnlyEqualsBatch
+[       OK ] StreamingEngine_Batch.ColdStartStepOnlyEqualsBatch (1 ms)
+[----------] 3 tests from StreamingEngine_Batch (775 ms total)
+
+[----------] 1 test from StreamingEngine_Errors
+[ RUN      ] StreamingEngine_Errors.ShapeMismatchesAreRejected
+[       OK ] StreamingEngine_Errors.ShapeMismatchesAreRejected (0 ms)
+[----------] 1 test from StreamingEngine_Errors (0 ms total)
+
+[----------] 3 tests from SubtreeCache_Lru
+[ RUN      ] SubtreeCache_Lru.BudgetEvictsLeastRecentlyUsed
+[       OK ] SubtreeCache_Lru.BudgetEvictsLeastRecentlyUsed (0 ms)
+[ RUN      ] SubtreeCache_Lru.OversizeAndDuplicateAreRejected
+[       OK ] SubtreeCache_Lru.OversizeAndDuplicateAreRejected (0 ms)
+[ RUN      ] SubtreeCache_Lru.EvictedValueStaysAliveForHolder
+[       OK ] SubtreeCache_Lru.EvictedValueStaysAliveForHolder (0 ms)
+[----------] 3 tests from SubtreeCache_Lru (0 ms total)
+
+[----------] 1 test from SubtreeCache_Key
+[ RUN      ] SubtreeCache_Key.IsolatesPanelDigestAndMode
+[       OK ] SubtreeCache_Key.IsolatesPanelDigestAndMode (0 ms)
+[----------] 1 test from SubtreeCache_Key (0 ms total)
+
+[----------] 3 tests from SubtreeCache_Hash
+[ RUN      ] SubtreeCache_Hash.SameSubtreeAcrossProgramsHashesEqual
+[       OK ] SubtreeCache_Hash.SameSubtreeAcrossProgramsHashesEqual (0 ms)
+[ RUN      ] SubtreeCache_Hash.DifferentFieldOrWindowHashesDiffer
+[       OK ] SubtreeCache_Hash.DifferentFieldOrWindowHashesDiffer (0 ms)
+[ RUN      ] SubtreeCache_Hash.PanelDigestSeesOneBit
+[       OK ] SubtreeCache_Hash.PanelDigestSeesOneBit (14 ms)
+[----------] 3 tests from SubtreeCache_Hash (15 ms total)
+
+[----------] 4 tests from SubtreeCache_Engine
+[ RUN      ] SubtreeCache_Engine.CachedEqualsFreshByteForByte
+[       OK ] SubtreeCache_Engine.CachedEqualsFreshByteForByte (483 ms)
+[ RUN      ] SubtreeCache_Engine.WarmSecondPassHitsAtLeast90Pct
+[       OK ] SubtreeCache_Engine.WarmSecondPassHitsAtLeast90Pct (271 ms)
+[ RUN      ] SubtreeCache_Engine.KeyIsolationAcrossPanels
+[       OK ] SubtreeCache_Engine.KeyIsolationAcrossPanels (19 ms)
+[ RUN      ] SubtreeCache_Engine.NullCacheIsPlainEvaluate
+[       OK ] SubtreeCache_Engine.NullCacheIsPlainEvaluate (356 ms)
+[----------] 4 tests from SubtreeCache_Engine (1130 ms total)
+
+[----------] 2 tests from AlphaVmNodes_Subset
+[ RUN      ] AlphaVmNodes_Subset.SubsetEqualsFullEvaluateRoots
+[       OK ] AlphaVmNodes_Subset.SubsetEqualsFullEvaluateRoots (172 ms)
+[ RUN      ] AlphaVmNodes_Subset.RejectsBadRootIndices
+[       OK ] AlphaVmNodes_Subset.RejectsBadRootIndices (4 ms)
+[----------] 2 tests from AlphaVmNodes_Subset (177 ms total)
+
+[----------] 5 tests from TsWelfordVar
+[ RUN      ] TsWelfordVar.NearConstantHighMean_MatchesTruth
+[       OK ] TsWelfordVar.NearConstantHighMean_MatchesTruth (0 ms)
+[ RUN      ] TsWelfordVar.ConstantWindow_ExactlyZero
+[       OK ] TsWelfordVar.ConstantWindow_ExactlyZero (0 ms)
+[ RUN      ] TsWelfordVar.NaNInWindow_PropagatesNaNGate
+[       OK ] TsWelfordVar.NaNInWindow_PropagatesNaNGate (0 ms)
+[ RUN      ] TsWelfordVar.RandomPanel_WithinToleranceOfOracle
+[       OK ] TsWelfordVar.RandomPanel_WithinToleranceOfOracle (1433 ms)
+[ RUN      ] TsWelfordVar.ResearchFast_TwiceRunIdentical
+[       OK ] TsWelfordVar.ResearchFast_TwiceRunIdentical (0 ms)
+[----------] 5 tests from TsWelfordVar (1434 ms total)
+
+[----------] 1 test from TsAuditExactVar
+[ RUN      ] TsAuditExactVar.DefaultMode_ByteIdenticalToOracle
+[       OK ] TsAuditExactVar.DefaultMode_ByteIdenticalToOracle (9 ms)
+[----------] 1 test from TsAuditExactVar (9 ms total)
+
+[----------] 1 test from TsEvalMode
+[ RUN      ] TsEvalMode.DefaultIsAuditExact
+[       OK ] TsEvalMode.DefaultIsAuditExact (0 ms)
+[----------] 1 test from TsEvalMode (0 ms total)
+
+[----------] 2 tests from TsWelfordZscore
+[ RUN      ] TsWelfordZscore.NearConstantHighMean_WithinToleranceOfOracle
+[       OK ] TsWelfordZscore.NearConstantHighMean_WithinToleranceOfOracle (13 ms)
+[ RUN      ] TsWelfordZscore.ConstantWindow_ZeroVarianceParityWithOracle
+[       OK ] TsWelfordZscore.ConstantWindow_ZeroVarianceParityWithOracle (0 ms)
+[----------] 2 tests from TsWelfordZscore (14 ms total)
+
+[----------] 2 tests from TsWelfordAvDiff
+[ RUN      ] TsWelfordAvDiff.AdversarialHighMean_WithinAtol1e7OfOracle
+[ts_av_diff adversarial] worst |welford-oracle| = 4.65661e-10 (gate 1e-7)
+[       OK ] TsWelfordAvDiff.AdversarialHighMean_WithinAtol1e7OfOracle (13 ms)
+[ RUN      ] TsWelfordAvDiff.WindowOne_MatchesOracleZero
+[       OK ] TsWelfordAvDiff.WindowOne_MatchesOracleZero (0 ms)
+[----------] 2 tests from TsWelfordAvDiff (14 ms total)
+
+[----------] 1 test from TsWelfordZscoreAvDiff
+[ RUN      ] TsWelfordZscoreAvDiff.RandomPanel_WithinTolerancesOfOracle
+[       OK ] TsWelfordZscoreAvDiff.RandomPanel_WithinTolerancesOfOracle (1447 ms)
+[----------] 1 test from TsWelfordZscoreAvDiff (1448 ms total)
+
+[----------] 1 test from TsAuditExactZscoreAvDiff
+[ RUN      ] TsAuditExactZscoreAvDiff.DefaultMode_ByteIdenticalToOracle
+[       OK ] TsAuditExactZscoreAvDiff.DefaultMode_ByteIdenticalToOracle (8 ms)
+[----------] 1 test from TsAuditExactZscoreAvDiff (9 ms total)
+
+[----------] 3 tests from TsOrderStat_Kernel2
+[ RUN      ] TsOrderStat_Kernel2.SignedZeroMedianFallsBackToBatchBits
+[       OK ] TsOrderStat_Kernel2.SignedZeroMedianFallsBackToBatchBits (0 ms)
+[ RUN      ] TsOrderStat_Kernel2.StridedColumnsMatchPerColumnBatch
+[       OK ] TsOrderStat_Kernel2.StridedColumnsMatchPerColumnBatch (2 ms)
+[ RUN      ] TsOrderStat_Kernel2.RoutedAlwaysThroughOnlineDispatch
+[       OK ] TsOrderStat_Kernel2.RoutedAlwaysThroughOnlineDispatch (0 ms)
+[----------] 3 tests from TsOrderStat_Kernel2 (2 ms total)
+
+[----------] 1 test from TsOrderStat_Engine
+[ RUN      ] TsOrderStat_Engine.VmMatchesOracleBitExactInBothModes
+[       OK ] TsOrderStat_Engine.VmMatchesOracleBitExactInBothModes (63 ms)
+[----------] 1 test from TsOrderStat_Engine (63 ms total)
+
+[----------] 4 tests from TsColumnParallel
+[ RUN      ] TsColumnParallel.SeqEqualsParallel_DigestIdentical
+[       OK ] TsColumnParallel.SeqEqualsParallel_DigestIdentical (1175 ms)
+[ RUN      ] TsColumnParallel.NullPoolMatchesOneWorker
+[       OK ] TsColumnParallel.NullPoolMatchesOneWorker (24 ms)
+[ RUN      ] TsColumnParallel.DefaultEngineHasNullTsPool
+[       OK ] TsColumnParallel.DefaultEngineHasNullTsPool (0 ms)
+[ RUN      ] TsColumnParallel.SingleInstrument_PoolNoOp
+[       OK ] TsColumnParallel.SingleInstrument_PoolNoOp (0 ms)
+[----------] 4 tests from TsColumnParallel (1201 ms total)
+
+[----------] 2 tests from TsSlidingCoMoment_Adversarial
+[ RUN      ] TsSlidingCoMoment_Adversarial.LargeOffsetSeriesDoesNotCancel
+[       OK ] TsSlidingCoMoment_Adversarial.LargeOffsetSeriesDoesNotCancel (209 ms)
+[ RUN      ] TsSlidingCoMoment_Adversarial.ExactConstantWindowIsNaNLikeBatch
+[       OK ] TsSlidingCoMoment_Adversarial.ExactConstantWindowIsNaNLikeBatch (0 ms)
+[----------] 2 tests from TsSlidingCoMoment_Adversarial (209 ms total)
+
+[----------] 1 test from TsSlidingCoMoment_Panel
+[ RUN      ] TsSlidingCoMoment_Panel.MultiColumnSweepEqualsPerColumnSweep
+[       OK ] TsSlidingCoMoment_Panel.MultiColumnSweepEqualsPerColumnSweep (2 ms)
+[----------] 1 test from TsSlidingCoMoment_Panel (2 ms total)
+
+[----------] 1 test from TsSlidingUnary_Engine
+[ RUN      ] TsSlidingUnary_Engine.ResearchFastWithinToleranceAuditExactByteIdentical
+[       OK ] TsSlidingUnary_Engine.ResearchFastWithinToleranceAuditExactByteIdentical (133 ms)
+[----------] 1 test from TsSlidingUnary_Engine (133 ms total)
+
+[----------] 2 tests from AlphaVmCsPool_Digest
+[ RUN      ] AlphaVmCsPool_Digest.Pool1EqualsPool8EqualsSerial
+[       OK ] AlphaVmCsPool_Digest.Pool1EqualsPool8EqualsSerial (1373 ms)
+[ RUN      ] AlphaVmCsPool_Digest.GroupedOpsBitIdentical
+[       OK ] AlphaVmCsPool_Digest.GroupedOpsBitIdentical (47 ms)
+[----------] 2 tests from AlphaVmCsPool_Digest (1421 ms total)
+
+[----------] 1 test from AlphaVmCsPool_Setup
+[ RUN      ] AlphaVmCsPool_Setup.NullPoolRestoresSerial
+[       OK ] AlphaVmCsPool_Setup.NullPoolRestoresSerial (10 ms)
+[----------] 1 test from AlphaVmCsPool_Setup (10 ms total)
+
+[----------] 4 tests from ModesAndWidths/StreamingEngine_Corpus101
+[ RUN      ] ModesAndWidths/StreamingEngine_Corpus101.EverySupportedCanonicalAlphaStreamsBitExact/0
+[corpus101] mode=0 inst=24 streamed=101 with_finite=97 not_impl=0
+[       OK ] ModesAndWidths/StreamingEngine_Corpus101.EverySupportedCanonicalAlphaStreamsBitExact/0 (1845 ms)
+[ RUN      ] ModesAndWidths/StreamingEngine_Corpus101.EverySupportedCanonicalAlphaStreamsBitExact/1
+[corpus101] mode=1 inst=24 streamed=101 with_finite=97 not_impl=0
+[       OK ] ModesAndWidths/StreamingEngine_Corpus101.EverySupportedCanonicalAlphaStreamsBitExact/1 (1106 ms)
+[ RUN      ] ModesAndWidths/StreamingEngine_Corpus101.EverySupportedCanonicalAlphaStreamsBitExact/2
+[corpus101] mode=0 inst=128 streamed=101 with_finite=90 not_impl=0
+[       OK ] ModesAndWidths/StreamingEngine_Corpus101.EverySupportedCanonicalAlphaStreamsBitExact/2 (9535 ms)
+[ RUN      ] ModesAndWidths/StreamingEngine_Corpus101.EverySupportedCanonicalAlphaStreamsBitExact/3
+[corpus101] mode=1 inst=128 streamed=101 with_finite=90 not_impl=0
+[       OK ] ModesAndWidths/StreamingEngine_Corpus101.EverySupportedCanonicalAlphaStreamsBitExact/3 (7185 ms)
+[----------] 4 tests from ModesAndWidths/StreamingEngine_Corpus101 (19674 ms total)
+
+[----------] 10 tests from Windows/TsOrderStat_Kernel
+[ RUN      ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/0
+[       OK ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/0 (1 ms)
+[ RUN      ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/1
+[       OK ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/1 (4 ms)
+[ RUN      ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/2
+[       OK ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/2 (6 ms)
+[ RUN      ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/3
+[       OK ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/3 (5 ms)
+[ RUN      ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/4
+[       OK ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/4 (5 ms)
+[ RUN      ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/5
+[       OK ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/5 (11 ms)
+[ RUN      ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/6
+[       OK ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/6 (14 ms)
+[ RUN      ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/7
+[       OK ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/7 (7 ms)
+[ RUN      ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/8
+[       OK ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/8 (8 ms)
+[ RUN      ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/9
+[       OK ] Windows/TsOrderStat_Kernel.SweepBitExactVsBatchOnNastyColumn/9 (9 ms)
+[----------] 10 tests from Windows/TsOrderStat_Kernel (75 ms total)
+
+[----------] 5 tests from Windows/TsSlidingCoMoment_Kernel
+[ RUN      ] Windows/TsSlidingCoMoment_Kernel.MatchesAccurateReferenceWithHoles/0
+[       OK ] Windows/TsSlidingCoMoment_Kernel.MatchesAccurateReferenceWithHoles/0 (35 ms)
+[ RUN      ] Windows/TsSlidingCoMoment_Kernel.MatchesAccurateReferenceWithHoles/1
+[       OK ] Windows/TsSlidingCoMoment_Kernel.MatchesAccurateReferenceWithHoles/1 (60 ms)
+[ RUN      ] Windows/TsSlidingCoMoment_Kernel.MatchesAccurateReferenceWithHoles/2
+[       OK ] Windows/TsSlidingCoMoment_Kernel.MatchesAccurateReferenceWithHoles/2 (86 ms)
+[ RUN      ] Windows/TsSlidingCoMoment_Kernel.MatchesAccurateReferenceWithHoles/3
+[       OK ] Windows/TsSlidingCoMoment_Kernel.MatchesAccurateReferenceWithHoles/3 (69 ms)
+[ RUN      ] Windows/TsSlidingCoMoment_Kernel.MatchesAccurateReferenceWithHoles/4
+[       OK ] Windows/TsSlidingCoMoment_Kernel.MatchesAccurateReferenceWithHoles/4 (37 ms)
+[----------] 5 tests from Windows/TsSlidingCoMoment_Kernel (290 ms total)
+
+[----------] 3 tests from Windows/TsSlidingCoMoment_LevelJump
+[ RUN      ] Windows/TsSlidingCoMoment_LevelJump.JumpUpAndDownStayWithinTolerance/0
+[       OK ] Windows/TsSlidingCoMoment_LevelJump.JumpUpAndDownStayWithinTolerance/0 (31 ms)
+[ RUN      ] Windows/TsSlidingCoMoment_LevelJump.JumpUpAndDownStayWithinTolerance/1
+[       OK ] Windows/TsSlidingCoMoment_LevelJump.JumpUpAndDownStayWithinTolerance/1 (59 ms)
+[ RUN      ] Windows/TsSlidingCoMoment_LevelJump.JumpUpAndDownStayWithinTolerance/2
+[       OK ] Windows/TsSlidingCoMoment_LevelJump.JumpUpAndDownStayWithinTolerance/2 (118 ms)
+[----------] 3 tests from Windows/TsSlidingCoMoment_LevelJump (210 ms total)
+
+[----------] 6 tests from Windows/TsSlidingUnary_Kernel
+[ RUN      ] Windows/TsSlidingUnary_Kernel.MatchesAccurateReferenceWithHoles/0
+[       OK ] Windows/TsSlidingUnary_Kernel.MatchesAccurateReferenceWithHoles/0 (10 ms)
+[ RUN      ] Windows/TsSlidingUnary_Kernel.MatchesAccurateReferenceWithHoles/1
+[       OK ] Windows/TsSlidingUnary_Kernel.MatchesAccurateReferenceWithHoles/1 (35 ms)
+[ RUN      ] Windows/TsSlidingUnary_Kernel.MatchesAccurateReferenceWithHoles/2
+[       OK ] Windows/TsSlidingUnary_Kernel.MatchesAccurateReferenceWithHoles/2 (51 ms)
+[ RUN      ] Windows/TsSlidingUnary_Kernel.MatchesAccurateReferenceWithHoles/3
+[       OK ] Windows/TsSlidingUnary_Kernel.MatchesAccurateReferenceWithHoles/3 (89 ms)
+[ RUN      ] Windows/TsSlidingUnary_Kernel.MatchesAccurateReferenceWithHoles/4
+[       OK ] Windows/TsSlidingUnary_Kernel.MatchesAccurateReferenceWithHoles/4 (100 ms)
+[ RUN      ] Windows/TsSlidingUnary_Kernel.MatchesAccurateReferenceWithHoles/5
+[       OK ] Windows/TsSlidingUnary_Kernel.MatchesAccurateReferenceWithHoles/5 (55 ms)
+[----------] 6 tests from Windows/TsSlidingUnary_Kernel (343 ms total)
+
+[----------] 3 tests from Windows/TsSlidingUnary_LevelJump
+[ RUN      ] Windows/TsSlidingUnary_LevelJump.JumpUpAndDownStayWithinTolerance/0
+[       OK ] Windows/TsSlidingUnary_LevelJump.JumpUpAndDownStayWithinTolerance/0 (39 ms)
+[ RUN      ] Windows/TsSlidingUnary_LevelJump.JumpUpAndDownStayWithinTolerance/1
+[       OK ] Windows/TsSlidingUnary_LevelJump.JumpUpAndDownStayWithinTolerance/1 (69 ms)
+[ RUN      ] Windows/TsSlidingUnary_LevelJump.JumpUpAndDownStayWithinTolerance/2
+[       OK ] Windows/TsSlidingUnary_LevelJump.JumpUpAndDownStayWithinTolerance/2 (119 ms)
+[----------] 3 tests from Windows/TsSlidingUnary_LevelJump (228 ms total)
+
+[----------] Global test environment tear-down
+[==========] 783 tests from 314 test suites ran. (68100 ms total)
+[  PASSED  ] 783 tests.
+
+  YOU HAVE 1 DISABLED TEST
+

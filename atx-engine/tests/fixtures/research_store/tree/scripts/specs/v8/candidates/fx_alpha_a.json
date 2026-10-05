@@ -1,0 +1,27 @@
+{
+  "id": "fx_alpha_a",
+  "dsl": "rank(close)",
+  "dsl_sha256": "843b1f97b9e6376b2671c02929d9c6a903b000ecb0da48d5428352a1bb07baad",
+  "theme": "fixture",
+  "tier": "B",
+  "prior_sign": 1,
+  "citation": "Fixture (2020) — placeholder",
+  "origin": "prior",
+  "hypothesis": "h-fx",
+  "schema": "atx.wave-candidate/v1",
+  "status": "pinned",
+  "wave": null,
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2023-05-01",
+      "by": "lane"
+    },
+    {
+      "status": "pinned",
+      "at": "2023-05-02",
+      "by": "pm",
+      "note": "ruling fx"
+    }
+  ]
+}

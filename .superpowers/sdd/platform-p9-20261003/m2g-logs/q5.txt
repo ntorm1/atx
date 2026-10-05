@@ -1,0 +1,12 @@
+AL-COMB Q5 (zero trials): style-variance share of the book on the columns no theme names (G-2a, Euler contributions over the summed daily ex-ante variance; a column may be negative)
+G-2a output build-equity/p9-q5-diagnostics/diagnostics-v8-g2a.json  sha256 08d366e8f7b0095873df2db8ced4149899fcbb1a7ece9f730e63bb9a43b96175
+sessions: complete 1005, incomplete 0
+columns (style_share_of_summed_variance): size +0.0334, residual_vol +0.0275, liquidity -0.0107, beta +0.0091, leverage +0.0078
+q     (size + residual_vol + liquidity)        = +0.0502   SR factor bound 1/sqrt(1-q)     1.0261
+q_lit (q + beta + leverage; lit upper bound) = +0.0671   SR factor bound 1/sqrt(1-q_lit) 1.0353
+ex-ante vol ratio (ALCOMB-9 (b)): not produced (Q5 reads one book; a ratio needs G-2a on the cell and its parent)
+
+cross-check build-equity/p9-q5-diagnostics-dbg/diagnostics-v8-g2a.json  sha256 5281e58172d88904bfad8ab68f62c8dfec908a35b8f7154863c86297f4d21320
+  sessions complete 1005, incomplete 0
+  |difference| per column: size 0.000e+00, residual_vol 0.000e+00, liquidity 0.000e+00, beta 0.000e+00, leverage 0.000e+00
+  |difference| q 0.000e+00, q_lit 0.000e+00

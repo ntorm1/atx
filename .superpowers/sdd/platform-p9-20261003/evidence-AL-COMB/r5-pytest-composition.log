@@ -1,0 +1,43 @@
+.F........F............................................................................................................. [ 90%]
+........s....                                                [100%]
+================================== FAILURES ===================================
+_______________ DeclaredRule.test_block_is_the_rule_tables_row ________________
+
+self = <test_composition_theme_hedge.DeclaredRule testMethod=test_block_is_the_rule_tables_row>
+
+    def test_block_is_the_rule_tables_row(self):
+        rows = [r for r in json.loads(RULES.read_text(encoding="utf-8"))["rules"] if r["id"] == cth.RULE_ID]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual((row["block_key"], row["stage"], row["recipe_key"]), (cth.BLOCK, "hedge", "composition_hedge"))
+        self.assertEqual(sorted(row["incompatible"]), ["theme-resid-v1", "two-speed-v1"])
+        # P9 lane D2's K-P9-9 params form (ruling D1-PSCHEMA): a closed object of the rule key and the registered
+        # constants, each optional, typed and const; the spec block the fitter writes is exactly those consts.
+        schema = row["params_schema"]
+        self.assertEqual((schema["type"], schema["additionalProperties"]), ("object", False))
+>       self.assertNotIn("required", schema)
+E       AssertionError: 'required' unexpectedly found in {'additionalProperties': False, 'properties': {'lag': {'const': 2}, 'lookback': {'const': 252}, 'min_pairs': {'const': 126}, 'rule': {'const': 'theme-cov-hedge-v1'}, 'step': {'const': 21}}, 'required': ['rule', 'lookback', 'lag', 'step', 'min_pairs'], 'type': 'object'}
+
+test_composition_theme_hedge.py:58: AssertionError
+_______________ DeclaredRule.test_block_is_the_rule_tables_row ________________
+
+self = <test_composition_mom_volman.DeclaredRule testMethod=test_block_is_the_rule_tables_row>
+
+    def test_block_is_the_rule_tables_row(self):
+        """The K-P9-6 fixture row: the same block key; its params_schema is P9 lane D2's K-P9-9 params form (ruling
+        D1-PSCHEMA): a closed object of the rule key and the registered constants, each optional, typed and const. The
+        block the fitter writes is those keys, every one at its const, plus the scaled theme (fixed by the rule id) and
+        the recorded sleeve with its sessions (the row's parse checks the block)."""
+        row = rule_row(cmv.RULE_ID)
+        self.assertEqual((row["block_key"], row["stage"]), (cmv.BLOCK, "schedule"))
+        self.assertEqual(sorted(row["incompatible"]), ["theme-resid-v1", "theme-tsmom-v1"])
+        schema = row["params_schema"]
+        self.assertEqual((schema["type"], schema["additionalProperties"]), ("object", False))
+>       self.assertNotIn("required", schema)
+E       AssertionError: 'required' unexpectedly found in {'additionalProperties': False, 'properties': {'lag': {'const': 2}, 'lookback': {'const': 126}, 'rule': {'const': 'mom-volman-v1'}, 'sessions': {'items': {'type': 'integer'}, 'maxItems': 65536, 'minItems': 128, 'type': 'array'}, 'sleeve': {'items': {'type': 'number'}, 'maxItems': 65536, 'minItems': 128, 'type': 'array'}, 'step': {'const': 21}, 'theme': {'const': 'price_momentum'}}, 'required': ['rule', 'theme', 'lookback', 'lag', 'step', 'sessions', 'sleeve'], 'type': 'object'}
+
+test_composition_mom_volman.py:61: AssertionError
+=========================== short test summary info ===========================
+FAILED test_composition_theme_hedge.py::DeclaredRule::test_block_is_the_rule_tables_row
+FAILED test_composition_mom_volman.py::DeclaredRule::test_block_is_the_rule_tables_row
+2 failed, 130 passed, 1 skipped, 36 subtests passed in 47.86s

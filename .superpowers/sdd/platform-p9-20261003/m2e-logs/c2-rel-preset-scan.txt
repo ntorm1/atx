@@ -1,0 +1,7 @@
+build receipts by preset: {'equity-dev': 74, 'equity-rel': 10, None: 21}
+build receipts outside equity-dev / equity-rel: [('mega-sha-o2-receipt.json', None), ('mega-t1-a-receipt.json', None), ('mega-t1-b-receipt.json', None), ('mega-t10-a-receipt.json', None), ('mega-t14-a-receipt.json', None), ('mega-t14-fix1-receipt.json', None), ('mega-t15-a-receipt.json', None), ('mega-t2-a-receipt.json', None), ('mega-t2-fix1-receipt.json', None), ('mega-t22-a-receipt.json', None), ('mega-t3-a-receipt.json', None), ('mega-t4-a-receipt.json', None), ('mega-t7-a-receipt.json', None), ('mega-t7-fix1-receipt.json', None), ('mega-t7-fix2-receipt.json', None), ('mega-v5-0-receipt.json', None), ('mega-v5-1-receipt.json', None), ('mega-v5-2-receipt.json', None), ('mega-v6-0-receipt.json', None), ('mega-v6-1-receipt.json', None), ('mega-v6-2-receipt.json', None)]
+run receipts: 643
+build_type by (is_p9_run, type): {(False, None): 597, (True, None): 9, (True, 'Debug'): 30, (True, 'Release'): 7}
+exe tree by (is_p9_run, tree): {(False, 'c:\\program files\\python312'): 242, (False, 'build-equity'): 351, (False, 'build-equity-rel'): 4, (True, 'c:\\program files\\python312'): 4, (True, 'build-equity'): 33, (True, 'c:\\atx-wt\\pool-2\\build-equity\\p9-m1b-ref-targets'): 1, (True, 'build-equity-rel'): 7, (True, 'c:\\atx-wt\\pool-2\\build-equity\\p9-m1b-ref-ic'): 1}
+runs on a rel / rel-avx2 exe: []
+present trees: []

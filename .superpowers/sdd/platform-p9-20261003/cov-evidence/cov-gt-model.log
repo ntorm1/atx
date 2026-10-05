@@ -1,0 +1,57 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = CovTruncation.*:CovEigen.*:CovBias.*
+[==========] Running 16 tests from 3 test suites.
+[----------] Global test environment set-up.
+[----------] 4 tests from CovTruncation
+[ RUN      ] CovTruncation.BlocksBeforeTheCutAreByteIdentical
+[       OK ] CovTruncation.BlocksBeforeTheCutAreByteIdentical (28996 ms)
+[ RUN      ] CovTruncation.PerturbedFutureLeavesThePastUnchanged
+[       OK ] CovTruncation.PerturbedFutureLeavesThePastUnchanged (12258 ms)
+[ RUN      ] CovTruncation.FutureInstrumentsDoNotMoveThePast
+[       OK ] CovTruncation.FutureInstrumentsDoNotMoveThePast (12448 ms)
+[ RUN      ] CovTruncation.DetectsAPlantedLeak
+[       OK ] CovTruncation.DetectsAPlantedLeak (17001 ms)
+[----------] 4 tests from CovTruncation (70706 ms total)
+
+[----------] 8 tests from CovEigen
+[ RUN      ] CovEigen.RecipeV11IsBitIdenticalToToday
+[       OK ] CovEigen.RecipeV11IsBitIdenticalToToday (517 ms)
+[ RUN      ] CovEigen.ZeroSimulationsEqualsV11
+[       OK ] CovEigen.ZeroSimulationsEqualsV11 (697 ms)
+[ RUN      ] CovEigen.SmallEigenfactorsInflatedLargeNearOne
+[       OK ] CovEigen.SmallEigenfactorsInflatedLargeNearOne (464 ms)
+[ RUN      ] CovEigen.SeededPerSessionAndWorkerInvariant
+[       OK ] CovEigen.SeededPerSessionAndWorkerInvariant (143 ms)
+[ RUN      ] CovEigen.StructuralBorderAndPdScalingApplied
+[       OK ] CovEigen.StructuralBorderAndPdScalingApplied (12442 ms)
+[ RUN      ] CovEigen.VraReadsTheAdjustedPrior
+[       OK ] CovEigen.VraReadsTheAdjustedPrior (11742 ms)
+[ RUN      ] CovEigen.ResultIsPositiveDefinite
+[       OK ] CovEigen.ResultIsPositiveDefinite (11850 ms)
+[ RUN      ] CovEigen.LowersTrueRiskOfTheEstimatedMinVariancePortfolio
+[       OK ] CovEigen.LowersTrueRiskOfTheEstimatedMinVariancePortfolio (1891 ms)
+[----------] 8 tests from CovEigen (39752 ms total)
+
+[----------] 4 tests from CovBias
+[ RUN      ] CovBias.EigenFamilyInBandOnAPlantedModel
+..\atx-impl\tests\strategy_cov_model_test.cpp(484): error: Expected: (b) < (2.0), actual: 2.0564291380621036 vs 2
+
+[  FAILED  ] CovBias.EigenFamilyInBandOnAPlantedModel (11375 ms)
+[ RUN      ] CovBias.MinVarAndOptimizedUseCompleteForecastsOnly
+..\atx-impl\tests\strategy_cov_model_test.cpp(509): error: Expected: (formed.excluded_incomplete) > (0U), actual: 0 vs 0
+
+[  FAILED  ] CovBias.MinVarAndOptimizedUseCompleteForecastsOnly (11962 ms)
+[ RUN      ] CovBias.MissingReturnCountsZeroNeverRenormalised
+[       OK ] CovBias.MissingReturnCountsZeroNeverRenormalised (11831 ms)
+[ RUN      ] CovBias.V1FamiliesBytesUnchanged
+[       OK ] CovBias.V1FamiliesBytesUnchanged (11558 ms)
+[----------] 4 tests from CovBias (46728 ms total)
+
+[----------] Global test environment tear-down
+[==========] 16 tests from 3 test suites ran. (157188 ms total)
+[  PASSED  ] 14 tests.
+[  FAILED  ] 2 tests, listed below:
+[  FAILED  ] CovBias.EigenFamilyInBandOnAPlantedModel
+[  FAILED  ] CovBias.MinVarAndOptimizedUseCompleteForecastsOnly
+
+ 2 FAILED TESTS

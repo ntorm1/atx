@@ -1,4 +1,5 @@
 #include "atx/engine/alpha/oracle.hpp"
+#include "atx/engine/alpha/op_traits.hpp" // P9 S2: the grouped-op predicate (needs_group_operand)
 
 #include <algorithm> // std::stable_sort, std::sort, std::min_element, std::max_element
 #include <array>     // std::array (entropy bucket counts)
@@ -317,10 +318,7 @@ atx::core::Status Oracle::eval_cross_section(const Instr &in) {
   std::span<atx::f64> out = dst_col(in);
   // Group ops take the classifier in src[1]; CsScale/CsWinsorize read a scalar
   // (target L1 norm / std multiplier) from src[1]'s [0] cell.
-  const bool grouped =
-      (in.op == OpCode::CsDemeanG || in.op == OpCode::CsNeutG || in.op == OpCode::CsRankG ||
-       in.op == OpCode::CsZscoreG || in.op == OpCode::CsCountG || in.op == OpCode::CsMeanG ||
-       in.op == OpCode::CsScaleG || in.op == OpCode::CsResidualize || in.op == OpCode::CsSumG);
+  const bool grouped = detail::needs_group_operand(in.op); // P9 S2: the per-opcode table
   std::span<const atx::f64> g{};
   std::span<const atx::f64> z{}; // cs_residualize optional style covariate (src[2])
   atx::f64 scale_a = 1.0;

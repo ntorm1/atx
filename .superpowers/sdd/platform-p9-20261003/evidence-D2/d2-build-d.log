@@ -1,0 +1,83 @@
+﻿{
+    "Source":  "a17319fb37d571f4e5b1ec755e542428a228679e",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  12,
+    "ConfiguredProvenance":  "a17319fb37d571f4e5b1ec755e542428a228679e",
+    "Jobs":  3,
+    "FreeMiB":  2867,
+    "CommitMiB":  2846,
+    "Targets":  [
+                    "atx-impl-strategy-ic-tests",
+                    "atx-equity-strategy-ic",
+                    "atx-impl-strategy-target-tests",
+                    "atx-equity-strategy-targets",
+                    "atx-research-admission"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  148.04517479999998,
+    "CompiledTUs":  31,
+    "Links":  7,
+    "Tag":  "p9-d2-d",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-20\\build-equity",
+    "Executables":  {
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "09775c4211ec6becf4514848c37a30bef41e978baf194a4ace2f7c295d73c550"
+                                                       },
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "e2e4c926b12aaa261f02a8d14028fd376a4084335fa61c2d219b928e3d55d02f"
+                                                   },
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "1855922d8e80dbad4dc74551e67c03613f9737d43c46dadfaa3367bbff04e6b8"
+                                                           },
+                        "atx-equity-strategy-targets":  {
+                                                            "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-equity-strategy-targets.exe",
+                                                            "Sha256":  "cf1461a6a862dcbedd2ff81b6117f1155cf7c29969e209b504451cac5ad3f504"
+                                                        },
+                        "atx-research-admission":  {
+                                                       "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-research-admission.exe",
+                                                       "Sha256":  "03d7ce0e3db9ec5ca9153e8d2a11569d80fdc558502bfd248d353bd2df80608c"
+                                                   }
+                    }
+}
+[1/39] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+[2/39] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+[3/39] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+[4/39] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+[5/39] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+[6/39] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+[7/39] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+[8/39] Linking CXX static library lib\spdlogd.lib
+[9/39] Building CXX object atx-engine\CMakeFiles\atx-research-admission.dir\src\research\admission\admission_main.cpp.obj
+[10/39] Building CXX object atx-impl\CMakeFiles\atx-equity-strategy-targets.dir\tools\equity_strategy_targets.cpp.obj
+[11/39] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_marginal_pair_cache.cpp.obj
+[12/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_price_exposures_test.cpp.obj
+[13/39] Linking CXX static library lib\atx-impl-core.lib
+[14/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_target_replay_test.cpp.obj
+[15/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_cost_v2_test.cpp.obj
+[16/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_live_test.cpp.obj
+[17/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_nav_replay_test.cpp.obj
+[18/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_spo_pin_test.cpp.obj
+[19/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_spo_test.cpp.obj
+[20/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_spo_v3_pin_test.cpp.obj
+[21/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_spo_v3_test.cpp.obj
+[22/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_risk_model_test.cpp.obj
+[23/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_risk_target_test.cpp.obj
+[24/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_vol_target_test.cpp.obj
+[25/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_norm_score_test.cpp.obj
+[26/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\__\__\atx-engine\tests\book\book_target_shaping_test.cpp.obj
+[27/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\__\__\atx-engine\tests\book\book_risk_target_test.cpp.obj
+[28/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\__\__\atx-engine\tests\book\book_inverse_vol_test.cpp.obj
+[29/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\__\__\atx-engine\tests\book\book_vol_target_test.cpp.obj
+[30/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_two_speed_test.cpp.obj
+[31/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\__\__\atx-engine\tests\book\book_normal_score_test.cpp.obj
+[32/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\__\__\atx-engine\tests\book\book_two_speed_test.cpp.obj
+[33/39] Linking CXX executable bin\atx-research-admission.exe
+[34/39] Linking CXX executable bin\atx-equity-strategy-ic.exe
+[35/39] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_factors_verb_test.cpp.obj
+[36/39] Linking CXX executable bin\atx-impl-strategy-ic-tests.exe
+[37/39] Linking CXX executable bin\atx-equity-strategy-targets.exe
+[38/39] Linking CXX executable bin\atx-impl-strategy-target-tests.exe

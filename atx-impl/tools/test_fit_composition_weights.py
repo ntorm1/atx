@@ -614,7 +614,9 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(prov["lambda"], 0.9)
         self.assertEqual(prov["role_manifest_sha256"], self.fx.train_sha)
         self.assertEqual(prov["orientations_sha256"], self.fx.orientations_sha)
-        self.assertEqual(prov["script_sha256"], sha(Path(fcw.__file__).read_bytes()))
+        # CM-5 (P9 lane D2): the writing functions' producer fingerprint, not the file's SHA-256
+        self.assertEqual(prov["producer_fingerprint"], fcw.producer_fingerprint(fcw.OUTPUT_PRODUCERS))
+        self.assertNotIn("script_sha256", prov)
         begin = self.fx.p["score_begin"]
         self.assertEqual(prov["window"]["decision_begin"], begin)
         self.assertEqual(prov["window"]["decision_end_exclusive"], self.fx.p["close"].shape[0] - 2)
@@ -699,6 +701,64 @@ class Refusals(unittest.TestCase):
         close.write_bytes(bytes(data))
         self.refuse(fx, "payload SHA close.f64")
 
+
+class ExactFlagsOnly(unittest.TestCase):
+    """Ruling D2R-1: the fitter's parser reads no abbreviation (allow_abbrev=False). With argparse's default a unique
+    prefix was read as its flag, so adding a flag changed what a prefix meant (--compo read --composition until D2 added
+    --composition-exe, then failed as ambiguous). Every prefix is a usage error; every exact flag still parses."""
+
+    REQUIRED = ["--library", "l", "--library-sha256", "0", "--train", "t", "--train-sha256", "0", "--orientations", "o",
+                "--orientations-sha256", "0", "--runner-summary", "s", "--runner-summary-sha256", "0", "--screen",
+                "v4-prior-v1", "--output", "w"]
+
+    def parser(self) -> argparse.ArgumentParser:
+        """The parser fcw.parse_args builds (spied at its parse_args, which runs unchanged)."""
+        seen, real = [], argparse.ArgumentParser.parse_args
+
+        def spy(parser, args=None, namespace=None):
+            seen.append(parser)
+            return real(parser, args, namespace)
+        with unittest.mock.patch.object(argparse.ArgumentParser, "parse_args", spy):
+            fcw.parse_args(self.REQUIRED)
+        return seen[0]
+
+    def exit_code(self, extra: list) -> tuple[object, str]:
+        """(SystemExit code or None when it parsed, stderr) of the fitter's parse of REQUIRED + extra."""
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                fcw.parse_args(self.REQUIRED + extra)
+        except SystemExit as stop:
+            return stop.code, err.getvalue()
+        return None, err.getvalue()
+
+    def test_an_abbreviated_flag_is_a_usage_error(self):
+        for extra in (["--compo", "ew-theme-v1"], ["--compo=ew-theme-v1"], ["--c", "ew-theme-v1"], ["--orient", "prior"],
+                      ["--orient=prior"], ["--composition-e", "c.exe"], ["--engine-f"], ["--max-sec", "5"],
+                      ["--report-f"], ["--h"]):
+            code, err = self.exit_code(extra)
+            self.assertEqual(code, 2, extra)
+            self.assertIn(f"unrecognized arguments: {' '.join(extra)}", err, extra)
+
+    def test_no_prefix_of_any_flag_is_read(self):
+        parser = self.parser()
+        self.assertFalse(parser.allow_abbrev)
+        longs = sorted(o for o in parser._option_string_actions if o.startswith("--"))
+        self.assertIn("--composition-exe", longs)
+        prefixes = sorted({o[:end] for o in longs for end in range(3, len(o))} - set(longs))
+        self.assertGreater(len(prefixes), len(longs))
+        self.assertEqual([p for p in prefixes if self.exit_code([p, "x"])[0] != 2], [])
+
+    def test_the_exact_flags_still_parse(self):
+        args = fcw.parse_args(self.REQUIRED + ["--composition", "ew-theme-aim-v1", "--orientation", "prior"])
+        self.assertEqual((args.composition, args.orientation, args.screen), ("ew-theme-aim-v1", "prior", "v4-prior-v1"))
+        args = fcw.parse_args(self.REQUIRED + ["--composition=ew-theme-v1", "--orientation=prior", "--engine-fit",
+                                               "--composition-exe", "c.exe", "--max-seconds=5"])
+        self.assertEqual((args.composition, args.orientation, args.engine_fit, args.composition_exe, args.max_seconds),
+                         ("ew-theme-v1", "prior", True, Path("c.exe"), 5.0))
+        default = fcw.parse_args(self.REQUIRED)
+        self.assertEqual((default.composition, default.orientation, default.engine_fit, default.composition_exe),
+                         (fcw.RULE_ID, "train", False, None))
 
 
 # ------------------------------------------------------------- T11: v3-admit-v1
@@ -1298,6 +1358,26 @@ class CacheInvalidation(unittest.TestCase):
         with unittest.mock.patch.object(fcw, "producer_fingerprint", lambda funcs: "0" * 64):
             self.assertEqual(self.rerun("new_code")["computed_this_run"], len(IDS))
 
+    def test_cm5_script_sha_moves_no_output_byte(self):
+        """CM-5 (P9 lane D2): an edit of the fitter file outside the writing functions (its whole-file SHA-256 moves,
+        the OUTPUT_PRODUCERS fingerprint does not) leaves every output byte as it was; the summary still names the
+        file's SHA-256 (main prints it)."""
+        with unittest.mock.patch.object(fcw, "SCRIPT_SHA256", "0" * 64):
+            self.rerun("edited")
+        first, edited = self.root / "first", self.root / "edited"
+        self.assertEqual(sorted(p.name for p in first.iterdir()), sorted(p.name for p in edited.iterdir()))
+        for p in first.iterdir():
+            self.assertEqual(p.read_bytes(), (edited / p.name).read_bytes(), p.name)
+            self.assertNotIn(fcw.SCRIPT_SHA256.encode(), p.read_bytes(), p.name)
+        with unittest.mock.patch.object(fcw, "producer_fingerprint", lambda funcs: "ab" * 32):
+            self.rerun("new_writer")
+        doc = json.loads((self.root / "new_writer" / fcw.OUTPUT_WEIGHTS).read_bytes())
+        self.assertEqual(doc["provenance"]["producer_fingerprint"], "ab" * 32)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(fcw.main(self.fx.argv(self.root / "main", "none", ["--work-dir", str(self.work)])), 0)
+        self.assertEqual(json.loads(out.getvalue().splitlines()[-1])["script_sha256"], fcw.SCRIPT_SHA256)
+
     def test_semantics_tag_change_misses_the_cache(self):
         with unittest.mock.patch.object(fcw, "SEMANTICS_TAG", "0" * 16):
             self.assertEqual(self.rerun("new_tag")["computed_this_run"], len(IDS))
@@ -1680,7 +1760,8 @@ class PriorEndToEnd(unittest.TestCase):
         self.assertEqual(prov["themes"]["value"]["admitted"], ["slow_a_clone", "slow_a_twin"])
         self.assertNotIn("lambda", prov)
         self.assertEqual(prov["admission_sha256"], sha(self.bytes[fcw.OUTPUT_ADMISSION]))
-        self.assertEqual(prov["script_sha256"], sha(Path(fcw.__file__).read_bytes()))
+        self.assertEqual(prov["producer_fingerprint"], fcw.producer_fingerprint(fcw.OUTPUT_PRODUCERS))  # CM-5
+        self.assertNotIn("script_sha256", prov)
         rows = {r["id"]: r for r in prov["candidates"]}
         self.assertAlmostEqual(prov["weighted_standalone_turnover"], sum(w[i] * rows[i]["tau"] for i in self.ids),
                                places=14)
@@ -1870,6 +1951,27 @@ def superseded_window(module):
         yield
 
 
+FITTER_IDENTITY_KEYS = ("script_sha256", "producer_fingerprint")
+
+
+def without_fitter_identity(name: str, data: bytes) -> bytes:
+    """CM-5 (P9 lane D2): a fit output with the fitter's identity taken out where the fitter writes it -- inputs,
+    provenance and provenance.v6.inputs carry script_sha256 before CM-5 and producer_fingerprint after (exactly one of
+    the two) -- and re-serialised by canonical_bytes. Every JSON output must already be canonical_bytes, so the
+    git-history byte comparisons below still compare every other byte. Non-JSON outputs (admission.csv) pass as is."""
+    if not name.endswith(".json"):
+        return data
+    doc = json.loads(data)
+    assert fcw.canonical_bytes(doc) == data, f"{name}: not canonical bytes"
+    v6 = doc.get("provenance", {}).get("v6", {})
+    for block in (doc.get("inputs"), doc.get("provenance"), v6.get("inputs") if isinstance(v6, dict) else None):
+        if isinstance(block, dict):
+            assert sum(k in block for k in FITTER_IDENTITY_KEYS) == 1, f"{name}: fitter identity {sorted(block)}"
+            for key in FITTER_IDENTITY_KEYS:
+                block.pop(key, None)
+    return fcw.canonical_bytes(doc)
+
+
 class PriorV1BytesUnchanged(unittest.TestCase):
     """T27 edit: v4-prior-v1 emits the pre-T27 bytes except the embedded script SHA (git-history fitter)."""
 
@@ -1908,7 +2010,7 @@ class PriorV1BytesUnchanged(unittest.TestCase):
                     data = p.read_bytes()
                     for value, token in derived.items():
                         data = data.replace(value.encode(), token)
-                    files[p.name] = data
+                    files[p.name] = without_fitter_identity(p.name, data)  # CM-5
                 keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
                 got[tag] = (files, keys)
             self.assertEqual(got["new"][0], got["old"][0])
@@ -1957,7 +2059,7 @@ class DefaultBytesUnchanged(unittest.TestCase):
                         data = p.read_bytes()
                         for value, token in derived.items():
                             data = data.replace(value.encode(), token)
-                        files[p.name] = data
+                        files[p.name] = without_fitter_identity(p.name, data)  # CM-5
                     keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
                     got[tag] = (files, keys)
                 self.assertEqual(got["new"][0], got["old"][0], name)
@@ -2405,7 +2507,7 @@ class V1BytesUnchangedByAim(unittest.TestCase):
                         data = p.read_bytes()
                         for value, token in derived.items():
                             data = data.replace(value.encode(), token)
-                        files[p.name] = data
+                        files[p.name] = without_fitter_identity(p.name, data)  # CM-5
                     keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
                     got[tag] = (files, keys)
                 self.assertEqual(sorted(got["new"][0]), sorted(got["old"][0]), screen)
@@ -2659,7 +2761,8 @@ class V6EndToEnd(unittest.TestCase):
                          (self.fx.library_sha, self.fx.train_sha))
         self.assertEqual((inputs["orientations_sha256"], inputs["runner_summary_sha256"]),
                          (self.fx.orientations_sha, self.fx.summary_sha))
-        self.assertEqual(inputs["script_sha256"], sha(Path(fcw.__file__).read_bytes()))
+        self.assertEqual(inputs["producer_fingerprint"], fcw.producer_fingerprint(fcw.OUTPUT_PRODUCERS))  # CM-5
+        self.assertNotIn("script_sha256", inputs)
         self.assertEqual(self.summary["theme_redistribution"], "within-theme-v1")
         self.assertEqual(self.summary["dropped_members"], ["medium_half"])
 
@@ -2754,7 +2857,7 @@ class V1BytesUnchangedByV6(unittest.TestCase):
                         data = p.read_bytes()
                         for value, token in derived.items():
                             data = data.replace(value.encode(), token)
-                        files[p.name] = data
+                        files[p.name] = without_fitter_identity(p.name, data)  # CM-5
                     keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
                     got[tag] = (files, keys)
                 self.assertEqual(sorted(got["new"][0]), sorted(got["old"][0]), (screen, composition))
@@ -2837,7 +2940,7 @@ class OwnershipFlowTheme(unittest.TestCase):
                     data = p.read_bytes()
                     for value, token in derived.items():
                         data = data.replace(value.encode(), token)
-                    files[p.name] = data
+                    files[p.name] = without_fitter_identity(p.name, data)  # CM-5
                 keys = sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file())
                 got[tag] = (files, keys)
             self.assertEqual(sorted(got["new"][0]), sorted(got["old"][0]), screen)

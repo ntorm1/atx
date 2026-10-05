@@ -1,0 +1,37 @@
+merge c8ddf736 parents: 5afb5447e303e1515bf5dff9c91da49bc7897e59 0145a834e07c3b0c79710546f2fc166697245b02
+diff 5afb5447..c8ddf736 outside the sprint dir (expect the two test files only):
+ atx-impl/tests/CMakeLists.txt              |   5 +-
+ atx-impl/tests/strategy_cov_stage_diag.cpp | 572 +++++++++++++++++++++++++++++
+ 2 files changed, 576 insertions(+), 1 deletion(-)
+lane head 0145a834 vs merge on the two code files (expect empty):
+CMake hunk:
+diff --git a/atx-impl/tests/CMakeLists.txt b/atx-impl/tests/CMakeLists.txt
+index f43dbfce..888c59ab 100644
+--- a/atx-impl/tests/CMakeLists.txt
++++ b/atx-impl/tests/CMakeLists.txt
+@@ -134,7 +134,10 @@ add_executable(atx-impl-strategy-target-tests EXCLUDE_FROM_ALL
+     # platform v8 Y (YCOMB) rule Y-5: two-speed netted sleeves (engine kernel; NAV wiring is a follow-up)
+     "${PROJECT_SOURCE_DIR}/atx-engine/tests/book/book_two_speed_test.cpp"
+     strategy_cov_model_test.cpp  # P9 COV: CovTruncation, CovEigen, CovBias
+-    strategy_cov_store_test.cpp)  # P9 COV: CovRecipe, CovStore, CovDiff
++    strategy_cov_store_test.cpp  # P9 COV: CovRecipe, CovStore, CovDiff
++    # P9 COVR (ruling COV-12 (b)): DISABLED_ per-stage Debug-vs-Release digest diagnostic; not a
++    # *_test.cpp, so the atx-impl-tests glob does not take it.
++    strategy_cov_stage_diag.cpp)
+ atx_impl_test_target_environment(atx-impl-strategy-target-tests)
+ 
+ # Platform v8 H-3: the mining verb on its synthetic role, with the engine's signal-fitness
+DISABLED_ test name and env gate:
+3:// both recipes. Diagnostic only: DISABLED_, so it counts in no suite total, and it changes no
+21://   ATX_COVR_DUMP  file the digest lines go to (required; without it the test skips).
+405:TEST(CovStageDigest, DISABLED_DumpPerStageOnTheLaneFixture) {
+406:  const std::string dump_path = env("ATX_COVR_DUMP");
+408:    GTEST_SKIP() << "diagnostic: set ATX_COVR_DUMP (and optionally ATX_COVR_OUT, "
+451:    GTEST_SKIP() << "ATX_COVR_SWAP needs Windows";
+pins: no expected value / golden / pinned file in the diff:
+atx-impl/tests/CMakeLists.txt
+atx-impl/tests/strategy_cov_stage_diag.cpp
+sprint copies vs lane blobs (LF sha256):
+task-COVR-report.md root 759d6ad6de00e99f lane-blob 759d6ad6de00e99f pool-24-wt 759d6ad6de00e99f
+task-COVR-review.md root f824cd4fedfafd38 lane-blob f824cd4fedfafd38 pool-24-wt f824cd4fedfafd38
+handoff-COVR.md root 2f4cc7d3c4677aa2 lane-blob 2f4cc7d3c4677aa2 pool-24-wt 2f4cc7d3c4677aa2

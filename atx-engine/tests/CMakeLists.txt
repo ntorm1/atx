@@ -438,6 +438,73 @@ target_include_directories(atx-engine-research-admission-tests PRIVATE ${CMAKE_C
 target_compile_definitions(atx-engine-research-admission-tests PRIVATE
     "ATX_RESEARCH_ADMISSION_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_admission\"")
 
+# P9 lane SQL1 (K-P9-13): the research-store gtests (descriptor templates, schema fixtures, digests,
+# open / migrate). Sources in tests/research/ (not a test group), no shared test PCH; the private
+# engine src/ dir is on the include path because the tests instantiate toy descriptors through
+# research/store/detail/*. Registered directly under the CTest label atx_research (the deferred
+# registration above skips a target that is already registered).
+add_executable(atx-engine-research-store-tests EXCLUDE_FROM_ALL
+    research/research_store_table_test.cpp
+    research/research_store_schema_test.cpp
+    research/research_store_digest_test.cpp
+    research/research_store_open_test.cpp)
+target_link_libraries(atx-engine-research-store-tests PRIVATE
+    atx::engine-research-store GTest::gtest_main atx_warnings Threads::Threads atx-test-scratch
+    nlohmann_json::nlohmann_json)
+target_include_directories(atx-engine-research-store-tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(atx-engine-research-store-tests PRIVATE
+    "ATX_RESEARCH_STORE_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_store\"")
+gtest_discover_tests(atx-engine-research-store-tests DISCOVERY_MODE PRE_TEST
+    TEST_PREFIX "atx-engine-research-store-tests." PROPERTIES LABELS atx_research)
+
+# P9 lane SQL2 (K-P9-13): the artifact catalog gtests (ResearchCatalog*, SealGuard*, StoreCli*) over
+# the synthetic tree fixtures/research_store/tree (and legacy_records). Sources in tests/research/
+# (not a test group), no shared test PCH; public catalog headers only. Registered directly under
+# the CTest label atx_research.
+add_executable(atx-engine-research-catalog-tests EXCLUDE_FROM_ALL
+    research/research_catalog_test.cpp
+    research/research_catalog_seal_test.cpp
+    research/research_catalog_cli_test.cpp)
+target_link_libraries(atx-engine-research-catalog-tests PRIVATE
+    atx::engine-research-catalog GTest::gtest_main atx_warnings Threads::Threads atx-test-scratch)
+target_include_directories(atx-engine-research-catalog-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(atx-engine-research-catalog-tests PRIVATE
+    "ATX_RESEARCH_STORE_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_store\""
+    "ATX_RESEARCH_STORE_CLASSES_FILE=\"${CMAKE_CURRENT_SOURCE_DIR}/../schemas/research_store/classes.json\"")
+gtest_discover_tests(atx-engine-research-catalog-tests DISCOVERY_MODE PRE_TEST
+    TEST_PREFIX "atx-engine-research-catalog-tests." PROPERTIES LABELS atx_research)
+
+# P9 lane A3 (cross-lane append, ruling P2): the vendor panel, factor-break-v1, NYSE calendar and vendor-panel field
+# gtests join the research-fields test target (fixture under fixtures/research_fields/vendor).
+target_sources(atx-engine-research-fields-tests PRIVATE
+    research/research_fields_vendor_panel_test.cpp
+    research/research_fields_vendor_fields_test.cpp
+    research/research_fields_vendor_fixture_test.cpp)
+
+# P9 lane AL-SIG (cross-lane append): the stage readers' and engine-only kinds' gtests (gtest filter
+# ResearchFieldsAlSig*; synthetic stage fixture fixtures/research_fields_al_sig, found beside the slice-1 fixture)
+# join the research-fields test target.
+target_sources(atx-engine-research-fields-tests PRIVATE
+    research/research_fields_al_sig_thirteenf_test.cpp
+    research/research_fields_al_sig_gia_test.cpp
+    research/research_fields_al_sig_russell_test.cpp
+    research/research_fields_al_sig_fixture_test.cpp)
+
+# Platform P9 lane D2: the composition library's bounded target (ResearchComposition.*; the Python-generated
+# fixture path is a target-local define), registered in CTest under atx_research like B1's. The library target is
+# defined after this directory (end of atx-engine/CMakeLists.txt); CMake resolves the link name at generation.
+add_executable(atx-engine-research-composition-tests EXCLUDE_FROM_ALL
+    research/research_composition_fit_test.cpp)
+target_link_libraries(atx-engine-research-composition-tests PRIVATE
+    atx-engine-research-composition atx-engine-research-admission GTest::gtest_main atx_warnings Threads::Threads
+    atx-test-scratch nlohmann_json::nlohmann_json)
+target_include_directories(atx-engine-research-composition-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(atx-engine-research-composition-tests PRIVATE
+    "ATX_RESEARCH_COMPOSITION_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_composition\"")
+gtest_discover_tests(atx-engine-research-composition-tests DISCOVERY_MODE PRE_TEST
+    TEST_PREFIX "atx-engine-research-composition-tests." PROPERTIES LABELS atx_research)
+
 # Platform P9 B2: the research ledger and eval verb libraries' bounded targets (sources in tests/research/, not a
 # test group; no shared test PCH). ResearchLedger* runs on the ledger library alone; the eval target ties the verb
 # to T1's statistics fixture (fixtures/eval_tie, P11 / G-P7) and the Python ledger rules

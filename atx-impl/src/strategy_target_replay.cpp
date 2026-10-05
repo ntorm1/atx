@@ -128,7 +128,7 @@ co::Status validate_config(const TargetReplayConfig& cfg) {
   // rule, so a baseline or v2 recipe cannot silently carry them.
   if (aim_partial(cfg) &&
       (cfg.band_multiple != 0 || !(cfg.dust_multiple >= 0 && cfg.dust_multiple <= 0.5) ||
-       !(cfg.aim_leverage >= 1 && cfg.aim_leverage <= 2)))
+       !(cfg.aim_leverage >= aim_leverage_min && cfg.aim_leverage <= aim_leverage_max)))
     return co::Err(co::ErrorCode::InvalidArgument,
                    "target replay: aim-partial-v5 needs band_multiple 0, dust_multiple in "
                    "[0, 0.5] and aim_leverage in [1, 2]");

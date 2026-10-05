@@ -1,0 +1,71 @@
+# M2h finish item (a): MR-4 and C2's S13 in the merged tree (head 59893e9f)
+## the lane's merge-of-root d2cea6a6 vs git's automatic merge tree 0f746a16 (its own hunks: 5 added, 2 removed, 2 files)
+scripts/wave_kinds.py      | 2 ++
+ scripts/wave_stage_cell.py | 5 +++--
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+--- Changes ---
+
+scripts/wave_kinds.py
+  @@ -83,6 +83,8 @@ COMPOSITION_FLAGS = {
+  +    "theme-cov-hedge-v1": {"fit": {"--theme-hedge": "theme-cov-hedge-v1"}},     # MR-4 (AL-COMB)
+  +    "mom-volman-v1": {"fit": {"--mom-volman": "mom-volman-v1"}},                # MR-4 (AL-COMB)
+   }
+   SCHEMA_KEYWORDS = {"type", "const", "enum", "required", "properties", "additionalProperties", "items", "minItems",
+                      "maxItems", "minProperties", "pattern", "minimum", "maximum", "exclusiveMinimum",
+  +2 -0
+
+scripts/wave_stage_cell.py
+  @@ -71,9 +71,10 @@ def run_stage(w: Wave, done: dict, log) -> dict:
+  -        notes = exe_notes(w, out["phases"])
+  +        notes = exe_notes(w, out["phases"])     # ruling E1-REUSE-a2: outputs made by another exe than on disk now
+           if notes:
+  -            log(f"   exe notes (reused on a rebuilt exe without an exes_sha256 pin, E1-REUSE-a2): {'; '.join(notes)}")
+  +            log(f"   exe notes (made by another executable than the one on disk now; judged by the exes_sha256 pin "
+  +                f"rule, E1-REUSE-a2): {'; '.join(notes)}")
+               out["exe_notes"] = notes
+           return out
+       w.run(cyc(w,"run", cell, "--stop-after", "nav"), "calibration run (--stop-after nav)")
+  +3 -2
+## lane head dd857198 vs HEAD on those two files (empty = as placed):
+
+## the lines at HEAD
+0 matches for 'MR-4 (AL-COMB)'
+4 matches in 4 files:
+
+74:0:outputs made by another exe than on disk now
+77:0:{'; '.join(notes)}")
+85:0:outputs made by another exe than on disk now
+88:0:{'; '.join(notes)}")
+## lane head vs HEAD over scripts, atx-engine/tools, atx-impl/tools
+scripts/specs/p9/blocked/hf_crowd.json    |  2 +-
+ scripts/specs/p9/blocked/lazy_prices.json | 10 +++++-----
+ scripts/wave_stage_kinds.py               |  7 ++++---
+ 3 files changed, 10 insertions(+), 9 deletions(-)
+## provenance of the non-lane differences
+1dd0ac46 style(wave): wrap wave_stage_kinds.py:421 to the 120-column limit (E...
+30b9c9d2 spec(p9): AL-DATA amendments 5.1 / 5.2 to the blocked registrations ...
+30b9c9d2 spec(p9): AL-DATA amendments 5.1 / 5.2 to the blocked registrations ...
+## E2-18 (1dd0ac46) diff
+scripts/wave_stage_kinds.py | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+--- Changes ---
+
+scripts/wave_stage_kinds.py
+  @@ -418,9 +418,10 @@ def preflight_kind_plan(w: Wave) -> list[str]:
+  -    lines.append(f"#   then: ruling E2-14: no {' / '.join(WK.MATCH_FLAGS)} in any flag list (the {WK.MATCH_STAGE} match "
+  -                 "stage's own); ruling E2-15: no ref section but the template's own pinned block, its resolved side "
+  -                 "judged as the cell's")
+  +    lines.append(
+  +        f"#   then: ruling E2-14: no {' / '.join(WK.MATCH_FLAGS)} in any flag list (the {WK.MATCH_STAGE} match "
+  +        "stage's own); ruling E2-15: no ref section but the template's own pinned block, its resolved side "
+  +        "judged as the cell's")
+       return lines
+   
+   
+  +4 -3
+## C2 R4 pin at HEAD
+1 matches in 1 files:
+
+scripts/wave_stage_record.py:315:now["record_spec_digest"] = w.spec_digest(mt["record_spec"]) if w.exists(mt["rec...

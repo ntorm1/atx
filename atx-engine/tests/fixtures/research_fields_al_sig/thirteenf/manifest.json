@@ -1,0 +1,84 @@
+{
+  "clock_rule": "13f-filed-plus-46h-v1",
+  "files": {
+    "cusip_map_pit.parquet": {
+      "bytes": 1204,
+      "sha256": "739126340a1a434c4381ea113118106001d41c236e6911f872659ba4c472bfd9"
+    },
+    "filing_checks.parquet": {
+      "bytes": 848,
+      "sha256": "6e612ec9a68a1c11ec7656c320ec08ae73391f76be81cf49dfc5dfb861b8a8a1"
+    },
+    "filings.parquet": {
+      "bytes": 5551,
+      "sha256": "ff4ad30ddaf2d26fe6c6fa6460c273a74855f759236a9db294f50d519b485d6e"
+    },
+    "parts/source=2018q3/holdings.parquet": {
+      "bytes": 2653,
+      "sha256": "b63b2332bc50871c0de8dcb6ccfc524725f549187f105f5015618bf84b08fb7c"
+    },
+    "parts/source=2018q4/holdings.parquet": {
+      "bytes": 2656,
+      "sha256": "e1bc4f8bbb4a53e67bac2c114b5f54cdbaf18a70ea342b2ca83c442536efabf9"
+    },
+    "parts/source=2019q1/holdings.parquet": {
+      "bytes": 2648,
+      "sha256": "18a129bd5be967421be2901c4fccb431ecb7df36f69e40cd046ae4eeb41289ee"
+    },
+    "parts/source=2019q2/holdings.parquet": {
+      "bytes": 2652,
+      "sha256": "aa5e4230c14645228149daed784b21d087fa45f95fc4e910708ec19249622b6a"
+    },
+    "parts/source=2019q3/holdings.parquet": {
+      "bytes": 2781,
+      "sha256": "8af0c1506323b21680d302f4464579e97d1c687a5c3064dce297a769cdcc725c"
+    },
+    "parts/source=2019q4/holdings.parquet": {
+      "bytes": 2651,
+      "sha256": "03037b5e0b009fc43c6a8563a98ae90d3c5b96ec4504ab35b73e768b7bd32469"
+    },
+    "parts/source=2020q1/holdings.parquet": {
+      "bytes": 2652,
+      "sha256": "34825bde48300e3520f42ddccebd6c76d7125a05c7c3963a989d83a63a627122"
+    },
+    "parts/source=2020q2/holdings.parquet": {
+      "bytes": 2838,
+      "sha256": "21238d03ac5f5e261256374da9b63a9b5e8b3d538ae14d61d026e3cd32bea603"
+    },
+    "parts/source=2020q3/holdings.parquet": {
+      "bytes": 2788,
+      "sha256": "5b6ae6d50aa9751076b49af521ff5228b0c58c78c48a6c8d04869b4fe3e82014"
+    },
+    "parts/source=2020q4/holdings.parquet": {
+      "bytes": 2653,
+      "sha256": "d8a7601a083346fbb5422a6aeb36c7f2373cd21aa0913743412903b38b5463dc"
+    },
+    "parts/source=2021q1/holdings.parquet": {
+      "bytes": 2652,
+      "sha256": "8f7be5443782e4af913f5074fdaf739fa0467ef47e90cf12684793df3b7d4025"
+    },
+    "parts/source=2021q2/holdings.parquet": {
+      "bytes": 2665,
+      "sha256": "9323c9c4f625a906b296280d00a810dc788372cdd89c5d9cc884a0e8bc48887f"
+    },
+    "parts/source=2021q3/holdings.parquet": {
+      "bytes": 2647,
+      "sha256": "5ab77d7940dfa5df24874fbb39cffc5a296a8fc8c72d6b88ce13684a9df8543b"
+    },
+    "parts/source=2021q4/holdings.parquet": {
+      "bytes": 2642,
+      "sha256": "020ca666bc7c8b6be497f6fca2aecf6c7bb9b71557613e30ceb24c0ae40053e9"
+    },
+    "parts/source=2023q4/holdings.parquet": {
+      "bytes": 1681,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "parts/source=2024q1/holdings.parquet": {
+      "bytes": 1681,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "schema": "atx.alpha-panel.thirteenf/v1",
+  "staleness_days": 150,
+  "status": "complete"
+}

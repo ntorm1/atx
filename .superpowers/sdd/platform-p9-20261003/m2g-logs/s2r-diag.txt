@@ -1,0 +1,10 @@
+S2R-DIAG (S2R-2): smax / smax5 cells NaN under AuditExact and finite under ResearchFast (counts only)
+role build-equity/train-2020-2023-lo3/manifest.json sha256 e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4; score window = role sessions >= index 399
+
+smax: dsl f1a0e0f07c27a752; RF eval_mode 'ResearchFast;full-historical-asof-member-mask' vm dslvm1_clang18.1; AE eval_mode 'AuditExact;full-historical-asof-member-mask' vm dslvm1_clang18.1_opt_md_ndebug_xs13.0.0_audit
+  all sessions  cells 8320410: NaN AE & finite RF 0; finite AE & NaN RF 0; both NaN 6328780; both finite 1991630
+  score window  cells 5957532: NaN AE & finite RF 0; finite AE & NaN RF 0; both NaN 4188740; both finite 1768792
+
+smax5: dsl 7eec92bff4d0be02; RF eval_mode 'ResearchFast;full-historical-asof-member-mask' vm dslvm1_clang18.1; AE eval_mode 'AuditExact;full-historical-asof-member-mask' vm dslvm1_clang18.1_opt_md_ndebug_xs13.0.0_audit
+  all sessions  cells 8320410: NaN AE & finite RF 0; finite AE & NaN RF 0; both NaN 5830001; both finite 2490409
+  score window  cells 5957532: NaN AE & finite RF 0; finite AE & NaN RF 0; both NaN 4100337; both finite 1857195

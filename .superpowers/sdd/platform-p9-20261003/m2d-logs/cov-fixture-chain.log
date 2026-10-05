@@ -1,0 +1,13 @@
+exe sha256 3b955ba10b10c7c8 head 70104732
+== rel
+init 0
+files_seen 28 verified 25 declared 0 skipped 4
+catalog_digest d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69
+verify 0
+total checked 12 mismatches 0
+== abs
+init 0
+files_seen 28 verified 25 declared 0 skipped 4
+catalog_digest d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69
+verify 0
+total checked 12 mismatches 0

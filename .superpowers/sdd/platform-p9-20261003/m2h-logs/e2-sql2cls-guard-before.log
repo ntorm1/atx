@@ -1,0 +1,6 @@
+E       + {} : unregistered schema literals: add the schema to its class in atx-engine/schemas/research_store/classes.json (or a dated legacy_allow row): atx.research-wave/v2 in scripts/wave_kinds.py, scripts/wave_manifest.py
+
+atx-engine\tools\test_research_store_classes.py:114: AssertionError
+=========================== short test summary info ===========================
+FAILED atx-engine/tools/test_research_store_classes.py::ClassRegistryGuard::test_every_schema_literal_is_registered
+1 failed, 4 passed, 96 subtests passed in 2.13s

@@ -1,0 +1,38 @@
+    row 5 cell 593: Debug 4018efdb3362fe60 != correctly rounded 4018efdb3362fe61
+row 05 power(close, 0.5):
+    cells                                            706
+    debug==ucrtbased                                 706
+    release==ucrtbase                                706
+    debug!=release                                   1
+    debug cells moved by [sqrt / x*x / (x*x)*x]      1
+    release cells moved by [sqrt / x*x / (x*x)*x]    2
+    debug cells moved by [sqrt / x*x / x*(x*x)]      1
+    release cells moved by [sqrt / x*x / x*(x*x)]    2
+    debug cells moved by [correctly rounded]         1
+    release cells moved by [correctly rounded]       2
+    row 6 cell 186: Debug bf360968bb885c9a != correctly rounded bf360968bb885c9b
+    row 6 cell 201: Debug bf16c97100b18c2c != correctly rounded bf16c97100b18c2d
+    row 6 cell 255: Debug 3eeff84b1cf864ba != correctly rounded 3eeff84b1cf864bb
+row 06 signedpower(returns, 2):
+    cells                                            733
+    debug==ucrtbased                                 733
+    release==ucrtbase                                733
+    debug!=release                                   2
+    debug cells moved by [sqrt / x*x / (x*x)*x]      3
+    release cells moved by [sqrt / x*x / (x*x)*x]    1
+    debug cells moved by [sqrt / x*x / x*(x*x)]      3
+    release cells moved by [sqrt / x*x / x*(x*x)]    1
+    debug cells moved by [correctly rounded]         3
+    release cells moved by [correctly rounded]       1
+    row 83 cell 296: Debug 40fb9ad699a495e4 != correctly rounded 40fb9ad699a495e3
+row 83 close ^ 3:
+    cells                                            706
+    debug==ucrtbased                                 706
+    release==ucrtbase                                706
+    debug!=release                                   1
+    debug cells moved by [sqrt / x*x / (x*x)*x]      169
+    release cells moved by [sqrt / x*x / (x*x)*x]    168
+    debug cells moved by [sqrt / x*x / x*(x*x)]      169
+    release cells moved by [sqrt / x*x / x*(x*x)]    168
+    debug cells moved by [correctly rounded]         1
+    release cells moved by [correctly rounded]       0

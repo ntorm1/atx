@@ -1,0 +1,61 @@
+== preflight
+   preflight: manifest commit 9a353a950526, parent tiny (L 1.12), fields 395f82f7b34d, ledger 0 lines N 0, budget {'id': 'p9-kinds-fixture', 'construction_cap': 1000}
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2h-tw-eng0\waves\m2h-eng0\receipts\01-preflight.json
+== register
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2h-tw-eng0\waves\m2h-eng0\receipts\02-register.json
+== screen
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2h-tw-eng0\waves\m2h-eng0\receipts\03-screen.json
+== spec
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py lock scripts/specs/p9/kinds/templates/rule-composition-m2h-eng0.json --write --root C:/atx-wt/pool-2/build-equity/p9-m2h-tw-eng0
+git add -- scripts/specs/p9/kinds/templates/rule-composition-m2h-eng0.json
+git commit -q -m "wave m2h-eng0: rule cell rule-composition-m2h-eng0.json on tiny.json" -- scripts/specs/p9/kinds/templates/rule-composition-m2h-eng0.json
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2h-tw-eng0\waves\m2h-eng0\receipts\04-spec.json
+== run
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/p9/kinds/templates/rule-composition-m2h-eng0.json --stop-after w --root C:/atx-wt/pool-2/build-equity/p9-m2h-tw-eng0
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2h-tw-eng0\waves\m2h-eng0\receipts\05-run.json
+== match
+"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output waves/m2h-eng0/readers/mech-parent-run1 --bind scripts/wave_readers.py --bind tiny-nav/summary.json --bind tiny-nav/daily_linear-6bps-stale5-v1+swap-fin-v1.csv --bind tiny-nav/daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv --bind tiny-nav/daily_modeled-1bn-stale5-v1+flat-300-v0.csv --bind tiny-nav/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv --bind tiny-nav/daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv -- "C:/Program Files/Python312/python.exe" scripts/wave_readers.py mechanics --nav parent=tiny-nav --output waves/m2h-eng0/readers/mech-parent.json
+   gross (engine): G_parent 0.986692308059862 (mode pm6-6-engine, tolerance 0.005); nav --calibrate-gross
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py lock scripts/specs/p9/kinds/templates/rule-composition-m2h-eng0-cal.json --root C:/atx-wt/pool-2/build-equity/p9-m2h-tw-eng0
+git add -- scripts/specs/p9/kinds/templates/rule-composition-m2h-eng0-cal.json
+git commit -q -m "wave m2h-eng0: rule-composition-m2h-eng0-cal.json calibrated in one process (PM6-6, P9 C2)" -- scripts/specs/p9/kinds/templates/rule-composition-m2h-eng0-cal.json
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/p9/kinds/templates/rule-composition-m2h-eng0-cal.json --stop-after nav --root C:/atx-wt/pool-2/build-equity/p9-m2h-tw-eng0
+"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output waves/m2h-eng0/readers/mech-matched-run1 --bind scripts/wave_readers.py --bind tiny-nav-k-rule-gm/summary.json --bind tiny-nav-k-rule-gm/daily_linear-6bps-stale5-v1+swap-fin-v1.csv --bind tiny-nav-k-rule-gm/daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv --bind tiny-nav-k-rule-gm/daily_modeled-1bn-stale5-v1+flat-300-v0.csv --bind tiny-nav-k-rule-gm/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv --bind tiny-nav-k-rule-gm/daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv -- "C:/Program Files/Python312/python.exe" scripts/wave_readers.py mechanics --nav cell=tiny-nav-k-rule-gm --output waves/m2h-eng0/readers/mech-matched.json
+   calibrated: G 1.0419426343712663 at L 1.12 -> L 1.0606, G 0.9877841486160911 vs G_parent 0.986692308059862
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py lock scripts/specs/p9/kinds/templates/rule-composition-m2h-eng0-gm.json --root C:/atx-wt/pool-2/build-equity/p9-m2h-tw-eng0
+git add -- scripts/specs/p9/kinds/templates/rule-composition-m2h-eng0-gm.json
+git commit -q -m "wave m2h-eng0: rule-composition-m2h-eng0-gm.json at L 1.0606, the plain recipe of the calibrated NAV (PM6-6, P9 C2)" -- scripts/specs/p9/kinds/templates/rule-composition-m2h-eng0-gm.json
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2h-tw-eng0\waves\m2h-eng0\receipts\06-match.json
+== verify
+   mechanics gross_all_rows: 0.9877841486160911 [0.9, 1.05] -> pass
+   mechanics abs_net_all_rows: 0.0005979524206523631 <= 0.02 -> pass
+   mechanics tau_mean: 0.028836019046063307 <= 0.2 -> pass
+   mechanics tau_p95: 0.043619403227951256 <= 0.3 -> pass
+   mechanics max_return_identity_error: 2.305555919790425e-16 <= 1e-09 -> pass
+   mechanics max_cash_book_relative_error: 2.858545513317334e-15 <= 1e-09 -> pass
+
+research_cycle wave: HARD-STOP [verify]: verify: 2 date token(s) at or after the seal 2024-01-01 in ['waves/m2h-eng0/consoles/007-mechanics-reader.log', 'waves/m2h-eng0/consoles/012-mechanics-reader.log'] (inspect: a data date is a seal breach; a token that is not one is allowed by ruling: research_wave.py run ... --seal-allow TOKEN=RULING): stop for the PM's ruling (the cell ran; no ledger line was written)
+
+WAVE eng0 exit 4
+SEAL-HIT waves/m2h-eng0/consoles/007-mechanics-reader.log:7: 2026-10-04: "started_utc": "2026-10-04T22:06:09.823689+00:00",
+SEAL-HIT waves/m2h-eng0/consoles/012-mechanics-reader.log:7: 2026-10-04: "started_utc": "2026-10-04T22:06:12.712975+00:00",
+SEAL CHECK OK: every hit is a started_utc stamp; resuming with ['--seal-allow', '2026-10-04=SEAL-ALLOW']
+== preflight: done (01-preflight.json)
+== register: done (02-register.json)
+== screen: done (03-screen.json)
+== spec: done (04-spec.json)
+== run: done (05-run.json)
+== match: done (06-match.json)
+== verify
+   mechanics gross_all_rows: 0.9877841486160911 [0.9, 1.05] -> pass
+   mechanics abs_net_all_rows: 0.0005979524206523631 <= 0.02 -> pass
+   mechanics tau_mean: 0.028836019046063307 <= 0.2 -> pass
+   mechanics tau_p95: 0.043619403227951256 <= 0.3 -> pass
+   mechanics max_return_identity_error: 2.305555919790425e-16 <= 1e-09 -> pass
+   mechanics max_cash_book_relative_error: 2.858545513317334e-15 <= 1e-09 -> pass
+   mechanics PASS; binding 95b0e25b1c4c (spec 20f8451a571e); seal scan 29 log(s), 0 tokens; NAV exe 53ca5dd481a2 vs parent 53ca5dd481a2 (ref none)
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2h-tw-eng0\waves\m2h-eng0\receipts\07-verify.json
+== stopped after verify
+
+
+WAVE eng0 (resumed) exit 0

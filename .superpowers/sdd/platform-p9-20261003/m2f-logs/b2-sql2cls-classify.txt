@@ -1,0 +1,4 @@
+scratch catalog (atx-research-store p9-1u 3b955ba1, classes.json of the SQL2-CLS commit) over two synthetic files, --include each:
+path	class	json_schema
+evals/cell-eval.json	eval-output	atx.research-eval/v1
+waves/w1/ledger-head.json	ledger-head	atx.ledger-head/v1

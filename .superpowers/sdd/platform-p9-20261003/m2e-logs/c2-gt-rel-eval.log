@@ -1,0 +1,33 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = *StatsExt*:*Deflated*:*MinTrl*
+[==========] Running 10 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 4 tests from EvalMinTrl
+[ RUN      ] EvalMinTrl.MatchesBaileyLdpPaperExamples
+[       OK ] EvalMinTrl.MatchesBaileyLdpPaperExamples (0 ms)
+[ RUN      ] EvalMinTrl.FatTailsAndNegativeSkewLengthenTheRecord
+[       OK ] EvalMinTrl.FatTailsAndNegativeSkewLengthenTheRecord (0 ms)
+[ RUN      ] EvalMinTrl.UndefinedWhenSharpeDoesNotBeatBenchmark
+[       OK ] EvalMinTrl.UndefinedWhenSharpeDoesNotBeatBenchmark (0 ms)
+[ RUN      ] EvalMinTrl.PsrAtMinTrlEqualsConfidence
+[       OK ] EvalMinTrl.PsrAtMinTrlEqualsConfidence (0 ms)
+[----------] 4 tests from EvalMinTrl (0 ms total)
+
+[----------] 6 tests from EvalStatsExt
+[ RUN      ] EvalStatsExt.NormCdf_KnownPoints
+[       OK ] EvalStatsExt.NormCdf_KnownPoints (0 ms)
+[ RUN      ] EvalStatsExt.NormPpf_InvertsNormCdf
+[       OK ] EvalStatsExt.NormPpf_InvertsNormCdf (0 ms)
+[ RUN      ] EvalStatsExt.SkewKurt_SymmetricIsZero
+[       OK ] EvalStatsExt.SkewKurt_SymmetricIsZero (0 ms)
+[ RUN      ] EvalStatsExt.ExcessKurtosis_KnownValue
+[       OK ] EvalStatsExt.ExcessKurtosis_KnownValue (0 ms)
+[ RUN      ] EvalStatsExt.Median_EvenAndOdd
+[       OK ] EvalStatsExt.Median_EvenAndOdd (0 ms)
+[ RUN      ] EvalStatsExt.ReturnsFromEquity_SimpleSteps
+[       OK ] EvalStatsExt.ReturnsFromEquity_SimpleSteps (0 ms)
+[----------] 6 tests from EvalStatsExt (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 10 tests from 2 test suites ran. (0 ms total)
+[  PASSED  ] 10 tests.

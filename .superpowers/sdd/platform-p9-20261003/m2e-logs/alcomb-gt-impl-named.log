@@ -1,0 +1,62 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = ThemeHedgeRule.*:MomVolman.*:CompositionRules.*
+[==========] Running 23 tests from 3 test suites.
+[----------] Global test environment set-up.
+[----------] 6 tests from MomVolman
+[ RUN      ] MomVolman.RegisteredConstants
+[       OK ] MomVolman.RegisteredConstants (0 ms)
+[ RUN      ] MomVolman.StepVarianceClosedForm
+[       OK ] MomVolman.StepVarianceClosedForm (2 ms)
+[ RUN      ] MomVolman.ScheduleFromTheWeightsFile
+[       OK ] MomVolman.ScheduleFromTheWeightsFile (14 ms)
+[ RUN      ] MomVolman.SharedParseAndRefusals
+[       OK ] MomVolman.SharedParseAndRefusals (30 ms)
+[ RUN      ] MomVolman.TinyVolatilityGivesAFiniteScaleAndOverflowIsRefused
+[       OK ] MomVolman.TinyVolatilityGivesAFiniteScaleAndOverflowIsRefused (2 ms)
+[ RUN      ] MomVolman.SummaryTracePrintsTheScalePerBlock
+[       OK ] MomVolman.SummaryTracePrintsTheScalePerBlock (5 ms)
+[----------] 6 tests from MomVolman (58 ms total)
+
+[----------] 8 tests from CompositionRules
+[ RUN      ] CompositionRules.TableCoversEveryRule
+[       OK ] CompositionRules.TableCoversEveryRule (2 ms)
+[ RUN      ] CompositionRules.RecipeTextPinned
+[       OK ] CompositionRules.RecipeTextPinned (8 ms)
+[ RUN      ] CompositionRules.IncompatiblePairRefused
+[       OK ] CompositionRules.IncompatiblePairRefused (1 ms)
+[ RUN      ] CompositionRules.ThemeTableFromRegistry
+[       OK ] CompositionRules.ThemeTableFromRegistry (157 ms)
+[ RUN      ] CompositionRules.ListRulesJsonPinned
+[       OK ] CompositionRules.ListRulesJsonPinned (25 ms)
+[ RUN      ] CompositionRules.ParamsSchemaConstantsAreTheRegisteredOnes
+[       OK ] CompositionRules.ParamsSchemaConstantsAreTheRegisteredOnes (1 ms)
+[ RUN      ] CompositionRules.TwoSpeedRefusesAThemeOutsideTheTable
+[       OK ] CompositionRules.TwoSpeedRefusesAThemeOutsideTheTable (0 ms)
+[ RUN      ] CompositionRules.StageListIsTheV8CallSequence
+[       OK ] CompositionRules.StageListIsTheV8CallSequence (5 ms)
+[----------] 8 tests from CompositionRules (203 ms total)
+
+[----------] 9 tests from ThemeHedgeRule
+[ RUN      ] ThemeHedgeRule.RegisteredConstantsAndRow
+[       OK ] ThemeHedgeRule.RegisteredConstantsAndRow (0 ms)
+[ RUN      ] ThemeHedgeRule.FlagAbsentIdentity
+[       OK ] ThemeHedgeRule.FlagAbsentIdentity (2 ms)
+[ RUN      ] ThemeHedgeRule.BlockParseAndRefusals
+[       OK ] ThemeHedgeRule.BlockParseAndRefusals (3 ms)
+[ RUN      ] ThemeHedgeRule.BeforeTheFirstEstimateTheHedgeIsTheParent
+[       OK ] ThemeHedgeRule.BeforeTheFirstEstimateTheHedgeIsTheParent (6 ms)
+[ RUN      ] ThemeHedgeRule.AddThemeHedgedIsTheMassTimesTheKernel
+[       OK ] ThemeHedgeRule.AddThemeHedgedIsTheMassTimesTheKernel (8 ms)
+[ RUN      ] ThemeHedgeRule.StageWiringAndRefusals
+[       OK ] ThemeHedgeRule.StageWiringAndRefusals (23 ms)
+[ RUN      ] ThemeHedgeRule.TheTraceIsTheKernelRatioAtEachBlockStart
+[       OK ] ThemeHedgeRule.TheTraceIsTheKernelRatioAtEachBlockStart (13 ms)
+[ RUN      ] ThemeHedgeRule.SummaryTracePrintsTheHedgeRatiosPerBlock
+[       OK ] ThemeHedgeRule.SummaryTracePrintsTheHedgeRatiosPerBlock (17 ms)
+[ RUN      ] ThemeHedgeRule.SessionReturnsAreTheGuardedIntervalReturns
+[       OK ] ThemeHedgeRule.SessionReturnsAreTheGuardedIntervalReturns (0 ms)
+[----------] 9 tests from ThemeHedgeRule (77 ms total)
+
+[----------] Global test environment tear-down
+[==========] 23 tests from 3 test suites ran. (339 ms total)
+[  PASSED  ] 23 tests.

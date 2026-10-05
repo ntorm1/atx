@@ -1,0 +1,16 @@
+same   orientations.json 8d1a7f64
+same   recipe.json c248eff7
+DIFF   summary.json 0e3e87c2 vs 31ba2a7a: 278 leaves, 277 allowed, 1 outside
+         OUTSIDE /roles/*/ic_cache_bytes
+         allowed path classes: ['/roles/*/candidates/*/stage_seconds/cache_load', '/roles/*/candidates/*/stage_seconds/composition', '/roles/*/candidates/*/stage_seconds/ic', '/roles/*/candidates/*/wall_seconds', '/roles/*/hash_seconds', '/roles/*/stage_seconds/cache_load', '/roles/*/stage_seconds/composition', '/roles/*/stage_seconds/fields_verify', '/roles/*/stage_seconds/ic', '/roles/*/stage_seconds/label_preparation', '/roles/*/stage_seconds/load', '/roles/*/stage_seconds/save_combined']
+DIFF   train_candidates.jsonl 4e70b07a vs 5e83858f: 268 leaves, 268 allowed, 0 outside
+         allowed path classes: ['/stage_seconds/cache_load', '/stage_seconds/composition', '/stage_seconds/ic', '/wall_seconds']
+same   train_combined.f64 70d863f9
+same   train_combined.json e13fbc4d
+same   train_combined_finite.u8 c61f5b62
+same   train_combined_ids.u64 761bd1df
+same   train_combined_member.u8 c61f5b62
+same   train_combined_sessions.i64 ab244802
+same   train_daily_ic.csv 45261f20
+same   train_planned_targets.csv cb744a74
+TOTAL outside the list: 1

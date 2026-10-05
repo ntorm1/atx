@@ -1,0 +1,12 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = CovStageDigest.*
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from CovStageDigest
+[ RUN      ] CovStageDigest.DISABLED_DumpPerStageOnTheLaneFixture
+[       OK ] CovStageDigest.DISABLED_DumpPerStageOnTheLaneFixture (79357 ms)
+[----------] 1 test from CovStageDigest (79357 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (79358 ms total)
+[  PASSED  ] 1 test.

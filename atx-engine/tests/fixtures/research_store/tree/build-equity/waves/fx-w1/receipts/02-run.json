@@ -1,0 +1,17 @@
+{
+  "chain": "fx-w1",
+  "index": 2,
+  "inputs": {
+    "previous_receipt_sha256": "511cc0a58c030c9a30ff5a74f023361ecc199413ec3988e8e70599921d03e710"
+  },
+  "outputs": {
+    "runs": [
+      "fx-nav-run1"
+    ]
+  },
+  "schema": "atx.stage-receipt/v1",
+  "seconds": 1.5,
+  "stage": "run",
+  "started_utc": "2023-06-01T00:00:01+00:00",
+  "status": "ok"
+}

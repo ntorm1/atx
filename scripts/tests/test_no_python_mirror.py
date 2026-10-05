@@ -42,21 +42,25 @@ COMPOSITION = "composition fit mirror (composition review table rows 1-5b)"
 # (module, symbols, rule, C++ that decides it, retired_by). Frozen at FROZEN_AT: delete rows or symbols, never add.
 ALLOWLIST = (
     # P9 B2 retired the statistics-of-record rows (backtest_integrity.py, nav_summ.py, dsr_total.py): atx-research-eval.
+    # P9 ruling D2-3: ew-theme-aim-v2 and the theme-resid diagnostics had no C++ path at D2's merge, so the
+    # composition_*.py deletion (and with it these rows) moved to lane D3; D2 wired the C++ fit behind --engine-fit.
     ("atx-impl/tools/composition_rules.py",
      ("ew_theme_std", "ew_theme_aim_v2", "tier_weights", "member_cap", "theme_gain_weights"), COMPOSITION,
-     "atx-impl/src/strategy_ic_composition.cpp over engine combine/group_rerank.hpp", "D2"),
+     "atx-impl/src/strategy_ic_composition.cpp over engine combine/group_rerank.hpp", "D3"),
     ("atx-impl/tools/composition_resid.py", ("centred_tied_ranks", "tie_block_means"), COMPOSITION,
-     "atx-impl/src/strategy_ic_theme_resid.cpp over engine combine/group_residualise.hpp", "D2"),
+     "atx-impl/src/strategy_ic_theme_resid.cpp over engine combine/group_residualise.hpp", "D3"),
     ("atx-impl/tools/composition_theme_erc.py", ("erc_shares", "theme_erc"), COMPOSITION,
-     "atx-impl/src/strategy_ic_theme_erc.cpp over engine combine/group_erc.hpp", "D2"),
+     "atx-impl/src/strategy_ic_theme_erc.cpp over engine combine/group_erc.hpp", "D3"),
     ("atx-impl/tools/composition_ic_shrink.py", ("shrunk_shares", "ic_shrink"), COMPOSITION,
-     "atx-impl/src/strategy_ic_shrink.cpp over engine combine/group_shrink.hpp", "D2"),
+     "atx-impl/src/strategy_ic_shrink.cpp over engine combine/group_shrink.hpp", "D3"),
     ("atx-impl/tools/fit_composition_weights.py", ("newey_west_t", "screen_v4"),
      "admission screen and its Newey-West t (composition review table row 7)",
-     "new in B1 (atx-engine research/admission on eval/hac.hpp); the fitter is wired to it by D2", "D2"),
+     "new in B1 (atx-engine research/admission on eval/hac.hpp); the fitter is wired to it by D2", "D3"),
+    # P9 ruling D2-5: horizon_stats.py stays through P9 (its code is part of every factor record's key, so removing
+    # it would move keys under pinned records): a named G-P5 exception, retired in P10.
     ("atx-impl/tools/horizon_stats.py", ("theta_weights", "ic_theta", "theta_book_returns"),
      "aim-partial theta of strategy_target_replay.cpp (G-P5 names horizon_stats.py; plan section 2.2 names no owner: "
-     "D2 owns the fitter that imports it)", "atx-impl/src/strategy_target_replay.cpp", "D2"),
+     "D2 owns the fitter that imports it)", "atx-impl/src/strategy_target_replay.cpp", "P10"),
     ("scripts/wave_rules.py", ("matched_leverage", "gross_matches"), "gross-match rule PM6-6 (wave_rules.py:110-119)",
      "new in C2 (atx-equity-strategy-targets nav --calibrate-gross)", "C2"),
     ("scripts/wave_rules.py", ("sign_pm7_35",), "PM7-35 sign rule (P9 ruling P9: kept in wave 1)",
@@ -65,6 +69,11 @@ ALLOWLIST = (
      "P9 list)", "new in B2 (atx-research-eval paired block)", "P10"),
     ("python/src/atxpy/pbo.py", ("cscv_pbo",), "atxpy's standalone pandas CSCV (outside the P9 list)",
      "atx-engine/include/atx/engine/eval/pbo.hpp (bound as atxpy._core.pbo_cscv)", "P10"),
+    # P9 wave-2 carry "A2 note" (preflight section 5 row 5), added by lane E2: the seal rule of a reused fields
+    # manifest is A1's Python and A2's C++; the Python builder keeps its copy until its fields move to C++ (P10)
+    ("atx-engine/tools/prepare_research_fields.py", ("require_research_seal",),
+     "seal rule of a reused fields manifest (A1 Python, A2 C++; preflight section 5 row 5)",
+     "atx-engine/include/atx/engine/research/fields/reuse.hpp", "P10"),
 )
 # The (module, symbol) pairs of ALLOWLIST at FROZEN_AT. The live rows must stay a subset (a retired pair cannot come
 # back, and a row cannot be swapped for a new one); the rule names to detect come from here, so retiring a row never
@@ -83,6 +92,7 @@ FROZEN_PAIRS = frozenset((module, symbol) for module, symbols in (
     ("scripts/wave_rules.py", "matched_leverage gross_matches sign_pm7_35"),
     ("atx-impl/tools/mega_report/data.py", "memmel_se"),
     ("python/src/atxpy/pbo.py", "cscv_pbo"),
+    ("atx-engine/tools/prepare_research_fields.py", "require_research_seal"),   # ruled row (wave-2 carry, A2 note)
 ) for symbol in symbols.split())
 # (module, symbol): wrappers that call the C++ core, checked to still do so.
 BINDINGS = {("python/src/atxpy/eval.py", "deflated_sharpe"): "_core.deflated_sharpe("}

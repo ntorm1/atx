@@ -1,0 +1,7 @@
+log (u in (0,1], Box-Muller)                  log  : 0 of 200000 differ
+sin (2 pi u)                                  sin  : 0 of 200000 differ
+cos (2 pi u)                                  cos  : 0 of 200000 differ
+exp (x in [-12, 2], ln-vol / caps)            exp  : 0 of 200000 differ
+log (x in [1e-6, 1e13], caps / adv / sigma)   log  : 0 of 200000 differ
+exp2 (x in [-1, 0])                           exp2 : 76499 of 200000 differ
+sqrt (x in [1e-12, 1])                        sqrt : 0 of 200000 differ

@@ -1,0 +1,14 @@
+== build-equity/bin/atx-equity-strategy-risk.exe
+ucrtbased.dll 1069 cos
+ucrtbased.dll 1105 exp
+ucrtbased.dll 1106 exp2
+ucrtbased.dll 1221 log
+ucrtbased.dll 1272 pow
+ucrtbased.dll 1312 sin
+== build-equity-rel/bin/atx-equity-strategy-risk.exe
+api-ms-win-crt-math-l1-1-0.dll 144 cos
+api-ms-win-crt-math-l1-1-0.dll 178 exp
+api-ms-win-crt-math-l1-1-0.dll 179 exp2
+api-ms-win-crt-math-l1-1-0.dll 218 log
+api-ms-win-crt-math-l1-1-0.dll 254 pow
+api-ms-win-crt-math-l1-1-0.dll 274 sin

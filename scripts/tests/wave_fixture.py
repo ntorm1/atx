@@ -25,6 +25,7 @@ import research_spec  # noqa: E402
 import research_tree  # noqa: E402
 import wave_manifest as WM  # noqa: E402
 import wave_readers  # noqa: E402
+import wave_rules as WR  # noqa: E402
 
 BI = research_ledger.backtest_integrity()
 LEDGER = "out/trials.jsonl"
@@ -103,9 +104,17 @@ def sessions(n: int) -> list[int]:
     return out
 
 
+def nav_gross(gross: float, rows: int = 300) -> float:
+    """The all-rows S2 gross the mechanics reader reads from write_nav(gross)'s daily CSV (numpy's mean of its values,
+    which round-trip through the CSV): the G of a synthetic NAV (P9 C2's fake calibration)."""
+    import numpy as np  # noqa: PLC0415
+    return float(np.array([gross + 0.01 * math.sin(k / 7.0) for k in range(rows)], dtype=np.float64).mean())
+
+
 def write_nav(root: Path, nav: str, gross: float, *, drift: float = 2e-4, net_lev: float = 0.001, rows: int = 300,
-              x4: float = 1.1, accounting: float = 1e-14) -> None:
-    """A synthetic NAV output dir: summary.json (primary s2), daily_s2.csv, capacity_curve.csv."""
+              x4: float = 1.1, accounting: float = 1e-14, calibration: dict | None = None) -> None:
+    """A synthetic NAV output dir: summary.json (primary s2; P9 C2: the calibration record when given),
+    daily_s2.csv, capacity_curve.csv."""
     cols = ["session_ns", "return_observation", "executed", "traded_dollars", "pretrade_gross_dollars",
             "one_way_turnover_gmv", "gross_leverage", "net_leverage", "trade_cost_dollars", "pretrade_nav",
             "held_names", "net_return"]
@@ -125,8 +134,10 @@ def write_nav(root: Path, nav: str, gross: float, *, drift: float = 2e-4, net_le
                                   "tolerance": 1e-9},
             "meets_daily_turnover_mean": True, "meets_daily_turnover_p95": True,
             "construction": {"v5": {"aim_leverage": 1.0}}, "daily_turnover_gmv": {"mean": 0.02}}
-    write_json(root, f"{nav}/summary.json", {"primary_scenario": "s2", "rule": "aim-partial-v5", "status": "complete",
-                                             "scenarios": [scen]})
+    summary = {"primary_scenario": "s2", "rule": "aim-partial-v5", "status": "complete", "scenarios": [scen]}
+    if calibration is not None:
+        summary["calibration"] = calibration
+    write_json(root, f"{nav}/summary.json", summary)
     cap = "multiple,book,net_sharpe\n" + "".join(f"{m},s2,{x4 if m == 4 else 1.0}\n" for m in (0.5, 1, 2, 4, 8))
     write(root, f"{nav}/capacity_curve.csv", cap)
 
@@ -277,11 +288,21 @@ class FakeCycle:
                                                   for r in listed], chain=True)
             return self.ok(args, self.gate_exit)
         nav = c.out(spec["nav"]["output"])
+        if "--stop-after" in args and args[args.index("--stop-after") + 1] == "w":
+            w_out = f"{c.out(spec['ic']['w_output'])}-1"     # P9 C2 engine mode: the cell's inputs, no NAV
+            if not (self.root / w_out / "summary.json").is_file():
+                write_json(self.root, f"{w_out}/summary.json", {"status": "complete"})
+                write_json(self.root, f"{w_out}/train_combined.json", {"combined": spec["name"]})
+            return self.ok(args)
         if "--stop-after" in args:
             base = spec["name"][:-3] if spec["name"].endswith("-gm") else spec["name"]
-            gross = self.gross_per_l.get(base, 0.9862 / 1.1474) * float(spec["nav"]["leverage"])
+            per_l = self.gross_per_l.get(base, 0.9862 / 1.1474)
+            gross = per_l * float(spec["nav"]["leverage"])
             drift = 3e-4 + int(sha(base.encode()), 16) % 100003 * 1e-9          # each cell its own series
-            write_nav(self.root, nav, gross, accounting=self.accounting, drift=drift)
+            calibration = self.calibrate(spec["nav"], per_l)
+            if calibration is not None:
+                gross = per_l * calibration["leverage"]
+            write_nav(self.root, nav, gross, accounting=self.accounting, drift=drift, calibration=calibration)
             run_dir, k = f"{nav}-run", 2                                 # research_cycle: -run, then -run<k>
             while (self.root / run_dir).exists():
                 run_dir, k = f"{nav}-run{k}", k + 1
@@ -306,6 +327,24 @@ class FakeCycle:
         sr = json.loads((self.root / nav / "summary.json").read_text())["scenarios"][0]["net_sharpe"]
         BI.ledger_append(self.root / LEDGER, [construction_line(nav, sha(daily), sr)], chain=True)
         return self.ok(args)
+
+    @staticmethod
+    def calibrate(nav: dict, per_l: float) -> dict | None:
+        """P9 C2's nav --calibrate-gross on the synthetic NAV (G(L) = nav_gross(per_l x L)): pass 1 at L, PM6-6's one
+        correction, the record the exe writes into summary.json; None without the flag."""
+        flags = [str(f) for f in nav.get("flags") or []]
+        if "--calibrate-gross" not in flags:
+            return None
+        target = float(flags[flags.index("--calibrate-gross") + 1])
+        tol = float(flags[flags.index("--calibrate-tolerance") + 1]) if "--calibrate-tolerance" in flags else 0.005
+        lev = float(nav["leverage"])
+        g1 = nav_gross(per_l * lev)
+        corrected = abs(g1 - target) > tol
+        final = float(WR.matched_leverage(lev, target, g1)) if corrected else lev
+        g2 = nav_gross(per_l * final)
+        return {"target": target, "tolerance": tol, "leverage_requested": lev, "gross_requested": g1,
+                "corrected": corrected, "leverage": final, "gross": g2, "matched": abs(g2 - target) <= tol,
+                "construction_reused": True, "rule": "fake"}
 
     def add_alpha(self, args: list[str]):
         a = {args[k]: args[k + 1] for k in range(len(args) - 1) if args[k].startswith("--")}

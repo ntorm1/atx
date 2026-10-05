@@ -1,0 +1,39 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = BookNormalScore.*:*DecayMonitor*
+[==========] Running 13 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 8 tests from DecayMonitor
+[ RUN      ] DecayMonitor.DemotesPlantedDecayingAlpha
+[       OK ] DecayMonitor.DemotesPlantedDecayingAlpha (0 ms)
+[ RUN      ] DecayMonitor.DoesNotDemoteStableAlpha
+[       OK ] DecayMonitor.DoesNotDemoteStableAlpha (0 ms)
+[ RUN      ] DecayMonitor.PageHinkleyDetectsLevelShift
+[       OK ] DecayMonitor.PageHinkleyDetectsLevelShift (0 ms)
+[ RUN      ] DecayMonitor.MinTrlMatchesClosedForm
+[       OK ] DecayMonitor.MinTrlMatchesClosedForm (0 ms)
+[ RUN      ] DecayMonitor.EarlyObsCannotConcludeDecay
+[       OK ] DecayMonitor.EarlyObsCannotConcludeDecay (0 ms)
+[ RUN      ] DecayMonitor.CostFloodedIsNotDecay
+[       OK ] DecayMonitor.CostFloodedIsNotDecay (0 ms)
+[ RUN      ] DecayMonitor.DemotesDecayAcrossSeeds
+[       OK ] DecayMonitor.DemotesDecayAcrossSeeds (0 ms)
+[ RUN      ] DecayMonitor.NeverDemotesStableAcrossSeeds
+[       OK ] DecayMonitor.NeverDemotesStableAcrossSeeds (1 ms)
+[----------] 8 tests from DecayMonitor (2 ms total)
+
+[----------] 5 tests from BookNormalScore
+[ RUN      ] BookNormalScore.FourDistinctNamesAreThePublishedQuantiles
+[       OK ] BookNormalScore.FourDistinctNamesAreThePublishedQuantiles (0 ms)
+[ RUN      ] BookNormalScore.TiesShareTheMeanRankAndMirrorsAreOpposite
+[       OK ] BookNormalScore.TiesShareTheMeanRankAndMirrorsAreOpposite (0 ms)
+[ RUN      ] BookNormalScore.FixtureTellsWrongRulesApart
+[       OK ] BookNormalScore.FixtureTellsWrongRulesApart (0 ms)
+[ RUN      ] BookNormalScore.NormPpfOfALiteralIsItsRunTimeValue
+[       OK ] BookNormalScore.NormPpfOfALiteralIsItsRunTimeValue (0 ms)
+[ RUN      ] BookNormalScore.ShortRowsWriteNothingAndRefusalsWriteNothing
+[       OK ] BookNormalScore.ShortRowsWriteNothingAndRefusalsWriteNothing (0 ms)
+[----------] 5 tests from BookNormalScore (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 13 tests from 2 test suites ran. (3 ms total)
+[  PASSED  ] 13 tests.

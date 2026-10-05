@@ -1,0 +1,24 @@
+{
+  "dates": 260,
+  "files": {
+    "ids.u64": {
+      "bytes": 72,
+      "sha256": "6d38d6f198d2ef424d8e370ce4df36f26ee09b43f2ad06708de56f9224813dc3"
+    },
+    "member.u8": {
+      "bytes": 2340,
+      "sha256": "b821e07de822c30c728aac1baaa648cc79be6e8059c3ac03f26458b7d0941403"
+    },
+    "sessions.i64": {
+      "bytes": 2080,
+      "sha256": "5b28b041f463243d6458f4ad4a1e1069fe1fd3c788db73d49a3017cfe8f2356d"
+    }
+  },
+  "instrument_namespace": "spiderrock.securityID",
+  "instruments": 9,
+  "schema": "atx.recent-research-role/v1",
+  "score_begin": 0,
+  "score_end": 260,
+  "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "status": "complete"
+}

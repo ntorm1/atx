@@ -1,0 +1,88 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = CovTruncation.*:CovEigen.*:CovRecipe.*:CovStore.*:CovBias.*:CovDiff.*
+[==========] Running 29 tests from 6 test suites.
+[----------] Global test environment set-up.
+[----------] 4 tests from CovTruncation
+[ RUN      ] CovTruncation.BlocksBeforeTheCutAreByteIdentical
+[       OK ] CovTruncation.BlocksBeforeTheCutAreByteIdentical (1152 ms)
+[ RUN      ] CovTruncation.PerturbedFutureLeavesThePastUnchanged
+[       OK ] CovTruncation.PerturbedFutureLeavesThePastUnchanged (559 ms)
+[ RUN      ] CovTruncation.FutureInstrumentsDoNotMoveThePast
+[       OK ] CovTruncation.FutureInstrumentsDoNotMoveThePast (440 ms)
+[ RUN      ] CovTruncation.DetectsAPlantedLeak
+[       OK ] CovTruncation.DetectsAPlantedLeak (1334 ms)
+[----------] 4 tests from CovTruncation (3487 ms total)
+
+[----------] 8 tests from CovEigen
+[ RUN      ] CovEigen.RecipeV11IsBitIdenticalToToday
+[       OK ] CovEigen.RecipeV11IsBitIdenticalToToday (39 ms)
+[ RUN      ] CovEigen.ZeroSimulationsEqualsV11
+[       OK ] CovEigen.ZeroSimulationsEqualsV11 (39 ms)
+[ RUN      ] CovEigen.SmallEigenfactorsInflatedLargeNearOne
+[       OK ] CovEigen.SmallEigenfactorsInflatedLargeNearOne (15 ms)
+[ RUN      ] CovEigen.SeededPerSessionAndWorkerInvariant
+[       OK ] CovEigen.SeededPerSessionAndWorkerInvariant (6 ms)
+[ RUN      ] CovEigen.StructuralBorderAndPdScalingApplied
+[       OK ] CovEigen.StructuralBorderAndPdScalingApplied (478 ms)
+[ RUN      ] CovEigen.VraReadsTheAdjustedPrior
+[       OK ] CovEigen.VraReadsTheAdjustedPrior (524 ms)
+[ RUN      ] CovEigen.ResultIsPositiveDefinite
+[       OK ] CovEigen.ResultIsPositiveDefinite (434 ms)
+[ RUN      ] CovEigen.LowersTrueRiskOfTheEstimatedMinVariancePortfolio
+[       OK ] CovEigen.LowersTrueRiskOfTheEstimatedMinVariancePortfolio (57 ms)
+[----------] 8 tests from CovEigen (1595 ms total)
+
+[----------] 6 tests from CovBias
+[ RUN      ] CovBias.EigenFamilyInBandOnAPlantedModel
+[eigen b per rank] band panel atx-cov-v1: eigen-00=1.013 (T 469) eigen-01=0.998 (T 469) eigen-02=1.013 (T 469) eigen-03=1.020 (T 469) eigen-04=0.993 (T 469) eigen-05=1.021 (T 469) eigen-06=1.009 (T 469) | pooled 1.009 +- 0.025 (N 3283), in band 7/7, excluded at the floor 0
+[eigen b per rank] band panel atx-risk-v1.1: eigen-00=1.181 (T 469) eigen-01=1.108 (T 469) eigen-02=1.104 (T 469) eigen-03=1.084 (T 469) eigen-04=1.039 (T 469) eigen-05=1.036 (T 469) eigen-06=0.996 (T 469) | pooled 1.080 +- 0.025 (N 3283), in band 3/7, excluded at the floor 0
+[eigen b per rank] band panel atx-cov-v1 a=0.5 (negative control): eigen-00=1.085 (T 469) eigen-01=1.051 (T 469) eigen-02=1.058 (T 469) eigen-03=1.054 (T 469) eigen-04=1.015 (T 469) eigen-05=1.024 (T 469) eigen-06=1.007 (T 469) | pooled 1.042 +- 0.025 (N 3283), in band 6/7, excluded at the floor 0
+[eigen b per rank] churn panel atx-cov-v1: eigen-00=6.088 (T 119) eigen-01=2.156 (T 119) eigen-02=1.501 (T 119) eigen-03=1.258 (T 119) eigen-04=1.127 (T 119) eigen-05=1.289 (T 119) eigen-06=0.972 (T 119) eigen-07=1.182 (T 119) eigen-08=1.103 (T 119) eigen-09=0.926 (T 119) eigen-10=0.927 (T 119) eigen-11=0.863 (T 119) eigen-12=0.770 (T 109) | pooled 2.061 +- 0.036 (N 1537), in band 5/13, excluded at the floor 0
+[eigen b per rank] churn panel atx-risk-v1.1: eigen-00=7.123 (T 119) eigen-01=2.431 (T 119) eigen-02=1.689 (T 119) eigen-03=1.323 (T 119) eigen-04=1.112 (T 119) eigen-05=1.226 (T 119) eigen-06=1.017 (T 119) eigen-07=1.253 (T 119) eigen-08=1.033 (T 119) eigen-09=0.949 (T 119) eigen-10=0.815 (T 119) eigen-11=0.821 (T 119) eigen-12=0.673 (T 109) | pooled 2.327 +- 0.036 (N 1537), in band 4/13, excluded at the floor 0
+[       OK ] CovBias.EigenFamilyInBandOnAPlantedModel (2763 ms)
+[ RUN      ] CovBias.MinVarAndOptimizedUseCompleteForecastsOnly
+[       OK ] CovBias.MinVarAndOptimizedUseCompleteForecastsOnly (550 ms)
+[ RUN      ] CovBias.MissingReturnCountsZeroNeverRenormalised
+[       OK ] CovBias.MissingReturnCountsZeroNeverRenormalised (644 ms)
+[ RUN      ] CovBias.V1FamiliesBytesUnchanged
+[       OK ] CovBias.V1FamiliesBytesUnchanged (561 ms)
+[ RUN      ] CovBias.MinVarAndOptimizedEqualTheDenseInverseOnSmallN
+[       OK ] CovBias.MinVarAndOptimizedEqualTheDenseInverseOnSmallN (0 ms)
+[ RUN      ] CovBias.UnformedExtendedBooksAreCounted
+[       OK ] CovBias.UnformedExtendedBooksAreCounted (0 ms)
+[----------] 6 tests from CovBias (4520 ms total)
+
+[----------] 4 tests from CovRecipe
+[ RUN      ] CovRecipe.LegacyRecipeContainerEqualsDirectoryStore
+[       OK ] CovRecipe.LegacyRecipeContainerEqualsDirectoryStore (930 ms)
+[ RUN      ] CovRecipe.FlagsAbsentOutputsUnchanged
+[       OK ] CovRecipe.FlagsAbsentOutputsUnchanged (1001 ms)
+[ RUN      ] CovRecipe.ManifestNamesTheContainerRoot
+[       OK ] CovRecipe.ManifestNamesTheContainerRoot (537 ms)
+[ RUN      ] CovRecipe.CovV1RecipeRecorded
+[       OK ] CovRecipe.CovV1RecipeRecorded (2912 ms)
+[----------] 4 tests from CovRecipe (5382 ms total)
+
+[----------] 5 tests from CovStore
+[ RUN      ] CovStore.RiskSliceFromContainerEqualsDirectory
+[       OK ] CovStore.RiskSliceFromContainerEqualsDirectory (722 ms)
+[ RUN      ] CovStore.VolAndRiskTargetRecordsUnchanged
+[       OK ] CovStore.VolAndRiskTargetRecordsUnchanged (159 ms)
+[ RUN      ] CovStore.RefusesRoleGeometryOrRootMismatch
+[       OK ] CovStore.RefusesRoleGeometryOrRootMismatch (133 ms)
+[ RUN      ] CovStore.RefusesAContainerReachingTheSealWithoutUnseal
+[       OK ] CovStore.RefusesAContainerReachingTheSealWithoutUnseal (70 ms)
+[ RUN      ] CovStore.LegacyManifestTakesTheLegacyPath
+[       OK ] CovStore.LegacyManifestTakesTheLegacyPath (56 ms)
+[----------] 5 tests from CovStore (1141 ms total)
+
+[----------] 2 tests from CovDiff
+[ RUN      ] CovDiff.ThroughSessionReportsTheFirstDifferingBlock
+[       OK ] CovDiff.ThroughSessionReportsTheFirstDifferingBlock (1072 ms)
+[ RUN      ] CovDiff.LegacyModeComparesBitForBit
+[       OK ] CovDiff.LegacyModeComparesBitForBit (617 ms)
+[----------] 2 tests from CovDiff (1690 ms total)
+
+[----------] Global test environment tear-down
+[==========] 29 tests from 6 test suites ran. (17819 ms total)
+[  PASSED  ] 29 tests.

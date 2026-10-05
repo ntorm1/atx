@@ -4,7 +4,8 @@
 //   Closed form on four distinct names (u = .2, .4, .6, .8: the published Phi^{-1} values), a tie
 //   block sharing one score at its mean rank, mirrored blocks of opposite sign, names outside the
 //   row untouched, a row of one written nothing; wrong rules told apart (the uniform rank, Blom's
-//   (r - 3/8) / (n + 1/4), the rank over n); refusals before any write.
+//   (r - 3/8) / (n + 1/4), the rank over n); refusals before any write; Phi^{-1} of a literal is
+//   its run-time value bit for bit (M1c-RED: the same bits in Debug and Release).
 //
 // Suite: BookNormalScore
 
@@ -83,6 +84,26 @@ TEST(BookNormalScore, FixtureTellsWrongRulesApart) {
   EXPECT_GT(std::abs(top - blom), 1e-3);
   EXPECT_GT(std::abs(top - over_n), 1e-3);
   EXPECT_GT(std::abs(top - 0.5), 1.0);     // the uniform tied rank of the top name
+}
+
+// norm_ppf of p read through a volatile: a value the optimizer can never fold.
+static f64 norm_ppf_at_run_time(f64 p) {
+  volatile f64 opaque = p;
+  return atx::engine::eval::norm_ppf(opaque);
+}
+
+// M1c-RED (P9 C2): a call on a compile-time constant, which Release folds, returns the run-time
+// value bit for bit. With fmuladd-contracted polynomials Release folded them fused (one rounding)
+// while the run-time call rounded twice: 10/12 and 1001/1002 differed by 1 ULP in Release only.
+TEST(BookNormalScore, NormPpfOfALiteralIsItsRunTimeValue) {
+  namespace ev = atx::engine::eval;
+  EXPECT_EQ(ev::norm_ppf(10.0 / 12.0), norm_ppf_at_run_time(10.0 / 12.0));       // central
+  EXPECT_EQ(ev::norm_ppf(5.0 / 12.0), norm_ppf_at_run_time(5.0 / 12.0));
+  EXPECT_EQ(ev::norm_ppf(1001.0 / 1002.0), norm_ppf_at_run_time(1001.0 / 1002.0)); // upper tail
+  EXPECT_EQ(ev::norm_ppf(1000.625 / 1001.25), norm_ppf_at_run_time(1000.625 / 1001.25)); // Blom
+  EXPECT_EQ(ev::norm_ppf(1000.5 / 1001.0), norm_ppf_at_run_time(1000.5 / 1001.0)); // rank over n
+  EXPECT_EQ(ev::norm_ppf(0.01), norm_ppf_at_run_time(0.01));                       // lower tail
+  EXPECT_EQ(ev::norm_ppf(1.0 / 1002.0), norm_ppf_at_run_time(1.0 / 1002.0));
 }
 
 TEST(BookNormalScore, ShortRowsWriteNothingAndRefusalsWriteNothing) {

@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+import functools
 import hashlib
 import json
 import math
@@ -57,6 +58,13 @@ from pathlib import Path
 import sys
 
 import numpy as np
+
+# The AST producer fingerprints of atx-engine/tools (P9 lane D2, CM-5 and ruling D2-2: each composition module's
+# provenance block names the code that wrote it by its producer fingerprint, not by the whole file's SHA-256).
+ENGINE_TOOLS = Path(__file__).resolve().parents[2] / "atx-engine" / "tools"
+if str(ENGINE_TOOLS) not in sys.path:
+    sys.path.append(str(ENGINE_TOOLS))
+import code_fingerprint  # noqa: E402
 
 STD_RULE_ID = "ew-theme-std-v1"
 STD_AIM_RULE_ID = "ew-theme-std-aim-v1"   # R-3 on the R-1 rule (Ruling E-27); the runner block stays STD_RULE_ID
@@ -121,8 +129,34 @@ def _require(condition, message: str, error: type[Exception]) -> None:
         raise error(message)
 
 
-def module_sha256() -> str:
-    return hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
+# Ruling D2-2: the composition modules whose code a producer closure may read across modules (finding FD-2).
+LOCAL_MODULES = ("composition_rules", "composition_ic_shrink", "composition_theme_erc", "composition_theme_tsmom",
+                 "composition_resid", "composition_engine_fit")
+# The functions that write this module's provenance blocks (provenance.std, provenance.std_identity) and attach them.
+PRODUCERS = ("ew_theme_std", "identity_document", "attach_std")
+
+
+@functools.lru_cache(maxsize=None)
+def module_fingerprint(path: str, entries: tuple) -> str:
+    """Ruling D2-2 (CM-5 for the composition modules): SHA-256 over the producer fingerprint of ``entries`` in the
+    module at ``path`` (code_fingerprint: the AST closure, so comments, docstrings and formatting do not count) and, for
+    each other composition module that closure reads (code_fingerprint.cross_module_reads), that module's fingerprint
+    of the names it reads. Any code or constant the block's numbers depend on moves it; nothing else does."""
+    here = Path(path).resolve()
+    source = here.read_bytes()
+    try:
+        reads = code_fingerprint.cross_module_reads(source, tuple(entries), LOCAL_MODULES)
+        doc = {"module": here.name, "producer": code_fingerprint.fingerprint(source, tuple(entries)),
+               "reads": {m: module_fingerprint(str(here.with_name(f"{m}.py")), tuple(names))
+                         for m, names in reads.items()}}
+    except ValueError as exc:
+        raise RuleError(f"producer fingerprint of {here.name}: {exc}") from exc
+    return hashlib.sha256(json.dumps(doc, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def producer_fingerprint() -> str:
+    """This module's provenance identity (ruling D2-2; module_sha256, the whole file's SHA-256, before P9 lane D2)."""
+    return module_fingerprint(__file__, PRODUCERS)
 
 
 # ---------------------------------------------------------------- tiers
@@ -267,10 +301,13 @@ class StdFit:
 
 
 def ew_theme_std(ids: list[str], themes: list[str], prior_tiers: list, registry_path: Path | None = None,
-                 error: type[Exception] = RuleError, gains: list[float] | None = None) -> StdFit:
+                 error: type[Exception] = RuleError, gains: list[float] | None = None,
+                 engine: tuple | None = None) -> StdFit:
     """ew-theme-std-v1 weights over the members that take part (admitted, non-degenerate), in input order; with
     ``gains`` (the members' aim gains, same order) ew-theme-std-aim-v1: each tier score times its gain inside the
-    theme (each theme still 1/T before the cap). Gains of 1 give the ew-theme-std-v1 weights bit for bit."""
+    theme (each theme still 1/T before the cap). Gains of 1 give the ew-theme-std-v1 weights bit for bit. ``engine``
+    (the fitter's --engine-fit, ruling D2-1): theme_gain_weights' (weights, uncapped, passes, cap) as the C++ fit
+    computed them (composition_engine_fit.kernels), written in place of this function's own; None: computed here."""
     _require(len(ids) == len(themes) == len(prior_tiers) and ids, "ew-theme-std-v1: members, themes and tiers differ "
                                                                   "in length or are empty", error)
     if gains is not None:
@@ -282,8 +319,11 @@ def ew_theme_std(ids: list[str], themes: list[str], prior_tiers: list, registry_
     unscored = [f"{i}:{t}" for i, t in zip(ids, tiers) if t not in table]
     _require(not unscored, f"ew-theme-std-v1: tiers without a declared score {sorted(table)}: {unscored}", error)
     scores = [float(table[t]) for t in tiers]
-    weights, uncapped, passes, cap = theme_gain_weights(
-        themes, scores if gains is None else [s * float(g) for s, g in zip(scores, gains)], error)
+    if engine is None:
+        weights, uncapped, passes, cap = theme_gain_weights(
+            themes, scores if gains is None else [s * float(g) for s, g in zip(scores, gains)], error)
+    else:
+        weights, uncapped, passes, cap = engine
     present = sorted(set(themes))
     capped = {k for it in passes for k in it["capped"]}
     iterations = [{"capped": [ids[k] for k in it["capped"]], "excess_by_theme": it["excess_by_theme"]} for it in passes]
@@ -323,7 +363,7 @@ def ew_theme_std(ids: list[str], themes: list[str], prior_tiers: list, registry_
         "runner": ("atx-equity-strategy-ic theme_standardise {rule, rerank: true, themes}: per date and theme the sum "
                    "of present w_k*s_k*rank_k re-ranked (centred tied) over names with a present member, times "
                    "W_theme=sum of the theme's w_k (strategy_ic_composition.cpp IcThemeRule::standardise)"),
-        "module_sha256": module_sha256()}
+        "producer_fingerprint": producer_fingerprint()}
     if gains is None:
         return StdFit(weights=weights, theme_table=theme_table, block=block, provenance=provenance, ids=list(ids))
     provenance.update(aim_gains=dict(zip(ids, map(float, gains))),
@@ -358,7 +398,7 @@ def identity_document(accepted: dict) -> dict:
     out["provenance"]["std_identity"] = {
         "rule": STD_RULE_ID, "rerank": False, "cap": "off (the source weights)", "tier_shares": "off (the source "
         "weights)", "claim": "the IC runner's blend equals the source ew-theme-v1 blend byte for byte",
-        "module_sha256": module_sha256()}
+        "producer_fingerprint": producer_fingerprint()}
     return out
 
 

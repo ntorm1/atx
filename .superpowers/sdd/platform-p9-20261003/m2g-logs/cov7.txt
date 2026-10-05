@@ -1,0 +1,38 @@
+exe C:\atx-wt\pool-2\build-equity\bin\atx-impl-strategy-target-tests.exe sha256 ecb229ca4583ac29cca3ac13dba3c9023f622297e7b1ee9bb401147b813f5cde
+exe C:\atx-wt\pool-2\build-equity\bin\atx-equity-strategy-risk.exe sha256 94b5a5e746f20ba64dd314691edb7fc7a835b3604e2ad7da742aa3eaf0ad962d
+exe C:\atx-wt\pool-2\build-equity-rel\bin\atx-equity-strategy-risk.exe sha256 a31a0f961cb78e08bdbd4391679e6d8897e1aced237e0c9f19bb9ace975f3585
+fixture: copied yes from build-equity\p9-m2g-cov7\tmp\atxv-12e56598\atx_cov_impl_100059134558500_0\in after 33.9 s; gtest exit 0; last line: [  PASSED  ] 1 test.
+fixture copy re-verified (payload hashes, fields bound to role): True
+fixture role manifest sha256 c93324e72b0c4fcc1beafb2ebc41417f26b8fb684023b6f1f2cda5001cfa648d, fields manifest sha256 7e0cc52b06c9eabfc5ab6d0ea755152b84bdfbeda1bee1156a3c5075117d68c7
+run dbg-v11: exit 0, 1.0 s
+run rel-v11: exit 0, 0.3 s
+run dbg-covv1: exit 0, 4.9 s
+run rel-covv1: exit 0, 1.2 s
+
+== recipe atx-risk-v1.1
+  cov-diff (Debug exe): exit 1: first difference at block 2 session 1546560000000000000 (block)
+  cov-diff (Release exe): exit 1: first difference at block 2 session 1546560000000000000 (block)
+  model.atxcov bytes: dbg 14786944 rel 14786944; file sha256 dbg 4c63e2bf8c8fa500 rel 4daa0074d9148132
+  root_sha256 dbg bca39ff207982fa6bd1e27b869dc43957d0061a70aeca0d838c5e7816b969449
+  root_sha256 rel 9e6772123b4e9d1834c772cc8e3146ddd2078fd49944149f8e97bcc44b50aa29
+  differing bytes: 55258; by section: {'header.root_sha256': 32, 'MetaJson': 63, 'BlockHashes': 9335, 'Blocks': 45796, 'trailer.root_sha256': 32}
+  differing bytes outside META / header root / trailer root: ['BlockHashes', 'Blocks']
+  META leaf paths that differ: ['/producer/executable_sha256']
+  other output files (10) differing Debug vs Release: ['bias.csv', 'bias_summary.json', 'diagnostics.csv', 'factor_covariance.f64', 'specific_variance.f64']
+  manifest.json leaf paths that differ: ['/bias_harness/families/eigen/full_sample/b_mean', '/bias_harness/families/eigen/full_sample/b_median', '/bias_harness/families/eigen/pooled_kurtosis', '/bias_harness/families/eigen/qlike', '/bias_harness/families/eigen/rolling/252/kurtosis_band/0', '/bias_harness/families/eigen/rolling/252/kurtosis_band/1', '/bias_harness/families/eigen/rolling/63/kurtosis_band/0', '/bias_harness/families/eigen/rolling/63/kurtosis_band/1', '/bias_harness/families/factor/full_sample/b_median', '/bias_harness/families/factor/pooled_kurtosis', '/bias_harness/families/factor/qlike', '/bias_harness/families/factor/rolling/252/kurtosis_band/0', '/bias_harness/families/factor/rolling/63/kurtosis_band/1', '/bias_harness/families/minvar/full_sample/b_mean', '/bias_harness/families/minvar/full_sample/b_median', '/bias_harness/families/minvar/pooled_kurtosis', '/bias_harness/families/minvar/qlike', '/bias_harness/families/minvar/rolling/252/kurtosis_band/0', '/bias_harness/families/minvar/rolling/252/kurtosis_band/1', '/bias_harness/families/minvar/rolling/63/kurtosis_band/0', '/bias_harness/families/minvar/rolling/63/kurtosis_band/1', '/bias_harness/families/optimized/pooled_kurtosis', '/bias_harness/families/optimized/qlike', '/bias_harness/families/optimized/rolling/63/kurtosis_band/0', '/container/file_sha256', '/container/root_sha256', '/files/bias.csv/bytes', '/files/bias.csv/sha256', '/files/bias_summary.json/bytes', '/files/bias_summary.json/sha256', '/files/diagnostics.csv/bytes', '/files/diagnostics.csv/sha256', '/files/factor_covariance.f64/sha256', '/files/model.atxcov/sha256', '/files/specific_variance.f64/sha256', '/producer/executable_sha256', '/robustness/max_daily_specific_variance/value']
+  COV-7 criterion (cov-diff 0 both exes; bytes differ only in META producer / roots): MISS
+
+== recipe atx-cov-v1
+  cov-diff (Debug exe): exit 1: first difference at block 2 session 1546560000000000000 (block)
+  cov-diff (Release exe): exit 1: first difference at block 2 session 1546560000000000000 (block)
+  model.atxcov bytes: dbg 14787136 rel 14787136; file sha256 dbg e500157b547b3c3f rel 33f5a93ab20eee3e
+  root_sha256 dbg eb71a5f9b8a3f66758fd0e6ffbc4182ecb168165627b82eb4e55997494ed4fc3
+  root_sha256 rel faa3e75dfbd2662f9fef24d0fca0f728990447028f195cd063887bd11baa5b37
+  differing bytes: 59403; by section: {'header.root_sha256': 32, 'MetaJson': 63, 'BlockHashes': 9342, 'Blocks': 49934, 'trailer.root_sha256': 32}
+  differing bytes outside META / header root / trailer root: ['BlockHashes', 'Blocks']
+  META leaf paths that differ: ['/producer/executable_sha256']
+  other output files (10) differing Debug vs Release: ['bias.csv', 'bias_summary.json', 'diagnostics.csv', 'factor_covariance.f64', 'specific_variance.f64']
+  manifest.json leaf paths that differ: ['/bias_harness/families/eigen/full_sample/b_mean', '/bias_harness/families/eigen/full_sample/b_median', '/bias_harness/families/eigen/pooled_kurtosis', '/bias_harness/families/eigen/qlike', '/bias_harness/families/eigen/rolling/252/kurtosis_band/0', '/bias_harness/families/eigen/rolling/252/kurtosis_band/1', '/bias_harness/families/eigen/rolling/63/kurtosis_band/0', '/bias_harness/families/eigen/rolling/63/kurtosis_band/1', '/bias_harness/families/factor/full_sample/b_mean', '/bias_harness/families/factor/pooled_kurtosis', '/bias_harness/families/factor/qlike', '/bias_harness/families/factor/rolling/63/kurtosis_band/0', '/bias_harness/families/minvar/full_sample/b_mean', '/bias_harness/families/minvar/full_sample/b_median', '/bias_harness/families/minvar/pooled_kurtosis', '/bias_harness/families/minvar/qlike', '/bias_harness/families/minvar/rolling/63/kurtosis_band/0', '/bias_harness/families/optimized/full_sample/b_median', '/bias_harness/families/optimized/pooled_kurtosis', '/bias_harness/families/optimized/qlike', '/bias_harness/families/optimized/rolling/252/kurtosis_band/0', '/bias_harness/families/optimized/rolling/252/kurtosis_band/1', '/bias_harness/families/optimized/rolling/63/kurtosis_band/0', '/bias_harness/families/optimized/rolling/63/kurtosis_band/1', '/bias_harness/families/random/pooled_kurtosis', '/bias_harness/families/random/rolling/252/kurtosis_band/1', '/bias_harness/families/random/rolling/63/kurtosis_band/0', '/container/file_sha256', '/container/root_sha256', '/files/bias.csv/bytes', '/files/bias.csv/sha256', '/files/bias_summary.json/bytes', '/files/bias_summary.json/sha256', '/files/diagnostics.csv/bytes', '/files/diagnostics.csv/sha256', '/files/factor_covariance.f64/sha256', '/files/model.atxcov/sha256', '/files/specific_variance.f64/sha256', '/producer/executable_sha256', '/robustness/max_daily_specific_variance/value']
+  COV-7 criterion (cov-diff 0 both exes; bytes differ only in META producer / roots): MISS
+
+COV-7: IDENTITY MISS

@@ -1,0 +1,63 @@
+[atx-build] cmake --build C:\atx-wt\pool-24\build-equity --parallel 4 --target atx-engine-risk-tests
+[0/2] Re-checking globbed directories...
+[1/55] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[2/55] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[3/55] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[4/55] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[5/55] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[6/55] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[7/55] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[8/55] Linking CXX static library lib\spdlogd.lib
+[9/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_cov_container_test.cpp.obj
+[10/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_discretize_test.cpp.obj
+[11/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_covariance_integration_test.cpp.obj
+[12/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_dead_factor_test.cpp.obj
+[13/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_estimator_v2_test.cpp.obj
+[14/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_exposures_test.cpp.obj
+[15/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_eigen_adjust_test.cpp.obj
+[16/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_factor_model_test.cpp.obj
+[17/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_fundamental_factors_test.cpp.obj
+[18/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_horizon_test.cpp.obj
+[19/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_gp_riccati_test.cpp.obj
+[20/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_factor_builder_test.cpp.obj
+[21/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_factor_cov_target_test.cpp.obj
+[22/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_kelly_sizing_test.cpp.obj
+[23/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_kkt_ldl_test.cpp.obj
+[24/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_hybrid_model_test.cpp.obj
+[25/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_mh_true_mpc_test.cpp.obj
+[26/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_model_config_test.cpp.obj
+[27/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_multi_horizon_integration_test.cpp.obj
+[28/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_mpc_stack_test.cpp.obj
+[29/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_multi_horizon_test.cpp.obj
+[30/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_multi_period_test.cpp.obj
+[31/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_model_validation_test.cpp.obj
+[32/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_optimizer_test.cpp.obj
+[33/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_optimizer_cost_terms_test.cpp.obj
+[34/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_qp_polish_test.cpp.obj
+[35/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_scaffold_test.cpp.obj
+[36/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_qp_factor_admm_test.cpp.obj
+[37/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_qp_solver_test.cpp.obj
+[38/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_robust_regression_test.cpp.obj
+[39/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_specific_risk_test.cpp.obj
+[40/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_vol_regime_test.cpp.obj
+[41/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_w0r0_pit_test.cpp.obj
+[42/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_w0r0_thin_floor_test.cpp.obj
+[43/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_shrinkage_psd_test.cpp.obj
+[44/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_w0r0_sector_columns_test.cpp.obj
+[45/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\risk_stat_factor_test.cpp.obj
+[46/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\robust_ls_test.cpp.obj
+[47/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk_elasticity_test.cpp.obj
+[48/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk_cone_test.cpp.obj
+[49/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk_garleanu_pedersen_test.cpp.obj
+[50/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk_kkt_ldl_test.cpp.obj
+[51/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk_qp_s83_test.cpp.obj
+[52/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk_qp_augment_test.cpp.obj
+[53/55] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-risk-tests.dir\risk\robust_pipeline_e2e_test.cpp.obj
+[54/55] Linking CXX executable bin\atx-engine-risk-tests.exe

@@ -45,6 +45,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from research_common import sha256_file as file_sha256  # noqa: F401  (P9 E2: one copy)
+
 TEMPLATE_SCHEMA = "atx.research-cycle-template/v1"
 CHAIN_DIGEST = "atx.research-spec-chain/v1"   # the domain tag of a template's spec_digest
 FILL = "<fill:"                          # a value root fills before `run` (a null flag value in the template)
@@ -220,14 +222,6 @@ def chain(path: Path, repo: Path) -> list[tuple[Path, dict, Path, bool]]:
         out.append((p, doc, parent, nominal))
         p = parent
     return out
-
-
-def file_sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with Path(path).open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def spec_digest(path: Path, repo: Path) -> str:
