@@ -22,8 +22,8 @@ are those of before.
   spec       the rule cell's constants: rule -> the derived flags; leverage -> nav.leverage and the renamed NAV
              output (a NAV-only template next to the parent spec when the manifest has no rule_cell); horizon -> its
              flags and every output renamed -h<days>; role -> inputs.role and the fields dir of the build;
-             walk-forward -> its fitter flags and the fit, w and NAV outputs renamed -wf<lag>s<step> (the template
-             next to the parent spec)
+             walk-forward -> its fitter flags and every output downstream of the fit (fit, card, w, NAV, monitor)
+             renamed -wf<lag>s<step>[m<min>] (the template next to the parent spec)
 """
 from __future__ import annotations
 
@@ -171,6 +171,16 @@ def occurrences(flags: list, option: str) -> list:
     return RC.argparse_values([WK.norm_option(t) for t in flags], option)
 
 
+def reads(flags: list, option: str, switches: set) -> list:
+    """What the guard compares for an owned ``option``: its occurrences (the values argparse reads); for a bare switch
+    (``switches``: the NAV aliases, ruling C3-3, each standing for its row's whole ``--flag VALUE``, which
+    WK.alias_problems checks) the tokens that read as it, as WK.norm_option reads them: a switch consumes no value, so
+    the token after it (a flag the wave appends, say) is not read as its value."""
+    if option in switches:
+        return [WK.norm_option(t) for t in option_tokens(flags, option)]
+    return occurrences(flags, option)
+
+
 def map_values(value) -> list:
     """The values an option map entry can put on a flag list: the value, or each of a parent-value map's."""
     return list(value.values()) if isinstance(value, dict) else [value]
@@ -215,6 +225,7 @@ def rule_flag_guard(w: Wave, parent: dict, tables: dict, derived: dict) -> list[
     owned = WK.owned_flags(tables, derived)
     exempt = alias_exempt(w, tables)                # ruling C3-3: the named row may change its own legacy spelling
     owned["nav"] = owned.get("nav", set()) - exempt
+    switches = set(WK.flag_aliases(tables))         # ruling C3-3: an alias is a bare switch (reads)
     reported = set()
     for where, ops in maps.items():
         raw = WK.raw_rule_flags(ops, derived, tables, frozenset(exempt))
@@ -245,13 +256,13 @@ def rule_flag_guard(w: Wave, parent: dict, tables: dict, derived: dict) -> list[
         for s in sorted(owned):
             want_lists = flag_lists(base, s)
             for label, flags in flag_lists(cell, s).items():
-                changes += [(s, label, opt, occurrences(flags, opt), occurrences(want_lists[label], opt),
+                changes += [(s, label, opt, reads(flags, opt, switches), reads(want_lists[label], opt, switches),
                              option_tokens(flags, opt), option_tokens(want_lists[label], opt))
                             for opt in sorted(owned[s])]
         ref_flags = (ref_side(cell) or {}).get("flags")   # ruling E2-15 (a): a ref's own flags, judged as nav.flags
         if isinstance(ref_flags, list) and "nav" in owned:
             want = flag_lists(base, "nav")["nav.flags"]
-            changes += [("nav", "ref.flags", opt, occurrences(ref_flags, opt), occurrences(want, opt),
+            changes += [("nav", "ref.flags", opt, reads(ref_flags, opt, switches), reads(want, opt, switches),
                          option_tokens(ref_flags, opt), option_tokens(want, opt)) for opt in sorted(owned["nav"])]
         match_hits += match_flag_list_hits(w, parent, cell, maps, sets, match_named)
     except (research_spec.TemplateError, RC.CycleError, KeyError, TypeError) as exc:
@@ -329,10 +340,14 @@ def alias_exempt(w: Wave, tables: dict) -> set:
 
 def alias_beside_rule(w: Wave, cell: dict, tables: dict, derived: dict) -> list[str]:
     """Ruling C3-3 (the row's description: "one of the two, never both"): a wave naming a row whose x-flag it derives
-    may not leave that row's legacy spelling on the cell's NAV flag list (the NAV exe would refuse the pair at run;
-    here it stops at preflight, naming both)."""
+    may not leave that row's legacy spelling on the cell's NAV flag list, nor on its ref's own flags (ruling E2-15
+    (a): the reference side is judged as the cell's); the NAV exe would refuse the pair at run, here it stops at
+    preflight, naming both."""
     out = []
-    nav_flags = flag_lists(cell, "nav").get("nav.flags", []) if isinstance(cell.get("nav"), dict) else []
+    lists = {"nav.flags": flag_lists(cell, "nav").get("nav.flags", []) if isinstance(cell.get("nav"), dict) else []}
+    ref_flags = (ref_side(cell) or {}).get("flags")
+    if isinstance(ref_flags, list):
+        lists[f"{WK.REF_KEY}.flags"] = ref_flags
     named, rows = named_rules(w), {}
     for row in (tables.get("nav") or {}).get("rules") or []:
         if isinstance(row, dict) and isinstance(row.get("id"), str):
@@ -341,9 +356,11 @@ def alias_beside_rule(w: Wave, cell: dict, tables: dict, derived: dict) -> list[
         tokens = str((rows.get(rid) or {}).get("x-flag") or "").split()
         if rid not in named or not tokens or tokens[0] not in (derived or {}).get("nav", {}):
             continue
-        if occurrences(nav_flags, alias):
-            out.append(f"rules names {rid}, which derives nav {tokens[0]}, but the cell's nav.flags still carry its "
-                       f"legacy spelling {alias} (ruling C3-3: one of the two, never both; drop {alias} in this wave)")
+        for label, flags in lists.items():
+            if option_tokens(flags, alias):
+                out.append(f"rules names {rid}, which derives nav {tokens[0]}, but the cell's {label} still carry its "
+                           f"legacy spelling {alias} (ruling C3-3: one of the two, never both; drop {alias} in this "
+                           "wave)")
     return out
 
 
@@ -390,7 +407,7 @@ def inputs_refusal(w: Wave, parent: dict, cell: dict, sets: dict, template: dict
     difference no raw route names is refused as "the resolved cell". Setting a key to its parent's value is still a
     route that sets it: refused."""
     k = kind(w)
-    allowed = set(WK.KIND_INPUTS.get(k, ()))
+    allowed = set(WK.KIND_INPUTS.get(k or "", ()))
     routes = inputs_routes(sets, template)
     keys = sorted((set(routes) | set(inputs_changed(parent, cell))) - allowed)
     if not keys:
@@ -398,8 +415,9 @@ def inputs_refusal(w: Wave, parent: dict, cell: dict, sets: dict, template: dict
     what = "; ".join(f"inputs.{key}" + (f" by {', '.join(routes[key])}" if key in routes else
                                         " by the resolved cell (no raw route names it)") for key in keys)
     kinds = ", ".join(f"{kk} ({', '.join('inputs.' + x for x in ks) or 'no key'})" for kk, ks in WK.KIND_INPUTS.items())
-    return [f"{what}: kind {k} may not set or change an inputs.* key (ruling E2-17: inputs.* changes only in the kinds "
-            f"whose schema defines one, and only the keys they name: {kinds}; a rule cell that also swaps its data is two "
+    mine = ", ".join(f"inputs.{x}" for x in sorted(allowed)) or "no inputs.* key"
+    return [f"{what}: a kind {k} wave may set or change {mine} (ruling E2-17: inputs.* changes only in the kinds whose "
+            f"schema defines one, and only the keys they name: {kinds}; a rule cell that also swaps its data is two "
             "changes in one registered trial)"]
 
 

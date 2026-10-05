@@ -25,13 +25,14 @@ unchanged in every byte it plans and writes; only a v2 manifest reaches this mod
                  fields_output, fields_args?, seconds?,      prepare_recent_research.py role ...), then the fields
                  max_rss_mib?}                               builder on the new role (the wave's field names); the cell
                                                              is the template with inputs.role and its fields set to them
-  walk-forward   walk_forward: {lag, step, window?,           P9 lane D3 (K-P9-8): the parent's construction with its fit
-                 min_decisions?}                             refitted walk-forward (the fitter's --walk-forward flags,
-                                                             walk_forward_flags; the C++ composition exe refits per block
-                                                             on the decisions <= d - lag; weights schema v3); no
+  walk-forward   walk_forward: {lag, step, window?,           P9 lane D3 (K-P9-8): the parent's construction with its
+                 min_decisions?}                             fit refitted walk-forward (the fitter's --walk-forward
+                                                             flags, walk_forward_flags; the C++ composition exe refits
+                                                             per block on the decisions <= d - lag; weights v3); no
                                                              rule_cell: the spec stage writes the template next to the
-                                                             parent spec; fit, w and NAV outputs renamed -wf<lag>s<step>;
-                                                             the parent must fit under --engine-fit (ALCOMB-7)
+                                                             parent spec; every output downstream of the fit (fit, card,
+                                                             w, NAV, monitor) renamed -wf<lag>s<step>[m<min>]; the
+                                                             parent must fit under --engine-fit (ALCOMB-7)
 
 Rules (``rules``; K-P9-6, K-P9-7, ruling D1-PSCHEMA). Each name is a row of the IC exe's ``--list-rules --json``
 table (atx.composition-rules/v1) or of the NAV exe's ``nav --list-rules --json`` (atx.nav-rules/v1); a name in both,
@@ -317,13 +318,15 @@ def walk_forward_token(wf: dict) -> str:
     return f"wf{wf['lag']}s{wf['step']}" + (f"m{wf['min_decisions']}" if "min_decisions" in wf else "")
 
 
-WALK_FORWARD_OUTPUTS = (("fit", "output"), ("ic", "w_output"), ("nav", "output"))
+WALK_FORWARD_OUTPUTS = (("fit", "output"), ("card", "output"), ("ic", "w_output"), ("nav", "output"),
+                        ("monitor", "output"))
 
 
 def walk_forward_set(parent: dict, wf: dict) -> dict:
-    """change.set of a walk-forward cell: the outputs downstream of the refit renamed -wf<lag>s<step>: the fit (the v3
-    weights), the weighted IC pass and the NAV. The u pass, card, marginal and monitor read only the parent's inputs and
-    the admission table (byte-identical under the refit), so they resume as the parent's."""
+    """change.set of a walk-forward cell: every output downstream of the refit renamed -wf<lag>s<step>[m<min>], as a
+    composition change renames them (research_spec): the fit (the v3 weights), the card and the monitor (they read the
+    fit's dir), the weighted IC pass and the NAV, so nothing made from the parent's fit is silently reused. The u pass
+    and the marginal read only the parent's inputs and pools, so they resume as the parent's."""
     token = walk_forward_token(wf)
     return {f"{s}.{k}": renamed(parent[s][k], token) for s, k in WALK_FORWARD_OUTPUTS
             if isinstance(parent.get(s), dict) and isinstance(parent[s].get(k), str)}
@@ -332,15 +335,16 @@ def walk_forward_set(parent: dict, wf: dict) -> dict:
 def walk_forward_parent_problems(parent: dict) -> list[str]:
     """A walk-forward cell refits its parent's fit: the parent must fit under --engine-fit (the per-date weights are
     the C++ composition fit's, and ruling ALCOMB-7: a cell's fit mode is its parent's) without --theme-tsmom,
-    --theme-resid or --era (their TRAIN-fitted schedules, orders and pools are not refitted; the fitter refuses them)."""
+    --theme-resid or --era (their TRAIN-fitted schedules, orders and pools are not refitted; the fitter refuses
+    them)."""
     flags = (parent.get("fit") or {}).get("flags")
     flags = flags if isinstance(flags, list) else []
     norm = [norm_option(t).split("=", 1)[0] if isinstance(t, str) else t for t in flags]
     out = []
     if WALK_FORWARD_PARENT_FIT not in norm:
-        out.append(f"kind walk-forward refits the parent's fit with the C++ composition exe: the parent spec's fit.flags "
-                   f"must carry {WALK_FORWARD_PARENT_FIT} (ruling ALCOMB-7: the cell's fit mode is its parent's); "
-                   "name a parent fitted under it")
+        out.append("kind walk-forward refits the parent's fit with the C++ composition exe: the parent spec's "
+                   f"fit.flags must carry {WALK_FORWARD_PARENT_FIT} (ruling ALCOMB-7: the cell's fit mode is its "
+                   "parent's); name a parent fitted under it")
     bad = sorted({f for f in WALK_FORWARD_REFUSED if f in norm})
     if bad:
         out.append(f"kind walk-forward is refused on a parent fitted with {bad} (their TRAIN-fitted schedules, orders "
@@ -574,11 +578,21 @@ def _alias(value) -> bool:
 
 
 def alias_problems(tables: dict) -> list[str]:
-    """Ruling C3-3, fail closed: a NAV row whose x-flag-aliases is not a non-empty list of distinct long options (or
-    names an alias another row also lists) could not be guarded, so the wave stops on it by name."""
+    """Ruling C3-3, fail closed: a NAV row whose x-flag-aliases is not a non-empty list of distinct long options, whose
+    x-flag is no ``--flag VALUE`` pair with a constant value (an alias stands for that whole pair, a bare switch, as
+    C3's --cost-v2 for --cost-law cost-sqrt-v2; wave_stage_kinds.reads), that names an alias another row also lists,
+    or a flag some rule owns as its own (a row's x-flag or param x-flag, a composition rule's NAV flag: naming the row
+    would exempt another rule's flag) could not be guarded, so the wave stops on it by name."""
     out, seen = [], {}
-    for row in (tables.get("nav") or {}).get("rules") or []:
-        if not (isinstance(row, dict) and ALIASES_KEY in row):
+    rows = [r for r in (tables.get("nav") or {}).get("rules") or [] if isinstance(r, dict)]
+    flags = {f for ops in COMPOSITION_FLAGS.values() for f in ops.get("nav", {})}
+    for row in rows:
+        props = (row.get("params_schema") or {}).get("properties") if isinstance(row.get("params_schema"), dict) \
+            else None
+        flags.update(str(row.get("x-flag") or "").split()[:1])
+        flags.update(p.get("x-flag") for p in (props or {}).values() if isinstance(p, dict))
+    for row in rows:
+        if ALIASES_KEY not in row:
             continue
         aliases = row[ALIASES_KEY]
         if not (isinstance(aliases, list) and aliases and all(_alias(a) for a in aliases) and
@@ -586,10 +600,19 @@ def alias_problems(tables: dict) -> list[str]:
             out.append(f"the NAV exe's row {row.get('id')!r} lists {ALIASES_KEY} {aliases!r}, not a non-empty list of "
                        "distinct long options: its legacy spelling cannot be guarded (ruling C3-3)")
             continue
+        tokens = row.get("x-flag").split() if isinstance(row.get("x-flag"), str) else []
+        if len(tokens) != 2 or PLACEHOLDER_RE.fullmatch(tokens[1]):
+            out.append(f"the NAV exe's row {row.get('id')!r} lists {ALIASES_KEY} but its x-flag {row.get('x-flag')!r} "
+                       "is no '--flag VALUE' pair with a constant value: an alias stands for the whole pair (a bare "
+                       "switch), so the guard cannot read one that takes a value (ruling C3-3)")
+            continue
         for a in aliases:
             if a in seen and seen[a] != row.get("id"):
                 out.append(f"the NAV exe's rows {seen[a]!r} and {row.get('id')!r} both list the alias {a} (ruling "
                            "C3-3: an alias stands for one row's flag)")
+            if a in flags:
+                out.append(f"the NAV exe's row {row.get('id')!r} lists the alias {a}, which a rule of the tables owns "
+                           "as its own flag (ruling C3-3: an alias is a legacy spelling of its row's flag only)")
             seen[a] = row.get("id")
     return out
 
