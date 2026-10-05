@@ -1,0 +1,117 @@
+{
+    "Source":  "327c86b2c7c33ddb635ccb35c3065a8fa997ed77",
+    "Preset":  "equity-rel",
+    "DirtyEntries":  7,
+    "ConfiguredProvenance":  "327c86b2c7c33ddb635ccb35c3065a8fa997ed77-dirty",
+    "Jobs":  4,
+    "FreeMiB":  3735,
+    "CommitMiB":  4957,
+    "Targets":  [
+                    "atx-impl-strategy-target-tests",
+                    "atx-impl-tests",
+                    "atx-equity-strategy-targets",
+                    "atx-equity-strategy-ic",
+                    "atx-equity-strategy",
+                    "atx-equity-strategy-risk",
+                    "atx-equity-strategy-mine",
+                    "atx-research-eval",
+                    "atx-impl"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  768.7862453,
+    "CompiledTUs":  132,
+    "Links":  10,
+    "Tag":  "p9-2q",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity-rel",
+    "Executables":  {
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "2a4913aa2ebb454f68f2f29369c46873e6e033332ca58fbf96ca8022a8e9cbe3"
+                                                           },
+                        "atx-impl-tests":  {
+                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-tests.exe",
+                                               "Sha256":  "dd753dcf9bfd5cddd1089de94951b6aba76ea1d0a7cadddc1f691b9f1e386141"
+                                           },
+                        "atx-equity-strategy-targets":  {
+                                                            "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-targets.exe",
+                                                            "Sha256":  "adcf72d4821de049f2e83db43759f3d28df4493504956739e1ed40f580656368"
+                                                        },
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "1d24336f9de8c6337df3984693d94a8a02b9f8524238077c1ce085916e3b593e"
+                                                   },
+                        "atx-equity-strategy":  {
+                                                    "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy.exe",
+                                                    "Sha256":  "257d4b30d0ed6c0a843c54358db19e1ec5b29fbbfad20feb53a510c918eb5cf1"
+                                                },
+                        "atx-equity-strategy-risk":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-risk.exe",
+                                                         "Sha256":  "0afaffcc8bce6c3c5bbd1965f27ef7c91655a1c53d03a3767c8554c95e209a8b"
+                                                     },
+                        "atx-equity-strategy-mine":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-mine.exe",
+                                                         "Sha256":  "cca753127741c3c0ae42da54a7ed7f237f5da37e7f8c3571d3c7d8e100b64e3d"
+                                                     },
+                        "atx-research-eval":  {
+                                                  "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-eval.exe",
+                                                  "Sha256":  "a57a2090999c0f71557ebf93bd952337395bc8cd9cd107d641f4b8e4452e38d9"
+                                              },
+                        "atx-impl":  {
+                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl.exe",
+                                         "Sha256":  "099e68e53eb329eddad566b1d6dcd4f179213cb7b4c00e8f7b891ac2972bc194"
+                                     }
+                    },
+    "Canary":  {
+                   "Mode":  "check",
+                   "BuildType":  "Release",
+                   "Bin":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin",
+                   "ExitCode":  0,
+                   "Log":  "C:\\atx-wt\\pool-2\\build-equity\\mega-p9-2q-canary.log",
+                   "WallSeconds":  17.2285163
+               }
+}
+    + FullyQualifiedErrorId : NativeCommandError
+[1/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\generated\build_provenance.cpp.obj
+[2/145] Building CXX object atx-impl\CMakeFiles\atx-impl.dir\src\main.cpp.obj
+[3/145] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\trial_ledger.cpp.obj
+[4/145] Building CXX object atx-impl\CMakeFiles\atx-equity-strategy.dir\tools\equity_strategy.cpp.obj
+[5/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\cmake_pch.cxx.obj
+[6/145] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\cmake_pch.cxx.obj
+[7/145] Building CXX object atx-impl\CMakeFiles\atx-equity-strategy-ic.dir\tools\equity_strategy_ic.cpp.obj
+[8/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\artifacts.cpp.obj
+[9/145] Building CXX object atx-impl\CMakeFiles\atx-equity-strategy-targets.dir\tools\equity_strategy_targets.cpp.obj
+[10/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\serialize_panel.cpp.obj
+[11/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\panel_artifact.cpp.obj
+[12/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\stage_data_provenance.cpp.obj
+[13/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_runner.cpp.obj
+[14/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_library.cpp.obj
+[15/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_runner.cpp.obj
+[16/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_admission.cpp.obj
+[17/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_shrink.cpp.obj
+[18/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_composition.cpp.obj
+[19/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_theme_erc.cpp.obj
+[20/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_result_cache.cpp.obj
+[21/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_theme_resid.cpp.obj
+[22/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_theme_tsmom.cpp.obj
+[23/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_signal_cache.cpp.obj
+[24/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_two_speed.cpp.obj
+[25/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_research_role.cpp.obj
+[26/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine_ledger.cpp.obj
+[27/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine_pinned_file.cpp.obj
+[28/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine_pool.cpp.obj
+[29/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_marginal_ic.cpp.obj
+[30/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine_rule.cpp.obj
+[31/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine.cpp.obj
+[32/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_price_exposures.cpp.obj
+[33/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_validate.cpp.obj
+[34/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine_trials.cpp.obj
+[35/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine_promote.cpp.obj
+[36/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_liquidity.cpp.obj
+[37/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_mark.cpp.obj
+[38/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_execute.cpp.obj
+[39/145] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_decide.cpp.obj
+..............
+tiny_world canary (Release): planted members at h 21, band 2.0 SE (PM ruling T1-SE): {"planted_a": {"band_se": 2.0, "mean": 0.028643040293040295, "planted": 0.04406974726037816, "planted_t": 2.3393679827753457, "standard_error": 0.01883831341835128, "t": 1.5204673399869106, "within_band": true, "z": -0.8189006427884352}, "planted_b": {"band_se": 2.0, "mean": 0.010685531135531133, "planted": 0.04491101333227986, "planted_t": 1.4978441966553238, "standard_error": 0.029983768293501994, "t": 0.35637719151688063, "within_band": true, "z": -1.1414670051384432}}
+.
+15 passed in 14.83s

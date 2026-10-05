@@ -15,6 +15,9 @@ finite and the smallest eigenvalue of the symmetric eigensolution is > 0; ranks 
 smallest). A formed block is scored by the harness at the next session, so the sessions read here are the formed
 sessions t with a next session (t + 1 < dates); rank k exists at t when the block has more than k factors. The count
 per rank is printed so it can be checked against T_k of gate report item 4 (d).
+Amendment 1 (gate report 4 (e)): the harness forms only on forecast sessions (`day.forecast`, which also needs a
+specific forecast; strategy_risk_model.cpp:1182, :1377): the last `run.forecast_sessions` dates of the manifest. Blocks
+before them are skipped (counted). The per-rank counts of all 51 ranks must equal T_k, else the tool stops (exit 3).
 
 For ranks 00, 01, 02, per session: the eigenvalue over the median of that session's block eigenvalues; the unit
 eigenvector's squared loadings (sum 1) split into a partition of the block: (i) factors flagged structural at t
@@ -42,6 +45,8 @@ PINS = {  # manifest.json SHA-256 of record (handoff-root-m2i.md, W3-10 / PRE-29
 OPENED = ("manifest.json", "factor_covariance.f64", "factor_structural.u8")
 RANKS = (0, 1, 2)
 THRESHOLD = 0.99
+T_RANKS_00_47 = 1089          # T_k printed in gate report item 4 (d) (m2i-logs/dcov-read.txt), ranks 00-47
+T_RANKS_48_50 = (948, 817, 733)
 
 
 def sha_bytes(b: bytes) -> str:
@@ -88,6 +93,10 @@ def read_store(store: Path) -> dict:
     formed = 0
     flagged_sessions = 0
     max_partition_error = 0.0
+    # Amendment 1: the harness forms only on forecast sessions (day.forecast: a factor block AND a specific forecast,
+    # strategy_risk_model.cpp:1182, :1377); they are the last run.forecast_sessions dates of the run.
+    first_forecast = dates - int(man["run"]["forecast_sessions"])
+    skipped_before_forecast = 0
     for t in range(dates):
         diag = np.diagonal(cov[t])
         block = np.flatnonzero(np.isfinite(diag))
@@ -99,6 +108,9 @@ def read_store(store: Path) -> dict:
             continue
         values, vectors = np.linalg.eigh(f)
         if not values.min() > 0:
+            continue
+        if t < first_forecast:  # amendment 1: a block without a specific forecast is never formed by the harness
+            skipped_before_forecast += 1
             continue
         formed += 1
         if t + 1 >= dates:  # formed at the last session: never scored
@@ -127,6 +139,7 @@ def read_store(store: Path) -> dict:
             full[block] = u2
             row["sq"].append(full)
     return {"model": man.get("model"), "names": names, "dates": dates, "formed": formed,
+            "first_forecast": first_forecast, "skipped_before_forecast": skipped_before_forecast,
             "count_by_rank": count_by_rank, "per_rank": per_rank, "flagged_sessions": flagged_sessions,
             "max_partition_error": max_partition_error, "layouts": man.get("layouts", {})}
 
@@ -140,10 +153,18 @@ def main(argv: list[str]) -> int:
         print(f"\n## {store.as_posix()}  model {r['model']}  (manifest pin verified; payload pins verified)")
         print(f"layout factor_covariance.f64: {r['layouts'].get('factor_covariance.f64')}")
         print(f"layout factor_structural.u8: {r['layouts'].get('factor_structural.u8')}")
-        print(f"dates {r['dates']}; formed blocks {r['formed']}; scored sessions per rank (blocks with > k factors, "
-              f"next session present): ranks 00-47 {sorted(set(r['count_by_rank'][:48].tolist()))}, "
-              f"48 {r['count_by_rank'][48]}, 49 {r['count_by_rank'][49]}, 50 {r['count_by_rank'][50]}, "
-              f"51+ {r['count_by_rank'][51:].tolist()}")
+        print(f"dates {r['dates']}; first forecast session index {r['first_forecast']} (run.forecast_sessions); "
+              f"formed blocks before it skipped {r['skipped_before_forecast']}; formed blocks from it {r['formed']}; "
+              f"scored sessions per rank (blocks with > k factors, next session present): ranks 00-47 "
+              f"{sorted(set(r['count_by_rank'][:48].tolist()))}, 48 {r['count_by_rank'][48]}, "
+              f"49 {r['count_by_rank'][49]}, 50 {r['count_by_rank'][50]}, 51+ {r['count_by_rank'][51:].tolist()}")
+        want = [T_RANKS_00_47] * 48 + list(T_RANKS_48_50)
+        got = r["count_by_rank"][:51].tolist()
+        match = got == want and not any(r["count_by_rank"][51:])
+        print(f"session check against T_k of gate report 4 (d) (all 51 ranks): {'EQUAL' if match else 'NOT EQUAL'}")
+        if not match:
+            print("STOP: the session set is not the harness's (pre-run list); nothing is read for this store")
+            return 3
         print(f"scored sessions with at least one structural factor in the block: {r['flagged_sessions']}; "
               f"max |share(i) + (ii) + (iii) - 1| {r['max_partition_error']:.2e}")
         names = r["names"]
