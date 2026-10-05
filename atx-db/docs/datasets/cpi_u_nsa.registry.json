@@ -1,0 +1,46 @@
+{
+  "name": "cpi_u_nsa",
+  "lane": "P9 AL-data Task 8",
+  "schema": "atx.alpha-panel.cpi-u-nsa/v1",
+  "module": "atx_db.alpha_panel.cpi_u_nsa",
+  "args": [
+    [
+      "build"
+    ],
+    [
+      "accept"
+    ]
+  ],
+  "inputs": [
+    "raw/cpi_u_nsa"
+  ],
+  "manifest": "cpi_u_nsa/manifest.json",
+  "vintage": "vintage",
+  "guard_gb": 0.6,
+  "code": [
+    "cpi_u_nsa",
+    "common",
+    "compustat_std_parts",
+    "shortflow_common"
+  ],
+  "doc": "docs/datasets/cpi_u_nsa.md",
+  "outputs": [
+    {
+      "view": "cpi_u_nsa",
+      "glob": "cpi_u_nsa/parts/year=*/cpi_u_nsa.parquet",
+      "clock": "available_at",
+      "vintage": "vintage",
+      "keys": [
+        "ref_month"
+      ],
+      "order": [
+        "vintage_date"
+      ],
+      "primary_key": [
+        "ref_month",
+        "vintage_date"
+      ],
+      "doc": "Monthly CPI-U, U.S. city average, all items, not seasonally adjusted: BLS `CUUR0000SA0`, ALFRED/FRED `CPIAUCNS`, index level 1982-84=100. ALFRED download-page vintage dates and actual archival CSV columns provide the dated source. FRED latest and keyless BLS API are value cross-checks only; FRED graph requests with vintage_date were found to ignore it and provide no vintage proof."
+    }
+  ]
+}
