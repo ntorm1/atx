@@ -655,12 +655,17 @@ def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: P
     if not inputs_path.exists():
         raise SystemExit(f"{inputs_path} missing: run recover-inputs first")
     recovered = C.read_json(inputs_path)
-    if recovered["documents"]["status"] != "complete":
-        raise SystemExit(f"recover-inputs did not complete: {recovered['documents']['status']}")
+    documents = recovered["documents"]
+    blocked = (f"recover-inputs did not complete: {documents['status']} (mismatched {documents.get('mismatched_urls')}, "
+               f"failed {documents.get('failed_urls')})" if documents["status"] != "complete" else None)
+    if blocked and not dry_run:
+        raise SystemExit(blocked)
     inputs = {"receipt": recovered["receipt"]["path"], "ops_manifest": recovered["ops_manifest"]["path"],
               "document_review": recovered["document_review"]["path"]}
     steps = plan_steps(base, sha, data_root=data_root, inputs=inputs)
     if dry_run:
+        if blocked:
+            print(f"a0 run-arms BLOCKED: {blocked}; the real run refuses until every pinned input verifies", flush=True)
         print(f"a0 run-arms plan: commit {sha}, export {base / 'code' / sha[:7]}, {len(steps)} steps, serial", flush=True)
         for n, s in enumerate(steps, 1):
             record = base / "steps" / f"{s['id']}.json"

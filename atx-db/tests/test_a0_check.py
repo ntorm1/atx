@@ -326,6 +326,24 @@ def test_failed_first_export_moves_the_arm_to_a_new_rehearsal_root(tmp_path):
     assert argv[argv.index("--r4") + 1] == str(base / "R_A-2")
 
 
+def test_dry_run_prints_the_plan_but_the_real_run_refuses_incomplete_recovery(tmp_path, capsys, monkeypatch):
+    base = tmp_path / "a0"
+    base.mkdir()
+    (base / "a0-inputs.json").write_text(json.dumps({
+        "receipt": {"path": "r"}, "ops_manifest": {"path": "o"}, "document_review": {"path": "d"},
+        "documents": {"status": "stopped_hash_mismatch", "mismatched_urls": ["https://www.sec.gov/x.htm"]}}),
+        encoding="utf-8")
+    monkeypatch.delenv("ATX_GUARD_JOB", raising=False)
+    kwargs = {"data_root": tmp_path / "data", "python": Path(sys.executable), "guard": tmp_path / "guard.py"}
+    assert a0.run_arms(base, "HEAD", dry_run=True, **kwargs) == 0
+    printed = capsys.readouterr().out
+    assert "BLOCKED" in printed and "stopped_hash_mismatch" in printed and "https://www.sec.gov/x.htm" in printed
+    assert "P_B12.unseed" in printed and "--heavy" in printed
+    with pytest.raises(SystemExit, match="did not complete"):
+        a0.run_arms(base, "HEAD", dry_run=False, **kwargs)
+    assert sorted(p.name for p in base.iterdir()) == ["a0-inputs.json"]
+
+
 def test_export_phase_refuses_an_unsealed_first_attempt(tmp_path):
     out = tmp_path / "R_A"
     (out / "phases" / "export-001").mkdir(parents=True)
