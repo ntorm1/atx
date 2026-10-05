@@ -1,0 +1,16 @@
+# C3 fix round 1: tiny-world NAV opt-in check on the Debug exe of build p9-c3-l (atx-equity-strategy-targets sha256 9e910c34188af3794d6e89201a5251ea57360875040b64d372671a581c7f5966).
+# Both phases use the SAME post-round exe: the pre-round build for a true before/after was refused by the permission system (see the report). So 'old' = a first flag-absent run of this exe (its --ann-mean-gross line is expected to say exit 0 / not refused), 'new' = a second flag-absent run (determinism) and the opt-in run.
+$ python fix1-nav-identity.py old --bin build-equity/bin --work C:/Users/natha/AppData/Local/Temp/c3-navid-l
+cycle (pre-round targets exe): exit 0
+nav commands in the cycle's receipts: 1
+old-0: exit 0, files 12
+old exe with --ann-mean-gross: exit 0, no output dir False (pre-round: unknown flag)
+exit 1
+$ python fix1-nav-identity.py new --bin build-equity/bin --work C:/Users/natha/AppData/Local/Temp/c3-navid-l
+command 0 (tiny-nav-run/receipt.json): new exit 0, opt-in exit 0
+  old vs new: 12 files, same file list True, byte-different []
+  console (stdout + stderr, output path normalised) identical: True
+  absent vs opt-in: same file list True, byte-different ['summary.json']
+  opt-in summary.json: 5 ann_mean_gross lines for 5 scenarios, every scenario keyed True, absent file has the key False, opt-in minus those lines == absent bytes True
+RESULT PASS
+exit 0
