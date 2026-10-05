@@ -962,7 +962,7 @@ def discover_pit(roots: list[Path]) -> str:
 
 
 def d0_section(con: Any, *, rehearsal_a: Path, arm_a: Path, published: Path, published_r4: Path,
-               pit: str) -> dict[str, Any]:
+               pit: str, published_pit: str = "identity-bridge-v2-pit") -> dict[str, Any]:
     from .private_identity_differential import compare_d0
 
     links = Path("phases") / "export-001" / "security_company_links.part-0000.parquet"
@@ -976,13 +976,15 @@ def d0_section(con: Any, *, rehearsal_a: Path, arm_a: Path, published: Path, pub
             ("pit", Path("export") / pit / "links.parquet", Path("export") / pit / "manifest.json", "links.parquet"),
             ("link_table", Path("identity") / "link_table.parquet", Path("identity") / "link_table_manifest.json",
              "link_table.parquet")):
-        out[kind] = compare_d0(con, rebuilt=arm_a / rel, published=published / rel, kind=kind,
+        published_rel = Path("export") / published_pit / "links.parquet" if kind == "pit" else rel
+        published_manifest = Path("export") / published_pit / "manifest.json" if kind == "pit" else manifest
+        out[kind] = compare_d0(con, rebuilt=arm_a / rel, published=published / published_rel, kind=kind,
                                rebuilt_sha256=_files_sha(C.read_json(arm_a / manifest)["files"], name=name),
-                               published_sha256=_files_sha(C.read_json(published / manifest)["files"], name=name))
+                               published_sha256=_files_sha(C.read_json(published / published_manifest)["files"], name=name))
     validation = C.read_json(arm_a / "identity" / "manifest.json")["validation"]
     out["stage_i_validation"] = ({"pass": True} if validation["pass"] else
                                  {"pass": False, "got": validation["got"], "expected": validation["expected"]})
-    out["published_pit_manifest_sha256"] = C.sha256_file(published / "export" / pit / "manifest.json")
+    out["published_pit_manifest_sha256"] = C.sha256_file(published / "export" / published_pit / "manifest.json")
     return out
 
 
@@ -1032,10 +1034,10 @@ def provenance_section(*, published: Path, published_r4: Path, pit: str, repo: P
     heads = {out[label]["git_head"] for label in ("pit_export", "link_table_manifest")}
     if unmatched:
         contains = out["pit_export"].get("contains_alpha_panel")
-        statement = (f"No producing commit can be named: {len(unmatched)} recorded code hashes ({', '.join(unmatched)}) "
+        statement = (f"No producing commit is established from the examined evidence: {len(unmatched)} recorded code hashes ({', '.join(unmatched)}) "
                      f"match no line-ending variant of the file at {PROVENANCE_COMMIT}, and the recorded git_head "
                      f"{sorted(map(str, heads))} {'contains' if contains else 'has no'} alpha_panel/ directory: "
-                     "the published bridge was built from code no commit holds.")
+                     "no producing commit is established from these examined manifests and reference revision.")
     else:
         statement = (f"Every recorded code hash matches the file at {PROVENANCE_COMMIT} (raw or line-ending variant), "
                      f"but the recorded git_head is {sorted(map(str, heads))}: {PROVENANCE_COMMIT} is consistent with "
@@ -1108,7 +1110,7 @@ def _report_connection(out: Path) -> Any:
 
 
 def report(base: Path, *, data_root: Path, out: Path | None = None, windows: tuple[str, ...] = WINDOWS,
-           pit_export: str | None = None) -> dict[str, Any]:
+           pit_export: str | None = None, published_pit_export: str = "identity-bridge-v2-pit") -> dict[str, Any]:
     from .private_identity_arm_comparison import compare_arms
 
     out = out or base / "report"
@@ -1134,6 +1136,9 @@ def report(base: Path, *, data_root: Path, out: Path | None = None, windows: tup
         clocks = observation_clocks(con, receipt=Path(arms_record["inputs"]["receipt"]), rehearsal_a=rehearsals["A"])
         results: dict[str, Any] = {
             "version": "p9-a0-report-v1", "commit": arms_record["commit"], "base": str(base), "pit_export": pit,
+            "published_pit_export": published_pit_export,
+            "pit_paths": {"arms": {arm: str(root / "export" / pit / "links.parquet") for arm, root in roots.items()},
+                          "published_reference": str(published / "export" / published_pit_export / "links.parquet")},
             "coverage": {"pinned_calendar": {"path": str(calendar), "sha256": calendar_sha,
                                              "last_session": latest.isoformat(),
                                              "latest_year_partial": partial_year(latest)},
@@ -1144,8 +1149,8 @@ def report(base: Path, *, data_root: Path, out: Path | None = None, windows: tup
                          "stages": {arm: {p.stem: C.read_json(p)["coverage"] for p in sorted((root / "_a0").glob("stage-*.json"))}
                                     for arm, root in roots.items()}},
             "d0": d0_section(con, rehearsal_a=rehearsals["A"], arm_a=roots["A"], published=published,
-                             published_r4=published_r4, pit=pit),
-            "provenance": provenance_section(published=published, published_r4=published_r4, pit=pit,
+                             published_r4=published_r4, pit=pit, published_pit=published_pit_export),
+            "provenance": provenance_section(published=published, published_r4=published_r4, pit=published_pit_export,
                                              repo=C.PACKAGE_ROOT.parent)}
         results["baseline"] = arms_record.get("baseline", "historical")
         results["recovery"] = arms_record.get("recovery")
@@ -1214,6 +1219,8 @@ def markdown(results: dict[str, Any]) -> str:
              f"{' (latest year partial)' if cov['pinned_calendar']['latest_year_partial'] else ''}; "
              f"observation clocks: S1 {cov['observation_clocks']['s1']}, S2 {cov['observation_clocks']['s2']}.", "",
              "## D0 (arm A vs published)", ""]
+    lines[2:2] = [f"Arm PIT export: `{results['pit_export']}`; published D0/provenance reference: "
+                  f"`{results['published_pit_export']}`.", ""]
     recovery = results.get("recovery") or {}
     if recovery.get("repinning"):
         note = recovery["repinning"]
@@ -1328,7 +1335,9 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--data-root", type=Path, default=data)
     rp.add_argument("--out", type=Path)
     rp.add_argument("--window", action="append", choices=WINDOWS)
-    rp.add_argument("--pit-export")
+    rp.add_argument("--pit-export", help="arm/fixed PIT family; otherwise discover the one shared by all arms")
+    rp.add_argument("--published-pit-export", default="identity-bridge-v2-pit",
+                    help="published D0/provenance reference family (default: original v2)")
     args = ap.parse_args(argv)
     if args.cmd == "recover-inputs":
         outcome = recover_inputs(args.base, args.data_root, args.ticker_source, baseline=args.baseline)
@@ -1351,7 +1360,7 @@ def main(argv: list[str] | None = None) -> int:
             "files": len(payload.get("files") or payload.get("removed") or [])})
         return 0
     results = report(args.base, data_root=args.data_root, out=args.out, windows=tuple(args.window or WINDOWS),
-                     pit_export=args.pit_export)
+                     pit_export=args.pit_export, published_pit_export=args.published_pit_export)
     for line in results["sanity"]:
         print(line, flush=True)
     print(f"a0 report: {(args.out or args.base / 'report') / 'a0-results.md'}", flush=True)

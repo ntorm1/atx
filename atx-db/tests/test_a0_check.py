@@ -840,3 +840,35 @@ def test_run_arms_refuses_baseline_selection_mismatch(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="baseline differs"):
         a0.run_arms(base, "HEAD", data_root=tmp_path, python=Path(sys.executable), guard=tmp_path / "guard",
                     dry_run=False, baseline="repinned")
+
+
+def test_report_compares_fixed_v4_to_explicit_original_v2_reference(tmp_path):
+    base, data = _full_report_lake(tmp_path)
+    for arm in a0.ARMS:
+        export = base / f"P_{arm}" / "export"
+        (export / "identity-bridge-v2-pit").rename(export / "identity-bridge-v4-pit")
+    published = data / a0.PUBLISHED_ROOT
+    # A newer published family must neither replace nor confuse the original reference.
+    decoy = published / "export" / "identity-bridge-v3-pit"
+    decoy.mkdir()
+    (decoy / "manifest.json").write_text('{"unrelated": true}')
+    results = a0.report(base, data_root=data, out=tmp_path / "report")
+    assert results["pit_export"] == "identity-bridge-v4-pit"
+    assert results["published_pit_export"] == "identity-bridge-v2-pit"
+    assert results["d0"]["pit"]["d0_pass"]
+    assert results["d0"]["published_pit_manifest_sha256"] == _sha(published / "export" / "identity-bridge-v2-pit" / "manifest.json")
+    assert results["provenance"]["pit_export"]["manifest"] == str(published / "export" / "identity-bridge-v2-pit" / "manifest.json")
+    assert all("identity-bridge-v4-pit" in path for path in results["pit_paths"]["arms"].values())
+    assert "identity-bridge-v2-pit" in results["pit_paths"]["published_reference"]
+    statement = results["provenance"]["producing_commit_statement"]
+    assert "examined manifests and reference revision" in statement
+    assert "no commit holds" not in statement
+    text = (tmp_path / "report" / "a0-results.md").read_text()
+    assert "Arm PIT export: `identity-bridge-v4-pit`" in text
+    assert "published D0/provenance reference: `identity-bridge-v2-pit`" in text
+    (published / "export" / "identity-bridge-v2-pit").rename(published / "export" / "identity-bridge-v8-pit")
+    selected = a0.report(base, data_root=data, out=tmp_path / "explicit-report",
+                         pit_export="identity-bridge-v4-pit", published_pit_export="identity-bridge-v8-pit")
+    assert selected["d0"]["pit"]["d0_pass"]
+    assert selected["published_pit_export"] == "identity-bridge-v8-pit"
+    assert "identity-bridge-v8-pit" in selected["provenance"]["pit_export"]["manifest"]
