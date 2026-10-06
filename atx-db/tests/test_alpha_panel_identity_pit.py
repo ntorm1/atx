@@ -126,6 +126,34 @@ def test_all_tier_primary_is_preserved(lake):
     assert con.execute(f"SELECT is_issuer_primary FROM read_parquet('{(root / 'identity/link_table.parquet').as_posix()}') WHERE security_id=1 AND valid_from=DATE '2021-01-05'").fetchone() == (False,)
 
 
+def test_combine_preserves_strict_then_snapshot_primary_priority(lake, monkeypatch):
+    root, con, put = lake
+    monkeypatch.setenv('ATX_A0_S2', '0')
+    monkeypatch.setattr(BF, 'ALIVE_FROM', '2021-01-01')
+    put('identity/links.parquet', """SELECT sid::BIGINT security_id,123::BIGINT cik,
+        DATE '2021-01-04' AS start,CAST(last_day AS DATE) end_incl,flag AS "primary",'strict' tier,
+        'fixture' basis,TIMESTAMP '2020-01-01' available_at
+        FROM (VALUES(1,'2021-01-07','J'),(2,'2021-01-05','P')) t(sid,last_day,flag)""")
+    put('r4/phases/export-001/security_company_links.part-0000.parquet', """SELECT sid::BIGINT perm_security_id,
+        '123' cik,'P' link_primary,'current_ticker_verified' link_basis,NULL::DATE valid_until,
+        TIMESTAMP '2026-09-20' available_at FROM (VALUES(3),(4)) t(sid)""")
+    put('prices/2021/part.parquet', "SELECT sid::BIGINT security_id,session_date FROM read_parquet('" +
+        C.calendar_path().as_posix() + "') CROSS JOIN (VALUES(3),(4)) t(sid)")
+    put('identity/links_name_days.parquet', "SELECT 0::BIGINT security_id,session_date,123::BIGINT cik," +
+        "TIMESTAMP '2020-01-01' available_at FROM read_parquet('" + C.calendar_path().as_posix() + "')")
+    BF.build()
+    path = (root / 'identity/links_combined.parquet').as_posix()
+    assert con.execute(f'SELECT security_id,start,end_incl,"primary",tier FROM read_parquet(\'{path}\') ORDER BY ALL').fetchall() == [
+        (0, dt.date(2021,1,4), dt.date(2021,1,7), 'J', 'name'),
+        (1, dt.date(2021,1,4), dt.date(2021,1,7), 'J', 'strict'),
+        (2, dt.date(2021,1,4), dt.date(2021,1,5), 'P', 'strict'),
+        (3, dt.date(2021,1,4), dt.date(2021,1,5), 'J', 'backfill'),
+        (3, dt.date(2021,1,6), dt.date(2021,1,7), 'P', 'backfill'),
+        (4, dt.date(2021,1,4), dt.date(2021,1,7), 'J', 'backfill')]
+    pit = (root / 'identity/links_pit.parquet').as_posix()
+    assert con.execute(f"SELECT count(*) FROM read_parquet('{pit}') WHERE tier='backfill'").fetchone() == (0,)
+
+
 @pytest.mark.parametrize('variant', ['strict', 'pit', 'all'])
 def test_registry_discovers_current_v4_bridge(variant):
     from atx_db.stagelake import registry

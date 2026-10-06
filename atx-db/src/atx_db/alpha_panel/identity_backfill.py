@@ -145,27 +145,33 @@ def build() -> dict[str, Any]:
             ANTI JOIN strict_days s ON s.security_id = n.security_id AND s.session_date = n.session_date
             ANTI JOIN bf_days b ON b.security_id = n.security_id AND b.session_date = n.session_date"""
     receipt["name_tier"] = names_path.exists()
+    # Persist the reused union before grouping/joining so its materialized CTE
+    # does not compete with both consumers for the 600MB budget.
     con.execute(f"""
-        CREATE OR REPLACE TABLE comb_days AS
-        WITH u AS (
+        CREATE OR REPLACE TABLE comb_input AS
             SELECT security_id, session_date, sidx, cik, strict_primary, NULL AS snap_primary, tier, basis, available_at
             FROM strict_days
             UNION ALL
             SELECT security_id, session_date, sidx, cik, NULL, snap_primary, 'backfill', 'snapshot_run_backfill', available_at
             FROM bf_days
             {name_union}
-        ),
-        pk AS (
+    """)
+    con.execute("""
+        CREATE OR REPLACE TABLE comb_primary AS
             SELECT cik, session_date,
                    coalesce(min(security_id) FILTER (WHERE strict_primary = 'P'),
                             min(security_id) FILTER (WHERE tier = 'backfill' AND snap_primary = 'P'),
                             min(security_id)) AS p_sid
-            FROM u GROUP BY 1, 2
-        )
+            FROM comb_input GROUP BY 1, 2
+    """)
+    con.execute("""
+        CREATE OR REPLACE TABLE comb_days AS
         SELECT u.security_id, u.session_date, u.sidx, u.cik, u.tier, u.basis, u.available_at,
                CASE WHEN u.security_id = pk.p_sid THEN 'P' ELSE 'J' END AS "primary"
-        FROM u JOIN pk USING (cik, session_date)
+        FROM comb_input u JOIN comb_primary pk USING (cik, session_date)
     """)
+    con.execute("DROP TABLE comb_input")
+    con.execute("DROP TABLE comb_primary")
 
     def compress(table: str, dest_name: str, where: str = "TRUE") -> int:
         sql = f"""
