@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import shutil
+import tempfile
 import time
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -1255,16 +1256,23 @@ def _retained_inputs(receipt: Path):
     return ReconstructionInputs(**inputs)
 
 
-def prepare_rehearsal_inputs(work: Path, receipt: Path, step: str) -> dict[str, object]:
+def prepare_rehearsal_inputs(
+    work: Path, receipt: Path, step: str, *, reconstruction_batch_size: int = 250,
+) -> dict[str, object]:
     """Resumable bounded preparation: vendor -> facts -> reconstruction.
 
     Only the selected step's tables are replaced after an interrupted attempt.
     Inputs/code are pinned before any write; completed evidence files are hashed.
     No production connection, network request or whole-stage transaction occurs.
+    Batch size is execution metadata; it does not alter semantic input/code pins.
     """
     from . import identity_reconstruction as ir
     import pyarrow as pa
     import pyarrow.parquet as pq
+
+    if (not isinstance(reconstruction_batch_size, int) or isinstance(reconstruction_batch_size, bool)
+            or reconstruction_batch_size <= 0):
+        raise ValueError("reconstruction_batch_size must be a positive integer")
 
     # A0 S1 (check only): reconstruct without the 2026 SEC ticker snapshot; bound into the pin when on
     s1 = _a0_switch("ATX_A0_S1")
@@ -1308,16 +1316,21 @@ def prepare_rehearsal_inputs(work: Path, receipt: Path, step: str) -> dict[str, 
             params = ir.ReconstructionParams()
             lines = ir.read_vendor_lines(con)
             ciks = set()
-            for start in range(0, len(lines), 500):
-                ciks.update(str(row[1]) for row in ir.match_share_counts(con, params, vendor_ids=[line.vendor_id for line in lines[start:start+500]], clocked=True))
+            discovery_batch_size = 500 if reconstruction_batch_size == 250 else reconstruction_batch_size
+            for start in range(0, len(lines), discovery_batch_size):
+                ciks.update(str(row[1]) for row in ir.match_share_counts(con, params, vendor_ids=[line.vendor_id for line in lines[start:start+discovery_batch_size]], clocked=True))
             filings = ir.read_lifecycle_filings(inputs.submissions.path, sorted(ciks))
-            result.update(candidate_ciks=len(ciks), lifecycle_filings=len(filings), vendor_lines=len(lines), evidence_rows=0, files=[])
+            result.update(candidate_ciks=len(ciks), lifecycle_filings=len(filings), vendor_lines=len(lines), evidence_rows=0, files=[],
+                          reconstruction_batch_size=reconstruction_batch_size,
+                          candidate_discovery_batch_size=discovery_batch_size, driver_code_sha256=_LOADED_CODE_SHA256)
             artifacts = {item.name + "_sha256": item.sha256 for item in inputs.files()}
-            output_dir = work / "evidence"
-            output_dir.mkdir(exist_ok=True)
+            evidence_dir = work / "evidence"
+            evidence_dir.mkdir(exist_ok=True)
+            # Preserve incomplete attempts; only this attempt's files enter the completed manifest.
+            output_dir = Path(tempfile.mkdtemp(prefix="attempt-", dir=evidence_dir))
             for ordinal, batch in enumerate(ir.reconstruct_in_batches(con, lines, filings=filings,
                     tickers=() if s1 else ir.read_sec_ticker_snapshot(inputs.company_tickers.path),
-                    ticker_observed_at=inputs.company_tickers.received_at, params=params, batch_size=250)):
+                    ticker_observed_at=inputs.company_tickers.received_at, params=params, batch_size=reconstruction_batch_size)):
                 rows = batch.evidence_rows(observed_at=inputs.companyfacts.received_at,
                     source_loaded_at=inputs.companyfacts.received_at, run_id="identity-rehearsal-preparation",
                     artifact_sha256=inputs.companyfacts.sha256, artifacts=artifacts, revision_key=inputs.revision_key())
@@ -1347,6 +1360,7 @@ def main() -> int:
     prepare.add_argument("--work", type=Path, required=True)
     prepare.add_argument("--receipt", type=Path, required=True)
     prepare.add_argument("--step", choices=("vendor", "facts", "reconstruct"), required=True)
+    prepare.add_argument("--reconstruction-batch-size", type=int, default=250)
     rehearsal = commands.add_parser("rehearsal")
     rehearsal.add_argument("--work", type=Path, required=True)
     rehearsal.add_argument("--ops-manifest", type=Path, required=True)
@@ -1355,7 +1369,8 @@ def main() -> int:
     rehearsal.add_argument("--document-review", type=Path)
     args = parser.parse_args()
     if args.command == "prepare":
-        result = prepare_rehearsal_inputs(args.work, args.receipt, args.step)
+        result = prepare_rehearsal_inputs(args.work, args.receipt, args.step,
+                                         reconstruction_batch_size=args.reconstruction_batch_size)
     else:
         result = build_rehearsal(args.work, args.ops_manifest, args.out, phase=args.phase,
                                  document_review=args.document_review)

@@ -204,7 +204,7 @@ def test_native_s1_switch_removes_only_snapshot_from_clocked_replay(tmp_path, mo
             links.prepare_rehearsal_inputs(work, tmp_path / "synthetic-receipt.json", step)
         manifest = json.loads((work / "preparation.json").read_text())
         assert manifest["pin"].get("a0_s1", False) == disabled
-        payloads = [json.loads(row["value_json"]) for file in sorted((work / "evidence").glob("*.parquet"))
+        payloads = [json.loads(row["value_json"]) for file in (work / item["file"] for item in manifest["steps"]["reconstruct"]["files"])
                     for row in pq.read_table(file).to_pylist() if row["evidence_status"] == "reconstructed"]
         items = [item for payload in payloads for item in payload["items"]]
         assert any(item["kind"] == ir.EV_SYMBOL for item in items) == (not disabled)
@@ -253,3 +253,106 @@ def test_future_unmatched_vendor_runs_withdraw_only_at_observation(tmp_path):
     assert historic.share_weight == 2.0
     assert historic.valid_until == dt.datetime(2019, 1, 10, 22)
     assert result.clocked_links[0].tier_at(dt.datetime(2019, 1, 10, 22)) is None
+
+
+def test_partition_size_preserves_full_clocked_results_across_67_lines(tmp_path):
+    from dataclasses import asdict, replace
+
+    with duckdb.connect(str(tmp_path / "partitions.duckdb"), config={"memory_limit": "128MB", "threads": 1}) as con:
+        lines, filings = _fixture(con)
+        original_runs = con.execute("SELECT * FROM ri_share_runs WHERE vendor_id=1").fetchall()
+        for vid in range(4, 68):
+            lines.append(replace(lines[0], vendor_id=vid, price_security_id=f"TBLTICKERHISTORY-{vid}"))
+            con.executemany("INSERT INTO ri_share_runs VALUES (?,?,?,?,?)",
+                            [(vid, *row[1:]) for row in original_runs])
+        # Same counts/CIKs on both sides of64; late rival collision must remain per vendor line.
+        con.execute("INSERT INTO ri_share_facts SELECT '0000000099',concept,as_of,value,accession,form,"
+                    "DATE '2022-01-01' FROM ri_share_facts WHERE cik='0000000011'")
+        def serialized(size, subset):
+            evidence, results = [], {name: [] for name in ('links', 'clocked_links', 'rejected')}
+            considered = 0
+            for batch in ir.reconstruct_in_batches(con, subset, filings=filings,
+                    tickers=[('0000000012', 'RIVAL')], ticker_observed_at=SNAPSHOT,
+                    params=ir.ReconstructionParams(max_extension_days=1500), batch_size=size):
+                evidence.extend(batch.evidence_rows(observed_at=SNAPSHOT))
+                considered += batch.lines_considered
+                for name in results:
+                    results[name].extend(asdict(item) for item in getattr(batch, name))
+            def canonical(rows):
+                return sorted(json.dumps(row, sort_keys=True, default=str) for row in rows)
+            return canonical(evidence), {name: canonical(rows) for name, rows in results.items()}, considered
+        large = serialized(250, lines)
+        assert large == serialized(64, lines)
+        assert large[2] == 67
+        assert serialized(250, lines[:3]) == serialized(1, lines[:3])
+        payloads = [json.loads(json.loads(row)['value_json']) for row in large[0]
+                    if json.loads(row)['evidence_status'] == 'reconstructed']
+        assert any(version['from'] < '2020' and version['until'] is not None
+                   for payload in payloads for version in payload['versions'])
+
+
+def test_native_batch_cli_preserves_preparation_pin_and_isolates_retry_parts(tmp_path, monkeypatch):
+    import sys
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    import pytest
+
+    with duckdb.connect(str(tmp_path / "native-batch.duckdb"), config={"memory_limit": "128MB", "threads": 1}) as con:
+        fixture_lines, fixture_filings = _fixture(con)
+        runs = [ir.VendorShareRun(*row) for row in con.execute("SELECT * FROM ri_share_runs").fetchall()]
+        facts = [ir.IssuerShareFact(*row) for row in con.execute("SELECT * FROM ri_share_facts").fetchall()]
+    ticker = tmp_path / 'tickers.json'
+    ticker.write_text('{}')
+    vendor = tmp_path / 'vendor.parquet'
+    pq.write_table(pa.table({'securityID':[1,2,3], 'earnFlag':['0','0','0']}), vendor)
+    inputs = ir.ReconstructionInputs(*(ir.RetainedInput(name,path,'ab'*32,SNAPSHOT,'synthetic')
+        for name,path in (('ticker_history',vendor),('companyfacts',tmp_path/'facts.zip'),
+                          ('submissions',tmp_path/'submissions.zip'),('company_tickers',ticker))))
+    monkeypatch.setattr(links,'_retained_inputs',lambda receipt:inputs)
+    def vendor_input(con,path,**kwargs):
+        ir.stage_share_runs(con,runs)
+        con.execute('CREATE TABLE ri_vendor_lines AS SELECT unnest([1,2,3]) AS vendor_id')
+    monkeypatch.setattr(ir,'stage_vendor_ticker_history',vendor_input)
+    monkeypatch.setattr(ir,'iter_companyfacts_share_facts',lambda path:iter(facts))
+    monkeypatch.setattr(ir,'read_vendor_lines',lambda con:fixture_lines)
+    monkeypatch.setattr(ir,'read_lifecycle_filings',lambda path,ciks:fixture_filings)
+    work = tmp_path/'prepared'
+    receipt = tmp_path/'receipt.json'
+    for step in ('vendor','facts'):
+        links.prepare_rehearsal_inputs(work,receipt,step)
+    pin = json.loads((work/'preparation.json').read_text())['pin']
+    output = work/'evidence'
+    output.mkdir()
+    stale = output/'part-0000.parquet'
+    stale.write_bytes(b'preserved incomplete250 attempt')
+    monkeypatch.setattr(sys,'argv',['identity_links','prepare','--work',str(work),'--receipt',str(receipt),
+                                   '--step','reconstruct','--reconstruction-batch-size','64'])
+    assert links.main() == 0
+    manifest = json.loads((work/'preparation.json').read_text())
+    assert manifest['pin'] == pin
+    result = manifest['steps']['reconstruct']
+    assert result['reconstruction_batch_size'] == result['candidate_discovery_batch_size'] == 64
+    assert result['driver_code_sha256'] == links._LOADED_CODE_SHA256
+    assert stale.read_bytes() == b'preserved incomplete250 attempt'
+    assert all(item['file'].startswith('evidence/attempt-') for item in result['files'])
+    assert all((work/item['file']).exists() for item in result['files'])
+    reused = links.prepare_rehearsal_inputs(work,receipt,'reconstruct',reconstruction_batch_size=250)
+    assert reused['reused'] and reused['reconstruction_batch_size'] == 64
+    assert json.loads((work/'preparation.json').read_text()) == manifest
+    # Legacy completed metadata has unknown execution settings; reuse must not invent them.
+    for key in ('reconstruction_batch_size', 'candidate_discovery_batch_size', 'driver_code_sha256'):
+        del manifest['steps']['reconstruct'][key]
+    (work/'preparation.json').write_text(json.dumps(manifest))
+    legacy = links.prepare_rehearsal_inputs(work,receipt,'reconstruct',reconstruction_batch_size=64)
+    assert 'reconstruction_batch_size' not in legacy and 'driver_code_sha256' not in legacy
+    assert json.loads((work/'preparation.json').read_text()) == manifest
+    monkeypatch.setattr(links,'_retained_inputs',lambda receipt:pytest.fail('invalid config read inputs'))
+    invalid = tmp_path/'invalid'
+    with pytest.raises(ValueError,match='positive'):
+        links.prepare_rehearsal_inputs(invalid,receipt,'vendor',reconstruction_batch_size=0)
+    monkeypatch.setattr(sys,'argv',['identity_links','prepare','--work',str(invalid),'--receipt',str(receipt),
+                                   '--step','vendor','--reconstruction-batch-size','0'])
+    with pytest.raises(ValueError,match='positive'):
+        links.main()
+    assert not invalid.exists()
