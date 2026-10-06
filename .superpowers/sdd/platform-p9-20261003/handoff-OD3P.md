@@ -34,6 +34,18 @@
    all re-done on the verb. T3 is dropped. Then re-run the suites and update the report.
 7. Report `task-OD3P-report.md` and this handoff: DONE.
 
+## R8 round (dispatch R8-1, section OD3P; 2026-10-06)
+
+- DIRTY-1: `52805177` commits this handoff, `task-OD3P-report.md` (it was uncommitted and git-ignored too) and the six
+  suite logs `od3p-evidence/r7-e9bedcc7-*.log`, as they stood at the stop.
+- Merge of root `1b64ce45` = `70439eef`: not a no-op (one root commit, sprint-dir docs and logs only), no conflict, no
+  file outside the sprint dir changed. Lane files re-run on `70439eef`: 61 passed
+  (`od3p-evidence/r8-70439eef-lane-files.log`). Whole `scripts/tests` / stage chain not re-run (no code moved).
+- Slip fixed: the report's "Tests" section still read "TO BE FILLED"; filled from the committed logs, and the R8 merge
+  added to "Root merges".
+- `od3p-absent-contract.md` and `p9-od3-runbook.md` are committed (`git ls-files`). T2 (item 6) still PENDING on B2
+  (B2's redo is not in root at `1b64ce45`).
+
 ## For the next agent
 
 - If T2 is dispatched: merge root (which must show B2's redo), do item 6 above, re-run the two lane files, the whole

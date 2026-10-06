@@ -59,7 +59,21 @@ new code (M4, M7, M8 tested code OD3P-1 removed).
 
 ## Tests
 
-TO BE FILLED (section "Tests run").
+All with `C:/Program Files/Python312/python.exe`, explicit paths, `-p no:cacheprovider`, own `--basetemp`,
+`PYTHONDONTWRITEBYTECODE=1`; `scripts/tests` and the stage chain in separate invocations. No ENV-1 exit seen.
+
+| suite | tree | result | log (`od3p-evidence/`) |
+|---|---|---|---|
+| lane files (`scripts/tests/test_research_cycle_od3.py`, `atx-impl/tools/test_od3_tooling.py`) | `e809271f` | 53 passed | `r7-step1-merged-e809271f.log` |
+| lane files, after OD3P-1 | `9be598cf` code | 61 passed | `r7-item2-own-tests.log` |
+| lane files | `e9bedcc7` | 61 passed | `r7-e9bedcc7-lane-files.log` |
+| `scripts/tests/test_no_python_mirror.py` | `e9bedcc7` | 7 passed | `r7-e9bedcc7-no-python-mirror.log` |
+| whole `scripts/tests`, `PYTHONHASHSEED=0` | `e9bedcc7` | 543 passed, 4 skipped | `r7-e9bedcc7-scripts-tests-seed0.log` |
+| whole `scripts/tests`, `PYTHONHASHSEED=1` | `e9bedcc7` | 543 passed, 4 skipped | `r7-e9bedcc7-scripts-tests-seed1.log` |
+| `atx-engine/tools/test_stage_chain.py` | `e9bedcc7` | 9 passed | `r7-e9bedcc7-stage-chain.log` |
+| `atx-engine/tools/test_research_store_classes.py` | `e9bedcc7` | 1 failed (expected: this lane's two literals, SQL2-CLS), 4 passed, 96 subtests passed | `r7-e9bedcc7-classes-guard.log` |
+| teeth (22 mutations) | `9be598cf` code | 22 caught, files restored byte-identical | `teeth-r7.log` |
+| lane files (R8 round, after merging root `1b64ce45`, docs only) | `70439eef` | 61 passed | `r8-70439eef-lane-files.log` |
 
 ## New literals, flags, keys, rule ids (for SQL2-CLS / the prereg)
 
@@ -126,6 +140,7 @@ cell] (v15 unless a cell added a field).
 | `09e2350a` (round 1) | `9c7aa654` | none |
 | `e809271f` (step 1) | `4dc831ac` | none (no lane file changed by root) |
 | `e9bedcc7` (last step; suites below run on it) | `ebc918c3` (SQL2-CLS: `atx.nav-spec/v1` registered) | none (no lane file changed by root) |
+| `70439eef` (R8 round, after the DIRTY-1 commit `52805177`) | `1b64ce45` (sprint-dir docs and logs only) | none (no file outside the sprint dir changed); lane files re-run: 61 passed |
 
 A seed-0 run started on `05e2a373` was stopped (my own process, confirmed gone) when root moved, and its partial log
 deleted; every suite figure below is on `e9bedcc7`.
