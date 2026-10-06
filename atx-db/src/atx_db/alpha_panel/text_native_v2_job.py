@@ -419,7 +419,19 @@ def write_parts(output, rows, *, issuer=None):
         path = output / 'parts' / f'year={year}' / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         # Keep clock fields UTC-aware and dates typed, including all-NULL groups.
-        table = pa.Table.from_pylist(part_rows)
+        # Arrow's from_pylist infers field names from the first row. Use the
+        # complete column union so a first NULL/missing fact cannot erase later
+        # proven fiscal/source metadata in the same issuer/year part.
+        columns = sorted({key for row in part_rows for key in row})
+        table = pa.table({key: [row.get(key) for row in part_rows] for key in columns})
+        for key, kind in [('cik', pa.int64()), ('accession', pa.string()), ('form', pa.string()),
+                          ('fiscal_period', pa.string()), ('fiscal_year', pa.int32()),
+                          ('prior_accession', pa.string()), ('doc_sim_cosine', pa.float64()),
+                          ('reason', pa.string()), ('fiscal_metadata_basis', pa.string()),
+                          ('fiscal_metadata_source_files', pa.list_(pa.string()))]:
+            if key in columns:
+                index = table.schema.get_field_index(key)
+                table = table.set_column(index, key, pa.array([row.get(key) for row in part_rows], type=kind))
         for key in ('available_at', 'prior_available_at'):
             values = [dt.datetime.fromisoformat(r[key]).astimezone(dt.UTC) if r.get(key) else None for r in part_rows]
             index = table.schema.get_field_index(key)
@@ -539,10 +551,60 @@ def inspect_incomplete(output):
     return {'checks': checks, 'evidence': evidence}
 
 
+
+def rematerialize(source, output, expected_pin):
+    """Publish an absent immutable generation from pinned retained units; no HTTP."""
+    if output.exists():
+        raise ValueError('rematerialization target must be absent')
+    old = json.loads((source / 'manifest.json').read_text(encoding='utf-8'))
+    if digest(source / 'manifest.json')['sha256'] != expected_pin:
+        raise ValueError('source manifest pin mismatch')
+    for rel, pin in old['files'].items():
+        if digest(source / rel) != pin:
+            raise ValueError('source artifact pin mismatch: ' + rel)
+    started = time.monotonic()
+    output.mkdir(parents=True)
+    plan = json.loads((source / 'plan.json').read_text(encoding='utf-8'))
+    files = {}
+    for rel in old['files']:
+        if rel.endswith('.parquet') or rel.startswith('units/'):
+            continue
+        target = output / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((source / rel).read_bytes())
+        files[rel] = digest(target)
+    for cik in plan['issuers']:
+        rows = json.loads((source / 'units' / f'{cik}.json').read_text(encoding='utf-8'))
+        # Explicit nullable producer fields only; existing provenance values persist.
+        for row in rows:
+            for key in ('primary_url', 'doc_bytes', 'fiscal_metadata_basis', 'fiscal_metadata_source_files'):
+                row.setdefault(key, None)
+        unit = output / 'units' / f'{cik}.json'
+        atomic_json(unit, rows)
+        files[unit.relative_to(output).as_posix()] = digest(unit)
+        files.update(write_parts(output, rows, issuer=cik))
+    manifest = dict(old)
+    manifest['files'] = files
+    manifest['parent_generation'] = {'path': str(source), 'manifest_pin': digest(source / 'manifest.json'),
+        'repair': 'explicit_nullable_producer_fields_and_union_arrow_schema', 'http_attempts': 0,
+        'source_producer_code': old['producer_code'], 'source_measurements_preserved': True}
+    manifest['code'] = {str(Path(m.__file__).name): digest(Path(m.__file__)) for m in (V, V.TF, V.FT, sec_http, A, C)}
+    manifest['code']['git_head'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+    manifest['producer_code'] = digest(Path(__file__))
+    manifest['rematerialization_seconds'] = time.monotonic() - started
+    atomic_json(output / 'manifest.json', manifest)
+    checks = A.verify_stage(output, plan, digest)
+    atomic_json(output / 'acceptance.json', checks)
+    print(json.dumps({'manifest_pin': digest(output / 'manifest.json'), 'zero_http_rematerialization': True}), flush=True)
+
+
 def run(args):
     if not os.environ.get('ATX_GUARD_JOB'):
         raise RuntimeError('real I/O requires run_memory_guarded.py --heavy')
     output, raw_root = args.output.resolve(), args.raw_root.resolve()
+    if args.rematerialize_from:
+        rematerialize(args.rematerialize_from.resolve(), output, args.source_manifest_sha256)
+        return
     if args.inspect:
         evidence = inspect_incomplete(output)
         if args.evidence_output:
@@ -660,6 +722,8 @@ def main():
     parser.add_argument('--max-filings', type=int, default=2000)
     parser.add_argument('--max-transfer', type=int, default=MAX_TRANSFER)
     parser.add_argument('--issuers', type=int, default=3)
+    parser.add_argument('--rematerialize-from', type=Path)
+    parser.add_argument('--source-manifest-sha256')
     parser.add_argument('--inspect', action='store_true', help='read-only evidence of incomplete pilot; no network')
     parser.add_argument('--evidence-output', type=Path)
     parser.add_argument('--fsds-sub-root', type=Path, default=Path('atx-db/data/staging/fsds-v2/sub'))

@@ -236,3 +236,31 @@ def test_partial_checkpoint_recovery_preserves_prefix(tmp_path):
     partial.write_text(json.dumps({'rows': [records[1]], 'history': [], 'profile_files': {}}))
     with pytest.raises(ValueError, match='extension'):
         J.recover_partial_checkpoint(output, path, records)
+
+
+def test_year_part_first_unproven_row_does_not_drop_later_provenance(tmp_path):
+    import pyarrow.parquet as pq
+    earlier = V.feature_row(record('unknown', fiscal_period=None, fiscal_year=None,
+                           fiscal_metadata_basis=None), None, None, None)
+    later = V.feature_row(record('proved', fiscal_metadata_basis='original_primary_dei'), None, None, None)
+    files = J.write_parts(tmp_path, [earlier, later], issuer=1)
+    path = next(tmp_path / rel for rel in files)
+    rows = pq.ParquetFile(path).read().to_pylist()
+    assert rows[0]['fiscal_metadata_basis'] is None
+    assert rows[1]['fiscal_metadata_basis'] == 'original_primary_dei'
+    assert rows[1]['fiscal_period'] == 'Q1'
+    assert pq.ParquetFile(path).schema_arrow.field('doc_sim_cosine').type == J.pa.float64()
+
+def test_rematerialization_refuses_existing_target_and_wrong_pin(tmp_path):
+    from atx_db.alpha_panel import text_native_v2_job as J
+    import pytest
+    source = tmp_path / 'source'
+    source.mkdir()
+    J.atomic_json(source / 'manifest.json', {'files': {}})
+    target = tmp_path / 'existing'
+    target.mkdir()
+    with pytest.raises(ValueError, match='must be absent'):
+        J.rematerialize(source, target, 'bad')
+    with pytest.raises(ValueError, match='pin mismatch'):
+        J.rematerialize(source, tmp_path / 'new', 'bad')
+    assert not (tmp_path / 'new').exists()

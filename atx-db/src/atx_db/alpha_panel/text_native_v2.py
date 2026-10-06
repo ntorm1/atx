@@ -242,6 +242,8 @@ def profile_document(raw, form):
 
 def feature_row(record, profile, prior, prior_profile):
     out = dict(record)
+    for key in ('primary_url', 'doc_bytes', 'fiscal_metadata_basis', 'fiscal_metadata_source_files'):
+        out.setdefault(key, None)
     out.update(prior_accession=prior['accession'] if prior else None,
                prior_form=prior['form'] if prior else None,
                prior_report_date=prior.get('report_date') if prior else None,
