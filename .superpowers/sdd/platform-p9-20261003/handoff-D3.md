@@ -1,3 +1,22 @@
+# Handoff D3
+
+## Resume 7 (lane D3 after ruling D3-2: guards and kinds): suites to be re-run on d080af09 (owner stop)
+
+| | |
+|---|---|
+| Pool / branch | `C:/atx-wt/pool-20`, `feat/p9-d2-20261003`; tree clean |
+| Head | the commit adding this section, on `d080af09` |
+| Root merged | `a15ad887` (merge `40154ac4`), then `1b64ce45` (merge `d080af09`); no conflict either time |
+| Scope (D3-2) | the kind files only: `scripts/wave_kinds.py`, `scripts/wave_stage_kinds.py`, `scripts/tests/test_wave_kinds.py`, `scripts/specs/p9/kinds/**`. Everything else of the old part A (walk-forward C++, v3 runner, fitter flags, ALCOMB-6 / -7, D2-9, D2R-3) is lane D3W's (pool-23); part B follows D3W there |
+| Done | R7-1 steps 1-4, 6, 8: C3-3 alias guard, E2-17 `inputs.*` guard, walk-forward kind out of SCHEMA_ONLY (fitter flags under D3-2's names, registered constants named in the fixture), `new-cost-model` flipped (W3-8a: 10 runnable, 0 schema only), the live-table check as a test (skipped unless `ATX_EQUITY_BIN`), teeth 22 / 22, suites. Report: `task-D3-report.md` "Part A: guards and kinds" |
+| Not done | KINDS-TW (optional; P10 note). E2 re-review 4 S1 (optional) |
+| Build | none |
+| Next | review of this head; root's merge (re-prove list in the report). The C3b lane's listed edits to these files (fixture line 18; three test hunks) were left alone |
+
+Below: the owner-stop state of the old (pre-split) lane D3, kept because lane D3W reads its "Design decided" section.
+
+---
+
 # Handoff D3 (owner stop, part A in progress)
 
 | | |
