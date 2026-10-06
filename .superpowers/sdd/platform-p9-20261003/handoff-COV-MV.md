@@ -26,6 +26,8 @@ OD5-7, ALCOMB-1, W1-I1 (all read).
 | 7 tests on synthetic containers | not started |
 | 8 registration + template | not started |
 
+(Session R7, second stop: still all 8 not started in code; designed in full, see "Session R7" below.)
+
 ## Findings from the reading (for the fresh agent)
 
 Where things are (at `2efdcfbc`):
@@ -92,3 +94,110 @@ Where things are (at `2efdcfbc`):
 2. Implement per the brief's tasks 1-3 (kernel + gtests, row / parser / hook / summary + impl gtests,
    registration + template), using the findings above; then build `p9-covmv-a..` (equity-dev, then equity-rel),
    run the named filters, write `task-COV-MV-report.md`.
+
+## Session R7 (second owner stop, 2026-10-05)
+
+Dispatch: `r7-dispatch.md` section COV-MV (steps 1-7). Reading redone in full (resume4 / resume6 / r6-wave3-common /
+resume7, r7 COV-MV, brief, wave3-carry COV-MV + W3-9/10/17 + COV-11, cov-design 5.2, ledger rulings incl. COV-14,
+PRE-24a, PRE-29, PRE-9, COV-13, the RESUME 7 block; `.agents/cpp/agent.md`; prereg B.5).
+
+### State at the stop
+
+- Step 1 DONE: merged root `a15ad887` -> head `338e0e07` (clean, no conflict). AL-CLOCK (pool-8) had NOT merged in
+  root and had no code committed (its head `8a6ebe5b`, handoff only): the W3-9 keep-both append is still ahead.
+- Steps 2-7 NOT STARTED: no code, no build, no test run, no tag `p9-covmv-*` used (next tag `p9-covmv-a`).
+- `build-equity/` holds only COV / COVR receipts and logs (3.3 MB, object trees already gone): the first build is a
+  fresh configure (`powershell scripts\atx-build.ps1 configure -Preset equity-dev`). C: 85 GB free at the stop.
+- No permission refusal. Tree clean after this commit.
+
+### Design fixed in this session (use it; file:line at `338e0e07`)
+
+Engine kernel (new `atx-engine/include/atx/engine/book/mv_target.hpp`, `src/book/mv_target.cpp`; one source line
+after `src/book/risk_target.cpp` at `atx-engine/CMakeLists.txt:173`; test `atx-engine/tests/book/book_mv_target_test.cpp`
+is globbed into `atx-engine-book-tests`):
+- `mv_aim(const FactorRiskView& m, span<const f64> score, span<const f64> sigma, span<f64> out, MvAimScratch&)`
+  -> `Result<usize>` (active names). Active = finite score (NaN = no opinion: out 0, outside every sum). a = sigma *
+  score, demeaned over active (P alpha); u = a / D; G = X'D^-1X and r = X'u accumulated per name over its nonzero
+  columns (0, group, 1 + groups + s); M = I + F G, rhs = F r; partial-pivot elimination (first max, fixed order;
+  zero / non-finite pivot -> InvalidArgument "I + F G singular: F not PSD"); b = u - (X y) / D; w = b - mean(b);
+  out = w / sum|w|. Unavailable: < 2 active, P alpha == 0, sum|w| == 0. InvalidArgument: sizes (checked
+  multiplication for n * styles and K * K, R2b class), group > groups, non-finite covariance / exposure, sigma or D
+  not finite > 0 on an active name. Never F^-1 (COV-13 (c)); valid for singular F since eig(I + F G) >= 1 for PSD F.
+  Push-through identity checked by hand: V (D^-1 - D^-1 X (I + FG)^-1 F X' D^-1) = I.
+- `MvAimScratch` (vectors active, pivot, a, u, g, m, r, y, columns, values; `bytes()` = sum capacity * sizeof);
+  grow only by exact `reserve`, so `mv_aim_working_bytes(names, groups, styles)` (saturating u64) bounds `bytes()`.
+- Print helpers: `factor_exposure(view, w, e)` (e = X'w, name order, as `factor_variance` `risk_target.cpp:74-104`);
+  `factor_eigen(covariance, k, FactorEigen&)` = `atx::core::linalg::symmetric_eig` (`atx-core/include/atx/core/
+  linalg/decompose.hpp:127`) of the forecast block {j : F_jj > 0} (the store's RiskSlice sets non-forecast NaN
+  entries to 0, `strategy_spo.hpp:232`; COV's eigen family uses the finite-diagonal block, ascending,
+  `strategy_risk_model.cpp:1414-1437`); `low_eigen_share(eig, e, 3)` = sum_{r<3} lambda_r (u_r'e)^2 / sum_r
+  lambda_r (u_r'e)^2, NaN when not > 0.
+- Gtests `MvTarget.*`: ThreeNamesDiagonalClosedForm (K = 1, F = [0], dyadic sigma / score so the comparison is
+  exact), EqualsDenseInverseOnSmallN (N 40, K 6 = 1 + 3 groups + 2 styles, realistic D ~ 1e-4, F ~ 1e-4 so
+  kappa(V) ~ 40; |w - w_dense| <= 1e-12 at gross 1), RankDeficientFEqualsDenseSolve (F = v v' with dyadic v plus a
+  zero row / column: exactly singular), GrossNormalised, PositiveScalarWashesOut (c in {1e-3, 1, 1e3}, 1e-14),
+  NanAlphaIsNoOpinion (bits equal to the model without those names), DollarNeutralOnThePricedSet,
+  WorkingBytesBound (+ saturation), refusals with teeth, LowEigenShare on a diagonal F with one zero factor.
+
+Impl rule (proposed new `atx-impl/src/strategy_mv_aim.{hpp,cpp}`, tail `target_sources(atx-impl-strategy PRIVATE
+src/strategy_mv_aim.cpp)` at the end of `atx-impl/CMakeLists.txt` (cross-lane CMake tail); keeps the edits in C3 /
+L4 files to glue):
+- `apply(x, d, no_short, desired)` on the calling thread: `RiskStore::check_axes` once per input
+  (`strategy_risk_target.cpp:104-107` idiom); `read(d, slice)`: Unavailable -> pass-through `no_forecast`; COV-11
+  S11: every slot of row d must be < 50 or == 255 (`risk_no_row`), else refuse naming instrument and slot; priced =
+  member && finite desired && slot < 50 && D finite > 0 (`strategy_risk_target.cpp:33-36`); < 2 -> pass-through;
+  kernel with score = desired, sigma = sqrt(D), view groups 50 / styles 11 / group 1 + slot; Unavailable -> `flat`;
+  priced desired_i = g * out_k, g = sum_P |desired_i| (W3-17); unpriced members and nonmembers untouched.
+- Stats only for scored decisions (d >= `x.decision_begin`) with d above the last recorded index (calibrate pass 2
+  that forms the construction again, `book/nav_run.cpp:249-262`, must not double count); warm-up counted apart.
+  Block `mv_aim` in `summary.json` (main pass; capacity pass: parameters only, as `add_risk_target`
+  `strategy_nav_v7.cpp:321-331`): rule, declaration, risk_model {directory, manifest_sha256}, scored decisions,
+  applied, pass_through {no_forecast, fewer_than_two_priced, flat}, warm_up, priced_names / unpriced_members
+  {n, mean, min, max} over applied, specific_vol_ratio {pooled = sum |w| sigma / sum |d| sigma, per_decision},
+  eigen_00_02_share {mv, desired}, special_tier_negative {locate_in_aim, name_decisions, decisions} (no_short[i] &&
+  w_i < 0). recipe.json and the holdings manifest: rule, declaration, risk_model. Rule id suffix `+mv-aim-v1` before
+  `add_risk_target`'s suffix (no Python parses the suffix: grep of `scripts/*.py` done).
+- `v7::extension_workspace_bytes(names)` (0 without the rule) added as ONE term in `nav_workspace_reserve_bytes`
+  (`book/nav_lockstep.cpp:65-75`, cross-lane one-term edit) so the scratch counts in `--max-bytes` (reviewer item 5).
+
+Glue in C3 / L4 files (list each in the report):
+- `book/nav_rules.cpp:96-98`: `constexpr Row targets[] = {{"mv-aim-v1", Kind::Target, "--target-rule mv-aim-v1",
+  mv_aim_params, mv_required, mv_incompatible, "<description>"}};` with params `risk_model` (`--risk-model`) and
+  `risk_model_sha256` (`--risk-model-sha256`, pattern `^[0-9a-f]{64}$`), both required (PRE-9), incompatible
+  {aim-partial-v6, spo-v1, spo-v2, spo-v3, two-speed-nav-v1, adv-hold-v1, hold-band-v1}; `rules_json()` `:170-171`
+  wraps `std::span<const Row>(targets)`. `--target-rule mv-aim-v1` passes `wave_kinds.nav_flags`
+  (`scripts/wave_kinds.py:384-401`; `PLACEHOLDER_RE` :99 does not match the lowercase id). NavSpec already has
+  `target_rule` (`book/nav_spec.cpp:75`): no NavSpec edit.
+- `strategy_nav_v7.cpp`: `NavV7Options::mv_aim`; State member + `begin_run` reset; parser `:1100-1121` handler sets
+  `o.mv_aim` (keep the "no handler" throw for other ids); `:1230-1232` spo_only lets the store flags through when
+  `o.mv_aim`; refusal block inserted after the spo_values loop (`:1246-1277`) and BEFORE `if (o.spo_v1)` (so the
+  rule's own message wins): spo rule, aim-partial-v6, `--rule` not aim-partial-v5, `--two-speed`, `--adv-hold-q`,
+  `--hold-band`, `--construction-grid`, missing store flags; store open `:1365` adds `|| o.mv_aim`; help `:1009-1010`
+  and header `strategy_nav_v7.hpp:15` text (help-only byte change); `summarize` / `extend_recipe` /
+  `extend_holdings` add the block; new `v7::apply_target_rule(x, d, no_short, desired)` (identity without an
+  extension or the rule).
+- Hook `book/nav_decide.cpp:42-43`: `ATX_TRY(const bool proceed, detail::form_desired(...)); if (proceed)
+  ATX_TRY_VOID(v7::apply_target_rule(x, d, shared.no_short, shared.desired)); return co::Ok(proceed);`. Runs on the
+  calling thread (`book/nav_session.cpp:347-350`, outside `for_each_lane`), before `record_construction`, so a
+  restored calibrate pass replays the post-rule target. One construction per decision because adv-hold / two-speed
+  (the only `book_groups` splitters, `book/nav_lockstep.cpp:144-161`) are refused. Decide path: the extension is
+  installed only by `dispatch_nav_v7` (`strategy_nav_v7.cpp:1380`); `strategy_live.cpp:1377` runs without one, so
+  the hook is the identity there (state it; optional test).
+
+Impl gtests `atx-impl/tests/strategy_mv_aim_rule_test.cpp` (globbed into `atx-impl-tests`; add a
+`target_sources(atx-impl-strategy-target-tests PRIVATE ...)` tail in `atx-impl/tests/CMakeLists.txt`): fixtures
+`strategy_spo_fixture.hpp` (Role, write_risk_model with specific_overrides, nav_config), `strategy_spo_cli_fixture.hpp`
+(write_run_inputs), `strategy_cov_fixture.hpp` `add_container` (role pin must be 64 hex), CLI pattern
+`strategy_vol_target_test.cpp:619-687`, truncation pattern `:694-774`. Truncated-role note: `Role(d)`'s member
+exit stretch depends on d (`strategy_spo_fixture.hpp:166-168`): build the "future deleted" role by copying a prefix
+of the full role's vectors, and the store by `write_risk_model` on the prefix sessions (its draws are date-ordered,
+so the prefix rows are bit-equal). Teeth plan: one extra build with every new refusal disabled at once, run the
+refusal tests, record the failing assertions, revert.
+
+COV-11 a = 2 control: beside the a = 0.5 control in `CovBias.EigenFamilyInBandOnAPlantedModel`
+(`atx-impl/tests/strategy_cov_model_test.cpp:644-646` per re-review 2 S10; a COV file: the smallest append).
+
+Registration / template shape: `scripts/specs/p9/rules/mom-volman-v1.json` and `templates/mom-volman.json` (read);
+the registration's store pin is `ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3` (prereg B.5,
+`build-equity/p9-m2i-dcov-covv1`, never opened); `source_sample_end` still to be taken from a cov-design section 8
+primary source (Menchero-Wang-Orr 2011 / 2012) or written "unverified" (PRE-19).
