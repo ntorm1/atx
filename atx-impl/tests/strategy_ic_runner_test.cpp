@@ -5088,7 +5088,10 @@ TEST(WeightsV3, RefusalsPrecedeAnyPayloadOrOutput) {
         ASSERT_TRUE(text_file(path,text,cfg.composition_weights_sha256));
         cfg.plan_only=plan_only; std::ostringstream attempt;
         const auto status=atx::impl::strategy::run_ic(cfg,attempt);
-        ASSERT_FALSE(status) << text.substr(0,400);
+        if (status) { // every case reports (a mutation's teeth show per refusal), none aborts the loop
+          ADD_FAILURE() << "accepted, expected: " << reason << "\n" << text.substr(0,400);
+          continue;
+        }
         EXPECT_NE(status.error().to_string().find(reason),std::string::npos)
             << reason << " -> " << status.error().to_string();
         EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
