@@ -19,9 +19,10 @@ def _fixture(con):
     serial = 0
 
     def line(vid, symbol):
-        item = ir.VendorLine(vid, f"TBLTICKERHISTORY-{vid}", D(2019, 1, 2) if vid == 1 else D(2018, 12, 20),
+        first = D(2018, 12, 28) if vid == 1 else D(2018, 12, 20)
+        item = ir.VendorLine(vid, f"TBLTICKERHISTORY-{vid}", first,
                              D(2025, 12, 31), last_symbol=symbol,
-                             symbols=((symbol, D(2018, 12, 20), D(2025, 12, 31)),))
+                             symbols=((symbol, first, D(2025, 12, 31)),))
         lines.append(item)
 
     def count(vid, cik, day, filed=None, covering=False):
