@@ -125,3 +125,16 @@ def test_all_tier_primary_is_preserved(lake):
     assert (2, dt.date(2021,1,5), dt.date(2021,1,6), 'P', 'backfill') in rows
     assert con.execute(f"SELECT is_issuer_primary FROM read_parquet('{(root / 'identity/link_table.parquet').as_posix()}') WHERE security_id=1 AND valid_from=DATE '2021-01-05'").fetchone() == (False,)
 
+
+@pytest.mark.parametrize('variant', ['strict', 'pit', 'all'])
+def test_registry_discovers_current_v4_bridge(variant):
+    from atx_db.stagelake import registry
+
+    stage_name = f'export_identity_bridge_{variant}'
+    stage = next(s for s in registry.load(include_discovered=False) if s.name == stage_name)
+    assert stage.built_by == 'identity_table'
+    assert stage.inputs == ('identity_table',)
+    assert stage.manifest == f'export/identity-bridge-v4-{variant}/manifest.json'
+    assert [(output.glob, output.view) for output in stage.outputs] == [
+        (f'export/identity-bridge-v4-{variant}/links.parquet', stage_name)]
+

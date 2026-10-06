@@ -158,9 +158,9 @@ STAGES: tuple[Stage, ...] = (
                       doc="issuers with several vendor lines (audit)")),
           doc="also reads the panel core/membership scratch (_tmp/panel_core, _tmp/panel_member)"),
     *(Stage(f"export_identity_bridge_{v}", "ID", "atx.identity-bridge/v1", None, built_by="identity_table",
-            manifest=f"export/identity-bridge-v2-{v}/manifest.json", inputs=("identity_table",),
+            manifest=f"export/identity-bridge-v4-{v}/manifest.json", inputs=("identity_table",),
             vintage="interval", staleness="links hold over [valid_from, valid_to]",
-            outputs=(_o(f"export/identity-bridge-v2-{v}/links.parquet", f"export_identity_bridge_{v}",
+            outputs=(_o(f"export/identity-bridge-v4-{v}/links.parquet", f"export_identity_bridge_{v}",
                         doc=f"consumer identity bridge ({v} tiers), atx.identity-bridge/v1"),))
       for v in ("all", "pit", "strict")),
     Stage("short_interest", "OWN", None, M + "short_interest", args=(("build",),), fetch=(("fetch",),),
