@@ -82,7 +82,8 @@ struct Counts {
 class Rule {
 public:
   explicit Rule(std::shared_ptr<const spo::RiskStore> store);
-  // A new pass of the run (begin_run): the counts and the axes check start again.
+  // A new run (ScopedNavExtension::begin_run): the counts start again (the store's axes are
+  // checked at every decision).
   void begin_run();
   // Decision d of `x` (the shared desired target that proceeds, one entry per instrument;
   // no_short: the locate-in-aim mask, empty without it). Rewrites the priced members' weights as
@@ -104,7 +105,6 @@ private:
   [[nodiscard]] atx::core::Status record(std::span<const atx::u8> no_short,
                                          const std::vector<atx::f64>& desired, atx::f64 gross);
   std::shared_ptr<const spo::RiskStore> store_;
-  const atx::i64* axes_{}; // the session keys check_axes accepted (per input)
   bool formed_{};          // some decision index was formed in this pass
   atx::usize last_{};      // the latest index formed
   Counts counts_;
