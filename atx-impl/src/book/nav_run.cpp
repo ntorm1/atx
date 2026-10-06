@@ -61,6 +61,11 @@ NavReplayConfig run_base(const TargetReplayConfig& target, const NavRateOptions&
   base.book_workers = execution.book_workers;
   return base;
 }
+// P9 AL-CLOCK: the info_clock block's field record (null without a loaded clock).
+Json info_clock_field(const LoadedFields& loaded) {
+  if (loaded.info_clock.empty()) return Json(nullptr);
+  return Json{{"name", nav_info_clock_field}, {"sha256", loaded.info_clock_sha256}};
+}
 } // namespace
 namespace nav_book {
 // Command-line numbers: the whole value, else std::invalid_argument.
@@ -311,7 +316,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     // Admission (the reserve at the pinned role's own geometry, then the fields and the
     // loader against the rest) and the pinned load (v8 E-25: with the label role's marks).
     ATX_TRY(auto admitted, admit_and_load(cfg, requested, fields, scenarios.size(), holdings,
-                                          execution.label_role));
+                                          execution.label_role, emit.info_clock_print));
     times.loaded = StageTimes::Clock::now();
     log_fields_seal(admitted.fields, progress); // P9 C3 (P13): a legacy manifest, logged
     const auto& blend = admitted.blend; const auto& loaded = admitted.fields;
@@ -320,7 +325,8 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     view.industry = loaded.industry; // empty unless an industry id
     const NavReplayInput input{view, blend.volume,
                                NavFinancingFields{loaded.shares_out, loaded.si_shares},
-                               NavMarkPrices{marks.close, marks.raw, marks.present}};
+                               NavMarkPrices{marks.close, marks.raw, marks.present},
+                               loaded.info_clock}; // P9 AL-CLOCK: empty unless rule or print
     StageClock* const stages = timed ? &times.replay : nullptr;
     // P9 C2 (--calibrate-gross): pass 1 on this load, then the published run at the final
     // leverage; `published` is the plain run's config at that leverage (cfg without the flag).
@@ -393,6 +399,7 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     const std::span<const NavReplayResult> all_results(results);
     const std::span<const NavSummary> all_summaries(summaries);
     const v7::RunRecords records = v7::run_records(all_scenarios, all_results, all_summaries);
+    const Json clock = info_clock_field(loaded); // P9 AL-CLOCK: printed only under the flag
     const NavRun run{published,
                      limits,
                      base,
@@ -411,7 +418,8 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
                      v7::installed() ? &records : nullptr,
                      false,
                      calibration_record.is_null() ? nullptr : &calibration_record,
-                     emit.ann_mean_gross};
+                     emit.ann_mean_gross,
+                     emit.info_clock_print ? &clock : nullptr};
     // Console provenance only: the cache changes no published byte, so no file records it.
     if (base.liquidity_cache) progress << "nav replay: shared execution liquidity cache on\n";
     if (!label.is_null())
@@ -464,7 +472,7 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
     first.target = targets.front();
     const usize books = configs.size() * scenarios.size();
     ATX_TRY(auto admitted, admit_and_load(first, configs.front(), fields, books, false,
-                                          execution.label_role));
+                                          execution.label_role, emit.info_clock_print));
     times.loaded = StageTimes::Clock::now();
     log_fields_seal(admitted.fields, progress); // P9 C3 (P13): a legacy manifest, logged
     const auto& blend = admitted.blend; const auto& loaded = admitted.fields;
@@ -473,7 +481,9 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
     view.industry = loaded.industry;
     const NavReplayInput input{view, blend.volume,
                                NavFinancingFields{loaded.shares_out, loaded.si_shares},
-                               NavMarkPrices{marks.close, marks.raw, marks.present}};
+                               NavMarkPrices{marks.close, marks.raw, marks.present},
+                               loaded.info_clock}; // P9 AL-CLOCK: empty unless rule or print
+    const Json clock = info_clock_field(loaded);
     ATX_TRY(const auto results, replay_books(input, configs, scenarios, Observer{},
                                              timed ? &times.replay : nullptr));
     times.replayed = StageTimes::Clock::now();
@@ -518,7 +528,8 @@ co::Status run_nav_grid(const TargetReplayRunConfig& cfg, const NavTurnoverLimit
                        v7::installed() ? &records : nullptr,
                        false,
                        nullptr,
-                       emit.ann_mean_gross};
+                       emit.ann_mean_gross,
+                       emit.info_clock_print ? &clock : nullptr};
       ATX_TRY_VOID(publish_nav(run, progress));
       const auto dir = root / variant.id;
       ATX_TRY(auto recipe_sha, timed_digest(timed, [&] {

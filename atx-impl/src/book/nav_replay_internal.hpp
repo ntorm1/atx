@@ -232,6 +232,12 @@ struct Construction {
   // session's construction, i.e. what DECIDE at the session reads; empty otherwise.
   bool emit_hold{};
   bk::HoldBandState hold_in;
+  // P9 AL-CLOCK (NavReplayInput::info_clock): the decision's row of the clock (empty without
+  // one) and, under rate info-clock-rate-v1, its per-name rates (nav_info_clock_rates; empty
+  // otherwise). Both set by run_books on the calling thread before the books' DECIDE; a book
+  // only reads them.
+  std::span<const f64> clock;
+  std::vector<f64> clock_rate;
 };
 // Borrow tiers of the latest decision, shared by every book of a lockstep replay.
 // They are rate-independent (the engine's flag count only); each book maps a tier to
@@ -264,6 +270,8 @@ struct Ctx {
   // label role's with --label-role, else x's own close, raw_close and present (the same spans,
   // so the same reads). DECIDE and EXECUTE read x only.
   NavMarkPrices mark{};
+  // P9 AL-CLOCK: NavReplayInput::info_clock (the same span for every book; empty without one).
+  std::span<const f64> info_clock{};
 };
 // --emit-holdings: the observed book's per-name outcomes of the current session, written
 // beside (never read by) the book's arithmetic. EXECUTE fields are cleared every session;
@@ -538,6 +546,11 @@ struct LoadedFields {
   std::vector<f64> industry; // industry_group_field; the industry ids only
   Json binding; // recipe record; null when no fields
   std::string seal; // P9 C3 (P13): "match" or "absent" (fields_seal); never published
+  // P9 AL-CLOCK: nav_info_clock_field under rate info-clock-rate-v1 (then also in binding's
+  // fields_used) or --info-clock-print (then not: print-only); empty otherwise. Its SHA-256 is
+  // the info_clock block's field record.
+  std::vector<f64> info_clock;
+  std::string info_clock_sha256;
 };
 // Console only (the run's published bytes do not record it, so a legacy and a sealed manifest
 // with the same fields publish the same files).
@@ -552,11 +565,14 @@ struct AdmittedRun {
 // only), then the fields (pinned and role-checked) and the blend charged against what
 // remains, so input + all results fit one budget. `label` (v8 E-25, --label-role): its
 // manifest is checked against --role's before any payload is read, its marks are charged
-// before the fields, and they load (checked against the blend) last.
+// before the fields, and they load (checked against the blend) last. P9 AL-CLOCK: rate
+// info-clock-rate-v1 (base.rate) and `info_clock_print` (--info-clock-print) need the fields pin
+// (InvalidArgument before anything is read) and load nav_info_clock_field with the fields.
 co::Result<AdmittedRun> admit_and_load(const TargetReplayRunConfig& cfg,
                                        const NavReplayConfig& base, const NavFieldsPin& fields,
                                        usize books, bool holdings,
-                                       const NavLabelRolePin& label = {});
+                                       const NavLabelRolePin& label = {},
+                                       bool info_clock_print = false);
 // The variants' lockstep groups (variant indices, in order of first appearance): one group
 // of every variant, except with the ADV cap (adv_hold_q > 0, shared by same_shared), whose
 // shared construction reads aim_leverage: then one group per distinct aim leverage (review
@@ -645,7 +661,14 @@ struct NavRun {
   // main directory only (the capacity directory's run leaves it false); the recipe never
   // records it.
   bool ann_mean_gross{};
+  // P9 AL-CLOCK (Ruling ALCLOCK-1, --info-clock-print): each scenario of summary.json gains the
+  // info_clock block; this is its field record {name, sha256} (null: no block). The main
+  // directory only (the capacity directory's run leaves it null); the recipe never records it.
+  const Json* info_clock{};
 };
+// The info_clock block of one main book (Ruling ALCLOCK-1): the book's NavInfoClockStats, its
+// shares (NaN -> null), the rate it runs, the rule's constants at the run's cadence and `field`.
+Json info_clock_json(const NavReplayConfig& base, const NavInfoClockStats& s, const Json& field);
 // The summary's warm_start record; null without a warm start. Called after the replay
 // accepted the input (warm_start_sessions <= decision_begin). The role rows of the first
 // warm-up decision and of score_begin (review A-3); publish_nav adds each book's gross
