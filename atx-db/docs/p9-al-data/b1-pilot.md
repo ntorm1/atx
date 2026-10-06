@@ -14,7 +14,7 @@ All four printed acceptance checks:
 |---|---|
 | I C5 manifest, exact public fields, pinned parts and year routing | PASS, 99 rows, zero excluded clocks |
 | II landed/full census coverage | FAIL for every primary year: explicit pilot scope; exact acceptance-year census denominator unmeasured |
-| III unchanged >=90% comparator gate | 2020 FAIL: 6/12 finite, six metadata-unknown; 2021–2025 PASS: 12/12 each; 2026 PASS: 9/9 |
+| III unchanged >=90% comparator gate | 2020 FAIL: 6/12 finite, six metadata-unknown; 2021-2025 PASS: 12/12 each; 2026 PASS: 9/9 |
 | IV original family and strictly earlier prior clock | PASS, no invalid accessions |
 
 | Year | Landed bodies by acceptance year | Census originals by filing year | Pilot share |

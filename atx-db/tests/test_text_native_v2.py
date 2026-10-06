@@ -288,3 +288,19 @@ def test_complete_arrow_schema_unknown_and_populated_parts_identical(tmp_path):
     assert schemas[0].field('mdna_sim_cosine').type == J.pa.float64()
     assert schemas[0].field('risk_words').type == J.pa.int64()
     assert set(unknown) == set(J.PUBLIC_SCHEMA.names)
+
+def test_retained_comparator_audit_detects_new_transition_candidate(tmp_path):
+    prior = V.feature_row(record('annual', 2020, form='10-K', fiscal_period='FY', report_date='2020-01-01'), None, None, None)
+    current = V.feature_row(record('transition', 2021, form='10-KT', fiscal_period='FY', report_date='2020-10-27'), None, None, None)
+    source = tmp_path / 'source'
+    J.atomic_json(source / 'plan.json', {'issuers': [1]})
+    J.atomic_json(source / 'units/1.json', [prior, current])
+    files = {rel: J.digest(source / rel) for rel in ('plan.json', 'units/1.json')}
+    J.atomic_json(source / 'manifest.json', {'files': files})
+    audit = J.audit_comparators(source)
+    assert audit['changed'] == [{'accession': 'transition', 'stored': None, 'selected': 'annual'},
+                                {'accession': 'transition', 'reason': 'prior_clock_changed'}]
+    target = tmp_path / 'r3'
+    with pytest.raises(ValueError, match='profile recomputation'):
+        J.rematerialize(source, target, J.digest(source / 'manifest.json')['sha256'])
+    assert not target.exists()
