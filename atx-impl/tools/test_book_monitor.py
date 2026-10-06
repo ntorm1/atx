@@ -318,6 +318,33 @@ class MissingInputs(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("not a baseline", err)
 
+    def test_indexed_fit_work_is_refused(self):
+        """P9 SQL3, ruling W3-5 (SQL1-MON): a --fit-work dir under which a record-store SQLite index could select
+        records (record_store.INDEX_NAME in the work dir, its parent or a store root under it) is refused, exit 1,
+        nothing written: the monitor reads record files only and would under-report an indexed store."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            w = World(root / "in")
+            argv = ["--admission", w.admission, "--fit-work"]
+            work = w.fit_work("work")
+            code, doc, err = w.run(["--baseline", *argv, work, "--output", root / "plain"])
+            self.assertEqual(code, 0, err)                                  # no index: read as before
+            self.assertNotEqual(doc["checks"]["M4"]["status"], "n/a")
+            name = fcw.record_store.INDEX_NAME
+            store_root = work / "3e3e3e3e3e3e3e3e-train"                    # a v8 store root <role sha16>-<window>
+            store_root.mkdir()
+            for k, index in enumerate((work / name, store_root / name, root / "in" / name)):
+                index.write_bytes(b"")                                      # presence alone selects (SQL-6)
+                out = root / f"refused-{k}"
+                code, doc, err = w.run(["--baseline", *argv, work, "--output", out])
+                self.assertEqual(code, 1, index)
+                self.assertIn("record-store SQLite index", err)
+                self.assertIn(index.as_posix(), err)
+                self.assertIsNone(doc)
+                self.assertFalse(out.exists())
+                index.unlink()
+            self.assertEqual(bm.work_indexes(work), [])
+
 
 if __name__ == "__main__":
     unittest.main()
