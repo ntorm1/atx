@@ -234,17 +234,20 @@ def era_manifest(root: Path, name: str, begin: str, end: str) -> dict:
     return {"id": name.upper(), "dir": name, "begin": begin, "end": end, "universe": "u-v1"}
 
 
-def drop_root(tmp: Path, history: bool = True, drop: bool = True) -> tuple[Path, Path, dict]:
+DROP_ERAS = (("e1", "2015-01-01", "2017-01-01"), ("e2", "2020-01-01", "2021-01-01"))
+
+
+def drop_root(tmp: Path, history: bool = True, drop: bool = True, eras=DROP_ERAS) -> tuple[Path, Path, dict]:
     """A carry cycle of a history era E1 ([2015, 2017), before TRAIN) and the anchor E2 (2020, inside TRAIN) whose
-    W has two members, with fit.carry.drop naming one (history=False: carry_root's two TRAIN eras)."""
+    W has two members, with fit.carry.drop naming one (history=False: carry_root's two TRAIN eras; ``eras``: other
+    (dir, begin, end) windows, the last the anchor)."""
     if not history:
         root, sp, spec = carry_root(tmp)
     else:
         root = TR.make_root(tmp)
         (root / "scripts" / "runner.py").write_text(FAKE_RUNNER)
         (root / "behaviour.json").write_text(json.dumps({"nav_files": {}}))
-        roles = [era_manifest(root, "e1", "2015-01-01", "2017-01-01"), era_manifest(root, "e2", "2020-01-01",
-                                                                                     "2021-01-01")]
+        roles = [era_manifest(root, *era) for era in eras]
         spec = TR.base_spec(roles=roles)
         spec.pop("gate")
         spec["summ"].pop("ledger")                                    # a history pool: no ledger line here
@@ -427,6 +430,180 @@ def test_drop_refuses_a_spec_that_applies_a_flagged_rule(tmp_path, where):
     assert e.value.code == RC.EXIT_USAGE
     sp.write_text(json.dumps(spec))
     assert RC.main(["plan", str(sp), "--root", str(root)]) == RC.EXIT_USAGE
+
+
+# ------------------------------------------------------------------ OD3P fix round 1 (review R-1, S-1, S-2, S-3)
+def line_specs(root: Path, spec: dict, out2: str, out4: str) -> tuple[Path, Path]:
+    """Runbook B6 on the fakes: line 2 (Y-F0: the carry without drop) and line 4 (the clean-source book: the same TRAIN
+    fit carried with fit.carry.drop), each with its own ic / nav outputs (od3-u-<book>, ...) and the fit.output given."""
+    paths = []
+    for book, out, drop in (("yf0", out2, False), ("clean", out4, True)):
+        s = json.loads(json.dumps(spec))
+        if not drop:
+            s["fit"]["carry"].pop("drop")
+        s["fit"]["output"] = out
+        s["ic"]["u_output"], s["ic"]["w_output"] = f"out/od3-u-{book}", f"out/od3-w-{book}"
+        s["nav"]["output"] = f"out/od3-nav-{book}"
+        path = root.parent / f"od3-{book}.json"
+        path.write_text(json.dumps(s))
+        paths.append(path)
+    return paths[0], paths[1]
+
+
+def fit_of(root: Path, sp: Path) -> RC.Step:
+    return next(st for st in TR.cycle_of(root, sp, capabilities=ABSENT).steps() if st.phase == "fit")
+
+
+def tool_argv(st: RC.Step) -> list[str]:
+    """The carry tool's own argv (after the bounded runner's ``--``)."""
+    return st.argv[st.argv.index("--") + 1:]
+
+
+def test_each_history_book_gets_its_own_fresh_fit_output_and_the_carry_runs(tmp_path):
+    """Review R-1, the fixed runbook B6 on the fakes: lines 2 and 4 carry one TRAIN fit, each into its own fresh
+    fit.output; P7 sees the fit phase pending with the carry's --output that dir (line 4: ending in --drop-list); the
+    run goes through the carry (line 4's list checked and recorded; its history w pass gets the absent flags), and a
+    re-plan shows the fit done (resume)."""
+    root, _, spec = drop_root(tmp_path)
+    p2, p4 = line_specs(root, spec, "out/od3-fit-yf0", "out/od3-fit-clean")
+    pin = RC.sha256_file(root / LIST)
+    for sp, out, tail in ((p2, "out/od3-fit-yf0", []), (p4, "out/od3-fit-clean", ["--drop-list", LIST,
+                                                                                   "--drop-list-sha256", pin])):
+        st = fit_of(root, sp)
+        tool = tool_argv(st)
+        assert st.state == "pending" and st.output == out and tool[tool.index("--output") + 1] == out
+        assert tool[tool.index("--output") + 2:] == tail
+        log: list[str] = []
+        assert TR.run(root, sp, log, capabilities=ABSENT, stop_after="w") == RC.EXIT_OK, log[-5:]
+        assert fit_of(root, sp).state == "done"                        # resume: this carry's own output
+    assert [c for c in TR.calls(root) if "fit" in c] == ["od3-fit-yf0-run1", "od3-fit-clean-run1"]   # two carries ran
+    rec2, rec4 = (json.loads((root / d / "carry.json").read_text()) for d in ("out/od3-fit-yf0", "out/od3-fit-clean"))
+    assert "drop" not in rec2 and rec4["drop"]["list_sha256"] == pin and rec4["drop"]["members"] == ["old_alpha"]
+    for name in ("composition_weights.json", "composition_weights.E1.json"):     # OD3P-1: the same weights bytes
+        assert (root / "out/od3-fit-clean" / name).read_bytes() == (root / "out/od3-fit-yf0" / name).read_bytes()
+    wt = {a[a.index("--output") + 1]: a for a in TR.argvs(root) if "--composition-weights" in a}
+    assert wt["out/od3-w-clean-E1-1"][-4:] == [RR.ABSENT_FLAG, LIST, RR.ABSENT_SHA_FLAG, pin]
+    assert RR.ABSENT_FLAG not in wt["out/od3-w-yf0-E1-1"] and RR.ABSENT_FLAG not in wt["out/od3-w-clean-E2-1"]
+
+
+@pytest.mark.parametrize("case, needle", [
+    ("train_fit_dir", "holds no atx.carry-weights/v1 carry.json"),
+    ("existing_dir", "holds no atx.carry-weights/v1 carry.json"),
+    ("line2_dir_for_line4", "records another drop"),
+    ("line4_dir_for_line2", "records another drop"),
+    ("other_weights", "records another weights"),
+])
+def test_a_fit_output_that_is_not_this_carrys_is_refused_at_plan(tmp_path, case, needle):
+    """Review R-1: carry_step takes the carry as done when fit.output holds composition_weights.json. The runbook's old
+    B6 kept the book's own fit section, whose fit.output is the TRAIN fit dir holding W: the carry never ran (nor the
+    drop-list checks) and the run hard-stopped at w:E1 after the history u passes. Lines 2 and 4 sharing one dir skip
+    line 4's carry the same way. Refused at plan time (exit 2), before any step runs."""
+    root, sp, spec = drop_root(tmp_path)
+    if case == "train_fit_dir":
+        spec["fit"]["output"] = "fit"                    # the dir holding W (and A): the book's own TRAIN fit section
+        sp.write_text(json.dumps(spec))
+    elif case == "existing_dir":
+        (root / "out" / "W").mkdir(parents=True)       # any existing dir: the tool would refuse to overwrite it
+    else:
+        p2, p4 = line_specs(root, spec, "out/od3-fit", "out/od3-fit")
+        first, sp = (p2, p4) if case in ("line2_dir_for_line4", "other_weights") else (p4, p2)
+        assert TR.run(root, first, [], capabilities=ABSENT, stop_after="fit") == RC.EXIT_OK
+        if case == "other_weights":                    # another book's TRAIN fit (other W) into the same dir
+            other = json.loads((root / "fit/composition_weights.json").read_bytes())
+            other["weights"]["new_alpha"] = 2.0
+            (root / "fit/other_weights.json").write_bytes(CW.canonical_bytes(other))
+            spec = json.loads(p2.read_text())
+            spec["fit"]["carry"]["weights"]["path"] = "fit/other_weights.json"
+            sp.write_text(json.dumps(spec))
+    calls = TR.calls(root)
+    with pytest.raises(RC.CycleError, match=needle) as e:
+        TR.run(root, sp, [], capabilities=ABSENT)
+    assert e.value.code == RC.EXIT_USAGE and "R-1" in str(e.value) and "fresh fit.output" in str(e.value)
+    assert RC.main(["plan", str(sp), "--root", str(root)]) == RC.EXIT_USAGE
+    assert TR.calls(root) == calls                     # nothing ran
+
+
+@pytest.mark.parametrize("case, needle", [
+    ("pending", "rules_pending"),
+    ("unknown_id", "are not members of the book"),
+    ("flagged_rule_in_base", "applies flagged rule"),
+    ("schema", "drop list schema"),
+])
+def test_the_carry_tools_list_checks_run_at_plan_time(tmp_path, case, needle):
+    """Review S-1: the carry tool's own drop_list / check_drop run when the cycle is made (plan, status, run), so a
+    list or base the carry would refuse is refused before any step, not at the fit step after the history u passes."""
+    root, sp, _ = drop_root(tmp_path)
+    lst = json.loads(json.dumps(DROP_LIST))
+    if case == "pending":
+        lst["rules_pending"] = ["mv-aim-v1"]
+    elif case == "unknown_id":
+        lst["members"] = ["old_alpha", "zz_alpha"]
+    elif case == "schema":
+        lst["schema"] = "atx.od3-flagged-members/v0"
+    else:
+        doc = json.loads((root / "fit/composition_weights.json").read_bytes())
+        doc["provenance"]["rule"] = "theme-cov-hedge-v1"
+        (root / "fit/composition_weights.json").write_bytes(CW.canonical_bytes(doc))
+    (root / LIST).write_text(json.dumps(lst))
+    with pytest.raises(RC.CycleError, match=needle) as e:
+        TR.run(root, sp, [], capabilities=ABSENT)
+    assert e.value.code == RC.EXIT_USAGE and "at plan time" in str(e.value)
+    assert RC.main(["plan", str(sp), "--root", str(root)]) == RC.EXIT_USAGE
+    assert TR.calls(root) == [] and not (root / "out").exists()
+
+
+@pytest.mark.parametrize("eras", [
+    (("e1", "2015-01-01", "2017-01-01"), ("e2", "2020-01-01", "2021-01-01"), ("e3", "2021-01-01", "2022-01-01")),
+    (("e1", "2015-01-01", "2017-01-01"), ("e2", "2017-01-01", "2020-01-01"), ("e3", "2020-01-01", "2021-01-01"),
+     ("e4", "2021-01-01", "2022-01-01")),
+], ids=["history_train_anchor", "two_history_train_anchor"])
+def test_the_absent_flags_reach_only_the_history_roles_ic_passes(tmp_path, eras):
+    """Review S-2 (required by the PM): --absent-members / --absent-members-sha256 (and the runner's bind of the list)
+    reach exactly the u and w passes of the history roles; a role inside TRAIN that is not the anchor gets nothing, as
+    the anchor; every other step's argv is the same spec's without fit.carry.drop (the carry adds --drop-list)."""
+    root, sp, spec = drop_root(tmp_path, eras=eras)
+    pin = RC.sha256_file(root / LIST)
+    history = {d.upper() for d, _, end in eras if end <= "2020-01-01"}          # end on or before the TRAIN begin
+    inside = {d.upper() for d, _, _ in eras} - history
+    assert history and len(inside) == 2                                         # one TRAIN role is not the anchor
+    plain_spec = json.loads(json.dumps(spec))
+    plain_spec["fit"]["carry"].pop("drop")
+    steps, plain = (RR.roles_cycle(s, RC.Resolver(root), spec_path=sp, capabilities=ABSENT).steps()
+                    for s in (json.loads(json.dumps(spec)), plain_spec))
+    assert [(s.phase, s.role) for s in steps] == [(s.phase, s.role) for s in plain]
+    flagged = set()
+    for st, st0 in zip(steps, plain):
+        if st.phase == "fit":
+            assert strip_absent(st.argv) == st0.argv + ["--drop-list", LIST, "--drop-list-sha256", pin]
+        elif RR.ABSENT_FLAG in (st.argv or []):
+            flagged.add((st.phase, st.role))
+            assert st.argv[-4:] == [RR.ABSENT_FLAG, LIST, RR.ABSENT_SHA_FLAG, pin]
+            k = st.argv.index("--")
+            assert st.argv[k - 2:k] == ["--bind", LIST] and strip_absent(st.argv) == st0.argv
+        else:
+            assert st.argv == st0.argv and LIST not in (st.argv or []), (st.phase, st.role)
+    assert flagged == {(phase, role) for role in history for phase in RR.ABSENT_PHASES}
+    for role in inside:                                                         # by name: the TRAIN roles' IC passes
+        for phase in RR.ABSENT_PHASES:
+            argv = next(s.argv for s in steps if (s.phase, s.role) == (phase, role))
+            assert not {RR.ABSENT_FLAG, RR.ABSENT_SHA_FLAG, LIST} & set(argv), (phase, role)
+
+
+def test_a_history_ic_pass_without_the_runner_is_refused_not_skipped(tmp_path):
+    """Review S-3: a history u / w pass is never planned without the flags. A pass whose argv has no bounded-runner
+    "--" (no such shape today: phases.py wraps every IC pass in the runner) is refused, not silently skipped."""
+    root, sp, spec = drop_root(tmp_path)
+    rc = RR.roles_cycle(spec, RC.Resolver(root), spec_path=sp, capabilities=ABSENT)
+    for phase in RR.ABSENT_PHASES:
+        per = {"E1": rc.eras[0].steps()}
+        st = next(s for s in per["E1"] if s.phase == phase)
+        st.argv = st.argv[st.argv.index("--") + 1:]                             # the exe's argv alone
+        with pytest.raises(RC.CycleError, match=f"the {phase} pass of history role E1 has no bounded-runner") as e:
+            rc.absent_members(per)
+        assert e.value.code == RC.EXIT_USAGE
+    per = {"E1": rc.eras[0].steps()}
+    rc.absent_members(per)                                                      # today's shape: planned with them
+    assert [s.argv[-4] for s in per["E1"] if s.phase in RR.ABSENT_PHASES] == [RR.ABSENT_FLAG] * 2
 
 
 # ------------------------------------------------------------------ OD3P: --risk-model on history (PRE-10)

@@ -33,8 +33,15 @@ weights are carried unchanged). The carry gets --drop-list (it checks and record
 without it), and every IC pass (u, w) of each history role gets ``--absent-members PATH --absent-members-sha256 PIN``
 (the list file and its pin) at the end of the IC exe's argv, the list bound by the runner; no TRAIN-window role gets
 them. Refused: an IC exe whose --list-rules --json envelope does not offer capability absent-members-v1 (fail closed,
-at plan time; od3p-absent-contract.md), a drop with no history role, and a nav / ref flag or nav rule that names a
-listed (flagged) rule. Without it the carry and IC argv are the ones above.
+at plan time; od3p-absent-contract.md), a drop with no history role, a nav / ref flag or nav rule that names a listed
+(flagged) rule, and (at plan time, by carry_weights.py's own drop_list / check_drop) a list or base the carry would
+refuse: pending rules, bad schema / source / ids, an id not a key of W's weights, a base applying a listed rule. An
+IC pass of a history role without the bounded runner's "--" is refused, never planned without the flags.
+fit.output of a fit.carry cycle (OD3P review R-1): the carry is "done" when fit.output holds composition_weights.json,
+so fit.output is refused at plan time when it exists and its carry.json does not record exactly this carry (W, A, the
+anchor, the eras and the drop list's pin): the book's TRAIN fit dir, or another history line's carry dir, would skip
+the carry and the drop-list checks. Each history book gets its own fresh fit.output (p9-od3-runbook.md B6).
+Without fit.carry.drop the carry and IC argv are the ones above.
 
 A book that reads --risk-model (a nav or ref flag) is refused on a spec with a history role (Ruling PRE-10): no per-era
 risk store is built in P9, so the OD-3 read is on P9-F0h, the last accepted book that does not read the risk model.
@@ -65,6 +72,7 @@ import sys
 
 HERE = Path(__file__).resolve().parent
 ENGINE_TOOLS = HERE.parent / "atx-engine" / "tools"
+IMPL_TOOLS = HERE.parent / "atx-impl" / "tools"     # carry_weights.py (imported lazily: carry_tool)
 for _p in (str(HERE), str(ENGINE_TOOLS)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -180,6 +188,15 @@ def carry_of(spec: dict) -> dict | None:
         raise usage("fit.carry needs weights and admission (and optionally drop), each {path, sha256 (null until "
                     "`lock`)}")
     return carry
+
+
+def carry_tool():
+    """atx-impl/tools/carry_weights.py, imported lazily (as wave_readers imports nav_summ): the cycle runs the carry
+    tool's own drop-list and base checks at plan time and reads its record schema (no copied logic)."""
+    if str(IMPL_TOOLS) not in sys.path:
+        sys.path.insert(0, str(IMPL_TOOLS))
+    import carry_weights as CW  # noqa: PLC0415
+    return CW
 
 
 def flag_names(flags) -> list[str]:
@@ -342,6 +359,53 @@ class RolesCycle:
             if not any(is_history(r) for r in self.roles):
                 raise usage(f"fit.carry.drop lists members absent on history (OD3P-1) and none of the roles "
                             f"{', '.join(r['id'] for r in self.roles)} is a history era: the list would apply nowhere")
+            self.check_drop_list(res, doc)
+        self.check_carry_output(res)
+
+    def check_drop_list(self, res: RC.Resolver, doc) -> None:
+        """Review S-1: the carry tool's own checks of the list and of the base (carry_weights.drop_list / check_drop),
+        run at plan time, before any step, so a list or base the carry would refuse never reaches the fit step after
+        the history u passes. A hash-only list (a fixture) is not read, as the Resolver's other content checks."""
+        path = self.carry["drop"]["path"]
+        if res.hash_only(path):
+            return
+        cw = carry_tool()
+        try:
+            drop = cw.drop_list(res.path(path).read_bytes())
+            if isinstance(doc, dict):
+                cw.check_drop(doc, drop)
+        except cw.CarryError as exc:
+            raise usage(f"fit.carry.drop: {exc} (carry_weights.py's check, at plan time)") from exc
+
+    def check_carry_output(self, res: RC.Resolver) -> None:
+        """Review R-1: carry_step takes the carry as done when fit.output holds composition_weights.json, so a fit.output
+        that exists and is not this carry's own publication (the book's TRAIN fit dir holding W, another history line's
+        carry dir, any other dir the tool would refuse to overwrite) is refused at plan time: its carry.json must record
+        exactly this carry (W, A, the anchor, the eras, and the drop list's pin or no drop)."""
+        w_dir = fit_weights_dir(self.anchor)
+        if not res.exists_dir(w_dir):
+            return                                    # pending (or failed: its run dir alone)
+        cw = carry_tool()
+        try:
+            rec = res.read_json(f"{w_dir}/{cw.OUTPUT_RECORD}")
+        except ValueError:
+            rec = None
+        want = {"weights": self.pins["carry:weights"][1], "admission": self.pins["carry:admission"][1],
+                "anchor": self.anchor.pin("role"), "eras": [[c.role_key, c.pin("role")] for c in self.eras[:-1]],
+                "drop": self.pins["carry:drop"][1] if "drop" in self.carry else None}
+        got = {} if not isinstance(rec, dict) or rec.get("schema") != cw.SCHEMA else {
+            "weights": rec.get("weights_sha256"), "admission": rec.get("admission_sha256"),
+            "anchor": rec.get("anchor_role_sha256"),
+            "eras": [[e.get("id"), e.get("role_sha256")] if isinstance(e, dict) else e for e in rec.get("eras") or []],
+            "drop": rec["drop"].get("list_sha256") if isinstance(rec.get("drop"), dict) else rec.get("drop")}
+        if not got:
+            why = f"it holds no {cw.SCHEMA} {cw.OUTPUT_RECORD}"
+        else:
+            why = f"its {cw.OUTPUT_RECORD} records another " + ", ".join(k for k in want if got.get(k) != want[k])
+        if not got or got != want:
+            raise usage(f"fit.output {w_dir} exists and is not this carry's output ({why}): the carry would be taken "
+                        "as done, or refuse to overwrite, so neither it nor its drop-list checks would run (OD3P review "
+                        "R-1); give each history book its own fresh fit.output (p9-od3-runbook.md B6)")
 
     def check_drop_rules(self, drop) -> None:
         """PRE-31: the clean-source line applies no flagged rule: no token of nav.rule, nav.flags or ref.flags is a
@@ -403,7 +467,11 @@ class RolesCycle:
         path, pin = self.carry["drop"]["path"], self.pins["carry:drop"][1]
         for cycle in history:
             for st in per[cycle.role_key]:
-                if st.phase in ABSENT_PHASES and st.argv and "--" in st.argv:
+                if st.phase in ABSENT_PHASES:
+                    if not st.argv or "--" not in st.argv:     # review S-3: fail closed, never planned without them
+                        raise RC.CycleError(f"fit.carry.drop: the {st.phase} pass of history role {cycle.role_key} has "
+                                            "no bounded-runner argv (no \"--\"), so the list cannot be bound and "
+                                            "passed (Ruling OD3P-1); refused, nothing runs", RC.EXIT_USAGE)
                     k = st.argv.index("--")
                     st.argv = st.argv[:k] + ["--bind", path] + st.argv[k:] + [ABSENT_FLAG, path, ABSENT_SHA_FLAG, pin]
                     st.note = "; ".join(x for x in (st.note, "fit.carry.drop: listed members absent (OD3P-1)") if x)

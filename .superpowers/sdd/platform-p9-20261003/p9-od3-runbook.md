@@ -123,10 +123,23 @@ spec as `v8-od3-protocol.md` section 5 "B6 specs" says, with these P9 rules:
   fields dir>, "label_dir": "build-equity/train-2020-2023-lo3-dlret"}` (E3 is the TRAIN role as built; nothing dated
   2024 or later is read: its end is the exclusive TRAIN end).
 - `fields`: `{"output": "build-equity/od3-fields-unused", "manifest_sha256": null}`, no list (every era as built).
-- `fit`: the book's own section plus `"carry": {"weights": {"path": <its TRAIN composition_weights.json>, "sha256":
-  null}, "admission": {"path": <its admission.json>, "sha256": null}}`; line 4 adds `"drop": {"path":
-  "scripts/specs/p9/od3/flagged_members.json", "sha256": null}` (the clean-source book's spec is the carry base,
-  PRE-31).
+- `fit`: the book's own section with `output` REPLACED by a fresh dir of the book's own, `build-equity/od3-fit-<book>`
+  (`<book>` = `p9f0h`, `yf0`, `r2`, `clean`), plus `"carry": {"weights": {"path": <its TRAIN
+  composition_weights.json>, "sha256": null}, "admission": {"path": <its admission.json>, "sha256": null}}`; line 4
+  adds `"drop": {"path": "scripts/specs/p9/od3/flagged_members.json", "sha256": null}` (the clean-source book's spec
+  is the carry base, PRE-31).
+  - **Never the book's TRAIN fit dir, never another line's dir** (OD3P review R-1). The cycle takes the carry as done
+    when `fit.output` holds `composition_weights.json` (`research_roles.py` `carry_step`). The book's own `fit.output`
+    is its TRAIN fit dir, the dir holding the carried file (Y-F0: `scripts/specs/v8/lib-v8ysb-gm.json` has
+    `build-equity/mega-weights-v8x-theme-erc-v8ysb`): kept, the carry would never run, no
+    `composition_weights.E1/E2.json` would be written, line 4's drop-list checks would never run, and the run would
+    HARD-STOP at `w:E1` after the fields and the history u passes. Lines 2 and 4 get DISTINCT dirs (`od3-fit-yf0`,
+    `od3-fit-clean`) even when both carry Y-F0's TRAIN fit; one shared dir would make line 4's carry "done" from
+    line 2, and its list would be neither checked nor recorded.
+  - Before P7, none of `build-equity/od3-fit-<book>`, `build-equity/od3-fit-<book>-run1`,
+    `build-equity/od3-fit-<book>.pending` exists. The cycle refuses at plan time (exit 2) a `fit.output` that exists and
+    whose `carry.json` does not record exactly this carry (W, A, anchor, eras, the drop list's pin or no drop); after
+    its own carry has run, the same spec re-plans with `fit` done (resume).
 - `ic.u_output`, `ic.w_output`, `nav.output`: `build-equity/od3-u-<book>`, `-w-<book>`, `-nav-<book>`. The NAV rule,
   L and flags stay unchanged. ALCLOCK-1: if P9-C is accepted and AL-CLOCK is merged, the two books of the
   turnover-share prediction (P9-F0h and Y-F0) both name `--info-clock-print` (print-only; only `summary.json` changes,
@@ -138,10 +151,15 @@ spec as `v8-od3-protocol.md` section 5 "B6 specs" says, with these P9 rules:
 
 **Lock and plan (P7).** `"$PY" scripts/research_cycle.py lock scripts/specs/p9/od3/od3-<book>.json --write`, then
 `plan`: the plan lists exactly E1, E2, E3 (`fields:E1..E3` pinned, `u:E1..E3`, fit = carry, `w:E1..E3`, `nav:E1..E3`,
-summ). For line 4 the plan also shows `# pin carry:drop`, the carry argv ends with `--drop-list ... --drop-list-sha256
-...`, and the E1 and E2 u / w argv end with `--absent-members scripts/specs/p9/od3/flagged_members.json
---absent-members-sha256 <pin>` (E3 without). A plan with other eras, a carry pin or anchor refusal, or (line 4 only) a
-capability refusal: STOP for that line (the capability refusal makes line 4 "not read: no producer").
+summ). The fit line reads `# phase fit [bounded; pending; fit.carry: ...] -> build-equity/od3-fit-<book>`, and the carry
+argv (after the runner's `--`) has `--output build-equity/od3-fit-<book>`. STOP for that line unless the fit phase is
+`pending` with that `--output` (a `done` or `failed` fit, or a refusal naming `fit.output`, means a reused or stale dir:
+OD3P review R-1). For line 4 the plan also shows `# pin carry:drop`, the carry argv ends with `--output
+build-equity/od3-fit-clean --drop-list scripts/specs/p9/od3/flagged_members.json --drop-list-sha256 <pin>`, and the E1
+and E2 u / w argv end with `--absent-members scripts/specs/p9/od3/flagged_members.json --absent-members-sha256 <pin>`
+(E3 without). A plan with other eras, a carry pin, anchor or drop-list refusal (the carry tool's list checks run at plan
+time), or (line 4 only) a capability refusal: STOP for that line (the capability refusal makes line 4 "not read: no
+producer").
 
 **P2 TRAIN identity.** Each of P9-F0h, Y-F0, R-2 and the clean-source book reproduces its TRAIN NAV byte for byte on
 the frozen build (for a book naming `--info-clock-print`, every file but `summary.json`'s `info_clock` block).
@@ -194,8 +212,9 @@ paired dSR P9-F0h vs R-2 on E1+E2 > 0; both p printed. A fail is reported, never
    active on history]**: P9-F0h vs Y-F0 mechanism signs (P9-H: vol ratio < 1, the hedge 0 in each era's first 252
    decisions, PRE-26; P9-C: turnover share up, gross up, with `--info-clock-print` on both books or "no producer";
    P9-M: inert, no effect predicted; P9-L: history labels from each era's own label role, whose delisting stage is
-   empty before 2018); P9-F0's history S2 net Sharpe vs its TRAIN value + P9-W's dSR, and "lower than on 2020-2023";
-   the ERC prediction printed "not read" (PRE-18).
+   empty before 2018); P9-F0h's history S2 net Sharpe = its TRAIN S2 net Sharpe + P9-W's dSR (PRE-39; prereg B.6
+   as PRE-39 reads it), and "lower than on 2020-2023" (PM7-28's registered expectation, carried); the ERC
+   prediction printed "not read" (PRE-18).
 4. Producers: NAV exe `ann_vol`, `ann_mean`, `net_sharpe` per era; pooled rows from `nav_summ --pool`; turnover as B.2.
 5. Contamination flags: every member of each book and every P9 rule with its `source_sample_end` (prereg Appendix III;
    mv-aim-v1 **[UNKNOWN: COV-MV's registration]**).
@@ -205,7 +224,8 @@ paired dSR P9-F0h vs R-2 on E1+E2 > 0; both p printed. A fail is reported, never
 
 A P1 pin difference; a P2 identity failure; score_begin != 399; an era past 2020-01-01; unreviewed factor-break
 sessions; an E1 scored session under 1,000 lo3 members; a fields argv beyond the allowed keys (B7) or a fields run
-refused at the cap; a plan with other eras or a carry refusal; K1 over its caps; a book reading `--risk-model`; the last
+refused at the cap; a plan with other eras or a carry refusal; a P7 plan whose fit phase is not `pending` into the
+book's own fresh `build-equity/od3-fit-<book>` (R-1); K1 over its caps; a book reading `--risk-model`; the last
 P9 cell not ledgered; an R2 refusal, a pin mismatch or an E3 SHA mismatch; an exe or `ucrtbase.dll` record differing
 from the freeze build (C.6, C.8); a print without the identity-bridge flag; OD3P (T2 included) not merged and reviewed
 (PRE-21); `rules_pending` not empty at the read (P0). Not a stop: the IC exe without `absent-members-v1` (line 4 prints
