@@ -1,4 +1,4 @@
-# Handoff SQL3 (P9 wave 3, pool-13): round R7-1 done at the owner stop; item 5 pending on B2
+# Handoff SQL3 (P9 wave 3, pool-13): round R7-1 done at the owner stop; R8 close done; item 5 pending on B2
 
 - Branch `feat/p9-sql3-20261004`, worktree `C:/atx-wt/pool-13`, lease run id `p9-sql3-20261004` (not touched).
 - Root SHA merged: `1b64ce45` (= root's head at the owner stop; merges `93760a1e` of `a15ad887` and `9e44d3be` of
@@ -6,8 +6,14 @@
   (F-2: the seal walk fails closed on a file-system error). Then the docs commit of this report / handoff.
 - Builds: `p9-sql3-a` (source `d10d9e54`) and `p9-sql3-b` (source `784d2abd`), equity-dev, targets
   `atx-engine-research-catalog,atx-engine-research-catalog-tests,atx-research-store`; no first-party warning. Object
-  tree `build-equity/` deleted by name at hand-back (receipts and logs `build-equity/mega-p9-sql3-{a,b}-*` kept, as
-  are the tracked `build-equity/audits/`, `build-equity/v8-interim3-pitch-render-run2/`). Next free tag `p9-sql3-c`.
+  tree `build-equity/`: NOT deleted (the R7 text said "deleted by name at hand-back" in error; R8 check: about 410 MB
+  present, `bin/` holds `p9-sql3-b`'s exes `466fcde5...` / `257f55a8...`, which the real-exe hook test uses).
+  Receipts and logs `build-equity/mega-p9-sql3-{a,b}-*` and the tracked `build-equity/audits/`,
+  `build-equity/v8-interim3-pitch-render-run2/` are kept. Deleting the object tree by name is left to the lane's close
+  (after item 5). Next free tag `p9-sql3-c`.
+- R8 round (close; no build): DIRTY-1 commit `f48d0585` (this file as it stood at the stop); `git merge
+  feat/platform-p9-20261003` = already up to date (root still `1b64ce45`; B2's redo not in root); SQL3-SEED: the whole
+  `scripts/tests` under PYTHONHASHSEED 1 on head `f48d0585` (code = `784d2abd`), counts below.
 - Full record: `task-SQL3-report.md` (file:line per item, tests, evidence logs in `sql3-evidence/`, SQL3-1, the
   tiny-world identity procedure for root, G-P10 (a)-(e), findings F-1 / F-2, permission refusals).
 
@@ -27,7 +33,9 @@
 - gtests `ResearchCatalog*:SealGuard*:StoreCli*`: 28 / 28 on `p9-sql3-a` (at `d10d9e54` and on the merged tree) and on
   `p9-sql3-b`.
 - `scripts/tests/test_research_store_hook.py`: 8 passed (real exe of `-a`; again 8 passed with `-b`'s exe, seed 0).
-- `scripts/tests` PYTHONHASHSEED 0: 520 passed, 4 skipped, 0 failed. PYTHONHASHSEED 1: SEE-SEED-1.
+- `scripts/tests` PYTHONHASHSEED 0: 520 passed, 4 skipped, 0 failed. PYTHONHASHSEED 1 (R8, head `f48d0585`, exe of
+  `p9-sql3-b`, real-exe case ran): 520 passed, 4 skipped, 0 failed, 27 min, ENV-1 did not occur
+  (`sql3-evidence/pytest-scripts-tests-seed1-r8.log`; the 4 skips are the env-gated live / e2e cases, as at seed 0).
 - `atx-engine/tools/test_stage_chain.py` seeds 0 / 1: 10 / 10 passed.
 - Store suite (`test_research_store_{classes,blind,identity,fixtures}.py`, `test_research_store.py`) seeds 0 / 1:
   42 passed, 1 failed each = the classes guard (expected, `atx.run-store/v1` only).
