@@ -304,3 +304,27 @@ def test_retained_comparator_audit_detects_new_transition_candidate(tmp_path):
     with pytest.raises(ValueError, match='profile recomputation'):
         J.rematerialize(source, target, J.digest(source / 'manifest.json')['sha256'])
     assert not target.exists()
+
+
+@pytest.mark.parametrize('checkpoint_kind', ['unit', 'working'])
+def test_nonempty_plan_inspection_reads_retained_rows_without_mutation(tmp_path, checkpoint_kind, capsys, monkeypatch):
+    row = {**record(), 'body_receipt': {'bytes': 12, 'sha256': 'synthetic-body'}}
+    plan = {'scope': 'pilot', 'sources': [], 'primary_start': '2020-01-01',
+            'support_start': '2018-06-30', 'observed_source_horizon': '2021-05-01',
+            'census_originals': 10, 'census_by_filing_year': {'2021': 10},
+            'issuers': [1], 'records': [record()]}
+    J.atomic_json(tmp_path / 'plan.json', plan)
+    ledger = [{'event': 'start', 'attempt': 1}, {'event': 'end', 'attempt': 1, 'status': 200, 'bytes': 12}]
+    (tmp_path / 'requests.jsonl').write_text('\n'.join(json.dumps(item) for item in ledger))
+    path = tmp_path / ('units' if checkpoint_kind == 'unit' else 'working') / '1.json'
+    J.atomic_json(path, [row] if checkpoint_kind == 'unit' else {'rows': [row]})
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    monkeypatch.setattr(J, 'Transport', lambda *a, **kw: pytest.fail('inspection must not contact SEC'))
+    result = J.inspect_incomplete(tmp_path)
+    assert result['evidence']['selected_issuers'] == [1]
+    assert result['evidence']['completed_rows'] == result['evidence']['landed_bodies'] == 1
+    assert result['evidence']['attempts'] == 1 and result['evidence']['bytes'] == 12
+    assert not result['evidence']['manifest_present']
+    assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+    emitted = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert len(emitted) == 5

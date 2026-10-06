@@ -523,8 +523,6 @@ def inspect_incomplete(output):
     refusals = [r for r in ends if r.get('status') in (403, 429)]
     rows = []
     for cik in plan['issuers']:
-        assert all(all(row[k] == value for k, value in original.items())
-                   for row, original in zip(rows, retained_public))
         unit = output / 'units' / f'{cik}.json'
         working = output / 'working' / f'{cik}.json'
         if unit.exists():
