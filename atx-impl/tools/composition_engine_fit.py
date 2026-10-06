@@ -161,7 +161,8 @@ def add_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--walk-forward-step", type=int, default=None,
                         help="--walk-forward: step >= 1 (registered 21)")
     parser.add_argument("--walk-forward-min-decisions", type=int, default=None,
-                        help=f"--walk-forward: min_decisions >= 2 (default and registered {WALK_FORWARD_MIN_DECISIONS})")
+                        help="--walk-forward: min_decisions >= 2 (default and registered "
+                             f"{WALK_FORWARD_MIN_DECISIONS})")
 
 
 def walk_forward(args) -> bool:
@@ -467,7 +468,11 @@ def check_fit(args, state: FitterState, work: Path, error: type[Exception]) -> t
     spec = work / "composition_fit_spec.json"
     spec.write_bytes(spec_bytes)
     out = work / "composition"
-    run_exe([args.composition_exe, "fit", "--factors", args.engine_factors, "--spec", spec, "--output", out], error)
+    argv = [args.composition_exe, "fit", "--factors", args.engine_factors, "--spec", spec, "--output", out]
+    if walk_forward(args):  # P9 D3W: the rows come from the same call; the checks below read the full-TRAIN blocks
+        lag, step, least = walk_forward_options(args)
+        argv += ["--walk-forward", args.walk_forward, "--lag", lag, "--step", step, "--min-decisions", least]
+    run_exe(argv, error)
     raw = _read(out / FIT_FILE, f"the fit's {FIT_FILE}", error)
     got = _json(raw, f"the fit's {FIT_FILE}", error)
     _require(isinstance(got, dict) and got.get("schema") == FIT_SCHEMA and got.get("status") == "complete",
@@ -477,6 +482,8 @@ def check_fit(args, state: FitterState, work: Path, error: type[Exception]) -> t
     _require(not differ, f"the C++ fit differs from the fitter's ({len(differ)}): {differ[:20]}", error)
     by_block = {k: pure_relative(want[k], got[k]) for k in ("parent", "theme_erc", "theme_tsmom", "weights")
                 if k in want}
+    if walk_forward(args):
+        setattr(args, WALK_FORWARD_FIT, walk_forward_rows(args, got, state, raw, error))
     return ({"composition_fit_sha256": hashlib.sha256(raw).hexdigest(),
              "fit_spec_sha256": hashlib.sha256(spec_bytes).hexdigest(), "fit_max_rel_float_diff": worst,
              "fit_max_pure_rel_diff_by_block": by_block,
@@ -584,3 +591,130 @@ def check_written(written_weights, engine: EngineKernels, error: type[Exception]
     """The weights the second composition wrote are the C++ fit's final weights bit for bit (fitter member order)."""
     _require([float(w) for w in written_weights] == engine.weights,
              "the composed weights are not the C++ fit's final weights", error)
+
+
+# ---------------------------------------------------------------- P9 D3W: walk-forward (K-P9-8, ruling D3-1)
+WALK_FORWARD_ROW_KEYS = ("decision_index", "from_session", "fit_decisions", "last_fit_index", "last_fit_session",
+                         "weights")
+WALK_FORWARD_MAX_ROWS = 4096  # atx-engine fit.hpp walk_forward_max_rows
+
+
+def _count(x) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool) and x >= 0
+
+
+def walk_forward_rows(args, got: dict, state: FitterState, raw: bytes, error: type[Exception]) -> dict:
+    """The C++ fit's walk_forward block (check 3 agreed with its full-TRAIN blocks), checked for shape: the rule, the
+    options asked for, 1..4096 rows of WALK_FORWARD_ROW_KEYS at strictly increasing decisions, each row's weights one
+    finite value >= 0 per fitted member (state.members order) weighting something. Kept for weights_v3 with the
+    members, their themes and the C++ document's SHA-256."""
+    block = got.get("walk_forward")
+    lag, step, least = walk_forward_options(args)
+    _require_wf(isinstance(block, dict) and block.get("rule") == WALK_FORWARD_RULE and
+                block.get("window") == args.walk_forward and
+                [block.get("lag"), block.get("step"), block.get("min_decisions")] == [lag, step, least] and
+                isinstance(block.get("rows"), list) and 1 <= len(block["rows"]) <= WALK_FORWARD_MAX_ROWS,
+                f"{FIT_FILE} carries no {WALK_FORWARD_RULE} block for window {args.walk_forward}, lag {lag}, step "
+                f"{step}, min_decisions {least}", error)
+    before = -1
+    for n, row in enumerate(block["rows"]):
+        _require_wf(isinstance(row, dict) and sorted(row) == sorted(WALK_FORWARD_ROW_KEYS) and
+                    all(_count(row[k]) for k in WALK_FORWARD_ROW_KEYS[:5]) and row["decision_index"] > before and
+                    isinstance(row["weights"], list) and len(row["weights"]) == len(state.members) and
+                    all(_number(w) and math.isfinite(w) and w >= 0 for w in row["weights"]) and
+                    any(w > 0 for w in row["weights"]),
+                    f"{FIT_FILE} walk_forward row {n} is malformed", error)
+        before = row["decision_index"]
+    return {"members": list(state.members), "member_themes": list(state.themes), "block": block,
+            "composition_fit_sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def weights_v3(document: dict, rows: dict, error: type[Exception] = EngineFitError) -> dict:
+    """The published weights document as atx.dsl-composition-weights/v3 (the IC runner's composition_walk_forward):
+    a copy with the schema v3, the top-level walk_forward {rule, window, lag, step, min_decisions, rows:
+    [{from_session, weights: {every library id: weight}}]} (a library candidate the fit did not take part in: 0) and
+    provenance.walk_forward (each row's window: decision index, fitted decisions, last fitted decision). The full-TRAIN
+    weights, signs and blocks stay as written. A candidate a row weights needs a sign and, under theme_standardise
+    with a top-level weight of 0, its theme among the top-level weighted themes (it is added to themes); else refused
+    (the runner refuses the same file)."""
+    out = json.loads(json.dumps(document))
+    block, members = rows["block"], rows["members"]
+    library = list(document["weights"])  # every library candidate (the fitter writes one weight per candidate)
+    v3_rows = []
+    for row in block["rows"]:
+        weights = dict.fromkeys(library, 0.0)
+        weights.update({cid: float(w) for cid, w in zip(members, row["weights"])})
+        v3_rows.append({"from_session": int(row["from_session"]), "weights": weights})
+    weighted = sorted({cid for row in v3_rows for cid, w in row["weights"].items() if w > 0})
+    unsigned = [cid for cid in weighted if not document.get("signs", {}).get(cid)]
+    _require_wf(not unsigned, f"a row weights a candidate without a composition sign: {unsigned}", error)
+    themes = out.get("theme_standardise", {}).get("themes")
+    if themes is not None:
+        top = {themes[cid] for cid in themes if document["weights"].get(cid, 0.0) > 0}
+        theme_of = dict(zip(members, rows["member_themes"]))
+        for cid in (c for c in weighted if not document["weights"][c] > 0):
+            _require_wf(theme_of[cid] in top,
+                        f"a row weights {cid} of theme {theme_of[cid]}, which no top-level weighted candidate has "
+                        "(the IC runner's standardise grouping is the full-TRAIN fit's)", error)
+            themes[cid] = theme_of[cid]
+    out["schema"] = WEIGHTS_SCHEMA_V3
+    out["walk_forward"] = {"rule": block["rule"], "window": block["window"], "lag": block["lag"],
+                           "step": block["step"], "min_decisions": block["min_decisions"], "rows": v3_rows}
+    out["provenance"]["walk_forward"] = {
+        "rule": block["rule"], "composition_fit_sha256": rows["composition_fit_sha256"],
+        "producer": "atx-research-composition fit --walk-forward (C++): row j is the composition fit on the TRAIN "
+                    "decisions d <= j - lag, in force from decision j's session; the IC runner holds the book flat "
+                    "before the first row (ruling D3-1)",
+        "rows": [{k: row[k] for k in WALK_FORWARD_ROW_KEYS[:5]} for row in block["rows"]]}
+    return out
+
+
+class WalkForwardHooks(NamedTuple):
+    """The fitter's own names run_walk_forward uses (its main() builds this: no module-level name of the fitter is
+    added, so nothing its producer fingerprint reaches moves)."""
+    error: type[Exception]
+    canonical: Callable[[dict], bytes]
+    publish: Callable[[Path, dict], None]
+    pending: Callable[[Path], Path]
+    limit: int
+    weights_file: str
+    exit_ok: int
+
+
+def run_walk_forward(args, fit: Callable, hooks: WalkForwardHooks, log=None) -> tuple[int, dict]:
+    """The fitter under --walk-forward: refuse an existing --output or a stale stage, run ``fit`` unchanged into
+    <output>.wf-stage, then publish (hooks.publish: all or nothing) the stage's files at --output with the weights
+    file turned into schema v3 (weights_v3; a fit that published no weights file is published as it is), and remove
+    the stage. Any refusal after the fit removes the stage and publishes nothing. The summary names the published
+    output, files and weights SHA-256, and the rows (walk_forward)."""
+    error, out = hooks.error, Path(args.output)
+    stage = out.with_name(out.name + WALK_FORWARD_STAGE)
+    _require_wf(not out.exists(), f"output exists; refusing overwrite: {out}", error)
+    _require_wf(not stage.exists() and not hooks.pending(stage).exists(),
+                f"stale or concurrent walk-forward stage; inspect and remove: {stage}", error)
+    setattr(args, WALK_FORWARD_ARMED, str(stage))
+    args.output = stage
+    try:
+        code, summary = fit(args, log=log)
+    finally:
+        args.output = out
+    try:
+        files = {p.name: p.read_bytes() for p in sorted(stage.iterdir())}
+        summary = dict(summary, output=str(out))
+        if code == hooks.exit_ok:
+            rows = getattr(args, WALK_FORWARD_FIT, None)
+            _require_wf(rows is not None, "the fit kept no walk-forward rows (the C++ fit did not run)", error)
+            document = json.loads(files[hooks.weights_file])
+            files[hooks.weights_file] = hooks.canonical(weights_v3(document, rows, error))
+            _require_wf(len(files[hooks.weights_file]) <= hooks.limit,
+                        f"output: the v3 weights JSON exceeds the runner's {hooks.limit}-byte bound", error)
+            first, last = rows["block"]["rows"][0], rows["block"]["rows"][-1]
+            summary.update(weights_sha256=hashlib.sha256(files[hooks.weights_file]).hexdigest(),
+                           walk_forward={"rule": WALK_FORWARD_RULE, "rows": len(rows["block"]["rows"]),
+                                         "first_from_session": first["from_session"],
+                                         "last_from_session": last["from_session"]})
+        summary["files"] = {n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())}
+        hooks.publish(out, files)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    return code, summary
