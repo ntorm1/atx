@@ -1,0 +1,28 @@
+== preflight
+   preflight: manifest commit ba31770de2d0, parent tiny (L 1.12), fields 395f82f7b34d, ledger 0 lines N 0, budget {'id': 'p9-kinds-fixture', 'construction_cap': 1000}
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2j-tw-c3r\waves\m2j-c3r\receipts\01-preflight.json
+== register
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2j-tw-c3r\waves\m2j-c3r\receipts\02-register.json
+== screen
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2j-tw-c3r\waves\m2j-c3r\receipts\03-screen.json
+== spec
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py lock scripts/specs/p9/kinds/templates/rule-nav-m2j-c3r.json --write --root C:/atx-wt/pool-2/build-equity/p9-m2j-tw-c3r
+git add -- scripts/specs/p9/kinds/templates/rule-nav-m2j-c3r.json
+git commit -q -m "wave m2j-c3r: rule cell rule-nav-m2j-c3r.json on tiny.json" -- scripts/specs/p9/kinds/templates/rule-nav-m2j-c3r.json
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2j-tw-c3r\waves\m2j-c3r\receipts\04-spec.json
+== run
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/p9/kinds/templates/rule-nav-m2j-c3r.json --stop-after w --root C:/atx-wt/pool-2/build-equity/p9-m2j-tw-c3r
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2j-tw-c3r\waves\m2j-c3r\receipts\05-run.json
+== match
+"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output waves/m2j-c3r/readers/mech-parent-run1 --bind scripts/wave_readers.py --bind tiny-nav/summary.json --bind tiny-nav/daily_linear-6bps-stale5-v1+swap-fin-v1.csv --bind tiny-nav/daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv --bind tiny-nav/daily_modeled-1bn-stale5-v1+flat-300-v0.csv --bind tiny-nav/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv --bind tiny-nav/daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv -- "C:/Program Files/Python312/python.exe" scripts/wave_readers.py mechanics --nav parent=tiny-nav --output waves/m2j-c3r/readers/mech-parent.json
+   gross (engine): G_parent 0.986692308059862 (mode pm6-6-engine, tolerance 0.005); nav --calibrate-gross
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py lock scripts/specs/p9/kinds/templates/rule-nav-m2j-c3r-cal.json --root C:/atx-wt/pool-2/build-equity/p9-m2j-tw-c3r
+git add -- scripts/specs/p9/kinds/templates/rule-nav-m2j-c3r-cal.json
+git commit -q -m "wave m2j-c3r: rule-nav-m2j-c3r-cal.json calibrated in one process (PM6-6, P9 C2)" -- scripts/specs/p9/kinds/templates/rule-nav-m2j-c3r-cal.json
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/p9/kinds/templates/rule-nav-m2j-c3r-cal.json --stop-after nav --root C:/atx-wt/pool-2/build-equity/p9-m2j-tw-c3r
+
+research_cycle wave: HARD-STOP [match]: calibrated run (--stop-after nav, nav --calibrate-gross): exit 4 ("C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/p9/kinds/templates/rule-nav-m2j-c3r-cal.json --stop-after nav --root C:/atx-wt/pool-2/build-equity/p9-m2j-tw-c3r) b2ba3da875effd6449b25269270218f7d18bf6c31 --fields fields/manifest.json --fields-sha256 395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac --output tiny-nav-k-navrule-gm --rule aim-partial-v5 --cadence 1 --trade-fraction 0.1 --dust-multiple .1 --aim-leverage 1.12 --daily-turnover-mean-max .20 --daily-turnover-p95-max .30 --neutralize price-risk-v1 --max-bytes 268435456 --order-basis delta --exit-rate .05 --locate-in-aim --liquidity-cache --rule aim-partial-v5 --calibrate-gross 0.986692308059862 --calibrate-tolerance 0.005
+   receipt: outcome process-error exit 2 0.3 s peak 2 MiB
+
+
+WAVE c3r exit 4

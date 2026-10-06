@@ -1,0 +1,8 @@
+### item 4 (PRE-7a, C3-9): X-5 --ann-mean-gross (Release p9-2q adcf72d4) vs flag-absent p9-m2j-x5-argv (same exe)
+absent build-equity/p9-m2j-x5-argv (27 files) | opt-in build-equity/p9-m2j-x5-optin (27 files); same file set True
+files differing: ['summary.json']
+summary.json: scenarios 5; differing leaf paths ['/scenarios/0/ann_mean_gross', '/scenarios/1/ann_mean_gross', '/scenarios/2/ann_mean_gross', '/scenarios/3/ann_mean_gross', '/scenarios/4/ann_mean_gross']; each on the opt-in side only True
+opt-in summary.json minus its '"ann_mean_gross"' lines: 5 lines deleted; equals the flag-absent file byte for byte: True
+capacity/summary.json holds an ann_mean_gross key on the opt-in side: False
+VERDICT: HOLDS (only summary.json, one ann_mean_gross key per scenario)
+exit 0
