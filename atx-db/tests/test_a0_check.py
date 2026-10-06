@@ -377,6 +377,8 @@ def _evidence(work: Path, symbol_items: int) -> None:
             {"evidence_id": "e2-R", "value_json": json.dumps({"rejection_reason": "x"})}]
     (work / "evidence").mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(rows), work / "evidence" / "part-0000.parquet")
+    (work / "preparation.json").write_text(json.dumps({
+        "steps": {"reconstruct": {"files": [{"file": "evidence/part-0000.parquet"}]}}}), encoding="utf-8")
 
 
 def _arm_manifests(root: Path, *, backfill_rows: int, rows: int, validation: bool = True, s2: bool = False) -> None:
@@ -394,7 +396,8 @@ def _report_lake(base: Path) -> None:
     _evidence(base / "W_B2", 0)
     for work, s1 in (("W_A", False), ("W_B2", True)):
         (base / work / "preparation.json").write_text(json.dumps(
-            {"pin": {"version": "v", **({"a0_s1": True} if s1 else {})}, "steps": {}}), encoding="utf-8")
+            {"pin": {"version": "v", **({"a0_s1": True} if s1 else {})},
+             "steps": {"reconstruct": {"files": [{"file": "evidence/part-0000.parquet"}]}}}), encoding="utf-8")
     for arm, bf, rows, s2 in (("A", 10, 6780, False), ("B1", 0, 6780, True), ("B2", 7, 6700, False),
                               ("B12", 0, 6700, True)):
         _arm_manifests(base / f"P_{arm}", backfill_rows=bf, rows=rows, s2=s2)
@@ -872,3 +875,56 @@ def test_report_compares_fixed_v4_to_explicit_original_v2_reference(tmp_path):
     assert selected["d0"]["pit"]["d0_pass"]
     assert selected["published_pit_export"] == "identity-bridge-v8-pit"
     assert "identity-bridge-v8-pit" in selected["provenance"]["pit_export"]["manifest"]
+
+
+def test_symbol_items_reads_only_completed_manifest_parts_nested_or_flat(tmp_path):
+    work = tmp_path/'W'
+    _evidence(work, 20)
+    nested = work/'evidence'/'attempt-new'
+    nested.mkdir()
+    pq.write_table(pa.table({'value_json':[json.dumps({'items':[{'kind':'symbol_snapshot_match'}]*3})]}),
+                   nested/'part-0000.parquet')
+    manifest = {'steps':{'reconstruct':{'files':[{'file':'evidence/attempt-new/part-0000.parquet'}]}}}
+    (work/'preparation.json').write_text(json.dumps(manifest))
+    assert a0.symbol_snapshot_items(work) == 3
+    manifest['steps']['reconstruct']['files'] = [{'file':'evidence/part-0000.parquet'}]
+    (work/'preparation.json').write_text(json.dumps(manifest))
+    assert a0.symbol_snapshot_items(work) == 20
+    (work/'preparation.json').write_text(json.dumps({'steps':{}}))
+    with pytest.raises(FileNotFoundError, match='completed'):
+        a0.symbol_snapshot_items(work)
+    manifest['steps']['reconstruct']['files'] = [{'file':'evidence/missing.parquet'}]
+    (work/'preparation.json').write_text(json.dumps(manifest))
+    with pytest.raises(FileNotFoundError):
+        a0.symbol_snapshot_items(work)
+
+
+def test_batch_option_changes_only_two_native_reconstruction_commands(tmp_path, monkeypatch):
+    kwargs = {'data_root':tmp_path/'data','inputs':{'receipt':'r','ops_manifest':'o','document_review':'d'}}
+    default = a0.plan_steps(tmp_path/'base','a'*40,**kwargs)
+    assert len(default) == 47
+    assert default == a0.plan_steps(tmp_path/'base','a'*40,**kwargs,reconstruction_batch_size=None)
+    configured = a0.plan_steps(tmp_path/'base','a'*40,**kwargs,reconstruction_batch_size=64)
+    changed = []
+    for old,new in zip(default,configured,strict=True):
+        if old != new:
+            changed.append(new['id'])
+            assert new == {**old,'argv':old['argv']+['--reconstruction-batch-size','64']}
+    assert changed == ['W_A.prepare.reconstruct','W_B2.prepare.reconstruct']
+    with pytest.raises(ValueError,match='positive'):
+        a0.plan_steps(tmp_path/'base','a'*40,**kwargs,reconstruction_batch_size=0)
+    captured = []
+    monkeypatch.setattr(a0,'run_arms',lambda *args,**kw:captured.append(kw) or 0)
+    assert a0.main(['run-arms','--commit','HEAD','--reconstruction-batch-size','64','--dry-run']) == 0
+    assert captured[-1]['reconstruction_batch_size'] == 64
+    assert a0.main(['run-arms','--commit','HEAD','--dry-run']) == 0
+    assert captured[-1]['reconstruction_batch_size'] is None
+
+
+def test_existing_arm_execution_batch_binding_cannot_be_retagged(tmp_path):
+    base = tmp_path/'base'
+    base.mkdir()
+    (base/'arms.json').write_text(json.dumps({'commit':'a'*40,'modules':{},'reconstruction_batch_size':64}))
+    assert a0.ensure_export(tmp_path,'a'*40,base,{'reconstruction_batch_size':64}) == base/'code'/('a'*7)
+    with pytest.raises(SystemExit,match='batch'):
+        a0.ensure_export(tmp_path,'a'*40,base,{})

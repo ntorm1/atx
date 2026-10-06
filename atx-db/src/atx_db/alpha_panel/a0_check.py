@@ -658,10 +658,16 @@ def rehearsal_root(base: Path, arm: str) -> Path:
         n += 1
 
 
-def plan_steps(base: Path, commit: str, *, data_root: Path, inputs: dict[str, str], baseline: str = "historical") -> list[dict[str, Any]]:
+def plan_steps(base: Path, commit: str, *, data_root: Path, inputs: dict[str, str], baseline: str = "historical",
+               reconstruction_batch_size: int | None = None) -> list[dict[str, Any]]:
     """Every step of ``run-arms`` in order: id, guard cap, environment overrides and the python argv."""
     from ..identity_links import REHEARSAL_PHASES
     from . import build
+
+    if reconstruction_batch_size is not None and (
+            not isinstance(reconstruction_batch_size, int) or isinstance(reconstruction_batch_size, bool)
+            or reconstruction_batch_size <= 0):
+        raise ValueError("reconstruction_batch_size must be a positive integer")
 
     code = base / "code" / commit[:7]
     caps = {name: cap for name, cap, _ in build.STAGES}
@@ -679,8 +685,10 @@ def plan_steps(base: Path, commit: str, *, data_root: Path, inputs: dict[str, st
         work, out = base / f"W_{arm}", rehearsal_root(base, arm)
         rehearsals[arm] = out
         for name in PREPARE_STEPS:
+            batch_option = (["--reconstruction-batch-size", str(reconstruction_batch_size)]
+                            if name == "reconstruct" and reconstruction_batch_size is not None else [])
             steps.append(step(f"W_{arm}.prepare.{name}", 0.8, s1, False, "exec", *common, "--", EXEC_MODULES[0],
-                              "prepare", "--work", str(work), "--receipt", inputs["receipt"], "--step", name))
+                              "prepare", "--work", str(work), "--receipt", inputs["receipt"], "--step", name, *batch_option))
         for phase in REHEARSAL_PHASES:
             steps.append(step(f"{out.name}.rehearsal.{phase}", PHASE_CAPS.get(phase, 0.8), s1, False, "exec", *common,
                               "--", EXEC_MODULES[0], "rehearsal", "--work", str(work), "--ops-manifest",
@@ -717,6 +725,8 @@ def ensure_export(repo: Path, sha: str, base: Path, record: dict[str, Any]) -> P
             raise SystemExit(f"{base} belongs to commit {arms['commit']}; use a new base directory")
         if arms.get("baseline", "historical") != record.get("baseline", "historical") or arms.get("inputs") != record.get("inputs"):
             raise SystemExit("arm baseline changed; use a new base directory")
+        if arms.get("reconstruction_batch_size") != record.get("reconstruction_batch_size"):
+            raise SystemExit("arm reconstruction batch changed; use a new base directory")
         if arms.get("recovery", {}).get("document_review") != record.get("recovery", {}).get("document_review") or arms.get("recovery", {}).get("repinning") != record.get("recovery", {}).get("repinning"):
             raise SystemExit("arm input pins changed; use a new base directory")
         for rel, expected in arms["modules"].items():
@@ -754,7 +764,8 @@ def _step_env(step: dict[str, Any]) -> dict[str, str]:
     return {**env, **step["env"]}
 
 
-def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: Path, dry_run: bool, baseline: str = "historical") -> int:
+def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: Path, dry_run: bool, baseline: str = "historical",
+             reconstruction_batch_size: int | None = None) -> int:
     repo = C.PACKAGE_ROOT.parent
     sha = _git(repo, "rev-parse", "--verify", f"{commit}^{{commit}}").decode().strip()
     inputs_path = baseline_inputs_path(base, baseline)
@@ -770,7 +781,8 @@ def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: P
         raise SystemExit(blocked)
     inputs = {"receipt": recovered["receipt"]["path"], "ops_manifest": recovered["ops_manifest"]["path"],
               "document_review": recovered["document_review"]["path"]}
-    steps = plan_steps(base, sha, data_root=data_root, inputs=inputs, baseline=baseline)
+    steps = plan_steps(base, sha, data_root=data_root, inputs=inputs, baseline=baseline,
+                       reconstruction_batch_size=reconstruction_batch_size)
     if dry_run:
         if blocked:
             print(f"a0 run-arms BLOCKED: {blocked}; the real run refuses until every pinned input verifies", flush=True)
@@ -793,7 +805,8 @@ def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: P
         arm["document_review"] = recovered["document_review"]
         arm["repinning"] = recovered.get("repinning")
         arm["original_document_review"] = (recovered.get("repinning") or {}).get("original_review", recovered["document_review"])
-    code = ensure_export(repo, sha, base, {"arms": arms, "inputs": inputs, "baseline": baseline, "recovery": recovered, "python": str(python), "guard": str(guard)})
+    execution = {} if reconstruction_batch_size is None else {"reconstruction_batch_size": reconstruction_batch_size}
+    code = ensure_export(repo, sha, base, {"arms": arms, "inputs": inputs, "baseline": baseline, "recovery": recovered, "python": str(python), "guard": str(guard), **execution})
     for s in steps:
         path = base / "steps" / f"{s['id']}.json"
         record = C.read_json(path) if path.exists() else {"id": s["id"], "commit": sha, "cap": s["cap"],
@@ -836,9 +849,11 @@ def symbol_snapshot_items(work: Path) -> int:
 
     from ..identity_reconstruction import EV_SYMBOL
 
-    files = sorted((work / "evidence").glob("*.parquet"))
-    if not files:
-        raise FileNotFoundError(f"no evidence parts below {work / 'evidence'}")
+    prepared = _read(work / "preparation.json") or {}
+    completed = prepared.get("steps", {}).get("reconstruct")
+    if completed is None or "files" not in completed:
+        raise FileNotFoundError(f"no completed reconstruction manifest below {work}")
+    files = [work / entry["file"] for entry in completed["files"]]
     total = 0
     for path in files:
         for value in pq.read_table(path, columns=["value_json"]).column("value_json").to_pylist():
@@ -1316,6 +1331,7 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--python", type=Path, default=Path(sys.executable))
     a.add_argument("--guard", type=Path, default=GUARD)
     a.add_argument("--dry-run", action="store_true")
+    a.add_argument("--reconstruction-batch-size", type=int)
     for name in ("preflight", "seed", "unseed", "stage"):
         p = sub.add_parser(name)
         p.add_argument("--code-root", type=Path)
@@ -1345,7 +1361,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if outcome["documents"]["status"] == "complete" else 1
     if args.cmd == "run-arms":
         return run_arms(args.base, args.commit, data_root=args.data_root, python=args.python, guard=args.guard,
-                        dry_run=args.dry_run, baseline=args.baseline)
+                        dry_run=args.dry_run, baseline=args.baseline,
+                        reconstruction_batch_size=args.reconstruction_batch_size)
     if args.cmd == "stage":
         return run_stage(args.root, args.r4, args.stage, data_root=args.data_root, code_root=args.code_root)
     if args.cmd == "preflight":
