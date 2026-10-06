@@ -71,6 +71,10 @@ SCAN_KEYS = {"rows_scanned": "rows_in_file", "rows_on_or_after_seal_skipped": "r
 # bar_panel): a panel guard without them would compare nothing, so it refuses (fail closed).
 PANEL_KEYS = ("rows_scanned", "rows_on_or_after_seal_skipped", "rows_selected", "rows_off_calendar",
               "duplicate_keys_quarantined")
+# The share statistics of the price panel (research_fields_price.source_panel): Python records them as 0 when it loads no
+# shares, the engine only when its panel loads shares (A3 re-review N-1), so a 0 the engine does not report is no
+# difference; any other value still has to be the engine's.
+SHARE_KEYS = ("shares_rows_above_a9_ceiling",)
 SPEC_SCHEMA = "atx.research-fields-spec/v1"
 RECEIPT_SCHEMA = "atx.research-fields-receipt/v1"
 RECEIPT_DIR = "engine_fields"
@@ -263,9 +267,11 @@ def same_panel(name: str, entry: dict, stats: dict) -> None:
     same factor-break-v1 outcome. The price fields' bits depend on the panel's history (a repaired step before the role
     divides both factors of a ratio), and the engine sets that history from the fields of its own call, so a run whose
     Python panel reaches further (coskew_60m without ceq_iss_5y, or ceq_iss_5y left to Python) is refused here. Fail
-    closed: statistics that are not a dict, or lack any of ``PANEL_KEYS``, refuse (an empty comparison proves nothing),
-    as does an engine entry without its panel's statistics."""
-    if not isinstance(stats, dict) or any(k not in stats for k in PANEL_KEYS):
+    closed: statistics that are not a dict, or lack any of ``PANEL_KEYS`` or hold None for one (A3 re-review S-R2: an
+    empty comparison proves nothing, and a None statistic is skipped below), refuse, as does an engine entry without its
+    panel's statistics. A ``SHARE_KEYS`` statistic that is 0 here and absent from the engine's block (its panel loaded
+    no shares) is not compared (A3 re-review N-1)."""
+    if not isinstance(stats, dict) or any(stats.get(k) is None for k in PANEL_KEYS):
         raise EngineError(f"{name}: this builder's vendor panel recorded no read statistics "
                           f"({', '.join(PANEL_KEYS)} needed); refusing")
     checks = entry.get("source_checks")
@@ -274,7 +280,8 @@ def same_panel(name: str, entry: dict, stats: dict) -> None:
         raise EngineError(f"{name}: the engine's receipt carries no vendor panel statistics; refusing")
     for key, want in stats.items():
         other = SCAN_KEYS.get(key, key)
-        if key == "rule" or (want is None and other not in got):
+        if key == "rule" or (want is None and other not in got) or (key in SHARE_KEYS and want == 0
+                                                                    and other not in got):
             continue
         if got.get(other) != want:
             raise EngineError(f"{name}: the engine's vendor panel differs from this builder's ({key}: "
