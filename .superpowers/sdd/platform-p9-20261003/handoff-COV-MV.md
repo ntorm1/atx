@@ -201,3 +201,39 @@ Registration / template shape: `scripts/specs/p9/rules/mom-volman-v1.json` and `
 the registration's store pin is `ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3` (prereg B.5,
 `build-equity/p9-m2i-dcov-covv1`, never opened); `source_sample_end` still to be taken from a cov-design section 8
 primary source (Menchero-Wang-Orr 2011 / 2012) or written "unverified" (PRE-19).
+
+## Session R8 (2026-10-06; dispatch r8-dispatch.md COV-MV)
+
+### State at hand-back
+
+- Merged root `1b64ce45` (merge `10259f38`, clean), then root `fd084e78` (SQL3; merge `db33c6ca`, clean; Debug
+  suites not yet re-run on it); AL-CLOCK not merged in root
+  (`git merge-tree` with its head `c3f3f1f8`: clean, keep-both is textual-conflict free today).
+- Items 1-8 DONE and committed (code / spec head `846739c1`): kernel `756035ed`; row, parser entry, hook, refusals,
+  summary block, workspace term, impl gtests `f6b05cbd` (+ slip `d44e05f5`, test slip `846739c1`); COV-11 a = 2
+  control `26b67bd5`; registration and template `628a9ffb`. Report: `task-COV-MV-report.md` (evidence in
+  `covmv-logs/`).
+- Debug evidence on the clean head (tags p9-covmv-a, c, d): MvTarget 11/11, MvAimRule 15/15, named suites 99/99,
+  whole atx-impl-strategy-target-tests 405/405 (1 DISABLED by design); teeth (p9-covmv-e): the 3 refusal tests fail
+  with the refusals disabled.
+- PERMISSION REFUSAL (PERM-1, not retried): the command that reverts the teeth mutation (`git checkout --
+  atx-impl/src/strategy_nav_v7.cpp atx-impl/src/strategy_mv_aim.cpp`, inside a compound command quoted in the
+  report). The working tree therefore still carries two uncommitted `// TEETH` lines:
+  `atx-impl/src/strategy_nav_v7.cpp:1271` (`if (o.mv_aim && false) {`) and `atx-impl/src/strategy_mv_aim.cpp:135`
+  (`if (true || slot < ...) continue;`). Never stage them. `build-equity/bin/atx-impl-strategy-target-tests.exe` is
+  the teeth binary.
+
+### Next step for a fresh agent (after the PM / owner rules on the revert)
+
+1. Revert the two `// TEETH` lines (`git checkout --` of the two files, once approved); `git status` must be clean
+   except git-ignored sprint files.
+2. Debug canary: `scripts/research-build.ps1 -Tag p9-covmv-f -Targets atx-equity-strategy-ic,
+   atx-equity-strategy-targets,atx-research-eval,atx-impl-strategy-target-tests -Canary` (PYTHONDONTWRITEBYTECODE=1);
+   re-run `MvAimRule.*` on it.
+3. Release once: `powershell scripts\atx-build.ps1 configure -Preset equity-rel`, then `-Preset equity-rel -Tag
+   p9-covmv-g -Targets atx-engine-book-tests,atx-impl-strategy-target-tests,atx-equity-strategy-ic,
+   atx-equity-strategy-targets,atx-research-eval -Canary` (stale-PCH ccache trap: CCACHE_RECACHE=1); run MvTarget.*,
+   MvAimRule.*, the named filter and the whole target-tests in Release.
+4. `git -C C:/atx-wt/pool-2 log --format=%s -30`: if root moved (AL-CLOCK), merge it (keep both rows / terms) and
+   re-run the Debug filters; update the report's evidence and "Pending"; commit the report (`git add -f`).
+5. Delete `build-equity` / `build-equity-rel` object trees by name (keep `mega-*` receipts and logs).

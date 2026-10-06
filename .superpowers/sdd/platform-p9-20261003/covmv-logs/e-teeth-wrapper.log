@@ -1,0 +1,39 @@
+﻿{
+    "Source":  "846739c14ee419418c19e9bb2c546188bc154af9",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  2,
+    "ConfiguredProvenance":  "26b67bd523f05cd6be8070873883e005938be44c",
+    "Jobs":  3,
+    "FreeMiB":  2937,
+    "CommitMiB":  5132,
+    "Targets":  [
+                    "atx-impl-strategy-target-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  53.1131253,
+    "CompiledTUs":  9,
+    "Links":  3,
+    "Tag":  "p9-covmv-e",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-24\\build-equity",
+    "Executables":  {
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-24\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "ed30f4e0df422915807d67e0186df8d1726d732b153c11fe357cad250ea97afc"
+                                                           }
+                    }
+}
+[1/13] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+[2/13] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+[3/13] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+[4/13] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+[5/13] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+[6/13] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+[7/13] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+[8/13] Linking CXX static library lib\spdlogd.lib
+[9/13] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mv_aim.cpp.obj
+[10/13] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_nav_v7.cpp.obj
+[11/13] Linking CXX static library lib\atx-impl-strategy.lib
+[12/13] Linking CXX executable bin\atx-impl-strategy-target-tests.exe
+
+research-build exit=0
