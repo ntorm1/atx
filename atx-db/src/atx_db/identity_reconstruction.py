@@ -1368,10 +1368,30 @@ def _reported_clocks(
     return output
 
 
+def _run_trial_counts(
+    con: duckdb.DuckDBPyConnection, items: Mapping[tuple[int, str], Sequence[EvidenceItem]],
+    params: ReconstructionParams,
+) -> dict[tuple[int, dt.date], int]:
+    """Bounded run metadata for evaluating weights without reversing rounded floats."""
+    wanted = sorted({(vid, item.detail["run_first"]) for (vid, _), values in items.items() for item in values})
+    if not wanted:
+        return {}
+    rows = con.execute(f"""
+        WITH wanted AS (SELECT unnest(?::BIGINT[]) AS vendor_id, unnest(?::DATE[]) AS first_date),
+        runs AS (SELECT vendor_id,first_date,count(*) OVER (
+            PARTITION BY vendor_id ORDER BY first_date
+            RANGE BETWEEN INTERVAL {int(params.trial_window_days)} DAY PRECEDING
+                      AND INTERVAL {int(params.trial_window_days)} DAY FOLLOWING) AS nearby
+            FROM ri_share_runs WHERE vendor_id IN (SELECT vendor_id FROM wanted))
+        SELECT r.vendor_id,r.first_date,r.nearby FROM runs r JOIN wanted USING(vendor_id,first_date)
+        """, [[pair[0] for pair in wanted], [pair[1] for pair in wanted]]).fetchall()
+    return {(vid, first): int(count) for vid, first, count in rows}
+
+
 def _candidates_at(
     candidates: Sequence[Candidate],
     reported: Mapping[tuple[int, str], Sequence[tuple[dt.datetime, dt.date, bool]]],
-    clock: dt.datetime,
+    clock: dt.datetime, params: ReconstructionParams,
 ) -> list[Candidate]:
     """Recompute collisions, best quarters, distinct counts and ratios at this clock."""
     known = {candidate.cik: [item for item in candidate.items if item.known_at <= clock]
@@ -1390,8 +1410,12 @@ def _candidates_at(
                 extra.append(item)
                 continue
             detail = item.detail
-            weight = float(detail["match_weight"]) * int(detail["collisions"]) / len(holders[detail["run_first"]])
             collisions = len(holders[detail["run_first"]])
+            value = float(detail["value"])
+            quantized = (params.round_value_weight if value % 1_000_000 == 0 else
+                         params.quantized_value_weight if value % 10_000 == 0 else 1.0)
+            weight = ((1.0 / collisions) * min(1.0, params.trial_allowance / int(detail["trial_count"]))
+                      * (1.0 if detail["aligned"] else params.covering_match_weight) * quantized)
             if item.weight != weight or int(detail["collisions"]) != collisions:
                 item = replace(item, weight=weight, detail={**detail,
                                "collisions": collisions, "match_weight": weight})
@@ -1614,6 +1638,9 @@ def reconstruct_issuer_links(
     price_start = price_start or min((line.first_trade_date for line in lines), default=dt.date.min)
     rows = match_share_counts(con, params, vendor_ids=by_vendor, clocked=True) if matches is None else matches
     share_items, pair_stats = _share_items(row for row in rows if int(row[0]) in by_vendor)  # type: ignore[call-overload]
+    trials = _run_trial_counts(con, share_items, params)
+    share_items = {pair: [replace(item, detail={**item.detail, "trial_count": trials[(pair[0], item.detail["run_first"])]})
+                         for item in items] for pair, items in share_items.items()}
 
     filings_by_cik: dict[str, list[IssuerFiling]] = defaultdict(list)
     for filing in filings:
@@ -1655,7 +1682,7 @@ def reconstruct_issuer_links(
         active = {}
         last_rejected = []
         for clock in sorted(clocks):
-            known = _candidates_at(originals, reported, clock)
+            known = _candidates_at(originals, reported, clock, params)
             known_filings = {cik: [filing for filing in values
                              if (filing.accepted_at or _at(filing.filing_date, _FILED_AVAILABILITY)) <= clock]
                              for cik, values in line_filings.items()}

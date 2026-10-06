@@ -154,6 +154,22 @@ def test_later_collision_cannot_prefilter_away_early_support(tmp_path):
             assert all(item.detail["collisions"] == 1 for item in version.items if item.kind == ir.EV_SHARES)
 
 
+def test_early_weights_recomputed_exactly_before_later_49_way_collision(tmp_path):
+    with duckdb.connect(str(tmp_path / "collision49.duckdb"), config={"memory_limit": "128MB", "threads": 1}) as con:
+        lines, filings = _fixture(con)
+        for rival in range(48):
+            con.execute("INSERT INTO ri_share_facts SELECT ?,concept,as_of,value,accession,form,"
+                        "DATE '2022-01-01' FROM ri_share_facts WHERE cik='0000000011'",
+                        [f"{1000 + rival:010d}"])
+        result = next(ir.reconstruct_in_batches(con, lines, filings=filings, ticker_observed_at=SNAPSHOT))
+    historic_links = [link for link in result.clocked_links if link.cik == "0000000011"]
+    assert historic_links, "later 49-way collisions must not erase the exact early threshold"
+    historic = historic_links[0]
+    assert historic.versions[0].share_weight == 2.0
+    assert historic.versions[0].weight == 3.0
+    assert historic.versions[0].available_at == dt.datetime(2019, 12, 12, 22)
+
+
 def test_native_s1_switch_removes_only_snapshot_from_clocked_replay(tmp_path, monkeypatch):
     import pyarrow as pa
     import pyarrow.parquet as pq
