@@ -1,6 +1,6 @@
 # B1 text_native v2 bounded pilot
 
-The authoritative corrected generation is `data/alpha_panel/v1/text_native_v2/pilot-20261005-r2`, manifest SHA-256 `323efb3f009f7844cfd8a9e92cfddc952e85ab6e168fce903378fa0c43844ea6` (18,912 bytes). It is a completed pilot materialization, not full-cohort coverage or acceptance of every gate. Source producer commit `4407c94b` produced the document-fetch timing/memory measurements; schema repair producer `9a6f986b` produced r2 by pinned retained-unit replay with zero HTTP. Exact source snapshots and guarded receipts reside in `.superpowers/sdd/2026-10-04-p9-al-data-atx-db-request/`.
+The authoritative corrected generation is `data/alpha_panel/v1/text_native_v2/pilot-20261005-r3`, manifest SHA-256 `5cbaf4efcaa1ee56325159d9042095a0bca3db3f808b8e98372d75fe43813f2b` (31,123 bytes). It is a completed pilot materialization, not full-cohort coverage or acceptance of every gate. Source producer commit `4407c94b` produced the document-fetch timing/memory measurements; Schema repair producer `9a6f986b` produced r2; complete-schema producer `36d87585` produced r3 by pinned retained-unit replay with zero HTTP after proving all 99 selected prior identities and clocks unchanged. Original metrics and receipts are retained values produced by the fetch producer, not newly computed by r3. Exact source snapshots and guarded receipts reside in `.superpowers/sdd/2026-10-04-p9-al-data-atx-db-request/`.
 
 The immutable original generation `pilot-20261005` remains preserved, including its initial C5 FAIL, manifest SHA-256 `1cc6760d06fc125d2de7af2e9b828cac5a4eafb3f0b8204902bcf7156a5b671e` (18,418 bytes). Arrow's first-row schema omitted real fiscal provenance in six 2019 rows. The repair writes an explicit union schema and explicit nullable producer fields; the validator still compares all public fields exactly. No provenance comparison was relaxed.
 
@@ -38,3 +38,20 @@ Original retained output measured 1,260,809 bytes and raw census 122,093,510 byt
 Focused synthetic tests: 23 passed in 3.83 seconds, one file, xdist disabled. r2 guarded rematerialization: 5.1 seconds, peak 127,225,856 bytes, no HTTP. Original artifacts and FAIL evidence are immutable. Full landing and Task 10 were not executed. The exact resumable future FULL command is recorded in `task-9-report.md` under the plan workspace and requires owner authorization for a different absent generation.
 
 The additional guarded local precision probe examined 218,559 rows in those 32 source files: every acceptance timestamp had zero seconds. Selected index/FSDS deltas ranged from -29 to +30 seconds. This observed precision does not prove the rounding convention or authorize treating unequal authenticated clocks as equal; the unresolved cases and 2020 FAIL are retained.
+
+
+Round-one fixes (BASE `62ea7163`): I1 removes the unsupported 365 +/-45-day report-gap filter; same-period/previous-fiscal-year, strict prior acceptance and inclusive 180-550-day bounds remain. A 300-day transition original is covered by regression. I2 declares all 53 public Arrow fields, including every section metric/count and prior_form; NULL-only and populated parts share exactly the same schema, and acceptance enforces it. I3 moves this evidence to the required docs/p9-al-data destination and fixes links. M1 uses ASCII 2021-2025. Fix commits 36d87585 and 7be335ab; 26 focused tests passed 5.19 seconds.
+
+The preserved r2 manifest pin is `323efb3f009f7844cfd8a9e92cfddc952e85ab6e168fce903378fa0c43844ea6` (18,912 bytes). Its historical C5 PASS used its pinned earlier validator; r3 adds the complete-schema check. No published original/r2 file, pin or acceptance receipt was replaced. The r3 comparator audit is pinned in its manifest and separately retained as task9-r3-comparator-audit.json. Reuse is rejected if a prior identity or clock changes; every preexisting public value remains exact, and only absent declared fields gain NULL. Fiscal uncertainty and the 2020 FAIL remain unchanged.
+
+r3 guarded replay took 6.1 seconds with 127,344,640-byte peak after 298.5 seconds shared-slot admission wait. No HTTP or profile recomputation occurred; cumulative 422 attempts/1,076,845,235bytes remain unchanged. Fetch/parse throughput and cost estimates above still belong to the original producer, and full execution remains unmeasured and owner-gated.
+
+Independent guarded r2/r3 comparison proves every original field and filing receipt unchanged in all 99 rows. Canonical SHA-256 values match on both sides:
+
+| CIK | Rows | Original fields and receipts, identical r2/r3 SHA-256 |
+|---|---:|---|
+| 1673358 | 33 | d62e56825c447a568bec09b86bcb9b2b28fb14597fbdba0055768d2044da34c1 |
+| 1474098 | 33 | 7be5ddab5f0af47d412643660f970fb56ecfb5474e79dffaf9c8fa7821d3285f |
+| 1527166 | 33 | 7d4edc55f3a95765b39273b5091c6c7c51296104ff891c35c229fd2d2fb8d9de |
+
+The independent verifier reproduced I PASS (99 rows, zero excluded clocks), II pilot FAIL for every year, III 2020 FAIL at 6/12 with six unresolved rows and later years PASS, IV PASS. It rechecked all three manifest pins unchanged. Evidence is retained as task9-r3-final-evidence.json; guarded run 2.0 seconds, peak 70,860,800 bytes. r3 producer bytes: 44,760, SHA-256 `88ac7d4514eb54f10502af818320a790696da042a5b9b832418d08236aea53e1`. r3 persistent bytes: 1,291,018; complete-schema full persistent projection: 3,162,448,937 bytes including census and scratch allowance, below 16 GB with the same sample limitations.

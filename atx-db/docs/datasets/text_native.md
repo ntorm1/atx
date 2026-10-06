@@ -156,4 +156,4 @@ errors use only the existing bounded same-target write retry; rejected cleanup
 is retained without an alternate attempt. Measurements and exact acceptance
 output are in [b1-pilot.md](../p9-al-data/b1-pilot.md).
 
-The corrected authoritative B1 pilot is the immutable `text_native_v2/pilot-20261005-r2` generation; see [b1-pilot.md](../p9-al-data/b1-pilot.md) for pins, acceptance results and limits. The original pilot and its schema FAIL remain preserved. Neither generation establishes full-cohort coverage; the 2020 comparator gate remains FAIL.
+The corrected authoritative B1 pilot is the immutable `text_native_v2/pilot-20261005-r3` generation; see [b1-pilot.md](../p9-al-data/b1-pilot.md) for pins, acceptance results and limits. The original pilot and its schema FAIL remain preserved. Neither generation establishes full-cohort coverage; the 2020 comparator gate remains FAIL.
