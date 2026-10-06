@@ -197,3 +197,44 @@ def test_content_digest_chains_without_time_keys(tmp_path):
             as e:
         ch.run(ctx, log=lambda s: None)
     assert e.value.code == SC.EXIT_STALE
+
+
+def test_on_write_once_per_written_receipt_never_for_a_done_stage(tmp_path, capsys):
+    """P9 SQL3: ``on_write`` gets the path of each receipt the chain has just written, once per ok receipt and once
+    per failed receipt, never for a done (skipped) stage; a callback that raises changes nothing (one stderr line);
+    without one (the default) the receipts are those of before, byte for byte."""
+    seen: list[Path] = []
+    ctx = Ctx(tmp_path)
+    ch = SC.Chain("test", [make("a"), make("b"), make("c")], tmp_path / "state", clock=lambda: "T",
+                  on_write=seen.append)
+    ctx.fail.add("b")
+    with pytest.raises(SC.ChainError) as e:
+        ch.run(ctx, log=lambda s: None)
+    assert e.value.code == 4
+    assert seen == [ch.receipt_path(0), ch.receipt_dir() / "02-b.failed-1.json"]
+    assert all(p.is_file() for p in seen)                       # called after the write
+    ctx.fail.clear()
+    ch.run(ctx, log=lambda s: None)                             # a done: skipped, not handed over again
+    assert seen[2:] == [ch.receipt_path(1), ch.receipt_path(2)]
+    ch.run(ctx, log=lambda s: None)
+    assert len(seen) == 4                                       # all done: nothing written, nothing called
+    # a raising callback: the same chain, receipts and exit codes as without one
+    def boom(path):
+        raise RuntimeError("hook down")
+    for name, cb in (("plain", None), ("boom", boom)):
+        c2 = Ctx(tmp_path / name)
+        c2.fail.add("c")
+        ch2 = SC.Chain("test", [make("a"), make("b"), make("c")], c2.root / "state", clock=lambda: "T",
+                       on_write=cb)
+        with pytest.raises(SC.ChainError) as e2:
+            ch2.run(c2, log=lambda s: None)
+        assert e2.value.code == 4 and c2.calls == ["a", "b", "c"]
+    err = capsys.readouterr().err
+    assert err.count("stage_chain: warning: on_write") == 3 and "RuntimeError: hook down" in err
+    names = sorted(p.name for p in (tmp_path / "plain" / "state" / "receipts").iterdir())
+    assert names == ["01-a.json", "02-b.json", "03-c.failed-1.json"]
+    assert names == sorted(p.name for p in (tmp_path / "boom" / "state" / "receipts").iterdir())
+    for rel in names:                                           # equal but for the measured seconds
+        docs = [SC.time_free(json.loads((tmp_path / d / "state" / "receipts" / rel).read_text()))
+                for d in ("plain", "boom")]
+        assert docs[0] == docs[1]
