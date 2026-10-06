@@ -21,7 +21,7 @@ from pathlib import Path
 import duckdb
 
 _LOADED_CODE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-PREPARATION_VERSION = "identity_retained_inputs_v1"
+PREPARATION_VERSION = "identity_retained_inputs_v2_clocked"
 ALLOCATION_VERSION = "positive_vendor_id_v1_cik_company_v1"
 STAGE_NAME = "identity_links_rebuild"
 SCHEMA_VERSION = "identity_links_v1"
@@ -294,7 +294,7 @@ def _company_versions(candidates: Sequence[Mapping[str, object]], created_at: dt
                     latest[key] = row
                 elif latest[key]["available_at"] == row["available_at"] and latest[key] != row:
                     latest[key] = _merge_candidate_evidence(latest[key], row)
-        active = list(latest.values())
+        active = [row for row in latest.values() if row["link_basis"] != "withdrawn"]
         boundaries = sorted({row["link_start"] for row in active} | {
             row["link_end"] + dt.timedelta(days=1) for row in active if row["link_end"] is not None})
         for index, start in enumerate(boundaries):
@@ -548,6 +548,47 @@ def _class_proof_at(line, payload: Mapping[str, object], at: dt.datetime, symbol
             "known_items": known, "symbol_witnesses": symbols}
 
 
+def _reconstruction_candidate_events(row, payload, line, symbol_holders, snapshot_clock):
+    """Translate replay versions and withdrawals into the existing assertion interface."""
+    versions = payload.get("versions")
+    if not versions:
+        versions = [{"start": row["valid_from"].isoformat(), "end": row["valid_to"].isoformat(),
+                     "tier": tier, "from": stamp, "until": None, "items": payload.get("items", ())}
+                    for tier, stamp in payload["tier_history"]]
+    for index, version in enumerate(versions):
+        first, last = dt.date.fromisoformat(version["start"]), dt.date.fromisoformat(version["end"]) - dt.timedelta(days=1)
+        since = _clock(dt.datetime.fromisoformat(version["from"]))
+        until = _clock(dt.datetime.fromisoformat(version["until"])) if version["until"] else None
+        clocks = {since}
+        clocks.update(dt.datetime.combine(first_symbol, dt.time(22)) for _, first_symbol, _ in line.symbols
+                      if dt.datetime.combine(first_symbol, dt.time(22)) >= since)
+        previous = None
+        for at in sorted(clocks):
+            if at > snapshot_clock or (until is not None and at >= until):
+                continue
+            proof = _class_proof_at(line, {**payload, "items": version["items"]}, at, symbol_holders)
+            state = (version["tier"], proof["class_status"], proof["security_class"])
+            if state == previous:
+                continue
+            previous = state
+            event_id = _event_id(row["evidence_id"], version["tier"], first, last, at)
+            candidate = {"assertion_id": row["evidence_id"], "perm_security_id": line.vendor_id,
+                         "cik": row["cik"], "link_start": first, "link_end": last,
+                         "link_basis": "reconstructed_" + version["tier"], "tier": version["tier"],
+                         "available_at": at, "evidence_ids": json.dumps([event_id]),
+                         "is_common": proof["class_status"] == "common", "class_status": proof["class_status"]}
+            yield candidate, {"parent_evidence_id": row["evidence_id"], "tier": version["tier"],
+                              **proof, "is_common": candidate["is_common"], "method": payload["method"]}
+        next_since = _clock(dt.datetime.fromisoformat(versions[index + 1]["from"])) if index + 1 < len(versions) else None
+        if until is not None and until <= snapshot_clock and until != next_since:
+            event_id = _event_id(row["evidence_id"], "withdrawn", until)
+            yield {"assertion_id": row["evidence_id"], "perm_security_id": line.vendor_id, "cik": row["cik"],
+                   "link_start": first, "link_end": last, "link_basis": "withdrawn", "tier": None,
+                   "available_at": until, "evidence_ids": json.dumps([event_id]), "is_common": False,
+                   "class_status": "unknown"}, {"parent_evidence_id": row["evidence_id"], "withdrawn": True,
+                                                "method": payload["method"]}
+
+
 def _dated_vendor_symbols(con, source: Path, vendor, *, chunks: int = 64, metrics=None):
     """Observed symbol islands; reject ambiguous days and never bridge missing sessions.
 
@@ -726,7 +767,7 @@ def build_rehearsal(work: Path, ops_manifest: Path, out: Path, *, phase: str,
                   "calendar.py", "_submissions_archive.py", "universe_us_listed.py",
                   "historical_identity.py", "historical_identity_sources.py", "_fundamental_clock.py", "ticker_history.py",
                   "market_daily.py", "warehouse.py")
-    pin = {"version": "identity_rehearsal_phases_v1", "allocation_version": ALLOCATION_VERSION,
+    pin = {"version": "identity_rehearsal_phases_v2_clocked", "allocation_version": ALLOCATION_VERSION,
            "preparation_manifest_sha256": file_sha256(work / "preparation.json"),
            "retained_database_sha256": file_sha256(work / "retained.duckdb"),
            "ops_manifest_sha256": file_sha256(ops_manifest),
@@ -892,36 +933,14 @@ def build_rehearsal(work: Path, ops_manifest: Path, out: Path, *, phase: str,
                         unresolved_rows.append((event_id, vendor_id, int(row["cik"]), row["cik"], first, last,
                                                 at, None, json.dumps([event_id]), payload["rejection_reason"]))
                     continue
-                history = [(tier, _clock(dt.datetime.fromisoformat(stamp))) for tier, stamp in payload["tier_history"]]
-                clocks = {at for _, at in history}
-                clocks.update(dt.datetime.combine(first, dt.time(22)) for _, first, _ in line.symbols)
-                previous = None
-                for at in sorted(clocks):
-                    if at > snapshot_clock:
-                        continue
-                    known_tiers = [(tier, since) for tier, since in history if since <= at]
-                    if not known_tiers:
-                        continue
-                    tier = max(known_tiers, key=lambda item: item[1])[0]
-                    proof = _class_proof_at(line, payload, at, symbol_holders)
-                    state = (tier, proof["class_status"], proof["security_class"])
-                    if state == previous:
-                        continue
-                    previous = state
-                    event_id = _event_id(row["evidence_id"], tier, at)
-                    assertion = {"parent_evidence_id": row["evidence_id"], "tier": tier,
-                                 **proof, "is_common": proof["class_status"] == "common",
-                                 "method": prepared["pin"]["reconstruction_method"]}
+                for candidate, assertion in _reconstruction_candidate_events(row, payload, line, symbol_holders, snapshot_clock):
+                    event_id = json.loads(candidate["evidence_ids"])[0]
                     evidence_rows.append((event_id, vendor_id, row["cik"], inputs["companyfacts"]["path"],
-                        inputs["companyfacts"]["sha256"], json.dumps(assertion, sort_keys=True, default=str), row["valid_from"],
-                        row["valid_to"] - dt.timedelta(days=1) if row["valid_to"] else None,
-                        at, row["observed_at"], "reconstructed_tier_and_class", None, "modeled_reconstruction"))
-                    candidate_rows.append({"assertion_id": row["evidence_id"], "perm_security_id": vendor_id,
-                        "cik": row["cik"], "link_start": row["valid_from"],
-                        "link_end": row["valid_to"] - dt.timedelta(days=1) if row["valid_to"] else None,
-                        "link_basis": "reconstructed_" + tier, "tier": tier, "available_at": at,
-                        "evidence_ids": json.dumps([event_id]), "is_common": proof["class_status"] == "common",
-                        "class_status": proof["class_status"]})
+                        inputs["companyfacts"]["sha256"], json.dumps(assertion, sort_keys=True, default=str),
+                        candidate["link_start"], candidate["link_end"], candidate["available_at"], row["observed_at"],
+                        "reconstructed_withdrawal" if assertion.get("withdrawn") else "reconstructed_tier_and_class",
+                        None, "modeled_clocked_reconstruction"))
+                    candidate_rows.append(candidate)
             snapshot_events = {}
             for row in retrospective:
                 if not row.linked or row.evidence_id or not row.cik:
@@ -1179,7 +1198,7 @@ def _seal_rehearsal_manifest(out, pin, created, result):
         "files": result["files"], **result["details"],
         "phases": {name: file_sha256(out / "phases" / f"{name}.json") for name in REHEARSAL_PHASES},
         "end_date_semantics": "inclusive business end; valid_until is exclusive evidence-version end",
-        "availability_basis": "reconstructed RI cumulative evidence; observed current snapshots never backfilled",
+        "availability_basis": "clocked acceptance/dominance/segments v2; withdrawals close versions at their own clocks; observed snapshots never backfilled",
         "remaining_acceptance": ["ledgered stage publication", "50 delisted cases", "multi-class ME",
                                  "monthly asof coverage", "repeatability", "331 baseline reconciliation"]}
     _write_json(out / "manifest.json", manifest)
@@ -1290,7 +1309,7 @@ def prepare_rehearsal_inputs(work: Path, receipt: Path, step: str) -> dict[str, 
             lines = ir.read_vendor_lines(con)
             ciks = set()
             for start in range(0, len(lines), 500):
-                ciks.update(str(row[1]) for row in ir.match_share_counts(con, params, vendor_ids=[line.vendor_id for line in lines[start:start+500]]))
+                ciks.update(str(row[1]) for row in ir.match_share_counts(con, params, vendor_ids=[line.vendor_id for line in lines[start:start+500]], clocked=True))
             filings = ir.read_lifecycle_filings(inputs.submissions.path, sorted(ciks))
             result.update(candidate_ciks=len(ciks), lifecycle_filings=len(filings), vendor_lines=len(lines), evidence_rows=0, files=[])
             artifacts = {item.name + "_sha256": item.sha256 for item in inputs.files()}
