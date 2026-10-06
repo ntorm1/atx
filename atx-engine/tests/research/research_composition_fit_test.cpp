@@ -34,6 +34,7 @@
 #include "atx/engine/research/composition/ew_theme_std.hpp"
 #include "atx/engine/research/composition/fit.hpp"
 #include "atx/engine/research/composition/theme_erc.hpp"
+#include "atx/engine/research/composition/theme_tsmom.hpp"
 #include "atx/engine/research/composition/weights_schema.hpp"
 
 namespace {
@@ -870,9 +871,8 @@ TEST(MomVolman, SleeveIsTsmomStepOneForPriceMomentum) {
   ASSERT_FALSE(ts->schedule.blocks.empty());
   for (const auto &block : ts->schedule.blocks) {
     f64 s = 0.0;
-    for (usize d = block.decision_index - 2U - 126U + 1U; d <= block.decision_index - 2U; ++d) {
-      s += mv->volman_sleeve[d];
-    }
+    const usize to = block.decision_index - rc::theme_tsmom_lag;
+    for (usize d = to + 1U - rc::theme_tsmom_lookback; d <= to; ++d) s += mv->volman_sleeve[d];
     EXPECT_EQ(std::bit_cast<u64>(s), std::bit_cast<u64>(block.trailing[p])) << block.decision_index;
   }
   // One decision in closed form: sum over the weighted price_momentum members of (w / W) f.
