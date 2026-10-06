@@ -616,12 +616,28 @@ TEST(WalkForward, ExpandingMeanClosedForm) {
 
 // Whatever the factors after decision j - lag, row j and every row before it are unchanged bit
 // for bit (ic-shrink-v1 alone, and theme-erc-v1 on ew-theme-std-v1 whose covariance reads every
-// window decision); a later row sees the change.
+// window decision); a later row sees the change. The ic-shrink-v1 case runs on a linear series:
+// on the fixture's series the early windows' ICs are noise and the member cap refuses most rows.
 TEST(WalkForward, NoRowUsesFutureDecisions) {
-  const Inputs in = inputs();
-  for (const usize index : {3U, 1U}) {
-    const rc::FitSpec spec = case_spec(index);
-    SCOPED_TRACE(fixture().at("cases").at(index).at("name").get<std::string>());
+  struct Case {
+    std::string name;
+    Inputs in;
+    rc::FitSpec spec;
+  };
+  const std::vector<Case> cases{
+      {"ic-shrink-v1 linear",
+       linear_inputs(120, {{1.0, 1.0}, {2.0, 0.0}, {3.0, 2.0}, {1.0, 3.0}, {4.0, 1.0}, {2.0, 2.0}}),
+       shrink_spec({{"c0", "value"},
+                    {"c1", "value"},
+                    {"c2", "value"},
+                    {"c3", "low_risk"},
+                    {"c4", "low_risk"},
+                    {"c5", "low_risk"}})},
+      {fixture().at("cases").at(1).at("name").get<std::string>(), inputs(), case_spec(1)}};
+  for (const Case &c : cases) {
+    const Inputs &in = c.in;
+    const rc::FitSpec &spec = c.spec;
+    SCOPED_TRACE(c.name);
     const rc::WalkForwardSpec wf{"expanding", 2, 21, 42};
     const auto base = rc::fit_walk_forward(in.view(), in.ids, spec, wf);
     ASSERT_TRUE(base) << base.error().to_string();
@@ -694,7 +710,9 @@ TEST(WalkForward, CliWritesTheRowsAndRefuses) {
   const fs::path dir = scratch("walk_forward");
   const Inputs in = inputs();
   const fs::path factors = write_factor_dir(dir, in);
-  Json spec_json = fixture().at("cases").at(3).at("spec");
+  // Case 1 (ew-theme-std-v1 + theme-erc-v1), as in CliPublishesTheFit: every row's fit and the
+  // whole-series fit are feasible (the ic-shrink-v1 cases refuse the member cap on this series).
+  Json spec_json = fixture().at("cases").at(1).at("spec");
   spec_json["theme_tsmom"] = false;
   write_bytes(dir / "spec.json", spec_json.dump());
   const std::string spec_path = (dir / "spec.json").string();

@@ -769,9 +769,12 @@ TEST(CompositionWeightRows, RowInForcePerDateAndFlatBeforeTheFirst) {
   const V8Fixture f;
   const auto std_rule = st::IcThemeRule::standardise;
   const auto plain_rule = st::IcThemeRule::redistribute;
-  const std::vector<f64> w1{.5, 1.0 / 6, 1.0 / 6, 1.0 / 6}, w2{.25, .5, 0.0, .25};
+  // w2 drops b1: under the standardise rule theme b's re-ranked composite then orders the names
+  // otherwise than rank(j), which theme a and w1's theme b both give (equal-mass rows of rank(j)
+  // would be the same composite bit for bit).
+  const std::vector<f64> w1{.5, 1.0 / 6, 1.0 / 6, 1.0 / 6}, w2{.25, 0.0, .25, .5};
   // W_theme as IcComposition::create sums them (library order, positive weights only).
-  const std::vector<f64> m1{.5, 0.0 + 1.0 / 6 + 1.0 / 6 + 1.0 / 6}, m2{.25, 0.0 + .5 + .25};
+  const std::vector<f64> m1{.5, 0.0 + 1.0 / 6 + 1.0 / 6 + 1.0 / 6}, m2{.25, 0.0 + .25 + .5};
   const auto rowed = [&](std::span<const usize> themes, st::IcThemeRule rule,
                          const std::vector<st::IcWeightRow>& rows,
                          const std::vector<st::IcThemeBlock>& blocks,
