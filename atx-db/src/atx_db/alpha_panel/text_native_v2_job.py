@@ -408,6 +408,24 @@ def prepare_rebuild(output, cik):
     atomic_json(state_path, {'rows': [], 'history': [], 'profile_files': old_state.get('profile_files', {})})
 
 
+
+# Every public field is declared; NULL-only and populated parts share one schema.
+PUBLIC_SCHEMA = pa.schema([
+    *[(name, pa.string()) for name in ('accession', 'form', 'index_filename', 'primary_url',
+        'fiscal_period', 'reason', 'fiscal_metadata_basis', 'prior_accession', 'prior_form', 'comparison_reason')],
+    ('cik', pa.int64()), ('fiscal_year', pa.int32()), ('doc_bytes', pa.int64()), ('doc_words', pa.int64()),
+    ('doc_fog', pa.float64()), ('prior_gap_days', pa.float64()), ('doc_sim_cosine', pa.float64()),
+    ('fiscal_metadata_source_files', pa.list_(pa.string())),
+    *[(name, pa.timestamp('us', tz='UTC')) for name in ('available_at', 'prior_available_at')],
+    *[(name, pa.date32()) for name in ('filing_date', 'report_date', 'prior_report_date')],
+    *[(section + '_' + key, kind) for section in V.TF.SECTIONS for key, kind in (
+        ('chars', pa.int64()), ('words', pa.int64()), ('sentences', pa.int64()),
+        ('fog', pa.float64()), ('pct_complex', pa.float64()), ('sim_cosine', pa.float64()),
+        ('sim_jaccard', pa.float64()), ('sim_minedit', pa.float64()), ('words_chg', pa.float64()),
+        ('reason', pa.string()))],
+])
+
+
 def write_parts(output, rows, *, issuer=None):
     groups = defaultdict(list)
     for row in rows:
@@ -418,28 +436,18 @@ def write_parts(output, rows, *, issuer=None):
         filename = 'features.parquet' if issuer is None else f'features-{issuer}.parquet'
         path = output / 'parts' / f'year={year}' / filename
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Keep clock fields UTC-aware and dates typed, including all-NULL groups.
-        # Arrow's from_pylist infers field names from the first row. Use the
-        # complete column union so a first NULL/missing fact cannot erase later
-        # proven fiscal/source metadata in the same issuer/year part.
-        columns = sorted({key for row in part_rows for key in row})
-        table = pa.table({key: [row.get(key) for row in part_rows] for key in columns})
-        for key, kind in [('cik', pa.int64()), ('accession', pa.string()), ('form', pa.string()),
-                          ('fiscal_period', pa.string()), ('fiscal_year', pa.int32()),
-                          ('prior_accession', pa.string()), ('doc_sim_cosine', pa.float64()),
-                          ('reason', pa.string()), ('fiscal_metadata_basis', pa.string()),
-                          ('fiscal_metadata_source_files', pa.list_(pa.string()))]:
-            if key in columns:
-                index = table.schema.get_field_index(key)
-                table = table.set_column(index, key, pa.array([row.get(key) for row in part_rows], type=kind))
-        for key in ('available_at', 'prior_available_at'):
-            values = [dt.datetime.fromisoformat(r[key]).astimezone(dt.UTC) if r.get(key) else None for r in part_rows]
-            index = table.schema.get_field_index(key)
-            table = table.set_column(index, key, pa.array(values, type=pa.timestamp('us', tz='UTC')))
-        for key in ('filing_date', 'report_date', 'prior_report_date'):
-            values = [dt.date.fromisoformat(r[key]) if r.get(key) else None for r in part_rows]
-            index = table.schema.get_field_index(key)
-            table = table.set_column(index, key, pa.array(values, type=pa.date32()))
+        unexpected = set().union(*(row.keys() for row in part_rows)) - set(PUBLIC_SCHEMA.names)
+        if unexpected:
+            raise ValueError('undeclared public columns: ' + repr(sorted(unexpected)))
+        converted = []
+        for row in part_rows:
+            public = {name: row.get(name) for name in PUBLIC_SCHEMA.names}
+            for key in ('available_at', 'prior_available_at'):
+                public[key] = dt.datetime.fromisoformat(public[key]).astimezone(dt.UTC) if public[key] else None
+            for key in ('filing_date', 'report_date', 'prior_report_date'):
+                public[key] = dt.date.fromisoformat(public[key]) if public[key] else None
+            converted.append(public)
+        table = pa.Table.from_pylist(converted, schema=PUBLIC_SCHEMA)
         pq.write_table(table, path, compression='zstd')
         files[path.relative_to(output).as_posix()] = digest(path)
     return files
@@ -515,6 +523,8 @@ def inspect_incomplete(output):
     refusals = [r for r in ends if r.get('status') in (403, 429)]
     rows = []
     for cik in plan['issuers']:
+        assert all(all(row[k] == value for k, value in original.items())
+                   for row, original in zip(rows, retained_public))
         unit = output / 'units' / f'{cik}.json'
         working = output / 'working' / f'{cik}.json'
         if unit.exists():
@@ -552,6 +562,30 @@ def inspect_incomplete(output):
 
 
 
+
+def audit_comparators(source):
+    """Exact selected-prior identity/clock and retained-public-value pins per issuer."""
+    plan = json.loads((source / 'plan.json').read_text(encoding='utf-8'))
+    changed, proof = [], []
+    for cik in plan['issuers']:
+        path = source / 'units' / f'{cik}.json'
+        rows = json.loads(path.read_text(encoding='utf-8'))
+        comparisons = []
+        for row in rows:
+            prior = V.select_prior(row, rows)
+            selected = prior['accession'] if prior else None
+            if selected != row.get('prior_accession'):
+                changed.append({'accession': row['accession'], 'stored': row.get('prior_accession'), 'selected': selected})
+            comparisons.append({'accession': row['accession'], 'prior_accession': selected,
+                'prior_available_at': prior.get('available_at') if prior else None})
+            if prior and prior.get('available_at') != row.get('prior_available_at'):
+                changed.append({'accession': row['accession'], 'reason': 'prior_clock_changed'})
+        proof.append({'cik': cik, 'unit_pin': digest(path), 'rows': len(rows), 'comparisons': comparisons})
+    return {'rule': 'same_period_previous_fiscal_year_strict_earlier_180_550',
+            'changed': changed, 'proof': proof,
+            'value_reuse': 'all_retained_public_values_preserved; only_absent_declared_fields_filled_NULL'}
+
+
 def rematerialize(source, output, expected_pin):
     """Publish an absent immutable generation from pinned retained units; no HTTP."""
     if output.exists():
@@ -562,6 +596,9 @@ def rematerialize(source, output, expected_pin):
     for rel, pin in old['files'].items():
         if digest(source / rel) != pin:
             raise ValueError('source artifact pin mismatch: ' + rel)
+    comparator_audit = audit_comparators(source)
+    if comparator_audit['changed']:
+        raise ValueError('comparator change requires profile recomputation')
     started = time.monotonic()
     output.mkdir(parents=True)
     plan = json.loads((source / 'plan.json').read_text(encoding='utf-8'))
@@ -575,10 +612,13 @@ def rematerialize(source, output, expected_pin):
         files[rel] = digest(target)
     for cik in plan['issuers']:
         rows = json.loads((source / 'units' / f'{cik}.json').read_text(encoding='utf-8'))
-        # Explicit nullable producer fields only; existing provenance values persist.
+        retained_public = [{k: v for k, v in row.items() if k not in {'index_receipt', 'body_receipt'}} for row in rows]
+        # Every declared nullable field is explicit; existing values must persist.
         for row in rows:
-            for key in ('primary_url', 'doc_bytes', 'fiscal_metadata_basis', 'fiscal_metadata_source_files'):
+            for key in PUBLIC_SCHEMA.names:
                 row.setdefault(key, None)
+        assert all(all(row[k] == value for k, value in original.items())
+                   for row, original in zip(rows, retained_public))
         unit = output / 'units' / f'{cik}.json'
         atomic_json(unit, rows)
         files[unit.relative_to(output).as_posix()] = digest(unit)
@@ -586,8 +626,9 @@ def rematerialize(source, output, expected_pin):
     manifest = dict(old)
     manifest['files'] = files
     manifest['parent_generation'] = {'path': str(source), 'manifest_pin': digest(source / 'manifest.json'),
-        'repair': 'explicit_nullable_producer_fields_and_union_arrow_schema', 'http_attempts': 0,
-        'source_producer_code': old['producer_code'], 'source_measurements_preserved': True}
+        'repair': 'complete_explicit_public_arrow_schema', 'http_attempts': 0,
+        'source_producer_code': old['producer_code'], 'source_measurements_preserved': True,
+        'comparator_audit': comparator_audit}
     manifest['code'] = {str(Path(m.__file__).name): digest(Path(m.__file__)) for m in (V, V.TF, V.FT, sec_http, A, C)}
     manifest['code']['git_head'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
     manifest['producer_code'] = digest(Path(__file__))

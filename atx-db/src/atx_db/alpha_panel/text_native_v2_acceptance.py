@@ -62,6 +62,7 @@ def _serialized(value):
 
 
 def verify_stage(output, plan, digest, *, emit=True):
+    from .text_native_v2_job import PUBLIC_SCHEMA
     manifest = json.loads((output / 'manifest.json').read_text(encoding='utf-8'))
     okay = (manifest.get('status') == 'complete' and manifest.get('rule') == V.RULE and
             manifest.get('clock_rule') == V.CLOCK_RULE and manifest.get('schema') == V.SCHEMA and
@@ -95,7 +96,9 @@ def verify_stage(output, plan, digest, *, emit=True):
         seen = set()
         for filename in filenames:
             for rel in parts.get(filename, []):
-                for row in pq.ParquetFile(output / rel).read().to_pylist():
+                parquet = pq.ParquetFile(output / rel)
+                okay &= parquet.schema_arrow == PUBLIC_SCHEMA
+                for row in parquet.read().to_pylist():
                     if row['cik'] != cik:
                         continue
                     clock = row.get('available_at')

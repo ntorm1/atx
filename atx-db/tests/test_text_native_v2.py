@@ -52,7 +52,7 @@ def test_period_year_change_transition_amendments_and_null():
     assert V.select_prior(record(form='10-Q/A'), [prior]) is None
     assert V.select_prior(record(available_at=None), [prior]) is None
     assert V.select_prior(current, [record('prior', 2020, available_at=None)]) is None
-    assert V.select_prior(current, [record('prior', 2020, report_date='2020-09-30')]) is None
+    assert V.select_prior(current, [record('prior', 2020, report_date='2020-10-04')]) is None
     transition = record(form='10-KT', fiscal_period='FY')
     annual = record('annual', 2020, form='10-K', fiscal_period='FY')
     assert V.select_prior(transition, [annual]) == annual
@@ -264,3 +264,27 @@ def test_rematerialization_refuses_existing_target_and_wrong_pin(tmp_path):
     with pytest.raises(ValueError, match='pin mismatch'):
         J.rematerialize(source, tmp_path / 'new', 'bad')
     assert not (tmp_path / 'new').exists()
+
+
+def test_transition_original_report_gap_300_is_valid():
+    prior = record('annual', 2020, form='10-K', fiscal_period='FY', report_date='2020-01-01')
+    current = record('transition', 2021, form='10-KT', fiscal_period='FY', report_date='2020-10-27')
+    assert (dt.date.fromisoformat(current['report_date']) - dt.date.fromisoformat(prior['report_date'])).days == 300
+    assert V.select_prior(current, [prior]) == prior
+
+
+def test_complete_arrow_schema_unknown_and_populated_parts_identical(tmp_path):
+    import pyarrow.parquet as pq
+    unknown = V.feature_row(record('unknown', fiscal_year=None, fiscal_period=None), None, None, None)
+    prior = record('prior', 2020)
+    profile = V.profile_document(b'<html><body>PART I ITEM 2 Management discussion alpha beta. PART II ITEM 1A Risk Factors risk gamma.</body></html>', '10-Q')
+    populated = V.feature_row(record('populated'), profile, prior, profile)
+    unknown_files = J.write_parts(tmp_path / 'unknown', [unknown], issuer=1)
+    populated_files = J.write_parts(tmp_path / 'populated', [populated], issuer=1)
+    schemas = [pq.ParquetFile(root / next(iter(files))).schema_arrow for root, files in
+               ((tmp_path / 'unknown', unknown_files), (tmp_path / 'populated', populated_files))]
+    assert schemas[0] == schemas[1] == J.PUBLIC_SCHEMA
+    assert schemas[0].field('prior_form').type == J.pa.string()
+    assert schemas[0].field('mdna_sim_cosine').type == J.pa.float64()
+    assert schemas[0].field('risk_words').type == J.pa.int64()
+    assert set(unknown) == set(J.PUBLIC_SCHEMA.names)

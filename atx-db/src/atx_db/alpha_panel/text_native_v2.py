@@ -221,7 +221,7 @@ def select_prior(current, history):
         report_gap = (dt.date.fromisoformat(current['report_date']) - dt.date.fromisoformat(prior['report_date'])).days
         filing_gap = (dt.date.fromisoformat(current['filing_date']) - dt.date.fromisoformat(prior['filing_date'])).days
         # Different fiscal year ends/transition periods are not automatically comparable.
-        if 180 <= gap <= 550 and 180 <= filing_gap <= 550 and 180 <= report_gap <= 550 and abs(report_gap - 365) <= 45:
+        if 180 <= gap <= 550 and 180 <= filing_gap <= 550 and 180 <= report_gap <= 550:
             candidates.append(prior)
     return candidates[0] if len(candidates) == 1 else None
 
@@ -242,7 +242,7 @@ def profile_document(raw, form):
 
 def feature_row(record, profile, prior, prior_profile):
     out = dict(record)
-    for key in ('primary_url', 'doc_bytes', 'fiscal_metadata_basis', 'fiscal_metadata_source_files'):
+    for key in ('index_filename', 'primary_url', 'doc_bytes', 'fiscal_metadata_basis', 'fiscal_metadata_source_files'):
         out.setdefault(key, None)
     out.update(prior_accession=prior['accession'] if prior else None,
                prior_form=prior['form'] if prior else None,
