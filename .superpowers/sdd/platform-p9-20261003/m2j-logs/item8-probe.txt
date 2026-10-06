@@ -1,0 +1,32 @@
+### item 8 (C3-5): tiny-world probe on REAL exes (Release p9-2q: NAV adcf72d4821de049..., source 327c86b2; EXE-CUR holds)
+Tool: m2j-logs/tools/m2j_c3_probe.py (pre-run list root-wave2-merge-report.md "M2j", committed 9c7aa654), run under
+C:/Program Files/Python312/python.exe; synthetic tiny world seed 7 (base build-equity/p9-m2j-tw, wave root
+build-equity/p9-m2j-tw-c3r), own empty trials.jsonl; --until verify; zero trials. Logs: probe-base.log (parent through
+nav, exit 0), probe-wave-c3r.log (wave exit 4), probe-report-c3r.log (report exit 0).
+
+Wave c3r: kind rule, gross_match pm6-6-engine, template rule-nav.json, rules [{"name": "aim-partial-v5",
+"params": {"trade_fraction": 0.1}}]. Stages: preflight, register, screen, spec, run (stop after w) passed; match: the
+mechanics reader ran on the parent; the calibrated NAV run (rule-nav-m2j-c3r-cal.json, --stop-after nav) was REFUSED by
+the NAV exe: receipt outcome process-error, exit 2, stderr "nav replay: duplicate/missing flag"; wave HARD-STOP [match],
+exit 4 (06-match.failed-1.json). No seal question arose (verify not reached; no --seal-allow passed).
+
+--rule tokens on every NAV argv the wave carries:
+  executed  tiny-nav-run (parent, tiny.json)            --rule x1 ['aim-partial-v5']   (--trade-fraction .05)
+  executed  tiny-nav-k-navrule-gm-run (calibrated cell) --rule x2 ['aim-partial-v5', 'aim-partial-v5'] -> refused, exit 2
+  planned   rule-nav-m2j-c3r-cal.json                   --rule x2 ['aim-partial-v5', 'aim-partial-v5']
+  planned   rule-nav-m2j-c3r.json (cell of record)      --rule x2 ['aim-partial-v5', 'aim-partial-v5']
+
+Attribution (read-only):
+  token 1: scripts/cycle/phases.py:829 nav_step emits "--rule", nav["rule"] unconditionally; the parent's nav.rule is
+           aim-partial-v5 (tiny.json; also the real parents: X-5 p9-c1-s2-x5-nav-run and Y-F0 p9-b0-yf0-nav-run argv
+           carry --rule ['aim-partial-v5'], --trade-fraction ['.05']: argv tokens only, no output opened).
+  token 2: scripts/wave_kinds.py:385-399 (lane D3's file, W3-8a) derives the NAV row's flags: param x-flag
+           --trade-fraction 0.1, then the row's x-flag "--rule aim-partial-v5"; the rule cell writes them to
+           change.flags.nav = {"--rule": "aim-partial-v5", "--trade-fraction": "0.1"}; scripts/research_spec.py:128
+           apply_flags replaces an option already in nav.flags (--trade-fraction .05 -> 0.1, in place) and APPENDS an
+           absent one; --rule is not in nav.flags (it is nav.rule), so it is appended after --liquidity-cache.
+Answer to C3-5's question: BOTH reach the NAV argv (nav_step's --rule nav.rule AND C3's row flag). Here the two values
+are equal (a duplicate); a row id other than the parent's (e.g. any C3 trade-rate row but aim-partial-v5) would be a
+conflicting pair. The NAV exe fails closed on the duplicate (no silent double application).
+VERDICT: STOP for the PM (r7-dispatch ROOT item 1, C3-5: "a duplicate or conflicting --rule is a stop for the PM").
+Nothing was fixed or re-run around it.
