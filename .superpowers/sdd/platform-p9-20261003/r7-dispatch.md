@@ -243,3 +243,36 @@ PRE-18, PRE-20, PRE-21, PRE-31, OD3P-1, ALCLOCK-2, OD5-1, ALD-9.
 5. Item 7: the whole `scripts/tests` under seeds 0 and 1, the stage chain, `test_no_python_mirror.py`.
 6. Item 3 (T2: the one-sided pooled p on the verb, in `nav_summ`) LAST and only if B2's redo is merged in root.
 7. Report `task-OD3P-report.md` ("For PRE": Appendix IV item 32; "For root": the identity procedure) and the handoff.
+
+---
+
+## A4 (stretch; pool-27, NEW branch `feat/p9-a4-20261005` at root `1b64ce45`; ruling A4-1)
+
+Read: `briefs/brief-A4.md` ("Rules for every P9 lane" is superseded by `resume4-dispatch.md` + `r6-wave3-common.md`
+where they differ: you DO build your own targets; pytest flags per the contract), `wave3-carry.md` ("brief-A4.md"
+under "Brief text superseded", the A4 section, W3-13), `task-A3-report.md`, `task-A3-rereview-1.md`,
+`C:/atx-wt/pool-12/.superpowers/sdd/platform-p9-20261003/handoff-A3.md` item 4 (A1-SHIM; read-only),
+`task-AL-SIG-report.md` (the 13F reader, P18), plan `docs/plans/2026-10-02-platform-core-migration.md` section 4
+slice 5 and `docs/plans/2026-10-02-platform-core-audit.md` section 2 rows for `research_fields_sec.py`,
+`research_fields_holdings.py`, `research_fields_v9.py`; rulings A4-1, A3-SHIM, A3-FIX1, A3-3, P18, DEC-5, OD-A3-6F,
+S-R2, W1-I1.
+
+1. `git merge dfa4218d` (T2's APPROVE head: the re-dated SEC / holdings fixtures) first; then root's head whenever it
+   moves. Identity runs on T2's merged fixtures.
+2. Deliver per the brief and the carry: the clock primitives (check `asof_series.hpp` before adding a "Latest"
+   clock; `fields/clock.hpp` is another meaning), the FTD / RegSHO stage readers in the AL-SIG 13F reader's style on
+   A3's source interface (no second 13F decoder), builder kinds for the moved fields with registry rows, a
+   planted-leak probe with teeth per builder, fixture byte identity vs the Python builders; A1-SHIM; S-R2; A3 review
+   S-2 (reuse key); A3-3 (per-field re-hash under `--reuse`); S-6 boundary (`coskew_60m`, `xrd0_ttm` stay Python).
+   Optional items of the carry as time allows.
+3. Each `kind: engine` flip is its OWN commit at the END of your branch, after the pre-flip head is complete and
+   tested (A3 precedent): root merges the pre-flip head, runs the TRAIN identity per moved field (payload SHA-256 =
+   the current manifest's; seal counts from the engine receipts), then merges the flips. Name the pre-flip head and
+   the flip commits in the report.
+4. Builds Debug (`p9-a4-a`, ...) then Release; the fields test targets; `atx-engine-research-fields-tests`; the
+   fixture pytests; whole `scripts/tests` under seeds 0 and 1 and the stage chain if you changed anything a Python
+   test executes.
+5. Report `task-A4-report.md` and `handoff-A4.md` in pool-27's sprint dir (create it; `git add -f`): per field the
+   builder, the registry row, the probe, the fixture identity; the TRAIN identity procedure for root (argv per field).
+   A4 is a stretch lane: it merges only if APPROVE at the wave-3 gate, else it is P10 whole; hand off cleanly at
+   any point (WIP commit + handoff) rather than hold the gate.
