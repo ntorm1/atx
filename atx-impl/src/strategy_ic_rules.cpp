@@ -4,7 +4,13 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <ios>
+#include <locale>
 #include <set>
+#include <sstream>
 #include <span>
 #include <string>
 #include <string_view>
@@ -776,6 +782,42 @@ co::Status composition_walk_forward(const Json& j,const RuleInputs& in,PinnedWei
   pinned.walk_forward=std::string(rc::walk_forward_rule);
   pinned.weight_from=std::move(from);
   pinned.weight_rows=std::move(rows);
+  return co::Ok();
+}
+
+co::Status write_mom_volman_sleeves(const PinnedWeights& pinned,std::span<const i64> role_sessions,
+                                    const std::filesystem::path& dir,const std::string& role) {
+  if (pinned.schedule!=mom_volman_rule || role_sessions.empty() || pinned.schedule_from.empty())
+    return co::Ok();
+  if (pinned.volman_sessions.size()!=pinned.volman_sleeve.size() ||
+      pinned.volman_scale.size()!=pinned.schedule_from.size())
+    return co::Err(co::ErrorCode::Internal,"IC runner: mom-volman-v1 sleeve shape");
+  std::ostringstream raw,scaled;
+  for (auto* text:{&raw,&scaled}) {
+    text->imbue(std::locale::classic());
+    *text<<std::setprecision(17)<<"session_ns,net_return\n";
+  }
+  usize rows=0,block=0;
+  for (usize d=0;d<pinned.volman_sleeve.size();++d) {
+    const i64 session=pinned.volman_sessions[d];
+    if (session<pinned.schedule_from.front() || session<role_sessions.front() ||
+        session>role_sessions.back())
+      continue;
+    while (block+1U<pinned.schedule_from.size() && pinned.schedule_from[block+1U]<=session) ++block;
+    raw<<session<<','<<pinned.volman_sleeve[d]<<'\n';
+    scaled<<session<<','<<pinned.volman_sleeve[d]*pinned.volman_scale[block]<<'\n';
+    ++rows;
+  }
+  if (rows==0U) return co::Ok();
+  for (const auto& [name,text]:{std::pair{std::string("_mom_volman_sleeve_raw.csv"),&raw},
+                                std::pair{std::string("_mom_volman_sleeve_scaled.csv"),&scaled}}) {
+    const std::string bytes=text->str();
+    std::ofstream file(dir/(role+name),std::ios::binary);
+    file.write(bytes.data(),static_cast<std::streamsize>(bytes.size()));
+    file.close();
+    if (!file)
+      return co::Err(co::ErrorCode::IoError,"IC runner: cannot write "+(dir/(role+name)).string());
+  }
   return co::Ok();
 }
 std::string_view stage_name(IcStageKind kind) noexcept {

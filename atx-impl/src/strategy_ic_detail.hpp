@@ -178,6 +178,9 @@ struct PinnedWeights {
   // order). Empty for v1 / v2 files, so nothing downstream changes.
   usize volman_theme{};
   std::string walk_forward; std::vector<i64> weight_from; std::vector<std::vector<f64>> weight_rows;
+  // P9 lane D3W (ruling ALCOMB-6): mom-volman-v1's recorded sleeve and its sessions (empty unless
+  // the rule's block is present), for the sleeve files a scored role writes.
+  std::vector<i64> volman_sessions; std::vector<f64> volman_sleeve;
   std::vector<const CompositionRule*> rules;
   // What the composition's grouping stage and admission receive: the standardised themes, else
   // the (possibly empty) within-theme-v1 themes.

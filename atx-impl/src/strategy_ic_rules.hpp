@@ -23,6 +23,7 @@
 // later is honoured only through the option. test_composition_resid.py pins the built-in table as
 // a prefix of the registry. It retires once every IC argv passes the registry (lane E2, K-P9-6).
 #include <array>
+#include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
@@ -161,6 +162,16 @@ co::Status composition_hedge(const Json& doc,const RuleInputs& in,PinnedWeights&
 co::Status add_theme_hedge_trace(const PinnedWeights& pinned,std::span<const i64> sessions,
                                  const IcCompositionResult& combined,Json& result);
 co::Status add_mom_volman_trace(const PinnedWeights& pinned,Json& result);
+// P9 lane D3W (ruling ALCOMB-6): mom-volman-v1's sleeve before and after scaling, as the two
+// series files atx-research-eval --daily reads (header session_ns,net_return; full precision):
+// <role>_mom_volman_sleeve_raw.csv holds the recorded sleeve r(d) and
+// <role>_mom_volman_sleeve_scaled.csv scale_b r(d) (b the last block whose from_session is at or
+// before the decision's session), at every recorded decision from the first block's session on
+// whose session lies within the role's sessions [front, back]. Nothing is written unless the rule
+// runs and such a decision exists; the role summary is unchanged. Internal on a sleeve whose
+// shape does not match the pinned blocks; IoError when a file cannot be written.
+co::Status write_mom_volman_sleeves(const PinnedWeights& pinned,std::span<const i64> role_sessions,
+                                    const std::filesystem::path& dir,const std::string& role);
 co::Status verify_ic_shrink(const Json& block,const Library& lib,const std::vector<f64>& weights);
 co::Status verify_ic_shrink_aim(const Json& block,const Library& lib,const std::vector<f64>& weights);
 co::Status verify_theme_erc(const Json& block,const Library& lib,const std::vector<f64>& weights);

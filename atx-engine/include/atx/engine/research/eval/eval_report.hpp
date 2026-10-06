@@ -11,6 +11,9 @@
 //   ledger        null | {path, exists, lines, chain_head, chain_rule, window_id}
 //   cells[]       per --daily series, in order:
 //                   label, path, net_moments {sessions, sr_daily, skew, kurtosis},
+//                   net_vol {sessions, mean_daily, sd_daily, vol_annual, sharpe_annual} with --vol
+//                   only (P9 lane D3W, ruling D3W-EVAL: config gains vol: true; absent, the
+//                   document's bytes are unchanged),
 //                   psr (backtest_integrity.psr_report), min_trl [{sr_star_annual, sessions,
 //                   years}],
 //                   dsr {house_v1 (nav_summ.ledger_dsr: N = construction trials by the defect
@@ -102,6 +105,7 @@ struct EvalRequest {
   std::vector<LineageStep> steps;
   f64 threshold{0.0};
   f64 conditional_alpha{kDefaultConditionalAlpha};
+  bool vol{false}; // P9 lane D3W (ruling D3W-EVAL): --vol, each cell's net_vol block
 };
 
 // InvalidArgument on an inconsistent request (no cell, a repeated label, dsr_n < 2, an

@@ -145,6 +145,9 @@ co::Status composition_volman(const Json& j, const RuleInputs& in, PinnedWeights
   pinned.volman_target = std::move(target);
   pinned.volman_scale = std::move(scale);
   pinned.volman_theme = momentum; // P9 lane D3W: walk_forward rows scale this theme's row mass
+  // P9 lane D3W (ruling ALCOMB-6): the recorded sleeve, for each scored role's sleeve files.
+  for (const auto& s : sessions) pinned.volman_sessions.push_back(s.get<i64>());
+  pinned.volman_sleeve = std::move(sleeve);
   return co::Ok();
 }
 } // namespace
