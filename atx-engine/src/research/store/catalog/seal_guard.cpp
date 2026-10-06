@@ -41,21 +41,32 @@ namespace {
 // walk always ends at the file-system root first; the bound only makes the loop's end obvious.
 constexpr usize kMaxAncestors = 4096;
 
-// True when `dir` holds a `.git` entry (a directory in a clone, a file in a worktree). A file
-// system error reads as no entry, which keeps the whole-path check (fail closed).
-[[nodiscard]] bool holds_git_entry(const std::filesystem::path &dir) {
+enum class GitEntry { Absent, Present, Unknown };
+
+// Whether `dir` holds a `.git` entry (a directory in a clone, a file in a worktree); Unknown when
+// the file system reports an error other than "not found".
+[[nodiscard]] GitEntry git_entry(const std::filesystem::path &dir) {
   std::error_code ec;
   const bool found = std::filesystem::exists(dir / ".git", ec);
-  return found && !ec;
+  if (ec) {
+    return GitEntry::Unknown;
+  }
+  return found ? GitEntry::Present : GitEntry::Absent;
 }
 
 // The OUTERMOST directory among `normal` and its ancestors that holds a `.git` entry, or nullopt.
-// Outermost, not nearest: a `.git` planted inside a sealed directory must not exempt it.
+// Outermost, not nearest: a `.git` planted inside a sealed directory must not exempt it. An
+// ancestor the file system cannot answer for could be the real top, so the walk then answers
+// nullopt: the caller checks the whole path (fail closed).
 [[nodiscard]] std::optional<std::filesystem::path> repo_top(const std::filesystem::path &normal) {
   std::optional<std::filesystem::path> top;
   std::filesystem::path dir = normal;
   for (usize i = 0; i < kMaxAncestors; ++i) {
-    if (holds_git_entry(dir)) {
+    const GitEntry entry = git_entry(dir);
+    if (entry == GitEntry::Unknown) {
+      return std::nullopt;
+    }
+    if (entry == GitEntry::Present) {
       top = dir;
     }
     std::filesystem::path parent = dir.parent_path();

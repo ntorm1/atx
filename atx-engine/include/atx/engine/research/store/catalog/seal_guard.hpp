@@ -58,9 +58,9 @@ inline constexpr u64 kMaxOpenBytes = 16ULL * 1024ULL * 1024ULL;
 // True when normal_root(root) holds a standalone year token 2024-2099 below its repository top:
 // the outermost of normal_root(root) and its ancestors that holds a `.git` entry (file or
 // directory; outermost, so a `.git` planted in a sealed directory exempts nothing). A directory
-// so named between the top and the root seals everything under it. With no `.git` ancestor (or
-// a file-system error reading one) the whole absolute path is checked. The upward walk is
-// bounded by the path's own segments.
+// so named between the top and the root seals everything under it. With no `.git` ancestor, or a
+// file-system error (other than "not found") on any ancestor's `.git`, the whole absolute path
+// is checked. The upward walk is bounded by the path's own segments.
 [[nodiscard]] bool sealed_root(const std::filesystem::path &root);
 
 // The refusal text for a sealed root.
