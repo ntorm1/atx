@@ -1,0 +1,14 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\atx-wt\pool-2
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 43 items
+
+atx-engine\tools\test_research_store_classes.py .....                    [ 11%]
+atx-engine\tools\test_research_store_blind.py ...                        [ 18%]
+atx-engine\tools\test_research_store_identity.py ................        [ 55%]
+atx-engine\tools\test_research_store_fixtures.py ........                [ 74%]
+atx-engine\tools\test_research_store.py ...........                      [100%]
+
+============================= 43 passed in 5.56s ==============================

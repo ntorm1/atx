@@ -1,0 +1,8 @@
+M2j finish (RESUME 7, R7-1), root agent; file written 2026-10-05T22:53:35Z
+start docs head 4dc831ac, code head 327c86b2; housekeeping docs commit a15ad887 (progress.md, status-7.md, next-goal-prompt.md, resume7-addendum.md, r7-dispatch.md)
+trial ledger at start: 133 lines, sha256 27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554
+EXE-CUR (NAV, gtest exes p9-2p / p9-2q, source 327c86b2): git diff --name-only 327c86b2..a15ad887 over *.cpp *.hpp *.h *.cc *.cxx *.ipp *.inl CMakeLists.txt *.cmake CMakePresets.json: 0 files
+  on disk: Release NAV adcf72d4821de049f2e83db43759f3d28df4493504956739e1ed40f580656368, Debug NAV 637f706987da395533342f51ede8cf894249a0fa1cfae9a1dc96217741338827 (= receipts mega-p9-2{q,p})
+  gtest exes: Release target-tests 2a4913aa, impl-tests dd753dcf; Debug target-tests 975e0a01, impl-tests 3d5f7efe (= receipts)
+EXE-CUR (research-store p9-1u 3b955ba10b10c7c8, source 1300fd6a): no change since in atx-engine/src/research/store, atx-engine/include/atx/engine/research/store, atx-core, top-level CMake; the atx-engine/CMakeLists.txt diff touches no research-store / research-catalog block
+interpreter: C:/Program Files/Python312/python.exe (psutil 6.1.0, pytest 9.0.2); the Bash PATH's first python is the atx-db venv, not used after the void attempt 1 of item 4 (see nav-runs.txt)
