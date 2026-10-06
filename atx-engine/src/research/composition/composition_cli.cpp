@@ -179,6 +179,10 @@ constexpr u64 kSpecLimit = 16ULL << 20;
                               {"theme_on_count", fit.schedule.on_count}};
   }
   if (fit.resid) doc["theme_resid"] = Json{{"order", fit.resid_order}};
+  if (fit.volman) { // P9 lane D3W (ruling ALCOMB-7): the price_momentum sleeve per decision
+    doc["mom_volman"] =
+        Json{{"theme", std::string(mom_volman_theme)}, {"sleeve", fit.volman_sleeve}};
+  }
   return doc;
 }
 
@@ -279,6 +283,7 @@ core::Result<FitSpec> parse_fit_spec(std::string_view text) {
     ATX_TRY(spec.theme_erc, optional_bool(j, "theme_erc"));
     ATX_TRY(spec.theme_tsmom, optional_bool(j, "theme_tsmom"));
     ATX_TRY(spec.theme_resid, optional_bool(j, "theme_resid"));
+    ATX_TRY(spec.mom_volman, optional_bool(j, "mom_volman")); // P9 D3W (ALCOMB-7)
     if (j.contains("registered_themes")) {
       const Json& registered = j.at("registered_themes");
       if (!registered.is_array()) {

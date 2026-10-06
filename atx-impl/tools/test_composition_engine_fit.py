@@ -173,6 +173,9 @@ def python_fit_document(spec: dict, factors_dir: Path) -> dict:
     if spec.get("theme_resid"):
         weighted = [t for t, w in zip(themes, weights) if w > 0]
         doc["theme_resid"] = {"order": cres.theme_order(weighted, spec["registered_themes"], cef.EngineFitError)}
+    if spec.get("mom_volman"):  # P9 D3W (ruling ALCOMB-7): theme-tsmom-v1's step 1 for price_momentum
+        sleeve = ct.sleeves(matrix, themes, [float(w) for w in weights], ["price_momentum"], mask)[0]
+        doc["mom_volman"] = {"theme": "price_momentum", "sleeve": [float(x) for x in sleeve]}
     doc["weights"] = [float(w) for w in weights]
     return doc
 

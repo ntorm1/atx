@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The fitter's ``--walk-forward`` post-step (P9 lane D3W, contract K-P9-8, rulings D3-1 / D3-2;
-composition_engine_fit.run_walk_forward / weights_v3) on the ``--engine-fit`` stand-in world of
+composition_engine_fit.run_post_step / weights_v3) on the ``--engine-fit`` stand-in world of
 test_composition_engine_fit.
 
 The C++ executables are that file's Python stand-ins; under ``--walk-forward`` the fit stand-in also writes the
@@ -29,10 +29,12 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import composition_engine_fit as cef  # noqa: E402
 import composition_ic_shrink as cis  # noqa: E402
+import composition_mom_volman as cmv  # noqa: E402
 import composition_rules as cr  # noqa: E402
 import composition_theme_erc as cte  # noqa: E402
 import fit_composition_weights as fcw  # noqa: E402
 import test_composition_engine_fit as tcef  # noqa: E402  (its stand-ins and world, not its tests)
+import test_fit_composition_weights as tfw  # noqa: E402  (its synthetic fitter fixture, not its tests)
 
 LAG, STEP, LEAST = 2, 100, 50  # small enough for the synthetic world's 550 decisions (registered: 2, 21, 21)
 WF = dict(walk_forward="expanding", walk_forward_lag=LAG, walk_forward_step=STEP, walk_forward_min_decisions=LEAST)
@@ -49,15 +51,15 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def hooks(limit: int = fcw.METADATA_LIMIT) -> cef.WalkForwardHooks:
+def hooks(limit: int = fcw.METADATA_LIMIT) -> cef.PostStepHooks:
     """What the fitter's main() passes (test MainRoutes runs main() itself)."""
-    return cef.WalkForwardHooks(error=fcw.FitError, canonical=fcw.canonical_bytes, publish=fcw.publish_directory,
+    return cef.PostStepHooks(error=fcw.FitError, canonical=fcw.canonical_bytes, publish=fcw.publish_directory,
                                 pending=fcw.pending_path, limit=limit, weights_file=fcw.OUTPUT_WEIGHTS,
                                 exit_ok=fcw.EXIT_OK)
 
 
 def stage_of(out: Path) -> Path:
-    return out.with_name(out.name + cef.WALK_FORWARD_STAGE)
+    return out.with_name(out.name + cef.POST_STAGE)
 
 
 def python_rows(argv: list) -> dict:
@@ -135,13 +137,13 @@ class World:
 
 
 def run_wf(fx, root: Path, name: str, tag: str, limit: int = fcw.METADATA_LIMIT, **stand) -> tuple[Path, object, list]:
-    """One --engine-fit --walk-forward run of CASES[name] through run_walk_forward: (output dir, (code, summary) or
+    """One --engine-fit --walk-forward run of CASES[name] through run_post_step: (output dir, (code, summary) or
     the FitError, the stand-ins' calls)."""
     out = root / f"{name}-{tag}"
     with WalkForwardStandIns(root / f"{name}-{tag}-factors", **stand) as stand_ins:
         args = fx.args(out, **CASES[name], **WF, **tcef.placeholders(root / f"{name}-{tag}-in"))
         try:
-            got = cef.run_walk_forward(args, fcw.fit, hooks(limit))
+            got = cef.run_post_step(args, fcw.fit, hooks(limit))
         except fcw.FitError as exc:
             got = exc
     return out, got, stand_ins.calls
@@ -245,7 +247,7 @@ class MainRoutes(unittest.TestCase):
         return ["--engine-fit", "--engine-factors", str(flags["engine_factors"]), "--admission-exe",
                 str(flags["admission_exe"]), "--composition-exe", str(flags["composition_exe"])]
 
-    def test_walk_forward_goes_through_run_walk_forward(self):
+    def test_walk_forward_goes_through_run_post_step(self):
         out = self.root / "main-wf"
         argv = self.fx.argv(out, "v4-prior-v1", [*CASE_ARGV["std-erc"], *self.engine_argv("main-wf"), *WF_ARGV])
         with WalkForwardStandIns(self.root / "main-wf-factors") as stand:
@@ -257,18 +259,18 @@ class MainRoutes(unittest.TestCase):
         self.assertEqual(summary["weights_sha256"], sha((out / fcw.OUTPUT_WEIGHTS).read_bytes()))
         self.assertEqual(json.loads((out / fcw.OUTPUT_WEIGHTS).read_bytes())["schema"], cef.WEIGHTS_SCHEMA_V3)
         self.assertFalse(stage_of(out).exists())
-        # The same run through run_walk_forward directly writes the same bytes (main adds nothing).
+        # The same run through run_post_step directly writes the same bytes (main adds nothing).
         direct, got, _ = run_wf(self.fx, self.root, "std-erc", "direct")
         self.assertNotIsInstance(got, Exception, got)
         self.assertEqual(tcef.load(out), tcef.load(direct))
 
     def test_flag_absent_main_is_fit_byte_for_byte(self):
-        """Without --walk-forward main() never reaches run_walk_forward and writes what fit() writes."""
+        """Without --walk-forward main() never reaches run_post_step and writes what fit() writes."""
         for tag, extra in (("plain", []), ("engine", self.engine_argv("absent-engine"))):
             with self.subTest(tag):
                 out_main, out_fit = self.root / f"absent-{tag}-main", self.root / f"absent-{tag}-fit"
                 argv = [*CASE_ARGV["std-erc"], *extra]
-                refuse = unittest.mock.patch.object(cef, "run_walk_forward", side_effect=AssertionError("routed"))
+                refuse = unittest.mock.patch.object(cef, "run_post_step", side_effect=AssertionError("routed"))
                 with tcef.StandIns(self.root / f"absent-{tag}-main-factors"), refuse:
                     code, stdout, stderr = self.main(self.fx.argv(out_main, "v4-prior-v1", argv))
                 self.assertEqual(code, fcw.EXIT_OK, stderr)
@@ -297,7 +299,7 @@ class Refusals(unittest.TestCase):
         return argparse.Namespace(**base)
 
     def test_check_walk_forward_before_any_compute(self):
-        armed = {cef.WALK_FORWARD_ARMED: "stage"}
+        armed = {cef.POST_ARMED: "stage"}
         wf = dict(walk_forward="expanding", walk_forward_lag=2, walk_forward_step=21)
         cases = [
             (dict(walk_forward_lag=2), False, "read only with --walk-forward"),
@@ -311,7 +313,6 @@ class Refusals(unittest.TestCase):
             (dict(wf, walk_forward_lag=1, **armed), False, "lag >= 2"),
             (dict(wf, walk_forward_step=0, **armed), False, "lag >= 2"),
             (dict(wf, walk_forward_min_decisions=1, **armed), False, "lag >= 2"),
-            (dict(wf), False, "through the fitter's main()"),
         ]
         for kw, pooled, needle in cases:
             with self.subTest(kw=kw, pooled=pooled):
@@ -320,6 +321,15 @@ class Refusals(unittest.TestCase):
                 self.assertIn(needle, str(caught.exception))
         cef.check_walk_forward(self.ns(), False, fcw.FitError)  # flag absent: nothing to refuse
         cef.check_walk_forward(self.ns(**wf, **armed), False, fcw.FitError)
+        # fit() alone (run_post_step did not arm it) under --walk-forward or --engine-fit --mom-volman: POST_ONLY.
+        for kw in (wf, dict(mom_volman="mom-volman-v1")):
+            with self.subTest(fit_alone=kw), self.assertRaises(fcw.FitError) as caught:
+                cef.check_args(self.ns(**kw), True, False, fcw.FitError)
+            self.assertIn("through the fitter's main()", str(caught.exception))
+        self.assertFalse(cef.post_step(self.ns(mom_volman="mom-volman-v1", engine_fit=False)))
+        self.assertTrue(cef.post_step(self.ns(mom_volman="mom-volman-v1")))
+        self.assertTrue(cef.post_step(self.ns(**wf)))
+        self.assertFalse(cef.post_step(self.ns()))
         self.assertEqual(cef.walk_forward_options(self.ns(**wf)), (2, 21, cef.WALK_FORWARD_MIN_DECISIONS))
         self.assertEqual(cef.WALK_FORWARD_MIN_DECISIONS, 21)  # ruling D3-1
 
@@ -345,7 +355,7 @@ class Refusals(unittest.TestCase):
                 before = sorted(p.name for p in self.root.iterdir())
                 fit = unittest.mock.Mock(side_effect=AssertionError("the fit ran"))
                 with self.assertRaises(fcw.FitError) as caught:
-                    cef.run_walk_forward(args, fit, hooks())
+                    cef.run_post_step(args, fit, hooks())
                 self.assertIn(needle, str(caught.exception))
                 fit.assert_not_called()
                 self.assertEqual(sorted(p.name for p in self.root.iterdir()), before)
@@ -401,6 +411,134 @@ class Refusals(unittest.TestCase):
         self.assertEqual(calls, ["screen", "fit-wf"])
         self.assertFalse(out.exists())
         self.assertFalse(stage_of(out).exists())
+
+
+# ---------------------------------------------------------------- --engine-fit --mom-volman (ruling ALCOMB-7)
+VOLMAN = dict(tcef.STD_ARGS, theme_erc=cte.RULE_ID, mom_volman=cmv.RULE_ID)
+VOLMAN_ARGV = ["--orientation", "prior", "--composition", "ew-theme-std-v1", "--theme-erc", cte.RULE_ID,
+               "--mom-volman", cmv.RULE_ID]
+
+
+def volman_world(root: Path):
+    """test_composition_mom_volman's world: medium and medium_half weighted price_momentum members."""
+    panel, signals, ids, extra = tfw.aim_world()
+    extra = dict(extra)
+    extra["flip"] = dict(extra["flip"], theme="value")
+    extra["medium_half"] = dict(extra["medium_half"], tier="C+", theme="price_momentum")
+    extra["medium"] = dict(extra["medium"], theme="price_momentum")
+    return tfw.Fixture(root / "fx", panel, signals, [1] * len(ids), ids=ids, families=["fam"] * len(ids),
+                       candidate_extra=extra)
+
+
+def scale_sleeve(scale: float):
+    """A fit stand-in mutation: the C++ document's mom_volman sleeve times ``scale``."""
+    def mutate(doc):
+        doc["mom_volman"]["sleeve"] = [x * scale for x in doc["mom_volman"]["sleeve"]]
+    return mutate
+
+
+class MomVolmanEngineFit(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        cls.fx = volman_world(cls.root)
+        registry = unittest.mock.patch.object(cr, "REGISTRY_PATH", cls.root / "no-registry.json")
+        registry.start()
+        cls.addClassCleanup(registry.stop)
+        cls.addClassCleanup(cls.tmp.cleanup)
+        cls.plain_code, _ = fcw.fit(cls.fx.args(cls.root / "plain", **VOLMAN))
+        cls.plain = tcef.load(cls.root / "plain")
+
+    def run_volman(self, tag: str, extra: dict | None = None, **stand) -> tuple[Path, object, list]:
+        out = self.root / tag
+        with WalkForwardStandIns(self.root / f"{tag}-factors", **stand) as stand_ins:
+            args = self.fx.args(out, **VOLMAN, **(extra or {}), **tcef.placeholders(self.root / f"{tag}-in"))
+            try:
+                got = cef.run_post_step(args, fcw.fit, hooks())
+            except fcw.FitError as exc:
+                got = exc
+        return out, got, stand_ins.calls
+
+    def test_the_cpp_sleeve_is_checked_and_written(self):
+        """Stand-ins equal to the Python: the document is the flag-absent one plus provenance.engine_fit and
+        provenance.mom_volman.sleeve_source; check 3 covered the mom_volman block."""
+        self.assertEqual(self.plain_code, fcw.EXIT_OK)
+        out, got, calls = self.run_volman("agree")
+        self.assertNotIsInstance(got, Exception, got)
+        self.assertEqual(got[0], fcw.EXIT_OK)
+        self.assertEqual(calls, ["screen", "fit"])
+        self.assertIn("mom_volman", got[1]["engine_fit"]["blocks"])
+        self.assertIn("mom_volman", got[1]["engine_fit"]["fit_max_pure_rel_diff_by_block"])
+        written = tcef.load(out)
+        doc = json.loads(written[fcw.OUTPUT_WEIGHTS])
+        self.assertEqual(doc["provenance"]["mom_volman"].pop("sleeve_source"), cef.VOLMAN_SOURCE)
+        del doc["provenance"][cef.PROVENANCE_KEY]
+        self.assertEqual(fcw.canonical_bytes(doc), self.plain[fcw.OUTPUT_WEIGHTS])
+        self.assertEqual(got[1]["weights_sha256"], sha(written[fcw.OUTPUT_WEIGHTS]))
+        self.assertFalse(stage_of(out).exists())
+
+    def test_a_cpp_sleeve_within_p12_is_the_sleeve_written(self):
+        out, got, _ = self.run_volman("within", fit_mutate=scale_sleeve(1.0 + 2.0 ** -50))
+        self.assertNotIsInstance(got, Exception, got)
+        written = json.loads((out / fcw.OUTPUT_WEIGHTS).read_bytes())["theme_schedule"]["sleeve"]
+        python = json.loads(self.plain[fcw.OUTPUT_WEIGHTS])["theme_schedule"]["sleeve"]
+        self.assertEqual(written, [x * (1.0 + 2.0 ** -50) for x in python])
+        self.assertNotEqual(written, python)
+
+    def test_a_cpp_sleeve_beyond_p12_is_refused(self):
+        out, got, _ = self.run_volman("beyond", fit_mutate=scale_sleeve(1.0 + 1e-6))
+        self.assertIsInstance(got, fcw.FitError)
+        self.assertIn("the C++ fit differs", str(got))
+        self.assertIn("mom_volman.sleeve", str(got))
+        self.assertFalse(out.exists())
+        self.assertFalse(stage_of(out).exists())
+
+    def test_with_walk_forward_both_steps_run(self):
+        out, got, calls = self.run_volman("with-wf", extra=WF, fit_mutate=scale_sleeve(1.0 + 2.0 ** -50))
+        self.assertNotIsInstance(got, Exception, got)
+        self.assertEqual(calls, ["screen", "fit-wf"])
+        doc = json.loads((out / fcw.OUTPUT_WEIGHTS).read_bytes())
+        self.assertEqual(doc["schema"], cef.WEIGHTS_SCHEMA_V3)
+        self.assertEqual(doc["provenance"]["mom_volman"]["sleeve_source"], cef.VOLMAN_SOURCE)
+        python = json.loads(self.plain[fcw.OUTPUT_WEIGHTS])["theme_schedule"]["sleeve"]
+        self.assertEqual(doc["theme_schedule"]["sleeve"], [x * (1.0 + 2.0 ** -50) for x in python])
+        self.assertGreaterEqual(len(doc["walk_forward"]["rows"]), 3)
+
+    def test_main_routes_engine_fit_mom_volman(self):
+        out = self.root / "main"
+        flags = tcef.placeholders(self.root / "main-in")
+        argv = self.fx.argv(out, "v4-prior-v1", [
+            *VOLMAN_ARGV, "--engine-fit", "--engine-factors", str(flags["engine_factors"]), "--admission-exe",
+            str(flags["admission_exe"]), "--composition-exe", str(flags["composition_exe"])])
+        stdout = io.StringIO()
+        with WalkForwardStandIns(self.root / "main-factors"), contextlib.redirect_stdout(stdout), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = fcw.main(argv)
+        self.assertEqual(code, fcw.EXIT_OK)
+        summary = json.loads(stdout.getvalue())
+        self.assertEqual(summary["output"], str(out))
+        doc = json.loads((out / fcw.OUTPUT_WEIGHTS).read_bytes())
+        self.assertEqual(doc["provenance"]["mom_volman"]["sleeve_source"], cef.VOLMAN_SOURCE)
+        self.assertFalse(stage_of(out).exists())
+
+    def test_engine_sleeve_refusals(self):
+        doc = json.loads(self.plain[fcw.OUTPUT_WEIGHTS])
+        sleeve = doc["theme_schedule"]["sleeve"]
+        cases = [
+            ({k: v for k, v in doc.items() if k != "theme_schedule"}, sleeve, "carries no mom-volman-v1 sleeve"),
+            (doc, sleeve[:-1], "carries no mom-volman-v1 sleeve"),
+            (dict(doc, theme_schedule=dict(doc["theme_schedule"], rule="theme-tsmom-v1")), sleeve,
+             "carries no mom-volman-v1 sleeve"),
+            (doc, [x + 1e-6 for x in sleeve], "the written sleeve differs from the C++ fit's"),
+        ]
+        for n, (document, cpp, needle) in enumerate(cases):
+            with self.subTest(n), self.assertRaises(fcw.FitError) as caught:
+                cef.engine_sleeve(document, {"sleeve": cpp}, fcw.FitError)
+            self.assertIn(needle, str(caught.exception))
+        same = cef.engine_sleeve(doc, {"sleeve": sleeve}, fcw.FitError)
+        self.assertEqual(same["theme_schedule"], doc["theme_schedule"])
+        self.assertNotIn("sleeve_source", doc["provenance"]["mom_volman"])  # the input is not edited
 
 
 class WeightsV3(unittest.TestCase):

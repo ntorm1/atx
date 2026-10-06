@@ -135,6 +135,51 @@ co::Result<SleeveCovariance> theme_sleeve_covariance(std::span<const std::vector
   return co::Ok(std::move(out));
 }
 
+namespace {
+// composition_theme_tsmom.theme_masses and sleeves for theme t: W_t over the weighted members in
+// member order, r = r + (w_k / W_t) x_k over every decision, then 0 outside TRAIN. Returns W_t;
+// `r` is resized to the decisions. theme-tsmom-v1 and mom-volman-v1 share it (one formula).
+f64 theme_sleeve(std::span<const std::vector<f64>> series,std::span<const u8> train,
+                 std::span<const f64> weights,std::span<const usize> theme,usize t,
+                 std::vector<f64>& r) {
+  f64 total=0.0;
+  for (usize k=0;k<weights.size();++k)
+    if (theme[k]==t && weights[k]>0.0) total+=weights[k];
+  r.assign(train.size(),0.0);
+  for (usize k=0;k<weights.size();++k) {
+    if (theme[k]!=t || !(weights[k]>0.0)) continue;
+    const f64 c=weights[k]/total;
+    for (usize d=0;d<r.size();++d) r[d]=r[d]+c*series[k][d];
+  }
+  for (usize d=0;d<r.size();++d)
+    if (train[d]==0U) r[d]=0.0;
+  return total;
+}
+
+// mom-volman-v1's sleeve (fit.hpp): the price_momentum theme's step-1 series on the final weights.
+co::Result<std::vector<f64>> mom_volman_sleeve(std::span<const std::vector<f64>> series,
+                                               std::span<const u8> train,
+                                               std::span<const f64> weights,
+                                               std::span<const usize> member_theme,
+                                               std::span<const std::string> themes) {
+  const std::string rule(mom_volman_rule);
+  const auto at=std::find(themes.begin(),themes.end(),mom_volman_theme);
+  const auto t=static_cast<usize>(at-themes.begin());
+  bool weighted=false;
+  for (usize k=0;k<weights.size();++k) weighted=weighted || (member_theme[k]==t && weights[k]>0.0);
+  if (at==themes.end() || !weighted)
+    return co::Err(refused(rule+": "+std::string(mom_volman_theme)+" has no weighted member"));
+  if (train.size()<mom_volman_min_decisions || train.size()>mom_volman_max_decisions)
+    return co::Err(refused(rule+": the role has "+std::to_string(train.size())+
+                           " decisions; the first block needs more than "+
+                           std::to_string(mom_volman_min_decisions-1U)+" (at most "+
+                           std::to_string(mom_volman_max_decisions)+")"));
+  std::vector<f64> r;
+  theme_sleeve(series,train,weights,member_theme,t,r);
+  return co::Ok(std::move(r));
+}
+} // namespace
+
 co::Result<TsmomSchedule> theme_tsmom_schedule(std::span<const std::vector<f64>> series,
                                                std::span<const i64> sessions,
                                                std::span<const u8> train,
@@ -166,23 +211,9 @@ co::Result<TsmomSchedule> theme_tsmom_schedule(std::span<const std::vector<f64>>
     return co::Err(refused("theme-tsmom-v1: the role has "+std::to_string(decisions)+
                            " decisions; the first block needs more than "+std::to_string(first)));
   const usize count=out.themes.size();
-  // composition_theme_tsmom.theme_masses and sleeves: W_t in member order; r = r + (w_k / W_t) x_k
-  // over every decision, then 0 outside TRAIN.
-  std::vector<std::vector<f64>> sleeve(count,std::vector<f64>(decisions,0.0));
-  for (usize p=0;p<count;++p) {
-    f64 total=0.0;
-    for (usize k=0;k<members;++k)
-      if (theme[k]==out.themes[p] && weights[k]>0.0) total+=weights[k];
-    out.parent_mass.push_back(total);
-    auto& r=sleeve[p];
-    for (usize k=0;k<members;++k) {
-      if (theme[k]!=out.themes[p] || !(weights[k]>0.0)) continue;
-      const f64 c=weights[k]/total;
-      for (usize d=0;d<decisions;++d) r[d]=r[d]+c*series[k][d];
-    }
-    for (usize d=0;d<decisions;++d)
-      if (train[d]==0U) r[d]=0.0;
-  }
+  std::vector<std::vector<f64>> sleeve(count);
+  for (usize p=0;p<count;++p)
+    out.parent_mass.push_back(theme_sleeve(series,train,weights,theme,out.themes[p],sleeve[p]));
   out.on_count.assign(count,0U);
   for (const usize j:starts) {
     TsmomBlock block;
@@ -240,6 +271,10 @@ co::Result<CompositionFit> fit_composition(const FactorSeriesView& view,
     return co::Err(refused("1..256 members"));
   if (spec.theme_resid && (spec.theme_erc || spec.theme_tsmom))
     return co::Err(refused("theme-resid-v1 is refused beside theme-erc-v1 and theme-tsmom-v1"));
+  if (spec.mom_volman && (aim || spec.theme_tsmom || spec.theme_resid))
+    return co::Err(refused(std::string(mom_volman_rule)+" takes an ew-theme-std-v1 or ic-shrink-v1 "
+                           "parent (with or without theme-erc-v1) and is refused beside "
+                           "theme-tsmom-v1 and theme-resid-v1"));
   if (view.factors.size()!=view.candidates*view.decisions || view.sessions.size()!=view.decisions ||
       view.train.size()!=view.decisions || ids.size()!=view.candidates)
     return co::Err(refused("factor series geometry"));
@@ -333,6 +368,11 @@ co::Result<CompositionFit> fit_composition(const FactorSeriesView& view,
     ATX_TRY(fit.resid_order,theme_resid_order(spec.registered_themes,weighted));
     fit.resid=true;
   }
+  if (spec.mom_volman) {
+    ATX_TRY(fit.volman_sleeve,
+            mom_volman_sleeve(series,view.train,fit.weights,fit.member_theme,fit.themes));
+    fit.volman=true;
+  }
   return co::Ok(std::move(fit));
 }
 
@@ -365,6 +405,8 @@ co::Result<std::vector<WalkForwardRow>> fit_walk_forward(const FactorSeriesView&
   if (rows>walk_forward_max_rows)
     return co::Err(refused(rule+": "+std::to_string(rows)+" rows; at most "+
                            std::to_string(walk_forward_max_rows)));
+  FitSpec row_spec=spec; // mom-volman-v1's sleeve is the full TRAIN fit's (fit.hpp)
+  row_spec.mom_volman=false;
   std::vector<WalkForwardRow> out;
   out.reserve(rows);
   std::vector<u8> mask(view.decisions,0U);
@@ -379,7 +421,7 @@ co::Result<std::vector<WalkForwardRow>> fit_walk_forward(const FactorSeriesView&
       last=cut;
     }
     const FactorSeriesView window{view.candidates,view.decisions,view.factors,view.sessions,mask};
-    auto fitted=fit_composition(window,ids,spec);
+    auto fitted=fit_composition(window,ids,row_spec);
     if (!fitted)
       return co::Err(refused(rule+": the row at decision "+std::to_string(j)+" (session "+
                              std::to_string(view.sessions[j])+") is refused: "+

@@ -812,3 +812,181 @@ TEST(WalkForward, CliWritesTheRowsAndRefuses) {
   refused({"--walk-forward", "expanding", "--lag", "2", "--step", "21"}, dir / "tsmom.json",
           "refused with theme-tsmom-v1");
 }
+
+// ---- P9 lane D3W: mom-volman-v1's sleeve in the C++ fit (ruling ALCOMB-7) -----------------------
+namespace {
+
+// The fixture case `index` with theme-tsmom-v1 off and mom-volman-v1 as asked.
+Json volman_spec_json(usize index, bool volman) {
+  Json spec = fixture().at("cases").at(index).at("spec");
+  spec["theme_tsmom"] = false;
+  if (volman) spec["mom_volman"] = true;
+  return spec;
+}
+
+rc::FitSpec parsed(const Json &spec) {
+  const auto out = rc::parse_fit_spec(spec.dump());
+  EXPECT_TRUE(out) << out.error().to_string();
+  return out ? *out : rc::FitSpec{};
+}
+
+} // namespace
+
+// The sleeve is theme-tsmom-v1's step 1 for price_momentum on the final weights: 0 outside TRAIN,
+// and every tsmom block's price_momentum trailing sum is the sum of the sleeve over its window,
+// bit for bit; the weights and every other block are those of the fit without it.
+TEST(MomVolman, SleeveIsTsmomStepOneForPriceMomentum) {
+  const Inputs in = inputs();
+  const Json tsmom_spec = fixture().at("cases").at(3).at("spec"); // ic-shrink-v1 + theme-tsmom-v1
+  ASSERT_TRUE(tsmom_spec.at("theme_tsmom").get<bool>());
+  const auto ts = rc::fit_composition(in.view(), in.ids, parsed(tsmom_spec));
+  const auto mv = rc::fit_composition(in.view(), in.ids, parsed(volman_spec_json(3, true)));
+  const auto plain = rc::fit_composition(in.view(), in.ids, parsed(volman_spec_json(3, false)));
+  ASSERT_TRUE(ts) << ts.error().to_string();
+  ASSERT_TRUE(mv) << mv.error().to_string();
+  ASSERT_TRUE(plain) << plain.error().to_string();
+  EXPECT_TRUE(mv->volman);
+  EXPECT_FALSE(plain->volman);
+  EXPECT_TRUE(plain->volman_sleeve.empty());
+  EXPECT_TRUE(same_bits(mv->weights, plain->weights));
+  EXPECT_TRUE(same_bits(mv->weights, ts->weights));
+  ASSERT_EQ(mv->volman_sleeve.size(), in.decisions);
+  usize nonzero = 0;
+  for (usize d = 0; d < in.decisions; ++d) {
+    if (in.train[d] == 0U) {
+      EXPECT_EQ(std::bit_cast<u64>(mv->volman_sleeve[d]), std::bit_cast<u64>(0.0)) << d;
+    } else if (mv->volman_sleeve[d] != 0.0) {
+      ++nonzero;
+    }
+  }
+  EXPECT_GT(nonzero, 200U);
+  const auto pm = std::find(mv->themes.begin(), mv->themes.end(), "price_momentum");
+  ASSERT_NE(pm, mv->themes.end());
+  const auto p = static_cast<usize>(
+      std::find(ts->schedule.themes.begin(), ts->schedule.themes.end(),
+                static_cast<usize>(pm - mv->themes.begin())) -
+      ts->schedule.themes.begin());
+  ASSERT_LT(p, ts->schedule.themes.size());
+  ASSERT_FALSE(ts->schedule.blocks.empty());
+  for (const auto &block : ts->schedule.blocks) {
+    f64 s = 0.0;
+    for (usize d = block.decision_index - 2U - 126U + 1U; d <= block.decision_index - 2U; ++d) {
+      s += mv->volman_sleeve[d];
+    }
+    EXPECT_EQ(std::bit_cast<u64>(s), std::bit_cast<u64>(block.trailing[p])) << block.decision_index;
+  }
+  // One decision in closed form: sum over the weighted price_momentum members of (w / W) f.
+  usize d = 0;
+  while (in.train[d] == 0U) ++d;
+  const auto theme = static_cast<usize>(pm - mv->themes.begin());
+  f64 mass = 0.0;
+  for (usize k = 0; k < mv->weights.size(); ++k) {
+    if (mv->member_theme[k] == theme && mv->weights[k] > 0.0) mass += mv->weights[k];
+  }
+  f64 r = 0.0;
+  for (usize k = 0; k < mv->weights.size(); ++k) {
+    if (mv->member_theme[k] != theme || !(mv->weights[k] > 0.0)) continue;
+    const f64 f = in.factors[d * in.ids.size() + mv->column[k]];
+    r = r + (mv->weights[k] / mass) * (std::isnan(f) ? 0.0 : f);
+  }
+  EXPECT_EQ(std::bit_cast<u64>(mv->volman_sleeve[d]), std::bit_cast<u64>(r));
+}
+
+// Refused: an aim parent, beside theme-tsmom-v1 or theme-resid-v1, no weighted price_momentum
+// member, and a role outside 128..65536 decisions. A walk-forward row records no sleeve.
+TEST(MomVolman, RefusalsAndWalkForwardRows) {
+  const Inputs in = inputs();
+  const auto refused = [&](const Inputs &x, const Json &spec, std::string_view needle) {
+    const auto fit = rc::fit_composition(x.view(), x.ids, parsed(spec));
+    ASSERT_FALSE(fit) << needle;
+    EXPECT_NE(fit.error().message().find(needle), std::string::npos) << fit.error().message();
+  };
+  refused(in, volman_spec_json(4, true), "mom-volman-v1 takes an ew-theme-std-v1 or ic-shrink-v1");
+  Json with_tsmom = volman_spec_json(3, true);
+  with_tsmom["theme_tsmom"] = true;
+  refused(in, with_tsmom, "refused beside theme-tsmom-v1 and theme-resid-v1");
+  Json with_resid = fixture().at("cases").at(2).at("spec"); // ew-theme-std-aim + theme-resid-v1
+  with_resid["composition"] = "ew-theme-std-v1";
+  for (auto &m : with_resid["members"]) m.erase("gain");
+  with_resid["mom_volman"] = true;
+  refused(in, with_resid, "refused beside theme-tsmom-v1 and theme-resid-v1");
+  // ic-shrink-v1 on four linear members, two per theme (the member cap's smallest feasible book).
+  const std::vector<std::pair<f64, f64>> ab{{1.0, 1.0}, {2.0, 0.0}, {3.0, 2.0}, {1.0, 3.0}};
+  Json no_pm{{"schema", "atx.composition-fit-spec/v1"},
+             {"composition", "ic-shrink-v1"},
+             {"mom_volman", true},
+             {"members", Json::array()}};
+  for (usize k = 0; k < ab.size(); ++k) {
+    const char *theme = k < 2U ? "value" : "low_risk";
+    no_pm["members"].push_back(
+        Json{{"id", "c" + std::to_string(k)}, {"theme", theme}, {"sign", 1}});
+  }
+  refused(linear_inputs(200, ab), no_pm, "price_momentum has no weighted member");
+  Json short_role = no_pm;
+  short_role["members"][2]["theme"] = "price_momentum";
+  short_role["members"][3]["theme"] = "price_momentum";
+  refused(linear_inputs(127, ab), short_role,
+          "the role has 127 decisions; the first block needs more than 127");
+  const Inputs least = linear_inputs(128, ab);
+  const auto accepted = rc::fit_composition(least.view(), least.ids, parsed(short_role));
+  ASSERT_TRUE(accepted) << accepted.error().to_string();
+  EXPECT_TRUE(accepted->volman);
+  EXPECT_EQ(accepted->volman_sleeve.size(), 128U);
+  // Walk-forward: the rows are the fits without the sleeve (the full fit's schedule).
+  const auto rows = rc::fit_walk_forward(in.view(), in.ids, parsed(volman_spec_json(1, true)),
+                                         rc::WalkForwardSpec{"expanding", 2, 21, 42});
+  const auto bare = rc::fit_walk_forward(in.view(), in.ids, parsed(volman_spec_json(1, false)),
+                                         rc::WalkForwardSpec{"expanding", 2, 21, 42});
+  ASSERT_TRUE(rows) << rows.error().to_string();
+  ASSERT_TRUE(bare) << bare.error().to_string();
+  ASSERT_EQ(rows->size(), bare->size());
+  for (usize r = 0; r < rows->size(); ++r) {
+    EXPECT_FALSE((*rows)[r].fit.volman) << r;
+    EXPECT_TRUE(same_bits((*rows)[r].fit.weights, (*bare)[r].fit.weights)) << r;
+  }
+}
+
+// The verb: a spec with mom_volman true adds the block {theme, sleeve} and nothing else; without
+// the key the document is that document without the block, byte for byte.
+TEST(MomVolman, CliWritesTheSleeveBlockOnlyWhenAsked) {
+  const fs::path dir = scratch("mom_volman");
+  const Inputs in = inputs();
+  const fs::path factors = write_factor_dir(dir, in);
+  write_bytes(dir / "on.json", volman_spec_json(1, true).dump());
+  write_bytes(dir / "off.json", volman_spec_json(1, false).dump());
+  std::ostringstream o;
+  std::ostringstream e;
+  for (const char *name : {"on", "off"}) {
+    ASSERT_EQ(run_main({"fit", "--factors", factors.string(), "--spec",
+                        (dir / (std::string(name) + ".json")).string(), "--output",
+                        (dir / (std::string("fit_") + name)).string()},
+                       o, e),
+              0)
+        << e.str();
+  }
+  const Json on = Json::parse(read_bytes(dir / "fit_on" / std::string(rc::kFitFile)));
+  ASSERT_TRUE(on.contains("mom_volman"));
+  EXPECT_EQ(on.at("mom_volman").size(), 2U);
+  EXPECT_EQ(on.at("mom_volman").at("theme").get<std::string>(), "price_momentum");
+  Inputs all = in;
+  all.train.assign(all.decisions, 1U);
+  const auto fit = rc::fit_composition(all.view(), all.ids, parsed(volman_spec_json(1, true)));
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  expect_values(on.at("mom_volman").at("sleeve"), fit->volman_sleeve, true, "cli sleeve");
+  Json stripped = on;
+  stripped.erase("mom_volman");
+  stripped["inputs"]["spec_sha256"] =
+      atx::core::sha256_hex(read_bytes(dir / "off.json")).value(); // the spec file differs
+  EXPECT_EQ(read_bytes(dir / "fit_off" / std::string(rc::kFitFile)), stripped.dump(2) + "\n");
+  // A non-boolean key is refused and publishes nothing.
+  Json bad = volman_spec_json(1, false);
+  bad["mom_volman"] = 1;
+  write_bytes(dir / "bad.json", bad.dump());
+  std::ostringstream err;
+  EXPECT_EQ(run_main({"fit", "--factors", factors.string(), "--spec", (dir / "bad.json").string(),
+                      "--output", (dir / "fit_bad").string()},
+                     o, err),
+            1);
+  EXPECT_NE(err.str().find("spec mom_volman must be a boolean"), std::string::npos) << err.str();
+  EXPECT_FALSE(fs::exists(dir / "fit_bad"));
+}
