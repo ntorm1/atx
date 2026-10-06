@@ -207,3 +207,6 @@ target_sources(atx-impl-strategy-ic-tests PRIVATE
 # CostLawRegistry.*, TradeRateRegistry.*, TargetRegistry.*) beside the NAV replay tests;
 # atx-impl-tests compiles it through its *_test.cpp glob.
 target_sources(atx-impl-strategy-target-tests PRIVATE strategy_nav_spec_test.cpp)
+# P9 lane COV-MV: the NAV target rule mv-aim-v1 (MvAimRule.*) beside the NAV replay tests;
+# atx-impl-tests compiles it through its *_test.cpp glob.
+target_sources(atx-impl-strategy-target-tests PRIVATE strategy_mv_aim_rule_test.cpp)

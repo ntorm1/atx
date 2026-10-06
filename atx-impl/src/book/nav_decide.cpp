@@ -39,8 +39,13 @@ co::Result<bool> form_desired_target(const TargetReplayInput& x, const NavReplay
       if (x.member[d * x.instruments + i])
         sigma[i] = window_liquidity(x, x.volume, cfg, d + 1, i).sigma;
   }
-  return detail::form_desired(x, cfg.target, d, shared.row, shared.desired, shared.price, out,
-                              shared.no_short, &shared.state);
+  ATX_TRY(const bool proceed,
+          detail::form_desired(x, cfg.target, d, shared.row, shared.desired, shared.price, out,
+                               shared.no_short, &shared.state));
+  // P9 COV-MV: the target rule (K-P9-7 kind target, --target-rule) rewrites the target that
+  // proceeds, before any book plans or the calibrate tape records it; the identity without one.
+  if (proceed) ATX_TRY_VOID(v7::apply_target_rule(x, d, shared.no_short, shared.desired));
+  return co::Ok(proceed);
 }
 // Engine predictors of name i as of decision d (row d fields and prices, presence
 // rows <= d); not available when any is missing or out of its declared domain.

@@ -4,6 +4,7 @@
 #include <initializer_list>
 #include <utility>
 #include <nlohmann/json.hpp>
+#include "strategy_mv_aim.hpp"
 #include "strategy_nav_replay.hpp"
 #include "strategy_risk_target.hpp"
 #include "strategy_target_replay.hpp"
@@ -93,9 +94,28 @@ constexpr Row cost_laws[] = {
      cost_sqrt_v2_aliases},
 };
 
-// The target slot (K-P9-7 kind target): empty in this build (COV-MV replaces this line with a
-// size-deduced table holding mv-aim-v1).
-constexpr std::span<const Row> targets{};
+// The target slot (K-P9-7 kind target; size-deduced, Ruling W3-9). P9 COV-MV: mv-aim-v1
+// (strategy_mv_aim.hpp; handler and refusals in strategy_nav_v7.cpp): the store it reads, both
+// required with their flags (Ruling PRE-9, the leverage rows' shape), and the rules it refuses.
+Json mv_aim_params() {
+  return Json{{"risk_model", property("string", "--risk-model", Json::object())},
+              {"risk_model_sha256", property("string", "--risk-model-sha256",
+                                             Json{{"pattern", "^[0-9a-f]{64}$"}})}};
+}
+constexpr std::array<std::string_view, 2> mv_aim_required{"risk_model", "risk_model_sha256"};
+constexpr std::array<std::string_view, 7> mv_aim_refuses{
+    "aim-partial-v6",   "spo-v1",      "spo-v2",       "spo-v3",
+    "two-speed-nav-v1", "adv-hold-v1", "hold-band-v1"};
+constexpr Row targets[] = {
+    {mv_aim::rule_id, Kind::Target, "--target-rule mv-aim-v1", mv_aim_params, mv_aim_required,
+     mv_aim_refuses,
+     "mv-aim-v1 (P9 COV-MV, cov-design 5.2): at each rebalance decision d the shared desired "
+     "target's priced members (a risk row at d: industry slot 0..49, specific variance D_i > 0) "
+     "become P V_d^-1 P alpha, alpha_i = sqrt(D_i) desired_i, V_d = X F X' + D of the store's row "
+     "d (F never inverted), rescaled to the desired gross over them; unpriced members keep their "
+     "weights; under two priced names: unchanged; needs --rule aim-partial-v5; not with "
+     "--construction-grid; mv_aim blocks in recipe, summary and holdings manifest"},
+};
 
 Json row_json(const Row& r) {
   Json required = Json::array();
@@ -168,7 +188,7 @@ std::string flag_ids(Kind kind) {
 Json rules_json() {
   Json rows = risk_target::leverage_rules_json();
   for (const auto table : {std::span<const Row>(trade_rates), std::span<const Row>(cost_laws),
-                           targets})
+                           std::span<const Row>(targets)})
     for (const auto& row : table) rows.push_back(row_json(row));
   return rows;
 }

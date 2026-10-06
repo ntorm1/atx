@@ -12,7 +12,13 @@
 //   --cost-v2                 adds the S2-KO and S2-FIM stress books (S1/S2/S3 unchanged)
 //   --cost-law ID             P9 C3 (K-P9-7): a cost-law row by id (book/nav_rules.hpp);
 //                             cost-sqrt-v2 is --cost-v2 (one of the two)
-//   --target-rule ID          P9 C3 (K-P9-7): the target slot; no row in this build (COV-MV)
+//   --target-rule ID          P9 C3 (K-P9-7): the target slot; mv-aim-v1 (P9 COV-MV,
+//                             strategy_mv_aim.hpp: the shared desired target's priced members
+//                             become P V_d^-1 P alpha at their gross; --risk-model DIR
+//                             --risk-model-sha256 SHA, --rule aim-partial-v5; not with an spo
+//                             rule, aim-partial-v6, --two-speed, --adv-hold-q, --hold-band or
+//                             --construction-grid; recipe, summary and holdings manifest get an
+//                             "mv_aim" block and the rule id +mv-aim-v1)
 //   --capacity-curve          the capacity books: S2 at NAV x {.5,1,2,4,8}, in the main lockstep
 //                             (P9 C1; before: a second pass), published into <output>/capacity,
 //                             then <output>/capacity_curve.csv
@@ -108,6 +114,7 @@
 #include "atx/core/types.hpp"
 #include "atx/engine/book/replay_cost.hpp"
 #include "strategy_cost_v2.hpp"
+#include "strategy_mv_aim.hpp"
 #include "strategy_nav_replay.hpp"
 #include "strategy_risk_target.hpp"
 #include "strategy_spo.hpp"
@@ -125,6 +132,7 @@ struct NavV7Options {
   // opened by dispatch_nav_v7; the spo rules' and the risk target's (one store, one check)
   std::shared_ptr<const spo::RiskStore> spo_risk;
   risk_target::Options risk_target{}; // --risk-target (v8 R-8)
+  bool mv_aim{}; // --target-rule mv-aim-v1 (P9 COV-MV; the store is spo_risk)
 };
 enum class NavV7Pass : atx::u8 { Main = 0, Capacity = 1 };
 
@@ -166,6 +174,8 @@ public:
   // The risk-target-v1 scaler (nullptr without --risk-target): its records are the main books'
   // scored decisions (those the loose seam planned and those each replay handed back).
   [[nodiscard]] const risk_target::Scaler* risk_target_scaler() const noexcept;
+  // The mv-aim-v1 target rule (nullptr without --target-rule mv-aim-v1; P9 COV-MV).
+  [[nodiscard]] const mv_aim::Rule* mv_aim_rule() const noexcept;
   // Why capture() voided the run (the spo specific-ceiling tripwire); empty otherwise.
   [[nodiscard]] const std::string& void_reason() const noexcept;
   struct State;
@@ -296,6 +306,17 @@ void observe(std::span<const NavReplayResult> results);
                                      std::span<const NavSummary> summaries);
 // True while an extension is installed on this thread.
 [[nodiscard]] bool installed();
+// P9 COV-MV: the run's target rule (K-P9-7 kind target, --target-rule mv-aim-v1) on decision d's
+// shared desired target, after its construction proceeded (book/nav_decide.cpp, the calling
+// thread, once per decision); no_short: the locate-in-aim mask (empty without it). The identity
+// (Ok, `desired` untouched) without an extension or without the rule.
+[[nodiscard]] atx::core::Status apply_target_rule(const TargetReplayInput& x, atx::usize d,
+                                                  std::span<const atx::u8> no_short,
+                                                  std::vector<atx::f64>& desired);
+// P9 COV-MV (Ruling COVMV-1): the bytes the installed extension's target rule holds at `names`
+// instruments, the NAV workspace reserve's term (nav_workspace_reserve_bytes); 0 without an
+// extension or without the rule.
+[[nodiscard]] atx::u64 extension_workspace_bytes(atx::usize names);
 // While alive, the extension publishes the capacity directory (P9 C1): the declarations read
 // pass "capacity" and the summary blocks are the capacity pass's (spo-v3: the capacity engine's;
 // the risk target: parameters only). Restores the pass it found.

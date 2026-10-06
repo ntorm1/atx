@@ -71,7 +71,8 @@ u64 nav_workspace_reserve_bytes(const NavReplayConfig& base, usize books, bool t
                        (tiered ? tier_name_bytes : 0) + (cached ? rate_name_bytes : 0) +
                        (holdings ? holdings_name_bytes + hold_trace : 0)) +
          detail::construction_scratch_bytes(base.target, names) + ring_bytes(base.target, names) +
-         u64{books} * (u64{sessions} * sizeof(NavReplayDay) + base.max_events * sizeof(NavEvent));
+         u64{books} * (u64{sessions} * sizeof(NavReplayDay) + base.max_events * sizeof(NavEvent)) +
+         v7::extension_workspace_bytes(names); // P9 COV-MV (COVMV-1): 0 without a target rule
 }
 namespace {
 bool same_price_risk(const PriceExposureConfig& a, const PriceExposureConfig& b) {
