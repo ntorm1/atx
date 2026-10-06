@@ -24,35 +24,35 @@ import test_prepare_research_fields as base
 
 UTC = dt.timezone.utc
 IDS = base.IDS                                   # 101 202 303 404 505
-SESSIONS = [d for d in (dt.date(2024, 5, 1) + dt.timedelta(days=i) for i in range(245)) if d.weekday() < 5]
-Q0, Q1, Q2, Q3 = dt.date(2023, 12, 31), dt.date(2024, 3, 31), dt.date(2024, 6, 30), dt.date(2024, 9, 30)
-DEADLINE = {Q0: dt.date(2024, 2, 14), Q1: dt.date(2024, 5, 15), Q2: dt.date(2024, 8, 14), Q3: dt.date(2024, 11, 14)}
+SESSIONS = [d for d in (dt.date(2023, 5, 1) + dt.timedelta(days=i) for i in range(245)) if d.weekday() < 5]
+Q0, Q1, Q2, Q3 = dt.date(2022, 12, 31), dt.date(2023, 3, 31), dt.date(2023, 6, 30), dt.date(2023, 9, 30)
+DEADLINE = {Q0: dt.date(2023, 2, 14), Q1: dt.date(2023, 5, 15), Q2: dt.date(2023, 8, 14), Q3: dt.date(2023, 11, 14)}
 CUSIP = {"C101": 101, "C202": 202, "C303": 303}
 A, B, C = "1", "2", "3"
 # (accession, filer, period, filing date, form, amendment type, source part, holdings rows (cusip, shares, value_usd))
 FILINGS = [
-    ("a-q0", A, Q0, dt.date(2024, 2, 1), "13F-HR", None, "2024q1", [("C101", 100, 1000)]),
-    ("b-q0", B, Q0, dt.date(2024, 2, 14), "13F-HR", None, "2024q1", [("C101", 50, 500)]),
-    ("a-q1", A, Q1, dt.date(2024, 4, 20), "13F-HR", None, "2024q2", [("C101", 100, 1000), ("C202", 40, 400),
+    ("a-q0", A, Q0, dt.date(2023, 2, 1), "13F-HR", None, "2023q1", [("C101", 100, 1000)]),
+    ("b-q0", B, Q0, dt.date(2023, 2, 14), "13F-HR", None, "2023q1", [("C101", 50, 500)]),
+    ("a-q1", A, Q1, dt.date(2023, 4, 20), "13F-HR", None, "2023q2", [("C101", 100, 1000), ("C202", 40, 400),
                                                                      ("CXXX", 60, 600)]),
-    ("b-q1", B, Q1, dt.date(2024, 5, 15), "13F-HR", None, "2024q2", [("C202", 60, 600)]),
-    ("c-q1", C, Q1, dt.date(2024, 5, 16), "13F-HR", None, "2024q2", [("C101", 9, 90)]),          # after the deadline
-    ("a-q2", A, Q2, dt.date(2024, 7, 15), "13F-HR", None, "2024q3", [("C101", 6, 60), ("C202", 4, 40)]),
-    ("b-q2", B, Q2, dt.date(2024, 7, 20), "13F-HR", None, "2024q3", [("C101", 99.9, 999)]),     # restated below
-    ("b-q2r", B, Q2, dt.date(2024, 8, 14), "13F-HR/A", "RESTATEMENT", "2024q3", [("C101", 10, 100), ("C303", 30, 300)]),
-    ("b-q2x", B, Q2, dt.date(2024, 8, 1), "13F-HR/A", None, "2024q3", [("C202", 1, 10)]),       # untyped: not used
-    ("a-q3", A, Q3, dt.date(2024, 10, 10), "13F-HR", None, "2024q4", [("C101", 7, 70)]),
-    ("a-q3n", A, Q3, dt.date(2024, 11, 1), "13F-HR/A", "NEW HOLDINGS", "2024q4", [("C303", 3, 30)]),
-    ("b-q3", B, Q3, dt.date(2024, 11, 14), "13F-HR", None, "2024q4", [("C101", 20, 200_000)]),  # dollars: factor .001
-    ("c-q3", C, Q3, dt.date(2024, 10, 20), "13F-HR", None, "2024q4", [("C101", 1, 1000)]),      # price outlier
-    ("a-q3r", A, Q3, dt.date(2024, 12, 1), "13F-HR/A", "RESTATEMENT", "2024q4", [("C202", 5, 50)]),  # late: ignored
-    ("n-q3", "4", Q3, dt.date(2024, 11, 14), "13F-NT", None, "2024q4", []),                     # notice: clock only
+    ("b-q1", B, Q1, dt.date(2023, 5, 15), "13F-HR", None, "2023q2", [("C202", 60, 600)]),
+    ("c-q1", C, Q1, dt.date(2023, 5, 16), "13F-HR", None, "2023q2", [("C101", 9, 90)]),          # after the deadline
+    ("a-q2", A, Q2, dt.date(2023, 7, 15), "13F-HR", None, "2023q3", [("C101", 6, 60), ("C202", 4, 40)]),
+    ("b-q2", B, Q2, dt.date(2023, 7, 20), "13F-HR", None, "2023q3", [("C101", 99.9, 999)]),     # restated below
+    ("b-q2r", B, Q2, dt.date(2023, 8, 14), "13F-HR/A", "RESTATEMENT", "2023q3", [("C101", 10, 100), ("C303", 30, 300)]),
+    ("b-q2x", B, Q2, dt.date(2023, 8, 1), "13F-HR/A", None, "2023q3", [("C202", 1, 10)]),       # untyped: not used
+    ("a-q3", A, Q3, dt.date(2023, 10, 10), "13F-HR", None, "2023q4", [("C101", 7, 70)]),
+    ("a-q3n", A, Q3, dt.date(2023, 11, 1), "13F-HR/A", "NEW HOLDINGS", "2023q4", [("C303", 3, 30)]),
+    ("b-q3", B, Q3, dt.date(2023, 11, 14), "13F-HR", None, "2023q4", [("C101", 20, 200_000)]),  # dollars: factor .001
+    ("c-q3", C, Q3, dt.date(2023, 10, 20), "13F-HR", None, "2023q4", [("C101", 1, 1000)]),      # price outlier
+    ("a-q3r", A, Q3, dt.date(2023, 12, 1), "13F-HR/A", "RESTATEMENT", "2023q4", [("C202", 5, 50)]),  # late: ignored
+    ("n-q3", "4", Q3, dt.date(2023, 11, 14), "13F-NT", None, "2023q4", []),                     # notice: clock only
 ]
 UNIT = {"b-q3": 0.001}
 # The stage aggregate (independent plants): (period, security, inst_shares, n_holders)
 AGG = [(Q0, 101, 150, 2), (Q1, 101, 300_000, 1), (Q1, 202, 500_000, 2), (Q2, 101, 400_000, 2), (Q2, 202, 600_000, 1),
        (Q2, 303, 100_000, 1), (Q3, 101, 450_000, 2), (Q3, 303, 3_000_000, 1)]
-FTD_END = dt.date(2024, 9, 30)
+FTD_END = dt.date(2023, 9, 29)   # the last weekday of 2023Q3
 
 
 def sha(path):
@@ -98,7 +98,7 @@ def write_thirteenf(root: Path, drop_agg=()):
             for k, v in zip(h, (acc, cusip, float(shares), "SH", None, float(value))):
                 h[k].append(v)
     # rows every screen must drop: an option, a principal amount and a zero-share row on a used filing
-    h = parts["2024q3"]
+    h = parts["2023q3"]
     for k, v in zip(h, ("a-q2", "C303", 5.0, "SH", "CALL", 50.0)):
         h[k].append(v)
     for k, v in zip(h, ("a-q2", "C303", 5.0, "PRN", None, 50.0)):
@@ -137,14 +137,14 @@ def ftd_available(d):
 
 def ftd_rows():
     rows = []  # (settlement, security_id or None, qty, map_basis)
-    for d in weekdays(dt.date(2024, 1, 2), FTD_END):
+    for d in weekdays(dt.date(2023, 1, 2), FTD_END):
         rows.append((d, 101, 1000.0 + d.day, "exact"))
         rows.append((d, 303, 100.0, "exact"))
         rows.append((d, 303, 9999.0, "collision"))
         rows.append((d, None, 5.0, "unmapped"))
         if d.month == 6:
             rows.append((d, 202, 500.0, "canonical"))
-        if d == dt.date(2024, 7, 1):
+        if d == dt.date(2023, 7, 3):
             rows.append((d, 303, 50.0, "exact"))    # a second CUSIP of the line: summed
     return rows
 
@@ -155,13 +155,13 @@ def write_ftd(root: Path):
                       "security_id": pa.array([r[1] for r in rows], pa.int64()),
                       "quantity": [r[2] for r in rows], "available_at": ts([ftd_available(r[0]) for r in rows]),
                       "map_basis": [r[3] for r in rows]})
-    return write_stage(root, "ftd", {"year=2024/ftd.parquet": table})
+    return write_stage(root, "ftd", {"year=2023/ftd.parquet": table})
 
 
-LIST_DAYS = weekdays(dt.date(2024, 1, 2), dt.date(2024, 12, 31))
-NASDAQ_ABSENT = {dt.date(2024, 9, 16), dt.date(2024, 9, 17), dt.date(2024, 9, 18), dt.date(2024, 9, 19)}
-ON_LIST = {101: [d for d in LIST_DAYS if dt.date(2024, 6, 3) <= d <= dt.date(2024, 6, 28)],
-           303: [d for d in LIST_DAYS if d >= dt.date(2024, 11, 1)],
+LIST_DAYS = weekdays(dt.date(2023, 1, 2), dt.date(2023, 12, 31))
+NASDAQ_ABSENT = {dt.date(2023, 9, 18), dt.date(2023, 9, 19), dt.date(2023, 9, 20), dt.date(2023, 9, 21)}
+ON_LIST = {101: [d for d in LIST_DAYS if dt.date(2023, 6, 5) <= d <= dt.date(2023, 6, 30)],
+           303: [d for d in LIST_DAYS if d >= dt.date(2023, 11, 1)],
            202: [d for d in LIST_DAYS if d.month == 7]}
 MARKET_CLASS = {101: "NNM", 202: "NYSE", 303: "SC", 404: "IEX"}
 
@@ -180,7 +180,7 @@ def write_regsho(root: Path):
     for d in LIST_DAYS:
         lists.append(("nasdaq", d, "absent" if d in NASDAQ_ABSENT else ("empty_list" if d.day == 5 else "list")))
         lists.append(("cboe_bzx", d, "list"))
-        if d < dt.date(2024, 1, 20):
+        if d < dt.date(2023, 1, 20):
             lists.append(("nyse", d, "list"))
     ltab = pa.table({"market": [x[0] for x in lists], "list_date": pa.array([x[1] for x in lists], pa.date32()),
                      "status": [x[2] for x in lists], "available_at": ts([list_available(x[0], x[1]) for x in lists])})
@@ -188,19 +188,19 @@ def write_regsho(root: Path):
     for sid, days in ON_LIST.items():
         market = "nyse" if sid == 202 else "nasdaq"
         rows += [(d, market, sid, True) for d in days if not (market == "nasdaq" and d in NASDAQ_ABSENT)]
-    rows.append((dt.date(2024, 6, 3), "nasdaq", 303, False))       # an off-list row: never counted
-    rows.append((dt.date(2024, 6, 4), "nasdaq", None, True))       # unmapped
+    rows.append((dt.date(2023, 6, 5), "nasdaq", 303, False))       # an off-list row: never counted
+    rows.append((dt.date(2023, 6, 6), "nasdaq", None, True))       # unmapped
     ttab = pa.table({"list_date": pa.array([r[0] for r in rows], pa.date32()), "market": [r[1] for r in rows],
                      "security_id": pa.array([r[2] for r in rows], pa.int64()), "on_list": [r[3] for r in rows],
                      "available_at": ts([list_available(r[1], r[0]) for r in rows])})
-    return write_stage(root, "regsho_threshold", {"lists.parquet": ltab, "year=2024/threshold.parquet": ttab})
+    return write_stage(root, "regsho_threshold", {"lists.parquet": ltab, "year=2023/threshold.parquet": ttab})
 
 
 def name_rows():
     out = []
     for sid, mc in MARKET_CLASS.items():
-        for d in [dt.date(2023, 12, 10) + dt.timedelta(days=15 * k) for k in range(26)]:
-            if sid == 303 and d > dt.date(2024, 9, 1):
+        for d in [dt.date(2022, 12, 10) + dt.timedelta(days=15 * k) for k in range(26)]:
+            if sid == 303 and d > dt.date(2023, 9, 1):
                 continue                                               # stale after 45 days: market unknown
             out.append((sid, d, mc))
     return out
@@ -217,7 +217,7 @@ def write_security_master(root: Path):
 
 def svx_rows():
     rows = []  # (security_id, trade_date, short, total)
-    for d in weekdays(dt.date(2024, 3, 1), dt.date(2024, 12, 31)):
+    for d in weekdays(dt.date(2023, 3, 1), dt.date(2023, 12, 31)):
         rows.append((101, d, 2000.0 + d.day, 4000.0))
         if d.day % 3:
             rows.append((202, d, 3000.0, 5000.0))
@@ -226,7 +226,7 @@ def svx_rows():
     return rows
 
 
-SVX_LATE = dt.date(2024, 11, 6)      # a trade date published 10 days late: enters the window only once visible
+SVX_LATE = dt.date(2023, 11, 8)      # a trade date published 10 days late: enters the window only once visible
 
 
 def svx_available(d):
@@ -239,7 +239,7 @@ def write_svx(root: Path):
                       "trade_date": pa.array([r[1] for r in rows], pa.date32()),
                       "short_volume": [r[2] for r in rows], "total_volume": [r[3] for r in rows],
                       "available_at": ts([svx_available(r[1]) for r in rows])})
-    return write_stage(root, "short_volume_ext", {"year=2024/short_volume_ext.parquet": table})
+    return write_stage(root, "short_volume_ext", {"year=2023/short_volume_ext.parquet": table})
 
 
 class HoldFixture(base.Fixture):
@@ -321,10 +321,11 @@ class Pure(unittest.TestCase):
         self.assertEqual(hold.anchor_quarters(pdays, vis, has, 241, 240 * hold.DAY_NS).tolist(), [0, 0])   # strict <
 
     def test_quarter_helpers(self):
-        self.assertEqual(hold.quarter_end(dt.date(2024, 2, 29)), Q1)
+        self.assertEqual(hold.quarter_end(dt.date(2023, 2, 28)), Q1)
+        self.assertEqual(hold.quarter_end(dt.date(2020, 2, 29)), dt.date(2020, 3, 31))   # a leap day
         self.assertEqual(hold.prev_quarter_end(Q1), Q0)
         self.assertEqual(hold.needed_quarters(SESSIONS[0], SESSIONS[-1]),
-                         [dt.date(2023, 9, 30), Q0, Q1, Q2, Q3])
+                         [dt.date(2022, 9, 30), Q0, Q1, Q2, Q3])
 
 
 class HoldingsFields(unittest.TestCase):
@@ -344,37 +345,37 @@ class HoldingsFields(unittest.TestCase):
         return self.f[name][t_of(d), col(sid)]
 
     def test_13f_visibility_at_the_deadline_clock(self):
-        # Q1's latest filing by the deadline (2024-05-15) gives V = 05-16 22:00: NOT visible on 05-17 (strict), visible 05-20
-        self.assertEqual(self.cell("inst_n_holders", dt.date(2024, 5, 17), 101), 2)   # still Q0
-        self.assertEqual(self.cell("inst_n_holders", dt.date(2024, 5, 20), 101), 1)   # Q1
-        self.assertTrue(np.isnan(self.cell("inst_n_holders", dt.date(2024, 5, 17), 202)))
-        self.assertEqual(self.cell("inst_n_holders", dt.date(2024, 5, 20), 202), 2)
-        self.assertTrue(np.isnan(self.cell("inst_n_holders", dt.date(2024, 8, 16), 303)))  # Q2 V = 08-15 22:00
-        self.assertEqual(self.cell("inst_n_holders", dt.date(2024, 8, 19), 303), 1)
-        self.assertEqual(self.cell("inst_n_holders", dt.date(2024, 11, 18), 101), 2)
-        self.assertEqual(self.cell("inst_own_share", dt.date(2024, 11, 18), 101), 0.4)   # Q2 until Q3 is visible
-        self.assertEqual(self.cell("inst_own_share", dt.date(2024, 11, 19), 101), 0.45)  # Q3 (V = 11-15 22:00, Fri)
+        # Q1's latest filing by the deadline (2023-05-15) gives V = 05-16 22:00: NOT visible on 05-17 (strict), visible 05-18
+        self.assertEqual(self.cell("inst_n_holders", dt.date(2023, 5, 17), 101), 2)   # still Q0
+        self.assertEqual(self.cell("inst_n_holders", dt.date(2023, 5, 18), 101), 1)   # Q1
+        self.assertTrue(np.isnan(self.cell("inst_n_holders", dt.date(2023, 5, 17), 202)))
+        self.assertEqual(self.cell("inst_n_holders", dt.date(2023, 5, 18), 202), 2)
+        self.assertTrue(np.isnan(self.cell("inst_n_holders", dt.date(2023, 8, 16), 303)))  # Q2 V = 08-15 22:00
+        self.assertEqual(self.cell("inst_n_holders", dt.date(2023, 8, 17), 303), 1)
+        self.assertEqual(self.cell("inst_n_holders", dt.date(2023, 11, 16), 101), 2)
+        self.assertEqual(self.cell("inst_own_share", dt.date(2023, 11, 16), 101), 0.4)   # Q2 until Q3 is visible
+        self.assertEqual(self.cell("inst_own_share", dt.date(2023, 11, 17), 101), 0.45)  # Q3 (V = 11-15 22:00, Wed)
         clock = self.manifest["source_checks"]["holdings"]["thirteenf"]["quarter_visible_at"]
-        self.assertEqual(clock[Q1.isoformat()], "2024-05-16T22:00:00.000000000Z")   # c-q1 (after the deadline) excluded
-        self.assertIsNone(clock["2023-09-30"])
+        self.assertEqual(clock[Q1.isoformat()], "2023-05-16T22:00:00.000000000Z")   # c-q1 (after the deadline) excluded
+        self.assertIsNone(clock["2022-09-30"])
 
     def test_13f_forward_fill_across_a_missing_quarter(self):
-        # 202 has no Q3 row: Q2 carries on after Q3 is visible, until 150 days after 2024-06-30 (2024-11-27)
-        for d in (dt.date(2024, 11, 19), dt.date(2024, 11, 27)):
+        # 202 has no Q3 row: Q2 carries on after Q3 is visible, until 150 days after 2023-06-30 (2023-11-27)
+        for d in (dt.date(2023, 11, 17), dt.date(2023, 11, 27)):
             self.assertEqual(self.cell("inst_own_share", d, 202), 0.3)
             self.assertEqual(self.cell("inst_n_holders", d, 202), 1)
             self.assertAlmostEqual(self.cell("inst_best_ideas", d, 202), 0.32)
         for x in ALL[:5]:
-            self.assertTrue(np.isnan(self.cell(x, dt.date(2024, 11, 28), 202)), x)
+            self.assertTrue(np.isnan(self.cell(x, dt.date(2023, 11, 28), 202)), x)
         e = next(e for e in self.manifest["fields"] if e["name"] == "inst_n_holders")
         self.assertGreater(e["nan_reasons_member_cells"]["forward_filled_finite"], 0)
 
     def test_13f_values(self):
-        d2, d3 = dt.date(2024, 9, 3), dt.date(2024, 12, 2)
-        # Q1 (2024-03-31) precedes the role: no quarter-end session, ownership NaN; its holdings fields exist
-        self.assertTrue(np.isnan(self.cell("inst_own_share", dt.date(2024, 6, 3), 101)))
-        self.assertAlmostEqual(self.cell("inst_best_ideas", dt.date(2024, 6, 3), 202), 0.5)   # unmapped row in A's total
-        self.assertAlmostEqual(self.cell("inst_best_ideas", dt.date(2024, 6, 3), 101), 0.0)
+        d2, d3 = dt.date(2023, 9, 5), dt.date(2023, 12, 4)
+        # Q1 (2023-03-31) precedes the role: no quarter-end session, ownership NaN; its holdings fields exist
+        self.assertTrue(np.isnan(self.cell("inst_own_share", dt.date(2023, 6, 5), 101)))
+        self.assertAlmostEqual(self.cell("inst_best_ideas", dt.date(2023, 6, 5), 202), 0.5)   # unmapped row in A's total
+        self.assertAlmostEqual(self.cell("inst_best_ideas", dt.date(2023, 6, 5), 101), 0.0)
         # Q2: the planted two-manager case (B restated; the untyped 13F-HR/A ignored)
         for sid, best in ((101, 0.28), (202, 0.32), (303, 0.15)):
             self.assertAlmostEqual(self.cell("inst_best_ideas", d2, sid), best, places=12)
@@ -400,7 +401,7 @@ class HoldingsFields(unittest.TestCase):
         self.assertEqual(h["effective_filings"], 10)
         self.assertEqual((h["filings_after_deadline_ignored"], h["hr_a_without_amendment_type_ignored"]), (2, 1))
         self.assertEqual(h["holdings_per_quarter"][Q3.isoformat()]["rows_price_outlier"], 1)
-        self.assertEqual(h["quarters_without_filings"], ["2023-09-30"])
+        self.assertEqual(h["quarters_without_filings"], ["2022-09-30"])
 
     def test_13f_every_value_uses_a_visible_quarter(self):
         # point in time: removing the Q3 agg rows changes no cell before Q3 is visible
@@ -412,7 +413,7 @@ class HoldingsFields(unittest.TestCase):
             m = self.fx.run(Path(temp) / "out", fields=["si_shares", "shares_out", "inst_own_share", "inst_n_holders"],
                             **stages)
             self.assertEqual(len(m["fields"]), 4)
-            cut = t_of(dt.date(2024, 11, 19))
+            cut = t_of(dt.date(2023, 11, 17))
             for x in ("inst_own_share", "inst_n_holders"):
                 got = np.fromfile(root / "out" / f"{x}.f64", dtype="<f8").reshape(len(SESSIONS), len(IDS))
                 np.testing.assert_array_equal(got[:cut], self.f[x][:cut], x)
@@ -450,9 +451,9 @@ class HoldingsFields(unittest.TestCase):
     def test_ftd_against_brute_force(self):
         np.testing.assert_allclose(self.f["ftd_shares_ratio21"], self.ftd_expected(), rtol=1e-12, equal_nan=True)
         got = self.f["ftd_shares_ratio21"]
-        self.assertTrue(np.isfinite(got[t_of(dt.date(2024, 11, 29)), col(101)]))
-        self.assertTrue(np.isnan(got[t_of(dt.date(2024, 12, 2)), col(101)]))    # > 60 days after 2024-09-30
-        self.assertTrue(np.isfinite(got[t_of(dt.date(2024, 7, 23)), col(202)]))  # 0 fails outside June: finite
+        self.assertTrue(np.isfinite(got[t_of(dt.date(2023, 11, 28)), col(101)]))
+        self.assertTrue(np.isnan(got[t_of(dt.date(2023, 11, 29)), col(101)]))    # > 60 days after 2023-09-29
+        self.assertTrue(np.isfinite(got[t_of(dt.date(2023, 7, 25)), col(202)]))  # 0 fails outside June: finite
         c = self.manifest["source_checks"]["holdings"]["ftd"]
         self.assertEqual(c["role_rows_summed_duplicates"], 1)
 
@@ -463,7 +464,7 @@ class HoldingsFields(unittest.TestCase):
             if d not in NASDAQ_ABSENT:
                 status[("nasdaq", d)] = list_available("nasdaq", d)
             status[("cboe_bzx", d)] = list_available("cboe_bzx", d)
-            if d < dt.date(2024, 1, 20):
+            if d < dt.date(2023, 1, 20):
                 status[("nyse", d)] = list_available("nyse", d)
         names = name_rows()
         out = np.full((len(SESSIONS), len(IDS)), np.nan)
@@ -489,10 +490,10 @@ class HoldingsFields(unittest.TestCase):
     def test_regsho_against_brute_force(self):
         got = self.f["regsho_threshold_days63"]
         np.testing.assert_array_equal(got, self.regsho_expected())
-        self.assertEqual(got[t_of(dt.date(2024, 7, 2)), col(101)], 20)          # 06-03..06-28, all visible
+        self.assertEqual(got[t_of(dt.date(2023, 7, 4)), col(101)], 20)          # 06-05..06-30, all visible
         self.assertTrue(np.all(np.isnan(got[:, col(202)])))                     # NYSE lists absent: never a false 0
         self.assertTrue(np.all(np.isnan(got[:, col(404)])))                     # IEX: no list source
-        self.assertTrue(np.isnan(got[t_of(dt.date(2024, 10, 1)), col(101)]))     # 4 absent Nasdaq lists in the window
+        self.assertTrue(np.isnan(got[t_of(dt.date(2023, 10, 2)), col(101)]))     # 4 absent Nasdaq lists in the window
         self.assertEqual(got[-1, col(101)], 0)                                   # a complete window: a true zero
         self.assertTrue(np.isnan(got[-1, col(303)]))                             # name row older than 45 days
         c = self.manifest["source_checks"]["holdings"]["regsho_threshold"]
@@ -523,7 +524,7 @@ class HoldingsFields(unittest.TestCase):
         self.assertTrue(np.all(np.isnan(got[:, col(303)])))                     # > 1: outside the declared domain
         self.assertTrue(np.isfinite(got[-1, col(202)]))
         c = self.manifest["source_checks"]["holdings"]["short_volume_ext"]
-        self.assertEqual(c["finra_total_over_vendor_volume_member_cells"]["2024"] > 0, True)
+        self.assertEqual(c["finra_total_over_vendor_volume_member_cells"]["2023"] > 0, True)
         self.assertEqual(c["sessions_not_yet_visible_at_window_entry"], 1)
 
     def test_manifest_entries(self):
@@ -538,7 +539,7 @@ class HoldingsFields(unittest.TestCase):
             for key, pin in e["stage_manifest_sha256"].items():
                 self.assertEqual(pin, self.fx.stages[key + "_sha256"])
                 self.assertIn(pin, [s["sha256"] for s in e["sources"]])
-            self.assertEqual(set(e["coverage"]["per_year"]), {"2024"})
+            self.assertEqual(set(e["coverage"]["per_year"]), {"2023"})
             self.assertIn("member_finite_quantiles", e["coverage"])
             self.assertEqual(e.get("depends_on", []), spec.get("requires", []))
         h = m["source_checks"]["holdings"]
@@ -557,8 +558,8 @@ class HoldingsFields(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             bad = root / "ftd"
-            sha_bad = write_stage(bad, "ftd", {"year=2024/ftd.parquet": pq.read_table(self.fx.stages["ftd"] /
-                                                                                      "year=2024/ftd.parquet")})
+            sha_bad = write_stage(bad, "ftd", {"year=2023/ftd.parquet": pq.read_table(self.fx.stages["ftd"] /
+                                                                                      "year=2023/ftd.parquet")})
             m = json.loads((bad / "manifest.json").read_bytes())
             m["staleness_days"] = 90
             (bad / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
@@ -568,7 +569,7 @@ class HoldingsFields(unittest.TestCase):
             self.assertNotEqual(sha_bad, sha(bad / "manifest.json"))
             tampered = root / "svx"
             write_svx(tampered)
-            path = tampered / "year=2024" / "short_volume_ext.parquet"
+            path = tampered / "year=2023" / "short_volume_ext.parquet"
             path.write_bytes(path.read_bytes() + b"\0")
             with self.assertRaisesRegex(ValueError, "does not match its stage manifest"):
                 self.fx.run(root / "o2", fields=["sv_offexchange_share126"], short_volume_ext=tampered,

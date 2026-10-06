@@ -299,19 +299,21 @@ class GoldFields(unittest.TestCase):
                 case.run("x1", FIELDS)
 
     def test_repository_window_fresh_interpreter(self):
-        """Under the repository window (seal 2024-01-01 from research_window.json) the 2024 partition is never
-        opened and a 2024 row group is pruned; the payloads equal this harness's."""
+        """In a fresh interpreter under the repository window (seal 2024-01-01 from research_window.json) the seal
+        year's and the next year's partitions are never opened and a 2024 row group is pruned; the payloads equal this
+        harness's."""
         rows = panel_rows()
-        for stage in rows:                       # rows dated in 2024 in the 2019 file and a 2024 partition
+        later = rw.SEAL.year + 1
+        for stage in rows:                       # sealed rows dated 2024 in the 2019 file and a partition of `later`
             rows[stage][2019] = [{**r, "session_date": dt.date(2024, 3, 1)} if r["session_date"] == sealed_day() else r
                                  for r in rows[stage][2019]]
         case = Case(self.base, rows)
         for stage in ("gold", "characteristics"):
-            junk = case.root / stage / "year=2024" / f"{stage}.parquet"
+            junk = case.root / stage / f"year={later}" / f"{stage}.parquet"
             junk.parent.mkdir(parents=True, exist_ok=True)
             junk.write_bytes(b"garbage")
             m = json.loads((case.root / stage / "manifest.json").read_text(encoding="utf-8"))
-            m["files"]["year=2024/" + junk.name] = {"bytes": 7, "sha256": hashlib.sha256(b"garbage").hexdigest()}
+            m["files"][f"year={later}/" + junk.name] = {"bytes": 7, "sha256": hashlib.sha256(b"garbage").hexdigest()}
             blob = json.dumps(m, sort_keys=True).encode("utf-8")
             (case.root / stage / "manifest.json").write_bytes(blob)
             case.pins[stage] = hashlib.sha256(blob).hexdigest()
@@ -337,7 +339,7 @@ class GoldFields(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr[-2000:])
         got = json.loads(out.stdout.strip().splitlines()[-1])
         self.assertEqual(got["seal"], rw.load()["seal_begin"])
-        self.assertEqual(got["sealed"], {"gold": 2, "characteristics": 2})        # 2024 and the harness seal year
+        self.assertEqual(got["sealed"], {"gold": 2, "characteristics": 2})        # the seal year and `later`
         self.assertEqual(got["pruned"], {"gold": 3, "characteristics": 3})
         for name in FIELDS:
             self.assertEqual((self.base / "there" / f"{name}.f64").read_bytes(),
