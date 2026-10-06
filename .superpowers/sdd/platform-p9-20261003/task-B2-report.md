@@ -559,9 +559,10 @@ Notes for root:
 
 ## Post-identity redo (dispatch R6-2, 2026-10-04; rulings B2-11, B2-12, PRE-15, D2R-2 (b), re-review 1)
 
-**Status: BLOCKED at item 1 (a permission refusal), partial.** Resumed from `handoff-B2.md` at `4bed5c43` (pool-14,
-branch `feat/p9-b2-20261003`). No history rewritten: `598d2199` and `8fb17ad6` stay; no rebase. Code commit of the
-round: `fe152fca`.
+**Status of the first round (R6-2): BLOCKED at item 1 (a permission refusal), partial.** Resumed from `handoff-B2.md`
+at `4bed5c43` (pool-14, branch `feat/p9-b2-20261003`). No history rewritten: `598d2199` and `8fb17ad6` stay; no rebase.
+Code commit of the round: `fe152fca`. **The redo was finished by two follow-ups: see "Follow-up 1" and "Follow-up 2"
+at the end of this section** (the merges, B2-11, the G-P5 and PRE-15 re-tests, D2R-2 (b), the builds and the suites).
 
 ### What stopped the round
 
@@ -729,3 +730,133 @@ added this round, so there are no refusal teeth to show.
 
 Blind and data rules: synthetic and fixture data only. No 2020-2023 statistic and nothing dated 2024 or later was
 opened. The trial ledger in pool-2 was not opened. `atx-impl/tools/test_holdout_gate.py` was not run (resume6).
+
+### Follow-up 1 (owner stop, 2026-10-04; ruling B2-14): the merge of root `5c57c1ef`
+
+Merge commit `c37ec671` (plain `git merge feat/platform-p9-20261003`, root `5c57c1ef`: E2's split, D2R, COVR), then the
+handoff commit `14b881c9`. Every conflict region was resolved by an Edit of that region (no checkout / restore /
+show-redirect, no copy-over, no whole-file rewrite from one side):
+
+| file | region | side kept / how combined | why |
+|---|---|---|---|
+| `scripts/research_cycle.py` | 1: module docstring (ours: the 186-line usage text; root: E2's 3-line shim text) | root's (E2's) text; ours removed in chunks by Edit | E2 moved the usage text to `scripts/cycle/cli.py`; ours = merge-base text + B2's `exes.eval` entry, re-placed in `cycle/cli.py` after `exes_sha256` |
+| `scripts/research_cycle.py` | 2: the module body (ours: the old 2,100-line code; root: E2's re-export imports) | root's re-exports, plus one line `from cycle.spec import EVAL_EXE  # noqa ...` | ours = merge-base code (E2 moved it to `scripts/cycle/**`) + B2-R3's hunks, each re-placed (table "B2-R3's hunks" below); none dropped: `git diff 5c57c1ef c37ec671 -- scripts/research_cycle.py` is that one line |
+| `scripts/tests/test_no_python_mirror.py` | ALLOWLIST head | ours (the six B2 statistics rows stay deleted, one comment line) + root's D2-3 comment; root's D3 / P10 rows untouched | G-P5: the deletion commit `598d2199` retired them |
+| `scripts/wave_stage_record.py` | `verify`'s `problems` line | combined: `[exe_problem(exe, pins, SK.rule_cell_kind(w)), eval_problem(w, done)]` | root's E2-15 (c) argument and B2-10's check both kept (B2-11 then reduced `eval_problem`) |
+| sprint-dir `handoff-B2.md`, `task-B2-report.md` (2 regions) | root held an older copy of the lane's own docs | ours (the lane's newer text) | lane-owned records |
+
+Auto-merged: `scripts/tests/test_research_cycle.py` (B2-R3's exes dicts), `atx-engine/tests/CMakeLists.txt`; root's
+deletion of 129 tracked `.mypy_cache` files under the sprint dir's `tools/`.
+
+### Follow-up 2 (dispatch R7-1, 2026-10-05; rulings B2-11, B2-14, PRE-15, D2R-2 (b), re-review 1 R1 / R2)
+
+Resumed from `handoff-B2.md` ("Follow-up at the owner stop") at `14b881c9`, pool-14. No history rewritten (no rebase,
+no amend, no reset); `598d2199`, `8fb17ad6`, `c37ec671` stay. Commits of this follow-up, in order:
+
+| commit | what |
+|---|---|
+| `b1df1829` | merge root `a15ad887` (`git merge feat/platform-p9-20261003`; root had moved one docs commit past `4dc831ac`): NO conflict. It completed on its own, so its message is git's default and carries no trailer (not amended: no history rewrite) |
+| `d8f80c7a` | B2-11 (re-review 1 R1 + R2), the test rewrite on a real v2 manifest, the fake-world fix for E2's v2 tests (below) |
+| `34838462` | D2R-2 (b): nav_summ `allow_abbrev=False`, the e27b `--protocol` cases |
+| `c3201a60` | merge root `ebc918c3` (root's SQL2-CLS commit, `classes.json` one line): NO conflict |
+| (the docs commit that adds this section) | report, handoff, evidence logs |
+
+**Conflict tables of this follow-up's merges:** `b1df1829` (root `a15ad887`): none. It brought C3 part A (`327c86b2`:
+`atx-impl/src/book/nav_*.cpp` (the 14-TU NAV split), `nav_spec.{hpp,cpp}`, `strategy_nav_replay.cpp` deleted,
+`atx-impl/CMakeLists.txt`, `atx-impl/tests/*` incl. `strategy_nav_spec_test.cpp`) and sprint-dir files; `git diff --stat
+14b881c9 b1df1829 -- scripts atx-engine atx-impl/tools` is empty. `c3201a60` (root `ebc918c3`): none;
+`atx-engine/schemas/research_store/classes.json` +1 / -1 (`atx.nav-spec/v1` registered: RESUME 7's one expected
+classes-guard red clears with it).
+
+**B2-R3's hunks (deletion commit `598d2199`, all in the old `research_cycle.py`) and where each sits now:**
+
+| hunk at `598d2199` | now (file:line at this head) | how it got there |
+|---|---|---|
+| usage docstring entry `exes.eval` (after `exes_sha256`) | `scripts/cycle/cli.py:54-56` | follow-up 1, region 1 (re-placed by Edit) |
+| `EVAL_EXE = ("eval", "atx-research-eval.exe")` after `EXE_NAMES` | `scripts/cycle/spec.py:81`; re-exported by the shim, `scripts/research_cycle.py:40` | follow-up 1, region 2 |
+| `effective_exes` docstring + `names = dict(EXE_NAMES, **(dict([EVAL_EXE]) if "summ" in spec else {}))` | `scripts/cycle/spec.py:416-428` (`:418-419`, `:424`) | follow-up 1, region 2 |
+| `summ_step`: `--engine-stats <exes.eval>` (three lines) + `EVAL_EXE` in the `cycle.spec` import | `scripts/cycle/phases.py:736-738`, import `:21` | follow-up 1, region 2 |
+| `cycle_verdict.py`: `EVAL_KEY`, `verb_sha256`, `check_verb`, `check_summ_verb`, `scoring_blocks`, `verdict`'s call | the same file: `scripts/cycle_verdict.py:34, 69, 87, 98, 107, 164` (only `check_summ_verb`'s docstring changed, B2-11) | no conflict |
+| `test_research_cycle.py`'s exes dicts | auto-merged, unchanged | no conflict |
+
+#### Items
+
+| item | state | change (file:line at this head) | test | evidence (`b2-evidence/`) |
+|---|---|---|---|---|
+| 1. merge root (B2-14) | DONE: `b1df1829` (root `a15ad887`) and `c3201a60` (root `ebc918c3`), no conflict; follow-up 1's `c37ec671` table above | - | the suites below | - |
+| 2. B2-11 verify part (re-review 1 R1) | DONE | `wave_stage_record.py:103-124` `eval_pin`, `eval_problem` (key + pin only, keyed on `wave_kinds.is_v2`, import `:13`; `V2_SCHEMA` dropped); verify's call `:46` unchanged | `test_wave_eval_verb.py`: `test_a_named_and_pinned_v2_cell_passes_verify_and_the_judge_runs_the_pinned_verb`, `test_verify_refuses_a_v2_cell_without_exes_eval_or_its_pin` | `r7-pytest-*` |
+| 2. B2-11 judge part (re-review 1 R2) | DONE | `wave_stage_record.py:127-155` `judge_verb` (key, pin, verb on disk, before anything runs), `pinned_verb`, `verb_refusal`; `:204-226` `bundle_once(..., verb)` (`--engine-stats`; `CV.check_verb` on bundle.json, fresh or reused); `:241-259` `scored_verdict(..., verb)` (`CV.check_summ_verb` on summ.json / pbo.json); `:268` `judge` passes the verb in both branches; `:297-309` `judge_plan`; `wave_steps.py:127-136` `bundle_argv(..., verb)` and the header line `:12-13`; `cycle_verdict.py:99-100` docstring | `test_the_judge_refuses_a_bundle_of_another_verb_fresh_and_reused[None / 4096]`, `test_the_judge_refuses_a_verb_whose_bytes_moved`, `test_the_judge_refuses_a_summ_or_pbo_of_another_verb`, `test_a_v1_manifest_keeps_its_plan_bytes_and_behaviour` | `r7-pytest-*`, `r7-v1-plan-identity.log` |
+| 2. tests on a real v2 manifest, stage order | DONE | `scripts/tests/test_wave_eval_verb.py` rewritten (7 tests) on E2's kinds fixture `new-nav-rule.json` via `test_wave_kinds`' `load_fixture` / `rerooted` / `world` / `wave` / `KindsFake` | itself | `r7-pytest-*` |
+| 2. teeth by mutation | NOT SHOWN: the mutation Edit was REFUSED by the permission system (below); not retried, no other mutation tried | - | - | `r7-teeth-b2-11.log` |
+| 3. G-P5 deletion on the merged tree | see Evidence | (no change) | `test_no_python_mirror.py`; `test_nav_summ_engine.py::test_a_bin_without_the_verb_fails_closed` | `r7-gp5-*.log`, `r7-pytest-tools-*` |
+| 3. PRE-15 on the merged tree | see Evidence | (no change) | gtest `EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns`; `test_dsr_total.py` | `r7-gtest-*`, `r7-pytest-tools-*` |
+| 4. D2R-2 (b) | DONE | scan first (no hit reaches nav_summ; no stop); `atx-impl/tools/nav_summ.py:1063-1065` `allow_abbrev=False`; `scripts/tests/test_research_spec.py:874-888` (`PROTOCOL_SPELLINGS` / `PROTOCOL_ABBREVIATIONS`), `:921-924` (`e27b_cases`), `:928-957` (the parser asserts) | `test_e27b_reads_what_the_fitter_and_nav_summ_parse`, `test_e27b_refuses_every_spelling_at_plan_run_and_lock`, `..._at_add_alpha` | `r7-d2r2b-scan.{py,log}`, `r7-pytest-*` |
+| 5. builds, gtests, suites | see Evidence | - | - | - |
+
+#### B2-11 in detail
+
+- **verify (R1):** `eval_problem` reads nothing the summ writes. A v2 cell whose locked spec lacks `exes.eval` or
+  `exes_sha256.eval` is refused, naming the missing key(s): "the v2 cell spec <rel> lacks exes.eval and
+  exes_sha256.eval: every P9 cell names the engine verb of its statistics and `lock --exes` pins it (rulings B2-10 (c),
+  B2-11)"; verify exits 4, as for its other problems. A v1 manifest: `None`.
+- **judge (R2):** `judge_verb` gives (path, pin) = the cell spec's effective `exes.eval` (the path `lock --exes`
+  hashed) and its `exes_sha256.eval`. It refuses, exit 3 (EXIT_PIN), before the judge runs anything: a key missing
+  since verify, or a verb on disk whose SHA-256 is not the pin ("... nothing ran (ruling B2-11)"). Then:
+  - the bundle runs `nav_summ.py --engine-stats <exes.eval> --protocol v8 --bundle ...` (never a default verb);
+  - `bundle_once` refuses a `bundle.json` whose `nav_summ_run.engine_exe_sha256` is not the pin, when the bundle has
+    just run AND when a later judge would reuse it (`CV.check_verb`, exit 3);
+  - `scored_verdict` refuses a summ.json row or pbo.json of another verb (`CV.check_summ_verb`, the verdict's own rule,
+    exit 3). The research_cycle run already refuses that in its verdict; this is the judge's own check where it reads
+    the verdict.
+  So no "Statistics of record" are published from another verb. Both judge branches (serial; side by side under
+  `driver.host_budget_mib`) pass the verb.
+- **v1:** no key asked for, no `--engine-stats`, no comparison (B2-10 (a)). The fixture's 33-line v1 plan is
+  byte-equal under `b1df1829`'s scripts and this head (`r7-v1-plan-identity.log`, SHA-256 `ed9b5d38...`).
+- **Change against the R6-2 design:** the verb-on-disk check sits in `judge_verb` (the judge's entry), not in
+  `bundle_once`. The cell's summ runs before the bundle, so a moved verb must stop the judge before the summ, not only
+  before the bundle (the first test run showed the summ check catching it first). `bundle_once` keeps the bundle.json
+  check.
+- **Refused mutation (teeth):** the Edit of `scripts/wave_stage_record.py` replacing `    if missing:` with
+  `    if missing and False:  # TEETH-M1` was refused by the permission system ("Security Test Removal"). Under
+  r6-wave3-common ("if the permission system refuses a mutation edit, do not retry it; say so") and PERM-1 it was not
+  retried, and no other mutation (M2-M6, listed in `r7-teeth-b2-11.log`) was tried. A pytest run launched beside the
+  refused Edit ran on the unmutated tree (7 passed); it is not mutation evidence. What the tests show without
+  mutation: each refusal is reached in the real stage order and its message is matched, and each test has a passing
+  control on the pinned verb (so no test can pass by a refusal that always fires).
+
+#### A merge-level red found and fixed (E2's v2 tests x B2-10 (c))
+
+On the merged tree four of E2's tests in `test_wave_kinds.py` failed at verify with B2-10 (c)'s refusal ("lacks
+exes.eval and exes_sha256.eval"): `test_the_match_stage_still_writes_its_own_leverage[pm6-6]`, `[pm6-6-engine]`,
+`test_w1_i2_a_holds_through_a_ref[template-b...-None]`, `test_build_logs_are_seal_scanned`. The same refusal was already
+in `eval_problem` at `14b881c9` (follow-up 1 did not run that file), so this is the merge's semantic conflict: E2's fake
+v2 world has cells that name no verb, which a P9 cell may not (B2-10 (c), B2-11). Fixed in the fake world, not in the
+rule:
+- `scripts/tests/wave_fixture.py:401-415` (appended): `EVAL_VERB`, `pin_eval_verb(root)`: the parent of a v2 world
+  names `exes.eval` and pins it (`exes_sha256.eval` of a synthetic verb file), the state root's re-pin gives the P9
+  lineage parents (B2-10 (b)). No IC / NAV exe file is written: an IC exe on disk turns on ruling W1-I1's cache-path
+  check, which a long pytest root fails (seen on the first try); the fake world has no exes by design.
+- `scripts/tests/wave_fixture.py:363-367` (`FakeCycle.add_alpha`): the derived cell spec takes the parent's `exes` and
+  `exes_sha256`, as the real add-alpha's `derive_spec` (a deep copy of the parent) does. v1 worlds: the parent's
+  `exes` equal `cell_spec`'s and it has no pins, so nothing changes.
+- `scripts/tests/test_wave_kinds.py:171` (D3's file, W3-8a): one call line in `world()`, `F.pin_eval_verb(root)`.
+
+After it, `test_wave_eval_verb` + `test_wave_kinds` + `test_wave_driver`: 147 passed.
+
+#### D2R-2 (b)
+
+- Scan first (`r7-d2r2b-scan.py`, log `r7-d2r2b-scan.log`): tracked files minus `atx-db/` and the sprint dir. 367 JSON
+  files parsed, 32 `summ.extra` / summ-flag / nav_summ-argv lists checked: 0 abbreviations. 19 text candidates in files
+  naming nav_summ, each read by hand: none reaches nav_summ's parser (the engine verb's `--onc`, research_cycle's / the
+  fit's `--era`, synthetic `--b` flags of `apply_flags` / `reuse_args`) except the e27b test's own `--protocol` cases.
+  Dynamic `f"--{...}"` flags in those files feed the fields builder and add-alpha, not nav_summ. No pinned spec relies on
+  an abbreviation: no stop.
+- `nav_summ.py`: `argparse.ArgumentParser(..., allow_abbrev=False)`, with a two-line comment.
+- e27b, on D2R's `test_research_spec.py`: the exact spellings (two tokens, `=`) read `--protocol v8`; `--proto v8`,
+  `--prot=v8` and `--pr v8` are usage errors (exit 2) whose stderr ends `error: unrecognized arguments: <token>` (the
+  full message), and the guard still counts each (`RC.argparse_values(...) == ["v8"]`: the safe side), so every
+  protocol spelling is still refused at plan / run / lock / add-alpha. `--p` now fails as no flag (no longer as
+  ambiguous).
+
+<!-- EVIDENCE-R7 -->
+
