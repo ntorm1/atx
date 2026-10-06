@@ -214,10 +214,111 @@ atx-engine, atx-impl, atx-tsdb, bin, lib, tests and the tree files) and of `buil
   `research_admission_sign_test.cpp:46-75`, the C++ route's keep / drop equals `WR.sign_pm7_35` row for row; only then
   root merges the deletion commit.
 
-### Next step for a fresh agent
+### Next step for a fresh agent (superseded: see "C3b at the second owner stop" below)
 
 Resume on `65ea7477` (no re-merge needed unless root moved): implement (b)-(f) and (h), run the wave suites and fix the
 Python-route assertions, then (g); C++ (i) with a Debug build `p9-c3-m` while the Python suites run, Release after;
 `scripts/tests` whole under PYTHONHASHSEED 0 and 1 and `atx-engine/tools/test_stage_chain.py` separately; (j) only if
 B2 is in root; report (k) as the open design question. Then merge root's then-current head, re-run, write "## Part B
 (C3b)" in `task-C3-report.md`.
+
+## C3b at the second owner stop (2026-10-05)
+
+Stopped at a clean point on the owner's stop (relayed by the PM). Nothing was in flight: the last suite (whole
+`scripts/tests`, seed 0) had finished. No process of this lane is running.
+
+- **Branch head:** the docs commit after `278fc2d8` (code). Commits this round: `d1629b01` merge root `4dc831ac`;
+  `938812e1` merge root `ebc918c3` (both clean, no conflict; git's default message, not amended); `278fc2d8`
+  `feat(c3b)` (all code and tests of items 1-5); then this docs commit (handoff, `c3-logs/c3b-*`).
+- **Root merged:** `ebc918c3` (code head, the SQL2-CLS commit). Root has since moved to `1b64ce45` (docs only, per its
+  subject; NOT merged). B2's redo is not in root (`git -C C:/atx-wt/pool-2 log --format=%s -30`): item 6 pending.
+- **Tree:** clean. Build tree `build-equity` (Debug, configured at `938812e1`, built at `278fc2d8`, 2.7 GB) is KEPT on
+  purpose: the next agent's teeth build of item 5 is incremental on it. Regenerable: delete by name when the lane is
+  done (keep `build-equity/mega-p9-c3-*` receipts / logs, `c3-*` files, `audits/`, `v8-interim3-pitch-render-run2/`).
+  No Release tree exists. Disk freed this round: 0.
+
+### Per item (file:line at `278fc2d8`)
+
+| item | state | change | test | evidence |
+|---|---|---|---|---|
+| 1 C2-11 retire the Python `pm6-6` | DONE | `scripts/wave_rules.py:109-129` (GROSS_MATCH = none / pm6-6-engine; `RETIRED_GROSS_MATCH`, `retired_gross_match`; `matched_leverage` / `gross_matches` deleted), `:175-187` (`validate_names` accepts the retired name: ledgered v1 manifests validate); `scripts/wave_stage_preflight.py:169-171` (preflight refusal, exit 3); `scripts/wave_stage_cell.py:48-60` (`refuse_retired`, `retired_plan`), `:78` (run), `:252` (match), `:258-273` (`match_none`: the receipt layout of before; fail-closed for a mode without a stage), `:112`, `:411` (plan prints the refusal); G-P5 row deleted (`scripts/tests/test_no_python_mirror.py`, old :75-76; `FROZEN_PAIRS` untouched, so the names stay detected); fixture default `scripts/tests/wave_fixture.py:179`; `FakeCycle.calibrate` computes L' inline (`:343`, a test oracle) | `scripts/tests/test_wave_gross_match.py:63` (v1 manifests validate), `:81` (preflight, a real v2 fixture and a v1 wave; plan / status still exit 0), `:107` (run / match stages of an older state dir), `:127` (fail-closed); the engine-vs-Python test replaced by `test_research_wave.py::test_engine_gross_match_on_the_pinned_fixture` (L' 1.1782 pinned) | teeth P1-P4 `c3-logs/c3b-teeth-py.log` |
+| 2 C2-9 no default | DONE | `scripts/wave_manifest.py:260-265`, `:338-347` (`gross_match_missing`: one message naming `"pm6-6-engine"`, or `"none"` for a v2 kind leverage; absent or null; plan exit 2) | `test_wave_gross_match.py:140` | teeth P5 |
+| 3 C2-10 / C3-12 digest re-check | DONE | `scripts/wave_result.py:54` (first act once the cell is formed), `:95-117` (`cell_digest_problems`, `refuse_cell_digests`: spec and engine run_spec; StageError exit 3; nothing written) | `test_wave_gross_match.py:191` (control, cell of record, run recipe, gross_match none) | teeth P6 |
+| 4 E2-16a test | DONE (test only) | none | `test_wave_gross_match.py:213` (`-gm` and `-cal` resolve `ref.leverage` 1.1474; record `nav.leverage` = L'; verify passes); PRE-27 test `:250` (a v2 wave on wave 1's `-gm` calibrates at L' 1.1782; on its `-cal` refused at preflight, E2-14) | seed-0 run |
+| 5 C3-7 `read_grid` duplicate key + S-12 | code + Debug tests DONE; C++ teeth and Release NOT done | `atx-impl/src/book/nav_spec.hpp:90-95` (`parse_unique_keys`), `book/nav_spec.cpp:317-326` (`parse_spec` uses it; messages unchanged), `:344-361` (definition; the trial_epoch callback moved here), `book/nav_run.cpp:5`, `:128-136` (refusal `nav grid: duplicate key "K" in PATH ...`, InvalidArgument) | `atx-impl/tests/strategy_nav_spec_test.cpp:385` `NavSpec.GridFileRefusesADuplicateKey` (a flag twice in a variant, `variants` twice: exit 1, key and file named, no output dir; the unrepeated file runs); S-12 `:446-455` (first console line = `nav spec: atx.nav-spec/v1 <file> sha256 <SHA-256 of its bytes>`) | `c3-logs/c3b-gtest-n-named.log`, `c3b-gtest-n-whole.log` |
+| 6 D2R-2 (a) stale text | PENDING (B2 not in root) | text at `scripts/cycle/spec.py:240-244`, `:264-269`, `:280-283` (design (j)) | | |
+| 7 W3-6 | DROPPED (C3-11) | `sign_pm7_35` kept; its G-P5 row kept (`test_no_python_mirror.py`, the `("sign_pm7_35",)` row) | | |
+| opt S-13 | NOT done | one comment in `book/nav_spec.hpp:30-34`: name `--spo-gross G` (hard cap on planned gross, default `--aim-leverage`, in (0, 1.5 x L]; `strategy_nav_v7.cpp:1025-1026`, `:1297-1303`, verified) beside vol-target-v1 / risk-target-v1 | | |
+| opt C3-10 log line | NOT done | not a one-line change: `load_nav_deploy` (`book/nav_deploy.cpp:40`) and `verified_load` have no stream | | |
+| opt E2-11 | NOT done | no P9 SPO cell | | |
+
+Exit-code deviation from design (i): a duplicate key in the grid file exits **1**, not 2: `read_grid` refusals are
+printed and return 1 at `book/nav_cli.cpp:219-220`, like the schema / duplicate-id refusals of
+`ConstructionGrid.RefusesBadGridsBeforeAnyOutput`; the test asserts 1.
+
+### Cross-lane edits (lane D3's files; smallest possible; root resolves at merge)
+
+- `scripts/specs/p9/kinds/{new-combination-rule,new-cost-model,new-field,new-horizon,new-signal,new-universe,
+  replaced-signal,walk-forward}.json`: line 18 `"gross_match": "pm6-6"` -> `"pm6-6-engine"` (one line each; D3's own
+  walk-forward hunk is line 5, separate).
+- `scripts/tests/test_wave_kinds.py`, three hunks: `@@ -609` (`test_leverage_wave_cap_and_table_and_the_matched_l_prime`
+  reads `record_spec`, 2 lines); `@@ -729` (parametrize `["pm6-6-engine"]`, 1 line); `@@ -756` (the dead `pm6-6`
+  branch deleted, 3 lines). Left for D3 / root (docstrings / comments only, not edited, to keep the hunks small):
+  `:543` "pm6-6 as well", `:563` 'with gross_match "none" or pm6-6', `:584` "a v2 horizon cell at pm6-6", `:734` "in
+  both modes", `:737` "Python pm6-6: the -gm copy".
+- Other wave tests rewritten for the engine route (not D3's): `test_research_wave.py`, `test_wave_driver.py` (W1-I2;
+  reader reuse with keep_verdicts: the judge's cycle dir is `cycle-<cell>-gm`; timings), `test_wave_review.py`,
+  `test_wave_review_minor.py` (two tests name `gross_match "none"`: their subject is the run stage's NAV being the
+  cell's), `test_wave_scoreboard.py` (lineage `-gm`), `test_wave_speed.py` (one NAV, 41.5 s).
+- Not edited (PRE-40): `scripts/specs/p9/rules/mom-volman-v1.json:81`, `theme-cov-hedge-v1.json:75`. The two P9
+  templates (`scripts/specs/p9/templates/*.json`) carry no `gross_match` (a manifest key): root's P9-M / P9-H manifests
+  must name `pm6-6-engine` (C2-9 refuses an absent key, C2-11 refuses `pm6-6`).
+- Root's evidence tools that still call the Python mode (not edited; they now fail on the missing functions):
+  `m2e-logs/tools/c2_gm_pair.py:156-159` (`WR.matched_leverage`, `WR.gross_matches`), `m2h-logs/m2h2-engine-o1.py:125`
+  (variant `"py"`: run only the engine variants).
+
+### Builds and tests actually run
+
+| what | result | log |
+|---|---|---|
+| tag `p9-c3-m` (Debug, `-Canary`) | refused at the argument check (`-Canary` needs the IC exe and atx-research-eval in the tag): nothing built, no receipt; counted used | `build-equity/c3-build-m.out` |
+| tag `p9-c3-n` (Debug, `-Canary`; atx-impl-strategy-target-tests, atx-equity-strategy-targets, atx-equity-strategy-ic, atx-research-eval) at clean `278fc2d8` | build exit 0, 359 TUs, 661 s; canary 14 passed, **1 failed on wall time only** (`first run took 17.5 s (limit 15.0 s)`, ATX_E2E_MAX_SECONDS; the golden-digest assertion just before it passed) on a host running about nine agents | `build-equity/mega-p9-c3-n-*`, `c3-logs/mega-p9-c3-n-canary.log` |
+| named filter (part A's 33 + `NavSpec.GridFileRefusesADuplicateKey`) on n | 34 / 34 | `c3-logs/c3b-gtest-n-named.log` |
+| whole `atx-impl-strategy-target-tests` on n | 391 / 391, 1 disabled (COVR's `DISABLED_`), ENV-1 hits 0 | `c3-logs/c3b-gtest-n-whole.log` |
+| Python teeth P1-P6 (each refusal removed alone, its test run, file restored, SHA-256 checked) | 6 / 6 caught, each by its own test (a FAIL, not an error) | `c3-logs/c3b-teeth-py.{py,log}` |
+| wave suites + the new file (before the commit) | 85 passed (the 18 Python-route reds of the first run all rewritten) | scratch run, not logged |
+| whole `scripts/tests`, PYTHONHASHSEED 0, head `278fc2d8` | 522 passed, 4 skipped (e2e without ATX_EQUITY_BIN; three RESEARCH_CYCLE_LIVE_ROOT), 0 failed, ENV-1 0 | `c3-logs/c3b-pyt-n-scripts-s0.log` |
+| NOT run (stopped) | `scripts/tests` seed 1; `atx-engine/tools/test_stage_chain.py`; the canary re-run on a quiet host; C++ teeth; Release build; final root merge and re-run | |
+
+Next free build tag: `p9-c3-o`.
+
+### Next step for a fresh agent
+
+1. `git merge feat/platform-p9-20261003` (root `1b64ce45` or later; never rebase). If B2's redo is in root
+   (`git -C C:/atx-wt/pool-2 log --format=%s -30`), do item 6 (text only, design (j)); else leave it pending.
+2. Optional S-13 (the comment above), before the builds.
+3. C++ teeth, tag `p9-c3-o` (Debug, `-Targets atx-impl-strategy-target-tests` only, on the kept tree): in
+   `book/nav_run.cpp` mutate `if (!doc.is_discarded() && !duplicate.empty())` to `if (false && ...)`; expect
+   `NavSpec.GridFileRefusesADuplicateKey` to FAIL (both files run at the last value) and the other 33 named tests to
+   pass; restore the file byte for byte; then `p9-c3-p` (Debug, the four canary targets, `-Canary`) at the clean head.
+4. Release `p9-c3-q` (configure `powershell scripts\atx-build.ps1 configure -Preset equity-rel`; `-Preset equity-rel`,
+   the four targets, `-Canary`; on the stale-PCH trap delete that tree's six `cmake_pch.cxx.{pch,obj}` by name and
+   rebuild with `CCACHE_RECACHE=1`): named 34, whole 391, canary on the Release goldens.
+5. A canary wall-time miss (`first run took ... (limit 15.0 s)`) with the digest assertion passing is host load:
+   re-run the receipt's canary command once on a quieter host and report both runs.
+6. Whole `scripts/tests` under PYTHONHASHSEED 0 and 1, and `atx-engine/tools/test_stage_chain.py` (separate
+   invocations; `c3-logs/c3b-pyt.sh`), on the merged tree.
+7. Write "## Part B (C3b)" in `task-C3-report.md` from this section: items, cross-lane hunks, root's evidence tools,
+   and what root re-proves (the wave suites and `test_wave_gross_match.py` on its merged tree; named 34 / whole 391 on
+   both builds; the canary on both goldens; D3's merge resolving the three `test_wave_kinds.py` hunks and the eight
+   fixture lines). Flag-absent identity: a grid or NavSpec file without a repeated key parses to the same document (the
+   callback keeps every value), so no NAV byte moves; gross_match none keeps its receipt layout (its match-plan line now
+   reads "the run stage's NAV is the cell's (no correction)"); no new schema literal, flag or JSON key.
+8. At the end, delete the `build-equity` object trees by name (keep receipts and logs).
+
+### Open questions
+
+- The PM may want the canary's 15 s first-run budget (ATX_E2E_MAX_SECONDS) relaxed on a loaded host; this lane did not
+  change it.
+- Scratch of this round (pytest basetemps, synthetic only) is under the session scratchpad `.../scratchpad/c3b/`;
+  delete by name.
