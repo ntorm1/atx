@@ -1,0 +1,103 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "a15ad887c67751d06de69195878ce7f20b2c97bb",
+  "started_utc": "2026-10-05T22:24:36.228792+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-targets.exe",
+    "nav",
+    "--combined",
+    "build-equity/mega-v8xw-train-theme-erc-1/train_combined.json",
+    "--combined-sha256",
+    "2a442f560982749b74283f16ef3060656f270d6130628c64fcd4bde77259cb86",
+    "--role",
+    "build-equity/train-2020-2023-lo3/manifest.json",
+    "--role-sha256",
+    "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+    "--fields",
+    "build-equity/train-2020-2023-lo3-fields-v13/manifest.json",
+    "--fields-sha256",
+    "e5f7f28c465a92885d55d55a439eb2f217b9f5f15d51017b4293ebc55935e9b2",
+    "--output",
+    "build-equity/p9-m2j-x5-dbg",
+    "--rule",
+    "aim-partial-v5",
+    "--cadence",
+    "1",
+    "--trade-fraction",
+    ".05",
+    "--dust-multiple",
+    ".1",
+    "--aim-leverage",
+    "1.1720",
+    "--daily-turnover-mean-max",
+    ".20",
+    "--daily-turnover-p95-max",
+    ".30",
+    "--neutralize",
+    "price-risk-v1",
+    "--max-bytes",
+    "1073741824",
+    "--order-basis",
+    "delta",
+    "--exit-rate",
+    ".05",
+    "--locate-in-aim",
+    "--liquidity-cache",
+    "--warm-start-sessions",
+    "60",
+    "--capacity-curve",
+    "--label-role",
+    "build-equity/train-2020-2023-lo3-dlret/manifest.json",
+    "--label-role-sha256",
+    "95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069"
+  ],
+  "executable_sha256": "637f706987da395533342f51ede8cf894249a0fa1cfae9a1dc96217741338827",
+  "argv_sha256": "86fe15288e4a12fe84b262c3db438dde8101207c80fbb88fad7af6944e8c7d75",
+  "attempt": 1,
+  "build_type": "Debug",
+  "bindings": [],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 2048,
+    "min_free_mib": 256,
+    "admission_wait_seconds": 1800.0
+  },
+  "sampled_peak_tree_rss_bytes": 619577344,
+  "minimum_system_free_bytes": 1853485056,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    ".superpowers/sdd/platform-p9-20261003/m2j-logs/nav-runs.txt",
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png"
+  ],
+  "admission": {
+    "wait_seconds": 1800.0,
+    "need_free_mib": 2304,
+    "host_budget_mib": null,
+    "claims_dir": null,
+    "waited_seconds": 0.031,
+    "checks": 1,
+    "free_mib": 2774,
+    "claimed_by_others_mib": null
+  },
+  "wall_seconds": 84.20300000000861,
+  "owned_processes": [
+    {
+      "pid": 22060,
+      "create_time": 1791239076.2856288
+    },
+    {
+      "pid": 27600,
+      "create_time": 1791239076.3410807
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "2dbbf7fca2e55bde28481e0023a34ac03318c7b9ec7811fa2c6c2e3487bc63a8",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

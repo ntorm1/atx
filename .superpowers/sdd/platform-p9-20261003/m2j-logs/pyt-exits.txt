@@ -1,0 +1,6 @@
+sql2cls-guard-before seed 0 head a15ad887 code-dirty [] exit 1 wall 5s start 2026-10-05T22:32:55Z env1-hits 0 :: ========================= 1 failed, 4 passed in 2.02s =========================
+sql2cls-guard-after seed 0 head a15ad887 code-dirty [ M atx-engine/schemas/research_store/classes.json ] exit 0 wall 3s start 2026-10-05T22:35:12Z env1-hits 0 :: ============================== 5 passed in 1.16s ==============================
+sql2cls-store-seed0 seed 0 head a15ad887 code-dirty [ M atx-engine/schemas/research_store/classes.json ] exit 0 wall 8s start 2026-10-05T22:35:15Z env1-hits 0 :: ============================= 43 passed in 5.56s ==============================
+sql2cls-store-seed1 seed 1 head a15ad887 code-dirty [ M atx-engine/schemas/research_store/classes.json ] exit 0 wall 6s start 2026-10-05T22:35:24Z env1-hits 0 :: ============================= 43 passed in 4.39s ==============================
+root1-scripts seed 0 head ebc918c3 code-dirty [] exit 0 wall 1130s start 2026-10-05T22:53:17Z env1-hits 0 :: ================= 512 passed, 4 skipped in 1128.11s (0:18:48) =================
+root1-stage-chain seed 0 head ebc918c3 code-dirty [] exit 0 wall 3s start 2026-10-05T23:12:08Z env1-hits 0 :: ============================== 9 passed in 0.81s ==============================
