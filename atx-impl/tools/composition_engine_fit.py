@@ -34,6 +34,22 @@ ew-theme-v1 / ew-theme-aim-v1 / ew-theme-aim-v2 / ew-theme-v6 rules have no C++ 
 Under the flag the ic-shrink block states that its ICs are the C++ fit's and records their largest difference from
 admission.json's train_mean (ruling D2-S4); provenance.engine_fit names the producing code (the two executables'
 SHA-256 and this module's fingerprint of verify / kernels / check_written).
+
+P9 lane D3W (contract K-P9-8, rulings D3-1 / D3-2): the walk-forward refit, under --engine-fit only,
+
+    --walk-forward expanding --walk-forward-lag N --walk-forward-step N [--walk-forward-min-decisions N]
+
+(lag and step required with it, min-decisions default 21; none of the three without it; refused with --theme-tsmom,
+--theme-resid and --era: their schedule, order and pool are fitted on the whole TRAIN window). Nothing inside the
+fitter's fit / fit_prior (its producer_fingerprint closure) changes: ``verify`` runs the C++ fit with
+``--walk-forward expanding --lag N --step N --min-decisions N`` (one executable call; the comparison of check 3 reads
+only the full-TRAIN blocks) and keeps the C++ rows on the fitter's args; the fitter's main() then calls
+``run_walk_forward``, which runs the unchanged fit into the stage directory ``<output>.wf-stage`` (a stale stage is
+refused), turns its weights document into schema atx.dsl-composition-weights/v3 (``weights_v3``: the document as
+published, plus the top-level walk_forward block {rule, window, lag, step, min_decisions, rows: [{from_session,
+weights: {library id: weight}}]} the IC runner reads, and provenance.walk_forward), publishes the directory atomically
+at --output and removes the stage; the summary names the published files. Before the first row no fit exists: the
+IC runner holds the book flat there (ruling D3-1). Flag absent: nothing of this runs.
 """
 from __future__ import annotations
 
@@ -42,9 +58,10 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 import numpy as np
 
@@ -66,6 +83,18 @@ REFUSED = (f"--engine-fit runs the single-window prior path with --composition {
            "--theme-erc / --theme-tsmom / --theme-resid [--theme-resid-parent] / --two-speed) and needs "
            "--engine-factors, --admission-exe and --composition-exe; refused under --era")
 PRODUCERS = ("verify", "kernels", "check_written")  # the code that turns the executables' output into written values
+# P9 lane D3W (K-P9-8): walk-forward-v1 (atx-engine fit.hpp walk_forward_rule) and the v3 document.
+WALK_FORWARD_RULE = "walk-forward-v1"
+WALK_FORWARD_WINDOWS = ("expanding",)
+WALK_FORWARD_MIN_DECISIONS = 21            # ruling D3-1: the registered value (one step)
+WALK_FORWARD_STAGE = ".wf-stage"           # <output>.wf-stage: the unchanged fit's directory before the v3 step
+WALK_FORWARD_FIT = "_walk_forward_fit"     # args attribute: the C++ rows verify keeps for run_walk_forward
+WALK_FORWARD_ARMED = "_walk_forward_stage"  # args attribute: set by run_walk_forward (fit alone is refused)
+WEIGHTS_SCHEMA_V3 = "atx.dsl-composition-weights/v3"
+WALK_FORWARD_REFUSED = ("--walk-forward runs under --engine-fit (the rows are the C++ fit's, rulings D3-1 / ALCOMB-7) "
+                        "and is refused with --theme-tsmom, --theme-resid and --era (their schedule, order and pool "
+                        "are fitted on the whole TRAIN window)")
+WALK_FORWARD_VALUES = ("walk_forward_lag", "walk_forward_step", "walk_forward_min_decisions")
 
 
 class EngineFitError(ValueError):
@@ -122,10 +151,61 @@ def add_argument(parser: argparse.ArgumentParser) -> None:
                              "(atx-equity-strategy-targets factors)")
     parser.add_argument("--admission-exe", type=Path, default=None, help="--engine-fit: atx-research-admission")
     parser.add_argument("--composition-exe", type=Path, default=None, help="--engine-fit: atx-research-composition")
+    parser.add_argument("--walk-forward", default=None, choices=WALK_FORWARD_WINDOWS,
+                        help="P9 D3W (K-P9-8): with --engine-fit, also refit walk-forward: rows every "
+                             "--walk-forward-step decisions from the first whose window (the TRAIN decisions <= d - "
+                             "--walk-forward-lag) holds --walk-forward-min-decisions, each the C++ fit on its window; "
+                             "the weights file becomes atx.dsl-composition-weights/v3 with the walk_forward rows; "
+                             "absent: output bytes unchanged")
+    parser.add_argument("--walk-forward-lag", type=int, default=None, help="--walk-forward: lag >= 2 (registered 2)")
+    parser.add_argument("--walk-forward-step", type=int, default=None,
+                        help="--walk-forward: step >= 1 (registered 21)")
+    parser.add_argument("--walk-forward-min-decisions", type=int, default=None,
+                        help=f"--walk-forward: min_decisions >= 2 (default and registered {WALK_FORWARD_MIN_DECISIONS})")
+
+
+def walk_forward(args) -> bool:
+    """P9 D3W: whether the fitter runs walk-forward (--walk-forward given)."""
+    return getattr(args, "walk_forward", None) is not None
+
+
+def _require_wf(condition, message: str, error: type[Exception]) -> None:
+    if not condition:
+        raise error(f"--walk-forward: {message}")
+
+
+def walk_forward_options(args) -> tuple[int, int, int]:
+    """(lag, step, min_decisions) of the walk-forward flags (check_args has run)."""
+    least = getattr(args, "walk_forward_min_decisions", None)
+    return (int(args.walk_forward_lag), int(args.walk_forward_step),
+            WALK_FORWARD_MIN_DECISIONS if least is None else int(least))
+
+
+def check_walk_forward(args, pooled: bool, error: type[Exception]) -> None:
+    """P9 D3W: refused before any compute (WALK_FORWARD_REFUSED); flag absent: its values are refused alone."""
+    if not walk_forward(args):
+        _require_wf(all(getattr(args, name, None) is None for name in WALK_FORWARD_VALUES),
+                    "--walk-forward-lag / --walk-forward-step / --walk-forward-min-decisions are read only with "
+                    "--walk-forward", error)
+        return
+    _require_wf(getattr(args, "engine_fit", False) and getattr(args, "theme_tsmom", None) is None and
+                getattr(args, "theme_resid", None) is None and not pooled, WALK_FORWARD_REFUSED, error)
+    _require_wf(getattr(args, "walk_forward_lag", None) is not None and
+                getattr(args, "walk_forward_step", None) is not None,
+                "--walk-forward needs --walk-forward-lag and --walk-forward-step", error)
+    lag, step, least = walk_forward_options(args)
+    _require_wf(lag >= 2 and step >= 1 and least >= 2,
+                f"lag >= 2 (contract K-P9-8: fitted on decisions <= d - 2), step >= 1 and min_decisions >= 2; "
+                f"got lag {lag}, step {step}, min_decisions {least}", error)
+    _require_wf(getattr(args, WALK_FORWARD_ARMED, None) is not None,
+                "the walk-forward step runs through the fitter's main() (run_walk_forward); fit() alone would "
+                "publish without the rows", error)
 
 
 def check_args(args, prior: bool, pooled: bool, error: type[Exception] = EngineFitError) -> None:
-    """Refused before any compute (REFUSED); flag absent: nothing is checked and nothing changes."""
+    """Refused before any compute (REFUSED); flag absent: nothing is checked and nothing changes. P9 D3W: the
+    walk-forward flags first (check_walk_forward)."""
+    check_walk_forward(args, pooled, error)
     if not getattr(args, "engine_fit", False):
         _require(getattr(args, "engine_factors", None) is None and getattr(args, "admission_exe", None) is None and
                  getattr(args, "composition_exe", None) is None,
