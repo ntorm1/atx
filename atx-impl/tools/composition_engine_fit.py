@@ -250,12 +250,17 @@ def check_args(args, prior: bool, pooled: bool, error: type[Exception] = EngineF
 
 # ---------------------------------------------------------------- 1. factor series
 def check_factor_series(directory: Path, state: FitterState, error: type[Exception]) -> dict:
-    """Check 1: the series of DIR against the fitter's. Returns the worst |f| and |tau| differences."""
-    raw = Path(directory, "manifest.json").read_bytes()
-    manifest = json.loads(raw)
+    """Check 1: the series of DIR against the fitter's. Returns the worst |f| and |tau| differences. P9 D3W (ruling
+    D2-9, review S-d): every read of DIR is the refusal ``error`` when it fails (a missing or unreadable file, a
+    manifest that is not JSON, a candidate row that is not an object), as the executables' outputs are."""
+    raw = _read(Path(directory, "manifest.json"), "the factor series' manifest.json", error)
+    manifest = _json(raw, "the factor series' manifest.json", error)
     _require(isinstance(manifest, dict) and manifest.get("schema") == FACTOR_SCHEMA,
              f"{directory}: not an {FACTOR_SCHEMA} manifest", error)
-    ids = [c.get("id") for c in manifest.get("candidates", [])]
+    rows = manifest.get("candidates", [])
+    _require(isinstance(rows, list) and all(isinstance(c, dict) for c in rows),
+             f"{directory}: the manifest's candidates must be a list of objects", error)
+    ids = [c.get("id") for c in rows]
     _require(ids == list(state.library_ids), f"factor series candidates {ids} are not the library {state.library_ids}",
              error)
     _require(manifest.get("role_manifest_sha256") == state.role_sha256,
@@ -265,8 +270,8 @@ def check_factor_series(directory: Path, state: FitterState, error: type[Excepti
     _require(sessions == [int(s) for s in state.decision_sessions],
              "factor series decision sessions are not the fitter's decisions", error)
     t, k = len(sessions), len(ids)
-    factor = np.frombuffer(Path(directory, "factor.f64").read_bytes(), dtype="<f8")
-    tau = np.frombuffer(Path(directory, "tau.f64").read_bytes(), dtype="<f8")
+    factor = np.frombuffer(_read(Path(directory, "factor.f64"), "the factor series' factor.f64", error), dtype="<f8")
+    tau = np.frombuffer(_read(Path(directory, "tau.f64"), "the factor series' tau.f64", error), dtype="<f8")
     _require(factor.size == t * k and tau.size == k, "factor.f64 / tau.f64 extent", error)
     cpp = factor.reshape(t, k).T
     mine = np.asarray(state.factors, dtype=np.float64)
@@ -462,14 +467,18 @@ def _number(x) -> bool:
 
 
 def compare_values(want, got, where: str = "$", tolerance: float = P12_TOLERANCE, out: list | None = None,
-                   worst: list | None = None) -> tuple[list, float]:
+                   worst: list | None = None, strict: bool = False) -> tuple[list, float]:
     """Differences of ``got`` (the C++ JSON) against ``want`` (the Python values): every string, bool, null, integer,
     key and length exactly (the decisions), every float to tolerance x max(1, |want|). Returns (differences, worst
-    relative float difference)."""
+    relative float difference). P9 D3W (ruling D2-9, review S-c): ``strict`` also makes an integer against a float a
+    difference, equal or not (composition_resid.parent_check: both sides are the fitter's canonical JSON, so a type
+    flip is a code change); check 3 keeps the default."""
     out = [] if out is None else out
     worst = [0.0] if worst is None else worst
     if _number(want) and _number(got):
-        if isinstance(want, int) and isinstance(got, int):
+        if strict and isinstance(want, int) != isinstance(got, int):
+            out.append(f"{where}: {want!r} vs {got!r} (an integer against a float)")
+        elif isinstance(want, int) and isinstance(got, int):
             if want != got:
                 out.append(f"{where}: {want!r} vs {got!r}")
         elif not (math.isfinite(float(want)) and math.isfinite(float(got))):
@@ -484,12 +493,12 @@ def compare_values(want, got, where: str = "$", tolerance: float = P12_TOLERANCE
         if sorted(want) != sorted(got):
             out.append(f"{where}: keys {sorted(want)} vs {sorted(got)}")
         for key in sorted(set(want) & set(got)):
-            compare_values(want[key], got[key], f"{where}.{key}", tolerance, out, worst)
+            compare_values(want[key], got[key], f"{where}.{key}", tolerance, out, worst, strict)
     elif isinstance(want, (list, tuple)) and isinstance(got, list):
         if len(want) != len(got):
             out.append(f"{where}: length {len(want)} vs {len(got)}")
         for i, (a, b) in enumerate(zip(want, got)):
-            compare_values(a, b, f"{where}[{i}]", tolerance, out, worst)
+            compare_values(a, b, f"{where}[{i}]", tolerance, out, worst, strict)
     elif type(want) is not type(got) or want != got:
         out.append(f"{where}: {want!r} vs {got!r}")
     return out, worst[0]

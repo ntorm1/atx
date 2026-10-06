@@ -1,0 +1,38 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = MomVolman.*:WeightsV3.*:CompositionWeightRows.*
+[==========] Running 11 tests from 3 test suites.
+[----------] Global test environment set-up.
+[----------] 1 test from CompositionWeightRows
+[ RUN      ] CompositionWeightRows.RowInForcePerDateAndFlatBeforeTheFirst
+[       OK ] CompositionWeightRows.RowInForcePerDateAndFlatBeforeTheFirst (11 ms)
+[----------] 1 test from CompositionWeightRows (12 ms total)
+
+[----------] 3 tests from WeightsV3
+[ RUN      ] WeightsV3.SingleRowEqualsV1Bytes
+[       OK ] WeightsV3.SingleRowEqualsV1Bytes (2497 ms)
+[ RUN      ] WeightsV3.RowsSwitchAtTheirSessionAndTheBookIsFlatBefore
+[       OK ] WeightsV3.RowsSwitchAtTheirSessionAndTheBookIsFlatBefore (1817 ms)
+[ RUN      ] WeightsV3.RefusalsPrecedeAnyPayloadOrOutput
+[       OK ] WeightsV3.RefusalsPrecedeAnyPayloadOrOutput (16432 ms)
+[----------] 3 tests from WeightsV3 (20747 ms total)
+
+[----------] 7 tests from MomVolman
+[ RUN      ] MomVolman.RegisteredConstants
+[       OK ] MomVolman.RegisteredConstants (0 ms)
+[ RUN      ] MomVolman.StepVarianceClosedForm
+[       OK ] MomVolman.StepVarianceClosedForm (1 ms)
+[ RUN      ] MomVolman.ScheduleFromTheWeightsFile
+[       OK ] MomVolman.ScheduleFromTheWeightsFile (6 ms)
+[ RUN      ] MomVolman.SharedParseAndRefusals
+[       OK ] MomVolman.SharedParseAndRefusals (60 ms)
+[ RUN      ] MomVolman.TinyVolatilityGivesAFiniteScaleAndOverflowIsRefused
+[       OK ] MomVolman.TinyVolatilityGivesAFiniteScaleAndOverflowIsRefused (10 ms)
+[ RUN      ] MomVolman.SummaryTracePrintsTheScalePerBlock
+[       OK ] MomVolman.SummaryTracePrintsTheScalePerBlock (12 ms)
+[ RUN      ] MomVolman.SleeveFilesBeforeAndAfterScaling
+[       OK ] MomVolman.SleeveFilesBeforeAndAfterScaling (61 ms)
+[----------] 7 tests from MomVolman (153 ms total)
+
+[----------] Global test environment tear-down
+[==========] 11 tests from 3 test suites ran. (20914 ms total)
+[  PASSED  ] 11 tests.

@@ -601,6 +601,35 @@ class Comparisons(unittest.TestCase):
         self.assertEqual(cef.compare_values({"x": 1e-300}, {"x": 2e-300})[0], [])    # relative to max(1, |x|)
         self.assertTrue(cef.compare_values({"x": float("inf")}, {"x": 1e308})[0])
 
+    def test_strict_types_refuse_an_integer_against_an_equal_float(self):
+        """P9 D3W (ruling D2-9, review S-c): check 3's comparison accepts 5 against 5.0; strict (parent_check's) does
+        not, at any depth, and is otherwise the same comparison."""
+        want = {"provenance": {"window": {"turnover_transitions": 5}}, "w": [0.5, 2]}
+        got = {"provenance": {"window": {"turnover_transitions": 5.0}}, "w": [0.5, 2]}
+        self.assertEqual(cef.compare_values(want, got), ([], 0.0))
+        diff, _ = cef.compare_values(want, got, strict=True)
+        self.assertEqual(diff, ["$.provenance.window.turnover_transitions: 5 vs 5.0 (an integer against a float)"])
+        self.assertTrue(cef.compare_values({"w": [0.5, 2.0]}, {"w": [0.5, 2]}, strict=True)[0])
+        self.assertEqual(cef.compare_values({"w": [0.5, 2]}, {"w": [0.5 * (1 + 1e-14), 2]}, strict=True)[0], [])
+        self.assertTrue(cef.compare_values({"w": [0.5, 2]}, {"w": [0.5, 3]}, strict=True)[0])
+        self.assertEqual(cef.compare_values(want, json.loads(json.dumps(want)), strict=True), ([], 0.0))
+
+    def test_parent_check_engine_mode_is_strict(self):
+        """composition_resid.parent_check in engine-fit mode (ruling D2-R2): the reviewer's probe, a parent's
+        turnover_transitions 5 against the re-fit's 5.0, is refused; equal integers pass."""
+        def parent(transitions) -> bytes:
+            return json.dumps({"provenance": {cef.PROVENANCE_KEY: {"status": "agree"},
+                                              "window": {"turnover_transitions": transitions}},
+                               "weights": {"a": 0.5, "b": 0.5}}).encode()
+        child = json.loads(parent(5.0))
+        child[cres.BLOCK] = {"rule": cres.RULE_ID}
+        child["provenance"]["resid"] = {"rule": cres.RULE_ID}
+        with self.assertRaises(cres.ResidError) as caught:
+            cres.parent_check(child, b"{}", parent(5), b"{}", engine_fit=True)
+        self.assertIn("an integer against a float", str(caught.exception))
+        child["provenance"]["window"]["turnover_transitions"] = 5
+        self.assertTrue(cres.parent_check(child, b"{}", parent(5), b"{}", engine_fit=True))
+
     def test_compare_admission_csv(self):
         csv = "id,status,tau,train_mean\na,admitted,0.1,0.002\nb,reject_veto,0.2,-0.001\n"
         self.assertEqual(cef.compare_admission_csv(csv.encode(), csv.encode()), ([], 0.0))
@@ -610,6 +639,69 @@ class Comparisons(unittest.TestCase):
         self.assertTrue(cef.compare_admission_csv(csv.encode(), csv.replace("reject_veto", "admitted").encode())[0])
         self.assertTrue(cef.compare_admission_csv(csv.encode(), csv.replace("b,", "c,").encode())[0])
         self.assertTrue(cef.compare_admission_csv(csv.encode(), csv.rsplit("\n", 2)[0].encode())[0])
+        # P9 D3W (ruling D2-9, review S-b): the branches D2's fix round added, each exercised.
+        nan = csv.replace("0.002", "nan")
+        self.assertTrue(cef.compare_admission_csv(nan.encode(), csv.encode())[0])          # NaN vs finite
+        self.assertTrue(cef.compare_admission_csv(csv.encode(), nan.encode())[0])          # finite vs NaN
+        self.assertEqual(cef.compare_admission_csv(nan.encode(), nan.encode()), ([], 0.0))  # NaN vs NaN, same text
+        extra = csv.replace("a,admitted,0.1,0.002", "a,admitted,0.1,0.002,9")
+        self.assertIn("5 vs 5 cells under a 4-column header",
+                      "".join(cef.compare_admission_csv(extra.encode(), extra.encode())[0]))
+        self.assertTrue(cef.compare_admission_csv(csv.encode(), extra.encode())[0])        # an extra cell
+        word = csv.replace("0.002", "abc")
+        self.assertIn("not numbers", "".join(cef.compare_admission_csv(csv.encode(), word.encode())[0]))
+        self.assertIn("shape or header", "".join(cef.compare_admission_csv(b"", csv.encode())[0]))  # empty
+        self.assertIn("shape or header", "".join(cef.compare_admission_csv(b"", b"")[0]))
+        later = csv.replace("-0.001", "nan")
+        self.assertIn("line 2", "".join(cef.compare_admission_csv(csv.encode(), later.encode())[0]))
+
+    def test_run_exe_refusals(self):
+        """Review S-b / S-2: an executable that times out, does not start or exits non-zero is the refusal."""
+        def raising(exc):
+            return unittest.mock.patch.object(cef.subprocess, "run", side_effect=exc)
+        argv = [Path("atx-research-composition.exe"), "fit", "--x"]
+        for exc, needle in ((cef.subprocess.TimeoutExpired("x", 1), f"ran over {cef.EXE_SECONDS} s"),
+                            (OSError("no such file"), "did not start: no such file")):
+            with self.subTest(needle), raising(exc), self.assertRaises(cef.EngineFitError) as caught:
+                cef.run_exe(argv, cef.EngineFitError)
+            self.assertIn("atx-research-composition.exe fit", str(caught.exception))
+            self.assertIn(needle, str(caught.exception))
+        done = cef.subprocess.CompletedProcess(argv, 3, "", "refused: a reason")
+        with unittest.mock.patch.object(cef.subprocess, "run", return_value=done), \
+                self.assertRaises(cef.EngineFitError) as caught:
+            cef.run_exe(argv, cef.EngineFitError)
+        self.assertIn("exited 3: refused: a reason", str(caught.exception))
+
+    def test_factor_series_reads_are_refusals(self):
+        """Review S-d (ruling D2-9): a factor directory whose manifest is missing or not JSON, whose candidates are
+        not objects, or that lacks factor.f64 / tau.f64 is the refusal, not a raw OSError / JSONDecodeError."""
+        state = cef.FitterState(*([None] * len(cef.FitterState._fields)))._replace(
+            library_ids=["a"], role_sha256="r" * 64, decision_sessions=np.array([1, 2], dtype=np.int64),
+            factors=np.zeros((1, 2)), taus=[0.0])
+        manifest = {"schema": cef.FACTOR_SCHEMA, "candidates": [{"id": "a"}], "role_manifest_sha256": "r" * 64,
+                    "decision_sessions_ns": [1, 2]}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = {"no-manifest": ({}, "manifest.json"), "not-json": ({"manifest.json": b"{"}, "not JSON"),
+                     "rows": ({"manifest.json": json.dumps(dict(manifest, candidates=["a"])).encode()},
+                              "a list of objects"),
+                     "no-factor": ({"manifest.json": json.dumps(manifest).encode()}, "factor.f64"),
+                     "no-tau": ({"manifest.json": json.dumps(manifest).encode(),
+                                 "factor.f64": np.zeros(2, dtype="<f8").tobytes()}, "tau.f64")}
+            for name, (files, needle) in cases.items():
+                directory = root / name
+                directory.mkdir()
+                for file, data in files.items():
+                    (directory / file).write_bytes(data)
+                with self.subTest(name), self.assertRaises(cef.EngineFitError) as caught:
+                    cef.check_factor_series(directory, state, cef.EngineFitError)
+                self.assertIn(needle, str(caught.exception))
+            whole = root / "whole"
+            whole.mkdir()
+            (whole / "manifest.json").write_bytes(json.dumps(manifest).encode())
+            (whole / "factor.f64").write_bytes(np.zeros(2, dtype="<f8").tobytes())
+            (whole / "tau.f64").write_bytes(np.zeros(1, dtype="<f8").tobytes())
+            self.assertEqual(cef.check_factor_series(whole, state, cef.EngineFitError)["decisions"], 2)
 
 
 class ModuleFingerprints(unittest.TestCase):
