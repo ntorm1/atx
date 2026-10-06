@@ -193,6 +193,7 @@ import math
 import re
 import time
 import zipfile
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
@@ -1368,29 +1369,34 @@ def _reported_clocks(
     return output
 
 
-def _run_trial_counts(
+def _run_observations(
     con: duckdb.DuckDBPyConnection, items: Mapping[tuple[int, str], Sequence[EvidenceItem]],
     params: ReconstructionParams,
-) -> dict[tuple[int, dt.date], int]:
-    """Bounded run metadata for evaluating weights without reversing rounded floats."""
+) -> dict[int, list[dt.date]]:
+    """Relevant vendor count observations, bounded to this batch's matched-run windows."""
     wanted = sorted({(vid, item.detail["run_first"]) for (vid, _), values in items.items() for item in values})
     if not wanted:
         return {}
     rows = con.execute(f"""
         WITH wanted AS (SELECT unnest(?::BIGINT[]) AS vendor_id, unnest(?::DATE[]) AS first_date),
-        runs AS (SELECT vendor_id,first_date,count(*) OVER (
-            PARTITION BY vendor_id ORDER BY first_date
-            RANGE BETWEEN INTERVAL {int(params.trial_window_days)} DAY PRECEDING
-                      AND INTERVAL {int(params.trial_window_days)} DAY FOLLOWING) AS nearby
-            FROM ri_share_runs WHERE vendor_id IN (SELECT vendor_id FROM wanted))
-        SELECT r.vendor_id,r.first_date,r.nearby FROM runs r JOIN wanted USING(vendor_id,first_date)
+        runs AS (SELECT vendor_id,first_date FROM ri_share_runs
+                 WHERE vendor_id IN (SELECT vendor_id FROM wanted))
+        SELECT r.vendor_id,r.first_date FROM runs r WHERE EXISTS (
+            SELECT 1 FROM wanted w WHERE w.vendor_id=r.vendor_id
+            AND r.first_date BETWEEN w.first_date-INTERVAL {int(params.trial_window_days)} DAY
+                                 AND w.first_date+INTERVAL {int(params.trial_window_days)} DAY)
+        ORDER BY r.vendor_id,r.first_date
         """, [[pair[0] for pair in wanted], [pair[1] for pair in wanted]]).fetchall()
-    return {(vid, first): int(count) for vid, first, count in rows}
+    observations: dict[int, list[dt.date]] = defaultdict(list)
+    for vid, first in rows:
+        observations[vid].append(first)
+    return observations
 
 
 def _candidates_at(
     candidates: Sequence[Candidate],
     reported: Mapping[tuple[int, str], Sequence[tuple[dt.datetime, dt.date, bool]]],
+    observations: Sequence[dt.date],
     clock: dt.datetime, params: ReconstructionParams,
 ) -> list[Candidate]:
     """Recompute collisions, best quarters, distinct counts and ratios at this clock."""
@@ -1410,15 +1416,20 @@ def _candidates_at(
                 extra.append(item)
                 continue
             detail = item.detail
+            first = detail["run_first"]
+            window = dt.timedelta(days=params.trial_window_days)
+            public_through = clock.date() - dt.timedelta(days=clock < _at(clock.date(), _BAR_CUTOFF))
+            trials = (bisect_right(observations, min(first + window, public_through))
+                      - bisect_left(observations, first - window))
             collisions = len(holders[detail["run_first"]])
             value = float(detail["value"])
             quantized = (params.round_value_weight if value % 1_000_000 == 0 else
                          params.quantized_value_weight if value % 10_000 == 0 else 1.0)
-            weight = ((1.0 / collisions) * min(1.0, params.trial_allowance / int(detail["trial_count"]))
+            weight = ((1.0 / collisions) * min(1.0, params.trial_allowance / trials)
                       * (1.0 if detail["aligned"] else params.covering_match_weight) * quantized)
-            if item.weight != weight or int(detail["collisions"]) != collisions:
+            if item.weight != weight or int(detail["collisions"]) != collisions or detail.get("trial_count") != trials:
                 item = replace(item, weight=weight, detail={**detail,
-                               "collisions": collisions, "match_weight": weight})
+                               "collisions": collisions, "match_weight": weight, "trial_count": trials})
             key = (-weight, detail["filed"], detail["concept"], detail["run_first"],
                    detail["vendor_shares_thousands"], detail["value"], detail["accession"] or "", detail["form"] or "")
             as_of = detail["as_of"]
@@ -1491,7 +1502,8 @@ def _lifecycle_items(
         items.append(
             EvidenceItem(
                 kind=EV_LISTING,
-                known_at=max(_at(filing.filing_date, _FILED_AVAILABILITY), _at(line.first_trade_date, _BAR_CUTOFF)),
+                known_at=max(filing.accepted_at or _at(filing.filing_date, _FILED_AVAILABILITY),
+                             _at(filing.filing_date, _FILED_AVAILABILITY), _at(line.first_trade_date, _BAR_CUTOFF)),
                 line_date=line.first_trade_date,
                 weight=params.lifecycle_weight,
                 detail={"form": filing.form, "filing_date": filing.filing_date, "accession": filing.accession,
@@ -1638,9 +1650,7 @@ def reconstruct_issuer_links(
     price_start = price_start or min((line.first_trade_date for line in lines), default=dt.date.min)
     rows = match_share_counts(con, params, vendor_ids=by_vendor, clocked=True) if matches is None else matches
     share_items, pair_stats = _share_items(row for row in rows if int(row[0]) in by_vendor)  # type: ignore[call-overload]
-    trials = _run_trial_counts(con, share_items, params)
-    share_items = {pair: [replace(item, detail={**item.detail, "trial_count": trials[(pair[0], item.detail["run_first"])]})
-                         for item in items] for pair, items in share_items.items()}
+    observations = _run_observations(con, share_items, params)
 
     filings_by_cik: dict[str, list[IssuerFiling]] = defaultdict(list)
     for filing in filings:
@@ -1678,11 +1688,14 @@ def reconstruct_issuer_links(
         clocks.update(at for candidate in originals for at, _, _ in reported[(vendor_id, candidate.cik)])
         clocks.update(filing.accepted_at or _at(filing.filing_date, _FILED_AVAILABILITY)
                       for values in line_filings.values() for filing in values)
+        clocks.update(item.known_at for cik, values in line_filings.items() for filing in values
+                      for item in _lifecycle_items(line, cik, [filing], params, horizon, price_start))
+        clocks.update(_at(first, _BAR_CUTOFF) for first in observations[vendor_id])
         versions = defaultdict(list)
         active = {}
         last_rejected = []
         for clock in sorted(clocks):
-            known = _candidates_at(originals, reported, clock, params)
+            known = _candidates_at(originals, reported, observations[vendor_id], clock, params)
             known_filings = {cik: [filing for filing in values
                              if (filing.accepted_at or _at(filing.filing_date, _FILED_AVAILABILITY)) <= clock]
                              for cik, values in line_filings.items()}

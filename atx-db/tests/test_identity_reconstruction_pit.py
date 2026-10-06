@@ -210,3 +210,46 @@ def test_native_s1_switch_removes_only_snapshot_from_clocked_replay(tmp_path, mo
         assert any(item["kind"] == ir.EV_SYMBOL for item in items) == (not disabled)
         results.append(sorted(json.dumps(item, sort_keys=True) for item in items if item["kind"] != ir.EV_SYMBOL))
     assert results[0] == results[1]
+
+def _review_clock_fixture(con, future_runs=False):
+    cik = "0000000011"
+    line = ir.VendorLine(1, "TBLTICKERHISTORY-1", D(2019, 1, 1), D(2019, 12, 31))
+    runs = [ir.VendorShareRun(1, 12345, D(2019, 1, 1), D(2019, 1, 2)),
+            ir.VendorShareRun(1, 12445, D(2019, 1, 3), D(2019, 1, 20))]
+    if future_runs:
+        runs += [ir.VendorShareRun(1, 90000 + day, D(2019, 1, day), D(2019, 1, day))
+                 for day in (10, 11, 12)]
+    ir.stage_share_runs(con, runs)
+    ir.stage_share_facts(con, [ir.IssuerShareFact(cik, CONCEPT, D(2019, 1, day), value,
+                          str(day), "10-Q", D(2019, 1, 3))
+                          for day, value in ((1, 12345123), (3, 12445123))])
+    early = ir.IssuerFiling(cik, "8-A12B", D(2019, 1, 5), accepted_at=dt.datetime(2019, 1, 5, 12))
+    return line, early
+
+
+def test_late_closer_listing_preserves_earlier_eligibility_clock(tmp_path):
+    with duckdb.connect(str(tmp_path / "lifecycle-clock.duckdb"), config={"memory_limit": "128MB", "threads": 1}) as con:
+        line, early = _review_clock_fixture(con)
+        late = ir.IssuerFiling(early.cik, "8-A12B", D(2019, 1, 2), accepted_at=dt.datetime(2022, 1, 1, 12))
+        def replay(filings):
+            return ir.reconstruct_issuer_links(con, [line], filings=filings,
+                       price_start=D(2018, 1, 1), horizon=D(2019, 12, 31))
+        baseline = replay([early]).clocked_links[0].versions[0]
+        historic = replay([early, late]).clocked_links[0].versions[0]
+    assert baseline.available_at == dt.datetime(2019, 1, 6, 22)
+    assert historic.available_at == baseline.available_at
+    assert historic.weight == baseline.weight == 3.0
+    assert next(item for item in historic.items if item.kind == ir.EV_LISTING).detail["filing_date"] == early.filing_date
+
+
+def test_future_unmatched_vendor_runs_withdraw_only_at_observation(tmp_path):
+    with duckdb.connect(str(tmp_path / "vendor-clock.duckdb"), config={"memory_limit": "128MB", "threads": 1}) as con:
+        line, early = _review_clock_fixture(con, future_runs=True)
+        result = ir.reconstruct_issuer_links(con, [line], filings=[early],
+                         price_start=D(2018, 1, 1), horizon=D(2019, 12, 31))
+    assert result.clocked_links, "future unmatched vendor runs must preserve earlier acceptance"
+    historic = result.clocked_links[0].versions[0]
+    assert historic.available_at == dt.datetime(2019, 1, 6, 22)
+    assert historic.share_weight == 2.0
+    assert historic.valid_until == dt.datetime(2019, 1, 10, 22)
+    assert result.clocked_links[0].tier_at(dt.datetime(2019, 1, 10, 22)) is None
