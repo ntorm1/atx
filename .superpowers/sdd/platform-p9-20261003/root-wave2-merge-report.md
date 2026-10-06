@@ -1447,3 +1447,53 @@ brief, rulings C3-1 .. C3-10, PRE-7a, W3-8, SQL2-CLS, ROOT-1, EXE-CUR, SEAL-ALLO
 | 9 ROOT-1 | **NOT RUN** | - |
 | Part B D-COV-EIG | **DONE**: no rank 00-02 structurally null in either recipe; third pooled row = the all-ranks row (gate report 4 (d), 4 (e)) | `dcov-eig.txt`, `dcov-eig-pooled.txt` |
 | M2I-HK | **NOT DONE** (`p9-m2i-cov-y1-nav` still on disk) | - |
+
+#### M2j finish (RESUME 7, dispatch R7-1, 2026-10-05; M2J-1 .. M2J-3, W3-8a, M2I-HK, SQL2-CLS, C3-5, EXE-CUR)
+
+Start: docs head `4dc831ac`, code head `327c86b2`; trial ledger 133 lines `27e40f9f` (`m2j-logs/resume7-start-state.txt`).
+Housekeeping docs commit **`a15ad887`** first (`progress.md`, `status-7.md`, `next-goal-prompt.md`, `resume7-addendum.md`,
+`r7-dispatch.md` as they stood). Order (M2J-1): 4, 5, the rest of 1, 6, 9, 8, then M2I-HK. Item 7 left root (W3-8a):
+`scripts/tests/test_wave_kinds.py` not touched. No lane merged. No build: EXE-CUR holds at every step
+(`git diff --name-only 327c86b2..HEAD` over C++ / CMake / presets = 0 files; the one code commit is `classes.json`), so
+p9-2p / p9-2q stay current and the next free tag stays **p9-2r**. Every run, comparison and test ran under
+`C:/Program Files/Python312/python.exe` (see the slip below). The pre-run lists of this section (above) were used as
+committed; nothing was amended.
+
+| item | result | evidence (`m2j-logs/`) |
+|---|---|---|
+| 4 opt-in (PRE-7a, C3-9) | **HOLDS**: `p9-m2j-x5-optin` (Release p9-2q `adcf72d4`; X-5 argv, `--output` changed, `--ann-mean-gross` appended; 43.3 s, 582 MiB) vs `p9-m2j-x5-argv` (same exe): the same 27 files; only `summary.json` differs; its differing leaf paths are exactly `/scenarios/0..4/ann_mean_gross` (5 scenarios), each on the opt-in side only; the opt-in file minus its 5 `"ann_mean_gross"` lines equals the flag-absent file byte for byte; `capacity/summary.json` holds no such key. No value printed | `item4-cmp.txt`, `nav-runs.txt`, `receipt-p9-m2j-x5-optin.json` |
+| 5 Release = Debug (G-P3 NAV half) | **HOLDS**: `p9-m2j-x5-dbg` (Debug p9-2p `637f7069`; 84.2 s, 591 MiB) vs `p9-m2j-x5-argv` (Release): 26 / 27 byte-identical, `summary.json` only `/producer/build_type`; vs `p9-c1-s2-x5-nav` (Debug `bf4b0ec2`): 26 / 27, only `/producer/engine_git_sha` | `item5-cmp.txt`, `receipt-p9-m2j-x5-dbg.json` |
+| 5 NAV wall, before / after the 14-TU split | X-5 Release 41.7 s -> 38.4 s; X-5 Debug 62.6 s -> 84.2 s; Y-F0 Release 27.4 s (pre-split, same argv + `--emit-holdings`) -> 35.8 s; receipts only; host load not controlled (about nine agents); reported, not judged | `item5-walls.txt` |
+| 1 rest: gtests | Release whole `atx-impl-strategy-target-tests` (`2a4913aa`): **390 passed / 0 failed / 1 DISABLED** (COVR's diagnostic), 78 s. Whole `atx-impl-tests`: Release (`dd753dcf`) **1,206 ran, 1,201 passed, 5 skipped, 0 failed** (307 s); Debug (`3d5f7efe`) the same counts (1,155 s). The 5 skips: `Alpha101Orats.RankBySharpeRiskParity`, `.RankByOptimizerSharpe`, `AtxImplDiscover.W6_RediscoverLowVolCapacityAlpha`, `FundamentalZoo.RealDataIcReport`, `SingleAlphaCapacity.SweepAndVerify`. ENV-1 hits 0 | `gt-exits.txt`, `rel-gt-target-whole.log`, `{rel,dbg}-gt-impl-whole.log` |
+| 6 SQL2-CLS | **`ebc918c3`** (`classes.json` only: `atx.nav-spec/v1` joins `nav-output`, after `atx.nav-rules/v1`). Guard before: 1 failed / 4 passed, the only missing literal `atx.nav-spec/v1` (in `nav_cli.cpp`, `nav_spec.{cpp,hpp}`, `strategy_nav_replay.hpp`); after: 5 passed. Store suite (`test_research_store_{classes,blind,identity,fixtures}.py`, `test_research_store.py`) **43 passed** under `PYTHONHASHSEED` 0 and 1. Fixture chain (research-store p9-1u `3b955ba1`, source `1300fd6a`; EXE-CUR: no store / catalog source, catalog CMake block, `atx-core` or top-level CMake change since): digest **`d32f7655...4e69`** unchanged, rel = abs, verify 0, identity 12 checked / 0 mismatches. The classes guard is no longer an expected red | `sql2cls-guard-{before,after}.log`, `sql2cls-store-seed{0,1}.log`, `sql2cls-fixture-chain.log` |
+| 9 ROOT-1 | at `ebc918c3`: `scripts/tests` seed 0 **512 passed / 4 skipped / 0 failed** (1,130 s; the skips: `test_cycle_e2e.py` without `ATX_EQUITY_BIN`, `test_research_cycle.py` x3 without `RESEARCH_CYCLE_LIVE_ROOT`, as at M2i); `atx-engine/tools/test_stage_chain.py` **9 passed**; separate invocations; ENV-1 hits 0 | `pyt-exits.txt`, `root1-scripts-s0.log`, `root1-chain-s0.log` |
+| 8 C3-5 probe | **STOP for the PM (duplicate `--rule`).** Base world `build-equity/p9-m2j-tw` (Release p9-2q exes; parent through nav, exit 0). Wave `c3r` (kind rule, `pm6-6-engine`, `rule-nav.json`, rules `[aim-partial-v5 {trade_fraction .1}]`): preflight .. run passed; at match the calibrated NAV run carried `--rule aim-partial-v5` TWICE and the NAV exe refused it (`nav replay: duplicate/missing flag`, outcome process-error, exit 2); wave HARD-STOP [match], exit 4. The cell of record's planned argv carries the same two tokens. Token 1: `scripts/cycle/phases.py:829` (`nav_step` emits `--rule nav["rule"]`; the parent's `nav.rule` is `aim-partial-v5`, as on the real X-5 and Y-F0 argvs). Token 2: the row's x-flag, derived at `scripts/wave_kinds.py:385-399` (lane D3's file) into `change.flags.nav["--rule"]`, which `scripts/research_spec.py:128` `apply_flags` appends (it replaces only an option already in `nav.flags`: `--trade-fraction` .05 -> 0.1 in place). So BOTH reach the argv; any trade-rate row other than the parent's own would be a conflicting pair. Nothing was fixed or re-run around it; verify was not reached, no `--seal-allow` passed | `item8-probe.txt`, `probe-base.log`, `probe-wave-c3r.log`, `probe-report-c3r.log` |
+| M2I-HK | **DONE**: `build-equity/p9-m2i-cov-y1-nav` (12 MB) deleted by its literal path; its `-run` receipt dir kept; `p9-m2i-dcov-v11`, `p9-m2i-dcov-covv1`, `p9-m2d-cov-risk-container` untouched | - |
+
+- **Slip (logged, fixed in place).** Item 4 attempt 1 ran under the Bash PATH's first `python`, which is the interpreter of
+  `C:/atx/atx-db/.venv` (executed once, `PYTHONDONTWRITEBYTECODE=1`; nothing was written under `atx-db/`):
+  `run_bounded_research.py` stopped at `import psutil` before admission; no exe started, no output dir. Void; its log is
+  `runner-p9-m2j-x5-optin-void1.log`, its line in `nav-runs.txt` is annotated. Re-run under Python312 (the interpreter
+  `pyt.sh` pins); every later step named that interpreter explicitly.
+- **Known-red set after M2j:** EMPTY (the classes guard cleared by `ebc918c3`). Release
+  `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` stays a named skip (not run in this step).
+- **Outputs kept** (regenerable): `build-equity/p9-m2j-{x5,yf0}-{argv,spec}`, `p9-m2j-x5-{optin,dbg}` and their `-run`
+  dirs (11 MB each); the probe worlds `build-equity/p9-m2j-tw` (23 MB) and `p9-m2j-tw-c3r` (24 MB, the stop's evidence).
+  Deleted by name: my scratch catalogs (`m2j/chain`) and pytest basetemps.
+
+#### For PRE (round 2b facts from M2j)
+
+- **Appendix IV item 5 (B.0, C3-6 byte neutrality of `--ann-mean-gross`): CLOSED, holds; no gross-alpha line is cut.**
+  Exes: Release p9-2q NAV `adcf72d4821de049f2e83db43759f3d28df4493504956739e1ed40f580656368`, Debug p9-2p NAV
+  `637f706987da395533342f51ede8cf894249a0fa1cfae9a1dc96217741338827`, both from `327c86b2` (C3 part A merge). (i) Flag
+  absent, argv: X-5 vs its reference of record `p9-c1-s2-x5-nav` (M2J-2: X-5 had no P9-B0 run) and Y-F0 vs the P9-B0
+  reference `p9-b0-yf0-nav`: 26 / 27 files byte-identical, `summary.json` only `/producer/build_type`,
+  `/producer/engine_git_sha`. (ii) `--spec` (schema `atx.nav-spec/v1`; printed specs x5 `53fd737d...`, yf0
+  `a793e183...`) = argv on all 27 files, both cells. (iii) Tiny-world canary goldens: 15 passed on Debug and on Release.
+  (iv) Opt-in on: only `summary.json` changes, by exactly one `ann_mean_gross` key per scenario object (5 on X-5).
+  (v) Release = Debug on X-5 outside `/producer/build_type`.
+- **Appendix IV item 16 (B.4 P9-C, C3-5 probe):** the probe on C3's own row (`aim-partial-v5`) found that a rule wave
+  naming a NAV row whose x-flag is `--rule <id>` puts a second `--rule` on the NAV argv beside the parent's `nav.rule`;
+  the NAV exe refuses it (exit 2). Open with the PM; the repeat with `info-clock-rate-v1` is root's at AL-CLOCK's merge.
+- **B.8 D-COV-EIG (row "without structurally null ranks"):** done in M2j part B (gate report 4 (d) / 4 (e)); COV-14 rules
+  its reading.

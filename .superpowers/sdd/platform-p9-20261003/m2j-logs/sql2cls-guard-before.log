@@ -1,0 +1,30 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\atx-wt\pool-2
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 5 items
+
+atx-engine\tools\test_research_store_classes.py F....                    [100%]
+
+================================== FAILURES ===================================
+_________ ClassRegistryGuard.test_every_schema_literal_is_registered __________
+
+self = <test_research_store_classes.ClassRegistryGuard testMethod=test_every_schema_literal_is_registered>
+
+    def test_every_schema_literal_is_registered(self):
+        missing = unregistered(scan(REPO), load(), datetime.date.today())
+>       self.assertEqual(missing, {}, "unregistered schema literals: add the schema to its class in "
+                                      f"{REGISTRY.relative_to(REPO).as_posix()} (or a dated legacy_allow row): "
+                                      + "; ".join(f"{k} in {', '.join(v[:3])}" for k, v in missing.items()))
+E       AssertionError: {'atx.nav-spec/v1': ['atx-impl/src/book/na[115 chars]pp']} != {}
+E       + {}
+E       - {'atx.nav-spec/v1': ['atx-impl/src/book/nav_cli.cpp',
+E       -                      'atx-impl/src/book/nav_spec.cpp',
+E       -                      'atx-impl/src/book/nav_spec.hpp',
+E       -                      'atx-impl/src/strategy_nav_replay.hpp']} : unregistered schema literals: add the schema to its class in atx-engine/schemas/research_store/classes.json (or a dated legacy_allow row): atx.nav-spec/v1 in atx-impl/src/book/nav_cli.cpp, atx-impl/src/book/nav_spec.cpp, atx-impl/src/book/nav_spec.hpp
+
+atx-engine\tools\test_research_store_classes.py:114: AssertionError
+=========================== short test summary info ===========================
+FAILED atx-engine/tools/test_research_store_classes.py::ClassRegistryGuard::test_every_schema_literal_is_registered
+========================= 1 failed, 4 passed in 2.02s =========================
