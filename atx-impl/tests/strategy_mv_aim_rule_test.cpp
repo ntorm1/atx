@@ -33,6 +33,7 @@
 #include "../src/book/nav_rules.hpp"
 #include "../src/book/nav_spec.hpp"
 #include "../src/strategy_mv_aim.hpp"
+#include "../src/strategy_nav_calibrate.hpp"
 #include "../src/strategy_nav_replay.hpp"
 #include "../src/strategy_nav_v7.hpp"
 #include "../src/strategy_spo.hpp"
@@ -788,9 +789,35 @@ TEST(MvAimRule, WorkspaceReserveTermOnlyWithTheRule) {
             std::numeric_limits<u64>::max());
 }
 
+// The primary book's all-rows mean gross leverage of a published run (its daily CSV, the mean
+// PM6-6 matches; strategy_nav_calibrate_test.cpp's reading).
+f64 primary_gross(const fs::path& run) {
+  const auto label = read_json_file(run / "summary.json").at("primary_scenario").get<std::string>();
+  std::ifstream in(run / ("daily_" + label + ".csv"));
+  std::string line;
+  std::getline(in, line);
+  std::vector<std::string> header;
+  {
+    std::stringstream row(line);
+    for (std::string cell; std::getline(row, cell, ',');) header.push_back(cell);
+  }
+  const auto column = static_cast<usize>(
+      std::find(header.begin(), header.end(), "gross_leverage") - header.begin());
+  EXPECT_LT(column, header.size());
+  std::vector<f64> gross;
+  while (std::getline(in, line)) {
+    std::stringstream row(line);
+    std::string cell;
+    for (usize k = 0; k <= column && std::getline(row, cell, ',');) ++k;
+    gross.push_back(std::stod(cell));
+  }
+  return st::numpy_mean(gross);
+}
+
 // PM6-6 in one process (P9 C2): --calibrate-gross runs with the rule (pass 1 forms the
-// constructions, the published pass restores them), and the published summary counts every
-// decision once: its mv_aim block equals the plain run's.
+// constructions, the published pass restores them; the target is 1.1 x the plain run's gross, so
+// the one correction moves L 1.2 to about 1.32), and the published summary counts every decision
+// once: its mv_aim block equals the plain run's (the rule's target does not read L).
 TEST(MvAimRule, CalibrateGrossCountsEachDecisionOnce) {
   const Directory dir;
   const Role role(40, 12, 53);
@@ -798,7 +825,13 @@ TEST(MvAimRule, CalibrateGrossCountsEachDecisionOnce) {
   const auto pin = cli_store(dir.path / "risk", role, in);
   std::ostringstream out, err;
   ASSERT_EQ(nav(nav_line(in, dir.path / "plain", rule_on(pin)), out, err), 0) << err.str();
-  ASSERT_EQ(nav(nav_line(in, dir.path / "matched", rule_on(pin, {"--calibrate-gross", "1.2"})),
+  const f64 g = primary_gross(dir.path / "plain");
+  ASSERT_TRUE(std::isfinite(g) && g > 0) << g;
+  std::ostringstream target;
+  target.precision(17);
+  target << 1.1 * g;
+  ASSERT_EQ(nav(nav_line(in, dir.path / "matched",
+                         rule_on(pin, {"--calibrate-gross", target.str()})),
                 out, err),
             0)
       << err.str();
