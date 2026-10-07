@@ -117,7 +117,7 @@ LAKE_STAGES = [
                  {"glob": "indexes_v2/recon_summary/available_year=*/recon_summary.parquet",
                   "view": "indexes_v2_recon_summary", "keys": ["index_id", "recon_date"], "vintage": "vintage"}],
      "staleness": "annual / semi-annual (Russell) and quarterly (S&P proxy) reconstitution", "vintage": "interval",
-     "guard_gb": 0.9, "planned": True},
+     "guard_gb": 0.9},
     # The published v1 stage, kept declared for its readers (universe, release_inputs, universe.registry.json).
     {"name": "indexes", "lane": "MKT", "schema": "atx.alpha-panel.indexes/v1", "module": None,
      "doc": "legacy v1 publication (rules russell-proxy-v1 / sp500-proxy-v1, built at 791767cd); immutable, never "

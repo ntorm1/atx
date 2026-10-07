@@ -471,7 +471,7 @@ def test_registry_loads_and_declares_both_stages():
     stages = {s.name: s for s in registry.load()}
     v2, v1 = stages["indexes_v2"], stages["indexes"]
     assert v2.module == "atx_db.alpha_panel.indexes" and v2.schema == X.SCHEMA and v1.module is None
-    assert v2.planned is True  # first real publication belongs to Task 7
+    assert v2.planned is False  # Task 7 published the first immutable v2 stage
     assert {o.view: (o.clock, v2.output_vintage(o)) for o in v2.outputs} == {
         "indexes_v2_constituents": ("available_at", "interval"), "indexes_v2_exits": ("available_at", "event"),
         "indexes_v2_membership": ("available_at", "daily"),

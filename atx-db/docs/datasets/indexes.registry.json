@@ -1,8 +1,7 @@
 {
   "stage": "indexes_v2",
-  "planned": true,
   "lane": "MKT",
-  "task": "P9 AL-DATA Task 6 (Path B; build in Task 7)",
+  "task": "P9 AL-DATA Tasks 6/7 (Path B; first immutable publication)",
   "schema": "atx.alpha-panel.indexes/v2",
   "module": "atx_db.alpha_panel.indexes",
   "args": [

@@ -6,12 +6,12 @@ published v1 stage, which is never touched (readers re-pin to `indexes_v2/`). Mo
 `atx_db.alpha_panel.indexes` (rules, R7 rank snapshot, writer), kernel `private_index_pit` (R1-R5 and the
 receipt), `exchange_calendar` (NYSE sessions from rules). Registry: the module's `LAKE_STAGES` declares
 `indexes_v2` and keeps the legacy `indexes` declaration (no command: v1 is never rebuilt); stub
-`indexes.registry.json`. The v2 declaration is `planned: true` until Task 7's first publication.
+`indexes.registry.json`. The v2 declaration is published following Task 7's first immutable build.
 
 Commands (every real-data run under `run_memory_guarded.py --heavy --job-gb <= 1.0`):
 
 - `python -m atx_db.alpha_panel.indexes build [--pit-links identity/links_pit.parquet]` writes `indexes_v2/`
-  (refuses when its manifest exists). Not yet run on real data (P9 Task 7).
+  (refuses when its manifest exists). First real publication completed 2026-10-06 (P9 Task 7).
 - `python -m atx_db.alpha_panel.indexes measure [--from-year 2018] [--pit-links P]` reads the published v1
   stage and the panel and writes nothing: per rank date, the v1-selected lines whose type came from the
   directory snapshot, carry `directory_etf` or a backfill link, and the v2-eligible company count.
@@ -84,15 +84,23 @@ or left unlinked, `backfill_cik_would_fail_operating` (what R7.2 (e) would repor
 `directory_etf` was ignored or whose `shrout` came from an SEC count); `coverage`; `focus_2020_plus`; the
 calendar check; the inherited R2000 gate [1,900, 2,100] in `gate_status`.
 
-## Measured before the first build (2026-10-05, guarded, nothing written)
+## Measured first real build (2026-10-06, with new PIT links)
 
-`measure` on the published v1 stage: of the v1 R2000P members, 1,058 / 1,128 / 1,226 / 1,309 / 1,406 / 1,489 /
-1,629 lines (rank dates 2020-05-08 .. 2026-04-30) had a type from the directory snapshot and 169 / 191 / 277 /
-277 / 273 / 300 / 310 a backfill link. Every one of those lines has a dated FINRA type of `common_unverified`
-(panel `finra_type`) that the directory named `common` / `REIT`. Eligible companies with ME >= USD 30M under
-(a) + (d): 1,803 / 1,976 / 1,895 / 1,516 / 1,254 / 1,031 / 777, so the R2000 proxy cannot reach 1,900. A dry
-selection of the build (no output) gave R2000P companies 866 / 1,018 / 921 / 671 / 502 / 356 / 201 at the
-2020-2026 reconstitutions: **gate FAIL**, band unchanged (ruling IX-4). Details: P9 Task 6 report.
+Manifest SHA-256: `2c9be8b974d802d907414f9e325dfa6fc5f9ab2bd5c731c65672f6d834a70220`. PIT input SHA-256: `376d2ce5a040e112d0cad15150bd90d9070198a0ca1ba87db942893213c6cb21`. Source panel/vendor end: `2026-09-18`; membership through `2026-09-21`; 2026 partial.
+
+| rank | recon | lines | companies | band [1900,2100] |
+| --- | --- | --- | --- | --- |
+| 2018-05-11 | 2018-06-22 | 1115 | 1110 | FAIL |
+| 2019-05-10 | 2019-06-28 | 1088 | 1073 | FAIL |
+| 2020-05-08 | 2020-06-26 | 886 | 866 | FAIL |
+| 2021-05-07 | 2021-06-25 | 1042 | 1018 | FAIL |
+| 2022-05-06 | 2022-06-24 | 937 | 921 | FAIL |
+| 2023-04-28 | 2023-06-23 | 685 | 672 | FAIL |
+| 2024-04-30 | 2024-06-28 | 513 | 503 | FAIL |
+| 2025-04-30 | 2025-06-27 | 367 | 358 | FAIL |
+| 2026-04-30 | 2026-06-26 | 211 | 203 | FAIL |
+
+Rank-vintage/count equality at 62 reconstitutions; directory decided zero and backfill grouping/operating 0/0 at 44 ranks. Every available-year part/hash passes; both real as-of replays pass all four products. Full per-rank measurements, v1 differences, part hashes, receipt values and runtime peaks: [Task7 acceptance](../p9-al-data/indexes-v2-acceptance.md). Earlier Task6 dry-selection values are historical evidence only.
 
 ## Limits
 
