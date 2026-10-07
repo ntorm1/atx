@@ -321,9 +321,11 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
 // within weights; pinned.signs: blend signs, empty = the TRAIN IC orientation) and the composition
 // rule table rows the file carries; the rows whose stage runs are the composition's ordered stage
 // list (composition_stages, strategy_ic_rules.hpp) and the combined manifest's rule keys.
+// `absent` (absent-members-v1, P9 lane ABS; empty: no list): per candidate 1 when listed.
 co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const Role& spec,
-    const KnownManifests& known,const PinnedWeights& pinned,std::vector<int>& signs,Json& frozen,
-    const std::string& recipe_sha,const std::string& orientation_pin,std::ostream& progress) {
+    const KnownManifests& known,const PinnedWeights& pinned,std::span<const u8> absent,
+    std::vector<int>& signs,Json& frozen,const std::string& recipe_sha,
+    const std::string& orientation_pin,std::ostream& progress) {
   const std::span<const f64> weights(pinned.values);
   const std::span<const int> blend_signs(pinned.signs);
   const auto started=std::chrono::steady_clock::now();
@@ -482,6 +484,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   f64 total_vm_seconds=0,total_ic_seconds=0,total_composition_seconds=0;
   for (usize k=0;k<lib.candidates.size();++k) {
     const auto& candidate=lib.candidates[k];
+    const bool listed=!absent.empty() && absent[k]!=0; // absent-members-v1
     ledger<<Json{{"id",candidate.id},{"status","started"},{"number",k+1}}.dump()<<'\n'<<std::flush;
     if (!ledger) return co::Err(co::ErrorCode::IoError,"IC runner: candidate receipt");
     const auto candidate_started=std::chrono::steady_clock::now();
@@ -496,8 +499,9 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     // --no-composition: nothing but IC reads the signal, and an IC entry is keyed on
     // the payload SHA256 its sidecar records, so a signal hit whose IC result is
     // cached too is never loaded (its bytes were verified when that entry was made).
-    // Under --label-terminal both IC results must be cached (each reads the signal).
-    if (cfg.no_composition && ic_scope && cache.hits[k]) {
+    // Under --label-terminal both IC results must be cached (each reads the signal). Never for a
+    // listed member (absent-members-v1 is refused with --no-composition; its IC is never cached).
+    if (cfg.no_composition && ic_scope && cache.hits[k] && !listed) {
       const auto probe_started=std::chrono::steady_clock::now();
       const auto& hit=*cache.hits[k];
       ic_entry=hit.dir/ic_scope->directory/(hit.stem+".json");
@@ -523,6 +527,10 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
           signal_cache?&cache.keys[k]:nullptr,signal_cache?cache.hits[k]:std::nullopt,pool.get(),vm,
           signal_buffer,meter,progress));
     }
+    // absent-members-v1 (P9 lane ABS, OD3P-1): a listed member's data is removed here, after the
+    // candidate cache served or stored its exact bytes. Every cell non-finite: its IC rows, its
+    // TRAIN orientation and every composition rule see a member with no data on any date.
+    if (listed) std::fill(signal_buffer.begin(),signal_buffer.end(),quiet_nan);
     const std::span<const f64> signal(signal_buffer);
     const auto vm_seconds=acquired.vm; total_vm_seconds+=vm_seconds;
     total_cache_load_seconds+=acquired.cache_load; total_cache_write_seconds+=acquired.cache_write;
@@ -536,7 +544,11 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
           {"signal_key_sha256",key.signal_key}});
     }
     const auto ic_started=std::chrono::steady_clock::now();
-    if (ic_scope) {
+    // A listed member's IC is scored from its blanked signal and never read from or written to the
+    // IC-result cache, whose entries key on the real signal bytes (absent-members-v1).
+    const bool ic_cached=ic_scope.has_value() && !listed;
+    const bool legacy_cached=legacy_scope.has_value() && !listed;
+    if (ic_cached) {
       if (!acquired.entry || !hash_valid(acquired.entry->payload_sha))
         return co::Err(co::ErrorCode::Internal,
             "IC runner: signal payload SHA256 missing for IC-result cache");
@@ -553,7 +565,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     } else {
       ATX_TRY(scored,ex::evaluate_research_ic(signal,labels,scratch,pool.get()));
       daily_series=scratch_series(scratch);
-      if (ic_scope) {
+      if (ic_cached) {
         ATX_TRY_VOID(ic_cache_store(ic_entry,*ic_scope,candidate,acquired.entry->payload_sha,scored,
             daily_series,cfg.workers));
       }
@@ -562,7 +574,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     // when the cache is on (ruling S2-3), else one IC pass beside the imputed one.
     std::optional<ex::ResearchIcResult> legacy_scored; IcSeries legacy_series;
     if (legacy_labels) {
-      if (legacy_scope && !legacy_probed) {
+      if (legacy_cached && !legacy_probed) {
         legacy_entry=acquired.entry->dir/legacy_scope->directory/(acquired.entry->stem+".json");
         ATX_TRY(cached_legacy,ic_cache_lookup(legacy_entry,*legacy_scope,candidate,
             acquired.entry->payload_sha,*legacy_scratch,ic_options.active_horizons));
@@ -573,7 +585,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
       } else {
         ATX_TRY(auto legacy,ex::evaluate_research_ic(signal,*legacy_labels,*legacy_scratch,pool.get()));
         legacy_series=scratch_series(*legacy_scratch);
-        if (legacy_scope) {
+        if (legacy_cached) {
           ATX_TRY_VOID(ic_cache_store(legacy_entry,*legacy_scope,candidate,acquired.entry->payload_sha,
               legacy,legacy_series,cfg.workers));
         }
@@ -789,6 +801,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     // absent-members-v1 (P9 lane ABS): the list, checked against the library before any role
     // payload or output (nullopt without the flag).
     ATX_TRY(const auto absent,absent_members(cfg,lib));
+    const std::span<const u8> absent_mask=
+        absent?std::span<const u8>(absent->absent):std::span<const u8>{};
     const bool pinned_signs=!pinned.signs.empty();
     ATX_TRY_VOID(cache_preflight(cfg,lib));
     ATX_TRY(const auto known,legacy_manifests(cfg));
@@ -940,7 +954,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     }
     ATX_TRY_VOID(write_json(dir/"summary.json",report));
     for (const auto& role:roles) {
-      auto scored=score_role(cfg,lib,role,known,pinned,signs,orientations,recipe_sha,
+      auto scored=score_role(cfg,lib,role,known,pinned,absent_mask,signs,orientations,recipe_sha,
           report.value("orientations_artifact_sha256",std::string{}),progress);
       if (!scored) {
         report["status"]="failed"; report["error"]=scored.error().to_string();
