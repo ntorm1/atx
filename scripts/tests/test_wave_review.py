@@ -264,7 +264,9 @@ def test_a_library_spec_edited_after_register_is_never_screened(tmp_path, capsys
 
 
 def test_a_file_a_done_stage_recorded_that_moves_is_stale_on_resume(tmp_path, capsys):
-    root = F.build(tmp_path / "r")
+    # gross_match none: the run stage records the cell's NAV summary (the engine route's run pins are
+    # test_research_wave.test_engine_match_pins_the_w_output_its_nav_reads)
+    root = F.build(tmp_path / "r", gross_match="none")
     fake = F.FakeCycle(root, KEPT_ALL)
     assert wave(root, fake, "run", "--until", "match")[0] == 0
     nav = receipt(root, "05-run.json")["outputs"]["nav"]
@@ -279,7 +281,7 @@ def test_a_file_a_done_stage_recorded_that_moves_is_stale_on_resume(tmp_path, ca
 class OtherSpecBinding(F.FakeCycle):
     def cycle(self, args):
         done = super().cycle(args)
-        if "--stop-after" in args:
+        if "--stop-after" in args and args[args.index("--stop-after") + 1] == "nav":    # the cell's NAV run
             spec, c = self.spec_outputs(args[1])
             p = self.root / f"{c.out(spec['nav']['output'])}-run/cycle_binding.json"
             p.write_text(json.dumps(dict(json.loads(p.read_text()), spec_sha256="0" * 64)))

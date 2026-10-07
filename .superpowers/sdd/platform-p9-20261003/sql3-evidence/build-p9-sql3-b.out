@@ -1,0 +1,56 @@
+﻿{
+    "Source":  "784d2abde522292f5339a63b95d7bac1fbee30b2",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  1,
+    "ConfiguredProvenance":  "d10d9e54ef90a2411a9cde3a4005d93e9df45eb0",
+    "Jobs":  4,
+    "FreeMiB":  4295,
+    "CommitMiB":  3574,
+    "Targets":  [
+                    "atx-engine-research-catalog",
+                    "atx-engine-research-catalog-tests",
+                    "atx-research-store"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  26.4421383,
+    "CompiledTUs":  21,
+    "Links":  4,
+    "Tag":  "p9-sql3-b",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-13\\build-equity",
+    "Executables":  {
+                        "atx-engine-research-catalog-tests":  {
+                                                                  "Path":  "C:\\atx-wt\\pool-13\\build-equity\\bin\\atx-engine-research-catalog-tests.exe",
+                                                                  "Sha256":  "257f55a8c4051aa468b4f9f6d0a0148b7ee96a1821b955bf53dff1a6483517a1"
+                                                              },
+                        "atx-research-store":  {
+                                                   "Path":  "C:\\atx-wt\\pool-13\\build-equity\\bin\\atx-research-store.exe",
+                                                   "Sha256":  "466fcde57f9796b6dec0d84d685ca299447c6d94759eec0018d4a95cebbee145"
+                                               }
+                    }
+}
+[1/26] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+[2/26] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+[3/26] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+[4/26] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+[5/26] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+[6/26] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+[7/26] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+[8/26] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\pins.cpp.obj
+[9/26] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\classify.cpp.obj
+[10/26] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\catalog.cpp.obj
+[11/26] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\json_text.cpp.obj
+[12/26] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_run.cpp.obj
+[13/26] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_stage.cpp.obj
+[14/26] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_cycle.cpp.obj
+[15/26] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_wave.cpp.obj
+[16/26] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_spec.cpp.obj
+[17/26] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\seal_guard.cpp.obj
+[18/26] Linking CXX static library lib\spdlogd.lib
+[19/26] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_build.cpp.obj
+[20/26] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\cache_index.cpp.obj
+[21/26] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\store_cli.cpp.obj
+[22/26] Linking CXX static library lib\atx-engine-research-catalog.lib
+[23/26] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-catalog-tests.dir\research\research_catalog_seal_test.cpp.obj
+[24/26] Linking CXX executable bin\atx-research-store.exe
+[25/26] Linking CXX executable bin\atx-engine-research-catalog-tests.exe

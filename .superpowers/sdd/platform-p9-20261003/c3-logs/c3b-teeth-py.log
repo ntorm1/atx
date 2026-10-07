@@ -1,0 +1,40 @@
+== P1 preflight refusal off (scripts/wave_stage_preflight.py): pytest exit 1: 1 failed in 2.67s
+   E   AssertionError: ['== preflight', "   preflight: manifest commit 5e32171a5f9d, parent p0 (L 1.1474), fields 8914e5028c9c, ledger 2 line...m1\\test_pm6_6_is_refused_at_prefl0\\v2\\out\\waves\\k-add\\receipts\\01-preflight.json', '== stopped after preflight']
+   C:\atx-wt\pool-15\scripts\tests\test_wave_gross_match.py:89: AssertionError: ['== preflight', "   preflight: manifest commit 5e32171a5f9d, parent p0 (L 1.1474), fields 8914e5028c9c, ledger 2 line...m1\\test_pm6_6_is_refused_at_prefl0\\v2\\out\\waves\\k-add\\receipts\\01-preflight.json', '== stopped 
+   FAILED scripts/tests/test_wave_gross_match.py::test_pm6_6_is_refused_at_preflight_naming_the_engine
+== P2 run-stage refusal off (scripts/wave_stage_cell.py): pytest exit 1: 1 failed in 2.99s
+   E   FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\04b7433c-9f90-4bac-98b7-2d955c5a5ea1\\scratchpad\\c3b\\teeth3\\m2\\test_a_state_dir_older_than_th0\\r\\out\\waves\\w1\\receipts\\05-run.failed-1.json'
+   C:\Program Files\Python312\Lib\pathlib.py:1013: FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\04b7433c-9f90-4bac-98b7-2d955c5a5ea1\\scratchpad\\c3b\\teeth3\\m2\\test_a_state_dir_older_than_th0\\r\\out\\waves\\w1\\receipts\\05-run.fai
+   FAILED scripts/tests/test_wave_gross_match.py::test_a_state_dir_older_than_the_retirement_is_refused[run]
+== P3 match-stage refusal off (scripts/wave_stage_cell.py): pytest exit 1: 1 failed in 3.35s
+   E   AssertionError: match: gross_match 'pm6-6' is neither none nor an engine mode
+   C:\atx-wt\pool-15\scripts\tests\test_wave_gross_match.py:122: AssertionError: match: gross_match 'pm6-6' is neither none nor an engine mode
+   FAILED scripts/tests/test_wave_gross_match.py::test_a_state_dir_older_than_the_retirement_is_refused[match]
+== P4 match fail-closed off (scripts/wave_stage_cell.py): pytest exit 1: 1 failed in 2.15s
+   E   KeyError: 'run'
+   C:\atx-wt\pool-15\scripts\wave_stage_cell.py:265: KeyError: 'run'
+   FAILED scripts/tests/test_wave_gross_match.py::test_match_fails_closed_on_a_mode_without_a_stage
+== P5 C2-9 missing-key refusal off (scripts/wave_manifest.py): pytest exit 1: 1 failed in 1.89s
+   E   AssertionError: []
+   C:\atx-wt\pool-15\scripts\tests\test_wave_gross_match.py:147: AssertionError: []
+   FAILED scripts/tests/test_wave_gross_match.py::test_a_manifest_without_gross_match_is_refused_at_plan
+== P6 C2-10 digest re-check off (scripts/wave_result.py): pytest exit 1: 3 failed in 12.23s
+   E   AssertionError: ['== preflight', "   preflight: manifest commit 25bf5f82f5aa, parent p0 (L 1.1474), fields 8914e5028c9c, ledger 2 line...mp/claude/c--atx/04b7433c-9f90-4bac-98b7-2d955c5a5ea1/scratchpad/c3b/teeth3/m6/test_a_cell_edited_during_judg0/r', ...]
+   C:\atx-wt\pool-15\scripts\tests\test_wave_gross_match.py:204: AssertionError: ['== preflight', "   preflight: manifest commit 25bf5f82f5aa, parent p0 (L 1.1474), fields 8914e5028c9c, ledger 2 line...mp/claude/c--atx/04b7433c-9f90-4bac-98b7-2d955c5a5ea1/scratchpad/c3b/teeth3/m6/test_a_cell_edited_dur
+   E   AssertionError: ['== preflight', "   preflight: manifest commit 70bb17752ace, parent p0 (L 1.1474), fields 8914e5028c9c, ledger 2 line...mp/claude/c--atx/04b7433c-9f90-4bac-98b7-2d955c5a5ea1/scratchpad/c3b/teeth3/m6/test_a_cell_edited_during_judg1/r', ...]
+   C:\atx-wt\pool-15\scripts\tests\test_wave_gross_match.py:204: AssertionError: ['== preflight', "   preflight: manifest commit 70bb17752ace, parent p0 (L 1.1474), fields 8914e5028c9c, ledger 2 line...mp/claude/c--atx/04b7433c-9f90-4bac-98b7-2d955c5a5ea1/scratchpad/c3b/teeth3/m6/test_a_cell_edited_dur
+   E   AssertionError: ['== preflight', "   preflight: manifest commit 2a11ace2fcc5, parent p0 (L 1.1474), fields 8914e5028c9c, ledger 2 line...mp/claude/c--atx/04b7433c-9f90-4bac-98b7-2d955c5a5ea1/scratchpad/c3b/teeth3/m6/test_a_cell_edited_during_judg2/r', ...]
+   C:\atx-wt\pool-15\scripts\tests\test_wave_gross_match.py:204: AssertionError: ['== preflight', "   preflight: manifest commit 2a11ace2fcc5, parent p0 (L 1.1474), fields 8914e5028c9c, ledger 2 line...mp/claude/c--atx/04b7433c-9f90-4bac-98b7-2d955c5a5ea1/scratchpad/c3b/teeth3/m6/test_a_cell_edited_dur
+   FAILED scripts/tests/test_wave_gross_match.py::test_a_cell_edited_during_judge_writes_no_wave_result[record-spec]
+   FAILED scripts/tests/test_wave_gross_match.py::test_a_cell_edited_during_judge_writes_no_wave_result[run-recipe]
+   FAILED scripts/tests/test_wave_gross_match.py::test_a_cell_edited_during_judge_writes_no_wave_result[none-cell]
+
+| mutation | pytest exit | result |
+|---|---|---|
+| P1 preflight refusal off | 1 | 1 failed in 2.67s |
+| P2 run-stage refusal off | 1 | 1 failed in 2.99s |
+| P3 match-stage refusal off | 1 | 1 failed in 3.35s |
+| P4 match fail-closed off | 1 | 1 failed in 2.15s |
+| P5 C2-9 missing-key refusal off | 1 | 1 failed in 1.89s |
+| P6 C2-10 digest re-check off | 1 | 3 failed in 12.23s |
+RESULT PASS: every mutation caught by its own test; files restored (SHA-256 checked)
