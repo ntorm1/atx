@@ -708,6 +708,16 @@ def plan_steps(base: Path, commit: str, *, data_root: Path, inputs: dict[str, st
 def data_binding_spec(base: Path, commit: str, data_root: Path, mode: str | None) -> dict[str, Any] | None:
     """Explicit, immutable execution binding; never retag the frozen arm configuration."""
     pin = base / "execution_compatibility" / "frozen53-data-binding.json"
+    recorded_bindings = [attempt["execution_compatibility"]["binding"]
+                         for path in (base / "steps").glob("*.json")
+                         for attempt in C.read_json(path).get("attempts", [])
+                         if "execution_compatibility" in attempt]
+    if recorded_bindings:
+        if not pin.exists():
+            raise SystemExit("recorded compatibility requires its original execution binding sidecar")
+        recorded_pin = C.read_json(pin)
+        if any(binding != recorded_pin for binding in recorded_bindings):
+            raise SystemExit("recorded compatibility differs from its execution binding sidecar")
     spec = None
     if mode is not None:
         if mode != "frozen53-v1" or commit != "53a1807d18a32528e7ffff716d395ea438c9ca15":

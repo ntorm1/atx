@@ -187,6 +187,37 @@ def test_compatibility_attempt_records_effective_execution_and_preserves_history
     with pytest.raises(SystemExit,match='original step configuration'):
         a0.run_arms(base,'HEAD',**kwargs,frozen_data_binding='frozen53-v1')
     assert len(calls) == 1 and pin.read_bytes() == before
+    step_before = (base/'steps/P_A.seed.json').read_bytes()
+    pin.unlink()
+    for mode in (None, 'frozen53-v1'):
+        with pytest.raises(SystemExit, match='recorded compatibility'):
+            a0.run_arms(base, 'HEAD', **kwargs, frozen_data_binding=mode)
+        assert len(calls) == 1 and not pin.exists()
+        assert (base/'steps/P_A.seed.json').read_bytes() == step_before
+    pin.write_bytes(before)
+    changed_binding = C.read_json(pin)
+    changed_binding['adapter_sha256'] = '0'*64
+    C.write_json_atomic(pin, changed_binding)
+    changed_bytes = pin.read_bytes()
+    with pytest.raises(SystemExit, match='recorded compatibility'):
+        a0.run_arms(base, 'HEAD', **kwargs, frozen_data_binding='frozen53-v1')
+    assert len(calls) == 1 and pin.read_bytes() == changed_bytes
+    assert (base/'steps/P_A.seed.json').read_bytes() == step_before
+
+
+@pytest.mark.parametrize('mode', [None, 'frozen53-v1'])
+def test_recorded_compatibility_requires_original_sidecar(tmp_path, mode):
+    sha = '53a1807d18a32528e7ffff716d395ea438c9ca15'
+    base = tmp_path/'base'
+    binding = a0.data_binding_spec(base, sha, tmp_path, 'frozen53-v1')
+    record = {'attempts': [{'exit_code': 1}, {'execution_compatibility': {'binding': binding}}]}
+    path = base/'steps/P_A.seed.json'
+    C.write_json_atomic(path, record)
+    before = path.read_bytes()
+    with pytest.raises(SystemExit, match='recorded compatibility'):
+        a0.data_binding_spec(base, sha, tmp_path, mode)
+    assert path.read_bytes() == before
+    assert not (base/'execution_compatibility/frozen53-data-binding.json').exists()
 
 
 def _sha(path: Path) -> str:
