@@ -28,6 +28,167 @@ SRC = Path(atx_db.__file__).resolve().parents[1]
 TICKERS = (("1", "AAA"),)
 
 
+def test_nested_archive_binding_preserves_real_and_unrelated_paths(tmp_path, monkeypatch):
+    data = tmp_path / 'data'
+    package = data / 'research' / 'code' / 'frozen' / 'atx-db'
+    monkeypatch.setattr(C, 'PACKAGE_ROOT', package)
+    monkeypatch.setattr(C, 'DEFAULT_ROOT', package / 'data/alpha_panel/v1')
+    monkeypatch.setattr(C, 'COMPANYFACTS_DIR', package / 'data/staging/facts')
+    monkeypatch.setattr(C, 'FSDS_DIR', data / 'staging/already-real')
+    monkeypatch.setattr(C, 'IDENTITY_R4_DIR', tmp_path / 'unrelated/rehearsal')
+    a0.restore_data_paths(data)
+    assert data / 'alpha_panel/v1' == C.DEFAULT_ROOT
+    assert data / 'staging/facts' == C.COMPANYFACTS_DIR
+    assert data / 'staging/already-real' == C.FSDS_DIR
+    assert tmp_path / 'unrelated/rehearsal' == C.IDENTITY_R4_DIR
+    assert a0.restore_data_paths(data)['DEFAULT_ROOT'] == str(data / 'alpha_panel/v1')
+
+
+def test_explicit_data_binding_guard_and_resume_pin(tmp_path):
+    sha = '53a1807d18a32528e7ffff716d395ea438c9ca15'
+    base, data = tmp_path / 'base', tmp_path / 'data'
+    inputs = dict(receipt='r', ops_manifest='o', document_review='d')
+    plan = a0.plan_steps(base, sha, data_root=data, inputs=inputs)
+    before = json.dumps(plan, sort_keys=True)
+    binding = a0.data_binding_spec(base, sha, data, 'frozen53-v1')
+    kwargs = dict(receipt=tmp_path/'r.json', stdout=tmp_path/'o', stderr=tmp_path/'e',
+                  python=Path(sys.executable), guard=tmp_path/'guard')
+    seed = next(s for s in plan if s['id'] == 'P_A.seed')
+    normal = a0.guard_command(seed, **kwargs)
+    wrapped = a0.guard_command(seed, **kwargs, data_binding=binding)
+    split = normal.index('--')
+    assert normal[:split+2] == wrapped[:split+2]
+    assert wrapped[-len(seed['argv']):] == seed['argv']
+    assert str(binding['adapter']) in wrapped
+    assert '--adapter-sha256' in wrapped
+    assert json.dumps(plan, sort_keys=True) == before and len(plan) == 47
+    assert a0.guard_command(plan[1], **kwargs, data_binding=binding) == a0.guard_command(plan[1], **kwargs)
+    pin = base/'execution_compatibility/frozen53-data-binding.json'
+    C.write_json_atomic(pin, binding)
+    assert a0.data_binding_spec(base, sha, data, 'frozen53-v1') == binding
+    with pytest.raises(SystemExit, match='binding'):
+        a0.data_binding_spec(base, sha, data, None)
+    with pytest.raises(SystemExit, match='binding'):
+        a0.data_binding_spec(base, sha, tmp_path/'other', 'frozen53-v1')
+    with pytest.raises(SystemExit, match='53a1807'):
+        a0.data_binding_spec(base, 'f'*40, data, 'frozen53-v1')
+    original = C.read_json(pin)
+    original['adapter_sha256'] = '0'*64
+    C.write_json_atomic(pin, original)
+    with pytest.raises(SystemExit, match='hash'):
+        a0.data_binding_spec(base, sha, data, 'frozen53-v1')
+
+
+def test_explicit_bootstrap_executes_frozen_module_without_byte_changes(tmp_path):
+    sha = '53a1807d18a32528e7ffff716d395ea438c9ca15'
+    data = tmp_path/'data'
+    base = data/'research/check'
+    code = base/'code'/sha[:7]
+    src = code/'atx-db/src'
+    package = src/'atx_db/alpha_panel'
+    package.mkdir(parents=True)
+    (src/'atx_db/__init__.py').write_text('')
+    (package/'__init__.py').write_text('')
+    common = package/'common.py'
+    common.write_text("from pathlib import Path\nPACKAGE_ROOT=Path(__file__).resolve().parents[3]\n"
+        "DEFAULT_ROOT=PACKAGE_ROOT/'data/alpha_panel/v1'\n"
+        "COMPANYFACTS_DIR=PACKAGE_ROOT/'data/staging/facts'\n"
+        f"FSDS_DIR=Path({str(data/'already-real')!r})\n"
+        f"IDENTITY_R4_DIR=Path({str(tmp_path/'unrelated')!r})\n")
+    frozen = package/'a0_check.py'
+    frozen.write_text("import json,sys\nfrom . import common as C\n"
+        "print(json.dumps({'root':str(C.DEFAULT_ROOT),'facts':str(C.COMPANYFACTS_DIR),"
+        "'fsds':str(C.FSDS_DIR),'r4':str(C.IDENTITY_R4_DIR),'argv':sys.argv[1:]}))\n")
+    paths = [common, frozen]
+    initial = {str(p): p.read_bytes() for p in paths}
+    C.write_json_atomic(base/'arms.json', {'commit':sha,'code':str(code),'modules':{
+        p.relative_to(src).as_posix(): a0._hashes(p.read_bytes()) for p in paths}})
+    binding = a0.data_binding_spec(base, sha, data, 'frozen53-v1')
+    C.write_json_atomic(Path(binding['binding_pin']), binding)
+    argv = ['-m',a0.A0,'seed','--code-root',str(code),'--data-root',str(data),'--root',str(base/'P_A')]
+    receipt = tmp_path/'bootstrap.json'
+    command = [sys.executable,binding['adapter'],'--adapter-sha256',binding['adapter_sha256'],
+               '--binding-pin',binding['binding_pin'],'--receipt',str(receipt),'--',*argv]
+    env = {**os.environ,'PYTHONPATH':str(src),'PYTHONDONTWRITEBYTECODE':'1',
+           'OPENBLAS_NUM_THREADS':'1','ATX_A0_S1':'0','ATX_A0_S2':'0'}
+    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+    got = json.loads(result.stdout)
+    assert got == {'root':str(data/'alpha_panel/v1'),'facts':str(data/'staging/facts'),
+                   'fsds':str(data/'already-real'),'r4':str(tmp_path/'unrelated'),'argv':argv[2:]}
+    proof = C.read_json(receipt)
+    assert proof['inner_argv'] == argv and proof['adapter_sha256'] == binding['adapter_sha256']
+    assert proof['effective_env']['PYTHONPATH'] == str(src)
+    assert proof['effective_env']['ATX_A0_S1'] == '0'
+    assert proof['actual_argv'][1:] == command[1:]
+    assert {str(p):p.read_bytes() for p in paths} == initial
+    proof_bytes = receipt.read_bytes()
+    for changed in ({'ATX_A0_S1':'1'}, {'OPENBLAS_NUM_THREADS':'2'}):
+        refused = subprocess.run(command, env={**env,**changed}, capture_output=True, text=True, timeout=15)
+        assert refused.returncode != 0 and 'effective environment changed' in refused.stderr
+        assert receipt.read_bytes() == proof_bytes
+    for index, value in [(command.index('--adapter-sha256')+1,'0'*64),
+                         (command.index('--')+2,'atx_db.unrelated'),
+                         (command.index('--')+3,'exec')]:
+        unsupported = command.copy()
+        unsupported[index] = value
+        assert subprocess.run(unsupported, env=env, capture_output=True, timeout=15).returncode != 0
+        assert receipt.read_bytes() == proof_bytes
+    bad = command.copy()
+    bad[bad.index('--data-root')+1] = str(tmp_path/'other')
+    assert subprocess.run(bad, env=env, capture_output=True, timeout=15).returncode != 0
+    common.write_text(common.read_text()+'\n# changed\n')
+    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=15)
+    assert result.returncode != 0 and 'frozen export changed' in result.stderr
+
+
+def test_compatibility_attempt_records_effective_execution_and_preserves_history(tmp_path, monkeypatch):
+    sha = '53a1807d18a32528e7ffff716d395ea438c9ca15'
+    base = tmp_path/'base'
+    C.write_json_atomic(a0.baseline_inputs_path(base,'repinned'), {
+        'baseline':'repinned','documents':{'status':'complete'},'receipt':{'path':'r'},
+        'ops_manifest':{'path':'o'},'document_review':{'path':'d'}})
+    monkeypatch.setattr(a0,'_git',lambda *args:sha.encode())
+    monkeypatch.setattr(a0,'ensure_export',lambda *args:tmp_path)
+    monkeypatch.delenv('ATX_GUARD_JOB',raising=False)
+    step = {'id':'P_A.seed','cap':0.6,'env':{'PYTHONPATH':'frozen','ATX_A0_S1':'0','ATX_A0_S2':'0'},
+            'argv':['-m',a0.A0,'seed','--code-root','frozen','--data-root','data']}
+    monkeypatch.setattr(a0,'plan_steps',lambda *args,**kwargs:[step])
+    old = {'attempt':1,'exit_code':1,'guard_status':'failed','command':['historical-without-adapter']}
+    C.write_json_atomic(base/'steps/P_A.seed.json',{'id':step['id'],'commit':sha,'cap':0.6,
+        'env':step['env'],'argv':step['argv'],'attempts':[old],'complete':False})
+    calls=[]
+    def fake_call(cmd, **kw):
+        calls.append((cmd, kw))
+        after_guard = cmd.index('--')
+        bootstrap = Path(cmd[cmd.index('--receipt', after_guard)+1])
+        C.write_json_atomic(bootstrap, {'synthetic': True})
+        return 1
+    monkeypatch.setattr(a0.subprocess,'call',fake_call)
+    kwargs=dict(data_root=tmp_path,python=Path(sys.executable),guard=tmp_path/'guard',dry_run=False,baseline='repinned')
+    assert a0.run_arms(base,'HEAD',**kwargs,frozen_data_binding='frozen53-v1') == 1
+    record=C.read_json(base/'steps/P_A.seed.json')
+    assert record['attempts'][0] == old and record['argv'] == step['argv'] and record['env'] == step['env']
+    attempt=record['attempts'][1]
+    execution=attempt['execution_compatibility']
+    assert execution['actual_argv'] == calls[0][0] == attempt['command']
+    assert execution['effective_env']['PYTHONPATH'] == calls[0][1]['env']['PYTHONPATH'] == 'frozen'
+    assert execution['binding']['adapter_sha256'] == _sha(Path(execution['binding']['adapter']))
+    assert execution['bootstrap_receipt'].endswith('P_A.seed.02.bootstrap.json')
+    assert execution['bootstrap_receipt_sha256'] == _sha(Path(execution['bootstrap_receipt']))
+    pin=base/'execution_compatibility/frozen53-data-binding.json'
+    before=pin.read_bytes()
+    with pytest.raises(SystemExit,match='omitted'):
+        a0.run_arms(base,'HEAD',**kwargs)
+    assert pin.read_bytes() == before and len(calls) == 1
+    tampered = C.read_json(base/'steps/P_A.seed.json')
+    tampered['env']['ATX_A0_S1'] = '1'
+    C.write_json_atomic(base/'steps/P_A.seed.json',tampered)
+    with pytest.raises(SystemExit,match='original step configuration'):
+        a0.run_arms(base,'HEAD',**kwargs,frozen_data_binding='frozen53-v1')
+    assert len(calls) == 1 and pin.read_bytes() == before
+
+
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 

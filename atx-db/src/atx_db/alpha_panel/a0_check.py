@@ -137,7 +137,7 @@ def restore_data_paths(data_root: Path) -> dict[str, str]:
     restored = {}
     for name in DATA_CONSTANTS:
         value = Path(getattr(C, name))
-        if not value.is_relative_to(data_root):
+        if value.is_relative_to(package_data):
             value = Path(data_root) / value.relative_to(package_data)
         setattr(C, name, value)
         restored[name] = str(value)
@@ -705,10 +705,41 @@ def plan_steps(base: Path, commit: str, *, data_root: Path, inputs: dict[str, st
     return steps
 
 
+def data_binding_spec(base: Path, commit: str, data_root: Path, mode: str | None) -> dict[str, Any] | None:
+    """Explicit, immutable execution binding; never retag the frozen arm configuration."""
+    pin = base / "execution_compatibility" / "frozen53-data-binding.json"
+    spec = None
+    if mode is not None:
+        if mode != "frozen53-v1" or commit != "53a1807d18a32528e7ffff716d395ea438c9ca15":
+            raise SystemExit("data binding supports only frozen53-v1 at 53a1807d")
+        adapter = Path(__file__).with_name("a0_frozen_bootstrap.py").resolve()
+        spec = {"mode": mode, "commit": commit, "adapter": str(adapter),
+                "adapter_sha256": C.sha256_file(adapter), "data_root": str(data_root.resolve()),
+                "code_root": str((base / "code" / commit[:7]).resolve()),
+                "arms_pin": str((base / "arms.json").resolve()), "binding_pin": str(pin.resolve()),
+                "guard_flags": list(GUARD_FLAGS),
+                "frozen_env": {"PYTHONPATH": str(base / "code" / commit[:7] / "atx-db" / "src"),
+                               "PYTHONDONTWRITEBYTECODE": "1", "OPENBLAS_NUM_THREADS": "1"},
+                "arm_env": {str((base / f"P_{arm}").resolve()):
+                            {"ATX_A0_S1": str(int(s1)), "ATX_A0_S2": str(int(s2))}
+                            for arm, (_, s1, s2) in ARMS.items()}}
+    if pin.exists() and C.read_json(pin) != spec:
+        raise SystemExit("execution data binding changed or omitted; preserve the recorded mode and adapter hash")
+    return spec
+
+
+def binding_receipt(receipt: Path) -> Path:
+    return receipt.with_name(receipt.stem + ".bootstrap.json")
+
+
 def guard_command(step: dict[str, Any], *, receipt: Path, stdout: Path, stderr: Path, python: Path,
-                  guard: Path) -> list[str]:
+                  guard: Path, data_binding: dict[str, Any] | None = None) -> list[str]:
+    argv = step["argv"]
+    if data_binding is not None and len(argv) >= 3 and argv[:2] == ["-m", A0] and argv[2] in ("seed", "stage", "unseed"):
+        argv = [data_binding["adapter"], "--adapter-sha256", data_binding["adapter_sha256"],
+                "--binding-pin", data_binding["binding_pin"], "--receipt", str(binding_receipt(receipt)), "--", *argv]
     return [str(python), str(guard), "--job-gb", str(step["cap"]), *GUARD_FLAGS, "--receipt", str(receipt),
-            "--stdout", str(stdout), "--stderr", str(stderr), "--", str(python), *step["argv"]]
+            "--stdout", str(stdout), "--stderr", str(stderr), "--", str(python), *argv]
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -776,9 +807,10 @@ def next_attempt_number(base: Path, step_id: str, record: dict[str, Any]) -> int
 
 
 def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: Path, dry_run: bool, baseline: str = "historical",
-             reconstruction_batch_size: int | None = None) -> int:
+             reconstruction_batch_size: int | None = None, frozen_data_binding: str | None = None) -> int:
     repo = C.PACKAGE_ROOT.parent
     sha = _git(repo, "rev-parse", "--verify", f"{commit}^{{commit}}").decode().strip()
+    compatibility = data_binding_spec(base, sha, data_root, frozen_data_binding)
     inputs_path = baseline_inputs_path(base, baseline)
     if not inputs_path.exists():
         raise SystemExit(f"{inputs_path} missing: run recover-inputs first")
@@ -803,7 +835,7 @@ def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: P
             done = record.exists() and C.read_json(record).get("complete")
             command = guard_command(s, receipt=base / "receipts" / f"{s['id']}.01.json",
                                     stdout=base / "logs" / f"{s['id']}.01.out", stderr=base / "logs" / f"{s['id']}.01.err",
-                                    python=python, guard=guard)
+                                    python=python, guard=guard, data_binding=compatibility)
             print(f"{n:02d} {s['id']} cap={s['cap']} S1={s['env']['ATX_A0_S1']} S2={s['env']['ATX_A0_S2']}"
                   f"{' [complete]' if done else ''}\n   {subprocess.list2cmdline(command)}", flush=True)
         return 0
@@ -818,6 +850,16 @@ def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: P
         arm["original_document_review"] = (recovered.get("repinning") or {}).get("original_review", recovered["document_review"])
     execution = {} if reconstruction_batch_size is None else {"reconstruction_batch_size": reconstruction_batch_size}
     code = ensure_export(repo, sha, base, {"arms": arms, "inputs": inputs, "baseline": baseline, "recovery": recovered, "python": str(python), "guard": str(guard), **execution})
+    if compatibility is not None:
+        by_id = {step["id"]: step for step in steps}
+        for path in (base / "steps").glob("*.json"):
+            prior = C.read_json(path)
+            planned = by_id.get(prior["id"])
+            if planned is not None and any(prior[k] != planned[k] for k in ("cap", "env", "argv")):
+                raise SystemExit(f"compatibility original step configuration changed: {prior['id']}")
+        pin = base / "execution_compatibility" / "frozen53-data-binding.json"
+        if not pin.exists():
+            C.write_json_atomic(pin, compatibility)
     # Explicit resume assumes the old controller is terminal, including exports omitted by a fresh root.
     for path in (base / "steps").glob("*.json"):
         record = C.read_json(path)
@@ -843,20 +885,31 @@ def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: P
         receipt = base / "receipts" / f"{s['id']}.{n:02d}.json"
         stdout, stderr = base / "logs" / f"{s['id']}.{n:02d}.out", base / "logs" / f"{s['id']}.{n:02d}.err"
         stdout.parent.mkdir(parents=True, exist_ok=True)
-        command = guard_command(s, receipt=receipt, stdout=stdout, stderr=stderr, python=python, guard=guard)
+        command = guard_command(s, receipt=receipt, stdout=stdout, stderr=stderr, python=python, guard=guard,
+                                data_binding=compatibility)
+        effective_env = _step_env(s)
         started, t0 = _utc(), time.monotonic()
         attempt = {"attempt": n, "command": command, "exit_code": None, "started_utc": started,
                    "wall_seconds": None, "run_seconds": None, "peak_bytes": None,
                    "guard_status": None, "receipt": str(receipt), "stdout": str(stdout),
                    "stderr": str(stderr), "status": "running"}
+        if compatibility is not None and str(compatibility["adapter"]) in command:
+            attempt["execution_compatibility"] = {"binding": compatibility, "actual_argv": command,
+                "effective_env": {k: effective_env.get(k) for k in (
+                    "ATX_A0_S1", "ATX_A0_S2", "ATX_ALPHA_PANEL_ROOT", "PYTHONPATH",
+                    "PYTHONDONTWRITEBYTECODE", "OPENBLAS_NUM_THREADS")},
+                "bootstrap_receipt": str(binding_receipt(receipt))}
         record["attempts"].append(attempt)
         record["complete"] = False
         C.write_json_atomic(path, record)
         if any(p.exists() for p in (receipt, stdout, stderr)):
             raise FileExistsError(f"attempt output already exists: {receipt}")
-        rc = subprocess.call(command, env=_step_env(s), cwd=str(code / "atx-db"), stdin=subprocess.DEVNULL)
+        rc = subprocess.call(command, env=effective_env, cwd=str(code / "atx-db"), stdin=subprocess.DEVNULL)
         wall = round(time.monotonic() - t0, 1)
         g = C.read_json(receipt) if receipt.exists() else {}
+        bootstrap = binding_receipt(receipt)
+        if "execution_compatibility" in attempt and bootstrap.exists():
+            attempt["execution_compatibility"]["bootstrap_receipt_sha256"] = C.sha256_file(bootstrap)
         attempt.update({"exit_code": rc, "wall_seconds": wall, "run_seconds": g.get("run_seconds"),
                         "peak_bytes": g.get("native_peak_job_memory_bytes"),
                         "guard_status": g.get("status"), "status": "completed"})
@@ -1363,6 +1416,8 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--guard", type=Path, default=GUARD)
     a.add_argument("--dry-run", action="store_true")
     a.add_argument("--reconstruction-batch-size", type=int)
+    a.add_argument("--frozen-data-binding", choices=("frozen53-v1",),
+                   help="explicit data-root compatibility adapter for immutable frozen53 arms only")
     for name in ("preflight", "seed", "unseed", "stage"):
         p = sub.add_parser(name)
         p.add_argument("--code-root", type=Path)
@@ -1393,7 +1448,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "run-arms":
         return run_arms(args.base, args.commit, data_root=args.data_root, python=args.python, guard=args.guard,
                         dry_run=args.dry_run, baseline=args.baseline,
-                        reconstruction_batch_size=args.reconstruction_batch_size)
+                        reconstruction_batch_size=args.reconstruction_batch_size,
+                        frozen_data_binding=args.frozen_data_binding)
     if args.cmd == "stage":
         return run_stage(args.root, args.r4, args.stage, data_root=args.data_root, code_root=args.code_root)
     if args.cmd == "preflight":
