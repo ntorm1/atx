@@ -928,3 +928,101 @@ def test_existing_arm_execution_batch_binding_cannot_be_retagged(tmp_path):
     assert a0.ensure_export(tmp_path,'a'*40,base,{'reconstruction_batch_size':64}) == base/'code'/('a'*7)
     with pytest.raises(SystemExit,match='batch'):
         a0.ensure_export(tmp_path,'a'*40,base,{})
+
+
+@pytest.mark.parametrize("interruption", ["before_launch", "during_guard", "after_receipt"])
+def test_attempt_reserved_before_interruption_and_resume(tmp_path, monkeypatch, interruption):
+    base = tmp_path / "base"
+    base.mkdir()
+    C.write_json_atomic(a0.baseline_inputs_path(base, "historical"), {
+        "documents": {"status": "complete"}, "receipt": {"path": "synthetic"},
+        "ops_manifest": {"path": "synthetic"}, "document_review": {"path": "synthetic"}})
+    monkeypatch.setattr(a0, "_git", lambda *args: b"f" * 40)
+    monkeypatch.setattr(a0, "ensure_export", lambda *args: tmp_path)
+    step = {"id": "synthetic", "cap": 1.0, "env": {}, "argv": ["synthetic"]}
+    monkeypatch.setattr(a0, "plan_steps", lambda *args, **kwargs: [step])
+    monkeypatch.setattr(a0, "rehearsal_root", lambda base, arm: base / arm)
+    monkeypatch.delenv("ATX_GUARD_JOB", raising=False)
+    receipt = base / "receipts" / "synthetic.01.json"
+    path = base / "steps" / "synthetic.json"
+    original_write = C.write_json_atomic
+    if interruption == "before_launch":
+        def write_then_interrupt(dest, value):
+            original_write(dest, value)
+            if dest == path:
+                raise KeyboardInterrupt
+        monkeypatch.setattr(C, "write_json_atomic", write_then_interrupt)
+    def interrupted(*args, **kwargs):
+        assert C.read_json(path)["attempts"][0]["exit_code"] is None
+        if interruption == "after_receipt":
+            original_write(receipt, {"status": "completed", "exit_code": 0})
+        raise KeyboardInterrupt
+    monkeypatch.setattr(a0.subprocess, "call", interrupted)
+    kwargs = dict(data_root=tmp_path, python=Path(sys.executable), guard=tmp_path / "guard", dry_run=False)
+    with pytest.raises(KeyboardInterrupt):
+        a0.run_arms(base, "HEAD", **kwargs)
+    assert not C.read_json(path)["complete"]
+    old = receipt.read_bytes() if receipt.exists() else None
+    monkeypatch.setattr(C, "write_json_atomic", original_write)
+    calls = []
+    monkeypatch.setattr(a0.subprocess, "call", lambda command, **kw: calls.append(command) or 0)
+    assert a0.run_arms(base, "HEAD", **kwargs) == 0
+    record = C.read_json(path)
+    assert [a["attempt"] for a in record["attempts"]] == [1, 2]
+    assert record["attempts"][0]["status"] == "interrupted"
+    assert record["attempts"][0]["exit_code"] is None
+    assert str(base / "receipts" / "synthetic.02.json") in calls[0]
+    if old is not None:
+        assert receipt.read_bytes() == old
+
+
+@pytest.mark.parametrize("legacy", [[], [{"exit_code": 78}], [{"attempt": 3, "exit_code": 78}]])
+def test_attempt_number_preserves_orphan_receipt_and_legacy_record(tmp_path, legacy):
+    record = {"attempts": legacy}
+    original = json.loads(json.dumps(record))
+    occupied = 4 if legacy and legacy[0].get("attempt") == 3 else len(legacy) + 1
+    receipt = tmp_path / "receipts" / f"synthetic.{occupied:02d}.json"
+    receipt.parent.mkdir()
+    receipt.write_bytes(b"orphan receipt")
+    expected = occupied + 1
+    assert a0.next_attempt_number(tmp_path, "synthetic", record) == expected
+    assert receipt.read_bytes() == b"orphan receipt"
+    assert record == original
+
+
+def test_resume_labels_abandoned_export_reservation_without_changing_outcome(tmp_path, monkeypatch):
+    base = tmp_path / "base"
+    sha = "f" * 40
+    C.write_json_atomic(a0.baseline_inputs_path(base, "historical"), {
+        "documents": {"status": "complete"}, "receipt": {"path": "synthetic"},
+        "ops_manifest": {"path": "synthetic"}, "document_review": {"path": "synthetic"}})
+    abandoned = base / "steps" / "R_A.rehearsal.export.json"
+    old = {"commit": sha, "complete": False, "attempts": [{"attempt": 1,
+           "status": "running", "exit_code": None, "wall_seconds": None}]}
+    C.write_json_atomic(abandoned, old)
+    completed = base / "steps" / "W_A.vendor.json"
+    C.write_json_atomic(completed, {"commit": sha, "complete": True,
+                                 "attempts": [{"exit_code": 0}]})
+    completed_bytes = completed.read_bytes()
+    receipt = base / "receipts" / "R_A.rehearsal.export.01.json"
+    receipt.parent.mkdir()
+    receipt.write_bytes(b"preserved unknown export receipt")
+    monkeypatch.setattr(a0, "_git", lambda *args: sha.encode())
+    monkeypatch.setattr(a0, "ensure_export", lambda *args: tmp_path)
+    # Use the real plan: unknown export selects R_A-2 and omits R_A's record.
+    plans = []
+    original_plan = a0.plan_steps
+    def plan(*args, **kwargs):
+        steps = original_plan(*args, **kwargs)
+        plans.extend(steps)
+        return []  # no synthetic subprocess needed to check resume reconciliation
+    monkeypatch.setattr(a0, "plan_steps", plan)
+    monkeypatch.delenv("ATX_GUARD_JOB", raising=False)
+    assert a0.run_arms(base, "HEAD", data_root=tmp_path, python=Path(sys.executable),
+                       guard=tmp_path / "guard", dry_run=False) == 0
+    assert any(s["id"].startswith("R_A-2.") for s in plans)
+    assert not any(s["id"].startswith("R_A.") for s in plans)
+    old["attempts"][0].update(status="interrupted", interruption_cause=None)
+    assert C.read_json(abandoned) == old
+    assert completed.read_bytes() == completed_bytes
+    assert receipt.read_bytes() == b"preserved unknown export receipt"

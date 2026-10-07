@@ -764,6 +764,17 @@ def _step_env(step: dict[str, Any]) -> dict[str, str]:
     return {**env, **step["env"]}
 
 
+def next_attempt_number(base: Path, step_id: str, record: dict[str, Any]) -> int:
+    """Consume recorded attempts and preserve orphan receipts/logs from legacy controllers."""
+    n = max((a.get("attempt", i) for i, a in enumerate(record["attempts"], 1)), default=0) + 1
+    while any(path.exists() for path in (
+            base / "receipts" / f"{step_id}.{n:02d}.json",
+            base / "logs" / f"{step_id}.{n:02d}.out",
+            base / "logs" / f"{step_id}.{n:02d}.err")):
+        n += 1
+    return n
+
+
 def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: Path, dry_run: bool, baseline: str = "historical",
              reconstruction_batch_size: int | None = None) -> int:
     repo = C.PACKAGE_ROOT.parent
@@ -807,6 +818,19 @@ def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: P
         arm["original_document_review"] = (recovered.get("repinning") or {}).get("original_review", recovered["document_review"])
     execution = {} if reconstruction_batch_size is None else {"reconstruction_batch_size": reconstruction_batch_size}
     code = ensure_export(repo, sha, base, {"arms": arms, "inputs": inputs, "baseline": baseline, "recovery": recovered, "python": str(python), "guard": str(guard), **execution})
+    # Explicit resume assumes the old controller is terminal, including exports omitted by a fresh root.
+    for path in (base / "steps").glob("*.json"):
+        record = C.read_json(path)
+        if record.get("commit") != sha or record.get("complete"):
+            continue
+        changed = False
+        for previous in record["attempts"]:
+            if previous.get("status") == "running":
+                previous["status"] = "interrupted"
+                previous["interruption_cause"] = None
+                changed = True
+        if changed:
+            C.write_json_atomic(path, record)
     for s in steps:
         path = base / "steps" / f"{s['id']}.json"
         record = C.read_json(path) if path.exists() else {"id": s["id"], "commit": sha, "cap": s["cap"],
@@ -815,20 +839,27 @@ def run_arms(base: Path, commit: str, *, data_root: Path, python: Path, guard: P
             raise SystemExit(f"step record {path} belongs to commit {record['commit']}")
         if record.get("complete"):
             continue
-        n = len(record["attempts"]) + 1
+        n = next_attempt_number(base, s['id'], record)
         receipt = base / "receipts" / f"{s['id']}.{n:02d}.json"
         stdout, stderr = base / "logs" / f"{s['id']}.{n:02d}.out", base / "logs" / f"{s['id']}.{n:02d}.err"
         stdout.parent.mkdir(parents=True, exist_ok=True)
         command = guard_command(s, receipt=receipt, stdout=stdout, stderr=stderr, python=python, guard=guard)
         started, t0 = _utc(), time.monotonic()
+        attempt = {"attempt": n, "command": command, "exit_code": None, "started_utc": started,
+                   "wall_seconds": None, "run_seconds": None, "peak_bytes": None,
+                   "guard_status": None, "receipt": str(receipt), "stdout": str(stdout),
+                   "stderr": str(stderr), "status": "running"}
+        record["attempts"].append(attempt)
+        record["complete"] = False
+        C.write_json_atomic(path, record)
+        if any(p.exists() for p in (receipt, stdout, stderr)):
+            raise FileExistsError(f"attempt output already exists: {receipt}")
         rc = subprocess.call(command, env=_step_env(s), cwd=str(code / "atx-db"), stdin=subprocess.DEVNULL)
         wall = round(time.monotonic() - t0, 1)
         g = C.read_json(receipt) if receipt.exists() else {}
-        record["attempts"].append({"attempt": n, "command": command, "exit_code": rc, "started_utc": started,
-                                   "wall_seconds": wall, "run_seconds": g.get("run_seconds"),
-                                   "peak_bytes": g.get("native_peak_job_memory_bytes"),
-                                   "guard_status": g.get("status"), "receipt": str(receipt),
-                                   "stdout": str(stdout), "stderr": str(stderr)})
+        attempt.update({"exit_code": rc, "wall_seconds": wall, "run_seconds": g.get("run_seconds"),
+                        "peak_bytes": g.get("native_peak_job_memory_bytes"),
+                        "guard_status": g.get("status"), "status": "completed"})
         record["complete"] = rc == 0
         C.write_json_atomic(path, record)
         _print({"step": s["id"], "attempt": n, "exit_code": rc, "wall_seconds": wall,
