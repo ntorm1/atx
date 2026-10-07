@@ -1,5 +1,39 @@
 # Handoff D3
 
+## Resume 9 close (lane D3: guards, kinds, C3-13): hand back for the first review (CRITICAL PATH)
+
+| | |
+|---|---|
+| Pool / branch | `C:/atx-wt/pool-20`, `feat/p9-d2-20261003`; tree clean after the records commit |
+| Head | the commit adding this section, on `b9b288e5` (code = `3834bc0c` = C3-13 `0c9f75d9` + root; only docs since) |
+| Root merged | `685e238b` (merge `3834bc0c`, docs only, no conflict); before it `fd084e78` (merge `aca78a14`, no conflict) |
+| Resume 9 commits | `c525c54c` report as it stood at STOP 8 (DIRTY-1); `3834bc0c` merge; `cc10622f` r8 evidence + C3-13 teeth tool / log as they stood (DIRTY-1); `b9b288e5` teeth tool gains TEETH-RESTORE's checks; the records commit (report sections 7, 8; this section; r9 logs) |
+| Suites (merged head; seed 0 unless named) | `test_wave_kinds.py` 192 passed / 0 failed / 1 skipped (live-table test, `ATX_EQUITY_BIN` unset); live-table test on root's Debug exes of record (IC `919569fb`, NAV `637f7069`) 1 passed; C3-13 tests 10 / 0; whole `scripts/tests` seed 0 599 / 0 / 6 skipped, seed 1 599 / 0 / 6 (both started before TEST-1, let finish; ENV-1 did not occur); stage chain: deferred to the gate (TEST-1), last run 10 passed at code-identical `aca78a14`. Logs `d3-logs/r9-*.log` |
+| Teeth | C3-13 N1-N5: 5 / 5 caught on the merged head, every restore verified (SHA-256 = pre-mutation, blob = HEAD's; `d3-logs/r9-c3-13-teeth.log`); first run 5 / 5 at `0c9f75d9` (`c3-13-teeth.log`); part A 22 / 22 at `e531257b` (`teeth.log`, does not cover C3-13) |
+| Build | none (Python only) |
+| Report | `task-D3-report.md`: section 7 suites, section 8 "C3-13", "What root re-proves at merge" |
+| Process | under TEST-1 my runner bash (Windows PID 4708, my own) was stopped while seed 1 ran so the stage-chain runs never started; no other process touched; none of mine left |
+
+What root re-proves at merge:
+1. Ruling C3-13: the C3-5 probe on a fresh tiny world with real exes for (a) the parent's own aim rule with other
+   params (`aim-partial-v5`, `trade_fraction` .1) and (b) another aim rule: exactly one `--rule` on the NAV argv, the
+   NAV exe accepts; with `--rate info-clock-rate-v1` at AL-CLOCK's merge.
+2. The keep-both with C3b: its eight kind-fixture lines (`"gross_match": "pm6-6"` -> `"pm6-6-engine"`, line 18 of
+   eight fixtures) and its three `test_wave_kinds.py` hunks (root's / C3b's lines `:612-613`, `:732`, `:759-761`;
+   this lane's `:629-630`, `:749`, `:776-778`); `git merge-tree` of
+   `3834bc0c` with C3b's `3129ca14` is clean; then `test_wave_kinds.py` on the merged tree (C3-13 tests included;
+   they do not use the retired Python `pm6-6`).
+3. W3-8a: "10 runnable, 0 schema only" in `test_the_ten_fixtures_load_and_cover_the_kinds`.
+4. The live-table test on both builds (report "What root re-proves" item 2); re-run after AL-CLOCK / COV-MV rows.
+5. At the gate (TEST-1): whole `scripts/tests` seeds 0 and 1 and `atx-engine/tools/test_stage_chain.py`.
+6. At D3W's merge: `WK.WALK_FORWARD_FLAGS` against the fitter's four flag names.
+
+Not done: KINDS-TW (optional; P10 note); E2 re-review 4 S1 (optional). Next: first review, BASE by REV-BASE
+(`git merge-base <HEAD> feat/platform-p9-20261003`). Open questions: the report's three (P9-F0h fit mode for P9-W;
+E2-17 vs `fields.output`; min_decisions default) stand.
+
+---
+
 ## Resume 7 (lane D3 after ruling D3-2: guards and kinds): suites to be re-run on d080af09 (owner stop)
 
 | | |

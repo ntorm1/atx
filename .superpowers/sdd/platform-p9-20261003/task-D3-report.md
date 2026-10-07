@@ -4,16 +4,18 @@
 
 | | |
 |---|---|
-| Outcome | DONE: green at `d080af09` (owner-stop run) and again at resume 8; the C3-13 fix of resume 8 is the section "C3-13" below |
+| Outcome | DONE: green at `d080af09` (owner-stop run), at `9c44f74b` (resume 8, before C3-13) and on the resume-9 merged head `3834bc0c` (section 7); the C3-13 fix of resume 8 is section 8 "C3-13" |
 | Pool / branch | `C:/atx-wt/pool-20`, `feat/p9-d2-20261003` (D2's branch; no switch, no history rewrite; WIP `0389e868` kept) |
-| Root merged | `a15ad887` (merge `40154ac4`, no conflict); `1b64ce45` (merge `d080af09`, no conflict) |
-| Commits | `40154ac4` merge; `e531257b` code + tests (finishes the WIP); `d080af09` merge; resume 8: see "C3-13" |
+| Root merged | `a15ad887` (merge `40154ac4`, no conflict); `1b64ce45` (merge `d080af09`, no conflict); `fd084e78` (merge `aca78a14`, no conflict); `685e238b` (merge `3834bc0c`, docs only, no conflict) |
+| Commits | `40154ac4` merge; `e531257b` code + tests (finishes the WIP); `d080af09` merge; resume 8: `0c9f75d9` C3-13 fix + tests, `aca78a14` merge; resume 9: `c525c54c` this report as it stood at STOP 8 (DIRTY-1), `3834bc0c` merge, `cc10622f` r8 evidence + C3-13 teeth as they stood (DIRTY-1), `b9b288e5` teeth tool gains TEETH-RESTORE's checks, then the records commit |
 | Rulings | D3-1, D3-2, W3-8a, PRE-35, C3-3, E2-17, E2-8, E2-15, P14, KINDS-TW, W3-7, W3-8 |
 | Files | `scripts/wave_kinds.py`, `scripts/wave_stage_kinds.py`, `scripts/tests/test_wave_kinds.py`, `scripts/specs/p9/kinds/walk-forward.json`, `scripts/specs/p9/kinds/new-cost-model.json` (the four kind files of D3-2 only) |
 | Build | none (Python only); no configure, no compile |
 | Data | synthetic fake worlds only; the live-table test ran root's exes' `--list-rules --json` (no data read) |
 
-Line numbers below are at `e531257b` (unchanged by the later commits, which touch no source line).
+Line numbers in sections 1-6 are at `e531257b`. The C3-13 commit `0c9f75d9` added lines to `wave_kinds.py` (after
+`:93` and `:534`), `wave_stage_kinds.py` and the test file, so later lines there moved; section 8 gives its own line
+numbers, at the head.
 
 ### 1. C3-3: the alias guard (`x-flag-aliases`)
 
@@ -100,7 +102,77 @@ selection. Log `d3-logs/teeth.log`. At `e531257b`: 22 / 22 caught, tree clean af
 
 ### 7. Suites
 
-@@SUITES@@
+Resume 9, on the merged head `3834bc0c` (root `685e238b`; the code is that of `0c9f75d9` + root's `fd084e78`).
+Interpreter `C:/Program Files/Python312/python.exe`, `-p no:cacheprovider`, own `--basetemp`,
+`PYTHONDONTWRITEBYTECODE=1`, one invocation each, in sequence (runner `d3-logs/r9-suites.sh`).
+
+| Suite | Seed | Result | Log (`d3-logs/`) |
+|---|---|---|---|
+| `scripts/tests/test_wave_kinds.py` | 0 | 192 passed / 0 failed / 1 skipped (the live-table test: `ATX_EQUITY_BIN` unset) | `r9-wave-kinds.log` |
+| the same, `-k live_rule_tables`, `ATX_EQUITY_BIN=C:/atx-wt/pool-2/build-equity/bin` (root's Debug exes of record: IC `919569fb...`, NAV `637f7069...`, hashes checked in the log; `--list-rules --json` only) | 0 | 1 passed | `r9-live-build-equity.log` |
+| the C3-13 tests, `-k c3_13` | 0 | 10 passed / 0 failed | `r9-c3-13-tests.log` |
+| whole `scripts/tests` | 0 | 599 passed / 0 failed / 6 skipped | `r9-seed0.log` |
+| whole `scripts/tests` | 1 | 599 passed / 0 failed / 6 skipped | `r9-seed1.log` |
+| `atx-engine/tools/test_stage_chain.py` | 0, 1 | not run: deferred to the gate (TEST-1). Last run: 10 passed at `aca78a14` (code-identical to `3834bc0c`: only docs commits since; PYTHONHASHSEED unset) | `r8-s4-stage-chain.log` |
+
+Ruling TEST-1 (PM amendment, received while seed 1 ran): whole `scripts/tests` seeds 0/1 and stage chain: deferred
+to the gate (TEST-1). The two whole runs above had already started and were let finish, as TEST-1 allows; the runner
+was then stopped so the two stage-chain invocations never started (note at the end of `r9-seed1.log`; seed 1's own
+pytest summary is in the log, the runner's `exit` line is not). No child exited 3221225794 in either whole run
+(ENV-1 did not occur). The six skips are environment-gated, the same in both seeds: `test_cycle_e2e.py:439` and
+`test_wave_kinds.py:1408` (`ATX_EQUITY_BIN` unset), `test_research_cycle.py:56`, `:706`, `:946`
+(`RESEARCH_CYCLE_LIVE_ROOT` unset), `test_research_store_hook.py:381` (no `atx-research-store.exe` in this pool: no
+build here). Count change against resume 8 (582 / 5 at `9c44f74b`): +10 C3-13 tests, the rest from root's SQL3 merge
+(`test_research_store_hook.py`, with its one skip).
+
+Earlier rounds (kept): owner-stop run at `d080af09`: `scripts-tests-seed0.log` / `-seed1.log` 582 / 5, stage chain 9
+(`stage-chain.log`); resume 8 at `9c44f74b`: `r8-s2-*.log` (wave kinds 182 / 1, seeds 0 and 1 582 / 5, stage chain 9);
+resume 8 at `aca78a14`: `r8-s4-*.log`: seed 0 is VOID under ENV-1 (exit 3221225794 in hundreds of child runs and
+`TimeoutExpired` on a host loaded for about 21 hours), seed 1 599 / 6, wave kinds 192 / 1, stage chain 10.
+
+### 8. C3-13: a kind `rule` wave naming a `--rule` row sets `nav.rule` (rulings C3-13, C3-13a)
+
+Commit `0c9f75d9` (on `9c44f74b`; files `scripts/wave_kinds.py`, `scripts/wave_stage_kinds.py`,
+`scripts/tests/test_wave_kinds.py`; no fixture edited). Line numbers at the head (the merges did not touch these
+files; blobs `d282586a` / `694b619e` / the test file's are `0c9f75d9`'s).
+
+| Change | file:line | Test (`scripts/tests/test_wave_kinds.py`) | Teeth |
+|---|---|---|---|
+| `NAV_RULE_FLAG, NAV_RULE_KEY = "--rule", "nav.rule"` | `wave_kinds.py:96-98` | all below | - |
+| `nav_rule_split(derived)`: a derived `--rule <id>` entry becomes the set `nav.rule = <id>`; the row's param x-flags stay in `nav` flags (the append route); without a `--rule` entry the derived map comes back as given; the receipt's map is not edited | `wave_kinds.py:537-551` | `test_c3_13_nav_rule_split` (`:1487`) | N1, N2, N5 |
+| the spec stage's rule cell: `kind_constants` returns `nav_rule_split(derived)` for kind `rule` | `wave_stage_kinds.py:121-122` | `test_c3_13_a_rule_row_sets_nav_rule` (`:1505`, 3 params) | N3 |
+| E2-8's guard compares the parent's lists with the split ops (else it would refuse the fixed cell) | `wave_stage_kinds.py:254-257` | same test (preflight exit 0) | N4 |
+| docstrings (module, `kind_constants`, stage table) | `wave_kinds.py:44-46`; `wave_stage_kinds.py:22-23`, `:118` | - | - |
+| the live-table test also checks every live `--rule` row's x-flag is `--rule <its id>` (the shape the split relies on) | `test_wave_kinds.py:1436` | `test_the_live_rule_tables` (1 passed on root's Debug exes, section 7) | - |
+
+Tests on fakes (synthetic NAV table `NAV_C3_13` = `NAV_C3` + a second aim row `aim-partial-v6` + a synthetic
+`--target-rule` row, `:1456-1460`):
+- (a) the parent's own aim rule with other params (root's C3-5 probe shape: parent `nav.rule aim-partial-v5` at
+  `--trade-fraction .05`, wave names `aim-partial-v5` with `trade_fraction` 0.1) and (b) another aim rule (a second
+  `--rule` row named; and the parent running `aim-partial-v6` while the wave names `aim-partial-v5`): the cell sets
+  `nav.rule` to the named id and `change.flags == {"nav": {"--trade-fraction": "0.1"}}`; the NAV argv the cycle derives
+  (`RC.Cycle.nav_step`) for the cell, the match stage's `-cal` run recipe and its `-gm` record carries exactly one
+  `--rule` (the named id) and one `--trade-fraction 0.1`; preflight exits 0 (E2's raw-rule-flag guard accepts) and its
+  receipt still lists the derived `{"nav": {"--trade-fraction": "0.1", "--rule": <id>}}`.
+- the other row kinds keep the append route: `--rate per-name-v1 --rate-min 0.01`, `--target-rule`, `--cost-law
+  cost-sqrt-v2` reach `nav.flags`, no `nav.rule` is set, the argv carries the parent's one `--rule`
+  (`test_c3_13_other_row_kinds_keep_the_append_route`, `:1537`, 3 params). The `--rate` / `--target-rule` /
+  `--cost-law` kind fixtures are unchanged (`0c9f75d9` touches no file under `scripts/specs/p9/kinds/`).
+- no route opens: a raw `--rule` in `rule_cell.constants.flags`, the template's `change.flags` or a set `nav.flags`
+  is still E2-8's refusal (`test_c3_13_a_raw_rule_flag_is_still_refused`, `:1561`, 3 params).
+
+Where the parent's `nav.rule` is read: `scripts/cycle/phases.py:829` (`nav_step` emits `"--rule", nav["rule"]`, then
+`nav.flags`); not edited (unchanged since `0c9f75d9`).
+
+Teeth (TEETH-RESTORE): `d3-logs/c3-13-teeth.py`, five mutations N1-N5 (table column above), each restored by the
+tool itself. First run at `0c9f75d9` (resume 8): 5 / 5 caught, tree clean (`d3-logs/c3-13-teeth.log`). Re-run on the
+merged head (`b9b288e5`, code of `3834bc0c`) with TEETH-RESTORE's checks added to the tool (after every restore the
+file's SHA-256 equals its pre-mutation SHA-256 and `git hash-object` equals HEAD's blob; `git status --porcelain`
+empty): N0 control 10 passed; N1 5 failed, N2 4, N3 3, N4 3, N5 4: 5 / 5 caught, every restore verified
+(`d3-logs/r9-c3-13-teeth.log`). Part A's `teeth.log` (22 / 22 at `e531257b`) predates C3-13 and does not cover it.
+
+What root re-proves at merge (ruling C3-13): the C3-5 probe on a fresh tiny world with real exes for (a) and (b) (one
+`--rule` on the NAV argv, the NAV exe accepts), and with `--rate info-clock-rate-v1` at AL-CLOCK's merge.
 
 ### Optional, not done
 
@@ -130,7 +202,9 @@ selection. Log `d3-logs/teeth.log`. At `e531257b`: 22 / 22 caught, tree clean af
 - Preflight receipt (`01-preflight.json` `outputs.kind`) of a walk-forward wave: `walk_forward` (the block) and `flags`
   (`{"fit": {...}}`). Manifest block `walk_forward {window?, lag, step, min_decisions?}` is E2's, unchanged.
 - Python names: `WK.KIND_FLAGS`, `WK.KIND_INPUTS`, `WK.ALIASES_KEY`, `WK.WALK_FORWARD_*`, `SK.reads`,
-  `SK.alias_exempt`, `SK.alias_beside_rule`, `SK.inputs_routes`, `SK.inputs_changed`, `SK.inputs_refusal`.
+  `SK.alias_exempt`, `SK.alias_beside_rule`, `SK.inputs_routes`, `SK.inputs_changed`, `SK.inputs_refusal`;
+  C3-13: `WK.NAV_RULE_FLAG`, `WK.NAV_RULE_KEY`, `WK.nav_rule_split` (no new receipt key: the preflight receipt's
+  derived flags keep their shape; a rule cell gains `change.set["nav.rule"]` when it names a `--rule` row).
 
 ### Flag-absent identity (for root)
 
@@ -141,7 +215,11 @@ receipt key of another kind moves. No exe, golden or pin changes; nothing to sub
 
 ### What root re-proves at merge
 
-1. `scripts/tests` under PYTHONHASHSEED 0 and 1, and `atx-engine/tools/test_stage_chain.py`, separate invocations.
+1. `scripts/tests` under PYTHONHASHSEED 0 and 1, and `atx-engine/tools/test_stage_chain.py`, separate invocations
+   (at the gate, TEST-1; the stage chain was not run on this head, section 7).
+1a. Ruling C3-13 (section 8): the C3-5 probe on a fresh tiny world with real exes for (a) the parent's own aim rule
+   with other params and (b) another aim rule: one `--rule` on the NAV argv, the exe accepts; with
+   `--rate info-clock-rate-v1` at AL-CLOCK's merge.
 2. The live-table test on real exes, both builds:
    `ATX_EQUITY_BIN=C:/atx-wt/pool-2/build-equity/bin` and `.../build-equity-rel/bin`, then
    `python -m pytest -q -p no:cacheprovider --basetemp <own> scripts/tests/test_wave_kinds.py -k live_rule_tables`
@@ -150,6 +228,16 @@ receipt key of another kind moves. No exe, golden or pin changes; nothing to sub
    `test_wave_kinds.py` around `test_the_match_stage_still_writes_its_own_leverage` and the leverage test's `-gm`
    read). This lane left those lines untouched; my fixture hunks are the description (line 5) and the
    `walk_forward` block; a textual conflict is not expected.
+   Resume 9 check (read-only `git merge-tree --write-tree` of this head `3834bc0c` with C3b's head `3129ca14`):
+   clean, no conflict. C3b's side in these files: eight fixture lines `"gross_match": "pm6-6"` ->
+   `"pm6-6-engine"` (line 18 of new-combination-rule, new-cost-model, new-field, new-horizon, new-signal,
+   new-universe, replaced-signal, walk-forward; leverage-change and new-nav-rule stay `"none"`), and three
+   `test_wave_kinds.py` hunks (lines in root's / C3b's file; in this lane's file `:629-630`, `:749`, `:776-778`):
+   `:612-613` `cell_spec` -> `record_spec` in the leverage test; `:732` the match-stage test parametrised on
+   `pm6-6-engine` only, ruling C2-11; `:759-761` its `pm6-6` branch removed. Keep both. The
+   C3-13 tests use `new-nav-rule.json` (`"none"`) and set `pm6-6-engine` themselves, so the retired Python `pm6-6`
+   does not reach them; root runs `test_wave_kinds.py` on the merged tree (C3-13 tests included) and re-proves the
+   C3-5 probe (1a).
 4. At D3W's merge: `WK.WALK_FORWARD_FLAGS` against D3W's `composition_engine_fit.add_argument` (the four names); the
    walk-forward fixture's derived argv parses under the fitter (`allow_abbrev=False`). D3W branched at `899b5811`
    (before the WIP); it does not edit the kind files.
@@ -171,7 +259,10 @@ receipt key of another kind moves. No exe, golden or pin changes; nothing to sub
   monitor outputs renamed `-wf2s21m21`) + `change.flags.fit` (the four flags), generated by
   `wave_kinds.walk_forward_template` / `walk_forward_set` / `walk_forward_flags`. Its SHA-256 exists only once the
   parent is fixed; the spec stage records the cell's `spec_digest` (`04-spec.json`) and verify re-checks it. Pin
-  instead: the manifest's SHA-256 and the generator @@SHAS@@.
+  instead: the manifest's SHA-256 and the generator files' git blobs at this lane's head (unchanged since
+  `0c9f75d9`): `scripts/wave_kinds.py` blob `d282586a` (SHA-256 of the blob bytes `9268e222b4f11420...`),
+  `scripts/wave_stage_kinds.py` blob `694b619e` (`800b40801da4443f...`); the checkout here is CRLF, so a SHA-256 of
+  the working-tree file differs; root re-reads both at its merge head (C3b's merge does not touch them).
 
 ### Open questions
 
