@@ -23,6 +23,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import research_store_hook  # noqa: E402
 import research_tree  # noqa: E402
 from wave_context import Wave, execute, stage_chain  # noqa: E402
 import wave_manifest as WM  # noqa: E402
@@ -33,9 +34,11 @@ CHAIN = "atx.research-wave"
 
 def chain_of(w: Wave) -> stage_chain.Chain:
     """The wave's stage chain; driver.receipt_digest "content" chains the receipts' content digests (P9 OR section 3:
-    no started_utc / seconds in a chain hash), absent the file digests of before."""
+    no started_utc / seconds in a chain hash), absent the file digests of before. Each receipt the chain writes goes to
+    the record-store hook as class stage-receipt (P9 SQL3; a no-op unless the root's catalog is on)."""
     return stage_chain.Chain(CHAIN, wave_stages.STAGES, w.path(w.out_dir),
-                             digest=WM.driver(w.manifest, "receipt_digest", "file"))
+                             digest=WM.driver(w.manifest, "receipt_digest", "file"),
+                             on_write=lambda path: research_store_hook.record(w.root, path, "stage-receipt"))
 
 
 def main(argv=None, *, executor=execute, log=print) -> int:

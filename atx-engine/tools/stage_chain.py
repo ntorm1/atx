@@ -29,6 +29,10 @@ JSON without the time keys (TIME_KEYS: started_utc, seconds, wall_seconds, peak_
 and its outputs' phase and process rows), as ``previous_receipt_content_sha256``, so a chain re-run on the same inputs
 and outputs has the same digests whatever its timing. A chain keeps one rule: a receipt recorded under the other rule
 reads as stale.
+
+Write callback (``Chain(..., on_write=)``, P9 SQL3): called with the path of each receipt the chain has just written
+(ok and ``.failed-<k>``), never for a done stage; default None (nothing called). A callback that raises is reported on
+stderr and changes nothing: the chain, its receipts and its exit codes are those of a run without one.
 Standard library only.
 """
 from __future__ import annotations
@@ -39,6 +43,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 import time
 from typing import Callable
 
@@ -110,7 +115,7 @@ def content_sha256(path: Path) -> str:
 
 class Chain:
     def __init__(self, name: str, stages: list[Stage], state_dir: Path, *, clock: Callable[[], str] = utc_now,
-                 digest: str = "file"):
+                 digest: str = "file", on_write: Callable[[Path], object] | None = None):
         names = [s.name for s in stages]
         if not stages or len(set(names)) != len(names) or not all(n and n.replace("-", "").isalnum() for n in names):
             raise ValueError(f"chain {name}: stages need distinct names of letters, digits and '-' ({names})")
@@ -118,6 +123,16 @@ class Chain:
             raise ValueError(f"chain {name}: digest must be one of {', '.join(DIGESTS)}")
         self.name, self.stages, self.state_dir, self.clock = name, list(stages), Path(state_dir), clock
         self.digest = digest
+        self.on_write = on_write
+
+    def written(self, path: Path) -> None:
+        """Hand a receipt just written to ``on_write`` (module doc); a callback failure is one stderr line."""
+        if self.on_write is None:
+            return
+        try:
+            self.on_write(path)
+        except Exception as exc:                      # noqa: BLE001  (a callback never changes the chain)
+            print(f"stage_chain: warning: on_write {path}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
     def receipt_digest(self, path: Path) -> str:
         """A receipt file's digest under the chain's rule: its file SHA-256, or content_sha256 (digest="content")."""
@@ -261,11 +276,14 @@ class Chain:
                 except Exception as exc:                  # noqa: BLE001  any failure leaves its receipt and stops
                     code = exc.code if isinstance(exc, StageError) else EXIT_STOP
                     error = str(exc) if isinstance(exc, StageError) else f"{type(exc).__name__}: {exc}"
-                    self.write(self.failed_path(i), dict(self.body(i, now, {}, started, t0), status="failed",
-                                                         error=error, code=code))
+                    failed = self.failed_path(i)
+                    self.write(failed, dict(self.body(i, now, {}, started, t0), status="failed", error=error,
+                                            code=code))
+                    self.written(failed)
                     raise ChainError(f"HARD-STOP [{st.name}]: {error}", code) from exc
                 outputs = json.loads(canonical(outputs or {}))
                 self.write(self.receipt_path(i), self.body(i, now, outputs, started, t0))
+                self.written(self.receipt_path(i))
                 done[st.name] = outputs
                 log(f"   receipt {self.receipt_path(i)}")
             if until == st.name:
