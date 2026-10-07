@@ -168,6 +168,7 @@ def rerooted(m: dict, root: Path) -> dict:
 def world(tmp_path: Path, m: dict) -> Path:
     """The fake root with manifest ``m`` (re-rooted) and the fixture templates committed."""
     root = F.build(tmp_path)
+    F.pin_eval_verb(root)       # rulings B2-10 (c), B2-11: a v2 cell names and pins exes.eval (inherited from its parent)
     for t in (KINDS_DIR / "templates").glob("*.json"):
         dest = root / t.relative_to(REPO)
         dest.parent.mkdir(parents=True, exist_ok=True)

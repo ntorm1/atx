@@ -1,0 +1,23 @@
+B2-11 teeth by mutation (R7 follow-up 2, pool-14): NOT SHOWN -- the mutation edit was refused.
+
+Attempted mutation M1 (an Edit of scripts/wave_stage_record.py, eval_problem):
+    old: "    if missing:"
+    new: "    if missing and False:  # TEETH-M1"
+The permission system REFUSED this Edit ("Security Test Removal"). Under r6-wave3-common.md ("if the permission system
+refuses a mutation edit, do not retry it; say so") and PERM-1 it was not retried, and no other mutation (M2-M6 below)
+was attempted: each is the same action (a working-tree edit that switches a refusal off).
+
+The source file was never changed: `grep -c TEETH scripts/wave_stage_record.py` = 0; `if missing:` at line 121.
+A pytest run started in parallel with the refused Edit ran on the UNMUTATED tree (7 passed in 26.05s); it is not
+mutation evidence and is not reported as such.
+
+Mutations planned and not run (each would have been reverted by hand):
+  M1 eval_problem `if missing:` off            -> expected red: test_verify_refuses_a_v2_cell_without_exes_eval_or_its_pin
+  M2 judge_verb disk check `if disk != pin:` off -> expected red: test_the_judge_refuses_a_verb_whose_bytes_moved
+  M3 bundle_once CV.check_verb off             -> expected red: test_the_judge_refuses_a_bundle_of_another_verb_fresh_and_reused[None/4096]
+  M4 scored_verdict CV.check_summ_verb off     -> expected red: test_the_judge_refuses_a_summ_or_pbo_of_another_verb
+  M5 bundle_argv drops --engine-stats          -> expected red: test_a_named_and_pinned_v2_cell_passes_verify_and_the_judge_runs_the_pinned_verb
+  M6 judge_verb key check off                  -> expected red: test_verify_refuses_... (the judge_verb pytest.raises)
+
+What the tests assert without mutation (each refusal is reached in the real stage order and its message is matched;
+each test also has a passing control on the pinned verb): see task-B2-report.md, "Post-identity redo", B2-11.

@@ -1,0 +1,21 @@
+# merge of e8e424b9 into 4bed5c43 (2026-10-04), conflict state before abort
+UU scripts/research_cycle.py
+UU scripts/tests/test_no_python_mirror.py
+UU scripts/wave_stage_record.py
+
+## conflict markers per file
+scripts/research_cycle.py:
+4:<<<<<<< HEAD
+191:=======
+195:>>>>>>> e8e424b9
+203:<<<<<<< HEAD
+2309:=======
+2338:>>>>>>> e8e424b9
+scripts/tests/test_no_python_mirror.py:
+44:<<<<<<< HEAD
+46:=======
+61:>>>>>>> e8e424b9
+scripts/wave_stage_record.py:
+47:<<<<<<< HEAD
+49:=======
+51:>>>>>>> e8e424b9

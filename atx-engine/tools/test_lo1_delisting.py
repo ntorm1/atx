@@ -15,12 +15,19 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 
 import prepare_recent_research as tool
 import prepare_research_fields as prf
 import test_linked_operating_v2 as v2t
 import test_linked_operating_v3 as v3t
 import test_prepare_recent_research as base
+
+# Ruling T2-GOLD: the expected hashes below (and the lo1 label-role-pair fixture text) pin role-builder bytes produced
+# under the superseded window research-seal-v1 (seal 2025-01-01) and are kept unedited (rule 4), so this module runs
+# under that window, bound for this module only (module-scoped fixture, conftest.py); the rest of the suite runs
+# under the repository window.
+pytestmark = pytest.mark.usefixtures("superseded_research_window")
 
 LO1 = "linked-operating-v1"
 PATCHED = ("close.f64", "raw_close.f64", "volume.f64", "present.u8")

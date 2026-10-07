@@ -361,9 +361,10 @@ class FakeCycle:
         write_json(self.root, f"{st}/ic_{name}.recipe.v2.json", {"members": members + [cid]})
         write(self.root, f"{st}/libraries/{name}.prereg.md", f"# {name}\n")
         pspec, pc = self.spec_outputs(a["--parent-spec"])
-        write_json(self.root, f"scripts/specs/v8/lib-{name}.json",
-                   cell_spec(name, f"out/nav-{name}-L1.1474", reference_nav=pc.out(pspec["nav"]["output"]),
-                             leverage=str(pspec["nav"]["leverage"]), marginal_of=pspec["name"]))
+        spec = cell_spec(name, f"out/nav-{name}-L1.1474", reference_nav=pc.out(pspec["nav"]["output"]),
+                         leverage=str(pspec["nav"]["leverage"]), marginal_of=pspec["name"])
+        spec.update({k: pspec[k] for k in ("exes", RC.EXES_PIN) if k in pspec})   # derive_spec copies the parent's
+        write_json(self.root, f"scripts/specs/v8/lib-{name}.json", spec)
         write_json(self.root, a["--save-plan"], {"library": name, "candidates": [{"id": cid}]})
         return self.ok(args)
 
@@ -395,3 +396,19 @@ class FakeCycle:
                                                           "bindings": bindings})
         write(self.root, f"{run_dir}/stdout.log", "reader\n")
         return self.ok(argv, code)
+
+
+EVAL_VERB = "bin/atx-research-eval.exe"
+
+
+def pin_eval_verb(root: Path) -> None:
+    """The parent spec of a v2 world names the engine verb and pins it, as root's re-pin does for the P9 lineage
+    parents (rulings B2-10 (b), B2-11: exes.eval, path and SHA-256): exes.eval beside ic and nav and exes_sha256.eval
+    of a synthetic verb file; its cells inherit both (a template child by resolve, an add-alpha copy as derive_spec
+    copies the parent). No IC or NAV exe file is written (the fake world has none: an exe on disk turns on checks a
+    fake tool cannot meet, e.g. ruling W1-I1's cache path bound). Written, not committed."""
+    parent = json.loads((root / PARENT).read_text(encoding="utf-8"))
+    write(root, EVAL_VERB, f"synthetic exe {EVAL_VERB}\n")
+    parent["exes"] = dict(parent["exes"], eval=EVAL_VERB)
+    parent[RC.EXES_PIN] = dict(parent.get(RC.EXES_PIN) or {}, eval=sha((root / EVAL_VERB).read_bytes()))
+    write_json(root, PARENT, parent)

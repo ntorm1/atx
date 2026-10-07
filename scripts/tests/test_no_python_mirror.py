@@ -41,18 +41,7 @@ STATS = "statistics of record (F-1)"
 COMPOSITION = "composition fit mirror (composition review table rows 1-5b)"
 # (module, symbols, rule, C++ that decides it, retired_by). Frozen at FROZEN_AT: delete rows or symbols, never add.
 ALLOWLIST = (
-    ("atx-impl/tools/backtest_integrity.py",
-     ("psr", "min_trl", "deflated_sharpe", "expected_max_sr", "lo_null_dsr", "effective_n_dsr"), STATS,
-     "atx-engine/include/atx/engine/eval/deflated_sharpe.hpp, min_trl.hpp", "B2"),
-    ("atx-impl/tools/backtest_integrity.py", ("cscv_pbo",), STATS, "atx-engine/include/atx/engine/eval/pbo.hpp", "B2"),
-    ("atx-impl/tools/backtest_integrity.py", ("onc", "onc_base", "effective_trials"), STATS,
-     "atx-engine/include/atx/engine/eval/trial_clusters.hpp", "B2"),
-    ("atx-impl/tools/nav_summ.py", ("deflated_sharpe", "expected_max_sr", "dsr_rows"), STATS,
-     "atx-engine/include/atx/engine/eval/deflated_sharpe.hpp", "B2"),
-    ("atx-impl/tools/nav_summ.py", ("memmel_se", "cbb_indices", "paired_stats"), STATS,
-     "new in B2 (atx-research-eval paired block, K-P9-5)", "B2"),
-    ("atx-impl/tools/dsr_total.py", ("dsr_at", "ledger_rows"), STATS,
-     "new in B2 (research/ledger + eval/deflated_sharpe.hpp house_v1)", "B2"),
+    # P9 B2 retired the statistics-of-record rows (backtest_integrity.py, nav_summ.py, dsr_total.py): atx-research-eval.
     # P9 ruling D2-3: ew-theme-aim-v2 and the theme-resid diagnostics had no C++ path at D2's merge, so the
     # composition_*.py deletion (and with it these rows) moved to lane D3; D2 wired the C++ fit behind --engine-fit.
     ("atx-impl/tools/composition_rules.py",

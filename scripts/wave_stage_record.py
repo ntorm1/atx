@@ -8,7 +8,9 @@ from pathlib import Path
 import shutil
 
 import cycle_resume as CR
+import cycle_verdict as CV
 import research_ledger
+import wave_kinds as WK
 import wave_manifest as WM
 import wave_queue
 import wave_result
@@ -41,7 +43,7 @@ def verify(w: Wave, done: dict, log) -> dict:
     digest = mt.get("spec_digest") or done["spec"]["spec_digest"]
     seal = wave_seal.scan(w, wave_seal.wave_logs(w, done), wave_seal.rulings(w, done))
     exe, pins = nav_exe(w, done), exes_pins(w, done)
-    problems = [p for p in [exe_problem(exe, pins, SK.rule_cell_kind(w))] if p]
+    problems = [p for p in [exe_problem(exe, pins, SK.rule_cell_kind(w)), eval_problem(w, done)] if p]
     if not chk["pass"]:
         problems.append("mechanics FAIL (" + ", ".join(r["check"] for r in chk["rows"] if not r["pass"]) + ")")
     if not isinstance(binding, dict) or not binding.get("argv_sha256"):
@@ -98,6 +100,61 @@ def exe_problem(exe: dict, pins: dict | None, rule_cell: bool = False) -> str | 
             " and the cell spec's reference construction did not run on it (no completed ref run with that exe)")
 
 
+def eval_pin(w: Wave, rel: str) -> tuple[str | None, str | None]:
+    """(path, pin) of the engine verb the cell spec ``rel`` names: its effective exes.eval (the path `lock --exes`
+    hashes) and its exes_sha256.eval pin; either is None when the spec lacks it."""
+    spec = w.load_spec(rel)
+    return RC.effective_exes(spec).get(CV.EVAL_KEY), (spec.get(RC.EXES_PIN) or {}).get(CV.EVAL_KEY)
+
+
+def eval_problem(w: Wave, done: dict) -> str | None:
+    """Ruling B2-11 (corrects B2-10 (c)): verify checks only that a v2 cell's locked spec names the engine verb of its
+    statistics (exes.eval) and pins it (exes_sha256.eval, `lock --exes`); refused, fail closed, otherwise, naming the
+    missing key(s). Nothing the summ writes is read here: the summ and the bundle run later, in the judge, which
+    compares their verb with the pin (judge_verb, bundle_once, scored_verdict). None for a v1 manifest (ruling B2-10
+    (a): today's behaviour, the verb recorded only)."""
+    if not WK.is_v2(w.manifest):
+        return None
+    rel = done["match"]["cell_spec"]
+    path, pin = eval_pin(w, rel)
+    missing = [key for key, value in (("exes.eval", path), (f"{RC.EXES_PIN}.eval", pin)) if not value]
+    if missing:
+        return (f"the v2 cell spec {rel} lacks {' and '.join(missing)}: every P9 cell names the engine verb of its "
+                "statistics and `lock --exes` pins it (rulings B2-10 (c), B2-11)")
+    return None
+
+
+def judge_verb(w: Wave, cell: str) -> tuple[str, str] | None:
+    """Ruling B2-11: (path, pin) of the engine verb a v2 cell's judge runs and checks, its locked spec's exes.eval and
+    exes_sha256.eval; None for a v1 manifest (the bundle runs nav_summ's own verb, recorded only: ruling B2-10 (a)).
+    Refused, fail closed (EXIT_PIN), before the judge runs anything: a spec without either key (verify required both;
+    an edit since) or a verb on disk whose SHA-256 is not the pin."""
+    if not WK.is_v2(w.manifest):
+        return None
+    path, pin = eval_pin(w, cell)
+    if not path or not pin:
+        raise StageError(f"judge: the v2 cell spec {cell} lacks exes.eval or its exes_sha256.eval pin: the judge runs "
+                         "and checks only the pinned engine verb (ruling B2-11)", EXIT_PIN)
+    disk = w.sha(path)
+    if disk != pin:
+        raise StageError(f"judge: the engine verb exes.eval {path} on disk is {disk or 'missing'}, not the cell spec's "
+                         f"exes_sha256 pin {pin}: the judge would publish Statistics of record from another verb; "
+                         "nothing ran (ruling B2-11)", EXIT_PIN)
+    return path, pin
+
+
+def pinned_verb(verb: tuple[str, str]) -> tuple[str, str]:
+    """judge_verb's (path, pin) as cycle_verdict's verb argument (SHA-256, what it is)."""
+    return verb[1], f"the cell spec's exes_sha256 pin of exes.eval {verb[0]}"
+
+
+def verb_refusal(exc: Exception) -> StageError:
+    """cycle_verdict.check_verb's refusal as the judge's StageError (EXIT_PIN): no Statistics of record from another
+    verb (ruling B2-11)."""
+    return StageError(f"judge: {exc}; the judge publishes no Statistics of record from another verb (ruling B2-11)",
+                      EXIT_PIN)
+
+
 def exes_pins(w: Wave, done: dict) -> dict | None:
     """P9 OR-2: {parent, cell, differ} of the parent's and the cell's spec pins exes_sha256 (`lock --exes`; differ: the
     exe keys whose pins differ, null unless both specs pin); None when neither spec pins its exes."""
@@ -144,20 +201,29 @@ def verify_plan(w: Wave, done: dict) -> list[str]:
 
 
 # ------------------------------------------------------------------ judge
-def bundle_once(w: Wave, base: str, cell: str) -> dict:
+def bundle_once(w: Wave, base: str, cell: str, verb: tuple[str, str] | None = None) -> dict:
     """The PM5-23 bundle of the cell against the parent, run once; its run's receipt must bind both NAVs' daily series
-    at their SHA-256 now (which daily series the bundle read)."""
+    at their SHA-256 now (which daily series the bundle read).
+    ``verb`` (a v2 cell, judge_verb, which checked the verb on disk; ruling B2-11) = (path, pin) of the cell spec's
+    exes.eval: the bundle runs nav_summ on that verb (--engine-stats), never a default one, and is refused, fail
+    closed (EXIT_PIN), when bundle.json, fresh or reused, names another verb in nav_summ_run.engine_exe_sha256
+    (cycle_verdict.check_verb). None (v1): as before, the verb recorded only."""
     out = w.wave_path("bundle.json")
     doc = w.read_json(out)
     series = nav_series(w, [base, cell])
     if doc is None:
         w.run(WS.bundle_argv(w.python, base, cell, out, w.free_run_dir(w.wave_path("bundle")), w.root, series,
-                             w.manifest.get("driver")), "bundle (PM5-23)")
+                             w.manifest.get("driver"), verb[0] if verb else None), "bundle (PM5-23)")
         doc = w.read_json(out)
         if doc is None:
             raise StageError(f"bundle wrote no {out}")
     if Path(str(doc.get("base"))).as_posix() != base or Path(str(doc.get("final"))).as_posix() != cell:
         raise StageError(f"{out} is the bundle of {doc.get('final')} vs {doc.get('base')}, not {cell} vs {base}")
+    if verb is not None:
+        try:
+            CV.check_verb(out, doc, pinned_verb(verb))
+        except CV.VerdictError as exc:
+            raise verb_refusal(exc) from exc
     run = last_completed(w, w.wave_path("bundle"))
     daily = [f for f in series if Path(f).name.startswith("daily_")]
     loose = unbound(w, run, daily) if run else daily
@@ -172,12 +238,24 @@ def bundle_once(w: Wave, base: str, cell: str) -> dict:
             "path": out, "sha256": w.sha(out)}
 
 
-def scored_verdict(w: Wave, cell: str) -> tuple[str, dict]:
-    """(path, document) of the cell's cycle_verdict.json, which must carry the scoring blocks (paired, dsr)."""
-    vpath = verdict_file(w, w.outputs(cell)["cycle_dir"], "run")
+def scored_verdict(w: Wave, cell: str, verb: tuple[str, str] | None = None) -> tuple[str, dict]:
+    """(path, document) of the cell's cycle_verdict.json, which must carry the scoring blocks (paired, dsr). With
+    ``verb`` (a v2 cell, ruling B2-11) every row of the cell's summ.json and its pbo.json must name that pinned verb
+    (cycle_verdict.check_summ_verb, the verdict's own rule, checked again where the judge reads it; EXIT_PIN)."""
+    cycle_dir = w.outputs(cell)["cycle_dir"]
+    vpath = verdict_file(w, cycle_dir, "run")
     v = w.read_json(vpath)
     if not isinstance(v, dict) or not isinstance(v.get("paired"), dict) or not isinstance(v.get("dsr"), dict):
         raise StageError(f"judge: {vpath} has no scoring blocks (paired, dsr): a verdict spec scores its cell")
+    if verb is not None:
+        summ = w.read_json(f"{cycle_dir}/{CV.SUMM_JSON}")
+        if not isinstance(summ, list) or not summ:
+            raise StageError(f"judge: the v2 cell has no nav_summ --json rows ({cycle_dir}/{CV.SUMM_JSON}) to match "
+                             f"to exes.eval {verb[0]} {verb[1]} (ruling B2-11)", EXIT_PIN)
+        try:
+            CV.check_summ_verb(cycle_dir, summ, w.read_json(f"{cycle_dir}/{CV.PBO_JSON}"), pinned_verb(verb))
+        except CV.VerdictError as exc:
+            raise verb_refusal(exc) from exc
     return vpath, v
 
 
@@ -187,6 +265,7 @@ def judge(w: Wave, done: dict, log) -> dict:
     m, mt = w.manifest, done["match"]
     cell, nav, parent_nav = mt["cell_spec"], mt["nav"], done["spec"]["reference_nav"]
     navs = {"cell": nav, "parent": parent_nav}
+    verb = judge_verb(w, cell)          # ruling B2-11: a v2 cell's pinned engine verb (None: v1, as before)
 
     def score() -> None:
         w.run(cyc(w, "run", cell), "the cell's monitor and summ (nav_summ scores and ledgers the cell)")
@@ -195,13 +274,13 @@ def judge(w: Wave, done: dict, log) -> dict:
         log(f"   the cell's summ || bundle || book reader, side by side under the host memory budget {budget} MiB")
         # records (consoles, process rows) in this call order, whatever finishes first; the first failure, in this
         # order, stops the stage (Wave.side_by_side, E1 review minor)
-        _, bundle, read = w.side_by_side([(score,), (bundle_once, w, parent_nav, nav),
+        _, bundle, read = w.side_by_side([(score,), (bundle_once, w, parent_nav, nav, verb),
                                           (read_once, w, "book", "book", navs)])
-        vpath, v = scored_verdict(w, cell)
+        vpath, v = scored_verdict(w, cell, verb)
     else:
         score()
-        vpath, v = scored_verdict(w, cell)
-        bundle, read = bundle_once(w, parent_nav, nav), read_once(w, "book", "book", navs)
+        vpath, v = scored_verdict(w, cell, verb)
+        bundle, read = bundle_once(w, parent_nav, nav, verb), read_once(w, "book", "book", navs)
     outs = w.outputs(cell)
     book = read["navs"]
     crit = WR.criteria_rows(m["acceptance"].get("printed", []), book["cell"], book["parent"])
@@ -221,9 +300,12 @@ def judge_plan(w: Wave, done: dict) -> list[str]:
     parent = s.get("reference_nav", "<parent NAV>")
     budget = WM.driver(w.manifest, "host_budget_mib")
     side = [f"#   the three run side by side under the host memory budget {budget} MiB"] if budget else []
+    verb = None  # ruling B2-11: a v2 bundle names the cell spec's exes.eval (v1: bytes as before)
+    if WK.is_v2(w.manifest):
+        verb = (eval_pin(w, cell)[0] if mt.get("cell_spec") else None) or "<the cell spec's exes.eval>"
     return [WS.fmt_argv(cyc(w,"run", cell)),
             WS.fmt_argv(WS.bundle_argv(w.python, parent, nav, w.wave_path("bundle.json"), w.wave_path("bundle-run1"),
-                                       w.root, nav_series(w, [parent, nav]), w.manifest.get("driver"))),
+                                       w.root, nav_series(w, [parent, nav]), w.manifest.get("driver"), verb)),
             reader_plan(w, "book", "book", {"cell": nav, "parent": parent})] + side + [
             f"#   verdict by {w.manifest['acceptance']['rule']}"]
 

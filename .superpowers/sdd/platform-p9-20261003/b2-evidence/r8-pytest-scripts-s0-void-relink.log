@@ -1,0 +1,9 @@
+..............s...............
+G-P5: 16 mirrored rule function(s) in 7 row(s) left for P9 lanes
+...................s...................... [ 13%]
+.s...........s.......................................................... [ 27%]
+........................................................................ [ 41%]
+........................................................................ [ 54%]
+...............................exit=1
+
+[VOID: stopped by the lane at 18:55 (taskkill of its own pytest); the Debug verb build-equity/bin/atx-research-eval.exe was relinked mid-run by build p9-b2-m (shared spdlog-build refreshed by another lane), so the run straddled two binaries (p9-b2-i -> p9-b2-m). Re-run as r8-pytest-scripts-m-s0.log.]

@@ -1,0 +1,172 @@
+# teeth: eval_report.cpp:198 mutated to dsr_at_json(m, n_tot, ...) (M not left out); build p9-b2-g (Debug, dirty: the mutation + this report)
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = EvalVerb.HandRow*
+[==========] Running 2 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 2 tests from EvalVerb
+[ RUN      ] EvalVerb.HandRowIsThePrefixState
+[       OK ] EvalVerb.HandRowIsThePrefixState (1134 ms)
+[ RUN      ] EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns
+..\atx-engine\tests\research\research_eval_tie_test.cpp(356): error: Expected equality of these values:
+  n
+    Which is: 60
+  trials + own
+    Which is: 20
+
+..\atx-engine\tests\research\research_eval_tie_test.cpp(357): error: Expected equality of these values:
+  n
+    Which is: 60
+  t["tot"]["n"].get<i64>() - m
+    Which is: 20
+
+..\atx-engine\tests\research\research_eval_tie_test.cpp(369): error: Expected: (row["dsr"].get<f64>()) > (t["tot"]["dsr"].get<f64>()), actual: 0.61418335146109737 vs 0.61418335146109737
+
+..\atx-engine\tests\research\research_eval_tie_test.cpp(356): error: Expected equality of these values:
+  n
+    Which is: 59
+  trials + own
+    Which is: 19
+
+..\atx-engine\tests\research\research_eval_tie_test.cpp(357): error: Expected equality of these values:
+  n
+    Which is: 59
+  t["tot"]["n"].get<i64>() - m
+    Which is: 19
+
+..\atx-engine\tests\research\research_eval_tie_test.cpp(369): error: Expected: (row["dsr"].get<f64>()) > (t["tot"]["dsr"].get<f64>()), actual: 0.25509840942530854 vs 0.25509840942530854
+
+..\atx-engine\tests\research\research_eval_tie_test.cpp(375): error: Expected: (out.find(" | hand (N_tot-M=" + std::to_string(trials + 1) + ") ")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+== ledger C:/atx-wt/pool-14/atx-engine/tests/fixtures/research_ledger\ledger.jsonl: 20 lines, chain head c0e7cd0eb942ff21 (atx-ledger-chain-fold/v1), window ledger-fx-v1
+== book (C:\Users\natha\AppData\Local\Temp\atxv-470d1c60\atx_research_eval_tie\trial_00.csv): T 500 SR +1.021 ann, skew -0.052 kurtosis 3.388
+   PSR vs SR* +0.00 ann: 0.9240 | MinTRL 659 sessions (2.61 y)
+   PSR vs SR* +0.50 ann: 0.7676 | MinTRL 2527 sessions (10.03 y)
+   DSR cross (N=10) 0.6459 | lo 0.4453 | house_v1 (N=15) 0.7157 | tot (N_tot=60) 0.6142 | hand (N_tot-M=60) 0.6142
+== old (C:\Users\natha\AppData\Local\Temp\atxv-470d1c60\atx_research_eval_tie\trial_01.csv): T 500 SR +0.344 ann, skew -0.068 kurtosis 3.469
+   PSR vs SR* +0.00 ann: 0.6855 | MinTRL 5787 sessions (22.97 y)
+   PSR vs SR* +0.50 ann: 0.4130 | MinTRL na sessions (na y)
+   DSR cross (N=10) 0.2818 | lo 0.1381 | house_v1 (N=14) 0.3574 | tot (N_tot=59) 0.2551 | hand (N_tot-M=59) 0.2551
+== conditional (Andrews-Kitagawa-McCloskey; printed only): 0 selected cell(s), raw sum +0.000 -> adjusted +0.000 (null bias 0.000)
+== DSR_hand (prefix rule) 0000000000000001: prefix 1 lines (chain head bad7b3fc76a72bb3), N_tot 1 DSR na
+
+
+[  FAILED  ] EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns (26 ms)
+[----------] 2 tests from EvalVerb (1161 ms total)
+
+[----------] Global test environment tear-down
+[==========] 2 tests from 1 test suite ran. (1162 ms total)
+[  PASSED  ] 1 test.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns
+
+ 1 FAILED TEST
+gtest exit=1
+F.FF.....                                                                [100%]
+================================== FAILURES ===================================
+________________ test_total_count_and_dsr_are_the_closed_form _________________
+
+book = {'dirs': {'A0': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/cebf5462-22ad-46d2-abf8-79e0fd372a4d/scra...l/Temp/claude/c--atx/cebf5462-22ad-46d2-abf8-79e0fd372a4d/scratchpad/b2redo/bt-teeth/test_total_count_and_dsr_are_t0')}
+capsys = <_pytest.capture.CaptureFixture object at 0x000001BE46F63080>
+
+    def test_total_count_and_dsr_are_the_closed_form(book, capsys):
+        d, ledger = book["dirs"], book["ledger"]
+        records = BI.ledger_read(ledger)
+        assert BI.trial_counts(records) == [1, 1, 1, 0, 0, 1, 1, 0] + [1] * 7 + [1, 0] + [1] * 3 + [1]
+        rows, out = run_json(book["tmp"], [str(d["XF0"]), str(d["NEW"]), "--dsr-total", str(ledger)], capsys)
+        v = v_ddof1(list(WINDOW_SRS.values()))
+        xf0, new = rows[0]["deflated_total"], rows[1]["deflated_total"]
+        assert xf0["parts"] == {"by_kind": {"admission": 10, "construction": 7}, "ledger_trials": 17,
+                                "campaign_registry": REGISTRY_COUNT, "n_tot": 149}
+        assert xf0["in_ledger"] is True and new["in_ledger"] is False
+        assert (xf0["tot"]["n"], xf0["v8"]["n"]) == (149, 7)          # the book is ledgered: no + 1
+        assert (new["tot"]["n"], new["v8"]["n"]) == (150, 8)          # not yet ledgered: + 1 on both counts
+        assert xf0["cells_in_v"] == 5 and xf0["variance_sr"] == pytest.approx(v, rel=1e-12)
+        for key, nets in (("XF0", nets_of(8, 0.0006)), ("NEW", nets_of(9, 0.0006))):
+            row = xf0 if key == "XF0" else new
+            for which in ("tot", "v8"):
+                want = oracle(nets, row[which]["n"], v)
+                assert row[which]["sr0_daily"] == pytest.approx(want["sr0"], rel=1e-9)
+                assert row[which]["sr0_annual"] == pytest.approx(want["sr0"] * ROOT, rel=1e-9)
+                assert row[which]["dsr"] == pytest.approx(want["dsr"], rel=1e-9)
+        assert xf0["tot"]["dsr"] < xf0["v8"]["dsr"]                    # the larger count deflates more
+        head = BI.ledger_head(ledger)
+        assert xf0["chain_head"] == head and xf0["lines"] == len(records) == 21
+        assert (f"== total-count DSR {d['XF0']} (ledger {ledger}, 21 lines, chain head {head[:16]})") in out
+        assert (f"   DSR_tot (N_tot=149): DSR {xf0['tot']['dsr']:.4f} vs SR0 {xf0['tot']['sr0_annual']:.3f} ann | "
+                f"N_tot = admission 10 + construction 7 + campaign registry 132 | V[SR] {v:.3e} from 5 cells ledgered on "
+                f"{BI.window_id()} | ") in out
+        assert "   DSR_tot (N_tot=150): " in out and "+ campaign registry 132 + 1 (this cell, not yet ledgered) |" in out
+        assert f"   DSR_v8 (N_c=7, v8 rule 3 as --dsr-ledger): DSR {xf0['v8']['dsr']:.4f} vs SR0 " in out
+        # P9 ruling PRE-15: DSR_hand at N = N_tot - M (the campaign's registry count left out), the same V
+>       assert (xf0["tot_minus_m"]["n"], new["tot_minus_m"]["n"]) == (149 - REGISTRY_COUNT, 150 - REGISTRY_COUNT)
+E       assert (149, 150) == (17, 18)
+E         
+E         At index 0 diff: 149 != 17
+E         Use -v to get more diff
+
+atx-impl\tools\test_dsr_total.py:165: AssertionError
+_____________ test_a_campaign_line_changes_n_tot_and_nothing_else _____________
+
+book = {'dirs': {'A0': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/cebf5462-22ad-46d2-abf8-79e0fd372a4d/scra...l/Temp/claude/c--atx/cebf5462-22ad-46d2-abf8-79e0fd372a4d/scratchpad/b2redo/bt-teeth/test_a_campaign_line_changes_n0')}
+capsys = <_pytest.capture.CaptureFixture object at 0x000001BE46F517C0>
+
+    def test_a_campaign_line_changes_n_tot_and_nothing_else(book, capsys):
+        d, ledger = book["dirs"], book["ledger"]
+        texts = ledger.read_text(encoding="utf-8").splitlines()
+        k = next(i for i, line in enumerate(texts) if json.loads(line)["kind"] == BI.MINING_CAMPAIGN)
+        without = book["tmp"] / "no-campaign.jsonl"                  # the same program without its campaign line:
+        BI.ledger_append(without, [json.loads(line) for line in texts[:3]])     # rebuilt so the chain verifies
+        BI.ledger_append(without, [{x: y for x, y in json.loads(line).items() if x != "prev_sha256"}
+                                   for i, line in enumerate(texts[3:], 3) if i != k], chain=True)
+        with_c, _ = run_json(book["tmp"], [str(d["XF0"]), "--dsr-total", str(ledger)], capsys)
+        no_c, _ = run_json(book["tmp"], [str(d["XF0"]), "--dsr-total", str(without)], capsys)
+        a, b = with_c[0]["deflated_total"], no_c[0]["deflated_total"]
+        assert a["tot"]["n"] - b["tot"]["n"] == REGISTRY_COUNT and a["parts"]["campaign_registry"] == REGISTRY_COUNT
+        assert b["parts"]["campaign_registry"] == 0 and a["parts"]["by_kind"] == b["parts"]["by_kind"]
+        assert a["v8"] == b["v8"] and a["variance_sr"] == b["variance_sr"] and a["cells_in_v"] == b["cells_in_v"]
+        assert a["tot"]["dsr"] < b["tot"]["dsr"]
+        nets = nets_of(8, 0.0006)
+        assert b["tot"]["dsr"] == pytest.approx(oracle(nets, 149 - REGISTRY_COUNT, a["variance_sr"])["dsr"], rel=1e-9)
+        # P9 ruling PRE-15 (v8y YP-2): DSR_hand at N_tot - M is what dropping the campaign gives, to the bit; without a
+        # campaign it is DSR_tot
+>       assert a["tot_minus_m"] == b["tot"] and b["tot_minus_m"] == b["tot"]
+E       AssertionError: assert ({'dsr': 0.276...2523673560834} == {'dsr': 0.373...6451590317849}
+E         
+E         Differing items:
+E         {'n': 149} != {'n': 17}
+E         {'dsr': 0.2769630560639885} != {'dsr': 0.37315269582479765}
+E         {'sr0_daily': 0.049712523673560834} != {'sr0_daily': 0.03406451590317849}
+E         {'sr0_annual': 0.7891618481139184} != {'sr0_annual': 0.5407574256696905}
+E         Use -v to get more diff)
+
+atx-impl\tools\test_dsr_total.py:209: AssertionError
+_______________ test_dsr_hand_at_n_tot_minus_m_ties_v8ys_dsr_at _______________
+
+book = {'dirs': {'A0': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/cebf5462-22ad-46d2-abf8-79e0fd372a4d/scra...l/Temp/claude/c--atx/cebf5462-22ad-46d2-abf8-79e0fd372a4d/scratchpad/b2redo/bt-teeth/test_dsr_hand_at_n_tot_minus_m0')}
+capsys = <_pytest.capture.CaptureFixture object at 0x000001BE46F3E600>
+
+    def test_dsr_hand_at_n_tot_minus_m_ties_v8ys_dsr_at(book, capsys):
+        """P9 ruling PRE-15: v8y's DSR_hand was ``dsr_total.dsr_at(moments, N_tot - M, V)`` (YP-2), code lane B2 retired;
+        the verb's row ties its frozen copy (fixtures/eval_tie/frozen_statistics.py) within 1e-12 on the same series, for a
+        ledgered book and a new one."""
+        spec = importlib.util.spec_from_file_location("b2_frozen_statistics_pre15", FROZEN)
+        frozen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(frozen)
+        d, ledger = book["dirs"], book["ledger"]
+        rows, _ = run_json(book["tmp"], [str(d["XF0"]), str(d["NEW"]), "--dsr-total", str(ledger)], capsys)
+        records = BI.ledger_read(ledger)
+        parts, v = frozen.trial_breakdown(records), BI.dsr_variance(records, BI.window_id())["variance_sr"]
+        assert parts["campaign_registry"] == REGISTRY_COUNT
+        for key, own, row in (("XF0", 0, rows[0]), ("NEW", 1, rows[1])):
+            x = np.array(list(NS.net_series(NS.load_daily(d[key], SCEN)).values()), dtype=np.float64)
+            n = parts["n_tot"] + own - parts["campaign_registry"]
+            want, got = frozen.dsr_at(frozen.net_moments(x), n, v), row["deflated_total"]["tot_minus_m"]
+>           assert got["n"] == want["n"] == n == parts["ledger_trials"] + own
+E           assert 149 == 17
+
+atx-impl\tools\test_dsr_total.py:228: AssertionError
+=========================== short test summary info ===========================
+FAILED atx-impl/tools/test_dsr_total.py::test_total_count_and_dsr_are_the_closed_form
+FAILED atx-impl/tools/test_dsr_total.py::test_a_campaign_line_changes_n_tot_and_nothing_else
+FAILED atx-impl/tools/test_dsr_total.py::test_dsr_hand_at_n_tot_minus_m_ties_v8ys_dsr_at
+3 failed, 6 passed in 7.00s
+pytest exit=1

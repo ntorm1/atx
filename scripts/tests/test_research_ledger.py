@@ -53,13 +53,11 @@ def protocol(ledger: Path, root: Path) -> int:
 
 
 def nav_summ_n(root: Path, ledger: Path, rel: str) -> int:
-    """nav_summ --dsr-ledger's N for one dir, with its own in-ledger rule (the trial_id of the dir's daily series)."""
-    records = BI.ledger_read(ledger)
-    present = {r.get("trial_id") for r in records if r.get("kind") == "construction"}
-    daily = root / rel / f"daily_{SCEN}.csv"
-    moments = NS.net_moments(np.array(list(NS.net_series(NS.load_daily(root / rel, SCEN)).values())))
-    tid = BI.trial_id("construction", BI.sha256_file(daily))
-    return NS.ledger_dsr(moments, records, tid in present, BI.window_id())["n"]
+    """nav_summ --dsr-ledger's N for one dir, with its own in-ledger rule (the trial_id of the dir's daily series), as
+    nav_summ prints it: deflated_ledger.n of its --json, the engine verb's house_v1 row (review B2 S7)."""
+    out = root / f"nav-summ-n-{sum(1 for _ in root.glob('nav-summ-n-*.json'))}.json"
+    assert NS.main([str(root / rel), "--dsr-ledger", str(ledger), "--json", str(out)]) == 0
+    return json.loads(out.read_text(encoding="utf-8"))[0]["deflated_ledger"]["n"]
 
 
 def cycle_n(root: Path, sp: Path) -> int:

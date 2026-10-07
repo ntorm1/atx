@@ -167,7 +167,7 @@ def test_emission_window_and_seal_inside_replay():
     counts = {}
     rows = bfe.process_cik(7, [fy_filing("old", "2013-02-20T21:00:00", 2012, 50, 500, 4000),
                                fy_filing("new", "2014-06-02T21:00:00", 2013, 60, 600, 4200),
-                               fy_filing("seal", "2025-01-01T00:00:00", 2024, 70, 700, 4400)], counts)
+                               fy_filing("seal", "2024-01-01T00:00:00", 2023, 70, 700, 4400)], counts)
     assert [r[1] for r in rows] == ["new"]
     assert item(rows[0], "at_lag4") == 4000  # pre-window knowledge is still used
     assert counts["accessions_sealed"] == 1
@@ -444,9 +444,9 @@ def sources(tmp_path):
                           ("CostOfRevenue", 500))]
           + [cf_row(1003, "Assets", None, "2020-12-31", "2021-03-05", "10-K", "0001003-21-000001", 3000)]
           + cf_annual(1500, 2020, "2021-03-01", "0001500-21-000001"))           # out of scope
-    b1 = (cf_annual(2001, 2023, "2024-02-15", "0002001-24-000001")              # FC1
-          + cf_annual(2001, 2024, "2024-12-31", "0002001-24-000099")            # accepted at the seal
-          + cf_annual(2001, 2025, "2025-02-15", "0002001-25-000001"))           # filed after the seal
+    b1 = (cf_annual(2001, 2022, "2023-02-15", "0002001-23-000001")              # FC1
+          + cf_annual(2001, 2023, "2023-12-31", "0002001-23-000099")            # accepted at the seal
+          + cf_annual(2001, 2024, "2024-02-15", "0002001-24-000001"))           # filed after the seal
     batches = []
     for i, (rows, lo, hi) in enumerate(((b0, 1000, 1999), (b1, 2000, 2999))):
         path = cf / f"batch-{i:04d}.parquet"
@@ -467,17 +467,17 @@ def sources(tmp_path):
                            "2021-02-20T14:05:00"),
                    sub_row("0001001-21-000002", 1001, None, "8-K", "2020-12-31", "2021-02-25",
                            "2021-02-25T14:05:00")],
-        "2024q4": [sub_row("0002001-24-000099", 2001, "2834", "10-K", "2024-12-31", "2024-12-31",
-                           "2025-01-01T00:00:00")],
+        "2023q4": [sub_row("0002001-23-000099", 2001, "2834", "10-K", "2023-12-31", "2023-12-31",
+                           "2024-01-01T00:00:00")],
     }
     quarters = {}
     for q, rows in subs.items():
         path = fsds / "sub" / f"{q}.parquet"
         pq.write_table(pa.Table.from_pylist(rows, schema=SUB_SCHEMA), path)
         quarters[q] = {"tables": {"sub": {"path": f"sub/{q}.parquet", "parquet_sha256": sha(path)}}}
-    post = fsds / "sub" / "2025q1.parquet"
+    post = fsds / "sub" / "2024q1.parquet"
     post.write_bytes(b"not a parquet file: opening it would fail")  # the seal: must never be opened
-    quarters["2025q1"] = {"tables": {"sub": {"path": "sub/2025q1.parquet", "parquet_sha256": sha(post)}}}
+    quarters["2024q1"] = {"tables": {"sub": {"path": "sub/2024q1.parquet", "parquet_sha256": sha(post)}}}
     (fsds / "fsds-staging-manifest.json").write_text(json.dumps({"quarters": quarters}))
     ciks = tmp_path / "ciks.txt"
     ciks.write_text("# T19 scope\n1001\n0000001002\n1003\n2001\n")
@@ -511,13 +511,13 @@ def test_end_to_end_clock_seal_sic_resume_and_manifest_last(sources):
     assert manifest["files"]["fundamental_events.parquet"]["sha256"] == sha(events_path)
     assert manifest["files"]["sic_events.parquet"]["sha256"] == sha(s["out"] / "sic_events.parquet")
     assert [q["quarter"] for q in manifest["inputs"]["fsds"]["sub_quarters"]] == ["2019q4", "2020q1", "2021q1",
-                                                                                  "2024q4"]
+                                                                                  "2023q4"]
     ev = pq.read_table(events_path)
     assert ev.schema == bfe.EVENT_SCHEMA
     rows = ev.to_pylist()
     assert [(r["cik"], r["accession"]) for r in rows] == [
         (1001, "0001001-20-000001"), (1001, "0001001-21-000001"), (1002, "0001002-21-000001"),
-        (1003, "0001003-21-000001"), (2001, "0002001-24-000001")]
+        (1003, "0001003-21-000001"), (2001, "0002001-23-000001")]
     r0, r1, r2, mixed, r3 = rows
     assert (mixed["sale_ttm"], mixed["gp_ttm"]) == (900, 400)  # Revenues total; gp = total - cost of revenue
     assert r0["clock_basis"] == bfe.BASIS_FSDS and r0["accepted_utc"] == dt.datetime(2020, 2, 20, 21, 30, tzinfo=UTC)
