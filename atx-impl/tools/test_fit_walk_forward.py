@@ -18,6 +18,7 @@ import copy
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -581,6 +582,77 @@ class WeightsV3(unittest.TestCase):
         with self.assertRaises(fcw.FitError) as caught:
             cef.weights_v3(unsigned, self.rows([[0.5, 0.0, 0.5]]), fcw.FitError)
         self.assertIn("without a composition sign: ['c']", str(caught.exception))
+
+
+@unittest.skipUnless(os.environ.get("ATX_RESEARCH_ADMISSION_EXE") and os.environ.get("ATX_RESEARCH_COMPOSITION_EXE"),
+                     "needs built atx-research-admission and atx-research-composition")
+class RealExecutables(unittest.TestCase):
+    """The built executables end to end: --walk-forward's rows are the C++ fit's (decision, session and window counts
+    exactly, every weight within ruling P12 of the Python composition on the same window), and --engine-fit
+    --mom-volman writes the C++ sleeve, within P12 of the flag-absent fit's."""
+
+    def run_real(self, fx, root: Path, tag: str, case: dict) -> tuple[dict, dict, dict]:
+        """(the published weights document, the summary, python_rows on the spec and series the C++ fit read plus
+        the spec's member order)."""
+        exes = dict(admission_exe=Path(os.environ["ATX_RESEARCH_ADMISSION_EXE"]),
+                    composition_exe=Path(os.environ["ATX_RESEARCH_COMPOSITION_EXE"]))
+        real_check, real_run, fits = cef.check_factor_series, cef.run_exe, []
+
+        def check(directory, state, error):
+            tcef.write_factor_dir(Path(directory), state)
+            return real_check(directory, state, error)
+
+        def run(argv, error):
+            argv = [str(a) for a in argv]
+            if argv[1] == "fit":  # keep the spec the fit read (its work directory is removed after verify)
+                kept = root / f"{tag}-spec.json"
+                kept.write_bytes(tcef.flag(argv, "--spec").read_bytes())
+                fits.append([str(kept) if a == str(tcef.flag(argv, "--spec")) else a for a in argv])
+            return real_run(argv, error)
+        out = root / tag
+        with unittest.mock.patch.object(cef, "check_factor_series", check), \
+                unittest.mock.patch.object(cef, "run_exe", run):
+            args = fx.args(out, **case, **dict(tcef.placeholders(root / f"{tag}-in"), **exes))
+            code, summary = cef.run_post_step(args, fcw.fit, hooks())
+        self.assertEqual((code, len(fits)), (fcw.EXIT_OK, 1))
+        spec = json.loads(tcef.flag(fits[0], "--spec").read_bytes())
+        return json.loads((out / fcw.OUTPUT_WEIGHTS).read_bytes()), summary, dict(
+            python_rows(fits[0]), members=[m["id"] for m in spec["members"]])
+
+    def assert_rows(self, doc: dict, python: dict) -> None:
+        keys = ("decision_index", "from_session", "fit_decisions", "last_fit_index", "last_fit_session")
+        cpp = doc["provenance"]["walk_forward"]["rows"]
+        self.assertGreaterEqual(len(cpp), 3)
+        self.assertEqual([[r[k] for k in keys] for r in cpp], [[r[k] for k in keys] for r in python["rows"]])
+        for row, want in zip(doc["walk_forward"]["rows"], python["rows"]):
+            self.assertEqual(row["from_session"], want["from_session"])
+            self.assertEqual(cef.compare_values(want["weights"], [row["weights"][m] for m in python["members"]])[0],
+                             [])
+            self.assertEqual([c for c, w in row["weights"].items() if w and c not in python["members"]], [])
+
+    def test_walk_forward_rows_are_the_cpp_fit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fx = tcef.World.build(root)
+            with unittest.mock.patch.object(cr, "REGISTRY_PATH", root / "no-registry.json"):
+                doc, summary, python = self.run_real(fx, root, "wf", dict(CASES["std-erc"], **WF))
+        self.assertEqual(doc["schema"], cef.WEIGHTS_SCHEMA_V3)
+        self.assertEqual(summary["walk_forward"]["rows"], len(python["rows"]))
+        self.assert_rows(doc, python)
+
+    def test_mom_volman_writes_the_cpp_sleeve_beside_the_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fx = volman_world(root)
+            with unittest.mock.patch.object(cr, "REGISTRY_PATH", root / "no-registry.json"):
+                self.assertEqual(fcw.fit(fx.args(root / "plain", **VOLMAN))[0], fcw.EXIT_OK)
+                plain = json.loads((root / "plain" / fcw.OUTPUT_WEIGHTS).read_bytes())
+                doc, summary, python = self.run_real(fx, root, "both", dict(VOLMAN, **WF))
+        self.assertIn("mom_volman", summary["engine_fit"]["blocks"])
+        self.assertEqual(doc["provenance"]["mom_volman"]["sleeve_source"], cef.VOLMAN_SOURCE)
+        self.assertEqual(cef.compare_values(plain["theme_schedule"]["sleeve"], doc["theme_schedule"]["sleeve"])[0],
+                         [])
+        self.assert_rows(doc, python)
 
 
 if __name__ == "__main__":
