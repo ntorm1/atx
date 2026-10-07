@@ -1077,13 +1077,15 @@ f64 group_label(usize d,usize i) {
   if (i==0 && d%3==0) return 5.0;
   return i<3?1.0:2.0;
 }
-// `gate` (P9 lane ABS): the scale on every cell (1 keeps a gated member's data, NaN removes it).
+// `gate` (P9 lane ABS): the scale times a positive multiplier varying by date and name (scale 1: a
+// gated member's data; NaN: none).
 std::vector<f64> field_column(const std::string& name,f64 scale) {
   std::vector<f64> out(D*N);
   for (usize d=0;d<D;++d) for (usize i=0;i<N;++i)
     out[d*N+i]=name=="grp_a"?group_label(d,i):(name=="mkt_ret"?market_value(d):
         (name=="iv_atm_21d"?.3+.01*static_cast<f64>(i):
-        (name=="gate"?scale:si_value(d,i,scale))));
+        (name=="gate"?scale*(1.5+std::sin(.37*static_cast<f64>(d)+1.3*static_cast<f64>(i))):
+        si_value(d,i,scale))));
   return out;
 }
 // A producer-shaped atx.research-role-fields/v1 directory bound to one role's own
@@ -5138,8 +5140,9 @@ bool pin_weights_text(const Directory& dir,IcRunnerConfig& cfg,const std::string
   return text_file(cfg.composition_weights_path,text,cfg.composition_weights_sha256);
 }
 // The members `listed` read the field gate, which no other candidate reads: each DSL becomes
-// (DSL) * gate. gate holds the fields' scale on every cell (field_column): 1 keeps the members'
-// data, NaN removes it (contract section 5's I': their evaluated signals non-finite everywhere).
+// (DSL) * gate. gate (field_column) is a positive multiplier at scale 1, so the members keep
+// informative data, and NaN at scale NaN (contract section 5's I': their evaluated signals
+// non-finite everywhere).
 bool gate_members(IcRunnerConfig& cfg,const std::vector<std::string>& listed) {
   auto lib=read_json(cfg.library_path);
   lib["fields"].push_back({{"name","gate"},{"basis","synthetic upstream field"}});
@@ -5347,7 +5350,8 @@ TEST(AbsentMembers, UnweightedPassWithoutCacheLeavesTheMemberUnoriented) {
   Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
   ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_vee"}));
   expect_absent_equivalence(dir,cfg,Json::array({"volume_vee"}),"u");
-  for (const auto& row:read_json(dir.path/"u-listed"/"orientations.json").at("candidates"))
+  const auto orientations=read_json(dir.path/"u-listed"/"orientations.json");
+  for (const auto& row:orientations.at("candidates"))
     EXPECT_EQ(row.at("sign").get<int>()==0,row.at("id")=="volume_vee") << row.at("id");
 }
 // Case 7 (D3W's v3 rows): per-date weights on the plain path and on ew-theme-std-v1 treat a listed
@@ -5396,7 +5400,8 @@ TEST(AbsentMembers, SharedCacheNeverCrossServesRunsWithAndWithoutTheList) {
   ASSERT_EQ(ic_entries.size(),2U);
   for (const auto& [path,sha]:ic_entries) ASSERT_FALSE(sha.empty()) << path;
   const auto warm=run_named(dir,listed,"warm_listed"); ASSERT_TRUE(warm.ok) << warm.error;
-  for (const auto& role_result:read_json(dir.path/"warm_listed"/"summary.json").at("roles")) {
+  const auto warm_summary=read_json(dir.path/"warm_listed"/"summary.json");
+  for (const auto& role_result:warm_summary.at("roles")) {
     EXPECT_EQ(role_result.at("candidate_cache").at("hits"),3);
     EXPECT_EQ(role_result.at("candidate_cache").at("ic_results").at("hits"),2);
     for (const auto& row:role_result.at("candidates")) {
@@ -5406,7 +5411,8 @@ TEST(AbsentMembers, SharedCacheNeverCrossServesRunsWithAndWithoutTheList) {
   }
   for (const auto& [path,sha]:ic_entries) EXPECT_EQ(file_sha(path),sha) << path;
   const auto again=run_named(dir,cfg,"warm_plain"); ASSERT_TRUE(again.ok) << again.error;
-  for (const auto& role_result:read_json(dir.path/"warm_plain"/"summary.json").at("roles"))
+  const auto again_summary=read_json(dir.path/"warm_plain"/"summary.json");
+  for (const auto& role_result:again_summary.at("roles"))
     EXPECT_EQ(role_result.at("candidate_cache").at("ic_results").at("hits"),3);
   expect_same_outputs(dir.path/"cold",dir.path/"warm_plain",{},true);
   auto fresh=listed; fresh.candidate_cache_directory=(dir.path/"fresh").string();
