@@ -144,7 +144,8 @@ def test_a_named_and_pinned_v2_cell_passes_verify_and_the_judge_runs_the_pinned_
     vf = receipt(root, m, "07-verify.json")["outputs"]
     assert vf["exes_sha256"]["cell"]["eval"] == pin and WR.eval_pin(w, cell) == (VERB, pin)
     code, log = K.wave(root, fake, "plan")      # the plan after match names the cell spec's verb
-    assert code == 0 and [f"--engine-stats {VERB} --protocol v8" in line for line in log if "--bundle" in line] == [True]
+    assert code == 0 and [f"--engine-stats {VERB} --protocol v8" in line
+                          for line in log if "--bundle" in line] == [True]
     code, log = K.wave(root, fake, "run")
     assert code == 0, log
     (cmd,) = bundle_cmds(fake)
@@ -152,7 +153,8 @@ def test_a_named_and_pinned_v2_cell_passes_verify_and_the_judge_runs_the_pinned_
     bundle = json.loads((root / w.wave_path("bundle.json")).read_text(encoding="utf-8"))
     assert bundle["nav_summ_run"]["engine_exe_sha256"] == pin
     jd = receipt(root, m, "08-judge.json")["outputs"]
-    assert jd["bundle"]["path"] == w.wave_path("bundle.json") and (root / "out/waves/k-navrule/wave-result.json").exists()
+    assert jd["bundle"]["path"] == w.wave_path("bundle.json") and (
+        root / "out/waves/k-navrule/wave-result.json").exists()
 
 
 def test_verify_refuses_a_v2_cell_without_exes_eval_or_its_pin(tmp_path):

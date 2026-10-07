@@ -300,7 +300,7 @@ def judge_plan(w: Wave, done: dict) -> list[str]:
     parent = s.get("reference_nav", "<parent NAV>")
     budget = WM.driver(w.manifest, "host_budget_mib")
     side = [f"#   the three run side by side under the host memory budget {budget} MiB"] if budget else []
-    verb = None                         # ruling B2-11: a v2 bundle names the cell spec's exes.eval (v1: bytes as before)
+    verb = None  # ruling B2-11: a v2 bundle names the cell spec's exes.eval (v1: bytes as before)
     if WK.is_v2(w.manifest):
         verb = (eval_pin(w, cell)[0] if mt.get("cell_spec") else None) or "<the cell spec's exes.eval>"
     return [WS.fmt_argv(cyc(w,"run", cell)),
