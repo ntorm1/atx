@@ -102,7 +102,12 @@ constexpr u64 kSpecLimit = 16ULL << 20;
               {"weights_before_cap", fit.parent_uncapped},
               {"cap", fit.parent_cap},
               {"cap_iterations", passes_json(fit.parent_passes, ids, themes)}};
-  if (!fit.tiers.empty()) {
+  if (spec.composition == ew_theme_aim_v2_rule) { // P9 lane D3W-PB: the gains and theme masses
+    Json theme_weights = Json::object();
+    for (usize t = 0; t < themes.size(); ++t) theme_weights[themes[t]] = fit.theme_weight[t];
+    parent["member_gains"] = fit.gains;
+    parent["theme_weights"] = std::move(theme_weights);
+  } else if (!fit.tiers.empty()) {
     Json regrades = Json::array();
     for (const auto& r : fit.regrades) {
       Json row{{"id", r.id}, {"from", r.from}, {"to", r.to}, {"status", r.status}};
