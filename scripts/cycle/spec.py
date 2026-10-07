@@ -239,10 +239,11 @@ def validate_runner_phases(phases, seconds=None) -> None:
 
 
 def argparse_values(flags: list, option: str) -> list:
-    """Every value argparse (``allow_abbrev`` on, its default) reads for the long ``option`` in an argv list, in order:
-    ``--option V``, ``--option=V`` and any abbreviation (``--opt V``, ``--opt=V``: argparse takes a unique prefix, and a
-    prefix shared with another option fails that run, so every prefix is counted); None for an occurrence with no value.
-    The value an occurrence consumes is skipped; a bare ``--`` ends the options (review R6B-C-4)."""
+    """Every value an argv list gives the long ``option``, in order: ``--option V``, ``--option=V`` and any prefix
+    (``--opt V``, ``--opt=V``: argparse's default ``allow_abbrev`` reads a unique prefix; the fitter and nav_summ set
+    ``allow_abbrev=False``, rulings D2R-1 / D2R-2 (b), so there a prefix is a usage error; every prefix is counted, the
+    safe side); None for an occurrence with no value. The value an occurrence consumes is skipped; a bare ``--`` ends
+    the options (review R6B-C-4)."""
     name, out, i = option[2:], [], 0
     while i < len(flags):
         tok = flags[i]
@@ -264,10 +265,11 @@ def argparse_values(flags: list, option: str) -> list:
 
 def validate_e27b(spec: dict) -> None:
     """Ruling E-27b on the argv the tools parse (review R6B-C-4). A spec is v8 when it is a verdict spec or nav_summ
-    reads --protocol v8 from summ.extra in any spelling (``--protocol v8``, ``--protocol=v8``, an abbreviation); a v8
-    spec never fits the v5 rule ew-theme-aim-v1, whatever the spelling of --composition in fit.flags (``=``, an
-    abbreviation, a repeat: argparse keeps the last). The cycle's own readers (summ_protocol, option_value, the template
-    maps) read one two-token pair, so --protocol (every spec) and a v8 spec's --composition are written once, that way."""
+    reads --protocol v8 from summ.extra in either spelling (``--protocol v8``, ``--protocol=v8``); a v8 spec never fits
+    the v5 rule ew-theme-aim-v1, whatever the spelling of --composition in fit.flags (``=``, a repeat: argparse keeps
+    the last). Both tools refuse an abbreviation (``allow_abbrev=False``, rulings D2R-1 / D2R-2 (b)); argparse_values
+    still counts one (the safe side). The cycle's own readers (summ_protocol, option_value, the template maps) read one
+    two-token pair, so --protocol (every spec) and a v8 spec's --composition are written once, that way."""
     extra = (spec.get("summ") or {}).get("extra") or []
     flags = (spec.get("fit") or {}).get("flags") or []
     protocols, compositions = argparse_values(extra, "--protocol"), argparse_values(flags, "--composition")
@@ -280,8 +282,8 @@ def validate_e27b(spec: dict) -> None:
                                          ("fit.flags", flags, "--composition", compositions if v8 else [])):
         if values and (len(values) > 1 or option_value(given, option) != values[0]):
             raise CycleError(f"spec {where}: write {option} once, as the two tokens '{option} VALUE' (argparse also "
-                             f"reads '{option}=VALUE', an abbreviation or a repeat, which the cycle's own checks do not "
-                             f"see; review R6B-C-4)", EXIT_USAGE)
+                             f"reads '{option}=VALUE' or a repeat, which the cycle's own checks do not see; the tool "
+                             f"refuses an abbreviation; review R6B-C-4)", EXIT_USAGE)
 
 
 def validate_v8_keys(spec: dict) -> None:
