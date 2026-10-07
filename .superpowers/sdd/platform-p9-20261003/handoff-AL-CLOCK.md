@@ -1,118 +1,70 @@
 # Handoff AL-CLOCK (lane AL-CLOCK, pool-8, branch `feat/p9-alclock-20261004`)
 
-Stopped a second time by the OWNER STOP relayed by the PM (R7-1 resume), at a clean point. Contract:
-`resume4-dispatch.md`, `resume6-addendum.md`, `r6-wave3-common.md`, `resume7-addendum.md`, `r7-dispatch.md` section
-"AL-CLOCK", rulings ALCLOCK-1, ALCLOCK-2, W3-9, W3-16, DEC-16, C3-1/3/4/5/9, PRE-7a, PRE-14/19/31, W1-I1, ALCOMB-1.
+Resume R8 (`r8-dispatch.md` "AL-CLOCK"). Contract: `resume4-dispatch.md`, `resume6-addendum.md`, `r6-wave3-common.md`,
+`resume7-addendum.md`, `resume8-addendum.md`; rulings ALCLOCK-1 / -2 / -3, W3-9, W3-16, C3-5 / C3-13, PRE-7a, DEC-16.
+Report: `task-AL-CLOCK-report.md` (same dir). The design text of the earlier handoffs is in git history
+(`git show ebaf1e3f:.superpowers/sdd/platform-p9-20261003/handoff-AL-CLOCK.md`, and at `120f6a25`).
 
-## State at the stop
+Continued in pool-30 on `feat/p9-alclock2-20261007` (TEETH-POOL); pool-8 frozen for the owner. The section "State at
+the stop" below is pool-8's, as it stood at STOP 8 (copied by plain `cp`; only the HEAD placeholder filled).
 
-- Root head `4dc831ac` merged: merge commit `8a6ebe5b` (clean, no conflict). Root may have moved since: merge it
-  again first (step 1 below).
-- The code of items 1, 2 (`two_speed_fast_theta(cadence)`), the refusals, the per-book stats and the
-  `--info-clock-print` opt-in is WRITTEN BUT NEVER COMPILED, in the commit `WIP(al-clock): ...` on top of `8a6ebe5b`
-  (16 C++ files, +352 / -32). Expect slips (missing include, a 100-column line, a warning under /W4 /WX).
-- Build trees: `build-equity` was CONFIGURED once (`atx-build.ps1 configure -Preset equity-dev`, exit 0; the
-  configure log is in the shared scratchpad, `alclock-configure-dev.log`); NOTHING was built: no build tag was used
-  (`p9-alclock-a` is still free), no object tree exists, no receipt. `build-equity-rel` does not exist.
-- Tests: NONE written, none run. No Python changed. No permission refusal.
+## State at the stop: BLOCKED by a permission refusal (PERM-1)
 
-## Items (r7-dispatch "AL-CLOCK" steps 1-7)
+- HEAD `1cbe5233` holds all lane code, tests, registration and template (committed); root `fd084e78` merged
+  (`e40ed78c`, clean).
+- The WORKING TREE IS NOT CLEAN: six source files carry the teeth set 1 mutations (uncommitted):
+  `atx-impl/src/book/nav_cli.cpp`, `nav_decide.cpp`, `nav_load.cpp`, `nav_lockstep.cpp`, `nav_validate.cpp`,
+  `atx-impl/src/strategy_nav_v7.cpp`. The exact diff is `alclock-logs/teeth-set1.diff` (108 lines; made by
+  `alclock-logs/tools/teeth.py 1`). The teeth build ran and every mutation was caught (report "Teeth").
+- The revert was REFUSED by the permission system, as one command:
+  `cd C:/atx-wt/pool-8 && git checkout -- atx-impl/src/book/nav_validate.cpp atx-impl/src/book/nav_lockstep.cpp atx-impl/src/book/nav_load.cpp atx-impl/src/book/nav_decide.cpp atx-impl/src/book/nav_cli.cpp atx-impl/src/strategy_nav_v7.cpp && rtk proxy git status --short && "C:/Program Files/Python312/python.exe" .superpowers/sdd/platform-p9-20261003/alclock-logs/tools/teeth.py 2 && rtk proxy git diff`
+  Not retried; no same-effect substitute (git restore / stash / Edit-tool reversal) was used (PERM-1). Everything
+  that needs the reverted tree stopped there.
+- Build tree `build-equity` (equity-dev, configured, warm) is KEPT for the resume (a fresh agent saves ~25 minutes);
+  `bin/atx-impl-strategy-target-tests.exe` is the TEETH exe of `p9-alclock-f` (mutated): never evidence. The canary
+  exes in `bin/` (`atx-equity-strategy-targets`, `-ic`, `atx-research-eval`) are `p9-alclock-b`'s (source `c3f3f1f8`,
+  clean; SHA-256 in `mega-p9-alclock-b-receipt.json`). `build-equity-rel` does not exist (Release not configured).
+
+## Items
 
 | item | status |
 |---|---|
-| 1 merge root | done (`8a6ebe5b`, root `4dc831ac`) |
-| 2 row + parser entry (append-only, W3-9) | written, uncompiled: row `nav_rules.cpp:77-83` (constant `info_clock_refuses` `:55-58`), parser `nav_cli.cpp:203-207` (`--rate info-clock-rate-v1`), help `:65-69`; header comment `nav_rules.hpp:11-12` |
-| 2 `two_speed_fast_theta(cadence)` (W3-16) | written: `nav_info_clock_fast_theta` / `nav_info_clock_fast` / `nav_info_clock_rates` declared `strategy_nav_replay.hpp:120-152`, defined `book/nav_decide.cpp:9-36` |
-| 2 refusals | written (see list below); NO test, so no teeth yet |
-| 2 per-book stats | written: `NavInfoClockStats` `strategy_nav_replay.hpp:402-417`; counted in `nav_decide.cpp:250-266` (`count_info_clock`), called `:333-335` (scored effective rebalances, members, main books) |
-| 3 `--info-clock-print` (ALCLOCK-1) | written: CLI `nav_cli.cpp:50-55`, help `:128-130`; NavSpec key `nav_spec.cpp:123-124` (appended at the table's end); `NavEmitOptions::info_clock_print` `strategy_nav_replay.hpp:749-764`; load without `fields_used` `nav_load.cpp:116-127`, `:159-166`, `:205-214`; block `nav_publish.cpp:80-83` + `info_clock_json` `nav_write.cpp:290-311`; `NavRun::info_clock` `nav_replay_internal.hpp:664-670`; wiring `nav_run.cpp:64-68`, `:312-329`, `:402`, `:417`, `:470-486`, `:526-527` |
-| 4 tests | NOT STARTED |
-| 5 registration + template | NOT STARTED (content decided, below) |
-| 6 builds Debug / Release, canary | NOT STARTED |
-| 7 report `task-AL-CLOCK-report.md` with "For PRE" | NOT STARTED |
+| merge root | done: `c3f3f1f8` (root `1b64ce45`), `e40ed78c` (root `fd084e78`), both clean |
+| compile the WIP (16 C++ files) | done: clean under /W4 /WX at `p9-alclock-b` (no slip) |
+| C++ test file + CMake tail | done: 13 tests; Debug `p9-alclock-e` (pre-merge tree): `InfoClock*` 13 / 13, named 24 / 24, whole target-tests 403 / 403 |
+| `rule_flags` pytest | done: `scripts/tests/test_info_clock_rule.py` 5 / 5 |
+| registration + template | done |
+| teeth set 1 | done (`p9-alclock-f`): 7 tests fail as intended, 6 pass; NOT reverted (refused) |
+| teeth set 2 (ALCLOCK-3 over-loosened) | NOT done (needs the reverted tree) |
+| Debug canary | goldens match on `p9-alclock-b`'s exes; @@CANARY@@ |
+| Debug build of the merged head, named + whole on it | NOT done (needs the reverted tree) |
+| Release (configure, build, named, whole, canary) | NOT done (needs the reverted tree) |
+| `scripts/tests` seeds 0 / 1, stage chain | @@PYTEST@@ |
+| report | committed with placeholders for the items above (`@@...@@` lines) |
 
-### What the WIP code does (file:line)
+## Tools (lane-local, `alclock-logs/tools/`)
 
-- `NavRateRule::InfoClockV1 = 2` and the rule text, constants `nav_info_clock_rate_id`, `nav_info_clock_field`
-  (`ea_days_since`), `nav_info_clock_window` 21: `strategy_nav_replay.hpp:120-152`.
-- `NavReplayInput::info_clock` (trailing span, date-major `ea_days_since`; empty = the replay without it):
-  `strategy_nav_replay.hpp:290-301`. Copied into every book's `Ctx::info_clock` (`nav_replay_internal.hpp:273-274`,
-  `nav_lockstep.cpp:269`) and into `replay_books`' input (`nav_lockstep.cpp:220`).
-- Rates formed ONCE per decision on the calling thread in `run_books` (`nav_session.cpp:302-306`, `:358-367`) into
-  `Construction::clock_rate` (`nav_replay_internal.hpp:235-240`); `plan_decision` hands them to aim-partial-v5
-  (`nav_decide.cpp:290-291`); so `--book-workers N` stays legal (only per-name-v1 is refused there).
-- Refusals written: config `nav_validate.cpp:81-89` (rule needs aim-partial-v5, trade_fraction .05, no rate params);
-  `rate_ok` treats the rule like fixed for the params `:91-99`; input `nav_validate.cpp:180-196` (clock geometry,
-  rule without clock, a cell outside NaN-or-finite->=0); budget `:209-210`; grid variants must keep the base cadence
-  `nav_lockstep.cpp:201-209` (two-speed's message left byte-identical: a test pins it); no `--fields` `nav_load.cpp:
-  205-214`; kernel `nav_decide.cpp:13-30`. Existing refusals that already cover the row's `incompatible[]`:
-  per-name params `nav_cli.cpp:245-248`, `--rate` aim-partial-v5 only `:241-243`, two-speed `nav_validate.cpp:
-  106-110` + v7 `strategy_nav_v7.cpp:1218-1221`, spo `:1292`, aim-partial-v6 `:1340-1345`.
-- Loosened: `--capacity-curve` with `--rate info-clock-rate-v1` is now accepted (`strategy_nav_v7.cpp:1340-1345`;
-  the rate reads no NAV; Y-F0, P9-C's parent, runs `--capacity-curve`).
-- Recipe under the rule: `rate`, `rate_theta_fast`, `rate_theta_slow`, `rate_window_sessions`, `rate_field`,
-  `aim_partial` (`nav_write.cpp:250-260`, tail text `:87-96`); `ea_days_since` enters `financing_fields.fields_used`
-  only under the rule (`nav_load.cpp:159-166`); summary `construction.v5.rate` (`nav_publish.cpp:95`).
-- Reserve: `nav_lockstep.cpp:69-75` (one f64 per name under the rule only; flag absent adds 0).
-- Decide path: unchanged; `nav_deploy.cpp:87` already refuses every non-fixed rate.
+- `build.sh TAG PRESET TARGETS` (`RECACHE=1`, `CANARY=1`): waits for no other build on the host and the memory floor
+  (90 minutes), then `scripts/research-build.ps1`; copies receipts / logs to `alclock-logs/`, one line in `builds.txt`.
+- `gt.sh LABEL EXE LOG FILTER`, `pyt.sh LABEL SEED BASETEMP LOG -- args`: root's wrappers with lane paths.
+- `teeth.py 1|2`: the teeth mutations (exact text replacements, CRLF-aware).
 
-### Decided, not yet written
+## Next step for a fresh agent (after the PM / owner restores the six files to HEAD in an accepted form)
 
-- Tests (new file `atx-impl/tests/strategy_nav_info_clock_test.cpp` + CMake tail
-  `target_sources(atx-impl-strategy-target-tests PRIVATE strategy_nav_info_clock_test.cpp)` at the END of
-  `atx-impl/tests/CMakeLists.txt`; the glob already puts it in atx-impl-tests). Fixture: spo `Role(40, 12, 53)` +
-  `write_run_inputs` + an own fields writer (shares_out 1e8, si_shares 1e6, optional ea_days_since; manifest pinned to
-  the role's receipts, as `strategy_nav_replay_test.cpp:411-444`). Planned suites: `InfoClockRate.KernelAtTheWindowBoundary`
-  (0, 21, nextafter(21), 22, NaN, nonmember; cadence 1 / 5 / 21; .12945 at C = 1; every refusal writes nothing),
-  `.StepChangeClosedForm` (holdings sink: rule_weight = held + theta_i (L desired - held), dust 0, exit 1; an
-  all-NaN clock equals the fixed run except applied_fraction), `.EventClockIsCausal` (clock rows > d0 changed: days
-  <= d0 identical), `.RefusedConfigsAndInputs`, `.BookWorkersOneAndFourSameBytes` (rule on, `--cost-v2
-  --capacity-curve`, fields), `.RegistryRowAndParser`; `InfoClockPrint.FlagAbsentLoadsNoClock` (manifest with and
-  without the field: NAV files equal, recipe/summary equal after the manifest-SHA substitution, no `info_clock`,
-  no `rate`), `.PrintOnlyOptInAddsOneBlockPerScenario` (every file but summary.json equal incl. capacity/ and v7
-  files; summary minus the blocks = absent bytes; values checked against `--emit-holdings --holdings-format csv`:
-  sum of |planned_trade_weight| over member rows of rebalance sessions, fast by the fixture clock),
-  `.RuleOnWithoutFlagPrintsNoBlock`, `.SpecEqualsArgv`. Teeth: one Debug build with every new check disabled
-  (commit first, mutate, build, run, `git checkout -- <files>`).
-- Pytest `scripts/tests/test_info_clock_rule.py` (never edit D3's `test_wave_kinds.py`): fake NAV table = C1's
-  three leverage rows + the row as `--list-rules --json` prints it; `wave_kinds.rule_flags([{"name":
-  "info-clock-rate-v1"}])` == `{"nav": {"--rate": "info-clock-rate-v1"}}`; params `{"x": 1}` refused;
-  `raw_rule_flags` refuses `nav --rate` and leaves `--info-clock-print` free; a fake-world `wave run --until spec`
-  on a kind-rule manifest naming the row gives the cell `--rate info-clock-rate-v1` on the NAV argv. A new Python
-  test file means: whole `scripts/tests` under PYTHONHASHSEED 0 and 1 + `test_stage_chain.py`, separate invocations.
-- Argv token: the row puts `--rate info-clock-rate-v1` on the NAV argv (`wave_kinds.nav_flags`: x-flag, no
-  params). It does not touch `--rule`, so the C3-5 probe should see the parent's `--rule aim-partial-v5` once; a
-  parent argv that already carries `--rate` gets its value replaced (derived flag applied), never duplicated.
-- Registration `scripts/specs/p9/rules/info-clock-rate-v1.json` (`atx.p9-rule-registration/v1`, AL-COMB's shape,
-  `mom-volman-v1.json`): `source_sample_end` 2019, FLAGGED (PRE-19 / PRE-31, ALCLOCK-2; Bowles, Reed, Ringgenberg,
-  Thornock, "Anomaly Time", JF 79(5) 2024, p. 14 "Our sample period begins January 1990 and goes through 2019");
-  the paper's information-release date mapped to `ea_days_since`'s reaction session stated as a FIXED CHOICE;
-  constants theta_f = two_speed_fast_theta(C) (W3-16), theta_s .05, window 21; C3-4 line: the rule changes only the
-  per-name rate, never L, so realised gross stays bounded by the parent's L; DEC-16 argument: Y-5 buckets THEMES into
-  two netted sleeves, this rule buckets NAME-DAYS by an event clock (one aim, a per-name rate vector, no sleeve,
-  no netting), R-3 is a per-signal aim gain; manifest_fragment with `gross_match: "pm6-6-engine"` (a manifest key,
-  not a template key) and `rules: [{name: info-clock-rate-v1, params: {}}]`.
-- Template `scripts/specs/p9/templates/info-clock.json` (`atx.research-cycle-template/v1`, name `p9-info-clock`;
-  parent null, nominal_parent `../../v8/lib-v8ysb-gm.json` (Y-F0); `change.set` only `nav.output`
-  `build-equity/mega-nav-p9-info-clock` and `monitor.output` `build-equity/mega-monitor-p9-info-clock`; no `rules`,
-  no `change.flags`). `--info-clock-print` is NOT in the template: per ALCLOCK-1 root names it on the Y-F0
-  reference at the wave-3 P9-B0 and the cell inherits it.
-
-## Next step for a fresh agent
-
-1. `git merge feat/platform-p9-20261003` in pool-8 (W3-EARLY-2; never rebase).
-2. Read this WIP diff (`git show HEAD`); then write the C++ test file + CMake tail, the pytest, the registration
-   and the template (above).
-3. Build `p9-alclock-a` (equity-dev): `powershell -File scripts\research-build.ps1 -Tag p9-alclock-a -Targets
-   "atx-impl-strategy-target-tests,atx-equity-strategy-targets,atx-equity-strategy-ic,atx-research-eval" -Canary`
-   (the tree is configured); fix slips; named filter `InfoClock*:NavSpec.*:NavRules.*:TradeRateRegistry.*:
-   NavAnnMeanGross.*`, then whole target-tests; teeth build; Release `equity-rel` (configure first; stale PCH:
-   `CCACHE_RECACHE=1`); canary on both goldens.
-4. Report `task-AL-CLOCK-report.md` with "For PRE" (P9-C block); merge root again, re-run suites; delete own build
-   trees by name.
-
-## Notes
-
-- Anchoring disclosure (unchanged): two public ledger lines with Y-5 / X-10 verdict numbers (`progress.md` :147,
-  :156) were shown by a grep in the first session; no constant or prediction is taken from them.
-- The R7 dispatch also asks for a `--spec` = argv test with the flag; the NavSpec key exists, the test does not.
+1. Check `git status --short` is empty and `git diff HEAD` is empty (the six files equal HEAD's).
+2. Teeth set 2: `teeth.py 2`, `bash alclock-logs/tools/build.sh p9-alclock-g equity-dev atx-impl-strategy-target-tests`,
+   `gt.sh g-teeth <exe> <log> 'InfoClockRate.CapacityCurveAcceptsThisRateOnly'` (expect FAILED: per-name-v1 with the
+   capacity curve and aim-partial-v6 with this rate both accepted), then restore the file in the accepted form. If
+   that restore is not available, skip set 2 and say so (set 1's M10 already shows the refusal line has teeth).
+3. Merge `feat/platform-p9-20261003` if root moved.
+4. `CANARY=1 bash alclock-logs/tools/build.sh p9-alclock-h equity-dev "atx-impl-strategy-target-tests,atx-equity-strategy-targets,atx-equity-strategy-ic,atx-research-eval"`;
+   `gt.sh` named filter `InfoClock*:NavSpec.*:NavRules.*:TradeRateRegistry.*:NavAnnMeanGross.*:CostLawRegistry.*:TargetRegistry.*`
+   and `'*'` on `build-equity/bin/atx-impl-strategy-target-tests.exe`.
+5. `powershell scripts\atx-build.ps1 configure -Preset equity-rel` (the documented form, from pool-8); then
+   `RECACHE=1 CANARY=1 bash alclock-logs/tools/build.sh p9-alclock-i equity-rel "<the four targets>"`; named + whole
+   on `build-equity-rel/bin/atx-impl-strategy-target-tests.exe`.
+6. If root moved after step 3: `scripts/tests` seeds 0 and 1 and `atx-engine/tools/test_stage_chain.py` again
+   (separate invocations, `pyt.sh`).
+7. Fill the report's `@@...@@` lines, commit report + handoff + `alclock-logs/` (`git add -f`), then delete
+   `build-equity` and `build-equity-rel` object trees by name (keep `mega-*` receipts and logs, already copied to
+   `alclock-logs/`).
