@@ -935,8 +935,8 @@ pytest (`"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovide
 | suite | env | on `7832719f` (Debug `m`, Release `n`) | on `1b15330d` (Debug `o`, Release `p`) |
 |---|---|---|---|
 | `scripts/tests` whole (incl. `test_wave_eval_verb.py` (B2-11), `test_wave_kinds.py`, `test_research_spec.py` (D2R-2 (b), e27b), `test_cycle_scoring.py` (both verb tests), `test_no_python_mirror.py`) | seed 0 | 520 passed, 4 skipped (`r8-pytest-scripts-m-s0.log`) | 527 passed, 5 skipped (`r8-pytest-scripts-o-s0.log`) |
-| the same | seed 1 | 520 passed, 4 skipped (`r8-pytest-scripts-m-s1.log`) | R9, on `52cdcc8c` (= `1b15330d` + root's docs-only `685e238b`), Debug `q`: 527 passed, 5 skipped, 0 failed (`r9-pytest-scripts-q-s1.log`); the R8 run stopped at about 58 % stays in `r8-pytest-scripts-o-s1.log` (marked STOPPED, not evidence) |
-| `atx-engine/tools/test_stage_chain.py` | seeds 0 and 1 | 9 passed each (`r8-pytest-chain-s{0,1}.log`) | R9, on `52cdcc8c`, Debug `q`: 10 passed each, 0 failed (`r9-pytest-chain-q-s{0,1}.log`); the tenth case is SQL3's (`d10d9e54`, in root `fd084e78`) |
+| the same | seed 1 | 520 passed, 4 skipped (`r8-pytest-scripts-m-s1.log`) | R9, on `52cdcc8c` (= `1b15330d` + root's docs-only `685e238b`), Debug `q`: 527 passed, 5 skipped, 0 failed (`r9-pytest-scripts-q-s1.log`); the R8 run stopped at about 58 % stays in `r8-pytest-scripts-o-s1.log` (marked STOPPED, not evidence). TEST-1 (owner, 2026-10-07) reached the lane only after this run had finished and been committed (`fda4c27b`): under TEST-1 this suite is deferred to the gate (TEST-1), whose run on the gate head is the run of record; this one is kept as the lane's evidence, not repeated |
+| `atx-engine/tools/test_stage_chain.py` | seeds 0 and 1 | 9 passed each (`r8-pytest-chain-s{0,1}.log`) | R9, on `52cdcc8c`, Debug `q`: 10 passed each, 0 failed (`r9-pytest-chain-q-s{0,1}.log`); the tenth case is SQL3's (`d10d9e54`, in root `fd084e78`). TEST-1 (owner, 2026-10-07) reached the lane only after this run had finished and been committed (`fda4c27b`): under TEST-1 this suite is deferred to the gate (TEST-1), whose run on the gate head is the run of record; this one is kept as the lane's evidence, not repeated |
 | tools + fixtures (the R6 list: `test_nav_summ_engine`, `test_nav_summ`, `_pool`, `_v8`, `test_dsr_total` (PRE-15), `test_backtest_integrity`, `test_book_diagnostics`, `test_trial_ledger_rules`, `test_mega_report_v8`, `_v8_render`, `_pitch3`, the eval_tie / research_ledger / research_eval_edges fixture tests) | seed 0, Debug verb | 274 passed, 1 skipped (`r8-pytest-tools-m-s0.log`) | 274 passed, 1 skipped (`r8-pytest-tools-o-s0.log`) |
 | the same | seed 1, Release verb (`ATX_EQUITY_BIN=build-equity-rel/bin`) | 274 passed, 1 skipped (`r8-pytest-tools-n-s1.log`) | 274 passed, 1 skipped (`r8-pytest-tools-p-s1.log`) |
 | G-P5: `scripts/tests/test_no_python_mirror.py` | Debug | 7 passed (`r8-gp5-mirror.log`) | 7 passed; "16 mirrored rule function(s) in 7 row(s) left", the B2 rows stay retired (`r8-gp5-mirror-o.log`) |
@@ -986,6 +986,9 @@ the trial ledger in pool-2 not opened; `atx-impl/tools/test_holdout_gate.py` not
   `--basetemp`, `PYTHONDONTWRITEBYTECODE=1`, ATX_EQUITY_BIN unset, separate invocations):** `scripts/tests` seed 1
   527 passed / 5 skipped; `atx-engine/tools/test_stage_chain.py` seeds 0 and 1, 10 passed each. 0 failed. The five
   skips are the same named environment skips as seed 0 on `1b15330d` (above). No child exited 3221225794 (ENV-1).
+- **TEST-1:** the PM's TEST-1 message arrived after the build, the gtests and both suites above had
+  finished and `fda4c27b` was committed. Nothing was re-run after it; the Release build was not done;
+  the whole `scripts/tests` / stage chain are deferred to the gate (TEST-1) as runs of record.
 - **State:** every named suite is green on the final tree; nothing pending. Re-review 2 may start (B2-SEQ); REV-BASE
   stays `26fe8d50`; `52cdcc8c` is a sixth merge with no conflict (table below).
 

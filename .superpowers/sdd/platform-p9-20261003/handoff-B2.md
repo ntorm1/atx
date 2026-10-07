@@ -6,6 +6,10 @@
 round 2b-i, docs only, no conflict). **Root SHA merged last:** `685e238b`. Branch `feat/p9-b2-20261003`, pool-14. No
 rebase, amend or reset; no code changed; tree clean after this commit; nothing pending in the lane.
 
+**TEST-1:** the PM's TEST-1 message arrived after `p9-b2-q`, the gtests and both suites below had finished
+and been committed (`fda4c27b`); nothing was re-run; the whole `scripts/tests` and the stage chain are deferred
+to the gate (TEST-1), whose runs are the runs of record (the lane's runs stay as its evidence).
+
 **Done:** configure `equity-dev` (the object tree had been deleted at the R8 stop); Debug `p9-b2-q` at `52cdcc8c`
 (receipt `build-equity/mega-p9-b2-q-receipt.json`, copy in `b2-evidence/`; dirty 0, exit 0, 466 TUs; verb
 `atx-research-eval` SHA-256 `80a73375313272011d4fcb7a90caba1b46cab371da899ddfeed560222cc0142d`, re-checked unchanged
