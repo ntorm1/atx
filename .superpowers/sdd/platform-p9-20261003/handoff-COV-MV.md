@@ -237,3 +237,14 @@ primary source (Menchero-Wang-Orr 2011 / 2012) or written "unverified" (PRE-19).
 4. `git -C C:/atx-wt/pool-2 log --format=%s -30`: if root moved (AL-CLOCK), merge it (keep both rows / terms) and
    re-run the Debug filters; update the report's evidence and "Pending"; commit the report (`git add -f`).
 5. Delete `build-equity` / `build-equity-rel` object trees by name (keep `mega-*` receipts and logs).
+
+## Session R9 (2026-10-07; dispatch r9-dispatch.md COV-MV; TEETH-POOL)
+
+- Continued in pool-31 on `feat/p9-covmv2-20261007` (TEETH-POOL); the two `// TEETH` lines stay uncommitted in
+  pool-24 for the owner (`atx-impl/src/strategy_nav_v7.cpp:1271`, `atx-impl/src/strategy_mv_aim.cpp:135`; pool-24
+  is read-only for this lane: no build, no edit, no git write; nothing under its `build-equity*/bin` is evidence).
+- Start: pool-31 head `b6e304ee`, tree clean, no `// TEETH` line in either file. Pool-24's lane records
+  (`handoff-COV-MV.md`, `task-COV-MV-report.md`, `covmv-logs/**`) compared with pool-31's: identical modulo the CRLF
+  checkout; nothing copied.
+- Step 1 of "Session R8 / Next step" is void here (the committed tree holds no teeth line); steps 2-5 run in this
+  pool per the R9 dispatch.
