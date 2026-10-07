@@ -1,5 +1,23 @@
 # Lane B2 handoff: post-identity redo (first written 2026-10-04; newest section first)
 
+## R9 round: the two pending suites done (2026-10-07; dispatch R9-1; supersedes every section below)
+
+**Head:** the docs commit that adds this section, on the merge commit `52cdcc8c` (root `685e238b` merged: prereg
+round 2b-i, docs only, no conflict). **Root SHA merged last:** `685e238b`. Branch `feat/p9-b2-20261003`, pool-14. No
+rebase, amend or reset; no code changed; tree clean after this commit; nothing pending in the lane.
+
+**Done:** configure `equity-dev` (the object tree had been deleted at the R8 stop); Debug `p9-b2-q` at `52cdcc8c`
+(receipt `build-equity/mega-p9-b2-q-receipt.json`, copy in `b2-evidence/`; dirty 0, exit 0, 466 TUs; verb
+`atx-research-eval` SHA-256 `80a73375313272011d4fcb7a90caba1b46cab371da899ddfeed560222cc0142d`, re-checked unchanged
+after the last suite); gtests eval 26 / 26, ledger 16 / 16, `atx-impl-tests` `*Ledger*:EvalVerb*` 29 / 29;
+`scripts/tests` seed 1 527 passed / 5 skipped; `atx-engine/tools/test_stage_chain.py` seeds 0 and 1, 10 passed each.
+0 failed; the five skips are the named environment skips of seed 0; ENV-1 not seen. Logs `b2-evidence/r9-*`; record
+in `task-B2-report.md`, section "R8 round" (the two cells filled) and "R9 completion".
+
+**Next:** re-review 2 (B2-SEQ: the suites are recorded, it may start; REV-BASE `26fe8d50`; `52cdcc8c` is one more
+merge with no conflict). The pool-14 Debug object tree is deleted by name after this commit (`mega-p9-b2-*` receipts
+and logs kept). Next free tag `p9-b2-r`.
+
 ## R8 round: OWNER STOP with two suite runs pending (2026-10-06; dispatch R8-1; supersedes every section below)
 
 **Head:** the docs commit that adds this section, on the merge commit `1b15330d`. **Root SHA merged last:**

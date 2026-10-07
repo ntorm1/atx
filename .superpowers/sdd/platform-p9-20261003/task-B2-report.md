@@ -4,6 +4,10 @@
 
 **Fix round 1 (end of file) supersedes the SHAs below: identity merge point `1b25b9a4`, deletion commit `598d2199`.**
 
+**R9 (2026-10-07): the two pending suites are done on `52cdcc8c` (root `685e238b` merged, docs only, no conflict),
+Debug `p9-b2-q`: `scripts/tests` seed 1 527 passed / 5 skipped, stage chain 10 passed per seed, 0 failed (section
+"R8 round", table cells and "R9 completion"). Nothing is pending in the lane; next: re-review 2 (B2-SEQ).**
+
 **Post-identity redo (last section): R8 (2026-10-06), stopped by the owner with two suite runs pending. Root
 `fd084e78` merged (`1b15330d`); PRE-15 (`fe152fca`), B2-11 with re-review R1 / R2 (`d8f80c7a`), D2R-2 (b)
 (`34838462`), the G-P5 placement; builds `p9-b2-o` (Debug) / `p9-b2-p` (Release); every named suite green on
@@ -931,8 +935,8 @@ pytest (`"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovide
 | suite | env | on `7832719f` (Debug `m`, Release `n`) | on `1b15330d` (Debug `o`, Release `p`) |
 |---|---|---|---|
 | `scripts/tests` whole (incl. `test_wave_eval_verb.py` (B2-11), `test_wave_kinds.py`, `test_research_spec.py` (D2R-2 (b), e27b), `test_cycle_scoring.py` (both verb tests), `test_no_python_mirror.py`) | seed 0 | 520 passed, 4 skipped (`r8-pytest-scripts-m-s0.log`) | 527 passed, 5 skipped (`r8-pytest-scripts-o-s0.log`) |
-| the same | seed 1 | 520 passed, 4 skipped (`r8-pytest-scripts-m-s1.log`) | NOT FINISHED: stopped by me at the owner stop at about 58 %, no failure printed; pending (`r8-pytest-scripts-o-s1.log`, marked) |
-| `atx-engine/tools/test_stage_chain.py` | seeds 0 and 1 | 9 passed each (`r8-pytest-chain-s{0,1}.log`) | NOT RUN (owner stop came first); pending |
+| the same | seed 1 | 520 passed, 4 skipped (`r8-pytest-scripts-m-s1.log`) | R9, on `52cdcc8c` (= `1b15330d` + root's docs-only `685e238b`), Debug `q`: 527 passed, 5 skipped, 0 failed (`r9-pytest-scripts-q-s1.log`); the R8 run stopped at about 58 % stays in `r8-pytest-scripts-o-s1.log` (marked STOPPED, not evidence) |
+| `atx-engine/tools/test_stage_chain.py` | seeds 0 and 1 | 9 passed each (`r8-pytest-chain-s{0,1}.log`) | R9, on `52cdcc8c`, Debug `q`: 10 passed each, 0 failed (`r9-pytest-chain-q-s{0,1}.log`); the tenth case is SQL3's (`d10d9e54`, in root `fd084e78`) |
 | tools + fixtures (the R6 list: `test_nav_summ_engine`, `test_nav_summ`, `_pool`, `_v8`, `test_dsr_total` (PRE-15), `test_backtest_integrity`, `test_book_diagnostics`, `test_trial_ledger_rules`, `test_mega_report_v8`, `_v8_render`, `_pitch3`, the eval_tie / research_ledger / research_eval_edges fixture tests) | seed 0, Debug verb | 274 passed, 1 skipped (`r8-pytest-tools-m-s0.log`) | 274 passed, 1 skipped (`r8-pytest-tools-o-s0.log`) |
 | the same | seed 1, Release verb (`ATX_EQUITY_BIN=build-equity-rel/bin`) | 274 passed, 1 skipped (`r8-pytest-tools-n-s1.log`) | 274 passed, 1 skipped (`r8-pytest-tools-p-s1.log`) |
 | G-P5: `scripts/tests/test_no_python_mirror.py` | Debug | 7 passed (`r8-gp5-mirror.log`) | 7 passed; "16 mirrored rule function(s) in 7 row(s) left", the B2 rows stay retired (`r8-gp5-mirror-o.log`) |
@@ -955,6 +959,36 @@ pytest (`"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovide
 Blind and data rules: synthetic and fixture data only; no 2020-2023 statistic and nothing dated 2024 or later opened;
 the trial ledger in pool-2 not opened; `atx-impl/tools/test_holdout_gate.py` not run.
 
+#### R9 completion (dispatch R9-1, 2026-10-07; HOST-3, EXE-CUR, SPDLOG-RELINK, ENV-1, B2-SEQ)
+
+- **Merge:** `52cdcc8c` (parents `e86d8b7c`, `685e238b`): root `685e238b` (prereg round 2b-i), NO conflict; it changes
+  only `p9-prereg.md` in the sprint dir (`git diff 1b15330d 52cdcc8c` outside `.superpowers` is empty). **Root SHA
+  merged last: `685e238b`.** No code changed this round.
+- **Configure:** the Debug object tree was deleted at the R8 stop, so `powershell scripts\atx-build.ps1 configure
+  -Preset equity-dev` first (exit 0; `r9-configure-equity-dev.log`). No Release build this round (not asked; the
+  Release exe of record stays `p9-b2-p`, and `git diff 1b15330d..52cdcc8c` over C++ / CMake is empty).
+- **Build `p9-b2-q`** (`scripts/research-build.ps1`, equity-dev, admitted with 3669 MiB free and no other build on the
+  host): receipt `build-equity/mega-p9-b2-q-receipt.json` (copy in `b2-evidence/`): source and configured provenance
+  `52cdcc8c`, dirty 0, jobs 4, exit 0, 334 s, 466 TUs, 18 links; targets `atx-research-eval`,
+  `atx-engine-research-eval-tests`, `atx-engine-research-ledger-tests`, `atx-impl-tests`. SHA-256 per the receipt:
+  verb `atx-research-eval` `80a73375313272011d4fcb7a90caba1b46cab371da899ddfeed560222cc0142d`; eval tests
+  `54a5672a3dafbf7542d0f85a60eb0b6fbd7c691b74e4535c397e9304e3f8bd91`; ledger tests
+  `0a98717e995378ea701eea51b36f3c3b606d429971aa11334904ba729339d2b1`; `atx-impl-tests`
+  `085f1059eeada666573330a9c16dd5d1bccecb094a6250e484416cf1b35fe2f4`. The verb's SHA-256 differs from `p9-b2-o`'s with
+  no C++ / CMake source change (fresh configure at a new provenance; the shared `C:\atx-cache\deps\spdlog-build` was
+  rebuilt again, 7 TUs). SPDLOG-RELINK: the evidence below is from this receipt; the verb's SHA-256 was re-checked
+  after the last suite and is unchanged; no build ran in pool-14 while a suite ran.
+- **gtests (Debug `q`):** `atx-engine-research-eval-tests` 26 / 26 (incl. PRE-15's
+  `EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns`; "33 of 34 bit-equal" as in every Debug run),
+  `atx-engine-research-ledger-tests` 16 / 16, `atx-impl-tests --gtest_filter=*Ledger*:EvalVerb*` 29 / 29
+  (`r9-gtest-q-{eval-whole,ledger-whole,impl-ledger}.log`).
+- **pytest (Debug `q`; command form of the handoff: explicit interpreter, `-q -rs -p no:cacheprovider`, own
+  `--basetemp`, `PYTHONDONTWRITEBYTECODE=1`, ATX_EQUITY_BIN unset, separate invocations):** `scripts/tests` seed 1
+  527 passed / 5 skipped; `atx-engine/tools/test_stage_chain.py` seeds 0 and 1, 10 passed each. 0 failed. The five
+  skips are the same named environment skips as seed 0 on `1b15330d` (above). No child exited 3221225794 (ENV-1).
+- **State:** every named suite is green on the final tree; nothing pending. Re-review 2 may start (B2-SEQ); REV-BASE
+  stays `26fe8d50`; `52cdcc8c` is a sixth merge with no conflict (table below).
+
 #### Conflict tables of the merges (B2-14; for re-review 2 under REV-BASE)
 
 | merge | root head merged | conflicts | regions and resolution |
@@ -964,6 +998,7 @@ the trial ledger in pool-2 not opened; `atx-impl/tools/test_holdout_gate.py` not
 | `c3201a60` (parents `34838462`, `ebc918c3`) | `ebc918c3` (SQL2-CLS `atx.nav-spec/v1`) | none | - |
 | `7832719f` (parents `426721b2`, `1b64ce45`) | `1b64ce45` (docs only) | none | - |
 | `1b15330d` (parents `7832719f`, `fd084e78`) | `fd084e78` (SQL3 merged) | none | - |
+| `52cdcc8c` (parents `e86d8b7c`, `685e238b`) | `685e238b` (prereg round 2b-i, docs only) | none | - (R9) |
 
 REV-BASE for re-review 2: BASE = the SHA re-review 1 names as reviewed, `26fe8d50`.
 
