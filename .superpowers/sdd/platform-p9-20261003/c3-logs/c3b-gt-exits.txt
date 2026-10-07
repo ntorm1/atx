@@ -1,2 +1,7 @@
 n-named exe 72fc9dd799fc194d filter 'NavSpec.*:NavRules.*:CostLawRegistry.*:TradeRateRegistry.*:TargetRegistry.*:NavFieldsSeal.*:NavBookWorkers.*:NavBookRule.*:NavAnnMeanGross.*:CalibrateGross.*:CovStore.*' exit 0 wall 30s ran 34 passed 34 skipped 0 failed 0 disabled 0 env1-hits 0
 n-whole exe 72fc9dd799fc194d filter '*' exit 0 wall 535s ran 391 passed 391 skipped 0 failed 0 disabled 1 env1-hits 0
+o-teeth-named exe a144625ca7ca023d filter 'NavSpec.*:NavRules.*:CostLawRegistry.*:TradeRateRegistry.*:TargetRegistry.*:NavFieldsSeal.*:NavBookWorkers.*:NavBookRule.*:NavAnnMeanGross.*:CalibrateGross.*:CovStore.*' exit 1 wall 39s ran 34 passed 33 skipped 0 failed 1 disabled 0 env1-hits 0
+p-named exe 3bd62115dbf81486 filter 'NavSpec.*:NavRules.*:CostLawRegistry.*:TradeRateRegistry.*:TargetRegistry.*:NavFieldsSeal.*:NavBookWorkers.*:NavBookRule.*:NavAnnMeanGross.*:CalibrateGross.*:CovStore.*' exit 0 wall 37s ran 34 passed 34 skipped 0 failed 0 disabled 0 env1-hits 0
+p-whole exe 3bd62115dbf81486 filter '*' exit 0 wall 598s ran 391 passed 391 skipped 0 failed 0 disabled 1 env1-hits 0
+q-rel-named exe 74ad03cfe3389d96 filter 'NavSpec.*:NavRules.*:CostLawRegistry.*:TradeRateRegistry.*:TargetRegistry.*:NavFieldsSeal.*:NavBookWorkers.*:NavBookRule.*:NavAnnMeanGross.*:CalibrateGross.*:CovStore.*' exit 0 wall 16s ran 34 passed 34 skipped 0 failed 0 disabled 0 env1-hits 0
+q-rel-whole exe 74ad03cfe3389d96 filter '*' exit 0 wall 111s ran 391 passed 391 skipped 0 failed 0 disabled 1 env1-hits 0
