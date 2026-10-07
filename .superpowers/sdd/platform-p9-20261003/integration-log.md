@@ -657,3 +657,18 @@ report "M2j finish"; logs `m2j-logs/`. Zero trials: `build-equity/trials.jsonl` 
 | 7 W3-8 | not root's (W3-8a) |
 
 Next free build tag **p9-2r**. Known-red set: **empty**.
+
+## P9 wave-3 merges
+
+Detail per lane: `root-wave3-merge-report.md` (same directory). B2 and T2 rows stay under the wave-2 heading.
+
+### M1 (RESUME 8): SQL3, 2026-10-06
+
+Start docs `1b64ce45` (code `ebc918c3`); housekeeping docs `cfd5a25d`. Code head **`fd084e78`**. Logs `m1-logs/`.
+Zero trials: `build-equity/trials.jsonl` 133 lines `27e40f9f` at start and end.
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| SQL3 | `a02c074f` (APPROVE, review `69b8c162`, 0 Required, 8 Suggested) | `fbd2c045` + SQL2-CLS `fd084e78` (`atx.run-store/v1` on `run-receipt` / `run-start`) | 0 | **p9-2r** equity-dev, **p9-2s** equity-rel; `atx-engine-research-catalog,atx-engine-research-catalog-tests,atx-research-store` (14 / 25 TUs) | 0 / 0 | `ResearchCatalog*:SealGuard*:StoreCli*` 28 / 28 on both | hook file 8 (real exe); book monitor 13; store suite 43 x seeds 0 / 1; stage chain 10 x seeds 0 / 1; `scripts/tests` seed 0 @@S0@@, seed 1 @@S1@@ | guard 1f -> 5p; fixture chain `d32f7655...4e69` unchanged, identity 12 / 0, rel = abs; tiny world catalog off 69 / 69 identical (F-1 filter), runner equal outside the substitution list, no `store` key: **holds**; SQL3-2: default catalog path absent, hook OFF, 0 of 1,473 receipts carry the block: **holds**; G-P10 (a) P10 for SQL3 / gate, (b) PARTIAL, (c) gate, (d) PARTIAL, (e) LANDED; item 5 pending (B2) |
+
+Next free build tag **p9-2t**. Known-red set: **empty**.
