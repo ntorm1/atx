@@ -1607,3 +1607,22 @@ All real lake reads ran with the existing shared `run_memory_guarded.py --heavy 
 ## Limits
 
 Held r4 is the unchanged identity source, with its original seal and evidence limitations; the Task4 reconstruction fix is not substituted. Frozen panel/shares still carry upstream SEC share lineage, including possible backfill-derived counts; removing rank company/operating influence does not independently re-admit those inputs. FINRA common_unverified classification and shrinking eligible population explain the reported count failures. No licensed official overlap, float, committee/sector discretion or full IPO/spin-off additions. Future sessions after the measured vendor end have scheduled constituent bounds, not newly observed market facts. The immutable manifest status complete denotes writer completion, not a passing R2000 band or production activation.
+
+## Own scratch cleanup outcome
+
+A separate guarded read-only audit completed in 9.1 seconds (peak 0.0414 GiB, FIFO wait 184.5 seconds, cap_hit=false). It rechecked the seeded-file hashes, resolved every target inside the newly created Task7 root or its SDD directory, and rejected symlinks/junctions. Audit and exact resolved paths: `task7-cleanup-validation.json`, receipt `task7-cleanup-validation-guard.json`.
+
+The single native PowerShell `Remove-Item -LiteralPath` attempt for these exact targets was rejected before process creation with **blocked by policy**. No cleanup occurred. Per the binding refusal rule, all eight targets are retained, with no retry or alternate deletion method. No prior D3-refused Task3/Task6 target was attempted.
+
+| Retained own target | Validated files | Validated bytes |
+| --- | --- | --- |
+| `data/research/identity_rehearsal/ix-pit-links-20261004/prices` | 9 | 1191272848 |
+| `data/research/identity_rehearsal/ix-pit-links-20261004/short_interest` | 1 | 30481536 |
+| `data/research/identity_rehearsal/ix-pit-links-20261004/calendar.parquet` | 1 | 19323 |
+| `data/research/identity_rehearsal/ix-pit-links-20261004/_tmp` | 27 | 1332354831 |
+| SDD `task7-measure-spill` | 0 | 0 |
+| SDD `task7-build-spill` | 1 | 26226688 |
+| SDD `task7-acceptance-spill` | 0 | 0 |
+| SDD `task7-ix8-synthetic` | 0 | 0 |
+
+The new root's `identity/` PIT file, original link/combined outputs and `_a0/` manifests remain intentionally retained, as do all SDD scripts, failed/successful receipts, immutable-input hash pins and final evidence. Published indexes_v2 and original v1/r4 bytes remain unchanged as proven by the successful acceptance run. This is a scratch-cleanup policy limitation, with no data acceptance gate waiver or production activation.
