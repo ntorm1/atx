@@ -14,6 +14,58 @@ SNAPSHOT = dt.datetime(2026, 9, 20, 0, 6)
 CONCEPT = "dei:EntityCommonStockSharesOutstanding"
 
 
+def test_evaluation_metrics_scan_each_candidate_once_per_clock(monkeypatch):
+    """Rival comparisons and accepted segments reuse only this clock's metrics."""
+    line = ir.VendorLine(1, "line", D(2019, 1, 1), D(2025, 12, 31))
+    clock = dt.datetime(2020, 1, 1)
+    candidates = [ir.Candidate(1, str(index), (
+        ir.EvidenceItem(ir.EV_SHARES, clock, D(2019, 2, 1), 3.0),
+    ), match_ratio=1.0) for index in range(8)]
+    counts = {"weight": 0, "span": 0}
+    original_weight, original_span = ir._share_weight, ir._share_span
+
+    def weight(items):
+        counts["weight"] += 1
+        return original_weight(items)
+
+    def span(items):
+        counts["span"] += 1
+        return original_span(items)
+
+    monkeypatch.setattr(ir, "_share_weight", weight)
+    monkeypatch.setattr(ir, "_share_span", span)
+    accepted, rejected = ir._evaluate_line(line, candidates, {}, ir.ReconstructionParams(), clock)
+    assert not accepted and len(rejected) == 8
+    assert counts == {"weight": 8, "span": 8}
+    # A separate clock must rebuild metrics, including the accepted segment path.
+    counts.update(weight=0, span=0)
+    later = ir.Candidate(1, "0", (ir.EvidenceItem(ir.EV_SHARES, clock, D(2019, 2, 1), 4.5),),
+                         match_ratio=1.0)
+    accepted, rejected = ir._evaluate_line(line, [later], {}, ir.ReconstructionParams(),
+                                          clock + dt.timedelta(days=1))
+    assert len(accepted) == 1 and not rejected
+    assert accepted[0].weight == 4.5 and accepted[0].share_weight == 4.5
+    assert counts == {"weight": 1, "span": 1}
+
+
+def test_evaluation_preserves_fsum_and_share_corroboration_gate():
+    line = ir.VendorLine(1, "line", D(2019, 1, 1), D(2025, 12, 31))
+    clock = dt.datetime(2020, 1, 1)
+    # Sequential summation loses the unit term; the original fsum retains it.
+    items = tuple(ir.EvidenceItem(ir.EV_SHARES, clock, D(2019, 2, 1), value)
+                  for value in (1e16, 1.0, -1e16))
+    candidate = ir.Candidate(1, "1", items, match_ratio=1.0)
+    params = ir.ReconstructionParams(accept_weight=1.0, min_share_weight=1.0)
+    accepted, rejected = ir._evaluate_line(line, [candidate], {}, params, clock)
+    assert not rejected and accepted[0].weight == accepted[0].share_weight == 1.0
+    corroboration = ir.Candidate(1, "2", (
+        ir.EvidenceItem(ir.EV_LISTING, clock, D(2019, 2, 1), 100.0),
+    ), match_ratio=1.0)
+    accepted, rejected = ir._evaluate_line(line, [corroboration], {}, params, clock)
+    assert not accepted and rejected[0].reason == ir.REJECT_BELOW_THRESHOLD
+    assert rejected[0].weight == rejected[0].share_weight == 0.0
+
+
 def _fixture(con):
     lines, runs, facts, filings = [], [], [], []
     serial = 0

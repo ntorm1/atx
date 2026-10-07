@@ -1731,6 +1731,30 @@ def reconstruct_issuer_links(
     return ReconstructionResult(params, tuple(final_links), tuple(rejected), len(lines), tuple(clocked_links))
 
 
+@dataclass(frozen=True)
+class _CandidateMetrics:
+    """Immutable summaries of one candidate in one evaluation state."""
+
+    weight: float
+    share_weight: float
+    span: tuple[dt.date, dt.date] | None
+    ratio_acceptable: bool
+    is_rival: bool
+
+
+def _candidate_metrics(candidate: Candidate, params: ReconstructionParams) -> _CandidateMetrics:
+    share_weight = candidate.share_weight
+    # Keep the original fsum input order and the share-only corroboration gate.
+    weight = 0.0 if share_weight <= 0 else math.fsum(item.weight for item in candidate.items)
+    ratio_acceptable = candidate.match_ratio >= params.min_match_ratio or (
+        share_weight >= params.strong_share_weight and candidate.match_ratio >= params.strong_min_ratio
+    )
+    is_rival = share_weight >= params.competitor_floor and (
+        candidate.match_ratio >= params.competitor_min_ratio or ratio_acceptable
+    )
+    return _CandidateMetrics(weight, share_weight, candidate.span, ratio_acceptable, is_rival)
+
+
 def _evaluate_line(
     line: VendorLine, candidates: Sequence[Candidate],
     filings_by_cik: Mapping[str, Sequence[IssuerFiling]], params: ReconstructionParams, clock: dt.datetime,
@@ -1739,31 +1763,33 @@ def _evaluate_line(
     vendor_id = line.vendor_id
     links = []
     rejected = []
-    found = sorted(candidates, key=lambda c: (-c.weight, c.cik))
+    metrics = {id(candidate): _candidate_metrics(candidate, params) for candidate in candidates}
+    found = sorted(candidates, key=lambda c: (-metrics[id(c)].weight, c.cik))
     accepted: list[tuple[Candidate, tuple[tuple[str, float], ...]]] = []
     rivals_of: dict[str, list[Candidate]] = {}
     line_rejected: list[RejectedCandidate] = []
     for candidate in found:
+        own = metrics[id(candidate)]
         rivals_of[candidate.cik] = [
             other
             for other in found
             if other is not candidate
-            and _is_rival(other, params)
-            and _overlaps(candidate.span, other.span, params.overlap_tolerance_days)
+            and metrics[id(other)].is_rival
+            and _overlaps(own.span, metrics[id(other)].span, params.overlap_tolerance_days)
         ]
-        competitors = tuple((other.cik, other.weight) for other in rivals_of[candidate.cik])
-        if candidate.weight < params.accept_weight or candidate.share_weight < params.min_share_weight:
+        competitors = tuple((other.cik, metrics[id(other)].weight) for other in rivals_of[candidate.cik])
+        if own.weight < params.accept_weight or own.share_weight < params.min_share_weight:
             reason = REJECT_BELOW_THRESHOLD
-        elif not _ratio_acceptable(candidate, params):
+        elif not own.ratio_acceptable:
             reason = REJECT_INCONSISTENT
-        elif any(candidate.weight < params.dominance_ratio * weight for _cik, weight in competitors):
+        elif any(own.weight < params.dominance_ratio * weight for _cik, weight in competitors):
             reason = REJECT_CONFLICTING
         else:
             accepted.append((candidate, competitors))
             continue
         line_rejected.append(
-            RejectedCandidate(vendor_id, line.price_security_id, candidate.cik, reason, candidate.weight,
-                              candidate.share_weight, candidate.span, competitors)
+            RejectedCandidate(vendor_id, line.price_security_id, candidate.cik, reason, own.weight,
+                              own.share_weight, own.span, competitors)
         )
     # Both sides of every conflict are kept as conflict rows, whatever a side's own
     # threshold outcome: a rival a link was preferred over (dominance rule) is the
@@ -1782,17 +1808,19 @@ def _evaluate_line(
     # Rejected rivals with real weight bound every segment's extension.
     chosen = {pair[0].cik for pair in accepted}
     rivals = [
-        other.span
+        metrics[id(other)].span
         for other in found
-        if other.cik not in chosen and _is_rival(other, params) and other.span is not None
+        if other.cik not in chosen and metrics[id(other)].is_rival and metrics[id(other)].span is not None
     ]
-    accepted.sort(key=lambda pair: pair[0].span[0])  # type: ignore[index]
-    segments = _segments(line, [pair[0] for pair in accepted], rivals, filings_by_cik, params)
+    accepted.sort(key=lambda pair: metrics[id(pair[0])].span[0])  # type: ignore[index]
+    segments = _segments(line, [pair[0] for pair in accepted], rivals, filings_by_cik, params,
+                         spans=[metrics[id(pair[0])].span for pair in accepted])
     for (candidate, competitors), (start, end) in zip(accepted, segments, strict=True):
+        own = metrics[id(candidate)]
         if end <= start:
             rejected.append(
                 RejectedCandidate(vendor_id, line.price_security_id, candidate.cik, REJECT_EMPTY_SEGMENT,
-                                  candidate.weight, candidate.share_weight, candidate.span, competitors)
+                                  own.weight, own.share_weight, own.span, competitors)
             )
             continue
         history = ((_tier(candidate, competitors), clock),)
@@ -1805,8 +1833,8 @@ def _evaluate_line(
                 valid_to=end,
                 available_at=clock,
                 evidence_complete_at=max(item.known_at for item in candidate.items),
-                weight=candidate.weight,
-                share_weight=candidate.share_weight,
+                weight=own.weight,
+                share_weight=own.share_weight,
                 tier=_tier(candidate, competitors),
                 symbol=_symbol_in(line, (start, end)),
                 items=candidate.items,
@@ -1858,6 +1886,8 @@ def _segments(
     rivals: Sequence[tuple[dt.date, dt.date]],
     filings_by_cik: Mapping[str, Sequence[IssuerFiling]],
     params: ReconstructionParams,
+    *,
+    spans: Sequence[tuple[dt.date, dt.date] | None] | None = None,
 ) -> list[tuple[dt.date, dt.date]]:
     """Disjoint ``[from, to)`` intervals for the sequential accepted candidates of one line.
 
@@ -1872,13 +1902,13 @@ def _segments(
     starts: list[dt.date] = []
     ends: list[dt.date] = []
     for index, candidate in enumerate(ordered):
-        span = candidate.span
+        span = candidate.span if spans is None else spans[index]
         assert span is not None
         kinds = {item.kind for item in candidate.items}
         if index == 0:
             start = line_start if span[0] - line_start <= reach or EV_LISTING in kinds else span[0] - reach
         else:
-            previous = ordered[index - 1].span
+            previous = ordered[index - 1].span if spans is None else spans[index - 1]
             assert previous is not None
             # A successor/listing registration between the predecessor's last and
             # this candidate's first evidence dates the hand-over more precisely.
