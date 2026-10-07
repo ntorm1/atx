@@ -39,6 +39,7 @@
 #include "atx/engine/combine/group_shrink.hpp"
 #include "atx/engine/research/composition/ew_theme_std.hpp"
 #include "atx/engine/research/composition/ic_shrink.hpp"
+#include "atx/engine/research/composition/mom_volman.hpp"
 #include "atx/engine/research/composition/theme_erc.hpp"
 
 namespace atx::engine::research::composition {
@@ -170,11 +171,8 @@ struct CompositionFit {
 // weighted members of (w_k / W) s_k f_k(d) in member order, 0 outside TRAIN, over every decision of
 // the series. The IC runner forms every block's volatility, target and scale from it
 // (strategy_ic_mom_volman.cpp). The registered parents are ew-theme-std-v1 and ic-shrink-v1, with
-// or without theme-erc-v1; the role needs lookback + lag (126 + 2) to 65536 decisions.
-inline constexpr std::string_view mom_volman_rule="mom-volman-v1";
-inline constexpr std::string_view mom_volman_theme="price_momentum";
-inline constexpr atx::usize mom_volman_min_decisions=128;   // mom_volman_lookback + mom_volman_lag
-inline constexpr atx::usize mom_volman_max_decisions=65536; // mom_volman_max_decisions
+// or without theme-erc-v1; the role needs mom_volman_min_decisions (lookback + lag, 126 + 2) to
+// mom_volman_max_decisions decisions (mom_volman.hpp: the one definition both sides read).
 
 // The fit of `spec` on `view`, whose candidate columns carry the ids `ids`. Err (InvalidArgument)
 // on an unknown composition, a member not in `ids` or listed twice, a sign other than +1, a missing
