@@ -2,34 +2,35 @@
 
 ## Outcome
 
-DONE_WITH_CONCERNS -- items 1-8 are implemented, committed and green in Debug on the committed head `846739c1`
-(MvTarget 11/11, MvAimRule 15/15, the whole `atx-impl-strategy-target-tests` 405/405, teeth shown). Two things are
-pending, because the permission system refused my command that reverts the teeth mutation (PERM-1: not retried,
-not routed around):
+DONE -- items 1-8 are implemented and committed (code and spec head `846739c1`; no code changed after it). In
+RESUME 9 the lane continued in pool-31 on `feat/p9-covmv2-20261007` (TEETH-POOL) and, under the PM's ruling TEST-1,
+ran the one Debug build the round allows, on the merged head `a8baba2a` (root `685e238b` merged; root `fd084e78`
+came in through `db33c6ca`): `MvTarget.*` 11/11, `MvAimRule.*` 15/15, the lane's named filter 99/99, 0 first-party
+warnings. The whole target-tests on the merged head, the Release build and its suites, and both tiny-world canaries
+are deferred to the gate (TEST-1).
 
-- the working tree still carries the 2-line teeth mutation (uncommitted; never staged);
-- the Debug tiny-world canary, and the one Release build with its suites and Release canary.
-
-The refused command, exactly:
+The R8 permission refusal stays with the owner (PERM-1; not retried, not routed around). It is the command that
+reverted the teeth mutation in pool-24:
 
 ```
 cd C:/atx-wt/pool-24 && L=.superpowers/sdd/platform-p9-20261003/covmv-logs; grep -n "RefusesAnIndustrySlotOutsideTheTable" -B 2 $L/e-teeth-refusals.log | head -3; awk '/RUN.*RefusesAnIndustrySlot/,/FAILED.*RefusesAnIndustrySlot/' $L/e-teeth-refusals.log | grep "error:" | cut -c1-200; git checkout -- atx-impl/src/strategy_nav_v7.cpp atx-impl/src/strategy_mv_aim.cpp && git status --short && grep -c "TEETH" atx-impl/src/strategy_nav_v7.cpp atx-impl/src/strategy_mv_aim.cpp
 ```
 
-The rest of the lane does not depend on the revert, except the canary and Release builds. Those would compile the
-mutated tree.
+Pool-24 is frozen with the two uncommitted `// TEETH` lines (TEETH-POOL). Pool-31's tree never held them.
 
 ## Branch / SHA
 
-- Branch `feat/p9-cov-20261003` in pool-24.
-- Code and spec head `846739c1`. The report and handoff commit follows it; `git log -1` gives the final head.
-- Root merged: first `1b64ce45` (merge commit `10259f38`, clean). At the end root had moved to `fd084e78` (SQL3's
-  merge), and that head was merged too (merge commit `db33c6ca`, clean).
-  - Root's range `1b64ce45..fd084e78` touches C++ only in `atx-engine` research-store `seal_guard.{hpp,cpp}` and its
-    test; the rest is Python, specs and docs. None of it is a file of this lane.
-  - The Debug evidence below is at `846739c1`, before that merge. Re-running the suites on the merged tree is
-    pending with the revert.
-- AL-CLOCK is NOT merged in root.
+- Branch `feat/p9-covmv2-20261007` in pool-31 (RESUME 9, TEETH-POOL). The PM leased it at `b6e304ee`, the lane's
+  committed head in frozen pool-24 (`feat/p9-cov-20261003`). Root merges this new branch, after AL-CLOCK.
+- Code and spec head `846739c1` (unchanged in R9). The R9 commits are records and one root merge; this report's
+  commit follows them, and `git log -1` gives the final head.
+- Root merged:
+  - `1b64ce45` (merge commit `10259f38`, clean);
+  - `fd084e78`, SQL3's merge (merge commit `db33c6ca`, clean);
+  - in R9, `685e238b` (merge commit `a8baba2a`, clean). It changes only `p9-prereg.md`.
+  - Root's range `1b64ce45..685e238b` touches C++ only in `atx-engine` research-store `seal_guard.{hpp,cpp}` and
+    its test; the rest is Python, specs and docs. None of it is a file of this lane.
+- AL-CLOCK is NOT merged in root at `685e238b` (see the W3-9 note below).
 - Lease: untouched.
 
 Commits, in order:
@@ -43,20 +44,20 @@ Commits, in order:
 | `d44e05f5` | fix(impl): an unused private field (slip at build `p9-covmv-b`) |
 | `628a9ffb` | feat(specs): registration and template (item 8) |
 | `846739c1` | test(impl): the calibrate test targets 1.1 x the plain gross (slip at build `p9-covmv-c`) |
+| `db33c6ca` | merge root `fd084e78` (clean) |
+| `b6e304ee` | docs: the R8 report, handoff and Debug evidence (last commit made in pool-24) |
+| `6eea0c54` | docs: handoff note "continued in pool-31" (R9, pool-31) |
+| `a8baba2a` | merge root `685e238b` (clean; docs only) |
 
-## Working tree at hand-back (uncommitted; revert first)
+## Working tree at hand-back
 
-These are the only dirty files:
-
-- `atx-impl/src/strategy_nav_v7.cpp:1271`: `if (o.mv_aim && false) { // TEETH (reverted)`
-- `atx-impl/src/strategy_mv_aim.cpp:135`: `if (true || slot < ...) continue; // TEETH`
-
-The revert is `git checkout -- atx-impl/src/strategy_nav_v7.cpp atx-impl/src/strategy_mv_aim.cpp`. It needs the
-owner's or the PM's approval, because that command was refused.
-
-`build-equity/bin/atx-impl-strategy-target-tests.exe` is the teeth binary (tag `p9-covmv-e`). Rebuild it before
-using it. `atx-equity-strategy-targets.exe` (`p9-covmv-d`) and `atx-engine-book-tests.exe` (`p9-covmv-a`) are
-unmutated.
+- pool-31: clean, apart from git-ignored sprint files. `atx-impl/src/strategy_nav_v7.cpp` and
+  `atx-impl/src/strategy_mv_aim.cpp` hold no `// TEETH` line.
+- pool-24 (FROZEN, TEETH-POOL) still carries the two uncommitted R8 teeth lines, for the owner:
+  `atx-impl/src/strategy_nav_v7.cpp:1271` and `atx-impl/src/strategy_mv_aim.cpp:135`. They were never staged.
+  Nothing under its `build-equity*/bin` is evidence.
+- In R9 this lane only read pool-24. Its lane records (`handoff-COV-MV.md`, `task-COV-MV-report.md`,
+  `covmv-logs/**`) are identical to pool-31's apart from the CRLF checkout, so nothing was copied.
 
 ## Items -> change -> test -> evidence
 
@@ -71,6 +72,9 @@ unmutated.
 | 7 tests on synthetic containers | `atx-impl/tests/strategy_mv_aim_rule_test.cpp` (15 tests; directory and container stores) | `MvAimRule.*` | as above |
 | COV-11 | the a = 2 control `atx-impl/tests/strategy_cov_model_test.cpp:647-657`; the per-row group check `strategy_mv_aim.cpp:132-140` | `CovBias.EigenFamilyInBandOnAPlantedModel`: a = 2 misses the band, pooled 0.957 +- 0.025, 5/7 in band | `covmv-logs/c-named-debug.log` (99/99) |
 | 8 registration and template | `scripts/specs/p9/rules/mv-aim-v1.json`, `scripts/specs/p9/templates/mv-aim.json` | `validate_specs.py` (the repo's own validators) | `covmv-logs/d-validate-specs.log` |
+
+R9 re-run of the same filters on the merged head `a8baba2a` (build `p9-covmv-f`): `f-mvtarget-debug.log` 11/11,
+`f-mvaimrule-debug.log` 15/15, `f-named-debug.log` 99/99.
 
 Optional items done: the special-tier negative count, the warm-up count, a decision counted once across a second
 pass, and `--calibrate-gross` compatibility with its test.
@@ -120,8 +124,43 @@ All logs are in `.superpowers/sdd/platform-p9-20261003/covmv-logs/`:
 - Python: no Python file changed. No Python test reads `scripts/specs/p9/rules/` or `templates/` (grep: only
   `test_p9_al_sig_registrations.py` and `test_wave_kinds.py` touch `scripts/specs/p9`, and only `candidates/`,
   `blocked/` and `kinds/`). So `scripts/tests` seeds 0 / 1 and the stage chain are not required, and were not run.
-- NOT run: the tiny-world canary (Debug or Release) and every Release build or suite. Both are pending the revert;
-  see "Pending".
+- Deferred to the gate (TEST-1): the tiny-world canary (Debug and Release), every Release build and suite, and the
+  whole target-tests on the merged head.
+
+### R9 (pool-31, merged head `a8baba2a`; ruling TEST-1)
+
+TEST-1 allows one target-scoped Debug build of the lane's test target "plus the exe its tests need". `MvTarget.*`
+lives in `atx-engine-book-tests`, so the one build has two targets. It has no canary target and no `-Canary`. The
+build ran through `covmv-logs/tools/wait-build.ps1`, which waits for no other build on the host (HOST-3).
+
+| tag | targets | source / dirty | exit | exes (SHA-256 prefix) |
+|---|---|---|---|---|
+| p9-covmv-f | atx-impl-strategy-target-tests, atx-engine-book-tests | `a8baba2a` / 0 (provenance `a8baba2a`) | 0 | tests `25abbffc12908dfd`, book-tests `9e38654ca5f2399e` |
+
+- The receipt is `covmv-logs/f-receipt.json` (a copy of `build-equity/mega-p9-covmv-f-receipt.json`). The build
+  compiled 378 TUs in 713 s with 4 jobs.
+- The build log is `covmv-logs/f-build.log`. It has 0 first-party warnings. The only warnings are two third-party
+  `databento-cpp` `getenv` deprecations and clang-cl's `/MP` driver note.
+- The exe SHA-256s were re-checked against the receipt before the runs (SPDLOG-RELINK). No run had the ENV-1 exit
+  code.
+- `build-equity/bin/atx-engine-book-tests.exe --gtest_filter=MvTarget.*` -> exit 0, `[  PASSED  ] 11 tests.`
+  (`f-mvtarget-debug.log`).
+- `atx-impl-strategy-target-tests.exe --gtest_filter=MvAimRule.*` -> exit 0, `[  PASSED  ] 15 tests.`
+  (`f-mvaimrule-debug.log`).
+- The lane's named filter
+  `Cov*:NavBookRule.*:VolTarget.*:Spo*:NavSpec.*:NavRules.*:CostLawRegistry.*:TradeRateRegistry.*:TargetRegistry.*:NavAnnMeanGross.*`
+  -> exit 0, `[  PASSED  ] 99 tests.` from 22 suites, with 1 DISABLED (COVR's, by design) (`f-named-debug.log`).
+- `validate_specs.py` re-run in pool-31 against the same list-rules JSON gives the identical output (SHA-256s,
+  0 problems, the same derived flags) (`r9-validate-specs.log`).
+- T1's guard sanity (G-P5: no Python copy of the rule): `scripts/tests/test_no_python_mirror.py` and
+  `test_no_versioned_scripts.py` -> exit 0, 11 passed (`r9-t1-guards.log`).
+- `nav --list-rules`: the diff above was taken on `p9-covmv-d` (`846739c1`). Since then the C++ has changed only
+  in root's `seal_guard` (SQL3), not in the NAV rule table. TEST-1 builds no targets exe, so root's item 3 re-proves
+  the diff on root's own exe.
+- Deferred to the gate (TEST-1):
+  - the whole `atx-impl-strategy-target-tests` on the merged head;
+  - the Release build (`equity-rel`) with `MvTarget.*`, `MvAimRule.*`, the named filter and the whole target-tests;
+  - the tiny-world canary on the Debug and on the Release goldens.
 
 ## Flag-absent identity procedure for root
 
@@ -143,7 +182,7 @@ All logs are in `.superpowers/sdd/platform-p9-20261003/covmv-logs/`:
   against p9-2p).
 - **Help.** `nav --help` changes, help bytes only: the `--target-rule` sentence (`strategy_nav_v7.cpp:1039-1043`) no
   longer says "none registered in this build". The header comment `strategy_nav_v7.hpp:15-21` changes the same way.
-- **Canary.** The tiny-world canary goldens, Debug and Release, are pending (see "Pending").
+- **Canary.** The tiny-world canary goldens, Debug and Release: deferred to the gate (TEST-1).
 
 ## What root re-proves at merge
 
@@ -155,7 +194,8 @@ All logs are in `.superpowers/sdd/platform-p9-20261003/covmv-logs/`:
 2. The rule-absent identity (above) on real data, 0 trials. X-5 and Y-F0 NAV byte-identical; `/producer`
    substituted; Release equals Debug on X-5.
 3. The `--list-rules` diff: one added row.
-4. The tiny-world canary goldens, Debug and Release.
+4. The tiny-world canary goldens, Debug and Release. These, the Release build and the whole target-tests are
+   deferred to the gate (TEST-1). At the merge, root does the targeted checks of ROOT-1a only.
 5. No run of the rule on TRAIN or any real role before P9-MV is registered (COV-2).
 6. Before P9-MV:
    - `universe.delisting.returns_applied == false` (S9, COV-9);
@@ -261,11 +301,16 @@ The decision at session t is formed and first traded as follows (code at `846739
 
 **W3-9 keep-both note (AL-CLOCK).**
 
-- AL-CLOCK (pool-8, head `c3f3f1f8`, WIP) is not merged in root.
-- `git merge-tree --write-tree HEAD c3f3f1f8` gives a clean tree with no conflict. AL-CLOCK appends to the
-  trade-rate table and to the `(...)` sum inside `nav_workspace_reserve_bytes`. This lane replaces the target slot
-  and appends a term after the last line of that return. Both hunks are kept.
-- Root resolves the keep-both at the second merge if a later AL-CLOCK head conflicts.
+- AL-CLOCK is not merged in root at `685e238b`. It continues on `feat/p9-alclock2-20261007` (pool-30), head
+  `7ebd41ff` at this report.
+- `git merge-tree --write-tree --name-only HEAD feat/p9-alclock2-20261007` (`covmv-logs/r9-merge-tree-alclock2.log`):
+  - These auto-merge: `nav_decide.cpp`, `nav_lockstep.cpp`, `nav_rules.{cpp,hpp}` and `strategy_nav_v7.cpp`.
+  - ONE textual conflict, in `atx-impl/tests/CMakeLists.txt`. After the `strategy_nav_spec_test.cpp` line, both
+    lanes tail-append a `target_sources(atx-impl-strategy-target-tests PRIVATE ...)` block:
+    AL-CLOCK's for `strategy_nav_info_clock_test.cpp`, this lane's for `strategy_mv_aim_rule_test.cpp`.
+  - Resolution: keep both, AL-CLOCK's block first, then this lane's.
+- Root resolves this at COV-MV's merge (W3-9; AL-CLOCK merges first). Then root builds Debug target-tests and runs
+  `MvAimRule.*`, AL-CLOCK's `InfoClock*` filter and the named filter (ROOT-1a).
 
 ## New literals, flags, keys, rule ids
 
@@ -296,31 +341,33 @@ The decision at session t is formed and first traded as follows (code at `846739
   in Release; Debug runs of the rule on a full role are slower.
 - The decide path (`strategy_live.cpp:1377`) installs no extension, so the hook is the identity there.
 
-## Pending (hand-back; see `handoff-COV-MV.md` "Session R8")
+## Pending (hand-back)
 
-1. The owner or the PM approves the revert of the teeth mutation: `git checkout -- atx-impl/src/strategy_nav_v7.cpp
-   atx-impl/src/strategy_mv_aim.cpp`.
-2. Debug canary: `research-build -Tag p9-covmv-f -Targets atx-equity-strategy-ic,atx-equity-strategy-targets,
-   atx-research-eval,atx-impl-strategy-target-tests -Canary`.
-3. Release: configure `equity-rel`, then build `p9-covmv-g` with `atx-engine-book-tests`,
-   `atx-impl-strategy-target-tests`, `atx-equity-strategy-ic`, `atx-equity-strategy-targets` and `atx-research-eval`
-   `-Canary`. Then the Release filters and the whole target-tests.
-4. Re-run the Debug filters on the merged tree (root `fd084e78`, merge `db33c6ca`). Merge root again if it moved
-   after that.
-5. Delete `build-equity` and `build-equity-rel` by name (keep the receipts and logs).
+- Deferred to the gate (TEST-1), for root to run once on the gate head:
+  - the whole `atx-impl-strategy-target-tests` on the merged head (Debug);
+  - the Release build (`equity-rel`): `MvTarget.*`, `MvAimRule.*`, the named filter and the whole target-tests;
+  - the tiny-world canary on the Debug and Release goldens;
+  - `scripts/tests` seeds 0 / 1 and the stage chain. This lane does not need them: it changed no Python.
+- Owner: the two `// TEETH` lines in frozen pool-24 (the R8 revert that was refused; TEETH-POOL).
+- Root, at COV-MV's merge: the W3-9 keep-both in `atx-impl/tests/CMakeLists.txt` (above).
+- No other lane work remains.
 
 ## Disk
 
-- Freed: 0. `build-equity` (2.9 GB) is kept warm for the pending Debug canary build. C: had 50 GB free.
+- R8 (pool-24): freed 0. Its `build-equity` stays frozen with the pool.
+- R9 (pool-31): after this report's commit, the `build-equity` object tree (about 2.8 GB) is deleted by name. The
+  tracked `audits/` and `v8-interim3-pitch-render-run2/` stay, and so do the `mega-p9-covmv-f-*` receipt and logs.
 
 ## Open questions (one line each)
 
-- May the teeth mutation be reverted with the refused `git checkout --` command (or by an edit), so the canary and
-  Release can run?
+- None. The R8 revert question belongs to the owner (TEETH-POOL).
 
 ## Ledger candidates
 
 - `git checkout -- <file>` to revert a teeth mutation can be refused by the permission system. Next time, mutate a
   copy-free way that reverts by re-applying a recorded patch, or ask before the mutation.
+- On Windows a watcher that holds a log open (`tail -F`) makes PowerShell's `Add-Content` to that log fail. Seen
+  in R9: the first wait-tool run died at its log write before it launched anything. A wait tool must append with
+  retries, and a watcher must poll with short opens.
 - In the spo fixture (Role 40 x 12, NAV 1e8), the S2 book's all-rows gross is about .0085 (participation caps). A
   fixed `--calibrate-gross` target leaves L' outside [1, 2]; derive it from a plain run.

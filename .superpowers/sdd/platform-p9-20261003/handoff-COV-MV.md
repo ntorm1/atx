@@ -248,3 +248,15 @@ primary source (Menchero-Wang-Orr 2011 / 2012) or written "unverified" (PRE-19).
   checkout; nothing copied.
 - Step 1 of "Session R8 / Next step" is void here (the committed tree holds no teeth line); steps 2-5 run in this
   pool per the R9 dispatch.
+
+### State at hand-back (R9; ruling TEST-1 amended the dispatch mid-round)
+
+- Root `685e238b` merged (merge `a8baba2a`, clean, docs only); AL-CLOCK not in root. A dry merge with
+  `feat/p9-alclock2-20261007` (`7ebd41ff`) shows one keep-both conflict for root: the tail of
+  `atx-impl/tests/CMakeLists.txt` (report, W3-9 note).
+- One Debug build `p9-covmv-f` on `a8baba2a` (`atx-impl-strategy-target-tests` + `atx-engine-book-tests`, which
+  `MvTarget.*` needs; no canary): exit 0, 0 first-party warnings. `MvTarget.*` 11/11, `MvAimRule.*` 15/15,
+  named filter 99/99 (logs `covmv-logs/f-*`).
+- Deferred to the gate (TEST-1): the whole target-tests, the Release build and suites, both canaries.
+- No teeth run in R9. No permission refusal in R9. The `build-equity` object tree is deleted by name after the
+  report commit (receipt / logs kept). Next step: the first review (the PM dispatches it).

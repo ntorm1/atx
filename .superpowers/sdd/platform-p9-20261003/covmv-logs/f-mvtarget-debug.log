@@ -1,0 +1,33 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = MvTarget.*
+[==========] Running 11 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 11 tests from MvTarget
+[ RUN      ] MvTarget.ThreeNamesDiagonalClosedForm
+[       OK ] MvTarget.ThreeNamesDiagonalClosedForm (0 ms)
+[ RUN      ] MvTarget.EqualsDenseInverseOnSmallN
+[       OK ] MvTarget.EqualsDenseInverseOnSmallN (1 ms)
+[ RUN      ] MvTarget.RankDeficientFEqualsDenseSolve
+[       OK ] MvTarget.RankDeficientFEqualsDenseSolve (1 ms)
+[ RUN      ] MvTarget.GrossNormalised
+[       OK ] MvTarget.GrossNormalised (0 ms)
+[ RUN      ] MvTarget.PositiveScalarWashesOut
+[       OK ] MvTarget.PositiveScalarWashesOut (0 ms)
+[ RUN      ] MvTarget.NanAlphaIsNoOpinion
+[       OK ] MvTarget.NanAlphaIsNoOpinion (0 ms)
+[ RUN      ] MvTarget.DollarNeutralOnThePricedSet
+[       OK ] MvTarget.DollarNeutralOnThePricedSet (0 ms)
+[ RUN      ] MvTarget.WorkingBytesBound
+[       OK ] MvTarget.WorkingBytesBound (0 ms)
+[ RUN      ] MvTarget.RefusalsAndUnavailable
+[       OK ] MvTarget.RefusalsAndUnavailable (0 ms)
+[ RUN      ] MvTarget.FactorExposureIsXTransposeW
+[       OK ] MvTarget.FactorExposureIsXTransposeW (0 ms)
+[ RUN      ] MvTarget.LowEigenShare
+[       OK ] MvTarget.LowEigenShare (0 ms)
+[----------] 11 tests from MvTarget (5 ms total)
+
+[----------] Global test environment tear-down
+[==========] 11 tests from 1 test suite ran. (7 ms total)
+[  PASSED  ] 11 tests.
+exit=0
