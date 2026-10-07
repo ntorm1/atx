@@ -78,7 +78,7 @@ mutations were caught.
 | r7 2 OD3P-1 (carry zeroes nothing; flags on history u / w; capability refusal; contract) | done, unchanged | `carry_weights.py` is unchanged in the range. The cycle's flag placement is unchanged apart from S-3's fail-closed branch. |
 | r7 3 ALCLOCK-2 | done, unchanged | `rules` = theme-cov-hedge-v1 2017, mom-volman-v1 2016, info-clock-rate-v1 2019. `rules_pending` = [mv-aim-v1]. |
 | r7 4 runbook | done | All required lines are intact. Four history lines (section 1 table, `:44-49`). `holdout_gate.py` never runs (rule 0.2, `:19-20`). The identity-bridge flag is on every print (rule 0.3 `:21-27`, section 4 heading `:206`, stop list `:230`). The "not read: no producer" fallback is at `:57`, `:79`, `:161-162`, `:188`, `:209`, `:231-232`. Every value that is not yet known is marked `[UNKNOWN: ...]`. The fix round edited only B6, P7, prediction 3 and the stop list. |
-| r7 5 suites | done for R7. Fix round: seed 1 not run | The lane ran these on `97a8157f`: lane files 74, `scripts/tests` seed 0 563 / 5 skipped, stage chain 10, mirror 7, classes guard 1 expected red. The seed-1 run was stopped at the OWNER STOP (report `:209`). I re-ran seed 0. Seed 1 is root's merge procedure (below). |
+| r7 5 suites | done for R7. Fix round: seed 1 not run | The lane ran these on `97a8157f`: lane files 74, `scripts/tests` seed 0 563 / 5 skipped, stage chain 10, mirror 7, classes guard 1 expected red. The seed-1 run was stopped at the OWNER STOP (report `:209`). I re-ran seed 0 before TEST-1 reached me. Seed 1 is deferred to the gate (TEST-1 / GATE-1). |
 | r7 6 T2 | pending by rule | B2's redo is not in root: `git -C C:/atx-wt/pool-2 log --format=%s -30` shows no B2 merge. Not a finding. |
 | r7 7 report, handoff | done | The fix-round sections are at `task-OD3P-report.md:167-246` and `handoff-OD3P.md:49-61`. |
 | contract vs OD3P-1 | consistent | Range diff: section 6 gained one bullet (`od3p-absent-contract.md:122-125`) listing the three plan-time refusals, all cycle-side. Sections 2-5 (lane ABS's spec) are byte-unchanged. The schema, keys, flag spelling, capability, the defining equivalence (`:73-82`), and where the cycle puts the flags all still match `research_roles.py:453-477` and OD3P-1 (`progress.md:624`). |
@@ -107,7 +107,7 @@ Each new refusal happens at plan time, before any step, and names the runbook se
 |---|---|---|---|
 | `scripts/tests/test_research_cycle_od3.py:489-496` (guard `research_roles.py:393-405`) | Suggested | Test gap: no test exercises the guard's `eras` component (nor `admission` or `anchor`). My own probe X1 made the comparison ignore `eras`, and it was NOT CAUGHT (`-k "drop or absent or fit_output or carry"`: 32 passed). This is defensive only. A dir carried for other eras with the same W / A / drop would otherwise plan `done`. The IC runner's weights-to-`--train` binding would then refuse at `w:E1`, after the history u passes: R-1's failure mode, but only by hand misuse. | Add an `other_eras` case (the same W, A and list, one era role with another SHA) and an `other_admission` case to the refusal test. |
 | `.superpowers/sdd/platform-p9-20261003/od3p-absent-contract.md:3-6` | Suggested | The header still says the C++ lane is "D3W's files; the PM assigns the work at D3W's hand-back". ABS-1 (`progress.md:643`) gives it to lane ABS, branched from D3W's APPROVE head. The source citations are "at `4dc831ac`" and may have moved on D3W's head. The handoff was updated (`handoff-OD3P.md:68`) but the contract was not. Sections 2-5 are unaffected. | At the next touch (or in ABS's brief), say "lane ABS (ABS-1)" and have ABS re-locate the cited lines on its base. A reviewer does not edit lane records (DIRTY-1a). |
-| `.superpowers/sdd/platform-p9-20261003/task-OD3P-report.md:209` | Suggested | The seed-1 row names log `fix1-97a8157f-scripts-tests-seed1.log`, which does not exist (the partial was deleted, as the row says). Seed 1 never ran on the fix code. Hash-seed sensitivity is unlikely: the change sorts or compares lists and dicts and iterates no set into output. | Root runs seed 1 in the identity procedure at the merge (below). The row should read "no log". |
+| `.superpowers/sdd/platform-p9-20261003/task-OD3P-report.md:209` | Suggested | The seed-1 row names log `fix1-97a8157f-scripts-tests-seed1.log`, which does not exist (the partial was deleted, as the row says). Seed 1 never ran on the fix code. Hash-seed sensitivity is unlikely: the change sorts or compares lists and dicts and iterates no set into output. | Root runs seed 1 at the gate (TEST-1 / GATE-1). The row should read "no log". |
 | `.superpowers/sdd/platform-p9-20261003/p9-od3-runbook.md:139-140`, `:155-157` | Suggested | B6 lists `build-equity/od3-fit-<book>.pending` as must-be-absent before P7. P7's stop rule and the plan-time guard do not test it. A stale `.pending` (possible only from a hand-run carry; a crashed cycle carry leaves `-run1`, which P7 sees as `failed`) plans `pending`. The carry tool would then refuse at the fit step after the u passes. | Have P7 state "and `<dir>.pending` absent", or extend `check_carry_output` to refuse an existing `<fit.output>.pending`. Low priority. |
 
 ## Evidence
@@ -127,6 +127,19 @@ $ python -m pytest atx-engine/tools/test_research_store_classes.py ...      (ext
   {'atx.carry-weights/v1': ['atx-impl/tools/carry_weights.py'],
    'atx.od3-flagged-members/v1': ['atx-impl/tools/carry_weights.py']}
 ```
+
+**TEST-1 (`progress.md:688`, the owner's ruling, sent to me by PM message while I worked).** The PM's TEST-1 message
+reached me after both runs below had already finished:
+
+- the whole `scripts/tests` seed-0 run, started under the r9 dispatch's "run yourself" line;
+- the one-file classes-guard run.
+
+Neither can be undone, and neither changes how this review counts its evidence. The verdict rests on the lane files,
+the two teeth and reading the code. The whole-suite figure is extra evidence only: it is not part of the evidence this
+review needs.
+
+After TEST-1 arrived I ran nothing more. Under TEST-1 the whole `scripts/tests` (seeds 0 and 1) and the stage chain
+are deferred to the gate (GATE-1; see "What root must check", item 2).
 
 **Teeth** (TEETH-RESTORE). My tool keeps the original bytes in memory, mutates `scripts/research_roles.py`, runs the
 named tests, and writes the bytes back. It then asserts that the file's SHA-256 equals HEAD's blob and that
@@ -159,8 +172,9 @@ X1  (own probe, not counted: the guard ignores eras)              NOT CAUGHT (ex
      `diagnostic-spec` (`**/diagnostics/*.json`).
    - Afterwards the classes guard must be 5 passed.
 2. **Identity procedure** (report `:117-134`, `:224-233`).
-   - Re-run the two lane files (74), then the whole `scripts/tests` under seeds 0 and 1. **Seed 1 has not run on the
-     fix code anywhere.** Then run `test_stage_chain.py` separately. There is no build and no exe.
+   - At the merge (TEST-1), re-run the two lane files (expected: 74 passed). There is no build and no exe.
+   - Deferred to the gate (GATE-1, root, once, on the gate head): the whole `scripts/tests` under seeds 0 and 1, and
+     `test_stage_chain.py` separately. **Seed 1 has not run on the fix code anywhere.**
    - The identity tests pin root's `research_roles.py` blob `313b23b3`. If another lane changes root's
      `research_roles.py` before this merge, the lane re-derives that pin; root never edits it.
 3. **`mv-aim-v1` pin (P0, root's).** Resolve `mv-aim-v1` in `scripts/specs/p9/od3/flagged_members.json` from
