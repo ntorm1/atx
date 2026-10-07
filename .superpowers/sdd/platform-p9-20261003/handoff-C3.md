@@ -322,3 +322,35 @@ Next free build tag: `p9-c3-o`.
   change it.
 - Scratch of this round (pytest basetemps, synthetic only) is under the session scratchpad `.../scratchpad/c3b/`;
   delete by name.
+
+## R8 round (reconstructed from logs)
+
+Written in RESUME 9 by the C3b agent from `git log 278fc2d8..3129ca14`, `c3-logs/` and the receipts
+`build-equity/mega-p9-c3-{o,p,q}-receipt.json` (copies in `c3-logs/`). The R8 agent left no handoff or report text;
+nothing below is counted done without a log or a receipt. Times are local (EDT), 2026-10-06 unless noted.
+DIRTY-1 (R9, first act): the two exit tables `c3-logs/c3b-gt-exits.txt` / `c3b-pyt-exits.txt` committed as they stood
+(`7a487eb8`); the other R8 logs below were untracked (git-ignored) and are committed with this section.
+
+| step (handoff "Next step" 1-8) | evidence | result |
+|---|---|---|
+| 1 merge root | `7c038124` (18:08, parents `e28d7849` + root `1b64ce45`, docs only, clean); `3129ca14` (19:31, parents `f41719c2` + root `fd084e78` = SQL3 merge + `atx.run-store/v1` class row, clean) | done; item 6 not done (B2's redo not in root) |
+| 2 optional S-13 | `f41719c2` (18:10): `atx-impl/src/book/nav_spec.hpp` comment, +4 / -3 | done |
+| 3a C++ teeth, tag `p9-c3-o` | receipt o: Source `f41719c2`, DirtyEntries 1 (the mutation; the exit tables were still clean at 18:15), equity-dev, target-tests only, 23 TUs (every `book/` TU: S-13 touched `nav_spec.hpp`), 138 s, exe `a144625c...`; `c3-logs/c3b-teeth-o-named.log` (18:16): 34 ran, 33 passed, 1 FAILED = `NavSpec.GridFileRefusesADuplicateKey` (exit 0 where 1 expected, no `nav grid: duplicate key` message, output dir created: both repeated-key files ran) | caught 1 / 1 by its own test. The mutation text was not logged; the failure signature is the handoff's planned `if (false && ...)` in `book/nav_run.cpp`. Restore (before TEETH-RESTORE existed): build p recompiled `book/nav_run.cpp` and nothing else of the lane, p's DirtyEntries 1 is the exit table appended at 18:16, p's named run has the test passing, and at STOP 8 `nav_run.cpp` equals HEAD's blob (SHA-256 checked in R9: `501cb0c1...` both) |
+| 3b clean Debug `p9-c3-p` `-Canary` | receipt p: Source `f41719c2`, DirtyEntries 1 (`c3b-gt-exits.txt`), equity-dev, the four canary targets, 1 lane TU + relinks (spdlog rebuilt in the shared cache, SPDLOG-RELINK), 57 s; canary block ExitCode 0, log `mega-p9-c3-p-canary.log` 15 passed; `c3b-gtest-p-named.log` 34 / 34 and `c3b-gtest-p-whole.log` 391 / 391 (1 disabled, COVR's), exe `3bd62115...`, ENV-1 0 | done |
+| 4 Release `p9-c3-q` | `build-equity/c3-configure-q-rel.log` (18:59, fresh `build-equity-rel`); receipt q: Source `f41719c2`, DirtyEntries 2 (the two exit tables), equity-rel, the four targets, 359 TUs, 297 s, no stale-PCH trap; canary ExitCode 0 (`mega-p9-c3-q-canary.log` 15 passed); `c3b-gtest-q-rel-named.log` 34 / 34, `c3b-gtest-q-rel-whole.log` 391 / 391 (1 disabled), exe `74ad03cf...`, ENV-1 0 | done |
+| canary at the merged head `3129ca14` (same p / q exes) | `c3b-pyt-r-canary-p-debug.log` 15 passed; `c3b-pyt-r-canary-q-release.log` 14 passed, 1 failed: `first run took 15.3 s (limit 15.0 s)`, the golden-digest assertion just before it passed | Debug done; Release = one wall-time miss with matching digests (C3-14): the one re-run on a quieter host NOT done in R8 |
+| 6 suites at `f41719c2` (pre-SQL3 merge) | `c3b-pyt-q-scripts-s0.log` 522 passed / 4 skipped / 0 failed; `c3b-pyt-q-chain-s0.log` 9 passed; `c3b-pyt-q-scripts-s1.log` 522 / 4 / 0; ENV-1 0 each | done, superseded by the merged-tree runs |
+| 6 suites at the merged head `3129ca14` | `c3b-pyt-r-chain-s0.log` 10 passed; `c3b-pyt-r-scripts-s0.log` 529 passed / 5 skipped / 0 failed (SQL3's tests in; the fifth skip is SQL3's real-exe hook case without an exe), ENV-1 0; `c3b-pyt-r-scripts-s1.log` (started 20:22, ran 21 h 05 min to 2026-10-07 17:28): 187 failed / 342 passed / 5 skipped, 528 hits of exit 3221225794 (164 `git init -q` children, 11 `HARD-STOP [fields]` children; 118 of 122 failure sections carry the code; the other four are host-memory-gate tests of the queue / launcher and one nested pytest) | seed 0 and chain done; seed 1 VOID under ENV-1 (re-run once in R9) |
+| 7 report "## Part B (C3b)" | `task-C3-report.md` has no such section | NOT done |
+| 8 delete object trees | `build-equity` (2.7 GB) and `build-equity-rel` (1.7 GB) present | NOT done |
+
+EXE-CUR at `3129ca14` (checked in R9): the kept Debug tree (receipt p) and Release tree (receipt q) hold exes whose
+SHA-256 equal their receipts (`3bd62115` / `82ffe2f8` / `89c43003` / `f39fba52` Debug; `74ad03cf` / `1ae4d237` /
+`7e1ddbc3` / `70e96e5e` Release; targets, targets exe, IC, eval). Their source is `f41719c2`; `git diff f41719c2
+3129ca14` over C++ / CMake is `seal_guard.{hpp,cpp}` and `research_catalog_seal_test.cpp` only, all inside
+`atx-engine-research-catalog` (EXCLUDE_FROM_ALL; every includer of `seal_guard.hpp` is in that library; none of the
+four link lines in `build-equity/build.ninja` names it), plus `classes.json` (run-time data of the store CLI). So both
+trees are current for the four targets at `3129ca14`, and at R9's merge `d31b9961` (root `685e238b` adds only
+`p9-prereg.md`).
+
+Build tags used in R8: `p9-c3-o`, `p9-c3-p`, `p9-c3-q`. Next free build tag: `p9-c3-r`.

@@ -1,0 +1,38 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\atx-wt\pool-15
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 526 items
+
+scripts\tests\test_cycle_e2e.py ..............s                          [  2%]
+scripts\tests\test_cycle_resume.py .....                                 [  3%]
+scripts\tests\test_cycle_scoring.py ....                                 [  4%]
+scripts\tests\test_no_python_mirror.py .....
+G-P5: 32 mirrored rule function(s) in 12 row(s) left for P9 lanes
+..                           [  5%]
+scripts\tests\test_no_versioned_scripts.py ....                          [  6%]
+scripts\tests\test_p9_al_sig_registrations.py ...........                [  8%]
+scripts\tests\test_research_cycle.py ..s.......................s........ [ 15%]
+...s.........................................................            [ 26%]
+scripts\tests\test_research_cycle_label_role.py ..                       [ 27%]
+scripts\tests\test_research_cycle_roles.py ..........................    [ 32%]
+scripts\tests\test_research_ledger.py ......                             [ 33%]
+scripts\tests\test_research_mine.py .................................... [ 40%]
+......                                                                   [ 41%]
+scripts\tests\test_research_spec.py .................................... [ 48%]
+...................................................                      [ 57%]
+scripts\tests\test_research_wave.py ...................                  [ 61%]
+scripts\tests\test_wave_driver.py ............................           [ 66%]
+scripts\tests\test_wave_gross_match.py ............                      [ 69%]
+scripts\tests\test_wave_hardening.py ........                            [ 70%]
+scripts\tests\test_wave_kinds.py ....................................... [ 78%]
+........................................................................ [ 91%]
+                                                                         [ 91%]
+scripts\tests\test_wave_queue.py .....                                   [ 92%]
+scripts\tests\test_wave_review.py .....................                  [ 96%]
+scripts\tests\test_wave_review_minor.py .........                        [ 98%]
+scripts\tests\test_wave_scoreboard.py ...                                [ 99%]
+scripts\tests\test_wave_speed.py .....                                   [100%]
+
+================= 522 passed, 4 skipped in 1855.42s (0:30:55) =================
