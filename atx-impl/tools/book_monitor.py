@@ -12,7 +12,10 @@ Inputs (each optional; a check without its input is ``n/a`` with the reason):
   --daily-ic CSV        the u pass train_daily_ic.csv (M2 IC; h=5 rank IC times the admission sign s_k)
   --admission JSON      admission.json: the admitted members (M2, M4) and their signs
   --sleeve-daily CSV    the report card's daily_sleeve.csv (M2 turnover per member)
-  --fit-work DIR        the fitter WorkStore: price-risk-v1 neutralized member returns f_k (M4 crowding)
+  --fit-work DIR        the fitter WorkStore: price-risk-v1 neutralized member returns f_k (M4 crowding). Refused
+                        (exit 1, nothing written) when a record-store SQLite index (record_store.INDEX_NAME) sits
+                        in DIR, DIR/.. or a DIR/*/ store root: records stored only in an index are not read here
+                        yet, and a monitor that counted fewer records would under-report (P9 SQL3, ruling W3-5)
 
 Checks and declared thresholds (literature-v7 S7; [est] values are declared here, not fitted):
   M1 risk       b63 = sample SD of z = r / sigma_hat(t-1) of the book over the last 63 sessions; ok inside
@@ -237,7 +240,20 @@ class Inputs:
                 self.turn[k].sort()
         self.resid, self.resid_note = None, None
         if args.fit_work:
+            indexed = work_indexes(Path(args.fit_work))
+            require(not indexed, f"--fit-work {args.fit_work}: a record-store SQLite index selects records this "
+                                 f"monitor cannot read yet ({', '.join(p.as_posix() for p in indexed)}); refused "
+                                 "(fail closed, ruling W3-5): run it on a work dir without an index")
             self.resid, self.resid_note = fit_records(Path(args.fit_work), self.admission, self.members)
+
+
+def work_indexes(work: Path) -> list[Path]:
+    """The record-store SQLite indexes a store under the fitter work dir ``work`` could select
+    (record_store.RecordStore: its root or the root's parent): ``work``, ``work/..`` and every ``work/*/`` (the v8
+    store roots ``<work>/<role sha16>-<window>/``, fcw.WorkStore), sorted."""
+    name = fcw.record_store.INDEX_NAME
+    found = [work / name, work.parent / name, *work.glob("*/" + name)]
+    return sorted({p for p in found if p.is_file()})
 
 
 def fit_records(work: Path, admission: dict | None, members: list[str]) -> tuple[dict | None, str | None]:

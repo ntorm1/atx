@@ -1,0 +1,72 @@
+﻿Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = ResearchCatalog*:SealGuard*:StoreCli*
+[==========] Running 28 tests from 3 test suites.
+[----------] Global test environment set-up.
+[----------] 15 tests from ResearchCatalog
+[ RUN      ] ResearchCatalog.RecordsSchemaJsonEqualsFixture
+[       OK ] ResearchCatalog.RecordsSchemaJsonEqualsFixture (32 ms)
+[ RUN      ] ResearchCatalog.IngestsSyntheticTree
+[       OK ] ResearchCatalog.IngestsSyntheticTree (690 ms)
+[ RUN      ] ResearchCatalog.DigestReproducibleFromScratch
+[       OK ] ResearchCatalog.DigestReproducibleFromScratch (619 ms)
+[ RUN      ] ResearchCatalog.DigestIndependentOfIngestOrder
+[       OK ] ResearchCatalog.DigestIndependentOfIngestOrder (514 ms)
+[ RUN      ] ResearchCatalog.PinsResolvedAndStaleDetected
+[       OK ] ResearchCatalog.PinsResolvedAndStaleDetected (562 ms)
+[ RUN      ] ResearchCatalog.DeclaredPayloadNeverOpenedAndMarkedDeclared
+[       OK ] ResearchCatalog.DeclaredPayloadNeverOpenedAndMarkedDeclared (344 ms)
+[ RUN      ] ResearchCatalog.VerifyPayloadsUpgradesToVerified
+[       OK ] ResearchCatalog.VerifyPayloadsUpgradesToVerified (1013 ms)
+[ RUN      ] ResearchCatalog.UnparsedJsonCataloguedAsArtifact
+[       OK ] ResearchCatalog.UnparsedJsonCataloguedAsArtifact (283 ms)
+[ RUN      ] ResearchCatalog.DuplicateKeyAcrossFilesRefusedInEveryOrder
+[       OK ] ResearchCatalog.DuplicateKeyAcrossFilesRefusedInEveryOrder (613 ms)
+[ RUN      ] ResearchCatalog.CrlfAndLfDetected
+[       OK ] ResearchCatalog.CrlfAndLfDetected (323 ms)
+[ RUN      ] ResearchCatalog.IngestIsIdempotent
+[       OK ] ResearchCatalog.IngestIsIdempotent (171 ms)
+[ RUN      ] ResearchCatalog.TrialLinesAppendOnly
+[       OK ] ResearchCatalog.TrialLinesAppendOnly (433 ms)
+[ RUN      ] ResearchCatalog.LedgerHeadSeamReceivesLinesInFileOrder
+[       OK ] ResearchCatalog.LedgerHeadSeamReceivesLinesInFileOrder (279 ms)
+[ RUN      ] ResearchCatalog.ClassifierUsesGlobsAndSchemas
+[       OK ] ResearchCatalog.ClassifierUsesGlobsAndSchemas (1 ms)
+[ RUN      ] ResearchCatalog.CacheImportMatchesRecordStore
+[       OK ] ResearchCatalog.CacheImportMatchesRecordStore (751 ms)
+[----------] 15 tests from ResearchCatalog (6637 ms total)
+
+[----------] 7 tests from SealGuard
+[ RUN      ] SealGuard.HasSealedYearMatchesTheBackstopRegex
+[       OK ] SealGuard.HasSealedYearMatchesTheBackstopRegex (0 ms)
+[ RUN      ] SealGuard.YearTokenPathNeverOpened
+[       OK ] SealGuard.YearTokenPathNeverOpened (278 ms)
+[ RUN      ] SealGuard.SealedRootNeverOpened
+[       OK ] SealGuard.SealedRootNeverOpened (146 ms)
+[ RUN      ] SealGuard.RootTokenScannedOnlyBelowTheRepoTop
+[       OK ] SealGuard.RootTokenScannedOnlyBelowTheRepoTop (320 ms)
+[ RUN      ] SealGuard.CacheImportNeverOpensSealedPaths
+[       OK ] SealGuard.CacheImportNeverOpensSealedPaths (107 ms)
+[ RUN      ] SealGuard.OutsideRootsListedNotOpened
+[       OK ] SealGuard.OutsideRootsListedNotOpened (291 ms)
+[ RUN      ] SealGuard.FieldSourcePinsNotFollowed
+[       OK ] SealGuard.FieldSourcePinsNotFollowed (299 ms)
+[----------] 7 tests from SealGuard (1444 ms total)
+
+[----------] 6 tests from StoreCli
+[ RUN      ] StoreCli.ExitCodes
+[       OK ] StoreCli.ExitCodes (1107 ms)
+[ RUN      ] StoreCli.SealedRootRefusedBeforeAnythingIsRead
+[       OK ] StoreCli.SealedRootRefusedBeforeAnythingIsRead (388 ms)
+[ RUN      ] StoreCli.RebuildOpensTheOldCatalogLikeEveryVerb
+[       OK ] StoreCli.RebuildOpensTheOldCatalogLikeEveryVerb (176 ms)
+[ RUN      ] StoreCli.DuplicateCandidateIdIsARefusal
+[       OK ] StoreCli.DuplicateCandidateIdIsARefusal (318 ms)
+[ RUN      ] StoreCli.QueryRowsOrderedByKey
+[       OK ] StoreCli.QueryRowsOrderedByKey (738 ms)
+[ RUN      ] StoreCli.SchemaJsonEqualsStoreInfo
+[       OK ] StoreCli.SchemaJsonEqualsStoreInfo (309 ms)
+[----------] 6 tests from StoreCli (3039 ms total)
+
+[----------] Global test environment tear-down
+[==========] 28 tests from 3 test suites ran. (11123 ms total)
+[  PASSED  ] 28 tests.
