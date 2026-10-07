@@ -216,8 +216,7 @@ class CommittedRegistry(unittest.TestCase):
                 row = doc[name]
                 self.assertIn((row["kind"], row["builder"]), (("python", row["builder"]), ("engine", name)))
                 self.assertIn("engine-shim", row["owner"])
-                self.assertEqual(row["formula_sha256"],
-                                 tool.formula_id(name, tool.spec_definition(name, engine.lag_of(name))))
+                self.assertEqual(row["formula_sha256"], engine.formula_of(name))   # A4: holdings spec text too
         self.assertEqual((doc["si_shares"]["options"], doc["vol_126"]["options"]),
                          ({"group": "finra"}, {"group": "price_volume"}))
 

@@ -242,7 +242,8 @@ def test_flag_errors(tmp_path, monkeypatch):
 
 def test_engine_rows_follow_the_registry(tmp_path, field_registry):
     assert engine.ENGINE_FIELDS == ("si_shares", "si_dtc", "vol_126", "ret_overnight", "ret_intraday", "ceq_iss_5y",
-                                    "open_adj", "high_adj", "low_adj")  # the routable fields (lane A1 imports it)
+                                    "open_adj", "high_adj", "low_adj", "ftd_shares_ratio21",
+                                    "regsho_threshold_days63")  # the routable fields (lane A1 imports it; A4 holdings)
     assert engine.engine_rows() == ["si_shares", "si_dtc", "vol_126"]          # registration order, python rows out
     assert engine.engine_rows(field_registry) == ["si_shares", "si_dtc", "vol_126"]
     flipped = write_registry(tmp_path / "other.json", {"vol_126": "engine", "si_dtc": "python", "si_shares": "python"})

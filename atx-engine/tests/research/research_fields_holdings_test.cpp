@@ -14,6 +14,10 @@
 // change no row whose clock cannot see it; the honest kernel's first changed row is exactly the
 // first that can. The same kernel run one session late (the next session's clock: a planted leak)
 // changes an earlier row, so the probe has teeth.
+//
+// ResearchFieldsHoldingsKernel.*: the bounded-memory forms against the Python's: FtdKernel's ring
+// of kFtdWindow + 1 prefix rows against the full (dates + 1) x lines matrix, in any row order, and
+// the Reg SHO late-row rule's unit (the file, not the parquet row group the one reader streams).
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -458,20 +462,22 @@ TEST(ResearchFieldsHoldingsProbe, FtdLookAheadProbeHasTeeth) {
         const f64 regular = 100.0 + static_cast<f64>(sid);
         rows.quantity.push_back(d == plant_day && sid == 11 ? plant : regular);
         rows.available_ns.push_back((d + 3) * kDayNs);
-        rows.collision.push_back(0);
+        rows.basis.push_back(-1); // not a collision
       }
     }
     return rows;
   };
   const auto payload = [&](const fields::FtdRows &rows, std::span<const i64> marks) {
     fields::FtdIndexer indexer(role);
-    indexer.add(rows, "year=2023/ftd.parquet");
+    indexer.add(rows);
+    indexer.end_file("year=2023/ftd.parquet");
     const fields::FtdPanel panel = indexer.finish().value();
+    fields::FtdKernel kernel(panel, role, shares);
     std::vector<f64> out;
     std::vector<f64> row(role.instruments());
     fields::FtdReasons reasons;
     for (usize t = 0; t < role.dates(); ++t) {
-      fields::ftd_row(panel, role, shares, t, marks[t], role.member_row(t), reasons, row);
+      kernel.row(t, marks[t], role.member_row(t), reasons, row);
       out.insert(out.end(), row.begin(), row.end());
     }
     return out;
@@ -505,7 +511,7 @@ TEST(ResearchFieldsHoldingsProbe, RegshoLookAheadProbeHasTeeth) {
   for (const i64 d : weekdays(day_of(2022, 12, 1), day_of(2023, 6, 30))) {
     lists.market.push_back(0);
     lists.list_day.push_back(d);
-    lists.status.emplace_back("list");
+    lists.status.push_back(0); // "list"
     lists.available_ns.push_back((d + 1) * kDayNs + 6 * kHourNs);
   }
   // line 11 is NNM (nasdaq), its FINRA name rows every 15 days, visible at dissemination 22:00
@@ -514,9 +520,11 @@ TEST(ResearchFieldsHoldingsProbe, RegshoLookAheadProbeHasTeeth) {
     names.security_id.push_back(11);
     names.available_ns.push_back(d * kDayNs + kMarkNs);
     names.dissemination_day.push_back(d);
-    names.market_class.emplace_back("NNM");
+    names.market_class.push_back(0); // "NNM"
   }
-  const fields::ListingRows listing = fields::index_listing_rows(names, role);
+  fields::ListingIndexer listing_indexer(role);
+  listing_indexer.add(names);
+  const fields::ListingRows listing = listing_indexer.finish();
   const auto threshold_of = [](std::optional<i64> plant_day) {
     fields::ThresholdRows rows;
     for (const i64 d : weekdays(day_of(2023, 4, 3), day_of(2023, 4, 14))) {
@@ -538,11 +546,10 @@ TEST(ResearchFieldsHoldingsProbe, RegshoLookAheadProbeHasTeeth) {
   // the kernel; `shift` 1 computes row t as the honest row of session t + 1 (a planted leak)
   const auto payload = [&](const fields::ThresholdRows &rows, usize shift) {
     fields::RegshoIndexer indexer(lists, role);
-    indexer.add(rows, "year=2023/threshold.parquet");
+    indexer.add(rows);
+    indexer.end_file("year=2023/threshold.parquet");
     const fields::RegshoPanel panel = indexer.finish();
-    auto latest =
-        fields::LatestRows::create(listing.available_ns, listing.column, role.instruments())
-            .value();
+    auto kernel = fields::RegshoKernel::create(panel, listing, role).value();
     const std::vector<i64> marks = fields::previous_session_marks(role.days());
     std::vector<f64> out;
     std::vector<f64> row(role.instruments());
@@ -550,9 +557,7 @@ TEST(ResearchFieldsHoldingsProbe, RegshoLookAheadProbeHasTeeth) {
     std::vector<u64> by_market(fields::kRegshoMarkets.size(), 0);
     for (usize t = 0; t < role.dates(); ++t) {
       const usize s = std::min(t + shift, role.dates() - 1);
-      const auto visible = latest.before(marks[s]);
-      fields::regsho_row(panel, listing, visible, role, s, marks[s], role.member_row(s), reasons,
-                         by_market, row);
+      kernel.row(s, marks[s], role.member_row(s), reasons, by_market, row);
       out.insert(out.end(), row.begin(), row.end());
     }
     return out;
@@ -573,4 +578,132 @@ TEST(ResearchFieldsHoldingsProbe, RegshoLookAheadProbeHasTeeth) {
                                   payload(threshold_of(plant_day), 1), role.instruments());
   ASSERT_TRUE(leaky.has_value());
   EXPECT_LT(*leaky, plant_row + 2) << "the probe must catch a clock one session late";
+}
+
+// ---- kernels and indexers ---------------------------------------------------------------------
+
+// FtdKernel keeps only kFtdWindow + 1 prefix rows: its payload is the Python's full (dates + 1) x
+// lines matrix (np.add.at in read order into zeros, sequential axis-0 cumsum, a window as the
+// difference of two prefix rows), computed here as the Python does, bit for bit, and the same when
+// the rows are asked for last to first (each earlier anchor recomputes from prefix row 0).
+TEST(ResearchFieldsHoldingsKernel, FtdRingIsTheFullMatrixInAnyOrder) {
+  const std::vector<i64> days = weekdays(day_of(2023, 3, 1), day_of(2023, 6, 30));
+  const ProbeRole pr = probe_role("holdings_kernel_ftd", days);
+  const fields::RoleAxes &role = pr.role;
+  const fields::RunPayload shares = flat_shares_out(pr.dir.parent_path(), role);
+  fields::FtdRows rows; // line 11 fails twice on every third weekday (summed in read order)
+  for (const i64 d : weekdays(day_of(2023, 1, 2), day_of(2023, 6, 30))) {
+    for (usize rep = 0; rep < 3; ++rep) {
+      if (rep == 2 && d % 3 != 0) {
+        continue;
+      }
+      const i64 sid = rep == 1 ? 22 : 11;
+      rows.settlement_day.push_back(d);
+      rows.security_id.push_back(sid);
+      rows.quantity.push_back(0.1 * static_cast<f64>(d % 13) + 1e-7 * static_cast<f64>(sid));
+      rows.available_ns.push_back((d + 3) * kDayNs);
+      rows.basis.push_back(-1);
+    }
+  }
+  fields::FtdIndexer indexer(role);
+  indexer.add(rows);
+  indexer.end_file("year=2023/ftd.parquet");
+  const fields::FtdPanel panel = indexer.finish().value();
+  EXPECT_GT(panel.checks.at("role_rows_summed_duplicates").get<u64>(), 0U);
+  // The Python's matrix.
+  const usize n = role.instruments();
+  const usize dates = panel.calendar.size();
+  std::vector<f64> cum((dates + 1) * n, 0.0);
+  for (usize i = 0; i < rows.size(); ++i) {
+    const auto at = std::lower_bound(panel.calendar.begin(), panel.calendar.end(),
+                                     rows.settlement_day[i]);
+    const usize k = static_cast<usize>(at - panel.calendar.begin());
+    cum[(k + 1) * n + *role.column_of(rows.security_id[i])] += rows.quantity[i];
+  }
+  for (usize k = 1; k <= dates; ++k) {
+    for (usize j = 0; j < n; ++j) {
+      cum[k * n + j] = cum[(k - 1) * n + j] + cum[k * n + j];
+    }
+  }
+  const std::vector<i64> marks = fields::previous_session_marks(role.days());
+  const auto run = [&](bool backwards) {
+    fields::FtdKernel kernel(panel, role, shares);
+    std::vector<f64> out(role.dates() * n);
+    fields::FtdReasons reasons;
+    for (usize i = 0; i < role.dates(); ++i) {
+      const usize t = backwards ? role.dates() - 1 - i : i;
+      kernel.row(t, marks[t], role.member_row(t), reasons, std::span<f64>(out).subspan(t * n, n));
+    }
+    return out;
+  };
+  const std::vector<f64> forwards = run(false);
+  usize finite = 0;
+  for (usize t = 0; t < role.dates(); ++t) {
+    const auto visible = std::lower_bound(panel.prefix_visible_ns.begin(),
+                                          panel.prefix_visible_ns.end(), marks[t]);
+    const usize anchors = static_cast<usize>(visible - panel.prefix_visible_ns.begin());
+    for (usize j = 0; j < n; ++j) {
+      const f64 got = forwards[t * n + j];
+      if (std::isnan(got)) {
+        continue;
+      }
+      ++finite;
+      ASSERT_GE(anchors, fields::kFtdWindow);
+      const f64 want = (cum[anchors * n + j] - cum[(anchors - fields::kFtdWindow) * n + j]) / 1e6;
+      EXPECT_EQ(std::bit_cast<u64>(got), std::bit_cast<u64>(want)) << "row " << t << " line " << j;
+    }
+  }
+  EXPECT_GT(finite, 100U);
+  EXPECT_FALSE(first_change(forwards, run(true), n).has_value());
+}
+
+// The Python's unit of the Reg SHO late-row rule is the file: a row is compared with its list's
+// visibility before ANY raise of its file, so a file read in two row groups gives the panel and
+// checks of one batch; the late rows of the second group are late against the original list.
+TEST(ResearchFieldsHoldingsKernel, RegshoLateRuleIsPerFileAcrossBatches) {
+  const std::vector<i64> days = weekdays(day_of(2023, 3, 1), day_of(2023, 6, 30));
+  const ProbeRole pr = probe_role("holdings_kernel_regsho", days);
+  const fields::RoleAxes &role = pr.role;
+  fields::RegshoListRows lists;
+  for (const i64 d : weekdays(day_of(2022, 12, 1), day_of(2023, 6, 30))) {
+    lists.market.push_back(0);
+    lists.list_day.push_back(d);
+    lists.status.push_back(0);
+    lists.available_ns.push_back((d + 1) * kDayNs + 6 * kHourNs);
+  }
+  const i64 d = day_of(2023, 4, 4);
+  const i64 list_at = (d + 1) * kDayNs + 6 * kHourNs;
+  const auto threshold = [&](i64 available) {
+    fields::ThresholdRows rows;
+    rows.list_day.push_back(d);
+    rows.market.push_back(0);
+    rows.security_id.push_back(11);
+    rows.on_list.push_back(1);
+    rows.available_ns.push_back(available);
+    return rows;
+  };
+  const fields::ThresholdRows first = threshold(list_at + 9 * kHourNs); // raises the list
+  const fields::ThresholdRows second = threshold(list_at + 2 * kHourNs); // late vs the original
+  fields::ThresholdRows both = first;
+  both.list_day.push_back(second.list_day[0]);
+  both.market.push_back(second.market[0]);
+  both.security_id.push_back(second.security_id[0]);
+  both.on_list.push_back(second.on_list[0]);
+  both.available_ns.push_back(second.available_ns[0]);
+  fields::RegshoIndexer batches(lists, role);
+  batches.add(first);
+  batches.add(second);
+  batches.end_file("year=2023/threshold.parquet");
+  const fields::RegshoPanel split = batches.finish();
+  fields::RegshoIndexer whole(lists, role);
+  whole.add(both);
+  whole.end_file("year=2023/threshold.parquet");
+  const fields::RegshoPanel one = whole.finish();
+  EXPECT_EQ(split.checks, one.checks);
+  EXPECT_EQ(split.checks.at("rows_later_than_their_list").get<u64>(), 2U);
+  EXPECT_EQ(split.list_visible_ns, one.list_visible_ns);
+  EXPECT_EQ(split.on_market, one.on_market);
+  const auto k = static_cast<usize>(
+      std::lower_bound(one.calendar.begin(), one.calendar.end(), d) - one.calendar.begin());
+  EXPECT_EQ(one.list_visible_ns[k], list_at + 9 * kHourNs); // market 0 row: the latest raise
 }
