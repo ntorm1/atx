@@ -36,7 +36,11 @@ fixtures (scripts/specs/p9/kinds/, gate G-P2). Synthetic worlds only (wave_fixtu
                                                       --walk-forward* in any other kind (E2-8 via KIND_FLAGS)
   test_c3_3_*                                         ruling C3-3: x-flag-aliases owned as the row's flag
   test_e2_17_*                                        ruling E2-17: inputs.* only by the kinds and keys of KIND_INPUTS
-  test_the_live_rule_tables                           skipped unless ATX_EQUITY_BIN names a bin with both exes: the
+  test_c3_13_*                                        ruling C3-13: a NAV row whose x-flag is --rule <id> sets the
+                                                      cell's nav.rule (one --rule on every NAV argv: root's C3-5
+                                                      probe (a), (b) on fakes); other row kinds append; a raw --rule
+                                                      is still refused (E2-8)
+  test_the_live_rule_tables                          skipped unless ATX_EQUITY_BIN names a bin with both exes: the
                                                       exes' live tables, the 10 fixtures on them (root M2h's check)
 """
 from __future__ import annotations
@@ -1406,8 +1410,9 @@ def test_the_live_rule_tables(tmp_path):
     """Root M2h's live-table check (m2h-logs/e2-live-table-check.py) as a test, plus lane C3's rows: the exes'
     --list-rules --json envelopes through E2's own argv and parser; the IC table is the committed fixture these tests
     read; every IC rule mapped; fixed-v1's range [1, 2]; C3's cost-law row and its alias (ruling C3-3) as NAV_C3
-    mirrors them; then all ten kinds fixtures pass preflight in the fake world served the LIVE tables (walk-forward on
-    an --engine-fit parent) and the cost-model and combination-rule fixtures run to spec. No data is read."""
+    mirrors them; every live --rule row is "--rule <its id>" (the shape ruling C3-13's nav.rule relies on); then all ten
+    kinds fixtures pass preflight in the fake world served the LIVE tables (walk-forward on an --engine-fit parent) and
+    the cost-model and combination-rule fixtures run to spec. No data is read."""
     bin_dir = live_bin()
     ic_text, ic = live_listing(bin_dir / LIVE_EXES[0], False)
     _, nav = live_listing(bin_dir / LIVE_EXES[1], True)
@@ -1428,7 +1433,11 @@ def test_the_live_rule_tables(tmp_path):
     assert WK.alias_problems(tables) == [] and WK.flag_aliases(tables) == {COST_V2: "cost-sqrt-v2"}
     assert WK.rule_flags(load_fixture("new-cost-model.json")["rules"], tables) == \
         ({"nav": {"--cost-law": "cost-sqrt-v2"}}, [])
-    for mine in C3_ROWS:                                 # NAV_C3 mirrors the live rows the guard reads
+    aims = [r for r in nav["rules"] if str(r.get("x-flag") or "").split()[:1] == [WK.NAV_RULE_FLAG]]   # C3-13
+    assert aims and all(r["x-flag"] == f"{WK.NAV_RULE_FLAG} {r['id']}" for r in aims), aims
+    assert WK.nav_rule_split(WK.rule_flags([AIM_TF], tables)[0]) == \
+        ({WK.NAV_RULE_KEY: "aim-partial-v5"}, {"nav": {"--trade-fraction": "0.1"}})
+    for mine in C3_ROWS:                                # NAV_C3 mirrors the live rows the guard reads
         live = rows[mine["id"]]
         props = live["params_schema"]["properties"]
         assert (live["kind"], live["x-flag"], live.get(WK.ALIASES_KEY)) == \
@@ -1442,3 +1451,118 @@ def test_the_live_rule_tables(tmp_path):
         code, log, _, _ = run_probe(tmp_path / name[:-5], name, None, None, pedit, "run", "--until", until, ic=ic,
                                     nav=nav)
         assert code == 0, (name, log)
+
+
+# ------------------------------------------------------------------ P9 lane D3: ruling C3-13 (a --rule row is nav.rule)
+AIM_V6 = c3_row("aim-partial-v6", "trade-rate", "--rule aim-partial-v6", {"trade_fraction": num("--trade-fraction")})
+TARGET_RULE = c3_row("zz-target-rule-v0", "target", "--target-rule zz-target-rule-v0")   # COV-MV's route, synthetic
+NAV_C3_13 = dict(NAV_C3, rules=NAV_C3["rules"] + [AIM_V6, TARGET_RULE])   # a second --rule row: synthetic (the live
+AIM_TF = {"name": "aim-partial-v5", "params": {"trade_fraction": 0.1}}    # table lists aim-partial-v5 only)
+
+
+def nav_argv(root: Path, spec_rel: str) -> list[str]:
+    """The NAV replay argv the cycle builds for the cell ``spec_rel`` (scripts/cycle/phases.py nav_step: "--rule",
+    nav.rule, then nav.flags); the combined file, fields and role pins are stubs: only the NAV verb's tokens matter."""
+    p = root / spec_rel
+    spec = RC.load_spec(p)
+    c = RC.Cycle(spec, RC.Resolver(root), verify=False, spec_path=p)
+    return c.nav_step("nav", c.out(spec["nav"]["output"]), "comb.json", "0" * 64, spec["nav"],
+                      f"{F.FIELDS}/manifest.json", "role/manifest.json", "0" * 64).argv
+
+
+def values_of(argv: list[str], flag: str) -> list[str]:
+    return [argv[i + 1] for i, t in enumerate(argv[:-1]) if t == flag]
+
+
+def with_trade_fraction(spec: dict) -> None:
+    """The parent as tiny.json runs it (root's C3-5 probe): nav.rule aim-partial-v5 at --trade-fraction .05."""
+    spec["nav"]["flags"] = [*spec["nav"]["flags"], "--trade-fraction", ".05"]
+
+
+def runs_aim_v6(spec: dict) -> None:
+    """A parent whose cell of record runs another aim rule (nav.rule aim-partial-v6)."""
+    spec["nav"]["rule"] = "aim-partial-v6"
+
+
+def test_c3_13_nav_rule_split():
+    """WK.nav_rule_split: the derived --rule entry becomes nav.rule; the row's param flags and every other section stay
+    (the append route); without a --rule entry the derived flags come back as given; the receipt's map is not edited."""
+    both = {"fit": {"--two-speed": "two-speed-v1"}, "nav": {"--trade-fraction": "0.1", "--rule": "aim-partial-v5"}}
+    assert WK.nav_rule_split(both) == ({"nav.rule": "aim-partial-v5"}, {"fit": {"--two-speed": "two-speed-v1"},
+                                                                         "nav": {"--trade-fraction": "0.1"}})
+    assert both["nav"] == {"--trade-fraction": "0.1", "--rule": "aim-partial-v5"}
+    assert WK.nav_rule_split({"nav": {"--rule": "aim-partial-v6"}}) == ({"nav.rule": "aim-partial-v6"}, {})
+    for derived in ({}, {"nav": {"--rate": "per-name-v1"}}, {"nav": {"--target-rule": TARGET_RULE["id"]}},
+                    {"nav": {"--cost-law": "cost-sqrt-v2"}}, {"fit": {"--composition": "ew-theme-std-v1"}}):
+        assert WK.nav_rule_split(derived) == ({}, derived)
+
+
+@pytest.mark.parametrize("rule, pedit, want", [
+    (AIM_TF, with_trade_fraction, "aim-partial-v5"),                                        # (a) root's C3-5 probe
+    (dict(AIM_TF, name="aim-partial-v6"), with_trade_fraction, "aim-partial-v6"),           # (b) another --rule row
+    (AIM_TF, runs_aim_v6, "aim-partial-v5"),                                                # (b) the parent's another
+], ids=["a-the-parents-own-aim-rule", "b-another-aim-row", "b-a-parent-on-another-aim-rule"])
+def test_c3_13_a_rule_row_sets_nav_rule(tmp_path, rule, pedit, want):
+    """Ruling C3-13 (root M2j item 8, the C3-5 probe, on fakes): a kind rule wave naming a NAV row whose x-flag is
+    --rule <id> SETS the cell's nav.rule to <id> (replacing the parent's) and appends only the row's param flags. The
+    NAV argv the cycle derives (nav_step) for the cell, the match stage's -cal run recipe and its -gm cell of record
+    carries exactly one --rule, <id>, and one --trade-fraction 0.1. (a) the parent's own aim rule with another param;
+    (b) another aim rule: a second --rule row, or the row named on a parent running another. E2-8's raw-rule-flag
+    guard accepts the cell (preflight exit 0); the preflight receipt still lists the row's derived x-flag."""
+    m = load_fixture("new-nav-rule.json")
+    m.update(gross_match=WK.MATCH_STAGE, rules=[rule])
+    root = world(tmp_path, m)
+    edit_parent(root, pedit)
+    fake = KindsFake(root, nav=NAV_C3_13, gross_per_l={f"p9k-rule-nav-{m['wave']}": 0.9604 / 1.1474})
+    code, log = wave(root, fake, "run", "--until", "verify")
+    assert code == 0, log
+    receipts = root / "out/waves" / m["wave"] / "receipts"
+    assert json.loads((receipts / "01-preflight.json").read_text())["outputs"]["kind"]["flags"] == \
+        {"nav": {"--trade-fraction": "0.1", "--rule": rule["name"]}}
+    cell = cell_of(root)["cell_spec"]
+    change = json.loads((root / cell).read_text())["change"]
+    assert change["set"][WK.NAV_RULE_KEY] == want and change["flags"] == {"nav": {"--trade-fraction": "0.1"}}
+    mt = json.loads((receipts / "06-match.json").read_text())["outputs"]
+    for spec in (cell, mt["cell_spec"], mt["record_spec"]):
+        nav, argv = RC.load_spec(root / spec)["nav"], nav_argv(root, spec)
+        assert nav["rule"] == want and "--rule" not in nav["flags"], (spec, nav)
+        assert values_of(argv, "--rule") == [want] and values_of(argv, "--trade-fraction") == ["0.1"], (spec, argv)
+
+
+@pytest.mark.parametrize("rule, flags", [
+    ({"name": "per-name-v1", "params": {"rate_min": 0.01}}, ["--rate", "per-name-v1", "--rate-min", "0.01"]),
+    ({"name": TARGET_RULE["id"]}, ["--target-rule", TARGET_RULE["id"]]),
+    ({"name": "cost-sqrt-v2"}, ["--cost-law", "cost-sqrt-v2"]),
+], ids=["rate", "target-rule", "cost-law"])
+def test_c3_13_other_row_kinds_keep_the_append_route(tmp_path, rule, flags):
+    """Ruling C3-13: a NAV row whose x-flag is no --rule (--rate, --target-rule, --cost-law) keeps the append route:
+    its flags (the row's and its params', in the receipt's key order) reach nav.flags, the cell sets no nav.rule (the
+    parent's aim-partial-v5 stays) and the derived NAV argv carries one --rule, the parent's."""
+    m = load_fixture("new-nav-rule.json")
+    m.update(rules=[rule])
+    root = world(tmp_path, m)
+    code, log = wave(root, KindsFake(root, nav=NAV_C3_13), "run", "--until", "spec")
+    assert code == 0, log
+    cell = cell_of(root)["cell_spec"]
+    assert WK.NAV_RULE_KEY not in (json.loads((root / cell).read_text())["change"].get("set") or {})
+    nav = RC.load_spec(root / cell)["nav"]
+    assert nav["rule"] == "aim-partial-v5" and nav["flags"] == NAV_SET + flags, nav
+    assert values_of(nav_argv(root, cell), "--rule") == ["aim-partial-v5"]
+
+
+@pytest.mark.parametrize("edit, tedit, needle", [
+    (constants(flags={"nav": {"--rule": "aim-partial-v6"}}), None,
+     "rule_cell.constants.flags sets ['nav --rule'], which the exes' rules own"),
+    (None, lambda t: t["change"].update(flags={"nav": {"--rule": "aim-partial-v6"}}),
+     "rule_cell.template change.flags sets ['nav --rule'], which the exes' rules own"),
+    (constants(set={"nav.flags": NAV_SET + ["--rule", "aim-partial-v6"]}), None,
+     "rule_cell.constants.set nav.flags: the cell's nav.flags adds token(s) ['--rule']"),
+], ids=["constants-flags", "template-flags", "constants-set"])
+def test_c3_13_a_raw_rule_flag_is_still_refused(tmp_path, edit, tedit, needle):
+    """Ruling C3-13 opens no route: in a wave naming aim-partial-v5, a raw --rule in a flag map or a set nav.flags is
+    still E2-8's refusal (the derived --rule goes to nav.rule, never to the lists the guard compares)."""
+    def named(m):
+        m["rules"] = [AIM_TF]
+        if edit:
+            edit(m)
+    stopped_at_preflight(*run_probe(tmp_path, "new-nav-rule.json", named, tedit, None, nav=NAV_C3_13), needle)

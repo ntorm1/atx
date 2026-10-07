@@ -41,6 +41,9 @@ JSON Schema subset the exes print), with the row's own name as its ``rule`` key 
 a NAV row's from its x-flag keys (the rule's, then each param's), a composition row's from COMPOSITION_FLAGS. The
 preflight stage reads both tables (their SHA-256 in its receipt), validates and derives; the spec stage writes the
 flags into the cell. The exe capabilities the cycle needs come from the same envelope (cycle/phases.exe_capabilities).
+Ruling C3-13: a NAV row whose x-flag is ``--rule <id>`` (an aim rule; C3's aim-partial-v5) is the cell's nav.rule, which
+the cycle puts on the NAV argv itself (cycle/phases.py nav_step): the spec stage SETS nav.rule to <id> (replacing the
+parent's) and appends only the row's param flags (nav_rule_split); every other row kind keeps the append route.
 
 Raw rule flags (ruling E2-8, one guard, every v2 kind; wave_stage_kinds.rule_flag_guard): no flag a rule owns
 (owned_flags: every table rule's, named or not, plus the named rules' derived ones) reaches the cell any other way
@@ -90,6 +93,9 @@ WALK_FORWARD_REFUSED = ("--theme-tsmom", "--theme-resid", "--era")   # their own
 # setting or changing an inputs.* key, by any route, is refused at preflight (wave_stage_kinds.inputs_refusal)
 KIND_INPUTS = {"field": (), "role": ("role",), "horizon": ()}
 ALIASES_KEY = "x-flag-aliases"                      # ruling C3-3: a K-P9-7 row's legacy spellings of its x-flag
+# Ruling C3-13: the x-flag of a NAV row selected by nav.rule (an aim rule): the cycle emits "--rule", nav["rule"] on
+# every NAV argv (scripts/cycle/phases.py nav_step), so a rule wave naming the row sets nav.rule (nav_rule_split)
+NAV_RULE_FLAG, NAV_RULE_KEY = "--rule", "nav.rule"
 WINDOWS = (5, 21, 63, 126, 252)                     # plan section 0.6: windows (here horizons) from this set
 HORIZON_OUTPUTS = (("ic", "u_output"), ("fit", "output"), ("card", "output"), ("marginal", "output"),
                    ("ic", "w_output"), ("nav", "output"), ("monitor", "output"))
@@ -526,6 +532,23 @@ def rule_flags(rules: list[dict], tables: dict) -> tuple[dict, list[str]]:
                     out.append(f"rules: {section} {flag} set to {have[flag]!r} and {value!r}")
                 have[flag] = value
     return flags, out
+
+
+def nav_rule_split(derived: dict) -> tuple[dict, dict]:
+    """Ruling C3-13: (sets, flags) of a rule wave's derived flags (rule_flags) for its rule cell. A named NAV row whose
+    x-flag is ``--rule <id>`` (NAV_RULE_FLAG, an aim rule) SETS the cell's nav.rule (NAV_RULE_KEY) to <id>, replacing
+    the parent's: the cycle puts ``--rule nav.rule`` on the NAV argv itself (cycle/phases.py nav_step), so the flag in
+    nav.flags would be a second --rule the NAV exe refuses (root M2j item 8, the C3-5 probe). Only the row's param
+    x-flags stay in the flags (the append route). Without a --rule entry ``derived`` comes back as given: every other
+    row kind (--rate, --target-rule, --cost-law, a composition row's flags) keeps the append route."""
+    nav = dict((derived or {}).get("nav") or {})
+    if NAV_RULE_FLAG not in nav:
+        return {}, derived
+    value = nav.pop(NAV_RULE_FLAG)
+    flags = {s: ops for s, ops in derived.items() if s != "nav"}
+    if nav:
+        flags["nav"] = nav
+    return {NAV_RULE_KEY: value}, flags
 
 
 def unmapped_ic_rules(tables: dict) -> list[str]:

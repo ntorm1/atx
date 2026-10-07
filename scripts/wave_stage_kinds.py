@@ -19,7 +19,8 @@ are those of before.
              <the wave's fields + the rows> --reuse <the wave's fields dir>) into field.output under the bounded
              runner; kind role: the role builder (prepare_recent_research.py ... --out role.output) then the fields
              builder on the new role (the wave's field names) into role.fields_output
-  spec       the rule cell's constants: rule -> the derived flags; leverage -> nav.leverage and the renamed NAV
+  spec       the rule cell's constants: rule -> the derived flags (ruling C3-13: a NAV row whose x-flag is --rule <id>
+             sets nav.rule to <id>, only its param flags appended); leverage -> nav.leverage and the renamed NAV
              output (a NAV-only template next to the parent spec when the manifest has no rule_cell); horizon -> its
              flags and every output renamed -h<days>; role -> inputs.role and the fields dir of the build;
              walk-forward -> its fitter flags and every output downstream of the fit (fit, card, w, NAV, monitor)
@@ -114,10 +115,11 @@ SET_ROUTES = ("rule_cell.constants.set", "rule_cell.template change.set", "rule_
 
 def kind_constants(w: Wave, parent: dict, derived: dict) -> tuple[dict, dict]:
     """(sets, flags) the kind derives for its rule cell on the ``parent`` spec: rule -> the named rules' flags
-    (``derived``); leverage -> nav.leverage and the renamed NAV output; horizon -> its outputs renamed and its flags."""
+    (``derived``; ruling C3-13: a --rule row's id as nav.rule, WK.nav_rule_split); leverage -> nav.leverage and the
+    renamed NAV output; horizon -> its outputs renamed and its flags."""
     k, m = kind(w), w.manifest
-    if k == "rule":
-        return {}, derived
+    if k == "rule":                                 # ruling C3-13: the cycle emits --rule nav.rule (phases.py nav_step)
+        return WK.nav_rule_split(derived)
     if k == "leverage":
         return WK.leverage_set(parent, m["leverage"]["value"]), {}
     if k == "horizon":
@@ -249,8 +251,9 @@ def rule_flag_guard(w: Wave, parent: dict, tables: dict, derived: dict) -> list[
         doc = WS.rule_cell_doc(template or {}, tpath, w.manifest["parent"]["spec"],
                                WK.merged_constants(rc, sets_k, flags_k), w.manifest["wave"])
         cell = research_spec.resolve(doc, w.path(cell_path(w)), RC.load_spec, research_tree.REPO)
+        cell_ops = WK.nav_rule_split(derived)[1]   # ruling C3-13: a --rule row's id goes to nav.rule, not a list
         base = dict(parent, **{s: dict(parent[s], flags=research_spec.apply_flags(
-            flag_lists(parent, s)[f"{s}.flags"], ops, f"{s}.flags")) for s, ops in derived.items()
+            flag_lists(parent, s)[f"{s}.flags"], ops, f"{s}.flags")) for s, ops in cell_ops.items()
             if isinstance(parent.get(s), dict)})              # the parent's lists with only the named rules applied
         changes = []
         for s in sorted(owned):
