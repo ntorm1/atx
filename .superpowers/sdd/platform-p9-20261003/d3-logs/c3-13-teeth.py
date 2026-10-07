@@ -2,11 +2,15 @@
 mutation below removes or weakens one piece of the C3-13 derivation in the working tree, runs the tests that pin it,
 restores the file's original bytes (finally), then asserts `git status --porcelain` is empty. A mutation is CAUGHT
 when its tests report >= 1 failure. Same harness as part A's teeth.py (this dir).
+Ruling TEETH-RESTORE (resume 9): after every restore it also asserts the file's SHA-256 equals its pre-mutation SHA-256
+and `git hash-object <file>` equals HEAD's blob id (git's own clean conversion, so core.autocrlf does not matter);
+a failed restore stops the run (assert) with the mutation already undone by `finally`.
 
   python c3-13-teeth.py OUT_LOG BASETEMP_DIR      (run from anywhere; the worktree is this file's repo)
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -46,6 +50,13 @@ def summary(text: str) -> tuple[int, int, int]:
     return tuple(int(m.group(1)) if m else 0 for m in found)
 
 
+def blob_is_heads(rel: str) -> bool:
+    """TEETH-RESTORE: the working file, through git's own clean conversion (core.autocrlf), is HEAD's blob."""
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    return git("hash-object", rel) == git("rev-parse", f"HEAD:{rel}") != ""
+
+
 def main(out_log: str, basetemp: str) -> int:
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONHASHSEED="0")
     env.pop("ATX_EQUITY_BIN", None)
@@ -62,9 +73,12 @@ def main(out_log: str, basetemp: str) -> int:
     failed, passed, errors = summary(done.stdout)
     lines.append(f"N0  control, no mutation, every selection below: {failed} failed / {passed} passed / {errors} errors")
     assert failed == 0 and errors == 0 and passed > 0, done.stdout[-3000:]
+    for rel in sorted({m[2] for m in MUTATIONS}):
+        assert blob_is_heads(rel), f"{rel} is not HEAD's blob before the run"
     for mid, what, rel, old, new, sel in MUTATIONS:
         path = ROOT / rel
         orig = path.read_bytes()
+        before = hashlib.sha256(orig).hexdigest()
         text = orig.decode("utf-8")
         if "\r\n" in text:                                   # core.autocrlf: the working tree has CRLF
             old, new = old.replace("\n", "\r\n"), new.replace("\n", "\r\n")
@@ -76,16 +90,20 @@ def main(out_log: str, basetemp: str) -> int:
                                   text=True, timeout=1800)
         finally:
             path.write_bytes(orig)
+        after = hashlib.sha256(path.read_bytes()).hexdigest()       # TEETH-RESTORE: bytes back, HEAD's blob
+        assert after == before, f"{mid}: {rel} SHA-256 {after} after the restore, {before} before the mutation"
+        assert blob_is_heads(rel), f"{mid}: {rel} is not HEAD's blob after the restore"
         failed, passed, errors = summary(done.stdout)
         caught = failed > 0 and errors == 0
         if not caught:
             missed.append(mid)
         lines.append(f"{mid}  {'CAUGHT' if caught else 'NOT CAUGHT'}  {what}  [{rel}; -k \"{sel}\"]  "
-                     f"{failed} failed / {passed} passed / {errors} errors")
+                     f"{failed} failed / {passed} passed / {errors} errors  (restored: sha256 {after[:12]} = "
+                     "pre-mutation; blob = HEAD's)")
         status = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True).stdout
         assert status == "", f"{mid}: tree not clean after the revert:\n{status}"
     lines.append(f"RESULT {'all caught' if not missed else 'NOT CAUGHT: ' + ', '.join(missed)}; tree clean after "
-                 "every revert (git status --porcelain empty)")
+                 "every revert (git status --porcelain empty; SHA-256 = pre-mutation; git hash-object = HEAD's blob)")
     Path(out_log).write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
     return 1 if missed else 0
