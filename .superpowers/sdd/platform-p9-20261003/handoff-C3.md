@@ -326,8 +326,14 @@ Next free build tag: `p9-c3-o`.
 ## R8 round (reconstructed from logs)
 
 Written in RESUME 9 by the C3b agent from `git log 278fc2d8..3129ca14`, `c3-logs/` and the receipts
-`build-equity/mega-p9-c3-{o,p,q}-receipt.json` (copies in `c3-logs/`). The R8 agent left no handoff or report text;
-nothing below is counted done without a log or a receipt. Times are local (EDT), 2026-10-06 unless noted.
+`build-equity/mega-p9-c3-{o,p,q}-receipt.json` (copies in `c3-logs/`). The R8 agent left no handoff or report text
+in the sprint dir; nothing below is counted done without a log or a receipt. Times are local (EDT), 2026-10-06 unless
+noted. Found in R9 when the lane's old scratch was deleted: R8 had drafted a handoff addition and a Part B under its
+session scratchpad (`.../e45465ef-.../scratchpad/c3b/handoff-add.md`, `partb.md`; never in the sprint dir, so never
+committed). Its handoff draft, read before deletion as a draft (not as evidence), agrees with this table: the teeth
+mutation was at `book/nav_run.cpp:132` and the file was restored byte for byte (SHA-256 `501cb0c1...`); the Release
+canary re-run was not done; seed 1 at `3129ca14` was still running (`@@S1R@@` placeholder). Both drafts were deleted
+with that scratch.
 DIRTY-1 (R9, first act): the two exit tables `c3-logs/c3b-gt-exits.txt` / `c3b-pyt-exits.txt` committed as they stood
 (`7a487eb8`); the other R8 logs below were untracked (git-ignored) and are committed with this section.
 
