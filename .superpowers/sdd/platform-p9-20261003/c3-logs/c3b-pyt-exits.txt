@@ -7,3 +7,5 @@ r-canary-q-release seed 0 head 3129ca14 code-dirty [] exit 1 wall 24s start 2026
 r-chain seed 0 head 3129ca14 code-dirty [] exit 0 wall 3s start 2026-10-06T23:33:57Z env1-hits 0 :: ============================= 10 passed in 0.88s ==============================
 r-scripts seed 0 head 3129ca14 code-dirty [] exit 0 wall 2283s start 2026-10-06T23:44:25Z env1-hits 0 :: ================= 529 passed, 5 skipped in 2278.50s (0:37:58) =================
 r-scripts seed 1 head 3129ca14 code-dirty [] exit 1 wall 75936s start 2026-10-07T00:22:29Z env1-hits 528 :: ========== 187 failed, 342 passed, 5 skipped in 75931.32s (21:05:31) ==========
+r9-canary-q-release-rerun seed 0 head 51860229 code-dirty [] exit 0 wall 10s start 2026-10-07T22:33:21Z env1-hits 0 :: 15 passed in 8.88s
+r9-wave-files seed 0 head 51860229 code-dirty [] exit 0 wall 326s start 2026-10-07T22:35:23Z env1-hits 0 :: 104 passed in 324.85s (0:05:24)

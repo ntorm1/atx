@@ -354,3 +354,27 @@ trees are current for the four targets at `3129ca14`, and at R9's merge `d31b996
 `p9-prereg.md`).
 
 Build tags used in R8: `p9-c3-o`, `p9-c3-p`, `p9-c3-q`. Next free build tag: `p9-c3-r`.
+
+## C3b R9 round (2026-10-07; hand-back for the re-review)
+
+- Commits: `7a487eb8` DIRTY-1 (the two exit tables as they stood); `d31b9961` merge of root `685e238b` (docs only:
+  `p9-prereg.md`; clean; git's default message); `51860229` R8 reconstruction + the R8 logs; then the records commit
+  (Part B of `task-C3-report.md`, this section, the R9 logs). No code changed in R9; no build (tag `p9-c3-r` unused).
+- Ruling TEST-1 (owner) reached the lane mid-round: no Release build, canary, whole target-tests, whole `scripts/tests`
+  or stage chain until the gate. Already evidenced in R8 and recorded as done from its receipts and logs: C++ teeth o,
+  Debug p (+ canary), Release q (+ canary), named 34 / whole 391 on both. The C3-14 Release canary re-run had already
+  launched (bounded quiet-host poller `c3-logs/r9-quiet-run.sh`, 18:33, CPU 56 %, no build process, 3.9 GB free)
+  when TEST-1 arrived: 15 passed (`c3b-pyt-r9-canary-q-release-rerun.log`, `r9-host.txt`).
+- TEST-1 run: the lane's wave pytest files at seed 0 on `51860229` (code = `d31b9961`): `test_wave_gross_match.py`,
+  `test_research_wave.py`, `test_wave_driver.py`, `test_wave_review.py`, `test_wave_review_minor.py`,
+  `test_wave_scoreboard.py`, plus the lane's own small `test_wave_speed.py` and `test_no_python_mirror.py`: 104
+  passed, 0 failed, 0 skipped, ENV-1 0, 325 s (`c3b-pyt-r9-wave-files-s0.log`).
+- Deferred to the gate (TEST-1): the valid seed-1 run of the whole `scripts/tests` (R8's was void under ENV-1); the
+  whole suites, Release build and canaries on the gate head.
+- Item 6 PENDING: B2's redo is not in root (`git -C C:/atx-wt/pool-2 log --format=%s -30`, R9).
+- Object trees: deleted by name after the records commit (the hand-back message gives the freed size).
+
+### Next step
+
+Re-review of C3b (BASE per REV-BASE: the SHA the previous review names as reviewed). Then root's merge (Part B "What
+root re-proves"). Item 6 (D2R-2 (a), text only) is a short follow-up once B2's redo is in root.
