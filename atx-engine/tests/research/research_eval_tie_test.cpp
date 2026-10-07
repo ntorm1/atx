@@ -25,6 +25,7 @@
 #include "atx/engine/eval/stats_ext.hpp"
 #include "atx/engine/research/eval/eval_cli.hpp"
 #include "atx/engine/research/eval/eval_report.hpp"
+#include "atx/engine/research/eval/house_moments.hpp"
 #include "atx/engine/research/ledger/chain.hpp"
 
 namespace {
@@ -314,6 +315,67 @@ TEST(EvalVerb, HandRowIsThePrefixState) {
   const auto refused = ev::evaluate(rq);
   ASSERT_FALSE(refused.has_value());
   EXPECT_NE(refused.error().message().find("has no construction line"), std::string::npos);
+}
+
+// P9 ruling PRE-15: DSR_hand at N = N_tot - M (dsr.tot.tot_minus_m) on the Python ledger rules'
+// fixture (fixtures/research_ledger: trials by the defect rule, a campaign registry M > 0, V from
+// its window's cells). The whole-ledger rows leave out exactly M and keep V; the value is the
+// house DSR at that N; a --hand book keeps the prefix rule (no tot_minus_m row); the text labels
+// both.
+const Json &ledger_fixture() {
+  static const Json doc =
+      Json::parse(read_bytes(fs::path(ATX_RESEARCH_LEDGER_FIXTURE) / "expected.json"));
+  return doc;
+}
+
+TEST(EvalVerb, HandRowAtNTotMinusMLeavesOutTheCampaigns) {
+  const Json &fx = ledger_fixture();
+  const Json &parts = fx["values"]["trial_breakdown"];
+  const i64 trials = parts["ledger_trials"].get<i64>();
+  const i64 m = parts["campaign_registry"].get<i64>();
+  ASSERT_GT(m, 0); // the fixture holds a mining campaign: N_tot - M is not N_tot
+  const std::string ledgered = fx["values"]["construction_ids"][0].get<std::string>();
+  const fs::path ledger =
+      fs::path(ATX_RESEARCH_LEDGER_FIXTURE) / fx["ledger"]["file"].get<std::string>();
+  ev::EvalRequest rq;
+  rq.daily.push_back(ev::LabeledPath{"book", inputs().csv[0].string()});
+  rq.daily.push_back(ev::LabeledPath{"old", inputs().csv[1].string()});
+  rq.trials.push_back(ev::LabeledPath{"old", ledgered});
+  rq.ledger = ledger.string();
+  rq.window_id = fx["ledger"]["window_id"].get<std::string>();
+  rq.hands.push_back(ev::HandBook{ledgered, inputs().csv[1].string()});
+  const auto doc = ev::evaluate(rq);
+  ASSERT_TRUE(doc.has_value()) << doc.error().to_string();
+  for (usize k = 0; k < 2U; ++k) {
+    const Json &c = (*doc)["cells"][k];
+    const Json &t = c["dsr"]["tot"];
+    const i64 own = k == 0U ? 1 : 0; // "book" is not ledgered (+ 1), "old" is
+    EXPECT_EQ(t["in_ledger"].get<bool>(), k == 1U);
+    EXPECT_EQ(t["tot"]["n"].get<i64>(), parts["n_tot"].get<i64>() + own);
+    const i64 n = t["tot_minus_m"]["n"].get<i64>();
+    EXPECT_EQ(n, trials + own);
+    EXPECT_EQ(n, t["tot"]["n"].get<i64>() - m);
+    // the house DSR at (N_tot - M, the ledger's V), bit for bit
+    const Json &mj = c["net_moments"];
+    const ev::HouseMoments hm{mj["sessions"].get<usize>(), mj["sr_daily"].get<f64>(),
+                              mj["skew"].get<f64>(), mj["kurtosis"].get<f64>()};
+    ASSERT_TRUE(t["variance_sr"].is_number());
+    const ev::DsrRow want = ev::dsr_at(hm, static_cast<usize>(n), t["variance_sr"].get<f64>());
+    ASSERT_TRUE(want.dsr && want.sr0_daily && want.sr0_annual);
+    const Json &row = t["tot_minus_m"];
+    EXPECT_EQ(row["dsr"].get<f64>(), *want.dsr);
+    EXPECT_EQ(row["sr0_daily"].get<f64>(), *want.sr0_daily);
+    EXPECT_EQ(row["sr0_annual"].get<f64>(), *want.sr0_annual);
+    EXPECT_GT(row["dsr"].get<f64>(), t["tot"]["dsr"].get<f64>()); // fewer trials deflate less
+  }
+  const Json &h = (*doc)["hand"][0];
+  EXPECT_TRUE(h.contains("tot") && h.contains("v8"));
+  EXPECT_FALSE(h.contains("tot_minus_m"));
+  const std::string out = ev::eval_text(*doc);
+  EXPECT_NE(out.find(" | hand (N_tot-M=" + std::to_string(trials + 1) + ") "), std::string::npos)
+      << out;
+  EXPECT_NE(out.find("== DSR_hand (prefix rule) " + ledgered + ": prefix "), std::string::npos)
+      << out;
 }
 
 TEST(EvalVerb, CliWritesTheDocumentAndRefuses) {

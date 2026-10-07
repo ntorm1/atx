@@ -1,0 +1,18 @@
+..............s...............
+G-P5: 16 mirrored rule function(s) in 7 row(s) left for P9 lanes
+...................s...................... [ 13%]
+.s...........s.......................................................... [ 27%]
+........................................................................ [ 40%]
+........................................................................ [ 54%]
+.........................s.............................................. [ 67%]
+........................................................................ [ 81%]
+........................................................................ [ 94%]
+............................                                             [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] scripts\tests\test_cycle_e2e.py:439: set ATX_EQUITY_BIN to the directory of the equity executables
+SKIPPED [1] scripts\tests\test_research_cycle.py:56: set RESEARCH_CYCLE_LIVE_ROOT to hash the real pool-2 files
+SKIPPED [1] scripts\tests\test_research_cycle.py:706: set RESEARCH_CYCLE_LIVE_ROOT to hash the real pool-2 files (after the L7 merge)
+SKIPPED [1] scripts\tests\test_research_cycle.py:946: set RESEARCH_CYCLE_LIVE_ROOT to hash the real pool-2 files (after the L8 merge)
+SKIPPED [1] scripts\tests\test_research_store_hook.py:381: C:\atx-wt\pool-14\build-equity\bin\atx-research-store.exe not built (target atx-research-store)
+527 passed, 5 skipped in 2168.49s (0:36:08)
+exit=0

@@ -37,6 +37,7 @@ from cycle.spec import (ATTEMPT_PHASES, BUILDS, CAP_KEYS, CAPACITY_FILES, CAPACI
                         load_spec, option_value, parse_attempts, parse_runner_overrides, phase_present,
                         summ_protocol, validate_compare, validate_e27b, validate_marginal, validate_runner_phases,
                         validate_spec, validate_summ_protocol, validate_v8_keys)
+from cycle.spec import EVAL_EXE  # noqa: E402,F401  (P9 ruling B2-R3: the engine verb's exes key and file name)
 from cycle_verdict import PBO_JSON, SUMM_JSON, VERDICT, VerdictError, step_key  # noqa: E402,F401
 from research_common import fmt_argv, sha256_file  # noqa: E402,F401
 

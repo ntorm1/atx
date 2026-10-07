@@ -35,6 +35,39 @@ DAY = 86_400_000_000_000
 T0 = 1_577_923_200_000_000_000
 
 
+def p12_equal(a, b) -> bool:
+    """Equal JSON values at the P12 tolerance (P9 B2, ruling B2-2): equal structure, keys, ints, strings and flags;
+    floats within 1e-12 relative (NaN == NaN). The engine verb's statistics agree with the retired Python's to that
+    tolerance, not to the last bit, so an old-blob identity check compares values, while printed text stays exact."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return set(a) == set(b) and all(p12_equal(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(p12_equal(x, y) for x, y in zip(a, b))
+    if isinstance(a, float) and isinstance(b, float):
+        return a == b or (math.isnan(a) and math.isnan(b)) or math.isclose(a, b, rel_tol=1e-12, abs_tol=1e-300)
+    return a == b and type(a) is type(b)
+
+
+def nets_of(x) -> dict:
+    """A net series (session_ns -> net) of the values, one session a day from T0 (the engine verb's input)."""
+    return {T0 + k: float(v) for k, v in enumerate(np.asarray(x, dtype=np.float64))}   # 1 ns apart: never sealed
+
+
+def paired(a, b, draws: int = NS.DEFAULT_DRAWS, block: int = NS.DEFAULT_BLOCK, seed: int = NS.DEFAULT_SEED) -> dict:
+    """nav_summ's paired block of a vs b from the engine verb (P9 B2: the Python paired_stats is retired)."""
+    from types import SimpleNamespace
+    return NS.engine_of(None).paired_of(nets_of(a), nets_of(b), SimpleNamespace(draws=draws, block=block, seed=seed))
+
+
+def oracle_moments(x) -> dict:
+    """Per-session SR (ddof 1), skewness and raw kurtosis (population moments), written out here as the test's oracle."""
+    x = np.asarray(x, dtype=np.float64)
+    e = x - x.mean()
+    m2 = float((e ** 2).mean())
+    return {"sessions": int(x.size), "sr_daily": float(x.mean()) / float(x.std(ddof=1)),
+            "skew": float((e ** 3).mean()) / m2 ** 1.5, "kurtosis": float((e ** 4).mean()) / m2 ** 2}
+
+
 def eps_alt(t):
     return np.array([1.0 if k % 2 == 0 else -1.0 for k in range(t)])
 
@@ -87,7 +120,7 @@ def test_paired_closed_form_uncorrelated_and_identical():
     t = 1000
     a = 0.001 + 0.01 * eps_alt(t)
     b = 0.0005 + 0.02 * eps_pair(t)          # orthogonal to the alternating pattern: rho = 0 exactly
-    p = NS.paired_stats(a, b, draws=300)
+    p = paired(a, b, draws=300)
     scale = math.sqrt(t / (t - 1))           # sample SD (ddof 1) of m + s * (+-1) is s * sqrt(T / (T-1))
     sr_a = 0.001 / (0.01 * scale) * math.sqrt(252)
     sr_b = 0.0005 / (0.02 * scale) * math.sqrt(252)
@@ -99,25 +132,13 @@ def test_paired_closed_form_uncorrelated_and_identical():
     assert p["memmel_se"] == pytest.approx(memmel, rel=1e-9)
     assert p["t"] == pytest.approx((sr_a - sr_b) / memmel, rel=1e-9)
     assert p["sessions"] == t and p["draws"] == 300 and p["block"] == 21
-    # identical series: every resample difference is exactly 0; the studentized SE is 0 -> no LW interval
-    q = NS.paired_stats(a, a.copy(), draws=200)
-    assert q["dsr"] == 0.0 and q["rho"] == pytest.approx(1.0, abs=1e-12) and q["memmel_se"] < 1e-6
+    # identical series: every resample difference is exactly 0; a degenerate pair (ruling B2-R1 (c): 1 - rho < 1e-6)
+    # has no SE, t or LW interval
+    q = paired(a, a.copy(), draws=200)
+    assert q["dsr"] == 0.0 and q["rho"] == pytest.approx(1.0, abs=1e-12) and q["degenerate"] is True
+    assert q["memmel_se"] is None and q["t"] is None
     assert q["cbb_ci95"] == [0.0, 0.0]
     assert q["lw"]["ci95"] == [None, None]
-    # Memmel with rho = 1 and different SRs: only the SR-dispersion term remains
-    assert NS.memmel_se(1.0, 0.5, 1.0, 100) == pytest.approx(
-        math.sqrt(0.5 * (1 / 252 + 0.25 / 252 - 2 * 0.5 / 252) / 100 * 252), rel=1e-12)
-
-
-def test_circular_block_indices():
-    rng = np.random.default_rng(1)
-    idx = NS.cbb_indices(50, 7, 21, rng)
-    assert idx.shape == (7, 50) and idx.min() >= 0 and idx.max() < 50
-    # within a block consecutive (mod T), each block starts fresh at 0, 21, 42
-    for row in idx:
-        for start in (0, 21, 42):
-            blk = row[start:start + 21]
-            assert np.all(np.diff(blk) % 50 == 1)
 
 
 def test_bootstrap_is_seeded_and_calibrated_against_memmel():
@@ -126,7 +147,7 @@ def test_bootstrap_is_seeded_and_calibrated_against_memmel():
     e1, e2 = rng.normal(size=t), rng.normal(size=t)
     a = 0.0008 + 0.01 * e1
     b = 0.0003 + 0.01 * (0.95 * e1 + math.sqrt(1 - 0.95 ** 2) * e2)
-    p = NS.paired_stats(a, b)
+    p = paired(a, b)
     assert p["draws"] == 2000 and p["cbb_valid_draws"] == 2000 and p["lw"]["valid_draws"] == 2000
     assert p["rho"] == pytest.approx(0.95, abs=0.02)
     lo, hi = p["cbb_ci95"]
@@ -139,9 +160,9 @@ def test_bootstrap_is_seeded_and_calibrated_against_memmel():
     assert 0.75 < (lhi - llo) / (2 * 1.96 * p["memmel_se"]) < 1.5
     assert abs(p["lw"]["dsr_population"] - p["dsr"]) < 5e-3  # population vs sample SD: O(1/T)
     assert 0 < p["lw"]["p_value"] <= 1
-    again = NS.paired_stats(a, b)
+    again = paired(a, b)
     assert again["cbb_ci95"] == p["cbb_ci95"] and again["lw"] == p["lw"]
-    other = NS.paired_stats(a, b, seed=1)
+    other = paired(a, b, seed=1)
     assert other["cbb_ci95"] != p["cbb_ci95"]
 
 
@@ -151,7 +172,7 @@ def test_lw_p_value_small_for_a_clear_difference():
     e = rng.normal(size=t)
     a = 0.002 + 0.01 * e                              # SR ~ 3.2
     b = 0.0 + 0.01 * (0.98 * e + math.sqrt(1 - 0.98 ** 2) * rng.normal(size=t))
-    p = NS.paired_stats(a, b)
+    p = paired(a, b)
     assert p["dsr"] > 2.5 and p["lw"]["p_value"] < 0.01 and p["cbb_ci95"][0] > 0 and p["lw"]["ci95"][0] > 0
 
 
@@ -234,74 +255,26 @@ def longhand_dsr(sr, t, skew, kurt, variance, n):
     return sr0, nd.cdf(z)
 
 
-def test_normal_helpers_match_the_standard_library():
-    from statistics import NormalDist
-    nd = NormalDist()
-    for p in (1e-6, 0.025, 0.5, 0.8, 0.9, 0.975, 1 - 1 / (10 * math.e), 1 - 1 / (20 * math.e)):
-        assert NS.norm_ppf(p) == pytest.approx(nd.inv_cdf(p), abs=1e-12)
-    for x in (-5.0, -1.3, 0.0, 0.7, 3.2):
-        assert NS.norm_cdf(x) == pytest.approx(nd.cdf(x), abs=1e-15)
-    with pytest.raises(ValueError):
-        NS.norm_ppf(1.0)
-
-
 def test_net_moments_hand_case():
-    m = NS.net_moments(np.array([0.0, 0.0, 0.0, 1.0]))
+    m = NS.engine_of(None).moments_of(nets_of([0.0, 0.0, 0.0, 1.0]))
     # mean .25, sample sd .5 -> SR .5; population m2 3/16, m3 3/32, m4 21/256 -> skew 2/sqrt(3), kurtosis 7/3
     assert m["sessions"] == 4 and m["sr_daily"] == pytest.approx(0.5, abs=1e-15)
     assert m["skew"] == pytest.approx(2 / math.sqrt(3), abs=1e-14)
     assert m["kurtosis"] == pytest.approx(7 / 3, abs=1e-14)
-    assert NS.net_moments(np.full(5, 0.01))["sr_daily"] is None
+    assert NS.engine_of(None).moments_of(nets_of(np.full(5, 0.01)))["sr_daily"] is None
 
 
-def test_deflated_sharpe_hand_case_n10_t754():
-    n, t, sr, skew, kurt, variance = 10, 754, 0.08, -0.3, 5.0, 0.0004   # per-session SR .08 (~1.27 annual)
-    sr0_ref, dsr_ref = longhand_dsr(sr, t, skew, kurt, variance, n)
-    sr0 = NS.expected_max_sr(variance, n)
-    assert sr0 == pytest.approx(sr0_ref, abs=1e-12)
-    assert NS.deflated_sharpe(sr, t, skew, kurt, sr0) == pytest.approx(dsr_ref, abs=1e-12)
-    # pinned values (computed once with the longhand above): SR0 = 0.0314919660..., DSR = 0.9051249340...
-    assert sr0 == pytest.approx(0.03149196602689943, abs=1e-6)
-    assert NS.deflated_sharpe(sr, t, skew, kurt, sr0) == pytest.approx(0.9051249340733833, abs=1e-6)
-    # a denominator <= 0 (extreme positive skew) has no DSR
-    assert NS.deflated_sharpe(0.5, t, 10.0, 3.0, 0.0) is None
-
-
-def test_deflated_sharpe_gaussian_case():
-    # exact Gaussian moments: the denominator is sqrt(1 + SR^2 / 2)
-    sr, t, sr0 = 0.06, 754, 0.03
-    want = NS.norm_cdf((sr - sr0) * math.sqrt(t - 1) / math.sqrt(1 + sr * sr / 2))
-    assert NS.deflated_sharpe(sr, t, 0.0, 3.0, sr0) == pytest.approx(want, abs=1e-15)
+def test_engine_moments_of_gaussian_nets():
     # simulated Gaussian nets: sample skew ~ 0, kurtosis ~ 3, denominator ~ sqrt(1 + SR^2 / 2)
     x = 0.0005 + 0.01 * np.random.default_rng(12).normal(size=200_000)
-    m = NS.net_moments(x)
+    m = NS.engine_of(None).moments_of(nets_of(x))
     assert abs(m["skew"]) < 0.03 and abs(m["kurtosis"] - 3) < 0.06
+    want = oracle_moments(x)
+    for key in ("sr_daily", "skew", "kurtosis"):
+        assert m[key] == pytest.approx(want[key], rel=1e-12)
     s = m["sr_daily"]
     denom = math.sqrt(1 - m["skew"] * s + (m["kurtosis"] - 1) * s * s / 4)
     assert denom == pytest.approx(math.sqrt(1 + s * s / 2), rel=1e-3)
-    # plan-s4 4.E: expected max annual SR under the null over 3 years (Lo variance at SR 0, T = 756)
-    for n, want_annual in ((5, 0.69), (10, 0.91), (20, 1.10)):
-        assert NS.expected_max_sr(1 / 756, n) * math.sqrt(252) == pytest.approx(want_annual, abs=0.005)
-
-
-def test_dsr_rows_cross_cell_and_single_cell_fallback():
-    cells = [{"sessions": 754, "sr_daily": s, "skew": -0.2, "kurtosis": 4.0} for s in (0.02, 0.05, 0.08)]
-    rows = NS.dsr_rows(cells, 10)
-    v = float(np.var([0.02, 0.05, 0.08], ddof=1))
-    for row, cell in zip(rows, cells):
-        sr0_ref, dsr_ref = longhand_dsr(cell["sr_daily"], 754, -0.2, 4.0, v, 10)
-        assert row["variance_sr"] == pytest.approx(v, abs=1e-18) and "cross-cell" in row["variance_source"]
-        assert row["sr0_daily"] == pytest.approx(sr0_ref, abs=1e-12)
-        assert row["dsr"] == pytest.approx(dsr_ref, abs=1e-12)
-        assert row["sr0_annual"] == pytest.approx(sr0_ref * math.sqrt(252), abs=1e-12) and row["n"] == 10
-    assert rows[0]["dsr"] < rows[1]["dsr"] < rows[2]["dsr"]
-    single = NS.dsr_rows(cells[1:2], 10)[0]
-    assert "Lo (2002)" in single["variance_source"]
-    assert single["variance_sr"] == pytest.approx((1 + 0.05 ** 2 / 2) / 754, abs=1e-18)
-    undefined = NS.dsr_rows([cells[0], {"sessions": 5, "sr_daily": None, "skew": None, "kurtosis": None}], 10)
-    assert undefined[1]["dsr"] is None and "Lo (2002)" in undefined[0]["variance_source"]  # one defined SR only
-    with pytest.raises(ValueError):
-        NS.dsr_rows(cells, 1)
 
 
 def test_main_reports_dsr_for_every_cell(tmp_path, capsys):
@@ -315,7 +288,7 @@ def test_main_reports_dsr_for_every_cell(tmp_path, capsys):
     text = capsys.readouterr().out
     assert text.count("deflated SR (N=10): DSR") == 3 and "cross-cell sample variance of 3 per-session SRs" in text
     res = json.loads(out.read_text())
-    moments = [NS.net_moments(np.array(list(NS.net_series(NS.load_daily(Path(d), SCEN)).values()))) for d in dirs]
+    moments = [oracle_moments(list(NS.net_series(NS.load_daily(Path(d), SCEN)).values())) for d in dirs]
     v = float(np.var([m["sr_daily"] for m in moments], ddof=1))
     for r, m in zip(res, moments):
         q = r["deflated"]
@@ -483,10 +456,14 @@ def test_existing_fields_and_text_unchanged_against_the_pre_t41_blob(tmp_path, c
                                   executed=executed, cost_dollars=cost_dollars, pretrade_nav=nav,
                                   cost_return=lagged_cost_return(list(cost_dollars), list(nav)),
                                   v5={"mean_held_share": 0.9})))
+    # P9 B2 (ruling B2-6): the reference is not a listed dir. A dir paired with itself is a degenerate pair the
+    # engine refuses (Memmel SE, t and p "na" and one degenerate line) where this old blob printed SE 0.000;
+    # test_nav_summ_engine.test_a_dir_paired_with_itself pins it.
+    ref = str(write_nav(tmp_path / "ref", list(0.0002 + 0.01 * np.random.default_rng(37).normal(size=t))))
     texts, rows = {}, {}
     for tag, module in (("new", NS), ("old", pre)):
         out = tmp_path / f"{tag}.json"
-        assert module.main(dirs + ["--weights", str(tmp_path / "w.json"), "--reference", dirs[0], "--draws", "200",
+        assert module.main(dirs + ["--weights", str(tmp_path / "w.json"), "--reference", ref, "--draws", "200",
                                    "--dsr-n", "3", "--json", str(out)]) == 0
         texts[tag] = capsys.readouterr().out.splitlines()
         rows[tag] = json.loads(out.read_text())
@@ -495,7 +472,7 @@ def test_existing_fields_and_text_unchanged_against_the_pre_t41_blob(tmp_path, c
         assert set(new) - set(old_row) == NEW_KEYS and set(old_row) <= set(new)
         for key in old_row:
             if key != "cost_per_gmv_turnover":
-                assert json.dumps(new[key], sort_keys=True) == json.dumps(old_row[key], sort_keys=True), key
+                assert p12_equal(json.loads(json.dumps(new[key])), json.loads(json.dumps(old_row[key]))), key
         assert new["cost_per_gmv_turnover"] < old_row["cost_per_gmv_turnover"]   # the 2e5 $ deployment is out
     kept = [line for line in texts["new"] if not line.startswith(("   leverage over all ", V6_LINE))]
     assert len(texts["new"]) - len(kept) == 6 and len(kept) == len(texts["old"])
@@ -570,10 +547,15 @@ def test_every_pre_v6_field_and_line_is_byte_identical(tmp_path, capsys):
                                   cost_dollars=cost_dollars, pretrade_nav=nav,
                                   cost_return=lagged_cost_return(list(cost_dollars), list(nav)),
                                   v5={"mean_held_share": 0.9})))
+    # P9 B2: the reference is not a listed dir. A dir paired with itself is the one case where the engine and the
+    # retired Python differ beyond 1e-12: numpy's corrcoef (OpenBLAS syrk) gives rho = 1 - 2e-16 for identical
+    # series, hence a Memmel SE of ~2e-8 and t = 0.0, where the engine has rho = 1, SE 0 and no t (reported to the PM;
+    # test_nav_summ_engine.py pins the engine's self-pair).
+    ref = str(write_nav(tmp_path / "ref", list(0.0002 + 0.01 * np.random.default_rng(31).normal(size=t))))
     texts, rows = {}, {}
     for tag, module in (("new", NS), ("old", pre)):
         out = tmp_path / f"{tag}.json"
-        assert module.main(dirs + ["--weights", str(tmp_path / "w.json"), "--reference", dirs[0], "--draws", "200",
+        assert module.main(dirs + ["--weights", str(tmp_path / "w.json"), "--reference", ref, "--draws", "200",
                                    "--dsr-n", "2", "--json", str(out)]) == 0
         texts[tag] = capsys.readouterr().out.splitlines()
         rows[tag] = json.loads(out.read_text())
@@ -582,7 +564,7 @@ def test_every_pre_v6_field_and_line_is_byte_identical(tmp_path, capsys):
         assert set(new) - set(old_row) == V6_KEYS and set(old_row) <= set(new)
         for key in old_row:
             if key != "nav_summ_run":
-                assert json.dumps(new[key], sort_keys=True) == json.dumps(old_row[key], sort_keys=True), key
+                assert p12_equal(json.loads(json.dumps(new[key])), json.loads(json.dumps(old_row[key]))), key
         assert new["post_ramp_rows"] == new["csv_rows"] - 63
     kept = [line for line in texts["new"] if not line.startswith(V6_LINE)]
     assert len(texts["new"]) - len(kept) == 2 and kept == texts["old"]

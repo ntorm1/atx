@@ -11,19 +11,22 @@ ledger of record. A trial that is not counted could raise the Sharpe ratio witho
   V     = dsr_variance(records, window_id)["variance_sr"]   the ddof-1 variance of s2_net_sr / sqrt(252) over the
                                                 construction lines scored on the research window (book cells only;
                                                 defect-rule exclusions and history lines are left out)
-  SR0   = expected_max_sr(V, N)
-  DSR   = deflated_sharpe(SR, T, skew, kurtosis, SR0)   (per-session units; backtest_integrity)
+  SR0, DSR the house DSR at (N, V) (per-session units)
 
 Rows:
 - ``tot``: N_tot of the whole ledger. This is DSR_tot, the value the X gate reads.
 - ``v8``: N = ledger_n(records, ...), the construction count of v8 rule 3, with the same V. This is the value
   ``nav_summ --dsr-ledger`` prints.
-- ``hand``: N_tot and V of the ledger prefix that ends at a named book's own construction line. Applied to the last
-  hand-written book H-F this is DSR_hand (PM7-2). The same rule gives any ledgered book's value at its own ledger
-  state, for example V8-F's.
+- ``tot_minus_m`` (P9 ruling PRE-15): DSR_hand at N = N_tot - M, the whole ledger's trials by the defect rule (+ 1 when
+  not yet ledgered) without the mining campaigns' registry counts M, with the same V: v8y's YP-2 reading ("what
+  dropping the campaigns gives"), printed for every --dsr-total dir.
+- ``hand`` (the prefix rule, v8x PM7-2): N_tot and V of the ledger prefix that ends at a named book's own construction
+  line. Applied to the last hand-written book H-F this was v8x's DSR_hand. The same rule gives any ledgered book's
+  value at its own ledger state, for example V8-F's. Printed labelled "prefix rule" beside the PRE-15 row.
 
-The functions are pure over ledger records and net moments, except ``read_ledger``. nav_summ.py reads the NAV
-directories (flags --dsr-total and --dsr-hand). Without those flags nothing here runs.
+Platform P9 B2 (K-P9-5): the rows are computed by the engine verb atx-research-eval (dsr.tot and hand of its document;
+research/ledger trial_breakdown, dsr_variance, ledger_n and eval house_dsr), which nav_summ.py calls. What stays here
+is the ledger read for --dsr-total, the N_tot breakdown and prefix rules the readers share, and the printed lines.
 """
 from __future__ import annotations
 
@@ -70,33 +73,6 @@ def trial_breakdown(records: list[dict]) -> dict:
             "n_tot": sum(counts) + m}
 
 
-def dsr_at(moments: dict, n: int, variance: float | None) -> dict:
-    """SR0 and DSR of one book at N trials and cross-trial variance V (per-session units). Values are None when V is
-    undefined (fewer than two cells on the window), when the series has no defined moments, or when N < 2."""
-    row = {"n": n, "sr0_daily": None, "sr0_annual": None, "dsr": None}
-    sr, t, skew, kurt = moments["sr_daily"], moments["sessions"], moments["skew"], moments["kurtosis"]
-    if variance is None or sr is None or skew is None or kurt is None or t < 2 or n < 2:
-        return row
-    sr0 = BI.expected_max_sr(variance, n)
-    row.update(sr0_daily=sr0, sr0_annual=sr0 * math.sqrt(BI.ANNUAL),
-               dsr=BI.deflated_sharpe(sr, t, skew, kurt, sr0))
-    return row
-
-
-def ledger_rows(moments: dict, records: list[dict], in_ledger: bool, window_id: str) -> dict:
-    """The ``tot`` and ``v8`` rows of one book over these ledger lines, with N_tot's parts and V.
-
-    ``in_ledger`` says whether the book has a construction line among ``records``. When it has none, both counts add
-    1 for the book itself, as ledger_n does."""
-    v = BI.dsr_variance(records, window_id)
-    parts = trial_breakdown(records)
-    n_tot = parts["n_tot"] + (0 if in_ledger else 1)
-    n_c = BI.ledger_n(records, in_ledger)
-    return {"window_id": window_id, "in_ledger": in_ledger, "variance_sr": v["variance_sr"], "cells_in_v": v["cells"],
-            "variance_source": v["variance_source"], "parts": parts,
-            "tot": dsr_at(moments, n_tot, v["variance_sr"]), "v8": dsr_at(moments, n_c, v["variance_sr"])}
-
-
 def construction_ids(records: list[dict]) -> set:
     return {r.get("trial_id") for r in records if r.get("kind") == CONSTRUCTION}
 
@@ -109,16 +85,6 @@ def prefix_length(records: list[dict], trial_id: str) -> int:
             return k + 1
     raise ValueError(f"--dsr-hand: trial {trial_id} has no construction line in the ledger (DSR_hand is read on the "
                      "ledger prefix that ends at the book's own line; ledger the book first)")
-
-
-def hand_row(moments: dict, ledger: dict, trial_id: str, window_id: str) -> dict:
-    """DSR_hand: the book's total-count DSR on the ledger prefix that ends at its own construction line (PM7-2).
-
-    N_tot, V and the chain head are all taken from that prefix. Every line after it is left out, the campaign line
-    of an X campaign that ran after H-F included."""
-    k = prefix_length(ledger["records"], trial_id)
-    rows = ledger_rows(moments, ledger["records"][:k], True, window_id)
-    return dict(rows, trial_id=trial_id, prefix_lines=k, prefix_chain_head=BI.chain_head(ledger["lines"][:k]))
 
 
 def parts_text(rows: dict) -> str:
@@ -138,21 +104,32 @@ def variance_text(rows: dict) -> str:
     return f"V[SR] {fmt(rows['variance_sr'], '.3e')} from {rows['cells_in_v']} cells ledgered on {rows['window_id']}"
 
 
+def hand_parts_text(rows: dict) -> str:
+    """N_tot - M's parts: the trials by the defect rule, without the campaigns' registry counts (PRE-15)."""
+    p = rows["parts"]
+    kinds = " + ".join(f"{kind} {n}" for kind, n in p["by_kind"].items()) or "no ledger trial"
+    own = "" if rows["in_ledger"] else " + 1 (this cell, not yet ledgered)"
+    return f"{kinds}{own}; campaign registry {p['campaign_registry']} left out"
+
+
 def format_book(label: str, moments: dict, ledger: dict, rows: dict) -> list[str]:
-    """The printed lines of one book's ``tot`` and ``v8`` rows (one block per --dsr-total dir)."""
-    t, v8 = rows["tot"], rows["v8"]
+    """The printed lines of one book's ``tot``, ``v8`` and ``tot_minus_m`` rows (one block per --dsr-total dir)."""
+    t, v8, h = rows["tot"], rows["v8"], rows["tot_minus_m"]
     return [f"== total-count DSR {label} (ledger {ledger['path']}, {len(ledger['records'])} lines, chain head "
             f"{ledger['chain_head'][:16]})",
             f"   DSR_tot (N_tot={t['n']}): DSR {fmt(t['dsr'], '.4f')} vs SR0 {fmt(t['sr0_annual'], '.3f')} ann | "
             f"N_tot = {parts_text(rows)} | {variance_text(rows)} | {moments_text(moments)}",
             f"   DSR_v8 (N_c={v8['n']}, v8 rule 3 as --dsr-ledger): DSR {fmt(v8['dsr'], '.4f')} vs SR0 "
-            f"{fmt(v8['sr0_annual'], '.3f')} ann | same V"]
+            f"{fmt(v8['sr0_annual'], '.3f')} ann | same V",
+            f"   DSR_hand (N_tot - M={h['n']}, ruling PRE-15): DSR {fmt(h['dsr'], '.4f')} vs SR0 "
+            f"{fmt(h['sr0_annual'], '.3f')} ann | N_tot - M = {hand_parts_text(rows)} | same V"]
 
 
 def format_hand(label: str, moments: dict, row: dict) -> list[str]:
-    """The printed lines of one --dsr-hand book."""
+    """The printed lines of one --dsr-hand book: the prefix rule (v8x PM7-2), labelled as such beside PRE-15's row."""
     t = row["tot"]
-    return [f"== DSR_hand {label}: ledger prefix of {row['prefix_lines']} lines ending at its construction line "
-            f"{row['trial_id']} (chain head {row['prefix_chain_head'][:16]})",
-            f"   DSR_hand (N_tot={t['n']}): DSR {fmt(t['dsr'], '.4f')} vs SR0 {fmt(t['sr0_annual'], '.3f')} ann | "
-            f"N_tot = {parts_text(row)} | {variance_text(row)} | {moments_text(moments)}"]
+    return [f"== DSR_hand (prefix rule) {label}: ledger prefix of {row['prefix_lines']} lines ending at its "
+            f"construction line {row['trial_id']} (chain head {row['prefix_chain_head'][:16]})",
+            f"   DSR_hand (prefix rule, N_tot={t['n']}): DSR {fmt(t['dsr'], '.4f')} vs SR0 "
+            f"{fmt(t['sr0_annual'], '.3f')} ann | N_tot = {parts_text(row)} | {variance_text(row)} | "
+            f"{moments_text(moments)}"]

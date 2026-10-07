@@ -19,7 +19,9 @@
 //                   dsr {house_v1 (nav_summ.ledger_dsr: N = construction trials by the defect
 //                        rule, + 1 unless ledgered or a history read; V = the window's cell
 //                        variance; legacy variance beside), tot (dsr_total.ledger_rows: the
-//                        tot and v8 rows), cross (nav_summ.dsr_rows over the cells, N =
+//                        tot (N_tot) and v8 (N_c) rows, and P9 ruling PRE-15's DSR_hand row
+//                        tot_minus_m: N = N_tot - M, the campaigns' registry counts M left
+//                        out, the same V), cross (nav_summ.dsr_rows over the cells, N =
 //                        dsr_n), lo (lo_null_dsr, N = dsr_n), onc (effective_n_dsr)},
 //                   paired (nav_summ.paired_stats keys plus K-P9-5's se = the LW studentized
 //                        SE, p_one, p_two, and the reference; one_minus_rho and degenerate of
@@ -29,7 +31,9 @@
 //   onc           null | backtest_integrity.effective_trials (cluster members by label)
 //   pbo           null | backtest_integrity.cscv_pbo keys, logits, labels, engine diagnostics
 //                 (with constant_candidates: ruling B2-R2, Sharpe 0 in every split)
-//   hand[]        DSR_hand rows (dsr_total.hand_row) of --hand books
+//   hand[]        DSR_hand rows of --hand books by the prefix rule (dsr_total.hand_row, v8x
+//                 PM7-2: the tot / v8 rows of the ledger prefix ending at the book's own line;
+//                 no tot_minus_m row)
 //   conditional   {threshold, alpha, se_basis, rows (the --step lineage, then the cells),
 //                  cumulative {cells, raw_sum, adjusted_sum, null_bias_sum}} -- printed only
 //   psr, min_trl, dsr, paired   K-P9-5's top level: the first cell's blocks

@@ -1,7 +1,7 @@
 """research_fields_mgr13f (platform v8 lane YDATA): a synthetic 13F stage and the builder's synthetic fixtures only.
 
 Pure tests check the churn arithmetic (Gaspar-Massa-Matos minimum churn), the share-basis rule across a split and the
-short-term tercile by hand. The field test builds a nine-quarter 13F world (2022q3 .. 2024q3; nine filers with fixed
+short-term tercile by hand. The field test builds a nine-quarter 13F world (2021q3 .. 2023q3; nine filers with fixed
 trading intensities, a 2:1 split, an implied-price outlier, option / principal / zero-share rows, a filing after the
 deadline, a 13F-NT notice) and checks every cell of ``stio_chg_q`` against the definition written out here with plain
 loops, then probes look-ahead (shown to fail on a same-session-mark variant)."""
@@ -27,19 +27,19 @@ import research_window as rw
 import test_prepare_research_fields as base
 import test_research_fields_holdings as thold
 
-SESSIONS = thold.SESSIONS            # 2024-05-01 .. 2024-12-31 weekdays (the holdings fixture's role)
+SESSIONS = thold.SESSIONS            # 2023-05-01 .. 2023-12-29 weekdays (the holdings fixture's role)
 IDS = thold.IDS                      # 101 202 303 404 505
-QS = [dt.date(2022, 9, 30), dt.date(2022, 12, 31), dt.date(2023, 3, 31), dt.date(2023, 6, 30), dt.date(2023, 9, 30),
-      dt.date(2023, 12, 31), dt.date(2024, 3, 31), dt.date(2024, 6, 30), dt.date(2024, 9, 30)]
+QS = [dt.date(2021, 9, 30), dt.date(2021, 12, 31), dt.date(2022, 3, 31), dt.date(2022, 6, 30), dt.date(2022, 9, 30),
+      dt.date(2022, 12, 31), dt.date(2023, 3, 31), dt.date(2023, 6, 30), dt.date(2023, 9, 30)]
 SECS = {"C101": 101, "C202": 202, "C303": 303, "C909": 909}       # 909 is mapped but not a role line
 FILERS = [str(k) for k in range(1, 10)]
 TAU = dict(zip(FILERS, (0.6, 0.5, 0.4, 0.2, 0.15, 0.1, 0.03, 0.02, 0.01)))   # trading intensity per filer
-SPLIT_AFTER = dt.date(2023, 6, 30)   # 202 splits 2:1 between this quarter end and the next
-OUTLIER = ("5", "C909", dt.date(2024, 3, 31))                     # value x 100: an implied-price outlier
-EXIT = ("1", "C303", dt.date(2023, 12, 31))                       # filer 1 holds no 303 at this quarter end
+SPLIT_AFTER = dt.date(2022, 6, 30)   # 202 splits 2:1 between this quarter end and the next
+OUTLIER = ("5", "C909", dt.date(2023, 3, 31))                     # value x 100: an implied-price outlier
+EXIT = ("1", "C303", dt.date(2022, 12, 31))                       # filer 1 holds no 303 at this quarter end
 FIELDS = list(yreg.FIELDS_MGR13F_DRAFT)
 RECIPE = ["si_shares", "shares_out"] + FIELDS
-CUT = dt.date(2024, 11, 18)          # Q3 (2024-09-30) becomes visible on 2024-11-19 (V = 11-15 22:00 UTC)
+CUT = dt.date(2023, 11, 16)          # Q3 (2023-09-30) becomes visible on 2023-11-17 (V = 11-15 22:00 UTC)
 
 
 def deadline(q):
@@ -59,7 +59,7 @@ def holdings_world(seed=11):
     for q in QS:
         for c in price:
             price[c] *= math.exp(rng.normal(0.0, 0.1))
-        if q == dt.date(2023, 9, 30):
+        if q == dt.date(2022, 9, 30):
             price["C202"] /= 2.0
             for k in FILERS:
                 shares[(k, "C202")] *= 2.0
@@ -315,6 +315,9 @@ class StioField(unittest.TestCase):
     def setUpClass(cls):
         cls._reg = registered()
         cls._reg.__enter__()
+        # P9 T2: restored even when the fixture below raises (tearDownClass is skipped then), so no registered field
+        # stays bound in the builder for later modules; the second __exit__ after tearDownClass is a no-op.
+        cls.addClassCleanup(lambda: cls._reg.__exit__(None, None, None))
         cls.temp = tempfile.TemporaryDirectory()
         cls.fx = Fixture(Path(cls.temp.name))
         cls.manifest = cls.fx.run("fields", fields=RECIPE)
@@ -339,22 +342,22 @@ class StioField(unittest.TestCase):
                 self.assertEqual(len(s), 3, q)
                 self.assertFalse(s & {7, 8, 9}, q)
         # the split quarter: buy-and-hold filer 9's churn stays small although its 202 shares doubled
-        self.assertLess(cr[dt.date(2023, 9, 30)][9], 0.05)
+        self.assertLess(cr[dt.date(2022, 9, 30)][9], 0.05)
         q3 = self.manifest["source_checks"]["mgr13f"]["thirteenf"]["per_quarter"]
-        self.assertEqual(q3["2023-09-30"]["basis_changes"], 1)
-        self.assertEqual(q3["2024-03-31"]["rows_price_outlier"], 1)
+        self.assertEqual(q3["2022-09-30"]["basis_changes"], 1)
+        self.assertEqual(q3["2023-03-31"]["rows_price_outlier"], 1)
 
     def test_clock(self):
         t, j = SESSIONS.index(CUT), IDS.index(101)
         self.assertTrue(math.isnan(self.got[t, j]))           # still Q2 (its Q1 base is before the role: NaN)
-        self.assertTrue(math.isfinite(self.got[t + 1, j]))    # Q3, visible from 2024-11-19
+        self.assertTrue(math.isfinite(self.got[t + 1, j]))    # Q3, visible from 2023-11-17
         e = {x["name"]: x for x in self.manifest["fields"]}["stio_chg_q"]
         self.assertEqual(e["producer"]["module"], "research_fields_mgr13f.py")
         self.assertEqual(e["depends_on"], ["shares_out"])
         self.assertEqual(e["stage_manifest_sha256"], self.fx.stage_sha)
         self.assertEqual(e["imported_code"], mgr.imported_code("y_stio"))
         clock = self.manifest["source_checks"]["mgr13f"]["thirteenf"]["quarter_visible_at"]
-        self.assertEqual(clock["2024-09-30"], "2024-11-15T22:00:00.000000000Z")   # the late filing does not move V
+        self.assertEqual(clock["2023-09-30"], "2023-11-15T22:00:00.000000000Z")   # the late filing does not move V
 
     def test_point_in_time_probe(self):
         """Every holding available at or after the t-1 mark of CUT rescaled: rows <= CUT identical, later rows move;

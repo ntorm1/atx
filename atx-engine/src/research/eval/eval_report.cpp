@@ -168,9 +168,14 @@ struct LedgerState {
   return core::Ok(std::move(row));
 }
 
-// dsr_total.ledger_rows: the tot (N_tot) and v8 (construction N) rows with the same V.
+// dsr_total.ledger_rows: the tot (N_tot) and v8 (construction N) rows with the same V. With
+// `hand_row` (the whole ledger, not a --hand prefix) also P9 ruling PRE-15's DSR_hand row
+// tot_minus_m: N = N_tot - M, i.e. the ledger's trials by the defect rule (+ 1 unless ledgered)
+// without the mining campaigns' registry counts M (v8y YP-2, "what dropping the campaigns gives"),
+// on the same V.
 [[nodiscard]] core::Result<Json> ledger_rows_json(const HouseMoments &m, lg::Records records,
-                                                  bool in_ledger, const std::string &window_id) {
+                                                  bool in_ledger, const std::string &window_id,
+                                                  bool hand_row) {
   ATX_TRY(const lg::DsrVariance v, lg::dsr_variance(records, window_id));
   ATX_TRY(const lg::TrialBreakdown parts, lg::trial_breakdown(records));
   ATX_TRY(const i64 n_c, lg::ledger_n(records, in_ledger));
@@ -179,18 +184,22 @@ struct LedgerState {
   for (const auto &[kind, trials] : parts.by_kind) {
     by_kind[kind] = trials;
   }
-  return core::Ok(Json{{"window_id", window_id},
-                       {"in_ledger", in_ledger},
-                       {"variance_sr", opt(v.variance_sr)},
-                       {"cells_in_v", v.cells},
-                       {"variance_source", v.variance_source},
-                       {"parts",
-                        Json{{"by_kind", std::move(by_kind)},
-                             {"ledger_trials", parts.ledger_trials},
-                             {"campaign_registry", parts.campaign_registry},
-                             {"n_tot", parts.n_tot}}},
-                       {"tot", dsr_at_json(m, n_tot, v.variance_sr)},
-                       {"v8", dsr_at_json(m, n_c, v.variance_sr)}});
+  Json out{{"window_id", window_id},
+           {"in_ledger", in_ledger},
+           {"variance_sr", opt(v.variance_sr)},
+           {"cells_in_v", v.cells},
+           {"variance_source", v.variance_source},
+           {"parts",
+            Json{{"by_kind", std::move(by_kind)},
+                 {"ledger_trials", parts.ledger_trials},
+                 {"campaign_registry", parts.campaign_registry},
+                 {"n_tot", parts.n_tot}}},
+           {"tot", dsr_at_json(m, n_tot, v.variance_sr)},
+           {"v8", dsr_at_json(m, n_c, v.variance_sr)}};
+  if (hand_row) {
+    out["tot_minus_m"] = dsr_at_json(m, n_tot - parts.campaign_registry, v.variance_sr);
+  }
+  return core::Ok(std::move(out));
 }
 
 [[nodiscard]] core::Result<LedgerState> load_ledger(const EvalRequest &rq) {
@@ -571,14 +580,15 @@ struct Cell {
     const bool in_ledger = tid != nullptr && s.ledgered.contains(*tid);
     const bool hist = history.contains(c.series.label);
     ATX_TRY(Json house, house_v1_json(c.moments, s.file.records, in_ledger, hist, rq.window_id));
-    ATX_TRY(Json tot, ledger_rows_json(c.moments, s.file.records, in_ledger, rq.window_id));
+    ATX_TRY(Json tot, ledger_rows_json(c.moments, s.file.records, in_ledger, rq.window_id, true));
     c.dsr["house_v1"] = std::move(house);
     c.dsr["tot"] = std::move(tot);
   }
   return core::Ok();
 }
 
-// dsr_total.hand_row: the book's rows on the ledger prefix ending at its own construction line.
+// dsr_total.hand_row, the prefix rule (v8x PM7-2): the book's rows on the ledger prefix ending at
+// its own construction line. Kept beside PRE-15's dsr.tot.tot_minus_m; printed as the prefix rule.
 [[nodiscard]] core::Result<Json> hand_block(const EvalRequest &rq, const LedgerState &s) {
   Json out = Json::array();
   for (const HandBook &h : rq.hands) {
@@ -592,7 +602,7 @@ struct Cell {
                                "first)"));
     }
     const lg::Records prefix = std::span<const lg::Record>(s.file.records).first(*k);
-    ATX_TRY(Json row, ledger_rows_json(m, prefix, true, rq.window_id));
+    ATX_TRY(Json row, ledger_rows_json(m, prefix, true, rq.window_id, false));
     ATX_TRY(const lg::ChainHead head,
             lg::chain_head(std::span<const std::string>(s.file.lines).first(*k)));
     row["trial_id"] = h.trial_id;
@@ -752,7 +762,9 @@ void cell_text(std::string &out, const Json &c) {
     out += " | house_v1 (N=" + std::to_string(d["house_v1"]["n"].get<i64>()) + ") " +
            fmt(d["house_v1"]["dsr"], "%.4f") + " | tot (N_tot=" +
            std::to_string(d["tot"]["tot"]["n"].get<i64>()) + ") " +
-           fmt(d["tot"]["tot"]["dsr"], "%.4f");
+           fmt(d["tot"]["tot"]["dsr"], "%.4f") + " | hand (N_tot-M=" +
+           std::to_string(d["tot"]["tot_minus_m"]["n"].get<i64>()) + ") " +
+           fmt(d["tot"]["tot_minus_m"]["dsr"], "%.4f");
   }
   if (d.contains("onc")) {
     out += " | onc (N_eff=" + std::to_string(d["onc"]["n_eff"].get<usize>()) + ") " +
@@ -828,7 +840,7 @@ std::string eval_text(const nlohmann::json &doc) {
            " splits | logit mean " + fmt(p["logit_mean"], "%+.3f") + "\n";
   }
   for (const Json &h : doc["hand"]) {
-    out += "== DSR_hand " + h["trial_id"].get<std::string>() + ": prefix " +
+    out += "== DSR_hand (prefix rule) " + h["trial_id"].get<std::string>() + ": prefix " +
            std::to_string(h["prefix_lines"].get<usize>()) + " lines (chain head " +
            h["prefix_chain_head"].get<std::string>().substr(0, 16) + "), N_tot " +
            std::to_string(h["tot"]["n"].get<i64>()) + " DSR " + fmt(h["tot"]["dsr"], "%.4f") +
