@@ -1,0 +1,4 @@
+as committed: unregistered ['atx.run-store/v1']
+with the proposal: unregistered []
+with the proposal: shared_literal_problems []
+rows: ['{"id": "run-receipt", "registers": ["atx.run-store/v1"]}', '{"id": "run-start", "registers": ["atx.run-store/v1"]}']
