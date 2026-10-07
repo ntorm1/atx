@@ -36,11 +36,11 @@ the stop" below is pool-8's, as it stood at STOP 8 (copied by plain `cp`; only t
 | registration + template | done |
 | teeth set 1 | done (`p9-alclock-f`): 7 tests fail as intended, 6 pass; NOT reverted (refused) |
 | teeth set 2 (ALCLOCK-3 over-loosened) | NOT done (needs the reverted tree) |
-| Debug canary | goldens match on `p9-alclock-b`'s exes; @@CANARY@@ |
+| Debug canary | goldens match on `p9-alclock-b`'s exes; one first-run wall miss (16.0 s, limit 15 s; C3-14). R9: `p9-alclock-h` canary 15 / 15 |
 | Debug build of the merged head, named + whole on it | NOT done (needs the reverted tree) |
 | Release (configure, build, named, whole, canary) | NOT done (needs the reverted tree) |
-| `scripts/tests` seeds 0 / 1, stage chain | @@PYTEST@@ |
-| report | committed with placeholders for the items above (`@@...@@` lines) |
+| `scripts/tests` seeds 0 / 1, stage chain | stage chain 10 / 10 at seeds 0 and 1; `scripts/tests` seed 0 ran on the teeth-mutated tree with 81 ENV-1 hits (void). R9: deferred to the gate (TEST-1) |
+| report | R8: committed with placeholders; R9: filled (pool-30) |
 
 ## Tools (lane-local, `alclock-logs/tools/`)
 
@@ -68,3 +68,23 @@ the stop" below is pool-8's, as it stood at STOP 8 (copied by plain `cp`; only t
 7. Fill the report's `@@...@@` lines, commit report + handoff + `alclock-logs/` (`git add -f`), then delete
    `build-equity` and `build-equity-rel` object trees by name (keep `mega-*` receipts and logs, already copied to
    `alclock-logs/`).
+
+## R9 (pool-30, `feat/p9-alclock2-20261007`; TEETH-POOL, TEST-1)
+
+State: DONE_WITH_CONCERNS, working tree clean, handed back for the first review (BASE per REV-BASE:
+`git merge-base <HEAD> feat/platform-p9-20261003`). No code changed in R9; lane code head `1cbe5233`.
+
+| step | result |
+|---|---|
+| copy the pool-8 records, DIRTY-1 / TEETH-POOL commit | `3cc8a356` (handoff, report, `alclock-logs/` incl. `tools/`, `teeth-set1.diff`; tools repointed to pool-30) |
+| configure `equity-dev` | done twice (before and after the merge, so the baked provenance is the merged head) |
+| teeth set 2 | SKIPPED: `teeth.py` does not keep / restore the bytes itself (TEETH-RESTORE) |
+| merge root `685e238b` | `adf1c6cb`, docs only, no conflict |
+| Debug `p9-alclock-h` (`adf1c6cb`) | exit 0; canary 15 / 15 (built with `-Canary` and the four targets: started before TEST-1 arrived) |
+| named filter on `p9-alclock-h` | 24 / 24 (`gt-h-named.log`) |
+| `test_info_clock_rule.py` seeds 0 / 1 | 5 / 5, 5 / 5; stage chain 10 / 10 at both seeds (before TEST-1) |
+| Debug whole, Release leg, whole `scripts/tests` | deferred to the gate (TEST-1) |
+| object trees | pool-30 `build-equity` object tree deleted by name after the records commit (tracked `audits/`, `v8-interim3-pitch-render-run2/` kept) |
+
+Next step for a fresh agent: none in the lane. Owed elsewhere: the gate runs the deferred legs (TEST-1); teeth set 2
+only if the PM asks (needs a restore-capable `teeth.py` and one target-tests build). Pool-8 stays frozen for the owner.

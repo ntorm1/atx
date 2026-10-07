@@ -2,7 +2,17 @@
 
 ## Outcome
 
-BLOCKED (PERM-1) after the code, tests and registration were done: the WIP compiled clean, 13 gtests + 5 pytests
+R9 (pool-30, `feat/p9-alclock2-20261007`; TEETH-POOL, TEST-1): DONE_WITH_CONCERNS. The lane continued from its
+committed head `1cbe5233` in the fresh pool-30; the records were copied from frozen pool-8 and committed
+(`3cc8a356`); root `685e238b` merged (`adf1c6cb`, docs only, no conflict). One Debug build of the merged head,
+`p9-alclock-h` (exit 0, no code warning; its `-Canary` check passed 15 / 15: the build started before ruling TEST-1
+reached the lane); named filter 24 / 24 on its exe (EXE-CUR: receipt SHA = run SHA); `test_info_clock_rule.py`
+5 / 5 at seeds 0 and 1. Deferred to the gate (TEST-1): the whole target-tests, the Release leg (configure, build,
+named, whole, canary), the whole `scripts/tests`. Teeth set 2 skipped (`teeth.py` does not restore the bytes
+itself: TEETH-RESTORE). No code changed in R9. The paragraph below is the R8 outcome as it stood in pool-8.
+
+R8 (pool-8, at STOP 8): BLOCKED (PERM-1) after the code, tests and registration were done: the WIP compiled
+clean, 13 gtests + 5 pytests
 written and green on Debug (`InfoClock*` 13 / 13, named 24 / 24, whole target-tests 403 / 403 at `p9-alclock-e`),
 registration and template committed, teeth set 1 caught every mutation; the permission system then refused the
 revert of the teeth mutations (`git checkout -- <six files>`), so the six files still carry them in the working tree
@@ -12,14 +22,21 @@ step" finishes the lane.
 
 ## Branch / SHA
 
-`feat/p9-alclock-20261004` in `C:/atx-wt/pool-8` @ @@HEAD@@ (all work committed; the working tree is NOT clean: the six teeth set 1 files, see "Permission refusals"). Commits of this
-resume (R8): `c3f3f1f8` merge of root `1b64ce45`; `76a4f00b` tests, CMake tail, pytest, registration, template;
-@@COMMITS@@. Earlier: `ebaf1e3f` (design handoff), `8a6ebe5b` (merge of root `4dc831ac`), `120f6a25`
+`feat/p9-alclock2-20261007` in `C:/atx-wt/pool-30` (TEETH-POOL; root merges THIS branch), working tree clean.
+Commits of R9: `3cc8a356` records copied from frozen pool-8 (DIRTY-1 / TEETH-POOL); `adf1c6cb` merge of root
+`685e238b`; then the records commit that carries this revision of the report (HEAD). Lane code head: `1cbe5233`
+(no code commit in R9).
+
+R8 (pool-8, `feat/p9-alclock-20261004` @ `1cbe5233`; frozen, its working tree still holds the six teeth set 1 files
+for the owner, see "Permission refusals"): `c3f3f1f8` merge of root `1b64ce45`; `76a4f00b` tests, CMake tail,
+pytest, registration, template; `e40ed78c` merge of root `fd084e78`; `1cbe5233` the rate-beside-an-aim-rule test
+(C3-13 route is lane D3's). Earlier: `ebaf1e3f` (design handoff), `8a6ebe5b` (merge of root `4dc831ac`), `120f6a25`
 `WIP(al-clock)` (the 16 C++ files, uncompiled at the stop; they compiled clean at `p9-alclock-b`, no slip to fix).
 
 ## Frozen base / lease
 
-Lease untouched by this lane (contract: never touch a lease). Root merged last: `fd084e78` (merge `e40ed78c`, clean).
+Lease untouched by this lane (contract: never touch a lease; pool-30 was leased by the PM). Root merged last:
+`685e238b` (merge `adf1c6cb`, clean; R8: `fd084e78` via `e40ed78c`).
 
 ## Files changed (lane code vs root; `git diff <root-merge-base> HEAD`)
 
@@ -134,13 +151,25 @@ All equity-dev (Debug) in `build-equity`, target-scoped; receipts, build logs an
 | `p9-alclock-d` | same + test fixes | target-tests | exit 0 |
 | `p9-alclock-e` | same; content = commit `76a4f00b` | target-tests | exit 0; exe `006d2432...` (the evidence exe below) |
 | `p9-alclock-f` | `1cbe5233` (root `fd084e78` merged) + 6 dirty: TEETH set 1 | target-tests | exit 0, 13 TUs; teeth exe `1708ab8d...` (never evidence) |
+| `p9-alclock-h` (R9, pool-30) | `adf1c6cb` (root `685e238b` merged); ConfiguredProvenance `adf1c6cb` (clean); DirtyEntries 2 = the lane's tracked logs `alclock-logs/builds.txt`, `pyt-exits.txt` (no code) | the four canary targets, `-Canary` (started before TEST-1 arrived) | exit 0; 360 TUs, 17 links, 1021 s build (1505 s with the gate wait; jobs 2); only third-party / driver warnings (databento `getenv`, unused `/MP`). Canary check (Debug): exit 0, 15 passed. Exes: target-tests `822de6de...6268`, targets `cb59685e...8d74`, ic `09a1e3b5...379d`, eval `24ee34ea...670c` |
 
-Not built (blocked, see "Permission refusals"): Debug of the merged head with `-Canary`, the Release configure and
-build.
+pool-8's trees (`p9-alclock-a` .. `f`) stay with the frozen pool (TEETH-POOL: nothing under its `bin/` is evidence).
+Not built: Release (`equity-rel`, tag `p9-alclock-i` unused): deferred to the gate (TEST-1).
 
 ## Tests run (counts)
 
-@@TESTS@@
+R9, pool-30, merged head `adf1c6cb` (clean code tree). Logs in `alclock-logs/`; one line per run in `gt-exits.txt` /
+`pyt-exits.txt`.
+
+| run | exe / head | result | log |
+|---|---|---|---|
+| Debug named filter `InfoClock*:NavSpec.*:NavRules.*:TradeRateRegistry.*:NavAnnMeanGross.*:CostLawRegistry.*:TargetRegistry.*` | `p9-alclock-h` target-tests `822de6de...` (= receipt) | 24 / 24 passed (InfoClockRate 9, InfoClockPrint 4, NavSpec 4, NavRules 2, CostLawRegistry 2, TradeRateRegistry 1, TargetRegistry 1, NavAnnMeanGross 1), 0 failed, 0 skipped, ENV-1 hits 0 | `gt-h-named.log` |
+| Debug canary (tiny world, Debug goldens) | `p9-alclock-h` `-Canary` | 15 passed, 0 failed (inside the build, before TEST-1) | `mega-p9-alclock-h-canary.log` |
+| Debug whole target-tests | - | deferred to the gate (TEST-1); the last whole run is R8's 403 / 403 at `p9-alclock-e` (pool-8; lane code = HEAD's) | `gt-e-whole.log` |
+| Release build, named, whole, canary | - | deferred to the gate (TEST-1) | - |
+| `scripts/tests/test_info_clock_rule.py` seeds 0 / 1 | `adf1c6cb` (fakes; no exe) | 5 / 5 and 5 / 5 | `pyt-clock-h-s0.log`, `pyt-clock-h-s1.log` |
+| `atx-engine/tools/test_stage_chain.py` seeds 0 / 1 | `adf1c6cb` | 10 / 10 and 10 / 10 (ran before TEST-1 arrived) | `pyt-chain-h-s0.log`, `pyt-chain-h-s1.log` |
+| whole `scripts/tests` seeds 0 / 1 | - | deferred to the gate (TEST-1). pool-8's seed-0 run (`pyt-scripts-s0.log`) ran on the teeth-mutated tree with 81 ENV-1 hits: void, not evidence | - |
 
 ## Teeth
 
@@ -166,9 +195,12 @@ Passing under set 1, as expected: `RegistryRowAndParser`, `WorkspaceReserveOneRa
 a removed check). The kernel's span-length check was not removed (removing it writes out of bounds).
 
 Set 2 (ALCLOCK-3 over-loosened: the capacity curve takes any non-fixed rate, aim-partial-v6 takes this one; expected
-to fail `CapacityCurveAcceptsThisRateOnly`): NOT RUN, because the revert of set 1 was refused (below). Set 1's M10
-already shows the line has teeth in one direction; the test's assertions for the other direction (per-name-v1 with
-the capacity curve refused; aim-partial-v6 with this rate refused) pass on the clean exe.
+to fail `CapacityCurveAcceptsThisRateOnly`): NOT RUN. R8: the revert of set 1 was refused (below). R9: SKIPPED under
+TEETH-RESTORE / TEST-1: `alclock-logs/tools/teeth.py` applies exact replacements but neither keeps and restores the
+pre-mutation bytes itself nor asserts `git status --porcelain` empty and HEAD's blob SHA afterwards, so it is not run
+again as it stands. Set 1's M10 already shows the line has teeth in one direction; the test's assertions for the
+other direction (per-name-v1 with the capacity curve refused; aim-partial-v6 with this rate refused) pass on the
+clean exe (`p9-alclock-h`, named filter 24 / 24).
 
 ## New literals, flags, keys, rule ids (for root)
 
@@ -210,6 +242,10 @@ the capacity curve refused; aim-partial-v6 with this rate refused) pass on the c
 
 ## Root at merge
 
+- Root merges `feat/p9-alclock2-20261007` (pool-30), not pool-8's `feat/p9-alclock-20261004` (TEETH-POOL); the code
+  is the same (`1cbe5233`), the new branch adds the records and the merge of root `685e238b`.
+- At the gate (TEST-1): Debug whole target-tests, the Release leg (build, named, whole, canary) and the whole
+  `scripts/tests` seeds 0 / 1, all deferred by the lane.
 - Merge AFTER this lane's review, BEFORE COV-MV (W3-9); COV-MV's root merge is keep-both in `nav_rules.cpp`,
   `nav_cli.cpp`, `nav_spec.cpp`, the CMake tail.
 - C3-5 probe (C3-13) with `--rate info-clock-rate-v1` on real exes: expected one `--rule aim-partial-v5` (nav.rule)
@@ -295,6 +331,15 @@ the capacity curve refused; aim-partial-v6 with this rate refused) pass on the c
 
 ## Concerns
 
+- R9: the whole target-tests, Release and the whole `scripts/tests` are not run on this head (deferred to the gate,
+  TEST-1); the C++ evidence is Debug `p9-alclock-h` (named 24 / 24, canary 15 / 15) plus R8's whole run at
+  `p9-alclock-e` (lane code = HEAD's). Teeth set 2 not run (no restore-capable tool).
+- R9 build shape: `p9-alclock-h` built the four canary targets with `-Canary` (the dispatch before TEST-1); TEST-1,
+  which arrived during the build, asks for target-tests only and no canary. Nothing ran after TEST-1 but the named
+  filter (the canary result is reported because it exists).
+
+R8 concerns (pool-8, as they stood):
+
 - The working tree is NOT clean: the six files of teeth set 1 (`alclock-logs/teeth-set1.diff`) are mutated and
   uncommitted (the revert was refused). Nothing mutated is committed; HEAD is the correct code. Do not build or merge
   this tree's working copy before the six files are restored.
@@ -313,6 +358,10 @@ the capacity curve refused; aim-partial-v6 with this rate refused) pass on the c
 
 ## Permission refusals
 
+R9 (pool-30): none.
+
+R8 (pool-8):
+
 One refusal; not retried, no same-effect substitute used (PERM-1). The exact command (one Bash call):
 
 `cd C:/atx-wt/pool-8 && git checkout -- atx-impl/src/book/nav_validate.cpp atx-impl/src/book/nav_lockstep.cpp atx-impl/src/book/nav_load.cpp atx-impl/src/book/nav_decide.cpp atx-impl/src/book/nav_cli.cpp atx-impl/src/strategy_nav_v7.cpp && rtk proxy git status --short && "C:/Program Files/Python312/python.exe" .superpowers/sdd/platform-p9-20261003/alclock-logs/tools/teeth.py 2 && rtk proxy git diff`
@@ -325,6 +374,14 @@ canary). The PM / owner restores the six files to HEAD in an accepted form; `alc
 exact diff to drop.
 
 ## Disk
+
+R9 (pool-30): after this report's commit the lane deletes by name the `build-equity` object tree of `p9-alclock-h`
+(about 2.7 GB: `CMakeFiles/`, `atx-core/`, `atx-engine/`, `atx-impl/`, `atx-tsdb/`, `bin/`, `lib/`, `tests/` and the
+top-level ninja / cmake files), keeping the tracked `audits/` and `v8-interim3-pitch-render-run2/` and the
+`mega-p9-alclock-h-*` receipt / logs (copied to `alclock-logs/`); and its own pytest basetemps (`alclock-bt`). The
+one-time `build/` left by the lease's `dev` configure is not the lane's (r6-wave3-common) and stays.
+
+R8 (pool-8, frozen; kept for the owner):
 
 Nothing deleted yet (the lane did not end). Kept: `build-equity` 2.7 GB (configured; its `bin/` holds the teeth
 target-tests exe of `p9-alclock-f` and `p9-alclock-b`'s canary exes); the one-time `build/` (592 KB, the failed
@@ -339,6 +396,13 @@ target-tests exe of `p9-alclock-f` and `p9-alclock-b`'s canary exes); the one-ti
   substitution list for a recipe change needs both.
 
 ## Open questions
+
+R9:
+- Teeth set 2 (ALCLOCK-3 over-loosened) is owed only if the PM wants it: it needs a restore-capable `teeth.py`
+  (TEETH-RESTORE) and one more target-tests build; the reviewer or the gate could take it.
+- C3-4 (below) is still open.
+
+R8 (as they stood; the first is answered by TEETH-POOL, the third by the R9 deletion):
 
 - Who restores the six teeth-mutated files to HEAD (the lane's `git checkout -- <files>` was refused): the PM / owner,
   or a form the PM names for the resumed lane?

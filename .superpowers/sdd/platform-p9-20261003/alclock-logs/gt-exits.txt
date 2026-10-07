@@ -4,3 +4,4 @@ e-new exe 006d2432d555e9ba filter 'InfoClock*' exit 0 wall 17s ran 13 passed 13 
 e-named exe 006d2432d555e9ba filter 'InfoClock*:NavSpec.*:NavRules.*:TradeRateRegistry.*:NavAnnMeanGross.*:CostLawRegistry.*:TargetRegistry.*' exit 0 wall 23s ran 24 passed 24 skipped 0 failed 0 disabled 0 env1-hits 0
 e-whole exe 006d2432d555e9ba filter '*' exit 0 wall 609s ran 403 passed 403 skipped 0 failed 0 disabled 1 env1-hits 0
 f-teeth exe 1708ab8d9eae6777 filter 'InfoClock*' exit 1 wall 19s ran 13 passed 6 skipped 0 failed 7 disabled 0 env1-hits 0
+h-named exe 822de6dea00e6808 filter 'InfoClock*:NavSpec.*:NavRules.*:TradeRateRegistry.*:NavAnnMeanGross.*:CostLawRegistry.*:TargetRegistry.*' exit 0 wall 16s ran 24 passed 24 skipped 0 failed 0 disabled 0 env1-hits 0
