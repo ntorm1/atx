@@ -1,4 +1,81 @@
-# Handoff A4 (stretch lane; pool-27, branch `feat/p9-a4-20261005`) - OWNER STOP
+# Handoff A4 (stretch lane; pool-27, branch `feat/p9-a4-20261005`)
+
+## R8 slice, reconstructed (RESUME 9 agent, 2026-10-07; from `git diff 1b64ce45..5c53c2c9`)
+
+The R8 agent worked after the 2026-10-05 stop below, committed `1e4904b7` (A1-SHIM, S-R2, N-1) and left 25 paths
+uncommitted at STOP 8. DIRTY-2 commit of those paths as they stood: `5c53c2c9` ("WIP(a4): work uncommitted at STOP 8
+(DIRTY-2; untested as committed)"). History before it: `ebfb333e` merges T2 `dfa4218d` (dispatch step 1 done).
+
+### What exists (file:line at `5c53c2c9`; paths under `atx-engine/`)
+
+Committed in `1e4904b7` (Python only):
+- A1-SHIM: `tools/prepare_research_fields_{draft,xdata,ohlc,ydata}.py` `main` hands its argv to the builder behind
+  `--registry <committed registry>` (unchanged when the argv names one); `register`, `DRAFT_MODULES`, "DEPRECATED"
+  kept; test `tools/test_field_registry.py` (+35 lines).
+- S-R2: `tools/prepare_research_fields_engine.py` `same_panel` refuses a statistic that is None for a `PANEL_KEYS`
+  key; N-1 (optional): `SHARE_KEYS` 0-without-shares is not compared; test
+  `tests/fixtures/research_fields/test_vendor_engine_path.py` (+23).
+
+In the DIRTY-2 commit `5c53c2c9` (C++ and one Python wrapper):
+- Clock primitives `include/.../fields/session_clock.hpp:43-157`, `src/research/fields/session_clock.cpp:29-129`:
+  `SessionCalendar` (Python Calendar: NYSE rule sessions around the role, marks, `usable_from`, stats),
+  `LatestRows` (Python Latest pointer: per-column last row passed), `WindowedSums<T>` (Python Windowed, events in
+  numpy's stable order). `asof_series.hpp` was checked first (header comment :22-25 says why it is another rule).
+- Run payload `include/.../fields/run_payload.hpp:21-43`, `src/research/fields/run_payload.cpp:35-72`: this run's
+  `shares_out.f64` pinned by SHA-256 (`BuildSpec::shares_out`, `FileRequest`, `build_spec.hpp:28-53`).
+- Short-side stage readers `include/.../fields/sources/short_side.hpp:28-87`, `src/research/fields/sources/
+  short_side.cpp:64-152`: `kFtdStage` / `kRegshoStage` / `kSecurityMasterStage` contracts, `stage_year_files`
+  (reader-side seal), four separate whole-file decoders `read_ftd_rows`, `read_regsho_lists`, `read_threshold_rows`,
+  `read_finra_names` on `PinnedStage::table`.
+- Holdings kinds `include/.../fields/holdings_fields.hpp:47-200`: `ftd_shares_ratio21` (`src/research/fields/
+  holdings_ftd.cpp:44-257`: `FtdIndexer` with a `std::map` of settlement days, a full (dates+1) x lines cumulative
+  matrix, `ftd_row`, `build_ftd_shares_ratio21`, `parse_ftd_kind` / `build_ftd_kind`) and `regsho_threshold_days63`
+  (`src/research/fields/holdings_regsho.cpp:73-352`: `RegshoIndexer`, `index_listing_rows`, `regsho_row`,
+  `build_regsho_threshold_days63`, kinds); specs `src/research/fields/holdings_specs.cpp:15-113` (registry spec_text
+  copies).
+- Registry: kind table 11 -> 13 rows (`src/research/fields/registry.cpp:235-249`), stage pins
+  (`registry.cpp:353-365`), `SharedSources` / `BuildContext` (`registry.hpp:68-84`); spec keys `ftd`,
+  `regsho_threshold`, `security_master`, `shares_out` (`research_fields_cli.cpp:166-170`, `:224-248`, `:394-406`).
+- A3 review S-2: `build_entries(spec, role, to_build, planned)` builds on the union of every planned field
+  (`research_fields_cli.cpp:109-120`, `:424`, `:462`) and reuse rule 6 (`reuse.hpp:22-31`, `reuse.cpp:201-247`,
+  `:307-317`: a vendor price field is reused only from a panel with this build's `sessions_before_role`).
+- A3-3: `DigestCache` (`reuse.cpp:165-178`), one digest per distinct input per decision, `inputs_digested` in the
+  reuse record (`reuse.cpp:331`).
+- Python engine route for the two holdings kinds (`tools/prepare_research_fields_engine.py`: `HOLD_ROUTES`,
+  `formula_of`, `build_fields(stages=, shares_out=)`, `stage_reads`, `holdings_entry`, `holdings_producers`,
+  `engine_path` binding) - flag-absent (no `--engine-exe`) path unchanged.
+- Tests: `tests/research/research_fields_a4_clock_test.cpp` (6 TESTs), `research_fields_a4_reuse_test.cpp` (3),
+  `research_fields_holdings_test.cpp` (7: fixture identity x5, planted-leak probes x2), registry test kind list
+  13; CMake tails `atx-engine/CMakeLists.txt:551-561`, `tests/CMakeLists.txt:539-546`.
+- Fixture `tests/fixtures/research_fields_holdings/` (synthetic, T2's re-dated stages, role 2023-05-01..2023-12-29;
+  expected payloads of all nine holdings fields from the EXISTING Python builder), generator
+  `make_holdings_fixture.py`, pytest `test_holdings_fixture.py` (2 tests). Scope note there: `sv_offexchange_share126`
+  and `exch_up_365d` stay Python.
+
+### What compiles / is tested: UNKNOWN as committed
+
+- Receipts in `build-equity/`: `p9-a4-a` (Debug, 6 dirty entries, exit 0) and `p9-a4-b` (Debug, 24 dirty entries,
+  exit 0) both from uncommitted trees on `1e4904b7`; neither is evidence for `5c53c2c9`. The only kept test log,
+  `a4-evidence/gtest-p9-a4-a-whole.log`, is 94 / 95 with `ResearchFieldsA4Reuse.RebuiltPriceFieldUsesTheWholeBuilds
+  Panel` red (1600 vs 1261; the committed test now expects 1600). No log for `p9-a4-b`. No pytest log. Next tag `p9-a4-c`.
+
+### Missing against `r7-dispatch.md` A4 steps 2-5 (at `5c53c2c9`)
+
+1. Owner's bar: ONE reader interface for the short-side sources (four ad-hoc decoders now), bounded memory (whole
+   year files decoded; FTD keeps a (dates+1) x lines matrix), no per-row allocation (text columns kept as strings).
+2. Planted-leak probes with mutation teeth (TEETH-RESTORE tool) for the new refusals / rules (S-2 rule 6, A3-3,
+   the probes' clock); none run.
+3. Root merge (`685e238b`), Debug build + fields gtests on the merged committed head, Release build + gtests,
+   fixture pytest, Python suites (`scripts/tests` seeds 0 / 1, stage chain) since `prepare_research_fields_engine.py`
+   changed.
+4. The `kind: engine` flips of `ftd_shares_ratio21` and `regsho_threshold_days63` in `tools/field_registry.json` (own
+   commits, at the end), the TRAIN identity argv for root.
+5. S-6 boundary statement (`coskew_60m`, `xrd0_ttm` stay Python: both rows `kind: python`, verified), report
+   `task-A4-report.md`.
+
+---
+
+## Earlier (2026-10-05) - OWNER STOP, read phase (superseded by the section above)
 
 Stopped at the owner's relayed STOP (PM, 2026-10-05) during the read phase. No code, test, build or merge was done.
 
