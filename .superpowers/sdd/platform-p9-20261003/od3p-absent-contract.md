@@ -119,6 +119,10 @@ not matching `[A-Za-z0-9_]+`; a listed id that is not a candidate of `--library`
   line is then printed "not read: no producer"); a drop with no history role; a nav / ref flag or nav rule naming a
   listed rule. The carry tool refuses (publishing nothing) an unknown, repeated or malformed id, pending rules, a base
   applying a listed rule, a non-v1/v2 weights document and a list without `--era`.
+- Added in OD3P fix round 1 (cycle side only; sections 2-5 unchanged): the carry tool's list and base checks also run
+  at plan time (`check_drop_list`); a history u / w pass without the bounded runner's `--` is refused, never
+  planned without the flags; a `fit.output` that exists and whose `carry.json` does not record exactly this carry is
+  refused (review R-1: each history book carries into its own fresh `fit.output`, runbook B6).
 
 Synthetic w-pass argv of a history era E1 (`fit.carry.drop.path` = `fit/flagged_members.json`):
 

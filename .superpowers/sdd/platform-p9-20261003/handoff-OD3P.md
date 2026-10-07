@@ -46,10 +46,26 @@
 - `od3p-absent-contract.md` and `p9-od3-runbook.md` are committed (`git ls-files`). T2 (item 6) still PENDING on B2
   (B2's redo is not in root at `1b64ce45`).
 
+## Fix round 1 (review `91fae138` of `d78d23ce`; dispatch "OD3P fix round 1"; 2026-10-06)
+
+- R-1 (Required) DONE: runbook B6 gives each history book its own fresh `fit.output` `build-equity/od3-fit-<book>`
+  (lines 2 and 4 distinct; `p9-od3-runbook.md:126-142`); P7 stops unless `fit` is `pending` with that `--output`
+  (`:152-162`); stop list `:227-228`. The cycle also refuses, at plan time, an existing `fit.output` whose `carry.json`
+  does not record exactly this carry (`scripts/research_roles.py:380-408`). Reproduced first on the fakes
+  (`od3p-evidence/fix1-r1-probe-before.log`), fixed run (`fix1-r1-probe-after.log`).
+- S-1 DONE (plan-time `carry_weights.drop_list` / `check_drop`, `research_roles.py:362-378`; variant: an existing
+  `fit.output` is accepted only as this carry's own output, so resume still works). S-2 DONE (test
+  `test_the_absent_flags_reach_only_the_history_roles_ic_passes`; probe P1 now caught). S-3 DONE
+  (`research_roles.py:470-474`). S-4 DONE (`p9-od3-runbook.md:215-217`). S-5 DONE (report "Blind"). S-6 root's.
+- Teeth: 8 of 8 caught (`od3p-evidence/teeth-fix1.log`). Commits: fix `365b8c8b`; merge of root `fd084e78` =
+  `97a8157f` (plain, no conflict); then the records commit. Suites on `97a8157f`: see the report's "Tests (fix round 1)".
+- T2 (item 6) still PENDING on B2 (not in root at `fd084e78`).
+
 ## For the next agent
 
+- Next is the re-review (REV-BASE: BASE = `d78d23ce`, the SHA the first review names as reviewed).
 - If T2 is dispatched: merge root (which must show B2's redo), do item 6 above, re-run the two lane files, the whole
   `scripts/tests` (seeds 0, 1), the stage chain; append to the report.
-- The C++ `absent-members-v1` work is not this lane's (OD3P-1: D3W's IC runner files); the contract is the input.
+- The C++ `absent-members-v1` work is lane ABS's (ABS-1); `od3p-absent-contract.md` sections 2-5 are its input.
 - Before the OD-3 read, root resolves `mv-aim-v1` in `scripts/specs/p9/od3/flagged_members.json` and re-pins it
   (runbook P0).
