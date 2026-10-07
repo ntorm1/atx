@@ -146,13 +146,36 @@ def test_activation_patch_exactly_two_files_and_never_applies(tmp_path):
 
 
 def results():
-    row = {"rows_1_4": {"a_only": 0}, "row_7": {"2020": {"a_only": 0, "b_only": 0}},
-           "row_8": {"a_only": 0, "b_only": 0}}
-    pairs = {pair: copy.deepcopy(row) for pair in ("B1 vs A", "B2 vs A", "B12 vs A", "B12 vs B1")}
+    counts = {key: 0 for key in ("1_a_only", "1_b_only", "2_cik", "3_p_to_j", "3_j_to_p", "4_class")}
+    row = {"status": "CONDITIONAL_DIAGNOSTIC_COUNTS", "rows_1_4": counts,
+           "row_5_distinct_sr_id": 8, "row_6_distinct_cik": 7, "complete_axis_cells": 80,
+           "row_7": {"2020": {"a_only": 0, "b_only": 0, "a_total": 80}},
+           "row_8": {"a_only": 0, "b_only": 0}, "row_9": {"a_only": 2, "b_only": 3}, "row_10": {"2020": 4},
+           "yearly": {"2020": {"rows_1_4": counts, "row_7": {"a_only": 0, "b_only": 0, "a_total": 80}}},
+           "baseline": {"pit": "baseline_pit", "link_table": "baseline_table"},
+           "variant": {"pit": "variant_pit", "link_table": "variant_table"},
+           "input_sha256": {name: "a" * 64 for name in ("baseline_pit", "baseline_table", "variant_pit", "variant_table")},
+           "files": {"identifiers.parquet": {"sha256": "b" * 64, "bytes": 100}}}
+    pairs = {pair: {**copy.deepcopy(row), "comparison": pair} for pair in ("B1 vs A", "B2 vs A", "B12 vs A", "B12 vs B1")}
+    d0 = {kind: {"kind": kind, "rebuilt_rows": 12, "published_rows": 14,
+          "excluded_columns": ["created_at"] if kind == "r4" else [],
+          "rebuilt_schema": [["identifier", "BIGINT"]], "published_schema": [["identifier", "BIGINT"]],
+          "schema_matches": True, "rebuilt_only_rows": 2, "published_only_rows": 4,
+          "rebuilt_duplicate_key_groups": 0 if kind == "r4" else None,
+          "published_duplicate_key_groups": 0 if kind == "r4" else None,
+          "rebuilt_null_key_rows": 0 if kind == "r4" else None, "published_null_key_rows": 0 if kind == "r4" else None,
+          "rows_identical": False, "d0_pass": False, "source_quality_certified": False} for kind in ("r4", "pit", "link_table")}
+    d0.update(stage_i_validation={"pass": True}, published_pit_manifest_sha256="b" * 64)
     return {"commit": "a" * 40, "baseline": "repinned", "pit_export": "identity-bridge-v4-pit",
             "published_pit_export": "identity-bridge-v2-pit", "sanity": ["PASS synthetic"],
             "windows": {"original": {"rows": pairs}, "2020-latest": {"rows": copy.deepcopy(pairs)}},
-            "d0": {key: {} for key in ("r4", "pit", "link_table", "stage_i_validation")}}
+            "row_11": {arm: {"backfill_rows": 0, "symbol_snapshot_match": 0, "name_tier": True,
+                        "validation_got": validation_counts()} for arm in ("B1", "B2", "B12")}, "d0": d0}
+
+
+def validation_counts():
+    return {"rows": 2, "lines": 2, "ciks": 2, "min_start": "2012-03-27",
+            "rows_by_tier": {"high": 1, "medium": 1}, "ambiguous_line_days": 0}
 
 
 def test_gate_recomputes_zero_and_accepts_extended_differences():
@@ -175,7 +198,7 @@ def test_missing_or_wrong_report_admission(field, value):
 
 
 def completed_steps(base):
-    from atx_db.alpha_panel.a0_check import plan_steps
+    from atx_db.alpha_panel.a0_check import plan_steps, guard_command
     commit = "a" * 40
     code = base / "code" / commit[:7] / "atx-db" / "src" / "atx_db"
     code.mkdir(parents=True)
@@ -184,6 +207,7 @@ def completed_steps(base):
     hashes = {"atx_db/" + name: {"sha256": delivery.digest(code / name)}
               for name in ("identity_links.py", "identity_reconstruction.py")}
     arms = {"commit": commit, "baseline": "repinned", "reconstruction_batch_size": 64,
+            "python": "python", "guard": "guard.py",
             "arms": {arm: {} for arm in ("A", "B1", "B2", "B12")}, "modules": hashes,
             "inputs": {key: "synthetic" for key in ("receipt", "ops_manifest", "document_review")}}
     (base / "arms.json").write_text(json.dumps(arms))
@@ -202,9 +226,11 @@ def completed_steps(base):
         for path in paths.values():
             path.write_text("")
         paths["receipt"].write_text(json.dumps({"status": "completed", "returncode": 0,
-            "heavy": True, "job_limit_gb": step["cap"], "cap_hit": False}))
+            "heavy": True, "job_limit_gb": step["cap"], "cap_hit": False, "command": ["python", *step["argv"]]}))
         saved = {**step, "commit": commit, "complete": True, "attempts": [{"exit_code": 0,
-            "guard_status": "completed", **{key: str(path) for key, path in paths.items()}}]}
+            "guard_status": "completed", "command": guard_command(step, receipt=paths["receipt"],
+                stdout=paths["stdout"], stderr=paths["stderr"], python=Path("python"), guard=Path("guard.py")),
+            **{key: str(path) for key, path in paths.items()}}]}
         (base / "steps" / f"{step['id']}.json").write_text(json.dumps(saved))
     return commit
 
@@ -243,15 +269,38 @@ def test_fixed_provenance_cannot_be_inferred_from_success_label(tmp_path, mutati
 
 
 def test_result_seal_keeps_identifier_hashes_and_refuses_overwrite(tmp_path):
-    (tmp_path / "a0-results.json").write_text(json.dumps(results()))
+    data = results()
+    inputs = synthetic_d0_inputs(tmp_path / "inputs", data)
+    (tmp_path / "a0-results.json").write_text(json.dumps(data))
     (tmp_path / "a0-results.md").write_text("synthetic report")
     (tmp_path / "identifiers").mkdir()
     (tmp_path / "identifiers" / "diff.parquet").write_bytes(b"identifiers")
     evidence = {"commit": "a" * 40, "baseline": "repinned", "reconstruction_batch_size": 64, "files": {}}
-    seal = delivery.seal_results(tmp_path, commit="a" * 40, evidence=evidence, destination=tmp_path / "sealed.json")
+    seal = delivery.seal_results(tmp_path, commit="a" * 40, evidence=evidence, d0_inputs=inputs, destination=tmp_path / "sealed.json")
     assert seal["report_files"]["identifiers/diff.parquet"] == delivery.digest(tmp_path / "identifiers" / "diff.parquet")
     with pytest.raises(FileExistsError):
-        delivery.seal_results(tmp_path, commit="a" * 40, evidence=evidence, destination=tmp_path / "sealed.json")
+        delivery.seal_results(tmp_path, commit="a" * 40, evidence=evidence, d0_inputs=inputs, destination=tmp_path / "sealed.json")
+
+
+def synthetic_d0_inputs(root, data):
+    root.mkdir()
+    inputs = {"products": {}}
+    for kind in ("r4", "pit", "link_table"):
+        inputs["products"][kind] = {}
+        for side in ("rebuilt", "published"):
+            path, manifest = root / f"{kind}-{side}.parquet", root / f"{kind}-{side}.json"
+            path.write_bytes(f"synthetic {kind} {side}".encode())
+            manifest.write_bytes(b"synthetic manifest")
+            inputs["products"][kind][side] = {"path": str(path), "sha256": delivery.digest(path),
+                "manifest": str(manifest), "manifest_sha256": delivery.digest(manifest)}
+    stage = root / "stage-i.json"
+    validation = {"seal": "2025-01-01", "pass": True, "got": validation_counts(), "expected": validation_counts()}
+    stage.write_text(json.dumps({"validation": validation}))
+    inputs["stage_i"] = {"manifest": str(stage), "manifest_sha256": delivery.digest(stage), "validation": validation}
+    data["pit_paths"] = {"arms": {"A": inputs["products"]["pit"]["rebuilt"]["path"]},
+                         "published_reference": inputs["products"]["pit"]["published"]["path"]}
+    data["d0"]["published_pit_manifest_sha256"] = inputs["products"]["pit"]["published"]["manifest_sha256"]
+    return inputs
 
 
 def test_rehearsal_receipt_build_and_launch_evidence(tmp_path):
@@ -314,3 +363,118 @@ def test_exact_five_publication_trees_exclude_partial_rehearsal_files(tmp_path):
     (identity / "links_pit.parquet").unlink()
     with pytest.raises(ValueError, match="missing"):
         delivery.publication_trees(arm, rehearsal, tmp_path / "data")
+
+
+@pytest.mark.parametrize("missing", ["row_5_distinct_sr_id", "row_6_distinct_cik", "row_9", "row_10", "yearly",
+                                     "input_sha256", "baseline", "files"])
+def test_report_rejects_missing_required_measured_rows_and_input_evidence(missing):
+    data = results()
+    del data["windows"]["2020-latest"]["rows"]["B2 vs A"][missing]
+    with pytest.raises(ValueError):
+        delivery.validate_results(data, commit="a" * 40)
+
+
+@pytest.mark.parametrize("missing", ["row_11", "d0_empty", "d0_schema", "d0_count", "stage_i", "published_pin"])
+def test_report_rejects_missing_row11_or_full_d0_measurements(missing):
+    data = results()
+    if missing == "row_11":
+        data["row_11"] = {}
+    elif missing == "d0_empty":
+        data["d0"]["pit"] = {}
+    elif missing == "d0_schema":
+        data["d0"]["r4"]["rebuilt_schema"] = []
+    elif missing == "d0_count":
+        del data["d0"]["link_table"]["published_only_rows"]
+    elif missing == "stage_i":
+        data["d0"]["stage_i_validation"] = {}
+    else:
+        del data["d0"]["published_pit_manifest_sha256"]
+    with pytest.raises(ValueError):
+        delivery.validate_results(data, commit="a" * 40)
+
+
+def test_measured_d0_schema_change_and_stage_i_mismatch_remain_reportable():
+    data = results()
+    row = data["d0"]["r4"]
+    row["published_schema"] = [["identifier", "VARCHAR"]]
+    row["schema_matches"] = False
+    for field in ("rebuilt_only_rows", "published_only_rows", "rebuilt_duplicate_key_groups",
+                  "published_duplicate_key_groups", "rebuilt_null_key_rows", "published_null_key_rows"):
+        row[field] = None
+    got, expected = validation_counts(), validation_counts()
+    got["rows"] = 3
+    data["d0"]["stage_i_validation"] = {"pass": False, "got": got, "expected": expected}
+    delivery.validate_results(data, commit="a" * 40)
+
+
+@pytest.mark.parametrize("mutation", ["attempt_wrong", "attempt_missing", "child_wrong", "child_missing", "receipt_reused"])
+def test_terminal_commands_and_receipts_must_belong_to_exact_step(tmp_path, mutation):
+    commit = completed_steps(tmp_path)
+    path = tmp_path / "steps" / "W_A.prepare.vendor.json"
+    saved = json.loads(path.read_text())
+    if mutation == "attempt_wrong":
+        saved["attempts"][-1]["command"][-1] = "other-input"
+    elif mutation == "attempt_missing":
+        del saved["attempts"][-1]["command"]
+    elif mutation == "receipt_reused":
+        saved["attempts"][-1]["receipt"] = str(tmp_path / "logs" / "preflight.receipt")
+    else:
+        receipt = Path(saved["attempts"][-1]["receipt"])
+        data = json.loads(receipt.read_text())
+        if mutation == "child_wrong":
+            data["command"] = ["python", "-m", "unrelated.module"]
+        else:
+            del data["command"]
+        receipt.write_text(json.dumps(data))
+    path.write_text(json.dumps(saved))
+    with pytest.raises(ValueError, match="invocation differs|receipt reused"):
+        delivery.fixed_step_evidence(tmp_path, commit=commit, data_root=tmp_path / "data")
+
+
+@pytest.mark.parametrize("mutation", ["input_missing", "input_changed", "selection", "stage_i_changed"])
+def test_result_seal_requires_exact_d0_input_bytes_and_stage_i(tmp_path, mutation):
+    data = results()
+    inputs = synthetic_d0_inputs(tmp_path / "inputs", data)
+    if mutation == "input_missing":
+        inputs["products"] = {}
+    elif mutation == "input_changed":
+        Path(inputs["products"]["r4"]["published"]["path"]).write_bytes(b"changed source")
+    elif mutation == "selection":
+        data["pit_paths"]["published_reference"] = "occupied-v3-must-not-be-selected"
+    else:
+        inputs["stage_i"]["validation"]["got"]["rows"] = 4
+    (tmp_path / "a0-results.json").write_text(json.dumps(data))
+    evidence = {"commit": "a" * 40, "baseline": "repinned", "reconstruction_batch_size": 64}
+    with pytest.raises(ValueError):
+        delivery.seal_results(tmp_path, commit="a" * 40, evidence=evidence, d0_inputs=inputs, destination=tmp_path / "sealed.json")
+    assert not (tmp_path / "sealed.json").exists()
+
+
+def test_d0_inventory_uses_existing_manifest_pins_and_explicit_input_selection(tmp_path):
+    from atx_db.alpha_panel.a0_check import PUBLISHED_ROOT, PUBLISHED_R4
+    base, data_root = tmp_path / "fixed", tmp_path / "data"
+    arm, published = base / "P_A", data_root / PUBLISHED_ROOT
+    for root, family in ((arm, "identity-bridge-v4-pit"), (published, "identity-bridge-v2-pit")):
+        export = root / "export" / family
+        export.parent.mkdir(parents=True)
+        tree(export)
+        identity = root / "identity"
+        identity.mkdir()
+        (identity / "link_table.parquet").write_bytes(b"synthetic table")
+        (identity / "link_table_manifest.json").write_text(json.dumps({"files": {
+            "link_table.parquet": {"sha256": delivery.digest(identity / "link_table.parquet")}}}))
+    for root, receipt_rel in ((base / "R_A", "phases/export.json"), (data_root / PUBLISHED_R4, "manifest.json")):
+        path = root / "phases" / "export-001" / "security_company_links.part-0000.parquet"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"synthetic native links")
+        (root / receipt_rel).write_text(json.dumps({"files": [{"table": "security_company_links",
+            "file": "phases/export-001/security_company_links.part-0000.parquet", "sha256": delivery.digest(path)}]}))
+    (arm / "identity" / "manifest.json").write_text(json.dumps({"validation": {
+        "seal": "2025-01-01", "pass": False, "got": validation_counts(), "expected": validation_counts()}}))
+    inventory = delivery.d0_input_evidence(base, data_root=data_root)
+    assert "identity-bridge-v2-pit" in inventory["products"]["pit"]["published"]["path"]
+    assert "identity-bridge-v4-pit" in inventory["products"]["pit"]["rebuilt"]["path"]
+    assert inventory["stage_i"]["validation"]["pass"] is False
+    Path(inventory["products"]["r4"]["published"]["path"]).write_bytes(b"changed original input")
+    with pytest.raises(ValueError, match="differs from manifest"):
+        delivery.d0_input_evidence(base, data_root=data_root)

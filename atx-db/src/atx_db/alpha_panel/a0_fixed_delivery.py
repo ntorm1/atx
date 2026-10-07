@@ -189,6 +189,39 @@ def validate_results(results: dict, *, commit: str) -> None:
     for name in ("original", "2020-latest"):
         if set(results["windows"][name]["rows"]) != pairs:
             raise ValueError("incomplete four-arm report")
+        for pair, row in results["windows"][name]["rows"].items():
+            if row.get("comparison") != pair or row.get("status") != "CONDITIONAL_DIAGNOSTIC_COUNTS":
+                raise ValueError("comparison identity/status missing")
+            _counts(row.get("rows_1_4"), ("1_a_only", "1_b_only", "2_cik", "3_p_to_j", "3_j_to_p", "4_class"))
+            _counts(row, ("row_5_distinct_sr_id", "row_6_distinct_cik", "complete_axis_cells"))
+            for key in ("row_7", "row_10", "yearly"):
+                if not isinstance(row.get(key), dict) or not row[key]:
+                    raise ValueError(f"empty or missing {key}")
+            for bucket in row["row_7"].values():
+                _counts(bucket, ("a_only", "b_only", "a_total"))
+            _counts(row["row_10"], tuple(row["row_10"]))
+            for key in ("row_8", "row_9"):
+                _counts(row.get(key), ("a_only", "b_only"))
+            for year in row["yearly"].values():
+                _counts(year.get("rows_1_4"), ("1_a_only", "1_b_only", "2_cik", "3_p_to_j", "3_j_to_p", "4_class"))
+                _counts(year.get("row_7"), ("a_only", "b_only", "a_total"))
+            pins = row.get("input_sha256")
+            if not isinstance(pins, dict) or not pins or any(not _sha(sha) for sha in pins.values()):
+                raise ValueError("comparison input pins missing")
+            for side in ("baseline", "variant"):
+                identity = row.get(side, {})
+                for key in ("pit", "link_table"):
+                    if not identity.get(key) or identity[key] not in pins:
+                        raise ValueError("comparison input identity missing")
+            if not row.get("files") or any(not _sha(info.get("sha256")) for info in row["files"].values()):
+                raise ValueError("comparison identifier pins missing")
+    if set(results.get("row_11", {})) != {"B1", "B2", "B12"}:
+        raise ValueError("row11 evidence missing")
+    for row in results["row_11"].values():
+        _counts(row, ("backfill_rows", "symbol_snapshot_match"))
+        if type(row.get("name_tier")) is not bool:
+            raise ValueError("row11 name tier missing")
+        _validation_counts(row.get("validation_got"))
     original = results["windows"]["original"]
     from .a0_check import zero_gate
     if zero_gate(original["rows"])["pass"] is not True:
@@ -197,11 +230,59 @@ def validate_results(results: dict, *, commit: str) -> None:
         raise ValueError("sanity FAIL or missing")
     if not {"r4", "pit", "link_table", "stage_i_validation"} <= set(results.get("d0", {})):
         raise ValueError("full D0 evidence missing")
+    for kind in ("r4", "pit", "link_table"):
+        row = results["d0"][kind]
+        if row.get("kind") != kind:
+            raise ValueError("D0 product identity missing")
+        _counts(row, ("rebuilt_rows", "published_rows"))
+        for field in ("rebuilt_schema", "published_schema"):
+            if not isinstance(row.get(field), list) or not row[field] or any(
+                    not isinstance(column, (list, tuple)) or len(column) != 2 or
+                    any(not isinstance(value, str) or not value for value in column) for column in row[field]):
+                raise ValueError("D0 schema evidence missing")
+        for field in ("schema_matches", "rows_identical", "d0_pass", "source_quality_certified"):
+            if type(row.get(field)) is not bool:
+                raise ValueError("D0 measured flag missing")
+        if row["schema_matches"] != (row["rebuilt_schema"] == row["published_schema"]):
+            raise ValueError("D0 schema flag contradicts evidence")
+        for field in ("rebuilt_only_rows", "published_only_rows", "rebuilt_duplicate_key_groups",
+                      "published_duplicate_key_groups", "rebuilt_null_key_rows", "published_null_key_rows"):
+            if field not in row or (row[field] is None and row["schema_matches"] and
+                                   (field.endswith("only_rows") or kind == "r4")):
+                raise ValueError("D0 measured counts missing")
+            if row[field] is not None:
+                _counts(row, (field,))
+        if row.get("excluded_columns") != (["created_at"] if kind == "r4" else []):
+            raise ValueError("D0 projection evidence differs")
+    stage_i = results["d0"]["stage_i_validation"]
+    if type(stage_i.get("pass")) is not bool:
+        raise ValueError("D0 StageI evidence missing")
+    if not stage_i["pass"]:
+        _validation_counts(stage_i.get("got"))
+        _validation_counts(stage_i.get("expected"))
+    if not _sha(results["d0"].get("published_pit_manifest_sha256")):
+        raise ValueError("published D0 manifest pin missing")
+
+
+def _sha(value) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _counts(row, keys) -> None:
+    if not isinstance(row, dict) or any(type(row.get(key)) is not int or row[key] < 0 for key in keys):
+        raise ValueError("measured counts missing or invalid")
+
+
+def _validation_counts(row) -> None:
+    _counts(row, ("rows", "lines", "ciks", "ambiguous_line_days"))
+    if not isinstance(row.get("min_start"), str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", row["min_start"]):
+        raise ValueError("validation min_start missing")
+    _counts(row.get("rows_by_tier"), ("high", "medium"))
 
 
 def fixed_step_evidence(base: Path, *, commit: str, data_root: Path) -> dict:
     """Authenticate every planned step and retain hashes of its terminal evidence."""
-    from .a0_check import plan_steps
+    from .a0_check import plan_steps, guard_command
     record = json.loads(_file(base, "arms.json").read_text(encoding="utf-8"))
     if (record["commit"], record["baseline"], record.get("reconstruction_batch_size")) != (commit, "repinned", 64):
         raise ValueError("fixed arm configuration differs")
@@ -231,6 +312,7 @@ def fixed_step_evidence(base: Path, *, commit: str, data_root: Path) -> dict:
                 path = _file(base / f"W_{arm}", output["file"])
                 if digest(path) != output["sha256"]:
                     raise ValueError(f"completed preparation output changed: {path}")
+    terminal_receipts = set()
     for step in plan_steps(base, commit, data_root=data_root, inputs=record["inputs"],
                            baseline="repinned", reconstruction_batch_size=64):
         rel = f"steps/{step['id']}.json"
@@ -243,6 +325,14 @@ def fixed_step_evidence(base: Path, *, commit: str, data_root: Path) -> dict:
         last = saved["attempts"][-1]
         if last["exit_code"] != 0 or last["guard_status"] != "completed":
             raise ValueError(f"unsuccessful terminal attempt: {rel}")
+        receipt_path = Path(last["receipt"]).resolve()
+        if receipt_path in terminal_receipts:
+            raise ValueError("terminal receipt reused across steps")
+        terminal_receipts.add(receipt_path)
+        command = guard_command(step, receipt=Path(last["receipt"]), stdout=Path(last["stdout"]),
+                                stderr=Path(last["stderr"]), python=Path(record["python"]), guard=Path(record["guard"]))
+        if last.get("command") != command:
+            raise ValueError(f"terminal invocation differs: {rel}")
         evidence[rel] = digest(path)
         for key in ("receipt", "stdout", "stderr"):
             output = Path(last[key]).absolute()
@@ -251,6 +341,8 @@ def fixed_step_evidence(base: Path, *, commit: str, data_root: Path) -> dict:
         receipt = json.loads(Path(last["receipt"]).read_text(encoding="utf-8"))
         if receipt.get("status") != "completed" or receipt.get("returncode") != 0:
             raise ValueError(f"guard receipt contradicts success: {rel}")
+        if receipt.get("command") != [record["python"], *step["argv"]]:
+            raise ValueError(f"guard child invocation differs: {rel}")
         if receipt.get("heavy") is not True or receipt.get("job_limit_gb") != step["cap"] or receipt.get("cap_hit") is not False:
             raise ValueError(f"guard resource configuration differs: {rel}")
     return {"commit": commit, "baseline": "repinned", "reconstruction_batch_size": 64, "files": evidence}
@@ -281,18 +373,82 @@ def save_activation_patch(path: Path, *, common_source: str, identity_source: st
     return digest(path)
 
 
-def seal_results(report_root: Path, *, commit: str, evidence: dict, destination: Path) -> dict:
+def d0_input_evidence(base: Path, *, data_root: Path) -> dict:
+    """Additional delivery evidence: original report does not retain these input pins."""
+    from .a0_check import PUBLISHED_ROOT, PUBLISHED_R4, rehearsal_root, _files_sha
+    arm, rehearsal = base / "P_A", rehearsal_root(base, "A")
+    published, original = data_root / PUBLISHED_ROOT, data_root / PUBLISHED_R4
+    r4 = "phases/export-001/security_company_links.part-0000.parquet"
+    selected = {
+        "r4": ((rehearsal, r4, "phases/export.json"), (original, r4, "manifest.json")),
+        "pit": ((arm, "export/identity-bridge-v4-pit/links.parquet", "export/identity-bridge-v4-pit/manifest.json"),
+                (published, "export/identity-bridge-v2-pit/links.parquet", "export/identity-bridge-v2-pit/manifest.json")),
+        "link_table": ((arm, "identity/link_table.parquet", "identity/link_table_manifest.json"),
+                       (published, "identity/link_table.parquet", "identity/link_table_manifest.json"))}
+    inputs = {}
+    for kind, sides in selected.items():
+        inputs[kind] = {}
+        for side, (root, rel, manifest_rel) in zip(("rebuilt", "published"), sides):
+            manifest_path = _file(root, manifest_rel)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            expected = (_files_sha(manifest["files"], table="security_company_links") if kind == "r4" else
+                        _files_sha(manifest["files"], name=Path(rel).name))
+            source = _file(root, rel)
+            if digest(source) != expected:
+                raise ValueError(f"D0 input differs from manifest: {source}")
+            inputs[kind][side] = {"path": str(source.absolute()), "sha256": expected,
+                                 "manifest": str(manifest_path.absolute()), "manifest_sha256": digest(manifest_path)}
+    stage = _file(arm, "identity/manifest.json")
+    validation = json.loads(stage.read_text(encoding="utf-8"))["validation"]
+    if validation.get("seal") != "2025-01-01" or type(validation.get("pass")) is not bool:
+        raise ValueError("StageI validation evidence missing")
+    _validation_counts(validation.get("got"))
+    _validation_counts(validation.get("expected"))
+    return {"products": inputs, "stage_i": {"manifest": str(stage.absolute()), "manifest_sha256": digest(stage),
+            "validation": validation}, "basis": "additional delivery inventory of exact existing D0 selections"}
+
+
+def seal_results(report_root: Path, *, commit: str, evidence: dict, d0_inputs: dict, destination: Path) -> dict:
     """Save immutable report/identifier byte pins beside the actual step evidence."""
     results = json.loads(_file(report_root, "a0-results.json").read_text(encoding="utf-8"))
     validate_results(results, commit=commit)
     if evidence["commit"] != commit or evidence["baseline"] != "repinned" or evidence["reconstruction_batch_size"] != 64:
         raise ValueError("step evidence identity differs")
+    if set(d0_inputs.get("products", {})) != {"r4", "pit", "link_table"}:
+        raise ValueError("D0 input inventory missing")
+    for sides in d0_inputs["products"].values():
+        if set(sides) != {"rebuilt", "published"}:
+            raise ValueError("D0 input sides missing")
+        for item in sides.values():
+            for path_key, pin_key in (("path", "sha256"), ("manifest", "manifest_sha256")):
+                path = Path(item[path_key])
+                if not _sha(item.get(pin_key)) or digest(_file(path.parent, path.name)) != item[pin_key]:
+                    raise ValueError("D0 input byte pin differs")
+    pit = d0_inputs["products"]["pit"]
+    if (pit["rebuilt"]["path"] != results["pit_paths"]["arms"]["A"] or
+        pit["published"]["path"] != results["pit_paths"]["published_reference"] or
+        pit["published"]["manifest_sha256"] != results["d0"]["published_pit_manifest_sha256"]):
+        raise ValueError("D0 input selection differs from saved report")
+    stage = d0_inputs["stage_i"]
+    path = Path(stage["manifest"])
+    if digest(_file(path.parent, path.name)) != stage["manifest_sha256"]:
+        raise ValueError("StageI manifest pin differs")
+    validation = json.loads(path.read_text(encoding="utf-8"))["validation"]
+    if validation != stage["validation"] or validation.get("seal") != "2025-01-01":
+        raise ValueError("StageI delivery evidence differs")
+    _validation_counts(validation.get("got"))
+    _validation_counts(validation.get("expected"))
+    report_validation = results["d0"]["stage_i_validation"]
+    wanted = {"pass": True} if validation["pass"] else {key: validation[key] for key in ("pass", "got", "expected")}
+    if report_validation != wanted:
+        raise ValueError("StageI report evidence differs")
     _file(report_root, "a0-results.md")
     files = {p.relative_to(report_root).as_posix(): digest(_file(report_root, p.relative_to(report_root).as_posix()))
              for p in sorted(report_root.rglob("*")) if p.is_file()}
     if not any(rel.startswith("identifiers/") for rel in files):
         raise ValueError("identifier evidence missing")
-    seal = {"commit": commit, "report_root": str(report_root.absolute()), "report_files": files, "steps": evidence}
+    seal = {"commit": commit, "report_root": str(report_root.absolute()), "report_files": files,
+            "steps": evidence, "d0_inputs": d0_inputs}
     with destination.open("x", encoding="utf-8") as stream:
         json.dump(seal, stream, indent=2, sort_keys=True)
         stream.write("\n")
