@@ -1,4 +1,5 @@
 #include "strategy_ic_runner.hpp"
+#include "strategy_ic_absent.hpp"
 #include "strategy_ic_composition.hpp"
 #include "strategy_ic_detail.hpp"
 #include "strategy_ic_rules.hpp"
@@ -785,6 +786,9 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     ATX_TRY(const auto themes,theme_table(cfg));
     // Both new options are fully validated here, before any role payload.
     ATX_TRY(const auto pinned,composition_weights(cfg,lib,themes));
+    // absent-members-v1 (P9 lane ABS): the list, checked against the library before any role
+    // payload or output (nullopt without the flag).
+    ATX_TRY(const auto absent,absent_members(cfg,lib));
     const bool pinned_signs=!pinned.signs.empty();
     ATX_TRY_VOID(cache_preflight(cfg,lib));
     ATX_TRY(const auto known,legacy_manifests(cfg));
@@ -972,6 +976,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
 }
 int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
   IcRunnerConfig cfg;
+  // absent-members-v1 (P9 lane ABS): each of its two flags at most once ([0] list, [1] pin).
+  std::array<bool,2> absent_given{};
   try {
     // K-P9-6 (P9 lane D1): `--list-rules --json` prints the composition rule table and the exe's
     // capabilities (strategy_ic_rules.hpp list_rules_json) and nothing else; it takes no other
@@ -1009,6 +1015,7 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "[--min-coverage F] [--ic-hac-rule bartlett-2h-v1|horizon-aware-v3] "
                "[--label-terminal imputed-v1 --train-label-role MANIFEST --train-label-role-sha256 SHA "
                "[--validation-label-role MANIFEST --validation-label-role-sha256 SHA]] "
+               "[--absent-members JSON --absent-members-sha256 SHA] "
                "| --list-rules --json\n"
                "  verbs: marginal (marginal IC of each candidate against a saved blend, contract K6; see\n"
                "    `atx-equity-strategy-ic marginal --help`); ic (this option list, also the default).\n"
@@ -1033,6 +1040,11 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "    (d+1, d+1+h] its pinned label role (the role builder's --delisting-returns build of that\n"
                "    role) prices, at that imputed close, then holds cash; read as labels only. Each candidate\n"
                "    also prints its IC under today's labels (ic_missing_exit_v1) and the missing-exit share.\n"
+               "  --absent-members: absent-members-v1, an atx.od3-flagged-members/v1 list\n"
+               "    ({schema, members: [id, ...]}, other keys ignored): each listed candidate is\n"
+               "    treated on every date as a member with no data (its mass stays in its theme;\n"
+               "    weights, signs and verify unchanged); summary.json records absent_members.\n"
+               "    Each flag at most once; refused with --no-composition.\n"
                "  --*-fields: atx.research-role-fields/v1 directory bound to that role; SHA pins DIR/manifest.json.\n"
                "  --candidate-cache: content-keyed entries (v2) under DIR[/<vm-identity>]/<role-sha>/[fp_<fk16>/]\n"
                "    <id>.<dsl16>.{f64,json}, keyed on the DSL and the payload SHA256 of each field it reads; v1 entries\n"
@@ -1110,6 +1122,13 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       else if (key=="--train-label-role-sha256") cfg.train_label_role_sha256=value;
       else if (key=="--validation-label-role") cfg.validation_label_role=value;
       else if (key=="--validation-label-role-sha256") cfg.validation_label_role_sha256=value;
+      else if (key=="--absent-members" || key=="--absent-members-sha256") {
+        // A second list or pin would silently replace the first: refused (contract section 3).
+        const bool pin=key=="--absent-members-sha256";
+        if (std::exchange(absent_given[pin?1U:0U],true))
+          throw std::invalid_argument(key+" given more than once");
+        (pin?cfg.absent_members_sha256:cfg.absent_members_path)=value;
+      }
       else throw std::invalid_argument("unknown option: "+key);
     }
     const auto result=run_ic(cfg,out);
