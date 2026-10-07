@@ -204,10 +204,19 @@ struct IcComposition::Impl {
   IcCompositionResult result;
   usize next{};
   bool finished{};
+  // The weight candidate `index` enters with at date `d` (ruling D3W-S S-3: the one place add and
+  // add_standardised read it): the weight of the per-date row in force (P9 lane D3W; 0 before the
+  // first row), else its pinned (or default) weight.
+  [[nodiscard]] f64 weight_at(usize index, usize d) const noexcept;
 };
 namespace {
 constexpr usize no_row = std::numeric_limits<usize>::max();
 } // namespace
+f64 IcComposition::Impl::weight_at(usize index, usize d) const noexcept {
+  if (row_of.empty()) return weights[index];
+  const usize r = row_of[d];
+  return r == no_row ? 0.0 : row_weights[r][index];
+}
 IcComposition::IcComposition(std::unique_ptr<Impl> p) : impl_(std::move(p)) {}
 IcComposition::~IcComposition() = default;
 IcComposition::IcComposition(IcComposition&&) noexcept = default;
@@ -343,12 +352,6 @@ co::Status IcComposition::add(usize index, std::span<const f64> signal, int sign
     ++p.next; return co::Ok();
   }
   if (!p.std_theme.empty()) return add_standardised(index, signal, sign, pool);
-  const f64 weight = p.weights[index];
-  const auto weight_at = [&p, index, dated, weight](usize d) {
-    if (!dated) return weight;
-    const usize r = p.row_of[d];
-    return r == no_row ? 0.0 : p.row_weights[r][index];
-  };
   // Pinned themes: the candidate accumulates into its theme's blend plane and adds
   // its weight to the theme's present-weight plane (folded by finish); otherwise
   // straight into the blend, the unchanged expression on the same cells.
@@ -359,7 +362,7 @@ co::Status IcComposition::add(usize index, std::span<const f64> signal, int sign
   // has capacity for every name, so ranking never allocates.
   const auto rank_dates = [&](usize begin, usize end, std::vector<Ranked>& row) {
     for (usize d = begin; d < end; ++d) {
-      const f64 w = weight_at(d);
+      const f64 w = p.weight_at(index, d);
       if (dated && !(w > 0)) continue;
       row.clear(); const auto offset = d * p.cfg.instruments;
       for (usize i = 0; i < p.cfg.instruments; ++i)
@@ -411,19 +414,13 @@ co::Status IcComposition::add(usize index, std::span<const f64> signal, int sign
 co::Status IcComposition::add_standardised(usize index, std::span<const f64> signal, int sign,
                                            engine::parallel::DetPool* pool) {
   auto& p = *impl_;
-  const f64 weight = p.weights[index];
   f64* const plane = p.std_plane[p.std_theme[index]].data();
-  // P9 lane D3W: the weight of the row in force at each date (as add); a zero-weight date makes no
-  // cell of the plane present.
+  // P9 lane D3W: the weight of the row in force at each date (Impl::weight_at, as add); a
+  // zero-weight date makes no cell of the plane present.
   const bool dated = !p.row_of.empty();
-  const auto weight_at = [&p, index, dated, weight](usize d) {
-    if (!dated) return weight;
-    const usize r = p.row_of[d];
-    return r == no_row ? 0.0 : p.row_weights[r][index];
-  };
   const auto rank_dates = [&](usize begin, usize end, std::vector<Ranked>& row) {
     for (usize d = begin; d < end; ++d) {
-      const f64 w = weight_at(d);
+      const f64 w = p.weight_at(index, d);
       if (dated && !(w > 0)) continue;
       row.clear(); const auto offset = d * p.cfg.instruments;
       for (usize i = 0; i < p.cfg.instruments; ++i)
