@@ -1,173 +1,199 @@
-# Lane B2 handoff: fix round 1, stopped by the owner
+# Lane B2 handoff: post-identity redo (first written 2026-10-04; newest section first)
 
-**Closed (RESUME 4):** fix round 1 finished; see `task-B2-report.md`, section "Fix round 1". Identity merge point
-`1b25b9a4`, deletion commit `598d2199`; the WIP `dee6cacb` below was taken back (`1b87cb6a`) and re-applied, finished.
+## R9 round: the two pending suites done (2026-10-07; dispatch R9-1; supersedes every section below)
 
-**Where:** pool-14, branch `feat/p9-b2-20261003`.
-- Base: `1239a5ff`.
-- Head: the commit that adds this file. Its parent is `dee6cacb` (the WIP deletion).
-- **Fix round 1 is about 75% done.**
-  - Every change before the deletion is committed, built and tested.
-  - The re-applied deletion is committed as WIP and is not finished.
-  - The report's "Fix round 1" section is not written yet.
-- **Inputs:**
-  - The review: `task-B2-review.md` (commit `7395965c`).
-  - Rulings B2-R1, B2-R2 and B2-R3: in `C:/atx-wt/pool-2/.superpowers/sdd/platform-p9-20261003/progress.md`, lines 310-312.
+**Head:** the docs commit that adds this section, on the merge commit `52cdcc8c` (root `685e238b` merged: prereg
+round 2b-i, docs only, no conflict). **Root SHA merged last:** `685e238b`. Branch `feat/p9-b2-20261003`, pool-14. No
+rebase, amend or reset; no code changed; tree clean after this commit; nothing pending in the lane.
 
-## Commits of this round, in order
+**TEST-1:** the PM's TEST-1 message arrived after `p9-b2-q`, the gtests and both suites below had finished
+and been committed (`fda4c27b`); nothing was re-run; the whole `scripts/tests` and the stage chain are deferred
+to the gate (TEST-1), whose runs are the runs of record (the lane's runs stay as its evidence).
 
-| commit | what |
-|---|---|
-| `d12dd945` | Reverts the deletion `b76c2219`, without rewriting history (the lane A3 pattern). |
-| `ec8043b7` | **B2-R1 and B2-R2 in C++.**<br>- Paired statistics are formed from the difference series.<br>- A pair with 1 - rho < 1e-6 is refused as degenerate.<br>- A constant CSCV candidate gets Sharpe 0.<br>- Adds the `fixtures/research_eval_edges` fixture and the `EvalEdges.*` gtests.<br>- Documents `--trial` / `--history` as trusted-caller flags (S4). |
-| `a12b4c30` | **nav_summ, B2-R1 (c) and the pre-deletion part of B2-R3.**<br>- The adapter keeps a degenerate pair's refused values null and prints `na` plus one degenerate line.<br>- With an engine, `nav_summ_run` gains `engine_exe` and `engine_exe_sha256`.<br>- Updates `test_nav_summ_engine.py`.<br>- Renames that test's synthetic ledger to `fixture-ledger.jsonl` (S10). |
-| `b295fa4f` | **Suggested fixes S2, S3, S5, S9 and S10** (details below). |
-| `f07ba1be` | Fixes a `-Wrange-loop-construct` error in the S3 test. |
-| `c85dc6f2` | Fixes Python truthiness of a string `defect` in the S3 reader check. |
-| `d5f653cc` | Moves the edge fixture's 5e-4 case to 5.005e-4. At exactly 5e-4, rho = 0.9995 sits on the rounding boundary of the 3-decimal rho print, so a 1e-16 difference flipped the printed digit. |
-| `dee6cacb` | **WIP, not for merge:** the deletion re-applied, unfinished (details below). |
+**Done:** configure `equity-dev` (the object tree had been deleted at the R8 stop); Debug `p9-b2-q` at `52cdcc8c`
+(receipt `build-equity/mega-p9-b2-q-receipt.json`, copy in `b2-evidence/`; dirty 0, exit 0, 466 TUs; verb
+`atx-research-eval` SHA-256 `80a73375313272011d4fcb7a90caba1b46cab371da899ddfeed560222cc0142d`, re-checked unchanged
+after the last suite); gtests eval 26 / 26, ledger 16 / 16, `atx-impl-tests` `*Ledger*:EvalVerb*` 29 / 29;
+`scripts/tests` seed 1 527 passed / 5 skipped; `atx-engine/tools/test_stage_chain.py` seeds 0 and 1, 10 passed each.
+0 failed; the five skips are the named environment skips of seed 0; ENV-1 not seen. Logs `b2-evidence/r9-*`; record
+in `task-B2-report.md`, section "R8 round" (the two cells filled) and "R9 completion".
 
-**Identity merge point: `d5f653cc`.** All identity-relevant code is at or before it.
-- **The deletion sits at `dee6cacb` and is incomplete.** Once it is finished, it must again be the last code commit.
-- Two options when finishing it:
-  - Add follow-up commits, then report the final deletion SHA as the range `d5f653cc..<last>`.
-  - Or squash the WIP and its follow-ups into one new commit. That rewrites only commits made this round, never `b76c2219` or earlier.
+**Next:** re-review 2 (B2-SEQ: the suites are recorded, it may start; REV-BASE `26fe8d50`; `52cdcc8c` is one more
+merge with no conflict). The pool-14 Debug object tree is deleted by name after this commit (`mega-p9-b2-*` receipts
+and logs kept). Next free tag `p9-b2-r`.
 
-## State per item
+## R8 round: OWNER STOP with two suite runs pending (2026-10-06; dispatch R8-1; supersedes every section below)
 
-### B2-R1 (a): difference-series forms — DONE in `ec8043b7`
-In `paired.cpp`, all of the following are now computed from the difference series:
-- **1 - rho:** `sum((za - zb)^2) / (2 (T - 1))`.
-- **Memmel SE:** uses `2 omr` and `(a - b)^2 + 2 a b omr (2 - omr)`, where `omr` is 1 - rho.
-- **LW point SE `s0`:** the Bartlett long-run variance of the scalar influence series `g'(y_k - mean)`.
-- **Bootstrap SE `s*`:** the sum of squared block sums of that series.
+**Head:** the docs commit that adds this section, on the merge commit `1b15330d`. **Root SHA merged last:**
+`fd084e78` (SQL3 merged in root during the round). Branch `feat/p9-b2-20261003`, pool-14. No rebase, amend or reset;
+tree clean after this commit. No code changed this round; nothing is WIP.
 
-`rho` itself is still the numpy-order Pearson value.
+**Commits of the round:** `426721b2` (DIRTY-1: the R7 record and 11 untracked R7 logs, as they stood); `7832719f`
+(merge root `1b64ce45`, no conflict); `1b15330d` (merge root `fd084e78`, no conflict); the docs commit.
 
-### B2-R1 (b): tolerance — DONE
-- **Tolerance:** 1e-12 / (1 - rho), used in `EvalEdges.PairedTiesWithinTheConditioningBound` and in `test_nav_summ_engine.close`, where counts and p-values are compared exactly.
-- **Printed lines:** byte-equal at 1 - rho = 5.005e-4, 5e-5, 5e-6 and 1.02e-6, checked through nav_summ in `test_near_identical_pairs_follow_the_conditioning_rule`.
-- **Caveat:** a printed value that sits exactly on a rounding boundary can still flip. That is how the original 5e-4 case failed; no tolerance can prevent it.
+**Done:** every item of `r7-dispatch.md` "B2": the merges (B2-14; conflict tables of all five merges in the report),
+B2-11 with re-review 1 R1 / R2 (`d8f80c7a`), the test rewrite on a real v2 manifest, G-P5 on the merged tree,
+PRE-15 (`fe152fca`), D2R-2 (b) (`34838462`), builds, and every named suite on `7832719f`; on `1b15330d` every suite
+except the two below. Not shown: B2-11's teeth by mutation (the R7 mutation Edit was refused; PERM-1: not retried;
+the reviewer may try its own).
 
-### B2-R1 (c): degenerate refusal — DONE
-- **Rule:** `kDegenerateOneMinusRho = 1e-6`, applied to the stable 1 - rho.
-- **Refused:** `memmel_se`, `t`, `lw.se`, the LW CI, `p_value` and `p_one_sided` are null; `valid_draws` is 0.
-- **Still reported:** dSR, rho, d0 and the CBB interval.
-- **Verb JSON:** the paired block gains `one_minus_rho` and `degenerate`, and the text print adds one line.
-- **nav_summ:**
-  - Prints "Memmel SE na t na" and the degenerate line.
-  - In `--json`, `degenerate` and `one_minus_rho` appear only on a degenerate pair, so every other pair has the Python's keys.
-- **Self pair:** it now prints SE "na", where ruling B2-4 said SE 0. B2-R1 (c) says "same as the self-pair", and I applied "na" to both. **The PM should confirm this.**
+**Not done (pending; the only next step):** on the final tree `1b15330d` (or on root's then-current head, merged with
+`git merge feat/platform-p9-20261003`):
+1. `scripts/tests` under PYTHONHASHSEED 1 (my run was stopped at the owner stop at about 58 %, no failure printed;
+   `b2-evidence/r8-pytest-scripts-o-s1.log`, marked STOPPED);
+2. `atx-engine/tools/test_stage_chain.py` under seeds 0 and 1 (not started).
+Both need the Debug verb `build-equity/bin/atx-research-eval.exe` (the object trees were deleted at this stop: build
+Debug first with tag `p9-b2-q`, targets as the receipts list). Command form: `PYTHONDONTWRITEBYTECODE=1
+PYTHONHASHSEED=1 "C:/Program Files/Python312/python.exe" -m pytest -q -rs -p no:cacheprovider --basetemp <scratch>
+scripts/tests`, ATX_EQUITY_BIN unset; then fill the two "pending" cells of the report's R8 pytest table
+(`task-B2-report.md`, section "R8 round", table row "the same / seed 1" and the stage-chain row).
 
-### B2-R1 (d): tests — DONE
-- **Fixture** `atx-engine/tests/fixtures/research_eval_edges/`:
-  - Contains the generator, `expected.json` and a pytest.
-  - The series come from an exact LCG, repeated bit for bit by the gtest, so no series file is committed.
-  - Cases: 1 - rho = 5.005e-4, 5e-5, 5e-6, 1.02e-6, 0.98e-6, 5e-9, 6e-13, and the self pair. T is 750, with 999 draws.
-- **Gtests:** `EvalEdges.*` (5 tests).
-- **pytest:** `test_near_identical_pairs_follow_the_conditioning_rule[...]` (7 cases).
-- **Still owed:** Concern 1 in the report must be updated. Text to use:
-  - The engine now forms these statistics stably.
-  - The tolerance is 1e-12 / (1 - rho).
-  - Below 1e-6 the pair is refused.
-  - Root measures rho for the X-5 and Y-F0 pairs.
+**Builds used (pool-14):** `p9-b2-m` (Debug) / `p9-b2-n` (Release) at `7832719f`; `p9-b2-o` (Debug) / `p9-b2-p`
+(Release) at `1b15330d`; all dirty 0, exit 0. Release builds were no-ops (exes byte-equal to `p9-b2-l`); the Debug
+ones relinked only because the shared `C:\atx-cache\deps\spdlog-build` had been refreshed by another lane. Verb
+SHA-256 at `1b15330d`: Debug `b2ee9b269eb847325848bdbe67907ecd987eeeda6ccdf4c26188b8d9c71a7529`, Release
+`bef0c0cd5b1d47f266d5b2c2c5f28a60718158bcfd8a99486b47dbe2bcf883d1`. Receipts kept (`build-equity/mega-p9-b2-*`,
+copies of i..p in `b2-evidence/`). Next free tag `p9-b2-q`.
 
-### B2-R2: constant CSCV candidate — DONE in `ec8043b7`
-- **Fix:** `cscv_report.cpp` passes a column whose used returns are all equal to the engine CSCV as zeros, so its Sharpe is 0 in every split. That is exactly the Python's `var > 0` rule, because the Python's centred moments are exactly 0 for such a column.
-- **JSON:** the column is listed in `pbo.engine.constant_candidates`.
-- **Test:** `EvalEdges.CscvConstantCandidateHasSharpeZero`, on 5 generated candidates plus a constant 0.001 column (240 sessions, 8 blocks). The engine now equals the Python exactly: PBO 0.1857, logits and winner counts `[57,4,9,0,0,0]`.
-- **Not "0.171":** the review's exact series is unknown. A search over numpy seeds 0..59 did not reproduce it.
-- **Not covered:** a candidate that is constant over only some blocks. Both implementations divide by a rounding residue there. This is documented in `cscv_report.hpp`.
+**Tests actually run (0 failed in every finished run; logs `b2-evidence/r8-*`):**
+- on `7832719f`: gtests eval 26, ledger 16, `atx-impl-tests` `*Ledger*:EvalVerb*` 29 (Debug and Release);
+  `scripts/tests` seed 0 520 passed / 4 skipped, seed 1 520 / 4; stage chain 9 per seed; tools + fixtures 274 passed /
+  1 skipped (Debug seed 0, Release seed 1); mirror guard 7; fail-closed 1. One void seed-0 run (the Debug verb was
+  relinked under it), re-run whole.
+- on `1b15330d`: the same gtests 26 / 16 / 29 (Debug and Release); `scripts/tests` seed 0 527 passed / 5 skipped (the
+  new skip: SQL3's `test_research_store_hook.py:381`, `atx-research-store.exe` not a B2 target); tools + fixtures 274
+  / 1 (Debug seed 0, Release seed 1); mirror guard 7; fail-closed 1. Seed 1 stopped, chain not run (above).
 
-### B2-R3: name and pin the verb — PARTIAL
-**Done before the deletion (`a12b4c30`):**
-- `EngineStats` hashes the exe when it opens it.
-- `nav_summ_run` in `--json`, `--pbo-json` and `--bundle-json` records `engine_exe` and `engine_exe_sha256` whenever an engine was used.
-- The test is `test_the_engine_run_names_its_verb`.
+**For re-review 2 (REV-BASE):** BASE `26fe8d50`; check every conflict region of `c37ec671`, `b1df1829`, `c3201a60`
+(and the clean `7832719f`, `1b15330d`). For root's merge: the report's section "What root re-proves at merge" (TRAIN
+identity procedure; keep-both points with D3 `test_wave_kinds.py:171`, D3W `eval_report.cpp` PRE-15 hunks, C3b
+`scripts/cycle/spec.py`).
 
-**In the WIP `dee6cacb`, untested:**
-- `default_engine_exe` returns `$ATX_EQUITY_BIN/atx-research-eval.exe` whenever `ATX_EQUITY_BIN` is set, so a missing exe there fails closed in `EngineStats`.
-- Lazy `engine_of`, which is S8.
+**Open for the PM:** (1) D3W-EVAL assumed `eval_report.cpp` is not in B2's list; PRE-15's hunks are there (keep-both
+at merge). (2) The shared Debug `spdlog-build` dir lets one pool's build relink another pool's exes (new SHA-256s with
+no source change). (3) Permission refusal this round (PERM-1, not retried): a Write of a NEW scratch draft
+`scratchpad/b2-r8/report-r8.md` was refused ("Subagents should return findings as text, not write report files"); the
+lane records were then written by Edits of the existing `task-B2-report.md` and `handoff-B2.md`.
 
-**NOT done:**
-1. **`scripts/research_cycle.py`** (cross-lane with E2):
-   - `effective_exes` adds `"eval": "atx-research-eval.exe"` when `"summ"` is in the spec. Then `lock --exes` pins it and `verify_exes` checks it.
-   - `summ_step` passes `--engine-stats <exes.eval>` right after the script when `exes.eval` is set.
-   - Do **not** add a `--bind` for the exe: `run_bounded_research` refuses binds over 16 MiB, and the Debug exe is about 2.2 MB, so it fits, but a Release exe might not.
-   - Update `test_build_key_resolves_exe_dir`, which asserts the exact exes dict, and add a test.
-2. **`scripts/cycle_verdict.py` `scoring_blocks`:** refuse a `summ.json` or `pbo.json` whose `nav_summ_run.engine_exe_sha256` differs from the cycle's eval pin. Without a pin, compare against the sha of `spec.exes.eval`. Raise `VerdictError` ("not reused"). Add a test in `test_cycle_scoring.py`.
-3. **Test for the fail-closed rule:** `ATX_EQUITY_BIN` set to a dir without the exe means `NS.main` raises SystemExit. Reset `NS._ENGINE` first, because it caches the default verb per process.
-4. **Merge requests to add to the report:**
-   - Add `atx-research-eval` to `$canaryExes` in `research-build.ps1`.
-   - The `exes_sha256` pin, if root prefers E2 to own `research_cycle`.
+## Follow-up at the owner stop (2026-10-04; superseded by "R8 round" above)
 
-### Suggested
-| item | state | where | detail or reason |
+**Head:** the docs commit that adds this section, on the merge commit `c37ec671`. **Root SHA merged:** `5c57c1ef`
+(`git merge feat/platform-p9-20261003`, plain; it holds E2's split, D2R and COVR). The merge is COMPLETE and committed;
+no rebase, no history rewritten. No permission refusal this round. Tree clean after this commit.
+
+**Conflict regions (ruling B2-14: each resolved by an Edit of that region; no checkout / restore / show-redirect):**
+
+| file | region | side kept / how combined | why |
 |---|---|---|---|
-| S1 (norm_ppf) | not done | — | The house rows use the engine's shared Acklam+Halley `norm_ppf` (`stats_ext.hpp`), which other callers use too. Recorded N_tot is 13..233, and 1e-12 holds up to N = 1e3. List with this reason; the PM may rule a bound. |
-| S2 | done | `b295fa4f` | `chain_head`, `prefix_heads` and `is_chained_line` treat a line as chained only when its `prev_sha256` is non-null, in C++ and in `backtest_integrity.chain_head`. The rule name stays `/v1`. Tests: gtest `ANullPrevLineFoldsInEveryRule` and pytest `test_a_null_prev_line_folds_for_chain_head_as_for_the_reader`. |
-| S3 | done | `b295fa4f`, `c85dc6f2` | The reader refuses three inputs: a BOM at a line start; a raw CR, U+0085, U+2028 or U+2029 inside a line; and a truthy non-object `defect`. Test: `ResearchLedger.ReaderRefusesWhatThePythonRefuses`. |
-| S4 | done, as docs | `ec8043b7` | `eval_cli.hpp` and `eval_report.hpp` document the flags. K-P9-5 itself lives in the plan, which I did not edit. |
-| S5 | done | `b295fa4f` | Dropped the uncalled `check_era_id`, `check_era_windows`, `segment_starts` and `weighted_mean`. |
-| S6 | not done | belongs in the deletion | After the deletion, `test_nav_summ_engine` compares the engine with itself. Option 1: retire the comparison tests and keep the arg, refusal, provenance and degenerate tests, which never skip. Option 2: compare `nav_summ --json` against `frozen_statistics.paired_stats` at the conditioning tolerance. The edge cases there import `generate_research_eval_edges`, whose `paired_case` needs the generator retarget below. |
-| S7 | not done | belongs in the deletion | In `scripts/tests/test_research_ledger.py`, `nav_summ_n` should read N from `nav_summ --json` (`deflated_ledger.n` or `house_v1`) instead of `BI.ledger_n`. |
-| S8 | WIP | `dee6cacb` | Lazy engine. |
-| S9 | done | `b295fa4f` | Lines over 100 columns. |
-| S10 | done | `a12b4c30`, `b295fa4f` | `fixture-ledger.jsonl`. |
+| `scripts/research_cycle.py` | 1: module docstring (ours: the 186-line usage text; root: E2's 3-line shim text) | root's (E2's) text; ours removed in chunks by Edit | E2 moved the usage text to `scripts/cycle/cli.py`; ours = merge-base text + B2's `exes.eval` entry, which is re-placed in `cycle/cli.py` after `exes_sha256` |
+| `scripts/research_cycle.py` | 2: the module body (ours: the old 2,100-line code; root: E2's re-export imports) | root's re-exports, plus one line `from cycle.spec import EVAL_EXE  # noqa ...` | ours = merge-base code (E2 moved it to `scripts/cycle/**`) + B2-R3's hunks, each re-placed: `EVAL_EXE` after `EXE_NAMES` in `cycle/spec.py:81`; the `effective_exes` docstring and `names` line in `cycle/spec.py:417-425`; the three `summ_step` lines (`--engine-stats <exes.eval>`) in `cycle/phases.py:736-738` (+ `EVAL_EXE` in its `cycle.spec` import, `:21`). None dropped: `git diff 5c57c1ef c37ec671 -- scripts/research_cycle.py` is that one line |
+| `scripts/tests/test_no_python_mirror.py` | ALLOWLIST head | ours (the six B2 statistics rows stay deleted, one comment line) + root's D2-3 comment; root's D3 / P10 rows untouched | G-P5: the deletion commit `598d2199` retired them |
+| `scripts/wave_stage_record.py` | `verify`'s `problems` line | combined: `[exe_problem(exe, pins, SK.rule_cell_kind(w)), eval_problem(w, done)]` | root's E2-15 (c) argument and B2-10's check both kept (B2-11 below reduces `eval_problem`) |
+| sprint-dir `handoff-B2.md`, `task-B2-report.md` (2 regions) | root held an older copy of the lane's own docs | ours (the lane's newer text) | lane-owned records |
 
-**Deletion follow-up besides R3, S6 and S7:** retarget `generate_research_eval_edges.py` from `nav_summ` and `backtest_integrity` to `fixtures/eval_tie/frozen_statistics.py` (`paired_stats`, `cscv_pbo`), the same way `generate_eval_tie.py` was retargeted. Otherwise its import of `NS.paired_stats` breaks after the deletion.
+Auto-merged: `scripts/tests/test_research_cycle.py` (B2-R3's exes dicts), `atx-engine/tests/CMakeLists.txt`. The merge
+also carries root's deletion of 129 tracked `.mypy_cache` files under the sprint dir's `tools/` (none added by me).
 
-## Builds and tests run
-All builds used `scripts/research-build.ps1` with the equity-dev preset. The receipts are in `build-equity/mega-p9-b2-c*`.
+**Pending items:**
+- G-P5 deletion on the merged tree: PARTLY. In the tree (`598d2199` merged; mirror rows retired by the resolution).
+  Not yet re-run on the merged tree: `test_no_python_mirror.py`, `test_nav_summ_engine.py::test_a_bin_without_the_verb_fails_closed`.
+- B2-11 (re-review 1 R1 + R2): NOT STARTED (design: report, "B2-11 / R1 / R2"). Where:
+  `wave_stage_record.py:27` drop `V2_SCHEMA`; `:104-128` `eval_problem` keeps only the spec key + pin check, keyed on
+  `wave_kinds.is_v2(w.manifest)` (import `wave_kinds as WK`); `:177` `bundle_once(w, base, cell, verb=None)`: for v2
+  refuse a verb on disk (`w.sha(path)`) != pin before the run, and after the run / on reuse
+  `CV.check_verb(out, doc, (pin, ...))` -> `StageError(..., EXIT_PIN)`; `:214` `judge` passes the cell's
+  (exes.eval, pin) to `bundle_once` in both branches and checks the cell's summ.json / pbo.json with
+  `CV.check_summ_verb` after `scored_verdict`; `:248` `judge_plan` passes the verb to `bundle_argv`;
+  `wave_steps.py:126` `bundle_argv(..., verb=None)` adds `--engine-stats <verb>` right after the script (v1 bytes
+  unchanged). Tests: rewrite `scripts/tests/test_wave_eval_verb.py` on a real v2 manifest via `test_wave_kinds.py`'s
+  `load_fixture` / `rerooted` / `world` / `wave` helpers (`:155-186`) in stage order; teeth by mutation.
+- R1 / R2: = B2-11, NOT STARTED.
+- PRE-15 survives the merge: YES by grep (`tot_minus_m` in `eval_report.cpp` x5, `nav_summ.py` x1, `dsr_total.py` x3;
+  "prefix rule" in `eval_report.cpp` x3, `nav_summ.py` x3); its tests not re-run on the merged tree.
+- D2R-2 (b): NOT STARTED (scan specs / templates / fixtures / drivers for abbreviated `nav_summ` flags first; then
+  `allow_abbrev=False` and the e27b `--protocol` cases on D2R's `test_research_spec.py`).
 
-**Builds:**
-- `p9-b2-c` (dirty tree): FAILED on the `-Wrange-loop-construct` error, fixed in `f07ba1be`.
-- `p9-b2-c2`: source `f07ba1be`, 0 dirty entries, exit 0, 11 TUs.
-- `p9-b2-c3`: source `c85dc6f2`, exit 0. The tree was configured fresh this round.
+**Tests actually run on the merged tree (before the merge commit; `PYTHONDONTWRITEBYTECODE=1`, `-p no:cacheprovider`, no
+ATX_EQUITY_BIN):** `test_research_cycle.py` + `test_wave_eval_verb.py` + `test_cycle_scoring.py`: 99 passed, 3 skipped,
+2 failed. The two failures are `test_cycle_scoring.py::test_verdict_dsr_is_the_ledger_variance_value_not_the_single_cell_lo_value`
+and `::test_the_summ_runs_the_named_verb_and_the_verdict_refuses_another`: `FileNotFoundError` for
+`build-equity/bin/atx-research-eval.exe` (no build tree in pool-14; they need the built verb). Suites are NOT known
+green: no full `scripts/tests` run, no stage chain, no tools suites, no build on the merged tree.
 
-**gtests, run at `c85dc6f2` and `d5f653cc` (logs in `b2-evidence/fix1-gtest-*.log`):**
-- `atx-engine-research-ledger-tests --gtest_filter=ResearchLedger*`: 16 of 16 pass.
-- `atx-engine-research-eval-tests --gtest_filter=EvalVerb.*:ResearchEvalRng.*:Conditional.*:EvalEdges.*`: 21 of 21 pass. The `eval_tie` tie still holds at 1e-12.
+**Next step for a fresh agent:** from this head (no re-merge unless root moved; if it did, `git merge
+feat/platform-p9-20261003` again): implement B2-11 as above; G-P5 checks; D2R-2 (b) last; then build Debug + Release
+(tags from `p9-b2-i`; the merge brought root's C++ changes, EXE-CUR), gtests eval / ledger / `TrialLedger*`, pytest
+`scripts/tests` seeds 0 and 1 with `ATX_EQUITY_BIN` unset or a full bin, stage chain, tools suites, mirror guard; then
+finish the report section "Post-identity redo" with the conflict table above.
 
-**pytest before the deletion, at `d5f653cc`** (`ATX_EQUITY_BIN` set to the pool-14 bin, `ATX_ENGINE_STATS_REQUIRED=1`):
-- The nav_summ, ledger and fixture suites (14 files): 134 passed, 1 skipped, the known root-only v8 test. Log: `b2-evidence/fix1-pytest-pre-deletion.log`.
-- The wave, holdout and mega-report suites: 146 passed. Log: `b2-evidence/fix1-pytest-pre-deletion-wave.log`.
+**Where:** pool-14, branch `feat/p9-b2-20261003`. Head: the docs commit that adds this file (code commit of the round
+`fe152fca`, on `4bed5c43`). History kept: `598d2199` (deletion) and `8fb17ad6` (B2-10) are on the branch; no rebase.
+Report: `task-B2-report.md`, section "Post-identity redo" (end of file).
 
-**Flag-absent identity, nav_summ at `1239a5ff` vs `d5f653cc`:**
-- Setup: 5 synthetic dirs, a v8 argv with PSR, effective N, PBO, the ledger DSR, the total DSR and the hand DSR, and a shared pristine ledger. Run once with a far reference and once with a near-identical one (1 - rho = 1.25e-10).
-- Result: stdout, stderr, `--json` and `--pbo-json` are **byte-equal** in both runs.
+Earlier rounds are closed: the first report, fix round 1 (identity point `1b25b9a4`, merged by root at `c2416d62`),
+B2-10, re-review 1 (`task-B2-rereview-1.md`, CHANGES_REQUIRED: R1, R2, S1-S7).
 
-**`--engine-stats` against Python at `d5f653cc`, same setup:**
-- Far reference: stdout equal, 0 JSON differences.
-- Near reference: the pair is refused as degenerate. As expected, its stdout differs and its JSON gains `degenerate` and `one_minus_rho`.
-- These two scripts were scratch and are deleted. Their content is described here.
+## Why the round stopped
 
-**Not run:** anything after the deletion. The WIP has not been tested.
+`git merge e8e424b9` (plain; root's head at dispatch) conflicted in 3 files. Resolving `scripts/research_cycle.py`
+takes E2's re-export shim (E2 moved the code to `scripts/cycle/`). The command `git checkout --theirs
+scripts/research_cycle.py` was refused by the permission system ("Irreversible Local Destruction"). It was not retried
+and not routed around (resume6 rule): any other resolution of that file reaches the same state. The merge was aborted
+(`git merge --abort`), so the tree is at the pre-merge branch. The conflict list is in
+`b2-evidence/redo-merge-conflicts.txt`, and the intended resolution is in the report.
 
-## Exact next steps
-1. In pool-14 at the head, finish the deletion:
-   - B2-R3 in `research_cycle.py` and `cycle_verdict.py`, with tests.
-   - The fail-closed test.
-   - S6, S7 and the edge-generator retarget.
-   - Commit as follow-up commits, or squash this round's WIP into one deletion commit.
-2. Run the post-deletion pytests: the same 14 files plus the wave, holdout and mega-report suites, plus `scripts/tests/test_research_cycle.py`, `test_wave_driver.py` and `test_research_spec.py` (because of `research_cycle`). Use `ATX_EQUITY_BIN` and `ATX_ENGINE_STATS_REQUIRED=1`.
-3. Rebuild only if C++ changes; the exe at `d5f653cc` is current, with sha256 `2398a582…` from `p9-b2-c2`. Check that `p9-b2-c3`'s exe is the same.
-4. Append "Fix round 1" to `task-B2-report.md`:
-   - The new identity merge point is `d5f653cc`, plus the deletion SHA.
-   - Concern 1 rewritten per B2-R1.
-   - B2-R2, B2-R3 and the Suggested table above.
-   - Merge requests: `$canaryExes`, and root checking each identity pair's rho first.
-   - Commit with `git add -f`.
-5. Delete the `build-equity` object tree (DISK-2), keeping `mega-*` receipts and logs. (The gtest scratch dirs
-   `%TEMP%/atx_research_eval_tie` / `_edges` were checked: absent.)
+**The owner must decide before the next round:** allow that resolution (`git checkout --theirs` on a conflicted
+file during the merge), or have root or the owner resolve the file.
 
-## Open questions for the PM
-1. **Self pair:** it now prints SE "na" (B2-R1 (c)) instead of SE 0 (B2-4). Confirm.
-2. **Rounding boundaries:** printed lines can still differ when a printed value lands exactly on a rounding boundary. The 5e-4 case hit this on the 3-decimal rho print. The probability is negligible for real data. Is a note enough?
-3. **B2-R3 placement:** I put the `research_cycle` / `cycle_verdict` pin of the verb in the deletion part, because before the deletion the summ's statistics are `nav_summ.py`'s own and `script_sha256` already covers them. These are E2's files. Who owns this edit?
-4. **S1:** port the bisection `norm_ppf` for the house rows, or rule a bound (N_tot ≤ 1e3 holds 1e-12)?
+## Done this round (pre-merge branch; merges without a conflict)
 
-## Scratch
-- Deleted by name: my scratchpad files `b2fix_*`, `b2c*_*`, `b2r1_*`, `b2fix_base/` and `b2fix_flagwork/`.
-- My stash `b2-fix1-deletion-wip-2` was popped into `dee6cacb`, so no stash of mine remains.
-- Left in place: the `build-equity` object tree, which the next session needs for the exe and the gtests.
+- **PRE-15:** the verb row `dsr.tot.tot_minus_m` (DSR_hand at N = N_tot - M, same V), nav_summ's printed line and JSON
+  key, the prefix rule labelled "prefix rule". gtest `EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns`, pytest in
+  `test_dsr_total.py`. Teeth: mutating the N rule fails the gtest and 3 pytests.
+- **Re-review 1 Suggested:** S2, S3, S5, S6, S7 done. S4 was already in root's `classes.json`.
+- **Builds:**
+  - `p9-b2-f` Debug, clean, `fe152fca`: verb `4bcfce3e...8ee2`.
+  - `p9-b2-g` Debug: the teeth mutation, reverted.
+  - `p9-b2-h` Release: see the report.
+- **Tests:** see the report's "Evidence" section.
+
+## Next round, in order (needs the merge)
+
+1. `git merge <root's head>` (root `c8ddf736` already holds D2R and COVR). Resolve as the report's conflict table
+   says:
+   - `research_cycle.py`: E2's shim, plus `EVAL_EXE` in the `cycle.spec` re-export list;
+   - B2-R3's hunks onto `scripts/cycle/{cli,spec,phases}.py`;
+   - `test_no_python_mirror.py`: drop the B2 rows, keep root's D3 / P10 rows;
+   - `wave_stage_record.py`: verify's problems line with both `SK.rule_cell_kind(w)` and `eval_problem`.
+
+   Re-run `test_research_cycle.py::test_build_key_resolves_exe_dir` and `test_cycle_scoring.py` (the two verb tests
+   need a built verb).
+2. B2-11 (re-review 1 R1 + R2), as designed in the report:
+   - verify keeps only the `exes.eval` key and pin check, keyed on `wave_kinds.is_v2`;
+   - the judge's `bundle_argv` passes `--engine-stats <exes.eval>` for v2;
+   - `bundle_once` refuses a verb on disk, or a `bundle.json` (fresh or reused), whose SHA-256 is not the
+     `exes_sha256.eval` pin;
+   - tests on a real `atx.research-wave/v2` manifest in the real stage order, with teeth by mutation.
+3. G-P5 on the merged tree: `test_no_python_mirror.py` (the B2 rows retired), `nav_summ` failing closed without the
+   verb.
+4. D2R-2 (b), last, on D2R's version of `scripts/tests/test_research_spec.py`:
+   - scan specs, templates, fixtures, drivers and argvs reaching `nav_summ` for abbreviated flags (stop if a pinned
+     spec relies on one);
+   - `nav_summ`'s `ArgumentParser(..., allow_abbrev=False)`;
+   - update the e27b `--protocol` spelling cases (exact two-token and `=` forms read; an abbreviation refused, asserting
+     the full `unrecognized arguments: <token>` message).
+5. Rebuild after the merge (Debug and Release, next tags `p9-b2-i`, ...; EXE-CUR: root's `stats_ext.hpp` changed since
+   `1b25b9a4`):
+   - gtests: eval, ledger, and `TrialLedger*` (`atx-impl-tests`, not built this round: no atx-impl C++ changed);
+   - pytest: `scripts/tests` under seeds 0 and 1, the stage chain, the tools suites.
+
+## Notes
+
+- Known reds on this pre-merge tree (both seeds):
+  - `test_research_mine.py::test_fields_are_the_rule_applied_to_the_registry`: E2's former red, cleared by E2's merge,
+    which this branch lacks.
+  - `test_cycle_e2e.py` canary: fails only when ATX_EQUITY_BIN names a bin without the IC / NAV exes (my first run); a
+    host skip without it.
+- `atx-impl/tools/test_holdout_gate.py` was not run (resume6: never run holdout_gate.py).
+- Scratch: deleted by name at the end of the round (my `scratchpad/b2redo/`). The build trees `build-equity/` (Debug
+  objects) and `build-equity-rel/` were deleted; the `mega-p9-b2-*` receipts and logs are kept in `build-equity/`.

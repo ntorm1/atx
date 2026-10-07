@@ -1391,7 +1391,8 @@ def test_build_key_resolves_exe_dir(tmp_path):
     rel = dict(spec, build="equity-rel")
     c = RC.Cycle(rel, RC.Resolver(root))
     assert c.spec["exes"] == {"ic": "build-equity-rel/bin/atx-equity-strategy-ic.exe",
-                              "nav": "build-equity-rel/bin/atx-equity-strategy-targets.exe"}
+                              "nav": "build-equity-rel/bin/atx-equity-strategy-targets.exe",
+                              "eval": "build-equity-rel/bin/atx-research-eval.exe"}   # a summ spec: the verb (B2-R3)
     assert c.spec["env_path_prepend"] == ["C:/atx-cache/vcpkg_installed/x64-windows/bin"]
     assert c.env()["PATH"].startswith(str(Path("C:/atx-cache/vcpkg_installed/x64-windows/bin")) + os.pathsep)
     steps = {s.phase: s for s in c.steps()}
@@ -1399,8 +1400,10 @@ def test_build_key_resolves_exe_dir(tmp_path):
     assert u[u.index("--") + 1] == "build-equity-rel/bin/atx-equity-strategy-ic.exe"
     assert nav[nav.index("--") + 1:nav.index("--") + 3] == ["build-equity-rel/bin/atx-equity-strategy-targets.exe",
                                                              "nav"]
+    assert steps["summ"].argv[2:4] == ["--engine-stats", "build-equity-rel/bin/atx-research-eval.exe"]
     dbg = RC.Cycle(dict(spec, build="equity", exes={"ic": "my-ic.exe", "nav": "x/nav.exe"}), RC.Resolver(root))
-    assert dbg.spec["exes"] == {"ic": "build-equity/bin/my-ic.exe", "nav": "x/nav.exe"}   # a bare name, a path
+    assert dbg.spec["exes"] == {"ic": "build-equity/bin/my-ic.exe", "nav": "x/nav.exe",   # a bare name, a path
+                                "eval": "build-equity/bin/atx-research-eval.exe"}
     assert dbg.spec["env_path_prepend"][0].endswith("debug/bin")
     pinned = RC.Cycle(dict(rel, env_path_prepend=["D:/dlls"]), RC.Resolver(root))
     assert pinned.spec["env_path_prepend"] == ["D:/dlls"]                   # an explicit DLL path wins

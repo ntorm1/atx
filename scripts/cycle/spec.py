@@ -78,6 +78,7 @@ BUILDS = {
     "equity-rel": {"bin": "build-equity-rel/bin", "path": ["C:/atx-cache/vcpkg_installed/x64-windows/bin"]},
 }
 EXE_NAMES = {"ic": "atx-equity-strategy-ic.exe", "nav": "atx-equity-strategy-targets.exe"}
+EVAL_EXE = ("eval", "atx-research-eval.exe")  # P9 ruling B2-R3: the verb of nav_summ's statistics (a summ spec)
 EXES_PIN = "exes_sha256"               # P9 OR-2: spec {exe key: SHA-256}, written by `lock --exes`
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 # ruling E1-REUSE-a2: the spec key naming each phase's output (Cycle.inherited: a template keeps its parent's output
@@ -413,12 +414,15 @@ def input_dir(item: dict) -> str:
 
 
 def effective_exes(spec: dict) -> dict:
-    """spec exes with the build key applied: a missing exe defaults to the build's bin dir, a bare name goes in it."""
+    """spec exes with the build key applied: a missing exe defaults to the build's bin dir, a bare name goes in it. A
+    spec with a summ section also runs the engine verb (EVAL_EXE, ruling B2-R3): with a build key it defaults like the
+    others; without one it is the spec's exes.eval, when given."""
     exes = dict(spec.get("exes") or {})
     b = BUILDS.get(spec.get("build"))
     if b is None:
         return exes
-    for key, name in EXE_NAMES.items():
+    names = dict(EXE_NAMES, **(dict([EVAL_EXE]) if "summ" in spec else {}))
+    for key, name in names.items():
         value = exes.get(key, name)
         exes[key] = value if "/" in value or "\\" in value else f"{b['bin']}/{value}"
     return exes

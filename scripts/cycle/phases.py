@@ -18,7 +18,7 @@ from cycle.spec import (CAP_KEYS, CAPACITY_FILES, CAPACITY_FLAG, COMPARE_SUFFIX,
                         ERA_PHASES, EXES_PIN, EXIT_PIN, EXIT_USAGE, FIT_INCOMPLETE, HOLDINGS_INPUTS,
                         MARGINAL_CANDIDATES, MAX_ATTEMPTS, OPERAND, OUT_PHASES, PHASE_OUTPUTS, RUNNER_PHASE_RULES,
                         SEC_STAGE_INPUTS, SOURCE_FLAGS, SUMM_V8, BUILDS, CycleError, as_built, effective_exes,
-                        input_dir, load_spec, option_value, summ_protocol)
+                        input_dir, load_spec, option_value, summ_protocol, EVAL_EXE)
 from cycle_verdict import PBO_JSON, SUMM_JSON
 from research_common import free_run_dir, run_dir_of
 
@@ -733,6 +733,9 @@ class Cycle:
     def summ_step(self, w_dir: str, n_out: str) -> Step:
         s, sm = self.spec, self.spec["summ"]
         argv = [self.py, self.tool(sm["script"])]
+        verb = (s.get("exes") or {}).get(EVAL_EXE[0])
+        if verb:            # P9 ruling B2-R3: the engine verb of the statistics of record, pinned with the cell's exes
+            argv += ["--engine-stats", verb]
         if w_dir:
             argv += ["--weights", f"{w_dir}/composition_weights.json"]
         if "reference_cell" in s["inputs"]:
