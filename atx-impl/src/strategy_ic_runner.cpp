@@ -940,6 +940,9 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     if (recipe.contains("research_fields")) report["research_fields"]=recipe.at("research_fields");
     // Not a method input (recipe unchanged): the pass scored IC and orientations only.
     if (cfg.no_composition) report["composition"]="skipped";
+    // Present only with --absent-members (P9 lane ABS): the list the pass applied. Not a method
+    // input either: the recipe and every cache key are those of the run on the data removed.
+    if (absent) report["absent_members"]=absent_members_record(*absent);
     std::vector<int> signs; Json orientations=Json::array();
     if (validation_only) {
       signs=std::move(recovered.signs);
