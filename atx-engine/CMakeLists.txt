@@ -547,3 +547,15 @@ target_link_libraries(atx-engine-research-eval
         atx_warnings)
 add_executable(atx-research-eval EXCLUDE_FROM_ALL src/research/eval/eval_main.cpp)
 target_link_libraries(atx-research-eval PRIVATE atx::engine-research-eval atx_warnings)
+
+# Platform P9 lane A4 (SEC / holdings sources to C++, migration slice 5): the session clock
+# primitives (research_fields_sec.py Calendar / Latest / Windowed), the short-side stage readers
+# (ftd/, regsho_threshold/, security_master/ on the pinned-stage reader) and the holdings kinds
+# join the research-fields library.
+target_sources(atx-engine-research-fields PRIVATE
+    src/research/fields/session_clock.cpp
+    src/research/fields/run_payload.cpp
+    src/research/fields/sources/short_side.cpp
+    src/research/fields/holdings_specs.cpp
+    src/research/fields/holdings_ftd.cpp
+    src/research/fields/holdings_regsho.cpp)

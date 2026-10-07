@@ -1,0 +1,1 @@
+{"schema": "atx.alpha-panel.ftd/v1", "status": "complete", "clock_rule": "ftd-publication-halfmonth-v1", "staleness_days": 60, "files": {"year=2023/ftd.parquet": {"bytes": 4153, "sha256": "cd89731e7f44e099845030dd3f454c37c9be7cfedf1fcfb2657ee06bf8e4de2a"}}}

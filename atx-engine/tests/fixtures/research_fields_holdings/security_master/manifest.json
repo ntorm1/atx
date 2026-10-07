@@ -1,0 +1,1 @@
+{"schema": "atx.alpha-panel.security-master/v1", "status": "complete", "rule": "security-master-v1", "files": {"finra_names.parquet": {"bytes": 1853, "sha256": "1b28e008dedc6d9708681f27e6ea223fbb35d3bc99733ab0ea6767af0373e51c"}}}

@@ -1,0 +1,1 @@
+{"schema": "atx.alpha-panel.short-volume-ext/v1", "status": "complete", "clock_rule": "sv-ext-next-day-v1", "staleness_days": 5, "files": {"year=2023/short_volume_ext.parquet": {"bytes": 6621, "sha256": "29cfc37a0ea8aeac82a2bba0c3637a017ab9b86a9d6e8b16838522262c4f4aab"}}}

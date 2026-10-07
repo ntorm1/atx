@@ -2,13 +2,18 @@
 
 #include <algorithm>
 #include <exception>
+#include <map>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include "atx/core/sha256.hpp"
 #include "atx/engine/data/research_window.hpp"
 #include "atx/engine/research/fields/field_spec.hpp"
 #include "atx/engine/research/fields/manifest.hpp"
+#include "atx/engine/research/fields/sources/nyse_calendar.hpp"
+#include "atx/engine/research/fields/sources/vendor_panel.hpp"
+#include "atx/engine/research/fields/vendor_fields.hpp"
 
 namespace atx::engine::research::fields {
 namespace {
@@ -154,14 +159,33 @@ struct Prior {
   return std::nullopt;
 }
 
-[[nodiscard]] Reason sources_differ(const Json &entry, const FieldPlan &plan) {
+// The digests of one reuse decision's input files: each distinct path is streamed through SHA-256
+// once, however many plans read it (A3-3: the vendor file once, not once per vendor field). A
+// failed read is remembered too, so every plan that reads the file misses for the same reason.
+class DigestCache {
+public:
+  [[nodiscard]] const core::Result<FileDigest> &of(const std::filesystem::path &path) {
+    auto it = digests_.find(path);
+    if (it == digests_.end()) {
+      it = digests_.emplace(path, digest_file(path)).first;
+    }
+    return it->second;
+  }
+  [[nodiscard]] usize size() const noexcept { return digests_.size(); }
+
+private:
+  std::map<std::filesystem::path, core::Result<FileDigest>> digests_;
+};
+
+[[nodiscard]] Reason sources_differ(const Json &entry, const FieldPlan &plan,
+                                    DigestCache &digests) {
   const auto sources = entry.find("sources");
   if (sources == entry.end() || !sources->is_array() || sources->size() != plan.inputs.size()) {
     return std::string("the prior source list differs");
   }
   for (usize i = 0; i < plan.inputs.size(); ++i) {
     const std::filesystem::path &input = plan.inputs[i];
-    const auto digest = digest_file(input);
+    const auto &digest = digests.of(input);
     if (!digest) {
       return "the source " + input.string() + " cannot be read";
     }
@@ -174,9 +198,57 @@ struct Prior {
   return std::nullopt;
 }
 
+// The extended-axis prefix (sessions before the role) of this build's vendor panel: the union of
+// every planned vendor field's request (registry.cpp ensure_vendor_panel); nullopt when no plan is
+// a vendor field.
+[[nodiscard]] core::Result<std::optional<usize>>
+vendor_history_prefix(const RoleAxes &role, std::span<const FieldPlan> plans) {
+  VendorPanelRequest request;
+  bool any = false;
+  for (const FieldPlan &plan : plans) {
+    if (const auto need = vendor_request(plan.name)) {
+      request.merge(*need);
+      any = true;
+    }
+  }
+  if (!any) {
+    return core::Ok(std::optional<usize>{});
+  }
+  ATX_TRY(const auto axis, extended_axis(role.days(), request.pre_sessions, request.lookback_days));
+  return core::Ok(std::optional<usize>(axis.prefix));
+}
+
+// Rule 6: a field on the panel's price matrices is reused only from a panel with this build's
+// history (the prior source_checks.<name>.source.sessions_before_role).
+[[nodiscard]] Reason history_differs(const Json &prior_manifest, const FieldPlan &plan,
+                                     std::optional<usize> prefix) {
+  const auto need = vendor_request(plan.name);
+  if (!need || !need->price || !prefix) {
+    return std::nullopt;
+  }
+  const auto checks = prior_manifest.find("source_checks");
+  const Json *source = nullptr;
+  if (checks != prior_manifest.end() && checks->is_object() && checks->contains(plan.name)) {
+    const Json &mine = checks->at(plan.name);
+    const auto it = mine.is_object() ? mine.find("source") : mine.end();
+    source = it != mine.end() ? &*it : nullptr;
+  }
+  const auto recorded = source == nullptr ? std::nullopt
+                                          : unsigned_member(*source, "sessions_before_role");
+  if (!recorded) {
+    return std::string("the prior vendor panel history is not recorded");
+  }
+  if (*recorded != static_cast<u64>(*prefix)) {
+    return "the prior vendor panel history differs (" + std::to_string(*recorded) +
+           " sessions before the role, this build's panel " + std::to_string(*prefix) + ")";
+  }
+  return std::nullopt;
+}
+
 // The first failing rule of reuse.hpp's list, nullopt when the field is reused.
 [[nodiscard]] Reason miss_reason(const Json *entry, const Json *pin, const FieldPlan &plan,
-                                 const RoleAxes &role, const ProducerIdentity &producer) {
+                                 const RoleAxes &role, const ProducerIdentity &producer,
+                                 DigestCache &digests) {
   if (entry == nullptr || pin == nullptr) {
     return std::string("absent from the prior manifest");
   }
@@ -190,7 +262,7 @@ struct Prior {
   if (!formula || string_member(*entry, "formula_sha256") != *formula) {
     return std::string("the formula fingerprint differs");
   }
-  return sources_differ(*entry, plan);
+  return sources_differ(*entry, plan, digests);
 }
 
 [[nodiscard]] core::Result<ReusedField> carry(const Prior &prior, const Json &entry,
@@ -232,13 +304,19 @@ core::Result<ReuseOutcome> reuse_payloads(const ReuseRequest &request, const Rol
                                           const std::filesystem::path &output_dir) {
   try {
     ATX_TRY(const auto prior, load_prior(request, role));
+    ATX_TRY(const auto history, vendor_history_prefix(role, plans));
     ReuseOutcome out;
+    DigestCache digests;
     Json reused = Json::array();
     Json recomputed = Json::object();
     for (const FieldPlan &plan : plans) {
       const Json *entry = entry_named(prior.manifest, plan.name);
       const Json *pin = pin_named(prior.manifest, plan.name + ".f64");
-      if (Reason why = miss_reason(entry, pin, plan, role, producer)) {
+      Reason why = miss_reason(entry, pin, plan, role, producer, digests);
+      if (!why) {
+        why = history_differs(prior.manifest, plan, history);
+      }
+      if (why) {
         recomputed[plan.name] = *why;
         continue;
       }
@@ -250,7 +328,8 @@ core::Result<ReuseOutcome> reuse_payloads(const ReuseRequest &request, const Rol
                       {"manifest_sha256", prior.sha256},
                       {"seal", prior.seal},
                       {"reused", std::move(reused)},
-                      {"recomputed", std::move(recomputed)}};
+                      {"recomputed", std::move(recomputed)},
+                      {"inputs_digested", digests.size()}};
     return core::Ok(std::move(out));
   } catch (const std::exception &e) {
     return core::Err(core::ErrorCode::Internal, std::string("reuse: ") + e.what());
