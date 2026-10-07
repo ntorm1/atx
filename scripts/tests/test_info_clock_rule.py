@@ -174,11 +174,11 @@ def test_rule_flags_put_the_rate_on_the_nav_argv():
     # the book's one rate rule: with per-name-v1 the wave sets --rate twice, a conflict named at preflight
     _, problems = WK.rule_flags([{"name": RULE}, {"name": "per-name-v1"}], t)
     assert problems == [f"rules: nav --rate set to '{RULE}' and 'per-name-v1'"]
-    # a parent's aim rule named beside it keeps its own flag (C3-13: --rule is set, the rate appended)
+    # beside the parent's aim rule with its params, the rate is still derived once (how the aim rule's own --rule
+    # reaches the cell is lane D3's C3-13 route, not asserted here)
     flags, problems = WK.rule_flags([{"name": "aim-partial-v5", "params": {"trade_fraction": 0.05}},
                                      {"name": RULE}], t)
-    assert problems == [] and flags == {"nav": {"--trade-fraction": "0.05", "--rule": "aim-partial-v5",
-                                                "--rate": RULE}}
+    assert problems == [] and flags["nav"]["--rate"] == RULE and flags["nav"]["--trade-fraction"] == "0.05"
 
 
 def test_raw_rate_flag_refused_print_flag_free():
