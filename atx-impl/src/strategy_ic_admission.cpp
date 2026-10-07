@@ -16,6 +16,7 @@
 #include <vector>
 #include "atx/engine/data/research_window.hpp"
 #include "atx/engine/data/strategy_data.hpp"
+#include "atx/engine/research/composition/weights_schema.hpp"
 #include "strategy_ic_composition.hpp"
 #include "strategy_ic_rules.hpp"
 
@@ -25,6 +26,11 @@ constexpr const char* weights_schema="atx.dsl-composition-weights/v1";
 // ew-theme-v6 files (V6-W fix round 1 I1): v2 iff a theme_redistribution block is
 // present, v1 iff absent, so a binary predating within-theme-v1 refuses them loudly.
 constexpr const char* weights_schema_v2="atx.dsl-composition-weights/v2";
+// P9 lane D3W (contract K-P9-8, ruling P19): v2's blocks plus the walk_forward block (per-date
+// weights; strategy_ic_rules.hpp composition_walk_forward). A binary predating D3W refuses it.
+constexpr const char* weights_schema_v3="atx.dsl-composition-weights/v3";
+static_assert(std::string_view(weights_schema_v3)==
+              atx::engine::research::composition::weights_schema_v3);
 constexpr const char* fields_semantics="extra-date-major-f64-columns-resolved-by-name;NaN-where-not-visible;"
     "role-presence-mask;decision-member-mask-unchanged";
 } // namespace
@@ -83,6 +89,9 @@ Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,
         if (rule->stage==IcStageKind::residualise)
           recipe["composition_residualise_order"]=theme_order_json(pinned->residualise_order);
       }
+    // P9 lane D3W: per-date weights (a v3 file's walk_forward rows) record their rule.
+    if (pinned!=nullptr && !pinned->walk_forward.empty())
+      recipe["composition_walk_forward"]=pinned->walk_forward;
     recipe["composition_weights_sha256"]=cfg.composition_weights_sha256;
   }
   return recipe;
@@ -275,8 +284,10 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
   const auto cells=d*n,score_dates=end-begin;
   // The pinned composition's stage list (strategy_ic_rules.hpp), its grouping's theme count (0:
   // none) and the sleeve planes when two-speed-v1 runs: the v8 envelope for the same file.
+  // P9 lane D3W: a v3 file's walk_forward rows add their own term (none otherwise).
   ATX_TRY(auto composition,ic_composition_stage_bytes(static_cast<usize>(d),static_cast<usize>(n),
-      lib.candidates.size(),pinned.composition_theme_count(),running_stage_kinds(pinned)));
+      lib.candidates.size(),pinned.composition_theme_count(),running_stage_kinds(pinned),
+      pinned.weight_rows.size()));
   Budget b{std::numeric_limits<u64>::max(),0};
   Json memory=Json::object();
   u64 mark=0;
@@ -653,7 +664,8 @@ co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Li
   ATX_TRY(auto text,pinned_text(cfg.composition_weights_path,cfg.composition_weights_sha256));
   ATX_TRY(auto j,unique_key_json(text));
   if (!j.is_object() || !j.contains("schema") ||
-      (j.at("schema")!=weights_schema && j.at("schema")!=weights_schema_v2) ||
+      (j.at("schema")!=weights_schema && j.at("schema")!=weights_schema_v2 &&
+       j.at("schema")!=weights_schema_v3) ||
       !j.contains("library_sha256") || j.at("library_sha256")!=cfg.library_sha256 ||
       !j.contains("weights") || !j.at("weights").is_object())
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: composition weights schema/library identity");
@@ -685,17 +697,26 @@ co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Li
   // redistribution and theme_standardise are exclusive").
   ATX_TRY_VOID(parse_composition_rules(j,RuleInputs{lib,themes},pinned));
   const bool v2=j.at("schema")==weights_schema_v2;
+  // P9 lane D3W: v3 takes v2's grouping blocks (none required) and requires the walk_forward block,
+  // which v1 and v2 refuse.
+  const bool v3=j.at("schema")==weights_schema_v3;
   const bool standardise=!pinned.standardise.empty();
   if (v2 && pinned.themes.empty() && !standardise)
     return co::Err(co::ErrorCode::InvalidArgument,
         "IC runner: composition weights schema atx.dsl-composition-weights/v2 requires a theme_redistribution block "
         "or a theme_standardise block");
-  if (!v2 && !pinned.themes.empty())
+  if (!v2 && !v3 && !pinned.themes.empty())
     return co::Err(co::ErrorCode::InvalidArgument,
         "IC runner: theme_redistribution requires composition weights schema atx.dsl-composition-weights/v2");
-  if (!v2 && standardise)
+  if (!v2 && !v3 && standardise)
     return co::Err(co::ErrorCode::InvalidArgument,
         "IC runner: theme_standardise requires composition weights schema atx.dsl-composition-weights/v2");
+  if (v3) {
+    ATX_TRY_VOID(composition_walk_forward(j,RuleInputs{lib,themes},pinned));
+  } else if (j.contains("walk_forward")) {
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: walk_forward requires composition "
+        "weights schema atx.dsl-composition-weights/v3");
+  }
   if (j.contains("provenance")) pinned.provenance=j.at("provenance");
   return co::Ok(std::move(pinned));
 }
@@ -721,6 +742,11 @@ Json weights_summary(const IcRunnerConfig& cfg,const PinnedWeights& pinned,const
   // two-speed-v1 only (absent otherwise): its rule and fast themes.
   if (!pinned.sleeves.empty())
     out["sleeves"]=Json{{"rule",pinned.sleeves},{"fast_themes",pinned.sleeve_fast_themes}};
+  // walk-forward-v1 only (P9 lane D3W, schema v3; absent otherwise): its rule, rows, first and last
+  // row session; the book is flat before the first.
+  if (!pinned.walk_forward.empty())
+    out["walk_forward"]=Json{{"rule",pinned.walk_forward},{"rows",pinned.weight_from.size()},
+        {"first_session",pinned.weight_from.front()},{"last_session",pinned.weight_from.back()}};
   return out;
 }
 // Review M1 (root ruling, strict): weights applied against a frozen TRAIN artifact

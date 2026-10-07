@@ -206,8 +206,9 @@ def parent_check(document: dict, admission: bytes, parent: bytes, parent_admissi
     Ruling D2-R2: ``engine_fit`` (the re-fit runs --engine-fit) or a parent carrying provenance.engine_fit puts the
     check in engine-fit mode: provenance.engine_fit and the ic-shrink IC annotations (ENGINE_FIT_ANNOTATIONS) are set
     aside and the rest is compared under ruling P12 (composition_engine_fit.compare_values: floats within 1e-12 x
-    max(1, |x|), everything else exactly), so C++ values within P12 of the Python's pass and a change beyond it is
-    refused, naming the values. Returns whether the check ran in engine-fit mode."""
+    max(1, |x|), everything else exactly; P9 D3W, ruling D2-9: strict, so an integer against an equal float is a
+    difference too), so C++ values within P12 of the Python's pass and a change beyond it is refused, naming the
+    values. Returns whether the check ran in engine-fit mode."""
     try:
         mother, child_adm, mother_adm = json.loads(parent), json.loads(admission), json.loads(parent_admission)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -249,7 +250,7 @@ def parent_check(document: dict, admission: bytes, parent: bytes, parent_admissi
         _require(not differ, f"{RULE_ID}: --theme-resid-parent: the re-fit is not the parent cell's weights file plus "
                              f"the block (differ: {differ}); a fitter-affecting change lies between the two fits", error)
         return False
-    differ, _ = composition_engine_fit.compare_values(mother, child)
+    differ, _ = composition_engine_fit.compare_values(mother, child, strict=True)
     sides = " and ".join(name for name, on in (("the parent", parent_engine), ("this re-fit", engine_fit)) if on)
     _require(not differ, f"{RULE_ID}: --theme-resid-parent: --engine-fit on {sides} (ruling D2-R2): the re-fit is not "
                          f"the parent cell's weights file plus the block within ruling P12 ({len(differ)} values differ: "

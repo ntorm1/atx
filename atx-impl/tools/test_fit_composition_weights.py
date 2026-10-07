@@ -747,7 +747,10 @@ class ExactFlagsOnly(unittest.TestCase):
         self.assertIn("--composition-exe", longs)
         prefixes = sorted({o[:end] for o in longs for end in range(3, len(o))} - set(longs))
         self.assertGreater(len(prefixes), len(longs))
-        self.assertEqual([p for p in prefixes if self.exit_code([p, "x"])[0] != 2], [])
+        # Ruling D2R-3 (review S1): exit 2 for the prefix itself, not for an ambiguity, a bad value or the stray "x".
+        refused = {p: self.exit_code([p, "x"]) for p in prefixes}
+        self.assertEqual([p for p, (code, err) in refused.items()
+                          if code != 2 or f"unrecognized arguments: {p} x" not in err], [])
 
     def test_the_exact_flags_still_parse(self):
         args = fcw.parse_args(self.REQUIRED + ["--composition", "ew-theme-aim-v1", "--orientation", "prior"])

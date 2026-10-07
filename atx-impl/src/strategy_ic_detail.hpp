@@ -172,6 +172,15 @@ struct PinnedWeights {
   // block is present): mom-volman-v1's sigma, target and scale per schedule block, and
   // theme-cov-hedge-v1's theme names by composition theme index.
   std::vector<f64> volman_sigma,volman_target,volman_scale; std::vector<std::string> hedge_themes;
+  // P9 lane D3W (contract K-P9-8, schema atx.dsl-composition-weights/v3; strategy_ic_rules.cpp
+  // composition_walk_forward): mom-volman-v1's price_momentum composition theme index, and the
+  // walk_forward block: its rule ("" none), per row its first session and its weights (library
+  // order). Empty for v1 / v2 files, so nothing downstream changes.
+  usize volman_theme{};
+  std::string walk_forward; std::vector<i64> weight_from; std::vector<std::vector<f64>> weight_rows;
+  // P9 lane D3W (ruling ALCOMB-6): mom-volman-v1's recorded sleeve and its sessions (empty unless
+  // the rule's block is present), for the sleeve files a scored role writes.
+  std::vector<i64> volman_sessions; std::vector<f64> volman_sleeve;
   std::vector<const CompositionRule*> rules;
   // What the composition's grouping stage and admission receive: the standardised themes, else
   // the (possibly empty) within-theme-v1 themes.

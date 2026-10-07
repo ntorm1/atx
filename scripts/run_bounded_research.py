@@ -44,6 +44,12 @@ declared caps; the free-memory check, not N, keeps them within the host's
 memory. A wait that times out writes outcome
 prelaunch-admission-timeout (nothing ran). The receipt's "admission" block (only
 with the flags) records the wait.
+
+Store (P9 SQL3, ruling SQL-6; research_store_hook): when the root's research catalog is on, or a directory the
+command names holds a record-store index, start.json and receipt.json end with the key "store"
+(atx.run-store/v1: the catalog and its exe hash, the index files); absent otherwise (today's bytes). With the
+catalog on, each file is ingested into it after the write (a failure is one stderr warning; the exit code and the
+JSON never change).
 """
 from __future__ import annotations
 
@@ -63,6 +69,7 @@ import time
 import psutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import research_store_hook  # noqa: E402  (P9 SQL3: the receipt's store block and the catalog hook)
 import research_tree  # noqa: E402
 from research_common import sha256_file as digest  # noqa: E402  (P9 E2: one copy)
 
@@ -481,7 +488,10 @@ def main() -> int:
         dirty_outside_pathspec=ignored)
     if args.role_id is not None:
         receipt["role_id"] = args.role_id
-    (output / "start.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    store = research_store_hook.selection(root, command[1:])     # SQL-6: None = no key, today's bytes
+    start = receipt if store is None else dict(receipt, store=store)
+    (output / "start.json").write_text(json.dumps(start, indent=2) + "\n", encoding="utf-8")
+    research_store_hook.record(root, output / "start.json", "run-start", selected=store)
     started = time.monotonic()
     child = None
     owned = {}
@@ -544,9 +554,12 @@ def main() -> int:
         receipt["ownership_scope"] = "sampled descendant identities; commands must not detach unsampled children"
         receipt["logs"] = {name: digest(output / name) for name in ("stdout.log", "stderr.log")
                            if (output / name).exists()}
+        if store is not None:
+            receipt["store"] = store                                # last key, as in start.json
         with (output / "receipt.json").open("x", encoding="utf-8") as stream:
             json.dump(receipt, stream, indent=2)
             stream.write("\n")
+        research_store_hook.record(root, output / "receipt.json", "run-receipt", selected=store)
     print(json.dumps(receipt, indent=2))
     return 0 if receipt["outcome"] == "completed" else 1
 
