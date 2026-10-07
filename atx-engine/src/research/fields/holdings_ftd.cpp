@@ -20,6 +20,7 @@ constexpr f64 kNaN = std::numeric_limits<f64>::quiet_NaN();
 // The year files a role reads: the year of (first session - staleness - 60 days) .. the last one.
 constexpr i64 kFtdYearMarginDays = 60;
 constexpr i64 kCalendarGapDays = 5;
+constexpr usize kNoDate = std::numeric_limits<usize>::max();
 
 [[nodiscard]] core::Error refused(std::string message) {
   return core::Error(core::ErrorCode::InvalidArgument,
@@ -39,13 +40,50 @@ constexpr i64 kCalendarGapDays = 5;
   return out;
 }
 
+// The settlement row of `day` (a calendar date by construction).
+[[nodiscard]] usize settlement_row(std::span<const i64> calendar, i64 day) noexcept {
+  const auto at = std::lower_bound(calendar.begin(), calendar.end(), day);
+  return static_cast<usize>(std::distance(calendar.begin(), at));
+}
+
+// The number of (settlement row, line) cells holding more than one fail row.
+[[nodiscard]] u64 summed_cells(const FtdPanel &panel) {
+  std::vector<usize> seen(panel.columns, kNoDate);
+  std::vector<usize> counted(panel.columns, kNoDate);
+  u64 out = 0;
+  for (usize k = 0; k < panel.calendar.size(); ++k) {
+    for (usize r = panel.date_begin[k]; r < panel.date_begin[k + 1]; ++r) {
+      const usize c = panel.fail_column[r];
+      if (seen[c] != k) {
+        seen[c] = k;
+      } else if (counted[c] != k) {
+        counted[c] = k;
+        ++out;
+      }
+    }
+  }
+  return out;
+}
+
 } // namespace
 
 FtdIndexer::FtdIndexer(const RoleAxes &role) : role_(&role) {}
 
-void FtdIndexer::add(const FtdRows &rows, std::string_view name) {
-  names_.emplace_back(name);
-  const usize count = rows.settlement_day.size();
+void FtdIndexer::see(i64 day, i64 available) {
+  if (last_ >= visible_.size() || visible_[last_].first != day) {
+    const auto it = std::lower_bound(
+        visible_.begin(), visible_.end(), day,
+        [](const std::pair<i64, i64> &entry, i64 d) { return entry.first < d; });
+    last_ = static_cast<usize>(std::distance(visible_.begin(), it));
+    if (it == visible_.end() || it->first != day) {
+      visible_.insert(it, {day, kBeforeAllNs});
+    }
+  }
+  visible_[last_].second = std::max(visible_[last_].second, available);
+}
+
+void FtdIndexer::add(const FtdRows &rows) {
+  const usize count = rows.size();
   rows_ += static_cast<u64>(count);
   for (usize i = 0; i < count; ++i) {
     const i64 available = rows.available_ns[i];
@@ -54,25 +92,30 @@ void FtdIndexer::add(const FtdRows &rows, std::string_view name) {
       continue;
     }
     const i64 day = rows.settlement_day[i];
-    const auto slot = visible_.try_emplace(day, kBeforeAllNs).first;
-    slot->second = std::max(slot->second, available);
-    const bool collision = rows.collision[i] != 0;
+    see(day, available);
+    const bool collision = rows.basis[i] == kFtdCollision;
     rows_collision_ += collision ? 1U : 0U;
     const i64 sid = rows.security_id[i];
     rows_unmapped_ += sid <= 0 ? 1U : 0U;
     const auto column = sid > 0 ? role_->column_of(sid) : std::nullopt;
     if (column && !collision && std::isfinite(rows.quantity[i])) {
-      ++rows_on_role_;
-      kept_.push_back(Kept{day, *column, rows.quantity[i]});
+      kept_day_.push_back(day);
+      kept_column_.push_back(static_cast<u32>(*column)); // finish refuses a role wider than u32
+      kept_quantity_.push_back(rows.quantity[i]);
     }
   }
 }
+
+void FtdIndexer::end_file(std::string_view name) { names_.emplace_back(name); }
 
 core::Result<FtdPanel> FtdIndexer::finish() {
   if (visible_.empty()) {
     return core::Err(refused("ftd: no settlement date before the seal in the stage's year files"));
   }
   const usize n = role_->instruments();
+  if (n > std::numeric_limits<u32>::max()) {
+    return core::Err(refused("ftd: the role has more lines than a fail row can index"));
+  }
   FtdPanel panel;
   panel.columns = n;
   i64 running = kBeforeAllNs;
@@ -82,30 +125,26 @@ core::Result<FtdPanel> FtdIndexer::finish() {
     panel.prefix_visible_ns.push_back(running);
   }
   const usize dates = panel.calendar.size();
-  panel.cumulative.assign((dates + 1) * n, 0.0);
-  std::vector<u64> cells;
-  cells.reserve(kept_.size());
-  for (const Kept &row : kept_) { // np.add.at(cum, (k + 1, col), qty): row order
-    const auto at = std::lower_bound(panel.calendar.begin(), panel.calendar.end(), row.day);
-    const usize k = static_cast<usize>(std::distance(panel.calendar.begin(), at));
-    panel.cumulative[(k + 1) * n + row.column] += row.quantity;
-    cells.push_back(static_cast<u64>(k) * static_cast<u64>(n) + static_cast<u64>(row.column));
+  // The fails grouped by settlement row, stable in read order (a counting sort).
+  panel.date_begin.assign(dates + 1, 0);
+  for (const i64 day : kept_day_) {
+    ++panel.date_begin[settlement_row(panel.calendar, day) + 1];
   }
-  std::sort(cells.begin(), cells.end());
-  u64 summed = 0;
-  for (usize i = 0; i < cells.size();) {
-    usize j = i + 1;
-    while (j < cells.size() && cells[j] == cells[i]) {
-      ++j;
-    }
-    summed += j - i > 1 ? 1U : 0U;
-    i = j;
+  for (usize k = 0; k < dates; ++k) {
+    panel.date_begin[k + 1] += panel.date_begin[k];
   }
-  for (usize k = 1; k <= dates; ++k) { // numpy's sequential axis-0 cumsum
-    for (usize j = 0; j < n; ++j) {
-      panel.cumulative[k * n + j] = panel.cumulative[(k - 1) * n + j] + panel.cumulative[k * n + j];
-    }
+  std::vector<usize> cursor(panel.date_begin.begin(), panel.date_begin.end() - 1);
+  panel.fail_column.resize(kept_day_.size());
+  panel.fail_quantity.resize(kept_day_.size());
+  for (usize i = 0; i < kept_day_.size(); ++i) {
+    const usize at = cursor[settlement_row(panel.calendar, kept_day_[i])]++;
+    panel.fail_column[at] = kept_column_[i];
+    panel.fail_quantity[at] = kept_quantity_[i];
   }
+  const u64 kept = static_cast<u64>(kept_day_.size());
+  kept_day_ = {};
+  kept_column_ = {};
+  kept_quantity_ = {};
   u64 gaps = 0;
   for (usize k = 1; k < dates; ++k) {
     gaps += panel.calendar[k] - panel.calendar[k - 1] > kCalendarGapDays ? 1U : 0U;
@@ -113,10 +152,10 @@ core::Result<FtdPanel> FtdIndexer::finish() {
   panel.checks = Json{{"files", Json(names_)},
                       {"rows", rows_},
                       {"rows_sealed", rows_sealed_},
-                      {"rows_on_role", rows_on_role_},
+                      {"rows_on_role", kept},
                       {"rows_collision_excluded", rows_collision_},
                       {"rows_unmapped", rows_unmapped_},
-                      {"role_rows_summed_duplicates", summed},
+                      {"role_rows_summed_duplicates", summed_cells(panel)},
                       {"settlement_calendar", Json{{"dates", dates},
                                                    {"first", iso_date(panel.calendar.front())},
                                                    {"last", iso_date(panel.calendar.back())},
@@ -124,22 +163,69 @@ core::Result<FtdPanel> FtdIndexer::finish() {
   return core::Ok(std::move(panel));
 }
 
-void ftd_row(const FtdPanel &panel, const RoleAxes &role, const RunPayload &shares_out, usize t,
-             i64 mark, std::span<const u8> member, FtdReasons &reasons, std::span<f64> out) {
+FtdKernel::FtdKernel(const FtdPanel &panel, const RoleAxes &role, const RunPayload &shares_out)
+    : panel_(&panel), role_(&role), shares_out_(&shares_out),
+      ring_((kFtdWindow + 1) * panel.columns, 0.0), adds_(panel.columns, 0.0),
+      sums_(panel.columns, 0.0) {}
+
+std::span<f64> FtdKernel::ring_row(usize prefix_row) noexcept {
+  const usize n = panel_->columns;
+  return std::span<f64>(ring_).subspan((prefix_row % (kFtdWindow + 1)) * n, n);
+}
+
+void FtdKernel::advance() {
+  const usize k = next_ - 1; // the settlement row this prefix row adds
+  std::fill(adds_.begin(), adds_.end(), 0.0);
+  for (usize r = panel_->date_begin[k]; r < panel_->date_begin[k + 1]; ++r) {
+    adds_[panel_->fail_column[r]] += panel_->fail_quantity[r]; // np.add.at: read order
+  }
+  const std::span<const f64> previous = ring_row(next_ - 1);
+  const std::span<f64> current = ring_row(next_); // another slot: 22 > 1
+  for (usize j = 0; j < current.size(); ++j) { // numpy's sequential axis-0 cumsum
+    current[j] = previous[j] + adds_[j];
+  }
+  ++next_;
+}
+
+std::span<const f64> FtdKernel::window(usize anchor) {
+  if (sums_valid_ && sums_anchor_ == anchor) {
+    return sums_;
+  }
+  const usize hi = anchor + 1;
+  const usize lo = hi - kFtdWindow;
+  if (lo + kFtdWindow + 1 < next_) { // prefix row lo was evicted: recompute from row 0
+    next_ = 1;
+    const std::span<f64> zero = ring_row(0);
+    std::fill(zero.begin(), zero.end(), 0.0);
+  }
+  while (next_ <= hi) {
+    advance();
+  }
+  const std::span<const f64> top = ring_row(hi);
+  const std::span<const f64> bottom = ring_row(lo);
+  for (usize j = 0; j < sums_.size(); ++j) {
+    sums_[j] = top[j] - bottom[j];
+  }
+  sums_anchor_ = anchor;
+  sums_valid_ = true;
+  return sums_;
+}
+
+void FtdKernel::row(usize t, i64 mark, std::span<const u8> member, FtdReasons &reasons,
+                    std::span<f64> out) {
   std::fill(out.begin(), out.end(), kNaN);
   const u64 members = members_of(member);
   // S*(t): the latest settlement date whose whole prefix is visible before the mark.
-  const auto visible = std::lower_bound(panel.prefix_visible_ns.begin(),
-                                        panel.prefix_visible_ns.end(), mark);
-  const usize visible_dates =
-      static_cast<usize>(std::distance(panel.prefix_visible_ns.begin(), visible));
+  const auto &visible_ns = panel_->prefix_visible_ns;
+  const auto visible = std::lower_bound(visible_ns.begin(), visible_ns.end(), mark);
+  const usize visible_dates = static_cast<usize>(std::distance(visible_ns.begin(), visible));
   if (visible_dates == 0) {
     reasons.no_visible_window += members;
     return;
   }
   const usize anchor = visible_dates - 1;
-  const i64 settle = panel.calendar[anchor];
-  const auto days = role.days();
+  const i64 settle = panel_->calendar[anchor];
+  const auto days = role_->days();
   if (days[t] - settle > kFtdStaleDays) {
     reasons.stale += members;
     return;
@@ -151,17 +237,16 @@ void ftd_row(const FtdPanel &panel, const RoleAxes &role, const RunPayload &shar
   // shares_out at the last role session on or before S*(t) (none: every line NaN)
   const auto after = std::upper_bound(days.begin(), days.end(), settle);
   const usize sessions_through = static_cast<usize>(std::distance(days.begin(), after));
-  const usize n = panel.columns;
-  const usize hi = (anchor + 1) * n;
-  const usize lo = (anchor + 1 - kFtdWindow) * n;
-  for (usize j = 0; j < n; ++j) {
-    const f64 so = sessions_through == 0 ? kNaN : shares_out.row(sessions_through - 1)[j];
+  const std::span<const f64> shares =
+      sessions_through == 0 ? std::span<const f64>{} : shares_out_->row(sessions_through - 1);
+  const std::span<const f64> sums = window(anchor);
+  for (usize j = 0; j < out.size(); ++j) {
+    const f64 so = shares.empty() ? kNaN : shares[j];
     if (!(std::isfinite(so) && so > 0.0)) {
       reasons.shares_out_nan += member[j] != 0 ? 1U : 0U;
       continue;
     }
-    const f64 sum = panel.cumulative[hi + j] - panel.cumulative[lo + j];
-    out[j] = sum / so;
+    out[j] = sums[j] / so;
   }
 }
 
@@ -181,17 +266,22 @@ core::Result<HoldingsField> build_ftd_shares_ratio21(PinnedStage &stage,
     return core::Err(refused("ftd: no year file of the stage overlaps the role"));
   }
   FtdIndexer indexer(role);
-  for (const std::string &rel : files) {
-    ATX_TRY(const auto rows, read_ftd_rows(stage, rel)); // one year at a time
-    indexer.add(rows, rel);
+  const RowsVisitor<FtdRows> add_batch = [&indexer](const FtdRows &rows) -> core::Status {
+    indexer.add(rows);
+    return core::Ok();
+  };
+  for (const std::string &rel : files) { // one row group at a time
+    ATX_TRY_VOID(read_short_side<FtdRows>(stage, rel, add_batch));
+    indexer.end_file(rel);
   }
   ATX_TRY(const auto panel, indexer.finish());
   const std::vector<i64> marks = previous_session_marks(days);
   ATX_TRY(auto writer, FieldWriter::create(output_dir, spec.name, role));
+  FtdKernel kernel(panel, role, shares_out);
   std::vector<f64> row(role.instruments());
   FtdReasons reasons;
   for (usize t = 0; t < role.dates(); ++t) {
-    ftd_row(panel, role, shares_out, t, marks[t], role.member_row(t), reasons, row);
+    kernel.row(t, marks[t], role.member_row(t), reasons, row);
     ATX_TRY_VOID(writer.write(row));
   }
   ATX_TRY(auto written, writer.close());

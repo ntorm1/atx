@@ -2,16 +2,17 @@
 // holdings_fields.hpp.
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <iterator>
 #include <limits>
+#include <numeric>
 #include <string>
 #include <utility>
 
 #include "atx/engine/data/research_window.hpp"
 #include "atx/engine/research/fields/clock.hpp"
 #include "atx/engine/research/fields/holdings_fields.hpp"
-#include "atx/engine/research/fields/session_clock.hpp"
 
 namespace atx::engine::research::fields {
 namespace {
@@ -20,16 +21,6 @@ using Json = nlohmann::json;
 
 constexpr f64 kNaN = std::numeric_limits<f64>::quiet_NaN();
 constexpr usize kMarkets = kRegshoMarkets.size();
-constexpr std::array<std::string_view, 2> kListStatuses{"list", "empty_list"};
-// FINRA marketClassCode -> the threshold list that covers the listing (REGSHO_MARKET_OF_CLASS):
-// NNM / SC -> nasdaq, NYSE / AMEX / ARCA -> nyse, BZX -> cboe_bzx, OTC -> finra_otc.
-constexpr std::array<std::pair<std::string_view, i64>, 7> kMarketOfClass{{{"NNM", 0},
-                                                                         {"SC", 0},
-                                                                         {"NYSE", 1},
-                                                                         {"AMEX", 1},
-                                                                         {"ARCA", 1},
-                                                                         {"BZX", 2},
-                                                                         {"OTC", 3}}};
 
 [[nodiscard]] core::Error refused(std::string message) {
   return core::Error(core::ErrorCode::InvalidArgument,
@@ -39,16 +30,6 @@ constexpr std::array<std::pair<std::string_view, i64>, 7> kMarketOfClass{{{"NNM"
 [[nodiscard]] u64 members_of(std::span<const u8> member) noexcept {
   return static_cast<u64>(std::count_if(member.begin(), member.end(),
                                         [](u8 m) { return m != 0; }));
-}
-
-[[nodiscard]] bool usable_status(std::string_view status) noexcept {
-  return std::find(kListStatuses.begin(), kListStatuses.end(), status) != kListStatuses.end();
-}
-
-[[nodiscard]] i64 market_of_class(std::string_view market_class) noexcept {
-  const auto it = std::find_if(kMarketOfClass.begin(), kMarketOfClass.end(),
-                               [market_class](const auto &c) { return c.first == market_class; });
-  return it == kMarketOfClass.end() ? -1 : it->second;
 }
 
 // The calendar index of `day` when it is a calendar date, else nullopt.
@@ -68,18 +49,24 @@ constexpr std::array<std::pair<std::string_view, i64>, 7> kMarketOfClass{{{"NNM"
   return out;
 }
 
+// The listing market of a FINRA marketClassCode code (-1: a class without a list source).
+[[nodiscard]] i64 market_of_class(i64 class_code) noexcept {
+  return class_code >= 0 && static_cast<usize>(class_code) < kFinraClassMarket.size()
+             ? kFinraClassMarket[static_cast<usize>(class_code)]
+             : -1;
+}
+
 } // namespace
 
 RegshoIndexer::RegshoIndexer(const RegshoListRows &lists, const RoleAxes &role) : role_(&role) {
   const auto days = role.days();
-  const usize count = lists.list_day.size();
+  const usize count = lists.size();
   std::vector<u8> ok(count, 0);
   std::vector<i64> before;
   for (usize i = 0; i < count; ++i) {
-    const bool usable =
-        usable_status(lists.status[i]) && !data::is_sealed(lists.available_ns[i]);
+    const bool usable = lists.status[i] >= 0 && !data::is_sealed(lists.available_ns[i]);
     ok[i] = static_cast<u8>(usable ? 1 : 0);
-    if (ok[i] != 0 && lists.list_day[i] < days.front()) {
+    if (usable && lists.list_day[i] < days.front()) {
       before.push_back(lists.list_day[i]);
     }
   }
@@ -126,19 +113,10 @@ RegshoIndexer::RegshoIndexer(const RegshoListRows &lists, const RoleAxes &role) 
                   {"prefix_sessions", keep}};
 }
 
-void RegshoIndexer::add(const ThresholdRows &rows, std::string_view name) {
-  names_.emplace_back(name);
-  RegshoPanel &p = panel_;
+void RegshoIndexer::add(const ThresholdRows &rows) {
+  const RegshoPanel &p = panel_;
   const usize dates = p.calendar.size();
-  struct Use {
-    usize date{};
-    usize column{};
-    usize market{};
-    i64 available{};
-    bool late{};
-  };
-  std::vector<Use> uses;
-  for (usize i = 0; i < rows.list_day.size(); ++i) {
+  for (usize i = 0; i < rows.size(); ++i) {
     const i64 sid = rows.security_id[i];
     const i64 m = rows.market[i];
     if (rows.on_list[i] == 0 || sid <= 0 || m < 0 || data::is_sealed(rows.available_ns[i])) {
@@ -151,19 +129,27 @@ void RegshoIndexer::add(const ThresholdRows &rows, std::string_view name) {
     }
     const usize market = static_cast<usize>(m);
     const i64 list = p.list_visible_ns[market * dates + *k]; // before this file's raises
-    uses.push_back(Use{*k, *column, market, rows.available_ns[i], rows.available_ns[i] > list});
+    const i64 available = rows.available_ns[i];
+    held_.push_back(Held{*k, *column, market, available, available > list});
   }
-  for (const Use &u : uses) { // a row later than its list delays the list
-    if (u.late) {
+}
+
+void RegshoIndexer::end_file(std::string_view name) {
+  RegshoPanel &p = panel_;
+  const usize dates = p.calendar.size();
+  for (const Held &h : held_) { // a row later than its list delays the list
+    if (h.late) {
       ++late_rows_;
-      i64 &slot = p.list_visible_ns[u.market * dates + u.date];
-      slot = std::max(slot, u.available);
+      i64 &slot = p.list_visible_ns[h.market * dates + h.date];
+      slot = std::max(slot, h.available);
     }
   }
-  for (const Use &u : uses) { // row order: the last row of a cell wins
-    p.on_market[u.date * p.columns + u.column] = static_cast<u8>(u.market + 1);
-    ++rows_used_;
+  for (const Held &h : held_) { // read order: the last row of a cell wins
+    p.on_market[h.date * p.columns + h.column] = static_cast<u8>(h.market + 1);
   }
+  rows_used_ += static_cast<u64>(held_.size());
+  held_.clear();
+  names_.emplace_back(name);
 }
 
 RegshoPanel RegshoIndexer::finish() {
@@ -173,58 +159,96 @@ RegshoPanel RegshoIndexer::finish() {
   return std::move(panel_);
 }
 
-ListingRows index_listing_rows(const FinraNameRows &names, const RoleAxes &role) {
-  std::vector<usize> keep;
-  std::vector<usize> column(names.security_id.size(), 0);
-  for (usize i = 0; i < names.security_id.size(); ++i) {
-    const i64 sid = names.security_id[i];
-    const auto c = sid > 0 ? role.column_of(sid) : std::nullopt;
-    if (c && !data::is_sealed(names.available_ns[i])) {
-      keep.push_back(i);
-      column[i] = *c;
+ListingIndexer::ListingIndexer(const RoleAxes &role) : role_(&role) {}
+
+void ListingIndexer::add(const FinraNameRows &rows) {
+  for (usize i = 0; i < rows.size(); ++i) {
+    const i64 sid = rows.security_id[i];
+    const auto column = sid > 0 ? role_->column_of(sid) : std::nullopt;
+    if (!column || data::is_sealed(rows.available_ns[i])) {
+      continue;
     }
+    rows_.available_ns.push_back(rows.available_ns[i]);
+    rows_.dissemination_day.push_back(rows.dissemination_day[i]);
+    rows_.column.push_back(*column);
+    rows_.market.push_back(market_of_class(rows.market_class[i]));
   }
-  std::stable_sort(keep.begin(), keep.end(), [&names](usize a, usize b) {
-    return names.available_ns[a] < names.available_ns[b];
+}
+
+ListingRows ListingIndexer::finish() {
+  const usize count = rows_.available_ns.size();
+  std::vector<usize> order(count);
+  std::iota(order.begin(), order.end(), usize{0});
+  std::stable_sort(order.begin(), order.end(), [this](usize a, usize b) {
+    return rows_.available_ns[a] < rows_.available_ns[b];
   });
   ListingRows out;
-  out.available_ns.reserve(keep.size());
-  for (const usize i : keep) {
-    out.available_ns.push_back(names.available_ns[i]);
-    out.dissemination_day.push_back(names.dissemination_day[i]);
-    out.column.push_back(column[i]);
-    out.market.push_back(market_of_class(names.market_class[i]));
+  out.available_ns.reserve(count);
+  out.dissemination_day.reserve(count);
+  out.column.reserve(count);
+  out.market.reserve(count);
+  for (const usize i : order) {
+    out.available_ns.push_back(rows_.available_ns[i]);
+    out.dissemination_day.push_back(rows_.dissemination_day[i]);
+    out.column.push_back(rows_.column[i]);
+    out.market.push_back(rows_.market[i]);
   }
+  rows_ = {};
   return out;
 }
 
-void regsho_row(const RegshoPanel &panel, const ListingRows &listing, std::span<const i64> latest,
-                const RoleAxes &role, usize t, i64 mark, std::span<const u8> member,
-                RegshoReasons &reasons, std::span<u64> counts_by_market, std::span<f64> out) {
+RegshoKernel::RegshoKernel(const RegshoPanel &panel, const ListingRows &listing,
+                           const RoleAxes &role, LatestRows latest)
+    : panel_(&panel), listing_(&listing), role_(&role), latest_(std::move(latest)),
+      counts_(panel.columns, 0) {}
+
+core::Result<RegshoKernel> RegshoKernel::create(const RegshoPanel &panel,
+                                                const ListingRows &listing,
+                                                const RoleAxes &role) {
+  ATX_TRY(auto latest, LatestRows::create(listing.available_ns, listing.column,
+                                          role.instruments()));
+  return core::Ok(RegshoKernel(panel, listing, role, std::move(latest)));
+}
+
+void RegshoKernel::row(usize t, i64 mark, std::span<const u8> member, RegshoReasons &reasons,
+                       std::span<u64> counts_by_market, std::span<f64> out) {
   std::fill(out.begin(), out.end(), kNaN);
-  const usize n = panel.columns;
-  const usize dates = panel.calendar.size();
-  const i64 day = role.days()[t];
-  const i64 end = static_cast<i64>(panel.prefix + t) - 2; // the window ends at session t-2
+  const RegshoPanel &p = *panel_;
+  const usize n = p.columns;
+  const usize dates = p.calendar.size();
+  const i64 end = static_cast<i64>(p.prefix + t) - 2; // the window ends at session t-2
   if (end - static_cast<i64>(kRegshoWindow) + 1 < 0) {
     reasons.short_calendar += members_of(member);
     return;
   }
-  const usize last = static_cast<usize>(end);
-  const usize first = last + 1 - kRegshoWindow;
+  const usize first = static_cast<usize>(end) + 1 - kRegshoWindow;
+  // Per window session, which on_market codes count: code m + 1 iff market m's list is visible.
+  std::array<std::array<u8, kMarkets + 1>, kRegshoWindow> counts_code{};
   std::array<usize, kMarkets> covered{};
-  for (usize m = 0; m < kMarkets; ++m) {
-    for (usize w = first; w <= last; ++w) {
-      covered[m] += panel.list_visible_ns[m * dates + w] < mark ? 1U : 0U;
+  for (usize w = 0; w < kRegshoWindow; ++w) {
+    for (usize m = 0; m < kMarkets; ++m) {
+      const bool visible = p.list_visible_ns[m * dates + first + w] < mark;
+      counts_code[w][m + 1] = static_cast<u8>(visible ? 1 : 0);
+      covered[m] += visible ? 1U : 0U;
     }
   }
+  std::fill(counts_.begin(), counts_.end(), 0U);
+  for (usize w = 0; w < kRegshoWindow; ++w) { // contiguous panel rows, one list date at a time
+    const std::span<const u8> on(p.on_market.data() + (first + w) * n, n);
+    const auto &code_counts = counts_code[w];
+    for (usize j = 0; j < n; ++j) {
+      assert(on[j] <= kMarkets);
+      counts_[j] += static_cast<u32>(code_counts[on[j]]);
+    }
+  }
+  const std::span<const i64> latest = latest_.before(mark); // name rows before mark(t-1)
+  const i64 day = role_->days()[t];
   for (usize j = 0; j < n; ++j) {
     i64 market = -1; // the line's listing market from its latest visible name row
-    const i64 row = latest[j];
-    if (row >= 0) {
-      const usize r = static_cast<usize>(row);
-      if (day - listing.dissemination_day[r] <= kRegshoNameMaxAgeDays) {
-        market = listing.market[r];
+    if (latest[j] >= 0) {
+      const usize r = static_cast<usize>(latest[j]);
+      if (day - listing_->dissemination_day[r] <= kRegshoNameMaxAgeDays) {
+        market = listing_->market[r];
       }
     }
     if (market < 0) {
@@ -236,14 +260,7 @@ void regsho_row(const RegshoPanel &panel, const ListingRows &listing, std::span<
       reasons.market_lists_incomplete += member[j] != 0 ? 1U : 0U;
       continue;
     }
-    usize count = 0;
-    for (usize w = first; w <= last; ++w) {
-      const u8 on = panel.on_market[w * n + j];
-      if (on > 0 && panel.list_visible_ns[(on - 1U) * dates + w] < mark) {
-        ++count;
-      }
-    }
-    out[j] = static_cast<f64>(count);
+    out[j] = static_cast<f64>(counts_[j]);
     counts_by_market[mk] += member[j] != 0 ? 1U : 0U;
   }
 }
@@ -253,30 +270,38 @@ core::Result<HoldingsField> build_regsho_threshold_days63(PinnedStage &lists_sta
                                                           const RoleAxes &role,
                                                           const std::filesystem::path &output_dir) {
   const FieldSpec &spec = regsho_threshold_days63_spec();
-  ATX_TRY(const auto lists, read_regsho_lists(lists_stage));
+  ATX_TRY(const auto lists, read_short_side_all<RegshoListRows>(lists_stage, "lists.parquet"));
   RegshoIndexer indexer(lists, role);
   const auto calendar = indexer.calendar();
   const std::vector<std::string> files = stage_year_files(
       lists_stage, "threshold.parquet", year_of(calendar.front()), year_of(calendar.back()));
-  for (const std::string &rel : files) {
-    ATX_TRY(const auto rows, read_threshold_rows(lists_stage, rel)); // one year at a time
-    indexer.add(rows, rel);
+  const RowsVisitor<ThresholdRows> add_batch = [&indexer](const ThresholdRows &rows)
+      -> core::Status {
+    indexer.add(rows);
+    return core::Ok();
+  };
+  for (const std::string &rel : files) { // one row group at a time
+    ATX_TRY_VOID(read_short_side<ThresholdRows>(lists_stage, rel, add_batch));
+    indexer.end_file(rel);
   }
   RegshoPanel panel = indexer.finish();
-  ATX_TRY(const auto names, read_finra_names(names_stage));
-  const ListingRows listing = index_listing_rows(names, role);
+  ListingIndexer listing_indexer(role);
+  const RowsVisitor<FinraNameRows> add_names =
+      [&listing_indexer](const FinraNameRows &rows) -> core::Status {
+    listing_indexer.add(rows);
+    return core::Ok();
+  };
+  ATX_TRY_VOID(read_short_side<FinraNameRows>(names_stage, "finra_names.parquet", add_names));
+  const ListingRows listing = listing_indexer.finish();
   panel.checks["finra_name_rows_on_role"] = static_cast<u64>(listing.available_ns.size());
-  ATX_TRY(auto latest, LatestRows::create(listing.available_ns, listing.column,
-                                          role.instruments()));
+  ATX_TRY(auto kernel, RegshoKernel::create(panel, listing, role));
   const std::vector<i64> marks = previous_session_marks(role.days());
   ATX_TRY(auto writer, FieldWriter::create(output_dir, spec.name, role));
   std::vector<f64> row(role.instruments());
   RegshoReasons reasons;
   std::array<u64, kMarkets> by_market{};
   for (usize t = 0; t < role.dates(); ++t) {
-    const auto visible = latest.before(marks[t]); // name rows with available_at < mark(t-1)
-    regsho_row(panel, listing, visible, role, t, marks[t], role.member_row(t), reasons,
-               by_market, row);
+    kernel.row(t, marks[t], role.member_row(t), reasons, by_market, row);
     ATX_TRY_VOID(writer.write(row));
   }
   ATX_TRY(auto written, writer.close());

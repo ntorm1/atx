@@ -1,10 +1,9 @@
-// The short-side stage readers: ftd/, regsho_threshold/ and security_master/ (P9 lane A4).
+// The short-side stage reader: ftd/, regsho_threshold/ and security_master/ (P9 lane A4).
 // Declared in short_side.hpp.
 #include "atx/engine/research/fields/sources/short_side.hpp"
 
-#include <algorithm>
 #include <array>
-#include <initializer_list>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -16,55 +15,203 @@ namespace {
 
 using core::io::ParquetTable;
 
-// A BOOL column as 0 / 1; null -> 0 (pc.fill_null(on_list, False)).
-[[nodiscard]] core::Result<std::vector<u8>> flag_column(const ParquetTable &table,
-                                                        std::string_view name) {
-  const core::io::ColumnInfo *info = table.schema().find(name);
-  if (info == nullptr || info->dtype != core::io::DType::Bool) {
-    return core::Err(core::ErrorCode::InvalidArgument,
-                     "stage column " + std::string(name) + " is absent or not BOOL");
-  }
-  ATX_TRY(const auto column, table.to_column<bool>(name));
-  ATX_TRY(const auto nulls, table.null_mask(name));
-  const auto values = column.view();
-  if (!nulls.empty() && nulls.size() != values.size()) {
-    return core::Err(core::ErrorCode::Internal,
-                     "stage column " + std::string(name) + ": null mask length differs");
-  }
-  std::vector<u8> out(values.size(), 0);
-  for (usize i = 0; i < values.size(); ++i) {
-    const bool null = !nulls.empty() && nulls[i] != 0;
-    out[i] = static_cast<u8>((!null && values[i]) ? 1 : 0);
-  }
-  return core::Ok(std::move(out));
+// How one layout column decodes (parquet_columns.hpp) and which Rows member it fills: `ints` for
+// Id / Day / Instant / Code, `reals` for Real, `flags` for Flag (the others null).
+enum class Decode : u8 { Id, Day, Instant, Real, Flag, Code };
+
+template <class Rows> struct Column {
+  std::string_view name;
+  Decode decode{};
+  std::vector<i64> Rows::*ints = nullptr;
+  std::vector<f64> Rows::*reals = nullptr;
+  std::vector<u8> Rows::*flags = nullptr;
+  std::span<const std::string_view> codes{}; // Code: the value list
+};
+
+// The column constructors of the layouts below (one per member type).
+template <class Rows>
+constexpr Column<Rows> int_col(std::string_view name, Decode decode, std::vector<i64> Rows::*m) {
+  Column<Rows> c;
+  c.name = name;
+  c.decode = decode;
+  c.ints = m;
+  return c;
+}
+template <class Rows>
+constexpr Column<Rows> code_col(std::string_view name, std::vector<i64> Rows::*m,
+                                std::span<const std::string_view> codes) {
+  Column<Rows> c = int_col<Rows>(name, Decode::Code, m);
+  c.codes = codes;
+  return c;
+}
+template <class Rows>
+constexpr Column<Rows> real_col(std::string_view name, std::vector<f64> Rows::*m) {
+  Column<Rows> c;
+  c.name = name;
+  c.decode = Decode::Real;
+  c.reals = m;
+  return c;
+}
+template <class Rows>
+constexpr Column<Rows> flag_col(std::string_view name, std::vector<u8> Rows::*m) {
+  Column<Rows> c;
+  c.name = name;
+  c.decode = Decode::Flag;
+  c.flags = m;
+  return c;
 }
 
-[[nodiscard]] std::vector<i64> market_codes(const std::vector<std::string> &text) {
-  std::vector<i64> out;
-  out.reserve(text.size());
-  for (const std::string &m : text) {
-    out.push_back(code_of(m, kRegshoMarkets));
+// The column layout of each Rows type: the stage columns it reads, in read order.
+template <class Rows> struct Layout;
+
+template <> struct Layout<FtdRows> {
+  using R = FtdRows;
+  static constexpr std::array<Column<R>, 5> columns{
+      int_col<R>("settlement_date", Decode::Day, &R::settlement_day),
+      int_col<R>("security_id", Decode::Id, &R::security_id),
+      real_col<R>("quantity", &R::quantity),
+      int_col<R>("available_at", Decode::Instant, &R::available_ns),
+      code_col<R>("map_basis", &R::basis, kFtdBases)};
+};
+
+template <> struct Layout<RegshoListRows> {
+  using R = RegshoListRows;
+  static constexpr std::array<Column<R>, 4> columns{
+      code_col<R>("market", &R::market, kRegshoMarkets),
+      int_col<R>("list_date", Decode::Day, &R::list_day),
+      code_col<R>("status", &R::status, kRegshoListStatuses),
+      int_col<R>("available_at", Decode::Instant, &R::available_ns)};
+};
+
+template <> struct Layout<ThresholdRows> {
+  using R = ThresholdRows;
+  static constexpr std::array<Column<R>, 5> columns{
+      int_col<R>("list_date", Decode::Day, &R::list_day),
+      code_col<R>("market", &R::market, kRegshoMarkets),
+      int_col<R>("security_id", Decode::Id, &R::security_id),
+      flag_col<R>("on_list", &R::on_list),
+      int_col<R>("available_at", Decode::Instant, &R::available_ns)};
+};
+
+template <> struct Layout<FinraNameRows> {
+  using R = FinraNameRows;
+  static constexpr std::array<Column<R>, 4> columns{
+      int_col<R>("security_id", Decode::Id, &R::security_id),
+      int_col<R>("available_at", Decode::Instant, &R::available_ns),
+      int_col<R>("dissemination_date", Decode::Day, &R::dissemination_day),
+      code_col<R>("market_class", &R::market_class, kFinraMarketClasses)};
+};
+
+// Every column fills exactly the member its decoding produces (checked at compile time).
+template <class Rows> consteval bool well_formed() {
+  for (const Column<Rows> &c : Layout<Rows>::columns) {
+    const bool ints = c.ints != nullptr;
+    const bool reals = c.reals != nullptr;
+    const bool flags = c.flags != nullptr;
+    switch (c.decode) {
+    case Decode::Id:
+    case Decode::Day:
+    case Decode::Instant:
+      if (!ints || reals || flags || !c.codes.empty()) {
+        return false;
+      }
+      break;
+    case Decode::Code:
+      if (!ints || reals || flags || c.codes.empty()) {
+        return false;
+      }
+      break;
+    case Decode::Real:
+      if (ints || !reals || flags) {
+        return false;
+      }
+      break;
+    case Decode::Flag:
+      if (ints || reals || !flags) {
+        return false;
+      }
+      break;
+    }
+  }
+  return true;
+}
+static_assert(well_formed<FtdRows>(), "FtdRows layout");
+static_assert(well_formed<RegshoListRows>(), "RegshoListRows layout");
+static_assert(well_formed<ThresholdRows>(), "ThresholdRows layout");
+static_assert(well_formed<FinraNameRows>(), "FinraNameRows layout");
+
+template <class Rows> constexpr auto column_names() {
+  std::array<std::string_view, Layout<Rows>::columns.size()> out{};
+  for (usize i = 0; i < out.size(); ++i) {
+    out[i] = Layout<Rows>::columns[i].name;
   }
   return out;
 }
 
-[[nodiscard]] core::Status same_length(usize rows, std::initializer_list<usize> sizes,
-                                       std::string_view what) {
-  for (const usize s : sizes) {
-    if (s != rows) {
+// One layout column of a decoded group into its Rows member (the member replaced).
+template <class Rows>
+[[nodiscard]] core::Status decode_column(const ParquetTable &table, const Column<Rows> &c,
+                                         Rows &rows) {
+  switch (c.decode) {
+  case Decode::Id: {
+    ATX_TRY(rows.*(c.ints), id_column(table, c.name));
+    return core::Ok();
+  }
+  case Decode::Day: {
+    ATX_TRY(rows.*(c.ints), day_column(table, c.name));
+    return core::Ok();
+  }
+  case Decode::Instant: {
+    ATX_TRY(rows.*(c.ints), instant_column(table, c.name));
+    return core::Ok();
+  }
+  case Decode::Code: {
+    ATX_TRY(rows.*(c.ints), code_column(table, c.name, c.codes));
+    return core::Ok();
+  }
+  case Decode::Real: {
+    ATX_TRY(rows.*(c.reals), real_column(table, c.name));
+    return core::Ok();
+  }
+  case Decode::Flag: {
+    ATX_TRY(rows.*(c.flags), flag_column(table, c.name));
+    return core::Ok();
+  }
+  }
+  return core::Err(core::ErrorCode::Internal, "short-side reader: unknown column decoding");
+}
+
+template <class Rows> [[nodiscard]] usize member_size(const Rows &rows, const Column<Rows> &c) {
+  if (c.reals != nullptr) {
+    return (rows.*(c.reals)).size();
+  }
+  if (c.flags != nullptr) {
+    return (rows.*(c.flags)).size();
+  }
+  return (rows.*(c.ints)).size();
+}
+
+// The decoded group, every member checked to one length.
+template <class Rows>
+[[nodiscard]] core::Status decode_group(const ParquetTable &table, std::string_view rel,
+                                        Rows &rows) {
+  for (const Column<Rows> &c : Layout<Rows>::columns) {
+    ATX_TRY_VOID(decode_column(table, c, rows));
+  }
+  for (const Column<Rows> &c : Layout<Rows>::columns) {
+    if (member_size(rows, c) != rows.size()) {
       return core::Err(core::ErrorCode::Internal,
-                       std::string(what) + ": decoded columns differ in length");
+                       std::string(rel) + ": decoded columns differ in length");
     }
   }
   return core::Ok();
 }
 
-} // namespace
-
-i64 code_of(std::string_view text, std::span<const std::string_view> values) noexcept {
-  const auto it = std::find(values.begin(), values.end(), text);
-  return it == values.end() ? -1 : static_cast<i64>(it - values.begin());
+template <class T> void append(std::vector<T> &to, const std::vector<T> &from) {
+  to.insert(to.end(), from.begin(), from.end());
 }
+
+} // namespace
 
 std::vector<std::string> stage_year_files(const PinnedStage &stage, std::string_view name, i64 lo,
                                           i64 hi) {
@@ -78,77 +225,51 @@ std::vector<std::string> stage_year_files(const PinnedStage &stage, std::string_
   return out;
 }
 
-core::Result<FtdRows> read_ftd_rows(PinnedStage &stage, std::string_view rel) {
-  static constexpr std::array<std::string_view, 5> kColumns{
-      "settlement_date", "security_id", "quantity", "available_at", "map_basis"};
-  ATX_TRY(const auto table, stage.table(rel, kColumns));
-  FtdRows out;
-  ATX_TRY(out.settlement_day, day_column(table, "settlement_date"));
-  ATX_TRY(out.security_id, id_column(table, "security_id"));
-  ATX_TRY(out.quantity, real_column(table, "quantity"));
-  ATX_TRY(out.available_ns, instant_column(table, "available_at"));
-  ATX_TRY(const auto basis, text_column(table, "map_basis"));
-  ATX_TRY(const auto nulls, table.null_mask("map_basis"));
-  out.collision.assign(basis.size(), 0);
-  for (usize i = 0; i < basis.size(); ++i) { // a null basis is not a collision (index_in -> -1)
-    const bool null = i < nulls.size() && nulls[i] != 0;
-    out.collision[i] = static_cast<u8>((!null && basis[i] == "collision") ? 1 : 0);
-  }
-  ATX_TRY_VOID(same_length(out.settlement_day.size(),
-                           {out.security_id.size(), out.quantity.size(), out.available_ns.size(),
-                            out.collision.size()},
-                           "ftd"));
-  return core::Ok(std::move(out));
+template <class Rows>
+core::Status read_short_side(PinnedStage &stage, std::string_view rel,
+                             const RowsVisitor<Rows> &visit) {
+  static constexpr auto kNames = column_names<Rows>();
+  Rows rows; // one group's batch: every member replaced per group
+  return stage.for_each_group(rel, kNames, [&](const ParquetTable &group) -> core::Status {
+    ATX_TRY_VOID(decode_group(group, rel, rows));
+    return visit(rows);
+  });
 }
 
-core::Result<RegshoListRows> read_regsho_lists(PinnedStage &stage) {
-  static constexpr std::array<std::string_view, 4> kColumns{"market", "list_date", "status",
-                                                            "available_at"};
-  ATX_TRY(const auto table, stage.table("lists.parquet", kColumns));
-  RegshoListRows out;
-  ATX_TRY(const auto market, text_column(table, "market"));
-  out.market = market_codes(market);
-  ATX_TRY(out.list_day, day_column(table, "list_date"));
-  ATX_TRY(out.status, text_column(table, "status"));
-  ATX_TRY(out.available_ns, instant_column(table, "available_at"));
-  ATX_TRY_VOID(same_length(out.market.size(),
-                           {out.list_day.size(), out.status.size(), out.available_ns.size()},
-                           "regsho lists"));
-  return core::Ok(std::move(out));
+template <class Rows>
+core::Result<Rows> read_short_side_all(PinnedStage &stage, std::string_view rel) {
+  Rows all;
+  const RowsVisitor<Rows> gather = [&all](const Rows &rows) -> core::Status {
+    for (const Column<Rows> &c : Layout<Rows>::columns) {
+      if (c.reals != nullptr) {
+        append(all.*(c.reals), rows.*(c.reals));
+      } else if (c.flags != nullptr) {
+        append(all.*(c.flags), rows.*(c.flags));
+      } else {
+        append(all.*(c.ints), rows.*(c.ints));
+      }
+    }
+    return core::Ok();
+  };
+  ATX_TRY_VOID(read_short_side<Rows>(stage, rel, gather));
+  return core::Ok(std::move(all));
 }
 
-core::Result<ThresholdRows> read_threshold_rows(PinnedStage &stage, std::string_view rel) {
-  static constexpr std::array<std::string_view, 5> kColumns{"list_date", "market", "security_id",
-                                                            "on_list", "available_at"};
-  ATX_TRY(const auto table, stage.table(rel, kColumns));
-  ThresholdRows out;
-  ATX_TRY(out.list_day, day_column(table, "list_date"));
-  ATX_TRY(const auto market, text_column(table, "market"));
-  out.market = market_codes(market);
-  ATX_TRY(out.security_id, id_column(table, "security_id"));
-  ATX_TRY(out.on_list, flag_column(table, "on_list"));
-  ATX_TRY(out.available_ns, instant_column(table, "available_at"));
-  ATX_TRY_VOID(same_length(out.list_day.size(),
-                           {out.market.size(), out.security_id.size(), out.on_list.size(),
-                            out.available_ns.size()},
-                           "regsho threshold"));
-  return core::Ok(std::move(out));
-}
-
-core::Result<FinraNameRows> read_finra_names(PinnedStage &stage) {
-  static constexpr std::array<std::string_view, 4> kColumns{"security_id", "available_at",
-                                                            "dissemination_date", "market_class"};
-  ATX_TRY(const auto table, stage.table("finra_names.parquet", kColumns));
-  FinraNameRows out;
-  ATX_TRY(out.security_id, id_column(table, "security_id"));
-  ATX_TRY(out.available_ns, instant_column(table, "available_at"));
-  ATX_TRY(out.dissemination_day, day_column(table, "dissemination_date"));
-  ATX_TRY(out.market_class, text_column(table, "market_class"));
-  ATX_TRY_VOID(same_length(out.security_id.size(),
-                           {out.available_ns.size(), out.dissemination_day.size(),
-                            out.market_class.size()},
-                           "finra_names"));
-  return core::Ok(std::move(out));
-}
+// The Rows types of short_side.hpp.
+template core::Status read_short_side<FtdRows>(PinnedStage &, std::string_view,
+                                               const RowsVisitor<FtdRows> &);
+template core::Status read_short_side<RegshoListRows>(PinnedStage &, std::string_view,
+                                                      const RowsVisitor<RegshoListRows> &);
+template core::Status read_short_side<ThresholdRows>(PinnedStage &, std::string_view,
+                                                     const RowsVisitor<ThresholdRows> &);
+template core::Status read_short_side<FinraNameRows>(PinnedStage &, std::string_view,
+                                                     const RowsVisitor<FinraNameRows> &);
+template core::Result<FtdRows> read_short_side_all<FtdRows>(PinnedStage &, std::string_view);
+template core::Result<RegshoListRows> read_short_side_all<RegshoListRows>(PinnedStage &,
+                                                                          std::string_view);
+template core::Result<ThresholdRows> read_short_side_all<ThresholdRows>(PinnedStage &,
+                                                                        std::string_view);
+template core::Result<FinraNameRows> read_short_side_all<FinraNameRows>(PinnedStage &,
+                                                                        std::string_view);
 
 } // namespace atx::engine::research::fields

@@ -168,13 +168,16 @@ public:
     auto it = digests_.find(path);
     if (it == digests_.end()) {
       it = digests_.emplace(path, digest_file(path)).first;
+      ++computed_;
     }
     return it->second;
   }
-  [[nodiscard]] usize size() const noexcept { return digests_.size(); }
+  // The files streamed through SHA-256 by this decision (the record's inputs_digested).
+  [[nodiscard]] usize computed() const noexcept { return computed_; }
 
 private:
   std::map<std::filesystem::path, core::Result<FileDigest>> digests_;
+  usize computed_{};
 };
 
 [[nodiscard]] Reason sources_differ(const Json &entry, const FieldPlan &plan,
@@ -329,7 +332,7 @@ core::Result<ReuseOutcome> reuse_payloads(const ReuseRequest &request, const Rol
                       {"seal", prior.seal},
                       {"reused", std::move(reused)},
                       {"recomputed", std::move(recomputed)},
-                      {"inputs_digested", digests.size()}};
+                      {"inputs_digested", digests.computed()}};
     return core::Ok(std::move(out));
   } catch (const std::exception &e) {
     return core::Err(core::ErrorCode::Internal, std::string("reuse: ") + e.what());
