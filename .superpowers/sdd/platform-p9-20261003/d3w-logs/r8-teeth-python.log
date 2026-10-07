@@ -1,0 +1,25 @@
+M-P1 WALK_FORWARD_REFUSED: exit 1; 4 failed, 1 passed, 44 deselected, 9 subtests passed in 1.77s
+    SUBFAILED(kw={'_engine_post_step': 'stage', 'engine_fit': False, 'walk_forward': 'expanding', 'walk_forward_lag': 2, ...}, pooled=False) atx-impl/tools/test_fit_walk_forward.py::Re
+    SUBFAILED(kw={'_engine_post_step': 'stage', 'theme_tsmom': 'theme-tsmom-v1', 'walk_forward': 'expanding', 'walk_forward_lag': 2, ...}, pooled=False) atx-impl/tools/test_fit_walk_fo
+    SUBFAILED(kw={'_engine_post_step': 'stage', 'theme_resid': 'theme-resid-v1', 'walk_forward': 'expanding', 'walk_forward_lag': 2, ...}, pooled=False) atx-impl/tools/test_fit_walk_fo
+    SUBFAILED(kw={'_engine_post_step': 'stage', 'walk_forward': 'expanding', 'walk_forward_lag': 2, 'walk_forward_step': 21}, pooled=True) atx-impl/tools/test_fit_walk_forward.py::Refu
+M-P2 POST_ONLY: exit 1; 2 failed, 43 deselected, 12 subtests passed in 4.29s
+    FAILED atx-impl/tools/test_fit_walk_forward.py::Refusals::test_check_walk_forward_before_any_compute
+    FAILED atx-impl/tools/test_fit_walk_forward.py::Refusals::test_fit_alone_is_refused_and_publishes_nothing
+M-P3 walk_forward row shape: exit 1; 1 failed, 1 passed, 44 deselected, 10 subtests passed in 16.07s
+    SUBFAILED[nothing] atx-impl/tools/test_fit_walk_forward.py::Refusals::test_a_malformed_block_is_refused
+M-P4 weights_v3 top-level theme: exit 1; 1 failed, 1 passed, 43 deselected in 1.04s
+    FAILED atx-impl/tools/test_fit_walk_forward.py::WeightsV3::test_refusals - As...
+M-P5 stale stage: exit 1; 2 failed, 1 passed, 44 deselected, 1 subtests passed in 1.99s
+    SUBFAILED[stage] atx-impl/tools/test_fit_walk_forward.py::Refusals::test_an_existing_output_or_a_stale_stage_is_refused_before_the_fit
+    SUBFAILED[pending] atx-impl/tools/test_fit_walk_forward.py::Refusals::test_an_existing_output_or_a_stale_stage_is_refused_before_the_fit
+M-P6 engine_sleeve P12: exit 1; 2 failed, 44 deselected, 3 subtests passed in 4.03s
+    SUBFAILED(<subtest>) atx-impl/tools/test_fit_walk_forward.py::MomVolmanEngineFit::test_engine_sleeve_refusals
+    FAILED atx-impl/tools/test_fit_walk_forward.py::MomVolmanEngineFit::test_engine_sleeve_refusals
+M-P7 strict int/float: exit 1; 2 failed, 43 deselected in 1.20s
+    FAILED atx-impl/tools/test_composition_engine_fit.py::Comparisons::test_parent_check_engine_mode_is_strict
+    FAILED atx-impl/tools/test_composition_engine_fit.py::Comparisons::test_strict_types_refuse_an_integer_against_an_equal_float
+M-P8 factor rows objects: exit 1; 2 failed, 44 deselected, 2 subtests passed in 1.72s
+    SUBFAILED[rows] atx-impl/tools/test_composition_engine_fit.py::Comparisons::test_factor_series_reads_are_refusals
+    FAILED atx-impl/tools/test_composition_engine_fit.py::Comparisons::test_factor_series_reads_are_refusals
+restored: clean

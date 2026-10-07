@@ -6,11 +6,13 @@ root merged last: see the report's table (updated at the final commit).
 
 ## State
 
-- Root merged: `1b64ce45` (`cec719a0`), `fd084e78` (`c7549d6a`)@@ROOT3@@.
+- Root merged: `1b64ce45` (`cec719a0`), `fd084e78` (`c7549d6a`); root's later head `685e238b` is docs only and was not merged (root's code head stays `fd084e78`).
 - Builds: `p9-d3w-a` .. `-g` Debug (`-f` / `-g` are the MUTATED teeth builds), `p9-d3w-h` Release from
   `c7549d6a` (receipt copied to `d3w-logs/receipt-p9-d3w-h.json`, EXE-CUR all match).
-- Object trees `build-equity/` and `build-equity-rel/` deleted by name at the close (the `mega-p9-d3w-*` receipts
-  and logs in `build-equity/` kept); any further C++ test needs a fresh configure and build.
+- Object trees `build-equity/` and `build-equity-rel/` were NOT deleted at the close (review S-1); D3W-PB deleted
+  their untracked build outputs by name as its first act (2026-10-07; the `mega-p9-d3w-*` receipts and build logs
+  copied to `d3w-logs/` first; the tracked `build-equity/audits/` and `v8-interim3-pitch-render-run2/` kept); any
+  further C++ test needs a fresh configure and build.
 - Tests on the final head: see the report's "Tests (final head)".
 
 ## Where things are
