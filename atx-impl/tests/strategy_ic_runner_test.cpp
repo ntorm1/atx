@@ -871,7 +871,8 @@ TEST(StrategyIcRunner, ThemeRedistributionRefusalsAndSchemaGatePrecedeAnyPayload
       {themed_text(weights_v1,cfg,equal,theme_block(both)),
        "theme_redistribution requires composition weights schema atx.dsl-composition-weights/v2"},
       // P9 lane D3W: v3 is K-P9-8's (WeightsV3.*), so an unknown schema is now v4.
-      {themed_text("atx.dsl-composition-weights/v4",cfg,equal,theme_block(both)),"schema/library identity"},
+      {themed_text("atx.dsl-composition-weights/v4",cfg,equal,theme_block(both)),
+       "schema/library identity"},
       // Block shape: exactly {rule: within-theme-v1, composition: ew-theme-v6, themes: {...}}.
       {themed_text(weights_v2,cfg,equal,R"(,"theme_redistribution":[1])"),shape},
       {themed_text(weights_v2,cfg,equal,theme_block(both,"within-theme-v2")),shape},
@@ -1076,11 +1077,13 @@ f64 group_label(usize d,usize i) {
   if (i==0 && d%3==0) return 5.0;
   return i<3?1.0:2.0;
 }
+// `gate` (P9 lane ABS): the scale on every cell (1 keeps a gated member's data, NaN removes it).
 std::vector<f64> field_column(const std::string& name,f64 scale) {
   std::vector<f64> out(D*N);
   for (usize d=0;d<D;++d) for (usize i=0;i<N;++i)
     out[d*N+i]=name=="grp_a"?group_label(d,i):(name=="mkt_ret"?market_value(d):
-        (name=="iv_atm_21d"?.3+.01*static_cast<f64>(i):si_value(d,i,scale)));
+        (name=="iv_atm_21d"?.3+.01*static_cast<f64>(i):
+        (name=="gate"?scale:si_value(d,i,scale))));
   return out;
 }
 // A producer-shaped atx.research-role-fields/v1 directory bound to one role's own
@@ -4852,17 +4855,18 @@ std::string volman_block(usize n) {
     sessions.push_back(train_session(d));
     sleeve.push_back((d<200?.5:2.0)*(d%2U==0U?1.0:-1.0));
   }
-  return ",\"theme_schedule\":"+Json{{"rule","mom-volman-v1"},{"theme","price_momentum"},{"lookback",126},
-      {"lag",2},{"step",21},{"sessions",sessions},{"sleeve",sleeve}}.dump();
+  return ",\"theme_schedule\":"+Json{{"rule","mom-volman-v1"},{"theme","price_momentum"},
+      {"lookback",126},{"lag",2},{"step",21},{"sessions",sessions},{"sleeve",sleeve}}.dump();
 }
 // A v3 run against its v1 / v2 parent whose top-level weights its one row (from TRAIN session 0)
 // repeats: every payload byte for byte; the recipe, the orientations' candidates, the combined
 // manifests and the role summaries differ only by the weights pin, the rule key and the hashes of
 // those; the summary records the rows.
-void expect_single_row_identity(const Directory& dir,const std::string& parent,const std::string& v3) {
+void expect_single_row_identity(const Directory& dir,const std::string& parent,
+                                const std::string& v3) {
   for (const std::string role_name:{"train","validation"})
-    for (const auto* suffix:{"_daily_ic.csv","_planned_targets.csv","_combined.f64","_combined_member.u8",
-                             "_combined_finite.u8"}) {
+    for (const auto* suffix:{"_daily_ic.csv","_planned_targets.csv","_combined.f64",
+                             "_combined_member.u8","_combined_finite.u8"}) {
       const auto file=role_name+suffix; const auto expected=file_sha(dir.path/parent/file);
       ASSERT_FALSE(expected.empty()) << file;
       EXPECT_EQ(file_sha(dir.path/v3/file),expected) << file;
@@ -4872,7 +4876,8 @@ void expect_single_row_identity(const Directory& dir,const std::string& parent,c
   EXPECT_FALSE(a.contains("composition_walk_forward"));
   EXPECT_NE(a.at("composition_weights_sha256"),b.at("composition_weights_sha256"));
   for (auto* recipe:{&a,&b})
-    for (const auto* key:{"composition_walk_forward","composition_weights_sha256"}) recipe->erase(key);
+    for (const auto* key:{"composition_walk_forward","composition_weights_sha256"})
+      recipe->erase(key);
   EXPECT_EQ(b,a);
   EXPECT_EQ(read_json(dir.path/v3/"orientations.json").at("candidates"),
             read_json(dir.path/parent/"orientations.json").at("candidates"));
@@ -4882,8 +4887,8 @@ void expect_single_row_identity(const Directory& dir,const std::string& parent,c
     EXPECT_EQ(y.at("composition_walk_forward"),"walk-forward-v1") << role_name;
     EXPECT_FALSE(x.contains("composition_walk_forward")) << role_name;
     for (auto* m:{&x,&y})
-      for (const auto* key:{"composition_walk_forward","composition_weights_sha256","run_recipe_sha256",
-                            "orientations_artifact_sha256"})
+      for (const auto* key:{"composition_walk_forward","composition_weights_sha256",
+                            "run_recipe_sha256","orientations_artifact_sha256"})
         m->erase(key);
     EXPECT_EQ(y,x) << role_name;
   }
@@ -4910,7 +4915,8 @@ TEST(WeightsV3, SingleRowEqualsV1Bytes) {
   const std::string weights=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
   const std::string signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
   const std::string row="["+wf_row(train_session(0),weights)+"]";
-  const std::string themes=R"({"volume_level":"value","volume_rank":"price_momentum","volume_vee":"value"})";
+  const std::string themes=
+      R"({"volume_level":"value","volume_rank":"price_momentum","volume_vee":"value"})";
   const std::vector<std::pair<std::string,std::string>> parents{
       {weights_v1,signs},{weights_v2,signs+std_block(themes,true)},
       {weights_v2,signs+std_block(themes,true)+volman_block(300)}};
@@ -4950,8 +4956,10 @@ TEST(WeightsV3, RowsSwitchAtTheirSessionAndTheBookIsFlatBefore) {
   ASSERT_TRUE(run("b",themed_text(weights_v1,cfg,second,signs)));
   const std::string halves=R"({"volume_level":0.5,"volume_rank":0.5,"volume_vee":0.0})";
   ASSERT_TRUE(run("wf",themed_text(weights_v3,cfg,halves,
-      signs+wf_block("["+wf_row(train_session(200),first)+","+wf_row(train_session(300),second)+"]"))));
-  // ew-theme-std-v1: the top-level weights leave volume_rank at 0; its row weights it in theme value.
+      signs+wf_block("["+wf_row(train_session(200),first)+","+wf_row(train_session(300),second)+
+                     "]"))));
+  // ew-theme-std-v1: the top-level weights leave volume_rank at 0; its row weights it in theme
+  // value.
   const std::string themes=R"({"volume_level":"value","volume_rank":"value","volume_vee":"value"})";
   const std::string spread=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
   ASSERT_TRUE(run("c",themed_text(weights_v2,cfg,spread,signs+std_block(themes,true))));
@@ -4967,7 +4975,8 @@ TEST(WeightsV3, RowsSwitchAtTheirSessionAndTheBookIsFlatBefore) {
       const auto s=combined_payload(dir.path/run_name/combined);
       ASSERT_EQ(s.size(),D*N);
       std::vector<std::vector<f64>> want;
-      for (const auto& reference:after) want.push_back(combined_payload(dir.path/reference.second/combined));
+      for (const auto& reference:after)
+        want.push_back(combined_payload(dir.path/reference.second/combined));
       const bool train=role_name=="train";
       for (usize k=0;k<D*N;++k) {
         const usize d=k/N;
@@ -4999,7 +5008,8 @@ TEST(WeightsV3, RefusalsPrecedeAnyPayloadOrOutput) {
   const auto path=dir.path/"weights.json"; cfg.composition_weights_path=path.string();
   const std::string w=R"({"volume_level":0.5,"volume_rank":0.25,"volume_vee":0.25})";
   const std::string signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
-  const std::string themes=R"({"volume_level":"value","volume_rank":"price_momentum","volume_vee":"value"})";
+  const std::string themes=
+      R"({"volume_level":"value","volume_rank":"price_momentum","volume_vee":"value"})";
   const std::string row=wf_row(train_session(10),w);
   const std::string rows="["+row+"]";
   const auto v3=[&](const std::string& extra) { return themed_text(weights_v3,cfg,w,signs+extra); };
@@ -5013,10 +5023,13 @@ TEST(WeightsV3, RefusalsPrecedeAnyPayloadOrOutput) {
     const auto plan=Json::parse(log.str());
     EXPECT_EQ(plan.at("composition_weights").at("walk_forward").at("rule"),"walk-forward-v1");
   }
-  const std::string shape="walk_forward must be {rule: walk-forward-v1, window: expanding, lag: >= 2";
-  const std::string row_shape="walk_forward row must be {from_session: integer, weights: {id: weight}}";
-  const std::string refused_with="walk_forward (walk-forward-v1) is refused with theme_redistribution, "
-                                 "theme_residualise and theme-tsmom-v1";
+  const std::string shape=
+      "walk_forward must be {rule: walk-forward-v1, window: expanding, lag: >= 2";
+  const std::string row_shape=
+      "walk_forward row must be {from_session: integer, weights: {id: weight}}";
+  const std::string refused_with=
+      "walk_forward (walk-forward-v1) is refused with theme_redistribution, "
+      "theme_residualise and theme-tsmom-v1";
   std::string many="[";
   for (usize r=0;r<4097;++r) many+=(r?",":"")+wf_row(train_session(0)+static_cast<i64>(r),w);
   many+="]";
@@ -5037,7 +5050,8 @@ TEST(WeightsV3, RefusalsPrecedeAnyPayloadOrOutput) {
       "walk_forward requires composition weights schema atx.dsl-composition-weights/v3";
   const std::string bad="walk_forward weight must be finite and >= 0: volume_rank";
   const std::vector<std::pair<std::string,std::string>> cases{
-      {v3(""),"composition weights schema atx.dsl-composition-weights/v3 requires a walk_forward block"},
+      {v3(""),
+       "composition weights schema atx.dsl-composition-weights/v3 requires a walk_forward block"},
       {themed_text(weights_v1,cfg,w,signs+wf_block(rows)),needs_v3},
       {themed_text(weights_v2,cfg,w,signs+std_block(themes,true)+wf_block(rows)),needs_v3},
       {v3(R"(,"walk_forward":[1])"),shape},
@@ -5060,12 +5074,14 @@ TEST(WeightsV3, RefusalsPrecedeAnyPayloadOrOutput) {
       {v3(wf_block("["+row+","+row+"]")),"walk_forward from_session must increase strictly"},
       {v3(one(R"({"volume_level":0.5,"volume_rank":0.25,"volume_vee":0.25,"other":0})")),
        "walk_forward weight for unknown candidate: other"},
-      {v3(one(R"({"volume_level":0.5,"volume_vee":0.25})")),"walk_forward weight missing: volume_rank"},
+      {v3(one(R"({"volume_level":0.5,"volume_vee":0.25})")),
+       "walk_forward weight missing: volume_rank"},
       {v3(one(R"({"volume_level":0.5,"volume_rank":-0.25,"volume_vee":0.25})")),bad},
       {v3(one(R"({"volume_level":0.5,"volume_rank":"x","volume_vee":0.25})")),bad},
       {v3(one(R"({"volume_level":0,"volume_rank":0,"volume_vee":0})")),"weights no candidate"},
       {themed_text(weights_v3,cfg,w,signs+theme_block(themes)+wf_block(rows)),refused_with},
-      {v3(std_block(themes,true)+resid_block(R"(["value","price_momentum"])")+wf_block(rows)),refused_with},
+      {v3(std_block(themes,true)+resid_block(R"(["value","price_momentum"])")+wf_block(rows)),
+       refused_with},
       {v3(std_block(themes,true)+tsmom_block(R"(["price_momentum","value"])",
                                              "["+tsmom_row(1000,"[1.0,-1.0]")+"]")+wf_block(rows)),
        refused_with}};
@@ -5088,14 +5104,495 @@ TEST(WeightsV3, RefusalsPrecedeAnyPayloadOrOutput) {
         ASSERT_TRUE(text_file(path,text,cfg.composition_weights_sha256));
         cfg.plan_only=plan_only; std::ostringstream attempt;
         const auto status=atx::impl::strategy::run_ic(cfg,attempt);
-        if (status) { // every case reports (a mutation's teeth show per refusal), none aborts the loop
+        // Every case reports (a mutation's teeth show per refusal); none aborts the loop.
+        if (status) {
           ADD_FAILURE() << "accepted, expected: " << reason << "\n" << text.substr(0,400);
           continue;
         }
         EXPECT_NE(status.error().to_string().find(reason),std::string::npos)
             << reason << " -> " << status.error().to_string();
-        EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+        EXPECT_TRUE(attempt.str().empty());
+        EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
       }
+  }
+}
+// ---- P9 lane ABS: absent-members-v1 (--absent-members; ruling OD3P-1, contract
+// od3p-absent-contract.md sections 2-5) ----
+using atx::impl::strategy::IcRunnerConfig;
+// The list file the cycle passes (its drop list itself); every key but schema and members is the
+// Python side's and ignored by the exe.
+bool pin_absent(const Directory& dir,IcRunnerConfig& cfg,const Json& members,
+                const std::string& name="flagged_members.json") {
+  cfg.absent_members_path=(dir.path/name).string();
+  const Json list{{"schema","atx.od3-flagged-members/v1"},{"members",members},
+      {"rules",Json::array({"theme-cov-hedge-v1"})},{"rules_pending",Json::array()},
+      {"source",{{"path","flags.md"},{"sha256",std::string(64,'b')}}}};
+  return json_file(cfg.absent_members_path,list,cfg.absent_members_sha256);
+}
+void clear_absent(IcRunnerConfig& cfg) {
+  cfg.absent_members_path.clear(); cfg.absent_members_sha256.clear();
+}
+bool pin_weights_text(const Directory& dir,IcRunnerConfig& cfg,const std::string& file,
+                      const std::string& text) {
+  cfg.composition_weights_path=(dir.path/file).string();
+  return text_file(cfg.composition_weights_path,text,cfg.composition_weights_sha256);
+}
+// The members `listed` read the field gate, which no other candidate reads: each DSL becomes
+// (DSL) * gate. gate holds the fields' scale on every cell (field_column): 1 keeps the members'
+// data, NaN removes it (contract section 5's I': their evaluated signals non-finite everywhere).
+bool gate_members(IcRunnerConfig& cfg,const std::vector<std::string>& listed) {
+  auto lib=read_json(cfg.library_path);
+  lib["fields"].push_back({{"name","gate"},{"basis","synthetic upstream field"}});
+  usize gated=0;
+  for (auto& candidate:lib["candidates"]) {
+    const auto id=candidate.at("id").get<std::string>();
+    if (std::find(listed.begin(),listed.end(),id)!=listed.end()) {
+      candidate["dsl"]="("+candidate.at("dsl").get<std::string>()+") * gate";
+      ++gated;
+    }
+  }
+  return gated==listed.size() && json_file(cfg.library_path,lib,cfg.library_sha256);
+}
+// Pins the gate fields at dir/<tag>-{train,validation}, replacing what is there: both runs of an
+// equivalence read the same paths, so only the pins differ.
+bool pin_gate(const Directory& dir,IcRunnerConfig& cfg,const std::string& tag,f64 gate) {
+  std::error_code ec;
+  for (const auto* role_name:{"-train","-validation"})
+    std::filesystem::remove_all(dir.path/(tag+role_name),ec);
+  return pin_fields(dir,cfg,tag,{"gate"},gate);
+}
+// A run's input pins of the gate fields: the two manifests and the two gate payloads.
+std::vector<std::string> gate_pins(const IcRunnerConfig& cfg) {
+  return {cfg.train_fields_sha256,cfg.validation_fields_sha256,
+          file_sha(std::filesystem::path(cfg.train_fields_directory)/"gate.f64"),
+          file_sha(std::filesystem::path(cfg.validation_fields_directory)/"gate.f64")};
+}
+// The hashes a run publishes over its inputs: the recipe's, the orientations' and each role's
+// combined manifest (empty where absent).
+std::vector<std::string> run_hashes(const std::filesystem::path& out) {
+  const auto summary=read_json(out/"summary.json");
+  std::vector<std::string> hashes;
+  for (const auto* key:{"recipe_sha256","orientation_recipe_sha256","orientations_artifact_sha256"})
+    hashes.push_back(summary.value(key,std::string{}));
+  for (const auto& role_result:summary.at("roles"))
+    hashes.push_back(role_result.contains("combined_artifact")
+        ?role_result.at("combined_artifact").at("manifest_sha256").get<std::string>()
+        :std::string{});
+  return hashes;
+}
+using Pins=std::vector<std::pair<std::string,std::string>>;
+std::string substituted(std::string text,const Pins& pins) {
+  for (const auto& [from,to]:pins) {
+    if (from.empty() || from==to) continue;
+    for (usize at=text.find(from);at!=std::string::npos;at=text.find(from,at+to.size()))
+      text.replace(at,from.size(),to);
+  }
+  return text;
+}
+// The keys contract section 5 excludes, at any depth: wall-clock and stage seconds, the cache
+// bookkeeping and the absent_members record. `warm` (runs on caches in different states): also
+// what a cache hit saves (the verified bytes and the field loads).
+void drop_excluded(Json& j,bool warm) {
+  if (j.is_object()) {
+    for (const auto* key:{"wall_seconds","stage_seconds","hash_seconds","candidate_cache",
+                          "signal_cache","ic_result_cache","ic_missing_exit_v1_result_cache",
+                          "absent_members"})
+      j.erase(key);
+    if (warm)
+      for (const auto* key:{"verify_bytes","field_loads","peak_resident_fields","loaded_bytes"})
+        j.erase(key);
+  }
+  if (j.is_structured())
+    for (auto& value:j) drop_excluded(value,warm);
+}
+std::string normalised(const std::string& text,bool lines,bool warm) {
+  if (!lines) {
+    auto j=Json::parse(text); drop_excluded(j,warm); return j.dump(1);
+  }
+  std::istringstream in(text); std::string out;
+  for (std::string line;std::getline(in,line);) {
+    auto j=Json::parse(line); drop_excluded(j,warm); out+=j.dump()+'\n';
+  }
+  return out;
+}
+// Every file `a` publishes equals `b`'s byte for byte: binary payloads as written, text with `b`'s
+// input pins (and the hashes over them) substituted by `a`'s, summary.json and the candidate
+// receipts without the excluded keys.
+void expect_same_outputs(const std::filesystem::path& a,const std::filesystem::path& b,
+                         const Pins& pins,bool warm=false) {
+  const auto names=[](const std::filesystem::path& dir) {
+    std::set<std::string> out;
+    for (const auto& entry:std::filesystem::directory_iterator(dir))
+      out.insert(entry.path().filename().string());
+    return out;
+  };
+  const auto files=names(a);
+  ASSERT_EQ(files,names(b));
+  ASSERT_GE(files.size(),10U);
+  for (const auto& name:files) {
+    SCOPED_TRACE(name);
+    const auto x=file_bytes(a/name),y=file_bytes(b/name);
+    const bool lines=name.ends_with(".jsonl");
+    if (!lines && !name.ends_with(".json") && !name.ends_with(".csv")) {
+      EXPECT_TRUE(x==y) << x.size() << " vs " << y.size() << " bytes";
+      continue;
+    }
+    const std::string left(x.begin(),x.end());
+    const std::string right=substituted(std::string(y.begin(),y.end()),pins);
+    if (name=="summary.json" || lines)
+      EXPECT_EQ(normalised(left,lines,warm),normalised(right,lines,warm));
+    else
+      EXPECT_EQ(left,right);
+  }
+}
+// Contract section 5 for `cfg` (a library gated on the listed members; weights pinned or not): the
+// pass with the list on I (gate 1) against the same pass without it on I' (gate NaN), on fresh
+// caches when `cfg` names one. The pass without the list on I shows the list removes something.
+void expect_absent_equivalence(const Directory& dir,IcRunnerConfig cfg,const Json& listed,
+                               const std::string& tag) {
+  SCOPED_TRACE(tag);
+  cfg.save_combined=true;
+  const bool cached=!cfg.candidate_cache_directory.empty();
+  const auto cache=[&](IcRunnerConfig& run,const std::string& name) {
+    if (cached) run.candidate_cache_directory=(dir.path/(tag+"-"+name)).string();
+  };
+  ASSERT_TRUE(pin_gate(dir,cfg,tag+"-gate",1.0));
+  ASSERT_TRUE(pin_absent(dir,cfg,listed,tag+"-list.json"));
+  cache(cfg,"c1");
+  const auto with_list=run_named(dir,cfg,tag+"-listed");
+  ASSERT_TRUE(with_list.ok) << with_list.error;
+  const auto listed_pins=gate_pins(cfg);
+  auto plain=cfg; clear_absent(plain); cache(plain,"c0");
+  const auto data=run_named(dir,plain,tag+"-data"); ASSERT_TRUE(data.ok) << data.error;
+  auto removed=plain; cache(removed,"c2");
+  ASSERT_TRUE(pin_gate(dir,removed,tag+"-gate",std::numeric_limits<f64>::quiet_NaN()));
+  const auto without=run_named(dir,removed,tag+"-removed");
+  ASSERT_TRUE(without.ok) << without.error;
+  Pins pins;
+  const auto removed_pins=gate_pins(removed);
+  for (usize k=0;k<removed_pins.size();++k) pins.emplace_back(removed_pins[k],listed_pins[k]);
+  const auto a=run_hashes(dir.path/(tag+"-listed")),b=run_hashes(dir.path/(tag+"-removed"));
+  for (usize k=0;k<a.size();++k) pins.emplace_back(b[k],a[k]);
+  expect_same_outputs(dir.path/(tag+"-listed"),dir.path/(tag+"-removed"),pins);
+  const auto record=read_json(dir.path/(tag+"-listed")/"summary.json").at("absent_members");
+  EXPECT_EQ(record.at("members"),listed);
+  EXPECT_FALSE(read_json(dir.path/(tag+"-removed")/"summary.json").contains("absent_members"));
+  for (const std::string role_name:{"train","validation"})
+    EXPECT_NE(file_sha(dir.path/(tag+"-data")/(role_name+"_combined.f64")),
+              file_sha(dir.path/(tag+"-listed")/(role_name+"_combined.f64"))) << role_name;
+}
+const std::string vee_signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
+// Case 1: a listed member of a theme with other members (ew-theme-v6's within-theme-v1): its mass
+// stays in the theme and the others carry it.
+TEST(AbsentMembers, ThemeMemberLeavesItsMassToTheOtherMembers) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_vee"}));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const std::string weights=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  const std::string themes=
+      R"({"volume_level":"liquidity","volume_rank":"size","volume_vee":"liquidity"})";
+  ASSERT_TRUE(pin_weights_text(dir,cfg,"v6.json",
+                               themed_text(weights_v2,cfg,weights,vee_signs+theme_block(themes))));
+  expect_absent_equivalence(dir,cfg,Json::array({"volume_vee"}),"v6");
+}
+// Case 2: every member of one theme listed, under ew-theme-v6 and ew-theme-std-v1: the theme with
+// no present member.
+TEST(AbsentMembers, WholeThemeListedIsAThemeWithNoPresentMember) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_level","volume_vee"}));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const std::string weights=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  const std::string themes=
+      R"({"volume_level":"liquidity","volume_rank":"size","volume_vee":"liquidity"})";
+  const Json listed=Json::array({"volume_vee","volume_level"});
+  ASSERT_TRUE(pin_weights_text(dir,cfg,"v6.json",
+                               themed_text(weights_v2,cfg,weights,vee_signs+theme_block(themes))));
+  expect_absent_equivalence(dir,cfg,listed,"v6");
+  ASSERT_TRUE(pin_weights_text(dir,cfg,"std.json",
+      themed_text(weights_v2,cfg,weights,vee_signs+std_block(themes,true))));
+  expect_absent_equivalence(dir,cfg,listed,"std");
+}
+// Case 3: theme-erc-v1 and ic-shrink-v1 bases: the runner verifies the same weights file and the
+// listed member's TRAIN weight is carried into its theme's mass.
+TEST(AbsentMembers, ThemeErcAndIcShrinkBasesVerifyAndCarryTheirWeights) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(shrink_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_lag_1"}));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  for (const std::string rule:{"theme-erc-v1","ic-shrink-v1"}) {
+    const auto doc=rule=="theme-erc-v1"?erc_doc(cfg,rule):shrink_doc(cfg,rule);
+    ASSERT_TRUE(pin_weights_text(dir,cfg,rule+".json",doc.dump()));
+    expect_absent_equivalence(dir,cfg,Json::array({"volume_lag_1"}),rule);
+  }
+}
+// Case 4: an ew-theme-std-v1 base (the standardise path, IcComposition::add_standardised).
+TEST(AbsentMembers, StandardiseBaseLeavesTheMemberOutOfItsThemeRerank) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(shrink_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_vee"}));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  ASSERT_TRUE(pin_weights_text(dir,cfg,"std.json",erc_doc(cfg,"ew-theme-std-v1").dump()));
+  expect_absent_equivalence(dir,cfg,Json::array({"volume_vee"}),"std");
+}
+// Case 5: a base without themes (v1 weights): the blend keeps its fixed denominator.
+TEST(AbsentMembers, UnthemedBlendKeepsItsFixedDenominator) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_rank"}));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const std::string weights=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  ASSERT_TRUE(pin_weights_text(dir,cfg,"v1.json",themed_text(weights_v1,cfg,weights,vee_signs)));
+  expect_absent_equivalence(dir,cfg,Json::array({"volume_rank"}),"v1");
+}
+// Case 6: the u pass (no --composition-weights; cases 1-5 and 7 are w passes), without a cache: the
+// listed member has no TRAIN orientation (sign 0) and the equal family weights are unchanged.
+TEST(AbsentMembers, UnweightedPassWithoutCacheLeavesTheMemberUnoriented) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_vee"}));
+  expect_absent_equivalence(dir,cfg,Json::array({"volume_vee"}),"u");
+  for (const auto& row:read_json(dir.path/"u-listed"/"orientations.json").at("candidates"))
+    EXPECT_EQ(row.at("sign").get<int>()==0,row.at("id")=="volume_vee") << row.at("id");
+}
+// Case 7 (D3W's v3 rows): per-date weights on the plain path and on ew-theme-std-v1 treat a listed
+// member as missing on every date of every row.
+TEST(AbsentMembers, WalkForwardRowsTreatTheMemberAsMissing) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_vee"}));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const std::string top=R"({"volume_level":0.5,"volume_rank":0.25,"volume_vee":0.25})";
+  const std::string first=R"({"volume_level":0.5,"volume_rank":0.0,"volume_vee":0.5})";
+  const std::string second=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  const std::string rows="["+wf_row(train_session(200),first)+","+
+                         wf_row(train_session(300),second)+"]";
+  ASSERT_TRUE(pin_weights_text(dir,cfg,"wf.json",
+                               themed_text(weights_v3,cfg,top,vee_signs+wf_block(rows))));
+  expect_absent_equivalence(dir,cfg,Json::array({"volume_vee"}),"wf");
+  const std::string themes=R"({"volume_level":"value","volume_rank":"value","volume_vee":"value"})";
+  ASSERT_TRUE(pin_weights_text(dir,cfg,"std_wf.json",
+      themed_text(weights_v3,cfg,top,vee_signs+std_block(themes,true)+wf_block(rows))));
+  expect_absent_equivalence(dir,cfg,Json::array({"volume_vee"}),"std_wf");
+}
+// One cache dir shared by runs with and without the list serves neither a wrong entry (contract
+// section 4): the listed member's signal entry holds its real bytes and serves both; its IC result
+// is never read from or written to the cache. So the warm run with the list equals one on a fresh
+// cache, and the warm run without it equals the cold one (cache bookkeeping aside).
+TEST(AbsentMembers, SharedCacheNeverCrossServesRunsWithAndWithoutTheList) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_vee"}));
+  cfg.save_combined=true; ASSERT_TRUE(pin_gate(dir,cfg,"gate",1.0));
+  cfg.candidate_cache_directory=(dir.path/"shared").string();
+  auto listed=cfg; ASSERT_TRUE(pin_absent(dir,listed,Json::array({"volume_vee"})));
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  // The listed member's IC-result entries the run without the list wrote, per role.
+  std::vector<std::pair<std::filesystem::path,std::string>> ic_entries;
+  const auto cold_summary=read_json(dir.path/"cold"/"summary.json");
+  for (const auto& role_result:cold_summary.at("roles")) {
+    const auto& scope=role_result.at("candidate_cache");
+    for (const auto& entry:scope.at("entries"))
+      if (entry.at("id")=="volume_vee") {
+        const std::filesystem::path sidecar=entry.at("sidecar").get<std::string>();
+        const auto path=sidecar.parent_path()/
+            scope.at("ic_results").at("subdirectory").get<std::string>()/sidecar.filename();
+        ic_entries.emplace_back(path,file_sha(path));
+      }
+  }
+  ASSERT_EQ(ic_entries.size(),2U);
+  for (const auto& [path,sha]:ic_entries) ASSERT_FALSE(sha.empty()) << path;
+  const auto warm=run_named(dir,listed,"warm_listed"); ASSERT_TRUE(warm.ok) << warm.error;
+  for (const auto& role_result:read_json(dir.path/"warm_listed"/"summary.json").at("roles")) {
+    EXPECT_EQ(role_result.at("candidate_cache").at("hits"),3);
+    EXPECT_EQ(role_result.at("candidate_cache").at("ic_results").at("hits"),2);
+    for (const auto& row:role_result.at("candidates")) {
+      EXPECT_EQ(row.at("signal_cache"),"hit") << row.at("id");
+      EXPECT_EQ(row.at("ic_result_cache"),row.at("id")=="volume_vee"?"miss":"hit") << row.at("id");
+    }
+  }
+  for (const auto& [path,sha]:ic_entries) EXPECT_EQ(file_sha(path),sha) << path;
+  const auto again=run_named(dir,cfg,"warm_plain"); ASSERT_TRUE(again.ok) << again.error;
+  for (const auto& role_result:read_json(dir.path/"warm_plain"/"summary.json").at("roles"))
+    EXPECT_EQ(role_result.at("candidate_cache").at("ic_results").at("hits"),3);
+  expect_same_outputs(dir.path/"cold",dir.path/"warm_plain",{},true);
+  auto fresh=listed; fresh.candidate_cache_directory=(dir.path/"fresh").string();
+  const auto clean=run_named(dir,fresh,"fresh_listed"); ASSERT_TRUE(clean.ok) << clean.error;
+  expect_same_outputs(dir.path/"fresh_listed",dir.path/"warm_listed",{},true);
+}
+// The record is the list's only trace: summary.json's absent_members (members as listed, not in
+// library order), absent without the flag; the recipe is the same bytes with and without it; an
+// unlisted member's rows are unchanged, a listed one scores no IC and is unoriented.
+TEST(AbsentMembers, RecordIsTheOnlyTraceAndUnlistedRowsAreUnchanged) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_level","volume_vee"}));
+  cfg.save_combined=true; ASSERT_TRUE(pin_gate(dir,cfg,"gate",1.0));
+  const auto plain=run_named(dir,cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  auto listed=cfg; ASSERT_TRUE(pin_absent(dir,listed,Json::array({"volume_vee","volume_level"})));
+  const auto run=run_named(dir,listed,"listed"); ASSERT_TRUE(run.ok) << run.error;
+  const auto a=read_json(dir.path/"plain"/"summary.json");
+  const auto b=read_json(dir.path/"listed"/"summary.json");
+  EXPECT_FALSE(a.contains("absent_members"));
+  EXPECT_EQ(b.at("absent_members"),(Json{{"rule","absent-members-v1"},
+      {"list_sha256",listed.absent_members_sha256},
+      {"members",Json::array({"volume_vee","volume_level"})}}));
+  std::set<std::string> keys_a,keys_b;
+  for (auto it=a.begin();it!=a.end();++it) keys_a.insert(it.key());
+  for (auto it=b.begin();it!=b.end();++it) keys_b.insert(it.key());
+  keys_b.erase("absent_members");
+  EXPECT_EQ(keys_b,keys_a);
+  EXPECT_EQ(file_sha(dir.path/"listed"/"recipe.json"),file_sha(dir.path/"plain"/"recipe.json"));
+  const auto rows_of=[](const std::filesystem::path& path,const std::string& id) {
+    std::ifstream in(path,std::ios::binary); std::vector<std::string> out;
+    for (std::string line;std::getline(in,line);) if (line.starts_with(id+",")) out.push_back(line);
+    return out;
+  };
+  for (const std::string role_name:{"train","validation"}) {
+    SCOPED_TRACE(role_name);
+    const auto daily=role_name+"_daily_ic.csv";
+    const auto kept=rows_of(dir.path/"listed"/daily,"volume_rank");
+    EXPECT_FALSE(kept.empty());
+    EXPECT_EQ(kept,rows_of(dir.path/"plain"/daily,"volume_rank"));
+    for (const std::string id:{"volume_level","volume_vee"}) {
+      const auto removed=rows_of(dir.path/"listed"/daily,id);
+      ASSERT_EQ(removed.size(),rows_of(dir.path/"plain"/daily,id).size()) << id;
+      for (const auto& line:removed) EXPECT_TRUE(line.ends_with(",,,")) << line;
+    }
+  }
+  const auto oa=read_json(dir.path/"plain"/"orientations.json").at("candidates");
+  const auto ob=read_json(dir.path/"listed"/"orientations.json").at("candidates");
+  ASSERT_EQ(ob.size(),oa.size());
+  for (usize c=0;c<ob.size();++c) {
+    if (ob.at(c).at("id")=="volume_rank") { EXPECT_EQ(ob.at(c),oa.at(c)); continue; }
+    EXPECT_EQ(ob.at(c).at("sign"),0) << ob.at(c).at("id");
+    EXPECT_FALSE(ob.at(c).at("orientation_defined").get<bool>()) << ob.at(c).at("id");
+  }
+}
+// The capability (contract section 3): `--list-rules --json` offers absent-members-v1, sorted.
+TEST(AbsentMembers, CapabilityIsListedInTheSortedEnvelope) {
+  std::vector<std::string> args{"atx-equity-strategy-ic","--list-rules","--json"};
+  std::vector<char*> argv; for (auto& arg:args) argv.push_back(arg.data());
+  std::ostringstream out,err;
+  ASSERT_EQ(atx::impl::strategy::dispatch_ic(static_cast<int>(argv.size()),argv.data(),out,err),0)
+      << err.str();
+  const auto caps=Json::parse(out.str()).at("capabilities");
+  EXPECT_TRUE(std::is_sorted(caps.begin(),caps.end()));
+  EXPECT_NE(std::find(caps.begin(),caps.end(),"absent-members-v1"),caps.end());
+}
+// The IC CLI on `cfg`'s TRAIN role plus `extra`: its exit code, stdout and stderr.
+struct CliRun { int code{}; std::string out,err; };
+CliRun absent_cli(const IcRunnerConfig& cfg,const std::vector<std::string>& extra) {
+  std::vector<std::string> args{"atx-equity-strategy-ic","--library",cfg.library_path,
+      "--library-sha256",cfg.library_sha256,"--train",cfg.train_manifest,"--train-sha256",
+      cfg.train_sha256,"--min-names","3","--min-dates","8"};
+  args.insert(args.end(),extra.begin(),extra.end());
+  std::vector<char*> argv; for (auto& arg:args) argv.push_back(arg.data());
+  std::ostringstream out,err;
+  const int code=
+      atx::impl::strategy::dispatch_ic(static_cast<int>(argv.size()),argv.data(),out,err);
+  return {code,out.str(),err.str()};
+}
+// Every refusal of contract section 5 precedes any payload or output: run_ic's (exit 1), with both
+// roles' close payloads removed, as a run and as a plan; the CLI's repeated flag (exit 2). The list
+// with the Python side's keys is admitted.
+TEST(AbsentMembers, RefusalsPrecedeAnyPayloadOrOutput) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg)); ASSERT_TRUE(vee_library(cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  ASSERT_TRUE(pin_absent(dir,cfg,Json::array({"volume_vee"})));
+  {
+    auto plan=cfg; plan.plan_only=true; std::ostringstream log;
+    const auto status=atx::impl::strategy::run_ic(plan,log);
+    ASSERT_TRUE(status) << status.error().to_string();
+    EXPECT_EQ(Json::parse(log.str()).at("candidate_count"),3);
+  }
+  const auto with_text=[&](const std::string& name,const std::string& text) {
+    auto attempt=cfg; attempt.absent_members_path=(dir.path/name).string();
+    EXPECT_TRUE(text_file(attempt.absent_members_path,text,attempt.absent_members_sha256));
+    return attempt;
+  };
+  const std::string schema=R"("schema":"atx.od3-flagged-members/v1")";
+  const auto members=[&](const std::string& raw) { return "{"+schema+",\"members\":"+raw+"}"; };
+  const std::string both="--absent-members and --absent-members-sha256 are given together";
+  const std::string bad_hex="needs --absent-members-sha256 as 64 lowercase hex";
+  const std::string not_object="--absent-members file is not a JSON object";
+  const std::string bad_schema="schema must be atx.od3-flagged-members/v1";
+  const std::string not_array="members must be a non-empty array of candidate ids";
+  const std::string not_string="member must be a string";
+  const std::string bad_id="member id must match [A-Za-z0-9_]+: ";
+  std::vector<std::tuple<std::string,IcRunnerConfig,std::string>> cases;
+  { auto a=cfg; a.absent_members_sha256.clear(); cases.emplace_back("path_only",a,both); }
+  { auto a=cfg; a.absent_members_path.clear(); cases.emplace_back("pin_only",a,both); }
+  { auto a=cfg; a.no_composition=true;
+    cases.emplace_back("screen",a,"--absent-members is refused with --no-composition"); }
+  { auto a=cfg;
+    std::transform(a.absent_members_sha256.begin(),a.absent_members_sha256.end(),
+                   a.absent_members_sha256.begin(),
+                   [](char c)->char { return c>='a' && c<='f'?static_cast<char>(c-'a'+'A'):c; });
+    cases.emplace_back("upper_pin",a,bad_hex); }
+  { auto a=cfg; a.absent_members_sha256.pop_back(); cases.emplace_back("short_pin",a,bad_hex); }
+  { auto a=cfg; a.absent_members_path=(dir.path/"missing.json").string();
+    cases.emplace_back("missing",a,"metadata file missing or unreadable"); }
+  cases.emplace_back("empty",with_text("empty.json",""),"metadata file empty");
+  { auto a=cfg; a.absent_members_sha256=std::string(64,'0');
+    cases.emplace_back("mismatch",a,"--absent-members file SHA-256 differs"); }
+  cases.emplace_back("torn",with_text("torn.json","{"+schema+","),not_object);
+  cases.emplace_back("array",with_text("array.json",R"(["volume_vee"])"),not_object);
+  cases.emplace_back("scalar",with_text("scalar.json",R"("volume_vee")"),not_object);
+  cases.emplace_back("no_schema",with_text("no_schema.json",R"({"members":["volume_vee"]})"),
+                     bad_schema);
+  cases.emplace_back("schema_v2",with_text("schema_v2.json",
+      R"({"schema":"atx.od3-flagged-members/v2","members":["volume_vee"]})"),bad_schema);
+  cases.emplace_back("schema_number",with_text("schema_number.json",
+      R"({"schema":1,"members":["volume_vee"]})"),bad_schema);
+  cases.emplace_back("no_members",with_text("no_members.json","{"+schema+"}"),not_array);
+  cases.emplace_back("members_text",with_text("members_text.json",members(R"("volume_vee")")),
+                     not_array);
+  cases.emplace_back("members_object",with_text("members_object.json",
+      members(R"({"volume_vee":1})")),not_array);
+  cases.emplace_back("members_empty",with_text("members_empty.json",members("[]")),not_array);
+  cases.emplace_back("number",with_text("number.json",members("[1]")),not_string);
+  cases.emplace_back("null",with_text("null.json",members(R"(["volume_vee",null])")),not_string);
+  cases.emplace_back("nested",with_text("nested.json",members(R"([["volume_vee"]])")),not_string);
+  cases.emplace_back("dash",with_text("dash.json",members(R"(["volume-vee"])")),
+                     bad_id+"volume-vee");
+  cases.emplace_back("blank",with_text("blank.json",members(R"([""])")),bad_id);
+  cases.emplace_back("space",with_text("space.json",members(R"(["volume vee"])")),
+                     bad_id+"volume vee");
+  cases.emplace_back("case",with_text("case.json",members(R"(["Volume_vee"])")),
+                     "member is not a candidate of --library: Volume_vee");
+  cases.emplace_back("other",with_text("other.json",members(R"(["volume_vee","other"])")),
+                     "member is not a candidate of --library: other");
+  cases.emplace_back("twice",with_text("twice.json",
+      members(R"(["volume_vee","volume_rank","volume_vee"])")),"member listed twice: volume_vee");
+  for (const auto& [name,attempt,reason]:cases) {
+    expect_early_refusal(dir,attempt,name,reason);
+    auto plan=attempt; plan.plan_only=true; std::ostringstream log;
+    const auto status=atx::impl::strategy::run_ic(plan,log);
+    EXPECT_FALSE(status) << name;
+    if (!status)
+      EXPECT_NE(status.error().to_string().find(reason),std::string::npos)
+          << name << ": " << status.error().to_string();
+    EXPECT_TRUE(log.str().empty()) << name;
+  }
+  // The CLI: each flag at most once (exit 2 before run_ic), as a run and as a plan.
+  const std::vector<std::string> flags{"--absent-members",cfg.absent_members_path,
+                                       "--absent-members-sha256",cfg.absent_members_sha256};
+  auto plan_args=flags; plan_args.push_back("--plan-only");
+  const auto accepted=absent_cli(cfg,plan_args);
+  EXPECT_EQ(accepted.code,0) << accepted.err;
+  for (const usize repeated:{0U,2U}) {
+    for (const bool plan:{true,false}) {
+      auto extra=flags;
+      extra.insert(extra.end(),flags.begin()+static_cast<std::ptrdiff_t>(repeated),
+                   flags.begin()+static_cast<std::ptrdiff_t>(repeated+2U));
+      const auto out=(dir.path/("cli_"+std::to_string(repeated)+(plan?"_plan":"_run"))).string();
+      if (plan) {
+        extra.push_back("--plan-only");
+      } else {
+        extra.push_back("--output");
+        extra.push_back(out);
+      }
+      const auto refused=absent_cli(cfg,extra);
+      EXPECT_EQ(refused.code,2) << flags[repeated] << ' ' << plan << ": " << refused.err;
+      EXPECT_NE(refused.err.find(flags[repeated]+" given more than once"),std::string::npos)
+          << refused.err;
+      EXPECT_TRUE(refused.out.empty()) << flags[repeated];
+      EXPECT_FALSE(std::filesystem::exists(out)) << out;
+    }
   }
 }
 } // namespace
