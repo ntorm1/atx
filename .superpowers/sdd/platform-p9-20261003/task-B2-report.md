@@ -4,8 +4,11 @@
 
 **Fix round 1 (end of file) supersedes the SHAs below: identity merge point `1b25b9a4`, deletion commit `598d2199`.**
 
-**Post-identity redo (last section): BLOCKED at the merge of root by a permission refusal. PRE-15 and the cheap
-Suggested items are done in `fe152fca`; B2-11, R1 / R2, the G-P5 placement and D2R-2 (b) are pending.**
+**Post-identity redo (last section): R8 (2026-10-06), stopped by the owner with two suite runs pending. Root
+`fd084e78` merged (`1b15330d`); PRE-15 (`fe152fca`), B2-11 with re-review R1 / R2 (`d8f80c7a`), D2R-2 (b)
+(`34838462`), the G-P5 placement; builds `p9-b2-o` (Debug) / `p9-b2-p` (Release); every named suite green on
+`7832719f`, and on `1b15330d` all but `scripts/tests` seed 1 and the stage chain (section "R8 round"). B2-11's teeth
+by mutation are not shown (the mutation Edit was refused in R7; PERM-1).**
 
 DONE_WITH_CONCERNS. Pool `C:/atx-wt/pool-14`, branch `feat/p9-b2-20261003`, base `1239a5ff`. Resumed from
 `handoff-B2.md` (about 45%: ledger and eval libraries coded, nothing built).
@@ -859,4 +862,159 @@ After it, `test_wave_eval_verb` + `test_wave_kinds` + `test_wave_driver`: 147 pa
   ambiguous).
 
 <!-- EVIDENCE-R7 -->
+
+#### R7 round at the owner stop (committed by DIRTY-1 in `426721b2`; superseded by the R8 evidence below)
+
+At `c3201a60` the R7 round built Debug `p9-b2-i` (clean, exit 0, 466 TUs) and ran: gtests eval 26 / 26, ledger 16 / 16,
+`atx-impl-tests` `TrialLedger*` 24 / 24; `scripts/tests` seed 0 520 passed / 4 skipped; tools seed 0 274 passed /
+1 skipped; stage chain 9 / 9 (seeds 0, 1); mirror guard 7; fail-closed 1 (`r7-*.log`). Release: `p9-b2-j` and
+`p9-b2-k` exit 1 (the known stale-PCH trap: `deps/equity-rel/eigen3-src` re-populated by the fresh configure, "has
+been modified since the precompiled header"); `p9-b2-l` exit 0 (407 TUs), DirtyEntries 1 = the uncommitted report;
+its wall time (77,698 s) spans the owner stop. The stop came before `scripts/tests` seed 1 and the Release suites.
+
+#### R8 round (dispatch R8-1, 2026-10-06; DIRTY-1, EXE-CUR, REV-BASE, W3-EARLY-2)
+
+Resumed at `c3201a60` (pool-14). No history rewritten; no rebase, amend or reset. No code changed this round.
+
+| commit | what |
+|---|---|
+| `426721b2` | DIRTY-1: `task-B2-report.md` as it stood at the stop (the R7 record up to the marker) + the 11 R7 evidence logs that were untracked at the stop |
+| `7832719f` | merge root `1b64ce45` (docs only past `ebc918c3`): NO conflict |
+| `1b15330d` | merge root `fd084e78` (root moved during the round: SQL3 merged as `fbd2c045`, then `fd084e78`): NO conflict. Brings `seal_guard.{hpp,cpp}` + its gtest, `classes.json`, `stage_chain.py`, `book_monitor.py`, `research_store_hook.py`, `research_wave.py`, `run_bounded_research.py`, `wave_queue.py` and their tests |
+| (the docs commit that adds this section) | this evidence, `handoff-B2.md`, `b2-evidence/r8-*`, receipts `mega-p9-b2-{i..p}-receipt.json` |
+
+**Root SHA merged last: `fd084e78`.** Every suite below ran on `7832719f`; on the final `1b15330d` every suite ran
+EXCEPT `scripts/tests` seed 1 (stopped at the owner stop, about 58 %) and the stage chain (not started). Those two are
+the round's only pending items (next step in `handoff-B2.md`, "R8 round").
+
+#### Evidence (R8)
+
+Builds (`scripts/research-build.ps1`, pool-14, target-scoped, one at a time on the host, each started only when no
+other build ran; targets `atx-research-eval`, `atx-engine-research-eval-tests`, `atx-engine-research-ledger-tests`,
+`atx-impl-tests`; receipts copied to `b2-evidence/`):
+
+| tag | preset | source | dirty | result | `atx-research-eval` SHA-256 |
+|---|---|---|---|---|---|
+| `p9-b2-m` | equity-dev (Debug) | `7832719f` | 0 | exit 0, 37 s, 7 TUs + 6 links (spdlog, below) | `845c8287658bbaf3a00281506c3e2738691f06e27a5485908485978f85eed3ae` |
+| `p9-b2-n` | equity-rel (Release) | `7832719f` | 0 | exit 0, 0 TUs, 0 links: every exe byte-equal to `p9-b2-l` | `bef0c0cd5b1d47f266d5b2c2c5f28a60718158bcfd8a99486b47dbe2bcf883d1` |
+| `p9-b2-o` | equity-dev (Debug) | `1b15330d` | 0 | exit 0, 33 s, 7 TUs + 6 links (spdlog again) | `b2ee9b269eb847325848bdbe67907ecd987eeeda6ccdf4c26188b8d9c71a7529` |
+| `p9-b2-p` | equity-rel (Release) | `1b15330d` | 0 | exit 0, 0 TUs, 0 links: every exe byte-equal to `p9-b2-l` | `bef0c0cd5b1d47f266d5b2c2c5f28a60718158bcfd8a99486b47dbe2bcf883d1` |
+
+- **EXE-CUR:** `git diff c3201a60..7832719f` over C++ / CMake is empty. Root's `fd084e78` changes
+  `seal_guard.{hpp,cpp}`: neither `p9-b2-o` nor `p9-b2-p` compiled it, so it is outside these four targets. The exes
+  of record are `p9-b2-o` (Debug) and `p9-b2-p` (Release) at `1b15330d`. Configured provenance: Debug `c3201a60`,
+  Release `c3201a60-dirty` (configured by R7 while the report was uncommitted; the dirty entry was that sprint-dir
+  file, committed unchanged by DIRTY-1). Neither tree was reconfigured: a reconfigure re-populates `deps/equity-rel`
+  and trips the stale-PCH trap again (j / k above).
+- **Why the Debug builds were not no-ops:** the Debug preset builds `spdlog` in the SHARED
+  `C:\atx-cache\deps\spdlog-build`. Other lanes' Debug builds refresh it, so ninja rebuilt the 7 `spdlog` TUs and
+  relinked `spdlogd.lib` and the exes; no source of this tree changed. Finding for the PM: a shared Debug deps build
+  dir lets one pool's build force relinks (new exe SHA-256s) in another pool.
+
+gtests (whole targets; `atx-impl-tests` with `--gtest_filter=*Ledger*:EvalVerb*`, i.e. `TrialLedger*` (24) plus 5
+Ledger-named cases of `ConfigEquityIc`, `ReplayDiagnosticsTest`, `StageEquityUniverse`):
+
+| target | Debug `m` / `o` | Release `n` / `p` | logs |
+|---|---|---|---|
+| `atx-engine-research-eval-tests` (EvalVerb, ResearchEvalRng, Conditional, EvalEdges) | 26 / 26 passed, both | 26 / 26 passed, both | `r8-gtest-{m,n,o,p}-eval-whole.log` |
+| `atx-engine-research-ledger-tests` (ResearchLedgerChain, ResearchLedger) | 16 / 16 passed, both | 16 / 16 passed, both | `r8-gtest-{m,n,o,p}-ledger-whole.log` |
+| `atx-impl-tests` `*Ledger*:EvalVerb*` | 29 / 29 passed, both | 29 / 29 passed, both | `r8-gtest-{m,n,o,p}-impl-ledger.log` |
+
+PRE-15's gtest `EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns` passes in all four. The B2-9 quantile line prints
+"33 of 34 bit-equal" in Debug and "34 of 34" in Release, as in the R6 round (the one-ulp erfc difference of the two C
+runtimes); the Acklam worst is 5.509e-12 at N 1e6 (synthetic quantiles, not a statistic of data).
+
+pytest (`"C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider --basetemp <own scratch>`,
+`PYTHONDONTWRITEBYTECODE=1`, explicit paths, separate invocations; ATX_EQUITY_BIN unset = the Debug verb
+`build-equity/bin` unless stated):
+
+| suite | env | on `7832719f` (Debug `m`, Release `n`) | on `1b15330d` (Debug `o`, Release `p`) |
+|---|---|---|---|
+| `scripts/tests` whole (incl. `test_wave_eval_verb.py` (B2-11), `test_wave_kinds.py`, `test_research_spec.py` (D2R-2 (b), e27b), `test_cycle_scoring.py` (both verb tests), `test_no_python_mirror.py`) | seed 0 | 520 passed, 4 skipped (`r8-pytest-scripts-m-s0.log`) | 527 passed, 5 skipped (`r8-pytest-scripts-o-s0.log`) |
+| the same | seed 1 | 520 passed, 4 skipped (`r8-pytest-scripts-m-s1.log`) | NOT FINISHED: stopped by me at the owner stop at about 58 %, no failure printed; pending (`r8-pytest-scripts-o-s1.log`, marked) |
+| `atx-engine/tools/test_stage_chain.py` | seeds 0 and 1 | 9 passed each (`r8-pytest-chain-s{0,1}.log`) | NOT RUN (owner stop came first); pending |
+| tools + fixtures (the R6 list: `test_nav_summ_engine`, `test_nav_summ`, `_pool`, `_v8`, `test_dsr_total` (PRE-15), `test_backtest_integrity`, `test_book_diagnostics`, `test_trial_ledger_rules`, `test_mega_report_v8`, `_v8_render`, `_pitch3`, the eval_tie / research_ledger / research_eval_edges fixture tests) | seed 0, Debug verb | 274 passed, 1 skipped (`r8-pytest-tools-m-s0.log`) | 274 passed, 1 skipped (`r8-pytest-tools-o-s0.log`) |
+| the same | seed 1, Release verb (`ATX_EQUITY_BIN=build-equity-rel/bin`) | 274 passed, 1 skipped (`r8-pytest-tools-n-s1.log`) | 274 passed, 1 skipped (`r8-pytest-tools-p-s1.log`) |
+| G-P5: `scripts/tests/test_no_python_mirror.py` | Debug | 7 passed (`r8-gp5-mirror.log`) | 7 passed; "16 mirrored rule function(s) in 7 row(s) left", the B2 rows stay retired (`r8-gp5-mirror-o.log`) |
+| G-P5: `test_nav_summ_engine.py::test_a_bin_without_the_verb_fails_closed` (runs the built verb, then an empty bin) | Debug | 1 passed (`r8-gp5-failclosed-m.log`) | 1 passed (`r8-gp5-failclosed-o.log`) |
+
+- Skips are environment skips: `test_cycle_e2e.py:439` (ATX_EQUITY_BIN unset; the canary is root's, with a full bin),
+  three `test_research_cycle.py` live-root hashes (RESEARCH_CYCLE_LIVE_ROOT), and on `1b15330d` SQL3's new
+  `test_research_store_hook.py:381` (`atx-research-store.exe` is not one of B2's targets). The tools skip is
+  `test_nav_summ_v8.py:72` (root-only, ATX_EQUITY_ROOT). The +7 passed on `1b15330d` are SQL3's new tests.
+- **One void run:** the first `scripts/tests` seed-0 run on `7832719f` (started 18:25 on the `p9-b2-i` verb) was
+  stopped by me at about 54 % with no failure printed: `p9-b2-m` relinked the Debug verb under it at 18:43, so the run
+  straddled two binaries. Kept as `r8-pytest-scripts-s0-void-relink.log`; re-run whole on `p9-b2-m`. From then on no
+  build ran in pool-14 while a Debug-verb suite ran. No child exited 3221225794 (ENV-1) in any run.
+- Known-red set: EMPTY at root `fd084e78`; 0 failed in every finished run above (the stopped seed-1 run printed no
+  failure up to 58 %), so there is no red to attribute. SQL3's merge
+  (record-store hook in `research_wave.py` / `wave_queue.py`) and B2-11's `wave_stage_record.py` checks pass together.
+- Teeth of B2-11: the refused mutation Edit stays reported (R7, `r7-teeth-b2-11.log`), not retried (PERM-1); no other
+  mutation tried. The reviewer may try its own. PRE-15's teeth stand from the R6 round (`redo-teeth-pre15.log`).
+
+Blind and data rules: synthetic and fixture data only; no 2020-2023 statistic and nothing dated 2024 or later opened;
+the trial ledger in pool-2 not opened; `atx-impl/tools/test_holdout_gate.py` not run.
+
+#### Conflict tables of the merges (B2-14; for re-review 2 under REV-BASE)
+
+| merge | root head merged | conflicts | regions and resolution |
+|---|---|---|---|
+| `c37ec671` (parents `294612c3`, `5c57c1ef`) | `5c57c1ef` (E2's split, D2R, COVR) | 4 files, 6 regions | the table in "Follow-up 1" above: `research_cycle.py` (2 regions: root's shim text and re-exports kept, + one `EVAL_EXE` re-export line; B2-R3's hunks re-placed in `cycle/{cli,spec,phases}.py`), `test_no_python_mirror.py` (ALLOWLIST head: B2 rows stay retired + root's D2-3 comment and D3 / P10 rows), `wave_stage_record.py` (verify's `problems` line: both calls kept), sprint-dir `handoff-B2.md` / `task-B2-report.md` (2 regions: the lane's newer text). Each by an Edit of the region; no checkout / restore / show-redirect / copy-over |
+| `b1df1829` (parents `14b881c9`, `a15ad887`) | `a15ad887` (C3 part A) | none | - (git's default message, no trailer; not amended) |
+| `c3201a60` (parents `34838462`, `ebc918c3`) | `ebc918c3` (SQL2-CLS `atx.nav-spec/v1`) | none | - |
+| `7832719f` (parents `426721b2`, `1b64ce45`) | `1b64ce45` (docs only) | none | - |
+| `1b15330d` (parents `7832719f`, `fd084e78`) | `fd084e78` (SQL3 merged) | none | - |
+
+REV-BASE for re-review 2: BASE = the SHA re-review 1 names as reviewed, `26fe8d50`.
+
+#### What root re-proves at merge
+
+Merge `git merge <B2 head>` into root. Against root `fd084e78` the lane differs in 35 code / test files
+(`git diff --stat fd084e78 <B2 head> -- . ':(exclude).superpowers'`) and in its own `task-B2-report.md`,
+`handoff-B2.md` and `b2-evidence/`. Expected conflicts against `fd084e78`: none (it is already merged here). Against
+lanes that merge into root first:
+- `scripts/tests/test_wave_kinds.py:171` (D3's file, W3-8a): B2 added ONE call line in `world()`,
+  `F.pin_eval_verb(root)`. If D3 rewrote `world()`, keep D3's version and re-add that one line (without it, four of
+  E2's v2 tests are refused at verify by B2-10 (c) / B2-11; see "A merge-level red found and fixed").
+- `scripts/tests/wave_fixture.py:363-367, 401-415` (`FakeCycle.add_alpha` copies the parent's `exes` / `exes_sha256`;
+  `EVAL_VERB`, `pin_eval_verb` appended).
+- `atx-engine/src/research/eval/eval_report.{cpp,hpp}`: B2's PRE-15 hunks (`eval_report.cpp:169-201, :584, :605,
+  :733-737, :813`; `eval_report.hpp:17-33`, at `fe152fca`). Ruling D3W-EVAL assumed this file is not in B2's list; it
+  is (PRE-15). D3W's eval-verb append and these hunks are keep-both.
+- `scripts/cycle/spec.py` (B2-R3's `EVAL_EXE`, `effective_exes`): C3b's D2R-2 (a) text edit sits in the same file.
+
+Then root re-proves, on the merged head, with exes rebuilt or shown current (EXE-CUR):
+1. Builds: `atx-research-eval`, `atx-engine-research-eval-tests`, `atx-engine-research-ledger-tests`, `atx-impl-tests`
+   (Debug and Release). gtests: the two research targets whole; `atx-impl-tests --gtest_filter=TrialLedger*`.
+2. ROOT-1: `scripts/tests` under one seed and the stage chain, separate invocations; plus the lane's named files:
+   `scripts/tests/test_wave_eval_verb.py`, `test_wave_kinds.py`, `test_cycle_scoring.py` (its two verb tests need the
+   built verb), `test_research_spec.py` (e27b), `test_no_python_mirror.py`, and the tools list above with the verb.
+3. **TRAIN identity procedure (flag-absent nav_summ; B2-1 / B2-7, re-stated for this head).** On X-5 and Y-F0, each
+   with the merged head's verb (build tag, SHA-256 and source commit stated):
+   `python atx-impl/tools/nav_summ.py <X-5 | Y-F0 dir> --reference <its base> --protocol v8 --psr
+   --dsr-ledger <COPY of trials.jsonl> --dsr-total <same copy> --json a.json`. Never `--ledger` (it appends); the
+   read-only ledger flags get a COPY of the ledger; the reference is not among the dirs. Compare against root's
+   identity-run outputs at `1b25b9a4` / `c2416d62`:
+   - stdout equal except ONE added line per listed dir, `   DSR_hand (N_tot - M=..., ruling PRE-15): ...`;
+   - `a.json` within 1e-12 except the added key `deflated_total.tot_minus_m` (pop it and `nav_summ_run`);
+   - the same argv without `--dsr-total`: stdout, stderr and the JSON without `nav_summ_run` byte-equal;
+   - `--dsr-hand` (not in the identity argv) changes two words per line ("prefix rule");
+   - substitution list: `nav_summ_run` (exe path / SHA-256 / argv) is the only expected difference besides the PRE-15
+     line and key. D2R-2 (b) (`allow_abbrev=False`) changes nothing on this argv (every flag spelled in full);
+   - the PRE-15 public cross-check is "State for root" item 2 above (a miss is a stop for the PM).
+4. B2-11 at the gate: a P9 v2 wave's cell specs must name `exes.eval` and carry `exes_sha256.eval` (`lock --exes`),
+   or verify refuses them; the judge runs nav_summ `--engine-stats <exes.eval>` and refuses a verb whose bytes or
+   `nav_summ_run.engine_exe_sha256` differ from the pin. The W1-I2 (b) re-pin (B2-10 (b), GATE-1) adds `exes.eval` to
+   the lineage parents. v1 manifests: plan bytes unchanged (`r7-v1-plan-identity.log`).
+5. New literals / flags / keys: unchanged from "State for root" item 3 (no new `atx.<name>/v<n>` literal, no new flag;
+   JSON keys `dsr.tot.tot_minus_m`, `deflated_total.tot_minus_m`, `cscv_wins`, G-3c `result.engine`). The canary's
+   `$canaryExes` already lists `atx-research-eval` (`scripts/research-build.ps1:73`).
+
+Disk: after this commit the pool-14 object trees are deleted by name (`build-equity/` objects, `build-equity-rel/`);
+the `mega-p9-b2-*` receipts and logs stay in `build-equity/`, copies of i..p in `b2-evidence/`.
+
+Permission refusal this round (PERM-1; not retried, not routed around): a Write of a NEW scratch file
+`scratchpad/b2-r8/report-r8.md` (a draft of this section) was refused ("Subagents should return findings as text, not
+write report files"). This section was then written by one Edit of this existing lane record, which the dispatch
+requires.
 

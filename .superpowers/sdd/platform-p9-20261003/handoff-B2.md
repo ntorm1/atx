@@ -1,6 +1,59 @@
-# Lane B2 handoff: post-identity redo, BLOCKED at the merge (permission refusal), 2026-10-04
+# Lane B2 handoff: post-identity redo (first written 2026-10-04; newest section first)
 
-## Follow-up at the owner stop (2026-10-04; supersedes "Next round" below where they differ)
+## R8 round: OWNER STOP with two suite runs pending (2026-10-06; dispatch R8-1; supersedes every section below)
+
+**Head:** the docs commit that adds this section, on the merge commit `1b15330d`. **Root SHA merged last:**
+`fd084e78` (SQL3 merged in root during the round). Branch `feat/p9-b2-20261003`, pool-14. No rebase, amend or reset;
+tree clean after this commit. No code changed this round; nothing is WIP.
+
+**Commits of the round:** `426721b2` (DIRTY-1: the R7 record and 11 untracked R7 logs, as they stood); `7832719f`
+(merge root `1b64ce45`, no conflict); `1b15330d` (merge root `fd084e78`, no conflict); the docs commit.
+
+**Done:** every item of `r7-dispatch.md` "B2": the merges (B2-14; conflict tables of all five merges in the report),
+B2-11 with re-review 1 R1 / R2 (`d8f80c7a`), the test rewrite on a real v2 manifest, G-P5 on the merged tree,
+PRE-15 (`fe152fca`), D2R-2 (b) (`34838462`), builds, and every named suite on `7832719f`; on `1b15330d` every suite
+except the two below. Not shown: B2-11's teeth by mutation (the R7 mutation Edit was refused; PERM-1: not retried;
+the reviewer may try its own).
+
+**Not done (pending; the only next step):** on the final tree `1b15330d` (or on root's then-current head, merged with
+`git merge feat/platform-p9-20261003`):
+1. `scripts/tests` under PYTHONHASHSEED 1 (my run was stopped at the owner stop at about 58 %, no failure printed;
+   `b2-evidence/r8-pytest-scripts-o-s1.log`, marked STOPPED);
+2. `atx-engine/tools/test_stage_chain.py` under seeds 0 and 1 (not started).
+Both need the Debug verb `build-equity/bin/atx-research-eval.exe` (the object trees were deleted at this stop: build
+Debug first with tag `p9-b2-q`, targets as the receipts list). Command form: `PYTHONDONTWRITEBYTECODE=1
+PYTHONHASHSEED=1 "C:/Program Files/Python312/python.exe" -m pytest -q -rs -p no:cacheprovider --basetemp <scratch>
+scripts/tests`, ATX_EQUITY_BIN unset; then fill the two "pending" cells of the report's R8 pytest table
+(`task-B2-report.md`, section "R8 round", table row "the same / seed 1" and the stage-chain row).
+
+**Builds used (pool-14):** `p9-b2-m` (Debug) / `p9-b2-n` (Release) at `7832719f`; `p9-b2-o` (Debug) / `p9-b2-p`
+(Release) at `1b15330d`; all dirty 0, exit 0. Release builds were no-ops (exes byte-equal to `p9-b2-l`); the Debug
+ones relinked only because the shared `C:\atx-cache\deps\spdlog-build` had been refreshed by another lane. Verb
+SHA-256 at `1b15330d`: Debug `b2ee9b269eb847325848bdbe67907ecd987eeeda6ccdf4c26188b8d9c71a7529`, Release
+`bef0c0cd5b1d47f266d5b2c2c5f28a60718158bcfd8a99486b47dbe2bcf883d1`. Receipts kept (`build-equity/mega-p9-b2-*`,
+copies of i..p in `b2-evidence/`). Next free tag `p9-b2-q`.
+
+**Tests actually run (0 failed in every finished run; logs `b2-evidence/r8-*`):**
+- on `7832719f`: gtests eval 26, ledger 16, `atx-impl-tests` `*Ledger*:EvalVerb*` 29 (Debug and Release);
+  `scripts/tests` seed 0 520 passed / 4 skipped, seed 1 520 / 4; stage chain 9 per seed; tools + fixtures 274 passed /
+  1 skipped (Debug seed 0, Release seed 1); mirror guard 7; fail-closed 1. One void seed-0 run (the Debug verb was
+  relinked under it), re-run whole.
+- on `1b15330d`: the same gtests 26 / 16 / 29 (Debug and Release); `scripts/tests` seed 0 527 passed / 5 skipped (the
+  new skip: SQL3's `test_research_store_hook.py:381`, `atx-research-store.exe` not a B2 target); tools + fixtures 274
+  / 1 (Debug seed 0, Release seed 1); mirror guard 7; fail-closed 1. Seed 1 stopped, chain not run (above).
+
+**For re-review 2 (REV-BASE):** BASE `26fe8d50`; check every conflict region of `c37ec671`, `b1df1829`, `c3201a60`
+(and the clean `7832719f`, `1b15330d`). For root's merge: the report's section "What root re-proves at merge" (TRAIN
+identity procedure; keep-both points with D3 `test_wave_kinds.py:171`, D3W `eval_report.cpp` PRE-15 hunks, C3b
+`scripts/cycle/spec.py`).
+
+**Open for the PM:** (1) D3W-EVAL assumed `eval_report.cpp` is not in B2's list; PRE-15's hunks are there (keep-both
+at merge). (2) The shared Debug `spdlog-build` dir lets one pool's build relink another pool's exes (new SHA-256s with
+no source change). (3) Permission refusal this round (PERM-1, not retried): a Write of a NEW scratch draft
+`scratchpad/b2-r8/report-r8.md` was refused ("Subagents should return findings as text, not write report files"); the
+lane records were then written by Edits of the existing `task-B2-report.md` and `handoff-B2.md`.
+
+## Follow-up at the owner stop (2026-10-04; superseded by "R8 round" above)
 
 **Head:** the docs commit that adds this section, on the merge commit `c37ec671`. **Root SHA merged:** `5c57c1ef`
 (`git merge feat/platform-p9-20261003`, plain; it holds E2's split, D2R and COVR). The merge is COMPLETE and committed;

@@ -1,0 +1,80 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = *Ledger*:EvalVerb*
+[==========] Running 29 tests from 5 test suites.
+[----------] Global test environment set-up.
+[----------] 2 tests from ConfigEquityIc
+[ RUN      ] ConfigEquityIc.MissingTrialLedgerValueCannotConsumeAnotherFlag
+[       OK ] ConfigEquityIc.MissingTrialLedgerValueCannotConsumeAnotherFlag (0 ms)
+[ RUN      ] ConfigEquityIc.ExistingGuardedStagesStillRejectTrialLedger
+[       OK ] ConfigEquityIc.ExistingGuardedStagesStillRejectTrialLedger (0 ms)
+[----------] 2 tests from ConfigEquityIc (0 ms total)
+
+[----------] 1 test from ReplayDiagnosticsTest
+[ RUN      ] ReplayDiagnosticsTest.SingletonIsUnavailableAndMalformedLedgerFails
+[       OK ] ReplayDiagnosticsTest.SingletonIsUnavailableAndMalformedLedgerFails (0 ms)
+[----------] 1 test from ReplayDiagnosticsTest (0 ms total)
+
+[----------] 2 tests from StageEquityUniverse
+[ RUN      ] StageEquityUniverse.Ledger_PreAndTerminalLinesDeclareZero
+[       OK ] StageEquityUniverse.Ledger_PreAndTerminalLinesDeclareZero (481 ms)
+[ RUN      ] StageEquityUniverse.Ledger_FailedRunKeepsBothLines
+[       OK ] StageEquityUniverse.Ledger_FailedRunKeepsBothLines (281 ms)
+[----------] 2 tests from StageEquityUniverse (763 ms total)
+
+[----------] 23 tests from TrialLedger
+[ RUN      ] TrialLedger.SerializesAPreRegisteredLineByteExactly
+[       OK ] TrialLedger.SerializesAPreRegisteredLineByteExactly (1 ms)
+[ RUN      ] TrialLedger.MissingLedgerIsAValidEmptyChain
+[       OK ] TrialLedger.MissingLedgerIsAValidEmptyChain (1 ms)
+[ RUN      ] TrialLedger.ThreeAppendsFormAVerifiableChain
+[       OK ] TrialLedger.ThreeAppendsFormAVerifiableChain (35 ms)
+[ RUN      ] TrialLedger.TamperedMiddleLineBreaksTheChainAtTheFollowingIndex
+[       OK ] TrialLedger.TamperedMiddleLineBreaksTheChainAtTheFollowingIndex (54 ms)
+[ RUN      ] TrialLedger.TruncatedFinalLineIsDetectedAsParseErrorNamingTheRepairOffset
+[       OK ] TrialLedger.TruncatedFinalLineIsDetectedAsParseErrorNamingTheRepairOffset (75 ms)
+[ RUN      ] TrialLedger.AppendAfterABrokenChainIsRefused
+[       OK ] TrialLedger.AppendAfterABrokenChainIsRefused (67 ms)
+[ RUN      ] TrialLedger.DeclaredTrialsForCheckpointReturnsTheDeclaredN
+[       OK ] TrialLedger.DeclaredTrialsForCheckpointReturnsTheDeclaredN (57 ms)
+[ RUN      ] TrialLedger.ManifestTracksTheHeadAndPreservesCreatedUtc
+[       OK ] TrialLedger.ManifestTracksTheHeadAndPreservesCreatedUtc (29 ms)
+[ RUN      ] TrialLedger.PreRegisteredLineRejectsAResultDigest
+[       OK ] TrialLedger.PreRegisteredLineRejectsAResultDigest (2 ms)
+[ RUN      ] TrialLedger.TailEditIsDetectedBySidecarHeadMismatch
+[       OK ] TrialLedger.TailEditIsDetectedBySidecarHeadMismatch (76 ms)
+[ RUN      ] TrialLedger.LastLineDeletionIsDetectedBySidecarCountMismatch
+[       OK ] TrialLedger.LastLineDeletionIsDetectedBySidecarCountMismatch (45 ms)
+[ RUN      ] TrialLedger.LastLineDeletionWithAConsistentSidecarIsTheDocumentedLimit
+[       OK ] TrialLedger.LastLineDeletionWithAConsistentSidecarIsTheDocumentedLimit (44 ms)
+[ RUN      ] TrialLedger.MissingSidecarBesideANonEmptyLedgerIsRefused
+[       OK ] TrialLedger.MissingSidecarBesideANonEmptyLedgerIsRefused (43 ms)
+[ RUN      ] TrialLedger.ForgedGenesisLinkFailsAtLineZero
+[       OK ] TrialLedger.ForgedGenesisLinkFailsAtLineZero (61 ms)
+[ RUN      ] TrialLedger.ConcurrentAppendIsRefusedWhileTheLockExists
+[       OK ] TrialLedger.ConcurrentAppendIsRefusedWhileTheLockExists (54 ms)
+[ RUN      ] TrialLedger.RejectsAnObjectKeyThatCouldForgeAScannableField
+[       OK ] TrialLedger.RejectsAnObjectKeyThatCouldForgeAScannableField (1 ms)
+[ RUN      ] TrialLedger.ZeroDeclared_AcceptedOnlyForNonTrialPurpose
+[       OK ] TrialLedger.ZeroDeclared_AcceptedOnlyForNonTrialPurpose (13 ms)
+[ RUN      ] TrialLedger.PositiveDeclared_RejectedForNonTrialPurpose
+[       OK ] TrialLedger.PositiveDeclared_RejectedForNonTrialPurpose (1 ms)
+[ RUN      ] TrialLedger.NegativeDeclared_AlwaysRejected
+[       OK ] TrialLedger.NegativeDeclared_AlwaysRejected (1 ms)
+[ RUN      ] TrialLedger.DeclaredTrials_SumsZeroLinesAndFindsThem
+[       OK ] TrialLedger.DeclaredTrials_SumsZeroLinesAndFindsThem (114 ms)
+[ RUN      ] TrialLedger.DeclaredTrials_ZeroWithTrialPurpose_IsParseError
+[       OK ] TrialLedger.DeclaredTrials_ZeroWithTrialPurpose_IsParseError (24 ms)
+[ RUN      ] TrialLedger.DeclaredTrials_PositiveWithNonTrialPurposeInWalk_IsParseError
+[       OK ] TrialLedger.DeclaredTrials_PositiveWithNonTrialPurposeInWalk_IsParseError (29 ms)
+[ RUN      ] TrialLedger.PreRegisteredLines_CountsByCheckpoint
+[       OK ] TrialLedger.PreRegisteredLines_CountsByCheckpoint (88 ms)
+[----------] 23 tests from TrialLedger (928 ms total)
+
+[----------] 1 test from TrialLedgerRepository
+[ RUN      ] TrialLedgerRepository.ExistingCp14Ledger_StillVerifies
+[       OK ] TrialLedgerRepository.ExistingCp14Ledger_StillVerifies (3 ms)
+[----------] 1 test from TrialLedgerRepository (3 ms total)
+
+[----------] Global test environment tear-down
+[==========] 29 tests from 5 test suites ran. (1696 ms total)
+[  PASSED  ] 29 tests.
