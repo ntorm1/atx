@@ -4,10 +4,10 @@
 
 | | |
 |---|---|
-| Outcome | @@OUTCOME@@ |
+| Outcome | DONE: green at `d080af09` (owner-stop run) and again at resume 8; the C3-13 fix of resume 8 is the section "C3-13" below |
 | Pool / branch | `C:/atx-wt/pool-20`, `feat/p9-d2-20261003` (D2's branch; no switch, no history rewrite; WIP `0389e868` kept) |
-| Root merged | `a15ad887` (merge `40154ac4`, no conflict); @@MERGE2@@ |
-| Commits | `40154ac4` merge; `e531257b` code + tests (finishes the WIP); @@COMMITS@@ |
+| Root merged | `a15ad887` (merge `40154ac4`, no conflict); `1b64ce45` (merge `d080af09`, no conflict) |
+| Commits | `40154ac4` merge; `e531257b` code + tests (finishes the WIP); `d080af09` merge; resume 8: see "C3-13" |
 | Rulings | D3-1, D3-2, W3-8a, PRE-35, C3-3, E2-17, E2-8, E2-15, P14, KINDS-TW, W3-7, W3-8 |
 | Files | `scripts/wave_kinds.py`, `scripts/wave_stage_kinds.py`, `scripts/tests/test_wave_kinds.py`, `scripts/specs/p9/kinds/walk-forward.json`, `scripts/specs/p9/kinds/new-cost-model.json` (the four kind files of D3-2 only) |
 | Build | none (Python only); no configure, no compile |
@@ -88,13 +88,15 @@ listing == the committed `composition_rules_list.json`, bytes and JSON; every IC
 [1, 2]; new-nav-rule's flags) and adds: `alias_problems(live) == []`, `flag_aliases(live) == {"--cost-v2":
 "cost-sqrt-v2"}`, new-cost-model derives `--cost-law cost-sqrt-v2`, `NAV_C3`'s rows equal the live rows (kind, x-flag,
 aliases, param x-flags), and all ten fixtures in the fake world served the LIVE tables (cost-model, combination-rule
-and walk-forward to spec). @@LIVE@@
+and walk-forward to spec). Ran at `d080af09` on root's bins (Debug `build-equity/bin`, Release `build-equity-rel/bin`,
+exe SHA-256 in the logs): 1 passed each (`d3-logs/live-build-equity.log`, `d3-logs/live-build-equity-rel.log`); again
+at resume 8 with the C3-13 check (`d3-logs/r8-live-build-equity*.log`).
 
 ### 6. Teeth
 
 `d3-logs/teeth.py` (in this dir): each of 22 mutations removes one check in the working tree, runs the tests that pin
 it, restores the bytes in `finally` and asserts `git status --porcelain` is empty; M0 is the unmutated control of every
-selection. Log `d3-logs/teeth.log`. @@TEETH@@
+selection. Log `d3-logs/teeth.log`. At `e531257b`: 22 / 22 caught, tree clean after every revert.
 
 ### 7. Suites
 
