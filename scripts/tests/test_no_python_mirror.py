@@ -58,8 +58,8 @@ ALLOWLIST = (
     ("atx-impl/tools/composition_rules.py",
      ("ew_theme_std", "ew_theme_aim_v2", "tier_weights", "member_cap", "theme_gain_weights"), COMPOSITION,
      "atx-impl/src/strategy_ic_composition.cpp over engine combine/group_rerank.hpp", "D3"),
-    ("atx-impl/tools/composition_resid.py", ("centred_tied_ranks", "tie_block_means"), COMPOSITION,
-     "atx-impl/src/strategy_ic_theme_resid.cpp over engine combine/group_residualise.hpp", "D3"),
+    # D3 part B (lane D3W-PB) retired composition_resid.py's row: its numpy reference moved to its test. The other
+    # D3 rows wait for a fitter that builds every document from composition_fit.json (P10).
     ("atx-impl/tools/composition_theme_erc.py", ("erc_shares", "theme_erc"), COMPOSITION,
      "atx-impl/src/strategy_ic_theme_erc.cpp over engine combine/group_erc.hpp", "D3"),
     ("atx-impl/tools/composition_ic_shrink.py", ("shrunk_shares", "ic_shrink"), COMPOSITION,
