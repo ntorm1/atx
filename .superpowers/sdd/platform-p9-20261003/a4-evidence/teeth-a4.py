@@ -17,7 +17,7 @@ FILTER = ("ResearchFieldsA4*:ResearchFieldsHoldings*")
 MUTATIONS = [  # (id, file, exact old text, new text, the test that must fail)
     ("M1-rule6", "atx-engine/src/research/fields/reuse.cpp",
      "        why = history_differs(prior.manifest, plan, history);\n",
-     "        (void)history; // TEETH M1\n",
+     "        (void)history_differs(prior.manifest, plan, history); // TEETH M1\n",
      "ResearchFieldsA4Reuse.PriceFieldReusedOnlyWithTheBuildsPanelHistory"),
     ("M2-union", "atx-engine/src/research/fields/research_fields_cli.cpp",
      "build_entries(spec, role, to_build, plans)",
