@@ -1,20 +1,26 @@
 """The eval verb's edge-case fixture (platform P9 lane B2, fix round 1: rulings B2-R1 and B2-R2).
 
-Two inputs where a faithful port cannot match the Python bit for bit, or did not, with the values today's Python
-statistics of record compute on them, so the engine (gtest EvalEdges.*, atx-engine-research-eval-tests) is tied to
-them under the rulings' rules:
+Inputs where a faithful port cannot match the Python bit for bit, or did not, with the values the Python statistics
+of record compute on them, so the engine (gtest EvalEdges.*, atx-engine-research-eval-tests) is tied to them under the
+rulings' rules. Since lane B2's deletion the Python is the retired code's verbatim copy beside the eval_tie fixture
+(fixtures/eval_tie/frozen_statistics.py, imported as FS; the names below are the functions it keeps):
 
   paired     B2-R1: a cell b against its reference a at a stated 1 - rho. The series come from an exact generator
              (below) that the gtest repeats bit for bit, so no series file is committed. Python:
-             nav_summ.paired_stats(b, a, draws 999, block 21, seed 20260929, one-sided). A case with 1 - rho >= 1e-6
+             paired_stats(b, a, draws 999, block 21, seed 20260929, one-sided). A case with 1 - rho >= 1e-6
              ties within 1e-12 / (1 - rho) relative with equal counts; below 1e-6 the engine refuses the pair
              (degenerate: SE / t / p null) and the Python value is recorded for the record only.
   cscv       B2-R2: five generated candidates and one constant 0.001 series, 240 sessions, 8 blocks. Python:
-             backtest_integrity.cscv_pbo (exhaustive). The constant candidate's Sharpe is 0 in every split.
+             cscv_pbo (exhaustive). The constant candidate's Sharpe is 0 in every split.
+  cscv_wins  B2-R2, re-review 1 S7: four candidates that all drift negative, then the constant 0.001 series and a
+             zero series (both Sharpe 0 in every split), same sessions and blocks. The constant wins the splits where
+             every other candidate's in-sample Sharpe is negative; it ties the zero column in and out of sample, and
+             the tie keeps the lower index (Python's first maximum and its OOS rank rule), so the zero column never
+             wins.
   house_dsr  B2-9: the house DSR rows at N from 2 to 1e6 (HOUSE_N). Python: norm_ppf (bisection) at 1 - 1/N and
              1 - 1/(N e); expected_max_sr and deflated_sharpe at each moment set and V of ``direct``; and the verb's
-             rows on two generated cells (the reference a and HOUSE_SEED's cell at HOUSE_DRIFT): nav_summ.dsr_rows
-             (cross) and backtest_integrity.lo_null_dsr (lo) at dsr_n = N. Tied within 1e-12 relative for every N.
+             rows on two generated cells (the reference a and HOUSE_SEED's cell at HOUSE_DRIFT): dsr_rows (cross)
+             and lo_null_dsr (lo) at dsr_n = N. Tied within 1e-12 relative for every N.
 
   python generate_research_eval_edges.py --write    regenerate expected.json (a deliberate fixture change)
   python generate_research_eval_edges.py --check    recompute the values from the committed parameters (exit 0 = tied)
@@ -40,12 +46,10 @@ import sys
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[3]
-TOOLS = REPO / "atx-impl" / "tools"
-if str(TOOLS) not in sys.path:
-    sys.path.insert(0, str(TOOLS))
-import backtest_integrity as BI  # noqa: E402
-import nav_summ as NS  # noqa: E402
+FROZEN = HERE.parent / "eval_tie"
+if str(FROZEN) not in sys.path:
+    sys.path.insert(0, str(FROZEN))
+import frozen_statistics as FS  # noqa: E402  (the retired Python statistics, verbatim; P9 B2)
 
 SCHEMA = "atx.research-eval-edges-fixture/v1"
 EXPECTED = "expected.json"
@@ -62,6 +66,7 @@ TARGETS = (("omr_5e-4", 5.005e-4), ("omr_5e-5", 5e-5), ("omr_5e-6", 5e-6), ("omr
            ("omr_0.98e-6", 0.98e-6), ("omr_5e-9", 5e-9), ("omr_6e-13", 6e-13))
 CSCV_T, CSCV_BLOCKS, CSCV_CONSTANT = 240, 8, 0.001
 CSCV_DRIFTS = (0.0004, -0.0002, 0.0001, 0.0003, -0.0001)
+CSCV_WIN_SEED, CSCV_WIN_DRIFTS = 5151, (-0.0002, -0.0001, -0.0003, -0.00015)   # re-review 1 S7
 # ruling B2-9: the trial counts N of the house DSR tie, 2 to 1e6 (the recorded N_tot are 13..233; a mined campaign's
 # registry count can pass 1e4), and the second cell of the verb rows
 HOUSE_N = (2, 3, 4, 5, 7, 10, 13, 41, 100, 233, 1000, 4097, 10000, 33333, 100000, 314159, 1000000)
@@ -128,7 +133,7 @@ def plain(x):
 
 def paired_case(name: str, target: float | None, eps: float, shift: float) -> dict:
     a, b = reference(), cell(eps, shift)
-    p = NS.paired_stats(b, a, draws=DRAWS, block=BLOCK, seed=SEED, one_sided=True)
+    p = FS.paired_stats(b, a, draws=DRAWS, block=BLOCK, seed=SEED, one_sided=True)
     omr = one_minus_rho(b, a)
     return {"name": name, "target_one_minus_rho": target, "eps": eps, "shift": shift, "one_minus_rho": omr,
             "numpy_one_minus_rho": 1.0 - float(np.corrcoef(b, a)[0, 1]), "degenerate": omr < DEGENERATE,
@@ -142,10 +147,24 @@ def cscv_matrix() -> np.ndarray:
 
 
 def cscv_case() -> dict:
-    r = BI.cscv_pbo(cscv_matrix(), blocks=CSCV_BLOCKS)
+    r = FS.cscv_pbo(cscv_matrix(), blocks=CSCV_BLOCKS)
     r = dict(r, logits=[float(x) for x in r["logits"]])
     return {"sessions": CSCV_T, "blocks": CSCV_BLOCKS, "constant": CSCV_CONSTANT, "drifts": list(CSCV_DRIFTS),
             "seed": CSCV_SEED, "python": plain(r)}
+
+
+def cscv_wins_matrix() -> np.ndarray:
+    cols = [[((u - 0.5) * 0.02) + d for u in uniforms(CSCV_WIN_SEED + c, CSCV_T)]
+            for c, d in enumerate(CSCV_WIN_DRIFTS)]
+    cols += [[CSCV_CONSTANT] * CSCV_T, [0.0] * CSCV_T]
+    return np.array(cols).T
+
+
+def cscv_wins_case() -> dict:
+    r = FS.cscv_pbo(cscv_wins_matrix(), blocks=CSCV_BLOCKS)
+    r = dict(r, logits=[float(x) for x in r["logits"]])
+    return {"sessions": CSCV_T, "blocks": CSCV_BLOCKS, "constant": CSCV_CONSTANT, "drifts": list(CSCV_WIN_DRIFTS),
+            "seed": CSCV_WIN_SEED, "columns": "drifts, then the constant, then 0.0", "python": plain(r)}
 
 
 def house_cell() -> np.ndarray:
@@ -154,18 +173,18 @@ def house_cell() -> np.ndarray:
 
 def house_dsr_case() -> dict:
     """Ruling B2-9: the Python house DSR at every N of HOUSE_N, directly and as the verb's cross / lo rows."""
-    ppf = [{"n": n, "p_hi": 1.0 - 1.0 / n, "ppf_hi": NS.norm_ppf(1.0 - 1.0 / n),
-            "p_lo": 1.0 - 1.0 / (n * math.e), "ppf_lo": NS.norm_ppf(1.0 - 1.0 / (n * math.e))} for n in HOUSE_N]
+    ppf = [{"n": n, "p_hi": 1.0 - 1.0 / n, "ppf_hi": FS.norm_ppf(1.0 - 1.0 / n),
+            "p_lo": 1.0 - 1.0 / (n * math.e), "ppf_lo": FS.norm_ppf(1.0 - 1.0 / (n * math.e))} for n in HOUSE_N]
     direct = []
     for label, sr, t, skew, kurt, v in HOUSE_DIRECT:
         rows = []
         for n in HOUSE_N:
-            sr0 = NS.expected_max_sr(v, n)
-            rows.append({"n": n, "sr0_daily": sr0, "dsr": NS.deflated_sharpe(sr, t, skew, kurt, sr0)})
+            sr0 = FS.expected_max_sr(v, n)
+            rows.append({"n": n, "sr0_daily": sr0, "dsr": FS.deflated_sharpe(sr, t, skew, kurt, sr0)})
         direct.append({"label": label, "sr_daily": sr, "sessions": t, "skew": skew, "kurtosis": kurt, "variance": v,
                        "rows": rows})
-    ma, mb = NS.net_moments(reference()), NS.net_moments(house_cell())
-    verb = [{"n": n, "cross": NS.dsr_rows([ma, mb], n), "lo": BI.lo_null_dsr(ma, n)} for n in HOUSE_N]
+    ma, mb = FS.net_moments(reference()), FS.net_moments(house_cell())
+    verb = [{"n": n, "cross": FS.dsr_rows([ma, mb], n), "lo": FS.lo_null_dsr(ma, n)} for n in HOUSE_N]
     return plain({"n": list(HOUSE_N), "seed": HOUSE_SEED, "drift": HOUSE_DRIFT, "norm_ppf": ppf, "direct": direct,
                   "verb_moments": [ma, mb], "verb": verb})
 
@@ -179,7 +198,7 @@ def document(eps_by_name: dict[str, float]) -> dict:
             "paired": {"sessions": T, "draws": DRAWS, "block": BLOCK, "seed": SEED, "one_sided": True,
                        "degenerate_below": DEGENERATE, "tolerance": "1e-12 / (1 - rho) relative (ruling B2-R1 (b))",
                        "cases": cases},
-            "cscv": cscv_case(), "house_dsr": house_dsr_case()}
+            "cscv": cscv_case(), "cscv_wins": cscv_wins_case(), "house_dsr": house_dsr_case()}
 
 
 def encode(doc) -> bytes:

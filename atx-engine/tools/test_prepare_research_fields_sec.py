@@ -35,18 +35,19 @@ UTC = dt.timezone.utc
 D = dt.date.fromisoformat
 at, mark = base.at, base.mark
 LONG_AGO = base.LONG_AGO
-SEAL = at(2025, 1, 1)
+SEAL = at(2024, 1, 1)   # the repository window's seal (research_window.py)
 
-# Hand-listed NYSE full-day closures 2023-2026 (independent of sec.nyse_holidays).
+# Hand-listed NYSE full-day closures 2022-2025 (independent of sec.nyse_holidays): a rule calendar, not data. The
+# fixture's rows end before the seal; the calendar runs past it because expected dates are up to 364 days ahead.
 HOLIDAYS = {D(x) for x in (
+    "2022-01-17", "2022-02-21", "2022-04-15", "2022-05-30", "2022-06-20", "2022-07-04", "2022-09-05", "2022-11-24",
+    "2022-12-26",
     "2023-01-02", "2023-01-16", "2023-02-20", "2023-04-07", "2023-05-29", "2023-06-19", "2023-07-04", "2023-09-04",
     "2023-11-23", "2023-12-25", "2024-01-01", "2024-01-15", "2024-02-19", "2024-03-29", "2024-05-27", "2024-06-19",
     "2024-07-04", "2024-09-02", "2024-11-28", "2024-12-25", "2025-01-01", "2025-01-09", "2025-01-20", "2025-02-17",
-    "2025-04-18", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-11-27", "2025-12-25",
-    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03",
-    "2026-09-07", "2026-11-26", "2026-12-25")}
-_ALL = [D("2023-01-02") + dt.timedelta(days=i) for i in range(1460)]   # through 2026-12-31
-# the role's own sessions inside the role (the fixture role keeps 2024-11-28 and 2024-12-25), the rule outside
+    "2025-04-18", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01", "2025-11-27", "2025-12-25")}
+_ALL = [D("2022-01-01") + dt.timedelta(days=i) for i in range(1461)]   # through 2025-12-31
+# the role's own sessions inside the role (the fixture role keeps 2023-11-23 and 2023-12-25), the rule outside
 CAL = sorted({d for d in _ALL if d.weekday() < 5 and d not in HOLIDAYS and not SESSIONS[0] <= d <= SESSIONS[-1]}
              | set(SESSIONS))
 IDX = {d: i for i, d in enumerate(CAL)}
@@ -78,8 +79,8 @@ SEC_BRIDGE = [
     (101, 1001, D("2015-01-01"), None, LONG_AGO, "P", "strict", "reconstructed_high"),
     (303, 1001, D("2015-01-01"), None, LONG_AGO, "J", "strict", "reconstructed_high"),     # second class: NaN
     (202, 2002, D("2015-01-01"), None, LONG_AGO, "P", "strict", "reconstructed_high"),
-    (404, 4004, D("2015-01-01"), D("2024-12-02"), LONG_AGO, "P", "strict", "reconstructed_high"),  # ends in the role
-    (505, 5005, D("2024-11-01"), None, mark(D("2024-11-01")), "P", "name", "finra_name_match"),  # starts in the role
+    (404, 4004, D("2015-01-01"), D("2023-12-04"), LONG_AGO, "P", "strict", "reconstructed_high"),  # ends in the role
+    (505, 5005, D("2023-11-03"), None, mark(D("2023-11-03")), "P", "name", "finra_name_match"),  # starts in the role
     (999, 9009, D("2015-01-01"), None, LONG_AGO, "P", "strict", "reconstructed_high"),     # off the role axis
 ]
 
@@ -97,45 +98,45 @@ def post(d):
 
 
 ANN = [
-    (1001, "0000001001-23-000010", at(2023, 10, 24, 20, 30), "post_market", D("2023-10-24"), post(D("2023-10-24")),
+    (1001, "0000001001-22-000010", at(2022, 10, 25, 20, 30), "post_market", D("2022-10-25"), post(D("2022-10-25")),
      True, "yoy_364", 1),
-    (1001, "0000001001-24-000001", at(2024, 1, 25, 12), "pre_market", D("2024-01-25"), D("2024-01-25"), True,
+    (1001, "0000001001-23-000001", at(2023, 1, 26, 12), "pre_market", D("2023-01-26"), D("2023-01-26"), True,
      "yoy_364", -2),
-    (1001, "0000001001-24-000002", at(2024, 4, 23, 20, 15), "post_market", D("2024-04-23"), post(D("2024-04-23")),
+    (1001, "0000001001-23-000002", at(2023, 4, 25, 20, 15), "post_market", D("2023-04-25"), post(D("2023-04-25")),
      True, "yoy_364", 0),
-    (1001, "0000001001-24-000003", at(2024, 7, 23, 20, 10), "intraday", D("2024-07-23"), D("2024-07-23"), True,
+    (1001, "0000001001-23-000003", at(2023, 7, 25, 20, 10), "intraday", D("2023-07-25"), D("2023-07-25"), True,
      "yoy_364", 3),
-    # late (expected 10-22) and accepted 22:30 UTC on 10-29: not usable on 10-30, usable from 10-31
-    (1001, "0000001001-24-000004", at(2024, 10, 29, 22, 30), "post_market", D("2024-10-29"), D("2024-10-30"), True,
+    # late (expected 10-24) and accepted 22:30 UTC on 10-31: not usable on 11-01, usable from 11-02
+    (1001, "0000001001-23-000004", at(2023, 10, 31, 22, 30), "post_market", D("2023-10-31"), D("2023-11-01"), True,
      "yoy_364", 7),
-    (1001, "0000001001-24-000005", at(2024, 11, 5, 13), "pre_market", D("2024-11-05"), D("2024-11-05"), False,
+    (1001, "0000001001-23-000005", at(2023, 11, 7, 13), "pre_market", D("2023-11-07"), D("2023-11-07"), False,
      None, None),                                                   # non-primary: ignored
-    (1001, "0000001001-25-000001", at(2025, 1, 28, 21), "post_market", D("2025-01-28"), D("2025-01-29"), True,
+    (1001, "0000001001-24-000001", at(2024, 1, 30, 21), "post_market", D("2024-01-30"), D("2024-01-31"), True,
      "yoy_364", 0),                                                 # sealed
-    # young filer: no year-ago rows -> fallback +91; the second release at 21:59 UTC on 11-07 is usable on 11-08
-    (2002, "0000002002-24-000001", at(2024, 8, 6, 11, 30), "pre_market", D("2024-08-06"), D("2024-08-06"), True,
+    # young filer: no year-ago rows -> fallback +91; the second release at 21:59 UTC on 11-09 is usable on 11-10
+    (2002, "0000002002-23-000001", at(2023, 8, 8, 11, 30), "pre_market", D("2023-08-08"), D("2023-08-08"), True,
      None, None),
-    (2002, "0000002002-24-000002", at(2024, 11, 7, 21, 59), "post_market", D("2024-11-07"), D("2024-11-08"), True,
+    (2002, "0000002002-23-000002", at(2023, 11, 9, 21, 59), "post_market", D("2023-11-09"), D("2023-11-10"), True,
      "prev_primary_plus_91", 2),
     # missed quarter: overdue beyond 63 sessions, then stale after 200 days
-    (4004, "0000004004-23-000001", at(2023, 7, 20, 20), "post_market", D("2023-07-20"), D("2023-07-21"), True,
+    (4004, "0000004004-22-000001", at(2022, 7, 21, 20), "post_market", D("2022-07-21"), D("2022-07-22"), True,
      "yoy_364", 0),
-    (4004, "0000004004-23-000002", at(2023, 10, 19, 20), "post_market", D("2023-10-19"), D("2023-10-20"), True,
+    (4004, "0000004004-22-000002", at(2022, 10, 20, 20), "post_market", D("2022-10-20"), D("2022-10-21"), True,
      "yoy_364", 1),
-    (4004, "0000004004-24-000001", at(2024, 5, 2, 20), "post_market", D("2024-05-02"), D("2024-05-03"), True,
+    (4004, "0000004004-23-000001", at(2023, 5, 4, 20), "post_market", D("2023-05-04"), D("2023-05-05"), True,
      "yoy_364", 14),
-    # early announcement: the year-ago expectation (2024-11-05) is consumed by the 2024-10-24 release
-    (5005, "0000005005-23-000001", at(2023, 11, 7, 12), "pre_market", D("2023-11-07"), D("2023-11-07"), True,
+    # early announcement: the year-ago expectation (2023-11-07) is consumed by the 2023-10-26 release
+    (5005, "0000005005-22-000001", at(2022, 11, 8, 12), "pre_market", D("2022-11-08"), D("2022-11-08"), True,
      "yoy_364", 0),
-    (5005, "0000005005-24-000001", at(2024, 2, 8, 12), "pre_market", D("2024-02-08"), D("2024-02-08"), True,
+    (5005, "0000005005-23-000001", at(2023, 2, 9, 12), "pre_market", D("2023-02-09"), D("2023-02-09"), True,
      "yoy_364", 0),
-    (5005, "0000005005-24-000002", at(2024, 5, 9, 12), "pre_market", D("2024-05-09"), D("2024-05-09"), True,
+    (5005, "0000005005-23-000002", at(2023, 5, 11, 12), "pre_market", D("2023-05-11"), D("2023-05-11"), True,
      "yoy_364", 0),
-    (5005, "0000005005-24-000003", at(2024, 8, 8, 12), "closed_day", D("2024-08-08"), D("2024-08-08"), True,
+    (5005, "0000005005-23-000003", at(2023, 8, 10, 12), "closed_day", D("2023-08-10"), D("2023-08-10"), True,
      "yoy_364", 0),
-    (5005, "0000005005-24-000004", at(2024, 10, 24, 12), "pre_market", D("2024-10-24"), D("2024-10-24"), True,
+    (5005, "0000005005-23-000004", at(2023, 10, 26, 12), "pre_market", D("2023-10-26"), D("2023-10-26"), True,
      "yoy_364", -12),
-    (7777, "0000007777-24-000001", at(2024, 10, 2, 12), "pre_market", D("2024-10-02"), D("2024-10-02"), True,
+    (7777, "0000007777-23-000001", at(2023, 10, 4, 12), "pre_market", D("2023-10-04"), D("2023-10-04"), True,
      "yoy_364", 0),                                                 # unlinked CIK
 ]
 TIMING = {"pre_market": 0.0, "intraday": 1.0, "post_market": 2.0, "closed_day": 3.0}
@@ -190,43 +191,43 @@ def day_after(d, hh=21):
 
 
 TXS = [
-    # history of CIK 1001 insiders for the 2024 classification
-    *[tx(1001, 11, D(x), day_after(D(x)), "S", 100) for x in ("2021-03-10", "2022-03-15", "2023-03-14")],  # routine
-    tx(1001, 12, D("2021-02-10"), day_after(D("2021-02-10")), "P", 50),                                   # opportunistic
-    tx(1001, 12, D("2022-06-15"), day_after(D("2022-06-15")), "S", 60),
-    tx(1001, 12, D("2023-09-12"), day_after(D("2023-09-12")), "P", 70),
-    tx(1001, 13, D("2023-05-05"), day_after(D("2023-05-05")), "P", 10),                                   # unclassified
-    tx(1001, 21, D("2021-01-05"), day_after(D("2021-01-05")), "P", 5, officer=True, director=False),
-    tx(1001, 21, D("2022-01-05"), day_after(D("2022-01-05")), "P", 5, officer=True, director=False),
-    tx(1001, 21, D("2023-12-28"), at(2024, 1, 2, 15), "P", 5, officer=True, director=False),  # filed in 2024: unseen
-    # the 2024 window
-    tx(1001, 11, D("2024-09-10"), at(2024, 9, 11, 20), "S", 1000),
-    tx(1001, 12, D("2024-10-21"), at(2024, 10, 22, 22, 30), "P", 500.5),     # 22:30 UTC: usable from 10-24, not 10-23
-    tx(1001, 13, D("2024-10-28"), at(2024, 10, 29, 21), "P", 300),
-    tx(1001, 14, D("2024-11-01"), at(2024, 11, 4, 21, 59), "P", 200),        # 21:59 UTC: usable on 11-05
-    tx(1001, 21, D("2024-11-06"), at(2024, 11, 7, 20), "S", 40.25, officer=True, director=False),
-    tx(1001, 20, D("2024-08-01"), at(2024, 10, 15, 21), "S", 250),           # late filing inside the window
-    tx(1001, 19, D("2024-03-01"), at(2024, 10, 10, 21), "P", 400),           # late filing outside the window
-    tx(1001, 15, D("2024-10-08"), at(2024, 10, 9, 20), "P", 5000, director=False),                # 10% owner only
-    tx(1001, 12, D("2024-10-21"), at(2024, 10, 25, 20), "P", 999, form="4/A"),                   # amendment
-    tx(1001, 16, D("2024-10-14"), at(2024, 10, 15, 20), "P", 77, form="5"),                      # Form 5
-    tx(1001, 17, D("2024-10-14"), at(2024, 10, 15, 20), "P", 88, table="derivative"),            # derivative
-    tx(1001, 18, D("2024-10-14"), at(2024, 10, 15, 20), "P", 99, direction="D"),                 # direction mismatch
-    tx(1001, 22, D("2024-10-14"), at(2024, 10, 15, 20), "P", 0.0),                               # zero shares
-    tx(1001, 23, D("2024-10-16"), at(2024, 10, 17, 20), "S", 7000, owners=3, ten=True),  # sponsor group + director
-    tx(1001, 24, D("2024-09-16"), at(2024, 9, 17, 20), "P", 30, ten=True),               # founder director, 10%, alone
-    tx(1001, 11, D("2024-11-20"), at(2024, 11, 21, 20), "M", 123),           # exercise: presence only
+    # history of CIK 1001 insiders for the 2023 classification
+    *[tx(1001, 11, D(x), day_after(D(x)), "S", 100) for x in ("2020-03-11", "2021-03-16", "2022-03-15")],  # routine
+    tx(1001, 12, D("2020-02-12"), day_after(D("2020-02-12")), "P", 50),                                   # opportunistic
+    tx(1001, 12, D("2021-06-16"), day_after(D("2021-06-16")), "S", 60),
+    tx(1001, 12, D("2022-09-13"), day_after(D("2022-09-13")), "P", 70),
+    tx(1001, 13, D("2022-05-06"), day_after(D("2022-05-06")), "P", 10),                                   # unclassified
+    tx(1001, 21, D("2020-01-07"), day_after(D("2020-01-07")), "P", 5, officer=True, director=False),
+    tx(1001, 21, D("2021-01-06"), day_after(D("2021-01-06")), "P", 5, officer=True, director=False),
+    tx(1001, 21, D("2022-12-29"), at(2023, 1, 3, 15), "P", 5, officer=True, director=False),  # filed in 2023: unseen
+    # the 2023 window
+    tx(1001, 11, D("2023-09-12"), at(2023, 9, 13, 20), "S", 1000),
+    tx(1001, 12, D("2023-10-23"), at(2023, 10, 24, 22, 30), "P", 500.5),     # 22:30 UTC: usable from 10-26, not 10-25
+    tx(1001, 13, D("2023-10-30"), at(2023, 10, 31, 21), "P", 300),
+    tx(1001, 14, D("2023-11-03"), at(2023, 11, 6, 21, 59), "P", 200),        # 21:59 UTC: usable on 11-07
+    tx(1001, 21, D("2023-11-08"), at(2023, 11, 9, 20), "S", 40.25, officer=True, director=False),
+    tx(1001, 20, D("2023-08-03"), at(2023, 10, 17, 21), "S", 250),           # late filing inside the window
+    tx(1001, 19, D("2023-03-03"), at(2023, 10, 12, 21), "P", 400),           # late filing outside the window
+    tx(1001, 15, D("2023-10-10"), at(2023, 10, 11, 20), "P", 5000, director=False),                # 10% owner only
+    tx(1001, 12, D("2023-10-23"), at(2023, 10, 27, 20), "P", 999, form="4/A"),                   # amendment
+    tx(1001, 16, D("2023-10-16"), at(2023, 10, 17, 20), "P", 77, form="5"),                      # Form 5
+    tx(1001, 17, D("2023-10-16"), at(2023, 10, 17, 20), "P", 88, table="derivative"),            # derivative
+    tx(1001, 18, D("2023-10-16"), at(2023, 10, 17, 20), "P", 99, direction="D"),                 # direction mismatch
+    tx(1001, 22, D("2023-10-16"), at(2023, 10, 17, 20), "P", 0.0),                               # zero shares
+    tx(1001, 23, D("2023-10-18"), at(2023, 10, 19, 20), "S", 7000, owners=3, ten=True),  # sponsor group + director
+    tx(1001, 24, D("2023-09-18"), at(2023, 9, 19, 20), "P", 30, ten=True),               # founder director, 10%, alone
+    tx(1001, 11, D("2023-11-22"), at(2023, 11, 23, 20), "M", 123),           # exercise: presence only
     # CIK 2002: an award only (Section 16 present, no open-market trade)
-    tx(2002, 31, D("2024-06-03"), at(2024, 6, 4, 20), "A", 1000),
-    tx(2002, 32, D("2024-12-02"), at(2024, 12, 3, 20), "S", 5e6),   # |net| > shares_out: ratio NaN, seller counted
-    # CIK 4004: last Section 16 row 2023-10-20 -> presence ends inside the role
-    tx(4004, 41, D("2023-10-19"), at(2023, 10, 20, 20), "M", 10),
-    # CIK 5005 (linked from 11-01; shares_out NaN on line 505)
-    tx(5005, 51, D("2024-11-12"), at(2024, 11, 13, 20), "P", 600),
-    tx(5005, 52, D("2024-05-12"), at(2024, 5, 13, 20), "S", 100),
+    tx(2002, 31, D("2023-06-05"), at(2023, 6, 6, 20), "A", 1000),
+    tx(2002, 32, D("2023-12-04"), at(2023, 12, 5, 20), "S", 5e6),   # |net| > shares_out: ratio NaN, seller counted
+    # CIK 4004: last Section 16 row 2022-10-21 -> presence ends inside the role
+    tx(4004, 41, D("2022-10-20"), at(2022, 10, 21, 20), "M", 10),
+    # CIK 5005 (linked from 11-03; shares_out NaN on line 505)
+    tx(5005, 51, D("2023-11-14"), at(2023, 11, 15, 20), "P", 600),
+    tx(5005, 52, D("2023-05-14"), at(2023, 5, 15, 20), "S", 100),
     # unlinked and sealed
-    tx(7777, 71, D("2024-10-10"), at(2024, 10, 11, 20), "P", 1),
-    tx(1001, 11, D("2025-01-06"), at(2025, 1, 7, 20), "S", 1),
+    tx(7777, 71, D("2023-10-12"), at(2023, 10, 13, 20), "P", 1),
+    tx(1001, 11, D("2024-01-08"), at(2024, 1, 9, 20), "S", 1),
 ]
 INS_COLS = ("issuer_cik", "owner_cik", "form", "is_amendment", "table_type", "transaction_code", "acquired_disposed",
             "shares", "transaction_date", "any_director", "any_officer", "any_ten_percent_owner", "n_reporting_owners",
@@ -238,7 +239,7 @@ INS_TYPES = {"issuer_cik": pa.int64(), "owner_cik": pa.int64(), "form": pa.strin
              "available_at": pa.timestamp("us")}
 
 
-def insider_tables(rows=TXS, first=(2015, 1), last=(2025, 2)):
+def insider_tables(rows=TXS, first=(2015, 1), last=(2024, 2)):
     """transactions/year=Y/YqN.parquet for every filing quarter first..last (empty ones included) + one owners file."""
     tables, (y, q) = {}, first
     while (y, q) <= last:
@@ -247,25 +248,25 @@ def insider_tables(rows=TXS, first=(2015, 1), last=(2025, 2)):
         data["issuer_name"] = pa.array(["x"] * len(sel), pa.string())
         tables[f"transactions/year={y}/{y}q{q}.parquet"] = pa.table(data)
         y, q = (y + 1, 1) if q == 4 else (y, q + 1)
-    tables["owners/year=2024/2024q4.parquet"] = pa.table({"accession": pa.array(["a"], pa.string())})
+    tables["owners/year=2023/2023q4.parquet"] = pa.table({"accession": pa.array(["a"], pa.string())})
     return tables
 
 
 # ---- 8-K items -----------------------------------------------------------------------------------------------------
 K8 = [  # (cik, accession, form, items, available_at)
-    (1001, "0000001001-23-000090", "8-K", ("7.01",), at(2023, 12, 1, 15)),
-    (1001, "0000001001-24-000040", "8-K", ("1.01", "9.01"), at(2024, 6, 3, 14)),       # material, before the role
-    (1001, "0000001001-24-000045", "8-K12B", ("8.01",), at(2024, 9, 3, 14)),
-    (1001, "0000001001-24-000050", "8-K", ("2.02", "9.01"), at(2024, 10, 29, 22, 30)),  # usable from 10-31
-    (1001, "0000001001-24-000055", "8-K", ("5.02",), at(2024, 11, 12, 15)),             # material
-    (1001, "0000001001-24-000056", "8-K/A", ("5.02",), at(2024, 11, 20, 15)),           # amendment: ignored
-    (1001, "0000001001-24-000060", "8-K", ("8.01",), at(2024, 12, 2, 13)),              # co-registrant with 2002
-    (2002, "0000001001-24-000060", "8-K", ("8.01",), at(2024, 12, 2, 13)),
-    (4004, "0000004004-23-000070", "8-K", ("8.01",), at(2023, 11, 1, 14)),              # presence ends inside the role
-    (5005, "0000005005-24-000070", "8-K", ("2.05", "9.01"), at(2024, 11, 15, 21, 59)),  # 21:59 UTC: usable 11-18
-    (7777, "0000007777-24-000070", "8-K", ("1.01",), at(2024, 10, 15, 14)),             # unlinked
-    (1001, "0000001001-25-000070", "8-K", ("5.02",), at(2025, 1, 6, 14)),               # sealed
-    (1001, "0000001001-24-000080", "10-Q", ("",), at(2024, 11, 1, 14)),                 # not an 8-K form
+    (1001, "0000001001-22-000090", "8-K", ("7.01",), at(2022, 12, 2, 15)),
+    (1001, "0000001001-23-000040", "8-K", ("1.01", "9.01"), at(2023, 6, 5, 14)),       # material, before the role
+    (1001, "0000001001-23-000045", "8-K12B", ("8.01",), at(2023, 9, 5, 14)),
+    (1001, "0000001001-23-000050", "8-K", ("2.02", "9.01"), at(2023, 10, 31, 22, 30)),  # usable from 11-02
+    (1001, "0000001001-23-000055", "8-K", ("5.02",), at(2023, 11, 14, 15)),             # material
+    (1001, "0000001001-23-000056", "8-K/A", ("5.02",), at(2023, 11, 22, 15)),           # amendment: ignored
+    (1001, "0000001001-23-000060", "8-K", ("8.01",), at(2023, 12, 4, 13)),              # co-registrant with 2002
+    (2002, "0000001001-23-000060", "8-K", ("8.01",), at(2023, 12, 4, 13)),
+    (4004, "0000004004-22-000070", "8-K", ("8.01",), at(2022, 11, 2, 14)),              # presence ends inside the role
+    (5005, "0000005005-23-000070", "8-K", ("2.05", "9.01"), at(2023, 11, 17, 21, 59)),  # 21:59 UTC: usable 11-20
+    (7777, "0000007777-23-000070", "8-K", ("1.01",), at(2023, 10, 17, 14)),             # unlinked
+    (1001, "0000001001-24-000070", "8-K", ("5.02",), at(2024, 1, 8, 14)),               # sealed
+    (1001, "0000001001-23-000080", "10-Q", ("",), at(2023, 11, 3, 14)),                 # not an 8-K form
 ]
 
 
@@ -450,46 +451,48 @@ class SecFields(unittest.TestCase):
         self.assertEqual(checks["files_read"], listed - checks["files_not_read_after_role"] - 1)
 
     def test_pit_acceptance_after_22_utc_is_not_usable_next_session(self):
-        # 1001's release accepted 2024-10-29 22:30 UTC: still the July release on 10-30, the new one from 10-31
-        self.assertEqual(self.at_("ea_delay_days", "2024-10-30", 101), 3.0)
-        self.assertEqual(self.at_("ea_delay_days", "2024-10-31", 101), 7.0)
-        self.assertEqual(self.at_("ea_days_since", "2024-10-31", 101), 1.0)   # reaction session 10-30
-        # 8-K of the same filing: 10-30 still counts the 09-03 8-K12B as latest; 10-31 counts the new one
-        self.assertEqual(self.at_("k8_days_since_any", "2024-10-31", 101), 1.0)
-        # Form 4 accepted 22:30 UTC on 10-22: not a buyer on 10-23, a buyer on 10-24
-        self.assertEqual(self.at_("ins_n_buyers", "2024-10-23", 101), 1.0)   # owner 24 only
-        self.assertEqual(self.at_("ins_n_buyers", "2024-10-24", 101), 2.0)   # + owner 12
+        # 1001's release accepted 2023-10-31 22:30 UTC: still the July release on 11-01, the new one from 11-02
+        self.assertEqual(self.at_("ea_delay_days", "2023-11-01", 101), 3.0)
+        self.assertEqual(self.at_("ea_delay_days", "2023-11-02", 101), 7.0)
+        self.assertEqual(self.at_("ea_days_since", "2023-11-02", 101), 1.0)   # reaction session 11-01
+        # 8-K of the same filing: 11-01 still counts the 09-05 8-K12B as latest; 11-02 counts the new one
+        self.assertEqual(self.at_("k8_days_since_any", "2023-11-02", 101), 1.0)
+        # Form 4 accepted 22:30 UTC on 10-24: not a buyer on 10-25, a buyer on 10-26
+        self.assertEqual(self.at_("ins_n_buyers", "2023-10-25", 101), 1.0)   # owner 24 only
+        self.assertEqual(self.at_("ins_n_buyers", "2023-10-26", 101), 2.0)   # + owner 12
         # 21:59 UTC on d-1 is usable on d
-        self.assertEqual(self.at_("ea_days_since", "2024-11-08", 202), 0.0)   # post-market 11-07 -> reaction 11-08
-        self.assertEqual(self.at_("ins_cluster_buy", "2024-11-05", 101), 1.0)  # 12, 13 and 14 (usable 11-05)
-        self.assertEqual(self.at_("ins_cluster_buy", "2024-11-04", 101), 0.0)
+        self.assertEqual(self.at_("ea_days_since", "2023-11-10", 202), 0.0)   # post-market 11-09 -> reaction 11-10
+        self.assertEqual(self.at_("ins_cluster_buy", "2023-11-07", 101), 1.0)  # 12, 13 and 14 (usable 11-07)
+        self.assertEqual(self.at_("ins_cluster_buy", "2023-11-06", 101), 0.0)
 
     def test_expectation_consumption_fallback_overdue_and_staleness(self):
-        # 1001 before its late release: pending 2024-10-22 (yoy of 2023-10-24); overdue afterwards
-        self.assertEqual(self.at_("ea_days_to_expected", "2024-10-15", 101), 5.0)
-        self.assertEqual(self.at_("ea_window_pre5", "2024-10-15", 101), 1.0)
-        self.assertEqual(self.at_("ea_days_to_expected", "2024-10-25", 101), -3.0)
-        # after it: 2024-10-22 consumed; next is 2025-01-23 counted on the NYSE rule calendar (01-01, 01-09, 01-20 shut)
-        self.assertEqual(self.at_("ea_days_to_expected", "2024-12-31", 101), 14.0)
-        # 2002 has no year-ago rows: session + 91 days (2024-11-05), then 2025-02-06 after the 11-07 release
-        self.assertEqual(self.at_("ea_days_to_expected", "2024-11-04", 202), 1.0)
-        self.assertTrue(math.isnan(self.at_("ea_delay_days", "2024-11-08", 202)))  # prev_primary_plus_91 rule
-        # 5005's 2024-10-24 release consumes the 2024-11-05 year-ago expectation: next is 2025-02-07
-        self.assertEqual(self.at_("ea_days_to_expected", "2024-11-01", 505), 66.0)
-        # 4004: the 2024-07-18 expectation is overdue by > 63 sessions from mid-October, stale after 2024-11-18
-        self.assertEqual(self.at_("ea_days_to_expected", "2024-10-01", 404), -52.0)
-        self.assertTrue(math.isnan(self.at_("ea_days_to_expected", "2024-10-17", 404)))
-        self.assertEqual(self.at_("ea_days_since", "2024-11-18", 404), 137.0)   # reaction 2024-05-03
-        self.assertTrue(math.isnan(self.at_("ea_days_since", "2024-11-19", 404)))
+        # 1001 before its late release: pending 2023-10-24 (yoy of 2022-10-25); overdue afterwards
+        self.assertEqual(self.at_("ea_days_to_expected", "2023-10-17", 101), 5.0)
+        self.assertEqual(self.at_("ea_window_pre5", "2023-10-17", 101), 1.0)
+        self.assertEqual(self.at_("ea_days_to_expected", "2023-10-27", 101), -3.0)
+        # after it: 2023-10-24 consumed; next is 2024-01-25 (yoy of 2023-01-26), counted from the last role session
+        # 2023-12-29 on the NYSE rule calendar (01-01 and 01-15 shut)
+        self.assertEqual(self.at_("ea_days_to_expected", "2023-12-29", 101), 17.0)
+        # 2002 has no year-ago rows: session + 91 days (2023-11-07), then 2024-02-08 after the 11-09 release
+        self.assertEqual(self.at_("ea_days_to_expected", "2023-11-06", 202), 1.0)
+        self.assertTrue(math.isnan(self.at_("ea_delay_days", "2023-11-10", 202)))  # prev_primary_plus_91 rule
+        # 5005's 2023-10-26 release consumes the 2023-11-07 year-ago expectation: next is 2024-02-08 (yoy of 2023-02-09)
+        self.assertEqual(self.at_("ea_days_to_expected", "2023-11-03", 505), 67.0)
+        # 4004: the 2023-07-20 expectation is overdue by > 63 sessions from mid-October, stale after 2023-11-20
+        self.assertEqual(self.at_("ea_days_to_expected", "2023-10-02", 404), -51.0)
+        self.assertEqual(self.at_("ea_days_to_expected", "2023-10-18", 404), -63.0)
+        self.assertTrue(math.isnan(self.at_("ea_days_to_expected", "2023-10-19", 404)))
+        self.assertEqual(self.at_("ea_days_since", "2023-11-20", 404), 137.0)   # reaction 2023-05-05
+        self.assertTrue(math.isnan(self.at_("ea_days_since", "2023-11-21", 404)))
         # the J line of 1001 and the unlinked line stay NaN
         self.assertTrue(np.isnan(self.got("ea_days_since")[:, IDS.index(303)]).all())
 
     def test_insider_classification_windows_and_exclusions(self):
-        self.assertEqual(classify(1001, 11, 2024), "routine")
-        self.assertEqual(classify(1001, 12, 2024), "opportunistic")
-        self.assertEqual(classify(1001, 13, 2024), "unclassified")
-        self.assertEqual(classify(1001, 21, 2024), "unclassified")   # its 2023 trade was filed in 2024
-        t, i = SESSIONS.index(D("2024-11-12")), IDS.index(101)
+        self.assertEqual(classify(1001, 11, 2023), "routine")
+        self.assertEqual(classify(1001, 12, 2023), "opportunistic")
+        self.assertEqual(classify(1001, 13, 2023), "unclassified")
+        self.assertEqual(classify(1001, 21, 2023), "unclassified")   # its 2022 trade was filed in 2023
+        t, i = SESSIONS.index(D("2023-11-14")), IDS.index(101)
         so = self.so[t, i]
         # window: 11 S 1000, 12 P 500.5, 13 P 300, 14 P 200, 21 S 40.25, 20 S 250 (late filing, trade inside), 24 P 30
         self.assertEqual(self.got("ins_net_buy_ratio")[t, i], (500.5 + 300 + 200 + 30 - 1000 - 40.25 - 250) / so)
@@ -497,24 +500,24 @@ class SecFields(unittest.TestCase):
         self.assertEqual(self.got("ins_n_buyers")[t, i], 4.0)
         self.assertEqual(self.got("ins_n_sellers")[t, i], 3.0)
         # 2002: awards only -> present with zero trades; 4004: presence expires; 505: shares_out NaN
-        self.assertEqual(self.at_("ins_net_buy_ratio", "2024-11-12", 202), 0.0)
-        self.assertTrue(math.isnan(self.at_("ins_net_buy_ratio", "2024-12-04", 202)))   # 5e6 sold > shares_out
-        self.assertEqual(self.at_("ins_n_sellers", "2024-12-04", 202), 1.0)
-        self.assertEqual(self.at_("ins_n_buyers", "2024-10-21", 404), 0.0)
-        self.assertTrue(math.isnan(self.at_("ins_n_buyers", "2024-10-23", 404)))
-        self.assertEqual(self.at_("ins_n_buyers", "2024-11-15", 505), 1.0)
-        self.assertTrue(math.isnan(self.at_("ins_net_buy_ratio", "2024-11-15", 505)))
-        self.assertTrue(math.isnan(self.at_("shares_out", "2024-11-15", 505)))
+        self.assertEqual(self.at_("ins_net_buy_ratio", "2023-11-14", 202), 0.0)
+        self.assertTrue(math.isnan(self.at_("ins_net_buy_ratio", "2023-12-06", 202)))   # 5e6 sold > shares_out
+        self.assertEqual(self.at_("ins_n_sellers", "2023-12-06", 202), 1.0)
+        self.assertEqual(self.at_("ins_n_buyers", "2023-10-23", 404), 0.0)
+        self.assertTrue(math.isnan(self.at_("ins_n_buyers", "2023-10-25", 404)))
+        self.assertEqual(self.at_("ins_n_buyers", "2023-11-17", 505), 1.0)
+        self.assertTrue(math.isnan(self.at_("ins_net_buy_ratio", "2023-11-17", 505)))
+        self.assertTrue(math.isnan(self.at_("shares_out", "2023-11-17", 505)))
 
     def test_eightk_windows_presence_and_links(self):
-        self.assertEqual(self.at_("k8_item_material_21", "2024-11-13", 101), 1.0)   # 5.02 accepted 11-12 15:00
-        self.assertEqual(self.at_("k8_item_material_21", "2024-11-12", 101), 0.0)
-        self.assertEqual(self.at_("k8_count_63", "2024-12-03", 202), 1.0)           # co-registrant 8-K
-        self.assertTrue(math.isnan(self.at_("k8_count_63", "2024-12-02", 202)))     # 2002 had no 8-K before
-        self.assertEqual(self.at_("k8_count_63", "2024-10-31", 404), 0.0)
-        self.assertTrue(math.isnan(self.at_("k8_count_63", "2024-11-01", 404)))     # presence expired
-        self.assertTrue(math.isnan(self.at_("k8_count_63", "2024-10-31", 505)))     # not linked yet
-        self.assertEqual(self.at_("k8_item_material_21", "2024-11-18", 505), 1.0)   # 2.05 at 21:59 UTC on 11-15
+        self.assertEqual(self.at_("k8_item_material_21", "2023-11-15", 101), 1.0)   # 5.02 accepted 11-14 15:00
+        self.assertEqual(self.at_("k8_item_material_21", "2023-11-14", 101), 0.0)
+        self.assertEqual(self.at_("k8_count_63", "2023-12-05", 202), 1.0)           # co-registrant 8-K
+        self.assertTrue(math.isnan(self.at_("k8_count_63", "2023-12-04", 202)))     # 2002 had no 8-K before
+        self.assertEqual(self.at_("k8_count_63", "2023-11-02", 404), 0.0)
+        self.assertTrue(math.isnan(self.at_("k8_count_63", "2023-11-03", 404)))     # presence expired
+        self.assertTrue(math.isnan(self.at_("k8_count_63", "2023-11-02", 505)))     # not linked yet
+        self.assertEqual(self.at_("k8_item_material_21", "2023-11-20", 505), 1.0)   # 2.05 at 21:59 UTC on 11-17
 
     def test_manifest_records_formula_pins_coverage_and_sources(self):
         entries = {e["name"]: e for e in self.manifest["fields"]}
@@ -530,16 +533,16 @@ class SecFields(unittest.TestCase):
                 self.assertEqual(e["stage_manifests"][stage]["sha256"], self.fx.pins[f"{stage}_sha256"])
             self.assertEqual(e["identity_bridge_manifest_sha256"], self.fx.sec_bridge_sha)
             self.assertIn(self.fx.sec_bridge_sha, [s.get("sha256") for s in e["sources"]])
-            self.assertIn("2024", e["coverage"]["per_year"])
-            self.assertIn("2024", e["coverage_linked_primary"])
+            self.assertIn("2023", e["coverage"]["per_year"])
+            self.assertIn("2023", e["coverage_linked_primary"])
             self.assertEqual(set(e["nan_reasons_member_cells"]), {"not_primary_link", "absent_or_stale", "out_of_rule"})
             self.assertEqual(e["sha256"], self.manifest["files"][f"{name}.f64"]["sha256"])
         self.assertEqual(entries["ins_net_buy_ratio"]["depends_on"], ["shares_out"])
         checks = self.manifest["source_checks"]["sec"]
-        self.assertEqual(checks["calendar"]["role_sessions_not_in_rule"], 2)   # the fixture keeps 11-28 and 12-25
+        self.assertEqual(checks["calendar"]["role_sessions_not_in_rule"], 2)   # the fixture keeps 11-23 and 12-25
         self.assertEqual(checks["earnings_calendar"]["lookback_truncated_rows"], 0)
-        self.assertEqual(checks["insider"]["files_not_read_after_role"], 1)    # 2025q2 (2025q1: within 31 days)
-        # 2025q1 begins at the seal this fixture binds (conftest.py): it is never opened, so its sealed row is not read
+        self.assertEqual(checks["insider"]["files_not_read_after_role"], 1)    # 2024q2 (2024q1: within 31 days)
+        # 2024q1 begins at the repository window's seal: it is never opened, so its sealed row is not read
         self.assertEqual(checks["insider"]["files_not_read_sealed"], 1)
         self.assertEqual(checks["insider"]["rows_sealed"], 0)
         self.assertEqual(checks["insider"]["dropped_form_not_original_4"], 2)
@@ -554,19 +557,19 @@ class SecFields(unittest.TestCase):
     def test_min_history_rules(self):
         with tempfile.TemporaryDirectory() as temp:
             fx = SecFixture(Path(temp))
-            # insider stage from 2022q1: classification needs 2025 -> opportunistic NaN, the rest unchanged
+            # insider stage from 2021q1: the 2023 classification needs 2020 -> opportunistic NaN, the rest unchanged
             short = fx.base / "short" / "insider"
-            fx.pins["insider_sha256"] = write_stage(short, sec.STAGES["insider"][1], insider_tables(first=(2022, 1)))
+            fx.pins["insider_sha256"] = write_stage(short, sec.STAGES["insider"][1], insider_tables(first=(2021, 1)))
             opts = fx.options(sec_stages=fx.base / "short")
             fields = ["si_shares", "shares_out", "ins_net_buy_ratio", "ins_opportunistic_net"]
-            fx.run("m22", fields=fields, module_options=opts)
-            self.assertTrue(np.isnan(fx.field("m22", "ins_opportunistic_net")).all())
-            np.testing.assert_array_equal(fx.field("m22", "ins_net_buy_ratio"), self.got("ins_net_buy_ratio"))
-            # insider stage from 2024q3: the 126-session window starts before the data for the whole role
+            fx.run("m21", fields=fields, module_options=opts)
+            self.assertTrue(np.isnan(fx.field("m21", "ins_opportunistic_net")).all())
+            np.testing.assert_array_equal(fx.field("m21", "ins_net_buy_ratio"), self.got("ins_net_buy_ratio"))
+            # insider stage from 2023q3: the 126-session window starts before the data for the whole role
             late = fx.base / "late" / "insider"
-            fx.pins["insider_sha256"] = write_stage(late, sec.STAGES["insider"][1], insider_tables(first=(2024, 3)))
-            fx.run("m24", fields=fields, module_options=fx.options(sec_stages=fx.base / "late"))
-            self.assertTrue(np.isnan(fx.field("m24", "ins_net_buy_ratio")).all())
+            fx.pins["insider_sha256"] = write_stage(late, sec.STAGES["insider"][1], insider_tables(first=(2023, 3)))
+            fx.run("m23", fields=fields, module_options=fx.options(sec_stages=fx.base / "late"))
+            self.assertTrue(np.isnan(fx.field("m23", "ins_net_buy_ratio")).all())
 
     def test_refusals_before_any_output(self):
         opts = self.fx.options()
@@ -606,7 +609,7 @@ class SecFields(unittest.TestCase):
 
 class NyseCalendar(unittest.TestCase):
     def test_rule_matches_the_hand_list(self):
-        got = sec.nyse_sessions(D("2023-01-01"), D("2026-12-31"))
+        got = sec.nyse_sessions(D("2022-01-01"), D("2025-12-31"))
         want = [(d - dt.date(1970, 1, 1)).days for d in _ALL if d.weekday() < 5
                 and d not in HOLIDAYS]
         self.assertEqual(got.tolist(), want)

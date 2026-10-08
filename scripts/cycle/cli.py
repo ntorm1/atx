@@ -51,6 +51,12 @@ Platform v8 (lane A) additions, each off unless the spec or the command line ask
   exes_sha256     (P9 OR-2) {exe key: SHA-256} of the exes the cell runs (effective exes: ic, nav), written by
                   `lock --exes` (a template's into change.set, over the pins its parent's spec carries); plan and run stop
                   (exit 3) when an exe no longer hashes to its pin; absent, exes are pinned by path only, as before
+  exes.eval       (P9 ruling B2-R3) the engine verb atx-research-eval that computes nav_summ's statistics of record: a
+                  spec's exes.eval, or with a build key and a summ section the build's bin atx-research-eval.exe; the
+                  summ step passes nav_summ --engine-stats EXE, `lock --exes` pins it, and the verdict refuses a
+                  summ.json / pbo.json whose nav_summ_run.engine_exe_sha256 is not that pin (unpinned: the exe's
+                  SHA-256 now): a summ output of another verb is not reused. Without it, nav_summ resolves its own
+                  verb, as before
   marginal.candidates (P9 ruling P4) [member id, ...]: the marginal verb gets --candidates FILE, the ids one per line
                   (UTF-8) in <cycle dir>/marginal-candidates-<sha12>.txt, written when the step starts and bound in its
                   receipt; set by a wave whose manifest's marginal ruling has candidates_only; absent, as before

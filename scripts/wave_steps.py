@@ -9,7 +9,8 @@ absolute path):
   bounded_argv     scripts/run_bounded_research.py with the wave readers' caps (180 s / 1,536 MiB / 512 MiB free, the
                    integrator's caps for the bundle and the mechanics reads) around one command
   reader_argv      wave_readers.py mechanics | book under the bounded runner
-  bundle_argv      nav_summ.py --protocol v8 --bundle PARENT CELL --bundle-json OUT under the bounded runner (PM5-23)
+  bundle_argv      nav_summ.py [--engine-stats VERB] --protocol v8 --bundle PARENT CELL --bundle-json OUT under the
+                   bounded runner (PM5-23; VERB: a v2 cell's pinned exes.eval, ruling B2-11)
   commit_argvs     git add -- PATHS ; git commit -q -m MSG -- PATHS (exactly the paths the stage wrote)
 Spec files:
   gm_doc           the gross-matched copy of a cell spec (Ruling PM6-6): name + "-gm", nav.leverage L', nav.output with
@@ -124,10 +125,13 @@ def reader_argv(py: str, kind: str, navs: dict, out: str, run_dir: str, root=Non
 
 
 def bundle_argv(py: str, base_nav: str, cell_nav: str, out: str, run_dir: str, root=None,
-                files: list | None = None, driver: dict | None = None) -> list[str]:
-    """``files``: the two NAVs' daily series (daily_<scen>.csv), bound with summary.json (bundle_once checks them)."""
+                files: list | None = None, driver: dict | None = None, verb: str | None = None) -> list[str]:
+    """``files``: the two NAVs' daily series (daily_<scen>.csv), bound with summary.json (bundle_once checks them).
+    ``verb`` (a v2 cell's exes.eval, ruling B2-11): ``--engine-stats VERB`` right after the script, so the bundle never
+    runs a default verb; None (v1): the argv of before, byte for byte (ruling B2-10 (a))."""
     summ = tool(NAV_SUMM, root)
-    cmd = [py, summ, "--protocol", "v8", "--bundle", base_nav, cell_nav, "--bundle-json", out]
+    cmd = [py, summ, *(["--engine-stats", verb] if verb else []), "--protocol", "v8", "--bundle", base_nav, cell_nav,
+           "--bundle-json", out]
     return bounded_argv(py, run_dir, [summ, f"{base_nav}/summary.json", f"{cell_nav}/summary.json"] + list(files or []),
                         cmd, root, driver)
 

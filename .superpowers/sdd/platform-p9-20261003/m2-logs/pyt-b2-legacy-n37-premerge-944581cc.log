@@ -1,0 +1,8 @@
+# pre-merge tree 944581cc (git archive atx-impl/tools atx-engine/tools scripts), ATX_EQUITY_ROOT=pool-2 build-equity; blind flags; first attempt (archive without atx-engine/tools) was a collection error
+F                                                                        [100%]
+1 failed in 0.72s
+exit=1
+# attempt 3: archive + atx-impl/strategies atx-engine/schemas (attempt 2 failed in setup: FileNotFoundError atx-impl/strategies/research_window.json, missing from the archive)
+.                                                                        [100%]
+1 passed in 17.48s
+exit=0

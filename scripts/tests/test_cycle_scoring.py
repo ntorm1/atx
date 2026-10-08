@@ -97,7 +97,11 @@ def test_verdict_dsr_is_the_ledger_variance_value_not_the_single_cell_lo_value(t
     variance = (0.15 / ROOT_252) ** 2
     assert dl["n"] == 41 and dl["cells"] == 41 and dl["window_id"] == BI.window_id()
     assert dl["variance_sr"] == pytest.approx(variance, rel=1e-12)
-    want = NS.deflated_sharpe(m["sr_daily"], m["sessions"], m["skew"], m["kurtosis"], NS.expected_max_sr(variance, 41))
+    from statistics import NormalDist                                          # the oracle, written out (P9 B2)
+    nd, gamma, sr = NormalDist(), 0.5772156649015329, m["sr_daily"]
+    sr0 = math.sqrt(variance) * ((1 - gamma) * nd.inv_cdf(1 - 1 / 41) + gamma * nd.inv_cdf(1 - 1 / (41 * math.e)))
+    want = nd.cdf((sr - sr0) * math.sqrt(m["sessions"] - 1)
+                  / math.sqrt(1 - m["skew"] * sr + (m["kurtosis"] - 1) * sr * sr / 4))
     assert dl["dsr"] == pytest.approx(want, rel=1e-12)
     assert dl["sr0_annual"] == pytest.approx(0.33, abs=0.005) and dl["dsr"] == pytest.approx(0.91, abs=0.01)
     lo = row["deflated"]                                                         # the old verdict source
@@ -199,6 +203,63 @@ def test_add_alpha_from_a_v8_parent_inherits_the_v8_protocol(tmp_path):
     assert "--seed" not in argv and "--draws" not in argv                            # nav_summ's v8 defaults apply
     assert (NS.V8_SEED, NS.V8_DRAWS) == (20260929, 4999)
     assert T.RA.wave_origin(["prior", "grid", "prior"]) == "grid" and T.RA.wave_origin(["prior", "mined"]) == "mined"
+
+
+def test_the_summ_runs_the_named_verb_and_the_verdict_refuses_another(tmp_path, monkeypatch, capsys):
+    """Ruling B2-R3 (the call site in E2's research_cycle / cycle_verdict, ruling B2-8): a spec that names the engine
+    verb (exes.eval) pins it with `lock --exes`; its summ step runs nav_summ --engine-stats EXE; the verdict reads a
+    summ.json / pbo.json only when its nav_summ_run.engine_exe_sha256 is that pin (unpinned: exes.eval's SHA-256 as it
+    is now): a summ output of another verb is not reused. A missing named verb is refused; a spec that names none is
+    scored as before (the first test)."""
+    import hashlib
+    verb = NS.default_engine_exe().resolve()
+    want = hashlib.sha256(verb.read_bytes()).hexdigest()
+    root, sp = scoring_root(tmp_path, sr_annual=1.0, t=300, prior_srs=[1.1, 0.9, 1.0], summ_extra=[])
+    doc = json.loads(sp.read_text())
+    doc["exes"]["eval"] = verb.as_posix()
+    sp.write_text(json.dumps(doc))
+    assert RC.main(["lock", str(sp), "--root", str(root), "--exes", "--write"]) == RC.EXIT_OK
+    assert json.loads(sp.read_text())[RC.EXES_PIN]["eval"] == want
+    c = cycle_of(root, sp)
+    assert c.exe_pins["eval"] == (verb.as_posix(), want)
+    monkeypatch.setattr(NS, "V8_DRAWS", 99)            # speed only: a v8 spec may not pass --draws (review F-2)
+    argv, rows = run_summ(root, sp, monkeypatch)
+    capsys.readouterr()
+    assert argv[2:4] == ["--engine-stats", verb.as_posix()]
+    assert {r["nav_summ_run"]["engine_exe_sha256"] for r in rows} == {want}
+    assert CV.verb_sha256(c) == (want, f"the exes_sha256 pin of {verb.as_posix()}")
+    cyc = root / c.cycle_dir()
+    (cyc / CV.PBO_JSON).write_text(json.dumps({"pbo": 0.25, "nav_summ_run": rows[0]["nav_summ_run"]}))
+    blocks = CV.scoring_blocks(c.res, c.cycle_dir(), "out/N", CV.verb_sha256(c))
+    assert blocks["dsr"]["n"] == 4 and blocks["pbo"] == 0.25
+    good = (cyc / CV.SUMM_JSON).read_text()
+    other = [dict(r, nav_summ_run=dict(r["nav_summ_run"], engine_exe_sha256="0" * 64)) for r in rows]
+    (cyc / CV.SUMM_JSON).write_text(json.dumps(other))                       # a summ.json of another verb
+    with pytest.raises(CV.VerdictError, match=r"engine verb 0{64} .*not reused"):
+        CV.scoring_blocks(c.res, c.cycle_dir(), "out/N", CV.verb_sha256(c))
+    with pytest.raises(RC.CycleError, match=r"HARD-STOP \[verdict\].*not reused"):
+        RC.write_verdict(c, {}, lambda s: None)
+    (cyc / CV.SUMM_JSON).write_text(json.dumps([{k: v for k, v in r.items() if k != "nav_summ_run"} for r in rows]))
+    with pytest.raises(CV.VerdictError, match="engine verb none named"):    # a summ that names no verb
+        CV.scoring_blocks(c.res, c.cycle_dir(), "out/N", CV.verb_sha256(c))
+    (cyc / CV.SUMM_JSON).write_text(good)
+    (cyc / CV.PBO_JSON).write_text(json.dumps({"pbo": 0.25, "nav_summ_run": other[0]["nav_summ_run"]}))
+    with pytest.raises(CV.VerdictError, match=r"pbo\.json: .*not reused"):
+        CV.scoring_blocks(c.res, c.cycle_dir(), "out/N", CV.verb_sha256(c))
+    (cyc / CV.PBO_JSON).unlink()
+    # unpinned: exes.eval's bytes as they are now (here another file) decide; a missing named verb is refused
+    doc = json.loads(sp.read_text())
+    doc.pop(RC.EXES_PIN)
+    (root / "bin" / "eval-other.exe").write_bytes(b"another verb")
+    doc["exes"]["eval"] = "bin/eval-other.exe"
+    sp.write_text(json.dumps(doc))
+    c = cycle_of(root, sp)
+    assert c.exe_pins == {} and CV.verb_sha256(c)[1] == "bin/eval-other.exe (unpinned, as it is now)"
+    with pytest.raises(CV.VerdictError, match="not reused"):
+        CV.scoring_blocks(c.res, c.cycle_dir(), "out/N", CV.verb_sha256(c))
+    (root / "bin" / "eval-other.exe").unlink()
+    with pytest.raises(CV.VerdictError, match="exes.eval bin/eval-other.exe is missing"):
+        CV.verb_sha256(cycle_of(root, sp))
 
 
 def test_verdict_refuses_a_dsr_without_the_ledger(tmp_path):
