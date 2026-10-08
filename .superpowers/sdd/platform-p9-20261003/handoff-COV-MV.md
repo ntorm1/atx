@@ -260,3 +260,66 @@ primary source (Menchero-Wang-Orr 2011 / 2012) or written "unverified" (PRE-19).
 - Deferred to the gate (TEST-1): the whole target-tests, the Release build and suites, both canaries.
 - No teeth run in R9. No permission refusal in R9. The `build-equity` object tree is deleted by name after the
   report commit (receipt / logs kept). Next step: the first review (the PM dispatches it).
+
+## Fix round 1 (COVMV-S; R9; stopped by OWNER STOP 9)
+
+- Dispatch: "Dispatch COV-MV fix round 1" (ledger), Ruling COVMV-S, review `task-COV-MV-review.md` (the seven
+  Suggested). Pool-31, branch `feat/p9-covmv2-20261007`, start head `e9e794b3` (the review commit on `bda51b98`;
+  code `846739c1`).
+- STOP 9 arrived while single-TU checks ran. Everything below is ONE commit `cc63c38f`
+  (`WIP(cov-mv-fix1): ...`), because the stop came before the slicing step; history is never rewritten, so the
+  report lists the hunks by item instead of by commit.
+- No research build ran in this round (tag `p9-covmv-i` is still unused). No test ran. No teeth run. No permission
+  refusal. Configure `equity-dev` done (`covmv-logs/i-configure-dev.log`, exit 0).
+- Single-TU checks (`atx-build.ps1 -Preset equity-dev check`): `atx-engine/src/book/mv_target.cpp` and
+  `atx-impl/src/strategy_mv_aim.cpp` compile clean, 0 warnings (`covmv-logs/i-check-1.log`). Second check
+  (`strategy_nav_v7.cpp`, `book/nav_rules.cpp`, `book/nav_decide.cpp`, `book_mv_target_test.cpp`,
+  `strategy_mv_aim_rule_test.cpp`): all five compile clean, 0 warnings, exit 0 (`covmv-logs/i-check-2.log`; the test TUs pulled about 224 engine
+  objects through their order-only deps).
+
+### Items: done in the working tree, committed in `cc63c38f`, untested
+
+| item | where (file) | category | test |
+|---|---|---|---|
+| S-1 (REQUIRED) | `atx-engine/include/atx/engine/book/mv_target.hpp` (`FactorEigen` gets a PIMPL `Workspace`, move-only, the vectors reserved once at k / k x k); `atx-engine/src/book/mv_target.cpp` (`FactorEigen::Workspace` = the block `MatX` + `Eigen::SelfAdjointEigenSolver<MatX>`, kept across calls; `factor_eigen` runs `symmetric_eig`'s guard `linalg::detail::is_symmetric_within(kSymmetryTol)` and `solver.compute` with the default options, the same messages and codes; `sized` reuses a new `reserve_exact`); `atx-impl/src/strategy_mv_aim.cpp` `workspace_bytes` (comment only: the value is UNCHANGED, so `nav_workspace_reserve_bytes` with and without the flag is unchanged; `book/nav_lockstep.cpp` not edited) | allocation | new `MvTarget.FactorEigenOnKeptStorageIsAFreshSolve` (62-factor blocks: same, smaller, larger, 1, after a refusal; every value and vector bit-equal to a fresh `linalg::symmetric_eig`); existing `MvAimRule.WorkspaceReserveTermOnlyWithTheRule` |
+| S-2 (REQUIRED) | `strategy_mv_aim.hpp` (`Counts::share_unavailable`, `share_error`; header text); `strategy_mv_aim.cpp` `Rule::apply` tail: `if (auto printed = add_eigen_shares(); !printed) note_unavailable(printed.error());`, `record` now `void` (ratio, negatives), `add_eigen_shares` (both shares or neither), `note_unavailable`; `summary_json`: no failure -> the `eigen_00_02_share` block byte-identical to before; any failure -> `"eigen_00_02_share": null` plus `"eigen_00_02_share_unavailable": {"decisions": N, "first_error": "..."}` (a key that exists only on failure) | failure handling | new `MvAimRule.PrintFailureLeavesTheBookAndWritesNull` (helper `plant_asymmetric_f`: F_{0,8} moved 1e-4 from 0 with its sign kept, F_{8,0} left; factor 8 = slot 7, which no fixture name has, so the kernel reads F bit for bit as before and the print's symmetry guard fails at every decision; in-process targets bit-equal to the clean store's, counts, null; CLI: every file but recipe.json / summary.json byte-equal, those equal after the pin, `recipe_sha256` and the two eigen keys are removed) |
+| S-6 (REQUIRED) | `strategy_mv_aim.cpp` `Rule::check_input`: `check_axes` once per run (`axes_checked_`, reset by `begin_run`), then `assert(store_->check_axes(...) && "...")` (Debug only); `strategy_mv_aim.hpp` (`axes_checked_`, docs). Deviation: "at store open" is not possible as such, because `RiskStore::open` (dispatch_nav_v7) runs before the role is loaded; the first decision of the run is the first point the replay's session axis exists (the `BookScaler::estimate` / `spo::Engine::prepare` pattern). | check timing | existing `MvAimRule.*` (no test changes) |
+| S-4 | `strategy_mv_aim.cpp` / `.hpp`: `apply` (now ~25 lines) calls `check_input`, `begin_decision` (fresh / scored, `Visit`), `priced_view` (S11 + the view; returns the unpriced count), `tilt` (kernel + gross rescale), `pass_through`, `count_applied`, `record`, `add_eigen_shares`, `note_unavailable`; `invalid` returns `auto` (the Err proxy). Same order of every side effect as before. | structure | existing `MvAimRule.*` |
+| S-3 | `strategy_nav_v7.hpp`: the `#include "strategy_mv_aim.hpp"` replaced by `namespace atx::impl::strategy::mv_aim { class Rule; }`; `strategy_nav_v7.cpp` includes `strategy_mv_aim.hpp` (grep: no other includer of v7.hpp uses mv_aim; `book/nav_rules.cpp` and the rule test include it directly) | structure | compile only |
+| S-5 | `book/nav_rules.cpp` `mv_aim_refuses`: `two-speed-nav-v1` -> `two-speed-v1` (as per-name-v1's and AL-CLOCK's rows name it) + one comment line; `MvAimRule.ListRulesRowIsAClosedTargetRow`'s expected list updated to match. Changes `nav --list-rules --json` bytes of the mv-aim-v1 row only (no Python consumer of `incompatible[]`; no registration or template byte changes). | structure (registry naming) | `MvAimRule.ListRulesRowIsAClosedTargetRow` |
+| S-7 | record only: the R9 runs' exe SHA check was not logged; the receipt SHAs match (reviewer). Next build: hash each exe into the log beside its gtest run. | record | - |
+
+Residual allocation (S-1, stated in `mv_target.hpp`): Eigen 3.4.0's `SelfAdjointEigenSolver::compute` makes one
+block-sized vector per call inside `HouseholderSequence::evalTo` (its API takes no workspace), and the block /
+solver storage is resized when the forecast block's size changes from the previous decision. Everything the print
+owns is kept. `RiskStore::read`'s per-call `narrow` buffer is COV's code (not this lane's).
+
+Byte identity (the PM's bar): no arithmetic changed. Every hunk is allocation (S-1), check timing (S-6), failure
+handling (S-2: bytes differ only when a print fails, which aborted the run before), or structure (S-3, S-4; S-5
+changes the list-rules row text only). The proof rests on the tests below plus the new S-1 bit-identity test; no
+before/after byte compare is possible within TEST-1's one build.
+
+### Next step for a fresh agent (exact)
+
+1. In pool-31, tree clean at `cc63c38f`. Re-run the single-TU checks that did not finish or failed (see
+   `i-check-2.log`); fix slips in place (a slip is a normal commit, `fix(cov-mv): ...`).
+2. ONE Debug build (HOST-3: fifth; wait while another build runs; `covmv-logs/tools/wait-build.ps1 -Tag p9-covmv-i
+   -Targets atx-impl-strategy-target-tests,atx-engine-book-tests`). Log the two exe SHA-256s beside the runs (S-7).
+3. Run `MvTarget.*` (expect 12: 11 + the S-1 test), `MvAimRule.*` (expect 16: 15 + the S-2 test), the named filter
+   `Cov*:NavBookRule.*:VolTarget.*:Spo*:NavSpec.*:NavRules.*:CostLawRegistry.*:TradeRateRegistry.*:TargetRegistry.*:NavAnnMeanGross.*`
+   (expect 99).
+4. Teeth (the only other build, skip if the host is loaded): with a tool that saves and restores the bytes itself
+   (TEETH-RESTORE), mutate in `atx-impl/src/strategy_mv_aim.cpp` the line
+   `  if (auto printed = add_eigen_shares(); !printed) note_unavailable(printed.error());` to
+   `  if (auto printed = add_eigen_shares(); !printed) return printed;` (the pre-round behaviour: the print stops the
+   run); build `p9-covmv-j` (`atx-impl-strategy-target-tests`), run `MvAimRule.PrintFailureLeavesTheBookAndWritesNull`,
+   expect FAILED; restore; assert `git status --porcelain` empty and `git hash-object` = `git rev-parse HEAD:<path>`
+   (CRLF checkout: compare git's blob ids, plus the raw SHA-256 against the saved pre-mutation bytes).
+5. Append "Fix round 1 (COVMV-S)" to `task-COV-MV-report.md` from the table above plus the evidence; one line to
+   this handoff; commit (`git add -f`); delete `build-equity`'s object tree by name (keep `audits/`,
+   `v8-interim3-pitch-render-run2/`, the `mega-p9-covmv-*` receipts and logs).
+6. Root re-proves at merge: ROOT-1a's filters (unchanged) plus the two new tests; `nav --list-rules` shows the
+   mv-aim-v1 row with `two-speed-v1` (S-5); flag-absent identity unchanged (the reserve term's value did not move).
+
+Disk: `build-equity` now holds the configured tree and about 230 check objects (about 0.6 GB); NOT deleted at the
+stop (the report is not final and the next agent reuses the configured tree).
