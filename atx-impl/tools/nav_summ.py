@@ -115,6 +115,10 @@ Era pools (platform v8 H-1; opt-in, without --pool nothing above moves):
   --era-of TRIAL_ID      a one-era history pool (sessions before TRAIN) with --ledger: the trial_id of the TRAIN cell
                          it re-reads, required (review P-1). Its line carries era_of: an era line, adding no trial,
                          never read as a TRAIN cell; refused for a pool of two or more eras or one inside TRAIN.
+  --pool-one-sided       (OD-3 T2; P9 ruling PRE-21) the pooled row's paired block is the engine verb's with --one-sided
+                         (lw.p_one_sided, from the same resamples) plus the bundle's verdict dict (dSR > 0 and one-sided
+                         p < --bundle-alpha); one more printed line. Needs --pool and a reference (--pool-reference or
+                         --reference). The listed dirs' paired blocks are unchanged; without the flag nothing moves.
 
 Engine statistics (platform P9 B2, contract K-P9-5):
   every statistic of record (net moments, paired dSR with Memmel SE / CBB / Ledoit-Wolf, the DSR rows, PSR and MinTRL,
@@ -615,6 +619,15 @@ def print_ledger_dsr(q: dict) -> None:
           f"{fmt(q['legacy_dsr'], '.4f')} vs SR0 {fmt(q['legacy_sr0_annual'], '.3f')} ann")
 
 
+def paired_verdict(paired: dict, alpha: float, rule: str) -> dict:
+    """The verdict of a one-sided paired block (the engine verb's, ``--one-sided``): dSR > 0 and lw.p_one_sided <
+    alpha. A comparison of the verb's numbers, no statistic: --bundle and --pool-one-sided (OD-3 T2) share it."""
+    p1 = paired["lw"].get("p_one_sided")
+    positive = bool(math.isfinite(paired["dsr"]) and paired["dsr"] > 0)
+    return {"dsr_positive": positive, "p_one_sided": p1, "alpha": alpha,
+            "pass": bool(positive and p1 is not None and p1 < alpha), "rule": rule}
+
+
 def bundle(base: Path, final: Path, args) -> dict:
     """The cumulative paired test FINAL vs BASE (v8-prereg items 4 and 9): paired dSR with the one-sided studentized
     bootstrap p, a per-year dSR table, both cells' year tables and the verdict dSR > 0 and p_one_sided < alpha."""
@@ -634,12 +647,9 @@ def bundle(base: Path, final: Path, args) -> dict:
         sr_b = finite_or_none(sharpe(np.array([nets["base"][s] for s in sessions])))
         years.append({"year": y, "sessions": len(sessions), "sr_final": sr_f, "sr_base": sr_b,
                       "dsr": sr_f - sr_b if sr_f is not None and sr_b is not None else None})
-    p1 = paired["lw"].get("p_one_sided")
-    positive = bool(math.isfinite(paired["dsr"]) and paired["dsr"] > 0)
-    verdict = {"dsr_positive": positive, "p_one_sided": p1, "alpha": args.bundle_alpha,
-               "pass": bool(positive and p1 is not None and p1 < args.bundle_alpha),
-               "rule": "cumulative paired S2 net dSR(FINAL - BASE) > 0 and studentized circular-block-bootstrap "
-                       "one-sided p < alpha (v8-prereg item 9: this part of the freeze gate only)"}
+    verdict = paired_verdict(paired, args.bundle_alpha,
+                             "cumulative paired S2 net dSR(FINAL - BASE) > 0 and studentized circular-block-bootstrap "
+                             "one-sided p < alpha (v8-prereg item 9: this part of the freeze gate only)")
     return {"base": str(base), "final": str(final), "scenarios": scenarios, "paired": paired, "years": years,
             "year_table": tables, "verdict": verdict}
 
@@ -738,7 +748,15 @@ def paired_or_note(nets: dict, ref_nets: dict, args) -> dict:
     a, b = align(nets, ref_nets)
     if a.size < 3:
         return {"paired_note": f"paired skipped: {a.size} session(s) in common with the reference (3 needed)"}
-    return {"paired": engine_of(args).paired_of(nets, ref_nets, args)}
+    if not getattr(args, "pool_one_sided", False):
+        return {"paired": engine_of(args).paired_of(nets, ref_nets, args)}
+    # OD-3 T2 (--pool-one-sided; PRE-21: on the engine verb's --one-sided, no Python statistic): the one-sided p of the
+    # same resamples and the bundle's verdict rule on the pooled pair; without the flag the block is unchanged
+    p = engine_of(args).paired_of(nets, ref_nets, args, one_sided=True)
+    p["verdict"] = paired_verdict(p, args.bundle_alpha,
+                                  "pooled paired S2 net dSR > 0 and studentized circular-block-bootstrap one-sided p "
+                                  "< alpha (the bundle's rule on the pooled pair; OD-3 T2)")
+    return {"paired": p}
 
 
 def analyse_pool(dirs: list[str], ids: list[str], args, weights: list[dict], ref_nets: dict | None) -> tuple[dict, dict]:
@@ -800,6 +818,10 @@ def print_pool(r: dict) -> None:
               f"hac {fmt(e['hac_t'], '+.2f')} return rows {e['return_rows']} tau_gmv mean "
               f"{fmt(e['tau_gmv_mean'], '.4f')} gross_lev_post_ramp {fmt(e['mean_gross_leverage_post_ramp'], '.4f')} "
               f"({e['post_ramp_rows']} rows)")
+    v = (r.get("paired") or {}).get("verdict")
+    if v is not None:   # OD-3 T2: --pool-one-sided only
+        print(f"   pooled paired one-sided p {fmt(v['p_one_sided'], '.4f')} (engine verb --one-sided, same resamples); "
+              f"verdict dSR > 0 and p < {v['alpha']}: {'PASS' if v['pass'] else 'FAIL'}")
     if "paired_note" in r:
         print(f"   {r['paired_note']}")
 
@@ -1113,6 +1135,8 @@ def main(argv=None) -> int:
     ap.add_argument("--pool-ids", default=None, help="ID,... of the --pool eras (default E1,E2,...)")
     ap.add_argument("--pool-reference", nargs="+", default=None, metavar="DIR",
                     help="the reference's era NAV dirs, pooled, for the pooled row's paired dSR (default --reference)")
+    ap.add_argument("--pool-one-sided", action="store_true",
+                    help="the pooled row's paired block adds the verb's one-sided p and the bundle verdict (OD-3 T2)")
     ap.add_argument("--era-of", default=None, metavar="TRIAL_ID",
                     help="a one-era history --pool with --ledger: the trial_id of the TRAIN cell it re-reads (P-1)")
     ap.add_argument("--engine-stats", nargs="?", const=None, default=None, metavar="EXE",
@@ -1134,6 +1158,8 @@ def main(argv=None) -> int:
         ap.error("--ledger / --psr / --effective-n dirs need NAV dirs")
     if (args.pool_ids or args.pool_reference) and not args.pool:
         ap.error("--pool-ids / --pool-reference need --pool")
+    if args.pool_one_sided and not (args.pool and (args.pool_reference or args.reference)):
+        ap.error("--pool-one-sided needs --pool and a reference (--pool-reference or --reference)")
     if args.era_of is not None and not (args.pool and args.ledger):
         ap.error("--era-of needs --pool and --ledger (the ledger line of a one-era history read)")
     if (args.rerun_of is None) != (args.rerun_basis is None):
