@@ -530,7 +530,8 @@ target_link_libraries(atx-engine-research-eval-tests PRIVATE
 target_include_directories(atx-engine-research-eval-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(atx-engine-research-eval-tests PRIVATE
     "ATX_EVAL_TIE_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/eval_tie\""
-    "ATX_EVAL_EDGES_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_eval_edges\"")
+    "ATX_EVAL_EDGES_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_eval_edges\""
+    "ATX_RESEARCH_LEDGER_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_ledger\"")
 foreach(_b2_tests IN ITEMS atx-engine-research-ledger-tests atx-engine-research-eval-tests)
     gtest_discover_tests(${_b2_tests} DISCOVERY_MODE PRE_TEST TEST_PREFIX "${_b2_tests}."
         PROPERTIES LABELS atx_research)

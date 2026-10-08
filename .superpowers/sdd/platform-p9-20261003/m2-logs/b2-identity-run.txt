@@ -1,0 +1,7 @@
+ledger copy: 133 lines sha256 27e40f9f
+verb: ad6c587861bcb7efe2091c4420304cbc735de2a8a7713d66221b9b3eb39c4bb9
+X5 exit=0
+YF0 exit=0
+trial ledger after: 133 lines sha256 27e40f9f
+X5 nototal exit=0
+YF0 nototal exit=0

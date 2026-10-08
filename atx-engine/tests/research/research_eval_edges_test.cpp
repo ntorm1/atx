@@ -1,9 +1,10 @@
-// Platform P9 B2 fix round 1 (rulings B2-R1, B2-R2, B2-9): the eval verb on the inputs where a port
-// of the Python statistics cannot, or did not, match them bit for bit (fixtures/research_eval_edges,
-// written by its generator from today's Python):
+// Platform P9 B2 fix round 1 (rulings B2-R1, B2-R2, B2-9): the eval verb on the inputs where a
+// port of the Python statistics cannot, or did not, match them bit for bit
+// (fixtures/research_eval_edges, written by its generator from today's Python):
 //   - paired cells at a stated 1 - rho: with 1 - rho >= 1e-6 every float ties within
 //     1e-12 / (1 - rho) and the counts are equal; below 1e-6 the pair is refused as degenerate.
-//   - a CSCV grid with a constant nonzero candidate: its Sharpe is 0 in every split, as in Python.
+//   - a CSCV grid with a constant nonzero candidate: its Sharpe is 0 in every split, as in Python;
+//     and a grid where it wins splits and ties a zero column (re-review 1 S7).
 //   - the house DSR rows at N from 2 to 1e6: the bisection quantile, SR* and the DSR tie within
 //     1e-12 for every N (the engine's Acklam quantile did not, past N = 1e3).
 // The series are regenerated here bit for bit (each step one IEEE double operation), so no series
@@ -270,28 +271,31 @@ TEST(EvalEdges, VerbPrintsADegeneratePairAsRefused) {
   fs::remove_all(dir, ec);
 }
 
-// Ruling B2-R2: a constant nonzero candidate has Sharpe 0 in every split, so the PBO, the logit
-// distribution and every winner statistic equal the Python's (the engine alone gave PBO 0: the
-// constant column's rounding-residue sd made it win every split).
-TEST(EvalEdges, CscvConstantCandidateHasSharpeZero) {
-  const Json &cs = fixture()["cscv"];
+// The engine's CSCV report of a fixture grid (the generated candidates, stream seed + c at drift c,
+// then the given constant columns), with every value tied to the section's Python: PBO, winner
+// counts, the rank distribution and the logits exactly, the means and quantiles within 1e-12.
+ev::CscvReport tied_cscv(const Json &cs, const std::vector<f64> &constants) {
   const Json &py = cs["python"];
   const usize t = cs["sessions"].get<usize>();
   const std::vector<f64> drifts = cs["drifts"].get<std::vector<f64>>();
-  const usize n = drifts.size() + 1U;
+  const usize n = drifts.size() + constants.size();
   std::vector<f64> m(t * n);
-  for (usize c = 0; c + 1U < n; ++c) {
+  for (usize c = 0; c < drifts.size(); ++c) {
     const std::vector<f64> u = uniforms(cs["seed"].get<u64>() + c, t);
     for (usize s = 0; s < t; ++s) {
       m[s * n + c] = scaled(u[s], 0.02, drifts[c]);
     }
   }
-  for (usize s = 0; s < t; ++s) {
-    m[s * n + n - 1U] = cs["constant"].get<f64>();
+  for (usize k = 0; k < constants.size(); ++k) {
+    for (usize s = 0; s < t; ++s) {
+      m[s * n + drifts.size() + k] = constants[k];
+    }
   }
   const auto r = ev::cscv_report(m, t, n, cs["blocks"].get<usize>());
-  ASSERT_TRUE(r.has_value()) << r.error().to_string();
-  EXPECT_EQ(r->constant_candidates, std::vector<usize>{n - 1U});
+  EXPECT_TRUE(r.has_value()) << (r.has_value() ? "" : r.error().to_string());
+  if (!r.has_value()) {
+    return {};
+  }
   EXPECT_EQ(r->pbo, py["pbo"].get<f64>());
   EXPECT_EQ(r->winner_counts, py["winner_counts"].get<std::vector<usize>>());
   EXPECT_EQ(r->rank_splits, py["logit_distribution"]["splits"].get<std::vector<usize>>());
@@ -305,6 +309,30 @@ TEST(EvalEdges, CscvConstantCandidateHasSharpeZero) {
   for (usize k = 0; k < r->logit_quantiles.size(); ++k) {
     expect_tied(r->logit_quantiles[k], py["logit_quantiles"][q[k]], 1e-12, q[k]);
   }
+  return *r;
+}
+
+// Ruling B2-R2: a constant nonzero candidate has Sharpe 0 in every split, so the PBO, the logit
+// distribution and every winner statistic equal the Python's (the engine alone gave PBO 0: the
+// constant column's rounding-residue sd made it win every split).
+TEST(EvalEdges, CscvConstantCandidateHasSharpeZero) {
+  const Json &cs = fixture()["cscv"];
+  const ev::CscvReport r = tied_cscv(cs, {cs["constant"].get<f64>()});
+  EXPECT_EQ(r.constant_candidates, std::vector<usize>{cs["drifts"].size()});
+}
+
+// Re-review 1 S7: every generated candidate drifts negative, so the constant wins the splits where
+// all of them lose in sample; the zero column after it has Sharpe 0 too and loses every tie by
+// index (the Python's first maximum in sample and its OOS rank rule): the path B2-R2 rests on.
+TEST(EvalEdges, CscvConstantWinsAndTiesTheZeroColumnByIndex) {
+  const Json &cs = fixture()["cscv_wins"];
+  const usize k = cs["drifts"].size();
+  const ev::CscvReport r = tied_cscv(cs, {cs["constant"].get<f64>(), 0.0});
+  EXPECT_EQ(r.constant_candidates, (std::vector<usize>{k, k + 1U}));
+  ASSERT_EQ(r.winner_counts.size(), k + 2U);
+  EXPECT_GT(r.winner_counts[k], 0U);                // the constant wins some splits
+  EXPECT_LT(r.winner_counts[k], r.splits);          // not every split
+  EXPECT_EQ(r.winner_counts[k + 1U], 0U);           // the zero column never: the tie keeps index k
 }
 
 // ---------------------------------------------------------------------------- ruling B2-9
@@ -345,8 +373,10 @@ void tie_json(const Json &want, const Json &got, const std::string &path,
 }
 
 // The house quantile is the Python bisection: at 1 - 1/N and 1 - 1/(N e), N from 2 to 1e6, it
-// ties the Python value (in fact it is the same double); the engine's Acklam + Halley quantile,
-// which the house rows used before, misses 1e-12 on this grid.
+// ties the Python value within 1e-12 (33 of the 34 quantiles are the same double; ppf_lo at
+// N = 1e4 is 6 ulps away, 6.7e-16 relative: one ulp of erfc at a midpoint flips one halving).
+// The engine's Acklam + Halley quantile, which the house rows used before, is printed for the
+// record only (a note, not an assertion on another function: review B2 re-review 1 S6).
 TEST(EvalEdges, HouseNormPpfIsThePythonBisectionForAnyN) {
   const Json &h = house();
   ASSERT_EQ(h["n"].front().get<usize>(), 2U);
@@ -395,7 +425,6 @@ TEST(EvalEdges, HouseNormPpfIsThePythonBisectionForAnyN) {
   std::printf("[ house_norm_ppf ] %zu of %zu quantiles bit-equal to the Python;%s\n"
               "[ house_norm_ppf ] the Acklam SR* (before B2-9) worst rel %.3e at N %zu\n",
               same, total, differs.empty() ? " all" : differs.c_str(), acklam_worst, acklam_n);
-  EXPECT_GT(acklam_worst, 1e-12); // the grid reaches where the engine quantile misses (review S1)
   EXPECT_TRUE(std::isnan(atx::engine::eval::house_norm_ppf(1.0)));
   EXPECT_TRUE(std::isnan(atx::engine::eval::house_norm_ppf(0.0)));
 }

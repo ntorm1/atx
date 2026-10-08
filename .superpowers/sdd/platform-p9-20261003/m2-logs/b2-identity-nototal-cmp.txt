@@ -1,0 +1,3 @@
+== X5 (no --dsr-total): run completed exit 0; old block lines removed 3; stdout 28 vs 28 lines, EQUAL; stderr byte-equal; json leaves 116 vs 116, all equal -> HOLDS
+== YF0 (no --dsr-total): run completed exit 0; old block lines removed 3; stdout 28 vs 28 lines, EQUAL; stderr byte-equal; json leaves 116 vs 116, all equal -> HOLDS
+OVERALL HOLDS

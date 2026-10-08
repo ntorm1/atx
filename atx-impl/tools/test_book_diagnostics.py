@@ -564,6 +564,8 @@ def test_cli_end_to_end_every_diagnostic_on_a_synthetic_cell(cell, tmp_path):
     assert len(g3a["series"]["s2_fee_return"]) == g3a["rows"]
     assert set(g["G-3b"]["result"]["members"]) == {"lowrisk"}
     assert set(g["G-3c"]["result"]["delays"]) == {"1", "2"} and g["G-3c"]["result"]["delays"]["2"]["delta"] < 0
+    verb = BD.NS.default_engine_exe().resolve()          # review B2 re-review 1 S5: G-3c names its Memmel SE's verb
+    assert g["G-3c"]["result"]["engine"] == {"engine_exe": str(verb), "engine_exe_sha256": sha(verb.read_bytes())}
     assert g["G-3d"]["result"]["clusters_cut"] == 4 and len(g["G-3d"]["result"]["members"]) == 4
     code, err = run_main(cell.argv(out))                                            # never overwritten
     assert code == BD.EXIT_REFUSED and "never overwritten" in err
