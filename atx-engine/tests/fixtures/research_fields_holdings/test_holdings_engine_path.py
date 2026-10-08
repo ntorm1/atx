@@ -90,21 +90,6 @@ def files_of(root: Path) -> dict:
             if p.is_file() and p.relative_to(root).parts[0] != engine.RECEIPT_DIR}
 
 
-FLIPPED = ['ftd_shares_ratio21']   # the registry rows flipped to kind engine (one commit each)
-
-
-def test_repository_registry_routes_the_flipped_rows_to_the_engine():
-    """K-P9-1 / ruling P5, P9 A4's flips: each flipped holdings row is kind engine with builder = its kind id, keeps its
-    python twin's formula fingerprint and the engine-shim owner, and is one of the wrapper's engine rows."""
-    path = HERE.parents[2] / "tools" / "field_registry.json"
-    rows = {r["name"]: r for r in json.loads(path.read_text(encoding="utf-8"))["fields"]}
-    for name in FLIPPED:
-        assert rows[name]["kind"] == "engine" and rows[name]["builder"] == name, rows[name]
-        assert rows[name]["dtype"] == "f64" and "engine-shim" in rows[name]["owner"]
-        assert rows[name]["formula_sha256"] == engine.formula_of(name)
-    assert set(engine.engine_rows(path)) >= set(FLIPPED)
-
-
 def test_flag_absent_is_the_plain_builder(tmp_path):
     run(tmp_path, tmp_path / "plain")
     got = files_of(tmp_path / "plain")

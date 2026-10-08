@@ -3199,11 +3199,11 @@
       }
     },
     {
-      "builder": "ftd_shares_ratio21",
+      "builder": "research_fields_holdings",
       "dtype": "f64",
       "first_session": null,
       "formula_sha256": "cce14201f301041672114856a56afe9c06fe9d7bc4bda0e1965e298bf068eafd",
-      "kind": "engine",
+      "kind": "python",
       "name": "ftd_shares_ratio21",
       "options": {
         "group": "ftd"
