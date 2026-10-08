@@ -5,6 +5,7 @@
 #include "strategy_mv_aim.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -37,7 +38,8 @@ template <class T> void reserve_exact(std::vector<T>& v, usize n) {
   fresh.reserve(n);
   v.swap(fresh);
 }
-co::Status invalid(std::string what) {
+// An InvalidArgument naming the rule, convertible to every Result<T>.
+auto invalid(std::string what) {
   return co::Err(co::ErrorCode::InvalidArgument, "mv-aim-v1: " + std::move(what));
 }
 } // namespace
@@ -84,8 +86,10 @@ u64 workspace_bytes(usize names) noexcept {
   const u64 view_name = sizeof(u32) + s * f + 5U * f + sizeof(usize);
   total = sat_add(total, sat_mul(n, view_name));
   total = sat_add(total, eb::mv_aim_working_bytes(names, spo::risk_industry_slots, s));
-  // The eigen print: the block, Eigen's result and solver (K x K each, bounded by four) and their
-  // K-vectors, the block's factor list (its growth included) and the exposure vector.
+  // The eigen print, kept across decisions (FactorEigen, Ruling COVMV-S S-1): the block, the
+  // solver's eigenvectors and the result's (three K x K, a fourth of headroom), the K-vectors (the
+  // solver's eigenvalues, subdiagonal, Householder coefficients and its per-call vector, the
+  // result's values), the factor list and the exposure vector.
   total = sat_add(total, 4U * k * k * f + 4U * k * f + 2U * k * sizeof(usize) + k * f);
   return total;
 }
@@ -93,6 +97,7 @@ u64 workspace_bytes(usize names) noexcept {
 Rule::Rule(std::shared_ptr<const spo::RiskStore> store) : store_(std::move(store)) {}
 
 void Rule::begin_run() {
+  axes_checked_ = false;
   formed_ = false;
   last_ = 0;
   counts_ = Counts{};
@@ -100,12 +105,54 @@ void Rule::begin_run() {
 
 co::Status Rule::apply(const TargetReplayInput& x, usize d, std::span<const u8> no_short,
                        std::vector<f64>& desired) {
+  ATX_TRY_VOID(check_input(x, d, no_short, desired));
+  const Visit visit = begin_decision(x, d, no_short);
+  if (auto row = store_->read(d, slice_); !row) {
+    if (row.error().code() != co::ErrorCode::Unavailable) return row;
+    pass_through(visit, &Counts::no_forecast);
+    return co::Ok();
+  }
+  ATX_TRY(const usize unpriced, priced_view(x, d, desired));
+  if (index_.size() < 2) {
+    pass_through(visit, &Counts::fewer_than_two_priced);
+    return co::Ok();
+  }
+  const auto gross = tilt(desired);
+  if (!gross) {
+    if (gross.error().code() != co::ErrorCode::Unavailable) return co::Err(gross.error());
+    pass_through(visit, &Counts::flat);
+    return co::Ok();
+  }
+  if (!count_applied(visit, unpriced)) return co::Ok();
+  record(no_short, desired, *gross);
+  // Print only (Ruling COVMV-S S-2): a failed eigen print leaves the decision as formed; the
+  // summary's eigen_00_02_share is then null and the failure counted.
+  if (auto printed = add_eigen_shares(); !printed) note_unavailable(printed.error());
+  return co::Ok();
+}
+
+co::Status Rule::check_input(const TargetReplayInput& x, usize d, std::span<const u8> no_short,
+                             const std::vector<f64>& desired) {
   if (!store_) return invalid("no risk model (--risk-model)");
   const usize n = x.instruments;
   if (d >= x.dates || desired.size() != n || x.member.size() != x.dates * n ||
       x.instrument_ids.size() != n || (!no_short.empty() && no_short.size() != n))
     return invalid("decision geometry");
-  ATX_TRY_VOID(store_->check_axes(x.session_keys, n));
+  // Ruling COVMV-S S-6: the store's axes are the replay's, compared once per run. The store is
+  // opened (dispatch_nav_v7) before the role is loaded, so the run's first decision is the first
+  // point the replay's session axis exists (BookScaler::estimate and spo::Engine::prepare check
+  // there too); every later decision of the run reads that same input, which only a Debug build
+  // compares again.
+  if (!axes_checked_) {
+    ATX_TRY_VOID(store_->check_axes(x.session_keys, n));
+    axes_checked_ = true;
+  }
+  assert(store_->check_axes(x.session_keys, n) && "mv-aim-v1: the run's input changed axes");
+  return co::Ok();
+}
+
+Rule::Visit Rule::begin_decision(const TargetReplayInput& x, usize d,
+                                 std::span<const u8> no_short) noexcept {
   // Counted once per decision index: the first time the run forms it (Ruling COV-4 trace: the
   // decision at d, after d's mark, first traded at d + 1's close).
   const bool fresh = !formed_ || d > last_;
@@ -113,22 +160,13 @@ co::Status Rule::apply(const TargetReplayInput& x, usize d, std::span<const u8> 
     formed_ = true;
     last_ = d;
   }
-  const bool scored = d >= x.decision_begin;
   counts_.locate_in_aim = counts_.locate_in_aim || !no_short.empty();
-  const auto pass_through = [&](usize Counts::*outcome) {
-    if (!fresh) return;
-    if (!scored) {
-      ++counts_.warm_up;
-      return;
-    }
-    ++counts_.decisions;
-    ++(counts_.*outcome);
-  };
-  if (auto row = store_->read(d, slice_); !row) {
-    if (row.error().code() != co::ErrorCode::Unavailable) return row;
-    pass_through(&Counts::no_forecast);
-    return co::Ok();
-  }
+  return Visit{fresh, d >= x.decision_begin};
+}
+
+co::Result<usize> Rule::priced_view(const TargetReplayInput& x, usize d,
+                                    const std::vector<f64>& desired) {
+  const usize n = x.instruments;
   // Ruling COV-11 (S11): every slot of row d is an industry (0..49) or no row (255).
   for (usize i = 0; i < n; ++i) {
     const u8 slot = slice_.slot[i];
@@ -164,38 +202,47 @@ co::Status Rule::apply(const TargetReplayInput& x, usize d, std::span<const u8> 
     sigma_.push_back(std::sqrt(specific));
     index_.push_back(i);
   }
+  return co::Ok(unpriced);
+}
+
+co::Result<f64> Rule::tilt(std::vector<f64>& desired) {
   const usize priced = index_.size();
-  if (priced < 2) {
-    pass_through(&Counts::fewer_than_two_priced);
-    return co::Ok();
-  }
   const eb::FactorRiskView view{spo::risk_industry_slots, spo::risk_styles, group_, exposures_,
                                 slice_.covariance, specific_};
   out_.assign(priced, 0.0);
-  if (auto tilt = eb::mv_aim(view, score_, sigma_, out_, scratch_); !tilt) {
-    if (tilt.error().code() != co::ErrorCode::Unavailable) return co::Err(tilt.error());
-    pass_through(&Counts::flat);
-    return co::Ok();
-  }
+  ATX_TRY_VOID(eb::mv_aim(view, score_, sigma_, out_, scratch_));
   // Ruling W3-17: the priced block keeps the desired target's gross over the priced names.
   f64 gross = 0;
   for (const f64 s : score_) gross += std::abs(s);
   for (usize k = 0; k < priced; ++k) desired[index_[k]] = gross * out_[k];
-  if (!fresh) return co::Ok();
-  if (!scored) {
+  return co::Ok(gross);
+}
+
+void Rule::pass_through(Visit v, usize Counts::*outcome) noexcept {
+  if (!v.fresh) return;
+  if (!v.scored) {
+    ++counts_.warm_up;
+    return;
+  }
+  ++counts_.decisions;
+  ++(counts_.*outcome);
+}
+
+bool Rule::count_applied(Visit v, usize unpriced) noexcept {
+  if (!v.fresh) return false;
+  if (!v.scored) {
     ++counts_.warm_up;
     ++counts_.warm_up_applied;
-    return co::Ok();
+    return false;
   }
   ++counts_.decisions;
   ++counts_.applied;
-  counts_.priced.add(static_cast<f64>(priced));
+  counts_.priced.add(static_cast<f64>(index_.size()));
   counts_.unpriced.add(static_cast<f64>(unpriced));
-  return record(no_short, desired, gross);
+  return true;
 }
 
-co::Status Rule::record(std::span<const u8> no_short, const std::vector<f64>& desired,
-                        f64 gross) {
+void Rule::record(std::span<const u8> no_short, const std::vector<f64>& desired, f64 gross) {
   const usize priced = index_.size();
   // Ruling PRE-24a: the gross-weighted mean specific volatility of the target over that of the
   // desired target, on the priced names (both have gross g there, so the ratio of the sums).
@@ -209,22 +256,32 @@ co::Status Rule::record(std::span<const u8> no_short, const std::vector<f64>& de
   counts_.pooled_target += target;
   counts_.pooled_desired += before;
   counts_.ratio.add(before > 0 ? target / before : nan);
-  // Ruling COV-13 (c): the share of e' F_d e on eigen ranks 00-02, e = X' w over the priced names.
-  const eb::FactorRiskView view{spo::risk_industry_slots, spo::risk_styles, group_, exposures_,
-                                slice_.covariance, specific_};
-  ATX_TRY_VOID(eb::factor_eigen(slice_.covariance, spo::risk_factors, eigen_));
-  exposure_.assign(spo::risk_factors, 0.0);
-  ATX_TRY_VOID(eb::factor_exposure(view, weights_, exposure_));
-  counts_.share_mv.add(eb::low_eigen_share(eigen_, exposure_, low_ranks));
-  ATX_TRY_VOID(eb::factor_exposure(view, score_, exposure_));
-  counts_.share_desired.add(eb::low_eigen_share(eigen_, exposure_, low_ranks));
   // Under --locate-in-aim: special-tier names the target puts short.
   usize negative = 0;
   for (usize i = 0; i < no_short.size(); ++i)
     if (no_short[i] != 0 && desired[i] < 0) ++negative;
   counts_.negative_names += negative;
   counts_.negative_decisions += negative > 0 ? 1U : 0U;
+}
+
+co::Status Rule::add_eigen_shares() {
+  // Ruling COV-13 (c): the share of e' F_d e on eigen ranks 00-02, e = X' w over the priced names
+  // (w: the target's weights_ from record, then the desired target); both shares or neither.
+  const eb::FactorRiskView view{spo::risk_industry_slots, spo::risk_styles, group_, exposures_,
+                                slice_.covariance, specific_};
+  ATX_TRY_VOID(eb::factor_eigen(slice_.covariance, spo::risk_factors, eigen_));
+  exposure_.assign(spo::risk_factors, 0.0);
+  ATX_TRY_VOID(eb::factor_exposure(view, weights_, exposure_));
+  const f64 mv = eb::low_eigen_share(eigen_, exposure_, low_ranks);
+  ATX_TRY_VOID(eb::factor_exposure(view, score_, exposure_));
+  counts_.share_mv.add(mv);
+  counts_.share_desired.add(eb::low_eigen_share(eigen_, exposure_, low_ranks));
   return co::Ok();
+}
+
+void Rule::note_unavailable(const co::Error& error) {
+  if (counts_.share_unavailable == 0) counts_.share_error = error.to_string();
+  ++counts_.share_unavailable;
 }
 
 Json Rule::parameters_json() const {
@@ -255,13 +312,21 @@ Json Rule::summary_json() const {
       {"definition", "Ruling PRE-24a: sum |w_i| sigma_i / sum |desired_i| sigma_i over the "
                      "priced names of an applied decision (equal gross there), sigma_i = "
                      "sqrt(D_i) of row d; pooled = the ratio of the sums over decisions"}};
-  out["eigen_00_02_share"] = Json{
-      {"mv", stats_json(c.share_mv)},
-      {"desired", stats_json(c.share_desired)},
-      {"definition", "Ruling COV-13 (c): sum_{r < 3} lambda_r (v_r' e)^2 / e' F_d e over the "
-                     "forecast block of F_d (F_jj > 0), ranks ascending (00 = the smallest), "
-                     "e = X' w of the priced names (mv: the target, desired: the desired "
-                     "target)"}};
+  if (c.share_unavailable == 0) {
+    out["eigen_00_02_share"] = Json{
+        {"mv", stats_json(c.share_mv)},
+        {"desired", stats_json(c.share_desired)},
+        {"definition", "Ruling COV-13 (c): sum_{r < 3} lambda_r (v_r' e)^2 / e' F_d e over the "
+                       "forecast block of F_d (F_jj > 0), ranks ascending (00 = the smallest), "
+                       "e = X' w of the priced names (mv: the target, desired: the desired "
+                       "target)"}};
+  } else {
+    // Ruling COVMV-S S-2: a figure that failed at some applied decision is not printed in part;
+    // the decisions themselves stood as formed.
+    out["eigen_00_02_share"] = nullptr;
+    out["eigen_00_02_share_unavailable"] =
+        Json{{"decisions", c.share_unavailable}, {"first_error", c.share_error}};
+  }
   out["special_tier_negative"] = Json{{"locate_in_aim", c.locate_in_aim},
                                       {"name_decisions", c.negative_names},
                                       {"decisions", c.negative_decisions}};

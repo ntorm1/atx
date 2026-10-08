@@ -10,13 +10,16 @@
 //   a decision counted once (a second pass forms it again); the container and directory stores
 //   give the same book; --book-workers 1 and 4 publish the same bytes (W1-MIN M-1); the summary
 //   block only with the rule; the rule-absent identity of the hook and of the NAV workspace
-//   reserve (Ruling COVMV-1); --calibrate-gross counts each decision once.
+//   reserve (Ruling COVMV-1); --calibrate-gross counts each decision once; a failed eigen print
+//   leaves every decision and NAV byte as they were and prints the figure as null (Ruling
+//   COVMV-S S-2).
 //
 // Suite: MvAimRule
 
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -192,6 +195,27 @@ std::vector<std::string> rule_on(const Pin& pin, std::vector<std::string> extra 
   return args;
 }
 
+// Every row's F_{0,8} moved 1e-4 away from 0 (its sign kept), F_{8,0} left, in the store in
+// `dir` (the manifest's file entry re-hashed); returns the new manifest SHA-256. Factor 8 is
+// industry slot 7, which no fixture name has (write_risk_model: slot i % 5), so its column of F
+// meets only exact zeros of G = X' D^-1 X and r = X' u in the kernel (each product the same
+// signed zero) and the target reads the store bit for bit as before; F_d's forecast block is no
+// longer symmetric, so the eigen print fails at every decision (Ruling COVMV-S S-2).
+std::string plant_asymmetric_f(const fs::path& dir, usize dates) {
+  constexpr usize k = sp::risk_factors, row = 0, column = 1 + 7;
+  const auto raw = bytes_of(dir / "factor_covariance.f64");
+  std::vector<f64> cov(dates * k * k);
+  EXPECT_EQ(raw.size(), cov.size() * sizeof(f64));
+  std::memcpy(cov.data(), raw.data(), std::min(raw.size(), cov.size() * sizeof(f64)));
+  for (usize d = 0; d < dates; ++d) {
+    f64& entry = cov[(d * k + row) * k + column];
+    entry = std::copysign(std::abs(entry) + 1e-4, entry);
+  }
+  auto manifest = read_json_file(dir / "manifest.json");
+  manifest["files"]["factor_covariance.f64"] = write_payload(dir / "factor_covariance.f64", cov);
+  return write_json_file(dir / "manifest.json", manifest);
+}
+
 // ---- the registry row -----------------------------------------------------------------------
 
 // K-P9-7: one target row, closed params_schema (the store pin, both required with their flags:
@@ -223,7 +247,7 @@ TEST(MvAimRule, ListRulesRowIsAClosedTargetRow) {
             (Json{{"type", "string"}, {"x-flag", "--risk-model-sha256"},
                   {"pattern", "^[0-9a-f]{64}$"}}));
   EXPECT_EQ(row.at("incompatible"),
-            Json::array({"aim-partial-v6", "spo-v1", "spo-v2", "spo-v3", "two-speed-nav-v1",
+            Json::array({"aim-partial-v6", "spo-v1", "spo-v2", "spo-v3", "two-speed-v1",
                          "adv-hold-v1", "hold-band-v1"}));
   ASSERT_EQ(nr::target_rows().size(), 1U);
   EXPECT_EQ(nr::find(nr::Kind::Target, "mv-aim-v1"), &nr::target_rows()[0]);
@@ -632,6 +656,80 @@ TEST(MvAimRule, ContainerAndDirectoryStoresGiveTheSameBook) {
     for (auto* doc : {&a, &b}) {
       (*doc)["mv_aim"].erase("risk_model");
       doc->erase("recipe_sha256");
+    }
+    EXPECT_EQ(a, b) << name;
+  }
+}
+
+// Ruling COVMV-S S-2: a print-only figure never stops a cell. On a store whose F the target reads
+// bit for bit as the clean store's but whose forecast block is not symmetric (plant_asymmetric_f),
+// the eigen print fails at every applied decision: every target is the clean store's bit for
+// bit, the run publishes, every file but the two that record the store pin is byte-identical,
+// summary.json's eigen_00_02_share is null and the failures are counted with the first error.
+TEST(MvAimRule, PrintFailureLeavesTheBookAndWritesNull) {
+  const Directory dir;
+  const Role role(40, 12, 53);
+  // The decisions, in process.
+  const std::vector<u8> forecast(role.d, u8{1});
+  const auto clean_store = store_of(dir.path / "clean", role, forecast);
+  fs::copy(dir.path / "clean", dir.path / "planted", fs::copy_options::recursive);
+  const auto planted_sha = plant_asymmetric_f(dir.path / "planted", role.d);
+  auto opened = sp::RiskStore::open((dir.path / "planted").string(), planted_sha, "role-sha");
+  ASSERT_TRUE(opened) << opened.error().to_string();
+  ma::Rule clean(clean_store);
+  ma::Rule planted(std::make_shared<const sp::RiskStore>(std::move(*opened)));
+  constexpr usize through = 30;
+  const auto tc = targets(clean, role, through);
+  const auto tp = targets(planted, role, through);
+  for (usize d = 0; d <= through; ++d) EXPECT_TRUE(same_bits(tc[d], tp[d])) << d;
+  EXPECT_GT(clean.counts().applied, 0U);
+  EXPECT_EQ(planted.counts().applied, clean.counts().applied);
+  EXPECT_EQ(clean.counts().share_unavailable, 0U);
+  EXPECT_GT(clean.counts().share_mv.n, 0U);
+  EXPECT_EQ(planted.counts().share_unavailable, planted.counts().applied);
+  EXPECT_EQ(planted.counts().share_mv.n, 0U);
+  EXPECT_EQ(planted.counts().share_desired.n, 0U);
+  EXPECT_NE(planted.counts().share_error.find("symmetric"), std::string::npos)
+      << planted.counts().share_error;
+  EXPECT_TRUE(clean.summary_json().at("eigen_00_02_share").is_object());
+  EXPECT_TRUE(planted.summary_json().at("eigen_00_02_share").is_null());
+  // The command line: the same NAV bytes, the figure null.
+  const auto in = write_run_inputs(dir.path, role);
+  const auto pin = cli_store(dir.path / "cli-clean", role, in);
+  fs::copy(dir.path / "cli-clean", dir.path / "cli-planted", fs::copy_options::recursive);
+  const Pin skewed{(dir.path / "cli-planted").string(),
+                   plant_asymmetric_f(dir.path / "cli-planted", role.d)};
+  std::ostringstream out, err;
+  ASSERT_EQ(nav(nav_line(in, dir.path / "a", rule_on(pin)), out, err), 0) << err.str();
+  ASSERT_EQ(nav(nav_line(in, dir.path / "b", rule_on(skewed)), out, err), 0) << err.str();
+  const auto names = tree(dir.path / "a");
+  ASSERT_EQ(names, tree(dir.path / "b"));
+  ASSERT_GE(names.size(), 9U);
+  for (const auto& name : names) {
+    if (name != "recipe.json" && name != "summary.json") {
+      EXPECT_TRUE(bytes_of(dir.path / "a" / name) == bytes_of(dir.path / "b" / name)) << name;
+      continue;
+    }
+    auto a = read_json_file(dir.path / "a" / name);
+    auto b = read_json_file(dir.path / "b" / name);
+    EXPECT_EQ(b.at("mv_aim").at("risk_model").at("manifest_sha256"), skewed.sha) << name;
+    for (auto* doc : {&a, &b}) {
+      (*doc)["mv_aim"].erase("risk_model");
+      doc->erase("recipe_sha256");
+    }
+    if (name == "summary.json") {
+      const auto& block = b.at("mv_aim");
+      EXPECT_TRUE(block.at("eigen_00_02_share").is_null());
+      const auto& why = block.at("eigen_00_02_share_unavailable");
+      EXPECT_GT(block.at("decisions").at("applied").get<usize>(), 0U);
+      EXPECT_EQ(why.at("decisions"), block.at("decisions").at("applied"));
+      EXPECT_NE(why.at("first_error").get<std::string>().find("symmetric"), std::string::npos);
+      EXPECT_TRUE(a.at("mv_aim").at("eigen_00_02_share").is_object());
+      EXPECT_FALSE(a.at("mv_aim").contains("eigen_00_02_share_unavailable"));
+      for (auto* doc : {&a, &b}) {
+        (*doc)["mv_aim"].erase("eigen_00_02_share");
+        (*doc)["mv_aim"].erase("eigen_00_02_share_unavailable");
+      }
     }
     EXPECT_EQ(a, b) << name;
   }

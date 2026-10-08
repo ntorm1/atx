@@ -22,6 +22,7 @@
 #include "atx/engine/book/risk_target.hpp"
 #include "atx/engine/book/two_speed.hpp"
 #include "book/nav_rules.hpp" // P9 C3: --cost-law / --target-rule registry ids
+#include "strategy_mv_aim.hpp"   // P9 COV-MV: mv_aim::Rule (the header forward-declares it)
 #include "strategy_risk_target.hpp"
 #include "strategy_spo_v3.hpp"
 #include "strategy_target_replay_detail.hpp"

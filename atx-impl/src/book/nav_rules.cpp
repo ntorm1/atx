@@ -103,9 +103,11 @@ Json mv_aim_params() {
                                              Json{{"pattern", "^[0-9a-f]{64}$"}})}};
 }
 constexpr std::array<std::string_view, 2> mv_aim_required{"risk_model", "risk_model_sha256"};
+// Named as the other rows name them (Ruling COVMV-S S-5): two-speed by its composition rule
+// two-speed-v1, as per-name-v1's row does.
 constexpr std::array<std::string_view, 7> mv_aim_refuses{
-    "aim-partial-v6",   "spo-v1",      "spo-v2",       "spo-v3",
-    "two-speed-nav-v1", "adv-hold-v1", "hold-band-v1"};
+    "aim-partial-v6", "spo-v1",      "spo-v2",      "spo-v3",
+    "two-speed-v1",   "adv-hold-v1", "hold-band-v1"};
 constexpr Row targets[] = {
     {mv_aim::rule_id, Kind::Target, "--target-rule mv-aim-v1", mv_aim_params, mv_aim_required,
      mv_aim_refuses,

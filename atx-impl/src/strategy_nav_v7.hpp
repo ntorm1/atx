@@ -114,11 +114,17 @@
 #include "atx/core/types.hpp"
 #include "atx/engine/book/replay_cost.hpp"
 #include "strategy_cost_v2.hpp"
-#include "strategy_mv_aim.hpp"
 #include "strategy_nav_replay.hpp"
 #include "strategy_risk_target.hpp"
 #include "strategy_spo.hpp"
 #include "strategy_target_replay.hpp"
+
+// P9 COV-MV: the target rule (strategy_mv_aim.hpp); this header only lends a pointer to it
+// (ScopedNavExtension::mv_aim_rule), so every includer is spared the rule's and the engine
+// kernel's headers.
+namespace atx::impl::strategy::mv_aim {
+class Rule;
+} // namespace atx::impl::strategy::mv_aim
 
 namespace atx::impl::strategy::v7 {
 

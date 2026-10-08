@@ -6,6 +6,7 @@
 #include <cmath>   // std::abs, std::isfinite, std::isnan
 #include <initializer_list>
 #include <limits>  // std::numeric_limits
+#include <memory>  // std::make_unique (FactorEigen::workspace)
 #include <span>    // std::span
 #include <string>  // std::string
 #include <utility> // std::move (ATX_TRY), std::swap
@@ -36,14 +37,17 @@ constexpr f64 nan = std::numeric_limits<f64>::quiet_NaN();
 
 [[nodiscard]] bool finite_positive(f64 x) noexcept { return std::isfinite(x) && x > 0.0; }
 
-// Grows v to hold n entries with one exact allocation (no growth factor), so the scratch's bytes
-// stay within mv_aim_working_bytes; then sets every entry to `fill`.
+// Grows v's capacity to n with one exact allocation (no growth factor; the entries are dropped
+// when it grows), so the bytes stay within the stated bounds.
+template <class T> void reserve_exact(std::vector<T>& v, usize n) {
+  if (v.capacity() >= n) return;
+  std::vector<T> fresh;
+  fresh.reserve(n);
+  v.swap(fresh);
+}
+// reserve_exact, then every one of n entries set to `fill` (the scratch: mv_aim_working_bytes).
 template <class T> void sized(std::vector<T>& v, usize n, T fill) {
-  if (v.capacity() < n) {
-    std::vector<T> fresh;
-    fresh.reserve(n);
-    v.swap(fresh);
-  }
+  reserve_exact(v, n);
   v.assign(n, fill);
 }
 
@@ -269,7 +273,20 @@ atx::core::Status factor_exposure(const FactorRiskView& m, std::span<const f64> 
   return atx::core::Ok();
 }
 
+// The decomposition's storage, kept across calls (Ruling COVMV-S S-1): F's forecast block and
+// Eigen's solver; Eigen resizes each only when the block's size changes.
+struct FactorEigen::Workspace {
+  atx::core::linalg::MatX block;
+  Eigen::SelfAdjointEigenSolver<atx::core::linalg::MatX> solver;
+};
+
+FactorEigen::FactorEigen() = default;
+FactorEigen::~FactorEigen() = default;
+FactorEigen::FactorEigen(FactorEigen&&) noexcept = default;
+FactorEigen& FactorEigen::operator=(FactorEigen&&) noexcept = default;
+
 atx::core::Status factor_eigen(std::span<const f64> covariance, usize k, FactorEigen& out) {
+  namespace la = atx::core::linalg;
   out.factors.clear();
   out.values.clear();
   out.vectors.clear();
@@ -278,25 +295,39 @@ atx::core::Status factor_eigen(std::span<const f64> covariance, usize k, FactorE
     return invalid("factor_eigen: the covariance is not k x k");
   for (const f64 x : covariance)
     if (!std::isfinite(x)) return invalid("factor_eigen: a non-finite covariance entry");
+  reserve_exact(out.factors, k);
+  reserve_exact(out.values, k);
+  reserve_exact(out.vectors, *cells);
   for (usize j = 0U; j < k; ++j)
     if (covariance[j * k + j] > 0.0) out.factors.push_back(j);
   const usize size = out.factors.size();
   if (size == 0U) return atx::core::Ok();
+  if (!out.workspace) out.workspace = std::make_unique<FactorEigen::Workspace>();
+  FactorEigen::Workspace& w = *out.workspace;
   const auto index = [](usize x) { return static_cast<Eigen::Index>(x); };
-  atx::core::linalg::MatX block(index(size), index(size));
+  w.block.resize(index(size), index(size));
   for (usize a = 0U; a < size; ++a)
     for (usize b = 0U; b < size; ++b)
-      block(index(a), index(b)) = covariance[out.factors[a] * k + out.factors[b]];
-  auto eig = atx::core::linalg::symmetric_eig(block);
-  if (!eig) {
+      w.block(index(a), index(b)) = covariance[out.factors[a] * k + out.factors[b]];
+  // symmetric_eig (decompose.hpp) step for step: its guard, then the solver's compute with the
+  // default options, so the result is a fresh decomposition's bit for bit.
+  if (!la::detail::is_symmetric_within(w.block, la::detail::kSymmetryTol)) {
     out.factors.clear();
-    return atx::core::Err(eig.error().code(), "mv-aim-v1: factor_eigen: " + eig.error().message());
+    return invalid("factor_eigen: symmetric_eig: A must be square and symmetric");
   }
+  w.solver.compute(w.block);
+  if (w.solver.info() != Eigen::Success) {
+    out.factors.clear();
+    return failure(atx::core::ErrorCode::Internal,
+                   "factor_eigen: symmetric_eig: eigensolver did not converge");
+  }
+  const auto& values = w.solver.eigenvalues();
+  const auto& vectors = w.solver.eigenvectors();
   out.values.resize(size);
   out.vectors.resize(size * size);
   for (usize r = 0U; r < size; ++r) {
-    out.values[r] = eig->values(index(r));
-    for (usize a = 0U; a < size; ++a) out.vectors[r * size + a] = eig->vectors(index(a), index(r));
+    out.values[r] = values(index(r));
+    for (usize a = 0U; a < size; ++a) out.vectors[r * size + a] = vectors(index(a), index(r));
   }
   return atx::core::Ok();
 }

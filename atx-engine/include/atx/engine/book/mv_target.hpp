@@ -27,9 +27,11 @@
 // groups + styles; no m x m matrix.
 //
 // Deterministic: no RNG, clock or map. Allocation: the scratch's vectors, reserved exactly on
-// first use at the call's sizes (mv_aim_working_bytes bounds MvAimScratch::bytes()).
+// first use at the call's sizes (mv_aim_working_bytes bounds MvAimScratch::bytes()); the print's
+// FactorEigen keeps its storage across calls the same way (below).
 
 #include <limits>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -83,14 +85,31 @@ mv_aim(const FactorRiskView& m, std::span<const atx::f64> score, std::span<const
 // forecast has a zero row in the store's slice), eigenvalues ascending (rank 00 = the smallest,
 // COV's convention, strategy_risk_model.cpp form_extended), eigenvector r stored at
 // vectors[r * size .. r * size + size) over the block's factors in index order.
+//
+// Kept by the caller across calls (one per thread; Ruling COVMV-S S-1): the three vectors are
+// reserved once at k (k x k), and the decomposition's workspace (the block and Eigen's solver,
+// behind a pointer so this header stays free of Eigen; made by the first call) is resized only
+// when the block's size changes, so a call at the previous call's block size allocates nothing
+// of its own. Eigen's SelfAdjointEigenSolver::compute itself still makes one block-sized vector
+// per call (HouseholderSequence::evalTo's workspace, which its API does not take).
 struct FactorEigen {
+  FactorEigen();
+  ~FactorEigen();
+  FactorEigen(FactorEigen&&) noexcept;
+  FactorEigen& operator=(FactorEigen&&) noexcept;
+  FactorEigen(const FactorEigen&) = delete;
+  FactorEigen& operator=(const FactorEigen&) = delete;
+
   std::vector<atx::usize> factors;
   std::vector<atx::f64> values;
   std::vector<atx::f64> vectors;
+  struct Workspace;
+  std::unique_ptr<Workspace> workspace;
 };
-// InvalidArgument: covariance not k x k, a non-finite entry, or a block that is not symmetric
-// (atx::core::linalg::symmetric_eig's relative tolerance); Internal: no convergence. An empty
-// block leaves `out` empty.
+// atx::core::linalg::symmetric_eig's guard and solver on that storage, so the bits are a fresh
+// symmetric_eig's of the same block. InvalidArgument: covariance not k x k, a non-finite entry,
+// or a block that is not symmetric (symmetric_eig's relative tolerance); Internal: no
+// convergence. An empty block leaves `out` empty; a refusal leaves `out.factors` empty.
 [[nodiscard]] atx::core::Status factor_eigen(std::span<const atx::f64> covariance, atx::usize k,
                                              FactorEigen& out);
 

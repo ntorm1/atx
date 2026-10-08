@@ -6,7 +6,8 @@
 //   COV-13 (c): finite and equal to the dense solve, F never inverted), the gross
 //   normalisation, a positive scale on alpha washing out, NaN as no opinion (bit for bit the
 //   model without those names), dollar neutrality, the scratch bound, the refusals and the
-//   print helpers (factor_exposure, factor_eigen, low_eigen_share).
+//   print helpers (factor_exposure, factor_eigen, low_eigen_share; factor_eigen on storage kept
+//   across calls is a fresh symmetric_eig bit for bit, Ruling COVMV-S S-1).
 //
 // Suite: MvTarget
 
@@ -23,6 +24,7 @@
 #include <gtest/gtest.h>
 
 #include "atx/core/error.hpp"
+#include "atx/core/linalg/decompose.hpp"
 #include "atx/core/types.hpp"
 #include "atx/engine/book/mv_target.hpp"
 #include "atx/engine/book/risk_target.hpp"
@@ -431,6 +433,79 @@ TEST(MvTarget, LowEigenShare) {
   ASSERT_TRUE(eb::factor_eigen(std::vector<f64>(k * k, 0.0), k, eig));
   EXPECT_TRUE(eig.factors.empty());
   EXPECT_TRUE(std::isnan(eb::low_eigen_share(eig, e, 3U)));
+}
+
+// Ruling COVMV-S S-1: one FactorEigen keeps its block and Eigen's solver across calls. Each call on
+// that storage (the same 62-factor block again, a smaller block, a larger one, a single factor,
+// a call after a refusal) gives the bits a fresh atx::core::linalg::symmetric_eig of the same
+// block gives; an asymmetric block is refused as symmetric_eig refuses it.
+TEST(MvTarget, FactorEigenOnKeptStorageIsAFreshSolve) {
+  namespace la = atx::core::linalg;
+  constexpr usize k = 62U;
+  Draws rng{29U};
+  std::vector<f64> a(k * k);
+  for (f64& x : a) x = rng.next(-1.0, 1.0);
+  std::vector<f64> full(k * k, 0.0);
+  for (usize r = 0U; r < k; ++r)
+    for (usize c = 0U; c < k; ++c) {
+      f64 v = r == c ? 1e-6 : 0.0;
+      for (usize l = 0U; l < k; ++l) v += 1e-4 * a[r * k + l] * a[c * k + l];
+      full[r * k + c] = v;
+    }
+  // F with every factor j outside `keep` unforecast (a zero row and column).
+  const auto masked = [&](auto keep) {
+    std::vector<f64> f = full;
+    for (usize j = 0U; j < k; ++j)
+      if (!keep(j))
+        for (usize l = 0U; l < k; ++l) f[j * k + l] = f[l * k + j] = 0.0;
+    return f;
+  };
+  const std::vector<std::vector<f64>> cases{full,
+                                            full,
+                                            masked([](usize j) { return j % 2U == 0U; }),
+                                            full,
+                                            masked([](usize j) { return j == 7U; }),
+                                            masked([](usize j) { return j < 40U; }),
+                                            full};
+  const std::vector<usize> sizes{k, k, 31U, k, 1U, 40U, k};
+  std::vector<f64> skew = full;
+  skew[0U * k + 5U] += 1e-3;
+  const auto index = [](usize x) { return static_cast<Eigen::Index>(x); };
+  eb::FactorEigen eig;
+  for (usize c = 0U; c < cases.size(); ++c) {
+    const auto& f = cases[c];
+    ASSERT_TRUE(eb::factor_eigen(f, k, eig)) << c;
+    const usize size = eig.factors.size();
+    ASSERT_EQ(size, sizes[c]) << c;
+    la::MatX block(index(size), index(size));
+    for (usize p = 0U; p < size; ++p)
+      for (usize q = 0U; q < size; ++q)
+        block(index(p), index(q)) = f[eig.factors[p] * k + eig.factors[q]];
+    const auto fresh = la::symmetric_eig(block);
+    ASSERT_TRUE(fresh) << c;
+    ASSERT_EQ(eig.values.size(), size) << c;
+    ASSERT_EQ(eig.vectors.size(), size * size) << c;
+    const auto same = [](f64 x, f64 y) { return std::bit_cast<u64>(x) == std::bit_cast<u64>(y); };
+    usize differ = 0U;
+    for (usize r = 0U; r < size; ++r) {
+      if (!same(eig.values[r], fresh->values(index(r)))) ++differ;
+      for (usize p = 0U; p < size; ++p)
+        if (!same(eig.vectors[r * size + p], fresh->vectors(index(p), index(r)))) ++differ;
+    }
+    EXPECT_EQ(differ, 0U) << c;
+    if (c == 3U) { // a refusal on the kept storage; the next call is a fresh solve again
+      const auto refused = eb::factor_eigen(skew, k, eig);
+      ASSERT_FALSE(refused);
+      EXPECT_EQ(refused.error().code(), co::ErrorCode::InvalidArgument);
+      EXPECT_NE(refused.error().message().find("symmetric"), std::string::npos);
+      EXPECT_TRUE(eig.factors.empty());
+      EXPECT_TRUE(eig.values.empty());
+    }
+  }
+  la::MatX skewed(index(k), index(k));
+  for (usize p = 0U; p < k; ++p)
+    for (usize q = 0U; q < k; ++q) skewed(index(p), index(q)) = skew[p * k + q];
+  EXPECT_FALSE(la::symmetric_eig(skewed));
 }
 
 } // namespace atx_test_p9_book_mv_target
