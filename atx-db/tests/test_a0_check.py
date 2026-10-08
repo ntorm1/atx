@@ -220,6 +220,25 @@ def test_recorded_compatibility_requires_original_sidecar(tmp_path, mode):
     assert not (base/'execution_compatibility/frozen53-data-binding.json').exists()
 
 
+def test_report_connection_has_bounded_budget_and_file_backed_spill(tmp_path):
+    con = a0._report_connection(tmp_path)
+    try:
+        budget, threads, spill, insertion, timezone = con.execute("""
+            SELECT current_setting('memory_limit'), current_setting('threads'),
+                   current_setting('temp_directory'), current_setting('preserve_insertion_order'),
+                   current_setting('TimeZone')
+        """).fetchone()
+        size, unit = budget.split()
+        assert unit == 'MiB' and 240 < float(size) < 250
+        assert threads == 1 and insertion is False and timezone == 'UTC'
+        assert Path(spill).resolve() == (tmp_path/'a0-report.spill').resolve()
+        assert Path(con.execute('PRAGMA database_list').fetchone()[2]).resolve() == (tmp_path/'a0-report.duckdb').resolve()
+        con.execute('CREATE TABLE bounded_report_probe AS SELECT 1 AS value')
+        assert con.execute('SELECT value FROM bounded_report_probe').fetchone() == (1,)
+    finally:
+        con.close()
+
+
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
