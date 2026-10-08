@@ -35,6 +35,7 @@ import json
 
 from research_common import run_dir_of
 import research_spec
+import research_store_hook
 import research_tree
 
 BINDING = "cycle_binding.json"
@@ -189,6 +190,7 @@ def write_binding(cycle, st) -> dict:
         doc["spec_rule"] = SPEC_RULE
     doc["argv_sha256"] = argv_digest(step_args(st))
     cycle.res.path(f"{st.run_dir}/{BINDING}").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    research_store_hook.record(cycle.res.root, cycle.res.path(f"{st.run_dir}/{BINDING}"), "cycle-binding")
     return doc
 
 
