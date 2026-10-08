@@ -299,3 +299,8 @@ target_sources(atx-impl-strategy PRIVATE src/strategy_nav_calibrate.cpp)
 # trial_ledger.cpp and its users, stage_equity_ic / stage_equity_universe, are pipeline TUs;
 # atx-impl-core is INTERFACE).
 target_link_libraries(atx-impl-pipeline PUBLIC atx::engine-research-ledger)
+# P9 lane SIGN (ruling C3-11): `atx-equity-strategy-ic sign`, the wave's PM7-35 sign rule on its screen
+# rows by the engine's research/admission predicate (sign_rule.hpp pm7_35; screen.hpp status names), so
+# atx-impl-strategy links the admission library (header-only predicate, status_name from screen.cpp).
+target_sources(atx-impl-strategy PRIVATE src/strategy_sign_verb.cpp)
+target_link_libraries(atx-impl-strategy PUBLIC atx::engine-research-admission)
