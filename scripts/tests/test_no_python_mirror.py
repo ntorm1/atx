@@ -34,7 +34,7 @@ REPO = Path(__file__).resolve().parents[2]
 FROZEN_AT = "d7c1c520"
 P9_FREEZE = False
 SCOPE = ("scripts", "atx-engine/tools", "atx-impl/tools", "atx-impl/strategies", "python")
-P9_LANES = ("B1", "B2", "C2", "C3", "D2", "D3", "E2")
+P9_LANES = ("B1", "B2", "C2", "C3", "D2", "D3", "E2", "SIGN")   # SIGN: P9 ruling C3-11 (the PM7-35 sign rule)
 LANES = P9_LANES + ("P10",)
 
 STATS = "statistics of record (F-1)"
@@ -61,8 +61,9 @@ ALLOWLIST = (
     ("atx-impl/tools/horizon_stats.py", ("theta_weights", "ic_theta", "theta_book_returns"),
      "aim-partial theta of strategy_target_replay.cpp (G-P5 names horizon_stats.py; plan section 2.2 names no owner: "
      "D2 owns the fitter that imports it)", "atx-impl/src/strategy_target_replay.cpp", "P10"),
+    # P9 ruling C3-11 / C3B-S: lane SIGN retires it (the screen stage runs the IC exe's sign verb on B1's predicate).
     ("scripts/wave_rules.py", ("sign_pm7_35",), "PM7-35 sign rule (P9 ruling P9: kept in wave 1)",
-     "new in B1 (the research/admission sign predicate)", "E2"),
+     "atx-impl/src/strategy_sign_verb.cpp over engine research/admission/sign_rule.hpp pm7_35", "SIGN"),
     ("atx-impl/tools/mega_report/data.py", ("memmel_se",), "report renderer's copy of nav_summ.memmel_se (outside the "
      "P9 list)", "new in B2 (atx-research-eval paired block)", "P10"),
     ("python/src/atxpy/pbo.py", ("cscv_pbo",), "atxpy's standalone pandas CSCV (outside the P9 list)",

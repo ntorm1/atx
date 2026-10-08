@@ -1,5 +1,6 @@
 """The register, screen and spec stages of a research wave (wave_stages.py): add-alpha into the wave's library,
-the screen and the sign rule, the cell spec (screen library, b library or rule cell).
+the screen and the sign rule (the IC exe's sign verb, P9 lane SIGN), the cell spec (screen library, b library or rule
+cell).
 """
 from __future__ import annotations
 
@@ -115,9 +116,11 @@ def screen(w: Wave, done: dict, log) -> dict:
     marginal = [{k: x.get(k) for k in MARGINAL_KEYS} for x in (doc or {}).get("marginal") or [] if isinstance(x, dict)]
     ids = {c["id"] for c in m["candidates"]}
     try:
-        dec = WR.screen_decision(m["sign_rule"], m["candidates"], [r for r in rows if r["id"] in ids])
+        sign_in = WR.sign_rows(m["candidates"], [r for r in rows if r["id"] in ids])
     except WR.RuleError as exc:
         raise StageError(f"screen: {apath}: {exc}") from exc
+    sign = sign_verb(w, spec, m["sign_rule"], sign_in)          # the sign rule: the IC exe's sign verb (C++)
+    dec = sign.pop("decision")
     gate_ok = done_screen.returncode == RC.EXIT_OK
     for row in dec["rows"]:
         log(f"   {row['id']}: status {row['status']}, runner sign {row['runner_sign']} vs prior "
@@ -126,7 +129,7 @@ def screen(w: Wave, done: dict, log) -> dict:
         f"{dec['kept']}, dropped {dec['dropped']}")
     out = {"spec": spec, "gate_exit": done_screen.returncode, "admission": apath, "admission_sha256": w.sha(apath),
            "verdict": vpath, "verdict_sha256": w.sha(vpath), "rows": [r for r in rows if r["id"] in ids],
-           "marginal": marginal, "decision": dec, "cell": bool(gate_ok and dec["kept"])}
+           "marginal": marginal, "decision": dec, "sign": sign, "cell": bool(gate_ok and dec["kept"])}
     if timings_on(w):                  # P9 OR section 5: the screen's u, fit, card, marginal rows (a b library's cell
         out["phases"] = phase_rows(w, spec)                       # spec is another spec)
     return out
@@ -135,8 +138,50 @@ def screen(w: Wave, done: dict, log) -> dict:
 def screen_plan(w: Wave, done: dict) -> list[str]:
     if not library_wave(w):
         return ["#   (rule wave: no screen)"]
+    rule = w.manifest["sign_rule"]
     return [WS.fmt_argv(cyc(w,"run", lib_spec(w.manifest["library"]), "--screen")),
-            f"#   then: the sign rule {w.manifest['sign_rule']} on every string's row of the fit's admission.json"]
+            f"#   then: the sign rule {rule} on every string's row of the fit's admission.json, by the IC exe's sign "
+            f"verb: <exes.ic> sign --rule {rule} --rows {w.wave_path(SIGN_DIR, 'rows-<k>.json')} --output "
+            f"{w.wave_path(SIGN_DIR, 'receipt-<k>.json')}"]
+
+
+# ------------------------------------------------------------------ the sign verb (P9 lane SIGN, ruling C3-11)
+SIGN_DIR = "sign"
+
+
+def sign_exe(w: Wave, spec: str) -> str:
+    """The IC exe the screen spec runs (its effective exes.ic, research_cycle's rule; load_spec refuses a spec with an
+    ic section and no exes.ic), held to its exes_sha256 pin when the spec has one (exit 3 otherwise: the sign verb
+    runs on the exe the screen ran on)."""
+    doc = w.load_spec(spec)
+    exe = RC.effective_exes(doc)["ic"]
+    pin, now = (doc.get(RC.EXES_PIN) or {}).get("ic"), w.sha(exe)
+    if pin is not None and now != pin:
+        raise StageError(f"screen: the IC exe {exe} is sha256 {str(now)[:12]}, not its pin {str(pin)[:12]} ({spec} "
+                         f"{RC.EXES_PIN}.ic): the sign verb runs only on the pinned exe", EXIT_PIN)
+    return exe
+
+
+def sign_verb(w: Wave, spec: str, rule: str, rows: list[dict]) -> dict:
+    """The sign rule ``rule`` on the screen's rows (WR.sign_rows) by the IC exe's sign verb (atx-equity-strategy-ic
+    sign: the engine's research/admission pm7_35, so no Python copy decides). Each call writes the rows file
+    <out_dir>/sign/rows-<k>.json and the verb writes its receipt-<k>.json (k the first free number: a retried screen
+    gets its own pair, nothing is overwritten); the decision is read from the receipt (WR.verb_decision, exit 3 when
+    it is not the verb's answer to these rows). Returns {exe, exe_sha256, rows, rows_sha256, receipt, receipt_sha256,
+    decision}."""
+    exe = sign_exe(w, spec)
+    k = 1
+    while w.exists(w.wave_path(SIGN_DIR, f"rows-{k}.json")) or w.exists(w.wave_path(SIGN_DIR, f"receipt-{k}.json")):
+        k += 1
+    rows_rel, receipt_rel = w.wave_path(SIGN_DIR, f"rows-{k}.json"), w.wave_path(SIGN_DIR, f"receipt-{k}.json")
+    rows_sha = w.write_json(rows_rel, {"rule": rule, "rows": rows}, exclusive=True)
+    w.run([str(w.path(exe)), "sign", "--rule", rule, "--rows", rows_rel, "--output", receipt_rel], f"sign ({rule})")
+    try:
+        dec = WR.verb_decision(rule, rows, w.read_json(receipt_rel), rows_sha)
+    except (WR.RuleError, ValueError) as exc:
+        raise StageError(f"screen: {receipt_rel}: {exc}", EXIT_PIN) from exc
+    return {"exe": exe, "exe_sha256": w.sha(exe), "rows": rows_rel, "rows_sha256": rows_sha, "receipt": receipt_rel,
+            "receipt_sha256": w.sha(receipt_rel), "decision": dec}
 
 
 def cell_out(w: Wave, done: dict, spec: str, kind: str, commit: str | None, library: str) -> dict:
@@ -228,4 +273,9 @@ def screen_inputs(w: Wave, done: dict) -> dict:
 
 def spec_inputs(w: Wave, done: dict) -> dict:
     sc = done.get("screen") or {}
-    return pinned("screen", sc, {"admission_sha256": w.sha(sc["admission"])}) if sc.get("admission") else {}
+    if not sc.get("admission"):
+        return {}
+    out = pinned("screen", sc, {"admission_sha256": w.sha(sc["admission"])})
+    if sc.get("sign"):       # P9 lane SIGN: the receipt the decision was read from (a screen before SIGN has none)
+        out.update(pinned("screen.sign", sc["sign"], {"receipt_sha256": w.sha(sc["sign"]["receipt"])}))
+    return out
