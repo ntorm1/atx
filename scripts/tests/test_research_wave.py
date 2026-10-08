@@ -74,16 +74,6 @@ def test_sign_rule_pm7_35_as_ruled():
     assert dec["kept"] == ["alpha_a", "alpha_c"] and dec["dropped"] == ["alpha_b"]
 
 
-def test_gross_match_reproduces_the_logged_corrections():
-    """X-3, X-5 and X-6 of the integration log (L, G_parent, G calibration -> L')."""
-    assert WR.matched_leverage("1.1474", 0.9862108210, 0.9913686083) == "1.1414"
-    assert WR.matched_leverage("1.1414", 0.9861733264, 0.9604183310) == "1.1720"
-    assert WR.matched_leverage("1.1720", 0.9862260459, 1.0099371711) == "1.1445"
-    assert WR.gross_matches("pm6-6", 0.9859903463, 0.9862108210)                 # X-2: |diff| .00022 stands
-    assert not WR.gross_matches("pm6-6", 0.9862108210, 0.9913686083)             # X-3: .00516 corrects
-    assert WR.gross_matches("none", 1.0, 0.5)
-
-
 def test_gm_doc_of_a_plain_spec_and_of_a_template():
     plain = F.cell_spec("v8x3b", "out/mega-nav-loc-L1.1474-v8x3b")
     plain["ref"] = {"output": "out/ref", "combined": "reference_combined"}
@@ -184,11 +174,14 @@ def test_a_library_wave_with_every_string_kept_runs_to_its_result(tmp_path):
     assert receipts(root) == ["01-preflight.json", "02-register.json", "03-screen.json", "04-spec.json", "05-run.json",
                               "06-match.json", "07-verify.json", "08-judge.json", "09-record.json"]
     res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
-    assert res["cell"]["spec"] == "scripts/specs/v8/lib-w1.json" and res["cell"]["kind"] == "screen-library"
+    # gross_match pm6-6-engine (the only gross match, ruling C2-11): the cell of record is the plain -gm recipe, the
+    # run recipe -cal made its NAV (within tolerance: L unchanged)
+    assert res["cell"]["spec"] == "scripts/specs/v8/lib-w1-gm.json" and res["cell"]["kind"] == "screen-library"
+    assert res["cell"]["run_spec"] == "scripts/specs/v8/lib-w1-cal.json" and res["cell"]["leverage"] == "1.1474"
     assert res["cell"]["corrected"] is False and res["verdict"]["accepted"] is True
     assert res["ledger"]["n_before"] == 2 and res["ledger"]["n_after"] == 3
     assert res["ledger"]["admission_lines"] == ["alpha_a", "alpha_b", "alpha_c"]
-    assert res["next_parent"] == {"spec": "scripts/specs/v8/lib-w1.json", "library": "w1"}
+    assert res["next_parent"] == {"spec": "scripts/specs/v8/lib-w1-gm.json", "library": "w1"}
     assert res["stats"]["cell"]["x4_net_sharpe"] == 1.1 and res["bundle"]["p_one_sided"] == 0.15
     assert [c["printed"] for c in res["verdict"]["criteria"]] == ["met", "unmet"]
     assert (root / "sprint/waves/w1/wave-result.json").read_bytes() == (root / "out/waves/w1/wave-result.json").read_bytes()
@@ -199,9 +192,13 @@ def test_a_library_wave_with_every_string_kept_runs_to_its_result(tmp_path):
     assert len(adds) == 3 and all(c[c.index("--name") + 1] == "w1" for c in adds)
     runs = [F.unrooted(c[2:]) for c in fake.calls if Path(c[1]).name == "research_cycle.py" and c[2] == "run"]
     assert runs == [["run", "scripts/specs/v8/lib-w1.json", "--screen"],
-                    ["run", "scripts/specs/v8/lib-w1.json", "--stop-after", "nav"],
-                    ["run", "scripts/specs/v8/lib-w1.json"]]
-    assert F.git(root, "log", "--format=%s").splitlines()[0].startswith("wave w1: register library w1")
+                    ["run", "scripts/specs/v8/lib-w1.json", "--stop-after", "w"],
+                    ["run", "scripts/specs/v8/lib-w1-cal.json", "--stop-after", "nav"],
+                    ["run", "scripts/specs/v8/lib-w1-cal.json"]]
+    subjects = F.git(root, "log", "--format=%s").splitlines()
+    assert subjects[0].startswith("wave w1: lib-w1-gm.json at L 1.1474, the plain recipe of the calibrated NAV")
+    assert subjects[1].startswith("wave w1: lib-w1-cal.json calibrated in one process")
+    assert subjects[2].startswith("wave w1: register library w1")
     assert F.git(root, "status", "--porcelain", "--", "scripts", "atx-impl") == ""
     calls = len(fake.calls)                                                          # a second run: every stage done
     code, lines = wave(root, fake, "run")
@@ -220,72 +217,68 @@ def test_a_dropped_string_makes_the_b_library_and_gross_is_matched(tmp_path):
     assert cell["spec"] == "scripts/specs/v8/lib-w1b-gm.json" and cell["leverage"] != "1.1474"
     assert abs(cell["gross"] - cell["gross_parent"]) <= 0.005 < abs(cell["gross_calibration"] - cell["gross_parent"])
     gm = json.loads((root / cell["spec"]).read_text())
-    assert gm["nav"]["output"] == f"out/nav-w1b-L{cell['leverage']}" and gm["name"] == "w1b-gm"
+    assert gm["nav"]["output"] == "out/nav-w1b-L1.1474-gm" and gm["name"] == "w1b-gm"     # the engine NAV (C2-7)
     b_adds = [c for c in fake.calls if "add-alpha" in c and c[c.index("--name") + 1] == "w1b"]
     assert [c[c.index("--id") + 1] for c in b_adds] == ["alpha_a", "alpha_c"]
     assert res["verdict"]["accepted"] is False and res["next_parent"]["spec"] == F.PARENT    # dSR < 0: parent stays
     assert "NOT ACCEPTED" in (root / "out/waves/w1/wave-log.md").read_text()
     subjects = F.git(root, "log", "--format=%s").splitlines()
-    assert subjects[0].startswith("wave w1: lib-w1b-gm.json at L") and subjects[1].startswith("wave w1: cell library w1b")
+    assert subjects[0].startswith("wave w1: lib-w1b-gm.json at L") and subjects[1].startswith("wave w1: lib-w1b-cal")
+    assert subjects[2].startswith("wave w1: cell library w1b")
 
 
 def no_calibrate(flags: list) -> bool:
     return not any(str(f).startswith("--calibrate-") for f in flags)
 
 
-def test_engine_gross_match_is_the_python_match_in_one_nav(tmp_path):
-    """P9 C2 (P15): gross_match pm6-6-engine stops the run stage after w and runs ONE NAV in the match stage, the run
-    recipe -cal at the cell's L with nav --calibrate-gross G_parent; its correction, gross and the leverage it reports
-    are the Python match's (pm6-6, two NAVs) bit for bit. Ruling C2-R2 (review R2): the cell of record and next_parent
-    are the PLAIN -gm recipe at the published L' (no --calibrate-*), the Python mode's -gm but for its NAV dir, so a
-    child of an engine-mode cell is the Python-mode child (same L', same flags) and calibrates nothing again."""
-    results, calls, nxt = {}, {}, {}
-    for mode in ("pm6-6", "pm6-6-engine"):
-        root = F.build(tmp_path / mode, gross_match=mode)
-        fake = F.FakeCycle(root, ONE_DROPPED, gross_per_l={"w1b": 0.9604 / 1.1474}, dsr=0.05)
-        code, lines = wave(root, fake, "run")
-        assert code == 0, lines
-        res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
-        results[mode], nxt[mode] = res["cell"], res["next_parent"]
-        calls[mode] = [F.unrooted(c[2:]) for c in fake.calls if Path(c[1]).name == "research_cycle.py" and c[2] == "run"]
-        assert F.git(root, "status", "--porcelain", "--", "scripts", "atx-impl") == ""
-    py, en = results["pm6-6"], results["pm6-6-engine"]
-    assert en["corrected"] is True and en["gross_match"] == "pm6-6-engine"
-    for key in ("leverage", "gross", "gross_parent", "gross_calibration", "leverage_calibration", "corrected", "spec"):
-        assert en[key] == py[key], key
-    assert "run_spec" not in py and "run_spec_digest" not in py                      # Python mode: layout of before
+def test_engine_gross_match_on_the_pinned_fixture(tmp_path):
+    """P9 C2 (P15), ruling C2-11 (this test replaces the engine-vs-Python comparison: the Python match is retired):
+    gross_match pm6-6-engine, the fixture's default, on the pinned synthetic fixture (parent NAV gross 0.9862; the b
+    cell's gross 0.9604 at L 1.1474, one correction). The run stage stops after w and the match stage runs ONE NAV, the
+    run recipe -cal at the cell's L with nav --calibrate-gross G_parent; the published L' is 1.1782 (= 1.1474 x G_parent
+    / G_cal at 4 decimals, the fake exe's arithmetic) and the grosses are the fixture's (wave_fixture.nav_gross).
+    Ruling C2-R2: the cell of record and next_parent are the PLAIN -gm recipe at L' (the b cell spec at L', no
+    --calibrate-*) bound to the calibrated NAV, so a child copies L' and the cell's flags and calibrates nothing."""
+    per_l = 0.9604 / 1.1474
+    root = F.build(tmp_path / "r")
+    fake = F.FakeCycle(root, ONE_DROPPED, gross_per_l={"w1b": per_l}, dsr=0.05)
+    code, lines = wave(root, fake, "run")
+    assert code == 0, lines
+    assert F.git(root, "status", "--porcelain", "--", "scripts", "atx-impl") == ""
+    res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
+    en = res["cell"]
+    calls = [F.unrooted(c[2:]) for c in fake.calls if Path(c[1]).name == "research_cycle.py" and c[2] == "run"]
+    assert en["gross_match"] == "pm6-6-engine" and en["corrected"] is True
+    assert en["leverage"] == "1.1782" and en["leverage_calibration"] == "1.1474"          # the pinned L'
+    assert en["gross_parent"] == F.nav_gross(0.9862) and en["gross_calibration"] == F.nav_gross(per_l * 1.1474)
+    assert en["gross"] == F.nav_gross(per_l * 1.1782)
+    assert abs(en["gross"] - en["gross_parent"]) <= 0.005 < abs(en["gross_calibration"] - en["gross_parent"])
     assert en["spec"] == "scripts/specs/v8/lib-w1b-gm.json" and en["nav"] == "out/nav-w1b-L1.1474-gm"
-    assert en["run_spec"] == "scripts/specs/v8/lib-w1b-cal.json" and en["leverage"] != "1.1474"
-    eroot = tmp_path / "pm6-6-engine"
-    gm = json.loads((eroot / en["spec"]).read_text())                               # the cell of record: plain, at L'
-    assert gm["name"] == "w1b-gm" and gm["nav"]["leverage"] == en["leverage"] and no_calibrate(gm["nav"]["flags"])
+    assert en["run_spec"] == "scripts/specs/v8/lib-w1b-cal.json"
+    gm = json.loads((root / en["spec"]).read_text())                                # the cell of record: plain, at L'
+    assert gm["name"] == "w1b-gm" and gm["nav"]["leverage"] == "1.1782" and no_calibrate(gm["nav"]["flags"])
     assert gm["nav"]["output"] == en["nav"]
-    assert en["spec_digest"] == F.research_spec.spec_digest(eroot / en["spec"], F.research_tree.REPO)
-    assert en["run_spec_digest"] == F.research_spec.spec_digest(eroot / en["run_spec"], F.research_tree.REPO)
-    pgm = json.loads((tmp_path / "pm6-6" / py["spec"]).read_text())                  # = the Python -gm but its NAV dir
-    assert dict(gm["nav"], output=None) == dict(pgm["nav"], output=None)
-    cal = json.loads((eroot / en["run_spec"]).read_text())                         # the run recipe: the cell's L
+    assert en["spec_digest"] == F.research_spec.spec_digest(root / en["spec"], F.research_tree.REPO)
+    assert en["run_spec_digest"] == F.research_spec.spec_digest(root / en["run_spec"], F.research_tree.REPO)
+    plain = json.loads((root / "scripts/specs/v8/lib-w1b.json").read_text())        # the b cell as add-alpha wrote it
+    assert dict(gm["nav"], output=None, leverage=None) == dict(plain["nav"], output=None, leverage=None)
+    cal = json.loads((root / en["run_spec"]).read_text())                         # the run recipe: the cell's L
     assert cal["name"] == "w1b-gm" and cal["nav"]["leverage"] == "1.1474" and cal["nav"]["output"] == en["nav"]
     flags = cal["nav"]["flags"]
     assert flags[flags.index("--calibrate-gross") + 1] == repr(en["gross_parent"])
     assert flags[flags.index("--calibrate-tolerance") + 1] == "0.005"
-    match = json.loads((eroot / "out/waves/w1/receipts/06-match.json").read_text())["outputs"]
+    match = json.loads((root / "out/waves/w1/receipts/06-match.json").read_text())["outputs"]
     assert match["cell_spec"] == en["run_spec"] and match["record_spec"] == en["spec"]   # verify / judge ran the recipe
-    navs = [c for c in calls["pm6-6-engine"] if "--stop-after" in c]
-    assert ["run", "scripts/specs/v8/lib-w1b.json", "--stop-after", "w"] in navs
-    assert sum(1 for c in navs if c[c.index("--stop-after") + 1] == "nav") == 1           # one NAV, not two
-    assert ["run", "scripts/specs/v8/lib-w1b-cal.json"] in calls["pm6-6-engine"]          # judge (C2-6)
-    assert sum(1 for c in calls["pm6-6"] if c[-2:] == ["--stop-after", "nav"]) == 2
-    children = {}
-    for mode in ("pm6-6", "pm6-6-engine"):                  # review R2: the next wave's cell, copied from next_parent
-        root = tmp_path / mode
-        assert nxt[mode]["spec"] == "scripts/specs/v8/lib-w1b-gm.json"
-        F.write_json(root, "scripts/specs/v8/child.json",
-                     {"schema": F.research_spec.TEMPLATE_SCHEMA, "name": "child", "parent": "lib-w1b-gm.json",
-                      "change": {"set": {"nav.output": "out/nav-child"}}})
-        children[mode] = RC.load_spec(root / "scripts/specs/v8/child.json")["nav"]
-    assert children["pm6-6-engine"]["leverage"] == children["pm6-6"]["leverage"] == en["leverage"]
-    assert children["pm6-6-engine"]["flags"] == children["pm6-6"]["flags"] and no_calibrate(children["pm6-6"]["flags"])
+    assert match["calibration"]["leverage"] == 1.1782 and match["calibration"]["matched"] is True
+    assert [c for c in calls if "--stop-after" in c] == [["run", "scripts/specs/v8/lib-w1b.json", "--stop-after", "w"],
+                                                         ["run", en["run_spec"], "--stop-after", "nav"]]   # ONE NAV
+    assert ["run", "scripts/specs/v8/lib-w1b-cal.json"] in calls                    # judge (C2-6)
+    assert res["next_parent"]["spec"] == "scripts/specs/v8/lib-w1b-gm.json"        # review R2: the next wave's cell
+    F.write_json(root, "scripts/specs/v8/child.json",
+                 {"schema": F.research_spec.TEMPLATE_SCHEMA, "name": "child", "parent": "lib-w1b-gm.json",
+                  "change": {"set": {"nav.output": "out/nav-child"}}})
+    child = RC.load_spec(root / "scripts/specs/v8/child.json")["nav"]
+    assert child["leverage"] == "1.1782" and child["flags"] == gm["nav"]["flags"] and no_calibrate(child["flags"])
 
 
 def test_engine_run_recipe_pins_the_reference_to_the_uncalibrated_construction(tmp_path):
