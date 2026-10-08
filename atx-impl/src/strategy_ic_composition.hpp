@@ -75,13 +75,22 @@ struct IcStage {
   std::vector<IcThemeBlock> blocks; // schedule only: the blocks schedule_theme_masses takes
   std::vector<atx::u8> fast;        // sleeves only: the flags set_theme_sleeves takes
 };
+// One row of per-date weights (P9 lane D3W, contract K-P9-8, weights schema v3's walk_forward
+// block): from date `begin` until the next row's begin (the last: to the end) each candidate
+// enters with `weights` (library order, finite >= 0) in place of its pinned weight.
+struct IcWeightRow {
+  atx::usize begin{};
+  std::vector<atx::f64> weights;
+};
 // What create_from_stages composes. `weights`: pinned weights in library order (empty: equal
 // family/within weights); `themes`: the grouping stage's theme index per candidate (empty exactly
 // when there is no grouping stage). Both borrowed for the create_from_stages call only.
+// `weight_rows` (empty: none): the per-date weights set_weight_rows takes.
 struct IcCompositionStages {
   std::span<const atx::f64> weights;
   std::span<const atx::usize> themes;
   std::vector<IcStage> stages;
+  std::vector<IcWeightRow> weight_rows{}; // initialiser: a 3-member brace list stays warning-free
 };
 // ic_composition_working_bytes of a staged composition: the grouping's rule (residualise when a
 // residualise stage rides on standardise), `themes` the grouping's theme count (0 without one) and
@@ -89,10 +98,12 @@ struct IcCompositionStages {
 // stage is (strategy_ic_theme_hedge.hpp). The model is the composition's peak: one
 // theme plane set per theme beside the blend (the worst single candidate's VM slots are admitted
 // by the caller, strategy_ic_admission.cpp). Refuses (InvalidArgument) a malformed stage order
-// and themes without a grouping stage, as create_from_stages does.
+// and themes without a grouping stage, as create_from_stages does. `weight_rows` > 0 (P9 lane
+// D3W) adds the rows (8 B per candidate each), the row index per date and a flag per candidate;
+// 0 is the unchanged envelope.
 [[nodiscard]] atx::core::Result<atx::u64> ic_composition_stage_bytes(
     atx::usize dates, atx::usize instruments, atx::usize candidates, atx::usize themes,
-    std::span<const IcStageKind> kinds);
+    std::span<const IcStageKind> kinds, atx::usize weight_rows = 0);
 
 // Streaming equal-family/equal-within-family centered tied-rank composition.
 // create copies membership and candidate metadata. add borrows one signal only
@@ -142,9 +153,10 @@ class IcComposition {
       std::span<const atx::usize> pinned_themes = {}, // empty: no redistribution
       IcThemeRule rule = IcThemeRule::redistribute);  // what pinned_themes switch on
   // The runner's entry (P9 lane D1): create under the grouping stage's rule, then
-  // schedule_theme_masses for a schedule stage and set_theme_sleeves for a sleeves stage, in stage
-  // order; the result is that call sequence's, bit for bit. Refuses (InvalidArgument) a malformed
-  // stage order, a grouping stage without themes or themes without one, and whatever create,
+  // set_weight_rows for non-empty weight_rows (P9 lane D3W), then schedule_theme_masses for a
+  // schedule stage and set_theme_sleeves for a sleeves stage, in stage order; the result is that
+  // call sequence's, bit for bit. Refuses (InvalidArgument) a malformed stage order, a grouping
+  // stage without themes or themes without one, and whatever create, set_weight_rows,
   // schedule_theme_masses or set_theme_sleeves refuse.
   [[nodiscard]] static atx::core::Result<IcComposition> create_from_stages(
       const IcCompositionConfig&, std::span<const IcCompositionCandidate>,
@@ -191,6 +203,16 @@ class IcComposition {
   // sleeves, after finish or on a shape mismatch; OutOfRange when the hedge's planes exceed the
   // working budget. Nothing is kept on refusal.
   [[nodiscard]] atx::core::Status set_theme_hedge(std::vector<atx::f64> session_returns);
+  // Per-date weights (P9 lane D3W, contract K-P9-8): optional, before the first add, not under
+  // the redistribute grouping. Rows in non-decreasing `begin` (each <= dates), each one finite
+  // weight >= 0 per candidate. add then uses, at each date, the weight of the row in force (the
+  // last whose begin is not after the date) in place of the pinned weight, and skips a date whose
+  // weight is 0 exactly as it skips a zero-weight candidate (no signed-zero change, no presence);
+  // a date before the first row adds nothing, so the composite there is flat. The pinned weights
+  // keep their meaning for create (std_mass, the theme indices); a schedule stage carries the
+  // masses in force. Not called: add is unchanged. Refuses (InvalidArgument) after an add or
+  // finish, under redistribute, on an empty or malformed row list; nothing is kept on refusal.
+  [[nodiscard]] atx::core::Status set_weight_rows(std::span<const IcWeightRow> rows);
  private:
   struct Impl;
   explicit IcComposition(std::unique_ptr<Impl>);

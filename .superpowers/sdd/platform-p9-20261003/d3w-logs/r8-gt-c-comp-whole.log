@@ -1,0 +1,74 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 17 tests from 3 test suites.
+[----------] Global test environment set-up.
+[----------] 10 tests from ResearchComposition
+[ RUN      ] ResearchComposition.NumpyPairwiseSumIsNumpys
+[       OK ] ResearchComposition.NumpyPairwiseSumIsNumpys (71 ms)
+[ RUN      ] ResearchComposition.ErcClosedFormTwoThemes
+[       OK ] ResearchComposition.ErcClosedFormTwoThemes (1 ms)
+[ RUN      ] ResearchComposition.SleeveCovarianceClosedForm
+[       OK ] ResearchComposition.SleeveCovarianceClosedForm (0 ms)
+[ RUN      ] ResearchComposition.CapTraceRecordsEveryPass
+[       OK ] ResearchComposition.CapTraceRecordsEveryPass (0 ms)
+[ RUN      ] ResearchComposition.TierRegradesAreRuleFive
+[       OK ] ResearchComposition.TierRegradesAreRuleFive (0 ms)
+[ RUN      ] ResearchComposition.ThemeResidOrderIsTheRegisteredOrder
+[       OK ] ResearchComposition.ThemeResidOrderIsTheRegisteredOrder (0 ms)
+[ RUN      ] ResearchComposition.FitEqualsPythonFixture
+[       OK ] ResearchComposition.FitEqualsPythonFixture (13 ms)
+[ RUN      ] ResearchComposition.FitRefusesMalformedSpecs
+[       OK ] ResearchComposition.FitRefusesMalformedSpecs (9 ms)
+[ RUN      ] ResearchComposition.CliPublishesTheFit
+[       OK ] ResearchComposition.CliPublishesTheFit (73 ms)
+[ RUN      ] ResearchComposition.WeightsSchemaIds
+[       OK ] ResearchComposition.WeightsSchemaIds (0 ms)
+[----------] 10 tests from ResearchComposition (171 ms total)
+
+[----------] 4 tests from WalkForward
+[ RUN      ] WalkForward.ExpandingMeanClosedForm
+[       OK ] WalkForward.ExpandingMeanClosedForm (4 ms)
+[ RUN      ] WalkForward.NoRowUsesFutureDecisions
+[       OK ] WalkForward.NoRowUsesFutureDecisions (33 ms)
+[ RUN      ] WalkForward.RefusesBeforeAnyRow
+[       OK ] WalkForward.RefusesBeforeAnyRow (3 ms)
+[ RUN      ] WalkForward.CliWritesTheRowsAndRefuses
+[       OK ] WalkForward.CliWritesTheRowsAndRefuses (209 ms)
+[----------] 4 tests from WalkForward (251 ms total)
+
+[----------] 3 tests from MomVolman
+[ RUN      ] MomVolman.SleeveIsTsmomStepOneForPriceMomentum
+..\atx-engine\tests\research\research_composition_fit_test.cpp(876): error: Expected equality of these values:
+  std::bit_cast<u64>(s)
+    Which is: 4603822311265533952
+  std::bit_cast<u64>(block.trailing[p])
+    Which is: 13829120692492173312
+254
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(876): error: Expected equality of these values:
+  std::bit_cast<u64>(s)
+    Which is: 4597524308661633024
+  std::bit_cast<u64>(block.trailing[p])
+    Which is: 13827348279748198400
+275
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(876): error: Expected equality of these values:
+  std::bit_cast<u64>(s)
+    Which is: 13819612115935166464
+  std::bit_cast<u64>(block.trailing[p])
+    Which is: 13827796880492331008
+296
+
+[  FAILED  ] MomVolman.SleeveIsTsmomStepOneForPriceMomentum (5 ms)
+[ RUN      ] MomVolman.RefusalsAndWalkForwardRows
+[       OK ] MomVolman.RefusalsAndWalkForwardRows (38 ms)
+[ RUN      ] MomVolman.CliWritesTheSleeveBlockOnlyWhenAsked
+[       OK ] MomVolman.CliWritesTheSleeveBlockOnlyWhenAsked (85 ms)
+[----------] 3 tests from MomVolman (129 ms total)
+
+[----------] Global test environment tear-down
+[==========] 17 tests from 3 test suites ran. (553 ms total)
+[  PASSED  ] 16 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] MomVolman.SleeveIsTsmomStepOneForPriceMomentum
+
+ 1 FAILED TEST

@@ -1,0 +1,14 @@
+# synthetic sleeve CSVs (session_ns,net_return; 300 sessions from 2010-01-04, sin-generated values; scaled = raw x 0.5) through the Release atx-research-eval --vol (p9-d3w-h)
+$ atx-research-eval.exe --vol --daily raw=sleeve_raw.csv --daily scaled=sleeve_scaled.csv
+== raw (C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/d3w/sleeve_raw.csv): T 300 SR +4.656 ann, skew -0.016 kurtosis 1.500
+   vol 0.0112481 ann (sd 0.000708566 daily, T 300) | Sharpe +4.656 ann
+   PSR vs SR* +0.00 ann: 1.0000 | MinTRL 33 sessions (0.13 y)
+   PSR vs SR* +0.50 ann: 1.0000 | MinTRL 41 sessions (0.16 y)
+   DSR cross (N=10) 1.0000 | lo 0.9997
+== scaled (C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/d3w/sleeve_scaled.csv): T 300 SR +4.656 ann, skew -0.016 kurtosis 1.500
+   vol 0.00562407 ann (sd 0.000354283 daily, T 300) | Sharpe +4.656 ann
+   PSR vs SR* +0.00 ann: 1.0000 | MinTRL 33 sessions (0.13 y)
+   PSR vs SR* +0.50 ann: 1.0000 | MinTRL 41 sessions (0.16 y)
+   DSR cross (N=10) 1.0000 | lo 0.9997
+== conditional (Andrews-Kitagawa-McCloskey; printed only): 0 selected cell(s), raw sum +0.000 -> adjusted +0.000 (null bias 0.000)
+exit=0
