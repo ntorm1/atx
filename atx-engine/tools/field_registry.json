@@ -3235,11 +3235,11 @@
       }
     },
     {
-      "builder": "regsho_threshold_days63",
+      "builder": "research_fields_holdings",
       "dtype": "f64",
       "first_session": null,
       "formula_sha256": "7e869d7de916b8b6e238664a48b94ab33321923a5afb78c16797614bf1e06862",
-      "kind": "engine",
+      "kind": "python",
       "name": "regsho_threshold_days63",
       "options": {
         "group": "regsho"

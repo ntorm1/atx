@@ -90,7 +90,7 @@ def files_of(root: Path) -> dict:
             if p.is_file() and p.relative_to(root).parts[0] != engine.RECEIPT_DIR}
 
 
-FLIPPED = ['ftd_shares_ratio21', 'regsho_threshold_days63']   # the registry rows flipped to kind engine (one commit each)
+FLIPPED = ['ftd_shares_ratio21']   # the registry rows flipped to kind engine (one commit each)
 
 
 def test_repository_registry_routes_the_flipped_rows_to_the_engine():
