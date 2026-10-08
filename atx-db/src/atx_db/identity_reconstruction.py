@@ -1393,11 +1393,34 @@ def _run_observations(
     return observations
 
 
+class _WeightedItemCache:
+    """One latest weighted variant per immutable original, owned by one line replay."""
+
+    def __init__(self) -> None:
+        self._latest: dict[int, tuple[EvidenceItem, tuple[float, int, int], EvidenceItem]] = {}
+
+    def reweight(self, original: EvidenceItem, weight: float, collisions: int, trials: int) -> EvidenceItem:
+        # These are all the fields changed by the original replacement. The full
+        # original reference retains every other field and prevents identity reuse.
+        key = (weight, collisions, trials)
+        entry = self._latest.get(id(original))
+        if entry is not None and entry[0] is original and entry[1] == key:
+            return entry[2]
+        detail = original.detail
+        item = original
+        if original.weight != weight or int(detail["collisions"]) != collisions or detail.get("trial_count") != trials:
+            item = replace(original, weight=weight, detail={**detail,
+                           "collisions": collisions, "match_weight": weight, "trial_count": trials})
+        self._latest[id(original)] = (original, key, item)
+        return item
+
+
 def _candidates_at(
     candidates: Sequence[Candidate],
     reported: Mapping[tuple[int, str], Sequence[tuple[dt.datetime, dt.date, bool]]],
     observations: Sequence[dt.date],
     clock: dt.datetime, params: ReconstructionParams,
+    *, weighted_items: _WeightedItemCache | None = None,
 ) -> list[Candidate]:
     """Recompute collisions, best quarters, distinct counts and ratios at this clock."""
     known = {candidate.cik: [item for item in candidate.items if item.known_at <= clock]
@@ -1427,7 +1450,9 @@ def _candidates_at(
                          params.quantized_value_weight if value % 10_000 == 0 else 1.0)
             weight = ((1.0 / collisions) * min(1.0, params.trial_allowance / trials)
                       * (1.0 if detail["aligned"] else params.covering_match_weight) * quantized)
-            if item.weight != weight or int(detail["collisions"]) != collisions or detail.get("trial_count") != trials:
+            if weighted_items is not None:
+                item = weighted_items.reweight(item, weight, collisions, trials)
+            elif item.weight != weight or int(detail["collisions"]) != collisions or detail.get("trial_count") != trials:
                 item = replace(item, weight=weight, detail={**detail,
                                "collisions": collisions, "match_weight": weight, "trial_count": trials})
             key = (-weight, detail["filed"], detail["concept"], detail["run_first"],
@@ -1694,8 +1719,23 @@ def reconstruct_issuer_links(
         versions = defaultdict(list)
         active = {}
         last_rejected = []
-        for clock in sorted(clocks):
-            known = _candidates_at(originals, reported, observations[vendor_id], clock, params)
+        weighted_items = _WeightedItemCache()
+        ordered_clocks = sorted(clocks)
+        omit_shareless = params.min_share_weight > 0 and params.competitor_floor > 0
+        first_shares = {
+            id(candidate): min((item.known_at for item in candidate.items if item.kind == EV_SHARES), default=None)
+            for candidate in originals
+        } if omit_shareless else {}
+        for index, clock in enumerate(ordered_clocks):
+            retain_rejections = index == len(ordered_clocks) - 1
+            # Before any share is public, positive own/rival share floors prove
+            # this candidate cannot affect links or anyone else's collisions.
+            # Keep every clock and the full final state; never omit after birth.
+            at_clock = [candidate for candidate in originals
+                        if first_shares[id(candidate)] is not None and first_shares[id(candidate)] <= clock
+                        ] if omit_shareless and not retain_rejections else originals
+            known = _candidates_at(at_clock, reported, observations[vendor_id], clock, params,
+                                   weighted_items=weighted_items)
             known_filings = {cik: [filing for filing in values
                              if (filing.accepted_at or _at(filing.filing_date, _FILED_AVAILABILITY)) <= clock]
                              for cik, values in line_filings.items()}
@@ -1704,7 +1744,8 @@ def reconstruct_issuer_links(
                          line, candidate.cik, known_filings[candidate.cik], params, horizon, price_start)
                          if item.known_at <= clock))
                      for candidate in known]
-            current, last_rejected = _evaluate_line(line, known, known_filings, params, clock)
+            current, last_rejected = _evaluate_line(line, known, known_filings, params, clock,
+                                                    retain_rejections=retain_rejections)
             state = {link.cik: link for link in current}
             for cik in active.keys() | state.keys():
                 old, new = active.get(cik), state.get(cik)
@@ -1758,8 +1799,9 @@ def _candidate_metrics(candidate: Candidate, params: ReconstructionParams) -> _C
 def _evaluate_line(
     line: VendorLine, candidates: Sequence[Candidate],
     filings_by_cik: Mapping[str, Sequence[IssuerFiling]], params: ReconstructionParams, clock: dt.datetime,
+    *, retain_rejections: bool = True,
 ) -> tuple[list[ReconstructedLink], list[RejectedCandidate]]:
-    """Apply acceptance, dominance and segment rules to one then-known state."""
+    """Apply one then-known state; replay may omit discarded rejection output."""
     vendor_id = line.vendor_id
     links = []
     rejected = []
@@ -1770,6 +1812,13 @@ def _evaluate_line(
     line_rejected: list[RejectedCandidate] = []
     for candidate in found:
         own = metrics[id(candidate)]
+        # This candidate stays in found as a rival/segment bound for every other
+        # candidate. Only its own discarded rejection work can be omitted.
+        if not retain_rejections and (
+            own.weight < params.accept_weight or own.share_weight < params.min_share_weight
+            or not own.ratio_acceptable
+        ):
+            continue
         rivals_of[candidate.cik] = [
             other
             for other in found
@@ -1787,22 +1836,24 @@ def _evaluate_line(
         else:
             accepted.append((candidate, competitors))
             continue
-        line_rejected.append(
-            RejectedCandidate(vendor_id, line.price_security_id, candidate.cik, reason, own.weight,
-                              own.share_weight, own.span, competitors)
-        )
+        if retain_rejections:
+            line_rejected.append(
+                RejectedCandidate(vendor_id, line.price_security_id, candidate.cik, reason, own.weight,
+                                  own.share_weight, own.span, competitors)
+            )
     # Both sides of every conflict are kept as conflict rows, whatever a side's own
     # threshold outcome: a rival a link was preferred over (dominance rule) is the
     # losing side of a resolved conflict; a rival that blocks another candidate is one
     # side of an unresolved one.
-    dominated = {cik for _candidate, competitors in accepted for cik, _weight in competitors}
-    blocking = {cik for item in line_rejected if item.reason == REJECT_CONFLICTING for cik, _w in item.competitors}
-    for item in line_rejected:
-        if item.cik in dominated:
-            item = replace(item, reason=REJECT_CONFLICT_DOMINATED, own_reason=item.reason)
-        elif item.cik in blocking and item.reason not in CONFLICT_REASONS:
-            item = replace(item, reason=REJECT_CONFLICTING, own_reason=item.reason)
-        rejected.append(item)
+    if retain_rejections:
+        dominated = {cik for _candidate, competitors in accepted for cik, _weight in competitors}
+        blocking = {cik for item in line_rejected if item.reason == REJECT_CONFLICTING for cik, _w in item.competitors}
+        for item in line_rejected:
+            if item.cik in dominated:
+                item = replace(item, reason=REJECT_CONFLICT_DOMINATED, own_reason=item.reason)
+            elif item.cik in blocking and item.reason not in CONFLICT_REASONS:
+                item = replace(item, reason=REJECT_CONFLICTING, own_reason=item.reason)
+            rejected.append(item)
     if not accepted:
         return [], rejected
     # Rejected rivals with real weight bound every segment's extension.
@@ -1818,10 +1869,11 @@ def _evaluate_line(
     for (candidate, competitors), (start, end) in zip(accepted, segments, strict=True):
         own = metrics[id(candidate)]
         if end <= start:
-            rejected.append(
-                RejectedCandidate(vendor_id, line.price_security_id, candidate.cik, REJECT_EMPTY_SEGMENT,
-                                  own.weight, own.share_weight, own.span, competitors)
-            )
+            if retain_rejections:
+                rejected.append(
+                    RejectedCandidate(vendor_id, line.price_security_id, candidate.cik, REJECT_EMPTY_SEGMENT,
+                                      own.weight, own.share_weight, own.span, competitors)
+                )
             continue
         history = ((_tier(candidate, competitors), clock),)
         links.append(

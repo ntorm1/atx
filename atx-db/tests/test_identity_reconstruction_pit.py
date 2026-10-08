@@ -14,6 +14,242 @@ SNAPSHOT = dt.datetime(2026, 9, 20, 0, 6)
 CONCEPT = "dei:EntityCommonStockSharesOutstanding"
 
 
+def test_replay_omits_only_candidates_before_first_known_share(monkeypatch):
+    first_share = dt.datetime(2022, 1, 3, 22)
+    line = ir.VendorLine(1, "late", D(2019, 1, 1), D(2025, 12, 31), last_symbol="LATE")
+    visits = []
+    original = ir._candidates_at
+
+    def candidates_at(candidates, reported, observations, clock, params, **kwargs):
+        visits.append((clock, tuple(candidate.cik for candidate in candidates)))
+        return original(candidates, reported, observations, clock, params, **kwargs)
+
+    monkeypatch.setattr(ir, "_candidates_at", candidates_at)
+    with duckdb.connect(config={"memory_limit": "128MB", "threads": 1}) as con:
+        ir.stage_share_runs(con, [ir.VendorShareRun(1, 12345, D(2019, 1, 1), D(2019, 2, 1))])
+        ir.stage_share_facts(con, [ir.IssuerShareFact("late", CONCEPT, D(2019, 1, 1),
+                                  12345123, "late", "10-Q", D(2022, 1, 2))])
+        ir.reconstruct_issuer_links(con, [line], filings=[ir.IssuerFiling("late", "8-A12B", D(2019, 1, 2))],
+            tickers=[("late", "LATE")], ticker_observed_at=dt.datetime(2020, 1, 1),
+            horizon=D(2027, 1, 1), price_start=D(2018, 1, 1))
+    assert any(clock < first_share for clock, _ in visits)
+    assert all(not pairs for clock, pairs in visits if clock < first_share)
+    assert all(pairs == ("late",) for clock, pairs in visits if clock >= first_share)
+
+
+def test_shareless_omission_fallback_final_and_zero_weight_presence(monkeypatch):
+    first_share = dt.datetime(2022, 1, 3, 22)
+    observed = dt.datetime(2023, 1, 1)
+    line = ir.VendorLine(1, "late", D(2019, 1, 1), D(2025, 12, 31), last_symbol="LATE")
+    visits, results = [], []
+    original = ir._candidates_at
+
+    def candidates_at(candidates, reported, observations, clock, params, **kwargs):
+        output = original(candidates, reported, observations, clock, params, **kwargs)
+        visits.append((clock, tuple(candidate.cik for candidate in candidates),
+                       tuple(candidate.share_weight for candidate in output)))
+        return output
+
+    monkeypatch.setattr(ir, "_candidates_at", candidates_at)
+    settings = [ir.ReconstructionParams(min_share_weight=0), ir.ReconstructionParams(min_share_weight=-1),
+                ir.ReconstructionParams(competitor_floor=0), ir.ReconstructionParams(competitor_floor=-1)]
+    with duckdb.connect(config={"memory_limit": "128MB", "threads": 1}) as con:
+        ir.stage_share_runs(con, [ir.VendorShareRun(1, 12000, D(2019, 1, 1), D(2019, 2, 1))])
+        ir.stage_share_facts(con, [ir.IssuerShareFact("late", CONCEPT, D(2019, 1, 1),
+                                  12000000, "late", "10-Q", D(2022, 1, 2))])
+        for params in settings + [ir.ReconstructionParams(round_value_weight=0)]:
+            visits.clear()
+            results.append(ir.reconstruct_issuer_links(con, [line], params=params,
+                tickers=[("late", "LATE")], ticker_observed_at=observed))
+            assert visits[-1][0] == observed and visits[-1][1] == ("late",)
+            assert results[-1].rejected[0].cik == "late"
+            if params in settings:
+                assert any(clock < first_share for clock, _, _ in visits)
+                assert all(pairs == ("late",) for _, pairs, _ in visits)
+            else:
+                assert all(pairs == ("late",) and weights == (0.0,)
+                           for clock, pairs, weights in visits if clock >= first_share)
+                assert any(first_share <= clock < observed for clock, _, _ in visits)
+
+
+def test_replay_constructs_rejections_only_at_final_clock(monkeypatch):
+    original_evaluate, original_reject = ir._evaluate_line, ir.RejectedCandidate
+    clocks, rejected_at = [], []
+
+    def evaluate(*args, **kwargs):
+        clocks.append(args[4])
+        return original_evaluate(*args, **kwargs)
+
+    def reject(*args, **kwargs):
+        rejected_at.append(clocks[-1])
+        return original_reject(*args, **kwargs)
+
+    monkeypatch.setattr(ir, "_evaluate_line", evaluate)
+    monkeypatch.setattr(ir, "RejectedCandidate", reject)
+    with duckdb.connect(config={"memory_limit": "128MB", "threads": 1}) as con:
+        lines, filings = _fixture(con)
+        result = ir.reconstruct_issuer_links(con, lines, filings=filings,
+                    tickers=[("0000000011", "RIVAL"), ("0000000022", "LATER"),
+                             ("0000000031", "DOMINANT")], ticker_observed_at=SNAPSHOT)
+    assert result.clocked_links and result.rejected
+    assert any(clock < SNAPSHOT for clock in clocks)
+    assert rejected_at and set(rejected_at) == {SNAPSHOT}
+
+
+def test_intermediate_rejected_rivals_still_block_and_bound_history(monkeypatch):
+    line = ir.VendorLine(1, "line", D(2019, 1, 1), D(2025, 12, 31))
+    clock = dt.datetime(2020, 1, 1)
+
+    def candidate(cik, weight, day, ratio=1.0):
+        return ir.Candidate(1, cik, (ir.EvidenceItem(ir.EV_SHARES, clock, day, weight),),
+                            match_ratio=ratio)
+
+    own = candidate("own", 3.0, D(2019, 7, 1))
+    rival = candidate("rival", 1.1, D(2019, 7, 1))
+    params = ir.ReconstructionParams()
+    full_links, full_rejected = ir._evaluate_line(line, [own, rival], {}, params, clock)
+    lean_links, lean_rejected = ir._evaluate_line(line, [own, rival], {}, params, clock,
+                                                retain_rejections=False)
+    assert full_links == lean_links == [] and lean_rejected == []
+    assert {row.reason for row in full_rejected} == {ir.REJECT_CONFLICTING}
+    # When dominated, the below-own-threshold rival still appears in the accepted
+    # historical ordered competitor tuple, and bounds the segment extension.
+    own = candidate("own", 3.5, D(2019, 7, 1))
+    full_links, full_rejected = ir._evaluate_line(line, [own, rival], {}, params, clock)
+    lean_links, lean_rejected = ir._evaluate_line(line, [own, rival], {}, params, clock,
+                                                retain_rejections=False)
+    assert full_links == lean_links and len(lean_links) == 1 and lean_rejected == []
+    assert lean_links[0].competitors == (("rival", 1.1),)
+    assert full_rejected[0].reason == ir.REJECT_CONFLICT_DOMINATED
+    # Rejecting an inconsistent candidate's own row cannot remove its rival role.
+    ratio_rival = candidate("inconsistent", 1.1, D(2019, 7, 1), params.competitor_min_ratio)
+    full_links, _ = ir._evaluate_line(line, [own, ratio_rival], {}, params, clock)
+    lean_links, lean_rejected = ir._evaluate_line(line, [own, ratio_rival], {}, params, clock,
+                                                retain_rejections=False)
+    assert full_links == lean_links and lean_links[0].competitors == (("inconsistent", 1.1),)
+    assert not lean_rejected
+    # A nonoverlapping weak rival is still a segment bound even without a tuple.
+    before = candidate("before", 1.1, D(2019, 2, 1))
+    full_links, _ = ir._evaluate_line(line, [own, before], {}, params, clock)
+    lean_links, _ = ir._evaluate_line(line, [own, before], {}, params, clock, retain_rejections=False)
+    assert full_links == lean_links and lean_links[0].valid_from == D(2019, 2, 2)
+    assert ir._evaluate_line(line, [], {}, params, clock) == ([], [])
+    assert ir._evaluate_line(line, [], {}, params, clock, retain_rejections=False) == ([], [])
+    ended = ir.VendorLine(1, "ended", D(2019, 1, 1), D(2019, 3, 1))
+    no_extension = ir.ReconstructionParams(max_extension_days=0)
+    full_links, full_rejected = ir._evaluate_line(ended, [own], {}, no_extension, clock)
+    lean_links, lean_rejected = ir._evaluate_line(ended, [own], {}, no_extension, clock,
+                                                retain_rejections=False)
+    assert full_links == lean_links == [] and not lean_rejected
+    assert full_rejected[0].reason == ir.REJECT_EMPTY_SEGMENT
+
+
+def test_intermediate_skips_only_unusable_own_competitor_work(monkeypatch):
+    clock = dt.datetime(2020, 1, 1)
+    line = ir.VendorLine(1, "line", D(2019, 1, 1), D(2025, 12, 31))
+    candidates = [ir.Candidate(1, str(index), (
+        ir.EvidenceItem(ir.EV_SHARES, clock, D(2019, 2, 1), 1.1),
+    ), match_ratio=1.0) for index in range(8)]
+    calls = []
+    original = ir._overlaps
+
+    def overlaps(*args):
+        calls.append(args)
+        return original(*args)
+
+    monkeypatch.setattr(ir, "_overlaps", overlaps)
+    full_links, full_rejected = ir._evaluate_line(line, candidates, {}, ir.ReconstructionParams(), clock)
+    assert len(calls) == 8 * 7 and len(full_rejected) == 8
+    calls.clear()
+    lean_links, lean_rejected = ir._evaluate_line(line, candidates, {}, ir.ReconstructionParams(), clock,
+                                                retain_rejections=False)
+    assert full_links == lean_links == [] and not lean_rejected and not calls
+
+
+def test_clock_replay_reuses_unchanged_weighted_items(monkeypatch):
+    """Unrelated publication clocks must not rebuild identical weighted evidence."""
+    original_replace = ir.replace
+    replacements = {}
+    originals = []
+
+    def counted(item, **changes):
+        if isinstance(item, ir.EvidenceItem) and "detail" in changes:
+            originals.append(item)  # Keep identities live throughout this probe.
+            detail = changes["detail"]
+            key = (id(item), changes["weight"], detail["collisions"], detail["trial_count"])
+            replacements[key] = replacements.get(key, 0) + 1
+        return original_replace(item, **changes)
+
+    monkeypatch.setattr(ir, "replace", counted)
+    with duckdb.connect(config={"memory_limit": "128MB", "threads": 1}) as con:
+        lines, filings = _fixture(con)
+        result = ir.reconstruct_issuer_links(con, lines, filings=filings,
+                    tickers=[("0000000012", "RIVAL")], ticker_observed_at=SNAPSHOT)
+    assert result.clocked_links
+    assert replacements
+    assert max(replacements.values()) == 1
+
+
+def test_weighted_cache_exact_dependencies_and_latest_only():
+    import gc
+    import weakref
+
+    original = ir.EvidenceItem(ir.EV_SHARES, SNAPSHOT, D(2019, 1, 1), 1.0,
+                              {"collisions": 1, "trial_count": 1, "value": 12345123,
+                               "accession": "original", "match_weight": 1.0})
+    cache = ir._WeightedItemCache()
+    first = cache.reweight(original, 0.5, 2, 1)
+    assert cache.reweight(original, 0.5, 2, 1) is first
+    # Equal weights still have different collision/trial provenance.
+    second = cache.reweight(original, 0.5, 1, 2)
+    assert second is not first and second.detail["trial_count"] == 2
+    assert first.detail["collisions"] == 2 and original.weight == 1.0
+    # Nearby floats cannot be treated as approximately equal.
+    third = cache.reweight(original, 0.5000000000000001, 1, 2)
+    assert third is not second and third.weight == 0.5000000000000001
+    assert third.detail["match_weight"] == third.weight
+    older = weakref.ref(second)
+    del second
+    gc.collect()
+    assert older() is None  # The cache cannot retain past variants.
+    retained = weakref.ref(first)
+    assert retained() is first  # Prior history references remain unchanged.
+    latest = weakref.ref(third)
+    del third
+    assert latest() is not None
+    del cache
+    gc.collect()
+    assert latest() is None  # Nothing escapes the replay-owned cache lifetime.
+    # A distinct immutable original must never inherit the prior item's detail.
+    cache = ir._WeightedItemCache()
+    other = ir.replace(original, detail={**original.detail, "accession": "other"})
+    assert cache.reweight(other, 0.5, 2, 1).detail["accession"] == "other"
+
+
+def test_weighted_cache_lifetime_ends_with_line_replay(monkeypatch):
+    import weakref
+
+    caches = []
+    original = ir._WeightedItemCache
+
+    class TrackedCache(original):
+        def __init__(self):
+            super().__init__()
+            caches.append(weakref.ref(self))
+
+        def reweight(self, *args):
+            assert all(ref() is None for ref in caches[:-1])
+            return super().reweight(*args)
+
+    monkeypatch.setattr(ir, "_WeightedItemCache", TrackedCache)
+    with duckdb.connect(config={"memory_limit": "128MB", "threads": 1}) as con:
+        lines, filings = _fixture(con)
+        result = ir.reconstruct_issuer_links(con, lines, filings=filings,
+                                            ticker_observed_at=SNAPSHOT)
+    assert result.clocked_links and len(caches) == 3
+    assert all(ref() is None for ref in caches)
+
+
 def test_evaluation_metrics_scan_each_candidate_once_per_clock(monkeypatch):
     """Rival comparisons and accepted segments reuse only this clock's metrics."""
     line = ir.VendorLine(1, "line", D(2019, 1, 1), D(2025, 12, 31))
