@@ -1,4 +1,0 @@
-Traceback (most recent call last):
-  File "C:\atx\.superpowers\sdd\tier1-v4\nyse-distributed-clock-preflight-v1.py", line 116, in <module>
-    raise RuntimeError('Original/distributed source version or factual table differs')
-RuntimeError: Original/distributed source version or factual table differs

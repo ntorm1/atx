@@ -1,1 +1,0 @@
-{"status": "BOUNDED_DISK_METADATA_LEADS_NOT_DELETION_AUTHORIZATION", "seconds": 45.016, "free_bytes": 37359812608, "roots": [{"path": "C:\\Users\\natha\\AppData\\Local\\Temp\\pytest-of-natha", "exists": true, "visited": 401354, "files": 319600, "complete": true}, {"path": "C:\\atx", "exists": true, "visited": 11600, "files": 10576, "complete": false}]}

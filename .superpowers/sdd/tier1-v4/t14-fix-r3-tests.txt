@@ -1,4 +1,0 @@
-Command: .venv/Scripts/python.exe -m pytest -o addopts='' --run-slow tests/test_alpha_panel_notes.py tests/test_alpha_panel_notes_fund.py -q
-................................ [100%]
-32 passed in 35.41s
-Final covering tool session98345 exit0. Earlier incorrect fixture clock assertion failed, then corrected to authoritative SUB acceptance 2022-03-07 21:30UTC.

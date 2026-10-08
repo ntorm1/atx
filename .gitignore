@@ -83,6 +83,20 @@ _deps/
 *.dylib
 *.dll
 *.exe
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.pch
+*.ipch
+
+# Generated logs and local OS/editor files.
+*.log
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
 
 # Generated benchmark / TSDB segment artifacts (e.g. atx_panel_bench.atxseg, 100s of MB)
 *.atxseg
@@ -95,10 +109,6 @@ scratch/
 /work/
 /scratch_wc_out.txt
 
-# Subagent-driven-dev scratch (ledger, briefs, reports) — not versioned
-.superpowers/
-
-
 *.duckdb
 *.duckdb*.bak
 *.duckdb.wal*
@@ -108,14 +118,22 @@ scratch/
 # Python warehouse (atx-db) — code is tracked; runtime data artifacts are not
 __pycache__/
 *.pyc
+*.pyo
 .pytest_cache/
 .mypy_cache/
 *.egg-info/
 .venv/
+.coverage
+.coverage.*
+htmlcov/
 # Warehouse databases, source caches, and Parquet exports are reproducible or
 # operator-managed runtime state. Keep all of them out of source control.
 atx-db/data/
 *.csv
+# Source registries and research definitions are maintained inputs.
+!/atx-db/research/*.csv
+!/atx-db/src/atx_db/parityscore/*.csv
+!/atx-db/src/atx_db/seeds/*.csv
 
 # Vendor option-chain data (Databento OPRA) is NOT committed — licensing +
 # repo policy ("commits no vendor option-chain data"). Real-data tests
@@ -125,3 +143,14 @@ atx-vol/tests/data/**/*.dbn.zst
 # Generated report artifacts (figures/html) — reproducible from the tool + script.
 atx-vol/python/report_out_real/
 .replay-xb/
+
+# Research service runtime and web dependencies/build products.
+/vcpkg_installed/
+/atx-server/var/
+/atx-front/node_modules/
+/atx-front/dist/
+/atx-front/coverage/
+/atx-front/.vite/
+
+# Maintained engine test fixtures include sample CSVs, logs and build trees.
+!/atx-engine/tests/fixtures/**

@@ -1,4 +1,0 @@
-Traceback (most recent call last):
-  File "C:\atx\.superpowers\sdd\tier1-v4\p9-a0-extra-store-candidates-v1.py", line 99, in <module>
-    raise RuntimeError('Named metadata state changed')
-RuntimeError: Named metadata state changed
