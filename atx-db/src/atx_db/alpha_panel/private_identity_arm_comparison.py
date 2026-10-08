@@ -61,16 +61,18 @@ def _path(value):
     return path.resolve(strict=False)
 
 
-def _resources(con):
+def _resources(con, *, memory_limit_mib=128):
+    if type(memory_limit_mib) is not int or memory_limit_mib not in (128, 256):
+        raise ValueError('Comparison memory budget must be 128 or 256 MiB')
     settings = dict(con.execute("SELECT name,value FROM duckdb_settings() WHERE name IN "
         "('threads','TimeZone','memory_limit','temp_directory')").fetchall())
     units = {'B': 1, 'KiB': 1024, 'MiB': 1024**2, 'GiB': 1024**3, 'TiB': 1024**4}
     match = re.fullmatch(r'(\d+(?:\.\d+)?)\s+(B|KiB|MiB|GiB|TiB)', settings['memory_limit'])
     databases = [row[2] for row in con.execute('PRAGMA database_list').fetchall() if row[2]]
     if (settings['threads'] != '1' or settings['TimeZone'] != 'UTC' or not match or
-            float(match[1]) * units[match[2]] > 128 * 1024**2 or
+            float(match[1]) * units[match[2]] > memory_limit_mib * 1024**2 or
             not settings['temp_directory'] or len(databases) != 1):
-        raise ValueError('One file-backed 128MiB/one-thread/UTC database with spill required')
+        raise ValueError(f'One file-backed {memory_limit_mib}MiB/one-thread/UTC database with spill required')
     return _path(databases[0]).parent
 
 
@@ -162,10 +164,11 @@ def _panel_sql(panel, members, year, last=LAST_SESSION, first=None):
        GROUP BY m.security_id,m.session_date'''
 
 
-def compare_arms(con, *, baseline, variant, calendar, members, pins, output, window=None):
+def compare_arms(con, *, baseline, variant, calendar, members, pins, output, window=None, memory_limit_mib=128):
     """Produce rows1-10 and identifier-only parts for one of four fixed pairs.
 
     ``window`` (:class:`Window`) bounds the consumer view; the default is the request's original window.
+    ``memory_limit_mib`` keeps the default 128MiB ceiling; 256MiB is an explicit reporting-only option.
 
     baseline/variant are {arm, pit, link_table}; pins maps every exact consumed
     absolute path to its independently frozen SHA256. Membership has its entire
@@ -182,7 +185,7 @@ def compare_arms(con, *, baseline, variant, calendar, members, pins, output, win
     if (variant['arm'], baseline['arm']) not in PAIRS or not members:
         raise ValueError('A fixed P9 comparison and complete membership inventory required')
     directory = _path(output)
-    database_root = _resources(con)
+    database_root = _resources(con, memory_limit_mib=memory_limit_mib)
     if database_root not in directory.parents or directory == database_root:
         raise ValueError('Comparison outputs must be below the isolated database directory')
     paths = [baseline['pit'], variant['pit'], baseline['link_table'], variant['link_table'], calendar, *members]

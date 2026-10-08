@@ -349,11 +349,12 @@ def fixed_step_evidence(base: Path, *, commit: str, data_root: Path) -> dict:
 
 
 def compare_published(con, *, published: Path, fixed: Path, calendar: str,
-                      members: list[str], pins: dict, output: Path, window=None) -> dict:
+                      members: list[str], pins: dict, output: Path, window=None, memory_limit_mib=128) -> dict:
     """Rows1-10 with explicit published-v2 baseline and fixed-v4 variant.
 
     The existing kernel's admitted pair labels A/B1 are transport labels only.
     The returned identities make this separate fix-impact comparison explicit.
+    Comparison memory keeps the kernel's default 128MiB ceiling unless explicitly opted into 256MiB.
     """
     from .private_identity_arm_comparison import compare_arms
     baseline = {"arm": "A", "pit": str((published / "export" / "identity-bridge-v2-pit" / "links.parquet").resolve()),
@@ -361,7 +362,7 @@ def compare_published(con, *, published: Path, fixed: Path, calendar: str,
     variant = {"arm": "B1", "pit": str((fixed / "export" / "identity-bridge-v4-pit" / "links.parquet").resolve()),
                "link_table": str((fixed / "identity" / "link_table.parquet").resolve())}
     rows = compare_arms(con, baseline=baseline, variant=variant, calendar=calendar, members=members,
-                        pins=pins, output=output, window=window)
+                        pins=pins, output=output, window=window, memory_limit_mib=memory_limit_mib)
     return {"comparison": "fixed A vs original published v2", "baseline": baseline,
             "variant": variant, "kernel_labels": {"A": "published v2", "B1": "fixed arm A"}, "rows": rows}
 

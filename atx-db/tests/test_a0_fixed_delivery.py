@@ -317,20 +317,31 @@ def test_rehearsal_receipt_build_and_launch_evidence(tmp_path):
         delivery.seal_tree(tmp_path, manifests=("phase.json",), required=("build.json",))
 
 
-def test_published_comparison_uses_exact_original_and_fixed_paths(tmp_path, monkeypatch):
+@pytest.mark.parametrize('budget', [None, 128, 256])
+def test_published_comparison_uses_exact_original_and_fixed_paths(tmp_path, monkeypatch, budget):
     from atx_db.alpha_panel import private_identity_arm_comparison as kernel
 
     def capture(con, **kwargs):
         assert kwargs["baseline"]["pit"].endswith("identity-bridge-v2-pit/links.parquet") or kwargs["baseline"]["pit"].endswith("identity-bridge-v2-pit\\links.parquet")
         assert "identity-bridge-v4-pit" in kwargs["variant"]["pit"]
         assert kwargs["baseline"]["arm"] == "A" and kwargs["variant"]["arm"] == "B1"
+        assert kwargs['memory_limit_mib'] == (128 if budget is None else budget)
         return {"row_8": {"a_only": 7, "b_only": 9}}
 
     monkeypatch.setattr(kernel, "compare_arms", capture)
+    options = {} if budget is None else {'memory_limit_mib': budget}
     comparison = delivery.compare_published(None, published=tmp_path / "published", fixed=tmp_path / "P_A",
-        calendar="calendar", members=["members"], pins={}, output=tmp_path / "evidence")
+        calendar="calendar", members=["members"], pins={}, output=tmp_path / "evidence", **options)
     assert comparison["kernel_labels"] == {"A": "published v2", "B1": "fixed arm A"}
     assert comparison["rows"]["row_8"] == {"a_only": 7, "b_only": 9}
+
+
+@pytest.mark.parametrize('budget', [0, 512, '256'])
+def test_published_comparison_rejects_unsupported_budget(tmp_path, budget):
+    with pytest.raises(ValueError, match='budget must be 128 or 256'):
+        delivery.compare_published(None, published=tmp_path/'published', fixed=tmp_path/'fixed',
+            calendar='calendar', members=['members'], pins={}, output=tmp_path/'invalid', memory_limit_mib=budget)
+    assert not (tmp_path/'invalid').exists()
 
 
 def test_exact_five_publication_trees_exclude_partial_rehearsal_files(tmp_path):

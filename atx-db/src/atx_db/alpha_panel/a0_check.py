@@ -1212,7 +1212,7 @@ def _report_connection(out: Path) -> Any:
     import duckdb
 
     con = duckdb.connect(str(out / "a0-report.duckdb"), config={
-        "memory_limit": "256MB", "threads": 1, "temp_directory": str(out / "a0-report.spill"),
+        "memory_limit": "128MB", "threads": 1, "temp_directory": str(out / "a0-report.spill"),
         "preserve_insertion_order": False})
     con.execute("SET TimeZone='UTC'")
     return con
@@ -1261,6 +1261,8 @@ def report(base: Path, *, data_root: Path, out: Path | None = None, windows: tup
                              published_r4=published_r4, pit=pit, published_pit=published_pit_export),
             "provenance": provenance_section(published=published, published_r4=published_r4, pit=published_pit_export,
                                              repo=C.PACKAGE_ROOT.parent)}
+        # D0 retains its strict <=128MiB contract; arm-state aggregation needs more headroom.
+        con.execute("SET memory_limit='256MB'")
         results["baseline"] = arms_record.get("baseline", "historical")
         results["recovery"] = arms_record.get("recovery")
         facts = collect_arm_facts(base)
@@ -1286,7 +1288,8 @@ def report(base: Path, *, data_root: Path, out: Path | None = None, windows: tup
                 rows[f"{variant} vs {baseline}"] = compare_arms(
                     con, baseline=files[baseline], variant=files[variant], calendar=str(calendar.resolve()),
                     members=[str(p.resolve()) for p, _ in members], pins=pins,
-                    output=out / "identifiers" / name / f"{variant}-vs-{baseline}", window=window)
+                    output=out / "identifiers" / name / f"{variant}-vs-{baseline}", window=window,
+                    memory_limit_mib=256)
             entry = {"window": rows["B12 vs A"]["window"], "rows": rows,
                      "b2_attribution_aid": attribution_aid(
                          con, r4_a=rehearsals["A"] / "phases" / "export-001" / "security_company_links.part-0000.parquet",

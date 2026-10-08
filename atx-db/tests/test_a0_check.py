@@ -229,7 +229,7 @@ def test_report_connection_has_bounded_budget_and_file_backed_spill(tmp_path):
                    current_setting('TimeZone')
         """).fetchone()
         size, unit = budget.split()
-        assert unit == 'MiB' and 240 < float(size) < 250
+        assert unit == 'MiB' and 120 < float(size) < 128
         assert threads == 1 and insertion is False and timezone == 'UTC'
         assert Path(spill).resolve() == (tmp_path/'a0-report.spill').resolve()
         assert Path(con.execute('PRAGMA database_list').fetchone()[2]).resolve() == (tmp_path/'a0-report.duckdb').resolve()
@@ -932,7 +932,20 @@ def _weekdays(first: dt.date, last: dt.date) -> int:
     return sum(1 for n in range((last - first).days + 1) if (first + dt.timedelta(days=n)).weekday() < 5)
 
 
-def test_report_writes_both_windows_from_tiny_arms(tmp_path):
+def test_report_writes_both_windows_from_tiny_arms(tmp_path, monkeypatch):
+    from atx_db.alpha_panel import private_identity_arm_comparison as comparison
+
+    original_compare = comparison.compare_arms
+    comparison_budgets = []
+
+    def compare_with_observed_budget(con, **kwargs):
+        budget = con.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+        comparison_budgets.append(budget)
+        size, unit = budget.split()
+        assert unit == 'MiB' and 240 < float(size) < 250
+        return original_compare(con, **kwargs)
+
+    monkeypatch.setattr(comparison, 'compare_arms', compare_with_observed_budget)
     base, data = _full_report_lake(tmp_path)
     out = tmp_path / "report"
     results = a0.report(base, data_root=data, out=out)
@@ -943,6 +956,7 @@ def test_report_writes_both_windows_from_tiny_arms(tmp_path):
     assert results["coverage"]["observation_clocks"] == {"s1": "2026-09-20 00:06:20.722492",
                                                          "s2": "2026-09-20 22:00:00"}
     assert all(results["d0"][kind]["d0_pass"] for kind in ("r4", "pit", "link_table"))
+    assert len(comparison_budgets) == 8
     assert results["d0"]["stage_i_validation"] == {"pass": True}
     assert results["provenance"]["unmatched"] and "No producing commit" in \
         results["provenance"]["producing_commit_statement"]

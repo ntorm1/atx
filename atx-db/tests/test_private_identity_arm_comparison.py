@@ -131,6 +131,33 @@ def test_full_yearly_counts_identifiers_clocks_classes_and_full_rows(connection,
     assert not connection.execute("SELECT table_name FROM duckdb_tables() WHERE table_name LIKE 'a0_pair_%'").fetchall()
 
 
+def test_explicit_comparison_budget_preserves_counts_and_default_ceiling(connection, tmp_path):
+    args, *_ = setup(connection, tmp_path)
+    default = D.compare_arms(connection, **args)
+    args['output'] = tmp_path/'budget-result'
+    connection.execute("SET memory_limit='256MB'")
+    with pytest.raises(ValueError, match='128MiB'):
+        D.compare_arms(connection, **args)
+    assert not args['output'].exists()
+    explicit = D.compare_arms(connection, **args, memory_limit_mib=256)
+    for key in ('rows_1_4', 'row_5_distinct_sr_id', 'row_6_distinct_cik', 'row_7',
+                'row_8', 'row_9', 'row_10', 'complete_axis_cells'):
+        assert explicit[key] == default[key]
+    connection.execute("SET memory_limit='300MB'")
+    args['output'] = tmp_path/'over-budget'
+    with pytest.raises(ValueError, match='256MiB'):
+        D.compare_arms(connection, **args, memory_limit_mib=256)
+    assert not args['output'].exists()
+
+
+@pytest.mark.parametrize('budget', [0, 129, 512, None, True, '256', 128.0])
+def test_comparison_budget_options_are_closed(connection, tmp_path, budget):
+    args, *_ = setup(connection, tmp_path)
+    with pytest.raises(ValueError, match='budget must be 128 or 256'):
+        D.compare_arms(connection, **args, memory_limit_mib=budget)
+    assert not args['output'].exists()
+
+
 def test_input_mutation_finally_refuses_completion_and_cleans_sql(connection,tmp_path):
     args,*_=setup(connection,tmp_path)
     source=tmp_path/'a.parquet'
