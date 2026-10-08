@@ -1,18 +1,21 @@
 # Lane COV-MV (R9) wait-then-build tool, HOST-2 / HOST-3: waits until no C++ build runs on the host
 # (ninja / clang-cl / lld-link / cmake --build / another research-build.ps1), then a grace window so a
 # higher-priority agent polling at <= 60 s starts first, then runs scripts\research-build.ps1 from pool-31.
-# An admission refusal ("memory admission") writes no receipt, so it is retried; the bound is 90 minutes.
+# An admission refusal ("memory admission") writes no receipt, so it is retried; the bound is
+# -BoundMinutes (90 under HOST-2 / HOST-3; R10 passes 180, HOST-4). -LogPrefix names the round's logs.
 param(
   [Parameter(Mandatory = $true)][string] $Tag,
   [Parameter(Mandatory = $true)][string] $Targets,
   [string] $Preset = 'equity-dev',
   [switch] $Canary,
-  [switch] $Recache
+  [switch] $Recache,
+  [int] $BoundMinutes = 90,
+  [string] $LogPrefix = 'r9'
 )
 $ErrorActionPreference = 'Stop'
 $pool = 'C:\atx-wt\pool-31'
 $logDir = Join-Path $pool '.superpowers\sdd\platform-p9-20261003\covmv-logs'
-$waitLog = Join-Path $logDir "r9-wait-$Tag.log"
+$waitLog = Join-Path $logDir "$LogPrefix-wait-$Tag.log"
 $self = $PID
 
 function Get-Busy {
@@ -30,7 +33,7 @@ function Write-WaitLog([string] $Line) {
   }
 }
 
-$deadline = (Get-Date).AddMinutes(90)
+$deadline = (Get-Date).AddMinutes($BoundMinutes)
 while ((Get-Date) -lt $deadline) {
   $busy = Get-Busy
   $free = Get-FreeMiB
@@ -51,7 +54,7 @@ while ((Get-Date) -lt $deadline) {
       $out = & powershell @args2 2>&1 | Out-String
       $code = $LASTEXITCODE
       $ErrorActionPreference = 'Stop'
-      try { $out | Add-Content (Join-Path $logDir "r9-wrapper-$Tag.log") } catch { Write-WaitLog "wrapper log write failed" }
+      try { $out | Add-Content (Join-Path $logDir "$LogPrefix-wrapper-$Tag.log") } catch { Write-WaitLog "wrapper log write failed" }
       if ($out -match 'memory admission') {
         Write-WaitLog "$(Get-Date -Format s) admission refused; retry"
         Start-Sleep -Seconds 60
@@ -65,5 +68,5 @@ while ((Get-Date) -lt $deadline) {
   Write-WaitLog "$(Get-Date -Format s) wait busy=[$names] free=$free"
   Start-Sleep -Seconds 60
 }
-Write-WaitLog "$(Get-Date -Format s) BLOCKED-HOST: no admission within 90 minutes free=$(Get-FreeMiB)"
+Write-WaitLog "$(Get-Date -Format s) BLOCKED-HOST: no admission within $BoundMinutes minutes free=$(Get-FreeMiB)"
 exit 99
