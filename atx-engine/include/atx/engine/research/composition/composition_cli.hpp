@@ -24,9 +24,18 @@
 // SHA-256, the members and themes, and per stage every fitted value the fitter's weights document
 // records (fit.hpp CompositionFit), members and themes by name; floats in shortest round-trip form.
 //
+// P9 lane D3W (contract K-P9-8, ruling D3-1): `fit ... --walk-forward expanding --lag N --step N
+// [--min-decisions N]` (lag and step required with it, min-decisions default 21; none of the three
+// without it) also refits the spec walk-forward (fit.hpp fit_walk_forward) and adds the block
+//   "walk_forward": {"rule": "walk-forward-v1", "window", "lag", "step", "min_decisions",
+//                    "rows": [{"decision_index", "from_session", "fit_decisions", "last_fit_index",
+//                              "last_fit_session", "weights": [per member]}, ...]}
+// Without the flag the document's bytes are unchanged.
+//
 // Exit codes: 0 fitted; 1 refused (message on `err`, nothing published); 2 usage.
 
 #include <filesystem>
+#include <optional>
 #include <ostream>
 #include <span>
 #include <string>
@@ -44,11 +53,12 @@ inline constexpr std::string_view kFitFile = "composition_fit.json";
 // The spec of FILE's text. Err(InvalidArgument) on a malformed document.
 [[nodiscard]] core::Result<FitSpec> parse_fit_spec(std::string_view text);
 
-// The fit of `spec_file` on `factors_dir`, published into `output_dir` (created exclusively).
-// Returns the published document's text.
-[[nodiscard]] core::Result<std::string> run_fit(const std::filesystem::path& factors_dir,
-                                                const std::filesystem::path& spec_file,
-                                                const std::filesystem::path& output_dir);
+// The fit of `spec_file` on `factors_dir`, published into `output_dir` (created exclusively), with
+// the walk-forward rows when `walk_forward` is set. Returns the published document's text.
+[[nodiscard]] core::Result<std::string> run_fit(
+    const std::filesystem::path& factors_dir, const std::filesystem::path& spec_file,
+    const std::filesystem::path& output_dir,
+    const std::optional<WalkForwardSpec>& walk_forward = std::nullopt);
 
 // The verb: argv as main() receives it.
 [[nodiscard]] int research_composition_main(std::span<const std::string_view> args,

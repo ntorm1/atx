@@ -1,0 +1,41 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = WalkForward.*:ResearchComposition*
+[==========] Running 14 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 10 tests from ResearchComposition
+[ RUN      ] ResearchComposition.NumpyPairwiseSumIsNumpys
+[       OK ] ResearchComposition.NumpyPairwiseSumIsNumpys (103 ms)
+[ RUN      ] ResearchComposition.ErcClosedFormTwoThemes
+[       OK ] ResearchComposition.ErcClosedFormTwoThemes (1 ms)
+[ RUN      ] ResearchComposition.SleeveCovarianceClosedForm
+[       OK ] ResearchComposition.SleeveCovarianceClosedForm (0 ms)
+[ RUN      ] ResearchComposition.CapTraceRecordsEveryPass
+[       OK ] ResearchComposition.CapTraceRecordsEveryPass (0 ms)
+[ RUN      ] ResearchComposition.TierRegradesAreRuleFive
+[       OK ] ResearchComposition.TierRegradesAreRuleFive (0 ms)
+[ RUN      ] ResearchComposition.ThemeResidOrderIsTheRegisteredOrder
+[       OK ] ResearchComposition.ThemeResidOrderIsTheRegisteredOrder (0 ms)
+[ RUN      ] ResearchComposition.FitEqualsPythonFixture
+[       OK ] ResearchComposition.FitEqualsPythonFixture (24 ms)
+[ RUN      ] ResearchComposition.FitRefusesMalformedSpecs
+[       OK ] ResearchComposition.FitRefusesMalformedSpecs (16 ms)
+[ RUN      ] ResearchComposition.CliPublishesTheFit
+[       OK ] ResearchComposition.CliPublishesTheFit (144 ms)
+[ RUN      ] ResearchComposition.WeightsSchemaIds
+[       OK ] ResearchComposition.WeightsSchemaIds (0 ms)
+[----------] 10 tests from ResearchComposition (292 ms total)
+
+[----------] 4 tests from WalkForward
+[ RUN      ] WalkForward.ExpandingMeanClosedForm
+[       OK ] WalkForward.ExpandingMeanClosedForm (4 ms)
+[ RUN      ] WalkForward.NoRowUsesFutureDecisions
+[       OK ] WalkForward.NoRowUsesFutureDecisions (58 ms)
+[ RUN      ] WalkForward.RefusesBeforeAnyRow
+[       OK ] WalkForward.RefusesBeforeAnyRow (5 ms)
+[ RUN      ] WalkForward.CliWritesTheRowsAndRefuses
+[       OK ] WalkForward.CliWritesTheRowsAndRefuses (509 ms)
+[----------] 4 tests from WalkForward (579 ms total)
+
+[----------] Global test environment tear-down
+[==========] 14 tests from 2 test suites ran. (873 ms total)
+[  PASSED  ] 14 tests.

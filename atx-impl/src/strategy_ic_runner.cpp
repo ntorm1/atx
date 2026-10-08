@@ -141,6 +141,8 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
     if (rule->stage==IcStageKind::residualise)
       manifest["composition_residualise_order"]=theme_order_json(pinned.residualise_order);
   }
+  // P9 lane D3W: per-date weights (a v3 file's walk_forward rows; absent otherwise).
+  if (!pinned.walk_forward.empty()) manifest["composition_walk_forward"]=pinned.walk_forward;
   // two-speed-v1 (v8 Y-5; absent otherwise): the fast and slow sleeves and the fast share per date in
   // their own manifest (the combined file set above stays the five files every consumer admits),
   // pinned here by name and SHA-256.
@@ -701,6 +703,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     // and mom-volman-v1's scale per block; nothing unless those rules run.
     ATX_TRY_VOID(add_theme_hedge_trace(pinned,role.session_keys,*combined,result));
     ATX_TRY_VOID(add_mom_volman_trace(pinned,result));
+    // P9 lane D3W (ruling ALCOMB-6): the sleeve's series files; nothing unless that rule runs.
+    ATX_TRY_VOID(write_mom_volman_sleeves(pinned,role.session_keys,dir,spec.name));
   }
   if (save) {
     result["combined_artifact"]=std::move(saved);

@@ -870,7 +870,8 @@ TEST(StrategyIcRunner, ThemeRedistributionRefusalsAndSchemaGatePrecedeAnyPayload
        "composition weights schema atx.dsl-composition-weights/v2 requires a theme_redistribution block"},
       {themed_text(weights_v1,cfg,equal,theme_block(both)),
        "theme_redistribution requires composition weights schema atx.dsl-composition-weights/v2"},
-      {themed_text("atx.dsl-composition-weights/v3",cfg,equal,theme_block(both)),"schema/library identity"},
+      // P9 lane D3W: v3 is K-P9-8's (WeightsV3.*), so an unknown schema is now v4.
+      {themed_text("atx.dsl-composition-weights/v4",cfg,equal,theme_block(both)),"schema/library identity"},
       // Block shape: exactly {rule: within-theme-v1, composition: ew-theme-v6, themes: {...}}.
       {themed_text(weights_v2,cfg,equal,R"(,"theme_redistribution":[1])"),shape},
       {themed_text(weights_v2,cfg,equal,theme_block(both,"within-theme-v2")),shape},
@@ -4829,5 +4830,272 @@ TEST(IcFieldsSeal, ManifestSealMustBeThisBuildsOrAbsent) {
   auto keyless=sealed({{"window_id","research-window-v2"}});
   const auto legacy=run_named(dir,keyless,"keyless"); ASSERT_TRUE(legacy.ok) << legacy.error;
   EXPECT_NE(legacy.log.find("IC fields-seal role=train seal=absent accepted-as-legacy-manifest"),std::string::npos);
+}
+// ---- P9 lane D3W: composition weights schema v3, walk-forward-v1 rows (contract K-P9-8) ----
+const std::string weights_v3="atx.dsl-composition-weights/v3";
+const std::string wf_head=
+    R"("rule":"walk-forward-v1","window":"expanding","lag":2,"step":21,"min_decisions":21)";
+// The walk_forward block: `head` (rule and recorded flags) and raw `rows`.
+std::string wf_block(const std::string& rows,const std::string& head=wf_head) {
+  return ",\"walk_forward\":{"+head+",\"rows\":"+rows+"}";
+}
+std::string wf_row(i64 session,const std::string& weights) {
+  return "{\"from_session\":"+std::to_string(session)+",\"weights\":"+weights+"}";
+}
+// The fixture's TRAIN role session of date d (the validation role's sessions all follow them).
+i64 train_session(usize d) { return (17683+static_cast<i64>(d))*day; }
+// A mom-volman-v1 theme_schedule block over TRAIN sessions 0..n-1: .5 (-1)^d, then 2 (-1)^d from
+// 200 on (the volatility steps up, so the block scales move).
+std::string volman_block(usize n) {
+  Json sessions=Json::array(),sleeve=Json::array();
+  for (usize d=0;d<n;++d) {
+    sessions.push_back(train_session(d));
+    sleeve.push_back((d<200?.5:2.0)*(d%2U==0U?1.0:-1.0));
+  }
+  return ",\"theme_schedule\":"+Json{{"rule","mom-volman-v1"},{"theme","price_momentum"},{"lookback",126},
+      {"lag",2},{"step",21},{"sessions",sessions},{"sleeve",sleeve}}.dump();
+}
+// A v3 run against its v1 / v2 parent whose top-level weights its one row (from TRAIN session 0)
+// repeats: every payload byte for byte; the recipe, the orientations' candidates, the combined
+// manifests and the role summaries differ only by the weights pin, the rule key and the hashes of
+// those; the summary records the rows.
+void expect_single_row_identity(const Directory& dir,const std::string& parent,const std::string& v3) {
+  for (const std::string role_name:{"train","validation"})
+    for (const auto* suffix:{"_daily_ic.csv","_planned_targets.csv","_combined.f64","_combined_member.u8",
+                             "_combined_finite.u8"}) {
+      const auto file=role_name+suffix; const auto expected=file_sha(dir.path/parent/file);
+      ASSERT_FALSE(expected.empty()) << file;
+      EXPECT_EQ(file_sha(dir.path/v3/file),expected) << file;
+    }
+  auto a=read_json(dir.path/parent/"recipe.json"),b=read_json(dir.path/v3/"recipe.json");
+  EXPECT_EQ(b.at("composition_walk_forward"),"walk-forward-v1");
+  EXPECT_FALSE(a.contains("composition_walk_forward"));
+  EXPECT_NE(a.at("composition_weights_sha256"),b.at("composition_weights_sha256"));
+  for (auto* recipe:{&a,&b})
+    for (const auto* key:{"composition_walk_forward","composition_weights_sha256"}) recipe->erase(key);
+  EXPECT_EQ(b,a);
+  EXPECT_EQ(read_json(dir.path/v3/"orientations.json").at("candidates"),
+            read_json(dir.path/parent/"orientations.json").at("candidates"));
+  for (const std::string role_name:{"train","validation"}) {
+    const auto manifest=role_name+"_combined.json";
+    auto x=read_json(dir.path/parent/manifest),y=read_json(dir.path/v3/manifest);
+    EXPECT_EQ(y.at("composition_walk_forward"),"walk-forward-v1") << role_name;
+    EXPECT_FALSE(x.contains("composition_walk_forward")) << role_name;
+    for (auto* m:{&x,&y})
+      for (const auto* key:{"composition_walk_forward","composition_weights_sha256","run_recipe_sha256",
+                            "orientations_artifact_sha256"})
+        m->erase(key);
+    EXPECT_EQ(y,x) << role_name;
+  }
+  const auto sa=read_json(dir.path/parent/"summary.json"),sb=read_json(dir.path/v3/"summary.json");
+  for (usize r=0;r<2;++r)
+    EXPECT_EQ(stable_role(sb.at("roles").at(r),false),stable_role(sa.at("roles").at(r),false)) << r;
+  const auto& record=sb.at("composition_weights").at("walk_forward");
+  EXPECT_EQ(record.at("rule"),"walk-forward-v1");
+  EXPECT_EQ(record.at("rows").get<usize>(),1U);
+  EXPECT_EQ(record.at("first_session").get<i64>(),train_session(0));
+  EXPECT_FALSE(sa.at("composition_weights").contains("walk_forward"));
+}
+// Contract K-P9-8 (ruling P19, brief-D3 as carried): a v3 file whose one row starts at the first
+// TRAIN session with the top-level weights is its v1 / v2 parent byte for byte, on the plain pinned
+// path, on ew-theme-std-v1's standardisation and under the mom-volman-v1 schedule (whose blocks the
+// row masses then merge with); only the records that name the file and the rule differ.
+TEST(WeightsV3, SingleRowEqualsV1Bytes) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); cfg.save_combined=true;
+  const auto pin=[&](const std::string& file,const std::string& text) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,text,cfg.composition_weights_sha256);
+  };
+  const std::string weights=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  const std::string signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
+  const std::string row="["+wf_row(train_session(0),weights)+"]";
+  const std::string themes=R"({"volume_level":"value","volume_rank":"price_momentum","volume_vee":"value"})";
+  const std::vector<std::pair<std::string,std::string>> parents{
+      {weights_v1,signs},{weights_v2,signs+std_block(themes,true)},
+      {weights_v2,signs+std_block(themes,true)+volman_block(300)}};
+  for (usize c=0;c<parents.size();++c) {
+    SCOPED_TRACE(c);
+    const auto& [schema,extra]=parents[c];
+    const auto parent="parent"+std::to_string(c),v3="v3_"+std::to_string(c);
+    ASSERT_TRUE(pin(parent+".json",themed_text(schema,cfg,weights,extra)));
+    const auto a=run_named(dir,cfg,parent); ASSERT_TRUE(a.ok) << a.error;
+    ASSERT_TRUE(pin(v3+".json",themed_text(weights_v3,cfg,weights,extra+wf_block(row))));
+    const auto b=run_named(dir,cfg,v3); ASSERT_TRUE(b.ok) << b.error;
+    expect_single_row_identity(dir,parent,v3);
+  }
+}
+// Rows switch at their session and the book is flat before the first (ruling D3-1): on the plain
+// path each TRAIN date before the first row's session holds 0 (members) or NaN (non-members), the
+// dates of each row are the blend of a v1 file with that row's weights, bit for bit, and every
+// validation date (its sessions follow the rows) the last row's. On ew-theme-std-v1 the same, with
+// a row weighting a candidate the top-level weights leave at 0 (its theme is a weighted one).
+TEST(WeightsV3, RowsSwitchAtTheirSessionAndTheBookIsFlatBefore) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); cfg.save_combined=true;
+  const auto pin=[&](const std::string& file,const std::string& text) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,text,cfg.composition_weights_sha256);
+  };
+  const std::string signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
+  const std::string first=R"({"volume_level":1.0,"volume_rank":0.0,"volume_vee":0.0})";
+  const std::string second=R"({"volume_level":0.0,"volume_rank":1.0,"volume_vee":0.0})";
+  const auto run=[&](const std::string& name,const std::string& text) {
+    if (!pin(name+".json",text)) return false;
+    const auto done=run_named(dir,cfg,name);
+    EXPECT_TRUE(done.ok) << name << ": " << done.error;
+    return done.ok;
+  };
+  ASSERT_TRUE(run("a",themed_text(weights_v1,cfg,first,signs)));
+  ASSERT_TRUE(run("b",themed_text(weights_v1,cfg,second,signs)));
+  const std::string halves=R"({"volume_level":0.5,"volume_rank":0.5,"volume_vee":0.0})";
+  ASSERT_TRUE(run("wf",themed_text(weights_v3,cfg,halves,
+      signs+wf_block("["+wf_row(train_session(200),first)+","+wf_row(train_session(300),second)+"]"))));
+  // ew-theme-std-v1: the top-level weights leave volume_rank at 0; its row weights it in theme value.
+  const std::string themes=R"({"volume_level":"value","volume_rank":"value","volume_vee":"value"})";
+  const std::string spread=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  ASSERT_TRUE(run("c",themed_text(weights_v2,cfg,spread,signs+std_block(themes,true))));
+  const std::string ends=R"({"volume_level":0.5,"volume_rank":0.0,"volume_vee":0.5})";
+  ASSERT_TRUE(run("std_wf",themed_text(weights_v3,cfg,ends,
+      signs+std_block(themes,true)+wf_block("["+wf_row(train_session(250),spread)+"]"))));
+  // `after`: (first TRAIN date, reference run) per row, ascending.
+  using Rows=std::vector<std::pair<usize,std::string>>;
+  const auto flat_then=[&](const std::string& run_name,usize from,const Rows& after) {
+    for (const std::string role_name:{"train","validation"}) {
+      SCOPED_TRACE(run_name+" "+role_name);
+      const auto combined=role_name+"_combined.f64";
+      const auto s=combined_payload(dir.path/run_name/combined);
+      ASSERT_EQ(s.size(),D*N);
+      std::vector<std::vector<f64>> want;
+      for (const auto& reference:after) want.push_back(combined_payload(dir.path/reference.second/combined));
+      const bool train=role_name=="train";
+      for (usize k=0;k<D*N;++k) {
+        const usize d=k/N;
+        if (train && d<from) {
+          if (std::isnan(want.front()[k])) EXPECT_TRUE(std::isnan(s[k])) << d << ' ' << k%N;
+          else EXPECT_EQ(std::bit_cast<u64>(s[k]),std::bit_cast<u64>(0.0)) << d << ' ' << k%N;
+          continue;
+        }
+        usize source=after.size()-1U;
+        if (train)
+          for (usize r=0;r<after.size();++r) if (d>=after[r].first) source=r;
+        EXPECT_TRUE(same_value(s[k],want[source][k])) << d << ' ' << k%N;
+      }
+    }
+  };
+  flat_then("wf",200,{{200,"a"},{300,"b"}});
+  flat_then("std_wf",250,{{250,"c"}});
+  const auto manifest=read_json(dir.path/"std_wf"/"train_combined.json");
+  EXPECT_EQ(manifest.at("composition_walk_forward"),"walk-forward-v1");
+  EXPECT_EQ(manifest.at("composition_standardise"),"ew-theme-std-v1");
+}
+// Every v3 refusal (block shape, rows, the rules it is refused with, a row-weighted candidate
+// without its sign or theme) and v1 / v2 carrying the block precede any payload or output.
+TEST(WeightsV3, RefusalsPrecedeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto path=dir.path/"weights.json"; cfg.composition_weights_path=path.string();
+  const std::string w=R"({"volume_level":0.5,"volume_rank":0.25,"volume_vee":0.25})";
+  const std::string signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
+  const std::string themes=R"({"volume_level":"value","volume_rank":"price_momentum","volume_vee":"value"})";
+  const std::string row=wf_row(train_session(10),w);
+  const std::string rows="["+row+"]";
+  const auto v3=[&](const std::string& extra) { return themed_text(weights_v3,cfg,w,signs+extra); };
+  // Admitted: the plain path, a standardise grouping, two rows.
+  for (const auto& text:{v3(wf_block(rows)),v3(std_block(themes,true)+wf_block(rows)),
+                         v3(wf_block("["+row+","+wf_row(train_session(30),w)+"]"))}) {
+    ASSERT_TRUE(text_file(path,text,cfg.composition_weights_sha256));
+    cfg.plan_only=true; std::ostringstream log;
+    const auto status=atx::impl::strategy::run_ic(cfg,log);
+    ASSERT_TRUE(status) << status.error().to_string() << "\n" << text;
+    const auto plan=Json::parse(log.str());
+    EXPECT_EQ(plan.at("composition_weights").at("walk_forward").at("rule"),"walk-forward-v1");
+  }
+  const std::string shape="walk_forward must be {rule: walk-forward-v1, window: expanding, lag: >= 2";
+  const std::string row_shape="walk_forward row must be {from_session: integer, weights: {id: weight}}";
+  const std::string refused_with="walk_forward (walk-forward-v1) is refused with theme_redistribution, "
+                                 "theme_residualise and theme-tsmom-v1";
+  std::string many="[";
+  for (usize r=0;r<4097;++r) many+=(r?",":"")+wf_row(train_session(0)+static_cast<i64>(r),w);
+  many+="]";
+  // The head with one field replaced (rule, window, lag, step, min_decisions as raw JSON).
+  const auto head=[](const std::string& rule,const std::string& window,const std::string& lag,
+                     const std::string& step,const std::string& min) {
+    return "\"rule\":"+rule+",\"window\":"+window+",\"lag\":"+lag+",\"step\":"+step+
+           ",\"min_decisions\":"+min;
+  };
+  const std::string ok_rule="\"walk-forward-v1\"",ok_window="\"expanding\"";
+  const std::string head_v=R"("rule":"walk-forward-v1","window":"expanding","lag":2,"step":21)";
+  // One row at TRAIN session 10 with raw `weights`.
+  const auto one=[](const std::string& weights) {
+    return wf_block("["+wf_row(train_session(10),weights)+"]");
+  };
+  const std::string s0=std::to_string(train_session(0));
+  const std::string needs_v3=
+      "walk_forward requires composition weights schema atx.dsl-composition-weights/v3";
+  const std::string bad="walk_forward weight must be finite and >= 0: volume_rank";
+  const std::vector<std::pair<std::string,std::string>> cases{
+      {v3(""),"composition weights schema atx.dsl-composition-weights/v3 requires a walk_forward block"},
+      {themed_text(weights_v1,cfg,w,signs+wf_block(rows)),needs_v3},
+      {themed_text(weights_v2,cfg,w,signs+std_block(themes,true)+wf_block(rows)),needs_v3},
+      {v3(R"(,"walk_forward":[1])"),shape},
+      {v3(wf_block(rows,head("\"walk-forward-v2\"",ok_window,"2","21","21"))),shape},
+      {v3(wf_block(rows,head(ok_rule,"\"rolling\"","2","21","21"))),shape},
+      {v3(wf_block(rows,head(ok_rule,ok_window,"1","21","21"))),shape},
+      {v3(wf_block(rows,head(ok_rule,ok_window,"2","0","21"))),shape},
+      {v3(wf_block(rows,head(ok_rule,ok_window,"2","21","1"))),shape},
+      {v3(wf_block(rows,head(ok_rule,ok_window,"2","21","\"21\""))),shape},
+      {v3(wf_block(rows,head_v)),shape},
+      {v3(wf_block(rows,wf_head+R"(,"extra":1)")),shape},
+      {v3(",\"walk_forward\":{"+wf_head+"}"),shape},
+      {v3(wf_block("[]")),shape},
+      {v3(wf_block("{}")),shape},
+      {v3(wf_block(many)),shape},
+      {v3(wf_block("[1]")),row_shape},
+      {v3(wf_block(R"([{"from_session":1.5,"weights":{}}])")),row_shape},
+      {v3(wf_block("[{\"from_session\":"+s0+"}]")),row_shape},
+      {v3(wf_block("[{\"from_session\":"+s0+",\"weights\":"+w+",\"x\":1}]")),row_shape},
+      {v3(wf_block("["+row+","+row+"]")),"walk_forward from_session must increase strictly"},
+      {v3(one(R"({"volume_level":0.5,"volume_rank":0.25,"volume_vee":0.25,"other":0})")),
+       "walk_forward weight for unknown candidate: other"},
+      {v3(one(R"({"volume_level":0.5,"volume_vee":0.25})")),"walk_forward weight missing: volume_rank"},
+      {v3(one(R"({"volume_level":0.5,"volume_rank":-0.25,"volume_vee":0.25})")),bad},
+      {v3(one(R"({"volume_level":0.5,"volume_rank":"x","volume_vee":0.25})")),bad},
+      {v3(one(R"({"volume_level":0,"volume_rank":0,"volume_vee":0})")),"weights no candidate"},
+      {themed_text(weights_v3,cfg,w,signs+theme_block(themes)+wf_block(rows)),refused_with},
+      {v3(std_block(themes,true)+resid_block(R"(["value","price_momentum"])")+wf_block(rows)),refused_with},
+      {v3(std_block(themes,true)+tsmom_block(R"(["price_momentum","value"])",
+                                             "["+tsmom_row(1000,"[1.0,-1.0]")+"]")+wf_block(rows)),
+       refused_with}};
+  // A row weighting a candidate the top-level weights leave at 0: its sign, then its theme.
+  const std::string top=R"({"volume_level":0.5,"volume_rank":0.0,"volume_vee":0.5})";
+  const std::string lifted=one(R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})");
+  const std::string two_signs=R"(,"signs":{"volume_level":1,"volume_vee":1})";
+  const std::string value_only=R"({"volume_level":"value","volume_vee":"value"})";
+  const std::vector<std::pair<std::string,std::string>> lifted_cases{
+      {themed_text(weights_v3,cfg,top,two_signs+lifted),
+       "composition sign missing for a candidate a walk_forward row weights: volume_rank"},
+      {themed_text(weights_v3,cfg,top,signs+std_block(value_only,true)+lifted),
+       "theme missing for a candidate a walk_forward row weights: volume_rank"},
+      {themed_text(weights_v3,cfg,top,signs+std_block(themes,true)+lifted),
+       "walk_forward row weights volume_rank of theme price_momentum, which no top-level weighted "
+       "candidate has"}};
+  for (const bool plan_only:{true,false}) {
+    for (const auto* list:{&cases,&lifted_cases})
+      for (const auto& [text,reason]:*list) {
+        ASSERT_TRUE(text_file(path,text,cfg.composition_weights_sha256));
+        cfg.plan_only=plan_only; std::ostringstream attempt;
+        const auto status=atx::impl::strategy::run_ic(cfg,attempt);
+        if (status) { // every case reports (a mutation's teeth show per refusal), none aborts the loop
+          ADD_FAILURE() << "accepted, expected: " << reason << "\n" << text.substr(0,400);
+          continue;
+        }
+        EXPECT_NE(status.error().to_string().find(reason),std::string::npos)
+            << reason << " -> " << status.error().to_string();
+        EXPECT_TRUE(attempt.str().empty()); EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+      }
+  }
 }
 } // namespace
