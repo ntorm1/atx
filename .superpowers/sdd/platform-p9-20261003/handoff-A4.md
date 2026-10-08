@@ -1,5 +1,25 @@
 # Handoff A4 (stretch lane; pool-27, branch `feat/p9-a4-20261005`)
 
+## RESUME 9 progress (this agent; newest first)
+
+- Code slice `984c4a77`: ONE short-side reader (`sources/short_side.hpp` `read_short_side<Rows>` /
+  `read_short_side_all<Rows>`, row-group streaming over `PinnedStage::for_each_group`, compile-time-checked column
+  layouts in `short_side.cpp`, text -> code via new `parquet_columns` `code_column` / `flag_column`); indexers take
+  batches (`FtdIndexer`, `RegshoIndexer` with the per-FILE late-row unit, `ListingIndexer`); `FtdKernel` (ring of 22
+  prefix rows, no (dates+1) x lines matrix), `RegshoKernel` (contiguous window sums); `inputs_digested` counts digests
+  computed (A3-3 teeth); registry owner suffix for the two routed rows (A3 precedent `b07782e6`).
+- Tests slice `ee19dc4a`: probes on the kernel API, `ResearchFieldsHoldingsKernel.*` (2), pytest
+  `test_holdings_engine_path.py` (flag-absent + real-exe identity), mechanical pins (routes, registry formula check).
+- Pytests green (Python only): fixture identity 2/2; tools registry / imports / no-new-builder 46/46; fixture engine
+  paths 17 passed 4 skipped (real-exe tests need `ATX_RESEARCH_FIELDS_EXE`); engine-path holdings 1 passed 1 skipped.
+- Single-TU checks clean (equity-dev): short_side, parquet_columns, holdings_ftd, holdings_regsho, reuse,
+  holdings test. Configure re-run (`a4-evidence/configure-equity-dev-r9.log`).
+- NEXT: Debug build `p9-a4-c` (gated by `a4-evidence/gate-build.ps1`), A4 gtest filter
+  `ResearchFieldsA4*:ResearchFieldsHoldings*:ResearchFieldsRegistry*`, real-exe pytests; teeth build via
+  `a4-evidence/teeth-a4.py p9-a4-d`; then the two flip commits (registry row kind engine + builder = kind id, plus a
+  pin in `test_holdings_engine_path.py`), report `task-A4-report.md` (skeleton written, `@@...@@` cells to fill).
+- TEST-1 (owner): no Release, no whole targets, no whole `scripts/tests`, no stage chain - "deferred to the gate".
+
 ## R8 slice, reconstructed (RESUME 9 agent, 2026-10-07; from `git diff 1b64ce45..5c53c2c9`)
 
 The R8 agent worked after the 2026-10-05 stop below, committed `1e4904b7` (A1-SHIM, S-R2, N-1) and left 25 paths
