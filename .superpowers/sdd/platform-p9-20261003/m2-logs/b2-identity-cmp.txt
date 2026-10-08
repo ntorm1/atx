@@ -1,0 +1,34 @@
+== X5: run outcome completed exit 0
+  stdout: 31 vs 32 lines; added PRE-15 line(s) at new line [32]; EQUAL except the one PRE-15 line
+  stderr: byte-equal (144 vs 144 chars)
+  json: rows 1 vs 1; tot_minus_m popped from 1 row(s); leaves equal 137, ledger-path substituted 1, within 1e-12 not bit-equal 0 [], DIFFER []; only old []; only new []
+  nav_summ_run names verb sha256 ad6c587861bcb7ef = file = receipt p9-2t: True
+  RESULT X5: HOLDS
+== YF0: run outcome completed exit 0
+  stdout: 31 vs 32 lines; added PRE-15 line(s) at new line [32]; EQUAL except the one PRE-15 line
+  stderr: byte-equal (144 vs 144 chars)
+  json: rows 1 vs 1; tot_minus_m popped from 1 row(s); leaves equal 137, ledger-path substituted 1, within 1e-12 not bit-equal 0 [], DIFFER []; only old []; only new []
+  nav_summ_run names verb sha256 ad6c587861bcb7ef = file = receipt p9-2t: True
+  PRE-15 public cross-check (n == 123 and DSR = R0-12 logged DSR_hand at N 123): MISS (stop for the PM)
+  RESULT YF0: DOES NOT HOLD
+
+OVERALL DOES NOT HOLD
+
+# PRE-15 cross-check split (booleans / types only)
+tot_minus_m keys: ['dsr', 'n', 'sr0_annual', 'sr0_daily']
+type(n): int | n == 123: False
+type(dsr): float
+dsr to 4 places == '0.7589': False | to 3 places == '0.759': False
+PRE-15 lines: 1 | contains 'N_tot - M=123,': False | contains '.7589': False
+deflated_total.lines == 133: True
+
+# PRE-15 count parts (integer trial counts only; no DSR / SR0 / statistic)
+X5 new p9-2t | N_tot: 234 | v8 N_c: 63 | tot_minus_m.n: 124 | parts: {'by_kind': {'admission': 61, 'construction': 62}, 'campaign_registry': 110, 'ledger_trials': 123, 'n_tot': 233} | in_ledger: False | lines: 133
+X5 old M2f Edbg | N_tot: 234 | v8 N_c: 63 | tot_minus_m.n: None | parts: {'by_kind': {'admission': 61, 'construction': 62}, 'campaign_registry': 110, 'ledger_trials': 123, 'n_tot': 233} | in_ledger: False | lines: 133
+YF0 new p9-2t | N_tot: 234 | v8 N_c: 63 | tot_minus_m.n: 124 | parts: {'by_kind': {'admission': 61, 'construction': 62}, 'campaign_registry': 110, 'ledger_trials': 123, 'n_tot': 233} | in_ledger: False | lines: 133
+YF0 old M2f Edbg | N_tot: 234 | v8 N_c: 63 | tot_minus_m.n: None | parts: {'by_kind': {'admission': 61, 'construction': 62}, 'campaign_registry': 110, 'ledger_trials': 123, 'n_tot': 233} | in_ledger: False | lines: 133
+
+# PRE-15 +1 hypothesis (frozen oracle dsr_at on the run's own net_moments and V; booleans only)
+oracle at N_tot (234) == verb tot.dsr within 1e-9 rel: True
+oracle at 124 == verb tot_minus_m.dsr within 1e-9 rel: True
+oracle at 123, to 4 places == R0-12 logged DSR_hand at N 123 (B2 report '.7589'): True

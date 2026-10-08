@@ -1497,3 +1497,160 @@ committed; nothing was amended.
   the NAV exe refuses it (exit 2). Open with the PM; the repeat with `info-clock-rate-v1` is root's at AL-CLOCK's merge.
 - **B.8 D-COV-EIG (row "without structurally null ranks"):** done in M2j part B (gate report 4 (d) / 4 (e)); COV-14 rules
   its reading.
+
+## Step group M2 (RESUME 9): B2 post-identity redo and T2 merges (2026-10-07)
+
+Root agent M2 (dispatch "root M2", ledger; contract `r7-root-merge.md`, `resume9-addendum.md` TEST-1 / ROOT-1a).
+Start: docs head `685e238b`, code head `fd084e78`, tree clean but for the PM's `progress.md` / `integration-log.md`
+and the five untracked PNGs. Step 0 housekeeping docs `944581cc`. Trial ledger `build-equity/trials.jsonl` 133 lines
+`27e40f9f` at start, after every real-data run and at the end (0 trials). Evidence `m2-logs/` (tools `m2-logs/tools/`).
+Blind: no statistic read; every comparison by diff (line numbers, JSON paths, counts, match / miss).
+
+### B2 (RESUME 9)
+
+- **Merge:** `5dfb0ba1` = `git merge --no-ff 46ffe3dc` (MERGE-SHA: the APPROVE SHA of record, the re-review 2 docs
+  commit above code head `53856c8e`). 0 conflicts (B2 already held `685e238b`). Merge tree `7167e614` = `git merge-tree
+  --write-tree 944581cc 46ffe3dc`. `git diff 46ffe3dc 5dfb0ba1 -- . ':(exclude).superpowers'` is empty: the code is the
+  lane's. 35 code / test files (+1,999 / -1,230), as the lane's report says.
+- **Slips at the merge (each its own commit):**
+  - C3B-6 (D2R-2 (a), design (j) in pool-15 `handoff-C3.md`): `6c201a1d`,
+    `scripts/cycle/spec.py | 22 ++++++++++++----------` (12 insertions, 10 deletions). Three hunks, now at `:242-246`
+    (`argparse_values` docstring), `:267-272` (`validate_e27b` docstring), `:285-286` (the R6B-C-4 refusal message;
+    design (j) named `:240-244`, `:264-269`, `:280-283`, one line earlier before the merge). The stale text said
+    argparse reads an abbreviation; both tools the guard reads (fitter `--composition`, nav_summ `--protocol`) parse
+    with `allow_abbrev=False` since D2R-1 / D2R-2 (b) (`fit_composition_weights.py:2763`, `nav_summ.py:1065`). The
+    `argparse_values` text stays general (`wave_stage_kinds.py:159` uses it for other options). AST equal outside the
+    two docstrings and the one message string; the tests' needles (`write --composition once`, `write --protocol
+    once`, `test_research_spec.py:976-980`) unchanged; `test_research_spec.py` green (below).
+  - B2-S S-1: `fcb0200e`, `scripts/tests/test_wave_eval_verb.py | 6 ++++--` and `scripts/wave_stage_record.py | 2 +-`
+    (5 insertions, 3 deletions): `wave_stage_record.py:303` (comment spacing) and `test_wave_eval_verb.py:147, :155`
+    (implicit continuation). Token streams unchanged (tokenize, NL / NEWLINE / INDENT ignored). Not touched:
+    `wave_stage_record.py:198` (125 columns, from `3fa2dd4a` P0-FIX, not B2's; outside the ruling).
+- **SQL2-CLS:** no new literal. The added lines of `5dfb0ba1` name only `atx.research-wave/v1` and `/v2` (registered,
+  row `wave-manifest`). Guard `atx-engine/tools/test_research_store_classes.py` 5 passed (`pyt-classes-guard-s0.log`).
+- **Build p9-2t** (ONE Debug build, TEST-1; `scripts/research-build.ps1`, equity-dev). It waited behind lane ABS's
+  build in pool-28 (one build on the host; tool `m2-logs/build-wait.log`), then was admitted at 4131 MiB free / 3752 MiB
+  commit, jobs 4. Receipt `build-equity/mega-p9-2t-receipt.json` (copy `m2-logs/mega-p9-2t-receipt.json`): source
+  `fcb0200e`, configured provenance `fcb0200e-dirty` (the 5 untracked PNGs), exit 0, 81 s, 9 TUs, 7 links, 0 warning
+  lines. Targets: the four of B2's `p9-b2-q` receipt (`atx-research-eval`, `atx-engine-research-eval-tests`,
+  `atx-engine-research-ledger-tests`, `atx-impl-tests`) plus `atx-engine-research-fields-tests` (named in the dispatch
+  as T2's; T2 has no C++ and touches nothing that target compiles or reads, so it is a no-change control). SHA-256 per
+  the receipt (SPDLOG-RELINK: this receipt is the evidence; every file re-hashed before the gtests and equal):
+
+  | exe (Debug p9-2t, `build-equity/bin`) | SHA-256 |
+  |---|---|
+  | atx-research-eval | `ad6c587861bcb7efe2091c4420304cbc735de2a8a7713d66221b9b3eb39c4bb9` |
+  | atx-engine-research-eval-tests | `1a81e3473b4c7b4691703531c47d73e810b2867c7e60eeef6440af48f56aa461` |
+  | atx-engine-research-ledger-tests | `8c5a6065f31f061fe6a06b474b0bd9987f45a640c5f59a9ade4b61b25fe322cd` (not relinked: no source change) |
+  | atx-impl-tests | `13bb6bde680e3e2c208c5860a52a19d3d3789ccd588a8d50eb501ed59bdb67fe` |
+  | atx-engine-research-fields-tests | `327fd4a4d7d25b73d1c4f271e92c914e2d189422fa2362e3b550ea8fd3d0de57` |
+
+- **Named gtests (Debug p9-2t):** `atx-engine-research-eval-tests` 26 / 26 (incl.
+  `EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns`), `atx-engine-research-ledger-tests` 16 / 16,
+  `atx-impl-tests --gtest_filter=*Ledger*:EvalVerb*` 29 / 29, `atx-engine-research-fields-tests
+  --gtest_filter=ResearchFields*` 92 / 92 (`gt-2t-*.log`).
+- **Pytest** (seed 0; explicit interpreter, `-p no:cacheprovider`, own `--basetemp` under the session scratchpad,
+  PYTHONDONTWRITEBYTECODE=1, ATX_EQUITY_BIN unset so the checkout's p9-2t bin is the verb):
+  - `scripts/tests/test_wave_eval_verb.py test_wave_kinds.py test_research_cycle.py test_cycle_scoring.py
+    test_no_python_mirror.py test_research_spec.py test_research_ledger.py`: **317 passed, 3 skipped** (the three
+    `RESEARCH_CYCLE_LIVE_ROOT` environment skips; `test_cycle_scoring`'s two verb tests ran) (`pyt-b2-scripts-s0.log`).
+  - `atx-impl/tools/test_backtest_integrity.py test_book_diagnostics.py test_dsr_total.py test_nav_summ.py
+    test_nav_summ_engine.py test_nav_summ_v8.py` and
+    `atx-engine/tests/fixtures/research_eval_edges/test_research_eval_edges_fixture.py`: **76 passed, 1 skipped**
+    (`test_nav_summ_v8.py:72`, root-only, ATX_EQUITY_ROOT) (`pyt-b2-tools-s0.log`). That root-only test, run
+    separately: **FAILED** (below).
+- **TRAIN identity** (re-review 2 item 3; flag-absent nav_summ; X-5 and Y-F0). Runs through the bounded runner
+  (`--seconds 600 --max-rss-mib 2048`, the ledger COPY bound, never `--ledger`, the reference never among the dirs).
+  The argv is root's M2f Edbg argv (`m2f-logs/tools/b2_identity_run.sh`) except the ledger copy path and the `--json`
+  path; the verb is p9-2t `ad6c5878...` (named in every `nav_summ_run`; equal to the file and the receipt). Tools
+  `m2-logs/tools/b2_identity_run.sh`, `b2_identity_cmp.py`, `b2_identity_nototal.sh`, `b2_identity_nototal_cmp.py`;
+  results `b2-identity-cmp.txt`, `b2-identity-nototal-cmp.txt`. Compared against root's M2f Edbg outputs
+  (`c2416d62`, Debug verb p9-2i):
+  - X-5: stdout **equal** except the ONE added line 32 (`   DSR_hand (N_tot - M=..., ruling PRE-15): ...`); stderr
+    byte-equal; JSON 137 leaves bit-equal after popping `deflated_total.tot_minus_m` and `nav_summ_run` (1 of them is
+    the ledger copy path, substituted); 0 within tolerance only, 0 differing. **Holds.**
+  - Y-F0: the same (line 32 added; 137 leaves bit-equal). **Holds** on the identity.
+  - The same argv without `--dsr-total`: stdout equal to the old stdout less its 3-line total-count block, stderr
+    byte-equal, JSON 116 leaves equal to the old JSON less `deflated_total`. **Holds** for both.
+  - Not run: `--dsr-hand` (not in the identity argv; the lane's tests cover the "prefix rule" words). Rho per B2-13 not
+    re-measured (blind; the references are unchanged since M2f, `m2f-logs/b2-rho-pairs.txt`; no `degenerate` key in
+    either pair's JSON).
+- **PRE-15 public cross-check** (report "State for root" item 2; "a miss is a stop for the PM"): **MISS, attributed.**
+  Y-F0's `tot_minus_m` has n = 124, not 123. The integer trial counts of the run (ledger metadata, no statistic):
+  ledger trials by the defect rule 123 (admission 61 + construction 62), campaign registry M = 110, N_tot = 233. Y-F0
+  is not in the ledger (`in_ledger` false), so the verb adds 1 for the book itself to both rows: `tot` N_tot = 234 and
+  `tot_minus_m` n = 233 + 1 - 110 = 124 (the rule as `dsr_total.py:20` states it: "+ 1 when not yet ledgered"). R0-12's
+  logged DSR_hand is at N 123 = 233 - 110 (no + 1). Checks, booleans only (`b2-identity-cmp.txt`, tail): the frozen
+  oracle (`atx-engine/tests/fixtures/eval_tie/frozen_statistics.py` `dsr_at`), on the run's own net moments and V,
+  equals the verb's `tot` DSR (N 234) and `tot_minus_m` DSR (N 124) within 1e-9 relative, and at N 123 it reproduces
+  R0-12's logged value to the 4 printed places (the value as the B2 report quotes it; R0-12's report not opened). So
+  the verb's arithmetic is right and the only difference is the + 1 for an un-ledgered book. **For the PM:** which N
+  the PRE-15 row means for a book not yet in the ledger: N_tot - M with the book's own + 1 (as the verb and the `tot`
+  row do) or without it (as R0-12 and the cross-check text do). A definition ruling; root changed no code.
+- **Root-only legacy test RED, attributed to `5dfb0ba1`.**
+  `atx-impl/tools/test_nav_summ_v8.py::test_legacy_n37_numbers_reproduced` (ATX_EQUITY_ROOT = pool-2 `build-equity`;
+  byte-equal canonical JSON against `mega-nav-v71-summ-n37.json` / `-pbo-n37.json`; run with `--tb=no
+  --show-capture=no -rN`): merged head **1 failed** (`pyt-b2-legacy-n37-s0.log`); pre-merge tree `944581cc`
+  (`git archive` of `atx-impl/tools atx-engine/tools scripts atx-impl/strategies atx-engine/schemas` into the session
+  scratchpad) **1 passed** (`pyt-b2-legacy-n37-premerge-944581cc.log`; two earlier attempts there failed at collection
+  / setup on files missing from the archive, logged). Blind diagnosis (`m2-logs/tools/n37_diag.py`,
+  `n37_diag_any.py`; `b2-legacy-n37-diag.txt`, `b2-legacy-n37-diag-premerge-944581cc.txt`; paths and counts only):
+  merged head 37 / 37 rows, **0 numeric leaves beyond 1e-12**; leaves within 1e-12 but not bit-equal at the verb's
+  statistic paths (`deflated*.dsr`, `deflated_effective_n.*`, `paired.{rho,t,memmel_se,lw.*}`, `psr.benchmarks[*].*`;
+  PBO `logit_mean`, `winner_oos_sr_annual_mean`); ONE row gains `paired.degenerate` / `paired.one_minus_rho`, with
+  `paired.{lw.se,memmel_se,t}` typed null (B2-6's degenerate-pair fallback). Pre-merge: 0 differing leaves. Cause:
+  B2's G-P5 deletion makes the verb the only source of the statistics (B2-R1 (b) tolerance, not bytes) and adds B2-6.
+  The test is root-only (it skips in every suite run without ATX_EQUITY_ROOT), so neither the lane nor its reviewers
+  could run it. **For the PM:** a B2 fix round (the test's comparison moved to B2-R1 (b) plus the B2-6 disclosure, as
+  root's M2f comparator did) or a ruling; root edited no test.
+- **SQL3-2:** `build-equity/research-store/catalog.sqlite` does NOT exist in pool-2 (the directory
+  `build-equity/research-store/` is absent; `build-equity/bin/atx-research-store.exe` is present, so the hook stays OFF
+  by the catalog's absence). Checked at the start and at the end.
+- **Deferred to the gate (TEST-1):** whole `scripts/tests` seeds 0 / 1, the stage chain, whole gtest targets, the
+  Release build (Release `atx-research-eval` p9-2q `a57a2090...` and Release `atx-impl-tests` are stale by source after
+  this merge), canaries, golden 1 / 4 workers, the parents' flag-absent identity, B2-11 / B2-10 (b)'s re-pin.
+- **Keep-both notes for the next groups** (re-review 2 item 2):
+  1. D3: `scripts/tests/test_wave_kinds.py:171` `F.pin_eval_verb(root)` in `world()` must survive D3's merge (re-add
+     the one line if D3 rewrote `world()`).
+  2. D3W: `atx-engine/src/research/eval/eval_report.cpp`: B2's hunks (`:569-605`, `cell_text` `:722-737`, `:798-813`)
+     and D3W's (`:603-628`, `:634-660`, `:683`, `cell_text` `:710-716`) are adjacent but disjoint. B2-EVAL-KEEP: after
+     D3W merges, run the eval gtests (26) and `EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns`.
+  3. C3b: `wave_fixture.py` / `test_wave_kinds.py` auto-merge with B2's lines; then `test_wave_kinds.py` and
+     `test_wave_eval_verb.py` must pass with the eval pin inherited through `match.cell_spec` (the `-cal` recipe under
+     `pm6-6-engine`).
+
+### T2
+
+- **Merge:** `27e69387` = `git merge --no-ff dfa4218d` (review APPROVE `dfa4218d` of `2e9d6813`; code `bc618cb4`),
+  as a unit (T2-SLOT: `3eacd5cf..0b4b6c47` are red by design and are never bisected into). 0 conflicts; merge tree
+  `fcef6848` = `git merge-tree --write-tree 5dfb0ba1 dfa4218d`. T2's 20 files are byte-equal to `bc618cb4`; the scope
+  holds (`git diff --stat 1239a5ff..bc618cb4`: only `atx-engine/tools/{test_*,conftest,t2_gold}.py`, 20 files,
+  +931 / -465).
+- **A3 overlap (A1-SHIM):** moot in root: `git diff --name-only 1239a5ff 5dfb0ba1 -- <T2's 20 files>` is empty (no
+  root commit since T2's base touched them).
+- **SQL2-CLS:** the literals on T2's added lines (`atx.fundamental-events/v1`, `atx.identity-bridge/v1`,
+  `atx.recent-research-role/v1`) are all registered; guard 5 passed.
+- **Build:** none needed (no C++, CMake or build target).
+- **Pytest** (seed 0, cwd `atx-engine/tools`): T2's 22 modules of its E3 list (the 18 changed test files and the 4
+  knock-on victims `module_reuse`, `ivshape`, `v8`, `v8_quarters`) in one process: **248 passed** (= the sum of T2's
+  per-module E3 counts) (`pyt-t2-own-s0.log`). Targeted check of the bind retirement on the other lanes' tools tests
+  (the `atx-engine/tools/test_*.py` root added or changed since `1239a5ff`, stage chain excluded:
+  `test_field_registry`, `test_record_store_sqlite`, `test_research_store`, `_blind`, `_classes`, `_fixtures`,
+  `_identity`): **87 passed** (`pyt-t2-bind-others-s0.log`).
+- **Ledger facts for the T2 merge entry** (review S1; synthetic fixture values, not statistics). Expected values that
+  moved with re-dated fixture rows: xdata `(vol, src)` (2, 4) -> (1, 2); v9_nt `rows_after_role` (sealed_nt, 1) ->
+  (sealed_nt, 2); and the three SEC values the report omitted, `test_prepare_research_fields_sec.py:475, 480, 482`:
+  14 -> 17, 66 -> 67, -52 -> -51, plus one added assertion at `:483` (re-derived by the reviewer).
+- **Deferred to the gate (TEST-1):** the whole `atx-engine/tools` under seeds 0 and 1 (T2's post-merge gate); the
+  mixed run `pytest atx-engine/tools atx-impl/tools` (T2 Risk 5, never run). Left as recorded: S2 (stale "conftest
+  binds" docstrings at `test_research_window.py:4-5, 136`, `test_seal_partitions.py:7`,
+  `test_prepare_research_fields_seal.py:3`), S3 (`test_research_fields_v9_earn.py:81` without `addClassCleanup`) and S5
+  (the window-restore probe is uncommitted) -> P10 / owners; S6 (pool-22 caches) -> at lease release (not root's
+  tree).
+
+### M2 status
+
+Code head `fcb0200e` (merges `5dfb0ba1`, `27e69387`; slips `6c201a1d`, `fcb0200e`). Next free build tag `p9-2u`.
+Known-red set: the suites' set is EMPTY; one root-only red, `test_nav_summ_v8.py::test_legacy_n37_numbers_reproduced`,
+attributed to `5dfb0ba1`. Two stops for the PM (PRE-15's N for an un-ledgered book; the legacy n37 test). The merges
+are not reverted. Debug object tree kept (C: 48 GB free).

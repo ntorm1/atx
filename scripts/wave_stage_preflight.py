@@ -14,6 +14,7 @@ import research_spec
 import research_tree
 import wave_manifest as WM
 import wave_queue
+import wave_rules
 from wave_context import Wave
 from wave_stage_util import EXIT_PIN, StageError, library_wave
 import wave_stage_kinds as SK
@@ -165,6 +166,9 @@ def preflight(w: Wave, done: dict, log) -> dict:
     dirty = w.dirty_code()
     if dirty:
         problems.append(f"the code pathspec is dirty ({', '.join(dirty[:6])}): the bounded runner refuses; commit first")
+    retired = wave_rules.retired_gross_match(m.get("gross_match"))     # P9 ruling C2-11: the Python match is gone
+    if retired:
+        problems.append(retired)
     parent = m["parent"]["spec"]
     if not w.exists(parent):
         raise StageError(f"parent spec {parent} not found", EXIT_PIN)
