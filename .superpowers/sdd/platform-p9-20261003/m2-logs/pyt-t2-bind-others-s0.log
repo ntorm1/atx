@@ -1,0 +1,4 @@
+# cwd=C:/atx-wt/pool-2/atx-engine/tools seed=0 files: test_field_registry.py test_record_store_sqlite.py test_research_store.py test_research_store_blind.py test_research_store_classes.py test_research_store_fixtures.py test_research_store_identity.py
+.......................................................................................                                                                                                                                                                   [100%]
+87 passed, 135 subtests passed in 21.88s
+exit=0

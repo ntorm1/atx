@@ -1,0 +1,9 @@
+B2-11 v1 plan identity (ruling B2-10 (a)): research_wave plan of wave_fixture's v1 manifest (wave w1) on one synthetic root (built by pool-14's wave_fixture.build), planned by
+  old: the scripts of b1df1829 (git archive of scripts, atx-engine/tools, atx-impl/tools, atx-impl/strategies into scratch)
+  new: pool-14's working tree with B2-11 (wave_stage_record.py, wave_steps.py, cycle_verdict.py)
+each in its own process (r7-plan-v1.py; <REPO> = the checkout root, normalized; the root path is the same scratch dir for both).
+old: 33 lines sha256 ed9b5d383b663571e130a14ca1f66a668fdfdbf28592fbbd1a4153697b328b3d
+new: 33 lines sha256 ed9b5d383b663571e130a14ca1f66a668fdfdbf28592fbbd1a4153697b328b3d
+cmp: BYTE-EQUAL
+the judge's bundle line (new, root path elided):
+"C:\Program Files\Python312\python.exe" <REPO>/scripts/run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output out/waves/w1/bundle-run1 --bind <REPO>/atx-impl/tools/nav_summ.py --bind "<parent NAV>/summary.json" --bind "<the cell NAV>/summary.json" -- "C:\Program Files\Python312\python.exe" <REPO>/atx-impl/tools/nav_summ.py --protocol v8 --bundle "<parent NAV>" "<the cell NAV>" --bundle-json out/waves/w1/bundle.json

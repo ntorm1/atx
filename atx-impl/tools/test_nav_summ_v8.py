@@ -24,7 +24,7 @@ import pytest
 
 import backtest_integrity as BI
 import nav_summ as NS
-from test_nav_summ import SCEN, T0, DAY, write_nav
+from test_nav_summ import SCEN, T0, DAY, longhand_dsr, write_nav
 
 TOOLS = Path(__file__).resolve().parent
 SHIM = TOOLS.parents[1] / ".superpowers" / "sdd" / "mega-alpha-20260926" / "studies" / "nav_summ.py"
@@ -253,8 +253,9 @@ def test_variance_from_rerun_cells(tmp_path, capsys):
     q = rows[0]["deflated_ledger"]
     assert q["variance_sr"] == pytest.approx(v["variance_sr"], rel=1e-15) and q["cells"] == 4
     m = rows[0]["net_moments"]
-    sr0 = NS.expected_max_sr(v["variance_sr"], 6)
-    assert q["dsr"] == pytest.approx(NS.deflated_sharpe(m["sr_daily"], m["sessions"], m["skew"], m["kurtosis"], sr0),
+    sr0, dsr = longhand_dsr(m["sr_daily"], m["sessions"], m["skew"], m["kurtosis"], v["variance_sr"], 6)
+    assert q["sr0_daily"] == pytest.approx(sr0, rel=1e-12)
+    assert q["dsr"] == pytest.approx(dsr,
                                      rel=1e-12)
     assert q["legacy_dsr"] is not None and q["legacy_cells"] == 3        # reported beside it
     # with fewer than two cells on the window there is no current variance (never a silent fallback)
@@ -407,7 +408,7 @@ def test_old_study_path_is_a_shim_to_the_moved_script(tmp_path):
     spec = importlib.util.spec_from_file_location("nav_summ_shim_probe", SHIM)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert mod.paired_stats is NS.paired_stats or mod.paired_stats.__code__.co_filename == NS.__file__
+    assert mod.analyse is NS.analyse or mod.analyse.__code__.co_filename == NS.__file__
     done = subprocess.run([PY, str(SHIM), "--help"], capture_output=True, text=True, timeout=120, check=False)
     assert done.returncode == 0 and "--bundle BASE FINAL" in done.stdout
     assert not (SHIM.parent / "backtest_integrity.py").exists()

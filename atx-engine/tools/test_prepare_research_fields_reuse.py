@@ -165,7 +165,7 @@ class ReuseInvalidation(unittest.TestCase):
 
     def test_changed_source_recomputes_the_field_and_its_dependents(self):
         fx = self.env.fx
-        rows = base.FINRA_SHARES + [(303, "2024-10-10", "777")]
+        rows = base.FINRA_SHARES + [(303, "2023-10-10", "777")]
         shutil.rmtree(fx.finra)
         base.write_finra(fx.finra, shares_rows=rows)
         b = self.env.produce("B", SMALL, reuse=self.a_dir)

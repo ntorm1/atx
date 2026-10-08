@@ -67,3 +67,15 @@ def test_the_cscv_grid_has_one_constant_candidate_that_never_wins():
     assert m.shape == (G.CSCV_T, len(G.CSCV_DRIFTS) + 1)
     assert np.all(m[:, -1] == G.CSCV_CONSTANT) and all(np.ptp(m[:, c]) > 0 for c in range(m.shape[1] - 1))
     assert py["winner_counts"][-1] == 0 and 0.0 < py["pbo"] < 1.0
+
+
+def test_the_second_cscv_grid_has_a_constant_that_wins_and_a_zero_column_that_ties_it():
+    """Re-review 1 S7: every generated candidate drifts negative, so the constant (Sharpe 0) wins some splits, and the
+    zero column after it (Sharpe 0 too) loses every tie by index."""
+    py = EXPECTED["cscv_wins"]["python"]
+    m = G.cscv_wins_matrix()
+    k = len(G.CSCV_WIN_DRIFTS)
+    assert m.shape == (G.CSCV_T, k + 2) and all(d < 0.0 for d in G.CSCV_WIN_DRIFTS)
+    assert np.all(m[:, k] == G.CSCV_CONSTANT) and np.all(m[:, k + 1] == 0.0)
+    assert 0 < py["winner_counts"][k] < py["splits"] and py["winner_counts"][k + 1] == 0
+    assert 0.0 < py["pbo"] < 1.0

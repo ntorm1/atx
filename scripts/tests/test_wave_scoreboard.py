@@ -50,18 +50,21 @@ def two_waves(tmp_path: Path, second_accepted: bool) -> Path:
 def test_the_lineage_follows_accepted_books(tmp_path, capsys):
     root = two_waves(tmp_path, second_accepted=True)
     m2 = json.loads((root / W2).read_text())
-    assert m2["parent"] == {"spec": "scripts/specs/v8/lib-w1.json", "library": "w1"} and m2["expect"] == {"n_before": 3}
+    # pm6-6-engine: each accepted cell's next_parent is its plain cell of record <cell>-gm.json (ruling C2-R2)
+    assert m2["parent"] == {"spec": "scripts/specs/v8/lib-w1-gm.json", "library": "w1"} and m2["expect"] == {
+        "n_before": 3}
     out = root / "board.json"
     assert RC.main(["scoreboard", "--root", str(root), "--results", "out/waves/*/wave-result.json",
                     "--json", str(out)]) == 0
     b = json.loads(out.read_text())
     assert [r["wave"] for r in b["lineage"]] == ["(parent)", "w1", "w2"]
-    assert [r["cell"] for r in b["lineage"]] == [F.PARENT, "scripts/specs/v8/lib-w1.json", "scripts/specs/v8/lib-w2.json"]
+    assert [r["cell"] for r in b["lineage"]] == [F.PARENT, "scripts/specs/v8/lib-w1-gm.json",
+                                                 "scripts/specs/v8/lib-w2-gm.json"]
     assert [r["n"] for r in b["lineage"]] == [2, 3, 4] and b["ledger"]["n"] == 4
     assert b["lineage"][1]["net_sharpe"] == 1.2 and b["lineage"][1]["x4_net_sharpe"] == 1.1
     assert all(c["ledgered"] and c["s2_net_sr_equal"] for c in b["checks"])
     text = capsys.readouterr().out
-    assert "### Accepted lineage" in text and "| w2 | ACCEPTED | `scripts/specs/v8/lib-w2.json` |" in text
+    assert "### Accepted lineage" in text and "| w2 | ACCEPTED | `scripts/specs/v8/lib-w2-gm.json` |" in text
     assert {c["status"] for c in Q.load(root).values()} == {"in-book"}
 
 
