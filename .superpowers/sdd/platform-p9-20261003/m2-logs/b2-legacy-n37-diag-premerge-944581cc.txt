@@ -1,0 +1,12 @@
+argv flags: ['--weights', '--reference', '--dsr-n', '--effective-n', '--psr', '--pbo', '--ledger', '--ledger-kind', '--json', '--pbo-json', '--ledger-n']
+argv tokens: 57 | non-flag tokens: 46
+NS.main returned 0
+rows got / want: 37 37
+  summ: leaves 4958 vs 4958; only got 0 []; only want 0 []
+  summ: numeric within 1e-12 (not equal) by generic path: {}
+  summ: numeric BEYOND 1e-12 by generic path: {}
+  summ: non-numeric differing by generic path: {}
+  pbo: leaves 13077 vs 13077; only got 0 []; only want 0 []
+  pbo: numeric within 1e-12 (not equal) by generic path: {}
+  pbo: numeric BEYOND 1e-12 by generic path: {}
+  pbo: non-numeric differing by generic path: {}

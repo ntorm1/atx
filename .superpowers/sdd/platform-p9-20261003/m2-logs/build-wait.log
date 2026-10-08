@@ -1,0 +1,67 @@
+2026-10-07 19:36:27Z others=2 free=3984 commit=4375
+2026-10-07 19:36:58Z others=0 free=4022 commit=4283
+2026-10-07 19:37:28Z others=0 free=4278 commit=3203
+2026-10-07 19:37:58Z others=0 free=4435 commit=3878
+2026-10-07 19:37:58Z starting p9-2t
+{
+    "Source":  "fcb0200e36ecfa4e7dafa9888ddd3fe3b21e8bfd",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  5,
+    "ConfiguredProvenance":  "fcb0200e36ecfa4e7dafa9888ddd3fe3b21e8bfd-dirty",
+    "Jobs":  4,
+    "FreeMiB":  4131,
+    "CommitMiB":  3752,
+    "Targets":  [
+                    "atx-research-eval",
+                    "atx-engine-research-eval-tests",
+                    "atx-engine-research-ledger-tests",
+                    "atx-impl-tests",
+                    "atx-engine-research-fields-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  81.1631642,
+    "CompiledTUs":  9,
+    "Links":  7,
+    "Tag":  "p9-2t",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity",
+    "Executables":  {
+                        "atx-research-eval":  {
+                                                  "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-eval.exe",
+                                                  "Sha256":  "ad6c587861bcb7efe2091c4420304cbc735de2a8a7713d66221b9b3eb39c4bb9"
+                                              },
+                        "atx-engine-research-eval-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-eval-tests.exe",
+                                                               "Sha256":  "1a81e3473b4c7b4691703531c47d73e810b2867c7e60eeef6440af48f56aa461"
+                                                           },
+                        "atx-engine-research-ledger-tests":  {
+                                                                 "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-ledger-tests.exe",
+                                                                 "Sha256":  "8c5a6065f31f061fe6a06b474b0bd9987f45a640c5f59a9ade4b61b25fe322cd"
+                                                             },
+                        "atx-impl-tests":  {
+                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-tests.exe",
+                                               "Sha256":  "13bb6bde680e3e2c208c5860a52a19d3d3789ccd588a8d50eb501ed59bdb67fe"
+                                           },
+                        "atx-engine-research-fields-tests":  {
+                                                                 "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-fields-tests.exe",
+                                                                 "Sha256":  "327fd4a4d7d25b73d1c4f271e92c914e2d189422fa2362e3b550ea8fd3d0de57"
+                                                             }
+                    }
+}
+[1/19] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\generated\build_provenance.cpp.obj
+[2/19] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\generated\research_fields_build_identity.cpp.obj
+[3/19] Linking CXX static library lib\atx-engine-research-fields.lib
+[4/19] Building CXX object atx-engine\CMakeFiles\atx-research-eval.dir\src\research\eval\eval_main.cpp.obj
+[5/19] Building CXX object atx-engine\CMakeFiles\atx-engine-research-eval.dir\src\research\eval\eval_cli.cpp.obj
+[6/19] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-eval-tests.dir\research\research_eval_rng_test.cpp.obj
+[7/19] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-eval-tests.dir\research\research_eval_conditional_test.cpp.obj
+[8/19] Linking CXX static library lib\atx-impl-strategy.lib
+[9/19] Building CXX object atx-engine\CMakeFiles\atx-engine-research-eval.dir\src\research\eval\eval_report.cpp.obj
+[10/19] Linking CXX static library lib\atx-engine-research-eval.lib
+[11/19] Linking CXX executable bin\atx-research-eval.exe
+[12/19] Linking CXX executable bin\atx-engine-research-fields-tests.exe
+[13/19] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-eval-tests.dir\research\research_eval_tie_test.cpp.obj
+[14/19] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-eval-tests.dir\research\research_eval_edges_test.cpp.obj
+[15/19] Linking CXX executable bin\atx-engine-research-eval-tests.exe
+[16/19] Linking CXX executable bin\atx-impl-tests.exe
+2026-10-07 19:39:26Z research-build exit=0
