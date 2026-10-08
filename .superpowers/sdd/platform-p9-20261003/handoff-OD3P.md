@@ -69,3 +69,58 @@
 - The C++ `absent-members-v1` work is lane ABS's (ABS-1); `od3p-absent-contract.md` sections 2-5 are its input.
 - Before the OD-3 read, root resolves `mv-aim-v1` in `scripts/specs/p9/od3/flagged_members.json` and re-pins it
   (runbook P0).
+
+## Follow-up round (item 6, OD3P-S; RESUME 9, dispatch "OD3P follow-up"): OWNER STOP 9, 2026-10-07
+
+Head at the stop: `a1348616` WIP code + this handoff commit (records). Root merged first: `feat/platform-p9-20261003`
+= `73b4acfd` (contains `fcb0200e`: B2 redo + T2 in root), merge `6f667bc1`, plain, no conflict; root's range changed no
+lane file except an append to the `scripts/cycle/cli.py` usage text (not the lane's hunk). Tree clean at the stop; no
+teeth ran, nothing mutated. No test has run on this round's code. No permission refusal.
+
+| item | state | where (file:line at `a1348616`) |
+|---|---|---|
+| 1 merge root | DONE | `6f667bc1` (root `73b4acfd`) |
+| 6 T2 (`--pool-one-sided` on the verb) | CODE WIP, UNTESTED | `atx-impl/tools/nav_summ.py:118-121` usage; `:622-628` `paired_verdict` (one verdict rule, now also used by `bundle()`, `:647-649`); `:746-759` `paired_or_note` one-sided branch (`paired_of(..., one_sided=True)` + `verdict`); `:821-824` the one printed line; `:1138-1139` flag; `:1161-1162` refusal (needs `--pool` and `--pool-reference` / `--reference`) |
+| S-a (guard eras / admission test with teeth) | NOT DONE (no code change needed; test + teeth only) | guard `scripts/research_roles.py:382-420` |
+| S-d (stale `.pending` refused at P7, test with teeth) | CODE WIP, UNTESTED | `atx-impl/tools/carry_weights.py:77` `PENDING_SUFFIX` (`:218` publish uses it); `scripts/research_roles.py:388-395` refusal at plan time (dir or file), doc `:43-45` |
+| S-b (contract header: ABS is the consumer) | NOT DONE (checked only) | ABS `task-ABS-report.md` (pool-28) lines 5-6, 48-54, 172-174: flags `--absent-members` / `--absent-members-sha256`, capability `absent-members-v1`, schema `atx.od3-flagged-members/v1`, `summary.json` `absent_members {rule, list_sha256, members}` = the contract's spellings: no spelling differs; edit the header sentence (`od3p-absent-contract.md:3-6`) only |
+| S-c (report row) | NOT DONE | `task-OD3P-report.md` "Tests (fix round 1)" seed-1 row: log column -> "no log (partial deleted); deferred to the gate (TEST-1)" |
+| runbook | NOT DONE | `p9-od3-runbook.md` P0 T2 bullet (`:80-81`) and R4 (`:200-202`) `[UNKNOWN: T2 ...]` markers; B6 `:139-142` and P7 `:155-156` add "and `<dir>.pending` absent (the cycle refuses it, S-d)"; note in R4 that T2's printed verdict is the bundle's rule (dSR > 0 and p < alpha) while G-B8's pass rule is dSR > 0 with both p printed (prereg F.1) |
+
+### Exact next step (fresh agent, pool-21, from the head above)
+
+1. Tests, `atx-impl/tools/test_od3_tooling.py` (replace the header's "T2 pending" sentence):
+   - a `verb` fixture with params `fake` / `real`: `fake` = a dummy exe file passed as `--engine-stats` and
+     `NS.EngineStats.run` monkeypatched to a fake built on B2's frozen statistics
+     (`atx-engine/tests/fixtures/eval_tie/frozen_statistics.py`: `net_moments`, `paired_stats(..., one_sided=)`,
+     `dsr_rows`; the `--paired` CSV path maps back to its series via `engine._csv`; refuse unsupported options; record
+     each call's options); `real` = `--engine-stats NS.default_engine_exe()`, skipped with a reason when not built (no
+     build in pool-21; root's gate has it). Pass `--engine-stats` explicitly to the old module too (its default exe
+     path resolves from its tmp location).
+   - T2: the xpre test `f68058e2:atx-impl/tools/test_od3_tooling.py:230-248` on the verb: with the flag only
+     `lw.p_one_sided` and `verdict` are added and one line printed; `p_one_sided` equals
+     `FS.paired_stats(pooled aligned a, b, 200, NS.DEFAULT_BLOCK, NS.V8_SEED, one_sided=True)` exactly, dSR close; the
+     fake records exactly one `--one-sided` call (the pooled pair). Verdict cases on the fake with forced dSR / p
+     (PASS, FAIL on p, FAIL on dSR <= 0, FAIL on p null, `--bundle-alpha` honoured). Refusals (no `--pool`; no
+     reference): exit 2.
+   - T5: xpre `:186-200` on the verb (helpers `test_nav_summ_pool.history_rows` / `write_dir`, `test_nav_summ.write_nav`,
+     `SCEN`), plus: the ledger lines with and without `--pool-one-sided` are equal.
+   - Flag-absent identity against root's `nav_summ.py` blob `9fd6bd0a6032b4512c93c50fcc25dbc123c8b518` (root `fcb0200e`
+     = `73b4acfd`; sha256 `50fa3503...`), loaded by `git cat-file`, its `EngineStats.run` patched the same way: stdout,
+     stderr, JSON minus `nav_summ_run`, and (fake) the verb-call sequence equal on: pooled + pool reference (v8), two
+     history eras (v7), a listed dir with `--reference`, `--bundle` with `--bundle-json` (the shared `paired_verdict`),
+     and `--ledger` lines (`comparable`, as xpre `:276-307`).
+2. Tests, `scripts/tests/test_research_cycle_od3.py`: S-a `other_eras` (run the carry into a fresh `out/od3-fit-clean`
+   with `stop_after="fit"`, then change `e1/manifest.json` `dates` -> "records another eras"), `other_admission`
+   (rewrite `fit/admission.json` -> "records another admission"), `other_anchor` (hand-edit the record's
+   `anchor_role_sha256` -> "records another anchor"); each exit 2 at plan, nothing runs. S-d: a `<fit.output>.pending`
+   dir (fresh and after a done carry) and a `.pending` file -> refused at plan ("od3-fit-clean.pending exists", "S-d").
+3. Run (TEST-1): the two lane files only, `PYTHONHASHSEED=0`, `C:/Program Files/Python312/python.exe`,
+   `-p no:cacheprovider`, own `--basetemp` (parent created first), `PYTHONDONTWRITEBYTECODE=1`.
+4. Commit the tests (code commit), then teeth with a new tool `od3p-evidence/mutate-fu.py` (TEETH-RESTORE: keep the
+   bytes, mutate, run the named test, restore, assert raw SHA-256 = pre-mutation, `git hash-object` = `HEAD:<file>`
+   blob (nav_summ is CRLF in the working tree, LF in the blob), `git status --porcelain` empty before and after):
+   S-a: the guard ignoring `eras`, `admission`, `anchor` (each alone); S-d: the `.pending` check removed; T2: the
+   refusal removed, `one_sided=True` dropped, the verdict comparison inverted.
+5. Docs: S-b header, S-c row, the runbook lines above; "Follow-up round (item 6, OD3P-S)" in `task-OD3P-report.md`;
+   a head line here; records commit (`git add -f`). Blind: no 2020-2023 statistic.
