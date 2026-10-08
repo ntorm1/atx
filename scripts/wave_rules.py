@@ -14,8 +14,12 @@ so a new ruling is a new entry here (reviewed code), never prose.
   criteria     printed (or deciding, under v8-prereg-5) comparisons of the cell's book with its parent's
   gross match  (match) Ruling PM6-6: a calibration run at the parent's L; |G - G_parent| <= .005 stands, else ONE
                correction L' = L x G_parent / G (4 decimals) and the matched run must be within .005 (else a stop)
-    pm6-6-engine  the same rule inside the nav exe (P9 C2, P15: nav --calibrate-gross G_parent): the run stage stops
+    pm6-6-engine  the rule inside the nav exe (P9 C2, P15: nav --calibrate-gross G_parent): the run stage stops
                after the w phase and the match stage runs ONE NAV, which calibrates and publishes at the final L
+    none       no matching: the run stage's NAV is the cell's
+    pm6-6      RETIRED (P9 ruling C2-11): the Python match (two NAVs, L' computed here). A ledgered v1 manifest that
+               names it still validates (plan and status of its state dir work); preflight, run and match refuse it,
+               naming pm6-6-engine (retired_gross_match). There is no default: a manifest names gross_match (C2-9)
   mechanics    (verify) the v8 cell limits on the S2 daily CSV: all-rows gross in [.90, 1.05], |all-rows net| <= .02,
                tau mean <= .20, tau p95 <= .30, the NAV's accounting errors within its own tolerance
 """
@@ -106,20 +110,22 @@ def _num(x) -> bool:
 
 
 # ------------------------------------------------------------------ gross matching (match)
-GROSS_MATCH = {"pm6-6": {"tolerance": 0.005, "corrections": 1}, "none": None,
+GROSS_MATCH = {"none": None,
                "pm6-6-engine": {"tolerance": 0.005, "corrections": 1, "engine": True}}  # P9 C2 (P15)
+# P9 ruling C2-11: a retired mode -> the mode that replaces it. Accepted by validate_names (a ledgered v1 manifest keeps
+# its validation), refused by every stage that would run it (retired_gross_match)
+RETIRED_GROSS_MATCH = {"pm6-6": "pm6-6-engine"}
 
 
-def matched_leverage(leverage: str | float, g_parent: float, g_cal: float) -> str:
-    """Ruling PM6-6: L' = L x G_parent / G_cal, written with 4 decimals (as nav.leverage is)."""
-    if not (_num(g_parent) and _num(g_cal) and g_cal > 0):
-        raise RuleError(f"gross match: G_parent {g_parent!r} and G {g_cal!r} must be finite, G > 0")
-    return f"{float(leverage) * g_parent / g_cal:.4f}"
-
-
-def gross_matches(mode: str, g_parent: float, g: float) -> bool:
-    rule = GROSS_MATCH[mode]
-    return True if rule is None else abs(g - g_parent) <= rule["tolerance"]
+def retired_gross_match(mode) -> str | None:
+    """The refusal of a retired gross_match name (P9 ruling C2-11), naming the mode that replaces it; None for a live
+    or an unknown name (validate_names refuses an unknown one at load)."""
+    new = RETIRED_GROSS_MATCH.get(mode) if isinstance(mode, str) else None
+    if new is None:
+        return None
+    return (f'gross_match "{mode}" is retired (ruling C2-11: the Python gross match is gone): the manifest names '
+            f'"{new}" (PM6-6 inside the NAV exe); a ledgered v1 manifest is replayed from a copy that names "{new}" '
+            "(ruling C2-9)")
 
 
 # ------------------------------------------------------------------ criteria and acceptance (judge)
@@ -167,13 +173,15 @@ def judge(rule: str, dsr, mechanics_pass: bool, criteria: list[dict]) -> dict:
 
 
 def validate_names(sign_rule: str | None, acceptance: str, criteria: list[str], gross_match: str | None) -> list[str]:
-    """Problems with the rule names a manifest gives (empty: every name is known)."""
+    """Problems with the rule names a manifest gives (empty: every name is known). A retired gross_match name is known
+    (RETIRED_GROSS_MATCH: refused when a stage would run it, not here); gross_match None (absent) is the caller's
+    problem to state (wave_manifest: ruling C2-9)."""
     out = []
     if sign_rule is not None and sign_rule not in SIGN_RULES:
         out.append(f"sign_rule {sign_rule!r} is not one of {', '.join(SIGN_RULES)}")
     if acceptance not in ACCEPTANCE:
         out.append(f"acceptance.rule {acceptance!r} is not one of {', '.join(ACCEPTANCE)}")
     out += [f"acceptance.printed {c!r} is not one of {', '.join(CRITERIA)}" for c in criteria if c not in CRITERIA]
-    if gross_match not in GROSS_MATCH:
+    if gross_match is not None and gross_match not in GROSS_MATCH and gross_match not in RETIRED_GROSS_MATCH:
         out.append(f"gross_match {gross_match!r} is not one of {', '.join(GROSS_MATCH)}")
     return out

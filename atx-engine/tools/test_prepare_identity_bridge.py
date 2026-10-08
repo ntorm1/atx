@@ -154,13 +154,13 @@ def test_current_ticker_line_does_not_demote_a_published_primary():
 
 def test_seal_ignores_later_versions_and_clips_intervals():
     rows, stats = tool.resolve([
-        link(801, 8, D(2024, 12, 1), D(2025, 3, 1), T(2024, 11, 30)),
-        link(802, 9, D(2024, 1, 1), D(2025, 3, 1), T(2025, 1, 1))])
-    assert by_line(rows, 801) == [(8, D(2024, 12, 1), D(2024, 12, 31), "P", "high")]
+        link(801, 8, D(2023, 12, 1), D(2024, 3, 1), T(2023, 11, 30)),
+        link(802, 9, D(2023, 1, 1), D(2024, 3, 1), T(2024, 1, 1))])
+    assert by_line(rows, 801) == [(8, D(2023, 12, 1), D(2023, 12, 31), "P", "high")]
     assert by_line(rows, 802) == []
     assert stats["versions_visible_before_seal"] == 1
-    rows, _ = tool.resolve([link(801, 8, D(2023, 12, 1), D(2025, 3, 1), T(2023, 11, 30))], seal=D(2024, 1, 1))
-    assert by_line(rows, 801) == [(8, D(2023, 12, 1), D(2023, 12, 31), "P", "high")]
+    rows, _ = tool.resolve([link(801, 8, D(2022, 12, 1), D(2024, 3, 1), T(2022, 11, 30))], seal=D(2023, 1, 1))
+    assert by_line(rows, 801) == [(8, D(2022, 12, 1), D(2022, 12, 31), "P", "high")]
 
 
 def test_duplicate_versions_of_one_line_keep_newest_evidence():
@@ -353,4 +353,4 @@ def test_cli_build_and_check(tmp_path, capsys):
     lines = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
     assert lines[-1]["year"] == "scored" and lines[-1]["cell_coverage_p"] == 1.0
     with pytest.raises(SystemExit):
-        tool.main(["--output", str(tmp_path / "o3"), "--source", str(src), "--seal", "2025-06-01"])
+        tool.main(["--output", str(tmp_path / "o3"), "--source", str(src), "--seal", "2024-06-01"])

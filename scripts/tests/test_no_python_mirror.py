@@ -41,18 +41,7 @@ STATS = "statistics of record (F-1)"
 COMPOSITION = "composition fit mirror (composition review table rows 1-5b)"
 # (module, symbols, rule, C++ that decides it, retired_by). Frozen at FROZEN_AT: delete rows or symbols, never add.
 ALLOWLIST = (
-    ("atx-impl/tools/backtest_integrity.py",
-     ("psr", "min_trl", "deflated_sharpe", "expected_max_sr", "lo_null_dsr", "effective_n_dsr"), STATS,
-     "atx-engine/include/atx/engine/eval/deflated_sharpe.hpp, min_trl.hpp", "B2"),
-    ("atx-impl/tools/backtest_integrity.py", ("cscv_pbo",), STATS, "atx-engine/include/atx/engine/eval/pbo.hpp", "B2"),
-    ("atx-impl/tools/backtest_integrity.py", ("onc", "onc_base", "effective_trials"), STATS,
-     "atx-engine/include/atx/engine/eval/trial_clusters.hpp", "B2"),
-    ("atx-impl/tools/nav_summ.py", ("deflated_sharpe", "expected_max_sr", "dsr_rows"), STATS,
-     "atx-engine/include/atx/engine/eval/deflated_sharpe.hpp", "B2"),
-    ("atx-impl/tools/nav_summ.py", ("memmel_se", "cbb_indices", "paired_stats"), STATS,
-     "new in B2 (atx-research-eval paired block, K-P9-5)", "B2"),
-    ("atx-impl/tools/dsr_total.py", ("dsr_at", "ledger_rows"), STATS,
-     "new in B2 (research/ledger + eval/deflated_sharpe.hpp house_v1)", "B2"),
+    # P9 B2 retired the statistics-of-record rows (backtest_integrity.py, nav_summ.py, dsr_total.py): atx-research-eval.
     # P9 ruling D2-3: ew-theme-aim-v2 and the theme-resid diagnostics had no C++ path at D2's merge, so the
     # composition_*.py deletion (and with it these rows) moved to lane D3; D2 wired the C++ fit behind --engine-fit.
     ("atx-impl/tools/composition_rules.py",
@@ -72,8 +61,6 @@ ALLOWLIST = (
     ("atx-impl/tools/horizon_stats.py", ("theta_weights", "ic_theta", "theta_book_returns"),
      "aim-partial theta of strategy_target_replay.cpp (G-P5 names horizon_stats.py; plan section 2.2 names no owner: "
      "D2 owns the fitter that imports it)", "atx-impl/src/strategy_target_replay.cpp", "P10"),
-    ("scripts/wave_rules.py", ("matched_leverage", "gross_matches"), "gross-match rule PM6-6 (wave_rules.py:110-119)",
-     "new in C2 (atx-equity-strategy-targets nav --calibrate-gross)", "C2"),
     ("scripts/wave_rules.py", ("sign_pm7_35",), "PM7-35 sign rule (P9 ruling P9: kept in wave 1)",
      "new in B1 (the research/admission sign predicate)", "E2"),
     ("atx-impl/tools/mega_report/data.py", ("memmel_se",), "report renderer's copy of nav_summ.memmel_se (outside the "

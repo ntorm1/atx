@@ -1,0 +1,12 @@
+argv flags: ['--weights', '--reference', '--dsr-n', '--effective-n', '--psr', '--pbo', '--ledger', '--ledger-kind', '--json', '--pbo-json', '--ledger-n']
+argv tokens: 57 | non-flag tokens: 46
+NS.main returned 0
+rows got / want: 37 37
+  summ: leaves 4960 vs 4958; only got 2 ['[*].paired.degenerate', '[*].paired.one_minus_rho']; only want 0 []
+  summ: numeric within 1e-12 (not equal) by generic path: {'[*].deflated.dsr': 8, '[*].deflated_effective_n.dsr': 37, '[*].deflated_effective_n.sr0_annual': 37, '[*].deflated_effective_n.sr0_daily': 37, '[*].deflated_effective_n.variance_sr': 37, '[*].deflated_lo_null.dsr': 17, '[*].paired.lw.ci95[0]': 31, '[*].paired.lw.ci95[1]': 36, '[*].paired.lw.se': 34, '[*].paired.memmel_se': 35, '[*].paired.rho': 36, '[*].paired.t': 35, '[*].psr.benchmarks[0].min_trl_sessions': 36, '[*].psr.benchmarks[0].min_trl_years': 36, '[*].psr.benchmarks[0].psr': 12, '[*].psr.benchmarks[1].min_trl_sessions': 35, '[*].psr.benchmarks[1].min_trl_years': 35, '[*].psr.benchmarks[1].psr': 7}
+  summ: numeric BEYOND 1e-12 by generic path: {}
+  summ: non-numeric differing by generic path: {'[*].paired.lw.se': 1, '[*].paired.memmel_se': 1, '[*].paired.t': 1}
+  pbo: leaves 13077 vs 13077; only got 0 []; only want 0 []
+  pbo: numeric within 1e-12 (not equal) by generic path: {'.logit_mean': 1, '.winner_oos_sr_annual_mean': 1}
+  pbo: numeric BEYOND 1e-12 by generic path: {}
+  pbo: non-numeric differing by generic path: {}

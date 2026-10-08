@@ -17,12 +17,12 @@ import prepare_research_fields as tool
 
 DAY_NS = 86_400_000_000_000
 IDS = [101, 202, 303, 404, 505]
-SESSIONS = [d for d in (dt.date(2024, 10, 1) + dt.timedelta(days=i) for i in range(92)) if d.weekday() < 5]
-FORMATIONS = [dt.date(2024, 8, 30), dt.date(2024, 9, 30), dt.date(2024, 10, 31), dt.date(2024, 11, 29), dt.date(2024, 12, 31)]
-SPLIT_303 = dt.date(2024, 11, 1)
-C81_303 = dt.date(2024, 12, 2)  # an above-ceiling row inside the role: 303 withheld from here on only
-SHARES_202_CHANGE = dt.date(2024, 8, 15)
-LAST_SHARES_505 = dt.date(2023, 6, 15)
+SESSIONS = [d for d in (dt.date(2023, 10, 1) + dt.timedelta(days=i) for i in range(92)) if d.weekday() < 5]
+FORMATIONS = [dt.date(2023, 8, 31), dt.date(2023, 9, 29), dt.date(2023, 10, 31), dt.date(2023, 11, 30), dt.date(2023, 12, 29)]
+SPLIT_303 = dt.date(2023, 11, 1)
+C81_303 = dt.date(2023, 12, 4)  # an above-ceiling row inside the role: 303 withheld from here on only
+SHARES_202_CHANGE = dt.date(2023, 8, 15)
+LAST_SHARES_505 = dt.date(2022, 6, 15)
 DUP = (10, 202)
 # Declared IV domain [0.02, 5.0]: (t, sid) -> atmCenI_21d; 63d = v + 0.05 and 126d = v + 0.1 in float32.
 IV_OVERRIDES = {(13, 303): 1e16,           # garbage: above in every tenor
@@ -50,7 +50,7 @@ def write_tickerhistory(path):
     rows = {k: [] for k in ("tradingDate", "securityID", "close", "volume", "shares", "earnFlag", "cumulReturnFactor",
                             "atmCenI_21d", "atmCenI_63d", "atmCenI_126d")}
     session_index = {d: t for t, d in enumerate(SESSIONS)}
-    start, stop = dt.date(2023, 4, 3), dt.date(2025, 1, 31)  # includes 2025 rows that must be skipped
+    start, stop = dt.date(2022, 4, 4), dt.date(2024, 1, 31)  # includes sealed (2024) rows that must be skipped
     days = [start + dt.timedelta(days=i) for i in range((stop - start).days + 1)]
     for d in (x for x in days if x.weekday() < 5):
         t = session_index.get(d, -1)
@@ -62,7 +62,7 @@ def write_tickerhistory(path):
                 shares, crf = (1000, 1.0) if d >= SPLIT_303 else (500, 0.5)
                 if d == C81_303:
                     shares = 150_000_000
-            if sid == 404 and d == dt.date(2024, 3, 1):
+            if sid == 404 and d == dt.date(2023, 3, 1):
                 shares = 200_000_000  # above the A9 thousands ceiling: whole line withheld (C-81)
             if sid == 505:
                 shares = 700 if d <= LAST_SHARES_505 else None
@@ -87,7 +87,7 @@ def write_tickerhistory(path):
                 rows[k].append(x)
     # One positive duplicate key (all its rows quarantined) and one weekend row (off calendar).
     t, sid = DUP
-    extra = [(SESSIONS[t], sid, 0.9), (dt.date(2024, 10, 5), 101, 0.7)]
+    extra = [(SESSIONS[t], sid, 0.9), (dt.date(2023, 10, 7), 101, 0.7)]
     for d, sid, v in extra:
         for k, x in (("tradingDate", d), ("securityID", sid), ("close", 10.0), ("volume", 1e6), ("shares", 2000),
                      ("earnFlag", "N"), ("cumulReturnFactor", 1.0), ("atmCenI_21d", np.float32(v)),
@@ -107,13 +107,13 @@ def write_tickerhistory(path):
 
 
 FINRA_SHARES = [  # (security_id, available_at, value)
-    (101, "2024-09-25", "100"), (101, "2024-10-09", "110"), (101, "2024-10-21", "120"), (101, "2024-12-24", "130"),
-    (202, "2024-10-01", "50"), (202, "2024-10-15", "nan"),
-    (303, "2024-10-02", "7.5"),
-    (999, "2024-10-02", "1"),
-    (101, "2025-01-10", "999"),
+    (101, "2023-09-25", "100"), (101, "2023-10-09", "110"), (101, "2023-10-23", "120"), (101, "2023-12-26", "130"),
+    (202, "2023-10-02", "50"), (202, "2023-10-16", "nan"),
+    (303, "2023-10-04", "7.5"),
+    (999, "2023-10-04", "1"),
+    (101, "2024-01-10", "999"),  # sealed
 ]
-FINRA_DTC = [(101, "2024-09-25", "1.5"), (202, "2024-10-01", "2.25")]
+FINRA_DTC = [(101, "2023-09-25", "1.5"), (202, "2023-10-02", "2.25")]
 
 
 def write_finra(root, shares_rows=FINRA_SHARES, dtc_rows=FINRA_DTC):
@@ -144,7 +144,7 @@ def write_lake(root, formations=FORMATIONS):
             for c, v in (("eom", eom), ("line_id", f"TBLTICKERHISTORY-{sid}"), ("price", 1.0), ("me_line", me),
                          ("size_grp", sg), ("formation_date", f)):
                 rows[c].append(v)
-    spine = root / "spine_monthly" / "year=2024" / "part-0.parquet"
+    spine = root / "spine_monthly" / "year=2023" / "part-0.parquet"
     spine.parent.mkdir(parents=True)
     pq.write_table(pa.table({"eom": pa.array(rows["eom"], pa.date32()), "line_id": rows["line_id"],
                              "price": rows["price"], "me_line": pa.array(rows["me_line"], pa.float64()),
@@ -264,24 +264,24 @@ class ResearchFields(unittest.TestCase):
     def test_finra_strict_available_at_staleness_and_visible_nan(self):
         si = self.fx.field("fields", "si_shares")
         a = IDS.index(101)
-        self.assertEqual(si[t_of("2024-10-01"), a], 100)
-        self.assertEqual(si[t_of("2024-10-09"), a], 100)   # published that day: not visible yet
-        self.assertEqual(si[t_of("2024-10-10"), a], 110)   # first session after availability
-        self.assertEqual(si[t_of("2024-10-21"), a], 110)
-        self.assertEqual(si[t_of("2024-10-22"), a], 120)
-        self.assertEqual(si[t_of("2024-12-05"), a], 120)   # age 45: still visible
-        self.assertTrue(np.isnan(si[t_of("2024-12-06"), a]))  # age 46: stale
-        self.assertTrue(np.isnan(si[t_of("2024-12-24"), a]))
-        self.assertEqual(si[t_of("2024-12-26"), a], 130)
+        self.assertEqual(si[t_of("2023-10-02"), a], 100)
+        self.assertEqual(si[t_of("2023-10-09"), a], 100)   # published that day: not visible yet
+        self.assertEqual(si[t_of("2023-10-10"), a], 110)   # first session after availability
+        self.assertEqual(si[t_of("2023-10-23"), a], 110)
+        self.assertEqual(si[t_of("2023-10-24"), a], 120)
+        self.assertEqual(si[t_of("2023-12-07"), a], 120)   # age 45: still visible
+        self.assertTrue(np.isnan(si[t_of("2023-12-08"), a]))  # age 46: stale
+        self.assertTrue(np.isnan(si[t_of("2023-12-26"), a]))
+        self.assertEqual(si[t_of("2023-12-27"), a], 130)
         b = IDS.index(202)
-        self.assertTrue(np.isnan(si[t_of("2024-10-01"), b]))  # nothing strictly before
-        self.assertEqual(si[t_of("2024-10-15"), b], 50)
-        self.assertTrue(np.isnan(si[t_of("2024-10-16"), b]))  # visible NaN wins, no skip-back
+        self.assertTrue(np.isnan(si[t_of("2023-10-02"), b]))  # nothing strictly before
+        self.assertEqual(si[t_of("2023-10-16"), b], 50)
+        self.assertTrue(np.isnan(si[t_of("2023-10-17"), b]))  # visible NaN wins, no skip-back
         self.assertTrue(np.all(np.isnan(si[:, IDS.index(404)])))
         dtc = self.fx.field("fields", "si_dtc")
         self.assertEqual(dtc[0, a], 1.5)
-        self.assertEqual(dtc[t_of("2024-11-15"), b], 2.25)  # 2024-10-01 + 45
-        self.assertTrue(np.isnan(dtc[t_of("2024-11-18"), b]))
+        self.assertEqual(dtc[t_of("2023-11-16"), b], 2.25)  # 2023-10-02 + 45
+        self.assertTrue(np.isnan(dtc[t_of("2023-11-17"), b]))  # age 46
         checks = self.manifest["source_checks"]["si_shares"]
         self.assertEqual(checks["rows_sealed_dropped"], 1)
         self.assertEqual(checks["rows_ignored_unknown_id"], 1)
@@ -303,7 +303,7 @@ class ResearchFields(unittest.TestCase):
         self.assertTrue(np.isnan(earn[8, IDS.index(202)]))     # null flag
         self.assertTrue(np.isnan(earn[9, IDS.index(303)]))     # unexpected flag
         self.assertTrue(np.isnan(earn[DUP[0], IDS.index(DUP[1])]))
-        self.assertEqual(earn[t_of("2024-10-07"), a], 0)       # weekend row 10-05 never lands anywhere
+        self.assertEqual(earn[t_of("2023-10-09"), a], 0)       # weekend row 10-07 never lands anywhere
         checks = self.manifest["source_checks"]["tickerhistory"]
         self.assertEqual(checks["duplicate_keys_quarantined"], 1)
         self.assertEqual(checks["rows_off_role_calendar"], 1)
@@ -364,9 +364,9 @@ class ResearchFields(unittest.TestCase):
             else:
                 self.assertEqual(so[t, b], 3_000_000 if d >= switch else 2_000_000, d)
         c = IDS.index(303)
-        self.assertEqual(so[t_of("2024-10-15"), c], 500_000)   # pre-split basis
-        self.assertEqual(so[t_of("2024-11-04"), c], 1_000_000)  # lag row pre-split, restated 2:1
-        self.assertEqual(so[t_of("2024-11-29"), c], 1_000_000)  # before its above-ceiling row: not withheld
+        self.assertEqual(so[t_of("2023-10-17"), c], 500_000)   # pre-split basis
+        self.assertEqual(so[t_of("2023-11-02"), c], 1_000_000)  # lag row pre-split, restated 2:1
+        self.assertEqual(so[t_of("2023-11-29"), c], 1_000_000)  # before its above-ceiling row: not withheld
         for t, d in enumerate(SESSIONS):  # C-81 point in time: withheld from the offending row's date on
             self.assertEqual(np.isnan(so[t, c]), d >= C81_303, d)
         self.assertTrue(np.all(np.isnan(so[:, IDS.index(404)])))  # A9 row before the role -> withheld throughout
@@ -382,28 +382,28 @@ class ResearchFields(unittest.TestCase):
         me = self.fx.field("fields", "mktcap_lagged")
         sg = self.fx.field("fields", "size_grp")
         a, b, c = IDS.index(101), IDS.index(202), IDS.index(303)
-        self.assertEqual(me[t_of("2024-10-01"), a], 2e9)   # Sep formation
-        self.assertEqual(me[t_of("2024-10-31"), a], 2e9)   # formation session itself: still Sep (strict)
-        self.assertEqual(me[t_of("2024-11-01"), a], 3e9)   # Oct formation
-        self.assertEqual(sg[t_of("2024-11-01"), a], 2.0)   # large
-        self.assertEqual(sg[t_of("2024-12-02"), a], 3.0)   # mega (Nov formation)
-        self.assertTrue(np.isnan(sg[t_of("2024-11-01"), b]))   # NULL size_grp
-        self.assertEqual(me[t_of("2024-11-01"), b], 5e8)
-        self.assertTrue(np.isnan(me[t_of("2024-11-01"), c]))   # absent at the Oct formation
-        self.assertEqual(me[t_of("2024-12-02"), c], 2e8 + 3)
+        self.assertEqual(me[t_of("2023-10-02"), a], 2e9)   # Sep formation
+        self.assertEqual(me[t_of("2023-10-31"), a], 2e9)   # formation session itself: still Sep (strict)
+        self.assertEqual(me[t_of("2023-11-01"), a], 3e9)   # Oct formation
+        self.assertEqual(sg[t_of("2023-11-01"), a], 2.0)   # large
+        self.assertEqual(sg[t_of("2023-12-01"), a], 3.0)   # mega (Nov formation)
+        self.assertTrue(np.isnan(sg[t_of("2023-11-01"), b]))   # NULL size_grp
+        self.assertEqual(me[t_of("2023-11-01"), b], 5e8)
+        self.assertTrue(np.isnan(me[t_of("2023-11-01"), c]))   # absent at the Oct formation
+        self.assertEqual(me[t_of("2023-12-01"), c], 2e8 + 3)
         self.assertTrue(np.all(np.isnan(me[:, IDS.index(404)])))
-        self.assertEqual(me[t_of("2024-12-31"), a], 4e9)       # Dec formation (2024-12-31) never used
+        self.assertEqual(me[t_of("2023-12-29"), a], 4e9)       # Dec formation (2023-12-29) never used
         ic = self.fx.field("fields", "is_common")
         self.assertEqual(list(ic[0, :3]), [1.0, 1.0, 0.0])
         self.assertTrue(np.isnan(ic[0, IDS.index(404)]))
         self.assertEqual(ic[0, IDS.index(505)], 0.0)
         self.assertTrue(np.array_equal(ic, np.broadcast_to(ic[0], ic.shape), equal_nan=True))  # static
-        self.assertEqual(self.manifest["source_checks"]["lake"]["spine_max_formation_age_days"], 32)  # Dec 31 <- Nov 29
+        self.assertEqual(self.manifest["source_checks"]["lake"]["spine_max_formation_age_days"], 32)  # Oct 31 <- Sep 29
 
     def test_stale_spine_formation_refused(self):
         with tempfile.TemporaryDirectory() as temp:
             fx = Fixture(Path(temp), formations=FORMATIONS[:3])  # lake ends with the October formation
-            with self.assertRaisesRegex(ValueError, r"stale spine formation: session 2024-12-06 .* 2024-10-31 \(36 days"):
+            with self.assertRaisesRegex(ValueError, r"stale spine formation: session 2023-12-06 .* 2023-10-31 \(36 days"):
                 fx.run("stale", fields=["size_grp"])
             self.assertFalse((fx.base / "stale" / "manifest.json").exists())
 
@@ -438,24 +438,24 @@ class ResearchFields(unittest.TestCase):
             v = e["coverage"]["vintage_risk"]
             self.assertEqual((v["finite_member_cells"], v["last_session_with_republished_visible_cell"]), (0, None))
             self.assertEqual(v["first_session_vintage_safe"], SESSIONS[0].isoformat())
-        # A cutoff inside the role (2024-10-09): rows available on or before it are "republished".
+        # A cutoff inside the role (2023-10-09): rows available on or before it are "republished".
         with tempfile.TemporaryDirectory() as temp:
             role = tool.Role(self.fx.role, self.fx.role_sha)
             dissemination, _, source = tool.read_schedule(self.fx.finra)
             with contextlib.redirect_stdout(io.StringIO()):
                 w, _, cov, _, extra = tool.finra_field("si_shares", self.fx.finra, role, Path(temp),
-                                                       (dissemination, day(dt.date(2024, 10, 9)), source), tool.Budget())
-            self.assertEqual(extra["vintage_safe_from"], "2024-10-10")
+                                                       (dissemination, day(dt.date(2023, 10, 9)), source), tool.Budget())
+            self.assertEqual(extra["vintage_safe_from"], "2023-10-10")
             v = cov["vintage_risk"]
-            # 303's 2024-10-02 row stays visible through age 45 (2024-11-16, a Saturday).
-            self.assertEqual(v["last_session_with_republished_visible_cell"], "2024-11-15")
-            self.assertEqual(v["first_session_vintage_safe"], "2024-11-18")
+            # 303's 2023-10-04 row stays visible through age 45 (2023-11-18, a Saturday).
+            self.assertEqual(v["last_session_with_republished_visible_cell"], "2023-11-17")
+            self.assertEqual(v["first_session_vintage_safe"], "2023-11-20")
             si = np.fromfile(Path(temp) / "si_shares.f64", dtype="<f8").reshape(len(SESSIONS), len(IDS))
             member = np.fromfile(self.fx.role / "member.u8", dtype="u1").reshape(len(SESSIONS), len(IDS)) != 0
-            # 101: rows 09-25 and 10-09 visible through 10-21; 202: 10-01 row through 10-15; 303: through 11-15.
+            # 101: rows 09-25 and 10-09 visible through 10-23; 202: 10-02 row through 10-16; 303: through 11-17.
             expect = 0
             for t, d in enumerate(SESSIONS):
-                for i, last in ((0, dt.date(2024, 10, 21)), (1, dt.date(2024, 10, 15)), (2, dt.date(2024, 11, 15))):
+                for i, last in ((0, dt.date(2023, 10, 23)), (1, dt.date(2023, 10, 16)), (2, dt.date(2023, 11, 17))):
                     expect += int(d <= last and member[t, i] and np.isfinite(si[t, i]))
             self.assertEqual(v["finite_member_cells"], expect)
             self.assertGreater(expect, 0)
@@ -542,14 +542,14 @@ class ResearchFields(unittest.TestCase):
             self.fx.run("bad-sha", role_sha="0" * 64)
         with self.assertRaisesRegex(ValueError, "--fields"):
             self.fx.run("bad-field", fields=["si_shares", "hv_21d"])
-        # A role reaching 2025 is refused before any output is created.
-        sealed = self.fx.base / "role-2025"
-        sealed_sha = write_role(sealed, sha(self.fx.th), SESSIONS + [dt.date(2025, 1, 2)])
-        with self.assertRaisesRegex(ValueError, "2025"):
+        # A role reaching the seal (2024-01-01) is refused before any output is created.
+        sealed = self.fx.base / "role-sealed"
+        sealed_sha = write_role(sealed, sha(self.fx.th), SESSIONS + [dt.date(2024, 1, 2)])
+        with self.assertRaisesRegex(ValueError, "2024-01-01"):
             with contextlib.redirect_stdout(io.StringIO()):
-                tool.run(sealed, sealed_sha, self.fx.base / "out-2025", finra=self.fx.finra,
+                tool.run(sealed, sealed_sha, self.fx.base / "out-sealed", finra=self.fx.finra,
                          tickerhistory=self.fx.th, lake=self.fx.lake)
-        self.assertFalse((self.fx.base / "out-2025").exists())
+        self.assertFalse((self.fx.base / "out-sealed").exists())
         # A different vendor file than the role's source: refused, nothing published.
         other = self.fx.base / "role-other"
         other_sha = write_role(other, "f" * 64)
@@ -562,7 +562,7 @@ class ResearchFields(unittest.TestCase):
     def test_source_pins_refuse_changed_inputs(self):
         with tempfile.TemporaryDirectory() as temp:
             fx = Fixture(Path(temp))
-            spine = fx.lake / "spine_monthly" / "year=2024" / "part-0.parquet"
+            spine = fx.lake / "spine_monthly" / "year=2023" / "part-0.parquet"
             spine.write_bytes(spine.read_bytes() + b"\0")
             with self.assertRaisesRegex(ValueError, "lake manifest"):
                 fx.run("lake-bad", fields=["mktcap_lagged"])
@@ -578,19 +578,19 @@ class ResearchFields(unittest.TestCase):
                 fx.run("role-bad-shares", fields=["si_shares", "shares_out"])
             self.assertFalse((fx.base / "role-bad-shares" / "manifest.json").exists())
             csv_path = fx.finra / "asof" / "si_dtc.csv"
-            csv_path.write_bytes(csv_path.read_bytes() + b"303,2024-10-02,1\n")
+            csv_path.write_bytes(csv_path.read_bytes() + b"303,2023-10-04,1\n")
             with self.assertRaisesRegex(ValueError, "receipt"):
                 fx.run("finra-bad", fields=["si_dtc"])
             # The strict CSV contract: duplicates and non-dissemination dates are refused.
             with self.assertRaisesRegex(ValueError, "duplicate"):
-                tool.parse_asof_csv(b"security_id,available_at,value\n1,2024-01-02,1\n1,2024-01-02,2\n")
+                tool.parse_asof_csv(b"security_id,available_at,value\n1,2023-01-02,1\n1,2023-01-02,2\n")
             with self.assertRaisesRegex(ValueError, "finite decimal"):
-                tool.parse_asof_csv(b"security_id,available_at,value\n1,2024-01-02,inf\n")
+                tool.parse_asof_csv(b"security_id,available_at,value\n1,2023-01-02,inf\n")
             with self.assertRaisesRegex(ValueError, "header"):
                 tool.parse_asof_csv(b"\xef\xbb\xbfsecurity_id,available_at,value\n")
-            ids, days, values = tool.parse_asof_csv(b"security_id,available_at,value\r\n5,2024-01-03,NaN\r\n5,2024-01-02,\r\n")
+            ids, days, values = tool.parse_asof_csv(b"security_id,available_at,value\r\n5,2023-01-03,NaN\r\n5,2023-01-02,\r\n")
             self.assertEqual(list(ids), [5, 5])
-            self.assertEqual(list(days), [day(dt.date(2024, 1, 2)), day(dt.date(2024, 1, 3))])
+            self.assertEqual(list(days), [day(dt.date(2023, 1, 2)), day(dt.date(2023, 1, 3))])
             self.assertTrue(np.all(np.isnan(values)))
 
     def test_cli_subset(self):
@@ -976,7 +976,7 @@ class FactorBreakShares(unittest.TestCase):
 
 # ---------------------------------------------------------------------------------------------------------
 # Issuer-level fields (T21): identity bridge (T19 rows) + fundamental events and SIC events (T20 snapshots).
-# The main fixture's role (2024-10-01 .. 2024-12-31, ids 101..505) with an independent pure-Python oracle.
+# The main fixture's role (2023-10-02 .. 2023-12-29, ids 101..505) with an independent pure-Python oracle.
 # ---------------------------------------------------------------------------------------------------------
 
 UTC = dt.timezone.utc
@@ -996,51 +996,51 @@ LONG_AGO = mark(dt.date(2015, 1, 1))  # T19 invariant: available_at <= start 22:
 BRIDGE = [
     (101, 1001, dt.date(2015, 1, 1), OPEN, LONG_AGO, "P", "high", "reconstructed_high"),
     (303, 1001, dt.date(2015, 1, 1), OPEN, LONG_AGO, "J", "high", "reconstructed_high"),       # second class of 1001
-    (202, 2002, dt.date(2024, 10, 15), dt.date(2024, 12, 2), mark(dt.date(2024, 10, 15)), "P", "medium",
-     "reconstructed_medium"),                                  # available exactly at its start mark: 10-15 included
+    (202, 2002, dt.date(2023, 10, 17), dt.date(2023, 12, 4), mark(dt.date(2023, 10, 17)), "P", "medium",
+     "reconstructed_medium"),                                  # available exactly at its start mark: 10-17 included
     (404, 4004, dt.date(2015, 1, 1), OPEN, LONG_AGO, "P", "high", "reconstructed_high"),
-    (404, 4005, dt.date(2024, 11, 1), dt.date(2024, 11, 29), LONG_AGO, "P", "high", "reconstructed_high"),  # ambiguous
-    (505, 5005, dt.date(2015, 1, 1), OPEN, at(2024, 10, 20, 12), "P", "high",
-     "reconstructed_high"),                                    # violates the invariant: counted, gated to 10-21
+    (404, 4005, dt.date(2023, 11, 1), dt.date(2023, 11, 30), LONG_AGO, "P", "high", "reconstructed_high"),  # ambiguous
+    (505, 5005, dt.date(2015, 1, 1), OPEN, at(2023, 10, 22, 12), "P", "high",
+     "reconstructed_high"),                                    # violates the invariant: counted, gated to 10-23
     (999, 9009, dt.date(2015, 1, 1), OPEN, LONG_AGO, "P", "high", "reconstructed_high"),       # off the role axis
     (505, 5006, dt.date(2015, 1, 1), OPEN, LONG_AGO, "N", "low", "reconstructed_medium"),      # N: dropped
-    (202, 2003, dt.date(2024, 10, 1), OPEN, LONG_AGO, "P", "high", "current_ticker_verified"),  # excluded basis
-    (101, 1009, dt.date(2015, 1, 1), OPEN, at(2025, 2, 1), "P", "high", "reconstructed_high"),  # sealed
+    (202, 2003, dt.date(2023, 10, 2), OPEN, LONG_AGO, "P", "high", "current_ticker_verified"),  # excluded basis
+    (101, 1009, dt.date(2015, 1, 1), OPEN, at(2024, 2, 1), "P", "high", "reconstructed_high"),  # sealed
 ]
 # (cik, accepted_utc, clock_basis, period_end, staleness_days, be, at, accession)
 EVENTS = [
-    (1001, at(2024, 6, 1, 12), "fsds_accepted_utc", dt.date(2024, 3, 31), 200, 100.0, 1000.0, "0000001001-24-000001"),
-    (1001, mark(dt.date(2024, 10, 10)) - dt.timedelta(microseconds=1), "fsds_accepted_utc", dt.date(2024, 6, 30), 200,
-     110.0, 1100.0, "0000001001-24-000002"),
-    (1001, mark(dt.date(2024, 10, 21)), "cf_fc1", dt.date(2024, 6, 30), 200, 111.0, 1101.0,
-     "0000001001-24-000003"),                                                    # restated, clock exactly at a mark
-    (1001, at(2024, 11, 12, 21), "fsds_accepted_utc", dt.date(2024, 9, 30), 200, math.nan, 1300.0,
-     "0000001001-24-000004"),                                                    # visible NaN be
-    (1001, at(2025, 1, 5, 12), "fsds_accepted_utc", dt.date(2024, 12, 31), 200, 999.0, 9999.0,
-     "0000001001-25-000001"),                                                    # sealed
-    (2002, at(2024, 5, 10, 20), "fsds_accepted_utc", dt.date(2024, 4, 15), 200, 50.0, 500.0,
-     "0000002002-24-000001"),                                                    # stale after 2024-11-01
-    (4004, at(2024, 8, 1, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 40.0, 400.0, "0000004004-24-000001"),
-    (4004, at(2024, 9, 3, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 42.0, 420.0,
-     "0000004004-24-000009"),                                                    # same CIK and clock: the larger
-    (4004, at(2024, 9, 3, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 41.0, 410.0,
-     "0000004004-24-000002"),                                                    # accession wins, not file order
-    (4005, at(2024, 8, 1, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 45.0, 450.0, "0000004005-24-000001"),
-    (5005, at(2024, 1, 20, 20), "cf_fc1", dt.date(2023, 10, 1), 400, 55.0, 550.0,
-     "0000005005-24-000001"),                                                    # annual-only filer: 400 days
-    (7777, at(2024, 8, 1, 20), "fsds_accepted_utc", dt.date(2024, 6, 30), 200, 77.0, 770.0,
-     "0000007777-24-000001"),                                                    # unlinked CIK
+    (1001, at(2023, 6, 1, 12), "fsds_accepted_utc", dt.date(2023, 3, 31), 200, 100.0, 1000.0, "0000001001-23-000001"),
+    (1001, mark(dt.date(2023, 10, 10)) - dt.timedelta(microseconds=1), "fsds_accepted_utc", dt.date(2023, 6, 30), 200,
+     110.0, 1100.0, "0000001001-23-000002"),
+    (1001, mark(dt.date(2023, 10, 23)), "cf_fc1", dt.date(2023, 6, 30), 200, 111.0, 1101.0,
+     "0000001001-23-000003"),                                                    # restated, clock exactly at a mark
+    (1001, at(2023, 11, 14, 21), "fsds_accepted_utc", dt.date(2023, 9, 30), 200, math.nan, 1300.0,
+     "0000001001-23-000004"),                                                    # visible NaN be
+    (1001, at(2024, 1, 5, 12), "fsds_accepted_utc", dt.date(2023, 12, 31), 200, 999.0, 9999.0,
+     "0000001001-24-000001"),                                                    # sealed
+    (2002, at(2023, 5, 10, 20), "fsds_accepted_utc", dt.date(2023, 4, 17), 200, 50.0, 500.0,
+     "0000002002-23-000001"),                                                    # stale after 2023-11-03
+    (4004, at(2023, 8, 1, 20), "fsds_accepted_utc", dt.date(2023, 6, 30), 200, 40.0, 400.0, "0000004004-23-000001"),
+    (4004, at(2023, 9, 3, 20), "fsds_accepted_utc", dt.date(2023, 6, 30), 200, 42.0, 420.0,
+     "0000004004-23-000009"),                                                    # same CIK and clock: the larger
+    (4004, at(2023, 9, 3, 20), "fsds_accepted_utc", dt.date(2023, 6, 30), 200, 41.0, 410.0,
+     "0000004004-23-000002"),                                                    # accession wins, not file order
+    (4005, at(2023, 8, 1, 20), "fsds_accepted_utc", dt.date(2023, 6, 30), 200, 45.0, 450.0, "0000004005-23-000001"),
+    (5005, at(2023, 1, 20, 20), "cf_fc1", dt.date(2022, 10, 2), 400, 55.0, 550.0,
+     "0000005005-23-000001"),                                                    # annual-only filer: 400 days
+    (7777, at(2023, 8, 1, 20), "fsds_accepted_utc", dt.date(2023, 6, 30), 200, 77.0, 770.0,
+     "0000007777-23-000001"),                                                    # unlinked CIK
 ]
 # (cik, accepted_utc, sic, accession)
 SIC_EVENTS = [
-    (1001, at(2024, 1, 10, 15), 7372, "0000001001-24-000000"),
-    (1001, at(2024, 10, 24, 15), 3674, "0000001001-24-000005"),  # SIC change: visible from 10-25 (lag 1)
-    (1001, at(2025, 2, 1, 15), 1000, "0000001001-25-000002"),    # sealed
-    (2002, at(2023, 5, 1, 12), 6022, "0000002002-23-000001"),    # 550 days old on 2024-11-01
-    (4004, at(2024, 2, 1, 12), 9999, "0000004004-24-000000"),    # no FF49 industry
-    (5005, at(2024, 3, 1, 12), 2834, "0000005005-24-000002"),
-    (5005, at(2024, 6, 1, 12), None, "0000005005-24-000003"),    # carries no SIC: skipped (guard)
-    (4005, at(2024, 3, 1, 12), 0, "0000004005-24-000000"),       # invalid: skipped (guard)
+    (1001, at(2023, 1, 10, 15), 7372, "0000001001-23-000000"),
+    (1001, at(2023, 10, 24, 15), 3674, "0000001001-23-000005"),  # SIC change: visible from 10-25 (lag 1)
+    (1001, at(2024, 2, 1, 15), 1000, "0000001001-24-000002"),    # sealed
+    (2002, at(2022, 5, 2, 12), 6022, "0000002002-22-000001"),    # 550 days old on 2023-11-03
+    (4004, at(2023, 2, 1, 12), 9999, "0000004004-23-000000"),    # no FF49 industry
+    (5005, at(2023, 3, 1, 12), 2834, "0000005005-23-000002"),
+    (5005, at(2023, 6, 1, 12), None, "0000005005-23-000003"),    # carries no SIC: skipped (guard)
+    (4005, at(2023, 3, 1, 12), 0, "0000004005-23-000000"),       # invalid: skipped (guard)
 ]
 ITEM_NAMES = [x[0] for x in tool.FUND_ITEMS]
 
@@ -1105,7 +1105,7 @@ def oracle_link(sid, d):
     """(cik or None or 'amb', primary) of line sid at session d: the interval, plus the <= gate (binds only on rows
     that violate available_at <= start mark)."""
     q = [(cik, kind) for s, cik, start, end, avail, kind, _, basis in BRIDGE
-         if s == sid and kind in ("P", "J") and basis != "current_ticker_verified" and avail < at(2025, 1, 1)
+         if s == sid and kind in ("P", "J") and basis != "current_ticker_verified" and avail < at(2024, 1, 1)
          and start <= d and (end is None or d <= end) and avail <= mark(d)]
     ciks = {c for c, _ in q}
     if not ciks:
@@ -1120,7 +1120,7 @@ def oracle_latest(rows, cik, cutoff, accession):
     """Index of the CIK's row with clock < cutoff (not sealed) and the largest (clock, accession)."""
     best = None
     for r, row in enumerate(rows):
-        if row[0] == cik and row[1] < cutoff and row[1] < at(2025, 1, 1):
+        if row[0] == cik and row[1] < cutoff and row[1] < at(2024, 1, 1):
             if best is None or (row[1], row[accession]) > (rows[best][1], rows[best][accession]):
                 best = r
     return best
@@ -1230,32 +1230,32 @@ class IssuerFields(unittest.TestCase):
         a, b, c, d, e = range(5)
         self.assertTrue(np.all(np.isnan(be[0])))                  # t < lag: nothing visible yet
         self.assertEqual(be[1, a], 100)
-        self.assertEqual(be[t_of("2024-10-10"), a], 100)          # clock 1 us before the 10-10 mark: s0 = 10-10 ...
-        self.assertEqual(be[t_of("2024-10-11"), a], 110)          # ... + 1 declared lag session
-        self.assertEqual(be[t_of("2024-10-22"), a], 110)          # restatement clock == the 10-21 mark: s0 = 10-22
-        self.assertEqual(be[t_of("2024-10-23"), a], 111)          # restated value from s0 + 1, never backdated
-        self.assertTrue(np.isnan(be[t_of("2024-11-13"), a]))      # visible NaN in the latest row: no skip-back
-        self.assertEqual(self.fx.field("issuer", "at")[t_of("2024-11-13"), a], 1300)
+        self.assertEqual(be[t_of("2023-10-10"), a], 100)          # clock 1 us before the 10-10 mark: s0 = 10-10 ...
+        self.assertEqual(be[t_of("2023-10-11"), a], 110)          # ... + 1 declared lag session
+        self.assertEqual(be[t_of("2023-10-24"), a], 110)          # restatement clock == the 10-23 mark: s0 = 10-24
+        self.assertEqual(be[t_of("2023-10-25"), a], 111)          # restated value from s0 + 1, never backdated
+        self.assertTrue(np.isnan(be[t_of("2023-11-15"), a]))      # visible NaN in the latest row: no skip-back
+        self.assertEqual(self.fx.field("issuer", "at")[t_of("2023-11-15"), a], 1300)
         self.assertTrue(np.all(np.isnan(be[:, c])))               # J line: issuer fields are primary-only
-        self.assertTrue(np.isnan(be[t_of("2024-10-14"), b]))      # before the link's start
-        self.assertEqual(be[t_of("2024-10-15"), b], 50)           # available_at == start mark: first day kept
-        self.assertTrue(np.isnan(be[t_of("2024-10-18"), e]))      # invariant violation gated: not before ...
-        self.assertEqual(be[t_of("2024-10-21"), e], 55)           # ... the first mark >= available_at
-        self.assertEqual(be[t_of("2024-11-01"), b], 50)           # age 200 (period end 2024-04-15): kept
-        self.assertTrue(np.isnan(be[t_of("2024-11-04"), b]))      # age 203: stale
-        self.assertEqual(be[t_of("2024-10-31"), d], 42)           # same CIK and clock: the later file row wins
+        self.assertTrue(np.isnan(be[t_of("2023-10-16"), b]))      # before the link's start
+        self.assertEqual(be[t_of("2023-10-17"), b], 50)           # available_at == start mark: first day kept
+        self.assertTrue(np.isnan(be[t_of("2023-10-20"), e]))      # invariant violation gated: not before ...
+        self.assertEqual(be[t_of("2023-10-23"), e], 55)           # ... the first mark >= available_at
+        self.assertEqual(be[t_of("2023-11-03"), b], 50)           # age 200 (period end 2023-04-17): kept
+        self.assertTrue(np.isnan(be[t_of("2023-11-06"), b]))      # age 203: stale
+        self.assertEqual(be[t_of("2023-10-31"), d], 42)           # same CIK and clock: the later file row wins
         self.assertTrue(np.all(np.isnan(be[[t for t, x in enumerate(SESSIONS) if x.month == 11], d])))  # ambiguous
-        self.assertEqual(be[t_of("2024-12-02"), d], 42)
-        self.assertEqual(be[t_of("2024-11-04"), e], 55)           # annual-only: age 400 kept
-        self.assertTrue(np.isnan(be[t_of("2024-11-05"), e]))      # age 401: stale
+        self.assertEqual(be[t_of("2023-12-01"), d], 42)
+        self.assertEqual(be[t_of("2023-11-06"), e], 55)           # annual-only: age 400 kept
+        self.assertTrue(np.isnan(be[t_of("2023-11-07"), e]))      # age 401: stale
         r = self.entry("be")["nan_reasons_member_cells"]
         self.assertGreater(r["stale"], 0)
         self.assertGreater(r["visible_nan"], 0)
         self.assertGreater(r["no_visible_row"], 0)
         member = np.fromfile(self.fx.role / "member.u8", dtype="u1").reshape(len(SESSIONS), len(IDS)) != 0
         fc1 = np.zeros_like(member)
-        fc1[t_of("2024-10-23"):t_of("2024-11-13"), a] = True      # 1001's FC1 restatement row is visible
-        fc1[t_of("2024-10-21"):t_of("2024-11-05"), e] = True      # 5005's FC1 row (linked from 10-21)
+        fc1[t_of("2023-10-25"):t_of("2023-11-15"), a] = True      # 1001's FC1 restatement row is visible
+        fc1[t_of("2023-10-23"):t_of("2023-11-07"), e] = True      # 5005's FC1 row (linked from 10-23)
         fc1[0] = False
         self.assertEqual(r["fc1_finite_member_cells"], int(np.count_nonzero(fc1 & member & np.isfinite(be))))
 
@@ -1264,8 +1264,8 @@ class IssuerFields(unittest.TestCase):
         be = self.fx.field("lag0", "be")
         np.testing.assert_array_equal(be, oracle_fund("be", 0))
         np.testing.assert_array_equal(self.fx.field("lag0", "grp_ff49"), oracle_grp("ff49", 0))
-        self.assertEqual(be[t_of("2024-10-10"), 0], 110)
-        self.assertEqual(be[t_of("2024-10-22"), 0], 111)
+        self.assertEqual(be[t_of("2023-10-10"), 0], 110)
+        self.assertEqual(be[t_of("2023-10-24"), 0], 111)
         self.assertNotEqual(self.entry("be", m)["clock"], self.entry("be")["clock"])  # runner refuses mixed lags
         self.assertIn("L = 1", self.entry("be")["clock"])
         self.assertEqual(self.manifest["source_checks"]["issuer"]["fund_lag_sessions"], 1)
@@ -1274,13 +1274,13 @@ class IssuerFields(unittest.TestCase):
         for kind in ("sic2", "ff12", "ff49"):
             np.testing.assert_array_equal(self.fx.field("issuer", f"grp_{kind}"), oracle_grp(kind, 1), kind)
         ff49, ff12 = self.fx.field("issuer", "grp_ff49"), self.fx.field("issuer", "grp_ff12")
-        self.assertEqual(ff49[t_of("2024-10-24"), 0], 36)        # Softw (7372)
-        self.assertEqual(ff49[t_of("2024-10-25"), 0], 37)        # Chips (3674) from s0 + 1
-        self.assertEqual(ff12[t_of("2024-11-01"), 1], 11)        # Money: 6022 accepted 2023-05-01, age 550
-        self.assertTrue(np.isnan(ff12[t_of("2024-11-04"), 1]))   # age 553: stale
-        self.assertEqual(ff12[t_of("2024-10-31"), 3], 12)        # 9999: FF12 Other ...
-        self.assertTrue(np.isnan(ff49[t_of("2024-10-31"), 3]))   # ... and no FF49 industry
-        self.assertEqual(self.fx.field("issuer", "grp_sic2")[t_of("2024-10-22"), 4], 28)  # null-SIC row skipped
+        self.assertEqual(ff49[t_of("2023-10-24"), 0], 36)        # Softw (7372)
+        self.assertEqual(ff49[t_of("2023-10-25"), 0], 37)        # Chips (3674) from s0 + 1
+        self.assertEqual(ff12[t_of("2023-11-03"), 1], 11)        # Money: 6022 accepted 2022-05-02, age 550
+        self.assertTrue(np.isnan(ff12[t_of("2023-11-06"), 1]))   # age 553: stale
+        self.assertEqual(ff12[t_of("2023-10-31"), 3], 12)        # 9999: FF12 Other ...
+        self.assertTrue(np.isnan(ff49[t_of("2023-10-31"), 3]))   # ... and no FF49 industry
+        self.assertEqual(self.fx.field("issuer", "grp_sic2")[t_of("2023-10-24"), 4], 28)  # null-SIC row skipped
         st = self.manifest["source_checks"]["issuer"]
         self.assertEqual(st["sic_events"]["rows_used_invalid_sic_skipped"], 2)
         self.assertEqual(st["sic_events"]["rows_sealed_dropped"], 1)
@@ -1309,7 +1309,7 @@ class IssuerFields(unittest.TestCase):
         so = self.fx.field("issuer", "shares_out")
         got = self.fx.field("issuer", "me_company")
         np.testing.assert_allclose(got, oracle_me(so, raw, present), rtol=1e-15, atol=0, equal_nan=True)
-        t = t_of("2024-10-15")
+        t = t_of("2023-10-17")
         self.assertAlmostEqual(got[t, 0], so[t, 0] * raw[t, 0] + so[t, 2] * raw[t, 2], delta=1e-6)
         self.assertTrue(np.all(np.isnan(got[:, 2])))               # J line itself: NaN
         after = [t for t, d in enumerate(SESSIONS) if d >= C81_303]
@@ -1358,7 +1358,7 @@ class IssuerFields(unittest.TestCase):
         for t, d in enumerate(SESSIONS):
             for i, sid in enumerate(IDS):
                 rows = [r for r in compliant if r[0] == sid and r[5] in ("P", "J") and r[7] != "current_ticker_verified"
-                        and r[4] < at(2025, 1, 1) and r[2] <= d and (r[3] is None or d <= r[3])]
+                        and r[4] < at(2024, 1, 1) and r[2] <= d and (r[3] is None or d <= r[3])]
                 if not rows:
                     self.assertTrue(np.isnan(got[t, i]), (d, sid))  # no interval contains d
         np.testing.assert_array_equal(got[:, :4], self.fx.field("issuer", "be")[:, :4])
@@ -1368,14 +1368,14 @@ class IssuerFields(unittest.TestCase):
                          (0, 4))
 
     def test_point_in_time_later_rows_change_no_earlier_cell(self):
-        late = mark(dt.date(2024, 12, 10)) - dt.timedelta(microseconds=1)
-        extra = EVENTS + [(1001, late, "fsds_accepted_utc", dt.date(2024, 9, 30), 200, 123.0, 1234.0,
-                           "0000001001-24-000009")]
-        sic_extra = SIC_EVENTS + [(1001, late, 2834, "0000001001-24-000009")]
+        late = mark(dt.date(2023, 12, 12)) - dt.timedelta(microseconds=1)
+        extra = EVENTS + [(1001, late, "fsds_accepted_utc", dt.date(2023, 9, 30), 200, 123.0, 1234.0,
+                           "0000001001-23-000009")]
+        sic_extra = SIC_EVENTS + [(1001, late, 2834, "0000001001-23-000009")]
         root = self.fx.base / "events-late"
         sha_late = write_events(root, extra, sic_extra)
         self.produce("late", ["be", "grp_ff49"], fund_events=root, fund_events_sha256=sha_late)
-        t = t_of("2024-12-11")
+        t = t_of("2023-12-13")
         for name in ("be", "grp_ff49"):
             before, after = self.fx.field("issuer", name), self.fx.field("late", name)
             np.testing.assert_array_equal(after[:t], before[:t], name)
@@ -1458,7 +1458,7 @@ class IssuerFields(unittest.TestCase):
             np.testing.assert_array_equal(self.fx.field("variants-out", name), self.fx.field("issuer", name), name)
         # Events with no row for any linked CIK: every cell NaN, nothing refused.
         lone_sha = write_events(base / "lone", [x for x in EVENTS if x[0] == 7777],
-                                [(7777, at(2024, 1, 1), 1000, "0000007777-24-000000")])
+                                [(7777, at(2023, 1, 1), 1000, "0000007777-23-000000")])
         self.produce("lone-out", ["be", "grp_ff12"], fund_events=base / "lone", fund_events_sha256=lone_sha)
         for name in ("be", "grp_ff12"):
             self.assertTrue(np.all(np.isnan(self.fx.field("lone-out", name))), name)

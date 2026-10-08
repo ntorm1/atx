@@ -27,18 +27,18 @@ import test_prepare_research_fields as base
 REPO = Path(__file__).resolve().parents[2]
 PRODUCER = REPO / "build-equity" / "audits" / "iteration21_finra_si_asof.py"
 SESSIONS, IDS = base.SESSIONS, base.IDS
-FIRST_FILE = dt.date(2024, 3, 1)
-LAST_FILE = dt.date(2024, 12, 31)           # == the last role session: listed, never read
-MISSING = dt.date(2024, 10, 15)             # a role session without a CNMS file
-WEEKEND = dt.date(2024, 10, 12)             # a file dated off the role calendar: never read
-AFTER = dt.date(2025, 1, 2)                 # after the role (and the seal): never read
-DUP_DAY = dt.date(2024, 11, 6)              # AAA twice in one file: the last row wins
-X_NEW = dt.date(2024, 9, 16)                # 404's vendor ticker OLD -> NEW
-AMB = (dt.date(2024, 8, 5), dt.date(2024, 8, 9))  # 999 (not a role id) spells A.AA: AAA ambiguous
-Z_CPK = dt.date(2024, 10, 16)               # CPK TotalVolume is 0 before this date
-LATE_START = dt.date(2024, 9, 2)            # LATE (505) is in the files from this date on
-BLANK = (dt.date(2024, 6, 3), 202)          # a blank vendor ticker: 202 unmapped that day
-NULL = (dt.date(2024, 6, 4), 505)           # a null vendor ticker
+FIRST_FILE = dt.date(2023, 3, 1)
+LAST_FILE = dt.date(2023, 12, 29)           # == the last role session: listed, never read
+MISSING = dt.date(2023, 10, 17)             # a role session without a CNMS file
+WEEKEND = dt.date(2023, 10, 14)             # a file dated off the role calendar: never read
+AFTER = dt.date(2024, 1, 2)                 # after the role (and the seal): never read
+DUP_DAY = dt.date(2023, 11, 8)              # AAA twice in one file: the last row wins
+X_NEW = dt.date(2023, 9, 18)                # 404's vendor ticker OLD -> NEW
+AMB = (dt.date(2023, 8, 7), dt.date(2023, 8, 11))  # 999 (not a role id) spells A.AA: AAA ambiguous
+Z_CPK = dt.date(2023, 10, 18)               # CPK TotalVolume is 0 before this date
+LATE_START = dt.date(2023, 9, 4)            # LATE (505) is in the files from this date on
+BLANK = (dt.date(2023, 6, 5), 202)          # a blank vendor ticker: 202 unmapped that day
+NULL = (dt.date(2023, 6, 6), 505)           # a null vendor ticker
 
 
 def load_producer():
@@ -99,7 +99,7 @@ def write_cnms(root, override=None):
     """CNMSshvol files (CRLF, row-count trailer, gz) and the downloader receipt manifest.csv."""
     root.mkdir(parents=True)
     receipt = ["date,file,bytes,sha256_of_raw_bytes,rows,url,http_status,downloaded_at",
-               "2024-03-29,,0,,0,https://x/CNMSshvol20240329.txt,403,2026-09-27T23:00:00+00:00"]
+               "2023-04-07,,0,,0,https://x/CNMSshvol20230407.txt,403,2026-09-27T23:00:00+00:00"]
     for k, d in enumerate(sorted(file_days())):
         rows = cnms_rows(d, k)
         if override:
@@ -212,14 +212,14 @@ class ShortVolumeField(unittest.TestCase):
             self.assertTrue(np.isfinite(self.sv[:, i]).any(), IDS[i])
 
     def test_ratio_formula_by_hand_for_one_cell(self):
-        t, i = base.t_of("2024-12-02"), IDS.index(101)
+        t, i = base.t_of("2023-12-04"), IDS.index(101)
         days = sorted(self.mapped)
         prefix = [d for d in days if d < SESSIONS[0]][-126:]
         window = (prefix + list(SESSIONS))[len(prefix) + t - 126:len(prefix) + t]
         self.assertEqual(len(window), 126)
         self.assertNotIn(SESSIONS[t], window)                      # lag 1: the session's own file is excluded
         obs = [self.mapped[s][101] for s in window if s in self.mapped and 101 in self.mapped[s]]
-        self.assertEqual(len(obs), 126 - 1 - 5)                    # 10-15 has no file; AAA ambiguous 08-05..08-09
+        self.assertEqual(len(obs), 126 - 1 - 5)                    # 10-17 has no file; AAA ambiguous 08-07..08-11
         self.assertEqual(self.sv[t, i], sum(x[0] for x in obs) / sum(x[1] for x in obs))
 
     def test_ambiguity_collision_duplicate_and_translation(self):
@@ -236,7 +236,7 @@ class ShortVolumeField(unittest.TestCase):
         m = self.entry()["short_volume"]["mapping"]
         totals = m["totals"]
         wednesdays = sum(1 for d in read_days() if d.weekday() == 2)
-        self.assertEqual(totals["rows_ambiguous"], 5 + 1)          # AAA x 5 days + AA/A on Wednesday 08-07
+        self.assertEqual(totals["rows_ambiguous"], 5 + 1)          # AAA x 5 days + AA/A on Wednesday 08-09
         self.assertEqual(totals["rows_collision_dropped"], wednesdays - 1)
         self.assertEqual(totals["duplicate_symbol_rows"], 1)
         self.assertEqual(totals["rows_unknown_lowercase_marker"], 0)
@@ -246,7 +246,7 @@ class ShortVolumeField(unittest.TestCase):
     def test_pit_ticker_change_uses_the_file_date(self):
         self.assertEqual(self.mapped[X_NEW - dt.timedelta(days=3)][404], (1.0, 10.0))  # Friday: OLD
         self.assertEqual(self.mapped[X_NEW][404], (9.0, 10.0))                        # Monday: NEW
-        t = base.t_of("2024-10-01")
+        t = base.t_of("2023-10-02")
         window = [d for d in sorted(self.mapped) if d < SESSIONS[t]][-126:]
         new = sum(1 for d in window if d >= X_NEW)
         self.assertEqual(self.sv[t, IDS.index(404)], (new * 9 + (126 - new)) / (126 * 10))
@@ -261,7 +261,7 @@ class ShortVolumeField(unittest.TestCase):
         z = SESSIONS.index(Z_CPK)
         self.assertTrue((self.count[:, cpk] >= 63).all())
         self.assertTrue(np.isnan(self.sv[:z + 1, cpk]).all())      # every window row has TotalVolume 0
-        self.assertTrue(np.isfinite(self.sv[z + 1:, cpk]).all())   # the 10-16 file enters at 10-17
+        self.assertTrue(np.isfinite(self.sv[z + 1:, cpk]).all())   # the 10-18 file enters at 10-19
 
     def test_manifest_records_sources_formula_and_coverage(self):
         e = self.entry()
@@ -288,9 +288,9 @@ class ShortVolumeField(unittest.TestCase):
         self.assertEqual(e["sources"][0]["files_sha256"], digest)
         self.assertEqual(e["sources"][2]["sha256"], base.sha(self.fx.th))
         cov = e["coverage"]
-        self.assertEqual(list(cov["per_year"]), ["2024"])
+        self.assertEqual(list(cov["per_year"]), ["2023"])
         member = np.fromfile(self.fx.role / "member.u8", dtype="u1").reshape(len(SESSIONS), len(IDS)) != 0
-        self.assertEqual(cov["per_year"]["2024"]["finite_member_cells"], int((member & np.isfinite(self.sv)).sum()))
+        self.assertEqual(cov["per_year"]["2023"]["finite_member_cells"], int((member & np.isfinite(self.sv)).sum()))
         self.assertEqual(self.manifest["source_checks"]["finra_short_volume"]["files_sha256"], digest)
 
     def test_lag_the_sessions_own_file_is_never_used(self):
@@ -315,11 +315,11 @@ class ShortVolumeField(unittest.TestCase):
             self.fx.run("tampered-out", fields=["sv_ratio126"], finra_short_volume=bad)
         with self.assertRaisesRegex(ValueError, "needs --finra-short-volume"):
             self.fx.run("noarg-out", fields=["sv_ratio126"], finra_short_volume=None)
-        day = tool.day_of(dt.date(2024, 5, 1))
-        good = b"Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market\r\n20240501|A|1|0|2|Q\r\n1\r\n"
+        day = tool.day_of(dt.date(2023, 5, 1))
+        good = b"Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market\r\n20230501|A|1|0|2|Q\r\n1\r\n"
         self.assertEqual(tool.parse_cnms(good, day, "x")[0], ["A"])
         for blob, why in ((good.replace(b"\r\n1\r\n", b"\r\n2\r\n"), "trailer"),
-                          (good.replace(b"20240501|", b"20240502|"), "Date"),
+                          (good.replace(b"20230501|", b"20230502|"), "Date"),
                           (good.replace(b"|1|0|2|", b"|3|0|2|"), "ShortVolume above"),
                           (good.replace(b"|1|0|2|", b"|-1|0|2|"), "non-negative decimal"),
                           (good.replace(b"|A|", b"|A B|"), "Symbol"),

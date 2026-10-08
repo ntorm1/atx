@@ -29,9 +29,10 @@
 // calibrate_gross (PM6-6's correction is bounded by [1, 2]) and with construction_grid (its
 // variants set their own --aim-leverage). The range bounds the aim-leverage PARAMETER L, not the
 // book's realised gross leverage L_t: under a leverage rule L_t moves around L (vol-target-v1
-// runs L_t in [1, L], risk-target-v1 in [.8 L, 1.25 L], i.e. up to 2.5 at L = 2; Ruling C3-4: a
-// cell whose rule can realise more than L states its cap on realised leverage in its
-// registration).
+// runs L_t in [1, L], risk-target-v1 in [.8 L, 1.25 L], i.e. up to 2.5 at L = 2), and the spo
+// rules plan gross up to --spo-gross G (a hard cap on planned gross, G in (0, 1.5 L]; default
+// L, spo-v2's 1; spo::validate_gross_budget). Ruling C3-4: a cell whose rule can realise more
+// than L states its cap on realised leverage in its registration.
 //
 // Print-only options (no weight, trade, cost or NAV value depends on them): stage_timers, and
 // ann_mean_gross (Rulings PRE-7 / PRE-7a; --ann-mean-gross): each scenario of summary.json gains
@@ -88,6 +89,12 @@ struct Key {
 // A spec file: at most max_spec_bytes, JSON with no key repeated inside an object, then
 // to_args's checks.
 [[nodiscard]] atx::core::Result<nlohmann::json> read(const std::string& path);
+// `text` parsed as JSON, with the first key repeated inside one object written to `duplicate`
+// (cleared first; empty when every key appears once per object). The document is discarded
+// (is_discarded()) when `text` is not JSON. The parser keeps a repeated key's last value while a
+// reader of the file sees the first, so a caller refuses a non-empty `duplicate`: the spec file
+// (review C3 R-1) and the construction-grid file a spec can name (Ruling C3-7, read_grid).
+[[nodiscard]] nlohmann::json parse_unique_keys(const std::string& text, std::string& duplicate);
 // The constants block at today's values.
 [[nodiscard]] nlohmann::json constants_json();
 

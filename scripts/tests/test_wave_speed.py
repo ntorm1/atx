@@ -47,7 +47,7 @@ def test_the_b_cell_reuses_the_screen_marginal_and_screens_first(tmp_path):
     assert "marginal" in json.loads((root / "scripts/specs/v8/lib-w1.json").read_text())   # the screen kept it
     runs = cycle_runs(fake)
     k = runs.index(["run", B_SPEC, "--screen"])
-    assert runs[k - 1] == ["lock", B_SPEC] and runs[k + 1] == ["run", B_SPEC, "--stop-after", "nav"]
+    assert runs[k - 1] == ["lock", B_SPEC] and runs[k + 1] == ["run", B_SPEC, "--stop-after", "w"]   # pm6-6-engine
     res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
     assert res["marginal"]["source"].startswith("the screen (scripts/specs/v8/lib-w1.json): per-row fields carried")
     assert [r["id"] for r in res["marginal"]["rows"]] == ["alpha_a", "alpha_c"]          # the kept strings' rows
@@ -101,9 +101,9 @@ def test_a_ruled_marginal_runs_pool_only_with_its_cap_and_the_b_cell_reuses_it(t
 
 def test_the_scoreboard_prints_wall_seconds_by_phase(tmp_path, capsys):
     root = F.build(tmp_path / "r")
-    run(root, F.FakeCycle(root, ONE_DROPPED, gross_per_l={"w1b": 0.9604 / 1.1474}))   # calibration + matched NAV
+    run(root, F.FakeCycle(root, ONE_DROPPED, gross_per_l={"w1b": 0.9604 / 1.1474}))   # ONE calibrated NAV (P9 C2)
     b = S.board(root, ["out/waves/*/wave-result.json"])
     t = b["timings"][0]
-    assert t["wave"] == "w1" and t["phases"]["nav"]["runs"] == 2 and t["phases"]["nav"]["seconds"] == 83.0
+    assert t["wave"] == "w1" and t["phases"]["nav"]["runs"] == 1 and t["phases"]["nav"]["seconds"] == 41.5
     assert RC.main(["scoreboard", "--root", str(root), "--results", "out/waves/*/wave-result.json", "--timings"]) == 0
     assert "### Wall-clock by phase" in capsys.readouterr().out

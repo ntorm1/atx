@@ -14,9 +14,15 @@ from unittest.mock import patch
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 import prepare_recent_research as tool
 import test_prepare_recent_research as base
+
+# Ruling T2-GOLD: the expected hashes below pin role-builder bytes produced under the superseded window
+# research-seal-v1 (seal 2025-01-01) and are kept unedited (rule 4), so this module runs under that window, bound for
+# this module only (module-scoped fixture, conftest.py); the rest of the suite runs under the repository window.
+pytestmark = pytest.mark.usefixtures("superseded_research_window")
 
 # Normalised v1 output of LinkedOperatingUniverse's fixture computed with prepare_recent_research.py at the W5b base
 # commit 9da38ad8 (before linked-operating-v2 existed): environment-dependent pins and paths are replaced by tokens

@@ -317,23 +317,10 @@ co::Result<std::string> read_text(const std::string& path) {
   return co::Ok(std::move(text));
 }
 // The spec text as JSON. A key repeated inside one object is refused: the parser keeps the last
-// value while a reader of the pinned file sees the first (review C3 R-1). The duplicate-key
-// callback of atx-engine/src/eval/trial_epoch.cpp: one key set per open object.
+// value while a reader of the pinned file sees the first (review C3 R-1; parse_unique_keys).
 co::Result<Json> parse_spec(const std::string& text, const std::string& path) {
-  std::vector<std::set<std::string>> objects;
   std::string duplicate;
-  const auto unique_keys = [&objects, &duplicate](int, Json::parse_event_t event, Json& value) {
-    if (event == Json::parse_event_t::object_start) {
-      objects.emplace_back();
-    } else if (event == Json::parse_event_t::object_end) {
-      if (!objects.empty()) objects.pop_back();
-    } else if (event == Json::parse_event_t::key && duplicate.empty() && !objects.empty() &&
-               !objects.back().insert(value.get<std::string>()).second) {
-      duplicate = value.get<std::string>();
-    }
-    return true;
-  };
-  auto doc = Json::parse(text, unique_keys, false);
+  auto doc = parse_unique_keys(text, duplicate);
   if (doc.is_discarded()) return bad("the spec file is not JSON: " + path);
   if (!duplicate.empty())
     return bad("duplicate key \"" + duplicate + "\" in " + path +
@@ -355,6 +342,26 @@ co::Result<SpecFile> load(const std::string& path) {
   return co::Ok(std::move(out));
 }
 } // namespace
+
+// The duplicate-key callback of atx-engine/src/eval/trial_epoch.cpp: one key set per open object
+// (a key in two different objects is no repetition). It keeps every value, so the document is the
+// one Json::parse(text, nullptr, false) gives.
+Json parse_unique_keys(const std::string& text, std::string& duplicate) {
+  std::vector<std::set<std::string>> objects;
+  duplicate.clear();
+  const auto unique_keys = [&objects, &duplicate](int, Json::parse_event_t event, Json& value) {
+    if (event == Json::parse_event_t::object_start) {
+      objects.emplace_back();
+    } else if (event == Json::parse_event_t::object_end) {
+      if (!objects.empty()) objects.pop_back();
+    } else if (event == Json::parse_event_t::key && duplicate.empty() && !objects.empty() &&
+               !objects.back().insert(value.get<std::string>()).second) {
+      duplicate = value.get<std::string>();
+    }
+    return true;
+  };
+  return Json::parse(text, unique_keys, false);
+}
 
 std::span<const Key> keys() noexcept { return table; }
 const Key* by_key(std::string_view key) noexcept {

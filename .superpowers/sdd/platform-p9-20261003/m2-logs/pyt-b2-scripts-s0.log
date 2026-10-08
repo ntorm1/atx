@@ -1,0 +1,11 @@
+# cwd=C:/atx-wt/pool-2 seed=0 files: scripts/tests/test_wave_eval_verb.py scripts/tests/test_wave_kinds.py scripts/tests/test_research_cycle.py scripts/tests/test_cycle_scoring.py scripts/tests/test_no_python_mirror.py scripts/tests/test_research_spec.py scripts/tests/test_research_ledger.py
+.........................................................................................................................s.......................s...........s.................................. [ 60%]
+.................................
+G-P5: 16 mirrored rule function(s) in 7 row(s) left for P9 lanes
+...............................................................................................                                                                 [100%]
+======================================================================================= short test summary info =======================================================================================
+SKIPPED [1] scripts\tests\test_research_cycle.py:56: set RESEARCH_CYCLE_LIVE_ROOT to hash the real pool-2 files
+SKIPPED [1] scripts\tests\test_research_cycle.py:706: set RESEARCH_CYCLE_LIVE_ROOT to hash the real pool-2 files (after the L7 merge)
+SKIPPED [1] scripts\tests\test_research_cycle.py:946: set RESEARCH_CYCLE_LIVE_ROOT to hash the real pool-2 files (after the L8 merge)
+317 passed, 3 skipped in 777.05s (0:12:57)
+exit=0
