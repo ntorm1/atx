@@ -383,7 +383,12 @@ HISTORY_FLOWS = ("sale_q", "cogs_q", "gp_q", "xsga_q", "oi_q", "ebitda_q", "xint
                  "dp_q", "cfo_q", "capx_q", "dvc_q", "prstkc_q", "sstk_q", "dvt_q")
 HISTORY_STOCKS = ("at", "lt", "che", "debt", "be", "seq", "act", "lct", "invt", "rect", "ap", "drev", "ppe", "ppegt",
                   "gdwl", "intan", "mib", "pstk", "shrs")
-HISTORY_ITEMS = HISTORY_FLOWS + HISTORY_STOCKS
+DEPTH_STOCKS = ("dlc", "dltt", "txditc", "re", "teq", "tempeq")
+DEPTH_ANNUAL = {"sale_ttm": "sale", "cogs_ttm": "cogs", "xsga_ttm": "xsga", "ni_ttm": "ni",
+                "dp_ttm": "dp", "cfo_ttm": "cfo", "capx_ttm": "capx", "xrd_ttm": "xrd",
+                "dvc_ttm": "dvc", "prstkc_ttm": "prstkc", "sstk_ttm": "sstk", "txt_ttm": "txt"}
+HISTORY_ITEMS = HISTORY_FLOWS + HISTORY_STOCKS + DEPTH_STOCKS + tuple(
+    "annual_" + col for col in DEPTH_ANNUAL)
 # FX classes of the money items (S4.3): balances at the period-end rate, flows at the period-average rate, lags at
 # their own period end (LAG_ENDS_KEY holds those ends in compute_items' output; issuer_events pops it)
 LAG_ENDS_KEY = "_lag_ends"
@@ -484,9 +489,10 @@ class Knowledge:
     """Latest-clock value of every retained fact of one issuer."""
 
     __slots__ = ("by_end", "by_start", "cls_clock", "dur", "dur_ends", "inst", "present", "share_changes",
-                 "share_first", "share_last")
+                 "share_first", "share_last", "source_backed_only")
 
-    def __init__(self) -> None:
+    def __init__(self, source_backed_only: bool = False) -> None:
+        self.source_backed_only = source_backed_only
         self.dur: dict[int, dict[tuple[dt.date, dt.date], float]] = {}
         self.dur_ends: set[dt.date] = set()   # every duration end (history recomputes dependent quarter ends)
         self.by_end: dict[int, dict[dt.date, set[dt.date]]] = {}
@@ -925,12 +931,12 @@ class ItemCalc:
         lt_rep = s.inst("lt", end)
         mib = mib_rep if mib_rep is not None else (seq_nci - seq_rep if seq_nci is not None and seq_rep is not None else None)
         seq = seq_rep
-        if seq is None and seq_nci is not None:
+        if seq is None and seq_nci is not None and (mib_rep is not None or not s.k.source_backed_only):
             seq = seq_nci - (mib_rep or 0.0)
-        if seq is None and at is not None and lt_rep is not None:
+        if seq is None and at is not None and lt_rep is not None and not s.k.source_backed_only:
             seq = at - lt_rep
         lt = lt_rep
-        if lt is None and at is not None:
+        if lt is None and at is not None and not s.k.source_backed_only:
             if seq_nci is not None:
                 lt = at - seq_nci
             elif seq_rep is not None:
@@ -940,15 +946,21 @@ class ItemCalc:
             che = cash_sti
         else:
             cash, sti = s.inst("cash", end), s.inst("sti", end)
-            che = None if cash is None and sti is None else _add(cash, sti)
+            che = None if (cash is None or sti is None) and s.k.source_backed_only else (
+                None if cash is None and sti is None else _add(cash, sti))
         dcur, cur_ltd, stb = s.inst("debt_current", end), s.inst("cur_ltd", end), s.inst("stb", end)
         st = dcur if dcur is not None else (None if cur_ltd is None and stb is None else _add(cur_ltd, stb))
+        if s.k.source_backed_only and dcur is None and (cur_ltd is None or stb is None):
+            st = None
         ltd_nc = s.inst("ltd_nc", end)
         if ltd_nc is None:
             ltd_total = s.inst("ltd_total", end)
-            if ltd_total is not None:
+            if ltd_total is not None and (cur_ltd is not None or not s.k.source_backed_only):
                 ltd_nc = ltd_total - (cur_ltd or 0.0)
-        if at is not None:
+        if s.k.source_backed_only:
+            debt = st + ltd_nc if st is not None and ltd_nc is not None else None
+            ltd_nc_z = ltd_nc
+        elif at is not None:
             debt = _add(st, ltd_nc)
             ltd_nc_z = ltd_nc if ltd_nc is not None else 0.0
         else:
@@ -957,8 +969,11 @@ class ItemCalc:
         txditc = s.inst_carry("txditc", end, CARRY_DAYS)
         pstk = s.inst_carry("pstk", end, CARRY_DAYS)
         be = None if seq is None else seq + (txditc or 0.0) - (pstk or 0.0)
+        if s.k.source_backed_only and (txditc is None or pstk is None):
+            be = None
         noa = None
-        if at is not None and seq is not None:
+        if (at is not None and seq is not None and (not s.k.source_backed_only
+                or all(v is not None for v in (pstk, che, debt, mib)))):
             ps = pstk or 0.0
             ceq = seq - ps
             noa = (at - (che or 0.0)) - (at - (debt or 0.0) - (mib or 0.0) - ps - ceq)
@@ -1206,6 +1221,8 @@ def _no_line(ctx: Ctx, s: Snapshot, chain: str, flag: str, stmt: str, end: dt.da
     ``knowledge_ok=None`` disables the knowledge rule. ``period_only`` (discrete-quarter items): on the PRE
     path it suffices that the chain has no fact ending at ``end`` (that quarter's statement shows no line).
     Returns the evidence code or None."""
+    if s.k.source_backed_only:
+        return None  # PRE/CompanyFacts omission does not certify an explicit reported zero.
     recent = s.has_recent_flow(chain, end, FLOW_ZERO_LOOKBACK)
     f = ctx.flags(end, tol)
     if f is not None:
@@ -1271,15 +1288,17 @@ def _sale(s: Snapshot, ctx: Ctx, end: dt.date, quarterly: bool) -> tuple[float |
     when the filing's own income statement (FSDS PRE) has no revenue-like line and the revenue chain
     has no fact within 460 days (not for bank, insurer or reit templates)."""
     get = s._q if quarterly else s._ttm_key
-    v = get("sale", end)
+    key = presented_sale_chain(s, ctx, end)
+    v = get(key, end)
     v = v[0] if quarterly and v is not None else v
     if v is not None:
-        return v, "chain"
+        return v, "main_statement_contract" if key != "sale" else "chain"
     bank = get("int_inc", end)
     bank = bank[0] if quarterly and bank is not None else bank
     if bank is not None:
         nonint = s.qv("nonint_inc", end) if quarterly else s.ttm("nonint_inc", end)
-        return bank + (nonint or 0.0), "bank_int_nonint"
+        if nonint is not None or not s.k.source_backed_only:
+            return bank + (nonint or 0.0), "bank_int_nonint"
     v = get("sale" + X, end)
     v = v[0] if quarterly and v is not None else v
     if v is not None:
@@ -1293,6 +1312,23 @@ def _sale(s: Snapshot, ctx: Ctx, end: dt.date, quarterly: bool) -> tuple[float |
     return None, None
 
 
+def presented_sale_chain(s: Snapshot, ctx: Ctx, end: dt.date) -> str:
+    """Select the main-statement contractual total when generic Revenues is not an IS/CI caption.
+
+    This depends on the filing's own FSDS presentation, not sign, size or future concept presence.
+    E.g. Flowserve's generic CompanyFacts Revenues=0 is not its presented consolidated sales.
+    Where both captions are presented the original economic chain priority remains in force.
+    """
+    flags=ctx.flags(end)
+    if (s.k.source_backed_only and flags and flags.get('is_sale_contract')
+            and not flags.get('is_sale_generic')):
+        key='sale_presented'
+        s.chains[key]=tuple(c for c in s.chains['sale'] if CONCEPTS[c][2].startswith(
+            'RevenueFromContractWithCustomer'))
+        return key
+    return 'sale'
+
+
 def _sale_q_nonzero(s: Snapshot, ctx: Ctx, end: dt.date) -> float | None:
     """Item-level revenue quarter without the zero fill (the building block of ``quarters_mixed``)."""
     v, src = _sale(s, ctx, end, True)
@@ -1304,7 +1340,7 @@ def _xsga(s: Snapshot, end: dt.date, quarterly: bool) -> float | None:
     v = f("xsga", end)
     if v is None:
         ga = f("xga", end)
-        if ga is not None:
+        if ga is not None and (f("xsm", end) is not None or not s.k.source_backed_only):
             v = ga + (f("xsm", end) or 0.0)
     return v
 
@@ -1326,7 +1362,8 @@ def _gp(s: Snapshot, end: dt.date, sale: float | None, quarterly: bool) -> tuple
         return sale - cogs, "sale_minus_cogs"
     if sale is not None:
         tc = f("opcost", end)
-        if tc is not None:
+        if tc is not None and (not s.k.source_backed_only or all(
+                v is not None for v in (_xsga(s, end, quarterly), f("xrd", end), f("dp", end)))):
             derived = tc - (_xsga(s, end, quarterly) or 0.0) - (f("xrd", end) or 0.0) - (f("dp", end) or 0.0)
             if derived >= 0:
                 return sale - derived, "sale_minus_opcost_ex_sga_rd_dp"
@@ -1368,7 +1405,8 @@ def _oi(s: Snapshot, ctx: Ctx, end: dt.date, debt: float | None, quarterly: bool
 def _zero_stock(s: Snapshot, names: Sequence[str], end: dt.date, at: float | None) -> bool:
     """0 for an unreported stock (goodwill, intangibles, minority interest): assets exist at the end and none
     of the chains has a fact within 460 days."""
-    return at is not None and not any(s.has_recent_flow(n, end, FLOW_ZERO_LOOKBACK) for n in names)
+    return (not s.k.source_backed_only and at is not None
+            and not any(s.has_recent_flow(n, end, FLOW_ZERO_LOOKBACK) for n in names))
 
 
 def compute_items(k: Knowledge, end: dt.date, fr_ni: dict[dt.date, float],
@@ -1430,7 +1468,8 @@ def compute_items(k: Knowledge, end: dt.date, fr_ni: dict[dt.date, float],
         zero.append("txt_q")
     for name in ("dvc", "prstkc", "sstk"):
         v = s.ttm(name, end)
-        if v is None and out["cfo_ttm"] is not None and not s.has_recent_flow(name, end, FLOW_ZERO_LOOKBACK):
+        if (v is None and not s.k.source_backed_only and out["cfo_ttm"] is not None
+                and not s.has_recent_flow(name, end, FLOW_ZERO_LOOKBACK)):
             v = 0.0
             counters[f"{name}_zero_filled"] = counters.get(f"{name}_zero_filled", 0) + 1
             zero.append(f"{name}_ttm")
@@ -1454,7 +1493,8 @@ def compute_items(k: Knowledge, end: dt.date, fr_ni: dict[dt.date, float],
         out["ebitda_q"] = out["oi_q"] + out["dp_q"]
     for key, q in (("dvt_ttm", False), ("dvt_q", True)):
         v = s.qv("dvt", end) if q else s.ttm("dvt", end)
-        if v is None and out["dvc_ttm"] == 0.0 and not s.has_recent_flow("dvt", end, FLOW_ZERO_LOOKBACK):
+        if (v is None and not s.k.source_backed_only and out["dvc_ttm"] == 0.0
+                and not s.has_recent_flow("dvt", end, FLOW_ZERO_LOOKBACK)):
             v = 0.0
             zero.append(key)
         out[key] = v
@@ -1465,7 +1505,8 @@ def compute_items(k: Knowledge, end: dt.date, fr_ni: dict[dt.date, float],
     drev = s.inst("drev", end)
     if drev is None:
         dc, dn = s.inst("drev_cur", end), s.inst("drev_nc", end)
-        drev = None if dc is None and dn is None else _add(dc, dn)
+        drev = None if (dc is None or dn is None) and s.k.source_backed_only else (
+            None if dc is None and dn is None else _add(dc, dn))
     out["drev"] = drev
     out["ppegt"] = s.inst("ppegt", end)
     gw = s.inst("gdwl", end)
@@ -1476,7 +1517,7 @@ def compute_items(k: Knowledge, end: dt.date, fr_ni: dict[dt.date, float],
     intan = s.inst("intan", end)
     if intan is None:
         fin, ind = s.inst("intan_fin", end), s.inst("intan_ind", end)
-        if fin is not None or ind is not None:
+        if (fin is not None or ind is not None) and (not s.k.source_backed_only or (fin is not None and ind is not None)):
             intan = _add(fin, ind)
         else:
             tot = s.inst("intan_gw", end)
@@ -1492,7 +1533,7 @@ def compute_items(k: Knowledge, end: dt.date, fr_ni: dict[dt.date, float],
         zero.append("mib")
     out["mib"] = mib
     pstk = cur.get("pstk")
-    if pstk is None and at is not None:
+    if pstk is None and at is not None and not s.k.source_backed_only:
         pstk = 0.0
         zero.append("pstk")
     out["pstk"] = pstk
@@ -1620,20 +1661,24 @@ def catalog_items(s: Snapshot, calc: ItemCalc, ctx: Ctx, end: dt.date, out: dict
     else:
         out["intano"] = s.inst("intan_gw", end)
     at = out.get("at")
-    out["dlc"] = cur.get("st") if cur.get("st") is not None else (0.0 if at is not None else None)
+    out["dlc"] = cur.get("st") if cur.get("st") is not None else (
+        0.0 if at is not None and not s.k.source_backed_only else None)
     if not cat_structural(ctx.template, ctx.sic, "lco"):     # Compustat: LCT = AP + DLC + TXP + LCO
         lct, ap = out.get("lct"), out.get("ap")
-        if lct is not None and ap is not None and out["dlc"] is not None:
+        if (lct is not None and ap is not None and out["dlc"] is not None
+                and (out.get("txp") is not None or not s.k.source_backed_only)):
             out["lco"] = lct - ap - out["dlc"] - (out.get("txp") or 0.0)
         else:
             out["lco"] = s.inst(CAT + "lco", end)
     out["dltt"] = cur.get("ltd_nc") if at is not None or cur.get("ltd_nc") is not None else None
     txditc = s.inst_carry("txditc", end, CARRY_DAYS)
-    out["txditc"] = txditc if txditc is not None else (0.0 if at is not None else None)
+    out["txditc"] = txditc if txditc is not None else (
+        0.0 if at is not None and not s.k.source_backed_only else None)
     seq, pstk, mib = out.get("seq"), out.get("pstk"), out.get("mib")
-    out["ceq"] = None if seq is None else seq - (pstk or 0.0)
+    out["ceq"] = None if seq is None or (s.k.source_backed_only and pstk is None) else seq - (pstk or 0.0)
     teq = cur.get("seq_nci")
-    out["teq"] = teq if teq is not None else (None if seq is None else seq + (mib or 0.0))
+    out["teq"] = teq if teq is not None else (
+        None if seq is None or (s.k.source_backed_only and mib is None) else seq + (mib or 0.0))
     if out.get("lse") is None:
         out["lse"] = at
     act, lct = out.get("act"), out.get("lct")
@@ -1663,7 +1708,8 @@ def catalog_items(s: Snapshot, calc: ItemCalc, ctx: Ctx, end: dt.date, out: dict
     for cid in CHAIN_IDS["dvc"]:
         if CONCEPTS[cid][2] == "PaymentsOfDividends" and cid in s.k.present:
             dv = _ttm_one(s, cid, end)
-    if dv is None and out.get("dvc_ttm") is not None:
+    if (dv is None and out.get("dvc_ttm") is not None
+            and (out.get("dvpd_ttm") is not None or not s.k.source_backed_only)):
         dv = out["dvc_ttm"] + (out.get("dvpd_ttm") or 0.0)
     out["dv_ttm"] = dv
     return zero
@@ -1785,10 +1831,23 @@ def history_values(k: Knowledge, end: dt.date, ctx: Ctx) -> dict[str, tuple[floa
     drev = s.inst("drev", end)
     if drev is None:
         dc, dn = s.inst("drev_cur", end), s.inst("drev_nc", end)
-        drev = None if dc is None and dn is None else _add(dc, dn)
+        drev = None if (dc is None or dn is None) and s.k.source_backed_only else (
+            None if dc is None and dn is None else _add(dc, dn))
     put("drev", drev)
     put("mib", b.get("mib"))
     put("pstk", b.get("pstk"))
+    if k.source_backed_only:
+        # Annual comparatives carry their own filing clock; no quarterly deltas or current substitutions.
+        put("dlc", b.get("st"))
+        put("dltt", b.get("ltd_nc"))
+        put("txditc", s.inst("txditc", end))
+        put("re", s.inst(CAT + "re", end))
+        put("teq", b.get("seq_nci"))
+        put("tempeq", s.inst(CAT + "mibt", end))
+        for col, chain in DEPTH_ANNUAL.items():
+            keys=(presented_sale_chain(s,ctx,end),) if chain=='sale' else s.tiers(chain)
+            value = next((v for key in keys if (v := s._annual(key, end)) is not None), None)
+            put("annual_" + col, value)
     sh, _, _ = shares_at(s, end, latest_cover=False)
     put("shrs", sh)
     return out
@@ -1806,7 +1865,7 @@ def nil_zeros(k: Knowledge, durs: list[tuple[int, dt.date, dt.date]], own: dt.da
     enter 0 for that concept over the filing's own current period of the same duration (a start taken from
     the filing's other current-period facts, duration within 10 days), at the filing's clock -- never when a
     shorter period of that chain from the same start is non-zero (a year-to-date total does not return to 0)."""
-    if own is None or not durs:
+    if k.source_backed_only or own is None or not durs:
         return 0
     cur: dict[int, dt.date] = {}
     for cid, s0, e0 in durs:
@@ -1844,7 +1903,7 @@ def cat_nil_zeros(k: Knowledge, durs: list[tuple[int, dt.date, dt.date]], insts:
                   own: dt.date | None, clock: dt.datetime, counters: dict[str, int]) -> int:
     """``CAT_NIL_RULE`` for one filing: flows as ``nil_zeros`` over ``CAT_NIL_FLOW``; balances over ``CAT_NIL_STOCK``
     at the filing's comparative balance-sheet dates. Returns the number of zero facts entered."""
-    if own is None:
+    if k.source_backed_only or own is None:
         return 0
     n = 0
     cur: dict[int, dt.date] = {}
@@ -1914,7 +1973,8 @@ def staleness_days(quarterly_clocks: list[dt.datetime], clock: dt.datetime) -> i
 def company_events(cik: int, rows: Sequence[tuple], emit_from: dt.datetime, counters: dict[str, int],
                    money_unit: str = "USD", sic_by_accn: dict[str, int] | None = None,
                    pre_by_accn: dict[str, dict[str, bool]] | None = None,
-                   history: list[tuple] | None = None) -> tuple[list[dict[str, Any]], dict[str, str | None]]:
+                   history: list[tuple] | None = None, source_backed_only: bool = False
+                   ) -> tuple[list[dict[str, Any]], dict[str, str | None]]:
     """Rows: (clock, accn, cid, start, end, value, unit, form, filed, fy, fp, basis) sorted by (clock, accn).
 
     Money facts enter the knowledge only in ``money_unit``; share facts always. Returns one output dict per
@@ -1922,7 +1982,7 @@ def company_events(cik: int, rows: Sequence[tuple], emit_from: dt.datetime, coun
     ``history`` (optional) receives quarterly-history tuples (item, period_end, fiscal_period, accession,
     value, clock, zero_filled) for every accession (all clocks) whenever a value is new or changed.
     """
-    k = Knowledge()
+    k = Knowledge(source_backed_only=source_backed_only)
     fr_ni: dict[dt.date, float] = {}
     labels: dict[dt.date, tuple[int | None, str | None]] = {}
     pre_by_pe: dict[dt.date, dict[str, bool]] = {}
@@ -1995,6 +2055,9 @@ def company_events(cik: int, rows: Sequence[tuple], emit_from: dt.datetime, coun
                     latest_pe = own
                 if accn in pre_by_accn:
                     pre_by_pe[own] = pre_by_accn[accn]
+                    if source_backed_only:
+                        for _, _, comparative_end in a['durs']:
+                            pre_by_pe[comparative_end] = pre_by_accn[accn]
             a["own"] = own
             nil_zeros(k, a["durs"], a["own_pe"], clock, counters)
             cat_nil_zeros(k, a["durs"], a["insts"], a["own_pe"], clock, counters)
@@ -2114,21 +2177,24 @@ def fx_convert(e: dict[str, Any], ne: dict[str, Any], ccy: str, fx: Any) -> bool
 
 def issuer_events(cik: int, rows: Sequence[tuple], emit_from: dt.datetime, counters: dict[str, int],
                   sic_by_accn: dict[str, int] | None = None, pre_by_accn: dict[str, dict[str, bool]] | None = None,
-                  history: list[tuple] | None = None, fx: Any = None) -> list[dict[str, Any]]:
+                  history: list[tuple] | None = None, fx: Any = None,
+                  source_backed_only: bool = False) -> list[dict[str, Any]]:
     """Events of one issuer: money and share items from the USD knowledge; when the issuer reports money
     facts in another currency, the currency-invariant items (``UNITLESS_ITEMS``) of events whose filing
     reports in that currency come from that currency's knowledge, and so do their quarterly-history rows
     (tuples gain an eighth element, the currency). With ``fx`` (``fund_fx.FxTable``, ruling D4) covering that
     currency, those events' money items are the reporting-currency values converted to USD (``fx_convert``)."""
     hist_usd: list[tuple] | None = [] if history is not None else None
-    events, cur_by_accn = company_events(cik, rows, emit_from, counters, "USD", sic_by_accn, pre_by_accn, hist_usd)
+    events, cur_by_accn = company_events(cik, rows, emit_from, counters, "USD", sic_by_accn, pre_by_accn, hist_usd,
+                                       source_backed_only=source_backed_only)
     native = native_currency(rows)
     hist_nat: list[tuple] | None = None
     if native is not None:
         counters["issuers_native_currency_pass"] = counters.get("issuers_native_currency_pass", 0) + 1
         scratch: dict[str, int] = {}
         hist_nat = [] if history is not None else None
-        nat_events, _ = company_events(cik, rows, emit_from, scratch, native, sic_by_accn, pre_by_accn, hist_nat)
+        nat_events, _ = company_events(cik, rows, emit_from, scratch, native, sic_by_accn, pre_by_accn, hist_nat,
+                                       source_backed_only=source_backed_only)
         by_accn = {e["accession"]: e for e in nat_events}
         covered = fx is not None and fx.covers(native)
         for e in events:

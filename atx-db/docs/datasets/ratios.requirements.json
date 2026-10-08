@@ -1,0 +1,5421 @@
+{
+  "Task7_recomparison_contract": {
+    "clock": "monthend22UTC strictly for fundamentals, links and classification; keep ratio daily prior-session22UTC contract separately",
+    "comparison": "published raw characteristic values; no reconstructed panel proxy or unsafe foreign clocks; per-date raw matched-cell Spearman>=.99 remains required",
+    "currency": "USD money; reporting currency label is not money-unit evidence; preserve fx_conversion provenance",
+    "formulas": {
+      "bm": "(SEQ+actual visible TXDITC-PSTK)/issuerME; positive-book eligibility agreed explicitly",
+      "ep": "parentNI_TTM/issuerME; counterpart is inverse pe_issuer_ni extension, not diluted P/E",
+      "gpa": "(SALE_TTM-COGS_TTM)/currentAT",
+      "sp": "SALE_TTM/issuerME"
+    },
+    "history": "same standardized stage/hash, accession/available_at/restatement vintage; no unsupported GP zero defaults; actual retained comparable periods, same freshness/null/sign masks",
+    "issuer_cap": "same session rawclose*shares_daily.shrout across identical dated common P/J line set; retain line set and class/share evidence",
+    "join": [
+      "session_date",
+      "security_id"
+    ],
+    "owner": "Task7",
+    "producer_stage": "published char_monthly (currently absent; characteristics/year=*/characteristics.parquet files0)",
+    "required_lineage_fields": [
+      "fund_available_at",
+      "fund_datadate",
+      "fund_accession",
+      "std_manifest_sha256",
+      "issuer_cap_lineage",
+      "fx_money_basis",
+      "universe_manifest_sha256"
+    ],
+    "universe": "same finalized universe hash90e9ca70cec64838a96b5f7ffc0de88a28e1faf529b48b480c56f4b9d85d0c0e; explicit agreed membership mask"
+  },
+  "clock": "fundamentals strict < monthly month-end22UTC or daily prior-session22UTC; market close <= session",
+  "coverage_snapshot_status": {
+    "gc3": "REFRESHED after R9 release; all9fileSHA/size verified before/after",
+    "is_latest_universe": true,
+    "measured_manifest_sha256": "90e9ca70cec64838a96b5f7ffc0de88a28e1faf529b48b480c56f4b9d85d0c0e",
+    "output_integrity_verified": true,
+    "supersedes": "R1 overlap-era provisional/invalid coverage; R0 historical coverage preserved only as earlier report history",
+    "universe_parity": "NOT certified: Task2 French10/60FAIL remains"
+  },
+  "coverage_universe_manifest_sha256": "90e9ca70cec64838a96b5f7ffc0de88a28e1faf529b48b480c56f4b9d85d0c0e",
+  "formula_authorities": {
+    "P/E": "https://finance.wharton.upenn.edu/~mrrobert/resources/FDM/fdm-20230823.pdf",
+    "WFRS": "https://people.tamu.edu/~cschulman/ECMT461/Termp/WRDS_Industry_Financial_Ratio_Manual.pdf"
+  },
+  "gold_linkage": {
+    "gprof": {
+      "candidate": "gp_at",
+      "identity": "gross profit TTM / end assets; source and clocks must align"
+    },
+    "growth": {
+      "owner": "Task5/7/16",
+      "required_families": [
+        "quarterly_YoY",
+        "annual_TTM_sales_earnings_cashflow_asset_equity_capex_RD_growth",
+        "margin_changes",
+        "working_capital_investment_growth",
+        "per_share_dilution"
+      ],
+      "status": "requires expanded primitive matrix; no invented primitive or source-equivalence claim"
+    },
+    "roa": {
+      "candidate": null,
+      "reason": "WFRS roa is EBITDA / average assets; cannot label as NI/assets"
+    },
+    "roe": {
+      "candidate": null,
+      "reason": "NI/average(SEQ+TXDITC); not automatically NI/end common equity"
+    }
+  },
+  "growth_handoff": "Task5 owns primitive recovery/matrix; Task7/16 own additional quarterly YoY/annual/TTM growth families. No missing historical period ->zero.",
+  "input_manifest_sha256": "9a7d486f61fa557ffbe53aea7aab12a08525ac3d37f3f3f24fd133fea5c96325",
+  "input_schema": "atx.alpha-panel.compustat-std/v2",
+  "input_stage": "compustat_std",
+  "literature_range_contract": {
+    "authority": "WRDS Research Team2016 manual pp2-3, https://people.tamu.edu/~cschulman/ECMT461/Termp/WRDS_Industry_Financial_Ratio_Manual.pdf",
+    "controller_reference_needed": [
+      "named empirical reference dataset/publication/table",
+      "exact ratio definition and period basis",
+      "comparable issuer universe including financial issuer policy",
+      "currency/PIT clocks/freshness and vintage",
+      "raw vs truncated/smoothed treatment and threshold rule"
+    ],
+    "diagnostic_quantiles": [
+      {
+        "n": 147952,
+        "quantiles": [
+          -17.28,
+          0.09226143648748002,
+          2.4072076671878824
+        ]
+      }
+    ],
+    "findings": "Raw firm ratios untruncated/unsmoothed; 1% industry aggregation outlier handling is not a fixed numerical firm-level envelope. No published authority establishes PTPM[-200,2] or the other ad hoc numeric bands.",
+    "no_clipping": true,
+    "status": "BLOCKED/unverifiable; hard gate FAIL under R10"
+  },
+  "metrics": [
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Shiller's cyclically adjusted P/E: market equity / mean net income of the last five fiscal years (nominal)",
+      "den": "ni_avg5",
+      "downstream_column": "capei",
+      "expr": "CASE WHEN (ni_avg5) <> 0 THEN (me) / (ni_avg5) END",
+      "family": "valuation",
+      "freq": "a",
+      "inputs": [
+        "ni"
+      ],
+      "name": "capei",
+      "num": "me",
+      "price": true,
+      "role": "primary",
+      "undef": "((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 1431)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Book/Market: book equity / market equity",
+      "den": "me",
+      "downstream_column": "bm",
+      "expr": "CASE WHEN (me) <> 0 THEN (be_q0) / (me) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "seq"
+      ],
+      "name": "bm",
+      "num": "be_q0",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Enterprise value multiple: (me + dltt + dlc + pstk + mib - che) / EBITDA (oibdp) TTM",
+      "den": "oibdp_ttm",
+      "downstream_column": "evm",
+      "expr": "CASE WHEN (oibdp_ttm) <> 0 THEN (me + ev_debt) / (oibdp_ttm) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "dlc",
+        "che",
+        "oibdp"
+      ],
+      "name": "evm",
+      "num": "me + ev_debt",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Issuer aggregate common market equity / income before extraordinary items TTM (USD); cap/earnings analog, not diluted EPS P/E",
+      "den": "ib_ttm",
+      "downstream_column": "pe_issuer_ib",
+      "expr": "CASE WHEN (ib_ttm) <> 0 THEN (me) / (ib_ttm) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "ib"
+      ],
+      "name": "pe_issuer_ib",
+      "num": "me",
+      "price": true,
+      "role": "extension",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Issuer aggregate common market equity / parent net income TTM (USD); cap/earnings analog, not diluted EPS P/E",
+      "den": "ni_ttm",
+      "downstream_column": "pe_issuer_ni",
+      "expr": "CASE WHEN (ni_ttm) <> 0 THEN (me) / (ni_ttm) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "ni"
+      ],
+      "name": "pe_issuer_ni",
+      "num": "me",
+      "price": true,
+      "role": "extension",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "WFRS price / diluted EPS excluding EI; NULL until certified security-class/ADR/EPS share-basis alignment is available",
+      "den": "epsfx_ttm * eps_adj",
+      "downstream_column": "pe_exi",
+      "expr": "CAST(NULL AS DOUBLE)",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "epsfx"
+      ],
+      "name": "pe_exi",
+      "num": "prc",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "WFRS price / diluted EPS including EI; NULL until certified security-class/ADR/EPS share-basis alignment is available",
+      "den": "epsfi_ttm * eps_adj",
+      "downstream_column": "pe_inc",
+      "expr": "CAST(NULL AS DOUBLE)",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "epsfi"
+      ],
+      "name": "pe_inc",
+      "num": "prc",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Price/Sales: market equity / sales TTM",
+      "den": "sale_ttm",
+      "downstream_column": "ps",
+      "expr": "CASE WHEN (sale_ttm) <> 0 THEN (me) / (sale_ttm) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "sale"
+      ],
+      "name": "ps",
+      "num": "me",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Price/Cash flow: market equity / operating cash flow TTM",
+      "den": "oancf_ttm",
+      "downstream_column": "pcf",
+      "expr": "CASE WHEN (oancf_ttm) <> 0 THEN (me) / (oancf_ttm) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "oancf"
+      ],
+      "name": "pcf",
+      "num": "me",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Dividend payout ratio: common cash dividends TTM / income before extraordinary items TTM",
+      "den": "ib_ttm",
+      "downstream_column": "dpr",
+      "expr": "CASE WHEN (ib_ttm) <> 0 THEN (dvc_ttm) / (ib_ttm) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "dvc",
+        "ib"
+      ],
+      "name": "dpr",
+      "num": "dvc_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Trailing PEG: pe_exi / 3-year compound annual growth (percent) of annual diluted EPS excl. EI (both > 0)",
+      "den": "eps_g3 * 100",
+      "downstream_column": "peg_trailing",
+      "expr": "CAST(NULL AS DOUBLE)",
+      "family": "valuation",
+      "freq": "qa",
+      "inputs": [
+        "epsfx"
+      ],
+      "name": "peg_trailing",
+      "num": "CASE WHEN (epsfx_ttm * eps_adj) <> 0 THEN (prc) / (epsfx_ttm * eps_adj) END",
+      "price": true,
+      "role": "primary",
+      "undef": "(((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 1066) OR epsfx_a0 <= 0 OR epsfx_a3 <= 0)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Dividend yield: common cash dividends TTM / market equity",
+      "den": "me",
+      "downstream_column": "divyield_paid",
+      "expr": "CASE WHEN (me) <> 0 THEN (dvc_ttm) / (me) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "dvc"
+      ],
+      "name": "divyield_paid",
+      "num": "dvc_ttm",
+      "price": true,
+      "role": "extension",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Price/Book: market equity / common equity",
+      "den": "ceq_q0",
+      "downstream_column": "ptb",
+      "expr": "CASE WHEN (ceq_q0) <> 0 THEN (me) / (ceq_q0) END",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "ceq"
+      ],
+      "name": "ptb",
+      "num": "me",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Indicated dividend rate / price (WFRS); NULL: no source-backed indicated rate primitive",
+      "den": "prc",
+      "downstream_column": "divyield",
+      "expr": "CAST(NULL AS DOUBLE)",
+      "family": "valuation",
+      "freq": "q",
+      "inputs": [
+        "indicated_dividend_rate"
+      ],
+      "name": "divyield",
+      "num": "CAST(NULL AS DOUBLE)",
+      "price": true,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Net profit margin: net income TTM / sales TTM",
+      "den": "sale_ttm",
+      "downstream_column": "npm",
+      "expr": "CASE WHEN (sale_ttm) <> 0 THEN (ni_ttm) / (sale_ttm) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "ni",
+        "sale"
+      ],
+      "name": "npm",
+      "num": "ni_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Operating profit margin before depreciation: oibdp TTM / sales TTM",
+      "den": "sale_ttm",
+      "downstream_column": "opmbd",
+      "expr": "CASE WHEN (sale_ttm) <> 0 THEN (oibdp_ttm) / (sale_ttm) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "oibdp",
+        "sale"
+      ],
+      "name": "opmbd",
+      "num": "oibdp_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Operating profit margin after depreciation: oiadp TTM / sales TTM",
+      "den": "sale_ttm",
+      "downstream_column": "opmad",
+      "expr": "CASE WHEN (sale_ttm) <> 0 THEN (oiadp_ttm) / (sale_ttm) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "oiadp",
+        "sale"
+      ],
+      "name": "opmad",
+      "num": "oiadp_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Gross profit margin: (sales - cogs) TTM / sales TTM",
+      "den": "sale_ttm",
+      "downstream_column": "gpm",
+      "expr": "CASE WHEN (sale_ttm) <> 0 THEN (sale_ttm - cogs_ttm) / (sale_ttm) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "sale",
+        "cogs"
+      ],
+      "name": "gpm",
+      "num": "sale_ttm - cogs_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Pre-tax profit margin: pretax income / sales (latest fiscal year)",
+      "den": "sale_a0",
+      "downstream_column": "ptpm",
+      "expr": "CASE WHEN (sale_a0) <> 0 THEN (pi_a0) / (sale_a0) END",
+      "family": "profitability",
+      "freq": "a",
+      "inputs": [
+        "pi",
+        "sale"
+      ],
+      "name": "ptpm",
+      "num": "pi_a0",
+      "price": false,
+      "role": "primary",
+      "undef": "(fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Cash flow margin: (income before extraordinary items + depreciation) TTM / sales TTM",
+      "den": "sale_ttm",
+      "downstream_column": "cfm",
+      "expr": "CASE WHEN (sale_ttm) <> 0 THEN (ib_ttm + dp_ttm) / (sale_ttm) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "ib",
+        "dp",
+        "sale"
+      ],
+      "name": "cfm",
+      "num": "ib_ttm + dp_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Return on assets: oibdp TTM / average total assets",
+      "den": "avg_at",
+      "downstream_column": "roa",
+      "expr": "CASE WHEN (avg_at) <> 0 THEN (oibdp_ttm) / (avg_at) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "oibdp",
+        "at"
+      ],
+      "name": "roa",
+      "num": "oibdp_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Return on equity: NI TTM / average (parent stockholder equity + deferred taxes and investment tax credit)",
+      "den": "avg_wrds_be",
+      "downstream_column": "roe",
+      "expr": "CASE WHEN (avg_wrds_be) <> 0 THEN (ni_ttm) / (avg_wrds_be) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "ni",
+        "seq",
+        "txditc"
+      ],
+      "name": "roe",
+      "num": "ni_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Return on capital employed: EBIT (NI + tax + interest) TTM / average (dltt + dlc + ceq)",
+      "den": "avg_capemp",
+      "downstream_column": "roce",
+      "expr": "CASE WHEN (avg_capemp) <> 0 THEN (ni_ttm + txt_ttm + xint_ttm) / (avg_capemp) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "ni",
+        "txt",
+        "xint",
+        "dltt",
+        "dlc",
+        "ceq"
+      ],
+      "name": "roce",
+      "num": "ni_ttm + txt_ttm + xint_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Effective tax rate: income taxes / pretax income (latest fiscal year)",
+      "den": "pi_a0",
+      "downstream_column": "efftax",
+      "expr": "CASE WHEN (pi_a0) <> 0 THEN (txt_a0) / (pi_a0) END",
+      "family": "profitability",
+      "freq": "a",
+      "inputs": [
+        "txt",
+        "pi"
+      ],
+      "name": "efftax",
+      "num": "txt_a0",
+      "price": false,
+      "role": "primary",
+      "undef": "(fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "After-tax return on average common equity: NI TTM / average ceq",
+      "den": "avg_ceq",
+      "downstream_column": "aftret_eq",
+      "expr": "CASE WHEN (avg_ceq) <> 0 THEN (ni_ttm) / (avg_ceq) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "ni",
+        "ceq"
+      ],
+      "name": "aftret_eq",
+      "num": "ni_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "After-tax return on invested capital: (NI + interest) TTM / invested capital",
+      "den": "icapt_q0",
+      "downstream_column": "aftret_invcapx",
+      "expr": "CASE WHEN (icapt_q0) <> 0 THEN (ni_ttm + xint_ttm) / (icapt_q0) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "ni",
+        "xint",
+        "dltt",
+        "ceq"
+      ],
+      "name": "aftret_invcapx",
+      "num": "ni_ttm + xint_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "After-tax return on total stockholders' equity: NI TTM / average seq",
+      "den": "avg_seq",
+      "downstream_column": "aftret_equity",
+      "expr": "CASE WHEN (avg_seq) <> 0 THEN (ni_ttm) / (avg_seq) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "ni",
+        "seq"
+      ],
+      "name": "aftret_equity",
+      "num": "ni_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Pre-tax return on net operating assets: oiadp TTM / average (ppent + act - lct)",
+      "den": "avg_noa",
+      "downstream_column": "pretret_noa",
+      "expr": "CASE WHEN (avg_noa) <> 0 THEN (oiadp_ttm) / (avg_noa) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "oiadp",
+        "ppent",
+        "act",
+        "lct"
+      ],
+      "name": "pretret_noa",
+      "num": "oiadp_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Pre-tax return on total earning assets: oiadp TTM / average (ppent + act)",
+      "den": "avg_tea",
+      "downstream_column": "pretret_earnat",
+      "expr": "CASE WHEN (avg_tea) <> 0 THEN (oiadp_ttm) / (avg_tea) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "oiadp",
+        "ppent",
+        "act"
+      ],
+      "name": "pretret_earnat",
+      "num": "oiadp_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Gross profit / total assets (WFRS GProf)",
+      "den": "at_q0",
+      "downstream_column": "gprof",
+      "expr": "CASE WHEN (at_q0) <> 0 THEN (sale_ttm - cogs_ttm) / (at_q0) END",
+      "family": "profitability",
+      "freq": "q",
+      "inputs": [
+        "sale",
+        "cogs",
+        "at"
+      ],
+      "name": "gprof",
+      "num": "sale_ttm - cogs_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Common equity / invested capital",
+      "den": "icapt_q0",
+      "downstream_column": "equity_invcap",
+      "expr": "CASE WHEN (icapt_q0) <> 0 THEN (ceq_q0) / (icapt_q0) END",
+      "family": "capitalization",
+      "freq": "q",
+      "inputs": [
+        "ceq",
+        "dltt"
+      ],
+      "name": "equity_invcap",
+      "num": "ceq_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Long-term debt / invested capital",
+      "den": "icapt_q0",
+      "downstream_column": "debt_invcap",
+      "expr": "CASE WHEN (icapt_q0) <> 0 THEN (dltt_q0) / (icapt_q0) END",
+      "family": "capitalization",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "ceq"
+      ],
+      "name": "debt_invcap",
+      "num": "dltt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Total debt (dltt + dlc) / invested capital",
+      "den": "icapt_q0",
+      "downstream_column": "totdebt_invcap",
+      "expr": "CASE WHEN (icapt_q0) <> 0 THEN (dltt_q0 + dlc_q0) / (icapt_q0) END",
+      "family": "capitalization",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "dlc",
+        "ceq"
+      ],
+      "name": "totdebt_invcap",
+      "num": "dltt_q0 + dlc_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Capitalization ratio: dltt / (dltt + ceq + pstk)",
+      "den": "dltt_q0 + ceq_q0 + pstk_q0",
+      "downstream_column": "capital_ratio",
+      "expr": "CASE WHEN (dltt_q0 + ceq_q0 + pstk_q0) <> 0 THEN (dltt_q0) / (dltt_q0 + ceq_q0 + pstk_q0) END",
+      "family": "capitalization",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "ceq"
+      ],
+      "name": "capital_ratio",
+      "num": "dltt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Interest TTM / average long-term debt",
+      "den": "avg_dltt",
+      "downstream_column": "int_debt",
+      "expr": "CASE WHEN (avg_dltt) <> 0 THEN (xint_ttm) / (avg_dltt) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "xint",
+        "dltt"
+      ],
+      "name": "int_debt",
+      "num": "xint_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Interest TTM / average total debt",
+      "den": "avg_totdebt",
+      "downstream_column": "int_totdebt",
+      "expr": "CASE WHEN (avg_totdebt) <> 0 THEN (xint_ttm) / (avg_totdebt) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "xint",
+        "dltt",
+        "dlc"
+      ],
+      "name": "int_totdebt",
+      "num": "xint_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Cash and short-term investments / total liabilities",
+      "den": "lt_q0",
+      "downstream_column": "cash_lt",
+      "expr": "CASE WHEN (lt_q0) <> 0 THEN (che_q0) / (lt_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "che",
+        "lt"
+      ],
+      "name": "cash_lt",
+      "num": "che_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Inventory / current assets",
+      "den": "act_q0",
+      "downstream_column": "invt_act",
+      "expr": "CASE WHEN (act_q0) <> 0 THEN (invt_q0) / (act_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "invt",
+        "act"
+      ],
+      "name": "invt_act",
+      "num": "invt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Receivables / current assets",
+      "den": "act_q0",
+      "downstream_column": "rect_act",
+      "expr": "CASE WHEN (act_q0) <> 0 THEN (rect_q0) / (act_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "rect",
+        "act"
+      ],
+      "name": "rect_act",
+      "num": "rect_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Total liabilities / total assets (WFRS debt_at)",
+      "den": "at_q0",
+      "downstream_column": "debt_at",
+      "expr": "CASE WHEN (at_q0) <> 0 THEN (lt_q0) / (at_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "lt",
+        "at"
+      ],
+      "name": "debt_at",
+      "num": "lt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Total debt / EBITDA TTM",
+      "den": "oibdp_ttm",
+      "downstream_column": "debt_ebitda",
+      "expr": "CASE WHEN (oibdp_ttm) <> 0 THEN (dltt_q0 + dlc_q0) / (oibdp_ttm) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "dlc",
+        "oibdp"
+      ],
+      "name": "debt_ebitda",
+      "num": "dltt_q0 + dlc_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Short-term debt / total debt",
+      "den": "dltt_q0 + dlc_q0",
+      "downstream_column": "short_debt",
+      "expr": "CASE WHEN (dltt_q0 + dlc_q0) <> 0 THEN (dlc_q0) / (dltt_q0 + dlc_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "dlc"
+      ],
+      "name": "short_debt",
+      "num": "dlc_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Current liabilities / total liabilities",
+      "den": "lt_q0",
+      "downstream_column": "curr_debt",
+      "expr": "CASE WHEN (lt_q0) <> 0 THEN (lct_q0) / (lt_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "lct",
+        "lt"
+      ],
+      "name": "curr_debt",
+      "num": "lct_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Long-term debt / total liabilities",
+      "den": "lt_q0",
+      "downstream_column": "lt_debt",
+      "expr": "CASE WHEN (lt_q0) <> 0 THEN (dltt_q0) / (lt_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "lt"
+      ],
+      "name": "lt_debt",
+      "num": "dltt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Operating income before depreciation TTM / current liabilities",
+      "den": "lct_q0",
+      "downstream_column": "profit_lct",
+      "expr": "CASE WHEN (lct_q0) <> 0 THEN (oibdp_ttm) / (lct_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "oibdp",
+        "lct"
+      ],
+      "name": "profit_lct",
+      "num": "oibdp_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Operating cash flow TTM / current liabilities",
+      "den": "lct_q0",
+      "downstream_column": "ocf_lct",
+      "expr": "CASE WHEN (lct_q0) <> 0 THEN (oancf_ttm) / (lct_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "oancf",
+        "lct"
+      ],
+      "name": "ocf_lct",
+      "num": "oancf_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Operating cash flow TTM / total debt",
+      "den": "dltt_q0 + dlc_q0",
+      "downstream_column": "cash_debt",
+      "expr": "CASE WHEN (dltt_q0 + dlc_q0) <> 0 THEN (oancf_ttm) / (dltt_q0 + dlc_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "oancf",
+        "dltt",
+        "dlc"
+      ],
+      "name": "cash_debt",
+      "num": "oancf_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Free cash flow / operating cash flow",
+      "den": "oancf_ttm",
+      "downstream_column": "fcf_ocf",
+      "expr": "CASE WHEN (oancf_ttm) <> 0 THEN (oancf_ttm - capx_ttm) / (oancf_ttm) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "oancf",
+        "capx"
+      ],
+      "name": "fcf_ocf",
+      "num": "oancf_ttm - capx_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Total liabilities / total tangible assets (AT - INTAN)",
+      "den": "at_q0 - intan_q0",
+      "downstream_column": "lt_ppent",
+      "expr": "CASE WHEN (at_q0 - intan_q0) <> 0 THEN (lt_q0) / (at_q0 - intan_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "lt",
+        "at",
+        "intan"
+      ],
+      "name": "lt_ppent",
+      "num": "lt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Long-term debt / book equity",
+      "den": "be_q0",
+      "downstream_column": "dltt_be",
+      "expr": "CASE WHEN (be_q0) <> 0 THEN (dltt_q0) / (be_q0) END",
+      "family": "solvency_fin",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "seq"
+      ],
+      "name": "dltt_be",
+      "num": "dltt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Total debt/equity: total liabilities / shareholders' equity (common and preferred)",
+      "den": "ceq_q0 + pstk_q0",
+      "downstream_column": "de_ratio",
+      "expr": "CASE WHEN (ceq_q0 + pstk_q0) <> 0 THEN (lt_q0) / (ceq_q0 + pstk_q0) END",
+      "family": "solvency",
+      "freq": "q",
+      "inputs": [
+        "lt",
+        "ceq"
+      ],
+      "name": "de_ratio",
+      "num": "lt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Financial debt / total assets",
+      "den": "at_q0",
+      "downstream_column": "debt_assets",
+      "expr": "CASE WHEN (at_q0) <> 0 THEN (dltt_q0 + dlc_q0) / (at_q0) END",
+      "family": "solvency",
+      "freq": "q",
+      "inputs": [
+        "dltt",
+        "dlc",
+        "at"
+      ],
+      "name": "debt_assets",
+      "num": "dltt_q0 + dlc_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Total debt/capital: (ap + dlc + dltt) / (ap + dlc + dltt + ceq + pstk)",
+      "den": "ap_q0 + dlc_q0 + dltt_q0 + ceq_q0 + pstk_q0",
+      "downstream_column": "debt_capital",
+      "expr": "CASE WHEN (ap_q0 + dlc_q0 + dltt_q0 + ceq_q0 + pstk_q0) <> 0 THEN (ap_q0 + dlc_q0 + dltt_q0) / (ap_q0 + dlc_q0 + dltt_q0 + ceq_q0 + pstk_q0) END",
+      "family": "solvency",
+      "freq": "q",
+      "inputs": [
+        "ap",
+        "dlc",
+        "dltt",
+        "ceq"
+      ],
+      "name": "debt_capital",
+      "num": "ap_q0 + dlc_q0 + dltt_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "After-tax interest coverage: (xint + ib) TTM / xint TTM",
+      "den": "xint_ttm",
+      "downstream_column": "intcov",
+      "expr": "CASE WHEN (xint_ttm) <> 0 THEN (xint_ttm + ib_ttm) / (xint_ttm) END",
+      "family": "solvency",
+      "freq": "q",
+      "inputs": [
+        "xint",
+        "ib"
+      ],
+      "name": "intcov",
+      "num": "xint_ttm + ib_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Interest coverage ratio: EBIT (NI + tax + interest) TTM / xint TTM",
+      "den": "xint_ttm",
+      "downstream_column": "intcov_ratio",
+      "expr": "CASE WHEN (xint_ttm) <> 0 THEN (ni_ttm + txt_ttm + xint_ttm) / (xint_ttm) END",
+      "family": "solvency",
+      "freq": "q",
+      "inputs": [
+        "ni",
+        "txt",
+        "xint"
+      ],
+      "name": "intcov_ratio",
+      "num": "ni_ttm + txt_ttm + xint_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Cash and short-term investments / current liabilities",
+      "den": "lct_q0",
+      "downstream_column": "cash_ratio",
+      "expr": "CASE WHEN (lct_q0) <> 0 THEN (che_q0) / (lct_q0) END",
+      "family": "liquidity",
+      "freq": "q",
+      "inputs": [
+        "che",
+        "lct"
+      ],
+      "name": "cash_ratio",
+      "num": "che_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Quick ratio (acid test): (current assets - inventories) / current liabilities",
+      "den": "lct_q0",
+      "downstream_column": "quick_ratio",
+      "expr": "CASE WHEN (lct_q0) <> 0 THEN (act_q0 - invt_z0) / (lct_q0) END",
+      "family": "liquidity",
+      "freq": "q",
+      "inputs": [
+        "act",
+        "invt",
+        "lct"
+      ],
+      "name": "quick_ratio",
+      "num": "act_q0 - invt_z0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Current ratio: current assets / current liabilities",
+      "den": "lct_q0",
+      "downstream_column": "curr_ratio",
+      "expr": "CASE WHEN (lct_q0) <> 0 THEN (act_q0) / (lct_q0) END",
+      "family": "liquidity",
+      "freq": "q",
+      "inputs": [
+        "act",
+        "lct"
+      ],
+      "name": "curr_ratio",
+      "num": "act_q0",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Cash conversion cycle (days): 365 x (inventories / cogs + receivables / sales - payables / cogs), current balances and TTM flows",
+      "den": "cogs_ttm * sale_ttm",
+      "downstream_column": "cash_conversion",
+      "expr": "CASE WHEN cogs_ttm <> 0 AND sale_ttm <> 0 THEN 365.0 * (invt_q0 / cogs_ttm + rect_q0 / sale_ttm - ap_q0 / cogs_ttm) END",
+      "family": "liquidity",
+      "freq": "q",
+      "inputs": [
+        "invt",
+        "rect",
+        "ap",
+        "cogs",
+        "sale"
+      ],
+      "name": "cash_conversion",
+      "num": null,
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Asset turnover: sales TTM / average total assets",
+      "den": "avg_at",
+      "downstream_column": "at_turn",
+      "expr": "CASE WHEN (avg_at) <> 0 THEN (sale_ttm) / (avg_at) END",
+      "family": "efficiency",
+      "freq": "q",
+      "inputs": [
+        "sale",
+        "at"
+      ],
+      "name": "at_turn",
+      "num": "sale_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Inventory turnover: cogs TTM / average inventories",
+      "den": "avg_invt",
+      "downstream_column": "inv_turn",
+      "expr": "CASE WHEN (avg_invt) <> 0 THEN (cogs_ttm) / (avg_invt) END",
+      "family": "efficiency",
+      "freq": "q",
+      "inputs": [
+        "cogs",
+        "invt"
+      ],
+      "name": "inv_turn",
+      "num": "cogs_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Payables turnover: (cogs TTM + change in inventories over the year) / average accounts payable",
+      "den": "avg_ap",
+      "downstream_column": "pay_turn",
+      "expr": "CASE WHEN (avg_ap) <> 0 THEN (cogs_ttm + (invt_z0 - invt_z4)) / (avg_ap) END",
+      "family": "efficiency",
+      "freq": "q",
+      "inputs": [
+        "cogs",
+        "invt",
+        "ap"
+      ],
+      "name": "pay_turn",
+      "num": "cogs_ttm + (invt_z0 - invt_z4)",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Receivables turnover: sales TTM / average receivables",
+      "den": "avg_rect",
+      "downstream_column": "rect_turn",
+      "expr": "CASE WHEN (avg_rect) <> 0 THEN (sale_ttm) / (avg_rect) END",
+      "family": "efficiency",
+      "freq": "q",
+      "inputs": [
+        "sale",
+        "rect"
+      ],
+      "name": "rect_turn",
+      "num": "sale_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Sales TTM / stockholders' equity",
+      "den": "seq_q0",
+      "downstream_column": "sale_equity",
+      "expr": "CASE WHEN (seq_q0) <> 0 THEN (sale_ttm) / (seq_q0) END",
+      "family": "efficiency",
+      "freq": "q",
+      "inputs": [
+        "sale",
+        "seq"
+      ],
+      "name": "sale_equity",
+      "num": "sale_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Sales TTM / invested capital",
+      "den": "icapt_q0",
+      "downstream_column": "sale_invcap",
+      "expr": "CASE WHEN (icapt_q0) <> 0 THEN (sale_ttm) / (icapt_q0) END",
+      "family": "efficiency",
+      "freq": "q",
+      "inputs": [
+        "sale",
+        "dltt",
+        "ceq"
+      ],
+      "name": "sale_invcap",
+      "num": "sale_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Sales TTM / working capital (act - lct)",
+      "den": "act_q0 - lct_q0",
+      "downstream_column": "sale_nwc",
+      "expr": "CASE WHEN (act_q0 - lct_q0) <> 0 THEN (sale_ttm) / (act_q0 - lct_q0) END",
+      "family": "efficiency",
+      "freq": "q",
+      "inputs": [
+        "sale",
+        "act",
+        "lct"
+      ],
+      "name": "sale_nwc",
+      "num": "sale_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Accruals / average total assets: (ib - oancf) TTM / average at (Sloan sign)",
+      "den": "avg_at",
+      "downstream_column": "accrual",
+      "expr": "CASE WHEN (avg_at) <> 0 THEN (ib_ttm - oancf_ttm) / (avg_at) END",
+      "family": "other",
+      "freq": "q",
+      "inputs": [
+        "ib",
+        "oancf",
+        "at"
+      ],
+      "name": "accrual",
+      "num": "ib_ttm - oancf_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "R&D expense TTM / sales TTM",
+      "den": "sale_ttm",
+      "downstream_column": "rd_sale",
+      "expr": "CASE WHEN (sale_ttm) <> 0 THEN (xrd_ttm) / (sale_ttm) END",
+      "family": "other",
+      "freq": "q",
+      "inputs": [
+        "xrd",
+        "sale"
+      ],
+      "name": "rd_sale",
+      "num": "xrd_ttm",
+      "price": false,
+      "role": "primary",
+      "undef": null
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Advertising expense / sales (latest fiscal year)",
+      "den": "sale_a0",
+      "downstream_column": "adv_sale",
+      "expr": "CASE WHEN (sale_a0) <> 0 THEN (xad_a0) / (sale_a0) END",
+      "family": "other",
+      "freq": "a",
+      "inputs": [
+        "xad",
+        "sale"
+      ],
+      "name": "adv_sale",
+      "num": "xad_a0",
+      "price": false,
+      "role": "primary",
+      "undef": "(fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Piotroski (2000) F-score: sum of nine indicators on annual data (f_roa ib/at_t-1 > 0; f_cfo oancf/at_t-1 > 0; f_droa change in roa > 0; f_accrual cfo > roa; f_dlever change in dltt / average at < 0; f_dliquid change in current ratio > 0; f_eqoff sstk = 0; f_dmargin change in gross margin > 0; f_dturn change in sale/at_t-1 > 0); NULL unless all nine are defined",
+      "den": null,
+      "downstream_column": "piotroski_f",
+      "expr": "f_roa + f_cfo + f_droa + f_accrual + f_dlever + f_dliquid + f_eqoff + f_dmargin + f_dturn",
+      "family": "composite",
+      "freq": "a",
+      "inputs": [
+        "ib",
+        "at",
+        "oancf",
+        "dltt",
+        "act",
+        "lct",
+        "sstk",
+        "sale",
+        "cogs"
+      ],
+      "name": "piotroski_f",
+      "price": false,
+      "role": "composite",
+      "undef": "((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 700)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Altman (1968) Z = 1.2 (act - lct)/at + 1.4 re/at + 3.3 oiadp/at + 0.6 me/lt + 1.0 sale/at (latest fiscal year; me of the session)",
+      "den": null,
+      "downstream_column": "altman_z",
+      "expr": "CASE WHEN altman_x IS NOT NULL AND lt_a0 <> 0 AND me IS NOT NULL THEN altman_x + 0.6 * me / lt_a0 END",
+      "family": "composite",
+      "freq": "a",
+      "inputs": [
+        "act",
+        "lct",
+        "at",
+        "re",
+        "oiadp",
+        "lt",
+        "sale"
+      ],
+      "name": "altman_z",
+      "price": true,
+      "role": "composite",
+      "undef": "(fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Ohlson (1980) model 1 O = -1.32 - 0.407 ln(at, USD millions, undeflated) + 6.03 lt/at - 1.43 (act - lct)/at + 0.0757 lct/act - 1.72 [lt > at] - 2.37 ni/at - 1.83 oancf/lt + 0.285 [ni < 0 both years] - 0.521 (ni_t - ni_t-1)/(|ni_t| + |ni_t-1|) (latest fiscal year)",
+      "den": null,
+      "downstream_column": "ohlson_o",
+      "expr": "ohlson_o",
+      "family": "composite",
+      "freq": "a",
+      "inputs": [
+        "at",
+        "lt",
+        "act",
+        "lct",
+        "ni",
+        "oancf"
+      ],
+      "name": "ohlson_o",
+      "price": false,
+      "role": "composite",
+      "undef": "((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 335)"
+    },
+    {
+      "consumer_owner": "Task7/16 (Task17 registry integration)",
+      "definition": "Beneish (1999) 8-variable M = -4.84 + 0.920 DSRI + 0.528 GMI + 0.404 AQI + 0.892 SGI + 0.115 DEPI - 0.172 SGAI + 4.679 TATA - 0.327 LVGI (fiscal years t and t-1; TATA = (ib - oancf)/at)",
+      "den": null,
+      "downstream_column": "beneish_m",
+      "expr": "beneish_m",
+      "family": "composite",
+      "freq": "a",
+      "inputs": [
+        "rect",
+        "sale",
+        "cogs",
+        "act",
+        "ppent",
+        "at",
+        "dp",
+        "xsga",
+        "lct",
+        "dltt",
+        "ib",
+        "oancf"
+      ],
+      "name": "beneish_m",
+      "price": false,
+      "role": "composite",
+      "undef": "((fy0_datadate IS NULL AND date_diff('day', first_datadate, datadate) < 300) OR hist_days < 335)"
+    }
+  ],
+  "per_formula_source_certification": {
+    "capei": {
+      "role": "primary",
+      "counts": {
+        "blocked_contract": 40
+      },
+      "status": "blocked_contract",
+      "missing_source_fields_counts": {
+        "ni_fy0": 40,
+        "ni_fy1": 40,
+        "ni_fy2": 40,
+        "ni_fy3": 40,
+        "ni_fy4": 40,
+        "source_full_year_comparability": 40
+      },
+      "source_primitive_chains": {
+        "ni_fy0": [
+          "unprovided_producer_field",
+          "Task5",
+          "ni_fy0"
+        ],
+        "ni_fy1": [
+          "unprovided_producer_field",
+          "Task5",
+          "ni_fy1"
+        ],
+        "ni_fy2": [
+          "unprovided_producer_field",
+          "Task5",
+          "ni_fy2"
+        ],
+        "ni_fy3": [
+          "unprovided_producer_field",
+          "Task5",
+          "ni_fy3"
+        ],
+        "ni_fy4": [
+          "unprovided_producer_field",
+          "Task5",
+          "ni_fy4"
+        ],
+        "source_full_year_comparability": [
+          "unprovided_producer_field",
+          "Task5",
+          "source_full_year_comparability"
+        ]
+      },
+      "producer": {
+        "fields": [
+          "ni_fy0",
+          "ni_fy1",
+          "ni_fy2",
+          "ni_fy3",
+          "ni_fy4",
+          "source_full_year_comparability"
+        ],
+        "owner": "Task5",
+        "reason": "Five comparable annual NI vintages are not jointly certified by a retained single filing; no calendar-history inference"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "bm": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 38,
+        "match": 2
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "txditc": 20,
+        "pstk": 37,
+        "seq": 2
+      },
+      "source_primitive_chains": {
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "txditc": [
+          "i",
+          [
+            "DeferredIncomeTaxLiabilitiesNet",
+            "DeferredTaxLiabilitiesNoncurrent"
+          ]
+        ],
+        "pstk": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ],
+        "me": [
+          "published_market_inputs",
+          [
+            "same-date issuer common-line rawclose*shares_daily.shrout; no independent third-party market-cap certification in SEC-only check"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "txditc",
+          "pstk",
+          "seq"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "evm": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 38,
+        "both_absent": 2
+      },
+      "status": "blocked_source_fields",
+      "missing_source_fields_counts": {
+        "dlc": 33,
+        "che": 6,
+        "oiadp": 10,
+        "dp": 16,
+        "pstk": 37,
+        "mib": 24,
+        "dltt": 13
+      },
+      "source_primitive_chains": {
+        "me": [
+          "published_market_inputs",
+          [
+            "same-date issuer common-line rawclose*shares_daily.shrout; no independent third-party market-cap certification in SEC-only check"
+          ]
+        ],
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "dlc": [
+          "DebtCurrent"
+        ],
+        "pstk": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ],
+        "mib": [
+          "MinorityInterest"
+        ],
+        "che": [
+          "i",
+          [
+            "CashAndCashEquivalentsAtCarryingValue"
+          ]
+        ],
+        "oiadp": [
+          "d",
+          [
+            "OperatingIncomeLoss"
+          ]
+        ],
+        "dp": [
+          "d",
+          [
+            "DepreciationDepletionAndAmortization",
+            "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "dlc",
+          "che",
+          "oiadp",
+          "dp",
+          "pstk",
+          "mib",
+          "dltt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "pe_issuer_ib": {
+      "role": "extension",
+      "counts": {
+        "match": 40
+      },
+      "status": "checked_sample",
+      "missing_source_fields_counts": {},
+      "source_primitive_chains": {
+        "me": [
+          "published_market_inputs",
+          [
+            "same-date issuer common-line rawclose*shares_daily.shrout; no independent third-party market-cap certification in SEC-only check"
+          ]
+        ],
+        "ib": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "pe_issuer_ni": {
+      "role": "extension",
+      "counts": {
+        "match": 40
+      },
+      "status": "checked_sample",
+      "missing_source_fields_counts": {},
+      "source_primitive_chains": {
+        "me": [
+          "published_market_inputs",
+          [
+            "same-date issuer common-line rawclose*shares_daily.shrout; no independent third-party market-cap certification in SEC-only check"
+          ]
+        ],
+        "ni": [
+          "d",
+          [
+            "NetIncomeLoss",
+            "ProfitLoss",
+            "NetIncomeLossAvailableToCommonStockholdersBasic"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "pe_exi": {
+      "role": "primary",
+      "counts": {
+        "blocked_contract": 40
+      },
+      "status": "blocked_contract",
+      "missing_source_fields_counts": {
+        "security_class_diluted_eps_continuing": 40,
+        "adr_ratio": 40,
+        "eps_share_basis": 40,
+        "split_available_at": 40
+      },
+      "source_primitive_chains": {
+        "security_class_diluted_eps_continuing": [
+          "unprovided_producer_field",
+          "Task5 + market",
+          "security_class_diluted_eps_continuing"
+        ],
+        "adr_ratio": [
+          "unprovided_producer_field",
+          "Task5 + market",
+          "adr_ratio"
+        ],
+        "eps_share_basis": [
+          "unprovided_producer_field",
+          "Task5 + market",
+          "eps_share_basis"
+        ],
+        "split_available_at": [
+          "unprovided_producer_field",
+          "Task5 + market",
+          "split_available_at"
+        ]
+      },
+      "producer": {
+        "fields": [
+          "security_class_diluted_eps_continuing",
+          "adr_ratio",
+          "eps_share_basis",
+          "split_available_at"
+        ],
+        "owner": "Task5 + market",
+        "reason": "Diluted per-share security-class/date/split alignment unprovided; outstanding shares and issuer cap cannot substitute"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "pe_inc": {
+      "role": "primary",
+      "counts": {
+        "blocked_contract": 40
+      },
+      "status": "blocked_contract",
+      "missing_source_fields_counts": {
+        "security_class_diluted_eps_total": 40,
+        "adr_ratio": 40,
+        "eps_share_basis": 40,
+        "split_available_at": 40
+      },
+      "source_primitive_chains": {
+        "security_class_diluted_eps_total": [
+          "unprovided_producer_field",
+          "Task5 + market",
+          "security_class_diluted_eps_total"
+        ],
+        "adr_ratio": [
+          "unprovided_producer_field",
+          "Task5 + market",
+          "adr_ratio"
+        ],
+        "eps_share_basis": [
+          "unprovided_producer_field",
+          "Task5 + market",
+          "eps_share_basis"
+        ],
+        "split_available_at": [
+          "unprovided_producer_field",
+          "Task5 + market",
+          "split_available_at"
+        ]
+      },
+      "producer": {
+        "fields": [
+          "security_class_diluted_eps_total",
+          "adr_ratio",
+          "eps_share_basis",
+          "split_available_at"
+        ],
+        "owner": "Task5 + market",
+        "reason": "Same class/date/split alignment unprovided; NI/IB scaling prohibited"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "ps": {
+      "role": "primary",
+      "counts": {
+        "match": 37,
+        "source_absent": 2,
+        "both_absent": 1
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "me": [
+          "published_market_inputs",
+          [
+            "same-date issuer common-line rawclose*shares_daily.shrout; no independent third-party market-cap certification in SEC-only check"
+          ]
+        ],
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "pcf": {
+      "role": "primary",
+      "counts": {
+        "match": 40
+      },
+      "status": "checked_sample",
+      "missing_source_fields_counts": {},
+      "source_primitive_chains": {
+        "me": [
+          "published_market_inputs",
+          [
+            "same-date issuer common-line rawclose*shares_daily.shrout; no independent third-party market-cap certification in SEC-only check"
+          ]
+        ],
+        "oancf": [
+          "d",
+          [
+            "NetCashProvidedByUsedInOperatingActivities",
+            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "dpr": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 15,
+        "match": 23,
+        "both_absent": 2
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "dvc": 17
+      },
+      "source_primitive_chains": {
+        "dvc": [
+          "d",
+          [
+            "PaymentsOfDividendsCommonStock",
+            "PaymentsOfDividends"
+          ]
+        ],
+        "ib": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "dvc"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "peg_trailing": {
+      "role": "primary",
+      "counts": {
+        "blocked_contract": 40
+      },
+      "status": "blocked_contract",
+      "missing_source_fields_counts": {
+        "security_class_diluted_eps_fy0": 40,
+        "security_class_diluted_eps_fy3": 40,
+        "source_full_year_comparability": 40,
+        "split_available_at": 40
+      },
+      "source_primitive_chains": {
+        "security_class_diluted_eps_fy0": [
+          "unprovided_producer_field",
+          "Task5 + market",
+          "security_class_diluted_eps_fy0"
+        ],
+        "security_class_diluted_eps_fy3": [
+          "unprovided_producer_field",
+          "Task5 + market",
+          "security_class_diluted_eps_fy3"
+        ],
+        "source_full_year_comparability": [
+          "unprovided_producer_field",
+          "Task5 + market",
+          "source_full_year_comparability"
+        ],
+        "split_available_at": [
+          "unprovided_producer_field",
+          "Task5 + market",
+          "split_available_at"
+        ]
+      },
+      "producer": {
+        "fields": [
+          "security_class_diluted_eps_fy0",
+          "security_class_diluted_eps_fy3",
+          "source_full_year_comparability",
+          "split_available_at"
+        ],
+        "owner": "Task5 + market",
+        "reason": "Certified positive comparable diluted EPS three-year history and split basis unavailable"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "divyield_paid": {
+      "role": "extension",
+      "counts": {
+        "source_absent": 15,
+        "match": 23,
+        "both_absent": 2
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "dvc": 17
+      },
+      "source_primitive_chains": {
+        "dvc": [
+          "d",
+          [
+            "PaymentsOfDividendsCommonStock",
+            "PaymentsOfDividends"
+          ]
+        ],
+        "me": [
+          "published_market_inputs",
+          [
+            "same-date issuer common-line rawclose*shares_daily.shrout; no independent third-party market-cap certification in SEC-only check"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "dvc"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "ptb": {
+      "role": "primary",
+      "counts": {
+        "match": 3,
+        "source_absent": 37
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "pstk": 37,
+        "seq": 2
+      },
+      "source_primitive_chains": {
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "pstk": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ],
+        "me": [
+          "published_market_inputs",
+          [
+            "same-date issuer common-line rawclose*shares_daily.shrout; no independent third-party market-cap certification in SEC-only check"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "pstk",
+          "seq"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "divyield": {
+      "role": "primary",
+      "counts": {
+        "blocked_contract": 40
+      },
+      "status": "blocked_contract",
+      "missing_source_fields_counts": {
+        "indicated_annual_dividend_rate": 40,
+        "dividend_announcement_available_at": 40,
+        "security_class_currency_basis": 40
+      },
+      "source_primitive_chains": {
+        "indicated_annual_dividend_rate": [
+          "unprovided_producer_field",
+          "Task13 + market",
+          "indicated_annual_dividend_rate"
+        ],
+        "dividend_announcement_available_at": [
+          "unprovided_producer_field",
+          "Task13 + market",
+          "dividend_announcement_available_at"
+        ],
+        "security_class_currency_basis": [
+          "unprovided_producer_field",
+          "Task13 + market",
+          "security_class_currency_basis"
+        ]
+      },
+      "producer": {
+        "fields": [
+          "indicated_annual_dividend_rate",
+          "dividend_announcement_available_at",
+          "security_class_currency_basis"
+        ],
+        "owner": "Task13 + market",
+        "reason": "Paid historical cash dividends are not an indicated rate"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "npm": {
+      "role": "primary",
+      "counts": {
+        "match": 37,
+        "source_absent": 2,
+        "both_absent": 1
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "ni": [
+          "d",
+          [
+            "NetIncomeLoss",
+            "ProfitLoss",
+            "NetIncomeLossAvailableToCommonStockholdersBasic"
+          ]
+        ],
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "opmbd": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 17,
+        "match": 20,
+        "both_absent": 3
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "oiadp": 10,
+        "dp": 16,
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "oiadp": [
+          "d",
+          [
+            "OperatingIncomeLoss"
+          ]
+        ],
+        "dp": [
+          "d",
+          [
+            "DepreciationDepletionAndAmortization",
+            "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment"
+          ]
+        ],
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "oiadp",
+          "dp",
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "opmad": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 8,
+        "match": 29,
+        "both_absent": 3
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "oiadp": 10,
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "oiadp": [
+          "d",
+          [
+            "OperatingIncomeLoss"
+          ]
+        ],
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "oiadp",
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "gpm": {
+      "role": "primary",
+      "counts": {
+        "match": 26,
+        "source_absent": 5,
+        "both_absent": 9
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "cogs": 14,
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ],
+        "cogs": [
+          "d",
+          [
+            "CostOfGoodsAndServicesSold",
+            "CostOfRevenue",
+            "CostOfGoodsSold",
+            "CostOfServices",
+            "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+            "CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "cogs",
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "ptpm": {
+      "role": "primary",
+      "counts": {
+        "match": 37,
+        "both_absent": 3
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "pi": 3,
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "pi": [
+          "d",
+          [
+            "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+            "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"
+          ]
+        ],
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "pi",
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "cfm": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 16,
+        "match": 23,
+        "both_absent": 1
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "dp": 16,
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "ib": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ],
+        "dp": [
+          "d",
+          [
+            "DepreciationDepletionAndAmortization",
+            "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment"
+          ]
+        ],
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "dp",
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "roa": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 17,
+        "match": 21,
+        "both_absent": 2
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "oiadp": 10,
+        "dp": 16
+      },
+      "source_primitive_chains": {
+        "oiadp": [
+          "d",
+          [
+            "OperatingIncomeLoss"
+          ]
+        ],
+        "dp": [
+          "d",
+          [
+            "DepreciationDepletionAndAmortization",
+            "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment"
+          ]
+        ],
+        "at": [
+          "i",
+          [
+            "Assets"
+          ]
+        ],
+        "at_p": [
+          "i",
+          [
+            "Assets"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "oiadp",
+          "dp"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "roe": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 17,
+        "match": 17,
+        "both_absent": 5,
+        "ratio_absent": 1
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "txditc": 20,
+        "txditc_p": 20,
+        "seq": 2,
+        "seq_p": 2
+      },
+      "source_primitive_chains": {
+        "ni": [
+          "d",
+          [
+            "NetIncomeLoss",
+            "ProfitLoss",
+            "NetIncomeLossAvailableToCommonStockholdersBasic"
+          ]
+        ],
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "txditc": [
+          "i",
+          [
+            "DeferredIncomeTaxLiabilitiesNet",
+            "DeferredTaxLiabilitiesNoncurrent"
+          ]
+        ],
+        "seq_p": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "txditc_p": [
+          "i",
+          [
+            "DeferredIncomeTaxLiabilitiesNet",
+            "DeferredTaxLiabilitiesNoncurrent"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "txditc",
+          "txditc_p",
+          "seq",
+          "seq_p"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "roce": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 32,
+        "both_absent": 8
+      },
+      "status": "blocked_source_fields",
+      "missing_source_fields_counts": {
+        "xint": 25,
+        "dlc": 33,
+        "dlc_p": 33,
+        "pstk": 37,
+        "pstk_p": 37,
+        "seq": 2,
+        "seq_p": 2,
+        "txt": 4,
+        "dltt": 13,
+        "dltt_p": 12
+      },
+      "source_primitive_chains": {
+        "ni": [
+          "d",
+          [
+            "NetIncomeLoss",
+            "ProfitLoss",
+            "NetIncomeLossAvailableToCommonStockholdersBasic"
+          ]
+        ],
+        "txt": [
+          "d",
+          [
+            "IncomeTaxExpenseBenefit"
+          ]
+        ],
+        "xint": [
+          "d",
+          [
+            "InterestExpense",
+            "InterestAndDebtExpense"
+          ]
+        ],
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "dlc": [
+          "DebtCurrent"
+        ],
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "pstk": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ],
+        "dltt_p": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "dlc_p": [
+          "DebtCurrent"
+        ],
+        "seq_p": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "pstk_p": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "xint",
+          "dlc",
+          "dlc_p",
+          "pstk",
+          "pstk_p",
+          "seq",
+          "seq_p",
+          "txt",
+          "dltt",
+          "dltt_p"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "efftax": {
+      "role": "primary",
+      "counts": {
+        "match": 36,
+        "source_absent": 2,
+        "both_absent": 2
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "txt": 4,
+        "pi": 3
+      },
+      "source_primitive_chains": {
+        "txt": [
+          "d",
+          [
+            "IncomeTaxExpenseBenefit"
+          ]
+        ],
+        "pi": [
+          "d",
+          [
+            "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+            "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "txt",
+          "pi"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "aftret_eq": {
+      "role": "primary",
+      "counts": {
+        "match": 3,
+        "source_absent": 37
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "pstk": 37,
+        "pstk_p": 37,
+        "seq": 2,
+        "seq_p": 2
+      },
+      "source_primitive_chains": {
+        "ni": [
+          "d",
+          [
+            "NetIncomeLoss",
+            "ProfitLoss",
+            "NetIncomeLossAvailableToCommonStockholdersBasic"
+          ]
+        ],
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "pstk": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ],
+        "seq_p": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "pstk_p": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "pstk",
+          "pstk_p",
+          "seq",
+          "seq_p"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "aftret_invcapx": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 33,
+        "both_absent": 6,
+        "match": 1
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "xint": 25,
+        "pstk": 37,
+        "seq": 2,
+        "mib": 24,
+        "dltt": 13
+      },
+      "source_primitive_chains": {
+        "ni": [
+          "d",
+          [
+            "NetIncomeLoss",
+            "ProfitLoss",
+            "NetIncomeLossAvailableToCommonStockholdersBasic"
+          ]
+        ],
+        "xint": [
+          "d",
+          [
+            "InterestExpense",
+            "InterestAndDebtExpense"
+          ]
+        ],
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "pstk": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ],
+        "mib": [
+          "MinorityInterest"
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "xint",
+          "pstk",
+          "seq",
+          "mib",
+          "dltt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "aftret_equity": {
+      "role": "primary",
+      "counts": {
+        "match": 38,
+        "source_absent": 2
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "seq": 2,
+        "seq_p": 2
+      },
+      "source_primitive_chains": {
+        "ni": [
+          "d",
+          [
+            "NetIncomeLoss",
+            "ProfitLoss",
+            "NetIncomeLossAvailableToCommonStockholdersBasic"
+          ]
+        ],
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "seq_p": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "seq",
+          "seq_p"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "pretret_noa": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 6,
+        "both_absent": 7,
+        "match": 27
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "oiadp": 10,
+        "ppent": 8,
+        "ppent_p": 8,
+        "act": 6,
+        "lct": 6,
+        "act_p": 6,
+        "lct_p": 6
+      },
+      "source_primitive_chains": {
+        "oiadp": [
+          "d",
+          [
+            "OperatingIncomeLoss"
+          ]
+        ],
+        "ppent": [
+          "PropertyPlantAndEquipmentNet"
+        ],
+        "act": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ],
+        "lct": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ],
+        "ppent_p": [
+          "PropertyPlantAndEquipmentNet"
+        ],
+        "act_p": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ],
+        "lct_p": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "oiadp",
+          "ppent",
+          "ppent_p",
+          "act",
+          "lct",
+          "act_p",
+          "lct_p"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "pretret_earnat": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 6,
+        "both_absent": 7,
+        "match": 27
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "oiadp": 10,
+        "ppent": 8,
+        "ppent_p": 8,
+        "act": 6,
+        "act_p": 6
+      },
+      "source_primitive_chains": {
+        "oiadp": [
+          "d",
+          [
+            "OperatingIncomeLoss"
+          ]
+        ],
+        "ppent": [
+          "PropertyPlantAndEquipmentNet"
+        ],
+        "act": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ],
+        "ppent_p": [
+          "PropertyPlantAndEquipmentNet"
+        ],
+        "act_p": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "oiadp",
+          "ppent",
+          "ppent_p",
+          "act",
+          "act_p"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "gprof": {
+      "role": "primary",
+      "counts": {
+        "match": 26,
+        "source_absent": 5,
+        "both_absent": 9
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "cogs": 14,
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ],
+        "cogs": [
+          "d",
+          [
+            "CostOfGoodsAndServicesSold",
+            "CostOfRevenue",
+            "CostOfGoodsSold",
+            "CostOfServices",
+            "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+            "CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization"
+          ]
+        ],
+        "at": [
+          "i",
+          [
+            "Assets"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "cogs",
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "equity_invcap": {
+      "role": "primary",
+      "counts": {
+        "match": 3,
+        "source_absent": 37
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "pstk": 37,
+        "seq": 2,
+        "mib": 24,
+        "dltt": 13
+      },
+      "source_primitive_chains": {
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "pstk": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ],
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "mib": [
+          "MinorityInterest"
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "pstk",
+          "seq",
+          "mib",
+          "dltt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "debt_invcap": {
+      "role": "primary",
+      "counts": {
+        "match": 3,
+        "source_absent": 37
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "pstk": 37,
+        "seq": 2,
+        "mib": 24,
+        "dltt": 13
+      },
+      "source_primitive_chains": {
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "pstk": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ],
+        "mib": [
+          "MinorityInterest"
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "pstk",
+          "seq",
+          "mib",
+          "dltt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "totdebt_invcap": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 40
+      },
+      "status": "blocked_source_fields",
+      "missing_source_fields_counts": {
+        "dlc": 33,
+        "pstk": 37,
+        "seq": 2,
+        "mib": 24,
+        "dltt": 13
+      },
+      "source_primitive_chains": {
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "dlc": [
+          "DebtCurrent"
+        ],
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "pstk": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ],
+        "mib": [
+          "MinorityInterest"
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "dlc",
+          "pstk",
+          "seq",
+          "mib",
+          "dltt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "capital_ratio": {
+      "role": "primary",
+      "counts": {
+        "match": 3,
+        "source_absent": 37
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "pstk": 37,
+        "seq": 2,
+        "dltt": 13
+      },
+      "source_primitive_chains": {
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "pstk": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "pstk",
+          "seq",
+          "dltt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "int_debt": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 13,
+        "match": 12,
+        "mismatch": 2,
+        "both_absent": 13
+      },
+      "status": "numeric_mismatch",
+      "missing_source_fields_counts": {
+        "xint": 25,
+        "dltt": 13,
+        "dltt_p": 12
+      },
+      "source_primitive_chains": {
+        "xint": [
+          "d",
+          [
+            "InterestExpense",
+            "InterestAndDebtExpense"
+          ]
+        ],
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "dltt_p": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "xint",
+          "dltt",
+          "dltt_p"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "int_totdebt": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 23,
+        "match": 4,
+        "mismatch": 1,
+        "both_absent": 12
+      },
+      "status": "numeric_mismatch",
+      "missing_source_fields_counts": {
+        "xint": 25,
+        "dlc": 33,
+        "dlc_p": 33,
+        "dltt": 13,
+        "dltt_p": 12
+      },
+      "source_primitive_chains": {
+        "xint": [
+          "d",
+          [
+            "InterestExpense",
+            "InterestAndDebtExpense"
+          ]
+        ],
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "dlc": [
+          "DebtCurrent"
+        ],
+        "dltt_p": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "dlc_p": [
+          "DebtCurrent"
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "xint",
+          "dlc",
+          "dlc_p",
+          "dltt",
+          "dltt_p"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "cash_lt": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 16,
+        "match": 24
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "che": 6,
+        "lt": 10
+      },
+      "source_primitive_chains": {
+        "che": [
+          "i",
+          [
+            "CashAndCashEquivalentsAtCarryingValue"
+          ]
+        ],
+        "lt": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "che",
+          "lt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "invt_act": {
+      "role": "primary",
+      "counts": {
+        "match": 25,
+        "both_absent": 15
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "invt": 15,
+        "act": 6
+      },
+      "source_primitive_chains": {
+        "invt": [
+          "i",
+          [
+            "InventoryNet"
+          ]
+        ],
+        "act": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "invt",
+          "act"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "rect_act": {
+      "role": "primary",
+      "counts": {
+        "match": 28,
+        "source_absent": 3,
+        "both_absent": 9
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "rect": 12,
+        "act": 6
+      },
+      "source_primitive_chains": {
+        "rect": [
+          "i",
+          [
+            "AccountsReceivableNetCurrent"
+          ]
+        ],
+        "act": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "rect",
+          "act"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "debt_at": {
+      "role": "primary",
+      "counts": {
+        "match": 30,
+        "source_absent": 10
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "lt": 10
+      },
+      "source_primitive_chains": {
+        "lt": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ],
+        "at": [
+          "i",
+          [
+            "Assets"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "lt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "debt_ebitda": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 35,
+        "both_absent": 2,
+        "match": 3
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "dlc": 33,
+        "oiadp": 10,
+        "dp": 16,
+        "dltt": 13
+      },
+      "source_primitive_chains": {
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "dlc": [
+          "DebtCurrent"
+        ],
+        "oiadp": [
+          "d",
+          [
+            "OperatingIncomeLoss"
+          ]
+        ],
+        "dp": [
+          "d",
+          [
+            "DepreciationDepletionAndAmortization",
+            "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "dlc",
+          "oiadp",
+          "dp",
+          "dltt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "short_debt": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 24,
+        "match": 6,
+        "mismatch": 1,
+        "both_absent": 9
+      },
+      "status": "numeric_mismatch",
+      "missing_source_fields_counts": {
+        "dlc": 33,
+        "dltt": 13
+      },
+      "source_primitive_chains": {
+        "dlc": [
+          "DebtCurrent"
+        ],
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "dlc",
+          "dltt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "curr_debt": {
+      "role": "primary",
+      "counts": {
+        "match": 24,
+        "source_absent": 10,
+        "both_absent": 6
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "lt": 10,
+        "lct": 6
+      },
+      "source_primitive_chains": {
+        "lct": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ],
+        "lt": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "lt",
+          "lct"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "lt_debt": {
+      "role": "primary",
+      "counts": {
+        "match": 17,
+        "source_absent": 23
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "lt": 10,
+        "dltt": 13
+      },
+      "source_primitive_chains": {
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "lt": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "lt",
+          "dltt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "profit_lct": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 13,
+        "match": 21,
+        "both_absent": 6
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "oiadp": 10,
+        "dp": 16,
+        "lct": 6
+      },
+      "source_primitive_chains": {
+        "oiadp": [
+          "d",
+          [
+            "OperatingIncomeLoss"
+          ]
+        ],
+        "dp": [
+          "d",
+          [
+            "DepreciationDepletionAndAmortization",
+            "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment"
+          ]
+        ],
+        "lct": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "oiadp",
+          "dp",
+          "lct"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "ocf_lct": {
+      "role": "primary",
+      "counts": {
+        "match": 34,
+        "both_absent": 6
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "lct": 6
+      },
+      "source_primitive_chains": {
+        "oancf": [
+          "d",
+          [
+            "NetCashProvidedByUsedInOperatingActivities",
+            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"
+          ]
+        ],
+        "lct": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "lct"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "cash_debt": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 24,
+        "match": 6,
+        "mismatch": 1,
+        "both_absent": 9
+      },
+      "status": "numeric_mismatch",
+      "missing_source_fields_counts": {
+        "dlc": 33,
+        "dltt": 13
+      },
+      "source_primitive_chains": {
+        "oancf": [
+          "d",
+          [
+            "NetCashProvidedByUsedInOperatingActivities",
+            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"
+          ]
+        ],
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "dlc": [
+          "DebtCurrent"
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "dlc",
+          "dltt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "fcf_ocf": {
+      "role": "primary",
+      "counts": {
+        "match": 38,
+        "source_absent": 2
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "capx": 2
+      },
+      "source_primitive_chains": {
+        "oancf": [
+          "d",
+          [
+            "NetCashProvidedByUsedInOperatingActivities",
+            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"
+          ]
+        ],
+        "capx": [
+          "d",
+          [
+            "PaymentsToAcquirePropertyPlantAndEquipment",
+            "PaymentsForCapitalImprovements",
+            "PaymentsToAcquireMachineryAndEquipment",
+            "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+            "PaymentsToAcquireProductiveAssets"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "capx"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "lt_ppent": {
+      "role": "primary",
+      "counts": {
+        "match": 9,
+        "source_absent": 30,
+        "both_absent": 1
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "lt": 10,
+        "intan": 21
+      },
+      "source_primitive_chains": {
+        "lt": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ],
+        "at": [
+          "i",
+          [
+            "Assets"
+          ]
+        ],
+        "intan": [
+          "IntangibleAssetsNetIncludingGoodwill"
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "lt",
+          "intan"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "dltt_be": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 38,
+        "match": 2
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "txditc": 20,
+        "pstk": 37,
+        "seq": 2,
+        "dltt": 13
+      },
+      "source_primitive_chains": {
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "txditc": [
+          "i",
+          [
+            "DeferredIncomeTaxLiabilitiesNet",
+            "DeferredTaxLiabilitiesNoncurrent"
+          ]
+        ],
+        "pstk": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "txditc",
+          "pstk",
+          "seq",
+          "dltt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "de_ratio": {
+      "role": "primary",
+      "counts": {
+        "match": 30,
+        "source_absent": 10
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "lt": 10,
+        "seq": 2
+      },
+      "source_primitive_chains": {
+        "lt": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ],
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "lt",
+          "seq"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "debt_assets": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 33,
+        "match": 6,
+        "mismatch": 1
+      },
+      "status": "numeric_mismatch",
+      "missing_source_fields_counts": {
+        "dlc": 33,
+        "dltt": 13
+      },
+      "source_primitive_chains": {
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "dlc": [
+          "DebtCurrent"
+        ],
+        "at": [
+          "i",
+          [
+            "Assets"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "dlc",
+          "dltt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "debt_capital": {
+      "role": "primary",
+      "counts": {
+        "both_absent": 7,
+        "source_absent": 33
+      },
+      "status": "blocked_source_fields",
+      "missing_source_fields_counts": {
+        "ap": 10,
+        "dlc": 33,
+        "pstk": 37,
+        "seq": 2,
+        "dltt": 13
+      },
+      "source_primitive_chains": {
+        "ap": [
+          "AccountsPayableCurrent"
+        ],
+        "dlc": [
+          "DebtCurrent"
+        ],
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "pstk": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "ap",
+          "dlc",
+          "pstk",
+          "seq",
+          "dltt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "intcov": {
+      "role": "primary",
+      "counts": {
+        "both_absent": 14,
+        "match": 15,
+        "source_absent": 11
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "xint": 25
+      },
+      "source_primitive_chains": {
+        "ib": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ],
+        "xint": [
+          "d",
+          [
+            "InterestExpense",
+            "InterestAndDebtExpense"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "xint"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "intcov_ratio": {
+      "role": "primary",
+      "counts": {
+        "both_absent": 16,
+        "match": 14,
+        "source_absent": 10
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "xint": 25,
+        "txt": 4
+      },
+      "source_primitive_chains": {
+        "ni": [
+          "d",
+          [
+            "NetIncomeLoss",
+            "ProfitLoss",
+            "NetIncomeLossAvailableToCommonStockholdersBasic"
+          ]
+        ],
+        "txt": [
+          "d",
+          [
+            "IncomeTaxExpenseBenefit"
+          ]
+        ],
+        "xint": [
+          "d",
+          [
+            "InterestExpense",
+            "InterestAndDebtExpense"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "xint",
+          "txt"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "cash_ratio": {
+      "role": "primary",
+      "counts": {
+        "source_absent": 2,
+        "match": 32,
+        "both_absent": 6
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "che": 6,
+        "lct": 6
+      },
+      "source_primitive_chains": {
+        "che": [
+          "i",
+          [
+            "CashAndCashEquivalentsAtCarryingValue"
+          ]
+        ],
+        "lct": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "che",
+          "lct"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "quick_ratio": {
+      "role": "primary",
+      "counts": {
+        "match": 25,
+        "both_absent": 15
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "invt": 15,
+        "act": 6,
+        "lct": 6
+      },
+      "source_primitive_chains": {
+        "act": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ],
+        "invt": [
+          "i",
+          [
+            "InventoryNet"
+          ]
+        ],
+        "lct": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "invt",
+          "act",
+          "lct"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "curr_ratio": {
+      "role": "primary",
+      "counts": {
+        "match": 34,
+        "both_absent": 6
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "act": 6,
+        "lct": 6
+      },
+      "source_primitive_chains": {
+        "act": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ],
+        "lct": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "act",
+          "lct"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "cash_conversion": {
+      "role": "primary",
+      "counts": {
+        "both_absent": 16,
+        "source_absent": 5,
+        "match": 19
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "ap": 10,
+        "rect": 12,
+        "cogs": 14,
+        "invt": 15,
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "invt": [
+          "i",
+          [
+            "InventoryNet"
+          ]
+        ],
+        "rect": [
+          "i",
+          [
+            "AccountsReceivableNetCurrent"
+          ]
+        ],
+        "ap": [
+          "AccountsPayableCurrent"
+        ],
+        "cogs": [
+          "d",
+          [
+            "CostOfGoodsAndServicesSold",
+            "CostOfRevenue",
+            "CostOfGoodsSold",
+            "CostOfServices",
+            "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+            "CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization"
+          ]
+        ],
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "ap",
+          "rect",
+          "cogs",
+          "invt",
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "at_turn": {
+      "role": "primary",
+      "counts": {
+        "match": 37,
+        "source_absent": 3
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ],
+        "at": [
+          "i",
+          [
+            "Assets"
+          ]
+        ],
+        "at_p": [
+          "i",
+          [
+            "Assets"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "inv_turn": {
+      "role": "primary",
+      "counts": {
+        "match": 22,
+        "source_absent": 3,
+        "both_absent": 15
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "cogs": 14,
+        "invt": 15,
+        "invt_p": 15
+      },
+      "source_primitive_chains": {
+        "cogs": [
+          "d",
+          [
+            "CostOfGoodsAndServicesSold",
+            "CostOfRevenue",
+            "CostOfGoodsSold",
+            "CostOfServices",
+            "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+            "CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization"
+          ]
+        ],
+        "invt": [
+          "i",
+          [
+            "InventoryNet"
+          ]
+        ],
+        "invt_p": [
+          "i",
+          [
+            "InventoryNet"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "cogs",
+          "invt",
+          "invt_p"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "pay_turn": {
+      "role": "primary",
+      "counts": {
+        "both_absent": 16,
+        "source_absent": 3,
+        "match": 21
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "ap": 10,
+        "ap_p": 10,
+        "cogs": 14,
+        "invt": 15,
+        "invt_p": 15
+      },
+      "source_primitive_chains": {
+        "cogs": [
+          "d",
+          [
+            "CostOfGoodsAndServicesSold",
+            "CostOfRevenue",
+            "CostOfGoodsSold",
+            "CostOfServices",
+            "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+            "CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization"
+          ]
+        ],
+        "invt": [
+          "i",
+          [
+            "InventoryNet"
+          ]
+        ],
+        "invt_p": [
+          "i",
+          [
+            "InventoryNet"
+          ]
+        ],
+        "ap": [
+          "AccountsPayableCurrent"
+        ],
+        "ap_p": [
+          "AccountsPayableCurrent"
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "ap",
+          "ap_p",
+          "cogs",
+          "invt",
+          "invt_p"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "rect_turn": {
+      "role": "primary",
+      "counts": {
+        "match": 28,
+        "source_absent": 3,
+        "both_absent": 9
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "rect": 12,
+        "rect_p": 12,
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ],
+        "rect": [
+          "i",
+          [
+            "AccountsReceivableNetCurrent"
+          ]
+        ],
+        "rect_p": [
+          "i",
+          [
+            "AccountsReceivableNetCurrent"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "rect",
+          "rect_p",
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "sale_equity": {
+      "role": "primary",
+      "counts": {
+        "match": 35,
+        "source_absent": 5
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "seq": 2,
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ],
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "seq",
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "sale_invcap": {
+      "role": "primary",
+      "counts": {
+        "match": 3,
+        "source_absent": 37
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "pstk": 37,
+        "seq": 2,
+        "mib": 24,
+        "dltt": 13,
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ],
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "seq": [
+          "i",
+          [
+            "StockholdersEquity"
+          ]
+        ],
+        "pstk": [
+          "i",
+          [
+            "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+            "PreferredStockValue",
+            "PreferredStockValueOutstanding"
+          ]
+        ],
+        "mib": [
+          "MinorityInterest"
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "pstk",
+          "seq",
+          "mib",
+          "dltt",
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "sale_nwc": {
+      "role": "primary",
+      "counts": {
+        "match": 33,
+        "both_absent": 6,
+        "source_absent": 1
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "sale": 3,
+        "act": 6,
+        "lct": 6
+      },
+      "source_primitive_chains": {
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ],
+        "act": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ],
+        "lct": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "sale",
+          "act",
+          "lct"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "accrual": {
+      "role": "primary",
+      "counts": {
+        "match": 40
+      },
+      "status": "checked_sample",
+      "missing_source_fields_counts": {},
+      "source_primitive_chains": {
+        "ib": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ],
+        "oancf": [
+          "d",
+          [
+            "NetCashProvidedByUsedInOperatingActivities",
+            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"
+          ]
+        ],
+        "at": [
+          "i",
+          [
+            "Assets"
+          ]
+        ],
+        "at_p": [
+          "i",
+          [
+            "Assets"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "rd_sale": {
+      "role": "primary",
+      "counts": {
+        "match": 21,
+        "source_absent": 18,
+        "both_absent": 1
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "xrd": 18,
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "xrd": [
+          "d",
+          [
+            "ResearchAndDevelopmentExpense",
+            "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost",
+            "ResearchAndDevelopmentExpenseSoftwareExcludingAcquiredInProcessCost"
+          ]
+        ],
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "xrd",
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "adv_sale": {
+      "role": "primary",
+      "counts": {
+        "both_absent": 31,
+        "match": 7,
+        "source_absent": 2
+      },
+      "status": "partially_checked",
+      "missing_source_fields_counts": {
+        "xad": 33,
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "xad": [
+          "AdvertisingExpense"
+        ],
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "xad",
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Annual duration/currency/classification producer qualification remains; debt captions require total/current/lease scope certification; missing components never zero-filled"
+    },
+    "piotroski_f": {
+      "role": "composite",
+      "counts": {
+        "source_absent": 26,
+        "both_absent": 14
+      },
+      "status": "blocked_source_fields",
+      "missing_source_fields_counts": {
+        "at_p2": 38,
+        "sstk": 32,
+        "cogs": 14,
+        "cogs_p": 14,
+        "ib_p": 33,
+        "dltt": 13,
+        "dltt_p": 12,
+        "act": 6,
+        "lct": 6,
+        "act_p": 6,
+        "lct_p": 6,
+        "sale": 3,
+        "sale_p": 3
+      },
+      "source_primitive_chains": {
+        "ib": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ],
+        "ib_p": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ],
+        "at": [
+          "i",
+          [
+            "Assets"
+          ]
+        ],
+        "at_p": [
+          "i",
+          [
+            "Assets"
+          ]
+        ],
+        "at_p2": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ],
+        "oancf": [
+          "d",
+          [
+            "NetCashProvidedByUsedInOperatingActivities",
+            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"
+          ]
+        ],
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "dltt_p": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "act": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ],
+        "lct": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ],
+        "act_p": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ],
+        "lct_p": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ],
+        "sstk": [
+          "ProceedsFromStockIssuance",
+          "ProceedsFromIssuanceOfCommonStock"
+        ],
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ],
+        "cogs": [
+          "d",
+          [
+            "CostOfGoodsAndServicesSold",
+            "CostOfRevenue",
+            "CostOfGoodsSold",
+            "CostOfServices",
+            "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+            "CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization"
+          ]
+        ],
+        "sale_p": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ],
+        "cogs_p": [
+          "d",
+          [
+            "CostOfGoodsAndServicesSold",
+            "CostOfRevenue",
+            "CostOfGoodsSold",
+            "CostOfServices",
+            "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+            "CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "at_p2",
+          "sstk",
+          "cogs",
+          "cogs_p",
+          "ib_p",
+          "dltt",
+          "dltt_p",
+          "act",
+          "lct",
+          "act_p",
+          "lct_p",
+          "sale",
+          "sale_p"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Independent implemented-score arithmetic is not original model equivalence certification; retained full-period/history/source definitions still required",
+      "source_model_certification": {
+        "status": "BLOCKED full original-model certification",
+        "producer": "Task5 + market",
+        "fields": [
+          "source_full_period_comparability_fy0_fy1_fy2",
+          "assets_beginning_fy0_fy1",
+          "common_equity_issuance_event_or_share_count_definition"
+        ],
+        "reason": "FY-2 assets/issuance and comparable histories missing; cash SSTK alone does not certify every issuance event"
+      }
+    },
+    "altman_z": {
+      "role": "composite",
+      "counts": {
+        "source_absent": 13,
+        "match": 20,
+        "mismatch": 1,
+        "both_absent": 6
+      },
+      "status": "numeric_mismatch",
+      "missing_source_fields_counts": {
+        "oiadp": 10,
+        "lt": 10,
+        "act": 6,
+        "lct": 6,
+        "sale": 3
+      },
+      "source_primitive_chains": {
+        "act": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ],
+        "lct": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ],
+        "at": [
+          "i",
+          [
+            "Assets"
+          ]
+        ],
+        "re": [
+          "RetainedEarningsAccumulatedDeficit"
+        ],
+        "oiadp": [
+          "d",
+          [
+            "OperatingIncomeLoss"
+          ]
+        ],
+        "me": [
+          "published_market_inputs",
+          [
+            "same-date issuer common-line rawclose*shares_daily.shrout; no independent third-party market-cap certification in SEC-only check"
+          ]
+        ],
+        "lt": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ],
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "oiadp",
+          "lt",
+          "act",
+          "lct",
+          "sale"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Independent implemented-score arithmetic is not original model equivalence certification; retained full-period/history/source definitions still required",
+      "source_model_certification": {
+        "status": "BLOCKED full original-model certification",
+        "producer": "Task5 + Task7",
+        "fields": [
+          "certified_source_EBIT_definition",
+          "source_retained_earnings",
+          "source_full_period_comparability",
+          "model_population_applicability"
+        ],
+        "reason": "Implemented OIADP term must not be assumed identical to original EBIT; raw score arithmetic does not certify original manufacturing-model population"
+      }
+    },
+    "ohlson_o": {
+      "role": "composite",
+      "counts": {
+        "match": 17,
+        "mismatch": 2,
+        "source_absent": 10,
+        "ratio_absent": 5,
+        "both_absent": 6
+      },
+      "status": "numeric_mismatch",
+      "missing_source_fields_counts": {
+        "lt": 10,
+        "act": 6,
+        "lct": 6
+      },
+      "source_primitive_chains": {
+        "at": [
+          "i",
+          [
+            "Assets"
+          ]
+        ],
+        "lt": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ],
+        "act": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ],
+        "lct": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ],
+        "ni": [
+          "d",
+          [
+            "NetIncomeLoss",
+            "ProfitLoss",
+            "NetIncomeLossAvailableToCommonStockholdersBasic"
+          ]
+        ],
+        "oancf": [
+          "d",
+          [
+            "NetCashProvidedByUsedInOperatingActivities",
+            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"
+          ]
+        ],
+        "ni_p": [
+          "d",
+          [
+            "NetIncomeLoss",
+            "ProfitLoss",
+            "NetIncomeLossAvailableToCommonStockholdersBasic"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "lt",
+          "act",
+          "lct"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Ohlson nominal-assets and OCF proxy: exact source model remains blocked on GNP deflator and source funds-from-operations identity",
+      "source_model_certification": {
+        "status": "BLOCKED full original-model certification",
+        "producer": "Task5 + Task7",
+        "fields": [
+          "GNP_price_level_deflator",
+          "source_funds_from_operations_identity",
+          "source_full_period_comparability",
+          "comparable_prior_NI"
+        ],
+        "reason": "Nominal asset log and OCF proxy differ from original model inputs; missing fields have no assumed equivalence"
+      }
+    },
+    "beneish_m": {
+      "role": "composite",
+      "counts": {
+        "source_absent": 9,
+        "both_absent": 18,
+        "match": 10,
+        "mismatch": 2,
+        "ratio_absent": 1
+      },
+      "status": "numeric_mismatch",
+      "missing_source_fields_counts": {
+        "dp": 16,
+        "dp_p": 16,
+        "rect": 12,
+        "rect_p": 12,
+        "cogs": 14,
+        "cogs_p": 14,
+        "ppent": 8,
+        "ppent_p": 8,
+        "xsga": 17,
+        "xsga_p": 17,
+        "dltt": 13,
+        "dltt_p": 12,
+        "sale": 3,
+        "sale_p": 3,
+        "act": 6,
+        "act_p": 6,
+        "lct": 6,
+        "lct_p": 6
+      },
+      "source_primitive_chains": {
+        "rect": [
+          "i",
+          [
+            "AccountsReceivableNetCurrent"
+          ]
+        ],
+        "rect_p": [
+          "i",
+          [
+            "AccountsReceivableNetCurrent"
+          ]
+        ],
+        "sale": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ],
+        "sale_p": [
+          "d",
+          [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense"
+          ]
+        ],
+        "cogs": [
+          "d",
+          [
+            "CostOfGoodsAndServicesSold",
+            "CostOfRevenue",
+            "CostOfGoodsSold",
+            "CostOfServices",
+            "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+            "CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization"
+          ]
+        ],
+        "cogs_p": [
+          "d",
+          [
+            "CostOfGoodsAndServicesSold",
+            "CostOfRevenue",
+            "CostOfGoodsSold",
+            "CostOfServices",
+            "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+            "CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization"
+          ]
+        ],
+        "act": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ],
+        "act_p": [
+          "i",
+          [
+            "AssetsCurrent"
+          ]
+        ],
+        "ppent": [
+          "PropertyPlantAndEquipmentNet"
+        ],
+        "ppent_p": [
+          "PropertyPlantAndEquipmentNet"
+        ],
+        "at": [
+          "i",
+          [
+            "Assets"
+          ]
+        ],
+        "at_p": [
+          "i",
+          [
+            "Assets"
+          ]
+        ],
+        "dp": [
+          "d",
+          [
+            "DepreciationDepletionAndAmortization",
+            "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment"
+          ]
+        ],
+        "dp_p": [
+          "d",
+          [
+            "DepreciationDepletionAndAmortization",
+            "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment"
+          ]
+        ],
+        "xsga": [
+          "SellingGeneralAndAdministrativeExpense"
+        ],
+        "xsga_p": [
+          "SellingGeneralAndAdministrativeExpense"
+        ],
+        "lct": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ],
+        "lct_p": [
+          "i",
+          [
+            "LiabilitiesCurrent"
+          ]
+        ],
+        "dltt": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "dltt_p": [
+          "LongTermDebtNoncurrent",
+          "LongTermDebtAndCapitalLeaseObligations"
+        ],
+        "ib": [
+          "derived",
+          [
+            "explicit component arithmetic; source_inputs/provenance in keyed records"
+          ]
+        ],
+        "oancf": [
+          "d",
+          [
+            "NetCashProvidedByUsedInOperatingActivities",
+            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"
+          ]
+        ]
+      },
+      "producer": {
+        "owner": "Task5",
+        "fields": [
+          "dp",
+          "dp_p",
+          "rect",
+          "rect_p",
+          "cogs",
+          "cogs_p",
+          "ppent",
+          "ppent_p",
+          "xsga",
+          "xsga_p",
+          "dltt",
+          "dltt_p",
+          "sale",
+          "sale_p",
+          "act",
+          "act_p",
+          "lct",
+          "lct_p"
+        ],
+        "reason": "Exact missing retained source fields/history above; no zeros/primitive equivalence inferred"
+      },
+      "qualification": "Independent implemented-score arithmetic is not original model equivalence certification; retained full-period/history/source definitions still required",
+      "source_model_certification": {
+        "status": "BLOCKED full original-model certification",
+        "producer": "Task5 + Task7",
+        "fields": [
+          "source_total_accruals_original_definition",
+          "source_full_period_comparability_fy0_fy1",
+          "certified_gross_profit_debt_SGA_depreciation_source_scope"
+        ],
+        "reason": "IB-minus-OCF accrual proxy and source histories/bases need original-model equivalence certification"
+      }
+    }
+  },
+  "policy": {
+    "EPSFI": "annual source only; no quarterly NI/IB approximation",
+    "P/E": "pe_exi/inc retain WRDS dilutedEPS meanings and publish explicit quality NULL; issuer ME/NI or IB only in pe_issuer_ni/ib extensions.",
+    "averages": "q0 and same-quarter prior-year q4; missing either -> NULL",
+    "bases": "ratio denominator zero -> NULL; signed denominators allowed except PEG requires positive EPS endpoints",
+    "calendar": "quarter offsets91.3125d +/-20; annual365.25d +/-30; fiscal changes may cause history nulls",
+    "coverage": "Missing history, absent annual records, ordinary missing primitives and stale/missing states remain eligible. Only explicit sector applicability and true zero denominators exclude; history insufficiency is ratio_history_missing.",
+    "currency": "standardized USD; fx_converted retained",
+    "fiscal_pairing": "Quarter lag must match 4*(fyearq0-fyearq)+fqtr0-fqtr and same fyr as well as elapsed-day tolerance. Annual lag requires fyear progression/same fyr and preceding end gap350..380; end-date screen is not source duration certification, missing/transition paths NULL.",
+    "identity_classification": "Identity available_at and latest dated FINRA observation strictly before common cutoff: prior calendar session22UTC daily; month-end22UTC monthly. No all-time modal FINRA filter.",
+    "known_conventions": "Missing deferred taxes, NCI, preferred stock and historical averages remain NULL; source-stage explicit reported zeros preserved.",
+    "restatement": "latest per(cik,datadate) at each distinct visible clock; annual comparative10Q supported",
+    "structural": "bank/insurer cogs and inventory only; missing observed inputs do not establish structural applicability"
+  },
+  "primitive_sources": {
+    "annual": {
+      "0": [
+        "sale",
+        "cogs",
+        "xsga",
+        "oiadp",
+        "oibdp",
+        "dp",
+        "xint",
+        "ni",
+        "ib",
+        "pi",
+        "txt",
+        "xad",
+        "at",
+        "lt",
+        "act",
+        "lct",
+        "rect",
+        "ppent",
+        "dltt",
+        "re",
+        "oancf",
+        "capx",
+        "dvc",
+        "xrd",
+        "sstk",
+        "prstkc",
+        "txditc",
+        "epsfx",
+        "epspx",
+        "epsfi"
+      ],
+      "1": [
+        "sale",
+        "cogs",
+        "xsga",
+        "dp",
+        "ni",
+        "ib",
+        "at",
+        "act",
+        "lct",
+        "rect",
+        "ppent",
+        "dltt",
+        "txditc"
+      ],
+      "2": [
+        "at",
+        "ni"
+      ],
+      "3": [
+        "ni",
+        "epsfx"
+      ],
+      "4": [
+        "ni"
+      ]
+    },
+    "quarter": {
+      "act": "actq",
+      "ap": "apq",
+      "at": "atq",
+      "capx": "capxy",
+      "ceq": "ceqq",
+      "che": "cheq",
+      "cogs": "cogsq",
+      "csho": "cshoq",
+      "dlc": "dlcq",
+      "dltt": "dlttq",
+      "dp": "dpq",
+      "dvc": "dvy",
+      "epsfx": "epsfxq",
+      "epspx": "epspxq",
+      "ib": "ibq",
+      "invt": "invtq",
+      "lct": "lctq",
+      "lt": "ltq",
+      "mib": "mibq",
+      "ni": "niq",
+      "oancf": "oancfy",
+      "oiadp": "oiadpq",
+      "oibdp": "oibdpq",
+      "ppent": "ppentq",
+      "prstkc": "prstkcy",
+      "pstk": "pstkq",
+      "rect": "rectq",
+      "sale": "saleq",
+      "seq": "seqq",
+      "sstk": "sstky",
+      "txt": "txtq",
+      "xint": "xintq",
+      "xrd": "xrdy",
+      "xsga": "xsgaq"
+    }
+  },
+  "producer_needs": {
+    "annual_duration_certification": [
+      "Task5/compustat_std: source-backed period_start/end or verified full-year/comparable-period flag, with source available_at; adjacent fiscal-year end dates alone are not duration certification"
+    ],
+    "debt_basis_certification": [
+      "Task5: independently certify total short-term debt (current LTD maturities plus actual other short borrowing or explicit DebtCurrent), noncurrent long-term debt excluding current maturities; lease/noncurrent/current liability scope, net/gross discounts and issuance costs. Do not equate a partial caption or LongTermDebt total with noncurrent DLTT."
+    ],
+    "divyield": [
+      "Task13: source-backed indicated dividend rate with announcement and class/currency basis"
+    ],
+    "historical_average_nulls": [
+      "Task5: genuinely missing prior same-period balances; no current-only substitution"
+    ],
+    "pe_exi": [
+      "Task5: source-supported continuing-operations dilutedEPS history",
+      "market: dated security-class/ADR ratio and EPS share basis plus split clocks"
+    ],
+    "pe_inc": [
+      "Task5: source-supported total dilutedEPS quarterly/annual history; NI/IB scaling forbidden",
+      "market: dated security-class/ADR ratio and EPS share basis plus split clocks"
+    ],
+    "peg_trailing": [
+      "same pe_exi certification",
+      "Task5: 3-year comparable positive annual dilutedEPS history"
+    ],
+    "ptpm_tail_source_scope": {
+      "evidence": "t4-r2-tail-provenance.json",
+      "needs": [
+        "Task5/standardization: CIK30625 annual FY2018/FY2020 zero Revenues preferred over explicit3.832666b/3.728134b contractual revenue; restated annual denominators-1000/13000 are not reported total sales",
+        "Task5: CIK1253986 financial issuer chosen extension185k versus InterestIncomeOperating466.087m; certify total financial-revenue and pretax source scope",
+        "Task5: CIK1895618 revenue256 explicitly reported; PI-3.948097m only corroborated by NetIncomeLoss in bounded extraction, not certified pretax identity"
+      ]
+    },
+    "retained_source_disagreements": {
+      "evidence": "t4-r2-attribution.json",
+      "needs": [
+        "CIK7084 FY2024 source DLTT7.600b vs state7.580b; reconcile net/gross/capital-lease caption basis with retained filing",
+        "CIK1415404 priorDLTT2.389168b vs2.389733b and priorNI-74.252m vs-62.917m; COGS FY2023 source9.510427b vsstate16.180753b, sourceDLTT19.717266b vsstate0; reconcile actual fiscal/history/restatement/source selection",
+        "CIK40545 priorNI9.482b vs9.483b; CIK1768224 RE-143.800m vs-143.816m; reconcile source comparative/caption history",
+        "7 ratio-absent cells: missing comparable prior annual state fields; raw source presence is not full retained-history certification"
+      ]
+    },
+    "roe_prior_history_case": {
+      "accession": "0001817358-22-000039",
+      "cik": 1817358,
+      "datadate": "2022-01-29",
+      "need": "Task5: reconcile retained fiscal history and source period certification; absence of comparable retained history is not proof primitive absent",
+      "paired_prior_txditc": null,
+      "source_prior_txditc": 138703000
+    },
+    "unmatched_source_checks": [
+      "Task5: source concept/source-default audit; keyed evidence t4-hand-attribution.json; absence in narrow source chains is not proof a primitive does not exist"
+    ]
+  },
+  "rebuild_chain": "compustat_std build --fund-stage fundamentals_v11 --stage <standardized>; ratios build --std-stage <standardized>",
+  "schema": "atx.ratios-requirements/v1",
+  "sourcecheck_scope": {
+    "both_absent_is_certification": false,
+    "classified_composites": 4,
+    "classified_extensions": 3,
+    "classified_primary": 66,
+    "evidence": "t4-r2-sourcecheck.json and t4-r2-attribution.json",
+    "primary_all40_numeric_matches": 2,
+    "primary_with_some_matching_numeric_cells": 57,
+    "primary_without_positive_check": 9,
+    "source_model_full_suite_certified": false
+  },
+  "composite_source_model_certification": {
+    "piotroski_f": {
+      "status": "BLOCKED full original-model certification",
+      "producer": "Task5 + market",
+      "fields": [
+        "source_full_period_comparability_fy0_fy1_fy2",
+        "assets_beginning_fy0_fy1",
+        "common_equity_issuance_event_or_share_count_definition"
+      ],
+      "reason": "FY-2 assets/issuance and comparable histories missing; cash SSTK alone does not certify every issuance event"
+    },
+    "altman_z": {
+      "status": "BLOCKED full original-model certification",
+      "producer": "Task5 + Task7",
+      "fields": [
+        "certified_source_EBIT_definition",
+        "source_retained_earnings",
+        "source_full_period_comparability",
+        "model_population_applicability"
+      ],
+      "reason": "Implemented OIADP term must not be assumed identical to original EBIT; raw score arithmetic does not certify original manufacturing-model population"
+    },
+    "ohlson_o": {
+      "status": "BLOCKED full original-model certification",
+      "producer": "Task5 + Task7",
+      "fields": [
+        "GNP_price_level_deflator",
+        "source_funds_from_operations_identity",
+        "source_full_period_comparability",
+        "comparable_prior_NI"
+      ],
+      "reason": "Nominal asset log and OCF proxy differ from original model inputs; missing fields have no assumed equivalence"
+    },
+    "beneish_m": {
+      "status": "BLOCKED full original-model certification",
+      "producer": "Task5 + Task7",
+      "fields": [
+        "source_total_accruals_original_definition",
+        "source_full_period_comparability_fy0_fy1",
+        "certified_gross_profit_debt_SGA_depreciation_source_scope"
+      ],
+      "reason": "IB-minus-OCF accrual proxy and source histories/bases need original-model equivalence certification"
+    }
+  }
+}

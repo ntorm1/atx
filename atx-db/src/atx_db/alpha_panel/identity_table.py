@@ -22,11 +22,14 @@ Outputs:
   - ``evidence_at``: the clock of the dated evidence the link rests on: ``available_at`` for strict and name
     links; for backfill links ``valid_from`` 22:00 UTC (the CIK had filed a periodic report and the vendor line
     had traded by then; the choice of CIK still comes from the snapshot).
-* ``export/identity-bridge-v2-{strict,pit,all}/`` in the consumer contract ``atx.identity-bridge/v1``
+* ``export/identity-bridge-v4-{strict,pit,all}/`` in the consumer contract ``atx.identity-bridge/v1``
   (``links.parquet``: ``sr_id, cik, start, end_incl, available_at, primary (P|J), tier, basis, class_status`` plus
   ``link_tier, share_class, knowledge_at``). ``strict`` = r4 tiers; ``pit`` = strict + name; ``all`` = strict + name
   + backfill with ``available_at`` = ``evidence_at`` (``knowledge_at`` keeps the true clock) so a consumer that
   gates on ``available_at`` can run the survivorship-biased sensitivity deliberately.
+  Strict and pit primaries and islands use their own tiers known by each session's 22:00 UTC mark.
+  Historical rows known after their start are retained, comparing their own volume against the eligible
+  issuer lines, without competing with those lines before their knowledge clock.
 * ``identity/audit.json`` (request section 5.4 and U2): per year the share of member / member_equity cells by
   link tier, ambiguous line-days, dead-line coverage, the multi-class issuer list.
 """
@@ -38,7 +41,7 @@ from typing import Any
 
 from . import common as C
 
-RULE = "identity-link-table-v1"
+RULE = "identity-link-table-v4"
 DEAD_BEFORE = "2026-09-01"  # a line whose last vendor session is before this date died before the snapshot
 
 
@@ -57,6 +60,14 @@ def _paths() -> dict[str, str]:
 
 def build() -> dict[str, Any]:
     p = _paths()
+    root = C.build_root()
+    pit = root / "identity" / "links_pit.parquet"
+    if not pit.exists():
+        raise FileNotFoundError("identity/links_pit.parquet: run identity_backfill combine first")
+    for name in VARIANTS:
+        target = root / "export" / f"identity-bridge-v4-{name}"
+        if target.exists():
+            raise FileExistsError(f"refusing to replace existing bridge export: {target}")
     con = C.connect(memory="600MB", threads=1, db_file="identity_table.duckdb")
     receipt: dict[str, Any] = {"rule": RULE}
     # line-sessions the line actually traded (panel core), with the inputs of the primary and class rules
@@ -156,6 +167,25 @@ def build() -> dict[str, Any]:
         SELECT count(DISTINCT security_id) FILTER (WHERE share_class IS NOT NULL), count(DISTINCT security_id)
         FROM read_parquet('{dest.as_posix()}')
     """).fetchone()
+    # PIT variants use their own population, including names on backfill-covered days.
+    con.execute(f"""
+        CREATE OR REPLACE TABLE pit_days AS
+        SELECT c.session_date, c.security_id, l.cik,
+               CASE WHEN l.tier = 'name' THEN 'name' ELSE 'strict' END AS link_tier,
+               l.basis, CASE WHEN l.tier = 'name' THEN coalesce(n.available_at, l.available_at)
+                            ELSE l.available_at END AS link_available_at, c.adv63, c.ticker
+        FROM core c JOIN read_parquet('{pit.as_posix()}') l
+          ON c.security_id = l.security_id AND c.session_date BETWEEN l.start AND l.end_incl
+        LEFT JOIN read_parquet('{p["name_days"]}') n
+          ON n.security_id = c.security_id AND n.session_date = c.session_date AND n.cik = l.cik
+    """)
+    con.execute("""
+        CREATE OR REPLACE TABLE pit_classes AS
+        SELECT d.*, coalesce(CASE WHEN regexp_matches(d.ticker, '^[A-Z]+\\.[A-Z]$')
+                                 THEN right(d.ticker, 1) END, f.cls) AS share_class
+        FROM pit_days d ASOF LEFT JOIN fr_cls f
+          ON d.security_id = f.security_id AND d.session_date > f.dissemination_date
+    """)
     receipt["exports"] = export_bridges(con, dest)
     receipt["audit"] = audit(con, p)
     con.close()
@@ -180,17 +210,46 @@ def export_bridges(con, table) -> dict[str, Any]:
     out: dict[str, Any] = {}
     root = C.build_root()
     for name, tiers in VARIANTS.items():
-        d = root / "export" / f"identity-bridge-v2-{name}"
-        d.mkdir(parents=True, exist_ok=True)
+        d = root / "export" / f"identity-bridge-v4-{name}"
+        if d.exists():
+            raise FileExistsError(f"refusing to replace existing bridge export: {d}")
+        d.mkdir(parents=True)
         lst = ", ".join(f"'{t}'" for t in tiers)
         avail = "evidence_at" if name == "all" else "available_at"
+        source = f"read_parquet('{table.as_posix()}')"
+        if name != "all":
+            con.execute(f"""
+                CREATE OR REPLACE TABLE variant_islands AS
+                WITH ranked AS (
+                    SELECT *, struct_pack(volume := -coalesce(adv63, '-Infinity'::DOUBLE),
+                                          sid := security_id) AS rank_key
+                    FROM pit_classes WHERE link_tier IN ({lst})
+                ), flags AS (
+                    SELECT *, coalesce(rank_key <= min(rank_key) FILTER (
+                        WHERE link_available_at <= CAST(session_date AS TIMESTAMP) + INTERVAL 22 HOUR
+                    ) OVER (PARTITION BY cik, session_date), true) AS is_issuer_primary
+                    FROM ranked
+                ), cal AS (
+                    SELECT session_date, row_number() OVER (ORDER BY session_date) AS k
+                    FROM read_parquet('{C.calendar_path().as_posix()}')
+                ), x AS (
+                    SELECT f.*, k - row_number() OVER (PARTITION BY security_id, cik, link_tier,
+                        basis, is_issuer_primary, coalesce(share_class, '') ORDER BY k) AS grp
+                    FROM flags f JOIN cal USING (session_date)
+                )
+                SELECT security_id, cik, link_tier, basis, is_issuer_primary, share_class,
+                       min(session_date) AS valid_from, max(session_date) AS valid_to,
+                       min(link_available_at) AS available_at
+                FROM x GROUP BY security_id, cik, link_tier, basis, is_issuer_primary, share_class, grp
+            """)
+            source = "variant_islands"
         n = C.copy_to_parquet(con, f"""
             SELECT security_id AS sr_id, cik, valid_from AS start, valid_to AS end_incl,
                    {avail} AS available_at,
                    CASE WHEN is_issuer_primary THEN 'P' ELSE 'J' END AS "primary",
                    link_tier AS tier, basis, coalesce(share_class, 'common') AS class_status,
                    link_tier, share_class, available_at AS knowledge_at
-            FROM read_parquet('{table.as_posix()}') WHERE link_tier IN ({lst})
+            FROM {source} WHERE link_tier IN ({lst})
             ORDER BY sr_id, start
         """, d / "links.parquet")
         stats = con.execute(f"""
@@ -205,9 +264,12 @@ def export_bridges(con, table) -> dict[str, Any]:
             "available_at_basis": ("evidence_at for backfill rows (knowledge_at = 2026-09-20 snapshot: survivorship-"
                                    "biased, not point in time); the link's own clock for strict and name rows")
                                   if name == "all" else "the link's own knowledge clock (point in time)",
-            "primary_rule": "P = the issuer's linked line with the highest prior-63-session dollar volume that session "
+            "primary_rule": ("all tiers; " if name == "all" else "own tiers known by session 22:00 UTC; ") +
+                            "P = the issuer's linked line with the highest prior-63-session dollar volume that session "
                             "(ties: smallest security_id); intervals split where the flag changes",
-            "source": {"scope_complete": False, "link_table": C.output_hashes(table.parent, table.name)},
+            "source": {"scope_complete": False, "link_table": C.output_hashes(table.parent, table.name),
+                       **({"links_pit": C.output_hashes(root / "identity", "links_pit.parquet")}
+                          if name != "all" else {})},
             "counts": {"rows": stats[0], "lines": stats[1], "ciks": stats[2], "min_start": str(stats[3]),
                        "max_end_incl": str(stats[4]), "rows_available_after_start_mark": stats[5]},
             "files": C.output_hashes(d, "links.parquet"),

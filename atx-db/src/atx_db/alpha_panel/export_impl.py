@@ -28,6 +28,9 @@ from typing import Any
 import numpy as np
 
 from . import common as C
+from . import char_registry as R
+from .characteristics import panel_stage
+from .gold import feature_quality_flags
 
 ROLE_SCHEMA = "atx.recent-research-role/v1"
 FIELDS_SCHEMA = "atx.research-role-fields/v1"
@@ -114,7 +117,7 @@ def export(out: Path, score_start: dt.date, end: dt.date, fields: list[str], iss
     if score_begin < 383:
         raise SystemExit("need >= 383 warm-up sessions before the score start")
     d = len(sessions)
-    panel = (C.build_root() / "panel" / "*" / "*.parquet").as_posix()
+    panel = (C.build_root() / panel_stage() / "*" / "*.parquet").as_posix()
     lo, hi = sessions[0], sessions[-1]
     ids = [r[0] for r in con.execute(f"""
         SELECT DISTINCT security_id FROM read_parquet('{panel}', hive_partitioning = false)
@@ -132,7 +135,7 @@ def export(out: Path, score_start: dt.date, end: dt.date, fields: list[str], iss
         for y in range(lo.year, hi.year + 1):
             rows = con.execute(f"""
                 SELECT date_diff('day', DATE '1970-01-01', p.session_date) AS dday, p.security_id, {expr} AS v
-                FROM read_parquet('{(C.build_root() / 'panel' / f'year={y}' / '*.parquet').as_posix()}', hive_partitioning = false) p
+                FROM read_parquet('{(C.build_root() / panel_stage() / f'year={y}' / '*.parquet').as_posix()}', hive_partitioning = false) p
                 JOIN ax USING (security_id)
                 WHERE p.session_date BETWEEN DATE '{lo}' AND DATE '{hi}' AND ({where})""").fetchnumpy()
             if not len(rows["v"]):
@@ -175,6 +178,8 @@ def export(out: Path, score_start: dt.date, end: dt.date, fields: list[str], iss
         "dates": d, "instruments": n, "score_begin": score_begin, "score_end": d,
         "score_start_ns": int(sess_ns[score_begin]), "score_end_ns": int(sess_ns[-1] + NS_DAY),
         "source_sha256": src_sha, "membership_recipe": json.dumps(MEMBERSHIP, sort_keys=True, separators=(",", ":")),
+        "sources": {"panel_stage": panel_stage(),
+                    "panel_manifest_sha256": C.sha256_file(C.build_root() / panel_stage() / "manifest.json")},
         "declared_output_bytes": d * n * 26 + d * 8 + n * 8, "files": files,
         "producer": "atx_db.alpha_panel.export_impl", "window": {"first": str(lo), "score_start": str(sessions[score_begin]),
                                                                  "last": str(hi)},
@@ -219,9 +224,11 @@ def export(out: Path, score_start: dt.date, end: dt.date, fields: list[str], iss
         "role": {"manifest_sha256": role_sha, "sessions_sha256": files["sessions.i64"]["sha256"],
                  "ids_sha256": files["ids.u64"]["sha256"], "dates": d, "instruments": n},
         "fields": field_rows, "files": field_files, "producer": "atx_db.alpha_panel.export_impl",
+        "sources": role_manifest["sources"],
     }
     (fields_dir / "manifest.json").write_text(json.dumps(fm, indent=2, sort_keys=True), encoding="utf-8", newline="\n")
     fields_sha = hashlib.sha256((fields_dir / "manifest.json").read_bytes()).hexdigest()
+    con.close()
     return {"role_dir": str(role_dir), "role_manifest_sha256": role_sha, "fields_dir": str(fields_dir),
             "fields_manifest_sha256": fields_sha, "dates": d, "instruments": n, "score_begin": score_begin}
 
@@ -267,7 +274,7 @@ def align(role_dir: Path, out: Path, fields: list[str] | None, issuer_lines: str
     ax = _role_axes(role_dir)
     con = C.connect(memory="500MB", threads=2)
     root = C.build_root()
-    panel = (root / "panel" / "*" / "*.parquet").as_posix()
+    panel = (root / panel_stage() / "*" / "*.parquet").as_posix()
     schema = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{panel}', union_by_name = true)").fetchall()
     types = {r[0]: r[1] for r in schema}
     if fields is None:
@@ -293,7 +300,7 @@ def align(role_dir: Path, out: Path, fields: list[str] | None, issuer_lines: str
         for y in range(lo.year, hi.year + 1):
             rows = con.execute(f"""
                 SELECT date_diff('day', DATE '1970-01-01', p.session_date) AS dday, p.security_id, {expr} AS v
-                FROM read_parquet('{(root / 'panel' / f'year={y}' / '*.parquet').as_posix()}', union_by_name = true) p
+                FROM read_parquet('{(root / panel_stage() / f'year={y}' / '*.parquet').as_posix()}', union_by_name = true) p
                 JOIN ax USING (security_id)
                 WHERE p.session_date BETWEEN DATE '{lo}' AND DATE '{hi}' AND ({where})""").fetchnumpy()
             if not len(rows["v"]):
@@ -362,7 +369,7 @@ def align(role_dir: Path, out: Path, fields: list[str] | None, issuer_lines: str
                    "dates": ax["d"], "instruments": ax["n"]},
           "fields": rows_out, "files": files, "codes": codes, "producer": "atx_db.alpha_panel.export_impl.align",
           "code": C.code_identity("export_impl", "panel", "common"), "link_tiers": tiers, "issuer_lines": issuer_lines,
-          "sources": {"panel_manifest": C.output_hashes(root / "panel", "manifest.json"),
+          "sources": {"panel_manifest": C.output_hashes(root / panel_stage(), "manifest.json"),
                       "stage_manifests": {p.parent.name: C.sha256_file(p) for p in sorted(root.glob("*/manifest.json"))}},
           "seal": str(SEAL), "coverage_basis": "member.u8 cells of the role"}
     (out / "manifest.json").write_text(json.dumps(fm, indent=2, sort_keys=True), encoding="utf-8", newline="\n")
@@ -370,7 +377,117 @@ def align(role_dir: Path, out: Path, fields: list[str] | None, issuer_lines: str
             "manifest_sha256": hashlib.sha256((out / "manifest.json").read_bytes()).hexdigest()}
 
 
+def align_stage(role_dir: Path, out: Path, stage: str = "gold", fields: list[str] | None = None) -> dict[str, Any]:
+    """Stream numeric gold/characteristic fields onto sealed consumer axes.
+
+    Only dates on the role are scanned; the 2024+ warehouse features are never
+    exported. Missing securities/sessions and absent role cells stay NaN. Memory
+    maps bound resident matrix memory and atomic file renames publish each field.
+    """
+    if stage not in ("gold", "characteristics"):
+        raise ValueError("feature stage must be gold or characteristics")
+    ax = _role_axes(role_dir)
+    if not ax["d"] or not ax["n"] or np.any(np.diff(ax["days"]) <= 0) or np.any(np.diff(ax["ids"]) <= 0):
+        raise ValueError("consumer axes must be nonempty, sorted and unique")
+    root = C.build_root()
+    man_path = root / stage / "manifest.json"
+    manifest = C.read_json(man_path)
+    if manifest.get("status") != "complete":
+        raise ValueError("feature stage is not complete")
+    stage_sha = C.sha256_file(man_path)
+    glob = (root / stage / "year=*" / "*.parquet").as_posix()
+    con = C.connect(memory="220MB", threads=1)
+    try:
+        types = dict((r[0], r[1]) for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{glob}')").fetchall())
+        if fields is None:
+            fields = [c for c in types if c.startswith(("g_", "c_", "ctl_"))] if stage == "gold" else [
+                c for c in types if c in R.by_name()]
+        if not fields or len(fields) != len(set(fields)):
+            raise ValueError("fields must be nonempty and unique")
+        if any(c not in types or types[c] not in ("DOUBLE", "FLOAT") for c in fields):
+            raise ValueError("only floating-point feature columns can be exported")
+        out.mkdir(parents=True, exist_ok=False)
+        d, n = ax["d"], ax["n"]
+        present, member = ax["present"].astype(bool), ax["member"]
+        con.execute("CREATE TEMP TABLE role_ids AS SELECT unnest(?::BIGINT[]) AS security_id", [ax["ids"].tolist()])
+        lo = EPOCH + dt.timedelta(days=int(ax["days"][0]))
+        hi = EPOCH + dt.timedelta(days=int(ax["days"][-1]))
+        files, rows_out = {}, []
+        for name in fields:
+            path = out / f"{name}.f64"
+            tmp = path.with_name(path.name + ".partial")
+            matrix = np.memmap(tmp, mode="w+", dtype="<f8", shape=(d, n))
+            for offset in range(0, d, 64):
+                matrix[offset:offset + 64] = np.nan
+            # Calendar-month chunks avoid fetching millions of narrow rows at once.
+            cur = lo.replace(day=1)
+            while cur <= hi:
+                nxt = dt.date(cur.year + (cur.month == 12), cur.month % 12 + 1, 1)
+                year_glob = root / stage / f"year={cur.year}" / "*.parquet"
+                if list(year_glob.parent.glob("*.parquet")):
+                    got = con.execute(f"""SELECT date_diff('day', DATE '1970-01-01', session_date) AS day,
+                        security_id, "{name}" AS value FROM read_parquet('{year_glob.as_posix()}')
+                        JOIN role_ids USING(security_id) WHERE session_date >= ? AND session_date < ?""",
+                                      [max(cur, lo), min(nxt, hi + dt.timedelta(days=1))]).fetchnumpy()
+                    dd, sid = np.asarray(got["day"]), np.asarray(got["security_id"])
+                    ri, ci = np.searchsorted(ax["days"], dd), np.searchsorted(ax["ids"], sid)
+                    valid = (ri < d) & (ci < n)
+                    ri, ci, pos = ri[valid], ci[valid], np.flatnonzero(valid)
+                    valid2 = (ax["days"][ri] == dd[pos]) & (ax["ids"][ci] == sid[pos]) & present[ri, ci]
+                    values = got["value"]
+                    if hasattr(values, "filled"):
+                        values = values.filled(np.nan)
+                    matrix[ri[valid2], ci[valid2]] = np.asarray(values)[pos[valid2]]
+                cur = nxt
+            finite, total = 0, 0
+            for offset in range(0, d, 64):
+                mask = member[offset:offset + 64]
+                vals = matrix[offset:offset + 64]
+                finite += int(np.isfinite(vals[mask]).sum())
+                total += int(mask.sum())
+            matrix.flush()
+            del vals
+            matrix._mmap.close()  # Windows cannot rename an open mapping, including its sliced views.
+            del matrix
+            os.replace(tmp, path)
+            info = {"bytes": path.stat().st_size, "sha256": _sha(path)}
+            files[path.name] = info
+            rows_out.append({"name": name, "file": path.name, "sha256": info["sha256"], "dtype": "<f8",
+                "layout": "date-major", "shape": [d, n], "point_in_time": True, "non_pit_aspects": [],
+                "units": "standardized score" if stage == "gold" and not name.startswith("ctl_") else "raw feature units",
+                "clock": "known by 22:00 UTC of decision session; trailing and same-session inputs only",
+                "source_columns": [f"alpha_panel.{stage}.{name}"],
+                "source_quality_flags": manifest.get("feature_quality_flags", {}).get(name,
+                    feature_quality_flags(R.by_name()[name]) if stage == "characteristics" else []),
+                "source_vintages_certified": manifest.get("source_vintages_certified", False),
+                "coverage": {"finite_member_frac": finite / total if total else None}})
+        if C.sha256_file(man_path) != stage_sha:
+            raise ValueError("feature stage changed during export")
+        payload = {"schema": FIELDS_SCHEMA, "status": "complete", "producer": "atx_db.alpha_panel.export_impl.align_stage",
+            "role": {**{k: ax[k] for k in ("path", "manifest_sha256", "sessions_sha256", "ids_sha256", "d", "n", "first", "last")},
+                     "dates": d, "instruments": n}, "fields": rows_out, "files": files, "codes": {},
+            "seal": str(SEAL), "sources": {"feature_stage": stage, "feature_manifest_sha256": stage_sha},
+            "quality_status": manifest.get("quality_status", "raw research candidates; validation required"),
+            "predictive_power_certified": manifest.get("predictive_power_certified", False),
+            "code": C.code_identity("export_impl", "gold", "common"), "coverage_basis": "member.u8 cells of the role"}
+        C.write_json_atomic(out / "manifest.json", payload)
+        return {"fields_dir": str(out), "fields": len(fields), "manifest_sha256": C.sha256_file(out / "manifest.json")}
+    finally:
+        con.close()
+
+
 def main(argv: list[str] | None = None) -> int:
+    actual = sys.argv[1:] if argv is None else argv
+    if actual and actual[0] == "align-stage":
+        ap = argparse.ArgumentParser()
+        ap.add_argument("cmd")
+        ap.add_argument("--role", type=Path, required=True)
+        ap.add_argument("--out", type=Path, required=True)
+        ap.add_argument("--stage", choices=("gold", "characteristics"), default="gold")
+        ap.add_argument("--fields", default=None)
+        a = ap.parse_args(actual)
+        print(json.dumps(align_stage(a.role, a.out, a.stage, a.fields.split(",") if a.fields else None), indent=2))
+        return 0
     if argv is None and len(sys.argv) > 1 and sys.argv[1] == "align":
         ap = argparse.ArgumentParser()
         ap.add_argument("cmd")

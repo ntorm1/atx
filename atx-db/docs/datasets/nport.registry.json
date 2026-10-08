@@ -1,0 +1,8 @@
+{
+  "stage": "nport",
+  "path": "nport/fund_ownership.parquet",
+  "keys": ["security_id", "period_q"],
+  "schema_id": "atx.alpha-panel.nport/v2",
+  "as_of_macro_sql": "SELECT * FROM read_parquet('nport/fund_ownership.parquet') WHERE available_at < cutoff",
+  "admission": "requires_source_rebuild_vintage_repair_and_review"
+}

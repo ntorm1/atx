@@ -192,8 +192,52 @@ def test_share_exchange_history_runs(tmp_path, monkeypatch) -> None:
         FROM read_parquet('{(tmp_path / 'security_master' / 'share_exchange_history.parquet').as_posix()}')
         ORDER BY 1, 2""").fetchall()
     assert [(r[0], r[3], r[4], r[5]) for r in got] == [(1, 3, 1, 11), (1, 2, 3, 11), (2, 5, 4, 73), (3, 2, 3, 31)]
-    assert got[1][1] == sess[3] and got[1][6] == dt.datetime(2021, 3, 3, 22)   # stamped d-1 22:00 UTC
+    # stamped 1 s before the cutoff of its first session (22:00 UTC of the previous session)
+    assert got[1][1] == sess[3] and got[1][6] == dt.datetime(2021, 3, 3, 21, 59, 59)
+    assert got[0][6] == dt.datetime(2021, 2, 28, 21, 59, 59)       # first calendar session: valid_from - 1 day
     assert rec["rows"] == 4
+
+
+def test_share_exchange_history_as_of_returns_new_code_from_its_first_session(tmp_path, monkeypatch) -> None:
+    """The registered as-of path (docs/datasets/share_exchange_history.registry.json) returns a code change on the
+    run's first session (a Monday: its cutoff is Friday 22:00 UTC) and never earlier."""
+    import json
+    from pathlib import Path
+
+    import duckdb
+
+    monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT", str(tmp_path))
+    sess = [dt.date(2021, 3, d) for d in (1, 2, 3, 4, 5, 8, 9, 10)]       # Mon 1 .. Fri 5, Mon 8 .. Wed 10
+    _write(tmp_path / "calendar.parquet", {"session_date": sess})
+    rows = [(d, 1, "XNYS" if d.day <= 5 else "XNAS") for d in sess]
+    data = {"session_date": [r[0] for r in rows], "security_id": [r[1] for r in rows],
+            "exchange": [r[2] for r in rows], "security_type": ["common"] * len(rows)}
+    data |= {c: [False] * len(rows) for c in ("is_etf", "is_adr", "is_adr_likely", "is_fpi", "is_lp", "is_reit")}
+    _write(tmp_path / "panel" / "year=2021" / "panel-03.parquet", data)
+    V.codes()
+    stub = json.loads((Path(__file__).resolve().parents[1] / "docs" / "datasets"
+                       / "share_exchange_history.registry.json").read_text(encoding="utf-8"))
+    con = duckdb.connect()
+    con.execute(f"CREATE VIEW calendar AS SELECT * FROM read_parquet('{(tmp_path / 'calendar.parquet').as_posix()}')")
+    con.execute(f"CREATE VIEW share_exchange_history AS SELECT * FROM read_parquet("
+                f"'{(tmp_path / 'security_master' / 'share_exchange_history.parquet').as_posix()}')")
+    # lake_cutoff exactly as atx_db.stagelake.catalog defines it
+    con.execute("CREATE MACRO lake_cutoff(d) AS (SELECT CAST(max(session_date) AS TIMESTAMP) + INTERVAL 22 HOUR "
+                "FROM calendar WHERE session_date < CAST(d AS DATE))")
+    con.execute(stub["as_of_sql"])
+    assert "DATE '2024-03-15'" in stub["as_of_usage"]
+
+    def at(d: dt.date) -> list[tuple]:
+        return con.execute(stub["as_of_usage"].replace("DATE '2024-03-15'", f"DATE '{d}'")).fetchall()
+
+    assert at(dt.date(2021, 3, 5)) == [(1, 11, 1)]                 # Friday: still NYSE
+    assert at(dt.date(2021, 3, 8)) == [(1, 11, 3)]                 # Monday, first session of the Nasdaq run
+    assert at(dt.date(2021, 3, 10)) == [(1, 11, 3)]
+    nas = con.execute("SELECT available_at FROM share_exchange_history WHERE exchcd = 3").fetchone()[0]
+    assert nas == dt.datetime(2021, 3, 5, 21, 59, 59)
+    # the Nasdaq run is invisible before its first session: as of Friday's cutoff it does not exist
+    seen = con.execute("SELECT exchcd FROM share_exchange_history_as_of(lake_cutoff(DATE '2021-03-05'))").fetchall()
+    assert seen == [(1,)]
 
 
 def _bridge_table(tmp_path) -> "Path":

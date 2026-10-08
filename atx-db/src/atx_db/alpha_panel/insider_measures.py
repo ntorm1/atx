@@ -35,7 +35,7 @@ from typing import Any
 from . import common as C
 
 STAGE = "insider_ext"
-SCHEMA = "atx.alpha-panel.insider-ext/v1"
+SCHEMA = "atx.alpha-panel.insider-ext/v2"
 RULE = "cmp-routine-v1"
 FIRST_YEAR = 2019
 MEMORY = "400MB"
@@ -65,6 +65,32 @@ TRADES_SQL = """
 """
 
 
+def price_sanity_sql(trades: str, prices: str) -> str:
+    """Require one dated issuer line and a finite raw close on the trade date.
+
+    Multiple share classes are ambiguous without a security link; retain shares
+    and counts but NULL the value. A same-day acceptance waits until the close
+    comparison is observable (22:00 UTC conservative panel-close clock).
+    """
+    return f"""WITH p AS (
+        SELECT cik AS issuer_cik, session_date AS transaction_date,
+               CASE WHEN count(DISTINCT security_id) = 1 THEN max(raw_close) END AS panel_close
+        FROM read_parquet('{prices}', hive_partitioning=false)
+        WHERE cik IS NOT NULL GROUP BY 1, 2)
+    SELECT t.* EXCLUDE(value, available_at),
+           CASE WHEN isfinite(price) AND isfinite(panel_close) AND panel_close > 0
+                     AND price BETWEEN 0.2 * panel_close AND 5.0 * panel_close
+                THEN shares * price END AS value,
+           CASE WHEN panel_close IS NULL OR NOT isfinite(panel_close) OR panel_close <= 0 THEN 'close_missing_or_ambiguous'
+                WHEN price IS NULL OR NOT isfinite(price) OR price <= 0 THEN 'price_missing_or_invalid'
+                WHEN price NOT BETWEEN 0.2 * panel_close AND 5.0 * panel_close THEN 'price_outside_0.2_5x'
+                ELSE 'qualified' END AS price_sanity,
+           panel_close,
+           CASE WHEN t.available_at IS NULL THEN NULL ELSE greatest(t.available_at, (CAST(t.transaction_date AS TIMESTAMP) + INTERVAL 22 HOUR)
+                    AT TIME ZONE 'UTC') END AS available_at
+    FROM ({trades}) t LEFT JOIN p USING (issuer_cik, transaction_date)"""
+
+
 HIST_SQL = """CREATE OR REPLACE TABLE hist AS
     SELECT DISTINCT owner_cik, year(transaction_date) AS y, month(transaction_date) AS m FROM t
     WHERE available_at < make_timestamptz(year(transaction_date) + 1, 1, 1, 0, 0, 0.0, 'UTC')"""
@@ -83,11 +109,18 @@ LABEL_SQL = """CREATE OR REPLACE TABLE lab AS
     FROM yrs LEFT JOIN ny USING (owner_cik, y) LEFT JOIN best USING (owner_cik, y)"""
 
 
+def _value_total(cond: str) -> str:
+    """An absent trade side is zero; a present trade with unknown value is unknown."""
+    return (f"CASE WHEN count(*) FILTER (WHERE {cond}) = count(value) FILTER (WHERE {cond}) "
+            f"THEN coalesce(sum(value) FILTER (WHERE {cond}), 0) END")
+
+
 def _side(cond: str, pfx: str) -> str:
+    buy_value = _value_total(f"transaction_code = 'P' AND {cond}")
+    sell_value = _value_total(f"transaction_code = 'S' AND {cond}")
     return (f"count(*) FILTER (WHERE transaction_code = 'P' AND {cond}) AS {pfx}n_buy, "
             f"count(*) FILTER (WHERE transaction_code = 'S' AND {cond}) AS {pfx}n_sell, "
-            f"coalesce(sum(value) FILTER (WHERE transaction_code = 'P' AND {cond}), 0) "
-            f"- coalesce(sum(value) FILTER (WHERE transaction_code = 'S' AND {cond}), 0) AS {pfx}net_value, "
+            f"({buy_value}) - ({sell_value}) AS {pfx}net_value, "
             f"count(DISTINCT owner_cik) FILTER (WHERE transaction_code = 'P' AND {cond}) "
             f"- count(DISTINCT owner_cik) FILTER (WHERE transaction_code = 'S' AND {cond}) AS {pfx}net_buyers")
 
@@ -101,15 +134,16 @@ def monthly_sql(trades: str) -> str:
                coalesce(sum(shares) FILTER (WHERE transaction_code = 'S'), 0) AS sell_shares,
                coalesce(sum(shares) FILTER (WHERE transaction_code = 'P'), 0)
                  - coalesce(sum(shares) FILTER (WHERE transaction_code = 'S'), 0) AS net_shares,
-               coalesce(sum(value) FILTER (WHERE transaction_code = 'P'), 0) AS buy_value,
-               coalesce(sum(value) FILTER (WHERE transaction_code = 'S'), 0) AS sell_value,
-               coalesce(sum(value) FILTER (WHERE transaction_code = 'P'), 0)
-                 - coalesce(sum(value) FILTER (WHERE transaction_code = 'S'), 0) AS net_value,
+               {_value_total("transaction_code = 'P'")} AS buy_value,
+               {_value_total("transaction_code = 'S'")} AS sell_value,
+               ({_value_total("transaction_code = 'P'")})
+                 - ({_value_total("transaction_code = 'S'")}) AS net_value,
                count(DISTINCT owner_cik) FILTER (WHERE transaction_code = 'P') AS n_buyers,
                count(DISTINCT owner_cik) FILTER (WHERE transaction_code = 'S') AS n_sellers,
                {_side("cmp_label = 'opportunistic'", 'opp_')}, {_side("cmp_label = 'routine'", 'rtn_')},
                {_side("(officer OR director)", 'od_')},
                avg(CASE WHEN aff10b5one THEN 1.0 WHEN aff10b5one IS NOT NULL THEN 0.0 END) AS share_10b5_1,
+               count(*) FILTER (WHERE value IS NULL) AS n_value_missing,
                max(available_at) AS available_at, '{RULE}' AS cmp_rule
         FROM read_parquet('{trades}')
         WHERE available_at >= TIMESTAMPTZ '{FIRST_YEAR}-01-01 00:00:00+00'
@@ -122,10 +156,13 @@ def build() -> dict[str, Any]:
     ins = root / "insider"
     if C.read_json(ins / "manifest.json").get("status") != "complete":
         raise SystemExit("insider stage not published")
+    if C.read_json(root / "panel" / "manifest.json").get("status") != "complete":
+        raise SystemExit("panel stage not published")
     out = C.stage_dir(STAGE)
     con = C.connect(memory=MEMORY, threads=2, temp_dir=root / "_tmp" / "insider_ext", db_file="insider_ext.duckdb")
     tx = (ins / "transactions" / "*" / "*.parquet").as_posix()
-    con.execute(f"CREATE TABLE t AS {TRADES_SQL.format(tx=tx)}")
+    prices = (root / "panel" / "year=*" / "*.parquet").as_posix()
+    con.execute(f"CREATE TABLE t AS {price_sanity_sql(TRADES_SQL.format(tx=tx), prices)}")
     con.execute(HIST_SQL)
     con.execute(LABEL_SQL)
     n_tr = C.copy_to_parquet(con, f"""
@@ -173,13 +210,13 @@ def publish(receipt: dict[str, Any]) -> None:
 
     root = C.build_root()
     payload = {
-        "rules": {"trades": "non-derivative P / S, original filings, shares > 0; value = shares x price when price > 0",
+        "rules": {"trades": "non-derivative P / S, originals, shares > 0; value only for finite price 0.2-5x unique dated issuer raw close",
                   "cmp": __doc__.split("Rule ``cmp-routine-v1``")[1].split("Outputs:")[0].strip(),
                   "monthly": "month = calendar month (UTC) of available_at; available_at = latest trade clock of the month",
                   "form144": F.__doc__.split("Outputs")[0].strip()},
         "staleness": "monthly event aggregates; a month with no row had no qualifying trade",
         "inputs": {"input_manifests_sha256": {k: C.sha256_file(root / k / "manifest.json")
-                                              for k in ("insider", "sec_filings") if (root / k / "manifest.json").exists()}},
+                                              for k in ("insider", "sec_filings", "panel") if (root / k / "manifest.json").exists()}},
         "sources": {"sec_144_fetch_ledger": D.ledger_counts(F.SOURCE), "sec_144_objects_bytes": D.objects_bytes(F.SOURCE)},
         "receipt": receipt,
     }

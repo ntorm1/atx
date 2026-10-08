@@ -1,0 +1,2401 @@
+{
+  "version": "fundamentals-v11-requirements-v1",
+  "status": "SOURCE_QUALIFICATION_AND_COVERAGE_PENDING",
+  "primitives": {
+    "sales": {
+      "columns": [
+        "sale_ttm",
+        "sale_q"
+      ],
+      "implemented_columns": [
+        "sale_ttm",
+        "sale_q"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "cogs": {
+      "columns": [
+        "cogs_ttm",
+        "cogs_q"
+      ],
+      "implemented_columns": [
+        "cogs_ttm",
+        "cogs_q"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "gross_profit": {
+      "columns": [
+        "gp_ttm",
+        "gp_q"
+      ],
+      "implemented_columns": [
+        "gp_ttm",
+        "gp_q"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "operating_income": {
+      "columns": [
+        "oi_ttm",
+        "oi_q"
+      ],
+      "implemented_columns": [
+        "oi_ttm",
+        "oi_q"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "ebitda": {
+      "columns": [
+        "ebitda_ttm",
+        "ebitda_q"
+      ],
+      "implemented_columns": [
+        "ebitda_ttm",
+        "ebitda_q"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "net_income": {
+      "columns": [
+        "ni_ttm",
+        "ni_q"
+      ],
+      "implemented_columns": [
+        "ni_ttm",
+        "ni_q"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "income_before_extraordinary": {
+      "columns": [
+        "ib_ttm"
+      ],
+      "implemented_columns": [
+        "ib_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "operating_cash_flow": {
+      "columns": [
+        "cfo_ttm"
+      ],
+      "implemented_columns": [
+        "cfo_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "assets": {
+      "columns": [
+        "at"
+      ],
+      "implemented_columns": [
+        "at"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "equity": {
+      "columns": [
+        "seq",
+        "ceq",
+        "teq"
+      ],
+      "implemented_columns": [
+        "seq",
+        "ceq",
+        "teq"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "working_capital": {
+      "columns": [
+        "act",
+        "lct"
+      ],
+      "implemented_columns": [
+        "act",
+        "lct"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "inventory": {
+      "columns": [
+        "invt"
+      ],
+      "implemented_columns": [
+        "invt"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "receivables": {
+      "columns": [
+        "rect"
+      ],
+      "implemented_columns": [
+        "rect"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "debt": {
+      "columns": [
+        "dlc",
+        "dltt"
+      ],
+      "implemented_columns": [
+        "dlc",
+        "dltt"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "interest": {
+      "columns": [
+        "xint_ttm"
+      ],
+      "implemented_columns": [
+        "xint_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "tax": {
+      "columns": [
+        "txt_ttm",
+        "txditc"
+      ],
+      "implemented_columns": [
+        "txt_ttm",
+        "txditc"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "capex": {
+      "columns": [
+        "capx_ttm"
+      ],
+      "implemented_columns": [
+        "capx_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "research": {
+      "columns": [
+        "xrd_ttm"
+      ],
+      "implemented_columns": [
+        "xrd_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "dividends": {
+      "columns": [
+        "dvc_ttm"
+      ],
+      "implemented_columns": [
+        "dvc_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "issuance": {
+      "columns": [
+        "sstk_ttm"
+      ],
+      "implemented_columns": [
+        "sstk_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "buybacks": {
+      "columns": [
+        "prstkc_ttm"
+      ],
+      "implemented_columns": [
+        "prstkc_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "basic_shares": {
+      "columns": [
+        "cshpri"
+      ],
+      "implemented_columns": [
+        "cshpri"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "diluted_shares": {
+      "columns": [
+        "cshfd"
+      ],
+      "implemented_columns": [
+        "cshfd"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "basic_eps": {
+      "columns": [
+        "epspx_ttm"
+      ],
+      "implemented_columns": [
+        "epspx_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "diluted_eps": {
+      "columns": [
+        "epsfx_ttm"
+      ],
+      "implemented_columns": [
+        "epsfx_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "investment": {
+      "columns": [
+        "ppe"
+      ],
+      "implemented_columns": [
+        "ppe"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    },
+    "free_cash_flow": {
+      "columns": [
+        "cfo_ttm",
+        "capx_ttm"
+      ],
+      "implemented_columns": [
+        "cfo_ttm",
+        "capx_ttm"
+      ],
+      "source": "retained SEC CompanyFacts / FSDS exact taxonomy, concept, unit and scope",
+      "clock": "actual filing/component available_at; FX clock if later"
+    }
+  },
+  "formula_to_gold": {
+    "gross_margin": {
+      "formula": "gp_ttm/sale_ttm",
+      "primitive_families": [
+        "gross_profit",
+        "sales"
+      ],
+      "gold_column": "gross_margin",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "gp_ttm",
+        "sale_ttm"
+      ],
+      "prior_input_columns": [],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "gp_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        }
+      }
+    },
+    "operating_margin": {
+      "formula": "oi_ttm/sale_ttm",
+      "primitive_families": [
+        "operating_income",
+        "sales"
+      ],
+      "gold_column": "operating_margin",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "oi_ttm",
+        "sale_ttm"
+      ],
+      "prior_input_columns": [],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "oi_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        }
+      }
+    },
+    "net_margin": {
+      "formula": "ni_ttm/sale_ttm",
+      "primitive_families": [
+        "net_income",
+        "sales"
+      ],
+      "gold_column": "net_margin",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "ni_ttm",
+        "sale_ttm"
+      ],
+      "prior_input_columns": [],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        }
+      }
+    },
+    "cash_margin": {
+      "formula": "cfo_ttm/sale_ttm",
+      "primitive_families": [
+        "operating_cash_flow",
+        "sales"
+      ],
+      "gold_column": "cash_margin",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cfo_ttm",
+        "sale_ttm"
+      ],
+      "prior_input_columns": [],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "cfo_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        }
+      }
+    },
+    "gp_assets": {
+      "formula": "gp_ttm/at",
+      "primitive_families": [
+        "gross_profit",
+        "assets"
+      ],
+      "gold_column": "gp_assets",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "gp_ttm",
+        "at"
+      ],
+      "prior_input_columns": [],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "gp_ttm",
+            "at"
+          ],
+          "period": "current TTM endpoint"
+        }
+      }
+    },
+    "roa": {
+      "formula": "ni_ttm/mean(at,prior_at)",
+      "primitive_families": [
+        "net_income",
+        "assets"
+      ],
+      "gold_column": "roa",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "ni_ttm",
+        "at"
+      ],
+      "prior_input_columns": [
+        "at"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "at"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "at"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      },
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "denominator_history": {
+        "current_endpoint": {
+          "current_stocks": [
+            "at"
+          ],
+          "prior_stocks": [
+            "at"
+          ],
+          "prior_period": "same fiscal quarter four quarters earlier",
+          "method": "arithmetic mean; no missing substitution"
+        }
+      }
+    },
+    "roe": {
+      "formula": "ni_ttm/mean(seq+txditc,prior_seq+prior_txditc)",
+      "primitive_families": [
+        "net_income",
+        "equity",
+        "tax"
+      ],
+      "gold_column": "roe",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "ni_ttm",
+        "seq",
+        "txditc"
+      ],
+      "prior_input_columns": [
+        "seq",
+        "txditc"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "seq",
+            "txditc"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "seq",
+            "txditc"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      },
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "denominator_history": {
+        "current_endpoint": {
+          "current_stocks": [
+            "seq",
+            "txditc"
+          ],
+          "prior_stocks": [
+            "seq",
+            "txditc"
+          ],
+          "prior_period": "same fiscal quarter four quarters earlier",
+          "method": "arithmetic mean; no missing substitution"
+        }
+      }
+    },
+    "roic": {
+      "formula": "source_EBIT*(1-source_effective_tax)/mean(source_invested_capital,prior_source_invested_capital)",
+      "primitive_families": [
+        "operating_income",
+        "equity",
+        "debt",
+        "tax"
+      ],
+      "gold_column": "roic",
+      "status": "UNSUPPORTED until exact EBIT/capital/tax economic scope is independently sourced",
+      "current_input_columns": [
+        "source_EBIT",
+        "source_invested_capital",
+        "source_effective_tax"
+      ],
+      "prior_input_columns": [
+        "source_invested_capital"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS",
+      "input_bindings": {
+        "current": {
+          "table": "UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS",
+          "columns": [
+            "source_EBIT",
+            "source_invested_capital",
+            "source_effective_tax"
+          ]
+        },
+        "prior": {
+          "table": "UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS",
+          "columns": [
+            "source_invested_capital"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      },
+      "source_gap": "These semantic prerequisite names are not published columns; no proxy/substitution is certified."
+    },
+    "roce": {
+      "formula": "source_EBIT/mean(source_capital_employed,prior_source_capital_employed)",
+      "primitive_families": [
+        "operating_income",
+        "equity",
+        "debt"
+      ],
+      "gold_column": "roce",
+      "status": "UNSUPPORTED until exact EBIT/capital/tax economic scope is independently sourced",
+      "current_input_columns": [
+        "source_EBIT",
+        "source_capital_employed"
+      ],
+      "prior_input_columns": [
+        "source_capital_employed"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS",
+      "input_bindings": {
+        "current": {
+          "table": "UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS",
+          "columns": [
+            "source_EBIT",
+            "source_capital_employed"
+          ]
+        },
+        "prior": {
+          "table": "UNPROVIDED_CERTIFIED_ECONOMIC_SCOPE_INPUTS",
+          "columns": [
+            "source_capital_employed"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      },
+      "source_gap": "These semantic prerequisite names are not published columns; no proxy/substitution is certified."
+    },
+    "cash_conversion": {
+      "formula": "cfo_ttm/ni_ttm",
+      "primitive_families": [
+        "operating_cash_flow",
+        "net_income"
+      ],
+      "gold_column": "cash_conversion",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cfo_ttm",
+        "ni_q",
+        "ni_ttm"
+      ],
+      "prior_input_columns": [],
+      "input_clock": "latest source vintage strictly before feature cutoff"
+    },
+    "accrual_quality": {
+      "formula": "(ni_ttm-cfo_ttm)/mean(at,prior_at)",
+      "primitive_families": [
+        "net_income",
+        "operating_cash_flow",
+        "assets"
+      ],
+      "gold_column": "accrual_quality",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "ni_ttm",
+        "cfo_ttm",
+        "at"
+      ],
+      "prior_input_columns": [
+        "at"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "cfo_ttm",
+            "at"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "at"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      },
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "denominator_history": {
+        "current_endpoint": {
+          "current_stocks": [
+            "at"
+          ],
+          "prior_stocks": [
+            "at"
+          ],
+          "prior_period": "same fiscal quarter four quarters earlier",
+          "method": "arithmetic mean; no missing substitution"
+        }
+      }
+    },
+    "free_cash_flow": {
+      "formula": "cfo_ttm-capx_ttm",
+      "primitive_families": [
+        "operating_cash_flow",
+        "capex"
+      ],
+      "gold_column": "free_cash_flow",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "capx_ttm",
+        "cfo_ttm"
+      ],
+      "prior_input_columns": [],
+      "input_clock": "latest source vintage strictly before feature cutoff"
+    },
+    "working_capital_growth": {
+      "formula": "((act-lct)-(prior_act-prior_lct))/abs(prior_act-prior_lct)",
+      "primitive_families": [
+        "working_capital"
+      ],
+      "gold_column": "working_capital_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "act",
+        "lct"
+      ],
+      "prior_input_columns": [
+        "act",
+        "lct"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable fiscal year"
+    },
+    "dilution": {
+      "formula": "cshpri/prior(cshpri)-1",
+      "primitive_families": [
+        "basic_shares"
+      ],
+      "gold_column": "dilution",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cshpri"
+      ],
+      "prior_input_columns": [
+        "cshpri"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year"
+    },
+    "sales_quarterly_yoy_growth": {
+      "formula": "(sale_q-prior(sale_q))/abs(prior(sale_q))",
+      "primitive_families": [
+        "sales"
+      ],
+      "gold_column": "sales_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "sale_q"
+      ],
+      "prior_input_columns": [
+        "sale_q"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "quarterly_history",
+          "columns": [
+            "sale_q"
+          ],
+          "item_keys": [
+            "sale_q"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "sales_annual_growth": {
+      "formula": "(sale_ttm-prior(sale_ttm))/abs(prior(sale_ttm))",
+      "primitive_families": [
+        "sales"
+      ],
+      "gold_column": "sales_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "sale_ttm"
+      ],
+      "prior_input_columns": [
+        "sale_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "quarterly_history",
+          "item_keys": [
+            "annual_sale_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "sales_ttm_growth": {
+      "formula": "(sale_ttm-prior(sale_ttm))/abs(prior(sale_ttm))",
+      "primitive_families": [
+        "sales"
+      ],
+      "gold_column": "sales_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "sale_ttm"
+      ],
+      "prior_input_columns": [
+        "sale_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "sale_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "net_income_quarterly_yoy_growth": {
+      "formula": "(ni_q-prior(ni_q))/abs(prior(ni_q))",
+      "primitive_families": [
+        "net_income"
+      ],
+      "gold_column": "net_income_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "ni_q"
+      ],
+      "prior_input_columns": [
+        "ni_q"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "quarterly_history",
+          "columns": [
+            "ni_q"
+          ],
+          "item_keys": [
+            "ni_q"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "net_income_annual_growth": {
+      "formula": "(ni_ttm-prior(ni_ttm))/abs(prior(ni_ttm))",
+      "primitive_families": [
+        "net_income"
+      ],
+      "gold_column": "net_income_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "ni_ttm"
+      ],
+      "prior_input_columns": [
+        "ni_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "quarterly_history",
+          "item_keys": [
+            "annual_ni_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "net_income_ttm_growth": {
+      "formula": "(ni_ttm-prior(ni_ttm))/abs(prior(ni_ttm))",
+      "primitive_families": [
+        "net_income"
+      ],
+      "gold_column": "net_income_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "ni_ttm"
+      ],
+      "prior_input_columns": [
+        "ni_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "ni_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "operating_cash_flow_quarterly_yoy_growth": {
+      "formula": "(cfo_q-prior(cfo_q))/abs(prior(cfo_q))",
+      "primitive_families": [
+        "operating_cash_flow"
+      ],
+      "gold_column": "operating_cash_flow_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cfo_q"
+      ],
+      "prior_input_columns": [
+        "cfo_q"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "quarterly_history",
+          "columns": [
+            "cfo_q"
+          ],
+          "item_keys": [
+            "cfo_q"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "operating_cash_flow_annual_growth": {
+      "formula": "(cfo_ttm-prior(cfo_ttm))/abs(prior(cfo_ttm))",
+      "primitive_families": [
+        "operating_cash_flow"
+      ],
+      "gold_column": "operating_cash_flow_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cfo_ttm"
+      ],
+      "prior_input_columns": [
+        "cfo_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "quarterly_history",
+          "item_keys": [
+            "annual_cfo_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "operating_cash_flow_ttm_growth": {
+      "formula": "(cfo_ttm-prior(cfo_ttm))/abs(prior(cfo_ttm))",
+      "primitive_families": [
+        "operating_cash_flow"
+      ],
+      "gold_column": "operating_cash_flow_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cfo_ttm"
+      ],
+      "prior_input_columns": [
+        "cfo_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "cfo_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "free_cash_flow_quarterly_yoy_growth": {
+      "formula": "(cfo_q-capx_q-prior(cfo_q-capx_q))/abs(prior(cfo_q-capx_q))",
+      "primitive_families": [
+        "free_cash_flow"
+      ],
+      "gold_column": "free_cash_flow_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cfo_q",
+        "capx_q"
+      ],
+      "prior_input_columns": [
+        "cfo_q",
+        "capx_q"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "quarterly_history",
+          "columns": [
+            "cfo_q",
+            "capx_q"
+          ],
+          "item_keys": [
+            "cfo_q",
+            "capx_q"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "free_cash_flow_annual_growth": {
+      "formula": "(cfo_ttm-capx_ttm-prior(cfo_ttm-capx_ttm))/abs(prior(cfo_ttm-capx_ttm))",
+      "primitive_families": [
+        "free_cash_flow"
+      ],
+      "gold_column": "free_cash_flow_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cfo_ttm",
+        "capx_ttm"
+      ],
+      "prior_input_columns": [
+        "cfo_ttm",
+        "capx_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "quarterly_history",
+          "item_keys": [
+            "annual_cfo_ttm",
+            "annual_capx_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "free_cash_flow_ttm_growth": {
+      "formula": "(cfo_ttm-capx_ttm-prior(cfo_ttm-capx_ttm))/abs(prior(cfo_ttm-capx_ttm))",
+      "primitive_families": [
+        "free_cash_flow"
+      ],
+      "gold_column": "free_cash_flow_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cfo_ttm",
+        "capx_ttm"
+      ],
+      "prior_input_columns": [
+        "cfo_ttm",
+        "capx_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "cfo_ttm",
+            "capx_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "assets_quarterly_yoy_growth": {
+      "formula": "(at-prior(at))/abs(prior(at))",
+      "primitive_families": [
+        "assets"
+      ],
+      "gold_column": "assets_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "at"
+      ],
+      "prior_input_columns": [
+        "at"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "at"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "assets_annual_growth": {
+      "formula": "(at-prior(at))/abs(prior(at))",
+      "primitive_families": [
+        "assets"
+      ],
+      "gold_column": "assets_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "at"
+      ],
+      "prior_input_columns": [
+        "at"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "at"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "assets_ttm_growth": {
+      "formula": "(at-prior(at))/abs(prior(at))",
+      "primitive_families": [
+        "assets"
+      ],
+      "gold_column": "assets_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "at"
+      ],
+      "prior_input_columns": [
+        "at"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "at"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "equity_quarterly_yoy_growth": {
+      "formula": "(seq-prior(seq))/abs(prior(seq))",
+      "primitive_families": [
+        "equity"
+      ],
+      "gold_column": "equity_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "seq"
+      ],
+      "prior_input_columns": [
+        "seq"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "seq"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "equity_annual_growth": {
+      "formula": "(seq-prior(seq))/abs(prior(seq))",
+      "primitive_families": [
+        "equity"
+      ],
+      "gold_column": "equity_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "seq"
+      ],
+      "prior_input_columns": [
+        "seq"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "seq"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "equity_ttm_growth": {
+      "formula": "(seq-prior(seq))/abs(prior(seq))",
+      "primitive_families": [
+        "equity"
+      ],
+      "gold_column": "equity_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "seq"
+      ],
+      "prior_input_columns": [
+        "seq"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "seq"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "capex_quarterly_yoy_growth": {
+      "formula": "(capx_q-prior(capx_q))/abs(prior(capx_q))",
+      "primitive_families": [
+        "capex"
+      ],
+      "gold_column": "capex_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "capx_q"
+      ],
+      "prior_input_columns": [
+        "capx_q"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "quarterly_history",
+          "columns": [
+            "capx_q"
+          ],
+          "item_keys": [
+            "capx_q"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "capex_annual_growth": {
+      "formula": "(capx_ttm-prior(capx_ttm))/abs(prior(capx_ttm))",
+      "primitive_families": [
+        "capex"
+      ],
+      "gold_column": "capex_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "capx_ttm"
+      ],
+      "prior_input_columns": [
+        "capx_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "quarterly_history",
+          "item_keys": [
+            "annual_capx_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "capex_ttm_growth": {
+      "formula": "(capx_ttm-prior(capx_ttm))/abs(prior(capx_ttm))",
+      "primitive_families": [
+        "capex"
+      ],
+      "gold_column": "capex_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "capx_ttm"
+      ],
+      "prior_input_columns": [
+        "capx_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "capx_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "research_quarterly_yoy_growth": {
+      "formula": "(xrd_q-prior(xrd_q))/abs(prior(xrd_q))",
+      "primitive_families": [
+        "research"
+      ],
+      "gold_column": "research_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "xrd_q"
+      ],
+      "prior_input_columns": [
+        "xrd_q"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "quarterly_history",
+          "columns": [
+            "xrd_q"
+          ],
+          "item_keys": [
+            "xrd_q"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "research_annual_growth": {
+      "formula": "(xrd_ttm-prior(xrd_ttm))/abs(prior(xrd_ttm))",
+      "primitive_families": [
+        "research"
+      ],
+      "gold_column": "research_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "xrd_ttm"
+      ],
+      "prior_input_columns": [
+        "xrd_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "quarterly_history",
+          "item_keys": [
+            "annual_xrd_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "research_ttm_growth": {
+      "formula": "(xrd_ttm-prior(xrd_ttm))/abs(prior(xrd_ttm))",
+      "primitive_families": [
+        "research"
+      ],
+      "gold_column": "research_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "xrd_ttm"
+      ],
+      "prior_input_columns": [
+        "xrd_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "xrd_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "basic_eps_quarterly_yoy_growth": {
+      "formula": "(epspxq-prior(epspxq))/abs(prior(epspxq))",
+      "primitive_families": [
+        "basic_eps"
+      ],
+      "gold_column": "basic_eps_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "epspxq"
+      ],
+      "prior_input_columns": [
+        "epspxq"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "compustat_std.fundq",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "Quarterly standardized EPS excludes extraordinary/discontinued operations; annual total-EPS counterparts require matched definition qualification, otherwise NULL.",
+      "input_bindings": {
+        "current": {
+          "table": "fundq",
+          "columns": [
+            "epspxq"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "basic_eps_annual_growth": {
+      "formula": "(epspx_ttm-prior(epspx_ttm))/abs(prior(epspx_ttm))",
+      "primitive_families": [
+        "basic_eps"
+      ],
+      "gold_column": "basic_eps_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "epspx_ttm"
+      ],
+      "prior_input_columns": [
+        "epspx_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "epspx_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "basic_eps_ttm_growth": {
+      "formula": "(epspx_ttm-prior(epspx_ttm))/abs(prior(epspx_ttm))",
+      "primitive_families": [
+        "basic_eps"
+      ],
+      "gold_column": "basic_eps_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "epspx_ttm"
+      ],
+      "prior_input_columns": [
+        "epspx_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "epspx_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "diluted_eps_quarterly_yoy_growth": {
+      "formula": "(epsfxq-prior(epsfxq))/abs(prior(epsfxq))",
+      "primitive_families": [
+        "diluted_eps"
+      ],
+      "gold_column": "diluted_eps_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "epsfxq"
+      ],
+      "prior_input_columns": [
+        "epsfxq"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "compustat_std.fundq",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "Quarterly standardized EPS excludes extraordinary/discontinued operations; annual total-EPS counterparts require matched definition qualification, otherwise NULL.",
+      "input_bindings": {
+        "current": {
+          "table": "fundq",
+          "columns": [
+            "epsfxq"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "diluted_eps_annual_growth": {
+      "formula": "(epsfx_ttm-prior(epsfx_ttm))/abs(prior(epsfx_ttm))",
+      "primitive_families": [
+        "diluted_eps"
+      ],
+      "gold_column": "diluted_eps_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "epsfx_ttm"
+      ],
+      "prior_input_columns": [
+        "epsfx_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "epsfx_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "diluted_eps_ttm_growth": {
+      "formula": "(epsfx_ttm-prior(epsfx_ttm))/abs(prior(epsfx_ttm))",
+      "primitive_families": [
+        "diluted_eps"
+      ],
+      "gold_column": "diluted_eps_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "epsfx_ttm"
+      ],
+      "prior_input_columns": [
+        "epsfx_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "epsfx_ttm"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "inventory_quarterly_yoy_growth": {
+      "formula": "(invt-prior(invt))/abs(prior(invt))",
+      "primitive_families": [
+        "inventory"
+      ],
+      "gold_column": "inventory_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "invt"
+      ],
+      "prior_input_columns": [
+        "invt"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "invt"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "inventory_annual_growth": {
+      "formula": "(invt-prior(invt))/abs(prior(invt))",
+      "primitive_families": [
+        "inventory"
+      ],
+      "gold_column": "inventory_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "invt"
+      ],
+      "prior_input_columns": [
+        "invt"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "invt"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "inventory_ttm_growth": {
+      "formula": "(invt-prior(invt))/abs(prior(invt))",
+      "primitive_families": [
+        "inventory"
+      ],
+      "gold_column": "inventory_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "invt"
+      ],
+      "prior_input_columns": [
+        "invt"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "invt"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "receivables_quarterly_yoy_growth": {
+      "formula": "(rect-prior(rect))/abs(prior(rect))",
+      "primitive_families": [
+        "receivables"
+      ],
+      "gold_column": "receivables_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "rect"
+      ],
+      "prior_input_columns": [
+        "rect"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "rect"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "receivables_annual_growth": {
+      "formula": "(rect-prior(rect))/abs(prior(rect))",
+      "primitive_families": [
+        "receivables"
+      ],
+      "gold_column": "receivables_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "rect"
+      ],
+      "prior_input_columns": [
+        "rect"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "rect"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "receivables_ttm_growth": {
+      "formula": "(rect-prior(rect))/abs(prior(rect))",
+      "primitive_families": [
+        "receivables"
+      ],
+      "gold_column": "receivables_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "rect"
+      ],
+      "prior_input_columns": [
+        "rect"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "rect"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "basic_shares_quarterly_yoy_growth": {
+      "formula": "(cshprq-prior(cshprq))/abs(prior(cshprq))",
+      "primitive_families": [
+        "basic_shares"
+      ],
+      "gold_column": "basic_shares_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cshprq"
+      ],
+      "prior_input_columns": [
+        "cshprq"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "compustat_std.fundq",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "fundq",
+          "columns": [
+            "cshprq"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "basic_shares_annual_growth": {
+      "formula": "(cshpri-prior(cshpri))/abs(prior(cshpri))",
+      "primitive_families": [
+        "basic_shares"
+      ],
+      "gold_column": "basic_shares_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cshpri"
+      ],
+      "prior_input_columns": [
+        "cshpri"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "cshpri"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "basic_shares_ttm_growth": {
+      "formula": "(cshpri-prior(cshpri))/abs(prior(cshpri))",
+      "primitive_families": [
+        "basic_shares"
+      ],
+      "gold_column": "basic_shares_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cshpri"
+      ],
+      "prior_input_columns": [
+        "cshpri"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "cshpri"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "diluted_shares_quarterly_yoy_growth": {
+      "formula": "(cshfdq-prior(cshfdq))/abs(prior(cshfdq))",
+      "primitive_families": [
+        "diluted_shares"
+      ],
+      "gold_column": "diluted_shares_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cshfdq"
+      ],
+      "prior_input_columns": [
+        "cshfdq"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "compustat_std.fundq",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "cshfdq is not currently published; diluted quarterly share growth remains unsupported",
+      "input_bindings": {
+        "current": {
+          "table": "fundq",
+          "columns": [
+            "cshfdq"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "diluted_shares_annual_growth": {
+      "formula": "(cshfd-prior(cshfd))/abs(prior(cshfd))",
+      "primitive_families": [
+        "diluted_shares"
+      ],
+      "gold_column": "diluted_shares_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cshfd"
+      ],
+      "prior_input_columns": [
+        "cshfd"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "cshfd"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "diluted_shares_ttm_growth": {
+      "formula": "(cshfd-prior(cshfd))/abs(prior(cshfd))",
+      "primitive_families": [
+        "diluted_shares"
+      ],
+      "gold_column": "diluted_shares_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cshfd"
+      ],
+      "prior_input_columns": [
+        "cshfd"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "cshfd"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "investment_quarterly_yoy_growth": {
+      "formula": "(ppe-prior(ppe))/abs(prior(ppe))",
+      "primitive_families": [
+        "investment"
+      ],
+      "gold_column": "investment_quarterly_yoy_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "ppe"
+      ],
+      "prior_input_columns": [
+        "ppe"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "definition": "Net physical capital investment growth: PPENT/ppe period-end change; not gross investment or capex.",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "ppe"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "investment_annual_growth": {
+      "formula": "(ppe-prior(ppe))/abs(prior(ppe))",
+      "primitive_families": [
+        "investment"
+      ],
+      "gold_column": "investment_annual_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "ppe"
+      ],
+      "prior_input_columns": [
+        "ppe"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "previous comparable full fiscal year",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "definition": "Net physical capital investment growth: PPENT/ppe period-end change; not gross investment or capex.",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "ppe"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "investment_ttm_growth": {
+      "formula": "(ppe-prior(ppe))/abs(prior(ppe))",
+      "primitive_families": [
+        "investment"
+      ],
+      "gold_column": "investment_ttm_growth",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "ppe"
+      ],
+      "prior_input_columns": [
+        "ppe"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog/quarterly_history",
+      "duration": "TTM four contiguous quarters; annual direct source full-period total; stocks use period-end values without summation",
+      "source_gap": "missing source/history/basis remains NULL",
+      "definition": "Net physical capital investment growth: PPENT/ppe period-end change; not gross investment or capex.",
+      "input_bindings": {
+        "current": {
+          "table": "events/catalog",
+          "columns": [
+            "ppe"
+          ]
+        },
+        "prior": "same exact keys/columns at declared prior_period and visible restatement vintage"
+      }
+    },
+    "gross_margin_change": {
+      "formula": "gross_margin(current_endpoint)-gross_margin(prior_endpoint)",
+      "primitive_families": [
+        "gross_profit",
+        "sales"
+      ],
+      "gold_column": "gross_margin_change",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "gp_ttm",
+        "sale_ttm"
+      ],
+      "prior_input_columns": [
+        "gp_ttm",
+        "sale_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "metric_formula": "gp_ttm/sale_ttm",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "gp_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "gp_ttm",
+            "sale_ttm"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      }
+    },
+    "operating_margin_change": {
+      "formula": "operating_margin(current_endpoint)-operating_margin(prior_endpoint)",
+      "primitive_families": [
+        "operating_income",
+        "sales"
+      ],
+      "gold_column": "operating_margin_change",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "oi_ttm",
+        "sale_ttm"
+      ],
+      "prior_input_columns": [
+        "oi_ttm",
+        "sale_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "metric_formula": "oi_ttm/sale_ttm",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "oi_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "oi_ttm",
+            "sale_ttm"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      }
+    },
+    "net_margin_change": {
+      "formula": "net_margin(current_endpoint)-net_margin(prior_endpoint)",
+      "primitive_families": [
+        "net_income",
+        "sales"
+      ],
+      "gold_column": "net_margin_change",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "ni_ttm",
+        "sale_ttm"
+      ],
+      "prior_input_columns": [
+        "ni_ttm",
+        "sale_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "metric_formula": "ni_ttm/sale_ttm",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "sale_ttm"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      }
+    },
+    "cash_margin_change": {
+      "formula": "cash_margin(current_endpoint)-cash_margin(prior_endpoint)",
+      "primitive_families": [
+        "operating_cash_flow",
+        "sales"
+      ],
+      "gold_column": "cash_margin_change",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "cfo_ttm",
+        "sale_ttm"
+      ],
+      "prior_input_columns": [
+        "cfo_ttm",
+        "sale_ttm"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "metric_formula": "cfo_ttm/sale_ttm",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "cfo_ttm",
+            "sale_ttm"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "cfo_ttm",
+            "sale_ttm"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      }
+    },
+    "gp_assets_change": {
+      "formula": "gp_assets(current_endpoint)-gp_assets(prior_endpoint)",
+      "primitive_families": [
+        "gross_profit",
+        "assets"
+      ],
+      "gold_column": "gp_assets_change",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "gp_ttm",
+        "at"
+      ],
+      "prior_input_columns": [
+        "gp_ttm",
+        "at"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "metric_formula": "gp_ttm/at",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "gp_ttm",
+            "at"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "gp_ttm",
+            "at"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      }
+    },
+    "roa_change": {
+      "formula": "roa(current_endpoint)-roa(prior_endpoint)",
+      "primitive_families": [
+        "net_income",
+        "assets"
+      ],
+      "gold_column": "roa_change",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "ni_ttm",
+        "at"
+      ],
+      "prior_input_columns": [
+        "ni_ttm",
+        "at"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "metric_formula": "ni_ttm/mean(at,prior_at)",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "at"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "at"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      },
+      "denominator_history": {
+        "current_endpoint": {
+          "current_stocks": [
+            "at"
+          ],
+          "prior_stocks": [
+            "at"
+          ],
+          "prior_period": "four quarters before current endpoint"
+        },
+        "prior_endpoint": {
+          "current_stocks": [
+            "at"
+          ],
+          "prior_stocks": [
+            "at"
+          ],
+          "prior_period": "four quarters before prior endpoint (eight before current)"
+        },
+        "method": "arithmetic mean at each endpoint; all source stocks required; no missing substitution"
+      }
+    },
+    "roe_change": {
+      "formula": "roe(current_endpoint)-roe(prior_endpoint)",
+      "primitive_families": [
+        "net_income",
+        "equity",
+        "tax"
+      ],
+      "gold_column": "roe_change",
+      "status": "Task7/16 registration and independent qualification pending",
+      "current_input_columns": [
+        "ni_ttm",
+        "seq",
+        "txditc"
+      ],
+      "prior_input_columns": [
+        "ni_ttm",
+        "seq",
+        "txditc"
+      ],
+      "input_clock": "latest source vintage strictly before feature cutoff",
+      "metric_formula": "ni_ttm/mean(seq+txditc,prior_seq+prior_txditc)",
+      "prior_period": "same fiscal quarter four quarters earlier",
+      "source_table": "fundamentals_v11.events/catalog",
+      "input_bindings": {
+        "current": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "seq",
+            "txditc"
+          ],
+          "period": "current TTM endpoint"
+        },
+        "prior": {
+          "table": "fundamentals_v11.events/catalog",
+          "columns": [
+            "ni_ttm",
+            "seq",
+            "txditc"
+          ],
+          "period": "same fiscal quarter four quarters earlier"
+        }
+      },
+      "denominator_history": {
+        "current_endpoint": {
+          "current_stocks": [
+            "seq",
+            "txditc"
+          ],
+          "prior_stocks": [
+            "seq",
+            "txditc"
+          ],
+          "prior_period": "four quarters before current endpoint"
+        },
+        "prior_endpoint": {
+          "current_stocks": [
+            "seq",
+            "txditc"
+          ],
+          "prior_stocks": [
+            "seq",
+            "txditc"
+          ],
+          "prior_period": "four quarters before prior endpoint (eight before current)"
+        },
+        "method": "arithmetic mean at each endpoint; all source stocks required; no missing substitution"
+      }
+    },
+    "basic_share_dilution": {
+      "formula": "cshpri/prior(cshpri)-1",
+      "primitive_families": [
+        "basic_shares"
+      ],
+      "current_input_columns": [
+        "cshpri"
+      ],
+      "prior_input_columns": [
+        "cshpri"
+      ],
+      "prior_period": "previous comparable source full fiscal year",
+      "gold_column": "basic_share_dilution",
+      "source_table": "fundamentals_v11.catalog",
+      "status": "Requires certified class/split/share basis; missing history is NULL"
+    },
+    "diluted_share_dilution": {
+      "formula": "cshfd/prior(cshfd)-1",
+      "primitive_families": [
+        "diluted_shares"
+      ],
+      "current_input_columns": [
+        "cshfd"
+      ],
+      "prior_input_columns": [
+        "cshfd"
+      ],
+      "prior_period": "previous comparable source full fiscal year",
+      "gold_column": "diluted_share_dilution",
+      "source_table": "fundamentals_v11.catalog",
+      "status": "Requires certified class/split/share basis; missing history is NULL"
+    }
+  },
+  "policy": {
+    "history": "Quarterly YoY requires same fiscal quarter; annual requires source 350-380-day periods and matching fiscal calendars; TTM requires four contiguous source quarters. Prior values use the visible restatement vintage.",
+    "denominators": "Actual averages of current/prior source stocks; missing prior is NULL. Zero growth base is NULL; negative base uses abs(base) with explicit negative-base quality flag.",
+    "currency": "Same economically comparable reporting currency or verified source FX conversion; unsupported currency/basis is NULL.",
+    "sector": "Existing bank/insurer/REIT structural masks; no observed-missingness structural inference.",
+    "null_reasons": [
+      "missing_source",
+      "missing_history",
+      "invalid_source_duration",
+      "fiscal_transition",
+      "currency_mismatch",
+      "uncertified_economic_scope",
+      "uncertified_share_basis",
+      "structural_not_applicable",
+      "stale",
+      "zero_denominator"
+    ],
+    "coverage": "Every year2020-2025 in member_equity, univ_all_common, univ_r3000p; ordinary missing history remains eligible denominator. Measurements pending final producer and coordinated universe snapshot.",
+    "returns": "All return statistics and complete label windows end before2023-01-01."
+  },
+  "explicit_dependencies": [
+    "Task7 gold formula registration/comparison",
+    "Task13 indicated dividend rate",
+    "market producer class/ADR/EPS/split/date alignment",
+    "independent composite original-model qualification"
+  ]
+}

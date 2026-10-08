@@ -1,0 +1,19 @@
+{
+  "stage": "fundamentals_release_v1",
+  "schema": "atx.fundamentals-release/v1",
+  "module": "atx_db.alpha_panel.fund_batch_release",
+  "manifest": "fundamentals_release_v1/generations/<explicit-generation>/manifest.json",
+  "pointer": "fundamentals_release_v1/current.json",
+  "path": "fundamentals_release_v1/generations/<explicit-generation>/fundamentals_v11",
+  "semantic_producer": "fundamentals_v11",
+  "native_manifest": "fundamentals_release_v1/generations/<explicit-generation>/fundamentals_v11/manifest.json",
+  "keys": {"events": ["cik", "accession"], "catalog": ["cik", "accession"], "sic": ["cik", "accession"], "history": ["cik", "item", "period_end", "fiscal_period", "accession"]},
+  "clock": "available_at",
+  "as_of_sql": "SELECT * FROM read_parquet('<explicit-generation>/fundamentals_v11/events.parquet') WHERE available_at < CAST(ts AS TIMESTAMP) QUALIFY row_number() OVER (PARTITION BY cik ORDER BY available_at DESC, accession DESC) = 1",
+  "consumer_binding": "Resolve pointer, fully validate explicit immutable generation, retain outer/native manifest and all output SHA/size; no legacy fallback",
+  "source_quality_certified": false,
+  "status": "NOT_PRODUCTION_READY",
+  "registered": false,
+  "task": "Task16 independent fund release foundation; full Task16 and Task17 registration pending",
+  "doc": "atx-db/docs/datasets/fundamentals_release_v1.md"
+}

@@ -37,7 +37,10 @@ issuer, ``N`` = a non-common line (preferred, unit, warrant, right, note, fund) 
 ``security_master/share_exchange_history.parquet``: CRSP-style dated ``exchcd`` (1 NYSE, 2 NYSE American, 3
 Nasdaq, 4 NYSE Arca, 5 Cboe BZX, 6 IEX (5-6 are our extensions), 0 OTC / none) and ``shrcd`` (first digit 1
 common, 3 ADR, 4 closed-end fund / trust, 7 unit or LP or ETP; second digit 1 US common, 2 foreign-incorporated
-or FPI, 8 REIT, 3 ETP) runs per line from the v2 panel's point-in-time security flags.
+or FPI, 8 REIT, 3 ETP) runs per line from the v2 panel's point-in-time security flags. A run is visible from its
+first session: ``available_at`` = 22:00 UTC of the session before ``valid_from`` minus 1 s (``CODES_RULE``), i.e. the
+panel row's own visibility (the panel's session-d flags are read at session d; their inputs and clocks are listed
+in ``CODES_CLOCK_NOTE``), so ``share_exchange_history_as_of(lake_cutoff(d))`` returns the run holding d.
 
 Exports ``export/identity-bridge-v3-{strict,pit,all}/`` follow the v2 bridge contract (``atx.identity-bridge/v1``);
 ``pit`` = strict + dated + name.
@@ -64,6 +67,7 @@ from pathlib import Path
 from typing import Any
 
 from . import common as C
+from .security_master import listed_panel_sql
 from . import identity_names as N
 from . import shortflow_common as S
 
@@ -74,7 +78,7 @@ RECENT_DAYS = 120
 MIN_WEIGHT = 2
 MEMORY = "220MB"
 EXPORT_SEAL = "2024-01-01"      # consumer seal for the bridge exports (global constraint 1)
-MODULES = ("identity_v3", "identity_names", "shortflow_common", "common")
+MODULES = ("identity_v3", "identity_names", "shortflow_common", "security_master", "common")
 DEAD_BEFORE = "2026-09-01"
 FIRST_SESSION = "2017-10-01"
 
@@ -662,6 +666,16 @@ def audit(con) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- CRSP-style codes
 EXCHCD = {"XNYS": 1, "XASE": 2, "XNAS": 3, "ARCX": 4, "BATS": 5, "IEXG": 6, "OTC": 0}
+CODES_RULE = "share-exchange-runs-v2"
+CODES_CLOCK_NOTE = (
+    "available_at = 22:00 UTC of the calendar session before valid_from minus 1 s (the first calendar session: "
+    "valid_from - 1 day 21:59:59), so a run is visible at its first session under available_at < lake_cutoff(d), "
+    "the panel's own visibility of its session-d row. Panel inputs of the code flags (panel.py): SIC and the SEC "
+    "filer regime (is_reit, is_fpi) as of issuer_cutoff = previous session 22:00 UTC, strict; FINRA issue names "
+    "(security_type, exchange) as of dissemination_date < d with available_at = dissemination_date 22:00 UTC, so "
+    "the clock can equal the cutoff (dissemination on the previous session) or fall on a non-session day before d; "
+    "the CIK link behind is_fpi uses link available_at <= d 22:00 UTC (identity convention); the Nasdaq directory "
+    "snapshot (directory_type, directory_etf; 2026-09-18) is a non-PIT fallback for security_type and is_etf.")
 
 
 def shrcd_sql() -> str:
@@ -686,29 +700,32 @@ def codes() -> dict[str, Any]:
     con.execute(f"""CREATE TABLE d AS
         SELECT p.session_date, p.security_id, p.exchange, CASE p.exchange {ex} END AS exchcd,
                {shrcd_sql()} AS shrcd, p.security_type
-        FROM read_parquet('{panel}', hive_partitioning = false) p""")
+        FROM ({listed_panel_sql(panel)}) p""")
     dest = root / "security_master" / "share_exchange_history.parquet"
     n = C.copy_to_parquet(con, f"""
-        WITH c AS (SELECT session_date, row_number() OVER (ORDER BY session_date) AS k FROM read_parquet('{cal}')),
-        x AS (SELECT d.*, c.k - row_number() OVER (PARTITION BY security_id, exchange, exchcd, shrcd, security_type
-                                                   ORDER BY c.k) AS grp
+        WITH c AS (SELECT session_date, row_number() OVER (ORDER BY session_date) AS k,
+                          coalesce(lag(session_date) OVER (ORDER BY session_date), session_date - 1) AS prev_session
+                   FROM read_parquet('{cal}')),
+        x AS (SELECT d.*, c.prev_session,
+                     c.k - row_number() OVER (PARTITION BY security_id, exchange, exchcd, shrcd, security_type
+                                              ORDER BY c.k) AS grp
               FROM d JOIN c USING (session_date))
         SELECT security_id, min(session_date) AS valid_from, max(session_date) AS valid_to, count(*) AS sessions,
                exchcd, exchange, shrcd, security_type,
-               CAST(min(session_date) AS TIMESTAMP) - INTERVAL 2 HOUR AS available_at
+               CAST(min(prev_session) AS TIMESTAMP) + INTERVAL {C.MARK_HOUR_UTC} HOUR - INTERVAL 1 SECOND AS available_at
         FROM x GROUP BY security_id, exchange, exchcd, shrcd, security_type, grp
         ORDER BY security_id, valid_from""", dest)
     stats = dict(con.execute(f"""SELECT coalesce(CAST(shrcd AS VARCHAR), 'null'), sum(sessions)
                                  FROM read_parquet('{dest.as_posix()}') GROUP BY 1 ORDER BY 1""").fetchall())
     con.close()
     (root / "_tmp" / "identity_v3_codes.duckdb").unlink(missing_ok=True)
-    rec = {"rows": n, "line_sessions_by_shrcd": {k: int(v) for k, v in stats.items()},
-           "available_at_rule": "the panel's flags on session d use data visible before d-1 22:00 UTC; a run is "
-                                "stamped at its first session's 22:00 UTC of the previous day (first session - 2 h)"}
+    rec = {"rows": n, "line_sessions_by_shrcd": {k: int(v) for k, v in stats.items()}, "rule": CODES_RULE,
+           "available_at_rule": CODES_CLOCK_NOTE}
     C.write_json_atomic(root / "security_master" / "share_exchange_history_manifest.json", {
         "schema": "atx.alpha-panel.share-exchange-history/v1", "status": "complete", "rule_text": __doc__,
         "code": C.code_identity(*MODULES), "files": C.output_hashes(root / "security_master", "share_exchange_history.parquet"),
-        "input_manifests_sha256": {"panel_manifest_sha256": C.sha256_file(root / "panel" / "manifest.json")}
+        "input_manifests_sha256": {"panel_manifest_sha256": C.sha256_file(root / "panel" / "manifest.json"),
+            "security_master_manifest_sha256": C.sha256_file(root / "security_master" / "manifest.json")}
         if (root / "panel" / "manifest.json").exists() else {},
         "exchcd": EXCHCD, "shrcd_rule": shrcd_sql(), "receipt": rec})
     return rec

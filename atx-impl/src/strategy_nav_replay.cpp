@@ -1311,7 +1311,8 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
                                                    const NavFinancingFields& fields,
                                                    std::span<const Ctx> ctxs,
                                                    const Observer& observer,
-                                                   par::DetPool* pool, StageClock* stages) {
+                                                   par::DetPool* pool, StageClock* stages,
+                                                   std::stop_token stop) {
   const usize begin = x.decision_begin, end = x.decision_end, count = ctxs.size();
   // The shared construction's config (neutralization, price risk, guard) is every book's:
   // replay_books admits only variants that agree on it (with the ADV cap also on the aim
@@ -1365,6 +1366,8 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
   }
   std::vector<NavReplayDay> days(count);
   for (usize t = start; t < end; ++t) {
+    if (stop.stop_requested())
+      return co::Err(co::ErrorCode::Cancelled, "nav replay: cancelled at session boundary");
     Session s;
     s.t = t; s.start = start; s.begin = begin; s.end = end; s.first_return = first_return;
     s.execution = t > start && t + 2 <= end; s.decision = t + 2 < end;
@@ -1422,6 +1425,8 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
   }
   // Accumulated: a grid of several leverage groups (review A-1) calls run_books per group.
   if (stages) stages->exposures += shared.price.exposure.ring.seconds;
+  if (stop.stop_requested())
+    return co::Err(co::ErrorCode::Cancelled, "nav replay: cancelled before results");
   std::vector<NavReplayResult> results;
   results.reserve(count);
   for (auto& book : books) {
@@ -2390,7 +2395,10 @@ std::vector<std::vector<usize>> book_groups(std::span<const NavReplayConfig> con
 // the books' records join the seam's after the replay (v7::observe).
 co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
     const NavReplayInput& in, std::span<const NavReplayConfig> variants,
-    std::span<const NavScenario> scenarios, const Observer& observer, StageClock* stages) {
+    std::span<const NavScenario> scenarios, const Observer& observer, StageClock* stages,
+    std::stop_token stop = {}) {
+  if (stop.stop_requested())
+    return co::Err(co::ErrorCode::Cancelled, "nav replay: cancelled before validation");
   if (scenarios.empty() || scenarios.size() > max_scenarios)
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: 1..16 scenarios per replay");
   if (variants.empty() || variants.size() > nav_max_grid_variants)
@@ -2481,7 +2489,7 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
     std::vector<NavReplayResult> flat(books);
     const auto groups = book_groups(configs);
     if (groups.size() == 1) { // every book in one lockstep run (always without the cap)
-      ATX_TRY(flat, run_books(x, in.financing, ctxs, observer, pool.get(), stages));
+      ATX_TRY(flat, run_books(x, in.financing, ctxs, observer, pool.get(), stages, stop));
     } else {
       // Review A-1 (P9 C1: and the capacity multiples): each group of books with one leverage
       // and multiple runs its own lockstep (its shared construction capped at that leverage
@@ -2496,7 +2504,7 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
           members.push_back(ctxs[group[j]]);
           if (observer.sink && group[j] == observer.book) seen = Observer{observer.sink, j};
         }
-        ATX_TRY(auto part, run_books(x, in.financing, members, seen, pool.get(), stages));
+        ATX_TRY(auto part, run_books(x, in.financing, members, seen, pool.get(), stages, stop));
         for (usize j = 0; j < part.size(); ++j) flat[group[j]] = std::move(part[j]);
       }
     }
@@ -2516,22 +2524,24 @@ co::Result<std::vector<NavReplayResult>> replay_observed(const NavReplayInput& i
                                                          const NavReplayConfig& base,
                                                          std::span<const NavScenario> scenarios,
                                                          const Observer& observer,
-                                                         StageClock* stages = nullptr) {
+                                                         StageClock* stages = nullptr,
+                                                         std::stop_token stop = {}) {
   ATX_TRY(auto grid, replay_books(in, std::span<const NavReplayConfig>(&base, 1), scenarios,
-                                  observer, stages));
+                                  observer, stages, stop));
   return co::Ok(std::move(grid.front()));
 }
 } // namespace
 
 co::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
-    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios) {
-  return replay_observed(in, base, scenarios, Observer{});
+    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios,
+    std::stop_token stop) {
+  return replay_observed(in, base, scenarios, Observer{}, nullptr, stop);
 }
 
 co::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
     const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios,
-    NavHoldingsSink& sink, usize observed) {
-  return replay_observed(in, base, scenarios, Observer{&sink, observed});
+    NavHoldingsSink& sink, usize observed, std::stop_token stop) {
+  return replay_observed(in, base, scenarios, Observer{&sink, observed}, nullptr, stop);
 }
 
 co::Result<std::vector<std::vector<NavReplayResult>>> replay_nav_grid(
@@ -3327,7 +3337,9 @@ constexpr const char* two_speed_groups_declaration =
 co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
                           const NavFieldsPin& fields, const NavRateOptions& rate,
                           const NavExecutionOptions& execution, const NavEmitOptions& emit,
-                          std::ostream& progress) {
+                          std::ostream& progress, std::stop_token stop) {
+  if (stop.stop_requested())
+    return co::Err(co::ErrorCode::Cancelled, "nav replay: cancelled before input loading");
   try {
     StageTimes times; // --stage-timers: the clock starts at entry
     StageTimes* const timed = emit.stage_timers ? &times : nullptr;
@@ -3370,10 +3382,10 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
       ATX_TRY_VOID(csv.open(emit.holdings_directory, emit.format, view.instrument_ids,
                             hold_band_declared(base.target)));
       ATX_TRY(results, replay_observed(input, base, scenarios,
-                                       Observer{&csv, nav_primary_scenario_index}, stages));
+                                       Observer{&csv, nav_primary_scenario_index}, stages, stop));
       ATX_TRY_VOID(csv.close());
     } else {
-      ATX_TRY(results, replay_observed(input, base, scenarios, Observer{}, stages));
+      ATX_TRY(results, replay_observed(input, base, scenarios, Observer{}, stages, stop));
     }
     times.replayed = StageTimes::Clock::now();
     std::vector<NavSummary> summaries; summaries.reserve(scenarios.size());
@@ -3408,6 +3420,8 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
                      all_summaries.subspan(main_books),
                      v7::installed() ? &records : nullptr,
                      false};
+    if (stop.stop_requested())
+      return co::Err(co::ErrorCode::Cancelled, "nav replay: cancelled before publication");
     // Console provenance only: the cache changes no published byte, so no file records it.
     if (base.liquidity_cache) progress << "nav replay: shared execution liquidity cache on\n";
     if (!label.is_null())

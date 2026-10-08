@@ -137,14 +137,14 @@ clock when an exact (offset-bearing, not EDGAR-midnight) ``acceptanceDateTime``
 is retained, else ``filed`` + 46h (labelled ``filing_clock_basis``), and never
 before the cutoff of the session *after* the last trade -- knowing that a bar
 was the last one takes the next session, so a terminal alignment is never
-usable at the last bar; the snapshot at its observation. A link's ``available_at`` is the earliest clock at which the
-items known by then already pass the acceptance rule -- so a consumer that
-joins on ``available_at <= cutoff`` (the bridge's rule) never links a bar with
-evidence from its future. ``value_json.evidence_complete_at`` records the clock
-of the last item. Conflicts, the match-ratio filter and segment bounds are
-judged on all retained evidence: they can only remove or shorten a link, never
-make one available earlier (documented residual: a later rival can remove a
-link that would have been accepted at the time). The archives themselves are
+usable at the last bar; the snapshot at its observation. Method v4 replays
+acceptance, match ratios, dominance and segments at each evidence clock.
+``value_json.versions`` records the resulting segment/tier lifetimes, including
+closed assertions: later evidence can replace or withdraw an assertion only
+at its own clock. The rehearsal translates these into company versions with
+``available_at`` and ``valid_until`` for Stage I. ``links`` retains the final
+evaluation state; historical consumers must use the versions, including their
+withdrawals, rather than the final segment bounds. The archives themselves are
 2026 retrievals whose historical vintage is unverified, hence
 ``availability_status='modeled'``.
 
@@ -193,6 +193,7 @@ import math
 import re
 import time
 import zipfile
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
@@ -269,7 +270,7 @@ SOURCE = "atx-db identity reconstruction v1"
 #: window/arg_max order over repeated vendor-days; a float ``sum`` at the rival floor), so the
 #: deterministic logic is a new method -- a revision id never names two contents.
 #: v3 (tier1-v2 3.3): terminal evidence waits for the next XNYS session, including holidays.
-METHOD = "ri1_share_fingerprint_v3_xnys"
+METHOD = "ri1_share_fingerprint_v4_clocked"
 EVIDENCE_STATUS = "reconstructed"
 AVAILABILITY_STATUS = "modeled"
 IDENTITY_BASIS = "reconstructed_identity_unverified"
@@ -496,6 +497,8 @@ class ReconstructedLink:
     current_cik: str | None = None
     #: Point-in-time ``(tier, from)`` steps; the first starts at ``available_at``, the last is ``tier``.
     tier_history: tuple[tuple[str, dt.datetime], ...] = ()
+    valid_until: dt.datetime | None = None
+    versions: tuple[ReconstructedLink, ...] = ()
 
     @property
     def tier_attained_at(self) -> dt.datetime:
@@ -504,6 +507,10 @@ class ReconstructedLink:
 
     def tier_at(self, cutoff: dt.datetime) -> str | None:
         """The tier in force at ``cutoff`` (None before the link is available)."""
+        if self.versions:
+            visible = [version.tier for version in self.versions if version.available_at <= cutoff
+                       and (version.valid_until is None or cutoff < version.valid_until)]
+            return visible[-1] if visible else None
         in_force = [tier for tier, since in self.tier_history if since <= cutoff]
         return in_force[-1] if in_force else None
 
@@ -538,6 +545,7 @@ class ReconstructionResult:
     links: tuple[ReconstructedLink, ...]
     rejected: tuple[RejectedCandidate, ...]
     lines_considered: int
+    clocked_links: tuple[ReconstructedLink, ...] = ()
 
     def best_rejected(self) -> list[RejectedCandidate]:
         """The strongest rejected candidate of every line that has no accepted link."""
@@ -639,7 +647,7 @@ class ReconstructionResult:
         revision = f"{METHOD}:{self.params.digest()}" + (f":{revision_key}" if revision_key else "")
         loaded = source_loaded_at or observed_at
         rows: list[dict[str, object]] = []
-        for link in self.links:
+        for link in self.clocked_links or self.links:
             payload = {
                 "cik": link.cik,
                 "owner_security_id": link.owner_security_id,
@@ -652,6 +660,10 @@ class ReconstructionResult:
                 "tier_attained_at": link.tier_attained_at.isoformat(),
                 "tier_at_available_at": link.tier_history[0][0] if link.tier_history else link.tier,
                 "tier_history": [[tier, since.isoformat()] for tier, since in link.tier_history],
+                "versions": [{"start": version.valid_from.isoformat(), "end": version.valid_to.isoformat(),
+                              "tier": version.tier, "from": version.available_at.isoformat(),
+                              "until": version.valid_until.isoformat() if version.valid_until else None,
+                              "items": _json_items(version.items)} for version in link.versions],
                 "corroborated_by": sorted({item.kind for item in link.items} & set(_CORROBORATING)),
                 "evidence_weight": round(link.weight, 4),
                 "share_weight": round(link.share_weight, 4),
@@ -1144,6 +1156,7 @@ def match_share_counts(
     params: ReconstructionParams,
     *,
     vendor_ids: Iterable[int] | None = None,
+    clocked: bool = False,
 ) -> list[tuple[object, ...]]:
     """Share-count matches: one row per (vendor line, CIK, fact ``as_of``) -- the best fact/run pair.
 
@@ -1161,6 +1174,10 @@ def match_share_counts(
     Columns: vendor_id, cik, concept, as_of, value, filed, accession, form,
     shares, run_first, run_last, aligned, collisions, weight, match_weight,
     reported_quarters, match_ratio.
+
+    ``clocked=True`` retains alternative quarters and pairs below the final
+    floor: a later collision or stronger alternative cannot erase earlier
+    support. The replay chooses and weights then-known items itself.
     """
     lead, lag = params.run_start_lead_days, params.run_start_lag_days
     floor = min(params.min_share_weight, params.competitor_floor)
@@ -1237,7 +1254,7 @@ def match_share_counts(
             FROM counted
         ), best AS (
             SELECT * FROM weighted
-            QUALIFY row_number() OVER (
+            QUALIFY {"TRUE OR" if clocked else ""} row_number() OVER (
                 PARTITION BY vendor_id, cik, as_of
                 ORDER BY weight DESC, filed, concept, run_first, shares, value, accession, form) = 1
         ), valued AS (
@@ -1256,7 +1273,7 @@ def match_share_counts(
             SELECT vendor_id, cik,
                    count(DISTINCT as_of) FILTER (WHERE concept LIKE 'dei:%') AS matched_dei,
                    count(DISTINCT as_of) FILTER (WHERE concept NOT LIKE 'dei:%') AS matched_other
-            FROM valued GROUP BY vendor_id, cik HAVING sum(weight) >= ?
+            FROM valued GROUP BY vendor_id, cik HAVING {"TRUE OR" if clocked else ""} sum(weight) >= ?
         ), life AS (
             SELECT r.vendor_id, min(r.first_date) AS life_from, max(r.last_date) AS life_to
             FROM ri_share_runs r WHERE r.vendor_id IN (SELECT vendor_id FROM pairs) GROUP BY r.vendor_id
@@ -1285,7 +1302,7 @@ def match_share_counts(
     for row in rows:
         weights[(row[0], row[1])].append(float(row[13]))
     kept = {pair for pair, values in weights.items() if math.fsum(values) >= floor}
-    return [row for row in rows if (row[0], row[1]) in kept]
+    return rows if clocked else [row for row in rows if (row[0], row[1]) in kept]
 
 
 def _at(day: dt.date, delta: dt.timedelta) -> dt.datetime:
@@ -1322,11 +1339,140 @@ def _share_items(
                     "form": form,
                     "collisions": collisions,
                     "aligned": bool(aligned),
-                    "match_weight": round(float(match_weight), 4),  # type: ignore[arg-type]
+                    "match_weight": float(match_weight),  # type: ignore[arg-type]
                 },
             )
         )
     return grouped, stats
+
+
+def _reported_clocks(
+    con: duckdb.DuckDBPyConnection, pairs: Mapping[tuple[int, str], object], params: ReconstructionParams,
+) -> dict[tuple[int, str], list[tuple[dt.datetime, dt.date, bool]]]:
+    """Reported-quarter denominator events, bounded to the current line batch."""
+    output = {pair: [] for pair in pairs}
+    if not output:
+        return output
+    rows = con.execute("""
+        WITH pairs AS (SELECT unnest(?::BIGINT[]) AS vendor_id, unnest(?::VARCHAR[]) AS cik),
+        life AS (SELECT vendor_id,min(first_date) AS first,max(last_date) AS last
+                 FROM ri_share_runs WHERE vendor_id IN (SELECT vendor_id FROM pairs) GROUP BY 1)
+        SELECT p.vendor_id,p.cik,f.as_of,f.concept LIKE 'dei:%' AS dei,min(f.filed)
+        FROM pairs p JOIN life l USING(vendor_id) JOIN ri_share_facts f ON f.cik=p.cik
+        WHERE f.value>=? AND f.filed IS NOT NULL
+          AND f.as_of BETWEEN l.first-CAST(? AS INTEGER) AND l.last+CAST(? AS INTEGER)
+        GROUP BY 1,2,3,4
+        """, [[pair[0] for pair in pairs], [pair[1] for pair in pairs], params.min_fact_shares,
+              params.run_start_lag_days, params.run_start_lead_days]).fetchall()
+    for vid, cik, as_of, dei, filed in rows:
+        output[(vid, cik)].append((_at(filed, _FILED_AVAILABILITY), as_of, dei))
+    return output
+
+
+def _run_observations(
+    con: duckdb.DuckDBPyConnection, items: Mapping[tuple[int, str], Sequence[EvidenceItem]],
+    params: ReconstructionParams,
+) -> dict[int, list[dt.date]]:
+    """Relevant vendor count observations, bounded to this batch's matched-run windows."""
+    wanted = sorted({(vid, item.detail["run_first"]) for (vid, _), values in items.items() for item in values})
+    if not wanted:
+        return {}
+    rows = con.execute(f"""
+        WITH wanted AS (SELECT unnest(?::BIGINT[]) AS vendor_id, unnest(?::DATE[]) AS first_date),
+        runs AS (SELECT vendor_id,first_date FROM ri_share_runs
+                 WHERE vendor_id IN (SELECT vendor_id FROM wanted))
+        SELECT r.vendor_id,r.first_date FROM runs r WHERE EXISTS (
+            SELECT 1 FROM wanted w WHERE w.vendor_id=r.vendor_id
+            AND r.first_date BETWEEN w.first_date-INTERVAL {int(params.trial_window_days)} DAY
+                                 AND w.first_date+INTERVAL {int(params.trial_window_days)} DAY)
+        ORDER BY r.vendor_id,r.first_date
+        """, [[pair[0] for pair in wanted], [pair[1] for pair in wanted]]).fetchall()
+    observations: dict[int, list[dt.date]] = defaultdict(list)
+    for vid, first in rows:
+        observations[vid].append(first)
+    return observations
+
+
+class _WeightedItemCache:
+    """One latest weighted variant per immutable original, owned by one line replay."""
+
+    def __init__(self) -> None:
+        self._latest: dict[int, tuple[EvidenceItem, tuple[float, int, int], EvidenceItem]] = {}
+
+    def reweight(self, original: EvidenceItem, weight: float, collisions: int, trials: int) -> EvidenceItem:
+        # These are all the fields changed by the original replacement. The full
+        # original reference retains every other field and prevents identity reuse.
+        key = (weight, collisions, trials)
+        entry = self._latest.get(id(original))
+        if entry is not None and entry[0] is original and entry[1] == key:
+            return entry[2]
+        detail = original.detail
+        item = original
+        if original.weight != weight or int(detail["collisions"]) != collisions or detail.get("trial_count") != trials:
+            item = replace(original, weight=weight, detail={**detail,
+                           "collisions": collisions, "match_weight": weight, "trial_count": trials})
+        self._latest[id(original)] = (original, key, item)
+        return item
+
+
+def _candidates_at(
+    candidates: Sequence[Candidate],
+    reported: Mapping[tuple[int, str], Sequence[tuple[dt.datetime, dt.date, bool]]],
+    observations: Sequence[dt.date],
+    clock: dt.datetime, params: ReconstructionParams,
+    *, weighted_items: _WeightedItemCache | None = None,
+) -> list[Candidate]:
+    """Recompute collisions, best quarters, distinct counts and ratios at this clock."""
+    known = {candidate.cik: [item for item in candidate.items if item.known_at <= clock]
+             for candidate in candidates}
+    holders = defaultdict(set)
+    for cik, items in known.items():
+        for item in items:
+            if item.kind == EV_SHARES:
+                holders[item.detail["run_first"]].add(cik)
+    output = []
+    for candidate in candidates:
+        best = {}
+        extra = []
+        for item in known[candidate.cik]:
+            if item.kind != EV_SHARES:
+                extra.append(item)
+                continue
+            detail = item.detail
+            first = detail["run_first"]
+            window = dt.timedelta(days=params.trial_window_days)
+            public_through = clock.date() - dt.timedelta(days=clock < _at(clock.date(), _BAR_CUTOFF))
+            trials = (bisect_right(observations, min(first + window, public_through))
+                      - bisect_left(observations, first - window))
+            collisions = len(holders[detail["run_first"]])
+            value = float(detail["value"])
+            quantized = (params.round_value_weight if value % 1_000_000 == 0 else
+                         params.quantized_value_weight if value % 10_000 == 0 else 1.0)
+            weight = ((1.0 / collisions) * min(1.0, params.trial_allowance / trials)
+                      * (1.0 if detail["aligned"] else params.covering_match_weight) * quantized)
+            if weighted_items is not None:
+                item = weighted_items.reweight(item, weight, collisions, trials)
+            elif item.weight != weight or int(detail["collisions"]) != collisions or detail.get("trial_count") != trials:
+                item = replace(item, weight=weight, detail={**detail,
+                               "collisions": collisions, "match_weight": weight, "trial_count": trials})
+            key = (-weight, detail["filed"], detail["concept"], detail["run_first"],
+                   detail["vendor_shares_thousands"], detail["value"], detail["accession"] or "", detail["form"] or "")
+            as_of = detail["as_of"]
+            if as_of not in best or key < best[as_of][0]:
+                best[as_of] = (key, item)
+        counts = set()
+        shares = []
+        for _, item in sorted(best.values(), key=lambda pair: (pair[0][0], pair[1].detail["as_of"])):
+            count = item.detail["vendor_shares_thousands"]
+            shares.append(replace(item, weight=0.0) if count in counts else item)
+            counts.add(count)
+        events = [event for event in reported[(candidate.vendor_id, candidate.cik)] if event[0] <= clock]
+        dei = any(event[2] for event in events)
+        denominator = len({event[1] for event in events if event[2] == dei})
+        numerator = len({item.detail["as_of"] for item in shares if item.detail["concept"].startswith("dei:") == dei})
+        output.append(replace(candidate, items=tuple(sorted(shares + extra, key=lambda item: item.known_at)),
+                              reported_quarters=denominator, match_ratio=min(1.0, numerator / max(denominator, 1))))
+    return output
 
 
 def _lifecycle_items(
@@ -1381,7 +1527,8 @@ def _lifecycle_items(
         items.append(
             EvidenceItem(
                 kind=EV_LISTING,
-                known_at=max(_at(filing.filing_date, _FILED_AVAILABILITY), _at(line.first_trade_date, _BAR_CUTOFF)),
+                known_at=max(filing.accepted_at or _at(filing.filing_date, _FILED_AVAILABILITY),
+                             _at(filing.filing_date, _FILED_AVAILABILITY), _at(line.first_trade_date, _BAR_CUTOFF)),
                 line_date=line.first_trade_date,
                 weight=params.lifecycle_weight,
                 detail={"form": filing.form, "filing_date": filing.filing_date, "accession": filing.accession,
@@ -1526,8 +1673,9 @@ def reconstruct_issuer_links(
     by_vendor = {line.vendor_id: line for line in lines}
     horizon = horizon or max((line.last_trade_date for line in lines), default=dt.date.max)
     price_start = price_start or min((line.first_trade_date for line in lines), default=dt.date.min)
-    rows = match_share_counts(con, params, vendor_ids=by_vendor) if matches is None else matches
+    rows = match_share_counts(con, params, vendor_ids=by_vendor, clocked=True) if matches is None else matches
     share_items, pair_stats = _share_items(row for row in rows if int(row[0]) in by_vendor)  # type: ignore[call-overload]
+    observations = _run_observations(con, share_items, params)
 
     filings_by_cik: dict[str, list[IssuerFiling]] = defaultdict(list)
     for filing in filings:
@@ -1553,40 +1701,151 @@ def reconstruct_issuer_links(
         ordered = tuple(sorted(items, key=lambda item: item.known_at)) + tuple(extra)
         candidates[vendor_id].append(Candidate(vendor_id, cik, ordered, reported, ratio))
 
-    links: list[ReconstructedLink] = []
-    rejected: list[RejectedCandidate] = []
+    reported = _reported_clocks(con, share_items, params)
+    final_links = []
+    clocked_links = []
+    rejected = []
     for vendor_id in sorted(candidates):
         line = by_vendor[vendor_id]
-        found = sorted(candidates[vendor_id], key=lambda c: (-c.weight, c.cik))
-        accepted: list[tuple[Candidate, tuple[tuple[str, float], ...]]] = []
-        rivals_of: dict[str, list[Candidate]] = {}
-        line_rejected: list[RejectedCandidate] = []
-        for candidate in found:
-            rivals_of[candidate.cik] = [
-                other
-                for other in found
-                if other is not candidate
-                and _is_rival(other, params)
-                and _overlaps(candidate.span, other.span, params.overlap_tolerance_days)
-            ]
-            competitors = tuple((other.cik, other.weight) for other in rivals_of[candidate.cik])
-            if candidate.weight < params.accept_weight or candidate.share_weight < params.min_share_weight:
-                reason = REJECT_BELOW_THRESHOLD
-            elif not _ratio_acceptable(candidate, params):
-                reason = REJECT_INCONSISTENT
-            elif any(candidate.weight < params.dominance_ratio * weight for _cik, weight in competitors):
-                reason = REJECT_CONFLICTING
-            else:
-                accepted.append((candidate, competitors))
-                continue
+        originals = candidates[vendor_id]
+        line_filings = {candidate.cik: filings_by_cik.get(candidate.cik, ()) for candidate in originals}
+        clocks = {item.known_at for candidate in originals for item in candidate.items}
+        clocks.update(at for candidate in originals for at, _, _ in reported[(vendor_id, candidate.cik)])
+        clocks.update(filing.accepted_at or _at(filing.filing_date, _FILED_AVAILABILITY)
+                      for values in line_filings.values() for filing in values)
+        clocks.update(item.known_at for cik, values in line_filings.items() for filing in values
+                      for item in _lifecycle_items(line, cik, [filing], params, horizon, price_start))
+        clocks.update(_at(first, _BAR_CUTOFF) for first in observations[vendor_id])
+        versions = defaultdict(list)
+        active = {}
+        last_rejected = []
+        weighted_items = _WeightedItemCache()
+        ordered_clocks = sorted(clocks)
+        omit_shareless = params.min_share_weight > 0 and params.competitor_floor > 0
+        first_shares = {
+            id(candidate): min((item.known_at for item in candidate.items if item.kind == EV_SHARES), default=None)
+            for candidate in originals
+        } if omit_shareless else {}
+        for index, clock in enumerate(ordered_clocks):
+            retain_rejections = index == len(ordered_clocks) - 1
+            # Before any share is public, positive own/rival share floors prove
+            # this candidate cannot affect links or anyone else's collisions.
+            # Keep every clock and the full final state; never omit after birth.
+            at_clock = [candidate for candidate in originals
+                        if first_shares[id(candidate)] is not None and first_shares[id(candidate)] <= clock
+                        ] if omit_shareless and not retain_rejections else originals
+            known = _candidates_at(at_clock, reported, observations[vendor_id], clock, params,
+                                   weighted_items=weighted_items)
+            known_filings = {cik: [filing for filing in values
+                             if (filing.accepted_at or _at(filing.filing_date, _FILED_AVAILABILITY)) <= clock]
+                             for cik, values in line_filings.items()}
+            known = [replace(candidate, items=tuple(item for item in candidate.items
+                     if item.kind not in (EV_LISTING, EV_TERMINAL)) + tuple(item for item in _lifecycle_items(
+                         line, candidate.cik, known_filings[candidate.cik], params, horizon, price_start)
+                         if item.known_at <= clock))
+                     for candidate in known]
+            current, last_rejected = _evaluate_line(line, known, known_filings, params, clock,
+                                                    retain_rejections=retain_rejections)
+            state = {link.cik: link for link in current}
+            for cik in active.keys() | state.keys():
+                old, new = active.get(cik), state.get(cik)
+                old_state = (old.valid_from, old.valid_to, old.tier) if old else None
+                new_state = (new.valid_from, new.valid_to, new.tier) if new else None
+                if old_state == new_state:
+                    continue
+                if old is not None:
+                    versions[cik][-1] = replace(versions[cik][-1], valid_until=clock)
+                if new is not None:
+                    versions[cik].append(new)
+            active = state
+        rejected.extend(last_rejected)
+        for cik, history in sorted(versions.items()):
+            last = active.get(cik, history[-1])
+            tier_steps = tuple((v.tier, v.available_at) for index, v in enumerate(history)
+                               if index == 0 or history[index - 1].tier != v.tier)
+            representative = replace(last, available_at=history[0].available_at,
+                                     tier_history=tier_steps,
+                                     versions=tuple(history))
+            clocked_links.append(representative)
+            if cik in active:
+                final_links.append(representative)
+    return ReconstructionResult(params, tuple(final_links), tuple(rejected), len(lines), tuple(clocked_links))
+
+
+@dataclass(frozen=True)
+class _CandidateMetrics:
+    """Immutable summaries of one candidate in one evaluation state."""
+
+    weight: float
+    share_weight: float
+    span: tuple[dt.date, dt.date] | None
+    ratio_acceptable: bool
+    is_rival: bool
+
+
+def _candidate_metrics(candidate: Candidate, params: ReconstructionParams) -> _CandidateMetrics:
+    share_weight = candidate.share_weight
+    # Keep the original fsum input order and the share-only corroboration gate.
+    weight = 0.0 if share_weight <= 0 else math.fsum(item.weight for item in candidate.items)
+    ratio_acceptable = candidate.match_ratio >= params.min_match_ratio or (
+        share_weight >= params.strong_share_weight and candidate.match_ratio >= params.strong_min_ratio
+    )
+    is_rival = share_weight >= params.competitor_floor and (
+        candidate.match_ratio >= params.competitor_min_ratio or ratio_acceptable
+    )
+    return _CandidateMetrics(weight, share_weight, candidate.span, ratio_acceptable, is_rival)
+
+
+def _evaluate_line(
+    line: VendorLine, candidates: Sequence[Candidate],
+    filings_by_cik: Mapping[str, Sequence[IssuerFiling]], params: ReconstructionParams, clock: dt.datetime,
+    *, retain_rejections: bool = True,
+) -> tuple[list[ReconstructedLink], list[RejectedCandidate]]:
+    """Apply one then-known state; replay may omit discarded rejection output."""
+    vendor_id = line.vendor_id
+    links = []
+    rejected = []
+    metrics = {id(candidate): _candidate_metrics(candidate, params) for candidate in candidates}
+    found = sorted(candidates, key=lambda c: (-metrics[id(c)].weight, c.cik))
+    accepted: list[tuple[Candidate, tuple[tuple[str, float], ...]]] = []
+    rivals_of: dict[str, list[Candidate]] = {}
+    line_rejected: list[RejectedCandidate] = []
+    for candidate in found:
+        own = metrics[id(candidate)]
+        # This candidate stays in found as a rival/segment bound for every other
+        # candidate. Only its own discarded rejection work can be omitted.
+        if not retain_rejections and (
+            own.weight < params.accept_weight or own.share_weight < params.min_share_weight
+            or not own.ratio_acceptable
+        ):
+            continue
+        rivals_of[candidate.cik] = [
+            other
+            for other in found
+            if other is not candidate
+            and metrics[id(other)].is_rival
+            and _overlaps(own.span, metrics[id(other)].span, params.overlap_tolerance_days)
+        ]
+        competitors = tuple((other.cik, metrics[id(other)].weight) for other in rivals_of[candidate.cik])
+        if own.weight < params.accept_weight or own.share_weight < params.min_share_weight:
+            reason = REJECT_BELOW_THRESHOLD
+        elif not own.ratio_acceptable:
+            reason = REJECT_INCONSISTENT
+        elif any(own.weight < params.dominance_ratio * weight for _cik, weight in competitors):
+            reason = REJECT_CONFLICTING
+        else:
+            accepted.append((candidate, competitors))
+            continue
+        if retain_rejections:
             line_rejected.append(
-                RejectedCandidate(vendor_id, line.price_security_id, candidate.cik, reason, candidate.weight,
-                                  candidate.share_weight, candidate.span, competitors)
+                RejectedCandidate(vendor_id, line.price_security_id, candidate.cik, reason, own.weight,
+                                  own.share_weight, own.span, competitors)
             )
-        # Both sides of every conflict are kept as conflict rows, whatever a side's own
-        # threshold outcome: a rival a link was preferred over (dominance rule) is the
-        # losing side of a resolved conflict; a rival that blocks another candidate is one
-        # side of an unresolved one.
+    # Both sides of every conflict are kept as conflict rows, whatever a side's own
+    # threshold outcome: a rival a link was preferred over (dominance rule) is the
+    # losing side of a resolved conflict; a rival that blocks another candidate is one
+    # side of an unresolved one.
+    if retain_rejections:
         dominated = {cik for _candidate, competitors in accepted for cik, _weight in competitors}
         blocking = {cik for item in line_rejected if item.reason == REJECT_CONFLICTING for cik, _w in item.competitors}
         for item in line_rejected:
@@ -1595,48 +1854,48 @@ def reconstruct_issuer_links(
             elif item.cik in blocking and item.reason not in CONFLICT_REASONS:
                 item = replace(item, reason=REJECT_CONFLICTING, own_reason=item.reason)
             rejected.append(item)
-        if not accepted:
-            continue
-        # Rejected rivals with real weight bound every segment's extension.
-        chosen = {pair[0].cik for pair in accepted}
-        rivals = [
-            other.span
-            for other in found
-            if other.cik not in chosen and _is_rival(other, params) and other.span is not None
-        ]
-        accepted.sort(key=lambda pair: pair[0].span[0])  # type: ignore[index]
-        segments = _segments(line, [pair[0] for pair in accepted], rivals, filings_by_cik, params)
-        for (candidate, competitors), (start, end) in zip(accepted, segments, strict=True):
-            if end <= start:
+    if not accepted:
+        return [], rejected
+    # Rejected rivals with real weight bound every segment's extension.
+    chosen = {pair[0].cik for pair in accepted}
+    rivals = [
+        metrics[id(other)].span
+        for other in found
+        if other.cik not in chosen and metrics[id(other)].is_rival and metrics[id(other)].span is not None
+    ]
+    accepted.sort(key=lambda pair: metrics[id(pair[0])].span[0])  # type: ignore[index]
+    segments = _segments(line, [pair[0] for pair in accepted], rivals, filings_by_cik, params,
+                         spans=[metrics[id(pair[0])].span for pair in accepted])
+    for (candidate, competitors), (start, end) in zip(accepted, segments, strict=True):
+        own = metrics[id(candidate)]
+        if end <= start:
+            if retain_rejections:
                 rejected.append(
                     RejectedCandidate(vendor_id, line.price_security_id, candidate.cik, REJECT_EMPTY_SEGMENT,
-                                      candidate.weight, candidate.share_weight, candidate.span, competitors)
+                                      own.weight, own.share_weight, own.span, competitors)
                 )
-                continue
-            clock = _pit_clock(candidate.items, params)
-            assert clock is not None
-            history = _tier_history(candidate, rivals_of[candidate.cik], clock, params)
-            assert history and history[-1][0] == _tier(candidate, competitors)
-            links.append(
-                ReconstructedLink(
-                    vendor_id=vendor_id,
-                    price_security_id=line.price_security_id,
-                    cik=candidate.cik,
-                    valid_from=start,
-                    valid_to=end,
-                    available_at=clock,
-                    evidence_complete_at=max(item.known_at for item in candidate.items),
-                    weight=candidate.weight,
-                    share_weight=candidate.share_weight,
-                    tier=_tier(candidate, competitors),
-                    symbol=_symbol_in(line, (start, end)),
-                    items=candidate.items,
-                    competitors=competitors,
-                    current_cik=line.current_cik,
-                    tier_history=history,
-                )
+            continue
+        history = ((_tier(candidate, competitors), clock),)
+        links.append(
+            ReconstructedLink(
+                vendor_id=vendor_id,
+                price_security_id=line.price_security_id,
+                cik=candidate.cik,
+                valid_from=start,
+                valid_to=end,
+                available_at=clock,
+                evidence_complete_at=max(item.known_at for item in candidate.items),
+                weight=own.weight,
+                share_weight=own.share_weight,
+                tier=_tier(candidate, competitors),
+                symbol=_symbol_in(line, (start, end)),
+                items=candidate.items,
+                competitors=competitors,
+                current_cik=line.current_cik,
+                tier_history=history,
             )
-    return ReconstructionResult(params, tuple(links), tuple(rejected), lines_considered=len(lines))
+        )
+    return links, rejected
 
 
 def reconstruct_in_batches(
@@ -1679,6 +1938,8 @@ def _segments(
     rivals: Sequence[tuple[dt.date, dt.date]],
     filings_by_cik: Mapping[str, Sequence[IssuerFiling]],
     params: ReconstructionParams,
+    *,
+    spans: Sequence[tuple[dt.date, dt.date] | None] | None = None,
 ) -> list[tuple[dt.date, dt.date]]:
     """Disjoint ``[from, to)`` intervals for the sequential accepted candidates of one line.
 
@@ -1693,13 +1954,13 @@ def _segments(
     starts: list[dt.date] = []
     ends: list[dt.date] = []
     for index, candidate in enumerate(ordered):
-        span = candidate.span
+        span = candidate.span if spans is None else spans[index]
         assert span is not None
         kinds = {item.kind for item in candidate.items}
         if index == 0:
             start = line_start if span[0] - line_start <= reach or EV_LISTING in kinds else span[0] - reach
         else:
-            previous = ordered[index - 1].span
+            previous = ordered[index - 1].span if spans is None else spans[index - 1]
             assert previous is not None
             # A successor/listing registration between the predecessor's last and
             # this candidate's first evidence dates the hand-over more precisely.
@@ -1872,7 +2133,7 @@ def _refresh(
         candidate_ciks: set[str] = set()
         for start in range(0, len(vendor_ids), _CANDIDATE_CHUNK):
             chunk = vendor_ids[start : start + _CANDIDATE_CHUNK]
-            candidate_ciks.update(str(row[1]) for row in match_share_counts(con, params, vendor_ids=chunk))
+            candidate_ciks.update(str(row[1]) for row in match_share_counts(con, params, vendor_ids=chunk, clocked=True))
         filings = read_lifecycle_filings(inputs.submissions.path, sorted(candidate_ciks))
         seconds["lifecycle_filings"] = round(time.perf_counter() - clock, 1)
 

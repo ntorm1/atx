@@ -45,8 +45,37 @@ def refresh_concept_catalog(store: DuckDBStore) -> int:
     ``rowid`` pins the original first-non-NULL label/description choice to physical
     insertion order, including when insertion-order preservation is disabled.
     """
-    aggregates = store.con.execute(
-        """
+    aggregates = store.con.execute(concept_catalog_aggregate_sql()).fetchall()
+    if not aggregates:
+        return 0
+    rows = concept_catalog_rows(aggregates)
+    columns = ", ".join(_COLUMNS)
+    placeholders = ", ".join("?" for _ in _COLUMNS)
+    try:
+        with store.transaction():
+            store.con.execute(
+                f"CREATE TEMP TABLE xbrl_concept_catalog_load AS "
+                f"SELECT {columns} FROM xbrl_concept_catalog WHERE false"
+            )
+            store.con.executemany(
+                f"INSERT INTO xbrl_concept_catalog_load ({columns}) VALUES ({placeholders})", rows,
+            )
+            store.con.execute(
+                "DELETE FROM xbrl_concept_catalog AS dst USING xbrl_concept_catalog_load AS src "
+                "WHERE dst.source=src.source AND dst.taxonomy=src.taxonomy AND dst.concept=src.concept"
+            )
+            store.con.execute(
+                f"INSERT INTO xbrl_concept_catalog ({columns}) SELECT {columns} "
+                "FROM xbrl_concept_catalog_load ORDER BY source,taxonomy,concept"
+            )
+    finally:
+        store.con.execute("DROP TABLE IF EXISTS xbrl_concept_catalog_load")
+    return len(rows)
+
+
+def concept_catalog_aggregate_sql(*, concept_predicate: str = "TRUE") -> str:
+    """Whole-concept aggregation, preserving physical first-label selection."""
+    return f"""
         SELECT
             source,
             taxonomy,
@@ -70,17 +99,17 @@ def refresh_concept_catalog(store: DuckDBStore) -> int:
         FROM sec_company_facts
         WHERE taxonomy IS NOT NULL AND taxonomy <> ''
           AND concept IS NOT NULL AND concept <> ''
+          AND ({concept_predicate})
         GROUP BY source, taxonomy, concept
         ORDER BY source, taxonomy, concept
         """
-    ).fetchall()
-    if not aggregates:
-        return 0
 
+
+def concept_catalog_rows(aggregates) -> list[tuple]:
     # Keep the existing Python JSON serialization, including whitespace and
     # Unicode escaping. Dates/timestamps remain native DuckDB/Python values;
     # no full-fact DataFrame or pandas timestamp conversion is needed.
-    rows = [
+    return [
         (
             *row[:5],
             _statement_category(row[1], row[2]),
@@ -89,38 +118,3 @@ def refresh_concept_catalog(store: DuckDBStore) -> int:
         )
         for row in aggregates
     ]
-    columns = ", ".join(_COLUMNS)
-    placeholders = ", ".join("?" for _ in _COLUMNS)
-    try:
-        with store.transaction():
-            store.con.execute(
-                f"""
-                CREATE TEMP TABLE xbrl_concept_catalog_load AS
-                SELECT {columns} FROM xbrl_concept_catalog WHERE false
-                """
-            )
-            store.con.executemany(
-                f"INSERT INTO xbrl_concept_catalog_load ({columns}) VALUES ({placeholders})",
-                rows,
-            )
-            # Preserve the existing upsert scope: absent concepts, including an
-            # entirely empty source table, do not erase historical catalog rows.
-            store.con.execute(
-                """
-                DELETE FROM xbrl_concept_catalog AS dst
-                USING xbrl_concept_catalog_load AS src
-                WHERE dst.source = src.source
-                  AND dst.taxonomy = src.taxonomy
-                  AND dst.concept = src.concept
-                """
-            )
-            store.con.execute(
-                f"""
-                INSERT INTO xbrl_concept_catalog ({columns})
-                SELECT {columns} FROM xbrl_concept_catalog_load
-                ORDER BY source, taxonomy, concept
-                """
-            )
-    finally:
-        store.con.execute("DROP TABLE IF EXISTS xbrl_concept_catalog_load")
-    return len(rows)

@@ -1,0 +1,99 @@
+{
+  "name": "compustat_std",
+  "lane": "tier1-v4 lane B (task 3)",
+  "schema": "atx.alpha-panel.compustat-std/v2",
+  "module": "atx_db.alpha_panel.compustat_std",
+  "args": [
+    [
+      "build",
+      "--fund-stage",
+      "fundamentals_v10",
+      "--earn-stage",
+      "earnings_calendar",
+      "--buckets",
+      "32"
+    ],
+    [
+      "validate"
+    ],
+    [
+      "cutoff"
+    ],
+    [
+      "handcheck"
+    ]
+  ],
+  "inputs": [
+    "fundamentals_v10",
+    "earnings_calendar",
+    "reference"
+  ],
+  "inputs_note": "the fundamentals stage is a parameter (--fund-stage); task 5 rebuilds on fundamentals_v11. Reads <fund stage>/{events,catalog,quarterly_history}.parquet, <fund stage>/_work/cf (Company Facts extract), earnings_calendar/announcements.parquet, reference/fx_daily.parquet",
+  "manifest": "compustat_std/manifest.json",
+  "vintage": "vintage",
+  "staleness": "a row describes datadate as known at available_at; consumers bound staleness by session - datadate (e.g. <= 400 days) or by the next expected filing",
+  "guard_gb": 1.0,
+  "code": [
+    "compustat_std",
+    "fund_catalog",
+    "fund_fx",
+    "common"
+  ],
+  "doc": "docs/datasets/compustat_std.md",
+  "outputs": [
+    {
+      "view": "fundq",
+      "glob": "compustat_std/fundq.parquet",
+      "clock": "available_at",
+      "vintage": "vintage",
+      "keys": [
+        "cik",
+        "datadate"
+      ],
+      "order": [
+        "accession"
+      ],
+      "primary_key": [
+        "cik",
+        "datadate",
+        "fyearq",
+        "fqtr",
+        "accession",
+        "available_at"
+      ],
+      "doc": "Compustat-shaped PIT quarterly fundamentals (fundq), filing and restatement vintages (vintage_kind); rdq informational; available_at is part of vintage identity (multiple clocks per accession, ruling R6)"
+    },
+    {
+      "view": "funda",
+      "glob": "compustat_std/funda.parquet",
+      "clock": "available_at",
+      "vintage": "vintage",
+      "keys": [
+        "cik",
+        "datadate"
+      ],
+      "order": [
+        "accession"
+      ],
+      "primary_key": [
+        "cik",
+        "datadate",
+        "fyear",
+        "accession",
+        "available_at"
+      ],
+      "doc": "Compustat-shaped PIT annual fundamentals (funda): annual-form base periods with fqtr 4 and their later restatement vintages; 81 catalog fields, including non-Compustat extensions tempeq and nicon; available_at is part of vintage identity (multiple clocks per accession, ruling R6)"
+    }
+  ],
+  "asof_macros": {
+    "fundq_asof": "CREATE OR REPLACE MACRO fundq_asof(ts) AS TABLE SELECT * FROM read_parquet('<root>/compustat_std/fundq.parquet') WHERE available_at < CAST(ts AS TIMESTAMP) QUALIFY row_number() OVER (PARTITION BY cik, datadate ORDER BY available_at DESC, accession DESC) = 1",
+    "funda_asof": "CREATE OR REPLACE MACRO funda_asof(ts) AS TABLE SELECT * FROM read_parquet('<root>/compustat_std/funda.parquet') WHERE available_at < CAST(ts AS TIMESTAMP) QUALIFY row_number() OVER (PARTITION BY cik, datadate ORDER BY available_at DESC, accession DESC) = 1"
+  },
+  "asof_note": "fundq_asof(ts) / funda_asof(ts): per (cik, datadate) the latest vintage with available_at < ts (ts a naive UTC TIMESTAMP); identical to the stagelake vintage <view>_as_of macro with keys (cik, datadate) and order (available_at, accession). <root> = the alpha-panel build root.",
+  "vintage_identity": [
+    "cik",
+    "datadate",
+    "accession",
+    "available_at"
+  ]
+}

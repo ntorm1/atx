@@ -1,0 +1,13 @@
+{
+  "as_of_macro_sql": "SELECT * FROM read_parquet(<explicit admitted immutable label paths>) WHERE available_at < <cutoff> AND exit_date < DATE '2023-01-01' AND label_qualified",
+  "keys": [
+    "feature_date",
+    "security_id",
+    "horizon"
+  ],
+  "path": "golden_labels/generations/<independently-reviewed-generation>",
+  "schema_id": "atx.golden-labels/v1",
+  "source_quality_certified": false,
+  "stage": "golden_labels",
+  "status": "REGISTRATION_ONLY_ACTUAL_PUBLICATION_PENDING"
+}

@@ -1,0 +1,133 @@
+{
+  "bindings": {
+    "actual_basis": [
+      "cik",
+      "measure",
+      "basis",
+      "accounting_basis_id",
+      "period_type",
+      "fiscal_year",
+      "fiscal_quarter",
+      "period_end",
+      "fiscal_calendar_id",
+      "currency",
+      "unit",
+      "share_basis",
+      "share_basis_id",
+      "accession",
+      "source_sha256",
+      "source_available_at",
+      "evidence_id",
+      "value_field",
+      "source_value",
+      "security_id"
+    ],
+    "calendar": [
+      "exchange_id",
+      "session_date",
+      "close_at",
+      "source_available_at",
+      "evidence_id",
+      "source_sha256"
+    ],
+    "catalog": [
+      "cik",
+      "accession",
+      "doc_sha256",
+      "source_doc",
+      "doc_source"
+    ],
+    "members": [
+      "year",
+      "cik"
+    ],
+    "prices": [
+      "cik",
+      "accession",
+      "security_id",
+      "session_date",
+      "close",
+      "close_at",
+      "available_at",
+      "source_available_at",
+      "currency",
+      "basis_id",
+      "exchange_id",
+      "qualification_reason",
+      "evidence_id",
+      "source_sha256"
+    ],
+    "targets": [
+      "cik",
+      "measure",
+      "basis",
+      "accounting_basis_id",
+      "period_type",
+      "fiscal_year",
+      "fiscal_quarter",
+      "period_end",
+      "fiscal_calendar_id",
+      "currency",
+      "unit",
+      "share_basis",
+      "share_basis_id",
+      "accession",
+      "source_sha256",
+      "source_available_at",
+      "evidence_id"
+    ]
+  },
+  "config_sha256": "94358ee94edc83b699bf00cc64216d61eac1a63b89cdf92d39cfa96adca26a33",
+  "configuration": {
+    "actual": "current native Task9 GAAP diluted EPSFI/consolidated quarterly revenue with independently pinned original source_value equality, exact historical fiscal identity and accounting/share bridge; unsupported adjusted/basic/annual/FPI bridges NULL",
+    "basis": "explicit GAAP/ADJUSTED and independently identified accounting definition/scope accounting_basis_id; currency USD; EPS diluted/basic independently identified; revenue consolidated",
+    "candidate": {
+      "economic_sign": 1,
+      "measure": "EPS",
+      "primary_feature": "guid_surprise",
+      "selected_before_actual_values_or_return_results": true
+    },
+    "clocks": "original qualified SEC acceptance; evidence public clock <= original issue; daily strict preceding calendar session22 UTC",
+    "complete_forward_labels": "none; no return evaluation supplied",
+    "coverage": {
+      "population": "independently pinned member issuer-year inventory; guiding issuer numerator with qualified nonnull guidance",
+      "year_axis": "original SEC filing_date; never backdates available_at",
+      "years": [
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+        2025
+      ]
+    },
+    "evaluation_end_exclusive": "2023-01-01",
+    "feature_replay": "source-issuer union includes all parsed guidance and admitted actuals; orphan/null issuers refuse; global row count equals sum of full per-issuer regenerated multisets",
+    "guid_revision": "current qualified midpoint minus prior qualified midpoint, native units; floor/ceiling no midpoint",
+    "guid_surprise": "EPS actual minus prior midpoint divided by independently qualified comparable per-share price; revenue surprise NULL with unit_mismatch_total_revenue (R22)",
+    "limits": {
+      "batch_rows": 512,
+      "candidates_per_document": 256,
+      "comparator_identities_per_candidate": 256,
+      "document_bytes": 8388608,
+      "documents_per_release": 64,
+      "rows_per_issuer": 10000
+    },
+    "missing_source_target_policy": "original missing-source releases remain full audit/sample/coverage failures; genuinely unknown target creates no invented comparator identity and cannot invalidate a known different target; no completeness/economic certification follows",
+    "parser": "guidance-rules-v2-period-provenance candidates; stated sentence/table/heading targets only, inferred targets refused",
+    "precision": {
+      "required": 300,
+      "selection": "lowest SHA256(cik/accession/task10-precision-300-v1), ALL original eligible releases2020-2025 independent of parser success; missing retained",
+      "threshold": 0.9
+    },
+    "price_denominator": "last completed admitted exchange-session close strictly before original actual issue; genuine availability and comparable currency/share basis; no reaction price",
+    "prior": "latest strictly earlier comparable original guidance for exact target/basis/currency/unit/share/calendar identity; separate original target-identity blocker union survives duplicate/conflicting/unusable value evidence; unknown scope only within source-stated target; latest unusable issue blocks stale fallback; equal-clock ambiguity missing; never text-prior fallback",
+    "readiness": "NOT_PRODUCTION_READY",
+    "schema": "atx.events.guidance/v2",
+    "source_quality_certified": false,
+    "stage": "events_guidance_v2",
+    "target": "exact source FY/FQ/period type/end and historical fiscal_calendar_id; never inferred date",
+    "values": "source low/high only for range or one-sided bound; source point only for point quote; separately derived midpoint for complete range/point",
+    "version": "guidance-native-v2-frozen-r1"
+  }
+}

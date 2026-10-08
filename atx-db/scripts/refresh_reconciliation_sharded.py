@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Publish the reconciliation serving table in bounded symbol shards.
+"""Publish the reconciliation serving table in bounded whole-security shards.
 
 A single full-universe materialization of ``v_fundamental_reconciliation_contextual``
 can exceed available memory because the whole contextual result must stage at
@@ -16,7 +16,9 @@ Usage
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
+import os
 import subprocess
 import sys
 import time
@@ -25,7 +27,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from atx_db import DEFAULT_DB_PATH, DuckDBStore
-from atx_db.cli import _configure_analytical_session
 from atx_db.fundamental_reconciliation import (
     FundamentalReconciliationRefreshOptions,
     refresh_fundamental_reconciliation_serving,
@@ -34,13 +35,14 @@ from atx_db.fundamental_reconciliation import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Sequential symbol-sharded reconciliation serving publish."
+        description="Sequential security-bucket reconciliation serving publish."
     )
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--shards", type=int, default=16)
     parser.add_argument("--start-shard", type=int, default=1)
-    parser.add_argument("--memory-limit", default="1GB")
-    parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--memory-limit", choices=("256MB", "384MB"), default="384MB")
+    parser.add_argument("--threads", type=int, choices=(1,), default=1)
+    parser.add_argument("--receipts-dir", type=Path, default=Path("C:/atx/.superpowers/sdd/tier1-v2/receipts"))
     parser.add_argument("--run-id-prefix", default="recon-sharded")
     parser.add_argument(
         "--only-shard",
@@ -54,39 +56,37 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _symbol_shards(
-    db_path: Path, shard_count: int, *, memory_limit: str = "1GB", threads: int = 1,
+def _security_shards(
+    db_path: Path, shard_count: int, *, memory_limit: str = "256MB", threads: int = 1,
 ) -> list[list[str]]:
-    with DuckDBStore(db_path, read_only=True) as store:
-        _configure_analytical_session(store, memory_limit=memory_limit, threads=threads)
-        symbols = [
-            row[0]
-            for row in store.con.execute(
-                """
-                SELECT DISTINCT upper(trim(symbol))
-                FROM fundamental_standardized
-                WHERE symbol IS NOT NULL AND trim(symbol) <> ''
-                ORDER BY 1
-                """
-            ).fetchall()
-        ]
-    if not symbols:
-        raise SystemExit("no symbols found in fundamental_standardized")
-    size = -(-len(symbols) // shard_count)
-    return [symbols[i : i + size] for i in range(0, len(symbols), size)]
+    shards: list[list[str]] = [[] for _ in range(shard_count)]
+    with DuckDBStore(db_path, read_only=True, memory_limit=memory_limit, threads=threads) as store:
+        if store.con.execute("SELECT 1 FROM fundamental_standardized WHERE security_id IS NULL OR trim(security_id)='' LIMIT 1").fetchone():
+            raise ValueError("standardized rows lack a security key; refuse to silently omit them")
+        for security_id, bucket in store.con.execute(
+            "SELECT DISTINCT security_id,hash(security_id)%? FROM fundamental_standardized ORDER BY security_id",
+            [shard_count],
+        ).fetchall():
+            shards[int(bucket)].append(security_id)
+    return shards
 
 
 def main() -> int:
     args = parse_args()
+    if not os.environ.get("ATX_GUARD_JOB"):
+        raise SystemExit("reconciliation requires the memory guard")
+    if args.only_shard is None:
+        from atx_db.activation import _companyfacts_parent_guard
+        _companyfacts_parent_guard()  # Same non-HEAVY nested-admission contract.
     if args.shards < 1:
         raise SystemExit("--shards must be positive")
-    shards = _symbol_shards(args.db_path, args.shards, memory_limit=args.memory_limit, threads=args.threads)
+    shards = _security_shards(args.db_path, args.shards, memory_limit=args.memory_limit, threads=args.threads)
     if args.only_shard is None:
         print(
             json.dumps(
                 {
                     "step": "plan",
-                    "symbol_count": sum(len(s) for s in shards),
+                    "security_count": sum(len(s) for s in shards),
                     "shard_count": len(shards),
                     "start_shard": args.start_shard,
                 }
@@ -98,9 +98,20 @@ def main() -> int:
             continue
         if args.only_shard is not None and index != args.only_shard:
             continue
+        if not shard:
+            continue
         if args.only_shard is None:
+            args.receipts_dir.mkdir(parents=True, exist_ok=True)
+            stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S%f")
+            base = args.receipts_dir / f"reconciliation-{stamp}-s{index:04d}"
             child = subprocess.run(
                 [
+                    sys.executable,
+                    "C:/atx/.superpowers/sdd/tier1-parity/run_memory_guarded.py",
+                    "--quiet", "--job-gb", "0.8", "--heavy", "--wait-minutes", "30",
+                    "--parent-job", os.environ["ATX_GUARD_JOB"], "--disk-path", str(args.db_path.resolve().parent),
+                    "--min-free-disk-gb", "35", "--receipt", str(base.with_suffix(".json")),
+                    "--stdout", str(base.with_suffix(".out")), "--stderr", str(base.with_suffix(".err")), "--",
                     sys.executable,
                     str(Path(__file__).resolve()),
                     "--db-path",
@@ -116,26 +127,25 @@ def main() -> int:
                     "--run-id-prefix",
                     args.run_id_prefix,
                 ],
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_BREAKAWAY_FROM_JOB,
             )
-            if child.returncode != 0:
+            receipt = json.loads(base.with_suffix(".json").read_text())
+            if child.returncode != 0 or receipt.get("cap_hit"):
                 print(
                     json.dumps(
                         {"step": "shard", "shard": index, "status": "failed", "exit_code": child.returncode}
                     ),
                     flush=True,
                 )
-                return child.returncode
+                return child.returncode or 1
             continue
         begun = time.monotonic()
-        with DuckDBStore(args.db_path) as store:
+        with DuckDBStore(args.db_path, memory_limit=args.memory_limit, threads=1) as store:
             store.con.execute("PRAGMA disable_progress_bar")
-            _configure_analytical_session(
-                store, memory_limit=args.memory_limit, threads=args.threads
-            )
             result = refresh_fundamental_reconciliation_serving(
                 store,
                 FundamentalReconciliationRefreshOptions(
-                    symbols=tuple(shard),
+                    security_ids=tuple(shard),
                     run_id=f"{args.run_id_prefix}-s{index:02d}",
                 ),
             )
@@ -145,7 +155,7 @@ def main() -> int:
                     "step": "shard",
                     "shard": index,
                     "of": len(shards),
-                    "symbols": len(shard),
+                    "security_count": len(shard),
                     "build_id": result.build_id,
                     "serving_rows_in_scope": result.row_count,
                     "seconds": round(time.monotonic() - begun, 1),

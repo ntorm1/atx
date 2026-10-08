@@ -1,0 +1,95 @@
+import datetime as dt
+import html
+import json
+from types import SimpleNamespace
+import pytest
+from atx_db.alpha_panel import issuer_history as I
+
+def header(state='DE',cik=12,changed='20171229'):
+    return f'''<SEC-HEADER><ACCEPTANCE-DATETIME>20171229170000
+ACCESSION NUMBER: 0000000012-17-000001
+CONFORMED SUBMISSION TYPE: 10-K
+FILED AS OF DATE: 20171229
+DATE AS OF CHANGE: {changed}
+FILER:
+ COMPANY DATA:
+ CENTRAL INDEX KEY: {cik:010d}
+ STATE OF INCORPORATION: {state}
+ BUSINESS ADDRESS:
+ STATE: NY
+</SEC-HEADER>'''.encode()
+
+def test_exact_issuer_and_actual_conservative_clock():
+    obs=I.parse_header(header(),12,'0000000012-17-000001')
+    assert obs['inc_state_country']=='DE'
+    assert obs['accepted_at']==dt.datetime(2017,12,29,22,tzinfo=dt.UTC)
+    assert obs['available_at']==dt.datetime(2017,12,30,4,59,59,tzinfo=dt.UTC)
+    assert I.parse_header(header(cik=99),12,'0000000012-17-000001') is None
+    assert I.parse_header(header(),12,'wrong') is None
+    assert I.parse_header(header().replace(b'STATE OF INCORPORATION',b'STATE OF BUSINESS'),12,'0000000012-17-000001') is None
+    assert I.parse_header(header('XX'),12,'0000000012-17-000001') is None
+    assert I.parse_header(header('SC'),12,'0000000012-17-000001')['inc_state_country']=='SC'
+
+def test_later_change_cannot_backdate_and_html_entities():
+    raw=html.escape(header('E9',changed='20190102').decode()).encode()
+    obs=I.parse_header(raw,12,'0000000012-17-000001')
+    assert obs['inc_state_country']=='E9'
+    assert obs['available_at']==dt.datetime(2019,1,3,4,59,59,tzinfo=dt.UTC)
+
+def test_multi_entity_header_never_uses_other_company_or_address_state():
+    other=b'COMPANY DATA:\n CENTRAL INDEX KEY: 99\n STATE OF INCORPORATION: E9\n BUSINESS ADDRESS:\n STATE: NY\n'
+    obs=I.parse_header(header().replace(b'FILER:',b'FILER:\n'+other),12,'0000000012-17-000001')
+    assert obs['inc_state_country']=='DE'
+    contradictory=header().replace(b'</SEC-HEADER>',b'COMPANY DATA:\n CENTRAL INDEX KEY: 12\n STATE OF INCORPORATION: E9\n</SEC-HEADER>')
+    assert I.parse_header(contradictory,12,'0000000012-17-000001') is None
+    noncorporate=header().replace(b'CONFORMED SUBMISSION TYPE: 10-K',b'CONFORMED SUBMISSION TYPE: 4')
+    assert I.parse_header(noncorporate,12,'0000000012-17-000001') is None
+
+def test_clock_only_use_never_invents_missing_incorporation_or_issuer():
+    raw=header().replace(b'STATE OF INCORPORATION: DE',b'')
+    assert I.parse_header(raw,12,'0000000012-17-000001') is None
+    clock=I.parse_header(raw,12,'0000000012-17-000001',require_incorporation=False)
+    assert clock['inc_state_country'] is None
+    assert clock['available_at']==dt.datetime(2017,12,30,4,59,59,tzinfo=dt.UTC)
+    assert I.parse_header(raw,99,'0000000012-17-000001',require_incorporation=False) is None
+    assert I.parse_header(raw.replace(b'TYPE: 10-K',b'TYPE: 4'),12,'0000000012-17-000001',require_incorporation=False) is None
+    conflict=header().replace(b'</SEC-HEADER>',b'COMPANY DATA:\n CENTRAL INDEX KEY: 12\n STATE OF INCORPORATION: E9\n</SEC-HEADER>')
+    assert I.parse_header(conflict,12,'0000000012-17-000001',require_incorporation=False) is None
+
+def test_pre_eligibility_selection_and_later_redomicile():
+    first=dt.date(2018,1,2)
+    rows=[{'accession':str(i),'form':f,'filing_date':d} for i,f,d in [(1,'10-K',dt.date(2017,12,1)),(2,'4',dt.date(2017,12,31)),(3,'8-K',dt.date(2018,5,1)),(4,'10-Q',dt.date(2018,11,1)),(5,'10-K',dt.date(2023,2,1))]]
+    selected=I.select_observations(rows,first)
+    assert [r['accession'] for r in selected]==['1','4']
+    assert selected[0]['filing_date']<first
+
+def test_every_http_attempt_paced_persisted_and_capped(tmp_path,monkeypatch):
+    now=[100.0];grants=[]
+    def sleep(n):now[0]+=n
+    inner=SimpleNamespace(acquire=lambda label:grants.append(label) or now[0],lock_path=tmp_path/'shared')
+    monkeypatch.setattr(I.H,'default_sec_limiter',lambda:inner)
+    path=tmp_path/'attempts.jsonl'
+    limiter=I.RoundLimiter(path,cap=2,clock=lambda:now[0],sleep=sleep)
+    limiter.acquire('first');limiter.acquire('retry')
+    with pytest.raises(I.RequestBudgetExhausted):limiter.acquire('redirect')
+    records=[json.loads(s) for s in path.read_text().splitlines()]
+    assert records[1]['time']-records[0]['time']>=1
+    assert grants==['first','retry']
+    resumed=I.RoundLimiter(path,cap=2,clock=lambda:now[0],sleep=sleep)
+    with pytest.raises(I.RequestBudgetExhausted):resumed.acquire('resume')
+
+
+def test_plan_extensions_retain_prior_same_year_and_preeligibility_observations(tmp_path):
+    path=tmp_path/'plan.json'
+    prior={'cik':12,'accession':'prior','form':'10-K','filing_date':dt.date(2017,12,1),'priority':0}
+    june={'cik':12,'accession':'june','form':'10-Q','filing_date':dt.date(2018,6,1),'priority':1}
+    C=I.C
+    C.write_json_atomic(path,{'rows':I.retain_plan_observations([prior,june],path)})
+    november={**june,'accession':'november','filing_date':dt.date(2018,11,1)}
+    earlier={**prior,'accession':'new-prior','filing_date':dt.date(2017,12,20)}
+    extended=I.retain_plan_observations(I.select_observations([prior,earlier,june,november],dt.date(2018,1,2)),path)
+    assert [r['accession'] for r in extended]==['prior','june','new-prior','november']
+    C.write_json_atomic(path,{'rows':extended})
+    assert I.retain_plan_observations([],path)==C.read_json(path)['rows']
+    with pytest.raises(ValueError,match='conflicting retained source identity'):
+        I.retain_plan_observations([{**june,'filing_date':dt.date(2018,7,1)}],path)

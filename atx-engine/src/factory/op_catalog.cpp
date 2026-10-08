@@ -24,10 +24,17 @@ OpCatalog::sample_compatible(Shape shape, DType dtype, atx::usize arity, const O
   if (b == nullptr) {
     return std::nullopt;
   }
-  // Count alternatives (!= current) without allocating; then pick the k-th.
+  // Compare stable operator names: catalog rows come from the static built-in
+  // table, while parsed/checkpoint-restored nodes borrow Library-owned copies.
+  // Pointer identity would make identical pre/post-checkpoint genomes sample
+  // different alternatives (and would allow a no-op swap of parsed nodes).
+  const auto is_current = [current](const OpSig *sig) {
+    return current != nullptr && sig->name == current->name;
+  };
+  // Count alternatives without allocating; then pick the k-th.
   atx::usize alternatives = 0;
   for (const OpSig *sig : b->ops) {
-    if (sig != current) {
+    if (!is_current(sig)) {
       ++alternatives;
     }
   }
@@ -37,7 +44,7 @@ OpCatalog::sample_compatible(Shape shape, DType dtype, atx::usize arity, const O
   const atx::usize k = static_cast<atx::usize>(rng.next_u64() % alternatives);
   atx::usize seen = 0;
   for (const OpSig *sig : b->ops) {
-    if (sig == current) {
+    if (is_current(sig)) {
       continue;
     }
     if (seen == k) {

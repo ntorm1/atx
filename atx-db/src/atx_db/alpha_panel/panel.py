@@ -6,9 +6,18 @@ Sub-stages (resumable, each writes under the build root):
                 shares (``shares_out``), earnings indicator. -> ``_tmp/panel_core/bucket_NN.parquet``
 ``membership``  per year: scorecard universe ``research-prior63-usd-adv-topn-v1`` and the
                 equal-weight ``mkt_ret``. -> ``_tmp/panel_member/year=YYYY.parquet``
-``assemble``    per year: joins identity, fundamentals, SIC industry, FINRA short interest and
+``assemble``    per month: joins identity, fundamentals, SIC industry, FINRA short interest and
                 short volume (each optional: a missing stage leaves its columns NULL and is
-                recorded in the manifest). -> ``panel/year=YYYY/panel.parquet``
+                recorded in the manifest). -> ``<out stage>/year=YYYY/panel-MM.parquet``
+
+Bindings (flag > environment > default; recorded in the manifest's ``bindings``):
+* output stage ``--out-stage`` / ``ATX_PANEL_STAGE`` (default ``panel``; must start with ``panel``). Only
+  ``assemble`` and the manifest follow it; its month scratch databases are ``_tmp/<out stage>_YYYY_MM.duckdb``.
+  ``core`` / ``membership`` write the shared spine (``_tmp/panel_core``, ``_tmp/panel_member``, read by other
+  stages too) and therefore run only with the ``panel`` stage.
+* fundamentals ``--fund-stage`` / ``ATX_PANEL_FUND_STAGE`` (default ``fundamentals_v10``): ``events.parquet`` and
+  ``sic_events.parquet`` of that stage.
+* issuer links ``--link-table`` / ``ATX_PANEL_LINK_TABLE`` (default ``identity/link_table_v3.parquet``).
 
 Rules:
 * ``member`` (research-prior63-usd-adv-topn-v1): at session d rank lines by mean dollar volume
@@ -23,18 +32,25 @@ Rules:
   exceeds 3 x shares_out or visible short interest exceeds 5 x shares_out.
 * Issuer fields are attached to every line linked to the CIK (``is_issuer_primary`` marks the issuer's
   most liquid line that day by prior 63-session dollar volume, ties by security_id; consumers that
-  want one line per issuer mask the others); an event is visible at d when
-  ``clock_utc`` < 22:00 UTC of session d-1; items are stale (NULL) when d - period_end > 400
-  days (``sue``: 200 days). SIC industry: latest SIC event with the same clock rule, 550-day
-  staleness. ``me_company`` sums ``shares_out x raw_close`` over every line linked to the CIK.
+  want one line per issuer mask the others); an event is visible at d when its visibility clock
+  < 22:00 UTC of session d-1 (``available_at`` of fundamentals v10, which is >= the filing clock for FX-converted
+  events; ``clock_utc`` for a stage without it); ``fund_clock`` is that clock. Items are every events column but the
+  event keys and the v10 event metadata (``EVENT_META_COLUMNS``); they are stale (NULL) when d - period_end > 400
+  days (``sue``: 200 days); ``fx_converted`` (USD-converted money items) follows the items' staleness. SIC
+  industry: latest SIC event with the same clock rule, 550-day staleness. ``me_company`` sums
+  ``shares_out x raw_close`` over every line linked to the CIK.
 * Vendor earnFlag is unreliable (owner ruling 2026-09-28): it drives nothing. ``earn_recent_vendor``,
   ``earn_flag_vendor`` and ``is_operating_vendor`` are carried for audit only. ``earn_recent`` is 1 on the reaction
   session of an SEC 8-K Item 2.02 announcement of the linked issuer and on the session after it (NULL when unlinked);
   ``is_operating`` = an equity-type line (security master) that is not an ETP, SPAC, preferred, unit, warrant, right,
   note or index line, whose linked issuer filed a periodic report within 400 days (unlinked lines of equity type are
   kept); ``member_equity`` = member and is_operating.
-* Links come from ``identity/link_table.parquet`` and are used once known (strict / name: ``available_at`` <= the
-  session's 22:00 UTC mark; backfill: ``evidence_at``).
+* Links come from the link table's point-in-time tiers only (``PIT_LINK_TIERS``: strict, dated, name), each used
+  once known (``available_at`` <= the session's 22:00 UTC mark). The snapshot ``backfill`` tier is never used for
+  issuer joins (survivorship): a line linked only by it is unlinked (``cik`` NULL). ``link_tier`` and ``link_basis``
+  (the table's ``basis``) are carried.
+* Layout: v2 column names, order and types; v3 appends ``APPENDED_COLUMNS`` (``fx_converted``, ``link_basis``)
+  after ``is_issuer_primary``.
 * As-of producer outputs (``ASOF_SOURCES``): value visible at d when its clock < 22:00 UTC of session d-1.
 * ``si_shares``/``si_dtc``: latest settlement with dissemination_date < d, age <= 45 days.
 * Short volume for trade date T is visible from the next session: ``sv_*`` at d are T = d-1.
@@ -43,8 +59,11 @@ Rules:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
+import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -68,11 +87,50 @@ SIC_STALE_DAYS = 550
 SI_STALE_DAYS = 45
 OPERATING_DAYS = 400  # core's is_operating (panel column is_operating_vendor, audit only): vendor earnFlag 0 day within 400 days
 INDEX_ID_MIN = 1_000_000_000_000  # vendor index namespace (NDX 1001001001003, RUT, DJX, ...)
+# v3 keeps the v2 schema id: names and types are unchanged, columns are only appended (the stagelake registry
+# checks the id); the manifest's ``bindings`` records the inputs and the appended columns
 PANEL_SCHEMA = "atx.alpha-panel.panel/v2"
-# stage manifests the assembled panel reads besides ASOF_SOURCES (their SHA-256 is bound in the panel manifest)
-INPUT_MANIFESTS = ("prices/manifest.json", "identity/link_table_manifest.json", "fundamentals/manifest.json",
-                   "short_interest/manifest.json", "short_volume/manifest.json", "security_master/manifest.json",
-                   "earnings_calendar/manifest.json")
+# stage manifests the assembled panel reads besides the bound link table / fundamentals and ASOF_SOURCES
+# (their SHA-256 is bound in the panel manifest)
+INPUT_MANIFESTS = ("prices/manifest.json", "short_interest/manifest.json", "short_volume/manifest.json",
+                   "security_master/manifest.json", "earnings_calendar/manifest.json")
+
+OUT_STAGE_ENV = "ATX_PANEL_STAGE"
+FUND_STAGE_ENV = "ATX_PANEL_FUND_STAGE"
+LINK_TABLE_ENV = "ATX_PANEL_LINK_TABLE"
+DEFAULT_OUT_STAGE = "panel"
+DEFAULT_FUND_STAGE = "fundamentals_v10"
+DEFAULT_LINK_TABLE = "identity/link_table_v3.parquet"
+PIT_LINK_TIERS = ("strict", "dated", "name")  # never 'backfill' (a snapshot tier: survivorship)
+APPENDED_COLUMNS = ("fx_converted", "link_basis")  # v3 columns after the v2 layout, in this order
+
+
+@dataclass(frozen=True)
+class Bindings:
+    """Output stage and the bound inputs (paths relative to the build root)."""
+
+    out_stage: str = DEFAULT_OUT_STAGE
+    fund_stage: str = DEFAULT_FUND_STAGE
+    link_table: str = DEFAULT_LINK_TABLE
+
+    def link_manifest(self) -> str:
+        """``identity/link_table_v3.parquet`` -> ``identity/link_table_v3_manifest.json``."""
+        p = Path(self.link_table)
+        return (p.parent / f"{p.stem}_manifest.json").as_posix()
+
+    def input_manifests(self) -> tuple[str, ...]:
+        return (INPUT_MANIFESTS[0], self.link_manifest(), f"{self.fund_stage}/manifest.json", *INPUT_MANIFESTS[1:])
+
+
+def bindings(out_stage: str | None = None, fund_stage: str | None = None,
+             link_table: str | None = None) -> Bindings:
+    """Resolve each binding: explicit argument, else its environment variable, else the default."""
+    b = Bindings(out_stage or os.environ.get(OUT_STAGE_ENV) or DEFAULT_OUT_STAGE,
+                 fund_stage or os.environ.get(FUND_STAGE_ENV) or DEFAULT_FUND_STAGE,
+                 link_table or os.environ.get(LINK_TABLE_ENV) or DEFAULT_LINK_TABLE)
+    if not re.fullmatch(r"panel\w*", b.out_stage):
+        raise ValueError(f"output stage {b.out_stage!r}: must be a stage name starting with 'panel'")
+    return b
 
 FUND_ITEMS = (
     "at", "lt", "che", "debt", "be", "seq", "sale_q", "sale_ttm", "cogs_ttm", "xsga_ttm", "gp_ttm", "oi_ttm",
@@ -214,12 +272,25 @@ def membership_year(con, year: int) -> dict[str, Any]:
 
 EVENT_KEY_COLUMNS = frozenset({"cik", "accession", "form", "filed", "clock_utc", "clock_basis", "period_end",
                                "fiscal_year", "fiscal_period", "sue"})
+# fundamentals v10 per-event metadata: not panel items (``available_at`` is the as-of clock, ``fx_converted`` is
+# appended to the panel as APPENDED_COLUMNS, the rest stay in the stage)
+EVENT_META_COLUMNS = frozenset({"available_at", "fx_converted", "fx_rate", "fx_rate_avg_q", "fx_rate_avg_ttm",
+                                "is_amendment", "is_restated", "restated_items", "nonreliance_402_at"})
+
+
+def file_columns(con, path: Path) -> list[str]:
+    return [c[0] for c in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path.as_posix()}')").fetchall()]
 
 
 def event_items(con, events: Path) -> list[str]:
-    """Every item column of the fundamentals events file (all columns but the event keys), in file order."""
-    cols = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{events.as_posix()}')").fetchall()
-    return [c[0] for c in cols if c[0] not in EVENT_KEY_COLUMNS]
+    """Every item column of the fundamentals events file (all columns but the event keys and the v10 event
+    metadata), in file order."""
+    return [c for c in file_columns(con, events) if c not in EVENT_KEY_COLUMNS | EVENT_META_COLUMNS]
+
+
+def visibility_clock(columns: list[str]) -> str:
+    """The as-of clock of an issuer event file: ``available_at`` (fundamentals v10) else ``clock_utc``."""
+    return "available_at" if "available_at" in columns else "clock_utc"
 
 
 # U3 flags, evaluated over the assembled row ``y`` (DuckDB resolves earlier aliases of the same SELECT list).
@@ -391,6 +462,14 @@ _ALIAS = re.compile(r"\b(lk|fq|sq|sij|svv|fnm|sml|ernj|src_\w+)\.")
 _OUT_NAME = re.compile(r'(?:\bAS\s+"?(\w+)"?|\.(\w+))\s*$')
 
 
+def _out_name(expr: str) -> str:
+    """Output column name of a select item (``... AS name`` or ``alias.name``)."""
+    m = _OUT_NAME.search(expr.strip())
+    if m is None:
+        raise ValueError(f"select item without an output name: {expr!r}")
+    return m.group(1) or m.group(2)
+
+
 def join_rows(con, base_cols: str, select_extra: list[str], joins: list[str]) -> None:
     """Table ``x`` = base columns + every select_extra column, adding one joined table at a time (each step is a
     disk-backed table, so no step holds more than one join's hash table)."""
@@ -399,7 +478,7 @@ def join_rows(con, base_cols: str, select_extra: list[str], joins: list[str]) ->
     for it in select_extra:  # an item goes to the step of the last-joined table it reads
         found = [a for a in _ALIAS.findall(it) if a in order]
         items.setdefault(max(found, key=order.get) if found else "", []).append(it)
-    names = [(_OUT_NAME.search(it.strip()).group(1) or _OUT_NAME.search(it.strip()).group(2)) for it in select_extra]
+    names = [_out_name(it) for it in select_extra]
     con.execute("CREATE OR REPLACE TABLE x0 AS SELECT b.* RENAME (earn_recent AS earn_recent_vendor, "
                 "earn_flag AS earn_flag_vendor, is_operating AS is_operating_vendor), "
                 f"{', '.join(items.get('', []) or ['NULL AS _none'])} FROM base b")
@@ -426,23 +505,25 @@ def _exists(path: Path) -> bool:
     return path.exists() and any(path.parent.glob(path.name)) if "*" in path.name else path.exists()
 
 
-def assemble_month(con, year: int, month: int) -> dict[str, Any]:
+def assemble_month(con, year: int, month: int, bind: Bindings | None = None) -> dict[str, Any]:
+    bind = bind or bindings()
     root = C.build_root()
-    dest = C.stage_dir("panel") / f"year={year}" / f"panel-{month:02d}.parquet"
+    dest = C.stage_dir(bind.out_stage) / f"year={year}" / f"panel-{month:02d}.parquet"
     core = (root / "_tmp" / "panel_core").as_posix() + "/*.parquet"
     member = (root / "_tmp" / "panel_member" / f"year={year}.parquet").as_posix()
-    link_table = root / "identity" / "link_table.parquet"
-    links = root / "identity" / "links_combined.parquet"
+    link_table = root / bind.link_table
+    links = root / "identity" / "links_combined.parquet"  # legacy fallback when the link table is absent
     if not links.exists():
         links = root / "identity" / "links.parquet"
-    events = root / "fundamentals" / "events.parquet"
-    sic = root / "fundamentals" / "sic_events.parquet"
+    events = root / bind.fund_stage / "events.parquet"
+    sic = root / bind.fund_stage / "sic_events.parquet"
     si = root / "short_interest" / "si.parquet"
     sv_dir = root / "short_volume"
+    linked = link_table.exists() or links.exists()
     have = {
-        "identity": links.exists(),
-        "fundamentals": events.exists() and links.exists(),
-        "industry": sic.exists() and links.exists(),
+        "identity": linked,
+        "fundamentals": events.exists() and linked,
+        "industry": sic.exists() and linked,
         "short_interest": si.exists(),
         "short_volume": sv_dir.exists() and any(sv_dir.glob("*/*.parquet")),
         "security_master": (root / "security_master" / "manifest.json").exists(),
@@ -464,59 +545,71 @@ def assemble_month(con, year: int, month: int) -> dict[str, Any]:
     ]
     select_extra: list[str] = []
     joins: list[str] = []
+    appended: list[str] = []  # APPENDED_COLUMNS expressions (moved to the end of the layout at the final select)
     if have["identity"]:
         if link_table.exists():
-            # a link is used at session d once it is known (backfill: once its dated evidence exists)
-            gate = ("(CASE WHEN l.link_tier = 'backfill' THEN l.evidence_at ELSE l.available_at END) "
-                    f"<= CAST(b.session_date AS TIMESTAMP) + INTERVAL {C.MARK_HOUR_UTC} HOUR")
+            # point-in-time tiers only; a link is used at session d once it is known (available_at <= d's mark)
+            tiers = ", ".join(f"'{t}'" for t in PIT_LINK_TIERS)
             ctes.append(
-                f"""lk AS (SELECT b.session_date, b.security_id, l.cik, l.link_tier, l.share_class AS link_share_class
+                f"""lk AS (SELECT b.session_date, b.security_id, l.cik, l.link_tier, l.share_class AS link_share_class,
+                                  l.basis AS link_basis
                     FROM base b JOIN (SELECT * FROM read_parquet('{link_table.as_posix()}')
-                                      WHERE valid_from <= {hi} AND valid_to >= {lo}) l
+                                      WHERE link_tier IN ({tiers}) AND valid_from <= {hi} AND valid_to >= {lo}) l
                       ON b.security_id = l.security_id AND b.session_date BETWEEN l.valid_from AND l.valid_to
-                    WHERE {gate})"""
+                    WHERE l.available_at <= CAST(b.session_date AS TIMESTAMP) + INTERVAL {C.MARK_HOUR_UTC} HOUR)"""
             )
         else:
             ctes.append(
                 f"""lk AS (SELECT b.session_date, b.security_id, l.cik,
-                           CASE WHEN l.tier IN ('backfill', 'name') THEN l.tier ELSE 'strict' END AS link_tier,
-                           CAST(NULL AS VARCHAR) AS link_share_class
+                           CASE WHEN l.tier = 'name' THEN l.tier ELSE 'strict' END AS link_tier,
+                           CAST(NULL AS VARCHAR) AS link_share_class, CAST(NULL AS VARCHAR) AS link_basis
                     FROM base b JOIN read_parquet('{links.as_posix()}') l
-                      ON b.security_id = l.security_id AND b.session_date BETWEEN l.start AND l.end_incl)"""
+                      ON b.security_id = l.security_id AND b.session_date BETWEEN l.start AND l.end_incl
+                    WHERE l.tier IS DISTINCT FROM 'backfill')"""
             )
         ctes.append("bk AS (SELECT b.*, lk.cik FROM base b LEFT JOIN lk USING (session_date, security_id))")
         joins.append("LEFT JOIN lk USING (session_date, security_id)")
         select_extra += ["lk.cik", "lk.link_tier", "lk.link_share_class"]
+        appended.append("lk.link_basis")
     else:
         ctes.append("bk AS (SELECT b.*, CAST(NULL AS BIGINT) AS cik FROM base b)")
         select_extra += ["CAST(NULL AS BIGINT) AS cik", "CAST(NULL AS VARCHAR) AS link_tier",
                          "CAST(NULL AS VARCHAR) AS link_share_class"]
+        appended.append("CAST(NULL AS VARCHAR) AS link_basis")
     fund_items = event_items(con, events) if have["fundamentals"] else list(FUND_ITEMS)
     if have["fundamentals"]:
+        ecols = file_columns(con, events)
+        clock = visibility_clock(ecols)
+        fx = '"fx_converted"' if "fx_converted" in ecols else "CAST(NULL AS BOOLEAN)"
         items = ", ".join(f'e."{c}"' for c in fund_items)
         ctes.append(
-            f"""ev AS (SELECT cik, clock_utc, period_end, sue, form, clock_basis, {", ".join(f'"{c}"' for c in fund_items)}
+            f"""ev AS (SELECT cik, "{clock}" AS vis_clock, period_end, sue, form, clock_basis, {fx} AS fx_converted,
+                              {", ".join(f'"{c}"' for c in fund_items)}
                        FROM read_parquet('{events.as_posix()}')
-                       QUALIFY row_number() OVER (PARTITION BY cik, clock_utc ORDER BY period_end DESC, accession DESC) = 1),
-                fq AS (SELECT b.session_date, b.security_id, e.clock_utc AS fund_clock, e.period_end AS fund_period_end,
-                              e.sue AS sue_raw, e.form AS fund_form, e.clock_basis AS fund_clock_basis, {items}
+                       QUALIFY row_number() OVER (PARTITION BY cik, "{clock}" ORDER BY period_end DESC, accession DESC) = 1),
+                fq AS (SELECT b.session_date, b.security_id, e.vis_clock AS fund_clock, e.period_end AS fund_period_end,
+                              e.sue AS sue_raw, e.form AS fund_form, e.clock_basis AS fund_clock_basis,
+                              e.fx_converted AS fund_fx_converted, {items}
                        FROM (SELECT b.*, lk.cik FROM base b JOIN lk USING (session_date, security_id)) b
-                       ASOF JOIN ev e ON b.cik = e.cik AND b.issuer_cutoff > e.clock_utc)"""
+                       ASOF JOIN ev e ON b.cik = e.cik AND b.issuer_cutoff > e.vis_clock)"""
         )
         joins.append("LEFT JOIN fq USING (session_date, security_id)")
         stale = f"(b.session_date - fq.fund_period_end) <= {FUND_STALE_DAYS}"
         select_extra += ["fq.fund_clock", "fq.fund_period_end", "fq.fund_form", "fq.fund_clock_basis"]
         select_extra += [f'CASE WHEN {stale} THEN fq."{c}" END AS "{c}"' for c in fund_items]
         select_extra.append(f"CASE WHEN (b.session_date - fq.fund_period_end) <= {SUE_STALE_DAYS} THEN fq.sue_raw END AS sue")
+        appended.insert(0, f"CASE WHEN {stale} THEN fq.fund_fx_converted END AS fx_converted")
     else:
         select_extra += [f'CAST(NULL AS DOUBLE) AS "{c}"' for c in (*FUND_ITEMS, "sue")]
+        appended.insert(0, "CAST(NULL AS BOOLEAN) AS fx_converted")
     if have["industry"]:
+        sclock = visibility_clock(file_columns(con, sic))
         ctes.append(
-            f"""sq AS (SELECT b.session_date, b.security_id, s.clock_utc AS sic_clock, s.sic, s.sic2, s.ff12, s.ff49
+            f"""sq AS (SELECT b.session_date, b.security_id, s.vis_clock AS sic_clock, s.sic, s.sic2, s.ff12, s.ff49
                        FROM (SELECT b.*, lk.cik FROM base b JOIN lk USING (session_date, security_id)) b
-                       ASOF JOIN (SELECT * FROM read_parquet('{sic.as_posix()}')
-                                  QUALIFY row_number() OVER (PARTITION BY cik, clock_utc ORDER BY sic) = 1) s
-                         ON b.cik = s.cik AND b.issuer_cutoff > s.clock_utc)"""
+                       ASOF JOIN (SELECT *, "{sclock}" AS vis_clock FROM read_parquet('{sic.as_posix()}')
+                                  QUALIFY row_number() OVER (PARTITION BY cik, "{sclock}" ORDER BY sic) = 1) s
+                         ON b.cik = s.cik AND b.issuer_cutoff > s.vis_clock)"""
         )
         joins.append("LEFT JOIN sq USING (session_date, security_id)")
         fresh = f"(b.issuer_cutoff - sq.sic_clock) <= INTERVAL {SIC_STALE_DAYS} DAY"
@@ -605,6 +698,8 @@ def assemble_month(con, year: int, month: int) -> dict[str, Any]:
     src_cols, src_have = asof_sources(con, ctes, joins, root, lo, hi)
     select_extra += src_cols
     have.update(src_have)
+    assert [_out_name(a) for a in appended] == list(APPENDED_COLUMNS)
+    select_extra += appended
 
     materialize(con, ctes)
     base_cols = """b.session_date, b.security_id, b.ticker, b.member, b.adv_rank, b.adv63, b.mkt_ret,
@@ -633,13 +728,14 @@ def assemble_month(con, year: int, month: int) -> dict[str, Any]:
         FROM (SELECT session_date, security_id, cik, shares_out, raw_close, adv63 FROM y WHERE cik IS NOT NULL)
     """)
     pre = f"""
-    SELECT y.*, y.shares_out * y.raw_close AS me_line,
+    SELECT y.* EXCLUDE ({", ".join(APPENDED_COLUMNS)}), y.shares_out * y.raw_close AS me_line,
            CASE WHEN y.open > 0 AND y.raw_close > 0 THEN y.raw_close / y.open - 1 END AS ret_intraday,
            CASE WHEN y.open > 0 AND y.raw_close > 0 AND NOT y.ret_guarded
                 THEN (1 + y.ret) / (y.raw_close / y.open) - 1 END AS ret_overnight,
            {SECURITY_FLAGS},
            {OPERATING_FLAGS},
-           iss.me_company, iss.is_issuer_primary
+           iss.me_company, iss.is_issuer_primary,
+           {", ".join(f"y.{c}" for c in APPENDED_COLUMNS)}
     FROM y LEFT JOIN iss USING (session_date, security_id)
     ORDER BY session_date, security_id
     """
@@ -647,8 +743,12 @@ def assemble_month(con, year: int, month: int) -> dict[str, Any]:
     return {"rows": rows, "inputs": have}
 
 
-def run(stages: list[str], years: list[int]) -> dict[str, Any]:
-    receipt: dict[str, Any] = {"stage": "panel"}
+def run(stages: list[str], years: list[int], bind: Bindings | None = None) -> dict[str, Any]:
+    bind = bind or bindings()
+    if bind.out_stage != DEFAULT_OUT_STAGE and {"core", "membership"} & set(stages):
+        raise ValueError(f"stages core/membership rewrite the shared spine (_tmp/panel_core, _tmp/panel_member); "
+                         f"run them with the {DEFAULT_OUT_STAGE!r} stage, not {bind.out_stage!r}")
+    receipt: dict[str, Any] = {"stage": bind.out_stage}
     con = C.connect(memory="600MB", threads=1 if "assemble" in stages else 2)
     if "core" in stages:
         with C.timed(receipt, "core"):
@@ -661,7 +761,8 @@ def run(stages: list[str], years: list[int]) -> dict[str, Any]:
         with C.timed(receipt, "assemble"):
             receipt["assemble"] = {}
             for y in years:
-                ydir = C.stage_dir("panel") / f"year={y}"
+                t0 = time.perf_counter()
+                ydir = C.stage_dir(bind.out_stage) / f"year={y}"
                 for old in ydir.glob("panel.parquet"):
                     old.unlink()  # superseded single-file layout
                 months = {}
@@ -670,32 +771,35 @@ def run(stages: list[str], years: list[int]) -> dict[str, Any]:
                         WHERE year(session_date) = {y} AND month(session_date) = {mth}""").fetchone()[0]
                     if has:
                         # fresh file-backed scratch database per month: every join step is materialised and spills
-                        name = f"panel_{y}_{mth:02d}.duckdb"
+                        name = f"{bind.out_stage}_{y}_{mth:02d}.duckdb"
                         mcon = C.connect(memory="450MB", threads=1, db_file=name)
                         try:
-                            months[str(mth)] = assemble_month(mcon, y, mth)
+                            months[str(mth)] = assemble_month(mcon, y, mth, bind)
                         finally:
                             mcon.close()
                             for f in (C.build_root() / "_tmp").glob(name + "*"):
                                 f.unlink(missing_ok=True)
                 receipt["assemble"][str(y)] = {"rows": sum(v["rows"] for v in months.values()),
-                                               "inputs": next(iter(months.values()))["inputs"] if months else {}}
+                                               "inputs": next(iter(months.values()))["inputs"] if months else {},
+                                               "seconds": round(time.perf_counter() - t0, 1)}
                 print(y, receipt["assemble"][str(y)], flush=True)
-    manifest = C.stage_dir("panel") / "manifest.json"
+    manifest = C.stage_dir(bind.out_stage) / "manifest.json"
     prior = C.read_json(manifest) if manifest.exists() else {}
     for k in ("schema", "status", "stage", "code", "files"):
         prior.pop(k, None)
     for k, v in receipt.items():  # per-year receipts merge, so year ranges can be assembled by separate runs
         prior[k] = {**prior.get(k, {}), **v} if k in ("assemble", "membership", "timings_s") else v
     prior["rules"] = __doc__
+    prior["bindings"] = {**asdict(bind), "link_tiers": list(PIT_LINK_TIERS), "appended_columns": list(APPENDED_COLUMNS),
+                         "spine": ["_tmp/panel_core", "_tmp/panel_member"]}
     root = C.build_root()
     inputs = {}
-    for rel in INPUT_MANIFESTS + tuple(f"{s['stage']}/manifest.json" for s in ASOF_SOURCES):
+    for rel in bind.input_manifests() + tuple(f"{s['stage']}/manifest.json" for s in ASOF_SOURCES):
         p = root / rel
         if p.exists() and rel not in inputs:
             inputs[rel] = C.sha256_file(p)
     prior["input_manifests_sha256"] = inputs
-    C.write_stage_manifest("panel", PANEL_SCHEMA, ("panel", "common"), prior)
+    C.write_stage_manifest(bind.out_stage, PANEL_SCHEMA, ("panel", "common"), prior)
     return receipt
 
 
@@ -703,10 +807,17 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--stages", default="core,membership,assemble")
     ap.add_argument("--years", default="2018-2026")
+    ap.add_argument("--out-stage", default=None,
+                    help=f"output stage (else ${OUT_STAGE_ENV}, else {DEFAULT_OUT_STAGE}); assemble + manifest only")
+    ap.add_argument("--fund-stage", default=None,
+                    help=f"fundamentals stage (else ${FUND_STAGE_ENV}, else {DEFAULT_FUND_STAGE})")
+    ap.add_argument("--link-table", default=None,
+                    help=f"link table under the build root (else ${LINK_TABLE_ENV}, else {DEFAULT_LINK_TABLE})")
     args = ap.parse_args(argv)
     a, _, b = args.years.partition("-")
     years = list(range(int(a), int(b or a) + 1))
-    run([s.strip() for s in args.stages.split(",") if s.strip()], years)
+    run([s.strip() for s in args.stages.split(",") if s.strip()], years,
+        bindings(args.out_stage, args.fund_stage, args.link_table))
     return 0
 
 

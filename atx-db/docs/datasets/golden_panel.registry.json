@@ -1,0 +1,13 @@
+{
+  "as_of_macro_sql": "SELECT session_date,security_id,\"<field>\" FROM read_parquet(<explicit admitted immutable panel paths>) WHERE \"<field>_source_at\" < available_at AND available_at < <cutoff>",
+  "field_clock_contract": "golden_field_registry.json; exact selected field and strict GC1 materialization cutoff",
+  "keys": [
+    "session_date",
+    "security_id"
+  ],
+  "path": "golden_panel/generations/<independently-reviewed-generation>",
+  "schema_id": "atx.golden-panel/v1",
+  "source_quality_certified": false,
+  "stage": "golden_panel",
+  "status": "REGISTRATION_ONLY_ACTUAL_PUBLICATION_PENDING"
+}

@@ -5,6 +5,7 @@
 #include <limits>
 #include <memory>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -418,8 +419,11 @@ struct NavReplayResult {
 // (adv_hold_q > 0) a capacity book's cap reads its multiple's NAV, m x initial_nav (P9 C1, the
 // NAV-m book's cap): each multiple then forms its own construction (one lockstep per multiple,
 // x1 with the main books).
+// Cooperative cancellation is checked before validation and at session boundaries;
+// cancellation returns ErrorCode::Cancelled without publishing a partial result.
 [[nodiscard]] atx::core::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
-    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios);
+    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios,
+    std::stop_token stop = {});
 
 // ---- per-name holdings of one book (--emit-holdings, v7 B3) ----
 // EXECUTE outcome of one name's working order at session t.
@@ -474,7 +478,7 @@ public:
 // Observation only: every result is bit-identical to the overload without a sink.
 [[nodiscard]] atx::core::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
     const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios,
-    NavHoldingsSink& sink, atx::usize observed);
+    NavHoldingsSink& sink, atx::usize observed, std::stop_token stop = {});
 
 // Construction grid (v8 D-1): every variant runs every scenario, all variants x scenarios
 // books in lockstep over the one input with ONE shared construction per decision (the
@@ -692,7 +696,8 @@ struct NavEmitOptions {
                                                const NavRateOptions& rate,
                                                const NavExecutionOptions& execution,
                                                const NavEmitOptions& emit,
-                                               std::ostream& progress);
+                                               std::ostream& progress,
+                                               std::stop_token stop = {});
 // argv[0] is the "nav" verb. Rejects --one-way-bps / --annual-borrow-bps.
 // --fields PATH/manifest.json --fields-sha256 SHA enables the financing matrix.
 // --rate fixed|per-name-v1 is refused (usage error) unless --rule aim-partial-v5, and

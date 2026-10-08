@@ -11,6 +11,36 @@ import duckdb
 from atx_db.alpha_panel import insider_measures as M
 
 
+def test_price_sanity_boundaries_ambiguous_class_and_close_clock(tmp_path):
+    con = duckdb.connect()
+    p = tmp_path / "prices.parquet"
+    con.execute("""CREATE TABLE p AS SELECT * FROM (VALUES
+        (1, 101, DATE '2020-05-01', 10.0),
+        (2, 201, DATE '2020-05-01', 10.0),
+        (2, 202, DATE '2020-05-01', 20.0))
+        v(cik, security_id, session_date, raw_close)""")
+    con.execute(f"COPY p TO '{p.as_posix()}' (FORMAT parquet)")
+    trades = """SELECT * FROM (VALUES
+        (1, DATE '2020-05-01', 3.0, 100.0, 300.0, NULL),
+        (1, DATE '2020-05-01', 2.0, 100.0, 200.0, TIMESTAMPTZ '2020-05-01 12:00:00Z'),
+        (1, DATE '2020-05-01', 50.0, 100.0, 5000.0, TIMESTAMPTZ '2020-05-02 12:00:00Z'),
+        (1, DATE '2020-05-01', 50.1, 100.0, 5010.0, TIMESTAMPTZ '2020-05-02 12:00:00Z'),
+        (2, DATE '2020-05-01', 10.0, 100.0, 1000.0, TIMESTAMPTZ '2020-05-02 12:00:00Z'))
+        v(issuer_cik, transaction_date, price, shares, value, available_at)"""
+    result = con.execute(M.price_sanity_sql(trades, p.as_posix())).fetchall()
+    columns = [c[0] for c in con.description]
+    rows = [dict(zip(columns, row)) for row in result]
+    by_price = {(r["issuer_cik"], float(r["price"])): r for r in rows}
+    assert by_price[(1, 3)]["available_at"] is None
+    assert by_price[(1, 3)]["value"] == 300
+    assert by_price[(1, 2)]["value"] == 200
+    assert by_price[(1, 50)]["value"] == 5000
+    assert by_price[(1, 50.1)]["value"] is None
+    assert by_price[(2, 10)]["price_sanity"] == "close_missing_or_ambiguous"
+    assert by_price[(1, 2)]["available_at"].astimezone(dt.UTC).hour == 22
+    con.close()
+
+
 def test_cmp_label_python() -> None:
     routine = {(2016, 3), (2017, 3), (2018, 3), (2018, 7)}
     assert M.cmp_label(routine, 2019) == "routine"
@@ -77,11 +107,12 @@ def test_monthly_net_buying(tmp_path: Path) -> None:
     out = [dict(zip(cols, r, strict=True)) for r in res]
     assert [(r["issuer_cik"], r["month"]) for r in out] == [(10, dt.date(2024, 3, 1)), (10, dt.date(2024, 4, 1))]  # 2018 dropped
     m = out[0]
-    assert (m["n_buy"], m["n_sell"], m["net_shares"], m["net_value"]) == (2, 1, 120.0, 400.0)
+    assert (m["n_buy"], m["n_sell"], m["net_shares"], m["net_value"]) == (2, 1, 120.0, None)
     assert (m["n_buyers"], m["n_sellers"]) == (2, 1)
     assert (m["opp_n_buy"], m["opp_n_sell"], m["opp_net_value"], m["opp_net_buyers"]) == (1, 1, 400.0, 0)
-    assert (m["rtn_n_buy"], m["rtn_net_value"]) == (1, 0.0)                 # value unknown (no price) -> 0 in sums
-    assert (m["od_n_buy"], m["od_n_sell"], m["od_net_value"]) == (2, 0, 1000.0)
+    assert (m["rtn_n_buy"], m["rtn_net_value"]) == (1, None)                # present trade with unknown value stays unknown
+    assert (m["od_n_buy"], m["od_n_sell"], m["od_net_value"]) == (2, 0, None)
+    assert m["n_value_missing"] == 1
     assert m["share_10b5_1"] == 0.5 and m["available_at"] == base + dt.timedelta(days=2)
     assert out[1]["net_shares"] == -10.0
     assert list(itertools.chain(cols))[-1] == "cmp_rule"

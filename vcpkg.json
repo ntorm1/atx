@@ -8,5 +8,11 @@
     "openssl",
     "gtest"
   ],
-  "builtin-baseline": "9e9398f90a6c386bbd6ed89714ddb036b2e969eb"
+  "builtin-baseline": "9e9398f90a6c386bbd6ed89714ddb036b2e969eb",
+  "features": {
+    "server": {
+      "description": "Persistent gRPC research workspace service",
+      "dependencies": ["grpc"]
+    }
+  }
 }

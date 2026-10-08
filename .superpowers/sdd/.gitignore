@@ -1,0 +1,17 @@
+*
+!.gitignore
+
+# Runtime helpers and compatibility paths still used by maintained code/tests.
+!tier1-parity/
+tier1-parity/*
+!tier1-parity/run_memory_guarded.py
+!tier1-parity/rebuild_candidate_target_index.py
+!tier1-v4/
+tier1-v4/*
+!tier1-v4/t5-publish.py
+!tier1-v4/t4-r2-sourcecheck.py
+!mega-alpha-20260926/
+mega-alpha-20260926/*
+!mega-alpha-20260926/studies/
+mega-alpha-20260926/studies/*
+!mega-alpha-20260926/studies/nav_summ.py

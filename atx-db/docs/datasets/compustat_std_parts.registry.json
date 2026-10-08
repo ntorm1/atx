@@ -1,0 +1,47 @@
+{
+  "name": "compustat_std_parts",
+  "lane": "P9 AL-data Task 8",
+  "schema": "atx.alpha-panel.compustat-std-parts/v1",
+  "module": "atx_db.alpha_panel.compustat_std_parts",
+  "args": [
+    [
+      "build"
+    ],
+    [
+      "accept"
+    ]
+  ],
+  "inputs": [
+    "compustat_std"
+  ],
+  "manifest": "compustat_std_parts/manifest.json",
+  "vintage": "vintage",
+  "guard_gb": 0.6,
+  "code": [
+    "compustat_std_parts",
+    "common"
+  ],
+  "doc": "docs/datasets/compustat_std_parts.md",
+  "outputs": [
+    {
+      "view": "funda",
+      "glob": "compustat_std_parts/parts/year=*/funda.parquet",
+      "clock": "available_at",
+      "vintage": "vintage",
+      "keys": [
+        "cik",
+        "datadate"
+      ],
+      "order": [
+        "accession"
+      ],
+      "primary_key": [
+        "cik",
+        "datadate",
+        "accession",
+        "available_at"
+      ],
+      "doc": "A pinned export of every vintage in the published v10-based annual fundamentals file, projected to the 20 B3 columns. Part files are `parts/year=YYYY/funda.parquet`, partitioned by UTC `available_at`; NULL clocks are excluded with a counted reason. Restatements and leavers remain. Existing stages are never replaced."
+    }
+  ]
+}

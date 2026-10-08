@@ -193,9 +193,8 @@ TEST(DeflateSelection, PriorTrialCountDeflatesSearchSelection) {
   EXPECT_LT(r_big.best_fitness_per_gen.front(), r_n0.best_fitness_per_gen.front())
       << "prior_trial_count=100000 must STRICTLY deflate gen-0's best fitness vs "
          "prior_trial_count=0 (identical gen-0 population; only the dsr haircut differs)";
-  // The two runs must not be byte-identical overall (the running-N wire changed
-  // the selection signal from gen 0 onward, hence generally the digest too).
-  EXPECT_NE(r_n0.digest, r_big.digest);
+  // Scores must differ, but order can remain unchanged: the digest covers
+  // evaluated signals and is not required to change when DSR alone changes.
 }
 
 // ---------------------------------------------------------------------------
@@ -375,6 +374,12 @@ TEST(DeflateSelection, VersionedCheckpointRefreshesWithoutRepeatingBacktests) {
   cfg.n_workers = 4;
   const auto resumed = fx.driver().run(cfg, AlphaStore{}, &resumed_sink, &resume);
   ASSERT_FALSE(resumed.fitness_cache_resume_mismatch);
+  for (const auto &cp : resumed_sink.seen) {
+    EXPECT_EQ(cp.population, full_sink.seen[cp.generation].population)
+        << "population entering generation " << cp.generation;
+    EXPECT_EQ(cp.n_evaluated, full_sink.seen[cp.generation].n_evaluated)
+        << "trials after generation " << cp.generation;
+  }
   EXPECT_EQ(full.digest, resumed.digest);
   EXPECT_EQ(full.best_fitness_per_gen, resumed.best_fitness_per_gen);
   EXPECT_EQ(candidate_order(full), candidate_order(resumed));

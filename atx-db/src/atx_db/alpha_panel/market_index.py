@@ -1,7 +1,8 @@
 """Stage ``market_index`` (S3 market returns): CRSP-style value- and equal-weight index returns, plus the S3 exit
 checks against the French library -> ``market/index_returns.parquet`` and ``validation/factors_market.json``.
 
-Universes, per session, from the panel (read only):
+Universes, per session, from the frozen panel, NULL exchanges repaired from dated fresh FINRA evidence (T1-b).
+Aggregate-return input rows and output periods are bounded by --end <= 2022-12-31 (R5):
 
 * ``member_common``: ``member_equity`` and a CRSP share-code 10/11-like common stock: ``security_type`` common or
   common_unverified, not an ADR (``is_adr`` / ``is_adr_likely``), foreign private issuer (``is_fpi``), REIT,
@@ -28,6 +29,12 @@ Exit checks (ruling D6: windows end 2022-12-31; ``--end`` cannot be later):
   then), ME = December t-1 (the first 2018 session stands in for December 2017, before the panel). Six value-weight
   portfolios (weights: firm ME at the end of the previous month) are held July t to June t+1; SMB = mean(small) -
   mean(big), HML = mean(SH, BH) - mean(SL, BL). Correlation with French SMB / HML (FF3, monthly).
+* Mkt 2013-01 .. ``--end`` (tier1-v4 GC2): monthly correlation of the ``all_common`` VW return with French Mkt
+  (Mkt-RF + RF, RF added back). The stage's series from its first month (2018-02); before it, rule
+  ``crsp-index-history-v1`` on ``prices_history`` (2012-2017) and ``prices/`` sessions before the stage's first
+  month: the lines in ``all_common`` on the panel's first session (their flags stand in for 2012-2017; lines that
+  ended before the panel are absent, a survivorship gap), ME = vendor ``shares_vendor`` x raw close at the prior
+  month's last session, the month compounds ``ret`` (a guarded or missing day drops the line-month).
 """
 
 from __future__ import annotations
@@ -40,22 +47,25 @@ import sys
 from typing import Any
 
 from . import common as C
+from .security_master import listed_panel_sql
 from . import market_common as M
 
 STAGE = "market_index"
 SCHEMA = "atx.alpha-panel.market-index/v1"
 RULE = "crsp-index-v1"
-MODULES = ("market_index", "market_common", "common")
+MODULES = ("market_index", "market_common", "security_master", "common")
 OUT_DIR = "market"
 HOLDOUT_END = dt.date(2022, 12, 31)
 LISTED = ("XNYS", "XNAS", "XASE", "ARCX", "BATS")
-INPUTS = ("panel", "market/market_shares_manifest.json", "reference", "prices")
-GATES = {"mkt_rf_monthly_rho": 0.99, "smb_monthly_rho": 0.90}
+INPUTS = ("panel", "market/market_shares_manifest.json", "reference", "prices", "prices_history", "security_master")
+GATES = {"mkt_rf_monthly_rho": 0.99, "smb_monthly_rho": 0.90, "mkt_all_common_monthly_rho_2013": 0.99}
+HISTORY_START = dt.date(2013, 1, 1)
+HISTORY_RULE = "crsp-index-history-v1"
 
 LAKE_STAGES = [
     {"name": "market_index", "lane": "MKT", "schema": "atx.alpha-panel.market-index/v1",
      "module": "atx_db.alpha_panel.market_index", "args": ["build"],
-     "inputs": ["panel", "market_shares", "reference", "prices"],
+     "inputs": ["panel", "market_shares", "reference", "prices", "prices_history", "security_master"],
      "manifest": "market/market_index_manifest.json",
      "outputs": [{"glob": "market/index_returns.parquet", "view": "market_index_returns"}],
      "staleness": "daily; rebuilt with the panel", "vintage": "event", "guard_gb": 0.5},
@@ -70,8 +80,10 @@ def common_filter(alias: str = "p") -> str:
             f"AND NOT coalesce({a}.is_royalty_trust, false)")
 
 
-def load_universe(con, receipt: dict[str, Any]) -> None:
+def load_universe(con, receipt: dict[str, Any], end: dt.date = HOLDOUT_END) -> None:
     """``u``: every all_common / member_common line-session with ME, return and sort inputs (disk-backed)."""
+    if end > HOLDOUT_END:
+        raise ValueError("D6: aggregate market returns must end before 2023")
     panel = (C.build_root() / "panel" / "year=*" / "*.parquet").as_posix()
     shares = (C.build_root() / OUT_DIR / "shares_daily" / "year=*" / "shares_daily.parquet").as_posix()
     listed = ", ".join(f"'{x}'" for x in LISTED)
@@ -80,10 +92,10 @@ def load_universe(con, receipt: dict[str, Any]) -> None:
         SELECT p.session_date, p.security_id, p.cik, coalesce(p.is_issuer_primary, true) AS is_primary,
                p.exchange, p.raw_close, p.ret, coalesce(p.ret_guarded, true) AS ret_guarded,
                coalesce(p.member_equity, false) AS member_common, s.shrout, s.shrout * p.raw_close AS me
-        FROM read_parquet('{panel}', union_by_name = true, hive_partitioning = false) p
+        FROM ({listed_panel_sql(panel)}) p
         LEFT JOIN read_parquet('{shares}', hive_partitioning = false) s USING (session_date, security_id)
         WHERE {common_filter('p')} AND coalesce(p.is_operating, false) AND NOT coalesce(p.is_index, false)
-          AND p.exchange IN ({listed})
+          AND p.exchange IN ({listed}) AND p.session_date <= DATE '{end}'
     """)
     receipt["universe"] = [list(map(str, r)) for r in con.execute("""
         SELECT year(session_date), count(*), count(*) FILTER (WHERE member_common), count(me),
@@ -135,7 +147,7 @@ def monthly_sql() -> str:
 
 
 def build_index(con, receipt: dict[str, Any]) -> None:
-    con.execute(f"CREATE OR REPLACE TABLE idx AS {daily_sql()} UNION ALL {monthly_sql()}")
+    con.execute(f"CREATE OR REPLACE TABLE idx AS SELECT * FROM ({daily_sql()}) UNION ALL SELECT * FROM ({monthly_sql()})")
     last_session = con.execute("SELECT max(session_date) FROM u").fetchone()[0]
     # the running month (last session more than 4 days before its month end) is left out
     out = C.stage_dir(OUT_DIR) / "index_returns.parquet"
@@ -224,6 +236,80 @@ def ff_sorts_sql(end: dt.date) -> str:
     """
 
 
+def history_bars_sql(splice: dt.date) -> str | None:
+    """Daily bars for the pre-stage months: ``prices_history`` years and the ``prices/`` years before ``splice``."""
+    root = C.build_root()
+    files = sorted((root / "prices_history").glob("year=*/prices.parquet"))
+    files += [p for y in range(C.WARMUP_START.year, splice.year + 1)
+              for p in sorted((root / "prices" / f"year={y}").glob("prices.parquet"))]
+    if not files:
+        return None
+    lst = ", ".join(f"'{p.as_posix()}'" for p in files)
+    return (f"(SELECT security_id, session_date, close, shares_vendor, ret, ret_guarded "
+            f"FROM read_parquet([{lst}], union_by_name = true, hive_partitioning = false))")
+
+
+def history_monthly_sql(bars: str, start: dt.date, splice: dt.date) -> str:
+    """Rule ``crsp-index-history-v1``: monthly VW / EW returns, months ``start`` .. before ``splice``, of the lines in
+    ``u`` on its first session, from ``bars`` (``security_id, session_date, close, shares_vendor, ret,
+    ret_guarded``); weights = shares_vendor x close at the prior month's last session."""
+    return f"""
+    WITH keep AS (SELECT DISTINCT security_id FROM u WHERE session_date = (SELECT min(session_date) FROM u)),
+    h AS (
+        SELECT b.security_id, b.session_date, b.ret, b.shares_vendor * b.close AS me,
+               coalesce(b.ret_guarded, true) OR b.ret IS NULL OR b.ret <= -1 AS bad_day
+        FROM {bars} b JOIN keep USING (security_id)
+        WHERE b.session_date >= CAST(DATE '{start}' - INTERVAL 1 MONTH AS DATE) AND b.session_date < DATE '{splice}'
+    ),
+    m AS (
+        SELECT security_id, CAST(date_trunc('month', session_date) AS DATE) AS month,
+               exp(sum(CASE WHEN NOT bad_day THEN ln(1 + ret) END)) - 1 AS mret, bool_or(bad_day) AS bad
+        FROM h GROUP BY 1, 2
+    ),
+    last AS (
+        SELECT security_id, me, CAST(date_trunc('month', session_date) + INTERVAL 1 MONTH AS DATE) AS next_month
+        FROM h QUALIFY session_date = max(session_date) OVER (PARTITION BY date_trunc('month', session_date))
+    )
+    SELECT m.month, sum(l.me * m.mret) / sum(l.me) AS vw, avg(m.mret) AS ew, count(*) AS n_stocks
+    FROM m JOIN last l ON l.security_id = m.security_id AND l.next_month = m.month
+    WHERE l.me > 0 AND NOT m.bad AND m.month >= DATE '{start}'
+    GROUP BY 1 ORDER BY 1
+    """
+
+
+def market_history_check(con, end: dt.date, ff3m: dict, bars_for=history_bars_sql) -> dict[str, Any]:
+    """GC2: monthly rho of the all_common VW return (history before the stage's first month) with French Mkt-RF + RF
+    over ``HISTORY_START`` .. ``end``; ``ff3m`` = {month: (mkt_rf, smb, hml, rf)}, ``bars_for(splice)`` the bar
+    relation of :func:`history_monthly_sql` (or None)."""
+    stage = dict(con.execute(f"""SELECT CAST(date_trunc('month', period_end) AS DATE), vw FROM idx
+                                 WHERE freq = 'M' AND universe = 'all_common' AND period_end <= DATE '{end}'""").fetchall())
+    splice = min(stage) if stage else HISTORY_START
+    hist: dict[dt.date, float] = {}
+    n_hist: dict[dt.date, int] = {}
+    bars = bars_for(splice) if splice > HISTORY_START else None
+    if bars is not None:
+        for m, vw, _ew, n in con.execute(history_monthly_sql(bars, HISTORY_START, splice)).fetchall():
+            hist[m], n_hist[m] = vw, n
+    series = {**hist, **{m: v for m, v in stage.items() if m >= HISTORY_START}}
+    mkt = {m: v[0] + v[3] for m, v in ff3m.items()}
+
+    def rho(keys: list[dt.date]) -> tuple[float | None, int]:
+        ks = [m for m in sorted(keys) if m in mkt and series.get(m) is not None]
+        return pearson([series[m] for m in ks], [mkt[m] for m in ks]), len(ks)
+
+    full, n_full = rho(list(series))
+    h_rho, h_n = rho(list(hist))
+    s_rho, s_n = rho([m for m in stage if m >= HISTORY_START])
+    ks = [m for m in sorted(series) if m in mkt]
+    return {"rule": HISTORY_RULE, "window": f"{HISTORY_START.isoformat()[:7]}..{end.isoformat()[:7]}",
+            "french": "Mkt-RF + RF (FF3 monthly)", "splice_month": splice.isoformat(),
+            "monthly_rho": full, "months": n_full, "history_rho": h_rho, "history_months": h_n,
+            "stage_rho": s_rho, "stage_months": s_n,
+            "monthly_mean_diff": (sum(series[m] - mkt[m] for m in ks) / len(ks)) if ks else None,
+            "history_stocks_mean": round(sum(n_hist.values()) / len(n_hist), 1) if n_hist else None,
+            "missing_months": [m.isoformat() for m in sorted(mkt) if HISTORY_START <= m <= end and m not in series]}
+
+
 def pearson(x: list[float], y: list[float]) -> float | None:
     n = len(x)
     if n < 3:
@@ -235,7 +321,7 @@ def pearson(x: list[float], y: list[float]) -> float | None:
     return sxy / math.sqrt(sxx * syy) if sxx > 0 and syy > 0 else None
 
 
-def factor_checks(con, end: dt.date) -> dict[str, Any]:
+def factor_checks(con, end: dt.date, bars_for=history_bars_sql) -> dict[str, Any]:
     if end > HOLDOUT_END:
         raise ValueError(f"ruling D6: return statistics end on or before {HOLDOUT_END}")
     root = C.build_root()
@@ -248,7 +334,7 @@ def factor_checks(con, end: dt.date) -> dict[str, Any]:
             SELECT CAST(date_trunc('month', obs_date) + INTERVAL 1 MONTH AS DATE) AS m, obs_date, value_pct
             FROM read_parquet('{rates}') WHERE series_id = 'DTB3') GROUP BY 1""").fetchall())
     ff3m = {r[0]: r[1:] for r in con.execute(
-        f"SELECT month, mkt_rf, smb, hml FROM read_parquet('{(fr / 'ff3_monthly.parquet').as_posix()}')").fetchall()}
+        f"SELECT month, mkt_rf, smb, hml, rf FROM read_parquet('{(fr / 'ff3_monthly.parquet').as_posix()}')").fetchall()}
     ff3d = {r[0]: r[1] for r in con.execute(
         f"SELECT date, mkt_rf FROM read_parquet('{(fr / 'ff3_daily.parquet').as_posix()}')").fetchall()}
     for universe in ("member_common", "all_common"):
@@ -285,10 +371,14 @@ def factor_checks(con, end: dt.date) -> dict[str, Any]:
                   "first_month": ms[0].isoformat() if ms else None}
     res["hml"] = {"monthly_rho": pearson([hml[m] for m in ms], [ff3m[m][2] for m in ms]), "months": len(ms)}
     res["portfolio_firms_mean"] = {p: round(sum(v) / len(v), 1) for p, v in sorted(counts.items())}
+    res["mkt_all_common_2013"] = market_history_check(con, end, ff3m, bars_for)
     mk = res["mkt_rf_member_common"]["monthly_rho"]
+    mh = res["mkt_all_common_2013"]["monthly_rho"]
     res["pass"] = {"mkt_rf_monthly_rho": bool(mk is not None and mk >= GATES["mkt_rf_monthly_rho"]),
                    "smb_monthly_rho": bool(res["smb"]["monthly_rho"] is not None
-                                           and res["smb"]["monthly_rho"] >= GATES["smb_monthly_rho"])}
+                                           and res["smb"]["monthly_rho"] >= GATES["smb_monthly_rho"]),
+                   "mkt_all_common_monthly_rho_2013": bool(mh is not None
+                                                           and mh >= GATES["mkt_all_common_monthly_rho_2013"])}
     return res
 
 
@@ -296,17 +386,22 @@ def build(end: dt.date = HOLDOUT_END) -> dict[str, Any]:
     receipt: dict[str, Any] = {"rule": RULE}
     con = C.connect(memory="300MB", threads=2, db_file="mkt_index.duckdb")
     with C.timed(receipt, "universe"):
-        load_universe(con, receipt)
+        load_universe(con, receipt, end)
     with C.timed(receipt, "index"):
         build_index(con, receipt)
-    M.publish_part(OUT_DIR, STAGE, SCHEMA, MODULES, {"rule": RULE, "rule_text": __doc__, "receipt": receipt,
-                                                    "staleness": "daily"},
-                   M.input_manifests(*INPUTS), pattern="index_returns.parquet")
     with C.timed(receipt, "factor_checks"):
         checks = factor_checks(con, end)
     checks["input_manifests_sha256"] = M.input_manifests(*INPUTS)
     C.write_json_atomic(C.stage_dir("validation") / "factors_market.json", checks)
     receipt["factor_checks"] = checks
+    gate_status = {"pass": all(checks["pass"].values()), "gates": GATES, "per_gate": checks["pass"],
+                   "measured": {"mkt_rf_monthly_rho": checks["mkt_rf_member_common"]["monthly_rho"],
+                                "smb_monthly_rho": checks["smb"]["monthly_rho"],
+                                "mkt_all_common_monthly_rho_2013": checks["mkt_all_common_2013"]["monthly_rho"]},
+                   "window_end": end.isoformat(), "measured_by": "validation/factors_market.json"}
+    M.publish_part(OUT_DIR, STAGE, SCHEMA, MODULES, {"rule": RULE, "rule_text": __doc__, "receipt": receipt,
+                                                    "staleness": "daily", "gate_status": gate_status},
+                   M.input_manifests(*INPUTS), pattern="index_returns.parquet")
     return receipt
 
 

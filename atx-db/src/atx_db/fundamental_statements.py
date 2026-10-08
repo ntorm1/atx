@@ -616,8 +616,18 @@ def _insert_derived_reit_statement_points(
 
     table = _identifier(table)
     before = int(store.con.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
-    store.con.execute(
-        f"""
+    store.con.execute(derived_reit_statement_points_sql(table=table.strip('"')))
+    after = int(store.con.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
+    return after - before
+
+
+def derived_reit_statement_points_sql(
+    *, table: str = "fundamental_statement_points", security_predicate: str = "TRUE",
+    routes: str = "entity_industry_template", calculation_date_sql: str = "current_date",
+) -> str:
+    """Shared REIT INSERT, scoped only after complete per-security inputs exist."""
+    table = _identifier(table)
+    return f"""
         INSERT INTO {table} (
             statement_point_id,
             fact_revision_id,
@@ -670,10 +680,10 @@ def _insert_derived_reit_statement_points(
                         PARTITION BY security_id
                         ORDER BY available_at DESC, source_loaded_at DESC, route_id DESC
                     ) AS route_rank
-                FROM entity_industry_template eit
+                FROM {_identifier(routes)} eit
                 WHERE is_latest_revision
-                  AND valid_from <= current_date
-                  AND coalesce(valid_to, DATE '9999-12-31') > current_date
+                  AND valid_from <= {calculation_date_sql}
+                  AND coalesce(valid_to, DATE '9999-12-31') > {calculation_date_sql}
             )
             WHERE route_rank = 1
         ),
@@ -711,6 +721,7 @@ def _insert_derived_reit_statement_points(
               ON r.security_id = p.security_id
              AND r.industry_template = 'RT'
             WHERE p.period_type = 'duration'
+              AND ({security_predicate})
               AND p.canonical_metric IN (
                     'net_income',
                     'da_cf',
@@ -1009,9 +1020,6 @@ def _insert_derived_reit_statement_points(
             source_loaded_at
         FROM keyed
         """
-    )
-    after = int(store.con.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
-    return after - before
 
 
 def refresh_fundamental_statement_points(
@@ -1044,9 +1052,32 @@ def refresh_fundamental_statement_points(
             ),
             owned_registrations=("fundamental_statement_concept_filter",) if registered else (),
         ):
-            store.con.execute(
-                f"""
-            INSERT INTO fundamental_statement_points_bulk_stage (
+            store.con.execute(fundamental_statement_points_sql(concept_join=concept_join))
+            if not selected:
+                _insert_derived_reit_statement_points(store, table="fundamental_statement_points_bulk_stage")
+    finally:
+        if registered:
+            with suppress(Exception):
+                store.con.unregister("fundamental_statement_concept_filter")
+    return int(store.con.execute("SELECT count(*) FROM fundamental_statement_points").fetchone()[0])
+
+
+def fundamental_statement_points_sql(
+    *, target: str = "fundamental_statement_points_bulk_stage",
+    concept_join: str = "", security_predicate: str = "TRUE",
+    revisions: str = "fundamental_fact_revisions",
+    statement_map: str = "fundamental_statement_map", routes: str = "entity_industry_template",
+    calculation_date_sql: str = "current_date",
+) -> str:
+    """Shared statement INSERT; revision ownership remains global across buckets."""
+    revisions = _identifier(revisions)
+    # This relation must contain ALL completed revisions before any statement
+    # bucket starts: release ownership is a CIK-level, not bucket-level, claim.
+    source_facts = reported_eps_source_facts_cte().replace(
+        "FROM fundamental_fact_revisions r", f"FROM {revisions} r"
+    )
+    return f"""
+            INSERT INTO {_identifier(target)} (
                 statement_point_id,
                 fact_revision_id,
                 revision_group_id,
@@ -1100,14 +1131,14 @@ def refresh_fundamental_statement_points(
                             PARTITION BY security_id
                             ORDER BY available_at DESC, source_loaded_at DESC, route_id DESC
                         ) AS route_rank
-                    FROM entity_industry_template eit
+                    FROM {_identifier(routes)} eit
                     WHERE eit.is_latest_revision
-                      AND eit.valid_from <= current_date
-                      AND coalesce(eit.valid_to, DATE '9999-12-31') > current_date
+                      AND eit.valid_from <= {calculation_date_sql}
+                      AND coalesce(eit.valid_to, DATE '9999-12-31') > {calculation_date_sql}
                 )
                 WHERE route_rank = 1
             ),
-            {reported_eps_source_facts_cte()},
+            {source_facts},
             mapped AS (
                 SELECT
                     sha256(
@@ -1183,7 +1214,7 @@ def refresh_fundamental_statement_points(
                 {concept_join}
                 LEFT JOIN security_industry_templates it
                   ON it.security_id = r.security_id
-                JOIN fundamental_statement_map m
+                JOIN {_identifier(statement_map)} m
                   ON (
                         m.source = r.source
                         OR (
@@ -1203,6 +1234,7 @@ def refresh_fundamental_statement_points(
                  AND m.is_derived = FALSE
                 LEFT JOIN securities s
                   ON s.security_id = r.security_id
+                WHERE ({security_predicate})
             ),
             chosen AS (
                 SELECT *
@@ -1223,7 +1255,7 @@ def refresh_fundamental_statement_points(
                     lag(value) OVER statement_window AS previous_value
                 FROM chosen
                 WINDOW statement_window AS (
-                    PARTITION BY statement_revision_group_id
+                    PARTITION BY security_id, statement_revision_group_id
                     ORDER BY
                         coalesce(available_at, CAST(as_of_date AS TIMESTAMP)),
                         as_of_date,
@@ -1286,14 +1318,6 @@ def refresh_fundamental_statement_points(
                 source_loaded_at
             FROM sequenced
             """
-            )
-            if not selected:
-                _insert_derived_reit_statement_points(store, table="fundamental_statement_points_bulk_stage")
-    finally:
-        if registered:
-            with suppress(Exception):
-                store.con.unregister("fundamental_statement_concept_filter")
-    return int(store.con.execute("SELECT count(*) FROM fundamental_statement_points").fetchone()[0])
 
 
 def _has_column(store: DuckDBStore, table: str, column: str) -> bool:
@@ -1344,11 +1368,40 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
 
     raw_clock, sessions_sql, params = _rdq_clock_inputs(store)
     lineage = all(_has_column(store, "fundamental_periods", column) for column in RDQ_LINEAGE_COLUMNS)
-    lineage_columns = "".join(f",\n                {column}" for column in RDQ_LINEAGE_COLUMNS) if lineage else ""
     with fundamental_publication(store, ("fundamental_periods",)):
-        store.con.execute(
-            f"""
-            INSERT INTO fundamental_periods_bulk_stage (
+        store.con.execute(fundamental_periods_sql(
+            raw_clock=raw_clock, sessions_sql=sessions_sql, lineage=lineage,
+        ), params)
+    return int(store.con.execute("SELECT count(*) FROM fundamental_periods").fetchone()[0])
+
+
+def fundamental_periods_sql(
+    *, raw_clock: str, sessions_sql: str, lineage: bool,
+    target: str = "fundamental_periods_bulk_stage",
+    points: str = "fundamental_statement_points", security_predicate: str = "TRUE",
+    lineage_table: str | None = None,
+) -> str:
+    """Period INSERT with optional bounded, exact precomputed JSON lineage."""
+    lineage_columns = "".join(f",\n                {column}" for column in RDQ_LINEAGE_COLUMNS) if lineage else ""
+    lineage_expressions = (
+        "CAST(to_json(list(DISTINCT CAST(fiscal_year AS VARCHAR) ORDER BY CAST(fiscal_year AS VARCHAR))) AS VARCHAR)",
+        "CAST(to_json(list(DISTINCT fiscal_period ORDER BY fiscal_period)) AS VARCHAR)",
+        "CAST(to_json(list(DISTINCT statement_type ORDER BY statement_type)) AS VARCHAR)",
+        "CAST(to_json(list(DISTINCT canonical_metric ORDER BY canonical_metric)) AS VARCHAR)",
+        "CAST(to_json(list(statement_point_id ORDER BY statement_type, canonical_metric, statement_point_id)) AS VARCHAR)",
+    )
+    json_columns = ("reported_fiscal_years_json", "reported_fiscal_periods_json", "statement_types_json",
+                    "canonical_metrics_json", "input_statement_point_ids_json")
+    lineage_join = ""
+    if lineage_table is not None:
+        lineage_expressions = tuple(f"any_value(l.{name})" for name in json_columns)
+        lineage_join = (
+            f"JOIN {_identifier(lineage_table)} l ON l.fundamental_period_id = sha256(concat_ws('|', "
+            "p.source, p.security_id, coalesce(CAST(p.period_start AS VARCHAR),''), "
+            "CAST(p.period_end AS VARCHAR), p.accession_number))"
+        )
+    return f"""
+            INSERT INTO {_identifier(target)} (
                 fundamental_period_id,
                 period_group_id,
                 source,
@@ -1442,11 +1495,11 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                     max(available_at) AS available_at,
                     any_value(form) AS form,
                     accession_number,
-                    CAST(to_json(list(DISTINCT CAST(fiscal_year AS VARCHAR) ORDER BY CAST(fiscal_year AS VARCHAR))) AS VARCHAR) AS reported_fiscal_years_json,
-                    CAST(to_json(list(DISTINCT fiscal_period ORDER BY fiscal_period)) AS VARCHAR) AS reported_fiscal_periods_json,
-                    CAST(to_json(list(DISTINCT statement_type ORDER BY statement_type)) AS VARCHAR) AS statement_types_json,
-                    CAST(to_json(list(DISTINCT canonical_metric ORDER BY canonical_metric)) AS VARCHAR) AS canonical_metrics_json,
-                    CAST(to_json(list(statement_point_id ORDER BY statement_type, canonical_metric, statement_point_id)) AS VARCHAR) AS input_statement_point_ids_json,
+                    {lineage_expressions[0]} AS reported_fiscal_years_json,
+                    {lineage_expressions[1]} AS reported_fiscal_periods_json,
+                    {lineage_expressions[2]} AS statement_types_json,
+                    {lineage_expressions[3]} AS canonical_metrics_json,
+                    {lineage_expressions[4]} AS input_statement_point_ids_json,
                     count(*) AS statement_point_count,
                     count(DISTINCT canonical_metric) AS canonical_metric_count,
                     count(DISTINCT concat_ws('|', taxonomy, concept)) AS concept_count,
@@ -1456,7 +1509,8 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                     bool_or(statement_type = 'cash_flow') AS has_cash_flow,
                     bool_or(statement_type = 'per_share') AS has_per_share,
                     max(source_loaded_at) AS source_loaded_at
-                FROM fundamental_statement_points
+                FROM {_identifier(points)} p
+                {lineage_join}
                 WHERE source IS NOT NULL
                   AND source <> ''
                   AND security_id IS NOT NULL
@@ -1467,6 +1521,7 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                   AND as_of_date IS NOT NULL
                   AND accession_number IS NOT NULL
                   AND accession_number <> ''
+                  AND ({security_predicate})
                 GROUP BY source, security_id, period_start, period_end, accession_number
             ),
             rdq_raw AS (
@@ -1612,7 +1667,7 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                     CAST(max(available_at) OVER period_window AS DATE) AS ldate
                 FROM grouped
                 WINDOW period_window AS (
-                    PARTITION BY period_group_id
+                    PARTITION BY security_id, period_group_id
                     ORDER BY
                         available_at,
                         as_of_date,
@@ -1664,10 +1719,81 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
                 latest_available_at,
                 source_loaded_at{lineage_columns}
             FROM sequenced
-            """,
-            params,
-        )
-    return int(store.con.execute("SELECT count(*) FROM fundamental_periods").fetchone()[0])
+            """
+
+
+def stream_period_lineage(context, *, points: str = "fundamental_statement_points") -> str:
+    """Replace C26's five non-spilling ordered list aggregates exactly.
+
+    The read cursor streams one ordered period at a time from committed points.
+    Its five arrays preserve NULL, distinctness, ordering and point multiplicity;
+    output is inserted in small Arrow batches into the current transaction.
+    """
+    import itertools
+    import json
+    import pyarrow as pa
+    from ._fundamental_publication import security_bucket_sql
+
+    name = "_bounded_period_lineage"
+    columns = ("fundamental_period_id", "reported_fiscal_years_json", "reported_fiscal_periods_json",
+               "statement_types_json", "canonical_metrics_json", "input_statement_point_ids_json")
+    context.conn.execute(f"CREATE TEMP TABLE {name} (" + ",".join(f"{column} VARCHAR" for column in columns) + ")")
+    context.temporary_tables.append(name)
+    sql = f"""SELECT sha256(concat_ws('|',source,security_id,
+            coalesce(CAST(period_start AS VARCHAR),''),CAST(period_end AS VARCHAR),accession_number)) period_id,
+            CAST(fiscal_year AS VARCHAR),fiscal_period,statement_type,canonical_metric,statement_point_id
+        FROM {_identifier(points)} WHERE source IS NOT NULL AND source<>''
+          AND security_id IS NOT NULL AND security_id<>'' AND cik IS NOT NULL AND cik<>''
+          AND period_end IS NOT NULL AND as_of_date IS NOT NULL
+          AND accession_number IS NOT NULL AND accession_number<>''
+          AND {security_bucket_sql(context.bucket, context.buckets)}
+        ORDER BY period_id,statement_type,canonical_metric,statement_point_id"""
+    cursor = context.conn.cursor()
+    buffered = []
+
+    def flush():
+        if not buffered:
+            return
+        context.charge(len(buffered))
+        context.temporary_rows += len(buffered)
+        table = pa.Table.from_pylist(buffered, schema=pa.schema([(column, pa.string()) for column in columns]))
+        context.conn.register("_bounded_period_lineage_rows", table)
+        try:
+            inserted = context.conn.execute(f"INSERT INTO {name} SELECT * FROM _bounded_period_lineage_rows").fetchone()[0]
+            if inserted != len(buffered):
+                raise ValueError("streamed period lineage row count differs")
+        finally:
+            context.conn.unregister("_bounded_period_lineage_rows")
+        buffered.clear()
+
+    try:
+        cursor.execute(sql)
+
+        def rows():
+            while batch := cursor.fetchmany(1024):
+                yield from batch
+
+        for period_id, group in itertools.groupby(rows(), key=lambda row: row[0]):
+            unique = [set() for _ in range(4)]
+            point_ids = []
+            for row in group:
+                for index in range(4):
+                    unique[index].add(row[index+1])
+                point_ids.append(row[5])
+                if len(point_ids) > context.state["max_source_rows"]:
+                    raise ValueError("one period exceeds the frozen lineage bound")
+            arrays = [sorted(values, key=lambda value: (value is None, value or "")) for values in unique]
+            arrays.append(point_ids)
+            encoded = [json.dumps(values, ensure_ascii=False, separators=(",", ":")) for values in arrays]
+            if sum(len(value.encode("utf-8")) for value in encoded) > 16 * 1024**2:
+                raise ValueError("one period's exact lineage exceeds the bounded buffer")
+            buffered.append(dict(zip(columns, [period_id, *encoded], strict=True)))
+            if len(buffered) >= 64:
+                flush()
+        flush()
+    finally:
+        cursor.close()
+    return name
 
 
 def refresh_fundamental_ttm_points(
@@ -1691,9 +1817,18 @@ def refresh_fundamental_ttm_points(
         replace_where=f"canonical_metric IN ({placeholders})" if selected else "TRUE",
         replace_params=selected,
     ):
-        store.con.execute(
-            f"""
-            INSERT INTO fundamental_ttm_points_bulk_stage (
+        store.con.execute(fundamental_ttm_points_sql(metric_filter_sql=metric_filter_sql), list(selected))
+    return int(store.con.execute("SELECT count(*) FROM fundamental_ttm_points").fetchone()[0])
+
+
+def fundamental_ttm_points_sql(
+    *, target: str = "fundamental_ttm_points_bulk_stage",
+    points: str = "fundamental_statement_points", metric_filter_sql: str = "",
+    security_predicate: str = "TRUE",
+) -> str:
+    """Shared TTM INSERT; every issuer window has an explicit security key."""
+    return f"""
+            INSERT INTO {_identifier(target)} (
                 ttm_point_id,
                 ttm_revision_group_id,
                 anchor_statement_point_id,
@@ -1760,12 +1895,13 @@ def refresh_fundamental_ttm_points(
                     source_loaded_at,
                     date_diff('day', period_start, period_end) + 1 AS period_days,
                     coalesce(available_at, CAST(as_of_date AS TIMESTAMP)) AS availability_ts
-                FROM fundamental_statement_points
+                FROM {_identifier(points)}
                 WHERE period_type = 'duration'
                   AND period_start IS NOT NULL
                   AND period_end IS NOT NULL
                   AND value IS NOT NULL
                   {metric_filter_sql}
+                  AND ({security_predicate})
             ),
             reported_quarter_points AS (
                 SELECT
@@ -1859,7 +1995,7 @@ def refresh_fundamental_ttm_points(
                  AND prior_ytd.as_of_date <= current_ytd.as_of_date
                  AND prior_ytd.availability_ts <= current_ytd.availability_ts
                 QUALIFY row_number() OVER (
-                    PARTITION BY current_ytd.statement_point_id
+                    PARTITION BY current_ytd.security_id, current_ytd.statement_point_id
                     ORDER BY
                         prior_ytd.period_end DESC,
                         prior_ytd.availability_ts DESC,
@@ -1889,7 +2025,7 @@ def refresh_fundamental_ttm_points(
                     a.source_loaded_at AS anchor_source_loaded_at,
                     q.*,
                     row_number() OVER (
-                        PARTITION BY a.anchor_statement_point_id, q.period_start, q.period_end
+                        PARTITION BY a.security_id, a.anchor_statement_point_id, q.period_start, q.period_end
                         ORDER BY
                             q.availability_ts DESC,
                             q.quarter_source_priority,
@@ -1923,7 +2059,7 @@ def refresh_fundamental_ttm_points(
                 SELECT
                     *,
                     row_number() OVER (
-                        PARTITION BY anchor_statement_point_id
+                        PARTITION BY security_id, anchor_statement_point_id
                         ORDER BY period_end DESC, period_start DESC, statement_point_id DESC
                     ) AS trailing_rank
                 FROM latest_visible
@@ -1974,7 +2110,7 @@ def refresh_fundamental_ttm_points(
                     max(coalesce(source_loaded_at, anchor_source_loaded_at)) AS source_loaded_at
                 FROM trailing_windows
                 WHERE trailing_rank <= 4
-                GROUP BY anchor_statement_point_id
+                GROUP BY security_id, anchor_statement_point_id
                 HAVING count(*) = 4
                    AND date_diff('day', min(period_start), max(period_end)) + 1 BETWEEN 330 AND 380
             ),
@@ -1992,7 +2128,7 @@ def refresh_fundamental_ttm_points(
                     lag(ttm_value) OVER ttm_window AS previous_ttm_value
                 FROM keyed
                 WINDOW ttm_window AS (
-                    PARTITION BY ttm_revision_group_id
+                    PARTITION BY security_id, ttm_revision_group_id
                     ORDER BY
                         available_at,
                         as_of_date,
@@ -2053,7 +2189,4 @@ def refresh_fundamental_ttm_points(
                 END AS calculation_method,
                 source_loaded_at
             FROM sequenced
-            """,
-            list(selected),
-        )
-    return int(store.con.execute("SELECT count(*) FROM fundamental_ttm_points").fetchone()[0])
+            """

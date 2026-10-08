@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 import sys
 import time
 from typing import Any
@@ -51,7 +52,8 @@ def min_count(h: int) -> int:
     return -(-9 * h // 10)
 
 
-def scan_panel(con: duckdb.DuckDBPyConnection, files: list[str], lo: dt.date, hi: dt.date, table: str = "w") -> int:
+def scan_panel(con: duckdb.DuckDBPyConnection, files: list[str], lo: dt.date, hi: dt.date, table: str = "w",
+               quality: str = "legacy") -> int:
     """Load per-line log returns ``(session_date, idx, security_id, lr, lidx, dlret)`` for ``lo..hi`` into ``table``.
 
     Needs temp tables ``cal(session_date, idx)`` and ``ev(security_id, lidx, dlret)``. Refuses (before reading) any
@@ -61,16 +63,21 @@ def scan_panel(con: duckdb.DuckDBPyConnection, files: list[str], lo: dt.date, hi
     if not files:
         raise FileNotFoundError("no panel files to scan")
     flist = "[" + ", ".join(f"'{f}'" for f in files) + "]"
+    repair = "coalesce(q.repaired, false)" if quality == "strict" else "false"
+    repair_join = "LEFT JOIN label_repairs q USING(session_date,security_id)" if quality == "strict" else ""
+    columns = {r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet({flist}, hive_partitioning=false)").fetchall()}
+    anchor = "p.raw_close > 0 AND isfinite(p.raw_close)" if "raw_close" in columns else "true"
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE {table} AS
         SELECT p.session_date, c.idx, p.security_id,
-               CASE WHEN coalesce(p.ret_guarded, false) OR p.ret IS NULL OR NOT isfinite(p.ret) OR p.ret <= -1 THEN NULL
+               CASE WHEN {repair} OR coalesce(p.ret_guarded, false) OR p.ret IS NULL OR NOT isfinite(p.ret) OR p.ret <= -1 THEN NULL
                     WHEN e.lidx IS NOT NULL AND c.idx > e.lidx THEN NULL
                     ELSE ln(1 + p.ret) END AS lr,
-               e.lidx, e.dlret
+               e.lidx, e.dlret, e.dlret_observed, {repair} AS source_repaired, {anchor} AS anchor_valid
         FROM read_parquet({flist}, hive_partitioning = false) p
         JOIN cal c USING (session_date)
         LEFT JOIN ev e USING (security_id)
+        {repair_join}
         WHERE p.session_date BETWEEN DATE '{lo}' AND DATE '{hi}'
     """)
     top = con.execute(f"SELECT max(session_date) FROM {table}").fetchone()[0]
@@ -79,11 +86,17 @@ def scan_panel(con: duckdb.DuckDBPyConnection, files: list[str], lo: dt.date, hi
     return int(con.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
 
 
-def _label_sql(cut_idx: int, lo_idx: int, hi_idx: int) -> str:
+def _label_sql(cut_idx: int, lo_idx: int, hi_idx: int, quality: str = "legacy") -> str:
     wins = []
     for h in HORIZONS:
         fr = f"OVER (PARTITION BY security_id ORDER BY idx RANGE BETWEEN 2 FOLLOWING AND {h + 1} FOLLOWING)"
         wins.append(f"sum(lr) {fr} AS s{h}, count(lr) {fr} AS c{h}")
+        if quality == "strict":
+            wins.append(f"count(*) FILTER (WHERE source_repaired) OVER (PARTITION BY security_id ORDER BY idx "
+                        f"RANGE BETWEEN 1 FOLLOWING AND {h + 1} FOLLOWING) AS repairs{h}")
+    if quality == "strict":
+        wins.append("count(*) FILTER (WHERE anchor_valid) OVER (PARTITION BY security_id ORDER BY idx "
+                    "RANGE BETWEEN 1 FOLLOWING AND 1 FOLLOWING) AS anchor_count")
     outer = []
     for h in HORIZONS:
         trunc = f"(lidx IS NOT NULL AND lidx >= idx + 1 AND lidx <= idx + {h})"
@@ -93,40 +106,77 @@ def _label_sql(cut_idx: int, lo_idx: int, hi_idx: int) -> str:
         outer.append(f"""CASE WHEN idx + 1 + {h} > {cut_idx} THEN NULL
                              WHEN {trunc} THEN CASE WHEN {n} > 0 THEN {tot} END
                              WHEN coalesce(c{h}, 0) >= {min_count(h)} THEN s{h} END AS fwd_{h}""")
+        if quality == "strict":
+            # Actual h returns, or all actual pre-terminal returns plus an observed
+            # terminal payoff. Imputed Shumway losses and unknown cash are not observed.
+            observed = f"({trunc} AND dlret_observed AND dlret IS NOT NULL AND isfinite(dlret) AND dlret > -1)"
+            full_prefix = f"(coalesce(c{h}, 0) = greatest(lidx - idx - 1, 0))"
+            outer[-1] = f"""CASE WHEN idx + 1 + {h} > {cut_idx} THEN NULL
+                                 WHEN source_repaired OR repairs{h} > 0 THEN NULL
+                                 WHEN anchor_count <> 1 THEN NULL
+                                 WHEN {trunc} THEN CASE WHEN {observed} AND {full_prefix} THEN {tot} END
+                                 WHEN coalesce(c{h}, 0) = {h} THEN s{h} END AS fwd_{h}"""
+            # Codes are mutually exclusive diagnostics, retained even for NULL labels.
+            outer.append(f"""CASE WHEN idx + 1 + {h} > {cut_idx} THEN 6
+                                  WHEN source_repaired THEN 7
+                                  WHEN repairs{h} > 0 THEN 8
+                                  WHEN anchor_count <> 1 THEN 5
+                                  WHEN {trunc} AND dlret IS NULL THEN 3
+                                  WHEN {trunc} AND NOT dlret_observed THEN 4
+                                  WHEN {observed} AND {full_prefix} THEN 2
+                                  WHEN NOT {trunc} AND coalesce(c{h}, 0) = {h} THEN 1
+                                  ELSE 5 END AS quality_{h}""")
         if h != 1:
             outer.append(f"CASE WHEN idx + 1 + {h} > {cut_idx} THEN NULL ELSE {n} END AS n_{h}")
     return f"""
-        WITH x AS (SELECT session_date, idx, security_id, lidx, dlret, {', '.join(wins)} FROM w)
+        WITH x AS (SELECT session_date, idx, security_id, lidx, dlret, dlret_observed, source_repaired, {', '.join(wins)} FROM w)
         SELECT session_date, security_id, {', '.join(outer)} FROM x
         WHERE idx BETWEEN {lo_idx} AND {hi_idx}
     """
 
 
-def build(memory: str = "300MB", threads: int = 2, force: bool = False, years: list[int] | None = None) -> dict[str, Any]:
+def build(memory: str = "300MB", threads: int = 2, force: bool = False, years: list[int] | None = None,
+          quality: str = "legacy", out_stage: str | None = None) -> dict[str, Any]:
     """Build the labels stage (all decision years, or ``years``) and publish the stage manifest."""
     root = C.build_root()
+    panel_stage = os.environ.get("ATX_ALPHA_PANEL_STAGE", "panel")
+    stage = out_stage or os.environ.get("ATX_ALPHA_LABEL_STAGE", STAGE)
+    if quality not in ("legacy", "strict"):
+        raise ValueError("label quality must be legacy or strict")
+    if quality == "strict" and stage == STAGE:
+        raise ValueError("strict labels require an isolated --out-stage (for example labels_goldready)")
     con = C.connect(memory=memory, threads=threads, db_file="labels.duckdb")
     cal = C.load_calendar(con)
     if LABEL_CUTOFF not in cal:
         raise HoldoutViolation(f"label cutoff {LABEL_CUTOFF} is not a calendar session")
     idx_of = {d: i for i, d in enumerate(cal)}
     cut_idx = idx_of[LABEL_CUTOFF]
-    last_dec = cut_idx - 2  # fwd_1 ends at d+2
+    last_dec = cut_idx if quality == "strict" else cut_idx - 2  # strict keeps NULL censored tail for QA
     con.execute("CREATE TEMP TABLE cal (session_date DATE, idx BIGINT)")
     con.executemany("INSERT INTO cal VALUES (?, ?)", [(d, i) for i, d in enumerate(cal)])
     ev_path = root / "delisting" / "events.parquet"
     if ev_path.exists():
+        columns = {row[0] for row in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{ev_path.as_posix()}')").fetchall()}
+        observed = "NOT coalesce(e.dlret_imputed, true)" if "dlret_imputed" in columns else "false"
         con.execute(f"""CREATE TEMP TABLE ev AS
-            SELECT e.security_id, c.idx AS lidx, CAST(e.dlret AS DOUBLE) AS dlret
+            SELECT e.security_id, c.idx AS lidx, CAST(e.dlret AS DOUBLE) AS dlret, {observed} AS dlret_observed
             FROM read_parquet('{ev_path.as_posix()}') e
             JOIN cal c ON c.session_date = e.last_session WHERE NOT coalesce(e.continued, false)""")
     else:
-        con.execute("CREATE TEMP TABLE ev (security_id BIGINT, lidx BIGINT, dlret DOUBLE)")
+        con.execute("CREATE TEMP TABLE ev (security_id BIGINT, lidx BIGINT, dlret DOUBLE, dlret_observed BOOLEAN)")
     dec = [(i, d) for i, d in enumerate(cal) if d >= LABEL_START and i <= last_dec]
-    out = C.stage_dir(STAGE)
+    out = C.stage_dir(stage)
+    old_manifest = out / "manifest.json"
+    prior = C.read_json(old_manifest) if old_manifest.exists() else {}
+    if old_manifest.exists() and not force and (
+        prior.get("label_policy", "legacy") != quality
+        or prior.get("receipt", {}).get("panel_stage", "panel") != panel_stage
+    ):
+        raise ValueError("label source or quality policy changed: rebuild with --force")
     receipt: dict[str, Any] = {"rule": "forward-log-return-d+2..d+1+h", "cutoff": str(LABEL_CUTOFF),
                                "start": str(LABEL_START), "rows_per_year": {}, "timings_s": {},
-                               "delisting_events_used": ev_path.exists()}
+                               "delisting_events_used": ev_path.exists(), "panel_stage": panel_stage,
+                               "label_policy": quality, "quality_attrition": prior.get("quality_attrition", {}) if not force else {}}
     for year in sorted({d.year for _i, d in dec}):
         if years and year not in years:
             continue
@@ -139,19 +189,38 @@ def build(memory: str = "300MB", threads: int = 2, force: bool = False, years: l
         lo_i, hi_i = yi[0], yi[-1]
         scan_hi = min(hi_i + 1 + max(HORIZONS), cut_idx)
         t0 = time.perf_counter()
-        files = [(root / "panel" / f"year={y}" / "*.parquet").as_posix()
-                 for y in range(cal[lo_i].year, cal[scan_hi].year + 1) if (root / "panel" / f"year={y}").is_dir()]
-        scan_panel(con, files, cal[lo_i], cal[scan_hi])
-        con.execute(f"CREATE OR REPLACE TEMP TABLE y AS {_label_sql(cut_idx, lo_i, hi_i)}")
+        files = [(root / panel_stage / f"year={y}" / "*.parquet").as_posix()
+                 for y in range(cal[lo_i].year, cal[scan_hi].year + 1) if (root / panel_stage / f"year={y}").is_dir()]
+        if quality == "strict":
+            price_files = [str(p.as_posix()) for y in range(cal[lo_i].year, cal[scan_hi].year + 1)
+                           for p in (root / "prices" / f"year={y}").glob("*.parquet")]
+            con.execute("CREATE OR REPLACE TEMP TABLE label_repairs (session_date DATE, security_id BIGINT, repaired BOOLEAN)")
+            if price_files:
+                source = "[" + ", ".join(f"'{p}'" for p in price_files) + "]"
+                cols = {row[0] for row in con.execute(f"DESCRIBE SELECT * FROM read_parquet({source})").fetchall()}
+                if "sid0_repaired" not in cols:
+                    raise ValueError("strict production labels require prices.sid0_repaired quality flags")
+                con.execute(f"INSERT INTO label_repairs SELECT session_date,security_id,true FROM read_parquet({source}) "
+                            f"WHERE sid0_repaired AND session_date BETWEEN DATE '{cal[lo_i]}' AND DATE '{cal[scan_hi]}'")
+            elif (root / panel_stage / "manifest.json").exists():
+                raise ValueError("strict production labels require the underlying prices repair flags")
+        scan_panel(con, files, cal[lo_i], cal[scan_hi], quality=quality)
+        con.execute(f"CREATE OR REPLACE TEMP TABLE y AS {_label_sql(cut_idx, lo_i, hi_i, quality)}")
         con.execute("DROP TABLE w")
+        if quality == "strict":
+            receipt["quality_attrition"][str(year)] = {
+                f"h{h}": {str(code): count for code, count in con.execute(f"SELECT quality_{h},count(*) FROM y GROUP BY 1").fetchall()}
+                for h in HORIZONS}
         for h in HORIZONS:
             d_max = con.execute(f"SELECT max(session_date) FROM y WHERE fwd_{h} IS NOT NULL").fetchone()[0]
             if d_max is not None and cal[idx_of[d_max] + 1 + h] > LABEL_CUTOFF:
                 raise HoldoutViolation(f"year {year}: a fwd_{h} label ends {cal[idx_of[d_max] + 1 + h]} > {LABEL_CUTOFF}")
-        n = C.copy_to_parquet(con, """SELECT CAST(session_date AS DATE) AS session_date, CAST(security_id AS BIGINT) AS security_id,
+        quality_cols = ", " + ", ".join(f"CAST(quality_{h} AS UTINYINT) AS quality_{h}" for h in HORIZONS) if quality == "strict" else ""
+        keep_rows = "true" if quality == "strict" else "fwd_1 IS NOT NULL OR fwd_5 IS NOT NULL OR fwd_21 IS NOT NULL OR fwd_63 IS NOT NULL"
+        n = C.copy_to_parquet(con, f"""SELECT CAST(session_date AS DATE) AS session_date, CAST(security_id AS BIGINT) AS security_id,
                 fwd_1, fwd_5, fwd_21, fwd_63, CAST(n_5 AS SMALLINT) AS n_5, CAST(n_21 AS SMALLINT) AS n_21,
-                CAST(n_63 AS SMALLINT) AS n_63 FROM y
-            WHERE fwd_1 IS NOT NULL OR fwd_5 IS NOT NULL OR fwd_21 IS NOT NULL OR fwd_63 IS NOT NULL
+                CAST(n_63 AS SMALLINT) AS n_63 {quality_cols} FROM y
+            WHERE {keep_rows}
             ORDER BY session_date, security_id""", dest, row_group_size=65536)
         con.execute("DROP TABLE y")
         receipt["rows_per_year"][str(year)] = n
@@ -171,11 +240,17 @@ def build(memory: str = "300MB", threads: int = 2, force: bool = False, years: l
         raise HoldoutViolation(f"labels on disk end at {cal[disk_end]} > {LABEL_CUTOFF}")
     receipt["max_label_end"] = str(cal[disk_end]) if disk_end else None
     receipt["rows_total"] = sum(receipt["rows_per_year"].values())
-    inputs = {rel: C.sha256_file(root / rel) for rel in ("delisting/manifest.json", "panel/manifest.json")
+    inputs = {rel: C.sha256_file(root / rel) for rel in ("delisting/manifest.json", f"{panel_stage}/manifest.json", "prices/manifest.json")
               if (root / rel).exists()}
-    C.write_stage_manifest(STAGE, SCHEMA, ("labels", "common"), {
+    C.write_stage_manifest(stage, SCHEMA if quality == "legacy" else "atx.alpha-panel.labels/v2", ("labels", "common"), {
         "rule_text": __doc__, "input_manifests_sha256": inputs, "max_label_end": receipt["max_label_end"],
-        "receipt": receipt})
+        "receipt": receipt, "label_policy": quality,
+        "quality_codes": {"1": "complete observed horizon", "2": "complete observed terminal payoff",
+                          "3": "unknown terminal payoff excluded", "4": "imputed terminal payoff excluded",
+                          "5": "incomplete or invalid observed horizon excluded", "6": "sealed cutoff censored",
+                          "7": "repaired decision identity excluded", "8": "repaired trade anchor or forward return identity excluded"},
+        "quality_attrition": receipt["quality_attrition"],
+        "limitations": "Strict labels exclude unobserved delisting outcomes; report attrition and selection bias. Legacy allows 90% samples and terminal imputations."})
     return receipt
 
 
@@ -184,8 +259,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--years", type=int, nargs="*")
     ap.add_argument("--memory", default="300MB")
+    ap.add_argument("--threads", type=int, default=2)
+    ap.add_argument("--quality", choices=("legacy", "strict"), default="legacy")
+    ap.add_argument("--out-stage", default=None)
     a = ap.parse_args(argv)
-    r = build(memory=a.memory, force=a.force, years=a.years)
+    r = build(memory=a.memory, threads=a.threads, force=a.force, years=a.years, quality=a.quality, out_stage=a.out_stage)
     print({k: v for k, v in r.items() if k != "timings_s"})
     return 0
 

@@ -1,4 +1,4 @@
-"""IC evaluator v2: daily cross-sectional rank IC of candidate features against the forward-return labels.
+"""IC evaluator v3: daily rank IC with purged chronological selection and validation.
 
 ``python -m atx_db.alpha_panel.ic_eval --features <stage>[:<col,...>] [...] --out <json> [--overlap-with <stage>:<col,...>]``
 
@@ -16,9 +16,12 @@ Definitions (Global Constraints 1, 2, 5), horizons h in {1, 5, 21, 63}, labels f
 * Risk-adjusted: centred feature rank residualised per session by OLS on the centred ranks of ``beta_252``,
   ``vol_63``, ``log_adv63`` (``characteristics`` stage; skipped with a notice while any is absent), then Spearman
   against the label.
+* SELECTION uses 2020-2021 decisions whose complete forward label ends before 2022. VALIDATION uses 2022-2023
+  decisions, with realized labels capped at 2023-12-29. Signs are fixed priors; validation never chooses a sign,
+  horizon or neutralisation. TRAIN aggregates are descriptive and must not select candidates for validation.
 * Non-return statistics over all sessions from 2019-01-02 to the last panel session: coverage (mean daily share of
   ``member_equity`` lines with a finite value, per calendar year), rank autocorrelation at lags 1 and 21 sessions, and on the
-  last session of each TRAIN month the pairwise mean |Spearman| between the features (and against ``--overlap-with``).
+  last session of each SELECTION month the pairwise mean |Spearman| between features (and ``--overlap-with``).
 
 The evaluator refuses (:class:`HoldoutViolation`) any label whose end session ``d+1+h`` is after ``LABEL_CUTOFF`` or whose
 decision session is after the TRAIN end; it never reads a label for a later session. Memory: features are processed in
@@ -44,16 +47,19 @@ import numpy as np
 from . import common as C
 from .labels import HORIZONS, LABEL_CUTOFF, HoldoutViolation
 
-SCHEMA = "atx.alpha-panel.ic-eval/v2"
+SCHEMA = "atx.alpha-panel.ic-eval/v3"
 FIRST_SESSION = dt.date(2019, 1, 2)
 DISCOVERY = (dt.date(2019, 1, 2), dt.date(2019, 12, 31))
 TRAIN_START = dt.date(2020, 1, 2)
+VALIDATION_START = dt.date(2022, 1, 1)
+ALLOW_CENSORED_TAIL = False  # scoped authorized OOS evaluator only; default seal is unchanged
 MIN_NAMES = 100
 NW_MIN_SESSIONS = 30
 MAX_BATCH = 16
 STAGES = ("panel", "characteristics", "gold")
 RISK_COLS = ("beta_252", "vol_63", "log_adv63")
 KEYS = ("session_date", "security_id")
+METADATA = (*KEYS, "cik", "year", "member", "member_equity", "grp_ff49", "grp_ff12", "bucket")
 NUMERIC = ("TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT",
            "FLOAT", "DOUBLE", "DECIMAL")
 UNIVERSES = ("member_equity", "lo")
@@ -64,6 +70,8 @@ UNIVERSES = ("member_equity", "lo")
 def rank_avg(a: np.ndarray) -> np.ndarray:
     """1-based ranks with ties averaged."""
     n = a.size
+    if not n:
+        return np.empty(0, dtype=float)
     order = np.argsort(a, kind="stable")
     s = a[order]
     ranks = np.empty(n, dtype=float)
@@ -92,18 +100,41 @@ def nw_lag(h: int) -> int:
     return 5 if h == 1 else h
 
 
-def nw_t(x: np.ndarray, lag: int, min_n: int | None = None) -> float:
-    """Mean over its Newey-West (Bartlett weights) standard error; NaN with fewer than ``min_n`` finite values."""
+def nw_mean_se(x: np.ndarray, lag: int, min_n: int | None = None,
+               session_idx: np.ndarray | None = None) -> float:
+    """HAC standard error of the mean, respecting missing exchange sessions.
+
+    ``session_idx`` is the actual exchange-calendar index, never a compressed row
+    number. Missing observations contribute zero centred score; only pairs exactly
+    k exchange sessions apart contribute at lag k.
+    """
     x = np.asarray(x, dtype=float)
-    x = x[np.isfinite(x)]
+    idx = np.arange(x.size) if session_idx is None else np.asarray(session_idx)
+    if idx.shape != x.shape or np.any(np.diff(idx) <= 0):
+        raise ValueError("session_idx must be increasing and aligned to x")
+    keep = np.isfinite(x)
+    x, idx = x[keep], idx[keep]
     n = len(x)
     if n < (NW_MIN_SESSIONS if min_n is None else min_n):
         return float("nan")
     e = x - x.mean()
-    s = float(e @ e) / n
-    for k in range(1, min(lag, n - 1) + 1):
-        s += 2 * (1 - k / (lag + 1)) * float(e[k:] @ e[:-k]) / n
-    return float(x.mean() / math.sqrt(s / n)) if s > 0 else float("nan")
+    s = float(e @ e)
+    for k in range(1, min(lag, int(idx[-1] - idx[0])) + 1):
+        pos = np.searchsorted(idx, idx + k)
+        valid = pos < n
+        left = np.flatnonzero(valid)
+        left = left[idx[pos[left]] == idx[left] + k]
+        s += 2 * (1 - k / (lag + 1)) * float(e[left] @ e[pos[left]])
+    return math.sqrt(s) / n if s > 0 else float("nan")
+
+
+def nw_t(x: np.ndarray, lag: int, min_n: int | None = None,
+         session_idx: np.ndarray | None = None) -> float:
+    """Mean over its Newey-West (Bartlett weights) standard error."""
+    se = nw_mean_se(x, lag, min_n, session_idx)
+    finite = np.asarray(x, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    return float(finite.mean() / se) if math.isfinite(se) and finite.size else float("nan")
 
 
 def session_ics(x: np.ndarray, y: np.ndarray, grp: np.ndarray | None, risk: np.ndarray | None,
@@ -164,11 +195,15 @@ def parse_features(spec: str) -> tuple[str, list[str] | None]:
 
 
 def _stage_glob(stage: str, year: int | str = "*") -> str:
-    return (C.build_root() / stage / f"year={year}" / "*.parquet").as_posix()
+    actual = os.environ.get("ATX_ALPHA_PANEL_STAGE", "panel") if stage == "panel" else stage
+    actual = os.environ.get("ATX_ALPHA_LABEL_STAGE", "labels") if stage == "labels" else actual
+    return (C.build_root() / actual / f"year={year}" / "*.parquet").as_posix()
 
 
 def _stage_years(stage: str) -> list[int]:
-    base = C.build_root() / stage
+    actual = os.environ.get("ATX_ALPHA_PANEL_STAGE", "panel") if stage == "panel" else stage
+    actual = os.environ.get("ATX_ALPHA_LABEL_STAGE", "labels") if stage == "labels" else actual
+    base = C.build_root() / actual
     return sorted(int(p.name[5:]) for p in base.glob("year=*") if p.is_dir() and any(p.glob("*.parquet")))
 
 
@@ -185,7 +220,7 @@ def resolve_features(con, stage: str, cols: list[str] | None) -> list[str]:
     if cols is None:
         if stage == "panel":
             raise ValueError("stage panel needs an explicit column list")
-        return [c for c, t in schema.items() if c not in KEYS and t.split("(")[0] in NUMERIC]
+        return [c for c, t in schema.items() if c not in METADATA and t.split("(")[0] in NUMERIC]
     missing = [c for c in cols if c not in schema]
     if missing:
         raise ValueError(f"{stage}: unknown columns {missing}")
@@ -197,14 +232,33 @@ def check_labels(con, cal: list[dt.date]) -> dt.date:
 
     Returns the TRAIN end (the last decision session whose 1-day label fits the cutoff)."""
     idx_of = {d: i for i, d in enumerate(cal)}
+    if len(idx_of) != len(cal) or cal != sorted(cal):
+        raise ValueError("exchange calendar must contain sorted unique sessions")
+    if LABEL_CUTOFF not in idx_of:
+        raise HoldoutViolation(f"label cutoff {LABEL_CUTOFF} is not an exchange session")
     cut_idx = idx_of[LABEL_CUTOFF]
-    train_end = cal[cut_idx - 2]
+    train_end = cal[cut_idx - min(HORIZONS) - 1]
     glob = _stage_glob("labels")
     if not _stage_years("labels"):
         raise FileNotFoundError("labels stage is missing (build it with atx_db.alpha_panel.labels)")
+    con.execute("CREATE OR REPLACE TEMP TABLE eval_calendar (session_date DATE)")
+    con.executemany("INSERT INTO eval_calendar VALUES (?)", [(d,) for d in cal])
+    off = con.execute(f"SELECT l.session_date FROM read_parquet('{glob}') l ANTI JOIN eval_calendar c "
+                      "USING(session_date) LIMIT 1").fetchone()
+    if off:
+        raise HoldoutViolation(f"label decision session {off[0]} is outside the exchange calendar")
+    duplicate = con.execute(f"SELECT session_date, security_id FROM read_parquet('{glob}') "
+                            "GROUP BY ALL HAVING count(*) > 1 LIMIT 1").fetchone()
+    if duplicate:
+        raise ValueError(f"duplicate label key {duplicate}")
     top = con.execute(f"SELECT max(session_date) FROM read_parquet('{glob}')").fetchone()[0]
     if top is not None and top > train_end:
-        raise HoldoutViolation(f"label decision session {top} is after the TRAIN end {train_end}")
+        label_manifest = C.build_root() / os.environ.get("ATX_ALPHA_LABEL_STAGE", "labels") / "manifest.json"
+        strict = label_manifest.exists() and C.read_json(label_manifest).get("label_policy") == "strict"
+        has_late = con.execute(f"SELECT count(*) FROM read_parquet('{glob}') WHERE session_date > DATE '{train_end}' "
+                              f"AND ({' OR '.join(f'fwd_{h} IS NOT NULL' for h in HORIZONS)})").fetchone()[0]
+        if not (ALLOW_CENSORED_TAIL or strict) or top > LABEL_CUTOFF or has_late:
+            raise HoldoutViolation(f"label decision session {top} is after the TRAIN end {train_end}")
     for h in HORIZONS:
         d = con.execute(f"SELECT max(session_date) FROM read_parquet('{glob}') WHERE fwd_{h} IS NOT NULL").fetchone()[0]
         if d is None:
@@ -245,7 +299,7 @@ class Series:
         self.risk.append(res[2])
 
 
-def _stat(s: Series, sel: np.ndarray, h: int) -> dict[str, Any] | None:
+def _stat(s: Series, sel: np.ndarray, h: int, calendar: list[dt.date] | None = None) -> dict[str, Any] | None:
     if not sel.any():
         return None
     lag = nw_lag(h)
@@ -253,29 +307,56 @@ def _stat(s: Series, sel: np.ndarray, h: int) -> dict[str, Any] | None:
     ind = np.frombuffer(s.ind, dtype=np.float64)[sel]
     risk = np.frombuffer(s.risk, dtype=np.float64)[sel]
     n = np.frombuffer(s.n, dtype=np.int32)[sel]
+    days = np.frombuffer(s.date, dtype=np.int32)[sel]
+    if calendar is None:
+        idx = np.arange(raw.size)
+    else:
+        cal_days = np.asarray(calendar, dtype="datetime64[D]").astype(np.int32)
+        idx = np.searchsorted(cal_days, days)
 
     def m(v: np.ndarray) -> float:
         v = v[np.isfinite(v)]
         return float(v.mean()) if v.size else float("nan")
 
-    return {"sessions": int(raw.size), "names_mean": _num(float(n.mean()), 2), "ic_mean": _num(m(raw)),
-            "nw_t": _num(nw_t(raw, lag), 3), "pos_share": _num(float((raw > 0).mean()), 4),
-            "ind_ic_mean": _num(m(ind)), "ind_nw_t": _num(nw_t(ind, lag), 3),
-            "risk_ic_mean": _num(m(risk)), "risk_nw_t": _num(nw_t(risk, lag), 3)}
+    finite = np.isfinite(raw)
+    out = {"sessions": int(finite.sum()), "names_mean": _num(float(n[finite].mean()), 2) if finite.any() else None,
+           "ic_mean": _num(m(raw)), "nw_t": _num(nw_t(raw, lag, session_idx=idx), 3),
+           "pos_share": _num(float((raw[finite] > 0).mean()), 4) if finite.any() else None,
+           "ind_ic_mean": _num(m(ind)), "ind_nw_t": _num(nw_t(ind, lag, session_idx=idx), 3),
+           "risk_ic_mean": _num(m(risk)), "risk_nw_t": _num(nw_t(risk, lag, session_idx=idx), 3),
+           "eligible_sessions": int(raw.size), "ind_sessions": int(np.isfinite(ind).sum()),
+           "risk_sessions": int(np.isfinite(risk).sum()), "nw_lag_sessions": lag}
+    for name, vals in (("ic", raw), ("ind_ic", ind), ("risk_ic", risk)):
+        se = nw_mean_se(vals, lag, session_idx=idx)
+        mean = m(vals)
+        out[f"{name}_se"] = _num(se)
+        out[f"{name}_ci95"] = [_num(mean - 1.96 * se), _num(mean + 1.96 * se)]
+    return out
 
 
-def _summaries(s: Series, h: int) -> dict[str, Any]:
+def selection_end(calendar: list[dt.date], h: int) -> dt.date | None:
+    """Last selection decision whose entire forward window predates validation."""
+    ends = [i for i, d in enumerate(calendar) if d < VALIDATION_START and d <= LABEL_CUTOFF]
+    decision = ends[-1] - h - 1 if ends else -1
+    return calendar[decision] if decision >= 0 else None
+
+
+def _summaries(s: Series, h: int, calendar: list[dt.date] | None = None) -> dict[str, Any]:
     days = np.frombuffer(s.date, dtype=np.int32)
     d64 = days.astype("datetime64[D]")
 
     def win(a: dt.date, b: dt.date) -> np.ndarray:
         return (d64 >= np.datetime64(a)) & (d64 <= np.datetime64(b))
 
-    out: dict[str, Any] = {"DISCOVERY": _stat(s, win(*DISCOVERY), h),
-                           "TRAIN": _stat(s, d64 >= np.datetime64(TRAIN_START), h), "years": {}}
+    end = selection_end(calendar, h) if calendar else None
+    selection = win(TRAIN_START, end) if end is not None else np.zeros(days.size, dtype=bool)
+    out: dict[str, Any] = {"DISCOVERY": _stat(s, win(*DISCOVERY), h, calendar),
+                           "TRAIN": _stat(s, d64 >= np.datetime64(TRAIN_START), h, calendar),
+                           "SELECTION": _stat(s, selection, h, calendar),
+                           "VALIDATION": _stat(s, d64 >= np.datetime64(VALIDATION_START), h, calendar), "years": {}}
     yrs = d64.astype("datetime64[Y]").astype(int) + 1970
     for y in sorted(set(yrs.tolist())):
-        out["years"][str(y)] = _stat(s, yrs == y, h)
+        out["years"][str(y)] = _stat(s, yrs == y, h, calendar)
     return out
 
 
@@ -313,7 +394,7 @@ def _fetch_block(con, stage: str, year: int, cols: list[str], n: int, step: int 
 def _month_ends(cal: list[dt.date], train_end: dt.date) -> list[dt.date]:
     last: dict[tuple[int, int], dt.date] = {}
     for d in cal:
-        if TRAIN_START <= d <= train_end:
+        if TRAIN_START <= d <= train_end and d < VALIDATION_START:
             last[(d.year, d.month)] = d
     return sorted(last.values())
 
@@ -421,6 +502,7 @@ def run(features: list[tuple[str, list[str] | None]], out: Path | None = None,
 def _run(con, features: list[tuple[str, list[str] | None]], out: Path | None,
          overlap: tuple[str, list[str] | None] | None) -> dict[str, Any]:
     cal = C.load_calendar(con)
+    cal_index = {int(np.datetime64(d).astype("datetime64[D]").astype(np.int32)): i for i, d in enumerate(cal)}
     train_end = check_labels(con, cal)
     notices: list[str] = []
     feats: list[tuple[str, str]] = []
@@ -446,6 +528,12 @@ def _run(con, features: list[tuple[str, list[str] | None]], out: Path | None,
     bufs: dict[int, collections.deque] = {bi: collections.deque(maxlen=21) for bi in range(len(batches))}
     gpos = {f: i for i, f in enumerate(feats)}
     for year in years:
+        for stage in {"panel", *(s for s, _ in feats), *(s for s, _ in ovl_cols)}:
+            if year in _stage_years(stage):
+                duplicate = con.execute(f"SELECT session_date, security_id FROM read_parquet('{_stage_glob(stage, year)}') "
+                                        "GROUP BY ALL HAVING count(*) > 1 LIMIT 1").fetchone()
+                if duplicate:
+                    raise ValueError(f"duplicate {stage} key {duplicate}")
         con.execute(f"""
             CREATE OR REPLACE TABLE meta AS
             SELECT row_number() OVER (ORDER BY p.session_date, p.security_id) - 1 AS rn, p.session_date, p.security_id,
@@ -479,13 +567,6 @@ def _run(con, features: list[tuple[str, list[str] | None]], out: Path | None,
                 risk = np.column_stack([_f(got[r]) for r in RISK_COLS])
             else:
                 risk = None
-        stage_sessions: dict[str, set[int]] = {}
-        for stage in {b[0] for b in batches}:
-            if year in _stage_years(stage):
-                got = con.execute(f"SELECT DISTINCT session_date FROM read_parquet('{_stage_glob(stage, year)}')").fetchnumpy()
-                stage_sessions[stage] = set(np.asarray(got["session_date"]).astype("datetime64[D]").astype(np.int32).tolist())
-            else:
-                stage_sessions[stage] = set()
         train_end_i = int(np.datetime64(train_end).astype("datetime64[D]").astype(np.int32))
         cutoff_i = int(np.datetime64(LABEL_CUTOFF).astype("datetime64[D]").astype(np.int32))
         first_i = int(np.datetime64(FIRST_SESSION).astype("datetime64[D]").astype(np.int32))
@@ -495,16 +576,17 @@ def _run(con, features: list[tuple[str, list[str] | None]], out: Path | None,
             for a, b in itertools.pairwise(edges):
                 di = int(dates[a])
                 sl = slice(a, b)
-                if di in stage_sessions[stage]:
-                    share = np.isfinite(X[sl]).mean(axis=0)
-                    for k, g in enumerate(gj):
-                        cell = cov_sum[g][year]
-                        cell[0] += float(share[k])
-                        cell[1] += 1
+                share = np.isfinite(X[sl]).mean(axis=0)
+                for k, g in enumerate(gj):
+                    cell = cov_sum[g][year]
+                    cell[0] += float(share[k])
+                    cell[1] += 1
                 cur_ids, cur_X = ids[sl], X[sl]
                 buf = bufs[bi]
                 for lag in (1, 21):
                     if di <= cutoff_i and len(buf) >= lag:  # return-valued features: no post-cutoff sessions (GC1, R7)
+                        if cal_index[di] - cal_index[buf[-lag][0]] != lag:
+                            continue
                         pid, pX = buf[-lag][1], buf[-lag][2]
                         _c, ia, ib = np.intersect1d(cur_ids, pid, assume_unique=True, return_indices=True)
                         if ia.size >= MIN_NAMES:
@@ -540,26 +622,56 @@ def _run(con, features: list[tuple[str, list[str] | None]], out: Path | None,
         gc.collect()
         print(f"ic_eval: year {year} done", flush=True)
     red, pair_info = _redundancy(con, cal, train_end, feats, ovl_cols, notices) if feats else ({}, {"pairs": {}, "months": [], "overlap": {}})
+    sel_ends = {f"h{h}": selection_end(cal, h) for h in HORIZONS}
+    sel_end = max((d for d in cal if TRAIN_START <= d < VALIDATION_START and d <= LABEL_CUTOFF), default=None)
     result: dict[str, Any] = {
         "schema": SCHEMA, "generated_utc": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "label_cutoff": str(LABEL_CUTOFF), "train_end": str(train_end),
-        "windows": {"DISCOVERY": [str(DISCOVERY[0]), str(DISCOVERY[1])], "TRAIN": [str(TRAIN_START), str(train_end)]},
+        "windows": {"DISCOVERY": [str(DISCOVERY[0]), str(DISCOVERY[1])], "TRAIN": [str(TRAIN_START), str(train_end)],
+                    "SELECTION": [str(TRAIN_START), str(sel_end) if sel_end else None],
+                    "VALIDATION": [str(VALIDATION_START), str(train_end)]},
+        "validation_protocol": {"selection_decision_ends": {h: str(d) if d else None for h, d in sel_ends.items()},
+                                "purge_sessions": {f"h{h}": h + 1 for h in HORIZONS},
+                                "feature_sign": "fixed prior sign; no return-fitted sign flips",
+                                "selection_window": "SELECTION", "validation_window": "VALIDATION",
+                                "uncertainty": "Newey-West Bartlett HAC on actual exchange-session indices; lag=max(5 for h1, h)",
+                                "sealed_return_years": [2024, 2025, 2026],
+                                "selection_multiple_testing": "exploratory screening; held-out validation required"},
         "horizons": list(HORIZONS), "universes": list(UNIVERSES), "min_names": MIN_NAMES,
         "autocorr_window": [str(FIRST_SESSION), str(LABEL_CUTOFF)],
         "risk_adjustment": {"available": risk_ok, "inputs": list(RISK_COLS)},
         "last_panel_session": str(last_panel), "notices": notices,
+        "panel_stage": os.environ.get("ATX_ALPHA_PANEL_STAGE", "panel"),
+        "label_stage": os.environ.get("ATX_ALPHA_LABEL_STAGE", "labels"),
+        "label_policy": "legacy",
+        "input_manifests_sha256": {f"{stage}/manifest.json": C.sha256_file(C.build_root() / stage / "manifest.json")
+                                   for stage in {os.environ.get("ATX_ALPHA_PANEL_STAGE", "panel"), os.environ.get("ATX_ALPHA_LABEL_STAGE", "labels"), "characteristics",
+                                                 *(s for s, _ in feats if s != "panel")}
+                                   if (C.build_root() / stage / "manifest.json").exists()},
         "features_requested": [f"{s}:{c}" for s, c in feats], "features": {}}
+    label_manifest = C.build_root() / result["label_stage"] / "manifest.json"
+    if label_manifest.exists():
+        label_meta = C.read_json(label_manifest)
+        result["label_policy"] = label_meta.get("label_policy", "legacy")
+        result["label_quality_attrition"] = label_meta.get("quality_attrition", {})
+        source_rel = f"{result['panel_stage']}/manifest.json"
+        pinned = label_meta.get("input_manifests_sha256", {})
+        if source_rel not in pinned and result["label_policy"] == "strict":
+            raise ValueError("strict labels do not bind the evaluator panel manifest")
+        if source_rel in pinned and (C.build_root() / source_rel).exists() and pinned[source_rel] != C.sha256_file(C.build_root() / source_rel):
+            raise ValueError("label panel manifest differs from current evaluator input")
     for g, (stage, col) in enumerate(feats):
         entry: dict[str, Any] = {"stage": stage, "column": col, "ic": {}}
         entry["coverage"] = {str(y): _num(v[0] / v[1], 4) for y, v in sorted(cov_sum[g].items()) if v[1]}
+        entry["coverage_sessions"] = {str(y): int(v[1]) for y, v in sorted(cov_sum[g].items())}
         entry["rank_autocorr"] = {f"lag{k}": _num(float(np.mean(ac[g][k])), 4) if ac[g][k] else None for k in (1, 21)}
         for h in HORIZONS:
-            entry["ic"][f"h{h}"] = {u: _summaries(series[(g, h, u)], h) for u in UNIVERSES if (g, h, u) in series}
+            entry["ic"][f"h{h}"] = {u: _summaries(series[(g, h, u)], h, cal) for u in UNIVERSES if (g, h, u) in series}
         key = f"{stage}:{col}"
         entry["overlap"] = pair_info["overlap"].get(key)
         entry["redundancy"] = red.get(key)
         result["features"][key] = entry
-    result["pairwise_redundancy"] = {"months": pair_info["months"], "pairs": pair_info["pairs"]}
+    result["pairwise_redundancy"] = {"window": "SELECTION", "months": pair_info["months"], "pairs": pair_info["pairs"]}
     if out is not None:
         C.write_json_atomic(out, result)
     return result
@@ -571,9 +683,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--overlap-with", default=None, help="<stage>:<col,...>")
     ap.add_argument("--memory", default="220MB")
+    ap.add_argument("--threads", type=int, default=2)
     a = ap.parse_args(argv)
     res = run([parse_features(s) for s in a.features], a.out,
-              overlap=parse_features(a.overlap_with) if a.overlap_with else None, memory=a.memory)
+              overlap=parse_features(a.overlap_with) if a.overlap_with else None, memory=a.memory, threads=a.threads)
     print(f"ic_eval: {len(res['features'])} features -> {a.out}")
     return 0
 

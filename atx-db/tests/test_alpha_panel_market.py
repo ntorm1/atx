@@ -65,6 +65,21 @@ def test_monthly_weights_are_last_session_of_prior_month(mi):
     assert got[5] == 2 and out[(D(2019, 3, 31), "member_common")][5] == 3   # line 3 member at end of February
 
 
+def test_build_index_writes_daily_and_monthly_rows(mi, tmp_path):
+    con, m, cal = mi
+    rec: dict = {}
+    m.build_index(con, rec)
+    out = pq.read_table(tmp_path / "market" / "index_returns.parquet").to_pylist()
+    months = sorted({r["period_end"] for r in out if r["freq"] == "M"})
+    assert months == [D(2019, 2, 28), D(2019, 3, 31)]           # January has no prior month-end weights
+    assert {(r["universe"], r["weighting"]) for r in out} == {(u, w) for u in ("all_common", "member_common")
+                                                             for w in ("VW", "EW")}
+    daily = [r for r in out if r["freq"] == "D" and r["universe"] == "all_common" and r["weighting"] == "VW"]
+    assert len(daily) == len(cal) - 1 and rec["index_rows"] == len(out)
+    feb = next(r for r in out if r["freq"] == "M" and r["period_end"] == D(2019, 2, 28))
+    assert feb["available_at"] == dt.datetime(2019, 2, 28, 22)
+
+
 def test_holdout_blocks_return_statistics_after_2022(mi):
     con, m, _ = mi
     with pytest.raises(ValueError, match="D6"):
@@ -76,3 +91,65 @@ def test_pearson():
     assert pearson([1, 2, 3, 4], [2, 4, 6, 8]) == pytest.approx(1.0)
     assert pearson([1, 2, 3, 4], [4, 3, 2, 1]) == pytest.approx(-1.0)
     assert pearson([1, 2], [1, 2]) is None
+
+
+@pytest.fixture()
+def hist(tmp_path, monkeypatch):
+    """Pre-stage bars (rule crsp-index-history-v1): lines 1, 2 are in ``u`` on its first session, line 3 is not."""
+    monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT", str(tmp_path))
+    from atx_db.alpha_panel import common, market_common, market_index
+    importlib.reload(common)
+    importlib.reload(market_common)
+    importlib.reload(market_index)
+    con = common.connect(memory="100MB", threads=1)
+    con.execute("""CREATE TABLE u (session_date DATE, security_id BIGINT, cik BIGINT, is_primary BOOLEAN,
+                   exchange VARCHAR, ret DOUBLE, ret_guarded BOOLEAN, member_common BOOLEAN, me DOUBLE)""")
+    con.executemany("INSERT INTO u VALUES (?, 1, 1, true, 'XNYS', 0.0, false, true, 1.0)", [(D(2018, 3, 1),)])
+    con.executemany("INSERT INTO u VALUES (?, 2, 2, true, 'XNYS', 0.0, false, true, 1.0)", [(D(2018, 3, 1),)])
+    con.executemany("INSERT INTO u VALUES (?, 3, 3, true, 'XNYS', 0.0, false, true, 1.0)", [(D(2018, 3, 2),)])
+    days = sessions(D(2017, 12, 1), D(2018, 2, 28))
+    rows = []
+    for i, d in enumerate(days):
+        for sid, r, shares in ((1, 0.01, 10.0), (2, -0.01, 30.0), (3, 0.02, 1000.0)):
+            guarded = sid == 2 and d == D(2018, 2, 14)
+            rows.append((sid, d, 10 * (1 + r) ** i, shares, r if i else None, guarded))
+    con.execute("""CREATE TABLE hb (security_id BIGINT, session_date DATE, close DOUBLE, shares_vendor DOUBLE,
+                   ret DOUBLE, ret_guarded BOOLEAN)""")
+    con.executemany("INSERT INTO hb VALUES (?, ?, ?, ?, ?, ?)", rows)
+    return con, market_index, days
+
+
+def test_history_months_weight_prior_month_end_vendor_me(hist):
+    con, m, days = hist
+    out = {r[0]: r for r in con.execute(m.history_monthly_sql("hb", D(2018, 1, 1), D(2018, 3, 1))).fetchall()}
+    assert sorted(out) == [D(2018, 1, 1), D(2018, 2, 1)]                 # December is lookback only
+    k = days.index(max(d for d in days if d.month == 12))
+    jan = [d for d in days if d.month == 1]
+    w1, w2 = 10 * 10 * 1.01 ** k, 30 * 10 * 0.99 ** k
+    r1, r2 = 1.01 ** len(jan) - 1, 0.99 ** len(jan) - 1
+    assert out[D(2018, 1, 1)][1] == pytest.approx((w1 * r1 + w2 * r2) / (w1 + w2))   # line 3 not in u at its start
+    assert out[D(2018, 1, 1)][3] == 2
+    feb = [d for d in days if d.month == 2]
+    assert out[D(2018, 2, 1)][3] == 1                                    # line 2 has a guarded day in February
+    assert out[D(2018, 2, 1)][1] == pytest.approx(1.01 ** len(feb) - 1)
+
+
+def test_market_history_check_splices_stage_and_adds_rf_back(hist, monkeypatch):
+    con, m, _ = hist
+    monkeypatch.setattr(m, "HISTORY_START", D(2018, 1, 1))
+    stage = {D(2018, 3, 1): 0.02, D(2018, 4, 1): -0.03, D(2018, 5, 1): 0.05}
+    con.execute("CREATE TABLE idx (freq VARCHAR, period_end DATE, universe VARCHAR, vw DOUBLE)")
+    for mo, v in stage.items():
+        end = D(mo.year, mo.month + 1, 1) - dt.timedelta(days=1)
+        con.execute("INSERT INTO idx VALUES ('M', ?, 'all_common', ?), ('M', ?, 'member_common', 0.0)", [end, v, end])
+    hrows = {r[0]: r[1] for r in con.execute(m.history_monthly_sql("hb", D(2018, 1, 1), D(2018, 3, 1))).fetchall()}
+    series = {**hrows, **stage}
+    rf = {mo: 0.001 * (i + 1) for i, mo in enumerate(sorted(series))}
+    ff3m = {mo: (v - rf[mo], 0.0, 0.0, rf[mo]) for mo, v in series.items()}   # French Mkt-RF = ours - RF
+    res = m.market_history_check(con, D(2022, 12, 31), ff3m, bars_for=lambda splice: "hb")
+    assert res["splice_month"] == "2018-03-01" and res["months"] == 5
+    assert res["history_months"] == 2 and res["stage_months"] == 3
+    assert res["monthly_rho"] == pytest.approx(1.0) and res["monthly_mean_diff"] == pytest.approx(0.0, abs=1e-12)
+    assert res["missing_months"] == []
+    none = m.market_history_check(con, D(2022, 12, 31), ff3m, bars_for=lambda splice: None)
+    assert none["history_months"] == 0 and none["missing_months"] == ["2018-01-01", "2018-02-01"]

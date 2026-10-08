@@ -1,0 +1,12 @@
+{
+  "stage": "fundamentals_v11",
+  "path": "data/alpha_panel/v1/fundamentals_v11",
+  "schema_id": "atx.alpha-panel.fundamentals/v2",
+  "keys": {
+    "events": ["cik", "accession"],
+    "catalog": ["cik", "accession"],
+    "quarterly_history": ["cik", "item", "period_end", "accession", "available_at", "currency"]
+  },
+  "status": "UNPUBLISHED_IMPLEMENTATION_PENDING_ACCEPTANCE",
+  "asof_sql": "SELECT * FROM read_parquet('<root>/fundamentals_v11/events.parquet') WHERE available_at < t QUALIFY row_number() OVER (PARTITION BY cik ORDER BY available_at DESC, accession DESC) = 1"
+}

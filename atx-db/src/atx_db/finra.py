@@ -3,15 +3,26 @@ from __future__ import annotations
 import calendar
 import csv
 import datetime as dt
+import email.utils
+import gzip
+import hashlib
 import io
+import json
 import logging
+import os
 import time
+import zlib
+from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable, Literal
+from urllib.parse import urljoin
 
 import pandas as pd
 import requests
 
+from .calendar import next_session
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .sec_http import PUBLIC_DATA_USER_AGENT
@@ -727,3 +738,602 @@ class FinraShortInterestDataset(Dataset):
             """,
             [self.dataset_id, max_date],
         )
+
+
+# ---------------------------------------------------------------------------
+# Fetch half (tier-1 v2 X.2 Steps 1-2, ruling C-91): FINRA files + receipts, no warehouse
+# ---------------------------------------------------------------------------
+
+#: FINRA is not SEC, but it is fetched politely: one paced client per process, never above 5 requests/second.
+FINRA_MAX_REQUESTS_PER_SECOND = 5.0
+FINRA_DEFAULT_REQUESTS_PER_SECOND = 4.0
+FINRA_RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+#: CloudFront answers a file that is not (yet) published with 403 AccessDenied (sometimes 404).
+FINRA_ABSENT_STATUS_CODES = frozenset({403, 404})
+_FINRA_TRANSIENT_ERRORS = (
+    requests.ConnectionError,
+    requests.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+    requests.exceptions.ContentDecodingError,
+)
+_FINRA_MAX_BACKOFF_SECONDS = 120.0
+
+#: Short interest is published 7 business (XNYS) days after its settlement date: the FINRA reporting
+#: schedule's Publication Date column (every 2025/2026 row reproduces, task-X.12-fetch-report.md).
+SHORT_INTEREST_PUBLICATION_LAG_SESSIONS = 7
+#: Official twice-monthly files (from 2018-11; exchange-listed issues only from June 2021 on).
+SHORT_INTEREST_CDN_URL = "https://cdn.finra.org/equity/otcmarket/biweekly/shrt{day:%Y%m%d}.csv"
+#: OTC-only static archive (settlements 2014-11-14 .. 2019-06-28), listed by the OTCE app's JSON index.
+SHORT_INTEREST_ARCHIVE_INDEX_URL = (
+    "https://otce.finra.org/otce/assets/archives/equityShortInterest/equityShortInterest.json"
+)
+SHORT_INTEREST_ARCHIVE_BASE_URL = "https://otce.finra.org/otce/"
+#: settlementDate is the dataset's partition key: with its EQUAL filter a sort is allowed, so pages are stable.
+SHORT_INTEREST_API_SORT = ("symbolCode", "marketClassCode")
+FINRA_RECEIPTS_NAME = "receipts.jsonl"
+FINRA_OK_OUTCOMES = frozenset({"fetched", "verified"})
+
+
+def short_interest_publication_date(settlement_date: dt.date) -> dt.date:
+    """Settlement date + 7 XNYS sessions: the day FINRA publishes that settlement's short interest."""
+
+    day = settlement_date
+    for _ in range(SHORT_INTEREST_PUBLICATION_LAG_SESSIONS):
+        day = next_session(day)
+    return day
+
+
+def _retry_after_seconds(response: requests.Response) -> float:
+    value = response.headers.get("Retry-After")
+    if not value:
+        return 0.0
+    value = value.strip()
+    if value.isdigit():
+        return min(float(value), _FINRA_MAX_BACKOFF_SECONDS)
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=dt.UTC)
+    return min(max((when - dt.datetime.now(dt.UTC)).total_seconds(), 0.0), _FINRA_MAX_BACKOFF_SECONDS)
+
+
+class PoliteFinraClient:
+    """One paced ``requests`` session for FINRA public data (api / cdn / otce.finra.org).
+
+    Every attempt (retries included) is spaced at least ``1 / requests_per_second`` apart, at most 5/s;
+    429/5xx and transport errors are retried with exponential backoff (``Retry-After`` honored, capped at
+    120 s). The body is read inside the retry scope. The user agent is descriptive and carries no contact
+    address. :meth:`stats` reports the observed rate (``max_in_any_second`` over the whole run).
+    """
+
+    def __init__(
+        self,
+        *,
+        user_agent: str = PUBLIC_DATA_USER_AGENT,
+        requests_per_second: float = FINRA_DEFAULT_REQUESTS_PER_SECOND,
+        max_attempts: int = 6,
+        backoff_s: float = 2.0,
+        timeout: float = 60.0,
+    ) -> None:
+        if not 0 < requests_per_second <= FINRA_MAX_REQUESTS_PER_SECOND:
+            raise ValueError(f"requests_per_second must be in (0, {FINRA_MAX_REQUESTS_PER_SECOND}]")
+        if "@" in user_agent:
+            raise ValueError("FINRA requests must not carry a contact address in the user agent")
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+        self.user_agent = user_agent
+        self.requests_per_second = requests_per_second
+        self.interval = 1.0 / requests_per_second
+        self.max_attempts = max_attempts
+        self.backoff_s = backoff_s
+        self.timeout = timeout
+        self.session = requests.Session()
+        self.session.headers.update({"User-Agent": user_agent, "Accept-Encoding": "gzip, deflate"})
+        self._next_slot = 0.0
+        self._window: deque[float] = deque()
+        self.requests = 0
+        self.retries = 0
+        self.transport_errors = 0
+        self.max_in_any_second = 0
+        self.first_request_at: float | None = None
+        self.last_request_at: float | None = None
+        self.status_counts: dict[int, int] = {}
+
+    def _pace(self) -> None:
+        now = time.monotonic()
+        if now < self._next_slot:
+            time.sleep(self._next_slot - now)
+            now = time.monotonic()
+        self._next_slot = now + self.interval
+        self._window.append(now)
+        while now - self._window[0] >= 1.0:
+            self._window.popleft()
+        self.max_in_any_second = max(self.max_in_any_second, len(self._window))
+        self.requests += 1
+        wall = time.time()
+        if self.first_request_at is None:
+            self.first_request_at = wall
+        self.last_request_at = wall
+
+    def _backoff(self, attempt: int) -> float:
+        return min(self.backoff_s * (2 ** (attempt - 1)), _FINRA_MAX_BACKOFF_SECONDS)
+
+    def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        kwargs.setdefault("timeout", self.timeout)
+        for attempt in range(1, self.max_attempts + 1):
+            self._pace()
+            try:
+                response = self.session.request(method, url, **kwargs)
+                _ = response.content  # read the whole body inside the retry scope
+            except _FINRA_TRANSIENT_ERRORS as exc:
+                self.transport_errors += 1
+                if attempt >= self.max_attempts:
+                    raise
+                self.retries += 1
+                logging.warning("FINRA %s %s attempt %d failed: %s", method, url, attempt, type(exc).__name__)
+                time.sleep(self._backoff(attempt))
+                continue
+            self.status_counts[response.status_code] = self.status_counts.get(response.status_code, 0) + 1
+            if response.status_code in FINRA_RETRY_STATUS_CODES and attempt < self.max_attempts:
+                self.retries += 1
+                time.sleep(max(self._backoff(attempt), _retry_after_seconds(response)))
+                continue
+            return response
+        raise AssertionError("unreachable")
+
+    def get(self, url: str, **kwargs: Any) -> requests.Response:
+        return self.request("GET", url, **kwargs)
+
+    def post(self, url: str, **kwargs: Any) -> requests.Response:
+        return self.request("POST", url, **kwargs)
+
+    def stats(self) -> dict[str, Any]:
+        span = (self.last_request_at or 0.0) - (self.first_request_at or 0.0)
+        return {
+            "user_agent": self.user_agent,
+            "configured_requests_per_second": self.requests_per_second,
+            "requests": self.requests,
+            "retries": self.retries,
+            "transport_errors": self.transport_errors,
+            "status_counts": {str(key): value for key, value in sorted(self.status_counts.items())},
+            "max_requests_in_any_1s_window": self.max_in_any_second,
+            "span_s": round(span, 1),
+            "mean_requests_per_second": round(self.requests / span, 3) if span > 0 else None,
+        }
+
+    def close(self) -> None:
+        self.session.close()
+
+
+def write_gzip_object(payload: bytes, destination: Path) -> str:
+    """Store ``payload`` at ``destination`` gzip-compressed (level 6, mtime 0), atomically; return its raw sha256.
+
+    Same convention as the SEC fetch store (ruling C-71): sha256 and ``bytes`` in a receipt are over the raw
+    bytes, the file at rest is ``<name>.gz``.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    part = destination.with_name(destination.name + ".part")
+    with part.open("wb") as handle:
+        handle.write(gzip.compress(payload, compresslevel=6, mtime=0))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(part, destination)
+    return hashlib.sha256(payload).hexdigest()
+
+
+def gzip_object_verifies(path: Path, sha256: str | None, size: int | None) -> bool:
+    """True when ``path`` decompresses to exactly ``size`` bytes hashing to ``sha256``."""
+
+    try:
+        raw = gzip.decompress(path.read_bytes())
+    except (OSError, EOFError, zlib.error):
+        return False
+    return len(raw) == size and hashlib.sha256(raw).hexdigest() == sha256
+
+
+class FinraReceiptStore:
+    """``receipts.jsonl`` under one fetch root: one fsynced JSON line per outcome; the newest line per key wins.
+
+    One fetch process writes a root at a time. A line torn by a kill is counted (``corrupt_lines``) and
+    isolated by a leading newline on the next append.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.path = root / FINRA_RECEIPTS_NAME
+        self.newest: dict[str, dict[str, Any]] = {}
+        self.lines = 0
+        self.corrupt_lines = 0
+
+    def load(self) -> FinraReceiptStore:
+        self.newest, self.lines, self.corrupt_lines = {}, 0, 0
+        if self.path.is_file():
+            with self.path.open("rb") as handle:
+                for raw in handle:
+                    if not raw.strip():
+                        continue
+                    self.lines += 1
+                    try:
+                        record = json.loads(raw)
+                        self.newest[str(record["key"])] = record
+                    except (ValueError, KeyError, TypeError):
+                        self.corrupt_lines += 1
+        return self
+
+    def get(self, key: str) -> dict[str, Any] | None:
+        return self.newest.get(key)
+
+    def append(self, record: dict[str, Any]) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(record, sort_keys=True, default=str).encode("utf-8") + b"\n"
+        with self.path.open("ab+") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell():
+                handle.seek(-1, os.SEEK_END)
+                if handle.read(1) != b"\n":
+                    handle.write(b"\n")
+            handle.write(line)
+            handle.flush()
+            os.fsync(handle.fileno())
+        self.newest[str(record["key"])] = record
+
+
+def _utc_now_iso() -> str:
+    return dt.datetime.now(dt.UTC).isoformat(timespec="milliseconds")
+
+
+def _text_file_facts(payload: bytes) -> dict[str, Any]:
+    first_newline = payload.find(b"\n")
+    header = payload[: first_newline if first_newline >= 0 else len(payload)].decode("utf-8", "replace").strip()
+    return {"lines": payload.count(b"\n") + (0 if payload.endswith(b"\n") or not payload else 1), "header": header}
+
+
+def fetch_finra_file(
+    client: PoliteFinraClient,
+    store: FinraReceiptStore,
+    *,
+    key: str,
+    url: str,
+    relative_path: str,
+    data_date: dt.date,
+    run_date: dt.date,
+    extra: dict[str, Any] | None = None,
+    absent_final_days: int = 14,
+    describe: Callable[[bytes], dict[str, Any]] = _text_file_facts,
+) -> dict[str, Any]:
+    """Fetch one FINRA file into ``store.root / relative_path`` (gzip at rest), or verify the retained copy.
+
+    Returns the record with ``outcome``: ``verified`` (retained copy matches its receipt; not requested, not
+    re-appended), ``fetched``, ``absent`` (403/404: not published), ``absent_known`` (an earlier absent
+    receipt for a date more than ``absent_final_days`` before ``run_date``: not requested again) or ``failed``.
+    A retained copy that no longer verifies is refetched.
+    """
+
+    prior = store.get(key)
+    destination = store.root / relative_path
+    if prior is not None:
+        if prior.get("outcome") in FINRA_OK_OUTCOMES and gzip_object_verifies(
+            destination, prior.get("sha256"), prior.get("bytes")
+        ):
+            return {**prior, "outcome": "verified"}
+        if prior.get("outcome") == "absent" and (run_date - data_date).days > absent_final_days:
+            return {**prior, "outcome": "absent_known"}
+    base = {"key": key, "url": url, "file": relative_path, "data_date": data_date.isoformat(), **(extra or {})}
+    try:
+        response = client.get(url)
+    except _FINRA_TRANSIENT_ERRORS as exc:
+        record = {**base, "outcome": "failed", "error": f"{type(exc).__name__}: {exc}"[:300],
+                  "fetched_at": _utc_now_iso()}
+        store.append(record)
+        return record
+    status = int(response.status_code)
+    if status in FINRA_ABSENT_STATUS_CODES:
+        record = {**base, "outcome": "absent", "status": status, "fetched_at": _utc_now_iso()}
+        store.append(record)
+        return record
+    if status != 200:
+        record = {**base, "outcome": "failed", "status": status, "fetched_at": _utc_now_iso(),
+                  "error": response.text[:200]}
+        store.append(record)
+        return record
+    payload = response.content
+    sha256 = write_gzip_object(payload, destination)
+    record = {
+        **base,
+        "outcome": "fetched",
+        "status": status,
+        "bytes": len(payload),
+        "sha256": sha256,
+        "stored_bytes": destination.stat().st_size,
+        "fetched_at": _utc_now_iso(),
+        "last_modified": response.headers.get("Last-Modified"),
+        "etag": response.headers.get("ETag"),
+        "content_type": response.headers.get("Content-Type"),
+        "user_agent": client.user_agent,
+        **describe(payload),
+    }
+    store.append(record)
+    return record
+
+
+def fetch_short_interest_api_date(
+    client: PoliteFinraClient,
+    store: FinraReceiptStore,
+    *,
+    settlement_date: dt.date,
+    record_total: int,
+    api_url: str = API_URL,
+    limit: int = 5000,
+) -> dict[str, Any]:
+    """All rows of one settlement date from the FINRA Query API, in stable (sorted) pages, as one CSV file.
+
+    Stored at ``api/consolidatedShortInterest/<yyyy>/<date>.csv.gz`` (header once, then every page's rows as
+    received). The row count must equal the API's ``record-total``; a retained file is only reused when its
+    receipt's ``record_total`` equals today's (a revised settlement is fetched again).
+    """
+
+    key = f"api:{settlement_date.isoformat()}"
+    relative_path = f"api/consolidatedShortInterest/{settlement_date.year}/{settlement_date.isoformat()}.csv.gz"
+    destination = store.root / relative_path
+    prior = store.get(key)
+    if (
+        prior is not None
+        and prior.get("outcome") in FINRA_OK_OUTCOMES
+        and prior.get("record_total") == record_total
+        and gzip_object_verifies(destination, prior.get("sha256"), prior.get("bytes"))
+    ):
+        return {**prior, "outcome": "verified"}
+
+    header_line: str | None = None
+    columns: list[str] = []
+    parts: list[str] = []
+    keys: set[tuple[str, str]] = set()
+    rows = pages = offset = 0
+    started = time.perf_counter()
+    while offset < record_total:
+        payload = date_payload(settlement_date, limit, offset)
+        payload["sortFields"] = list(SHORT_INTEREST_API_SORT)
+        response = client.post(api_url, json=payload, headers={"Accept": "text/plain"})
+        pages += 1
+        if response.status_code != 200:
+            record = {"key": key, "url": api_url, "outcome": "failed", "status": response.status_code,
+                      "settlement_date": settlement_date.isoformat(), "offset": offset,
+                      "error": response.text[:300], "fetched_at": _utc_now_iso()}
+            store.append(record)
+            return record
+        text = response.text
+        newline = text.find("\n")
+        if newline < 0:
+            break
+        header, data = text[:newline].rstrip("\r"), text[newline + 1 :]
+        if header_line is None:
+            header_line = header
+            columns = next(csv.reader([header]))
+        elif header != header_line:
+            raise RuntimeError(f"FINRA API header changed between pages for {settlement_date}")
+        symbol_index, market_index = columns.index("symbolCode"), columns.index("marketClassCode")
+        page_rows = 0
+        for row in csv.reader(io.StringIO(data)):
+            if row:
+                page_rows += 1
+                keys.add((row[symbol_index], row[market_index]))
+        if page_rows == 0:
+            break
+        parts.append(data if data.endswith("\n") else data + "\n")
+        rows += page_rows
+        offset += page_rows
+    if rows != record_total or header_line is None:
+        record = {"key": key, "url": api_url, "outcome": "failed", "settlement_date": settlement_date.isoformat(),
+                  "record_total": record_total, "rows": rows, "pages": pages,
+                  "error": "row count differs from record-total", "fetched_at": _utc_now_iso()}
+        store.append(record)
+        return record
+    body = (header_line + "\n" + "".join(parts)).encode("utf-8")
+    sha256 = write_gzip_object(body, destination)
+    record = {
+        "key": key,
+        "url": api_url,
+        "request": {
+            "compareFilters": [{"compareType": "EQUAL", "fieldName": "settlementDate",
+                                "fieldValue": settlement_date.isoformat()}],
+            "sortFields": list(SHORT_INTEREST_API_SORT),
+            "limit": limit,
+        },
+        "file": relative_path,
+        "outcome": "fetched",
+        "settlement_date": settlement_date.isoformat(),
+        "publication_date": short_interest_publication_date(settlement_date).isoformat(),
+        "record_total": record_total,
+        "rows": rows,
+        "distinct_symbol_market_keys": len(keys),
+        "pages": pages,
+        "bytes": len(body),
+        "sha256": sha256,
+        "stored_bytes": destination.stat().st_size,
+        "columns": columns,
+        "columns_match_expected": columns == RAW_COLUMNS,
+        "fetch_s": round(time.perf_counter() - started, 3),
+        "fetched_at": _utc_now_iso(),
+        "user_agent": client.user_agent,
+    }
+    store.append(record)
+    return record
+
+
+def _month_coverage(dates: Iterable[dt.date]) -> dict[str, Any]:
+    """Months (between the first and last date) that do not hold exactly two settlement dates."""
+
+    ordered = sorted(set(dates))
+    if not ordered:
+        return {"months": 0, "irregular_months": []}
+    per_month: dict[tuple[int, int], int] = {}
+    for day in ordered:
+        per_month[(day.year, day.month)] = per_month.get((day.year, day.month), 0) + 1
+    irregular = [
+        {"month": f"{year:04d}-{month:02d}", "dates": per_month.get((year, month), 0)}
+        for year, month in month_iter(ordered[0], ordered[-1])
+        if per_month.get((year, month), 0) != 2
+    ]
+    return {"months": len(month_iter(ordered[0], ordered[-1])), "irregular_months": irregular}
+
+
+def _tally(records: list[dict[str, Any]], date_field: str) -> dict[str, Any]:
+    outcomes: dict[str, int] = {}
+    for record in records:
+        outcomes[str(record["outcome"])] = outcomes.get(str(record["outcome"]), 0) + 1
+    ok = [record for record in records if record["outcome"] in FINRA_OK_OUTCOMES]
+    ok_dates = sorted(str(record[date_field]) for record in ok)
+    return {
+        "attempted": len(records),
+        "outcomes": outcomes,
+        "files_ok": len(ok),
+        "raw_bytes": sum(int(record.get("bytes") or 0) for record in ok),
+        "stored_bytes": sum(int(record.get("stored_bytes") or 0) for record in ok),
+        "rows_or_lines": sum(int(record.get("rows") or record.get("lines") or 0) for record in ok),
+        "first_date": ok_dates[0] if ok_dates else None,
+        "last_date": ok_dates[-1] if ok_dates else None,
+        "failed": [
+            {"key": record["key"], "status": record.get("status"), "error": record.get("error")}
+            for record in records
+            if record["outcome"] == "failed"
+        ],
+    }
+
+
+def fetch_short_interest_history(
+    client: PoliteFinraClient,
+    root: Path,
+    *,
+    api_start: dt.date,
+    cdn_start: dt.date,
+    end: dt.date,
+    include_api: bool = True,
+    include_cdn: bool = True,
+    include_archive: bool = True,
+    absent_final_days: int = 14,
+    progress: Callable[[str, int, int, dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Fetch the twice-monthly short-interest history into ``root`` (files + ``receipts.jsonl`` only).
+
+    * ``api``: every settlement date the Query API holds in ``[api_start, end]`` (discovered by record-total
+      probes), all rows per date (exchange-listed + OTC; the API starts at settlement 2017-12-29).
+    * ``cdn``: the official ``shrt<yyyymmdd>.csv`` file for each discovered settlement date >= ``cdn_start``.
+    * ``archive``: the OTC-only static archive listed by the OTCE JSON index (2014-11-14 .. 2019-06-28).
+
+    Every record carries its settlement date and publication date (settlement + 7 XNYS sessions).
+    """
+
+    store = FinraReceiptStore(root).load()
+    summary: dict[str, Any] = {"root": str(root), "receipt_lines_before": store.lines,
+                               "receipt_corrupt_lines": store.corrupt_lines}
+    settlement_totals = discover_settlement_dates(
+        session=client,  # duck-typed: PoliteFinraClient.post paces and retries; post_finra adds no retries
+        api_url=API_URL,
+        start_date=api_start,
+        end_date=end,
+        timeout=int(client.timeout),
+        max_retries=1,
+        retry_sleep=0.0,
+    )
+    dates = sorted(settlement_totals)
+    summary["discovery"] = {
+        "window": [api_start.isoformat(), end.isoformat()],
+        "settlement_dates": len(dates),
+        "first_settlement_date": dates[0].isoformat() if dates else None,
+        "last_settlement_date": dates[-1].isoformat() if dates else None,
+        "record_total_sum": sum(settlement_totals.values()),
+        "min_record_total": min(settlement_totals.values()) if dates else None,
+        "coverage": _month_coverage(dates),
+    }
+
+    if include_api:
+        records = []
+        for index, settlement_date in enumerate(dates, start=1):
+            record = fetch_short_interest_api_date(
+                client, store, settlement_date=settlement_date, record_total=settlement_totals[settlement_date]
+            )
+            records.append(record)
+            if progress:
+                progress("si-api", index, len(dates), record)
+        summary["api"] = _tally(records, "settlement_date")
+        summary["api"]["columns_match_expected_all"] = all(
+            bool(record.get("columns_match_expected")) for record in records if record["outcome"] == "fetched"
+        )
+
+    if include_cdn:
+        cdn_dates = [day for day in dates if day >= cdn_start]
+        records = []
+        for index, settlement_date in enumerate(cdn_dates, start=1):
+            record = fetch_finra_file(
+                client,
+                store,
+                key=f"cdn:{settlement_date.isoformat()}",
+                url=SHORT_INTEREST_CDN_URL.format(day=settlement_date),
+                relative_path=f"cdn/{settlement_date.year}/shrt{settlement_date:%Y%m%d}.csv.gz",
+                data_date=settlement_date,
+                run_date=end,
+                extra={
+                    "settlement_date": settlement_date.isoformat(),
+                    "publication_date": short_interest_publication_date(settlement_date).isoformat(),
+                },
+                absent_final_days=absent_final_days,
+            )
+            records.append(record)
+            if progress:
+                progress("si-cdn", index, len(cdn_dates), record)
+        summary["cdn"] = _tally(records, "settlement_date")
+        summary["cdn"]["absent_settlements"] = [
+            record["settlement_date"] for record in records if record["outcome"] in ("absent", "absent_known")
+        ]
+
+    if include_archive:
+        response = client.get(SHORT_INTEREST_ARCHIVE_INDEX_URL)
+        response.raise_for_status()
+        index_bytes = response.content
+        index_path = f"archive/index/equityShortInterest-{dt.datetime.now(dt.UTC):%Y%m%dT%H%M%SZ}.json.gz"
+        store.append({
+            "key": "archive:index",
+            "url": SHORT_INTEREST_ARCHIVE_INDEX_URL,
+            "file": index_path,
+            "outcome": "fetched",
+            "bytes": len(index_bytes),
+            "sha256": write_gzip_object(index_bytes, store.root / index_path),
+            "fetched_at": _utc_now_iso(),
+            "last_modified": response.headers.get("Last-Modified"),
+        })
+        entries = json.loads(index_bytes)
+        records = []
+        for index, entry in enumerate(sorted(entries, key=lambda item: str(item["path"])), start=1):
+            settlement_date = dt.datetime.strptime(str(entry["date"]), "%m/%d/%Y").date()
+            name = Path(str(entry["path"])).name
+            record = fetch_finra_file(
+                client,
+                store,
+                key=f"archive:{name}",
+                url=urljoin(SHORT_INTEREST_ARCHIVE_BASE_URL, str(entry["path"])),
+                relative_path=f"archive/{settlement_date.year}/{name}.gz",
+                data_date=settlement_date,
+                run_date=end,
+                extra={
+                    "settlement_date": settlement_date.isoformat(),
+                    "publication_date": short_interest_publication_date(settlement_date).isoformat(),
+                },
+                absent_final_days=absent_final_days,
+            )
+            records.append(record)
+            if progress:
+                progress("si-archive", index, len(entries), record)
+        summary["archive"] = _tally(records, "settlement_date")
+        summary["archive"]["index_entries"] = len(entries)
+        summary["archive"]["coverage"] = _month_coverage(
+            dt.date.fromisoformat(record["settlement_date"])
+            for record in records
+            if record["outcome"] in FINRA_OK_OUTCOMES
+        )
+    summary["publication_clock"] = (
+        f"publication_date = settlement_date + {SHORT_INTEREST_PUBLICATION_LAG_SESSIONS} XNYS sessions"
+    )
+    return summary

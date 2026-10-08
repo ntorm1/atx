@@ -4,7 +4,7 @@ The strict links (``identity/links.parquet``, rule r4-links-asof-v1) are point-i
 links; they leave ~40% of the 2024 top-3,000 members unlinked (Alphabet among them) because the r4
 rehearsal only admits dated reconstructed evidence. This module adds a clearly labelled second tier.
 
-Rule ``snapshot-run-backfill-v1``:
+Rule ``snapshot-run-backfill-v2``:
 1. Candidates: r4 ``current_ticker_verified`` P/J links open at the 2026-09-20 snapshot
    (``valid_until`` NULL): the SEC's current ticker -> CIK map verified against the vendor line.
 2. The line's final contiguous run: consecutive vendor sessions of the line with no gap longer than
@@ -22,10 +22,13 @@ issuer fields to strict links. ``available_at`` of a backfill link is the snapsh
 Outputs: ``identity/links_backfill.parquet`` (backfill intervals) and
 ``identity/links_combined.parquet`` (strict + backfill with re-derived primary), both with columns
 ``security_id, cik, start, end_incl, primary, tier, basis, available_at``.
+The additional ``identity/links_pit.parquet`` keeps strict and name links with known-strict
+precedence; its provisional primary is replaced by the bridge's own-tier volume rule.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any
 
@@ -37,7 +40,16 @@ ALIVE_FROM = "2026-09-01"
 PERIODIC = ("10-K", "10-Q", "10-KT", "10-QT", "20-F", "40-F", "10-K/A", "10-Q/A", "20-F/A", "40-F/A")
 
 
+def _a0_s2() -> bool:
+    """Check-only A0 switch S2 (P9 request A0.3): ``ATX_A0_S2=1`` empties the candidate set; unset or 0 is off."""
+    value = os.environ.get("ATX_A0_S2", "0")
+    if value not in ("0", "1"):
+        raise ValueError("ATX_A0_S2 must be unset, 0 or 1")
+    return value == "1"
+
+
 def build() -> dict[str, Any]:
+    s2 = _a0_s2()
     root = C.build_root()
     con = C.connect(memory="600MB", threads=1, db_file="identity_backfill.duckdb")
     links = (C.IDENTITY_R4_DIR / "phases" / "export-001" / "security_company_links.part-0000.parquet").as_posix()
@@ -47,15 +59,17 @@ def build() -> dict[str, Any]:
     sub = (C.FSDS_DIR / "sub" / "*.parquet").as_posix()
     cf = (C.COMPANYFACTS_DIR / "batch-*.parquet").as_posix()
     forms = ", ".join(f"'{f}'" for f in PERIODIC)
-    receipt: dict[str, Any] = {"rule": "snapshot-run-backfill-v1"}
+    receipt: dict[str, Any] = {"rule": "snapshot-run-backfill-v2"}
 
     con.execute(f"""
         CREATE OR REPLACE TABLE cand AS
         SELECT perm_security_id AS security_id, CAST(cik AS BIGINT) AS cik, link_primary AS snap_primary,
                available_at
         FROM read_parquet('{links}')
-        WHERE link_basis = 'current_ticker_verified' AND link_primary IN ('P', 'J') AND valid_until IS NULL
+        WHERE link_basis = 'current_ticker_verified' AND link_primary IN ('P', 'J') AND valid_until IS NULL{" AND FALSE" if s2 else ""}
     """)
+    if s2:  # same schema, no rows: neither pass writes a backfill day
+        receipt["a0_s2"] = True
     receipt["candidates"] = con.execute("SELECT count(*), count(DISTINCT security_id), count(DISTINCT cik) FROM cand").fetchone()
     # a line mapped to two CIKs at the snapshot is ambiguous
     con.execute("DELETE FROM cand WHERE security_id IN (SELECT security_id FROM cand GROUP BY 1 HAVING count(DISTINCT cik) > 1)")
@@ -117,6 +131,8 @@ def build() -> dict[str, Any]:
     """)
     C.copy_to_parquet(con, "SELECT security_id, session_date FROM strict_days UNION SELECT security_id, session_date FROM bf_days",
                       root / "_tmp" / "identity_days_strict_backfill.parquet")
+    C.copy_to_parquet(con, "SELECT security_id, session_date FROM strict_days WHERE available_at <= CAST(session_date AS TIMESTAMP) + INTERVAL 22 HOUR",
+                      root / "_tmp" / "identity_days_strict.parquet")
     names_path = root / "identity" / "links_name_days.parquet"
     name_union = ""
     if names_path.exists():
@@ -129,27 +145,33 @@ def build() -> dict[str, Any]:
             ANTI JOIN strict_days s ON s.security_id = n.security_id AND s.session_date = n.session_date
             ANTI JOIN bf_days b ON b.security_id = n.security_id AND b.session_date = n.session_date"""
     receipt["name_tier"] = names_path.exists()
+    # Persist the reused union before grouping/joining so its materialized CTE
+    # does not compete with both consumers for the 600MB budget.
     con.execute(f"""
-        CREATE OR REPLACE TABLE comb_days AS
-        WITH u AS (
+        CREATE OR REPLACE TABLE comb_input AS
             SELECT security_id, session_date, sidx, cik, strict_primary, NULL AS snap_primary, tier, basis, available_at
             FROM strict_days
             UNION ALL
             SELECT security_id, session_date, sidx, cik, NULL, snap_primary, 'backfill', 'snapshot_run_backfill', available_at
             FROM bf_days
             {name_union}
-        ),
-        pk AS (
+    """)
+    con.execute("""
+        CREATE OR REPLACE TABLE comb_primary AS
             SELECT cik, session_date,
                    coalesce(min(security_id) FILTER (WHERE strict_primary = 'P'),
                             min(security_id) FILTER (WHERE tier = 'backfill' AND snap_primary = 'P'),
                             min(security_id)) AS p_sid
-            FROM u GROUP BY 1, 2
-        )
+            FROM comb_input GROUP BY 1, 2
+    """)
+    con.execute("""
+        CREATE OR REPLACE TABLE comb_days AS
         SELECT u.security_id, u.session_date, u.sidx, u.cik, u.tier, u.basis, u.available_at,
                CASE WHEN u.security_id = pk.p_sid THEN 'P' ELSE 'J' END AS "primary"
-        FROM u JOIN pk USING (cik, session_date)
+        FROM comb_input u JOIN comb_primary pk USING (cik, session_date)
     """)
+    con.execute("DROP TABLE comb_input")
+    con.execute("DROP TABLE comb_primary")
 
     def compress(table: str, dest_name: str, where: str = "TRUE") -> int:
         sql = f"""
@@ -167,6 +189,24 @@ def build() -> dict[str, Any]:
 
     receipt["backfill_rows"] = compress("comb_days", "links_backfill.parquet", "tier = 'backfill'")
     receipt["combined_rows"] = compress("comb_days", "links_combined.parquet")
+    pit_names = ""
+    if names_path.exists():
+        pit_names = f"""
+            UNION ALL
+            SELECT n.security_id, n.session_date, c.sidx, n.cik, 'name', 'finra_name_match', n.available_at, 'P'
+            FROM read_parquet('{names_path.as_posix()}') n
+            JOIN (SELECT session_date, row_number() OVER (ORDER BY session_date) AS sidx FROM read_parquet('{cal}')) c
+              USING (session_date)
+            ANTI JOIN strict_days s ON s.security_id = n.security_id AND s.session_date = n.session_date
+              AND s.available_at <= CAST(s.session_date AS TIMESTAMP) + INTERVAL 22 HOUR
+        """
+    con.execute(f"""
+        CREATE OR REPLACE TABLE pit_days AS
+        SELECT security_id, session_date, sidx, cik, tier, basis, available_at, strict_primary AS "primary"
+        FROM strict_days
+        {pit_names}
+    """)
+    compress("pit_days", "links_pit.parquet")
     per_year = con.execute("""
         SELECT year(session_date) y, count(*) FILTER (WHERE tier NOT IN ('backfill', 'name')) strict_days,
                count(*) FILTER (WHERE tier = 'backfill') backfill_days, count(*) FILTER (WHERE tier = 'name') name_days,
@@ -176,6 +216,8 @@ def build() -> dict[str, Any]:
     receipt["line_days_by_year"] = {str(y): {"strict": int(a), "backfill": int(b), "name": int(c), "lines": int(n)}
                                     for y, a, b, c, n in per_year}
     C.write_json_atomic(root / "identity" / "backfill_manifest.json", receipt)
+    con.close()
+    (root / "_tmp" / "identity_backfill.duckdb").unlink(missing_ok=True)
     return receipt
 
 

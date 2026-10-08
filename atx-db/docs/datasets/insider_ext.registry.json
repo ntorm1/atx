@@ -1,0 +1,8 @@
+{
+  "stage": "insider_ext",
+  "path": "insider_ext/net_buying_monthly.parquet",
+  "keys": ["issuer_cik", "month"],
+  "schema_id": "atx.alpha-panel.insider-ext/v2",
+  "as_of_macro_sql": "SELECT * FROM read_parquet('insider_ext/net_buying_monthly.parquet') WHERE available_at < cutoff",
+  "admission": "requires_guarded_rebuild_and_review"
+}

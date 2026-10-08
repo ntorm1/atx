@@ -327,6 +327,8 @@ class ActivationOptions:
     submissions_mode: str = "staged"
     submissions_staging_dir: Path = Path("data/staging/submissions/702fbcd8b4335bc64")
     submissions_receipts_dir: Path = Path("C:/atx/.superpowers/sdd/tier1-v2/receipts")
+    fundamentals_mode: str = "staged"
+    fundamentals_receipts_dir: Path = Path("C:/atx/.superpowers/sdd/tier1-v2/receipts")
     earnings_release_cache_dir: Path | None = None
     earnings_release_history_start: dt.date | None = None
     earnings_release_history_end: dt.date | None = None
@@ -352,6 +354,8 @@ class ActivationOptions:
             raise ValueError("companyfacts_mode must be staged or legacy")
         if self.submissions_mode not in ("staged", "legacy"):
             raise ValueError("submissions_mode must be staged or legacy")
+        if self.fundamentals_mode not in ("staged", "legacy"):
+            raise ValueError("fundamentals_mode must be staged or legacy")
         if min(self.threads, self.reconciliation_shards, self.submissions_batch_size,
                self.earnings_release_candidate_batch_size, self.earnings_release_max_index_bytes,
                self.earnings_release_max_document_bytes) < 1 or self.earnings_release_request_timeout <= 0:
@@ -1146,8 +1150,58 @@ STAGES.update(
 )
 
 
+def _stage_fundamentals_staged(store: DuckDBStore, options: ActivationOptions, stage: str, output: str) -> StageResult:
+    """Delegate after closing the caller's connection; every slice has a fresh guard."""
+    import hashlib
+
+    try:
+        guard = _companyfacts_parent_guard()
+    except ValueError as exc:
+        raise ValueError(str(exc).replace("CompanyFacts", "fundamentals")) from exc
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_slices.py"
+    if not script.is_file():
+        raise FileNotFoundError(script)
+    run_key = hashlib.sha256((stage + "|" + options.run_id).encode()).hexdigest()[:24]
+    requested = {"as_of_date": str(options.as_of_date), "shares_run_id": f"{options.run_id}-shares",
+                 "calendar_run_id": f"{options.run_id}-calendarization"}
+    receipts = options.fundamentals_receipts_dir.resolve()
+    receipts.mkdir(parents=True, exist_ok=True)
+    spec_file = receipts / f"{stage}-{run_key}.activation-spec.json"
+    if spec_file.exists() and json.loads(spec_file.read_text(encoding="utf-8")) != requested:
+        raise ValueError("fundamentals activation spec differs from its frozen resume spec")
+    temporary = spec_file.with_name(spec_file.name + f".{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(requested, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, spec_file)
+    module_spec = importlib.util.spec_from_file_location("_atx_fundamentals_slices", script)
+    if module_spec is None or module_spec.loader is None:
+        raise RuntimeError("cannot import the reviewed fundamentals slice orchestrator")
+    runner = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(runner)
+    store.close()
+    try:
+        code = runner.main(["--db", str(options.db_path.resolve()), "--stage", stage, "--run-key", run_key,
+            "--spec-json", str(spec_file), "--job-gb", "0.8", "--heavy", "--max-batches", "1",
+            "--max-minutes", "1", "--max-slices", "100000", "--checkpoint-every", "1", "--recycle-every", "1",
+            "--until-complete", "--finalize", "--duckdb-memory", "384MB", "--threads", "1",
+            "--receipts-dir", str(receipts)])
+    except SystemExit as exc:
+        raise ActivationStageError("fundamentals delegation refused", StageResult(0, {"error": str(exc), "guard": guard})) from exc
+    finally:
+        store.reopen()
+    if code:
+        raise ActivationStageError("fundamentals slice failed", StageResult(0, {"exit_code": code, "run_key": run_key}))
+    row = store.con.execute("SELECT status,note FROM build_runs WHERE stage=? AND run_key=?", [stage, run_key]).fetchone()
+    if not row or row[0] != "published":
+        raise ActivationStageError("fundamentals stage did not publish", StageResult(0, {"run_key": run_key}))
+    detail = json.loads(row[1])
+    detail.update(guard=guard, receipts_dir=str(receipts))
+    return StageResult(int(detail["outputs"][output][0]), detail)
+
+
 def stage_statement_points(store: DuckDBStore, options: ActivationOptions) -> StageResult:
     """Rebuild effective revisions, statement points, and dependent SEC shares."""
+    if options.fundamentals_mode == "staged":
+        return _stage_fundamentals_staged(store, options, "statement_points_rebuild", "fundamental_statement_points")
     from ._fundamental_clock import FUNDAMENTAL_CLOCK_POLICY
     from .fundamental_statements import refresh_fundamental_statement_points
     from .fundamentals import refresh_fundamental_fact_revisions, refresh_xbrl_concept_catalog
@@ -1172,6 +1226,8 @@ def stage_statement_points(store: DuckDBStore, options: ActivationOptions) -> St
 
 
 def stage_periods(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    if options.fundamentals_mode == "staged":
+        return _stage_fundamentals_staged(store, options, "periods_rebuild", "fundamental_periods")
     from .fundamental_statements import refresh_fundamental_periods
 
     _ = options
@@ -1180,6 +1236,8 @@ def stage_periods(store: DuckDBStore, options: ActivationOptions) -> StageResult
 
 
 def stage_ttm(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    if options.fundamentals_mode == "staged":
+        return _stage_fundamentals_staged(store, options, "ttm_rebuild", "fundamental_ttm_points")
     from .fundamental_statements import refresh_fundamental_ttm_points
 
     _ = options
@@ -1188,6 +1246,8 @@ def stage_ttm(store: DuckDBStore, options: ActivationOptions) -> StageResult:
 
 
 def stage_calendarization(store: DuckDBStore, options: ActivationOptions) -> StageResult:
+    if options.fundamentals_mode == "staged":
+        return _stage_fundamentals_staged(store, options, "calendarization_rebuild", "fundamental_calendar_ttm")
     from .calendarization import CalendarizationOptions, run_calendarization_refresh
 
     summary = run_calendarization_refresh(
@@ -1870,6 +1930,8 @@ def add_activation_arguments(parser: argparse.ArgumentParser) -> None:
                         help="Verify and resume completed members of a failed or source-incomplete companyfacts dataset UUID.")
     parser.add_argument("--submissions-batch-size", type=int, default=50)
     parser.add_argument("--submissions-mode", choices=("staged", "legacy"), default="staged")
+    parser.add_argument("--fundamentals-mode", choices=("staged", "legacy"), default="staged")
+    parser.add_argument("--fundamentals-receipts-dir", type=Path, default=Path("C:/atx/.superpowers/sdd/tier1-v2/receipts"))
     parser.add_argument("--submissions-staging-dir", type=Path,
                         default=Path("data/staging/submissions/702fbcd8b4335bc64"))
     parser.add_argument("--submissions-receipts-dir", type=Path,
@@ -1942,6 +2004,8 @@ def activation_options_from_args(args: argparse.Namespace) -> ActivationOptions:
         submissions_batch_size=args.submissions_batch_size,
         submissions_resume_from_run_id=args.submissions_resume_from_run_id,
         submissions_mode=args.submissions_mode,
+        fundamentals_mode=args.fundamentals_mode,
+        fundamentals_receipts_dir=args.fundamentals_receipts_dir,
         submissions_staging_dir=args.submissions_staging_dir,
         submissions_receipts_dir=args.submissions_receipts_dir,
         earnings_release_cache_dir=args.earnings_release_cache_dir,

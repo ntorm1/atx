@@ -3,14 +3,15 @@ and a periodic-report fallback, with timing and expected dates recomputed over t
 
 v1 (``earnings_calendar``, read-only) stays as published; v2 is a new stage. One row per disclosing filing:
 
-* ``source = '8k_202'``: every v1 row (original 8-K with item 2.02); ``fiscal_period_end`` as v1.
+* ``source = '8k_202'``: every v1 row (original 8-K with item 2.02); the period is established only from the
+  release's own evidence in the stable ``ea_actuals`` parse publication, never from a later periodic report.
 * ``source = '6k_results'`` (2019+, ruling D7): a 6-K whose EX-99 exhibit (else main document) was fetched for the
   ``fpi_period_results`` / ``fpi_results`` full-text queries and whose opening text announces period results (:func:`classify_release`: a
   results / earnings headline naming a quarter, half year, nine months or (fiscal) year, not a notice of an
   upcoming release, a call invitation, AGM / voting / tender results or an operating update).
   ``fiscal_period_end`` = the first "(quarter | half year | six months | ... | year) ended <date>" in the opening
-  text (``period_basis = 'text_date'``), else a label ("third quarter 2024", "H1 2025", "fiscal 2024") mapped with the
-  issuer's fiscal-year end (``'text_label'``).
+  text (``period_basis = 'text_date'``), with ambiguous dates left missing. Labels such as "third quarter 2024"
+  need a qualified historical fiscal calendar and remain missing; the latest issuer profile cannot establish it.
 * ``source = 'periodic_report'``: an original 10-Q / 10-K / 10-QT / 10-KT / 20-F / 40-F filed 2018+ for which no
   announcement row of the same CIK and period (8-K: same ``fiscal_period_end``; 6-K: within 10 days) was accepted
   before it: the report is then the first public disclosure of the period's results. ``fiscal_period_end`` = the
@@ -31,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -44,10 +46,11 @@ import pyarrow.parquet as pq
 from . import common as C
 from . import earnings_calendar as EC1
 from . import events_sources as ES
+from . import ea_publication as P
 
 STAGE = "earnings_calendar_v2"
 SCHEMA = "atx.alpha-panel.earnings-calendar/v2"
-CLASSIFIER_VERSION = "fpi-results-v1"
+CLASSIFIER_VERSION = "fpi-source-clock-v2"
 START_6K = dt.date(2019, 1, 1)
 START_PERIODIC = dt.date(2018, 1, 1)
 PERIODIC_FORMS = ("10-Q", "10-K", "10-QT", "10-KT", "20-F", "40-F")
@@ -103,28 +106,20 @@ def classify_release(text: str, filed: dt.date | None, fye_month: int = 12) -> d
     if NOT_RESULTS.search(context):
         return None
     headline = " ".join(head[lo:m.end() + 80].split())[:240]
+    explicit = set()
     for e in ENDED.finditer(head):
         try:
             pe = dt.date(int(e.group(3)), _MONTHS[e.group(1).lower()], int(e.group(2)))
         except ValueError:
             continue
-        if filed is None or dt.timedelta(0) <= filed - pe <= dt.timedelta(days=400):
-            return {"period_end": pe, "period_basis": "text_date", "headline": headline}
-    for lb in LABEL.finditer(head):
-        fy = int(lb.group("yr"))
-        g = {k: (v or "").lower() for k, v in lb.groupdict().items()}
-        if g["q"]:
-            pe = _fiscal_quarter_end(fy, _Q[g["q"]], fye_month)
-        elif g["qq"]:
-            pe = _fiscal_quarter_end(fy, int(g["qq"][1]), fye_month)
-        elif g["h"]:
-            pe = _fiscal_quarter_end(fy, 4 if g["h"] in ("second half", "h2") else 2, fye_month)
-        elif g["n"]:
-            pe = _fiscal_quarter_end(fy, 3, fye_month)
-        else:
-            pe = _fiscal_quarter_end(fy, 4, fye_month)
-        if filed is None or dt.timedelta(0) <= filed - pe <= dt.timedelta(days=400):
-            return {"period_end": pe, "period_basis": "text_label", "headline": headline}
+        if filed is not None and dt.timedelta(0) <= filed - pe <= dt.timedelta(days=150):
+            explicit.add(pe)
+    if len(explicit) == 1:
+        return {"period_end":next(iter(explicit)),"period_basis":"text_date","headline":headline}
+    if explicit:
+        return {"period_end":None,"period_basis":"ambiguous_explicit_periods","headline":headline}
+    if LABEL.search(head):
+        return {"period_end": None, "period_basis": "label_fiscal_calendar_unqualified", "headline": headline}
     return {"period_end": None, "period_basis": None, "headline": headline}
 
 
@@ -136,6 +131,7 @@ FPI_SCHEMA = pa.schema([
     ("doc_sha256", pa.string()), ("filing_date", pa.date32()), ("is_results", pa.bool_()),
     ("period_end", pa.date32()), ("period_basis", pa.string()), ("headline", pa.string()),
     ("classifier_version", pa.string()),
+    ("document_evidence", pa.list_(pa.string())),
 ])
 
 
@@ -155,30 +151,56 @@ def _fye_months() -> dict[int, int]:
 
 
 def phase_parse() -> dict[str, Any]:
-    fye = _fye_months()
+    catalog_sha=C.sha256_file(ES.catalog_path())
+    code=C.code_identity('earnings_calendar_v2','events_sources','common')
     store = ES.open_store()
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    by_accession: dict[str, dict[str, Any]] = {}
+    seen: set[tuple[str, str]] = set()
 
     def pred(r: dict[str, Any]) -> bool:
         q = r.get("qids") or []
         return (r.get("form") or "").startswith("6-K") and ("fpi_results" in q or "fpi_period_results" in q)
 
     for r in ES.iter_catalog(pred):
-        if r["accession"] in seen or r["filing_date"] is None or r["filing_date"] < START_6K:
+        key = (r["accession"], r.get("doc_sha256") or r["source_doc"])
+        if key in seen or r["filing_date"] is None or r["filing_date"] < START_6K:
             continue
-        text = ES.document_text(ES.read_document(r, store), r["source_doc"])
-        res = classify_release(text, r["filing_date"], fye.get(r["cik"], 12))
-        seen.add(r["accession"])
-        rows.append({"cik": r["cik"], "accession": r["accession"], "form": r["form"], "source_doc": r["source_doc"],
+        blob = ES.read_document(r,store)
+        valid_document = blob is not None and hashlib.sha256(blob).hexdigest() == r.get("doc_sha256")
+        text = ES.document_text(blob,r["source_doc"]) if valid_document else ""
+        res = classify_release(text, r["filing_date"])
+        seen.add(key)
+        parsed = {"cik": r["cik"], "accession": r["accession"], "form": r["form"], "source_doc": r["source_doc"],
                      "doc_sha256": r.get("doc_sha256"), "filing_date": r["filing_date"], "is_results": res is not None,
                      "period_end": res and res["period_end"], "period_basis": res and res["period_basis"],
-                     "headline": res and res["headline"], "classifier_version": CLASSIFIER_VERSION})
+                     "headline": res and res["headline"], "classifier_version": CLASSIFIER_VERSION}
+        evidence = json.dumps({"source_doc":r["source_doc"],"doc_sha256":r.get("doc_sha256"),
+                               "source_integrity":"verified" if valid_document else "missing_or_corrupt",
+                               "is_results":res is not None,"period_end":str(res and res["period_end"]),
+                               "period_basis":res and res["period_basis"]},sort_keys=True)
+        previous = by_accession.get(r["accession"])
+        parsed["document_evidence"] = [*(previous.get("document_evidence",[]) if previous else []),evidence]
+        if previous is None or (not previous["is_results"] and parsed["is_results"]):
+            by_accession[r["accession"]] = parsed
+        else:
+            previous["document_evidence"] = parsed["document_evidence"]
+            if previous["is_results"] and parsed["is_results"]:
+                if previous["period_basis"] == "conflicting_exhibits":
+                    continue
+                if previous["period_end"] is not None and parsed["period_end"] is not None and previous["period_end"] != parsed["period_end"]:
+                    previous.update(period_end=None,period_basis="conflicting_exhibits")
+                elif previous["period_end"] is None and parsed["period_end"] is not None:
+                    previous.update(period_end=parsed["period_end"],period_basis=parsed["period_basis"],headline=parsed["headline"])
+    rows = list(by_accession.values())
     dest = _tmp() / "fpi_releases.parquet"
     tmp = dest.with_name(dest.name + ".partial")
     pq.write_table(pa.Table.from_pylist(rows, schema=FPI_SCHEMA), tmp, compression="zstd")
     os.replace(tmp, dest)
-    receipt = {"documents": len(rows), "results": sum(r["is_results"] for r in rows),
+    if C.sha256_file(ES.catalog_path())!=catalog_sha:
+        raise RuntimeError('FPI catalog changed during parse')
+    receipt = {"status":"complete","classifier_version":CLASSIFIER_VERSION,"catalog_sha256":catalog_sha,
+               "code":code,"output":{"bytes":dest.stat().st_size,"sha256":C.sha256_file(dest)},
+               "documents": len(rows), "results": sum(r["is_results"] for r in rows),
                "with_period": sum(r["period_end"] is not None for r in rows),
                "text_date": sum(r["period_basis"] == "text_date" for r in rows),
                "peak_memory": ES.peak_memory()}
@@ -186,15 +208,39 @@ def phase_parse() -> dict[str, Any]:
     return receipt
 
 
+def verify_fpi_parse() -> dict[str,Any]:
+    path=_tmp()/'fpi_releases.parquet'
+    receipt=C.read_json(_tmp()/'fpi_parse_receipt.json')
+    code=C.code_identity('earnings_calendar_v2','events_sources','common')
+    if receipt.get('status')!='complete' or receipt.get('classifier_version')!=CLASSIFIER_VERSION:
+        raise RuntimeError('incomplete or stale FPI parse phase')
+    if receipt.get('catalog_sha256')!=C.sha256_file(ES.catalog_path()) or any(
+            receipt.get('code',{}).get(k,{}).get('sha256_lf')!=v['sha256_lf'] for k,v in code.items() if isinstance(v,dict)):
+        raise RuntimeError('stale FPI code/catalog identity')
+    if path.stat().st_size!=receipt['output']['bytes'] or C.sha256_file(path)!=receipt['output']['sha256']:
+        raise RuntimeError('FPI parse output integrity mismatch')
+    return receipt
+
+
 # ---------------------------------------------------------------------------------------------------------
 # phase build: combine, recompute timing / primaries / expected dates per CIK, coverage (DuckDB, guarded)
 
 OUT_SCHEMA = pa.schema([*EC1.OUT_SCHEMA, ("source", pa.string()), ("period_basis", pa.string()),
-                        ("is_fpi", pa.bool_()), ("headline", pa.string())])
+                        ("is_fpi", pa.bool_()), ("headline", pa.string()), ("clock_reason", pa.string())])
 
 
 def _merge_cik(rows: list[dict[str, Any]], cal: EC1.SessionCalendar) -> list[dict[str, Any]]:
     """Drop periodic rows preceded by an announcement of the same period; recompute the v1 fields."""
+    from .ea_actuals import qualified_clock
+    normalized = []
+    for row in rows:
+        r = dict(row)
+        at = qualified_clock(r)
+        r["clock_reason"] = "qualified" if at is not None else "acceptance_clock_missing_or_unresolved"
+        if at is None:
+            r["announcement_utc"] = r["available_at"] = None
+        normalized.append(r)
+    rows = normalized
     ann = [r for r in rows if r["source"] != "periodic_report"]
     keep = list(ann)
     for r in rows:
@@ -211,10 +257,15 @@ def _merge_cik(rows: list[dict[str, Any]], cal: EC1.SessionCalendar) -> list[dic
 
 
 def build_stage() -> dict[str, Any]:
+    from .ea_actuals import verify_input
     root = C.build_root()
+    inputs = {s: verify_input(s) for s in ("earnings_calendar", "sec_filings", "panel")}
+    inputs["ea_actuals/releases_manifest.json"] = verify_input("ea_actuals","releases_manifest.json",('parsed',))
+    inputs['calendar.parquet']={'path':str(C.calendar_path()),'sha256':C.sha256_file(C.calendar_path())}
     v1 = (root / "earnings_calendar" / "announcements.parquet").as_posix()
     filings = (root / "sec_filings" / "filings.parquet").as_posix()
     fpi = _tmp() / "fpi_releases.parquet"
+    fpi_receipt=verify_fpi_parse() if fpi.exists() else None
     con = C.connect(memory="350MB", threads=2)
     cal_dates = [r[0] for r in con.execute(
         f"SELECT session_date FROM read_parquet('{C.calendar_path().as_posix()}') ORDER BY 1").fetchall()]
@@ -223,11 +274,12 @@ def build_stage() -> dict[str, Any]:
     con.execute(f"""
         CREATE TABLE fpi_ciks AS SELECT DISTINCT cik FROM read_parquet('{filings}')
         WHERE form IN ('20-F', '40-F', '6-K') AND filing_date >= DATE '{START_PERIODIC}'""")
+    releases = P.file('ea_actuals','releases.parquet','releases_manifest.json').as_posix()
     parts = [f"""
-        SELECT cik, accession, form, items, filing_date, event_date, announcement_utc, available_at,
-               acceptance_clock, vintage_risk, fiscal_period_end, fiscal_period_form, '8k_202' AS source,
-               'periodic_report_date' AS period_basis, CAST(NULL AS VARCHAR) AS headline
-        FROM read_parquet('{v1}')""",
+        SELECT a.cik, a.accession, a.form, a.items, a.filing_date, a.event_date, a.announcement_utc, a.available_at,
+               a.acceptance_clock, a.vintage_risk, r.period_end AS fiscal_period_end, NULL AS fiscal_period_form,
+               '8k_202' AS source, r.period_basis, CAST(NULL AS VARCHAR) AS headline
+        FROM read_parquet('{v1}') a LEFT JOIN read_parquet('{releases}') r USING(cik,accession)""",
              f"""
         SELECT cik, accession, form, NULL, filing_date, report_date, acceptance_utc, available_at, acceptance_clock,
                vintage_risk, report_date, form, 'periodic_report', 'report_date', NULL
@@ -242,8 +294,8 @@ def build_stage() -> dict[str, Any]:
         WHERE r.is_results""")
     reader = con.execute(f"""
         SELECT u.*, (u.cik IN (SELECT cik FROM fpi_ciks)) AS is_fpi FROM ({" UNION ALL ".join(parts)}) u
-        ORDER BY u.cik, u.announcement_utc, u.accession""").fetch_record_batch(50_000)
-    dest_dir = C.stage_dir(STAGE)
+        ORDER BY u.cik, u.announcement_utc, u.accession""").to_arrow_reader(50_000)
+    dest_dir = P.create(STAGE)
     dest = dest_dir / "announcements.parquet"
     tmp = dest.with_name(dest.name + ".partial")
     writer = pq.ParquetWriter(tmp, OUT_SCHEMA, compression="zstd")
@@ -274,8 +326,7 @@ def build_stage() -> dict[str, Any]:
     total += flush()
     writer.close()
     os.replace(tmp, dest)
-    receipt: dict[str, Any] = {"rows": total, "fpi_parse": C.read_json(_tmp() / "fpi_parse_receipt.json")
-                               if (_tmp() / "fpi_parse_receipt.json").exists() else None}
+    receipt: dict[str, Any] = {"rows": total, "fpi_parse": fpi_receipt}
     a = dest.as_posix()
     receipt["per_year_source"] = {
         str(y): dict(zip(("8k_202", "6k_results", "periodic_report", "primary", "fpi_rows"), map(int, v)))
@@ -289,15 +340,25 @@ def build_stage() -> dict[str, Any]:
     receipt["peak_memory"] = ES.peak_memory()
     manifest = {"schema": SCHEMA, "status": "complete", "stage": STAGE, "rule": __doc__,
                 "classifier_version": CLASSIFIER_VERSION,
+                "fpi_parse_input": {"path":str(fpi),"sha256":C.sha256_file(fpi),"bytes":fpi.stat().st_size} if fpi.exists() else None,
                 "code": C.code_identity("earnings_calendar_v2", "earnings_calendar", "events_sources", "common"),
                 "files": C.output_hashes(dest_dir, "*.parquet"),
-                "input_manifests_sha256": {
-                    s: {"path": str(root / s / "manifest.json"), "sha256": C.sha256_file(root / s / "manifest.json")}
-                    for s in ("earnings_calendar", "sec_filings", "panel") if (root / s / "manifest.json").exists()},
+                "input_manifests_sha256": inputs,
                 "clock_rule": "available_at = EDGAR acceptance (UTC) of the disclosing filing; usable at session d "
                               "only if available_at < 22:00 UTC of session d-1",
+                "gate_status": {"member_coverage": "PASS" if all(
+                    r["covered_share"] is not None and r["covered_share"] >= .95
+                    for y,r in receipt["member_coverage"].items() if int(y)>=2020) else "FAIL"},
                 **receipt}
-    C.write_json_atomic(dest_dir / "manifest.json", manifest)
+    if fpi.exists(): verify_fpi_parse()
+    for stage in ('earnings_calendar','sec_filings','panel'):
+        if verify_input(stage)['sha256']!=inputs[stage]['sha256']:
+            raise RuntimeError(f'{stage}: changed during calendar build')
+    if verify_input('ea_actuals','releases_manifest.json',('parsed',))['sha256']!=inputs['ea_actuals/releases_manifest.json']['sha256']:
+        raise RuntimeError('parse generation changed during calendar build')
+    if C.sha256_file(C.calendar_path())!=inputs['calendar.parquet']['sha256']:
+        raise RuntimeError('calendar source changed during build')
+    P.publish(STAGE,dest_dir,'calendar',manifest,('announcements.parquet',))
     return receipt
 
 

@@ -1,8 +1,8 @@
 """Stage ``events`` table ``buyback`` (S6.3): share repurchase authorisation announcements from 8-K text.
 
-Documents (2019+, ruling D7): the 8-K main documents and EX-99 exhibits that EDGAR full-text search hits for
-repurchase-program phrases (``events_sources`` query ``buyback``), fetched into ``data/raw/sec_events``, plus every
-earnings-release exhibit already read for guidance (landed v2 objects and fetched ``guidance`` hits).
+Documents: independently admitted original retained objects in deterministic partitions
+of the complete eligible2020+8-K/10-Qsource catalog. No network acquisition is performed.
+Byte/reader replay does not certify source semantic correctness or prior-history completeness.
 
 Extraction (:func:`extract_authorizations`, pure), per sentence:
 
@@ -15,21 +15,25 @@ Extraction (:func:`extract_authorizations`, pure), per sentence:
 * A sentence about an older authorisation is skipped: "remaining under", "previously announced / authorized",
   "existing program" (unless "additional" / "increase"), or an authorisation dated (``authorized in <month> <year>``)
   more than 120 days before the filing.
-* One event per (filing, amount); the first sentence wins. ``first_announcement`` marks the earliest filing of a
-  CIK's (event_type, amount) within 180 days (a later earnings release repeating an 8-K announcement is a repeat).
+* One event per (filing, amount); the first sentence wins. ``first_announcement`` is
+  NULL for authorizations until complete global prior-history dependencies are admitted.
+  A document-hash partition cannot prove the absence of an earlier180day authorization.
+  Executions have false and a not-applicable basis, never first-announcement status.
 
 XBRL join (no recomputation): the fundamentals stage's ``buyback_authorized`` / ``buyback_remaining``
 (``fundamentals/events.parquet``, from ``StockRepurchaseProgramAuthorizedAmount1`` /
 ``...RemainingAuthorizedRepurchaseAmount1``): the latest value known before the announcement (``xbrl_*_before``, by
 ``clock_utc < available_at``) and the first reported after it (``xbrl_*_after``, with its accession).
 
-Clock: ``available_at`` = the 8-K's EDGAR acceptance (sec_filings rule); ``event_date`` = the 8-K report date.
+Clock: matching original source receipt fetched_at/done_at conservativefloor. Original
+acceptance/class semantics remain explicitly unqualified; event_date is unknown.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -41,9 +45,9 @@ from typing import Any
 from . import common as C
 from .guidance import SCALE, find_values, _apply_scale
 
-EXTRACTOR_VERSION = "buyback-rules-v1"
+EXTRACTOR_VERSION = "buyback-rules-v3"
 TABLE = "buyback"
-SCHEMA = "atx.alpha-panel.events.buyback/v1"
+SCHEMA = "atx.alpha-panel.events.buyback/v3"
 
 BUYBACK_OBJ = re.compile(r"\b(?:re-?purchases?|buy-?backs?|buy\s+back)\b", re.IGNORECASE)
 #: An authorising act (a verb), or "new / additional [$X] share repurchase ..." (a noun phrase naming a new program).
@@ -283,7 +287,47 @@ OUT_COLUMNS = [
     ("acceptance_clock", "VARCHAR"), ("vintage_risk", "VARCHAR"), ("event_type", "VARCHAR"),
     ("amount_usd", "DOUBLE"), ("amount_shares", "DOUBLE"), ("total_after_usd", "DOUBLE"), ("evidence", "VARCHAR"),
     ("extractor_version", "VARCHAR"),
+    ("source_sha256", "VARCHAR"), ("execution_period", "VARCHAR"),
+    ("execution_shares", "DOUBLE"), ("execution_average_price", "DOUBLE"),
+    ("public_program_shares", "DOUBLE"), ("remaining_authorization_usd", "DOUBLE"),
 ]
+
+
+def extract_part_ii(text: str) -> list[dict[str, Any]]:
+    """Read a deliberately narrow native Part II Item 2 pipe table.
+
+    Units must explicitly be shares and USD. Values in millions or thousands are
+    rejected, as are unknown columns. Executions are never authorization events.
+    """
+    section = re.search(r"Part\s+II\b.*?Item\s+2\b(.*?)(?:\bItem\s+3\b|\Z)", text, re.I | re.S)
+    if not section:
+        return []
+    lines = section.group(1).splitlines()
+    if re.search(r"\b(?:millions?|thousands?|billions?|000s|in\s+\$?000)\b", section.group(1), re.I) or re.search(r"\b(?:shares?|amounts?|dollars?)\b[^.\n]{0,80}\b(?:in|expressed\s+in)\s+(?:millions?|thousands?|billions?|000s)\b", text, re.I):
+        return []
+    expected = ["period", "total shares purchased", "average price paid per share (usd)",
+                "shares purchased under publicly announced plans", "remaining authorization (usd)"]
+    active = False
+    result = []
+    for line in lines:
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if [c.lower() for c in cells] == expected:
+            active = True
+            continue
+        if not active or len(cells) != 5 or cells[0].lower() == "total":
+            continue
+        if not re.fullmatch(r"[A-Za-z]+\s+20\d{2}", cells[0]):
+            continue
+        try:
+            numbers = [float(c.replace(",", "").replace("$", "")) for c in cells[1:]]
+        except ValueError:
+            continue
+        import math
+        if any(not math.isfinite(v) or v < 0 for v in numbers) or numbers[2] > numbers[0]:
+            continue
+        result.append(dict(zip(("execution_period", "execution_shares", "execution_average_price",
+                               "public_program_shares", "remaining_authorization_usd"), [cells[0], *numbers]), evidence=line.strip()))
+    return result
 
 
 def _tmp() -> Path:
@@ -293,82 +337,131 @@ def _tmp() -> Path:
 
 
 def phase_parse(start: dt.date = dt.date(2019, 1, 1)) -> dict[str, Any]:
-    """Pure Python over the document catalog (ruling C-1: no DuckDB)."""
+    """Legacy unadmitted catalog parsing cannot produce an admissible product."""
+    raise ValueError("legacy catalog parse lacks independent native admission; use parse_native")
+
+
+def native_rows(admission_path: Path, expected_sha256: str):
+    from . import distributions_native as N
+    from .distributions import clock
+    originals, pins, admitted = N.replay_inputs(admission_path, expected_sha256)
+    rows = []
+    diagnostics = []
+    for doc, blob, text in originals:
+        base = {"cik": doc["cik"], "accession": doc["accession"], "form": doc["form"], "items": doc.get("items"),
+                "source_doc": doc["source_doc"], "doc_source": doc["source_path"],
+                "filing_date": dt.date.fromisoformat(doc["filing_date"]), "event_date": None,
+                "available_at": clock(doc["fetched_at"]).replace(tzinfo=None), "acceptance_clock": "unqualified_fetched_at_floor",
+                "vintage_risk": "clock_class_unqualified", "source_sha256": hashlib.sha256(blob).hexdigest(),
+                "extractor_version": EXTRACTOR_VERSION}
+        for event in extract_authorizations(text, base["filing_date"]):
+            rows.append({**base, **event.__dict__})
+        executions = extract_part_ii(text) if doc["form"].startswith("10-Q") else []
+        for event in executions:
+            rows.append({**base, **event, "event_type": "execution"})
+        diagnostics.append({"accession": doc["accession"], "source_sha256": base["source_sha256"],
+                            "execution_rows": len(executions), "unsupported_part_ii_reason":
+                            "scaled_or_ambiguous_or_unsupported_caption" if doc["form"].startswith("10-Q") and not executions else None})
+    N.validate_keys(rows, ["accession", "source_sha256", "event_type", "evidence"])
+    N.recheck(pins)
+    return rows, pins, admitted, diagnostics
+
+
+def parse_native(admission_path: Path, expected_sha256: str) -> dict[str, Any]:
     import pyarrow as pa
     import pyarrow.parquet as pq
-
-    from . import events_sources as ES
-    from .guidance import peak_memory
-
-    store = ES.open_store()
-
-    def pred(r: dict[str, Any]) -> bool:
-        if not r["form"] or not r["form"].startswith("8-K") or (r["filing_date"] or dt.date.min) < start:
-            return False
-        if r["doc_source"] == "landed_v2":
-            return True
-        q = r["qids"] or []
-        ft = (r["file_type"] or "").upper()
-        return ("buyback" in q or "guidance" in q) and (ft.startswith("EX-99") or ft.startswith("8-K"))
-
-    schema = pa.schema([(n, {"BIGINT": pa.int64(), "VARCHAR": pa.string(), "DATE": pa.date32(),
-                             "TIMESTAMP": pa.timestamp("us"), "DOUBLE": pa.float64()}[t]) for n, t in OUT_COLUMNS])
+    rows, pins, admitted, diagnostics = native_rows(admission_path, expected_sha256)
+    types = {"BIGINT": pa.int64(), "VARCHAR": pa.string(), "DATE": pa.date32(), "TIMESTAMP": pa.timestamp("us"), "DOUBLE": pa.float64()}
+    schema = pa.schema([(name, types[typ]) for name, typ in OUT_COLUMNS])
     dest = _tmp() / "buyback_rows.parquet"
-    tmp = dest.with_name(dest.name + ".partial")
-    writer = pq.ParquetWriter(tmp, schema, compression="zstd")
-    stats: dict[str, Any] = {"documents": 0, "unreadable": 0, "events": 0}
-    buf: list[dict[str, Any]] = []
-    seen: set[tuple[Any, ...]] = set()
-    for r in ES.iter_catalog(pred):
-        stats["documents"] += 1
-        blob = ES.read_document(r, store)
-        if not blob:
-            stats["unreadable"] += 1
-            continue
-        for a in extract_authorizations(ES.document_text(blob, r["source_doc"] or ""), r["filing_date"]):
-            k = (r["accession"], a.event_type, a.amount_usd, a.amount_shares, a.total_after_usd)
-            if k in seen:
-                continue
-            seen.add(k)
-            buf.append({"cik": r["cik"], "accession": r["accession"], "form": r["form"], "items": r["items"],
-                        "source_doc": r["source_doc"], "doc_source": r["doc_source"], "filing_date": r["filing_date"],
-                        "event_date": r["event_date"], "available_at": r["available_at"],
-                        "acceptance_clock": r["acceptance_clock"], "vintage_risk": r["vintage_risk"],
-                        "event_type": a.event_type, "amount_usd": a.amount_usd, "amount_shares": a.amount_shares,
-                        "total_after_usd": a.total_after_usd, "evidence": a.evidence,
-                        "extractor_version": EXTRACTOR_VERSION})
-            stats["events"] += 1
-        if len(buf) >= 5000:
-            writer.write_table(pa.Table.from_pylist(buf, schema=schema))
-            buf.clear()
-    if buf:
-        writer.write_table(pa.Table.from_pylist(buf, schema=schema))
-    writer.close()
-    os.replace(tmp, dest)
-    stats["peak_memory"] = peak_memory()
-    C.write_json_atomic(_tmp() / "buyback_parse_receipt.json", stats)
-    return stats
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), dest.with_suffix(".partial"))
+    from . import distributions_native as N
+    N.recheck(pins)
+    dest.with_suffix(".partial").replace(dest)
+    receipt = {"parse_rows_sha256": C.sha256_file(dest), "admission_sha256": expected_sha256,
+               "native_input_code_pins": pins, "population": admitted["population"], "diagnostics": diagnostics}
+    C.write_json_atomic(_tmp() / "buyback_parse_receipt.json", receipt)
+    return receipt
 
 
-def phase_publish() -> dict[str, Any]:
+def validate_product(target: Path, admission_path: Path, expected_sha256: str) -> dict[str, Any]:
+    """Read-only full native and admitted join replay, without trusting a parse receipt."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from . import distributions_native as N, events_common as EC
+    rows, pins, admitted, diagnostics = native_rows(admission_path, expected_sha256)
+    before = C.sha256_file(target)
+    types = {"BIGINT": pa.int64(), "VARCHAR": pa.string(), "DATE": pa.date32(), "TIMESTAMP": pa.timestamp("us"), "DOUBLE": pa.float64()}
+    table = pa.Table.from_pylist(rows, schema=pa.schema([(name, types[typ]) for name, typ in OUT_COLUMNS]))
+    N.validate_keys(pq.read_table(target).to_pylist(), ["accession", "source_sha256", "event_type", "evidence"])
+    con = C.connect(memory="128MB", threads=1)
+    con.register("native", table)
+    con.execute("""CREATE TABLE b AS SELECT r.*,
+        CASE WHEN r.event_type='execution' THEN false ELSE CAST(NULL AS BOOLEAN) END AS first_announcement,
+        CASE WHEN r.event_type='execution' THEN 'not_applicable_execution'
+             ELSE 'unknown_incomplete_global_history' END AS first_announcement_basis FROM native r""")
+    fund = Path(admitted["inputs"]["fundamentals"]["path"]).parent / "events.parquet"
+    if EC.link_table_path().resolve() != (Path(admitted["inputs"]["identity"]["path"]).parent / "link_table.parquet").resolve():
+        raise ValueError("security reader is not admitted identity path")
+    con.execute(f"CREATE TABLE fx AS SELECT cik, accession AS xbrl_accession, clock_utc, buyback_authorized, buyback_remaining FROM read_parquet('{fund.as_posix()}') WHERE buyback_authorized IS NOT NULL OR buyback_remaining IS NOT NULL")
+    con.execute("""CREATE TABLE b2 AS SELECT b.*, pb.buyback_authorized AS xbrl_authorized_before,
+        pb.buyback_remaining AS xbrl_remaining_before, pa.buyback_authorized AS xbrl_authorized_after,
+        pa.buyback_remaining AS xbrl_remaining_after, pa.xbrl_accession AS xbrl_after_accession,
+        pa.clock_utc AS xbrl_after_available_at FROM b
+        ASOF LEFT JOIN fx pb ON pb.cik=b.cik AND b.available_at>pb.clock_utc
+        ASOF LEFT JOIN fx pa ON pa.cik=b.cik AND pa.clock_utc>b.available_at""")
+    EC.attach_security(con, "b2", "b3", date_col="filing_date")
+    con.execute(f"CREATE VIEW actual AS SELECT * FROM read_parquet('{target.as_posix()}')")
+    actual_schema = dict((r[0], r[1]) for r in con.execute("DESCRIBE actual").fetchall())
+    expected_schema = dict((r[0], r[1]) for r in con.execute("DESCRIBE b3").fetchall())
+    if actual_schema != expected_schema:
+        raise ValueError("exact buyback schema mismatch")
+    columns = ",".join('"' + name + '"' for name in sorted(actual_schema))
+    delta = con.execute(f"SELECT count(*) FROM ((SELECT {columns} FROM actual EXCEPT ALL SELECT {columns} FROM b3) UNION ALL (SELECT {columns} FROM b3 EXCEPT ALL SELECT {columns} FROM actual))").fetchone()[0]
+    con.close()
+    if delta:
+        raise ValueError("buyback full native/join replay mismatch")
+    N.recheck(pins)
+    if C.sha256_file(target) != before:
+        raise ValueError("buyback product changed during admission")
+    return {"native_replay": "PASS", "rows": len(rows), "catalog_rows": admitted["population"]["catalog_rows"],
+            "source_semantics": "UNQUALIFIED", "diagnostics": diagnostics, "sha256": before}
+
+
+def phase_publish(*, admission_path: Path | None = None, expected_sha256: str | None = None) -> dict[str, Any]:
     from . import events_common as EC
+    from . import distributions_native as N
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    if admission_path is None or expected_sha256 is None:
+        raise ValueError("independent complete native admission required; hash-only parse receipt refused")
+    expected_rows, admitted_pins, admitted, diagnostics = native_rows(admission_path, expected_sha256)
 
     receipt: dict[str, Any] = {"parse": C.read_json(_tmp() / "buyback_parse_receipt.json")}
-    con = C.connect(memory="300MB", threads=2)
+    parse_path = _tmp() / "buyback_rows.parquet"
+    if receipt["parse"].get("admission_sha256") != expected_sha256 or receipt["parse"].get("native_input_code_pins") != admitted_pins:
+        raise ValueError("abbreviated/stale parse provenance refused")
+    types = {"BIGINT": pa.int64(), "VARCHAR": pa.string(), "DATE": pa.date32(), "TIMESTAMP": pa.timestamp("us"), "DOUBLE": pa.float64()}
+    schema = pa.schema([(name, types[typ]) for name, typ in OUT_COLUMNS])
+    parsed = pq.read_table(parse_path)
+    if parsed.schema != schema or not parsed.equals(pa.Table.from_pylist(expected_rows, schema=schema)):
+        raise ValueError("parsed schema/full native replay mismatch")
+    if C.sha256_file(parse_path) != receipt["parse"]["parse_rows_sha256"]:
+        raise ValueError("buyback parsed rows changed")
+    pin_paths = [parse_path, C.build_root() / "fundamentals" / "events.parquet", EC.link_table_path(),
+                 C.build_root() / "fundamentals" / "manifest.json", C.build_root() / "identity" / "manifest.json"]
+    pinned = {str(p): C.sha256_file(p) for p in pin_paths}
+    if any(str(p.resolve()) not in admitted_pins or C.sha256_file(p) != admitted_pins[str(p.resolve())] for p in pin_paths[1:]):
+        raise ValueError("fundamental/identity reader inputs not independently admitted")
+    pinned.update(admitted_pins)
+    con = C.connect(memory="128MB", threads=1)
     rows = (_tmp() / "buyback_rows.parquet").as_posix()
     fund = (C.build_root() / "fundamentals" / "events.parquet").as_posix()
     con.execute(f"""
-        CREATE TABLE b AS
-        SELECT r.*,
-               -- earliest filing of the same (cik, type, amount) within 180 days is the announcement
-               NOT EXISTS (SELECT 1 FROM read_parquet('{rows}') o
-                           WHERE o.cik = r.cik AND o.event_type = r.event_type
-                             AND coalesce(o.amount_usd, -1) = coalesce(r.amount_usd, -1)
-                             AND coalesce(o.amount_shares, -1) = coalesce(r.amount_shares, -1)
-                             AND coalesce(o.total_after_usd, -1) = coalesce(r.total_after_usd, -1)
-                             AND (o.available_at < r.available_at
-                                  OR (o.available_at = r.available_at AND o.accession < r.accession))
-                             AND o.available_at >= r.available_at - INTERVAL 180 DAY) AS first_announcement
+        CREATE TABLE b AS SELECT r.*,
+            CASE WHEN r.event_type='execution' THEN false ELSE CAST(NULL AS BOOLEAN) END AS first_announcement,
+            CASE WHEN r.event_type='execution' THEN 'not_applicable_execution'
+                 ELSE 'unknown_incomplete_global_history' END AS first_announcement_basis
         FROM read_parquet('{rows}') r""")
     con.execute(f"""
         CREATE TABLE fx AS SELECT cik, accession AS xbrl_accession, clock_utc, buyback_authorized, buyback_remaining
@@ -382,13 +475,20 @@ def phase_publish() -> dict[str, Any]:
         ASOF LEFT JOIN fx pb ON pb.cik = b.cik AND b.available_at > pb.clock_utc
         ASOF LEFT JOIN (SELECT * FROM fx) pa ON pa.cik = b.cik AND pa.clock_utc > b.available_at""")
     EC.attach_security(con, "b2", "b3", date_col="filing_date")
-    out = C.stage_dir(EC.STAGE) / f"{TABLE}.parquet"
+    code = C.code_identity("events_buyback", "guidance", "events_common", "events_sources", "common")
+    product_id = hashlib.sha256(json.dumps({"inputs": pinned, "code": {k: v for k, v in code.items() if k != "git_head"}}, sort_keys=True).encode()).hexdigest()
+    product = C.stage_dir(EC.STAGE) / "buyback_products" / product_id
+    if product.exists():
+        raise FileExistsError("immutable buyback product already exists")
+    product.mkdir(parents=True)
+    out = product / f"{TABLE}.parquet"
     receipt["rows"] = C.copy_to_parquet(con, """
         SELECT cik, security_id, link_tier, link_basis, is_member_issuer, accession, form, items, source_doc,
                doc_source, filing_date, event_date, available_at, acceptance_clock, vintage_risk, event_type,
-               amount_usd, amount_shares, total_after_usd, first_announcement, xbrl_authorized_before,
+               amount_usd, amount_shares, total_after_usd, first_announcement, first_announcement_basis, xbrl_authorized_before,
                xbrl_remaining_before, xbrl_authorized_after, xbrl_remaining_after, xbrl_after_accession,
-               xbrl_after_available_at, evidence, extractor_version
+               xbrl_after_available_at, evidence, extractor_version, source_sha256, execution_period,
+               execution_shares, execution_average_price, public_program_shares, remaining_authorization_usd
         FROM b3 ORDER BY cik, available_at, accession""", out)
     o = out.as_posix()
     receipt["per_year"] = {str(y): {"rows": int(n), "first": int(f), "member_first": int(mf), "ciks": int(c),
@@ -406,20 +506,39 @@ def phase_publish() -> dict[str, Any]:
                                      OR abs(xbrl_authorized_after - coalesce(total_after_usd, -1)) <= 0.01 * amount_usd))
         FROM read_parquet('{o}') WHERE first_announcement""").fetchone()
     con.close()
+    replay_proof = validate_product(out, admission_path, expected_sha256)
+    N.recheck(admitted_pins)
+    for name, digest in pinned.items():
+        if C.sha256_file(Path(name)) != digest:
+            raise ValueError("buyback input changed during publication")
+    C.write_json_atomic(product / "manifest.json", {"schema": SCHEMA, "product_id": product_id,
+        "input_manifests_sha256": pinned, "file_sha256": C.sha256_file(out), "admission": replay_proof,
+        "gate_status": {"buyback_200_native_handchecks": "FAIL", "measured": 0, "required": 200}, **receipt})
+    import shutil
+    alias = C.stage_dir(EC.STAGE) / f"{TABLE}.parquet"
+    shutil.copyfile(out, alias.with_suffix(".partial"))
+    alias.with_suffix(".partial").replace(alias)
     EC.publish_table(TABLE, ("events_buyback", "guidance", "events_common", "events_sources", "common"), {
-        "schema": SCHEMA, "rule": __doc__, "extractor_version": EXTRACTOR_VERSION, **receipt})
+        "schema": SCHEMA, "rule": __doc__, "extractor_version": EXTRACTOR_VERSION,
+        "gate_status": {"buyback_200_native_handchecks": "FAIL", "measured": 0, "required": 200}, **receipt})
     return receipt
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--phase", choices=("parse", "publish", "all"), default="all")
+    ap.add_argument("--admission", type=Path, required=True)
+    ap.add_argument("--admission-sha256", required=True)
+    ap.add_argument("--validate-product", type=Path)
     args = ap.parse_args(argv)
     out: dict[str, Any] = {}
+    if args.validate_product:
+        print(json.dumps(validate_product(args.validate_product, args.admission, args.admission_sha256), default=str))
+        return 0
     if args.phase in ("parse", "all"):
-        out["parse"] = phase_parse()
+        out["parse"] = parse_native(args.admission, args.admission_sha256)
     if args.phase in ("publish", "all"):
-        out["publish"] = phase_publish()
+        out["publish"] = phase_publish(admission_path=args.admission, expected_sha256=args.admission_sha256)
     print(json.dumps(out, default=str, indent=1)[:5000], flush=True)
     return 0
 

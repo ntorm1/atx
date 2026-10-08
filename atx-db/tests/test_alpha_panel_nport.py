@@ -99,8 +99,9 @@ def test_parse_quarter_tiny(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     f = {r["accession"]: r for r in pq.read_table(part / "filings.parquet").to_pylist()}
     assert f[a1]["cik"] == 36405 and f[a1]["report_date"] == dt.date(2024, 3, 31) and f[a1]["filing_date"] == dt.date(2024, 5, 28)
     assert f[a1]["sales_m1"] == 50 and f[a1]["redemption_m1"] == 20 and f[a1]["sales_m2"] is None
-    assert f[a1]["ret_q"] == pytest.approx(1.01 * 1.02 * 1.03 - 1)     # median over classes with all 3 months
-    assert (f[a1]["n_classes"], f[a1]["n_classes_ret"]) == (2, 1)
+    assert f[a1]["ret_q"] is None
+    assert f[a1]["return_boundary_reason"] == "return_window_holdout"
+    assert (f[a1]["n_classes"], f[a1]["n_classes_ret"]) == (None, None)
     assert f[a2]["is_amendment"] is True
     # no acceptance: 00:00 America/New_York the day after filing = 04:00 UTC in May
     assert f[a2]["available_at"].astimezone(dt.UTC) == dt.datetime(2024, 5, 30, 4, 0, tzinfo=dt.UTC)
@@ -118,6 +119,47 @@ def _fil(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
                    reinvestment_m3 DOUBLE, redemption_m1 DOUBLE, redemption_m2 DOUBLE, redemption_m3 DOUBLE)""")
     con.executemany("INSERT INTO fil VALUES (?, ?, 1, 'R', 'S', ?, ?, ?, ?, ?, NULL, ?, 1, 'x', ?, 0, 0, 0, 0, 0, ?, 0, 0)",
                     rows)
+
+
+def test_actual_clock_vintages_preserve_original_and_late_prior_amendment():
+    con=duckdb.connect()
+    con.execute("SET TimeZone='UTC'")
+    timestamp=lambda value:dt.datetime.fromisoformat(value).replace(tzinfo=dt.UTC)
+    q1,q2=dt.date(2020,3,31),dt.date(2020,6,30)
+    _fil(con,[
+        ("F1","F1","p0",q1,dt.date(2020,5,15),timestamp("2020-05-15T20:00:00"),100.0,0.0,0.0,0.0),
+        ("F1","F1","c0",q2,dt.date(2020,8,15),timestamp("2020-08-15T20:00:00"),120.0,0.1,15.0,5.0),
+        ("F1","F1","c1",q2,dt.date(2020,8,20),timestamp("2020-08-20T20:00:00"),121.0,0.1,17.0,5.0),
+        ("F1","F1","p1",q1,dt.date(2020,8,25),timestamp("2020-08-25T20:00:00"),110.0,0.0,0.0,0.0)])
+    original=con.execute(N.effective_asof_sql(timestamp("2020-08-20T20:00:00"))).fetchall()
+    assert {row[5] for row in original}=={"p0","c0"}
+    versions=con.execute(f"""SELECT accession,available_at,previous_accession,flow_pct_reported
+        FROM ({N.flow_vintages_sql()}) WHERE report_date=DATE '2020-06-30' ORDER BY available_at""").fetchall()
+    assert [row[0] for row in versions]==["c0","c1","c1"]
+    assert [row[2] for row in versions]==["p0","p0","p1"]
+    assert [row[3] for row in versions]==pytest.approx([0.1,0.12,12/110])
+    con.close()
+
+
+def test_native_flow_vintage_producer_accounts_for_missing_series_clock(tmp_path,monkeypatch):
+    import json
+    monkeypatch.setenv("ATX_ALPHA_PANEL_ROOT",str(tmp_path / "lake"))
+    con=duckdb.connect()
+    q=dt.date(2020,3,31)
+    at=dt.datetime(2020,5,15,20,tzinfo=dt.UTC)
+    _fil(con,[("F1","F1","a",q,at.date(),at,100.0,0.0,0.0,0.0)])
+    source=tmp_path / "filings.parquet"
+    con.execute(f"""COPY (SELECT * EXCLUDE(fund_key) FROM fil UNION ALL
+        SELECT * EXCLUDE(fund_key) REPLACE(NULL AS series_id,'bad' AS accession,NULL AS available_at) FROM fil)
+        TO '{source.as_posix()}' (FORMAT parquet)""")
+    manifest=tmp_path / "source-manifest.json"
+    manifest.write_text(json.dumps(dict(status="complete")))
+    receipt=N.build_flow_vintages([source],manifest)
+    assert receipt["rows"]==1 and receipt["rejected_filings"]==1
+    rejected=pq.read_table(tmp_path / "lake/nport_vintages/rejected_filings.parquet").to_pylist()[0]
+    assert rejected["source_available_at"] is None and rejected["available_at"] is not None
+    assert rejected["reason"]=="series_id_missing"
+    con.close()
 
 
 def test_effective_reports_and_flows() -> None:
@@ -141,8 +183,11 @@ def test_effective_reports_and_flows() -> None:
     fl = {r[0]: r[1:] for r in con.execute(f"""SELECT accession, net_flow_reported, flow_pct_reported, flow_proxy, flow_proxy_pct
                                               FROM ({N.FLOWS_SQL})""").fetchall()}
     assert fl["a2"][0] == 10.0 and fl["a2"][1] == pytest.approx(0.10)
-    assert fl["a2"][2] == pytest.approx(121.0 - 100.0 * 1.10) and fl["a2"][3] == pytest.approx(0.11)
+    assert fl["a2"][2] is None and fl["a2"][3] is None                    # return product strict holdout
     assert fl["b1"][1] is None                                              # prior report only 29 days earlier
+    con.execute("UPDATE eff SET sales_m2=NULL WHERE accession='a2'")
+    missing = con.execute(f"SELECT net_flow_reported,flow_missing_reason FROM ({N.FLOWS_SQL}) WHERE accession='a2'").fetchone()
+    assert missing == (None, "reported_component_missing")
 
 
 def test_aggregate_and_changes(tmp_path: Path) -> None:

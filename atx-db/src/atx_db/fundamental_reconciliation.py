@@ -50,6 +50,7 @@ class ReconciliationTerm:
 class FundamentalReconciliationRefreshOptions:
     symbols: tuple[str, ...] | None = None
     run_id: str | None = None
+    security_ids: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -429,13 +430,18 @@ def refresh_fundamental_reconciliation_serving(
     """Atomically publish the contextual reconciliation view into its indexed API table."""
 
     options = options or FundamentalReconciliationRefreshOptions()
+    symbols = tuple(sorted({str(symbol).strip().upper() for symbol in options.symbols or () if symbol}))
+    security_ids = tuple(sorted({str(value) for value in options.security_ids or () if value}))
+    if options.security_ids is not None and (not security_ids or symbols):
+        raise ValueError("security_ids must be nonempty and cannot be combined with symbols")
+    scoped = bool(symbols or security_ids)
     store.initialize()
     seed_fundamental_reconciliation_rules(store)
     run_id = options.run_id or f"fundamental-reconciliation-{uuid.uuid4()}"
     build_id = str(uuid.uuid4())
-    symbols = tuple(sorted({str(symbol).strip().upper() for symbol in options.symbols or () if symbol}))
     scope_json = json.dumps(
-        {"symbols": list(symbols) if symbols else None},
+        ({"security_ids": list(security_ids)} if security_ids else
+         {"symbols": list(symbols) if symbols else None}),
         separators=(",", ":"),
         sort_keys=True,
     )
@@ -448,7 +454,18 @@ def refresh_fundamental_reconciliation_serving(
         [build_id, scope_json, run_id],
     )
     try:
-        if symbols:
+        if security_ids:
+            store.con.execute(
+                "CREATE OR REPLACE TEMP TABLE fundamental_reconciliation_security_scope "
+                "(security_id VARCHAR PRIMARY KEY)"
+            )
+            store.con.executemany(
+                "INSERT INTO fundamental_reconciliation_security_scope VALUES (?)",
+                [(value,) for value in security_ids],
+            )
+            where_clause = "WHERE security_id IN (SELECT security_id FROM fundamental_reconciliation_security_scope)"
+            source_relation = _create_scoped_contextual_view(store)
+        elif symbols:
             store.con.execute(
                 """
                 CREATE OR REPLACE TEMP TABLE fundamental_reconciliation_symbol_scope (
@@ -521,7 +538,7 @@ def refresh_fundamental_reconciliation_serving(
                 SELECT * FROM fundamental_reconciliation_serving_next
                 """
             )
-            if symbols:
+            if scoped:
                 store.con.execute(
                     """
                     DELETE FROM fundamental_reconciliation_serving current_row
@@ -546,7 +563,7 @@ def refresh_fundamental_reconciliation_serving(
                     )
                     """
                 )
-            if symbols:
+            if scoped:
                 serving_row_count, serving_max_available_at = _fetch_count_watermark(
                     store,
                     """
@@ -595,7 +612,7 @@ def refresh_fundamental_reconciliation_serving(
                     serving_row_count,
                     source_max_available_at,
                     serving_max_available_at,
-                    not symbols,
+                    not scoped,
                     published_row_count,
                     published_max_available_at,
                     published_content_hash,

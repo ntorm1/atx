@@ -1,0 +1,16 @@
+{
+  "stage": "ea_actuals",
+  "path": "data/alpha_panel/v1/ea_actuals/manifest.json",
+  "product": "ann_features.parquet",
+  "resolver": "atx_db.alpha_panel.ea_publication.file",
+  "required_phases": ["features", "validated"],
+  "keys": ["cik", "accession"],
+  "schema_id": "atx.alpha-panel.ea-actuals/v1",
+  "as_of_macro_sql": "SELECT * FROM read_parquet(resolved_product_path) WHERE available_at < CAST(ts AS TIMESTAMP) QUALIFY row_number() OVER (PARTITION BY cik ORDER BY available_at DESC, accession DESC) = 1",
+  "integration_requirement": "Task17 must verify required phase, resolve the activated products path and bind resolved_product_path; never glob generations",
+  "qualification": "experimental; gate_status and reason columns must be consulted; EPS share-basis and manual precision unresolved",
+  "separate_products": {
+    "filing_lags": {"keys": ["cik", "accession"], "clock": "matching later original 10-Q acceptance"},
+    "reaction_returns": {"keys": ["cik", "accession", "security_id"], "clock": "third reaction-session 22:00 UTC", "source_window": "entirely before 2023"}
+  }
+}

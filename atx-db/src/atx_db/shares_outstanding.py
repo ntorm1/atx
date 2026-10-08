@@ -38,8 +38,28 @@ def refresh_shares_outstanding_history(
     with store.transaction():
         store.con.execute("DELETE FROM shares_outstanding_history WHERE source = ?", [options.source])
         store.con.execute(
-            f"""
-            INSERT INTO shares_outstanding_history (
+            shares_outstanding_history_sql(),
+            [options.source, options.source, options.run_id],
+        )
+
+    return int(
+        store.con.execute(
+            "SELECT count(*) FROM shares_outstanding_history WHERE source = ?",
+            [options.source],
+        ).fetchone()[0]
+    )
+
+
+def shares_outstanding_history_sql(
+    *, target: str = "shares_outstanding_history",
+    points: str = "fundamental_statement_points", security_predicate: str = "TRUE",
+) -> str:
+    """Shared INSERT query; binds source, source, run_id in that order."""
+    from ._bulk_publication import _identifier
+
+    points = _identifier(points)
+    return f"""
+            INSERT INTO {_identifier(target)} (
                 share_history_id,
                 source,
                 security_id,
@@ -116,7 +136,7 @@ def refresh_shares_outstanding_history(
                 p.source_url,
                 coalesce(?, p.run_id) AS run_id,
                 p.source_loaded_at
-            FROM fundamental_statement_points p
+            FROM {points} p
             JOIN (
                 SELECT
                     statement_point_id,
@@ -130,7 +150,7 @@ def refresh_shares_outstanding_history(
                             THEN upper(substr(lower(canonical_metric), 7))
                         ELSE NULL
                     END AS share_class
-                FROM fundamental_statement_points
+                FROM {points}
             ) m
               ON m.statement_point_id = p.statement_point_id
             LEFT JOIN (
@@ -140,7 +160,7 @@ def refresh_shares_outstanding_history(
                     period_end,
                     as_of_date,
                     max(value) AS shares_outstanding
-                FROM fundamental_statement_points
+                FROM {points}
                 WHERE lower(canonical_metric) = 'shares_outstanding'
                   AND value IS NOT NULL
                   AND value >= 0
@@ -151,6 +171,7 @@ def refresh_shares_outstanding_history(
              AND outstanding.period_end = p.period_end
              AND outstanding.as_of_date = p.as_of_date
             WHERE m.share_count_type IN ({_METRIC_SQL_LIST})
+              AND ({security_predicate})
               AND p.value IS NOT NULL
               AND p.value >= 0
               AND (lower(p.unit) IN ('share', 'shares') OR lower(p.unit_type) IN ('share', 'shares'))
@@ -167,16 +188,7 @@ def refresh_shares_outstanding_history(
                   OR outstanding.shares_outstanding IS NULL
                   OR p.value <= outstanding.shares_outstanding
               )
-            """,
-            [options.source, options.source, options.run_id],
-        )
-
-    return int(
-        store.con.execute(
-            "SELECT count(*) FROM shares_outstanding_history WHERE source = ?",
-            [options.source],
-        ).fetchone()[0]
-    )
+            """
 
 
 class SharesOutstandingHistoryDataset(Dataset):

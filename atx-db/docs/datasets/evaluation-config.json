@@ -1,0 +1,3518 @@
+{
+  "cost_bps": [
+    0,
+    10,
+    25,
+    50
+  ],
+  "deduplication": {
+    "annual asset growth": "same economic definition as at_gr1; counted once"
+  },
+  "delisting": "qualified total return plus independently admitted dlret proceeds and residual cash convention; unknown -> missing",
+  "development_subset": null,
+  "end_exclusive": "2023-01-01",
+  "endpoints": [
+    "IC",
+    "spread"
+  ],
+  "entry": "next session close; returns of subsequent h complete sessions; exit feature index+h+1",
+  "exploratory": [
+    {
+      "direction": 1,
+      "name": "adv_finra",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "age",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "aliq_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "aliq_mat",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ami_126d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "at_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "at_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "at_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "at_turnover",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "be_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "be_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "beta_60m",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "beta_dimson_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "betabab_1260d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "betadown_252d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "bev_mev",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "bidaskhl_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "bseg_n",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "bseg_rev_hhi",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "capex_abn",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "capx_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "capx_gr2",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "capx_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "cash_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "cash_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "cash_bev",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "cash_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "cash_sale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "ceq_iss_5y",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "cfoa_ch5",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "chcsho_12m",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "chs_proxy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "coa_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "col_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "common_manager_share_change",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "comparison_population_managers",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "contributing_managers",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "cop_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "cop_atl1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "cop_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "cop_bev",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "cop_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "cop_sale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "corr_1260d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "coskew_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "cowc_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "daily_abn_turnover",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_abn_volume_5",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_accruals",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_amihud_21",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_asset_growth",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_beta_252",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_bm",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_breadth_change",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_capx_at",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_cash_at",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_cfoa",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_cfp",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_chtax",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_downside_beta_252",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_droe",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_dtc",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_dvc_yield",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_ea_window_ahead_5",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_ear",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_earn_days_since",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_ebit_ev",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_ep",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_fcfp",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_frog_in_pan",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_fscore",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_ftd_latest_to_shares",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_ftd_to_shares",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_gm_change",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_gpa",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_high_52w",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_hl_spread_21",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_ind_adj_rev_21",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_ind_adj_rev_5",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_ind_mom_12_1",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_ind_mom_6_1",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_intraday_rev_5",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_io_change_q",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_io_concentration",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_io_ratio",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_issuance_vendor",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_issuance_xbrl",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_iv_change_21",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_iv_change_5",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_iv_level_21",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_iv_rv_ratio",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_iv_rv_spread",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_iv_term_slope",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_ivol_21",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_leverage",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_log_adv63",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_log_me",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_log_me_line",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_log_price",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_low_beta",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_low_coskew_252",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_low_coskew_60m",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_low_ivol",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_low_ivol_63",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_low_max",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_low_skew_63",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_low_vol_126",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_lowvol_ind",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_mom_12_1",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_mom_12_7",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_mom_6_1",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_mom_overnight_12",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_net_payout",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_noa_at",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_opbe",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_opex_at",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_overnight_intraday_tug_21",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_rd_me",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_regsho_run_days",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_regsho_threshold",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_resid_mom_12_1",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_rev_21",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_rev_5",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_roa",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_roe_q",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_sale_growth_q",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_seas_annual_avg_2_5",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_seasonality_same_month",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_sector_mom_ff12_12_1",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_short_vol_ratio_21",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_short_vol_ratio_5",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_si_change",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_si_ratio",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_si_to_adv",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_si_to_io",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_sp",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_sue",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_tsmom_12",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_turnover_21",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_vol_21",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_vol_252",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_vol_63",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_vol_of_volume_63",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_volume_trend_21_252",
+      "stored_sign": -1
+    },
+    {
+      "direction": 1,
+      "name": "daily_within_ind_mom",
+      "stored_sign": 1
+    },
+    {
+      "direction": 1,
+      "name": "daily_zero_return_days_63",
+      "stored_sign": 1
+    },
+    {
+      "direction": -1,
+      "name": "dbnetis_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "debt_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "debt_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "debt_bev",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "debt_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "debt_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "debt_sale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "denominator_shares",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "dgp_dsale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "div12m_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "dolvol_126d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "dolvol_var_126d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "dsale_dinv",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "dsale_drec",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "dsale_dsga",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ea_epsfiq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ea_epsfiq_seasonal_comparative",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ea_epsfiq_surprise",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ea_niq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ea_niq_seasonal_comparative",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ea_saleq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ea_saleq_seasonal_comparative",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ea_saleq_surprise",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ea_sue_rev_ann",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "earnings_variability",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ebit_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ebit_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ebit_bev",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ebit_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ebit_sale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ebitda_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ebitda_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ebitda_bev",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ebitda_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ebitda_mev",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ebitda_sale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "emp_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "eq_dur",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "eqnetis_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "eqnpo_12m",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "eqnpo_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "eqpo_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "event_score",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "f_score",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "fcf_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "fcf_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "fcf_bev",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "fcf_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "fcf_sale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "fnl_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "foreign_sales_share",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "gmar_ch5",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "gp_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "gp_atl1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "gp_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "gp_bev",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "gp_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "gp_sale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "gpoa_ch5",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "guid_revision",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "guid_surprise",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "insider_buyers_6m",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "insider_net_buy_6m",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "insider_opportunistic_buy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "inst_breadth_change",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "inst_closed_positions",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "inst_hhi",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "inst_n_holders",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "inst_new_positions",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "inst_ownership",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "inst_ownership_change",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "inst_persistent_holders",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "inst_shares",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "inst_shares_change",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "inst_top5_share",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "institutional_ownership_change_split_adjusted",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "inv_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "inv_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "iskew_capm_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "iskew_ff3_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "iskew_hxz4_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ival_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "ivol_capm_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "ivol_capm_252d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "ivol_ff3_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "ivol_hxz4_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "kz_index",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "lnoa_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "lti_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "market_equity",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "mispricing_mgmt",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "mispricing_perf",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "ncoa_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "ncol_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "netdebt_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "netis_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "nfna_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ni_ar1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ni_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ni_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ni_bev",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ni_inc8q",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ni_ivol",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ni_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ni_sale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "niq_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "niq_at_chg1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "niq_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "niq_be_chg1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "niq_su",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "nix_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "nix_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "nix_bev",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "nix_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "nix_sale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "nncoa_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "noa_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "noa_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "nonreliance_402",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "o_score",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "oaccruals_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "oaccruals_ni",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "observed_n_holders",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "observed_shares",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ocf_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ocf_at_chg1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ocf_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ocf_bev",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ocf_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ocf_sale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "ocfq_saleq_std",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "op_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "op_atl1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ope_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ope_bel1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "opex_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "owner_at_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "owner_at_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_at_q_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_at_ttm_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_be_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_be_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_be_q_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_be_ttm_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "owner_capx_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "owner_capx_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_capx_q_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_capx_ttm_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_cash_conversion",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_cash_margin",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_eps_basic_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_eps_basic_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_eps_basic_q_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_eps_basic_ttm_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_eps_diluted_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_eps_diluted_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_eps_diluted_q_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_eps_diluted_ttm_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_fcf_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_fcf_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_fcf_q_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_fcf_ttm_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_gross_margin_change",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_net_margin",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_net_margin_change",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_ni_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_ni_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_ni_q_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_ni_ttm_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_ocf_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_ocf_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_ocf_q_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_ocf_ttm_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_operating_margin_change",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_roa",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_roce",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_roe",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_roic",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_sale_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_sale_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_sale_q_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_sale_ttm_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "owner_shares_basic_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "owner_shares_basic_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_shares_basic_q_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_shares_basic_ttm_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "owner_shares_diluted_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "owner_shares_diluted_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_shares_diluted_q_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_shares_diluted_ttm_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_wc_growth",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_xrd_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_xrd_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_xrd_q_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "owner_xrd_ttm_yoy",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ownership_breadth_change",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "pi_nix",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "ppeinv_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "prc",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "prc_highprc_252d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "qmj",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "qmj_growth",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "qmj_prof",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "qmj_safety",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_accrual",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_adv_sale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_aftret_eq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_aftret_equity",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_aftret_invcapx",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_altman_z",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_at_turn",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_beneish_m",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_bm",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_capei",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_capital_ratio",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_cash_conversion",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_cash_debt",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_cash_lt",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_cash_ratio",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_cfm",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_curr_debt",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_curr_ratio",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_de_ratio",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_debt_assets",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_debt_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_debt_capital",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_debt_ebitda",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_debt_invcap",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_divyield",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_divyield_paid",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_dltt_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_dpr",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_efftax",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_equity_invcap",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_evm",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_fcf_ocf",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_gpm",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_gprof",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_int_debt",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_int_totdebt",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_intcov",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_intcov_ratio",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_inv_turn",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_invt_act",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_lt_debt",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_lt_ppent",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_npm",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_ocf_lct",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_ohlson_o",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_opmad",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_opmbd",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_pay_turn",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_pcf",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_pe_exi",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_pe_inc",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_pe_issuer_ib",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_pe_issuer_ni",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_peg_trailing",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_piotroski_f",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_pretret_earnat",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_pretret_noa",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_profit_lct",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_ps",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_ptb",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_ptpm",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_quick_ratio",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_rd_sale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_rect_act",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_rect_turn",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_roa",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_roce",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_roe",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_sale_equity",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_sale_invcap",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_sale_nwc",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_short_debt",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ratio_totdebt_invcap",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "rd5_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "rd_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "rd_sale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "resff3_12_1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "resff3_6_1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ret",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ret_12_1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ret_12_7",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "ret_1_0",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ret_3_1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "ret_60_12",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ret_6_1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ret_9_1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "ret_excess",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "rmax1_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "rmax5_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "rmax5_rvol_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "roa_ch5",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "roe_ch5",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "rskew_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "rvol_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "sale_bev",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "sale_emp_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "sale_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "sale_gr3",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "sale_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "saleq_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "saleq_su",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "score_at_gr1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "score_be_me",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "score_gp_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "score_guid_surprise",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "score_institutional_ownership_change_split_adjusted",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "score_ivol_capm_252d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "score_ni_be",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "score_oaccruals_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "score_op_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "score_ownership_breadth_change",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "score_ret_12_1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "score_rvol_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "score_sue_eps_ann",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "seas_11_15an",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "seas_11_15na",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "seas_16_20an",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "seas_16_20na",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "seas_1_1an",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "seas_1_1na",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "seas_2_5an",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "seas_2_5na",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "seas_6_10an",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "seas_6_10na",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "seo_recent",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "seo_recent_252",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "short_exempt_volume",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "short_interest_ratio",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "short_volume",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "short_volume_ratio",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "si_dtc",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "si_prev",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "si_shares",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_aco",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_acominc",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_act",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_actq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_am",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ao",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ap",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_apalch",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_apq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_aqc",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_atq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_benef",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_caps",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_capx",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_capxint",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ceq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ceqq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ch",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_che",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_chech",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_cheq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_citotal",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_cogs",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_cogsq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_cshfd",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_cshi",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_csho",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_cshoq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_cshpri",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_cshprq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_cstk",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dd1",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dlc",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dlcch",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dlcq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dltis",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dltr",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dltt",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dlttq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_do",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dp",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dpact",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dpq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dptc",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dv",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dvc",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dvp",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dvpd",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_dvt",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_epsfi",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_epsfx",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_epsfxq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_epspi",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_epspx",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_epspxq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_esub",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_exre",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_fincf",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_gdwl",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_gdwlq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_gp",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ib",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ibq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_idit",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_iditbk",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_intan",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_intano",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_intanq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_intpn",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_invch",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_invt",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_invtq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ivao",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ivncf",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ivst",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_lco",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_lct",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_lctq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_llo",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_lntal",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_lo",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_lse",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_lt",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ltq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_mib",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_mibq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_mii",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ni",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_nicon",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_niint",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_niq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_nopi",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_oancf",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_oiadp",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_oiadpq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_oibdp",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_oibdpq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_pcl",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_pi",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ppegt",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ppent",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_ppentq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_prem",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_prstkc",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_pstk",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_pstkq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_re",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_recch",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_rect",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_rectq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_rouant",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_sale",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_saleq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_seq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_seqq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_spi",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_sppiv",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_sstk",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_stkco",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_tempeq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_teq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_teqq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_tstk",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_txc",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_txdba",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_txdc",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_txdi",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_txditc",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_txp",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_txpd",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_txt",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_txtq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_wcap",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_xacc",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_xad",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_xido",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_xint",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_xintq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_xopr",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_xpp",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_xrd",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_xsell",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_xsga",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "std_xsgaq",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "sti_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "sue_eps_ann",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "taccruals_at",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "taccruals_ni",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tangibility",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tax_dtl",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tax_gr1a",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_chars",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_fog",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_pct_complex",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_sentences",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_sim_cosine",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_sim_jaccard",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_sim_minedit",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_words",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_words_chg",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_doc_bytes",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_doc_fog",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_doc_words",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_chars",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_fog",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_pct_complex",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_sentences",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_sim_cosine",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_sim_jaccard",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_sim_minedit",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_words",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_words_chg",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_n_sections",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_chars",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_fog",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_pct_complex",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_sentences",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_sim_cosine",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_sim_jaccard",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_sim_minedit",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_words",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_words_chg",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_score",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tnic_best_score",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tnic_n_fallback_peers",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tnic_n_peers",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tnic_n_peers_own_clock",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tnic_threshold",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tnic_total_similarity",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tnic_vocabulary_words",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "total_volume",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "turnover_126d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": -1,
+      "name": "turnover_var_126d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "z_score",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "zero_trades_126d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "zero_trades_21d",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "zero_trades_252d",
+      "stored_sign": "natural"
+    }
+  ],
+  "fdr_q": 0.05,
+  "hac_lag": "max(horizon-1,21)",
+  "history_qualification": "prior research exposure possible; no untouched holdout claim",
+  "horizons": [
+    5,
+    21,
+    63
+  ],
+  "incremental_controls": [
+    "log_me",
+    "ret_12_1",
+    "rvol_21d"
+  ],
+  "liquidity": "pre-entry independently admitted native dolvol_126d mean USD close times raw share volume, native minimum60 observations; exact source clock and qualification required; missing excluded from cost/liquidity evidence",
+  "minimum_dates": 126,
+  "minimum_names": 100,
+  "monthly_carry": "native monthly value strictly after documented availability; bounded staleness",
+  "nyse_minimum_names": 20,
+  "owner_directions": {
+    "annual asset growth": "at_gr1",
+    "operating profitability": "op_at",
+    "ownership breadth change": "ownership_breadth_change",
+    "split-adjusted institutional ownership change": "institutional_ownership_change_split_adjusted"
+  },
+  "primary": [
+    {
+      "direction": 1,
+      "name": "be_me"
+    },
+    {
+      "direction": 1,
+      "name": "gp_at"
+    },
+    {
+      "direction": 1,
+      "name": "ret_12_1"
+    },
+    {
+      "direction": 1,
+      "name": "ni_be"
+    },
+    {
+      "direction": -1,
+      "name": "at_gr1"
+    },
+    {
+      "direction": -1,
+      "name": "oaccruals_at"
+    },
+    {
+      "direction": -1,
+      "name": "rvol_21d"
+    },
+    {
+      "direction": -1,
+      "name": "ivol_capm_252d"
+    },
+    {
+      "direction": 1,
+      "name": "sue_eps_ann"
+    },
+    {
+      "direction": 1,
+      "name": "guid_surprise"
+    },
+    {
+      "direction": 1,
+      "name": "ownership_breadth_change"
+    },
+    {
+      "direction": 1,
+      "name": "institutional_ownership_change_split_adjusted"
+    },
+    {
+      "direction": 1,
+      "name": "op_at"
+    }
+  ],
+  "purge_embargo_sessions": 63,
+  "schema": "atx.golden-evaluation/v2",
+  "start": "2020-01-01",
+  "turnover": "sum absolute signed-long-short weight changes, include closing missing names; initial from cash",
+  "universes": [
+    "univ_all_common",
+    "univ_r3000p"
+  ],
+  "weight_cap": 0.05
+}

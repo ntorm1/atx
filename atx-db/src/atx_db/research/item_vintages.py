@@ -16,7 +16,7 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from .fundamental_sources import canonical_sha256, file_sha256, parquet_relation
 
-ENGINE_VERSION = "item_vintages_v4"
+ENGINE_VERSION = "item_vintages_v5"
 MAPPING_OUTCOMES_VERSION = "outer_identity_v1"
 PERIOD_POLICY = {"quarter_days": [70, 112], "half_year_days": [150, 215],
                  "nine_month_days": [240, 310], "year_days": [350, 380],
@@ -25,6 +25,8 @@ PERIOD_POLICY = {"quarter_days": [70, 112], "half_year_days": [150, 215],
                  "missing": "null", "weighted_shares": "nonadditive_direct_only",
                  "conflict": "semantic_before_provenance", "snapshot_date": "2026-09-20",
                  "encoded_endpoint": "C114_unique_joint_exact_fact_conservative_clock_v1",
+                 "context_history": "original_then_joint_context_v1",
+                 "endpoint_retirement": "adverse_history_and_explicit_slot_replacement_v1",
                  "encoded_authority": "mapping.fsds_endpoint_authority"}
 
 
@@ -106,8 +108,45 @@ def corroborate(rows: list[dict[str, Any]], *, endpoint_authority: dict | None =
             row["clock_basis"] = "fsds_same_fact_corroborated"
             row["period_basis"] = "same_fact_cf_start" if start else "instant"
             row["endpoint_encoding"] = "exact_same_fact"
+    # Exact same-fact borrowing is an already-authorized source clock. C114 is
+    # a later context revision, so retain this original state before recovering
+    # encoded dates. Never let future joint evidence erase the earlier interval.
+    original_contexts = [_context_state(row) for row in rows]
     if endpoint_authority is not None:
         _recover_encoded_endpoints(rows, endpoint_authority)
+    for row, original in zip(rows, original_contexts):
+        corrected = _context_state(row)
+        transition = row.get("encoded_context_at") or row.get("filing_context_at")
+        row["has_context_history"] = transition is not None and original != corrected
+        versions = []
+        if transition is not None and original["available_at"] is not None and original != corrected:
+            if original["available_at"] < transition:
+                versions.append({**original, "context_from": original["available_at"], "context_until": transition,
+                                 "withdrawal_inputs": corrected["dependencies"]+corrected.get("filing_context_dependencies", [])})
+            versions.append({**corrected, "context_from": max(corrected["available_at"], transition),
+                             "context_until": None, "withdrawal_inputs": []})
+        else:
+            versions.append({**corrected, "context_from": corrected["available_at"],
+                             "context_until": None, "withdrawal_inputs": []})
+        for version in versions:
+            version["context_version_id"] = (canonical_sha256({"candidate_id": row["candidate_id"], **version})
+                                             if row["has_context_history"] else None)
+        row["context_versions"] = versions
+        row["candidate_effective_at"] = original["available_at"]
+        row["candidate_clock_basis"] = original["clock_basis"]
+
+
+_CONTEXT_FIELDS = ("period_start", "period_end", "filing_period", "available_at", "dependencies", "clock_basis",
+                   "period_basis", "endpoint_encoding", "encoded_context_at", "filing_context_at",
+                   "filing_context_dependencies", "filing_context_status")
+
+
+def _context_state(row: dict) -> dict:
+    return {key: row[key] for key in _CONTEXT_FIELDS if key in row}
+
+
+def _context_variant(row: dict, context: dict) -> dict:
+    return {**{key:value for key,value in row.items() if key not in _CONTEXT_FIELDS}, **context}
 
 
 def _adjacent_month_ends(day: dt.date) -> tuple[dt.date, dt.date]:
@@ -278,6 +317,150 @@ def _grid(rows: list[dict[str, Any]]) -> tuple[dict, dict]:
     return by_end, by_slot
 
 
+def _temporal_grid(rows: list[dict]) -> tuple[dict, dict]:
+    """Compile fiscal metadata changes; identical fact claims collapse first.
+
+    Only explicit context withdrawal removes a claim. Ordinary later filings
+    retain earlier claims and therefore retain genuine fiscal conflicts.
+    """
+    representatives = {}
+    for row in rows:
+        for context in row["context_versions"]:
+            if context["context_from"] is None or row["source_status"] != "candidate":
+                continue
+            variant = _context_variant(row, context)
+            key = tuple(variant.get(k) for k in ("accession", "source_kind", "period_end", "filing_period",
+                        "reported_fy", "reported_fp", "context_from", "context_until"))+(bool(row["qtrs"]),)
+            if key not in representatives or row["candidate_id"] < representatives[key]["candidate_id"]:
+                representatives[key] = variant
+    events = collections.defaultdict(list)
+    for number, row in enumerate(representatives.values()):
+        events[row["context_from"]].append((True, number, row))
+        if row["context_until"] is not None:
+            events[row["context_until"]].append((False, number, row))
+    active, previous, previous_slots, previous_claims = {}, {}, {}, {}
+    endpoints, slots = collections.defaultdict(list), collections.defaultdict(list)
+
+    def signature(point):
+        if point is None:
+            return None
+        return (point["end"], point["fy"], point["q"], point["invalid_at"] is not None,
+                tuple(point["inputs"]), tuple(point["invalid_inputs"]))
+
+    for clock, changes in sorted(events.items()):
+        triggers = set()
+        for addition, number, row in changes:
+            if addition:
+                active[number] = row
+                triggers.update(row["dependencies"])
+                triggers.update(row.get("filing_context_dependencies", []))
+            else:
+                active.pop(number, None)
+                triggers.update(row["withdrawal_inputs"])
+        current, _ = _grid(list(active.values()))
+        current_claims = {end: signature(point) for end, point in current.items()}
+        resolved = {}
+        for end in set(previous)|set(current):
+            old, new = previous.get(end), current.get(end)
+            if previous_claims.get(end) == current_claims.get(end):
+                if old is not None:
+                    resolved[end] = old
+                continue
+            if new is not None:
+                new = {**new, "clock": clock,
+                       "inputs": sorted(set(new["inputs"]) | triggers),
+                       "invalid_at": clock if new["invalid_at"] is not None else None,
+                       "invalid_inputs": sorted(set(new["invalid_inputs"]) | triggers) if new["invalid_at"] is not None else []}
+                resolved[end] = new
+            endpoints[end].append({"at": clock, "point": new, "triggers": sorted(triggers)})
+        # Compare raw semantic claims on the next iteration, while keeping the
+        # event's actual knowledge clock/dependencies for period construction.
+        previous = resolved
+        previous_claims = current_claims
+        grouped = collections.defaultdict(list)
+        for point in resolved.values():
+            grouped[point["fy"]*4+point["q"]].append(point)
+        for slot in set(previous_slots)|set(grouped):
+            points = sorted(grouped.get(slot, []), key=lambda p:p["end"])
+            old = previous_slots.get(slot, [])
+            if [signature(p) for p in points] != [signature(p) for p in old]:
+                slots[slot].append({"at": clock, "points": points, "triggers": sorted(triggers)})
+        previous_slots = grouped
+    return endpoints, slots
+
+
+def _timeline_at(timeline: Sequence[dict], clock: dt.datetime) -> dict | None:
+    from bisect import bisect_right
+    position = bisect_right(timeline, clock, key=lambda r:r["at"])-1
+    return timeline[position] if position >= 0 else None
+
+
+def _period_events(row: dict, endpoint_history: dict, slot_history: dict) -> list[dict]:
+    """Resolve a candidate's context intervals without future metadata rewrites."""
+    observations = []
+    for context in row["context_versions"]:
+        begin, until = context["context_from"], context["context_until"]
+        if begin is None:
+            continue
+        variant = _context_variant(row, context)
+        timeline = endpoint_history.get(variant["period_end"], [])
+        clocks = {begin}
+        clocks.update(p["at"] for p in timeline if p["at"] >= begin and (until is None or p["at"] < until))
+        predecessor_slots = set()
+        if variant["qtrs"] and variant["period_start"] is None:
+            for entry in timeline:
+                point = entry["point"]
+                if point is not None:
+                    predecessor_slots.add(point["fy"]*4+(point["q"]-1 if variant["qtrs"] == 1 else 0))
+            for slot in predecessor_slots:
+                clocks.update(p["at"] for p in slot_history.get(slot, [])
+                              if p["at"] >= begin and (until is None or p["at"] < until))
+        previous = None
+        for clock in sorted(clocks):
+            endpoint = _timeline_at(timeline, clock)
+            point = None if endpoint is None else endpoint["point"]
+            by_end = {} if point is None else {variant["period_end"]:point}
+            by_slot = {}
+            for slot in predecessor_slots:
+                prior = _timeline_at(slot_history.get(slot, []), clock)
+                by_slot[slot] = [] if prior is None else prior["points"]
+            period = _period(variant, by_end, by_slot)
+            rejection = None
+            if period is None and point is not None and row["period_kind"] == "instant":
+                period = {"period_start": None, "period_end": variant["period_end"], "freq": "instant",
+                          "fiscal_year": point["fy"], "fiscal_qtr": point["q"], "available_at": clock,
+                          "period_basis": "rejected_stock_context", "dependencies": variant["dependencies"]+point["inputs"],
+                          "invalid_at": None, "invalid_dependencies": []}
+                rejection = "period_ambiguous"
+            if period is None:
+                if previous is not None:
+                    observations.append({**previous, "available_at": clock, "forced_period_status": "endpoint_retired",
+                        "dependencies": sorted(set(previous["dependencies"]+(endpoint or {}).get("triggers", [])))})
+                    previous = None
+                continue
+            period["available_at"] = max(period["available_at"], clock)
+            period["forced_period_status"] = ("fiscal_grid_conflict" if period["invalid_at"] is not None
+                                               and period["invalid_at"] <= clock else rejection)
+            period["is_fiscal_invalidation"] = period["forced_period_status"] == "fiscal_grid_conflict" and clock>begin
+            period["invalid_at"], period["invalid_dependencies"] = None, []
+            period["context_version_id"] = context["context_version_id"]
+            period["clock_basis"] = variant["clock_basis"]
+            if previous is not None and _series_key({**row, **previous, "item":str(row["item_id"])}) != _series_key({**row, **period, "item":str(row["item_id"])}):
+                observations.append({**previous, "available_at": clock, "forced_period_status": "endpoint_retired",
+                    "dependencies": sorted(set(previous["dependencies"]+period["dependencies"]))})
+            observations.append(period)
+            previous = period
+        if until is not None and previous is not None:
+            observations.append({**previous, "available_at": until, "forced_period_status": "endpoint_retired",
+                "dependencies": sorted(set(previous["dependencies"]+context["withdrawal_inputs"]))})
+    # An evidence-only revision at the same economic key replaces its old
+    # context directly; it does not nullify that still-active endpoint.
+    active_keys = {(p["available_at"],p["freq"],p["period_start"],p["period_end"],p["fiscal_year"],p["fiscal_qtr"])
+                   for p in observations if p["forced_period_status"] != "endpoint_retired"}
+    return [p for p in observations if p["forced_period_status"] != "endpoint_retired" or
+            (p["available_at"],p["freq"],p["period_start"],p["period_end"],p["fiscal_year"],p["fiscal_qtr"]) not in active_keys]
+
+
 def _period(row: dict[str, Any], by_end: dict, by_slot: dict) -> dict[str, Any] | None:
     end, qtrs = row["period_end"], row["qtrs"]
     point = by_end.get(end)
@@ -335,6 +518,9 @@ def _event(template: dict[str, Any], *, clock: dt.datetime, value: Decimal | Non
                available_at=clock, valid_until=None, status=status, rule_id=rule,
                source_kind=template.get("source_kind", "derived"), inputs=sorted(set(inputs)), **extra)
     row.setdefault("event_stage", "derived")
+    row.setdefault("event_kind", "value")
+    row.setdefault("replaces_vintage_ids", [])
+    row.setdefault("context_version_ids", [])
     row["year"] = row["fiscal_year"]
     row["vintage_id"] = canonical_sha256(row)
     row["lineage_id"] = row["vintage_id"]
@@ -366,13 +552,22 @@ def _merge_series(inputs: Sequence[Sequence[dict]], template: dict, rule: str,
         mixed["accession"] = "+".join(sorted({r["accession"] or "" for r in current if r is not None}))
         if rule == "slot:duration_reconcile":
             visible = [r for r in current if r is not None]
-            mixed.update({k: visible[0][k] for k in ("period_start", "period_end")})
+            active = [r for r in visible if r["status"] != "endpoint_retired"]
+            chosen = (active or visible)[0]
+            mixed.update({k: chosen[k] for k in ("period_start", "period_end")})
+            retired = [r["vintage_id"] for r in visible if r["status"] == "endpoint_retired"]
+        else:
+            retired, active = [], []
         output.append(_event(mixed, clock=clock, value=value, status=status, inputs=dependencies, rule=rule,
-                             missing_value_basis=outcome[2] if len(outcome) > 2 else None))
+                             missing_value_basis=outcome[2] if len(outcome) > 2 else None,
+                             event_kind="current_slot_replacement" if retired and active else "value",
+                             replaces_vintage_ids=retired if retired and active else []))
     return output
 
 
 def _arithmetic(current, signs):
+    if any(row is not None and row["status"] == "endpoint_retired" for row in current):
+        return None, "endpoint_retired"
     if any(row is None for row in current):
         return None, "missing_input"
     if any(row["value_exact"] is None for row in current):
@@ -388,10 +583,7 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
         return [], []
     owner = rows[0]["cik"]
     corroborate(rows, endpoint_authority=mapping.get("fsds_endpoint_authority"))
-    for row in rows:
-        row["candidate_effective_at"] = row["available_at"]
-        row["candidate_clock_basis"] = row["clock_basis"]
-    by_end, by_slot = _grid(rows)
+    by_end, by_slot = _temporal_grid(rows)
     groups, mapping_dispositions = collections.defaultdict(list), []
     for row in rows:
         disposition = {"candidate_id": row["candidate_id"], "cik": owner, "item_id": row["item_id"],
@@ -415,42 +607,33 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
             continue
         forced_status = (row["source_status"] if rejected_stock else
                          "unit_mismatch" if expected is None or row["unit"] != expected else None)
-        if (str(end) < row["alias_valid_from"] or
-                row["alias_valid_to"] and str(end) >= row["alias_valid_to"] or
-                str(end) < row["rule_valid_from"] or
-                row["rule_valid_to"] and str(end) >= row["rule_valid_to"]):
-            disposition["reason"] = "alias_outside_validity"
+        periods = _period_events(row, by_end, by_slot)
+        if not periods:
+            disposition["reason"] = "period_ambiguous"
             mapping_dispositions.append(disposition)
             continue
-        period = _period(row, by_end, by_slot)
-        if period is None:
-            disposition["reason"] = "period_ambiguous"
-            point = by_end.get(end)
-            if row["period_kind"] != "instant" or point is None or row["available_at"] is None:
-                mapping_dispositions.append(disposition)
+        reasons = set()
+        for period in periods:
+            end = period["period_end"]
+            if (str(end) < row["alias_valid_from"] or
+                    row["alias_valid_to"] and str(end) >= row["alias_valid_to"] or
+                    str(end) < row["rule_valid_from"] or
+                    row["rule_valid_to"] and str(end) >= row["rule_valid_to"]):
+                reasons.add("alias_outside_validity")
                 continue
-            # The filing is visible and its stock endpoint is known. Preserve
-            # the rejected observation as a NULL revision instead of presenting
-            # it to downstream BE as ordinary non-reporting.
-            period = {"period_start": None, "period_end": end, "freq": "instant",
-                      "fiscal_year": point["fy"], "fiscal_qtr": point["q"],
-                      "available_at": max(row["available_at"], point["clock"]),
-                      "invalid_at": point["invalid_at"], "period_basis": "rejected_stock_context",
-                      "invalid_dependencies": list(point["invalid_inputs"]),
-                      "dependencies": sorted(set(row["dependencies"]+point["inputs"]))}
-            forced_status = forced_status or "period_ambiguous"
-        row.update(period, owner_id=owner, item=str(row["item_id"]), unit=expected)
-        raw_value = _decimal(row["value_exact"]) if forced_status is None else None
-        row["forced_status"] = forced_status
-        row["normalized_exact"] = None if raw_value is None else raw_value*Decimal(str(row["multiplier"]))
-        if row["normalized_exact"] is not None:
-            if row["sign_rule"] == "invert":
-                row["normalized_exact"] *= -1
-            elif row["sign_rule"] == "absolute":
-                row["normalized_exact"] = abs(row["normalized_exact"])
-            row["normalized_exact"] *= {"identity": 1, "thousands": 1000, "millions": 1000000}[row["scale_rule"]]
-        groups[_series_key(row)].append(row)
-        disposition["reason"] = forced_status or "mapped_candidate"
+            variant = {**row, **period, "owner_id":owner, "item":str(row["item_id"]), "unit":expected}
+            variant["forced_status"] = period["forced_period_status"] or forced_status
+            raw_value = _decimal(row["value_exact"]) if variant["forced_status"] is None else None
+            variant["normalized_exact"] = None if raw_value is None else raw_value*Decimal(str(row["multiplier"]))
+            if variant["normalized_exact"] is not None:
+                if row["sign_rule"] == "invert":
+                    variant["normalized_exact"] *= -1
+                elif row["sign_rule"] == "absolute":
+                    variant["normalized_exact"] = abs(variant["normalized_exact"])
+                variant["normalized_exact"] *= {"identity":1,"thousands":1000,"millions":1000000}[row["scale_rule"]]
+            groups[_series_key(variant)].append(variant)
+            reasons.add(variant["forced_status"] or "mapped_candidate")
+        disposition["reason"] = "mapped_candidate" if "mapped_candidate" in reasons else "+".join(sorted(reasons))
         mapping_dispositions.append(disposition)
     raw_series = {}
     for key, group in groups.items():
@@ -465,6 +648,8 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
             # C-104: conflict is decided before source/candidate ID representative selection.
             representative = min(tied, key=lambda r: (r["source_kind"] != "fsds", r["candidate_id"]))
             status = "semantic_conflict" if len(values) > 1 else "valid" if next(iter(values)) is not None else "invalid_value"
+            if any(r.get("forced_status") == "fiscal_grid_conflict" for r in tied):
+                status = "fiscal_grid_conflict"
             if len(values) == 1 and next(iter(values)) is None:
                 status = representative.get("forced_status") or status
             invalid = min((r["invalid_at"] for r in tied if r["invalid_at"] is not None), default=None)
@@ -476,7 +661,8 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
                 inputs += list(itertools.chain.from_iterable(r["invalid_dependencies"] for r in tied
                                if r["invalid_at"] is not None and r["invalid_at"] <= clock))
             output.append(_event(representative, clock=clock, value=value, status=status,
-                                 inputs=inputs, rule=representative["rule_id"], event_stage="source"))
+                                 inputs=inputs, rule="fiscal_grid_invalidation" if representative.get("is_fiscal_invalidation") else representative["rule_id"], event_stage="source",
+                                 context_version_ids=sorted({r["context_version_id"] for r in tied if r["context_version_id"]})))
             if invalid is not None and invalid > clock:
                 invalid_inputs = list(itertools.chain.from_iterable(r["invalid_dependencies"] for r in tied
                                       if r["invalid_at"] is not None and r["invalid_at"] <= invalid))
@@ -631,8 +817,12 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
     # when their exact-period keys differ. Persist a NULL instead of allowing the
     # reader's provenance hash to choose an economic value.
     slots = collections.defaultdict(list)
+    retirement_history = []
     for key, series in mnemonic.items():
         slots[key[0], key[1], key[4], key[5]].append(series)
+        retirement_history.extend(_event(row, clock=row["available_at"], value=None, status="endpoint_retired",
+            inputs=[row["vintage_id"]], rule="endpoint:retired_history", event_kind="endpoint_retirement")
+            for row in series if row["status"] == "endpoint_retired")
     for slot, series in slots.items():
         if len(series) <= 1:
             continue
@@ -642,14 +832,26 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
         for key in [k for k in mnemonic if (k[0], k[1], k[4], k[5]) == slot]:
             del mnemonic[key]
         mnemonic[_series_key(template)] = _merge_series(series, template, "slot:duration_reconcile", _duration_choice)
+    current_endpoint_clocks = {(r["item"],r["freq"],r["period_start"],r["period_end"],r["available_at"])
+                              for series in mnemonic.values() for r in series}
+    first_public_endpoint = {}
+    for series in mnemonic.values():
+        for row in series:
+            key = row["item"],row["freq"],row["period_start"],row["period_end"]
+            first_public_endpoint[key] = min(first_public_endpoint.get(key,row["available_at"]),row["available_at"])
+    retirement_history = [r for r in retirement_history if
+        (r["item"],r["freq"],r["period_start"],r["period_end"],r["available_at"]) not in current_endpoint_clocks
+        and first_public_endpoint.get((r["item"],r["freq"],r["period_start"],r["period_end"]),r["available_at"])<r["available_at"]]
     output = list(itertools.chain.from_iterable(raw_series.values()))
     output += list(itertools.chain.from_iterable(canonical.values()))
     output += intermediates
     output += list(itertools.chain.from_iterable(mnemonic.values()))
+    output += retirement_history
     # Keep the complete dependency graph, including intermediate raw canonical nodes.
     unique = {r["vintage_id"]: r for r in output}
     timelines = collections.defaultdict(list)
     serving_ids = {r["vintage_id"] for series in mnemonic.values() for r in series}
+    serving_ids.update(r["vintage_id"] for r in retirement_history)
     for row in unique.values():
         row["is_public"] = row["vintage_id"] in serving_ids
         private_basis = None if row["is_public"] else (row["rule_id"], row["event_stage"])
@@ -685,6 +887,10 @@ def build_owner(rows: list[dict[str, Any]], mapping: dict[str, Any]) -> tuple[li
                              "encoded_context_at": source.get("encoded_context_at"),
                              "endpoint_encoding": source["endpoint_encoding"],
                              "filing_context_status": source.get("filing_context_status"),
+                             "context_versions": json.dumps([{k:v for k,v in context.items() if k not in
+                                 {"dependencies","withdrawal_inputs","filing_context_dependencies"}}
+                                 for context in source["context_versions"]] if source["has_context_history"] else [],
+                                 sort_keys=True, default=str),
                              "year": year})
     return sorted(unique.values(), key=lambda r: (r["year"], r["item"], r["freq"], r["period_end"], r["available_at"], r["vintage_id"])), dispositions
 
@@ -711,9 +917,9 @@ def _coalesce_events(rows, rule):
 
 
 def _duration_choice(current):
-    present = [r for r in current if r is not None]
+    present = [r for r in current if r is not None and r["status"] != "endpoint_retired"]
     if not present:
-        return None, "missing_input"
+        return None, "endpoint_retired" if any(r is not None for r in current) else "missing_input"
     if len({(r["period_start"], r["period_end"]) for r in present}) > 1:
         return None, "period_duration_conflict"
     latest_clock = max(r["available_at"] for r in present)
@@ -751,9 +957,9 @@ def _book_equity(current):
     if stockholders is not None:
         equity = _decimal(stockholders["value_exact"])
         if equity is None:
-            return None, "invalid_operand"
+            return None, "endpoint_retired" if stockholders["status"] == "endpoint_retired" else "invalid_operand"
     elif common is not None and common["value_exact"] is None:
-        return None, "invalid_operand"
+        return None, "endpoint_retired" if common["status"] == "endpoint_retired" else "invalid_operand"
     elif common is not None and preferred is not None:
         equity, status = _arithmetic([common, preferred], [1, 1])
         if equity is None:
@@ -768,7 +974,7 @@ def _book_equity(current):
             extra.append(Decimal(0))
             convention.append(item+"_ordinary_absence_zero")
         elif row["value_exact"] is None:
-            return None, "invalid_operand"
+            return None, "endpoint_retired" if row["status"] == "endpoint_retired" else "invalid_operand"
         else:
             extra.append(_decimal(row["value_exact"]))
     return equity+extra[0]-extra[1], "valid", "+".join(convention) or None
@@ -785,6 +991,8 @@ def schemas():
                         + [(k, text) for k in ("accession", "rule_id", "vintage_id", "source_kind",
                                               "clock_basis", "period_basis", "value_exact", "unit", "status", "lineage_id")]
                         + [("missing_value_basis", text), ("event_stage", text),
+                           ("event_kind", text), ("replaces_vintage_ids", pa.list_(text)),
+                           ("context_version_ids", pa.list_(text)),
                            ("year", pa.int32()), ("is_public", pa.bool_())])
     lineage = pa.schema([(k, text) for k in ("vintage_id", "input_candidate_or_vintage_id", "input_role",
                                              "mapping_sha256", "build_sha256")] + [("year", pa.int32())])
@@ -792,6 +1000,7 @@ def schemas():
                              ("mapping_outcomes", text), ("source_occurrences", pa.int64()), ("year", pa.int32())])
     disposition = disposition.append(pa.field("effective_at", pa.timestamp("us"))).append(pa.field("clock_basis", text))
     disposition = disposition.append(pa.field("mapping_outcomes_version", text))
+    disposition = disposition.append(pa.field("context_versions", text))
     for name, kind in (("raw_period_end", pa.date32()), ("economic_period_end", pa.date32()),
                        ("original_effective_at", pa.timestamp("us")), ("encoded_context_at", pa.timestamp("us")),
                        ("endpoint_encoding", text), ("filing_context_status", text)):
@@ -1282,11 +1491,22 @@ def audit_bucket(files, plan, *, output: Path, root: Path) -> dict:
             "duplicate_dispositions": "SELECT count(*)-count(DISTINCT candidate_id) FROM d",
             "invalid_disposition_representation": f"SELECT count(*) FROM d WHERE mapping_outcomes_version IS DISTINCT FROM '{MAPPING_OUTCOMES_VERSION}'",
             "raw_endpoint_provenance_mismatch": "SELECT count(DISTINCT d.candidate_id) FROM d JOIN raw USING(candidate_id) WHERE d.raw_period_end IS DISTINCT FROM raw.period_end OR d.original_effective_at IS DISTINCT FROM raw.available_at",
-            "encoded_endpoint_early_clock": "SELECT count(*) FROM d WHERE endpoint_encoding IN ('joint_exact_fact','joint_filing_context') AND (effective_at IS NULL OR encoded_context_at IS NULL OR effective_at<encoded_context_at OR effective_at<original_effective_at)",
+            "encoded_endpoint_early_clock": """SELECT count(*) FROM d,json_each(d.context_versions) c
+                WHERE json_extract_string(c.value,'$.endpoint_encoding') IN ('joint_exact_fact','joint_filing_context')
+                  AND (try_cast(json_extract_string(c.value,'$.context_from') AS TIMESTAMP) IS NULL
+                    OR try_cast(json_extract_string(c.value,'$.context_from') AS TIMESTAMP)<
+                       try_cast(json_extract_string(c.value,'$.encoded_context_at') AS TIMESTAMP)
+                    OR try_cast(json_extract_string(c.value,'$.context_from') AS TIMESTAMP)<original_effective_at)""",
             "unaccounted_candidates": "SELECT count(*) FROM (SELECT DISTINCT candidate_id FROM raw EXCEPT SELECT candidate_id FROM d)",
             "unknown_dispositions": "SELECT count(*) FROM (SELECT candidate_id FROM d EXCEPT SELECT candidate_id FROM raw)",
             "duplicate_vintages": "SELECT count(*)-count(DISTINCT vintage_id) FROM v",
-            "public_same_clock": "SELECT count(*) FROM (SELECT owner_id,item,freq,fiscal_year,fiscal_qtr,available_at FROM v WHERE is_public GROUP BY ALL HAVING count(*)>1)",
+            "public_same_clock": "SELECT count(*) FROM (SELECT owner_id,item,freq,fiscal_year,fiscal_qtr,available_at FROM v WHERE is_public AND event_kind<>'endpoint_retirement' GROUP BY ALL HAVING count(*)>1)",
+            "public_endpoint_same_clock": "SELECT count(*) FROM (SELECT owner_id,item,freq,period_start,period_end,fiscal_year,fiscal_qtr,available_at FROM v WHERE is_public GROUP BY ALL HAVING count(*)>1)",
+            "invalid_retirement": "SELECT count(*) FROM v WHERE event_kind='endpoint_retirement' AND (status<>'endpoint_retired' OR value IS NOT NULL)",
+            "replacement_without_retired_input": """SELECT count(*) FROM v WHERE event_kind='current_slot_replacement'
+                AND (len(replaces_vintage_ids)=0 OR EXISTS(SELECT 1 FROM unnest(v.replaces_vintage_ids) ids(id)
+                  LEFT JOIN v retired ON retired.vintage_id=ids.id
+                  WHERE retired.vintage_id IS NULL OR retired.status<>'endpoint_retired' OR retired.available_at>v.available_at))""",
             "invalid_intervals": "SELECT count(*) FROM v WHERE available_at IS NULL OR (valid_until IS NOT NULL AND valid_until<=available_at)",
             "future_vintages": "SELECT count(*) FROM v WHERE available_at>=TIMESTAMP '2026-09-21' OR period_end>DATE '2026-09-20'",
             "future_period_anchors": "SELECT count(*) FROM v WHERE period_end>available_at::DATE",
@@ -1463,6 +1683,10 @@ class ItemVintageStore:
             raise ValueError("not a completed fundamental lake index")
         if not self.manifest.get("accepted") and not allow_diagnostic:
             raise ValueError("item build has not passed all acceptance gates; diagnostic opt-in required")
+        context_policy = self.manifest.get("period_policy", {}).get("context_history")
+        if context_policy not in (None, "original_then_joint_context_v1"):
+            raise ValueError("unsupported item context history representation")
+        self.current_slot_filter = "true" if context_policy is None else "event_kind<>'endpoint_retirement'"
         self.files = collections.defaultdict(list)
         for entry in self.manifest["slices"]:
             if file_sha256(entry["manifest_path"]) != entry["manifest_sha256"]:
@@ -1500,7 +1724,7 @@ class ItemVintageStore:
                     candidates = con.execute(f"""SELECT * EXCLUDE(pick) FROM (
                        SELECT *,row_number() OVER(PARTITION BY owner_id,item,freq,fiscal_year,fiscal_qtr
                          ORDER BY available_at DESC,period_end DESC,vintage_id DESC) pick
-                       FROM {parquet_relation(files)} WHERE is_public AND available_at<=?
+                       FROM {parquet_relation(files)} WHERE is_public AND {self.current_slot_filter} AND available_at<=?
                          AND item IN ({','.join(sql_text(i) for i in items)})) WHERE pick=1
                        ORDER BY owner_id,item,freq,period_end""", [cutoff]).to_arrow_reader(batch_size=4096)
                     values = collections.defaultdict(dict)

@@ -29,6 +29,11 @@ at [`atx-vol/README.md`](atx-vol/README.md).
 
 ## Build
 
+The equity research client/server workspace lives in [`atx-server`](atx-server/README.md)
+and [`atx-front`](atx-front/README.md). Build and launch it on Windows with
+`python scripts/atx-workspace.py --build`; its dedicated `server-dev` preset enables
+the gRPC service without the optional volatility modules.
+
 Presets are the supported entry point (`dev`, `rel`, `rel-avx2`, `dev-counters`,
 `dev-shared`, `hygiene`):
 

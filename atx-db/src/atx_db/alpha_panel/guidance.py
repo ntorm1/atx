@@ -56,7 +56,7 @@ from typing import Any
 
 from . import common as C
 
-EXTRACTOR_VERSION = "guidance-rules-v1"
+EXTRACTOR_VERSION = "guidance-rules-v2-period-provenance"
 STAGE = "events"
 TABLE = "guidance"
 SCHEMA = "atx.alpha-panel.events.guidance/v1"
@@ -813,12 +813,16 @@ def extract_from_sentence(s: str, rep: ReportedPeriod, anchor_year: int, heading
         if i in resp:
             per = resp[i]
         pr = resolve_period(per, rep, anchor_year) if per is not None else None
+        period_resolution = pr[3] if pr is not None else None
+        period_origin = "sentence"
         if pr is not None and outlook_only and pr[3] == "inferred":
             continue  # "for the year" without a cue of its own: the reported year as often as the next
         if pr is None and per is None:
             pm = line_prefix_period or heading_period
             pr = resolve_period(pm, rep, anchor_year) if pm is not None else None
             if pr is not None:
+                period_resolution = pr[3]
+                period_origin = "heading" if pm is heading_period else "line_prefix"
                 pr = (pr[0], pr[1], pr[2], "heading" if pm is heading_period else pr[3])
         if pr is None:
             continue
@@ -870,6 +874,7 @@ def extract_from_sentence(s: str, rep: ReportedPeriod, anchor_year: int, heading
             low=low, high=high, point=point, value_type=vt, qualifier=qual, prior_low=prior_low,
             prior_high=prior_high, text_direction=_direction(head[max(0, kw_start - 110):]),
             unit=unit, evidence=s.strip()[:700], source_kind="sentence",
+            extras={"period_resolution": period_resolution, "period_origin": period_origin},
         ))
     return rows
 
@@ -1005,6 +1010,7 @@ def _table_rows(lines: list[str], idx: int, rep: ReportedPeriod, anchor_year: in
                 prior_high=(prior[1] if prior and prior[3] == "range" else prior[2] if prior else None),
                 text_direction=None, unit="USD_PER_SHARE" if measure == "EPS" else "USD",
                 evidence=(lines[idx][:250] + " || " + line[:350]), source_kind="table",
+                extras={"period_resolution": _pb, "period_origin": "table"},
             ))
     return out
 
@@ -1314,7 +1320,7 @@ def phase_doclist(start: dt.date) -> dict[str, Any]:
 
 
 def phase_parse(limit: int | None = None) -> dict[str, Any]:
-    """No DuckDB: runs unguarded under ruling C-1 (peak recorded)."""
+    """Legacy pure parser; operational use requires current controller/guard authorization."""
     receipt: dict[str, Any] = {}
     with C.timed(receipt, "parse"):
         receipt["parse"] = parse_documents(_tmp_dir() / "guidance_docs.parquet", _tmp_dir() / "guidance_rows.parquet",
@@ -1371,13 +1377,24 @@ def build(start: dt.date = dt.date(2019, 1, 1), limit: int | None = None, phase:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--start", type=dt.date.fromisoformat, default=dt.date(2019, 1, 1))
-    ap.add_argument("--limit", type=int, default=None, help="parse at most N documents (smoke runs)")
-    ap.add_argument("--phase", choices=("all", "doclist", "parse", "publish"), default="all",
-                    help="doclist and publish open DuckDB (guarded); parse is pure Python (ruling C-1)")
+    ap = argparse.ArgumentParser(description="Native source-qualified events_guidance_v2; contract printing is read-only.")
+    ap.add_argument("--native-spec", type=Path, help="explicit pinned guidance_bindings_v2; isolated native publication")
+    ap.add_argument("--destination", type=Path, help="isolated events_guidance_v2 output")
+    ap.add_argument("--max-new-releases", type=int)
+    ap.add_argument("--manual-audit", type=Path, help="JSON with path/SHA/reviewed SHA of fixed source handchecks")
+    ap.add_argument("--native-phase", choices=("contract","parse","features","validate"), default="parse")
     args = ap.parse_args(argv)
-    print(json.dumps(build(args.start, args.limit, args.phase), default=str, indent=1)[:6000], flush=True)
+    if args.native_phase=="contract":
+        from . import guidance_native as N
+        print(json.dumps(N.contract(),default=str,indent=1),flush=True)
+    elif args.native_spec:
+        from . import guidance_native as N
+        spec=C.read_json(args.native_spec);destination=args.destination or C.stage_dir(N.STAGE)
+        if destination.name!=N.STAGE:raise ValueError("isolated events_guidance_v2 destination required")
+        result=N.parse(spec,destination,max_new_releases=args.max_new_releases) if args.native_phase=="parse" else N.build(spec,destination,manual=C.read_json(args.manual_audit) if args.manual_audit else None) if args.native_phase=="features" else N.validate(spec,destination)
+        print(json.dumps(result,default=str,indent=1),flush=True)
+    else:
+        ap.error("--native-spec is required; --native-phase contract prints the interface without data")
     return 0
 
 

@@ -185,8 +185,13 @@ def build(buckets: list[int] | None = None) -> dict[str, Any]:
             SELECT * FROM read_parquet('{glob}') WHERE year(session_date) = {y} ORDER BY session_date, security_id
         """, out / f"year={y}" / "liquidity.parquet")
     receipt["years"] = years
+    # GC9: measure the files about to be published; the manifest is written once, with the gate
+    summary = coverage(con)
+    summary["input_manifests_sha256"] = M.input_manifests("panel")
+    summary["measured"] = "files of this build, before market_liquidity_manifest.json was published"
+    C.write_json_atomic(C.stage_dir("validation") / "liquidity_coverage.json", summary)
     M.publish_part(OUT_DIR, STAGE, SCHEMA, MODULES, {"rule": RULE, "rule_text": __doc__, "receipt": receipt,
-                                                    "staleness": "daily"},
+                                                    "staleness": "daily", "gate_status": gate_status(summary)},
                    M.input_manifests(*INPUTS), pattern="liquidity/**/*.parquet")
     return receipt
 
@@ -195,29 +200,47 @@ MEASURED = ("spread_cs_21", "spread_ar_21", "amihud_21", "amihud_63", "amihud_25
             "turnover_63", "zero_vol_21", "zero_vol_63", "adv_21", "adv_63", "halt_days_21")
 
 
-def measure() -> dict[str, Any]:
+def coverage(con) -> dict[str, Any]:
     """Share of panel member_equity cells with a finite value, per column and year (done criterion >= 99%)."""
-    con = C.connect(memory="240MB", threads=2)
     glob = (C.build_root() / OUT_DIR / "liquidity" / "year={y}" / "liquidity.parquet").as_posix()
     res = M.member_coverage(con, glob, {c: f"isfinite(t.{c})" for c in MEASURED})
     tot = sum(v["cells"] for v in res.values())
     overall = {c: sum(v["cells"] * v[c] for v in res.values()) / tot for c in MEASURED}
-    summary = {"rule": RULE, "per_year": res, "overall_2019_2026": overall, "gate": {"finite_min": 0.99},
-               "pass": {c: overall[c] >= 0.99 for c in MEASURED},
-               "input_manifests_sha256": M.input_manifests("panel", "market/market_liquidity_manifest.json")}
+    return {"rule": RULE, "per_year": res, "overall_2019_2026": overall, "gate": {"finite_min": 0.99},
+            "pass": {c: overall[c] >= 0.99 for c in MEASURED}}
+
+
+def gate_status(summary: dict[str, Any]) -> dict[str, Any]:
+    overall = summary["overall_2019_2026"]
+    return {"criterion": "S3.7: finite on >= 99% of panel member_equity cells 2019-2026",
+            "pass": all(summary["pass"].values()), "measured_min": min(overall.values()), "per_column": overall,
+            "measured_by": "validation/liquidity_coverage.json"}
+
+
+def measure() -> dict[str, Any]:
+    """Re-measure the published files into ``validation/liquidity_coverage.json``; the manifest is never rewritten
+    (its SHA-256 is an input binding of downstream stages)."""
+    con = C.connect(memory="240MB", threads=2)
+    summary = coverage(con)
+    summary["input_manifests_sha256"] = M.input_manifests("panel", "market/market_liquidity_manifest.json")
+    summary["measured"] = "published files (standalone measure)"
     C.write_json_atomic(C.stage_dir("validation") / "liquidity_coverage.json", summary)
     return summary
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    # ``build`` and ``all`` publish with the coverage gate; ``measure`` only refreshes the validation file
     ap.add_argument("step", nargs="?", choices=("build", "measure", "all"), default="build")
     ap.add_argument("--buckets", default=None)
     args = ap.parse_args(argv)
     if args.step in ("build", "all"):
         rec = build([int(x) for x in args.buckets.split(",")] if args.buckets else None)
         print(json.dumps({k: v for k, v in rec.items() if k != "timings_s"}, default=str)[:3000], flush=True)
-    if args.step in ("measure", "all"):
+        if args.buckets is None:
+            print(json.dumps(C.read_json(C.build_root() / "validation" / "liquidity_coverage.json"),
+                             default=str)[:5000], flush=True)
+    if args.step == "measure":
         print(json.dumps(measure(), default=str)[:5000], flush=True)
     return 0
 

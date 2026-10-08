@@ -1,0 +1,8 @@
+{
+  "stage": "thirteenf_features",
+  "path": "thirteenf_features/features.parquet",
+  "keys": ["security_id", "period_q", "available_at"],
+  "schema_id": "atx.alpha-panel.thirteenf-features/v1",
+  "as_of_macro_sql": "SELECT * FROM read_parquet('thirteenf_features/features.parquet') WHERE available_at < cutoff",
+  "admission": "unqualified_normalized_adapters_requires_source_and_economic_review"
+}

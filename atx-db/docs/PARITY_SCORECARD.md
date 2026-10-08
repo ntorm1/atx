@@ -1,5 +1,7 @@
 # Parity scorecard
 
+Task17 engineering checkpoint (2026-10-04): the conditional native reader and existing stagelake catalog/verify integration is documented in [the product catalog](TIER1_V4_PRODUCT_CATALOG.md). No new actual source measurements or catalog build were authorized for this checkpoint. The historical measurements below are unchanged; all new 2020-2025 population coverage and original source/economic gates remain pending. Missing reader integration is recorded separately from missing actual source evidence. Full Task17 remains incomplete.
+
 Generated 2026-09-29 by `python -m atx_db.parityscore.scorecard` from `src/atx_db/parityscore/catalog.csv` (370 rows: plan section 1.1 domains, design-spec items, seed items, CRSP and panel fields) and the stage lake `C:/atx/atx-db/data/alpha_panel/v1`. Measurement year 2025; TRAIN window 2020-01-01..2022-12-31. Every number is read from the file named in its row; `not measured` means no published measurement exists. Nothing is estimated.
 
 Sources read (SHA-256 prefix):

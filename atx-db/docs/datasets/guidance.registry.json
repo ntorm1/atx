@@ -1,0 +1,46 @@
+{
+  "asof_macro_sql": "SELECT * FROM resolved_guidance_features WHERE available_at < t_utc",
+  "config_sha256": "94358ee94edc83b699bf00cc64216d61eac1a63b89cdf92d39cfa96adca26a33",
+  "daily_cutoff": "t_utc=22:00 UTC of preceding admitted exchange session; never caller calendar day subtraction",
+  "keys": {
+    "guidance.parquet": [
+      "cik",
+      "accession",
+      "candidate_id"
+    ],
+    "guidance_features.parquet": [
+      "cik",
+      "accession",
+      "candidate_id",
+      "event_kind"
+    ],
+    "releases.parquet": [
+      "cik",
+      "accession"
+    ]
+  },
+  "path": "events_guidance_v2",
+  "primary_candidate": {
+    "economic_sign": 1,
+    "measure": "EPS",
+    "primary_feature": "guid_surprise",
+    "selected_before_actual_values_or_return_results": true
+  },
+  "readiness": "NOT_PRODUCTION_READY",
+  "required_phases": {
+    "guidance.parquet": [
+      "parsed",
+      "features",
+      "validated"
+    ],
+    "guidance_features.parquet": [
+      "features",
+      "validated"
+    ]
+  },
+  "resolve": "explicit validated immutable manifest products only; guidance_native.validate(spec,root), then root/manifest.products[product]; no root parquet or generation glob",
+  "schema_id": "atx.events.guidance/v2",
+  "semantic_relation": "events.guidance/v2",
+  "source_quality_certified": false,
+  "stage": "events_guidance_v2"
+}

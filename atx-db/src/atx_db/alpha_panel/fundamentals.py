@@ -54,8 +54,9 @@ from . import fund_catalog as fcat
 from . import fund_extract as fx
 from . import fund_fx as ffx
 from . import fund_items as fi
+from . import fund_prepare_cache as fpc
 
-CODE_VERSION = "fundamentals-v10"
+CODE_VERSION = "fundamentals-v11"
 RULE = "fund-events-pit-v3"
 SCHEMA = "atx.alpha-panel.fundamentals/v2"
 EMIT_FROM = dt.datetime(2010, 1, 1)
@@ -63,7 +64,7 @@ SCOPE_LINK_END_MIN = dt.date(2017, 1, 1)
 FC1_HOURS = 46
 FORMS = tuple(sorted(fx.FORMS))
 COVERAGE_YEARS = tuple(range(2016, 2027))
-MODULES = ("fundamentals", "fund_items", "fund_extract", "fund_fx", "fund_catalog", "common")
+MODULES = ("fundamentals", "fund_items", "fund_extract", "fund_fx", "fund_catalog", "common", "fund_prepare_cache")
 
 RULE_TEXT = (
     "fund-events-pit-v3: one event per (cik, accession) of forms 10-K/10-Q/10-KT/10-QT/20-F/40-F (+/A) "
@@ -219,6 +220,8 @@ POS_RULE = (
     "cost-of-revenue chain (filers that tag cost of revenue only by product and service line)")
 # FSDS PRE (not parenthetical) statement lines of each accession, case-insensitive tag patterns.
 PRE_PATTERNS = {
+    "is_sale_contract": r"^revenuefromcontractwithcustomer(excluding|including)assessedtax$",
+    "is_sale_generic": r"^revenues$",
     "is_rd": r"researchanddevelopment|researchdevelopment",
     "is_rev": r"revenue|sales|rental|leaseincome|royalt|premium|commission|feeincome|fees|licens|tuition|contractincome",
     "is_tax": r"incometax|taxexpense|taxbenefit|taxesonincome|provisionforincome",
@@ -306,6 +309,7 @@ def pre_flags_sql(pre_glob: str) -> str:
     is_names = [name for name in PRE_PATTERNS if name != "cf_capx"]
     line_is = ",\n".join(
         f"(stmt IN ('IS', 'CI') AND regexp_matches(ltag, {_q(pat)})"
+        + (" AND NOT custom" if name in ("is_sale_contract", "is_sale_generic") else "")
         + (f" AND NOT regexp_matches(ltag, {_q(PRE_REV_EXCLUDE)})" if name == "is_rev" else "")
         + f") AS {name}"
         for name, pat in PRE_PATTERNS.items() if name != "cf_capx")
@@ -388,30 +392,85 @@ def label_lines_sql(pre_glob: str, num_glob: str) -> str:
     """
 
 
-def _fingerprint(sql: str) -> str:
-    """SHA-256 of a step's SQL plus the size and mtime of every FSDS input file (the SQL names its globs)."""
-    h = hashlib.sha256(sql.encode())
-    for p in sorted(common.FSDS_DIR.glob("*/*.parquet")):
-        st = p.stat()
-        h.update(f"{p.as_posix()}|{st.st_size}|{st.st_mtime_ns}".encode())
-    return h.hexdigest()
+def _prepare_code_identity() -> dict[str, str]:
+    return {name: fpc.digest(Path(__file__).with_name(name + ".py"))
+            for name in MODULES}
 
 
-def cached_copy(con: Any, sql: str, dest: Path, receipt: dict[str, Any], key: str, **kw: Any) -> int:
-    """``common.copy_to_parquet`` unless ``dest`` exists with the same fingerprint (``<dest>.sha256`` sidecar):
-    a guard stop during prepare resumes at the first unfinished step. Skipped steps are listed in
-    ``receipt['cached']``."""
-    receipt.setdefault("cached", [])
-    side = dest.with_name(dest.name + ".sha256")
-    fp = _fingerprint(sql)
-    if dest.exists() and side.exists() and side.read_text().strip() == fp:
-        receipt["cached"].append(key)
-        return int(pq.ParquetFile(dest).metadata.num_rows)
-    if side.exists():
-        side.unlink()
-    n = common.copy_to_parquet(con, sql, dest, **kw)
-    side.write_text(fp)
-    return n
+def _verify_preparation() -> dict:
+    preparation = common.read_json(work_dir() / "prepare.json")
+    snapshot = fpc.SourceSnapshot(common.FSDS_DIR)
+    cache = fpc.PreparationCache(snapshot, _prepare_code_identity())
+    expected = cache.verify_units(preparation, _required_preparation_units(snapshot))
+    if preparation.get("preparation_binding") != expected:
+        raise ValueError("uncertified or stale fundamentals preparation")
+    return expected
+
+
+def _sub_clock_sql() -> str:
+    sub_glob = (common.FSDS_DIR / "sub" / "*.parquet").as_posix()
+    return f"""
+                SELECT adsh, TRY_CAST(cik AS BIGINT) AS sub_cik, TRY_CAST(sic AS INTEGER) AS sic, form AS sub_form,
+                       fy AS sub_fy, fp AS sub_fp, filed AS sub_filed,
+                       CAST(accepted_utc AS TIMESTAMP) AS accepted_utc, quarter AS sub_quarter
+                FROM read_parquet('{sub_glob}')
+                """
+
+
+def _scope_sql() -> str:
+    return f"""
+                SELECT DISTINCT cik FROM read_parquet('{links_path().as_posix()}')
+                WHERE end_incl >= DATE '{SCOPE_LINK_END_MIN.isoformat()}'
+                """
+
+
+def _union_sql(parts, hashes) -> str:
+    listing = ", ".join(f"'{p.as_posix()}'" for p in parts)
+    return f"/* parts {hashlib.sha256('|'.join(hashes).encode()).hexdigest()} */ SELECT * FROM read_parquet([{listing}])"
+
+
+def _required_preparation_units(snapshot) -> dict:
+    """Fixed products plus both quarter products for every pinned configured quarter."""
+    tables = {t: fpc.ordered_sources(p for p in snapshot.pins if p.startswith(t + "/"))
+              for t in ("sub", "num", "pre")}
+    quarters = {t: {Path(p).name for p in paths} for t, paths in tables.items()}
+    if not quarters["pre"] or not (quarters["sub"] == quarters["num"] == quarters["pre"]):
+        raise ValueError("incomplete configured FSDS quarter tables")
+    required = {}
+    def add(dest, key, sql, sources=(), dependencies=(), **options):
+        required[dest.as_posix()] = {"key": key, "sql": sql, "sources": fpc.ordered_sources(sources),
+            "dependencies": [p.as_posix() for p in dependencies], "options": options}
+    num_glob = (common.FSDS_DIR / "num" / "*.parquet").as_posix()
+    add(sub_clock_path(), "sub_clock", _sub_clock_sql(), tables["sub"])
+    add(class_shares_path(), "class_shares", class_sum_sql(num_glob), tables["num"])
+    add(pos_sums_path(), "pos_sums", pos_sum_sql(num_glob), tables["num"])
+    for key, make_sql, dest, options in (
+            ("pre_flags", lambda pre, num: pre_flags_sql(pre), pre_flags_path(), {"row_group_size": 32768}),
+            ("label_lines", label_lines_sql, label_lines_path(), {})):
+        parts = []
+        for rel in tables["pre"]:
+            pre = common.FSDS_DIR / rel
+            num = common.FSDS_DIR / "num" / pre.name
+            part = work_dir() / key / pre.name
+            add(part, f"{key}/{pre.stem}", make_sql(pre.as_posix(), num.as_posix()),
+                (rel, f"num/{pre.name}"), **options)
+            parts.append(part)
+        def union(units, parts=tuple(parts)):
+            return _union_sql(parts, [units[p.as_posix()]["output"]["sha256"] for p in parts])
+        add(dest, key, union, dependencies=parts, **options)
+    add(scope_path(), "scope", _scope_sql(), dependencies=(links_path(),))
+    return required
+
+
+def cached_copy(con: Any, sql: str, dest: Path, receipt: dict[str, Any], key: str,
+                *, sources=(), dependencies=(), **kw: Any) -> int:
+    cache = receipt.get("_prepare_cache")
+    if cache is None:
+        # Standalone callers without an approved snapshot are never certified.
+        receipt.setdefault("cached", [])
+        return common.copy_to_parquet(con, sql, dest, **kw)
+    return cache.copy(con, sql, dest, receipt, key, sources=sources,
+                      dependencies=dependencies, **kw)
 
 
 def per_quarter(con: Any, key: str, make_sql: Any, dest: Path, receipt: dict[str, Any], **kw: Any) -> int:
@@ -427,30 +486,28 @@ def per_quarter(con: Any, key: str, make_sql: Any, dest: Path, receipt: dict[str
         if not num.exists():
             raise FileNotFoundError(f"FSDS num file missing for {pre.name}")
         part = parts_dir / pre.name
-        cached_copy(con, make_sql(pre.as_posix(), num.as_posix()), part, receipt, f"{key}/{pre.stem}", **kw)
+        cached_copy(con, make_sql(pre.as_posix(), num.as_posix()), part, receipt, f"{key}/{pre.stem}",
+                    sources=(f"pre/{pre.name}", f"num/{num.name}"), **kw)
         parts.append(part)
-        fps.append(part.with_name(part.name + ".sha256").read_text().strip())
-    listing = ", ".join(f"'{p.as_posix()}'" for p in parts)
-    sql = f"/* parts {hashlib.sha256('|'.join(fps).encode()).hexdigest()} */ SELECT * FROM read_parquet([{listing}])"
-    return cached_copy(con, sql, dest, receipt, key, **kw)
+        fps.append(fpc.digest(part))
+    sql = _union_sql(parts, fps)
+    return cached_copy(con, sql, dest, receipt, key, dependencies=parts, **kw)
 
 
 def prepare() -> dict[str, Any]:
-    receipt: dict[str, Any] = {}
+    snapshot = fpc.SourceSnapshot(common.FSDS_DIR)
+    cache = fpc.PreparationCache(snapshot, _prepare_code_identity())
+    required = _required_preparation_units(snapshot)
+    receipt: dict[str, Any] = {"_prepare_cache": cache}
     con = common.connect(memory=DUCKDB_MEM, threads=2)
     try:
         with common.timed(receipt, "sub_clock"):
-            sub_glob = (common.FSDS_DIR / "sub" / "*.parquet").as_posix()
             dest = sub_clock_path()
             n = cached_copy(
                 con,
-                f"""
-                SELECT adsh, TRY_CAST(cik AS BIGINT) AS sub_cik, TRY_CAST(sic AS INTEGER) AS sic, form AS sub_form,
-                       fy AS sub_fy, fp AS sub_fp, filed AS sub_filed,
-                       CAST(accepted_utc AS TIMESTAMP) AS accepted_utc, quarter AS sub_quarter
-                FROM read_parquet('{sub_glob}')
-                """,
+                _sub_clock_sql(),
                 dest, receipt, "sub_clock",
+                sources=required[dest.as_posix()]["sources"],
             )
             dup = con.execute(
                 f"SELECT count(*) - count(DISTINCT adsh) FROM read_parquet('{dest.as_posix()}')"
@@ -464,9 +521,10 @@ def prepare() -> dict[str, Any]:
         with common.timed(receipt, "class_shares"):
             num_glob = (common.FSDS_DIR / "num" / "*.parquet").as_posix()
             receipt["class_share_rows"] = cached_copy(con, class_sum_sql(num_glob), class_shares_path(), receipt,
-                                                      "class_shares")
+                                                      "class_shares", sources=required[class_shares_path().as_posix()]["sources"])
         with common.timed(receipt, "pos_sums"):
-            receipt["pos_sum_rows"] = cached_copy(con, pos_sum_sql(num_glob), pos_sums_path(), receipt, "pos_sums")
+            receipt["pos_sum_rows"] = cached_copy(con, pos_sum_sql(num_glob), pos_sums_path(), receipt, "pos_sums",
+                sources=required[pos_sums_path().as_posix()]["sources"])
         with common.timed(receipt, "pre_flags"):
             receipt["pre_flag_rows"] = per_quarter(con, "pre_flags", lambda pre, num: pre_flags_sql(pre),
                                                    pre_flags_path(), receipt, row_group_size=32768)
@@ -475,17 +533,17 @@ def prepare() -> dict[str, Any]:
             receipt["label_lines_by_concept"] = dict(con.execute(
                 f"SELECT concept, count(*) FROM read_parquet('{label_lines_path().as_posix()}') GROUP BY 1").fetchall())
         with common.timed(receipt, "scope"):
-            n = common.copy_to_parquet(
+            n = cached_copy(
                 con,
-                f"""
-                SELECT DISTINCT cik FROM read_parquet('{links_path().as_posix()}')
-                WHERE end_incl >= DATE '{SCOPE_LINK_END_MIN.isoformat()}'
-                """,
-                scope_path(),
+                _scope_sql(),
+                scope_path(), receipt, "scope", dependencies=(links_path(),),
             )
             receipt["scope_ciks"] = n
     finally:
         con.close()
+    snapshot.verify()
+    receipt.pop("_prepare_cache")
+    receipt["preparation_binding"] = cache.verify_units(receipt, required)
     receipt["class_rule"] = CLASS_RULE
     receipt["pre_rule"] = PRE_RULE
     receipt["pos_rule"] = POS_RULE
@@ -750,7 +808,7 @@ def process_batch(con, batch: Path, fx_table: ffx.FxTable | None = None) -> dict
             n_rows += len(rows)
             h: list[tuple] = []
             events.extend(fi.issuer_events(cik, rows, EMIT_FROM, counters, sic_by.get(cik), pre_by.get(cik), h,
-                                           fx=fx_table))
+                                           fx=fx_table, source_backed_only=fx.stage_name() == "fundamentals_v11"))
             hist.add(cik, h, basis_by)
         n_hist = hist.close()
     except BaseException:
@@ -899,6 +957,17 @@ def finalize() -> dict[str, Any]:
                                 "items_v1": list(fi.ITEM_COLUMNS), "items_v2": list(fi.ITEM_COLUMNS_V2),
                                 "history_items": list(fi.HISTORY_ITEMS)}
     old = common.read_json(out_dir / "manifest.json") if (out_dir / "manifest.json").exists() else {}
+    if fx.stage_name() == 'fundamentals_v11':
+        manifest['source_backed_only'] = True
+        manifest['legacy_item_rules'] = manifest.pop('item_rules')
+        manifest['item_rules'] = {
+            'missing_values':'Only explicit source zeros are zero. Missing/PRE omission/nil omissions stay NULL.',
+            'balance':'Reported source stocks; no assets-minus-liabilities balancing plugs; catalog temporary equity retained.',
+            'debt':'DebtCurrent else current LTD plus reported other short borrowing; total LTD less reported current LTD.',
+            'history':'Core discrete quarters plus direct source annual flows and tax/debt/RE/temp-equity comparatives at disclosure clocks.',
+            'sales':'Presented contractual revenue only when own FSDS IS/CI contractual caption exists and generic Revenues caption does not.'}
+        manifest['nil_zero_rule'] = 'disabled: absence/nil does not certify an explicit source zero'
+        manifest['rule_text'] += ' V11 source-backed-only overrides legacy zero/default/plug rules; see item_rules.'
     stale = out_dir / "manifest.json"
     if stale.exists():
         stale.unlink()  # publish-last: no manifest while the outputs are being replaced
@@ -980,6 +1049,8 @@ def finalize() -> dict[str, Any]:
         manifest["guard_previous"] = old["guard"]
     manifest["timings_s"]["total_finalize"] = round(time.perf_counter() - t0, 3)
     manifest["created_utc"] = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
+    if fx.stage_name() == "fundamentals_v11":
+        manifest["preparation_binding"] = _verify_preparation()
     common.write_stage_manifest(fx.stage_name(), SCHEMA, MODULES, manifest, pattern="*.parquet")
     return manifest
 
@@ -1408,7 +1479,8 @@ def validate_cutoff(out: Path | None, ciks: tuple[int, ...] = CUTOFF_CIKS) -> di
             part = [r for r in rows if r[0] < cutoff]
             h: list[tuple] = []
             counters: dict[str, int] = {}
-            for e in fi.issuer_events(cik, part, EMIT_FROM, counters, sic_by.get(cik), pre_by.get(cik), h):
+            for e in fi.issuer_events(cik, part, EMIT_FROM, counters, sic_by.get(cik), pre_by.get(cik), h,
+                                     source_backed_only=fx.stage_name() == "fundamentals_v11"):
                 rebuilt_ev[(cik, e["accession"])] = e
             for item, pe, fp, accn, value, clock, zero, cur in h:
                 rebuilt_h.add((cik, item, pe, fp, accn, value, cur, clock, zero))
@@ -1467,7 +1539,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "build-all":
         t0 = time.perf_counter()
         if not args.skip_prepare:
-            print({k: v for k, v in prepare().items() if not k.endswith("rule")}, flush=True)
+            print({k: v for k, v in prepare().items()
+                   if not k.endswith("rule") and k not in ("preparation_units", "preparation_binding")}, flush=True)
         print(f"prepare done {time.perf_counter() - t0:.0f}s", flush=True)
         run_batches(None)
         print(f"batches done {time.perf_counter() - t0:.0f}s", flush=True)

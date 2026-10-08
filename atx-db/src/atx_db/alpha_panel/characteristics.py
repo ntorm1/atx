@@ -63,6 +63,16 @@ IN_DIR = "char_in"
 LINE_DIR = "char_line"
 KEYS = ("session_date", "security_id")
 FLAGS = ("member", "member_equity", "grp_ff49", "grp_ff12")
+REPAIR_LOOKBACK = max(f.lookback_sessions for f in R.REGISTRY)
+REPAIR_FLAGS = ("source_repaired_now", "source_repaired_window")
+
+
+def panel_stage() -> str:
+    """Allow an isolated refreshed silver panel without mutating published inputs."""
+    name = os.environ.get("ATX_ALPHA_PANEL_STAGE", "panel")
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+        raise ValueError("invalid ATX_ALPHA_PANEL_STAGE")
+    return name
 
 # Panel columns read by the line pass (Task 5 extends this with its fundamental inputs).
 PANEL_COLUMNS = (
@@ -163,14 +173,56 @@ def cal_sql(cal_path: str) -> str:
             FROM cal0 c JOIN cm USING (month_idx))"""
 
 
-def input_sql(panel_rel: str, bp_rel: str | None, columns: Sequence[str] = PANEL_COLUMNS) -> str:
+def input_sql(panel_rel: str, bp_rel: str | None, columns: Sequence[str] = PANEL_COLUMNS,
+              repair_rel: str | None = None, market_rel: str | None = None) -> str:
     """The narrow line-pass input: panel columns plus the borrow_proxy columns (NULL when the stage is absent)."""
-    cols = ", ".join(f'p."{c}"' for c in columns)
+    repair_now = "q.repair_date = p.session_date"
+    unmasked = set(KEYS) | set(FLAGS)
+    cols = ", ".join((f"CASE WHEN {repair_now} THEN NULL ELSE mk.mkt_ret END AS mkt_ret" if repair_rel else
+                      "mk.mkt_ret AS mkt_ret") if c == "mkt_ret" and market_rel else
+                     f'p."{c}"' if not repair_rel or c in unmasked else
+                     (f'CASE WHEN {repair_now} THEN TRUE ELSE p."{c}" END AS "{c}"' if c == "ret_guarded" else
+                      f'CASE WHEN {repair_now} THEN NULL ELSE p."{c}" END AS "{c}"') for c in columns)
+    repair_cols = (f"coalesce({repair_now}, false) AS source_repaired_now, "
+                   f"coalesce(c.sidx - q.repair_sidx <= {REPAIR_LOOKBACK}, false) AS source_repaired_window"
+                   if repair_rel else "false AS source_repaired_now, false AS source_repaired_window")
+    repair_join = (f"JOIN (SELECT session_date,row_number() OVER(ORDER BY session_date) AS sidx FROM "
+                   f"{_rp(C.calendar_path())}) c USING(session_date) ASOF LEFT JOIN {repair_rel} q "
+                   "ON p.security_id=q.security_id AND p.session_date>=q.repair_date" if repair_rel else "")
+    market_join = f" LEFT JOIN {market_rel} mk USING(session_date)" if market_rel else ""
     if bp_rel is None:
         bp = ", ".join(f"CAST(NULL AS {t}) AS {out}" for out, t in BP_COLUMNS.values())
-        return f"SELECT {cols}, {bp} FROM {panel_rel} p"
-    bp = ", ".join(f"q.{src} AS {out}" for src, (out, _) in BP_COLUMNS.items())
-    return f"SELECT {cols}, {bp} FROM {panel_rel} p LEFT JOIN {bp_rel} q USING (session_date, security_id)"
+        return f"SELECT {cols}, {bp}, {repair_cols} FROM {panel_rel} p {repair_join}{market_join}"
+    bp = ", ".join((f"CASE WHEN {repair_now} THEN NULL ELSE b.{src} END AS {out}" if repair_rel else
+                     f"b.{src} AS {out}") for src, (out, _) in BP_COLUMNS.items())
+    return f"SELECT {cols}, {bp}, {repair_cols} FROM {panel_rel} p LEFT JOIN {bp_rel} b USING (session_date, security_id) {repair_join}{market_join}"
+
+
+def clean_market_sql(panel_rel: str, repair_rel: str, cal_path: str) -> str:
+    """Preserve the panel's prior-member equal-weight market recipe, removing uncertain contributors.
+
+    A contributor needs a consecutive previous-session member row, clean identity
+    at both sessions (including trailing registry quarantine), and a finite,
+    unguarded current return. Existing membership ranks are preserved; this is
+    a conservative subset of the source benchmark, not a newly fitted universe.
+    """
+    inp = input_sql(panel_rel, None, columns=(*KEYS, "member", "ret", "ret_guarded"), repair_rel=repair_rel)
+    return f"""WITH cal AS (SELECT session_date,row_number() OVER(ORDER BY session_date) AS sidx
+                            FROM read_parquet('{cal_path}')),
+        p AS (SELECT i.session_date,i.security_id,i.member,i.ret,i.ret_guarded,i.source_repaired_window,c.sidx
+              FROM ({inp}) i JOIN cal c USING(session_date)),
+        prior AS (SELECT *,lag(member) OVER w AS previous_member,lag(sidx) OVER w AS previous_sidx,
+                    lag(source_repaired_window) OVER w AS previous_repaired_window
+                  FROM p WINDOW w AS(PARTITION BY security_id ORDER BY sidx)),
+        eligible AS (SELECT *,coalesce(previous_member AND previous_sidx=sidx-1,false) AS prior_member_present,
+                         coalesce(source_repaired_window OR previous_repaired_window,false) AS uncertain_identity
+                     FROM prior)
+        SELECT session_date,avg(ret) FILTER(WHERE prior_member_present AND NOT uncertain_identity
+                                   AND NOT coalesce(ret_guarded,false) AND isfinite(ret) AND ret>-1) AS mkt_ret,
+               count(*) FILTER(WHERE prior_member_present AND NOT uncertain_identity
+                                   AND NOT coalesce(ret_guarded,false) AND isfinite(ret) AND ret>-1) AS mkt_n,
+               count(*) FILTER(WHERE prior_member_present AND uncertain_identity) AS excluded_identity_n
+        FROM eligible GROUP BY session_date"""
 
 
 def mkt_month_sql(daily_rel: str, cal_path: str) -> str:
@@ -178,7 +230,8 @@ def mkt_month_sql(daily_rel: str, cal_path: str) -> str:
     return f"""
     WITH {cal_sql(cal_path)}
     SELECT c.month_idx, sum(ln(1 + x.r)) AS m_lr
-    FROM (SELECT session_date, CASE WHEN ret_guarded OR ret <= -1 THEN NULL ELSE ret END AS r
+    FROM (SELECT session_date, CASE WHEN coalesce(ret_guarded,false) OR ret IS NULL OR NOT isfinite(ret)
+                                       OR ret <= -1 THEN NULL ELSE ret END AS r
           FROM {daily_rel} WHERE security_id = {MKT_ID}) x
     JOIN cal c USING (session_date) JOIN cm USING (month_idx)
     GROUP BY 1 HAVING count(x.r) = max(cm.n_month)"""
@@ -432,7 +485,7 @@ def _feature_sql(f: R.Feature) -> str:
 def keep_columns(line_cols: Iterable[str], features: Sequence[R.Feature]) -> list[str]:
     """Line-pass columns the year pass needs: keys, flags, group-stat sources and every column a feature names."""
     have = list(line_cols)
-    want = set(KEYS) | set(FLAGS) | {src for _, src, _ in GROUP_STATS}
+    want = set(KEYS) | set(FLAGS) | set(REPAIR_FLAGS) | {src for _, src, _ in GROUP_STATS}
     for f in features:
         want |= set(_TOKEN.findall(_feature_sql(f)))
     return [c for c in have if c in want]
@@ -450,21 +503,21 @@ def year_sql(line_rel: str, lo: dt.date, hi: dt.date, features: Sequence[R.Featu
     ctes, joins, gcols = [], [], []
     for grp, stats in groups.items():
         aggs = ", ".join(f"avg({src}) AS a_{out}, count({src}) AS n_{out}" for out, src in stats)
-        ctes.append(f"q_{grp} AS (SELECT session_date, {grp}, {aggs} FROM {y} WHERE member AND {grp} IS NOT NULL "
+        ctes.append(f"q_{grp} AS (SELECT session_date, {grp}, {aggs} FROM {y} WHERE member AND NOT source_repaired_window AND {grp} IS NOT NULL "
                     f"GROUP BY 1, 2)")
         joins.append(f"LEFT JOIN q_{grp} USING (session_date, {grp})")
         gcols += [f"CASE WHEN n_{out} >= {GROUP_MIN} THEN a_{out} END AS {out}" for out, _ in stats]
-    raw = ", ".join(f"CAST(({_feature_sql(f)}) AS DOUBLE) AS \"{f.name}\"" for f in features)
+    raw = ", ".join(f"CASE WHEN source_repaired_window THEN NULL ELSE CAST(({_feature_sql(f)}) AS DOUBLE) END AS \"{f.name}\"" for f in features)
     out_cols = []
     for f in features:
         v = f'CASE WHEN isfinite("{f.name}") THEN "{f.name}" END'
-        out_cols.append(f'coalesce({v}, 0.0) AS "{f.name}"' if f.fill_zero else f'{v} AS "{f.name}"')
+        out_cols.append(f'CASE WHEN source_repaired_window THEN NULL ELSE coalesce({v}, 0.0) END AS "{f.name}"' if f.fill_zero else f'{v} AS "{f.name}"')
     flags = ", ".join(FLAGS)
     return f"""
     WITH {', '.join(ctes)},
     z AS (SELECT y.*, {', '.join(gcols)} FROM {y} y {' '.join(joins)}),
-    z2 AS (SELECT session_date, security_id, {flags}, {raw} FROM z)
-    SELECT session_date, security_id, {flags}, {', '.join(out_cols)} FROM z2{'' if all_rows else ' WHERE member'}
+    z2 AS (SELECT session_date, security_id, {flags}, source_repaired_now, source_repaired_window, {raw} FROM z)
+    SELECT session_date, security_id, {flags}, source_repaired_now, source_repaired_window, {', '.join(out_cols)} FROM z2{'' if all_rows else ' WHERE member'}
     """
 
 
@@ -491,10 +544,41 @@ def _tmp(*parts: str) -> Path:
     return C.build_root() / "_tmp" / Path(*parts)
 
 
+def repair_events(con, cutoff: dt.date | None = None) -> str | None:
+    """Sparse repaired-date events, used only with a backward ASOF lookup.
+
+    No line is excluded because it has a repair in its future. Calendar-session
+    indices, rather than observed line-row counts, define the quarantine duration.
+    """
+    parts = []
+    for stage in ("prices", "prices_history"):
+        glob = C.build_root() / stage / "year=*" / "*.parquet"
+        if not list(glob.parent.parent.glob("year=*/*.parquet")):
+            continue
+        relation = _rp(glob)
+        names = {r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()}
+        if "sid0_repaired" in names:
+            cut = f" AND session_date <= DATE '{cutoff}'" if cutoff else ""
+            parts.append(f"SELECT session_date,security_id FROM {relation} WHERE sid0_repaired{cut}")
+    if not parts:
+        return None
+    con.execute(f"""CREATE OR REPLACE TABLE char_repairs AS WITH cal AS (
+        SELECT session_date,row_number() OVER(ORDER BY session_date) AS sidx FROM {_rp(C.calendar_path())})
+        SELECT DISTINCT security_id,session_date AS repair_date,sidx AS repair_sidx
+        FROM ({' UNION ALL '.join(parts)}) r JOIN cal USING(session_date)""")
+    return "char_repairs"
+
+
+def guarded_history_sql(con, relation: str) -> str:
+    names = {r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()}
+    bad = "coalesce(ret_guarded,false) OR coalesce(sid0_repaired,false)" if "sid0_repaired" in names else "ret_guarded"
+    return f"SELECT session_date,security_id,CASE WHEN {bad} THEN NULL ELSE ret END AS ret,{bad} AS ret_guarded FROM {relation}"
+
+
 def _input_manifests() -> dict[str, str | None]:
     root = C.build_root()
     out: dict[str, str | None] = {}
-    for st in ("panel", "prices_history", "borrow_proxy"):
+    for st in (panel_stage(), "prices", "prices_history", "borrow_proxy"):
         m = root / st / "manifest.json"
         out[st] = C.sha256_file(m) if m.exists() else None
     out["calendar.parquet"] = C.sha256_file(C.calendar_path()) if C.calendar_path().exists() else None
@@ -510,7 +594,9 @@ def _line_signature(nb: int, features: Sequence[R.Feature], extra_terms: dict[st
     queries, the columns the features name, the bucket count and the input stage manifests."""
     tokens = sorted({t for f in features for t in _TOKEN.findall(_feature_sql(f))} | {s for _, s, _ in GROUP_STATS})
     return _sha({"nb": nb, "inputs": _input_manifests(), "tokens": tokens, "extra": extra_terms or {},
-                 "sql": [input_sql("panel", "bp"), line_sql("inp", "hist", "mkt", "cal", extra_terms),
+                 "code": C.code_identity(*MODULES),
+                 "sql": [input_sql("panel", "bp", repair_rel="repairs", market_rel="clean_market"),
+                         clean_market_sql("panel", "repairs", "cal"), line_sql("inp", "hist", "mkt", "cal", extra_terms),
                          mkt_month_sql("daily", "cal"), PANEL_START, MKT_ID]})
 
 
@@ -539,7 +625,8 @@ def extract(con, years: Sequence[int], nb: int) -> dict[str, Any]:
     """Narrow per-bucket inputs from the panel (+ borrow_proxy) and prices_history; SPY monthly returns."""
     root = C.build_root()
     out: dict[str, Any] = {}
-    panel_years = sorted(int(p.name.split("=")[1]) for p in (root / "panel").glob("year=*") if p.is_dir())
+    repairs = repair_events(con)
+    panel_years = sorted(int(p.name.split("=")[1]) for p in (root / panel_stage()).glob("year=*") if p.is_dir())
     # every panel year up to the last output year: the years before the first output year are window warm-up
     for d in _tmp(IN_DIR, "panel").glob("year=*"):
         if d.name.endswith(".partial") or int(d.name.split("=")[1]) > max(years):  # .partial: a stopped run
@@ -547,14 +634,29 @@ def extract(con, years: Sequence[int], nb: int) -> dict[str, Any]:
     for y in [py for py in panel_years if py <= max(years)]:
         bp = root / "borrow_proxy" / f"year={y}"
         bp_rel = _rp(bp / "*.parquet") if list(bp.glob("*.parquet")) else None
-        sql = input_sql(_rp(root / "panel" / f"year={y}" / "*.parquet"), bp_rel)
+        market_rel = None
+        if repairs:
+            market_source = (f"(SELECT * FROM {_rp(root / panel_stage() / 'year=*' / '*.parquet')} "
+                             f"WHERE session_date BETWEEN DATE '{y}-01-01' - INTERVAL 10 DAY AND DATE '{y}-12-31')")
+            con.execute(f"CREATE OR REPLACE TABLE char_clean_market AS {clean_market_sql(market_source,repairs,C.calendar_path().as_posix())}")
+            market_rel = "char_clean_market"
+        sql = input_sql(_rp(root / panel_stage() / f"year={y}" / "*.parquet"), bp_rel,
+                        repair_rel=repairs, market_rel=market_rel)
         _copy_partitioned(con, f"SELECT *, security_id % {nb} AS b FROM ({sql})", _tmp(IN_DIR, "panel", f"year={y}"),
                           "b")
-        out[str(y)] = {"borrow_proxy": bp_rel is not None}
+        out[str(y)] = {"borrow_proxy": bp_rel is not None, "repair_quarantine": repairs is not None}
+        bad_now, bad_window = con.execute(f"SELECT count(*) FILTER(WHERE source_repaired_now),"
+            f"count(*) FILTER(WHERE source_repaired_window) FROM {_rp(_tmp(IN_DIR, 'panel', f'year={y}', 'b=*', '*.parquet'))}").fetchone()
+        out[str(y)].update(repaired_current_rows=int(bad_now), repaired_window_rows=int(bad_window))
+        if market_rel:
+            market_n, excluded_n = con.execute(f"SELECT sum(mkt_n),sum(excluded_identity_n) FROM {market_rel} "
+                                               "WHERE year(session_date)=?", [y]).fetchone()
+            out[str(y)].update(clean_market_contributions=int(market_n or 0),
+                               excluded_market_identity_contributions=int(excluded_n or 0))
     hist = root / "prices_history"
     if list(hist.glob("year=*/*.parquet")):
-        _copy_partitioned(con, f"SELECT session_date, security_id, ret, ret_guarded, security_id % {nb} AS b "
-                               f"FROM {_rp(hist / 'year=*' / '*.parquet')} WHERE session_date < DATE '{PANEL_START}'",
+        history = guarded_history_sql(con, _rp(hist / 'year=*' / '*.parquet'))
+        _copy_partitioned(con, f"SELECT *,security_id % {nb} AS b FROM ({history}) WHERE session_date < DATE '{PANEL_START}'",
                           _tmp(IN_DIR, "hist"), "b")
         out["hist"] = True
     else:
@@ -735,9 +837,19 @@ def run(stages: Sequence[str], years: Sequence[int], *, nb: int = NB, features: 
             with C.timed(receipt, "coverage"):
                 receipt["coverage"] = coverage(con, feats)
             payload = {"registry": R.as_manifest(feats), "receipt": receipt, "line_signature": sig,
+                       "quality_status": "raw research candidates; independent validation required",
+                       "source_vintages_certified": False, "predictive_power_certified": False,
                        "year_signature": ysig,
                        "input_manifests_sha256": _input_manifests(),
                        "rules": {"pit": "Global Constraint 4; iv_atm_* lag 1 (ruling R3); vendor earnFlag unused",
+                                 "sid0_repair_quarantine_sessions": REPAIR_LOOKBACK,
+                                 "sid0_repair_policy": "backward ASOF only; current repaired numeric inputs missing; "
+                                                       "all features missing through longest trailing registry lookback",
+                                 "market_return_policy": "source prior-session member equal weights; consecutive bars; "
+                                     "exclude current/prior trailing repair quarantine and invalid returns; "
+                                     "legacy market retained only when source repair flags are unavailable",
+                                 "spy_monthly_policy": "complete observed months; repaired current returns excluded "
+                                                       "identically in extraction and PIT rebuild",
                                  "buckets": f"security_id % {nb}", "group_min": GROUP_MIN, "mkt_id": MKT_ID,
                                  "rows": "every panel row" if all_rows else "panel rows with member (scorecard "
                                          "universe, includes every member_equity row)"}}
@@ -759,10 +871,16 @@ def pit_source(con, bucket: int, dmax: dt.date, *, nb: int = NB, table: str = "p
     build's extracts), rows ``session_date <= dmax`` only; ``pit_check(source=...)`` cuts it at each d."""
     root = C.build_root()
     cut = f"session_date <= DATE '{dmax}'"
-    pan = f"(SELECT * FROM {_rp(root / 'panel' / 'year=*' / '*.parquet')} WHERE security_id % {nb} = {bucket} AND {cut})"
+    all_pan = f"(SELECT * FROM {_rp(root / panel_stage() / 'year=*' / '*.parquet')} WHERE {cut})"
+    pan = f"(SELECT * FROM {all_pan} WHERE security_id % {nb} = {bucket})"
     bp = (f"(SELECT * FROM {_rp(root / 'borrow_proxy' / 'year=*' / '*.parquet')} "
           f"WHERE security_id % {nb} = {bucket} AND {cut})") if list((root / "borrow_proxy").glob("year=*/*.parquet")) else None
-    con.execute(f"CREATE OR REPLACE TABLE {table} AS {input_sql(pan, bp)}")
+    repairs = repair_events(con, dmax)
+    market_rel = None
+    if repairs:
+        con.execute(f"CREATE OR REPLACE TABLE pit_clean_market AS {clean_market_sql(all_pan,repairs,C.calendar_path().as_posix())}")
+        market_rel = "pit_clean_market"
+    con.execute(f"CREATE OR REPLACE TABLE {table} AS {input_sql(pan, bp, repair_rel=repairs,market_rel=market_rel)}")
     return table
 
 
@@ -783,13 +901,19 @@ def pit_check(con, bucket: int, d: dt.date, *, nb: int = NB, features: Sequence[
     hist_files = list((root / "prices_history").glob("year=*/*.parquet"))
     hist = (f"(SELECT * FROM {_rp(root / 'prices_history' / 'year=*' / '*.parquet')} "
             f"WHERE security_id % {nb} = {bucket} AND {cut})") if hist_files else None
+    hist = f"({guarded_history_sql(con, hist)})" if hist else None
     con.execute(f"CREATE OR REPLACE TEMP VIEW pit_in AS SELECT * FROM {src} WHERE {cut}")
-    mk_parts = [f"SELECT session_date, security_id, ret, ret_guarded FROM {_rp(root / 'panel' / 'year=*' / '*.parquet')} "
-                f"WHERE security_id = {MKT_ID} AND {cut}"]
+    spy_pan = (f"(SELECT * FROM {_rp(root / panel_stage() / 'year=*' / '*.parquet')} "
+               f"WHERE security_id = {MKT_ID} AND {cut})")
+    repairs = repair_events(con, d)
+    mk_parts = [input_sql(spy_pan,None,columns=(*KEYS,"ret","ret_guarded"),repair_rel=repairs)]
     if hist_files:
-        mk_parts.append(f"SELECT session_date, security_id, ret, ret_guarded FROM "
-                        f"{_rp(root / 'prices_history' / 'year=*' / '*.parquet')} WHERE security_id = {MKT_ID} "
-                        f"AND session_date < DATE '{PANEL_START}' AND {cut}")
+        spy_hist = (f"(SELECT * FROM {_rp(root / 'prices_history' / 'year=*' / '*.parquet')} WHERE security_id = {MKT_ID} "
+                    f"AND session_date < DATE '{PANEL_START}' AND {cut})")
+        # Both branches must have the same columns; the panel projection also
+        # carries audit-only borrow/repair flags, so narrow it before the union.
+        mk_parts[0] = f"SELECT session_date,security_id,ret,ret_guarded FROM ({mk_parts[0]})"
+        mk_parts.append(guarded_history_sql(con,spy_hist))
     con.execute(f"CREATE OR REPLACE TEMP TABLE pit_mkt AS {mkt_month_sql('(' + ' UNION ALL '.join(mk_parts) + ')', cal)}")
     sql, keep = line_query(con, "pit_in", hist, "pit_mkt", cal, feats, extra_terms, tag="pit")
     cols = ", ".join(f'"{c}"' for c in keep)

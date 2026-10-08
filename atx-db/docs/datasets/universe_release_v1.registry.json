@@ -1,0 +1,17 @@
+{
+  "stage": "universe_release_v1",
+  "schema": "atx.alpha-panel.universe-release/v1",
+  "module": "atx_db.alpha_panel.universe_release",
+  "manifest": "universe_release_v1/generations/<explicit-generation>/manifest.json",
+  "pointer": "universe_release_v1/current.json",
+  "keys": ["session_date", "security_id"],
+  "path": "universe_release_v1/generations/<explicit-generation>/year=*/universe.parquet",
+  "clock": "available_at",
+  "as_of_sql": "CREATE MACRO universe_release_v1_asof(ts) AS TABLE SELECT * FROM universe_release_v1 WHERE available_at < CAST(ts AS TIMESTAMP)",
+  "consumer_binding": "Resolve and fully validate explicit immutable generation, pin manifest and actual output SHA/size; never legacy fallback",
+  "source_quality_certified": false,
+  "status": "NOT_PRODUCTION_READY",
+  "registered": false,
+  "task": "Task16 release foundation only; Task17 registration pending",
+  "doc": "atx-db/docs/datasets/universe_release_v1.md"
+}

@@ -1,0 +1,46 @@
+{
+  "args": [
+    "build"
+  ],
+  "as_of_sql": "CREATE MACRO universe_as_of(ts) AS TABLE SELECT * FROM universe WHERE available_at < CAST(ts AS TIMESTAMP)",
+  "as_of_usage": "SELECT security_id, univ_all_common, univ_r3000p FROM universe_as_of(lake_cutoff(DATE '2024-03-15')) QUALIFY row_number() OVER (PARTITION BY security_id ORDER BY session_date DESC) = 1",
+  "doc": "atx-db/docs/datasets/universe.md",
+  "exchange_rule": "NULL frozen-panel exchange repaired only from dated FINRA listing evidence, dissemination_date < d, age <=45 days, shared EXCHANGE_BY_CLASS; T1-b qualification preserved",
+  "formation_join": "research panels keyed by session_date join universe on (session_date, security_id): the flags of session d use prices through the close of d and issuer facts before lake_cutoff(d), the CRSP formation-date convention (form at the close of d, hold from d+1)",
+  "guard_gb": 0.8,
+  "inputs": [
+    "classification",
+    "identity/link_table_v3_manifest.json",
+    "identity_cover",
+    "indexes",
+    "issuer_classes",
+    "issuer_history",
+    "market/market_shares_manifest.json",
+    "panel",
+    "sec_filings",
+    "security_master",
+    "security_master/share_exchange_history_manifest.json"
+  ],
+  "lane": "A",
+  "manifest": "universe/manifest.json",
+  "module": "atx_db.alpha_panel.universe",
+  "outputs": [
+    {
+      "clock": "available_at",
+      "glob": "universe/year=*/universe.parquet",
+      "keys": [
+        "session_date",
+        "security_id"
+      ],
+      "view": "universe",
+      "vintage": "daily"
+    }
+  ],
+  "registered": "NOT registered: no LAKE_STAGES literal (inputs share_exchange_history, identity/link_table_v3 and identity_cover have no registered stage; a literal naming them would break registry.load for every lane); Task 17 folds this stub into stagelake",
+  "rule": "universe-all-common-v2",
+  "schema": "atx.alpha-panel.universe/v1",
+  "stage": "universe",
+  "staleness": "daily panel outputs; sparse historical issuer assertions through2022, later status refresh required",
+  "task": "tier1-v4 Task 2 fix round 2; Task 2x approved",
+  "validation": "validation/universe.json (gates, counts, 30-field coverage), validation/universe_hand_check_sample.json"
+}

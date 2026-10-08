@@ -134,29 +134,33 @@ STAGES: tuple[Stage, ...] = (
           inputs=("identity", "short_interest", "prices"), guard_gb=1.0, vintage="daily",
           staleness="a name link holds 45 days after its dissemination",
           outputs=(_o("identity/links_name_days.parquet", "identity_links_name_days",
-                      doc="FINRA issue name -> SEC filer name tier (finra-name-match-v1), one row per line-day"),),
-          doc="reads _tmp/identity_days_strict_backfill.parquet from identity_backfill's first pass"),
+                      doc="FINRA issue name -> SEC filer name tier (finra-name-match-v2), one row per line-day"),),
+          doc="reads _tmp/identity_days_strict.parquet from identity_backfill's first pass"),
     Stage("identity_backfill", "ID", None, M + "identity_backfill", manifest="identity/backfill_manifest.json",
           inputs=("identity", "identity_names", "prices"), guard_gb=1.0, vintage="interval",
           staleness="links hold over [start, end_incl]",
           outputs=(_o("identity/links_backfill.parquet", "identity_links_backfill",
-                      doc="snapshot-run-backfill-v1 tier (survivorship-tilted: lines alive at the snapshot)"),
+                      doc="snapshot-run-backfill-v2 tier (survivorship-tilted: lines alive at the snapshot)"),
                    _o("identity/links_combined.parquet", "identity_links_combined",
-                      doc="strict + backfill + name links with the re-derived primary line")),
+                      doc="strict + backfill + name links with the re-derived primary line"),
+                   _o("identity/links_pit.parquet", "identity_links_pit",
+                      doc="strict + name links; names withheld only by known strict links"),
+                   _o("_tmp/identity_days_strict.parquet", "identity_days_strict", clock=None,
+                      doc="known strict line-days for name-tier precedence")),
           doc="build.py runs it before identity_names (strict + backfill days) and after (combine)"),
     Stage("identity_table", "ID", "atx.alpha-panel.identity-link-table/v1", M + "identity_table",
           manifest="identity/link_table_manifest.json",
           inputs=("identity_backfill", "identity_names", "short_interest", "prices"), guard_gb=0.8,
           vintage="interval", staleness="links hold over [valid_from, valid_to]",
           outputs=(_o("identity/link_table.parquet", "identity_link_table",
-                      doc="dated security_id -> cik link table with link_tier (identity-link-table-v1)"),
+                      doc="dated security_id -> cik link table with link_tier (identity-link-table-v4)"),
                    _o("identity/multi_class_issuers.parquet", "identity_multi_class_issuers", clock=None,
                       doc="issuers with several vendor lines (audit)")),
           doc="also reads the panel core/membership scratch (_tmp/panel_core, _tmp/panel_member)"),
     *(Stage(f"export_identity_bridge_{v}", "ID", "atx.identity-bridge/v1", None, built_by="identity_table",
-            manifest=f"export/identity-bridge-v2-{v}/manifest.json", inputs=("identity_table",),
+            manifest=f"export/identity-bridge-v4-{v}/manifest.json", inputs=("identity_table",),
             vintage="interval", staleness="links hold over [valid_from, valid_to]",
-            outputs=(_o(f"export/identity-bridge-v2-{v}/links.parquet", f"export_identity_bridge_{v}",
+            outputs=(_o(f"export/identity-bridge-v4-{v}/links.parquet", f"export_identity_bridge_{v}",
                         doc=f"consumer identity bridge ({v} tiers), atx.identity-bridge/v1"),))
       for v in ("all", "pit", "strict")),
     Stage("short_interest", "OWN", None, M + "short_interest", args=(("build",),), fetch=(("fetch",),),
@@ -357,11 +361,15 @@ def discover(src_root: Path = SRC_ROOT, package: str = "atx_db", errors: list[st
 
 
 def load(src_root: Path = SRC_ROOT, extra: Iterable[Stage] = (), include_discovered: bool = True,
-         strict: bool = True) -> list[Stage]:
+         strict: bool = True, tier1: bool = True) -> list[Stage]:
     """Every registered stage, validated, in topological order (inputs first).
 
     ``strict=False`` (the CLIs): a discovered entry that does not validate (bad field, unknown input, clash) is
     dropped with a warning on stderr, so one lane's broken declaration cannot stop verify, catalog or plan."""
+    extra = tuple(extra)
+    if tier1 and src_root == SRC_ROOT and not extra and include_discovered:
+        from atx_db.alpha_panel.tier1_catalog import declarations
+        return declarations()
     stages = list(STAGES) + list(extra)
     if not include_discovered:
         return validate(stages)

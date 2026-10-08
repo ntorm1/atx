@@ -194,8 +194,26 @@ def refresh_entity_industry_templates(
     with store.transaction():
         store.con.execute("DELETE FROM entity_industry_template WHERE source = ?", [options.source])
         store.con.execute(
-            """
-            INSERT INTO entity_industry_template (
+            entity_industry_templates_sql(),
+            [options.source, options.source, options.source, options.run_id],
+        )
+    row = store.con.execute(
+        "SELECT count(*) FROM entity_industry_template WHERE source = ?", [options.source],
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("industry-template route count query returned no row")
+    return int(row[0])
+
+
+def entity_industry_templates_sql(
+    *, target: str = "entity_industry_template", security_predicate: str = "TRUE",
+    calculation_date_sql: str = "current_date",
+) -> str:
+    """Shared route INSERT; temporal policy changes remain governed by node2.3."""
+    from ._bulk_publication import _identifier
+
+    return f"""
+            INSERT INTO {_identifier(target)} (
                 route_id, source, security_id, symbol, industry_template,
                 matched_taxonomy, matched_node_code, match_reason,
                 valid_from, valid_to, as_of_date, available_at,
@@ -218,6 +236,7 @@ def refresh_entity_industry_templates(
                   ON tx.taxonomy_id = ec.taxonomy_id
                  AND tx.code = 'SIC'
                 WHERE ec.is_primary
+                  AND ({security_predicate})
             ),
             sic_boundaries AS (
                 SELECT
@@ -253,6 +272,7 @@ def refresh_entity_industry_templates(
                 SELECT security_id,min(period_end) AS first_period_end
                 FROM sec_company_facts
                 WHERE period_end IS NOT NULL
+                  AND ({security_predicate})
                 GROUP BY security_id
             ),
             routed_sic AS (
@@ -308,27 +328,27 @@ def refresh_entity_industry_templates(
                     CAST(NULL AS VARCHAR) AS node_code,
                     coalesce(
                         max(sic.effective_valid_to) FILTER (
-                            WHERE sic.effective_valid_to <= current_date
+                            WHERE sic.effective_valid_to <= {calculation_date_sql}
                         ),
                         s.first_seen_date,
                         DATE '1900-01-01'
                     ) AS valid_from,
                     min(sic.valid_from) FILTER (
-                        WHERE sic.valid_from > current_date
+                        WHERE sic.valid_from > {calculation_date_sql}
                     ) AS valid_to,
                     coalesce(s.first_seen_date, DATE '1900-01-01') AS as_of_date,
                     s.source_loaded_at AS available_at,
                     s.source_loaded_at,
                     'ALL' AS industry_template,
                     'default_all_no_current_sic' AS match_reason
-                FROM securities s
+                FROM (SELECT * FROM securities WHERE {security_predicate}) s
                 LEFT JOIN bounded_sic sic ON sic.security_id = s.security_id
                 WHERE NOT EXISTS (
                     SELECT 1
                     FROM bounded_sic current_sic
                     WHERE current_sic.security_id = s.security_id
-                      AND current_sic.valid_from <= current_date
-                      AND coalesce(current_sic.effective_valid_to, DATE '9999-12-31') > current_date
+                      AND current_sic.valid_from <= {calculation_date_sql}
+                      AND coalesce(current_sic.effective_valid_to, DATE '9999-12-31') > {calculation_date_sql}
                 )
                 GROUP BY
                     s.security_id,s.primary_symbol,s.first_seen_date,s.source_loaded_at
@@ -381,16 +401,7 @@ def refresh_entity_industry_templates(
                 CASE WHEN revision_sequence = 1 THEN 'original' ELSE 'restated' END AS update_type,
                 knowledge_valid_to
             FROM sequenced
-            """,
-            [options.source, options.source, options.source, options.run_id],
-        )
-    row = store.con.execute(
-        "SELECT count(*) FROM entity_industry_template WHERE source = ?",
-        [options.source],
-    ).fetchone()
-    if row is None:
-        raise RuntimeError("industry-template route count query returned no row")
-    return int(row[0])
+            """
 
 
 def refresh_industry_template_coverage(

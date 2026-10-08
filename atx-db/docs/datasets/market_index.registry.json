@@ -1,0 +1,40 @@
+{
+  "stage": "market_index",
+  "lane": "MKT",
+  "task": "tier1-v4 Tasks 2/2x fix round 1",
+  "schema": "atx.alpha-panel.market-index/v1",
+  "module": "atx_db.alpha_panel.market_index",
+  "args": [
+    "build"
+  ],
+  "manifest": "market/market_index_manifest.json",
+  "inputs": [
+    "panel",
+    "market_shares",
+    "reference",
+    "prices",
+    "prices_history",
+    "security_master"
+  ],
+  "outputs": [
+    {
+      "view": "market_index_returns",
+      "glob": "market/index_returns.parquet",
+      "keys": [
+        "freq",
+        "period_end",
+        "universe",
+        "weighting"
+      ],
+      "clock": "available_at",
+      "vintage": "event"
+    }
+  ],
+  "as_of_sql": "CREATE MACRO market_index_returns_as_of(ts) AS TABLE SELECT * FROM market_index_returns WHERE available_at < CAST(ts AS TIMESTAMP)",
+  "as_of_usage": "SELECT period_end, ret FROM market_index_returns_as_of(lake_cutoff(DATE '2024-03-15')) WHERE freq = 'D' AND universe = 'all_common' AND weighting = 'VW'",
+  "validation": "validation/factors_market.json",
+  "registered": "already declared by the module LAKE_STAGES literal (inputs now include prices_history); stub records keys and as-of SQL",
+  "doc": "atx-db/docs/datasets/market_index.md",
+  "exchange_rule": "NULL frozen-panel exchange repaired only from dated FINRA listing evidence, dissemination_date < d, age <=45 days, shared EXCHANGE_BY_CLASS; T1-b qualification preserved",
+  "holdout": "R5: aggregate-return computation/output <=2022-12-31; future rows excluded before aggregation"
+}

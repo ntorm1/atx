@@ -150,3 +150,59 @@ def test_manifest_written(lake) -> None:
     import json
     m = json.loads((root / "labels" / "manifest.json").read_text())
     assert m["max_label_end"] <= str(CAL[CUT]) and m["status"] == "complete"
+
+
+def test_strict_labels_exclude_partial_unknown_and_imputed_terminal(lake) -> None:
+    _, root = lake
+    L.build(memory="200MB", threads=1, quality="strict", out_stage="labels_strict")
+    con = duckdb.connect()
+    rows = con.execute(f"SELECT * FROM read_parquet('{(root / 'labels_strict' / '*' / '*.parquet').as_posix()}')").fetchall()
+    cols = [c[0] for c in con.description]
+    got = {r[:2]: dict(zip(cols, r, strict=True)) for r in rows}
+    assert got[(CAL[9], 2)]["fwd_21"] is None  # legacy 19/21 threshold is forbidden
+    assert got[(CAL[9], 2)]["quality_21"] == 5
+    assert got[(CAL[10], 3)]["fwd_21"] is None
+    assert got[(CAL[10], 3)]["quality_21"] == 4  # no explicit observed marker -> imputed
+    assert got[(CAL[10], 4)]["fwd_21"] is None
+    assert got[(CAL[10], 4)]["quality_21"] == 3
+    assert got[(CAL[20], 1)]["quality_63"] == 1
+    import json
+    manifest = json.loads((root / "labels_strict" / "manifest.json").read_text())
+    assert manifest["label_policy"] == "strict"
+    assert manifest["quality_attrition"]["2019"]["h21"]["3"] > 0
+    assert manifest["quality_attrition"]["2019"]["h21"]["4"] > 0
+
+
+def test_strict_observed_terminal_payoff_requires_complete_prefix(lake) -> None:
+    _, root = lake
+    con = duckdb.connect()
+    dest = root / "delisting" / "events.parquet"
+    con.execute(f"CREATE TABLE observed_events AS SELECT *, false AS dlret_imputed FROM read_parquet('{dest.as_posix()}')")
+    con.execute(f"COPY observed_events TO '{dest.as_posix()}' (FORMAT PARQUET)")
+    L.build(memory="200MB", threads=1, quality="strict", out_stage="labels_observed")
+    row = con.execute(f"SELECT fwd_21,quality_21 FROM read_parquet('{(root / 'labels_observed' / '*' / '*.parquet').as_posix()}') "
+                      "WHERE session_date=? AND security_id=3", [CAL[10]]).fetchone()
+    assert row[0] == pytest.approx(sum(lr(k, 3) for k in range(12, 16)) + math.log(.7))
+    assert row[1] == 2
+
+
+def test_strict_requires_isolated_stage(lake) -> None:
+    with pytest.raises(ValueError, match="isolated"):
+        L.build(quality="strict")
+
+
+def test_strict_quarantines_repaired_decision_trade_anchor_and_forward_returns(lake) -> None:
+    _, root = lake
+    con = duckdb.connect()
+    _write(con, [(d, 1, i in (17, CUT + 5)) for i, d in enumerate(CAL)],
+           "session_date DATE, security_id BIGINT, sid0_repaired BOOLEAN",
+           root / "prices" / "year=2019" / "prices.parquet")
+    L.build(memory="200MB", threads=1, quality="strict", out_stage="labels_repaired")
+    glob = (root / "labels_repaired" / "*" / "*.parquet").as_posix()
+    def get(i):
+        return con.execute(f"SELECT fwd_1,quality_1 FROM read_parquet('{glob}') WHERE session_date=? AND security_id=1", [CAL[i]]).fetchone()
+    assert get(17) == (None, 7)  # repaired decision
+    assert get(16) == (None, 8)  # repaired trade anchor d+1
+    assert get(15) == (None, 8)  # repaired forward return d+2
+    assert get(18)[1] == 1
+    assert get(CUT - 2)[1] == 1  # repair after cutoff never enters the sealed label scan

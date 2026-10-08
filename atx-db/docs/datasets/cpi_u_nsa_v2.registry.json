@@ -1,0 +1,51 @@
+{
+  "name": "cpi_u_nsa_v2",
+  "lane": "P9 AL-data Task 8",
+  "schema": "atx.alpha-panel.cpi-u-nsa/v2",
+  "module": "atx_db.alpha_panel.cpi_u_nsa",
+  "args": [
+    [
+      "build",
+      "--stage",
+      "cpi_u_nsa_v2"
+    ],
+    [
+      "accept",
+      "--stage",
+      "cpi_u_nsa_v2"
+    ]
+  ],
+  "inputs": [
+    "raw/cpi_u_nsa"
+  ],
+  "manifest": "cpi_u_nsa_v2/manifest.json",
+  "vintage": "vintage",
+  "guard_gb": 0.6,
+  "code": [
+    "cpi_u_nsa",
+    "common",
+    "compustat_std_parts",
+    "shortflow_common"
+  ],
+  "doc": "docs/datasets/cpi_u_nsa.md",
+  "outputs": [
+    {
+      "view": "cpi_u_nsa",
+      "glob": "cpi_u_nsa_v2/parts/year=*/cpi_u_nsa.parquet",
+      "clock": "available_at",
+      "vintage": "vintage",
+      "keys": [
+        "ref_month"
+      ],
+      "order": [
+        "vintage_date"
+      ],
+      "primary_key": [
+        "ref_month",
+        "vintage_date"
+      ],
+      "doc": "CPI vintage values with vintage_date retained, unknown exact release_date, and evidenced conservative available_at bound"
+    }
+  ],
+  "inputs_note": "ALFRED vintage data with verified civil-date semantics; conservative availability bounds; exact publication clock PARTIAL."
+}
