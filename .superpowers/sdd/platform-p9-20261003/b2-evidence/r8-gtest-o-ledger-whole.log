@@ -1,0 +1,44 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 16 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 9 tests from ResearchLedgerChain
+[ RUN      ] ResearchLedgerChain.EmptyPrefixIsTheGenesisUnderTheNamedRule
+[       OK ] ResearchLedgerChain.EmptyPrefixIsTheGenesisUnderTheNamedRule (0 ms)
+[ RUN      ] ResearchLedgerChain.LegacyLinesFoldAndAChainedLineIsItsOwnHash
+[       OK ] ResearchLedgerChain.LegacyLinesFoldAndAChainedLineIsItsOwnHash (2 ms)
+[ RUN      ] ResearchLedgerChain.PrefixHeadsAreTheHeadOfEveryPrefix
+[       OK ] ResearchLedgerChain.PrefixHeadsAreTheHeadOfEveryPrefix (2 ms)
+[ RUN      ] ResearchLedgerChain.LineEndsAndBlankLinesDoNotMoveTheHead
+[       OK ] ResearchLedgerChain.LineEndsAndBlankLinesDoNotMoveTheHead (1 ms)
+[ RUN      ] ResearchLedgerChain.VerifyAcceptsTheChainAndRefusesEachBreak
+[       OK ] ResearchLedgerChain.VerifyAcceptsTheChainAndRefusesEachBreak (2 ms)
+[ RUN      ] ResearchLedgerChain.ANullPrevLineFoldsInEveryRule
+[       OK ] ResearchLedgerChain.ANullPrevLineFoldsInEveryRule (1 ms)
+[ RUN      ] ResearchLedgerChain.ANonObjectLineIsAParseError
+[       OK ] ResearchLedgerChain.ANonObjectLineIsAParseError (0 ms)
+[ RUN      ] ResearchLedgerChain.FixturePrefixHeadsEqualPython
+[       OK ] ResearchLedgerChain.FixturePrefixHeadsEqualPython (14 ms)
+[ RUN      ] ResearchLedgerChain.AnAbsentLedgerIsEmptyOrRefused
+[       OK ] ResearchLedgerChain.AnAbsentLedgerIsEmptyOrRefused (0 ms)
+[----------] 9 tests from ResearchLedgerChain (27 ms total)
+
+[----------] 7 tests from ResearchLedger
+[ RUN      ] ResearchLedger.TrialCountsEqualPython
+[       OK ] ResearchLedger.TrialCountsEqualPython (19 ms)
+[ RUN      ] ResearchLedger.LedgerNEqualsPython
+[       OK ] ResearchLedger.LedgerNEqualsPython (4 ms)
+[ RUN      ] ResearchLedger.NTotBreakdownEqualsPython
+[       OK ] ResearchLedger.NTotBreakdownEqualsPython (2 ms)
+[ RUN      ] ResearchLedger.WindowVarianceEqualsPython
+[       OK ] ResearchLedger.WindowVarianceEqualsPython (4 ms)
+[ RUN      ] ResearchLedger.ConstructionIdsAndPrefixesEqualPython
+[       OK ] ResearchLedger.ConstructionIdsAndPrefixesEqualPython (2 ms)
+[ RUN      ] ResearchLedger.TrialIdentitiesEqualPython
+[       OK ] ResearchLedger.TrialIdentitiesEqualPython (1 ms)
+[ RUN      ] ResearchLedger.ReaderRefusesWhatThePythonRefuses
+[       OK ] ResearchLedger.ReaderRefusesWhatThePythonRefuses (3 ms)
+[----------] 7 tests from ResearchLedger (40 ms total)
+
+[----------] Global test environment tear-down
+[==========] 16 tests from 2 test suites ran. (69 ms total)
+[  PASSED  ] 16 tests.

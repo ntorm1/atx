@@ -1,0 +1,25 @@
+{
+    "Source":  "c3201a60f323f9072bc7e263a8261cbcefd43a6d",
+    "Preset":  "equity-rel",
+    "DirtyEntries":  1,
+    "ConfiguredProvenance":  "c3201a60f323f9072bc7e263a8261cbcefd43a6d-dirty",
+    "Jobs":  3,
+    "FreeMiB":  3391,
+    "CommitMiB":  4308,
+    "Targets":  [
+                    "atx-research-eval",
+                    "atx-engine-research-eval-tests",
+                    "atx-engine-research-ledger-tests",
+                    "atx-impl-tests"
+                ],
+    "ExitCode":  1,
+    "WallSeconds":  14.7742765,
+    "CompiledTUs":  3,
+    "Links":  0,
+    "Tag":  "p9-b2-k",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-14\\build-equity-rel",
+    "Executables":  {
+
+                    }
+}

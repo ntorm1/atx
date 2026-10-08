@@ -51,8 +51,8 @@ GAP_IDS = {11: 0.02}                           # line 11 has no row on 2% of ses
 GAMMA = {11: -0.5, 22: 0.3, 33: 0.0, 44: -1.0, 55: 0.8, 66: -0.2, 77: 0.5, SPY: 0.0, QQQ: 0.4}
 SPY_IV_PRINTS = {dt.date(2018, 9, 17): 7.5, dt.date(2018, 11, 15): 0.0, dt.date(2018, 12, 10): None}
 SPY_DUP = dt.date(2018, 10, 1)
-SEAL_ROWS = [(dt.date(2025, 2, 3), 22), (dt.date(2025, 2, 3), SPY)]            # after the superseded seal
-LATE_ROWS = [(dt.date(2024, 3, 1), 11), (dt.date(2024, 3, 1), SPY)]           # sealed under the repository window
+SEAL_ROWS = [(dt.date(2024, 2, 5), 22), (dt.date(2024, 2, 5), SPY)]            # after the seal: skipped and counted
+LATE_ROWS = [(dt.date(2023, 3, 1), 11), (dt.date(2023, 3, 1), SPY)]           # after the role, before the seal: kept
 CUT = 120                                      # the probe's mutation session (role row)
 
 
@@ -152,7 +152,7 @@ def write_source(path, rows, drop=()):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def observations(rows, seal=dt.date(2025, 1, 1)):
+def observations(rows, seal=dt.date(2024, 1, 1)):
     """{(sid, epoch day): (raw f32 as f64, F, volume, iv f32 as f64 in domain else nan)} of the unique, valid,
     on-calendar rows before the seal."""
     seen, keep = {}, {}
@@ -459,8 +459,8 @@ class XdataFields(unittest.TestCase):
                              (self.base / "api" / f"{name}.f64").read_bytes())
 
     def test_repository_window_fresh_interpreter(self):
-        """Under the repository window (seal from research_window.json, never this harness's superseded one) a fresh
-        interpreter drops the 2024 rows as sealed and writes the same payloads."""
+        """In a fresh interpreter under the repository window (seal from research_window.json) the builder drops the
+        rows on or after the seal exactly as this harness does and writes the same payloads."""
         case = Case(self.base, world())
         case.run("here", FIELDS)
         script = (
@@ -483,7 +483,7 @@ class XdataFields(unittest.TestCase):
         got = json.loads(out.stdout.strip().splitlines()[-1])
         repo = rw.load()["seal_begin"]
         self.assertEqual((got["seal"], got["manifest_seal"]), (repo, repo))
-        self.assertEqual((got["vol"], got["src"]), (2, 4))             # + the 2024 SPY row; + both 2024 rows
+        self.assertEqual((got["vol"], got["src"]), (1, 2))             # SEAL_ROWS only, as in the harness
         for name in FIELDS:
             self.assertEqual((self.base / "there" / f"{name}.f64").read_bytes(),
                              (self.base / "here" / f"{name}.f64").read_bytes(), name)

@@ -1,0 +1,38 @@
+nav_summ long options (40): --block --bundle --bundle-alpha --bundle-json --draws --dsr-hand --dsr-ledger --dsr-n --dsr-total --effective-n --engine-stats --era-of --json --ledger --ledger-count --ledger-defect --ledger-kind --ledger-n --ledger-note --onc-init --onc-seed --origin --pbo --pbo-blocks --pbo-json --pbo-max-splits --pool --pool-ids --pool-reference --protocol --psr --psr-alpha --psr-benchmarks --reference --rerun-basis --rerun-of --scenario --seed --weights --year-table
+JSON files parsed: 367; summ.extra / summ-flag / nav_summ argv lists checked: 32
+1. spec / template summ flags abbreviating a nav_summ option: 0
+1. pinned JSON argvs of nav_summ with an abbreviation: 0
+2. text candidates in files naming nav_summ (hand check): 19
+    atx-impl/tools/nav_summ.py:279 --onc (prefix of --onc-init, --onc-seed)
+    scripts/cycle/cli.py:109 --era (prefix of --era-of)
+    scripts/tests/test_research_cycle_roles.py:63 --era (prefix of --era-of)
+    scripts/tests/test_research_cycle_roles.py:204 --era (prefix of --era-of)
+    scripts/tests/test_research_cycle_roles.py:205 --era (prefix of --era-of)
+    scripts/tests/test_research_cycle_roles.py:448 --era (prefix of --era-of)
+    scripts/tests/test_research_spec.py:832 --b (prefix of --block, --bundle, --bundle-alpha, --bundle-json)
+    scripts/tests/test_research_spec.py:833 --b (prefix of --block, --bundle, --bundle-alpha, --bundle-json)
+    scripts/tests/test_research_spec.py:835 --b (prefix of --block, --bundle, --bundle-alpha, --bundle-json)
+    scripts/tests/test_research_spec.py:836 --b (prefix of --block, --bundle, --bundle-alpha, --bundle-json)
+    scripts/tests/test_research_spec.py:841 --b (prefix of --block, --bundle, --bundle-alpha, --bundle-json)
+    scripts/tests/test_research_spec.py:884 --proto (prefix of --protocol)
+    scripts/tests/test_research_spec.py:885 --prot (prefix of --protocol)
+    scripts/tests/test_research_spec.py:885 --pr (prefix of --protocol)
+    scripts/tests/test_research_spec.py:945 --p (prefix of --pbo, --pbo-blocks, --pbo-json, --pbo-max-splits, --pool, --pool-ids, --pool-reference, --protocol, --psr, --psr-alpha, --psr-benchmarks)
+    scripts/tests/test_research_spec.py:946 --p (prefix of --pbo, --pbo-blocks, --pbo-json, --pbo-max-splits, --pool, --pool-ids, --pool-reference, --protocol, --psr, --psr-alpha, --psr-benchmarks)
+    scripts/tests/test_research_spec.py:947 --p (prefix of --pbo, --pbo-blocks, --pbo-json, --pbo-max-splits, --pool, --pool-ids, --pool-reference, --protocol, --psr, --psr-alpha, --psr-benchmarks)
+    scripts/tests/test_wave_driver.py:207 --b (prefix of --block, --bundle, --bundle-alpha, --bundle-json)
+    scripts/tests/test_wave_driver.py:208 --b (prefix of --block, --bundle, --bundle-alpha, --bundle-json)
+
+Hand check of the 19 text candidates (each line read; code only):
+  atx-impl/tools/nav_summ.py:279 --onc            argv of the engine verb atx-research-eval (EngineStats.run, C++ CLI), not nav_summ's parser
+  scripts/cycle/cli.py:109 --era                   research_cycle's own usage text (the pooled fit's --era), not nav_summ
+  scripts/tests/test_research_cycle_roles.py:63,204,205,448 --era   the fit's --era flag (research_roles), not nav_summ
+  scripts/tests/test_research_spec.py:832-841 --b  synthetic flags of research_spec.apply_flags, not nav_summ
+  scripts/tests/test_wave_driver.py:207-208 --b    synthetic flags of cycle_resume.reuse_args("fit", ...), not nav_summ
+  scripts/tests/test_research_spec.py:884,885,945-947 --proto / --prot / --pr / --p   the e27b test's own --protocol
+                                                   abbreviation cases (ruling D2R-2 (b): updated in this commit)
+Dynamic flag construction (f"--{...}") in files naming nav_summ: scripts/tests/test_research_cycle.py:1216 (the fields
+builder's holdings flags) and scripts/wave_steps.py:74 (add-alpha's optional flags): neither reaches nav_summ.
+
+RESULT: no spec, template, fixture, pinned argv or driver passes an abbreviated flag to nav_summ; no pinned spec relies
+on one (no stop). nav_summ's parser gets allow_abbrev=False; the e27b --protocol cases are updated (D2R-1's form).

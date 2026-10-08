@@ -48,6 +48,7 @@ import json
 import math
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -528,7 +529,7 @@ def projection_ic(raw: np.ndarray, projected: np.ndarray, support: np.ndarray, l
 def signal_lag(base: Mapping[int, float], lagged: Mapping[int, Mapping[int, float]]) -> dict:
     """G-3c: per delay k, the book's net Sharpe with the combined signal delayed k sessions against the base cell on
     their common return sessions: both Sharpe ratios, the difference (the cost of slower execution) and its Memmel
-    SE (nav_summ.memmel_se)."""
+    SE (the engine verb's paired block, K-P9-5; nav_summ.memmel_se was retired by P9 B2)."""
     out = {}
     for k in sorted(lagged):
         common = sorted(set(base) & set(lagged[k]))
@@ -538,9 +539,26 @@ def signal_lag(base: Mapping[int, float], lagged: Mapping[int, Mapping[int, floa
         rho = float(np.corrcoef(a, b)[0, 1]) if len(common) > 2 and a.std() > 0 and b.std() > 0 else None
         out[str(k)] = {"sessions": len(common), "net_sharpe": sa, "base_net_sharpe": sb,
                        "delta": sa - sb if sa is not None and sb is not None else None, "rho": rho,
-                       "memmel_se": NS.memmel_se(sa, sb, rho, len(common))
+                       "memmel_se": engine_memmel(dict(zip(common, a.tolist())), dict(zip(common, b.tolist())))
                        if None not in (sa, sb, rho) and common else None}
     return out
+
+
+def engine_memmel(cell: dict, base: dict) -> float | None:
+    """Memmel's SE of SR(cell) - SR(base) on aligned nets from the engine verb (one resample; only memmel_se read)."""
+    p = NS.engine_of(None).paired_of(cell, base, SimpleNamespace(draws=1, block=NS.DEFAULT_BLOCK, seed=NS.DEFAULT_SEED))
+    value = None if p is None else p["memmel_se"]
+    return value if value is not None and math.isfinite(value) else None
+
+
+def engine_producer(delays: dict) -> dict | None:
+    """The engine verb G-3c's Memmel SEs came from, as nav_summ_run names it ({engine_exe, engine_exe_sha256}; review B2
+    re-review 1 S5): nav_summ's default verb, the one engine_memmel opens; None when signal_lag asked it for nothing
+    (its rule: a delay with both Sharpe ratios (delta), rho and a common session)."""
+    if not any(r["delta"] is not None and r["rho"] is not None and r["sessions"] for r in delays.values()):
+        return None
+    eng = NS.engine_of(None)
+    return {"engine_exe": str(eng.exe), "engine_exe_sha256": eng.sha256}
 
 
 # ================================================================================================= G-3d
@@ -1405,7 +1423,8 @@ def run_g3c(src: Sources) -> dict:
     for k, cell in lagged.items():
         require(cell["scenario"]["scenario"] == base["scenario"]["scenario"],
                 f"--lagged {k}: primary scenario differs from the base cell's")
-    res = {"delays": signal_lag(NS.net_series(base["daily"]), {k: NS.net_series(v["daily"]) for k, v in lagged.items()}),
+    delays = signal_lag(NS.net_series(base["daily"]), {k: NS.net_series(v["daily"]) for k, v in lagged.items()})
+    res = {"delays": delays, "engine": engine_producer(delays),
            "base_scenario": base["scenario"]["scenario"],
            "combined_sha256": {"base": base["summary"].get("combined_sha256"),
                                **{str(k): v["summary"].get("combined_sha256") for k, v in lagged.items()}}}
