@@ -207,3 +207,7 @@ target_sources(atx-impl-strategy-ic-tests PRIVATE
 # CostLawRegistry.*, TradeRateRegistry.*, TargetRegistry.*) beside the NAV replay tests;
 # atx-impl-tests compiles it through its *_test.cpp glob.
 target_sources(atx-impl-strategy-target-tests PRIVATE strategy_nav_spec_test.cpp)
+
+# P9 lane SIGN: the IC exe's `sign` verb (SignVerb.*) in the focused IC target; atx-impl-tests
+# compiles it through its *_test.cpp glob.
+target_sources(atx-impl-strategy-ic-tests PRIVATE strategy_sign_verb_test.cpp)
