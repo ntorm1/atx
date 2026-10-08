@@ -202,3 +202,10 @@ Nothing: no P9 cell reads ew-theme-aim-v2's C++ fit (the C++ fit is used of reco
 ## Permission refusals
 
 None.
+
+## Fix round 1 (D3WPB-R1)
+
+- Commit `90bc1962` on the PARTIAL review commit `a0c7427c` (history not rewritten); one file, `scripts/tests/test_no_python_mirror.py`.
+- Four `retired_by` labels `"D3"` -> `"P10"` (ruling D3WPB-Q1): `composition_rules.py` (:60), `composition_theme_erc.py` (:64), `composition_ic_shrink.py` (:66), `fit_composition_weights.py` `newey_west_t` / `screen_v4` (:69); the comments at :56-57 and :61-62 cite D3WPB-Q1 (the D2-5 precedent for `horizon_stats.py`). No row, symbol or check removed or weakened.
+- `scripts/tests/test_no_python_mirror.py`, own invocation: 7 passed; "G-P5: 21 mirrored rule function(s) in 8 row(s) left for P9 lanes" (32 / 12 with the D3 labels).
+- No build, no root merge, no C++ touched; the review resumes from `task-D3W-PB-review.md` "Next step" (D3WPB-SEQ, REV-FRESH; HEAD = the records commit above `90bc1962`).
