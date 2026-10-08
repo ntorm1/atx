@@ -658,6 +658,20 @@ report "M2j finish"; logs `m2j-logs/`. Zero trials: `build-equity/trials.jsonl` 
 
 Next free build tag **p9-2r**. Known-red set: **empty**.
 
+### M2 (RESUME 9): B2 post-identity redo, T2, 2026-10-07 (two stops for the PM, both attributed to `5dfb0ba1`)
+
+Start docs `685e238b` (code `fd084e78`); housekeeping docs `944581cc`. Code head **`fcb0200e`**. Detail: merge report
+"Step group M2 (RESUME 9)"; logs `m2-logs/` (tools `m2-logs/tools/`). Zero trials: `build-equity/trials.jsonl` 133
+lines `27e40f9f` at start, after each real-data run and at the end. TEST-1 / ROOT-1a: targeted checks only.
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| B2 | `46ffe3dc` (re-review 2 APPROVE of `53856c8e`, 0 Required, 5 Suggested) | `5dfb0ba1` (tree = `git merge-tree` recompute; code = lane's) + slips C3B-6 `6c201a1d` (`scripts/cycle/spec.py`, 3 text hunks, +12 / -10) and B2-S S-1 `fcb0200e` (3 line wraps, +5 / -3, tokens unchanged) | 0 | **p9-2t** equity-dev; `atx-research-eval,atx-engine-research-eval-tests,atx-engine-research-ledger-tests,atx-impl-tests,atx-engine-research-fields-tests` (9 TUs, 7 links) | 0 | eval 26 / 26 (PRE-15 gtest in); ledger 16 / 16; `atx-impl-tests` `*Ledger*:EvalVerb*` 29 / 29 | `scripts/tests` B2 files 317p / 3 skip; `atx-impl/tools` B2 files + edges fixture 76p / 1 skip; root-only `test_legacy_n37_numbers_reproduced` **1 FAILED** (pre-merge `944581cc`: 1 passed; 0 leaves beyond 1e-12, B2-R1 floats + one B2-6 degenerate row) | identity X-5 / Y-F0 **holds** (stdout equal but the one PRE-15 line; JSON 137 leaves bit-equal outside `tot_minus_m`; without `--dsr-total` byte-equal); PRE-15 public cross-check **MISS**: n 124 = 233 + 1 (Y-F0 not ledgered) - 110 vs R0-12's 123; the oracle at N 123 reproduces R0-12's value (stop for the PM); SQL2-CLS none (guard 5p); SQL3-2 holds |
+| T2 | `dfa4218d` (review APPROVE of `2e9d6813`, 0 Required, 6 Suggested; code `bc618cb4`) | `27e69387` (as a unit, T2-SLOT; tree = recompute; 20 files = `bc618cb4`) | 0 | none (no C++) | - | `ResearchFields*` 92 / 92 on p9-2t (no-change control) | T2's 22 modules 248p; other lanes' tools tests without the bind (7 files) 87p | A1-SHIM moot (no root edit of T2's files since `1239a5ff`); SQL2-CLS none; S1 ledger facts: xdata (2, 4) -> (1, 2), v9_nt (sealed_nt, 1) -> (sealed_nt, 2), SEC `:475, 480, 482` 14 -> 17, 66 -> 67, -52 -> -51 (+ assertion `:483`); whole `atx-engine/tools` seeds 0 / 1 deferred to the gate |
+
+Next free build tag **p9-2u**. Known-red set: suites **empty**; root-only red `atx-impl/tools/test_nav_summ_v8.py::
+test_legacy_n37_numbers_reproduced` (attributed to `5dfb0ba1`, for the PM).
+
 ## P9 wave-3 merges
 
 Detail per lane: `root-wave3-merge-report.md` (same directory). B2 and T2 rows stay under the wave-2 heading.
