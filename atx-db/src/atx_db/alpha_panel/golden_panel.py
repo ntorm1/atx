@@ -89,12 +89,25 @@ def bind_views(con, admitted):
     for source,product,view in (("standardized_v11","fundq","gst_q"),("standardized_v11","funda","gst_a"),("ea_actuals","ann_features.parquet","gea")):
         if source in admitted and admitted[source]["status"]!="excluded" and product in admitted[source]["products"]:
             con.execute(f"CREATE OR REPLACE TEMP VIEW {view} AS SELECT * FROM {sql([admitted[source]['products'][product]])}")
+    if 'standardized_v11' in admitted and admitted['standardized_v11']['status']!='excluded':
+        leaf=Path(admitted['standardized_v11']['products']['qualified_fundamental_leaf'])
+        con.execute('CREATE OR REPLACE TEMP VIEW g_fund_clock AS SELECT * FROM '+sql([leaf/'events.parquet']))
     if "ratios_v11" in admitted and admitted["ratios_v11"]["status"]!="excluded":
         native=[v for k,v in admitted["ratios_v11"]["products"].items() if k.startswith("monthly/")]
         if native:con.execute(f"CREATE OR REPLACE TEMP VIEW gr AS SELECT * FROM {sql(native)}")
     if "events_guidance_v2" in admitted:
         path = admitted["events_guidance_v2"]["products"]["guidance_features.parquet"]
         con.execute(f"CREATE OR REPLACE TEMP VIEW gg AS SELECT * FROM {sql([path])}")
+    for source,product,view in (('text_features','text/features.parquet','gtxt'),('classification_tnic','classification_tnic/firms.parquet','gtnic')):
+        if source in admitted and admitted[source]['status']!='excluded':
+            con.execute(f'CREATE OR REPLACE TEMP VIEW {view} AS SELECT * FROM '+sql([admitted[source]['products'][product]]))
+    if 'fundamentals_notes' in admitted and admitted['fundamentals_notes']['status']!='excluded':
+        con.execute('CREATE OR REPLACE TEMP VIEW gnotes AS SELECT * FROM '+sql([admitted['fundamentals_notes']['products']['notes_cells.parquet']]))
+    for source,view in (('short_interest','gsi'),('short_volume_ext','gsv')):
+        if source in admitted and admitted[source]['status']!='excluded':
+            paths=[value for key,value in admitted[source]['products'].items() if key.endswith('_cells.parquet')]
+            if not paths:raise ValueError('complete native mapped short products required')
+            con.execute('CREATE OR REPLACE TEMP VIEW '+view+' AS SELECT * FROM '+sql(paths))
     # Keys and population are independently verified before any join/ranking.
     for relation in ("gu", "gp"):
         if con.execute(f"SELECT 1 FROM {relation} GROUP BY session_date,security_id HAVING count(*)<>1 OR security_id IS NULL OR session_date IS NULL LIMIT 1").fetchone():
@@ -136,6 +149,20 @@ def query(kind, start, end, admitted):
         joins.append(f"LEFT JOIN LATERAL (SELECT * FROM gr WHERE security_id=u.security_id AND available_at<{cutoff} ORDER BY available_at DESC,session_date DESC LIMIT 1) r ON true")
     if "ea_actuals" in admitted and admitted["ea_actuals"]["status"]!="excluded" and "ann_features.parquet" in admitted["ea_actuals"]["products"]:
         joins.append(f"LEFT JOIN LATERAL (SELECT *,count(*) OVER(PARTITION BY available_at) n_vintages FROM gea WHERE cik=u.cik AND available_at<{cutoff} ORDER BY available_at DESC LIMIT 1) ea ON true")
+    for source,view,alias in (('text_features','gtxt','txt'),('classification_tnic','gtnic','tnic')):
+        if source in admitted and admitted[source]['status']!='excluded':
+            joins.append(f'LEFT JOIN LATERAL (SELECT *,count(*) OVER(PARTITION BY available_at) n_vintages FROM {view} WHERE cik=u.cik AND available_at<{cutoff} ORDER BY available_at DESC LIMIT 1) {alias} ON true')
+    if 'fundamentals_notes' in admitted and admitted['fundamentals_notes']['status']!='excluded':
+        for name,contract in registry.items():
+            if contract['source']!='fundamentals_notes' or contract['kind']=='normalized_score':continue
+            alias=ident('note_'+name)
+            joins.append(f"LEFT JOIN LATERAL (SELECT *,count(*) OVER(PARTITION BY available_at,period) n_vintages FROM gnotes WHERE cik=u.cik AND field='{name}' AND available_at<{cutoff} AND period<=u.session_date ORDER BY available_at DESC,period DESC LIMIT 1) {alias} ON true")
+    for source,view,alias,date in (('short_interest','gsi','si','settlement_date'),('short_volume_ext','gsv','sv','trade_date')):
+        if source in admitted and admitted[source]['status']!='excluded':
+            joins.append(f'LEFT JOIN LATERAL (SELECT *,count(*) OVER(PARTITION BY available_at,{date}) n_vintages FROM {view} WHERE security_id=u.security_id AND available_at<{cutoff} AND {date}<=u.session_date ORDER BY available_at DESC,{date} DESC LIMIT 1) {alias} ON true')
+    if 'short_interest' in admitted and admitted['short_interest']['status']!='excluded' and 'char_monthly' in admitted:
+        joins.append(f'LEFT JOIN LATERAL (SELECT *,count(*) OVER(PARTITION BY available_at,session_date) n_vintages FROM g_price_quality WHERE security_id=u.security_id AND session_date=si.settlement_date AND available_at<{cutoff} ORDER BY available_at DESC LIMIT 1) sden ON true')
+        joins.append(f'LEFT JOIN LATERAL (SELECT * FROM g_cap_quality WHERE security_id=u.security_id AND session_date=si.settlement_date AND available_at<{cutoff} ORDER BY available_at DESC LIMIT 1) sdenq ON true')
     for name, contract in registry.items():
         if contract['kind']=='normalized_score':
             continue
@@ -169,10 +196,55 @@ def query(kind, start, end, admitted):
             native_name=name.removeprefix("std_");alias="stq" if native_name in quarterly else "sta"
             value=f"CASE WHEN {alias}.n_vintages=1 AND {alias}.datadate>=u.session_date-INTERVAL '550 days' THEN {alias}.{ident(native_name)} END"
             clock=alias+".available_at";reason="'missing_stale_or_ambiguous_standardized_vintage'"
+            qualified=f"{alias}.n_vintages=1 AND ({alias}.curcd='USD' OR ({alias}.fx_converted AND {alias}.fx_rate>0)) AND EXISTS(SELECT 1 FROM g_fund_clock fc WHERE fc.cik={alias}.cik AND fc.accession={alias}.accession AND fc.available_at<={alias}.available_at AND fc.clock_basis IS NOT NULL AND fc.clock_basis NOT LIKE '%unresolved%' AND fc.clock_basis NOT LIKE '%unknown%')"
         elif source=="ratios_v11" and "ratios_v11" in admitted and admitted["ratios_v11"]["status"]!="excluded":
             value="r."+ident(name.removeprefix("ratio_"));clock="r.available_at";reason="'native_ratio_missing_history_or_structural_null'"
+            if 'char_monthly' in admitted:
+                qualified=f"EXISTS(SELECT 1 FROM g_cap_quality cq WHERE cq.security_id=r.security_id AND cq.session_date=r.session_date AND cq.certified AND cq.membership_certified AND cq.currency='USD' AND cq.available_at<{cutoff} AND cq.source_available_at<{cutoff}) AND EXISTS(SELECT 1 FROM g_price_quality pq WHERE pq.security_id=r.security_id AND pq.session_date=r.session_date AND pq.return_certified AND pq.available_at<{cutoff} AND pq.source_available_at<{cutoff})"
+        elif source=='fundamentals_notes' and source in admitted and admitted[source]['status']!='excluded':
+            alias=ident('note_'+name)
+            value=f'CASE WHEN {alias}.n_vintages=1 THEN coalesce({alias}.value,{alias}.diagnostic_value) END'
+            clock=alias+'.available_at';reason=f"coalesce({alias}.reason,'missing_or_ambiguous_native_notes_vintage')"
+            qualified=f'{alias}.n_vintages=1 AND {alias}.qualified AND {alias}.value IS NOT NULL AND {alias}.period>=u.session_date-INTERVAL \'550 days\''
+        elif source in ('short_interest','short_volume_ext') and source in admitted and admitted[source]['status']!='excluded':
+            alias='si' if source=='short_interest' else 'sv'
+            clock=alias+'.available_at';reason=f"coalesce({alias}.qualification_reason,'missing_or_ambiguous_native_short_vintage')"
+            qualified=f'{alias}.n_vintages=1 AND {alias}.qualified'
+            if name=='short_volume_ratio':
+                value='CASE WHEN sv.n_vintages=1 AND sv.total_volume>0 THEN sv.short_volume/sv.total_volume END'
+                qualified+=' AND sv.total_volume>0'
+            elif name=='short_interest_ratio':
+                if 'char_monthly' in admitted:
+                    value='CASE WHEN si.n_vintages=1 AND sden.n_vintages=1 AND sden.shares>0 THEN si.si_shares/sden.shares END'
+                    clock='greatest(si.available_at,sden.available_at,sden.source_available_at,sdenq.available_at,sdenq.source_available_at)'
+                    qualified+=f" AND sden.n_vintages=1 AND sden.price_certified AND sden.shares>0 AND sden.source_available_at<{cutoff} AND sdenq.certified AND sdenq.membership_certified AND sdenq.currency='USD' AND sdenq.source_available_at<{cutoff}"
+                else:reason="'independently admitted dated native shares denominator required'";qualified='false'
+            else:value=f'CASE WHEN {alias}.n_vintages=1 THEN {alias}.{ident(contract["source_columns"][0])} END'
+        elif source=='text_features' and contract.get('native_name') and source in admitted and admitted[source]['status']!='excluded':
+            native_name=contract['native_name'];value='txt.'+ident(native_name);clock='txt.available_at'
+            reason="coalesce(txt.reason,'native_text_missing_or_unqualified')"
+            qualified="txt.n_vintages=1 AND txt.reason IS NULL AND txt.acceptance_clock IS NOT NULL AND txt.acceptance_clock NOT LIKE '%unresolved%'"
+            from . import text_features as TF
+            section=next((section for section in TF.SECTIONS if native_name.startswith(section+'_')),None)
+            if section:
+                qualified+=' AND txt.'+ident(section+'_reason')+' IS NULL'
+                if native_name in [section+'_'+metric for metric in TF.SIM_COLS]:
+                    qualified+=' AND txt.'+ident(section+'_comparison_reason')+' IS NULL'
+                if native_name.endswith('_minedit'):
+                    qualified+=' AND txt.'+ident(section+'_edit_reason')+' IS NULL'
+        elif source=='classification_tnic' and source in admitted and admitted[source]['status']!='excluded':
+            value='tnic.'+ident(contract['native_name']);clock='tnic.available_at'
+            reason="coalesce(tnic.reason,'native_tnic_missing_or_unqualified')"
+            qualified="tnic.n_vintages=1 AND tnic.reason IS NULL AND tnic.peer_basis='reproduced_tnic3_df25_sic3'"
+            if contract['native_name']=='n_fallback_peers':qualified='false'
         elif source=="ea_actuals" and "ea_actuals" in admitted and admitted["ea_actuals"]["status"]!="excluded" and "ann_features.parquet" in admitted["ea_actuals"]["products"]:
             value=f"CASE WHEN ea.n_vintages=1 THEN ea.{ident(contract['source_columns'][0])} END";clock="ea.available_at";reason="'native_earnings_history_or_ambiguity'"
+            native_name=contract['source_columns'][0]
+            qualified="ea.n_vintages=1 AND ea.clock_reason='qualified' AND ea.currency='USD' AND ea.period_end<=u.session_date"
+            if native_name.startswith('sue_'):
+                qualified+=' AND ea.'+ident(native_name+'_reason')+"='qualified'"
+            elif native_name.startswith('epsfiq'):
+                qualified+=' AND ea.eps_split_comparable'
         # Source NULLs do not get a fabricated clock or certification.
         fields.extend([f"{value} AS {ident(name)}", f"CASE WHEN {value} IS NOT NULL THEN {clock} END AS {ident(name+'_source_at')}",
             f"CASE WHEN {value} IS NULL THEN {reason} WHEN coalesce({qualified},false) THEN 'conditional_native_qualified' ELSE 'diagnostic_native_value' END AS {ident(name+'_quality')}",
@@ -224,13 +296,17 @@ publication clock, like other source features; no same-close price backdating.
         yield;return
     from . import tier1_native_readers as I
     sessions=f"SELECT session_date FROM gc WHERE session_date BETWEEN DATE '{start}'-INTERVAL '7 days' AND DATE '{end}'"
-    with I.ratio_cells(row["spec"],con,sessions,"CAST(session_date AS TIMESTAMP)+INTERVAL 22 HOUR") as native_sql:
-        con.execute("CREATE OR REPLACE TEMP VIEW gr AS SELECT * FROM ("+native_sql+")")
-        yield
+    # admit_plan performs complete native admission once for this transaction;
+    # build/replay authenticate all admitted bytes before and after consumption.
+    native_sql=I._admitted_ratio_sql(row,sessions,"CAST(session_date AS TIMESTAMP)+INTERVAL 22 HOUR")
+    con.execute("CREATE OR REPLACE TEMP VIEW gr AS SELECT * FROM ("+native_sql+")")
+    yield
 
 
 def measure(con, path, expected_sql):
     con.execute(f"CREATE OR REPLACE TEMP VIEW gold_check AS SELECT * FROM {sql([path])}")
+    if con.execute('DESCRIBE SELECT * FROM gold_check').fetchall()!=con.execute('DESCRIBE ('+expected_sql+')').fetchall():
+        raise ValueError('golden exact typed schema replay failure')
     duplicate = con.execute("SELECT count(*) FROM (SELECT session_date,security_id FROM gold_check GROUP BY 1,2 HAVING count(*)<>1)").fetchone()[0]
     different = con.execute(f"SELECT count(*) FROM ((SELECT * FROM gold_check EXCEPT ALL ({expected_sql})) UNION ALL (({expected_sql}) EXCEPT ALL SELECT * FROM gold_check))").fetchone()[0]
     if duplicate or different:
@@ -256,6 +332,7 @@ def build(plan_path, stage, generation_id, max_new_units=None):
     plan = C.read_json(Path(plan_path))
     with writer_lock(stage):
         con = connect(stage / "_scratch" / generation_id)
+        consumed_source_pins=None
         try:
             admitted, exclusions = admit_plan(plan, con)
             bind_views(con, admitted)
@@ -265,7 +342,8 @@ def build(plan_path, stage, generation_id, max_new_units=None):
             inventory = units(con, start, end)
             generation = stage / "generations" / generation_id
             generation.mkdir(parents=True, exist_ok=True)
-            frozen = {"plan": plan, "plan_path": str(Path(plan_path).resolve()), "plan_pin": S.pin(plan_path), "inventory": [[n,k,str(a),str(b)] for n,k,a,b in inventory], "exclusions": exclusions}
+            frozen = {"plan": plan, "plan_path": str(Path(plan_path).resolve()), "plan_pin": S.pin(plan_path), "inventory": [[n,k,str(a),str(b)] for n,k,a,b in inventory], "exclusions": exclusions,"source_pins":S.admitted_pins(admitted)}
+            consumed_source_pins=frozen['source_pins']
             snapshot = generation / "snapshot.json"
             if snapshot.exists() and C.read_json(snapshot) != frozen:
                 raise ValueError("stale restart snapshot")
@@ -307,7 +385,10 @@ def build(plan_path, stage, generation_id, max_new_units=None):
             C.write_json_atomic(current, pointer)
             return {"status": "diagnostic_published", "published": True, "gate_status": manifest["gate_status"]}
         finally:
-            con.close()
+            try:
+                if consumed_source_pins is not None:S.check_pins(consumed_source_pins)
+            finally:
+                con.close()
 
 
 def validate_generation(stage, generation, con):
@@ -315,6 +396,7 @@ def validate_generation(stage, generation, con):
     if generation.parent != stage/"generations":
         raise ValueError("foreign golden generation")
     before = S.pin(generation/"manifest.json")
+    consumed = S.generation_pins(generation)
     m, frozen = C.read_json(generation/"manifest.json"), C.read_json(generation/"snapshot.json")
     if m.get("schema") != SCHEMA or m.get("stage") != STAGE or m.get("status") != "complete" or m.get("source_quality_certified") is not False:
         raise ValueError("unsupported golden manifest")
@@ -323,6 +405,8 @@ def validate_generation(stage, generation, con):
     if S.pin(frozen["plan_path"]) != frozen["plan_pin"]:
         raise ValueError("independently reviewed plan changed")
     admitted, exclusions = admit_plan(frozen["plan"], con)
+    if frozen.get('source_pins')!=S.admitted_pins(admitted):
+        raise ValueError('complete native consumed source inventory changed')
     bind_views(con, admitted)
     if frozen['plan']['start']!='2020-01-02' or dt.date.fromisoformat(frozen['plan']['end'])!=con.execute('SELECT max(session_date) FROM gu').fetchone()[0]:
         raise ValueError('original complete latest native output window changed')
@@ -354,7 +438,10 @@ def validate_generation(stage, generation, con):
                 j = rng.randrange(measured["rows"] + 200)
                 if j < 200:
                     sampled[j] = coordinate
-    admit_plan(frozen["plan"], con)
+    again,_=admit_plan(frozen["plan"], con)
+    if frozen['source_pins']!=S.admitted_pins(again):
+        raise ValueError('native consumed source inventory changed after replay')
+    S.check_pins(consumed)
     if S.pin(generation/"manifest.json") != before:
         raise ValueError("golden manifest changed during replay")
     return {"status": "valid_diagnostic", "pit_sample": sampled, "all_cells_replayed": True, "gate_status": m["gate_status"]}
@@ -394,6 +481,7 @@ def load_golden(start, end, columns, universe="univ_all_common", *, stage=None, 
         if S.pin(generation/"manifest.json") != pointer["manifest"]:
             raise ValueError("changed consumer pointer")
         validate_generation(stage, generation, con)
+        consumed=S.generation_pins(generation)
         m = C.read_json(generation/"manifest.json")
         selected = [generation/n for n in m["files"] if n.startswith(kind+"/")]
         cur = con.execute(f"SELECT {','.join(ident(n) for n in columns)} FROM {sql(selected)} WHERE session_date BETWEEN ? AND ? AND {universe} ORDER BY session_date,security_id", [start, end])
@@ -401,8 +489,11 @@ def load_golden(start, end, columns, universe="univ_all_common", *, stage=None, 
             yield rows
         if S.pin(generation/"manifest.json") != pointer["manifest"]:
             raise ValueError("generation changed during bounded scan")
+        S.check_pins(consumed)
     finally:
-        con.close()
+        try:
+            if 'consumed' in locals():S.check_pins(consumed)
+        finally:con.close()
 
 
 def main(argv=None):

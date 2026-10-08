@@ -151,5 +151,9 @@ def envelope(name, spec, generation, validation, products, dependencies):
         raise ValueError('independent native manifest pin differs')
     if digest(validation) != spec['expected_validation_sha256']:
         raise ValueError('independent full native validation digest differs')
+    complete={**dependencies,**files(generation.parent.parent,C.read_json(generation/'manifest.json')),
+              str(generation/'manifest.json'):spec['manifest_pin']}
+    check_pins(complete)
     return {'status': 'admitted_diagnostic', 'products': products, 'validation': validation,
-            'source_quality_certified': False, 'spec': spec, 'native_interface': VERSION}
+            'source_quality_certified': False, 'spec': spec, 'native_interface': VERSION,
+            'dependency_pins':complete}

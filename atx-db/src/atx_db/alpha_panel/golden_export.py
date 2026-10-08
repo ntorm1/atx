@@ -103,6 +103,7 @@ def write_bundle(con, generation, role, names, output):
     generation=Path(generation)
     manifest=C.read_json(generation/"manifest.json")
     source_pin=S.pin(generation/"manifest.json")
+    consumed=S.generation_pins(generation)
     paths=[generation/n for n in manifest["files"] if n.startswith("daily/")]
     con.execute(f"CREATE OR REPLACE TEMP VIEW ge AS SELECT * FROM {P.sql(paths)}")
     output.mkdir(parents=True)
@@ -158,6 +159,7 @@ def write_bundle(con, generation, role, names, output):
             "coverage":{"finite_cells":finite,"finite_member_cells":member_finite},
             "historical_vintage_verified":False,"common_stock_verified":False})
     S.check_pins(role["pins"])
+    S.check_pins(consumed)
     if S.pin(generation/"manifest.json")!=source_pin:
         raise ValueError("golden source changed during export")
     m={"schema":FIELDS_SCHEMA,"status":"complete","instrument_namespace":"spiderrock.securityID",
@@ -179,10 +181,12 @@ def export(stage,generation_id,role_dir,role_manifest_pin,fields,output):
     con=P.connect(stage/"_scratch"/"export")
     try:
         P.validate_generation(stage,generation,con)
+        consumed=S.generation_pins(generation)
         role=admit_role(role_dir,role_manifest_pin)
         result=write_bundle(con,generation,role,fields,pending)
         validate_export(pending,role_dir,role_manifest_pin,con=con)
         P.validate_generation(stage,generation,con)
+        S.check_pins(consumed)
         with P.writer_lock(output.parent):
             if output.exists():raise ValueError('immutable export publication collision')
             pending.rename(output)
@@ -232,6 +236,10 @@ def validate_export(directory,role_dir,role_manifest_pin,*,con=None):
     try:
         if S.pin(generation/'manifest.json')!=m['sources']['golden_manifest']:raise ValueError('changed export source')
         P.validate_generation(stage,generation,con)
+        consumed=S.generation_pins(generation)
+        exported={str(directory/name):pin for name,pin in m['files'].items()}
+        exported[str(directory/'manifest.json')]=identity
+        S.check_pins(exported)
         native=C.read_json(generation/'manifest.json')
         role=admit_role(role_dir,role_manifest_pin)
         con.execute('CREATE OR REPLACE TEMP VIEW ge AS SELECT * FROM '+P.sql([generation/n for n in native['files'] if n.startswith('daily/')]))
@@ -250,6 +258,8 @@ def validate_export(directory,role_dir,role_manifest_pin,*,con=None):
                         expected[i]=value
                 if not np.array_equal(expected,values[t],equal_nan=True):raise ValueError('complete native export values differ')
         S.check_pins(role['pins'])
+        S.check_pins(consumed)
+        S.check_pins(exported)
         if identity!=S.pin(directory/'manifest.json') or S.pin(generation/'manifest.json')!=m['sources']['golden_manifest']:raise ValueError('export source changed during public replay')
         return {'status':'valid_native_replay','runtime_acceptance':'PENDING_ROOT_ATX_IMPL_LOAD_SMOKE','fields':len(m['fields'])}
     finally:

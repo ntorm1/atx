@@ -17429,6 +17429,750 @@
     "unit": "dimensionless",
     "unsupported_reason": null
   },
+  "text_business_chars": {
+    "bronze_to_gold": {
+      "native_column": "business_chars",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text business_chars; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_business_chars",
+    "native_name": "business_chars",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "business_chars"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_business_fog": {
+    "bronze_to_gold": {
+      "native_column": "business_fog",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text business_fog; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_business_fog",
+    "native_name": "business_fog",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "business_fog"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_business_pct_complex": {
+    "bronze_to_gold": {
+      "native_column": "business_pct_complex",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text business_pct_complex; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_business_pct_complex",
+    "native_name": "business_pct_complex",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "business_pct_complex"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_business_sentences": {
+    "bronze_to_gold": {
+      "native_column": "business_sentences",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text business_sentences; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_business_sentences",
+    "native_name": "business_sentences",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "business_sentences"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_business_sim_cosine": {
+    "bronze_to_gold": {
+      "native_column": "business_sim_cosine",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text business_sim_cosine; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_business_sim_cosine",
+    "native_name": "business_sim_cosine",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "business_sim_cosine"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_business_sim_jaccard": {
+    "bronze_to_gold": {
+      "native_column": "business_sim_jaccard",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text business_sim_jaccard; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_business_sim_jaccard",
+    "native_name": "business_sim_jaccard",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "business_sim_jaccard"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_business_sim_minedit": {
+    "bronze_to_gold": {
+      "native_column": "business_sim_minedit",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text business_sim_minedit; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_business_sim_minedit",
+    "native_name": "business_sim_minedit",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "business_sim_minedit"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_business_words": {
+    "bronze_to_gold": {
+      "native_column": "business_words",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text business_words; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_business_words",
+    "native_name": "business_words",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "business_words"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_business_words_chg": {
+    "bronze_to_gold": {
+      "native_column": "business_words_chg",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text business_words_chg; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_business_words_chg",
+    "native_name": "business_words_chg",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "business_words_chg"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_doc_bytes": {
+    "bronze_to_gold": {
+      "native_column": "doc_bytes",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text doc_bytes; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_doc_bytes",
+    "native_name": "doc_bytes",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "doc_bytes"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_doc_fog": {
+    "bronze_to_gold": {
+      "native_column": "doc_fog",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text doc_fog; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_doc_fog",
+    "native_name": "doc_fog",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "doc_fog"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_doc_words": {
+    "bronze_to_gold": {
+      "native_column": "doc_words",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text doc_words; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_doc_words",
+    "native_name": "doc_words",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "doc_words"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_mdna_chars": {
+    "bronze_to_gold": {
+      "native_column": "mdna_chars",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text mdna_chars; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_mdna_chars",
+    "native_name": "mdna_chars",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "mdna_chars"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_mdna_fog": {
+    "bronze_to_gold": {
+      "native_column": "mdna_fog",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text mdna_fog; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_mdna_fog",
+    "native_name": "mdna_fog",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "mdna_fog"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_mdna_pct_complex": {
+    "bronze_to_gold": {
+      "native_column": "mdna_pct_complex",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text mdna_pct_complex; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_mdna_pct_complex",
+    "native_name": "mdna_pct_complex",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "mdna_pct_complex"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_mdna_sentences": {
+    "bronze_to_gold": {
+      "native_column": "mdna_sentences",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text mdna_sentences; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_mdna_sentences",
+    "native_name": "mdna_sentences",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "mdna_sentences"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_mdna_sim_cosine": {
+    "bronze_to_gold": {
+      "native_column": "mdna_sim_cosine",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text mdna_sim_cosine; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_mdna_sim_cosine",
+    "native_name": "mdna_sim_cosine",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "mdna_sim_cosine"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_mdna_sim_jaccard": {
+    "bronze_to_gold": {
+      "native_column": "mdna_sim_jaccard",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text mdna_sim_jaccard; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_mdna_sim_jaccard",
+    "native_name": "mdna_sim_jaccard",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "mdna_sim_jaccard"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_mdna_sim_minedit": {
+    "bronze_to_gold": {
+      "native_column": "mdna_sim_minedit",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text mdna_sim_minedit; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_mdna_sim_minedit",
+    "native_name": "mdna_sim_minedit",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "mdna_sim_minedit"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_mdna_words": {
+    "bronze_to_gold": {
+      "native_column": "mdna_words",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text mdna_words; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_mdna_words",
+    "native_name": "mdna_words",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "mdna_words"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_mdna_words_chg": {
+    "bronze_to_gold": {
+      "native_column": "mdna_words_chg",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text mdna_words_chg; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_mdna_words_chg",
+    "native_name": "mdna_words_chg",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "mdna_words_chg"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_n_sections": {
+    "bronze_to_gold": {
+      "native_column": "n_sections",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text n_sections; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_n_sections",
+    "native_name": "n_sections",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "n_sections"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_risk_chars": {
+    "bronze_to_gold": {
+      "native_column": "risk_chars",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text risk_chars; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_risk_chars",
+    "native_name": "risk_chars",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "risk_chars"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_risk_fog": {
+    "bronze_to_gold": {
+      "native_column": "risk_fog",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text risk_fog; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_risk_fog",
+    "native_name": "risk_fog",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "risk_fog"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_risk_pct_complex": {
+    "bronze_to_gold": {
+      "native_column": "risk_pct_complex",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text risk_pct_complex; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_risk_pct_complex",
+    "native_name": "risk_pct_complex",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "risk_pct_complex"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_risk_sentences": {
+    "bronze_to_gold": {
+      "native_column": "risk_sentences",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text risk_sentences; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_risk_sentences",
+    "native_name": "risk_sentences",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "risk_sentences"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_risk_sim_cosine": {
+    "bronze_to_gold": {
+      "native_column": "risk_sim_cosine",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text risk_sim_cosine; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_risk_sim_cosine",
+    "native_name": "risk_sim_cosine",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "risk_sim_cosine"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_risk_sim_jaccard": {
+    "bronze_to_gold": {
+      "native_column": "risk_sim_jaccard",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text risk_sim_jaccard; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_risk_sim_jaccard",
+    "native_name": "risk_sim_jaccard",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "risk_sim_jaccard"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_risk_sim_minedit": {
+    "bronze_to_gold": {
+      "native_column": "risk_sim_minedit",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text risk_sim_minedit; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_risk_sim_minedit",
+    "native_name": "risk_sim_minedit",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "risk_sim_minedit"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_risk_words": {
+    "bronze_to_gold": {
+      "native_column": "risk_words",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text risk_words; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_risk_words",
+    "native_name": "risk_words",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "risk_words"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
+  "text_risk_words_chg": {
+    "bronze_to_gold": {
+      "native_column": "risk_words_chg",
+      "native_product": "text/features.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged native filing text risk_words_chg; original section/comparison/edit exclusions retained",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "text_risk_words_chg",
+    "native_name": "risk_words_chg",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "text_features",
+    "source_columns": [
+      "risk_words_chg"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native original count or text metric"
+  },
   "text_score": {
     "bronze_to_gold": {
       "source": "text_features"
@@ -17450,6 +18194,174 @@
     "structural_null": "unknown source or applicability -> NULL",
     "type": "DOUBLE",
     "unit": "dimensionless"
+  },
+  "tnic_best_score": {
+    "bronze_to_gold": {
+      "native_column": "best_score",
+      "native_product": "classification_tnic/firms.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged reproduced TNIC prior-year DF25/SIC3 firms best_score; fallback and failed corpus qualification excluded",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "tnic_best_score",
+    "native_name": "best_score",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "classification_tnic",
+    "source_columns": [
+      "best_score"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native similarity metric"
+  },
+  "tnic_n_fallback_peers": {
+    "bronze_to_gold": {
+      "native_column": "n_fallback_peers",
+      "native_product": "classification_tnic/firms.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged reproduced TNIC prior-year DF25/SIC3 firms n_fallback_peers; fallback and failed corpus qualification excluded",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "tnic_n_fallback_peers",
+    "native_name": "n_fallback_peers",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "classification_tnic",
+    "source_columns": [
+      "n_fallback_peers"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "count"
+  },
+  "tnic_n_peers": {
+    "bronze_to_gold": {
+      "native_column": "n_peers",
+      "native_product": "classification_tnic/firms.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged reproduced TNIC prior-year DF25/SIC3 firms n_peers; fallback and failed corpus qualification excluded",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "tnic_n_peers",
+    "native_name": "n_peers",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "classification_tnic",
+    "source_columns": [
+      "n_peers"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "count"
+  },
+  "tnic_n_peers_own_clock": {
+    "bronze_to_gold": {
+      "native_column": "n_peers_own_clock",
+      "native_product": "classification_tnic/firms.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged reproduced TNIC prior-year DF25/SIC3 firms n_peers_own_clock; fallback and failed corpus qualification excluded",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "tnic_n_peers_own_clock",
+    "native_name": "n_peers_own_clock",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "classification_tnic",
+    "source_columns": [
+      "n_peers_own_clock"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "count"
+  },
+  "tnic_threshold": {
+    "bronze_to_gold": {
+      "native_column": "threshold",
+      "native_product": "classification_tnic/firms.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged reproduced TNIC prior-year DF25/SIC3 firms threshold; fallback and failed corpus qualification excluded",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "tnic_threshold",
+    "native_name": "threshold",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "classification_tnic",
+    "source_columns": [
+      "threshold"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native similarity metric"
+  },
+  "tnic_total_similarity": {
+    "bronze_to_gold": {
+      "native_column": "total_similarity",
+      "native_product": "classification_tnic/firms.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged reproduced TNIC prior-year DF25/SIC3 firms total_similarity; fallback and failed corpus qualification excluded",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "tnic_total_similarity",
+    "native_name": "total_similarity",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "classification_tnic",
+    "source_columns": [
+      "total_similarity"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "native similarity metric"
+  },
+  "tnic_vocabulary_words": {
+    "bronze_to_gold": {
+      "native_column": "vocabulary_words",
+      "native_product": "classification_tnic/firms.parquet"
+    },
+    "clock": "strict original available_at < cutoff",
+    "definition": "unchanged reproduced TNIC prior-year DF25/SIC3 firms vocabulary_words; fallback and failed corpus qualification excluded",
+    "history": "native complete history required",
+    "kind": "raw_feature",
+    "missingness": "qualified native source required; never zero-fill",
+    "name": "tnic_vocabulary_words",
+    "native_name": "vocabulary_words",
+    "non_pit_aspects": [],
+    "point_in_time": true,
+    "source": "classification_tnic",
+    "source_columns": [
+      "vocabulary_words"
+    ],
+    "staleness": "native contract; admission pending",
+    "stored_sign": "natural",
+    "structural_null": "unknown source or applicability -> NULL",
+    "type": "DOUBLE",
+    "unit": "count"
   },
   "total_volume": {
     "bronze_to_gold": {

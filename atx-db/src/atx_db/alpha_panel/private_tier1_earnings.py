@@ -1,6 +1,7 @@
 """Full phase-specific Task9 public replay using unchanged native parser kernels."""
 from __future__ import annotations
 from collections import Counter, defaultdict
+import heapq
 import gzip
 import hashlib
 import json
@@ -77,13 +78,30 @@ class DocumentBytes(dict):
         return blob
 
 
-def documents(lake, dependencies):
+class CatalogRows:
+    """File-backed ordered document index; never collect the source population."""
+    def __init__(self,con,path):
+        self.con=con;self.path=path
+        con.execute('CREATE OR REPLACE TABLE t17_document_index AS SELECT *,row_number() OVER() AS _original_order FROM '+A.sql([path]))
+        con.execute('CREATE INDEX IF NOT EXISTS t17_document_key ON t17_document_index(cik,accession)')
+
+    def __iter__(self):
+        for batch in pq.ParquetFile(self.path).iter_batches(batch_size=64):yield from batch.to_pylist()
+
+    def for_filing(self,cik,accession):
+        cursor=self.con.execute("SELECT * EXCLUDE(_original_order) FROM t17_document_index WHERE cik=? AND accession=? AND form='8-K' AND NOT is_amendment ORDER BY _original_order",[cik,accession])
+        names=[r[0] for r in cursor.description]
+        while batch:=cursor.fetchmany(64):
+            for values in batch:yield dict(zip(names,values))
+
+
+def documents(lake, dependencies, con):
     """Read native retained as-served bytes without fetch or quarantine mutations."""
     catalog = ES.catalog_path()
     dependencies[str(catalog.resolve())] = A.pin(catalog)
     store = ES.open_store()
     if store.ledger_path.exists(): dependencies[str(store.ledger_path.resolve())] = A.pin(store.ledger_path)
-    rows = list(ES.iter_catalog())
+    rows = CatalogRows(con,catalog)
     blobs = DocumentBytes()
     for row in rows:
         if row['form'] != '8-K' and not (row['form'] or '').startswith('6-K'): continue
@@ -110,24 +128,34 @@ def documents(lake, dependencies):
     return rows, blobs
 
 
-def parsed_rows(con, lake, catalog, blobs):
+def filing_rows(con,lake):
     filings = A.sql([lake/'sec_filings/filings.parquet']); items = A.sql([lake/'sec_filings/eight_k_items.parquet'])
-    cursor = con.execute(f"""SELECT f.cik,f.accession,f.filing_date,f.available_at,f.acceptance_clock,f.vintage_risk
+    cursor = con.cursor()
+    cursor.execute(f"""SELECT f.cik,f.accession,f.filing_date,f.available_at,f.acceptance_clock,f.vintage_risk
         FROM {filings} f WHERE NOT f.is_amendment AND f.form='8-K' AND f.filing_date>=DATE '2015-01-01'
         AND EXISTS(SELECT 1 FROM {items} i WHERE i.cik=f.cik AND i.accession=f.accession AND i.item='2.02')
         ORDER BY f.cik,f.available_at,f.accession""")
-    columns = [d[0] for d in cursor.description]; base = cursor.fetchall()
-    by_key = defaultdict(list)
-    for row in catalog:
-        if row['form'] == '8-K' and not row['is_amendment']: by_key[(row['cik'], row['accession'])].append(row)
-    output = []
-    for values in base:
-        row = dict(zip(columns, values)); row['source_available_at'] = row['available_at']
-        row['available_at'] = E.qualified_clock(row)
-        row['clock_reason'] = 'qualified' if row['available_at'] is not None else 'acceptance_clock_missing_or_unresolved'
+    columns = [d[0] for d in cursor.description]
+    try:
+        while batch:=cursor.fetchmany(64):
+            for values in batch:
+                row=dict(zip(columns,values));row['source_available_at']=row['available_at']
+                row['available_at']=E.qualified_clock(row)
+                row['clock_reason']='qualified' if row['available_at'] is not None else 'acceptance_clock_missing_or_unresolved'
+                yield row
+    finally:cursor.close()
+
+
+def documents_for(catalog,cik,accession):
+    if isinstance(catalog,CatalogRows):return catalog.for_filing(cik,accession)
+    return (r for r in catalog if r['cik']==cik and r['accession']==accession and r['form']=='8-K' and not r['is_amendment'])
+
+
+def parsed_rows(con, lake, catalog, blobs):
+    for row in filing_rows(con,lake):
         extracts, names, hashes = [], [], []
         missing_objects = 0
-        for document in by_key.get((row['cik'], row['accession']), []):
+        for document in documents_for(catalog,row['cik'],row['accession']):
             sha = document['doc_sha256']
             if sha in hashes: continue
             blob=blobs.get(sha)
@@ -144,13 +172,29 @@ def parsed_rows(con, lake, catalog, blobs):
             if len(periods) == 1: row.update(period_end=next(iter(periods)), period_basis='source_explicit_end_date')
             elif periods: row.update(period_basis='conflicting_document_periods')
         pairs = sorted(zip(names, hashes))
-        row.update(source_doc=[p[0] for p in pairs], doc_sha256=[p[1] for p in pairs], _missing_objects=missing_objects); output.append(row)
-    return output
+        row.update(source_doc=[p[0] for p in pairs], doc_sha256=[p[1] for p in pairs], _missing_objects=missing_objects)
+        yield row
 
 
 def fpi_rows(catalog, blobs):
-    by_accession = {}; seen = set()
-    for row in catalog:
+    if isinstance(catalog,CatalogRows):
+        cursor=catalog.con.cursor()
+        cursor.execute('SELECT * EXCLUDE(_original_order) FROM t17_document_index ORDER BY accession,_original_order')
+        names=[column[0] for column in cursor.description]
+        def ordered():
+            try:
+                while batch:=cursor.fetchmany(64):
+                    for values in batch:yield dict(zip(names,values))
+            finally:cursor.close()
+        population=ordered()
+    else:
+        population=iter(sorted(catalog,key=lambda row:row['accession']))
+    by_accession = {}; seen = set(); current=None; group_bytes=0
+    for row in population:
+        if current is not None and row['accession']!=current:
+            yield from by_accession.values()
+            by_accession={};seen=set();group_bytes=0
+        current=row['accession']
         q = row.get('qids') or []
         if not (row.get('form') or '').startswith('6-K') or not ('fpi_results' in q or 'fpi_period_results' in q): continue
         key = row['accession'], row.get('doc_sha256') or row['source_doc']
@@ -165,6 +209,8 @@ def fpi_rows(catalog, blobs):
         evidence = json.dumps({'source_doc': row['source_doc'], 'doc_sha256': row.get('doc_sha256'),
                               'source_integrity': 'verified' if valid else 'missing_or_corrupt', 'is_results': parsed is not None,
                               'period_end': str(parsed and parsed['period_end']), 'period_basis': parsed and parsed['period_basis']}, sort_keys=True)
+        group_bytes+=len(evidence.encode())+len(json.dumps(result,default=str).encode())
+        if group_bytes>32*1024**2:raise ValueError('native FPI accession exceeds bounded replay workspace; no rows admitted')
         prior = by_accession.get(row['accession']); result['document_evidence'] = [*(prior.get('document_evidence', []) if prior else []), evidence]
         if prior is None or (not prior['is_results'] and result['is_results']): by_accession[row['accession']] = result
         else:
@@ -175,11 +221,53 @@ def fpi_rows(catalog, blobs):
                     prior.update(period_end=None, period_basis='conflicting_exhibits')
                 elif prior['period_end'] is None and result['period_end'] is not None:
                     prior.update(period_end=result['period_end'], period_basis=result['period_basis'], headline=result['headline'])
-    return list(by_accession.values())
+    yield from by_accession.values()
 
 
 def write_rows(path, rows, schema):
-    pq.write_table(pa.Table.from_pylist(rows, schema=schema), path, compression='zstd')
+    with pq.ParquetWriter(path,schema,compression='zstd') as writer:
+        batch=[]
+        for row in rows:
+            batch.append(row)
+            if len(batch)==64:
+                writer.write_table(pa.Table.from_pylist(batch,schema=schema));batch=[]
+        if batch:writer.write_table(pa.Table.from_pylist(batch,schema=schema))
+
+
+class ParseEvidence:
+    def __init__(self):
+        self.rows=0;self.any=0;self.all=0;self.reasons=Counter();self.sample=[]
+
+    def observe(self,rows):
+        for row in rows:
+            self.rows+=1;self.any+=any(row.get(f) is not None for f in E.FIELDS)
+            self.all+=all(row.get(f) is not None for f in E.FIELDS);self.reasons[row['reason']]+=1
+            self.reasons['missing_or_corrupt_object']+=row.get('_missing_objects',0)
+            if not self.reasons['missing_or_corrupt_object']:self.reasons.pop('missing_or_corrupt_object',None)
+            if 2020<=row['filing_date'].year<=2025:
+                key=hashlib.sha256((str(row['cik'])+'/'+row['accession']+'/t9-precision-200-v1').encode()).hexdigest()
+                entry=(-int(key,16),-self.rows,row)
+                if len(self.sample)<200:heapq.heappush(self.sample,entry)
+                elif entry[:2]>self.sample[0][:2]:heapq.heapreplace(self.sample,entry)
+            yield row
+
+    def selected(self):return [r for _,_,r in sorted(self.sample,key=lambda item:(-item[0],-item[1]))]
+
+
+def feature_rows(con,releases):
+    cursor=con.cursor();cursor.execute('SELECT * FROM '+A.sql([releases])+' ORDER BY cik,available_at NULLS LAST,accession')
+    names=[r[0] for r in cursor.description];group=[];current=None;size=0
+    try:
+        while batch:=cursor.fetchmany(64):
+            for values in batch:
+                row=dict(zip(names,values))
+                if group and row['cik']!=current:
+                    yield from E.sue_history(group);group=[];size=0
+                size+=len(json.dumps(row,default=str).encode())
+                if size>32*1024**2:raise ValueError('native issuer history exceeds bounded replay workspace; no rows admitted')
+                current=row['cik'];group.append(row)
+        if group:yield from E.sue_history(group)
+    finally:cursor.close()
 
 
 def calendar_replay(con, lake, releases, fpi, target):
@@ -201,24 +289,31 @@ def calendar_replay(con, lake, releases, fpi, target):
     cursor = con.execute(f"SELECT u.*,(u.cik IN (SELECT cik FROM t17_fpi_ciks)) AS is_fpi FROM ({' UNION ALL '.join(parts)}) u ORDER BY u.cik,u.announcement_utc,u.accession")
     columns = [d[0] for d in cursor.description]
     with pq.ParquetWriter(target, V.OUT_SCHEMA, compression='zstd') as writer:
-        current = None; group = []
-        while batch := cursor.fetchmany(4096):
+        current = None; group = [];group_bytes=0
+        while batch := cursor.fetchmany(64):
             for values in batch:
                 item = dict(zip(columns, values))
                 if group and item['cik'] != current:
                     writer.write_table(pa.Table.from_pylist(V._merge_cik(group, calendar), schema=V.OUT_SCHEMA))
-                    group = []
+                    group = [];group_bytes=0
+                group_bytes+=len(json.dumps(item,default=str).encode())
+                if group_bytes>32*1024**2:raise ValueError('native calendar issuer exceeds bounded replay workspace; no rows admitted')
                 current = item['cik']; group.append(item)
         if group: writer.write_table(pa.Table.from_pylist(V._merge_cik(group, calendar), schema=V.OUT_SCHEMA))
 
 
 def check_parse_receipt(receipt, rows, sample):
-    reasons = Counter(r['reason'] for r in rows)
-    missing = sum(r.get('_missing_objects',0) for r in rows)
+    if isinstance(rows,ParseEvidence):
+        reasons=rows.reasons;missing=0
+        count,any_count,all_count=rows.rows,rows.any,rows.all
+    else:
+        reasons=Counter(r['reason'] for r in rows);missing=sum(r.get('_missing_objects',0) for r in rows)
+        count=len(rows);any_count=sum(any(r.get(f) is not None for f in E.FIELDS) for r in rows)
+        all_count=sum(all(r.get(f) is not None for f in E.FIELDS) for r in rows)
     if missing: reasons['missing_or_corrupt_object'] += missing
-    expected = {'rows': len(rows),
-        'qualified_any': sum(any(r.get(f) is not None for f in E.FIELDS) for r in rows),
-        'qualified_all': sum(all(r.get(f) is not None for f in E.FIELDS) for r in rows),
+    expected = {'rows': count,
+        'qualified_any': any_count,
+        'qualified_all': all_count,
         'reasons': dict(reasons),
         'precision_sample': {'rows':len(sample),
             'selection':'lowest SHA256(cik/accession/t9-precision-200-v1), all original 2.02 releases 2020-2025, independent of extraction success',
@@ -235,14 +330,10 @@ def parse_unit_sources(con,lake,catalog,blobs,manifest,dependencies):
         'catalog':C.sha256_file(ES.catalog_path()),'version':E.VERSION},sort_keys=True).encode()).hexdigest()
     if receipt['run_key']!=run_key or receipt['catalog_sha256']!=C.sha256_file(ES.catalog_path()):
         raise ValueError('native parser code/source run key differs')
-    rows=parsed_rows(con,lake,catalog,blobs);by_key=defaultdict(list)
-    for document in catalog:
-        if document['form']=='8-K' and not document['is_amendment']:
-            by_key[(document['cik'],document['accession'])].append(document)
     count=0
-    for row in rows:
+    for row in filing_rows(con,lake):
         seen=set()
-        for document in by_key[(row['cik'],row['accession'])]:
+        for document in documents_for(catalog,row['cik'],row['accession']):
             sha=document['doc_sha256'];blob=blobs.get(sha)
             if sha in seen or blob is None: continue
             seen.add(sha)
@@ -263,7 +354,7 @@ def parse_unit_sources(con,lake,catalog,blobs,manifest,dependencies):
 def replay(name, spec, con, source_only=False):
     lake, generation, manifest, dependencies = publication(name, spec)
     phase = manifest['phase']
-    catalog, blobs = documents(lake, dependencies)
+    catalog, blobs = documents(lake, dependencies, con)
     for pattern in ('sec_filings/filings.parquet', 'sec_filings/eight_k_items.parquet', 'calendar.parquet'):
         dependencies.update(A.selected(lake, pattern))
     fpi = lake/'_tmp/events/fpi_releases.parquet'
@@ -324,10 +415,9 @@ def replay(name, spec, con, source_only=False):
     if A.digest(source) != spec['snapshot_sha256']:
         raise ValueError('independent complete Task9 source snapshot differs')
     with A.scratch(lake, 'earnings-') as target:
-        rows = parsed_rows(con, lake, catalog, blobs)
-        releases = target/'releases.parquet'; write_rows(releases, rows, E.RELEASE_SCHEMA)
-        sample = sorted((r for r in rows if 2020<=r['filing_date'].year<=2025), key=lambda r: hashlib.sha256(
-            (str(r['cik'])+'/'+r['accession']+'/t9-precision-200-v1').encode()).hexdigest())[:200]
+        rows=ParseEvidence()
+        releases = target/'releases.parquet'; write_rows(releases,rows.observe(parsed_rows(con,lake,catalog,blobs)),E.RELEASE_SCHEMA)
+        sample=rows.selected()
         if name == 'ea_actuals' and phase == 'parsed':
             write_rows(target/'precision_sample.parquet', sample, E.RELEASE_SCHEMA)
             for product in PHASES[name][phase]: A.compare(con, generation/product, target/product)
@@ -335,12 +425,16 @@ def replay(name, spec, con, source_only=False):
         elif name == 'earnings_calendar_v2':
             if fpi.exists():
                 fpi_receipt=V.verify_fpi_parse()
-                fpi_replayed=fpi_rows(catalog,blobs)
-                counters={'documents':len(fpi_replayed),'results':sum(r['is_results'] for r in fpi_replayed),
-                    'with_period':sum(r['period_end'] is not None for r in fpi_replayed),'text_date':sum(r['period_basis']=='text_date' for r in fpi_replayed)}
+                counters={'documents':0,'results':0,'with_period':0,'text_date':0}
+                def counted_fpi():
+                    for row in fpi_rows(catalog,blobs):
+                        counters['documents']+=1;counters['results']+=bool(row['is_results'])
+                        counters['with_period']+=row['period_end'] is not None
+                        counters['text_date']+=row['period_basis']=='text_date'
+                        yield row
+                write_rows(target/'fpi.parquet', counted_fpi(), V.FPI_SCHEMA)
                 if any(fpi_receipt.get(k)!=v for k,v in counters.items()) or manifest['fpi_parse']!=fpi_receipt:
                     raise ValueError('native FPI source population counters differ')
-                write_rows(target/'fpi.parquet', fpi_replayed, V.FPI_SCHEMA)
                 A.compare(con, fpi, target/'fpi.parquet')
             calendar_replay(con, lake, releases, target/'fpi.parquet' if fpi.exists() else None, target/'announcements.parquet')
             A.compare(con, generation/'announcements.parquet', target/'announcements.parquet')
@@ -357,10 +451,7 @@ def replay(name, spec, con, source_only=False):
             # not a mutable root Parquet or a complete parsed-phase feature claim.
             A.compare(con, parse/'releases.parquet', releases)
             check_parse_receipt(parsed['receipt'], rows, sample)
-            groups = defaultdict(list)
-            for row in rows: groups[row['cik']].append(row)
-            features = [r for cik in sorted(groups) for r in E.sue_history(groups[cik])]
-            write_rows(target/'ann_features.parquet', features, E.FEATURE_SCHEMA)
+            write_rows(target/'ann_features.parquet',feature_rows(con,releases),E.FEATURE_SCHEMA)
             A.compare(con, generation/'ann_features.parquet', target/'ann_features.parquet')
             filing = A.sql([lake/'sec_filings/filings.parquet'])
             lag_rows = C.copy_to_parquet(con, f"""WITH candidates AS (
@@ -376,7 +467,7 @@ def replay(name, spec, con, source_only=False):
             reaction = E.build_reactions(con, target, str(releases))
             A.compare(con, generation/'reaction_returns.parquet', target/'reaction_returns.parquet')
             recall = con.execute('SELECT year(filing_date),count(*),count(*) FILTER(WHERE saleq IS NOT NULL AND epsfiq IS NOT NULL AND niq IS NOT NULL),count(*) FILTER(WHERE available_at IS NULL) FROM '+A.sql([target/'ann_features.parquet'])+" WHERE filing_date BETWEEN DATE '2020-01-01' AND DATE '2025-12-31' GROUP BY 1 ORDER BY 1").fetchall()
-            expected_receipt = {'rows':len(features), 'filing_lag_rows':lag_rows, 'recall':{str(y):{'releases':n,'all_actuals':a,'all_actuals_share':a/n,'unknown_clocks':u} for y,n,a,u in recall}, 'reaction_returns':reaction}
+            expected_receipt = {'rows':pq.ParquetFile(target/'ann_features.parquet').metadata.num_rows, 'filing_lag_rows':lag_rows, 'recall':{str(y):{'releases':n,'all_actuals':a,'all_actuals_share':a/n,'unknown_clocks':u} for y,n,a,u in recall}, 'reaction_returns':reaction}
             if manifest['receipt'] != expected_receipt:
                 raise ValueError('native reaction counters/window/clock evidence differs')
             if audited is not None:

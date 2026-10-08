@@ -46,3 +46,19 @@ def test_substituted_recovery_manifest_never_finishes_pointer(tmp_path,monkeypat
     monkeypatch.setattr(T,'_generation',lambda spec,name:(tmp_path,stage,new))
     with pytest.raises(ValueError,match='identity mismatch'): T.recover('ratios_v11',{'manifest_pin':pin},None)
     assert not (stage/'current.json').exists() and (stage/'activation.json').exists()
+
+
+def test_recovery_rejects_unrelated_current_and_preserves_rollback_history(tmp_path,monkeypatch):
+    stage=tmp_path/'ratios_v11';old=generation(stage,'a');target=generation(stage,'b');other=generation(stage,'c')
+    F._publish_pointer(stage,old,A.pin(old/'manifest.json'))
+    old_pointer=C.read_json(stage/'current.json')
+    C.write_json_atomic(stage/'activation.json',{'version':T.VERSION,
+        'current':{'generation':'b','manifest':A.pin(target/'manifest.json')},'previous':old_pointer})
+    F._publish_pointer(stage,other,A.pin(other/'manifest.json'))
+    C.write_json_atomic(stage/'manifest.json',C.read_json(other/'manifest.json'))
+    current=C.read_json(stage/'current.json');previous=C.read_json(stage/'previous.json')
+    monkeypatch.setattr(A,'guard',lambda con:None);monkeypatch.setattr(A,'execution',lambda spec:{})
+    monkeypatch.setattr(T,'_generation',lambda spec,name:(tmp_path,stage,target))
+    with pytest.raises(ValueError,match='unrelated'):T.recover('ratios_v11',{'manifest_pin':A.pin(target/'manifest.json')},None)
+    assert C.read_json(stage/'current.json')==current and C.read_json(stage/'previous.json')==previous
+    assert (stage/'activation.json').exists()

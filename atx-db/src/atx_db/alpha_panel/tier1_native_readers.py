@@ -139,6 +139,17 @@ def recover(name, spec, con):
         if F._transaction_target(stage, intent['current']) != generation or intent['current']['manifest'] != spec['manifest_pin']:
             raise ValueError('independently pinned recovery generation differs')
         if intent['previous'] is not None: F._transaction_target(stage, intent['previous'])
+        actual = C.read_json(stage/'current.json') if (stage/'current.json').exists() else None
+        if actual not in (intent['previous'], intent['current']):
+            raise ValueError('unrelated accounting current pointer; interrupted transition cannot replace it')
+        if actual == intent['current']:
+            previous = C.read_json(stage/'previous.json') if (stage/'previous.json').exists() else None
+            if previous != intent['previous']:
+                raise ValueError('accounting recovery rollback history differs from authenticated transition')
+        alias = A.pin(stage/'manifest.json') if (stage/'manifest.json').exists() else None
+        allowed_aliases = [intent['current']['manifest'], None if intent['previous'] is None else intent['previous']['manifest']]
+        if alias not in allowed_aliases:
+            raise ValueError('unrelated accounting alias during recovery')
         result = validate(name, spec, con)
         transaction = stage/'pointer-transaction.json'
         if transaction.exists():
@@ -359,13 +370,33 @@ rechecks actual source, generation and code pins after consumption.
     source=C.read_json(generation/'snapshot.json')
     before=A.files(stage,C.read_json(generation/'manifest.json'))
     A.check_pins(spec['dependency_pins'],source['dependencies'])
-    query=Q.consume_sql(Q.cells_sql(lake,session_sql,cutoff),
-        A.sql([result['products']['ratios_state']]),A.sql([generation/'split_events.parquet']))
+    query=_admitted_ratio_sql(result,session_sql,cutoff)
     try: yield query
     finally:
         A.check_pins(spec['dependency_pins'],source['dependencies'])
         if A.pin(generation/'manifest.json')!=spec['manifest_pin'] or A.files(stage,C.read_json(generation/'manifest.json'))!=before:
             raise ValueError('native daily ratio inputs changed during formation')
+
+
+def _admitted_ratio_sql(admission, session_sql, cutoff):
+    """Project unchanged formulas inside an already authenticated transaction.
+
+    This is SQL construction, not admission. Golden's complete native admit_plan
+    and consumed source inventory checks surround its entire build/replay, so
+    reconstructing each unit does not repeat full financial admission. The
+    standalone ratio_cells scope above retains its own complete admission.
+    """
+    spec=admission['spec']
+    lake,stage,generation=_generation(spec,'ratios_v11')
+    if admission['status']!='admitted_diagnostic' or Path(admission['products']['ratios_state']).resolve()!=generation/'fund_state.parquet':
+        raise ValueError('fixed admitted native ratio state required')
+    return _ratio_projection(lake,generation,session_sql,cutoff)
+
+
+def _ratio_projection(lake, generation, session_sql, cutoff):
+    """Pure unchanged native SQL construction; never authenticates sources."""
+    return Q.consume_sql(Q.cells_sql(lake,session_sql,cutoff),
+        A.sql([generation/'fund_state.parquet']),A.sql([generation/'split_events.parquet']))
 
 
 def main(argv=None):

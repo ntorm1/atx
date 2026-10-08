@@ -146,12 +146,16 @@ def test_encoded_endpoint_uses_joint_original_clock_and_both_inputs(fsds_clock, 
     vintages, dispositions = build_owner(rows, {**MAPPING, "fsds_endpoint_authority": FSDS_ENDPOINT_AUTHORITY})
     clock = max(dt.datetime.fromisoformat(fsds_clock), dt.datetime.fromisoformat(cf_clock))
     actual = [v for v in vintages if v["is_public"] and v["item"] == "SALE" and v["freq"] == "q"]
-    assert len(actual) == 1 and actual[0]["period_end"] == dt.date(2020, 5, 3)
-    assert actual[0]["value"] == 50 and actual[0]["available_at"] == clock
+    assert all(v["period_end"] == dt.date(2020, 5, 3) and v["value"] == 50 for v in actual)
+    assert actual[-1]["available_at"] == clock
+    expected_first = min(clock, dt.datetime.fromisoformat(cf_clock))
+    assert actual[0]["available_at"] == expected_first
     source = [v for v in vintages if v["event_stage"] == "source"]
-    assert source and all(set(v["inputs"]) == {"rounded", "precise"} for v in source)
+    assert source and all(set(v["inputs"]) == {"rounded", "precise"} for v in source if v["available_at"]>=clock)
+    assert all(set(v["inputs"]) == {"precise"} for v in source if v["available_at"]<clock)
     assert all(d["original_effective_at"] == originals[d["candidate_id"]][1] and
-               d["raw_period_end"] == originals[d["candidate_id"]][0] and d["effective_at"] == clock for d in dispositions)
+               d["raw_period_end"] == originals[d["candidate_id"]][0] and
+               d["effective_at"] == originals[d["candidate_id"]][1] for d in dispositions)
     assert all((r["reported_fy"], r["reported_fp"]) == originals[r["candidate_id"]][2:] for r in rows)
 
 
@@ -218,11 +222,54 @@ def test_encoded_filing_context_preserves_latest_null_and_rejected_stock(rejecte
                    "input_kinds": ["item"]*6, "combination_rule": "book_equity_jkp"}],
         "chains": {"BE": {"item_ids": [-100004], "magnitude": False, "additive": True}}}
     vintages, dispositions = build_owner([fsds, cf, prior, prior_equity, latest], mapping)
-    actual = sorted([v for v in vintages if v["is_public"] and v["item"] == "BE"], key=lambda v:v["available_at"])
-    assert actual[-2]["value"] == 105 and actual[-1]["value"] is None
+    actual = sorted([v for v in vintages if v["is_public"] and v["item"] == "BE"
+                     and v["event_kind"] != "endpoint_retirement"], key=lambda v:v["available_at"])
+    assert actual[0]["value"] == 105 and actual[-1]["value"] is None
+    assert all(v["value"] is None for v in actual if v["available_at"]>=dt.datetime(2020,5,7))
     assert actual[-1]["available_at"] == dt.datetime(2020, 5, 8)
     assert actual[-1]["status"] == "invalid_operand"
     disposition = next(d for d in dispositions if d["candidate_id"] == "latest_tax")
     assert disposition["endpoint_encoding"] == "joint_filing_context"
     assert disposition["raw_period_end"] == dt.date(2020, 4, 30)
     assert disposition["economic_period_end"] == dt.date(2020, 5, 3)
+
+
+@pytest.mark.parametrize("shape", ["new_slot", "prior_conflict", "unrelated_tie"])
+def test_encoded_context_preserves_prefix_and_retired_endpoint_history(shape):
+    fsds, cf = encoded_pair()
+    for row in (fsds, cf):
+        row.update(qtrs=0,period_start=None,period_kind="instant",concept="Assets",item_id=1101)
+    rows = [fsds, cf]
+    if shape == "prior_conflict":
+        previous = fact("previous",end="2019-04-30",qtrs=0,clock="2020-05-01",value="40")
+        previous.update(period_kind="instant",concept="Assets",item_id=1101)
+        rows.append(previous)
+    if shape == "unrelated_tie":
+        rows.append({**cf,"candidate_id":"independent_conflict","value_exact":"51"})
+    mapping = {"rules":[],"fsds_endpoint_authority":FSDS_ENDPOINT_AUTHORITY,
+               "chains":{"AT":{"item_ids":[1101],"magnitude":False,"additive":True}}}
+    full, dispositions = build_owner([dict(r) for r in rows],mapping)
+    joint = dt.datetime(2020,5,6)
+
+    def state(values, cutoff):
+        visible = [v for v in values if v["is_public"] and v["event_kind"]!="endpoint_retirement"
+                   and v["available_at"]<=cutoff]
+        latest = max(v["available_at"] for v in visible)
+        return [{k:v[k] for k in ("period_end","value_exact","status","available_at")}
+                for v in visible if v["available_at"]==latest]
+
+    for cutoff in (joint-dt.timedelta(microseconds=1),joint):
+        prefix,_ = build_owner([dict(r) for r in rows if r["available_at"]<=cutoff],mapping)
+        assert state(full,cutoff)==state(prefix,cutoff)
+    before, after = state(full,joint-dt.timedelta(microseconds=1)),state(full,joint)
+    assert before[0]["value_exact"] is None if shape=="prior_conflict" else before[0]["value_exact"]=="50"
+    assert after[0]["value_exact"]=="50" if shape=="new_slot" else after[0]["value_exact"] is None
+    if shape!="prior_conflict":
+        retired = [v for v in full if v["is_public"] and v["event_kind"]=="endpoint_retirement"]
+        assert retired and all(v["available_at"]==joint and v["value"] is None for v in retired)
+        assert all(v["period_end"]==dt.date(2020,4,30) for v in retired)
+        assert any(v["event_kind"]=="current_slot_replacement" and v["replaces_vintage_ids"] for v in full)
+    clocks = {d["candidate_id"]:d["effective_at"] for d in dispositions}
+    clocks.update({v["vintage_id"]:v["available_at"] for v in full})
+    assert len(dispositions)==len(rows)
+    assert all(clocks[i]<=v["available_at"] for v in full for i in v["inputs"])

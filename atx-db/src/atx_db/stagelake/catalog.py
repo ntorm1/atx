@@ -192,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", type=Path, default=None)
     ap.add_argument("--out", type=Path, default=CATALOG)
     ap.add_argument('--tier1-contract',type=Path,help='independently admitted complete Tier1 snapshot/code/native source contract')
+    ap.add_argument('--recover-transition-sha256',help='independently authenticated interrupted Tier1 publication intent')
     ap.add_argument('--legacy',action='store_true',help='preserved legacy catalog only; cannot satisfy Task17')
     ap.add_argument("--dump", action="store_true", help="print the canonical dump SHA-256 (and write <out>.dump.txt)")
     args = ap.parse_args(argv)
@@ -200,8 +201,11 @@ def main(argv: list[str] | None = None) -> int:
         from atx_db.alpha_panel import tier1_catalog as T
         from atx_db.alpha_panel import common as C
         spec=C.read_json(args.tier1_contract)
-        rec=T.build(root.resolve(),args.out.resolve(),spec['snapshot_sha256'],spec['code_pins'],spec['admissions'],
-            native_text=spec.get('native_text'),publications=spec.get('publications'))
+        if args.recover_transition_sha256:
+            rec=T.recover_catalog(root.resolve(),args.out.resolve(),spec,args.recover_transition_sha256)
+        else:
+            rec=T.build(root.resolve(),args.out.resolve(),spec['snapshot_sha256'],spec['code_pins'],spec['admissions'],
+                native_text=spec.get('native_text'),publications=spec.get('publications'),expected_previous=spec.get('expected_previous'))
     elif args.legacy:
         rec = build(root, registry.load(strict=False,tier1=False), args.out)
     else:

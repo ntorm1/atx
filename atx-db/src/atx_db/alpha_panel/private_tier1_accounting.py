@@ -33,13 +33,30 @@ def fundamental(spec):
     if F.digest(snapshot) != item['snapshot_sha256']:
         raise ValueError('independently pinned canonical fundamental snapshot differs')
     leaf = generation/F.SEMANTIC_STAGE
-    dependencies = {str(generation/'manifest.json'): item['manifest_pin'],
+    dependencies=financial_dependencies(stage,generation,manifest,snapshot,runtime,proof)
+    return leaf, snapshot, dependencies
+
+
+def financial_dependencies(stage,generation,manifest,snapshot,runtime,proof):
+    """Actual byte inventory obtained only after complete native admission."""
+    leaf=generation/F.SEMANTIC_STAGE
+    dependencies = {str(generation/'manifest.json'): A.pin(generation/'manifest.json'),
                     str(generation/'snapshot.json'): A.pin(generation/'snapshot.json'),
                     str(R.proof_path(stage, generation)): proof,
                     str(Path(runtime['contract_path'])): runtime['contract_identity'], **runtime['code'], **snapshot['code']}
     dependencies.update(A.files(generation, manifest))
     dependencies[str(leaf/'manifest.json')] = manifest['native_manifest']
     dependencies[str(snapshot['binding_path'])] = snapshot['binding_identity']
+    preparation=snapshot['preparation'];original=Path(preparation['source']['root'])
+    dependencies[str(original/'fsds-staging-manifest.json')]=preparation['source']['manifest']
+    dependencies.update({str(A.member(original,relative)):value for relative,value in preparation['source']['files'].items()})
+    dependencies[str(Path(snapshot['binding']['prep_root'])/'prepare.json')]=snapshot['prepare_summary']
+    if len(preparation['units'])!=F.PREPARATION_UNITS:raise ValueError('complete original144 preparation units required')
+    for path,unit in preparation['units'].items():
+        target=A.absolute(path);side=target.with_name(target.name+'.prepare.json')
+        if C.read_json(side)!=unit:raise ValueError('original preparation sidecar differs')
+        dependencies[str(target)]=unit['output'];dependencies[str(side)]=A.pin(side)
+        dependencies.update(unit['binding']['dependencies'])
     for product in snapshot['products'].values():
         if product is not None: dependencies.update(product['files'])
     extract = Path(snapshot['binding']['extract_root']).resolve()
@@ -53,7 +70,7 @@ def fundamental(spec):
     admission = snapshot['extract_admission']
     dependencies[admission['path']] = admission['identity']
     dependencies.update({v['path']: v['identity'] for v in admission['document']['receipts'].values()})
-    return leaf, snapshot, dependencies
+    return dependencies
 
 
 def standard_sources(spec, con):

@@ -4,7 +4,8 @@ import pytest
 from atx_db.alpha_panel import golden_evaluation as E, golden_labels as L, golden_registry as R
 
 
-def test_native_evaluator_streams_conditionally_qualified_returns(tmp_path,monkeypatch):
+@pytest.mark.parametrize('mutate_payload',[False,True])
+def test_native_evaluator_streams_conditionally_qualified_returns(tmp_path,monkeypatch,mutate_payload):
     # Synthetic immutable products only. Admission replacement is confined to
     # this test; production has fixed full native public validators.
     from atx_db.alpha_panel import golden_panel as P,golden_sources as S
@@ -14,6 +15,9 @@ def test_native_evaluator_streams_conditionally_qualified_returns(tmp_path,monke
     try:
         con.execute("CREATE TABLE features AS SELECT DATE '2021-01-04'+t::INTEGER session_date,i::BIGINT security_id,i::DOUBLE be_me,true be_me_qualified,TIMESTAMPTZ '2020-12-31 22:00:00+00' be_me_source_at,(1000.0+i)::DOUBLE me,true me_qualified,TIMESTAMPTZ '2020-12-31 22:00:00+00' me_source_at,TIMESTAMPTZ '2021-01-03 22:00:00+00'+t*INTERVAL '1 day' available_at,1 exchcd_like,true univ_all_common,true univ_r3000p,i::DOUBLE ret_12_1,true ret_12_1_qualified,(i%7)::DOUBLE rvol_21d,true rvol_21d_qualified FROM range(1,101) ids(i) CROSS JOIN range(3) days(t)")
         con.execute("CREATE TABLE labels AS SELECT session_date feature_date,security_id,5 horizon,session_date+1 entry_date,session_date+6 exit_date,((security_id+day(session_date))*.001)::DOUBLE AS value,true label_qualified,'qualified_complete_window' reason,true univ_all_common,true univ_r3000p FROM features")
+        con.execute("ALTER TABLE features ADD COLUMN dolvol_126d DOUBLE DEFAULT 10000000")
+        con.execute("ALTER TABLE features ADD COLUMN dolvol_126d_source_at TIMESTAMPTZ DEFAULT TIMESTAMPTZ '2020-12-31 22:00:00+00'")
+        con.execute("ALTER TABLE features ADD COLUMN dolvol_126d_qualified BOOLEAN DEFAULT true")
         P.C.copy_to_parquet(con,'SELECT * FROM features',g/'daily/year=2021/panel.parquet')
         P.C.copy_to_parquet(con,'SELECT * FROM labels',l/'year=2021/labels.parquet')
     finally:con.close()
@@ -27,10 +31,24 @@ def test_native_evaluator_streams_conditionally_qualified_returns(tmp_path,monke
     monkeypatch.setattr(E,'evaluation_config',lambda:config)
     config_path=tmp_path/'fixture-config.json';P.C.write_json_atomic(config_path,config)
     output=tmp_path/'result.json'
+    if mutate_payload:
+        original=E.evaluate_date;changed=[]
+        def change_after_consumption(*args,**kwargs):
+            result=original(*args,**kwargs)
+            changed.append(True)
+            if len(changed)==12:
+                with (g/'daily/year=2021/panel.parquet').open('ab') as stream:stream.write(b'changed actual payload')
+            return result
+        monkeypatch.setattr(E,'evaluate_date',change_after_consumption)
+        with pytest.raises(ValueError,match='stale independent input/code pin'):
+            E.evaluate_native(golden,'fixture',labels,'fixture',config_path,S.pin(config_path)['sha256'],output)
+        assert not output.exists()
+        return
     result=E.evaluate_native(golden,'fixture',labels,'fixture',config_path,S.pin(config_path)['sha256'],output)
     assert result['statistical_evidence_measured'] is True
     assert result['primary']['family_size']==2
     assert result['primary']['sensitivities']['be_me:5']['turnover']['usable_dates']==3
+    assert result['primary']['sensitivities']['be_me:5']['liquidity']=={'qualified_name_observations':300,'missing_name_observations':0}
     assert len((tmp_path/'result.date-outcomes.jsonl').read_text().splitlines())==12
     assert result['consumer_acceptance']=='PENDING' and result['feature_label_coverage']=='FAIL'
 

@@ -66,6 +66,27 @@ expected_validation_sha256 authenticates the full native result; dependency_pins
 must include every native frozen input, documentary source, code and metadata.
 The native validator additionally establishes exact inventories and replays.
     """
+    if name in {'reference_french','reference_fred'}:
+        from . import private_tier1_reference_sources as N
+        version=N.VERSION if name=='reference_french' else N.FRED_VERSION
+        if spec.get('interface_version')!=version:
+            raise ValueError('reviewed fixed complete reference source interface required')
+        return N.admit(spec,con)
+    if name=='fundamentals_notes':
+        from . import private_tier1_notes_sources as N
+        if spec.get('interface_version')!=N.VERSION:
+            return {'status':'excluded','reason':'reviewed fixed R12 notes interface required','products':{}}
+        return N.admit(spec,con)
+    if name in {'short_interest','short_volume_ext'}:
+        from . import private_tier1_short_sources as N
+        if spec.get('interface_version')!=N.VERSION:
+            return {'status':'excluded','reason':'reviewed fixed original short-source interface required','products':{}}
+        return N.admit(name,spec,con)
+    if name in {'text_features','classification_tnic','delisting_v2','distributions','events_buyback'}:
+        from . import private_tier1_family_sources as F
+        if spec.get('interface_version')!=F.VERSION:
+            return {'status':'excluded','reason':'reviewed fixed native family interface required','products':{}}
+        return F.admit(name,spec,con)
     if name in {"standardized_v11", "ratios_v11", "earnings_calendar_v2", "ea_actuals"} and spec.get("interface_version") == "tier1-native-readers-v1":
         if not spec.get("independent_review"):
             raise ValueError("Task17 native reader independent review prerequisite")
@@ -99,7 +120,7 @@ The native validator additionally establishes exact inventories and replays.
         if not spec.get("extract_admission") or not spec.get("expected_admission_sha256"):
             raise ValueError("qualified all85 extraction admission required")
         runtime = RT.load_runtime(Path(spec["runtime_contract"]), spec["runtime_contract_sha256"], spec["runtime_code_sha256"])
-        with RT.connection(root, runtime) as (native_con, resources):
+        with RT.connection(root, runtime) as (native_con, resources),F.writer_lock(root):
             proof = RT.check_proof(root, generation, runtime, spec["snapshot_sha256"])
             result = F.validate_generation(root, generation, native_con, extract_admission=Path(spec["extract_admission"]),
                 expected_admission_sha256=spec["expected_admission_sha256"], force_full_replay=True)
@@ -109,15 +130,25 @@ The native validator additionally establishes exact inventories and replays.
         snapshot = C.read_json(generation / "snapshot.json")
         if digest(snapshot) != spec["snapshot_sha256"]:
             raise ValueError("independently expected financial snapshot mismatch")
-        dependencies = {str(generation / "snapshot.json"): pin(generation / "snapshot.json")}
+        from . import private_tier1_accounting as accounting
+        dependencies=accounting.financial_dependencies(root,generation,result,snapshot,runtime,proof)
         products = {"qualified_fundamental_leaf": generation / F.SEMANTIC_STAGE}
     elif name == "char_monthly":
-        from . import char_monthly as M, char_monthly_sources as N, fund_release_runtime as RT
+        from . import char_monthly as M, char_monthly_sources as N, fund_release_runtime as RT, fund_batch_release as F
         lake = Path(spec["lake_root"])
+        financial=spec.get('financial')
+        if not financial:raise ValueError('complete underlying R23 financial admission/proof required')
+        admitted_financial=admit('fundamentals_release_v1',financial,con)
+        frozen_binding=C.read_json(generation/'snapshot.json')['bindings']
+        if (Path(financial['generation']).resolve()!=member(lake,frozen_binding['fundamentals_generation']) or
+            financial['manifest_pin']!=frozen_binding['fundamentals_manifest'] or
+            any(financial[k]!=spec[k] for k in ('runtime_contract','runtime_contract_sha256','runtime_code_sha256'))):
+            raise ValueError('monthly runtime proof differs from exact underlying financial generation')
         runtime = RT.load_runtime(Path(spec["runtime_contract"]), spec["runtime_contract_sha256"], spec["runtime_code_sha256"])
         # Its reader invokes the full financial validator: R23 requires the
         # separately pinned 256MB native protocol, never the golden128MB reader.
-        with RT.connection(lake/"fundamentals_release_v1", runtime) as (native_con, resources):
+        with RT.connection(lake/"fundamentals_release_v1", runtime) as (native_con, resources),F.writer_lock(lake/F.STAGE):
+            proof=RT.check_proof(lake/'fundamentals_release_v1',Path(financial['generation']),runtime,financial['snapshot_sha256'])
             result = M.validate_generation(lake, generation, native_con)
             frozen = C.read_json(generation / "snapshot.json")
             snapshot = N.admit(lake, frozen["bindings"], native_con)
@@ -137,6 +168,8 @@ The native validator additionally establishes exact inventories and replays.
                 native_con.execute(f"CREATE OR REPLACE TEMP VIEW gm_published AS SELECT * FROM {N.sql([path])}")
                 if native_con.execute("SELECT count(*) FROM ((SELECT * FROM gm_published EXCEPT ALL SELECT * FROM cm_output) UNION ALL (SELECT * FROM cm_output EXCEPT ALL SELECT * FROM gm_published))").fetchone()[0]:
                     raise ValueError("monthly full native source replay differs")
+            RT._recheck_proof(lake/'fundamentals_release_v1',Path(financial['generation']),runtime,financial['snapshot_sha256'],proof)
+            dependencies.update(financial['dependency_pins'])
     else:
         from . import guidance_native as G, guidance_publication as P
         result = G.validate(spec["native_bindings"], root, manifest_path)
@@ -184,8 +217,55 @@ The native validator additionally establishes exact inventories and replays.
     check_pins(spec["dependency_pins"])
     if pin(manifest_path) != spec["manifest_pin"]:
         raise ValueError("native generation changed during admission")
+    complete=dict(spec['dependency_pins'])
+    if name in {'universe_release_v1','char_monthly','events_guidance_v2'}:
+        # These fixed original validators already authenticate complete files
+        # against the independently expected manifest. Preserve their expected
+        # identities instead of adopting current bytes after admission.
+        current_manifest=C.read_json(manifest_path)
+        base=root if name=='events_guidance_v2' else generation
+        for relative,expected in current_manifest['files'].items():
+            path=member(base,relative)
+            if pin(path)!=expected:raise ValueError('native published product differs from admitted manifest')
+            if str(path) in complete and complete[str(path)]!=expected:
+                raise ValueError('independent native product identity conflicts with manifest')
+            complete[str(path)]=expected
+    if pin(manifest_path)!=spec['manifest_pin']:
+        raise ValueError('native manifest changed during consumed-product binding')
     return {"status": "admitted_diagnostic", "products": products, "validation": result,
-            "source_quality_certified": False, "spec": spec}
+            "source_quality_certified": False, "spec": spec,"dependency_pins":complete}
+
+
+def admitted_pins(admitted):
+    """Actual complete consumed native products, distinct from source assertions.
+
+    Only fixed native admissions produce these product maps. Their full native
+    replay authenticates the output inventory against independently expected
+    sources and manifest; this inventory is then sealed in the golden snapshot.
+    """
+    result={}
+    for row in admitted.values():
+        if row['status']=='excluded':continue
+        for inventory in (row.get('spec',{}).get('dependency_pins',{}),row.get('dependency_pins',{})):
+            for path,expected in inventory.items():
+                if path in result and result[path]!=expected:
+                    raise ValueError('conflicting independently admitted source identity')
+                result[path]=expected
+        for key,value in row['products'].items():
+            for product in value if isinstance(value,(tuple,list)) else [value]:
+                path=Path(product).resolve(strict=True)
+                if path.is_file():
+                    actual=pin(path)
+                    if result.get(str(path))!=actual:
+                        raise ValueError('consumed native product missing or differs from admitted identity')
+                    continue
+                if key!='qualified_fundamental_leaf':raise ValueError('unsupported native product directory')
+                # The complete R23 dependency traversal supplies all leaf bytes.
+                manifest=path/'manifest.json'
+                if str(manifest) not in result or pin(manifest)!=result[str(manifest)]:
+                    raise ValueError('full qualified financial leaf dependency inventory missing')
+    check_pins(result)
+    return result
 
 
 def code_pins():
@@ -196,6 +276,45 @@ def code_pins():
     for name in ("evaluation-config.json", "golden_field_registry.json", "golden_notes_inventory.json",'golden_profitability_requirements.json'):
         pins[str((docs/name).resolve())] = pin(docs/name)
     return pins
+
+
+def generation_pins(generation):
+    """Complete actual products, metadata, code and native reader dependencies.
+
+Used on both sides of every public read. The immutable native snapshot supplies
+the inventory; an unchanged adjacent manifest alone never authenticates a read.
+    """
+    generation=Path(generation).resolve()
+    manifest=C.read_json(generation/'manifest.json')
+    result={str(generation/'manifest.json'):pin(generation/'manifest.json')}
+    for group in ('files','receipts'):
+        for relative,identity in manifest.get(group,{}).items():
+            path=member(generation,relative)
+            if pin(path)!=identity:raise ValueError('changed immutable golden payload/receipt')
+            result[str(path)]=identity
+    snapshot=generation/'snapshot.json'
+    if snapshot.exists():
+        result[str(snapshot)]=pin(snapshot); frozen=C.read_json(snapshot)
+        if manifest.get('snapshot')!=result[str(snapshot)]:raise ValueError('changed immutable golden snapshot')
+        if 'plan' in frozen:
+            result.update(frozen.get('source_pins',{}))
+            result[frozen['plan_path']]=frozen['plan_pin']
+            result.update(frozen['plan']['code'])
+            for spec in frozen['plan']['sources'].values():result.update(spec.get('dependency_pins',{}))
+            for spec in frozen['plan']['sources'].values():
+                if spec.get('financial'):result.update(spec['financial']['dependency_pins'])
+                if spec.get('interface_version') in ('tier1-notes-sources-v1','tier1-short-sources-v1'):
+                    mapped=Path(spec['mapped_generation']).resolve()
+                    result[str(mapped/'manifest.json')]=spec['mapped_manifest_pin']
+                    for relative,identity in spec['mapped_product_pins'].items():
+                        result[str(member(mapped,relative))]=identity
+        else:
+            result.update(frozen['code'])
+            if frozen.get('returns_binding'):result.update(frozen['returns_binding']['dependency_pins'])
+            source=member(Path(frozen['golden_stage'])/'generations',frozen['golden_generation'])
+            result.update(generation_pins(source))
+    result.update(code_pins());check_pins(result)
+    return result
 
 
 def curated_notes():
@@ -217,7 +336,10 @@ def notes_admission(row, proof, inventory, cutoff):
         return None, "ambiguous_note_or_unverified_geography"
     if not expected or not expected.get("period") or not expected.get("proof_sha256"):
         return None, "missing_independent_curated_period_proof_pin"
-    if "selected_external_revenue" in proof or "external_revenue_selection" in proof:
+    # The unchanged native structural reader records an empty/proposed selection
+    # on every verified primary. Only recon_overlay's applied-selection marker
+    # changes the measure; retain that marker and its five R12 exclusions.
+    if "selected_external_revenue" in proof:
         return None, "automatic_external_selection_withheld"
     if digest(proof) != expected["proof_sha256"] or row.get("period") != expected["period"]:
         return None, "proof_or_period_mismatch"

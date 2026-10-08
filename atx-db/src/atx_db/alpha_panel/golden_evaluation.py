@@ -254,6 +254,7 @@ never claims that a diagnostic run measured predictive evidence.
         P.validate_generation(golden_stage,golden,con)
         label_manifest=L.validate_generation(label_stage,labels,con)
         source_pins={str(golden/"manifest.json"):S.pin(golden/"manifest.json"),str(labels/"manifest.json"):S.pin(labels/"manifest.json"),str(Path(config_path).resolve()):pin(config_path)}
+        source_pins.update(S.generation_pins(golden));source_pins.update(S.generation_pins(labels))
         m=C.read_json(golden/"manifest.json")
         con.execute(f"CREATE OR REPLACE TEMP VIEW evaluation_features AS SELECT * FROM {P.sql([golden/n for n in m['files'] if n.startswith('daily/')])}")
         con.execute(f"CREATE OR REPLACE TEMP VIEW evaluation_labels AS SELECT * FROM {P.sql([labels/n for n in label_manifest['files']])}")
@@ -290,14 +291,15 @@ never claims that a diagnostic run measured predictive evidence.
                         for date in dates:
                             # Full eligible feature population survives missing labels.
                             # Crossing-boundary NULL windows remain explicit exclusions.
-                            rows=con.execute(f"SELECT f.security_id,f.{P.ident(name)},l.value,f.me,f.exchcd_like=1,l.entry_date,l.exit_date,f.{P.ident(name+'_source_at')},f.available_at,f.me_source_at,f.{P.ident(name+'_qualified')},f.me_qualified,l.label_qualified,f.ret_12_1,f.ret_12_1_qualified,f.rvol_21d,f.rvol_21d_qualified FROM evaluation_features f JOIN evaluation_labels l ON l.feature_date=f.session_date AND l.security_id=f.security_id WHERE f.session_date=? AND l.horizon=? AND f.{universe}",[date,h]).fetchall()
+                            rows=con.execute(f"SELECT f.security_id,f.{P.ident(name)},l.value,f.me,f.exchcd_like=1,l.entry_date,l.exit_date,f.{P.ident(name+'_source_at')},f.available_at,f.me_source_at,f.{P.ident(name+'_qualified')},f.me_qualified,l.label_qualified,f.ret_12_1,f.ret_12_1_qualified,f.rvol_21d,f.rvol_21d_qualified,f.dolvol_126d,f.dolvol_126d_source_at,f.dolvol_126d_qualified FROM evaluation_features f JOIN evaluation_labels l ON l.feature_date=f.session_date AND l.security_id=f.security_id WHERE f.session_date=? AND l.horizon=? AND f.{universe}",[date,h]).fetchall()
                             data=[]
-                            for sid,v,ret,me,nyse,entry,exit,clock,cutoff,me_at,feature_ok,cap_ok,label_ok,momentum,mom_ok,risk,risk_ok in rows:
+                            for sid,v,ret,me,nyse,entry,exit,clock,cutoff,me_at,feature_ok,cap_ok,label_ok,momentum,mom_ok,risk,risk_ok,adv,adv_at,adv_ok in rows:
                                 if entry is None or exit is None:
                                     continue # retained in exact population exclusion counts above
                                 data.append({"security_id":sid,"value":v,"ret":ret,"me":me,"nyse":nyse,"entry_date":entry,"exit_date":exit,"source_at":clock,"cutoff":cutoff,"me_at":me_at,"source_qualified":bool(feature_ok and cap_ok),"label_qualified":label_ok,
                                     "log_me":math.log(me) if cap_ok and me is not None and me>0 else None,
-                                    "ret_12_1":momentum if mom_ok else None,"rvol_21d":risk if risk_ok else None})
+                                    "ret_12_1":momentum if mom_ok else None,"rvol_21d":risk if risk_ok else None,
+                                    'adv':adv,'adv_at':adv_at,'adv_qualified':bool(adv_ok and adv is not None and math.isfinite(adv) and adv>0 and adv_at is not None and adv_at<cutoff and adv_at.date()<entry)})
                             result=evaluate_date(data,date,h,direction,config,previous)
                             result["incremental"]=incremental_date(data,config["incremental_controls"])
                             previous=result.pop("weights") # retain only one bounded portfolio
@@ -323,6 +325,8 @@ never claims that a diagnostic run measured predictive evidence.
             "data_integrity":"DIAGNOSTIC_FULL_PUBLIC_REPLAY","feature_label_coverage":"FAIL","consumer_acceptance":"PENDING",
             "statistical_evidence_measured":measured,"actual_return_source_admission":"CONDITIONAL_NATIVE" if measured else "PENDING",
             "date_outcomes":{"path":str(date_output.resolve()),"identity":pin(date_output)}}
+        S.check_pins(source_pins)
+        P.validate_generation(golden_stage,golden,con);L.validate_generation(label_stage,labels,con)
         S.check_pins(source_pins)
         C.write_json_atomic(output,report)
         return report

@@ -21,13 +21,24 @@ def test_native_parser_clock_and_missing_document_population(tmp_path):
     sha=hashlib.sha256(blob).hexdigest()
     catalog=[{'cik':1,'accession':'a','form':'8-K','is_amendment':False,'doc_sha256':sha,'source_doc':'a.htm'},
         {'cik':2,'accession':'b','form':'8-K','is_amendment':False,'doc_sha256':'missing','source_doc':'b.htm'}]
-    with duckdb.connect(config={'memory_limit':'128MB','threads':'1'}) as con:
-        rows=T.parsed_rows(con,root,catalog,{sha:blob,'missing':None})
+    with duckdb.connect(str(tmp_path/'parser.duckdb'),config={'memory_limit':'128MB','threads':'1'}) as con:
+        rows=list(T.parsed_rows(con,root,catalog,{sha:blob,'missing':None}))
     expected=E.parse_release(blob,dt.date(2021,5,1));actual=E.merge_extracts([expected])
     for field in E.FIELDS: assert rows[0].get(field)==actual.get(field)
     assert rows[0]['available_at']==E.qualified_clock(dict(zip(fields, [fields[k][0].as_py() if isinstance(fields[k],pa.Array) else fields[k][0] for k in fields])))
     assert rows[1]['available_at'] is None and rows[1]['reason']=='no_cached_document'
     assert rows[1]['_missing_objects']==1
+
+
+def test_streamed_population_receipt_and_sample_match_complete_native_order():
+    rows=[{'cik':index%7,'accession':str(index),'filing_date':dt.date(2021,1,1),
+        'reason':'no_cached_document','_missing_objects':int(index%3==0)} for index in range(350)]
+    evidence=T.ParseEvidence()
+    assert list(evidence.observe(iter(rows)))==rows
+    expected=sorted(rows,key=lambda row:hashlib.sha256((str(row['cik'])+'/'+row['accession']+'/t9-precision-200-v1').encode()).hexdigest())[:200]
+    assert evidence.selected()==expected
+    assert evidence.rows==350 and len(evidence.sample)==200
+    assert evidence.reasons['missing_or_corrupt_object']==sum(row['_missing_objects'] for row in rows)
 
 
 def test_receipt_rejects_omitted_missing_sources_and_sample_key():

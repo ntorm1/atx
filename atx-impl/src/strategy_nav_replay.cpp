@@ -1014,7 +1014,8 @@ struct Observer {
 co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
                                                    const NavFinancingFields& fields,
                                                    std::span<const Ctx> ctxs,
-                                                   const Observer& observer = {}) {
+                                                   const Observer& observer,
+                                                   std::stop_token stop) {
   const usize begin = x.decision_begin, end = x.decision_end, count = ctxs.size();
   const auto& target = ctxs.front().cfg.target; // identical for every book
   // The rate, order basis, locate-in-aim and cache (like the target) are the base
@@ -1042,6 +1043,8 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
   }
   std::vector<NavReplayDay> days(count);
   for (usize t = begin; t < end; ++t) {
+    if (stop.stop_requested())
+      return co::Err(co::ErrorCode::Cancelled, "nav replay: cancelled at session boundary");
     const bool execution = t > begin && t + 2 <= end, decision = t + 2 < end;
     const bool rate_decision = per_name && decision;
     if (cache.on() && (execution || rate_decision))
@@ -1088,6 +1091,8 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
       b.result.days.push_back(days[k]);
     }
   }
+  if (stop.stop_requested())
+    return co::Err(co::ErrorCode::Cancelled, "nav replay: cancelled before results");
   std::vector<NavReplayResult> results;
   results.reserve(count);
   for (auto& book : books) {
@@ -1894,7 +1899,10 @@ namespace {
 co::Result<std::vector<NavReplayResult>> replay_observed(const NavReplayInput& in,
                                                          const NavReplayConfig& base,
                                                          std::span<const NavScenario> scenarios,
-                                                         const Observer& observer) {
+                                                         const Observer& observer,
+                                                         std::stop_token stop) {
+  if (stop.stop_requested())
+    return co::Err(co::ErrorCode::Cancelled, "nav replay: cancelled before validation");
   if (scenarios.empty() || scenarios.size() > max_scenarios)
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: 1..8 scenarios per replay");
   if (observer.sink && observer.book >= scenarios.size())
@@ -1940,7 +1948,7 @@ co::Result<std::vector<NavReplayResult>> replay_observed(const NavReplayInput& i
       }
       ctxs.push_back(ctx);
     }
-    return run_books(x, in.financing, ctxs, observer);
+    return run_books(x, in.financing, ctxs, observer, stop);
   } catch (const std::bad_alloc&) {
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: allocation failed");
   } catch (const std::length_error&) {
@@ -1950,14 +1958,15 @@ co::Result<std::vector<NavReplayResult>> replay_observed(const NavReplayInput& i
 } // namespace
 
 co::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
-    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios) {
-  return replay_observed(in, base, scenarios, Observer{});
+    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios,
+    std::stop_token stop) {
+  return replay_observed(in, base, scenarios, Observer{}, stop);
 }
 
 co::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
     const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios,
-    NavHoldingsSink& sink, usize observed) {
-  return replay_observed(in, base, scenarios, Observer{&sink, observed});
+    NavHoldingsSink& sink, usize observed, std::stop_token stop) {
+  return replay_observed(in, base, scenarios, Observer{&sink, observed}, stop);
 }
 
 co::Result<NavReplayResult> replay_nav(const NavReplayInput& in, const NavReplayConfig& cfg) {
@@ -2387,7 +2396,9 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
 co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLimits& limits,
                           const NavFieldsPin& fields, const NavRateOptions& rate,
                           const NavExecutionOptions& execution, const NavEmitOptions& emit,
-                          std::ostream& progress) {
+                          std::ostream& progress, std::stop_token stop) {
+  if (stop.stop_requested())
+    return co::Err(co::ErrorCode::Cancelled, "nav replay: cancelled before input loading");
   try {
     if (cfg.role_path.empty() || cfg.role_sha256.empty() || cfg.output_directory.empty())
       return co::Err(co::ErrorCode::InvalidArgument, "nav replay: pinned role and output required");
@@ -2435,10 +2446,10 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     if (holdings) {
       ATX_TRY_VOID(csv.open(emit.holdings_directory, emit.format, view.instrument_ids));
       ATX_TRY(results, replay_nav_scenarios(input, base, scenarios, csv,
-                                            nav_primary_scenario_index));
+                                            nav_primary_scenario_index, stop));
       ATX_TRY_VOID(csv.close());
     } else {
-      ATX_TRY(results, replay_nav_scenarios(input, base, scenarios));
+      ATX_TRY(results, replay_nav_scenarios(input, base, scenarios, stop));
     }
     std::vector<NavSummary> summaries; summaries.reserve(scenarios.size());
     for (const auto& result : results) {
@@ -2450,6 +2461,8 @@ co::Status run_nav_replay(const TargetReplayRunConfig& cfg, const NavTurnoverLim
     ATX_TRY_VOID(v7::capture(scenarios, results, summaries));
     const NavRun run{cfg, limits, base, scenarios, results, summaries, blend.manifest_json,
                      loaded.binding};
+    if (stop.stop_requested())
+      return co::Err(co::ErrorCode::Cancelled, "nav replay: cancelled before publication");
     // Console provenance only: the cache changes no published byte, so no file records it.
     if (base.liquidity_cache) progress << "nav replay: shared execution liquidity cache on\n";
     ATX_TRY_VOID(publish_nav(run, progress));

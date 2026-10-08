@@ -225,8 +225,16 @@ def compute_calendar_map_rows(
     keeps the previous derivation: the reported label, else the issuer ``fyr`` rule.
     """
 
+    return pd.DataFrame.from_records(
+        calendar_map_records(periods.to_dict("records"), source=source, run_id=run_id),
+        columns=CALENDAR_MAP_COLUMNS,
+    )
+
+
+def calendar_map_records(periods, *, source: str = SOURCE_NAME, run_id: str | None = None) -> list[dict]:
+    """The same row calculation for bounded native/Arrow input batches."""
     records: list[dict[str, object]] = []
-    for raw in periods.to_dict("records"):
+    for raw in periods:
         period_end = _as_date(raw.get("period_end"))
         if period_end is None:
             continue
@@ -317,7 +325,7 @@ def compute_calendar_map_rows(
                 "source_loaded_at": source_loaded_at,
             }
         )
-    return pd.DataFrame.from_records(records, columns=CALENDAR_MAP_COLUMNS)
+    return records
 
 
 def refresh_fundamental_calendar_map(
@@ -416,6 +424,11 @@ _CALENDAR_FISCAL_TEMP_TABLES = (
 
 def _create_calendar_map_input(store: DuckDBStore, *, labeled: bool) -> None:
     """Snapshot every period with its issuer FYR and (``labeled``) its period-own fiscal label."""
+    store.con.execute("CREATE TEMP TABLE _calendar_map_input AS " + calendar_map_input_sql(labeled=labeled))
+
+
+def calendar_map_input_sql(*, labeled: bool, periods: str = "fundamental_periods") -> str:
+    from ._bulk_publication import _identifier
 
     label_join = (
         """
@@ -431,15 +444,13 @@ def _create_calendar_map_input(store: DuckDBStore, *, labeled: bool) -> None:
             WHERE false
         ) label ON false"""
     )
-    store.con.execute(
-        f"""
-        CREATE TEMP TABLE _calendar_map_input AS
+    return f"""
         WITH issuer_fyr AS (
             SELECT
                 source,
                 security_id,
                 arg_max(CAST(EXTRACT(MONTH FROM period_end) AS INTEGER), period_end) AS fyr
-            FROM fundamental_periods
+            FROM {_identifier(periods)}
             WHERE normalized_period_type = 'annual'
               AND period_end IS NOT NULL
             GROUP BY 1, 2
@@ -466,12 +477,11 @@ def _create_calendar_map_input(store: DuckDBStore, *, labeled: bool) -> None:
             fp.available_at,
             fp.is_latest_revision,
             fp.source_loaded_at
-        FROM fundamental_periods fp
+        FROM {_identifier(periods)} fp
         LEFT JOIN issuer_fyr
           ON issuer_fyr.source = fp.source
          AND issuer_fyr.security_id = fp.security_id{label_join}
         """
-    )
 
 
 def refresh_fundamental_calendar_ttm(
@@ -486,8 +496,26 @@ def refresh_fundamental_calendar_ttm(
         replace_where="source = ?", replace_params=(options.source,),
     ):
         store.con.execute(
-            """
-            INSERT INTO fundamental_calendar_ttm_bulk_stage (
+            fundamental_calendar_ttm_sql(),
+            [options.source, options.source, options.source, options.run_id],
+        )
+    return int(
+        store.con.execute(
+            "SELECT count(*) FROM fundamental_calendar_ttm WHERE source = ?",
+            [options.source],
+        ).fetchone()[0]
+    )
+
+
+def fundamental_calendar_ttm_sql(
+    *, target: str = "fundamental_calendar_ttm_bulk_stage",
+    points: str = "fundamental_statement_points", calendar_map: str = "fundamental_calendar_map",
+    security_predicate: str = "TRUE",
+) -> str:
+    from ._bulk_publication import _identifier
+
+    return f"""
+            INSERT INTO {_identifier(target)} (
                 calendar_ttm_id,
                 calendar_ttm_revision_group_id,
                 source,
@@ -557,11 +585,12 @@ def refresh_fundamental_calendar_ttm(
                     source_loaded_at,
                     date_diff('day', period_start, period_end) + 1 AS period_days,
                     coalesce(available_at, CAST(as_of_date AS TIMESTAMP)) AS availability_ts
-                FROM fundamental_statement_points
+                FROM {_identifier(points)}
                 WHERE period_type = 'duration'
                   AND period_start IS NOT NULL
                   AND period_end IS NOT NULL
                   AND value IS NOT NULL
+                  AND ({security_predicate})
             ),
             reported_quarter_points AS (
                 SELECT
@@ -655,7 +684,7 @@ def refresh_fundamental_calendar_ttm(
                  AND prior_ytd.as_of_date <= current_ytd.as_of_date
                  AND prior_ytd.availability_ts <= current_ytd.availability_ts
                 QUALIFY row_number() OVER (
-                    PARTITION BY current_ytd.statement_point_id
+                    PARTITION BY current_ytd.security_id, current_ytd.statement_point_id
                     ORDER BY
                         prior_ytd.period_end DESC,
                         prior_ytd.availability_ts DESC,
@@ -691,7 +720,7 @@ def refresh_fundamental_calendar_ttm(
                             || CAST(EXTRACT(QUARTER FROM q.period_end) AS VARCHAR)
                     ) AS calendar_period
                 FROM quarter_points q
-                LEFT JOIN fundamental_calendar_map cm
+                LEFT JOIN {_identifier(calendar_map)} cm
                   ON cm.source = ?
                  AND cm.upstream_source = q.source
                  AND cm.security_id = q.security_id
@@ -723,7 +752,7 @@ def refresh_fundamental_calendar_ttm(
                     a.source_loaded_at AS anchor_source_loaded_at,
                     q.*,
                     row_number() OVER (
-                        PARTITION BY a.statement_point_id, q.calendar_period
+                        PARTITION BY a.security_id, a.statement_point_id, q.calendar_period
                         ORDER BY
                             q.quarter_source_priority,
                             q.availability_ts DESC,
@@ -752,7 +781,7 @@ def refresh_fundamental_calendar_ttm(
                 SELECT
                     *,
                     row_number() OVER (
-                        PARTITION BY anchor_statement_point_id_for_window
+                        PARTITION BY security_id, anchor_statement_point_id_for_window
                         ORDER BY calendar_period_end DESC, period_end DESC, statement_point_id DESC
                     ) AS trailing_rank
                 FROM latest_visible
@@ -800,7 +829,7 @@ def refresh_fundamental_calendar_ttm(
                     max(coalesce(source_loaded_at, anchor_source_loaded_at)) AS source_loaded_at
                 FROM trailing_windows
                 WHERE trailing_rank <= 4
-                GROUP BY anchor_statement_point_id_for_window
+                GROUP BY security_id, anchor_statement_point_id_for_window
             ),
             keyed AS (
                 SELECT
@@ -816,7 +845,7 @@ def refresh_fundamental_calendar_ttm(
                     lag(ttm_value) OVER ttm_window AS previous_ttm_value
                 FROM keyed
                 WINDOW ttm_window AS (
-                    PARTITION BY calendar_ttm_revision_group_id
+                    PARTITION BY security_id, calendar_ttm_revision_group_id
                     ORDER BY
                         available_at,
                         as_of_date,
@@ -877,15 +906,7 @@ def refresh_fundamental_calendar_ttm(
                 ? AS run_id,
                 source_loaded_at
             FROM sequenced
-            """,
-            [options.source, options.source, options.source, options.run_id],
-        )
-    return int(
-        store.con.execute(
-            "SELECT count(*) FROM fundamental_calendar_ttm WHERE source = ?",
-            [options.source],
-        ).fetchone()[0]
-    )
+            """
 
 
 def _resolve_coverage_as_of_date(store: DuckDBStore, options: CalendarizationOptions) -> dt.date:
@@ -928,8 +949,25 @@ def refresh_calendarization_coverage(
     with store.transaction():
         store.con.execute("DELETE FROM calendarization_coverage WHERE source = ?", [options.source])
         store.con.execute(
-            """
-            INSERT INTO calendarization_coverage (
+            calendarization_coverage_sql(),
+            [options.source, options.source, STITCHED_TTM_METHOD, options.source, as_of_date,
+             options.source, STITCHED_TTM_METHOD, as_of_date, available_at, options.run_id],
+        )
+    return int(
+        store.con.execute(
+            "SELECT count(*) FROM calendarization_coverage WHERE source = ?", [options.source],
+        ).fetchone()[0]
+    )
+
+
+def calendarization_coverage_sql(
+    *, target: str = "calendarization_coverage", calendar_map: str = "fundamental_calendar_map",
+    calendar_ttm: str = "fundamental_calendar_ttm", loaded_at_sql: str = "now()",
+) -> str:
+    from ._bulk_publication import _identifier
+
+    return f"""
+            INSERT INTO {_identifier(target)} (
                 coverage_id,
                 source,
                 period_count,
@@ -953,12 +991,12 @@ def refresh_calendarization_coverage(
             )
             WITH mapped AS (
                 SELECT *
-                FROM fundamental_calendar_map
+                FROM {_identifier(calendar_map)}
                 WHERE source = ?
             ),
             calendar_ttm AS (
                 SELECT *
-                FROM fundamental_calendar_ttm
+                FROM {_identifier(calendar_ttm)}
                 WHERE source = ?
             ),
             duplicate_maps AS (
@@ -1017,27 +1055,8 @@ def refresh_calendarization_coverage(
                 CAST(? AS TIMESTAMP) AS available_at,
                 true AS is_latest_revision,
                 ? AS run_id,
-                now() AS source_loaded_at
-            """,
-            [
-                options.source,
-                options.source,
-                STITCHED_TTM_METHOD,
-                options.source,
-                as_of_date,
-                options.source,
-                STITCHED_TTM_METHOD,
-                as_of_date,
-                available_at,
-                options.run_id,
-            ],
-        )
-    return int(
-        store.con.execute(
-            "SELECT count(*) FROM calendarization_coverage WHERE source = ?",
-            [options.source],
-        ).fetchone()[0]
-    )
+                {loaded_at_sql} AS source_loaded_at
+            """
 
 
 def run_calendarization_refresh(

@@ -3199,7 +3199,197 @@
     },
     {
       "direction": 1,
+      "name": "text_business_chars",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_fog",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_pct_complex",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_sentences",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_sim_cosine",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_sim_jaccard",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_sim_minedit",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_words",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_business_words_chg",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_doc_bytes",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_doc_fog",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_doc_words",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_chars",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_fog",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_pct_complex",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_sentences",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_sim_cosine",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_sim_jaccard",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_sim_minedit",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_words",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_mdna_words_chg",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_n_sections",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_chars",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_fog",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_pct_complex",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_sentences",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_sim_cosine",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_sim_jaccard",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_sim_minedit",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_words",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "text_risk_words_chg",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
       "name": "text_score",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tnic_best_score",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tnic_n_fallback_peers",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tnic_n_peers",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tnic_n_peers_own_clock",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tnic_threshold",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tnic_total_similarity",
+      "stored_sign": "natural"
+    },
+    {
+      "direction": 1,
+      "name": "tnic_vocabulary_words",
       "stored_sign": "natural"
     },
     {
@@ -3251,7 +3441,7 @@
     "ret_12_1",
     "rvol_21d"
   ],
-  "liquidity": "pre-entry independently admitted ADV; missing excluded from cost/liquidity evidence",
+  "liquidity": "pre-entry independently admitted native dolvol_126d mean USD close times raw share volume, native minimum60 observations; exact source clock and qualification required; missing excluded from cost/liquidity evidence",
   "minimum_dates": 126,
   "minimum_names": 100,
   "monthly_carry": "native monthly value strictly after documented availability; bounded staleness",
@@ -3317,7 +3507,7 @@
     }
   ],
   "purge_embargo_sessions": 63,
-  "schema": "atx.golden-evaluation/v1",
+  "schema": "atx.golden-evaluation/v2",
   "start": "2020-01-01",
   "turnover": "sum absolute signed-long-short weight changes, include closing missing names; initial from cash",
   "universes": [

@@ -14,14 +14,19 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from .asof import finra_short_volume_asof, short_volume_metrics_asof  # noqa: F401
+from .calendar import xnys_sessions
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
+from .finra import FINRA_OK_OUTCOMES, FinraReceiptStore, PoliteFinraClient, fetch_finra_file
 from .warehouse import file_sha256, insert_frame, json_dumps, now_utc_naive, quality_check, record_source_file, snake_case, symbol_key
 
 
@@ -435,6 +440,127 @@ class FinraShortVolumeDataset(Dataset):
             source=options.source,
             details={"source_file": str(options.source_file) if options.source_file else None},
         )
+
+
+# ---------------------------------------------------------------------------
+# Fetch half (tier-1 v2 X.2 Step 2, ruling C-91): Reg SHO daily files + receipts, no warehouse
+# ---------------------------------------------------------------------------
+
+REGSHO_DAILY_URL = "https://cdn.finra.org/equity/regsho/daily/{prefix}shvol{day:%Y%m%d}.txt"
+#: One pipe-delimited file per trade date and reporting facility (Date|Symbol|ShortVolume|ShortExemptVolume|
+#: TotalVolume|Market). CNMS is the consolidated NMS file (the FINRA TRFs + ADF); the facility files carry
+#: the same NMS volume split by facility (FORF: OTC equities) and reach further back.
+REGSHO_DAILY_PREFIXES: dict[str, str] = {
+    "CNMS": "consolidated NMS (FINRA TRFs + ADF)",
+    "FNSQ": "FINRA/Nasdaq TRF Carteret",
+    "FNQC": "FINRA/Nasdaq TRF Chicago",
+    "FNYX": "FINRA/NYSE TRF",
+    "FNRA": "FINRA ADF",
+    "FORF": "FINRA ORF (OTC equities)",
+}
+REGSHO_DAILY_HEADER = "Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market"
+#: FINRA posts a trade date's file no later than 18:00 America/New_York that same day.
+REGSHO_DAILY_POSTED_BY_ET = dt.time(18, 0)
+_NEW_YORK = ZoneInfo("America/New_York")
+
+
+def regsho_daily_posted_by_utc(trade_date: dt.date) -> dt.datetime:
+    """Trade date 18:00 America/New_York in UTC: when FINRA's daily short-volume file is public at the latest."""
+
+    return dt.datetime.combine(trade_date, REGSHO_DAILY_POSTED_BY_ET, tzinfo=_NEW_YORK).astimezone(dt.UTC)
+
+
+def fetch_regsho_daily_files(
+    client: PoliteFinraClient,
+    root: Path,
+    *,
+    prefixes: Iterable[str],
+    start_by_prefix: dict[str, dt.date],
+    end: dt.date,
+    absent_final_days: int = 14,
+    progress: Callable[[str, int, int, dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Fetch every Reg SHO daily short-volume file for XNYS sessions in ``[start, end]`` per prefix into ``root``.
+
+    Files are stored gzip-compressed at ``<prefix>/<yyyy>/<prefix>shvol<yyyymmdd>.txt.gz`` with one receipt
+    each (sha256 / bytes over the raw file, Last-Modified, ETag, line count, header, posted-by clock). A
+    session without a file is an ``absent`` receipt. Date-major order, so a killed run leaves every prefix
+    covered to about the same date; a rerun verifies retained files instead of requesting them.
+    """
+
+    prefixes = [prefix.upper() for prefix in prefixes]
+    unknown = sorted(set(prefixes) - set(REGSHO_DAILY_PREFIXES))
+    if unknown:
+        raise ValueError(f"unknown Reg SHO daily prefixes: {unknown}")
+    store = FinraReceiptStore(root).load()
+    sessions = xnys_sessions(min(start_by_prefix[prefix] for prefix in prefixes), end)
+    planned = sum(1 for day in sessions for prefix in prefixes if day >= start_by_prefix[prefix])
+    per_prefix: dict[str, list[dict[str, Any]]] = {prefix: [] for prefix in prefixes}
+    done = 0
+    for day in sessions:
+        for prefix in prefixes:
+            if day < start_by_prefix[prefix]:
+                continue
+            record = fetch_finra_file(
+                client,
+                store,
+                key=f"{prefix}:{day.isoformat()}",
+                url=REGSHO_DAILY_URL.format(prefix=prefix, day=day),
+                relative_path=f"{prefix}/{day.year}/{prefix}shvol{day:%Y%m%d}.txt.gz",
+                data_date=day,
+                run_date=end,
+                extra={
+                    "prefix": prefix,
+                    "trade_date": day.isoformat(),
+                    "posted_by_utc": regsho_daily_posted_by_utc(day).isoformat(),
+                },
+                absent_final_days=absent_final_days,
+            )
+            done += 1
+            per_prefix[prefix].append({
+                key: record.get(key)
+                for key in ("key", "outcome", "status", "error", "trade_date", "bytes", "stored_bytes", "lines",
+                            "header", "last_modified")
+            })
+            if progress:
+                progress("regsho", done, planned, record)
+
+    summary: dict[str, Any] = {"root": str(root), "sessions": len(sessions), "planned": planned,
+                               "receipt_lines_before": store.lines, "receipt_corrupt_lines": store.corrupt_lines,
+                               "posted_by_rule": "trade_date 18:00 America/New_York", "prefixes": {}}
+    for prefix, records in per_prefix.items():
+        outcomes: dict[str, int] = {}
+        for record in records:
+            outcomes[str(record["outcome"])] = outcomes.get(str(record["outcome"]), 0) + 1
+        ok = [record for record in records if record["outcome"] in FINRA_OK_OUTCOMES]
+        ok_dates = [str(record["trade_date"]) for record in ok]
+        first_ok = ok_dates[0] if ok_dates else None
+        # sessions after the first file without one (the only real gaps; before it the prefix did not exist)
+        gaps = [
+            str(record["trade_date"])
+            for record in records
+            if first_ok is not None and str(record["trade_date"]) > first_ok
+            and record["outcome"] in ("absent", "absent_known")
+        ]
+        headers = {str(record.get("header")) for record in ok}
+        summary["prefixes"][prefix] = {
+            "description": REGSHO_DAILY_PREFIXES[prefix],
+            "probe_start": start_by_prefix[prefix].isoformat(),
+            "attempted": len(records),
+            "outcomes": outcomes,
+            "files_ok": len(ok),
+            "first_date": first_ok,
+            "last_date": ok_dates[-1] if ok_dates else None,
+            "raw_bytes": sum(int(record.get("bytes") or 0) for record in ok),
+            "stored_bytes": sum(int(record.get("stored_bytes") or 0) for record in ok),
+            "lines": sum(int(record.get("lines") or 0) for record in ok),
+            "header_only_files": sum(1 for record in ok if int(record.get("lines") or 0) <= 1),
+            "headers_seen": sorted(headers)[:5],
+            "gap_sessions": len(gaps),
+            "gap_sample": gaps[:40],
+            "failed": [record for record in records if record["outcome"] == "failed"][:20],
+        }
+    return summary
 
 
 class ShortVolumeMetricsDataset(Dataset):

@@ -81,6 +81,7 @@ class NativeWindows:
                 raise ValueError("window inventory outside pre2023 contract")
             self.inventory[table]=record
         self.distributions=None
+        self.distribution_native_pins={}
         if spec.get("distributions"):
             from . import distributions as D
             d=spec["distributions"]
@@ -88,6 +89,18 @@ class NativeWindows:
             admission=N.review_file(self.root,d["admission"])
             validation=D.validate_product(target,admission,d["admission"]["expected_sha256"])
             if S.digest(validation)!=d["expected_validation_sha256"]:raise ValueError("independent Task13 full native validation changed")
+            _,native_pins,_=D.replay_rows(admission,d['admission']['expected_sha256'])
+            if native_pins!=d.get('expected_native_dependencies'):
+                raise ValueError('independent complete Task13 native dependency inventory differs')
+            self.distribution_native_pins=native_pins
+            for path,sha in native_pins.items():
+                if path.startswith('runtime:'):continue
+                expected=S.pin(path)
+                if expected['sha256']!=sha or spec['dependency_pins'].get(str(Path(path).resolve()))!=expected:
+                    raise ValueError('Task13 original/code/receipt missing from complete independent pins')
+            for path in (target,admission):
+                if spec['dependency_pins'].get(str(path.resolve()))!=S.pin(path):
+                    raise ValueError('Task13 product/admission omitted from complete independent pins')
             con.execute(f"CREATE OR REPLACE TEMP VIEW golden_native_distributions AS SELECT * FROM {sql([target])}")
             self.distributions=d
         self._required_pins()
@@ -104,6 +117,9 @@ class NativeWindows:
     def recheck(self):
         S.check_pins(self.spec["dependency_pins"])
         if native_code()!=self.spec["native_code"]:raise ValueError("native loaded source reader changed")
+        if self.distribution_native_pins:
+            from . import distributions_native as DN
+            DN.recheck(self.distribution_native_pins)
 
     def proof(self,feature,sid,h):
         found=[]
@@ -230,7 +246,8 @@ class NativeWindows:
                 availability=max(availability,result.available_at)
                 # Proceeds replace the prior price directly; never multiply a
                 # last-price return by unrelated proceeds with incompatible basis.
-                native[date]={"ret":float(result.proceeds_per_share)/prior-1,"source_qualified":True}
+                native[date]={"ret":float(result.proceeds_per_share)/prior-1,"source_qualified":True,
+                              'cash_conversion':True,'residual_cash_qualified':True}
                 cash_state=True
             else:return {"value":None,"reason":"unsupported_terminal_stock_or_mixed_residual_convention"}
         result=label_window(calendar,index,h,native)
@@ -238,5 +255,4 @@ class NativeWindows:
         result["proof_sha256"]=S.digest(proof)
         result["source_contract_sha256"]=self.spec["source_contract"]["expected_sha256"]
         result['available_at']=availability
-        self.recheck()
         return result

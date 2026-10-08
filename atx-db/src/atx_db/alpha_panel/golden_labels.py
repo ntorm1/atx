@@ -53,6 +53,15 @@ the cash return itself must still be independently sourced for each session.
             return {"value": None, "reason": "residual_cash_basis_unqualified", "horizon": horizon,
                     "feature_date": feature, "entry_date": entry, "exit_date": exit}
         wealth *= 1 + ret
+        if row.get('cash_conversion'):
+            if cash:
+                raise ValueError('duplicate native cash conversion')
+            # Native proceeds already replaced the prior raw price in ret.
+            # This flag changes state only; it never adds a second DLRET.
+            if date != exit and row.get('residual_cash_qualified') is not True:
+                return {'value': None, 'reason': 'residual_cash_convention_pending', 'horizon': horizon,
+                        'feature_date': feature, 'entry_date': entry, 'exit_date': exit}
+            cash = True
         if row.get("delisted"):
             dlret = row.get("dlret")
             if cash or row.get("dlret_qualified") is not True or dlret is None or not math.isfinite(dlret) or dlret < -1:
@@ -184,6 +193,7 @@ def validate_generation(stage,generation,con):
     if m.get("schema")!=SCHEMA or m.get("status")!="complete_diagnostic" or m.get("gate_status")!="FAIL" or m.get("physically_separate_from_features") is not True:
         raise ValueError("unsupported label certification")
     if m["snapshot"]!=pin(generation/"snapshot.json") or frozen["code"]!=S.code_pins():raise ValueError("stale label source/code snapshot")
+    consumed=S.generation_pins(generation)
     golden=S.member(Path(frozen["golden_stage"])/"generations",frozen["golden_generation"])
     if frozen["golden_manifest"]!=pin(golden/"manifest.json"):raise ValueError("changed golden label dependency")
     P.validate_generation(Path(frozen["golden_stage"]),golden,con)
@@ -206,6 +216,8 @@ def validate_generation(stage,generation,con):
             expected=[{'horizon':h,'reason':r,'denominator':n,'qualified_labels':q} for h,r,n,q in rows]
             if m['coverage'].get(f'{year}:{population}')!=expected:raise ValueError('label coverage evidence differs from full population')
     if pin(generation/"manifest.json")!=before:raise ValueError("label changed during validation")
+    if windows:windows.recheck()
+    S.check_pins(consumed)
     return m
 
 
@@ -241,4 +253,10 @@ def write_native_year(con,axes_query,path,windows):
                     rows.append(row)
                 writer.write_table(pa.Table.from_pylist(rows,schema=schema))
         windows.recheck();os.replace(temporary,path)
-    finally:cursor.close()
+    finally:
+        try:
+            # Authenticate the whole bounded consumption, including failure or
+            # early termination; source-sized hashing is never per window.
+            windows.recheck()
+        finally:
+            cursor.close()

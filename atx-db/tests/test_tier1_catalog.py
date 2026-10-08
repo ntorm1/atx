@@ -76,11 +76,30 @@ def test_existing_lake_catalog_and_verify_entrypoints_full_proof(tmp_path,monkey
     spec={'snapshot_sha256':A.digest(before),'code_pins':T.code_pins(),'admissions':{name:{} for name in T.T.NAMES}}
     contract=tmp_path/'independent-contract.json';C.write_json_atomic(contract,spec)
     assert catalog.main(['--root',str(tmp_path),'--out',str(out),'--tier1-contract',str(contract)])==0
+    spec.update(catalog_pin=A.pin(out),proof_pin=A.pin(out.with_suffix('.proof.json')))
+    C.write_json_atomic(contract,spec)
     assert verify.main(['--root',str(tmp_path),'--catalog',str(out),'--tier1-contract',str(contract)])==0
     assert all(calls.count(name)==4 for name in T.T.NAMES)
     assert registry.load()==[stage]
     out.write_bytes(b'corrupt actual catalog')
     assert verify.main(['--root',str(tmp_path),'--catalog',str(out),'--tier1-contract',str(contract)])==1
+
+
+def test_same_named_invented_view_refuses_adjacent_proof_and_independent_repin(tmp_path,monkeypatch):
+    _,stage=world(tmp_path);monkeypatch.setattr(T,'declarations',lambda:[stage])
+    monkeypatch.setattr(A,'guard',lambda con:None);monkeypatch.setattr(T.T,'admit',lambda *args:None)
+    before,_,_=T.preflight(tmp_path);out=tmp_path/'catalog.duckdb'
+    spec={'snapshot_sha256':A.digest(before),'code_pins':T.code_pins(),'admissions':{name:{} for name in T.T.NAMES}}
+    T.build(tmp_path,out,spec['snapshot_sha256'],spec['code_pins'],spec['admissions'])
+    spec.update(catalog_pin=A.pin(out),proof_pin=A.pin(out.with_suffix('.proof.json')))
+    with duckdb.connect(str(out),config={'memory_limit':'128MB','threads':'1'}) as con:
+        con.execute('CREATE OR REPLACE VIEW fixture AS SELECT security_id,999::DOUBLE AS value,available_at FROM '+A.sql([tmp_path/'fixture/year=2021/data.parquet']))
+        assert con.execute("SELECT value FROM fixture_as_of(TIMESTAMP '2021-02-02')").fetchone()==(999.,)
+    proof=C.read_json(out.with_suffix('.proof.json'));proof['catalog_identity']=A.pin(out)
+    C.write_json_atomic(out.with_suffix('.proof.json'),proof)
+    with pytest.raises(ValueError,match='independently admitted catalog/proof'):T.verify_catalog(tmp_path,out,spec)
+    spec.update(catalog_pin=A.pin(out),proof_pin=A.pin(out.with_suffix('.proof.json')))
+    with pytest.raises(ValueError,match='source-derived'):T.verify_catalog(tmp_path,out,spec)
 
 
 def test_whole_notes_item_key_collision_cannot_be_certified(tmp_path,monkeypatch):

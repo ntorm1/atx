@@ -775,9 +775,25 @@ def refresh_fundamental_fact_revisions(
             ),
             owned_registrations=("fundamental_revision_concept_filter",) if registered else (),
         ):
-            store.con.execute(
-                f"""
-            INSERT INTO fundamental_fact_revisions_bulk_stage (
+            store.con.execute(fundamental_fact_revisions_sql(concept_predicate=concept_predicate))
+    finally:
+        if registered:
+            with contextlib.suppress(Exception):
+                store.con.unregister("fundamental_revision_concept_filter")
+    count_row = store.con.execute("SELECT count(*) FROM fundamental_fact_revisions").fetchone()
+    assert count_row is not None
+    return int(count_row[0])
+
+
+def fundamental_fact_revisions_sql(
+    *, target: str = "fundamental_fact_revisions_bulk_stage",
+    concept_predicate: str = "", security_predicate: str = "TRUE",
+) -> str:
+    """Shared INSERT query; each staged scope contains complete securities."""
+    from ._bulk_publication import _identifier
+
+    return f"""
+            INSERT INTO {_identifier(target)} (
                 fact_revision_id,
                 revision_group_id,
                 source,
@@ -876,6 +892,7 @@ def refresh_fundamental_fact_revisions(
                   AND accession_number <> ''
                   AND filed_date IS NOT NULL
                   {concept_predicate}
+                  AND ({security_predicate})
             ),
             sequenced AS (
                 SELECT
@@ -892,7 +909,7 @@ def refresh_fundamental_fact_revisions(
                     max(available_at) OVER fact_window AS latest_available_at
                 FROM base
                 WINDOW fact_window AS (
-                    PARTITION BY revision_group_id
+                    PARTITION BY security_id, revision_group_id
                     ORDER BY
                         coalesce(available_at, CAST(filed_date AS TIMESTAMP)),
                         filed_date,
@@ -948,14 +965,6 @@ def refresh_fundamental_fact_revisions(
                 source_loaded_at
             FROM sequenced
             """
-            )
-    finally:
-        if registered:
-            with contextlib.suppress(Exception):
-                store.con.unregister("fundamental_revision_concept_filter")
-    count_row = store.con.execute("SELECT count(*) FROM fundamental_fact_revisions").fetchone()
-    assert count_row is not None
-    return int(count_row[0])
 
 
 @dataclass(frozen=True)

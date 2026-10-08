@@ -191,3 +191,82 @@ def test_scratch_database_removed(lake) -> None:
     root, _c, _con = lake
     E.run([("panel", ["f1"])], root / "ic.json", memory="200MB")
     assert not list((root / "_tmp").glob("ic_eval*"))
+
+
+def test_chronological_split_purges_complete_label_window(monkeypatch) -> None:
+    calendar = [dt.date(2020, 1, 2) + dt.timedelta(days=i) for i in range(1460)]
+    calendar = [d for d in calendar if d.weekday() < 5 and d <= dt.date(2023, 12, 29)]
+    monkeypatch.setattr(E, "LABEL_CUTOFF", calendar[-1])
+    first_validation = next(i for i, d in enumerate(calendar) if d >= E.VALIDATION_START)
+    for h in (5, 21, 63):
+        end = E.selection_end(calendar, h)
+        idx = calendar.index(end)
+        assert idx + 1 + h < first_validation
+        assert idx + 2 + h == first_validation
+        series = E.Series()
+        for d in calendar:
+            di = int(np.datetime64(d).astype("datetime64[D]").astype(np.int32))
+            value = 0.15 if d < E.VALIDATION_START else -0.15
+            series.add(di, 1000, (value, value, value))
+        summaries = E._summaries(series, h, calendar)
+        assert summaries["SELECTION"]["ic_mean"] == 0.15
+        assert summaries["VALIDATION"]["ic_mean"] == -0.15
+        assert summaries["SELECTION"]["sessions"] == idx + 1
+    assert all(d < E.VALIDATION_START for d in E._month_ends(calendar, calendar[-1]))
+
+
+def test_nw_uses_exchange_gaps_and_does_not_compress_nan() -> None:
+    x = np.array([1., 2., np.nan, 4., 2., 6.])
+    finite = np.isfinite(x)
+    centred = np.zeros(len(x))
+    centred[finite] = x[finite] - x[finite].mean()
+    lag = 2
+    variance_sum = centred @ centred
+    for k in (1, 2):
+        variance_sum += 2 * (1 - k / (lag + 1)) * (centred[k:] @ centred[:-k])
+    want = math.sqrt(variance_sum) / finite.sum()
+    assert E.nw_mean_se(x, lag, min_n=3) == pytest.approx(want)
+    assert E.nw_mean_se(x[finite], lag, min_n=3, session_idx=np.flatnonzero(finite)) == pytest.approx(want)
+    assert E.nw_mean_se(x[finite], lag, min_n=3) != pytest.approx(want)
+
+
+def test_constant_feature_sessions_are_not_false_negative_ic() -> None:
+    series = E.Series()
+    series.add(0, 100, (float("nan"), float("nan"), float("nan")))
+    series.add(1, 100, (0.2, 0.1, 0.1))
+    stats = E._stat(series, np.array([True, True]), 5)
+    assert stats["eligible_sessions"] == 2
+    assert stats["sessions"] == 1
+    assert stats["pos_share"] == 1.0
+
+
+def test_numeric_identity_columns_are_not_features(lake) -> None:
+    root, _char, con = lake
+    dest = root / "gold" / "year=2020" / "g.parquet"
+    con.execute(f"CREATE OR REPLACE TABLE metadata_gold AS SELECT session_date, security_id, g1, 123 AS cik, 2020 AS year, 7 AS bucket FROM read_parquet('{dest.as_posix()}', hive_partitioning=false)")
+    con.execute(f"COPY metadata_gold TO '{dest.as_posix()}' (FORMAT PARQUET)")
+    assert E.resolve_features(con, "gold", None) == ["g1"]
+
+
+def test_missing_feature_sessions_count_as_zero_coverage(lake) -> None:
+    root, _char, con = lake
+    year = 2020
+    dest = root / "gold" / f"year={year}" / "g.parquet"
+    con.execute(f"CREATE OR REPLACE TABLE missing_gold AS SELECT * FROM read_parquet('{dest.as_posix()}') WHERE session_date > DATE '2020-01-05'")
+    con.execute(f"COPY missing_gold TO '{dest.as_posix()}' (FORMAT PARQUET)")
+    res = E.run([("gold", ["g1"])], memory="200MB")
+    days = [d for d in CAL if d.year == year]
+    want = sum(d > dt.date(2020, 1, 5) for d in days) / len(days)
+    assert res["features"]["gold:g1"]["coverage"][str(year)] == pytest.approx(want, abs=0.0001)
+    assert res["pairwise_redundancy"]["window"] == "SELECTION"
+
+
+def test_duplicate_feature_keys_refused(lake) -> None:
+    root, _char, con = lake
+    dest = root / "gold" / "year=2020" / "g.parquet"
+    con.execute(f"CREATE OR REPLACE TABLE duplicate_gold AS SELECT * FROM read_parquet('{dest.as_posix()}') UNION ALL SELECT * FROM read_parquet('{dest.as_posix()}') LIMIT 1")
+    # Duplicate only a single key to avoid inflated row counts passing unnoticed.
+    con.execute("INSERT INTO duplicate_gold SELECT * FROM duplicate_gold")
+    con.execute(f"COPY duplicate_gold TO '{dest.as_posix()}' (FORMAT PARQUET)")
+    with pytest.raises(ValueError, match="duplicate gold key"):
+        E.run([("gold", ["g1"])], memory="200MB")

@@ -3,6 +3,7 @@
 #include <array>
 #include <iosfwd>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <vector>
 #include "strategy_target_replay.hpp"
@@ -311,8 +312,11 @@ struct NavReplayResult {
 // (and, for price-risk-v1, its price exposures) is formed ONCE and shared by every
 // scenario book; the books are otherwise independent. results[k] is bit-identical
 // to replay_nav(in, base with scenario = scenarios[k]). 1 <= scenarios <= 8.
+// Cooperative cancellation is checked before validation and at session boundaries;
+// cancellation returns ErrorCode::Cancelled without publishing a partial result.
 [[nodiscard]] atx::core::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
-    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios);
+    const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios,
+    std::stop_token stop = {});
 
 // ---- per-name holdings of one book (--emit-holdings, v7 B3) ----
 // EXECUTE outcome of one name's working order at session t.
@@ -361,7 +365,7 @@ public:
 // Observation only: every result is bit-identical to the overload without a sink.
 [[nodiscard]] atx::core::Result<std::vector<NavReplayResult>> replay_nav_scenarios(
     const NavReplayInput& in, const NavReplayConfig& base, std::span<const NavScenario> scenarios,
-    NavHoldingsSink& sink, atx::usize observed);
+    NavHoldingsSink& sink, atx::usize observed, std::stop_token stop = {});
 
 struct NavMonth {
   atx::u32 month{};
@@ -511,7 +515,8 @@ struct NavEmitOptions {
                                                const NavRateOptions& rate,
                                                const NavExecutionOptions& execution,
                                                const NavEmitOptions& emit,
-                                               std::ostream& progress);
+                                               std::ostream& progress,
+                                               std::stop_token stop = {});
 // argv[0] is the "nav" verb. Rejects --one-way-bps / --annual-borrow-bps.
 // --fields PATH/manifest.json --fields-sha256 SHA enables the financing matrix.
 // --rate fixed|per-name-v1 is refused (usage error) unless --rule aim-partial-v5, and

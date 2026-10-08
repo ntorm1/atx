@@ -289,7 +289,7 @@ def test_output_schema_rows_and_manifest(built):
     out, root = built["out"], built["root"]
     names = [f.name for f in R.REGISTRY]
     assert list(out.columns) == ["session_date", "security_id", "member", "member_equity", "grp_ff49", "grp_ff12",
-                                 *names]
+                                 *CH.REPAIR_FLAGS, *names]
     assert not out.duplicated(["session_date", "security_id"]).any()
     df = built["lake"]["df"]
     n2019 = int((pd.to_datetime(df["session_date"]).dt.year == 2019).sum())

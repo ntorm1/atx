@@ -10,6 +10,7 @@
 #include <limits>
 #include <sstream>
 #include <span>
+#include <stop_token>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -134,6 +135,65 @@ const st::NavEvent* find_event(const st::NavReplayResult& r, st::NavEventKind ki
   for (const auto& e : r.events) if (e.kind == kind && e.instrument_id == id) return &e;
   return nullptr;
 }
+TEST(NavReplayCancellation, RequestedStopReturnsCancelledBeforeValidation) {
+  std::stop_source stop;
+  stop.request_stop();
+  const auto result = st::replay_nav_scenarios({}, {}, {}, stop.get_token());
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), co::ErrorCode::Cancelled);
+}
+
+TEST(NavReplayCancellation, StopAtObservedSessionDoesNotReturnPartialSuccess) {
+  Panel panel{20, 2};
+  panel.by_name({-1, 1});
+  const auto scenario = flat(0, 0);
+  const auto cfg = config(scenario, 100'000, hold_after_deployment());
+  std::stop_source stop;
+  class StopSink final : public st::NavHoldingsSink {
+  public:
+    explicit StopSink(std::stop_source& source) : source_(source) {}
+    co::Status session(const st::NavReplayDay&, std::span<const st::NavHolding>) override {
+      ++calls;
+      source_.request_stop();
+      return co::Ok();
+    }
+    usize calls{};
+  private:
+    std::stop_source& source_;
+  } sink{stop};
+  const auto result = st::replay_nav_scenarios(panel.nav(), cfg,
+      std::span<const st::NavScenario>{&scenario, 1}, sink, 0, stop.get_token());
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), co::ErrorCode::Cancelled);
+  EXPECT_EQ(sink.calls, 1U);
+}
+
+TEST(NavReplayCancellation, NonRequestedTokenPreservesEveryDayBitForBit) {
+  Panel panel{20, 2};
+  panel.by_name({-1, 1});
+  const auto scenario = flat(6, 300);
+  const auto cfg = config(scenario, 100'000, hold_after_deployment());
+  const std::span<const st::NavScenario> scenarios{&scenario, 1};
+  const auto ordinary = st::replay_nav_scenarios(panel.nav(), cfg, scenarios);
+  std::stop_source stop;
+  const auto controlled = st::replay_nav_scenarios(panel.nav(), cfg, scenarios, stop.get_token());
+  ASSERT_TRUE(ordinary);
+  ASSERT_TRUE(controlled);
+  ASSERT_EQ(ordinary->front().days.size(), controlled->front().days.size());
+  for (usize i = 0; i < ordinary->front().days.size(); ++i)
+    expect_same_day(ordinary->front().days[i], controlled->front().days[i]);
+}
+
+TEST(NavReplayCancellation, PinnedRunCancelledBeforeAnyInputOrOutputIo) {
+  std::stop_source stop;
+  stop.request_stop();
+  std::ostringstream progress;
+  const auto status = st::run_nav_replay({}, {}, {}, {}, {}, {}, progress, stop.get_token());
+  ASSERT_FALSE(status);
+  EXPECT_EQ(status.error().code(), co::ErrorCode::Cancelled);
+  EXPECT_TRUE(progress.str().empty());
+}
+
 struct Lcg {
   u64 state;
   f64 next() {

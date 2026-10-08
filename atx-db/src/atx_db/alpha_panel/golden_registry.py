@@ -82,6 +82,19 @@ def registry():
             'definition':'unchanged native ea_actuals '+field.name+'; original fiscal/calendar/currency/basis and source clock',
             'unit':'native original units; earnings comparability admission required',
             'bronze_to_gold':{'native_product':'ann_features.parquet','native_column':field.name}}
+    from . import text_features_native as TEXT
+    for native_name in ('doc_bytes','doc_words','n_sections','doc_fog',*TEXT.METRICS):
+        key='text_'+native_name
+        fields[key]={**fields['text_score'],'name':key,'source_columns':[native_name],
+            'definition':'unchanged native filing text '+native_name+'; original section/comparison/edit exclusions retained',
+            'unit':'native original count or text metric','native_name':native_name,
+            'bronze_to_gold':{'native_product':'text/features.parquet','native_column':native_name}}
+    for native_name in ('vocabulary_words','threshold','n_peers','n_peers_own_clock','n_fallback_peers','total_similarity','best_score'):
+        key='tnic_'+native_name
+        fields[key]={**fields['text_score'],'name':key,'source':'classification_tnic','source_columns':[native_name],
+            'definition':'unchanged reproduced TNIC prior-year DF25/SIC3 firms '+native_name+'; fallback and failed corpus qualification excluded',
+            'unit':'count' if native_name.startswith('n_') or native_name=='vocabulary_words' else 'native similarity metric',
+            'native_name':native_name,'bronze_to_gold':{'native_product':'classification_tnic/firms.parquet','native_column':native_name}}
     for name, direction in PRIMARY:
         fields['score_'+name] = {**fields[name], 'name':'score_'+name,
             'source':'golden_cross_section', 'source_columns':[name], 'unit':'dimensionless',
@@ -100,7 +113,7 @@ PRIMARY = [("be_me", 1), ("gp_at", 1), ("ret_12_1", 1), ("ni_be", 1), ("at_gr1",
 
 
 def evaluation_config():
-    return {"schema": "atx.golden-evaluation/v1", "primary": [{"name": n, "direction": s} for n, s in PRIMARY],
+    return {"schema": "atx.golden-evaluation/v2", "primary": [{"name": n, "direction": s} for n, s in PRIMARY],
         "owner_directions": {"ownership breadth change": "ownership_breadth_change",
             "split-adjusted institutional ownership change": "institutional_ownership_change_split_adjusted",
             "operating profitability": "op_at", "annual asset growth": "at_gr1"},
@@ -117,4 +130,4 @@ def evaluation_config():
         "turnover": "sum absolute signed-long-short weight changes, include closing missing names; initial from cash",
         "incremental_controls": ["log_me", "ret_12_1", "rvol_21d"],
         "monthly_carry": "native monthly value strictly after documented availability; bounded staleness",
-        "liquidity": "pre-entry independently admitted ADV; missing excluded from cost/liquidity evidence"}
+        "liquidity": "pre-entry independently admitted native dolvol_126d mean USD close times raw share volume, native minimum60 observations; exact source clock and qualification required; missing excluded from cost/liquidity evidence"}

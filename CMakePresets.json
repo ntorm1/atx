@@ -45,6 +45,32 @@
       }
     },
     {
+      "name": "server-dev",
+      "inherits": "equity-dev",
+      "displayName": "server-dev: persistent gRPC equity workspace",
+      "binaryDir": "${sourceDir}/build-server",
+      "cacheVariables": {
+        "ATX_BUILD_SERVER": "ON",
+        "ATX_SERVER_WITH_GRPC": "ON",
+        "VCPKG_MANIFEST_FEATURES": "server",
+        "VCPKG_MANIFEST_MODE": "ON",
+        "VCPKG_MANIFEST_INSTALL": "ON",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/deps/vcpkg-server",
+        "ATX_TEST_GROUPS": "core",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/deps/server-dev"
+      }
+    },
+    {
+      "name": "server-rel",
+      "inherits": "server-dev",
+      "displayName": "server-rel: optimized gRPC equity workspace",
+      "binaryDir": "${sourceDir}/build-server-rel",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/deps/server-rel"
+      }
+    },
+    {
       "name": "equity-rel",
       "inherits": "equity-dev",
       "displayName": "equity-rel: optimised equity pipeline binary for measurement sweeps (no AVX2, no IPO)",
@@ -178,6 +204,8 @@
     }
   ],
   "buildPresets": [
+    { "name": "server-dev", "configurePreset": "server-dev" },
+    { "name": "server-rel", "configurePreset": "server-rel" },
     { "name": "ninja", "configurePreset": "ninja" },
     { "name": "dev", "configurePreset": "dev" },
     { "name": "equity-dev", "configurePreset": "equity-dev" },
@@ -197,6 +225,20 @@
     { "name": "vs", "configurePreset": "vs", "configuration": "Debug" }
   ],
   "testPresets": [
+    {
+      "name": "server-rel",
+      "configurePreset": "server-rel",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 1, "scheduleRandom": false },
+      "filter": { "include": { "label": "atx_server" } }
+    },
+    {
+      "name": "server-dev",
+      "configurePreset": "server-dev",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 1, "scheduleRandom": false },
+      "filter": { "include": { "label": "atx_server" } }
+    },
     {
       "name": "equity-asan",
       "configurePreset": "equity-asan",

@@ -1,0 +1,520 @@
+syntax = "proto3";
+
+package atx.v1;
+
+// Public service contract. JSON fields carry versioned research documents;
+// lifecycle, pagination, scheduling and event delivery remain typed.
+service WorkspaceService {
+  rpc GetHealth(HealthRequest) returns (HealthResponse);
+  rpc ListStrategies(ListStrategiesRequest) returns (ListStrategiesResponse);
+  rpc SubmitJob(SubmitJobRequest) returns (Job);
+  rpc GetJob(GetJobRequest) returns (Job);
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+  rpc CancelJob(CancelJobRequest) returns (Job);
+  rpc WatchEvents(WatchEventsRequest) returns (stream Event);
+  rpc ListDataSources(ListDataSourcesRequest) returns (ListDataSourcesResponse);
+  rpc GetDataCatalog(GetDataCatalogRequest) returns (DataCatalog);
+  rpc PreviewData(PreviewDataRequest) returns (DataResult);
+  rpc QueryData(QueryDataRequest) returns (DataResult);
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  rpc GetWorkspace(GetWorkspaceRequest) returns (WorkspaceDocument);
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (WorkspaceDocument);
+  rpc UpdateWorkspace(UpdateWorkspaceRequest) returns (WorkspaceDocument);
+  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
+  rpc ListAlphas(ListAlphasRequest) returns (ListAlphasResponse);
+  rpc GetAlpha(GetAlphaRequest) returns (AlphaSnapshot);
+  rpc CreateAlpha(CreateAlphaRequest) returns (AlphaSnapshot);
+  rpc UpdateAlpha(UpdateAlphaRequest) returns (AlphaSnapshot);
+  rpc ListAlphaRevisions(ListAlphaRevisionsRequest) returns (ListAlphaRevisionsResponse);
+  rpc SetAlphaArchived(SetAlphaArchivedRequest) returns (AlphaSnapshot);
+  rpc CompareJobs(CompareJobsRequest) returns (CompareJobsResponse);
+  rpc ValidateExpression(ValidateExpressionRequest) returns (ValidateExpressionResponse);
+  rpc CreateExperiment(CreateExperimentRequest) returns (Experiment);
+  rpc GetExperiment(GetExperimentRequest) returns (Experiment);
+  rpc ListExperiments(ListExperimentsRequest) returns (ListExperimentsResponse);
+  rpc CancelExperiment(CancelExperimentRequest) returns (Experiment);
+  rpc GetSession(SessionRequest) returns (SessionResponse);
+  rpc ListTeam(ListTeamRequest) returns (ListTeamResponse);
+  rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
+  rpc SubmitReview(SubmitReviewRequest) returns (ReviewRecord);
+  rpc GetReview(GetReviewRequest) returns (ReviewRecord);
+  rpc ListReviews(ListReviewsRequest) returns (ListReviewsResponse);
+  rpc DecideReview(DecideReviewRequest) returns (ReviewRecord);
+  rpc ListReviewDecisions(ListReviewDecisionsRequest) returns (ListReviewDecisionsResponse);
+  rpc CreateWorkflow(CreateWorkflowRequest) returns (Workflow);
+  rpc GetWorkflow(GetWorkflowRequest) returns (Workflow);
+  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
+  rpc SetWorkflowPaused(SetWorkflowPausedRequest) returns (Workflow);
+  rpc ListWorkflowRuns(ListWorkflowRunsRequest) returns (ListWorkflowRunsResponse);
+}
+
+message HealthRequest {}
+message HealthResponse {
+  string status = 1;
+  string version = 2;
+  int64 uptime_seconds = 3;
+  uint64 queued_jobs = 4;
+  uint64 running_jobs = 5;
+  uint64 cache_hits = 6;
+  uint64 cache_misses = 7;
+  uint64 cache_entries = 8;
+  uint64 cache_bytes = 9;
+  uint64 event_sequence = 10;
+  uint32 worker_count = 11;
+}
+message ListStrategiesRequest {}
+message ListStrategiesResponse { string strategies_json = 1; }
+
+message SubmitJobRequest {
+  string request_json = 1;
+  string idempotency_key = 2;
+  // Unix milliseconds. Zero starts as soon as capacity is available.
+  int64 scheduled_at_ms = 3;
+  // An immutable library revision may supply the recipe instead of request_json.
+  string alpha_id = 4;
+  uint64 alpha_revision = 5;
+  string label = 6;
+}
+message GetJobRequest { string id = 1; }
+message ListJobsRequest {
+  uint32 limit = 1;
+  uint32 offset = 2;
+  string status = 3;
+}
+message ListJobsResponse {
+  repeated Job jobs = 1;
+  uint64 total = 2;
+}
+message CancelJobRequest { string id = 1; }
+message Job {
+  string id = 1;
+  string status = 2;
+  string request_json = 3;
+  string result_json = 4;
+  string error = 5;
+  double progress = 6;
+  int64 created_at_ms = 7;
+  int64 scheduled_at_ms = 8;
+  int64 started_at_ms = 9;
+  int64 finished_at_ms = 10;
+  string label = 11;
+  string alpha_id = 12;
+  uint64 alpha_revision = 13;
+  string experiment_id = 14;
+  string actor_id = 15;
+  string workflow_id = 16;
+  int64 workflow_slot_ms = 17;
+}
+message WatchEventsRequest {
+  // "jobs", "system", or "all". Job events also have a job_id filter.
+  string channel = 1;
+  uint64 after_sequence = 2;
+  string job_id = 3;
+}
+message Event {
+  uint64 sequence = 1;
+  string channel = 2;
+  string type = 3;
+  string job_id = 4;
+  string payload_json = 5;
+  int64 created_at_ms = 6;
+  // A gap requires a client snapshot refresh before consuming new events.
+  bool gap = 7;
+}
+
+// Database providers expose curated source IDs, never client-supplied paths or credentials.
+message ListDataSourcesRequest {}
+message DataCapabilities {
+  bool browse = 1;
+  bool query = 2;
+  uint32 max_rows = 3;
+  uint32 max_offset = 4;
+  uint32 max_query_bytes = 5;
+  uint32 timeout_ms = 6;
+}
+message DataSource {
+  string id = 1;
+  string name = 2;
+  string provider = 3;
+  bool read_only = 4;
+  DataCapabilities capabilities = 5;
+}
+message ListDataSourcesResponse { repeated DataSource sources = 1; }
+message GetDataCatalogRequest { string source_id = 1; }
+message DataTable {
+  string catalog = 1;
+  string schema = 2;
+  string name = 3;
+  string kind = 4;
+}
+message DataCatalog {
+  string source_id = 1;
+  repeated DataTable tables = 2;
+  bool truncated = 3;
+}
+message PreviewDataRequest {
+  string source_id = 1;
+  string catalog = 2;
+  string schema = 3;
+  string table = 4;
+  uint32 limit = 5;
+  uint32 offset = 6;
+}
+message QueryDataRequest {
+  string source_id = 1;
+  string sql = 2;
+  uint32 max_rows = 3;
+}
+message DataColumn {
+  string name = 1;
+  string type = 2;
+}
+// Exact database-rendered text preserves BIGINT, DECIMAL, timestamps and NULL distinctly.
+message DataCell {
+  string text = 1;
+  bool is_null = 2;
+  bool truncated = 3;
+}
+message DataRow { repeated DataCell cells = 1; }
+message DataResult {
+  string source_id = 1;
+  repeated DataColumn columns = 2;
+  repeated DataRow rows = 3;
+  bool has_more = 4;
+  bool truncated = 5;
+  uint64 elapsed_ms = 6;
+  repeated string warnings = 7;
+}
+
+// Shared named layouts are durable, with optimistic revisions to prevent lost updates.
+// document_json is a bounded schema_version=1 envelope containing layout and panel_state.
+message WorkspaceDocument {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string document_json = 4;
+  uint64 revision = 5;
+  int64 created_at_ms = 6;
+  int64 updated_at_ms = 7;
+  string actor_id = 8;
+}
+message ListWorkspacesRequest {
+  uint32 limit = 1;
+  uint32 offset = 2;
+}
+message ListWorkspacesResponse {
+  // List responses omit document_json. Get one workspace to load its layout.
+  repeated WorkspaceDocument workspaces = 1;
+  uint64 total = 2;
+}
+message GetWorkspaceRequest { string id = 1; }
+message CreateWorkspaceRequest {
+  string name = 1;
+  string description = 2;
+  string document_json = 3;
+}
+message UpdateWorkspaceRequest {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string document_json = 4;
+  uint64 expected_revision = 5;
+}
+message DeleteWorkspaceRequest {
+  string id = 1;
+  uint64 expected_revision = 2;
+}
+message DeleteWorkspaceResponse {}
+
+// Every library edit creates a new immutable snapshot, including metadata edits.
+// A shared local project is the initial deployment model; project isolation is not implied.
+message AlphaSnapshot {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  string description = 4;
+  repeated string tags = 5;
+  string stage = 6;
+  uint64 revision = 7;
+  string hypothesis = 8;
+  string request_json = 9;
+  string request_sha256 = 10;
+  string source_job_id = 11;
+  int64 created_at_ms = 12;
+  int64 updated_at_ms = 13;
+  string actor_id = 14;
+}
+message ListAlphasRequest {
+  uint32 limit = 1;
+  uint32 offset = 2;
+  string search = 3;
+  string tag = 4;
+  string project_id = 5;
+  bool include_archived = 6;
+}
+message ListAlphasResponse {
+  // Summaries omit request_json and hypothesis; fetch a revision to inspect or execute it.
+  repeated AlphaSnapshot alphas = 1;
+  uint64 total = 2;
+}
+message GetAlphaRequest {
+  string id = 1;
+  uint64 revision = 2; // Zero selects the current head.
+}
+message CreateAlphaRequest {
+  string name = 1;
+  string description = 2;
+  repeated string tags = 3;
+  string hypothesis = 4;
+  string request_json = 5;
+  string source_job_id = 6;
+  string project_id = 7;
+}
+message UpdateAlphaRequest {
+  string id = 1;
+  uint64 expected_revision = 2;
+  string name = 3;
+  string description = 4;
+  repeated string tags = 5;
+  string hypothesis = 6;
+  string request_json = 7;
+  string source_job_id = 8;
+}
+message ListAlphaRevisionsRequest {
+  string id = 1;
+  uint32 limit = 2;
+  uint32 offset = 3;
+}
+message ListAlphaRevisionsResponse {
+  repeated AlphaSnapshot revisions = 1;
+  uint64 total = 2;
+}
+message SetAlphaArchivedRequest {
+  string id = 1;
+  uint64 expected_revision = 2;
+  bool archived = 3;
+}
+message CompareJobsRequest {
+  repeated string job_ids = 1;
+  string start_date = 2;
+  string end_date = 3;
+  uint32 max_chart_points = 4; // Zero uses the bounded default.
+  bool allow_mixed_evidence = 5;
+}
+message CompareJobsResponse { string comparison_json = 1; }
+message ValidateExpressionRequest {
+  string strategy_dsl = 1;
+  string dataset_id = 2; // Empty selects the explicitly synthetic demonstration fields.
+  string dataset_sha256 = 3;
+}
+message ValidateExpressionResponse { string analysis_json = 1; }
+
+message SimulationInput {
+  string label = 1;
+  // Exactly one source: request_json, or the alpha_id/alpha_revision pair.
+  string request_json = 2;
+  string alpha_id = 3;
+  uint64 alpha_revision = 4;
+}
+message CreateExperimentRequest {
+  string name = 1;
+  string description = 2;
+  repeated SimulationInput simulations = 3;
+  string idempotency_key = 4;
+  int64 scheduled_at_ms = 5;
+}
+message GetExperimentRequest { string id = 1; }
+message ListExperimentsRequest {
+  uint32 limit = 1;
+  uint32 offset = 2;
+}
+message ListExperimentsResponse {
+  repeated Experiment experiments = 1;
+  uint64 total = 2;
+}
+message CancelExperimentRequest { string id = 1; }
+message Experiment {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  int64 created_at_ms = 4;
+  int64 scheduled_at_ms = 5;
+  string status = 6;
+  double progress = 7;
+  uint32 total = 8;
+  uint32 queued = 9;
+  uint32 running = 10;
+  uint32 succeeded = 11;
+  uint32 failed = 12;
+  uint32 cancelled = 13;
+  // Get/create/cancel include bounded member summaries in submission order; lists omit them.
+  repeated Job jobs = 14;
+  string actor_id = 15;
+}
+
+// One shared team project. Credentials are operator configured and never exposed here.
+message Principal {
+  string id = 1;
+  string name = 2;
+  string role = 3; // viewer, researcher, reviewer, admin
+  int64 expires_at_ms = 4; // Zero means no configured expiration.
+}
+message SessionRequest {}
+message SessionResponse {
+  Principal principal = 1;
+  bool team_mode = 2;
+  string team_name = 3;
+  string project_id = 4;
+}
+message ListTeamRequest {}
+message ListTeamResponse {
+  repeated Principal principals = 1;
+  bool team_mode = 2;
+  string team_name = 3;
+  string project_id = 4;
+}
+message AuditRecord {
+  uint64 sequence = 1;
+  string entity_type = 2;
+  string entity_id = 3;
+  string action = 4;
+  string actor_id = 5;
+  uint64 revision = 6;
+  string metadata_json = 7;
+  int64 created_at_ms = 8;
+}
+message ListAuditRequest {
+  uint32 limit = 1;
+  uint32 offset = 2;
+  string entity_type = 3;
+  string entity_id = 4;
+  string actor_id = 5;
+}
+message ListAuditResponse {
+  repeated AuditRecord records = 1;
+  uint64 total = 2;
+}
+message SubmitReviewRequest {
+  string alpha_id = 1;
+  uint64 alpha_revision = 2;
+  repeated string job_ids = 3;
+  string note = 4;
+  string idempotency_key = 5;
+}
+message ReviewRecord {
+  string id = 1;
+  string alpha_id = 2;
+  uint64 alpha_revision = 3;
+  string request_sha256 = 4;
+  string requester_actor_id = 5;
+  string author_actor_id = 6;
+  string state = 7;
+  uint64 revision = 8;
+  string note = 9;
+  string evidence_json = 10;
+  int64 created_at_ms = 11;
+  int64 updated_at_ms = 12;
+  bool current = 13;
+}
+message GetReviewRequest { string id = 1; }
+message ListReviewsRequest {
+  uint32 limit = 1;
+  uint32 offset = 2;
+  string alpha_id = 3;
+  string state = 4;
+}
+message ListReviewsResponse {
+  repeated ReviewRecord reviews = 1;
+  uint64 total = 2;
+}
+message DecideReviewRequest {
+  string id = 1;
+  uint64 expected_revision = 2;
+  string state = 3; // approved, rejected, withdrawn
+  string rationale = 4;
+}
+message ReviewDecision {
+  string id = 1;
+  string review_id = 2;
+  uint64 revision = 3;
+  string state = 4;
+  string actor_id = 5;
+  string rationale = 6;
+  int64 created_at_ms = 7;
+}
+message ListReviewDecisionsRequest {
+  string id = 1;
+  uint32 limit = 2;
+  uint32 offset = 3;
+}
+message ListReviewDecisionsResponse {
+  repeated ReviewDecision decisions = 1;
+  uint64 total = 2;
+}
+
+// Immutable research recipe on a finite, fixed-interval UTC schedule.
+message CreateWorkflowRequest {
+  string name = 1;
+  string description = 2;
+  string request_json = 3;
+  string alpha_id = 4;
+  uint64 alpha_revision = 5;
+  uint64 interval_ms = 6;
+  uint32 max_runs = 7;
+  int64 first_run_at_ms = 8;
+  string idempotency_key = 9;
+}
+message Workflow {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string request_json = 4; // Omitted from list summaries.
+  string request_sha256 = 5;
+  string alpha_id = 6;
+  uint64 alpha_revision = 7;
+  string actor_id = 8;
+  uint64 interval_ms = 9;
+  uint32 max_runs = 10;
+  int64 first_run_at_ms = 11;
+  int64 next_run_at_ms = 12;
+  uint64 revision = 13; // CAS lifecycle revision; dispatch does not increment it.
+  bool enabled = 14;
+  string state = 15;
+  string pause_reason = 16;
+  string last_dispatch_error = 17;
+  int64 created_at_ms = 18;
+  int64 updated_at_ms = 19;
+  uint64 admitted_runs = 20;
+  uint64 queued = 21;
+  uint64 running = 22;
+  uint64 succeeded = 23;
+  uint64 failed = 24;
+  uint64 cancelled = 25;
+  uint64 missed_slots = 26;
+  uint64 skipped_slots = 27;
+  string active_job_id = 28;
+  string last_job_id = 29;
+}
+message GetWorkflowRequest { string id = 1; }
+message ListWorkflowsRequest {
+  uint32 limit = 1;
+  uint32 offset = 2;
+}
+message ListWorkflowsResponse {
+  repeated Workflow workflows = 1;
+  uint64 total = 2;
+}
+message SetWorkflowPausedRequest {
+  string id = 1;
+  uint64 expected_revision = 2;
+  bool paused = 3;
+}
+message ListWorkflowRunsRequest {
+  string id = 1;
+  uint32 limit = 2;
+  uint32 offset = 3;
+}
+message ListWorkflowRunsResponse {
+  repeated Job jobs = 1;
+  uint64 total = 2;
+}
