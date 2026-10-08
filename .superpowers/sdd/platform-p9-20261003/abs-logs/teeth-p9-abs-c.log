@@ -1,0 +1,56 @@
+mutated atx-impl/src/strategy_ic_absent.cpp: R1 pair
+mutated atx-impl/src/strategy_ic_absent.cpp: R2 no-composition
+mutated atx-impl/src/strategy_ic_absent.cpp: R3 pin hex
+mutated atx-impl/src/strategy_ic_absent.cpp: R4 file read
+mutated atx-impl/src/strategy_ic_absent.cpp: R5 sha mismatch
+mutated atx-impl/src/strategy_ic_absent.cpp: R6 not JSON
+mutated atx-impl/src/strategy_ic_absent.cpp: R7 not an object
+mutated atx-impl/src/strategy_ic_absent.cpp: R8a schema
+mutated atx-impl/src/strategy_ic_absent.cpp: R8b schema
+mutated atx-impl/src/strategy_ic_absent.cpp: R9 members array
+mutated atx-impl/src/strategy_ic_absent.cpp: R10 member string
+mutated atx-impl/src/strategy_ic_absent.cpp: R11 member id
+mutated atx-impl/src/strategy_ic_absent.cpp: R12 not a candidate
+mutated atx-impl/src/strategy_ic_absent.cpp: R13 listed twice
+mutated atx-impl/src/strategy_ic_runner.cpp: R14 CLI repeated flag
+mutated atx-impl/src/strategy_ic_runner.cpp: S1 IC cache bypass
+build p9-abs-c ...
+{
+    "Source":  "265bb42750526279ad14cc81501b0407517f97cc",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  2,
+    "ConfiguredProvenance":  "55464a2e046c377a14c49005f31b042e2cea21ad-dirty",
+    "Jobs":  4,
+    "FreeMiB":  4115,
+    "CommitMiB":  3824,
+    "Targets":  [
+                    "atx-equity-strategy-ic",
+                    "atx-impl-strategy-ic-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  54.2379977,
+    "CompiledTUs":  2,
+    "Links":  3,
+    "Tag":  "p9-abs-c",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-28\\build-equity",
+    "Executables":  {
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-28\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "68d010f8b33a43ab4c05b15e3bed22611dfee1d5ebe47682c88eff445f3b692d"
+                                                   },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-28\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "53f7164bf5aa3f131c966a49494c4587274f31c9f73c854c1f5507f3957ce019"
+                                                       }
+                    }
+}
+[1/6] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_absent.cpp.obj
+[2/6] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_runner.cpp.obj
+[3/6] Linking CXX static library lib\atx-impl-strategy.lib
+[4/6] Linking CXX executable bin\atx-equity-strategy-ic.exe
+[5/6] Linking CXX executable bin\atx-impl-strategy-ic-tests.exe
+
+build exit 0
+gtest exit 1 (log teeth-p9-abs-c-gtest.log)
+restored: git status --porcelain empty; every mutated file's blob == HEAD's

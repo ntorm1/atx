@@ -1,0 +1,68 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = AbsentMembers.*
+[==========] Running 11 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 11 tests from AbsentMembers
+[ RUN      ] AbsentMembers.ThemeMemberLeavesItsMassToTheOtherMembers
+[       OK ] AbsentMembers.ThemeMemberLeavesItsMassToTheOtherMembers (1187 ms)
+[ RUN      ] AbsentMembers.WholeThemeListedIsAThemeWithNoPresentMember
+[       OK ] AbsentMembers.WholeThemeListedIsAThemeWithNoPresentMember (2131 ms)
+[ RUN      ] AbsentMembers.ThemeErcAndIcShrinkBasesVerifyAndCarryTheirWeights
+[       OK ] AbsentMembers.ThemeErcAndIcShrinkBasesVerifyAndCarryTheirWeights (4689 ms)
+[ RUN      ] AbsentMembers.StandardiseBaseLeavesTheMemberOutOfItsThemeRerank
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5282): error: Expected: (file_sha(dir.path/(tag+"-data")/(role_name+"_combined.f64"))) != (file_sha(dir.path/(tag+"-listed")/(role_name+"_combined.f64"))), actual: "353f1b413482ce629dd3c953835b3d016cdd4bd0ec8cbb2672b2bf626be12201" vs "353f1b413482ce629dd3c953835b3d016cdd4bd0ec8cbb2672b2bf626be12201"
+train
+Google Test trace:
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5253): std
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5282): error: Expected: (file_sha(dir.path/(tag+"-data")/(role_name+"_combined.f64"))) != (file_sha(dir.path/(tag+"-listed")/(role_name+"_combined.f64"))), actual: "353f1b413482ce629dd3c953835b3d016cdd4bd0ec8cbb2672b2bf626be12201" vs "353f1b413482ce629dd3c953835b3d016cdd4bd0ec8cbb2672b2bf626be12201"
+validation
+Google Test trace:
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5253): std
+
+[  FAILED  ] AbsentMembers.StandardiseBaseLeavesTheMemberOutOfItsThemeRerank (2642 ms)
+[ RUN      ] AbsentMembers.UnthemedBlendKeepsItsFixedDenominator
+[       OK ] AbsentMembers.UnthemedBlendKeepsItsFixedDenominator (1894 ms)
+[ RUN      ] AbsentMembers.UnweightedPassWithoutCacheLeavesTheMemberUnoriented
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5282): error: Expected: (file_sha(dir.path/(tag+"-data")/(role_name+"_combined.f64"))) != (file_sha(dir.path/(tag+"-listed")/(role_name+"_combined.f64"))), actual: "371b2757b71172fe88779e58f3952f97ea93a09e1a2a4c48c7ad7722efa5be31" vs "371b2757b71172fe88779e58f3952f97ea93a09e1a2a4c48c7ad7722efa5be31"
+train
+Google Test trace:
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5253): u
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5282): error: Expected: (file_sha(dir.path/(tag+"-data")/(role_name+"_combined.f64"))) != (file_sha(dir.path/(tag+"-listed")/(role_name+"_combined.f64"))), actual: "371b2757b71172fe88779e58f3952f97ea93a09e1a2a4c48c7ad7722efa5be31" vs "371b2757b71172fe88779e58f3952f97ea93a09e1a2a4c48c7ad7722efa5be31"
+validation
+Google Test trace:
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5253): u
+
+unknown file: error: C++ exception with description "[json.exception.type_error.304] cannot use at() with number" thrown in the test body.
+
+[  FAILED  ] AbsentMembers.UnweightedPassWithoutCacheLeavesTheMemberUnoriented (1094 ms)
+[ RUN      ] AbsentMembers.WalkForwardRowsTreatTheMemberAsMissing
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5282): error: Expected: (file_sha(dir.path/(tag+"-data")/(role_name+"_combined.f64"))) != (file_sha(dir.path/(tag+"-listed")/(role_name+"_combined.f64"))), actual: "dd0f6f3b04279933ec20d8482063ae0102b7d4b691a58859da08849910523e90" vs "dd0f6f3b04279933ec20d8482063ae0102b7d4b691a58859da08849910523e90"
+validation
+Google Test trace:
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5253): std_wf
+
+[  FAILED  ] AbsentMembers.WalkForwardRowsTreatTheMemberAsMissing (3593 ms)
+[ RUN      ] AbsentMembers.SharedCacheNeverCrossServesRunsWithAndWithoutTheList
+unknown file: error: C++ exception with description "[json.exception.type_error.304] cannot use at() with number" thrown in the test body.
+
+[  FAILED  ] AbsentMembers.SharedCacheNeverCrossServesRunsWithAndWithoutTheList (1134 ms)
+[ RUN      ] AbsentMembers.RecordIsTheOnlyTraceAndUnlistedRowsAreUnchanged
+[       OK ] AbsentMembers.RecordIsTheOnlyTraceAndUnlistedRowsAreUnchanged (1004 ms)
+[ RUN      ] AbsentMembers.CapabilityIsListedInTheSortedEnvelope
+[       OK ] AbsentMembers.CapabilityIsListedInTheSortedEnvelope (9 ms)
+[ RUN      ] AbsentMembers.RefusalsPrecedeAnyPayloadOrOutput
+[       OK ] AbsentMembers.RefusalsPrecedeAnyPayloadOrOutput (298 ms)
+[----------] 11 tests from AbsentMembers (19681 ms total)
+
+[----------] Global test environment tear-down
+[==========] 11 tests from 1 test suite ran. (19683 ms total)
+[  PASSED  ] 7 tests.
+[  FAILED  ] 4 tests, listed below:
+[  FAILED  ] AbsentMembers.StandardiseBaseLeavesTheMemberOutOfItsThemeRerank
+[  FAILED  ] AbsentMembers.UnweightedPassWithoutCacheLeavesTheMemberUnoriented
+[  FAILED  ] AbsentMembers.WalkForwardRowsTreatTheMemberAsMissing
+[  FAILED  ] AbsentMembers.SharedCacheNeverCrossServesRunsWithAndWithoutTheList
+
+ 4 FAILED TESTS
