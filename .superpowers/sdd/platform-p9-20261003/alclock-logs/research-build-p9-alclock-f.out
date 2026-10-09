@@ -1,0 +1,41 @@
+{
+    "Source":  "1cbe523391ab9eec1747d69c6996a879831bd0e3",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  6,
+    "ConfiguredProvenance":  "c3f3f1f84f196d7a3f248b46d71fd326c012664f-dirty",
+    "Jobs":  3,
+    "FreeMiB":  2585,
+    "CommitMiB":  3053,
+    "Targets":  [
+                    "atx-impl-strategy-target-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  108.59709529999999,
+    "CompiledTUs":  13,
+    "Links":  3,
+    "Tag":  "p9-alclock-f",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-8\\build-equity",
+    "Executables":  {
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-8\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "1708ab8d9eae67772dad2db220e685babf8c6be18052cd85e15cb8bab69899d3"
+                                                           }
+                    }
+}
+[1/17] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+[2/17] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+[3/17] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+[4/17] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+[5/17] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+[6/17] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+[7/17] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+[8/17] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_validate.cpp.obj
+[9/17] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_decide.cpp.obj
+[10/17] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_load.cpp.obj
+[11/17] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_cli.cpp.obj
+[12/17] Linking CXX static library lib\spdlogd.lib
+[13/17] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_lockstep.cpp.obj
+[14/17] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_nav_v7.cpp.obj
+[15/17] Linking CXX static library lib\atx-impl-strategy.lib
+[16/17] Linking CXX executable bin\atx-impl-strategy-target-tests.exe

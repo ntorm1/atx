@@ -1,0 +1,11 @@
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_nav_rule_split
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_a_rule_row_sets_nav_rule[a-the-parents-own-aim-rule]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_a_rule_row_sets_nav_rule[b-another-aim-row]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_a_rule_row_sets_nav_rule[b-a-parent-on-another-aim-rule]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_other_row_kinds_keep_the_append_route[rate]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_other_row_kinds_keep_the_append_route[target-rule]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_other_row_kinds_keep_the_append_route[cost-law]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_a_raw_rule_flag_is_still_refused[constants-flags]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_a_raw_rule_flag_is_still_refused[template-flags]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_a_raw_rule_flag_is_still_refused[constants-set]
+10 passed, 183 deselected in 35.04s

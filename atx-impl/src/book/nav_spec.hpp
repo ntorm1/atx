@@ -38,7 +38,8 @@
 // ann_mean_gross (Rulings PRE-7 / PRE-7a; --ann-mean-gross): each scenario of summary.json gains
 // ann_mean_gross = 252 x the mean of the book's daily gross_return over the return rows that
 // ann_mean averages (the same rows and the same running mean; summarize_nav). Absent, every
-// output byte is the run without the option.
+// output byte is the run without the option. P9 AL-CLOCK (Ruling ALCLOCK-1): info_clock_print
+// (--info-clock-print) adds each scenario's info_clock block (NavEmitOptions::info_clock_print).
 //
 // The file is JSON with each key once per object: a repeated key is refused (the parser would
 // keep the last value while a reader of the pinned file sees the first).

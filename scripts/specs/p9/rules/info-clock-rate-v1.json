@@ -1,0 +1,99 @@
+{
+  "schema": "atx.p9-rule-registration/v1",
+  "id": "info-clock-rate-v1",
+  "cell": "P9-C",
+  "table": "trade-rate (K-P9-7: atx-equity-strategy-targets nav --list-rules --json, kind trade-rate, x-flag --rate info-clock-rate-v1, params_schema with no property)",
+  "lane": "AL-CLOCK",
+  "report": "task-AL-CLOCK-report.md",
+  "status": "proposed",
+  "citation": "Bowles, Reed, Ringgenberg and Thornock (2024), Anomaly Time, Journal of Finance 79(5) (lit [29]); Engelberg, McLean and Pontiff (2018), Anomalies and News, Journal of Finance 73(5) (lit [28]); the fast rate is Y-5's registered two_speed_fast_theta (atx-engine/include/atx/engine/book/two_speed.hpp; Ruling W3-16)",
+  "hypothesis": "info-clock-rate-v1",
+  "claim": "anomaly returns are concentrated in the first month after a firm's information release and decay soon after; stale formation understates predictability (Bowles et al.); anomaly returns are several times higher on earnings days (Engelberg et al.; lit section 2.3)",
+  "source_sample_end": 2019,
+  "source_sample_basis": "Bowles et al. (the rule's own source, the published sample): 'Our sample period begins January 1990 and goes through 2019' (read in the first AL-CLOCK session, handoff-AL-CLOCK.md); Engelberg et al. is a supporting citation, not the primary source (PRE-19)",
+  "source_sample_flag": "FLAGGED under PRE-19 / PRE-31 (Ruling ALCLOCK-2: the primary source's sample ends 2015 or later); P9-C stays registered (PRE-14 unchanged); the clean-source book of the OD-3 read applies no info-clock-rate-v1",
+  "predicted_mechanism": "anomaly returns arrive in the month after a firm's information release, so a name moved toward its aim at the fast rate in the 21 sessions after its latest earnings announcement's reaction session holds more of the signal while it still pays; the total trade toward a step change is unchanged, only its participation per day rises",
+  "data_class": "H",
+  "house_form": "a NAV trade-rate rule: aim-partial-v5's per-name rate vector (the per-name-v1 seam of strategy_target_replay aim_partial_weights), formed once per rebalance decision from the role field ea_days_since (atx-impl book/nav_decide.cpp nav_info_clock_rates; strategy_nav_replay.hpp states it); NAV flag --rate info-clock-rate-v1, no parameter",
+  "constants": [
+    {
+      "name": "theta_fast",
+      "value": "two_speed_fast_theta(C) = 1 - 2^(-C/5) at the rebalance cadence C (.12945 at C = 1, .5 at C = 5)",
+      "why": "Y-5's registered fast rate (two-speed-v1: half of an aim gap closes in 5 sessions at any cadence); Ruling W3-16: the function, not the literal .12945, which is its cadence-1 value (lit section 2.3)"
+    },
+    {
+      "name": "theta_slow",
+      "value": 0.05,
+      "why": "the parent's aim-partial-v5 theta (two_speed_slow_theta); the NAV exe refuses the rule at any other --trade-fraction"
+    },
+    {
+      "name": "window_sessions",
+      "value": 21,
+      "why": "Bowles et al.'s one month after the information release (21 sessions); the window is closed: 0 and 21 are fast"
+    },
+    {
+      "name": "field",
+      "value": "ea_days_since",
+      "why": "the house's event clock: sessions since the reaction session of the name's latest visible primary earnings announcement (atx-engine/tools/research_fields_sec.py, recipe sec-ea-days-since-reaction-v1; >= 0, NaN without a fresh announcement)"
+    }
+  ],
+  "fixed_choices": [
+    "the paper's information-release date is mapped to the reaction session of the name's latest visible primary earnings announcement as the role field ea_days_since records it (t minus that session: session_date for pre-market, intraday and closed-day releases, the next session for post-market; NaN without a fresh announcement): a FIXED CHOICE of this registration (Ruling ALCLOCK-2), made before any read; no other release (10-K / 10-Q filing, news) enters the clock; the published sample is the one a reader can check",
+    "member i at rebalance decision d moves theta_fast when ea_days_since[d, i] lies in [0, 21], else theta_slow; a NaN clock is slow; the clock is read at row d only (causal)",
+    "the aim (L x desired), the dust band and the exit rule are the parent's; a nonmember is never moved by theta (its exit applies) and gets the slow rate in the vector",
+    "one rate vector per decision for every book, formed on the calling thread before the books' DECIDE, so --book-workers N runs (the bytes of one worker; InfoClockRate.BookWorkersOneAndFourSameBytes)",
+    "the book's one rate rule: per-name-v1, two-speed-v1, aim-partial-v6 and the spo rules are refused with it (the row's incompatible[]); the parent must run --rule aim-partial-v5 at --trade-fraction .05",
+    "Ruling ALCLOCK-3: --capacity-curve is accepted with this rate (it reads no NAV, so each capacity book moves at the members' clock rates as the main books do); per-name-v1 stays refused with the capacity curve and aim-partial-v6 refuses every non-fixed rate, this one included (InfoClockRate.CapacityCurveAcceptsThisRateOnly)",
+    "a construction-grid variant keeps the base cadence under the rule (the fast rate is formed once per decision at it)",
+    "the field is pinned through the run's --fields manifest (point in time; recorded in the recipe's financing_fields.fields_used under the rule); a manifest without it, or a cell outside NaN-or-finite->=0, is refused before any output",
+    "the decide (deploy) path keeps refusing every non-fixed rate: the rule is a replay rule in P9"
+  ],
+  "realised_leverage": "Ruling C3-4: the rule changes only the per-name rate, never L or the aim. Per name the step is convex (|w_next| <= max(|w|, L |desired|)); with one rate for every name the planned gross stays within max(the book's gross, gross(aim)), but unequal rates can carry it above gross(aim) in a rotation (fast names fill toward new aims while slow names still unwind). Cap stated for the rule: planned gross <= (theta_fast / theta_slow) x gross(aim) by contraction, outside the dust band (2.589 x at cadence 1); loose. In P9-C the cell is gross-matched (gross_match pm6-6-engine): the match stage solves L' so that the cell's realised mean gross equals its parent's within C2's tolerance, so the realised gross the OD5-7 cap reads is the parent's; the daily realised gross is printed by the NAV exe (daily CSV) beside it",
+  "restatement": "Ruling DEC-16 (blind, before any Y read): distinct from Y-5 and R-3. Y-5 (two-speed-v1) buckets THEMES into a fast and a slow sleeve, each with its own aim and holdings, netted into one trade; this rule keeps one aim and one book and sets a rate per NAME-DAY from an event clock (the name's earnings announcement), whatever theme its alpha comes from: another decision unit (name-day vs theme) and another object (a rate vector vs sleeve aims; no sleeve, no netting). R-3 is a per-signal aim gain at one rate. Cost if wrong: one restated trial (N_c +1)",
+  "print_opt_in": "Ruling ALCLOCK-1: --info-clock-print (NavSpec options.info_clock_print) is print-only, not a rule flag and owned by no K-P9-7 row: it loads ea_days_since from --fields without recording it in the recipe and adds to each scenario of summary.json the block info_clock (rate, field {name, sha256}, window_sessions, theta_fast, theta_slow, name_days, fast_name_days, missing_name_days, fast_share, planned_turnover, fast_planned_turnover, turnover_share, definition) at whatever rate the book runs; flag absent = every byte of before; the rule alone prints no block. P9-C and its reference name it alike (root on the Y-F0 reference at the wave-3 P9-B0; the cell inherits it)",
+  "predictions": {
+    "registered_before_any_read": "the fast-rate share of name-days and the planned-turnover share on fast name-days are printed for the cell and its parent by the same C++ producer (info_clock block under --info-clock-print on both); the OD-3 prediction: turnover share up and gross up against the parent (plan section 5.3); the total traded quantity toward a step change is unchanged, participation per day rises on fast name-days (lit section 2.3)",
+    "expected_effect": "+.02 to +.06 net Sharpe [est]; book gross +~5% [est]; capacity down (plan section 7.2; lit section 2.3)"
+  },
+  "nav_flag": {
+    "nav": {
+      "--rate": "info-clock-rate-v1"
+    }
+  },
+  "nav_flag_note": "derived by wave_kinds.rule_flags from the NAV exe's K-P9-7 row (x-flag --rate info-clock-rate-v1, no params) on the append route (not a --rule row, Ruling C3-13): the cell's NAV argv carries the parent's --rule aim-partial-v5 once (nav.rule) and --rate info-clock-rate-v1 once; a parent flag list that already carries --rate gets its value replaced, never a second token; never from a template's change.flags or rule_cell.constants.flags (Ruling ALCOMB-1, F-8: --rate is a rule-owned NAV flag, refused there at preflight); --info-clock-print is free there (no row owns it)",
+  "manifest_fragment": {
+    "schema": "atx.research-wave/v2",
+    "kind": "rule",
+    "gross_match": "pm6-6-engine",
+    "rule_cell": {
+      "template": "scripts/specs/p9/templates/info-clock.json",
+      "template_sha256": "95d4104a421c32f91877649f1ec9dfbdb409c9a121d6f6e2377e5e25e19b42d5",
+      "name": "info-clock-rate-v1",
+      "source_sample_end": 2019,
+      "predicted_mechanism": "anomaly returns arrive in the month after a firm's information release, so a name moved toward its aim at the fast rate in the 21 sessions after its latest earnings announcement's reaction session holds more of the signal while it still pays; the total trade toward a step change is unchanged, only its participation per day rises",
+      "data_class": "H"
+    },
+    "rules": [
+      {
+        "name": "info-clock-rate-v1",
+        "params": {}
+      }
+    ]
+  },
+  "manifest_note": "paste into the P9-C atx.research-wave/v2 manifest (K-P9-9) beside root's own keys (wave, parent, fields, acceptance pm7-34, budget, ledger, expect, out_dir); gross_match pm6-6-engine is a manifest key (the template carries none); params {} = every registered constant (the row has no parameter). template_sha256 is the template file's SHA-256 at this lane's commit (LF bytes; scripts/specs/** text eol=lf, R0-7-EOL); root re-pins it when it sets the template's parent",
+  "requires": [
+    "the PM has ruled info-clock-rate-v1 distinct from Y-5 before any Y read (plan DEC-16: done, ledger)",
+    "the PM registers P9-C (plan section 5.2); source_sample_end 2019 FLAGGED (Ruling ALCLOCK-2); P9-C lapses at 0 if lane AL-CLOCK is not merged and APPROVE when the P9 cells start (PRE-14)",
+    "lane AL-CLOCK reviewed and merged by root before COV-MV (W3-9); root repeats the C3-5 probe with --rate info-clock-rate-v1 at that merge (Ruling C3-13) and re-pins the lineage parents to the wave-3 P9-B0 references (W1-I2)",
+    "the cell's fields manifest lists ea_days_since point in time (the NAV exe refuses otherwise)",
+    "root sets the template's parent to the last accepted cell whose NAV runs --rule aim-partial-v5 at --trade-fraction .05 with the fixed rate and no --two-speed (Y-F0 at registration), and names --info-clock-print on that reference at the wave-3 P9-B0 (Ruling ALCLOCK-1)"
+  ],
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-06",
+      "by": "AL-CLOCK",
+      "note": "P9 lane AL-CLOCK (lit section 2.3 [28][29]; plan DEC-16; Rulings W3-16, ALCLOCK-1, ALCLOCK-2, ALCLOCK-3); blind registration, one variant, no grid, trials 0"
+    }
+  ]
+}

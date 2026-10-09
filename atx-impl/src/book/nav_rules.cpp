@@ -52,6 +52,10 @@ constexpr std::array<std::string_view, 5> fixed_rate_rules{"aim-partial-v6", "sp
                                                            "spo-v3", "two-speed-v1"};
 constexpr std::array<std::string_view, 5> two_speed_refuses{"per-name-v1", "aim-partial-v6",
                                                             "spo-v1", "spo-v2", "spo-v3"};
+// P9 AL-CLOCK: info-clock-rate-v1 is the book's one rate rule (not with per-name-v1) and needs
+// aim-partial-v5's per-name move (the rules that need the fixed rate refuse it).
+constexpr std::array<std::string_view, 6> info_clock_refuses{
+    "per-name-v1", "two-speed-v1", "aim-partial-v6", "spo-v1", "spo-v2", "spo-v3"};
 
 // The kind tables (size-deduced: a lane appends one Row at the end, Ruling W3-9).
 constexpr Row trade_rates[] = {
@@ -68,6 +72,14 @@ constexpr Row trade_rates[] = {
      "the NAV half of the composition rule two-speed-v1 (named in rules as two-speed-v1, which "
      "sets --two-speed two-speed-v1 on both exes): a virtual fast sleeve at theta_f = 1 - "
      "2^(-C/5) at cadence C, the slow remainder at theta_s = .05, netted"},
+    {nav_info_clock_rate_id, Kind::TradeRate, "--rate info-clock-rate-v1", no_params, none,
+     info_clock_refuses,
+     "info-clock-rate-v1 (P9 AL-CLOCK, lit [28][29]): aim-partial-v5's theta per name from its "
+     "information clock: a member whose ea_days_since (sessions since its latest primary "
+     "earnings announcement's reaction session; --fields) is in [0, 21] moves at theta_f = 1 - "
+     "2^(-C/5) at cadence C (two-speed-v1's fast rate), every other member (a NaN clock "
+     "included) at theta_s = --trade-fraction, which must be .05; needs --rule aim-partial-v5; "
+     "one rate vector per decision for every book, so --book-workers N runs"},
 };
 
 // cost-sqrt-v2's legacy spelling (Ruling C3-3): the switch the v7 seam has always read.
