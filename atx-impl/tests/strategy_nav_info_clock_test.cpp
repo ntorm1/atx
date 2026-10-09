@@ -625,7 +625,8 @@ TEST(InfoClockRate, CommandLineRefusalsWriteNothing) {
        "--two-speed two-speed-v1 needs aim-partial-v5 at the fixed rate"},
       {&w.fields,
        {"--rule", "aim-partial-v6", "--trade-fraction", ".05", "--rate", "info-clock-rate-v1"}, 2,
-       "aim-partial-v6 and --capacity-curve need the fixed rate"},
+       "aim-partial-v6 needs the fixed rate, --capacity-curve the fixed rate or "
+       "info-clock-rate-v1"},
       {&w.fields, {"--rule", "spo-v1", "--rate", "info-clock-rate-v1"}, 2, "fixed rate"},
       {&w.fields, joined(rule_on, {"--construction-grid", grid.string()}), 1,
        "with --rate info-clock-rate-v1 every variant has the base cadence"},
@@ -654,7 +655,8 @@ TEST(InfoClockRate, CommandLineRefusalsWriteNothing) {
 // Ruling ALCLOCK-3: --capacity-curve accepts --rate info-clock-rate-v1 (the rate reads no NAV:
 // each capacity book moves at the members' clock rates, as the main books do) and no other
 // non-fixed rate: per-name-v1 is refused as before; aim-partial-v6 refuses every non-fixed rate,
-// this one included.
+// this one included. The refusal and the published capacity sentence say so (fix 1, review
+// S-1): under the rule the sentence names the rate; at the fixed rate it keeps its text.
 TEST(InfoClockRate, CapacityCurveAcceptsThisRateOnly) {
   const auto parses = [](const std::vector<std::string>& flags) {
     std::vector<std::string> args{"nav", "--combined", "c.json", "--combined-sha256",
@@ -666,7 +668,10 @@ TEST(InfoClockRate, CapacityCurveAcceptsThisRateOnly) {
     EXPECT_TRUE(v7::claims_nav_args(static_cast<int>(argv.size()), argv.data()));
     const auto parsed = v7::parse_nav_v7_args(static_cast<int>(argv.size()), argv.data());
     if (!parsed)
-      EXPECT_NE(parsed.error().to_string().find("need the fixed rate"), std::string::npos)
+      EXPECT_NE(parsed.error().to_string().find(
+                    "aim-partial-v6 needs the fixed rate, --capacity-curve the fixed rate or "
+                    "info-clock-rate-v1 (per-name-v1 reads the NAV)"),
+                std::string::npos)
           << parsed.error().to_string();
     return static_cast<bool>(parsed);
   };
@@ -690,6 +695,31 @@ TEST(InfoClockRate, CapacityCurveAcceptsThisRateOnly) {
       << err.str();
   EXPECT_TRUE(fs::exists(w.out("cap") / "capacity" / "summary.json"));
   EXPECT_EQ(Json::parse(bytes_of(w.out("cap") / "capacity" / "recipe.json")).at("rate"), clock_id);
+  // The capacity sentence of the recipe, the summary and v7_extras.json: it names the rate under
+  // the rule; at the fixed rate it is the sentence of before ("fixed rate only").
+  const auto sentences = [](const fs::path& dir) {
+    const auto recipe = Json::parse(bytes_of(dir / "recipe.json"));
+    const auto summary = Json::parse(bytes_of(dir / "summary.json"));
+    const auto extras = Json::parse(bytes_of(dir / "v7_extras.json"));
+    return std::vector<std::string>{
+        recipe.at("v7").at("capacity").get<std::string>(),
+        summary.at("v7").at("declarations").at("capacity").get<std::string>(),
+        extras.at("capacity_rule").get<std::string>()};
+  };
+  const std::string fixed_only = "; fixed rate only; x1 is S2 bit for bit";
+  const std::string named = "; the fixed rate or info-clock-rate-v1, this run's (Ruling ALCLOCK-3";
+  for (const auto& text : sentences(w.out("cap"))) {
+    EXPECT_NE(text.find(named), std::string::npos) << text;
+    EXPECT_EQ(text.find(fixed_only), std::string::npos) << text;
+  }
+  ASSERT_EQ(nav(w.args(w.out("cap-fixed"), &w.fields, joined(v5_slow, {"--capacity-curve"})), log,
+                err),
+            0)
+      << err.str();
+  for (const auto& text : sentences(w.out("cap-fixed"))) {
+    EXPECT_NE(text.find(fixed_only), std::string::npos) << text;
+    EXPECT_EQ(text.find("info-clock"), std::string::npos) << text;
+  }
   EXPECT_EQ(nav(w.args(w.out("cap-pn"), &w.fields,
                        joined(v5_slow, {"--rate", "per-name-v1", "--capacity-curve"})),
                 log, err),

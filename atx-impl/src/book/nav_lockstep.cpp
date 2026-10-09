@@ -209,12 +209,14 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
                        "every book)");
   // Books on a pool: the per-name-v1 rates share one buffer, and the spo engines hold every
   // book's state. P9 C1: every other v7 rule and the leverage rule keep their state per book
-  // (made on this thread before the books run), so they run on the pool.
+  // (made on this thread before the books run), so they run on the pool. P9 AL-CLOCK: so does
+  // info-clock-rate-v1 (one rate vector per decision, formed on this thread; fix 1 names it).
   if (base.book_workers > 1 &&
       (base.rate == NavRateRule::PerNameV1 || v7::shared_plan_state()))
     return co::Err(co::ErrorCode::InvalidArgument,
-                   "nav replay: --book-workers above 1 needs a fixed rate and no spo rule (its "
-                   "engines hold every book's state)");
+                   "nav replay: --book-workers above 1 needs the fixed rate or "
+                   "info-clock-rate-v1 (per-name-v1's rates share one buffer) and no spo rule "
+                   "(its engines hold every book's state)");
   const usize books = variants.size() * scenarios.size();
   // The NAV volume is authoritative, also for price-risk neutralization.
   TargetReplayInput x = in.target;

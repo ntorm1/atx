@@ -83,6 +83,9 @@ struct ScopedNavExtension::State {
   // configure(): the replay's books carry --adv-hold-q (P9 C1 fix 1: picks the spo-v3 capacity
   // sentence of the summary, holdings manifest and v7_extras.json; a recipe reads its own key).
   bool adv_hold{};
+  // configure(): the replay's books run --rate info-clock-rate-v1 (P9 AL-CLOCK fix 1, review S-1:
+  // picks the capacity sentence that names the rate; a recipe reads its own rate key).
+  bool info_clock{};
   // A capacity book: in the capacity pass every book; in the main pass a capacity id under
   // --capacity-curve (P9 C1: the capacity books join the main lockstep).
   [[nodiscard]] bool is_capacity(const NavScenario& scenario) const {
@@ -202,6 +205,21 @@ constexpr const char* capacity_declaration =
     "book is the NAV-m book divided by m: returns, Sharpe, cost per traded dollar and cap binding "
     "are the NAV-m book's; dollar columns are scaled back by m; participation p95 is the "
     "histogram bound times m); fixed rate only; x1 is S2 bit for bit";
+// Under --rate info-clock-rate-v1 (P9 AL-CLOCK fix 1, review S-1; Ruling ALCLOCK-3): the same
+// sentence naming the rate the capacity books run; every other run keeps the one above byte for
+// byte (flag absent: its recipe, summary, holdings manifest and v7_extras.json unchanged).
+constexpr const char* capacity_info_clock_declaration =
+    "capacity by replay (R4.2): S2 at NAV multiples m in {.5,1,2,4,8} of the initial NAV, run as "
+    "S2 books at the initial NAV with impact_y * m^0.5 and max_participation / m (the replay is "
+    "scale invariant in every dollar except the impact law and the participation cap, so each "
+    "book is the NAV-m book divided by m: returns, Sharpe, cost per traded dollar and cap binding "
+    "are the NAV-m book's; dollar columns are scaled back by m; participation p95 is the "
+    "histogram bound times m); the fixed rate or info-clock-rate-v1, this run's (Ruling "
+    "ALCLOCK-3: it reads no NAV, so each capacity book moves at the members' clock rates as the "
+    "main books do); x1 is S2 bit for bit";
+[[nodiscard]] constexpr const char* capacity_rule(bool info_clock) noexcept {
+  return info_clock ? capacity_info_clock_declaration : capacity_declaration;
+}
 constexpr const char* capacity_v6_declaration =
     "aim-partial-v6 in the capacity pass: each capacity book prices its c_i with its own law (S2 "
     "with impact_y * m^0.5), which at the base-scale reference trade q equals the S2 law at the "
@@ -279,8 +297,9 @@ constexpr const char* tc_declaration =
     "alpha_i / sigma_i^2 with Grinold-Kahn alpha_i = IC sigma_i z_i, z = the neutralized rank "
     "aim) and the planned weight w_i after the rule";
 
-// adv_hold: the --adv-hold-q in force (the spo-v3 capacity sentence; P9 C1 fix 1).
-Json declarations(const ScopedNavExtension::State& s, bool adv_hold) {
+// adv_hold: the --adv-hold-q in force (the spo-v3 capacity sentence; P9 C1 fix 1). info_clock:
+// the books run --rate info-clock-rate-v1 (the capacity sentence; P9 AL-CLOCK fix 1).
+Json declarations(const ScopedNavExtension::State& s, bool adv_hold, bool info_clock) {
   const auto& v6 = s.options.v6;
   Json j{{"hook", "platform-v7 lane L4 NAV extension (strategy_nav_v7)"},
          {"pass", pass_name(s.pass)},
@@ -292,7 +311,7 @@ Json declarations(const ScopedNavExtension::State& s, bool adv_hold) {
     j["s2_fim"] = fim_declaration;
   }
   if (s.options.capacity) {
-    j["capacity"] = capacity_declaration;
+    j["capacity"] = capacity_rule(info_clock);
     j["capacity_multiples"] = Json(std::vector<f64>(cost_v2::capacity_multiples.begin(),
                                                     cost_v2::capacity_multiples.end()));
     if (s.options.aim_v6) j["capacity_aim_partial_v6"] = capacity_v6_declaration;
@@ -462,7 +481,7 @@ co::Result<std::string> write_extras(const std::filesystem::path& dir,
     ATX_TRY(auto sha, co::sha256_file(path.string()));
     files["capacity_curve.csv"] = sha;
     extras["capacity"] = std::move(rows);
-    extras["capacity_rule"] = capacity_declaration;
+    extras["capacity_rule"] = capacity_rule(s.info_clock);
     if (o.aim_v6) extras["capacity_aim_partial_v6"] = capacity_v6_declaration;
     extras["capacity_x1_equals_primary_bit_for_bit"] =
         primary && unit && same_bits(primary->net_returns, unit->net_returns);
@@ -578,7 +597,7 @@ void summarize(const ScopedNavExtension::State& s, Json& summary, std::span<cons
           {"decisions_at_clip_hi", at_hi}};
     books[book] = std::move(entry);
   }
-  summary["v7"] = Json{{"declarations", declarations(s, s.adv_hold)},
+  summary["v7"] = Json{{"declarations", declarations(s, s.adv_hold, s.info_clock)},
                        {"books", std::move(books)}, {"extras", extras}};
   // The pass's own engine: spo-v3's capacity pass (Ruling E-37) summarises its capacity books.
   const spo::Engine* engine =
@@ -837,6 +856,7 @@ void configure(NavReplayConfig& cfg) {
   auto* s = active_state;
   if (!s) return;
   s->adv_hold = cfg.target.adv_hold_q > 0; // adv_hold_on (P9 C1 fix 1)
+  s->info_clock = cfg.rate == NavRateRule::InfoClockV1; // P9 AL-CLOCK fix 1 (review S-1)
   if (!s->options.risk_target.on || cfg.leverage.law != NavLeverageLaw::Fixed) return;
   cfg.leverage = risk_target::leverage_rule(s->options.risk_target, s->options.spo_risk);
 }
@@ -966,8 +986,11 @@ void extend_recipe(Json& recipe) {
   const auto* s = active_state;
   if (!s || !recipe.is_object()) return;
   // The recipe's own adv_hold_rule key (adv_hold_on) picks the spo-v3 capacity sentence, so the
-  // decide path, which runs no replay, forms the run's recipe (P9 C1 fix 1).
-  recipe["v7"] = declarations(*s, recipe.contains("adv_hold_rule"));
+  // decide path, which runs no replay, forms the run's recipe (P9 C1 fix 1); its own rate key
+  // (nav_write: set only under the rule) picks the capacity sentence (P9 AL-CLOCK fix 1).
+  const bool info_clock = recipe.contains("rate") && recipe.at("rate").is_string() &&
+                          recipe.at("rate").get<std::string>() == nav_info_clock_rate_id;
+  recipe["v7"] = declarations(*s, recipe.contains("adv_hold_rule"), info_clock);
   if (const char* id = rule_id(s->options);
       id && recipe.contains("rule") && recipe.at("rule").is_string())
     recipe["rule"] = relabel_v6(recipe.at("rule").get<std::string>(), id);
@@ -994,7 +1017,7 @@ void extend_summary(Json& summary, const RunRecords& records, const Json& bindin
 void extend_holdings(Json& manifest) {
   const auto* s = active_state;
   if (!s || !manifest.is_object()) return;
-  manifest["v7"] = declarations(*s, s->adv_hold);
+  manifest["v7"] = declarations(*s, s->adv_hold, s->info_clock);
   if (const char* id = rule_id(s->options);
       id && manifest.contains("rule") && manifest.at("rule").is_string())
     manifest["rule"] = relabel_v6(manifest.at("rule").get<std::string>(), id);
@@ -1010,7 +1033,8 @@ void append_help(std::ostream& out) {
          "--list-rules by id; none registered in this build)] "
          "[--capacity-curve (the capacity books S2 at NAV x .5,1,2,4,8 in the main lockstep, "
          "published into <output>/capacity, then <output>/capacity_curve.csv; with "
-         "--adv-hold-q each capacity book's cap reads its multiple's NAV; fixed rate only; "
+         "--adv-hold-q each capacity book's cap reads its multiple's NAV; the fixed rate or "
+         "--rate info-clock-rate-v1 (Ruling ALCLOCK-3: it reads no NAV), not per-name-v1; "
          "--emit-holdings observes the main primary book only)] [--rule aim-partial-v6 "
          "(aim-partial-v5 flags plus a cost-scaled target, "
          "band and regime rate; fixed rate only) --cost-shrink-kappa 1 --band-b "
@@ -1341,8 +1365,8 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
     // decision), so the capacity books run it as the main books do; aim-partial-v6 still refuses.
     if ((o.aim_v6 || o.capacity) && rate && *rate != "fixed" &&
         (o.aim_v6 || *rate != nav_info_clock_rate_id))
-      throw std::invalid_argument("aim-partial-v6 and --capacity-curve need the fixed rate "
-                                  "(per-name-v1 reads the NAV)");
+      throw std::invalid_argument("aim-partial-v6 needs the fixed rate, --capacity-curve the "
+                                  "fixed rate or info-clock-rate-v1 (per-name-v1 reads the NAV)");
     if (o.aim_v6) {
       if (!band_given) o.v6.band_b = dust ? number(*dust) : 0.0; // median band = the dust band
       const auto valid = cost_v2::validate_aim_v6(o.v6, theta ? number(*theta) : 0.25);
