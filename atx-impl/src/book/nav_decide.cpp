@@ -2,9 +2,38 @@
 // P9 C3 (task 1, move-only): moved unchanged from strategy_nav_replay.cpp.
 
 #include "book/nav_replay_internal.hpp"
+#include "atx/engine/book/two_speed.hpp" // P9 AL-CLOCK: Y-5's fast and slow rates
 
 namespace atx::impl::strategy {
 using namespace nav_book;
+// P9 AL-CLOCK, info-clock-rate-v1 (strategy_nav_replay.hpp states the rule).
+f64 nav_info_clock_fast_theta(usize cadence) noexcept {
+  return bk::two_speed_fast_theta(static_cast<f64>(cadence));
+}
+bool nav_info_clock_fast(f64 days_since) noexcept {
+  return days_since >= 0.0 && days_since <= nav_info_clock_window; // NaN: false (slow)
+}
+co::Status nav_info_clock_rates(std::span<const u8> member, std::span<const f64> days_since,
+                                usize cadence, f64 theta_slow, std::span<f64> rates) {
+  const usize n = member.size();
+  if (days_since.size() != n || rates.size() != n)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "info-clock-rate-v1: one member flag, clock and rate per name");
+  if (cadence < 1 || !std::isfinite(theta_slow) || !(theta_slow > 0.0) || theta_slow > 1.0)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "info-clock-rate-v1: cadence >= 1 and the slow rate in (0, 1]");
+  for (usize i = 0; i < n; ++i) {
+    const f64 v = days_since[i];
+    if (member[i] > u8{1} || !(std::isnan(v) || (std::isfinite(v) && v >= 0.0)))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "info-clock-rate-v1: member flags 0/1 and every ea_days_since NaN or finite "
+                     ">= 0 (a negative or infinite clock is outside the field's domain)");
+  }
+  const f64 fast = nav_info_clock_fast_theta(cadence);
+  for (usize i = 0; i < n; ++i)
+    rates[i] = member[i] != u8{0} && nav_info_clock_fast(days_since[i]) ? fast : theta_slow;
+  return co::Ok();
+}
 namespace {
 // STABLE EXTENSION POINT: the only place the NAV path forms its desired target,
 // once per rebalance decision for every scenario book. It is the target replay's
@@ -39,8 +68,13 @@ co::Result<bool> form_desired_target(const TargetReplayInput& x, const NavReplay
       if (x.member[d * x.instruments + i])
         sigma[i] = window_liquidity(x, x.volume, cfg, d + 1, i).sigma;
   }
-  return detail::form_desired(x, cfg.target, d, shared.row, shared.desired, shared.price, out,
-                              shared.no_short, &shared.state);
+  ATX_TRY(const bool proceed,
+          detail::form_desired(x, cfg.target, d, shared.row, shared.desired, shared.price, out,
+                               shared.no_short, &shared.state));
+  // P9 COV-MV: the target rule (K-P9-7 kind target, --target-rule) rewrites the target that
+  // proceeds, before any book plans or the calibrate tape records it; the identity without one.
+  if (proceed) ATX_TRY_VOID(v7::apply_target_rule(x, d, shared.no_short, shared.desired));
+  return co::Ok(proceed);
 }
 // Engine predictors of name i as of decision d (row d fields and prices, presence
 // rows <= d); not available when any is missing or out of its declared domain.
@@ -218,6 +252,24 @@ void anchor_order(NameState& s, usize i, bool locate_guarded) {
   s.delta[i] = delta ? u8{1} : u8{0};
   if (delta) s.anchor[i] = s.held[i];
 }
+// P9 AL-CLOCK (NavInfoClockStats): decision d's members into the book's census, in index order;
+// `clock` is row d of the info clock (validate_nav_input: NaN or finite >= 0).
+void count_info_clock(const TargetReplayInput& x, std::span<const f64> clock, usize d,
+                      const NameState& s, NavInfoClockStats& out) {
+  const usize n = x.instruments;
+  for (usize i = 0; i < n; ++i) {
+    if (!x.member[d * n + i]) continue;
+    const f64 trade = std::abs(s.planned[i] - s.current[i]);
+    ++out.name_days;
+    out.planned_turnover += trade;
+    if (std::isnan(clock[i])) {
+      ++out.missing_name_days;
+    } else if (nav_info_clock_fast(clock[i])) {
+      ++out.fast_name_days;
+      out.fast_planned_turnover += trade;
+    }
+  }
+}
 } // namespace
 namespace nav_book {
 // DECIDE at d: current weights are marked dollars / post-trade NAV (stale names at
@@ -240,6 +292,8 @@ co::Status plan_decision(const Ctx& c, Book& b, const Construction& shared,
   plan.decision = d; plan.session = x.session_keys[d]; plan.calendar_month = day.calendar_month;
   std::span<const f64> rates;
   if (c.cfg.rate == NavRateRule::PerNameV1) { per_name_rates(c, b, d, cache); rates = cache.rate; }
+  // P9 AL-CLOCK: the decision's info-clock rates, formed once for every book (run_books).
+  if (c.cfg.rate == NavRateRule::InfoClockV1) rates = shared.clock_rate;
   // P9 C1: a main book's scored decisions keep their leverage record (a capacity book none).
   const bool scored = !b.capacity && d >= x.decision_begin;
   const PlanInputs inputs{x,
@@ -281,6 +335,9 @@ co::Status plan_decision(const Ctx& c, Book& b, const Construction& shared,
     day.budget_excess = std::max(0.0, b.spent - c.cfg.target.monthly_budget);
   day.construction = construction; // shared record; the band acts on this book's weights
   day.construction.banded_names = plan.construction.banded_names;
+  // P9 AL-CLOCK (Ruling ALCLOCK-1): a main book's scored effective rebalance, members only.
+  if (!shared.clock.empty() && rebalance && scored)
+    count_info_clock(x, shared.clock, d, s, b.result.construction.info_clock);
   return co::Ok();
 }
 f64 gross_dollars(const NameState& s) {

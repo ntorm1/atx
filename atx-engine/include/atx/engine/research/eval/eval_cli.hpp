@@ -13,7 +13,13 @@
 //       [--ledger PATH] [--ledger-missing empty|refuse] [--window-id ID]
 //       [--trial LABEL=TRIAL_ID ...] [--history LABEL ...] [--hand TRIAL_ID=CSV ...]
 //       [--step LABEL=DSR,SE ...] [--threshold C] [--conditional-alpha A]
-//       [--json] [--out PATH]
+//       [--json] [--out PATH] [--vol]
+//
+// --vol (P9 lane D3W, ruling D3W-EVAL): each cell also prints net_vol {sessions, mean_daily,
+// sd_daily, vol_annual, sharpe_annual} (eval_report.hpp) and config gains vol: true; absent, the
+// document and the text print are unchanged. ALCOMB-6 reads the IC exe's mom-volman sleeve files
+// (<role>_mom_volman_sleeve_raw.csv / _scaled.csv) this way: vol and Sharpe before and after
+// scaling.
 //
 // CSV: session_ns,net_return (eval_series.hpp). A label defaults to the path. --protocol v8 sets
 // the v8 bootstrap (4,999 draws, seed 20260929) unless --draws / --seed are given; v7 keeps

@@ -1,0 +1,22 @@
+# D3W flag-absent identity (report procedure step 2): ident.py on git archive b182dfdd (root before the D3W merge) vs git archive 08f04e07 (merged), same WORK dir, then cmp.py (d3w-logs/tools at f0726acb)
+engine-shrink-tsmom/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+engine-shrink-tsmom/admission.json: identical sha256 90918fdafb1f54333d283e1cc9c8ce3a4ce0da99bb8f29d75fe8571ef4db2539
+engine-shrink-tsmom/composition_weights.json: DIFFERS at ['$.provenance.engine_fit.producer_fingerprint']
+engine-std-aim-resid/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+engine-std-aim-resid/admission.json: identical sha256 90918fdafb1f54333d283e1cc9c8ce3a4ce0da99bb8f29d75fe8571ef4db2539
+engine-std-aim-resid/composition_weights.json: DIFFERS at ['$.provenance.engine_fit.producer_fingerprint', '$.provenance.resid.producer_fingerprint']
+engine-std-erc-tsmom/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+engine-std-erc-tsmom/admission.json: identical sha256 90918fdafb1f54333d283e1cc9c8ce3a4ce0da99bb8f29d75fe8571ef4db2539
+engine-std-erc-tsmom/composition_weights.json: DIFFERS at ['$.provenance.engine_fit.producer_fingerprint']
+plain-shrink-tsmom/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+plain-shrink-tsmom/admission.json: identical sha256 90918fdafb1f54333d283e1cc9c8ce3a4ce0da99bb8f29d75fe8571ef4db2539
+plain-shrink-tsmom/composition_weights.json: identical sha256 991311aaf56b630d43ab9c494cb0a5cdc1adee2660876ab5627c9ca649510656
+plain-std/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+plain-std/admission.json: identical sha256 90918fdafb1f54333d283e1cc9c8ce3a4ce0da99bb8f29d75fe8571ef4db2539
+plain-std/composition_weights.json: identical sha256 c0c44744e17f50c03722e71fa5e8d4818fb027e8561d9ead996e4f3064672905
+plain-std-aim-resid/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+plain-std-aim-resid/admission.json: identical sha256 90918fdafb1f54333d283e1cc9c8ce3a4ce0da99bb8f29d75fe8571ef4db2539
+plain-std-aim-resid/composition_weights.json: DIFFERS at ['$.provenance.resid.producer_fingerprint']
+plain-std-erc-tsmom/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+plain-std-erc-tsmom/admission.json: identical sha256 90918fdafb1f54333d283e1cc9c8ce3a4ce0da99bb8f29d75fe8571ef4db2539
+plain-std-erc-tsmom/composition_weights.json: identical sha256 b164b0a4bc94a4b93cd4c9b4a50ad94a57320eaebfef00b3a2ef14a9280cd01d

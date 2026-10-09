@@ -2814,7 +2814,14 @@ def parse_args(argv):
 def main(argv=None) -> int:
     args = parse_args(argv)
     try:
-        code, summary = fit(args, log=lambda line: print(line, file=sys.stderr, flush=True))
+        if composition_engine_fit.post_step(args):  # P9 D3W: fit() unchanged into a stage, then the C++ values
+            hooks = composition_engine_fit.PostStepHooks(
+                error=FitError, canonical=canonical_bytes, publish=publish_directory, pending=pending_path,
+                limit=METADATA_LIMIT, weights_file=OUTPUT_WEIGHTS, exit_ok=EXIT_OK)
+            code, summary = composition_engine_fit.run_post_step(
+                args, fit, hooks, log=lambda line: print(line, file=sys.stderr, flush=True))
+        else:
+            code, summary = fit(args, log=lambda line: print(line, file=sys.stderr, flush=True))
     except Incomplete as stop:
         print(json.dumps(stop.summary, sort_keys=True))
         return EXIT_INCOMPLETE

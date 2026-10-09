@@ -103,6 +103,12 @@ struct IcRunnerConfig {
   // registry's themes at the P9 base, so every output is byte-identical to runs without it;
   // present, summary.json (and a --plan-only plan) records theme_registry_sha256.
   std::string theme_registry_path, theme_registry_sha256;
+  // absent-members-v1 (P9 lane ABS, ruling OD3P-1; strategy_ic_absent.hpp): an
+  // atx.od3-flagged-members/v1 list (the SHA-256 of its bytes pinned) of library members the pass
+  // treats, on every date, as members with no data. Both or neither; refused with
+  // --no-composition. Absent: every output byte unchanged; present, summary.json records
+  // absent_members and nothing else names it (no recipe term, no cache key).
+  std::string absent_members_path, absent_members_sha256;
 };
 // IC-only research; no book, surfaces, fees, Sharpe, stock events or holdout.
 // TRAIN21h sample rank-IC fits signs; validation uses frozen signs; screening remains diagnostic for the fixed blend.

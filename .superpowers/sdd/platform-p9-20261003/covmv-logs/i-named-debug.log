@@ -1,0 +1,295 @@
+2026-10-08T19:53:31 run named
+exe C:\atx-wt\pool-31\build-equity\bin\atx-impl-strategy-target-tests.exe
+receipt mega-p9-covmv-i-receipt.json Source 19e967d095bb9a6058952dad8b85aae2cbbb5f34 DirtyEntries 0 ExitCode 0
+sha256 before 4c9894aae1de2d2a2af7d54a1d6d8ae66619ce95a20e3f8ecbdc86035f0d0d34 receipt 4c9894aae1de2d2a2af7d54a1d6d8ae66619ce95a20e3f8ecbdc86035f0d0d34 equal=True
+filter Cov*:NavBookRule.*:VolTarget.*:Spo*:NavSpec.*:NavRules.*:CostLawRegistry.*:TradeRateRegistry.*:TargetRegistry.*:NavAnnMeanGross.*
+sha256 after 4c9894aae1de2d2a2af7d54a1d6d8ae66619ce95a20e3f8ecbdc86035f0d0d34 equal=True
+
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = Cov*:NavBookRule.*:VolTarget.*:Spo*:NavSpec.*:NavRules.*:CostLawRegistry.*:TradeRateRegistry.*:TargetRegistry.*:NavAnnMeanGross.*
+[==========] Running 100 tests from 22 test suites.
+[----------] Global test environment set-up.
+[----------] 7 tests from SpoSolver
+[ RUN      ] SpoSolver.KktResidualBelowToleranceOnFiftyNames
+[       OK ] SpoSolver.KktResidualBelowToleranceOnFiftyNames (0 ms)
+[ RUN      ] SpoSolver.CostFreeUnboundedSolutionIsTheClosedFormMarkowitz
+[       OK ] SpoSolver.CostFreeUnboundedSolutionIsTheClosedFormMarkowitz (4 ms)
+[ RUN      ] SpoSolver.NetGrossBetaAndBoxesHoldTo1e10
+[       OK ] SpoSolver.NetGrossBetaAndBoxesHoldTo1e10 (1 ms)
+[ RUN      ] SpoSolver.CostFreeAimVarianceFallsAndGrossCrossesWithGamma
+[       OK ] SpoSolver.CostFreeAimVarianceFallsAndGrossCrossesWithGamma (2 ms)
+[ RUN      ] SpoSolver.WarmAndColdStartsAgreeAndRepeatBitForBit
+[       OK ] SpoSolver.WarmAndColdStartsAgreeAndRepeatBitForBit (1 ms)
+[ RUN      ] SpoSolver.TwoNamesMatchAOneDimensionalSearchWithTheThreeHalvesCost
+[       OK ] SpoSolver.TwoNamesMatchAOneDimensionalSearchWithTheThreeHalvesCost (3 ms)
+[ RUN      ] SpoSolver.HorizonConsistentAlphaIsASqrtHCostWeightAndTradesLess
+[       OK ] SpoSolver.HorizonConsistentAlphaIsASqrtHCostWeightAndTradesLess (1 ms)
+[----------] 7 tests from SpoSolver (17 ms total)
+
+[----------] 1 test from SpoAlpha
+[ RUN      ] SpoAlpha.OrientationFollowsDesiredAndTheHorizonScalesThePerSessionForecast
+[       OK ] SpoAlpha.OrientationFollowsDesiredAndTheHorizonScalesThePerSessionForecast (0 ms)
+[----------] 1 test from SpoAlpha (0 ms total)
+
+[----------] 2 tests from SpoCalibration
+[ RUN      ] SpoCalibration.V1GammaKeepsTheCostedBookInsideTheBudgetAndV2Binds
+[       OK ] SpoCalibration.V1GammaKeepsTheCostedBookInsideTheBudgetAndV2Binds (4 ms)
+[ RUN      ] SpoCalibration.V2GammaBindFailureIsReportedAsNaNWithANoteAndNeverAborts
+[       OK ] SpoCalibration.V2GammaBindFailureIsReportedAsNaNWithANoteAndNeverAborts (5 ms)
+[----------] 2 tests from SpoCalibration (10 ms total)
+
+[----------] 2 tests from SpoRisk
+[ RUN      ] SpoRisk.RefusesADateWithoutForecastAnotherRoleAndAnotherPin
+[       OK ] SpoRisk.RefusesADateWithoutForecastAnotherRoleAndAnotherPin (125 ms)
+[ RUN      ] SpoRisk.ImplausibleSpecificVarianceIsCappedAndCounted
+[       OK ] SpoRisk.ImplausibleSpecificVarianceIsCappedAndCounted (0 ms)
+[----------] 2 tests from SpoRisk (125 ms total)
+
+[----------] 11 tests from SpoHook
+[ RUN      ] SpoHook.FlagOffKeepsAimPartialV5BitForBit
+[       OK ] SpoHook.FlagOffKeepsAimPartialV5BitForBit (2 ms)
+[ RUN      ] SpoHook.ParseRoutesTheRuleAndRefusesBadCombinations
+[       OK ] SpoHook.ParseRoutesTheRuleAndRefusesBadCombinations (1 ms)
+[ RUN      ] SpoHook.ParseSpoV2AppliesTheFixUpDefaultsUnderTheFlagsGiven
+[       OK ] SpoHook.ParseSpoV2AppliesTheFixUpDefaultsUnderTheFlagsGiven (1 ms)
+[ RUN      ] SpoHook.ParseGrossBudgetAndVoidFlags_RefuseOutOfRangeAndHoldingsWithTheVoid
+[       OK ] SpoHook.ParseGrossBudgetAndVoidFlags_RefuseOutOfRangeAndHoldingsWithTheVoid (1 ms)
+[ RUN      ] SpoHook.ReplayPlansNeutralBudgetedBooksAndRelabelsTheRule
+[       OK ] SpoHook.ReplayPlansNeutralBudgetedBooksAndRelabelsTheRule (218 ms)
+[ RUN      ] SpoHook.CalibrationMeetsTheBindingOfTheVolTargetAndTheGrossBudget
+[       OK ] SpoHook.CalibrationMeetsTheBindingOfTheVolTargetAndTheGrossBudget (179 ms)
+[ RUN      ] SpoHook.ReplayRefusesWhenTheRiskModelLacksADecisionDate
+[       OK ] SpoHook.ReplayRefusesWhenTheRiskModelLacksADecisionDate (143 ms)
+[ RUN      ] SpoHook.ShadowBookScoresTheAimPartialPlanBesideTheOptimiser
+[       OK ] SpoHook.ShadowBookScoresTheAimPartialPlanBesideTheOptimiser (168 ms)
+[ RUN      ] SpoHook.SpoV2CalibratesToTheVolTargetAndScalesAlphaToTheHorizon
+[       OK ] SpoHook.SpoV2CalibratesToTheVolTargetAndScalesAlphaToTheHorizon (188 ms)
+[ RUN      ] SpoHook.ACorruptSpecificVarianceIsCappedAndCountedInTheDiagnostics
+[       OK ] SpoHook.ACorruptSpecificVarianceIsCappedAndCountedInTheDiagnostics (185 ms)
+[ RUN      ] SpoHook.SpoV2BindsTheGrossBudgetOnPostRampDecisionsWithPlannedGrossG
+[       OK ] SpoHook.SpoV2BindsTheGrossBudgetOnPostRampDecisionsWithPlannedGrossG (352 ms)
+[----------] 11 tests from SpoHook (1443 ms total)
+
+[----------] 2 tests from SpoTripwire
+[ RUN      ] SpoTripwire.TheClampFeedsAlphaAndTheVoidStopsTheRunAtCapture
+[       OK ] SpoTripwire.TheClampFeedsAlphaAndTheVoidStopsTheRunAtCapture (333 ms)
+[ RUN      ] SpoTripwire.AVoidRunExitsThreeWithDiagnosticsAndNoNavOrReturnFile
+[       OK ] SpoTripwire.AVoidRunExitsThreeWithDiagnosticsAndNoNavOrReturnFile (1183 ms)
+[----------] 2 tests from SpoTripwire (1517 ms total)
+
+[----------] 2 tests from SpoPin
+[ RUN      ] SpoPin.SpoV1PlannedWeightsOfTwoLockstepBooks_MatchThePinnedDigest
+[spo-pin] weights=0xda6b6871e7e267c5 (54 diagnostics rows)
+[       OK ] SpoPin.SpoV1PlannedWeightsOfTwoLockstepBooks_MatchThePinnedDigest (138 ms)
+[ RUN      ] SpoPin.SpoV1ReplayAndDiagnosticsColumns1To38_MatchThePinnedDigest
+[spo-pin] replay=0xaabdbb72f99a6e13 (40 days)
+[       OK ] SpoPin.SpoV1ReplayAndDiagnosticsColumns1To38_MatchThePinnedDigest (163 ms)
+[----------] 2 tests from SpoPin (302 ms total)
+
+[----------] 19 tests from SpoV3
+[ RUN      ] SpoV3.V1AndV2DigestsUnchanged
+[spo-v3-pin] v1 weights=0xda6b6871e7e267c5 replay=0xaabdbb72f99a6e13
+[spo-v3-pin] v2 weights=0xb039820b40d5cf24 (40 diagnostics rows) replay=0xd24b61721a7c698c (30 days)
+[       OK ] SpoV3.V1AndV2DigestsUnchanged (415 ms)
+[ RUN      ] SpoV3.ZeroCostNoLimitsReturnsAimTo1e8
+[       OK ] SpoV3.ZeroCostNoLimitsReturnsAimTo1e8 (135 ms)
+[ RUN      ] SpoV3.GammaIsSPriorOverTheAnnualisedAimVolOfADenseSigma
+[       OK ] SpoV3.GammaIsSPriorOverTheAnnualisedAimVolOfADenseSigma (129 ms)
+[ RUN      ] SpoV3.GrossCapIsSlackOnFixture
+[       OK ] SpoV3.GrossCapIsSlackOnFixture (655 ms)
+[ RUN      ] SpoV3.PrimaryBookLimitsUnmetVoidsTheRunWhateverTheVoidFlag
+[       OK ] SpoV3.PrimaryBookLimitsUnmetVoidsTheRunWhateverTheVoidFlag (4 ms)
+[ RUN      ] SpoV3.EngineVoidsOnItsPrimaryBooksLimitsUnmet
+[       OK ] SpoV3.EngineVoidsOnItsPrimaryBooksLimitsUnmet (597 ms)
+[ RUN      ] SpoV3.TieredRunVoidsOnItsSwapFinancedPrimaryBookOnly
+[       OK ] SpoV3.TieredRunVoidsOnItsSwapFinancedPrimaryBookOnly (1267 ms)
+[ RUN      ] SpoV3.CliVoidOnPrimaryLimitsUnmetExitsThreeWithTheExtrasOnly
+[       OK ] SpoV3.CliVoidOnPrimaryLimitsUnmetExitsThreeWithTheExtrasOnly (11663 ms)
+[ RUN      ] SpoV3.ReportsTrackingErrorAndShareAtTradeLimit
+[       OK ] SpoV3.ReportsTrackingErrorAndShareAtTradeLimit (686 ms)
+[ RUN      ] SpoV3.WarmStartCalibratesOnTheFirstScoredDecision
+[       OK ] SpoV3.WarmStartCalibratesOnTheFirstScoredDecision (937 ms)
+[ RUN      ] SpoV3.CriterionReadsTheTradedBookAfterTheTrades
+[       OK ] SpoV3.CriterionReadsTheTradedBookAfterTheTrades (591 ms)
+[ RUN      ] SpoV3.TradedAfterIsBackFilledPerBookAcrossCadences
+[       OK ] SpoV3.TradedAfterIsBackFilledPerBookAcrossCadences (323 ms)
+[ RUN      ] SpoV3.ParseRefusesTheRegisteredConstantsAndRoutesTheImpliedAim
+[       OK ] SpoV3.ParseRefusesTheRegisteredConstantsAndRoutesTheImpliedAim (10 ms)
+[ RUN      ] SpoV3.AimIncludesHoldBandAndAdvCapWhenDeclared
+[       OK ] SpoV3.AimIncludesHoldBandAndAdvCapWhenDeclared (651 ms)
+[ RUN      ] SpoV3.ShapingFlagsAbsentIsByteIdentical
+[       OK ] SpoV3.ShapingFlagsAbsentIsByteIdentical (1950 ms)
+[ RUN      ] SpoV3.ShapingFlagsPassThroughAndSpoV1V2RefuseThem
+[       OK ] SpoV3.ShapingFlagsPassThroughAndSpoV1V2RefuseThem (1 ms)
+[ RUN      ] SpoV3.CapacityPassBooksAreTheNavMultipleTrackerAndLeaveTheMainPassAlone
+[       OK ] SpoV3.CapacityPassBooksAreTheNavMultipleTrackerAndLeaveTheMainPassAlone (3558 ms)
+[ RUN      ] SpoV3.CapacityDeclarationWithoutAdvHoldKeepsTheBaseBytes
+[       OK ] SpoV3.CapacityDeclarationWithoutAdvHoldKeepsTheBaseBytes (119 ms)
+[ RUN      ] SpoV3.TradeFractionHasNoEffectOnTheBook
+[       OK ] SpoV3.TradeFractionHasNoEffectOnTheBook (1280 ms)
+[----------] 19 tests from SpoV3 (24983 ms total)
+
+[----------] 6 tests from VolTarget
+[ RUN      ] VolTarget.ReplayManagesTheCapWithTheRunningMeanEvery21Sessions
+[       OK ] VolTarget.ReplayManagesTheCapWithTheRunningMeanEvery21Sessions (137 ms)
+[ RUN      ] VolTarget.AimPartialV5PlansTowardTheManagedAimBitForBit
+[       OK ] VolTarget.AimPartialV5PlansTowardTheManagedAimBitForBit (151 ms)
+[ RUN      ] VolTarget.CapacityX1IsTheMainBookBitForBit
+[       OK ] VolTarget.CapacityX1IsTheMainBookBitForBit (114 ms)
+[ RUN      ] VolTarget.RiskTargetSpellingsAreUnchangedWithoutTheFlag
+[       OK ] VolTarget.RiskTargetSpellingsAreUnchangedWithoutTheFlag (0 ms)
+[ RUN      ] VolTarget.ParseRoutesTheFlagAndRefusesTheRest
+[       OK ] VolTarget.ParseRoutesTheFlagAndRefusesTheRest (1 ms)
+[ RUN      ] VolTarget.TruncationInvariant
+[       OK ] VolTarget.TruncationInvariant (261 ms)
+[----------] 6 tests from VolTarget (666 ms total)
+
+[----------] 7 tests from NavBookRule
+[ RUN      ] NavBookRule.GridOfLeveragesInOnePassEqualsThreeSingleRuns
+[       OK ] NavBookRule.GridOfLeveragesInOnePassEqualsThreeSingleRuns (308 ms)
+[ RUN      ] NavBookRule.VolTargetOnBookWorkersEqualsSerialAndTheSeamInjectsTheRule
+[       OK ] NavBookRule.VolTargetOnBookWorkersEqualsSerialAndTheSeamInjectsTheRule (243 ms)
+[ RUN      ] NavBookRule.RefusedOutsideAimPartialV5AndOnTheDecidePath
+[       OK ] NavBookRule.RefusedOutsideAimPartialV5AndOnTheDecidePath (128 ms)
+[ RUN      ] NavBookRule.RefusedWithoutTheStoreOrOutsideTheParameterRanges
+[       OK ] NavBookRule.RefusedWithoutTheStoreOrOutsideTheParameterRanges (98 ms)
+[ RUN      ] NavBookRule.ListRulesJsonCarriesTheLeverageRows
+[       OK ] NavBookRule.ListRulesJsonCarriesTheLeverageRows (9 ms)
+[ RUN      ] NavBookRule.AimLeverageIsOptionalWithItsDefault
+[       OK ] NavBookRule.AimLeverageIsOptionalWithItsDefault (6 ms)
+[ RUN      ] NavBookRule.CliGridAndBookWorkersEqualTheStandaloneRunsByteForByte
+[       OK ] NavBookRule.CliGridAndBookWorkersEqualTheStandaloneRunsByteForByte (3150 ms)
+[----------] 7 tests from NavBookRule (3946 ms total)
+
+[----------] 4 tests from CovTruncation
+[ RUN      ] CovTruncation.BlocksBeforeTheCutAreByteIdentical
+[       OK ] CovTruncation.BlocksBeforeTheCutAreByteIdentical (26510 ms)
+[ RUN      ] CovTruncation.PerturbedFutureLeavesThePastUnchanged
+[       OK ] CovTruncation.PerturbedFutureLeavesThePastUnchanged (11862 ms)
+[ RUN      ] CovTruncation.FutureInstrumentsDoNotMoveThePast
+[       OK ] CovTruncation.FutureInstrumentsDoNotMoveThePast (11178 ms)
+[ RUN      ] CovTruncation.DetectsAPlantedLeak
+[       OK ] CovTruncation.DetectsAPlantedLeak (29046 ms)
+[----------] 4 tests from CovTruncation (78598 ms total)
+
+[----------] 8 tests from CovEigen
+[ RUN      ] CovEigen.RecipeV11IsBitIdenticalToToday
+[       OK ] CovEigen.RecipeV11IsBitIdenticalToToday (404 ms)
+[ RUN      ] CovEigen.ZeroSimulationsEqualsV11
+[       OK ] CovEigen.ZeroSimulationsEqualsV11 (561 ms)
+[ RUN      ] CovEigen.SmallEigenfactorsInflatedLargeNearOne
+[       OK ] CovEigen.SmallEigenfactorsInflatedLargeNearOne (267 ms)
+[ RUN      ] CovEigen.SeededPerSessionAndWorkerInvariant
+[       OK ] CovEigen.SeededPerSessionAndWorkerInvariant (90 ms)
+[ RUN      ] CovEigen.StructuralBorderAndPdScalingApplied
+[       OK ] CovEigen.StructuralBorderAndPdScalingApplied (8654 ms)
+[ RUN      ] CovEigen.VraReadsTheAdjustedPrior
+[       OK ] CovEigen.VraReadsTheAdjustedPrior (8701 ms)
+[ RUN      ] CovEigen.ResultIsPositiveDefinite
+[       OK ] CovEigen.ResultIsPositiveDefinite (8791 ms)
+[ RUN      ] CovEigen.LowersTrueRiskOfTheEstimatedMinVariancePortfolio
+[       OK ] CovEigen.LowersTrueRiskOfTheEstimatedMinVariancePortfolio (1440 ms)
+[----------] 8 tests from CovEigen (28912 ms total)
+
+[----------] 6 tests from CovBias
+[ RUN      ] CovBias.EigenFamilyInBandOnAPlantedModel
+[eigen b per rank] band panel atx-cov-v1: eigen-00=1.013 (T 469) eigen-01=0.998 (T 469) eigen-02=1.013 (T 469) eigen-03=1.020 (T 469) eigen-04=0.993 (T 469) eigen-05=1.021 (T 469) eigen-06=1.009 (T 469) | pooled 1.009 +- 0.025 (N 3283), in band 7/7, excluded at the floor 0
+[eigen b per rank] band panel atx-risk-v1.1: eigen-00=1.181 (T 469) eigen-01=1.108 (T 469) eigen-02=1.104 (T 469) eigen-03=1.084 (T 469) eigen-04=1.039 (T 469) eigen-05=1.036 (T 469) eigen-06=0.996 (T 469) | pooled 1.080 +- 0.025 (N 3283), in band 3/7, excluded at the floor 0
+[eigen b per rank] band panel atx-cov-v1 a=0.5 (negative control): eigen-00=1.085 (T 469) eigen-01=1.051 (T 469) eigen-02=1.058 (T 469) eigen-03=1.054 (T 469) eigen-04=1.015 (T 469) eigen-05=1.024 (T 469) eigen-06=1.007 (T 469) | pooled 1.042 +- 0.025 (N 3283), in band 6/7, excluded at the floor 0
+[eigen b per rank] band panel atx-cov-v1 a=2 (over-correction control): eigen-00=0.909 (T 469) eigen-01=0.890 (T 469) eigen-02=0.938 (T 469) eigen-03=0.963 (T 469) eigen-04=0.951 (T 469) eigen-05=1.031 (T 469) eigen-06=1.003 (T 469) | pooled 0.957 +- 0.025 (N 3283), in band 5/7, excluded at the floor 0
+[eigen b per rank] churn panel atx-cov-v1: eigen-00=6.074 (T 119) eigen-01=2.152 (T 119) eigen-02=1.497 (T 119) eigen-03=1.255 (T 119) eigen-04=1.124 (T 119) eigen-05=1.287 (T 119) eigen-06=0.969 (T 119) eigen-07=1.178 (T 119) eigen-08=1.101 (T 119) eigen-09=0.925 (T 119) eigen-10=0.925 (T 119) eigen-11=0.861 (T 119) eigen-12=0.769 (T 109) | pooled 2.056 +- 0.036 (N 1537), in band 5/13, excluded at the floor 0
+[eigen b per rank] churn panel atx-risk-v1.1: eigen-00=7.123 (T 119) eigen-01=2.431 (T 119) eigen-02=1.689 (T 119) eigen-03=1.323 (T 119) eigen-04=1.112 (T 119) eigen-05=1.226 (T 119) eigen-06=1.017 (T 119) eigen-07=1.253 (T 119) eigen-08=1.033 (T 119) eigen-09=0.949 (T 119) eigen-10=0.815 (T 119) eigen-11=0.821 (T 119) eigen-12=0.673 (T 109) | pooled 2.327 +- 0.036 (N 1537), in band 4/13, excluded at the floor 0
+[       OK ] CovBias.EigenFamilyInBandOnAPlantedModel (48387 ms)
+[ RUN      ] CovBias.MinVarAndOptimizedUseCompleteForecastsOnly
+[       OK ] CovBias.MinVarAndOptimizedUseCompleteForecastsOnly (7000 ms)
+[ RUN      ] CovBias.MissingReturnCountsZeroNeverRenormalised
+[       OK ] CovBias.MissingReturnCountsZeroNeverRenormalised (8214 ms)
+[ RUN      ] CovBias.V1FamiliesBytesUnchanged
+[       OK ] CovBias.V1FamiliesBytesUnchanged (7544 ms)
+[ RUN      ] CovBias.MinVarAndOptimizedEqualTheDenseInverseOnSmallN
+[       OK ] CovBias.MinVarAndOptimizedEqualTheDenseInverseOnSmallN (2 ms)
+[ RUN      ] CovBias.UnformedExtendedBooksAreCounted
+[       OK ] CovBias.UnformedExtendedBooksAreCounted (4 ms)
+[----------] 6 tests from CovBias (71155 ms total)
+
+[----------] 4 tests from CovRecipe
+[ RUN      ] CovRecipe.LegacyRecipeContainerEqualsDirectoryStore
+[       OK ] CovRecipe.LegacyRecipeContainerEqualsDirectoryStore (1702 ms)
+[ RUN      ] CovRecipe.FlagsAbsentOutputsUnchanged
+[       OK ] CovRecipe.FlagsAbsentOutputsUnchanged (4010 ms)
+[ RUN      ] CovRecipe.ManifestNamesTheContainerRoot
+[       OK ] CovRecipe.ManifestNamesTheContainerRoot (1300 ms)
+[ RUN      ] CovRecipe.CovV1RecipeRecorded
+[       OK ] CovRecipe.CovV1RecipeRecorded (38976 ms)
+[----------] 4 tests from CovRecipe (45989 ms total)
+
+[----------] 5 tests from CovStore
+[ RUN      ] CovStore.RiskSliceFromContainerEqualsDirectory
+[       OK ] CovStore.RiskSliceFromContainerEqualsDirectory (3264 ms)
+[ RUN      ] CovStore.VolAndRiskTargetRecordsUnchanged
+[       OK ] CovStore.VolAndRiskTargetRecordsUnchanged (169 ms)
+[ RUN      ] CovStore.RefusesRoleGeometryOrRootMismatch
+[       OK ] CovStore.RefusesRoleGeometryOrRootMismatch (99 ms)
+[ RUN      ] CovStore.RefusesAContainerReachingTheSealWithoutUnseal
+[       OK ] CovStore.RefusesAContainerReachingTheSealWithoutUnseal (65 ms)
+[ RUN      ] CovStore.LegacyManifestTakesTheLegacyPath
+[       OK ] CovStore.LegacyManifestTakesTheLegacyPath (62 ms)
+[----------] 5 tests from CovStore (3662 ms total)
+
+[----------] 2 tests from CovDiff
+[ RUN      ] CovDiff.ThroughSessionReportsTheFirstDifferingBlock
+[       OK ] CovDiff.ThroughSessionReportsTheFirstDifferingBlock (2716 ms)
+[ RUN      ] CovDiff.LegacyModeComparesBitForBit
+[       OK ] CovDiff.LegacyModeComparesBitForBit (1490 ms)
+[----------] 2 tests from CovDiff (4206 ms total)
+
+[----------] 5 tests from NavSpec
+[ RUN      ] NavSpec.FlagsAndSpecSameConfig
+[       OK ] NavSpec.FlagsAndSpecSameConfig (33 ms)
+[ RUN      ] NavSpec.RefusesWhatItCannotType
+[       OK ] NavSpec.RefusesWhatItCannotType (1 ms)
+[ RUN      ] NavSpec.RefusesADuplicateKey
+[       OK ] NavSpec.RefusesADuplicateKey (16 ms)
+[ RUN      ] NavSpec.GridFileRefusesADuplicateKey
+[       OK ] NavSpec.GridFileRefusesADuplicateKey (164 ms)
+[ RUN      ] NavSpec.SpecRunPublishesTheFlagRunBytes
+[       OK ] NavSpec.SpecRunPublishesTheFlagRunBytes (1103 ms)
+[----------] 5 tests from NavSpec (1319 ms total)
+
+[----------] 2 tests from NavRules
+[ RUN      ] NavRules.OneTableEveryKindInOrder
+[       OK ] NavRules.OneTableEveryKindInOrder (5 ms)
+[ RUN      ] NavRules.LegacyAliasesOnTheirRowsOnly
+[       OK ] NavRules.LegacyAliasesOnTheirRowsOnly (3 ms)
+[----------] 2 tests from NavRules (8 ms total)
+
+[----------] 2 tests from CostLawRegistry
+[ RUN      ] CostLawRegistry.RowsAreTheReplaysLawsAndOneNameableSet
+[       OK ] CostLawRegistry.RowsAreTheReplaysLawsAndOneNameableSet (0 ms)
+[ RUN      ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte
+[       OK ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte (555 ms)
+[----------] 2 tests from CostLawRegistry (555 ms total)
+
+[----------] 1 test from TradeRateRegistry
+[ RUN      ] TradeRateRegistry.RowsCarryTheParsersFlagsAndDefaults
+[       OK ] TradeRateRegistry.RowsCarryTheParsersFlagsAndDefaults (0 ms)
+[----------] 1 test from TradeRateRegistry (1 ms total)
+
+[----------] 1 test from TargetRegistry
+[ RUN      ] TargetRegistry.UnregisteredIdIsRefusedBeforeOutput
+[       OK ] TargetRegistry.UnregisteredIdIsRefusedBeforeOutput (44 ms)
+[----------] 1 test from TargetRegistry (45 ms total)
+
+[----------] 1 test from NavAnnMeanGross
+[ RUN      ] NavAnnMeanGross.PrintOnlyOptInAddsOneSummaryKey
+[       OK ] NavAnnMeanGross.PrintOnlyOptInAddsOneSummaryKey (1917 ms)
+[----------] 1 test from NavAnnMeanGross (1917 ms total)
+
+[----------] Global test environment tear-down
+[==========] 100 tests from 22 test suites ran. (269389 ms total)
+[  PASSED  ] 100 tests.
+
+  YOU HAVE 1 DISABLED TEST
+
+
+exit=0

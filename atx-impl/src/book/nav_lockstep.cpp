@@ -66,12 +66,15 @@ u64 nav_workspace_reserve_bytes(const NavReplayConfig& base, usize books, bool t
                                 usize names, usize sessions, bool holdings) {
   const bool cached = liquidity_cached(base);
   const u64 hold_trace = hold_band_declared(base.target) ? hold_trace_name_bytes : 0;
+  // P9 AL-CLOCK: info-clock-rate-v1's shared rate vector (one f64 per name).
+  const u64 clock = base.rate == NavRateRule::InfoClockV1 ? sizeof(f64) : 0;
   return publication_slack_bytes + u64{books} * fixed_workspace_bytes +
          u64{names} * (u64{books} * per_name_bytes + shared_name_bytes +
                        (tiered ? tier_name_bytes : 0) + (cached ? rate_name_bytes : 0) +
-                       (holdings ? holdings_name_bytes + hold_trace : 0)) +
+                       (holdings ? holdings_name_bytes + hold_trace : 0) + clock) +
          detail::construction_scratch_bytes(base.target, names) + ring_bytes(base.target, names) +
-         u64{books} * (u64{sessions} * sizeof(NavReplayDay) + base.max_events * sizeof(NavEvent));
+         u64{books} * (u64{sessions} * sizeof(NavReplayDay) + base.max_events * sizeof(NavEvent)) +
+         v7::extension_workspace_bytes(names); // P9 COV-MV (COVMV-1): 0 without a target rule
 }
 namespace {
 bool same_price_risk(const PriceExposureConfig& a, const PriceExposureConfig& b) {
@@ -196,6 +199,15 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
         return co::Err(co::ErrorCode::InvalidArgument,
                        "nav grid: with --hold-band or --two-speed every variant has the base "
                        "cadence");
+  // P9 AL-CLOCK: info-clock-rate-v1's fast rate reads the cadence (1 - 2^(-C/5)) and run_books
+  // forms one rate vector per decision for every book, so its variants share the cadence too.
+  if (base.rate == NavRateRule::InfoClockV1)
+    for (const auto& variant : variants)
+      if (variant.target.cadence != base.target.cadence)
+        return co::Err(co::ErrorCode::InvalidArgument,
+                       "nav grid: with --rate info-clock-rate-v1 every variant has the base "
+                       "cadence (its fast rate 1 - 2^(-C/5) is formed once per decision for "
+                       "every book)");
   // Books on a pool: the per-name-v1 rates share one buffer, and the spo engines hold every
   // book's state. P9 C1: every other v7 rule and the leverage rule keep their state per book
   // (made on this thread before the books run), so they run on the pool.
@@ -208,7 +220,7 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
   // The NAV volume is authoritative, also for price-risk neutralization.
   TargetReplayInput x = in.target;
   x.volume = in.volume;
-  const NavReplayInput input{x, in.volume, in.financing, in.mark};
+  const NavReplayInput input{x, in.volume, in.financing, in.mark, in.info_clock};
   // v8 E-25: what every book's MARK reads: the label marks, else x's own spans (the reads of
   // the replay without them, so every output is unchanged).
   const NavMarkPrices marks = in.mark.present.empty()
@@ -255,6 +267,7 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
         ctx.short_rate[tier_special] = (f.short_spread_bps + f.special_bps) * 1e-4;
       }
       ctx.mark = marks;
+      ctx.info_clock = in.info_clock; // P9 AL-CLOCK
       ctxs.push_back(ctx);
     }
     std::unique_ptr<par::DetPool> pool;

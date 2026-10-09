@@ -40,8 +40,23 @@ def screen_first(w: Wave, done: dict) -> bool:
 def engine(w: Wave) -> bool:
     """P9 C2 (P15): the manifest's gross_match runs PM6-6 inside the nav exe (wave_rules.GROSS_MATCH "engine":
     ``nav --calibrate-gross``): the run stage stops after the w phase (every cell has one: Wave.phase_bases) and the
-    match stage runs the one NAV, calibrated. Any other mode (absent: pm6-6) is the Python match, unchanged."""
+    match stage runs the one NAV, calibrated. The other live mode, none, runs the cell's NAV in the run stage and
+    matches nothing; the Python match (pm6-6) is retired (ruling C2-11: refuse_retired)."""
     return bool((WR.GROSS_MATCH.get(w.manifest.get("gross_match")) or {}).get("engine"))
+
+
+def refuse_retired(w: Wave, stage: str) -> None:
+    """P9 ruling C2-11: a retired gross_match mode (wave_rules.RETIRED_GROSS_MATCH) never runs. Preflight refuses it
+    first; this stops a state dir whose preflight receipt predates the retirement (exit 3, nothing run or written)."""
+    refusal = WR.retired_gross_match(w.manifest.get("gross_match"))
+    if refusal:
+        raise StageError(f"{stage}: {refusal}", EXIT_PIN)
+
+
+def retired_plan(w: Wave) -> list[str]:
+    """The plan line of a retired gross_match mode (the stage would refuse it); [] for a live mode."""
+    refusal = WR.retired_gross_match(w.manifest.get("gross_match"))
+    return [f"#   REFUSED (exit {EXIT_PIN}): {refusal}"] if refusal else []
 
 
 ENGINE_STOP = "w"
@@ -60,6 +75,7 @@ def w_combined(w: Wave, spec_rel: str) -> str | None:
 def run_stage(w: Wave, done: dict, log) -> dict:
     if no_cell(done):
         return skipped("no cell")
+    refuse_retired(w, "run")
     cell = done["spec"]["cell_spec"]
     if screen_first(w, done):
         w.run(cyc(w,"run", cell, "--screen"), "the b library's screen (its gate re-read)")
@@ -93,7 +109,9 @@ def run_stage(w: Wave, done: dict, log) -> dict:
 def run_plan(w: Wave, done: dict) -> list[str]:
     sp = done.get("spec") or {}
     cell = sp.get("cell_spec") or "<the cell spec (known after the spec stage)>"
-    lines = []
+    lines = retired_plan(w)
+    if lines:
+        return lines
     if not sp:
         lines.append("#   (a b library with speed.screen_first runs `run <cell> --screen` first)")
     elif screen_first(w, done):
@@ -227,46 +245,31 @@ def reader_plan(w: Wave, kind: str, name: str, navs: dict) -> str:
 
 # ------------------------------------------------------------------ match
 def match(w: Wave, done: dict, log) -> dict:
+    """The match stage: gross_match pm6-6-engine (match_engine) or none (match_none). The Python match (pm6-6) is
+    retired (P9 ruling C2-11): refused, as at preflight."""
     if no_cell(done):
         return skipped("no cell")
+    refuse_retired(w, "match")
     if engine(w):
         return match_engine(w, done, log)
+    return match_none(w, done, log)
+
+
+def match_none(w: Wave, done: dict, log) -> dict:
+    """gross_match none: the run stage's NAV is the cell's, uncorrected; the mechanics reader of it and of the parent
+    records both grosses (the receipt layout of before C2-11)."""
     m, s = w.manifest, done["spec"]
     mode = m["gross_match"]
+    if mode not in WR.GROSS_MATCH or WR.GROSS_MATCH[mode] is not None:     # fail closed: a mode with no stage here
+        raise StageError(f"match: gross_match {mode!r} is neither none nor an engine mode", EXIT_PIN)
     cal = read_once(w, "mechanics", "mech-calibration", {"cell": done["run"]["nav"], "parent": s["reference_nav"]})
     gp = cal["navs"]["parent"]["mean_gross_leverage_all_rows"]
     gc = cal["navs"]["cell"]["mean_gross_leverage_all_rows"]
-    rule = WR.GROSS_MATCH[mode] or {}
-    out = {"mode": mode, "tolerance": rule.get("tolerance"), "g_parent": gp, "g_calibration": gc,
-           "leverage_calibration": s["leverage"]}
-    log(f"   gross: G {gc} vs G_parent {gp} (mode {mode}, tolerance {rule.get('tolerance')})")
-    if WR.gross_matches(mode, gp, gc):
-        return dict(out, corrected=False, cell_spec=s["cell_spec"], nav=done["run"]["nav"], leverage=s["leverage"],
-                    g_cell=gc, mechanics=cal["navs"]["cell"], phases=done["run"]["phases"],
-                    readers=reader_digests(w, ["mech-calibration"]))
-    new = WR.matched_leverage(s["leverage"], gp, gc)
-    gm = WS.gm_path(s["cell_spec"])
-    w.require_clean("match", {gm})
-    note = (f"Wave {m['wave']} at matched gross (Ruling PM6-6, research_cycle.py wave): calibration at L "
-            f"{s['leverage']} gave all-rows S2 gross {gc:.10f} vs G_parent {gp:.10f}; L = {s['leverage']} x "
-            f"{gp:.10f} / {gc:.10f} -> {new}.")
-    write_spec_file(w, gm, WS.gm_doc(w.read_json(s["cell_spec"]), w.load_spec(s["cell_spec"]), new, note))
-    nav = w.outputs(gm)["nav"]
-    if nav == done["run"]["nav"]:
-        raise StageError(f"{gm}: the matched NAV output equals the calibration's ({nav})")
-    w.run(cyc(w,"lock", gm), "lock (dry: every pin of the -gm copy verified)")
-    commit = w.commit_paths(f"wave {m['wave']}: {Path(gm).name} at L {new} (gross matching, PM6-6)", {gm}) \
-        or w.committed(gm)
-    w.run(cyc(w,"run", gm, "--stop-after", "nav"), "matched run (--stop-after nav)")
-    got = read_once(w, "mechanics", "mech-matched", {"cell": nav})
-    g2 = got["navs"]["cell"]["mean_gross_leverage_all_rows"]
-    log(f"   matched: L {new}, G {g2} vs G_parent {gp}")
-    if not WR.gross_matches(mode, gp, g2):
-        raise StageError(f"gross match: the matched run's G {g2} is {abs(g2 - gp):.5f} from G_parent {gp} after "
-                         f"{rule.get('corrections')} correction: stop for the PM's ruling (no ledger line)")
-    return dict(out, corrected=True, cell_spec=gm, commit=commit, nav=nav, leverage=new, g_cell=g2,
-                mechanics=got["navs"]["cell"], spec_digest=w.spec_digest(gm), phases=phase_rows(w, gm),
-                readers=reader_digests(w, ["mech-calibration", "mech-matched"]))
+    out = {"mode": mode, "tolerance": None, "g_parent": gp, "g_calibration": gc, "leverage_calibration": s["leverage"]}
+    log(f"   gross: G {gc} vs G_parent {gp} (mode {mode}, tolerance None)")
+    return dict(out, corrected=False, cell_spec=s["cell_spec"], nav=done["run"]["nav"], leverage=s["leverage"],
+                g_cell=gc, mechanics=cal["navs"]["cell"], phases=done["run"]["phases"],
+                readers=reader_digests(w, ["mech-calibration"]))
 
 
 CALIBRATION_KEYS = ("target", "tolerance", "leverage_requested", "gross_requested", "corrected", "leverage", "gross",
@@ -405,6 +408,9 @@ def match_engine(w: Wave, done: dict, log) -> dict:
 
 def match_plan(w: Wave, done: dict) -> list[str]:
     run, s = done.get("run") or {}, done.get("spec") or {}
+    retired = retired_plan(w)
+    if retired:
+        return retired
     if engine(w):
         return [reader_plan(w, "mechanics", "mech-parent", {"parent": s.get("reference_nav", "<parent NAV>")}),
                 "#   write <cell>-cal.json (nav.flags + --calibrate-gross G_parent --calibrate-tolerance T, at the "
@@ -416,9 +422,7 @@ def match_plan(w: Wave, done: dict) -> list[str]:
                 "research_cycle.py lock <cell>-gm.json ; git commit"]
     navs = {"cell": run.get("nav", "<calibration NAV>"), "parent": s.get("reference_nav", "<parent NAV>")}
     return [reader_plan(w, "mechanics", "mech-calibration", navs),
-            f"#   |G - G_parent| > tolerance ({w.manifest['gross_match']}): write <cell>-gm.json at L', then",
-            "#   research_cycle.py lock <cell>-gm.json ; git commit ; research_cycle.py run <cell>-gm.json --stop-after "
-            "nav ; mechanics reader (mech-matched)"]
+            f"#   gross_match {w.manifest['gross_match']}: the run stage's NAV is the cell's (no correction)"]
 
 
 def run_inputs(w: Wave, done: dict) -> dict:

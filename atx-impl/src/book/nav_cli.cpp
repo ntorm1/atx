@@ -47,6 +47,12 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
         on = true;
         continue;
       }
+      // P9 AL-CLOCK (Ruling ALCLOCK-1): --info-clock-print, print-only, not a rule flag.
+      if (key == "--info-clock-print") {
+        if (!seen.insert(key).second) throw std::invalid_argument("duplicate/missing flag");
+        emit.info_clock_print = true;
+        continue;
+      }
       if (key == "--help") {
         out << "nav --combined PATH --combined-sha256 SHA --role PATH --role-sha256 SHA "
                "--output NEWDIR [--rule baseline-v1|monthly-budget-v2|aim-partial-v5] "
@@ -56,8 +62,11 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "(ind: FF12 demeaning, needs --fields; ind-v2: vol 126 / log-ADV 252 windows)] "
                "[--band-multiple 0] "
                "[--dust-multiple 0 --aim-leverage 1 (aim-partial-v5 only)] "
-               "[--rate fixed|per-name-v1 (aim-partial-v5 only) --rate-rra 10 "
-               "--rate-lambda .2 --rate-min .01 --rate-max .15 (per-name-v1 only)] "
+               "[--rate fixed|per-name-v1|info-clock-rate-v1 (aim-partial-v5 only) --rate-rra 10 "
+               "--rate-lambda .2 --rate-min .01 --rate-max .15 (per-name-v1 only); "
+               "info-clock-rate-v1 (P9 AL-CLOCK): a member whose ea_days_since (--fields) is in "
+               "[0, 21] moves at 1 - 2^(-C/5) at cadence C, every other one at --trade-fraction "
+               ".05 (required)] "
                "[--daily-turnover-mean-max .20] [--daily-turnover-p95-max .30] "
                "[--fields FIELDS/manifest.json --fields-sha256 SHA] [--max-bytes 536870912] "
                "[--order-basis target|delta] [--exit-rate 1 (below 1: aim-partial-v5, "
@@ -115,7 +124,10 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
                "(the NavSpec of the given flags, then exit)] "
                "[--ann-mean-gross (P9 C3, print-only: every scenario of summary.json gains "
                "ann_mean_gross = 252 x the mean daily gross_return over ann_mean's return rows, "
-               "before trade costs and financing; nothing else changes)]\n"
+               "before trade costs and financing; nothing else changes)] "
+               "[--info-clock-print (P9 AL-CLOCK, print-only, needs --fields: every scenario of "
+               "summary.json gains info_clock, the book's member-decisions whose ea_days_since "
+               "is in [0, 21] or NaN and the planned turnover on them; nothing else changes)]\n"
                "Runs every fixed scenario (S1 linear-6bps-stale5-v1, S2 modeled-1bn-stale5-v1 "
                "PRIMARY, S3 modeled-1bn-terminal-adverse-v1); costs/borrow are not flags.\n"
                "Without --fields: flat-300-v0 financing only. With the pinned role fields "
@@ -191,7 +203,8 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream& 
       } else if (key == "--rate") {
         if (value == "fixed") rate.rate = NavRateRule::Fixed;
         else if (value == "per-name-v1") rate.rate = NavRateRule::PerNameV1;
-        else throw std::invalid_argument("unknown --rate (fixed|per-name-v1)");
+        else if (value == nav_info_clock_rate_id) rate.rate = NavRateRule::InfoClockV1; // P9
+        else throw std::invalid_argument("unknown --rate (fixed|per-name-v1|info-clock-rate-v1)");
       } else throw std::invalid_argument("unknown flag: " + key);
     }
     if (cfg.role_path.empty() || cfg.role_sha256.empty())

@@ -2,7 +2,7 @@
   "schema": "atx.research-wave/v2",
   "wave": "k-cost",
   "kind": "rule",
-  "description": "P9 kinds fixture (contract K-P9-9, gate G-P2) on the tiny-world wave layout (scripts/tests/fixtures/tiny_world.py, seed 7: parent tiny.json, fields/, trials.jsonl): kind rule (new cost model): SCHEMA ONLY until lane C3 lists cost-law rows in the NAV exe's table (wave 3); until then preflight refuses the name (in neither table).",
+  "description": "P9 kinds fixture (contract K-P9-9, gate G-P2) on the tiny-world wave layout (scripts/tests/fixtures/tiny_world.py, seed 7: parent tiny.json, fields/, trials.jsonl): kind rule (new cost model): the cost law cost-sqrt-v2 from the NAV exe's rule table (K-P9-7, lane C3's cost-law rows: its x-flag --cost-law cost-sqrt-v2; its legacy spelling --cost-v2, x-flag-aliases, is owned by the same row, ruling C3-3). Runnable since lane D3 (ruling W3-8a); an exe whose table lists no such row refuses the name at preflight (in neither table).",
   "parent": {
     "spec": "tiny.json",
     "library": "tiny_world_v1"
@@ -15,7 +15,7 @@
     "rule": "pm7-34",
     "printed": []
   },
-  "gross_match": "pm6-6",
+  "gross_match": "pm6-6-engine",
   "budget": {
     "id": "p9-kinds-fixture",
     "construction_cap": 1000

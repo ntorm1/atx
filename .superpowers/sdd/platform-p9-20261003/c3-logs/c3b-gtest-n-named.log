@@ -1,0 +1,108 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = NavSpec.*:NavRules.*:CostLawRegistry.*:TradeRateRegistry.*:TargetRegistry.*:NavFieldsSeal.*:NavBookWorkers.*:NavBookRule.*:NavAnnMeanGross.*:CalibrateGross.*:CovStore.*
+[==========] Running 34 tests from 11 test suites.
+[----------] Global test environment set-up.
+[----------] 2 tests from NavBookWorkers
+[ RUN      ] NavBookWorkers.PublishedBytesEqualOneWorker
+[       OK ] NavBookWorkers.PublishedBytesEqualOneWorker (820 ms)
+[ RUN      ] NavBookWorkers.V6CostV2CapacityAdvHoldOnFourEqualsOne
+[       OK ] NavBookWorkers.V6CostV2CapacityAdvHoldOnFourEqualsOne (2044 ms)
+[----------] 2 tests from NavBookWorkers (2865 ms total)
+
+[----------] 7 tests from CalibrateGross
+[ RUN      ] CalibrateGross.NumpyMeanIsNumpysMeanAtEverySize
+[       OK ] CalibrateGross.NumpyMeanIsNumpysMeanAtEverySize (4 ms)
+[ RUN      ] CalibrateGross.FourDecimalsAndTheStepArePm66
+[       OK ] CalibrateGross.FourDecimalsAndTheStepArePm66 (0 ms)
+[ RUN      ] CalibrateGross.WithinToleranceOnePass
+[       OK ] CalibrateGross.WithinToleranceOnePass (548 ms)
+[ RUN      ] CalibrateGross.OneCorrectionMatchesTwoProcess
+[       OK ] CalibrateGross.OneCorrectionMatchesTwoProcess (2291 ms)
+[ RUN      ] CalibrateGross.RefusesOutsideRange
+[       OK ] CalibrateGross.RefusesOutsideRange (585 ms)
+[ RUN      ] CalibrateGross.TieredRunReusesTheConstructionByteForByte
+[       OK ] CalibrateGross.TieredRunReusesTheConstructionByteForByte (1214 ms)
+[ RUN      ] CalibrateGross.ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage
+[       OK ] CalibrateGross.ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage (5005 ms)
+[----------] 7 tests from CalibrateGross (9651 ms total)
+
+[----------] 1 test from NavFieldsSeal
+[ RUN      ] NavFieldsSeal.ManifestSealMustBeThisBuildsOrAbsent
+[       OK ] NavFieldsSeal.ManifestSealMustBeThisBuildsOrAbsent (641 ms)
+[----------] 1 test from NavFieldsSeal (641 ms total)
+
+[----------] 7 tests from NavBookRule
+[ RUN      ] NavBookRule.GridOfLeveragesInOnePassEqualsThreeSingleRuns
+[       OK ] NavBookRule.GridOfLeveragesInOnePassEqualsThreeSingleRuns (231 ms)
+[ RUN      ] NavBookRule.VolTargetOnBookWorkersEqualsSerialAndTheSeamInjectsTheRule
+[       OK ] NavBookRule.VolTargetOnBookWorkersEqualsSerialAndTheSeamInjectsTheRule (174 ms)
+[ RUN      ] NavBookRule.RefusedOutsideAimPartialV5AndOnTheDecidePath
+[       OK ] NavBookRule.RefusedOutsideAimPartialV5AndOnTheDecidePath (107 ms)
+[ RUN      ] NavBookRule.RefusedWithoutTheStoreOrOutsideTheParameterRanges
+[       OK ] NavBookRule.RefusedWithoutTheStoreOrOutsideTheParameterRanges (79 ms)
+[ RUN      ] NavBookRule.ListRulesJsonCarriesTheLeverageRows
+[       OK ] NavBookRule.ListRulesJsonCarriesTheLeverageRows (8 ms)
+[ RUN      ] NavBookRule.AimLeverageIsOptionalWithItsDefault
+[       OK ] NavBookRule.AimLeverageIsOptionalWithItsDefault (6 ms)
+[ RUN      ] NavBookRule.CliGridAndBookWorkersEqualTheStandaloneRunsByteForByte
+[       OK ] NavBookRule.CliGridAndBookWorkersEqualTheStandaloneRunsByteForByte (2571 ms)
+[----------] 7 tests from NavBookRule (3179 ms total)
+
+[----------] 5 tests from CovStore
+[ RUN      ] CovStore.RiskSliceFromContainerEqualsDirectory
+[       OK ] CovStore.RiskSliceFromContainerEqualsDirectory (4986 ms)
+[ RUN      ] CovStore.VolAndRiskTargetRecordsUnchanged
+[       OK ] CovStore.VolAndRiskTargetRecordsUnchanged (452 ms)
+[ RUN      ] CovStore.RefusesRoleGeometryOrRootMismatch
+[       OK ] CovStore.RefusesRoleGeometryOrRootMismatch (271 ms)
+[ RUN      ] CovStore.RefusesAContainerReachingTheSealWithoutUnseal
+[       OK ] CovStore.RefusesAContainerReachingTheSealWithoutUnseal (352 ms)
+[ RUN      ] CovStore.LegacyManifestTakesTheLegacyPath
+[       OK ] CovStore.LegacyManifestTakesTheLegacyPath (127 ms)
+[----------] 5 tests from CovStore (6190 ms total)
+
+[----------] 5 tests from NavSpec
+[ RUN      ] NavSpec.FlagsAndSpecSameConfig
+[       OK ] NavSpec.FlagsAndSpecSameConfig (83 ms)
+[ RUN      ] NavSpec.RefusesWhatItCannotType
+[       OK ] NavSpec.RefusesWhatItCannotType (2 ms)
+[ RUN      ] NavSpec.RefusesADuplicateKey
+[       OK ] NavSpec.RefusesADuplicateKey (101 ms)
+[ RUN      ] NavSpec.GridFileRefusesADuplicateKey
+[       OK ] NavSpec.GridFileRefusesADuplicateKey (638 ms)
+[ RUN      ] NavSpec.SpecRunPublishesTheFlagRunBytes
+[       OK ] NavSpec.SpecRunPublishesTheFlagRunBytes (1876 ms)
+[----------] 5 tests from NavSpec (2704 ms total)
+
+[----------] 2 tests from NavRules
+[ RUN      ] NavRules.OneTableEveryKindInOrder
+[       OK ] NavRules.OneTableEveryKindInOrder (11 ms)
+[ RUN      ] NavRules.LegacyAliasesOnTheirRowsOnly
+[       OK ] NavRules.LegacyAliasesOnTheirRowsOnly (8 ms)
+[----------] 2 tests from NavRules (19 ms total)
+
+[----------] 2 tests from CostLawRegistry
+[ RUN      ] CostLawRegistry.RowsAreTheReplaysLawsAndOneNameableSet
+[       OK ] CostLawRegistry.RowsAreTheReplaysLawsAndOneNameableSet (0 ms)
+[ RUN      ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte
+[       OK ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte (778 ms)
+[----------] 2 tests from CostLawRegistry (778 ms total)
+
+[----------] 1 test from TradeRateRegistry
+[ RUN      ] TradeRateRegistry.RowsCarryTheParsersFlagsAndDefaults
+[       OK ] TradeRateRegistry.RowsCarryTheParsersFlagsAndDefaults (1 ms)
+[----------] 1 test from TradeRateRegistry (1 ms total)
+
+[----------] 1 test from TargetRegistry
+[ RUN      ] TargetRegistry.UnregisteredIdIsRefusedBeforeOutput
+[       OK ] TargetRegistry.UnregisteredIdIsRefusedBeforeOutput (68 ms)
+[----------] 1 test from TargetRegistry (68 ms total)
+
+[----------] 1 test from NavAnnMeanGross
+[ RUN      ] NavAnnMeanGross.PrintOnlyOptInAddsOneSummaryKey
+[       OK ] NavAnnMeanGross.PrintOnlyOptInAddsOneSummaryKey (3657 ms)
+[----------] 1 test from NavAnnMeanGross (3657 ms total)
+
+[----------] Global test environment tear-down
+[==========] 34 tests from 11 test suites ran. (29761 ms total)
+[  PASSED  ] 34 tests.

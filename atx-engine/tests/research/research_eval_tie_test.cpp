@@ -429,4 +429,75 @@ TEST(EvalVerb, ProtocolDefaultsFollowNavSumm) {
   EXPECT_FALSE(ev::parse_eval_args(twice).has_value());
 }
 
+// P9 lane D3W (ruling D3W-EVAL, ALCOMB-6): --vol adds config.vol and each cell's net_vol (the
+// mean and ddof-1 sd of the series as read, sd x sqrt(252), and the annualized Sharpe, which is
+// the cell's psr.sr_annual bit for bit) and nothing else; absent, the document and the print are
+// those of the verb without the flag, byte for byte.
+TEST(EvalVerb, VolFlagAddsNetVolOnly) {
+  const Inputs &in = inputs();
+  const std::string a = "raw=" + in.csv[2].string();
+  const std::string b = "scaled=" + in.csv[3].string();
+  const auto run = [&](bool vol, bool json) {
+    std::vector<std::string_view> args = {"atx-research-eval", "--daily", a, "--daily", b,
+                                          "--draws", "199"};
+    if (vol) args.push_back("--vol");
+    if (json) args.push_back("--json");
+    std::ostringstream out;
+    std::ostringstream err;
+    EXPECT_EQ(ev::research_eval_main(args, out, err), 0) << err.str();
+    return out.str();
+  };
+  const std::string plain = run(false, true);
+  const std::string with = run(true, true);
+  Json doc = Json::parse(with);
+  EXPECT_TRUE(doc["config"]["vol"].get<bool>());
+  ASSERT_EQ(doc["cells"].size(), 2U);
+  for (usize k = 0; k < 2U; ++k) {
+    const Json &v = doc["cells"][k]["net_vol"];
+    ASSERT_EQ(v.size(), 5U);
+    const std::string text = read_bytes(in.csv[2U + k]);
+    std::vector<f64> x;
+    for (usize at = text.find('\n') + 1U; at < text.size();) {
+      const usize comma = text.find(',', at);
+      const usize end = text.find('\n', comma);
+      f64 value{};
+      std::from_chars(text.data() + comma + 1U, text.data() + end, value);
+      x.push_back(value);
+      at = end + 1U;
+    }
+    ASSERT_EQ(v["sessions"].get<usize>(), x.size());
+    f64 mean = 0.0;
+    for (const f64 value : x) mean += value;
+    mean /= static_cast<f64>(x.size());
+    f64 ss = 0.0;
+    for (const f64 value : x) ss += (value - mean) * (value - mean);
+    const f64 sd = std::sqrt(ss / static_cast<f64>(x.size() - 1U));
+    EXPECT_NEAR(v["mean_daily"].get<f64>(), mean, 1e-15);
+    EXPECT_NEAR(v["sd_daily"].get<f64>(), sd, 1e-15);
+    EXPECT_EQ(v["vol_annual"].get<f64>(), v["sd_daily"].get<f64>() * std::sqrt(252.0));
+    EXPECT_EQ(v["sharpe_annual"].get<f64>(), doc["cells"][k]["psr"]["sr_annual"].get<f64>());
+    doc["cells"][k].erase("net_vol");
+  }
+  doc["config"].erase("vol");
+  EXPECT_EQ(ev::eval_json_text(doc), plain); // flag absent: the document's bytes as before
+  // The text print: one vol line per cell with the flag, none without.
+  const std::string text_with = run(true, false);
+  const std::string text_plain = run(false, false);
+  EXPECT_EQ(text_plain.find("   vol "), std::string::npos);
+  usize lines = 0;
+  for (usize at = text_with.find("   vol "); at != std::string::npos;
+       at = text_with.find("   vol ", at + 1U)) {
+    ++lines;
+  }
+  EXPECT_EQ(lines, 2U);
+  std::string stripped;
+  for (usize at = 0; at < text_with.size();) {
+    const usize end = text_with.find('\n', at);
+    const std::string line = text_with.substr(at, end - at + 1U);
+    if (line.rfind("   vol ", 0) != 0) stripped += line;
+    at = end + 1U;
+  }
+  EXPECT_EQ(stripped, text_plain);
+}
+
 } // namespace

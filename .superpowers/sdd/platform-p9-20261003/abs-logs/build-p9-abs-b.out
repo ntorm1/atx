@@ -1,0 +1,31 @@
+{
+    "Source":  "7a748630aef385893f60dc3da8a88454cfe1a86c",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  0,
+    "ConfiguredProvenance":  "55464a2e046c377a14c49005f31b042e2cea21ad-dirty",
+    "Jobs":  3,
+    "FreeMiB":  3073,
+    "CommitMiB":  2672,
+    "Targets":  [
+                    "atx-equity-strategy-ic",
+                    "atx-impl-strategy-ic-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  13.444981199999999,
+    "CompiledTUs":  0,
+    "Links":  1,
+    "Tag":  "p9-abs-b",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-28\\build-equity",
+    "Executables":  {
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-28\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "e488b79df35b3b0ee508d2b20355543cc12076b2736680ea9f0a9157f50aeaa2"
+                                                   },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-28\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "fc73c6e18388fd138c06606c82c14948710a0394baeb8cb2a73ff7d2f937c2cf"
+                                                       }
+                    }
+}
+[1/2] Linking CXX executable bin\atx-impl-strategy-ic-tests.exe

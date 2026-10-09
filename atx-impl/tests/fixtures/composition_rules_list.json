@@ -1,5 +1,6 @@
 {
   "capabilities": [
+    "absent-members-v1",
     "eval-mode-audit-exact",
     "ic-hac-rule",
     "label-terminal",

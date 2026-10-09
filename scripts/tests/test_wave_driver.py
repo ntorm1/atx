@@ -1139,11 +1139,12 @@ def test_rule_cell_parent_nav_from_another_exe_is_refused(tmp_path, parent_exe, 
     fake = F.FakeCycle(root, {})
     assert research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "match"], executor=fake,
                               log=lambda s: None) == 0
-    nav_receipt(root, "out/nav-x-rule-run", cell_exe)                 # the cell's calibration run (FakeCycle's dir)
+    receipts = root / "out/waves/w1/receipts"
+    cell_nav = json.loads((receipts / "06-match.json").read_text())["outputs"]["nav"]   # pm6-6-engine: <nav>-gm
+    nav_receipt(root, f"{cell_nav}-run", cell_exe)                    # the cell's calibrated NAV run (FakeCycle's dir)
     lines: list[str] = []
     code = research_wave.main(["run", F.MANIFEST, "--root", str(root), "--until", "verify"], executor=fake,
                               log=lines.append)
-    receipts = root / "out/waves/w1/receipts"
     if refused:
         assert code == 4, lines
         text = json.loads((receipts / "07-verify.failed-1.json").read_text())["error"]
@@ -1249,7 +1250,8 @@ def test_reader_reuse_keyed_on_code_and_verdict_per_run(tmp_path):
     fake = F.FakeCycle(root, ADMIT_ALL)
     assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lambda s: None) == 0
     w = Wave(F.MANIFEST, root, executor=fake, log=lambda s: None)
-    navs = {"cell": "out/nav-w1-L1.1474", "parent": F.PARENT_NAV}
+    cell_nav = json.loads((root / "out/waves/w1/wave-result.json").read_text())["cell"]["nav"]   # engine: <nav>-gm
+    navs = {"cell": cell_nav, "parent": F.PARENT_NAV}
     assert WSC.read_once(w, "book", "book", navs)["kind"] == "book"          # reused: the code is unchanged
     p = root / "out/waves/w1/readers/book-run1/receipt.json"
     doc = json.loads(p.read_text())
@@ -1266,7 +1268,7 @@ def test_reader_reuse_keyed_on_code_and_verdict_per_run(tmp_path):
     b.write_text(json.dumps(dict(doc, bindings=[dict(x, sha256="0" * 64) if x["path"].endswith("nav_summ.py") else x
                                                 for x in doc["bindings"]])))
     with pytest.raises(WU.StageError, match=r"bundle.json: its code .*nav_summ.py changed since the run"):
-        WR.bundle_once(w, F.PARENT_NAV, "out/nav-w1-L1.1474")
+        WR.bundle_once(w, F.PARENT_NAV, cell_nav)
     # research_cycle --keep-verdicts: a per-run copy, never overwritten
     croot, sp = T.make_root(tmp_path / "c")
     assert T.run(croot, sp) == RC.EXIT_OK and not (croot / "build-equity/cycle-synthetic/verdicts").exists()
@@ -1288,8 +1290,8 @@ def test_reader_reuse_keyed_on_code_and_verdict_per_run(tmp_path):
     screen = json.loads((rdir / "03-screen.json").read_text())["outputs"]
     judge = json.loads((rdir / "08-judge.json").read_text())["outputs"]
     assert screen["verdict"] == "build-equity/cycle-w1/verdicts/screen-1.json"
-    assert judge["cycle_verdict"] == "build-equity/cycle-w1/verdicts/run-1.json"
-    cyc_dir = root / "build-equity/cycle-w1"
+    assert judge["cycle_verdict"] == "build-equity/cycle-w1-gm/verdicts/run-1.json"   # the judge runs <cell>-cal.json
+    cyc_dir = root / "build-equity/cycle-w1-gm"
     (cyc_dir / "cycle_verdict.json").write_text("{}")                         # a later run rewrites the latest
     w = Wave(F.MANIFEST, root, executor=fake, log=lambda s: None)
     assert [r["state"] for r in research_wave.chain_of(w).state(w)] == ["done"] * 9   # the pins hold
@@ -1297,7 +1299,7 @@ def test_reader_reuse_keyed_on_code_and_verdict_per_run(tmp_path):
     assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=F.FakeCycle(root, ADMIT_ALL),
                               log=lambda s: None) == 0
     judge = json.loads((root / "out/waves/w1/receipts/08-judge.json").read_text())["outputs"]
-    assert judge["cycle_verdict"] == "build-equity/cycle-w1/cycle_verdict.json"
+    assert judge["cycle_verdict"] == "build-equity/cycle-w1-gm/cycle_verdict.json"
 
 
 # ------------------------------------------------------------------ OR section 5: complete timings
@@ -1314,12 +1316,12 @@ def test_timings_complete(tmp_path):
     assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=F.FakeCycle(root, DROP_B),
                               log=lambda s: None) == 0
     res = json.loads((root / "out/waves/w1/wave-result.json").read_text())
-    assert res["cell"]["kind"] == "b-library" and res["cell"]["spec"] == "scripts/specs/v8/lib-w1b.json"
+    assert res["cell"]["kind"] == "b-library" and res["cell"]["spec"] == "scripts/specs/v8/lib-w1b-gm.json"
     runs = {(r["phase"], r["run_dir"]) for r in res["timings"]}
     assert ("u", "build-equity/u-w1-run") not in runs                        # (the fixture's u output names)
     assert ("u", "out/u-w1-run") in runs and ("u", "out/u-w1b-run") in runs  # the screen library's and the cell's
     assert ("bundle", "out/waves/w1/bundle-run1") in runs
-    assert {p for p, _ in runs} >= {"reader:book", "reader:mech-calibration", "nav", "u"}
+    assert {p for p, _ in runs} >= {"reader:book", "reader:mech-parent", "reader:mech-matched", "nav", "u"}
     assert list(res["stage_seconds"]) == ["preflight", "register", "screen", "spec", "run", "match", "verify", "judge"]
     procs = {(p["stage"], p["what"]): p for p in res["processes"]}
     assert procs[("register", "add-alpha alpha_a")]["calls"] == 1 and procs[("register", "commit")]["calls"] == 2

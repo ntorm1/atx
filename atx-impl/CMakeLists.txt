@@ -299,3 +299,9 @@ target_sources(atx-impl-strategy PRIVATE src/strategy_nav_calibrate.cpp)
 # trial_ledger.cpp and its users, stage_equity_ic / stage_equity_universe, are pipeline TUs;
 # atx-impl-core is INTERFACE).
 target_link_libraries(atx-impl-pipeline PUBLIC atx::engine-research-ledger)
+# P9 lane ABS: the IC exe's absent-members-v1 list (strategy_ic_absent.hpp, ruling OD3P-1). Metadata
+# only (read once before any payload), so it keeps the default flags and the shared PCH.
+target_sources(atx-impl-strategy PRIVATE src/strategy_ic_absent.cpp)
+# P9 lane COV-MV (Ruling COVMV-1, tail append): the NAV target rule mv-aim-v1 (strategy_mv_aim.hpp)
+# over the engine kernel book/mv_target.cpp, reached through the v7 seam.
+target_sources(atx-impl-strategy PRIVATE src/strategy_mv_aim.cpp)

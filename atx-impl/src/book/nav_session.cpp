@@ -299,6 +299,11 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
   }
   cost_v2::DecisionLiquidity liquidity; // the rebalance decision's, shared (v7 books only)
   Construction shared(x.instruments, base.locate_in_aim);
+  // P9 AL-CLOCK: the info clock (every book's ctx holds the same span; empty without one) and,
+  // under info-clock-rate-v1, the rate vector every book's DECIDE reads (formed per decision).
+  const std::span<const f64> info_clock = ctxs.front().info_clock;
+  const bool clock_rule = base.rate == NavRateRule::InfoClockV1;
+  if (clock_rule) shared.clock_rate.assign(x.instruments, base.target.trade_fraction);
   // v8 D-1: every decision's price exposures from the session ring (each session logged
   // once per replay); the bits of recomputing each window (the ring's contract: x's
   // prices are immutable for this call).
@@ -350,6 +355,16 @@ co::Result<std::vector<NavReplayResult>> run_books(const TargetReplayInput& x,
         if (tape) record_construction(*tape, t, cadence, shared, tiers, decided);
       }
       if (stages) stages->construction += seconds_since(started);
+      // P9 AL-CLOCK: row t of the clock (row t only: the decision reads no later row) and its
+      // rates, here on the calling thread between the phases, so books on a pool only read them.
+      if (!info_clock.empty()) {
+        const usize n = x.instruments;
+        shared.clock = info_clock.subspan(t * n, n);
+        if (clock_rule)
+          ATX_TRY_VOID(nav_info_clock_rates(x.member.subspan(t * n, n), shared.clock,
+                                            target.cadence, base.target.trade_fraction,
+                                            shared.clock_rate));
+      }
       // P9 C1: the v7 rules' decision liquidity, once for every book of a rebalance decision
       // (the same function and inputs each book's rule read before: x's rows [t - w, t)).
       if (v7_books && decided.rebalance) {

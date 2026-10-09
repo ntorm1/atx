@@ -1,0 +1,7 @@
+﻿[atx-build] ninja -C C:\atx-wt\pool-31\build-equity -j 1 atx-engine/CMakeFiles/atx-engine.dir/src/book/mv_target.cpp.obj atx-impl/CMakeFiles/atx-impl-strategy.dir/src/strategy_mv_aim.cpp.obj
+ninja: Entering directory `C:\atx-wt\pool-31\build-equity'
+[0/2] Re-checking globbed directories...
+[1/5] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\cmake_pch.cxx.obj
+[2/5] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\cmake_pch.cxx.obj
+[3/5] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\mv_target.cpp.obj
+[4/5] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mv_aim.cpp.obj

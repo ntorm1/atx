@@ -15,7 +15,7 @@
     "rule": "pm7-34",
     "printed": []
   },
-  "gross_match": "pm6-6",
+  "gross_match": "pm6-6-engine",
   "budget": {
     "id": "p9-kinds-fixture",
     "admission_cap": 1000,

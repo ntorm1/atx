@@ -1,0 +1,90 @@
+{
+  "schema": "atx.p9-rule-registration/v1",
+  "id": "mv-aim-v1",
+  "cell": "P9-MV",
+  "table": "nav (K-P9-7: atx-equity-strategy-targets nav --list-rules --json, kind target, x-flag --target-rule mv-aim-v1)",
+  "lane": "COV-MV",
+  "report": "task-COV-MV-report.md",
+  "status": "proposed",
+  "citation": "Menchero, Wang and Orr (2011), Eigen-Adjusted Covariance Matrices, MSCI Research Insight, May 2011 (cov-design section 8 source [2], https://www.top1000funds.com/wp-content/uploads/2011/06/Eigenfactor_Adjusted_Covariance_Matrices_May2011.pdf); Menchero, Wang and Orr (2012), Improving Risk Forecasts for Optimized Portfolios, Financial Analysts Journal 68(3) (source [3], its publication); Menchero, Orr and Wang (2011), The Barra US Equity Model (USE4): Methodology Notes, MSCI (source [1]); the alpha form alpha_i = IC sigma_i z_i is Grinold and Kahn's (strategy_spo.hpp, as spo-v2 defines it)",
+  "hypothesis": "mv-aim-v1",
+  "claim": "a sample factor covariance under-forecasts the risk of its small eigen-directions, and an optimised (minimum-risk or max-Sharpe) portfolio loads exactly those directions; the eigen adjustment removes the bias, and the minimum-risk fully invested portfolio on the adjusted matrix realises lower out-of-sample volatility than on the unadjusted one (13.98 vs 14.64 percent annualised, US, 1994-04-15 to 2010-07-30, Menchero-Wang-Orr 2011, section Out-of-Sample Volatilities); a max-Sharpe target on the eigen-adjusted atx-cov-v1 store therefore holds the desired alpha at lower ex-ante and realised volatility than the desired target itself",
+  "source_sample_end": 2010,
+  "source_sample_basis": "read on 2026-10-06 in the text of source [2] (the URL above, PDF of May 2011): 'we select the 50 largest US stocks as of July 30, 2010 that have full daily return histories dating back to July 1, 1993 (a total of 4,303 trading days)' and 'the testing window is 4,103 trading days (from April 15, 1994 to July 30, 2010)'; the out-of-sample volatility test runs 'over the out-of-sample period April 15, 1994 to July 30, 2010'. Source [2] is the primary source (the paper whose construction the eigen adjustment and the optimised-portfolio test implement); source [3] republishes it (2012) and is not a later sample. Before 2015: not flagged under Ruling PRE-19; before the house window",
+  "predicted_mechanism": "V^{-1} tilt lowers ex-ante and realised vol at equal gross alpha",
+  "data_class": "H",
+  "house_form": "a NAV rule of kind target (K-P9-7) at the NAV path's single desired-target extension point (atx-impl book/nav_decide.cpp form_desired_target, the calling thread, once per rebalance decision, before every book's construction rule): atx-impl strategy_mv_aim.cpp over the engine kernel atx-engine book/mv_target.cpp; the store is read with spo::RiskStore::read(d), the index risk-target-v1 and spo read (Ruling COV-4)",
+  "store": {
+    "directory": "build-equity/p9-m2i-dcov-covv1",
+    "manifest_sha256": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3",
+    "recipe": "atx-cov-v1 (eigen-adjusted, Release-built, Rulings W3-10, PRE-29, COV-5: no parameter moves)",
+    "note": "named by its pin only: lane COV-MV never opened it (synthetic stores only); the cell's params carry both (Ruling PRE-9)"
+  },
+  "constants": [],
+  "constants_note": "none: no IC, horizon, ridge, cap, clip or floor. A positive scalar on alpha (IC, 1 / sqrt(h), the desired target's cross-sectional SD) washes out under the gross normalisation (gtest MvTarget.PositiveScalarWashesOut); risk::FactorModel::create's specific-variance floor is not used (the kernel never forms F^-1 or a floored D: a name without a finite D_i > 0 is unpriced and keeps its weight)",
+  "fixed_choices": [
+    "members M_d are the role's members at d; a NaN desired weight is no opinion (untouched, outside every sum)",
+    "priced P_d: members with a finite desired weight and a risk row at d (industry slot 0..49 and a finite specific variance D_i > 0, the names book_variance prices); every other member is unpriced and keeps its desired weight; nonmembers keep theirs",
+    "alpha_i = sigma_i x desired_i on P_d, sigma_i = sqrt(D_i) of row d; w = P V_d^-1 P alpha with P = I - (1 / |P_d|) 1 1' on P_d and V_d = X F X' + D of row d (X: intercept, the industry slot as one of 50 groups, 11 styles; K = 62)",
+    "V_d^-1 is applied as u - D^-1 X y with (I + F G) y = F X' u, u = D^-1 P alpha, G = X' D^-1 X, solved by partial-pivot elimination in fixed order: F is never inverted and the form is defined for a singular F (Ruling COV-13 (c); gtest MvTarget.RankDeficientFEqualsDenseSolve); I + F G singular (an F that is not positive semi-definite) refuses the run",
+    "gross (Ruling W3-17): the priced block is rescaled to the desired target's gross over P_d, so the priced block is dollar neutral, unpriced members keep their net and the vector's total gross equals the desired target's",
+    "pass-through, counted and never silent: no forecast at d, fewer than two priced names, a flat tilt (P alpha = 0)",
+    "refused before any compute: no store (--risk-model, --risk-model-sha256), anything RiskStore::open refuses (role, sessions, geometry, container root, seal), an industry slot of row d outside 0..49 and 255 (Ruling COV-11, S11), and with --rule spo-v1|v2|v3, aim-partial-v6, a rule other than aim-partial-v5, --two-speed, --adv-hold-q, --hold-band, --construction-grid (the row's incompatible[])",
+    "under --locate-in-aim the target can be negative on a special-tier name; no clip (no extra constant): the books' locate block still applies at the plan, and the summary counts such names (special_tier_negative)",
+    "the target is formed once per decision on the calling thread; every book (the capacity books and books on a pool included) reads it; a --calibrate-gross pass that forms the construction again repeats it and counts nothing"
+  ],
+  "realised_leverage": "Ruling C3-4: the rule has no leverage parameter and holds the target's gross at the desired target's (W3-17), so the book's realised gross leverage is aim-partial-v5's at the parent's L (or the L' of the PM6-6 match, C2); it cannot exceed a parameter of its own. Under a leverage rule the cap is that rule's (P9-MV names none).",
+  "printed_only": {
+    "producer": "atx-equity-strategy-targets nav, summary.json key mv_aim (main pass; recipe.json, the holdings manifest and capacity/summary.json carry the parameters only)",
+    "decisions": "formed, applied, pass_through {no_forecast, fewer_than_two_priced, flat}; warm_up_decisions {formed, applied}",
+    "priced_names / unpriced_members": "n, mean, min, max over applied decisions",
+    "specific_vol_ratio": "Ruling PRE-24a: sum |w_i| sigma_i / sum |desired_i| sigma_i over the priced names (pooled = ratio of the sums; per_decision n, mean, min, max)",
+    "eigen_00_02_share": "Ruling COV-13 (c): sum_{r<3} lambda_r (v_r' e)^2 / e' F_d e over F_d's forecast block (F_jj > 0), ranks ascending (00 = the smallest), e = X' w of the priced names, for the MV target (mv) and the desired target (desired)",
+    "special_tier_negative": "locate_in_aim, name_decisions, decisions"
+  },
+  "predictions": {
+    "registered_by": "PRE (p9-prereg.md section B.5): vol ratio < 1 at gross-alpha ratio about 1 (band [.90, 1.10], PRE-25); the figures above and cost per traded dollar vs the parent printed only (PRE-24a)",
+    "prior_of_record": "spo-v2's v7 line (PRE-24a), printed beside P9-MV by the prereg"
+  },
+  "nav_flags": {
+    "derived_by": "scripts/wave_kinds.py nav_flags from the NAV exe's row (Ruling ALCOMB-1): --risk-model <params.risk_model> --risk-model-sha256 <params.risk_model_sha256> --target-rule mv-aim-v1",
+    "guard": "E2-8: --target-rule, --risk-model and --risk-model-sha256 by any other route are refused (Ruling PRE-9)"
+  },
+  "manifest_fragment": {
+    "schema": "atx.research-wave/v2",
+    "kind": "rule",
+    "gross_match": "pm6-6-engine",
+    "rule_cell": {
+      "template": "scripts/specs/p9/templates/mv-aim.json",
+      "template_sha256": "83391f2c526b28008d48e250f0e7d26e7c3f8661786d43a8f3d76439f664d870",
+      "name": "mv-aim-v1",
+      "source_sample_end": 2010,
+      "predicted_mechanism": "V^{-1} tilt lowers ex-ante and realised vol at equal gross alpha",
+      "data_class": "H"
+    },
+    "rules": [
+      {
+        "name": "mv-aim-v1",
+        "params": {
+          "risk_model": "build-equity/p9-m2i-dcov-covv1",
+          "risk_model_sha256": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3"
+        }
+      }
+    ]
+  },
+  "manifest_note": "paste into the P9-MV atx.research-wave/v2 manifest (K-P9-9) beside root's own keys (wave, parent, fields, acceptance pm7-34, budget, ledger, expect, out_dir); gross_match pm6-6-engine is the cell's (plan section 5.2 :910). params name the store pin (Ruling PRE-9; the row's params_schema requires both, no default). template_sha256 is the template file's SHA-256 at this lane's commit (LF bytes; scripts/specs/** text eol=lf, R0-7-EOL); root re-pins it when it sets the template's parent",
+  "requires": [
+    "lane COV-MV reviewed APPROVE and merged by root before the P9 cells start (Ruling COV-7; else P9-MV lapses at 0, PRE-14)",
+    "the PM registers P9-MV in the prereg with this file's and the template's SHA-256 and the store pin (Rulings W3-10, PRE-29), after reading the spo-v1 / spo-v2 v7 lines (cov-design section 5.2, Ruling PRE-24a)",
+    "root's checks at the merge: the rule-absent identity (X-5 and Y-F0 NAV byte-identical, summary.json /producer substituted), nav --list-rules --json differing by the mv-aim-v1 row alone, the tiny-world canary goldens (Debug and Release), the role's universe.delisting.returns_applied == false (S9, COV-9) and the lineage re-pin (W1-I2)",
+    "no run of the rule on TRAIN or any real role before P9-MV is registered (COV-2): that run is the cell"
+  ],
+  "history": [
+    {
+      "status": "proposed",
+      "at": "2026-10-06",
+      "by": "COV-MV",
+      "note": "P9 lane COV-MV (cov-design section 5.2; Rulings COV-7, W3-17, PRE-9, PRE-24a, COV-13 (c), COV-14); blind registration, one variant, no constant, no grid, trials 0"
+    }
+  ]
+}

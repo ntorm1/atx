@@ -61,8 +61,6 @@ ALLOWLIST = (
     ("atx-impl/tools/horizon_stats.py", ("theta_weights", "ic_theta", "theta_book_returns"),
      "aim-partial theta of strategy_target_replay.cpp (G-P5 names horizon_stats.py; plan section 2.2 names no owner: "
      "D2 owns the fitter that imports it)", "atx-impl/src/strategy_target_replay.cpp", "P10"),
-    ("scripts/wave_rules.py", ("matched_leverage", "gross_matches"), "gross-match rule PM6-6 (wave_rules.py:110-119)",
-     "new in C2 (atx-equity-strategy-targets nav --calibrate-gross)", "C2"),
     ("scripts/wave_rules.py", ("sign_pm7_35",), "PM7-35 sign rule (P9 ruling P9: kept in wave 1)",
      "new in B1 (the research/admission sign predicate)", "E2"),
     ("atx-impl/tools/mega_report/data.py", ("memmel_se",), "report renderer's copy of nav_summ.memmel_se (outside the "
