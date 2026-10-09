@@ -1,0 +1,43 @@
+exit=0
+[184/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\role_panel.cpp.obj
+[185/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\research_ic_fitness.cpp.obj
+[186/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\objective_ic.cpp.obj
+[187/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\multiple_testing.cpp.obj
+[188/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\lockbox_audit.cpp.obj
+[189/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\combine\signal_combiner.cpp.obj
+[190/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\combine\signal_cube.cpp.obj
+[191/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\combine\orthogonalize.cpp.obj
+[192/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\combine\marginal_rank_ic.cpp.obj
+[193/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\model_validation.cpp.obj
+[194/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\qp_solver.cpp.obj
+[195/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\qp_factor_admm.cpp.obj
+[196/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\exposures.cpp.obj
+[197/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\hybrid_factor_model.cpp.obj
+[198/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\cost_terms.cpp.obj
+[199/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\replay_cost.cpp.obj
+[200/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\target_shaping.cpp.obj
+[201/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\risk_target.cpp.obj
+[202/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\cost\cost_surface.cpp.obj
+[203/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\cost\spread_estimators.cpp.obj
+[204/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\cost\borrow_tiers.cpp.obj
+[205/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\cost\fim_adjustment.cpp.obj
+[206/224] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\cost\modeled_inputs.cpp.obj
+[207/224] Linking CXX static library lib\spdlogd.lib
+[208/224] Linking C static library lib\atx_sqlite3.lib
+[209/224] Linking C static library lib\atx_miniz.lib
+[210/224] Linking CXX static library lib\atx-core.lib
+[211/224] Linking CXX static library lib\Debug\databento.lib
+[212/224] Linking CXX static library lib\atx-tsdb.lib
+[213/224] Linking CXX static library lib\atx-engine.lib
+[214/224] Building CXX object atx-engine\CMakeFiles\atx-shm-worker.dir\src\parallel\shm_worker_main.cpp.obj
+[215/224] Linking CXX executable bin\atx-shm-worker.exe
+[216/224] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-test-pch.dir\cmake_pch.cxx.obj
+[217/224] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-test-pch.dir\cmake_pch.cxx.obj
+[218/224] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-book-tests.dir\book\book_mv_target_test.cpp.obj
+[219/224] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_decide.cpp.obj
+[220/224] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_nav_v7.cpp.obj
+[221/224] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_rules.cpp.obj
+[222/224] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-tests.dir\strategy_mv_aim_rule_test.cpp.obj
+[223/224] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_mv_aim_rule_test.cpp.obj
+
+[exited with code 0]

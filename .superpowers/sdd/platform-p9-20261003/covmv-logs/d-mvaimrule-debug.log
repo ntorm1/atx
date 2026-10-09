@@ -1,0 +1,40 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = MvAimRule.*
+[==========] Running 15 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 15 tests from MvAimRule
+[ RUN      ] MvAimRule.ListRulesRowIsAClosedTargetRow
+[       OK ] MvAimRule.ListRulesRowIsAClosedTargetRow (12 ms)
+[ RUN      ] MvAimRule.RefusesWithoutAStore
+[       OK ] MvAimRule.RefusesWithoutAStore (240 ms)
+[ RUN      ] MvAimRule.RefusesIncompatibleRules
+[       OK ] MvAimRule.RefusesIncompatibleRules (483 ms)
+[ RUN      ] MvAimRule.RefusesAnIndustrySlotOutsideTheTable
+[       OK ] MvAimRule.RefusesAnIndustrySlotOutsideTheTable (748 ms)
+[ RUN      ] MvAimRule.TargetAtDReadsStoreRowDOnly
+[       OK ] MvAimRule.TargetAtDReadsStoreRowDOnly (3527 ms)
+[ RUN      ] MvAimRule.FutureReturnDoesNotChangePast
+[       OK ] MvAimRule.FutureReturnDoesNotChangePast (2149 ms)
+[ RUN      ] MvAimRule.UnpricedMembersPassThrough
+[       OK ] MvAimRule.UnpricedMembersPassThrough (123 ms)
+[ RUN      ] MvAimRule.FewerThanTwoPricedPassesThrough
+[       OK ] MvAimRule.FewerThanTwoPricedPassesThrough (99 ms)
+[ RUN      ] MvAimRule.DecisionCountedOnceWarmUpAndLocateNegatives
+[       OK ] MvAimRule.DecisionCountedOnceWarmUpAndLocateNegatives (119 ms)
+[ RUN      ] MvAimRule.ContainerAndDirectoryStoresGiveTheSameBook
+[       OK ] MvAimRule.ContainerAndDirectoryStoresGiveTheSameBook (1623 ms)
+[ RUN      ] MvAimRule.BookWorkersParity
+[       OK ] MvAimRule.BookWorkersParity (2628 ms)
+[ RUN      ] MvAimRule.SummaryBlockOnlyWhenOn
+[       OK ] MvAimRule.SummaryBlockOnlyWhenOn (2063 ms)
+[ RUN      ] MvAimRule.FlagAbsentIdentity
+[       OK ] MvAimRule.FlagAbsentIdentity (1089 ms)
+[ RUN      ] MvAimRule.WorkspaceReserveTermOnlyWithTheRule
+[       OK ] MvAimRule.WorkspaceReserveTermOnlyWithTheRule (0 ms)
+[ RUN      ] MvAimRule.CalibrateGrossCountsEachDecisionOnce
+[       OK ] MvAimRule.CalibrateGrossCountsEachDecisionOnce (1446 ms)
+[----------] 15 tests from MvAimRule (16358 ms total)
+
+[----------] Global test environment tear-down
+[==========] 15 tests from 1 test suite ran. (16359 ms total)
+[  PASSED  ] 15 tests.

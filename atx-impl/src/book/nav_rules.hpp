@@ -14,8 +14,8 @@
 //               flag), ko-invariance-v1 and fim-live-v1 (the v2 stress laws; no flag of their own),
 //               cost-sqrt-v2 (--cost-law cost-sqrt-v2: both v2 stress books, the run --cost-v2
 //               gives; x-flag-aliases ["--cost-v2"])
-//   target      none in this build: the slot of the desired-target rules (--target-rule ID); lane
-//               COV-MV appends mv-aim-v1 (row here, handler in strategy_nav_v7.cpp)
+//   target      the desired-target rules (--target-rule ID): mv-aim-v1 (P9 COV-MV,
+//               strategy_mv_aim.hpp; row in nav_rules.cpp, handler in strategy_nav_v7.cpp)
 //
 // Row shape (C1's, strategy_risk_target.cpp): {id, kind, x-flag, params_schema, incompatible};
 // these registries add "description". x-flag is the flag that turns the rule on ("--flag VALUE",

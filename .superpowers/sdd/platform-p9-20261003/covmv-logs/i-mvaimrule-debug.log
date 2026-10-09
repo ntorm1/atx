@@ -1,0 +1,51 @@
+2026-10-08T19:53:09 run mvaimrule
+exe C:\atx-wt\pool-31\build-equity\bin\atx-impl-strategy-target-tests.exe
+receipt mega-p9-covmv-i-receipt.json Source 19e967d095bb9a6058952dad8b85aae2cbbb5f34 DirtyEntries 0 ExitCode 0
+sha256 before 4c9894aae1de2d2a2af7d54a1d6d8ae66619ce95a20e3f8ecbdc86035f0d0d34 receipt 4c9894aae1de2d2a2af7d54a1d6d8ae66619ce95a20e3f8ecbdc86035f0d0d34 equal=True
+filter MvAimRule.*
+sha256 after 4c9894aae1de2d2a2af7d54a1d6d8ae66619ce95a20e3f8ecbdc86035f0d0d34 equal=True
+
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = MvAimRule.*
+[==========] Running 16 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 16 tests from MvAimRule
+[ RUN      ] MvAimRule.ListRulesRowIsAClosedTargetRow
+[       OK ] MvAimRule.ListRulesRowIsAClosedTargetRow (9 ms)
+[ RUN      ] MvAimRule.RefusesWithoutAStore
+[       OK ] MvAimRule.RefusesWithoutAStore (773 ms)
+[ RUN      ] MvAimRule.RefusesIncompatibleRules
+[       OK ] MvAimRule.RefusesIncompatibleRules (174 ms)
+[ RUN      ] MvAimRule.RefusesAnIndustrySlotOutsideTheTable
+[       OK ] MvAimRule.RefusesAnIndustrySlotOutsideTheTable (820 ms)
+[ RUN      ] MvAimRule.TargetAtDReadsStoreRowDOnly
+[       OK ] MvAimRule.TargetAtDReadsStoreRowDOnly (3759 ms)
+[ RUN      ] MvAimRule.FutureReturnDoesNotChangePast
+[       OK ] MvAimRule.FutureReturnDoesNotChangePast (2435 ms)
+[ RUN      ] MvAimRule.UnpricedMembersPassThrough
+[       OK ] MvAimRule.UnpricedMembersPassThrough (163 ms)
+[ RUN      ] MvAimRule.FewerThanTwoPricedPassesThrough
+[       OK ] MvAimRule.FewerThanTwoPricedPassesThrough (139 ms)
+[ RUN      ] MvAimRule.DecisionCountedOnceWarmUpAndLocateNegatives
+[       OK ] MvAimRule.DecisionCountedOnceWarmUpAndLocateNegatives (231 ms)
+[ RUN      ] MvAimRule.ContainerAndDirectoryStoresGiveTheSameBook
+[       OK ] MvAimRule.ContainerAndDirectoryStoresGiveTheSameBook (2292 ms)
+[ RUN      ] MvAimRule.PrintFailureLeavesTheBookAndWritesNull
+[       OK ] MvAimRule.PrintFailureLeavesTheBookAndWritesNull (2986 ms)
+[ RUN      ] MvAimRule.BookWorkersParity
+[       OK ] MvAimRule.BookWorkersParity (2642 ms)
+[ RUN      ] MvAimRule.SummaryBlockOnlyWhenOn
+[       OK ] MvAimRule.SummaryBlockOnlyWhenOn (2562 ms)
+[ RUN      ] MvAimRule.FlagAbsentIdentity
+[       OK ] MvAimRule.FlagAbsentIdentity (929 ms)
+[ RUN      ] MvAimRule.WorkspaceReserveTermOnlyWithTheRule
+[       OK ] MvAimRule.WorkspaceReserveTermOnlyWithTheRule (0 ms)
+[ RUN      ] MvAimRule.CalibrateGrossCountsEachDecisionOnce
+[       OK ] MvAimRule.CalibrateGrossCountsEachDecisionOnce (1787 ms)
+[----------] 16 tests from MvAimRule (21712 ms total)
+
+[----------] Global test environment tear-down
+[==========] 16 tests from 1 test suite ran. (21712 ms total)
+[  PASSED  ] 16 tests.
+
+exit=0
