@@ -6,7 +6,7 @@
 # queue. Quiet = two polls 60 s apart with nothing counted. Exit 0 when quiet, 1 at the bound.
 param([Parameter(Mandatory = $true)][string]$Log, [int]$BoundMinutes = 180)
 $build = '^(ninja|cmake|cl|clang-cl|clang|lld-link|link)\.exe$'
-$higher = 'p9-(2[a-z]|b2|alclock|covmv|d3wpb)-|pool-(2|14|30|31|23)\\'
+$higher = 'p9-(2[a-z]|b2|alclock|covmv|d3wpb)-|pool-(2|14|30|31|23)[\\/]'
 $start = Get-Date
 $quiet = 0
 while (((Get-Date) - $start).TotalMinutes -lt $BoundMinutes) {
@@ -15,8 +15,9 @@ while (((Get-Date) - $start).TotalMinutes -lt $BoundMinutes) {
     $pool = @($procs | Where-Object { $_.CommandLine -match 'atx-wt' })
     $foreign = @($procs | Where-Object { $_.CommandLine -notmatch 'atx-wt' })
     $rb = @($all | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -match 'research-build\.ps1' })
-    $waiters = @($all | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -match '(wait-build|build-wait)' -and
-                       $_.CommandLine -match $higher -and $_.CommandLine -notmatch 'pool-29' })
+    $waiters = @($all | Where-Object { $_.Name -match '^(powershell|python)\.exe$' -and
+                       $_.CommandLine -match '(wait|build|teeth)' -and $_.CommandLine -match $higher -and
+                       $_.CommandLine -notmatch 'pool-29' })
     $free = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1024)
     $n = $pool.Count + $rb.Count + $waiters.Count
     if ($n -eq 0) { $quiet += 1 } else { $quiet = 0 }
