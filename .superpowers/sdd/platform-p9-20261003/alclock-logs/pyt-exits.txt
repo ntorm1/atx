@@ -12,3 +12,5 @@ clock-h-s0 seed 0 head adf1c6cb code-dirty [] exit 0 wall 9s start 2026-10-07T22
 clock-h-s1 seed 1 head adf1c6cb code-dirty [] exit 0 wall 8s start 2026-10-07T22:08:25Z env1-hits 0 :: 5 passed in 6.37s
 chain-h-s0 seed 0 head adf1c6cb code-dirty [] exit 0 wall 3s start 2026-10-07T22:08:46Z env1-hits 0 :: 10 passed in 0.70s
 chain-h-s1 seed 1 head adf1c6cb code-dirty [] exit 0 wall 3s start 2026-10-07T22:08:50Z env1-hits 0 :: 10 passed in 0.86s
+clock-k-s0 seed 0 head 9d3916b8 code-dirty [] exit 0 wall 5s start 2026-10-09T01:46:01Z env1-hits 0 :: 5 passed in 4.50s
+clock-k-s1 seed 1 head 9d3916b8 code-dirty [] exit 0 wall 5s start 2026-10-09T01:46:06Z env1-hits 0 :: 5 passed in 3.89s
