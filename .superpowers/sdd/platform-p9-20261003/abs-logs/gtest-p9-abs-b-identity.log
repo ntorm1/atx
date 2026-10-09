@@ -1,0 +1,152 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = CompositionRules.*:StrategyIcComposition.*:CompositionV8.*:CompositionWeightRows.*:WeightsV3.*:NoComposition.*:ThemeResidRunner.*:ThemeTsmomRunner.*:TwoSpeedRunner.*:Workers.*:StrategyIcRunner.PinnedDefaultCompositionWeightsReproduceDefaultBlendBytes:StrategyIcRunner.UnequalPinnedWeightsChangeBlendAndRecipeWhileZeroWeightStaysScored:StrategyIcRunner.ThemeRedistributionIsRecordedInRecipeSummaryAndCombinedOnlyWhenPinned:StrategyIcRunner.CandidateCacheColdAndWarmRunsReproduceUncachedOutputsExactly:StrategyIcRunner.IcResultCacheHitsReproduceUncachedOutputsExactly:StrategyIcRunner.AbsentFieldOptionsLeaveRecipeAndOutputsUnchanged:StrategyIcRunner.SharedVmWorkersPreserveSignalsOrientationsAndPlannedTargets:IcLabelTerminal.MissingExitIcIsCachedUnderItsOwnScope:IcMethodOptions.*
+[==========] Running 53 tests from 13 test suites.
+[----------] Global test environment set-up.
+[----------] 7 tests from StrategyIcComposition
+[ RUN      ] StrategyIcComposition.Actual48DslArtifactRunsWithBoundedLookbackAndCausalMask
+[       OK ] StrategyIcComposition.Actual48DslArtifactRunsWithBoundedLookbackAndCausalMask (2011 ms)
+[ RUN      ] StrategyIcComposition.FixedFamilyBudgetsNeutralMissingAndPlannedExitAccounting
+[       OK ] StrategyIcComposition.FixedFamilyBudgetsNeutralMissingAndPlannedExitAccounting (0 ms)
+[ RUN      ] StrategyIcComposition.UnorientedAndConstantSignalsCannotInventPositions
+[       OK ] StrategyIcComposition.UnorientedAndConstantSignalsCannotInventPositions (0 ms)
+[ RUN      ] StrategyIcComposition.FuturePayloadAndMembershipDoNotChangePrefix
+[       OK ] StrategyIcComposition.FuturePayloadAndMembershipDoNotChangePrefix (0 ms)
+[ RUN      ] StrategyIcComposition.AdmissionPrecedesAllocationAndIncompleteInputRefuses
+[       OK ] StrategyIcComposition.AdmissionPrecedesAllocationAndIncompleteInputRefuses (0 ms)
+[ RUN      ] StrategyIcComposition.PooledAddMatchesSerialBitsForEveryWorkerCount
+[       OK ] StrategyIcComposition.PooledAddMatchesSerialBitsForEveryWorkerCount (10 ms)
+[ RUN      ] StrategyIcComposition.WithinThemeRedistributionKeepsMissingMassInTheme
+[       OK ] StrategyIcComposition.WithinThemeRedistributionKeepsMissingMassInTheme (2 ms)
+[----------] 7 tests from StrategyIcComposition (2025 ms total)
+
+[----------] 13 tests from CompositionV8
+[ RUN      ] CompositionV8.OneMemberThemeHasSameDispersionAsOthers
+[       OK ] CompositionV8.OneMemberThemeHasSameDispersionAsOthers (1 ms)
+[ RUN      ] CompositionV8.MemberCapRedistributes
+[       OK ] CompositionV8.MemberCapRedistributes (3 ms)
+[ RUN      ] CompositionV8.StandardiseNeedsThemesAndPinnedWeights
+[       OK ] CompositionV8.StandardiseNeedsThemesAndPinnedWeights (0 ms)
+[ RUN      ] CompositionV8.RuleOneIsTheWeightedMeanOfSignedMemberRanks
+[       OK ] CompositionV8.RuleOneIsTheWeightedMeanOfSignedMemberRanks (12 ms)
+[ RUN      ] CompositionV8.IdentityWithReRankAndCapOffIsEwThemeV1
+[       OK ] CompositionV8.IdentityWithReRankAndCapOffIsEwThemeV1 (1149 ms)
+[ RUN      ] CompositionV8.ThemeStandardiseRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] CompositionV8.ThemeStandardiseRefusalsPrecedeAnyPayloadOrOutput (413 ms)
+[ RUN      ] CompositionV8.IcShrinkRunsTheStandardisationUnchangedAndRecordsItsRule
+[       OK ] CompositionV8.IcShrinkRunsTheStandardisationUnchangedAndRecordsItsRule (1437 ms)
+[ RUN      ] CompositionV8.IcShrinkRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] CompositionV8.IcShrinkRefusalsPrecedeAnyPayloadOrOutput (565 ms)
+[ RUN      ] CompositionV8.IcShrinkAimRunsTheStandardisationUnchangedAndRecordsItsRule
+[       OK ] CompositionV8.IcShrinkAimRunsTheStandardisationUnchangedAndRecordsItsRule (1303 ms)
+[ RUN      ] CompositionV8.IcShrinkAimRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] CompositionV8.IcShrinkAimRefusalsPrecedeAnyPayloadOrOutput (419 ms)
+[ RUN      ] CompositionV8.RecordedRuleMustWriteTheStandardiseBlockBeforeAnyPayloadOrOutput
+[       OK ] CompositionV8.RecordedRuleMustWriteTheStandardiseBlockBeforeAnyPayloadOrOutput (563 ms)
+[ RUN      ] CompositionV8.ThemeErcRunsTheStandardisationUnchangedAndRecordsItsRule
+[       OK ] CompositionV8.ThemeErcRunsTheStandardisationUnchangedAndRecordsItsRule (1269 ms)
+[ RUN      ] CompositionV8.ThemeErcRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] CompositionV8.ThemeErcRefusalsPrecedeAnyPayloadOrOutput (1047 ms)
+[----------] 13 tests from CompositionV8 (8188 ms total)
+
+[----------] 1 test from CompositionWeightRows
+[ RUN      ] CompositionWeightRows.RowInForcePerDateAndFlatBeforeTheFirst
+[       OK ] CompositionWeightRows.RowInForcePerDateAndFlatBeforeTheFirst (4 ms)
+[----------] 1 test from CompositionWeightRows (4 ms total)
+
+[----------] 7 tests from StrategyIcRunner
+[ RUN      ] StrategyIcRunner.SharedVmWorkersPreserveSignalsOrientationsAndPlannedTargets
+[       OK ] StrategyIcRunner.SharedVmWorkersPreserveSignalsOrientationsAndPlannedTargets (476 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheColdAndWarmRunsReproduceUncachedOutputsExactly
+[       OK ] StrategyIcRunner.CandidateCacheColdAndWarmRunsReproduceUncachedOutputsExactly (1298 ms)
+[ RUN      ] StrategyIcRunner.PinnedDefaultCompositionWeightsReproduceDefaultBlendBytes
+[       OK ] StrategyIcRunner.PinnedDefaultCompositionWeightsReproduceDefaultBlendBytes (1005 ms)
+[ RUN      ] StrategyIcRunner.UnequalPinnedWeightsChangeBlendAndRecipeWhileZeroWeightStaysScored
+[       OK ] StrategyIcRunner.UnequalPinnedWeightsChangeBlendAndRecipeWhileZeroWeightStaysScored (802 ms)
+[ RUN      ] StrategyIcRunner.ThemeRedistributionIsRecordedInRecipeSummaryAndCombinedOnlyWhenPinned
+[       OK ] StrategyIcRunner.ThemeRedistributionIsRecordedInRecipeSummaryAndCombinedOnlyWhenPinned (1309 ms)
+[ RUN      ] StrategyIcRunner.AbsentFieldOptionsLeaveRecipeAndOutputsUnchanged
+[       OK ] StrategyIcRunner.AbsentFieldOptionsLeaveRecipeAndOutputsUnchanged (985 ms)
+[ RUN      ] StrategyIcRunner.IcResultCacheHitsReproduceUncachedOutputsExactly
+[       OK ] StrategyIcRunner.IcResultCacheHitsReproduceUncachedOutputsExactly (2230 ms)
+[----------] 7 tests from StrategyIcRunner (8108 ms total)
+
+[----------] 3 tests from NoComposition
+[ RUN      ] NoComposition.SkipsBlendAndCombinedRows
+[       OK ] NoComposition.SkipsBlendAndCombinedRows (558 ms)
+[ RUN      ] NoComposition.MemberRowsByteIdenticalToDefault
+[       OK ] NoComposition.MemberRowsByteIdenticalToDefault (670 ms)
+[ RUN      ] NoComposition.HitWithIcResultIsNotLoaded
+[       OK ] NoComposition.HitWithIcResultIsNotLoaded (657 ms)
+[----------] 3 tests from NoComposition (1887 ms total)
+
+[----------] 1 test from Workers
+[ RUN      ] Workers.OutputsByteIdenticalAt4And8And16
+[       OK ] Workers.OutputsByteIdenticalAt4And8And16 (1340 ms)
+[----------] 1 test from Workers (1340 ms total)
+
+[----------] 4 tests from ThemeResidRunner
+[ RUN      ] ThemeResidRunner.ResidualisesInTheBlockOrderAndRecordsTheRule
+[       OK ] ThemeResidRunner.ResidualisesInTheBlockOrderAndRecordsTheRule (1419 ms)
+[ RUN      ] ThemeResidRunner.ThreeThemeCycleIsTheRegisteredRule
+[       OK ] ThemeResidRunner.ThreeThemeCycleIsTheRegisteredRule (433 ms)
+[ RUN      ] ThemeResidRunner.BlockRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] ThemeResidRunner.BlockRefusalsPrecedeAnyPayloadOrOutput (444 ms)
+[ RUN      ] ThemeResidRunner.RidesOnEveryRerankTrueRuleOfTheTable
+[       OK ] ThemeResidRunner.RidesOnEveryRerankTrueRuleOfTheTable (199 ms)
+[----------] 4 tests from ThemeResidRunner (2496 ms total)
+
+[----------] 2 tests from ThemeTsmomRunner
+[ RUN      ] ThemeTsmomRunner.SwitchesThemesAtTheBlockSessionAndRecordsTheRule
+[       OK ] ThemeTsmomRunner.SwitchesThemesAtTheBlockSessionAndRecordsTheRule (1417 ms)
+[ RUN      ] ThemeTsmomRunner.BlockRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] ThemeTsmomRunner.BlockRefusalsPrecedeAnyPayloadOrOutput (388 ms)
+[----------] 2 tests from ThemeTsmomRunner (1806 ms total)
+
+[----------] 2 tests from TwoSpeedRunner
+[ RUN      ] TwoSpeedRunner.SavesTheSleevesBesideAnUnchangedBlend
+[       OK ] TwoSpeedRunner.SavesTheSleevesBesideAnUnchangedBlend (1628 ms)
+[ RUN      ] TwoSpeedRunner.BlockRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] TwoSpeedRunner.BlockRefusalsPrecedeAnyPayloadOrOutput (372 ms)
+[----------] 2 tests from TwoSpeedRunner (2002 ms total)
+
+[----------] 1 test from IcMethodOptions
+[ RUN      ] IcMethodOptions.RecordedOnlyWhenGivenPrintBothHacRulesAndKeyTheIcCache
+[       OK ] IcMethodOptions.RecordedOnlyWhenGivenPrintBothHacRulesAndKeyTheIcCache (1675 ms)
+[----------] 1 test from IcMethodOptions (1675 ms total)
+
+[----------] 1 test from IcLabelTerminal
+[ RUN      ] IcLabelTerminal.MissingExitIcIsCachedUnderItsOwnScope
+[       OK ] IcLabelTerminal.MissingExitIcIsCachedUnderItsOwnScope (1507 ms)
+[----------] 1 test from IcLabelTerminal (1507 ms total)
+
+[----------] 3 tests from WeightsV3
+[ RUN      ] WeightsV3.SingleRowEqualsV1Bytes
+[       OK ] WeightsV3.SingleRowEqualsV1Bytes (2296 ms)
+[ RUN      ] WeightsV3.RowsSwitchAtTheirSessionAndTheBookIsFlatBefore
+[       OK ] WeightsV3.RowsSwitchAtTheirSessionAndTheBookIsFlatBefore (1511 ms)
+[ RUN      ] WeightsV3.RefusalsPrecedeAnyPayloadOrOutput
+[       OK ] WeightsV3.RefusalsPrecedeAnyPayloadOrOutput (14728 ms)
+[----------] 3 tests from WeightsV3 (18537 ms total)
+
+[----------] 8 tests from CompositionRules
+[ RUN      ] CompositionRules.TableCoversEveryRule
+[       OK ] CompositionRules.TableCoversEveryRule (2 ms)
+[ RUN      ] CompositionRules.RecipeTextPinned
+[       OK ] CompositionRules.RecipeTextPinned (13 ms)
+[ RUN      ] CompositionRules.IncompatiblePairRefused
+[       OK ] CompositionRules.IncompatiblePairRefused (2 ms)
+[ RUN      ] CompositionRules.ThemeTableFromRegistry
+[       OK ] CompositionRules.ThemeTableFromRegistry (235 ms)
+[ RUN      ] CompositionRules.ListRulesJsonPinned
+[       OK ] CompositionRules.ListRulesJsonPinned (32 ms)
+[ RUN      ] CompositionRules.ParamsSchemaConstantsAreTheRegisteredOnes
+[       OK ] CompositionRules.ParamsSchemaConstantsAreTheRegisteredOnes (3 ms)
+[ RUN      ] CompositionRules.TwoSpeedRefusesAThemeOutsideTheTable
+[       OK ] CompositionRules.TwoSpeedRefusesAThemeOutsideTheTable (0 ms)
+[ RUN      ] CompositionRules.StageListIsTheV8CallSequence
+[       OK ] CompositionRules.StageListIsTheV8CallSequence (3 ms)
+[----------] 8 tests from CompositionRules (295 ms total)
+
+[----------] Global test environment tear-down
+[==========] 53 tests from 13 test suites ran. (49879 ms total)
+[  PASSED  ] 53 tests.

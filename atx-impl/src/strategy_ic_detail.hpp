@@ -10,6 +10,7 @@
 //   strategy_ic_signal_cache.cpp  VM identity + source pin, candidate signal cache, report
 //   strategy_ic_result_cache.cpp  IC identity + source pin, IC-result cache
 //   strategy_ic_runner.cpp        score_role, outputs, run_ic, dispatch_ic
+//   strategy_ic_absent.cpp        absent-members-v1 list (strategy_ic_absent.hpp; P9 lane ABS)
 #include <array>
 #include <bitset>
 #include <cstddef>

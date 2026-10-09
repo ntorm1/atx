@@ -1,0 +1,28 @@
+ABS C++ teeth (TEST-1: one teeth build; TEETH-RESTORE). Tool: tools/abs_teeth.py (one run).
+Source: HEAD 265bb427 (clean tree asserted before mutation). Build: Debug p9-abs-c, receipt
+receipt-p9-abs-c-MUTATED.json (exes 68d010f8... / 53f7164b...: teeth binaries, never evidence).
+Mutations (all at once): R1 pair, R2 --no-composition, R3 pin hex, R4 file read (metadata_text ->
+value_or("")), R5 SHA mismatch, R6 not JSON, R7 not an object, R8 schema, R9 members array
+(-> Ok(empty list)), R10 member string, R11 member id, R12 not a candidate, R13 listed twice
+(R10-R13 -> skip the entry), all in atx-impl/src/strategy_ic_absent.cpp; R14 the CLI repeated
+flag (atx-impl/src/strategy_ic_runner.cpp dispatch_ic); S1 the IC-result cache bypass of a listed
+member (score_role ic_cached / legacy_cached without `&& !listed`).
+Run: atx-impl-strategy-ic-tests --gtest_filter=AbsentMembers.* (log teeth-p9-abs-c-gtest.log).
+Result: 9 passed, 2 failed, as expected:
+  RefusalsPrecedeAnyPayloadOrOutput RED: each of the 27 run_ic cases (path_only, pin_only, screen,
+    upper_pin, short_pin, missing, empty, mismatch, torn, array, scalar, no_schema, schema_v2,
+    schema_number, no_members, members_text, members_object, members_empty, number, null, nested,
+    dash, blank, space, case, other, twice) reports its own failure lines (5 each: accepted /
+    message / log / output dir / plan); the 4 CLI repeated-flag cases (each flag x run / plan)
+    report exit != 2.
+  SharedCacheNeverCrossServesRunsWithAndWithoutTheList RED (S1): the warm listed run served the
+    listed member's real IC from the cache (ic_results hits 3, not 2; its ic_result_cache "hit")
+    and its outputs differ from the fresh-cache listed run.
+  The 7 equivalence tests, the record test and the capability test stay green: they do not depend
+    on a refusal or (fresh caches) on the bypass. Blanking has no separate mutation: the
+    equivalence plus each test's non-triviality check (the run without the list on I differs) make
+    a run that does not blank fail by construction.
+Restore: the tool wrote the kept bytes back; `git status --porcelain` empty and each mutated file's
+`git hash-object` equals HEAD's blob (teeth-p9-abs-c.log, last line). A first attempt of the tool
+stopped on its own line-ending assertion before any mutation or build (strategy_ic_absent.cpp is
+LF, a new file); fixed in the tool, then this run.

@@ -549,9 +549,11 @@ constexpr std::array<CompositionRule,10> rule_table{{
 }};
 // What the exe offers beyond the v7 CLI (the envelope's capabilities; lane E2 reads them in place
 // of the --help probe, research_cycle.py exe_capabilities). Sorted. P9 S2 (ruling S2-2) adds the
-// IC method options ic-hac-rule, label-terminal and min-coverage.
-constexpr std::array<std::string_view,8> exe_capabilities{"eval-mode-audit-exact","ic-hac-rule",
-    "label-terminal","list-rules","marginal","min-coverage","no-composition","theme-registry"};
+// IC method options ic-hac-rule, label-terminal and min-coverage; P9 lane ABS (ruling OD3P-1)
+// absent-members-v1 (--absent-members, strategy_ic_absent.hpp).
+constexpr std::array<std::string_view,9> exe_capabilities{"absent-members-v1",
+    "eval-mode-audit-exact","ic-hac-rule","label-terminal","list-rules","marginal","min-coverage",
+    "no-composition","theme-registry"};
 // A pair of present rows that list each other is refused, naming both blocks (the v8 runner's
 // "theme_redistribution and theme_standardise are exclusive").
 co::Status refuse_incompatible(std::span<const CompositionRule* const> present) {
