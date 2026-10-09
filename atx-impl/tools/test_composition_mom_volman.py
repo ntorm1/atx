@@ -16,6 +16,7 @@ import unittest.mock
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import composition_engine_fit as cef  # noqa: E402  (POST_ONLY: --engine-fit --mom-volman, P9 D3W)
 import composition_mom_volman as cmv  # noqa: E402
 import composition_rules as cr  # noqa: E402
 import composition_theme_tsmom as ct  # noqa: E402
@@ -246,17 +247,15 @@ class FitterEndToEnd(unittest.TestCase):
             cmv.check_args(args, prior=False, pooled=False)
         cmv.check_args(args, prior=True, pooled=False)
         cmv.check_args(self.fx.args(self.root / "x", **ERC_ARGS), prior=False, pooled=True)  # flag absent: no check
-        # --engine-fit (P9 lane D2) writes the C++ fit's values and the C++ fit records no momentum sleeve: refused
-        # before any compute, by the module and by the fitter (nothing published).
-        with self.assertRaises(cmv.VolmanError) as caught:
-            cmv.check_args(argparse.Namespace(**dict(vars(args), engine_fit=True)), prior=True, pooled=False)
-        self.assertIn("--engine-fit", str(caught.exception))
+        # --engine-fit (P9 lane D3W, ruling ALCOMB-7): the module accepts it (the C++ fit records the sleeve); the
+        # fitter refuses fit() alone before any compute (the C++ sleeve is written by its main(), POST_ONLY).
+        cmv.check_args(argparse.Namespace(**dict(vars(args), engine_fit=True)), prior=True, pooled=False)
         cmv.check_args(argparse.Namespace(**dict(vars(args), engine_fit=False)), prior=True, pooled=False)
         out = self.root / "refused-engine"
         with unittest.mock.patch.object(cr, "REGISTRY_PATH", self.root / "no-registry.json"), \
                 self.assertRaises(fcw.FitError) as caught:
             fcw.fit(self.fx.args(out, **VOLMAN_ARGS, engine_fit=True))
-        self.assertIn(cmv.ENGINE_FIT_REFUSED, str(caught.exception))
+        self.assertIn(cef.POST_ONLY, str(caught.exception))
         self.assertFalse(out.exists())
 
 

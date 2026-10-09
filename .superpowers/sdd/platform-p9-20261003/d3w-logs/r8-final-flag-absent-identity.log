@@ -1,0 +1,22 @@
+# flag-absent identity: fitter of root fd084e78 (git archive) vs lane worktree c7549d6a (+ the uncommitted RealExecutables test only), same WORK_DIR; tools: d3w-logs/tools/ident.py, cmp.py
+engine-shrink-tsmom/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+engine-shrink-tsmom/admission.json: identical sha256 8628dd7876910f2d14eecae37cbbef9c90f31745b848c5e2cdd50e5007ce2c32
+engine-shrink-tsmom/composition_weights.json: DIFFERS at ['$.provenance.engine_fit.producer_fingerprint']
+engine-std-aim-resid/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+engine-std-aim-resid/admission.json: identical sha256 8628dd7876910f2d14eecae37cbbef9c90f31745b848c5e2cdd50e5007ce2c32
+engine-std-aim-resid/composition_weights.json: DIFFERS at ['$.provenance.engine_fit.producer_fingerprint', '$.provenance.resid.producer_fingerprint']
+engine-std-erc-tsmom/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+engine-std-erc-tsmom/admission.json: identical sha256 8628dd7876910f2d14eecae37cbbef9c90f31745b848c5e2cdd50e5007ce2c32
+engine-std-erc-tsmom/composition_weights.json: DIFFERS at ['$.provenance.engine_fit.producer_fingerprint']
+plain-shrink-tsmom/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+plain-shrink-tsmom/admission.json: identical sha256 8628dd7876910f2d14eecae37cbbef9c90f31745b848c5e2cdd50e5007ce2c32
+plain-shrink-tsmom/composition_weights.json: identical sha256 ccf044bc311de80be2b74ac36f679ef1734f1e4f76a25e59f662e64b51966e49
+plain-std/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+plain-std/admission.json: identical sha256 8628dd7876910f2d14eecae37cbbef9c90f31745b848c5e2cdd50e5007ce2c32
+plain-std/composition_weights.json: identical sha256 2f7a3442611f85dcf8d185d0ee248c0da2bb227788b27d3f7565f73c5d186839
+plain-std-aim-resid/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+plain-std-aim-resid/admission.json: identical sha256 8628dd7876910f2d14eecae37cbbef9c90f31745b848c5e2cdd50e5007ce2c32
+plain-std-aim-resid/composition_weights.json: DIFFERS at ['$.provenance.resid.producer_fingerprint']
+plain-std-erc-tsmom/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+plain-std-erc-tsmom/admission.json: identical sha256 8628dd7876910f2d14eecae37cbbef9c90f31745b848c5e2cdd50e5007ce2c32
+plain-std-erc-tsmom/composition_weights.json: identical sha256 a66d2f35d1bf3cca7180e73f804310d93dbe19dd29f67bbb7ad38e584d276217

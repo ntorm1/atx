@@ -21,7 +21,7 @@ constexpr std::string_view kUsage =
     "         [--ledger PATH] [--ledger-missing empty|refuse] [--window-id ID]\n"
     "         [--trial LABEL=TRIAL_ID ...] [--history LABEL ...] [--hand TRIAL_ID=CSV ...]\n"
     "         [--step LABEL=DSR,SE ...] [--threshold C] [--conditional-alpha A]\n"
-    "         [--json] [--out PATH]\n";
+    "         [--json] [--out PATH] [--vol]\n";
 
 [[nodiscard]] core::Error usage_error(std::string message) {
   return core::Error(core::ErrorCode::InvalidArgument, "atx-research-eval: " + std::move(message));
@@ -115,6 +115,8 @@ struct Parser {
       cli.request.pbo = true;
     } else if (key == "--json") {
       cli.json = true;
+    } else if (key == "--vol") { // P9 lane D3W (ruling D3W-EVAL): each cell's net_vol block
+      cli.request.vol = true;
     } else {
       return false;
     }

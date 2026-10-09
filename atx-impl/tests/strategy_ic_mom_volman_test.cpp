@@ -9,9 +9,14 @@
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <bit>
+#include <charconv>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <ios>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "../src/strategy_ic_mom_volman.hpp"
@@ -314,5 +319,86 @@ TEST(MomVolman, SummaryTracePrintsTheScalePerBlock) {
     ASSERT_TRUE(icd::add_mom_volman_trace(*other, untouched));
     EXPECT_EQ(untouched, (Json{{"role", "train"}}));
   }
+}
+
+// P9 lane D3W (ruling ALCOMB-6): the sleeve before and after scaling as two series files
+// (session_ns,net_return): from the first block's session on, within the role's sessions, raw
+// r(d) and scale_b r(d) with b the block in force, every value's bits kept; nothing for a role
+// outside the sleeve's sessions or without the rule.
+namespace {
+std::vector<std::pair<i64, f64>> read_series(const std::filesystem::path& path) {
+  std::ifstream file(path, std::ios::binary);
+  std::string line;
+  std::getline(file, line);
+  EXPECT_EQ(line, "session_ns,net_return");
+  std::vector<std::pair<i64, f64>> out;
+  while (std::getline(file, line)) {
+    const auto comma = line.find(',');
+    i64 session{};
+    f64 value{};
+    std::from_chars(line.data(), line.data() + comma, session);
+    std::from_chars(line.data() + comma + 1, line.data() + line.size(), value);
+    out.emplace_back(session, value);
+  }
+  return out;
+}
+} // namespace
+
+TEST(MomVolman, SleeveFilesBeforeAndAfterScaling) {
+  const Weights w;
+  const auto pinned = w.parse(Weights::document(Weights::volman(400)));
+  ASSERT_TRUE(pinned) << pinned.error().to_string();
+  const auto blocks = st::mom_volman_blocks(step_sleeve(400));
+  ASSERT_TRUE(blocks);
+  const auto sleeve = step_sleeve(400);
+  const auto dir = std::filesystem::temp_directory_path() / "atx_mom_volman_sleeve_files";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  const auto keys = [](i64 first, i64 last) {
+    std::vector<i64> out;
+    for (i64 s = first; s <= last; ++s) out.push_back(s);
+    return out;
+  };
+  ASSERT_TRUE(icd::write_mom_volman_sleeves(*pinned, keys(1000, 1399), dir, "train"));
+  const auto raw = read_series(dir / "train_mom_volman_sleeve_raw.csv");
+  const auto scaled = read_series(dir / "train_mom_volman_sleeve_scaled.csv");
+  const usize first = (*blocks)[0].decision; // 127
+  ASSERT_EQ(raw.size(), 400U - first);
+  ASSERT_EQ(scaled.size(), raw.size());
+  usize b = 0;
+  for (usize k = 0; k < raw.size(); ++k) {
+    const usize d = first + k;
+    while (b + 1U < blocks->size() && (*blocks)[b + 1U].decision <= d) ++b;
+    SCOPED_TRACE(d);
+    EXPECT_EQ(raw[k].first, static_cast<i64>(1000 + d));
+    EXPECT_EQ(scaled[k].first, static_cast<i64>(1000 + d));
+    EXPECT_EQ(bits(raw[k].second), bits(sleeve[d]));
+    EXPECT_EQ(bits(scaled[k].second), bits(sleeve[d] * (*blocks)[b].scale));
+  }
+  EXPECT_GT(b, 5U); // several blocks were in force
+  // A role over part of the sleeve: only its sessions.
+  ASSERT_TRUE(icd::write_mom_volman_sleeves(*pinned, keys(1200, 1250), dir, "part"));
+  const auto part = read_series(dir / "part_mom_volman_sleeve_scaled.csv");
+  ASSERT_EQ(part.size(), 51U);
+  EXPECT_EQ(part.front().first, 1200);
+  EXPECT_EQ(bits(part.front().second), bits(scaled[200 - first].second));
+  // No overlap, a role before the first block, or no mom-volman-v1 rule: no file.
+  ASSERT_TRUE(icd::write_mom_volman_sleeves(*pinned, keys(5000, 5010), dir, "later"));
+  ASSERT_TRUE(icd::write_mom_volman_sleeves(*pinned, keys(1000, 1100), dir, "early"));
+  const auto plain = w.parse(Weights::document(nullptr));
+  ASSERT_TRUE(plain) << plain.error().to_string();
+  ASSERT_TRUE(icd::write_mom_volman_sleeves(*plain, keys(1000, 1399), dir, "plain"));
+  for (const char* role : {"later", "early", "plain"}) {
+    EXPECT_FALSE(std::filesystem::exists(dir / (std::string(role) + "_mom_volman_sleeve_raw.csv")))
+        << role;
+    EXPECT_FALSE(
+        std::filesystem::exists(dir / (std::string(role) + "_mom_volman_sleeve_scaled.csv")))
+        << role;
+  }
+  // A sleeve whose shape does not match the blocks is an internal error.
+  auto broken = *pinned;
+  broken.volman_sleeve.pop_back();
+  EXPECT_FALSE(icd::write_mom_volman_sleeves(broken, keys(1000, 1399), dir, "broken"));
+  std::filesystem::remove_all(dir);
 }
 } // namespace

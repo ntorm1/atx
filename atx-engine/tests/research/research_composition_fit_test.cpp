@@ -34,6 +34,7 @@
 #include "atx/engine/research/composition/ew_theme_std.hpp"
 #include "atx/engine/research/composition/fit.hpp"
 #include "atx/engine/research/composition/theme_erc.hpp"
+#include "atx/engine/research/composition/theme_tsmom.hpp"
 #include "atx/engine/research/composition/weights_schema.hpp"
 
 namespace {
@@ -518,4 +519,474 @@ TEST(ResearchComposition, WeightsSchemaIds) {
   EXPECT_EQ(rc::weights_schema_v1, "atx.dsl-composition-weights/v1");
   EXPECT_EQ(rc::weights_schema_v2, "atx.dsl-composition-weights/v2");
   EXPECT_EQ(rc::weights_schema_v3, "atx.dsl-composition-weights/v3");
+}
+
+// ---- P9 lane D3W: walk-forward-v1 (contract K-P9-8, ruling D3-1) ------------------------------
+namespace {
+
+constexpr i64 first_session_ns = 1'578'441'600'000'000'000LL; // the fixture's first session
+constexpr i64 day_ns = 86'400'000'000'000LL;
+
+// `decisions` daily sessions, every one in TRAIN; candidate k's factor is a_k + b_k d (integers),
+// so every window sum is exact and the expanding mean over n decisions is a_k + b_k (n - 1) / 2,
+// a half-integer, bit for bit.
+Inputs linear_inputs(usize decisions, const std::vector<std::pair<f64, f64>> &ab) {
+  Inputs out;
+  for (usize k = 0; k < ab.size(); ++k) out.ids.push_back("c" + std::to_string(k));
+  out.decisions = decisions;
+  for (usize d = 0; d < decisions; ++d) {
+    out.sessions.push_back(first_session_ns + static_cast<i64>(d) * day_ns);
+    out.train.push_back(1U);
+    for (const auto &[a, b] : ab) out.factors.push_back(a + b * static_cast<f64>(d));
+  }
+  return out;
+}
+
+rc::FitSpec shrink_spec(const std::vector<std::pair<std::string, std::string>> &members) {
+  Json rows = Json::array();
+  for (const auto &[id, theme] : members) {
+    rows.push_back(Json{{"id", id}, {"theme", theme}, {"sign", 1}});
+  }
+  const Json doc{{"schema", "atx.composition-fit-spec/v1"},
+                 {"composition", "ic-shrink-v1"},
+                 {"members", rows}};
+  const auto spec = rc::parse_fit_spec(doc.dump());
+  EXPECT_TRUE(spec) << spec.error().to_string();
+  return spec ? *spec : rc::FitSpec{};
+}
+
+// A fixture case's spec with the schedule and the residual order switched off (walk-forward
+// refuses them).
+rc::FitSpec case_spec(usize index) {
+  Json spec = fixture().at("cases").at(index).at("spec");
+  spec["theme_tsmom"] = false;
+  spec["theme_resid"] = false;
+  const auto parsed = rc::parse_fit_spec(spec.dump());
+  EXPECT_TRUE(parsed) << parsed.error().to_string();
+  return parsed ? *parsed : rc::FitSpec{};
+}
+
+bool same_bits(const std::vector<f64> &a, const std::vector<f64> &b) {
+  if (a.size() != b.size()) return false;
+  for (usize i = 0; i < a.size(); ++i) {
+    if (std::bit_cast<u64>(a[i]) != std::bit_cast<u64>(b[i])) return false;
+  }
+  return true;
+}
+
+} // namespace
+
+// ic-shrink-v1 rows: each member's IC is the admission train_mean of its window, so on a linear
+// series row j holds the expanding mean over d = 0 .. j - lag in closed form; the row's weights
+// are fit_composition on that window; rows start at the first j whose window holds min_decisions
+// and step by `step`.
+TEST(WalkForward, ExpandingMeanClosedForm) {
+  const std::vector<std::pair<f64, f64>> ab{{1.0, 1.0}, {2.0, 0.0}, {3.0, 2.0}, {1.0, 3.0}};
+  const Inputs in = linear_inputs(60, ab);
+  const rc::FitSpec spec =
+      shrink_spec({{"c0", "value"}, {"c1", "value"}, {"c2", "low_risk"}, {"c3", "low_risk"}});
+  const rc::WalkForwardSpec wf{"expanding", 2, 5, 4};
+  const auto rows = rc::fit_walk_forward(in.view(), in.ids, spec, wf);
+  ASSERT_TRUE(rows) << rows.error().to_string();
+  // First row: j - 2 + 1 >= 4 decisions, so j = 5; then 10, ..., 55.
+  ASSERT_EQ(rows->size(), 11U);
+  for (usize r = 0; r < rows->size(); ++r) {
+    const auto &row = (*rows)[r];
+    const usize j = 5U + 5U * r;
+    const usize n = j - 1U;
+    SCOPED_TRACE("row " + std::to_string(r));
+    EXPECT_EQ(row.decision_index, j);
+    EXPECT_EQ(row.from_session, in.sessions[j]);
+    EXPECT_EQ(row.fit_decisions, n);
+    EXPECT_EQ(row.last_fit_index, j - 2U);
+    EXPECT_EQ(row.last_fit_session, in.sessions[j - 2U]);
+    ASSERT_EQ(row.fit.ic.size(), ab.size());
+    for (usize k = 0; k < ab.size(); ++k) {
+      const f64 closed = ab[k].first + ab[k].second * (static_cast<f64>(n) - 1.0) / 2.0;
+      EXPECT_EQ(std::bit_cast<u64>(row.fit.ic[k]), std::bit_cast<u64>(closed))
+          << k << ": " << row.fit.ic[k] << " vs " << closed;
+    }
+    Inputs window = in;
+    for (usize d = 0; d < window.decisions; ++d) window.train[d] = static_cast<u8>(d + 2U <= j);
+    const auto direct = rc::fit_composition(window.view(), window.ids, spec);
+    ASSERT_TRUE(direct) << direct.error().to_string();
+    EXPECT_TRUE(same_bits(row.fit.weights, direct->weights));
+  }
+  EXPECT_NE((*rows)[0].fit.ic[0], rows->back().fit.ic[0]); // the window expands
+}
+
+// Whatever the factors after decision j - lag, row j and every row before it are unchanged bit
+// for bit (ic-shrink-v1 alone, and theme-erc-v1 on ew-theme-std-v1 whose covariance reads every
+// window decision); a later row sees the change. The ic-shrink-v1 case runs on a linear series:
+// on the fixture's series the early windows' ICs are noise and the member cap refuses most rows.
+TEST(WalkForward, NoRowUsesFutureDecisions) {
+  struct Case {
+    std::string name;
+    Inputs in;
+    rc::FitSpec spec;
+  };
+  const std::vector<Case> cases{
+      {"ic-shrink-v1 linear",
+       linear_inputs(120, {{1.0, 1.0}, {2.0, 0.0}, {3.0, 2.0}, {1.0, 3.0}, {4.0, 1.0}, {2.0, 2.0}}),
+       shrink_spec({{"c0", "value"},
+                    {"c1", "value"},
+                    {"c2", "value"},
+                    {"c3", "low_risk"},
+                    {"c4", "low_risk"},
+                    {"c5", "low_risk"}})},
+      {fixture().at("cases").at(1).at("name").get<std::string>(), inputs(), case_spec(1)}};
+  for (const Case &c : cases) {
+    const Inputs &in = c.in;
+    const rc::FitSpec &spec = c.spec;
+    SCOPED_TRACE(c.name);
+    const rc::WalkForwardSpec wf{"expanding", 2, 21, 42};
+    const auto base = rc::fit_walk_forward(in.view(), in.ids, spec, wf);
+    ASSERT_TRUE(base) << base.error().to_string();
+    ASSERT_GE(base->size(), 4U);
+    const usize cut = (*base)[base->size() / 2U].decision_index;
+    Inputs moved = in;
+    for (usize d = cut - 1U; d < moved.decisions; ++d) {
+      for (usize c = 0; c < moved.ids.size(); ++c) {
+        f64 &f = moved.factors[d * moved.ids.size() + c];
+        if (std::isfinite(f)) f = -3.0 * f + 0.01 * static_cast<f64>(c + 1U);
+      }
+    }
+    const auto after = rc::fit_walk_forward(moved.view(), moved.ids, spec, wf);
+    ASSERT_TRUE(after) << after.error().to_string();
+    ASSERT_EQ(after->size(), base->size());
+    bool later_moved = false;
+    for (usize r = 0; r < base->size(); ++r) {
+      const auto &a = (*base)[r];
+      const auto &b = (*after)[r];
+      EXPECT_EQ(a.decision_index, b.decision_index);
+      EXPECT_EQ(a.fit_decisions, b.fit_decisions);
+      if (a.decision_index <= cut) {
+        EXPECT_TRUE(same_bits(a.fit.weights, b.fit.weights)) << "row " << r;
+        EXPECT_TRUE(same_bits(a.fit.covariance, b.fit.covariance)) << "row " << r;
+        EXPECT_TRUE(same_bits(a.fit.ic, b.fit.ic)) << "row " << r;
+      } else {
+        later_moved = later_moved || !same_bits(a.fit.weights, b.fit.weights);
+      }
+    }
+    EXPECT_TRUE(later_moved);
+  }
+}
+
+// Every refusal names the rule (or the row) before any row is published.
+TEST(WalkForward, RefusesBeforeAnyRow) {
+  const Inputs in = linear_inputs(60, {{1.0, 1.0}, {2.0, 0.0}});
+  const rc::FitSpec spec = shrink_spec({{"c0", "value"}, {"c1", "low_risk"}});
+  const auto refused = [&](const Inputs &x, const rc::FitSpec &s, const rc::WalkForwardSpec &wf,
+                           std::string_view needle) {
+    const auto rows = rc::fit_walk_forward(x.view(), x.ids, s, wf);
+    ASSERT_FALSE(rows) << needle;
+    EXPECT_NE(rows.error().message().find(needle), std::string::npos) << rows.error().message();
+  };
+  refused(in, spec, {"rolling", 2, 5, 4}, "the window must be expanding");
+  refused(in, spec, {"expanding", 1, 5, 4}, "lag >= 2");
+  refused(in, spec, {"expanding", 2, 0, 4}, "lag >= 2");
+  refused(in, spec, {"expanding", 2, 5, 1}, "lag >= 2");
+  rc::FitSpec tsmom = spec;
+  tsmom.theme_tsmom = true;
+  refused(in, tsmom, {}, "refused with theme-tsmom-v1 and theme-resid-v1");
+  rc::FitSpec resid = spec;
+  resid.theme_resid = true;
+  refused(in, resid, {}, "refused with theme-tsmom-v1 and theme-resid-v1");
+  refused(in, spec, {"expanding", 2, 5, 59}, "never fill a window of 59 decisions");
+  Inputs outside = in;
+  for (auto &t : outside.train) t = 0U;
+  refused(outside, spec, {"expanding", 2, 5, 4}, "never fill a window");
+  const Inputs long_series = linear_inputs(4200, {{1.0, 1.0}, {2.0, 0.0}});
+  refused(long_series, spec, {"expanding", 2, 1, 2}, "rows; at most 4096");
+  // c1 has no live decision before d = 20: the first row's ic-shrink-v1 fit refuses, by row.
+  Inputs late = in;
+  for (usize d = 0; d < 20U; ++d) late.factors[d * 2U + 1U] = std::numeric_limits<f64>::quiet_NaN();
+  refused(late, spec, {"expanding", 2, 5, 4}, "the row at decision 5 (session ");
+}
+
+// The verb: --walk-forward adds the rows (fit_walk_forward on the series, every decision of which
+// lies in TRAIN) and nothing else; the flag-absent document is that document without the block,
+// byte for byte; usage errors exit 2, refusals exit 1 and publish nothing.
+TEST(WalkForward, CliWritesTheRowsAndRefuses) {
+  const fs::path dir = scratch("walk_forward");
+  const Inputs in = inputs();
+  const fs::path factors = write_factor_dir(dir, in);
+  // Case 1 (ew-theme-std-v1 + theme-erc-v1), as in CliPublishesTheFit: every row's fit and the
+  // whole-series fit are feasible (the ic-shrink-v1 cases refuse the member cap on this series).
+  Json spec_json = fixture().at("cases").at(1).at("spec");
+  spec_json["theme_tsmom"] = false;
+  write_bytes(dir / "spec.json", spec_json.dump());
+  const std::string spec_path = (dir / "spec.json").string();
+  std::ostringstream o;
+  std::ostringstream e;
+  const fs::path out = dir / "fit_wf";
+  ASSERT_EQ(run_main({"fit", "--factors", factors.string(), "--spec", spec_path, "--output",
+                      out.string(), "--walk-forward", "expanding", "--lag", "2", "--step", "21",
+                      "--min-decisions", "21"},
+                     o, e),
+            0)
+      << e.str();
+  const Json doc = Json::parse(read_bytes(out / std::string(rc::kFitFile)));
+  const Json &wf = doc.at("walk_forward");
+  EXPECT_EQ(wf.at("rule").get<std::string>(), std::string(rc::walk_forward_rule));
+  EXPECT_EQ(wf.at("window").get<std::string>(), "expanding");
+  EXPECT_EQ(wf.at("lag").get<usize>(), 2U);
+  EXPECT_EQ(wf.at("step").get<usize>(), 21U);
+  EXPECT_EQ(wf.at("min_decisions").get<usize>(), 21U);
+  Inputs all = in;
+  all.train.assign(all.decisions, 1U);
+  const auto spec = rc::parse_fit_spec(spec_json.dump());
+  ASSERT_TRUE(spec);
+  const auto rows = rc::fit_walk_forward(all.view(), all.ids, *spec, rc::WalkForwardSpec{});
+  ASSERT_TRUE(rows) << rows.error().to_string();
+  ASSERT_EQ(wf.at("rows").size(), rows->size());
+  for (usize r = 0; r < rows->size(); ++r) {
+    const Json &row = wf.at("rows").at(r);
+    EXPECT_EQ(row.at("decision_index").get<usize>(), (*rows)[r].decision_index);
+    EXPECT_EQ(row.at("from_session").get<i64>(), (*rows)[r].from_session);
+    EXPECT_EQ(row.at("fit_decisions").get<usize>(), (*rows)[r].fit_decisions);
+    EXPECT_EQ(row.at("last_fit_index").get<usize>(), (*rows)[r].last_fit_index);
+    EXPECT_EQ(row.at("last_fit_session").get<i64>(), (*rows)[r].last_fit_session);
+    expect_values(row.at("weights"), (*rows)[r].fit.weights, true, "row " + std::to_string(r));
+  }
+  // The default min-decisions is the registered 21.
+  const fs::path defaulted = dir / "fit_wf_default";
+  ASSERT_EQ(run_main({"fit", "--factors", factors.string(), "--spec", spec_path, "--output",
+                      defaulted.string(), "--walk-forward", "expanding", "--lag", "2", "--step",
+                      "21"},
+                     o, e),
+            0)
+      << e.str();
+  EXPECT_EQ(read_bytes(defaulted / std::string(rc::kFitFile)),
+            read_bytes(out / std::string(rc::kFitFile)));
+  // Flag absent: the same document without the block, byte for byte.
+  const fs::path plain = dir / "fit_plain";
+  ASSERT_EQ(run_main({"fit", "--factors", factors.string(), "--spec", spec_path, "--output",
+                      plain.string()},
+                     o, e),
+            0)
+      << e.str();
+  Json stripped = doc;
+  stripped.erase("walk_forward");
+  EXPECT_EQ(read_bytes(plain / std::string(rc::kFitFile)), stripped.dump(2) + "\n");
+  // Usage: the counts only with --walk-forward, which needs --lag and --step; a count is digits.
+  const std::vector<std::string> base{"fit", "--factors", factors.string(), "--spec", spec_path,
+                                      "--output", (dir / "usage").string()};
+  const auto with = [&](std::vector<std::string> extra) {
+    std::vector<std::string> argv = base;
+    argv.insert(argv.end(), extra.begin(), extra.end());
+    return run_main(argv, o, e);
+  };
+  EXPECT_EQ(with({"--lag", "2", "--step", "21"}), 2);
+  EXPECT_EQ(with({"--min-decisions", "21"}), 2);
+  EXPECT_EQ(with({"--walk-forward", "expanding", "--step", "21"}), 2);
+  EXPECT_EQ(with({"--walk-forward", "expanding", "--lag", "2"}), 2);
+  EXPECT_EQ(with({"--walk-forward", "expanding", "--lag", "x", "--step", "21"}), 2);
+  EXPECT_EQ(with({"--walk-forward", "expanding", "--lag", "-2", "--step", "21"}), 2);
+  EXPECT_EQ(with({"--walk-forward", "expanding", "--lag", "2", "--step", ""}), 2);
+  EXPECT_FALSE(fs::exists(dir / "usage"));
+  // Refused by the fit: nothing published.
+  const auto refused = [&](std::vector<std::string> extra, const fs::path &spec_file,
+                           std::string_view needle) {
+    const fs::path target = dir / "refused";
+    std::vector<std::string> argv{"fit", "--factors", factors.string(), "--spec",
+                                  spec_file.string(), "--output", target.string()};
+    argv.insert(argv.end(), extra.begin(), extra.end());
+    std::ostringstream err;
+    EXPECT_EQ(run_main(argv, o, err), 1) << needle;
+    EXPECT_NE(err.str().find(needle), std::string::npos) << err.str();
+    EXPECT_FALSE(fs::exists(target)) << needle;
+  };
+  refused({"--walk-forward", "rolling", "--lag", "2", "--step", "21"}, dir / "spec.json",
+          "the window must be expanding");
+  refused({"--walk-forward", "expanding", "--lag", "1", "--step", "21"}, dir / "spec.json",
+          "lag >= 2");
+  refused({"--walk-forward", "expanding", "--lag", "2", "--step", "0"}, dir / "spec.json",
+          "lag >= 2");
+  refused({"--walk-forward", "expanding", "--lag", "2", "--step", "21", "--min-decisions", "1"},
+          dir / "spec.json", "lag >= 2");
+  refused({"--walk-forward", "expanding", "--lag", "2", "--step", "21", "--min-decisions", "999"},
+          dir / "spec.json", "never fill a window");
+  Json tsmom = spec_json;
+  tsmom["theme_tsmom"] = true;
+  write_bytes(dir / "tsmom.json", tsmom.dump());
+  refused({"--walk-forward", "expanding", "--lag", "2", "--step", "21"}, dir / "tsmom.json",
+          "refused with theme-tsmom-v1");
+}
+
+// ---- P9 lane D3W: mom-volman-v1's sleeve in the C++ fit (ruling ALCOMB-7) -----------------------
+namespace {
+
+// The fixture case `index` with theme-tsmom-v1 off and mom-volman-v1 as asked.
+Json volman_spec_json(usize index, bool volman) {
+  Json spec = fixture().at("cases").at(index).at("spec");
+  spec["theme_tsmom"] = false;
+  if (volman) spec["mom_volman"] = true;
+  return spec;
+}
+
+rc::FitSpec parsed(const Json &spec) {
+  const auto out = rc::parse_fit_spec(spec.dump());
+  EXPECT_TRUE(out) << out.error().to_string();
+  return out ? *out : rc::FitSpec{};
+}
+
+} // namespace
+
+// The sleeve is theme-tsmom-v1's step 1 for price_momentum on the final weights: 0 outside TRAIN,
+// and every tsmom block's price_momentum trailing sum is the sum of the sleeve over its window,
+// bit for bit; the weights and every other block are those of the fit without it.
+TEST(MomVolman, SleeveIsTsmomStepOneForPriceMomentum) {
+  const Inputs in = inputs();
+  const Json tsmom_spec = fixture().at("cases").at(3).at("spec"); // ic-shrink-v1 + theme-tsmom-v1
+  ASSERT_TRUE(tsmom_spec.at("theme_tsmom").get<bool>());
+  const auto ts = rc::fit_composition(in.view(), in.ids, parsed(tsmom_spec));
+  const auto mv = rc::fit_composition(in.view(), in.ids, parsed(volman_spec_json(3, true)));
+  const auto plain = rc::fit_composition(in.view(), in.ids, parsed(volman_spec_json(3, false)));
+  ASSERT_TRUE(ts) << ts.error().to_string();
+  ASSERT_TRUE(mv) << mv.error().to_string();
+  ASSERT_TRUE(plain) << plain.error().to_string();
+  EXPECT_TRUE(mv->volman);
+  EXPECT_FALSE(plain->volman);
+  EXPECT_TRUE(plain->volman_sleeve.empty());
+  EXPECT_TRUE(same_bits(mv->weights, plain->weights));
+  EXPECT_TRUE(same_bits(mv->weights, ts->weights));
+  ASSERT_EQ(mv->volman_sleeve.size(), in.decisions);
+  usize nonzero = 0;
+  for (usize d = 0; d < in.decisions; ++d) {
+    if (in.train[d] == 0U) {
+      EXPECT_EQ(std::bit_cast<u64>(mv->volman_sleeve[d]), std::bit_cast<u64>(0.0)) << d;
+    } else if (mv->volman_sleeve[d] != 0.0) {
+      ++nonzero;
+    }
+  }
+  EXPECT_GT(nonzero, 200U);
+  const auto pm = std::find(mv->themes.begin(), mv->themes.end(), "price_momentum");
+  ASSERT_NE(pm, mv->themes.end());
+  const auto p = static_cast<usize>(
+      std::find(ts->schedule.themes.begin(), ts->schedule.themes.end(),
+                static_cast<usize>(pm - mv->themes.begin())) -
+      ts->schedule.themes.begin());
+  ASSERT_LT(p, ts->schedule.themes.size());
+  ASSERT_FALSE(ts->schedule.blocks.empty());
+  for (const auto &block : ts->schedule.blocks) {
+    f64 s = 0.0;
+    const usize to = block.decision_index - rc::theme_tsmom_lag;
+    for (usize d = to + 1U - rc::theme_tsmom_lookback; d <= to; ++d) s += mv->volman_sleeve[d];
+    EXPECT_EQ(std::bit_cast<u64>(s), std::bit_cast<u64>(block.trailing[p])) << block.decision_index;
+  }
+  // One decision in closed form: sum over the weighted price_momentum members of (w / W) f.
+  usize d = 0;
+  while (in.train[d] == 0U) ++d;
+  const auto theme = static_cast<usize>(pm - mv->themes.begin());
+  f64 mass = 0.0;
+  for (usize k = 0; k < mv->weights.size(); ++k) {
+    if (mv->member_theme[k] == theme && mv->weights[k] > 0.0) mass += mv->weights[k];
+  }
+  f64 r = 0.0;
+  for (usize k = 0; k < mv->weights.size(); ++k) {
+    if (mv->member_theme[k] != theme || !(mv->weights[k] > 0.0)) continue;
+    const f64 f = in.factors[d * in.ids.size() + mv->column[k]];
+    r = r + (mv->weights[k] / mass) * (std::isnan(f) ? 0.0 : f);
+  }
+  EXPECT_EQ(std::bit_cast<u64>(mv->volman_sleeve[d]), std::bit_cast<u64>(r));
+}
+
+// Refused: an aim parent, beside theme-tsmom-v1 or theme-resid-v1, no weighted price_momentum
+// member, and a role outside 128..65536 decisions. A walk-forward row records no sleeve.
+TEST(MomVolman, RefusalsAndWalkForwardRows) {
+  const Inputs in = inputs();
+  const auto refused = [&](const Inputs &x, const Json &spec, std::string_view needle) {
+    const auto fit = rc::fit_composition(x.view(), x.ids, parsed(spec));
+    ASSERT_FALSE(fit) << needle;
+    EXPECT_NE(fit.error().message().find(needle), std::string::npos) << fit.error().message();
+  };
+  refused(in, volman_spec_json(4, true), "mom-volman-v1 takes an ew-theme-std-v1 or ic-shrink-v1");
+  Json with_tsmom = volman_spec_json(3, true);
+  with_tsmom["theme_tsmom"] = true;
+  refused(in, with_tsmom, "refused beside theme-tsmom-v1 and theme-resid-v1");
+  Json with_resid = fixture().at("cases").at(2).at("spec"); // ew-theme-std-aim + theme-resid-v1
+  with_resid["composition"] = "ew-theme-std-v1";
+  for (auto &m : with_resid["members"]) m.erase("gain");
+  with_resid["mom_volman"] = true;
+  refused(in, with_resid, "refused beside theme-tsmom-v1 and theme-resid-v1");
+  // ic-shrink-v1 on four linear members, two per theme (the member cap's smallest feasible book).
+  const std::vector<std::pair<f64, f64>> ab{{1.0, 1.0}, {2.0, 0.0}, {3.0, 2.0}, {1.0, 3.0}};
+  Json no_pm{{"schema", "atx.composition-fit-spec/v1"},
+             {"composition", "ic-shrink-v1"},
+             {"mom_volman", true},
+             {"members", Json::array()}};
+  for (usize k = 0; k < ab.size(); ++k) {
+    const char *theme = k < 2U ? "value" : "low_risk";
+    no_pm["members"].push_back(
+        Json{{"id", "c" + std::to_string(k)}, {"theme", theme}, {"sign", 1}});
+  }
+  refused(linear_inputs(200, ab), no_pm, "price_momentum has no weighted member");
+  Json short_role = no_pm;
+  short_role["members"][2]["theme"] = "price_momentum";
+  short_role["members"][3]["theme"] = "price_momentum";
+  refused(linear_inputs(127, ab), short_role,
+          "the role has 127 decisions; the first block needs more than 127");
+  const Inputs least = linear_inputs(128, ab);
+  const auto accepted = rc::fit_composition(least.view(), least.ids, parsed(short_role));
+  ASSERT_TRUE(accepted) << accepted.error().to_string();
+  EXPECT_TRUE(accepted->volman);
+  EXPECT_EQ(accepted->volman_sleeve.size(), 128U);
+  // Walk-forward: the rows are the fits without the sleeve (the full fit's schedule).
+  const auto rows = rc::fit_walk_forward(in.view(), in.ids, parsed(volman_spec_json(1, true)),
+                                         rc::WalkForwardSpec{"expanding", 2, 21, 42});
+  const auto bare = rc::fit_walk_forward(in.view(), in.ids, parsed(volman_spec_json(1, false)),
+                                         rc::WalkForwardSpec{"expanding", 2, 21, 42});
+  ASSERT_TRUE(rows) << rows.error().to_string();
+  ASSERT_TRUE(bare) << bare.error().to_string();
+  ASSERT_EQ(rows->size(), bare->size());
+  for (usize r = 0; r < rows->size(); ++r) {
+    EXPECT_FALSE((*rows)[r].fit.volman) << r;
+    EXPECT_TRUE(same_bits((*rows)[r].fit.weights, (*bare)[r].fit.weights)) << r;
+  }
+}
+
+// The verb: a spec with mom_volman true adds the block {theme, sleeve} and nothing else; without
+// the key the document is that document without the block, byte for byte.
+TEST(MomVolman, CliWritesTheSleeveBlockOnlyWhenAsked) {
+  const fs::path dir = scratch("mom_volman");
+  const Inputs in = inputs();
+  const fs::path factors = write_factor_dir(dir, in);
+  write_bytes(dir / "on.json", volman_spec_json(1, true).dump());
+  write_bytes(dir / "off.json", volman_spec_json(1, false).dump());
+  std::ostringstream o;
+  std::ostringstream e;
+  for (const char *name : {"on", "off"}) {
+    ASSERT_EQ(run_main({"fit", "--factors", factors.string(), "--spec",
+                        (dir / (std::string(name) + ".json")).string(), "--output",
+                        (dir / (std::string("fit_") + name)).string()},
+                       o, e),
+              0)
+        << e.str();
+  }
+  const Json on = Json::parse(read_bytes(dir / "fit_on" / std::string(rc::kFitFile)));
+  ASSERT_TRUE(on.contains("mom_volman"));
+  EXPECT_EQ(on.at("mom_volman").size(), 2U);
+  EXPECT_EQ(on.at("mom_volman").at("theme").get<std::string>(), "price_momentum");
+  Inputs all = in;
+  all.train.assign(all.decisions, 1U);
+  const auto fit = rc::fit_composition(all.view(), all.ids, parsed(volman_spec_json(1, true)));
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  expect_values(on.at("mom_volman").at("sleeve"), fit->volman_sleeve, true, "cli sleeve");
+  Json stripped = on;
+  stripped.erase("mom_volman");
+  stripped["inputs"]["spec_sha256"] =
+      atx::core::sha256_hex(read_bytes(dir / "off.json")).value(); // the spec file differs
+  EXPECT_EQ(read_bytes(dir / "fit_off" / std::string(rc::kFitFile)), stripped.dump(2) + "\n");
+  // A non-boolean key is refused and publishes nothing.
+  Json bad = volman_spec_json(1, false);
+  bad["mom_volman"] = 1;
+  write_bytes(dir / "bad.json", bad.dump());
+  std::ostringstream err;
+  EXPECT_EQ(run_main({"fit", "--factors", factors.string(), "--spec", (dir / "bad.json").string(),
+                      "--output", (dir / "fit_bad").string()},
+                     o, err),
+            1);
+  EXPECT_NE(err.str().find("spec mom_volman must be a boolean"), std::string::npos) << err.str();
+  EXPECT_FALSE(fs::exists(dir / "fit_bad"));
 }
