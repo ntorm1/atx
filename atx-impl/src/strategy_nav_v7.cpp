@@ -1337,7 +1337,10 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       if (!valid) throw std::invalid_argument(valid.error().to_string());
     }
     if (!output || output->empty()) throw std::invalid_argument("--output is required");
-    if ((o.aim_v6 || o.capacity) && rate && *rate != "fixed")
+    // P9 AL-CLOCK: info-clock-rate-v1 reads no NAV (each rate is the member's clock at the
+    // decision), so the capacity books run it as the main books do; aim-partial-v6 still refuses.
+    if ((o.aim_v6 || o.capacity) && rate && *rate != "fixed" &&
+        (o.aim_v6 || *rate != nav_info_clock_rate_id))
       throw std::invalid_argument("aim-partial-v6 and --capacity-curve need the fixed rate "
                                   "(per-name-v1 reads the NAV)");
     if (o.aim_v6) {

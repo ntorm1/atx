@@ -207,3 +207,8 @@ target_sources(atx-impl-strategy-ic-tests PRIVATE
 # CostLawRegistry.*, TradeRateRegistry.*, TargetRegistry.*) beside the NAV replay tests;
 # atx-impl-tests compiles it through its *_test.cpp glob.
 target_sources(atx-impl-strategy-target-tests PRIVATE strategy_nav_spec_test.cpp)
+
+# P9 lane AL-CLOCK: the trade-rate row info-clock-rate-v1 and the print-only --info-clock-print
+# (InfoClockRate.*, InfoClockPrint.*) beside the NAV replay tests; atx-impl-tests compiles it
+# through its *_test.cpp glob.
+target_sources(atx-impl-strategy-target-tests PRIVATE strategy_nav_info_clock_test.cpp)

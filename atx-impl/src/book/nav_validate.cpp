@@ -2,6 +2,7 @@
 // P9 C3 (task 1, move-only): moved unchanged from strategy_nav_replay.cpp.
 
 #include "book/nav_replay_internal.hpp"
+#include "atx/engine/book/two_speed.hpp" // P9 AL-CLOCK: two_speed_slow_theta
 
 namespace atx::impl::strategy {
 using namespace nav_book;
@@ -75,11 +76,21 @@ co::Status validate_nav_config(const NavReplayConfig& cfg) {
     return co::Err(co::ErrorCode::InvalidArgument,
                    "nav replay: invalid recipe (target-replay cost/borrow must be zero; "
                    "book workers 1..64)");
+  const bool rate_defaults = cfg.rate_rra == nav_rate_rra && cfg.rate_lambda == nav_rate_lambda &&
+                             cfg.rate_min == nav_rate_min && cfg.rate_max == nav_rate_max;
+  // P9 AL-CLOCK, info-clock-rate-v1: aim-partial-v5's move at two-speed-v1's two rates, whose
+  // slow one is the parent's theta (two_speed_slow_theta, the trade fraction); no per-name-v1
+  // parameter.
+  if (cfg.rate == NavRateRule::InfoClockV1 &&
+      (cfg.target.rule != TargetReplayRule::AimPartialV5 ||
+       cfg.target.trade_fraction != bk::two_speed_slow_theta || !rate_defaults))
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: rate info-clock-rate-v1 needs aim-partial-v5 at trade_fraction "
+                   ".05 (its slow rate theta_s, two-speed-v1's) and takes no rate parameters");
   // Trading rate: per-name-v1 is aim-partial-v5 only; a fixed rate carries no rate
   // parameters (each stays at its declared default). within() also refuses NaN.
-  const bool rate_ok = cfg.rate == NavRateRule::Fixed
-      ? cfg.rate_rra == nav_rate_rra && cfg.rate_lambda == nav_rate_lambda &&
-            cfg.rate_min == nav_rate_min && cfg.rate_max == nav_rate_max
+  const bool rate_ok = (cfg.rate == NavRateRule::Fixed || cfg.rate == NavRateRule::InfoClockV1)
+      ? rate_defaults
       : cfg.rate == NavRateRule::PerNameV1 &&
             cfg.target.rule == TargetReplayRule::AimPartialV5 &&
             within(cfg.rate_rra, 0, 1e6) && cfg.rate_rra > 0 &&
@@ -166,6 +177,22 @@ co::Status validate_nav_input(const NavReplayInput& in, const NavReplayConfig& c
   if (tiers != !f.si_shares.empty() ||
       (tiers && (f.shares_out.size() != cells || f.si_shares.size() != cells)))
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: financing fields geometry");
+  // P9 AL-CLOCK: the info clock (ea_days_since) at the input's geometry, every cell in the
+  // field's domain (NaN or finite >= 0); rate info-clock-rate-v1 reads it.
+  const auto& clock = in.info_clock;
+  if (!clock.empty() && clock.size() != cells)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: info clock (ea_days_since) geometry");
+  if (cfg.rate == NavRateRule::InfoClockV1 && clock.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: rate info-clock-rate-v1 needs the info clock ea_days_since "
+                   "(--fields)");
+  for (usize k = 0; k < clock.size(); ++k)
+    if (!(std::isnan(clock[k]) || (std::isfinite(clock[k]) && clock[k] >= 0)))
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "nav replay: ea_days_since outside its domain (NaN or finite >= 0) at row " +
+                         std::to_string(k / x.instruments) + ", name " +
+                         std::to_string(k % x.instruments));
   // Envelope EXCLUDES caller-owned input; events are charged at their cap. Every
   // lockstep book holds its state, days and events at once; the construction
   // (desired target and, when neutralizing, the price-risk scratch) and the borrow
@@ -178,7 +205,9 @@ co::Status validate_nav_input(const NavReplayInput& in, const NavReplayConfig& c
       !budget.add(x.decision_end - x.decision_begin, books * sizeof(NavReplayDay)) ||
       !budget.add(cfg.max_events, books * sizeof(NavEvent)) ||
       !budget.add(1, detail::construction_scratch_bytes(cfg.target, x.instruments)) ||
-      !budget.add(1, ring_bytes(cfg.target, x.instruments)))
+      !budget.add(1, ring_bytes(cfg.target, x.instruments)) ||
+      // P9 AL-CLOCK: info-clock-rate-v1's shared rate vector
+      !budget.add(cfg.rate == NavRateRule::InfoClockV1 ? x.instruments : 0, sizeof(f64)))
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: workspace budget");
   return co::Ok();
 }

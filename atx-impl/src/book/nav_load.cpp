@@ -113,12 +113,15 @@ co::Result<std::vector<f64>> load_field(const Json& manifest, const std::filesys
       {"staleness", entry.contains("staleness") ? entry.at("staleness") : Json(nullptr)}};
   return co::Ok(std::move(values));
 }
+// What load_fields loads besides the borrow fields (P9 AL-CLOCK): the info clock for the rule
+// (recorded in fields_used, an input of the run) or for the print alone (not recorded).
+enum class ClockLoad : u8 { None = 0, Rule = 1, PrintOnly = 2 };
 // Pins the atx.research-role-fields/v1 manifest, then its role to the pinned --role
 // (manifest, sessions, ids, member SHA against the role manifest's own receipts),
-// then loads shares_out and si_shares (and, for the industry ids, grp_ff12) within
-// `budget` bytes. Nothing is written.
+// then loads shares_out and si_shares (and, for the industry ids, grp_ff12; P9 AL-CLOCK: with
+// `clock`, ea_days_since) within `budget` bytes. Nothing is written.
 co::Result<LoadedFields> load_fields(const NavFieldsPin& pin, const TargetReplayRunConfig& cfg,
-                                     u64 budget) {
+                                     u64 budget, ClockLoad clock) {
   ATX_TRY(auto m, pinned_document(pin.manifest_path, pin.manifest_sha256,
                                   max_fields_manifest_bytes, "fields manifest"));
   if (m.at("schema") != fields_schema || m.at("status") != "complete")
@@ -137,7 +140,8 @@ co::Result<LoadedFields> load_fields(const NavFieldsPin& pin, const TargetReplay
     return co::Err(co::ErrorCode::InvalidArgument, "nav replay: fields role geometry");
   const u64 cells = dates * names;
   const bool industry = neutralize_by_industry(cfg.target.neutralize);
-  const u64 count = financing_field_names.size() + (industry ? 1U : 0U);
+  const u64 count = financing_field_names.size() + (industry ? 1U : 0U) +
+                    (clock != ClockLoad::None ? 1U : 0U);
   if (cells > budget / (count * sizeof(f64)))
     return co::Err(co::ErrorCode::OutOfRange, "nav replay: fields workspace budget");
   LoadedFields out;
@@ -151,6 +155,14 @@ co::Result<LoadedFields> load_fields(const NavFieldsPin& pin, const TargetReplay
   }
   if (industry) {
     ATX_TRY(out.industry, load_field(m, base, industry_group_field, dates, names, used));
+  }
+  if (clock != ClockLoad::None) { // P9 AL-CLOCK: the print alone leaves fields_used unchanged
+    Json printed = Json::object();
+    const std::string name = nav_info_clock_field;
+    ATX_TRY(out.info_clock, load_field(m, base, name, dates, names,
+                                       clock == ClockLoad::Rule ? used : printed));
+    const auto& record = clock == ClockLoad::Rule ? used : printed;
+    out.info_clock_sha256 = record.at(name).at("sha256").get<std::string>();
   }
   out.binding = Json{{"schema", fields_schema},
       {"manifest_sha256", pin.manifest_sha256}, {"role_manifest_sha256", cfg.role_sha256},
@@ -187,9 +199,17 @@ namespace nav_book {
 co::Result<AdmittedRun> admit_and_load(const TargetReplayRunConfig& cfg,
                                        const NavReplayConfig& base, const NavFieldsPin& fields,
                                        usize books, bool holdings,
-                                       const NavLabelRolePin& label) {
+                                       const NavLabelRolePin& label, bool info_clock_print) {
   const bool tiered = !fields.manifest_path.empty();
   const bool labelled = !label.manifest_path.empty();
+  // P9 AL-CLOCK: the rule's clock is an input of the run (fields_used); the print's is not.
+  const ClockLoad clock = base.rate == NavRateRule::InfoClockV1 ? ClockLoad::Rule
+                          : info_clock_print                    ? ClockLoad::PrintOnly
+                                                                : ClockLoad::None;
+  if (clock != ClockLoad::None && !tiered)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "nav replay: --rate info-clock-rate-v1 and --info-clock-print need --fields "
+                   "(the role fields manifest holding ea_days_since)");
   ATX_TRY(const auto geometry, role_geometry(cfg));
   // A warm start longer than the pinned role's pre-score history is refused before any
   // payload is read (the replay's own input check repeats it).
@@ -213,9 +233,9 @@ co::Result<AdmittedRun> admit_and_load(const TargetReplayRunConfig& cfg,
   AdmittedRun out;
   if (tiered) {
     // Pinned and role-checked before the blend is loaded or anything is written.
-    ATX_TRY(out.fields, load_fields(fields, cfg, remaining));
+    ATX_TRY(out.fields, load_fields(fields, cfg, remaining, clock));
     remaining -= (out.fields.shares_out.size() + out.fields.si_shares.size() +
-                  out.fields.industry.size()) * sizeof(f64);
+                  out.fields.industry.size() + out.fields.info_clock.size()) * sizeof(f64);
   }
   auto load = cfg; load.target.max_working_bytes = remaining;
   ATX_TRY(out.blend, detail::load_saved_blend(load, true));
