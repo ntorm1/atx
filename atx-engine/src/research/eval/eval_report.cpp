@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <new>
 #include <set>
@@ -21,6 +22,7 @@
 #include "atx/engine/research/ledger/chain.hpp"
 #include "atx/engine/research/ledger/ledger_file.hpp"
 #include "atx/engine/research/ledger/trial_counts.hpp"
+#include "atx/engine/research/numpy_reduce.hpp" // P9 lane D3W: --vol's mean and sd
 
 namespace atx::engine::research::eval {
 namespace {
@@ -613,26 +615,45 @@ struct Cell {
   return core::Ok(std::move(out));
 }
 
-[[nodiscard]] Json config_json(const EvalRequest &rq) {
-  return Json{{"protocol", rq.protocol},
-              {"draws", rq.paired_config.draws},
-              {"block", rq.paired_config.block},
-              {"seed", rq.paired_config.seed},
-              {"one_sided", rq.paired_config.one_sided},
-              {"dsr_n", rq.dsr_n},
-              {"psr_benchmarks", rq.psr_benchmarks},
-              {"psr_alpha", rq.psr_alpha},
-              {"onc", rq.onc},
-              {"onc_init", rq.onc_init},
-              {"onc_seed", rq.onc_seed},
-              {"pbo", rq.pbo},
-              {"pbo_blocks", rq.pbo_blocks},
-              {"window_id", rq.window_id},
-              {"threshold", rq.threshold},
-              {"conditional_alpha", rq.conditional_alpha}};
+// P9 lane D3W (ruling D3W-EVAL, ALCOMB-6): --vol's per-cell block on the series as read (file
+// order): the mean and the sample standard deviation (ddof 1) in numpy's order
+// (research/numpy_reduce.hpp), the annualized volatility sd x sqrt(252) and the annualized Sharpe
+// (house_sharpe: mean / sd x sqrt(252)). NaN (printed null) when undefined: no session for the
+// mean, fewer than two for sd and vol, sd not positive for the Sharpe.
+[[nodiscard]] Json vol_json(std::span<const f64> x) {
+  const f64 nan = std::numeric_limits<f64>::quiet_NaN();
+  const f64 sd = x.size() > 1U ? numpy::std_dev(x, 1U) : nan;
+  return Json{{"sessions", x.size()},
+              {"mean_daily", x.empty() ? nan : numpy::mean(x)},
+              {"sd_daily", sd},
+              {"vol_annual", sd * std::sqrt(kAnnualization)},
+              {"sharpe_annual", house_sharpe(x)}};
 }
 
-[[nodiscard]] Json cell_json(const Cell &c) {
+[[nodiscard]] Json config_json(const EvalRequest &rq) {
+  Json out{{"protocol", rq.protocol},
+           {"draws", rq.paired_config.draws},
+           {"block", rq.paired_config.block},
+           {"seed", rq.paired_config.seed},
+           {"one_sided", rq.paired_config.one_sided},
+           {"dsr_n", rq.dsr_n},
+           {"psr_benchmarks", rq.psr_benchmarks},
+           {"psr_alpha", rq.psr_alpha},
+           {"onc", rq.onc},
+           {"onc_init", rq.onc_init},
+           {"onc_seed", rq.onc_seed},
+           {"pbo", rq.pbo},
+           {"pbo_blocks", rq.pbo_blocks},
+           {"window_id", rq.window_id},
+           {"threshold", rq.threshold},
+           {"conditional_alpha", rq.conditional_alpha}};
+  if (rq.vol) {
+    out["vol"] = true; // P9 lane D3W: only with --vol (absent: the config's bytes as before)
+  }
+  return out;
+}
+
+[[nodiscard]] Json cell_json(const Cell &c, bool vol) {
   Json out{{"label", c.series.label},
            {"path", c.series.path},
            {"net_moments", moments_json(c.moments)},
@@ -643,6 +664,9 @@ struct Cell {
            {"conditional", c.conditional}};
   if (c.paired_note) {
     out["paired_note"] = *c.paired_note;
+  }
+  if (vol) {
+    out["net_vol"] = vol_json(c.series.nets);
   }
   return out;
 }
@@ -693,7 +717,7 @@ struct Cell {
   doc["conditional"] = std::move(conditional);
   Json rows = Json::array();
   for (const Cell &c : cells) {
-    rows.push_back(cell_json(c));
+    rows.push_back(cell_json(c, rq.vol));
   }
   doc["cells"] = std::move(rows);
   const Json &first = doc["cells"][0];
@@ -720,6 +744,12 @@ void cell_text(std::string &out, const Json &c) {
          "): T " + std::to_string(m["sessions"].get<usize>()) + " SR " +
          fmt(c["psr"]["sr_annual"], "%+.3f") + " ann, skew " + fmt(m["skew"], "%+.3f") +
          " kurtosis " + fmt(m["kurtosis"], "%.3f") + "\n";
+  if (c.contains("net_vol")) { // P9 lane D3W: --vol only
+    const Json &v = c["net_vol"];
+    out += "   vol " + fmt(v["vol_annual"], "%.6g") + " ann (sd " + fmt(v["sd_daily"], "%.6g") +
+           " daily, T " + std::to_string(v["sessions"].get<usize>()) + ") | Sharpe " +
+           fmt(v["sharpe_annual"], "%+.3f") + " ann\n";
+  }
   for (const Json &b : c["psr"]["benchmarks"]) {
     out += "   PSR vs SR* " + fmt(b["sr_star_annual"], "%+.2f") + " ann: " +
            fmt(b["psr"], "%.4f") + " | MinTRL " + fmt(b["min_trl_sessions"], "%.0f") +

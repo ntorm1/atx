@@ -132,6 +132,7 @@ struct FitSpec {
   bool theme_erc{};
   bool theme_tsmom{};
   bool theme_resid{};
+  bool mom_volman{};         // P9 D3W (ruling ALCOMB-7): record the price_momentum sleeve
   std::vector<std::string> registered_themes; // theme-resid-v1: the registered order
 };
 struct CompositionFit {
@@ -159,13 +160,68 @@ struct CompositionFit {
   // theme-resid-v1.
   bool resid{};
   std::vector<std::string> resid_order;
+  // mom-volman-v1's sleeve (P9 lane D3W, ruling ALCOMB-7): per decision.
+  bool volman{};
+  std::vector<atx::f64> volman_sleeve;
   std::vector<atx::f64> weights;         // per member: the final weights
 };
+// mom-volman-v1's sleeve (P9 lane D3W, ruling ALCOMB-7; composition_mom_volman.schedule): theme-
+// tsmom-v1's step 1 for the price_momentum theme on the final weights, r(d) = sum over the theme's
+// weighted members of (w_k / W) s_k f_k(d) in member order, 0 outside TRAIN, over every decision of
+// the series. The IC runner forms every block's volatility, target and scale from it
+// (strategy_ic_mom_volman.cpp). The registered parents are ew-theme-std-v1 and ic-shrink-v1, with
+// or without theme-erc-v1; the role needs lookback + lag (126 + 2) to 65536 decisions.
+inline constexpr std::string_view mom_volman_rule="mom-volman-v1";
+inline constexpr std::string_view mom_volman_theme="price_momentum";
+inline constexpr atx::usize mom_volman_min_decisions=128;   // mom_volman_lookback + mom_volman_lag
+inline constexpr atx::usize mom_volman_max_decisions=65536; // mom_volman_max_decisions
+
 // The fit of `spec` on `view`, whose candidate columns carry the ids `ids`. Err (InvalidArgument)
 // on an unknown composition, a member not in `ids` or listed twice, a sign other than +1, a missing
 // or extra aim gain, a tier without a score, theme-resid-v1 beside theme-erc-v1 or theme-tsmom-v1,
-// or any refusal of the rule functions.
+// mom-volman-v1 on an aim rule or beside theme-tsmom-v1 or theme-resid-v1, mom-volman-v1 without a
+// weighted price_momentum member or on a series outside its decision bounds, or any refusal of the
+// rule functions.
 [[nodiscard]] atx::core::Result<CompositionFit> fit_composition(const FactorSeriesView& view,
                                                                 std::span<const std::string> ids,
                                                                 const FitSpec& spec);
+
+// ---- walk-forward-v1 (contract K-P9-8; P9 lane D3W, rulings D3-1 / D3-2) ---------------------
+// The same fit refitted on an expanding window. Rows sit at decision indices j = first,
+// first + step, ... < D; the window of row j is the TRAIN decisions d with d + lag <= j, and
+// `first` is the smallest j whose window holds min_decisions decisions. Each row is
+// fit_composition of the spec on its window (the view's TRAIN mask cut at j - lag), so no fitted
+// value of row j reads a factor value of a decision after j - lag (f(d) is realised at d + 2: lag
+// 2 is K-P9-8's "fitted on decisions <= d - 2"). The IC runner applies row j from the session of
+// decision j until the next row's; before the first row no fit exists and the book is flat (ruling
+// D3-1). Registered constants of walk-forward-v1: window expanding, lag 2, step 21 (plan 5.2),
+// min_decisions 21 (one step).
+inline constexpr std::string_view walk_forward_rule="walk-forward-v1";
+inline constexpr std::string_view walk_forward_expanding="expanding";
+inline constexpr atx::usize walk_forward_lag=2;
+inline constexpr atx::usize walk_forward_step=21;
+inline constexpr atx::usize walk_forward_min_decisions=21;
+inline constexpr atx::usize walk_forward_max_rows=4096;
+struct WalkForwardSpec {
+  std::string window{walk_forward_expanding};
+  atx::usize lag{walk_forward_lag};
+  atx::usize step{walk_forward_step};
+  atx::usize min_decisions{walk_forward_min_decisions};
+};
+struct WalkForwardRow {
+  atx::usize decision_index{};  // j
+  atx::i64 from_session{};      // the session of decision j: the row applies from it
+  atx::usize fit_decisions{};   // the window's TRAIN decisions
+  atx::usize last_fit_index{};  // the window's last TRAIN decision (<= j - lag)
+  atx::i64 last_fit_session{};
+  CompositionFit fit;           // the window's fit (fit.weights: per member, the spec's order)
+};
+// Err (InvalidArgument) on a window other than expanding, lag < 2, step 0, min_decisions < 2,
+// theme-tsmom-v1 or theme-resid-v1 in the spec (their own TRAIN-fitted schedule and order), a
+// series whose TRAIN decisions never fill a window, more than walk_forward_max_rows rows, or a row
+// whose fit refuses (the message names its decision index and session). A row's fit records no
+// mom-volman-v1 sleeve (that schedule is fitted on the whole TRAIN window: the full fit's).
+[[nodiscard]] atx::core::Result<std::vector<WalkForwardRow>> fit_walk_forward(
+    const FactorSeriesView& view, std::span<const std::string> ids, const FitSpec& spec,
+    const WalkForwardSpec& wf);
 } // namespace atx::engine::research::composition

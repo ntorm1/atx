@@ -1,0 +1,8 @@
+C3-13 teeth at 0c9f75d94c451903182f12047b1483ddf8b7d4dd (worktree C:\atx-wt\pool-20); each row: id, what is removed, tests run (-k), failed / passed
+N0  control, no mutation, every selection below: 0 failed / 10 passed / 0 errors
+N1  CAUGHT  C3-13: nav_rule_split splits nothing (the --rule row appended to nav.flags, as before the fix)  [scripts/wave_kinds.py; -k "c3_13"]  5 failed / 5 passed / 0 errors
+N2  CAUGHT  C3-13: the row's param x-flags dropped (only nav.rule set)  [scripts/wave_kinds.py; -k "c3_13_nav_rule_split or c3_13_a_rule_row_sets_nav_rule"]  4 failed / 0 passed / 0 errors
+N3  CAUGHT  C3-13: kind_constants does not split (the spec stage writes the --rule row into nav.flags)  [scripts/wave_stage_kinds.py; -k "c3_13_a_rule_row_sets_nav_rule"]  3 failed / 0 passed / 0 errors
+N4  CAUGHT  C3-13: the E2-8 guard's base not split (the guard refuses the fixed cell)  [scripts/wave_stage_kinds.py; -k "c3_13_a_rule_row_sets_nav_rule"]  3 failed / 0 passed / 0 errors
+N5  CAUGHT  C3-13: an over-broad split (another row kind's flag taken as nav.rule)  [scripts/wave_kinds.py; -k "c3_13_other_row_kinds or c3_13_nav_rule_split"]  4 failed / 0 passed / 0 errors
+RESULT all caught; tree clean after every revert (git status --porcelain empty)

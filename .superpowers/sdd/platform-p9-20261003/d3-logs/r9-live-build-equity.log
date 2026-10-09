@@ -1,0 +1,6 @@
+== r9 live-build-equity  HEAD 3834bc0c  PYTHONHASHSEED=0  ATX_EQUITY_BIN=C:/atx-wt/pool-2/build-equity/bin  start 2026-10-07T22:01:46Z
+919569fb9983b8591bd4d345187f582da20dedecbcffd916ba57a6417741b6b0 *C:/atx-wt/pool-2/build-equity/bin/atx-equity-strategy-ic.exe
+637f706987da395533342f51ede8cf894249a0fa1cfae9a1dc96217741338827 *C:/atx-wt/pool-2/build-equity/bin/atx-equity-strategy-targets.exe
+.                                                                        [100%]
+1 passed, 192 deselected in 14.37s
+exit 0  end 2026-10-07T22:02:03Z

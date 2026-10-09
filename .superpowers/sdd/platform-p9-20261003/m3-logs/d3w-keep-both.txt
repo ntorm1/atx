@@ -1,0 +1,5 @@
+atx-engine/include/atx/engine/research/eval/eval_report.hpp: ours 2 hunks (merged :22-24, :34-36) kept True; theirs 2 hunks (merged :14-16, :112-112) kept True; PASS
+atx-engine/src/research/eval/eval_report.cpp: ours 8 hunks (merged :171-175, :177-178, :187-202, :583-583, :590-591, :605-605, :765-767, :843-843) kept True; theirs 7 hunks (merged :8-8, :25-25, :618-632, :634-656, :668-670, :720-720, :747-752) kept True; PASS
+atx-engine/tests/research/research_eval_tie_test.cpp: ours 2 hunks (merged :28-28, :320-380) kept True; theirs 1 hunks (merged :432-502) kept True; PASS
+scripts/tests/test_research_spec.py: ours 7 hunks (merged :875-878, :885-887, :923-923, :925-925, :929-932, :936-936, :950-957) kept True; theirs 1 hunks (merged :944-945) kept True; PASS
+RESULT PASS

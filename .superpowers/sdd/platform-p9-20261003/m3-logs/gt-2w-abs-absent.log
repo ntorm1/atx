@@ -1,0 +1,32 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = AbsentMembers.*
+[==========] Running 11 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 11 tests from AbsentMembers
+[ RUN      ] AbsentMembers.ThemeMemberLeavesItsMassToTheOtherMembers
+[       OK ] AbsentMembers.ThemeMemberLeavesItsMassToTheOtherMembers (1438 ms)
+[ RUN      ] AbsentMembers.WholeThemeListedIsAThemeWithNoPresentMember
+[       OK ] AbsentMembers.WholeThemeListedIsAThemeWithNoPresentMember (2855 ms)
+[ RUN      ] AbsentMembers.ThemeErcAndIcShrinkBasesVerifyAndCarryTheirWeights
+[       OK ] AbsentMembers.ThemeErcAndIcShrinkBasesVerifyAndCarryTheirWeights (4241 ms)
+[ RUN      ] AbsentMembers.StandardiseBaseLeavesTheMemberOutOfItsThemeRerank
+[       OK ] AbsentMembers.StandardiseBaseLeavesTheMemberOutOfItsThemeRerank (2250 ms)
+[ RUN      ] AbsentMembers.UnthemedBlendKeepsItsFixedDenominator
+[       OK ] AbsentMembers.UnthemedBlendKeepsItsFixedDenominator (1466 ms)
+[ RUN      ] AbsentMembers.UnweightedPassWithoutCacheLeavesTheMemberUnoriented
+[       OK ] AbsentMembers.UnweightedPassWithoutCacheLeavesTheMemberUnoriented (1157 ms)
+[ RUN      ] AbsentMembers.WalkForwardRowsTreatTheMemberAsMissing
+[       OK ] AbsentMembers.WalkForwardRowsTreatTheMemberAsMissing (2870 ms)
+[ RUN      ] AbsentMembers.SharedCacheNeverCrossServesRunsWithAndWithoutTheList
+[       OK ] AbsentMembers.SharedCacheNeverCrossServesRunsWithAndWithoutTheList (1677 ms)
+[ RUN      ] AbsentMembers.RecordIsTheOnlyTraceAndUnlistedRowsAreUnchanged
+[       OK ] AbsentMembers.RecordIsTheOnlyTraceAndUnlistedRowsAreUnchanged (803 ms)
+[ RUN      ] AbsentMembers.CapabilityIsListedInTheSortedEnvelope
+[       OK ] AbsentMembers.CapabilityIsListedInTheSortedEnvelope (7 ms)
+[ RUN      ] AbsentMembers.RefusalsPrecedeAnyPayloadOrOutput
+[       OK ] AbsentMembers.RefusalsPrecedeAnyPayloadOrOutput (254 ms)
+[----------] 11 tests from AbsentMembers (19025 ms total)
+
+[----------] Global test environment tear-down
+[==========] 11 tests from 1 test suite ran. (19026 ms total)
+[  PASSED  ] 11 tests.

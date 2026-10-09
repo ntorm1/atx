@@ -1,0 +1,60 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = WalkForward.*:ResearchComposition*
+[==========] Running 14 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 10 tests from ResearchComposition
+[ RUN      ] ResearchComposition.NumpyPairwiseSumIsNumpys
+[       OK ] ResearchComposition.NumpyPairwiseSumIsNumpys (52 ms)
+[ RUN      ] ResearchComposition.ErcClosedFormTwoThemes
+[       OK ] ResearchComposition.ErcClosedFormTwoThemes (1 ms)
+[ RUN      ] ResearchComposition.SleeveCovarianceClosedForm
+[       OK ] ResearchComposition.SleeveCovarianceClosedForm (0 ms)
+[ RUN      ] ResearchComposition.CapTraceRecordsEveryPass
+[       OK ] ResearchComposition.CapTraceRecordsEveryPass (0 ms)
+[ RUN      ] ResearchComposition.TierRegradesAreRuleFive
+[       OK ] ResearchComposition.TierRegradesAreRuleFive (0 ms)
+[ RUN      ] ResearchComposition.ThemeResidOrderIsTheRegisteredOrder
+[       OK ] ResearchComposition.ThemeResidOrderIsTheRegisteredOrder (0 ms)
+[ RUN      ] ResearchComposition.FitEqualsPythonFixture
+[       OK ] ResearchComposition.FitEqualsPythonFixture (12 ms)
+[ RUN      ] ResearchComposition.FitRefusesMalformedSpecs
+[       OK ] ResearchComposition.FitRefusesMalformedSpecs (7 ms)
+[ RUN      ] ResearchComposition.CliPublishesTheFit
+[       OK ] ResearchComposition.CliPublishesTheFit (58 ms)
+[ RUN      ] ResearchComposition.WeightsSchemaIds
+[       OK ] ResearchComposition.WeightsSchemaIds (0 ms)
+[----------] 10 tests from ResearchComposition (134 ms total)
+
+[----------] 4 tests from WalkForward
+[ RUN      ] WalkForward.ExpandingMeanClosedForm
+[       OK ] WalkForward.ExpandingMeanClosedForm (3 ms)
+[ RUN      ] WalkForward.NoRowUsesFutureDecisions
+..\atx-engine\tests\research\research_composition_fit_test.cpp(627): error: Value of: base
+  Actual: false
+Expected: true
+InvalidArgument: composition fit: walk-forward-v1: the row at decision 43 (session 1582156800000000000) is refused: ic-shrink-v1: group cap: no member of another group can take a group's excess (infeasible cap)
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(624): ic-shrink-tsmom
+
+[  FAILED  ] WalkForward.NoRowUsesFutureDecisions (1 ms)
+[ RUN      ] WalkForward.RefusesBeforeAnyRow
+[       OK ] WalkForward.RefusesBeforeAnyRow (2 ms)
+[ RUN      ] WalkForward.CliWritesTheRowsAndRefuses
+..\atx-engine\tests\research\research_composition_fit_test.cpp(708): error: Expected equality of these values:
+  run_main({"fit", "--factors", factors.string(), "--spec", spec_path, "--output", out.string(), "--walk-forward", "expanding", "--lag", "2", "--step", "21", "--min-decisions", "21"}, o, e)
+    Which is: 1
+  0
+InvalidArgument: ic-shrink-v1: group cap: no member of another group can take a group's excess (infeasible cap)
+
+
+[  FAILED  ] WalkForward.CliWritesTheRowsAndRefuses (26 ms)
+[----------] 4 tests from WalkForward (33 ms total)
+
+[----------] Global test environment tear-down
+[==========] 14 tests from 2 test suites ran. (169 ms total)
+[  PASSED  ] 12 tests.
+[  FAILED  ] 2 tests, listed below:
+[  FAILED  ] WalkForward.NoRowUsesFutureDecisions
+[  FAILED  ] WalkForward.CliWritesTheRowsAndRefuses
+
+ 2 FAILED TESTS

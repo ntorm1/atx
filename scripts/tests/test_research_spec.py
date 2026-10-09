@@ -941,7 +941,8 @@ def test_e27b_reads_what_the_fitter_and_nav_summ_parse(capsys):
     for name, sp in COMPOSITION_ABBREVIATIONS.items():
         with pytest.raises(SystemExit) as e:                             # the fitter reads no prefix (D2R-1)
             fcw.parse_args(FIT_REQUIRED + sp)
-        assert e.value.code == 2 and "unrecognized arguments" in capsys.readouterr().err, name
+        # ruling D2R-3 (review S2): the refusal names exactly the abbreviated tokens
+        assert e.value.code == 2 and f"unrecognized arguments: {' '.join(sp)}" in capsys.readouterr().err, name
         assert RC.argparse_values(sp, "--composition") == [V5_AIM], name   # counted anyway (the safe side)
     parser = tool_parser(NS.main)
     for name, sp in PROTOCOL_SPELLINGS.items():

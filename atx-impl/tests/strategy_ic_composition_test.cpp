@@ -757,3 +757,107 @@ TEST(CompositionV8, RuleOneIsTheWeightedMeanOfSignedMemberRanks) {
       EXPECT_EQ(std::bit_cast<u64>(pooled->signal[k]), std::bit_cast<u64>(got->signal[k])) << k;
   }
 }
+
+// ---- P9 lane D3W (contract K-P9-8): per-date weight rows (weights schema v3's walk_forward) ----
+// A date before the first row adds nothing (the composite is flat: members 0); every other date is
+// the pinned composition of the row in force, bit for bit, on the plain path and under the
+// standardise rule (the row masses then come as a schedule, from date 0 zero until the first row);
+// one row at date 0 repeating the pinned weights is the pinned path itself; the DetPool path
+// equals the serial bits. set_weight_rows refuses after an add, under redistribute and on a
+// malformed row list.
+TEST(CompositionWeightRows, RowInForcePerDateAndFlatBeforeTheFirst) {
+  const V8Fixture f;
+  const auto std_rule = st::IcThemeRule::standardise;
+  const auto plain_rule = st::IcThemeRule::redistribute;
+  // w2 drops b1: under the standardise rule theme b's re-ranked composite then orders the names
+  // otherwise than rank(j), which theme a and w1's theme b both give (equal-mass rows of rank(j)
+  // would be the same composite bit for bit).
+  const std::vector<f64> w1{.5, 1.0 / 6, 1.0 / 6, 1.0 / 6}, w2{.25, 0.0, .25, .5};
+  // W_theme as IcComposition::create sums them (library order, positive weights only).
+  const std::vector<f64> m1{.5, 0.0 + 1.0 / 6 + 1.0 / 6 + 1.0 / 6}, m2{.25, 0.0 + .25 + .5};
+  const auto rowed = [&](std::span<const usize> themes, st::IcThemeRule rule,
+                         const std::vector<st::IcWeightRow>& rows,
+                         const std::vector<st::IcThemeBlock>& blocks,
+                         atx::engine::parallel::DetPool* pool =
+                             nullptr) -> std::optional<st::IcCompositionResult> {
+    auto c = st::IcComposition::create(f.cfg, f.candidates, f.member, w1, themes, rule);
+    if (!c || !c->set_weight_rows(rows)) return std::nullopt;
+    if (!blocks.empty() && !c->schedule_theme_masses(blocks)) return std::nullopt;
+    for (usize k = 0; k < f.candidates.size(); ++k)
+      if (!c->add(k, f.signals[k], f.signs[k], pool)) return std::nullopt;
+    auto out = c->finish();
+    if (!out) return std::nullopt;
+    return std::move(*out);
+  };
+  const auto same_date = [&](const st::IcCompositionResult& a, const st::IcCompositionResult& b,
+                             usize d) {
+    for (usize i = 0; i < V8Fixture::width; ++i) {
+      const auto at = d * V8Fixture::width + i;
+      if (std::bit_cast<u64>(a.signal[at]) != std::bit_cast<u64>(b.signal[at])) return false;
+    }
+    return std::bit_cast<u64>(a.contribution_fraction[d]) ==
+           std::bit_cast<u64>(b.contribution_fraction[d]);
+  };
+  const std::vector<st::IcWeightRow> rows{{1, w1}, {2, w2}};
+  for (const bool grouped : {false, true}) {
+    SCOPED_TRACE(grouped);
+    const std::span<const usize> themes =
+        grouped ? std::span<const usize>(f.themes) : std::span<const usize>{};
+    const auto rule = grouped ? std_rule : plain_rule;
+    const std::vector<st::IcThemeBlock> blocks =
+        grouped ? std::vector<st::IcThemeBlock>{{0, {0.0, 0.0}}, {1, m1}, {2, m2}}
+                : std::vector<st::IcThemeBlock>{};
+    const auto got = rowed(themes, rule, rows, blocks);
+    const auto one = f.compose(w1, themes, rule), two = f.compose(w2, themes, rule);
+    ASSERT_TRUE(got); ASSERT_TRUE(one); ASSERT_TRUE(two);
+    for (usize i = 0; i < V8Fixture::width; ++i) // every name is a member: 0, never NaN
+      EXPECT_EQ(std::bit_cast<u64>(got->signal[i]), std::bit_cast<u64>(0.0)) << i;
+    EXPECT_EQ(std::bit_cast<u64>(got->contribution_fraction[0]), std::bit_cast<u64>(0.0));
+    EXPECT_TRUE(same_date(*got, *one, 1));
+    EXPECT_TRUE(same_date(*got, *two, 2));
+    EXPECT_FALSE(same_date(*one, *two, 2)); // the rows differ where it counts
+    // One row at date 0 with the pinned weights: the pinned path, bit for bit.
+    const std::vector<st::IcThemeBlock> pinned_blocks =
+        grouped ? std::vector<st::IcThemeBlock>{{0, m1}} : std::vector<st::IcThemeBlock>{};
+    const auto single = rowed(themes, rule, {{0, w1}}, pinned_blocks);
+    ASSERT_TRUE(single);
+    for (usize d = 0; d < V8Fixture::days; ++d) EXPECT_TRUE(same_date(*single, *one, d)) << d;
+    EXPECT_EQ(std::bit_cast<u64>(single->total_planned_turnover),
+              std::bit_cast<u64>(one->total_planned_turnover));
+    for (const usize workers : {usize{2}, usize{3}}) {
+      atx::engine::parallel::DetPool pool(workers);
+      const auto pooled = rowed(themes, rule, rows, blocks, &pool);
+      ASSERT_TRUE(pooled);
+      for (usize d = 0; d < V8Fixture::days; ++d)
+        EXPECT_TRUE(same_date(*pooled, *got, d)) << workers << ' ' << d;
+    }
+  }
+  // Refusals, nothing kept: after an add, under redistribute, empty, past the dates, decreasing,
+  // a short row, a negative or non-finite weight.
+  auto added = st::IcComposition::create(f.cfg, f.candidates, f.member, w1, {}, plain_rule);
+  ASSERT_TRUE(added);
+  ASSERT_TRUE(added->add(0, f.signals[0], 1));
+  EXPECT_FALSE(added->set_weight_rows(rows));
+  auto spread = st::IcComposition::create(f.cfg, f.candidates, f.member, w1, f.themes, plain_rule);
+  ASSERT_TRUE(spread);
+  EXPECT_FALSE(spread->set_weight_rows(rows));
+  const f64 nan = std::numeric_limits<f64>::quiet_NaN();
+  const std::vector<std::vector<st::IcWeightRow>> malformed{
+      {},
+      {{4, w1}},
+      {{2, w1}, {1, w2}},
+      {{0, {.5, .5, .5}}},
+      {{0, {.5, -.1, .2, .2}}},
+      {{0, {.5, nan, .2, .2}}}};
+  for (usize m = 0; m < malformed.size(); ++m) {
+    auto c = st::IcComposition::create(f.cfg, f.candidates, f.member, w1, {}, plain_rule);
+    ASSERT_TRUE(c);
+    EXPECT_FALSE(c->set_weight_rows(malformed[m])) << m;
+    // Nothing kept: the composition is still the pinned one.
+    for (usize k = 0; k < f.candidates.size(); ++k) ASSERT_TRUE(c->add(k, f.signals[k], 1));
+    const auto out = c->finish();
+    const auto pinned = f.compose(w1, {}, plain_rule);
+    ASSERT_TRUE(out); ASSERT_TRUE(pinned);
+    for (usize d = 0; d < V8Fixture::days; ++d) EXPECT_TRUE(same_date(*out, *pinned, d)) << m;
+  }
+}
