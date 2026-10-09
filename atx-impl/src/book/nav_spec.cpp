@@ -120,6 +120,8 @@ constexpr Key table[] = {
     {"spo_gross", "--spo-gross", Type::Real, no_choices},
     {"spo_alpha", "--spo-alpha", Type::Choice, implied_aim_values},
     {"spo_books", "--spo-books", Type::Choice, spo_books_values},
+    // P9 AL-CLOCK (Ruling ALCLOCK-1): print-only, summary.json's scenarios gain info_clock
+    {"info_clock_print", "--info-clock-print", Type::Switch, no_choices},
 };
 
 tl::unexpected<co::Error> bad(const std::string& what) {

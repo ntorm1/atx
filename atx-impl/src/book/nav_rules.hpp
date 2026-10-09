@@ -8,7 +8,8 @@
 //               printed unchanged)
 //   trade-rate  aim-partial-v5 (--rule aim-partial-v5: theta, dust, exit rate), per-name-v1
 //               (--rate per-name-v1 and its four parameters), two-speed-nav-v1 (the NAV half of
-//               the composition rule two-speed-v1; no flag of its own)
+//               the composition rule two-speed-v1; no flag of its own); P9 AL-CLOCK appends
+//               info-clock-rate-v1 (--rate info-clock-rate-v1, no parameter)
 //   cost-law    flat-bps-v1 and sqrt-impact-v1 (the fixed scenarios S1 / S2, S3 of every run; no
 //               flag), ko-invariance-v1 and fim-live-v1 (the v2 stress laws; no flag of their own),
 //               cost-sqrt-v2 (--cost-law cost-sqrt-v2: both v2 stress books, the run --cost-v2

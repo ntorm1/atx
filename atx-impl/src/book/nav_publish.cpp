@@ -77,6 +77,10 @@ co::Result<Json> publish_scenario(const NavRun& run, const std::filesystem::path
                                 daily_sha, events_sha);
   // P9 C3 (Rulings PRE-7 / PRE-7a): print-only, under --ann-mean-gross alone.
   if (run.ann_mean_gross) entry["ann_mean_gross"] = summary.ann_mean_gross;
+  // P9 AL-CLOCK (Ruling ALCLOCK-1): print-only, under --info-clock-print alone.
+  if (run.info_clock)
+    entry["info_clock"] =
+        info_clock_json(run.base, result.construction.info_clock, *run.info_clock);
   if (construction) {
     std::vector<ConstructionDay> decisions;
     for (const auto& d : result.days)
@@ -88,6 +92,7 @@ co::Result<Json> publish_scenario(const NavRun& run, const std::filesystem::path
         v5["rate"] = "per-name-v1";
         v5["rate_stats"] = rate_stats_json(result.construction.rate_stats);
       }
+      if (run.base.rate == NavRateRule::InfoClockV1) v5["rate"] = nav_info_clock_rate_id; // P9
       entry["construction"]["v5"] = std::move(v5);
     }
   }

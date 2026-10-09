@@ -1,0 +1,343 @@
+# C:\atx-wt\pool-8\build-equity\atx-engine\CMakeFiles\atx-engine.dir\cmake_pch.cxx
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# C:\atx-cache\deps\spdlog-src\src\spdlog.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# C:\atx-cache\deps\spdlog-src\src\stdout_sinks.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# C:\atx-cache\deps\spdlog-src\src\color_sinks.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# C:\atx-cache\deps\spdlog-src\src\file_sinks.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# C:\atx-cache\deps\spdlog-src\src\async.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# C:\atx-cache\deps\spdlog-src\src\cfg.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# C:\atx-cache\deps\spdlog-src\src\bundled_fmtlib_format.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\sqlite\sqlite3.c
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\miniz\miniz.c
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\src\core.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\src\decimal.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\src\datetime.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\src\symbol.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\src\sha256.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\src\io\parquet.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\src\io\parquet_writer.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\src\io\zip_reader.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\src\db\sqlite.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\src\db\connection.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\src\external\dbn.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\src\external\databento.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\src\external\databento_pull.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\batch.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\datetime.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\dbn.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\dbn_decoder.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\dbn_encoder.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\dbn_store.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\detail\buffer.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\detail\dbn_buffer_decoder.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\detail\http_client.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\detail\http_stream_reader.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\detail\json_helpers.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\detail\live_connection.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\detail\scoped_fd.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\detail\sha256_hasher.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\detail\tcp_client.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\detail\tcp_readable.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\detail\zstd_stream.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\enums.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\exceptions.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\file_stream.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\flag_set.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\historical.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\live.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\live_blocking.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\live_threaded.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\log.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\metadata.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\pretty.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\publishers.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\record.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\symbol_map.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\symbology.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\v1.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-core\third-party\databento-cpp\src\v2.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-tsdb\src\builder.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-tsdb\src\load_parquet.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-tsdb\src\mapping.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# C:\atx-wt\pool-8\build-equity\atx-impl\CMakeFiles\atx-impl-strategy.dir\cmake_pch.cxx
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# C:\atx-wt\pool-8\build-equity\atx-impl\CMakeFiles\atx-impl-pipeline.dir\cmake_pch.cxx
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-tsdb\src\version.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-tsdb\src\segment_reader.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-engine\src\book\claims_state.cpp
+direct_cache_miss
+local_storage_read_miss
+preprocessor_error
+# ..\atx-engine\src\book\replay.cpp
+direct_cache_miss
+local_storage_read_miss
+preprocessor_error
+# ..\atx-engine\src\engine.cpp
+direct_cache_miss
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+local_storage_write
+preprocessed_cache_hit
