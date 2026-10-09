@@ -35,8 +35,10 @@ MUTATIONS = [  # (id, file, needle, replacement, nodes that must FAIL)
     ("P6 receipt kept / dropped check off", "scripts/wave_rules.py",
      '    if receipt.get("kept") != kept or receipt.get("dropped") != dropped:\n', "    if False:\n",
      [f"{R}[kept inconsistent]", f"{R}[a flipped verdict]"]),
-    ("P7 missing admission row not refused", "scripts/wave_rules.py",
+    ("P7 missing admission row not refused", "scripts/wave_rules.py",   # sign_rows' lines (screen_decision has
+     "    by_id = {r.get(\"id\"): r for r in rows if isinstance(r, dict)}\n"  # `out = []` between the two)
      "    missing = [c[\"id\"] for c in candidates if c[\"id\"] not in by_id]\n    if missing:\n",
+     "    by_id = {r.get(\"id\"): r for r in rows if isinstance(r, dict)}\n"
      "    missing = [c[\"id\"] for c in candidates if c[\"id\"] not in by_id]\n    if False:\n",
      [f"{T}::test_a_string_without_an_admission_row_stops_the_screen_before_the_verb"]),
     ("P8 IC exe pin check off", "scripts/wave_stage_library.py",
@@ -71,6 +73,10 @@ def main() -> int:
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONHASHSEED="0")
     a.basetemp.mkdir(parents=True, exist_ok=True)
     lines, rows = [], []
+    for mid, rel, needle, _r, _n in MUTATIONS:      # every needle found exactly once before any mutation is written
+        text = (a.root / rel).read_bytes().decode("utf-8")
+        nl = "\r\n" if "\r\n" in text else "\n"
+        assert text.count(needle.replace("\n", nl)) == 1, (mid, text.count(needle.replace("\n", nl)))
     for k, (mid, rel, needle, repl, nodes) in enumerate(MUTATIONS, 1):
         path = a.root / rel
         orig = path.read_bytes()
