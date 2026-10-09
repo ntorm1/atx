@@ -323,3 +323,10 @@ before/after byte compare is possible within TEST-1's one build.
 
 Disk: `build-equity` now holds the configured tree and about 230 check objects (about 0.6 GB); NOT deleted at the
 stop (the report is not final and the next agent reuses the configured tree).
+
+- R10 (2026-10-08, pool-31): steps 1-3 and 5 done, step 4 deferred (HOST-4: SIGN and the D3W-PB reviewer were
+  waiting to build); roots `b182dfdd`, `08f04e07` (plain) and `094bcd3b` (one keep-both at the tail of
+  `atx-impl/CMakeLists.txt`, ABS's row first) merged; Debug `p9-covmv-i` on `19e967d0`: `MvTarget.*`
+  12/12, `MvAimRule.*` 16/16, named 100/100 (99 + C3b's new NavSpec test), exe SHAs logged beside each run (S-7);
+  report section "Fix round 1 (COVMV-S)"; the `build-equity` object tree (about 2.8 GB) is deleted by name after
+  this commit. Next: re-review 1 (BASE `e9e794b3`), whose one build may run `covmv-logs/tools/teeth-s2.py`.

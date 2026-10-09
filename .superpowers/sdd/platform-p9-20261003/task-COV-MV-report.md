@@ -371,3 +371,108 @@ The decision at session t is formed and first traded as follows (code at `846739
   retries, and a watcher must poll with short opens.
 - In the spo fixture (Role 40 x 12, NAV 1e8), the S2 book's all-rows gross is about .0085 (participation caps). A
   fixed `--calibrate-gross` target leaves L' outside [1, 2]; derive it from a plain run.
+
+## Fix round 1 (COVMV-S)
+
+Ruling COVMV-S (the seven Suggested of the first review `e9e794b3`; REQUIRED S-1, S-2, S-6; S-3, S-4, S-5 if
+cheap; S-7 record only), COVMV-WIP (one WIP commit, read by S item), COVMV-S6a (axes once per run). Code written in
+R9 and committed as ONE commit `cc63c38f` (`WIP(cov-mv-fix1)`) at OWNER STOP 9; R10 (this agent, pool-31) ran the
+checks, the one Debug build and the gtests, and wrote these records. No code line changed in R10.
+
+### Outcome (R10)
+
+DONE_WITH_CONCERNS. All six code items build with 0 warnings and pass: `MvTarget.*` 12/12, `MvAimRule.*` 16/16,
+named filter 100/100 (99 of the lane + root's new `NavSpec.GridFileRefusesADuplicateKey`, merged with C3b). The S-2
+teeth build is deferred (HOST-4). The before/after fixture byte compare that COVMV-S names was not run (no pre-round
+exe exists; a second build is outside TEST-1): see "Open questions".
+
+### Commits of the round
+
+| SHA | what |
+|---|---|
+| `cc63c38f` | WIP(cov-mv-fix1): S-1 .. S-6 (R9; the only code commit of the round) |
+| `12f5c094` | docs: handoff at STOP 9, check logs `i-check-1/2`, configure log |
+| `53013342` | merge root `b182dfdd` (plain: `git merge-tree --write-tree` = the commit's tree). Its message says "B2 + T2"; it also carries C3b's merge `b182dfdd` (subject only read). C++ in: `eval_report.{hpp,cpp}`, eval tests, `book/nav_run.cpp`, `book/nav_spec.{hpp,cpp}`, `strategy_nav_spec_test.cpp` |
+| `19e967d0` | chore: the wait tool takes HOST-4's 180-minute bound and a round log prefix (build source of `p9-covmv-i`) |
+| `cfa991a7` | chore: HOST-5 pool-only busy test in the wait tool; gtest runner with the exe SHA checks (S-7); S-2 teeth tool |
+| `39576746` | merge root `08f04e07` (D3W; plain). Touches no file of the lane's filters: `git diff --stat 19e967d0 39576746` over `atx-impl/src/book`, `strategy_nav_v7.*`, `strategy_mv_aim.*`, `atx-engine/{src,include}/.../book`, `atx-core`, `atx-impl/tests/CMakeLists.txt`, `atx-engine/tests/book`, the two rule / spec test files is empty. Not rebuilt (TEST-1); ROOT-1a re-proves at merge |
+| `1df31bcc` | merge root `094bcd3b` (ABS `898bf120` + SQL2-CLS rows). ONE conflict, resolved here (W3-EARLY-2: the lane's hunk): the tail of `atx-impl/CMakeLists.txt`, two tail appends to `atx-impl-strategy` (ABS `src/strategy_ic_absent.cpp`, COV-MV `src/strategy_mv_aim.cpp`). Kept both, root's ABS row first; `git diff 094bcd3b 1df31bcc -- atx-impl/CMakeLists.txt` is exactly the lane's three-line append. ABS's other C++ is IC-exe code (`strategy_ic_*`); none in the lane's filters. Not rebuilt (TEST-1); see the merge check below |
+| (this commit) | docs: this section, the handoff line, the R10 logs |
+
+### Hunks by S item (file:line at this head; the merges did not touch these files)
+
+| item | change (file:line) | test |
+|---|---|---|
+| S-1 (REQUIRED, allocation) | `atx-engine/include/atx/engine/book/mv_target.hpp:89-114`: `FactorEigen` is move-only with a PIMPL `Workspace` (`std::unique_ptr`, header free of Eigen); the doc states the residual allocation. `atx-engine/src/book/mv_target.cpp:40-53` `reserve_exact` (one exact allocation), `:276-286` `FactorEigen::Workspace` = the block `MatX` + `Eigen::SelfAdjointEigenSolver<MatX>`, `:288-333` `factor_eigen` reserves the three vectors once at k / k x k, reuses the block and solver, runs `symmetric_eig`'s own guard (`la::detail::is_symmetric_within(kSymmetryTol)`, `:314`) and `solver.compute` with the default options (`:318`): the same codes and messages as `symmetric_eig` (`decompose.hpp:127-136`). `atx-impl/src/strategy_mv_aim.cpp:89-93`: comment only; the `workspace_bytes` VALUE is unchanged, so `nav_workspace_reserve_bytes` with and without the flag is unchanged (`book/nav_lockstep.cpp` not edited) | new `MvTarget.FactorEigenOnKeptStorageIsAFreshSolve` (`atx-engine/tests/book/book_mv_target_test.cpp:438-509`: one `FactorEigen` over seven 62-factor cases, same / smaller / larger / single / after a refusal, every value and vector bit-equal to a fresh `linalg::symmetric_eig`); existing `MvAimRule.WorkspaceReserveTermOnlyWithTheRule` |
+| S-2 (REQUIRED, failure handling) | `atx-impl/src/strategy_mv_aim.hpp:39-42` (contract text), `:85-87` (`Counts::share_unavailable`, `share_error`), `:135-141` (`record` now `void`; `add_eigen_shares`; `note_unavailable`). `atx-impl/src/strategy_mv_aim.cpp:128-130` the apply tail `if (auto printed = add_eigen_shares(); !printed) note_unavailable(printed.error());`, `:245-265` `record` (ratio, negatives), `:267-280` `add_eigen_shares` (both shares or neither), `:282-285` `note_unavailable` (the count and the first error), `:315-329` `summary_json`: no failure -> the `eigen_00_02_share` block as before; any failure -> `"eigen_00_02_share": null` plus `"eigen_00_02_share_unavailable": {"decisions", "first_error"}` (the key exists only on failure) | new `MvAimRule.PrintFailureLeavesTheBookAndWritesNull` (`atx-impl/tests/strategy_mv_aim_rule_test.cpp:664-737`; store helper `plant_asymmetric_f` `:198-218`: F_{0,8} moved 1e-4 with its sign kept, factor 8 = slot 7 that no fixture name has, so the kernel reads F bit for bit and the print fails at every decision; in-process targets bit-equal to the clean store's; CLI: every file but `recipe.json` / `summary.json` byte-equal, those equal once the pin, `recipe_sha256` and the two eigen keys are removed) |
+| S-6 (REQUIRED, check timing; COVMV-S6a) | `atx-impl/src/strategy_mv_aim.cpp:100` (`begin_run` resets `axes_checked_`), `:141-150` (`check_axes` once per run at the first decision, then a Debug-only `assert`); `strategy_mv_aim.hpp:22-24`, `:93-95`, `:144` | existing `MvAimRule.*` |
+| S-4 (structure) | `atx-impl/src/strategy_mv_aim.cpp:106-132` `apply` (27 lines) calls `check_input` `:134`, `begin_decision` `:154`, `priced_view` `:167`, `tilt` `:208`, `pass_through` `:221`, `count_applied` `:231`, `record` `:245`, `add_eigen_shares` `:267`, `note_unavailable` `:282`; same order of every side effect; `strategy_mv_aim.hpp:111-141` | existing `MvAimRule.*` |
+| S-3 (structure) | `atx-impl/src/strategy_nav_v7.hpp:122-127` forward-declares `mv_aim::Rule` in place of `#include "strategy_mv_aim.hpp"`; `atx-impl/src/strategy_nav_v7.cpp:25` includes it. The other includer of `strategy_nav_v7.hpp` (`book/nav_replay_internal.hpp`) and its users name no `mv_aim` member; every file that does includes `strategy_mv_aim.hpp` itself (grep over `atx-impl/src`, `atx-impl/tests`) | compile (the build; `atx-impl-strategy` whole) |
+| S-5 (registry naming) | `atx-impl/src/book/nav_rules.cpp:106-110`: `two-speed-nav-v1` -> `two-speed-v1` in `mv_aim_refuses` (as per-name-v1's row names it). Changes the mv-aim-v1 row of `nav --list-rules --json` only | `MvAimRule.ListRulesRowIsAClosedTargetRow` (`strategy_mv_aim_rule_test.cpp:250`, the expected list) |
+| S-7 (record) | `covmv-logs/tools/run-gtests.py`: before and after each run it hashes the test exe and compares it with the receipt's SHA; both lines head each `i-*-debug.log` | - |
+
+Byte identity: no arithmetic changed (allocation S-1, check timing S-6, failure handling S-2, structure S-3 / S-4;
+S-5 changes the list-rules row text only). Evidence in this round: the S-1 bit-identity test, the S-2 test's
+clean-store / planted-store byte compare within one exe, and the unchanged `MvAimRule.*` assertions (the flag-on CLI
+tests, `BookWorkersParity`, `SummaryBlockOnlyWhenOn`).
+
+### Evidence (R10, Debug `equity-dev`, pool-31)
+
+- Single-TU checks: R9's `i-check-1.log` (2 TUs) and `i-check-2.log` (5 TUs) both ended `exit=0` with 0 warnings.
+  R10 re-ran all seven lane TUs (`mv_target.cpp`, `strategy_mv_aim.cpp`, `strategy_nav_v7.cpp`, `book/nav_rules.cpp`,
+  `book/nav_decide.cpp`, `book_mv_target_test.cpp`, `strategy_mv_aim_rule_test.cpp`, the last in its two targets):
+  `covmv-logs/i-check-3.log`, exit 0; every lane object was up to date (nothing had failed or stayed unfinished).
+  The shared `C:\atx-cache\deps\spdlog-build` objects were rebuilt and `spdlogd.lib` / `atx-shm-worker.exe` relinked
+  by that run (SPDLOG-RELINK: another pool had touched the shared tree); no lane object was recompiled.
+- Build `p9-covmv-i` (`scripts/research-build.ps1 -Targets atx-impl-strategy-target-tests,atx-engine-book-tests`,
+  through `covmv-logs/tools/wait-build.ps1 -BoundMinutes 180 -LogPrefix r10`): waited 19:22-19:47 behind another session's
+  `cmake --build C:\atx\build-vol` (logs `r10-wait-p9-covmv-i.log`, `r10-wrapper-p9-covmv-i.log`), then admitted at free RAM 3.6 GB.
+  Receipt `build-equity/mega-p9-covmv-i-receipt.json` (copy `covmv-logs/i-receipt.json`): Source `19e967d0`
+  (merged head: root `b182dfdd` in), DirtyEntries 0, Jobs 4, exit 0, 165 TUs, 7 links, 299 s. Build log: 0 warning
+  lines (first-party or other).
+- Exes (receipt SHA-256 = the file's, hashed before and after every run; S-7):
+  - `atx-impl-strategy-target-tests.exe` `4c9894aae1de2d2a2af7d54a1d6d8ae66619ce95a20e3f8ecbdc86035f0d0d34`
+  - `atx-engine-book-tests.exe` `a7b568a86e372ef9521b35c39f0dbd890de839a0db8aa3b73a98a8982428231f`
+
+| run | log | result |
+|---|---|---|
+| `MvTarget.*` (book-tests) | `covmv-logs/i-mvtarget-debug.log` | 12 / 12 passed, exit 0 (11 + `FactorEigenOnKeptStorageIsAFreshSolve`) |
+| `MvAimRule.*` (target-tests) | `covmv-logs/i-mvaimrule-debug.log` | 16 / 16 passed, exit 0 (15 + `PrintFailureLeavesTheBookAndWritesNull`) |
+| named filter `Cov*:NavBookRule.*:VolTarget.*:Spo*:NavSpec.*:NavRules.*:CostLawRegistry.*:TradeRateRegistry.*:TargetRegistry.*:NavAnnMeanGross.*` | `covmv-logs/i-named-debug.log` | 100 / 100 passed, exit 0, 1 disabled (as before). 99 of the lane + `NavSpec.GridFileRefusesADuplicateKey`, added by C3b and merged with root `b182dfdd` (`strategy_nav_spec_test.cpp` has 5 `NavSpec` tests at the head, 4 at `12f5c094`) |
+| S-2 teeth `p9-covmv-j` | - | deferred (HOST-4): at the decision (about 19:55) SIGN's wait loop (pool-29) and the D3W-PB reviewer's C++ teeth tool (pool-23) were waiting, and an AL-CLOCK check ran in pool-30. Ready for the reviewer's one build: `covmv-logs/tools/teeth-s2.py` (TEETH-RESTORE; mutates `strategy_mv_aim.cpp:130` to `... !printed) return printed;`, the pre-round behaviour; builds `atx-impl-strategy-target-tests` only; restores in `finally`; asserts porcelain empty, `hash-object` = HEAD's blob and the raw SHA-256; then `run-gtests.py p9-covmv-j j mvaimrule`, expect exactly `PrintFailureLeavesTheBookAndWritesNull` FAILED) |
+| whole target-tests, Release, canaries | - | deferred to the gate (TEST-1) |
+
+- Merge check on `1df31bcc` (root `094bcd3b` in; `covmv-logs/i-check-4.log`, run when no pool build ran):
+  `check strategy_mv_aim.cpp` made ninja re-run CMake on the merged `atx-impl/CMakeLists.txt` (configure and
+  generate done, exit 0; the lane object up to date), then `check strategy_ic_absent.cpp` (ABS's new TU in
+  `atx-impl-strategy`) compiled, exit 0, 0 warnings. A first combined check was refused by `atx-build.ps1` itself
+  before ninja ran (the old `build.ninja` had no object for the new TU); not a permission refusal.
+- Host rule HOST-5 (PM, during this round): only pool builds count. `wait-build.ps1` and `teeth-s2.py` now count a
+  build tool only if it, or a build-tool ancestor, names `C:\atx-wt\pool-*` (a dry run listed pool-30's `ninja -C
+  C:\atx-wt\pool-30\build-equity` and its `clang-cl`). The `p9-covmv-i` wait ran under the older, stricter test
+  (any build on the host); it launched when the host had no build at all, so no pool build ran beside it.
+
+### What root re-proves at merge (adds to "What root re-proves at merge" above)
+
+- ROOT-1a's filters (unchanged list) plus the two new tests: `MvTarget.FactorEigenOnKeptStorageIsAFreshSolve`,
+  `MvAimRule.PrintFailureLeavesTheBookAndWritesNull`.
+- `nav --list-rules --json`: the mv-aim-v1 row's `incompatible[]` names `two-speed-v1` (S-5); no other row changes.
+- Flag-absent identity unchanged: no code path without `--target-rule mv-aim-v1` changed, and the reserve term's
+  value did not move (S-1).
+- With the flag, `summary.json`'s `mv_aim` block is byte-identical to the APPROVE head's when no print fails (the
+  new `eigen_00_02_share_unavailable` key appears only on a failure).
+- Root merged here: `094bcd3b` (merge `1df31bcc`); the `atx-impl/CMakeLists.txt` keep-both with ABS is done. The
+  W3-9 keep-both with AL-CLOCK at the tail of `atx-impl/tests/CMakeLists.txt` stays root's (AL-CLOCK is not in
+  root at `094bcd3b`).
+
+### Disk (R10)
+
+After this report's commit the `build-equity` object tree is deleted by name; `audits/`,
+`v8-interim3-pitch-render-run2/`, the `mega-p9-covmv-{f,h,i}-*` receipts / logs and `vcpkg-manifest-install.log`
+stay. The freed figure is in the handoff line.
+
+### Open questions (one line each)
+
+- COVMV-S's "byte compare of a fixture run before / after" was not run: no pre-round exe exists and a second build
+  is outside TEST-1; the S-2 test's in-exe byte compare and the unchanged CLI tests stand in. Run it at the gate?
+- The S-2 teeth are owed: the reviewer's one build can run `covmv-logs/tools/teeth-s2.py` as it stands.
