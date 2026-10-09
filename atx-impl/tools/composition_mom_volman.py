@@ -13,10 +13,11 @@ in the top-level theme_schedule block {rule, theme, lookback, lag, step, session
 theme_standardise and provenance.rule stay the parent's.
 
 Parents: ew-theme-std-v1 and ic-shrink-v1, with or without --theme-erc theme-erc-v1. Refused with --theme-resid (a
-residualised composite is not the sleeve), with --theme-tsmom (one theme_schedule block holds one rule), under --era
-(the schedule's sessions are one role's) and under --engine-fit (P9 lane D2, ruling D2-1: that flag writes the C++
-fit's values, and the C++ composition fit, atx-research-composition fit, records no momentum sleeve; the sleeve here is
-this module's Python arithmetic on the final weights).
+residualised composite is not the sleeve), with --theme-tsmom (one theme_schedule block holds one rule) and under --era
+(the schedule's sessions are one role's). Under --engine-fit (P9 lane D3W, ruling ALCOMB-7) the C++ composition fit
+records the same sleeve (atx-research-composition fit, spec key mom_volman), composition_engine_fit holds this
+module's sleeve to it under ruling P12, and the fitter's main() writes the C++ sleeve (ruling D2-1); this module's
+functions are unchanged.
 
 provenance.mom_volman names its writer by ``producer_fingerprint`` (CM-5 / ruling D2-2, as every composition module
 since P9 lane D2: composition_rules.module_fingerprint of PRODUCERS, which also covers the composition_theme_tsmom code
@@ -50,9 +51,6 @@ RULE_TEXT = (
 PARENT_ONLY = (f"--mom-volman {RULE_ID} needs the prior path (--orientation prior, a v4 screen) and --composition "
                f"{' or '.join(PARENT_RULES)} (with or without --theme-erc); it is refused with --theme-resid and "
                "--theme-tsmom and under --era")
-ENGINE_FIT_REFUSED = (f"--mom-volman {RULE_ID} is refused under --engine-fit: that flag writes the C++ composition "
-                      "fit's values (P9 lane D2, ruling D2-1), and atx-research-composition fit records no momentum "
-                      "sleeve; run the cell without --engine-fit")
 PRODUCERS = ("schedule", "attach")  # the writers of theme_schedule and provenance.mom_volman (ruling D2-2)
 
 
@@ -128,10 +126,10 @@ def add_argument(parser: argparse.ArgumentParser) -> None:
 
 def check_args(args, prior: bool, pooled: bool, error: type[Exception] = VolmanError) -> None:
     """Refused before any compute: the flag needs the prior path and a PARENT_RULES composition, and is refused with
-    --theme-resid, --theme-tsmom, under --era and under --engine-fit (ENGINE_FIT_REFUSED)."""
+    --theme-resid, --theme-tsmom and under --era. --engine-fit is accepted (P9 lane D3W, ruling ALCOMB-7: the C++ fit
+    records the sleeve; composition_engine_fit checks and writes it)."""
     if getattr(args, "mom_volman", None) is None:
         return
     _require(prior and getattr(args, "composition", None) in PARENT_RULES and
              getattr(args, "theme_resid", None) is None and getattr(args, "theme_tsmom", None) is None and not pooled,
              f"{RULE_ID}: {PARENT_ONLY}", error)
-    _require(not getattr(args, "engine_fit", False), f"{RULE_ID}: {ENGINE_FIT_REFUSED}", error)

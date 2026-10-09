@@ -1,4 +1,5 @@
 #include "strategy_ic_runner.hpp"
+#include "strategy_ic_absent.hpp"
 #include "strategy_ic_composition.hpp"
 #include "strategy_ic_detail.hpp"
 #include "strategy_ic_rules.hpp"
@@ -141,6 +142,8 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
     if (rule->stage==IcStageKind::residualise)
       manifest["composition_residualise_order"]=theme_order_json(pinned.residualise_order);
   }
+  // P9 lane D3W: per-date weights (a v3 file's walk_forward rows; absent otherwise).
+  if (!pinned.walk_forward.empty()) manifest["composition_walk_forward"]=pinned.walk_forward;
   // two-speed-v1 (v8 Y-5; absent otherwise): the fast and slow sleeves and the fast share per date in
   // their own manifest (the combined file set above stays the five files every consumer admits),
   // pinned here by name and SHA-256.
@@ -318,9 +321,11 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
 // within weights; pinned.signs: blend signs, empty = the TRAIN IC orientation) and the composition
 // rule table rows the file carries; the rows whose stage runs are the composition's ordered stage
 // list (composition_stages, strategy_ic_rules.hpp) and the combined manifest's rule keys.
+// `absent` (absent-members-v1, P9 lane ABS; empty: no list): per candidate 1 when listed.
 co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const Role& spec,
-    const KnownManifests& known,const PinnedWeights& pinned,std::vector<int>& signs,Json& frozen,
-    const std::string& recipe_sha,const std::string& orientation_pin,std::ostream& progress) {
+    const KnownManifests& known,const PinnedWeights& pinned,std::span<const u8> absent,
+    std::vector<int>& signs,Json& frozen,const std::string& recipe_sha,
+    const std::string& orientation_pin,std::ostream& progress) {
   const std::span<const f64> weights(pinned.values);
   const std::span<const int> blend_signs(pinned.signs);
   const auto started=std::chrono::steady_clock::now();
@@ -479,6 +484,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   f64 total_vm_seconds=0,total_ic_seconds=0,total_composition_seconds=0;
   for (usize k=0;k<lib.candidates.size();++k) {
     const auto& candidate=lib.candidates[k];
+    const bool listed=!absent.empty() && absent[k]!=0; // absent-members-v1
     ledger<<Json{{"id",candidate.id},{"status","started"},{"number",k+1}}.dump()<<'\n'<<std::flush;
     if (!ledger) return co::Err(co::ErrorCode::IoError,"IC runner: candidate receipt");
     const auto candidate_started=std::chrono::steady_clock::now();
@@ -493,8 +499,9 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     // --no-composition: nothing but IC reads the signal, and an IC entry is keyed on
     // the payload SHA256 its sidecar records, so a signal hit whose IC result is
     // cached too is never loaded (its bytes were verified when that entry was made).
-    // Under --label-terminal both IC results must be cached (each reads the signal).
-    if (cfg.no_composition && ic_scope && cache.hits[k]) {
+    // Under --label-terminal both IC results must be cached (each reads the signal). Never for a
+    // listed member (absent-members-v1 is refused with --no-composition; its IC is never cached).
+    if (cfg.no_composition && ic_scope && cache.hits[k] && !listed) {
       const auto probe_started=std::chrono::steady_clock::now();
       const auto& hit=*cache.hits[k];
       ic_entry=hit.dir/ic_scope->directory/(hit.stem+".json");
@@ -520,6 +527,10 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
           signal_cache?&cache.keys[k]:nullptr,signal_cache?cache.hits[k]:std::nullopt,pool.get(),vm,
           signal_buffer,meter,progress));
     }
+    // absent-members-v1 (P9 lane ABS, OD3P-1): a listed member's data is removed here, after the
+    // candidate cache served or stored its exact bytes. Every cell non-finite: its IC rows, its
+    // TRAIN orientation and every composition rule see a member with no data on any date.
+    if (listed) std::fill(signal_buffer.begin(),signal_buffer.end(),quiet_nan);
     const std::span<const f64> signal(signal_buffer);
     const auto vm_seconds=acquired.vm; total_vm_seconds+=vm_seconds;
     total_cache_load_seconds+=acquired.cache_load; total_cache_write_seconds+=acquired.cache_write;
@@ -533,7 +544,11 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
           {"signal_key_sha256",key.signal_key}});
     }
     const auto ic_started=std::chrono::steady_clock::now();
-    if (ic_scope) {
+    // A listed member's IC is scored from its blanked signal and never read from or written to the
+    // IC-result cache, whose entries key on the real signal bytes (absent-members-v1).
+    const bool ic_cached=ic_scope.has_value() && !listed;
+    const bool legacy_cached=legacy_scope.has_value() && !listed;
+    if (ic_cached) {
       if (!acquired.entry || !hash_valid(acquired.entry->payload_sha))
         return co::Err(co::ErrorCode::Internal,
             "IC runner: signal payload SHA256 missing for IC-result cache");
@@ -550,7 +565,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     } else {
       ATX_TRY(scored,ex::evaluate_research_ic(signal,labels,scratch,pool.get()));
       daily_series=scratch_series(scratch);
-      if (ic_scope) {
+      if (ic_cached) {
         ATX_TRY_VOID(ic_cache_store(ic_entry,*ic_scope,candidate,acquired.entry->payload_sha,scored,
             daily_series,cfg.workers));
       }
@@ -559,7 +574,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     // when the cache is on (ruling S2-3), else one IC pass beside the imputed one.
     std::optional<ex::ResearchIcResult> legacy_scored; IcSeries legacy_series;
     if (legacy_labels) {
-      if (legacy_scope && !legacy_probed) {
+      if (legacy_cached && !legacy_probed) {
         legacy_entry=acquired.entry->dir/legacy_scope->directory/(acquired.entry->stem+".json");
         ATX_TRY(cached_legacy,ic_cache_lookup(legacy_entry,*legacy_scope,candidate,
             acquired.entry->payload_sha,*legacy_scratch,ic_options.active_horizons));
@@ -570,7 +585,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
       } else {
         ATX_TRY(auto legacy,ex::evaluate_research_ic(signal,*legacy_labels,*legacy_scratch,pool.get()));
         legacy_series=scratch_series(*legacy_scratch);
-        if (legacy_scope) {
+        if (legacy_cached) {
           ATX_TRY_VOID(ic_cache_store(legacy_entry,*legacy_scope,candidate,acquired.entry->payload_sha,
               legacy,legacy_series,cfg.workers));
         }
@@ -701,6 +716,8 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     // and mom-volman-v1's scale per block; nothing unless those rules run.
     ATX_TRY_VOID(add_theme_hedge_trace(pinned,role.session_keys,*combined,result));
     ATX_TRY_VOID(add_mom_volman_trace(pinned,result));
+    // P9 lane D3W (ruling ALCOMB-6): the sleeve's series files; nothing unless that rule runs.
+    ATX_TRY_VOID(write_mom_volman_sleeves(pinned,role.session_keys,dir,spec.name));
   }
   if (save) {
     result["combined_artifact"]=std::move(saved);
@@ -781,6 +798,11 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     ATX_TRY(const auto themes,theme_table(cfg));
     // Both new options are fully validated here, before any role payload.
     ATX_TRY(const auto pinned,composition_weights(cfg,lib,themes));
+    // absent-members-v1 (P9 lane ABS): the list, checked against the library before any role
+    // payload or output (nullopt without the flag).
+    ATX_TRY(const auto absent,absent_members(cfg,lib));
+    const std::span<const u8> absent_mask=
+        absent?std::span<const u8>(absent->absent):std::span<const u8>{};
     const bool pinned_signs=!pinned.signs.empty();
     ATX_TRY_VOID(cache_preflight(cfg,lib));
     ATX_TRY(const auto known,legacy_manifests(cfg));
@@ -918,6 +940,9 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     if (recipe.contains("research_fields")) report["research_fields"]=recipe.at("research_fields");
     // Not a method input (recipe unchanged): the pass scored IC and orientations only.
     if (cfg.no_composition) report["composition"]="skipped";
+    // Present only with --absent-members (P9 lane ABS): the list the pass applied. Not a method
+    // input either: the recipe and every cache key are those of the run on the data removed.
+    if (absent) report["absent_members"]=absent_members_record(*absent);
     std::vector<int> signs; Json orientations=Json::array();
     if (validation_only) {
       signs=std::move(recovered.signs);
@@ -932,7 +957,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     }
     ATX_TRY_VOID(write_json(dir/"summary.json",report));
     for (const auto& role:roles) {
-      auto scored=score_role(cfg,lib,role,known,pinned,signs,orientations,recipe_sha,
+      auto scored=score_role(cfg,lib,role,known,pinned,absent_mask,signs,orientations,recipe_sha,
           report.value("orientations_artifact_sha256",std::string{}),progress);
       if (!scored) {
         report["status"]="failed"; report["error"]=scored.error().to_string();
@@ -968,6 +993,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
 }
 int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
   IcRunnerConfig cfg;
+  // absent-members-v1 (P9 lane ABS): each of its two flags at most once ([0] list, [1] pin).
+  std::array<bool,2> absent_given{};
   try {
     // K-P9-6 (P9 lane D1): `--list-rules --json` prints the composition rule table and the exe's
     // capabilities (strategy_ic_rules.hpp list_rules_json) and nothing else; it takes no other
@@ -1005,6 +1032,7 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "[--min-coverage F] [--ic-hac-rule bartlett-2h-v1|horizon-aware-v3] "
                "[--label-terminal imputed-v1 --train-label-role MANIFEST --train-label-role-sha256 SHA "
                "[--validation-label-role MANIFEST --validation-label-role-sha256 SHA]] "
+               "[--absent-members JSON --absent-members-sha256 SHA] "
                "| --list-rules --json\n"
                "  verbs: marginal (marginal IC of each candidate against a saved blend, contract K6; see\n"
                "    `atx-equity-strategy-ic marginal --help`); ic (this option list, also the default).\n"
@@ -1029,6 +1057,11 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "    (d+1, d+1+h] its pinned label role (the role builder's --delisting-returns build of that\n"
                "    role) prices, at that imputed close, then holds cash; read as labels only. Each candidate\n"
                "    also prints its IC under today's labels (ic_missing_exit_v1) and the missing-exit share.\n"
+               "  --absent-members: absent-members-v1, an atx.od3-flagged-members/v1 list\n"
+               "    ({schema, members: [id, ...]}, other keys ignored): each listed candidate is\n"
+               "    treated on every date as a member with no data (its mass stays in its theme;\n"
+               "    weights, signs and verify unchanged); summary.json records absent_members.\n"
+               "    Each flag at most once; refused with --no-composition.\n"
                "  --*-fields: atx.research-role-fields/v1 directory bound to that role; SHA pins DIR/manifest.json.\n"
                "  --candidate-cache: content-keyed entries (v2) under DIR[/<vm-identity>]/<role-sha>/[fp_<fk16>/]\n"
                "    <id>.<dsl16>.{f64,json}, keyed on the DSL and the payload SHA256 of each field it reads; v1 entries\n"
@@ -1106,6 +1139,13 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       else if (key=="--train-label-role-sha256") cfg.train_label_role_sha256=value;
       else if (key=="--validation-label-role") cfg.validation_label_role=value;
       else if (key=="--validation-label-role-sha256") cfg.validation_label_role_sha256=value;
+      else if (key=="--absent-members" || key=="--absent-members-sha256") {
+        // A second list or pin would silently replace the first: refused (contract section 3).
+        const bool pin=key=="--absent-members-sha256";
+        if (std::exchange(absent_given[pin?1U:0U],true))
+          throw std::invalid_argument(key+" given more than once");
+        (pin?cfg.absent_members_sha256:cfg.absent_members_path)=value;
+      }
       else throw std::invalid_argument("unknown option: "+key);
     }
     const auto result=run_ic(cfg,out);

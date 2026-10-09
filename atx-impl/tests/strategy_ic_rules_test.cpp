@@ -409,7 +409,8 @@ TEST(CompositionRules, ListRulesJsonPinned) {
   const auto& caps = listing->at("capabilities");
   EXPECT_TRUE(std::is_sorted(caps.begin(), caps.end()));
   for (const auto* cap : {"list-rules", "marginal", "no-composition", "theme-registry",
-                          "ic-hac-rule", "label-terminal", "min-coverage"}) // + P9 S2 (S2-2)
+                          "ic-hac-rule", "label-terminal", "min-coverage", // + P9 S2 (S2-2)
+                          "absent-members-v1"})                            // + P9 ABS (OD3P-1)
     EXPECT_TRUE(std::find(caps.begin(), caps.end(), cap) != caps.end()) << cap;
   const auto rules = icd::composition_rules();
   ASSERT_EQ(listing->at("rules").size(), rules.size());

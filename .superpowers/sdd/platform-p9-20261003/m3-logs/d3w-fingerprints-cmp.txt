@@ -1,0 +1,13 @@
+# D3W identity step 3: module / producer fingerprints, git archive b182dfdd (base) vs 08f04e07 (merged), d3w-fingerprints.py at f0726acb
+composition_engine_fit: MOVES 79966210aa46 -> a6dd0da59c13
+composition_ic_shrink: unchanged 04d452035336 -> 04d452035336
+composition_mom_volman: unchanged 0ec0ff100d39 -> 0ec0ff100d39
+composition_resid: MOVES d7c911acbe91 -> 9c48f390ac6d
+composition_rules: unchanged 78305c4b4b15 -> 78305c4b4b15
+composition_theme_erc: unchanged ebdb2a46a8e1 -> ebdb2a46a8e1
+composition_theme_tsmom: unchanged a25fcb0ce265 -> a25fcb0ce265
+fitter AIM_ERA_PRODUCERS: unchanged 9a880f97b42f -> 9a880f97b42f
+fitter AIM_PRODUCERS: unchanged f1fb0d3a5183 -> f1fb0d3a5183
+fitter CONTEXT_PRODUCERS: unchanged 70e1eda51539 -> 70e1eda51539
+fitter FACTOR_PRODUCERS: unchanged 962cd507af51 -> 962cd507af51
+fitter OUTPUT_PRODUCERS (fit, fit_prior): unchanged d28a30895ad1 -> d28a30895ad1

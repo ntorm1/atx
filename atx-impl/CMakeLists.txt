@@ -299,6 +299,9 @@ target_sources(atx-impl-strategy PRIVATE src/strategy_nav_calibrate.cpp)
 # trial_ledger.cpp and its users, stage_equity_ic / stage_equity_universe, are pipeline TUs;
 # atx-impl-core is INTERFACE).
 target_link_libraries(atx-impl-pipeline PUBLIC atx::engine-research-ledger)
+# P9 lane ABS: the IC exe's absent-members-v1 list (strategy_ic_absent.hpp, ruling OD3P-1). Metadata
+# only (read once before any payload), so it keeps the default flags and the shared PCH.
+target_sources(atx-impl-strategy PRIVATE src/strategy_ic_absent.cpp)
 # P9 lane SIGN (ruling C3-11): `atx-equity-strategy-ic sign`, the wave's PM7-35 sign rule on its screen
 # rows by the engine's research/admission predicate (sign_rule.hpp pm7_35; screen.hpp status names), so
 # atx-impl-strategy links the admission library (header-only predicate, status_name from screen.cpp).

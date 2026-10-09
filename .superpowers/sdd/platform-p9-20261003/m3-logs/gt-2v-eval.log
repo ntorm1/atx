@@ -1,0 +1,74 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 27 tests from 4 test suites.
+[----------] Global test environment set-up.
+[----------] 12 tests from EvalVerb
+[ RUN      ] EvalVerb.TieMomentsAndPsr
+[       OK ] EvalVerb.TieMomentsAndPsr (869 ms)
+[ RUN      ] EvalVerb.TieDsrCrossLoAndHouse
+[       OK ] EvalVerb.TieDsrCrossLoAndHouse (0 ms)
+[ RUN      ] EvalVerb.TieOncAndEffectiveNDsr
+[       OK ] EvalVerb.TieOncAndEffectiveNDsr (0 ms)
+[ RUN      ] EvalVerb.TiePbo
+[       OK ] EvalVerb.TiePbo (0 ms)
+[ RUN      ] EvalVerb.TiePaired
+[       OK ] EvalVerb.TiePaired (0 ms)
+[ RUN      ] EvalVerb.TieNormPpf
+[       OK ] EvalVerb.TieNormPpf (0 ms)
+[ RUN      ] EvalVerb.JsonSchema
+[       OK ] EvalVerb.JsonSchema (0 ms)
+[ RUN      ] EvalVerb.HandRowIsThePrefixState
+[       OK ] EvalVerb.HandRowIsThePrefixState (1244 ms)
+[ RUN      ] EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns
+[       OK ] EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns (21 ms)
+[ RUN      ] EvalVerb.CliWritesTheDocumentAndRefuses
+[       OK ] EvalVerb.CliWritesTheDocumentAndRefuses (54 ms)
+[ RUN      ] EvalVerb.ProtocolDefaultsFollowNavSumm
+[       OK ] EvalVerb.ProtocolDefaultsFollowNavSumm (0 ms)
+[ RUN      ] EvalVerb.VolFlagAddsNetVolOnly
+[       OK ] EvalVerb.VolFlagAddsNetVolOnly (25 ms)
+[----------] 12 tests from EvalVerb (2221 ms total)
+
+[----------] 3 tests from ResearchEvalRng
+[ RUN      ] ResearchEvalRng.CbbStartsAreDefaultRngIntegers
+[       OK ] ResearchEvalRng.CbbStartsAreDefaultRngIntegers (17 ms)
+[ RUN      ] ResearchEvalRng.OncDrawsAreTheRecordedPicks
+[       OK ] ResearchEvalRng.OncDrawsAreTheRecordedPicks (58 ms)
+[ RUN      ] ResearchEvalRng.ReplayedPicksGiveTheRecordedClustersAndSilhouettes
+[       OK ] ResearchEvalRng.ReplayedPicksGiveTheRecordedClustersAndSilhouettes (29 ms)
+[----------] 3 tests from ResearchEvalRng (106 ms total)
+
+[----------] 3 tests from Conditional
+[ RUN      ] Conditional.ClosedFormNormalCase
+[       OK ] Conditional.ClosedFormNormalCase (0 ms)
+[ RUN      ] Conditional.UnselectedCellsAreListedNotSummed
+[       OK ] Conditional.UnselectedCellsAreListedNotSummed (0 ms)
+[ RUN      ] Conditional.RefusesANonPositiveSe
+[       OK ] Conditional.RefusesANonPositiveSe (0 ms)
+[----------] 3 tests from Conditional (0 ms total)
+
+[----------] 9 tests from EvalEdges
+[ RUN      ] EvalEdges.FixtureCoversTheRulingsCases
+[       OK ] EvalEdges.FixtureCoversTheRulingsCases (14 ms)
+[ RUN      ] EvalEdges.PairedTiesWithinTheConditioningBound
+[       OK ] EvalEdges.PairedTiesWithinTheConditioningBound (723 ms)
+[ RUN      ] EvalEdges.PairedRefusesADegeneratePair
+[       OK ] EvalEdges.PairedRefusesADegeneratePair (827 ms)
+[ RUN      ] EvalEdges.VerbPrintsADegeneratePairAsRefused
+[       OK ] EvalEdges.VerbPrintsADegeneratePairAsRefused (58 ms)
+[ RUN      ] EvalEdges.CscvConstantCandidateHasSharpeZero
+[       OK ] EvalEdges.CscvConstantCandidateHasSharpeZero (2 ms)
+[ RUN      ] EvalEdges.CscvConstantWinsAndTiesTheZeroColumnByIndex
+[       OK ] EvalEdges.CscvConstantWinsAndTiesTheZeroColumnByIndex (2 ms)
+[ RUN      ] EvalEdges.HouseNormPpfIsThePythonBisectionForAnyN
+[ house_norm_ppf ] 33 of 34 quantiles bit-equal to the Python; ppf_lo@N=10000 engine 3.9644158719723457 Python 3.964415871972343
+[ house_norm_ppf ] the Acklam SR* (before B2-9) worst rel 5.509e-12 at N 1000000
+[       OK ] EvalEdges.HouseNormPpfIsThePythonBisectionForAnyN (2 ms)
+[ RUN      ] EvalEdges.HouseDsrTiesThePythonForAnyN
+[       OK ] EvalEdges.HouseDsrTiesThePythonForAnyN (2 ms)
+[ RUN      ] EvalEdges.VerbHouseRowsTieThePythonForAnyN
+[       OK ] EvalEdges.VerbHouseRowsTieThePythonForAnyN (208 ms)
+[----------] 9 tests from EvalEdges (1844 ms total)
+
+[----------] Global test environment tear-down
+[==========] 27 tests from 4 test suites ran. (4174 ms total)
+[  PASSED  ] 27 tests.

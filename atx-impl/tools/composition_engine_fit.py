@@ -34,6 +34,31 @@ ew-theme-v1 / ew-theme-aim-v1 / ew-theme-aim-v2 / ew-theme-v6 rules have no C++ 
 Under the flag the ic-shrink block states that its ICs are the C++ fit's and records their largest difference from
 admission.json's train_mean (ruling D2-S4); provenance.engine_fit names the producing code (the two executables'
 SHA-256 and this module's fingerprint of verify / kernels / check_written).
+
+P9 lane D3W (contract K-P9-8, rulings D3-1 / D3-2): the walk-forward refit, under --engine-fit only,
+
+    --walk-forward expanding --walk-forward-lag N --walk-forward-step N [--walk-forward-min-decisions N]
+
+(lag and step required with it, min-decisions default 21; none of the three without it; refused with --theme-tsmom,
+--theme-resid and --era: their schedule, order and pool are fitted on the whole TRAIN window). Nothing inside the
+fitter's fit / fit_prior (its producer_fingerprint closure) changes: ``verify`` runs the C++ fit with
+``--walk-forward expanding --lag N --step N --min-decisions N`` (one executable call; the comparison of check 3 reads
+only the full-TRAIN blocks) and keeps the C++ rows on the fitter's args; the fitter's main() then calls
+``run_post_step``, which runs the unchanged fit into the stage directory ``<output>.engine-stage`` (a stale stage is
+refused), turns its weights document into schema atx.dsl-composition-weights/v3 (``weights_v3``: the document as
+published, plus the top-level walk_forward block {rule, window, lag, step, min_decisions, rows: [{from_session,
+weights: {library id: weight}}]} the IC runner reads, and provenance.walk_forward), publishes the directory atomically
+at --output and removes the stage; the summary names the published files. Before the first row no fit exists: the
+IC runner holds the book flat there (ruling D3-1). Flag absent: nothing of this runs.
+
+P9 lane D3W (ruling ALCOMB-7): --engine-fit with --mom-volman mom-volman-v1. The C++ fit records the price_momentum
+sleeve (spec key mom_volman, written only then; composition_fit.json mom_volman {theme, sleeve}); check 3 holds it to
+the Python sleeve (composition_theme_tsmom.sleeves on the fitter's final weights, signed zero-filled series and TRAIN
+mask, as composition_mom_volman.schedule records it) under ruling P12, and ``verify`` keeps it on the fitter's args.
+The fitter's fit_prior (its fingerprint closure) is not edited, so it still writes the module's sleeve on the C++
+weights; ruling D2-1 (the C++ values are written) is met by the same post-step of main(): ``engine_sleeve`` holds the
+written sleeve to the C++ one under ruling P12 and writes the C++ sleeve in its place (provenance.mom_volman
+sleeve_source). With both flags the sleeve step runs first. fit() alone under either flag is refused.
 """
 from __future__ import annotations
 
@@ -42,13 +67,17 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 import numpy as np
 
+import composition_mom_volman  # this directory: mom-volman-v1's block names (P9 D3W, ruling ALCOMB-7)
 import composition_rules  # this directory: module_fingerprint (review S-3)
+import composition_theme_tsmom  # this directory: the sleeve formula (P9 D3W, ruling ALCOMB-7)
+from engine_tools import research_window as rw  # this directory: TRAIN (research_window.json), as the fitter
 
 SUPPORTED = ("ew-theme-std-v1", "ew-theme-std-aim-v1", "ic-shrink-v1", "ic-shrink-aim-v1")
 STD_COMPOSITIONS = ("ew-theme-std-v1", "ew-theme-std-aim-v1")
@@ -63,9 +92,26 @@ EXE_SECONDS = 3600
 PROVENANCE_KEY = "engine_fit"  # the weights file's provenance.engine_fit (flag present only)
 WRITTEN = "atx-research-composition fit (C++): every fitted number of the weights file; the admission table: Python"
 REFUSED = (f"--engine-fit runs the single-window prior path with --composition {', '.join(SUPPORTED)} (with or without "
-           "--theme-erc / --theme-tsmom / --theme-resid [--theme-resid-parent] / --two-speed) and needs "
-           "--engine-factors, --admission-exe and --composition-exe; refused under --era")
+           "--theme-erc / --theme-tsmom / --theme-resid [--theme-resid-parent] / --two-speed / --mom-volman) and "
+           "needs --engine-factors, --admission-exe and --composition-exe; refused under --era")
 PRODUCERS = ("verify", "kernels", "check_written")  # the code that turns the executables' output into written values
+# P9 lane D3W (K-P9-8): walk-forward-v1 (atx-engine fit.hpp walk_forward_rule) and the v3 document.
+WALK_FORWARD_RULE = "walk-forward-v1"
+WALK_FORWARD_WINDOWS = ("expanding",)
+WALK_FORWARD_MIN_DECISIONS = 21            # ruling D3-1: the registered value (one step)
+POST_STAGE = ".engine-stage"               # <output>.engine-stage: the unchanged fit's directory before the post-step
+POST_ARMED = "_engine_post_step"           # args attribute: set by run_post_step (fit alone is refused)
+WALK_FORWARD_FIT = "_walk_forward_fit"     # args attribute: the C++ rows verify keeps for run_post_step
+VOLMAN_FIT = "_mom_volman_fit"             # args attribute: the C++ sleeve verify keeps for run_post_step
+WEIGHTS_SCHEMA_V3 = "atx.dsl-composition-weights/v3"
+VOLMAN_SOURCE = ("atx-research-composition fit (C++): the price_momentum sleeve of the C++ final weights (ruling "
+                 "ALCOMB-7), held to the Python sleeve under ruling P12 before it is written")
+POST_ONLY = ("--walk-forward and --mom-volman under --engine-fit write through the fitter's main() (run_post_step: "
+             "the C++ walk-forward rows and sleeve); fit() alone would publish without them")
+WALK_FORWARD_REFUSED = ("--walk-forward runs under --engine-fit (the rows are the C++ fit's, rulings D3-1 / ALCOMB-7) "
+                        "and is refused with --theme-tsmom, --theme-resid and --era (their schedule, order and pool "
+                        "are fitted on the whole TRAIN window)")
+WALK_FORWARD_VALUES = ("walk_forward_lag", "walk_forward_step", "walk_forward_min_decisions")
 
 
 class EngineFitError(ValueError):
@@ -122,10 +168,71 @@ def add_argument(parser: argparse.ArgumentParser) -> None:
                              "(atx-equity-strategy-targets factors)")
     parser.add_argument("--admission-exe", type=Path, default=None, help="--engine-fit: atx-research-admission")
     parser.add_argument("--composition-exe", type=Path, default=None, help="--engine-fit: atx-research-composition")
+    parser.add_argument("--walk-forward", default=None, choices=WALK_FORWARD_WINDOWS,
+                        help="P9 D3W (K-P9-8): with --engine-fit, also refit walk-forward: rows every "
+                             "--walk-forward-step decisions from the first whose window (the TRAIN decisions <= d - "
+                             "--walk-forward-lag) holds --walk-forward-min-decisions, each the C++ fit on its window; "
+                             "the weights file becomes atx.dsl-composition-weights/v3 with the walk_forward rows; "
+                             "absent: output bytes unchanged")
+    parser.add_argument("--walk-forward-lag", type=int, default=None, help="--walk-forward: lag >= 2 (registered 2)")
+    parser.add_argument("--walk-forward-step", type=int, default=None,
+                        help="--walk-forward: step >= 1 (registered 21)")
+    parser.add_argument("--walk-forward-min-decisions", type=int, default=None,
+                        help="--walk-forward: min_decisions >= 2 (default and registered "
+                             f"{WALK_FORWARD_MIN_DECISIONS})")
+
+
+def walk_forward(args) -> bool:
+    """P9 D3W: whether the fitter runs walk-forward (--walk-forward given)."""
+    return getattr(args, "walk_forward", None) is not None
+
+
+def _require_wf(condition, message: str, error: type[Exception]) -> None:
+    if not condition:
+        raise error(f"--walk-forward: {message}")
+
+
+def walk_forward_options(args) -> tuple[int, int, int]:
+    """(lag, step, min_decisions) of the walk-forward flags (check_args has run)."""
+    least = getattr(args, "walk_forward_min_decisions", None)
+    return (int(args.walk_forward_lag), int(args.walk_forward_step),
+            WALK_FORWARD_MIN_DECISIONS if least is None else int(least))
+
+
+def check_walk_forward(args, pooled: bool, error: type[Exception]) -> None:
+    """P9 D3W: refused before any compute (WALK_FORWARD_REFUSED); flag absent: its values are refused alone."""
+    if not walk_forward(args):
+        _require_wf(all(getattr(args, name, None) is None for name in WALK_FORWARD_VALUES),
+                    "--walk-forward-lag / --walk-forward-step / --walk-forward-min-decisions are read only with "
+                    "--walk-forward", error)
+        return
+    _require_wf(getattr(args, "engine_fit", False) and getattr(args, "theme_tsmom", None) is None and
+                getattr(args, "theme_resid", None) is None and not pooled, WALK_FORWARD_REFUSED, error)
+    _require_wf(getattr(args, "walk_forward_lag", None) is not None and
+                getattr(args, "walk_forward_step", None) is not None,
+                "--walk-forward needs --walk-forward-lag and --walk-forward-step", error)
+    lag, step, least = walk_forward_options(args)
+    _require_wf(lag >= 2 and step >= 1 and least >= 2,
+                f"lag >= 2 (contract K-P9-8: fitted on decisions <= d - 2), step >= 1 and min_decisions >= 2; "
+                f"got lag {lag}, step {step}, min_decisions {least}", error)
+
+
+def mom_volman(args) -> bool:
+    """P9 D3W (ruling ALCOMB-7): --engine-fit with --mom-volman (the C++ sleeve is written by the post-step)."""
+    return bool(getattr(args, "engine_fit", False)) and getattr(args, "mom_volman", None) is not None
+
+
+def post_step(args) -> bool:
+    """P9 D3W: whether the fitter's main() runs the fit through run_post_step (--walk-forward, or --engine-fit with
+    --mom-volman)."""
+    return walk_forward(args) or mom_volman(args)
 
 
 def check_args(args, prior: bool, pooled: bool, error: type[Exception] = EngineFitError) -> None:
-    """Refused before any compute (REFUSED); flag absent: nothing is checked and nothing changes."""
+    """Refused before any compute (REFUSED); flag absent: nothing is checked and nothing changes. P9 D3W: the
+    walk-forward flags first (check_walk_forward), then fit() alone under a post-step flag (POST_ONLY)."""
+    check_walk_forward(args, pooled, error)
+    _require(not post_step(args) or getattr(args, POST_ARMED, None) is not None, POST_ONLY, error)
     if not getattr(args, "engine_fit", False):
         _require(getattr(args, "engine_factors", None) is None and getattr(args, "admission_exe", None) is None and
                  getattr(args, "composition_exe", None) is None,
@@ -143,12 +250,17 @@ def check_args(args, prior: bool, pooled: bool, error: type[Exception] = EngineF
 
 # ---------------------------------------------------------------- 1. factor series
 def check_factor_series(directory: Path, state: FitterState, error: type[Exception]) -> dict:
-    """Check 1: the series of DIR against the fitter's. Returns the worst |f| and |tau| differences."""
-    raw = Path(directory, "manifest.json").read_bytes()
-    manifest = json.loads(raw)
+    """Check 1: the series of DIR against the fitter's. Returns the worst |f| and |tau| differences. P9 D3W (ruling
+    D2-9, review S-d): every read of DIR is the refusal ``error`` when it fails (a missing or unreadable file, a
+    manifest that is not JSON, a candidate row that is not an object), as the executables' outputs are."""
+    raw = _read(Path(directory, "manifest.json"), "the factor series' manifest.json", error)
+    manifest = _json(raw, "the factor series' manifest.json", error)
     _require(isinstance(manifest, dict) and manifest.get("schema") == FACTOR_SCHEMA,
              f"{directory}: not an {FACTOR_SCHEMA} manifest", error)
-    ids = [c.get("id") for c in manifest.get("candidates", [])]
+    rows = manifest.get("candidates", [])
+    _require(isinstance(rows, list) and all(isinstance(c, dict) for c in rows),
+             f"{directory}: the manifest's candidates must be a list of objects", error)
+    ids = [c.get("id") for c in rows]
     _require(ids == list(state.library_ids), f"factor series candidates {ids} are not the library {state.library_ids}",
              error)
     _require(manifest.get("role_manifest_sha256") == state.role_sha256,
@@ -158,8 +270,8 @@ def check_factor_series(directory: Path, state: FitterState, error: type[Excepti
     _require(sessions == [int(s) for s in state.decision_sessions],
              "factor series decision sessions are not the fitter's decisions", error)
     t, k = len(sessions), len(ids)
-    factor = np.frombuffer(Path(directory, "factor.f64").read_bytes(), dtype="<f8")
-    tau = np.frombuffer(Path(directory, "tau.f64").read_bytes(), dtype="<f8")
+    factor = np.frombuffer(_read(Path(directory, "factor.f64"), "the factor series' factor.f64", error), dtype="<f8")
+    tau = np.frombuffer(_read(Path(directory, "tau.f64"), "the factor series' tau.f64", error), dtype="<f8")
     _require(factor.size == t * k and tau.size == k, "factor.f64 / tau.f64 extent", error)
     cpp = factor.reshape(t, k).T
     mine = np.asarray(state.factors, dtype=np.float64)
@@ -267,9 +379,10 @@ def check_admission(args, state: FitterState, work: Path, error: type[Exception]
 
 
 # ---------------------------------------------------------------- 3. fit
-def fit_spec(state: FitterState) -> dict:
+def fit_spec(state: FitterState, volman: bool = False) -> dict:
     """The atx.composition-fit-spec/v1 of the fitted members: the C++ re-derives tiers (rule 5 re-grades applied to the
-    source tiers), scores, ICs, shares, the ERC, the tsmom schedule and the residual order itself."""
+    source tiers), scores, ICs, shares, the ERC, the tsmom schedule and the residual order itself. P9 D3W: with
+    ``volman`` the key mom_volman (the C++ records the price_momentum sleeve); absent: the spec bytes as before."""
     members = []
     for k, cid in enumerate(state.members):
         row = {"id": cid, "theme": state.themes[k], "sign": int(state.signs[k])}
@@ -285,12 +398,29 @@ def fit_spec(state: FitterState) -> dict:
         spec["tier_scores"] = {g: float(s) for g, s in state.tier_scores.items()}
     if state.resid_order is not None:
         spec["registered_themes"] = list(state.registered_themes)
+    if volman:
+        spec["mom_volman"] = True
     return spec
 
 
-def expected_fit(state: FitterState) -> dict:
+def volman_sleeve(state: FitterState) -> list:
+    """P9 D3W (ruling ALCOMB-7): the Python side of the C++ sleeve, the sleeve composition_mom_volman.schedule records:
+    composition_theme_tsmom.sleeves' price_momentum row over the fitted members (fitter order) with the final weights,
+    the prior-signed zero-filled factor series and the TRAIN mask of the decision sessions (research_window)."""
+    index = {cid: c for c, cid in enumerate(state.library_ids)}
+    factors = np.asarray(state.factors, dtype=np.float64)
+    zero = np.where(np.isnan(factors), 0.0, factors)
+    matrix = np.vstack([sign * zero[index[cid]] for cid, sign in zip(state.members, state.signs)])
+    sessions = np.asarray(state.decision_sessions, dtype=np.int64)
+    mask = (sessions >= rw.TRAIN_BEGIN_NS) & (sessions < rw.TRAIN_END_NS)
+    row = composition_theme_tsmom.sleeves(matrix, list(state.themes), [float(w) for w in state.weights],
+                                          [composition_mom_volman.THEME], mask)[0]
+    return [float(x) for x in row]
+
+
+def expected_fit(state: FitterState, volman: bool = False) -> dict:
     """The Python values in composition_fit.json's layout (test_composition_fit_fixture.run_case, on the fitter's own
-    fit objects): member-ordered lists, the theme order of each block."""
+    fit objects): member-ordered lists, the theme order of each block; with ``volman`` the mom_volman block."""
     ids, parent = list(state.members), state.parent
     prov = parent.provenance
     if state.composition in STD_COMPOSITIONS:
@@ -327,6 +457,8 @@ def expected_fit(state: FitterState) -> dict:
             "theme_on_count": [round(p["theme_on_fraction"][t] * p["blocks"]) for t in b["themes"]]}
     if state.resid_order is not None:
         doc["theme_resid"] = {"order": list(state.resid_order)}
+    if volman:
+        doc["mom_volman"] = {"theme": composition_mom_volman.THEME, "sleeve": volman_sleeve(state)}
     return doc
 
 
@@ -335,14 +467,18 @@ def _number(x) -> bool:
 
 
 def compare_values(want, got, where: str = "$", tolerance: float = P12_TOLERANCE, out: list | None = None,
-                   worst: list | None = None) -> tuple[list, float]:
+                   worst: list | None = None, strict: bool = False) -> tuple[list, float]:
     """Differences of ``got`` (the C++ JSON) against ``want`` (the Python values): every string, bool, null, integer,
     key and length exactly (the decisions), every float to tolerance x max(1, |want|). Returns (differences, worst
-    relative float difference)."""
+    relative float difference). P9 D3W (ruling D2-9, review S-c): ``strict`` also makes an integer against a float a
+    difference, equal or not (composition_resid.parent_check: both sides are the fitter's canonical JSON, so a type
+    flip is a code change); check 3 keeps the default."""
     out = [] if out is None else out
     worst = [0.0] if worst is None else worst
     if _number(want) and _number(got):
-        if isinstance(want, int) and isinstance(got, int):
+        if strict and isinstance(want, int) != isinstance(got, int):
+            out.append(f"{where}: {want!r} vs {got!r} (an integer against a float)")
+        elif isinstance(want, int) and isinstance(got, int):
             if want != got:
                 out.append(f"{where}: {want!r} vs {got!r}")
         elif not (math.isfinite(float(want)) and math.isfinite(float(got))):
@@ -357,12 +493,12 @@ def compare_values(want, got, where: str = "$", tolerance: float = P12_TOLERANCE
         if sorted(want) != sorted(got):
             out.append(f"{where}: keys {sorted(want)} vs {sorted(got)}")
         for key in sorted(set(want) & set(got)):
-            compare_values(want[key], got[key], f"{where}.{key}", tolerance, out, worst)
+            compare_values(want[key], got[key], f"{where}.{key}", tolerance, out, worst, strict)
     elif isinstance(want, (list, tuple)) and isinstance(got, list):
         if len(want) != len(got):
             out.append(f"{where}: length {len(want)} vs {len(got)}")
         for i, (a, b) in enumerate(zip(want, got)):
-            compare_values(a, b, f"{where}[{i}]", tolerance, out, worst)
+            compare_values(a, b, f"{where}[{i}]", tolerance, out, worst, strict)
     elif type(want) is not type(got) or want != got:
         out.append(f"{where}: {want!r} vs {got!r}")
     return out, worst[0]
@@ -383,24 +519,35 @@ def pure_relative(want, got) -> float:
 
 def check_fit(args, state: FitterState, work: Path, error: type[Exception]) -> tuple[dict, dict]:
     """Check 3: the C++ fit of the fitted members equals the fitter's values. Returns (summary keys, C++ document)."""
-    spec_bytes = (json.dumps(fit_spec(state), sort_keys=True, indent=1, allow_nan=False) + "\n").encode("utf-8")
+    volman = mom_volman(args)
+    spec_bytes = (json.dumps(fit_spec(state, volman), sort_keys=True, indent=1, allow_nan=False) +
+                  "\n").encode("utf-8")
     spec = work / "composition_fit_spec.json"
     spec.write_bytes(spec_bytes)
     out = work / "composition"
-    run_exe([args.composition_exe, "fit", "--factors", args.engine_factors, "--spec", spec, "--output", out], error)
+    argv = [args.composition_exe, "fit", "--factors", args.engine_factors, "--spec", spec, "--output", out]
+    if walk_forward(args):  # P9 D3W: the rows come from the same call; the checks below read the full-TRAIN blocks
+        lag, step, least = walk_forward_options(args)
+        argv += ["--walk-forward", args.walk_forward, "--lag", lag, "--step", step, "--min-decisions", least]
+    run_exe(argv, error)
     raw = _read(out / FIT_FILE, f"the fit's {FIT_FILE}", error)
     got = _json(raw, f"the fit's {FIT_FILE}", error)
     _require(isinstance(got, dict) and got.get("schema") == FIT_SCHEMA and got.get("status") == "complete",
              f"{FIT_FILE}: not a complete {FIT_SCHEMA} document", error)
-    want = expected_fit(state)
+    want = expected_fit(state, volman)
     differ, worst = compare_values(want, {k: got.get(k) for k in want})
     _require(not differ, f"the C++ fit differs from the fitter's ({len(differ)}): {differ[:20]}", error)
-    by_block = {k: pure_relative(want[k], got[k]) for k in ("parent", "theme_erc", "theme_tsmom", "weights")
-                if k in want}
+    by_block = {k: pure_relative(want[k], got[k])
+                for k in ("parent", "theme_erc", "theme_tsmom", "mom_volman", "weights") if k in want}
+    if walk_forward(args):
+        setattr(args, WALK_FORWARD_FIT, walk_forward_rows(args, got, state, raw, error))
+    if volman:  # check 3 held it to the Python sleeve: same length, every value within P12
+        setattr(args, VOLMAN_FIT, {"sleeve": [float(x) for x in got["mom_volman"]["sleeve"]]})
     return ({"composition_fit_sha256": hashlib.sha256(raw).hexdigest(),
              "fit_spec_sha256": hashlib.sha256(spec_bytes).hexdigest(), "fit_max_rel_float_diff": worst,
              "fit_max_pure_rel_diff_by_block": by_block,
-             "blocks": sorted(k for k in ("theme_erc", "theme_tsmom", "theme_resid") if k in want)}, got)
+             "blocks": sorted(k for k in ("theme_erc", "theme_tsmom", "theme_resid", "mom_volman") if k in want)},
+            got)
 
 
 # ---------------------------------------------------------------- the C++ values written (ruling D2-1)
@@ -504,3 +651,154 @@ def check_written(written_weights, engine: EngineKernels, error: type[Exception]
     """The weights the second composition wrote are the C++ fit's final weights bit for bit (fitter member order)."""
     _require([float(w) for w in written_weights] == engine.weights,
              "the composed weights are not the C++ fit's final weights", error)
+
+
+# ---------------------------------------------------------------- P9 D3W: walk-forward (K-P9-8, ruling D3-1)
+WALK_FORWARD_ROW_KEYS = ("decision_index", "from_session", "fit_decisions", "last_fit_index", "last_fit_session",
+                         "weights")
+WALK_FORWARD_MAX_ROWS = 4096  # atx-engine fit.hpp walk_forward_max_rows
+
+
+def _count(x) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool) and x >= 0
+
+
+def walk_forward_rows(args, got: dict, state: FitterState, raw: bytes, error: type[Exception]) -> dict:
+    """The C++ fit's walk_forward block (check 3 agreed with its full-TRAIN blocks), checked for shape: the rule, the
+    options asked for, 1..4096 rows of WALK_FORWARD_ROW_KEYS at strictly increasing decisions, each row's weights one
+    finite value >= 0 per fitted member (state.members order) weighting something. Kept for weights_v3 with the
+    members, their themes and the C++ document's SHA-256."""
+    block = got.get("walk_forward")
+    lag, step, least = walk_forward_options(args)
+    _require_wf(isinstance(block, dict) and block.get("rule") == WALK_FORWARD_RULE and
+                block.get("window") == args.walk_forward and
+                [block.get("lag"), block.get("step"), block.get("min_decisions")] == [lag, step, least] and
+                isinstance(block.get("rows"), list) and 1 <= len(block["rows"]) <= WALK_FORWARD_MAX_ROWS,
+                f"{FIT_FILE} carries no {WALK_FORWARD_RULE} block for window {args.walk_forward}, lag {lag}, step "
+                f"{step}, min_decisions {least}", error)
+    before = -1
+    for n, row in enumerate(block["rows"]):
+        _require_wf(isinstance(row, dict) and sorted(row) == sorted(WALK_FORWARD_ROW_KEYS) and
+                    all(_count(row[k]) for k in WALK_FORWARD_ROW_KEYS[:5]) and row["decision_index"] > before and
+                    isinstance(row["weights"], list) and len(row["weights"]) == len(state.members) and
+                    all(_number(w) and math.isfinite(w) and w >= 0 for w in row["weights"]) and
+                    any(w > 0 for w in row["weights"]),
+                    f"{FIT_FILE} walk_forward row {n} is malformed", error)
+        before = row["decision_index"]
+    return {"members": list(state.members), "member_themes": list(state.themes), "block": block,
+            "composition_fit_sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def weights_v3(document: dict, rows: dict, error: type[Exception] = EngineFitError) -> dict:
+    """The published weights document as atx.dsl-composition-weights/v3 (the IC runner's composition_walk_forward):
+    a copy with the schema v3, the top-level walk_forward {rule, window, lag, step, min_decisions, rows:
+    [{from_session, weights: {every library id: weight}}]} (a library candidate the fit did not take part in: 0) and
+    provenance.walk_forward (each row's window: decision index, fitted decisions, last fitted decision). The full-TRAIN
+    weights, signs and blocks stay as written. A candidate a row weights needs a sign and, under theme_standardise
+    with a top-level weight of 0, its theme among the top-level weighted themes (it is added to themes); else refused
+    (the runner refuses the same file)."""
+    out = json.loads(json.dumps(document))
+    block, members = rows["block"], rows["members"]
+    library = list(document["weights"])  # every library candidate (the fitter writes one weight per candidate)
+    v3_rows = []
+    for row in block["rows"]:
+        weights = dict.fromkeys(library, 0.0)
+        weights.update({cid: float(w) for cid, w in zip(members, row["weights"])})
+        v3_rows.append({"from_session": int(row["from_session"]), "weights": weights})
+    weighted = sorted({cid for row in v3_rows for cid, w in row["weights"].items() if w > 0})
+    unsigned = [cid for cid in weighted if not document.get("signs", {}).get(cid)]
+    _require_wf(not unsigned, f"a row weights a candidate without a composition sign: {unsigned}", error)
+    themes = out.get("theme_standardise", {}).get("themes")
+    if themes is not None:
+        top = {themes[cid] for cid in themes if document["weights"].get(cid, 0.0) > 0}
+        theme_of = dict(zip(members, rows["member_themes"]))
+        for cid in (c for c in weighted if not document["weights"][c] > 0):
+            _require_wf(theme_of[cid] in top,
+                        f"a row weights {cid} of theme {theme_of[cid]}, which no top-level weighted candidate has "
+                        "(the IC runner's standardise grouping is the full-TRAIN fit's)", error)
+            themes[cid] = theme_of[cid]
+    out["schema"] = WEIGHTS_SCHEMA_V3
+    out["walk_forward"] = {"rule": block["rule"], "window": block["window"], "lag": block["lag"],
+                           "step": block["step"], "min_decisions": block["min_decisions"], "rows": v3_rows}
+    out["provenance"]["walk_forward"] = {
+        "rule": block["rule"], "composition_fit_sha256": rows["composition_fit_sha256"],
+        "producer": "atx-research-composition fit --walk-forward (C++): row j is the composition fit on the TRAIN "
+                    "decisions d <= j - lag, in force from decision j's session; the IC runner holds the book flat "
+                    "before the first row (ruling D3-1)",
+        "rows": [{k: row[k] for k in WALK_FORWARD_ROW_KEYS[:5]} for row in block["rows"]]}
+    return out
+
+
+def engine_sleeve(document: dict, volman: dict, error: type[Exception] = EngineFitError) -> dict:
+    """P9 D3W (ruling ALCOMB-7, D2-1): the published weights document with the C++ sleeve written in place of the one
+    fit_prior wrote (the module's sleeve on the C++ weights): a copy whose theme_schedule.sleeve is the C++ sleeve and
+    provenance.mom_volman.sleeve_source VOLMAN_SOURCE. Refused unless the document carries the mom-volman-v1 block of
+    the same length and the written sleeve agrees with the C++ one under ruling P12."""
+    block = document.get(composition_mom_volman.BLOCK)
+    _require(isinstance(block, dict) and block.get("rule") == composition_mom_volman.RULE_ID and
+             isinstance(block.get("sleeve"), list) and len(block["sleeve"]) == len(volman["sleeve"]),
+             f"the weights document carries no {composition_mom_volman.RULE_ID} sleeve of the C++ fit's length", error)
+    differ, _ = compare_values(block["sleeve"], volman["sleeve"], "$.theme_schedule.sleeve")
+    _require(not differ, f"the written sleeve differs from the C++ fit's (ruling P12): {differ[:20]}", error)
+    out = json.loads(json.dumps(document))
+    out[composition_mom_volman.BLOCK]["sleeve"] = list(volman["sleeve"])
+    out["provenance"]["mom_volman"]["sleeve_source"] = VOLMAN_SOURCE
+    return out
+
+
+class PostStepHooks(NamedTuple):
+    """The fitter's own names run_post_step uses (its main() builds this: no module-level name of the fitter is
+    added, so nothing its producer fingerprint reaches moves)."""
+    error: type[Exception]
+    canonical: Callable[[dict], bytes]
+    publish: Callable[[Path, dict], None]
+    pending: Callable[[Path], Path]
+    limit: int
+    weights_file: str
+    exit_ok: int
+
+
+def run_post_step(args, fit: Callable, hooks: PostStepHooks, log=None) -> tuple[int, dict]:
+    """The fitter under a post-step flag (post_step): refuse an existing --output or a stale stage, run ``fit``
+    unchanged into <output>.engine-stage, then publish (hooks.publish: all or nothing) the stage's files at --output
+    with the weights file rewritten (engine_sleeve under --mom-volman, then weights_v3 under --walk-forward; a fit that
+    published no weights file is published as it is), and remove the stage. Any refusal after the fit removes the
+    stage and publishes nothing. The summary names the published output, files and weights SHA-256, and the rows
+    (walk_forward)."""
+    error, out = hooks.error, Path(args.output)
+    stage = out.with_name(out.name + POST_STAGE)
+    _require(not out.exists(), f"output exists; refusing overwrite: {out}", error)
+    _require(not stage.exists() and not hooks.pending(stage).exists(),
+             f"stale or concurrent post-step stage; inspect and remove: {stage}", error)
+    setattr(args, POST_ARMED, str(stage))
+    args.output = stage
+    try:
+        code, summary = fit(args, log=log)
+    finally:
+        args.output = out
+    try:
+        files = {p.name: p.read_bytes() for p in sorted(stage.iterdir())}
+        summary = dict(summary, output=str(out))
+        if code == hooks.exit_ok:
+            document = json.loads(files[hooks.weights_file])
+            if mom_volman(args):
+                volman = getattr(args, VOLMAN_FIT, None)
+                _require(volman is not None, "the fit kept no C++ sleeve (the C++ fit did not run)", error)
+                document = engine_sleeve(document, volman, error)
+            if walk_forward(args):
+                rows = getattr(args, WALK_FORWARD_FIT, None)
+                _require_wf(rows is not None, "the fit kept no walk-forward rows (the C++ fit did not run)", error)
+                document = weights_v3(document, rows, error)
+                first, last = rows["block"]["rows"][0], rows["block"]["rows"][-1]
+                summary["walk_forward"] = {"rule": WALK_FORWARD_RULE, "rows": len(rows["block"]["rows"]),
+                                           "first_from_session": first["from_session"],
+                                           "last_from_session": last["from_session"]}
+            files[hooks.weights_file] = hooks.canonical(document)
+            _require(len(files[hooks.weights_file]) <= hooks.limit,
+                     f"output: the weights JSON exceeds the runner's {hooks.limit}-byte bound", error)
+            summary["weights_sha256"] = hashlib.sha256(files[hooks.weights_file]).hexdigest()
+        summary["files"] = {n: hashlib.sha256(b).hexdigest() for n, b in sorted(files.items())}
+        hooks.publish(out, files)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    return code, summary

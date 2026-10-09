@@ -1,0 +1,10 @@
+      7 scripts/tests/test_no_python_mirror.py
+     19 scripts/tests/test_research_wave.py
+     28 scripts/tests/test_wave_driver.py
+      7 scripts/tests/test_wave_eval_verb.py
+     12 scripts/tests/test_wave_gross_match.py
+    111 scripts/tests/test_wave_kinds.py
+     21 scripts/tests/test_wave_review.py
+      9 scripts/tests/test_wave_review_minor.py
+      3 scripts/tests/test_wave_scoreboard.py
+      5 scripts/tests/test_wave_speed.py
