@@ -29,6 +29,17 @@ at [`atx-vol/README.md`](atx-vol/README.md).
 
 ## Build
 
+The restored volatility module has a dedicated `vol-dev` preset, which builds it
+alongside the equity dependencies without requiring the deleted optional modules:
+
+```powershell
+powershell scripts/atx-build.ps1 -Preset vol-dev configure
+powershell scripts/atx-build.ps1 -Preset vol-dev -Jobs 4 build atx-vol atx-vol-tests
+```
+
+Its build products live in `build-vol/`. See the module's [build and test
+instructions](atx-vol/README.md#build--test) for the complete fast test lane.
+
 The equity research client/server workspace lives in [`atx-server`](atx-server/README.md)
 and [`atx-front`](atx-front/README.md). Build and launch it on Windows with
 `python scripts/atx-workspace.py --build`; its dedicated `server-dev` preset enables

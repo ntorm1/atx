@@ -1,0 +1,7 @@
+{
+  "name": "holdout",
+  "dates": ["2026-08-14"],
+  "underliers": ["IVV", "IWM", "NDX", "RUT", "MSFT", "AMAT", "GOOGL", "MXEA", "NUGT", "CBRS"],
+  "buckets_et": ["1100", "1430", "1555"],
+  "notes": "Disjoint from tune in BOTH underliers and buckets (buckets 1100/1430/1555 vs tune's 1000/1300/1530; zero underlier overlap), mirroring the same strata so ratchet results generalize: index ETFs IVV (4,064 rows/bucket, ddiv_nz 0.69) and IWM (5,900, ddiv_nz 0.55); index-style NDX (17,181, largest notional uPrc ~29,974) and RUT (12,140, sdiv_med 0.05); high-div single names MSFT (4,052, ddiv_nz 0.86), AMAT (3,574, ddiv_nz 0.88), GOOGL (5,050, ddiv_nz 0.77); hard-to-borrow MXEA (sdiv_med -0.16) and NUGT (sdiv_med -0.02 with ddiv_nz 0.48, leveraged ETF); low-liquidity tail CBRS (2,124 rows/bucket). Only the Ratchet stage reads this cohort; membership frozen after iteration 0 per README."
+}

@@ -45,6 +45,17 @@
       }
     },
     {
+      "name": "vol-dev",
+      "inherits": "equity-dev",
+      "displayName": "vol-dev: restored volatility module and its dependencies",
+      "binaryDir": "${sourceDir}/build-vol",
+      "cacheVariables": {
+        "ATX_BUILD_VOL": "ON",
+        "ATX_TEST_GROUPS": "core",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/deps/vol-dev"
+      }
+    },
+    {
       "name": "server-dev",
       "inherits": "equity-dev",
       "displayName": "server-dev: persistent gRPC equity workspace",
@@ -206,6 +217,12 @@
     }
   ],
   "buildPresets": [
+    {
+      "name": "vol-dev",
+      "configurePreset": "vol-dev",
+      "targets": ["atx-vol", "atx-vol-tests", "spx-wilmott-repro-tests",
+                  "varswap-compare-columns-tests", "atx-vol-alpha-tests"]
+    },
     { "name": "server-dev", "configurePreset": "server-dev" },
     { "name": "server-rel", "configurePreset": "server-rel" },
     { "name": "ninja", "configurePreset": "ninja" },
@@ -231,6 +248,13 @@
     { "name": "vs", "configurePreset": "vs", "configuration": "Debug" }
   ],
   "testPresets": [
+    {
+      "name": "vol-dev",
+      "configurePreset": "vol-dev",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 4, "scheduleRandom": false },
+      "filter": { "include": { "label": "atx_vol_fast" } }
+    },
     {
       "name": "server-rel",
       "configurePreset": "server-rel",

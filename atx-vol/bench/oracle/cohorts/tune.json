@@ -1,0 +1,7 @@
+{
+  "name": "tune",
+  "dates": ["2026-08-14"],
+  "underliers": ["SPY", "QQQ", "SPX", "XSP", "GS", "KLAC", "BKNG", "MGTN", "MULL", "DAVE"],
+  "buckets_et": ["1000", "1300", "1530"],
+  "notes": "10 underliers x 3 buckets (morning/midday/near-close), stratified per README with stats measured from bucket 1300 of the 2026-08-14 store. Mega-cap ETF: SPY (14,588 rows/bucket, ddiv_nz 0.63), QQQ (12,738, ddiv_nz 0.53). Index-style: SPX (30,042 rows, pure sdiv carry, ddiv 0), XSP (16,602, mini-SPX European-style). High-div single names (ddiv discrete-dividend stress): GS (6,814 rows, ddiv_nz 0.86), KLAC (2,738, ddiv_nz 0.97), BKNG (4,234, ddiv_nz 0.91). Hard-to-borrow (sdiv stress): MGTN (sdiv_med -0.50, the most extreme borrow in the file), MULL (sdiv_med -0.11 AND ddiv_nz 0.87 - combined borrow+dividend stress). Low-liquidity tail: DAVE (2,090 rows/bucket, near the 2k liquidity floor)."
+}

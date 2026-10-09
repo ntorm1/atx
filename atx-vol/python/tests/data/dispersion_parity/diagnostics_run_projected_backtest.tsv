@@ -1,0 +1,8 @@
+ATX_DISPERSION_DIAGNOSTICS	1
+subcommand	phase	wall_ms	count
+run_projected_backtest	setup_read	12.000	0
+run_projected_backtest	divergence_replay	420.000	3
+run_projected_backtest	archive_load	150.000	3
+run_projected_backtest	priced_run	450.000	3
+run_projected_backtest	write_outputs	6.000	0
+run_projected_backtest	total	900.000	3

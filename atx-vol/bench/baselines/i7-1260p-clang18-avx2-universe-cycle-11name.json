@@ -1,0 +1,152 @@
+{
+  "context": {
+    "benchmark": "universe/cycle/real",
+    "harness": "atx-vol-universe-cycle-bench (BM_UniverseCycle_Real)",
+    "purpose": "U6 universe-cycle parallel-scaling MECHANISM proof on real OPRA",
+    "host": "i7-1260p (4 P-cores + 8 E-cores; 16 logical); pricing executor pinned to P-cores",
+    "isa": "avx2 (rel-avx2, clang-cl 18)",
+    "date": "2026-07-18",
+    "cohort": {
+      "symbols": [
+        "AAPL",
+        "AMZN",
+        "AVGO",
+        "GOOGL",
+        "JPM",
+        "LLY",
+        "META",
+        "MSFT",
+        "NVDA",
+        "SPY",
+        "XOM"
+      ],
+      "dates": [
+        "2026-01-02",
+        "2026-01-05",
+        "2026-01-06"
+      ],
+      "n_names": 11,
+      "n_boards_loaded": 33,
+      "n_boards_fitted": 32,
+      "n_dates": 3,
+      "total_quote_rows": 114036,
+      "opra_root": "C:/atx-data/spy-dispersion/opra (raw pull; regenerate via tools/make_universe.py)"
+    },
+    "pipeline": "load_opra_daterange -> corpus_board_from_opra -> populate_surface_db (U1 streaming per-date release + U2 LPT claim order + U3 date-granular durability + U4 shared small-book budget, over the E2 work-stealing pool)",
+    "method": "best-of-3 (Repetitions=3, Iterations=1), median reported; inner per-board fit pinned to 1 thread (ATX_VOL_FIT_WORKERS=1) so the sweep isolates OUTER board-level parallelism (populate n_threads) and Sum(board_ms) is invariant.",
+    "eff_cores_def": "eff_cores(P) = fit_ms(1) / fit_ms(P) = board-level fit-stage speedup",
+    "findings": [
+      "Monotone speedup 1.00 -> 3.83x across P=1..8; near-ideal at low P (par_eff 0.86 @ P=2).",
+      "Peak RSS bounded: 55.6 -> 67.1 MB for 8x workers (streaming per-date release; O(dates-in-flight), not O(all dates)).",
+      "Beyond 8 threads the curve plateaus/regresses (P=12: 8.9s, P=16: 7.2s > P=8: 6.9s): the box has only 4 physical P-cores, so 3.83x at 8 threads is near-linear PER PHYSICAL P-CORE; extra E-cores are slower and oversubscribe on a 33-board skewed cohort.",
+      "The >=6 eff-cores / wall(1)/wall(12)>=6 north-star gate needs >=6 PHYSICAL performance cores AND the 519-name cohort (board-count >> worker-count) -- both data- and hardware-gated on this laptop. MECHANISM (monotone, near-linear-per-P-core, bounded RSS) proven."
+    ]
+  },
+  "sweep": [
+    {
+      "workers": 1,
+      "total_s": 26.534,
+      "total_ms": 26533.8,
+      "fit_ms": 26374.0,
+      "ingest_ms": 155.5,
+      "cv_pct": 1.83,
+      "n_loaded": 33,
+      "n_fitted": 32,
+      "n_dates": 3,
+      "peak_rss_mb": 55.6,
+      "cycle_speedup": 1.0,
+      "eff_cores": 1.0,
+      "par_eff_logical": 1.0
+    },
+    {
+      "workers": 2,
+      "total_s": 15.405,
+      "total_ms": 15405.1,
+      "fit_ms": 15313.0,
+      "ingest_ms": 92.1,
+      "cv_pct": 1.94,
+      "n_loaded": 33,
+      "n_fitted": 32,
+      "n_dates": 3,
+      "peak_rss_mb": 58.8,
+      "cycle_speedup": 1.72,
+      "eff_cores": 1.72,
+      "par_eff_logical": 0.861
+    },
+    {
+      "workers": 4,
+      "total_s": 10.55,
+      "total_ms": 10550.4,
+      "fit_ms": 10493.1,
+      "ingest_ms": 59.9,
+      "cv_pct": 5.91,
+      "n_loaded": 33,
+      "n_fitted": 32,
+      "n_dates": 3,
+      "peak_rss_mb": 62.3,
+      "cycle_speedup": 2.51,
+      "eff_cores": 2.51,
+      "par_eff_logical": 0.628
+    },
+    {
+      "workers": 6,
+      "total_s": 8.139,
+      "total_ms": 8139.5,
+      "fit_ms": 8090.8,
+      "ingest_ms": 50.6,
+      "cv_pct": 5.57,
+      "n_loaded": 33,
+      "n_fitted": 32,
+      "n_dates": 3,
+      "peak_rss_mb": 63.5,
+      "cycle_speedup": 3.26,
+      "eff_cores": 3.26,
+      "par_eff_logical": 0.543
+    },
+    {
+      "workers": 8,
+      "total_s": 6.935,
+      "total_ms": 6935.2,
+      "fit_ms": 6891.4,
+      "ingest_ms": 45.3,
+      "cv_pct": 0.65,
+      "n_loaded": 33,
+      "n_fitted": 32,
+      "n_dates": 3,
+      "peak_rss_mb": 67.1,
+      "cycle_speedup": 3.83,
+      "eff_cores": 3.83,
+      "par_eff_logical": 0.478
+    },
+    {
+      "workers": 12,
+      "total_s": 8.904,
+      "total_ms": 8903.6,
+      "fit_ms": 8853.7,
+      "ingest_ms": 50.0,
+      "cv_pct": 7.76,
+      "n_loaded": 33,
+      "n_fitted": 32,
+      "n_dates": 3,
+      "peak_rss_mb": 70.5,
+      "cycle_speedup": 2.98,
+      "eff_cores": 2.98,
+      "par_eff_logical": 0.248
+    },
+    {
+      "workers": 16,
+      "total_s": 7.188,
+      "total_ms": 7188.0,
+      "fit_ms": 7130.1,
+      "ingest_ms": 54.9,
+      "cv_pct": 6.85,
+      "n_loaded": 33,
+      "n_fitted": 32,
+      "n_dates": 3,
+      "peak_rss_mb": 76.1,
+      "cycle_speedup": 3.69,
+      "eff_cores": 3.7,
+      "par_eff_logical": 0.231
+    }
+  ]
+}

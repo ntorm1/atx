@@ -1,0 +1,7 @@
+# These TSVs are byte-exact reference dumps: their sha256 IS the assertion the
+# NAV determinism gate makes, so end-of-line conversion must never touch them.
+# The repo has core.autocrlf=true, which would otherwise hand a fresh checkout
+# CRLF copies whose digests match nothing in the README beside them -- and the
+# failure would look like a determinism regression rather than a checkout
+# artefact. `-text` stores and restores these files verbatim.
+*.tsv -text

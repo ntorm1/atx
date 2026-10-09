@@ -156,3 +156,9 @@ atx-vol/python/report_out_real/
 
 # Maintained engine test fixtures include sample CSVs, logs and build trees.
 !/atx-engine/tests/fixtures/**
+
+# Maintained volatility reference data, test fixtures and benchmark baselines.
+!/atx-vol/bench/baselines/*.csv
+!/atx-vol/data/rates/*.csv
+!/atx-vol/data/universe/*.csv
+!/atx-vol/tests/support/*.csv

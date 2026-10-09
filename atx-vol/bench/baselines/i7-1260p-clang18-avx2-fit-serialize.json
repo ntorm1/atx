@@ -1,0 +1,93 @@
+{
+  "context": {
+    "date": "2026-07-18T15:57:22-04:00",
+    "host_name": "NATHANS_PC",
+    "executable": "C:\\atx-wt\\wt-bt-fit\\build-rel-avx2\\bin\\atx-vol-fit-serialize-bench.exe",
+    "num_cpus": 16,
+    "mhz_per_cpu": 2496,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 49152,
+        "num_sharing": 2
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 2
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 1310720,
+        "num_sharing": 2
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 18874368,
+        "num_sharing": 16
+      }
+    ],
+    "load_avg": [],
+    "library_version": "v1.9.0",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "fit_serialize/populate/threads:1/iterations:1/repeats:1/real_time",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "fit_serialize/populate/threads:1/iterations:1/repeats:1/real_time",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1,
+      "real_time": 3.5341315300000133e+04,
+      "cpu_time": 1.7187500000000000e+02,
+      "time_unit": "ms",
+      "archive_bytes": 6.1440000000000000e+04,
+      "bytes_per_surface": 1.5360000000000000e+03,
+      "cv_pct": 4.3511754705431571e+01,
+      "dates": 5.0000000000000000e+00,
+      "in_flight_surfaces": 8.0000000000000000e+00,
+      "ms_median": 4.2126678000000002e+03,
+      "n_planned": 4.0000000000000000e+01,
+      "provisional": 1.0000000000000000e+00,
+      "surfaces": 4.0000000000000000e+01,
+      "surfaces_per_s": 9.4951707324275603e+00,
+      "symbols_per_date": 8.0000000000000000e+00,
+      "threads": 1.0000000000000000e+00
+    },
+    {
+      "name": "fit_serialize/populate/threads:16/iterations:1/repeats:1/real_time",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "fit_serialize/populate/threads:16/iterations:1/repeats:1/real_time",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1,
+      "real_time": 1.1744353599999158e+04,
+      "cpu_time": 1.4062500000000000e+02,
+      "time_unit": "ms",
+      "archive_bytes": 6.1440000000000000e+04,
+      "bytes_per_surface": 1.5360000000000000e+03,
+      "cv_pct": 4.2148485190695713e+00,
+      "dates": 5.0000000000000000e+00,
+      "in_flight_surfaces": 8.0000000000000000e+00,
+      "ms_median": 1.6536347000000001e+03,
+      "n_planned": 4.0000000000000000e+01,
+      "provisional": 1.0000000000000000e+00,
+      "surfaces": 4.0000000000000000e+01,
+      "surfaces_per_s": 2.4189139233713469e+01,
+      "symbols_per_date": 8.0000000000000000e+00,
+      "threads": 1.6000000000000000e+01
+    }
+  ]
+}
