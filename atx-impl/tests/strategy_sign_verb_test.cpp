@@ -46,12 +46,12 @@ struct Directory {
   Directory& operator=(const Directory&) = delete;
 };
 
-struct Run {
+struct VerbRun {
   int code{};
   std::string out, err;
 };
 
-Run run_verb(std::vector<std::string> args) {
+VerbRun run_verb(std::vector<std::string> args) {
   args.insert(args.begin(), "sign");
   std::vector<char*> argv;
   for (auto& arg : args) argv.push_back(arg.data());
@@ -78,9 +78,9 @@ Json row(const std::string& id, const std::string& kind, int prior, const std::s
 }
 
 // Writes {"rows": rows} and runs `sign --rule pm7-35` on it into dir/receipt.json.
-Run sign_rows(const Directory& dir, const Json& rows, Json& receipt) {
+VerbRun sign_rows(const Directory& dir, const Json& rows, Json& receipt) {
   write_text(dir.path / "rows.json", Json{{"rows", rows}}.dump());
-  const Run run = run_verb({"--rule", "pm7-35", "--rows", (dir.path / "rows.json").string(),
+  const VerbRun run = run_verb({"--rule", "pm7-35", "--rows", (dir.path / "rows.json").string(),
                             "--output", (dir.path / "receipt.json").string()});
   if (run.code == 0) receipt = Json::parse(read_text(dir.path / "receipt.json"));
   return run;
@@ -125,7 +125,7 @@ TEST(SignVerb, DecisionTableThroughTheVerb) {
     }
   }
   Json receipt;
-  const Run run = sign_rows(dir, rows, receipt);
+  const VerbRun run = sign_rows(dir, rows, receipt);
   ASSERT_EQ(run.code, 0) << run.err;
   ASSERT_EQ(receipt.at("rows").size(), rows.size());
   for (std::size_t k = 0; k < rows.size(); ++k) {
@@ -153,7 +153,7 @@ TEST(SignVerb, ReasonsAreTheWaveRulesWords) {
                                  row("e", "replace", 1, "admitted", 1),
                                  row("f", "replace", -1, "admitted", 1)});
   Json receipt;
-  const Run run = sign_rows(dir, rows, receipt);
+  const VerbRun run = sign_rows(dir, rows, receipt);
   ASSERT_EQ(run.code, 0) << run.err;
   const std::array<const char*, 6> reasons{
       "addition admitted with the prior sign",
@@ -186,7 +186,7 @@ TEST(SignVerb, ReceiptPinsTheRowsFileAndIgnoresOtherKeys) {
   const std::string text = block.dump(2) + "\n";
   write_text(dir.path / "screen.json", text);
   const std::string rows_path = (dir.path / "screen.json").string();
-  const Run run = run_verb({"--rule", "pm7-35", "--rows", rows_path, "--output",
+  const VerbRun run = run_verb({"--rule", "pm7-35", "--rows", rows_path, "--output",
                             (dir.path / "out.json").string()});
   ASSERT_EQ(run.code, 0) << run.err;
   const std::string bytes = read_text(dir.path / "out.json");
@@ -291,7 +291,7 @@ TEST(SignVerb, RefusesMalformedRowsBeforeAnyOutput) {
   for (const Bad& bad : bad_rows()) {
     const Directory dir;
     write_text(dir.path / "rows.json", bad.text);
-    const Run run = run_verb({"--rule", "pm7-35", "--rows", (dir.path / "rows.json").string(),
+    const VerbRun run = run_verb({"--rule", "pm7-35", "--rows", (dir.path / "rows.json").string(),
                               "--output", (dir.path / "receipt.json").string()});
     EXPECT_EQ(run.code, 1) << bad.name << ": " << run.err;
     EXPECT_NE(run.err.find(bad.needle), std::string::npos) << bad.name << ": " << run.err;
@@ -306,7 +306,7 @@ TEST(SignVerb, RefusesAMissingRowsFileAndAnExistingOutput) {
   const Directory dir;
   const std::string rows = (dir.path / "rows.json").string();
   const std::string receipt = (dir.path / "receipt.json").string();
-  Run run = run_verb({"--rule", "pm7-35", "--rows", rows, "--output", receipt});
+  VerbRun run = run_verb({"--rule", "pm7-35", "--rows", rows, "--output", receipt});
   EXPECT_EQ(run.code, 1);
   EXPECT_NE(run.err.find("cannot open the rows file"), std::string::npos) << run.err;
   EXPECT_FALSE(fs::exists(receipt));
@@ -342,14 +342,14 @@ TEST(SignVerb, UsageErrorsWriteNothing) {
        "missing value or repeated flag --rows"},
   };
   for (const auto& [args, needle] : cases) {
-    const Run run = run_verb(args);
+    const VerbRun run = run_verb(args);
     EXPECT_EQ(run.code, 2) << needle << ": " << run.err;
     EXPECT_NE(run.err.find(needle), std::string::npos) << needle << ": " << run.err;
     EXPECT_NE(run.err.find("usage: atx-equity-strategy-ic sign --rule pm7-35"), std::string::npos)
         << needle;
     EXPECT_FALSE(fs::exists(receipt)) << needle;
   }
-  const Run help = run_verb({"--help"});
+  const VerbRun help = run_verb({"--help"});
   EXPECT_EQ(help.code, 0);
   EXPECT_NE(help.out.find("usage: atx-equity-strategy-ic sign"), std::string::npos);
 }
