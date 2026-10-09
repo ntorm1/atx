@@ -4,8 +4,9 @@
 
 **Fix round 2 (R10, 2026-10-08; last section "Fix round 2 (B2-N37)"): cause (b) arithmetic. The legacy n37 test
 compares at 1e-12 relative with the B2-6 disclosure (`71abeb2f`, test only; golden unchanged); max observed
-|relative difference| 4.967e-14. Debug `p9-b2-r` (verb only); root `094bcd3b` merged (`e4683013`, no conflict); the
-test file 10 passed with root's inputs on the merged tree. Next: re-review 3 (BASE `46ffe3dc`).**
+|relative difference| 4.967e-14. Debug `p9-b2-r` (verb only); root `094bcd3b` merged (`e4683013`), then root
+`858a4fca` (`96ff5aa0`), both without conflict; the test file 10 passed with root's inputs on both merged trees. Next:
+re-review 3 (BASE `46ffe3dc`).**
 
 **Fix round 1 (end of file) supersedes the SHAs below: identity merge point `1b25b9a4`, deletion commit `598d2199`.**
 
@@ -1077,7 +1078,9 @@ one build. Max observed |relative difference|: **4.967e-14** (summ), 3.104e-16 (
 | `73b4acfd` | start (root's M2 docs head; APPROVE `46ffe3dc` already merged) |
 | `71abeb2f` | the fix: `atx-impl/tools/test_nav_summ_v8.py` only (+73 / -5) |
 | `e4683013` | `git merge feat/platform-p9-20261003` = root `094bcd3b` (M3: C3b, D3W, ABS, SQL2-CLS rows). No conflict; tree `73c2c567` equals `git merge-tree --write-tree 71abeb2f 094bcd3b`. Slip: the commit carries git's default merge message without the trailer; not amended (no history rewrite) |
-| the docs commit | this section, `handoff-B2.md` head section, `b2-evidence/r10-*` |
+| `eef8aabd` | this section, `handoff-B2.md` head section, `b2-evidence/r10-*` |
+| `96ff5aa0` | second `git merge feat/platform-p9-20261003` = root `858a4fca` (M4: D3, OD3P, AL-CLOCK; root had moved again in code after `eef8aabd`). No conflict; tree `d64e548a` equals `git merge-tree --write-tree eef8aabd 858a4fca`; message with the trailer |
+| the last docs commit | the second-merge rows of this section and of `handoff-B2.md` |
 
 ### Reproduction (B2-FIX2-EXE)
 
@@ -1163,11 +1166,15 @@ The test's own helpers, imported from the fixed test module, on the real rows an
 | whole `test_nav_summ_v8.py`, synthetic | the same | 9 passed, 1 skipped (n37 without ATX_EQUITY_ROOT) | `r10-pyt-v8-file-synthetic.log` |
 | whole `test_nav_summ_v8.py`, root inputs, blind | merged `e4683013` | 10 passed | `r10-pyt-v8-file-root-merged.log` |
 | whole `test_nav_summ_v8.py`, synthetic | merged `e4683013` | 9 passed, 1 skipped | `r10-pyt-v8-file-synthetic-merged.log` |
+| whole `test_nav_summ_v8.py`, root inputs, blind | merged `96ff5aa0` (root `858a4fca`) | 10 passed | `r10-pyt-v8-file-root-merged2.log` |
+| whole `test_nav_summ_v8.py`, synthetic | merged `96ff5aa0` | 9 passed, 1 skipped | `r10-pyt-v8-file-synthetic-merged2.log` |
 
 Every run with `ATX_EQUITY_BIN` = the lane's `p9-b2-r` bin. On the merged tree that verb's source is `73b4acfd`
 (TEST-1 allows this round one build): the merge changed `eval_report.cpp` / `eval_cli.cpp` (D3W's eval-verb hunks;
 flag absent = bytes unchanged under D3W-EVAL) and nothing on the n37 Python path (`git diff 71abeb2f e4683013` of
-`nav_summ.py`, `backtest_integrity.py`, `test_nav_summ.py`, `test_nav_summ_v8.py` is empty). Whole suites, Release,
+`nav_summ.py`, `backtest_integrity.py`, `test_nav_summ.py`, `test_nav_summ_v8.py` is empty). Root `858a4fca`
+(second merge) changes in `atx-impl/tools` only `carry_weights.py` / `test_od3_tooling.py` and nothing under
+`atx-engine/src/research/eval`. Whole suites, Release,
 the gate's runs: deferred to the gate (TEST-1). ENV-1 not seen.
 
 ### Host and build (HOST-4, HOST-5)
@@ -1189,7 +1196,7 @@ the gate's runs: deferred to the gate (TEST-1). ENV-1 not seen.
   empty.
 - No new `atx.<name>/v<n>` literal, flag, JSON key or rule id; no cross-lane edit; no CMake change; no C++.
 - The reviewer's range `46ffe3dc..HEAD`: the lane's own change is `71abeb2f` (one test file); the rest is root's
-  history through `e4683013` (plain merge, tree = recompute).
+  history through `e4683013` and `96ff5aa0` (plain merges, trees = recompute).
 
 ### Disk
 

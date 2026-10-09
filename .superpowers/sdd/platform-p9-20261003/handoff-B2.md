@@ -2,10 +2,18 @@
 
 ## R10: fix round 2 (B2-N37) done (2026-10-08; dispatch R10-1; supersedes every section below)
 
-**Head:** the docs commit that adds this section, on the merge commit `e4683013` (root `094bcd3b` merged: M3's C3b,
-D3W, ABS and the SQL2-CLS rows; no conflict; tree = `git merge-tree` recompute). **Root SHA merged last:** `094bcd3b`.
-Lane code commit of the round: `71abeb2f` (`atx-impl/tools/test_nav_summ_v8.py` only). Branch `feat/p9-b2-20261003`,
-pool-14. No rebase, amend or reset; tree clean after this commit; nothing pending in the lane.
+**Head:** the docs commit that adds the "Second merge" note below, on the merge commit `96ff5aa0` (root `858a4fca`
+merged: M4's D3, OD3P, AL-CLOCK; no conflict; tree `d64e548a` = `git merge-tree` recompute). **Root SHA merged
+last:** `858a4fca`. Before it: `eef8aabd` (records) on `e4683013` (root `094bcd3b`: M3's C3b, D3W, ABS and the
+SQL2-CLS rows; no conflict; tree = recompute). Lane code commit of the round: `71abeb2f`
+(`atx-impl/tools/test_nav_summ_v8.py` only). Branch `feat/p9-b2-20261003`, pool-14. No rebase, amend or reset; tree
+clean after this commit; nothing pending in the lane.
+
+**Second merge (after the records commit; root had moved again in code):** `96ff5aa0` merges root `858a4fca`; it
+changes nothing on the n37 path (root's `atx-impl/tools` changes are `carry_weights.py` and `test_od3_tooling.py`;
+`atx-engine/src/research/eval` unchanged since `094bcd3b`). Re-run on `96ff5aa0` with the same `p9-b2-r` verb: the
+test file with root's inputs, blind, 10 passed (`r10-pyt-v8-file-root-merged2.log`); synthetic 9 passed / 1 skipped
+(`r10-pyt-v8-file-synthetic-merged2.log`).
 
 **Ruling B2-N37: cause (b), arithmetic.** The verb's JSON doubles round-trip exactly into nav_summ (nlohmann printer,
 `json.loads`), so no formatting fix exists; the residue is the engine's summation order / fma: 541 summ leaves and 2
@@ -20,7 +28,8 @@ in its docstring and pins exactly one degenerate row; the golden file and every 
 
 **Tests (TEST-1, the test file only):** red reproduced on the unchanged test (1 failed); fixed: n37 1 passed; whole
 file with root's inputs 10 passed (before and after the merge); synthetic 9 passed / 1 skipped (before and after).
-Teeth in memory through the test's own helpers: 8 / 8 breaking perturbations caught, a 5e-13 relative perturbation accepted (inside the tolerance).
+Teeth in memory through the test's own helpers: 8 / 8 breaking perturbations caught, a 5e-13 relative
+perturbation accepted (inside the tolerance).
 
 **Next:** re-review 3 (REV-FRESH, BASE `46ffe3dc`; the lane's change is `71abeb2f`, the rest root's history); then
 root merges the round (MERGE-SHA) and re-runs the test file with its own verb, blind: the known-red set becomes empty.
