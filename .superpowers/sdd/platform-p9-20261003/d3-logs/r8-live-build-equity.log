@@ -1,0 +1,7 @@
+== ATX_EQUITY_BIN=C:/atx-wt/pool-2/build-equity/bin  (tree: C3-13 edits on 9c44f74b, uncommitted)
+atx-equity-strategy-ic.exe sha256 919569fb9983b8591bd4d345187f582da20dedecbcffd916ba57a6417741b6b0
+atx-equity-strategy-targets.exe sha256 637f706987da395533342f51ede8cf894249a0fa1cfae9a1dc96217741338827
+=========================== short test summary info ===========================
+PASSED scripts/tests/test_wave_kinds.py::test_the_live_rule_tables
+1 passed, 192 deselected in 21.34s
+exit 0

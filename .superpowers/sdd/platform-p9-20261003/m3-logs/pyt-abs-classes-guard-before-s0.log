@@ -1,0 +1,9 @@
+F....                                            [100%]
+================================== FAILURES ===================================
+E   AssertionError: {'atx.od3-flagged-members/v1': ['atx-impl/[102 chars]pp']} != {}
+    + {}
+    - {'atx.od3-flagged-members/v1': ['atx-impl/src/strategy_ic_absent.hpp',
+    -                                 'atx-impl/src/strategy_ic_runner.cpp',
+    -                                 'atx-impl/src/strategy_ic_runner.hpp']} : unregistered schema literals: add the schema to its class in atx-engine/schemas/research_store/classes.json (or a dated legacy_allow row): atx.od3-flagged-members/v1 in atx-impl/src/strategy_ic_absent.hpp, atx-impl/src/strategy_ic_runner.cpp, atx-impl/src/strategy_ic_runner.hpp
+C:\Program Files\Python312\Lib\unittest\case.py:715: AssertionError: {'atx.od3-flagged-members/v1': ['atx-impl/[102 chars]pp']} != {}
+1 failed, 4 passed, 96 subtests passed in 1.24s

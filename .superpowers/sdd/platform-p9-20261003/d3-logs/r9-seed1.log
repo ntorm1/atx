@@ -1,0 +1,21 @@
+== r9 seed1  HEAD 3834bc0c  PYTHONHASHSEED=1  ATX_EQUITY_BIN=unset  start 2026-10-07T22:21:50Z
+..............s..............
+G-P5: 34 mirrored rule function(s) in 13 row(s) left for P9 lanes
+...................s....................... [ 11%]
+s...........s........................................................... [ 23%]
+........................................................................ [ 35%]
+........................................................................ [ 47%]
+........................s............................................... [ 59%]
+........................................................................ [ 71%]
+........................................................................ [ 83%]
+...............................................s........................ [ 95%]
+.............................                                            [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] scripts\tests\test_cycle_e2e.py:439: set ATX_EQUITY_BIN to the directory of the equity executables
+SKIPPED [1] scripts\tests\test_research_cycle.py:56: set RESEARCH_CYCLE_LIVE_ROOT to hash the real pool-2 files
+SKIPPED [1] scripts\tests\test_research_cycle.py:706: set RESEARCH_CYCLE_LIVE_ROOT to hash the real pool-2 files (after the L7 merge)
+SKIPPED [1] scripts\tests\test_research_cycle.py:946: set RESEARCH_CYCLE_LIVE_ROOT to hash the real pool-2 files (after the L8 merge)
+SKIPPED [1] scripts\tests\test_research_store_hook.py:381: C:\atx-wt\pool-20\build-equity\bin\atx-research-store.exe not built (target atx-research-store)
+SKIPPED [1] scripts\tests\test_wave_kinds.py:1408: ATX_EQUITY_BIN does not name a bin dir with both exes
+599 passed, 6 skipped in 982.47s (0:16:22)
+== runner note (lane D3, 2026-10-07T22:38:38Z): ruling TEST-1 (PM amendment during this run) forbids starting another whole run; the runner bash (Windows PID 4708) was terminated while this pytest (PID 29128) ran, so no 'exit' line was written; pytest ran to its own summary above (0 failed). The two stage-chain invocations of r9-suites.sh never started (deferred to the gate, TEST-1).

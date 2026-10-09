@@ -1,0 +1,59 @@
+{
+    "Source":  "094bcd3bb63cc87f7fdd82bc041682913715fc34",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  7,
+    "ConfiguredProvenance":  "094bcd3bb63cc87f7fdd82bc041682913715fc34-dirty",
+    "Jobs":  3,
+    "FreeMiB":  3202,
+    "CommitMiB":  5491,
+    "Targets":  [
+                    "atx-equity-strategy-ic",
+                    "atx-impl-strategy-ic-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  212.4684388,
+    "CompiledTUs":  26,
+    "Links":  3,
+    "Tag":  "p9-2w",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity",
+    "Executables":  {
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "8608b8249258da827166454bd3b95c5be61625fcd2c4300e590d94e15723f857"
+                                                   },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "fa383e75c7fb4aca66fe53117e419c4fc018e94c4032378f26ce3aff0254af52"
+                                                       }
+                    }
+}
+[1/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_library.cpp.obj
+[2/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_admission.cpp.obj
+[3/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_runner.cpp.obj
+[4/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_composition.cpp.obj
+[5/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_result_cache.cpp.obj
+[6/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_signal_cache.cpp.obj
+[7/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_theme_resid.cpp.obj
+[8/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_two_speed.cpp.obj
+[9/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_theme_tsmom.cpp.obj
+[10/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_research_role.cpp.obj
+[11/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_marginal_ic.cpp.obj
+[12/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\generated\build_provenance.cpp.obj
+[13/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine_pool.cpp.obj
+[14/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_marginal_pair_cache.cpp.obj
+[15/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine.cpp.obj
+[16/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_theme_hedge.cpp.obj
+[17/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_factors_verb.cpp.obj
+[18/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_absent.cpp.obj
+[19/32] Building CXX object atx-impl\CMakeFiles\atx-equity-strategy-ic.dir\tools\equity_strategy_ic.cpp.obj
+[20/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_mom_volman.cpp.obj
+[21/32] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_rules.cpp.obj
+[22/32] Linking CXX static library lib\atx-impl-strategy.lib
+[23/32] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-ic-tests.dir\strategy_marginal_ic_test.cpp.obj
+[24/32] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-ic-tests.dir\strategy_ic_rules_test.cpp.obj
+[25/32] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-ic-tests.dir\strategy_ic_theme_hedge_test.cpp.obj
+[26/32] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-ic-tests.dir\strategy_ic_runner_test.cpp.obj
+[27/32] Linking CXX executable bin\atx-equity-strategy-ic.exe
+[28/32] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-ic-tests.dir\strategy_ic_mom_volman_test.cpp.obj
+[29/32] Linking CXX executable bin\atx-impl-strategy-ic-tests.exe

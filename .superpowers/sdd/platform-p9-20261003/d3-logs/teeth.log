@@ -1,0 +1,25 @@
+teeth at e531257b254011dde6bec37c0f4987ed2a78ee03 (worktree C:\atx-wt\pool-20); each row: id, check removed, tests run (-k), failed / passed
+M0  control, no mutation, every selection below: 0 failed / 72 passed / 0 errors
+M1  CAUGHT  C3-3: aliases owned (table_flags)  [scripts/wave_kinds.py; -k "c3_3_an_alias_is_owned"]  10 failed / 2 passed / 0 errors
+M2  CAUGHT  C3-3: alias_problems called by the guard  [scripts/wave_stage_kinds.py; -k "c3_3_a_malformed_alias_field"]  1 failed / 12 passed / 0 errors
+M3  CAUGHT  C3-3: malformed x-flag-aliases shape  [scripts/wave_kinds.py; -k "c3_3_a_malformed_alias_field"]  8 failed / 5 passed / 0 errors
+M4  CAUGHT  C3-3: an alias that is a rule's own flag  [scripts/wave_kinds.py; -k "c3_3_a_malformed_alias_field"]  4 failed / 9 passed / 0 errors
+M5  CAUGHT  C3-3: an alias only on a constant '--flag VALUE' row  [scripts/wave_kinds.py; -k "c3_3_an_alias_stands_for_a_constant_pair"]  3 failed / 0 passed / 0 errors
+M6  CAUGHT  C3-3: two rows sharing an alias  [scripts/wave_kinds.py; -k "c3_3_two_rows_may_not_share"]  1 failed / 0 passed / 0 errors
+M7  CAUGHT  C3-3: alias_beside_rule called by the guard  [scripts/wave_stage_kinds.py; -k "c3_3_an_alias_is_owned"]  2 failed / 10 passed / 0 errors
+M8  CAUGHT  C3-3: alias_beside_rule reads the ref side  [scripts/wave_stage_kinds.py; -k "c3_3_an_alias_is_owned"]  1 failed / 11 passed / 0 errors
+M9  CAUGHT  C3-3: an alias compared as a bare switch (reads)  [scripts/wave_stage_kinds.py; -k "c3_3_an_inherited_alias_passes"]  1 failed / 0 passed / 0 errors
+M10  CAUGHT  C3-3: the named row may change its own alias (alias_exempt)  [scripts/wave_stage_kinds.py; -k "c3_3_an_inherited_alias_passes"]  1 failed / 0 passed / 0 errors
+M11  CAUGHT  E2-17: inputs_refusal called by the guard  [scripts/wave_stage_kinds.py; -k "e2_17_inputs_only_by"]  9 failed / 0 passed / 0 errors
+M12  CAUGHT  E2-17: the raw routes (inputs_routes)  [scripts/wave_stage_kinds.py; -k "e2_17_inputs_only_by"]  7 failed / 2 passed / 0 errors
+M13  CAUGHT  E2-17: a resolved difference (inputs_changed)  [scripts/wave_stage_kinds.py; -k "e2_17_a_resolved_difference"]  1 failed / 0 passed / 0 errors
+M14  CAUGHT  E2-17: a role wave's own key (KIND_INPUTS)  [scripts/wave_kinds.py; -k "e2_17_a_role_wave or e2_17_a_resolved_difference"]  2 failed / 0 passed / 0 errors
+M15  CAUGHT  walk-forward: the parent fits under --engine-fit  [scripts/wave_kinds.py; -k "walk_forward_refuses_a_parent"]  1 failed / 3 passed / 0 errors
+M16  CAUGHT  walk-forward: --theme-tsmom / --theme-resid / --era refused  [scripts/wave_kinds.py; -k "walk_forward_refuses_a_parent"]  3 failed / 1 passed / 0 errors
+M17  CAUGHT  walk-forward: preflight calls the parent check  [scripts/wave_stage_kinds.py; -k "walk_forward_refuses_a_parent"]  4 failed / 0 passed / 0 errors
+M18  CAUGHT  walk-forward: its fitter flags owned (KIND_FLAGS)  [scripts/wave_kinds.py; -k "walk_forward_flags_are_the_kinds_own"]  5 failed / 0 passed / 0 errors
+M19  CAUGHT  walk-forward: the block checks  [scripts/wave_kinds.py; -k "walk_forward_block_refusals"]  9 failed / 0 passed / 0 errors
+M20  CAUGHT  walk-forward: lag >= 2 (K-P9-8)  [scripts/wave_kinds.py; -k "walk_forward_block_refusals"]  1 failed / 8 passed / 0 errors
+M21  CAUGHT  walk-forward out of SCHEMA_ONLY (the flip)  [scripts/wave_kinds.py; -k "walk_forward_runs_to_spec or ten_fixtures or c3s_rows"]  3 failed / 10 passed / 0 errors
+M22  CAUGHT  walk-forward: card and monitor renamed  [scripts/wave_kinds.py; -k "walk_forward_runs_to_spec"]  1 failed / 0 passed / 0 errors
+RESULT all caught; tree clean after every revert (git status --porcelain empty)
