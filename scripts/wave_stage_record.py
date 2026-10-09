@@ -345,7 +345,7 @@ def record(w: Wave, done: dict, log) -> dict:
     doc = wave_result.build(w, done, ledger, seal)
     path, md = w.wave_path(wave_result.RESULT), w.wave_path(wave_result.LOG)
     sha = w.write_json(path, doc)
-    research_store_hook.record(w.root, w.path(path), "wave-result")
+    research_store_hook.record(w.root, w.path(path), "wave-result")     # P9 SQL3 item 5
     w.path(md).write_text(wave_result.log_section(doc), encoding="utf-8", newline="\n")
     head_path = w.wave_path(LEDGER_HEAD)       # P9 B2 (OR-5): the ledger head the wave recorded, copied with the result
     w.write_json(head_path, ledger_head_doc(w, ledger))

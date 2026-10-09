@@ -179,8 +179,9 @@ def keep_copy(cycle, mode: str, text: str) -> str:
         try:
             with (d / f"{mode}-{k}.json").open("x", encoding="utf-8", newline="\n") as f:
                 f.write(text)
-            research_store_hook.record(cycle.res.root, d / f"{mode}-{k}.json", "cycle-verdict")
-            return f"{cycle.cycle_dir()}/{VERDICTS}/{mode}-{k}.json"
+            rel = f"{cycle.cycle_dir()}/{VERDICTS}/{mode}-{k}.json"
+            research_store_hook.record(cycle.res.root, rel, "cycle-verdict")       # P9 SQL3 item 5
+            return rel
         except FileExistsError:
             k += 1
 
@@ -192,7 +193,7 @@ def write_verdict(cycle, timings: dict, spec_sha256: str | None, log, ledger: di
     doc = verdict(cycle, timings, spec_sha256, ledger)
     text = json.dumps(doc, indent=2) + "\n"
     path.write_text(text, encoding="utf-8", newline="\n")
-    research_store_hook.record(cycle.res.root, path, "cycle-verdict")
+    research_store_hook.record(cycle.res.root, f"{cycle.cycle_dir()}/{VERDICT}", "cycle-verdict")   # P9 SQL3 item 5
     copy = keep_copy(cycle, doc["mode"], text) if keep else None
     for r in doc["marginal"]:
         log(f"marginal {r.get('id')}: ic21 {r.get('ic21')} (HAC t {r.get('ic21_hac_t')}); marginal ic21 "

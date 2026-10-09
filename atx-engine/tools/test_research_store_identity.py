@@ -312,7 +312,7 @@ class IdentityCase(unittest.TestCase):
             self.assert_identical(rel, "stage-receipt", "lf")
 
     def test_cycle_binding_typed_py_indent2(self):
-        res = SimpleNamespace(path=lambda rel: self.cat.path(rel))
+        res = SimpleNamespace(path=lambda rel: self.cat.path(rel), root=self.cat.root)   # root: the writer's hook
         cycle = SimpleNamespace(res=res, spec_path=None)
         st = SimpleNamespace(output="build-equity/nav-ref", phase="ref", run_dir="build-equity/nav-ref-run1",
                              argv=["py", "run_bounded_research.py", "--", "x.exe", "nav", "--output", "o"])
@@ -350,7 +350,7 @@ class IdentityCase(unittest.TestCase):
         rel = "build-equity/cycle-c1/cycle_verdict.json"
         # cycle_verdict.write_verdict (cycle_verdict.py:146-148), then its keep_copy.
         self.cat.path(rel).write_text(text, encoding="utf-8", newline="\n")
-        cycle = SimpleNamespace(res=SimpleNamespace(path=lambda r: self.cat.root / r),
+        cycle = SimpleNamespace(res=SimpleNamespace(path=lambda r: self.cat.root / r, root=self.cat.root),
                                 cycle_dir=lambda: "build-equity/cycle-c1")
         copy = cycle_verdict.keep_copy(cycle, doc["mode"], text)
         self.assertEqual(copy, "build-equity/cycle-c1/verdicts/run-1.json")

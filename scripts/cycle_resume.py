@@ -190,7 +190,7 @@ def write_binding(cycle, st) -> dict:
         doc["spec_rule"] = SPEC_RULE
     doc["argv_sha256"] = argv_digest(step_args(st))
     cycle.res.path(f"{st.run_dir}/{BINDING}").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    research_store_hook.record(cycle.res.root, cycle.res.path(f"{st.run_dir}/{BINDING}"), "cycle-binding")
+    research_store_hook.record(cycle.res.root, f"{st.run_dir}/{BINDING}", "cycle-binding")   # P9 SQL3 item 5
     return doc
 
 
