@@ -1,0 +1,55 @@
+{
+    "Source":  "08f04e07995696d5f687b1e1ae9c78ffbfa52962",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  7,
+    "ConfiguredProvenance":  "fcb0200e36ecfa4e7dafa9888ddd3fe3b21e8bfd-dirty",
+    "Jobs":  4,
+    "FreeMiB":  3594,
+    "CommitMiB":  7110,
+    "Targets":  [
+                    "atx-research-eval",
+                    "atx-engine-research-eval-tests",
+                    "atx-engine-research-composition-tests",
+                    "atx-impl-strategy-ic-tests",
+                    "atx-research-composition",
+                    "atx-research-admission",
+                    "atx-equity-strategy-ic"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  138.6760514,
+    "CompiledTUs":  33,
+    "Links":  9,
+    "Tag":  "p9-2v",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity",
+    "Executables":  {
+                        "atx-research-eval":  {
+                                                  "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-eval.exe",
+                                                  "Sha256":  "6962966c4b9d419996e24df55ac825e6f6ccd7672956986ad0a3d5b1b5b68778"
+                                              },
+                        "atx-engine-research-eval-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-eval-tests.exe",
+                                                               "Sha256":  "dd8a3103828b4a671c048d569eba4d817d0e91acf49bd2fb61983e5777ddb7ca"
+                                                           },
+                        "atx-engine-research-composition-tests":  {
+                                                                      "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-composition-tests.exe",
+                                                                      "Sha256":  "4e4ea8850e4ea7ef0f3b2b2d0ee6a06c4e1f615efe70fec5fb77c38dd1f333f4"
+                                                                  },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "0a2d0d9962ce1ee386f9fb72be16df77048ebf297289c8f09c25f44e0b0e9685"
+                                                       },
+                        "atx-research-composition":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-composition.exe",
+                                                         "Sha256":  "5e81e9c2d965de28dac83f10c4906aeb48d39113000ad843540768ba787884b1"
+                                                     },
+                        "atx-research-admission":  {
+                                                       "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-admission.exe",
+                                                       "Sha256":  "411af33a0def5a6c28983dbf1ffc2fbc324694e8ac2e6b24401b27b693c9fa26"
+                                                   },
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "a22c935dadc90781196343a608694eacf1fb60fd2cfecd454a10eb957c7e00c2"
+                                                   }
+                    }
+}

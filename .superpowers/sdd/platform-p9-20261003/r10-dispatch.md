@@ -178,6 +178,83 @@ Read `task-A4-review.md` whole ("Not yet checked" 1-8 and "Exact next step" are 
    first with the fixture identity and A4-Q2's case, then the flips; SQL2-CLS; registry rows); commit ONLY that file.
 Stretch: APPROVE or P10 whole (a Required the lane cannot close in one round = P10, not a weakened verdict).
 
+## SQL4: IC cache indexes on SQLite (pool-32, `feat/p9-sql4-20261008` at `fcb0200e`; stretch; SQL4-GO)
+
+Read `briefs/brief-SQL4.md` (the spec: "Rules for every P9 lane" + "Lane SQL4"; its wave-1 lane-rules file and
+"never build C++" line are SUPERSEDED by the standing contract: lanes build under TEST-1), `sql-design.md` (the
+sections the brief names; a copy sits in every pool's sprint dir), ledger SQL-1 .. SQL-9, SQL-11, SQL-12, SQL4-GO,
+EXE-FREEZE, EXE-CUR, HOST-4, TEST-1, TEETH-RESTORE, G-P10; `.agents/cpp/agent.md` before any C++. The lease's one-time
+`dev` configure failed (known): ignore `build/`, configure `equity-dev` yourself.
+1. `git merge f0726acb` (D3W APPROVE head), `git merge 6a3f5043` (ABS APPROVE head), then
+   `git merge feat/platform-p9-20261003` (root's head of the moment; plain if root has merged them already). Never
+   rebase. Conflicts in your hunks only, region by region.
+2. Tasks 1-7 of the brief, in order, committed in slices (flags; index object; signal cache; IC-result cache; pair
+   cache; ledger index head; tests). Forbidden list and "Out of scope" as the brief says; no Python file; no pinned
+   source list or SHA; flag absent = every output byte unchanged.
+3. TEST-1: single-TU `check` while shaping; ONE Debug build per slice at most (tags `p9-sql4-a`, `-b`, ...) of
+   `atx-equity-strategy-ic,atx-impl-strategy-ic-tests` and once of `atx-research-store,atx-engine-research-catalog-tests`
+   through `scripts/research-build.ps1` (HOST-4: seventh priority; wait while any build runs, 60 s quiet, bound
+   180 min); named filters `IcCacheIndex.*:IcResultIndex.*:MarginalPairIndex.*:StrategyIcRunner.*:MarginalIc.*` and
+   `ResearchCatalog.*`; the three source tripwires unchanged; ONE teeth build (every refusal disabled at once, a
+   TEETH-RESTORE tool). Release, whole targets, pytest suites: the gate's.
+4. Flag-absent identity for root: on the tiny-world fakes in the lane (with and without an `index.sqlite` present,
+   no flag: bytes identical; with the flag: identical outside the listed blocks); the real X-5 u / w identity and the
+   marginal shard identity are ROOT's procedure at merge (write the argv and the expected-identical file list in the
+   report).
+5. `task-SQL4-report.md` + `handoff-SQL4.md` (`git add -f`); `git merge feat/platform-p9-20261003` again before the
+   report; delete the object trees by name. If you run low on context: `WIP(sql4): ...`, handoff, DONE_WITH_CONCERNS.
+Hand back; the PM dispatches the first review. Merges only if APPROVE and in root before the gate's P9-B0 (SQL-12).
+
+## ROOT M4 (pool-2; after M3 hands back; the PM's prompt names the heads)
+
+Per `r7-root-merge.md` and `handoff-root-m3b.md`. Merges, in order, each at its APPROVE SHA (MERGE-SHA), each with
+the review's "What root must check at merge" + ROOT-1a targeted checks, one Debug build per C++ lane at most:
+1. D3 `e197b3b6` (pool-20, `task-D3-review.md`): keep-both with C3b's eight kind-fixture lines and three
+   `test_wave_kinds.py` hunks and B2's `test_wave_kinds.py:171` `F.pin_eval_verb(root)` line (re-add if lost); C3-5
+   probes (a) and (b) (C3-13); `test_wave_kinds.py` (192 / 1 skipped expected), the C3-13 tests; W3-8a "10 runnable,
+   0 schema only"; Python only: no build.
+2. AL-CLOCK: the fix-1 head if `Task AL-CLOCK: APPROVE` names it by then, else `e9b3a323` (pool-30,
+   `task-AL-CLOCK-review.md`): ONE Debug build of `atx-impl-strategy-target-tests` + the NAV exe (`-Canary` if the
+   named filter needs the exe); `InfoClock*` named 24 (+ the fix round's test); `test_info_clock_rule.py`; the C3-5
+   probe with `--rate info-clock-rate-v1` to the spec stage (the tiny world has no `ea_days_since`); W3-9 tail appends.
+3. COV-MV: the fix-1 head if APPROVE by then, else `e9e794b3` (pool-31, `task-COV-MV-review.md`): the ONE conflict
+   `atx-impl/tests/CMakeLists.txt` tail: keep both, AL-CLOCK's block FIRST; `nav_workspace_reserve_bytes` auto-merges
+   with both terms; ONE Debug build of `atx-impl-strategy-target-tests,atx-engine-book-tests`; `MvTarget.*`,
+   `MvAimRule.*`, the named 99; `nav --list-rules --json` shows the mv-aim-v1 row; SQL2-CLS if any literal.
+4. OD3P `dc11c977` (pool-21, `task-OD3P-rereview-1.md`): SQL2-CLS rows `atx.carry-weights/v1`,
+   `atx.od3-flagged-members/v1` if ABS's merge did not already add them; the two lane test files; Python only.
+Records: `root-wave3-merge-report.md` sections, `integration-log.md`, `handoff-root-m4.md`. Then M5 (the PM's prompt).
+
+## Scoped re-reviews of this wave (fresh reviewers; REV-FRESH; FU-REVIEWS)
+
+Each: read `r7-review-dispatch.md`, `resume9-addendum.md` (TEST-1), `resume10-addendum.md`, the previous review
+file(s) in the pool, the fix round's section of the lane report / handoff, the ruling that ordered the round; BASE =
+the previous APPROVE SHA; HEAD = the lane's hand-back head; review BASE..HEAD only; re-run the lane's named filter (if
+the lane left a built tree or its logs name the receipt: EXE-CUR) and the lane's pytest files; one own mutation if
+cheap (TEETH-RESTORE); verdict APPROVE / CHANGES_REQUIRED; "What root must check at merge"; commit only the review
+file (`git add -f`).
+- B2 re-review 3: pool-14, BASE `46ffe3dc`, file `task-B2-rereview-3.md`; B2-N37 (cause (a) or (b) as the report
+  states; the golden untouched: `git diff 46ffe3dc HEAD --stat` over `build-equity`/goldens shows nothing); the
+  comparison form; B2-6 disclosure; no statistic in any record.
+- SQL3 review 2: pool-13, BASE `69b8c162`, file `task-SQL3-review-2.md`; `r8-review-notes.md` "SQL3": the hook never
+  changes an exit code or a JSON byte; one ingest per write; catalog off = no subprocess.
+- OD3P re-review 2: pool-21, BASE `dc11c977`, file `task-OD3P-rereview-2.md`; OD3P-S S-a / S-d with teeth, S-b / S-c,
+  item 6 (T2 on the verb, OD3P-T2V label, OD3P-SKIP named skip), the flag-absent identity vs root's `nav_summ.py`
+  blob; blind.
+- AL-CLOCK re-review 1: pool-30, BASE `e9b3a323`, file `task-AL-CLOCK-rereview-1.md`; ALCLOCK-S S-3 (the calibrate
+  gtest, ALCLOCK-S3a shape; teeth if the lane deferred it: the reviewer's one build), S-1 (ALCLOCK-S1a; flag absent
+  byte for byte), S-2 (ALCLOCK-4 wording; the registration is not yet pinned), S-4.
+- COV-MV re-review 1: pool-31, BASE `e9e794b3`, file `task-COV-MV-rereview-1.md`; COVMV-S S-1 (allocation: the
+  workspace kept across decisions; the reserve value unchanged), S-2 (print failure writes null, decision proceeds;
+  the new test), S-6 (COVMV-S6a: once per run), S-3 / S-4 / S-5 (structure only; `--list-rules` row text); bytes:
+  arithmetic untouched (the diff shows no kernel change); teeth if the lane deferred it.
+- SIGN first review: pool-29, BASE = merge-base with root, file `task-SIGN-review.md`; `r8-review-notes.md` "A4, ABS,
+  SIGN, D3W-PB": row-for-row identity vs the Python predicate (24 combinations), the verb's refusals with teeth, the
+  pre-deletion head and the deletion commit (G-P5 row gone in the same commit; `FROZEN_PAIRS` or equivalent), the
+  ledgered manifests still validate, the stage's one call line, the pinned exe (no new pinned-exe key).
+- SQL4 first review: pool-32, BASE = merge-base with root, file `task-SQL4-review.md`; the brief's "Root verifies"
+  and "Flag-absent identity"; the three tripwires; no Python; no pinned list moved; lock order documented.
+
 ## SIGN: resume from the WIP commits (pool-29, `feat/p9-sign-20261006`, head `422e9fad`; stretch; SIGN-RESUME)
 
 Read `briefs/brief-SIGN.md` (the spec), the three commit bodies (`git log --format=%B -3`), `git diff --stat

@@ -1,0 +1,35 @@
+2026-10-08T23:23:00Z p9-2u waiting: other build procs 3 free 2274 commit 7819 (waited 4s)
+2026-10-08T23:24:04Z p9-2u waiting: other build procs 3 free 2695 commit 7889 (waited 68s)
+2026-10-08T23:25:09Z p9-2u waiting: other build procs 3 free 2849 commit 7931 (waited 133s)
+2026-10-08T23:26:14Z p9-2u waiting: other build procs 3 free 2176 commit 7420 (waited 198s)
+2026-10-08T23:27:18Z p9-2u waiting: other build procs 3 free 3494 commit 7811 (waited 262s)
+2026-10-08T23:28:24Z p9-2u waiting: other build procs 3 free 2719 commit 7638 (waited 328s)
+2026-10-08T23:29:35Z p9-2u waiting: other build procs 3 free 1823 commit 7063 (waited 399s)
+2026-10-08T23:30:41Z p9-2u waiting: other build procs 3 free 2304 commit 7911 (waited 465s)
+2026-10-08T23:31:49Z p9-2u waiting: other build procs 3 free 2666 commit 7775 (waited 533s)
+2026-10-08T23:32:55Z p9-2u waiting: other build procs 3 free 2083 commit 6822 (waited 599s)
+2026-10-08T23:34:00Z p9-2u waiting: other build procs 2 free 2724 commit 8074 (waited 664s)
+2026-10-08T23:35:03Z p9-2u waiting: other build procs 2 free 3397 commit 8152 (waited 727s)
+2026-10-08T23:36:06Z p9-2u waiting: other build procs 3 free 3223 commit 8979 (waited 790s)
+2026-10-08T23:37:10Z p9-2u waiting: other build procs 3 free 2945 commit 8763 (waited 853s)
+2026-10-08T23:38:15Z p9-2u waiting: other build procs 3 free 2551 commit 7886 (waited 919s)
+2026-10-08T23:39:23Z p9-2u waiting: other build procs 3 free 2461 commit 8567 (waited 987s)
+2026-10-08T23:40:27Z p9-2u waiting: other build procs 3 free 2781 commit 7694 (waited 1051s)
+2026-10-08T23:41:34Z p9-2u waiting: other build procs 2 free 2943 commit 8523 (waited 1118s)
+2026-10-08T23:42:45Z p9-2u start preset equity-dev free 2620 commit 7863 recache 0 head b182dfdd
+2026-10-08T23:44:56Z p9-2u end exit 127 warning-lines 0 wall 1320s
+2026-10-08T23:56:36Z p9-2u SLIP M3-S1: the 'end exit 127' line above is the wrapper's, not the build's: root edited build.sh while it ran, so bash read the edited file from its old offset after research-build.ps1 returned (and overwrote research-build-p9-2u.out with its own error). The build itself: receipt ExitCode 0, 16 TUs, 2 links, 125 s, source b182dfdd; exe SHA-256 = receipt; warning lines 0 (UTF-16 log, tools/warn_count.py); receipt / build / cache-stats logs copied by hand.
+2026-10-08T23:58:11Z p9-2v waiting: pool build procs 2 free 3093 commit 8087 (waited 6s)
+2026-10-08T23:59:18Z p9-2v waiting: pool build procs 2 free 2619 commit 6872 (waited 73s)
+2026-10-09T00:00:22Z p9-2v waiting: pool build procs 2 free 3874 commit 7184 (waited 137s)
+2026-10-09T00:01:27Z p9-2v waiting: pool build procs 2 free 3445 commit 7401 (waited 202s)
+2026-10-09T00:02:36Z p9-2v waiting: pool build procs 2 free 2380 commit 5076 (waited 271s)
+2026-10-09T00:03:45Z p9-2v waiting: pool build procs 2 free 2620 commit 4751 (waited 340s)
+2026-10-09T00:04:54Z p9-2v waiting: pool build procs 2 free 3381 commit 6415 (waited 408s)
+2026-10-09T00:06:00Z p9-2v waiting: pool build procs 2 free 3321 commit 6177 (waited 475s)
+2026-10-09T00:07:08Z p9-2v waiting: pool build procs 2 free 2905 commit 5862 (waited 543s)
+2026-10-09T00:08:15Z p9-2v waiting: pool build procs 2 free 2126 commit 5727 (waited 610s)
+2026-10-09T00:09:23Z p9-2v start preset equity-dev free 3768 commit 7278 head 08f04e07
+2026-10-09T00:11:46Z p9-2v end exit 0 warning-lines 0 wall 821s
+2026-10-09T00:34:34Z p9-2w start preset equity-dev free 3426 commit 5690 head 094bcd3b
+2026-10-09T00:38:12Z p9-2w end exit 0 warning-lines 0 wall 224s

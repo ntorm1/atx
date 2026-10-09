@@ -1,0 +1,29 @@
+exe sha256 d8a500d84dc2a251 head 898bf120
+== rel root=atx-engine/tests/fixtures/research_store/tree
+catalog C:/Users/natha/AppData/Local/Temp/claude/c--atx/a17fe032-fb48-4307-ab8e-95f10be06ca8/scratchpad/root-m3/fc/m3-cat-rel.sqlite: schema atx.store-schema/v1 (catalog_core, catalog_records)
+init 0
+catalog_run 2026-10-09T00:34:06.340213Z
+files_seen 28 verified 25 declared 0 skipped 4
+catalog_digest d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69
+seconds 0.0807822
+checkpoint ok
+catalog 0
+d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69
+digest 0
+verify 0
+total checked 12 mismatches 0
+identity 0
+== abs root=C:/atx-wt/pool-2/atx-engine/tests/fixtures/research_store/tree
+catalog C:/Users/natha/AppData/Local/Temp/claude/c--atx/a17fe032-fb48-4307-ab8e-95f10be06ca8/scratchpad/root-m3/fc/m3-cat-abs.sqlite: schema atx.store-schema/v1 (catalog_core, catalog_records)
+init 0
+catalog_run 2026-10-09T00:34:07.398677Z
+files_seen 28 verified 25 declared 0 skipped 4
+catalog_digest d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69
+seconds 0.130929
+checkpoint ok
+catalog 0
+d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69
+digest 0
+verify 0
+total checked 12 mismatches 0
+identity 0
