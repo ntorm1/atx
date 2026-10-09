@@ -6,8 +6,10 @@ its screen spec pins (exes.ic); the Python copy of the rule is retired.
   (status, runner_sign, kind, prior) combination of the values test_research_wave.py's PM7-35 test enumerates (status
   admitted | reject_redundant, runner sign 1 | 0 | -1, kind add | replace, prior 1 | -1: their whole product, 24 rows,
   a superset of its eight cases and of the decision table of research_admission_sign_test.cpp) the verb's verdict and
-  reason equal the Python rule's (wave_rules.sign_pm7_35, before its deletion), the fake verb's
-  (wave_fixture.sign_oracle) and the pinned verdict column PINNED; the receipt pins the rows file.
+  reason equal the fake verb's (wave_fixture.sign_oracle) and the pinned verdict column PINNED; the receipt pins the
+  rows file. Until SIGN's deletion commit the test also held both to wave_rules.sign_pm7_35, the Python rule (the
+  identity of record: the pre-deletion head, task-SIGN-report.md); root's identity on the ledgered screen rows is
+  sign-identity-ledgered.py in the lane's sprint dir.
 - the stage (fakes): the screen stage writes the rows file, runs `<exes.ic> sign --rule pm7-35 --rows .. --output ..`
   once, takes the decision from the receipt (wave-result.json keeps its screen layout) and records the exe, rows and
   receipt with their SHA-256; a string without an admission row, a verb that exits non-zero, a receipt that is not
@@ -81,16 +83,15 @@ def test_the_combinations_cover_the_python_test_and_the_decision_table():
     assert len(table) == 12
 
 
-def test_the_pinned_column_and_the_fake_verb_are_the_python_rule():
+def test_the_fake_verb_is_the_pinned_column():
     for (s, g, k, p), want in zip(COMBOS, PINNED):
         row = {"id": "x", "kind": k, "prior_sign": p, "status": s, "runner_sign": g}
-        py = WR.sign_pm7_35({"status": s, "runner_sign": g}, k, p)
-        assert py == F.sign_oracle(row), row
-        assert py[0] == {"k": WR.KEEP, "d": WR.DROP}[want], row
+        assert F.sign_oracle(row)[0] == {"k": WR.KEEP, "d": WR.DROP}[want], row
+    assert not hasattr(WR, "sign_pm7_35") and not hasattr(WR, "screen_decision")    # the Python rule is gone
 
 
 @pytest.mark.skipif(not EXE.is_file(), reason=f"{EXE} not built (target atx-equity-strategy-ic)")
-def test_the_verb_equals_the_python_rule_on_every_enumerated_combination(tmp_path):
+def test_the_verb_equals_the_pinned_rule_on_every_enumerated_combination(tmp_path):
     rows = combo_rows()
     done, receipt, data = run_exe(tmp_path, rows)
     assert done.returncode == 0, done.stderr
@@ -98,9 +99,6 @@ def test_the_verb_equals_the_python_rule_on_every_enumerated_combination(tmp_pat
     assert receipt["sign_rule"] == "wave-zero-kept-v1" and receipt["rows_sha256"] == sha(data)
     assert [r["id"] for r in receipt["rows"]] == [r["id"] for r in rows]
     for want, got, pin in zip(rows, receipt["rows"], PINNED):
-        py = WR.sign_pm7_35({"status": want["status"], "runner_sign": want["runner_sign"]}, want["kind"],
-                            want["prior_sign"])
-        assert (got["verdict"], got["reason"]) == py, want
         assert (got["verdict"], got["reason"]) == F.sign_oracle(want), want
         assert got["verdict"][0] == pin, want
         assert {k: got[k] for k in WR.SIGN_ECHO} == want
@@ -142,11 +140,7 @@ def sign_calls(fake) -> list[list[str]]:
     return [c for c in fake.calls if len(c) > 1 and c[1] == "sign"]
 
 
-def test_the_screen_stage_runs_the_sign_verb_once_and_records_its_receipt(tmp_path, monkeypatch):
-    def python_rule(*_a, **_k):
-        raise AssertionError("the Python sign rule was called")
-    monkeypatch.setattr(WR, "sign_pm7_35", python_rule)            # the stage never calls it
-    monkeypatch.setattr(WR, "screen_decision", python_rule)
+def test_the_screen_stage_runs_the_sign_verb_once_and_records_its_receipt(tmp_path):
     root = F.build(tmp_path / "r")
     fake = F.FakeCycle(root, ONE_DROPPED)
     code, plan = wave(root, fake, "plan")

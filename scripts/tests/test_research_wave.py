@@ -59,18 +59,26 @@ def test_manifest_validation_lists_every_problem(tmp_path):
         F.candidate("alpha_r", kind="replace", replaces=["m1", "m2"], rescreen=True), "c"))
 
 
-def test_sign_rule_pm7_35_as_ruled():
+def test_sign_rule_pm7_35_as_ruled(tmp_path):
+    """PM7-35 as ruled, decided by the IC exe's sign verb (P9 lane SIGN: the engine's pm7_35; here its fake, which
+    test_wave_sign_verb.py holds equal to the real exe row for row): the eight ruled cases, a stop on a string without
+    an admission row, and the screen decision read from the verb's receipt."""
     cases = [("add", ("admitted", 1), 1, "keep"), ("add", ("admitted", 0), 1, "keep"),
              ("add", ("admitted", -1), 1, "drop"), ("add", ("reject_redundant", -1), 1, "keep"),
              ("add", ("admitted", 1), -1, "drop"), ("replace", ("admitted", 1), 1, "keep"),
              ("replace", ("admitted", 0), 1, "drop"), ("replace", ("reject_redundant", 1), 1, "drop")]
     for kind, (status, sign), prior, want in cases:
-        got, _ = WR.sign_pm7_35({"status": status, "runner_sign": sign}, kind, prior)
+        got, _ = F.sign_oracle({"kind": kind, "status": status, "runner_sign": sign, "prior_sign": prior})
         assert got == want, (kind, status, sign, prior)
     with pytest.raises(WR.RuleError, match="no admission row"):                    # a stop, never a drop
-        WR.sign_pm7_35(None, "add", 1)
-    dec = WR.screen_decision("pm7-35", [F.candidate(c) for c in ONE_DROPPED],
-                             [{"id": k, "status": s, "runner_sign": g} for k, (s, g) in ONE_DROPPED.items()])
+        WR.sign_rows([F.candidate("alpha_a")], [])
+    rows = WR.sign_rows([F.candidate(c) for c in ONE_DROPPED],
+                        [{"id": k, "status": s, "runner_sign": g} for k, (s, g) in ONE_DROPPED.items()])
+    F.write_json(tmp_path, "rows.json", {"rows": rows})
+    argv = ["bin/ic.exe", "sign", "--rule", "pm7-35", "--rows", "rows.json", "--output", "receipt.json"]
+    assert F.FakeCycle(tmp_path, {})(argv, tmp_path).returncode == 0
+    dec = WR.verb_decision("pm7-35", rows, json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8")),
+                           F.sha((tmp_path / "rows.json").read_bytes()))
     assert dec["kept"] == ["alpha_a", "alpha_c"] and dec["dropped"] == ["alpha_b"]
 
 
