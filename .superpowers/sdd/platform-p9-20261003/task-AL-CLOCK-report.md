@@ -2,6 +2,9 @@
 
 ## Outcome
 
+R10 fix round 1 (ALCLOCK-S): DONE; see the section "Fix round 1 (ALCLOCK-S)" at the end (S-3 REQUIRED, S-1, S-2,
+S-4 done; Debug `p9-alclock-k` and `-m`, teeth `p9-alclock-l` caught; registration SHA-256 now `7801c198...`).
+
 R9 (pool-30, `feat/p9-alclock2-20261007`; TEETH-POOL, TEST-1): DONE_WITH_CONCERNS. The lane continued from its
 committed head `1cbe5233` in the fresh pool-30; the records were copied from frozen pool-8 and committed
 (`3cc8a356`); root `685e238b` merged (`adf1c6cb`, docs only, no conflict). One Debug build of the merged head,
@@ -264,7 +267,9 @@ clean exe (`p9-alclock-h`, named filter 24 / 24).
   .12945 at C = 1) when `ea_days_since[d, i]` lies in [0, 21], else theta_s = .05 (`--trade-fraction`, required);
   NaN is slow; row d only; one rate vector per decision for every book.
 - **Registration.** `scripts/specs/p9/rules/info-clock-rate-v1.json`, SHA-256
-  `51b8b754b7e16f49d2185a5e27bf5fa1260b8890f34490cea82d0bc1ffa4e33c` (LF bytes). `source_sample_end` 2019 (Bowles,
+  `7801c19880a225a2f4c6ecb8756117f03fccafa71b92f440830bfb6fdcb8a152` (LF bytes; fix round 1, review S-2: only the
+  `realised_leverage` line changed, to ALCLOCK-4's wording; before it `51b8b754b7e16f49d2185a5e27bf5fa1260b8890f34490cea82d0bc1ffa4e33c`,
+  the SHA at the APPROVE head `e9b3a323`, the one root merged in M4). `source_sample_end` 2019 (Bowles,
   Reed, Ringgenberg and Thornock 2024, JF 79(5), sample 1990-2019), FLAGGED under PRE-19 / PRE-31 (ALCLOCK-2). The
   `ea_days_since` mapping is stated as a FIXED CHOICE (fixed_choices[0]): the paper's information-release date = the
   reaction session of the name's latest visible primary earnings announcement as the role field records it; no other
@@ -307,6 +312,14 @@ clean exe (`p9-alclock-h`, named filter 24 / 24).
   names unwind). Cap stated in the registration: planned gross <= (theta_f / theta_s) x gross(aim) by contraction,
   outside the dust band (2.589 x at cadence 1). P9-C is gross-matched (pm6-6-engine): the match stage solves L' so the
   cell's realised mean gross equals its parent's within C2's tolerance; the daily realised gross is printed.
+  Fix round 1 (Ruling ALCLOCK-4, review S-2): the registration's `realised_leverage` now carries the bound verbatim
+  ("planned gross <= (theta_f / theta_s) x gross(aim) by contraction outside the dust band, 2.589x at cadence 1;
+  P9-C's mean gross matched to its parent by pm6-6-engine") and the realised clause verbatim ("realised gross
+  leverage is read from the cell's own summary (max and mean over the cell) and printed beside the parent's":
+  `summary.json` `scenarios[k].exposure.max_gross_leverage` / `mean_gross_leverage`); the OD5-7 cap test applies to
+  that realised figure, not to the planned bound. The prereg's P9-C block (round 2b-ii) carries the same two clauses.
+  P9-C's own NAV shape (the rule under `--calibrate-gross`) is now covered in-process by
+  `InfoClockRate.CalibrateGrossKeepsTheRatesAndCountsOnce` (fix round 1, S-3).
 - **DEC-16 restatement argument.** Y-5 (two-speed-v1) buckets THEMES into a fast and a slow sleeve (own aims and
   holdings, netted into one trade); this rule keeps one aim and one book and sets a rate per NAME-DAY from an event
   clock (the name's earnings announcement), whatever theme its alpha comes from: another decision unit and another
@@ -409,3 +422,109 @@ R8 (as they stood; the first is answered by TEETH-POOL, the third by the R9 dele
 - C3-4: is the registration's cap (planned gross <= (theta_f / theta_s) x gross(aim), with P9-C's mean gross matched
   to its parent by pm6-6-engine) the realised-leverage statement the prereg wants for P9-C?
 - `build-equity` kept warm for the resume (2.7 GB): keep until the lane ends, or delete now?
+
+## Fix round 1 (ALCLOCK-S)
+
+R10, pool-30, `feat/p9-alclock2-20261007`. Contract: `resume10-addendum.md` (TEST-1, HOST-4), `r10-dispatch.md`
+"ALCLOCK-FIX1", the handoff's "Fix round 1 (ALCLOCK-S)" design table; rulings ALCLOCK-S, ALCLOCK-S1a, ALCLOCK-S3a,
+ALCLOCK-4, TEETH-RESTORE, HOST-4 and HOST-5 (the PM's message during the round: only builds under `C:\atx-wt\` count).
+Start: handoff head `a662d1c2` (APPROVE head `e9b3a323`, code `1cbe5233`). The fix head is the commit that carries
+this section; re-review 1 has BASE `e9b3a323` (the dispatch).
+
+**Outcome: DONE.** S-3 (REQUIRED), S-1, S-2 and S-4 written and tested; one Debug build of the round
+(`p9-alclock-k`), the teeth build (`p9-alclock-l`, caught), and one more Debug build (`p9-alclock-m`) because root
+moved in NAV code (COV-MV) after `-k` and item 4 asks for the named filter on the merged tree. S-5 is P10 (nothing
+in the lane). No permission refusal.
+
+### Commits of the round
+
+| commit | what |
+|---|---|
+| `65ec16af` | merge of root `b182dfdd` (C3b; root changed `nav_run.cpp`, `nav_spec.{hpp,cpp}`, `strategy_nav_spec_test.cpp`): no conflict |
+| `170ac2b2` | S-3 gtest; S-4 row fixture + its gtest check; `alclock-logs/tools/mk_row_fixture.py` |
+| `80b7ae69` | S-2 registration sentence; S-4 pytest reads the fixture; S-2 pytest asserts |
+| `bcade871` | S-1: help, refusals, the conditional capacity sentence; its test checks and the refusal needles |
+| `1d603d23` | merge of root `858a4fca` (D3W, ABS, D3, OD3P and this lane's `e9b3a323`): no conflict; no NAV file differs from the lane's |
+| `9d3916b8` | build wrapper for HOST-4 / HOST-5 (`tools/build.sh`, new `tools/pool-builds.ps1`) |
+| `b96fe073` | records of `p9-alclock-k`; the S-3 teeth tool `tools/teeth_s3.py` (committed before its run) |
+| `ee70a69f` | records of the teeth build `p9-alclock-l` |
+| `38967882` | merge of root `5c811b56` (COV-MV `25e11b32`; root changed `nav_cli.cpp`, `nav_decide.cpp`, `nav_lockstep.cpp`, `nav_rules.{hpp,cpp}`, `strategy_nav_v7.{hpp,cpp}`, the CMake tail): auto-merged, no conflict (W3-9 keep-both held: this round's hunks and COV-MV's sit in different places) |
+| this commit | records of `p9-alclock-m`, this section, the handoff line |
+
+### Items -> change -> test -> evidence
+
+| item | change (file:line at the fix head) | test | evidence (`alclock-logs/`) |
+|---|---|---|---|
+| S-3 (REQUIRED; ALCLOCK-S3a shape) | `atx-impl/tests/strategy_nav_info_clock_test.cpp:765` `InfoClockRate.CalibrateGrossKeepsTheRatesAndCountsOnce`; helpers `all_rows_gross` `:252`, `four_decimals`, `text_of`, `rebalance_census` `:280`, `closed_form_rows` `:308` | the rule (`aim-partial-v5 --cadence 1 --trade-fraction .05 --dust-multiple .1 --exit-rate .05 --rate info-clock-rate-v1`) + `--order-basis delta --liquidity-cache --capacity-curve --info-clock-print`: `first` at 1.2 gives g (numpy_mean of the primary daily gross); target 1.1 g, tolerance g / 1000; L' = `leverage_4_decimals(1.2 x target / g)`; `second` at L' (4 decimals) and `calibrated` at 1.2 with `--calibrate-gross --calibrate-tolerance`, both with `--emit-holdings csv`. Asserted: every published file but `summary.json` (capacity directory and v7 files included) and the whole holdings directory byte-equal to `second`; `summary.json` minus `calibration` = `second`'s; `corrected` and `construction_reused` true; leverage finite in [1, 2] and bit-equal L'; `gross_requested` = g, `gross` = `second`'s G (bits), `matched` = (abs(G - target) <= tolerance); recipe `rate` = the id in `recipe.json` and `capacity/recipe.json`; the closed form rule = held + theta_i (L' desired - held) on every moved member row of the calibrated holdings, theta_i by row d of the clock, fast and slow rows > 0; every main block's `name_days` / `fast_name_days` / `missing_name_days` = the members of the primary daily CSV's decision-and-rebalance rows (5 main books; pass 1's book is dropped); no block in `capacity/summary.json`; a 4-worker calibrated run (no holdings) = the 1-worker one byte for byte. Left out, stated in the test's comment (ALCLOCK-S3a): `--neutralize price-risk-v1`, `--locate-in-aim` (40 sessions < `min_return_pairs` 126) and `--warm-start-sessions` (score_begin 0) | `gt-k-clock.log`, `gt-k-named.log`, `gt-m-named.log`; teeth `gt-l-teeth.log` |
+| S-1 (a) help (ALCLOCK-S1a) | `atx-impl/src/strategy_nav_v7.cpp:1070-1071` (`--capacity-curve`: "the fixed rate or --rate info-clock-rate-v1 (Ruling ALCLOCK-3: it reads no NAV), not per-name-v1"); `atx-impl/src/book/nav_cli.cpp:95-96` (`--book-workers`: "the fixed rate or info-clock-rate-v1, not per-name-v1 or an spo rule") | help only (no test reads the help; grep) | `check-fix1-s1.log` |
+| S-1 (b) refusals (ALCLOCK-S1a) | `strategy_nav_v7.cpp:1441-1442` "aim-partial-v6 needs the fixed rate, --capacity-curve the fixed rate or info-clock-rate-v1 (per-name-v1 reads the NAV)" (predicate untouched); `atx-impl/src/book/nav_lockstep.cpp:218-220` "--book-workers above 1 needs the fixed rate or info-clock-rate-v1 (per-name-v1's rates share one buffer) and no spo rule (...)" (predicate untouched; no test needles it) | `CommandLineRefusalsWriteNothing` case 8 and `CapacityCurveAcceptsThisRateOnly`'s parse matrix needle the new message | `gt-k-clock.log` |
+| S-1 (c) capacity sentence, conditional | `strategy_nav_v7.cpp:215-226` `capacity_info_clock_declaration` + `capacity_rule(info_clock)` beside `capacity_declaration` (unchanged; precedent `capacity_spo_v3_rule`); `State::info_clock` `:92`, set in `configure()` `:875` from `cfg.rate`; `declarations(s, adv_hold, info_clock)` `:306` for the summary `:613` and the holdings manifest `:1049` (state), the recipe by its own `rate` key `:1019-1021` (nav_write sets it only under the rule, before `extend_recipe`); `v7_extras.json` `capacity_rule` `:497` (state). Not pinned anywhere (grep of tests, specs, goldens, fixtures, ledger; the tiny canary runs no `--capacity-curve`) | `CapacityCurveAcceptsThisRateOnly`: under the rule the sentence in `recipe.json` `v7.capacity`, `summary.json` `v7.declarations.capacity` and `v7_extras.json` `capacity_rule` names the rate and lacks "fixed rate only"; a fixed-rate capacity run keeps "; fixed rate only; x1 is S2 bit for bit" and no "info-clock" | `gt-k-clock.log` |
+| S-2 (ALCLOCK-4) | `scripts/specs/p9/rules/info-clock-rate-v1.json:51` `realised_leverage` only: "Rulings C3-4 and ALCLOCK-4" (C3-4 kept), the bound verbatim, the realised clause verbatim, "the OD5-7 cap test applies to that realised figure"; the superseded clause ("the realised gross the OD5-7 cap reads is the parent's") removed. SHA-256 `51b8b754...` -> `7801c19880a225a2f4c6ecb8756117f03fccafa71b92f440830bfb6fdcb8a152` (LF; "For PRE" re-quoted) | `test_registration_and_template` asserts both verbatim clauses, ALCLOCK-4, the OD5-7 sentence and the old clause's absence | `pyt-clock-k-s{0,1}.log`, `pyt-clock-m-s{0,1}.log` |
+| S-4 | new `atx-impl/tests/fixtures/nav_rule_info_clock_rate_v1.json` (the row alone, as `row_json` prints it; generated from `nav_rules.cpp`'s own literals by `tools/mk_row_fixture.py`, `--check` = True); `RegistryRowAndParser` `:885` asserts the listed row == the fixture (`ATX_IMPL_TESTS_DIR`); `scripts/tests/test_info_clock_rule.py:48`, `:80`: `NAV_TABLE`'s last row is the fixture | `RegistryRowAndParser`; the five pytests | `gt-k-clock.log`, `pyt-clock-*` |
+| S-5 | P10 (record only) | - | - |
+
+### Builds (equity-dev, `build-equity`, through `scripts/research-build.ps1`; one build on the host at a time)
+
+| tag | source (receipt) | result |
+|---|---|---|
+| `p9-alclock-k` | `9d3916b8` (root `858a4fca` merged); ConfiguredProvenance `9d3916b8` (clean); DirtyEntries 2 = the tracked logs `builds.txt`, `pyt-exits.txt` | exit 0; 139 TUs, 6 links, 90 s (jobs 4, free 3615 MiB); 0 warning lines; target-tests `44a2dd76e8f3267f3c4c3288fb792291ed01e02d9b5b7cacdb0297349bfab039` (= the run's exe) |
+| `p9-alclock-l` (teeth) | `b96fe073` + 1 dirty (the mutated `nav_session.cpp`) | exit 0, 1 TU; teeth exe `202aad461e912dbb...` (never evidence of the code) |
+| `p9-alclock-m` | `38967882` (root `5c811b56`, COV-MV, merged); ConfiguredProvenance `38967882` (clean); DirtyEntries 2 = `builds.txt` and this report (records) | exit 0; 34 TUs; 0 warning lines; target-tests `78311aa94f0ab61de61ed79ea3b4ceb99b2e6cb2d376234882049621395ddd9e` (= the run's exe) |
+
+The single-TU checks (`atx-build.ps1 -Preset equity-dev check`) of the test file and of `strategy_nav_v7.cpp`,
+`nav_cli.cpp`, `nav_lockstep.cpp` compiled clean under /W4 /WX (`check-fix1-s3-test.log`, `check-fix1-s1.log`; the
+first one built the 220 prerequisite objects of a fresh tree from the cache). Every build waited on the HOST-5 probe
+(`tools/pool-builds.ps1`: no pool build, 60 s quiet, research-build's own memory thresholds); none had to wait.
+
+### Tests (TEST-1: the lane's filters and pytest file only)
+
+| run | exe / head | result | log |
+|---|---|---|---|
+| `InfoClock*` | `p9-alclock-k` `44a2dd76...` | 14 / 14 (InfoClockRate 10, InfoClockPrint 4; the new test passes), ENV-1 0 | `gt-k-clock.log` |
+| named `InfoClock*:NavSpec.*:NavRules.*:TradeRateRegistry.*:NavAnnMeanGross.*:CostLawRegistry.*:TargetRegistry.*` | `p9-alclock-k` | 26 / 26 (NavSpec 5 with root's C3-7 test) | `gt-k-named.log` |
+| named filter (root moved in NAV code: COV-MV) | `p9-alclock-m` `78311aa9...` at `38967882` | 26 / 26, ENV-1 0 | `gt-m-named.log` |
+| `scripts/tests/test_info_clock_rule.py` seeds 0 / 1 | `9d3916b8` | 5 / 5, 5 / 5 | `pyt-clock-k-s0.log`, `-s1.log` |
+| the same, seeds 0 / 1 | `38967882` | 5 / 5, 5 / 5 | `pyt-clock-m-s0.log`, `-s1.log` |
+| whole target-tests, Release, canaries, whole `scripts/tests`, stage chain | - | deferred to the gate (TEST-1) | - |
+
+### Teeth (S-3; TEETH-RESTORE; build `p9-alclock-l`)
+
+- Tool `alclock-logs/tools/teeth_s3.py` (committed at `b96fe073` before its run): asserts porcelain empty and
+  hash-object = HEAD blob, keeps the bytes (memory and a git-ignored copy), one CRLF-aware replacement asserted
+  unique in `atx-impl/src/book/nav_session.cpp`: `if (clock_rule)` (before `nav_info_clock_rates`) -> `if (clock_rule
+  && !(tape && tape->replay))` (the restored pass of `--calibrate-gross` stops forming the rates; the construction's
+  initial vector, every name at .05, stays). One build; in `finally`, before any test: raw SHA-256 `c86532ab...` =
+  before, hash-object = HEAD blob `0aa59660...`, porcelain empty: OK (`teeth-s3.log`). No checkout / restore / stash.
+- `InfoClock*` on the teeth exe: 14 ran, 13 passed, 1 FAILED, exactly the expected one:
+  `CalibrateGrossKeepsTheRatesAndCountsOnce` (14 published files differ from the plain run at L' `:81`, the summary
+  minus calibration `:805`, the holdings directory `:72`, the closed form on 194 moved rows `:326`, the published gross
+  `:815`). The census assertions pass under the mutation (the census reads the clock, not the rates): as designed,
+  the rates' survival is shown by the bytes and the closed form (`gt-l-teeth.log`).
+
+### Flag-absent identity (for root)
+
+No output of a run without `--rate info-clock-rate-v1` moves: the capacity sentence is selected by the rule (the
+old constant is unchanged, and the test shows a fixed-rate capacity run still prints it); the rule's arithmetic is
+untouched. What changes by design on every run: the `--help` text (two clauses) and the two refusal messages
+(ALCLOCK-S: help / refusal text). The procedure of "Flag-absent identity procedure" above stands as written; no new
+substitution. New files: `atx-impl/tests/fixtures/nav_rule_info_clock_rate_v1.json`; no new `atx.<name>/v<n>`
+literal, flag, JSON key or rule id; the CMake tail is unchanged.
+
+### What root re-proves at merge
+
+- Merge the fix head of `feat/p9-alclock2-20261007` (pool-30); root already holds `e9b3a323` (M4), so the merge brings
+  only this round. Then the named filter above on root's Debug target-tests and `scripts/tests/test_info_clock_rule.py`.
+- The registration's SHA-256 is now `7801c198...`; it is pinned nowhere yet (W1-I2's re-pin at the gate reads it);
+  the template SHA (`95d4104a...`) is unchanged.
+- COV-MV is already in this branch (`38967882`): the root merge of this round is not a keep-both step.
+
+### Disk, refusals, open questions
+
+- Disk: after this commit the round deletes by name the `build-equity` object tree (`CMakeFiles/`, `atx-core/`,
+  `atx-engine/`, `atx-impl/`, `atx-tsdb/`, `bin/`, `lib/`, `tests/` and the top-level ninja / cmake / cpack files,
+  `compile_commands.json`, `spdlog.pc`, `vcpkg-manifest-install.log`), keeping the tracked `audits/`,
+  `v8-interim3-pitch-render-run2/` and the `mega-p9-alclock-*` receipts and logs (copied to `alclock-logs/`); and its
+  own scratch (the teeth copy `alclock-logs/teeth-s3-p9-alclock-l.orig`, the pytest basetemps). About 2.7 GB.
+- Permission refusals: none.
+- Open (one line): `p9-alclock-m` is a second Debug build of the round (TEST-1 says one), run because r10 item 4 asks
+  for the named filter after a merge that moved NAV code; the PM may count it as the merge's check.

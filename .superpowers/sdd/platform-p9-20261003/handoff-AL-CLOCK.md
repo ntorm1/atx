@@ -8,6 +8,10 @@ Report: `task-AL-CLOCK-report.md` (same dir). The design text of the earlier han
 Continued in pool-30 on `feat/p9-alclock2-20261007` (TEETH-POOL); pool-8 frozen for the owner. The section "State at
 the stop" below is pool-8's, as it stood at STOP 8 (copied by plain `cp`; only the HEAD placeholder filled).
 
+**Head (R10, fix round 1 DONE):** the commit that carries this line, on `feat/p9-alclock2-20261007`, tree clean;
+root `5c811b56` merged (`38967882`); S-3 / S-1 / S-2 / S-4 done, S-5 P10; builds `p9-alclock-k`, `-l` (teeth,
+caught), `-m`; object tree deleted. Next: re-review 1 (BASE `e9b3a323`), see the report's "Fix round 1 (ALCLOCK-S)".
+
 ## State at the stop: BLOCKED by a permission refusal (PERM-1)
 
 - HEAD `1cbe5233` holds all lane code, tests, registration and template (committed); root `fd084e78` merged
@@ -104,3 +108,13 @@ object tree exists in `build-equity` (receipts / logs of `-h` and `-j` only). No
 | S-5 | P10, record only | nothing to do in the lane |
 
 Exact next step for a fresh agent: (1) `powershell scripts\atx-build.ps1 configure -Preset equity-dev`; (2) write S-1 / S-2 / S-4 text and the S-3 test as designed above, shaping with `powershell scripts\atx-build.ps1 -Preset equity-dev check <file>` per edited TU; (3) commit in slices (S-3 test; S-1 / S-2 / S-4 text); (4) ONE Debug build `p9-alclock-k` of `atx-impl-strategy-target-tests` through `scripts/research-build.ps1` (HOST-3 priority: fourth); `InfoClock*` named filter + the new test; `scripts/tests/test_info_clock_rule.py` (seeds 0 / 1, own basetemp); (5) teeth `p9-alclock-l` only if the host is quiet; (6) append "Fix round 1 (ALCLOCK-S)" to `task-AL-CLOCK-report.md`, a head line here, `git add -f`, commit; delete the object tree by name.
+
+## Fix round 1 (ALCLOCK-S), R10: DONE
+
+Every step of "Exact next step" above ran, as designed, in pool-30 (record: `task-AL-CLOCK-report.md` "Fix round 1
+(ALCLOCK-S)"). Added beside the design: root merged three times (`65ec16af`, `1d603d23`, `38967882`; no conflict);
+the build wrapper counts only pool builds (HOST-5, `alclock-logs/tools/pool-builds.ps1`); one more Debug build
+`p9-alclock-m` because COV-MV's merge moved NAV code after `p9-alclock-k` (named filter 26 / 26 on it). Teeth
+`p9-alclock-l` with `alclock-logs/tools/teeth_s3.py` (TEETH-RESTORE): only the new test red; restore verified.
+Registration SHA-256 now `7801c19880a225a2f4c6ecb8756117f03fccafa71b92f440830bfb6fdcb8a152`. Nothing pending in
+the lane; next is the PM's re-review 1 (BASE `e9b3a323`, HEAD the commit with this section).
