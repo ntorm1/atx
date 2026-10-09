@@ -1,0 +1,9 @@
+F1 R-1: fit.output not this carry's output refused: CAUGHT (exit 1; 5 failed, 39 deselected in 60.97s (0:01:00)); restored byte-identical (sha256 1a70e29cadf5)
+F2 R-1: the guard compares the drop list's pin: CAUGHT (exit 1; 2 failed, 3 passed, 39 deselected in 34.99s); restored byte-identical (sha256 1a70e29cadf5)
+F3 R-1: a fresh fit.output per book plans pending and runs the carry (guard refusing its own output): CAUGHT (exit 1; 1 failed, 43 deselected in 14.14s); restored byte-identical (sha256 1a70e29cadf5)
+F4 S-1: the carry tool's list checks at plan time: CAUGHT (exit 1; 4 failed, 40 deselected in 34.18s); restored byte-identical (sha256 1a70e29cadf5)
+F5 S-2: probe P1, history = the non-anchor eras: CAUGHT (exit 1; 2 failed, 42 deselected in 5.32s); restored byte-identical (sha256 1a70e29cadf5)
+F5b S-2: probe P1 against the whole lane file (review: NOT CAUGHT by the 12 drop tests): CAUGHT (exit 1; 2 failed, 15 passed, 27 deselected in 44.91s); restored byte-identical (sha256 1a70e29cadf5)
+F6 S-2: history = the first history era only: CAUGHT (exit 1; 1 failed, 1 passed, 42 deselected in 6.26s); restored byte-identical (sha256 1a70e29cadf5)
+F7 S-3: a history IC pass without the runner silently skipped: CAUGHT (exit 1; 1 failed, 43 deselected in 4.86s); restored byte-identical (sha256 1a70e29cadf5)
+exit 0

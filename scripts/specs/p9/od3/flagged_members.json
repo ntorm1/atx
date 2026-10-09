@@ -1,0 +1,44 @@
+{
+  "schema": "atx.od3-flagged-members/v1",
+  "description": "The drop list of the OD-3 'clean-source book' history line (Rulings PRE-19, PRE-20, PRE-31, OD3P-1): the 12 members of the FINAL FLAG LIST of p9-prereg-flags.md (10 flagged + 2 flagged-unverified; unverified = flagged), absent on the history eras with TRAIN weights carried and no re-fit. OD3P-1: a listed member is treated on every date as the engine treats a member with no data (it adds nothing to the composite; its mass stays in its theme); the TRAIN weights, signs and theme blocks are unchanged. A roles spec names this file as fit.carry.drop: carry_weights.py --drop-list checks and records it, and the roles cycle passes it to the IC exe as --absent-members on the history roles' IC passes (capability absent-members-v1; od3p-absent-contract.md). 'members' is the only key the IC exe reads. 'rules': the P9 rules whose registration's source_sample_end is 2015 or later; the clean-source book applies none of them (PRE-31). 'rules_pending': rules whose registration was not merged when the list was written; carry_weights.py refuses the list until root resolves each from its registration (into 'rules' when its source_sample_end is 2015 or later, else removed) and re-pins this file. Copied by P9 lane OD3P from the committed flag file named in 'source'; no id was added, removed or reordered.",
+  "ruling": "PRE-31 (adopts the FINAL FLAG LIST as written; PRE-19 unverified = flagged; PRE-20 absent on history, TRAIN weights carried, no re-fit); OD3P-1 (absent = the engine's no-data rule, IC exe --absent-members); ALCLOCK-2 (info-clock-rate-v1: source_sample_end 2019, flagged)",
+  "source": {
+    "path": ".superpowers/sdd/platform-p9-20261003/p9-prereg-flags.md",
+    "section": "FINAL FLAG LIST",
+    "commit": "5c57c1ef",
+    "sha256": "7a089e5233cb69a329bd09f42f2dfff48f638101a421751f03b2291aa2d94bbe",
+    "sha256_of": "the committed blob (LF bytes; a checkout under core.autocrlf=true has CRLF bytes and another hash)"
+  },
+  "members": [
+    "bac",
+    "smax",
+    "smax5",
+    "sv_flow",
+    "qmj_safety",
+    "q5_eg_f49g",
+    "ear_mom_12m",
+    "op_rd",
+    "day_rev_freq",
+    "value_composite",
+    "k8_intensity",
+    "ftd_fail"
+  ],
+  "classes": {
+    "flagged": ["bac", "smax", "smax5", "sv_flow", "qmj_safety", "q5_eg_f49g", "ear_mom_12m", "op_rd", "day_rev_freq",
+                "value_composite"],
+    "flagged-unverified": ["k8_intensity", "ftd_fail"]
+  },
+  "rules": [
+    "theme-cov-hedge-v1",
+    "mom-volman-v1",
+    "info-clock-rate-v1"
+  ],
+  "rule_source_sample_end": {
+    "theme-cov-hedge-v1": 2017,
+    "mom-volman-v1": 2016,
+    "info-clock-rate-v1": 2019
+  },
+  "rules_pending": [
+    "mv-aim-v1"
+  ]
+}

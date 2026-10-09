@@ -1,0 +1,31 @@
+== old_b6: fit.output = the TRAIN fit dir holding W (runbook B6 before the fix)
+    # phase fit [bounded; done; fit.carry: TRAIN admission and weights carried to every era, no re-fit (PM7-29); the drop list is checked and recorded, its members 
+    carry argv tail: --output fit-run1 --bind fit/composition_weights.json --bind fit/admission.json --bind e1/manifest.json --bind e2/manifest.json --bind fit/flagged_members.json -- "C:\Program Files\Python312\python.exe" atx-impl/tools/carry_weights.py --weights fit/composition_weights.json --weights-sha256 2d1e4ac1202f57c557107094d66d4c3f038fe5dcf840b76b55b71d68b9d8b4ea --admission fit/admission.json --admission-sha256 2dcfac8486ebe9fded63f6461cf1dd2630ed7be976bd4e96ec257d1b53cc1906 --era E1 e1/manifest.json 99cac685d59b7498ed9c460578ba3bd37233ef4adfc04d6a5eadc7ad97fab0a8 --anchor e2/manifest.json 7cdf4b2680da2b8abed6da43f33a0d670684a687c357649f8b279a8ae5d52783 --output fit --drop-list fit/flagged_members.json --drop-list-sha256 b6aff102f4ded6d4f946e316649a498e4d2e061e949251888ef7ebd8ec71dd1b
+    run --stop-after w: CycleError exit 4: HARD-STOP [w:E1]: an upstream pin is unresolved (upstream output missing)
+    calls: fields F-E1, fields F-E2, check, U-E1-run1, U-E2-run1
+    carried era file written: False | carry.json: False
+== shared: lines 2 and 4 with one fresh fit.output (out/od3-fit), line 2 run first
+  line 2 plan:
+    # phase fit [bounded; pending; fit.carry: TRAIN admission and weights carried to every era, no re-fit (PM7-29)] -> out/od3-fit (receipt out/od3-fit-run1)
+    carry argv tail: --output out/od3-fit-run1 --bind fit/composition_weights.json --bind fit/admission.json --bind e1/manifest.json --bind e2/manifest.json -- "C:\Program Files\Python312\python.exe" atx-impl/tools/carry_weights.py --weights fit/composition_weights.json --weights-sha256 2d1e4ac1202f57c557107094d66d4c3f038fe5dcf840b76b55b71d68b9d8b4ea --admission fit/admission.json --admission-sha256 2dcfac8486ebe9fded63f6461cf1dd2630ed7be976bd4e96ec257d1b53cc1906 --era E1 e1/manifest.json 99cac685d59b7498ed9c460578ba3bd37233ef4adfc04d6a5eadc7ad97fab0a8 --anchor e2/manifest.json 7cdf4b2680da2b8abed6da43f33a0d670684a687c357649f8b279a8ae5d52783 --output out/od3-fit
+    run --stop-after w: exit 0
+    calls: fields F-E1, fields F-E2, check, od3-u-yf0-E1-run1, od3-u-yf0-E2-run1, od3-fit-run1, od3-w-yf0-E1-run1, od3-w-yf0-E2-run1
+  line 4 plan (after line 2 ran):
+    # phase fit [bounded; done; fit.carry: TRAIN admission and weights carried to every era, no re-fit (PM7-29); the drop list is checked and recorded, its members 
+    carry argv tail: --output out/od3-fit-run1 --bind fit/composition_weights.json --bind fit/admission.json --bind e1/manifest.json --bind e2/manifest.json --bind fit/flagged_members.json -- "C:\Program Files\Python312\python.exe" atx-impl/tools/carry_weights.py --weights fit/composition_weights.json --weights-sha256 2d1e4ac1202f57c557107094d66d4c3f038fe5dcf840b76b55b71d68b9d8b4ea --admission fit/admission.json --admission-sha256 2dcfac8486ebe9fded63f6461cf1dd2630ed7be976bd4e96ec257d1b53cc1906 --era E1 e1/manifest.json 99cac685d59b7498ed9c460578ba3bd37233ef4adfc04d6a5eadc7ad97fab0a8 --anchor e2/manifest.json 7cdf4b2680da2b8abed6da43f33a0d670684a687c357649f8b279a8ae5d52783 --output out/od3-fit --drop-list fit/flagged_members.json --drop-list-sha256 b6aff102f4ded6d4f946e316649a498e4d2e061e949251888ef7ebd8ec71dd1b
+    carry.json drop record: False
+== fixed_b6: each book its own fresh fit.output (out/od3-fit-yf0, out/od3-fit-clean)
+  line 2 plan:
+    # phase fit [bounded; pending; fit.carry: TRAIN admission and weights carried to every era, no re-fit (PM7-29)] -> out/od3-fit-yf0 (receipt out/od3-fit-yf0-run1
+    carry argv tail: --output out/od3-fit-yf0-run1 --bind fit/composition_weights.json --bind fit/admission.json --bind e1/manifest.json --bind e2/manifest.json -- "C:\Program Files\Python312\python.exe" atx-impl/tools/carry_weights.py --weights fit/composition_weights.json --weights-sha256 2d1e4ac1202f57c557107094d66d4c3f038fe5dcf840b76b55b71d68b9d8b4ea --admission fit/admission.json --admission-sha256 2dcfac8486ebe9fded63f6461cf1dd2630ed7be976bd4e96ec257d1b53cc1906 --era E1 e1/manifest.json 99cac685d59b7498ed9c460578ba3bd37233ef4adfc04d6a5eadc7ad97fab0a8 --anchor e2/manifest.json 7cdf4b2680da2b8abed6da43f33a0d670684a687c357649f8b279a8ae5d52783 --output out/od3-fit-yf0
+    run --stop-after w: exit 0
+    calls: fields F-E1, fields F-E2, check, od3-u-yf0-E1-run1, od3-u-yf0-E2-run1, od3-fit-yf0-run1, od3-w-yf0-E1-run1, od3-w-yf0-E2-run1
+  line 4 plan:
+    # phase fit [bounded; pending; fit.carry: TRAIN admission and weights carried to every era, no re-fit (PM7-29); the drop list is checked and recorded, its membe
+    carry argv tail: --output out/od3-fit-clean-run1 --bind fit/composition_weights.json --bind fit/admission.json --bind e1/manifest.json --bind e2/manifest.json --bind fit/flagged_members.json -- "C:\Program Files\Python312\python.exe" atx-impl/tools/carry_weights.py --weights fit/composition_weights.json --weights-sha256 2d1e4ac1202f57c557107094d66d4c3f038fe5dcf840b76b55b71d68b9d8b4ea --admission fit/admission.json --admission-sha256 2dcfac8486ebe9fded63f6461cf1dd2630ed7be976bd4e96ec257d1b53cc1906 --era E1 e1/manifest.json 99cac685d59b7498ed9c460578ba3bd37233ef4adfc04d6a5eadc7ad97fab0a8 --anchor e2/manifest.json 7cdf4b2680da2b8abed6da43f33a0d670684a687c357649f8b279a8ae5d52783 --output out/od3-fit-clean --drop-list fit/flagged_members.json --drop-list-sha256 b6aff102f4ded6d4f946e316649a498e4d2e061e949251888ef7ebd8ec71dd1b
+    run --stop-after w: exit 0
+    calls: fields F-E1, fields F-E2, check, od3-u-yf0-E1-run1, od3-u-yf0-E2-run1, od3-fit-yf0-run1, od3-w-yf0-E1-run1, od3-w-yf0-E2-run1, check, od3-u-clean-E1-run1, od3-u-clean-E2-run1, od3-fit-clean-run1, od3-w-clean-E1-run1, od3-w-clean-E2-run1
+    line 4 carry.json drop record: ['old_alpha'] | line 2 carry.json drop: False
+    line 4 WT-E1 argv tail: ['--absent-members', 'fit/flagged_members.json', '--absent-members-sha256']
+  line 2 status after run: fit    done     out/od3-fit-yf0 | receipt out/od3-fit-yf0-run1: completed exit 0 1.5 s peak 1 MiB | fit.carry: TRAIN adm
+  line 4 status after run: fit    done     out/od3-fit-clean | receipt out/od3-fit-clean-run1: completed exit 0 1.5 s peak 1 MiB | fit.carry: TRAIN
