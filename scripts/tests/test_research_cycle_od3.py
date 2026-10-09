@@ -7,7 +7,9 @@ Run: "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider sc
 The tiny_world eras and fake pipeline of test_research_cycle_roles.py are used. This file's fake runner runs the real
 carry_weights.py for the fit phase of a fit.carry cycle, and fakes every other phase as that file's runner does.
 The T1 / T4 tests are the xpre branch's (`f68058e2`); the T1 refusal of a spec without roles now sits in
-scripts/cycle/cli.py make_cycle (E2's split of the cycle driver).
+scripts/cycle/cli.py make_cycle (E2's split of the cycle driver). Review R-1's plan-time guard of an existing fit.output
+is tested component by component (W, the drop pin, and in the follow-up round, Ruling OD3P-S, S-a: the eras, the
+admission and the anchor), and S-d: a stale <fit.output>.pending is refused at plan time.
 Identity: without fit.carry, label_dir and a --risk-model history book, plan, status, step argv and lock equal
 research_roles.py at da3bb239 (blob 313b23b3, root's file before this lane).
 """
@@ -604,6 +606,75 @@ def test_a_history_ic_pass_without_the_runner_is_refused_not_skipped(tmp_path):
     per = {"E1": rc.eras[0].steps()}
     rc.absent_members(per)                                                      # today's shape: planned with them
     assert [s.argv[-4] for s in per["E1"] if s.phase in RR.ABSENT_PHASES] == [RR.ABSENT_FLAG] * 2
+
+
+# ------------------------------------------------------------------ OD3P follow-up round (Ruling OD3P-S: S-a, S-d)
+@pytest.mark.parametrize("case, needle", [
+    ("other_eras", "records another eras"),
+    ("other_admission", "records another admission"),
+    ("other_anchor", "records another anchor"),
+])
+def test_a_carry_output_of_other_eras_admission_or_anchor_is_refused_at_plan(tmp_path, capsys, case, needle):
+    """Review S-a (re-review 1 N-1; required by OD3P-S): the R-1 guard compares every component of the dir's
+    carry.json, not only W and the drop pin. Line 4's carry runs into its own fresh out/od3-fit-clean (a re-plan
+    shows it done); then the same dir under another era role (E1's manifest changed), another admission (fit/admission.json
+    rewritten) or a record naming another anchor (carry.json hand-edited) is refused at plan time (exit 2), the
+    message naming that component alone; nothing runs."""
+    root, _, spec = drop_root(tmp_path)
+    _, p4 = line_specs(root, spec, "out/od3-fit-yf0", "out/od3-fit-clean")
+    assert TR.run(root, p4, [], capabilities=ABSENT, stop_after="fit") == RC.EXIT_OK
+    assert fit_of(root, p4).state == "done"                                    # this carry's own output: resume
+    if case == "other_eras":
+        manifest = json.loads((root / "e1" / "manifest.json").read_text())
+        manifest["dates"] += 1
+        (root / "e1" / "manifest.json").write_text(json.dumps(manifest))
+    elif case == "other_admission":
+        (root / "fit" / "admission.json").write_text(json.dumps({"candidates": [{"id": "new_alpha",
+                                                                                 "status": "admitted"}]}))
+    else:
+        path = root / "out" / "od3-fit-clean" / CW.OUTPUT_RECORD
+        rec = json.loads(path.read_text())
+        rec["anchor_role_sha256"] = "0" * 64
+        path.write_text(json.dumps(rec))
+    calls = TR.calls(root)
+    with pytest.raises(RC.CycleError, match=f"its carry.json {needle}\\)") as e:
+        TR.run(root, p4, [], capabilities=ABSENT)
+    assert e.value.code == RC.EXIT_USAGE and "R-1" in str(e.value) and "out/od3-fit-clean" in str(e.value)
+    capsys.readouterr()
+    assert RC.main(["plan", str(p4), "--root", str(root)]) == RC.EXIT_USAGE
+    assert f"its carry.json {needle})" in capsys.readouterr().err
+    assert TR.calls(root) == calls                                             # nothing ran
+
+
+@pytest.mark.parametrize("case", ["dir_fresh", "dir_after_done", "file"])
+def test_a_stale_pending_carry_output_is_refused_at_plan(tmp_path, capsys, case):
+    """Review S-d (required by OD3P-S): carry_weights.py publishes through <fit.output>.pending and refuses an existing
+    one at the fit step, after the history u passes. The cycle refuses it at plan time (exit 2), nothing runs: a
+    .pending dir before any carry, one beside a done carry (a resume would plan the fit done and never look), and a
+    .pending file. Removed, the spec plans again (pending, or done after the carry)."""
+    root, _, spec = drop_root(tmp_path)
+    _, p4 = line_specs(root, spec, "out/od3-fit-yf0", "out/od3-fit-clean")
+    pending = root / "out" / f"od3-fit-clean{CW.PENDING_SUFFIX}"
+    if case == "dir_after_done":
+        assert TR.run(root, p4, [], capabilities=ABSENT, stop_after="fit") == RC.EXIT_OK
+    pending.parent.mkdir(parents=True, exist_ok=True)
+    if case == "file":
+        pending.write_text("partial")
+    else:
+        pending.mkdir()
+    calls = TR.calls(root)
+    with pytest.raises(RC.CycleError, match="out/od3-fit-clean\\.pending exists") as e:
+        TR.run(root, p4, [], capabilities=ABSENT)
+    assert e.value.code == RC.EXIT_USAGE and "S-d" in str(e.value)
+    capsys.readouterr()
+    assert RC.main(["plan", str(p4), "--root", str(root)]) == RC.EXIT_USAGE
+    assert "out/od3-fit-clean.pending exists" in capsys.readouterr().err
+    assert TR.calls(root) == calls                                             # nothing ran
+    if case == "file":
+        pending.unlink()
+    else:
+        pending.rmdir()
+    assert fit_of(root, p4).state == ("done" if case == "dir_after_done" else "pending")
 
 
 # ------------------------------------------------------------------ OD3P: --risk-model on history (PRE-10)

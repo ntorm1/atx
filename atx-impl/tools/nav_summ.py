@@ -119,6 +119,8 @@ Era pools (platform v8 H-1; opt-in, without --pool nothing above moves):
                          (lw.p_one_sided, from the same resamples) plus the bundle's verdict dict (dSR > 0 and one-sided
                          p < --bundle-alpha); one more printed line. Needs --pool and a reference (--pool-reference or
                          --reference). The listed dirs' paired blocks are unchanged; without the flag nothing moves.
+                         The verdict is labelled "bundle rule, not G-B8" (P9 ruling OD3P-T2V): G-B8's read is the
+                         prereg's own, made by the PM from the printed p values; no second verdict rule is coded.
 
 Engine statistics (platform P9 B2, contract K-P9-5):
   every statistic of record (net moments, paired dSR with Memmel SE / CBB / Ledoit-Wolf, the DSR rows, PSR and MinTRL,
@@ -755,7 +757,8 @@ def paired_or_note(nets: dict, ref_nets: dict, args) -> dict:
     p = engine_of(args).paired_of(nets, ref_nets, args, one_sided=True)
     p["verdict"] = paired_verdict(p, args.bundle_alpha,
                                   "pooled paired S2 net dSR > 0 and studentized circular-block-bootstrap one-sided p "
-                                  "< alpha (the bundle's rule on the pooled pair; OD-3 T2)")
+                                  "< alpha (bundle rule, not G-B8: the bundle's rule on the pooled pair; OD-3 T2, "
+                                  "ruling OD3P-T2V)")
     return {"paired": p}
 
 
@@ -821,7 +824,7 @@ def print_pool(r: dict) -> None:
     v = (r.get("paired") or {}).get("verdict")
     if v is not None:   # OD-3 T2: --pool-one-sided only
         print(f"   pooled paired one-sided p {fmt(v['p_one_sided'], '.4f')} (engine verb --one-sided, same resamples); "
-              f"verdict dSR > 0 and p < {v['alpha']}: {'PASS' if v['pass'] else 'FAIL'}")
+              f"verdict (bundle rule, not G-B8) dSR > 0 and p < {v['alpha']}: {'PASS' if v['pass'] else 'FAIL'}")
     if "paired_note" in r:
         print(f"   {r['paired_note']}")
 
