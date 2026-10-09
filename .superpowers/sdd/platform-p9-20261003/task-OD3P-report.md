@@ -25,7 +25,7 @@ base `5c57c1ef` (lease run id `p9-od3p-20261004`; leases not touched). Root merg
 | 3 | ALCLOCK-2 | `scripts/specs/p9/od3/flagged_members.json`: `info-clock-rate-v1` into `rules` with `rule_source_sample_end` 2019; `rules_pending` = [`mv-aim-v1`]; description / ruling text for OD3P-1 | `test_the_committed_list_is_the_final_flag_list_of_its_source` (also: the list as committed is refused, resolved it carries the book with no weight changed) | in the item-2 log |
 | 4 | runbook (lane item 6) | `p9-od3-runbook.md` | - | - |
 | 5 | suites (lane item 7) | - | see "Tests" | `od3p-evidence/r7-*.log` |
-| 6 | T2 (lane item 3) | PENDING: B2's redo is not in root (`git -C C:/atx-wt/pool-2 log --format=%s -30` shows no B2 merge) | - | - |
+| 6 | T2 (lane item 3) | PENDING at R7 / R8 / fix round 1 (B2's redo not in root); DONE in the follow-up round: see "Follow-up round (item 6, OD3P-S)" at the end of this file | - | - |
 | 7 | report, handoff | this file, `handoff-OD3P.md` | - | - |
 
 ### OD3P-1 as implemented
@@ -206,7 +206,7 @@ All with `C:/Program Files/Python312/python.exe`, explicit paths, `-p no:cachepr
 | `atx-engine/tools/test_research_store_classes.py` | `97a8157f` | 1 failed, 4 passed, 96 subtests passed: the expected SQL2-CLS red, naming exactly `atx.carry-weights/v1` and `atx.od3-flagged-members/v1` in `atx-impl/tools/carry_weights.py` (no new literal this round) | `fix1-97a8157f-classes-guard.log` |
 | `atx-engine/tools/test_stage_chain.py` | `97a8157f` | 10 passed | `fix1-97a8157f-stage-chain.log` |
 | whole `scripts/tests`, `PYTHONHASHSEED=0` | `97a8157f` | 563 passed, 5 skipped (2374.5 s on a loaded host) | `fix1-97a8157f-scripts-tests-seed0.log` |
-| whole `scripts/tests`, `PYTHONHASHSEED=1` | `97a8157f` | NOT RUN to the end: started after seed 0, stopped by me at the OWNER STOP (seed 0 took 39.6 min); its partial log deleted. Next step: re-run it | `fix1-97a8157f-scripts-tests-seed1.log` |
+| whole `scripts/tests`, `PYTHONHASHSEED=1` | `97a8157f` | NOT RUN to the end: started after seed 0, stopped by me at the OWNER STOP (seed 0 took 39.6 min); its partial log deleted. Deferred to the gate (TEST-1) | no log (partial deleted); deferred to the gate (TEST-1) (re-review 1 S-c) |
 | teeth (8 mutations) | `365b8c8b` code | 8 caught, restored byte-identical | `teeth-fix1.log` |
 
 ### Blind (review S-5)
@@ -244,3 +244,159 @@ All with `C:/Program Files/Python312/python.exe`, explicit paths, `-p no:cachepr
 1. PM: is the S-1 variant (an existing `fit.output` accepted only when its `carry.json` records this exact carry) the
    intended reading, rather than refusing any existing `fit.output` (which would also refuse resume)?
 2. Root's prereg F.1 prediction line still names P9-F0 where PRE-39 names P9-F0h: a ROUND 2b text item for root.
+
+## Follow-up round (item 6, OD3P-S)
+
+Dispatch: RESUME 9 "OD3P follow-up" (code WIP `a1348616` at OWNER STOP 9), finished in RESUME 10 "OD3P-FU" (rulings
+OD3P-S, OD3P-T2V, OD3P-SKIP, TEST-1, TEETH-RESTORE). Python only: no build, no exe, no data.
+
+Outcome: DONE_WITH_CONCERNS. Every item is done and tested, and the teeth caught 9 of 9. The concern: one lane-file test
+that predates this round, `test_carry_replaces_the_pooled_fit_and_feeds_every_era`, is red in pool-21 for an
+environmental reason. Its summ phase runs the real `nav_summ.py`, which needs the engine verb, and pool-21 has no verb
+(see "The one red" below). The three real-verb cases are named skips, as OD3P-SKIP allows.
+
+### Commits
+
+| commit | what |
+|---|---|
+| `6f667bc1` | (STOP 9) merge of root `73b4acfd` (B2's redo and T2 in root) |
+| `a1348616` | (STOP 9) WIP code: T2 on the verb, the S-d guard (untested at the stop) |
+| `e7d7c23a` | (STOP 9) the handoff |
+| `6e7b236a` | merge of root `898bf120` (C3b, D3W, ABS). Plain: its tree `45ca147a` equals `git merge-tree --write-tree` of the parents. Root changed no lane file. |
+| `cc6686f9` | code: the tests, plus the OD3P-T2V label in `nav_summ.py` |
+| `e75d9d9c` | merge of root `0a2ceb2b` (D3, plus SQL2-CLS `094bcd3b` with this lane's two `classes.json` rows). Plain: tree `7ac7c9e6` = merge-tree. Root changed no lane file. |
+| `68c2cc6b` | merge of root `858a4fca` (root's M4: OD3P `dc11c977` as `7f6f1c75`, then AL-CLOCK). Plain: tree `f4d770a9` = merge-tree. Every lane file keeps this branch's blob (root holds the lane's `dc11c977` versions, which are ancestors). |
+| (next) | records: this section, the handoff head line, S-b, S-c, the runbook, `od3p-evidence/` |
+
+### Items -> change -> test -> teeth (file:line at `68c2cc6b`; the code is the same as at `cc6686f9`)
+
+| item | change | test | teeth (`teeth-fu.log`) |
+|---|---|---|---|
+| 6 T2 `--pool-one-sided` on the verb | `atx-impl/tools/nav_summ.py`: usage `:118-123`; `:624-630` `paired_verdict` (the one verdict rule; `bundle()` uses it at `:652-654`); `:753-762` `paired_or_note`'s one-sided branch (`paired_of(..., one_sided=True)` plus the verdict); `:825-827` the one printed line; `:1141-1142` the flag; `:1164-1165` the refusal (it needs `--pool` and `--pool-reference` or `--reference`) | `atx-impl/tools/test_od3_tooling.py:546` `test_t2_pool_one_sided_adds_the_p_and_the_verdict_only[fake / real]`; `:600` `test_t2_verdict_is_the_bundle_rule_on_the_pooled_pair` (9 forced cases); `:620` `test_t2_pool_one_sided_refuses_without_its_inputs` | T1 (refusal removed), T2 (`one_sided=True` dropped), T3 (the verdict comparison inverted): all CAUGHT |
+| OD3P-T2V label | the printed line `verdict (bundle rule, not G-B8) dSR > 0 and p < <alpha>: PASS/FAIL` (`:827`), the verdict's `rule` text (`:759-761`) and the usage text (`:122-123`). No second verdict rule. | asserted in `:546`, `:600`, `:620` | T3 |
+| T5 on the verb | none (behaviour) | `:640` `test_t5_pool_over_a_ledgered_train_era_adds_nothing[fake / real]`. Also checks that the ledger bytes with `--pool-one-sided` equal the bytes without it. | - |
+| flag-absent identity | none | `:689` `test_flag_absent_nav_summ_equals_roots_blob[fake / real]` (see "Identity" below) | I1 (the plain pooled pair made one-sided): CAUGHT |
+| the `verb` fixture (OD3P-SKIP) | `test_od3_tooling.py:371-495`: `FakeVerb`, `Verb`, `verb` (params `fake` / `real`), `fake_verb` | each test above | - |
+| S-a (required) | none: the guard is `scripts/research_roles.py:402-418` | `scripts/tests/test_research_cycle_od3.py:617` `test_a_carry_output_of_other_eras_admission_or_anchor_is_refused_at_plan` (`other_eras`, `other_admission`, `other_anchor`). Each case runs line 4's carry into a fresh `out/od3-fit-clean` (`stop_after="fit"`) and checks that a re-plan shows it done. It then changes E1's manifest `dates`, or rewrites `fit/admission.json`, or hand-edits the record's `anchor_role_sha256`. Each is refused at plan with exit 2. The message names that component alone (`records another <c>)`), the CLI's stderr says the same, and no step runs. | A1, A2, A3 (the guard ignores eras / admission / anchor, each alone): CAUGHT. A1b: re-review 1's probe X1 on its own `-k`: CAUGHT (1 failed, 36 passed), where the review saw 32 pass. |
+| S-d (required) | `atx-impl/tools/carry_weights.py:77` `PENDING_SUFFIX` (`publish` uses it at `:218`); `scripts/research_roles.py:43-45` (doc), `:384-395` (refusal at plan of an existing `<fit.output>.pending`, dir or file) | `test_research_cycle_od3.py:650` `test_a_stale_pending_carry_output_is_refused_at_plan` (`dir_fresh`, `dir_after_done`, `file`). Each is refused at plan with exit 2 (`out/od3-fit-clean.pending exists`, "S-d"). The CLI's stderr says the same and no step runs. Once the `.pending` is removed, the spec plans again: `pending`, or `done` after the carry. | D1 (the check removed): CAUGHT (3 failed) |
+| S-b | `od3p-absent-contract.md:3-10`: the header now names lane ABS (ABS-1, merged in root at `898bf120`) as the consumer. It records that ABS's report uses the contract's spellings unchanged: flags, capability, schema and the `summary.json` `absent_members {rule, list_sha256, members}`. I checked against pool-28 `task-ABS-report.md` lines 5-9 and 172-176. Sections 1-6 are unchanged. | - | - |
+| S-c | this report, "Tests (fix round 1)", seed-1 row: the log column now reads "no log (partial deleted); deferred to the gate (TEST-1)" | - | - |
+| runbook | `p9-od3-runbook.md`: P0 T2 bullet `:80-83`; B6 `:141-146` (`<dir>.pending` absent, which the cycle refuses, S-d); P7 `:159-162` (the same); R4 `:204-213` (T2's verdict line is labelled "bundle rule, not G-B8"; G-B8's read is the prereg's own, made by the PM from the printed p values, OD3P-T2V); stop list `:234-242` (a `.pending` refusal is a stop) | - | - |
+
+### Tests (TEST-1: the two lane files only, `PYTHONHASHSEED=0`)
+
+All runs used `C:/Program Files/Python312/python.exe` with explicit paths, `-p no:cacheprovider`, my own `--basetemp`
+(parent created first), `PYTHONDONTWRITEBYTECODE=1` and `ATX_EQUITY_BIN` unset. I saw no ENV-1 exit and had no
+permission refusal.
+
+| suite | tree | result | log (`od3p-evidence/`) |
+|---|---|---|---|
+| `scripts/tests/test_research_cycle_od3.py` + `atx-impl/tools/test_od3_tooling.py` | `cc6686f9` | 1 failed, 92 passed, 3 skipped (96 = 74 + 22 new) | `fu-cc6686f9-lane-files.log` |
+| the same two files, after the second root merge | `e75d9d9c` | 1 failed, 92 passed, 3 skipped | `fu-e75d9d9c-lane-files.log` |
+| the same two files, after the last root merge (root `858a4fca`) | `68c2cc6b` | 1 failed, 92 passed, 3 skipped (the same red) | `fu-68c2cc6b-lane-files.log` |
+| teeth: 9 mutations, each selection first passed unmutated (B0) | `cc6686f9` | 9 of 9 CAUGHT. Every restore passed: raw SHA-256 equals the pre-mutation bytes, `git hash-object` equals the `HEAD:<file>` blob, porcelain empty before and after each. | `teeth-fu.log` (tool `mutate-fu.py`) |
+| whole `scripts/tests` (seeds 0 / 1), `test_stage_chain.py`, the classes guard | - | deferred to the gate (TEST-1) | - |
+
+**The 3 skips** are the `real` params of T2, T5 and the identity test (OD3P-SKIP). The skip reason names the verb and
+its path: `nav_summ.default_engine_exe()`, which is `$ATX_EQUITY_BIN/atx-research-eval.exe` when that variable is set,
+else `build-equity/bin` of the checkout. That is the path root's nav_summ suites use (`test_nav_summ_engine.py:34`).
+Root's run, with the verb built, executes these cases.
+
+**The one red** is `scripts/tests/test_research_cycle_od3.py:92`
+`test_carry_replaces_the_pooled_fit_and_feeds_every_era` (the xpre T1 test, unchanged since round 1).
+- Its full cycle run reaches the summ phase, which runs the real `atx-impl/tools/nav_summ.py`.
+- Since B2 (root `fcb0200e`, merged here at `6f667bc1`), nav_summ takes every statistic from the engine verb. It
+  refuses to run without one and never skips (B2-R3).
+- The test's stderr reads `nav_summ: no engine statistics executable
+  C:\atx-wt\pool-21\build-equity\bin\atx-research-eval.exe`, then `HARD-STOP [summ]: exit 1`.
+- The failure comes after the carry and every other phase ran. This round touched no code on that path.
+- The red has stood since the STOP 9 merge. No test ran at STOP 9, so it was not seen then. On `97a8157f`, before B2,
+  the test passed (74 passed).
+- Expected green in root's run, with the verb built. The same dependence holds for root's own
+  `scripts/tests/test_research_cycle_roles.py`, whose summ phase also "runs the real nav_summ.py" (its docstring,
+  line 8).
+- I did not edit the test, and I did not borrow another pool's verb.
+
+### The fake verb (fixture `verb`, param `fake`)
+
+- `EngineStats` needs an existing file to name and hash, so the test passes a dummy file as `--engine-stats`.
+- `EngineStats.run` is monkeypatched (`FakeVerb.install`) on the module under test. For the identity test it is
+  patched the same way on the blob module.
+- It answers in the verb's JSON shape (`eval_report.cpp:229-262` `paired_json`, including the keys nav_summ pops),
+  with B2's frozen statistics (`atx-engine/tests/fixtures/eval_tie/frozen_statistics.py`, the retired Python verbatim,
+  loaded by path as `test_nav_summ_engine.py` does). It handles three option sets:
+  - no option: `net_moments` of one cell;
+  - `--paired CSV --draws N --block B --seed S [--one-sided]`: `paired_stats`. The CSV path maps back to its series
+    through the EngineStats' own `_csv`.
+  - `--dsr-n N`: `dsr_rows`.
+- Any other option or shape fails the test.
+- It records each call: the cells' and the reference's series digests, the options, the flag.
+- `force` replaces dSR and `lw.p_one_sided` of a `--one-sided` block (the verdict cases).
+- The verb's JSON adds `p_one_sided` only under `--one-sided` (`eval_report.cpp:235-237`). The fake does the same.
+- The fake is test-only, so it is out of the G-P5 scan (`test_no_python_mirror.py`: tests are out of scope).
+
+### Identity (flag absent) and what root re-proves at merge
+
+1. Root merges, then re-runs the two lane files with the verb built. Expected: 96 passed, 0 skipped (the three `real`
+   cases run). No build or exe of the lane's.
+2. `test_flag_absent_nav_summ_equals_roots_blob[fake / real]` checks the lane against root's `nav_summ.py` blob
+   `9fd6bd0a6032b4512c93c50fcc25dbc123c8b518`.
+   - The blob is root's file at `fcb0200e`, and still at `898bf120`, `0a2ceb2b` and `858a4fca`; its sha256 is
+     `50fa3503...`.
+   - The test loads it with `git cat-file`, passes `--engine-stats` explicitly, and on `fake` patches the same verb.
+   - It compares stdout, stderr, the JSON document minus `nav_summ_run`, and on `fake` the verb-call sequence.
+   - The cases: a pooled row with a pooled reference (v8); two history eras (v7); a listed dir with `--reference`;
+     `--bundle` with `--bundle-json` (the shared `paired_verdict`); and the ledger lines of a pooled `--ledger` read
+     (minus `run` / `recorded_by` / `prev_sha256`, with the ledger path substituted in stdout).
+   - Substitution list: the ledger path in stdout only.
+   - If root's `nav_summ.py` changes before this merge, the lane re-derives the pin. Root never edits it.
+3. These pins are unchanged and their identity tests still pass:
+   - `research_roles.py` blob `313b23b3`: root's file before this lane. Since M4, root holds the lane's own `c293f40a`
+     (`dc11c977`); the pin stays the pre-lane module, as the test intends.
+   - (`nav_summ.py`: root's blob is still `9fd6bd0a` at `858a4fca`.)
+   - the round-1 module `8081a6d0`;
+   - `carry_weights.py` branch blob `186655d9`.
+4. SQL2-CLS: root's `094bcd3b` added the rows for `atx.carry-weights/v1` and `atx.od3-flagged-members/v1`. The
+   classes guard was not run here (TEST-1). Root checks it.
+5. Deferred to the gate (GATE-1): the whole `scripts/tests` under seeds 0 and 1, and `test_stage_chain.py`.
+
+### New flags, keys, literals; cross-lane edits
+
+- nav_summ flag `--pool-one-sided`. With it, the pooled row's `paired` gains `lw.p_one_sided` and `verdict`
+  `{dsr_positive, p_one_sided, alpha, pass, rule}`, plus one printed line. No new `atx.<name>/v<n>` literal, no CMake,
+  no C++.
+- `carry_weights.PENDING_SUFFIX` (a constant; the publish path is unchanged).
+- Cross-lane edit: `atx-impl/tools/nav_summ.py` is B2's file. The T2 hunks:
+  - usage, 6 lines;
+  - `paired_verdict` factored out of `bundle()`;
+  - the `paired_or_note` branch;
+  - the `print_pool` line;
+  - the flag and its refusal.
+  Without the flag, the result is identical to root's blob (tested above).
+
+### Blind
+
+- No data was opened, no exe run, no build made.
+- The fixtures are the xpre branch's synthetic NAV dirs (eras dated 2015, 2017, 2020). Their ledger lines carry
+  fixture Sharpe constants, which are the fixture's own and not any book's.
+- I read root history as one-line subjects only. I read the ABS report's header, item table and literals sections for
+  S-b; they contain no statistic.
+- No 2020-2023 return, IC, Sharpe, turnover or NAV figure was read or written. `holdout_gate.py` was never run.
+
+### Deviations (follow-up round)
+
+- Root was merged FIRST as well as last. It moved in code three times during the round: M3 (C3b / D3W / ABS); then D3
+  and SQL2-CLS; then M4 (OD3P `dc11c977`, AL-CLOCK). All three merges are plain.
+- The teeth go beyond the handoff's list:
+  - A1b: re-review 1's probe X1, re-done;
+  - I1: identity teeth;
+  - a B0 baseline pass of every selection.
+- The three merges of this round carry the trailer. The earlier merges `70439eef`, `97a8157f` and `6f667bc1` did not.
+- Slip fixed: fix round 1's five suite logs, `od3p-evidence/fix1-97a8157f-*.log`, were on disk but never committed,
+  though "Tests (fix round 1)" cites them. This round's records commit adds them as they stand.
+
+### Open questions (follow-up round, one line each)
+
+1. PM: pool-21 has no verb, so the pre-existing lane test `test_carry_replaces_the_pooled_fit_and_feeds_every_era` is
+   red here (its summ runs nav_summ). Do we accept it as environmental (green expected in root's run), or should the
+   lane stop that test before summ?

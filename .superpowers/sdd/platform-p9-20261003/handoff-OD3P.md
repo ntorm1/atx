@@ -124,3 +124,13 @@ teeth ran, nothing mutated. No test has run on this round's code. No permission 
    refusal removed, `one_sided=True` dropped, the verdict comparison inverted.
 5. Docs: S-b header, S-c row, the runbook lines above; "Follow-up round (item 6, OD3P-S)" in `task-OD3P-report.md`;
    a head line here; records commit (`git add -f`). Blind: no 2020-2023 statistic.
+
+## Follow-up round finished (RESUME 10, dispatch "OD3P-FU"), 2026-10-08
+
+Head: the records commit above merge `68c2cc6b` (root `858a4fca`, which holds root's M4 merge of OD3P `dc11c977`).
+Code `cc6686f9` (the tests, plus the OD3P-T2V label in `nav_summ.py`). Root merges: `6e7b236a` (root `898bf120`),
+`e75d9d9c` (root `0a2ceb2b`) and `68c2cc6b` (root `858a4fca`), all plain. Steps 1-5 above: DONE. The lane files give 1 failed / 92 passed / 3 skipped: the 3 skips are the named `real` OD3P-SKIP cases,
+and the 1 red is environmental (no verb in pool-21 for the summ phase of the pre-existing
+`test_carry_replaces_the_pooled_fit_and_feeds_every_era`). Teeth: 9 of 9 caught (`od3p-evidence/teeth-fu.log`). Tree
+clean, no permission refusal. Details: `task-OD3P-report.md`, "Follow-up round (item 6, OD3P-S)".
+Next: re-review 2 (BASE `dc11c977`, REV-FRESH), then root's M5 merge with the verb built (expected: 96 passed).

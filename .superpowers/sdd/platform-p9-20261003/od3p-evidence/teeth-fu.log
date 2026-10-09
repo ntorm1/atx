@@ -1,0 +1,21 @@
+HEAD cc6686f9; porcelain empty before the first mutation
+B0 baseline [scripts/tests/test_research_cycle_od3.py -k "other_eras"]: exit 0; 3 passed, 47 deselected in 14.83s
+B0 baseline [scripts/tests/test_research_cycle_od3.py -k "(drop or absent or fit_output or carry) and not carry_replaces_the_pooled"]: exit 0; 37 passed, 13 deselected in 47.98s
+B0 baseline [scripts/tests/test_research_cycle_od3.py -k "other_admission"]: exit 0; 1 passed, 49 deselected in 3.76s
+B0 baseline [scripts/tests/test_research_cycle_od3.py -k "other_anchor"]: exit 0; 1 passed, 49 deselected in 3.19s
+B0 baseline [scripts/tests/test_research_cycle_od3.py -k "stale_pending"]: exit 0; 3 passed, 47 deselected in 4.33s
+B0 baseline [atx-impl/tools/test_od3_tooling.py -k "refuses_without_its_inputs"]: exit 0; 1 passed, 45 deselected in 1.48s
+B0 baseline [atx-impl/tools/test_od3_tooling.py -k "t2_pool_one_sided_adds"]: exit 0; 1 passed, 1 skipped, 44 deselected in 2.16s
+B0 baseline [atx-impl/tools/test_od3_tooling.py -k "t2_verdict"]: exit 0; 9 passed, 37 deselected in 9.44s
+B0 baseline [atx-impl/tools/test_od3_tooling.py -k "flag_absent_nav_summ_equals_roots_blob"]: exit 0; 1 passed, 1 skipped, 44 deselected in 4.00s
+A1 S-a: the R-1 guard ignores the eras [scripts/tests/test_research_cycle_od3.py -k "other_eras"]: CAUGHT (exit 1; 1 failed, 2 passed, 47 deselected in 7.80s); restored: sha256 f2a554bf2467 == pre-mutation, hash-object == HEAD:scripts/research_roles.py, porcelain empty
+A1b S-a: re-review 1 probe X1 (the guard ignores the eras) on its own -k (review: NOT CAUGHT, 32 passed) [scripts/tests/test_research_cycle_od3.py -k "(drop or absent or fit_output or carry) and not carry_replaces_the_pooled"]: CAUGHT (exit 1; 1 failed, 36 passed, 13 deselected in 23.43s); restored: sha256 f2a554bf2467 == pre-mutation, hash-object == HEAD:scripts/research_roles.py, porcelain empty
+A2 S-a: the R-1 guard ignores the admission [scripts/tests/test_research_cycle_od3.py -k "other_admission"]: CAUGHT (exit 1; 1 failed, 49 deselected in 4.15s); restored: sha256 f2a554bf2467 == pre-mutation, hash-object == HEAD:scripts/research_roles.py, porcelain empty
+A3 S-a: the R-1 guard ignores the anchor [scripts/tests/test_research_cycle_od3.py -k "other_anchor"]: CAUGHT (exit 1; 1 failed, 49 deselected in 3.66s); restored: sha256 f2a554bf2467 == pre-mutation, hash-object == HEAD:scripts/research_roles.py, porcelain empty
+D1 S-d: the stale .pending check removed [scripts/tests/test_research_cycle_od3.py -k "stale_pending"]: CAUGHT (exit 1; 3 failed, 47 deselected in 7.28s); restored: sha256 f2a554bf2467 == pre-mutation, hash-object == HEAD:scripts/research_roles.py, porcelain empty
+T1 T2: the --pool-one-sided refusal removed [atx-impl/tools/test_od3_tooling.py -k "refuses_without_its_inputs"]: CAUGHT (exit 1; 1 failed, 45 deselected in 2.22s); restored: sha256 7b5c5e242e78 == pre-mutation, hash-object == HEAD:atx-impl/tools/nav_summ.py, porcelain empty
+T2 T2: one_sided=True dropped on the pooled pair [atx-impl/tools/test_od3_tooling.py -k "t2_pool_one_sided_adds"]: CAUGHT (exit 1; 1 failed, 1 skipped, 44 deselected in 3.10s); restored: sha256 7b5c5e242e78 == pre-mutation, hash-object == HEAD:atx-impl/tools/nav_summ.py, porcelain empty
+T3 T2: the verdict comparison inverted (p >= alpha) [atx-impl/tools/test_od3_tooling.py -k "t2_verdict"]: CAUGHT (exit 1; 5 failed, 4 passed, 37 deselected in 12.80s); restored: sha256 7b5c5e242e78 == pre-mutation, hash-object == HEAD:atx-impl/tools/nav_summ.py, porcelain empty
+I1 identity: the flag-absent pooled pair made one-sided (with the verdict) [atx-impl/tools/test_od3_tooling.py -k "flag_absent_nav_summ_equals_roots_blob"]: CAUGHT (exit 1; 1 failed, 1 skipped, 44 deselected in 3.32s); restored: sha256 7b5c5e242e78 == pre-mutation, hash-object == HEAD:atx-impl/tools/nav_summ.py, porcelain empty
+porcelain after the last restore: empty
+exit 0
