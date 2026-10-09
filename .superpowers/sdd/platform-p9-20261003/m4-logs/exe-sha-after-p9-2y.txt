@@ -1,0 +1,4 @@
+ee69e2fb06db6702b78a9e8cbb68a9a13ca25ccc5fa578ada0c3d90b9afd8b8e *atx-impl-strategy-target-tests.exe
+6977a5a75b386d283c81e148c0fec31a2da1f95536dc98cab2366d424d1f8360 *atx-engine-book-tests.exe
+e6b21410987a8946dcd9a5d0b5631a15fee76d682d2be987c46f1d05be4bd219 *atx-equity-strategy-targets.exe
+fbb5b3928ebb994ed14d87efe8d28c9929af94636d666433151d33cc5e40a314 *atx-equity-strategy-ic.exe

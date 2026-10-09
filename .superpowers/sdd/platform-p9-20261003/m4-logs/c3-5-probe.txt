@@ -1,0 +1,56 @@
+Root M4 (RESUME 10): C3-5 / C3-13 probes on real Debug exes (tool m4-logs/tools/m4_c3_probe.py; copy of
+m2j-logs/tools/m2j_c3_probe.py, changed lines marked M4). Synthetic only (tiny_world seed 7); argv tokens, exit
+codes, booleans. No statistic is read or recorded here.
+
+Head 858a4fca (code: D3 0a2ceb2b + OD3P 7f6f1c75 + AL-CLOCK 858a4fca). Exes (EXE-CUR, receipt
+build-equity/mega-p9-2x-receipt.json, source 858a4fca; disk SHA-256 = receipt):
+  NAV  atx-equity-strategy-targets.exe  p9-2x  d255a0c3b6914ddca792b5ab748fe796162472e191b769664b90a1f088b25b7f
+  IC   atx-equity-strategy-ic.exe       p9-2x  84fdbae1e732fb1485cc88f6de38082a6380addb46ed71115104093e986bb44e
+  eval atx-research-eval.exe            p9-2v  6962966c4b9d419996e24df55ac825e6f6ccd7672956986ad0a3d5b1b5b68778
+       (source 08f04e07; no atx-engine / atx-core / top-level CMake change since: current)
+Why at AL-CLOCK's head: at D3's merge (0a2ceb2b) the Debug NAV exe of record (p9-2p, source 327c86b2) was stale by
+source after C3b / D3W / ABS (EXE-CUR; M3-Q2), and D3 is Python only (no build); the first build of M4 (p9-2x, at
+AL-CLOCK's merge) made the NAV and IC exes current, so D3's (a) / (b) ran there with AL-CLOCK's repeat.
+
+Base worlds (parent through nav, exit 0 each): v5 / v6 (no eval verb), v5e / v6e (eval named and pinned by hand),
+v5p / v6p (eval named, then `research_cycle.py lock tiny.json --exes --write`: ic, nav, eval pinned, W1-I2 (b) /
+B2-10 (b), as root's re-pin of the P9 lineage parents). Parent nav.rule: v5* aim-partial-v5, v6* aim-partial-v6.
+
+Attempts (all kept as evidence of the setup, none is a red):
+  d3a   (base v5)  match done; verify HARD-STOP: the cell spec lacks exes.eval / exes_sha256.eval (B2-10 (c),
+                   B2-11): the tiny world's spec template names no eval verb (probe setup)
+  d3a2  (base v5e) / d3b2 (base v6e): match done; verify HARD-STOP: the parent pins no NAV exe (W1-I2: the parent
+                   must be re-pinned with the cell's exes): probe setup
+  d3a3  (base v5p) (a): see below, PASS
+  d3b3  (base v6p) (b): see below, PASS
+  clk3  (base v5p) AL-CLOCK repeat, --until spec: see below, PASS
+  (clk on base v5e was defined but not run.)
+
+(a) d3a3: wave names aim-partial-v5 {trade_fraction .1} on a parent at aim-partial-v5 (--trade-fraction .05)
+    cell rule-nav-m4-d3a3.json, -cal, -gm: change.set nav.rule = aim-partial-v5 (each)
+    planned NAV argv of the three: --rule x1 [aim-partial-v5]; --trade-fraction [0.1] x1
+    bounded NAV runs: parent tiny-nav-run --rule x1 [aim-partial-v5] (.05), completed exit 0;
+                      calibrated cell tiny-nav-k-navrule-gm-run --rule x1 [aim-partial-v5] (0.1), completed exit 0
+    wave: preflight .. match done; verify refused once on the run's own started_utc stamps only (SEAL-ALLOW-3 per-hit
+          check: 2 hits, both "started_utc" 2026-10-09 lines of the mechanics-reader consoles), resumed with
+          --seal-allow 2026-10-09=SEAL-ALLOW: verify done, wave exit 0 (--until verify; no judge, no record, 0 trials)
+    RESULT: exactly one --rule on every NAV argv; the NAV exe accepts                                       HOLDS
+(b) d3b3: wave names aim-partial-v5 {trade_fraction .1} on a parent at aim-partial-v6 (another aim rule; the live
+          table has one --rule row, aim-partial-v5)
+    cell and -cal / -gm: change.set nav.rule = aim-partial-v5 (replaces the parent's aim-partial-v6)
+    planned NAV argv: --rule x1 [aim-partial-v5]; --trade-fraction [0.1] x1
+    bounded NAV runs: parent --rule x1 [aim-partial-v6], completed exit 0; calibrated cell --rule x1 [aim-partial-v5],
+                      completed exit 0
+    wave: as (a), the same SEAL-ALLOW-3 check (2 started_utc hits), verify done, wave exit 0
+    RESULT: exactly one --rule (the named id) on every NAV argv of the cell; the NAV exe accepts            HOLDS
+(clk) clk3: wave names info-clock-rate-v1 {} on a parent at aim-partial-v5 (--trade-fraction .05), --until spec
+    preflight, register, screen, spec done; wave exit 0 (stopped after spec)
+    cell rule-nav-m4-clk3.json: change.set nav.rule not set (the append route: a --rate row, not a --rule row)
+    planned NAV argv: --rule x1 [aim-partial-v5] (from nav.rule); --rate x1 [info-clock-rate-v1]; --trade-fraction
+    [.05] x1 (the parent's, the rule's required slow rate)
+    no NAV run of the cell (the tiny world has no ea_days_since: a NAV run would be refused before output, AL-CLOCK
+    review item 2)
+    RESULT: one --rule and one --rate info-clock-rate-v1 on the cell's NAV argv; no duplicate               HOLDS
+
+Logs: probe-base-{v5,v6,v5e,v6e,v5p,v6p}.log, probe-wave-{d3a,d3a2,d3b2,d3a3,d3b3,clk3}.log,
+probe-report-{d3a,d3a3,d3b3,clk3}.log. Worlds: build-equity/p9-m4-tw-* (synthetic, regenerable; kept).

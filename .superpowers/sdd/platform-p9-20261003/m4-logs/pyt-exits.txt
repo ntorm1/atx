@@ -1,0 +1,12 @@
+d3-wave-kinds seed 0 head 0a2ceb2b code-dirty [] exit 0 wall 259s start 2026-10-09T01:11:34Z env1-hits 0 :: 191 passed, 1 skipped in 257.68s (0:04:17)
+d3-c3-13 seed 0 head 0a2ceb2b code-dirty [] exit 0 wall 19s start 2026-10-09T01:16:21Z env1-hits 0 :: 10 passed, 182 deselected in 16.87s
+d3-w3-8a seed 0 head 0a2ceb2b code-dirty [] exit 0 wall 14s start 2026-10-09T01:16:40Z env1-hits 0 :: 12 passed, 180 deselected in 12.05s
+d3-eval-verb seed 0 head 0a2ceb2b code-dirty [] exit 0 wall 22s start 2026-10-09T01:16:54Z env1-hits 0 :: 7 passed in 20.50s
+d3-classes-guard seed 0 head 0a2ceb2b code-dirty [] exit 0 wall 3s start 2026-10-09T01:17:45Z env1-hits 0 :: 5 passed, 97 subtests passed in 1.41s
+od3p-lane-files seed 0 head 7f6f1c75 code-dirty [] exit 0 wall 23s start 2026-10-09T01:18:25Z env1-hits 0 :: 74 passed in 21.83s
+od3p-classes-guard seed 0 head 7f6f1c75 code-dirty [] exit 0 wall 3s start 2026-10-09T01:18:48Z env1-hits 0 :: 5 passed, 97 subtests passed in 0.72s
+alclock-info-clock seed 0 head 858a4fca code-dirty [] exit 0 wall 5s start 2026-10-09T01:27:33Z env1-hits 0 :: 5 passed in 3.65s
+alclock-live-table-dbg-2x seed 0 head 858a4fca code-dirty [] exit 0 wall 11s start 2026-10-09T01:27:38Z env1-hits 0 :: 1 passed, 191 deselected in 9.71s
+covmv-classes-guard seed 0 head 5c811b56 code-dirty [] exit 0 wall 4s start 2026-10-09T01:56:32Z env1-hits 0 :: 5 passed, 97 subtests passed in 1.52s
+alclock-classes-guard-recheck seed 0 head 5c811b56 code-dirty [] exit 0 wall 2s start 2026-10-09T01:56:37Z env1-hits 0 :: 5 passed, 97 subtests passed in 0.71s
+covmv-live-table-dbg-2y seed 0 head 5c811b56 code-dirty [] exit 0 wall 10s start 2026-10-09T02:05:44Z env1-hits 0 :: 1 passed, 191 deselected in 8.83s

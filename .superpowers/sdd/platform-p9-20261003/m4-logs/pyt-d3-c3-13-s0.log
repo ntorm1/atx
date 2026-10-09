@@ -1,0 +1,35 @@
+..........                                                               [100%]
+=================================== PASSES ====================================
+_______ test_c3_13_a_rule_row_sets_nav_rule[a-the-parents-own-aim-rule] _______
+---------------------------- Captured stdout call -----------------------------
+wave_readers mechanics: parent -> out\waves\k-navrule\readers\mech-parent.json
+wave_readers mechanics: cell -> out\waves\k-navrule\readers\mech-matched.json
+___________ test_c3_13_a_rule_row_sets_nav_rule[b-another-aim-row] ____________
+---------------------------- Captured stdout call -----------------------------
+wave_readers mechanics: parent -> out\waves\k-navrule\readers\mech-parent.json
+wave_readers mechanics: cell -> out\waves\k-navrule\readers\mech-matched.json
+_____ test_c3_13_a_rule_row_sets_nav_rule[b-a-parent-on-another-aim-rule] _____
+---------------------------- Captured stdout call -----------------------------
+wave_readers mechanics: parent -> out\waves\k-navrule\readers\mech-parent.json
+wave_readers mechanics: cell -> out\waves\k-navrule\readers\mech-matched.json
+________ test_c3_13_a_raw_rule_flag_is_still_refused[constants-flags] _________
+---------------------------- Captured stderr call -----------------------------
+research_cycle wave: HARD-STOP [preflight]: preflight refused: rule_cell.constants.flags sets ['nav --rule'], which the exes' rules own (review F-8, ruling E2-8: name the rule in rules, never write its flags; its params are checked against its params_schema)
+_________ test_c3_13_a_raw_rule_flag_is_still_refused[template-flags] _________
+---------------------------- Captured stderr call -----------------------------
+research_cycle wave: HARD-STOP [preflight]: preflight refused: rule_cell.template change.flags sets ['nav --rule'], which the exes' rules own (review F-8, ruling E2-8: name the rule in rules, never write its flags; its params are checked against its params_schema)
+_________ test_c3_13_a_raw_rule_flag_is_still_refused[constants-set] __________
+---------------------------- Captured stderr call -----------------------------
+research_cycle wave: HARD-STOP [preflight]: preflight refused: rule_cell.constants.set nav.flags: the cell's nav.flags adds token(s) ['--rule'], read as --rule ['aim-partial-v6'] (the parent's with only the named rules: []), a flag the exes' rules own (ruling E2-8: a rule's flag comes only from rules, never from constants.set / change.set / a flag map, another spelling or an abbreviation)
+=========================== short test summary info ===========================
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_nav_rule_split
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_a_rule_row_sets_nav_rule[a-the-parents-own-aim-rule]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_a_rule_row_sets_nav_rule[b-another-aim-row]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_a_rule_row_sets_nav_rule[b-a-parent-on-another-aim-rule]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_other_row_kinds_keep_the_append_route[rate]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_other_row_kinds_keep_the_append_route[target-rule]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_other_row_kinds_keep_the_append_route[cost-law]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_a_raw_rule_flag_is_still_refused[constants-flags]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_a_raw_rule_flag_is_still_refused[template-flags]
+PASSED scripts/tests/test_wave_kinds.py::test_c3_13_a_raw_rule_flag_is_still_refused[constants-set]
+10 passed, 182 deselected in 16.87s

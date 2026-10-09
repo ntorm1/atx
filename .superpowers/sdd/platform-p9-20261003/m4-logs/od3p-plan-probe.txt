@@ -1,0 +1,28 @@
+real exe C:/atx-wt/pool-2/build-equity/bin/atx-equity-strategy-ic.exe sha256 8608b8249258da827166454bd3b95c5be61625fcd2c4300e590d94e15723f857
+[fake-without] plan exit 2
+  exit 2 (EXIT_USAGE): True
+  message names 'absent-members-v1': True
+  message names 'history roles E1': True
+  message names 'OD3P-1': True
+  message names 'not read: no producer': True
+  message names 'nothing runs': True
+  no out dir (before any step): True
+[fake-with] plan exit 0
+  plan exit 0: True
+  E1 u: ends --absent-members <list> --absent-members-sha256 <pin>: True
+  E1 u: flags after ['--candidate-cache']: True
+  E2 (TRAIN anchor) u: no absent flag, no list: True
+  E1 w: ends --absent-members <list> --absent-members-sha256 <pin>: True
+  E1 w: flags after ['--candidate-cache']: True
+  E2 (TRAIN anchor) w: no absent flag, no list: True
+  no out dir written by plan: True
+[real-exe] plan exit 0
+  plan exit 0: True
+  E1 u: ends --absent-members <list> --absent-members-sha256 <pin>: True
+  E1 u: flags after ['--candidate-cache']: True
+  E2 (TRAIN anchor) u: no absent flag, no list: True
+  E1 w: ends --absent-members <list> --absent-members-sha256 <pin>: True
+  E1 w: flags after ['--candidate-cache']: True
+  E2 (TRAIN anchor) w: no absent flag, no list: True
+  no out dir written by plan: True
+RESULT PASS

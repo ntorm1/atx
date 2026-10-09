@@ -1,0 +1,10 @@
+schema atx.nav-rules/v1 -> atx.nav-rules/v1
+rows 12 -> 13
+added: ['mv-aim-v1']
+removed: []
+changed: {}
+order of the kept rows unchanged: True
+capabilities [] added, [] removed
+mv-aim-v1: present True
+  last row: True; kind target; rows of that kind ['mv-aim-v1']
+  x-flag --target-rule mv-aim-v1; incompatible ['aim-partial-v6', 'spo-v1', 'spo-v2', 'spo-v3', 'two-speed-v1', 'adv-hold-v1', 'hold-band-v1']

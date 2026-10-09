@@ -384,3 +384,262 @@ producer (capability `absent-members-v1` on root's IC exe p9-2w); "not read: no 
   `atx-impl/tools/test_nav_summ_v8.py::test_legacy_n37_numbers_reproduced` (root-only; B2-N37, merge `5dfb0ba1`); no
   new red. Trial ledger 133 lines `27e40f9f` at start and end (0 trials). SQL3-2 holds (`build-equity/research-store/`
   absent). No lease touched. No permission refusal. One slip (M3-S1, wrapper only).
+
+## Step group M4 (RESUME 10): D3, OD3P, AL-CLOCK, COV-MV
+
+Root M4, 2026-10-09 UTC (ledger "Dispatch root M4"; `r10-dispatch.md` "ROOT M4"; the PM's prompt fixes the order D3,
+OD3P, AL-CLOCK, COV-MV). Evidence: `m4-logs/` (tools `m4-logs/tools/`: `build.sh`, `busy.ps1`, `gt.sh`, `pyt.sh`,
+`keep_both.py`, `warn_count.py`, `abs_caps.py` copied from `m3-logs/tools` with the logs dir changed; new:
+`od3_plan_probe.py` (ABS item 6 / OD3P item 6), `m4_c3_probe.py` (C3-5 / C3-13, a copy of
+`m2j-logs/tools/m2j_c3_probe.py` with the changed lines marked M4), `nav_rules_cmp.py` (two `nav --list-rules --json`
+envelopes by row id)). Exit tables `m4-logs/gt-exits.txt`, `pyt-exits.txt`, `builds.txt`. Handoff:
+`handoff-root-m4.md`. TEST-1 / ROOT-1a throughout: targeted checks at each merge; whole suites, Release, canaries,
+golden and the parents' flag-absent identity runs are the gate's.
+
+Start state (`m4-logs/start-state.txt`): docs head `f58e3a4c`, code head `094bcd3b`; tracked change only the PM's
+`progress.md`; the five `docs/plans/*.png` untracked (not root's); trial ledger 133 lines `27e40f9f`;
+`build-equity/research-store/` absent (SQL3-2). No housekeeping commit was needed (no merge touches `progress.md`).
+
+MERGE-SHA at each slot: D3 `e197b3b6` and OD3P `dc11c977` as dispatched. AL-CLOCK: at its slot the ledger's newest
+`Task AL-CLOCK: APPROVE` line is still `7ebd41ff` (first review `e9b3a323`); no fix-1 APPROVE line exists, so
+`e9b3a323` was merged and fix round 1 (ALCLOCK-S, pool-30, in progress) is M5's second AL-CLOCK merge. COV-MV: at its
+slot the ledger's newest line is `Task COV-MV: APPROVE at 25e11b32` (re-review 1 of fix round 1, code `942f499b`;
+the PM's message said the same), so `25e11b32` was merged, not `e9e794b3`: no second COV-MV merge is owed.
+
+## D3
+
+### Merge
+
+- `git merge --no-ff e197b3b6` (review APPROVE of `699440bb`; MERGE-SHA) -> **`0a2ceb2b`**, **0 conflicts**; tree
+  `2ce6ea7a` = the `git merge-tree --write-tree` recompute. Merge base `685e238b`.
+- 5 code files (+896 / -36): `scripts/wave_kinds.py`, `scripts/wave_stage_kinds.py`, `scripts/tests/test_wave_kinds.py`,
+  `scripts/specs/p9/kinds/new-cost-model.json`, `scripts/specs/p9/kinds/walk-forward.json` (D3-2's four kind files).
+  Records (`handoff-D3.md`, `task-D3-report.md`, `task-D3-review.md`, `d3-logs/`, `d3-configure.log`) arrived with it.
+- **Keep-both** (`m4-logs/d3-keep-both.txt`, `keep_both.py`; every hunk of both sides survives, PASS):
+  `new-cost-model.json` (C3b line 18; D3 line 5), `walk-forward.json` (C3b `:18`; D3 `:5`, `:29`, `:31-32`),
+  `test_wave_kinds.py` (root 4 hunks: B2's `F.pin_eval_verb(root)` in `world()` at merged **`:187`** (root's `:171`),
+  C3b's `:630-631` (`record_spec`), `:750` (`parametrize("mode", ["pm6-6-engine"])`), `:776` (the `pm6-6` branch
+  removed); D3 8 hunks). C3b's eight fixture lines read `"gross_match": "pm6-6-engine"` at line 18 of
+  new-combination-rule, new-cost-model, new-field, new-horizon, new-signal, new-universe, replaced-signal and
+  walk-forward; leverage-change and new-nav-rule stay `"none"` (`d3-c3b-b2-lines.txt`). Nothing had to be re-added.
+- No build (Python only).
+
+### Tests (merged head `0a2ceb2b`, seed 0, `ATX_EQUITY_BIN` unset; ENV-1: 0 hits)
+
+| suite | result |
+|---|---|
+| `scripts/tests/test_wave_kinds.py` | **191 passed / 1 skipped** (the skip: the live-table test, `ATX_EQUITY_BIN` unset). The dispatch expected 192 / 1: that is D3's own head; the D3 reviewer's three-way preview with C3b recorded **191 / 1** ("one fewer: C3b drops the `pm6-6` param of the match-stage test, C2-11"), which is what the merged tree gives |
+| the C3-13 tests (`-k c3_13`) | **10 passed** |
+| W3-8a: `test_the_ten_fixtures_load_and_cover_the_kinds` ("10 runnable, 0 schema only", `:216-217`), `test_the_cost_model_fixture_runs_to_spec_on_c3s_rows`, `test_every_fixture_runs_preflight_on_c3s_rows` (x 10) | **12 passed** |
+| `scripts/tests/test_wave_eval_verb.py` | **7 passed** |
+| classes guard (SQL2-CLS) | **5 passed** (D3 adds no literal; the two it names were registered before) |
+| live-table test on real exes (`-k live_rule_tables`) | Debug: **1 passed** on p9-2x (after AL-CLOCK's row) and **1 passed** on p9-2y (after COV-MV's row); exes by receipt. Release: deferred to the gate (TEST-1; the Release exes are stale by source) |
+
+### Root items (`task-D3-review.md` section 5; `handoff-D3.md` "Resume 9 close")
+
+| item | result |
+|---|---|
+| 1 C3-13 / C3-5 probes (a) and (b) on real exes | **hold** (`m4-logs/c3-5-probe.txt`). Run at AL-CLOCK's head with the p9-2x NAV / IC exes: at D3's merge the Debug NAV exe of record (p9-2p) was stale by source after C3b / D3W / ABS (EXE-CUR, M3-Q2) and D3 is Python only. (a) parent `aim-partial-v5` at .05, wave names `aim-partial-v5 {trade_fraction .1}`: the cell, `-cal` and `-gm` specs set `nav.rule aim-partial-v5`; every planned and run NAV argv carries ONE `--rule aim-partial-v5` and one `--trade-fraction 0.1`; the calibrated cell's NAV run completed exit 0; verify done (wave exit 0). (b) parent `aim-partial-v6` (another aim rule; the live table has one `--rule` row), the same wave: the cell's `nav.rule` is set to `aim-partial-v5` (the parent's replaced), ONE `--rule aim-partial-v5` on every NAV argv of the cell, the NAV exe accepts, verify done. Two earlier attempts per shape stopped at verify on the probe world's setup (no eval verb pinned, B2-10 (c); then no NAV pin on the parent, W1-I2), fixed by `lock --exes` on the parent; the cell and argv tokens were the same in every attempt |
+| 2 keep-both with C3b / B2 | **holds** (above) |
+| 3 W3-8a G-P2 tick | **holds** (12 passed) |
+| 4 `test_wave_kinds.py`, `test_wave_eval_verb.py` on the merged tree | **holds** (191 / 1 skipped; 7) |
+| 5 live-table test on both builds | **Debug holds** (p9-2x, p9-2y); Release deferred to the gate (TEST-1) |
+| 6 (and D3W review item 7, D3 S-3) the kind's walk-forward constants vs the fitter | **holds** (`d3-wf-flags.txt`): the four flag names, `expanding`, `--engine-fit`, the refused set (`--theme-tsmom`, `--theme-resid`, `--era` = the fitter's `pooled`), the bounds (lag >= 2, step >= 1, min_decisions >= 2) and the default 21 (D3-Q3) match `composition_engine_fit.py` / `fit_composition_weights.py:1923` |
+| 7 gate items | deferred (TEST-1): whole `scripts/tests` seeds 0 / 1, the stage chain, the D3-Q2 `fields.output` grep and the D3-S1 `nav.rule` grep |
+| C3b's five stale docstrings (`test_wave_kinds.py`) | **not edited**: comments only, in a W3-8a kind file (lane D3's); listed for P10 |
+
+### For PRE (round 2b-ii, Appendix IV item 18: B.6 P9-W)
+
+As `task-D3-report.md` "For PRE" states, now in root: manifest `atx.research-wave/v2`, kind `walk-forward`, no
+`rule_cell` / `rules` / `candidates`, `gross_match` `pm6-6-engine`, `walk_forward {window expanding, lag 2, step 21,
+min_decisions 21}` (all four named, D3-1; 21 explicit, D3-Q3). Fit mode: the parent must fit under `--engine-fit`
+without `--theme-tsmom` / `--theme-resid` / `--era` (preflight refuses otherwise; D3-Q1's identity at the gate's
+P9-B0 decides whether P9-F0h is such a parent). Per-date weights producer: the C++ composition fit through the fitter
+post-step (D3W, in root since `08f04e07`), `atx.dsl-composition-weights/v3`. Template: generated at
+`<parent dir>/<parent stem>-wf2s21m21-<wave>.json` (no SHA-256 before the parent is fixed); the generator blobs in root:
+`scripts/wave_kinds.py` `d282586a`, `scripts/wave_stage_kinds.py` `694b619e` (= the reviewed blobs); the kind fixture
+`scripts/specs/p9/kinds/walk-forward.json` sha256 `d865201a1f7a909c62f471f1c9ad58da87228c3c23e5fd28e45df0921b098d9f`.
+
+## OD3P
+
+### Merge
+
+- `git merge --no-ff dc11c977` (re-review 1 APPROVE of `97a8157f`; MERGE-SHA) -> **`7f6f1c75`**, **0 conflicts**;
+  tree `36c83320` = the recompute. Merge base `fd084e78`.
+- 6 code files (+1,633 / -6): `atx-impl/tools/carry_weights.py`, `atx-impl/tools/test_od3_tooling.py` (new),
+  `scripts/cycle/cli.py` (the 3-line T1 refusal), `scripts/research_roles.py`, `scripts/specs/p9/od3/flagged_members.json`
+  (new; sha256 `9aa6fb59...f5ff`, = the review's), `scripts/tests/test_research_cycle_od3.py` (new). Records
+  (`handoff-OD3P.md`, `od3p-absent-contract.md`, `od3p-evidence/`, `p9-od3-runbook.md`, `task-OD3P-report.md`,
+  `task-OD3P-review.md`, `task-OD3P-rereview-1.md`, `task-XPRE-report.md`, `v8-od3-protocol.md`) arrived with it.
+- Keep-both: `scripts/cycle/cli.py` (root 1 hunk at merged `:54-59`, OD3P 1 hunk at `:490-492`): PASS
+  (`od3p-keep-both.txt`). Root's `research_roles.py` blob before the merge was `313b23b3` (the identity tests' pin; no
+  lane changed it after the lane branched), after it `c293f40a` (OD3P's).
+- No build (Python only).
+
+### Tests and root items (`task-OD3P-rereview-1.md` "What root must check at merge"; ABS review item 6)
+
+| item | result |
+|---|---|
+| 1 SQL2-CLS `atx.carry-weights/v1`, `atx.od3-flagged-members/v1` | **holds**: both in root since `094bcd3b` (no new row); classes guard **5 passed**. The class of `atx.od3-flagged-members/v1` is `od3-drop-list` (`spec_doc`, `spec_kind` `other`), root M3's choice that M3-Q1 accepted; `atx.carry-weights/v1` sits in `fit-output` with `carry_weights.py` in its `writer` |
+| 2 the two lane files (`test_research_cycle_od3.py`, `atx-impl/tools/test_od3_tooling.py`) | **74 passed** (seed 0). Whole `scripts/tests` seeds 0 / 1 and the stage chain: the gate's (seed 1 has never run on the fix code) |
+| 3 the `mv-aim-v1` entry of `flagged_members.json` (`rules_pending`) | **open for P0 (before the read), not M4's**: COV-MV is now merged and its registration names `source_sample_end` 2010, so under the review's rule (into `rules` if 2015 or later, else removed) the entry is removed and the file re-pinned at P0; until then line 4's plan is refused at plan time, as the runbook's P7 expects. ALCLOCK-2 is already applied (`info-clock-rate-v1` 2019 in `rules`) |
+| 4 T2 (r7 item 6), OD3P-S S-a / S-d | the OD3P follow-up round (pool-21; M5 after its re-review 2) |
+| 5 R-1 at the read | the read's (P7) |
+| 6 after ABS: `--list-rules --json` lists `absent-members-v1`; the plan of a `fit.carry.drop` spec | **holds** (`od3p-plan-probe.txt`, `od3_plan_probe.py` on the lane test's fake world: history era E1, TRAIN anchor E2, the drop list): a fake IC exe lacking the capability -> `plan` exit **2**, before any step (no out dir), the message names `absent-members-v1`, "history roles E1", OD3P-1, "not read: no producer" and "nothing runs"; a fake offering it -> plan exit 0, E1's u and w passes end `--absent-members <list> --absent-members-sha256 <pin>` after `--candidate-cache` (the fake argv has no `--theme-registry`), E2's carry neither the flags nor the list; **root's real IC exe** (p9-2w `8608b824...`, source `094bcd3b`, current: no C++ / CMake change `094bcd3b..7f6f1c75`) behind the same `.cmd` shim -> the same plan, the same checks |
+| 7 prereg F.1 names P9-F0 where PRE-39 names P9-F0h | round 2b-ii text (PRE) |
+
+## AL-CLOCK
+
+### Merge
+
+- `git merge --no-ff e9b3a323` (review APPROVE of `7ebd41ff`; MERGE-SHA; branch `feat/p9-alclock2-20261007`, pool-30,
+  never pool-8's) -> **`858a4fca`**, **0 conflicts**; tree `868ae10e` = the recompute. Merge base `685e238b`.
+- 21 code files (+1,669 / -32): `atx-impl/src/book/nav_{cli,decide,load,lockstep,publish,rules,run,session,spec,
+  validate,write}.cpp`, `nav_replay_internal.hpp`, `nav_rules.hpp`, `nav_spec.hpp`, `strategy_nav_replay.hpp`,
+  `strategy_nav_v7.cpp` (ALCLOCK-3), `atx-impl/tests/CMakeLists.txt` (tail block), `strategy_nav_info_clock_test.cpp`
+  (new), `scripts/specs/p9/rules/info-clock-rate-v1.json`, `scripts/specs/p9/templates/info-clock.json`,
+  `scripts/tests/test_info_clock_rule.py`. Records (`handoff-AL-CLOCK.md`, `task-AL-CLOCK-report.md`,
+  `task-AL-CLOCK-review.md`, `alclock-logs/`) arrived with it.
+- Keep-both with C3b (`alclock-keep-both.txt`, PASS): `nav_run.cpp` (C3b 2 hunks / AL-CLOCK 8), `nav_spec.cpp` (C3b 4 /
+  AL-CLOCK 1, the key at the table's end `:123-124`), `nav_spec.hpp` (2 / 1).
+- **W3-9 tail appends hold:** the registry row `info-clock-rate-v1` is the last row of `trade_rates[]`
+  (`nav_rules.cpp:75-82`, its `info_clock_refuses` `:57-58`); the parser entry `--rate info-clock-rate-v1`
+  (`nav_cli.cpp:206`) and the switch `--info-clock-print` (`:51`); the NavSpec key `info_clock_print` at the end of the
+  table (`nav_spec.cpp:124`). The NAV exe's table against the p9-2p table (`covmv-logs/d-nav-list-rules-p9-2p.json`):
+  only `info-clock-rate-v1` added, no row changed, order kept (`nav-rules-cmp-2p-2x.txt`).
+
+### Build (EXE-CUR)
+
+| tag | preset | targets | exit | TUs / links | wall | warning lines | exes (source `858a4fca`; disk = receipt) |
+|---|---|---|---|---|---|---|---|
+| **p9-2x** | equity-dev | `atx-impl-strategy-target-tests,atx-equity-strategy-targets,atx-equity-strategy-ic` | 0 | 42 / 4 | 230 s (244 s with the wrapper) | 0 | target-tests `68a26abd619d0f15987788d84f4c40193ee2c2c244cea58effa69be3b018eba0`; NAV `d255a0c3b6914ddca792b5ab748fe796162472e191b769664b90a1f088b25b7f`; IC `84fdbae1e732fb1485cc88f6de38082a6380addb46ed71115104093e986bb44e` |
+
+The NAV exe is in the build by M3-Q2 (stale by source after C3b / D3W / ABS; no `-Canary`, TEST-1). The IC exe was
+added to the same build: it links `atx-impl-strategy`, which holds the changed `book/nav_*` sources, and the C3-5
+probe's IC passes and the live-table test run it (EXE-CUR); its relink precedes the wave-3 P9-B0 (EXE-FREEZE holds).
+`DirtyEntries 6` = `progress.md` and the five PNGs (no code). No host wait (no other build; 4.1 GB free).
+
+### Tests (head `858a4fca`; ENV-1: 0 hits)
+
+| suite | result |
+|---|---|
+| the lane's named filter `InfoClock*:NavSpec.*:NavRules.*:TradeRateRegistry.*:NavAnnMeanGross.*:CostLawRegistry.*:TargetRegistry.*` (p9-2x) | **25 / 25** = the lane's 24 + C3b's `NavSpec.GridFileRefusesADuplicateKey`; `InfoClock*` 13 (InfoClockRate 9 incl. `BookWorkersOneAndFourSameBytes`, `WorkspaceReserveOneRatePerName`; InfoClockPrint 4) (`gt-2x-alclock-named.log`) |
+| C3b's named filter again (`nav_spec` / `nav_run` keep-both) | **34 / 34** (`gt-2x-c3b-named.log`) |
+| `scripts/tests/test_info_clock_rule.py` (after D3's C3-13 merge, as the review asks) | **5 passed** |
+| live-table test, Debug p9-2x | **1 passed** |
+| classes guard | **5 passed** (run at `5c811b56`; AL-CLOCK adds no literal: its one `atx.` literal in added lines, `atx.nav-construction-grid/v1`, is registered in `nav-output`) |
+| Debug whole target-tests, Release (named, whole), canaries, `scripts/tests` seeds 0 / 1, the flag-absent X-5 / Y-F0 identity and the opt-in check | deferred to the gate (TEST-1) |
+
+### Root items (`task-AL-CLOCK-review.md` "What root must check at merge")
+
+| item | result |
+|---|---|
+| 1 merge target (pool-30 branch, review commit), before COV-MV | **holds** |
+| 2 C3-5 probe with `--rate info-clock-rate-v1` | **holds** (`c3-5-probe.txt`, wave `clk3`, `--until spec`): preflight .. spec done, wave exit 0; the cell sets no `nav.rule` (append route); its planned NAV argv carries `--rule aim-partial-v5` ONCE (from `nav.rule`) and `--rate info-clock-rate-v1` ONCE, `--trade-fraction .05` once (the parent's); no NAV run of the cell (the tiny world has no `ea_days_since`) |
+| 3 W3-9 keep-both with COV-MV | at COV-MV's merge (below): **holds** |
+| 3 do `mv-aim-v1` and `info-clock-rate-v1` compose? | neither row lists the other in `incompatible[]` (merged table); no P9 cell names both; **open for the PM** (the review asked root to confirm with the PM) |
+| 4 SQL2-CLS | **holds** (none) |
+| 5 1-vs-4 `--book-workers` bytes; `test_info_clock_rule.py` | **holds** (`InfoClockRate.BookWorkersOneAndFourSameBytes` in the 25; 5 passed) |
+| 6 before the first P9 cell (W1-I2 re-pin, ALCLOCK-1 `--info-clock-print` on the Y-F0 reference, `ea_days_since` in Y-F0's fields manifest, ALCLOCK-4's prereg line) | the gate's / P9-B0's / PRE's. ALCLOCK-2 holds already in root (`flagged_members.json` `rules` holds `info-clock-rate-v1` 2019) |
+| 7 gate items | deferred (TEST-1) |
+
+### For PRE (round 2b-ii, Appendix IV item 16: B.4 P9-C)
+
+As `task-AL-CLOCK-report.md` "For PRE: the P9-C block" states, now in root at `858a4fca`: rule and row
+`info-clock-rate-v1` (kind `trade-rate`, x-flag `--rate info-clock-rate-v1`, no params, incompatible `per-name-v1,
+two-speed-v1, aim-partial-v6, spo-v1, spo-v2, spo-v3`); registration `scripts/specs/p9/rules/info-clock-rate-v1.json`
+sha256 `51b8b754b7e16f49d2185a5e27bf5fa1260b8890f34490cea82d0bc1ffa4e33c` (= the report's), `source_sample_end` 2019;
+template `scripts/specs/p9/templates/info-clock.json` sha256
+`95d4104a421c32f91877649f1ec9dfbdb409c9a121d6f6e2377e5e25e19b42d5` (= the report's). **These are the pre-fix values:**
+fix round 1 (ALCLOCK-S S-2) widens the registration's realised-leverage sentence, so the registration SHA-256 moves
+at M5's second AL-CLOCK merge and is recorded there. C3-5 probe: holds (above). Fit mode: the parent's (NAV-only
+cell), at the wave-3 P9-B0. Producers, C3-4, DEC-16 argument: as the report.
+
+## COV-MV
+
+### Merge
+
+- `git merge --no-ff 25e11b32` (re-review 1 APPROVE of fix round 1 `942f499b`; first review `e9e794b3` of `846739c1`;
+  MERGE-SHA; branch `feat/p9-covmv2-20261007`, pool-31, never pool-24's) -> **`5c811b56`**, **1 conflict**, the
+  expected one: the `atx-impl/tests/CMakeLists.txt` tail. Resolved by an edit of that region (B2-14; no side
+  checkout): AL-CLOCK's block FIRST (its blank line, comment, `strategy_nav_info_clock_test.cpp`), then COV-MV's
+  three lines unchanged (comment, `strategy_mv_aim_rule_test.cpp`). Tree `8568b855` differs from the recompute
+  `5991248f` only in that file. Merge base `094bcd3b` (the lane merged root's code head in its fix round).
+- `atx-impl/CMakeLists.txt` was resolved inside the lane (its merge `1df31bcc`: ABS's `strategy_ic_absent.cpp` row,
+  then COV-MV's `strategy_mv_aim.cpp` row) and reaches root that way; `atx-engine/CMakeLists.txt` gains
+  `src/book/mv_target.cpp` in the `atx-engine` library.
+- 18 code files (+2,698 / -20) vs `858a4fca`: `atx-engine/{CMakeLists.txt, include/atx/engine/book/mv_target.hpp,
+  src/book/mv_target.cpp, tests/book/book_mv_target_test.cpp}`, `atx-impl/CMakeLists.txt`,
+  `atx-impl/src/book/nav_{decide,lockstep,rules}.cpp`, `nav_rules.hpp`, `atx-impl/src/strategy_mv_aim.{cpp,hpp}`,
+  `strategy_nav_v7.{cpp,hpp}`, `atx-impl/tests/CMakeLists.txt`, `strategy_cov_model_test.cpp`,
+  `strategy_mv_aim_rule_test.cpp`, `scripts/specs/p9/rules/mv-aim-v1.json`, `scripts/specs/p9/templates/mv-aim.json`.
+  Records (`handoff-COV-MV.md`, `task-COV-MV-report.md`, `task-COV-MV-review.md`, `task-COV-MV-rereview-1.md`,
+  `covmv-logs/`) arrived with it.
+- Keep-both (`covmv-keep-both.txt`, PASS; base `094bcd3b`, ours `858a4fca`, theirs `25e11b32`): `nav_decide.cpp`
+  (AL-CLOCK 5 hunks / COV-MV 1), `nav_lockstep.cpp` (5 / 1), `nav_rules.cpp` (2 / 3), `nav_rules.hpp` (1 / 1),
+  `strategy_nav_v7.cpp` (1 / 16), `atx-impl/tests/CMakeLists.txt` (1 / 1, merged `:210-214` then `:215-217`).
+- **`nav_workspace_reserve_bytes`** (`book/nav_lockstep.cpp`): the body has exactly two additions over `685e238b`,
+  AL-CLOCK's `clock` term inside the names product and COV-MV's trailing `+ v7::extension_workspace_bytes(names)`.
+
+### Build (EXE-CUR)
+
+| tag | preset | targets | exit | TUs / links | wall | warning lines | exes (source `5c811b56`; disk = receipt) |
+|---|---|---|---|---|---|---|---|
+| **p9-2y** | equity-dev | `atx-impl-strategy-target-tests,atx-engine-book-tests,atx-equity-strategy-targets,atx-equity-strategy-ic` | 0 | 36 / 6 | 165 s (174 s) | 0 | target-tests `ee69e2fb06db6702b78a9e8cbb68a9a13ca25ccc5fa578ada0c3d90b9afd8b8e`; book-tests `6977a5a75b386d283c81e148c0fec31a2da1f95536dc98cab2366d424d1f8360`; NAV `e6b21410987a8946dcd9a5d0b5631a15fee76d682d2be987c46f1d05be4bd219`; IC `fbb5b3928ebb994ed14d87efe8d28c9929af94636d666433151d33cc5e40a314` |
+
+The NAV exe is rebuilt because `nav --list-rules --json` must come from the merged head (COV-MV changes its table);
+the IC exe for the live-table re-run (it links `atx-impl-strategy`). This is the first clean build of a head holding
+D3W, ABS, AL-CLOCK and COV-MV's fix round together. All exes re-hashed at the end of the group = their receipts
+(SPDLOG-RELINK; `exe-sha-end.txt`).
+
+### Tests (head `5c811b56`; ENV-1: 0 hits)
+
+| suite | result |
+|---|---|
+| `MvTarget.*` (book-tests) | **12 / 12** incl. `FactorEigenOnKeptStorageIsAFreshSolve` |
+| `MvAimRule.*` (target-tests) | **16 / 16** incl. `PrintFailureLeavesTheBookAndWritesNull`, `WorkspaceReserveTermOnlyWithTheRule`, `BookWorkersParity`, `ListRulesRowIsAClosedTargetRow` |
+| the lane's named filter `Cov*:NavBookRule.*:VolTarget.*:Spo*:NavSpec.*:NavRules.*:CostLawRegistry.*:TradeRateRegistry.*:TargetRegistry.*:NavAnnMeanGross.*` | **100 / 100** (99 + C3b's `NavSpec.GridFileRefusesADuplicateKey`; the fix round's two new tests are in `MvTarget.*` / `MvAimRule.*`, outside this filter), 1 DISABLED (COVR's diagnostic, as before) |
+| AL-CLOCK's named filter again (both reserve tests) | **25 / 25** |
+| `nav --list-rules --json` (p9-2y) vs p9-2x | exit 0, stderr empty; 12 -> 13 rows: only `mv-aim-v1` added, no row changed, order kept; `mv-aim-v1` is the last row and the only `target` row, x-flag `--target-rule mv-aim-v1`, `incompatible` `[aim-partial-v6, spo-v1, spo-v2, spo-v3, two-speed-v1, adv-hold-v1, hold-band-v1]` (S-5: `two-speed-v1`) (`nav-rules-cmp-2x-2y.txt`); vs p9-2p: exactly `info-clock-rate-v1` and `mv-aim-v1` added |
+| the lane's `covmv-logs/validate_specs.py` against the p9-2y table | exit 0: template and registration SHAs as pinned, no rule-cell or registration problem, `rule_flags` problems none (`covmv-validate-specs-2y.log`) |
+| live-table test, Debug p9-2y | **1 passed** |
+| classes guard (SQL2-CLS) | **5 passed**; COV-MV adds no literal (its one `atx.` literal in added lines is the registered `atx.nav-construction-grid/v1`) |
+| Release, whole target-tests, canaries, gold-run 1 / 4 workers, the X-5 / Y-F0 rule-absent identity | deferred to the gate (TEST-1; COVMV-BYTES (c)) |
+
+### Root items (`task-COV-MV-rereview-1.md` section 6; `task-COV-MV-review.md` section 7)
+
+| item | result |
+|---|---|
+| 1 conflicts (W3-9): one, the tests CMake tail, AL-CLOCK first; `atx-impl/CMakeLists.txt` ABS then COV-MV | **holds** |
+| 2 `nav_workspace_reserve_bytes` both terms; `MvAimRule.WorkspaceReserveTermOnlyWithTheRule` and `InfoClockRate.WorkspaceReserveOneRatePerName` | **holds** |
+| 3 the rule table | **holds** |
+| 4 the two new tests, `MvTarget.*` 12, `MvAimRule.*` 16, named 100, `InfoClock*` | **holds** |
+| 5 flag-absent identity | by the round's construction (no path without `--target-rule mv-aim-v1` changed; the reserve value did not move); the X-5 / Y-F0 runs are the gate's |
+| 6 SQL2-CLS | **holds** (none) |
+| 7 pins | **hold**: store `ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3` in the registration (2) and the template (3); registration sha256 `4b4af6e238b529d5d7eabccd2699022dc653da52fa45801eb3f61896bd6680b4`, template `83391f2c526b28008d48e250f0e7d26e7c3f8661786d43a8f3d76439f664d870` (= the review's); S-b (the null form's sentence) is PRE's / the re-pin's |
+| 8 the right branch | **holds** (pool-31's `feat/p9-covmv2-20261007` at `25e11b32`) |
+| first review's item 5 (1 vs 4 workers with the rule on) | `MvAimRule.BookWorkersParity` passed; the gold-run check is the gate's |
+
+### For PRE (round 2b-ii, Appendix IV item 17: B.5 P9-MV)
+
+Merged and APPROVE (`25e11b32`, fix round 1 in). Registration `scripts/specs/p9/rules/mv-aim-v1.json` sha256
+`4b4af6e238b529d5d7eabccd2699022dc653da52fa45801eb3f61896bd6680b4`, template `scripts/specs/p9/templates/mv-aim.json`
+sha256 `83391f2c526b28008d48e250f0e7d26e7c3f8661786d43a8f3d76439f664d870` (root re-pins the template's
+`template_sha256`, and so the registration's SHA, when it sets the template's `parent`: PRE-29); `source_sample_end`
+2010 (reviewer-checked); the row as above; the store pin `ea58691f...f0f3` unchanged (PRE-9 / COV-13 (c) / PRE-24a
+carried as the lane's registration states). Fit mode: at the wave-3 P9-B0. OD3P's P0 consequence: 2010 < 2015, so
+`mv-aim-v1` leaves `flagged_members.json`'s `rules_pending` (re-pin at P0).
+
+### Disk and status (M4)
+
+- Root's object trees `build-equity/` and `build-equity-rel/` kept. The C3-5 probe worlds `build-equity/p9-m4-tw-*`
+  (12 dirs, about 25 MB each, synthetic, regenerable) kept as the probe's evidence beside M2j's.
+- Lane pools: nothing deleted (DISK-2 deletions are not in this dispatch; pool-30's fix round is running).
+- Session scratchpad `root-m4/` (merge messages, `--basetemp` dirs, the od3 plan probe's fake worlds): mine,
+  regenerable; deleted by literal name at the end of the group.
+- Code head **`5c811b56`**. Build tags used p9-2x, p9-2y; **next free build tag p9-2z**. Known-red set: exactly
+  `atx-impl/tools/test_nav_summ_v8.py::test_legacy_n37_numbers_reproduced` (root-only; B2-N37, merge `5dfb0ba1`); no
+  new red in M4. Trial ledger 133 lines `27e40f9f` at start and end (0 trials; every probe wave stopped at verify or
+  spec, with its own empty ledger). SQL3-2 holds. No lease touched. No permission refusal. One harmless duplicate in
+  `pyt-exits.txt`: the line labelled `alclock-classes-guard-recheck` is a second classes-guard run on `5c811b56` (same
+  result as `covmv-classes-guard`), not a run at AL-CLOCK's head.

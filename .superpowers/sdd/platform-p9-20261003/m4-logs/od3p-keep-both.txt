@@ -1,0 +1,2 @@
+scripts/cycle/cli.py: ours 1 hunks (merged :54-59) kept True; theirs 1 hunks (merged :490-492) kept True; PASS
+RESULT PASS

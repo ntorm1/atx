@@ -1,0 +1,42 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = MvAimRule.*
+[==========] Running 16 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 16 tests from MvAimRule
+[ RUN      ] MvAimRule.ListRulesRowIsAClosedTargetRow
+[       OK ] MvAimRule.ListRulesRowIsAClosedTargetRow (6 ms)
+[ RUN      ] MvAimRule.RefusesWithoutAStore
+[       OK ] MvAimRule.RefusesWithoutAStore (382 ms)
+[ RUN      ] MvAimRule.RefusesIncompatibleRules
+[       OK ] MvAimRule.RefusesIncompatibleRules (74 ms)
+[ RUN      ] MvAimRule.RefusesAnIndustrySlotOutsideTheTable
+[       OK ] MvAimRule.RefusesAnIndustrySlotOutsideTheTable (335 ms)
+[ RUN      ] MvAimRule.TargetAtDReadsStoreRowDOnly
+[       OK ] MvAimRule.TargetAtDReadsStoreRowDOnly (1743 ms)
+[ RUN      ] MvAimRule.FutureReturnDoesNotChangePast
+[       OK ] MvAimRule.FutureReturnDoesNotChangePast (1465 ms)
+[ RUN      ] MvAimRule.UnpricedMembersPassThrough
+[       OK ] MvAimRule.UnpricedMembersPassThrough (90 ms)
+[ RUN      ] MvAimRule.FewerThanTwoPricedPassesThrough
+[       OK ] MvAimRule.FewerThanTwoPricedPassesThrough (90 ms)
+[ RUN      ] MvAimRule.DecisionCountedOnceWarmUpAndLocateNegatives
+[       OK ] MvAimRule.DecisionCountedOnceWarmUpAndLocateNegatives (80 ms)
+[ RUN      ] MvAimRule.ContainerAndDirectoryStoresGiveTheSameBook
+[       OK ] MvAimRule.ContainerAndDirectoryStoresGiveTheSameBook (1218 ms)
+[ RUN      ] MvAimRule.PrintFailureLeavesTheBookAndWritesNull
+[       OK ] MvAimRule.PrintFailureLeavesTheBookAndWritesNull (1697 ms)
+[ RUN      ] MvAimRule.BookWorkersParity
+[       OK ] MvAimRule.BookWorkersParity (1402 ms)
+[ RUN      ] MvAimRule.SummaryBlockOnlyWhenOn
+[       OK ] MvAimRule.SummaryBlockOnlyWhenOn (1175 ms)
+[ RUN      ] MvAimRule.FlagAbsentIdentity
+[       OK ] MvAimRule.FlagAbsentIdentity (559 ms)
+[ RUN      ] MvAimRule.WorkspaceReserveTermOnlyWithTheRule
+[       OK ] MvAimRule.WorkspaceReserveTermOnlyWithTheRule (0 ms)
+[ RUN      ] MvAimRule.CalibrateGrossCountsEachDecisionOnce
+[       OK ] MvAimRule.CalibrateGrossCountsEachDecisionOnce (1070 ms)
+[----------] 16 tests from MvAimRule (11397 ms total)
+
+[----------] Global test environment tear-down
+[==========] 16 tests from 1 test suite ran. (11398 ms total)
+[  PASSED  ] 16 tests.
