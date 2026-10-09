@@ -1,0 +1,180 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = MvAimRule.Refuses*
+[==========] Running 3 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 3 tests from MvAimRule
+[ RUN      ] MvAimRule.RefusesWithoutAStore
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(259): error: Expected: (err.str().find("mv-aim-v1 needs --risk-model and --risk-model-sha256")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+InvalidArgument: spo-v1: --risk-model-sha256 and the role pin
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(259): error: Expected: (err.str().find("mv-aim-v1 needs --risk-model and --risk-model-sha256")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+InvalidArgument: spo-v1: --risk-model-sha256 and the role pin
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(259): error: Expected: (err.str().find("mv-aim-v1 needs --risk-model and --risk-model-sha256")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+IoError: cannot open file for SHA-256 digest
+
+
+[  FAILED  ] MvAimRule.RefusesWithoutAStore (238 ms)
+[ RUN      ] MvAimRule.RefusesIncompatibleRules
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(313): error: Expected equality of these values:
+  nav(nav_line(in, dir.path / "out", extra), out, err)
+    Which is: 0
+  2
+refused with --rule spo-v1|v2|v3
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(314): error: Expected: (err.str().find("--target-rule mv-aim-v1")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(315): error: Expected: (err.str().find(message)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(313): error: Expected equality of these values:
+  nav(nav_line(in, dir.path / "out", extra), out, err)
+    Which is: 1
+  2
+refused with --rule spo-v1|v2|v3
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(314): error: Expected: (err.str().find("--target-rule mv-aim-v1")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+Unavailable: spo-v2: the cost-free aim cannot reach --target-vol (ex-ante vol 0.011555); pass --gamma or a reachable target
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(315): error: Expected: (err.str().find(message)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+Unavailable: spo-v2: the cost-free aim cannot reach --target-vol (ex-ante vol 0.011555); pass --gamma or a reachable target
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(313): error: Expected equality of these values:
+  nav(nav_line(in, dir.path / "out", extra), out, err)
+    Which is: 1
+  2
+refused with --rule spo-v1|v2|v3
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(314): error: Expected: (err.str().find("--target-rule mv-aim-v1")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+Unavailable: spo-v3: tripwire: Ruling E-31a: the primary book modeled-1bn-stale5-v1+flat-300-v0 did not meet its net or beta limit (limits_unmet) on 4 scored decisions (first session 1578009600000000000); the run is VOID whatever --specific-ceiling-void: no NAV or return file is written
+nav v7: void run; C:\Users\natha\AppData\Local\Temp\atxv-27a129c4\atx_spo_287467059624600_1\out exists, diagnostics not written
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(315): error: Expected: (err.str().find(message)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+Unavailable: spo-v3: tripwire: Ruling E-31a: the primary book modeled-1bn-stale5-v1+flat-300-v0 did not meet its net or beta limit (limits_unmet) on 4 scored decisions (first session 1578009600000000000); the run is VOID whatever --specific-ceiling-void: no NAV or return file is written
+nav v7: void run; C:\Users\natha\AppData\Local\Temp\atxv-27a129c4\atx_spo_287467059624600_1\out exists, diagnostics not written
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(313): error: Expected equality of these values:
+  nav(nav_line(in, dir.path / "out", extra), out, err)
+    Which is: 1
+  2
+refused with --rule aim-partial-v6
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(314): error: Expected: (err.str().find("--target-rule mv-aim-v1")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+AlreadyExists: nav replay: output must not exist
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(315): error: Expected: (err.str().find(message)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+AlreadyExists: nav replay: output must not exist
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(313): error: Expected equality of these values:
+  nav(nav_line(in, dir.path / "out", extra), out, err)
+    Which is: 1
+  2
+needs --rule aim-partial-v5
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(314): error: Expected: (err.str().find("--target-rule mv-aim-v1")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+InvalidArgument: target replay: aim_leverage/dust_multiple are aim-partial-v5 only
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(315): error: Expected: (err.str().find(message)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+InvalidArgument: target replay: aim_leverage/dust_multiple are aim-partial-v5 only
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(313): error: Expected equality of these values:
+  nav(nav_line(in, dir.path / "out", extra), out, err)
+    Which is: 1
+  2
+needs --rule aim-partial-v5
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(314): error: Expected: (err.str().find("--target-rule mv-aim-v1")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+InvalidArgument: target replay: aim_leverage/dust_multiple are aim-partial-v5 only
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(315): error: Expected: (err.str().find(message)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+InvalidArgument: target replay: aim_leverage/dust_multiple are aim-partial-v5 only
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(313): error: Expected equality of these values:
+  nav(nav_line(in, dir.path / "out", extra), out, err)
+    Which is: 1
+  2
+refused with --two-speed
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(314): error: Expected: (err.str().find("--target-rule mv-aim-v1")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+InvalidArgument: target replay: two-speed-v1 needs trade_fraction .05 (its registered slow rate theta_s)
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(315): error: Expected: (err.str().find(message)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+InvalidArgument: target replay: two-speed-v1 needs trade_fraction .05 (its registered slow rate theta_s)
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(313): error: Expected equality of these values:
+  nav(nav_line(in, dir.path / "out", extra), out, err)
+    Which is: 1
+  2
+refused with --adv-hold-q
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(314): error: Expected: (err.str().find("--target-rule mv-aim-v1")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+AlreadyExists: nav replay: output must not exist
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(315): error: Expected: (err.str().find(message)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+AlreadyExists: nav replay: output must not exist
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(313): error: Expected equality of these values:
+  nav(nav_line(in, dir.path / "out", extra), out, err)
+    Which is: 1
+  2
+refused with --hold-band
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(314): error: Expected: (err.str().find("--target-rule mv-aim-v1")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+AlreadyExists: nav replay: output must not exist
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(315): error: Expected: (err.str().find(message)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+AlreadyExists: nav replay: output must not exist
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(313): error: Expected equality of these values:
+  nav(nav_line(in, dir.path / "out", extra), out, err)
+    Which is: 1
+  2
+refused with --construction-grid
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(314): error: Expected: (err.str().find("--target-rule mv-aim-v1")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+AlreadyExists: nav grid: output must not exist
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(315): error: Expected: (err.str().find(message)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+AlreadyExists: nav grid: output must not exist
+
+
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(317): error: Value of: fs::exists(dir.path / "out")
+  Actual: true
+Expected: false
+
+[  FAILED  ] MvAimRule.RefusesIncompatibleRules (5996 ms)
+[ RUN      ] MvAimRule.RefusesAnIndustrySlotOutsideTheTable
+..\atx-impl\tests\strategy_mv_aim_rule_test.cpp(346): error: Value of: refused
+  Actual: true
+Expected: false
+
+[  FAILED  ] MvAimRule.RefusesAnIndustrySlotOutsideTheTable (154 ms)
+[----------] 3 tests from MvAimRule (6390 ms total)
+
+[----------] Global test environment tear-down
+[==========] 3 tests from 1 test suite ran. (6390 ms total)
+[  PASSED  ] 0 tests.
+[  FAILED  ] 3 tests, listed below:
+[  FAILED  ] MvAimRule.RefusesWithoutAStore
+[  FAILED  ] MvAimRule.RefusesIncompatibleRules
+[  FAILED  ] MvAimRule.RefusesAnIndustrySlotOutsideTheTable
+
+ 3 FAILED TESTS

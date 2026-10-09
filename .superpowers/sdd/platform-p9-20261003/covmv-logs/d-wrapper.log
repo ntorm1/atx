@@ -1,0 +1,43 @@
+﻿{
+    "Source":  "846739c14ee419418c19e9bb2c546188bc154af9",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  0,
+    "ConfiguredProvenance":  "26b67bd523f05cd6be8070873883e005938be44c",
+    "Jobs":  2,
+    "FreeMiB":  1878,
+    "CommitMiB":  2987,
+    "Targets":  [
+                    "atx-impl-strategy-target-tests",
+                    "atx-equity-strategy-targets"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  46.9958852,
+    "CompiledTUs":  8,
+    "Links":  3,
+    "Tag":  "p9-covmv-d",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-24\\build-equity",
+    "Executables":  {
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-24\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "58d7bcb2444a8b58f3922bed3e056669b19606ae6ec76e2780764beaaeee1cb1"
+                                                           },
+                        "atx-equity-strategy-targets":  {
+                                                            "Path":  "C:\\atx-wt\\pool-24\\build-equity\\bin\\atx-equity-strategy-targets.exe",
+                                                            "Sha256":  "75593d6fb8726797fcf1e0deb0093c26dad26f518ef67aa57cd60b86b48cd6e9"
+                                                        }
+                    }
+}
+[1/12] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+[2/12] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+[3/12] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+[4/12] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+[5/12] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+[6/12] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+[7/12] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+[8/12] Linking CXX static library lib\spdlogd.lib
+[9/12] Linking CXX executable bin\atx-equity-strategy-targets.exe
+[10/12] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_mv_aim_rule_test.cpp.obj
+[11/12] Linking CXX executable bin\atx-impl-strategy-target-tests.exe
+
+research-build exit=0

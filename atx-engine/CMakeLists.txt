@@ -171,6 +171,8 @@ add_library(atx-engine ${ATX_LIB_TYPE}
     src/book/target_shaping.cpp
     # v8 R-8: ex-ante risk target (risk-target-v1: the aim's leverage from the gross-1 book's vol)
     src/book/risk_target.cpp
+    # P9 COV-MV: mv-aim-v1 (the max-Sharpe target P V^-1 P alpha; F never inverted, COV-13 (c))
+    src/book/mv_target.cpp
     src/cost/cost_surface.cpp
     src/cost/spread_estimators.cpp
     src/cost/borrow_tiers.cpp

@@ -644,6 +644,17 @@ TEST(CovBias, EigenFamilyInBandOnAPlantedModel) {
     EXPECT_EQ(half.pooled_n, cov.pooled_n);
     EXPECT_TRUE(std::abs(half.pooled - 1.0) > half.pooled_band() || half.share_in_band() < 0.95)
         << half.text();
+    // P9 COV-MV (Ruling COV-11, re-review 2 S10): the over-correction control a = 2 fails the band
+    // too (the a = .5 control above catches under-correction only).
+    auto twice_config = band_config(rk::RiskRecipe::CovV1);
+    twice_config.eigen_amplification = 2.0;
+    const auto twice = run_eigen_family(panel_band, twice_config);
+    std::cout << "[eigen b per rank] band panel atx-cov-v1 a=2 (over-correction control):"
+              << twice.text() << '\n';
+    EXPECT_EQ(twice.pooled_n, cov.pooled_n);
+    EXPECT_TRUE(std::abs(twice.pooled - 1.0) > twice.pooled_band() ||
+                twice.share_in_band() < 0.95)
+        << twice.text();
   }
   const auto panel = base_panel().panel();
   {
