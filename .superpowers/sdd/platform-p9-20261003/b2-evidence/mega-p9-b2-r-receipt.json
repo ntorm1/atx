@@ -1,0 +1,25 @@
+{
+    "Source":  "73b4acfd4a5b1354b787a8a9e963d4585582458b",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  0,
+    "ConfiguredProvenance":  "73b4acfd4a5b1354b787a8a9e963d4585582458b",
+    "Jobs":  3,
+    "FreeMiB":  2881,
+    "CommitMiB":  6611,
+    "Targets":  [
+                    "atx-research-eval"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  401.3613717,
+    "CompiledTUs":  221,
+    "Links":  10,
+    "Tag":  "p9-b2-r",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-14\\build-equity",
+    "Executables":  {
+                        "atx-research-eval":  {
+                                                  "Path":  "C:\\atx-wt\\pool-14\\build-equity\\bin\\atx-research-eval.exe",
+                                                  "Sha256":  "71d19288182a94a025b90b135f4c12477406d65e0e94ce82af5e6fbe49fd91c7"
+                                              }
+                    }
+}

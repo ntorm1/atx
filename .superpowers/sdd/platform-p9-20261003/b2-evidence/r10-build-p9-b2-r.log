@@ -1,0 +1,65 @@
+{
+    "Source":  "73b4acfd4a5b1354b787a8a9e963d4585582458b",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  0,
+    "ConfiguredProvenance":  "73b4acfd4a5b1354b787a8a9e963d4585582458b",
+    "Jobs":  3,
+    "FreeMiB":  2881,
+    "CommitMiB":  6611,
+    "Targets":  [
+                    "atx-research-eval"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  401.3613717,
+    "CompiledTUs":  221,
+    "Links":  10,
+    "Tag":  "p9-b2-r",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-14\\build-equity",
+    "Executables":  {
+                        "atx-research-eval":  {
+                                                  "Path":  "C:\\atx-wt\\pool-14\\build-equity\\bin\\atx-research-eval.exe",
+                                                  "Sha256":  "71d19288182a94a025b90b135f4c12477406d65e0e94ce82af5e6fbe49fd91c7"
+                                              }
+                    }
+}
+[1/234] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+[2/234] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+[3/234] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+[4/234] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+[5/234] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\cmake_pch.cxx.obj
+[6/234] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+[7/234] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+[8/234] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+[11/234] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\decimal.cpp.obj
+[12/234] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\core.cpp.obj
+[13/234] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\datetime.cpp.obj
+[14/234] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\symbol.cpp.obj
+[15/234] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\sha256.cpp.obj
+[16/234] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\io\parquet_writer.cpp.obj
+[17/234] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\io\zip_reader.cpp.obj
+[18/234] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\io\parquet.cpp.obj
+[19/234] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\db\sqlite.cpp.obj
+[20/234] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\db\connection.cpp.obj
+[21/234] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\external\dbn.cpp.obj
+[22/234] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\external\databento.cpp.obj
+[23/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\batch.cpp.obj
+[24/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\datetime.cpp.obj
+[25/234] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\external\databento_pull.cpp.obj
+[26/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn.cpp.obj
+[27/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn_decoder.cpp.obj
+[28/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn_encoder.cpp.obj
+[29/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn_store.cpp.obj
+[30/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\buffer.cpp.obj
+[31/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\dbn_buffer_decoder.cpp.obj
+[32/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\http_client.cpp.obj
+[33/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\http_stream_reader.cpp.obj
+[34/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\json_helpers.cpp.obj
+[35/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\live_connection.cpp.obj
+[36/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\scoped_fd.cpp.obj
+[37/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\sha256_hasher.cpp.obj
+[38/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\tcp_client.cpp.obj
+[39/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\tcp_readable.cpp.obj
+[40/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\zstd_stream.cpp.obj
+[41/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\enums.cpp.obj
+[42/234] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\exceptions.cpp.obj
