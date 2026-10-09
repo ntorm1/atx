@@ -6,6 +6,13 @@ Lane SIGN (stretch; ruling C3-11): retire the Python PM7-35 sign rule (`scripts/
 
 ## Head line
 
+- R10 (RESUME 10) end: DONE_WITH_CONCERNS. Pre-deletion code head `8727f6d4` (root `f58e3a4c` merged); the records
+  commit (report, this line, `sign-logs/` evidence) is its child; the deletion commit (`refactor(sign): retire the
+  Python PM7-35 sign rule ...`) is the LAST commit above it (its SHA in the hand-back). Debug `p9-sign-a` (source
+  `6d4b8bf9`): `SignVerb*` 6 / 6; lane identity 24 / 24 with the real exe; Python teeth 10 / 10; C++ teeth DEFERRED
+  (HOST-4: a build was waiting). Everything is in `task-SIGN-report.md`. Next: the first review (PM); root's identity
+  on the four ledgered screens before root merges the deletion commit. Object tree `build-equity` deleted by name
+  after the deletion commit (receipts and logs kept; the tracked `audits/`, `v8-interim3-pitch-render-run2/` kept).
 - STOP 9 state: head `422e9fad`, tree clean, three `WIP(sign)` commits above the merges of C3b `76b9f256`
   (`749d2c32`) and root `fcb0200e` (`9c360cde`). No handoff, no report, no log existed; `sign-logs/` held the four
   tools only. Nothing was ever compiled, built or run in C++; the pytest count in `422e9fad`'s body (19 passed,
