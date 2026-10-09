@@ -1,0 +1,14 @@
+{
+ "composition_engine_fit": "a6dd0da59c134ac99c51be7dec4427490b2606bf840fcb5bda71d9839f1e26e2",
+ "composition_ic_shrink": "04d4520353366260088ae1cf59aa2b2bbbdf9341ad5628b20b4eec0e6cf846bf",
+ "composition_mom_volman": "0ec0ff100d39dfeaaaa6ed08211296ccd5899e6356d016de9c36829621c6375b",
+ "composition_resid": "9c48f390ac6d1a53ce76a7de135d3255bfcc15da05096b4e48b80bafb26982c7",
+ "composition_rules": "78305c4b4b1540cc808233a2b0da0b95ecb196f13b6b690e0386f6626b5b3af2",
+ "composition_theme_erc": "ebdb2a46a8e19433dec130869dd63f84710124f3acf00e8a649148b227a9f67d",
+ "composition_theme_tsmom": "a25fcb0ce2652cd7e79fbda8b7f48815362f67e0fb51891719b9c4b5e4bf6946",
+ "fitter AIM_ERA_PRODUCERS": "9a880f97b42fdae67d859c8d505a611e896e1cdeab73077429c23e72292fba34",
+ "fitter AIM_PRODUCERS": "f1fb0d3a5183a723bc561cec124121e28a07a54abe667be6ab85f18b6cf80bec",
+ "fitter CONTEXT_PRODUCERS": "70e1eda51539c3536d9f46cc5c9f7091222b294fbd8c074bb07d689d46fe71b3",
+ "fitter FACTOR_PRODUCERS": "962cd507af511fe3a907ab63bb5109c1f2044dde1eca0cfa13ea59715dda0f4a",
+ "fitter OUTPUT_PRODUCERS (fit, fit_prior)": "d28a30895ad1393e512d3a20384af025063675e9a2617611ee9cae41e17304a2"
+}
