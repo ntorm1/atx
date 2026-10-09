@@ -151,13 +151,14 @@ SIGN_DIR = "sign"
 
 def sign_exe(w: Wave, spec: str) -> str:
     """The IC exe the screen spec runs (its effective exes.ic, research_cycle's rule; load_spec refuses a spec with an
-    ic section and no exes.ic), held to its exes_sha256 pin when the spec has one (exit 3 otherwise: the sign verb
-    runs on the exe the screen ran on)."""
+    ic section and no exes.ic), held to its exes_sha256 pin when the spec has one (exit 3 otherwise, a missing exe
+    included, as research_cycle's verify_exes: the sign verb runs on the exe the screen ran on)."""
     doc = w.load_spec(spec)
     exe = RC.effective_exes(doc)["ic"]
     pin, now = (doc.get(RC.EXES_PIN) or {}).get("ic"), w.sha(exe)
     if pin is not None and now != pin:
-        raise StageError(f"screen: the IC exe {exe} is sha256 {str(now)[:12]}, not its pin {str(pin)[:12]} ({spec} "
+        got = f"sha256 {now[:12]}" if now else "missing"
+        raise StageError(f"screen: the IC exe {exe} is {got}, not its pin {str(pin)[:12]} ({spec} "
                          f"{RC.EXES_PIN}.ic): the sign verb runs only on the pinned exe", EXIT_PIN)
     return exe
 

@@ -276,6 +276,12 @@ def test_the_ic_exe_must_be_its_pin(tmp_path):
             with pytest.raises(stage_chain.StageError, match="not its pin 000000000000") as exc:
                 SL.sign_exe(w, "scripts/specs/v8/lib-x.json")
             assert exc.value.code == SL.EXIT_PIN
+    pin = sha((root / "bin/ic.exe").read_bytes())                  # a pinned exe that is gone: refused, as
+    (root / "bin/ic.exe").unlink()                                 # research_cycle's verify_exes refuses it
+    F.write_json(root, "scripts/specs/v8/lib-x.json", dict(spec, **{RC.EXES_PIN: {"ic": pin}}))
+    with pytest.raises(stage_chain.StageError, match=f"bin/ic.exe is missing, not its pin {pin[:12]}") as exc:
+        SL.sign_exe(w, "scripts/specs/v8/lib-x.json")
+    assert exc.value.code == SL.EXIT_PIN
     F.write_json(root, "scripts/specs/v8/lib-x.json", dict(spec, exes={"nav": "bin/nav.exe"}))
     with pytest.raises(stage_chain.StageError, match="spec exes needs ic"):    # a screen spec always runs exes.ic
         SL.sign_exe(w, "scripts/specs/v8/lib-x.json")
