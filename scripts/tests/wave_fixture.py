@@ -25,7 +25,6 @@ import research_spec  # noqa: E402
 import research_tree  # noqa: E402
 import wave_manifest as WM  # noqa: E402
 import wave_readers  # noqa: E402
-import wave_rules as WR  # noqa: E402
 
 BI = research_ledger.backtest_integrity()
 LEDGER = "out/trials.jsonl"
@@ -177,7 +176,7 @@ def manifest(drop: tuple = (), **over) -> dict:
          "fields": {"dir": FIELDS, "manifest_sha256": None}, "library": "w1",
          "candidates": [candidate("alpha_a"), candidate("alpha_b"), candidate("alpha_c")],
          "acceptance": {"rule": "pm7-34", "printed": ["turnover-per-gross-not-higher", "capacity-4x-higher"]},
-         "sign_rule": "pm7-35", "gross_match": "pm6-6",
+         "sign_rule": "pm7-35", "gross_match": "pm6-6-engine",
          "budget": {"id": "syn", "admission_cap": 10, "admission_cycle_prefix": "w", "construction_cap": 20},
          "ledger": LEDGER, "expect": {"n_before": 2}, "out_dir": "out/waves/w1",
          "record": {"copy_to": "sprint/waves"}}
@@ -331,7 +330,8 @@ class FakeCycle:
     @staticmethod
     def calibrate(nav: dict, per_l: float) -> dict | None:
         """P9 C2's nav --calibrate-gross on the synthetic NAV (G(L) = nav_gross(per_l x L)): pass 1 at L, PM6-6's one
-        correction, the record the exe writes into summary.json; None without the flag."""
+        correction L' = L x G_parent / G at 4 decimals (the fake exe's own arithmetic, a test oracle: the Python rule
+        of wave_rules is retired, ruling C2-11), the record the exe writes into summary.json; None without the flag."""
         flags = [str(f) for f in nav.get("flags") or []]
         if "--calibrate-gross" not in flags:
             return None
@@ -340,7 +340,7 @@ class FakeCycle:
         lev = float(nav["leverage"])
         g1 = nav_gross(per_l * lev)
         corrected = abs(g1 - target) > tol
-        final = float(WR.matched_leverage(lev, target, g1)) if corrected else lev
+        final = float(f"{lev * target / g1:.4f}") if corrected else lev
         g2 = nav_gross(per_l * final)
         return {"target": target, "tolerance": tol, "leverage_requested": lev, "gross_requested": g1,
                 "corrected": corrected, "leverage": final, "gross": g2, "matched": abs(g2 - target) <= tol,

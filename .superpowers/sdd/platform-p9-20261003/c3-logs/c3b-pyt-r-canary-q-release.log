@@ -1,0 +1,59 @@
+..............
+tiny_world canary (Release): planted members at h 21, band 2.0 SE (PM ruling T1-SE): {"planted_a": {"band_se": 2.0, "mean": 0.028643040293040295, "planted": 0.04406974726037816, "planted_t": 2.3393679827753457, "standard_error": 0.01883831341835128, "t": 1.5204673399869106, "within_band": true, "z": -0.8189006427884352}, "planted_b": {"band_se": 2.0, "mean": 0.010685531135531133, "planted": 0.04491101333227986, "planted_t": 1.4978441966553238, "standard_error": 0.029983768293501994, "t": 0.35637719151688063, "within_band": true, "z": -1.1414670051384432}}
+F
+================================== FAILURES ===================================
+___ test_cycle_e2e_goldens_ic_reference_redundant_copy_and_idempotent_rerun ___
+
+    @pytest.mark.skipif(not BIN and not REQUIRED, reason="set ATX_EQUITY_BIN to the directory of the equity executables")
+    def test_cycle_e2e_goldens_ic_reference_redundant_copy_and_idempotent_rerun():
+        if not BIN:
+            pytest.fail("ATX_CANARY_REQUIRED=1 but ATX_EQUITY_BIN is not set")
+        if BUILD_TYPE not in TW.BUILD_TYPES:
+            pytest.fail(f"ATX_EQUITY_BUILD_TYPE {BUILD_TYPE!r} is not one of {TW.BUILD_TYPES}")
+        if not accepts_no_git():
+            if REQUIRED:
+                pytest.fail("research_cycle.py does not accept --no-git (contract K3)")
+            pytest.skip("research_cycle.py does not accept --no-git yet (contract K3, lane A)")
+        # A short root directly under the system temp dir, not pytest's tmp_path: the candidate cache nests
+        # <role sha>/fp_*/ic1_*/<id>.<key>.json (about 150 characters), and under tmp_path the IC runner's cache
+        # publish crosses Windows MAX_PATH (260) and fails with "The system cannot find the path specified".
+        root = fresh_root()
+        try:
+>           _live_cycle(root)
+
+scripts\tests\test_cycle_e2e.py:454: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+root = WindowsPath('C:/Users/natha/AppData/Local/Temp/tiny-world-w5exkext')
+
+    def _live_cycle(root: Path) -> None:
+        goldens = load_goldens()
+        assert goldens["fields_manifest_sha256"] == template_fields_pin(), "goldens belong to another world"
+        TW.build(root, bin_dir=Path(BIN), build_type=BUILD_TYPE)
+        spec = json.loads((root / TW.SPEC).read_bytes())
+        done, seconds = run_cycle(root)
+        assert done.returncode == 0, done.stdout[-4000:] + done.stderr[-4000:]
+        admission = admission_problems(admission_rows(root, spec))
+        assert not admission, "admission facts of the fixture broken:\n" + "\n".join(admission)
+        candidates = orientation_candidates(root, spec)
+        problems = ic_reference_problems(candidates, TW.simulate(TW.DEFAULT_SEED))
+        assert not problems, "the u pass's rank IC disagrees with the numpy reference:\n" + "\n".join(problems)
+        planted = planted_block(candidates)
+        print(f"\ntiny_world canary ({BUILD_TYPE}): planted members at h {ORIENTATION_HORIZON}, band {PLANTED_BAND_SE} SE "
+              "(PM ruling T1-SE): " + json.dumps(planted, sort_keys=True))
+        outside = planted_problems(planted)
+        assert not outside, "planted signal not recovered:\n" + "\n".join(outside)
+        got = digests(root, spec)
+        entry = goldens["builds"][BUILD_TYPE]
+        assert entry is not None, (f"{BUILD_TYPE} goldens not recorded: python scripts/tests/test_cycle_e2e.py --record "
+                                   f"--bin {BIN} --build-type {BUILD_TYPE} (got {got})")
+        assert got == dict(entry["outputs"], primary_scenario=entry["primary_scenario"])
+        limit = float(os.environ.get("ATX_E2E_MAX_SECONDS", "15"))
+>       assert seconds < limit, f"first run took {seconds:.1f} s (limit {limit} s)"
+E       AssertionError: first run took 15.3 s (limit 15.0 s)
+E       assert 15.316892000031658 < 15.0
+
+scripts\tests\test_cycle_e2e.py:483: AssertionError
+=========================== short test summary info ===========================
+FAILED scripts/tests/test_cycle_e2e.py::test_cycle_e2e_goldens_ic_reference_redundant_copy_and_idempotent_rerun
+1 failed, 14 passed in 21.62s

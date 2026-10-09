@@ -610,8 +610,8 @@ def test_leverage_wave_cap_and_table_and_the_matched_l_prime(tmp_path):
     code, log = wave(root, fake, "run", "--until", "match")
     assert code == 0, log
     got = json.loads((root / "out/waves" / m["wave"] / "receipts" / "06-match.json").read_text())["outputs"]
-    assert got["corrected"] is True and got["cell_spec"].endswith("-gm.json") and got["leverage"] != "1.1474"
-    gm = json.loads((root / got["cell_spec"]).read_text())
+    assert got["corrected"] is True and got["record_spec"].endswith("-gm.json") and got["leverage"] != "1.1474"
+    gm = json.loads((root / got["record_spec"]).read_text())
     assert gm["change"]["set"]["nav.leverage"] == got["leverage"]
 
 
@@ -730,7 +730,7 @@ def test_match_flags_inherited_from_the_parent_are_refused(tmp_path):
 TRADE_RATE = nav_row("zz-trade-rate-v0", "--trade-rate zz-trade-rate-v0", {}, [], [])   # C3's rows: not yet listed
 
 
-@pytest.mark.parametrize("mode", ["pm6-6", "pm6-6-engine"])
+@pytest.mark.parametrize("mode", ["pm6-6-engine"])     # the Python pm6-6 is retired (ruling C2-11)
 def test_the_match_stage_still_writes_its_own_leverage(tmp_path, mode):
     """Ruling E2-14: the reservation leaves the gross-match stage's own write alone, in both modes, on P9-C's shape
     (ruling E2-13 (b)): a kind rule wave naming a NAV rule that is no leverage rule (a synthetic trade-rate row), the
@@ -757,9 +757,6 @@ def test_the_match_stage_still_writes_its_own_leverage(tmp_path, mode):
     nav = RC.load_spec(root / record)["nav"]
     assert nav["leverage"] == lev and nav["flags"][:2] == NAV_SET and "--trade-rate" in nav["flags"]
     assert not [f for f in nav["flags"] if WK.match_flag_reads(f)]
-    if mode == "pm6-6":
-        assert "record_spec" not in mt
-        return
     run = RC.load_spec(root / mt["cell_spec"])["nav"]                       # the run recipe: the cell's L, calibrating
     assert mt["engine"] is True and mt["cell_spec"].endswith("-cal.json") and run["leverage"] == "1.1474"
     assert run["flags"][run["flags"].index(CAL) + 1] == repr(mt["g_parent"]) and "--calibrate-tolerance" in run["flags"]

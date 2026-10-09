@@ -143,7 +143,7 @@ def binds(argv: list[str]) -> list[str]:
 
 
 def test_readers_and_bundle_bind_the_daily_series_and_capacity_curve(tmp_path):
-    root = F.build(tmp_path / "r")
+    root = F.build(tmp_path / "r", gross_match="none")              # every reader reads both NAVs (no mech-parent)
     fake = F.FakeCycle(root, KEPT_ALL)
     assert wave(root, fake, "run")[0] == 0
     bounded = [c for c in fake.calls if Path(c[1]).name == "run_bounded_research.py"]
@@ -154,7 +154,7 @@ def test_readers_and_bundle_bind_the_daily_series_and_capacity_curve(tmp_path):
 
 
 def test_a_bundle_whose_run_did_not_bind_the_series_now_is_refused(tmp_path):
-    root = F.build(tmp_path / "r")
+    root = F.build(tmp_path / "r", gross_match="none")              # the cell's NAV is the run stage's (no -gm dir)
     fake = F.FakeCycle(root, KEPT_ALL)                                 # a bundle made by a run that bound no series
     F.write_json(root, f"{STATE}/bundle.json", {"base": F.PARENT_NAV, "final": "out/nav-w1-L1.1474", "paired": {}})
     F.write_json(root, f"{STATE}/bundle-run1/receipt.json", {"outcome": "completed", "exit_code": 0,
