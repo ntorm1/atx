@@ -18,6 +18,7 @@ using atx::vol::AmericanPriceBounds;
 using atx::vol::AmericanPriceNode;
 using atx::vol::AmericanPriceSlice;
 using atx::vol::check_american_calendar;
+using atx::vol::check_nondividend_american;
 using atx::vol::Side;
 
 constexpr AmericanPriceBounds kBounds{100.0, 1.0, 1.0, 100.0, 100.0};
@@ -244,6 +245,115 @@ TEST(AmericanPriceSlice, CalendarChecksBothSidesOnPartialOverlapAndDisjointDomai
   ASSERT_TRUE(disjoint.has_value());
   EXPECT_TRUE(check_american_calendar(*earlier, *disjoint).has_value());
   EXPECT_TRUE(check_american_calendar(*disjoint, *earlier).has_value());
+}
+
+TEST(AmericanPriceSlice, CarryEnvelopesMustContainImmediateExercise) {
+  const auto nodes = clean_nodes();
+  for (const AmericanPriceBounds bounds : {AmericanPriceBounds{100.0, 1.01, 1.02, 100.0, 100.0},
+                                           AmericanPriceBounds{100.0, 0.98, 0.99, 100.0, 100.0},
+                                           AmericanPriceBounds{100.0, 1.0, 1.0, 101.0, 102.0},
+                                           AmericanPriceBounds{100.0, 1.0, 1.0, 98.0, 99.0}}) {
+    const auto fit = AmericanPriceSlice::create(nodes, bounds);
+    ASSERT_FALSE(fit.has_value());
+    EXPECT_NE(fit.error().message().find("carry bounds"), std::string::npos);
+  }
+}
+
+TEST(AmericanPriceSlice, NondividendAdmitsZeroRateAndPositiveRateAnalyticCases) {
+  std::vector<AmericanPriceNode> flat_vol;
+  for (const double strike : {80.0, 90.0, 100.0, 110.0, 120.0}) {
+    flat_vol.push_back(flat_vol_node(strike, 0.25, 0.5));
+  }
+  const auto zero_rate = AmericanPriceSlice::create(flat_vol, kBounds);
+  ASSERT_TRUE(zero_rate.has_value());
+  EXPECT_TRUE(check_nondividend_american(*zero_rate, 1.0).has_value());
+
+  // Zero-volatility non-dividend stock: call continuation and put immediate
+  // exercise are independently analytic. Include both payoff kink strikes.
+  constexpr double df = 0.9;
+  constexpr AmericanPriceBounds bounds{100.0, df, 1.0, 100.0, 100.0};
+  std::vector<AmericanPriceNode> deterministic;
+  for (const double strike : {80.0, 100.0, 100.0 / df, 120.0}) {
+    deterministic.push_back(
+        {strike, std::max(100.0 - df * strike, 0.0), std::max(strike - 100.0, 0.0)});
+  }
+  const auto positive_rate = AmericanPriceSlice::create(deterministic, bounds);
+  ASSERT_TRUE(positive_rate.has_value()) << positive_rate.error().to_string();
+  const auto check = check_nondividend_american(*positive_rate, df);
+  EXPECT_TRUE(check.has_value()) << check.error().to_string();
+}
+
+TEST(AmericanPriceSlice, NondividendRejectsUnsupportedDiscountAndEmptyComparisonDomain) {
+  const auto fit = AmericanPriceSlice::create(clean_nodes(), kBounds);
+  ASSERT_TRUE(fit.has_value());
+  for (const double df : {0.0, -0.1, 1.01, std::numeric_limits<double>::quiet_NaN(),
+                          std::numeric_limits<double>::infinity()}) {
+    EXPECT_FALSE(check_nondividend_american(*fit, df).has_value());
+  }
+  const std::array narrow{AmericanPriceNode{90.0, 91.0, 0.0}, AmericanPriceNode{100.0, 90.0, 0.0}};
+  const auto no_overlap =
+      AmericanPriceSlice::create(narrow, AmericanPriceBounds{100.0, 0.1, 1.0, 100.0, 100.0});
+  ASSERT_TRUE(no_overlap.has_value());
+  const auto check = check_nondividend_american(*no_overlap, 0.1);
+  ASSERT_FALSE(check.has_value());
+  EXPECT_EQ(check.error().code(), atx::vol::ErrorCode::Unavailable);
+}
+
+TEST(AmericanPriceSlice, NondividendRejectsEuropeanCallBoundsAndSlopes) {
+  constexpr AmericanPriceBounds bounds{100.0, 0.9, 1.0, 100.0, 100.0};
+  const std::array too_low{AmericanPriceNode{80.0, 20.0, 0.0}, AmericanPriceNode{90.0, 10.0, 0.0}};
+  const auto lower_fit = AmericanPriceSlice::create(too_low, bounds);
+  ASSERT_TRUE(lower_fit.has_value());
+  auto check = check_nondividend_american(*lower_fit, 0.9);
+  ASSERT_FALSE(check.has_value());
+  EXPECT_NE(check.error().message().find("call price bound"), std::string::npos);
+  const std::array steep{AmericanPriceNode{80.0, 35.0, 7.0}, AmericanPriceNode{90.0, 25.5, 8.0}};
+  const auto slope_fit = AmericanPriceSlice::create(steep, bounds);
+  ASSERT_TRUE(slope_fit.has_value());
+  check = check_nondividend_american(*slope_fit, 0.9);
+  ASSERT_FALSE(check.has_value());
+  EXPECT_NE(check.error().message().find("call slope"), std::string::npos);
+}
+
+TEST(AmericanPriceSlice, NondividendRejectsAmericanBelowEuropeanAndLegendreViolation) {
+  constexpr AmericanPriceBounds broad{100.0, 0.8, 1.0, 100.0, 100.0};
+  const std::array below{AmericanPriceNode{80.0, 34.0, 5.0}, AmericanPriceNode{90.0, 27.0, 7.0},
+                         AmericanPriceNode{100.0, 20.0, 9.0}};
+  const auto below_fit = AmericanPriceSlice::create(below, broad);
+  ASSERT_TRUE(below_fit.has_value());
+  auto check = check_nondividend_american(*below_fit, 0.9);
+  ASSERT_FALSE(check.has_value());
+  EXPECT_NE(check.error().message().find("below its European"), std::string::npos);
+
+  // E(K)=.2*K-10 and A(K)=E(K)+1. The upper/lower price bounds hold,
+  // but the flat exercise premium violates K*(A'-E') >= A-E.
+  const std::array premium{AmericanPriceNode{80.0, 34.0, 7.0}, AmericanPriceNode{90.0, 27.0, 9.0},
+                           AmericanPriceNode{100.0, 20.0, 11.0}};
+  const auto premium_fit = AmericanPriceSlice::create(premium, broad);
+  ASSERT_TRUE(premium_fit.has_value());
+  check = check_nondividend_american(*premium_fit, 0.9);
+  ASSERT_FALSE(check.has_value());
+  EXPECT_NE(check.error().message().find("Legendre"), std::string::npos);
+}
+
+TEST(AmericanPriceSlice, NondividendUpperBoundFindsHiddenScaledKnotViolation) {
+  constexpr double df = 0.9;
+  constexpr AmericanPriceBounds bounds{100.0, df, 1.0, 100.0, 100.0};
+  const std::array nodes{AmericanPriceNode{90.0, 23.0, 4.0}, AmericanPriceNode{100.0, 14.0, 4.7},
+                         AmericanPriceNode{110.0, 5.0, 12.0}, AmericanPriceNode{120.0, 3.0, 22.0}};
+  const auto fit = AmericanPriceSlice::create(nodes, bounds);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  // Native knots and overlap endpoints are clean. Only the transformed
+  // call knot at .9*110=99 reveals the upper-bound crossing.
+  for (const double strike : {90.0, 100.0, 108.0}) {
+    EXPECT_LE(*fit->price(strike, Side::Put),
+              *fit->price(strike / df, Side::Call) - 100.0 + strike + 1.0e-12);
+  }
+  EXPECT_GT(*fit->price(99.0, Side::Put), *fit->price(110.0, Side::Call) - 1.0);
+  const auto check = check_nondividend_american(*fit, df);
+  ASSERT_FALSE(check.has_value());
+  EXPECT_NE(check.error().message().find("scaled European upper bound"), std::string::npos);
+  EXPECT_NE(check.error().message().find("99.000000"), std::string::npos);
 }
 
 } // namespace

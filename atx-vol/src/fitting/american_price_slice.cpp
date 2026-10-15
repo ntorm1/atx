@@ -26,7 +26,8 @@ using atx::core::Ok;
   return std::isfinite(b.spot) && b.spot > 0.0 && std::isfinite(b.discount_min) &&
          b.discount_min > 0.0 && std::isfinite(b.discount_max) &&
          b.discount_max >= b.discount_min && std::isfinite(b.prepaid_min) && b.prepaid_min >= 0.0 &&
-         std::isfinite(b.prepaid_max) && b.prepaid_max >= b.prepaid_min;
+         std::isfinite(b.prepaid_max) && b.prepaid_max >= b.prepaid_min && b.discount_min <= 1.0 &&
+         b.discount_max >= 1.0 && b.prepaid_min <= b.spot && b.prepaid_max >= b.spot;
 }
 
 [[nodiscard]] Status validate_node(const AmericanPriceNode &node, const AmericanPriceBounds &bounds,
@@ -84,6 +85,68 @@ using atx::core::Ok;
   const double tol = price_tolerance(bounds.spot, right.strike);
   if (middle.call - call_chord > tol || middle.put - put_chord > tol) {
     return node_error(index, "adjacent call/put secants violate convexity");
+  }
+  return Ok();
+}
+
+[[nodiscard]] Status validate_nondividend_segment(const AmericanPriceNode &left,
+                                                  const AmericanPriceNode &right, double spot,
+                                                  double df, std::size_t index) {
+  const double width = right.strike - left.strike;
+  const double tol = price_tolerance(spot, right.strike);
+  if (right.call - left.call < -df * width - tol) {
+    return node_error(index, "nondividend European call slope is below -df");
+  }
+  const double call_slope = (right.call - left.call) / width;
+  const double put_slope = (right.put - left.put) / width;
+  // K*f'(K)-f(K) is constant on each affine segment, including its left
+  // endpoint under the right-derivative convention. Use one comparison per
+  // represented segment rather than a sampled derivative stencil.
+  const double gap = left.strike * (put_slope - call_slope) - (left.put - left.call + spot);
+  if (!std::isfinite(gap) || gap < -tol) {
+    return node_error(index, "nondividend American/European Legendre condition violated");
+  }
+  return Ok();
+}
+
+[[nodiscard]] Status validate_nondividend_upper(const AmericanPriceSlice &slice, double df) {
+  const auto nodes = slice.nodes();
+  const double lo = nodes.front().strike;
+  const double hi = df * nodes.back().strike;
+  if (hi < lo) {
+    return Err(ErrorCode::Unavailable,
+               "nondividend American: no supported strike interval for scaled upper bound");
+  }
+  const double spot = slice.bounds().spot;
+  std::size_t native = 0u;
+  std::size_t scaled = 0u;
+  while (native < nodes.size() || scaled < nodes.size()) {
+    const bool take_native =
+        scaled == nodes.size() ||
+        (native < nodes.size() && nodes[native].strike <= df * nodes[scaled].strike);
+    const double strike = take_native ? nodes[native++].strike : df * nodes[scaled++].strike;
+    if (native < nodes.size() && nodes[native].strike == strike) {
+      ++native;
+    }
+    if (scaled < nodes.size() && df * nodes[scaled].strike == strike) {
+      ++scaled;
+    }
+    if (strike < lo || strike > hi) {
+      continue;
+    }
+    // Membership in [lo, df*Kmax] proves the exact quotient is supported.
+    // Clamp only the quotient's last-bit endpoint rounding, never the domain.
+    const double call_strike = std::clamp(strike / df, lo, nodes.back().strike);
+    const auto call = slice.price(call_strike, Side::Call);
+    const auto put = slice.price(strike, Side::Put);
+    if (!call || !put) {
+      return Err(ErrorCode::Internal, "nondividend American: supported price unavailable");
+    }
+    if (*put - (*call - spot + strike) > price_tolerance(spot, strike)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "nondividend American: scaled European upper bound violated at strike " +
+                     std::to_string(strike));
+    }
   }
   return Ok();
 }
@@ -178,6 +241,33 @@ Status check_american_calendar(const AmericanPriceSlice &earlier, const American
     }
   }
   return Ok();
+}
+
+Status check_nondividend_american(const AmericanPriceSlice &slice, double df) {
+  if (!std::isfinite(df) || !(df > 0.0) || df > 1.0) {
+    return Err(ErrorCode::InvalidArgument,
+               "nondividend American: constant nonnegative rate requires 0 < df <= 1");
+  }
+  const auto nodes = slice.nodes();
+  if (nodes.size() < 2u) {
+    return Err(ErrorCode::InvalidArgument, "nondividend American: empty or moved-from slice");
+  }
+  const double spot = slice.bounds().spot;
+  for (std::size_t i = 0u; i < nodes.size(); ++i) {
+    const auto &node = nodes[i];
+    const double tol = price_tolerance(spot, node.strike);
+    const double european = node.call - spot + df * node.strike;
+    if (node.call < std::max(spot - df * node.strike, 0.0) - tol || node.call - spot > tol) {
+      return node_error(i, "nondividend European call price bound violated");
+    }
+    if (european - node.put > tol) {
+      return node_error(i, "nondividend American put is below its European put");
+    }
+    if (i > 0u) {
+      ATX_TRY_VOID(validate_nondividend_segment(nodes[i - 1u], node, spot, df, i - 1u));
+    }
+  }
+  return validate_nondividend_upper(slice, df);
 }
 
 } // namespace atx::vol

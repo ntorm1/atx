@@ -18,6 +18,8 @@ struct AmericanPriceNode {
 // horizon, including immediate exercise. Negative rates are supported:
 // discount_max may exceed one. The caller supplies bounds valid for the
 // contract's carry/dividend model; this type does not infer them from quotes.
+// Since immediate exercise is available, [discount_min, discount_max] must
+// contain one and [prepaid_min, prepaid_max] must contain spot.
 struct AmericanPriceBounds {
   double spot{};
   double discount_min{};
@@ -70,5 +72,22 @@ private:
 // valuation instant, ordered by expiry; this type carries no identity or time.
 [[nodiscard]] Status check_american_calendar(const AmericanPriceSlice &earlier,
                                              const AmericanPriceSlice &later);
+
+// Additional necessary conditions for a NON-DIVIDEND stock at a constant
+// nonnegative rate, df = exp(-r*T) in (0,1]. The caller must establish this
+// regime (no cash dividends or effective stock yield); the bounds alone do
+// not identify a dividend model. Negative-rate inputs are rejected.
+//
+// American calls are European in this regime, so E(K)=C(K)-spot+df*K.
+// Check European call bounds/slopes, A>=E, and the Cox-Hoeggerl condition
+// K*A'_+(K)-A(K) >= K*C'_+(K)-C(K)+spot on every represented interval.
+// Check A(K)<=C(K/df)-spot+K on [K_min, df*K_max] at the union of native
+// and df-scaled knots; an empty comparison interval returns Unavailable.
+// No extrapolation or right derivative at the final endpoint is inferred.
+//
+// Source: Cox and Hoeggerl, Theorem 2.3, https://arxiv.org/pdf/1301.5467.
+// Success is a finite-domain necessary-condition certificate, not the
+// global model-existence conclusion of their Theorem 3.9.
+[[nodiscard]] Status check_nondividend_american(const AmericanPriceSlice &slice, double df);
 
 } // namespace atx::vol
