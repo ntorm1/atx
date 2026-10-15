@@ -1,0 +1,20 @@
+{
+  "description": "info-clock-rate-v1 (P9 AL-CLOCK, lit [28][29]): aim-partial-v5's theta per name from its information clock: a member whose ea_days_since (sessions since its latest primary earnings announcement's reaction session; --fields) is in [0, 21] moves at theta_f = 1 - 2^(-C/5) at cadence C (two-speed-v1's fast rate), every other member (a NaN clock included) at theta_s = --trade-fraction, which must be .05; needs --rule aim-partial-v5; one rate vector per decision for every book, so --book-workers N runs",
+  "id": "info-clock-rate-v1",
+  "incompatible": [
+    "per-name-v1",
+    "two-speed-v1",
+    "aim-partial-v6",
+    "spo-v1",
+    "spo-v2",
+    "spo-v3"
+  ],
+  "kind": "trade-rate",
+  "params_schema": {
+    "additionalProperties": false,
+    "properties": {},
+    "required": [],
+    "type": "object"
+  },
+  "x-flag": "--rate info-clock-rate-v1"
+}

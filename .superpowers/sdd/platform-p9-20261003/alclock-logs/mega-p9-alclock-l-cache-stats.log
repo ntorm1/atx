@@ -1,0 +1,9 @@
+# ..\atx-impl\src\book\nav_session.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
