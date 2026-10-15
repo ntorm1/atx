@@ -13,6 +13,7 @@
 #include <vector>
 #include "atx/engine/build_flavor.hpp"
 #include "build_provenance.hpp"
+#include "strategy_ic_cache_index.hpp"
 
 namespace atx::impl::strategy::ic_detail {
 namespace {
@@ -83,7 +84,10 @@ IcSeries scratch_series(const ex::ResearchIcScratch& scratch) {
 // reproduces the evaluated struct and series exactly. Like the signal cache it is
 // never a method input: the recipe and every output byte are unchanged by it.
 // Memory: one entry at a time, at most 1 MiB of text (metadata_text) plus its
-// parsed/decoded form, inside admission's fixed 32 MiB slack.
+// parsed/decoded form, inside admission's fixed 32 MiB slack. P9 lane SQL4: with
+// --candidate-cache-index sqlite the entry's text is the ic_result row's `record`
+// (one row at a time) and the index connection's 8 MiB page cache
+// (kCacheIndexPageCacheBytes) is counted inside the same slack.
 IcSeries cached_series(const CachedIc& cached) {
   IcSeries out;
   for (usize k=0;k<out.rank.size();++k) { out.pearson[k]=cached.pearson[k]; out.rank[k]=cached.rank[k]; }
@@ -263,25 +267,30 @@ std::optional<CachedIc> decode_ic_record(const Json& r,const ex::ResearchIcScrat
   return out;
 }
 } // namespace
-// nullopt: no entry (score, then store). A present entry must be intact and name
-// exactly this candidate, signal bytes and scope key; anything else is a loud
-// refusal, never a silent rescore over foreign bytes (the signal cache's policy).
-co::Result<std::optional<CachedIc>> ic_cache_lookup(const std::filesystem::path& path,
-    const IcCacheScope& scope,const Candidate& c,const std::string& signal_sha,
-    const ex::ResearchIcScratch& scratch,usize active) {
-  std::error_code ec; const bool present=std::filesystem::exists(path,ec);
-  if (ec) return co::Err(co::ErrorCode::IoError,"IC runner: candidate IC cache probe: "+c.id);
-  if (!present) return co::Ok(std::optional<CachedIc>{});
-  ATX_TRY(auto text,metadata_text(path.string()));
-  const auto j=Json::parse(text,nullptr,false);
+namespace {
+// An entry's text under today's checks, in two steps (P9 lane SQL4 shares them with the index):
+// its shape and self-hash (`defect`), then, for an intact entry, its candidate, signal bytes and
+// scope key (match_ic_entry).
+enum class EntryDefect : u8 { None, Malformed, Integrity };
+struct ParsedIcEntry { Json entry; EntryDefect defect{EntryDefect::None}; };
+co::Result<ParsedIcEntry> parse_ic_entry(const std::string& text) {
+  ParsedIcEntry out{Json::parse(text,nullptr,false),EntryDefect::None};
+  const auto& j=out.entry;
   if (j.is_discarded() || !j.is_object() || !j.contains("schema") || !j.at("schema").is_string() ||
       j.at("schema").get<std::string>()!=ic_cache_schema || !j.contains("record") ||
-      !j.at("record").is_object() || !j.contains("record_sha256") || !j.at("record_sha256").is_string())
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate IC cache entry malformed: "+c.id);
+      !j.at("record").is_object() || !j.contains("record_sha256") ||
+      !j.at("record_sha256").is_string()) {
+    out.defect=EntryDefect::Malformed;
+    return co::Ok(std::move(out));
+  }
+  ATX_TRY(auto digest,co::sha256_hex(j.at("record").dump()));
+  if (digest!=j.at("record_sha256").get<std::string>()) out.defect=EntryDefect::Integrity;
+  return co::Ok(std::move(out));
+}
+co::Result<std::optional<CachedIc>> match_ic_entry(const Json& j,const IcCacheScope& scope,
+    const Candidate& c,const std::string& signal_sha,const ex::ResearchIcScratch& scratch,
+    usize active) {
   const auto& record=j.at("record");
-  ATX_TRY(auto digest,co::sha256_hex(record.dump()));
-  if (digest!=j.at("record_sha256").get<std::string>())
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate IC cache entry integrity: "+c.id);
   const auto text_of=[&](const char* key) {
     return record.contains(key) && record.at(key).is_string()?record.at(key).get<std::string>():std::string{};
   };
@@ -291,21 +300,117 @@ co::Result<std::optional<CachedIc>> ic_cache_lookup(const std::filesystem::path&
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate IC cache entry mismatch: "+c.id);
   auto cached=decode_ic_record(record.at("result"),scratch,active);
   if (!cached)
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate IC cache entry malformed: "+c.id);
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC runner: candidate IC cache entry malformed: "+c.id);
+  return co::Ok(std::move(cached));
+}
+// The exact text of an entry found and its record SHA-256 (what an indexed run imports).
+struct IcEntryText { std::string text,record_sha256; };
+// Today's lookup of the entry file at `path`. `found` (null: unused) receives its text on a hit.
+co::Result<std::optional<CachedIc>> file_lookup(const std::filesystem::path& path,
+    const IcCacheScope& scope,const Candidate& c,const std::string& signal_sha,
+    const ex::ResearchIcScratch& scratch,usize active,IcEntryText* found) {
+  std::error_code ec; const bool present=std::filesystem::exists(path,ec);
+  if (ec) return co::Err(co::ErrorCode::IoError,"IC runner: candidate IC cache probe: "+c.id);
+  if (!present) return co::Ok(std::optional<CachedIc>{});
+  ATX_TRY(auto text,metadata_text(path.string()));
+  ATX_TRY(auto parsed,parse_ic_entry(text));
+  if (parsed.defect==EntryDefect::Malformed)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC runner: candidate IC cache entry malformed: "+c.id);
+  if (parsed.defect==EntryDefect::Integrity)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC runner: candidate IC cache entry integrity: "+c.id);
+  ATX_TRY(auto cached,match_ic_entry(parsed.entry,scope,c,signal_sha,scratch,active));
+  if (found) *found={std::move(text),parsed.entry.at("record_sha256").get<std::string>()};
+  return co::Ok(std::move(cached));
+}
+// ---- P9 lane SQL4: the IC-result cache on its SQLite index (strategy_ic_cache_index.hpp) -----
+// With --candidate-cache-index sqlite an entry is one ic_result row keyed by (entry_dir, id):
+// the '/'-path of the file's directory under DIR (<signal entry dir>/ic<v>_<key16>) and the file's
+// stem. `record` holds the self-hashed entry text of today's file unchanged, `key_sha256` the full
+// SHA-256 of the scope key, `record_sha256` its record hash; no file or directory is written.
+using IcResultRow=atx::engine::research::store::IcResultRow;
+// The parsed entry of a row whose text is intact under its own columns, else nullopt.
+co::Result<std::optional<Json>> intact_row(const IcResultRow& row,const std::string& key_sha) {
+  ATX_TRY(auto parsed,parse_ic_entry(row.record));
+  if (parsed.defect!=EntryDefect::None || row.key_sha256!=key_sha ||
+      parsed.entry.at("record_sha256").get<std::string>()!=row.record_sha256)
+    return co::Ok(std::optional<Json>{});
+  return co::Ok(std::optional<Json>(std::move(parsed.entry)));
+}
+// Commits a stored entry's row. A row already under its key is a concurrent writer's (accepted
+// only with the same record, as a raced file is) or a damaged row (replaced: it is never served).
+co::Status store_ic_row(CacheIndex& index,const std::filesystem::path& path,
+    const IcCacheScope& scope,const Candidate& c,const Json& record,const std::string& text,
+    const std::string& digest) {
+  ATX_TRY(auto entry_dir,index.relative(path.parent_path()));
+  ATX_TRY(auto key_sha,co::sha256_hex(scope.key.dump()));
+  const IcResultRow row{std::move(entry_dir),path.stem().string(),std::move(key_sha),text,digest};
+  ATX_TRY(const auto put,index.put_ic_result(row,false));
+  if (put.outcome!=IndexPut::Present) return co::Ok();
+  if (!put.existing)
+    return co::Err(co::ErrorCode::Internal,
+                   "IC runner: candidate IC cache index row vanished: "+c.id);
+  ATX_TRY(const auto held,intact_row(*put.existing,row.key_sha256));
+  if (!held) {
+    ATX_TRY(const auto replaced,index.put_ic_result(row,true));
+    (void)replaced;
+    return co::Ok();
+  }
+  if (held->at("record")!=record)
+    return co::Err(co::ErrorCode::AlreadyExists,
+        "IC runner: candidate IC cache entry raced with different bytes: "+c.id);
+  return co::Ok();
+}
+} // namespace
+// nullopt: no entry (score, then store). A present entry must be intact and name
+// exactly this candidate, signal bytes and scope key; anything else is a loud
+// refusal, never a silent rescore over foreign bytes (the signal cache's policy).
+// With `index` (P9 lane SQL4) the row is read first: a row that fails its own
+// self-hash is damage to the derived index, never served (a miss with a progress
+// line); with no usable row the file is read exactly as above and imported.
+co::Result<std::optional<CachedIc>> ic_cache_lookup(const std::filesystem::path& path,
+    const IcCacheScope& scope,const Candidate& c,const std::string& signal_sha,
+    const ex::ResearchIcScratch& scratch,usize active,CacheIndex* index) {
+  if (!index) return file_lookup(path,scope,c,signal_sha,scratch,active,nullptr);
+  ATX_TRY(auto entry_dir,index->relative(path.parent_path()));
+  const auto id=path.stem().string();
+  ATX_TRY(auto key_sha,co::sha256_hex(scope.key.dump()));
+  ATX_TRY(const auto row,index->find_ic_result(entry_dir,id));
+  if (row) {
+    ATX_TRY(const auto intact,intact_row(*row,key_sha));
+    if (intact) return match_ic_entry(*intact,scope,c,signal_sha,scratch,active);
+    index->note("ic_result",id,"row fails its self-hash: treated as a miss");
+  }
+  IcEntryText found;
+  ATX_TRY(auto cached,file_lookup(path,scope,c,signal_sha,scratch,active,&found));
+  if (cached && index->writable()) {
+    const IcResultRow imported{std::move(entry_dir),id,std::move(key_sha),std::move(found.text),
+        std::move(found.record_sha256)};
+    ATX_TRY(const auto put,index->put_ic_result(imported,row.has_value()));
+    (void)put; // Present: a concurrent run imported or stored it first
+  }
   return co::Ok(std::move(cached));
 }
 // No-replace publication; an entry that raced in first is accepted only if its
 // record is identical. `recorded` values are provenance only, outside the hash.
 co::Status ic_cache_store(const std::filesystem::path& path,const IcCacheScope& scope,const Candidate& c,
-    const std::string& signal_sha,const ex::ResearchIcResult& result,const IcSeries& daily,usize workers) {
-  std::error_code ec; std::filesystem::create_directories(path.parent_path(),ec);
-  if (ec) return co::Err(co::ErrorCode::IoError,"IC runner: candidate IC cache directory: "+ec.message());
+    const std::string& signal_sha,const ex::ResearchIcResult& result,const IcSeries& daily,
+    usize workers,CacheIndex* index) {
+  if (!index) {
+    std::error_code ec; std::filesystem::create_directories(path.parent_path(),ec);
+    if (ec)
+      return co::Err(co::ErrorCode::IoError,
+                     "IC runner: candidate IC cache directory: "+ec.message());
+  }
   const Json record{{"candidate_id",c.id},{"dsl_sha256",c.dsl_sha},{"signal_payload_sha256",signal_sha},
       {"key",scope.key},{"result",ic_result_record(result,daily)}};
   ATX_TRY(auto digest,co::sha256_hex(record.dump()));
-  const Json entry{{"schema",ic_cache_schema},{"record_sha256",std::move(digest)},{"record",record},
+  const Json entry{{"schema",ic_cache_schema},{"record_sha256",digest},{"record",record},
       {"recorded",{{"engine_git_sha",std::string(build_engine_git_sha())},{"ic_workers",workers}}}};
   const auto text=entry.dump()+"\n";
+  if (index) return store_ic_row(*index,path,scope,c,record,text,digest);
   const PartialFile partial(path);
   ATX_TRY_VOID(write_partial(partial,std::as_bytes(std::span(text.data(),text.size()))));
   ATX_TRY(auto existed,publish_new(partial.path,path));

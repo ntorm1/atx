@@ -52,7 +52,7 @@ constexpr std::string_view kUsage =
     "  catalog --catalog DB --root R [--specs GLOB]... [--ledger L]... [--include P]...\n"
     "          [--rebuild] [--verify-payloads DIR] [--classes FILE]\n"
     "  ingest --catalog DB --class C --path P [--root R] [--classes FILE]\n"
-    "  verify --catalog DB --pins [--spec S] [--strict]\n"
+    "  verify --catalog DB [--pins [--spec S] [--strict]] [--ledger L]...\n"
     "  query {artifacts|pins|stale-pins|runs|timings|producers} --catalog DB [--json]\n"
     "  digest --catalog DB\n"
     "  dump --catalog DB --table T\n"
@@ -343,22 +343,15 @@ int cmd_ingest(const Args &a, std::ostream &out, std::ostream &err) {
   return kExitOk;
 }
 
-int cmd_verify(const Args &a, std::ostream &out, std::ostream &err) {
-  if (!a.flag("--pins")) {
-    return usage(err, "verify needs --pins");
-  }
-  int code = kExitOk;
-  std::optional<Database> db = open_or_report(a.one("--catalog"), StoreOpen::Existing, err, code);
-  if (!db) {
-    return code;
-  }
+// verify --pins (the SQL2 report, unchanged).
+int verify_pins(const Args &a, Database &db, std::ostream &out, std::ostream &err) {
   std::optional<std::string> holder = a.one("--spec");
   if (holder) {
     std::replace(holder->begin(), holder->end(), '\\', '/');
   }
-  auto artifacts = artifact_counts(*db);
-  auto counts = pin_counts(*db, holder);
-  auto problems = pin_problems(*db, holder);
+  auto artifacts = artifact_counts(db);
+  auto counts = pin_counts(db, holder);
+  auto problems = pin_problems(db, holder);
   if (!artifacts || !counts || !problems) {
     const core::Error &e =
         !artifacts ? artifacts.error() : (!counts ? counts.error() : problems.error());
@@ -388,6 +381,62 @@ int cmd_verify(const Args &a, std::ostream &out, std::ostream &err) {
     return kExitRefusal;
   }
   return kExitOk;
+}
+
+// verify --ledger L... (P9 lane SQL4; ingest.hpp verify_ledger_heads): one line per named
+// ledger, one per recorded head checked, then a total; a refusal (3) when a ledger's index is
+// inconsistent or a recorded head is not the head of a prefix of its ledger.
+int verify_ledgers(Database &db, std::span<const std::string> ledgers, std::ostream &out,
+                   std::ostream &err) {
+  auto report = verify_ledger_heads(db, ledgers);
+  if (!report) {
+    return fail(err, report.error(), kExitError);
+  }
+  i64 inconsistent = 0;
+  for (const LedgerIndexCheck &c : report->ledgers) {
+    out << "ledger " << c.ledger_path << " lines " << c.lines << " head " << c.head_sha256
+        << " rule " << c.rule << " index " << c.problem.value_or("ok") << "\n";
+    inconsistent += c.problem ? 1 : 0;
+  }
+  i64 outside = 0;
+  for (const RecordedLedgerHead &r : report->recorded) {
+    out << "recorded " << r.table << " " << r.path << " head " << r.head_sha256 << " "
+        << (r.prefix_lines ? "prefix " + std::to_string(*r.prefix_lines) : "not-a-prefix-head")
+        << "\n";
+    outside += r.prefix_lines ? 0 : 1;
+  }
+  out << "recorded heads " << report->recorded.size() << " not-a-prefix-head " << outside
+      << " other-ledger " << report->other << "\n";
+  if (!report->ok()) {
+    err << "atx-research-store: " << outside << " recorded heads outside every prefix, "
+        << inconsistent << " inconsistent ledger indexes (--ledger)\n";
+    return kExitRefusal;
+  }
+  return kExitOk;
+}
+
+// verify --catalog DB [--pins [--spec S] [--strict]] [--ledger L]...: the pins report, then the
+// ledger heads; the exit code is the worse of the two (0 ok, 3 refusal, 4 error).
+int cmd_verify(const Args &a, std::ostream &out, std::ostream &err) {
+  const std::vector<std::string> ledgers = a.all("--ledger");
+  if (!a.flag("--pins") && ledgers.empty()) {
+    return usage(err, "verify needs --pins or --ledger L");
+  }
+  int code = kExitOk;
+  std::optional<Database> db = open_or_report(a.one("--catalog"), StoreOpen::Existing, err, code);
+  if (!db) {
+    return code;
+  }
+  if (a.flag("--pins")) {
+    code = verify_pins(a, *db, out, err);
+    if (code == kExitError) {
+      return code;
+    }
+  }
+  if (!ledgers.empty()) {
+    code = std::max(code, verify_ledgers(*db, ledgers, out, err));
+  }
+  return code;
 }
 
 int cmd_query(const Args &a, std::ostream &out, std::ostream &err) {

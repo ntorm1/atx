@@ -561,3 +561,8 @@ target_sources(atx-engine-research-fields PRIVATE
     src/research/fields/holdings_specs.cpp
     src/research/fields/holdings_ftd.cpp
     src/research/fields/holdings_regsho.cpp)
+
+# P9 lane SQL4 (rulings SQL-7 / SQL-9): the catalog's ledger index head and `verify --ledger`
+# come from B2's research/ledger chain_head / prefix_heads (catalog/ingest_ledger.cpp), never a
+# re-implementation of the chain rule.
+target_link_libraries(atx-engine-research-catalog PRIVATE atx::engine-research-ledger)

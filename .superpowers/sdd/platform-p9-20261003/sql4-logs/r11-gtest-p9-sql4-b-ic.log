@@ -1,0 +1,5 @@
+exe build-equity/bin/atx-impl-strategy-ic-tests.exe sha256 0d40d68808c6e9df82faf180a379133571df06c5b7ec2077978ae6217dd5d31b (build p9-sql4-b, source 44fce688)
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] 79 tests from 5 test suites ran. (26401 ms total)
+[  PASSED  ] 79 tests.
+gtest exit 0

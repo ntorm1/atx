@@ -5,6 +5,7 @@
 #include <vector>
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
+#include "strategy_ic_cache_index.hpp"
 namespace atx::impl::strategy {
 // Bytes of a research fields manifest (atx.research-role-fields/v1) the IC runner and the
 // marginal verb read (review B-4). Every other metadata file keeps 1 MiB, but a published
@@ -109,6 +110,13 @@ struct IcRunnerConfig {
   // --no-composition. Absent: every output byte unchanged; present, summary.json records
   // absent_members and nothing else names it (no recipe term, no cache key).
   std::string absent_members_path, absent_members_sha256;
+  // P9 lane SQL4 (--candidate-cache-index files|sqlite; strategy_ic_cache_index.hpp): Files (the
+  // default, and an absent flag) is today's cache layout and every output byte, whatever files
+  // DIR holds. Sqlite keeps the signal and IC-result entries as rows of DIR/index.sqlite (made only
+  // by `atx-research-store cache init DIR`; payload files unchanged, legacy files read through);
+  // the summary's candidate_cache block then records "index": "sqlite". Needs --candidate-cache;
+  // refused with --cache-report (a file-layout listing). Not a method input (no recipe term).
+  CacheIndexMode candidate_cache_index{CacheIndexMode::Files};
 };
 // IC-only research; no book, surfaces, fees, Sharpe, stock events or holdout.
 // TRAIN21h sample rank-IC fits signs; validation uses frozen signs; screening remains diagnostic for the fixed blend.

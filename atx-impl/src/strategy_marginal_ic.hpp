@@ -5,6 +5,7 @@
 #include <vector>
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
+#include "strategy_ic_cache_index.hpp"
 
 namespace atx::impl::strategy {
 // `atx-equity-strategy-ic marginal` (platform v8 F-2, contract K6): does each candidate add
@@ -44,6 +45,12 @@ namespace atx::impl::strategy {
 //   exclude_self        --exclude-self (needs --themes): a book member's row is residualised on
 //                       regressors without its own term (the review CM s.4 bias: v8 member rows
 //                       sit in a composite that contains them). Report-only rows.
+// P9 lane SQL4 option (absent or `files`: every output byte unchanged, whatever files exist):
+//   pair_cache_index    --pair-cache-index files|sqlite (needs --pair-cache DIR): sqlite keeps
+//                       the pair statistics as rows of DIR/index.sqlite (made only by
+//                       `atx-research-store cache init DIR`; legacy shards read through), and
+//                       inputs.pair_cache records "index": "sqlite" with rows_read in place of
+//                       shards_read (strategy_marginal_pair_cache.hpp). Marginal rows unchanged.
 struct MarginalIcConfig {
   // The u pass's --candidate-cache DIR; entries are read (v2 layout) in <role sha>/ or
   // <role sha>/fp_*/ of the roots marginal_cache_roots names (this build's own root only), and
@@ -62,6 +69,7 @@ struct MarginalIcConfig {
   std::string verified_digests_path; // optional (P9 S1)
   atx::usize workers{1};             // 1..16 (P9 S1)
   bool exclude_self{false};          // P9 S1
+  CacheIndexMode pair_cache_index{CacheIndexMode::Files}; // P9 lane SQL4
   // Reference switch, no CLI flag: false streams every role name per row (the v8 layout)
   // instead of the date's member names. Outputs are byte-identical either way (test
   // MarginalIc.CompactedRowsEqual).

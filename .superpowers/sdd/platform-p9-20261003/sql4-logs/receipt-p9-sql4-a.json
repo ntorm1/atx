@@ -1,0 +1,30 @@
+{
+    "Source":  "4aade94154ebf5fc0eed7d3705fa4b6e02133440",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  0,
+    "ConfiguredProvenance":  "4aade94154ebf5fc0eed7d3705fa4b6e02133440",
+    "Jobs":  4,
+    "FreeMiB":  4094,
+    "CommitMiB":  8548,
+    "Targets":  [
+                    "atx-equity-strategy-ic",
+                    "atx-impl-strategy-ic-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  119.4288182,
+    "CompiledTUs":  135,
+    "Links":  8,
+    "Tag":  "p9-sql4-a",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-32\\build-equity",
+    "Executables":  {
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-32\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "cd8a7a02b3fbc594011a8e1a009a33518dd1c87d1382174d6924af6674b6e750"
+                                                   },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-32\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "06a6ef444e8d4252bda3d08851b2e28513c8857c484ee9165151da36ed4faaea"
+                                                       }
+                    }
+}

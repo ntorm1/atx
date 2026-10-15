@@ -1,0 +1,14 @@
+anchor ok atx-impl/src/strategy_ic_runner.cpp: M1 sqlite without index
+anchor ok atx-impl/src/strategy_ic_runner.cpp: M2 cache report
+anchor ok atx-impl/src/strategy_ic_runner.cpp: M3 index without cache
+anchor ok atx-impl/src/strategy_ic_runner.cpp: S2 open by presence
+anchor ok atx-impl/src/strategy_ic_signal_cache.cpp: M4 row key parts
+anchor ok atx-impl/src/strategy_ic_signal_cache.cpp: M5 row payload
+anchor ok atx-impl/src/strategy_ic_result_cache.cpp: M6 self-hash
+anchor ok atx-impl/src/strategy_ic_cache_index.cpp: M7 pair bits
+anchor ok atx-impl/src/strategy_marginal_pair_cache.cpp: M8 key text
+anchor ok atx-impl/src/strategy_marginal_ic.cpp: M9 sqlite without index
+anchor ok atx-engine/src/research/store/catalog/ingest_ledger.cpp: M10 prefix head
+anchor ok atx-engine/src/research/store/catalog/ingest_ledger.cpp: M11 state lines
+anchor ok atx-engine/src/research/store/catalog/ingest_ledger.cpp: S1 seam
+check only: nothing written

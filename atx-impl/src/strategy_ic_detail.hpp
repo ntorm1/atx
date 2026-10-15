@@ -371,12 +371,16 @@ co::Status cache_load(const CacheHit& hit,usize cells,std::vector<f64>& out,Hash
 co::Result<bool> publish_new(const std::filesystem::path& partial,const std::filesystem::path& final);
 co::Result<std::string> write_partial(const PartialFile& partial,std::span<const std::byte> bytes,
                                       HashMeter* meter=nullptr);
+// P9 lane SQL4: `index` is the candidate cache's SQLite index (--candidate-cache-index sqlite;
+// strategy_ic_cache_index.hpp) or null (files: today's code and bytes). With an index the rows
+// are the entries (no sidecar or IC-result file is written) and legacy files are read through.
 co::Result<CacheHit> cache_store(const CacheKey& key,const IcRunnerConfig& cfg,const Role& spec,
-    const engine::data::StrategyRoleData& role,const Candidate& c,std::span<f64> signal,HashMeter& meter);
+    const engine::data::StrategyRoleData& role,const Candidate& c,std::span<f64> signal,
+    HashMeter& meter,CacheIndex* index);
 co::Result<CacheResolution> cache_resolve(const IcRunnerConfig& cfg,const Library& lib,const Role& role,
-                                          const KnownManifests& known);
+                                          const KnownManifests& known,CacheIndex* index);
 co::Result<Json> cache_plan(const IcRunnerConfig& cfg,const Library& lib,const Role& role,
-                            const KnownManifests& known);
+                            const KnownManifests& known,CacheIndex* index);
 co::Result<Json> cache_report(const IcRunnerConfig& cfg,const Library& lib,const std::vector<Role>& roles,
                               const KnownManifests& known);
 // ---- strategy_ic_result_cache.cpp --------------------------------------------
@@ -394,9 +398,12 @@ struct IcLabelScope {
 co::Result<IcCacheScope> ic_cache_scope(const Role& spec,const engine::data::StrategyRoleData& role,
     const ex::IcScreenConfig& ic,const ex::ResearchIcOptions& options,std::span<const u32> guard,
     const IcLabelScope& labels,HashMeter& meter);
+// `index` (P9 lane SQL4): as cache_store above; `path` then names the row (entry_dir = its
+// directory under the index, id = its stem).
 co::Result<std::optional<CachedIc>> ic_cache_lookup(const std::filesystem::path& path,
     const IcCacheScope& scope,const Candidate& c,const std::string& signal_sha,
-    const ex::ResearchIcScratch& scratch,usize active);
+    const ex::ResearchIcScratch& scratch,usize active,CacheIndex* index);
 co::Status ic_cache_store(const std::filesystem::path& path,const IcCacheScope& scope,const Candidate& c,
-    const std::string& signal_sha,const ex::ResearchIcResult& result,const IcSeries& daily,usize workers);
+    const std::string& signal_sha,const ex::ResearchIcResult& result,const IcSeries& daily,
+    usize workers,CacheIndex* index);
 } // namespace atx::impl::strategy::ic_detail

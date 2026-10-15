@@ -272,7 +272,8 @@ struct SignalTiming { f64 vm{},cache_load{},cache_write{}; bool hit{}; std::opti
 co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& spec,
     const engine::data::StrategyRoleData& role,FieldResidency& fields,usize k,const Candidate& candidate,
     const CacheKey* signal_cache,const std::optional<CacheHit>& hit,engine::parallel::DetPool* pool,
-    std::unique_ptr<al::Engine>& vm,std::vector<f64>& buffer,HashMeter& meter,std::ostream& progress) {
+    std::unique_ptr<al::Engine>& vm,std::vector<f64>& buffer,HashMeter& meter,CacheIndex* index,
+    std::ostream& progress) {
   using steady=std::chrono::steady_clock;
   const auto since=[](steady::time_point from) { return std::chrono::duration<f64>(steady::now()-from).count(); };
   SignalTiming out;
@@ -311,7 +312,7 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
   buffer=std::move(evaluated.alphas.front().values);
   if (signal_cache) {
     const auto write_started=steady::now();
-    ATX_TRY(auto stored,cache_store(*signal_cache,cfg,spec,role,candidate,buffer,meter));
+    ATX_TRY(auto stored,cache_store(*signal_cache,cfg,spec,role,candidate,buffer,meter,index));
     out.entry=std::move(stored); out.cache_write=since(write_started);
     progress<<"IC cache-write "<<candidate.id<<" role="<<spec.name<<" seconds="<<out.cache_write<<'\n'<<std::flush;
   }
@@ -325,7 +326,7 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
 co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const Role& spec,
     const KnownManifests& known,const PinnedWeights& pinned,std::span<const u8> absent,
     std::vector<int>& signs,Json& frozen,const std::string& recipe_sha,
-    const std::string& orientation_pin,std::ostream& progress) {
+    const std::string& orientation_pin,CacheIndex* index,std::ostream& progress) {
   const std::span<const f64> weights(pinned.values);
   const std::span<const int> blend_signs(pinned.signs);
   const auto started=std::chrono::steady_clock::now();
@@ -341,7 +342,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   // loop. Payload hashes are still verified on load.
   CacheResolution cache;
   if (!cfg.candidate_cache_directory.empty()) {
-    ATX_TRY(cache,cache_resolve(cfg,lib,spec,known));
+    ATX_TRY(cache,cache_resolve(cfg,lib,spec,known,index));
     progress<<"IC cache-preflight role="<<spec.name<<" ready="<<cache.ready<<'/'<<lib.candidates.size()
             <<" legacy="<<cache.legacy<<'\n'<<std::flush;
   }
@@ -506,12 +507,12 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
       const auto& hit=*cache.hits[k];
       ic_entry=hit.dir/ic_scope->directory/(hit.stem+".json");
       ATX_TRY(cached_ic,ic_cache_lookup(ic_entry,*ic_scope,candidate,hit.payload_sha,scratch,
-          ic_options.active_horizons));
+          ic_options.active_horizons,index));
       ic_probed=true;
       if (legacy_scope) {
         legacy_entry=hit.dir/legacy_scope->directory/(hit.stem+".json");
         ATX_TRY(cached_legacy,ic_cache_lookup(legacy_entry,*legacy_scope,candidate,hit.payload_sha,
-            *legacy_scratch,ic_options.active_horizons));
+            *legacy_scratch,ic_options.active_horizons,index));
         legacy_probed=true;
       }
       probe_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-probe_started).count();
@@ -525,7 +526,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     } else {
       ATX_TRY(acquired,candidate_signal(cfg,spec,role,fields,k,candidate,
           signal_cache?&cache.keys[k]:nullptr,signal_cache?cache.hits[k]:std::nullopt,pool.get(),vm,
-          signal_buffer,meter,progress));
+          signal_buffer,meter,index,progress));
     }
     // absent-members-v1 (P9 lane ABS, OD3P-1): a listed member's data is removed here, after the
     // candidate cache served or stored its exact bytes. Every cell non-finite: its IC rows, its
@@ -556,7 +557,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
       if (!ic_probed) {
         ic_entry=acquired.entry->dir/ic_scope->directory/(acquired.entry->stem+".json");
         ATX_TRY(cached_ic,ic_cache_lookup(ic_entry,*ic_scope,candidate,acquired.entry->payload_sha,scratch,
-            ic_options.active_horizons));
+            ic_options.active_horizons,index));
       }
     }
     ex::ResearchIcResult scored; IcSeries daily_series;
@@ -567,7 +568,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
       daily_series=scratch_series(scratch);
       if (ic_cached) {
         ATX_TRY_VOID(ic_cache_store(ic_entry,*ic_scope,candidate,acquired.entry->payload_sha,scored,
-            daily_series,cfg.workers));
+            daily_series,cfg.workers,index));
       }
     }
     // P9 S2: the same signal under today's labels (--label-terminal), from its own IC-result scope
@@ -577,7 +578,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
       if (legacy_cached && !legacy_probed) {
         legacy_entry=acquired.entry->dir/legacy_scope->directory/(acquired.entry->stem+".json");
         ATX_TRY(cached_legacy,ic_cache_lookup(legacy_entry,*legacy_scope,candidate,
-            acquired.entry->payload_sha,*legacy_scratch,ic_options.active_horizons));
+            acquired.entry->payload_sha,*legacy_scratch,ic_options.active_horizons,index));
       }
       if (cached_legacy) {
         legacy_scored.emplace(cached_legacy->result); legacy_series=cached_series(*cached_legacy);
@@ -587,7 +588,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
         legacy_series=scratch_series(*legacy_scratch);
         if (legacy_cached) {
           ATX_TRY_VOID(ic_cache_store(legacy_entry,*legacy_scope,candidate,acquired.entry->payload_sha,
-              legacy,legacy_series,cfg.workers));
+              legacy,legacy_series,cfg.workers,index));
         }
         legacy_scored.emplace(std::move(legacy));
       }
@@ -733,6 +734,9 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
         {"layout",cache_schema_v2},{"hits",cache_hits},{"legacy_hits",legacy_hits},
         {"misses",lib.candidates.size()-cache_hits},{"vm_evaluations",lib.candidates.size()-cache_hits},
         {"entries",std::move(cache_entries)}};
+    // P9 lane SQL4: present only under --candidate-cache-index sqlite (the entries are rows of
+    // DIR/index.sqlite; `sidecar` and the IC-result paths then name their rows' locations).
+    if (index) result["candidate_cache"]["index"]=std::string(kCacheIndexSqlite);
     if (!lib.extra_fields.empty())
       result["candidate_cache"]["fields_directory"]=(cache_root(cfg)/spec.fields.sha).string();
     // Entries live beside each signal entry: <entry dir>/<subdirectory>/<entry stem>.json.
@@ -790,6 +794,15 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     if (cfg.no_composition && !cfg.composition_weights_path.empty())
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: --no-composition builds no blend, so "
           "--composition-weights (which only weight the blend) is refused with it");
+    // P9 lane SQL4: the index needs its cache; --cache-report lists the file layout, which an
+    // indexed cache does not have.
+    const bool indexed=cfg.candidate_cache_index==CacheIndexMode::Sqlite;
+    if (indexed && cfg.candidate_cache_directory.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,
+          "IC runner: --candidate-cache-index sqlite needs --candidate-cache");
+    if (indexed && cfg.cache_report)
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: --cache-report lists the cache's "
+          "file layout; refused with --candidate-cache-index sqlite");
     // P9 S2: --eval-mode audit-exact is allowed with --candidate-cache (its entries live under their
     // own identity, vm_identity(true)); the IC method options are checked before any payload.
     ATX_TRY_VOID(check_ic_method_options(cfg,validation_only));
@@ -806,6 +819,16 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     const bool pinned_signs=!pinned.signs.empty();
     ATX_TRY_VOID(cache_preflight(cfg,lib));
     ATX_TRY(const auto known,legacy_manifests(cfg));
+    // P9 lane SQL4: the cache's one index object for the run (DIR/index.sqlite, never created
+    // here; opened before any role payload). --plan-only only reads it and prints no index line.
+    std::optional<CacheIndex> opened_index;
+    if (indexed) {
+      const auto access=metadata_only?IndexAccess::ReadOnly:IndexAccess::ReadWrite;
+      ATX_TRY(auto opened,CacheIndex::open(cfg.candidate_cache_directory,
+          metadata_only?nullptr:&progress,access));
+      opened_index.emplace(std::move(opened));
+    }
+    CacheIndex* const cache_index=opened_index?&*opened_index:nullptr;
     std::vector<Role> roles;
     // Fields bind at admission (metadata only); an unscored frozen TRAIN needs none. A scored role
     // over the memory budget is refused here, except under --plan-only, which prints every role's
@@ -895,7 +918,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       if (!cfg.candidate_cache_directory.empty()) {
         plan["candidate_cache"]=Json::array();
         for (const auto& role:roles) {
-          ATX_TRY(auto entry,cache_plan(cfg,lib,role,known)); plan["candidate_cache"].push_back(std::move(entry));
+          ATX_TRY(auto entry,cache_plan(cfg,lib,role,known,cache_index));
+          plan["candidate_cache"].push_back(std::move(entry));
         }
       }
       progress<<plan.dump(2)<<'\n';
@@ -958,7 +982,7 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     ATX_TRY_VOID(write_json(dir/"summary.json",report));
     for (const auto& role:roles) {
       auto scored=score_role(cfg,lib,role,known,pinned,absent_mask,signs,orientations,recipe_sha,
-          report.value("orientations_artifact_sha256",std::string{}),progress);
+          report.value("orientations_artifact_sha256",std::string{}),cache_index,progress);
       if (!scored) {
         report["status"]="failed"; report["error"]=scored.error().to_string();
         ATX_TRY_VOID(write_json(dir/"summary.json",report)); return co::Err(scored.error());
@@ -995,6 +1019,7 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
   IcRunnerConfig cfg;
   // absent-members-v1 (P9 lane ABS): each of its two flags at most once ([0] list, [1] pin).
   std::array<bool,2> absent_given{};
+  bool cache_index_given=false; // P9 lane SQL4: --candidate-cache-index
   try {
     // K-P9-6 (P9 lane D1): `--list-rules --json` prints the composition rule table and the exe's
     // capabilities (strategy_ic_rules.hpp list_rules_json) and nothing else; it takes no other
@@ -1024,7 +1049,8 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       if (key=="--help") {
         out<<"equity-strategy-ic --library JSON --library-sha256 SHA --train MANIFEST --train-sha256 SHA --output NEWDIR "
                "[--validation MANIFEST --validation-sha256 SHA --max-memory-mib N --min-names N --min-dates N --workers 1..16 --plan-only --save-combined] [--orientations TRAIN_ARTIFACT --orientations-sha256 SHA] "
-               "[--candidate-cache DIR [--cache-legacy-fields DIR]... [--cache-report]] "
+               "[--candidate-cache DIR [--cache-legacy-fields DIR]... [--cache-report] "
+               "[--candidate-cache-index files|sqlite]] "
                "[--composition-weights JSON --composition-weights-sha256 SHA] "
                "[--train-fields DIR --train-fields-sha256 SHA] [--validation-fields DIR --validation-fields-sha256 SHA] "
                "[--no-composition] [--eval-mode audit-exact] "
@@ -1068,6 +1094,11 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "    (<role-or-fields-sha>/<id>.{f64,json}) are read in place. Publication does not fsync; killed writes\n"
                "    leave inert .partial files (safe to delete); a foreign/corrupt entry refuses loudly. It also caches\n"
                "    IC results beside each entry: ic<v>_<key>/<stem>.json, keyed on signal bytes.\n"
+               "  --candidate-cache-index files|sqlite (default files: the layout above): sqlite\n"
+               "    keeps signal and IC-result entries as rows of DIR/index.sqlite (made only by\n"
+               "    atx-research-store cache init DIR; refused without it); payloads stay files,\n"
+               "    legacy files are read through and imported, and summary.json's\n"
+               "    candidate_cache records \"index\": \"sqlite\".\n"
                "  --cache-legacy-fields DIR (repeatable): a fields directory whose manifest keyed v1 field entries;\n"
                "    such an entry hits when every field its DSL reads has the pinned manifest's payload SHA256.\n"
                "  --cache-report: metadata only; prints per-role hits/misses and the unreferenced cache entries with\n"
@@ -1108,6 +1139,11 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       else if (key=="--orientations-sha256") cfg.orientations_sha256=value;
       else if (key=="--output") cfg.output_directory=value;
       else if (key=="--candidate-cache") cfg.candidate_cache_directory=value;
+      else if (key=="--candidate-cache-index") {
+        const auto mode=parse_cache_index_mode(value);
+        if (!mode) throw std::invalid_argument("--candidate-cache-index takes files or sqlite");
+        cfg.candidate_cache_index=*mode; cache_index_given=true;
+      }
       else if (key=="--cache-legacy-fields") cfg.candidate_cache_legacy_fields.push_back(value);
       else if (key=="--composition-weights") cfg.composition_weights_path=value;
       else if (key=="--composition-weights-sha256") cfg.composition_weights_sha256=value;
@@ -1148,6 +1184,14 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       }
       else throw std::invalid_argument("unknown option: "+key);
     }
+    // P9 lane SQL4: usage refusals (exit 2). The index is never created here; its presence only
+    // refuses, it never selects a backend.
+    if (cache_index_given && cfg.candidate_cache_directory.empty())
+      throw std::invalid_argument("--candidate-cache-index needs --candidate-cache");
+    if (cfg.candidate_cache_index==CacheIndexMode::Sqlite &&
+        !cache_index_present(cfg.candidate_cache_directory))
+      throw std::invalid_argument("--candidate-cache-index sqlite needs DIR/index.sqlite (made by "
+                                  "atx-research-store cache init DIR)");
     const auto result=run_ic(cfg,out);
     if (!result) { err<<result.error().to_string()<<'\n'; return 1; }
     return 0;

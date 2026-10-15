@@ -545,3 +545,9 @@ target_sources(atx-engine-research-fields-tests PRIVATE
     research/research_fields_a4_reuse_test.cpp
     research/research_fields_a4_clock_test.cpp
     research/research_fields_holdings_test.cpp)
+
+# P9 lane SQL4 (rulings SQL-7 / SQL-9): the catalog's ledger index head from B2's chain_head and
+# `verify --ledger` (ResearchCatalog.LedgerHeadFromResearchLedger, .RecordedHeadsArePrefixHeads)
+# beside SQL2's catalog gtests; the test reads B2's chain functions directly.
+target_sources(atx-engine-research-catalog-tests PRIVATE research/research_catalog_ledger_test.cpp)
+target_link_libraries(atx-engine-research-catalog-tests PRIVATE atx::engine-research-ledger)
