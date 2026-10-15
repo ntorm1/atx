@@ -1,0 +1,4 @@
+# D2-3 deletion trial on 703ac03a: blob hashes (git hash-object) of the three edited files
+a4a66cca56b3799be9da01c3d655d759c9797982 atx-impl/tools/composition_resid.py
+f643583380c6b033a33347e4dab5bf269651b368 atx-impl/tools/test_composition_resid.py
+d870b91243a0016836ca128e9c10b8d1647b4424 scripts/tests/test_no_python_mirror.py

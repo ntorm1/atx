@@ -1,0 +1,27 @@
+leverage-change.json line18: "gross_match":"none",
+new-combination-rule.json line18: "gross_match":"pm6-6-engine",
+new-cost-model.json line18: "gross_match":"pm6-6-engine",
+new-field.json line18: "gross_match":"pm6-6-engine",
+new-horizon.json line18: "gross_match":"pm6-6-engine",
+new-nav-rule.json line18: "gross_match":"none",
+new-signal.json line18: "gross_match":"pm6-6-engine",
+new-universe.json line18: "gross_match":"pm6-6-engine",
+replaced-signal.json line18: "gross_match":"pm6-6-engine",
+walk-forward.json line18: "gross_match":"pm6-6-engine",
+pin_eval_verb lines:
+0 matches for 'F.pin_eval_verb(root)'
+record_spec in leverage test:
+    assert code == 0, log
+    got = json.loads((root / "out/waves" / m["wave"] / "receipts" / "06-match.json").read_text())["outputs"]
+    assert got["corrected"] is True and got["record_spec"].endswith("-gm.json") and got["leverage"] != "1.1474"
+    gm = json.loads((root / got["record_spec"]).read_text())
+    assert gm["change"]["set"]["nav.leverage"] == got["leverage"]
+parametrize mode:
+@pytest.mark.parametrize("mode", ["pm6-6-engine"])     # the Python pm6-6 is retired (ruling C2-11)
+pm6-6 branch (non-engine) occurrences:
+2 matches in 2 files:
+
+237:0:m.update(gross_match="pm6-6"), 'gross_match must be "none"'),
+695:0:(m.update(gross_match="pm6-6"), constants(flags={"nav": {
+pin_eval_verb: 187:    F.pin_eval_verb(root)       # ru
+remaining "pm6-6" literals (refusal cases):

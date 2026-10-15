@@ -1,0 +1,3 @@
+scripts/specs/p9/kinds/new-cost-model.json
+scripts/specs/p9/kinds/walk-forward.json
+scripts/tests/test_wave_kinds.py

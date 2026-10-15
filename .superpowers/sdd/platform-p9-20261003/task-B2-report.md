@@ -2,6 +2,12 @@
 
 ## Outcome
 
+**Fix round 2 (R10, 2026-10-08; last section "Fix round 2 (B2-N37)"): cause (b) arithmetic. The legacy n37 test
+compares at 1e-12 relative with the B2-6 disclosure (`71abeb2f`, test only; golden unchanged); max observed
+|relative difference| 4.967e-14. Debug `p9-b2-r` (verb only); root `094bcd3b` merged (`e4683013`), then root
+`858a4fca` (`96ff5aa0`), both without conflict; the test file 10 passed with root's inputs on both merged trees. Next:
+re-review 3 (BASE `46ffe3dc`).**
+
 **Fix round 1 (end of file) supersedes the SHAs below: identity merge point `1b25b9a4`, deletion commit `598d2199`.**
 
 **R9 (2026-10-07): the two pending suites are done on `52cdcc8c` (root `685e238b` merged, docs only, no conflict),
@@ -1055,4 +1061,156 @@ Permission refusal this round (PERM-1; not retried, not routed around): a Write 
 `scratchpad/b2-r8/report-r8.md` (a draft of this section) was refused ("Subagents should return findings as text, not
 write report files"). This section was then written by one Edit of this existing lane record, which the dispatch
 requires.
+
+## Fix round 2 (B2-N37)
+
+Dispatch R10-1, `r10-dispatch.md` "B2-FIX2" (2026-10-08). Rulings B2-N37, B2-FIX2-EXE, B2-R1, B2-6, HOST-4, HOST-5
+(PM message during the round), TEST-1, PERM-1. Pool-14, branch `feat/p9-b2-20261003`. Evidence: `b2-evidence/r10-*`
+plus the receipt copy `b2-evidence/mega-p9-b2-r-{receipt.json,build.log,cache-stats.log}`.
+
+**Status: DONE. Cause (b), arithmetic.** The golden file is unchanged; no expected hash was edited; no C++ changed;
+one build. Max observed |relative difference|: **4.967e-14** (summ), 3.104e-16 (PBO).
+
+### Commits
+
+| commit | what |
+|---|---|
+| `73b4acfd` | start (root's M2 docs head; APPROVE `46ffe3dc` already merged) |
+| `71abeb2f` | the fix: `atx-impl/tools/test_nav_summ_v8.py` only (+73 / -5) |
+| `e4683013` | `git merge feat/platform-p9-20261003` = root `094bcd3b` (M3: C3b, D3W, ABS, SQL2-CLS rows). No conflict; tree `73c2c567` equals `git merge-tree --write-tree 71abeb2f 094bcd3b`. Slip: the commit carries git's default merge message without the trailer; not amended (no history rewrite) |
+| `eef8aabd` | this section, `handoff-B2.md` head section, `b2-evidence/r10-*` |
+| `96ff5aa0` | second `git merge feat/platform-p9-20261003` = root `858a4fca` (M4: D3, OD3P, AL-CLOCK; root had moved again in code after `eef8aabd`). No conflict; tree `d64e548a` equals `git merge-tree --write-tree eef8aabd 858a4fca`; message with the trailer |
+| the last docs commit | the second-merge rows of this section and of `handoff-B2.md` |
+
+### Reproduction (B2-FIX2-EXE)
+
+- Configure `equity-dev` (the object tree had been deleted at R9), then ONE Debug build `p9-b2-r` of
+  `atx-research-eval` only: source `73b4acfd`, dirty 0, exit 0, 221 TUs, 10 links, 401 s, 3 jobs, free 2,881 MiB at
+  admission. Verb SHA-256 `71d19288182a94a025b90b135f4c12477406d65e0e94ce82af5e6fbe49fd91c7` (re-hashed: equals the
+  receipt). 9 warning lines, all outside atx code (7 clang-cl `/MP` driver notes, 2 databento `getenv`).
+- `ATX_EQUITY_ROOT=C:/atx-wt/pool-2/build-equity` (read only), `ATX_EQUITY_BIN=C:/atx-wt/pool-14/build-equity/bin`.
+  Nothing was written under pool-2: the test's and the diagnosis' temp dirs are under the session scratchpad
+  `b2-r10/pt/`. pytest with `--tb=no --show-capture=no -rN`.
+- The unchanged test at `73b4acfd`: **1 failed**, the red reproduced (`r10-pyt-n37-repro.log`).
+
+### Diagnosis (blind)
+
+Tool `b2-evidence/r10-n37-diag.py`: root's `m2-logs/tools/n37_diag.py` form (copied verbatim as
+`b2-evidence/r10-n37_diag-root-m2.py`, SHA-256 `80e54b23...`), with the lane's tools dir, the lane's verb kept in the
+environment, and two additions (the formatting check and in-memory teeth). It prints counts, generic JSON paths,
+booleans, digit-count histograms and noise magnitudes, never a value. Output `r10-n37-diag-prefix.txt` (pre-fix tree)
+and `r10-n37-diag-fixed.txt` (fixed tree; the same numbers plus the teeth).
+
+- nav_summ's default verb resolves to the lane's bin: True. The golden is the canonical dump: True. `NS.main` 0.
+  37 / 37 rows. The reference token occurs in the argv more than once (also a dir): True.
+- **Formatting, cause (a), ruled out.** The verb writes its JSON with nlohmann::json (`doc.dump`,
+  `eval_cli.cpp:288` at HEAD, `:286` at `73b4acfd`), whose double printer always round-trips; nav_summ reads it with `json.loads`
+  (`nav_summ.py:238`) and the summ / PBO JSON are Python dumps (repr) of those doubles. So the verb's text form never
+  reaches the compared bytes: the doubles nav_summ holds are exactly the verb's. Its inputs are exact too
+  (nav_summ writes repr, the verb reads with `std::from_chars`, `eval_series.cpp:94-96`). Measured on the real run:
+  114 verb documents, 26,188 float tokens; 26,167 equal Python's repr of the parsed double, 21 longer (non-shortest
+  but round-trip forms), 0 shorter; tokens carry up to 17 significant digits (14,390 with 17). No change to the verb's
+  printing can change a byte of `summ.json`.
+- **Arithmetic, cause (b).** summ: 4,960 vs 4,958 leaves; 4,414 bit-equal; 541 numeric leaves differ, all within
+  1e-12 relative (abs_tol 0), across 18 generic paths (deflated / effective-N / Lo-null DSR, paired `lw.ci95` / `lw.se`
+  / `memmel_se` / `rho` / `t`, PSR / MinTRL); **0 beyond 1e-12**; 0 int / float type mismatches; max |relative
+  difference| 4.967e-14 at `paired.lw.ci95[0]`, max ulp distance 360 (same path; the paired quantities are the
+  ill-conditioned ones B2-R1 names). PBO: 13,077 leaves on both sides, 13,075 bit-equal, 2 within 1e-12
+  (`logit_mean`, `winner_oos_sr_annual_mean`), max 3.104e-16, 2 ulps. Spread over every statistic family at a few to
+  a few hundred ulps: summation order / fma of the engine against numpy, not a port defect.
+- **B2-6 disclosure.** Exactly 1 row is degenerate, and its dir is the reference: the legacy n37 argv lists its
+  reference among the dirs, so that row is a self pair (B2-6's own note that root's identity argv never lists the
+  reference holds for the identity argv, not for this legacy argv). Its `one_minus_rho` is a float below 1e-6: True.
+  `memmel_se`, `t`, `lw.se`: null in the run, finite floats in the golden. The two added keys
+  `paired.degenerate` / `paired.one_minus_rho` are the only extra leaves; no leaf is missing.
+
+### The fix (`atx-impl/tools/test_nav_summ_v8.py`, `71abeb2f`)
+
+| lines | change |
+|---|---|
+| `:66-71` | comment naming B2-N37; `N37_REL_TOL = 1e-12`; `N37_REFUSED` = the keys B2-6 / B2-R1 (c) refuse (`memmel_se`, `t`, `lw.se`) |
+| `:74-92` | `numeric_mismatches(got, want)`: same keys, lengths and types; strings / booleans / nulls / integers exact; floats `math.isclose(rel_tol=1e-12, abs_tol=0)`, NaN equals NaN; returns JSON paths only |
+| `:95-118` | `take_degenerate_disclosure(got, want)`: a row whose engine paired block carries `degenerate` must have it True and absent from the golden, `one_minus_rho` a float below 1e-6, each refused key null in the run and a float in the golden; those keys are removed from both rows; returns (True, the broken paths); any other row (False, []) |
+| `:121-131` | docstring: ruling B2-N37 (engine arithmetic, 1e-12 relative, B2-R1 (b)'s numeric form, golden unchanged) and the B2-6 disclosure line (the self pair, its "na" SE / t, the two added keys) |
+| `:138-139` | the golden's canonical-dump check as a boolean assert (a failure prints no string diff) |
+| `:158-167` | per row: the disclosure, then `numeric_mismatches`; one assert on the path list; `degenerate == 1` |
+| `:172-173` | the PBO JSON through `numeric_mismatches` |
+
+Every assertion on the real rows names paths or counts only, so the test stays value-free even without `--tb=no`.
+
+### Teeth (in memory; no file mutated, so TEETH-RESTORE has nothing to restore)
+
+The test's own helpers, imported from the fixed test module, on the real rows and on perturbed copies
+(`r10-n37-diag-fixed.txt`, lines "teeth"):
+
+| case | result |
+|---|---|
+| the real rows | 0 problems, 1 degenerate row (the test passes) |
+| a float leaf x (1 + 3e-12) | caught (1 path) |
+| a float leaf x (1 + 5e-13) | accepted: inside 1e-12, so the tolerance is the stated one, not looser |
+| a float leaf -> null | caught (type) |
+| an extra key | caught (keys) |
+| a string leaf changed | caught |
+| a PBO float leaf x (1 + 3e-12) | caught |
+| the degenerate row with 1 - rho = 1e-3 | caught (`paired.one_minus_rho`) |
+| the degenerate row with a refused key not null | caught (2 paths) |
+| the degenerate flag removed | caught (keys), and the degenerate count is 0, not 1 |
+
+### Tests (TEST-1: the test file only; no C++ changed, so no gtest; no other B2 pytest file touches the change)
+
+| run | tree | result | log |
+|---|---|---|---|
+| n37 test, unchanged test, root inputs, blind | `73b4acfd` | 1 failed (the red) | `r10-pyt-n37-repro.log` |
+| n37 test, fixed, root inputs, blind | `73b4acfd` + fix | 1 passed | `r10-pyt-n37-fixed.log` |
+| whole `test_nav_summ_v8.py`, root inputs, blind | the same | 10 passed | `r10-pyt-v8-file-root.log` |
+| whole `test_nav_summ_v8.py`, synthetic | the same | 9 passed, 1 skipped (n37 without ATX_EQUITY_ROOT) | `r10-pyt-v8-file-synthetic.log` |
+| whole `test_nav_summ_v8.py`, root inputs, blind | merged `e4683013` | 10 passed | `r10-pyt-v8-file-root-merged.log` |
+| whole `test_nav_summ_v8.py`, synthetic | merged `e4683013` | 9 passed, 1 skipped | `r10-pyt-v8-file-synthetic-merged.log` |
+| whole `test_nav_summ_v8.py`, root inputs, blind | merged `96ff5aa0` (root `858a4fca`) | 10 passed | `r10-pyt-v8-file-root-merged2.log` |
+| whole `test_nav_summ_v8.py`, synthetic | merged `96ff5aa0` | 9 passed, 1 skipped | `r10-pyt-v8-file-synthetic-merged2.log` |
+
+Every run with `ATX_EQUITY_BIN` = the lane's `p9-b2-r` bin. On the merged tree that verb's source is `73b4acfd`
+(TEST-1 allows this round one build): the merge changed `eval_report.cpp` / `eval_cli.cpp` (D3W's eval-verb hunks;
+flag absent = bytes unchanged under D3W-EVAL) and nothing on the n37 Python path (`git diff 71abeb2f e4683013` of
+`nav_summ.py`, `backtest_integrity.py`, `test_nav_summ.py`, `test_nav_summ_v8.py` is empty). Root `858a4fca`
+(second merge) changes in `atx-impl/tools` only `carry_weights.py` / `test_od3_tooling.py` and nothing under
+`atx-engine/src/research/eval`. Whole suites, Release,
+the gate's runs: deferred to the gate (TEST-1). ENV-1 not seen.
+
+### Host and build (HOST-4, HOST-5)
+
+- Waiter `b2-evidence/r10-build-wait.ps1`, log `r10-build-wait-p9-b2-r.log`. Its first run counted every ninja /
+  cmake / clang-cl process, including the foreign `cmake --build C:\atx\build-vol` of another session. When that build
+  paused it started the configure (23:46Z), and PowerShell 5.1 turned the configure's first stderr line into a
+  terminating NativeCommandError: the configure was cut short (`r10-configure-equity-dev-aborted.log`). Slip, fixed:
+  waiter v2 sends native output through a `cmd /c` redirect, and the configure was re-run by hand (exit 0,
+  `r10-configure-equity-dev.log`).
+- Waiter v2 applies HOST-5 (only a process whose command line names `C:\atx-wt\` counts) and needs 120 s quiet (root's
+  waiter needs 60 s, so root starts first when both wait). It waited behind pool-30's build and root's `p9-2v` (ended
+  00:11:46Z) and started `p9-b2-r` at 00:13:33Z (free RAM 3,160 MiB); the build ended 00:20:19Z, exit 0.
+
+### For root at merge, and for re-review 3 (BASE `46ffe3dc`)
+
+- Root re-proves: `atx-impl/tools/test_nav_summ_v8.py` with `ATX_EQUITY_ROOT` = its `build-equity` and its own
+  current Debug verb, `--tb=no --show-capture=no -rN`: 10 passed (the n37 test 1 passed). The known-red set becomes
+  empty.
+- No new `atx.<name>/v<n>` literal, flag, JSON key or rule id; no cross-lane edit; no CMake change; no C++.
+- The reviewer's range `46ffe3dc..HEAD`: the lane's own change is `71abeb2f` (one test file); the rest is root's
+  history through `e4683013` and `96ff5aa0` (plain merges, trees = recompute).
+
+### Disk
+
+After the docs commit: pool-14's Debug object tree deleted by name (in `build-equity/`: `CMakeFiles/`, `atx-core/`,
+`atx-engine/`, `atx-impl/`, `atx-tsdb/`, `bin/`, `lib/`, `tests/` and the configure's top-level files: 1,229 MiB by
+`du -m` before the deletion); kept: every `mega-p9-b2-*` receipt and log, `audits/`, `v8-interim3-pitch-render-run2/`.
+The session scratch dir `b2-r10/` (pytest basetemps, diagnosis temp dirs) is deleted by literal name.
+
+### Open questions (one line each)
+
+1. B2-6 says root's identity argv never lists the reference among the dirs; the legacy n37 argv does, and the test now
+   pins that one self pair as the disclosed degenerate row: confirm no ruling text change is wanted.
+2. Merge commit `e4683013` lacks the commit trailer (git's default message); left as is, not amended (no history
+   rewrite).
+
+Permission refusals this round: none.
 

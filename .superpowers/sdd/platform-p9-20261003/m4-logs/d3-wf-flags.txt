@@ -1,0 +1,11 @@
+D3W review item 7 / D3 review item 6 / D3 S-3 (root M4, merged tree 0a2ceb2b): kind constants vs the fitter
+kind  scripts/wave_kinds.py:86-90  | fitter atx-impl/tools/composition_engine_fit.py (D3W, in root since 08f04e07)
+flag names  WALK_FORWARD_FLAGS (--walk-forward, --walk-forward-lag, --walk-forward-step, --walk-forward-min-decisions)
+            == add_argument :171, :177, :178, :180 (same four, same spelling)                              HOLDS
+windows     WALK_FORWARD_WINDOWS ("expanding",) == fitter WALK_FORWARD_WINDOWS ("expanding",) :100          HOLDS
+parent fit  WALK_FORWARD_PARENT_FIT "--engine-fit" == check_walk_forward requires engine_fit :210           HOLDS
+refused     WALK_FORWARD_REFUSED (--theme-tsmom, --theme-resid, --era) == fitter theme_tsmom, theme_resid,
+            pooled (fit_composition_weights.py:1923 pooled = --era / --era-id) :210-211                   HOLDS
+bounds      kind walk_forward_problems: lag >= 2, step > 0, min_decisions >= 2 (window expanding)
+            == fitter :215-217 lag >= 2, step >= 1, min_decisions >= 2                                      HOLDS
+default     kind passes min_decisions only when named (D3-Q3); fitter default WALK_FORWARD_MIN_DECISIONS 21  HOLDS

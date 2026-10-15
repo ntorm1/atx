@@ -74,6 +74,7 @@ OUTPUT_RECORD = "carry.json"
 DROP_SCHEMA = "atx.od3-flagged-members/v1"           # the drop list (P9 OD3P, PRE-31)
 DROP_RULE = "drop-flagged-members-v1"
 WEIGHTS_SCHEMAS = ("atx.dsl-composition-weights/v1", "atx.dsl-composition-weights/v2")   # the IC runner's two
+PENDING_SUFFIX = ".pending"     # publish's partial dir <DIR>.pending (the cycle refuses a stale one at plan time)
 MEMBER_ID = re.compile(r"[A-Za-z0-9_]+")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -214,7 +215,7 @@ def publish(out: Path, files: dict[str, bytes]) -> None:
     if out.exists():
         raise CarryError(f"output exists; refusing overwrite: {out}")
     out.parent.mkdir(parents=True, exist_ok=True)
-    pending = out.with_name(out.name + ".pending")
+    pending = out.with_name(out.name + PENDING_SUFFIX)
     try:
         pending.mkdir()
     except FileExistsError as exc:

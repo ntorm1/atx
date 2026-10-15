@@ -1,0 +1,16 @@
+== preflight
+   preflight: manifest commit 06075d0f8006, parent tiny (L 1.12), fields 395f82f7b34d, ledger 0 lines N 0, budget {'id': 'p9-kinds-fixture', 'construction_cap': 1000}
+   receipt C:\atx-wt\pool-2\build-equity\p9-m4-tw-clk3\waves\m4-clk3\receipts\01-preflight.json
+== register
+   receipt C:\atx-wt\pool-2\build-equity\p9-m4-tw-clk3\waves\m4-clk3\receipts\02-register.json
+== screen
+   receipt C:\atx-wt\pool-2\build-equity\p9-m4-tw-clk3\waves\m4-clk3\receipts\03-screen.json
+== spec
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py lock scripts/specs/p9/kinds/templates/rule-nav-m4-clk3.json --write --exes --root C:/atx-wt/pool-2/build-equity/p9-m4-tw-clk3
+git add -- scripts/specs/p9/kinds/templates/rule-nav-m4-clk3.json
+git commit -q -m "wave m4-clk3: rule cell rule-nav-m4-clk3.json on tiny.json" -- scripts/specs/p9/kinds/templates/rule-nav-m4-clk3.json
+   receipt C:\atx-wt\pool-2\build-equity\p9-m4-tw-clk3\waves\m4-clk3\receipts\04-spec.json
+== stopped after spec
+
+
+WAVE clk3 exit 0

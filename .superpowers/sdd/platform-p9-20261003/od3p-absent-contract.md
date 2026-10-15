@@ -2,8 +2,12 @@
 
 Written by lane OD3P (pool-21, RESUME 7) under Ruling OD3P-1 (ledger `progress.md`, RESUME 7 block). It is the contract
 between the Python side (done in OD3P: `scripts/research_roles.py`, `atx-impl/tools/carry_weights.py`) and the C++ lane
-that owns the IC runner files (D3W's files; the PM assigns the work at D3W's hand-back). Synthetic data only; nothing
-here reads a return. Source citations are at OD3P's merge of root `4dc831ac`.
+that consumes it: lane ABS (Ruling ABS-1; pool-28, branched from D3W's APPROVE head; merged in root at `898bf120`).
+ABS's report (`task-ABS-report.md`) uses this file's spellings unchanged: flags `--absent-members` /
+`--absent-members-sha256`, capability `absent-members-v1`, schema `atx.od3-flagged-members/v1`, and `summary.json`
+`absent_members {rule, list_sha256, members}` (checked in OD3P's follow-up round, re-review 1 S-b). Synthetic data
+only; nothing here reads a return. Source citations are at OD3P's merge of root `4dc831ac`; the C++ as built is cited
+file:line at ABS's head in ABS's report.
 
 ## 1. What the ruling fixes (OD3P-1, quoted in substance)
 

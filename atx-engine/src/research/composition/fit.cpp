@@ -178,6 +178,15 @@ co::Result<std::vector<f64>> mom_volman_sleeve(std::span<const std::vector<f64>>
   theme_sleeve(series,train,weights,member_theme,t,r);
   return co::Ok(std::move(r));
 }
+
+// The parent of the rules whose weights are theme_gain_weights' (ew-theme-std-v1 / -aim-v1 and
+// ew-theme-aim-v2): its capped and uncapped weights, cap and passes.
+void take_gain_parent(CompositionFit& fit,ThemeGainFit&& parent) {
+  fit.parent_weights=std::move(parent.weights);
+  fit.parent_uncapped=std::move(parent.uncapped);
+  fit.parent_cap=parent.cap;
+  fit.parent_passes=std::move(parent.passes);
+}
 } // namespace
 
 co::Result<TsmomSchedule> theme_tsmom_schedule(std::span<const std::vector<f64>> series,
@@ -263,12 +272,18 @@ co::Result<CompositionFit> fit_composition(const FactorSeriesView& view,
   const bool std_rule=
       spec.composition==ew_theme_std_rule || spec.composition==ew_theme_std_aim_rule;
   const bool shrink_rule=spec.composition==ic_shrink_rule || spec.composition==ic_shrink_aim_rule;
-  const bool aim=spec.composition==ew_theme_std_aim_rule || spec.composition==ic_shrink_aim_rule;
-  if (!std_rule && !shrink_rule)
+  const bool aim_v2=spec.composition==ew_theme_aim_v2_rule; // P9 lane D3W-PB
+  const bool aim=spec.composition==ew_theme_std_aim_rule || spec.composition==ic_shrink_aim_rule ||
+                 aim_v2;
+  if (!std_rule && !shrink_rule && !aim_v2)
     return co::Err(refused("composition must be ew-theme-std-v1, ew-theme-std-aim-v1, "
-                           "ic-shrink-v1 or ic-shrink-aim-v1: "+spec.composition));
+                           "ic-shrink-v1, ic-shrink-aim-v1 or ew-theme-aim-v2: "+spec.composition));
   if (spec.members.empty() || spec.members.size()>max_members)
     return co::Err(refused("1..256 members"));
+  if (aim_v2 && (spec.theme_erc || spec.theme_tsmom || spec.theme_resid || spec.mom_volman))
+    return co::Err(refused(std::string(ew_theme_aim_v2_rule)+" is a plain weighted blend (no theme "
+                           "block): theme-erc-v1, theme-tsmom-v1, theme-resid-v1 and mom-volman-v1 "
+                           "are refused on it"));
   if (spec.theme_resid && (spec.theme_erc || spec.theme_tsmom))
     return co::Err(refused("theme-resid-v1 is refused beside theme-erc-v1 and theme-tsmom-v1"));
   if (spec.mom_volman && (aim || spec.theme_tsmom || spec.theme_resid))
@@ -316,10 +331,18 @@ co::Result<CompositionFit> fit_composition(const FactorSeriesView& view,
       scored.push_back(aim?row->second*gains[k]:row->second);
     }
     ATX_TRY(auto parent,theme_gain_weights(scored,fit.member_theme,themes));
-    fit.parent_weights=std::move(parent.weights);
-    fit.parent_uncapped=std::move(parent.uncapped);
-    fit.parent_cap=parent.cap;
-    fit.parent_passes=std::move(parent.passes);
+    take_gain_parent(fit,std::move(parent));
+  } else if (aim_v2) { // composition_rules.ew_theme_aim_v2: every score 1 times the member's gain
+    for (usize k=0;k<gains.size();++k)
+      if (!std::isfinite(gains[k]) || !(gains[k]>0.0))
+        return co::Err(refused(std::string(ew_theme_aim_v2_rule)+": the aim gain of "+
+                               member_ids[k]+" must be finite and > 0"));
+    ATX_TRY(auto parent,theme_gain_weights(gains,fit.member_theme,themes));
+    take_gain_parent(fit,std::move(parent));
+    fit.gains=std::move(gains);
+    fit.theme_weight.assign(themes,0.0); // the theme table's aim_theme_weight, in member order
+    for (usize k=0;k<fit.parent_weights.size();++k)
+      fit.theme_weight[fit.member_theme[k]]+=fit.parent_weights[k];
   } else {
     std::vector<f64> total(themes,0.0);
     std::vector<usize> count(themes,0U);
@@ -389,6 +412,10 @@ co::Result<std::vector<WalkForwardRow>> fit_walk_forward(const FactorSeriesView&
   if (spec.theme_tsmom || spec.theme_resid)
     return co::Err(refused(rule+": refused with theme-tsmom-v1 and theme-resid-v1 (their schedule "
                            "and order are fitted on the whole TRAIN window)"));
+  if (spec.composition==ew_theme_aim_v2_rule) // P9 lane D3W-PB
+    return co::Err(refused(rule+": refused with "+std::string(ew_theme_aim_v2_rule)+" (its weights "
+                           "read no factor value, only the spec's whole-TRAIN aim gains, so every "
+                           "row would be the full fit)"));
   if (view.train.size()!=view.decisions || view.sessions.size()!=view.decisions)
     return co::Err(refused("factor series geometry"));
   // The first row: the smallest j whose window (TRAIN d with d + lag <= j) holds min_decisions.

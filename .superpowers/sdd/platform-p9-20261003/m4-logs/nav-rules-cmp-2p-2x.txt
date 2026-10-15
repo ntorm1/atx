@@ -1,0 +1,10 @@
+schema atx.nav-rules/v1 -> atx.nav-rules/v1
+rows 11 -> 12
+added: ['info-clock-rate-v1']
+removed: []
+changed: {}
+order of the kept rows unchanged: True
+capabilities [] added, [] removed
+info-clock-rate-v1: present True
+  last row: False; kind trade-rate; rows of that kind ['aim-partial-v5', 'per-name-v1', 'two-speed-nav-v1', 'info-clock-rate-v1']
+  x-flag --rate info-clock-rate-v1; incompatible ['per-name-v1', 'two-speed-v1', 'aim-partial-v6', 'spo-v1', 'spo-v2', 'spo-v3']

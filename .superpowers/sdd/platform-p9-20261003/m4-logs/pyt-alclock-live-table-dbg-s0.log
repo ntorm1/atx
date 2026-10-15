@@ -1,0 +1,5 @@
+.                                                                        [100%]
+=================================== PASSES ====================================
+=========================== short test summary info ===========================
+PASSED scripts/tests/test_wave_kinds.py::test_the_live_rule_tables
+1 passed, 191 deselected in 9.71s

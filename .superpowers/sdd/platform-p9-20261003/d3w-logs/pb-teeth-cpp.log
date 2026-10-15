@@ -1,0 +1,552 @@
+# D3W-PB C++ teeth on HEAD 703ac03a7577aaa33f185b7c1ad129729a4a47d1; tag p9-d3wpb-b; file atx-engine/src/research/composition/fit.cpp; filter AimV2.*:WalkForward.*
+applied T1 aim-v2 modifiers: if (aim_v2 && (spec.theme_erc || spec.theme_tsmom || spec.theme_resid || spec.mom_volman)) -> if (false && aim_v2 && (spec.theme_erc || spec.theme_tsmom || spec.theme_resid || spec.mom_volman))
+applied T2 aim-v2 gains: if (!std::isfinite(gains[k]) || !(gains[k]>0.0)) -> if (false && (!std::isfinite(gains[k]) || !(gains[k]>0.0)))
+applied T3 walk-forward aim-v2: if (spec.composition==ew_theme_aim_v2_rule) // P9 lane D3W-PB -> if (false && spec.composition==ew_theme_aim_v2_rule) // P9 lane D3W-PB
+applied T4 S-10 look-ahead: for (;cut+wf.lag<=j;++cut) { -> for (;cut+wf.lag<=j+1U;++cut) {
+research-build exit 1
+memory admission: free=2153 commit=1856
+At C:\atx-wt\pool-23\scripts\research-build.ps1:145 char:44
++ ... mit -lt 2500) { throw "memory admission: free=$free commit=$commit" }
++                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (memory admission: free=2153 commit=1856:String) [], RuntimeException
+    + FullyQualifiedErrorId : memory admission: free=2153 commit=1856
+ 
+
+no receipt (admission refused): retry in 60 s
+research-build exit 1
+memory admission: free=1840 commit=2208
+At C:\atx-wt\pool-23\scripts\research-build.ps1:145 char:44
++ ... mit -lt 2500) { throw "memory admission: free=$free commit=$commit" }
++                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (memory admission: free=1840 commit=2208:String) [], RuntimeException
+    + FullyQualifiedErrorId : memory admission: free=1840 commit=2208
+ 
+
+no receipt (admission refused): retry in 60 s
+research-build exit 0
+{
+    "Source":  "703ac03a7577aaa33f185b7c1ad129729a4a47d1",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  1,
+    "ConfiguredProvenance":  "dcddb01dd880d35ec322a5f54d559c3a7fa808f5-dirty",
+    "Jobs":  3,
+    "FreeMiB":  3047,
+    "CommitMiB":  3093,
+    "Targets":  [
+                    "atx-engine-research-composition-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  22.282179,
+    "CompiledTUs":  8,
+    "Links":  3,
+    "Tag":  "p9-d3wpb-b",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-23\\build-equity",
+    "Executables":  {
+                        "atx-engine-research-composition-tests":  {
+                                                                      "Path":  "C:\\atx-wt\\pool-23\\build-equity\\bin\\atx-engine-research-composition-tests.exe",
+                                                                      "Sha256":  "1864023bfae58f5fe51944054f68e819c8e4a857786838b7567a940fa7c0b8e3"
+                                                                  }
+                    }
+}
+[1/12] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+[2/12] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+[3/12] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+[4/12] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+[5/12] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+[6/12] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+[7/12] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+[8/12] Linking CXX static library lib\spdlogd.lib
+[9/12] Building CXX object atx-engine\CMakeFiles\atx-engine-research-composition.dir\src\research\composition\fit.cpp.obj
+[10/12] Linking CXX static library lib\atx-engine-research-composition.lib
+[11/12] Linking CXX executable bin\atx-engine-research-composition-tests.exe
+
+gtest exit 1 (non-zero expected: the mutations must turn named tests red)
+    Which is: 1580515200000000000
+  in.sessions[j - 2U]
+    Which is: 1580428800000000000
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 4
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4623507967449235456
+  std::bit_cast<u64>(closed)
+    Which is: 4623226492472524800
+0: 13 vs 12.5
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 4
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4628293042053316608
+  std::bit_cast<u64>(closed)
+    Which is: 4628011567076605952
+2: 27 vs 26
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 4
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4630404104378646528
+  std::bit_cast<u64>(closed)
+    Which is: 4630192998146113536
+3: 37 vs 35.5
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 4
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(613): error: Value of: same_bits(row.fit.weights, direct->weights)
+  Actual: false
+Expected: true
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 4
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(600): error: Expected equality of these values:
+  row.fit_decisions
+    Which is: 30
+  n
+    Which is: 29
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 5
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(601): error: Expected equality of these values:
+  row.last_fit_index
+    Which is: 29
+  j - 2U
+    Which is: 28
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 5
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(602): error: Expected equality of these values:
+  row.last_fit_session
+    Which is: 1580947200000000000
+  in.sessions[j - 2U]
+    Which is: 1580860800000000000
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 5
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4624915342332788736
+  std::bit_cast<u64>(closed)
+    Which is: 4624633867356078080
+0: 15.5 vs 15
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 5
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4629700416936869888
+  std::bit_cast<u64>(closed)
+    Which is: 4629418941960159232
+2: 32 vs 31
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 5
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4631459635541311488
+  std::bit_cast<u64>(closed)
+    Which is: 4631248529308778496
+3: 44.5 vs 43
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 5
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(613): error: Value of: same_bits(row.fit.weights, direct->weights)
+  Actual: false
+Expected: true
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 5
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(600): error: Expected equality of these values:
+  row.fit_decisions
+    Which is: 35
+  n
+    Which is: 34
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 6
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(601): error: Expected equality of these values:
+  row.last_fit_index
+    Which is: 34
+  j - 2U
+    Which is: 33
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 6
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(602): error: Expected equality of these values:
+  row.last_fit_session
+    Which is: 1581379200000000000
+  in.sessions[j - 2U]
+    Which is: 1581292800000000000
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 6
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4625759767262920704
+  std::bit_cast<u64>(closed)
+    Which is: 4625619029774565376
+0: 18 vs 17.5
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 6
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4630404104378646528
+  std::bit_cast<u64>(closed)
+    Which is: 4630263366890291200
+2: 37 vs 36
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 6
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4632515166703976448
+  std::bit_cast<u64>(closed)
+    Which is: 4632304060471443456
+3: 52 vs 50.5
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 6
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(600): error: Expected equality of these values:
+  row.fit_decisions
+    Which is: 40
+  n
+    Which is: 39
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 7
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(601): error: Expected equality of these values:
+  row.last_fit_index
+    Which is: 39
+  j - 2U
+    Which is: 38
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 7
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(602): error: Expected equality of these values:
+  row.last_fit_session
+    Which is: 1581811200000000000
+  in.sessions[j - 2U]
+    Which is: 1581724800000000000
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 7
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4626463454704697344
+  std::bit_cast<u64>(closed)
+    Which is: 4626322717216342016
+0: 20.5 vs 20
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 7
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4631107791820423168
+  std::bit_cast<u64>(closed)
+    Which is: 4630967054332067840
+2: 42 vs 41
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 7
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4633570697866641408
+  std::bit_cast<u64>(closed)
+    Which is: 4633359591634108416
+3: 59.5 vs 58
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 7
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(613): error: Value of: same_bits(row.fit.weights, direct->weights)
+  Actual: false
+Expected: true
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 7
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(600): error: Expected equality of these values:
+  row.fit_decisions
+    Which is: 45
+  n
+    Which is: 44
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 8
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(601): error: Expected equality of these values:
+  row.last_fit_index
+    Which is: 44
+  j - 2U
+    Which is: 43
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 8
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(602): error: Expected equality of these values:
+  row.last_fit_session
+    Which is: 1582243200000000000
+  in.sessions[j - 2U]
+    Which is: 1582156800000000000
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 8
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4627167142146473984
+  std::bit_cast<u64>(closed)
+    Which is: 4627026404658118656
+0: 23 vs 22.5
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 8
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4631811479262199808
+  std::bit_cast<u64>(closed)
+    Which is: 4631670741773844480
+2: 47 vs 46
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 8
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4634415122796773376
+  std::bit_cast<u64>(closed)
+    Which is: 4634309569680506880
+3: 67 vs 65.5
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 8
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(613): error: Value of: same_bits(row.fit.weights, direct->weights)
+  Actual: false
+Expected: true
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 8
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(600): error: Expected equality of these values:
+  row.fit_decisions
+    Which is: 50
+  n
+    Which is: 49
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 9
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(601): error: Expected equality of these values:
+  row.last_fit_index
+    Which is: 49
+  j - 2U
+    Which is: 48
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 9
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(602): error: Expected equality of these values:
+  row.last_fit_session
+    Which is: 1582675200000000000
+  in.sessions[j - 2U]
+    Which is: 1582588800000000000
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 9
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4627870829588250624
+  std::bit_cast<u64>(closed)
+    Which is: 4627730092099895296
+0: 25.5 vs 25
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 9
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4632515166703976448
+  std::bit_cast<u64>(closed)
+    Which is: 4632374429215621120
+2: 52 vs 51
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 9
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4634942888378105856
+  std::bit_cast<u64>(closed)
+    Which is: 4634837335261839360
+3: 74.5 vs 73
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 9
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(613): error: Value of: same_bits(row.fit.weights, direct->weights)
+  Actual: false
+Expected: true
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 9
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(600): error: Expected equality of these values:
+  row.fit_decisions
+    Which is: 55
+  n
+    Which is: 54
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 10
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(601): error: Expected equality of these values:
+  row.last_fit_index
+    Which is: 54
+  j - 2U
+    Which is: 53
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 10
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(602): error: Expected equality of these values:
+  row.last_fit_session
+    Which is: 1583107200000000000
+  in.sessions[j - 2U]
+    Which is: 1583020800000000000
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 10
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4628574517030027264
+  std::bit_cast<u64>(closed)
+    Which is: 4628433779541671936
+0: 28 vs 27.5
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 10
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4633218854145753088
+  std::bit_cast<u64>(closed)
+    Which is: 4633078116657397760
+2: 57 vs 56
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 10
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(606): error: Expected equality of these values:
+  std::bit_cast<u64>(row.fit.ic[k])
+    Which is: 4635470653959438336
+  std::bit_cast<u64>(closed)
+    Which is: 4635365100843171840
+3: 82 vs 80.5
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(597): row 10
+
+[  FAILED  ] WalkForward.ExpandingMeanClosedForm (26 ms)
+[ RUN      ] WalkForward.NoRowUsesFutureDecisions
+..\atx-engine\tests\research\research_composition_fit_test.cpp(664): error: Value of: same_bits(a.fit.weights, b.fit.weights)
+  Actual: false
+Expected: true
+row 2
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(641): ic-shrink-v1 linear
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(666): error: Value of: same_bits(a.fit.ic, b.fit.ic)
+  Actual: false
+Expected: true
+row 2
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(641): ic-shrink-v1 linear
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(664): error: Value of: same_bits(a.fit.weights, b.fit.weights)
+  Actual: false
+Expected: true
+row 6
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(641): ew-theme-std-erc-tsmom
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(665): error: Value of: same_bits(a.fit.covariance, b.fit.covariance)
+  Actual: false
+Expected: true
+row 6
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(641): ew-theme-std-erc-tsmom
+
+[  FAILED  ] WalkForward.NoRowUsesFutureDecisions (100 ms)
+[ RUN      ] WalkForward.RefusesBeforeAnyRow
+[       OK ] WalkForward.RefusesBeforeAnyRow (2 ms)
+[ RUN      ] WalkForward.CliWritesTheRowsAndRefuses
+[       OK ] WalkForward.CliWritesTheRowsAndRefuses (183 ms)
+[----------] 4 tests from WalkForward (314 ms total)
+
+[----------] 4 tests from AimV2
+[ RUN      ] AimV2.ClosedFormOnAPlantedModel
+[       OK ] AimV2.ClosedFormOnAPlantedModel (1 ms)
+[ RUN      ] AimV2.ReadsNoFactorValue
+[       OK ] AimV2.ReadsNoFactorValue (1 ms)
+[ RUN      ] AimV2.RefusalsBeforeAnyFit
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1074): error: Value of: fit
+  Actual: true
+Expected: false
+ew-theme-aim-v2 is a plain weighted blend (no theme block)
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1089): theme_erc
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1075): error: Expected: (fit.error().message().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+composition fit: theme-tsmom-v1: the role has 40 decisions; the first block needs more than 254
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1089): theme_tsmom
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1074): error: Value of: fit
+  Actual: true
+Expected: false
+ew-theme-aim-v2 is a plain weighted blend (no theme block)
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1089): theme_resid
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1075): error: Expected: (fit.error().message().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+composition fit: mom-volman-v1 takes an ew-theme-std-v1 or ic-shrink-v1 parent (with or without theme-erc-v1) and is refused beside theme-tsmom-v1 and theme-resid-v1
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1089): mom_volman
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1075): error: Expected: (fit.error().message().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+ew-theme-std-v1: member scores must be finite and > 0
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1097): 0
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1075): error: Expected: (fit.error().message().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+ew-theme-std-v1: member scores must be finite and > 0
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1097): -1
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1075): error: Expected: (fit.error().message().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+ew-theme-std-v1: member scores must be finite and > 0
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1097): nan
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1075): error: Expected: (fit.error().message().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+ew-theme-std-v1: member scores must be finite and > 0
+Google Test trace:
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1097): inf
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1106): error: Value of: rows
+  Actual: true
+Expected: false
+
+[  FAILED  ] AimV2.RefusalsBeforeAnyFit (13 ms)
+[ RUN      ] AimV2.CliWritesGainsAndThemeWeightsOnlyForIt
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1156): error: Expected equality of these values:
+  run_main({"fit", "--factors", factors.string(), "--spec", (dir / "aim_v2.json").string(), "--output", (dir / "fit_wf").string(), "--walk-forward", "expanding", "--lag", "2", "--step", "21"}, o, err)
+    Which is: 0
+  1
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1157): error: Expected: (err.str().find("refused with ew-theme-aim-v2")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(1158): error: Value of: fs::exists(dir / "fit_wf")
+  Actual: true
+Expected: false
+
+[  FAILED  ] AimV2.CliWritesGainsAndThemeWeightsOnlyForIt (49 ms)
+[----------] 4 tests from AimV2 (65 ms total)
+
+[----------] Global test environment tear-down
+[==========] 8 tests from 2 test suites ran. (380 ms total)
+[  PASSED  ] 4 tests.
+[  FAILED  ] 4 tests, listed below:
+[  FAILED  ] WalkForward.ExpandingMeanClosedForm
+[  FAILED  ] WalkForward.NoRowUsesFutureDecisions
+[  FAILED  ] AimV2.RefusalsBeforeAnyFit
+[  FAILED  ] AimV2.CliWritesGainsAndThemeWeightsOnlyForIt
+
+ 4 FAILED TESTS
+
+restored atx-engine/src/research/composition/fit.cpp: git status --porcelain EMPTY; hash-object 1c3461a25cf990e1433b689763ec55d138ff04da vs HEAD blob 1c3461a25cf990e1433b689763ec55d138ff04da: EQUAL

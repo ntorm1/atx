@@ -2,6 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <ios>
+#include <locale>
+#include <span>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -187,6 +194,48 @@ co::Status add_mom_volman_trace(const PinnedWeights& pinned, Json& result) {
        "every earlier block, scale = target / sigma, the factor on price_momentum's W_t (each "
        "role applies a block from its first session at or after from_session)"},
       {"blocks", std::move(rows)}};
+  return co::Ok();
+}
+
+// P9 lane D3W (ruling ALCOMB-6): per scored role, the recorded sleeve before and after each block's
+// scale, from the first block's session within the role (here beside composition_volman: review
+// D3W S-5).
+co::Status write_mom_volman_sleeves(const PinnedWeights& pinned, std::span<const i64> role_sessions,
+                                    const std::filesystem::path& dir, const std::string& role) {
+  if (pinned.schedule != mom_volman_rule || role_sessions.empty() || pinned.schedule_from.empty())
+    return co::Ok();
+  if (pinned.volman_sessions.size() != pinned.volman_sleeve.size() ||
+      pinned.volman_scale.size() != pinned.schedule_from.size())
+    return co::Err(co::ErrorCode::Internal, "IC runner: mom-volman-v1 sleeve shape");
+  std::ostringstream raw, scaled;
+  for (auto* text : {&raw, &scaled}) {
+    text->imbue(std::locale::classic());
+    *text << std::setprecision(17) << "session_ns,net_return\n";
+  }
+  usize rows = 0, block = 0;
+  for (usize d = 0; d < pinned.volman_sleeve.size(); ++d) {
+    const i64 session = pinned.volman_sessions[d];
+    if (session < pinned.schedule_from.front() || session < role_sessions.front() ||
+        session > role_sessions.back())
+      continue;
+    while (block + 1U < pinned.schedule_from.size() && pinned.schedule_from[block + 1U] <= session)
+      ++block;
+    raw << session << ',' << pinned.volman_sleeve[d] << '\n';
+    scaled << session << ',' << pinned.volman_sleeve[d] * pinned.volman_scale[block] << '\n';
+    ++rows;
+  }
+  if (rows == 0U) return co::Ok();
+  for (const auto& [name, text] :
+       {std::pair{std::string("_mom_volman_sleeve_raw.csv"), &raw},
+        std::pair{std::string("_mom_volman_sleeve_scaled.csv"), &scaled}}) {
+    const std::string bytes = text->str();
+    std::ofstream file(dir / (role + name), std::ios::binary);
+    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    file.close();
+    if (!file)
+      return co::Err(co::ErrorCode::IoError,
+                     "IC runner: cannot write " + (dir / (role + name)).string());
+  }
   return co::Ok();
 }
 } // namespace atx::impl::strategy::ic_detail

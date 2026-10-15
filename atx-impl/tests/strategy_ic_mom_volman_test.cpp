@@ -8,14 +8,17 @@
 
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <ios>
 #include <limits>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -342,6 +345,31 @@ std::vector<std::pair<i64, f64>> read_series(const std::filesystem::path& path) 
   }
   return out;
 }
+
+// A directory this process created itself (create_directory settles any name collision, so two
+// test processes never share it), removed on exit. The target also links atx-test-scratch (a
+// per-process temp root); the test does not depend on that.
+struct ScratchDir {
+  std::filesystem::path path;
+  ScratchDir() {
+    static std::atomic<unsigned> sequence{};
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count() % 1'000'000;
+    for (unsigned a = 0; a < 32 && path.empty(); ++a) {
+      auto candidate = std::filesystem::temp_directory_path() /
+                       ("atx_mom_volman_sleeve-" + std::to_string(stamp) + "-" +
+                        std::to_string(sequence.fetch_add(1)));
+      std::error_code ec;
+      if (std::filesystem::create_directory(candidate, ec)) path = std::move(candidate);
+    }
+  }
+  ScratchDir(const ScratchDir&) = delete;
+  ScratchDir& operator=(const ScratchDir&) = delete;
+  ~ScratchDir() {
+    if (path.empty()) return;
+    std::error_code ec;
+    std::filesystem::remove_all(path, ec);
+  }
+};
 } // namespace
 
 TEST(MomVolman, SleeveFilesBeforeAndAfterScaling) {
@@ -351,9 +379,9 @@ TEST(MomVolman, SleeveFilesBeforeAndAfterScaling) {
   const auto blocks = st::mom_volman_blocks(step_sleeve(400));
   ASSERT_TRUE(blocks);
   const auto sleeve = step_sleeve(400);
-  const auto dir = std::filesystem::temp_directory_path() / "atx_mom_volman_sleeve_files";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
+  const ScratchDir scratch;
+  ASSERT_FALSE(scratch.path.empty());
+  const auto& dir = scratch.path;
   const auto keys = [](i64 first, i64 last) {
     std::vector<i64> out;
     for (i64 s = first; s <= last; ++s) out.push_back(s);
@@ -399,6 +427,5 @@ TEST(MomVolman, SleeveFilesBeforeAndAfterScaling) {
   auto broken = *pinned;
   broken.volman_sleeve.pop_back();
   EXPECT_FALSE(icd::write_mom_volman_sleeves(broken, keys(1000, 1399), dir, "broken"));
-  std::filesystem::remove_all(dir);
 }
 } // namespace

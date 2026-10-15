@@ -1,0 +1,34 @@
+# D3W-PB flag-absent identity after the D2-3 deletion (trial apply on 703ac03a, blobs pb-deletion-blobs.txt) vs base f0726acb, same WORK_DIR
+std plain 0
+std-erc-tsmom plain 0
+std-erc-tsmom engine 0
+shrink-tsmom plain 0
+shrink-tsmom engine 0
+std-aim-resid plain 0
+std-aim-resid engine 0
+aim-v2 plain 0
+engine-shrink-tsmom/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+engine-shrink-tsmom/admission.json: identical sha256 568b7354b0dd33334aafd63d32674313d2249530ae359616692ac15cc5d7fb2f
+engine-shrink-tsmom/composition_weights.json: DIFFERS at ['$.provenance.engine_fit.producer_fingerprint']
+engine-std-aim-resid/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+engine-std-aim-resid/admission.json: identical sha256 568b7354b0dd33334aafd63d32674313d2249530ae359616692ac15cc5d7fb2f
+engine-std-aim-resid/composition_weights.json: DIFFERS at ['$.provenance.engine_fit.producer_fingerprint']
+engine-std-erc-tsmom/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+engine-std-erc-tsmom/admission.json: identical sha256 568b7354b0dd33334aafd63d32674313d2249530ae359616692ac15cc5d7fb2f
+engine-std-erc-tsmom/composition_weights.json: DIFFERS at ['$.provenance.engine_fit.producer_fingerprint']
+plain-aim-v2/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+plain-aim-v2/admission.json: identical sha256 568b7354b0dd33334aafd63d32674313d2249530ae359616692ac15cc5d7fb2f
+plain-aim-v2/composition_weights.json: identical sha256 23aa6121a08e1c3e7b52803010dacecd9b630b60ef7accfbf938a2fa10ff9a2d
+plain-shrink-tsmom/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+plain-shrink-tsmom/admission.json: identical sha256 568b7354b0dd33334aafd63d32674313d2249530ae359616692ac15cc5d7fb2f
+plain-shrink-tsmom/composition_weights.json: identical sha256 033c29e1eb2d8f58e2562c5d56dd0bbcf9edd63a9fc66da4120f532cbe5db809
+plain-std/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+plain-std/admission.json: identical sha256 568b7354b0dd33334aafd63d32674313d2249530ae359616692ac15cc5d7fb2f
+plain-std/composition_weights.json: identical sha256 199fa5f80d7486c9fdac3bcaf3a905096872f30f54570191389994d7737c9408
+plain-std-aim-resid/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+plain-std-aim-resid/admission.json: identical sha256 568b7354b0dd33334aafd63d32674313d2249530ae359616692ac15cc5d7fb2f
+plain-std-aim-resid/composition_weights.json: identical sha256 84b423fbd68c0ed34c6e5858693a5f93039d334ea6ed8fab94932f1ca4909970
+plain-std-erc-tsmom/admission.csv: identical sha256 d658c0f9f7e3fe38d676343888cebdf95dab2da05f8b14cc3c978712d41358b5
+plain-std-erc-tsmom/admission.json: identical sha256 568b7354b0dd33334aafd63d32674313d2249530ae359616692ac15cc5d7fb2f
+plain-std-erc-tsmom/composition_weights.json: identical sha256 a9cf3770a58fd74460fe40d1dd920b71e2eb24c93704fa86734f7d4aea120e93
+exit=0

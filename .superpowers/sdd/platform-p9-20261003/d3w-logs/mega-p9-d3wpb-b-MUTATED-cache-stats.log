@@ -1,0 +1,44 @@
+# C:\atx-cache\deps\spdlog-src\src\stdout_sinks.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# C:\atx-cache\deps\spdlog-src\src\spdlog.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# C:\atx-cache\deps\spdlog-src\src\color_sinks.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# C:\atx-cache\deps\spdlog-src\src\file_sinks.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# C:\atx-cache\deps\spdlog-src\src\cfg.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# C:\atx-cache\deps\spdlog-src\src\async.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# C:\atx-cache\deps\spdlog-src\src\bundled_fmtlib_format.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-engine\src\research\composition\fit.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss

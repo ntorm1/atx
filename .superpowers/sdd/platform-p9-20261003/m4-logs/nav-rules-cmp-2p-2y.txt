@@ -1,0 +1,6 @@
+schema atx.nav-rules/v1 -> atx.nav-rules/v1
+rows 11 -> 13
+added: ['info-clock-rate-v1', 'mv-aim-v1']
+removed: []
+changed: {}
+order of the kept rows unchanged: True
