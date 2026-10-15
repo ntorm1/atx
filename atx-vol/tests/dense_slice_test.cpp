@@ -1482,3 +1482,82 @@ TEST(ConvexSliceFit, IvBisectionEarlyExitIsActuallyEngagedInProduction) {
          "the break condition in ConvexSliceFit::iv(), src/fitting/dense_slice.cpp, "
          "reproduces exactly this failure)";
 }
+
+TEST(ConvexSliceFit, CertifiedIvMatchesIndependentBisectionAcrossScalesAndWings) {
+  // Exercise the served inverter without a QP: node prices come from known
+  // Black volatilities, while the reference bisects the actual projected node
+  // premium. This includes quotes whose time value is rounded to intrinsic,
+  // and true vols below the market quote inverter's reporting floor.
+  std::size_t compared = 0;
+  for (const double F : {0.25, 100.0, 5000.0}) {
+    for (const double T : {1.0e-6, 1.0 / 365.0, 0.25, 2.0, 10.0}) {
+      for (const double sigma : {0.001, 0.01, 0.2, 0.8, 3.0, 4.9}) {
+        for (const double z : {-8.0, -3.0, -1.0, 0.0, 1.0, 3.0, 8.0}) {
+          const double k = std::clamp(z * sigma * std::sqrt(T), -12.0, 12.0);
+          const double K = F * std::exp(k);
+          const double df = std::exp(-0.04 * T);
+          ConvexSliceFit fit;
+          fit.F = F;
+          fit.T = T;
+          fit.df = df;
+          fit.u = {K};
+          fit.C = {black76_price(F, K, T, sigma, df, Side::Call)};
+
+          const double lower = df * std::max(F - K, 0.0);
+          const double upper = df * F;
+          const double epsilon = std::min(1.0e-6 * std::max(1.0, upper),
+                                          0.25 * (upper - lower));
+          const double target = std::min(std::max(fit.C.front(), lower + epsilon),
+                                         std::nextafter(upper, lower));
+          const double actual = fit.iv(k);
+          if (!(target > lower && target < upper) ||
+              black76_price(F, K, T, atx::vol::kIvMax, df, Side::Call) < target) {
+            EXPECT_TRUE(std::isnan(actual));
+            continue;
+          }
+          double lo = 1.0e-10;
+          double hi = atx::vol::kIvMax;
+          double original_early_exit = std::numeric_limits<double>::quiet_NaN();
+          for (int iter = 0; iter < 80; ++iter) {
+            const double mid = 0.5 * (lo + hi);
+            if (black76_price(F, K, T, mid, df, Side::Call) < target) {
+              lo = mid;
+            } else {
+              hi = mid;
+            }
+            if (std::isnan(original_early_exit) &&
+                hi - lo < 1.0e-12 * std::max(1.0, hi)) {
+              original_early_exit = 0.5 * (lo + hi);
+            }
+          }
+          const double reference = 0.5 * (lo + hi);
+          EXPECT_NEAR(actual, reference, 1.0e-11 * std::max(1.0, reference))
+              << "F=" << F << " T=" << T << " sigma=" << sigma << " z=" << z;
+          if (!atx::vol::detail::iv_early_exit_disabled_for_test()) {
+            EXPECT_EQ(actual, original_early_exit)
+                << "certificate changed bisection path: F=" << F << " T=" << T
+                << " sigma=" << sigma << " z=" << z;
+          }
+          ++compared;
+        }
+      }
+    }
+  }
+  EXPECT_GT(compared, 600u);
+}
+
+TEST(ConvexSliceFit, IvRejectsNonFiniteAndUnrepresentableStrikeCoordinates) {
+  ConvexSliceFit fit;
+  fit.F = 100.0;
+  fit.T = 0.25;
+  fit.df = 0.99;
+  fit.u = {90.0, 110.0};
+  fit.C = {12.0, 2.0};
+  for (const double k : {std::numeric_limits<double>::quiet_NaN(),
+                         std::numeric_limits<double>::infinity(),
+                         -std::numeric_limits<double>::infinity(), 1000.0, -1000.0}) {
+    EXPECT_TRUE(std::isnan(fit.iv(k))) << "k=" << k;
+  }
+  fit.T = std::numeric_limits<double>::infinity();
+  EXPECT_TRUE(std::isnan(fit.iv(0.0)));
+}

@@ -492,10 +492,14 @@ double ConvexSliceFit::call_price(double K) const noexcept {
 }
 
 double ConvexSliceFit::iv(double k_log) const noexcept {
-  if (!(F > 0.0) || !(T > 0.0)) {
+  if (!std::isfinite(F) || !std::isfinite(T) || !std::isfinite(k_log) ||
+      !(F > 0.0) || !(T > 0.0)) {
     return kNaN;
   }
   const double K = F * std::exp(k_log);
+  if (!(K > 0.0) || !std::isfinite(K)) {
+    return kNaN;
+  }
   const double c = call_price(K);
   // Price-space convex wings legitimately approach intrinsic/zero so closely
   // that a finite-vol root is lost to floating-point cancellation. Project the
@@ -513,15 +517,75 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
   if (!std::isfinite(safe_price)) {
     return kNaN;
   }
-  // The generic IV helper stops at a price tolerance appropriate for market
-  // quotes. A risk curve is differentiated twice, so that residual can become
-  // visible as false negative density. Polish monotonically by bisection to a
-  // near-machine price bracket; this is deterministic and remains reliable
-  // when vega collapses in a wing.
-  // Do not inherit the quote-inversion 0.5% IV floor here: in a deep wing even
-  // a healthy convex price can imply a smaller numerical sigma. Flooring sigma
-  // would move the served price off the convex curve and create false density.
-  double lo = 1.0e-10;
+  // A risk curve is differentiated twice: a quote-sized price tolerance can
+  // create false negative density. Accept Newton only after two independent
+  // price evaluations bracket its answer to the same near-machine IV width
+  // as bisection. A small residual or step by itself is not a certificate.
+  // The generic quote inverter cannot be used here: its reported 0.5% floor
+  // changes a healthy low-volatility curve, and its errors allocate strings.
+  constexpr double iv_lower = 1.0e-10;
+  const double sqrt_t = std::sqrt(T);
+  const double ln_fk = std::log(F / K);
+  const bool early_exit = !g_iv_early_exit_disabled.load(std::memory_order_relaxed);
+  double certified_lo = iv_lower;
+  double certified_hi = kIvMax;
+  const double intrinsic = df * std::max(F - K, 0.0);
+  const double time_value = safe_price - intrinsic;
+  // Numerical wings need the original deterministic price bisection. Its
+  // rounding-limited root can move more than the IV tolerance under Newton,
+  // even when a price residual is small. Avoid paying for that doomed attempt.
+  if (early_exit && time_value > 1.0e-4 * df * std::max(F, K)) {
+    constexpr double sqrt_two_pi = 2.5066282746310005024;
+    const double atm_seed = sqrt_two_pi * time_value / (df * std::min(F, K) * sqrt_t);
+    const double inflection_seed = std::sqrt(2.0 * std::fabs(ln_fk)) / sqrt_t;
+    double sigma = std::clamp(std::max(atm_seed, inflection_seed), iv_lower, kIvMax);
+    double newton_lo = iv_lower;
+    double newton_hi = kIvMax;
+    const double price_noise =
+        16.0 * std::numeric_limits<double>::epsilon() * df * std::max(F, K);
+    for (int iter = 0; iter < 10; ++iter) {
+      const Black76ValueVega value =
+          black76_value_and_vega(F, K, T, sigma, df, Side::Call, sqrt_t);
+      const double residual = value.price - safe_price;
+      const double radius = 4.0e-13 * std::max(1.0, sigma);
+      if (!(value.vega * radius > price_noise)) {
+        break;
+      }
+      if (residual < 0.0) {
+        newton_lo = sigma;
+      } else {
+        newton_hi = sigma;
+      }
+      const double step = residual / value.vega;
+      if (std::fabs(step) <= radius) {
+        const double left = std::max(iv_lower, sigma - radius);
+        const double right = std::min(kIvMax, sigma + radius);
+        const double left_price =
+            black76_price_from_lnfk(F, K, T, left, df, ln_fk, sqrt_t, Side::Call);
+        const double right_price =
+            black76_price_from_lnfk(F, K, T, right, df, ln_fk, sqrt_t, Side::Call);
+        // Require margin beyond rounding noise: sign alone is insufficient
+        // to skip comparisons just outside a floating-point price plateau.
+        if (left_price < safe_price - price_noise &&
+            right_price > safe_price + price_noise) {
+          certified_lo = left;
+          certified_hi = right;
+          break;
+        }
+        break;
+      }
+      const double candidate = sigma - step;
+      sigma = candidate > newton_lo && candidate < newton_hi
+                  ? candidate
+                  : 0.5 * (newton_lo + newton_hi);
+    }
+  }
+  // Follow the original bisection arithmetic even after certification: outside
+  // the certified interval monotonicity determines the sign without another
+  // Black evaluation. This keeps the established output rounding (including
+  // downstream deterministic frame hashes), while a failed Newton attempt
+  // leaves the full original bracket and its price comparisons untouched.
+  double lo = iv_lower;
   double hi = kIvMax;
   // FIT-P1 (Task P-5): a fixed 64-iteration bisection here was up to ~260k
   // Black-76 calls per Audit strip on a ConvexDense surface, with no early
@@ -534,14 +598,20 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
   // IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11 for the measured drift).
   // `g_iv_early_exit_disabled` exists solely so a bench can measure the SAME
   // binary with the optimization on and off (see its declaration above).
-  const bool early_exit = !g_iv_early_exit_disabled.load(std::memory_order_relaxed);
   for (int iter = 0; iter < 64; ++iter) {
     const double mid = 0.5 * (lo + hi);
-    const double model = black76_price(F, K, T, mid, df, Side::Call);
-    if (model < safe_price) {
+    if (mid <= certified_lo) {
       lo = mid;
-    } else {
+    } else if (mid >= certified_hi) {
       hi = mid;
+    } else {
+      const double model =
+          black76_price_from_lnfk(F, K, T, mid, df, ln_fk, sqrt_t, Side::Call);
+      if (model < safe_price) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
     }
     if (early_exit && (hi - lo) < 1.0e-12 * std::max(1.0, hi)) {
       break;
