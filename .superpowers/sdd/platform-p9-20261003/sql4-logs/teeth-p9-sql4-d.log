@@ -1,0 +1,73 @@
+anchor ok atx-impl/src/strategy_ic_runner.cpp: M1 sqlite without index
+anchor ok atx-impl/src/strategy_ic_runner.cpp: M2 cache report
+anchor ok atx-impl/src/strategy_ic_runner.cpp: M3 index without cache
+anchor ok atx-impl/src/strategy_ic_runner.cpp: S2 open by presence
+mutated atx-impl/src/strategy_ic_runner.cpp
+anchor ok atx-impl/src/strategy_ic_signal_cache.cpp: M4 row key parts
+anchor ok atx-impl/src/strategy_ic_signal_cache.cpp: M5 row payload
+mutated atx-impl/src/strategy_ic_signal_cache.cpp
+anchor ok atx-impl/src/strategy_ic_result_cache.cpp: M6 self-hash
+mutated atx-impl/src/strategy_ic_result_cache.cpp
+anchor ok atx-impl/src/strategy_ic_cache_index.cpp: M7 pair bits
+mutated atx-impl/src/strategy_ic_cache_index.cpp
+anchor ok atx-impl/src/strategy_marginal_pair_cache.cpp: M8 key text
+mutated atx-impl/src/strategy_marginal_pair_cache.cpp
+anchor ok atx-impl/src/strategy_marginal_ic.cpp: M9 sqlite without index
+mutated atx-impl/src/strategy_marginal_ic.cpp
+anchor ok atx-engine/src/research/store/catalog/ingest_ledger.cpp: M10 prefix head
+anchor ok atx-engine/src/research/store/catalog/ingest_ledger.cpp: M11 state lines
+anchor ok atx-engine/src/research/store/catalog/ingest_ledger.cpp: S1 seam
+mutated atx-engine/src/research/store/catalog/ingest_ledger.cpp
+build p9-sql4-d ...
+{
+    "Source":  "c4fe6aba7ae4d3c853aa58100688b5dd53351e14",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  7,
+    "ConfiguredProvenance":  "c5df575d70449e9d9eba48d4496e014e56346f27",
+    "Jobs":  4,
+    "FreeMiB":  4396,
+    "CommitMiB":  8569,
+    "Targets":  [
+                    "atx-equity-strategy-ic",
+                    "atx-impl-strategy-ic-tests",
+                    "atx-engine-research-catalog-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  19.3619336,
+    "CompiledTUs":  7,
+    "Links":  5,
+    "Tag":  "p9-sql4-d",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-32\\build-equity",
+    "Executables":  {
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-32\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "fb99fc386d1a177014f4c25976c9921455d38fdbfee753befe33eabe52961c57"
+                                                   },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-32\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "5c0559b3f014d71c4e824b8c2c3fbaed7cfddf163e2dca2f90e36d1506946016"
+                                                       },
+                        "atx-engine-research-catalog-tests":  {
+                                                                  "Path":  "C:\\atx-wt\\pool-32\\build-equity\\bin\\atx-engine-research-catalog-tests.exe",
+                                                                  "Sha256":  "96b1748479ab8fd382803b757912c4bcb67c152ce459cfb4c082a1d802ae9012"
+                                                              }
+                    }
+}
+[1/13] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_ledger.cpp.obj
+[2/13] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_marginal_ic.cpp.obj
+[3/13] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_result_cache.cpp.obj
+[4/13] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_cache_index.cpp.obj
+[5/13] Linking CXX static library lib\atx-engine-research-catalog.lib
+[6/13] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_marginal_pair_cache.cpp.obj
+[7/13] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_signal_cache.cpp.obj
+[8/13] Linking CXX executable bin\atx-engine-research-catalog-tests.exe
+[9/13] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_runner.cpp.obj
+[10/13] Linking CXX static library lib\atx-impl-strategy.lib
+[11/13] Linking CXX executable bin\atx-equity-strategy-ic.exe
+[12/13] Linking CXX executable bin\atx-impl-strategy-ic-tests.exe
+
+build exit 0
+atx-impl-strategy-ic-tests: gtest exit 1; failed 6: [  FAILED  ] IcCacheIndex.FlagAbsentKeepsFileLayoutAndSummary (577 ms); [  FAILED  ] IcCacheIndex.FlagWithoutIndexRefused (87 ms); [  FAILED  ] IcCacheIndex.KeyMismatchRefuses (504 ms); [  FAILED  ] IcResultIndex.TamperedRecordIsMiss (248 ms); [  FAILED  ] MarginalPairIndex.ConflictingBitsRefused (23 ms); [  FAILED  ] MarginalPairIndex.FlagAbsentBlockUnchanged (272 ms)
+atx-engine-research-catalog-tests: gtest exit 1; failed 3: [  FAILED  ] ResearchCatalog.LedgerHeadFromResearchLedger (286 ms); [  FAILED  ] ResearchCatalog.RecordedHeadsArePrefixHeads (592 ms); [  FAILED  ] ResearchCatalog.LedgerHeadSeamReceivesLinesInFileOrder (140 ms)
+restored: git status --porcelain empty; every mutated file's hash-object == HEAD's blob and its raw SHA-256 == the kept copy's
