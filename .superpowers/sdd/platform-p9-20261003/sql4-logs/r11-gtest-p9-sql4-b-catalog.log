@@ -1,0 +1,5 @@
+exe build-equity/bin/atx-engine-research-catalog-tests.exe sha256 cc0ed1061acceba88025f0eaf4a00037d398979ef06749eff0af78de680607c4 (build p9-sql4-b, source 44fce688)
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] 17 tests from 1 test suite ran. (3425 ms total)
+[  PASSED  ] 17 tests.
+gtest exit 0
