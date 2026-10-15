@@ -207,6 +207,7 @@ InputRow convert_row(const Header &header, const std::vector<std::string> &field
   if (side > 1U) throw std::runtime_error("is_call must be zero or one");
   row.quote = {real(get("strike"), "strike"), side == 1U ? Side::Call : Side::Put,
                real(get("bid"), "bid"), real(get("ask"), "ask")};
+  row.quote.continuous_yield = row.market.continuous_yield;
   return row;
 }
 

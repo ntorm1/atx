@@ -25,6 +25,9 @@ def make_quotes(path: Path) -> list[float]:
     # Independent closed-form European values: with zero rate/yield the
     # American call has no early-exercise premium.
     values = []
+    def phi(x: float) -> float:
+        return 0.5 * math.erfc(-x / math.sqrt(2.0))
+
     with path.open("w", newline="") as stream:
         writer = csv.writer(stream)
         writer.writerow([
@@ -36,7 +39,6 @@ def make_quotes(path: Path) -> list[float]:
             sigma_t = 0.3 * math.sqrt(0.5)
             d1 = math.log(100.0 / strike) / sigma_t + 0.5 * sigma_t
             d2 = d1 - sigma_t
-            phi = lambda x: 0.5 * math.erfc(-x / math.sqrt(2.0))
             price = 100.0 * phi(d1) - strike * phi(d2)
             values.append(price)
             writer.writerow([
