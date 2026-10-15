@@ -85,6 +85,7 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/risk_surface_validation.cpp
     src/fitting/convex_recovery.cpp
     src/fitting/quote_feasibility.cpp
+    src/fitting/quote_slice.cpp
     src/fitting/calib.cpp
     src/fitting/prepared_fitting.cpp
     src/fitting/c8.cpp
@@ -899,6 +900,10 @@ endif()
 # banner text line by line. Renaming is a separable change with its own blast
 # radius; the promotion does not need it.
 if(ATX_BUILD_TOOLS)
+    # Label-free benchmark runner. Reference values exist only in the separate
+    # Python scorer; the native tool accepts a closed raw-quote input schema.
+    add_executable(atx-vol-quote-bench tools/quote_bench_main.cpp)
+    target_link_libraries(atx-vol-quote-bench PRIVATE atx::vol atx::core atx_warnings)
     # Surface-db production build CLI (Task 6): the one-call build_surface_db
     # driver wrapped in a hand-rolled arg loop -- create-or-open a SurfaceDb,
     # load an OPRA hive v2 window, auto-generate per-symbol fit configs, and

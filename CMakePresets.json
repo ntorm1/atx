@@ -56,6 +56,32 @@
       }
     },
     {
+      "name": "vol-rel-avx2",
+      "inherits": "vol-dev",
+      "displayName": "vol-rel-avx2: optimized volatility benchmarks",
+      "description": "Restored volatility dependency graph, Release with ThinLTO and AVX2. No fast-math. Isolated dependency build directory; run timings on a quiet host.",
+      "binaryDir": "${sourceDir}/build-vol-rel-avx2",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/deps/vol-rel-avx2"
+      },
+      "environment": {
+        "CFLAGS": "/arch:AVX2",
+        "CXXFLAGS": "/arch:AVX2"
+      }
+    },
+    {
+      "name": "vol-hygiene",
+      "inherits": "vol-dev",
+      "displayName": "vol-hygiene: volatility with PCH disabled",
+      "binaryDir": "${sourceDir}/build-vol-hygiene",
+      "cacheVariables": {
+        "ATX_USE_PCH": "OFF",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/deps/vol-hygiene"
+      }
+    },
+    {
       "name": "server-dev",
       "inherits": "equity-dev",
       "displayName": "server-dev: persistent gRPC equity workspace",
