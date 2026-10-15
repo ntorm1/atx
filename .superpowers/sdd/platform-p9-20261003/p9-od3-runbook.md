@@ -77,8 +77,10 @@ that fixes it. Root fills each one in the read's own record (`progress.md` and t
   `rules_pending` is non-empty). **[UNKNOWN: the re-pinned SHA-256]**
 - The freeze build's IC exe: `<ic exe> --list-rules --json` lists `absent-members-v1` -> line 4 is read; else line 4
   is "not read: no producer" (not a stop for the other lines).
-- T2 (`nav_summ` pooled one-sided p on the engine verb, OD3P item 3) merged after B2's redo **[UNKNOWN: B2 / T2
-  merge]**. T2 is part of the OD3P port: if it slips, OD-3 waits for it (PRE-21).
+- T2 (`nav_summ --pool-one-sided`: the pooled pair's one-sided p from the engine verb's `--one-sided`, OD3P item 6)
+  is coded and tested in OD3P's follow-up round (code `cc6686f9`, on root `898bf120`, which holds B2's redo and T2);
+  root merges it after its re-review 2 **[UNKNOWN: root's merge of the OD3P follow-up]**. T2 is part of the OD3P
+  port: if it is not merged and reviewed, OD-3 waits for it (PRE-21).
 - The exe and `ucrtbase.dll` records equal the freeze build's (C.6, C.8); every spec names the frozen build.
 
 **P1 pins.** The stage pins (identity bridge `V2PIT`, SIC, delisting `DL`, fundamental events `FEV`, the `w0-2` runbook
@@ -139,7 +141,9 @@ spec as `v8-od3-protocol.md` section 5 "B6 specs" says, with these P9 rules:
   - Before P7, none of `build-equity/od3-fit-<book>`, `build-equity/od3-fit-<book>-run1`,
     `build-equity/od3-fit-<book>.pending` exists. The cycle refuses at plan time (exit 2) a `fit.output` that exists and
     whose `carry.json` does not record exactly this carry (W, A, anchor, eras, the drop list's pin or no drop); after
-    its own carry has run, the same spec re-plans with `fit` done (resume).
+    its own carry has run, the same spec re-plans with `fit` done (resume). And `<dir>.pending` absent: the cycle
+    refuses an existing `build-equity/od3-fit-<book>.pending` (dir or file: the carry tool's partial dir, left by a
+    stale or concurrent carry) at plan time too (OD3P review S-d).
 - `ic.u_output`, `ic.w_output`, `nav.output`: `build-equity/od3-u-<book>`, `-w-<book>`, `-nav-<book>`. The NAV rule,
   L and flags stay unchanged. ALCLOCK-1: if P9-C is accepted and AL-CLOCK is merged, the two books of the
   turnover-share prediction (P9-F0h and Y-F0) both name `--info-clock-print` (print-only; only `summary.json` changes,
@@ -153,8 +157,9 @@ spec as `v8-od3-protocol.md` section 5 "B6 specs" says, with these P9 rules:
 `plan`: the plan lists exactly E1, E2, E3 (`fields:E1..E3` pinned, `u:E1..E3`, fit = carry, `w:E1..E3`, `nav:E1..E3`,
 summ). The fit line reads `# phase fit [bounded; pending; fit.carry: ...] -> build-equity/od3-fit-<book>`, and the carry
 argv (after the runner's `--`) has `--output build-equity/od3-fit-<book>`. STOP for that line unless the fit phase is
-`pending` with that `--output` (a `done` or `failed` fit, or a refusal naming `fit.output`, means a reused or stale dir:
-OD3P review R-1). For line 4 the plan also shows `# pin carry:drop`, the carry argv ends with `--output
+`pending` with that `--output` and `build-equity/od3-fit-<book>.pending` absent (the cycle refuses it, S-d) (a `done`
+or `failed` fit, or a refusal naming `fit.output` or its `.pending`, means a reused or stale dir: OD3P review R-1,
+S-d). For line 4 the plan also shows `# pin carry:drop`, the carry argv ends with `--output
 build-equity/od3-fit-clean --drop-list scripts/specs/p9/od3/flagged_members.json --drop-list-sha256 <pin>`, and the E1
 and E2 u / w argv end with `--absent-members scripts/specs/p9/od3/flagged_members.json --absent-members-sha256 <pin>`
 (E3 without). A plan with other eras, a carry pin, anchor or drop-list refusal (the carry tool's list checks run at plan
@@ -199,9 +204,13 @@ with the list's SHA-256 (contract section 4), and E3's holds none. STOP on any r
 **R4 G-B8** (PRE-17: decided on E1+E2 pooled, 2015-2019; the 2015-2023 pool E1+E2+E3 printed only): pooled rows by
 `nav_summ --pool <book E1 E2 NAV dirs> --pool-ids E1,E2` and the paired block P9-F0h vs R-2 by `--pool-reference <R-2
 E1 E2 NAV dirs>`, with the one-sided p of the engine verb (`--one-sided`, `eval_cli.cpp:110-111`) through T2
-(`--pool-one-sided`) **[UNKNOWN: T2 merged after B2's redo]**. Pass rule: S2 net Sharpe of P9-F0h on E1+E2 > 0 AND
-paired dSR P9-F0h vs R-2 on E1+E2 > 0; both p printed. A fail is reported, never re-run; the freeze wording per OD5-1
-(v) ("passed with the identity-bridge flag").
+(`--pool-one-sided`; OD3P follow-up `cc6686f9` **[UNKNOWN: root's merge of the OD3P follow-up]**). Pass rule: S2 net
+Sharpe of P9-F0h on E1+E2 > 0 AND paired dSR P9-F0h vs R-2 on E1+E2 > 0; both p printed. T2's own printed line
+`verdict (bundle rule, not G-B8) dSR > 0 and p < <alpha>: PASS|FAIL` (and the `verdict` dict in `--json`) is the
+BUNDLE's rule (paired dSR > 0 and the one-sided p < `--bundle-alpha`), labelled "bundle rule, not G-B8" (Ruling
+OD3P-T2V): it is not G-B8's verdict. G-B8's read is the prereg's own (prereg F.1: dSR > 0 with both p printed), made
+by the PM from the printed rows and p values; no second verdict rule is coded. A fail is reported, never re-run; the
+freeze wording per OD5-1 (v) ("passed with the identity-bridge flag").
 
 ## 4. The OD-3 print (one print, every line with the identity-bridge flag of rule 0.3)
 
@@ -225,9 +234,9 @@ paired dSR P9-F0h vs R-2 on E1+E2 > 0; both p printed. A fail is reported, never
 A P1 pin difference; a P2 identity failure; score_begin != 399; an era past 2020-01-01; unreviewed factor-break
 sessions; an E1 scored session under 1,000 lo3 members; a fields argv beyond the allowed keys (B7) or a fields run
 refused at the cap; a plan with other eras or a carry refusal; a P7 plan whose fit phase is not `pending` into the
-book's own fresh `build-equity/od3-fit-<book>` (R-1); K1 over its caps; a book reading `--risk-model`; the last
-P9 cell not ledgered; an R2 refusal, a pin mismatch or an E3 SHA mismatch; an exe or `ucrtbase.dll` record differing
-from the freeze build (C.6, C.8); a print without the identity-bridge flag; OD3P (T2 included) not merged and reviewed
-(PRE-21); `rules_pending` not empty at the read (P0). Not a stop: the IC exe without `absent-members-v1` (line 4 prints
-"not read: no producer"; OD3P-1). After R3 nothing stops the read: the result is printed as it is; a defect found then
-is printed beside it and the PM rules whether the read is void.
+book's own fresh `build-equity/od3-fit-<book>` (R-1) or refused for a stale `.pending` (S-d); K1 over its caps; a book
+reading `--risk-model`; the last P9 cell not ledgered; an R2 refusal, a pin mismatch or an E3 SHA mismatch; an exe or
+`ucrtbase.dll` record differing from the freeze build (C.6, C.8); a print without the identity-bridge flag; OD3P (T2
+included) not merged and reviewed (PRE-21); `rules_pending` not empty at the read (P0). Not a stop: the IC exe without
+`absent-members-v1` (line 4 prints "not read: no producer"; OD3P-1). After R3 nothing stops the read: the result is
+printed as it is; a defect found then is printed beside it and the PM rules whether the read is void.
