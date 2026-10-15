@@ -305,3 +305,9 @@ target_sources(atx-impl-strategy PRIVATE src/strategy_ic_absent.cpp)
 # P9 lane COV-MV (Ruling COVMV-1, tail append): the NAV target rule mv-aim-v1 (strategy_mv_aim.hpp)
 # over the engine kernel book/mv_target.cpp, reached through the v7 seam.
 target_sources(atx-impl-strategy PRIVATE src/strategy_mv_aim.cpp)
+# P9 lane SQL4 (K-P9-13, rulings SQL-4 / SQL-6): the IC caches' SQLite index object
+# (strategy_ic_cache_index.hpp) behind --candidate-cache-index / --pair-cache-index; it opens
+# DIR/index.sqlite through the research store library (the vendored atx_sqlite3 via atx::core).
+# Metadata and row I/O only: default flags and the shared PCH.
+target_sources(atx-impl-strategy PRIVATE src/strategy_ic_cache_index.cpp)
+target_link_libraries(atx-impl-strategy PRIVATE atx::engine-research-store)
