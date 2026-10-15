@@ -1,0 +1,191 @@
+"""Post-implementation verification of cohort isolation and score integrity."""
+from __future__ import annotations
+
+import datetime as dt
+import importlib.util
+import json
+from pathlib import Path
+
+import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+
+
+TOOLS = Path(__file__).resolve().parents[2] / "tools"
+SPEC = importlib.util.spec_from_file_location("quote_benchmark", TOOLS / "quote_benchmark.py")
+qb = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(qb)
+
+
+def source_table() -> pa.Table:
+    n = 6
+    table = pa.table({
+        "okey_tk": ["AAA"] * 3 + ["BBB"] * 3,
+        "okey_dt": [dt.date(2027, 1, 15)] * n,
+        "okey_xx": [90., 100., 110.] * 2,
+        "okey_cp": ["Call", "Put", "Call"] * 2,
+        "date": [dt.datetime(2026, 10, 14, 14, 30, tzinfo=dt.timezone.utc)] * n,
+        "timestamp": [dt.datetime(2026, 10, 14, 14, 30, 1, tzinfo=dt.timezone.utc)] * n,
+        "undSecKey_tk": ["AAA"] * 3 + ["BBB"] * 3,
+        "uBid": [99.99] * n, "uAsk": [100.01] * n,
+        "bidPrc": [1.] * n, "askPrc": [1.2] * n,
+        "bidSz": [10] * n, "askSz": [10] * n,
+        "years": [.3] * n, "yearsC": [.25] * n,
+        "rate": [.04] * n, "sdiv": [.01] * n,
+        "ddiv": [0.] * n, "ddivPv": [0.] * n,
+        "exType": ["American"] * n,
+        "srPrc": [1.1] * n, "srVol": [.3] * n,
+        "bidIV": [998.] * n, "askIV": [999.] * n, "synSpot": [9999.] * n,
+        "atmVol": [999.] * n, "error": [999] * n,
+    })
+    return table
+
+
+def prepare(tmp_path: Path, table: pa.Table | None = None, *, name="cohort", batch_size=2):
+    source = tmp_path / f"{name}.parquet"
+    pq.write_table(table if table is not None else source_table(), source, row_group_size=3)
+    output = tmp_path / name
+    args = qb.parser().parse_args(["prepare", "--source", str(source), "--output", str(output),
+                                  "--split", "all", "--csv", "--batch-size", str(batch_size)])
+    manifest = qb.prepare(args)
+    return output, manifest
+
+
+def prediction_receipt(dataset: Path, *, rows=None):
+    quotes = pl.read_parquet(dataset / "quotes.parquet")
+    if rows is not None:
+        quotes = quotes.head(rows)
+    pred = quotes.select("row_id", "chain_id").with_columns(
+        pl.lit(1.11).alias("predicted_price"), pl.lit(.31).alias("predicted_vol"),
+        pl.lit("ok").alias("status"))
+    path = dataset / "predictions.csv"
+    pred.write_csv(path)
+    receipt = dataset / "predictions.csv.run.json"
+    qb.write_json(receipt, {"predictions": str(path), "prediction_sha256": qb.sha256(path),
+                           "quote_parquet_sha256": qb.sha256(dataset / "quotes.parquet")})
+    return path, receipt
+
+
+def score(dataset: Path, receipt: Path):
+    args = qb.parser().parse_args(["score", "--dataset", str(dataset), "--run-receipt", str(receipt),
+                                  "--output", str(dataset / "score.json"), "--split", "all"])
+    return qb.score(args)
+
+
+def test_poisoning_reference_and_vendor_model_fields_cannot_change_inputs(tmp_path):
+    first, manifest = prepare(tmp_path, name="original")
+    table = source_table()
+    for name in ("srPrc", "srVol", "bidIV", "askIV", "synSpot", "atmVol"):
+        table = table.set_column(table.schema.get_field_index(name), name,
+                                 pa.array([float("nan")] * table.num_rows))
+    second, changed = prepare(tmp_path, table, name="poisoned")
+    assert manifest["files"]["quotes.parquet"] == changed["files"]["quotes.parquet"]
+    assert manifest["files"]["quotes.csv"] == changed["files"]["quotes.csv"]
+    assert manifest["files"]["labels.parquet"] != changed["files"]["labels.parquet"]
+    assert set(pq.read_schema(first / "quotes.parquet").names).isdisjoint(qb.LABEL_COLUMNS)
+    assert set(pq.read_schema(second / "labels.parquet").names) == set(qb.LABEL_SCHEMA.names)
+
+
+def test_row_identity_and_chain_groups_survive_batch_boundaries(tmp_path):
+    one, _ = prepare(tmp_path, name="small", batch_size=2)
+    two, _ = prepare(tmp_path, name="large", batch_size=20)
+    a, b = pl.read_parquet(one / "quotes.parquet"), pl.read_parquet(two / "quotes.parquet")
+    assert a.equals(b)
+    assert a["row_id"].to_list() == list(range(6))
+    assert a["chain_id"].n_unique() == 2
+    assert a.group_by("underlier").agg(pl.col("split").n_unique())["split"].to_list() == [1, 1]
+    assert a["spot"].to_list() == [100.] * 6
+
+
+def test_rejections_are_retained_and_accounted_without_labels(tmp_path):
+    table = source_table()
+    table = table.set_column(table.schema.get_field_index("exType"), "exType",
+                             pa.array(["European"] + ["American"] * 5))
+    table = table.set_column(table.schema.get_field_index("uBid"), "uBid",
+                             pa.array([99.99, -99.] + [99.99] * 4))
+    table = table.set_column(table.schema.get_field_index("yearsC"), "yearsC",
+                             pa.array([.25, .25, 0., .25, .25, .25]))
+    dataset, manifest = prepare(tmp_path, table)
+    q = pl.read_parquet(dataset / "quotes.parquet")
+    assert manifest["rows_selected"] == 6
+    assert q["input_status"].to_list() == ["unsupported_exercise", "invalid_underlier_quote",
+                                          "invalid_time", "ok", "ok", "ok"]
+    assert pl.read_parquet(dataset / "labels.parquet").height == 6
+
+
+def test_normalization_refuses_a_label_bearing_frame():
+    batch = source_table().to_batches()[0]
+    with pytest.raises(ValueError, match="allowlist"):
+        qb.normalize_quotes(batch, 0, bucket_minutes=30, validation_fraction=.2, split_seed="seed")
+
+
+def test_distinct_snapshots_in_one_selection_bucket_never_merge(tmp_path):
+    table = source_table()
+    times = [dt.datetime(2026, 10, 14, 14, minute, tzinfo=dt.timezone.utc)
+             for minute in (30, 35, 55, 30, 35, 55)]
+    table = table.set_column(table.schema.get_field_index("date"), "date", pa.array(times))
+    dataset, _ = prepare(tmp_path, table)
+    q = pl.read_parquet(dataset / "quotes.parquet")
+    assert q["snapshot_ns"].n_unique() == 3
+    assert q["chain_id"].n_unique() == 6
+
+
+def test_missing_predictions_reduce_coverage_instead_of_silently_shrinking_cohort(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    _, receipt = prediction_receipt(dataset, rows=4)
+    metrics = score(dataset, receipt)["metrics"]
+    assert metrics["rows"] == metrics["eligible_rows"] == 6
+    assert metrics["price_scored_rows"] == 4
+    assert metrics["price_coverage"] == pytest.approx(4 / 6)
+    assert metrics["price_mae"] == pytest.approx(.01)
+    assert metrics["vol_bp_mae"] == pytest.approx(100.)
+    assert metrics["price_in_spreads_mae"] == pytest.approx(.05)
+    assert metrics["midpoint_price_mae"] == pytest.approx(0.)
+
+
+def test_missing_reference_labels_do_not_reduce_prediction_coverage(tmp_path):
+    table = source_table()
+    table = table.set_column(table.schema.get_field_index("srPrc"), "srPrc",
+                             pa.array([-99.] * 6))
+    dataset, _ = prepare(tmp_path, table)
+    _, receipt = prediction_receipt(dataset)
+    metrics = score(dataset, receipt)["metrics"]
+    assert metrics["price_coverage"] == 1.
+    assert metrics["price_scoring_coverage"] == 0.
+    assert metrics["price_prediction_rows"] == 6
+    assert metrics["price_label_rows"] == metrics["price_scored_rows"] == 0
+    assert metrics["price_mae"] is None
+
+
+@pytest.mark.parametrize("corruption", ["duplicates", "unknown", "wrong_chain", "hash"])
+def test_score_refuses_identity_or_provenance_corruption(tmp_path, corruption):
+    dataset, _ = prepare(tmp_path)
+    path, receipt = prediction_receipt(dataset)
+    df = pl.read_csv(path, schema_overrides={"row_id": pl.UInt64, "chain_id": pl.UInt64})
+    if corruption == "duplicates":
+        df = pl.concat([df, df.head(1)])
+    elif corruption == "unknown":
+        df = df.with_columns(pl.lit(100, dtype=pl.UInt64).alias("row_id"))
+    elif corruption == "wrong_chain":
+        df = df.with_columns(pl.lit(0, dtype=pl.UInt64).alias("chain_id"))
+    else:
+        df = df.with_columns(pl.lit(999.).alias("predicted_price"))
+    df.write_csv(path)
+    if corruption != "hash":
+        data = json.loads(receipt.read_text())
+        data["prediction_sha256"] = qb.sha256(path)
+        qb.write_json(receipt, data)
+    with pytest.raises(ValueError):
+        score(dataset, receipt)
+
+
+def test_explicit_selection_is_label_independent_and_keeps_original_row_ids(tmp_path):
+    source = tmp_path / "source.parquet"
+    pq.write_table(source_table(), source)
+    args = qb.parser().parse_args(["prepare", "--source", str(source), "--output", str(tmp_path / "chosen"),
+                                  "--symbols", "BBB", "--split", "all", "--buckets", "1030"])
+    qb.prepare(args)
+    q = pl.read_parquet(tmp_path / "chosen" / "quotes.parquet")
+    assert q["row_id"].to_list() == [3, 4, 5]
+    assert q["underlier"].to_list() == ["BBB"] * 3
