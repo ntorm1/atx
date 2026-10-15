@@ -1,0 +1,1545 @@
+{
+  "cell_rule": "NaN where the field is not visible at the session decision or the source is absent",
+  "common_stock_verified": false,
+  "coverage_basis": "member.u8 cells of the role (member cells with a finite value / member cells)",
+  "excluded_source_columns": [
+    {
+      "columns": "atmCenH_* (proposed hv_<tenor>)",
+      "reason": "not realized historical volatility: equals atmCenI_<tenor> exactly whenever nEarnCnt_<tenor> == 0 (sample H/I p10=p50=p90=1.000) and differs only when a scheduled earnings event falls inside the tenor (corr with atmCenI_21d 0.95); an alternate earnings adjustment of the same IV built from the forward-looking earnings calendar and *EMove family. Realized volatility is computable from close in the DSL."
+    },
+    {
+      "columns": "nEarnCnt_5d..nEarnCnt_504d",
+      "reason": "count FUTURE earnings events within the next N sessions (nEarnCnt_5d is 1 on the five sessions up to and including earnFlag -1 and 0 from the reaction session on): forward-looking"
+    },
+    {
+      "columns": "nEarnCnt",
+      "reason": "semantics unverified (typically 8, sometimes 7 on event sessions)"
+    },
+    {
+      "columns": "hEMove, iEMove, wkD1, shD1, qtrD1, lnD1",
+      "reason": "forward-horizon moves; excluded as look-ahead by the ORATS history loader design (2026-06-16)"
+    },
+    {
+      "columns": "earnFlag == -1",
+      "reason": "presumes a known future event date; mapped to 0 (same as N)"
+    },
+    {
+      "columns": "same-date vendor shares",
+      "reason": "A8: vendor runs start at the filing cover date; replaced by the 90-day lag (shares_out)"
+    }
+  ],
+  "fields": [
+    {
+      "caveats": [
+        "settlements before 2021-06 come from FINRA's later consolidated republication, not the bytes the exchanges disseminated (vintage risk; see vintage_risk counts)",
+        "securityID mapping by ORATS ticker_tk on the last trading day <= settlement (producer mapping_report.json)"
+      ],
+      "clock": "finra-asof:latest-row-with-available_at<date(session)-strict;available_at=official-dissemination-date;replicates-atx-impl-build_asof_column",
+      "coverage": {
+        "finite_cells_all": 98,
+        "finite_member_cells": 98,
+        "finite_member_frac": 0.112514,
+        "member_cells": 871,
+        "member_finite_max": 130.0,
+        "member_finite_mean": 73.36734693877551,
+        "member_finite_min": 7.5,
+        "member_finite_quantiles": {
+          "p0.1": 7.5,
+          "p1": 7.5,
+          "p50": 100.0,
+          "p99": 130.0,
+          "p99.9": 130.0
+        },
+        "per_year": {
+          "2023": {
+            "finite_member_cells": 98,
+            "finite_member_frac": 0.112514,
+            "member_cells": 871
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 98,
+          "finite_member_frac": 0.118932,
+          "member_cells": 824
+        },
+        "vintage_risk": {
+          "finite_member_cells": 0,
+          "first_session_vintage_safe": "2023-05-01",
+          "last_session_with_republished_visible_cell": null,
+          "rule": "visible row disseminated on or before 2021-06-09 (settlement before 2021-06-01): later FINRA republication"
+        }
+      },
+      "dtype": "<f8",
+      "file": "si_shares.f64",
+      "layout": "date-major",
+      "name": "si_shares",
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "sha256": "ce2e0bd154199f13075012230736edcbe1b09a730b32cc10ac6d8cb411e065a8",
+      "shape": [
+        175,
+        5
+      ],
+      "source_columns": [
+        "value"
+      ],
+      "sources": [
+        {
+          "bytes": 199,
+          "path": "<fixture>/finra/asof/si_shares.csv",
+          "sha256": "d163d1a5a03f3be04fe52e9fd1d0b8a0d42ffff0d476e128e18a251083e96f1b"
+        },
+        {
+          "bytes": 196,
+          "path": "<fixture>/finra/asof/manifest.json",
+          "sha256": "5ca7bd12c28b9e1706d355d853705c3ecb2a9be8f0ec24b7b7767fd026913a63"
+        },
+        {
+          "bytes": 625,
+          "path": "<fixture>/finra/dissemination_schedule.csv",
+          "sha256": "950aac6dafec3befaf1297b57350692ba0885bdfb310540b16223f8cffd8acd8"
+        }
+      ],
+      "staleness": "age=date(session)-available_at calendar days; age>45 -> NaN; before first visible row -> NaN; visible NaN stays NaN (no skip-back)",
+      "units": "shares short (FINRA consolidated currentShortPositionQuantity)",
+      "vintage_safe_from": "2021-06-10"
+    },
+    {
+      "caveats": [
+        "A8: vendor share runs start at the filing cover date, so same-date vendor shares would leak ~2 weeks; the 90-day modeled lag follows the research spine",
+        "restatement uses the vendor cumulReturnFactor ratio with the factor-break-v1 re-anchoring steps divided out (the vendor factor is not chained across 2021-01-04; see factor_break); genuine splits, consolidations and distributions stay in the ratio, so dividends move it by a few tenths of a percent",
+        "a genuine split that the vendor factor does not show (a raw move with no factor step) is not restated, as before",
+        "one price line's count, not the issuer total across share classes; an ADR line counts ADS"
+      ],
+      "clock": "A8-vendor-shares-lag90-restated-v2: last vendor observation of the line dated <= date(session)-90 calendar days with 0 < shares <= 1e8 (A9 thousands ceiling), times 1000 x cumulReturnFactor(session observation)/cumulReturnFactor(lag observation), divided by k of every factor-break-v1 repaired step (p,t,k) with lag < t <= session (k is known at t); observation = the role's present contract (unique key, finite positive close and factor, finite volume >= 0)",
+      "coverage": {
+        "finite_cells_all": 627,
+        "finite_member_cells": 623,
+        "finite_member_frac": 0.71527,
+        "member_cells": 871,
+        "member_finite_max": 3000000.0,
+        "member_finite_mean": 1171749.598715891,
+        "member_finite_min": 500000.0,
+        "member_finite_quantiles": {
+          "p0.1": 500000.0,
+          "p1": 500000.0,
+          "p50": 1000000.0,
+          "p99": 3000000.0,
+          "p99.9": 3000000.0
+        },
+        "per_year": {
+          "2023": {
+            "finite_member_cells": 623,
+            "finite_member_frac": 0.71527,
+            "member_cells": 871
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 586,
+          "finite_member_frac": 0.711165,
+          "member_cells": 824
+        }
+      },
+      "depends_on": [
+        "si_shares"
+      ],
+      "dtype": "<f8",
+      "factor_break": {
+        "gap_ambiguous_to_nan_cells": 0,
+        "gap_ambiguous_to_nan_member_cells": 0,
+        "mass_sessions": [],
+        "max_non_mass_jump_cells": 1,
+        "max_non_mass_session": "2023-11-01",
+        "parameters": {
+          "cell_excess_ln": 0.01,
+          "cell_step_ln": 0.01,
+          "mass_min_cells": 50,
+          "max_gap_calendar_days": 10,
+          "noise_ln": 1e-09,
+          "split_ratio": 1.25
+        },
+        "ported_from": "atx-impl/tools/repair_role_factor_breaks.py (T12): same parameters and step classification",
+        "restated_cells": 0,
+        "restated_counting": "restated_cells: finite cells a repaired step was divided out of, counted after the gap, C-81 and domain rules and BEFORE the units rules (the fields-v2 basis); restated_published_cells: those still finite after the units rules",
+        "restated_member_cells": 0,
+        "restated_published_cells": 0,
+        "restated_published_member_cells": 0,
+        "role_repair_mass_sessions": [],
+        "rule": "factor-break-v1",
+        "statement": "observation = a vendor row of a role id on the extended calendar with a unique (date, id) key, finite positive close (raw), finite volume >= 0 and finite positive cumulReturnFactor f (the role's present contract). step = consecutive observations p<t of a line <= max_gap_calendar_days apart; s=ln(f_t/f_p), r=ln(raw_t/raw_p), a=r+s. jump cell: step ending at t with |s|>cell_step_ln and |a|>|r|+cell_excess_ln; mass session: >= mass_min_cells jump cells. On a mass session b every step with p<b<=t and |s|>noise_ln is kept_gap (gap > max_gap_calendar_days), kept_split_follow (s<0 and r>=max(|s|/2, ln split_ratio), or s>0 and -r>=max(s/2, ln split_ratio)), kept_distribution (0<s<ln split_ratio), else repaired with k=f_t/f_p. Every decision reads rows <= t only.",
+        "use": "restatement ratio cumulReturnFactor(session)/cumulReturnFactor(lag) divided by k of every repaired step with lag < t <= session; a kept_gap step in that window -> NaN"
+      },
+      "file": "shares_out.f64",
+      "layout": "date-major",
+      "name": "shares_out",
+      "non_pit_aspects": [],
+      "plausibility": {
+        "above_max": 0,
+        "below_min": 0,
+        "implausible_to_nan": 0,
+        "implausible_to_nan_member": 0,
+        "inclusive": true,
+        "max": 50000000000.0,
+        "member_above_max": 0,
+        "member_below_min": 0,
+        "min": 100000.0,
+        "rule": "restated value v kept iff 1e5 <= v <= 5e10 (float64); any other finite value -> NaN, never clamped. Counts are role cells after the C-81 and factor-break rules. Range declared by the root controller for T10 (swap-fin-v1 borrow tiers) and applied in T6 fix round 2. Then the units rules (turnover, si_ratio; T6 fix round 3). implausible_to_nan counts every rule",
+        "si_ratio": {
+          "counting": "cells not already set to NaN by the turnover rule",
+          "max_si_shares_over_shares_out": 5.0,
+          "not_evaluable_cells": 530,
+          "not_evaluable_counting": "cells finite after the domain (the turnover rule's population) whose si_shares is NaN at the session (no visible FINRA row, or older than 45 days)",
+          "si_shares": "this run's si_shares field (visible at the session: strict available_at < session, 45-day staleness)",
+          "to_nan": 0,
+          "to_nan_member": 0
+        },
+        "turnover": {
+          "also_above_si_ratio": 0,
+          "inputs": [
+            {
+              "bytes": 7000,
+              "path": "<fixture>/role/volume.f64",
+              "sha256": "dce53be576b8821f56a648403b203cb3f8fd737c0d17628fbbff8af5259bd395"
+            },
+            {
+              "bytes": 7000,
+              "path": "<fixture>/role/close.f64",
+              "sha256": "53e3f123d7ecc7d152402772aa3349caafcb39c24aaa51d56e2b32f34c14d27a"
+            },
+            {
+              "bytes": 7000,
+              "path": "<fixture>/role/raw_close.f64",
+              "sha256": "999d86d013acae7855e6f238ee4f1e51b8cb03f8c587e7f6e9476666c2d157e1"
+            },
+            {
+              "bytes": 875,
+              "path": "<fixture>/role/present.u8",
+              "sha256": "6b8ff422b0d240d2b3e90c17682d073a6cc6ee8f219a72c6df70942be5fd2628"
+            }
+          ],
+          "max_median_volume_over_shares_out": 3.0,
+          "min_present_sessions": 11,
+          "not_evaluable_cells": 43,
+          "to_nan": 0,
+          "to_nan_member": 0,
+          "volume_basis": "role volume.f64 (raw-share-volume) restated to the session's share basis by the role close/raw factor ratio",
+          "window_sessions": 21
+        },
+        "units": "shares",
+        "units_rule": "applied after the factor-break correction, the C-81 rule and the [1e5, 5e10] domain, in this order: (a) turnover: u_d = volume_d / f_d over the name's present role sessions d in the 21 role sessions ending at t (role volume.f64 is raw-share-volume, each day's own share units; f = close/raw is the role's chained factor, so u is one share basis and median(u) x f_t is the median daily volume in session t's share basis); with at least 11 present days, median x f_t > 3.0 x shares_out -> NaN. (b) short interest: si_shares visible at t (the same run's si_shares field: strict available_at < session, 45-day staleness) / shares_out > 5.0 -> NaN. Only shares_out is set to NaN. Every input is dated <= t. Root ruling, T6 fix round 3; thresholds 3.0 / 5.0 amended by root in fix round 4 (were 1.0 / 1.5)"
+      },
+      "point_in_time": true,
+      "sha256": "37570908dd6fe369efcefdc51428cc8ffaa183a5981f4cec5880c6bd2ef4921f",
+      "shape": [
+        175,
+        5
+      ],
+      "source_columns": [
+        "shares",
+        "cumulReturnFactor",
+        "close",
+        "volume"
+      ],
+      "sources": [
+        {
+          "bytes": 34890,
+          "path": "<fixture>/TickerHistory3.parquet",
+          "row_groups": 5,
+          "rows": 2870,
+          "sha256": "99e94cb7c67a096d78abd3e63fa98c8c95de37089bb4aca087b1569baa9900a7"
+        }
+      ],
+      "staleness": "lag observation older than date(session)-90-400 days -> NaN; no same-date vendor observation -> NaN; a restatement spanning a factor-break-v1 kept_gap step (a step across more than 10 days over a mass session: artifact and genuine actions cannot be separated) -> NaN, counted; a line is withheld (NaN) from the date of its first vendor row above the A9 ceiling onward (point-in-time form of ruling C-81: the spine withholds the whole line, which would use rows after the session); a restated value outside the declared domain [1e5, 5e10] -> NaN, counted in plausibility; then a cell whose trailing 21-session median daily volume (session share basis) exceeds 3.0 x shares_out, or whose visible si_shares exceeds 5.0 x shares_out, -> NaN (vendor units defect), counted per rule in plausibility",
+      "units": "shares outstanding (vendor thousands x 1000), restated to the session's share basis"
+    },
+    {
+      "caveats": [
+        "the 13F clock is the filing date + 46 h (the data sets carry no acceptance time); quarters are published only after their 45-day deadline, so a value is 47-150 days old",
+        "filer type is not classified (hedge / mutual fund): every 13F filer counts",
+        "13F-HR/A amendments filed after the deadline (late confidential-treatment disclosures) are not used",
+        "a quarter in which a security has no 13F row (no mapped holder) is bridged by the prior quarter until the 150-day staleness; it is not read as zero holders",
+        "13F double counting (sub-advisers, multiple managers) can lift the share above 1",
+        "shares_out is the house A8 90-day lagged vendor count (one line, not the issuer total)"
+      ],
+      "clock": "13f-quarter-asof45-v1: the quarter P becomes visible at V(P) = max available_at (stage 13f-filed-plus-46h-v1: filing_date 00:00 UTC + 46 h) over every 13F filing of P filed by its deadline (effective or not, notices included), uniform across securities; session t reads the latest quarter P with V(P) < date(t-1) 22:00 UTC and date(t) - P <= 150 days in which the security has an agg_asof45 row (forward fill across a quarter without a row); every 13F field of the session reads that same anchor quarter (a NaN there stays NaN, no per-field skip-back)",
+      "coverage": {
+        "finite_cells_all": 236,
+        "finite_member_cells": 236,
+        "finite_member_frac": 0.270953,
+        "member_cells": 871,
+        "member_finite_max": 0.45,
+        "member_finite_mean": 0.3197033898305085,
+        "member_finite_min": 0.2,
+        "member_finite_quantiles": {
+          "p0.1": 0.2,
+          "p1": 0.2,
+          "p50": 0.3,
+          "p99": 0.45,
+          "p99.9": 0.45
+        },
+        "per_year": {
+          "2023": {
+            "finite_member_cells": 236,
+            "finite_member_frac": 0.270953,
+            "member_cells": 871
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 236,
+          "finite_member_frac": 0.286408,
+          "member_cells": 824
+        }
+      },
+      "definition": "13F institutional ownership at the anchor quarter P: agg_asof45 inst_shares of the security / this run's shares_out at the last role session on or before P (both in P's share basis); NaN when that session is before the role, shares_out there is not finite and positive, or the ratio exceeds 2 (declared plausibility, counted). Formula id 13f-asof45-io-share-qe-v1.",
+      "depends_on": [
+        "shares_out"
+      ],
+      "dtype": "<f8",
+      "file": "inst_own_share.f64",
+      "formula_id": "13f-asof45-io-share-qe-v1",
+      "layout": "date-major",
+      "name": "inst_own_share",
+      "nan_reasons_member_cells": {
+        "anchor_value_nan": 172,
+        "forward_filled_finite": 7,
+        "no_fresh_visible_quarter_row": 463,
+        "quarter_cells_above_declared_max_2": 1
+      },
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "seal_date": "2024-01-01",
+      "sha256": "c2916bb72cbe0141d65257ec9da1a56f851f9958563b829df8aa77502fdc29ad",
+      "shape": [
+        175,
+        5
+      ],
+      "source_columns": [
+        "filings.accession",
+        "filings.filer_cik",
+        "filings.period_q",
+        "filings.filing_date",
+        "filings.submission_type",
+        "filings.amendment_type",
+        "filings.available_at",
+        "filings.deadline",
+        "agg_asof45.inst_shares",
+        "agg_asof45.n_holders",
+        "agg_asof45.available_at",
+        "shares_out"
+      ],
+      "sources": [
+        {
+          "bytes": 1147,
+          "path": "<fixture>/thirteenf/manifest.json",
+          "sha256": "5b40341d5141fa43ed3e38d20245c4ce50840928a7c65255d62a51f00ca14e11"
+        },
+        {
+          "bytes": 2050,
+          "path": "<fixture>/thirteenf/agg_asof45.parquet",
+          "sha256": "f99d61215c722c1e76409528971efd23df8f8ec8c53d1a9a153144bca528847a"
+        },
+        {
+          "bytes": 1039,
+          "path": "<fixture>/thirteenf/cusip_map_pit.parquet",
+          "sha256": "1c530dc448df5d42e6ae2d07f86f7446a55ef0a050ea58e5331cb2cba5c15273"
+        },
+        {
+          "bytes": 744,
+          "path": "<fixture>/thirteenf/filing_checks.parquet",
+          "sha256": "9910f648a0458f46d2717aebd89dd73c4988c68340338a6774ef44d5edcad836"
+        },
+        {
+          "bytes": 2917,
+          "path": "<fixture>/thirteenf/filings.parquet",
+          "sha256": "7abc2f5a9814c5e3bf85d1258522cab301534ac8a61a5defc71297405c525593"
+        },
+        {
+          "bytes": 1675,
+          "path": "<fixture>/thirteenf/parts/source=2023q1/holdings.parquet",
+          "sha256": "57b8f5abf3396d18605b356dd41451fce6327469aa44ec837871f5b29cccc3f4"
+        },
+        {
+          "bytes": 1719,
+          "path": "<fixture>/thirteenf/parts/source=2023q2/holdings.parquet",
+          "sha256": "5cd841f9c8bfbbd40d099920942d8163c9edb1aba02ee8cf691305789914079d"
+        },
+        {
+          "bytes": 1828,
+          "path": "<fixture>/thirteenf/parts/source=2023q3/holdings.parquet",
+          "sha256": "bb3a1382b6d89b6c1fb948cfecd54fa9fd2bdee5a5b4af80f681134c4e8a5cdd"
+        },
+        {
+          "bytes": 1745,
+          "path": "<fixture>/thirteenf/parts/source=2023q4/holdings.parquet",
+          "sha256": "503848c3f2f70c019de5a6a2ec8066198229d584878fb8ecb22745020d789eee"
+        },
+        {
+          "bytes": 7000,
+          "path": "<fixture>/fields/shares_out.f64",
+          "sha256": "37570908dd6fe369efcefdc51428cc8ffaa183a5981f4cec5880c6bd2ef4921f"
+        }
+      ],
+      "stage_manifest_sha256": {
+        "thirteenf": "5b40341d5141fa43ed3e38d20245c4ce50840928a7c65255d62a51f00ca14e11"
+      },
+      "staleness": "date(t) - period_of_report > 150 days -> NaN (stage staleness_days 150); no visible fresh quarter with an agg_asof45 row for the security -> NaN; session 0 -> NaN",
+      "units": "fraction of shares outstanding (decimal)",
+      "visibility_rule": "a source row is usable at role session t iff available_at < date(t-1) 22:00 UTC, t-1 = the previous role session (v7 data request section 0.1); session 0 -> NaN"
+    },
+    {
+      "caveats": [
+        "the 13F clock is the filing date + 46 h (the data sets carry no acceptance time); quarters are published only after their 45-day deadline, so a value is 47-150 days old",
+        "filer type is not classified (hedge / mutual fund): every 13F filer counts",
+        "13F-HR/A amendments filed after the deadline (late confidential-treatment disclosures) are not used",
+        "a quarter in which a security has no 13F row (no mapped holder) is bridged by the prior quarter until the 150-day staleness; it is not read as zero holders",
+        "holdings rows of the effective filings with sshprnamt_type SH, no put/call, shares > 0 and a finite value_usd >= 0; value_usd x filing_checks.unit_factor of the accession (1 when unlisted); CUSIP -> security_id by cusip_map_pit.parquet at the same period_q; a mapped row with value > 0 whose implied price value/shares lies outside [1/10, 10] x the median implied price of its security's rows that quarter is dropped (declared screen for share / value unit errors)"
+      ],
+      "clock": "13f-quarter-asof45-v1: the quarter P becomes visible at V(P) = max available_at (stage 13f-filed-plus-46h-v1: filing_date 00:00 UTC + 46 h) over every 13F filing of P filed by its deadline (effective or not, notices included), uniform across securities; session t reads the latest quarter P with V(P) < date(t-1) 22:00 UTC and date(t) - P <= 150 days in which the security has an agg_asof45 row (forward fill across a quarter without a row); every 13F field of the session reads that same anchor quarter (a NaN there stays NaN, no per-field skip-back)",
+      "coverage": {
+        "finite_cells_all": 266,
+        "finite_member_cells": 265,
+        "finite_member_frac": 0.304248,
+        "member_cells": 871,
+        "member_finite_max": 0.5,
+        "member_finite_mean": -0.1339622641509434,
+        "member_finite_min": -0.5,
+        "member_finite_quantiles": {
+          "p0.1": -0.5,
+          "p1": -0.5,
+          "p50": -0.5,
+          "p99": 0.5,
+          "p99.9": 0.5
+        },
+        "per_year": {
+          "2023": {
+            "finite_member_cells": 265,
+            "finite_member_frac": 0.304248,
+            "member_cells": 871
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 265,
+          "finite_member_frac": 0.321602,
+          "member_cells": 824
+        }
+      },
+      "definition": "Chen-Hong-Stein breadth change at the anchor quarter P: (number of filers holding the security at P - number holding it at P-1) / number of filers, counting only filers with at least one screened holding row in both P and the preceding calendar quarter P-1; NaN when P-1 has no filings, or the security has no screened mapped row in P or in P-1 (unmapped then). Formula id 13f-asof45-breadth-chs-v1.",
+      "dtype": "<f8",
+      "file": "inst_breadth_chg.f64",
+      "formula_id": "13f-asof45-breadth-chs-v1",
+      "layout": "date-major",
+      "name": "inst_breadth_chg",
+      "nan_reasons_member_cells": {
+        "anchor_value_nan": 143,
+        "forward_filled_finite": 7,
+        "no_fresh_visible_quarter_row": 463
+      },
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "seal_date": "2024-01-01",
+      "sha256": "0a55a5a517da4da16349a86db59735ead1540382acc500595aa590f05e42d66e",
+      "shape": [
+        175,
+        5
+      ],
+      "source_columns": [
+        "filings.accession",
+        "filings.filer_cik",
+        "filings.period_q",
+        "filings.filing_date",
+        "filings.submission_type",
+        "filings.amendment_type",
+        "filings.available_at",
+        "filings.deadline",
+        "agg_asof45.inst_shares",
+        "agg_asof45.n_holders",
+        "agg_asof45.available_at",
+        "holdings.accession",
+        "holdings.cusip",
+        "holdings.shares",
+        "holdings.sshprnamt_type",
+        "holdings.put_call",
+        "holdings.value_usd",
+        "filing_checks.unit_factor",
+        "cusip_map_pit.security_id"
+      ],
+      "sources": [
+        {
+          "bytes": 1147,
+          "path": "<fixture>/thirteenf/manifest.json",
+          "sha256": "5b40341d5141fa43ed3e38d20245c4ce50840928a7c65255d62a51f00ca14e11"
+        },
+        {
+          "bytes": 2050,
+          "path": "<fixture>/thirteenf/agg_asof45.parquet",
+          "sha256": "f99d61215c722c1e76409528971efd23df8f8ec8c53d1a9a153144bca528847a"
+        },
+        {
+          "bytes": 1039,
+          "path": "<fixture>/thirteenf/cusip_map_pit.parquet",
+          "sha256": "1c530dc448df5d42e6ae2d07f86f7446a55ef0a050ea58e5331cb2cba5c15273"
+        },
+        {
+          "bytes": 744,
+          "path": "<fixture>/thirteenf/filing_checks.parquet",
+          "sha256": "9910f648a0458f46d2717aebd89dd73c4988c68340338a6774ef44d5edcad836"
+        },
+        {
+          "bytes": 2917,
+          "path": "<fixture>/thirteenf/filings.parquet",
+          "sha256": "7abc2f5a9814c5e3bf85d1258522cab301534ac8a61a5defc71297405c525593"
+        },
+        {
+          "bytes": 1675,
+          "path": "<fixture>/thirteenf/parts/source=2023q1/holdings.parquet",
+          "sha256": "57b8f5abf3396d18605b356dd41451fce6327469aa44ec837871f5b29cccc3f4"
+        },
+        {
+          "bytes": 1719,
+          "path": "<fixture>/thirteenf/parts/source=2023q2/holdings.parquet",
+          "sha256": "5cd841f9c8bfbbd40d099920942d8163c9edb1aba02ee8cf691305789914079d"
+        },
+        {
+          "bytes": 1828,
+          "path": "<fixture>/thirteenf/parts/source=2023q3/holdings.parquet",
+          "sha256": "bb3a1382b6d89b6c1fb948cfecd54fa9fd2bdee5a5b4af80f681134c4e8a5cdd"
+        },
+        {
+          "bytes": 1745,
+          "path": "<fixture>/thirteenf/parts/source=2023q4/holdings.parquet",
+          "sha256": "503848c3f2f70c019de5a6a2ec8066198229d584878fb8ecb22745020d789eee"
+        }
+      ],
+      "stage_manifest_sha256": {
+        "thirteenf": "5b40341d5141fa43ed3e38d20245c4ce50840928a7c65255d62a51f00ca14e11"
+      },
+      "staleness": "date(t) - period_of_report > 150 days -> NaN (stage staleness_days 150); no visible fresh quarter with an agg_asof45 row for the security -> NaN; session 0 -> NaN",
+      "units": "fraction of continuing 13F filers (decimal, signed)",
+      "visibility_rule": "a source row is usable at role session t iff available_at < date(t-1) 22:00 UTC, t-1 = the previous role session (v7 data request section 0.1); session 0 -> NaN"
+    },
+    {
+      "caveats": [
+        "the 13F clock is the filing date + 46 h (the data sets carry no acceptance time); quarters are published only after their 45-day deadline, so a value is 47-150 days old",
+        "filer type is not classified (hedge / mutual fund): every 13F filer counts",
+        "13F-HR/A amendments filed after the deadline (late confidential-treatment disclosures) are not used",
+        "a quarter in which a security has no 13F row (no mapped holder) is bridged by the prior quarter until the 150-day staleness; it is not read as zero holders"
+      ],
+      "clock": "13f-quarter-asof45-v1: the quarter P becomes visible at V(P) = max available_at (stage 13f-filed-plus-46h-v1: filing_date 00:00 UTC + 46 h) over every 13F filing of P filed by its deadline (effective or not, notices included), uniform across securities; session t reads the latest quarter P with V(P) < date(t-1) 22:00 UTC and date(t) - P <= 150 days in which the security has an agg_asof45 row (forward fill across a quarter without a row); every 13F field of the session reads that same anchor quarter (a NaN there stays NaN, no per-field skip-back)",
+      "coverage": {
+        "finite_cells_all": 31,
+        "finite_member_cells": 31,
+        "finite_member_frac": 0.035591,
+        "member_cells": 871,
+        "member_finite_max": 0.04999999999999999,
+        "member_finite_mean": 0.050000000000000024,
+        "member_finite_min": 0.04999999999999999,
+        "member_finite_quantiles": {
+          "p0.1": 0.04999999999999999,
+          "p1": 0.04999999999999999,
+          "p50": 0.04999999999999999,
+          "p99": 0.04999999999999999,
+          "p99.9": 0.04999999999999999
+        },
+        "per_year": {
+          "2023": {
+            "finite_member_cells": 31,
+            "finite_member_frac": 0.035591,
+            "member_cells": 871
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 31,
+          "finite_member_frac": 0.037621,
+          "member_cells": 824
+        }
+      },
+      "definition": "inst_own_share(P) - inst_own_share(P-1) for the anchor quarter P and the preceding calendar quarter P-1, each at its own quarter-end session (share-basis invariant); NaN when either is NaN. Formula id 13f-asof45-io-chg-q-v1.",
+      "depends_on": [
+        "shares_out"
+      ],
+      "dtype": "<f8",
+      "file": "inst_own_chg_q.f64",
+      "formula_id": "13f-asof45-io-chg-q-v1",
+      "layout": "date-major",
+      "name": "inst_own_chg_q",
+      "nan_reasons_member_cells": {
+        "anchor_value_nan": 377,
+        "forward_filled_finite": 0,
+        "no_fresh_visible_quarter_row": 463
+      },
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "seal_date": "2024-01-01",
+      "sha256": "d28183a86525a43ec3c608de2616fe1a26cf728095aa5bdef41d665313276e50",
+      "shape": [
+        175,
+        5
+      ],
+      "source_columns": [
+        "filings.accession",
+        "filings.filer_cik",
+        "filings.period_q",
+        "filings.filing_date",
+        "filings.submission_type",
+        "filings.amendment_type",
+        "filings.available_at",
+        "filings.deadline",
+        "agg_asof45.inst_shares",
+        "agg_asof45.n_holders",
+        "agg_asof45.available_at",
+        "shares_out"
+      ],
+      "sources": [
+        {
+          "bytes": 1147,
+          "path": "<fixture>/thirteenf/manifest.json",
+          "sha256": "5b40341d5141fa43ed3e38d20245c4ce50840928a7c65255d62a51f00ca14e11"
+        },
+        {
+          "bytes": 2050,
+          "path": "<fixture>/thirteenf/agg_asof45.parquet",
+          "sha256": "f99d61215c722c1e76409528971efd23df8f8ec8c53d1a9a153144bca528847a"
+        },
+        {
+          "bytes": 1039,
+          "path": "<fixture>/thirteenf/cusip_map_pit.parquet",
+          "sha256": "1c530dc448df5d42e6ae2d07f86f7446a55ef0a050ea58e5331cb2cba5c15273"
+        },
+        {
+          "bytes": 744,
+          "path": "<fixture>/thirteenf/filing_checks.parquet",
+          "sha256": "9910f648a0458f46d2717aebd89dd73c4988c68340338a6774ef44d5edcad836"
+        },
+        {
+          "bytes": 2917,
+          "path": "<fixture>/thirteenf/filings.parquet",
+          "sha256": "7abc2f5a9814c5e3bf85d1258522cab301534ac8a61a5defc71297405c525593"
+        },
+        {
+          "bytes": 1675,
+          "path": "<fixture>/thirteenf/parts/source=2023q1/holdings.parquet",
+          "sha256": "57b8f5abf3396d18605b356dd41451fce6327469aa44ec837871f5b29cccc3f4"
+        },
+        {
+          "bytes": 1719,
+          "path": "<fixture>/thirteenf/parts/source=2023q2/holdings.parquet",
+          "sha256": "5cd841f9c8bfbbd40d099920942d8163c9edb1aba02ee8cf691305789914079d"
+        },
+        {
+          "bytes": 1828,
+          "path": "<fixture>/thirteenf/parts/source=2023q3/holdings.parquet",
+          "sha256": "bb3a1382b6d89b6c1fb948cfecd54fa9fd2bdee5a5b4af80f681134c4e8a5cdd"
+        },
+        {
+          "bytes": 1745,
+          "path": "<fixture>/thirteenf/parts/source=2023q4/holdings.parquet",
+          "sha256": "503848c3f2f70c019de5a6a2ec8066198229d584878fb8ecb22745020d789eee"
+        },
+        {
+          "bytes": 7000,
+          "path": "<fixture>/fields/shares_out.f64",
+          "sha256": "37570908dd6fe369efcefdc51428cc8ffaa183a5981f4cec5880c6bd2ef4921f"
+        }
+      ],
+      "stage_manifest_sha256": {
+        "thirteenf": "5b40341d5141fa43ed3e38d20245c4ce50840928a7c65255d62a51f00ca14e11"
+      },
+      "staleness": "date(t) - period_of_report > 150 days -> NaN (stage staleness_days 150); no visible fresh quarter with an agg_asof45 row for the security -> NaN; session 0 -> NaN",
+      "units": "change of the ownership fraction (decimal, signed)",
+      "visibility_rule": "a source row is usable at role session t iff available_at < date(t-1) 22:00 UTC, t-1 = the previous role session (v7 data request section 0.1); session 0 -> NaN"
+    },
+    {
+      "caveats": [
+        "the 13F clock is the filing date + 46 h (the data sets carry no acceptance time); quarters are published only after their 45-day deadline, so a value is 47-150 days old",
+        "filer type is not classified (hedge / mutual fund): every 13F filer counts",
+        "13F-HR/A amendments filed after the deadline (late confidential-treatment disclosures) are not used",
+        "a quarter in which a security has no 13F row (no mapped holder) is bridged by the prior quarter until the 150-day staleness; it is not read as zero holders",
+        "holdings rows of the effective filings with sshprnamt_type SH, no put/call, shares > 0 and a finite value_usd >= 0; value_usd x filing_checks.unit_factor of the accession (1 when unlisted); CUSIP -> security_id by cusip_map_pit.parquet at the same period_q; a mapped row with value > 0 whose implied price value/shares lies outside [1/10, 10] x the median implied price of its security's rows that quarter is dropped (declared screen for share / value unit errors)",
+        "the market weight is the 13F-universe value weight, not the CRSP weight: a low-IO name has a lower benchmark weight"
+      ],
+      "clock": "13f-quarter-asof45-v1: the quarter P becomes visible at V(P) = max available_at (stage 13f-filed-plus-46h-v1: filing_date 00:00 UTC + 46 h) over every 13F filing of P filed by its deadline (effective or not, notices included), uniform across securities; session t reads the latest quarter P with V(P) < date(t-1) 22:00 UTC and date(t) - P <= 150 days in which the security has an agg_asof45 row (forward fill across a quarter without a row); every 13F field of the session reads that same anchor quarter (a NaN there stays NaN, no per-field skip-back)",
+      "coverage": {
+        "finite_cells_all": 409,
+        "finite_member_cells": 408,
+        "finite_member_frac": 0.468427,
+        "member_cells": 871,
+        "member_finite_max": 0.5,
+        "member_finite_mean": 0.22926470588235284,
+        "member_finite_min": 0.0,
+        "member_finite_quantiles": {
+          "p0.1": 0.0,
+          "p1": 0.0,
+          "p50": 0.24,
+          "p99": 0.5,
+          "p99.9": 0.5
+        },
+        "per_year": {
+          "2023": {
+            "finite_member_cells": 408,
+            "finite_member_frac": 0.468427,
+            "member_cells": 871
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 399,
+          "finite_member_frac": 0.484223,
+          "member_cells": 824
+        }
+      },
+      "definition": "Cohen-Polk-Silli conviction at the anchor quarter P: sum over filers m holding the security of max(0, w_m - mw), w_m = the security's screened value in m's filings / m's total screened long value (mapped or not), mw = the security's share of the total screened mapped 13F value of P (the 13F-universe market weight; no free-float market cap exists for the whole 13F universe at quarter end); NaN when the security has no screened mapped row in P. Formula id 13f-asof45-best-ideas-cps-v1.",
+      "dtype": "<f8",
+      "file": "inst_best_ideas.f64",
+      "formula_id": "13f-asof45-best-ideas-cps-v1",
+      "layout": "date-major",
+      "name": "inst_best_ideas",
+      "nan_reasons_member_cells": {
+        "anchor_value_nan": 0,
+        "forward_filled_finite": 7,
+        "no_fresh_visible_quarter_row": 463
+      },
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "seal_date": "2024-01-01",
+      "sha256": "799e4b1d2df229ad80e29c8076935f7a73ee8176cf621337178d459d9ea5ab1b",
+      "shape": [
+        175,
+        5
+      ],
+      "source_columns": [
+        "filings.accession",
+        "filings.filer_cik",
+        "filings.period_q",
+        "filings.filing_date",
+        "filings.submission_type",
+        "filings.amendment_type",
+        "filings.available_at",
+        "filings.deadline",
+        "agg_asof45.inst_shares",
+        "agg_asof45.n_holders",
+        "agg_asof45.available_at",
+        "holdings.accession",
+        "holdings.cusip",
+        "holdings.shares",
+        "holdings.sshprnamt_type",
+        "holdings.put_call",
+        "holdings.value_usd",
+        "filing_checks.unit_factor",
+        "cusip_map_pit.security_id"
+      ],
+      "sources": [
+        {
+          "bytes": 1147,
+          "path": "<fixture>/thirteenf/manifest.json",
+          "sha256": "5b40341d5141fa43ed3e38d20245c4ce50840928a7c65255d62a51f00ca14e11"
+        },
+        {
+          "bytes": 2050,
+          "path": "<fixture>/thirteenf/agg_asof45.parquet",
+          "sha256": "f99d61215c722c1e76409528971efd23df8f8ec8c53d1a9a153144bca528847a"
+        },
+        {
+          "bytes": 1039,
+          "path": "<fixture>/thirteenf/cusip_map_pit.parquet",
+          "sha256": "1c530dc448df5d42e6ae2d07f86f7446a55ef0a050ea58e5331cb2cba5c15273"
+        },
+        {
+          "bytes": 744,
+          "path": "<fixture>/thirteenf/filing_checks.parquet",
+          "sha256": "9910f648a0458f46d2717aebd89dd73c4988c68340338a6774ef44d5edcad836"
+        },
+        {
+          "bytes": 2917,
+          "path": "<fixture>/thirteenf/filings.parquet",
+          "sha256": "7abc2f5a9814c5e3bf85d1258522cab301534ac8a61a5defc71297405c525593"
+        },
+        {
+          "bytes": 1675,
+          "path": "<fixture>/thirteenf/parts/source=2023q1/holdings.parquet",
+          "sha256": "57b8f5abf3396d18605b356dd41451fce6327469aa44ec837871f5b29cccc3f4"
+        },
+        {
+          "bytes": 1719,
+          "path": "<fixture>/thirteenf/parts/source=2023q2/holdings.parquet",
+          "sha256": "5cd841f9c8bfbbd40d099920942d8163c9edb1aba02ee8cf691305789914079d"
+        },
+        {
+          "bytes": 1828,
+          "path": "<fixture>/thirteenf/parts/source=2023q3/holdings.parquet",
+          "sha256": "bb3a1382b6d89b6c1fb948cfecd54fa9fd2bdee5a5b4af80f681134c4e8a5cdd"
+        },
+        {
+          "bytes": 1745,
+          "path": "<fixture>/thirteenf/parts/source=2023q4/holdings.parquet",
+          "sha256": "503848c3f2f70c019de5a6a2ec8066198229d584878fb8ecb22745020d789eee"
+        }
+      ],
+      "stage_manifest_sha256": {
+        "thirteenf": "5b40341d5141fa43ed3e38d20245c4ce50840928a7c65255d62a51f00ca14e11"
+      },
+      "staleness": "date(t) - period_of_report > 150 days -> NaN (stage staleness_days 150); no visible fresh quarter with an agg_asof45 row for the security -> NaN; session 0 -> NaN",
+      "units": "sum of portfolio-weight excesses (decimal)",
+      "visibility_rule": "a source row is usable at role session t iff available_at < date(t-1) 22:00 UTC, t-1 = the previous role session (v7 data request section 0.1); session 0 -> NaN"
+    },
+    {
+      "caveats": [
+        "the 13F clock is the filing date + 46 h (the data sets carry no acceptance time); quarters are published only after their 45-day deadline, so a value is 47-150 days old",
+        "filer type is not classified (hedge / mutual fund): every 13F filer counts",
+        "13F-HR/A amendments filed after the deadline (late confidential-treatment disclosures) are not used",
+        "a quarter in which a security has no 13F row (no mapped holder) is bridged by the prior quarter until the 150-day staleness; it is not read as zero holders"
+      ],
+      "clock": "13f-quarter-asof45-v1: the quarter P becomes visible at V(P) = max available_at (stage 13f-filed-plus-46h-v1: filing_date 00:00 UTC + 46 h) over every 13F filing of P filed by its deadline (effective or not, notices included), uniform across securities; session t reads the latest quarter P with V(P) < date(t-1) 22:00 UTC and date(t) - P <= 150 days in which the security has an agg_asof45 row (forward fill across a quarter without a row); every 13F field of the session reads that same anchor quarter (a NaN there stays NaN, no per-field skip-back)",
+      "coverage": {
+        "finite_cells_all": 409,
+        "finite_member_cells": 408,
+        "finite_member_frac": 0.468427,
+        "member_cells": 871,
+        "member_finite_max": 2.0,
+        "member_finite_mean": 1.4264705882352942,
+        "member_finite_min": 1.0,
+        "member_finite_quantiles": {
+          "p0.1": 1.0,
+          "p1": 1.0,
+          "p50": 1.0,
+          "p99": 2.0,
+          "p99.9": 2.0
+        },
+        "per_year": {
+          "2023": {
+            "finite_member_cells": 408,
+            "finite_member_frac": 0.468427,
+            "member_cells": 871
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 399,
+          "finite_member_frac": 0.484223,
+          "member_cells": 824
+        }
+      },
+      "definition": "agg_asof45 n_holders of the security at the anchor quarter P (the stage aggregate: SH rows, no put/call, shares > 0, mapped, price-outlier rows excluded by the stage). Formula id 13f-asof45-n-holders-v1.",
+      "dtype": "<f8",
+      "file": "inst_n_holders.f64",
+      "formula_id": "13f-asof45-n-holders-v1",
+      "layout": "date-major",
+      "name": "inst_n_holders",
+      "nan_reasons_member_cells": {
+        "anchor_value_nan": 0,
+        "forward_filled_finite": 7,
+        "no_fresh_visible_quarter_row": 463
+      },
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "seal_date": "2024-01-01",
+      "sha256": "05a9b9fb44783b438aabe2ebe2b1cc58c5f6428a62183d11e818170e69faf089",
+      "shape": [
+        175,
+        5
+      ],
+      "source_columns": [
+        "filings.accession",
+        "filings.filer_cik",
+        "filings.period_q",
+        "filings.filing_date",
+        "filings.submission_type",
+        "filings.amendment_type",
+        "filings.available_at",
+        "filings.deadline",
+        "agg_asof45.inst_shares",
+        "agg_asof45.n_holders",
+        "agg_asof45.available_at"
+      ],
+      "sources": [
+        {
+          "bytes": 1147,
+          "path": "<fixture>/thirteenf/manifest.json",
+          "sha256": "5b40341d5141fa43ed3e38d20245c4ce50840928a7c65255d62a51f00ca14e11"
+        },
+        {
+          "bytes": 2050,
+          "path": "<fixture>/thirteenf/agg_asof45.parquet",
+          "sha256": "f99d61215c722c1e76409528971efd23df8f8ec8c53d1a9a153144bca528847a"
+        },
+        {
+          "bytes": 1039,
+          "path": "<fixture>/thirteenf/cusip_map_pit.parquet",
+          "sha256": "1c530dc448df5d42e6ae2d07f86f7446a55ef0a050ea58e5331cb2cba5c15273"
+        },
+        {
+          "bytes": 744,
+          "path": "<fixture>/thirteenf/filing_checks.parquet",
+          "sha256": "9910f648a0458f46d2717aebd89dd73c4988c68340338a6774ef44d5edcad836"
+        },
+        {
+          "bytes": 2917,
+          "path": "<fixture>/thirteenf/filings.parquet",
+          "sha256": "7abc2f5a9814c5e3bf85d1258522cab301534ac8a61a5defc71297405c525593"
+        },
+        {
+          "bytes": 1675,
+          "path": "<fixture>/thirteenf/parts/source=2023q1/holdings.parquet",
+          "sha256": "57b8f5abf3396d18605b356dd41451fce6327469aa44ec837871f5b29cccc3f4"
+        },
+        {
+          "bytes": 1719,
+          "path": "<fixture>/thirteenf/parts/source=2023q2/holdings.parquet",
+          "sha256": "5cd841f9c8bfbbd40d099920942d8163c9edb1aba02ee8cf691305789914079d"
+        },
+        {
+          "bytes": 1828,
+          "path": "<fixture>/thirteenf/parts/source=2023q3/holdings.parquet",
+          "sha256": "bb3a1382b6d89b6c1fb948cfecd54fa9fd2bdee5a5b4af80f681134c4e8a5cdd"
+        },
+        {
+          "bytes": 1745,
+          "path": "<fixture>/thirteenf/parts/source=2023q4/holdings.parquet",
+          "sha256": "503848c3f2f70c019de5a6a2ec8066198229d584878fb8ecb22745020d789eee"
+        }
+      ],
+      "stage_manifest_sha256": {
+        "thirteenf": "5b40341d5141fa43ed3e38d20245c4ce50840928a7c65255d62a51f00ca14e11"
+      },
+      "staleness": "date(t) - period_of_report > 150 days -> NaN (stage staleness_days 150); no visible fresh quarter with an agg_asof45 row for the security -> NaN; session 0 -> NaN",
+      "units": "count of 13F filers",
+      "visibility_rule": "a source row is usable at role session t iff available_at < date(t-1) 22:00 UTC, t-1 = the previous role session (v7 data request section 0.1); session 0 -> NaN"
+    },
+    {
+      "caveats": [
+        "files are re-posted without revision history (vintage_risk on every row)",
+        "rows the stage could not map (OTC and delisted symbols, collisions) count as no fail: 96-98% of fail value maps",
+        "two CUSIPs of one line on one date (CUSIP change) are summed"
+      ],
+      "clock": "sec-ftd-latest-visible-21-v1: rows visible by available_at (stage ftd-publication-halfmonth-v1: nominal half-month publication + 7 d, or a later HTTP Last-Modified) < date(t-1) 22:00 UTC; the window is the 21 settlement dates ending at the latest prefix-visible settlement date S*(t)",
+      "coverage": {
+        "finite_cells_all": 496,
+        "finite_member_cells": 495,
+        "finite_member_frac": 0.568312,
+        "member_cells": 871,
+        "member_finite_max": 0.021365,
+        "member_finite_mean": 0.006582090909090903,
+        "member_finite_min": 0.0,
+        "member_finite_quantiles": {
+          "p0.1": 0.0,
+          "p1": 0.0,
+          "p50": 0.0042,
+          "p99": 0.021365,
+          "p99.9": 0.021365
+        },
+        "per_year": {
+          "2023": {
+            "finite_member_cells": 495,
+            "finite_member_frac": 0.568312,
+            "member_cells": 871
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 495,
+          "finite_member_frac": 0.600728,
+          "member_cells": 824
+        }
+      },
+      "definition": "sum over the 21 settlement dates ending at S*(t) of the SEC CNS fails-to-deliver quantity of the line (a settlement date without a row of the line counts 0: the SEC file lists every non-zero fail) / this run's shares_out at the last role session on or before S*(t); S*(t) = the latest settlement date such that every settlement date up to it is visible; settlement calendar = the distinct settlement dates of the stage. Formula id sec-ftd-sum21-over-shares-v1.",
+      "depends_on": [
+        "shares_out"
+      ],
+      "dtype": "<f8",
+      "file": "ftd_shares_ratio21.f64",
+      "formula_id": "sec-ftd-sum21-over-shares-v1",
+      "layout": "date-major",
+      "name": "ftd_shares_ratio21",
+      "nan_reasons_member_cells": {
+        "no_visible_window": 4,
+        "shares_out_nan": 257,
+        "short_history": 0,
+        "stale": 115
+      },
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "seal_date": "2024-01-01",
+      "sha256": "feaa9d268aa43ab0a5c7a00b049e76f23ac391306e6897f09992e279b20f0b5c",
+      "shape": [
+        175,
+        5
+      ],
+      "source_columns": [
+        "settlement_date",
+        "security_id",
+        "quantity",
+        "available_at",
+        "map_basis",
+        "shares_out"
+      ],
+      "sources": [
+        {
+          "bytes": 257,
+          "path": "<fixture>/ftd/manifest.json",
+          "sha256": "30838cbebe0594eae880c21a4cee883da05d4048c51d56d6b1087b5782597ffe"
+        },
+        {
+          "bytes": 4153,
+          "path": "<fixture>/ftd/year=2023/ftd.parquet",
+          "sha256": "cd89731e7f44e099845030dd3f454c37c9be7cfedf1fcfb2657ee06bf8e4de2a"
+        },
+        {
+          "bytes": 7000,
+          "path": "<fixture>/fields/shares_out.f64",
+          "sha256": "37570908dd6fe369efcefdc51428cc8ffaa183a5981f4cec5880c6bd2ef4921f"
+        }
+      ],
+      "stage_manifest_sha256": {
+        "ftd": "30838cbebe0594eae880c21a4cee883da05d4048c51d56d6b1087b5782597ffe"
+      },
+      "staleness": "NaN when date(t) - S*(t) > 60 days (stage staleness), fewer than 21 settlement dates exist up to S*(t), or shares_out at the window's session is not finite and positive; session 0 -> NaN",
+      "units": "sum of daily fail balances / shares outstanding (decimal)",
+      "visibility_rule": "a source row is usable at role session t iff available_at < date(t-1) 22:00 UTC, t-1 = the previous role session (v7 data request section 0.1); session 0 -> NaN"
+    },
+    {
+      "caveats": [
+        "the NYSE-family lists were still landing at stage build time (51 days of 2018 only): NYSE-listed lines are NaN by the coverage rule, never a false zero; a rebuild after the stage lands them fills them unchanged",
+        "lists are re-posted without revision history (vintage_risk)",
+        "symbols the stage could not map are absent (OTC symbols outside the vendor file)"
+      ],
+      "clock": "regsho-days63-t2-v1: list rows and list statuses visible by available_at (stage regsho-publication-v1) < date(t-1) 22:00 UTC; the window ends at session t-2, the newest session whose next-day file is visible before the t-1 mark; listing-market rows by their dissemination available_at under the same rule",
+      "coverage": {
+        "finite_cells_all": 218,
+        "finite_member_cells": 217,
+        "finite_member_frac": 0.249139,
+        "member_cells": 871,
+        "member_finite_max": 20.0,
+        "member_finite_mean": 5.668202764976958,
+        "member_finite_min": 0.0,
+        "member_finite_quantiles": {
+          "p0.1": 0.0,
+          "p1": 0.0,
+          "p50": 0.0,
+          "p99": 20.0,
+          "p99.9": 20.0
+        },
+        "per_year": {
+          "2023": {
+            "finite_member_cells": 217,
+            "finite_member_frac": 0.249139,
+            "member_cells": 871
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 199,
+          "finite_member_frac": 0.241505,
+          "member_cells": 824
+        }
+      },
+      "definition": "number of the 63 sessions ending at t-2 (role calendar, extended before the role by the list dates) on which a visible Reg SHO threshold list carries the line on_list; finite only when the line's listing market (FINRA marketClassCode of its latest visible short-interest row no older than 45 days: NNM/SC -> nasdaq, NYSE/AMEX/ARCA -> nyse, BZX -> cboe_bzx, OTC -> finra_otc) has a visible list (status list or empty_list) on at least 60 of those 63 sessions. Formula id regsho-threshold-days63-listing-market-v1.",
+      "dtype": "<f8",
+      "file": "regsho_threshold_days63.f64",
+      "formula_id": "regsho-threshold-days63-listing-market-v1",
+      "layout": "date-major",
+      "name": "regsho_threshold_days63",
+      "nan_reasons_member_cells": {
+        "market_lists_incomplete": 244,
+        "market_unknown": 410,
+        "short_calendar": 0
+      },
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "seal_date": "2024-01-01",
+      "sha256": "fb03c6d51b6b4a531fd7056228ddaadbd831fac6361f60045695096da798c82a",
+      "shape": [
+        175,
+        5
+      ],
+      "source_columns": [
+        "lists.market",
+        "lists.list_date",
+        "lists.status",
+        "lists.available_at",
+        "threshold.list_date",
+        "threshold.market",
+        "threshold.security_id",
+        "threshold.on_list",
+        "threshold.available_at",
+        "finra_names.security_id",
+        "finra_names.available_at",
+        "finra_names.dissemination_date",
+        "finra_names.market_class"
+      ],
+      "sources": [
+        {
+          "bytes": 381,
+          "path": "<fixture>/regsho_threshold/manifest.json",
+          "sha256": "a61e4bfe8ad6785b48be4d63d074f1a755ebc34371166ed5a64130fee7aecb62"
+        },
+        {
+          "bytes": 7365,
+          "path": "<fixture>/regsho_threshold/lists.parquet",
+          "sha256": "25aec14468b3155e0e26b8b1e5bcb4ab49e826a86386538a6daf1d54ef9845a0"
+        },
+        {
+          "bytes": 2660,
+          "path": "<fixture>/regsho_threshold/year=2023/threshold.parquet",
+          "sha256": "a8547811b601c6cfe36dbbbc6c3c219b44b0a9bea03657f8f16b485280c031a8"
+        },
+        {
+          "bytes": 229,
+          "path": "<fixture>/security_master/manifest.json",
+          "sha256": "b04f1cd442af9589068e14dac5429666ca39650bd8fe565b70c8badaefa7031d"
+        },
+        {
+          "bytes": 1853,
+          "path": "<fixture>/security_master/finra_names.parquet",
+          "sha256": "1b28e008dedc6d9708681f27e6ea223fbb35d3bc99733ab0ea6767af0373e51c"
+        }
+      ],
+      "stage_manifest_sha256": {
+        "regsho_threshold": "a61e4bfe8ad6785b48be4d63d074f1a755ebc34371166ed5a64130fee7aecb62",
+        "security_master": "b04f1cd442af9589068e14dac5429666ca39650bd8fe565b70c8badaefa7031d"
+      },
+      "staleness": "NaN when the listing market is unknown (no visible FINRA name row within 45 days, or a market without a list source such as IEX) or fewer than 60 of the market's 63 window lists are visible (this also enforces the stage's 10-day list staleness); session 0 -> NaN",
+      "units": "count of sessions (0-63)",
+      "visibility_rule": "a source row is usable at role session t iff available_at < date(t-1) 22:00 UTC, t-1 = the previous role session (v7 data request section 0.1); session 0 -> NaN"
+    },
+    {
+      "caveats": [
+        "FINRA daily short volume counts market-maker short sales that hedge customer buying",
+        "files as landed long after the trade date (vintage_risk)",
+        "vendor volume is taken as consolidated volume; the ratio of FINRA total volume to it is reported per year in source_checks.holdings.short_volume_ext"
+      ],
+      "clock": "finra-svx-126-t2-v1: short_volume_ext rows visible by available_at (stage sv-ext-next-day-v1: trade date + 1 day 00:00 UTC) < date(t-1) 22:00 UTC; the window ends at session t-2, the newest session whose next-day file is visible before the t-1 mark; role volume of session s is known at its s mark",
+      "coverage": {
+        "finite_cells_all": 96,
+        "finite_member_cells": 96,
+        "finite_member_frac": 0.110218,
+        "member_cells": 871,
+        "member_finite_max": 0.3,
+        "member_finite_mean": 0.25079845595238087,
+        "member_finite_min": 0.2015404761904762,
+        "member_finite_quantiles": {
+          "p0.1": 0.20154123015873016,
+          "p1": 0.20154801587301588,
+          "p50": 0.25082579365079366,
+          "p99": 0.3,
+          "p99.9": 0.3
+        },
+        "per_year": {
+          "2023": {
+            "finite_member_cells": 96,
+            "finite_member_frac": 0.110218,
+            "member_cells": 871
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 96,
+          "finite_member_frac": 0.116505,
+          "member_cells": 824
+        }
+      },
+      "definition": "sum over S of FINRA CNMS short_volume (every FINRA-reported trade is off-exchange: TRFs and ADF) / sum over S of the role's consolidated vendor volume; S = the sessions among the 126 ending at t-2 with a visible short_volume_ext row of the line and a present role volume > 0; NaN when |S| < 63 or the ratio is outside [0, 1] (declared plausibility, counted). The FINRA files carry facility flags, not per-venue volumes: the only off-exchange / exchange split is FINRA versus consolidated volume. Formula id finra-offexchange-short-over-consolidated126-v1.",
+      "dtype": "<f8",
+      "file": "sv_offexchange_share126.f64",
+      "formula_id": "finra-offexchange-short-over-consolidated126-v1",
+      "layout": "date-major",
+      "name": "sv_offexchange_share126",
+      "nan_reasons_member_cells": {
+        "outside_domain": 48,
+        "short_history": 631,
+        "too_few_sessions": 96
+      },
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "seal_date": "2024-01-01",
+      "sha256": "3acf3f3f6050d76542f93af1f05303085ae2feabdeca12ba0da674ded4f723e9",
+      "shape": [
+        175,
+        5
+      ],
+      "source_columns": [
+        "security_id",
+        "trade_date",
+        "short_volume",
+        "total_volume",
+        "available_at",
+        "volume.f64",
+        "present.u8"
+      ],
+      "sources": [
+        {
+          "bytes": 272,
+          "path": "<fixture>/short_volume_ext/manifest.json",
+          "sha256": "efae0070d12bea5678986536d2e8f94fd92c453147dc3a8ba6399d9ae2f1c887"
+        },
+        {
+          "bytes": 6621,
+          "path": "<fixture>/short_volume_ext/year=2023/short_volume_ext.parquet",
+          "sha256": "29cfc37a0ea8aeac82a2bba0c3637a017ab9b86a9d6e8b16838522262c4f4aab"
+        },
+        {
+          "bytes": 7000,
+          "path": "<fixture>/role/volume.f64",
+          "sha256": "dce53be576b8821f56a648403b203cb3f8fd737c0d17628fbbff8af5259bd395"
+        },
+        {
+          "bytes": 875,
+          "path": "<fixture>/role/present.u8",
+          "sha256": "6b8ff422b0d240d2b3e90c17682d073a6cc6ee8f219a72c6df70942be5fd2628"
+        }
+      ],
+      "stage_manifest_sha256": {
+        "short_volume_ext": "efae0070d12bea5678986536d2e8f94fd92c453147dc3a8ba6399d9ae2f1c887"
+      },
+      "staleness": "NaN when fewer than 63 sessions contribute, the first 127 role sessions (no prefix: the role volume starts with the role), or outside [0, 1]; session 0 -> NaN",
+      "units": "ratio (decimal, [0, 1])",
+      "visibility_rule": "a source row is usable at role session t iff available_at < date(t-1) 22:00 UTC, t-1 = the previous role session (v7 data request section 0.1); session 0 -> NaN"
+    },
+    {
+      "caveats": [
+        "a listing move shows at the line's first short-interest row after it (semi-monthly: up to about 15 days late); the event date is that row's dissemination date, not the listing date",
+        "FINRA short interest before June 2021 is FINRA's later republication: its market class is as republished (vintage risk)",
+        "a move that coincides with a new vendor security_id is not seen; a de-SPAC that keeps its vendor line and moves from Nasdaq to NYSE is an up-switch",
+        "moves to or from NYSE Arca, Cboe BZX or OTC are not events (Dharan-Ikenberry use CRSP exchange codes)"
+      ],
+      "clock": "finra-names-up-switch-asof-v1: FINRA name rows (security_master finra_names, PIT at their dissemination available_at) are usable at role session t iff available_at < date(t-1) 22:00 UTC; the line's state and its events at t come from those rows only",
+      "coverage": {
+        "finite_cells_all": 0,
+        "finite_member_cells": 0,
+        "finite_member_frac": 0.0,
+        "member_cells": 871,
+        "member_finite_max": null,
+        "member_finite_mean": null,
+        "member_finite_min": null,
+        "member_finite_quantiles": null,
+        "per_year": {
+          "2023": {
+            "finite_member_cells": 0,
+            "finite_member_frac": 0.0,
+            "member_cells": 871
+          }
+        },
+        "score_window": {
+          "finite_member_cells": 0,
+          "finite_member_frac": 0.0,
+          "member_cells": 824
+        }
+      },
+      "definition": "1 when the line's latest visible up-switch of its listing exchange (Nasdaq -> NYSE, NYSE American -> NYSE or Nasdaq -> NYSE American; Dharan and Ikenberry 1995, the Chen-Zimmermann ExchSwitch moves) has a dissemination date d with date(t) - d <= 365 days, else 0. finra-listing-up-switch-v1: the listing venue of a FINRA name row is its market_class mapped NNM/SC -> nasdaq, AMEX -> amex (NYSE American), NYSE -> nyse, any other class (ARCA, BZX, OTC, IEX, null) -> other. The rows of the role's lines are taken in visibility order (available_at, then dissemination_date, then venue, then file order). Per line: the first row sets the current (dissemination date, venue); a row with a later dissemination date advances it and is an up-switch when current venue -> row venue is nasdaq -> nyse, amex -> nyse or nasdaq -> amex and the two dissemination dates are at most 45 days apart; a row on the current date with another venue makes the current venue other (conflict: the next row cannot switch from it); a row dated before the current one is ignored (out of order). An event is decided when its row becomes visible and is never revised by a later row. Formula id finra-listing-up-switch365-v1.",
+      "dtype": "<f8",
+      "file": "exch_up_365d.f64",
+      "formula_id": "finra-listing-up-switch365-v1",
+      "layout": "date-major",
+      "name": "exch_up_365d",
+      "nan_reasons_member_cells": {
+        "market_unknown": 0,
+        "short_history": 871
+      },
+      "non_pit_aspects": [],
+      "point_in_time": true,
+      "seal_date": "2024-01-01",
+      "sha256": "67d6813995f49849270395e436f97c5d84624fa7e715e3724d2535c4199bb1c8",
+      "shape": [
+        175,
+        5
+      ],
+      "source_columns": [
+        "finra_names.security_id",
+        "finra_names.available_at",
+        "finra_names.dissemination_date",
+        "finra_names.market_class"
+      ],
+      "sources": [
+        {
+          "bytes": 229,
+          "path": "<fixture>/security_master/manifest.json",
+          "sha256": "b04f1cd442af9589068e14dac5429666ca39650bd8fe565b70c8badaefa7031d"
+        },
+        {
+          "bytes": 1853,
+          "path": "<fixture>/security_master/finra_names.parquet",
+          "sha256": "1b28e008dedc6d9708681f27e6ea223fbb35d3bc99733ab0ea6767af0373e51c"
+        }
+      ],
+      "stage_manifest_sha256": {
+        "security_master": "b04f1cd442af9589068e14dac5429666ca39650bd8fe565b70c8badaefa7031d"
+      },
+      "staleness": "NaN when the line's latest visible name row is more than 45 days older than date(t) (listing market unknown, as regsho_threshold_days63), or when the visible name rows (any line of the role) do not reach back 410 days (365 + 45) before date(t) (short history: an earlier move could not be seen); session 0 -> NaN",
+      "units": "indicator (0/1)",
+      "visibility_rule": "a source row is usable at role session t iff available_at < date(t-1) 22:00 UTC, t-1 = the previous role session (v7 data request section 0.1); session 0 -> NaN"
+    }
+  ],
+  "files": {
+    "exch_up_365d.f64": {
+      "bytes": 7000,
+      "sha256": "67d6813995f49849270395e436f97c5d84624fa7e715e3724d2535c4199bb1c8"
+    },
+    "ftd_shares_ratio21.f64": {
+      "bytes": 7000,
+      "sha256": "feaa9d268aa43ab0a5c7a00b049e76f23ac391306e6897f09992e279b20f0b5c"
+    },
+    "inst_best_ideas.f64": {
+      "bytes": 7000,
+      "sha256": "799e4b1d2df229ad80e29c8076935f7a73ee8176cf621337178d459d9ea5ab1b"
+    },
+    "inst_breadth_chg.f64": {
+      "bytes": 7000,
+      "sha256": "0a55a5a517da4da16349a86db59735ead1540382acc500595aa590f05e42d66e"
+    },
+    "inst_n_holders.f64": {
+      "bytes": 7000,
+      "sha256": "05a9b9fb44783b438aabe2ebe2b1cc58c5f6428a62183d11e818170e69faf089"
+    },
+    "inst_own_chg_q.f64": {
+      "bytes": 7000,
+      "sha256": "d28183a86525a43ec3c608de2616fe1a26cf728095aa5bdef41d665313276e50"
+    },
+    "inst_own_share.f64": {
+      "bytes": 7000,
+      "sha256": "c2916bb72cbe0141d65257ec9da1a56f851f9958563b829df8aa77502fdc29ad"
+    },
+    "regsho_threshold_days63.f64": {
+      "bytes": 7000,
+      "sha256": "fb03c6d51b6b4a531fd7056228ddaadbd831fac6361f60045695096da798c82a"
+    },
+    "shares_out.f64": {
+      "bytes": 7000,
+      "sha256": "37570908dd6fe369efcefdc51428cc8ffaa183a5981f4cec5880c6bd2ef4921f"
+    },
+    "si_shares.f64": {
+      "bytes": 7000,
+      "sha256": "ce2e0bd154199f13075012230736edcbe1b09a730b32cc10ac6d8cb411e065a8"
+    },
+    "sv_offexchange_share126.f64": {
+      "bytes": 7000,
+      "sha256": "3acf3f3f6050d76542f93af1f05303085ae2feabdeca12ba0da674ded4f723e9"
+    }
+  },
+  "historical_vintage_verified": false,
+  "instrument_namespace": "spiderrock.securityID",
+  "non_point_in_time_fields": [],
+  "point_in_time_definition": "point_in_time is true when both a field's cell values and which of its cells are NaN use only information available by the session's decision (every finite cell of every field is known by the session-date 22:00 UTC mark, before the 23:00 UTC decision). A false flag carries point_in_time_reason and non_pit_aspects (values and/or presence). Revision vintage of the sources (FINRA republication, unproven vendor vintage) is reported separately (historical_vintage_verified, vintage_safe_from, caveats) and does not set this flag. Consumers that must avoid look-ahead refuse point_in_time false fields unless explicitly allowed.",
+  "role": {
+    "clock_recipe": "modeled-session+22h-mark+23h-decision-v1",
+    "dates": 175,
+    "first_session": "2023-05-01",
+    "ids_sha256": "18e3dcecfb24a688e83c1296383746220f73f901859a035c4c545239816a663a",
+    "instruments": 5,
+    "last_session": "2023-12-29",
+    "manifest_sha256": "ecf554bfb34effe16a564c67f68b47085aaca494ddbdd5430f6caf758bdacbb2",
+    "member_sha256": "c6fec6d37743be8d09f3fc17f7605aaf2e700b605ec544f478413020c9eeac0c",
+    "path": "<fixture>/role",
+    "score_begin": 10,
+    "score_end": 175,
+    "sessions_sha256": "bf55ee0ce6115041afc39424f3f2bd7904df52ca21f3ec7121cb9ec96aa9aedd",
+    "source_sha256": "99e94cb7c67a096d78abd3e63fa98c8c95de37089bb4aca087b1569baa9900a7"
+  },
+  "schema": "atx.research-role-fields/v1",
+  "seal": {
+    "exclusive_end": "2024-01-01",
+    "rule": "every source row available on or after 2024-01-01 is dropped before use; role sessions asserted < 2024-01-01"
+  },
+  "source_checks": {
+    "holdings": {
+      "code": {
+        "module": "research_fields_holdings.py"
+      },
+      "ftd": {
+        "files": [
+          "year=2023/ftd.parquet"
+        ],
+        "role_rows_summed_duplicates": 1,
+        "rows": 803,
+        "rows_collision_excluded": 195,
+        "rows_on_role": 413,
+        "rows_sealed": 0,
+        "rows_unmapped": 195,
+        "settlement_calendar": {
+          "dates": 195,
+          "first": "2023-01-02",
+          "gaps_over_5_days": 0,
+          "last": "2023-09-29"
+        }
+      },
+      "listing_switch": {
+        "advancing_beyond_gap": 0,
+        "advancing_rows": 92,
+        "conflicts": 0,
+        "first_rows": 4,
+        "flagged_member_cells": 0,
+        "lines_with_an_up_switch": 0,
+        "out_of_order_rows": 0,
+        "rows": 96,
+        "rows_on_role": 96,
+        "rows_sealed": 0,
+        "up_switches": 0
+      },
+      "regsho_threshold": {
+        "finite_member_cells_by_listing_market": {
+          "cboe_bzx": 0,
+          "finra_otc": 0,
+          "nasdaq": 217,
+          "nyse": 0
+        },
+        "finra_name_rows_on_role": 96,
+        "lists_by_market_on_calendar": {
+          "cboe_bzx": 239,
+          "finra_otc": 0,
+          "nasdaq": 236,
+          "nyse": 0
+        },
+        "lists_outside_the_window_calendar": 54,
+        "lists_unknown_market": 0,
+        "lists_used": 475,
+        "on_list_rows_on_role": 84,
+        "prefix_sessions": 65,
+        "rows_later_than_their_list": 0,
+        "threshold_files": [
+          "year=2023/threshold.parquet"
+        ]
+      },
+      "short_volume_ext": {
+        "duplicates_summed": 0,
+        "files": [
+          "year=2023/short_volume_ext.parquet"
+        ],
+        "finra_total_over_vendor_volume_member_cells": {
+          "2023": 1.39765
+        },
+        "rows": 801,
+        "rows_off_role_calendar": 114,
+        "rows_on_role_sessions": 469,
+        "sessions_not_yet_visible_at_window_entry": 1
+      },
+      "stages": {
+        "ftd": {
+          "clock_rule": "ftd-publication-halfmonth-v1",
+          "code_git_head": null,
+          "files_read": 1,
+          "manifest_sha256": "30838cbebe0594eae880c21a4cee883da05d4048c51d56d6b1087b5782597ffe",
+          "rule": null,
+          "schema": "atx.alpha-panel.ftd/v1",
+          "staleness_days": 60
+        },
+        "regsho_threshold": {
+          "clock_rule": "regsho-publication-v1",
+          "code_git_head": null,
+          "files_read": 2,
+          "manifest_sha256": "a61e4bfe8ad6785b48be4d63d074f1a755ebc34371166ed5a64130fee7aecb62",
+          "rule": null,
+          "schema": "atx.alpha-panel.regsho-threshold/v1",
+          "staleness_days": 10
+        },
+        "security_master": {
+          "clock_rule": null,
+          "code_git_head": null,
+          "files_read": 1,
+          "manifest_sha256": "b04f1cd442af9589068e14dac5429666ca39650bd8fe565b70c8badaefa7031d",
+          "rule": "security-master-v1",
+          "schema": "atx.alpha-panel.security-master/v1",
+          "staleness_days": null
+        },
+        "short_volume_ext": {
+          "clock_rule": "sv-ext-next-day-v1",
+          "code_git_head": null,
+          "files_read": 1,
+          "manifest_sha256": "efae0070d12bea5678986536d2e8f94fd92c453147dc3a8ba6399d9ae2f1c887",
+          "rule": null,
+          "schema": "atx.alpha-panel.short-volume-ext/v1",
+          "staleness_days": 5
+        },
+        "thirteenf": {
+          "clock_rule": "13f-filed-plus-46h-v1",
+          "code_git_head": null,
+          "files_read": 8,
+          "manifest_sha256": "5b40341d5141fa43ed3e38d20245c4ce50840928a7c65255d62a51f00ca14e11",
+          "rule": null,
+          "schema": "atx.alpha-panel.thirteenf/v1",
+          "staleness_days": 150
+        }
+      },
+      "thirteenf": {
+        "agg_rows_available_after_quarter_clock_dropped": 0,
+        "agg_rows_on_role": 8,
+        "effective_filings": 10,
+        "effective_rule": "13f-asof45-effective-v1: per (filer CIK, period_q) among 13F-HR / 13F-HR/A filings with filing_date <= the stage deadline (first SEC business day >= period + 45 d): base = the latest (filing_date, accession) 13F-HR or amendment_type RESTATEMENT; plus every NEW HOLDINGS amendment after the base; a 13F-HR/A without an amendment type and every filing after the deadline are not used (counted)",
+        "filings_after_deadline_ignored": 2,
+        "filings_in_quarters_by_deadline": 13,
+        "holders_equal_agg_asof45_role_cells": {
+          "cells": 8,
+          "equal": 8
+        },
+        "holdings_per_quarter": {
+          "2022-12-31": {
+            "filers": 2,
+            "filers_zero_total": 0,
+            "rows": 2,
+            "rows_mapped": 2,
+            "rows_price_outlier": 0,
+            "securities": 1
+          },
+          "2023-03-31": {
+            "filers": 2,
+            "filers_zero_total": 0,
+            "rows": 4,
+            "rows_mapped": 3,
+            "rows_price_outlier": 0,
+            "securities": 2
+          },
+          "2023-06-30": {
+            "filers": 2,
+            "filers_zero_total": 0,
+            "rows": 4,
+            "rows_mapped": 4,
+            "rows_price_outlier": 0,
+            "securities": 3
+          },
+          "2023-09-30": {
+            "filers": 2,
+            "filers_zero_total": 0,
+            "rows": 4,
+            "rows_mapped": 4,
+            "rows_price_outlier": 1,
+            "securities": 2
+          }
+        },
+        "hr_a_without_amendment_type_ignored": 1,
+        "quarter_visible_at": {
+          "2022-09-30": null,
+          "2022-12-31": "2023-02-15T22:00:00.000000000Z",
+          "2023-03-31": "2023-05-16T22:00:00.000000000Z",
+          "2023-06-30": "2023-08-15T22:00:00.000000000Z",
+          "2023-09-30": "2023-11-15T22:00:00.000000000Z"
+        },
+        "quarters": [
+          "2022-09-30",
+          "2022-12-31",
+          "2023-03-31",
+          "2023-06-30",
+          "2023-09-30"
+        ],
+        "quarters_sealed": 0,
+        "quarters_without_filings": [
+          "2022-09-30"
+        ],
+        "rows_rule": "holdings rows of the effective filings with sshprnamt_type SH, no put/call, shares > 0 and a finite value_usd >= 0; value_usd x filing_checks.unit_factor of the accession (1 when unlisted); CUSIP -> security_id by cusip_map_pit.parquet at the same period_q; a mapped row with value > 0 whose implied price value/shares lies outside [1/10, 10] x the median implied price of its security's rows that quarter is dropped (declared screen for share / value unit errors)"
+      },
+      "visibility_rule": "a source row is usable at role session t iff available_at < date(t-1) 22:00 UTC, t-1 = the previous role session (v7 data request section 0.1); session 0 -> NaN"
+    },
+    "si_shares": {
+      "max_stale_days": 45,
+      "rows_ignored_unknown_id": 1,
+      "rows_matched_axis": 7,
+      "rows_sealed_dropped": 1,
+      "rows_total": 9
+    },
+    "tickerhistory": {
+      "duplicate_keys_quarantined": 1,
+      "earnflag_null": 0,
+      "earnflag_unexpected": 0,
+      "iv_nonpositive_or_nonfinite": 0,
+      "rows_off_role_calendar": 1,
+      "rows_on_or_after_2025_skipped": 138,
+      "rows_scanned": 2870,
+      "rows_selected": 2276,
+      "shares_cells_withheld_c81": 195,
+      "shares_lines_withheld_c81": 2,
+      "shares_rows_above_a9_ceiling": 2
+    }
+  },
+  "status": "complete",
+  "visibility_mark": "every finite cell of every field is known by the session-date 22:00 UTC mark (the role close clock), before the 23:00 UTC decision"
+}

@@ -214,4 +214,39 @@ core::Result<std::vector<std::string>> text_column(const ParquetTable &table,
   return core::Ok(std::move(out));
 }
 
+core::Result<std::vector<u8>> flag_column(const ParquetTable &table, std::string_view name) {
+  ATX_TRY(const DType type, dtype_of(table, name));
+  if (type != DType::Bool) {
+    return core::Err(bad_type(name, "a BOOL column"));
+  }
+  ATX_TRY(const auto column, table.to_column<bool>(name));
+  const auto values = column.view();
+  std::vector<u8> out(values.size(), 0);
+  for (usize i = 0; i < values.size(); ++i) {
+    out[i] = static_cast<u8>(values[i] ? 1 : 0);
+  }
+  ATX_TRY_VOID(apply_nulls<u8>(table, name, out, 0));
+  return core::Ok(std::move(out));
+}
+
+core::Result<std::vector<i64>> code_column(const ParquetTable &table, std::string_view name,
+                                           std::span<const std::string_view> values) {
+  ATX_TRY(const DType type, dtype_of(table, name));
+  if (type != DType::String) {
+    return core::Err(bad_type(name, "a UTF-8 column"));
+  }
+  ATX_TRY(const auto views, table.strings(name));
+  std::vector<i64> out(views.size(), -1);
+  for (usize i = 0; i < views.size(); ++i) {
+    for (usize v = 0; v < values.size(); ++v) { // a handful of listed values: a linear scan
+      if (views[i] == values[v]) {
+        out[i] = static_cast<i64>(v);
+        break;
+      }
+    }
+  }
+  ATX_TRY_VOID(apply_nulls<i64>(table, name, out, -1));
+  return core::Ok(std::move(out));
+}
+
 } // namespace atx::engine::research::fields

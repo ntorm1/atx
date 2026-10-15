@@ -1,0 +1,3 @@
+# Holdings identity fixture (P9 lane A4): every stage file is pinned by SHA-256 in its stage manifest, the role by
+# its manifest, the expected payloads by the gtests. No end-of-line conversion.
+* -text

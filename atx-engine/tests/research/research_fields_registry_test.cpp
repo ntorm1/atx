@@ -34,14 +34,15 @@ fields::BuildSpec plan_spec(std::vector<std::string> names) {
 
 TEST(ResearchFieldsRegistry, KindLookup) {
   const auto kinds = fields::builder_kinds();
-  ASSERT_EQ(kinds.size(), 11U);
+  ASSERT_EQ(kinds.size(), 13U);
   const auto ids = fields::builder_kind_ids();
   // P9 A3 appended the six vendor-panel kinds (vendor_fields.hpp) after lane A2's three; lane
-  // AL-SIG's engine-only kinds follow.
+  // AL-SIG's engine-only kinds follow, then lane A4's holdings kinds.
   const std::vector<std::string_view> want{"si_shares",     "si_dtc",       "vol_126",
                                            "ret_overnight", "ret_intraday", "ceq_iss_5y",
                                            "open_adj",      "high_adj",     "low_adj",
-                                           "gia_13f",       "russell_recon"};
+                                           "gia_13f",       "russell_recon",
+                                           "ftd_shares_ratio21", "regsho_threshold_days63"};
   EXPECT_TRUE(std::equal(ids.begin(), ids.end(), want.begin(), want.end()));
   const auto names = fields::engine_field_names(); // the registry-less names are the kind ids
   EXPECT_TRUE(std::equal(names.begin(), names.end(), want.begin(), want.end()));
@@ -50,6 +51,10 @@ TEST(ResearchFieldsRegistry, KindLookup) {
     spec.price_source = support::fixture_dir() / "vendor" / "th.parquet"; // vendor kinds' input
     spec.thirteenf = fields::StageRequest{"thirteenf", std::string(64, 'a')}; // AL-SIG kinds'
     spec.indexes = fields::StageRequest{"indexes", std::string(64, 'a')};     // stage requests
+    spec.ftd = fields::StageRequest{"ftd", std::string(64, 'a')}; // lane A4 kinds' inputs
+    spec.regsho_threshold = fields::StageRequest{"regsho_threshold", std::string(64, 'a')};
+    spec.security_master = fields::StageRequest{"security_master", std::string(64, 'a')};
+    spec.shares_out = fields::FileRequest{"shares_out.f64", std::string(64, 'a')};
     return spec;
   };
   for (const fields::BuilderKind &kind : kinds) {

@@ -1,0 +1,8 @@
+build p9-a4-d: exit 0
+gtest exit 1; failed: ['ResearchFieldsA4Reuse.EachInputFileIsDigestedOncePerDecision', 'ResearchFieldsA4Reuse.PriceFieldReusedOnlyWithTheBuildsPanelHistory', 'ResearchFieldsA4Reuse.RebuiltPriceFieldUsesTheWholeBuildsPanel', 'ResearchFieldsHoldingsKernel.FtdRingIsTheFullMatrixInAnyOrder', 'ResearchFieldsHoldingsKernel.RegshoLateRuleIsPerFileAcrossBatches']
+M1-rule6: ResearchFieldsA4Reuse.PriceFieldReusedOnlyWithTheBuildsPanelHistory CAUGHT
+M2-union: ResearchFieldsA4Reuse.RebuiltPriceFieldUsesTheWholeBuildsPanel CAUGHT
+M3-digest-once: ResearchFieldsA4Reuse.EachInputFileIsDigestedOncePerDecision CAUGHT
+M4-late-per-file: ResearchFieldsHoldingsKernel.RegshoLateRuleIsPerFileAcrossBatches CAUGHT
+M5-ring-evict: ResearchFieldsHoldingsKernel.FtdRingIsTheFullMatrixInAnyOrder CAUGHT
+restored to HEAD blobs: True; git status --porcelain empty: True

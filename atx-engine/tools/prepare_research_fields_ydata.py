@@ -27,6 +27,8 @@ its fields). At integration it folds into the draft entry of record as further t
 """
 from __future__ import annotations
 
+import sys
+
 import field_registry                      # same directory: the registry entry these wrappers call (K-P9-1)
 import prepare_research_fields as builder  # same directory: the builder (it does not import this module)
 import research_fields_connected           # same directory
@@ -54,10 +56,14 @@ def register(host_namespace: dict) -> list:
 
 
 def main(argv=None):
-    """Deprecated (P9 A1): ``register`` then the builder's own ``main`` with this file's argv (manifest bytes as before).
-    The replacement is ``prepare_research_fields.py --registry field_registry.json`` with the same argv."""
-    register(vars(builder))
-    builder.main(argv)
+    """Deprecated (P9 A1; A1-SHIM, P9 lane A4): the registry entry, ``prepare_research_fields.py --registry
+    field_registry.json`` with this file's argv (the committed registry, unless the argv names one). The entry binds
+    every module a registry row names in registry order (``DRAFT_MODULES`` among them), checks the registry against the
+    code and runs the builder's own argv parser and ``run``: the fields an argv of this file can request come out in the
+    same order with the same bytes as from ``register`` and the builder's ``main``."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    return builder.main(argv if field_registry.wants_registry(argv)
+                        else ["--registry", str(field_registry.DEFAULT_PATH), *argv])
 
 
 if __name__ == "__main__":

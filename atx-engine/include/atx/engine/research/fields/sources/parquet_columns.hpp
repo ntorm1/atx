@@ -2,10 +2,11 @@
 
 // atx::engine::research::fields -- typed decoders of one decoded stage table's columns into plain
 // vectors, with the null mapping of research_fields_holdings.py's column helpers (_f64, _ids,
-// _days, _instants, _text). The typed parquet bridges of atx::core::io drop validity, so every
+// _days, _instants, _text, _codes). The typed parquet bridges of atx::core::io drop validity, so every
 // decoder here reads the column's null mask. Err(InvalidArgument) for an absent column or a type
 // the decoder does not take; Err(ParseError) for an id text that is not a decimal integer.
 
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -38,5 +39,15 @@ inline constexpr i64 kNullDay = -(1LL << 30);
 // A UTF-8 column as owned strings; null -> "".
 [[nodiscard]] core::Result<std::vector<std::string>>
 text_column(const core::io::ParquetTable &table, std::string_view name);
+
+// A BOOL column as 0 / 1; null -> 0 (pc.fill_null(column, False)). P9 lane A4.
+[[nodiscard]] core::Result<std::vector<u8>> flag_column(const core::io::ParquetTable &table,
+                                                        std::string_view name);
+
+// A UTF-8 column as the index of each text in `values`; null or a text not listed -> -1 (the
+// Python _codes, pc.index_in). No text is kept per row. P9 lane A4.
+[[nodiscard]] core::Result<std::vector<i64>>
+code_column(const core::io::ParquetTable &table, std::string_view name,
+            std::span<const std::string_view> values);
 
 } // namespace atx::engine::research::fields

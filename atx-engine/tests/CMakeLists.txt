@@ -536,3 +536,12 @@ foreach(_b2_tests IN ITEMS atx-engine-research-ledger-tests atx-engine-research-
     gtest_discover_tests(${_b2_tests} DISCOVERY_MODE PRE_TEST TEST_PREFIX "${_b2_tests}."
         PROPERTIES LABELS atx_research)
 endforeach()
+
+# Platform P9 lane A4 (SEC / holdings sources to C++): the reuse history and digest gtests (A3
+# review S-2, A3-3), the session clock primitives and the holdings kinds (fixture under
+# fixtures/research_fields_holdings, its generator and pytest beside it) join the research-fields
+# test target.
+target_sources(atx-engine-research-fields-tests PRIVATE
+    research/research_fields_a4_reuse_test.cpp
+    research/research_fields_a4_clock_test.cpp
+    research/research_fields_holdings_test.cpp)

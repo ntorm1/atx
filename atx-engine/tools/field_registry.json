@@ -3208,7 +3208,7 @@
       "options": {
         "group": "ftd"
       },
-      "owner": "builder:FIELD_MODULES",
+      "owner": "builder:FIELD_MODULES; engine-shim:prepare_research_fields_engine",
       "point_in_time": true,
       "requires": [
         "shares_out"
@@ -3244,7 +3244,7 @@
       "options": {
         "group": "regsho"
       },
-      "owner": "builder:FIELD_MODULES",
+      "owner": "builder:FIELD_MODULES; engine-shim:prepare_research_fields_engine",
       "point_in_time": true,
       "requires": [],
       "sources": [

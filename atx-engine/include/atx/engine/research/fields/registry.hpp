@@ -20,8 +20,10 @@
 // (volume_mean_field.hpp), then the vendor-panel kinds ret_overnight, ret_intraday, ceq_iss_5y,
 // open_adj, high_adj, low_adj (vendor_fields.hpp; they need the spec's price_source), then lane
 // AL-SIG's engine-only kinds gia_13f (gia_13f_field.hpp) and russell_recon
-// (russell_recon_field.hpp). Each builds exactly its own field and accepts only the option
-// {"group": <its spec group>} (the producer group a registry row records), or no option.
+// (russell_recon_field.hpp), then lane A4's holdings kinds ftd_shares_ratio21 and
+// regsho_threshold_days63 (holdings_fields.hpp; the spec's short-side stages). Each builds exactly
+// its own field and accepts only the option {"group": <its spec group>} (the producer group a
+// registry row records), or no option.
 //
 // plan_fields: without a registry, a field name names its kind (the ported builders' fields, in
 // spec order). With a registry (K-P9-1), each field must be a row of kind engine whose builder is a
@@ -44,6 +46,7 @@
 #include "atx/engine/research/fields/field_writer.hpp"
 #include "atx/engine/research/fields/finra_asof_field.hpp"
 #include "atx/engine/research/fields/role_axes.hpp"
+#include "atx/engine/research/fields/run_payload.hpp"
 #include "atx/engine/research/fields/sources/stage.hpp"
 #include "atx/engine/research/fields/sources/vendor_panel.hpp"
 
@@ -65,13 +68,19 @@ struct SharedSources {
   std::optional<VendorPanel> vendor_panel;
   std::optional<PinnedStage> thirteenf; // lane AL-SIG: the pinned 13F stage (gia_13f; A4 reuses)
   std::optional<PinnedStage> indexes;   // lane AL-SIG: the pinned Russell-proxy stage
+  // P9 lane A4: the short-side stages and this run's shares_out (holdings_fields.hpp).
+  std::optional<PinnedStage> ftd;
+  std::optional<PinnedStage> regsho_threshold;
+  std::optional<PinnedStage> security_master;
+  std::optional<RunPayload> shares_out;
 };
 
 struct BuildContext {
   const BuildSpec &spec;
   const RoleAxes &role;
   SharedSources sources;
-  std::span<const FieldPlan> plans{}; // every plan this run builds (a shared source's union)
+  // Every plan of the run, reused ones included (a shared source's union request: P9 A4, S-2).
+  std::span<const FieldPlan> plans{};
 };
 
 struct KindOutput {
@@ -109,7 +118,8 @@ struct BuilderKind {
 [[nodiscard]] core::Status check_kind_request(const FieldSpec &spec, std::string_view field,
                                               const nlohmann::json &options);
 
-// Every stage the spec requests (thirteenf, indexes) opened under its pin and its reader's contract
+// Every stage the spec requests (thirteenf, indexes; lane A4: ftd, regsho_threshold,
+// security_master) opened under its pin and its reader's contract
 // (PinnedStage::open), whether or not a planned field reads it: Err for a stage whose manifest is
 // not the pinned one, or not a complete manifest of the contract. A build checks the pins before
 // it reuses or builds any field and again after the last one (as it re-pins the role), so no

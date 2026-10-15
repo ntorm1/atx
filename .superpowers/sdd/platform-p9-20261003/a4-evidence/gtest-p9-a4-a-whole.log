@@ -1,0 +1,10 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+..\atx-engine\tests\research\research_fields_a4_reuse_test.cpp(127): error: Expected equality of these values:
+  union_history
+    Which is: 1600
+  fields::kPriceHistorySessions
+    Which is: 1261
+
+[  FAILED  ] ResearchFieldsA4Reuse.RebuiltPriceFieldUsesTheWholeBuildsPanel (594 ms)
+[==========] 95 tests from 18 test suites ran. (8282 ms total)
+[  PASSED  ] 94 tests.
