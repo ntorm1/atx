@@ -143,7 +143,7 @@ def write(root: Path, c: dict, d: str | None = None, *, new: bool = False) -> Pa
         raise QueueError(f"{p} exists: a candidate is proposed once")
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(c, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
-    research_store_hook.record(root, p, "wave-candidate")
+    research_store_hook.record(root, Path(d or QUEUE_DIR) / p.name, "wave-candidate")   # root-relative (SQL3-WQ)
     return p
 
 
@@ -347,7 +347,7 @@ def main(argv=None) -> int:
             raise QueueError(f"{out} exists: a wave manifest is written once")
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(m, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
-        research_store_hook.record(root, out, "wave-manifest")
+        research_store_hook.record(root, a.output, "wave-manifest")     # root-relative unless absolute (SQL3-WQ)
         print(f"wave manifest {out.as_posix()}: {len(m['candidates'])} candidates; commit it, then "
               f"research_cycle.py wave run {a.output.as_posix()}")
         return 0
