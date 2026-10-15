@@ -1,0 +1,179 @@
+#include "atx/vol/api/fitting/quote_slice.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+namespace atx::vol {
+namespace {
+
+std::vector<QuoteSliceQuote> flat_quotes(const QuoteSliceMarket &market, double sigma = 0.25) {
+  std::vector<QuoteSliceQuote> quotes;
+  const double ratio = market.calendar_years / market.variance_years;
+  for (int strike = 75; strike <= 125; strike += 5) {
+    for (Side side : {Side::Call, Side::Put}) {
+      const auto price = andersen_lake(market.spot, static_cast<double>(strike),
+                                      market.variance_years, sigma, market.rate * ratio,
+                                      market.continuous_yield * ratio, side);
+      if (!price) { ADD_FAILURE() << price.error().to_string(); return {}; }
+      const double half_spread = std::min(0.01, *price * 0.1);
+      quotes.push_back({static_cast<double>(strike), side,
+                        *price - half_spread, *price + half_spread});
+    }
+  }
+  return quotes;
+}
+
+TEST(QuoteSlice, SeparateClocksPreserveCarryAndRecoverVolatility) {
+  const QuoteSliceMarket market{100.0, 0.4, 0.5, 0.04, 0.015, 0.0};
+  const auto quotes = flat_quotes(market);
+  auto fitted = fit_quote_slice(market, quotes);
+  ASSERT_TRUE(fitted) << fitted.error().to_string();
+  ASSERT_EQ(fitted->fit_status, QuoteSliceFitStatus::Success) << fitted->fit_error;
+  EXPECT_NEAR(fitted->diagnostics.effective_rate, 0.05, 1.0e-15);
+  EXPECT_NEAR(fitted->diagnostics.effective_yield, 0.01875, 1.0e-15);
+  EXPECT_NEAR(fitted->diagnostics.forward, 100.0 * std::exp(0.025 * 0.5), 1.0e-12);
+  EXPECT_EQ(fitted->diagnostics.quotes_admitted, 11U);
+  EXPECT_EQ(fitted->diagnostics.prices_produced, quotes.size());
+  for (const auto &row : fitted->rows) {
+    EXPECT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success);
+    EXPECT_NEAR(row.fitted_iv, 0.25, 5.0e-4);
+    if (row.admitted) { EXPECT_NEAR(row.market_iv, 0.25, 5.0e-6); }
+  }
+  const auto value = evaluate_quote_slice(*fitted, 102.5, Side::Call);
+  ASSERT_TRUE(value) << value.error().to_string();
+  EXPECT_NEAR(value->volatility, 0.25, 5.0e-4);
+  const auto expected = andersen_lake(100.0, 102.5, 0.4, value->volatility, 0.05, 0.01875,
+                                     Side::Call);
+  ASSERT_TRUE(expected);
+  EXPECT_DOUBLE_EQ(value->price, *expected);
+}
+
+TEST(QuoteSlice, RepricesRejectedQuotesAndPreservesTheirProvenance) {
+  const QuoteSliceMarket market{100.0, 0.5, 0.5, 0.04, 0.01, 0.0};
+  auto quotes = flat_quotes(market);
+  quotes.push_back({103.0, Side::Call, 3.0, 2.0});
+  quotes.push_back({-1.0, Side::Call, 1.0, 2.0});
+  auto fitted = fit_quote_slice(market, quotes);
+  ASSERT_TRUE(fitted);
+  ASSERT_EQ(fitted->fit_status, QuoteSliceFitStatus::Success) << fitted->fit_error;
+  const auto &bad_quote = fitted->rows[quotes.size() - 2];
+  EXPECT_EQ(bad_quote.quote_status, QuoteSliceQuoteStatus::InvalidQuote);
+  EXPECT_FALSE(bad_quote.admitted);
+  EXPECT_EQ(bad_quote.evaluation_status, QuoteSliceEvaluationStatus::Success);
+  EXPECT_TRUE(std::isfinite(bad_quote.fitted_price));
+  const auto &bad_contract = fitted->rows.back();
+  EXPECT_EQ(bad_contract.quote_status, QuoteSliceQuoteStatus::InvalidContract);
+  EXPECT_EQ(bad_contract.evaluation_status, QuoteSliceEvaluationStatus::InvalidContract);
+  EXPECT_TRUE(std::isnan(bad_contract.fitted_price));
+  EXPECT_EQ(fitted->rows.front().quote_status, QuoteSliceQuoteStatus::ExcludedSide);
+  EXPECT_EQ(fitted->rows.front().evaluation_status, QuoteSliceEvaluationStatus::Success);
+}
+
+TEST(QuoteSlice, SmoothingProducesAFittedSmileRatherThanMidpointIdentity) {
+  const QuoteSliceMarket market{100.0, 0.5, 0.5, 0.04, 0.01, 0.0};
+  auto quotes = flat_quotes(market);
+  // A raw quote perturbation is the only changed input. An eSSVI fit has fewer
+  // degrees of freedom than these strikes and should smooth this isolated bump.
+  std::size_t changed = 0;
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    if (quotes[i].strike == 105.0 && quotes[i].side == Side::Call) {
+      quotes[i].bid += 0.10;
+      quotes[i].ask += 0.10;
+      changed = i;
+    }
+  }
+  auto fitted = fit_quote_slice(market, quotes);
+  ASSERT_TRUE(fitted);
+  ASSERT_EQ(fitted->fit_status, QuoteSliceFitStatus::Success) << fitted->fit_error;
+  ASSERT_TRUE(fitted->rows[changed].admitted);
+  const double mid = (quotes[changed].bid + quotes[changed].ask) * 0.5;
+  EXPECT_GT(std::abs(fitted->rows[changed].fitted_price - mid), 0.005);
+}
+
+TEST(QuoteSlice, AggregateCashIsAnExplicitApproximationAndCannotBeDoubleCounted) {
+  const QuoteSliceMarket market{100.0, 0.4, 0.5, 0.04, 0.01, 2.0};
+  EXPECT_FALSE(fit_quote_slice(market, {})); // refusing silently ignored cash
+  QuoteSliceConfig config;
+  config.dividend_model = QuoteSliceDividendModel::AggregatePresentValue;
+  auto fitted = fit_quote_slice(market, {}, config);
+  ASSERT_TRUE(fitted);
+  EXPECT_EQ(fitted->fit_status, QuoteSliceFitStatus::InsufficientQuotes);
+  EXPECT_NEAR(fitted->diagnostics.forward, 98.0 * std::exp(0.03 * 0.5), 1.0e-12);
+  EXPECT_NEAR(fitted->diagnostics.effective_yield, 0.0125 - std::log(0.98) / 0.4, 1.0e-14);
+  EXPECT_STREQ(to_string(fitted->dividend_model), "aggregate_pv_approximation");
+  const std::vector<CashDividend> events{{0.2, 2.0}};
+  EXPECT_FALSE(fit_quote_slice(market, {}, config, events));
+  config.dividend_model = QuoteSliceDividendModel::DatedCash;
+  EXPECT_FALSE(fit_quote_slice(market, {}, config, events));
+}
+
+TEST(QuoteSlice, DatedCashUsesTheSameLatticeForInversionAndNewStrikeQueries) {
+  const QuoteSliceMarket market{100.0, 0.4, 0.5, 0.04, 0.0, 0.0};
+  const std::vector<CashDividend> calendar_events{{0.2, 1.8}, {0.8, 2.0}};
+  const std::vector<CashDividend> model_events{{0.16, 1.8}};
+  QuoteSliceConfig config;
+  config.dividend_model = QuoteSliceDividendModel::DatedCash;
+  config.curve.kind = VolCurveKind::LinearVariance;
+  config.min_quotes = 5;
+  config.discrete_div_steps = 101;
+  std::vector<QuoteSliceQuote> quotes;
+  for (int strike = 85; strike <= 115; strike += 5) {
+    const auto side = strike < 100 ? Side::Put : Side::Call;
+    const auto value = american_discrete_div_price(100.0, static_cast<double>(strike), 0.4,
+                                                  0.25, 0.05, 0.0, side, model_events, 101);
+    ASSERT_TRUE(value) << value.error().to_string();
+    quotes.push_back({static_cast<double>(strike), side, *value - 0.001, *value + 0.001});
+  }
+  auto fitted = fit_quote_slice(market, quotes, config, calendar_events);
+  ASSERT_TRUE(fitted) << fitted.error().to_string();
+  ASSERT_EQ(fitted->fit_status, QuoteSliceFitStatus::Success) << fitted->fit_error;
+  ASSERT_EQ(fitted->variance_clock_dividends.size(), 1U);
+  EXPECT_NEAR(fitted->variance_clock_dividends[0].tau, 0.16, 1.0e-15);
+  for (const auto &row : fitted->rows) {
+    ASSERT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success);
+    EXPECT_NEAR(row.market_iv, 0.25, 2.0e-6);
+    EXPECT_NEAR(row.fitted_iv, 0.25, 2.0e-6);
+  }
+  const auto value = evaluate_quote_slice(*fitted, 102.5, Side::Call);
+  ASSERT_TRUE(value);
+  const auto expected = american_discrete_div_price(100.0, 102.5, 0.4, value->volatility,
+                                                    0.05, 0.0, Side::Call, model_events, 101);
+  ASSERT_TRUE(expected);
+  EXPECT_NEAR(value->price, *expected, 1.0e-11);
+}
+
+TEST(QuoteSlice, InsufficientDataRetainsEveryRowAndDoesNotFabricateAFit) {
+  const QuoteSliceMarket market{100.0, 0.5, 0.5, 0.04, 0.01, 0.0};
+  auto quotes = flat_quotes(market);
+  QuoteSliceConfig config;
+  config.min_quotes = 50;
+  auto fitted = fit_quote_slice(market, quotes, config);
+  ASSERT_TRUE(fitted);
+  EXPECT_EQ(fitted->fit_status, QuoteSliceFitStatus::InsufficientQuotes);
+  EXPECT_EQ(fitted->rows.size(), quotes.size());
+  EXPECT_FALSE(fitted->curve);
+  EXPECT_FALSE(evaluate_quote_slice(*fitted, 100.0, Side::Call));
+  for (const auto &row : fitted->rows) {
+    EXPECT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::NoFit);
+    EXPECT_TRUE(std::isnan(row.fitted_price));
+  }
+}
+
+TEST(QuoteSlice, InvalidSharedInputsFailWithoutPartiallyUsableOutput) {
+  QuoteSliceMarket market{100.0, 0.5, 0.5, 0.04, 0.01, 0.0};
+  QuoteSliceConfig config;
+  config.iv_tolerance = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(fit_quote_slice(market, {}, config));
+  market.variance_years = 0.0;
+  EXPECT_FALSE(fit_quote_slice(market, {}));
+  market.variance_years = 0.5;
+  market.rate = std::numeric_limits<double>::max();
+  EXPECT_FALSE(fit_quote_slice(market, {}));
+}
+
+} // namespace
+} // namespace atx::vol
