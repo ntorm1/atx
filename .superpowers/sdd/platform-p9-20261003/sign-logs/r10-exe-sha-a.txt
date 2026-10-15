@@ -1,0 +1,2 @@
+514e2ff16146f2df3e27e7e5fb2f71ac738cea6c640aadf89ecbd2362c91550f *build-equity/bin/atx-impl-strategy-ic-tests.exe
+76dbd261e3162b9d0d86d0f5e916db8c068f09fcb74c5712c6a5889f9cbed1bd *build-equity/bin/atx-equity-strategy-ic.exe

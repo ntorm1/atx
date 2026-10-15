@@ -1,0 +1,4 @@
+71a23ba33c3a5efc25066ea6943d6d261ea20f48 scripts/wave_rules.py
+9c6e325211fcccc20fecdec2497b7f930ef7a390 scripts/tests/test_no_python_mirror.py
+4c1c839321c84f14a2ba21341cf0fbae572c30a7 scripts/tests/test_research_wave.py
+2b60956e5e3c2297c620dc37d2f6ab544a1add7e scripts/tests/test_wave_sign_verb.py

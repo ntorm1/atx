@@ -1075,8 +1075,11 @@ def test_lock_exes_pins_and_verify_compares(tmp_path):
     assert "exes_sha256" not in res and "exes_sha256" not in json.loads(
         (root / "out/waves/w1/receipts/07-verify.json").read_text())["outputs"]
     # review E1 minor (sticky pins): a parent that pins its exes implies the key (its cells inherit the pins)
+    # P9 lane SIGN: the parent pins its NAV exe only. The fake world has no exe on disk (wave_fixture.pin_eval_verb: an
+    # exe on disk turns on ruling W1-I1's cache bound), and the screen runs its sign verb only on the IC exe its pin
+    # names (wave_stage_library.sign_exe, as research_cycle's verify_exes: a missing pinned exe is refused).
     root = F.build(tmp_path / "wp")
-    F.write_json(root, F.PARENT, dict(json.loads((root / F.PARENT).read_text()), exes_sha256={"ic": ic, "nav": nav}))
+    F.write_json(root, F.PARENT, dict(json.loads((root / F.PARENT).read_text()), exes_sha256={"nav": nav}))
     F.git(root, "commit", "-q", "-am", "the parent pins its exes")
     fake = F.FakeCycle(root, ADMIT_ALL)
     assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lambda s: None) == 0

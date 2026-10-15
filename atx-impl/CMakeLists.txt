@@ -305,3 +305,8 @@ target_sources(atx-impl-strategy PRIVATE src/strategy_ic_absent.cpp)
 # P9 lane COV-MV (Ruling COVMV-1, tail append): the NAV target rule mv-aim-v1 (strategy_mv_aim.hpp)
 # over the engine kernel book/mv_target.cpp, reached through the v7 seam.
 target_sources(atx-impl-strategy PRIVATE src/strategy_mv_aim.cpp)
+# P9 lane SIGN (ruling C3-11): `atx-equity-strategy-ic sign`, the wave's PM7-35 sign rule on its screen
+# rows by the engine's research/admission predicate (sign_rule.hpp pm7_35; screen.hpp status names), so
+# atx-impl-strategy links the admission library (header-only predicate, status_name from screen.cpp).
+target_sources(atx-impl-strategy PRIVATE src/strategy_sign_verb.cpp)
+target_link_libraries(atx-impl-strategy PUBLIC atx::engine-research-admission)

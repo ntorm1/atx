@@ -215,3 +215,6 @@ target_sources(atx-impl-strategy-target-tests PRIVATE strategy_nav_info_clock_te
 # P9 lane COV-MV: the NAV target rule mv-aim-v1 (MvAimRule.*) beside the NAV replay tests;
 # atx-impl-tests compiles it through its *_test.cpp glob.
 target_sources(atx-impl-strategy-target-tests PRIVATE strategy_mv_aim_rule_test.cpp)
+# P9 lane SIGN: the IC exe's `sign` verb (SignVerb.*) in the focused IC target; atx-impl-tests
+# compiles it through its *_test.cpp glob.
+target_sources(atx-impl-strategy-ic-tests PRIVATE strategy_sign_verb_test.cpp)
