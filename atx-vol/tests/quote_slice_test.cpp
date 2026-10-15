@@ -339,5 +339,141 @@ TEST(QuoteSlice, DatedCashInversionAndServingPreserveStrikeSpecificCarry) {
   EXPECT_NEAR(queried->price, *expected, 1.0e-10);
 }
 
+TEST(QuoteSlice, BidlessAndLockedMarketsCannotBecomePointTargetsButRemainPriced) {
+  const QuoteSliceMarket market{100.0, 0.5, 0.5, 0.04, 0.01, 0.0};
+  auto quotes = flat_quotes(market);
+  auto baseline = fit_quote_slice(market, quotes);
+  ASSERT_TRUE(baseline);
+  ASSERT_EQ(baseline->fit_status, QuoteSliceFitStatus::Success);
+  const auto original_count = quotes.size();
+  quotes.push_back({140.0, Side::Call, 0.0, 75.0});
+  quotes.push_back({60.0, Side::Put, 0.0, 75.0});
+  quotes.push_back({103.0, Side::Call, 20.0, 20.0});
+  auto fitted = fit_quote_slice(market, quotes);
+  ASSERT_TRUE(fitted);
+  ASSERT_EQ(fitted->fit_status, QuoteSliceFitStatus::Success) << fitted->fit_error;
+  EXPECT_EQ(fitted->diagnostics.iv_attempted, baseline->diagnostics.iv_attempted);
+  EXPECT_EQ(fitted->diagnostics.quotes_admitted, baseline->diagnostics.quotes_admitted);
+  for (std::size_t i = 0; i < original_count; ++i) {
+    EXPECT_DOUBLE_EQ(fitted->rows[i].fitted_iv, baseline->rows[i].fitted_iv);
+    EXPECT_DOUBLE_EQ(fitted->rows[i].fitted_price, baseline->rows[i].fitted_price);
+  }
+  for (std::size_t i = original_count; i < quotes.size(); ++i) {
+    const auto &row = fitted->rows[i];
+    EXPECT_FALSE(row.admitted);
+    EXPECT_EQ(row.weight_w, 0.0);
+    EXPECT_FALSE(row.weight_capped);
+    EXPECT_TRUE(std::isnan(row.market_iv));
+    EXPECT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success);
+    EXPECT_NEAR(row.fitted_iv, 0.25, 5.0e-4);
+  }
+  EXPECT_EQ(fitted->rows[original_count].quote_status, QuoteSliceQuoteStatus::BidlessQuote);
+  EXPECT_EQ(fitted->rows[original_count + 1].quote_status, QuoteSliceQuoteStatus::BidlessQuote);
+  EXPECT_EQ(fitted->rows.back().quote_status, QuoteSliceQuoteStatus::InvalidQuote);
+
+  for (auto &quote : quotes) { quote.bid = 0.0; }
+  auto no_points = fit_quote_slice(market, quotes);
+  ASSERT_TRUE(no_points);
+  EXPECT_EQ(no_points->fit_status, QuoteSliceFitStatus::InsufficientQuotes);
+  EXPECT_EQ(no_points->diagnostics.iv_attempted, 0U);
+  EXPECT_EQ(no_points->diagnostics.prices_produced, 0U);
+}
+
+TEST(QuoteSlice, ConfigurableQualityGatesReportTheRejectedMeasurement) {
+  const QuoteSliceMarket market{100.0, 0.5, 0.5, 0.04, 0.01, 0.0};
+  auto quotes = flat_quotes(market);
+  const auto value = andersen_lake(100.0, 104.0, 0.5, 0.25, 0.04, 0.01, Side::Call);
+  ASSERT_TRUE(value);
+  quotes.push_back({104.0, Side::Call, 0.6 * *value, 1.4 * *value});
+  QuoteSliceConfig config;
+  auto relative_rejection = fit_quote_slice(market, quotes, config);
+  ASSERT_TRUE(relative_rejection);
+  ASSERT_EQ(relative_rejection->fit_status, QuoteSliceFitStatus::Success);
+  EXPECT_EQ(relative_rejection->rows.back().quote_status, QuoteSliceQuoteStatus::WideSpreadToMid);
+  EXPECT_TRUE(std::isnan(relative_rejection->rows.back().market_iv));
+  EXPECT_EQ(relative_rejection->rows.back().evaluation_status, QuoteSliceEvaluationStatus::Success);
+
+  config.quality.max_spread_to_mid = 0.0;
+  auto vol_rejection = fit_quote_slice(market, quotes, config);
+  ASSERT_TRUE(vol_rejection);
+  EXPECT_EQ(vol_rejection->rows.back().quote_status, QuoteSliceQuoteStatus::WideSpreadVol);
+  EXPECT_GT(vol_rejection->rows.back().spread_vol, config.quality.max_spread_vol);
+  EXPECT_NEAR(vol_rejection->rows.back().market_iv, 0.25, 5.0e-6);
+
+  config.quality.max_spread_vol = 0.0;
+  auto admitted = fit_quote_slice(market, quotes, config);
+  ASSERT_TRUE(admitted);
+  EXPECT_TRUE(admitted->rows.back().admitted);
+  EXPECT_EQ(admitted->rows.back().evaluation_status, QuoteSliceEvaluationStatus::Success);
+
+  const double noise = admitted->rows.back().spread_vol;
+  config.quality.min_vega_weight = 2.0 / (noise * noise);
+  auto sensitivity_rejection = fit_quote_slice(market, quotes, config);
+  ASSERT_TRUE(sensitivity_rejection);
+  EXPECT_EQ(sensitivity_rejection->rows.back().quote_status, QuoteSliceQuoteStatus::LowVegaWeight);
+  EXPECT_EQ(sensitivity_rejection->rows.back().weight_w, 0.0);
+
+  config.quality.min_vega_weight = 0.0;
+  config.quality.min_bid = quotes.back().bid + 0.001;
+  auto bid_rejection = fit_quote_slice(market, quotes, config);
+  ASSERT_TRUE(bid_rejection);
+  EXPECT_EQ(bid_rejection->rows.back().quote_status, QuoteSliceQuoteStatus::BelowMinimumBid);
+}
+
+TEST(QuoteSlice, ObservationWeightsUseLocalUncertaintyAndTheConfiguredFiniteCap) {
+  const QuoteSliceMarket market{100.0, 0.5, 0.5, 0.04, 0.01, 0.0};
+  auto quotes = flat_quotes(market);
+  // This extra point is accurate but substantially less precise than the other
+  // quotes, so its uncapped inverse uncertainty must remain smaller.
+  const auto value = andersen_lake(100.0, 104.0, 0.5, 0.25, 0.04, 0.03, Side::Call);
+  ASSERT_TRUE(value);
+  quotes.push_back({104.0, Side::Call, *value - 0.2, *value + 0.2, 0.03});
+  QuoteSliceConfig config;
+  config.quality.max_weight = 1.0e6;
+  auto fitted = fit_quote_slice(market, quotes, config);
+  ASSERT_TRUE(fitted);
+  ASSERT_EQ(fitted->fit_status, QuoteSliceFitStatus::Success);
+  EXPECT_GT(fitted->diagnostics.weights_capped, 0U);
+  EXPECT_LT(fitted->diagnostics.weights_capped, fitted->diagnostics.quotes_admitted);
+  std::size_t capped_count = 0;
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    const auto &row = fitted->rows[i];
+    if (!row.admitted) { continue; }
+    const double yield = quotes[i].continuous_yield.value_or(market.continuous_yield);
+    const double forward = 100.0 * std::exp((0.04 - yield) * 0.5);
+    const double vega = black76_value_and_vega(forward, quotes[i].strike, 0.5,
+        row.market_iv, std::exp(-0.02), quotes[i].side).vega;
+    const double spread = std::max(quotes[i].ask - quotes[i].bid, config.spread_floor);
+    const double root = vega / spread / row.market_iv; // 2*sigma*T = sigma
+    EXPECT_NEAR(row.spread_vol, spread / vega, 1.0e-14);
+    EXPECT_NEAR(row.weight_w, std::min(root * root, config.quality.max_weight), 1.0e-7);
+    EXPECT_LE(row.weight_w, config.quality.max_weight);
+    if (row.weight_capped) { ++capped_count; }
+  }
+  EXPECT_EQ(capped_count, fitted->diagnostics.weights_capped);
+  EXPECT_FALSE(fitted->rows.back().weight_capped);
+  EXPECT_GT(fitted->rows.back().weight_w, 0.0);
+}
+
+TEST(QuoteSlice, InvalidQualityPoliciesFailAtTheSharedBoundary) {
+  const QuoteSliceMarket market{100.0, 0.5, 0.5, 0.04, 0.01, 0.0};
+  QuoteSliceConfig config;
+  for (double invalid : {-1.0, std::numeric_limits<double>::quiet_NaN(),
+                          std::numeric_limits<double>::infinity()}) {
+    for (double QuoteSliceQualityConfig::*field : {&QuoteSliceQualityConfig::min_bid,
+         &QuoteSliceQualityConfig::max_spread_to_mid, &QuoteSliceQualityConfig::max_spread_vol,
+         &QuoteSliceQualityConfig::min_vega_weight, &QuoteSliceQualityConfig::max_weight}) {
+      config.quality = {};
+      config.quality.*field = invalid;
+      const auto rejected = fit_quote_slice(market, {}, config);
+      ASSERT_FALSE(rejected);
+      EXPECT_EQ(rejected.error().code(), ErrorCode::InvalidArgument);
+    }
+  }
+  config.quality = {};
+  config.quality.max_weight = 0.0;
+  EXPECT_FALSE(fit_quote_slice(market, {}, config));
+}
+
 } // namespace
 } // namespace atx::vol

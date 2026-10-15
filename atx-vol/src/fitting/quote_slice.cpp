@@ -33,6 +33,11 @@ Status validate(const QuoteSliceMarket &m, std::span<const QuoteSliceQuote> quot
        cfg.side_policy != QuoteSliceSidePolicy::OutOfTheMoney)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid fitting configuration");
   }
+  if (!nonnegative(cfg.quality.min_bid) || !nonnegative(cfg.quality.max_spread_to_mid) ||
+      !nonnegative(cfg.quality.max_spread_vol) || !nonnegative(cfg.quality.min_vega_weight) ||
+      !positive(cfg.quality.max_weight)) {
+    return Err(ErrorCode::InvalidArgument, "quote slice: invalid quote-quality policy");
+  }
   switch (cfg.dividend_model) {
   case QuoteSliceDividendModel::ContinuousYield:
     if (m.dividend_pv != 0.0 || !dividends.empty()) {
@@ -262,6 +267,16 @@ const char *to_string(QuoteSliceQuoteStatus value) noexcept {
     return "implied_volatility_failure";
   case QuoteSliceQuoteStatus::InvalidObservation:
     return "invalid_observation";
+  case QuoteSliceQuoteStatus::BidlessQuote:
+    return "bidless_quote";
+  case QuoteSliceQuoteStatus::BelowMinimumBid:
+    return "below_minimum_bid";
+  case QuoteSliceQuoteStatus::WideSpreadToMid:
+    return "wide_spread_to_mid";
+  case QuoteSliceQuoteStatus::WideSpreadVol:
+    return "wide_spread_vol";
+  case QuoteSliceQuoteStatus::LowVegaWeight:
+    return "low_vega_weight";
   }
   return "unknown";
 }
@@ -366,6 +381,8 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
   out.rows.resize(quotes.size());
   std::vector<FitObs> observations;
   observations.reserve(quotes.size());
+  const double min_sensitivity = std::sqrt(config.quality.min_vega_weight);
+  const double max_weight_root = std::sqrt(config.quality.max_weight);
   for (std::size_t i = 0; i < quotes.size(); ++i) {
     const QuoteSliceQuote &quote = quotes[i];
     QuoteSliceRow &row = out.rows[i];
@@ -375,6 +392,17 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
       continue;
     }
     if (!nonnegative(quote.bid) || !positive(quote.ask) || quote.bid > quote.ask) {
+      continue;
+    }
+    if (quote.bid == 0.0) {
+      row.quote_status = QuoteSliceQuoteStatus::BidlessQuote;
+      continue;
+    }
+    if (quote.bid == quote.ask) {
+      continue;
+    }
+    if (quote.bid < config.quality.min_bid) {
+      row.quote_status = QuoteSliceQuoteStatus::BelowMinimumBid;
       continue;
     }
     const double calendar_yield = quote.continuous_yield.value_or(market.continuous_yield);
@@ -394,6 +422,12 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
       continue;
     }
     const double mid = 0.5 * quote.bid + 0.5 * quote.ask;
+    const double raw_spread = quote.ask - quote.bid;
+    if (config.quality.max_spread_to_mid > 0.0 &&
+        raw_spread / mid > config.quality.max_spread_to_mid) {
+      row.quote_status = QuoteSliceQuoteStatus::WideSpreadToMid;
+      continue;
+    }
     const double intrinsic = std::max(
         quote.side == Side::Call ? market.spot - quote.strike : quote.strike - market.spot, 0.0);
     if (!(mid - intrinsic > config.min_time_value)) {
@@ -419,20 +453,38 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
     }
     const auto euro = black76_value_and_vega(diag.forward, quote.strike, market.variance_years, *iv,
                                              diag.discount, quote.side);
-    const double spread = std::max(quote.ask - quote.bid, config.spread_floor);
+    const double spread = std::max(raw_spread, config.spread_floor);
     const double local_vega = forward == diag.forward ? euro.vega :
         black76_value_and_vega(forward, quote.strike, market.variance_years, *iv,
                                diag.discount, quote.side).vega;
+    const double variance = *iv * *iv * market.variance_years;
+    if (!positive(euro.vega) || !positive(local_vega) || !nonnegative(euro.price) ||
+        !positive(variance) || !std::isfinite(k)) {
+      row.quote_status = QuoteSliceQuoteStatus::InvalidObservation;
+      continue;
+    }
+    row.spread_vol = spread / local_vega;
+    if (config.quality.max_spread_vol > 0.0 &&
+        row.spread_vol > config.quality.max_spread_vol) {
+      row.quote_status = QuoteSliceQuoteStatus::WideSpreadVol;
+      continue;
+    }
+    // Compare square roots to avoid overflow in a high-sensitivity quote's
+    // inverse variance. The filter and cap use the local quote's uncertainty,
+    // independently of the reference-forward coordinate used by the curve.
+    const double sensitivity = local_vega / spread;
+    if (sensitivity < min_sensitivity) {
+      row.quote_status = QuoteSliceQuoteStatus::LowVegaWeight;
+      continue;
+    }
     // IV uncertainty belongs to the actual quote's carry. Price-space fitters
     // receive an equivalent spread in the common reference-forward coordinate.
     const double normalized_spread = local_vega == euro.vega ? spread :
         spread * (euro.vega / local_vega);
-    const double weight_root = local_vega / spread / (2.0 * *iv * market.variance_years);
-    const double weight = std::min(weight_root * weight_root, 1.0e24);
-    const double variance = *iv * *iv * market.variance_years;
-    if (!positive(weight) || !positive(euro.vega) || !positive(local_vega) ||
-        !positive(normalized_spread) || !nonnegative(euro.price) ||
-        !positive(variance) || !std::isfinite(k)) {
+    const double weight_root = sensitivity / (2.0 * *iv * market.variance_years);
+    const bool capped = weight_root >= max_weight_root;
+    const double weight = capped ? config.quality.max_weight : weight_root * weight_root;
+    if (!positive(weight) || !positive(normalized_spread) || !positive(row.spread_vol)) {
       row.quote_status = QuoteSliceQuoteStatus::InvalidObservation;
       continue;
     }
@@ -449,12 +501,15 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
     obs.mid = euro.price;
     obs.spread = normalized_spread;
     obs.vega = euro.vega;
-    obs.noise_sigma = spread / local_vega;
+    obs.noise_sigma = row.spread_vol;
     obs.side = quote.side;
     obs.source_strike_index = static_cast<std::uint32_t>(i);
     observations.push_back(obs);
     row.quote_status = QuoteSliceQuoteStatus::Admitted;
     row.admitted = true;
+    row.weight_w = weight;
+    row.weight_capped = capped;
+    if (capped) { ++diag.weights_capped; }
     ++diag.quotes_admitted;
   }
   std::stable_sort(observations.begin(), observations.end(),

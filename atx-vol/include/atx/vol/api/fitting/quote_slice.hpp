@@ -55,8 +55,23 @@ enum class QuoteSliceSidePolicy : std::uint8_t {
   OutOfTheMoney
 };
 
+// Policy for point observations, applied to every curve family. A point target
+// always requires 0 < bid < ask: a missing bid is an upper-bound observation,
+// not evidence that the fair price is half the ask. Such contracts are still
+// repriced from an available fit. Bound-constrained fitting is not provided.
+struct QuoteSliceQualityConfig {
+  double min_bid = 0.0; // additional absolute floor; a bid must still be positive
+  double max_spread_to_mid = 0.60; // full raw spread / midpoint; 0 disables
+  double max_spread_vol = 0.05; // full floored spread / local Black vega; 0 disables
+  double min_vega_weight = 1.0e-6; // (local Black vega / floored spread)^2; 0 disables
+  // Upper clip on inverse total-variance uncertainty, matching CalibOpts.
+  // This controls absolute weight scale, including spline roughness penalties.
+  double max_weight = 1.0e3;
+};
+
 struct QuoteSliceConfig {
   CurveConfig curve{.kind = VolCurveKind::Essvi};
+  QuoteSliceQualityConfig quality{};
   QuoteSliceDividendModel dividend_model = QuoteSliceDividendModel::ContinuousYield;
   QuoteSliceSidePolicy side_policy = QuoteSliceSidePolicy::OutOfTheMoney;
   std::optional<AlOpts> al_opts{};
@@ -76,7 +91,12 @@ enum class QuoteSliceQuoteStatus : std::uint8_t {
   ExcludedSide,
   UnidentifiableVolatility,
   ImpliedVolatilityFailure,
-  InvalidObservation
+  InvalidObservation,
+  BidlessQuote,
+  BelowMinimumBid,
+  WideSpreadToMid,
+  WideSpreadVol,
+  LowVegaWeight
 };
 enum class QuoteSliceEvaluationStatus : std::uint8_t {
   Success,
@@ -99,6 +119,10 @@ struct QuoteSliceRow {
   double market_iv = std::numeric_limits<double>::quiet_NaN();
   double fitted_iv = std::numeric_limits<double>::quiet_NaN();
   double fitted_price = std::numeric_limits<double>::quiet_NaN();
+  // Full floored spread in local volatility units, once IV and vega exist.
+  double spread_vol = std::numeric_limits<double>::quiet_NaN();
+  double weight_w = 0.0; // stored fit weight; zero when not admitted
+  bool weight_capped = false;
 };
 
 struct QuoteSliceDiagnostics {
@@ -107,6 +131,7 @@ struct QuoteSliceDiagnostics {
   std::size_t quotes_admitted = 0;
   std::size_t distinct_strikes = 0;
   std::size_t prices_produced = 0;
+  std::size_t weights_capped = 0;
   double forward = 0.0;
   double discount = 0.0;
   double effective_rate = 0.0;
@@ -151,7 +176,9 @@ struct QuoteSliceValue {
 // Per-contract yields are used for IV extraction and repricing. The fitted
 // volatility curve retains the COMMON market-reference forward coordinate;
 // European observation prices/spreads are transformed to that coordinate.
-// Weights use local-forward Black vega as a quote-sensitivity proxy.
+// Weights use local-forward Black vega as a quote-sensitivity proxy. Quality
+// gates act before curve fitting, using QuoteSliceConfig::quality for ALL curve
+// kinds; CurveConfig::parametric observation-builder gates do not run here.
 //
 // DatedCash dividends use CALENDAR tau measured from the same valuation instant
 // as calendar_years. The fitter maps tau to the variance clock at a constant
