@@ -2,7 +2,8 @@
 
 ## R11 round (SQL3-5-FINISH, Python only, no build; 2026-10-15)
 
-- Head: the R11 docs commit (this file, `task-SQL3-report.md`, `sql3-evidence/r11-*`) over `da19d7ac` (merge of root
+- Head: the SQL3-TREE record commit (this file only) over `b995f926` (the R11 docs commit: this file,
+  `task-SQL3-report.md`, `sql3-evidence/r11-*`) over `da19d7ac` (merge of root
   `175edd61`, 0 conflicts; no file of this lane changed on root's side) over `00779453` (SQL3-WQ code + test) over
   `d43b3a8b` (the R10 handoff). Review 2: BASE `69b8c162`, file `task-SQL3-review-2.md` (FU-REVIEWS).
 - DONE (1) SQL3-WQ: `scripts/wave_queue.py:146` hands the hook `Path(d or QUEUE_DIR) / p.name`; the emit line `:350`
@@ -22,7 +23,9 @@
   atx-tsdb/ bin/ lib/ tests/`, `.ninja_deps .ninja_log CMakeCache.txt CPackConfig.cmake CPackSourceConfig.cmake
   CTestTestfile.cmake build.ninja cmake_install.cmake compile_commands.json spdlog.pc`; 429,455,033 bytes measured) is
   deleted by name AFTER this commit; KEPT: `audits/`, `v8-interim3-pitch-render-run2/` (tracked), `mega-p9-sql3-{a,b}-*`,
-  `vcpkg-manifest-install.log`. The result is in the hand-back.
+  `vcpkg-manifest-install.log`. DONE after the report commit `b995f926`: the 18 names deleted by literal path (exit 0),
+  429,455,033 bytes of files (C: free 59,749,183,488 -> 60,179,128,320 bytes); `build-equity/` now holds only the kept
+  items (2,298,485 bytes); the 79 tracked files under it intact (`git ls-files -d build-equity` empty), porcelain empty.
 - No permission refusal. No subagent. No build. Deferred to the gate (TEST-1): whole `scripts/tests` seeds 0 / 1, the
   stage chain, the rest of the store suite, the cross-commit tiny-world identity.
 
