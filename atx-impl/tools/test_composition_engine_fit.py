@@ -46,6 +46,7 @@ CASES = {
     "std-erc-tsmom": dict(STD_ARGS, theme_erc=cte.RULE_ID, theme_tsmom=ct.RULE_ID),
     "shrink-tsmom": dict(STD_ARGS, composition=cis.RULE_ID, theme_tsmom=ct.RULE_ID),
     "std-aim-resid": dict(STD_ARGS, composition=cr.STD_AIM_RULE_ID, theme_resid=cres.RULE_ID),
+    "aim-v2": dict(STD_ARGS, composition=cr.AIM_V2_RULE_ID),   # P9 lane D3W-PB: the parent alone
 }
 
 
@@ -126,6 +127,18 @@ def python_fit_document(spec: dict, factors_dir: Path) -> dict:
     zero = np.where(np.isnan(f), 0.0, f)
     matrix = np.vstack([m["sign"] * zero[:, c] for m, c in zip(members, columns)])
     gains = [m["gain"] for m in members] if "gain" in members[0] else None
+    if spec["composition"] == cr.AIM_V2_RULE_ID:  # P9 lane D3W-PB: theme_gain_weights on the gains, no modifier
+        weights, uncapped, passes, cap = cr.theme_gain_weights(themes, gains)
+        _, table = cr.ew_theme_aim_v2(ids, themes, gains)
+        parent_block = {"rule": spec["composition"], "weights": [float(w) for w in weights],
+                        "weights_before_cap": [float(w) for w in uncapped], "cap": cap,
+                        "cap_iterations": [{"capped": [ids[k] for k in it["capped"]],
+                                            "excess_by_theme": it["excess_by_theme"]} for it in passes],
+                        "member_gains": [float(g) for g in gains],
+                        "theme_weights": {t: table[t]["aim_theme_weight"] for t in sorted(table)}}
+        return {"schema": cef.FIT_SCHEMA, "status": "complete", "composition": spec["composition"], "members": ids,
+                "member_themes": themes, "train_decisions": int(mask.sum()), "decisions": int(len(sessions)),
+                "parent": parent_block, "weights": [float(w) for w in weights]}
     if spec["composition"] in cr.STD_RULES:
         parent = cr.ew_theme_std(ids, themes, [m["tier"] for m in members], error=cef.EngineFitError, gains=gains)
         prov = parent.provenance
@@ -329,7 +342,27 @@ class EngineFitEndToEnd(unittest.TestCase):
     def test_every_case_exercises_its_blocks(self):
         blocks = {name: run["summary"]["engine_fit"]["blocks"] for name, run in self.runs.items()}
         self.assertEqual(blocks, {"std-erc-tsmom": ["theme_erc", "theme_tsmom"], "shrink-tsmom": ["theme_tsmom"],
-                                  "std-aim-resid": ["theme_resid"]})
+                                  "std-aim-resid": ["theme_resid"], "aim-v2": []})
+
+    def test_aim_v2_carries_the_cpp_bits_or_refuses(self):
+        """P9 lane D3W-PB: the fitter's ew-theme-aim-v2 rule takes no C++ values, so check_written requires the
+        composed weights to be the C++ final weights bit for bit: a C++ weight one part in 1e15 away passes check 3
+        (inside ruling P12) and is still refused, with nothing published; a C++ theme weight beyond P12 is check 3's
+        refusal."""
+        def last_bits(doc):
+            doc["weights"][0] *= 1 + 1e-15
+            doc["parent"]["weights"][0] = doc["weights"][0]
+        self.assert_refused("aim-v2", "bits", "the composed weights are not the C++ fit's final weights",
+                            fit_mutate=last_bits)
+
+        def theme_weight(doc):
+            first = sorted(doc["parent"]["theme_weights"])[0]
+            doc["parent"]["theme_weights"][first] *= 1 + 1e-9
+        self.assert_refused("aim-v2", "theme", "the C++ fit differs", fit_mutate=theme_weight)
+
+        def gain(doc):
+            doc["parent"]["member_gains"][0] *= 1 + 1e-9
+        self.assert_refused("aim-v2", "gain", "the C++ fit differs", fit_mutate=gain)
 
     def run_one(self, name: str, tag: str, **mutations) -> tuple[Path, object]:
         """One --engine-fit run of CASES[name] with stand-in mutations; (output dir, (code, summary) or the error)."""
@@ -559,10 +592,11 @@ class CheckArgs(unittest.TestCase):
             ready = placeholders(Path(tmp))
             cef.check_args(self.ns(), prior=True, pooled=False)                   # flag absent: nothing checked
             cef.check_args(self.ns(**ready), prior=True, pooled=False)            # every input present
+            cef.check_args(self.ns(**dict(ready, composition="ew-theme-aim-v2")), prior=True,  # P9 D3W-PB
+                           pooled=False)
             refused = {
                 "options without the flag": self.ns(engine_factors=ready["engine_factors"]),
                 "ew-theme-v1": self.ns(**dict(ready, composition="ew-theme-v1")),
-                "ew-theme-aim-v2": self.ns(**dict(ready, composition="ew-theme-aim-v2")),
                 "no factors": self.ns(**dict(ready, engine_factors=None)),
                 "no exe": self.ns(**dict(ready, composition_exe=Path(tmp) / "missing.exe")),
                 "no manifest": self.ns(**dict(ready, engine_factors=Path(tmp))),

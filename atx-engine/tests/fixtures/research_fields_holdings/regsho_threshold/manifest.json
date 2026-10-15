@@ -1,0 +1,1 @@
+{"schema": "atx.alpha-panel.regsho-threshold/v1", "status": "complete", "clock_rule": "regsho-publication-v1", "staleness_days": 10, "files": {"lists.parquet": {"bytes": 7365, "sha256": "25aec14468b3155e0e26b8b1e5bcb4ab49e826a86386538a6daf1d54ef9845a0"}, "year=2023/threshold.parquet": {"bytes": 2660, "sha256": "a8547811b601c6cfe36dbbbc6c3c219b44b0a9bea03657f8f16b485280c031a8"}}}

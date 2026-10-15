@@ -1,0 +1,2 @@
+scripts/tests/test_no_python_mirror.py: ours 2 hunks (merged :44-44, :63-63) kept True; theirs 1 hunks (merged :50-51) kept True; PASS
+RESULT PASS

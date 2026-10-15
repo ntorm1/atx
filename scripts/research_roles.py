@@ -40,7 +40,9 @@ IC pass of a history role without the bounded runner's "--" is refused, never pl
 fit.output of a fit.carry cycle (OD3P review R-1): the carry is "done" when fit.output holds composition_weights.json,
 so fit.output is refused at plan time when it exists and its carry.json does not record exactly this carry (W, A, the
 anchor, the eras and the drop list's pin): the book's TRAIN fit dir, or another history line's carry dir, would skip
-the carry and the drop-list checks. Each history book gets its own fresh fit.output (p9-od3-runbook.md B6).
+the carry and the drop-list checks. Each history book gets its own fresh fit.output (p9-od3-runbook.md B6). An
+existing <fit.output>.pending (the carry tool's partial dir: a stale or concurrent carry) is refused at plan time
+too (review S-d).
 Without fit.carry.drop the carry and IC argv are the ones above.
 
 A book that reads --risk-model (a nav or ref flag) is refused on a spec with a history role (Ruling PRE-10): no per-era
@@ -381,11 +383,18 @@ class RolesCycle:
         """Review R-1: carry_step takes the carry as done when fit.output holds composition_weights.json, so a fit.output
         that exists and is not this carry's own publication (the book's TRAIN fit dir holding W, another history line's
         carry dir, any other dir the tool would refuse to overwrite) is refused at plan time: its carry.json must record
-        exactly this carry (W, A, the anchor, the eras, and the drop list's pin or no drop)."""
+        exactly this carry (W, A, the anchor, the eras, and the drop list's pin or no drop). Review S-d: a stale
+        <fit.output>.pending (the tool's partial dir, left by a hand-run carry) is refused too: the tool would refuse
+        it at the fit step, after the history u passes."""
         w_dir = fit_weights_dir(self.anchor)
+        cw = carry_tool()
+        pending = w_dir + cw.PENDING_SUFFIX
+        if res.exists_dir(pending) or res.path(pending).exists():
+            raise usage(f"{pending} exists: a stale or concurrent partial carry output (carry_weights.py publishes "
+                        "through it and refuses it at the fit step, after the history u passes); inspect and remove "
+                        "it (OD3P review S-d; p9-od3-runbook.md B6 / P7)")
         if not res.exists_dir(w_dir):
             return                                    # pending (or failed: its run dir alone)
-        cw = carry_tool()
         try:
             rec = res.read_json(f"{w_dir}/{cw.OUTPUT_RECORD}")
         except ValueError:

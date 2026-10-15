@@ -1,0 +1,27 @@
+b2-n37-file-p9-2z seed 0 head 138e1d2c code-dirty [] exit 0 wall 21s start 2026-10-15T14:25:12Z env1-hits 0 :: ============================= 10 passed in 19.97s =============================
+od3p-lane-files-p9-2z seed 0 head a2cf7e78 code-dirty [] exit 0 wall 39s start 2026-10-15T14:26:11Z env1-hits 0 :: ============================= 96 passed in 38.12s =============================
+od3p-s4-classes-guard seed 0 head a2cf7e78 code-dirty [ M atx-engine/schemas/research_store/classes.json ] exit 0 wall 3s start 2026-10-15T14:28:56Z env1-hits 0 :: 5 passed, 97 subtests passed in 0.75s
+od3p-s4-store-suite seed 0 head a2cf7e78 code-dirty [ M atx-engine/schemas/research_store/classes.json ] exit 0 wall 4s start 2026-10-15T14:29:00Z env1-hits 0 :: 43 passed, 136 subtests passed in 2.55s
+od3p-s4-store-suite seed 1 head a2cf7e78 code-dirty [ M atx-engine/schemas/research_store/classes.json ] exit 0 wall 4s start 2026-10-15T14:29:04Z env1-hits 0 :: 43 passed, 136 subtests passed in 2.49s
+d3wpb-fitter5-3a seed 0 head 6088bfe9 code-dirty [] exit 0 wall 89s start 2026-10-15T14:31:55Z env1-hits 0 :: 180 passed, 88 subtests passed in 87.32s (0:01:27)
+d3wpb-resid-460f seed 0 head 175edd61 code-dirty [] exit 0 wall 15s start 2026-10-15T14:33:46Z env1-hits 0 :: 23 passed, 18 subtests passed in 13.27s
+d3wpb-mirror-460f seed 0 head 175edd61 code-dirty [] exit 0 wall 3s start 2026-10-15T14:34:01Z env1-hits 0 :: 7 passed in 2.13s
+d3wpb-mirror-44a3-resolved seed 0 head 175edd61 code-dirty [UU scripts/tests/test_no_python_mirror.py ] exit 0 wall 3s start 2026-10-15T14:35:18Z env1-hits 0 :: 7 passed in 1.66s
+sign-classes-guard-before seed 0 head ad913bd5 code-dirty [] exit 1 wall 2s start 2026-10-15T14:37:11Z env1-hits 0 :: 1 failed, 4 passed, 97 subtests passed in 0.77s
+sign-classes-guard-after seed 0 head ad913bd5 code-dirty [ M atx-engine/schemas/research_store/classes.json ] exit 0 wall 2s start 2026-10-15T14:37:42Z env1-hits 0 :: 5 passed, 97 subtests passed in 0.41s
+sign-store-suite seed 0 head ad913bd5 code-dirty [ M atx-engine/schemas/research_store/classes.json ] exit 0 wall 3s start 2026-10-15T14:37:44Z env1-hits 0 :: 43 passed, 136 subtests passed in 2.01s
+sign-store-suite seed 1 head ad913bd5 code-dirty [ M atx-engine/schemas/research_store/classes.json ] exit 0 wall 3s start 2026-10-15T14:37:47Z env1-hits 0 :: 43 passed, 136 subtests passed in 1.93s
+sign-verb-real-3b seed 0 head 1dd9b9b1 code-dirty [] exit 0 wall 14s start 2026-10-15T14:39:19Z env1-hits 0 :: 21 passed in 12.86s
+sign-research-wave-3b seed 0 head 1dd9b9b1 code-dirty [] exit 0 wall 21s start 2026-10-15T14:39:33Z env1-hits 0 :: 19 passed in 19.83s
+sign-wave-driver-3b seed 0 head 1dd9b9b1 code-dirty [] exit 0 wall 81s start 2026-10-15T14:39:54Z env1-hits 0 :: 28 passed in 80.12s (0:01:20)
+sign-wave-files-other-3b seed 0 head 1dd9b9b1 code-dirty [] exit 0 wall 204s start 2026-10-15T14:41:32Z env1-hits 0 :: 269 passed, 1 skipped in 202.76s (0:03:22)
+sign-mirror-pre seed 0 head 1dd9b9b1 code-dirty [] exit 0 wall 3s start 2026-10-15T14:44:56Z env1-hits 0 :: 7 passed in 1.88s
+sign-verb-real-post seed 0 head 338e6a7c code-dirty [] exit 0 wall 15s start 2026-10-15T14:46:24Z env1-hits 0 :: 21 passed in 14.71s
+sign-research-wave-post seed 0 head 338e6a7c code-dirty [] exit 0 wall 23s start 2026-10-15T14:46:40Z env1-hits 0 :: 19 passed in 22.74s
+sign-mirror-post seed 0 head 338e6a7c code-dirty [] exit 0 wall 2s start 2026-10-15T14:47:04Z env1-hits 0 :: 7 passed in 1.77s
+a4-holdings-fixture seed 0 head bba4c06f code-dirty [] exit 0 wall 6s start 2026-10-15T14:52:35Z env1-hits 0 :: 2 passed in 4.81s
+a4-holdings-engine-path seed 0 head bba4c06f code-dirty [] exit 0 wall 4s start 2026-10-15T14:52:41Z env1-hits 0 :: 2 passed in 2.73s
+a4-vendor-engine-path seed 0 head bba4c06f code-dirty [] exit 0 wall 5s start 2026-10-15T14:52:45Z env1-hits 0 :: 10 passed in 4.15s
+a4-fields-engine-path seed 0 head bba4c06f code-dirty [] exit 0 wall 8s start 2026-10-15T14:52:51Z env1-hits 0 :: 11 passed in 6.52s
+a4-field-registry seed 0 head bba4c06f code-dirty [] exit 0 wall 10s start 2026-10-15T14:52:59Z env1-hits 0 :: 37 passed, 8 subtests passed in 8.84s
+a4-classes-guard seed 0 head bba4c06f code-dirty [] exit 0 wall 3s start 2026-10-15T14:53:27Z env1-hits 0 :: 5 passed, 97 subtests passed in 1.03s

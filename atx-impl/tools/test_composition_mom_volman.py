@@ -23,7 +23,10 @@ import composition_theme_tsmom as ct  # noqa: E402
 import fit_composition_weights as fcw  # noqa: E402
 import test_fit_composition_weights as tfw  # noqa: E402  (its synthetic fitter fixture, not its tests)
 
-HEADER = Path(__file__).resolve().parents[1] / "src" / "strategy_ic_mom_volman.hpp"
+# P9 lane D3W-PB (review D3W S-2): the registered constants are defined once, in the engine header that both the
+# C++ fit and the IC runner (strategy_ic_mom_volman.hpp re-exports the names) read.
+HEADER = (Path(__file__).resolve().parents[2] / "atx-engine" / "include" / "atx" / "engine" / "research" /
+          "composition" / "mom_volman.hpp")
 RULES = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "composition_rules_list.json"
 STD_ARGS = dict(screen="v4-prior-v1", orientation="prior", composition="ew-theme-std-v1")
 ERC_ARGS = dict(STD_ARGS, theme_erc="theme-erc-v1")

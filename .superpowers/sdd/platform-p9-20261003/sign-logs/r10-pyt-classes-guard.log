@@ -1,0 +1,13 @@
+F....                                            [100%]
+================================== FAILURES ===================================
+_________ ClassRegistryGuard.test_every_schema_literal_is_registered __________
+atx-engine\tools\test_research_store_classes.py:114: in test_every_schema_literal_is_registered
+    self.assertEqual(missing, {}, "unregistered schema literals: add the schema to its class in "
+E   AssertionError: {'atx.sign-receipt/v1': ['atx-impl/src/str[81 chars]py']} != {}
+E   + {}
+E   - {'atx.sign-receipt/v1': ['atx-impl/src/strategy_sign_verb.cpp',
+E   -                          'atx-impl/src/strategy_sign_verb.hpp',
+E   -                          'scripts/wave_rules.py']} : unregistered schema literals: add the schema to its class in atx-engine/schemas/research_store/classes.json (or a dated legacy_allow row): atx.sign-receipt/v1 in atx-impl/src/strategy_sign_verb.cpp, atx-impl/src/strategy_sign_verb.hpp, scripts/wave_rules.py
+=========================== short test summary info ===========================
+FAILED atx-engine/tools/test_research_store_classes.py::ClassRegistryGuard::test_every_schema_literal_is_registered
+1 failed, 4 passed, 96 subtests passed in 2.21s

@@ -1,0 +1,47 @@
+$ PYTHONHASHSEED=0 PYTHONDONTWRITEBYTECODE=1 "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider --basetemp <own> -rs scripts/tests/test_research_cycle_od3.py atx-impl/tools/test_od3_tooling.py   (tree e75d9d9c = merge of root 0a2ceb2b; code = cc6686f9 + root; only sprint-dir docs uncommitted; ATX_EQUITY_BIN unset)
+F....................................................................... [ 75%]
+.........s...........s.s                                                 [100%]
+================================== FAILURES ===================================
+___________ test_carry_replaces_the_pooled_fit_and_feeds_every_era ____________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/a17fe032-fb48-4307-ab8e-95f10be06ca8/scratchpad/od3p-fu/bt-lane2/test_carry_replaces_the_pooled0')
+
+    def test_carry_replaces_the_pooled_fit_and_feeds_every_era(tmp_path):
+        root, sp, _ = carry_root(tmp_path)
+        plan = RC.plan_lines(TR.cycle_of(root, sp))
+        assert any(line.startswith("# pin carry:weights: fit/composition_weights.json") for line in plan)
+        log: list[str] = []
+>       assert TR.run(root, sp, log) == RC.EXIT_OK, log[-5:]
+               ^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_research_cycle_od3.py:99: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\test_research_cycle_roles.py:177: in run
+    return RC.run_cycle(cycle_of(root, sp, **kw), stop_after=stop_after, clean=lambda r: True,
+scripts\cycle\cli.py:462: in run_cycle
+    if step_outcome(cycle, x, k, done, log):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+cycle = <research_roles.RolesCycle object at 0x000001A6F0E9A9F0>
+st = <cycle.phases.Step object at 0x000001A6F0E60E30>, key = 'summ'
+done = CompletedProcess(args=['C:\\Program Files\\Python312\\python.exe', 'C:/atx-wt/pool-21/atx-impl/tools/nav_summ.py', '--...trials.jsonl', '--ledger-kind', 'construction', '--pool', 'out/N-E1', 'out/N-E2', '--pool-ids', 'E1,E2'], returncode=1)
+log = <built-in method append of list object at 0x000001A6F0C47180>
+
+    def step_outcome(cycle: Cycle, st: Step, key: str, done, log) -> bool:
+        """A process step's result from its receipt (bounded) or exit code (direct); raises CycleError (HARD-STOP) on a
+        refusal or failure; True when the fit exited "incomplete" and its next pass runs (FIT_INCOMPLETE)."""
+        if st.kind != "bounded":
+            if st.kind == "direct" and done.returncode != 0:
+>               raise CycleError(f"HARD-STOP [{key}]: exit {done.returncode}")
+E               cycle.spec.CycleError: HARD-STOP [summ]: exit 1
+
+scripts\cycle\cli.py:356: CycleError
+---------------------------- Captured stderr call -----------------------------
+nav_summ: no engine statistics executable C:\atx-wt\pool-21\build-equity\bin\atx-research-eval.exe: build atx-research-eval (scripts/research-build.ps1) or name one with --engine-stats EXE
+=========================== short test summary info ===========================
+SKIPPED [1] atx-impl\tools\test_od3_tooling.py:546: the engine verb atx-research-eval is not built at C:\atx-wt\pool-21\build-equity\bin\atx-research-eval.exe ($ATX_EQUITY_BIN, else build-equity/bin): Ruling OD3P-SKIP, root's run with the verb built executes this case
+SKIPPED [1] atx-impl\tools\test_od3_tooling.py:640: the engine verb atx-research-eval is not built at C:\atx-wt\pool-21\build-equity\bin\atx-research-eval.exe ($ATX_EQUITY_BIN, else build-equity/bin): Ruling OD3P-SKIP, root's run with the verb built executes this case
+SKIPPED [1] atx-impl\tools\test_od3_tooling.py:689: the engine verb atx-research-eval is not built at C:\atx-wt\pool-21\build-equity\bin\atx-research-eval.exe ($ATX_EQUITY_BIN, else build-equity/bin): Ruling OD3P-SKIP, root's run with the verb built executes this case
+1 failed, 92 passed, 3 skipped in 83.92s (0:01:23)
+exit 1

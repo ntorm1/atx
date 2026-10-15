@@ -19,7 +19,16 @@
 //      executable's, and this executable's exe_sha256 is known. A legacy Python producer (a block
 //      without "kind") is never reused here: the Python builder's own reuse owns those entries;
 //   4. its formula_sha256 equals the plan's spec fingerprint;
-//   5. its sources equal, in order and by (bytes, sha256), the plan's input files re-hashed now.
+//   5. its sources equal, in order and by (bytes, sha256), the plan's input files re-hashed now
+//      (each distinct input file is hashed once per decision, however many plans read it: P9 A4,
+//      A3-3; the record's "inputs_digested" counts them);
+//   6. a field of the vendor panel's price matrices (vendor_fields.hpp: ret_overnight,
+//      ret_intraday, ceq_iss_5y) had this build's panel history: the prior manifest's
+//      source_checks.<name>.source.sessions_before_role equals the extended-axis prefix of the
+//      union of every planned vendor field's request (P9 A4, A3 review S-2: a repaired factor
+//      step before the role divides both factors of a ratio, so the bits depend on the history
+//      the co-requested fields set; the fields this build rebuilds are built on that same union,
+//      research_fields_cli.cpp).
 // A field that passes is copied to output_dir/<name>.f64 (created exclusively); a copy that does
 // not hash to the pin is Err (a corrupt prior directory stops the build). Its manifest entry is the
 // prior entry unchanged, so its producer still names the build that wrote the payload, plus
@@ -56,15 +65,17 @@ struct ReusedField {
 
 struct ReuseOutcome {
   std::vector<ReusedField> reused; // plan order
-  // The manifest's "reuse" block: {dir, manifest_sha256, seal, reused[], recomputed{name: reason}}.
+  // The manifest's "reuse" block: {dir, manifest_sha256, seal, reused[], recomputed{name: reason},
+  // inputs_digested}.
   nlohmann::json record;
 
   [[nodiscard]] const ReusedField *find(std::string_view name) const noexcept;
 };
 
-// Decides reuse for `plans` against `request` and copies every reused payload into `output_dir`.
-// Err(InvalidArgument) for a refused prior manifest or a corrupt prior payload, Err(IoError) when a
-// prior file cannot be read or a copy cannot be written.
+// Decides reuse for `plans` (every field the build plans: rule 6 reads their union) against
+// `request` and copies every reused payload into `output_dir`. Err(InvalidArgument) for a refused
+// prior manifest, a corrupt prior payload or a vendor history the role's calendar cannot give,
+// Err(IoError) when a prior file cannot be read or a copy cannot be written.
 [[nodiscard]] core::Result<ReuseOutcome> reuse_payloads(const ReuseRequest &request,
                                                         const RoleAxes &role,
                                                         std::span<const FieldPlan> plans,

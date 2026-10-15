@@ -97,6 +97,8 @@ def write_crlf(rel: str, text: str) -> Path:
 
 
 class _Res:
+    root = TREE     # keep_copy hands it to the record-store hook (P9 SQL3 item 5): no catalog under TREE, a no-op
+
     def path(self, rel: str) -> Path:
         return TREE / rel
 

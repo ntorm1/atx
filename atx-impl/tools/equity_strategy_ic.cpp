@@ -2,6 +2,7 @@
 #include <string_view>
 #include "strategy_ic_runner.hpp"
 #include "strategy_marginal_ic.hpp"
+#include "strategy_sign_verb.hpp"
 namespace {
 // `atx-equity-strategy-ic [VERB] OPTIONS...`. A first argument naming a verb below
 // routes to it, with argv shifted so the handler sees the verb as argv[0] and its
@@ -12,6 +13,7 @@ struct Verb { std::string_view name; VerbMain run; };
 constexpr Verb verbs[]{
     {"ic",&atx::impl::strategy::dispatch_ic},
     {"marginal",&atx::impl::strategy::dispatch_marginal_ic},
+    {"sign",&atx::impl::strategy::dispatch_sign}, // P9 lane SIGN: the wave sign rule
 };
 } // namespace
 int main(int argc,char** argv) {

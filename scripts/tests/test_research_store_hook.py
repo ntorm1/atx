@@ -7,15 +7,22 @@ SQL-2, SQL-6, SQL-11, W3-4).
   test_runner_records_an_index_and_the_catalog            the store block, last in both files; a failing exe warns
                                                           once per file and changes no exit code
   test_hook_off_spawns_and_imports_nothing                no catalog: no subprocess, no sqlite3, no identity module
-  test_one_ingest_per_write_in_a_fake_wave                fake exe: one ingest per receipt / candidate written, with
-                                                          class, root-relative path, --root, --catalog, --classes
+  test_one_ingest_per_write_in_a_fake_wave                fake exe: one ingest per receipt / candidate / wave result
+                                                          written, with class, root-relative path, --root, --catalog,
+                                                          --classes; the wave result whole when ingested (item 5)
   test_fake_wave_bytes_equal_with_a_failing_store         no catalog vs a failing exe at the same root: every file
                                                           equal (time keys aside), exit codes equal, one warning
                                                           per write
+  test_write_binding_ingests_its_binding                  item 5, cycle_resume.write_binding: one ingest (class
+                                                          cycle-binding) of the whole file, absolute or relative root
+  test_write_verdict_ingests_the_verdict_then_its_copy    item 5, cycle_verdict.write_verdict: the verdict, then (keep)
+                                                          its copy, each one ingest of the whole file
+  test_keep_copy_ingests_each_copy                        item 5, cycle_verdict.keep_copy: one ingest per copy written
   test_failures_are_one_warning_each                      ingest exit 3, a timeout, a check mismatch: one line each
   test_real_store_exe_ingests_every_class                 the built atx-research-store in a temp root: every class
-                                                          ingested and re-rendered; a non-canonical file and a
-                                                          re-queued candidate id (N3) are one warning each
+                                                          ingested and re-rendered (item 5's writers by their own
+                                                          calls); a non-canonical file and a re-queued candidate id
+                                                          (N3) are one warning each
 
 Every file is synthetic (the tiny-world fake wave of wave_fixture, sessions 2020-2021); no data of the repository is
 read. The last case copies the built exe (ATX_RESEARCH_STORE_EXE, default build-equity/bin) into a temp root and is
@@ -41,6 +48,9 @@ import pytest
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
+from cycle.resolver import Resolver  # noqa: E402
+import cycle_resume  # noqa: E402
+import cycle_verdict  # noqa: E402
 import research_store_hook as H  # noqa: E402
 import research_wave  # noqa: E402
 import test_wave_driver as TW  # noqa: E402  (queued_root, manifest, ADMIT_ALL)
@@ -125,21 +135,30 @@ def warnings(err: str) -> list[str]:
 
 
 class Ingests:
-    """A stand-in for the hook's ``subprocess`` module: records every argv, exits ``code`` with ``err``."""
+    """A stand-in for the hook's ``subprocess`` module: records every argv and the bytes the exe would read at that
+    moment (``files``: the file ``--path`` names under ``--root``, None if absent), exits ``code`` with ``err``."""
 
     DEVNULL, TimeoutExpired = subprocess.DEVNULL, subprocess.TimeoutExpired
 
     def __init__(self, code: int = 0, err: str = "", raise_timeout: bool = False):
-        self.code, self.err, self.raise_timeout, self.calls = code, err, raise_timeout, []
+        self.code, self.err, self.raise_timeout = code, err, raise_timeout
+        self.calls: list[list[str]] = []
+        self.files: list[bytes | None] = []
 
     def run(self, argv, **kw):
         self.calls.append(list(argv))
+        p = Path(argv[argv.index("--root") + 1]) / argv[argv.index("--path") + 1]
+        self.files.append(p.read_bytes() if p.is_file() else None)
         if self.raise_timeout:
             raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
         return subprocess.CompletedProcess(argv, self.code, "", self.err)
 
     def of(self, flag: str) -> list[str]:
         return [a[a.index(flag) + 1] for a in self.calls]
+
+    def ingested(self) -> list[tuple[str, str]]:
+        """(root-relative path, class) per ingest, in call order."""
+        return list(zip(self.of("--path"), self.of("--class")))
 
 
 # ------------------------------------------------------------------ selection (SQL-6)
@@ -289,19 +308,27 @@ def remove_tree(path: Path) -> None:
     shutil.rmtree(path, onexc=writable)
 
 
-def test_one_ingest_per_write_in_a_fake_wave(tmp_path, monkeypatch):
-    root = wave_root(tmp_path / "w", monkeypatch)
+def fake_store(root: Path, monkeypatch) -> tuple[Ingests, list]:
+    """The hook on for ``root`` with a fake exe and a fake check: (the ingests, the (path, class) of each check)."""
     catalog_on(root)
-    H._catalogs.clear()
+    H._catalogs.clear()                                     # a write before this one may have decided "off"
     fake, checked = Ingests(), []
     monkeypatch.setattr(H, "subprocess", fake)
     monkeypatch.setattr(H, "check", lambda r, rel, cls, catalog: checked.append((rel, cls)))
+    return fake, checked
+
+
+def test_one_ingest_per_write_in_a_fake_wave(tmp_path, monkeypatch):
+    root = wave_root(tmp_path / "w", monkeypatch)
+    fake, checked = fake_store(root, monkeypatch)
     assert run_wave(root) == 0
     receipts = sorted(f"out/waves/w1/receipts/{p.name}" for p in (root / "out/waves/w1/receipts").glob("*.json"))
     candidates = [f"scripts/specs/v8/candidates/{c}.json" for c in ("alpha_a", "alpha_b", "alpha_c")]
+    result = "out/waves/w1/wave-result.json"                # item 5: wave_stage_record.record's wave result
     assert len(receipts) == 9
-    assert sorted(zip(fake.of("--path"), fake.of("--class"))) == sorted(
-        [(r, "stage-receipt") for r in receipts] + [(c, "wave-candidate") for c in candidates])
+    assert sorted(fake.ingested()) == sorted([(r, "stage-receipt") for r in receipts]
+                                             + [(c, "wave-candidate") for c in candidates] + [(result, "wave-result")])
+    assert fake.files[fake.ingested().index((result, "wave-result"))] == (root / result).read_bytes()  # after the write
     assert [a[:2] for a in fake.calls] == [[str(root.resolve() / H.EXE_REL), "ingest"]] * len(fake.calls)
     assert set(fake.of("--root")) == {str(root.resolve())}
     assert set(fake.of("--catalog")) == {str(root.resolve() / H.CATALOG_REL)}
@@ -325,7 +352,8 @@ def test_fake_wave_bytes_equal_with_a_failing_store(tmp_path, monkeypatch, capsy
     assert tree_digests(root) == plain
     lines = warnings(capsys.readouterr().err)
     classes = [line.split()[2] for line in lines]
-    assert classes.count("stage-receipt") == 9 and classes.count("wave-candidate") == 3 and len(classes) == 12
+    assert classes.count("stage-receipt") == 9 and classes.count("wave-candidate") == 3
+    assert classes.count("wave-result") == 1 and len(classes) == 13                  # item 5: the wave result
     assert all("ingest did not start" in line for line in lines)
     # a stage that fails: the same files, failed receipt included, and exit code with and without the store
     seen = {}
@@ -343,6 +371,63 @@ def test_fake_wave_bytes_equal_with_a_failing_store(tmp_path, monkeypatch, capsy
         seen[on] = (code, tree_digests(root), len(warnings(capsys.readouterr().err)))
     assert seen[False][0] == seen[True][0] != 0 and seen[False][1] == seen[True][1]
     assert seen[False][2] == 0 and seen[True][2] == 3            # preflight, register ok; screen failed
+
+
+# ------------------------------------------------------------------ item 5: the cycle's record writers (fake store)
+BINDING_STEP = {"output": "out/nav-ref", "phase": "ref", "run_dir": "out/nav-ref-run1",
+                "argv": ["py", "run_bounded_research.py", "--", "x.exe", "nav", "--output", "o"]}
+VERDICT_DOC = {"schema": cycle_verdict.VERDICT_SCHEMA, "cycle": "c1", "mode": "run", "spec_sha256": "c" * 64,
+               "admission": [{"id": "a", "admitted": True}], "marginal": [],
+               "phases": [{"name": "nav", "seconds": 1.5, "peak_mib": 50}],
+               "paired": {"dsr": 0.5, "se": 0.25, "cbb_ci": [0.125, 0.875], "lw_p": 1e-300},
+               "ledger": {"path": "out/trials.jsonl", "head": "e" * 64, "lines": 5}}
+
+
+def cycle_root(tmp_path: Path, monkeypatch, relative: bool) -> tuple[Path, Resolver]:
+    """A root and the cycle's Resolver of it: absolute, or relative to the cwd as ``research_cycle.py --root r`` takes
+    it (a cwd-relative path handed to the hook would name <root>/<root>/...: the calls pass root-relative names)."""
+    root = tmp_path / "r"
+    root.mkdir()
+    monkeypatch.chdir(tmp_path)
+    return root, Resolver(Path("r") if relative else root)
+
+
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute-root", "relative-root"])
+def test_write_binding_ingests_its_binding(tmp_path, monkeypatch, relative):
+    root, res = cycle_root(tmp_path, monkeypatch, relative)
+    fake, checked = fake_store(root, monkeypatch)
+    st = SimpleNamespace(**BINDING_STEP)
+    (root / st.run_dir).mkdir(parents=True)
+    doc = cycle_resume.write_binding(SimpleNamespace(res=res, spec_path=None), st)
+    rel = f"{st.run_dir}/{cycle_resume.BINDING}"
+    data = (root / rel).read_bytes()
+    assert data == rendered(doc)                                        # the writer's bytes (host text mode)
+    assert fake.ingested() == checked == [(rel, "cycle-binding")]
+    assert fake.of("--root") == [str(root.resolve())] and fake.files == [data]     # after the write: the whole file
+
+
+@pytest.mark.parametrize("keep", [False, True], ids=["no-copy", "keep-verdicts"])
+def test_write_verdict_ingests_the_verdict_then_its_copy(tmp_path, monkeypatch, keep):
+    root, res = cycle_root(tmp_path, monkeypatch, relative=True)
+    fake, checked = fake_store(root, monkeypatch)
+    monkeypatch.setattr(cycle_verdict, "verdict", lambda cycle, timings, spec_sha256, ledger: dict(VERDICT_DOC))
+    cycle = SimpleNamespace(res=res, cycle_dir=lambda: "out/cycle-c1")
+    assert cycle_verdict.write_verdict(cycle, {}, None, lambda s: None, keep=keep) == VERDICT_DOC
+    rels = ["out/cycle-c1/cycle_verdict.json"] + (["out/cycle-c1/verdicts/run-1.json"] if keep else [])
+    text = (json.dumps(VERDICT_DOC, indent=2) + "\n").encode("utf-8")
+    assert fake.ingested() == checked == [(rel, "cycle-verdict") for rel in rels]
+    assert fake.files == [text] * len(rels) and [(root / rel).read_bytes() for rel in rels] == [text] * len(rels)
+
+
+def test_keep_copy_ingests_each_copy(tmp_path, monkeypatch):
+    root, res = cycle_root(tmp_path, monkeypatch, relative=True)
+    fake, checked = fake_store(root, monkeypatch)
+    cycle = SimpleNamespace(res=res, cycle_dir=lambda: "out/cycle-c1")
+    texts = ['{"n": 1}\n', '{"n": 2}\n']
+    copies = [cycle_verdict.keep_copy(cycle, "run", text) for text in texts]   # the second finds run-1 taken
+    assert copies == ["out/cycle-c1/verdicts/run-1.json", "out/cycle-c1/verdicts/run-2.json"]
+    assert fake.ingested() == checked == [(c, "cycle-verdict") for c in copies]
+    assert fake.files == [text.encode("utf-8") for text in texts]
 
 
 # ------------------------------------------------------------------ failures are one warning each
@@ -379,9 +464,7 @@ def test_failures_are_one_warning_each(tmp_path, monkeypatch, capsys):
 
 # ------------------------------------------------------------------ the real store exe
 @pytest.mark.skipif(not EXE.is_file(), reason=f"{EXE} not built (target atx-research-store)")
-def test_real_store_exe_ingests_every_class(tmp_path, capsys):
-    import cycle_resume  # noqa: PLC0415
-    import cycle_verdict  # noqa: PLC0415
+def test_real_store_exe_ingests_every_class(tmp_path, monkeypatch, capsys):
     import research_store_identity as rsi  # noqa: PLC0415
     import wave_context  # noqa: PLC0415
     root = tmp_path / "r"
@@ -428,26 +511,19 @@ def test_real_store_exe_ingests_every_class(tmp_path, capsys):
                     "--output", "scripts/specs/v8/waves/w2.json"]) == 0
     written.append(("scripts/specs/v8/waves/w2.json", "wave-manifest"))
 
-    # the writers of item 5 (binding, verdict and its copy, wave result), each followed by the call item 5 adds
-    res = SimpleNamespace(path=lambda rel: root / rel)
-    st = SimpleNamespace(output="out/nav-ref", phase="ref", run_dir="out/nav-ref-run1",
-                         argv=["py", "run_bounded_research.py", "--", "x.exe", "nav", "--output", "o"])
+    # the writers of item 5, each ingesting by its own call: the binding (write_binding), the verdict and its copy
+    # (write_verdict, keep on, its doc fixed); the wave result as wave_stage_record.record writes it (Wave.write_json),
+    # then the call that writer makes
+    res = Resolver(root)
+    st = SimpleNamespace(**BINDING_STEP)
     (root / st.run_dir).mkdir(parents=True)
     cycle_resume.write_binding(SimpleNamespace(res=res, spec_path=None), st)
-    H.record(root, f"{st.run_dir}/cycle_binding.json", "cycle-binding")
     written.append((f"{st.run_dir}/cycle_binding.json", "cycle-binding"))
-    verdict = {"schema": cycle_verdict.VERDICT_SCHEMA, "cycle": "c1", "mode": "run", "spec_sha256": "c" * 64,
-               "admission": [{"id": "a", "admitted": True}], "marginal": [],
-               "phases": [{"name": "nav", "seconds": 1.5, "peak_mib": 50}],
-               "paired": {"dsr": 0.5, "se": 0.25, "cbb_ci": [0.125, 0.875], "lw_p": 1e-300},
-               "ledger": {"path": "out/trials.jsonl", "head": "e" * 64, "lines": 5}}
-    text = json.dumps(verdict, indent=2) + "\n"
-    (root / "out/cycle-c1").mkdir(parents=True)
-    (root / "out/cycle-c1/cycle_verdict.json").write_text(text, encoding="utf-8", newline="\n")
-    copy = cycle_verdict.keep_copy(SimpleNamespace(res=res, cycle_dir=lambda: "out/cycle-c1"), "run", text)
-    for rel in ("out/cycle-c1/cycle_verdict.json", copy):
-        H.record(root, rel, "cycle-verdict")
-        written.append((rel, "cycle-verdict"))
+    monkeypatch.setattr(cycle_verdict, "verdict", lambda cycle, timings, spec_sha256, ledger: dict(VERDICT_DOC))
+    cycle_verdict.write_verdict(SimpleNamespace(res=res, cycle_dir=lambda: "out/cycle-c1"), {}, None, lambda s: None,
+                                keep=True)
+    written += [("out/cycle-c1/cycle_verdict.json", "cycle-verdict"),
+                ("out/cycle-c1/verdicts/run-1.json", "cycle-verdict")]
     wave_context.Wave.write_json(res, "out/waves/w1/wave-result.json", {
         "schema": "atx.wave-result/v1", "wave": "w1", "kind": "rule",
         "manifest": {"path": "scripts/specs/v8/waves/w1.json", "sha256": "1" * 64, "commit": None},
@@ -456,7 +532,7 @@ def test_real_store_exe_ingests_every_class(tmp_path, capsys):
         "ledger": {"path": "out/trials.jsonl", "head": "e" * 64, "n_before": 3, "n_after": 4, "trial_id": "t5"},
         "next_parent": {"spec": "scripts/specs/v8/w1.json", "library": "lib"},
         "timings": [{"phase": "nav", "seconds": 12.345678901234567, "peak_mib": 50}]})
-    H.record(root, "out/waves/w1/wave-result.json", "wave-result")
+    H.record(root, res.path("out/waves/w1/wave-result.json"), "wave-result")
     written.append(("out/waves/w1/wave-result.json", "wave-result"))
 
     assert not warnings(capsys.readouterr().err)                       # every ingest and every check passed

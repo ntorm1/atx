@@ -3,7 +3,10 @@
 Every rule is looked up by the name a wave manifest gives; a name not listed here is refused when the manifest loads,
 so a new ruling is a new entry here (reviewed code), never prose.
 
-  sign rules   (screen) the wave composition from the gate's admission rows
+  sign rules   (screen) the wave composition from the gate's admission rows, decided by the IC exe's sign verb (P9 lane
+               SIGN, ruling C3-11: atx-equity-strategy-ic sign, the engine's research/admission pm7_35; the Python
+               copy sign_pm7_35 is retired). Here only the ids the verb knows (SIGN_RULES), its input rows (sign_rows)
+               and the reading of its receipt (verb_decision)
     pm7-35     additions: status admitted and runner sign = prior -> keep; admitted and runner sign 0 -> keep (R-2
                precedent); admitted and runner sign opposite to the prior -> drop; not admitted -> keep (weight 0 in
                the fit, R-2 / R-7 precedent). Replacements (a refinement, or a re-screen: add-alpha --replaces): keep
@@ -36,47 +39,53 @@ class RuleError(ValueError):
 
 
 # ------------------------------------------------------------------ sign rules (screen)
-def sign_pm7_35(row: dict | None, kind: str, prior: int) -> tuple[str, str]:
-    """(keep | drop, reason) of one screened candidate under PM7-35 (see the module doc). A candidate without an
-    admission row is no decision: RuleError (the fit's admission.json lists every candidate; a missing row is a
-    broken screen, never a drop)."""
-    if row is None:
-        raise RuleError("no admission row: the screen did not score this string (a stop, not a drop)")
-    status, sign = row.get("status"), row.get("runner_sign")
-    admitted = status == "admitted"
-    if kind == REPLACE:
-        if admitted and sign == prior:
-            return KEEP, "replacement admitted with the prior sign"
-        return DROP, (f"replacement not kept (status {status}, runner sign {sign}, prior {prior:+d}): the replaced "
-                      "member keeps its string at 0 trials")
-    if not admitted:
-        return KEEP, f"addition not admitted (status {status}): stays at weight 0"
-    if sign == prior:
-        return KEEP, "addition admitted with the prior sign"
-    if sign == 0:
-        return KEEP, "addition admitted, runner sign 0 (R-2 precedent)"
-    return DROP, f"addition admitted with runner sign {sign} against prior {prior:+d}: dropped from the wave"
+# P9 lane SIGN (ruling C3-11): the screen stage's sign rule is the IC exe's `sign` verb (atx-equity-strategy-ic sign:
+# the engine's research/admission pm7_35; atx-impl/src/strategy_sign_verb.hpp). Here only the rule ids the verb knows
+# (a manifest naming another is refused at load), its input rows and the reading of its receipt; nothing decides.
+SIGN_RULES = ("pm7-35",)
+SIGN_RECEIPT = "atx.sign-receipt/v1"
+SIGN_ECHO = ("id", "kind", "prior_sign", "status", "runner_sign")
 
 
-SIGN_RULES = {"pm7-35": sign_pm7_35}
-
-
-def screen_decision(rule: str, candidates: list[dict], rows: list[dict]) -> dict:
-    """{rule, rows: [{id, kind, prior_sign, status, runner_sign, decision, reason}], kept, dropped} in wave order."""
-    fn = SIGN_RULES[rule]
+def sign_rows(candidates: list[dict], rows: list[dict]) -> list[dict]:
+    """The sign verb's rows, one per candidate in wave order: the manifest's {id, kind, prior_sign} with the status and
+    runner sign of its row of the fit's admission.json. A candidate without an admission row is no decision: RuleError
+    (the fit's admission.json lists every candidate; a missing row is a broken screen, never a drop)."""
     by_id = {r.get("id"): r for r in rows if isinstance(r, dict)}
-    out = []
     missing = [c["id"] for c in candidates if c["id"] not in by_id]
     if missing:
         raise RuleError(f"no admission row for {missing}: the screen did not score these strings (a stop, not a drop)")
-    for c in candidates:
-        row = by_id.get(c["id"])
-        decision, reason = fn(row, c.get("kind", ADD), int(c["prior_sign"]))
-        out.append({"id": c["id"], "kind": c.get("kind", ADD), "prior_sign": int(c["prior_sign"]),
-                    "status": (row or {}).get("status"), "runner_sign": (row or {}).get("runner_sign"),
-                    "decision": decision, "reason": reason})
-    return {"rule": rule, "rows": out, "kept": [r["id"] for r in out if r["decision"] == KEEP],
-            "dropped": [r["id"] for r in out if r["decision"] == DROP]}
+    return [{"id": c["id"], "kind": c.get("kind", ADD), "prior_sign": int(c["prior_sign"]),
+             "status": by_id[c["id"]].get("status"), "runner_sign": by_id[c["id"]].get("runner_sign")}
+            for c in candidates]
+
+
+def verb_decision(rule: str, rows: list[dict], receipt, rows_sha256: str) -> dict:
+    """{rule, rows: [{id, kind, prior_sign, status, runner_sign, decision, reason}], kept, dropped} in wave order (the
+    layout of the screen receipt and wave-result.json) from the sign verb's receipt for ``rows``, the rows file of
+    SHA-256 ``rows_sha256``. RuleError when the receipt is not the verb's answer to exactly these rows under ``rule``:
+    its schema, rule or rows SHA-256 differ, a row is missing, extra, out of order or echoed with another value, a
+    verdict is not keep | drop, a reason is not text, or kept / dropped do not list the verdicts in wave order."""
+    if not isinstance(receipt, dict) or receipt.get("schema") != SIGN_RECEIPT:
+        raise RuleError(f"not a {SIGN_RECEIPT} receipt of the sign verb")
+    if receipt.get("rule") != rule or receipt.get("rows_sha256") != rows_sha256:
+        raise RuleError(f"the receipt is for rule {receipt.get('rule')!r} on rows sha256 "
+                        f"{str(receipt.get('rows_sha256'))[:12]}, not {rule!r} on {rows_sha256[:12]}")
+    got = receipt.get("rows")
+    if not isinstance(got, list) or len(got) != len(rows):
+        raise RuleError(f"the receipt lists {len(got) if isinstance(got, list) else 'no'} rows for {len(rows)}")
+    out = []
+    for want, row in zip(rows, got):
+        if not isinstance(row, dict) or any(row.get(k) != want.get(k) for k in SIGN_ECHO):
+            raise RuleError(f"the receipt's row {row!r:.200} is not the screen's {want!r:.200}")
+        if row.get("verdict") not in (KEEP, DROP) or not isinstance(row.get("reason"), str):
+            raise RuleError(f"the receipt's row {want['id']} has verdict {row.get('verdict')!r}, not keep | drop")
+        out.append(dict({k: want[k] for k in SIGN_ECHO}, decision=row["verdict"], reason=row["reason"]))
+    kept = [r["id"] for r in out if r["decision"] == KEEP]
+    dropped = [r["id"] for r in out if r["decision"] == DROP]
+    if receipt.get("kept") != kept or receipt.get("dropped") != dropped:
+        raise RuleError("the receipt's kept / dropped do not list its verdicts in wave order")
+    return {"rule": rule, "rows": out, "kept": kept, "dropped": dropped}
 
 
 # ------------------------------------------------------------------ mechanics (verify)

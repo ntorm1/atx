@@ -1,0 +1,76 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = WeightsV3.RefusalsPrecedeAnyPayloadOrOutput
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from WeightsV3
+[ RUN      ] WeightsV3.RefusalsPrecedeAnyPayloadOrOutput
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5092): error: Failed
+accepted, expected: weights no candidate
+{"schema":"atx.dsl-composition-weights/v3","library_sha256":"ea8842129cb89cb0f4f7cc2eaf500abb18cf67bae5f548099f42d3c07087db55","train_manifest_sha256":"a56589cd8bc7aeb17c42ac6830bfccd5592656a8e295793461568b0b375b53f6","weights":{"volume_level":0.5,"volume_rank":0.25,"volume_vee":0.25},"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1},"walk_forward":{"rule":"walk-forward-v1","window":"expan
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5092): error: Failed
+accepted, expected: walk_forward (walk-forward-v1) is refused with theme_redistribution, theme_residualise and theme-tsmom-v1
+{"schema":"atx.dsl-composition-weights/v3","library_sha256":"ea8842129cb89cb0f4f7cc2eaf500abb18cf67bae5f548099f42d3c07087db55","train_manifest_sha256":"a56589cd8bc7aeb17c42ac6830bfccd5592656a8e295793461568b0b375b53f6","weights":{"volume_level":0.5,"volume_rank":0.25,"volume_vee":0.25},"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1},"theme_redistribution":{"rule":"within-theme-v1","compos
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5092): error: Failed
+accepted, expected: walk_forward (walk-forward-v1) is refused with theme_redistribution, theme_residualise and theme-tsmom-v1
+{"schema":"atx.dsl-composition-weights/v3","library_sha256":"ea8842129cb89cb0f4f7cc2eaf500abb18cf67bae5f548099f42d3c07087db55","train_manifest_sha256":"a56589cd8bc7aeb17c42ac6830bfccd5592656a8e295793461568b0b375b53f6","weights":{"volume_level":0.5,"volume_rank":0.25,"volume_vee":0.25},"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1},"theme_standardise":{"rule":"ew-theme-std-v1","rerank":t
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5092): error: Failed
+accepted, expected: walk_forward (walk-forward-v1) is refused with theme_redistribution, theme_residualise and theme-tsmom-v1
+{"schema":"atx.dsl-composition-weights/v3","library_sha256":"ea8842129cb89cb0f4f7cc2eaf500abb18cf67bae5f548099f42d3c07087db55","train_manifest_sha256":"a56589cd8bc7aeb17c42ac6830bfccd5592656a8e295793461568b0b375b53f6","weights":{"volume_level":0.5,"volume_rank":0.25,"volume_vee":0.25},"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1},"theme_standardise":{"rule":"ew-theme-std-v1","rerank":t
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5095): error: Expected: (status.error().to_string().find(reason)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+weights no candidate -> IoError: strategy role: captured file extent mismatch: close.f64
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5097): error: Value of: attempt.str().empty()
+  Actual: false
+Expected: true
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5097): error: Value of: std::filesystem::exists(dir.path/"output")
+  Actual: true
+Expected: false
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5095): error: Expected: (status.error().to_string().find(reason)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+walk_forward (walk-forward-v1) is refused with theme_redistribution, theme_residualise and theme-tsmom-v1 -> AlreadyExists: IC runner: output directory must be new; The operation completed successfully.
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5097): error: Value of: std::filesystem::exists(dir.path/"output")
+  Actual: true
+Expected: false
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5095): error: Expected: (status.error().to_string().find(reason)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+walk_forward (walk-forward-v1) is refused with theme_redistribution, theme_residualise and theme-tsmom-v1 -> AlreadyExists: IC runner: output directory must be new; The operation completed successfully.
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5097): error: Value of: std::filesystem::exists(dir.path/"output")
+  Actual: true
+Expected: false
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5095): error: Expected: (status.error().to_string().find(reason)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+walk_forward (walk-forward-v1) is refused with theme_redistribution, theme_residualise and theme-tsmom-v1 -> AlreadyExists: IC runner: output directory must be new; The operation completed successfully.
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5097): error: Value of: std::filesystem::exists(dir.path/"output")
+  Actual: true
+Expected: false
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5097): error: Value of: std::filesystem::exists(dir.path/"output")
+  Actual: true
+Expected: false
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5097): error: Value of: std::filesystem::exists(dir.path/"output")
+  Actual: true
+Expected: false
+
+..\atx-impl\tests\strategy_ic_runner_test.cpp(5097): error: Value of: std::filesystem::exists(dir.path/"output")
+  Actual: true
+Expected: false
+
+[  FAILED  ] WeightsV3.RefusalsPrecedeAnyPayloadOrOutput (21577 ms)
+[----------] 1 test from WeightsV3 (21578 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (21578 ms total)
+[  PASSED  ] 0 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] WeightsV3.RefusalsPrecedeAnyPayloadOrOutput
+
+ 1 FAILED TEST

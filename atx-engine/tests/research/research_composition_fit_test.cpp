@@ -990,3 +990,170 @@ TEST(MomVolman, CliWritesTheSleeveBlockOnlyWhenAsked) {
   EXPECT_NE(err.str().find("spec mom_volman must be a boolean"), std::string::npos) << err.str();
   EXPECT_FALSE(fs::exists(dir / "fit_bad"));
 }
+
+// ---- ew-theme-aim-v2 (P9 lane D3W-PB) --------------------------------------------------------
+namespace {
+
+// The planted model: themes a {c0, c1} and b {c2, c3, c4}, gains 1, 3 / 2, 2, 4. T = 2, so the
+// uncapped weights g_k / (2 sum_theme g) are 1/8, 3/8 / 1/8, 1/8, 1/4 and the cap 1/(2T) is 1/4.
+// Pass 1 caps c1 (excess 1/8 of theme a) and adds it to b's members pro rata (1/32, 1/32, 1/16),
+// which lifts c4 to 5/16; pass 2 caps c4 (excess 1/16 of theme b) and adds it to c0, the one
+// unfrozen member of a: 3/16, 1/4 / 5/32, 5/32, 1/4. Every value is dyadic, so the bits are exact.
+const std::vector<std::pair<std::string, std::string>> aim_v2_members{
+    {"c0", "a"}, {"c1", "a"}, {"c2", "b"}, {"c3", "b"}, {"c4", "b"}};
+const std::vector<f64> aim_v2_gains{1.0, 3.0, 2.0, 2.0, 4.0};
+
+Json aim_v2_spec_json(std::string_view composition = rc::ew_theme_aim_v2_rule) {
+  Json rows = Json::array();
+  for (usize k = 0; k < aim_v2_members.size(); ++k) {
+    Json row{{"id", aim_v2_members[k].first},
+             {"theme", aim_v2_members[k].second},
+             {"sign", 1},
+             {"gain", aim_v2_gains[k]}};
+    if (composition != rc::ew_theme_aim_v2_rule) row["tier"] = "B";
+    rows.push_back(std::move(row));
+  }
+  Json spec{{"schema", "atx.composition-fit-spec/v1"},
+            {"composition", std::string(composition)},
+            {"members", std::move(rows)}};
+  if (composition != rc::ew_theme_aim_v2_rule) spec["tier_scores"] = Json{{"B", 0.7}};
+  return spec;
+}
+
+Inputs aim_v2_inputs() {
+  return linear_inputs(40, {{1.0, 0.0}, {2.0, 1.0}, {3.0, -1.0}, {4.0, 2.0}, {5.0, 0.0}});
+}
+
+} // namespace
+
+TEST(AimV2, ClosedFormOnAPlantedModel) {
+  const Inputs in = aim_v2_inputs();
+  const auto fit = rc::fit_composition(in.view(), in.ids, parsed(aim_v2_spec_json()));
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  EXPECT_EQ(fit->themes, (std::vector<std::string>{"a", "b"}));
+  EXPECT_TRUE(same_bits(fit->parent_uncapped, {0.125, 0.375, 0.125, 0.125, 0.25}));
+  EXPECT_TRUE(same_bits(fit->parent_weights, {0.1875, 0.25, 0.15625, 0.15625, 0.25}));
+  EXPECT_TRUE(same_bits(fit->weights, fit->parent_weights)); // no modifier rides on it
+  EXPECT_EQ(fit->parent_cap, 0.25);
+  ASSERT_EQ(fit->parent_passes.size(), 2U);
+  EXPECT_EQ(fit->parent_passes[0].capped, (std::vector<usize>{1}));
+  EXPECT_TRUE(same_bits(fit->parent_passes[0].excess, {0.125, 0.0}));
+  EXPECT_EQ(fit->parent_passes[1].capped, (std::vector<usize>{4}));
+  EXPECT_TRUE(same_bits(fit->parent_passes[1].excess, {0.0, 0.0625}));
+  EXPECT_TRUE(same_bits(fit->gains, aim_v2_gains));
+  EXPECT_TRUE(same_bits(fit->theme_weight, {0.4375, 0.5625}));
+  EXPECT_TRUE(fit->tiers.empty() && fit->ic.empty() && !fit->erc && !fit->tsmom && !fit->resid &&
+              !fit->volman);
+  // theme_gain_weights on the gains, as composition_rules.ew_theme_aim_v2 computes it.
+  const std::vector<usize> theme{0, 0, 1, 1, 1};
+  const auto direct = rc::theme_gain_weights(aim_v2_gains, theme, 2);
+  ASSERT_TRUE(direct) << direct.error().to_string();
+  EXPECT_TRUE(same_bits(direct->weights, fit->parent_weights));
+}
+
+// Its weights read no factor value and no TRAIN mask: a different series gives the same bits.
+TEST(AimV2, ReadsNoFactorValue) {
+  const Inputs in = aim_v2_inputs();
+  Inputs other = in;
+  for (usize i = 0; i < other.factors.size(); ++i) {
+    other.factors[i] = i % 7U == 0U ? std::numeric_limits<f64>::quiet_NaN() : -3.0 * in.factors[i];
+  }
+  other.train.assign(other.decisions, 0U);
+  const auto a = rc::fit_composition(in.view(), in.ids, parsed(aim_v2_spec_json()));
+  const auto b = rc::fit_composition(other.view(), other.ids, parsed(aim_v2_spec_json()));
+  ASSERT_TRUE(a && b);
+  EXPECT_TRUE(same_bits(a->weights, b->weights));
+  EXPECT_TRUE(same_bits(a->parent_uncapped, b->parent_uncapped));
+  EXPECT_TRUE(same_bits(a->theme_weight, b->theme_weight));
+}
+
+TEST(AimV2, RefusalsBeforeAnyFit) {
+  const Inputs in = aim_v2_inputs();
+  const auto refused = [&in](const rc::FitSpec &spec, std::string_view needle) {
+    const auto fit = rc::fit_composition(in.view(), in.ids, spec);
+    ASSERT_FALSE(fit) << needle;
+    EXPECT_NE(fit.error().message().find(needle), std::string::npos) << fit.error().message();
+  };
+  // A plain weighted blend: no modifier rides on it.
+  for (const char *modifier : {"theme_erc", "theme_tsmom", "theme_resid", "mom_volman"}) {
+    Json spec = aim_v2_spec_json();
+    spec[modifier] = true;
+    if (std::string_view(modifier) == "theme_resid") {
+      spec["registered_themes"] = Json::array();
+      for (const auto t : rc::theme_resid_frozen_prefix) {
+        spec["registered_themes"].push_back(std::string(t));
+      }
+      spec["registered_themes"].push_back("a");
+      spec["registered_themes"].push_back("b");
+    }
+    SCOPED_TRACE(modifier);
+    refused(parsed(spec), "ew-theme-aim-v2 is a plain weighted blend (no theme block)");
+  }
+  // Every member needs a gain, finite and > 0, named.
+  for (const f64 bad : {0.0, -1.0, std::numeric_limits<f64>::quiet_NaN(),
+                        std::numeric_limits<f64>::infinity()}) {
+    rc::FitSpec spec = parsed(aim_v2_spec_json());
+    spec.members[2].gain = bad;
+    SCOPED_TRACE(bad);
+    refused(spec, "ew-theme-aim-v2: the aim gain of c2 must be finite and > 0");
+  }
+  rc::FitSpec missing = parsed(aim_v2_spec_json());
+  missing.members[0].gain.reset();
+  refused(missing, "an aim gain exactly for the aim rules' members: c0");
+  // walk-forward-v1: every row would be the full fit (the gains are whole-TRAIN values).
+  const auto rows =
+      rc::fit_walk_forward(in.view(), in.ids, parsed(aim_v2_spec_json()), rc::WalkForwardSpec{});
+  ASSERT_FALSE(rows);
+  EXPECT_NE(rows.error().message().find("walk-forward-v1: refused with ew-theme-aim-v2"),
+            std::string::npos)
+      << rows.error().message();
+}
+
+// The verb: the parent block of an ew-theme-aim-v2 fit adds member_gains and theme_weights; another
+// composition's document has neither key (its bytes are unchanged); --walk-forward is refused
+// with it and publishes nothing.
+TEST(AimV2, CliWritesGainsAndThemeWeightsOnlyForIt) {
+  const fs::path dir = scratch("aim_v2");
+  const fs::path factors = write_factor_dir(dir, aim_v2_inputs());
+  write_bytes(dir / "aim_v2.json", aim_v2_spec_json().dump());
+  write_bytes(dir / "std_aim.json", aim_v2_spec_json(rc::ew_theme_std_aim_rule).dump());
+  std::ostringstream o;
+  std::ostringstream e;
+  for (const char *name : {"aim_v2", "std_aim"}) {
+    ASSERT_EQ(run_main({"fit", "--factors", factors.string(), "--spec",
+                        (dir / (std::string(name) + ".json")).string(), "--output",
+                        (dir / (std::string("fit_") + name)).string()},
+                       o, e),
+              0)
+        << e.str();
+  }
+  const Json doc = Json::parse(read_bytes(dir / "fit_aim_v2" / std::string(rc::kFitFile)));
+  EXPECT_EQ(doc.at("composition").get<std::string>(), "ew-theme-aim-v2");
+  const Json &parent = doc.at("parent");
+  std::vector<std::string> keys;
+  for (auto it = parent.begin(); it != parent.end(); ++it) keys.push_back(it.key());
+  EXPECT_EQ(keys, (std::vector<std::string>{"cap", "cap_iterations", "member_gains", "rule",
+                                            "theme_weights", "weights", "weights_before_cap"}));
+  EXPECT_EQ(parent.at("rule").get<std::string>(), "ew-theme-aim-v2");
+  EXPECT_TRUE(same_bits(parent.at("member_gains").get<std::vector<f64>>(), aim_v2_gains));
+  EXPECT_EQ(parent.at("theme_weights"), (Json{{"a", 0.4375}, {"b", 0.5625}}));
+  EXPECT_TRUE(same_bits(parent.at("weights").get<std::vector<f64>>(),
+                        {0.1875, 0.25, 0.15625, 0.15625, 0.25}));
+  EXPECT_EQ(parent.at("cap_iterations"),
+            Json::parse(R"([{"capped": ["c1"], "excess_by_theme": {"a": 0.125}},
+                            {"capped": ["c4"], "excess_by_theme": {"b": 0.0625}}])"));
+  EXPECT_TRUE(same_bits(doc.at("weights").get<std::vector<f64>>(),
+                        parent.at("weights").get<std::vector<f64>>()));
+  const Json other = Json::parse(read_bytes(dir / "fit_std_aim" / std::string(rc::kFitFile)));
+  EXPECT_FALSE(other.at("parent").contains("member_gains"));
+  EXPECT_FALSE(other.at("parent").contains("theme_weights"));
+  EXPECT_TRUE(other.at("parent").contains("member_scores"));
+  std::ostringstream err;
+  EXPECT_EQ(run_main({"fit", "--factors", factors.string(), "--spec",
+                      (dir / "aim_v2.json").string(), "--output", (dir / "fit_wf").string(),
+                      "--walk-forward", "expanding", "--lag", "2", "--step", "21"},
+                     o, err),
+            1);
+  EXPECT_NE(err.str().find("refused with ew-theme-aim-v2"), std::string::npos) << err.str();
+  EXPECT_FALSE(fs::exists(dir / "fit_wf"));
+}

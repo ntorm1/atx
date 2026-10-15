@@ -1,0 +1,65 @@
+{
+    "Source":  "9d3916b86035f1e41652f687f64928e598006d3a",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  2,
+    "ConfiguredProvenance":  "9d3916b86035f1e41652f687f64928e598006d3a",
+    "Jobs":  4,
+    "FreeMiB":  3615,
+    "CommitMiB":  6425,
+    "Targets":  [
+                    "atx-impl-strategy-target-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  89.7915694,
+    "CompiledTUs":  139,
+    "Links":  6,
+    "Tag":  "p9-alclock-k",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-30\\build-equity",
+    "Executables":  {
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-30\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "44a2dd76e8f3267f3c4c3288fb792291ed01e02d9b5b7cacdb0297349bfab039"
+                                                           }
+                    }
+}
+[1/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-admission.dir\src\research\admission\admission_csv.cpp.obj
+[2/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-admission.dir\src\research\admission\admission_cli.cpp.obj
+[3/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-admission.dir\src\research\admission\screen.cpp.obj
+[4/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-admission.dir\src\research\admission\traded_horizon.cpp.obj
+[5/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-composition.dir\src\research\composition\ew_theme_std.cpp.obj
+[6/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-composition.dir\src\research\composition\composition_cli.cpp.obj
+[7/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-composition.dir\src\research\composition\fit.cpp.obj
+[8/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-composition.dir\src\research\composition\ic_shrink.cpp.obj
+[9/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\cmake_pch.cxx.obj
+[10/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-composition.dir\src\research\composition\theme_erc.cpp.obj
+[11/146] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\cmake_pch.cxx.obj
+[12/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-composition.dir\src\research\composition\theme_resid.cpp.obj
+[13/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-composition.dir\src\research\composition\theme_tsmom.cpp.obj
+[14/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-ledger.dir\src\research\ledger\chain.cpp.obj
+[15/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-ledger.dir\src\research\ledger\era_pool.cpp.obj
+[16/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-ledger.dir\src\research\ledger\json_line.cpp.obj
+[17/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-ledger.dir\src\research\ledger\ledger_file.cpp.obj
+[18/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-ledger.dir\src\research\ledger\trial_counts.cpp.obj
+[19/146] Building CXX object atx-engine\CMakeFiles\atx-engine-research-ledger.dir\src\research\ledger\trial_ledger.cpp.obj
+[20/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\artifacts.cpp.obj
+[21/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\serialize_panel.cpp.obj
+[22/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\panel_artifact.cpp.obj
+[23/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_library.cpp.obj
+[24/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_runner.cpp.obj
+[25/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\stage_data_provenance.cpp.obj
+[26/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_runner.cpp.obj
+[27/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_admission.cpp.obj
+[28/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_signal_cache.cpp.obj
+[29/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_composition.cpp.obj
+[30/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_result_cache.cpp.obj
+[31/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_shrink.cpp.obj
+[32/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_theme_resid.cpp.obj
+[33/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_theme_erc.cpp.obj
+[34/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_theme_tsmom.cpp.obj
+[35/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_two_speed.cpp.obj
+[36/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine_ledger.cpp.obj
+[37/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine_pinned_file.cpp.obj
+[38/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine_pool.cpp.obj
+[39/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine_promote.cpp.obj
+[40/146] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine_rule.cpp.obj

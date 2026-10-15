@@ -1,0 +1,18 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0 -- C:\Program Files\Python312\python.exe
+rootdir: C:\atx-wt\pool-29
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 7 items
+
+scripts/tests/test_no_python_mirror.py::test_no_new_python_mirror PASSED [ 14%]
+scripts/tests/test_no_python_mirror.py::test_every_row_names_an_existing_definition PASSED [ 28%]
+scripts/tests/test_no_python_mirror.py::test_bindings_still_call_the_core PASSED [ 42%]
+scripts/tests/test_no_python_mirror.py::test_the_allowlist_only_shrinks_and_names_rule_owner_and_lane PASSED [ 57%]
+scripts/tests/test_no_python_mirror.py::test_rows_retired_by_a_p9_lane_are_gone_at_the_freeze PASSED [ 71%]
+scripts/tests/test_no_python_mirror.py::test_report_the_g_p5_count 
+G-P5: 13 mirrored rule function(s) in 5 row(s) left for P9 lanes
+PASSED [ 85%]
+scripts/tests/test_no_python_mirror.py::test_the_scan_sees_the_known_mirrors_and_skips_tests PASSED [100%]
+
+============================== 7 passed in 2.31s ==============================

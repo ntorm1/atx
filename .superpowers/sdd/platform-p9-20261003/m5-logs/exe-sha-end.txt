@@ -1,0 +1,14 @@
+atx-engine-book-tests: newest receipt p9-2y source 5c811b56 sha256 6977a5a75b386d283c81e148c0fec31a2da1f95536dc98cab2366d424d1f8360 disk = receipt
+atx-engine-research-catalog-tests: newest receipt p9-2r source fd084e78 sha256 f1134aaa72338346fcb642ddd57ff15fe6e59cdeb078f1c20782dca45c0f78ed disk = receipt
+atx-engine-research-composition-tests: newest receipt p9-3a source 6088bfe9 sha256 76b664b7483a77a717015a3fdebb38f97dc39fbcfecd04a98e52d3cd016023a9 disk = receipt
+atx-engine-research-eval-tests: newest receipt p9-2v source 08f04e07 sha256 dd8a3103828b4a671c048d569eba4d817d0e91acf49bd2fb61983e5777ddb7ca disk = receipt
+atx-engine-research-fields-tests: newest receipt p9-3c source bba4c06f sha256 39be2b3d995b11873b5d667c04419b5b063f1f2f56729bce1816eed1b30febdf disk = receipt
+atx-equity-strategy-ic: newest receipt p9-3b source 1dd9b9b1 sha256 ef3974cfa82d1cc86d6a8079394e5d0964e8abcea8fd36a068b12f8b8bc99b38 disk = receipt
+atx-equity-strategy-targets: newest receipt p9-2y source 5c811b56 sha256 e6b21410987a8946dcd9a5d0b5631a15fee76d682d2be987c46f1d05be4bd219 disk = receipt
+atx-impl-strategy-ic-tests: newest receipt p9-3b source 1dd9b9b1 sha256 9cd667c75c08a9197f4267c7dc1e407630beb84f9163739227e73f8d28eedf56 disk = receipt
+atx-impl-strategy-target-tests: newest receipt p9-2y source 5c811b56 sha256 ee69e2fb06db6702b78a9e8cbb68a9a13ca25ccc5fa578ada0c3d90b9afd8b8e disk = receipt
+atx-research-admission: newest receipt p9-3a source 6088bfe9 sha256 411af33a0def5a6c28983dbf1ffc2fbc324694e8ac2e6b24401b27b693c9fa26 disk = receipt
+atx-research-composition: newest receipt p9-3a source 6088bfe9 sha256 212f8b9941f0be705ebac138c03e83279fc863ab12051f00dd09501db7eed98e disk = receipt
+atx-research-eval: newest receipt p9-2z source 138e1d2c sha256 4791019131c0d74603b83cb772ef027ec8641167fd95844c4674e75bdf39893b disk = receipt
+atx-research-fields: newest receipt p9-3c source bba4c06f sha256 d14346e836923cc8dea8ebd05b9769f0449b44e0f9f9150866f31d5a2e875cde disk = receipt
+atx-research-store: newest receipt p9-2r source fd084e78 sha256 d8a500d84dc2a25130c69b226d8f5deec47b8dabb6256522c83c00764d3d9d65 disk = receipt

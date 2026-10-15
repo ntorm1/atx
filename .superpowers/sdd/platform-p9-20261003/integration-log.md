@@ -718,3 +718,45 @@ Release, canaries and the parents' identity runs deferred to the gate. AL-CLOCK:
 
 Next free build tag **p9-2z**. Known-red set: exactly `atx-impl/tools/test_nav_summ_v8.py::test_legacy_n37_numbers_reproduced`
 (root-only, B2-N37, merge `5dfb0ba1`); no new red.
+
+### M5 (RESUME 11): B2 fix 2, OD3P follow-up, D3W-PB, SIGN, A4 (pre-flip only), 2026-10-15
+
+Start docs `e3b6c111` (code `5c811b56`); housekeeping docs `6cb1070f`. Code head **`bba4c06f`**. Logs `m5-logs/`. Zero
+trials: `build-equity/trials.jsonl` 133 lines `27e40f9f` at start and end. TEST-1 / ROOT-1a: targeted checks; whole
+suites, Release, canaries and the parents' identity runs deferred to the gate. Every merge tree checked against
+`git merge-tree --write-tree` (`m5-logs/merge-trees.txt`).
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| B2 fix 2 | `509f4b79` (APPROVE, re-review 3 `101f695a`, 0 Required, 2 Suggested) | `6d47b28d` (tree = recompute `6dbe1225`) + slip `138e1d2c` (B2-S3 S-1 docstring) | 0 | **p9-2z** equity-dev; `atx-research-eval` (0 TUs / 1 link; p9-2v's verb was stale by source) | 0 | - | `test_nav_summ_v8.py` with root's inputs and the blind flags **10 passed** (n37 passes) | golden n37 files unchanged (`98b44b24...`, `bc112b38...`); **known-red set EMPTY** |
+| OD3P follow-up | `d99a12bb` (APPROVE, re-review 2 `4a7372e2`, 0 Required, 4 Suggested; code `cc6686f9`) | `a2cf7e78` (tree = recompute `dc9491c1`) + slip `b991c755` (OD3P-S2 S-4, `classes.json` `pinned_by`) | 0 | none (Python; verb p9-2z) | - | - | two lane files **96 / 0 failed / 0 skipped**; guard 5; store suite 43 x seeds 0 / 1 | `nav_summ.py` flag-absent identity on blob `9fd6bd0a` **holds**; `--pool-one-sided` only in runbook R4 **holds**; fixture chain `d32f7655...4e69` unchanged |
+| D3W-PB | `362793c6` (APPROVE, resumed review `44a331e6`, 0 Required, 7 Suggested; fix `90bc1962`) | `6088bfe9` (`c044f5f6`, = recompute `0303fd7f`), `175edd61` (`460f5ba2`, = recompute `02511ed6`), `22caee08` (`44a331e6`) | 1 (S-g, `test_no_python_mirror.py` comment lines: root's B2 line, then the two D3WPB-Q1 lines) | **p9-3a** equity-dev; composition tests, IC tests, composition, admission (9 TUs) | 0 | composition 21 / 21; IC 18 / 18 | fitter 5 files **180 / 88 subtests / 0 skipped** (root's exes); `test_composition_resid.py` 23; mirror 7 (G-P5 1 / 1) | fingerprints = lane's, `OUTPUT_PRODUCERS` `d28a3089`; identity **21 / 24**, 3 `engine-*` only at `producer_fingerprint`, at `c044f5f6` and again after `460f5ba2` **holds** |
+| SIGN | `50a43599` (APPROVE, review `e2844926`, 0 Required, 5 Suggested; pre-deletion `c2010ed1`, code `8727f6d4`) | `ad913bd5` (`c2010ed1`) + SQL2-CLS `1dd9b9b1` (`atx.sign-receipt/v1` in `ic-output`), `338e6a7c` (`50a43599`, = recompute `3337fd2e`), `cdc753a8` (`e2844926`, = recompute) | 2 (both CMake tails, keep both, root's lines first) | **p9-3b** equity-dev; IC exe, IC tests (4 TUs) | 0 | `SignVerb*` 6 / 6; D3W-PB's IC filter 18 / 18 | sign verb (real exe) 21 / 0 skipped; research wave 19; wave driver 28; ten other wave files 269 / 1 named skip; mirror 7 (G-P5 1 / 1 -> 0 / 0); guard 1f -> 5p; store suite 43 x seeds 0 / 1 | C3-11 identity on the ledgered results by path: Y-S 15 / 15 = recorded = Python rule, `RESULT PASS` (Y-2 / Y-3 / Y-5 rule waves) **holds**; `FROZEN_PAIRS` names `sign_pm7_35`; freeze rows 0 |
+| A4 (pre-flip only) | `7c9140c4` (APPROVE, review `fc3e414e`, 0 Required, 6 Suggested; pre-flip `6dab6948`) | `bba4c06f` (`6dab6948`, = recompute `d969238a`) | 0 | **p9-3c** equity-dev; fields tests, fields exe (33 TUs) | 0 | A4 filter 25 / 25 | holdings fixture 2; holdings engine path 2 (real exe); vendor engine path 10; fields engine path 11; field registry 37; guard 5 | fixture identity **holds**; registry rows **hold**; **A4-Q2 TRAIN identity NOT RUN** (its inputs live under `C:/atx/atx-db/data/`: owner rule): flips `69141218` / `59d807ea` and `fc3e414e` **NOT merged** (BLOCKED for the flips) |
+
+Next free build tag **p9-3d**. Known-red set: **EMPTY**; no new red.
+
+### M5c (RESUME 11; rulings A4-DB, A4-P10-FLIPS), 2026-10-15
+
+Same root agent, continued; read-only. Code head **`bba4c06f`** (unchanged). No merge, no build, no test, no real-data
+run. Zero trials: `build-equity/trials.jsonl` 133 lines `27e40f9f`.
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| A4 (flips) | flips `69141218` / `59d807ea`, APPROVE head `fc3e414e` | none (A4 stays merged at `6dab6948`, `bba4c06f`) | - | none | - | - | - | provenance of both fields (Y-F0's manifest `26fee5ce`): every stage input under `C:\atx\atx-db\data\alpha_panel\v1\{ftd,regsho_threshold,security_master}` (`a4-provenance.txt`); no copy outside atx-db in pool-2, `C:/atx/data`, `data-classification.md` or the lane pools (`a4-copy-search.txt`; names and sizes only; no SHA match possible); **identity not run: inputs under atx-db; flips P10** (A4-P10-FLIPS); Python stays the producer of record; nothing reverted |
+
+Next free build tag **p9-3d**. Known-red set: **EMPTY**.
+
+### M6 (RESUME 11): AL-CLOCK fix 1, SQL3 item 5, 2026-10-15
+
+Start docs `97505c1c` (code `bba4c06f`). Code head **`d51d011e`**. Logs `m6-logs/`. Zero trials:
+`build-equity/trials.jsonl` 133 lines `27e40f9f` at start and end. TEST-1 / ROOT-1a: targeted checks; whole suites,
+Release, canaries and the parents' identity runs deferred to the gate. Both merge trees equal
+`git merge-tree --write-tree` (`m6-logs/alclock-checks.txt`, `sql3-checks.txt`).
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| AL-CLOCK fix 1 | `f892eab1` (APPROVE, re-review 1 `eed512bd`, 0 Required, 2 Suggested; first APPROVE `e9b3a323` merged at `858a4fca`) | `1d003241` (`eed512bd`, = recompute `91d2526a`) | 0 | **p9-3d** equity-dev; target-tests, NAV exe (5 TUs / 3 links) | 0 | `InfoClock*` 14 / 14 (incl. the calibrate gtest); named filter 26 / 26 | `test_info_clock_rule.py` 5 / 5 at seeds 0 and 1 | registration `7801c198...` carries ALCLOCK-4's two clauses **holds**; flag absent (`capacity_declaration` unchanged, selected when the rule is off; tests) **holds**; W3-9 nothing to keep both; SQL2-CLS none; the P9-B0 parents' identity at the gate |
+| SQL3 item 5 | `0ebb83da` (APPROVE, review 2 `22b8fd17`, 0 Required, 4 Suggested; code `00779453`) | `d51d011e` (`22b8fd17`, = recompute `6c73537a`) | 0 | none (Python) | - | - | hook 13 / 0 (real-exe case ran); identity 16 + 6 subtests / 0; wave queue 6 / 0; seven writers' files 98 / 0 / 0 skipped | one ingest per write **holds**; SQL3-2 **holds** (no `build-equity/research-store/` before or after); SQL2-CLS none; store exe p9-2r `d8a500d8` = receipt before and after |
+
+Next free build tag **p9-3e**. Known-red set: **EMPTY**; no new red.

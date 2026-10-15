@@ -1,0 +1,75 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0 -- C:\Program Files\Python312\python.exe
+rootdir: C:\atx-wt\pool-29
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 28 items
+
+scripts/tests/test_wave_driver.py::test_receipt_k_p9_10_keys PASSED      [  3%]
+scripts/tests/test_wave_driver.py::test_resume_refuses_argv_mismatch PASSED [  7%]
+scripts/tests/test_wave_driver.py::test_resume_exe_check_pinned_refuses_unpinned_notes PASSED [ 10%]
+scripts/tests/test_wave_driver.py::test_nav_only_template_after_ic_rebuild PASSED [ 14%]
+scripts/tests/test_wave_driver.py::test_inherited_output_judged_by_the_ancestor_that_made_it PASSED [ 17%]
+scripts/tests/test_wave_driver.py::test_run_stage_notes_unpinned_exe_reuse PASSED [ 21%]
+scripts/tests/test_wave_driver.py::test_attempt_subdir_after_floor_kill PASSED [ 25%]
+scripts/tests/test_wave_driver.py::test_driver_auto_attempt_manifest_flag PASSED [ 28%]
+scripts/tests/test_wave_driver.py::test_launch_waits_for_free_memory PASSED [ 32%]
+scripts/tests/test_wave_driver.py::test_two_launches_never_overcommit PASSED [ 35%]
+scripts/tests/test_wave_driver.py::test_adopt_never_kills_the_child PASSED [ 39%]
+scripts/tests/test_wave_driver.py::test_claims_lock_failures_are_admission_waits PASSED [ 42%]
+scripts/tests/test_wave_driver.py::test_parallel_steps_under_host_budget PASSED [ 46%]
+scripts/tests/test_wave_driver.py::test_judge_records_in_call_order PASSED [ 50%]
+scripts/tests/test_wave_driver.py::test_cache_path_bound_w1_i1 PASSED    [ 53%]
+scripts/tests/test_wave_driver.py::test_lock_exes_pins_and_verify_compares FAILED [ 57%]
+scripts/tests/test_wave_driver.py::test_rule_cell_parent_nav_from_another_exe_is_refused[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-False] PASSED [ 60%]
+scripts/tests/test_wave_driver.py::test_rule_cell_parent_nav_from_another_exe_is_refused[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-True] PASSED [ 64%]
+scripts/tests/test_wave_driver.py::test_rule_cell_parent_nav_from_another_exe_is_refused[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-None-True] PASSED [ 67%]
+scripts/tests/test_wave_driver.py::test_rule_cell_parent_nav_from_another_exe_is_refused[None-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-True] PASSED [ 71%]
+scripts/tests/test_wave_driver.py::test_rule_cell_parent_nav_from_another_exe_is_refused[None-None-False] PASSED [ 75%]
+scripts/tests/test_wave_driver.py::test_receipt_digest_time_free PASSED  [ 78%]
+scripts/tests/test_wave_driver.py::test_code_reuse_keyed_on_import_closure PASSED [ 82%]
+scripts/tests/test_wave_driver.py::test_reader_reuse_keyed_on_code_and_verdict_per_run PASSED [ 85%]
+scripts/tests/test_wave_driver.py::test_timings_complete PASSED          [ 89%]
+scripts/tests/test_wave_driver.py::test_registration_keys_k_p9_11 PASSED [ 92%]
+scripts/tests/test_wave_driver.py::test_pin_by_role_list PASSED          [ 96%]
+scripts/tests/test_wave_driver.py::test_marginal_candidates_only PASSED  [100%]
+
+================================== FAILURES ===================================
+___________________ test_lock_exes_pins_and_verify_compares ___________________
+scripts\tests\test_wave_driver.py:1084: in test_lock_exes_pins_and_verify_compares
+    assert research_wave.main(["run", F.MANIFEST, "--root", str(root)], executor=fake, log=lambda s: None) == 0
+E   AssertionError: assert 3 == 0
+E    +  where 3 = <function main at 0x00000262A1A9C400>(['run', 'scripts/specs/v8/waves/w1.json', '--root', 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-driver-fix\\test_lock_exes_pins_and_verify0\\wp'], executor=<wave_fixture.FakeCycle object at 0x00000262A1AB7A10>, log=<function test_lock_exes_pins_and_verify_compares.<locals>.<lambda> at 0x00000262A392AC00>)
+E    +    where <function main at 0x00000262A1A9C400> = research_wave.main
+---------------------------- Captured stdout call -----------------------------
+locked library: lib/lib.json a4d6af83fa8e7f4f21f1209760a2b12cdefd5df27a9c7f629ba18f8f9065ab84
+locked recipe: lib/recipe.json c65eca07e6767a96f3589fb16eb5c14b57efa11467f873037256802000626026
+locked baseline_library: lib/base.json 52c5a8f686860d7b69b467e2c2e8291ac720efd22d8dab0f6fdfdebbc4971b0e
+locked role: role/manifest.json 28a5e8e98a55d31e6f09ae52ced0e0f49177d262ffeb315729f49a267a4c5e59
+locked baseline_fields: fields-base/manifest.json 2ff6f3bd3929ff5ced09ef15373975a89c0443a2310885c139000139b55922c4
+locked reference_admission: ref-w/admission.json ad42889423521c6898d7c678e7d2c6172c8279a1274799739f3073252ba59e3f
+locked reference_cell: ref-cell/summary.json 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
+locked exe ic: bin/ic.exe dae7f3a056377ab98e8eba07dd01c64c813dc392d02ecd4b7b3b728c6d1e21a8
+locked exe nav: bin/nav.exe abca4de9dd94d3ac2db9c470f8d4557f421b969fab4990c3c719629f7e7a8b69
+wrote C:\Users\natha\AppData\Local\Temp\claude\c--atx\a17fe032-fb48-4307-ab8e-95f10be06ca8\scratchpad\sign-pyt\r10-driver-fix\test_lock_exes_pins_and_verify0\c\spec.json
+locked library: lib/lib.json a4d6af83fa8e7f4f21f1209760a2b12cdefd5df27a9c7f629ba18f8f9065ab84
+locked recipe: lib/recipe.json c65eca07e6767a96f3589fb16eb5c14b57efa11467f873037256802000626026
+locked baseline_library: lib/base.json 52c5a8f686860d7b69b467e2c2e8291ac720efd22d8dab0f6fdfdebbc4971b0e
+locked role: role/manifest.json 28a5e8e98a55d31e6f09ae52ced0e0f49177d262ffeb315729f49a267a4c5e59
+locked baseline_fields: fields-base/manifest.json 2ff6f3bd3929ff5ced09ef15373975a89c0443a2310885c139000139b55922c4
+locked reference_admission: ref-w/admission.json ad42889423521c6898d7c678e7d2c6172c8279a1274799739f3073252ba59e3f
+locked reference_cell: ref-cell/summary.json 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
+locked exe ic: bin/ic.exe dae7f3a056377ab98e8eba07dd01c64c813dc392d02ecd4b7b3b728c6d1e21a8
+locked exe nav: bin/nav.exe abca4de9dd94d3ac2db9c470f8d4557f421b969fab4990c3c719629f7e7a8b69
+wrote C:\Users\natha\AppData\Local\Temp\claude\c--atx\a17fe032-fb48-4307-ab8e-95f10be06ca8\scratchpad\sign-pyt\r10-driver-fix\test_lock_exes_pins_and_verify0\t\spec.json
+wave_readers mechanics: parent -> out\waves\w1\readers\mech-parent.json
+wave_readers mechanics: cell -> out\waves\w1\readers\mech-matched.json
+wave_readers book: cell, parent -> out\waves\w1\readers\book.json
+wave_readers mechanics: parent -> out\waves\w1\readers\mech-parent.json
+wave_readers mechanics: cell -> out\waves\w1\readers\mech-matched.json
+wave_readers book: cell, parent -> out\waves\w1\readers\book.json
+---------------------------- Captured stderr call -----------------------------
+research_cycle wave: HARD-STOP [preflight]: preflight refused: IC cache path too long (ruling W1-I1): candidate id(s) ['alpha_a', 'alpha_b', 'alpha_c'] would write IC cache files of up to 395 characters (> 250), e.g. C:\Users\natha\AppData\Local\Temp\claude\c--atx\a17fe032-fb48-4307-ab8e-95f10be06ca8\scratchpad\sign-pyt\r10-driver-fix\test_lock_exes_pins_and_verify0\wp\build-equity\candidate-cache\3db32c8598ae0eb9-research-window-v2/dslvm1_clang18.1_opt_md_ndebug_xs13.0.0/0000000000000000000000000000000000000000000000000000000000000000/fp_0000000000000000/ic1_0000000000000000/alpha_a.0000000000000000.json; under this cache dir an id may have at most 0 characters: shorten the id before it is registered, or run from a shorter root / ic.cache (the Release layout is the bound for every build)
+=========================== short test summary info ===========================
+FAILED scripts/tests/test_wave_driver.py::test_lock_exes_pins_and_verify_compares
+================== 1 failed, 27 passed in 310.76s (0:05:10) ===================

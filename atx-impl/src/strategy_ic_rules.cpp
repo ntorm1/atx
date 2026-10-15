@@ -4,13 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
-#include <filesystem>
-#include <fstream>
-#include <iomanip>
-#include <ios>
-#include <locale>
 #include <set>
-#include <sstream>
 #include <span>
 #include <string>
 #include <string_view>
@@ -694,15 +688,15 @@ co::Result<IcCompositionStages> composition_stages(const PinnedWeights& pinned,
   return co::Ok(std::move(out));
 }
 
-co::Status composition_walk_forward(const Json& j,const RuleInputs& in,PinnedWeights& pinned) {
-  const auto& lib=in.lib;
-  const auto refuse=[](const std::string& what) {
-    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+what);
-  };
-  if (!j.contains("walk_forward"))
-    return refuse("composition weights schema atx.dsl-composition-weights/v3 requires a "
-                  "walk_forward block");
-  const auto& block=j.at("walk_forward");
+namespace {
+// composition_walk_forward's three jobs (review D3W S-4): the block's shape, its rows, and the
+// candidates the rows weight beyond the top-level weights.
+co::Error walk_forward_refused(const std::string& what) {
+  return co::Error(co::ErrorCode::InvalidArgument,"IC runner: "+what);
+}
+
+// The block's six keys (each row is walk_forward_rows').
+co::Status walk_forward_shape(const Json& block) {
   const auto at_least=[&block](const char* key,i64 least) {
     return block.contains(key) && block.at(key).is_number_integer() &&
            block.at(key).get<i64>()>=least;
@@ -715,46 +709,60 @@ co::Status composition_walk_forward(const Json& j,const RuleInputs& in,PinnedWei
       !text("window",rc::walk_forward_expanding) || !at_least("lag",2) || !at_least("step",1) ||
       !at_least("min_decisions",2) || !block.contains("rows") || !block.at("rows").is_array() ||
       block.at("rows").empty() || block.at("rows").size()>rc::walk_forward_max_rows)
-    return refuse("walk_forward must be {rule: walk-forward-v1, window: expanding, lag: >= 2, "
-                  "step: >= 1, min_decisions: >= 2, rows: [{from_session, weights: {id: "
-                  "weight}}, ...] (1..4096)}");
-  if (!pinned.themes.empty() || pinned.residualise || pinned.schedule==theme_tsmom_rule)
-    return refuse("walk_forward (walk-forward-v1) is refused with theme_redistribution, "
-                  "theme_residualise and theme-tsmom-v1 (their grouping, order and schedule are "
-                  "fitted on the whole TRAIN window)");
+    return co::Err(walk_forward_refused(
+        "walk_forward must be {rule: walk-forward-v1, window: expanding, lag: >= 2, step: >= 1, "
+        "min_decisions: >= 2, rows: [{from_session, weights: {id: weight}}, ...] (1..4096)}"));
+  return co::Ok();
+}
+
+// The rows (at most walk_forward_max_rows, checked by walk_forward_shape): from_session strictly
+// increasing; per row one finite weight >= 0 for every library candidate (library order), no
+// other id, at least one of them > 0.
+co::Status walk_forward_rows(const Json& block,const Library& lib,std::vector<i64>& from,
+                             std::vector<std::vector<f64>>& rows) {
   std::set<std::string> ids;
   for (const auto& c:lib.candidates) ids.insert(c.id);
-  std::vector<i64> from;
-  std::vector<std::vector<f64>> rows;
   for (const auto& row:block.at("rows")) {
     if (!row.is_object() || row.size()!=2U || !row.contains("from_session") ||
         !row.at("from_session").is_number_integer() || !row.contains("weights") ||
         !row.at("weights").is_object())
-      return refuse("walk_forward row must be {from_session: integer, weights: {id: weight}}");
+      return co::Err(
+          walk_forward_refused("walk_forward row must be {from_session: integer, weights: {id: "
+                               "weight}}"));
     const i64 session=row.at("from_session").get<i64>();
     if (!from.empty() && !(session>from.back()))
-      return refuse("walk_forward from_session must increase strictly");
+      return co::Err(walk_forward_refused("walk_forward from_session must increase strictly"));
     const auto& weights=row.at("weights");
     for (auto it=weights.begin();it!=weights.end();++it)
       if (!ids.contains(it.key()))
-        return refuse("walk_forward weight for unknown candidate: "+it.key());
+        return co::Err(
+            walk_forward_refused("walk_forward weight for unknown candidate: "+it.key()));
     std::vector<f64> w;
     w.reserve(lib.candidates.size());
     for (const auto& c:lib.candidates) {
       const auto it=weights.find(c.id);
-      if (it==weights.end()) return refuse("walk_forward weight missing: "+c.id);
+      if (it==weights.end())
+        return co::Err(walk_forward_refused("walk_forward weight missing: "+c.id));
       const f64 x=it->is_number()?it->get<f64>():quiet_nan;
       if (!std::isfinite(x) || x<0)
-        return refuse("walk_forward weight must be finite and >= 0: "+c.id);
+        return co::Err(walk_forward_refused("walk_forward weight must be finite and >= 0: "+c.id));
       w.push_back(x);
     }
     if (std::none_of(w.begin(),w.end(),[](f64 x) { return x>0; }))
-      return refuse("walk_forward row at from_session "+std::to_string(session)+
-                    " weights no candidate");
+      return co::Err(walk_forward_refused("walk_forward row at from_session "+
+                                          std::to_string(session)+" weights no candidate"));
     from.push_back(session);
     rows.push_back(std::move(w));
   }
-  // A candidate a row weights: its sign, and beyond the top-level weights its theme's index.
+  return co::Ok();
+}
+
+// A candidate a row weights needs its composition sign and, beyond the top-level weights, a theme
+// that a top-level weighted candidate has: the standardise grouping stays the full-TRAIN fit's, and
+// the candidate takes that theme's index.
+co::Status lift_walk_forward_candidates(const Json& j,const Library& lib,
+                                        std::span<const std::vector<f64>> rows,
+                                        PinnedWeights& pinned) {
   const bool grouped=!pinned.std_themes.empty();
   std::vector<std::string> names(grouped?pinned.std_theme_count:0U);
   if (grouped) {
@@ -768,60 +776,47 @@ co::Status composition_walk_forward(const Json& j,const RuleInputs& in,PinnedWei
       continue;
     const auto& id=lib.candidates[k].id;
     if (!pinned.signs.empty() && pinned.signs[k]==0)
-      return refuse("composition sign missing for a candidate a walk_forward row weights: "+id);
+      return co::Err(walk_forward_refused(
+          "composition sign missing for a candidate a walk_forward row weights: "+id));
     if (!grouped || pinned.values[k]>0) continue;
     const auto& listed=j.at("theme_standardise").at("themes");
     const auto it=listed.find(id);
     if (it==listed.end())
-      return refuse("theme missing for a candidate a walk_forward row weights: "+id);
+      return co::Err(
+          walk_forward_refused("theme missing for a candidate a walk_forward row weights: "+id));
     const auto& theme=it->get_ref<const std::string&>();
     const auto at=std::find(names.begin(),names.end(),theme);
     if (at==names.end())
-      return refuse("walk_forward row weights "+id+" of theme "+theme+
-                    ", which no top-level weighted candidate has");
+      return co::Err(walk_forward_refused("walk_forward row weights "+id+" of theme "+theme+
+                                          ", which no top-level weighted candidate has"));
     pinned.std_themes[k]=static_cast<usize>(at-names.begin());
   }
+  return co::Ok();
+}
+} // namespace
+
+co::Status composition_walk_forward(const Json& j,const RuleInputs& in,PinnedWeights& pinned) {
+  if (!j.contains("walk_forward"))
+    return co::Err(walk_forward_refused("composition weights schema "
+                                        "atx.dsl-composition-weights/v3 requires a walk_forward "
+                                        "block"));
+  const auto& block=j.at("walk_forward");
+  ATX_TRY_VOID(walk_forward_shape(block));
+  if (!pinned.themes.empty() || pinned.residualise || pinned.schedule==theme_tsmom_rule)
+    return co::Err(walk_forward_refused(
+        "walk_forward (walk-forward-v1) is refused with theme_redistribution, theme_residualise "
+        "and theme-tsmom-v1 (their grouping, order and schedule are fitted on the whole TRAIN "
+        "window)"));
+  std::vector<i64> from;
+  std::vector<std::vector<f64>> rows;
+  ATX_TRY_VOID(walk_forward_rows(block,in.lib,from,rows));
+  ATX_TRY_VOID(lift_walk_forward_candidates(j,in.lib,rows,pinned));
   pinned.walk_forward=std::string(rc::walk_forward_rule);
   pinned.weight_from=std::move(from);
   pinned.weight_rows=std::move(rows);
   return co::Ok();
 }
 
-co::Status write_mom_volman_sleeves(const PinnedWeights& pinned,std::span<const i64> role_sessions,
-                                    const std::filesystem::path& dir,const std::string& role) {
-  if (pinned.schedule!=mom_volman_rule || role_sessions.empty() || pinned.schedule_from.empty())
-    return co::Ok();
-  if (pinned.volman_sessions.size()!=pinned.volman_sleeve.size() ||
-      pinned.volman_scale.size()!=pinned.schedule_from.size())
-    return co::Err(co::ErrorCode::Internal,"IC runner: mom-volman-v1 sleeve shape");
-  std::ostringstream raw,scaled;
-  for (auto* text:{&raw,&scaled}) {
-    text->imbue(std::locale::classic());
-    *text<<std::setprecision(17)<<"session_ns,net_return\n";
-  }
-  usize rows=0,block=0;
-  for (usize d=0;d<pinned.volman_sleeve.size();++d) {
-    const i64 session=pinned.volman_sessions[d];
-    if (session<pinned.schedule_from.front() || session<role_sessions.front() ||
-        session>role_sessions.back())
-      continue;
-    while (block+1U<pinned.schedule_from.size() && pinned.schedule_from[block+1U]<=session) ++block;
-    raw<<session<<','<<pinned.volman_sleeve[d]<<'\n';
-    scaled<<session<<','<<pinned.volman_sleeve[d]*pinned.volman_scale[block]<<'\n';
-    ++rows;
-  }
-  if (rows==0U) return co::Ok();
-  for (const auto& [name,text]:{std::pair{std::string("_mom_volman_sleeve_raw.csv"),&raw},
-                                std::pair{std::string("_mom_volman_sleeve_scaled.csv"),&scaled}}) {
-    const std::string bytes=text->str();
-    std::ofstream file(dir/(role+name),std::ios::binary);
-    file.write(bytes.data(),static_cast<std::streamsize>(bytes.size()));
-    file.close();
-    if (!file)
-      return co::Err(co::ErrorCode::IoError,"IC runner: cannot write "+(dir/(role+name)).string());
-  }
-  return co::Ok();
-}
 std::string_view stage_name(IcStageKind kind) noexcept {
   switch (kind) {
     case IcStageKind::redistribute: return "redistribute";

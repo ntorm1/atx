@@ -1,0 +1,1500 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = InfoClock*
+[==========] Running 14 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 10 tests from InfoClockRate
+[ RUN      ] InfoClockRate.KernelAtTheWindowBoundary
+[       OK ] InfoClockRate.KernelAtTheWindowBoundary (0 ms)
+[ RUN      ] InfoClockRate.ConfigAndInputRefusals
+[       OK ] InfoClockRate.ConfigAndInputRefusals (2 ms)
+[ RUN      ] InfoClockRate.StepChangeClosedForm
+[       OK ] InfoClockRate.StepChangeClosedForm (1426 ms)
+[ RUN      ] InfoClockRate.EventClockIsCausal
+[       OK ] InfoClockRate.EventClockIsCausal (567 ms)
+[ RUN      ] InfoClockRate.CommandLineRefusalsWriteNothing
+[       OK ] InfoClockRate.CommandLineRefusalsWriteNothing (547 ms)
+[ RUN      ] InfoClockRate.CapacityCurveAcceptsThisRateOnly
+[       OK ] InfoClockRate.CapacityCurveAcceptsThisRateOnly (1151 ms)
+[ RUN      ] InfoClockRate.BookWorkersOneAndFourSameBytes
+[       OK ] InfoClockRate.BookWorkersOneAndFourSameBytes (1547 ms)
+[ RUN      ] InfoClockRate.CalibrateGrossKeepsTheRatesAndCountsOnce
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(81): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+capacity/daily_capacity-x0p5-v1+swap-fin-v1.csv
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(81): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+capacity/daily_capacity-x1-v1+swap-fin-v1.csv
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(81): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+capacity/daily_capacity-x2-v1+swap-fin-v1.csv
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(81): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+capacity/daily_capacity-x4-v1+swap-fin-v1.csv
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(81): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+capacity/daily_capacity-x8-v1+swap-fin-v1.csv
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(81): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+capacity/summary.json
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(81): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+capacity_curve.csv
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(81): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+daily_linear-6bps-stale5-v1+swap-fin-v1.csv
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(81): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(81): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+daily_modeled-1bn-stale5-v1+flat-300-v0.csv
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(81): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+daily_modeled-1bn-stale5-v1+swap-fin-v1.csv
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(81): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(81): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+v7_extras.json
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(81): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+v7_transfer_coefficient.csv
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(805): error: Expected equality of these values:
+  summary
+    Which is: {"capacity_qualified":false,"combined_sha256":"61ce2f137cb61a74f51aaed21be9c63667eaffc63f1ea62f2efd3f245dacfcd1","composition_weights_sha256":null,"financing_fields":{"fields_not_used":"mktcap_lagged (presence not point in time): market cap = shares_out x raw_close only","fields_used":{"ea_days_since":{"clock":"fixture-ea_days_since","point_in_time":true,"sha256":"199a6c0ca36eda3d852f89247097fd82c33236129efb2bef9fdcd3554395e729","staleness":null},"shares_out":{"clock":"fixture-shares_out","point_in_time":true,"sha256":"61c4fbd5d09f8b5e236b2568f8fd1e2218b68034a772e3d679261249483e5b8c","staleness":null},"si_shares":{"clock":"fixture-si_shares","point_in_time":true,"sha256":"23b578ccb2584daf58f591ca17ecbbb69d26bd45f0c0fab9f702f1796b6eab3c","staleness":null}},"manifest_sha256":"4cf75c5f7f5ea4f85812e734b52b6c0053464035ceb8b2105573296602289ed4","role_manifest_sha256":"9dba74f71255d7f5ada74a0304d0922fa08bda5f0056d66de0c55b3b26bdfe71","schema":"atx.research-role-fields/v1"},"limitations":"declared unfitted costs (constant 5 bps half spread, impact Y=0.6); financing is a declared scenario (flat-300-v0 legacy; swap-fin-v1 tier fees are research priors from public predictors, not lender quotes, and its locate rule is a modeled no-special-shorts rule, not locate availability; without --fields only flat-300-v0 runs, no locate); vendor adjusted-close factor unverified (guard sensitivity reported); common-stock status unverified; K-session write-off may misclassify halts vs delistings (missing histogram reported); cash earns 0% and shorts no rebate, so returns approximate excess returns; v2 budget planned by decision month while actual turnover is by execution month; working orders keep decision-NAV dollar targets; no terminal liquidation; the last two scored decisions are dropped vs the target replay; not capacity qualified; the monthly turnover fields (months_le_0.30, meets_turnover_target_*) are LEGACY reporting only (30%/month target retired 2026-09-27), the declared turnover limits are the daily GMV mean/p95 ceilings (daily_turnover_gmv, meets_daily_turnover_*); a capped (S2/S3) deployment that completes over several sessions counts its later sessions as turnover","order_basis":"delta","primary_financing_available":true,"primary_scenario":"modeled-1bn-stale5-v1+swap-fin-v1","producer":{"build_type":"debug","definition":"P9 C1 (NAV receipt completeness): the executable that wrote this directory: engine_git_sha = the configure-time commit of its source tree (\"-dirty\": the tree had local changes; \"unknown\": no git), build_type = release (NDEBUG) or debug; a comparison of two builds' summaries drops this key (every other byte is the replay's)","engine_git_sha":"9d3916b86035f1e41652f687f64928e598006d3a"},"recipe_sha256":"87e3ad5c521e7e8fdc0738955c16b6e8ea19a060f02a714bf49da4ef0385c1b0","role_sha256":"9dba74f71255d7f5ada74a0304d0922fa08bda5f0056d66de0c55b3b26bdfe71","rule":"aim-partial-v5","scenarios":[{"accounting_checks":{"max_cash_book_relative_error":8.286682888755298e-16,"max_return_identity_error":2.419939248987646e-16,"tolerance":1e-09},"ann_mean":0.03682993456737026,"ann_vol":0.011639212430902872,"cagr":0.03744533918738702,"calendar_year_returns":[{"net_compounded_return":0.0055587615139292,"observations":38,"year":2020}],"capacity":{"capped_fills":0,"fallback_vol_fills":0,"fills":443,"liquidity_blocked_orders":0,"participation_fills":443,"participation_max":34.059321682801226,"participation_p95_resolution":"0.01-decade histogram bin upper edge","participation_p95_upper_bound":3.3113112148259076,"unfilled_dollars":0.0},"construction":{"band_multiple":0.0,"banded_names_total":13,"cadence_rebalance_decisions":38,"decisions":38,"mean_banded_names_per_rebalance":0.34210526315789475,"neutralize":"none","neutralize_amplification_max":null,"neutralize_amplification_median":null,"neutralize_applied_decisions":0,"neutralize_attempted_decisions":0,"neutralize_max_excluded_share":0.0,"neutralize_skip_reasons":{"amplification":0,"excluded-share":0,"refused":0,"too-few-names":0},"neutralize_skipped_decisions":0,"neutralize_used_names_median":null,"neutralize_used_names_min":null,"rebalanced_decisions":38,"rule_id":"aim-partial-v5","v5":{"aim_leverage":1.32,"decisions":38,"dust_multiple":0.1,"exit_rate":0.05,"mean_gross":0.17594056224708013,"mean_held_share":1.0167464114832534,"mean_net":0.0028493982120581947,"rate":"info-clock-rate-v1","theta":0.05}},"costs":{"borrow_dollars":65733.61541232644,"impact_cost_dollars":0.0,"linear_cost_dollars":1537767.7361980374,"summed_borrow_return":6.535898057880604e-05,"summed_trade_cost_return":0.0015296028225859307,"summed_writeoff_return":0.0,"trade_cost_dollars":1537767.7361980374,"unrationed_full_request_cost_dollars":1537767.7361980374,"unrationed_unpriced_requests":0,"writeoff_pnl_dollars":0.0},"daily_csv_sha256":"fd06d0b3bc1a346aa495c08472fa51ac2b2ea57f301131e6078c3372f4317ffd","daily_turnover_gmv":{"basis":"executed-fills;forced-exits-included;deployment-session-excluded","definition":"daily one-way turnover in GMV units: tau_t = sum_i |filled dollars_i,t| / pre-trade gross (long$ + short$ after the mark at t, before trading; stale names at stale marks) over EXECUTED fills only (forced exits included, planned turnover never; write-offs are not fills); statistics over execution sessions with positive pre-trade gross, the deployment session (first nonzero fill) excluded; quantiles interpolate linearly at (n-1)q over the sorted sessions (numpy default); ceilings are declared before results and a NaN statistic never meets them","max":0.9973790431718325,"max_session_ns":1578268800000000000,"mean":0.40654737151356773,"mean_max":0.2,"median":0.3692334240131851,"p95":0.6718109345742501,"p95_max":0.3,"quantile":"linear interpolation at (n-1)q over sorted sessions (numpy default)","sessions":37,"zero_gmv_sessions_excluded":0},"deployment":{"occurred":true,"one_way_turnover":0.066,"session_ns":1578009600000000000,"traded_dollars":66000000.00000001},"events":0,"events_csv_sha256":"16cdec49220d087056d32c690648bb0c1f6f87a6c7bdd8703b1c1b685ff666ad","execution_months":2,"exposure":{"max_abs_net_leverage":0.0068775620598205195,"max_gross_leverage":0.23932007550166978,"max_stale_gross_fraction":0.0,"max_stale_names":0,"mean_gross_leverage":0.175936154749018,"mean_held_names":12.0,"mean_stale_names":0.0,"min_cash_ratio":0.993122437940179},"final_nav":1005558761.5139291,"financing":{"blocked_short_dollars":0.0,"blocked_short_name_decisions":0,"long_financing_dollars":54417.508578272624,"member_decisions_by_tier":{"gc":449,"special":0,"warm":0},"missing_predictor_member_decisions":0,"missing_predictor_short_name_days":0,"net_exposure":{"max_abs_net_leverage":0.0068775620598205195,"mean_abs_net_leverage":0.0030230957534168983,"mean_net_leverage":0.0030230957534168983},"short_dollar_share_by_tier":{"basis":"pre-mark short dollars on return rows with shorts; NaN/null without tiers","mean":{"gc":1.0,"special":0.0,"warm":0.0},"p95":{"gc":1.0,"special":0.0,"warm":0.0},"sessions":38},"short_financing_by_tier_dollars":{"gc":65733.61541232644,"special":0.0,"warm":0.0},"short_financing_dollars":65733.61541232644,"spec":{"block_special_shorts":true,"day_count":"ACT/360","flat_short_bps":0.0,"id":"swap-fin-v1","long_spread_bps":40.0,"rule":"tiered-swap-v1","short_spread_bps":20.0,"tier_fee_bps":{"gc":30.0,"special":500.0,"warm":100.0}},"summed_long_financing_return":5.4106189763763e-05,"summed_short_financing_return":6.535898057880604e-05,"tiers_available":true,"total_financing_dollars":120151.12399059907},"financing_scenario":"swap-fin-v1","gross_sharpe":4.110340980722382,"guard":{"guarded_gross_exposure_dollars":0.0,"guarded_intervals":0,"raw_minus_adjusted_pnl_sensitivity_dollars":0.0},"hac_defined":true,"hac_kernel":"bartlett","hac_lag":5,"hac_t":1.1355158438902122,"info_clock":{"definition":"P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence","fast_name_days":196,"fast_planned_turnover":1.0549492841285226,"fast_share":0.4365256124721604,"field":{"name":"ea_days_since","sha256":"199a6c0ca36eda3d852f89247097fd82c33236129efb2bef9fdcd3554395e729"},"missing_name_days":73,"name_days":449,"planned_turnover":2.537064816791459,"rate":"info-clock-rate-v1","theta_fast":0.129449436703876,"theta_slow":0.05,"turnover_share":0.4158148728193242,"window_sessions":21},"max_drawdown":0.0035499462803743054,"max_monthly_one_way_turnover":1.3995307336266203,"max_monthly_one_way_turnover_ex_deployment_month":1.1498073040165973,"mean_daily_net_return":0.00014615053399750103,"mean_monthly_one_way_turnover":1.2746690188216088,"mean_monthly_one_way_turnover_ex_deployment_month":1.1498073040165973,"meets_daily_turnover_mean":false,"meets_daily_turnover_p95":false,"meets_sharpe_target":true,"meets_turnover_target_all_months":false,"meets_turnover_target_all_months_ex_deployment_month":false,"meets_turnover_target_mean":false,"meets_turnover_target_mean_ex_deployment_month":false,"missing":{"blocked_absent_order_sessions":0,"gap_run_1":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_2_4":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_5_plus":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"reappeared_after_write_off_forgone":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"unresolved_at_end_stale_mark":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"written_off":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0}},"months":[{"decision_sessions":22,"execution_sessions":21,"is_deployment_month":true,"month":202001,"one_way_turnover":1.3995307336266203,"planned_turnover_decision_month":1.4719798981500365,"traded_dollars":1405744122.2454274,"traded_sessions":21},{"decision_sessions":16,"execution_sessions":17,"is_deployment_month":false,"month":202002,"one_way_turnover":1.1498073040165973,"planned_turnover_decision_month":1.0777782841548424,"traded_dollars":1157202104.7513006,"traded_sessions":17}],"months_le_0.30":0,"months_le_0.30_ex_deployment_month":0,"net_sharpe":3.1642978239304553,"observations":38,"planned_vs_actual":{"actual_minus_planned":-0.0004201446616627358,"basis":"planned = sum|next-cur| on drifted marked weights at decision NAV; actual = sum|fills|/pre-trade NAV at execution; gaps: drift, caps and working orders, blocked absent names, write-offs","monthly_reconciled_total":2.5493380376432175,"monthly_reconciliation_error":8.881784197001252e-16,"total_actual_one_way_turnover_execution_basis":2.5493380376432166,"total_planned_turnover_decision_basis":2.5497581823048794},"primary":false,"scenario":"linear-6bps-stale5-v1+swap-fin-v1","total_net_return":0.0055587615139292,"trading_scenario":"linear-6bps-stale5-v1","turnover_definition":"calendar-month one-way turnover = sum over EXECUTION sessions t in the month (the fill session's month, not the decision's) of sum_i |filled dollars_i,t| / pre-trade NAV_t; includes forced exits and the initial deployment; write-offs are not fills and are excluded; *_ex_deployment_month drops the calendar month holding the first nonzero fill; planned turnover (decision month, drifted marked weights) is reported only for reconciliation"},{"accounting_checks":{"max_cash_book_relative_error":1.3115048599027978e-15,"max_return_identity_error":1.9910695271338485e-16,"tolerance":1e-09},"ann_mean":-0.001024667313463769,"ann_vol":0.0006845356029473555,"cagr":-0.0010243725031547912,"calendar_year_returns":[{"net_compounded_return":-0.00015453609849302996,"observations":38,"year":2020}],"capacity":{"capped_fills":439,"fallback_vol_fills":230,"fills":446,"liquidity_blocked_orders":0,"participation_fills":446,"participation_max":0.010000000000000002,"participation_p95_resolution":"0.01-decade histogram bin upper edge","participation_p95_upper_bound":0.010000000000000002,"unfilled_dollars":2353838377.67348},"construction":{"band_multiple":0.0,"banded_names_total":7,"cadence_rebalance_decisions":38,"decisions":38,"mean_banded_names_per_rebalance":0.18421052631578946,"neutralize":"none","neutralize_amplification_max":null,"neutralize_amplification_median":null,"neutralize_applied_decisions":0,"neutralize_attempted_decisions":0,"neutralize_max_excluded_share":0.0,"neutralize_skip_reasons":{"amplification":0,"excluded-share":0,"refused":0,"too-few-names":0},"neutralize_skipped_decisions":0,"neutralize_used_names_median":null,"neutralize_used_names_min":null,"rebalanced_decisions":38,"rule_id":"aim-partial-v5","v5":{"aim_leverage":1.32,"decisions":38,"dust_multiple":0.1,"exit_rate":0.05,"mean_gross":0.06585537374375751,"mean_held_share":1.0,"mean_net":-0.0004361339916322388,"rate":"info-clock-rate-v1","theta":0.05}},"costs":{"borrow_dollars":3184.7660624344758,"impact_cost_dollars":209550.15447586693,"linear_cost_dollars":96684.5615298692,"summed_borrow_return":3.1849513917561535e-06,"summed_trade_cost_return":0.00030624915304491016,"summed_writeoff_return":0.0,"trade_cost_dollars":306234.7160057361,"unrationed_full_request_cost_dollars":44347691.03988373,"unrationed_unpriced_requests":0,"writeoff_pnl_dollars":0.0},"daily_csv_sha256":"3ec3928d9a70b8d88c69cf12b72280da1d242df3a1ff360e6597da1848f2fa0a","daily_turnover_gmv":{"basis":"executed-fills;forced-exits-included;deployment-session-excluded","definition":"daily one-way turnover in GMV units: tau_t = sum_i |filled dollars_i,t| / pre-trade gross (long$ + short$ after the mark at t, before trading; stale names at stale marks) over EXECUTED fills only (forced exits included, planned turnover never; write-offs are not fills); statistics over execution sessions with positive pre-trade gross, the deployment session (first nonzero fill) excluded; quantiles interpolate linearly at (n-1)q over the sorted sessions (numpy default); ceilings are declared before results and a NaN statistic never meets them","max":1.9087767140245535,"max_session_ns":1578268800000000000,"mean":0.678934385482459,"mean_max":0.2,"median":0.5693783883288538,"p95":1.117747007932857,"p95_max":0.3,"quantile":"linear interpolation at (n-1)q over sorted sessions (numpy default)","sessions":37,"zero_gmv_sessions_excluded":0},"deployment":{"occurred":true,"one_way_turnover":0.0002439476997234562,"session_ns":1578009600000000000,"traded_dollars":243947.6997234562},"events":0,"events_csv_sha256":"16cdec49220d087056d32c690648bb0c1f6f87a6c7bdd8703b1c1b685ff666ad","execution_months":2,"exposure":{"max_abs_net_leverage":0.002505636197216393,"max_gross_leverage":0.016336644049650188,"max_stale_gross_fraction":0.0,"max_stale_names":0,"mean_gross_leverage":0.007883506323369186,"mean_held_names":11.894736842105264,"mean_stale_names":0.0,"min_cash_ratio":0.9975257864893683},"final_nav":999845463.901507,"financing":{"blocked_short_dollars":0.0,"blocked_short_name_decisions":0,"long_financing_dollars":2176.8603240734083,"member_decisions_by_tier":{"gc":449,"special":0,"warm":0},"missing_predictor_member_decisions":0,"missing_predictor_short_name_days":0,"net_exposure":{"max_abs_net_leverage":0.002505636197216393,"mean_abs_net_leverage":0.0008313873754751248,"mean_net_leverage":-0.0005470348583982932},"short_dollar_share_by_tier":{"basis":"pre-mark short dollars on return rows with shorts; NaN/null without tiers","mean":{"gc":1.0,"special":0.0,"warm":0.0},"p95":{"gc":1.0,"special":0.0,"warm":0.0},"sessions":38},"short_financing_by_tier_dollars":{"gc":3184.7660624344758,"special":0.0,"warm":0.0},"short_financing_dollars":3184.7660624344758,"spec":{"block_special_shorts":true,"day_count":"ACT/360","flat_short_bps":0.0,"id":"swap-fin-v1","long_spread_bps":40.0,"rule":"tiered-swap-v1","short_spread_bps":20.0,"tier_fee_bps":{"gc":30.0,"special":500.0,"warm":100.0}},"summed_long_financing_return":2.176995486670022e-06,"summed_short_financing_return":3.1849513917561535e-06,"tiers_available":true,"total_financing_dollars":5361.626386507884},"financing_scenario":"swap-fin-v1","gross_sharpe":1.524685069564644,"guard":{"guarded_gross_exposure_dollars":0.0,"guarded_intervals":0,"raw_minus_adjusted_pnl_sensitivity_dollars":0.0},"hac_defined":true,"hac_kernel":"bartlett","hac_lag":5,"hac_t":-0.7274309192666927,"info_clock":{"definition":"P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence","fast_name_days":196,"fast_planned_turnover":1.0370538930472823,"fast_share":0.4365256124721604,"field":{"name":"ea_days_since","sha256":"199a6c0ca36eda3d852f89247097fd82c33236129efb2bef9fdcd3554395e729"},"missing_name_days":73,"name_days":449,"planned_turnover":2.5094311790750363,"rate":"info-clock-rate-v1","theta_fast":0.129449436703876,"theta_slow":0.05,"turnover_share":0.413262536026007,"window_sessions":21},"max_drawdown":0.00025859772834380124,"max_monthly_one_way_turnover":0.1136077503766649,"max_monthly_one_way_turnover_ex_deployment_month":0.1136077503766649,"mean_daily_net_return":-4.066140132792734e-06,"mean_monthly_one_way_turnover":0.08057646175603583,"mean_monthly_one_way_turnover_ex_deployment_month":0.1136077503766649,"meets_daily_turnover_mean":false,"meets_daily_turnover_p95":false,"meets_sharpe_target":false,"meets_turnover_target_all_months":true,"meets_turnover_target_all_months_ex_deployment_month":true,"meets_turnover_target_mean":true,"meets_turnover_target_mean_ex_deployment_month":true,"missing":{"blocked_absent_order_sessions":0,"gap_run_1":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_2_4":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_5_plus":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"reappeared_after_write_off_forgone":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"unresolved_at_end_stale_mark":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"written_off":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0}},"months":[{"decision_sessions":22,"execution_sessions":21,"is_deployment_month":true,"month":202001,"one_way_turnover":0.04754517313540675,"planned_turnover_decision_month":1.4574138366279583,"traded_dollars":47545375.27637364,"traded_sessions":21},{"decision_sessions":16,"execution_sessions":17,"is_deployment_month":false,"month":202002,"one_way_turnover":0.1136077503766649,"planned_turnover_decision_month":1.0577730464831347,"traded_dollars":113595560.60674164,"traded_sessions":17}],"months_le_0.30":2,"months_le_0.30_ex_deployment_month":1,"net_sharpe":-1.49687950349395,"observations":38,"planned_vs_actual":{"actual_minus_planned":-2.3540339595990214,"basis":"planned = sum|next-cur| on drifted marked weights at decision NAV; actual = sum|fills|/pre-trade NAV at execution; gaps: drift, caps and working orders, blocked absent names, write-offs","monthly_reconciled_total":0.16115292351207167,"monthly_reconciliation_error":0.0,"total_actual_one_way_turnover_execution_basis":0.16115292351207167,"total_planned_turnover_decision_basis":2.515186883111093},"primary":true,"scenario":"modeled-1bn-stale5-v1+swap-fin-v1","total_net_return":-0.00015453609849302996,"trading_scenario":"modeled-1bn-stale5-v1","turnover_definition":"calendar-month one-way turnover = sum over EXECUTION sessions t in the month (the fill session's month, not the decision's) of sum_i |filled dollars_i,t| / pre-trade NAV_t; includes forced exits and the initial deployment; write-offs are not fills and are excluded; *_ex_deployment_month drops the calendar month holding the first nonzero fill; planned turnover (decision month, drifted marked weights) is reported only for reconciliation"},{"accounting_checks":{"max_cash_book_relative_error":1.3115048599027978e-15,"max_return_identity_error":1.9910695271338485e-16,"tolerance":1e-09},"ann_mean":-0.001024667313463769,"ann_vol":0.0006845356029473555,"cagr":-0.0010243725031547912,"calendar_year_returns":[{"net_compounded_return":-0.00015453609849302996,"observations":38,"year":2020}],"capacity":{"capped_fills":439,"fallback_vol_fills":230,"fills":446,"liquidity_blocked_orders":0,"participation_fills":446,"participation_max":0.010000000000000002,"participation_p95_resolution":"0.01-decade histogram bin upper edge","participation_p95_upper_bound":0.010000000000000002,"unfilled_dollars":2353838377.67348},"construction":{"band_multiple":0.0,"banded_names_total":7,"cadence_rebalance_decisions":38,"decisions":38,"mean_banded_names_per_rebalance":0.18421052631578946,"neutralize":"none","neutralize_amplification_max":null,"neutralize_amplification_median":null,"neutralize_applied_decisions":0,"neutralize_attempted_decisions":0,"neutralize_max_excluded_share":0.0,"neutralize_skip_reasons":{"amplification":0,"excluded-share":0,"refused":0,"too-few-names":0},"neutralize_skipped_decisions":0,"neutralize_used_names_median":null,"neutralize_used_names_min":null,"rebalanced_decisions":38,"rule_id":"aim-partial-v5","v5":{"aim_leverage":1.32,"decisions":38,"dust_multiple":0.1,"exit_rate":0.05,"mean_gross":0.06585537374375751,"mean_held_share":1.0,"mean_net":-0.0004361339916322388,"rate":"info-clock-rate-v1","theta":0.05}},"costs":{"borrow_dollars":3184.7660624344758,"impact_cost_dollars":209550.15447586693,"linear_cost_dollars":96684.5615298692,"summed_borrow_return":3.1849513917561535e-06,"summed_trade_cost_return":0.00030624915304491016,"summed_writeoff_return":0.0,"trade_cost_dollars":306234.7160057361,"unrationed_full_request_cost_dollars":44347691.03988373,"unrationed_unpriced_requests":0,"writeoff_pnl_dollars":0.0},"daily_csv_sha256":"3ec3928d9a70b8d88c69cf12b72280da1d242df3a1ff360e6597da1848f2fa0a","daily_turnover_gmv":{"basis":"executed-fills;forced-exits-included;deployment-session-excluded","definition":"daily one-way turnover in GMV units: tau_t = sum_i |filled dollars_i,t| / pre-trade gross (long$ + short$ after the mark at t, before trading; stale names at stale marks) over EXECUTED fills only (forced exits included, planned turnover never; write-offs are not fills); statistics over execution sessions with positive pre-trade gross, the deployment session (first nonzero fill) excluded; quantiles interpolate linearly at (n-1)q over the sorted sessions (numpy default); ceilings are declared before results and a NaN statistic never meets them","max":1.9087767140245535,"max_session_ns":1578268800000000000,"mean":0.678934385482459,"mean_max":0.2,"median":0.5693783883288538,"p95":1.117747007932857,"p95_max":0.3,"quantile":"linear interpolation at (n-1)q over sorted sessions (numpy default)","sessions":37,"zero_gmv_sessions_excluded":0},"deployment":{"occurred":true,"one_way_turnover":0.0002439476997234562,"session_ns":1578009600000000000,"traded_dollars":243947.6997234562},"events":0,"events_csv_sha256":"16cdec49220d087056d32c690648bb0c1f6f87a6c7bdd8703b1c1b685ff666ad","execution_months":2,"exposure":{"max_abs_net_leverage":0.002505636197216393,"max_gross_leverage":0.016336644049650188,"max_stale_gross_fraction":0.0,"max_stale_names":0,"mean_gross_leverage":0.007883506323369186,"mean_held_names":11.894736842105264,"mean_stale_names":0.0,"min_cash_ratio":0.9975257864893683},"final_nav":999845463.901507,"financing":{"blocked_short_dollars":0.0,"blocked_short_name_decisions":0,"long_financing_dollars":2176.8603240734083,"member_decisions_by_tier":{"gc":449,"special":0,"warm":0},"missing_predictor_member_decisions":0,"missing_predictor_short_name_days":0,"net_exposure":{"max_abs_net_leverage":0.002505636197216393,"mean_abs_net_leverage":0.0008313873754751248,"mean_net_leverage":-0.0005470348583982932},"short_dollar_share_by_tier":{"basis":"pre-mark short dollars on return rows with shorts; NaN/null without tiers","mean":{"gc":1.0,"special":0.0,"warm":0.0},"p95":{"gc":1.0,"special":0.0,"warm":0.0},"sessions":38},"short_financing_by_tier_dollars":{"gc":3184.7660624344758,"special":0.0,"warm":0.0},"short_financing_dollars":3184.7660624344758,"spec":{"block_special_shorts":true,"day_count":"ACT/360","flat_short_bps":0.0,"id":"swap-fin-v1","long_spread_bps":40.0,"rule":"tiered-swap-v1","short_spread_bps":20.0,"tier_fee_bps":{"gc":30.0,"special":500.0,"warm":100.0}},"summed_long_financing_return":2.176995486670022e-06,"summed_short_financing_return":3.1849513917561535e-06,"tiers_available":true,"total_financing_dollars":5361.626386507884},"financing_scenario":"swap-fin-v1","gross_sharpe":1.524685069564644,"guard":{"guarded_gross_exposure_dollars":0.0,"guarded_intervals":0,"raw_minus_adjusted_pnl_sensitivity_dollars":0.0},"hac_defined":true,"hac_kernel":"bartlett","hac_lag":5,"hac_t":-0.7274309192666927,"info_clock":{"definition":"P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence","fast_name_days":196,"fast_planned_turnover":1.0370538930472823,"fast_share":0.4365256124721604,"field":{"name":"ea_days_since","sha256":"199a6c0ca36eda3d852f89247097fd82c33236129efb2bef9fdcd3554395e729"},"missing_name_days":73,"name_days":449,"planned_turnover":2.5094311790750363,"rate":"info-clock-rate-v1","theta_fast":0.129449436703876,"theta_slow":0.05,"turnover_share":0.413262536026007,"window_sessions":21},"max_drawdown":0.00025859772834380124,"max_monthly_one_way_turnover":0.1136077503766649,"max_monthly_one_way_turnover_ex_deployment_month":0.1136077503766649,"mean_daily_net_return":-4.066140132792734e-06,"mean_monthly_one_way_turnover":0.08057646175603583,"mean_monthly_one_way_turnover_ex_deployment_month":0.1136077503766649,"meets_daily_turnover_mean":false,"meets_daily_turnover_p95":false,"meets_sharpe_target":false,"meets_turnover_target_all_months":true,"meets_turnover_target_all_months_ex_deployment_month":true,"meets_turnover_target_mean":true,"meets_turnover_target_mean_ex_deployment_month":true,"missing":{"blocked_absent_order_sessions":0,"gap_run_1":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_2_4":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_5_plus":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"reappeared_after_write_off_forgone":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"unresolved_at_end_stale_mark":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"written_off":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0}},"months":[{"decision_sessions":22,"execution_sessions":21,"is_deployment_month":true,"month":202001,"one_way_turnover":0.04754517313540675,"planned_turnover_decision_month":1.4574138366279583,"traded_dollars":47545375.27637364,"traded_sessions":21},{"decision_sessions":16,"execution_sessions":17,"is_deployment_month":false,"month":202002,"one_way_turnover":0.1136077503766649,"planned_turnover_decision_month":1.0577730464831347,"traded_dollars":113595560.60674164,"traded_sessions":17}],"months_le_0.30":2,"months_le_0.30_ex_deployment_month":1,"net_sharpe":-1.49687950349395,"observations":38,"planned_vs_actual":{"actual_minus_planned":-2.3540339595990214,"basis":"planned = sum|next-cur| on drifted marked weights at decision NAV; actual = sum|fills|/pre-trade NAV at execution; gaps: drift, caps and working orders, blocked absent names, write-offs","monthly_reconciled_total":0.16115292351207167,"monthly_reconciliation_error":0.0,"total_actual_one_way_turnover_execution_basis":0.16115292351207167,"total_planned_turnover_decision_basis":2.515186883111093},"primary":false,"scenario":"modeled-1bn-terminal-adverse-v1+swap-fin-v1","total_net_return":-0.00015453609849302996,"trading_scenario":"modeled-1bn-terminal-adverse-v1","turnover_definition":"calendar-month one-way turnover = sum over EXECUTION sessions t in the month (the fill session's month, not the decision's) of sum_i |filled dollars_i,t| / pre-trade NAV_t; includes forced exits and the initial deployment; write-offs are not fills and are excluded; *_ex_deployment_month drops the calendar month holding the first nonzero fill; planned turnover (decision month, drifted marked weights) is reported only for reconciliation"},{"accounting_checks":{"max_cash_book_relative_error":1.0730461397496389e-15,"max_return_identity_error":1.7272579393379445e-16,"tolerance":1e-09},"ann_mean":-0.0011141040748596557,"ann_vol":0.0006866526563137008,"cagr":-0.0011137154438416452,"calendar_year_returns":[{"net_compounded_return":-0.00016802068952270766,"observations":38,"year":2020}],"capacity":{"capped_fills":439,"fallback_vol_fills":230,"fills":446,"liquidity_blocked_orders":0,"participation_fills":446,"participation_max":0.010000000000000002,"participation_p95_resolution":"0.01-decade histogram bin upper edge","participation_p95_upper_bound":0.010000000000000002,"unfilled_dollars":2353828129.458414},"construction":{"band_multiple":0.0,"banded_names_total":7,"cadence_rebalance_decisions":38,"decisions":38,"mean_banded_names_per_rebalance":0.18421052631578946,"neutralize":"none","neutralize_amplification_max":null,"neutralize_amplification_median":null,"neutralize_applied_decisions":0,"neutralize_attempted_decisions":0,"neutralize_max_excluded_share":0.0,"neutralize_skip_reasons":{"amplification":0,"excluded-share":0,"refused":0,"too-few-names":0},"neutralize_skipped_decisions":0,"neutralize_used_names_median":null,"neutralize_used_names_min":null,"rebalanced_decisions":38,"rule_id":"aim-partial-v5","v5":{"aim_leverage":1.32,"decisions":38,"dust_multiple":0.1,"exit_rate":0.05,"mean_gross":0.06585537717054599,"mean_held_share":1.0,"mean_net":-0.00043613674620426537,"rate":"info-clock-rate-v1","theta":0.05}},"costs":{"borrow_dollars":18846.83532846026,"impact_cost_dollars":209550.10650666515,"linear_cost_dollars":96684.53004527983,"summed_borrow_return":1.8848053785684758e-05,"summed_trade_cost_return":0.0003062506322925598,"summed_writeoff_return":0.0,"trade_cost_dollars":306234.636551945,"unrationed_full_request_cost_dollars":44347599.332040496,"unrationed_unpriced_requests":0,"writeoff_pnl_dollars":0.0},"daily_csv_sha256":"164631df7a584deb3b6db7ed00aa6ab6c51380451f97a5e6db50d3f778711155","daily_turnover_gmv":{"basis":"executed-fills;forced-exits-included;deployment-session-excluded","definition":"daily one-way turnover in GMV units: tau_t = sum_i |filled dollars_i,t| / pre-trade gross (long$ + short$ after the mark at t, before trading; stale names at stale marks) over EXECUTED fills only (forced exits included, planned turnover never; write-offs are not fills); statistics over execution sessions with positive pre-trade gross, the deployment session (first nonzero fill) excluded; quantiles interpolate linearly at (n-1)q over the sorted sessions (numpy default); ceilings are declared before results and a NaN statistic never meets them","max":1.9087767140245535,"max_session_ns":1578268800000000000,"mean":0.6789343372191877,"mean_max":0.2,"median":0.5693786884133776,"p95":1.117747007932857,"p95_max":0.3,"quantile":"linear interpolation at (n-1)q over sorted sessions (numpy default)","sessions":37,"zero_gmv_sessions_excluded":0},"deployment":{"occurred":true,"one_way_turnover":0.0002439476997234562,"session_ns":1578009600000000000,"traded_dollars":243947.6997234562},"events":0,"events_csv_sha256":"16cdec49220d087056d32c690648bb0c1f6f87a6c7bdd8703b1c1b685ff666ad","execution_months":2,"exposure":{"max_abs_net_leverage":0.0025056452321569936,"max_gross_leverage":0.016336845621476272,"max_stale_gross_fraction":0.0,"max_stale_names":0,"mean_gross_leverage":0.007883558106739574,"mean_held_names":11.894736842105264,"mean_stale_names":0.0,"min_cash_ratio":0.9975257756547576},"final_nav":999831979.3104773,"financing":{"blocked_short_dollars":0.0,"blocked_short_name_decisions":0,"long_financing_dollars":0.0,"member_decisions_by_tier":{"gc":449,"special":0,"warm":0},"missing_predictor_member_decisions":0,"missing_predictor_short_name_days":0,"net_exposure":{"max_abs_net_leverage":0.0025056452321569936,"mean_abs_net_leverage":0.0008313909684352642,"mean_net_leverage":-0.000547037731042347},"short_dollar_share_by_tier":{"basis":"pre-mark short dollars on return rows with shorts; NaN/null without tiers","mean":{"gc":1.0,"special":0.0,"warm":0.0},"p95":{"gc":1.0,"special":0.0,"warm":0.0},"sessions":38},"short_financing_by_tier_dollars":{"gc":18846.83532846026,"special":0.0,"warm":0.0},"short_financing_dollars":18846.83532846026,"spec":{"block_special_shorts":false,"day_count":"ACT/365","flat_short_bps":300.0,"id":"flat-300-v0","long_spread_bps":0.0,"rule":"flat-short-v0","short_spread_bps":0.0,"tier_fee_bps":{"gc":0.0,"special":0.0,"warm":0.0}},"summed_long_financing_return":0.0,"summed_short_financing_return":1.8848053785684758e-05,"tiers_available":true,"total_financing_dollars":18846.83532846026},"financing_scenario":"flat-300-v0","gross_sharpe":1.5246868866719703,"guard":{"guarded_gross_exposure_dollars":0.0,"guarded_intervals":0,"raw_minus_adjusted_pnl_sensitivity_dollars":0.0},"hac_defined":true,"hac_kernel":"bartlett","hac_lag":5,"hac_t":-0.7881645910188536,"info_clock":{"definition":"P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence","fast_name_days":196,"fast_planned_turnover":1.0370538990537632,"fast_share":0.4365256124721604,"field":{"name":"ea_days_since","sha256":"199a6c0ca36eda3d852f89247097fd82c33236129efb2bef9fdcd3554395e729"},"missing_name_days":73,"name_days":449,"planned_turnover":2.5094311923911055,"rate":"info-clock-rate-v1","theta_fast":0.129449436703876,"theta_slow":0.05,"turnover_share":0.41326253622662945,"window_sessions":21},"max_drawdown":0.00026178969647594474,"max_monthly_one_way_turnover":0.11360869616048341,"max_monthly_one_way_turnover_ex_deployment_month":0.11360869616048341,"mean_daily_net_return":-4.421047916109744e-06,"mean_monthly_one_way_turnover":0.08057697827242481,"mean_monthly_one_way_turnover_ex_deployment_month":0.11360869616048341,"meets_daily_turnover_mean":false,"meets_daily_turnover_p95":false,"meets_sharpe_target":false,"meets_turnover_target_all_months":true,"meets_turnover_target_all_months_ex_deployment_month":true,"meets_turnover_target_mean":true,"meets_turnover_target_mean_ex_deployment_month":true,"missing":{"blocked_absent_order_sessions":0,"gap_run_1":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_2_4":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_5_plus":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"reappeared_after_write_off_forgone":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"unresolved_at_end_stale_mark":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"written_off":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0}},"months":[{"decision_sessions":22,"execution_sessions":21,"is_deployment_month":true,"month":202001,"one_way_turnover":0.047545260384366204,"planned_turnover_decision_month":1.4574138458163974,"traded_dollars":47545375.27637364,"traded_sessions":21},{"decision_sessions":16,"execution_sessions":17,"is_deployment_month":false,"month":202002,"one_way_turnover":0.11360869616048341,"planned_turnover_decision_month":1.0577730602468876,"traded_dollars":113595508.13242605,"traded_sessions":17}],"months_le_0.30":2,"months_le_0.30_ex_deployment_month":1,"net_sharpe":-1.622514767278016,"observations":38,"planned_vs_actual":{"actual_minus_planned":-2.354032949518435,"basis":"planned = sum|next-cur| on drifted marked weights at decision NAV; actual = sum|fills|/pre-trade NAV at execution; gaps: drift, caps and working orders, blocked absent names, write-offs","monthly_reconciled_total":0.16115395654484962,"monthly_reconciliation_error":2.7755575615628914e-17,"total_actual_one_way_turnover_execution_basis":0.1611539565448496,"total_planned_turnover_decision_basis":2.5151869060632848},"primary":false,"scenario":"modeled-1bn-stale5-v1+flat-300-v0","total_net_return":-0.00016802068952270766,"trading_scenario":"modeled-1bn-stale5-v1","turnover_definition":"calendar-month one-way turnover = sum over EXECUTION sessions t in the month (the fill session's month, not the decision's) of sum_i |filled dollars_i,t| / pre-trade NAV_t; includes forced exits and the initial deployment; write-offs are not fills and are excluded; *_ex_deployment_month drops the calendar month holding the first nonzero fill; planned turnover (decision month, drifted marked weights) is reported only for reconciliation"},{"accounting_checks":{"max_cash_book_relative_error":1.192276955489297e-15,"max_return_identity_error":1.8057387182746076e-16,"tolerance":1e-09},"ann_mean":-0.00102361121752612,"ann_vol":0.0006845110980518656,"cagr":-0.0010233174678930812,"calendar_year_returns":[{"net_compounded_return":-0.00015437686741914813,"observations":38,"year":2020}],"capacity":{"capped_fills":439,"fallback_vol_fills":230,"fills":446,"liquidity_blocked_orders":0,"participation_fills":446,"participation_max":0.010000000000000002,"participation_p95_resolution":"0.01-decade histogram bin upper edge","participation_p95_upper_bound":0.010000000000000002,"unfilled_dollars":2353838497.453448},"construction":{"band_multiple":0.0,"banded_names_total":7,"cadence_rebalance_decisions":38,"decisions":38,"mean_banded_names_per_rebalance":0.18421052631578946,"neutralize":"none","neutralize_amplification_max":null,"neutralize_amplification_median":null,"neutralize_applied_decisions":0,"neutralize_attempted_decisions":0,"neutralize_max_excluded_share":0.0,"neutralize_skip_reasons":{"amplification":0,"excluded-share":0,"refused":0,"too-few-names":0},"neutralize_skipped_decisions":0,"neutralize_used_names_median":null,"neutralize_used_names_min":null,"rebalanced_decisions":38,"rule_id":"aim-partial-v5","v5":{"aim_leverage":1.32,"decisions":38,"dust_multiple":0.1,"exit_rate":0.05,"mean_gross":0.06585537370357014,"mean_held_share":1.0,"mean_net":-0.00043613395934209937,"rate":"info-clock-rate-v1","theta":0.05}},"costs":{"borrow_dollars":3025.5277582649933,"impact_cost_dollars":209550.15503762808,"linear_cost_dollars":96684.56189854984,"summed_borrow_return":3.0257035924507338e-06,"summed_trade_cost_return":0.00030624913574168366,"summed_writeoff_return":0.0,"trade_cost_dollars":306234.71693617787,"unrationed_full_request_cost_dollars":44347692.10849087,"unrationed_unpriced_requests":0,"writeoff_pnl_dollars":0.0},"daily_csv_sha256":"59a46c2728b23487c278c68ddeb09201c49c0970f71b57510f38bf6ce358770b","daily_turnover_gmv":{"basis":"executed-fills;forced-exits-included;deployment-session-excluded","definition":"daily one-way turnover in GMV units: tau_t = sum_i |filled dollars_i,t| / pre-trade gross (long$ + short$ after the mark at t, before trading; stale names at stale marks) over EXECUTED fills only (forced exits included, planned turnover never; write-offs are not fills); statistics over execution sessions with positive pre-trade gross, the deployment session (first nonzero fill) excluded; quantiles interpolate linearly at (n-1)q over the sorted sessions (numpy default); ceilings are declared before results and a NaN statistic never meets them","max":1.9087767140245535,"max_session_ns":1578268800000000000,"mean":0.6789343860488426,"mean_max":0.2,"median":0.5693783848169439,"p95":1.117747007932857,"p95_max":0.3,"quantile":"linear interpolation at (n-1)q over sorted sessions (numpy default)","sessions":37,"zero_gmv_sessions_excluded":0},"deployment":{"occurred":true,"one_way_turnover":0.0002439476997234562,"session_ns":1578009600000000000,"traded_dollars":243947.6997234562},"events":0,"events_csv_sha256":"16cdec49220d087056d32c690648bb0c1f6f87a6c7bdd8703b1c1b685ff666ad","execution_months":2,"exposure":{"max_abs_net_leverage":0.0025056360915839296,"max_gross_leverage":0.016336641692562454,"max_stale_gross_fraction":0.0,"max_stale_names":0,"mean_gross_leverage":0.007883505717205655,"mean_held_names":11.894736842105264,"mean_stale_names":0.0,"min_cash_ratio":0.9975257866183382},"final_nav":999845623.1325809,"financing":{"blocked_short_dollars":0.0,"blocked_short_name_decisions":0,"long_financing_dollars":2176.8603278426854,"member_decisions_by_tier":{"gc":449,"special":0,"warm":0},"missing_predictor_member_decisions":0,"missing_predictor_short_name_days":0,"net_exposure":{"max_abs_net_leverage":0.0025056360915839296,"mean_abs_net_leverage":0.0008313873333336434,"mean_net_leverage":-0.0005470348248316538},"short_dollar_share_by_tier":{"basis":"pre-mark short dollars on return rows with shorts; NaN/null without tiers","mean":{"gc":1.0,"special":0.0,"warm":0.0},"p95":{"gc":1.0,"special":0.0,"warm":0.0},"sessions":38},"short_financing_by_tier_dollars":{"gc":3025.5277582649933,"special":0.0,"warm":0.0},"short_financing_dollars":3025.5277582649933,"spec":{"block_special_shorts":true,"day_count":"ACT/360","flat_short_bps":0.0,"id":"engine-tiers-v1","long_spread_bps":40.0,"rule":"tiered-swap-v1","short_spread_bps":20.0,"tier_fee_bps":{"gc":27.5,"special":2750.0,"warm":300.0}},"summed_long_financing_return":2.1769953163199824e-06,"summed_short_financing_return":3.0257035924507338e-06,"tiers_available":true,"total_financing_dollars":5202.388086107679},"financing_scenario":"engine-tiers-v1","gross_sharpe":1.5246850487398316,"guard":{"guarded_gross_exposure_dollars":0.0,"guarded_intervals":0,"raw_minus_adjusted_pnl_sensitivity_dollars":0.0},"hac_defined":true,"hac_kernel":"bartlett","hac_lag":5,"hac_t":-0.7267108754235387,"info_clock":{"definition":"P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence","fast_name_days":196,"fast_planned_turnover":1.0370538929771154,"fast_share":0.4365256124721604,"field":{"name":"ea_days_since","sha256":"199a6c0ca36eda3d852f89247097fd82c33236129efb2bef9fdcd3554395e729"},"missing_name_days":73,"name_days":449,"planned_turnover":2.509431178919637,"rate":"info-clock-rate-v1","theta_fast":0.129449436703876,"theta_slow":0.05,"turnover_share":0.4132625360236374,"window_sessions":21},"max_drawdown":0.0002585605226290699,"max_monthly_one_way_turnover":0.11360773929961557,"max_monthly_one_way_turnover_ex_deployment_month":0.11360773929961557,"mean_daily_net_return":-4.061949275897301e-06,"mean_monthly_one_way_turnover":0.08057645570972907,"mean_monthly_one_way_turnover_ex_deployment_month":0.11360773929961557,"meets_daily_turnover_mean":false,"meets_daily_turnover_p95":false,"meets_sharpe_target":false,"meets_turnover_target_all_months":true,"meets_turnover_target_all_months_ex_deployment_month":true,"meets_turnover_target_mean":true,"meets_turnover_target_mean_ex_deployment_month":true,"missing":{"blocked_absent_order_sessions":0,"gap_run_1":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_2_4":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_5_plus":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"reappeared_after_write_off_forgone":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"unresolved_at_end_stale_mark":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"written_off":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0}},"months":[{"decision_sessions":22,"execution_sessions":21,"is_deployment_month":true,"month":202001,"one_way_turnover":0.04754517211984256,"planned_turnover_decision_month":1.4574138365224232,"traded_dollars":47545375.27637364,"traded_sessions":21},{"decision_sessions":16,"execution_sessions":17,"is_deployment_month":false,"month":202002,"one_way_turnover":0.11360773929961557,"planned_turnover_decision_month":1.0577730463224422,"traded_dollars":113595561.22120945,"traded_sessions":17}],"months_le_0.30":2,"months_le_0.30_ex_deployment_month":1,"net_sharpe":-1.4953902434004958,"observations":38,"planned_vs_actual":{"actual_minus_planned":-2.3540339714254066,"basis":"planned = sum|next-cur| on drifted marked weights at decision NAV; actual = sum|fills|/pre-trade NAV at execution; gaps: drift, caps and working orders, blocked absent names, write-offs","monthly_reconciled_total":0.16115291141945814,"monthly_reconciliation_error":0.0,"total_actual_one_way_turnover_execution_basis":0.16115291141945814,"total_planned_turnover_decision_basis":2.5151868828448647},"primary":false,"scenario":"modeled-1bn-stale5-v1+engine-tiers-v1","total_net_return":-0.00015437686741914813,"trading_scenario":"modeled-1bn-stale5-v1","turnover_definition":"calendar-month one-way turnover = sum over EXECUTION sessions t in the month (the fill session's month, not the decision's) of sum_i |filled dollars_i,t| / pre-trade NAV_t; includes forced exits and the initial deployment; write-offs are not fills and are excluded; *_ex_deployment_month drops the calendar month holding the first nonzero fill; planned turnover (decision month, drifted marked weights) is reported only for reconciliation"}],"schema":"atx.dsl-nav-replay-summary/v1","self_financing_nav":true,"signal_semantics":"exact-pre-target-composition;equal-family/equal-within;missing-or-unoriented-neutral-fixed-denominator","source_bindings":{"actual_trades_or_returns":false,"dates":40,"files":{"train_combined.f64":{"bytes":3840,"sha256":"f7295f0b724f1d332b2bb7fa3702aeb4fd2b42d1d6c860f49a0c6fbcff5bc47c"},"train_combined_finite.u8":{"bytes":480,"sha256":"88e18e36c5d67340603e8acd323b1a91d9459d5c6b5c3c7c448a9dd5005204c1"},"train_combined_ids.u64":{"bytes":96,"sha256":"308abf618a71863d40880f94c42b7b69d31e5791dfa1f580fd3a9f0dfef9130e"},"train_combined_member.u8":{"bytes":480,"sha256":"88e18e36c5d67340603e8acd323b1a91d9459d5c6b5c3c7c448a9dd5005204c1"},"train_combined_sessions.i64":{"bytes":320,"sha256":"bc06a9e5c55fbb418631dbc76853ccabe5dd72cb9ae59841137823c65d3be52d"}},"finite_cells":473,"finite_semantics":"one-iff-saved-f64-is-finite;nonmembers-NaN;zero-is-valid-neutral-signal","instruments":12,"layout":"date-major-little-endian","library_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","member_cells":473,"member_semantics":"decision-member-and-source-present-and-finite-positive-close;independent-of-component-coverage","orientation_candidates_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","orientations_artifact_sha256":null,"role":"train","role_manifest_sha256":"9dba74f71255d7f5ada74a0304d0922fa08bda5f0056d66de0c55b3b26bdfe71","role_window_required":true,"run_recipe_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","schema":"atx.dsl-combined-signal/v1","score_begin":0,"score_end":40,"signal_semantics":"exact-pre-target-composition;equal-family/equal-within;missing-or-unoriented-neutral-fixed-denominator","source_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"complete","train_manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"status":"complete","v7":{"books":{"linear-6bps-stale5-v1+swap-fin-v1":{"rebalance_decisions":38,"transfer_coefficient":{"mean":0.25092133470664224,"median":0.34396548617387607,"n":17,"p05":-0.1912207912704304,"p95":0.47370363029972196}},"modeled-1bn-stale5-v1+engine-tiers-v1":{"rebalance_decisions":38,"transfer_coefficient":{"mean":0.9726482558653344,"median":0.9697807234604022,"n":17,"p05":0.959023046810272,"p95":0.9896704846246152}},"modeled-1bn-stale5-v1+flat-300-v0":{"rebalance_decisions":38,"transfer_coefficient":{"mean":0.9726478892481893,"median":0.9697802273718287,"n":17,"p05":0.9590222810497946,"p95":0.9896704098136574}},"modeled-1bn-stale5-v1+swap-fin-v1":{"rebalance_decisions":38,"transfer_coefficient":{"mean":0.9726482516232045,"median":0.9697807177164164,"n":17,"p05":0.959023037956911,"p95":0.9896704837617134}},"modeled-1bn-terminal-adverse-v1+swap-fin-v1":{"rebalance_decisions":38,"transfer_coefficient":{"mean":0.9726482516232045,"median":0.9697807177164164,"n":17,"p05":0.959023037956911,"p95":0.9896704837617134}}},"declarations":{"capacity":"capacity by replay (R4.2): S2 at NAV multiples m in {.5,1,2,4,8} of the initial NAV, run as S2 books at the initial NAV with impact_y * m^0.5 and max_participation / m (the replay is scale invariant in every dollar except the impact law and the participation cap, so each book is the NAV-m book divided by m: returns, Sharpe, cost per traded dollar and cap binding are the NAV-m book's; dollar columns are scaled back by m; participation p95 is the histogram bound times m); the fixed rate or info-clock-rate-v1, this run's (Ruling ALCLOCK-3: it reads no NAV, so each capacity book moves at the members' clock rates as the main books do); x1 is S2 bit for bit","capacity_curve":true,"capacity_multiples":[0.5,1.0,2.0,4.0,8.0],"hook":"platform-v7 lane L4 NAV extension (strategy_nav_v7)","pass":"main","stress_books":false,"transfer_coefficient":"transfer coefficient (R2.5, Clarke-de Silva-Thorley 2002) per rebalance decision and book: corr over members with a finite decision-window sigma_i > 0 of desired_i / sigma_i (= alpha_i / sigma_i^2 with Grinold-Kahn alpha_i = IC sigma_i z_i, z = the neutralized rank aim) and the planned weight w_i after the rule"},"extras":"v7_transfer_coefficient.csv, the risk / vol target series, capacity/ and capacity_curve.csv (with --capacity-curve), spo_diagnostics.csv (spo rules) and v7_extras.json are written before this summary, which binds v7_extras.json and capacity/summary.json (v7.files, SHA-256); v7_extras.json binds the rest (its files)","files":{"capacity/summary.json":"093b27525fd698ddfdfef255c17dd4c72e79af6bdac12f60a0e62e4cbfb737f7","v7_extras.json":"f8cf30e5e2481366852d4823329740728c1b578ff3b9baf6016e5ba61db501d6"}}}
+  Json::parse(bytes_of(w.out("second") / "summary.json"))
+    Which is: {"capacity_qualified":false,"combined_sha256":"61ce2f137cb61a74f51aaed21be9c63667eaffc63f1ea62f2efd3f245dacfcd1","composition_weights_sha256":null,"financing_fields":{"fields_not_used":"mktcap_lagged (presence not point in time): market cap = shares_out x raw_close only","fields_used":{"ea_days_since":{"clock":"fixture-ea_days_since","point_in_time":true,"sha256":"199a6c0ca36eda3d852f89247097fd82c33236129efb2bef9fdcd3554395e729","staleness":null},"shares_out":{"clock":"fixture-shares_out","point_in_time":true,"sha256":"61c4fbd5d09f8b5e236b2568f8fd1e2218b68034a772e3d679261249483e5b8c","staleness":null},"si_shares":{"clock":"fixture-si_shares","point_in_time":true,"sha256":"23b578ccb2584daf58f591ca17ecbbb69d26bd45f0c0fab9f702f1796b6eab3c","staleness":null}},"manifest_sha256":"4cf75c5f7f5ea4f85812e734b52b6c0053464035ceb8b2105573296602289ed4","role_manifest_sha256":"9dba74f71255d7f5ada74a0304d0922fa08bda5f0056d66de0c55b3b26bdfe71","schema":"atx.research-role-fields/v1"},"limitations":"declared unfitted costs (constant 5 bps half spread, impact Y=0.6); financing is a declared scenario (flat-300-v0 legacy; swap-fin-v1 tier fees are research priors from public predictors, not lender quotes, and its locate rule is a modeled no-special-shorts rule, not locate availability; without --fields only flat-300-v0 runs, no locate); vendor adjusted-close factor unverified (guard sensitivity reported); common-stock status unverified; K-session write-off may misclassify halts vs delistings (missing histogram reported); cash earns 0% and shorts no rebate, so returns approximate excess returns; v2 budget planned by decision month while actual turnover is by execution month; working orders keep decision-NAV dollar targets; no terminal liquidation; the last two scored decisions are dropped vs the target replay; not capacity qualified; the monthly turnover fields (months_le_0.30, meets_turnover_target_*) are LEGACY reporting only (30%/month target retired 2026-09-27), the declared turnover limits are the daily GMV mean/p95 ceilings (daily_turnover_gmv, meets_daily_turnover_*); a capped (S2/S3) deployment that completes over several sessions counts its later sessions as turnover","order_basis":"delta","primary_financing_available":true,"primary_scenario":"modeled-1bn-stale5-v1+swap-fin-v1","producer":{"build_type":"debug","definition":"P9 C1 (NAV receipt completeness): the executable that wrote this directory: engine_git_sha = the configure-time commit of its source tree (\"-dirty\": the tree had local changes; \"unknown\": no git), build_type = release (NDEBUG) or debug; a comparison of two builds' summaries drops this key (every other byte is the replay's)","engine_git_sha":"9d3916b86035f1e41652f687f64928e598006d3a"},"recipe_sha256":"87e3ad5c521e7e8fdc0738955c16b6e8ea19a060f02a714bf49da4ef0385c1b0","role_sha256":"9dba74f71255d7f5ada74a0304d0922fa08bda5f0056d66de0c55b3b26bdfe71","rule":"aim-partial-v5","scenarios":[{"accounting_checks":{"max_cash_book_relative_error":8.267059630936204e-16,"max_return_identity_error":1.9737900550098608e-16,"tolerance":1e-09},"ann_mean":0.048840442235541265,"ann_vol":0.016749251367854,"cagr":0.04990440236175098,"calendar_year_returns":[{"net_compounded_return":0.0073705470362646075,"observations":38,"year":2020}],"capacity":{"capped_fills":0,"fallback_vol_fills":0,"fills":443,"liquidity_blocked_orders":0,"participation_fills":443,"participation_max":34.05862658125599,"participation_p95_resolution":"0.01-decade histogram bin upper edge","participation_p95_upper_bound":4.3651583224016655,"unfilled_dollars":0.0},"construction":{"band_multiple":0.0,"banded_names_total":13,"cadence_rebalance_decisions":38,"decisions":38,"mean_banded_names_per_rebalance":0.34210526315789475,"neutralize":"none","neutralize_amplification_max":null,"neutralize_amplification_median":null,"neutralize_applied_decisions":0,"neutralize_attempted_decisions":0,"neutralize_max_excluded_share":0.0,"neutralize_skip_reasons":{"amplification":0,"excluded-share":0,"refused":0,"too-few-names":0},"neutralize_skipped_decisions":0,"neutralize_used_names_median":null,"neutralize_used_names_min":null,"rebalanced_decisions":38,"rule_id":"aim-partial-v5","v5":{"aim_leverage":1.32,"decisions":38,"dust_multiple":0.1,"exit_rate":0.05,"mean_gross":0.23359242023113086,"mean_held_share":1.0167464114832534,"mean_net":0.03927381197609854,"rate":"info-clock-rate-v1","theta":0.05}},"costs":{"borrow_dollars":73604.08263946076,"impact_cost_dollars":0.0,"linear_cost_dollars":2566248.609624797,"summed_borrow_return":7.304380723530601e-05,"summed_trade_cost_return":0.0025482030838203163,"summed_writeoff_return":0.0,"trade_cost_dollars":2566248.609624797,"unrationed_full_request_cost_dollars":2566248.609624797,"unrationed_unpriced_requests":0,"writeoff_pnl_dollars":0.0},"daily_csv_sha256":"71a2ff9893343e9f9a81bba5b8e8fad400c1c09e88aa93b714ff1674a4de3879","daily_turnover_gmv":{"basis":"executed-fills;forced-exits-included;deployment-session-excluded","definition":"daily one-way turnover in GMV units: tau_t = sum_i |filled dollars_i,t| / pre-trade gross (long$ + short$ after the mark at t, before trading; stale names at stale marks) over EXECUTED fills only (forced exits included, planned turnover never; write-offs are not fills); statistics over execution sessions with positive pre-trade gross, the deployment session (first nonzero fill) excluded; quantiles interpolate linearly at (n-1)q over the sorted sessions (numpy default); ceilings are declared before results and a NaN statistic never meets them","max":1.0696367697979263,"max_session_ns":1578268800000000000,"mean":0.5112085403461318,"mean_max":0.2,"median":0.484475936133641,"p95":0.7280062092842804,"p95_max":0.3,"quantile":"linear interpolation at (n-1)q over sorted sessions (numpy default)","sessions":37,"zero_gmv_sessions_excluded":0},"deployment":{"occurred":true,"one_way_turnover":0.10095775214970544,"session_ns":1578009600000000000,"traded_dollars":100957752.14970544},"events":0,"events_csv_sha256":"16cdec49220d087056d32c690648bb0c1f6f87a6c7bdd8703b1c1b685ff666ad","execution_months":2,"exposure":{"max_abs_net_leverage":0.0925221827914337,"max_gross_leverage":0.36718664312534577,"max_stale_gross_fraction":0.0,"max_stale_names":0,"mean_gross_leverage":0.23352905142999245,"mean_held_names":12.0,"mean_stale_names":0.0,"min_cash_ratio":0.9074778172085665},"final_nav":1007370547.0362647,"financing":{"blocked_short_dollars":0.0,"blocked_short_name_decisions":0,"long_financing_dollars":81986.65718468212,"member_decisions_by_tier":{"gc":449,"special":0,"warm":0},"missing_predictor_member_decisions":0,"missing_predictor_short_name_days":0,"net_exposure":{"max_abs_net_leverage":0.0925221827914337,"mean_abs_net_leverage":0.039514708365525335,"mean_net_leverage":0.039514708365525335},"short_dollar_share_by_tier":{"basis":"pre-mark short dollars on return rows with shorts; NaN/null without tiers","mean":{"gc":1.0,"special":0.0,"warm":0.0},"p95":{"gc":1.0,"special":0.0,"warm":0.0},"sessions":38},"short_financing_by_tier_dollars":{"gc":73604.08263946076,"special":0.0,"warm":0.0},"short_financing_dollars":73604.08263946076,"spec":{"block_special_shorts":true,"day_count":"ACT/360","flat_short_bps":0.0,"id":"swap-fin-v1","long_spread_bps":40.0,"rule":"tiered-swap-v1","short_spread_bps":20.0,"tier_fee_bps":{"gc":30.0,"special":500.0,"warm":100.0}},"summed_long_financing_return":8.137966942400278e-05,"summed_short_financing_return":7.304380723530601e-05,"tiers_available":true,"total_financing_dollars":155590.7398241429},"financing_scenario":"swap-fin-v1","gross_sharpe":4.002265089311018,"guard":{"guarded_gross_exposure_dollars":0.0,"guarded_intervals":0,"raw_minus_adjusted_pnl_sensitivity_dollars":0.0},"hac_defined":true,"hac_kernel":"bartlett","hac_lag":5,"hac_t":1.0426673792312586,"info_clock":{"definition":"P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence","fast_name_days":196,"fast_planned_turnover":2.7525215808463868,"fast_share":0.4365256124721604,"field":{"name":"ea_days_since","sha256":"199a6c0ca36eda3d852f89247097fd82c33236129efb2bef9fdcd3554395e729"},"missing_name_days":73,"name_days":449,"planned_turnover":4.235244609840653,"rate":"info-clock-rate-v1","theta_fast":0.129449436703876,"theta_slow":0.05,"turnover_share":0.6499085258147457,"window_sessions":21},"max_drawdown":0.004921682159110707,"max_monthly_one_way_turnover":2.1545726694917153,"max_monthly_one_way_turnover_ex_deployment_month":2.0924324702088106,"mean_daily_net_return":0.00019381127871246533,"mean_monthly_one_way_turnover":2.123502569850263,"mean_monthly_one_way_turnover_ex_deployment_month":2.0924324702088106,"meets_daily_turnover_mean":false,"meets_daily_turnover_p95":false,"meets_sharpe_target":true,"meets_turnover_target_all_months":false,"meets_turnover_target_all_months_ex_deployment_month":false,"meets_turnover_target_mean":false,"meets_turnover_target_mean_ex_deployment_month":false,"missing":{"blocked_absent_order_sessions":0,"gap_run_1":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_2_4":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_5_plus":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"reappeared_after_write_off_forgone":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"unresolved_at_end_stale_mark":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"written_off":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0}},"months":[{"decision_sessions":22,"execution_sessions":21,"is_deployment_month":true,"month":202001,"one_way_turnover":2.1545726694917153,"planned_turnover_decision_month":2.285548623301002,"traded_dollars":2167647467.68303,"traded_sessions":21},{"decision_sessions":16,"execution_sessions":17,"is_deployment_month":false,"month":202002,"one_way_turnover":2.0924324702088106,"planned_turnover_decision_month":1.9623756051678836,"traded_dollars":2109433548.3582976,"traded_sessions":17}],"months_le_0.30":0,"months_le_0.30_ex_deployment_month":0,"net_sharpe":2.9159776256793353,"observations":38,"planned_vs_actual":{"actual_minus_planned":-0.0009190887683576676,"basis":"planned = sum|next-cur| on drifted marked weights at decision NAV; actual = sum|fills|/pre-trade NAV at execution; gaps: drift, caps and working orders, blocked absent names, write-offs","monthly_reconciled_total":4.247005139700526,"monthly_reconciliation_error":-8.881784197001252e-16,"total_actual_one_way_turnover_execution_basis":4.247005139700527,"total_planned_turnover_decision_basis":4.247924228468885},"primary":false,"scenario":"linear-6bps-stale5-v1+swap-fin-v1","total_net_return":0.0073705470362646075,"trading_scenario":"linear-6bps-stale5-v1","turnover_definition":"calendar-month one-way turnover = sum over EXECUTION sessions t in the month (the fill session's month, not the decision's) of sum_i |filled dollars_i,t| / pre-trade NAV_t; includes forced exits and the initial deployment; write-offs are not fills and are excluded; *_ex_deployment_month drops the calendar month holding the first nonzero fill; planned turnover (decision month, drifted marked weights) is reported only for reconciliation"},{"accounting_checks":{"max_cash_book_relative_error":1.0730405333640852e-15,"max_return_identity_error":1.9910695271338485e-16,"tolerance":1e-09},"ann_mean":-0.0011219319073322938,"ann_vol":0.0006892435920039098,"cagr":-0.0011215362960044217,"calendar_year_returns":[{"net_compounded_return":-0.00016920114483132132,"observations":38,"year":2020}],"capacity":{"capped_fills":444,"fallback_vol_fills":230,"fills":446,"liquidity_blocked_orders":0,"participation_fills":446,"participation_max":0.010000000000000002,"participation_p95_resolution":"0.01-decade histogram bin upper edge","participation_p95_upper_bound":0.010000000000000002,"unfilled_dollars":4000796120.4690876},"construction":{"band_multiple":0.0,"banded_names_total":7,"cadence_rebalance_decisions":38,"decisions":38,"mean_banded_names_per_rebalance":0.18421052631578946,"neutralize":"none","neutralize_amplification_max":null,"neutralize_amplification_median":null,"neutralize_applied_decisions":0,"neutralize_attempted_decisions":0,"neutralize_max_excluded_share":0.0,"neutralize_skip_reasons":{"amplification":0,"excluded-share":0,"refused":0,"too-few-names":0},"neutralize_skipped_decisions":0,"neutralize_used_names_median":null,"neutralize_used_names_min":null,"rebalanced_decisions":38,"rule_id":"aim-partial-v5","v5":{"aim_leverage":1.32,"decisions":38,"dust_multiple":0.1,"exit_rate":0.05,"mean_gross":0.10914371884891891,"mean_held_share":1.0,"mean_net":0.004621772100669436,"rate":"info-clock-rate-v1","theta":0.05}},"costs":{"borrow_dollars":3183.4655681590307,"impact_cost_dollars":210279.77364854357,"linear_cost_dollars":97141.8119003768,"summed_borrow_return":3.1836563893973683e-06,"summed_trade_cost_return":0.0003074365192537127,"summed_writeoff_return":0.0,"trade_cost_dollars":307421.5855489203,"unrationed_full_request_cost_dollars":89379495.29116206,"unrationed_unpriced_requests":0,"writeoff_pnl_dollars":0.0},"daily_csv_sha256":"bbaa07d103c3e1f6955fdf597c9acbaace86a3df7e44138f294450a542842ede","daily_turnover_gmv":{"basis":"executed-fills;forced-exits-included;deployment-session-excluded","definition":"daily one-way turnover in GMV units: tau_t = sum_i |filled dollars_i,t| / pre-trade gross (long$ + short$ after the mark at t, before trading; stale names at stale marks) over EXECUTED fills only (forced exits included, planned turnover never; write-offs are not fills); statistics over execution sessions with positive pre-trade gross, the deployment session (first nonzero fill) excluded; quantiles interpolate linearly at (n-1)q over the sorted sessions (numpy default); ceilings are declared before results and a NaN statistic never meets them","max":1.9087767140245535,"max_session_ns":1578268800000000000,"mean":0.6798681130064699,"mean_max":0.2,"median":0.5662940231469522,"p95":1.117747007932857,"p95_max":0.3,"quantile":"linear interpolation at (n-1)q over sorted sessions (numpy default)","sessions":37,"zero_gmv_sessions_excluded":0},"deployment":{"occurred":true,"one_way_turnover":0.0002439476997234562,"session_ns":1578009600000000000,"traded_dollars":243947.6997234562},"events":0,"events_csv_sha256":"16cdec49220d087056d32c690648bb0c1f6f87a6c7bdd8703b1c1b685ff666ad","execution_months":2,"exposure":{"max_abs_net_leverage":0.0026714022773609036,"max_gross_leverage":0.016022661593783717,"max_stale_gross_fraction":0.0,"max_stale_names":0,"mean_gross_leverage":0.007902889736026777,"mean_held_names":11.894736842105264,"mean_stale_names":0.0,"min_cash_ratio":0.997328597722638},"final_nav":999830798.8551687,"financing":{"blocked_short_dollars":0.0,"blocked_short_name_decisions":0,"long_financing_dollars":2180.496447309642,"member_decisions_by_tier":{"gc":449,"special":0,"warm":0},"missing_predictor_member_decisions":0,"missing_predictor_short_name_days":0,"net_exposure":{"max_abs_net_leverage":0.0026714022773609036,"mean_abs_net_leverage":0.0008550655105041795,"mean_net_leverage":-0.000542983820438507},"short_dollar_share_by_tier":{"basis":"pre-mark short dollars on return rows with shorts; NaN/null without tiers","mean":{"gc":1.0,"special":0.0,"warm":0.0},"p95":{"gc":1.0,"special":0.0,"warm":0.0},"sessions":38},"short_financing_by_tier_dollars":{"gc":3183.4655681590307,"special":0.0,"warm":0.0},"short_financing_dollars":3183.4655681590307,"spec":{"block_special_shorts":true,"day_count":"ACT/360","flat_short_bps":0.0,"id":"swap-fin-v1","long_spread_bps":40.0,"rule":"tiered-swap-v1","short_spread_bps":20.0,"tier_fee_bps":{"gc":30.0,"special":500.0,"warm":100.0}},"summed_long_financing_return":2.1806369469982994e-06,"summed_short_financing_return":3.1836563893973683e-06,"tiers_available":true,"total_financing_dollars":5363.962015468673},"financing_scenario":"swap-fin-v1","gross_sharpe":1.3858857634704789,"guard":{"guarded_gross_exposure_dollars":0.0,"guarded_intervals":0,"raw_minus_adjusted_pnl_sensitivity_dollars":0.0},"hac_defined":true,"hac_kernel":"bartlett","hac_lag":5,"hac_t":-0.7853544880143795,"info_clock":{"definition":"P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence","fast_name_days":196,"fast_planned_turnover":2.6848750473007796,"fast_share":0.4365256124721604,"field":{"name":"ea_days_since","sha256":"199a6c0ca36eda3d852f89247097fd82c33236129efb2bef9fdcd3554395e729"},"missing_name_days":73,"name_days":449,"planned_turnover":4.157256940163519,"rate":"info-clock-rate-v1","theta_fast":0.129449436703876,"theta_slow":0.05,"turnover_share":0.6458285080631014,"window_sessions":21},"max_drawdown":0.00025859772834380124,"max_monthly_one_way_turnover":0.11437020962477289,"max_monthly_one_way_turnover_ex_deployment_month":0.11437020962477289,"mean_daily_net_return":-4.452110743382118e-06,"mean_monthly_one_way_turnover":0.08095769138008982,"mean_monthly_one_way_turnover_ex_deployment_month":0.11437020962477289,"meets_daily_turnover_mean":false,"meets_daily_turnover_p95":false,"meets_sharpe_target":false,"meets_turnover_target_all_months":true,"meets_turnover_target_all_months_ex_deployment_month":true,"meets_turnover_target_mean":true,"meets_turnover_target_mean_ex_deployment_month":true,"missing":{"blocked_absent_order_sessions":0,"gap_run_1":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_2_4":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_5_plus":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"reappeared_after_write_off_forgone":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"unresolved_at_end_stale_mark":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"written_off":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0}},"months":[{"decision_sessions":22,"execution_sessions":21,"is_deployment_month":true,"month":202001,"one_way_turnover":0.04754517313540675,"planned_turnover_decision_month":2.245083885873699,"traded_dollars":47545375.27637364,"traded_sessions":21},{"decision_sessions":16,"execution_sessions":17,"is_deployment_month":false,"month":202002,"one_way_turnover":0.11437020962477289,"planned_turnover_decision_month":1.9179287583258715,"traded_dollars":114357644.55758767,"traded_sessions":17}],"months_le_0.30":2,"months_le_0.30_ex_deployment_month":1,"net_sharpe":-1.6277727067006664,"observations":38,"planned_vs_actual":{"actual_minus_planned":-4.001097261439391,"basis":"planned = sum|next-cur| on drifted marked weights at decision NAV; actual = sum|fills|/pre-trade NAV at execution; gaps: drift, caps and working orders, blocked absent names, write-offs","monthly_reconciled_total":0.16191538276017964,"monthly_reconciliation_error":2.7755575615628914e-17,"total_actual_one_way_turnover_execution_basis":0.1619153827601796,"total_planned_turnover_decision_basis":4.16301264419957},"primary":true,"scenario":"modeled-1bn-stale5-v1+swap-fin-v1","total_net_return":-0.00016920114483132132,"trading_scenario":"modeled-1bn-stale5-v1","turnover_definition":"calendar-month one-way turnover = sum over EXECUTION sessions t in the month (the fill session's month, not the decision's) of sum_i |filled dollars_i,t| / pre-trade NAV_t; includes forced exits and the initial deployment; write-offs are not fills and are excluded; *_ex_deployment_month drops the calendar month holding the first nonzero fill; planned turnover (decision month, drifted marked weights) is reported only for reconciliation"},{"accounting_checks":{"max_cash_book_relative_error":1.0730405333640852e-15,"max_return_identity_error":1.9910695271338485e-16,"tolerance":1e-09},"ann_mean":-0.0011219319073322938,"ann_vol":0.0006892435920039098,"cagr":-0.0011215362960044217,"calendar_year_returns":[{"net_compounded_return":-0.00016920114483132132,"observations":38,"year":2020}],"capacity":{"capped_fills":444,"fallback_vol_fills":230,"fills":446,"liquidity_blocked_orders":0,"participation_fills":446,"participation_max":0.010000000000000002,"participation_p95_resolution":"0.01-decade histogram bin upper edge","participation_p95_upper_bound":0.010000000000000002,"unfilled_dollars":4000796120.4690876},"construction":{"band_multiple":0.0,"banded_names_total":7,"cadence_rebalance_decisions":38,"decisions":38,"mean_banded_names_per_rebalance":0.18421052631578946,"neutralize":"none","neutralize_amplification_max":null,"neutralize_amplification_median":null,"neutralize_applied_decisions":0,"neutralize_attempted_decisions":0,"neutralize_max_excluded_share":0.0,"neutralize_skip_reasons":{"amplification":0,"excluded-share":0,"refused":0,"too-few-names":0},"neutralize_skipped_decisions":0,"neutralize_used_names_median":null,"neutralize_used_names_min":null,"rebalanced_decisions":38,"rule_id":"aim-partial-v5","v5":{"aim_leverage":1.32,"decisions":38,"dust_multiple":0.1,"exit_rate":0.05,"mean_gross":0.10914371884891891,"mean_held_share":1.0,"mean_net":0.004621772100669436,"rate":"info-clock-rate-v1","theta":0.05}},"costs":{"borrow_dollars":3183.4655681590307,"impact_cost_dollars":210279.77364854357,"linear_cost_dollars":97141.8119003768,"summed_borrow_return":3.1836563893973683e-06,"summed_trade_cost_return":0.0003074365192537127,"summed_writeoff_return":0.0,"trade_cost_dollars":307421.5855489203,"unrationed_full_request_cost_dollars":89379495.29116206,"unrationed_unpriced_requests":0,"writeoff_pnl_dollars":0.0},"daily_csv_sha256":"bbaa07d103c3e1f6955fdf597c9acbaace86a3df7e44138f294450a542842ede","daily_turnover_gmv":{"basis":"executed-fills;forced-exits-included;deployment-session-excluded","definition":"daily one-way turnover in GMV units: tau_t = sum_i |filled dollars_i,t| / pre-trade gross (long$ + short$ after the mark at t, before trading; stale names at stale marks) over EXECUTED fills only (forced exits included, planned turnover never; write-offs are not fills); statistics over execution sessions with positive pre-trade gross, the deployment session (first nonzero fill) excluded; quantiles interpolate linearly at (n-1)q over the sorted sessions (numpy default); ceilings are declared before results and a NaN statistic never meets them","max":1.9087767140245535,"max_session_ns":1578268800000000000,"mean":0.6798681130064699,"mean_max":0.2,"median":0.5662940231469522,"p95":1.117747007932857,"p95_max":0.3,"quantile":"linear interpolation at (n-1)q over sorted sessions (numpy default)","sessions":37,"zero_gmv_sessions_excluded":0},"deployment":{"occurred":true,"one_way_turnover":0.0002439476997234562,"session_ns":1578009600000000000,"traded_dollars":243947.6997234562},"events":0,"events_csv_sha256":"16cdec49220d087056d32c690648bb0c1f6f87a6c7bdd8703b1c1b685ff666ad","execution_months":2,"exposure":{"max_abs_net_leverage":0.0026714022773609036,"max_gross_leverage":0.016022661593783717,"max_stale_gross_fraction":0.0,"max_stale_names":0,"mean_gross_leverage":0.007902889736026777,"mean_held_names":11.894736842105264,"mean_stale_names":0.0,"min_cash_ratio":0.997328597722638},"final_nav":999830798.8551687,"financing":{"blocked_short_dollars":0.0,"blocked_short_name_decisions":0,"long_financing_dollars":2180.496447309642,"member_decisions_by_tier":{"gc":449,"special":0,"warm":0},"missing_predictor_member_decisions":0,"missing_predictor_short_name_days":0,"net_exposure":{"max_abs_net_leverage":0.0026714022773609036,"mean_abs_net_leverage":0.0008550655105041795,"mean_net_leverage":-0.000542983820438507},"short_dollar_share_by_tier":{"basis":"pre-mark short dollars on return rows with shorts; NaN/null without tiers","mean":{"gc":1.0,"special":0.0,"warm":0.0},"p95":{"gc":1.0,"special":0.0,"warm":0.0},"sessions":38},"short_financing_by_tier_dollars":{"gc":3183.4655681590307,"special":0.0,"warm":0.0},"short_financing_dollars":3183.4655681590307,"spec":{"block_special_shorts":true,"day_count":"ACT/360","flat_short_bps":0.0,"id":"swap-fin-v1","long_spread_bps":40.0,"rule":"tiered-swap-v1","short_spread_bps":20.0,"tier_fee_bps":{"gc":30.0,"special":500.0,"warm":100.0}},"summed_long_financing_return":2.1806369469982994e-06,"summed_short_financing_return":3.1836563893973683e-06,"tiers_available":true,"total_financing_dollars":5363.962015468673},"financing_scenario":"swap-fin-v1","gross_sharpe":1.3858857634704789,"guard":{"guarded_gross_exposure_dollars":0.0,"guarded_intervals":0,"raw_minus_adjusted_pnl_sensitivity_dollars":0.0},"hac_defined":true,"hac_kernel":"bartlett","hac_lag":5,"hac_t":-0.7853544880143795,"info_clock":{"definition":"P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence","fast_name_days":196,"fast_planned_turnover":2.6848750473007796,"fast_share":0.4365256124721604,"field":{"name":"ea_days_since","sha256":"199a6c0ca36eda3d852f89247097fd82c33236129efb2bef9fdcd3554395e729"},"missing_name_days":73,"name_days":449,"planned_turnover":4.157256940163519,"rate":"info-clock-rate-v1","theta_fast":0.129449436703876,"theta_slow":0.05,"turnover_share":0.6458285080631014,"window_sessions":21},"max_drawdown":0.00025859772834380124,"max_monthly_one_way_turnover":0.11437020962477289,"max_monthly_one_way_turnover_ex_deployment_month":0.11437020962477289,"mean_daily_net_return":-4.452110743382118e-06,"mean_monthly_one_way_turnover":0.08095769138008982,"mean_monthly_one_way_turnover_ex_deployment_month":0.11437020962477289,"meets_daily_turnover_mean":false,"meets_daily_turnover_p95":false,"meets_sharpe_target":false,"meets_turnover_target_all_months":true,"meets_turnover_target_all_months_ex_deployment_month":true,"meets_turnover_target_mean":true,"meets_turnover_target_mean_ex_deployment_month":true,"missing":{"blocked_absent_order_sessions":0,"gap_run_1":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_2_4":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_5_plus":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"reappeared_after_write_off_forgone":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"unresolved_at_end_stale_mark":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"written_off":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0}},"months":[{"decision_sessions":22,"execution_sessions":21,"is_deployment_month":true,"month":202001,"one_way_turnover":0.04754517313540675,"planned_turnover_decision_month":2.245083885873699,"traded_dollars":47545375.27637364,"traded_sessions":21},{"decision_sessions":16,"execution_sessions":17,"is_deployment_month":false,"month":202002,"one_way_turnover":0.11437020962477289,"planned_turnover_decision_month":1.9179287583258715,"traded_dollars":114357644.55758767,"traded_sessions":17}],"months_le_0.30":2,"months_le_0.30_ex_deployment_month":1,"net_sharpe":-1.6277727067006664,"observations":38,"planned_vs_actual":{"actual_minus_planned":-4.001097261439391,"basis":"planned = sum|next-cur| on drifted marked weights at decision NAV; actual = sum|fills|/pre-trade NAV at execution; gaps: drift, caps and working orders, blocked absent names, write-offs","monthly_reconciled_total":0.16191538276017964,"monthly_reconciliation_error":2.7755575615628914e-17,"total_actual_one_way_turnover_execution_basis":0.1619153827601796,"total_planned_turnover_decision_basis":4.16301264419957},"primary":false,"scenario":"modeled-1bn-terminal-adverse-v1+swap-fin-v1","total_net_return":-0.00016920114483132132,"trading_scenario":"modeled-1bn-terminal-adverse-v1","turnover_definition":"calendar-month one-way turnover = sum over EXECUTION sessions t in the month (the fill session's month, not the decision's) of sum_i |filled dollars_i,t| / pre-trade NAV_t; includes forced exits and the initial deployment; write-offs are not fills and are excluded; *_ex_deployment_month drops the calendar month holding the first nonzero fill; planned turnover (decision month, drifted marked weights) is reported only for reconciliation"},{"accounting_checks":{"max_cash_book_relative_error":1.0730546366292625e-15,"max_return_identity_error":1.7272579393379445e-16,"tolerance":1e-09},"ann_mean":-0.0012113071670519027,"ann_vol":0.0006913905365884985,"cagr":-0.0012108091836590118,"calendar_year_returns":[{"net_compounded_return":-0.00018267627536727726,"observations":38,"year":2020}],"capacity":{"capped_fills":444,"fallback_vol_fills":230,"fills":446,"liquidity_blocked_orders":0,"participation_fills":446,"participation_max":0.010000000000000002,"participation_p95_resolution":"0.01-decade histogram bin upper edge","participation_p95_upper_bound":0.010000000000000002,"unfilled_dollars":4000777761.070167},"construction":{"band_multiple":0.0,"banded_names_total":7,"cadence_rebalance_decisions":38,"decisions":38,"mean_banded_names_per_rebalance":0.18421052631578946,"neutralize":"none","neutralize_amplification_max":null,"neutralize_amplification_median":null,"neutralize_applied_decisions":0,"neutralize_attempted_decisions":0,"neutralize_max_excluded_share":0.0,"neutralize_skip_reasons":{"amplification":0,"excluded-share":0,"refused":0,"too-few-names":0},"neutralize_skipped_decisions":0,"neutralize_used_names_median":null,"neutralize_used_names_min":null,"rebalanced_decisions":38,"rule_id":"aim-partial-v5","v5":{"aim_leverage":1.32,"decisions":38,"dust_multiple":0.1,"exit_rate":0.05,"mean_gross":0.1091437192733538,"mean_held_share":1.0,"mean_net":0.004621769559665675,"rate":"info-clock-rate-v1","theta":0.05}},"costs":{"borrow_dollars":18839.13958214442,"impact_cost_dollars":210279.76405429558,"linear_cost_dollars":97141.80559110212,"summed_borrow_return":1.8840390510632663e-05,"summed_trade_cost_return":0.0003074380757282461,"summed_writeoff_return":0.0,"trade_cost_dollars":307421.56964539766,"unrationed_full_request_cost_dollars":89379301.0876807,"unrationed_unpriced_requests":0,"writeoff_pnl_dollars":0.0},"daily_csv_sha256":"de2fa6b190ed8befb6314c5357a72bfdb29f1ab77d862c73455d2472d01cb008","daily_turnover_gmv":{"basis":"executed-fills;forced-exits-included;deployment-session-excluded","definition":"daily one-way turnover in GMV units: tau_t = sum_i |filled dollars_i,t| / pre-trade gross (long$ + short$ after the mark at t, before trading; stale names at stale marks) over EXECUTED fills only (forced exits included, planned turnover never; write-offs are not fills); statistics over execution sessions with positive pre-trade gross, the deployment session (first nonzero fill) excluded; quantiles interpolate linearly at (n-1)q over the sorted sessions (numpy default); ceilings are declared before results and a NaN statistic never meets them","max":1.9087767140245535,"max_session_ns":1578268800000000000,"mean":0.6798681073144884,"mean_max":0.2,"median":0.5662940231469522,"p95":1.117747007932857,"p95_max":0.3,"quantile":"linear interpolation at (n-1)q over sorted sessions (numpy default)","sessions":37,"zero_gmv_sessions_excluded":0},"deployment":{"occurred":true,"one_way_turnover":0.0002439476997234562,"session_ns":1578009600000000000,"traded_dollars":243947.6997234562},"events":0,"events_csv_sha256":"16cdec49220d087056d32c690648bb0c1f6f87a6c7bdd8703b1c1b685ff666ad","execution_months":2,"exposure":{"max_abs_net_leverage":0.002671426711322999,"max_gross_leverage":0.016022845409220148,"max_stale_gross_fraction":0.0,"max_stale_names":0,"mean_gross_leverage":0.007902942844709649,"mean_held_names":11.894736842105264,"mean_stale_names":0.0,"min_cash_ratio":0.997328573288676},"final_nav":999817323.7246327,"financing":{"blocked_short_dollars":0.0,"blocked_short_name_decisions":0,"long_financing_dollars":0.0,"member_decisions_by_tier":{"gc":449,"special":0,"warm":0},"missing_predictor_member_decisions":0,"missing_predictor_short_name_days":0,"net_exposure":{"max_abs_net_leverage":0.002671426711322999,"mean_abs_net_leverage":0.0008550706828129818,"mean_net_leverage":-0.0005429864935434098},"short_dollar_share_by_tier":{"basis":"pre-mark short dollars on return rows with shorts; NaN/null without tiers","mean":{"gc":1.0,"special":0.0,"warm":0.0},"p95":{"gc":1.0,"special":0.0,"warm":0.0},"sessions":38},"short_financing_by_tier_dollars":{"gc":18839.13958214442,"special":0.0,"warm":0.0},"short_financing_dollars":18839.13958214442,"spec":{"block_special_shorts":false,"day_count":"ACT/365","flat_short_bps":300.0,"id":"flat-300-v0","long_spread_bps":0.0,"rule":"flat-short-v0","short_spread_bps":0.0,"tier_fee_bps":{"gc":0.0,"special":0.0,"warm":0.0}},"summed_long_financing_return":0.0,"summed_short_financing_return":1.8840390510632663e-05,"tiers_available":true,"total_financing_dollars":18839.13958214442},"financing_scenario":"flat-300-v0","gross_sharpe":1.3858813279912776,"guard":{"guarded_gross_exposure_dollars":0.0,"guarded_intervals":0,"raw_minus_adjusted_pnl_sensitivity_dollars":0.0},"hac_defined":true,"hac_kernel":"bartlett","hac_lag":5,"hac_t":-0.8447342087311668,"info_clock":{"definition":"P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence","fast_name_days":196,"fast_planned_turnover":2.684875061329574,"fast_share":0.4365256124721604,"field":{"name":"ea_days_since","sha256":"199a6c0ca36eda3d852f89247097fd82c33236129efb2bef9fdcd3554395e729"},"missing_name_days":73,"name_days":449,"planned_turnover":4.157256961706812,"rate":"info-clock-rate-v1","theta_fast":0.129449436703876,"theta_slow":0.05,"turnover_share":0.6458285080908894,"window_sessions":21},"max_drawdown":0.00026178969647594474,"max_monthly_one_way_turnover":0.11437120635923309,"max_monthly_one_way_turnover_ex_deployment_month":0.11437120635923309,"mean_daily_net_return":-4.806774472428185e-06,"mean_monthly_one_way_turnover":0.08095823337179965,"mean_monthly_one_way_turnover_ex_deployment_month":0.11437120635923309,"meets_daily_turnover_mean":false,"meets_daily_turnover_p95":false,"meets_sharpe_target":false,"meets_turnover_target_all_months":true,"meets_turnover_target_all_months_ex_deployment_month":true,"meets_turnover_target_mean":true,"meets_turnover_target_mean_ex_deployment_month":true,"missing":{"blocked_absent_order_sessions":0,"gap_run_1":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_2_4":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_5_plus":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"reappeared_after_write_off_forgone":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"unresolved_at_end_stale_mark":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"written_off":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0}},"months":[{"decision_sessions":22,"execution_sessions":21,"is_deployment_month":true,"month":202001,"one_way_turnover":0.047545260384366204,"planned_turnover_decision_month":2.245083895695779,"traded_dollars":47545375.27637364,"traded_sessions":21},{"decision_sessions":16,"execution_sessions":17,"is_deployment_month":false,"month":202002,"one_way_turnover":0.11437120635923309,"planned_turnover_decision_month":1.9179287796832116,"traded_dollars":114357634.04212989,"traded_sessions":17}],"months_le_0.30":2,"months_le_0.30_ex_deployment_month":1,"net_sharpe":-1.7519869060239222,"observations":38,"planned_vs_actual":{"actual_minus_planned":-4.001096208635391,"basis":"planned = sum|next-cur| on drifted marked weights at decision NAV; actual = sum|fills|/pre-trade NAV at execution; gaps: drift, caps and working orders, blocked absent names, write-offs","monthly_reconciled_total":0.1619164667435993,"monthly_reconciliation_error":0.0,"total_actual_one_way_turnover_execution_basis":0.1619164667435993,"total_planned_turnover_decision_basis":4.16301267537899},"primary":false,"scenario":"modeled-1bn-stale5-v1+flat-300-v0","total_net_return":-0.00018267627536727726,"trading_scenario":"modeled-1bn-stale5-v1","turnover_definition":"calendar-month one-way turnover = sum over EXECUTION sessions t in the month (the fill session's month, not the decision's) of sum_i |filled dollars_i,t| / pre-trade NAV_t; includes forced exits and the initial deployment; write-offs are not fills and are excluded; *_ex_deployment_month drops the calendar month holding the first nonzero fill; planned turnover (decision month, drifted marked weights) is reported only for reconciliation"},{"accounting_checks":{"max_cash_book_relative_error":1.0730649989806533e-15,"max_return_identity_error":2.0919680918107808e-16,"tolerance":1e-09},"ann_mean":-0.001120876183692101,"ann_vol":0.0006892186649462563,"cagr":-0.001120481734438461,"calendar_year_returns":[{"net_compounded_return":-0.00016904197210265703,"observations":38,"year":2020}],"capacity":{"capped_fills":444,"fallback_vol_fills":230,"fills":446,"liquidity_blocked_orders":0,"participation_fills":446,"participation_max":0.010000000000000002,"participation_p95_resolution":"0.01-decade histogram bin upper edge","participation_p95_upper_bound":0.010000000000000002,"unfilled_dollars":4000796335.08139},"construction":{"band_multiple":0.0,"banded_names_total":7,"cadence_rebalance_decisions":38,"decisions":38,"mean_banded_names_per_rebalance":0.18421052631578946,"neutralize":"none","neutralize_amplification_max":null,"neutralize_amplification_median":null,"neutralize_applied_decisions":0,"neutralize_attempted_decisions":0,"neutralize_max_excluded_share":0.0,"neutralize_skip_reasons":{"amplification":0,"excluded-share":0,"refused":0,"too-few-names":0},"neutralize_skipped_decisions":0,"neutralize_used_names_median":null,"neutralize_used_names_min":null,"rebalanced_decisions":38,"rule_id":"aim-partial-v5","v5":{"aim_leverage":1.32,"decisions":38,"dust_multiple":0.1,"exit_rate":0.05,"mean_gross":0.10914371884397511,"mean_held_share":1.0,"mean_net":0.004621772130384147,"rate":"info-clock-rate-v1","theta":0.05}},"costs":{"borrow_dollars":3024.2922881045833,"impact_cost_dollars":210279.77376069414,"linear_cost_dollars":97141.81197412794,"summed_borrow_return":3.0244733397067964e-06,"summed_trade_cost_return":0.0003074365010484341,"summed_writeoff_return":0.0,"trade_cost_dollars":307421.58573482203,"unrationed_full_request_cost_dollars":89379497.55538334,"unrationed_unpriced_requests":0,"writeoff_pnl_dollars":0.0},"daily_csv_sha256":"433e651ed3f9576009515234599c8c03c472ba4fd3f76aa9d955fec18576af5c","daily_turnover_gmv":{"basis":"executed-fills;forced-exits-included;deployment-session-excluded","definition":"daily one-way turnover in GMV units: tau_t = sum_i |filled dollars_i,t| / pre-trade gross (long$ + short$ after the mark at t, before trading; stale names at stale marks) over EXECUTED fills only (forced exits included, planned turnover never; write-offs are not fills); statistics over execution sessions with positive pre-trade gross, the deployment session (first nonzero fill) excluded; quantiles interpolate linearly at (n-1)q over the sorted sessions (numpy default); ceilings are declared before results and a NaN statistic never meets them","max":1.9087767140245535,"max_session_ns":1578268800000000000,"mean":0.6798681130730054,"mean_max":0.2,"median":0.5662940231469522,"p95":1.117747007932857,"p95_max":0.3,"quantile":"linear interpolation at (n-1)q over sorted sessions (numpy default)","sessions":37,"zero_gmv_sessions_excluded":0},"deployment":{"occurred":true,"one_way_turnover":0.0002439476997234562,"session_ns":1578009600000000000,"traded_dollars":243947.6997234562},"events":0,"events_csv_sha256":"16cdec49220d087056d32c690648bb0c1f6f87a6c7bdd8703b1c1b685ff666ad","execution_months":2,"exposure":{"max_abs_net_leverage":0.002671401988686759,"max_gross_leverage":0.016022659445131118,"max_stale_gross_fraction":0.0,"max_stale_names":0,"mean_gross_leverage":0.007902889114465402,"mean_held_names":11.894736842105264,"mean_stale_names":0.0,"min_cash_ratio":0.9973285980113122},"final_nav":999830958.0278974,"financing":{"blocked_short_dollars":0.0,"blocked_short_name_decisions":0,"long_financing_dollars":2180.496448675404,"member_decisions_by_tier":{"gc":449,"special":0,"warm":0},"missing_predictor_member_decisions":0,"missing_predictor_short_name_days":0,"net_exposure":{"max_abs_net_leverage":0.002671401988686759,"mean_abs_net_leverage":0.0008550654498921912,"mean_net_leverage":-0.000542983789280738},"short_dollar_share_by_tier":{"basis":"pre-mark short dollars on return rows with shorts; NaN/null without tiers","mean":{"gc":1.0,"special":0.0,"warm":0.0},"p95":{"gc":1.0,"special":0.0,"warm":0.0},"sessions":38},"short_financing_by_tier_dollars":{"gc":3024.2922881045833,"special":0.0,"warm":0.0},"short_financing_dollars":3024.2922881045833,"spec":{"block_special_shorts":true,"day_count":"ACT/360","flat_short_bps":0.0,"id":"engine-tiers-v1","long_spread_bps":40.0,"rule":"tiered-swap-v1","short_spread_bps":20.0,"tier_fee_bps":{"gc":27.5,"special":2750.0,"warm":300.0}},"summed_long_financing_return":2.1806367734450292e-06,"summed_short_financing_return":3.0244733397067964e-06,"tiers_available":true,"total_financing_dollars":5204.788736779987},"financing_scenario":"engine-tiers-v1","gross_sharpe":1.3858858157899385,"guard":{"guarded_gross_exposure_dollars":0.0,"guarded_intervals":0,"raw_minus_adjusted_pnl_sensitivity_dollars":0.0},"hac_defined":true,"hac_kernel":"bartlett","hac_lag":5,"hac_t":-0.7846503643414166,"info_clock":{"definition":"P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence","fast_name_days":196,"fast_planned_turnover":2.684875047137018,"fast_share":0.4365256124721604,"field":{"name":"ea_days_since","sha256":"199a6c0ca36eda3d852f89247097fd82c33236129efb2bef9fdcd3554395e729"},"missing_name_days":73,"name_days":449,"planned_turnover":4.157256939912122,"rate":"info-clock-rate-v1","theta_fast":0.129449436703876,"theta_slow":0.05,"turnover_share":0.6458285080627643,"window_sessions":21},"max_drawdown":0.0002585605226290699,"max_monthly_one_way_turnover":0.11437019795291936,"max_monthly_one_way_turnover_ex_deployment_month":0.11437019795291936,"mean_daily_net_return":-4.447921363857544e-06,"mean_monthly_one_way_turnover":0.08095768503638096,"mean_monthly_one_way_turnover_ex_deployment_month":0.11437019795291936,"meets_daily_turnover_mean":false,"meets_daily_turnover_p95":false,"meets_sharpe_target":false,"meets_turnover_target_all_months":true,"meets_turnover_target_all_months_ex_deployment_month":true,"meets_turnover_target_mean":true,"meets_turnover_target_mean_ex_deployment_month":true,"missing":{"blocked_absent_order_sessions":0,"gap_run_1":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_2_4":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"gap_run_5_plus":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"reappeared_after_write_off_forgone":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"unresolved_at_end_stale_mark":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0},"written_off":{"count":0,"gross_exposure_dollars":0.0,"pnl_dollars":0.0}},"months":[{"decision_sessions":22,"execution_sessions":21,"is_deployment_month":true,"month":202001,"one_way_turnover":0.04754517211984256,"planned_turnover_decision_month":2.245083885760769,"traded_dollars":47545375.27637364,"traded_sessions":21},{"decision_sessions":16,"execution_sessions":17,"is_deployment_month":false,"month":202002,"one_way_turnover":0.11437019795291936,"planned_turnover_decision_month":1.9179287580765805,"traded_dollars":114357644.68050623,"traded_sessions":17}],"months_le_0.30":2,"months_le_0.30_ex_deployment_month":1,"net_sharpe":-1.6262998097701034,"observations":38,"planned_vs_actual":{"actual_minus_planned":-4.001097273764587,"basis":"planned = sum|next-cur| on drifted marked weights at decision NAV; actual = sum|fills|/pre-trade NAV at execution; gaps: drift, caps and working orders, blocked absent names, write-offs","monthly_reconciled_total":0.1619153700727619,"monthly_reconciliation_error":-5.551115123125783e-17,"total_actual_one_way_turnover_execution_basis":0.16191537007276197,"total_planned_turnover_decision_basis":4.163012643837349},"primary":false,"scenario":"modeled-1bn-stale5-v1+engine-tiers-v1","total_net_return":-0.00016904197210265703,"trading_scenario":"modeled-1bn-stale5-v1","turnover_definition":"calendar-month one-way turnover = sum over EXECUTION sessions t in the month (the fill session's month, not the decision's) of sum_i |filled dollars_i,t| / pre-trade NAV_t; includes forced exits and the initial deployment; write-offs are not fills and are excluded; *_ex_deployment_month drops the calendar month holding the first nonzero fill; planned turnover (decision month, drifted marked weights) is reported only for reconciliation"}],"schema":"atx.dsl-nav-replay-summary/v1","self_financing_nav":true,"signal_semantics":"exact-pre-target-composition;equal-family/equal-within;missing-or-unoriented-neutral-fixed-denominator","source_bindings":{"actual_trades_or_returns":false,"dates":40,"files":{"train_combined.f64":{"bytes":3840,"sha256":"f7295f0b724f1d332b2bb7fa3702aeb4fd2b42d1d6c860f49a0c6fbcff5bc47c"},"train_combined_finite.u8":{"bytes":480,"sha256":"88e18e36c5d67340603e8acd323b1a91d9459d5c6b5c3c7c448a9dd5005204c1"},"train_combined_ids.u64":{"bytes":96,"sha256":"308abf618a71863d40880f94c42b7b69d31e5791dfa1f580fd3a9f0dfef9130e"},"train_combined_member.u8":{"bytes":480,"sha256":"88e18e36c5d67340603e8acd323b1a91d9459d5c6b5c3c7c448a9dd5005204c1"},"train_combined_sessions.i64":{"bytes":320,"sha256":"bc06a9e5c55fbb418631dbc76853ccabe5dd72cb9ae59841137823c65d3be52d"}},"finite_cells":473,"finite_semantics":"one-iff-saved-f64-is-finite;nonmembers-NaN;zero-is-valid-neutral-signal","instruments":12,"layout":"date-major-little-endian","library_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","member_cells":473,"member_semantics":"decision-member-and-source-present-and-finite-positive-close;independent-of-component-coverage","orientation_candidates_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","orientations_artifact_sha256":null,"role":"train","role_manifest_sha256":"9dba74f71255d7f5ada74a0304d0922fa08bda5f0056d66de0c55b3b26bdfe71","role_window_required":true,"run_recipe_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","schema":"atx.dsl-combined-signal/v1","score_begin":0,"score_end":40,"signal_semantics":"exact-pre-target-composition;equal-family/equal-within;missing-or-unoriented-neutral-fixed-denominator","source_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"complete","train_manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"status":"complete","v7":{"books":{"linear-6bps-stale5-v1+swap-fin-v1":{"rebalance_decisions":38,"transfer_coefficient":{"mean":0.3670927683950992,"median":0.41547486257252086,"n":17,"p05":-0.08235893527920218,"p95":0.6477281641664828}},"modeled-1bn-stale5-v1+engine-tiers-v1":{"rebalance_decisions":38,"transfer_coefficient":{"mean":0.9112478344425433,"median":0.9097113459603171,"n":17,"p05":0.8751278572320224,"p95":0.9500591212681541}},"modeled-1bn-stale5-v1+flat-300-v0":{"rebalance_decisions":38,"transfer_coefficient":{"mean":0.9112477061607008,"median":0.9097111903060183,"n":17,"p05":0.8751277266907674,"p95":0.9500590678245224}},"modeled-1bn-stale5-v1+swap-fin-v1":{"rebalance_decisions":38,"transfer_coefficient":{"mean":0.9112478329595677,"median":0.9097113441746182,"n":17,"p05":0.8751278557204781,"p95":0.9500591206514675}},"modeled-1bn-terminal-adverse-v1+swap-fin-v1":{"rebalance_decisions":38,"transfer_coefficient":{"mean":0.9112478329595677,"median":0.9097113441746182,"n":17,"p05":0.8751278557204781,"p95":0.9500591206514675}}},"declarations":{"capacity":"capacity by replay (R4.2): S2 at NAV multiples m in {.5,1,2,4,8} of the initial NAV, run as S2 books at the initial NAV with impact_y * m^0.5 and max_participation / m (the replay is scale invariant in every dollar except the impact law and the participation cap, so each book is the NAV-m book divided by m: returns, Sharpe, cost per traded dollar and cap binding are the NAV-m book's; dollar columns are scaled back by m; participation p95 is the histogram bound times m); the fixed rate or info-clock-rate-v1, this run's (Ruling ALCLOCK-3: it reads no NAV, so each capacity book moves at the members' clock rates as the main books do); x1 is S2 bit for bit","capacity_curve":true,"capacity_multiples":[0.5,1.0,2.0,4.0,8.0],"hook":"platform-v7 lane L4 NAV extension (strategy_nav_v7)","pass":"main","stress_books":false,"transfer_coefficient":"transfer coefficient (R2.5, Clarke-de Silva-Thorley 2002) per rebalance decision and book: corr over members with a finite decision-window sigma_i > 0 of desired_i / sigma_i (= alpha_i / sigma_i^2 with Grinold-Kahn alpha_i = IC sigma_i z_i, z = the neutralized rank aim) and the planned weight w_i after the rule"},"extras":"v7_transfer_coefficient.csv, the risk / vol target series, capacity/ and capacity_curve.csv (with --capacity-curve), spo_diagnostics.csv (spo rules) and v7_extras.json are written before this summary, which binds v7_extras.json and capacity/summary.json (v7.files, SHA-256); v7_extras.json binds the rest (its files)","files":{"capacity/summary.json":"bc3f2d620489f3c7fd3d41ca1a5359177fa69f7cd56dba5b5f0b82ba2adec5a9","v7_extras.json":"dc3815ed0fd24a31f378f292d3abfa087d429803dbc92127ba906d02a08c5484"}}}
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(72): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+holdings.csv
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(72): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+holdings_days.csv
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(72): error: Value of: bytes_of(a / name) == bytes_of(b / name)
+  Actual: false
+Expected: true
+manifest.json
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(815): error: Expected equality of these values:
+  bits(calibration.at("gross").get<f64>())
+    Which is: 4575685128778347593
+  bits(published_gross)
+    Which is: 4575701638047726336
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.00091666666666666719
+  held + theta * (leverage * desired - held)
+    Which is: -0.0023732396729043946
+t 0 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0064166666666666677
+  held + theta * (leverage * desired - held)
+    Which is: -0.016612677710330755
+t 0 name 2
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0082500000000000004
+  held + theta * (leverage * desired - held)
+    Which is: 0.021359157056139538
+t 0 name 3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.000916666666666666
+  held + theta * (leverage * desired - held)
+    Which is: 0.0023732396729043911
+t 0 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0027500000000000003
+  held + theta * (leverage * desired - held)
+    Which is: 0.0071197190187131795
+t 0 name 8
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0027500000000000003
+  held + theta * (leverage * desired - held)
+    Which is: -0.0071197190187131795
+t 0 name 9
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0064103955975956667
+  held + theta * (leverage * desired - held)
+    Which is: 0.016606931096949464
+t 1 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.00091131206020304552
+  held + theta * (leverage * desired - held)
+    Which is: 0.0023683328774589873
+t 1 name 2
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0027710779435683604
+  held + theta * (leverage * desired - held)
+    Which is: 0.0071390341930779797
+t 1 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0046169859787557809
+  held + theta * (leverage * desired - held)
+    Which is: 0.011897036606026088
+t 1 name 8
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.010042396792864054
+  held + theta * (leverage * desired - held)
+    Which is: 0.026068123424722086
+t 1 name 9
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.010086406651111213
+  held + theta * (leverage * desired - held)
+    Which is: 0.026108452695130138
+t 2 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0064218470579645529
+  held + theta * (leverage * desired - held)
+    Which is: 0.01661742486039651
+t 2 name 2
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0026801267391560408
+  held + theta * (leverage * desired - held)
+    Which is: -0.0070556893275689203
+t 2 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0044973557877702073
+  held + theta * (leverage * desired - held)
+    Which is: -0.011787411205868495
+t 2 name 8
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.010099576255302469
+  held + theta * (leverage * desired - held)
+    Which is: 0.026120520912337596
+t 3 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0064414442560529958
+  held + theta * (leverage * desired - held)
+    Which is: 0.016635383125485903
+t 3 name 2
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.00099101760342999007
+  held + theta * (leverage * desired - held)
+    Which is: -0.0024413725675158735
+t 3 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0045934736004216914
+  held + theta * (leverage * desired - held)
+    Which is: 0.011875490591075382
+t 3 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0062849756497475274
+  held + theta * (leverage * desired - held)
+    Which is: -0.016492000143004441
+t 3 name 9
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0027144096326821173
+  held + theta * (leverage * desired - held)
+    Which is: -0.0070871051089063377
+t 4 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.008303056757081595
+  held + theta * (leverage * desired - held)
+    Which is: 0.021407776624312216
+t 4 name 2
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0044333246980550198
+  held + theta * (leverage * desired - held)
+    Which is: 0.011728735099321106
+t 4 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0099866802357179273
+  held + theta * (leverage * desired - held)
+    Which is: 0.026017066498186844
+t 4 name 8
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.004596493498622148
+  held + theta * (leverage * desired - held)
+    Which is: 0.0118782579322117
+t 5 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0081617681500529803
+  held + theta * (leverage * desired - held)
+    Which is: -0.021278304122800552
+t 5 name 2
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0027421466092805483
+  held + theta * (leverage * desired - held)
+    Which is: 0.0071125224148030708
+t 5 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0063887672803699513
+  held + theta * (leverage * desired - held)
+    Which is: -0.016587111577218937
+t 5 name 8
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0027889148940365887
+  held + theta * (leverage * desired - held)
+    Which is: 0.0071553794217912433
+t 6 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.006369625592931377
+  held + theta * (leverage * desired - held)
+    Which is: -0.016569570727974638
+t 6 name 2
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.00096722866796463585
+  held + theta * (leverage * desired - held)
+    Which is: 0.0024195731241794722
+t 6 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0081521256736087951
+  held + theta * (leverage * desired - held)
+    Which is: -0.021269468056168916
+t 6 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0062905579819993052
+  held + theta * (leverage * desired - held)
+    Which is: 0.016497115619305804
+t 6 name 8
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0026826617043076259
+  held + theta * (leverage * desired - held)
+    Which is: -0.0070580122910853917
+t 7 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0027472481685645411
+  held + theta * (leverage * desired - held)
+    Which is: 0.0071171973256539851
+t 7 name 2
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0010998998840254851
+  held + theta * (leverage * desired - held)
+    Which is: 0.0025411489156267927
+t 7 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.00095489223848012176
+  held + theta * (leverage * desired - held)
+    Which is: -0.0024082684024565198
+t 7 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.010026338373031383
+  held + theta * (leverage * desired - held)
+    Which is: -0.026053407986373692
+t 7 name 8
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.00095071239324985134
+  held + theta * (leverage * desired - held)
+    Which is: 0.0024044381218041992
+t 8 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0049212888985861328
+  held + theta * (leverage * desired - held)
+    Which is: 0.012175890372627108
+t 8 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0025625776896613436
+  held + theta * (leverage * desired - held)
+    Which is: 0.0069479710209873072
+t 8 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0099353388623121437
+  held + theta * (leverage * desired - held)
+    Which is: 0.025970018854461794
+t 8 name 8
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0063441045633708271
+  held + theta * (leverage * desired - held)
+    Which is: -0.016546184047280074
+t 9 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0069201896412166945
+  held + theta * (leverage * desired - held)
+    Which is: 0.017074090562043457
+t 9 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.00093705114321743243
+  held + theta * (leverage * desired - held)
+    Which is: -0.0023919193755820422
+t 9 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0026626614036371543
+  held + theta * (leverage * desired - held)
+    Which is: -0.00703968463528037
+t 9 name 8
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0045518920010394976
+  held + theta * (leverage * desired - held)
+    Which is: -0.011837386501849147
+t 10 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0043045364888693012
+  held + theta * (leverage * desired - held)
+    Which is: 0.011610717575055288
+t 10 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0034372963175304809
+  held + theta * (leverage * desired - held)
+    Which is: 0.0077495360675316127
+t 10 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.00071032138941297797
+  held + theta * (leverage * desired - held)
+    Which is: 0.0021841512546447142
+t 10 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0065838089369160838
+  held + theta * (leverage * desired - held)
+    Which is: -0.01676584170771625
+t 10 name 8
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.002766602328407166
+  held + theta * (leverage * desired - held)
+    Which is: -0.0071349328780256904
+t 11 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0099865758949304641
+  held + theta * (leverage * desired - held)
+    Which is: 0.026016970883522318
+t 11 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0073663054799712364
+  held + theta * (leverage * desired - held)
+    Which is: -0.020549366780147182
+t 11 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0027451528562110997
+  held + theta * (leverage * desired - held)
+    Which is: 0.007115277246338648
+t 11 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0046536560092449311
+  held + theta * (leverage * desired - held)
+    Which is: -0.011930639885708631
+t 12 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0028432781225253786
+  held + theta * (leverage * desired - held)
+    Which is: 0.0072051961998791511
+t 12 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0070715368244740548
+  held + theta * (leverage * desired - held)
+    Which is: 0.017212780431136065
+t 12 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.010312865913117458
+  held + theta * (leverage * desired - held)
+    Which is: 0.026315972945765043
+t 12 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0064689657782516525
+  held + theta * (leverage * desired - held)
+    Which is: 0.01696724994432838
+t 13 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0046958762727146216
+  held + theta * (leverage * desired - held)
+    Which is: 0.011662682278233373
+t 13 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.010092556244749303
+  held + theta * (leverage * desired - held)
+    Which is: -0.027647322735596884
+t 13 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0017141693793193027
+  held + theta * (leverage * desired - held)
+    Which is: -0.005250575088128347
+t 13 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.010933282135487632
+  held + theta * (leverage * desired - held)
+    Which is: 0.028417737891133606
+t 14 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.002720612836609492
+  held + theta * (leverage * desired - held)
+    Which is: 0.0061728486867280016
+t 14 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0081737984479393969
+  held + theta * (leverage * desired - held)
+    Which is: -0.022209269161057688
+t 14 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0044008158320921328
+  held + theta * (leverage * desired - held)
+    Which is: 0.011392298033190942
+t 15 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.002941343980932834
+  held + theta * (leverage * desired - held)
+    Which is: 0.0063751198678097731
+t 15 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0091282722043629604
+  held + theta * (leverage * desired - held)
+    Which is: 0.023083919336116528
+t 15 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.010011122882404343
+  held + theta * (leverage * desired - held)
+    Which is: -0.027572699725638458
+t 16 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.002094679340318669
+  held + theta * (leverage * desired - held)
+    Which is: 0.0055992626259049614
+t 16 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0065270260984469884
+  held + theta * (leverage * desired - held)
+    Which is: -0.017020454622698064
+t 17 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0037310547093392624
+  held + theta * (leverage * desired - held)
+    Which is: -0.010778549693521093
+t 17 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0025022452130997555
+  held + theta * (leverage * desired - held)
+    Which is: 0.0059727433628837517
+t 17 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.011236135261275901
+  held + theta * (leverage * desired - held)
+    Which is: 0.028695263111397785
+t 17 name 7
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0065936403808006987
+  held + theta * (leverage * desired - held)
+    Which is: 0.017081497886936581
+t 18 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0080921486029223045
+  held + theta * (leverage * desired - held)
+    Which is: -0.022134447773086454
+t 18 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.011667967247817834
+  held + theta * (leverage * desired - held)
+    Which is: 0.029090980563117114
+t 18 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0022786118249172389
+  held + theta * (leverage * desired - held)
+    Which is: 0.0057678126554583722
+t 19 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0070261368332337577
+  held + theta * (leverage * desired - held)
+    Which is: 0.017477824234609397
+t 19 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0084014785808191571
+  held + theta * (leverage * desired - held)
+    Which is: -0.022417908179931174
+t 19 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0098582612597806589
+  held + theta * (leverage * desired - held)
+    Which is: 0.023752858687057461
+t 19 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0084176185141664091
+  held + theta * (leverage * desired - held)
+    Which is: 0.021512757468693671
+t 20 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.001615823346532967
+  held + theta * (leverage * desired - held)
+    Which is: 0.0030139251902621348
+t 20 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.00083682102413734269
+  held + theta * (leverage * desired - held)
+    Which is: -0.0023000716001879266
+t 20 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0031080893852228498
+  held + theta * (leverage * desired - held)
+    Which is: -0.010514330522388517
+t 20 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0016138348422598447
+  held + theta * (leverage * desired - held)
+    Which is: -0.0060785724733783139
+t 20 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0027500000000000003
+  held + theta * (leverage * desired - held)
+    Which is: 0.0071197190187131795
+t 20 name 11
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0048494032014283961
+  held + theta * (leverage * desired - held)
+    Which is: 0.012110016547202264
+t 21 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0017577124728742524
+  held + theta * (leverage * desired - held)
+    Which is: -0.0062104174758805079
+t 21 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0024884423493988354
+  held + theta * (leverage * desired - held)
+    Which is: 0.0068800356923287009
+t 21 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0071920566546219492
+  held + theta * (leverage * desired - held)
+    Which is: -0.020389690555871906
+t 21 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0087588859715279806
+  held + theta * (leverage * desired - held)
+    Which is: 0.02182548439210499
+t 21 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0070991764856910113
+  held + theta * (leverage * desired - held)
+    Which is: 0.017238108560232626
+t 21 name 11
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.00055152065285976018
+  held + theta * (leverage * desired - held)
+    Which is: -0.0020386311802676185
+t 22 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0034205938755693319
+  held + theta * (leverage * desired - held)
+    Which is: 0.0077342304672603501
+t 22 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.010173439325511508
+  held + theta * (leverage * desired - held)
+    Which is: 0.026188206741155764
+t 22 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0039683699427758914
+  held + theta * (leverage * desired - held)
+    Which is: -0.011302664968673257
+t 22 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0057727882010716065
+  held + theta * (leverage * desired - held)
+    Which is: 0.012956177948863935
+t 22 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0066726811164284083
+  held + theta * (leverage * desired - held)
+    Which is: 0.01684728141922763
+t 23 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0035942845134712756
+  held + theta * (leverage * desired - held)
+    Which is: -0.010959864672671144
+t 23 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0032141058327614298
+  held + theta * (leverage * desired - held)
+    Which is: 0.0075450112230705246
+t 23 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0047230903113410754
+  held + theta * (leverage * desired - held)
+    Which is: 0.011994267328657972
+t 23 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0075948331129600949
+  held + theta * (leverage * desired - held)
+    Which is: -0.020758782421860005
+t 23 name 11
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0067837659630571303
+  held + theta * (leverage * desired - held)
+    Which is: 0.016949076130602682
+t 24 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.00052232852581178416
+  held + theta * (leverage * desired - held)
+    Which is: -0.0020118804195882211
+t 24 name 3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.003934101254416237
+  held + theta * (leverage * desired - held)
+    Which is: -0.011271262204510187
+t 24 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0018997138137103848
+  held + theta * (leverage * desired - held)
+    Which is: -0.0063405431045686139
+t 24 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.010713005766835907
+  held + theta * (leverage * desired - held)
+    Which is: 0.026682648708977491
+t 24 name 6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0089408993149335102
+  held + theta * (leverage * desired - held)
+    Which is: -0.025058745266951881
+t 24 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0044519832889626425
+  held + theta * (leverage * desired - held)
+    Which is: 0.011745833253873676
+t 24 name 11
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.00043380206692283626
+  held + theta * (leverage * desired - held)
+    Which is: -0.0019307575157436056
+t 25 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0081062191650579721
+  held + theta * (leverage * desired - held)
+    Which is: -0.021227400754192199
+t 25 name 3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0067239004939249761
+  held + theta * (leverage * desired - held)
+    Which is: 0.016894217269681645
+t 25 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0087102492954229584
+  held + theta * (leverage * desired - held)
+    Which is: 0.021780915249178592
+t 25 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0097167448904882867
+  held + theta * (leverage * desired - held)
+    Which is: -0.025769706112036106
+t 25 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0020639329593693627
+  held + theta * (leverage * desired - held)
+    Which is: -0.0064910284411553833
+t 25 name 11
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0086086460122061243
+  held + theta * (leverage * desired - held)
+    Which is: 0.021687809148718432
+t 26 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.002626997704439069
+  held + theta * (leverage * desired - held)
+    Which is: 0.0070070035264107747
+t 26 name 3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0094235119621999056
+  held + theta * (leverage * desired - held)
+    Which is: -0.025500996542669352
+t 26 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0036980357298976802
+  held + theta * (leverage * desired - held)
+    Which is: -0.011054939072568687
+t 26 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0068606564492604558
+  held + theta * (leverage * desired - held)
+    Which is: -0.017019536189630483
+t 26 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.002912015976136717
+  held + theta * (leverage * desired - held)
+    Which is: -0.0072681854390171689
+t 26 name 11
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.002264914153194895
+  held + theta * (leverage * desired - held)
+    Which is: -0.0066752013795730088
+t 27 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.008402639648818001
+  held + theta * (leverage * desired - held)
+    Which is: 0.021499031300623573
+t 27 name 3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0048852372872373664
+  held + theta * (leverage * desired - held)
+    Which is: 0.012142853793082473
+t 27 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0031872113296725207
+  held + theta * (leverage * desired - held)
+    Which is: 0.0075203659337930318
+t 27 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0064648411137930824
+  held + theta * (leverage * desired - held)
+    Which is: -0.016656823280943783
+t 27 name 9
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0022140894769826598
+  held + theta * (leverage * desired - held)
+    Which is: -0.0035621577343294764
+t 27 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.00013412850895724512
+  held + theta * (leverage * desired - held)
+    Which is: 0.0014103235339062382
+t 27 name 11
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.00056225654487173911
+  held + theta * (leverage * desired - held)
+    Which is: -0.002048469219045002
+t 28 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0086863158999881136
+  held + theta * (leverage * desired - held)
+    Which is: 0.021758983427202387
+t 28 name 3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0052510062164460901
+  held + theta * (leverage * desired - held)
+    Which is: 0.012478033106091817
+t 28 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.010991251217538101
+  held + theta * (leverage * desired - held)
+    Which is: -0.026937624218286313
+t 28 name 9
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0048324852484140264
+  held + theta * (leverage * desired - held)
+    Which is: -0.0090280439724633888
+t 28 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0026189726419035293
+  held + theta * (leverage * desired - held)
+    Which is: 0.0069996496077678258
+t 28 name 11
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0011484370179273627
+  held + theta * (leverage * desired - held)
+    Which is: 0.0025856268411626436
+t 29 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0089733740433129427
+  held + theta * (leverage * desired - held)
+    Which is: 0.022022034614960464
+t 29 name 3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0041317697429316281
+  held + theta * (leverage * desired - held)
+    Which is: 0.0083859299956128303
+t 29 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0063756476982939738
+  held + theta * (leverage * desired - held)
+    Which is: -0.013508619711911671
+t 29 name 9
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0015963148925464891
+  held + theta * (leverage * desired - held)
+    Which is: 0.0091289872211504971
+t 29 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0092613336626860242
+  held + theta * (leverage * desired - held)
+    Which is: -0.025352381374252279
+t 29 name 11
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0078857489308104354
+  held + theta * (leverage * desired - held)
+    Which is: -0.021025368663019336
+t 30 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.003395146991535274
+  held + theta * (leverage * desired - held)
+    Which is: 0.0077109117312287919
+t 30 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.011975784479010147
+  held + theta * (leverage * desired - held)
+    Which is: 0.027839819992347636
+t 30 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0072481664425220471
+  held + theta * (leverage * desired - held)
+    Which is: -0.014308168853252912
+t 30 name 9
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0025536623675088879
+  held + theta * (leverage * desired - held)
+    Which is: 0.010006270782833273
+t 30 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.010231603410748033
+  held + theta * (leverage * desired - held)
+    Which is: -0.026241506506593935
+t 30 name 11
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0066467232882016112
+  held + theta * (leverage * desired - held)
+    Which is: 0.016823494469769964
+t 31 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0095909916873661086
+  held + theta * (leverage * desired - held)
+    Which is: 0.022588000286467944
+t 31 name 3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0090336820065125972
+  held + theta * (leverage * desired - held)
+    Which is: -0.025143768450550098
+t 31 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.012484236897463939
+  held + theta * (leverage * desired - held)
+    Which is: 0.02830575003370998
+t 31 name 5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0008170737974731385
+  held + theta * (leverage * desired - held)
+    Which is: 0.0038509631200720367
+t 31 name 9
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0074384212833463401
+  held + theta * (leverage * desired - held)
+    Which is: -0.017548981980963285
+t 31 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.00022793041444005638
+  held + theta * (leverage * desired - held)
+    Which is: 0.0013243663742680159
+t 31 name 11
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0042126637727339239
+  held + theta * (leverage * desired - held)
+    Which is: -0.011526528264757186
+t 32 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0040289381821911269
+  held + theta * (leverage * desired - held)
+    Which is: 0.011358167826505663
+t 32 name 2
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0065985883395631622
+  held + theta * (leverage * desired - held)
+    Which is: -0.019845854581163669
+t 32 name 3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.002093958833030974
+  held + theta * (leverage * desired - held)
+    Which is: -0.0065185432213970404
+t 32 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0074521664676663411
+  held + theta * (leverage * desired - held)
+    Which is: 0.023694516615598328
+t 32 name 9
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.00071405296949692953
+  held + theta * (leverage * desired - held)
+    Which is: 0.0052540402458231585
+t 32 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0011362641594387707
+  held + theta * (leverage * desired - held)
+    Which is: -0.0025744720108319434
+t 32 name 11
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0066373046879731759
+  held + theta * (leverage * desired - held)
+    Which is: 0.016814863556365411
+t 33 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0012247472771529124
+  held + theta * (leverage * desired - held)
+    Which is: -0.002655555198166936
+t 33 name 2
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.006921801635197085
+  held + theta * (leverage * desired - held)
+    Which is: -0.020142037230194098
+t 33 name 3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.009864005802045361
+  held + theta * (leverage * desired - held)
+    Which is: -0.025904651448359808
+t 33 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0062099271809326669
+  held + theta * (leverage * desired - held)
+    Which is: -0.0133567585648184
+t 33 name 9
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -9.5968924730012711e-05
+  held + theta * (leverage * desired - held)
+    Which is: 0.0014452917944790412
+t 33 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0049574431352464553
+  held + theta * (leverage * desired - held)
+    Which is: 0.012209020994827303
+t 34 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0076850135192170037
+  held + theta * (leverage * desired - held)
+    Which is: 0.020841420951823397
+t 34 name 2
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.001779573820690168
+  held + theta * (leverage * desired - held)
+    Which is: -0.0062304505376232005
+t 34 name 3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0066379760152974624
+  held + theta * (leverage * desired - held)
+    Which is: -0.016815478739923638
+t 34 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.012284105194891284
+  held + theta * (leverage * desired - held)
+    Which is: -0.028122355542754149
+t 34 name 8
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0037900728477926714
+  held + theta * (leverage * desired - held)
+    Which is: 0.014205748522361415
+t 34 name 9
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.00056287069377147824
+  held + theta * (leverage * desired - held)
+    Which is: 0.0051155014928829685
+t 34 name 11
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.00038267468953617333
+  held + theta * (leverage * desired - held)
+    Which is: -0.0018839059713395916
+t 35 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0048943421123127055
+  held + theta * (leverage * desired - held)
+    Which is: -0.01215119717265937
+t 35 name 2
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0021164931806751676
+  held + theta * (leverage * desired - held)
+    Which is: -0.0065391929993287908
+t 35 name 3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0075650660218221349
+  held + theta * (leverage * desired - held)
+    Which is: 0.020731504781904386
+t 35 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0094291192889777668
+  held + theta * (leverage * desired - held)
+    Which is: -0.019373195949547398
+t 35 name 8
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.00029009116973747573
+  held + theta * (leverage * desired - held)
+    Which is: 0.0012674041842268783
+t 35 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.009713642295177469
+  held + theta * (leverage * desired - held)
+    Which is: -0.025766862989830306
+t 36 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0033270104103183817
+  held + theta * (leverage * desired - held)
+    Which is: -0.007648473479482016
+t 36 name 2
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0079968538086171645
+  held + theta * (leverage * desired - held)
+    Which is: -0.021127181730345227
+t 36 name 3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0043778035301149619
+  held + theta * (leverage * desired - held)
+    Which is: 0.011677857221399971
+t 36 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0037617635883790477
+  held + theta * (leverage * desired - held)
+    Which is: 0.014179806794225596
+t 36 name 9
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.007992082895427785
+  held + theta * (leverage * desired - held)
+    Which is: 0.021122809813330017
+t 36 name 10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0011290667166967765
+  held + theta * (leverage * desired - held)
+    Which is: 0.0025678764973231681
+t 37 name 1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0074064799122954593
+  held + theta * (leverage * desired - held)
+    Which is: 0.020586181385083977
+t 37 name 2
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.0047130939900203147
+  held + theta * (leverage * desired - held)
+    Which is: -0.01198510700954568
+t 37 name 3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.00063777957222775356
+  held + theta * (leverage * desired - held)
+    Which is: -0.0021176761811572201
+t 37 name 4
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: -0.011172971268881209
+  held + theta * (leverage * desired - held)
+    Which is: -0.024037677355742616
+t 37 name 8
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.0030345263856099633
+  held + theta * (leverage * desired - held)
+    Which is: 0.010446919668966671
+t 37 name 9
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(326): error: Expected equality of these values:
+  rule
+    Which is: 0.011016813474672111
+  held + theta * (leverage * desired - held)
+    Which is: 0.026961048678651713
+t 37 name 10
+
+[  FAILED  ] InfoClockRate.CalibrateGrossKeepsTheRatesAndCountsOnce (3536 ms)
+[ RUN      ] InfoClockRate.RegistryRowAndParser
+[       OK ] InfoClockRate.RegistryRowAndParser (10 ms)
+[ RUN      ] InfoClockRate.WorkspaceReserveOneRatePerName
+[       OK ] InfoClockRate.WorkspaceReserveOneRatePerName (0 ms)
+[----------] 10 tests from InfoClockRate (8791 ms total)
+
+[----------] 4 tests from InfoClockPrint
+[ RUN      ] InfoClockPrint.FlagAbsentLoadsNoClock
+[       OK ] InfoClockPrint.FlagAbsentLoadsNoClock (2374 ms)
+[ RUN      ] InfoClockPrint.PrintOnlyOptInAddsOneBlockPerScenario
+[       OK ] InfoClockPrint.PrintOnlyOptInAddsOneBlockPerScenario (3153 ms)
+[ RUN      ] InfoClockPrint.RuleOnWithoutFlagPrintsNoBlock
+[       OK ] InfoClockPrint.RuleOnWithoutFlagPrintsNoBlock (680 ms)
+[ RUN      ] InfoClockPrint.SpecEqualsArgv
+[       OK ] InfoClockPrint.SpecEqualsArgv (2314 ms)
+[----------] 4 tests from InfoClockPrint (8523 ms total)
+
+[----------] Global test environment tear-down
+[==========] 14 tests from 2 test suites ran. (17316 ms total)
+[  PASSED  ] 13 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] InfoClockRate.CalibrateGrossKeepsTheRatesAndCountsOnce
+
+ 1 FAILED TEST

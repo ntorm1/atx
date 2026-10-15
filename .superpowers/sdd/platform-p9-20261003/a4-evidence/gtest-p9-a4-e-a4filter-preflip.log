@@ -1,0 +1,75 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = ResearchFieldsA4*:ResearchFieldsHoldings*:ResearchFieldsRegistry*
+[==========] Running 25 tests from 6 test suites.
+[----------] Global test environment set-up.
+[----------] 7 tests from ResearchFieldsRegistry
+[ RUN      ] ResearchFieldsRegistry.KindLookup
+[       OK ] ResearchFieldsRegistry.KindLookup (7 ms)
+[ RUN      ] ResearchFieldsRegistry.UnknownKindRefused
+[       OK ] ResearchFieldsRegistry.UnknownKindRefused (11 ms)
+[ RUN      ] ResearchFieldsRegistry.RowRequestsAKindRefuses
+[       OK ] ResearchFieldsRegistry.RowRequestsAKindRefuses (10 ms)
+[ RUN      ] ResearchFieldsRegistry.ParseRoundTrip
+[       OK ] ResearchFieldsRegistry.ParseRoundTrip (6 ms)
+[ RUN      ] ResearchFieldsRegistry.RowContract
+[       OK ] ResearchFieldsRegistry.RowContract (14 ms)
+[ RUN      ] ResearchFieldsRegistry.PlansKeepSourceOrderAndRegistrationOrder
+[       OK ] ResearchFieldsRegistry.PlansKeepSourceOrderAndRegistrationOrder (5 ms)
+[ RUN      ] ResearchFieldsRegistry.SpecSchemaFollowsTheRegistryFlag
+[       OK ] ResearchFieldsRegistry.SpecSchemaFollowsTheRegistryFlag (10 ms)
+[----------] 7 tests from ResearchFieldsRegistry (67 ms total)
+
+[----------] 3 tests from ResearchFieldsA4Reuse
+[ RUN      ] ResearchFieldsA4Reuse.RebuiltPriceFieldUsesTheWholeBuildsPanel
+[       OK ] ResearchFieldsA4Reuse.RebuiltPriceFieldUsesTheWholeBuildsPanel (479 ms)
+[ RUN      ] ResearchFieldsA4Reuse.PriceFieldReusedOnlyWithTheBuildsPanelHistory
+[       OK ] ResearchFieldsA4Reuse.PriceFieldReusedOnlyWithTheBuildsPanelHistory (407 ms)
+[ RUN      ] ResearchFieldsA4Reuse.EachInputFileIsDigestedOncePerDecision
+[       OK ] ResearchFieldsA4Reuse.EachInputFileIsDigestedOncePerDecision (326 ms)
+[----------] 3 tests from ResearchFieldsA4Reuse (1214 ms total)
+
+[----------] 6 tests from ResearchFieldsA4Clock
+[ RUN      ] ResearchFieldsA4Clock.SessionCalendarIsThePythonCalendar
+[       OK ] ResearchFieldsA4Clock.SessionCalendarIsThePythonCalendar (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.UsableFromIsStrictlyAfterTheMark
+[       OK ] ResearchFieldsA4Clock.UsableFromIsStrictlyAfterTheMark (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.SessionCalendarRefusesABadRole
+[       OK ] ResearchFieldsA4Clock.SessionCalendarRefusesABadRole (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.LatestRowsIsThePythonPointer
+[       OK ] ResearchFieldsA4Clock.LatestRowsIsThePythonPointer (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.LatestRowsBeforeIsStrict
+[       OK ] ResearchFieldsA4Clock.LatestRowsBeforeIsStrict (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.WindowedSumsAreThePythonSumsBitForBit
+[       OK ] ResearchFieldsA4Clock.WindowedSumsAreThePythonSumsBitForBit (0 ms)
+[----------] 6 tests from ResearchFieldsA4Clock (1 ms total)
+
+[----------] 5 tests from ResearchFieldsHoldingsFixture
+[ RUN      ] ResearchFieldsHoldingsFixture.FormulaFingerprintsAreTheRegistrys
+[       OK ] ResearchFieldsHoldingsFixture.FormulaFingerprintsAreTheRegistrys (76 ms)
+[ RUN      ] ResearchFieldsHoldingsFixture.FtdIsThePythonField
+[       OK ] ResearchFieldsHoldingsFixture.FtdIsThePythonField (67 ms)
+[ RUN      ] ResearchFieldsHoldingsFixture.RegshoIsThePythonField
+[       OK ] ResearchFieldsHoldingsFixture.RegshoIsThePythonField (87 ms)
+[ RUN      ] ResearchFieldsHoldingsFixture.RegistryBuildEntriesAreThePythonEntries
+[       OK ] ResearchFieldsHoldingsFixture.RegistryBuildEntriesAreThePythonEntries (238 ms)
+[ RUN      ] ResearchFieldsHoldingsFixture.MissingOrWrongInputsAreRefused
+[       OK ] ResearchFieldsHoldingsFixture.MissingOrWrongInputsAreRefused (18 ms)
+[----------] 5 tests from ResearchFieldsHoldingsFixture (488 ms total)
+
+[----------] 2 tests from ResearchFieldsHoldingsProbe
+[ RUN      ] ResearchFieldsHoldingsProbe.FtdLookAheadProbeHasTeeth
+[       OK ] ResearchFieldsHoldingsProbe.FtdLookAheadProbeHasTeeth (50 ms)
+[ RUN      ] ResearchFieldsHoldingsProbe.RegshoLookAheadProbeHasTeeth
+[       OK ] ResearchFieldsHoldingsProbe.RegshoLookAheadProbeHasTeeth (37 ms)
+[----------] 2 tests from ResearchFieldsHoldingsProbe (87 ms total)
+
+[----------] 2 tests from ResearchFieldsHoldingsKernel
+[ RUN      ] ResearchFieldsHoldingsKernel.FtdRingIsTheFullMatrixInAnyOrder
+[       OK ] ResearchFieldsHoldingsKernel.FtdRingIsTheFullMatrixInAnyOrder (47 ms)
+[ RUN      ] ResearchFieldsHoldingsKernel.RegshoLateRuleIsPerFileAcrossBatches
+[       OK ] ResearchFieldsHoldingsKernel.RegshoLateRuleIsPerFileAcrossBatches (17 ms)
+[----------] 2 tests from ResearchFieldsHoldingsKernel (65 ms total)
+
+[----------] Global test environment tear-down
+[==========] 25 tests from 6 test suites ran. (1926 ms total)
+[  PASSED  ] 25 tests.

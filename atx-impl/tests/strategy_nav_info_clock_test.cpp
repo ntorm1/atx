@@ -2,12 +2,15 @@
 // ALCLOCK-3) and the print-only --info-clock-print (Ruling ALCLOCK-1).
 //
 // Suites: InfoClockRate (the kernel at its window boundary, the refusals, the closed-form step,
-// causality, the capacity curve, book workers, the registry row, the reserve) and InfoClockPrint
+// causality, the capacity curve, book workers, the calibrate pass, the registry row and its
+// pinned listing, the reserve) and InfoClockPrint
 // (flag absent = the bytes of before; the opt-in adds one summary block per scenario on any book;
 // the rule alone prints no block; --spec equals argv). Synthetic roles only (the spo fixture).
 
 #include <algorithm>
+#include <array>
 #include <bit>
+#include <charconv>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -15,6 +18,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
@@ -23,6 +27,7 @@
 #include "atx/engine/book/two_speed.hpp"
 #include "../src/book/nav_rules.hpp"
 #include "../src/book/nav_spec.hpp"
+#include "../src/strategy_nav_calibrate.hpp"
 #include "../src/strategy_nav_replay.hpp"
 #include "../src/strategy_nav_v7.hpp"
 #include "../src/strategy_target_replay.hpp"
@@ -239,6 +244,90 @@ std::string summary_without_blocks(const fs::path& dir) {
     entry.erase("info_clock");
   }
   return summary.dump(2) + '\n';
+}
+
+// Review S-3 (Ruling ALCLOCK-S): the calibrate pass's arithmetic on a published directory. The
+// primary S2 book's all-rows mean gross from its daily CSV (17 significant digits: the values
+// round-trip), as nav_summ and PM6-6's pass compute it.
+f64 all_rows_gross(const fs::path& dir) {
+  const auto summary = Json::parse(bytes_of(dir / "summary.json"));
+  const auto label = summary.at("primary_scenario").get<std::string>();
+  const auto daily = read_csv(dir / ("daily_" + label + ".csv"));
+  const size_t c_gross = daily.col("gross_leverage");
+  std::vector<f64> gross;
+  gross.reserve(daily.rows.size());
+  for (const auto& row : daily.rows) gross.push_back(number_of(row.at(c_gross)));
+  return st::numpy_mean(gross);
+}
+// The leverage as the -gm spec carries it (Python f"{x:.4f}").
+std::string four_decimals(f64 x) {
+  std::array<char, 64> text{};
+  const auto printed =
+      std::to_chars(text.data(), text.data() + text.size(), x, std::chars_format::fixed, 4);
+  EXPECT_EQ(printed.ec, std::errc{});
+  return std::string(text.data(), printed.ptr);
+}
+// A double at 17 significant digits (it parses back to its bits).
+std::string text_of(f64 x) {
+  std::ostringstream text;
+  text.precision(17);
+  text << x;
+  return text.str();
+}
+// The census a main book's info_clock block reports, from a published directory: the members of
+// the primary book's decision and rebalance rows (its daily CSV), fast and missing by the fixture
+// clock.
+st::NavInfoClockStats rebalance_census(const World& w, const fs::path& dir) {
+  const auto summary = Json::parse(bytes_of(dir / "summary.json"));
+  const auto label = summary.at("primary_scenario").get<std::string>();
+  const auto daily = read_csv(dir / ("daily_" + label + ".csv"));
+  const size_t c_session = daily.col("session_ns"), c_decision = daily.col("decision"),
+               c_rebalance = daily.col("rebalance");
+  std::map<i64, bool> rebalance;
+  for (const auto& row : daily.rows)
+    rebalance[std::stoll(row.at(c_session))] =
+        row.at(c_decision) == "1" && row.at(c_rebalance) == "1";
+  st::NavInfoClockStats census;
+  for (usize t = 0; t < w.role.d; ++t) {
+    const auto found = rebalance.find(w.role.sessions[t]);
+    if (found == rebalance.end() || !found->second) continue;
+    for (usize i = 0; i < w.role.n; ++i) {
+      const usize k = t * w.role.n + i;
+      if (!w.role.member[k]) continue;
+      ++census.name_days;
+      census.fast_name_days += fast(w.clock[k]) ? 1U : 0U;
+      census.missing_name_days += std::isnan(w.clock[k]) ? 1U : 0U;
+    }
+  }
+  return census;
+}
+// The rule's step on the published primary book's holdings (--emit-holdings csv, cadence 1):
+// every member row of a rebalance that moved (rule_weight != held_weight, i.e. outside the dust
+// band) has rule_weight = held + theta_i (L desired - held), theta_i the fast rate when row d of
+// the fixture clock is in [0, 21], else .05. Returns {fast rows, slow rows}.
+std::pair<usize, usize> closed_form_rows(const World& w, const fs::path& holdings, f64 leverage) {
+  std::map<i64, usize> row_of;
+  for (usize t = 0; t < w.role.d; ++t) row_of[w.role.sessions[t]] = t;
+  const auto csv = read_csv(holdings / "holdings.csv");
+  const size_t c_session = csv.col("session_ns"), c_id = csv.col("instrument_id"),
+               c_member = csv.col("member"), c_held = csv.col("held_weight"),
+               c_desired = csv.col("desired_weight"), c_rule = csv.col("rule_weight");
+  const f64 theta_f = st::nav_info_clock_fast_theta(1);
+  usize fast_rows = 0, slow_rows = 0;
+  for (const auto& row : csv.rows) {
+    const f64 desired = number_of(row.at(c_desired));
+    if (row.at(c_member) != "1" || std::isnan(desired)) continue; // a member's rebalance
+    const f64 held = number_of(row.at(c_held)), rule = number_of(row.at(c_rule));
+    if (rule == held) continue; // inside the dust band: no move
+    const usize t = row_of.at(std::stoll(row.at(c_session)));
+    const usize i = static_cast<usize>(std::stoull(row.at(c_id)) - 100);
+    const bool is_fast = fast(w.clock[t * w.role.n + i]);
+    const f64 theta = is_fast ? theta_f : bk::two_speed_slow_theta;
+    EXPECT_DOUBLE_EQ(rule, held + theta * (leverage * desired - held)) << "t " << t << " name "
+                                                                         << i;
+    (is_fast ? fast_rows : slow_rows) += 1;
+  }
+  return {fast_rows, slow_rows};
 }
 } // namespace
 
@@ -536,7 +625,8 @@ TEST(InfoClockRate, CommandLineRefusalsWriteNothing) {
        "--two-speed two-speed-v1 needs aim-partial-v5 at the fixed rate"},
       {&w.fields,
        {"--rule", "aim-partial-v6", "--trade-fraction", ".05", "--rate", "info-clock-rate-v1"}, 2,
-       "aim-partial-v6 and --capacity-curve need the fixed rate"},
+       "aim-partial-v6 needs the fixed rate, --capacity-curve the fixed rate or "
+       "info-clock-rate-v1"},
       {&w.fields, {"--rule", "spo-v1", "--rate", "info-clock-rate-v1"}, 2, "fixed rate"},
       {&w.fields, joined(rule_on, {"--construction-grid", grid.string()}), 1,
        "with --rate info-clock-rate-v1 every variant has the base cadence"},
@@ -565,7 +655,8 @@ TEST(InfoClockRate, CommandLineRefusalsWriteNothing) {
 // Ruling ALCLOCK-3: --capacity-curve accepts --rate info-clock-rate-v1 (the rate reads no NAV:
 // each capacity book moves at the members' clock rates, as the main books do) and no other
 // non-fixed rate: per-name-v1 is refused as before; aim-partial-v6 refuses every non-fixed rate,
-// this one included.
+// this one included. The refusal and the published capacity sentence say so (fix 1, review
+// S-1): under the rule the sentence names the rate; at the fixed rate it keeps its text.
 TEST(InfoClockRate, CapacityCurveAcceptsThisRateOnly) {
   const auto parses = [](const std::vector<std::string>& flags) {
     std::vector<std::string> args{"nav", "--combined", "c.json", "--combined-sha256",
@@ -577,7 +668,10 @@ TEST(InfoClockRate, CapacityCurveAcceptsThisRateOnly) {
     EXPECT_TRUE(v7::claims_nav_args(static_cast<int>(argv.size()), argv.data()));
     const auto parsed = v7::parse_nav_v7_args(static_cast<int>(argv.size()), argv.data());
     if (!parsed)
-      EXPECT_NE(parsed.error().to_string().find("need the fixed rate"), std::string::npos)
+      EXPECT_NE(parsed.error().to_string().find(
+                    "aim-partial-v6 needs the fixed rate, --capacity-curve the fixed rate or "
+                    "info-clock-rate-v1 (per-name-v1 reads the NAV)"),
+                std::string::npos)
           << parsed.error().to_string();
     return static_cast<bool>(parsed);
   };
@@ -601,6 +695,31 @@ TEST(InfoClockRate, CapacityCurveAcceptsThisRateOnly) {
       << err.str();
   EXPECT_TRUE(fs::exists(w.out("cap") / "capacity" / "summary.json"));
   EXPECT_EQ(Json::parse(bytes_of(w.out("cap") / "capacity" / "recipe.json")).at("rate"), clock_id);
+  // The capacity sentence of the recipe, the summary and v7_extras.json: it names the rate under
+  // the rule; at the fixed rate it is the sentence of before ("fixed rate only").
+  const auto sentences = [](const fs::path& dir) {
+    const auto recipe = Json::parse(bytes_of(dir / "recipe.json"));
+    const auto summary = Json::parse(bytes_of(dir / "summary.json"));
+    const auto extras = Json::parse(bytes_of(dir / "v7_extras.json"));
+    return std::vector<std::string>{
+        recipe.at("v7").at("capacity").get<std::string>(),
+        summary.at("v7").at("declarations").at("capacity").get<std::string>(),
+        extras.at("capacity_rule").get<std::string>()};
+  };
+  const std::string fixed_only = "; fixed rate only; x1 is S2 bit for bit";
+  const std::string named = "; the fixed rate or info-clock-rate-v1, this run's (Ruling ALCLOCK-3";
+  for (const auto& text : sentences(w.out("cap"))) {
+    EXPECT_NE(text.find(named), std::string::npos) << text;
+    EXPECT_EQ(text.find(fixed_only), std::string::npos) << text;
+  }
+  ASSERT_EQ(nav(w.args(w.out("cap-fixed"), &w.fields, joined(v5_slow, {"--capacity-curve"})), log,
+                err),
+            0)
+      << err.str();
+  for (const auto& text : sentences(w.out("cap-fixed"))) {
+    EXPECT_NE(text.find(fixed_only), std::string::npos) << text;
+    EXPECT_EQ(text.find("info-clock"), std::string::npos) << text;
+  }
   EXPECT_EQ(nav(w.args(w.out("cap-pn"), &w.fields,
                        joined(v5_slow, {"--rate", "per-name-v1", "--capacity-curve"})),
                 log, err),
@@ -631,10 +750,111 @@ TEST(InfoClockRate, BookWorkersOneAndFourSameBytes) {
             std::string::npos);
 }
 
+// Ruling ALCLOCK-S (review S-3): P9-C's NAV runs the rule under --calibrate-gross (gross_match
+// pm6-6-engine: PM6-6 in one process; pass 1 is the S2 book alone and records the shared
+// construction, pass 2 replays it for every book) on the Y-F0 flags this fixture supports
+// (--order-basis delta --liquidity-cache --capacity-curve) and --info-clock-print. Left out
+// (Ruling ALCLOCK-S3a; the CalibrateGross cases and the gate's P9-B0 cover them): --neutralize
+// price-risk-v1 and --locate-in-aim (40 sessions, below the price exposures' default
+// min_return_pairs 126) and --warm-start-sessions (the fixture role's score_begin is 0). One
+// correction publishes the plain run at L' (the two-process result) byte for byte but
+// summary.json's calibration, with pass 1's construction replayed (construction_reused); the
+// restored pass forms each decision's rates again from row d of the clock (the closed form holds
+// at L' on the published holdings); each main block counts pass 2's member-decisions once (pass
+// 1's book is dropped). Four book workers publish the calibrated bytes of one.
+TEST(InfoClockRate, CalibrateGrossKeepsTheRatesAndCountsOnce) {
+  const World w;
+  const std::vector<std::string> shape{
+      "--rule", "aim-partial-v5", "--cadence", "1", "--trade-fraction", ".05",
+      "--dust-multiple", ".1", "--exit-rate", ".05", "--rate", "info-clock-rate-v1",
+      "--order-basis", "delta", "--liquidity-cache", "--capacity-curve", "--info-clock-print"};
+  const auto at = [&shape](const std::string& leverage, const std::vector<std::string>& extra) {
+    return joined(joined(shape, {"--aim-leverage", leverage}), extra);
+  };
+  const auto holdings = [&w](const std::string& name) {
+    return std::vector<std::string>{"--emit-holdings", w.out(name).string(), "--holdings-format",
+                                    "csv"};
+  };
+  std::ostringstream log, err;
+  ASSERT_EQ(nav(w.args(w.out("first"), &w.fields, at("1.2", {})), log, err), 0) << err.str();
+  const f64 g = all_rows_gross(w.out("first"));
+  ASSERT_TRUE(std::isfinite(g) && g > 0) << g;
+  const f64 target = 1.1 * g, tolerance = g / 1000;
+  const auto corrected = st::leverage_4_decimals(1.2 * target / g);
+  ASSERT_TRUE(corrected);
+  ASSERT_TRUE(*corrected >= 1.0 && *corrected <= 2.0) << *corrected;
+  ASSERT_EQ(nav(w.args(w.out("second"), &w.fields,
+                       at(four_decimals(*corrected), holdings("second-holdings"))),
+                log, err),
+            0)
+      << err.str();
+  const std::vector<std::string> calibrate{"--calibrate-gross", text_of(target),
+                                           "--calibrate-tolerance", text_of(tolerance)};
+  ASSERT_EQ(nav(w.args(w.out("calibrated"), &w.fields,
+                       at("1.2", joined(calibrate, holdings("calibrated-holdings")))),
+                log, err),
+            0)
+      << err.str();
+  // The plain run at L': every file (the capacity directory and the v7 files included) but
+  // summary.json, which is the plain run's once calibration is dropped; the holdings likewise.
+  expect_same_but_summary(w.out("calibrated"), w.out("second"));
+  auto summary = Json::parse(bytes_of(w.out("calibrated") / "summary.json"));
+  ASSERT_TRUE(summary.contains("calibration"));
+  const Json calibration = summary.at("calibration");
+  summary.erase("calibration");
+  EXPECT_EQ(summary, Json::parse(bytes_of(w.out("second") / "summary.json")));
+  EXPECT_GE(expect_same_tree(w.out("calibrated-holdings"), w.out("second-holdings")), 2U);
+  // PM6-6's record: one correction to L', pass 1's construction replayed.
+  EXPECT_EQ(calibration.at("corrected"), true) << calibration.dump();
+  EXPECT_EQ(calibration.at("construction_reused"), true) << calibration.dump();
+  const f64 leverage = calibration.at("leverage").get<f64>();
+  EXPECT_TRUE(std::isfinite(leverage) && leverage >= 1.0 && leverage <= 2.0) << leverage;
+  EXPECT_EQ(bits(leverage), bits(*corrected));
+  EXPECT_EQ(bits(calibration.at("gross_requested").get<f64>()), bits(g));
+  const f64 published_gross = all_rows_gross(w.out("second"));
+  EXPECT_EQ(bits(calibration.at("gross").get<f64>()), bits(published_gross));
+  EXPECT_EQ(calibration.at("matched").get<bool>(),
+            std::abs(published_gross - target) <= tolerance);
+  // The rule is the published run's, in the main and the capacity recipes.
+  EXPECT_EQ(Json::parse(bytes_of(w.out("calibrated") / "recipe.json")).at("rate"), clock_id);
+  EXPECT_EQ(Json::parse(bytes_of(w.out("calibrated") / "capacity" / "recipe.json")).at("rate"),
+            clock_id);
+  // The restored pass's rates: the closed form at L' from row d of the clock, fast and slow.
+  const auto [fast_rows, slow_rows] = closed_form_rows(w, w.out("calibrated-holdings"), leverage);
+  EXPECT_GT(fast_rows, 0U);
+  EXPECT_GT(slow_rows, 0U);
+  // Each main block counts pass 2's member-decisions once; the capacity summary has no block.
+  const auto census = rebalance_census(w, w.out("calibrated"));
+  EXPECT_GT(census.fast_name_days, 0U);
+  EXPECT_GT(census.missing_name_days, 0U);
+  const auto& scenarios = summary.at("scenarios");
+  ASSERT_GE(scenarios.size(), 5U); // S1..S3 x swap-fin-v1, S2 x flat-300-v0, S2 x engine-tiers
+  for (const auto& entry : scenarios) {
+    const auto& block = entry.at("info_clock");
+    EXPECT_EQ(block.at("rate"), clock_id) << entry.at("scenario");
+    EXPECT_EQ(block.at("name_days").get<usize>(), census.name_days) << entry.at("scenario");
+    EXPECT_EQ(block.at("fast_name_days").get<usize>(), census.fast_name_days)
+        << entry.at("scenario");
+    EXPECT_EQ(block.at("missing_name_days").get<usize>(), census.missing_name_days)
+        << entry.at("scenario");
+  }
+  EXPECT_EQ(bytes_of(w.out("calibrated") / "capacity" / "summary.json").find("info_clock"),
+            std::string::npos);
+  // Four book workers publish the one-worker calibrated run byte for byte (no holdings).
+  ASSERT_EQ(nav(w.args(w.out("one"), &w.fields, at("1.2", calibrate)), log, err), 0) << err.str();
+  ASSERT_EQ(nav(w.args(w.out("four"), &w.fields,
+                       at("1.2", joined(calibrate, {"--book-workers", "4"}))),
+                log, err),
+            0)
+      << err.str();
+  EXPECT_GE(expect_same_tree(w.out("four"), w.out("one")), 8U);
+}
+
 // K-P9-7 (append-only, Ruling W3-9): the row follows C3's three trade-rate rows, x-flag
 // "--rate info-clock-rate-v1", no parameter (every constant is registered), incompatible with
-// per-name-v1 and the rules that need the fixed rate; --list-rules prints it; its derived flag is
-// a typed NavSpec option; the --rate parser takes the id.
+// per-name-v1 and the rules that need the fixed rate; --list-rules prints it, as the pinned
+// fixture fixtures/nav_rule_info_clock_rate_v1.json holds it (review S-4); its derived flag is a
+// typed NavSpec option; the --rate parser takes the id.
 TEST(InfoClockRate, RegistryRowAndParser) {
   const auto rows = nr::trade_rate_rows();
   ASSERT_GE(rows.size(), 4U);
@@ -660,6 +880,11 @@ TEST(InfoClockRate, RegistryRowAndParser) {
   const auto listed = std::find_if(table.at("rules").begin(), table.at("rules").end(),
                                    [](const Json& r) { return r.at("id") == clock_id; });
   ASSERT_NE(listed, table.at("rules").end());
+  // Review S-4: the listed row is the committed fixture (the row alone: the table grows by
+  // appends), which scripts/tests/test_info_clock_rule.py reads as its NAV table's row.
+  const auto pinned = Json::parse(bytes_of(fs::path(ATX_IMPL_TESTS_DIR) / "fixtures" /
+                                           "nav_rule_info_clock_rate_v1.json"));
+  EXPECT_EQ(*listed, pinned) << listed->dump(2);
   EXPECT_EQ(listed->at("kind"), "trade-rate");
   EXPECT_EQ(listed->at("x-flag"), "--rate info-clock-rate-v1");
   EXPECT_TRUE(listed->at("params_schema").at("properties").empty());

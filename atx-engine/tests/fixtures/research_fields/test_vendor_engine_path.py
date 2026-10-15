@@ -237,6 +237,29 @@ def test_panel_guard_fails_closed_on_missing_statistics():
     for empty in ({}, {"source_checks": {}}, {"source_checks": {"source": {}}}, {"source_checks": {"source": None}}):
         with pytest.raises(engine.EngineError, match="ret_overnight: the engine's receipt carries no vendor panel"):
             engine.same_panel("ret_overnight", empty, stats)
+    # S-R2 (P9 lane A4): every PANEL_KEYS statistic None compared nothing (the None skip below); now refused
+    nones = dict(stats, **dict.fromkeys(engine.PANEL_KEYS))
+    bare = {"source_checks": {"source": {"row_groups": 1}}}   # a non-empty engine block without the panel keys
+    for bad in (nones, dict(stats, rows_off_calendar=None)):
+        for got in (entry, bare):
+            with pytest.raises(engine.EngineError, match="ret_overnight: this builder's vendor panel recorded no read"):
+                engine.same_panel("ret_overnight", got, bad)
     bars = m["source_checks"]["ohlc"]["source"]          # the ohlc panel records every PANEL_KEYS key too
     engine.same_panel("open_adj", {"source_checks": {"source": {engine.SCAN_KEYS.get(k, k): v for k, v in
                                                                  bars.items() if k != "rule"}}}, bars)
+
+
+def test_panel_guard_reads_an_unloaded_share_statistic_as_none():
+    """A3 re-review N-1 (P9 lane A4): the Python price panel records ``shares_rows_above_a9_ceiling: 0`` when it loads
+    no shares, the engine reports the key only when its panel loads shares: a 0 the engine does not report is no
+    difference, any other value still has to be the engine's."""
+    m = json.loads((VENDOR / "expected" / "manifest.normalized.json").read_text(encoding="utf-8"))
+    stats = dict(m["source_checks"]["price"]["source"], shares_rows_above_a9_ceiling=0)
+    source = {engine.SCAN_KEYS.get(k, k): v for k, v in stats.items() if k != "rule"}
+    del source["shares_rows_above_a9_ceiling"]
+    engine.same_panel("ret_overnight", {"source_checks": {"source": source}}, stats)   # no shares loaded: accepted
+    for python, got in ((1, None), (0, 1), (1, 0)):
+        reported = dict(source) if got is None else dict(source, shares_rows_above_a9_ceiling=got)
+        with pytest.raises(engine.EngineError, match="shares_rows_above_a9_ceiling"):
+            engine.same_panel("ret_overnight", {"source_checks": {"source": reported}},
+                              dict(stats, shares_rows_above_a9_ceiling=python))

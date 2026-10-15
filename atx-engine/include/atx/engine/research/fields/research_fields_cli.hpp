@@ -11,7 +11,11 @@
 //   {"schema", "role": {"dir", "manifest_sha256"}, "output_dir", "fields": [name, ...],
 //    "finra": dir (required with si_shares / si_dtc),
 //    "price_source": the role's vendor TickerHistory3 parquet (required with the vendor-panel
-//    kinds, registry.hpp; optional key, P9 A3: a spec without it parses and builds as before)}
+//    kinds, registry.hpp; optional key, P9 A3: a spec without it parses and builds as before),
+//    "thirteenf" / "indexes" (lane AL-SIG) and "ftd" / "regsho_threshold" / "security_master"
+//    (lane A4): {"dir", "manifest_sha256"} of an atx-db stage, required by the kinds that read it,
+//    "shares_out" (lane A4): {"path", "sha256"} of this run's shares_out.f64, required with
+//    ftd_shares_ratio21; each optional: a spec without them parses and builds as before}
 // and each field name names its builder kind (registry.hpp). Every field is written to
 // output_dir/<name>.f64, created exclusively (an existing file is never replaced). After the last
 // field closes, RECEIPT (atx.research-fields-receipt/v1) is created exclusively: one entry per

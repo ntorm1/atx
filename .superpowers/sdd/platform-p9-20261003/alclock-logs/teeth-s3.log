@@ -1,0 +1,5 @@
+2026-10-09T01:49:46Z mutated atx-impl/src/book/nav_session.cpp: 'if (clock_rule)' -> 'if (clock_rule && !(tape && tape->replay))'; porcelain 'M atx-impl/src/book/nav_session.cpp'
+2026-10-09T01:50:20Z quiet: free 4079 commit 6859
+2026-10-09T01:50:20Z p9-alclock-l start (head b96fe073, mutated atx-impl/src/book/nav_session.cpp)
+2026-10-09T01:50:45Z p9-alclock-l end exit 0 wall 58 s
+2026-10-09T01:50:45Z restored: sha256 c86532ab4c83f84f (before c86532ab4c83f84f), hash-object = HEAD blob True (0aa59660aec0bc17), porcelain empty True -> OK

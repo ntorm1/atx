@@ -1,0 +1,40 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\atx-wt\pool-2
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 6 items
+
+scripts\tests\test_wave_queue.py ......                                  [100%]
+
+=================================== PASSES ====================================
+________________________ test_pin_transitions_and_emit ________________________
+---------------------------- Captured stdout call -----------------------------
+pinned C:/Users/natha/AppData/Local/Temp/claude/c--atx/2a54b18d-50af-4385-9bb7-113c392a6360/scratchpad/root-m6/bt/sql3-wq/test_pin_transitions_and_emit0/q/alpha_a.json
+pinned C:/Users/natha/AppData/Local/Temp/claude/c--atx/2a54b18d-50af-4385-9bb7-113c392a6360/scratchpad/root-m6/bt/sql3-wq/test_pin_transitions_and_emit0/q/alpha_b.json
+wave manifest C:/Users/natha/AppData/Local/Temp/claude/c--atx/2a54b18d-50af-4385-9bb7-113c392a6360/scratchpad/root-m6/bt/sql3-wq/test_pin_transitions_and_emit0/w.json: 2 candidates; commit it, then research_cycle.py wave run w.json
+wave manifest C:/Users/natha/AppData/Local/Temp/claude/c--atx/2a54b18d-50af-4385-9bb7-113c392a6360/scratchpad/root-m6/bt/sql3-wq/test_pin_transitions_and_emit0/w2.json: 1 candidates; commit it, then research_cycle.py wave run w2.json
+---------------------------- Captured stderr call -----------------------------
+research_cycle candidates: C:\Users\natha\AppData\Local\Temp\claude\c--atx\2a54b18d-50af-4385-9bb7-113c392a6360\scratchpad\root-m6\bt\sql3-wq\test_pin_transitions_and_emit0\w.json exists: a wave manifest is written once
+____________ test_the_wave_sets_the_queue_status_of_its_candidates ____________
+---------------------------- Captured stdout call -----------------------------
+wave_readers mechanics: parent -> out\waves\w1\readers\mech-parent.json
+wave_readers mechanics: cell -> out\waves\w1\readers\mech-matched.json
+wave_readers book: cell, parent -> out\waves\w1\readers\book.json
+candidates: 3 valid in scripts/specs/v8/candidates
+_____ test_a_kept_string_the_gate_did_not_admit_is_screened_not_admitted ______
+---------------------------- Captured stdout call -----------------------------
+wave_readers mechanics: parent -> out\waves\w1\readers\mech-parent.json
+wave_readers mechanics: cell -> out\waves\w1\readers\mech-matched.json
+wave_readers book: cell, parent -> out\waves\w1\readers\book.json
+________ test_preflight_refuses_a_queued_candidate_that_is_not_pinned _________
+---------------------------- Captured stderr call -----------------------------
+research_cycle wave: HARD-STOP [preflight]: preflight refused: candidate alpha_a: queue status 'proposed', not pinned (the PM pins first); candidate alpha_b: queue status 'proposed', not pinned (the PM pins first); candidate alpha_c: queue status 'proposed', not pinned (the PM pins first)
+=========================== short test summary info ===========================
+PASSED scripts/tests/test_wave_queue.py::test_propose_validate_and_the_refusals
+PASSED scripts/tests/test_wave_queue.py::test_pin_transitions_and_emit
+PASSED scripts/tests/test_wave_queue.py::test_a_relative_root_hands_the_store_hook_root_relative_names
+PASSED scripts/tests/test_wave_queue.py::test_the_wave_sets_the_queue_status_of_its_candidates
+PASSED scripts/tests/test_wave_queue.py::test_a_kept_string_the_gate_did_not_admit_is_screened_not_admitted
+PASSED scripts/tests/test_wave_queue.py::test_preflight_refuses_a_queued_candidate_that_is_not_pinned
+============================== 6 passed in 5.64s ==============================

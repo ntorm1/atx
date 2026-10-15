@@ -29,6 +29,11 @@ namespace atx::engine::research::composition {
 inline constexpr std::string_view ew_theme_std_rule="ew-theme-std-v1";
 // the aim variant; its weights file's block rule stays ew-theme-std-v1
 inline constexpr std::string_view ew_theme_std_aim_rule="ew-theme-std-aim-v1";
+// R-3 on an ew-theme-v1 parent (Rulings E-27a, E-27b; composition_rules.ew_theme_aim_v2), fitted in
+// C++ by P9 lane D3W-PB: theme_gain_weights on scores = the members' aim gains (every parent score
+// 1): w_k = (1/T) g_k / sum_{theme(k)} g, then the member cap 1/(2T). Its weights file is a plain
+// weighted blend (schema v1, no theme block).
+inline constexpr std::string_view ew_theme_aim_v2_rule="ew-theme-aim-v2";
 inline constexpr atx::f64 member_cap_tolerance=1e-12; // relative (composition_rules.CAP_TOLERANCE)
 // Rule 5, verbatim: (id, from, to); "sue C+ stays" is declared as a no-op row.
 struct TierRegrade {

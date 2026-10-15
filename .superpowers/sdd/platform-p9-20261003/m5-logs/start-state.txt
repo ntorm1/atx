@@ -1,0 +1,9 @@
+root M5 (RESUME 11) start 2026-10-15T14:18:44Z
+docs head before step 0 e3b6c111, step 0 6cb1070f, code head 5c811b56
+trial ledger lines 133 sha256 27e40f9f6314585e
+research-store: absent
+tracked changes after step 0: 0
+untracked: ?? docs/plans/2026-10-02-x5-equity-curve.png ?? docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png ?? docs/plans/2026-10-03-wq-explore-equity-curve.png ?? docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png ?? docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png 
+busy (our build procs): 0
+free MiB 1539 of 16068
+C:              458G  402G   57G  88% /c

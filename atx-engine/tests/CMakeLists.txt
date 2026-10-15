@@ -537,6 +537,15 @@ foreach(_b2_tests IN ITEMS atx-engine-research-ledger-tests atx-engine-research-
         PROPERTIES LABELS atx_research)
 endforeach()
 
+# Platform P9 lane A4 (SEC / holdings sources to C++): the reuse history and digest gtests (A3
+# review S-2, A3-3), the session clock primitives and the holdings kinds (fixture under
+# fixtures/research_fields_holdings, its generator and pytest beside it) join the research-fields
+# test target.
+target_sources(atx-engine-research-fields-tests PRIVATE
+    research/research_fields_a4_reuse_test.cpp
+    research/research_fields_a4_clock_test.cpp
+    research/research_fields_holdings_test.cpp)
+
 # P9 lane SQL4 (rulings SQL-7 / SQL-9): the catalog's ledger index head from B2's chain_head and
 # `verify --ledger` (ResearchCatalog.LedgerHeadFromResearchLedger, .RecordedHeadsArePrefixHeads)
 # beside SQL2's catalog gtests; the test reads B2's chain functions directly.

@@ -2,8 +2,9 @@
 wave_kinds.py; ruling ALCOMB-1: a rule enters a cell only through the atx.research-wave/v2 rules block), the print-only
 --info-clock-print (ruling ALCLOCK-1: owned by no row, so free in a template or a cell's constants), and the lane's
 registration and template (scripts/specs/p9/rules/info-clock-rate-v1.json, scripts/specs/p9/templates/info-clock.json).
-Synthetic worlds only (wave_fixture.py's fake root and executor); the NAV row here is the one the exe prints
-(nav --list-rules --json, atx-impl book/nav_rules.cpp; its C++ side is InfoClockRate.RegistryRowAndParser).
+Synthetic worlds only (wave_fixture.py's fake root and executor); this lane's NAV row is read from the committed
+fixture atx-impl/tests/fixtures/nav_rule_info_clock_rate_v1.json, the row as the exe prints it (nav --list-rules --json,
+atx-impl book/nav_rules.cpp), which InfoClockRate.RegistryRowAndParser checks against the exe's listing (review S-4).
 
   "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider scripts/tests/test_info_clock_rule.py
 
@@ -43,6 +44,8 @@ KINDS_DIR = REPO / "scripts" / "specs" / "p9" / "kinds"
 REGISTRATION = REPO / "scripts" / "specs" / "p9" / "rules" / "info-clock-rate-v1.json"
 TEMPLATE = REPO / "scripts" / "specs" / "p9" / "templates" / "info-clock.json"
 IC_FIXTURE = REPO / "atx-impl" / "tests" / "fixtures" / "composition_rules_list.json"   # D1's K-P9-6 table, pinned
+# This lane's K-P9-7 row as the NAV exe lists it, pinned (the row alone: the table grows by appends; review S-4).
+NAV_ROW_FIXTURE = REPO / "atx-impl" / "tests" / "fixtures" / "nav_rule_info_clock_rate_v1.json"
 RULE = "info-clock-rate-v1"
 
 
@@ -57,7 +60,7 @@ def schema(properties: dict, required: list | None = None) -> dict:
 LEVERAGE = {"type": "number", "x-flag": "--aim-leverage", "minimum": 1, "maximum": 2, "default": 1}
 POSITIVE = {"type": "number", "exclusiveMinimum": 0}
 # The NAV exe's K-P9-7 table as nav --list-rules --json prints it: lane C1's fixed-v1 row, lane C3's aim-partial-v5
-# and per-name-v1 rows (each owns its x-flag's first token and its params' flags), and this lane's row.
+# and per-name-v1 rows (each owns its x-flag's first token and its params' flags), and this lane's row (the fixture).
 NAV_TABLE = {"schema": WK.NAV_RULES, "capabilities": ["leverage-rule-per-book", "nav-spec-v1"], "rules": [
     {"id": "fixed-v1", "kind": "leverage", "x-flag": "--aim-leverage", "incompatible": [],
      "params_schema": schema({"aim_leverage": LEVERAGE}, ["aim_leverage"])},
@@ -74,9 +77,7 @@ NAV_TABLE = {"schema": WK.NAV_RULES, "capabilities": ["leverage-rule-per-book", 
                                                  ("rate_lambda", 1e6, 0.2, "--rate-lambda"),
                                                  ("rate_min", 1, 0.01, "--rate-min"),
                                                  ("rate_max", 1, 0.15, "--rate-max"))})},
-    {"id": RULE, "kind": "trade-rate", "x-flag": f"--rate {RULE}", "params_schema": schema({}),
-     "incompatible": ["per-name-v1", "two-speed-v1", "aim-partial-v6", "spo-v1", "spo-v2", "spo-v3"],
-     "description": "info-clock-rate-v1 (P9 AL-CLOCK, lit [28][29])"}]}
+    json.loads(NAV_ROW_FIXTURE.read_text(encoding="utf-8"))]}
 
 
 def ic_table() -> dict:
@@ -247,6 +248,15 @@ def test_registration_and_template():
     assert reg["source_sample_end"] == 2019 and "FLAGGED" in reg["source_sample_flag"]      # ruling ALCLOCK-2
     assert "FIXED CHOICE" in reg["fixed_choices"][0] and "ea_days_since" in reg["fixed_choices"][0]
     assert "ALCLOCK-3" in " ".join(reg["fixed_choices"]) and "C3-4" in reg["realised_leverage"]
+    # ruling ALCLOCK-4 (review S-2): the stated bound and the realised figure the limits are judged on, verbatim
+    leverage = reg["realised_leverage"]
+    assert "ALCLOCK-4" in leverage
+    assert ("planned gross <= (theta_f / theta_s) x gross(aim) by contraction outside the dust band, 2.589x at "
+            "cadence 1; P9-C's mean gross matched to its parent by pm6-6-engine") in leverage
+    assert ("realised gross leverage is read from the cell's own summary (max and mean over the cell) and printed "
+            "beside the parent's") in leverage
+    assert "the OD5-7 cap test applies to that realised figure" in leverage
+    assert "the realised gross the OD5-7 cap reads is the parent's" not in leverage
     assert "DEC-16" in reg["restatement"] and reg["nav_flag"] == {"nav": {"--rate": RULE}}
     assert {c["name"] for c in reg["constants"]} == {"theta_fast", "theta_slow", "window_sessions", "field"}
     frag = reg["manifest_fragment"]

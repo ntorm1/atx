@@ -1,0 +1,8 @@
+# root M5 SIGN identity (C3-11) on the ledgered screen rows; tool blob dddd1140 (= pool-29 c2010ed1); head 1dd9b9b1; IC exe p9-3b source 1dd9b9b1
+exe C:\atx-wt\pool-2\build-equity\bin\atx-equity-strategy-ic.exe sha256 ef3974cfa82d1cc86d6a8079394e5d0964e8abcea8fd36a068b12f8b8bc99b38; python rule: wave_rules.sign_pm7_35
+C:\atx-wt\pool-2\.superpowers\sdd\platform-v8-20260929\waves\y-2\wave-result.json: wave y-2: no screen (a rule wave): skipped
+C:\atx-wt\pool-2\.superpowers\sdd\platform-v8-20260929\waves\y-3\wave-result.json: wave y-3: no screen (a rule wave): skipped
+C:\atx-wt\pool-2\.superpowers\sdd\platform-v8-20260929\waves\y-5\wave-result.json: wave y-5: no screen (a rule wave): skipped
+C:\atx-wt\pool-2\.superpowers\sdd\platform-v8-20260929\waves\y-s\wave-result.json: wave y-s, rule pm7-35: 15 rows; verb == recorded 15 / 15; verb == python 15 / 15; kept / dropped equal True; receipt pins the rows True; IDENTICAL
+RESULT PASS: every screen row identical
+exit 0

@@ -1,0 +1,35 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\atx-wt\pool-2
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 16 items
+
+atx-engine\tools\test_research_store_identity.py ................        [100%]
+
+=================================== PASSES ====================================
+_________________ IdentityCase.test_cli_counts_and_exit_codes _________________
+---------------------------- Captured stderr call -----------------------------
+usage: __main__.py [-h] --catalog CATALOG --root ROOT [--classes CLASSES]
+                   [--registry REGISTRY]
+__main__.py: error: the following arguments are required: --catalog
+research_store_identity: not a rendered class: run-log
+research_store_identity: no store at C:\Users\natha\AppData\Local\Temp\tmpxy9ppl3r\tree\absent.sqlite
+=========================== short test summary info ===========================
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_candidates_doc_py_indent2_noascii_lf
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_cli_counts_and_exit_codes
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_cycle_binding_typed_py_indent2
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_eol_stale_rows_and_unrenderable_keys_are_reported
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_one_byte_edit_of_a_row_is_reported
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_one_byte_edit_on_disk_is_reported
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_registry_refuses_unknown_rules
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_run_receipt_typed_py_indent2_crlf_and_lf
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_run_receipt_values_that_do_not_fit_stay_in_extra
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_run_start_doc_py_indent2
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_sealed_paths_never_opened
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_stage_receipts_typed_py_indent2_sorted_lf
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_trial_ledger_py_compact_sorted_lines_lf
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_verdict_and_copy_doc_py_indent2_lf
+PASSED atx-engine/tools/test_research_store_identity.py::IdentityCase::test_wave_result_doc_py_indent2_lf
+PASSED atx-engine/tools/test_research_store_identity.py::FixtureChain::test_cpp_catalog_renders_identically
+============================= 16 passed in 1.26s ==============================

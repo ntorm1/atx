@@ -1,0 +1,27 @@
+....FF.F                                                                 [100%]
+================================== FAILURES ===================================
+E   AssertionError: assert [('out/waves/...eceipt'), ...] == [('out/waves/...eceipt'), ...]
+      
+      At index 9 diff: ('out/waves/w1/wave-result.json', 'wave-result') != ('scripts/specs/v8/candidates/alpha_a.json', 'wave-candidate')
+      Left contains one more item: ('scripts/specs/v8/candidates/alpha_c.json', 'wave-candidate')
+      Use -v to get more diff
+---------------------------- Captured stdout call -----------------------------
+wave_readers mechanics: cell, parent -> out\waves\w1\readers\mech-calibration.json
+wave_readers book: cell, parent -> out\waves\w1\readers\book.json
+C:\atx-wt\pool-13\scripts\tests\test_research_store_hook.py:303: AssertionError: assert [('out/waves/...eceipt'), ...] == [('out/waves/...eceipt'), ...]
+E   AssertionError: assert (9 == 9 and 3 == 3 and 13 == 12)
+     +  where 9 = <built-in method count of list object at 0x0000020D42F25580>('stage-receipt')
+     +    where <built-in method count of list object at 0x0000020D42F25580> = ['stage-receipt', 'stage-receipt', 'stage-receipt', 'stage-receipt', 'stage-receipt', 'stage-receipt', ...].count
+     +  and   3 = <built-in method count of list object at 0x0000020D42F25580>('wave-candidate')
+     +    where <built-in method count of list object at 0x0000020D42F25580> = ['stage-receipt', 'stage-receipt', 'stage-receipt', 'stage-receipt', 'stage-receipt', 'stage-receipt', ...].count
+     +  and   13 = len(['stage-receipt', 'stage-receipt', 'stage-receipt', 'stage-receipt', 'stage-receipt', 'stage-receipt', ...])
+C:\atx-wt\pool-13\scripts\tests\test_research_store_hook.py:328: AssertionError: assert (9 == 9 and 3 == 3 and 13 == 12)
+E   AttributeError: 'types.SimpleNamespace' object has no attribute 'root'
+---------------------------- Captured stdout call -----------------------------
+wave manifest C:/Users/natha/AppData/Local/Temp/claude/c--atx/a17fe032-fb48-4307-ab8e-95f10be06ca8/scratchpad/sql3-5/bt-wip/test_real_store_exe_ingests_ev0/r/scripts/specs/v8/waves/w2.json: 2 candidates; commit it, then research_cycle.py wave run scripts/specs/v8/waves/w2.json
+C:\atx-wt\pool-13\scripts\cycle_resume.py:193: AttributeError: 'types.SimpleNamespace' object has no attribute 'root'
+=========================== short test summary info ===========================
+FAILED scripts/tests/test_research_store_hook.py::test_one_ingest_per_write_in_a_fake_wave
+FAILED scripts/tests/test_research_store_hook.py::test_fake_wave_bytes_equal_with_a_failing_store
+FAILED scripts/tests/test_research_store_hook.py::test_real_store_exe_ingests_every_class
+3 failed, 5 passed in 13.62s

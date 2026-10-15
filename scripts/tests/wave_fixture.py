@@ -1,6 +1,7 @@
 """A synthetic root for research_wave.py tests: a git repository holding a parent cell, its NAV, a fields manifest, a
 chained ledger and a committed wave manifest, plus FakeCycle, a process executor that plays research_cycle.py,
-add-alpha, the bounded runner (running wave_readers.py in process) and nav_summ --bundle on synthetic files.
+add-alpha, the bounded runner (running wave_readers.py in process), nav_summ --bundle and the IC exe's sign verb on
+synthetic files.
 
 Every number here is synthetic (sessions 2020-2021, inside TRAIN); no data of the repository is read.
 """
@@ -233,6 +234,8 @@ class FakeCycle:
         if argv[0] == "git":
             done = subprocess.run(argv, cwd=root, capture_output=True, text=True)
             return done
+        if argv[1] == "sign":                                     # the IC exe's sign verb (P9 lane SIGN)
+            return self.sign(argv)
         tool = Path(argv[1]).name
         if tool == "research_cycle.py":
             return self.cycle(argv[2:])
@@ -368,6 +371,27 @@ class FakeCycle:
         write_json(self.root, a["--save-plan"], {"library": name, "candidates": [{"id": cid}]})
         return self.ok(args)
 
+    def sign(self, argv: list[str]):
+        """`<exes.ic> sign --rule pm7-35 --rows FILE --output NEWFILE` on the fake root: the receipt of
+        atx-impl/src/strategy_sign_verb.hpp, each verdict and reason by sign_oracle (test_wave_sign_verb.py holds the
+        oracle to the real exe row for row)."""
+        a = {argv[k]: argv[k + 1] for k in range(2, len(argv) - 1, 2)}
+        if a.get("--rule") != "pm7-35":
+            return subprocess.CompletedProcess(argv, 2, "", f"sign: unknown --rule {a.get('--rule')}")
+        out = self.root / a["--output"]
+        if out.exists():
+            return subprocess.CompletedProcess(argv, 1, "", "sign: the output must not exist (never overwritten)")
+        data = (self.root / a["--rows"]).read_bytes()
+        rows = [dict({k: r[k] for k in SIGN_ECHO}, verdict=v, reason=why)
+                for r in json.loads(data)["rows"] for v, why in [sign_oracle(r)]]
+        write_json(self.root, a["--output"], {
+            "schema": "atx.sign-receipt/v1", "rule": "pm7-35", "sign_rule": "wave-zero-kept-v1",
+            "predicate": "pm7_35(sign_rule, kind, status == \"admitted\", prior_sign, runner_sign)",
+            "rows_file": a["--rows"], "rows_sha256": sha(data), "rows": rows,
+            "kept": [r["id"] for r in rows if r["verdict"] == "keep"],
+            "dropped": [r["id"] for r in rows if r["verdict"] == "drop"]})
+        return self.ok(argv)
+
     def bounded(self, argv: list[str]):
         k = argv.index("--")
         run_dir, cmd = argv[argv.index("--output") + 1], argv[k + 1:]
@@ -399,6 +423,27 @@ class FakeCycle:
 
 
 EVAL_VERB = "bin/atx-research-eval.exe"
+SIGN_ECHO = ("id", "kind", "prior_sign", "status", "runner_sign")
+
+
+def sign_oracle(row: dict) -> tuple[str, str]:
+    """(verdict, reason) of one screen row under PM7-35 as ruled: the fake IC exe's sign verb. A test oracle (the rule
+    is the engine's research/admission pm7_35); test_wave_sign_verb.py holds it equal to the real exe on every
+    enumerated combination."""
+    kind, status, sign, prior = row["kind"], row["status"], row["runner_sign"], row["prior_sign"]
+    admitted = status == "admitted"
+    if kind == "replace":
+        if admitted and sign == prior:
+            return "keep", "replacement admitted with the prior sign"
+        return "drop", (f"replacement not kept (status {status}, runner sign {sign}, prior {prior:+d}): the replaced "
+                        "member keeps its string at 0 trials")
+    if not admitted:
+        return "keep", f"addition not admitted (status {status}): stays at weight 0"
+    if sign == prior:
+        return "keep", "addition admitted with the prior sign"
+    if sign == 0:
+        return "keep", "addition admitted, runner sign 0 (R-2 precedent)"
+    return "drop", f"addition admitted with runner sign {sign} against prior {prior:+d}: dropped from the wave"
 
 
 def pin_eval_verb(root: Path) -> None:

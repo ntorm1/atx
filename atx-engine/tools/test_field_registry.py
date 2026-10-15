@@ -9,7 +9,8 @@
 * an engine-only row (``kind: engine``, no Python twin: how DEC-5 adds a field) passes ``check`` and the generator
   round-trip (``regenerate``) with no edit to the loader, and the entry refuses it before any output when nothing can
   compute it; today's rows still regenerate byte for byte through ``generate`` (review of A1, M1);
-* the four shims are thin deprecated wrappers; holdings is a late FIELD_MODULES module (its fields last).
+* the four shims are thin deprecated wrappers whose ``main`` is the registry entry (A1-SHIM, P9 lane A4); holdings
+  is a late FIELD_MODULES module (its fields last).
 Synthetic data only (the slice-1 fixture's role and FINRA inputs).
 """
 from __future__ import annotations
@@ -215,8 +216,7 @@ class CommittedRegistry(unittest.TestCase):
                 row = doc[name]
                 self.assertIn((row["kind"], row["builder"]), (("python", row["builder"]), ("engine", name)))
                 self.assertIn("engine-shim", row["owner"])
-                self.assertEqual(row["formula_sha256"],
-                                 tool.formula_id(name, tool.spec_definition(name, engine.lag_of(name))))
+                self.assertEqual(row["formula_sha256"], engine.formula_of(name))   # A4: holdings spec text too
         self.assertEqual((doc["si_shares"]["options"], doc["vol_126"]["options"]),
                          ({"group": "finra"}, {"group": "price_volume"}))
 
@@ -447,6 +447,20 @@ class Entry(unittest.TestCase):
             self.assertEqual((self.base / "script-entry" / f"{name}.f64").read_bytes(),
                              (FIXTURE / "expected" / f"{name}.f64").read_bytes(), name)
 
+    def test_each_shim_main_builds_the_registry_entrys_bytes(self):
+        """A1-SHIM (P9 lane A4): each deprecated shim's ``main`` is the registry entry. On the same argv it builds the
+        bytes of the shim's former body (``register`` then the builder's ``main``) and of the plain builder."""
+        fields = "vol_126,si_shares,si_dtc"
+        for shim in SHIMS:
+            name = shim.__name__.rsplit("_", 1)[-1]
+            with self.subTest(shim=shim.__name__), plain_builder(), contextlib.redirect_stdout(io.StringIO()):
+                shim.main(self.argv(f"shim-{name}", "--fields", fields, "--registry", str(self.registry)))
+                shim.register(vars(tool))   # the former body: register, then the builder's own main
+                tool.main(self.argv(f"former-{name}", "--fields", fields))
+                tool.main(self.argv(f"plain-{name}", "--fields", fields))
+            self.same(f"former-{name}", f"shim-{name}")
+            self.same(f"plain-{name}", f"shim-{name}")
+
     def test_entry_refuses_a_stale_registry_before_any_output(self):
         doc = fr.load(self.registry)
         doc["fields"][0]["formula_sha256"] = "0" * 64
@@ -468,6 +482,24 @@ class Registration(unittest.TestCase):
             first = draft.register(vars(tool))
             self.assertEqual(draft.register(vars(tool)), first)        # idempotent
             self.assertEqual(fr.bind_modules(vars(tool), draft.DRAFT_MODULES), first)
+
+    def test_shim_main_routes_through_the_registry_entry(self):
+        """A1-SHIM (P9 lane A4): ``main`` hands the builder its argv behind ``--registry <the committed registry>``, or
+        unchanged when the argv names a registry; with no argv it reads the command line. ``register``,
+        ``DRAFT_MODULES`` and the word DEPRECATED stay (above)."""
+        argv = ["--role", "r", "--role-sha256", "0" * 64, "--output", "o", "--fields", "vol_126"]
+        named = ["--registry", "elsewhere.json", *argv]
+        for shim in SHIMS:
+            with self.subTest(shim=shim.__name__):
+                self.assertIs(shim.builder, tool)
+                with mock.patch.object(tool, "main", return_value="built") as seen:
+                    self.assertEqual(shim.main(argv), "built")
+                    shim.main(named)
+                    with mock.patch.object(sys, "argv", ["shim.py", *argv]):
+                        shim.main()
+                registry = ["--registry", str(fr.DEFAULT_PATH)]
+                self.assertEqual([c.args[0] for c in seen.call_args_list], [registry + argv, named, registry + argv])
+                self.assertNotIn("register(vars(builder))", Path(shim.__file__).read_text(encoding="utf-8"))
 
     def test_holdings_is_a_late_field_module(self):
         late = fr.late_modules(vars(tool))

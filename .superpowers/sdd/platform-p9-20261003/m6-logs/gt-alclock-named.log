@@ -1,0 +1,83 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = InfoClock*:NavSpec.*:NavRules.*:TradeRateRegistry.*:NavAnnMeanGross.*:CostLawRegistry.*:TargetRegistry.*
+[==========] Running 26 tests from 8 test suites.
+[----------] Global test environment set-up.
+[----------] 5 tests from NavSpec
+[ RUN      ] NavSpec.FlagsAndSpecSameConfig
+[       OK ] NavSpec.FlagsAndSpecSameConfig (57 ms)
+[ RUN      ] NavSpec.RefusesWhatItCannotType
+[       OK ] NavSpec.RefusesWhatItCannotType (1 ms)
+[ RUN      ] NavSpec.RefusesADuplicateKey
+[       OK ] NavSpec.RefusesADuplicateKey (96 ms)
+[ RUN      ] NavSpec.GridFileRefusesADuplicateKey
+[       OK ] NavSpec.GridFileRefusesADuplicateKey (191 ms)
+[ RUN      ] NavSpec.SpecRunPublishesTheFlagRunBytes
+[       OK ] NavSpec.SpecRunPublishesTheFlagRunBytes (804 ms)
+[----------] 5 tests from NavSpec (1152 ms total)
+
+[----------] 2 tests from NavRules
+[ RUN      ] NavRules.OneTableEveryKindInOrder
+[       OK ] NavRules.OneTableEveryKindInOrder (5 ms)
+[ RUN      ] NavRules.LegacyAliasesOnTheirRowsOnly
+[       OK ] NavRules.LegacyAliasesOnTheirRowsOnly (4 ms)
+[----------] 2 tests from NavRules (10 ms total)
+
+[----------] 2 tests from CostLawRegistry
+[ RUN      ] CostLawRegistry.RowsAreTheReplaysLawsAndOneNameableSet
+[       OK ] CostLawRegistry.RowsAreTheReplaysLawsAndOneNameableSet (0 ms)
+[ RUN      ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte
+[       OK ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte (343 ms)
+[----------] 2 tests from CostLawRegistry (343 ms total)
+
+[----------] 1 test from TradeRateRegistry
+[ RUN      ] TradeRateRegistry.RowsCarryTheParsersFlagsAndDefaults
+[       OK ] TradeRateRegistry.RowsCarryTheParsersFlagsAndDefaults (0 ms)
+[----------] 1 test from TradeRateRegistry (0 ms total)
+
+[----------] 1 test from TargetRegistry
+[ RUN      ] TargetRegistry.UnregisteredIdIsRefusedBeforeOutput
+[       OK ] TargetRegistry.UnregisteredIdIsRefusedBeforeOutput (27 ms)
+[----------] 1 test from TargetRegistry (27 ms total)
+
+[----------] 1 test from NavAnnMeanGross
+[ RUN      ] NavAnnMeanGross.PrintOnlyOptInAddsOneSummaryKey
+[       OK ] NavAnnMeanGross.PrintOnlyOptInAddsOneSummaryKey (1246 ms)
+[----------] 1 test from NavAnnMeanGross (1246 ms total)
+
+[----------] 10 tests from InfoClockRate
+[ RUN      ] InfoClockRate.KernelAtTheWindowBoundary
+[       OK ] InfoClockRate.KernelAtTheWindowBoundary (0 ms)
+[ RUN      ] InfoClockRate.ConfigAndInputRefusals
+[       OK ] InfoClockRate.ConfigAndInputRefusals (1 ms)
+[ RUN      ] InfoClockRate.StepChangeClosedForm
+[       OK ] InfoClockRate.StepChangeClosedForm (773 ms)
+[ RUN      ] InfoClockRate.EventClockIsCausal
+[       OK ] InfoClockRate.EventClockIsCausal (383 ms)
+[ RUN      ] InfoClockRate.CommandLineRefusalsWriteNothing
+[       OK ] InfoClockRate.CommandLineRefusalsWriteNothing (336 ms)
+[ RUN      ] InfoClockRate.CapacityCurveAcceptsThisRateOnly
+[       OK ] InfoClockRate.CapacityCurveAcceptsThisRateOnly (716 ms)
+[ RUN      ] InfoClockRate.BookWorkersOneAndFourSameBytes
+[       OK ] InfoClockRate.BookWorkersOneAndFourSameBytes (1015 ms)
+[ RUN      ] InfoClockRate.CalibrateGrossKeepsTheRatesAndCountsOnce
+[       OK ] InfoClockRate.CalibrateGrossKeepsTheRatesAndCountsOnce (1748 ms)
+[ RUN      ] InfoClockRate.RegistryRowAndParser
+[       OK ] InfoClockRate.RegistryRowAndParser (4 ms)
+[ RUN      ] InfoClockRate.WorkspaceReserveOneRatePerName
+[       OK ] InfoClockRate.WorkspaceReserveOneRatePerName (0 ms)
+[----------] 10 tests from InfoClockRate (4982 ms total)
+
+[----------] 4 tests from InfoClockPrint
+[ RUN      ] InfoClockPrint.FlagAbsentLoadsNoClock
+[       OK ] InfoClockPrint.FlagAbsentLoadsNoClock (1355 ms)
+[ RUN      ] InfoClockPrint.PrintOnlyOptInAddsOneBlockPerScenario
+[       OK ] InfoClockPrint.PrintOnlyOptInAddsOneBlockPerScenario (1665 ms)
+[ RUN      ] InfoClockPrint.RuleOnWithoutFlagPrintsNoBlock
+[       OK ] InfoClockPrint.RuleOnWithoutFlagPrintsNoBlock (373 ms)
+[ RUN      ] InfoClockPrint.SpecEqualsArgv
+[       OK ] InfoClockPrint.SpecEqualsArgv (1428 ms)
+[----------] 4 tests from InfoClockPrint (4823 ms total)
+
+[----------] Global test environment tear-down
+[==========] 26 tests from 8 test suites ran. (12587 ms total)
+[  PASSED  ] 26 tests.

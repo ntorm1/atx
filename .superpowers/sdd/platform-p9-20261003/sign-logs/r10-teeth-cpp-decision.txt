@@ -1,0 +1,6 @@
+﻿2026-10-08T21:10:07 teeth decision check (HOST-4: C++ teeth only iff no build is waiting)
+6400 bash.exe :: eval 'cd C:/atx-wt/pool-27 && \"C:/Program Files/Python312/python.exe\" .superpowers/sdd/platform-p9-20261003/a4-evidence/review-f/review-f-teeth.py > .superpowers/sdd/platform-p9-20261003/a4-evidence
+1180 bash.exe :: eval 'cd C:/atx-wt/pool-27 && \"C:/Program Files/Python312/python.exe\" .superpowers/sdd/platform-p9-20261003/a4-evidence/review-f/review-f-teeth.py > .superpowers/sdd/platform-p9-20261003/a4-evidence
+10120 bash.exe :: eval 'cd C:/atx-wt/pool-27 && \"C:/Program Files/Python312/python.exe\" .superpowers/sdd/platform-p9-20261003/a4-evidence/review-f/review-f-teeth.py > .superpowers/sdd/platform-p9-20261003/a4-evidence
+3080 bash.exe :: eval 'D=\"C:/atx-wt/pool-27/.superpowers/sdd/platform-p9-20261003/a4-evidence/review-f\"; for i in $(seq 1 28); do if grep -q \"exit=\" \"$D/teeth-run.out\" 2>/dev/null; then break; fi; sleep 20; done
+8828 bash.exe :: eval 'D=\"C:/atx-wt/pool-27/.superpowers/sdd/platform-p9-20261003/a4-evidence/review-f\"; for i in $(seq 1 28); do if grep -q \"exit=\" \"$D/teeth-run.out\" 2>/dev/null; then break; fi; sleep 20; done

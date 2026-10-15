@@ -28,8 +28,18 @@ DIR is the ``atx-equity-strategy-targets factors`` output for the --train role a
 Supported: the single-window prior path with ew-theme-std-v1 / ew-theme-std-aim-v1 / ic-shrink-v1 / ic-shrink-aim-v1,
 with or without --theme-erc, --theme-tsmom, --theme-resid (with or without --theme-resid-parent, either side fitted
 with or without the flag: composition_resid.parent_check compares under ruling P12 then, ruling D2-R2) and --two-speed
-(two-speed writes a spec block only: nothing to compare). Refused before any compute: another composition (the
-ew-theme-v1 / ew-theme-aim-v1 / ew-theme-aim-v2 / ew-theme-v6 rules have no C++ fit), the train orientation or --era.
+(two-speed writes a spec block only: nothing to compare), and ew-theme-aim-v2 (P9 lane D3W-PB; its parent alone: the
+modifiers ride on a theme block it does not write). Refused before any compute: another composition (the ew-theme-v1 /
+ew-theme-aim-v1 / ew-theme-v6 rules have no C++ fit), the train orientation or --era.
+
+P9 lane D3W-PB (ew-theme-aim-v2): the C++ fit (atx-research-composition, fit.hpp) is theme_gain_weights on the aim
+gains, and composition_fit.json's parent block adds member_gains and theme_weights; check 3 holds every value to the
+fitter's own (composition_rules.theme_gain_weights and ew_theme_aim_v2 on the same members, themes and gains) under
+ruling P12. The fitter's rule function for it takes no C++ values (it sits inside the fitter's producer fingerprint
+closure, which this lane does not edit), so ruling D2-1 is met by check_written: the composed weights must equal the C++
+final weights bit for bit, else the fit is refused (a difference inside P12 included) and nothing is published. The
+C++ refuses --walk-forward with it (its weights read no factor value, only the whole-TRAIN gains); that refusal reaches
+the fitter as the executable's exit.
 
 Under the flag the ic-shrink block states that its ICs are the C++ fit's and records their largest difference from
 admission.json's train_mean (ruling D2-S4); provenance.engine_fit names the producing code (the two executables'
@@ -79,8 +89,10 @@ import composition_rules  # this directory: module_fingerprint (review S-3)
 import composition_theme_tsmom  # this directory: the sleeve formula (P9 D3W, ruling ALCOMB-7)
 from engine_tools import research_window as rw  # this directory: TRAIN (research_window.json), as the fitter
 
-SUPPORTED = ("ew-theme-std-v1", "ew-theme-std-aim-v1", "ic-shrink-v1", "ic-shrink-aim-v1")
+AIM_V2 = composition_rules.AIM_V2_RULE_ID  # P9 lane D3W-PB: atx-engine ew_theme_std.hpp ew_theme_aim_v2_rule
+SUPPORTED = ("ew-theme-std-v1", "ew-theme-std-aim-v1", "ic-shrink-v1", "ic-shrink-aim-v1", AIM_V2)
 STD_COMPOSITIONS = ("ew-theme-std-v1", "ew-theme-std-aim-v1")
+GAIN_PARENTS = STD_COMPOSITIONS + (AIM_V2,)  # the parents whose weights are theme_gain_weights'
 FACTOR_SCHEMA = "atx.factor-series/v1"
 FIT_SPEC_SCHEMA = "atx.composition-fit-spec/v1"
 FIT_SCHEMA = "atx.composition-fit/v1"
@@ -92,8 +104,9 @@ EXE_SECONDS = 3600
 PROVENANCE_KEY = "engine_fit"  # the weights file's provenance.engine_fit (flag present only)
 WRITTEN = "atx-research-composition fit (C++): every fitted number of the weights file; the admission table: Python"
 REFUSED = (f"--engine-fit runs the single-window prior path with --composition {', '.join(SUPPORTED)} (with or without "
-           "--theme-erc / --theme-tsmom / --theme-resid [--theme-resid-parent] / --two-speed / --mom-volman) and "
-           "needs --engine-factors, --admission-exe and --composition-exe; refused under --era")
+           "--theme-erc / --theme-tsmom / --theme-resid [--theme-resid-parent] / --two-speed / --mom-volman, where the "
+           "composition takes them) and needs --engine-factors, --admission-exe and --composition-exe; refused under "
+           "--era")
 PRODUCERS = ("verify", "kernels", "check_written")  # the code that turns the executables' output into written values
 # P9 lane D3W (K-P9-8): walk-forward-v1 (atx-engine fit.hpp walk_forward_rule) and the v3 document.
 WALK_FORWARD_RULE = "walk-forward-v1"
@@ -422,6 +435,8 @@ def expected_fit(state: FitterState, volman: bool = False) -> dict:
     """The Python values in composition_fit.json's layout (test_composition_fit_fixture.run_case, on the fitter's own
     fit objects): member-ordered lists, the theme order of each block; with ``volman`` the mom_volman block."""
     ids, parent = list(state.members), state.parent
+    if state.composition == AIM_V2:
+        return _expected_aim_v2(state)
     prov = parent.provenance
     if state.composition in STD_COMPOSITIONS:
         out = {"member_tiers": [prov["member_tiers"][i] for i in ids],
@@ -460,6 +475,22 @@ def expected_fit(state: FitterState, volman: bool = False) -> dict:
     if volman:
         doc["mom_volman"] = {"theme": composition_mom_volman.THEME, "sleeve": volman_sleeve(state)}
     return doc
+
+
+def _expected_aim_v2(state: FitterState) -> dict:
+    """P9 lane D3W-PB: the Python values of an ew-theme-aim-v2 fit in composition_fit.json's layout. The fitter's rule
+    keeps no fit object (state.parent is None), so its own functions run again on the same members, themes and gains:
+    composition_rules.theme_gain_weights (uncapped weights, passes, cap) and ew_theme_aim_v2 (the theme table's
+    aim_theme_weight); the final weights are the ones the fitter wrote."""
+    ids, themes, gains = list(state.members), list(state.themes), [float(g) for g in state.gains]
+    weights, uncapped, passes, cap = composition_rules.theme_gain_weights(themes, gains)
+    _, table = composition_rules.ew_theme_aim_v2(ids, themes, gains)
+    out = {"rule": AIM_V2, "weights": [float(w) for w in weights], "weights_before_cap": [float(w) for w in uncapped],
+           "cap": cap, "cap_iterations": [{"capped": [ids[k] for k in it["capped"]],
+                                           "excess_by_theme": it["excess_by_theme"]} for it in passes],
+           "member_gains": gains, "theme_weights": {t: table[t]["aim_theme_weight"] for t in sorted(table)}}
+    return {"composition": AIM_V2, "members": ids, "member_themes": themes, "train_decisions": state.train_decisions,
+            "decisions": len(state.decision_sessions), "parent": out, "weights": [float(w) for w in state.weights]}
 
 
 def _number(x) -> bool:
@@ -553,7 +584,9 @@ def check_fit(args, state: FitterState, work: Path, error: type[Exception]) -> t
 # ---------------------------------------------------------------- the C++ values written (ruling D2-1)
 class EngineKernels(NamedTuple):
     """The C++ fit's values in the shapes the composition modules' ``engine`` arguments take. ``parent``: for
-    ew-theme-std rules theme_gain_weights' (weights, uncapped, passes, cap), for ic-shrink rules a dict (ic, shrunk,
+    ew-theme-std rules and ew-theme-aim-v2 theme_gain_weights' (weights, uncapped, passes, cap; ew-theme-aim-v2's rule
+    function takes no engine argument, so check_written holds its weights to these bit for bit), for ic-shrink rules
+    a dict (ic, shrunk,
     shares, means, equal, uncapped, weights, passes, and ic_admission_max_abs_diff: max |C++ IC - admission.json
     train_mean|, ruling D2-S4); ``erc`` (theme_erc): (within-theme shares, covariance, rule_weights' dict) or None;
     ``tsmom`` (schedule): {parent, blocks: [(trailing, masses, themes off)]} or None; ``weights`` the final member
@@ -598,7 +631,7 @@ def _kernels(got: dict, state: FitterState) -> EngineKernels:
     weights = np.asarray(_floats(p["weights"]), dtype=np.float64)
     uncapped = np.asarray(_floats(p["weights_before_cap"]), dtype=np.float64)
     passes = _passes(p["cap_iterations"], index)
-    if state.composition in STD_COMPOSITIONS:
+    if state.composition in GAIN_PARENTS:
         parent: object = (weights, uncapped, passes, float(p["cap"]))
     else:
         parent = {"ic": _floats(p["ic"]), "shrunk": _floats(p["shrunk_ic"]),
@@ -689,14 +722,17 @@ def walk_forward_rows(args, got: dict, state: FitterState, raw: bytes, error: ty
             "composition_fit_sha256": hashlib.sha256(raw).hexdigest()}
 
 
-def weights_v3(document: dict, rows: dict, error: type[Exception] = EngineFitError) -> dict:
+def weights_v3(document: dict, rows: dict) -> dict:
     """The published weights document as atx.dsl-composition-weights/v3 (the IC runner's composition_walk_forward):
     a copy with the schema v3, the top-level walk_forward {rule, window, lag, step, min_decisions, rows:
     [{from_session, weights: {every library id: weight}}]} (a library candidate the fit did not take part in: 0) and
     provenance.walk_forward (each row's window: decision index, fitted decisions, last fitted decision). The full-TRAIN
-    weights, signs and blocks stay as written. A candidate a row weights needs a sign and, under theme_standardise
-    with a top-level weight of 0, its theme among the top-level weighted themes (it is added to themes); else refused
-    (the runner refuses the same file)."""
+    weights, signs and blocks stay as written. Under theme_standardise a candidate a row weights beyond the top-level
+    weights gets its fitted theme (the C++ fit's member theme) in themes. P9 lane D3W-PB (review D3W S-8): the file is
+    not re-checked here; the IC runner owns the refusal (strategy_ic_rules.cpp lift_walk_forward_candidates: such a
+    candidate's sign, and its theme among the top-level weighted themes), and the C++ fit cannot produce a row that
+    meets it (members are signed +1, and every theme of a fit carries mass: the 1/T theme shares survive the member cap,
+    ic-shrink's equal-share fall-back and theme-erc-v1's positive shares)."""
     out = json.loads(json.dumps(document))
     block, members = rows["block"], rows["members"]
     library = list(document["weights"])  # every library candidate (the fitter writes one weight per candidate)
@@ -705,18 +741,12 @@ def weights_v3(document: dict, rows: dict, error: type[Exception] = EngineFitErr
         weights = dict.fromkeys(library, 0.0)
         weights.update({cid: float(w) for cid, w in zip(members, row["weights"])})
         v3_rows.append({"from_session": int(row["from_session"]), "weights": weights})
-    weighted = sorted({cid for row in v3_rows for cid, w in row["weights"].items() if w > 0})
-    unsigned = [cid for cid in weighted if not document.get("signs", {}).get(cid)]
-    _require_wf(not unsigned, f"a row weights a candidate without a composition sign: {unsigned}", error)
     themes = out.get("theme_standardise", {}).get("themes")
     if themes is not None:
-        top = {themes[cid] for cid in themes if document["weights"].get(cid, 0.0) > 0}
         theme_of = dict(zip(members, rows["member_themes"]))
-        for cid in (c for c in weighted if not document["weights"][c] > 0):
-            _require_wf(theme_of[cid] in top,
-                        f"a row weights {cid} of theme {theme_of[cid]}, which no top-level weighted candidate has "
-                        "(the IC runner's standardise grouping is the full-TRAIN fit's)", error)
-            themes[cid] = theme_of[cid]
+        lifted = sorted({cid for row in v3_rows for cid, w in row["weights"].items()
+                         if w > 0 and not document["weights"][cid] > 0})
+        themes.update({cid: theme_of[cid] for cid in lifted})
     out["schema"] = WEIGHTS_SCHEMA_V3
     out["walk_forward"] = {"rule": block["rule"], "window": block["window"], "lag": block["lag"],
                            "step": block["step"], "min_decisions": block["min_decisions"], "rows": v3_rows}
@@ -788,7 +818,7 @@ def run_post_step(args, fit: Callable, hooks: PostStepHooks, log=None) -> tuple[
             if walk_forward(args):
                 rows = getattr(args, WALK_FORWARD_FIT, None)
                 _require_wf(rows is not None, "the fit kept no walk-forward rows (the C++ fit did not run)", error)
-                document = weights_v3(document, rows, error)
+                document = weights_v3(document, rows)
                 first, last = rows["block"]["rows"][0], rows["block"]["rows"][-1]
                 summary["walk_forward"] = {"rule": WALK_FORWARD_RULE, "rows": len(rows["block"]["rows"]),
                                            "first_from_session": first["from_session"],

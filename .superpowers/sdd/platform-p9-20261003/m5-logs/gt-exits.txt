@@ -1,0 +1,5 @@
+d3wpb-comp-3a exe 76b664b7483a77a7 filter 'AimV2.*:WalkForward.*:MomVolman.*:ResearchComposition.*' exit 0 wall 1s ran 21 passed 21 skipped 0 failed 0 disabled 0 env1-hits 0
+d3wpb-ic-3a exe b43d7a3ebc082f9d filter 'WeightsV3.*:CompositionWeightRows.*:MomVolman.*:ThemeTsmomRunner.*:CharCovHedge.*' exit 0 wall 12s ran 18 passed 18 skipped 0 failed 0 disabled 0 env1-hits 0
+sign-signverb-3b exe 9cd667c75c08a919 filter 'SignVerb*' exit 0 wall 1s ran 6 passed 6 skipped 0 failed 0 disabled 0 env1-hits 0
+sign-d3wpb-ic-3b exe 9cd667c75c08a919 filter 'WeightsV3.*:CompositionWeightRows.*:MomVolman.*:ThemeTsmomRunner.*:CharCovHedge.*' exit 0 wall 10s ran 18 passed 18 skipped 0 failed 0 disabled 0 env1-hits 0
+a4-filter-3c exe 39be2b3d995b1187 filter 'ResearchFieldsA4*:ResearchFieldsHoldings*:ResearchFieldsRegistry*' exit 0 wall 1s ran 25 passed 25 skipped 0 failed 0 disabled 0 env1-hits 0
