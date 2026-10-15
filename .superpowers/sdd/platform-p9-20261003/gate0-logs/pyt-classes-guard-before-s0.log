@@ -1,0 +1,19 @@
+F....                                           [100%]
+================================== FAILURES ===================================
+_________ ClassRegistryGuard.test_every_schema_literal_is_registered __________
+
+self = <test_research_store_classes.ClassRegistryGuard testMethod=test_every_schema_literal_is_registered>
+
+    def test_every_schema_literal_is_registered(self):
+        missing = unregistered(scan(REPO), load(), datetime.date.today())
+>       self.assertEqual(missing, {}, "unregistered schema literals: add the schema to its class in "
+                                      f"{REGISTRY.relative_to(REPO).as_posix()} (or a dated legacy_allow row): "
+                                      + "; ".join(f"{k} in {', '.join(v[:3])}" for k, v in missing.items()))
+E       AssertionError: {'atx.library-spec-receipt/v1': ['atx-impl/strategies/generate_from_spec.py']} != {}
+E       - {'atx.library-spec-receipt/v1': ['atx-impl/strategies/generate_from_spec.py']}
+E       + {} : unregistered schema literals: add the schema to its class in atx-engine/schemas/research_store/classes.json (or a dated legacy_allow row): atx.library-spec-receipt/v1 in atx-impl/strategies/generate_from_spec.py
+
+atx-engine\tools\test_research_store_classes.py:114: AssertionError
+=========================== short test summary info ===========================
+FAILED atx-engine/tools/test_research_store_classes.py::ClassRegistryGuard::test_every_schema_literal_is_registered
+1 failed, 4 passed, 97 subtests passed in 0.49s

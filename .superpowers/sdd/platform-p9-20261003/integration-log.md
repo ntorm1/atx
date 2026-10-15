@@ -760,3 +760,24 @@ Release, canaries and the parents' identity runs deferred to the gate. Both merg
 | SQL3 item 5 | `0ebb83da` (APPROVE, review 2 `22b8fd17`, 0 Required, 4 Suggested; code `00779453`) | `d51d011e` (`22b8fd17`, = recompute `6c73537a`) | 0 | none (Python) | - | - | hook 13 / 0 (real-exe case ran); identity 16 + 6 subtests / 0; wave queue 6 / 0; seven writers' files 98 / 0 / 0 skipped | one ingest per write **holds**; SQL3-2 **holds** (no `build-equity/research-store/` before or after); SQL2-CLS none; store exe p9-2r `d8a500d8` = receipt before and after |
 
 Next free build tag **p9-3e**. Known-red set: **EMPTY**; no new red.
+
+### GATE-0 (RESUME 11): the gate's step-0 slips, pulled forward (rulings STORE-M1, STORE-S, IC-S, PY-S), 2026-10-15
+
+Start code `d51d011e`, docs `475f5d8f`. Code head **`7320e1b9`**. Logs and tools `gate0-logs/`. No merge, no build
+(Python only), no real-data run. Zero trials: `build-equity/trials.jsonl` 133 lines `27e40f9f` at start and end.
+`build-equity/research-store/` absent at start, around every store run and at the end (SQL3-2; every test store under
+the session scratchpad `root-gate0/`). Store exe p9-2r `d8a500d8` = receipt at start and end.
+
+| item | commit | files | checks | result |
+|---|---|---|---|---|
+| step 0 docs | `22f99018` | the five `wave-review-<area>.md` files, `progress.md` as the PM left it | - | committed (`git add -f`); no ledger line edited |
+| STORE-M1 | `7320e1b9` | `atx-engine/tools/test_research_store_classes.py:26` (`PY_DIRS` + `atx-impl/strategies`; docstring :3-7); `atx-engine/schemas/research_store/classes.json:7` (new class `library-spec-receipt`) | classes guard, in its own invocation, seed 0 | 5 passed / 97 subtests (old dirs) -> **1 failed** (only `atx.library-spec-receipt/v1`) -> **5 passed** / 98 subtests; scan 930 files / 132 literals / 0 unregistered -> 932 / 135 / 1 -> 932 / 135 / 0 |
+| | | | store suite (5 files) seeds 0 / 1 | **43 passed** (137 subtests) each; `FixtureChain` ran |
+| | | | fixture chain (rel and abs root) | `catalog_digest d32f7655...4e69` unchanged; `verify --pins` 0; identity 12 / 0 |
+| | | | C++ classifier probe (synthetic tree) | library-spec receipt -> `library-spec-receipt`; bounded-run receipt -> `run-receipt` |
+| | | | the three JSON-input literals | not flagged by the extended guard (it scans `.py` / C++ only): no row (class `other`; P10) |
+| STORE-S S-1 | `7320e1b9` | `scripts/tests/test_research_store_hook.py:467-480` (+ header :22-23), 14-line fake-store case | hook file seed 0, root's exes | 13 passed before, **14 passed** after (real-exe case ran); teeth "catch-all re-raises": **caught** (only the new case red, 1 / 13); restore: raw sha256 `4daa7f42` = kept, hash-object = HEAD blob `ffc532a7` |
+| IC-S | none | - | `FROZEN_PAIRS` mechanism read; in-memory probe (`frozen-pairs-probe.txt`); mirror guard own invocation | **no edit**: the mechanism pins no bytes (a name detector plus an allowlist row with a retiring lane); the pairs alone red `test_no_new_python_mirror`; with P10 rows it is a retirement listing and still reds (`scripts/research_ledger.py: def ledger_n`); guard as committed 7 passed, "G-P5: 0 ... 0 row(s)". **G-P5 PARTIAL: four pairs unlisted, P10 retirement** |
+| PY-S S-6 | none | - | paths located, command lines written (`handoff-root-gate0.md`) | no run (the gate's scoreboard step) |
+
+Next free build tag **p9-3e** (unchanged). Known-red set: **EMPTY**; no new red.

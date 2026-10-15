@@ -1,0 +1,2 @@
+mutant pytest exit 1
+restore raw sha256 4daa7f426700a1f0 equal True; hash-object = HEAD blob ffc532a7990262da True
