@@ -1,0 +1,2 @@
+2026-10-15T15:39:43Z p9-3d start preset equity-dev free 3628 commit 7633 head 1d003241
+2026-10-15T15:40:10Z p9-3d end exit 0 warning-lines 0 wall 32s

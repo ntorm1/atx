@@ -1,0 +1,15 @@
+SQL3 item 5 merge checks (root M6, 2026-10-15T15:45:47Z)
+merge d51d011e parents 1d003241 22b8fd17; tree 6c73537a81bee9c8ad83de14196812e632f4764e; merge-tree --write-tree 1d003241 22b8fd17 = 6c73537a81bee9c8ad83de14196812e632f4764e
+22b8fd17 = review-2 commit over 0ebb83da: .superpowers/sdd/platform-p9-20261003/task-SQL3-review-2.md 
+lane files (merge-base 175edd61 .. 22b8fd17, outside .superpowers):
+  atx-engine/tests/fixtures/research_store/make_store_tree.py
+  atx-engine/tools/test_research_store_identity.py
+  scripts/cycle_resume.py
+  scripts/cycle_verdict.py
+  scripts/tests/test_research_store_hook.py
+  scripts/tests/test_wave_queue.py
+  scripts/wave_queue.py
+  scripts/wave_stage_record.py
+C++ / CMake / classes.json in the merge: [] (none: no build)
+new atx.*/vN literals in added lines (outside .superpowers): [] (SQL2-CLS: none)
+trials.jsonl lines 133 sha256 27e40f9f6314585e; research-store absent; porcelain-code []

@@ -1,0 +1,16 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\atx-wt\pool-2
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 98 items
+
+scripts\tests\test_cycle_resume.py .....                                 [  5%]
+scripts\tests\test_cycle_scoring.py .....                                [ 10%]
+scripts\tests\test_research_cycle_roles.py ..........................    [ 36%]
+scripts\tests\test_research_wave.py ...................                  [ 56%]
+scripts\tests\test_wave_driver.py ............................           [ 84%]
+scripts\tests\test_wave_hardening.py ........                            [ 92%]
+scripts\tests\test_wave_eval_verb.py .......                             [100%]
+
+======================= 98 passed in 136.69s (0:02:16) ========================

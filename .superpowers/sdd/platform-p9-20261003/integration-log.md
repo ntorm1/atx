@@ -746,3 +746,17 @@ run. Zero trials: `build-equity/trials.jsonl` 133 lines `27e40f9f`.
 | A4 (flips) | flips `69141218` / `59d807ea`, APPROVE head `fc3e414e` | none (A4 stays merged at `6dab6948`, `bba4c06f`) | - | none | - | - | - | provenance of both fields (Y-F0's manifest `26fee5ce`): every stage input under `C:\atx\atx-db\data\alpha_panel\v1\{ftd,regsho_threshold,security_master}` (`a4-provenance.txt`); no copy outside atx-db in pool-2, `C:/atx/data`, `data-classification.md` or the lane pools (`a4-copy-search.txt`; names and sizes only; no SHA match possible); **identity not run: inputs under atx-db; flips P10** (A4-P10-FLIPS); Python stays the producer of record; nothing reverted |
 
 Next free build tag **p9-3d**. Known-red set: **EMPTY**.
+
+### M6 (RESUME 11): AL-CLOCK fix 1, SQL3 item 5, 2026-10-15
+
+Start docs `97505c1c` (code `bba4c06f`). Code head **`d51d011e`**. Logs `m6-logs/`. Zero trials:
+`build-equity/trials.jsonl` 133 lines `27e40f9f` at start and end. TEST-1 / ROOT-1a: targeted checks; whole suites,
+Release, canaries and the parents' identity runs deferred to the gate. Both merge trees equal
+`git merge-tree --write-tree` (`m6-logs/alclock-checks.txt`, `sql3-checks.txt`).
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| AL-CLOCK fix 1 | `f892eab1` (APPROVE, re-review 1 `eed512bd`, 0 Required, 2 Suggested; first APPROVE `e9b3a323` merged at `858a4fca`) | `1d003241` (`eed512bd`, = recompute `91d2526a`) | 0 | **p9-3d** equity-dev; target-tests, NAV exe (5 TUs / 3 links) | 0 | `InfoClock*` 14 / 14 (incl. the calibrate gtest); named filter 26 / 26 | `test_info_clock_rule.py` 5 / 5 at seeds 0 and 1 | registration `7801c198...` carries ALCLOCK-4's two clauses **holds**; flag absent (`capacity_declaration` unchanged, selected when the rule is off; tests) **holds**; W3-9 nothing to keep both; SQL2-CLS none; the P9-B0 parents' identity at the gate |
+| SQL3 item 5 | `0ebb83da` (APPROVE, review 2 `22b8fd17`, 0 Required, 4 Suggested; code `00779453`) | `d51d011e` (`22b8fd17`, = recompute `6c73537a`) | 0 | none (Python) | - | - | hook 13 / 0 (real-exe case ran); identity 16 + 6 subtests / 0; wave queue 6 / 0; seven writers' files 98 / 0 / 0 skipped | one ingest per write **holds**; SQL3-2 **holds** (no `build-equity/research-store/` before or after); SQL2-CLS none; store exe p9-2r `d8a500d8` = receipt before and after |
+
+Next free build tag **p9-3e**. Known-red set: **EMPTY**; no new red.

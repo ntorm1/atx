@@ -958,3 +958,154 @@ TRAIN inputs outside atx-db, the identity only on a SHA-matched copy with year p
   (the same public v7 document the B2 re-reviewer hit); nothing of it is recorded or used; later searches used file
   names only. Reading the v15 fields manifest's `source_checks.holdings` block printed source row counts and vendor
   short-volume coverage ratios (data-quality counts, no return / IC / Sharpe / turnover / NAV statistic); none recorded.
+
+## Step group M6 (RESUME 11): AL-CLOCK fix 1, SQL3 item 5
+
+Root M6, 2026-10-15 UTC (ledger "Dispatch root M6"; `r11-dispatch.md` "ROOT M6"; start state `handoff-root-m5b.md`:
+code head `bba4c06f`, docs head `97505c1c`, next free tag `p9-3d`, known-red set EMPTY). Evidence: `m6-logs/` (tools
+`m6-logs/tools/`: `build.sh`, `busy.ps1`, `gt.sh`, `pyt.sh`, `warn_count.py` copied from `m5-logs/tools` with the logs
+dir changed; new: `cap_decl.py` (the text of `capacity_declaration` in `strategy_nav_v7.cpp` at two commits, by
+SHA-256) and `exe_sha_end.py` (per exe, the newest Debug receipt and whether the bytes on disk equal it)). Exit tables
+`m6-logs/gt-exits.txt`, `pyt-exits.txt`, `builds.txt`; per-merge checks `alclock-checks.txt`, `sql3-checks.txt`; start
+and end `start-state.txt`, `end-state.txt`; exe hashes at the end `exe-sha-end.txt`. Handoff: `handoff-root-m6.md`.
+TEST-1 / ROOT-1a throughout: targeted checks at each merge; whole suites, Release, canaries, golden and the parents'
+flag-absent identity runs are the gate's.
+
+Start state (`m6-logs/start-state.txt`): HEAD `97505c1c` (docs), code head `bba4c06f`; the only tracked change is the
+PM's `progress.md`; five untracked `docs/plans/*.png` (not root's, never added); trial ledger 133 lines `27e40f9f`;
+`build-equity/research-store/` absent (SQL3-2); the five exes this group uses or replaces hashed equal to their
+receipts (p9-2y target-tests and NAV, p9-2r store, p9-2z eval, p9-3b IC); no build of `C:\atx-wt\` running; free RAM
+about 3.5 GB, C: 57.7 GB free.
+
+MERGE-SHA at each slot: AL-CLOCK `eed512bd` (ledger "Task AL-CLOCK: APPROVE at `eed512bd`"), SQL3 `22b8fd17` (ledger
+"Task SQL3: APPROVE at `22b8fd17`"). Both merged whole, 0 conflicts, no slip.
+
+The one build of the group (Debug `equity-dev` through `scripts/research-build.ps1`, target-scoped, no `-Canary`):
+
+| tag | source | targets | TUs / links | wall | exes (disk = receipt at every run and at the end) |
+|---|---|---|---|---|---|
+| **p9-3d** | `1d003241` (the AL-CLOCK merge) | `atx-impl-strategy-target-tests,atx-equity-strategy-targets` | 5 / 3 | 24 s (32 s with the wrapper) | target-tests `685b8ba2947f878a9aa0a6a77cd7e4639c83588efc1cb398519be735efb13454`; NAV `7e101b564d800c9e4b57541e11a30d17d8f32d5f74fd2c5ccc95d3b2e5b5f0dc` |
+
+Exit 0, 0 warning lines; code dirty 0 (DirtyEntries 6 = `progress.md` and the five PNGs); ConfiguredProvenance
+`bba4c06f` (no CMake file changed since that configure); admitted at once (no other build of `C:\atx-wt\`; free 3628
+MiB, commit 7633 MiB; HOST-4 / HOST-5).
+
+## AL-CLOCK fix 1
+
+### Merge
+
+- `git merge --no-ff eed512bd` (re-review 1 APPROVE of fix head `f892eab1`; ruling ALCLOCK-S; MERGE-SHA; pool-30
+  branch `feat/p9-alclock2-20261007`, never pool-8's) -> **`1d003241`**, **0 conflicts**, tree `91d2526a` = the
+  recompute (`git merge-tree --write-tree 97505c1c eed512bd`). Merge base `5c811b56`. The first AL-CLOCK merge
+  (`e9b3a323`) is `858a4fca` (M4), so this one brings only fix round 1.
+- 7 code files: `atx-impl/src/book/nav_cli.cpp`, `atx-impl/src/book/nav_lockstep.cpp`, `atx-impl/src/strategy_nav_v7.cpp`,
+  `atx-impl/tests/fixtures/nav_rule_info_clock_rate_v1.json` (new), `atx-impl/tests/strategy_nav_info_clock_test.cpp`,
+  `scripts/specs/p9/rules/info-clock-rate-v1.json`, `scripts/tests/test_info_clock_rule.py`. Records arrived with it
+  (`task-AL-CLOCK-rereview-1.md`, the report's "Fix round 1 (ALCLOCK-S)", `handoff-AL-CLOCK.md`, `alclock-logs/` with
+  the `-k` / `-l` / `-m` receipts).
+- W3-9: the merge touches neither `atx-impl/tests/CMakeLists.txt` nor a registry / parser tail (COV-MV has been in the
+  lane's branch since `38967882`): nothing to keep both.
+
+### Tests (p9-3d; ENV-1: 0 hits)
+
+| suite | result |
+|---|---|
+| `InfoClock*` | **14 / 14** = M4's 13 + `InfoClockRate.CalibrateGrossKeepsTheRatesAndCountsOnce` (the calibrate gtest of S-3); InfoClockRate 10, InfoClockPrint 4 (`gt-infoclock.log`) |
+| the lane's named filter `InfoClock*:NavSpec.*:NavRules.*:TradeRateRegistry.*:NavAnnMeanGross.*:CostLawRegistry.*:TargetRegistry.*` | **26 / 26** = M4's 25 + the calibrate gtest (`gt-alclock-named.log`) |
+| `scripts/tests/test_info_clock_rule.py` | **5 passed** at seed 0, **5 passed** at seed 1 |
+| Debug whole target-tests, Release (named, whole), canaries, whole `scripts/tests`, the P9-B0 parents' flag-absent identity and the opt-in check | deferred to the gate (TEST-1) |
+
+The counts equal the lane's and the reviewer's (`InfoClock*` 14, named 26 at `f892eab1`). The dispatch's "`InfoClock*`
+24 + 1" matches no record; the "+ 1" is the calibrate gtest, which is in both counts above.
+
+### Root items (`task-AL-CLOCK-rereview-1.md` "What root must check at merge (M6)")
+
+| item | result |
+|---|---|
+| 1 merge at the review commit; 7 files + records; not a keep-both step | **holds** (above; the reviewer's predictive merge-tree was against `138e1d2c`, root's head at the merge was `97505c1c`: clean) |
+| 2 the named filter on a fresh Debug target-tests | **holds**: 14 / 14 and 26 / 26 on p9-3d (the lane's object trees are deleted, and root's p9-2y target-tests and NAV were stale by source: EXE-CUR) |
+| 3 `test_info_clock_rule.py` at seeds 0 and 1 | **holds** (5 / 5 each) |
+| 4 the registration sentence (ALCLOCK-4) | **holds**: `scripts/specs/p9/rules/info-clock-rate-v1.json:51` carries "planned gross <= (theta_f / theta_s) x gross(aim) by contraction outside the dust band, 2.589x at cadence 1" and "realised gross leverage is read from the cell's own summary (max and mean over the cell) and printed beside the parent's", then "the OD5-7 cap test applies to that realised figure"; the superseded clause is absent; SHA-256 of the HEAD blob = of the working bytes = `7801c19880a225a2f4c6ecb8756117f03fccafa71b92f440830bfb6fdcb8a152`; template `scripts/specs/p9/templates/info-clock.json` `95d4104a...42d5` unchanged; pinned nowhere yet (the W1-I2 re-pin at the gate reads the new SHA) (`alclock-checks.txt`) |
+| 5 flag absent, byte for byte (the capacity declaration conditional) | **holds** by reading and by test; byte identity of the P9-B0 parents is the gate's (TEST-1). `capacity_declaration`'s text is the same at `97505c1c` and `1d003241` (`cap_decl.py`: SHA-256 `611d4725...a828` at both, 553 characters); `capacity_rule(false)` returns it; `State::info_clock` defaults to false and is set only for `NavRateRule::InfoClockV1`; the recipe selects by its own `rate` key (written only under the rule). `CapacityCurveAcceptsThisRateOnly` (a fixed-rate capacity run keeps "; fixed rate only; x1 is S2 bit for bit" and names no info-clock) and `InfoClockPrint.FlagAbsentLoadsNoClock` pass. Changed by design: the `--help` text (two clauses) and two refusal messages of runs that write nothing |
+| 6 the row fixture against the merged registry | **holds** (`InfoClockRate.RegistryRowAndParser` passes, in the 14) |
+| 7 ledger | **holds**: "Task AL-CLOCK: APPROVE at `eed512bd`" is in the ledger, so `eed512bd` is the SHA of record |
+| SQL2-CLS | **holds**: no `atx.<name>/v<n>` literal in the added lines; nothing for `classes.json` |
+
+### For PRE (round 2b-ii, Appendix IV items 16 (B.4 P9-C) and 31 / 33 (F.1, Appendix III))
+
+- Item 16, replacing the pre-fix values M4 recorded: registration `scripts/specs/p9/rules/info-clock-rate-v1.json`
+  sha256 **`7801c19880a225a2f4c6ecb8756117f03fccafa71b92f440830bfb6fdcb8a152`** (was `51b8b754...e33c`, merged at
+  `858a4fca`); template `scripts/specs/p9/templates/info-clock.json` sha256
+  `95d4104a421c32f91877649f1ec9dfbdb409c9a121d6f6e2377e5e25e19b42d5` (unchanged). The registration's
+  `realised_leverage` carries ALCLOCK-4's two clauses verbatim (the P9-C block carries the same, ALCLOCK-4). The
+  ALCLOCK-S2 S-A disclosure (the capacity sentence's "x1 is S2 bit for bit" is tested on fixed-rate runs only; the
+  rule-on test is P10) stands as the ledger's PRE 2b-ii line. Rule, row, producers, C3-4, DEC-16 argument and the C3-5
+  probe as M4 recorded; fit mode at the wave-3 P9-B0.
+- Items 31 / 33: `source_sample_end` 2019, unchanged by the fix round.
+
+## SQL3 item 5
+
+### Merge
+
+- `git merge --no-ff 22b8fd17` (review 2 APPROVE of `0ebb83da`; `22b8fd17` = `0ebb83da` plus the review file only;
+  code `00779453`; MERGE-SHA) -> **`d51d011e`**, **0 conflicts**, tree `6c73537a` = the recompute
+  (`git merge-tree --write-tree 1d003241 22b8fd17`). Merge base `175edd61`.
+- 8 Python files, no C++, no CMake, no `classes.json`: `scripts/cycle_resume.py`, `scripts/cycle_verdict.py`,
+  `scripts/wave_stage_record.py` (item 5), `scripts/wave_queue.py` (SQL3-WQ, both hunks, SQL3-WQ-2),
+  `scripts/tests/test_research_store_hook.py`, `scripts/tests/test_wave_queue.py`,
+  `atx-engine/tools/test_research_store_identity.py`, `atx-engine/tests/fixtures/research_store/make_store_tree.py`.
+  The review's "nine Python files" lists these eight (a count slip in the review; no file is missing). No build.
+- Records arrived with it (`task-SQL3-review-2.md`, `task-SQL3-review.md`, the report's "Item 5 for the follow-up",
+  `handoff-SQL3.md`, `sql3-evidence/`).
+
+### Tests (head `d51d011e`; seed 0; ENV-1: 0 hits)
+
+Env: `ATX_EQUITY_ROOT=C:/atx-wt/pool-2/build-equity`, `ATX_EQUITY_BIN=C:/atx-wt/pool-2/build-equity/bin`,
+`ATX_RESEARCH_STORE_EXE=<that bin>/atx-research-store.exe`; each file (and the writers' set) in its own invocation,
+`-p no:cacheprovider`, own `--basetemp`, `PYTHONDONTWRITEBYTECODE=1`. EXE-CUR (`sql3-exe-sha-before.txt` =
+`sql3-exe-sha-after.txt`): store `d8a500d8...9d65` = p9-2r (source `fd084e78`; the store sources are unchanged since,
+current by source), eval verb `47910191...893b` = p9-2z (the writers' `nav_summ` cases); NAV p9-3d and IC p9-3b hashed
+only (no file of these runs names either exe).
+
+| file(s) | result |
+|---|---|
+| `scripts/tests/test_research_store_hook.py` | **13 passed** (`test_real_store_exe_ingests_every_class` PASSED: the real-exe case ran) |
+| `atx-engine/tools/test_research_store_identity.py` | **16 passed, 6 subtests passed** (`FixtureChain::test_cpp_catalog_renders_identically` PASSED: the real exe ran; the `-rA` run prints no subtest count, the `-q` re-run does: `pyt-sql3-identity-q.log`) |
+| `scripts/tests/test_wave_queue.py` | **6 passed** (the relative-root case PASSED) |
+| the seven writers' files (`test_cycle_resume.py`, `test_cycle_scoring.py`, `test_research_cycle_roles.py`, `test_research_wave.py`, `test_wave_driver.py`, `test_wave_hardening.py`, `test_wave_eval_verb.py`) | **98 passed, 0 failed, 0 skipped** |
+| whole `scripts/tests` seeds 0 / 1, the stage chain, the rest of the store suite | deferred to the gate (TEST-1) |
+
+### Root items (`task-SQL3-review-2.md` "What root must check at merge (M6)")
+
+| item | result |
+|---|---|
+| 1 merge (root had moved past `bba4c06f`: only AL-CLOCK's merge, no sprint-dir or Python path in common) | **holds** (0 conflicts) |
+| 2 Python only; store exe current | **holds** (8 Python files; p9-2r `d8a500d8` = receipt) |
+| 3 the three test files + the seven writers' files | **holds** (above) |
+| 4 one ingest per write | **holds**: the tests that pin the counts pass on the merge head (fake wave 13 ingests, 13 warnings with a failing store; `write_binding` 1; `write_verdict` 1, 2 with `keep`; `keep_copy` 1 per copy; the SQL3-WQ case 3); no wave fixture changed between the review's trial merge (`bba4c06f`) and root's head (AL-CLOCK's only Python file is `test_info_clock_rule.py`) |
+| 5 SQL3-2 | **holds**: `build-equity/research-store/` absent at the start, before and after the runs, and at the end |
+| 6 SQL2-CLS | **holds**: no `atx.<name>/v<n>` literal in the added lines; `classes.json` not in the merge |
+| 7 the freeze print | the gate's: G-P10 (d) PARTIAL ("three writers hooked, the stage record's side files not", SQL3-S2 S-2), (e) landed for `atx.run-store/v1`, printed from the merged tree, not the lane report (SQL3-S2 S-3); review 1's F-1 strip for console byte comparisons (S-4) |
+
+SQL3-S2 S-1 and S-4 (the rest of review 1's Suggested) are P10, as ruled.
+
+### For PRE (round 2b-ii)
+
+None. No Appendix IV placeholder names SQL3 (as at its first merge); the record hook stays off for every run of record
+(SQL3-2), so no P9-B0 reference or cell needs a `store` entry on a substitution list.
+
+### Disk and status (M6)
+
+- Root's object trees `build-equity/` and `build-equity-rel/` kept: M6b (the A4 re-applied fix head's Debug build, SQL4)
+  and the gate's Debug and Release builds use them. The group created under `build-equity/` only the p9-3d receipt and
+  logs (copies in `m6-logs/`) and relinked the two p9-3d exes.
+- Session scratchpad: `root-m6/` (pytest basetemps) and four extracts of lane records (`alclock-report.md`,
+  `alclock-rr1.md`, `sql3-report.md`, `sql3-rv2.md`), all mine and regenerable; deleted by literal name after the
+  records commit.
+- Lane pools: nothing deleted (pool-30 holds no object tree; pool-13's was deleted by the lane, SQL3-TREE; pool-23's
+  `build-equity/` untouched, TEETH-BIN-23).
+- Code head **`d51d011e`**. Build tag used p9-3d; **next free build tag p9-3e**. Known-red set: **EMPTY**; no new red.
+  Trial ledger 133 lines `27e40f9f` at start and end (0 trials). SQL3-2 holds. No lease touched. No permission
+  refusal. No data opened, no file under `C:/atx/atx-db` opened, `holdout_gate.py` not run; no statistic printed or
+  recorded (the "2.589x at cadence 1" quoted above is the registration's mechanical rate-ratio bound, not a measured
+  figure).
