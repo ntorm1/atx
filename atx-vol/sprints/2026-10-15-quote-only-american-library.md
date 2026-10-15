@@ -4,7 +4,8 @@ User objective: improve the reusable American equity options library and its
 speed/accuracy against SpiderRock fair price and volatility using only contract,
 quote, carry, dividend and clock inputs. Reference values are evaluation labels.
 The user explicitly requested sub-agent development, implementation before tests,
-and sustained autonomous iteration. Existing code is preserved and extended.
+and sustained autonomous iteration. Breaking changes and removal of outdated
+code are explicitly authorized.
 
 ## Working state
 
@@ -135,8 +136,8 @@ Integrated after the initial checkpoint:
   comparisons give max price difference 2.85e-14 and scaled Greek difference
   4.56e-8. All 66 targeted tests and PCH-off changed-TU compilation passed in
   the implementing lane. Release binaries for original production bisection
-  and direct Newton are preserved outside the repository; speed measurement
-  still requires a coordinated quiet window.
+  and direct Newton are preserved outside the repository. The subsequent quiet
+  CPU measurement is recorded below.
 * `AmericanPriceSlice` (`370e74fa`) owns final call/put price knots, rejects
   intrinsic/upper, vertical-spread, convexity and conservative cross-side
   violations, and offers bounded, allocation-free piecewise-linear serving.
@@ -179,3 +180,43 @@ and shared exercise opportunities. A sub-agent is implementing scalar rollback
 first; exact convex piecewise-linear strike recursion follows. This constructs
 a consistent finite Bermudan model and requires separate convergence evidence
 for continuous-American accuracy. No heldout validation labels have been read.
+
+## Symbol policies and constructive model work
+
+The user requires symbol-specific configurations and surface parameterizations.
+The new quote-policy catalog derives raw liquidity features across each snapshot,
+uses named dense/ordinary/sparse starting profiles, and supports exact symbol
+overrides with immutable owned configuration. Wide small-cap quotes must not
+inherit SPY's flexibility or observation certainty. Profile choice can change
+fit family and uncertainty policy; mandatory arbitrage admission is common.
+Native routing and policy JSON support are being integrated. The Python runner
+already binds policy content/hash and the native decision report to each run.
+Its 38 standalone adapter/provenance checks pass; no compiled Python extension
+or unrelated checkout is used by those tests.
+
+`AmericanMarkovModel` (`d7c7e109`) now compiles a shared positive sparse process
+with separate variance/funding clocks, event-aligned cash jumps, explicit finite
+boundaries and common expiry prefixes. Nine numerical tests pass in Debug and
+Release. Scalar rollback uses caller-prepared workspace and allocates nothing
+on successful calls. `ConvexPwlStrikeFunction` (`21ca9177`) provides bounded
+nonnegative weighted sums and exact exercise-envelope crossings, retaining all
+knots and rejecting resource exhaustion. Eight focused Debug tests pass. Exact
+strike rollback of the shared model is the next integration step. These are
+finite Bermudan models; continuous-American convergence is a separate gate.
+
+The original production bisection and direct Newton binaries were measured in
+a coordinated quiet window, single-worker Release AVX2, process affinity CPU0,
+four ABBA runs of five repetitions each. The 4,097-point dense inversion fixture
+is F=100, T=.25, df=.98, flat volatility .22. After rejecting runs whose CPU CV
+exceeded 5%, the retained means were 10,107.422 us and 6,520.433 us, a 1.5501x
+CPU speedup (35.49% less CPU). Their CVs were 3.35% and 3.77%. Wall-clock CV
+failed the quiet measurement threshold, so there is no wall/tail latency claim,
+library-wide speed claim, or world-record claim. External evidence is in
+`C:/atx-cache/quote-benchmark/dense-pinned-comparison.json` and the four original
+JSON reports per implementation. Numerical accuracy evidence remains above.
+
+Final price validation now uses a global convex-hull deviation bound so dense
+grids cannot accumulate material concavity through per-chord tolerances. A
+specialized nondividend American/European consistency check is also mandatory
+where its mathematical preconditions hold. All 37 focused quote/price-slice
+Release checks and PCH-off compilation of the integrated fitter/runner pass.

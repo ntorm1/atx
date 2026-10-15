@@ -34,6 +34,12 @@ add_test(NAME atx-vol-quote-slice
     COMMAND atx-vol-quote-slice-tests --gtest_filter=QuoteSlice.*:AmericanPriceSlice.*)
 set_tests_properties(atx-vol-quote-slice PROPERTIES LABELS "atx_vol_fast")
 
+add_executable(atx-vol-american-markov-tests american_markov_test.cpp pwl_strike_test.cpp)
+target_link_libraries(atx-vol-american-markov-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+add_test(NAME atx-vol-american-markov COMMAND atx-vol-american-markov-tests)
+set_tests_properties(atx-vol-american-markov PROPERTIES LABELS "atx_vol_fast")
+
 add_executable(atx-vol-tests
     convex_recovery_test.cpp
     quote_feasibility_test.cpp
@@ -75,6 +81,8 @@ add_executable(atx-vol-tests
     dense_slice_test.cpp
     quote_slice_test.cpp
     american_price_slice_test.cpp
+    american_markov_test.cpp
+    pwl_strike_test.cpp
     profile_test.cpp
     fit_policy_test.cpp
     curve_selector_test.cpp

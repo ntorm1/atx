@@ -58,6 +58,8 @@ set(ATX_VOL_PRICING_SOURCES
     # Andersen-Lake machinery, while its public entries sit beside them in
     # api/pricing/american.hpp.
     src/pricing/american_discrete_div.cpp
+    src/pricing/american_markov.cpp
+    src/pricing/pwl_strike.cpp
     src/pricing/american_batch.cpp
     src/pricing/adjoint_greeks.cpp
     src/pricing/boundary_interp.cpp
@@ -904,7 +906,8 @@ if(ATX_BUILD_TOOLS)
     # Label-free benchmark runner. Reference values exist only in the separate
     # Python scorer; the native tool accepts a closed raw-quote input schema.
     add_executable(atx-vol-quote-bench tools/quote_bench_main.cpp)
-    target_link_libraries(atx-vol-quote-bench PRIVATE atx::vol atx::core atx_warnings)
+    target_link_libraries(atx-vol-quote-bench PRIVATE atx::vol atx::core atx_warnings
+        nlohmann_json::nlohmann_json)
     # Surface-db production build CLI (Task 6): the one-call build_surface_db
     # driver wrapped in a hand-rolled arg loop -- create-or-open a SurfaceDb,
     # load an OPRA hive v2 window, auto-generate per-symbol fit configs, and

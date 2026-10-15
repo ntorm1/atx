@@ -205,7 +205,8 @@ def test_american_exercise_spelling_is_canonical_for_the_native_boundary(tmp_pat
     assert quotes["input_status"].to_list() == ["ok"] * 4 + ["unsupported_exercise"] * 2
 
 
-@pytest.mark.parametrize("extra", [["--curve", "svi"], ["--curve=svi"]])
+@pytest.mark.parametrize("extra", [["--curve", "svi"], ["--curve=svi"],
+                                  ["--policy", "auto"], ["--policy=auto"]])
 def test_native_extras_cannot_override_the_recorded_curve(tmp_path, monkeypatch, extra):
     dataset, _ = prepare(tmp_path)
     binary = tmp_path / "unused-native.exe"
@@ -279,16 +280,62 @@ def test_native_new_timing_report_remains_usable(tmp_path, monkeypatch):
         assert command[command.index("--report") + 1] == str(report)
         output.write_text("predictions")
         report.write_text("{}")
-        return qb.subprocess.CompletedProcess(command, 0)
+        return qb.subprocess.CompletedProcess(command, 0, stdout='{"policy_mode":"auto"}')
     monkeypatch.setattr(qb.subprocess, "run", execute)
     args = qb.parser().parse_args([
         "run", "--dataset", str(dataset), "--binary", str(binary),
         "--output", str(output), "--", "--report", str(report),
     ])
     receipt = qb.run_native(args)
-    assert receipt["curve"] == "essvi"
+    assert receipt["curve"] is None
+    assert receipt["policy"] == "auto"
+    assert receipt["native_report"] == {"policy_mode": "auto"}
     assert report.read_text() == "{}"
     assert Path(str(output) + ".run.json").is_file()
+
+
+@pytest.mark.parametrize("mutate", [False, True])
+def test_custom_policy_content_is_bound_to_run_receipt(tmp_path, monkeypatch, mutate):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "unused-native.exe"
+    binary.write_bytes(b"not executed")
+    output = tmp_path / "new-predictions.csv"
+    policy = tmp_path / "policy.json"
+    document = {"schema_version": 1, "symbol_overrides": [
+        {"symbol": "AAA", "profile": "sparse"}]}
+    policy.write_text(json.dumps(document))
+    original_hash = qb.sha256(policy)
+
+    def execute(command, **kwargs):
+        assert command[command.index("--policy") + 1] == str(policy.resolve())
+        assert "--curve" not in command
+        output.write_text("predictions")
+        if mutate:
+            policy.write_text('{"schema_version":1}')
+        return qb.subprocess.CompletedProcess(command, 0, stdout='{"policy_mode":"file"}')
+
+    monkeypatch.setattr(qb.subprocess, "run", execute)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary),
+        "--output", str(output), "--policy", str(policy),
+    ])
+    if mutate:
+        with pytest.raises(ValueError, match="policy configuration changed"):
+            qb.run_native(args)
+        assert not Path(str(output) + ".run.json").exists()
+    else:
+        receipt = qb.run_native(args)
+        assert receipt["policy_sha256"] == original_hash
+        assert receipt["policy_document"] == document
+        assert receipt["policy"] == str(policy.resolve())
+
+
+def test_policy_and_fixed_curve_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        qb.parser().parse_args([
+            "run", "--dataset", "dataset", "--binary", "runner", "--output", "predictions",
+            "--policy", "auto", "--curve", "essvi",
+        ])
 
 
 def candidate_receipt(dataset: Path, name: str, ids: list[int], prices: list[float],

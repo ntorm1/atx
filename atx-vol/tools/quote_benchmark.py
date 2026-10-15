@@ -308,8 +308,22 @@ def run_native(args: argparse.Namespace) -> dict:
         raise ValueError("prediction/receipt output already exists; use a new output path")
     output.parent.mkdir(parents=True, exist_ok=True)
     extras = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
-    if any(arg.split("=", 1)[0] in {"--input", "--output", "--curve"} for arg in extras):
-        raise ValueError("extra arguments cannot replace provenance-bound input/output/curve")
+    if any(arg.split("=", 1)[0] in {"--input", "--output", "--curve", "--policy"}
+           for arg in extras):
+        raise ValueError("extra arguments cannot replace provenance-bound input/output/curve/policy")
+    policy_path = None
+    policy_hash = None
+    policy_document = None
+    policy = args.policy or (None if args.curve else "auto")
+    if policy and policy != "auto":
+        policy_path = Path(policy).resolve()
+        # Keep configuration provenance bounded; the native loader owns schema validation.
+        if policy_path.stat().st_size > 1048576:
+            raise ValueError("policy configuration exceeds 1 MiB")
+        policy_bytes = policy_path.read_bytes()
+        policy_hash = hashlib.sha256(policy_bytes).hexdigest()
+        policy_document = json.loads(policy_bytes)
+        policy = str(policy_path)
     report_path = None
     for index, argument in enumerate(extras):
         if argument.split("=", 1)[0] != "--report":
@@ -325,21 +339,27 @@ def run_native(args: argparse.Namespace) -> dict:
         if not value or value.startswith("--"):
             raise ValueError("native timing report requires an output path")
         report_path = Path(value).resolve()
-        protected = {output, receipt_path.resolve()} | {
+        protected = {output, receipt_path.resolve(), binary, policy_path} | {
             (args.dataset / name).resolve()
             for name in ("manifest.json", "quotes.parquet", "quotes.csv", "labels.parquet")
         }
         if report_path.exists() or report_path in protected:
             raise ValueError("native timing report must use a new path distinct from predictions/receipt")
+    selection = ["--curve", args.curve] if args.curve else ["--policy", policy]
     command = [str(binary), "--input", str((args.dataset / "quotes.csv").resolve()),
-               "--output", str(output), "--curve", args.curve, *extras]
+               "--output", str(output), *selection, *extras]
     started = time.perf_counter()
-    result = subprocess.run(command, check=False)
+    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, text=True)
     elapsed = time.perf_counter() - started
     if result.returncode:
         raise RuntimeError(f"native runner failed with exit code {result.returncode}")
     if sha256(binary) != binary_hash:
         raise ValueError("native binary changed during execution")
+    if policy_path is not None and sha256(policy_path) != policy_hash:
+        raise ValueError("policy configuration changed during execution")
+    native_report = json.loads(result.stdout)
+    if not isinstance(native_report, dict):
+        raise ValueError("native runner did not return a JSON report object")
     # Ensure model execution did not mutate its declared quote input.
     verify_dataset(args.dataset)
     receipt = {
@@ -349,7 +369,9 @@ def run_native(args: argparse.Namespace) -> dict:
         "quote_parquet_sha256": manifest["files"]["quotes.parquet"]["sha256"],
         "quote_csv_sha256": manifest["files"]["quotes.csv"]["sha256"],
         "predictions": str(output), "prediction_sha256": sha256(output),
-        "wall_seconds": elapsed, "curve": args.curve,
+        "wall_seconds": elapsed, "curve": args.curve, "policy": policy,
+        "policy_sha256": policy_hash, "policy_document": policy_document,
+        "native_report": native_report,
     }
     write_json(receipt_path, receipt)
     print(json.dumps({"run_receipt": str(receipt_path), "wall_seconds": elapsed}))
@@ -648,8 +670,11 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--dataset", required=True, type=Path)
     run.add_argument("--binary", required=True, type=Path)
     run.add_argument("--output", required=True, type=Path)
-    run.add_argument("--curve", choices=["svi", "essvi", "convex-dense", "spline-vol",
-                                        "linear-variance", "c8-event"], default="essvi")
+    selection = run.add_mutually_exclusive_group()
+    selection.add_argument("--curve", choices=["svi", "essvi", "convex-dense", "spline-vol",
+                                              "linear-variance", "c8-event"],
+                           help="fixed curve for controlled experiments")
+    selection.add_argument("--policy", help="auto (default) or a symbol/profile JSON file")
     run.add_argument("extra", nargs=argparse.REMAINDER, help="native options after --")
     run.set_defaults(func=run_native)
     scoring = sub.add_parser("score", help="score predictions after verifying their cohort/run provenance")

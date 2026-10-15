@@ -36,6 +36,22 @@ options follow `--` on the `run` command, for example `-- --report timing.json`.
 Use a release build for performance measurements. End-to-end wrapper time
 includes process startup and file IO; native stage timings describe kernel work.
 
+`run` defaults to `--policy auto`. Raw near-money strike coverage, relative
+spreads and bidless fractions select a named dense, ordinary or sparse profile
+once per underlying/root/exact snapshot. An explicit `--curve` is a fixed-model
+experiment and is mutually exclusive with `--policy`. A JSON policy file can
+define alternative profiles and exact symbol overrides; no ticker mapping is
+compiled into the library. Model selection never reads evaluation labels.
+
+The run receipt contains the native report, including expanded profile settings,
+resolved decisions and actual model families. For `--policy path.json`, it also
+stores the complete JSON document and its SHA-256, checked again after execution.
+Global quote-filter overrides belong to explicit fixed-curve experiments;
+per-symbol experiments put those settings in the corresponding profile.
+The built-in profiles are starting configurations, not calibrated universal
+settings. Every profile retains the same final strike and calendar admission
+requirements, and rejected contracts remain in coverage reporting.
+
 Preparation projects only the fixed input allowlist and two label columns. It
 processes bounded Arrow batches; memory scales with batch size and the number of
 distinct underliers, not source rows. `--max-underliers` performs a preliminary
