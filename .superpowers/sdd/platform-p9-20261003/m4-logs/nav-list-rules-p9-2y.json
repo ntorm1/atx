@@ -1,0 +1,363 @@
+{
+  "capabilities": [
+    "leverage-rule-per-book",
+    "capacity-main-lockstep",
+    "summary-binds-extras",
+    "producer-identity",
+    "sqrt-impact-exact",
+    "calibrate-gross-pm6-6",
+    "nav-spec-v1",
+    "fields-seal-p13"
+  ],
+  "rules": [
+    {
+      "id": "fixed-v1",
+      "incompatible": [
+        "vol-target-v1",
+        "risk-target-v1"
+      ],
+      "kind": "leverage",
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "aim_leverage": {
+            "default": 1,
+            "maximum": 2,
+            "minimum": 1,
+            "type": "number",
+            "x-flag": "--aim-leverage"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "x-flag": "--aim-leverage"
+    },
+    {
+      "id": "vol-target-v1",
+      "incompatible": [
+        "risk-target-v1",
+        "aim-partial-v6",
+        "spo-v1",
+        "spo-v2",
+        "spo-v3"
+      ],
+      "kind": "leverage",
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "aim_leverage": {
+            "default": 1,
+            "maximum": 2,
+            "minimum": 1,
+            "type": "number",
+            "x-flag": "--aim-leverage"
+          },
+          "risk_model": {
+            "type": "string",
+            "x-flag": "--risk-model"
+          },
+          "risk_model_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string",
+            "x-flag": "--risk-model-sha256"
+          }
+        },
+        "required": [
+          "risk_model",
+          "risk_model_sha256"
+        ],
+        "type": "object"
+      },
+      "x-flag": "--vol-target vol-target-v1"
+    },
+    {
+      "id": "risk-target-v1",
+      "incompatible": [
+        "vol-target-v1",
+        "aim-partial-v6",
+        "spo-v1",
+        "spo-v2"
+      ],
+      "kind": "leverage",
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "aim_leverage": {
+            "default": 1,
+            "maximum": 2,
+            "minimum": 1,
+            "type": "number",
+            "x-flag": "--aim-leverage"
+          },
+          "bias": {
+            "default": 1.15,
+            "exclusiveMinimum": 0,
+            "maximum": 10,
+            "type": "number",
+            "x-flag": "--risk-target-bias"
+          },
+          "cadence": {
+            "default": 21,
+            "maximum": 10000,
+            "minimum": 1,
+            "type": "integer",
+            "x-flag": "--risk-target-cadence"
+          },
+          "risk_model": {
+            "type": "string",
+            "x-flag": "--risk-model"
+          },
+          "risk_model_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string",
+            "x-flag": "--risk-model-sha256"
+          },
+          "sigma_star": {
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "type": "number",
+            "x-flag": "--risk-target"
+          }
+        },
+        "required": [
+          "sigma_star",
+          "risk_model",
+          "risk_model_sha256"
+        ],
+        "type": "object"
+      },
+      "x-flag": "--risk-target S"
+    },
+    {
+      "description": "aim-partial-v5: every member moves theta (--trade-fraction) of its gap toward aim = L x desired unless the gap is inside the dust band dust / N_d; nonmembers exit at exit_rate",
+      "id": "aim-partial-v5",
+      "incompatible": [
+        "aim-partial-v6",
+        "spo-v1",
+        "spo-v2",
+        "spo-v3"
+      ],
+      "kind": "trade-rate",
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "dust_multiple": {
+            "default": 0.0,
+            "maximum": 0.5,
+            "minimum": 0,
+            "type": "number",
+            "x-flag": "--dust-multiple"
+          },
+          "exit_rate": {
+            "default": 1.0,
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "type": "number",
+            "x-flag": "--exit-rate"
+          },
+          "trade_fraction": {
+            "default": 0.25,
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "type": "number",
+            "x-flag": "--trade-fraction"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "x-flag": "--rule aim-partial-v5"
+    },
+    {
+      "description": "per-name-v1 (T36): aim-partial-v5's theta per name from its cost and risk (rra, lambda), clipped to [rate_min, rate_max]; needs --rule aim-partial-v5; one shared rate buffer, so --book-workers 1 only",
+      "id": "per-name-v1",
+      "incompatible": [
+        "aim-partial-v6",
+        "spo-v1",
+        "spo-v2",
+        "spo-v3",
+        "two-speed-v1"
+      ],
+      "kind": "trade-rate",
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "rate_lambda": {
+            "default": 0.2,
+            "exclusiveMinimum": 0,
+            "maximum": 1000000.0,
+            "type": "number",
+            "x-flag": "--rate-lambda"
+          },
+          "rate_max": {
+            "default": 0.15,
+            "exclusiveMinimum": 0,
+            "maximum": 1.0,
+            "type": "number",
+            "x-flag": "--rate-max"
+          },
+          "rate_min": {
+            "default": 0.01,
+            "exclusiveMinimum": 0,
+            "maximum": 1.0,
+            "type": "number",
+            "x-flag": "--rate-min"
+          },
+          "rate_rra": {
+            "default": 10.0,
+            "exclusiveMinimum": 0,
+            "maximum": 1000000.0,
+            "type": "number",
+            "x-flag": "--rate-rra"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "x-flag": "--rate per-name-v1"
+    },
+    {
+      "description": "the NAV half of the composition rule two-speed-v1 (named in rules as two-speed-v1, which sets --two-speed two-speed-v1 on both exes): a virtual fast sleeve at theta_f = 1 - 2^(-C/5) at cadence C, the slow remainder at theta_s = .05, netted",
+      "id": "two-speed-nav-v1",
+      "incompatible": [
+        "per-name-v1",
+        "aim-partial-v6",
+        "spo-v1",
+        "spo-v2",
+        "spo-v3"
+      ],
+      "kind": "trade-rate",
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "x-flag": null
+    },
+    {
+      "description": "info-clock-rate-v1 (P9 AL-CLOCK, lit [28][29]): aim-partial-v5's theta per name from its information clock: a member whose ea_days_since (sessions since its latest primary earnings announcement's reaction session; --fields) is in [0, 21] moves at theta_f = 1 - 2^(-C/5) at cadence C (two-speed-v1's fast rate), every other member (a NaN clock included) at theta_s = --trade-fraction, which must be .05; needs --rule aim-partial-v5; one rate vector per decision for every book, so --book-workers N runs",
+      "id": "info-clock-rate-v1",
+      "incompatible": [
+        "per-name-v1",
+        "two-speed-v1",
+        "aim-partial-v6",
+        "spo-v1",
+        "spo-v2",
+        "spo-v3"
+      ],
+      "kind": "trade-rate",
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "x-flag": "--rate info-clock-rate-v1"
+    },
+    {
+      "description": "S1 linear-6bps-stale5-v1: 6 bps per dollar traded (engine FlatBpsCost); a fixed scenario of every run, not a flag",
+      "id": "flat-bps-v1",
+      "incompatible": [],
+      "kind": "cost-law",
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "x-flag": null
+    },
+    {
+      "description": "S2 modeled-1bn-stale5-v1 (PRIMARY) and S3 modeled-1bn-terminal-adverse-v1: half spread + Y sigma (|F| / ADV)^delta under a 1% ADV cap (engine SqrtImpactCost); fixed scenarios of every run, not a flag",
+      "id": "sqrt-impact-v1",
+      "incompatible": [],
+      "kind": "cost-law",
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "x-flag": null
+    },
+    {
+      "description": "Kyle-Obizhaeva invariance square-root law: the stress book modeled-1bn-ko-v1 beside S2; on with cost-sqrt-v2",
+      "id": "ko-invariance-v1",
+      "incompatible": [],
+      "kind": "cost-law",
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "x-flag": null
+    },
+    {
+      "description": "Frazzini-Israel-Moskowitz live-trade law: the stress book modeled-1bn-fim-v1 beside S2; on with cost-sqrt-v2",
+      "id": "fim-live-v1",
+      "incompatible": [],
+      "kind": "cost-law",
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "x-flag": null
+    },
+    {
+      "description": "cost model v2: the ko-invariance-v1 and fim-live-v1 stress books beside S2 (S1, S2, S3 unchanged); byte for byte the run --cost-v2 gives (one of the two, never both)",
+      "id": "cost-sqrt-v2",
+      "incompatible": [],
+      "kind": "cost-law",
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "x-flag": "--cost-law cost-sqrt-v2",
+      "x-flag-aliases": [
+        "--cost-v2"
+      ]
+    },
+    {
+      "description": "mv-aim-v1 (P9 COV-MV, cov-design 5.2): at each rebalance decision d the shared desired target's priced members (a risk row at d: industry slot 0..49, specific variance D_i > 0) become P V_d^-1 P alpha, alpha_i = sqrt(D_i) desired_i, V_d = X F X' + D of the store's row d (F never inverted), rescaled to the desired gross over them; unpriced members keep their weights; under two priced names: unchanged; needs --rule aim-partial-v5; not with --construction-grid; mv_aim blocks in recipe, summary and holdings manifest",
+      "id": "mv-aim-v1",
+      "incompatible": [
+        "aim-partial-v6",
+        "spo-v1",
+        "spo-v2",
+        "spo-v3",
+        "two-speed-v1",
+        "adv-hold-v1",
+        "hold-band-v1"
+      ],
+      "kind": "target",
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "risk_model": {
+            "type": "string",
+            "x-flag": "--risk-model"
+          },
+          "risk_model_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string",
+            "x-flag": "--risk-model-sha256"
+          }
+        },
+        "required": [
+          "risk_model",
+          "risk_model_sha256"
+        ],
+        "type": "object"
+      },
+      "x-flag": "--target-rule mv-aim-v1"
+    }
+  ],
+  "schema": "atx.nav-rules/v1"
+}

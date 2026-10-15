@@ -1,0 +1,80 @@
+{
+    "Source":  "c3f3f1f84f196d7a3f248b46d71fd326c012664f",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  0,
+    "ConfiguredProvenance":  "8a6ebe5be0f29f2360023ff7116f7352ecea5ddd-dirty",
+    "Jobs":  4,
+    "FreeMiB":  3428,
+    "CommitMiB":  5780,
+    "Targets":  [
+                    "atx-impl-strategy-target-tests",
+                    "atx-equity-strategy-targets",
+                    "atx-equity-strategy-ic",
+                    "atx-research-eval"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  1265.1479576,
+    "CompiledTUs":  307,
+    "Links":  17,
+    "Tag":  "p9-alclock-b",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-8\\build-equity",
+    "Executables":  {
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-8\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "51b1a9a473d57f9136c888a24dad5066805d42293968118f05dc1f21c4728af7"
+                                                           },
+                        "atx-equity-strategy-targets":  {
+                                                            "Path":  "C:\\atx-wt\\pool-8\\build-equity\\bin\\atx-equity-strategy-targets.exe",
+                                                            "Sha256":  "028303b4784c8b4217a2fa115daac9c900393a3328e387c6db984b678800a039"
+                                                        },
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-8\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "06f5194770b6e3730c4e4c2d77c7d3c5f7e8430b59ecdcdc39ca03090a66c6c6"
+                                                   },
+                        "atx-research-eval":  {
+                                                  "Path":  "C:\\atx-wt\\pool-8\\build-equity\\bin\\atx-research-eval.exe",
+                                                  "Sha256":  "c822cbb859b31aac48dd827174c5f632aa1b66a3ccf95e2d95c42cb48281afc6"
+                                              }
+                    }
+}
+[1/325] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+[2/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\cmake_pch.cxx.obj
+[3/325] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\cmake_pch.cxx.obj
+[4/325] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\cmake_pch.cxx.obj
+[5/325] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+[6/325] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+[7/325] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+[8/325] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+[9/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\claims_state.cpp.obj
+[10/325] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+[11/325] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+[12/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\security_transition.cpp.obj
+[13/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\replay.cpp.obj
+[14/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\canonical.cpp.obj
+[15/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\crossover.cpp.obj
+[16/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\engine.cpp.obj
+[17/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\fitness.cpp.obj
+[18/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\execution_objective.cpp.obj
+[19/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\factory.cpp.obj
+[20/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\execution_cash_claim.cpp.obj
+[21/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\genome.cpp.obj
+[22/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\execution_stock_transition.cpp.obj
+[23/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\target_tracking.cpp.obj
+[24/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\mutation.cpp.obj
+[25/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\op_catalog.cpp.obj
+[26/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\param_search.cpp.obj
+[27/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\ic_screen.cpp.obj
+[28/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\cpcv.cpp.obj
+[29/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\cpcv_date.cpp.obj
+[30/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\constraints.cpp.obj
+[31/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\pool_view.cpp.obj
+[32/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\research_driver.cpp.obj
+[33/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\vol_regime.cpp.obj
+[34/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\search_driver.cpp.obj
+[35/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\cov_container.cpp.obj
+[36/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\cross_section_ic.cpp.obj
+[37/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\pbo.cpp.obj
+[38/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\cov_ewma.cpp.obj
+[39/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\perf_metrics.cpp.obj
+[40/325] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\robustness_battery.cpp.obj

@@ -1,0 +1,43 @@
+2026-10-08T19:53:09 run mvtarget
+exe C:\atx-wt\pool-31\build-equity\bin\atx-engine-book-tests.exe
+receipt mega-p9-covmv-i-receipt.json Source 19e967d095bb9a6058952dad8b85aae2cbbb5f34 DirtyEntries 0 ExitCode 0
+sha256 before a7b568a86e372ef9521b35c39f0dbd890de839a0db8aa3b73a98a8982428231f receipt a7b568a86e372ef9521b35c39f0dbd890de839a0db8aa3b73a98a8982428231f equal=True
+filter MvTarget.*
+sha256 after a7b568a86e372ef9521b35c39f0dbd890de839a0db8aa3b73a98a8982428231f equal=True
+
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = MvTarget.*
+[==========] Running 12 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 12 tests from MvTarget
+[ RUN      ] MvTarget.ThreeNamesDiagonalClosedForm
+[       OK ] MvTarget.ThreeNamesDiagonalClosedForm (0 ms)
+[ RUN      ] MvTarget.EqualsDenseInverseOnSmallN
+[       OK ] MvTarget.EqualsDenseInverseOnSmallN (1 ms)
+[ RUN      ] MvTarget.RankDeficientFEqualsDenseSolve
+[       OK ] MvTarget.RankDeficientFEqualsDenseSolve (2 ms)
+[ RUN      ] MvTarget.GrossNormalised
+[       OK ] MvTarget.GrossNormalised (0 ms)
+[ RUN      ] MvTarget.PositiveScalarWashesOut
+[       OK ] MvTarget.PositiveScalarWashesOut (1 ms)
+[ RUN      ] MvTarget.NanAlphaIsNoOpinion
+[       OK ] MvTarget.NanAlphaIsNoOpinion (1 ms)
+[ RUN      ] MvTarget.DollarNeutralOnThePricedSet
+[       OK ] MvTarget.DollarNeutralOnThePricedSet (0 ms)
+[ RUN      ] MvTarget.WorkingBytesBound
+[       OK ] MvTarget.WorkingBytesBound (0 ms)
+[ RUN      ] MvTarget.RefusalsAndUnavailable
+[       OK ] MvTarget.RefusalsAndUnavailable (1 ms)
+[ RUN      ] MvTarget.FactorExposureIsXTransposeW
+[       OK ] MvTarget.FactorExposureIsXTransposeW (0 ms)
+[ RUN      ] MvTarget.LowEigenShare
+[       OK ] MvTarget.LowEigenShare (0 ms)
+[ RUN      ] MvTarget.FactorEigenOnKeptStorageIsAFreshSolve
+[       OK ] MvTarget.FactorEigenOnKeptStorageIsAFreshSolve (135 ms)
+[----------] 12 tests from MvTarget (146 ms total)
+
+[----------] Global test environment tear-down
+[==========] 12 tests from 1 test suite ran. (146 ms total)
+[  PASSED  ] 12 tests.
+
+exit=0

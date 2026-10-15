@@ -1,0 +1,8 @@
+ee69e2fb06db6702 *atx-impl-strategy-target-tests.exe
+6977a5a75b386d28 *atx-engine-book-tests.exe
+e6b21410987a8946 *atx-equity-strategy-targets.exe
+fbb5b3928ebb994e *atx-equity-strategy-ic.exe
+6962966c4b9d4199 *atx-research-eval.exe
+5e81e9c2d965de28 *atx-research-composition.exe
+411af33a0def5a6c *atx-research-admission.exe
+d8a500d84dc2a251 *atx-research-store.exe

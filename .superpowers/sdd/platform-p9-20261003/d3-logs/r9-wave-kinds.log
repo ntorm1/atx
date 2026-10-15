@@ -1,0 +1,8 @@
+== r9 wave-kinds  HEAD 3834bc0c  PYTHONHASHSEED=0  ATX_EQUITY_BIN=unset  start 2026-10-07T21:58:13Z
+........................................................................ [ 37%]
+........................................................................ [ 74%]
+......................................s..........                        [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] scripts\tests\test_wave_kinds.py:1408: ATX_EQUITY_BIN does not name a bin dir with both exes
+192 passed, 1 skipped in 210.31s (0:03:30)
+exit 0  end 2026-10-07T22:01:46Z

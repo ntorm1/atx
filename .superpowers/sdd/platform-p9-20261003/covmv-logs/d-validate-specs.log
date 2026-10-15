@@ -1,0 +1,12 @@
+template CR bytes: 0
+template sha256: 83391f2c526b28008d48e250f0e7d26e7c3f8661786d43a8f3d76439f664d870
+registration sha256: 4b4af6e238b529d5d7eabccd2699022dc653da52fa45801eb3f61896bd6680b4
+rule_cell.template_sha256 equals the file: True
+rule_cell_problems: []
+registration_problems: []
+K-P9-11 keys equal the registration's: True
+gross_match accepted: pm6-6-engine True
+load_spec: p9-mv-aim | nav.output build-equity/mega-nav-p9-mv-aim | monitor.output build-equity/mega-monitor-p9-mv-aim
+no rules / change.flags in the template: True
+rule_flags problems: []
+derived flags: {"nav": {"--risk-model": "build-equity/p9-m2i-dcov-covv1", "--risk-model-sha256": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3", "--target-rule": "mv-aim-v1"}}

@@ -2,6 +2,7 @@
 // P9 C3 (task 1, move-only): moved unchanged from strategy_nav_replay.cpp.
 
 #include "book/nav_replay_internal.hpp"
+#include "atx/engine/book/two_speed.hpp" // P9 AL-CLOCK: two_speed_slow_theta
 
 namespace atx::impl::strategy {
 using namespace nav_book;
@@ -83,6 +84,28 @@ constexpr const char* per_name_rate_tail =
     "applied_fraction = the members' mean rate; monthly_budget unused; "
     "construction.v5.rate_stats: one sample per member per decision, quantiles exact at the "
     "clip bounds, else the upper edge of a 4096-bin histogram of [rate_min, rate_max]";
+// P9 AL-CLOCK: the info-clock aim_partial text is per_name_rate_head + the exit clause + this.
+constexpr const char* info_clock_rate_tail =
+    "; rate info-clock-rate-v1 (P9 AL-CLOCK, lit [28][29]): theta_i = rate_theta_fast = 1 - "
+    "2^(-cadence/5) (two-speed-v1's fast rate at the cadence, Ruling W3-16) for a member whose "
+    "clock rate_field (ea_days_since: sessions since the reaction session of its latest visible "
+    "primary earnings announcement, row d of the pinned role fields, financing_fields."
+    "fields_used) lies in [0, rate_window_sessions], else theta_i = rate_theta_slow = "
+    "trade_fraction (.05, two-speed-v1's slow rate; a NaN clock, no fresh announcement, is "
+    "slow); one rate vector per decision for every book (book-independent); applied_fraction "
+    "= the members' mean rate; monthly_budget unused";
+// P9 AL-CLOCK (Ruling ALCLOCK-1): the meaning of summary.json's info_clock block.
+constexpr const char* info_clock_declaration =
+    "P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored "
+    "effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): "
+    "name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned "
+    "role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, "
+    "window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / "
+    "name_days; planned_turnover = sum of |planned - current| weights over the name-days "
+    "(planned: the book's plan after DECIDE, locate block included; current: its weight "
+    "entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = "
+    "fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) "
+    "and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence";
 constexpr const char* order_basis_declaration =
     "delta (v6 prereg C1): at DECIDE a name whose plan changes to a NONZERO weight gets a delta "
     "order: decision-NAV dollars (planned - current) x NAVpost = planned x NAVpost - held_d; "
@@ -224,6 +247,17 @@ Json nav_recipe(const TargetReplayRunConfig& cfg, const NavReplayConfig& base,
     j["aim_partial"] = std::string(per_name_rate_head) +
                        detail::nonmember_exit_clause(cfg.target) + per_name_rate_tail;
   }
+  // P9 AL-CLOCK: rate info-clock-rate-v1 (aim-partial-v5 only) records its rule; its clock is in
+  // financing_fields.fields_used (load_fields).
+  if (base.rate == NavRateRule::InfoClockV1) {
+    j["rate"] = nav_info_clock_rate_id;
+    j["rate_theta_fast"] = nav_info_clock_fast_theta(cfg.target.cadence);
+    j["rate_theta_slow"] = cfg.target.trade_fraction;
+    j["rate_window_sessions"] = static_cast<usize>(nav_info_clock_window);
+    j["rate_field"] = nav_info_clock_field;
+    j["aim_partial"] = std::string(per_name_rate_head) +
+                       detail::nonmember_exit_clause(cfg.target) + info_clock_rate_tail;
+  }
   // v6 execution options: keys only when non-default, so the default recipe is the v5
   // recipe byte for byte. The liquidity cache changes no output and records nothing.
   if (base.order_basis == NavOrderBasis::Delta) {
@@ -251,6 +285,28 @@ Json rate_stats_json(const NavRateStats& s) {
       {"at_min_count", s.at_min_count}, {"at_max_count", s.at_max_count},
       {"share_at_min", finite_or_null(s.share_at_min)},
       {"share_at_max", finite_or_null(s.share_at_max)}};
+}
+Json info_clock_json(const NavReplayConfig& base, const NavInfoClockStats& s, const Json& field) {
+  const auto share = [](f64 part, f64 whole) {
+    return whole > 0 ? finite_or_null(part / whole) : Json(nullptr);
+  };
+  const char* rate = base.rate == NavRateRule::InfoClockV1 ? nav_info_clock_rate_id
+                     : base.rate == NavRateRule::PerNameV1 ? "per-name-v1"
+                                                           : "fixed";
+  return Json{{"rate", rate},
+              {"field", field},
+              {"window_sessions", static_cast<usize>(nav_info_clock_window)},
+              {"theta_fast", nav_info_clock_fast_theta(base.target.cadence)},
+              {"theta_slow", bk::two_speed_slow_theta},
+              {"name_days", s.name_days},
+              {"fast_name_days", s.fast_name_days},
+              {"missing_name_days", s.missing_name_days},
+              {"fast_share", share(static_cast<f64>(s.fast_name_days),
+                                   static_cast<f64>(s.name_days))},
+              {"planned_turnover", s.planned_turnover},
+              {"fast_planned_turnover", s.fast_planned_turnover},
+              {"turnover_share", share(s.fast_planned_turnover, s.planned_turnover)},
+              {"definition", info_clock_declaration}};
 }
 } // namespace nav_book
 namespace {

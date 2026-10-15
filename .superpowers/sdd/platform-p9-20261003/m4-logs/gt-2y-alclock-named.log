@@ -1,0 +1,81 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = InfoClock*:NavSpec.*:NavRules.*:TradeRateRegistry.*:NavAnnMeanGross.*:CostLawRegistry.*:TargetRegistry.*
+[==========] Running 25 tests from 8 test suites.
+[----------] Global test environment set-up.
+[----------] 5 tests from NavSpec
+[ RUN      ] NavSpec.FlagsAndSpecSameConfig
+[       OK ] NavSpec.FlagsAndSpecSameConfig (62 ms)
+[ RUN      ] NavSpec.RefusesWhatItCannotType
+[       OK ] NavSpec.RefusesWhatItCannotType (3 ms)
+[ RUN      ] NavSpec.RefusesADuplicateKey
+[       OK ] NavSpec.RefusesADuplicateKey (52 ms)
+[ RUN      ] NavSpec.GridFileRefusesADuplicateKey
+[       OK ] NavSpec.GridFileRefusesADuplicateKey (444 ms)
+[ RUN      ] NavSpec.SpecRunPublishesTheFlagRunBytes
+[       OK ] NavSpec.SpecRunPublishesTheFlagRunBytes (2718 ms)
+[----------] 5 tests from NavSpec (3294 ms total)
+
+[----------] 2 tests from NavRules
+[ RUN      ] NavRules.OneTableEveryKindInOrder
+[       OK ] NavRules.OneTableEveryKindInOrder (14 ms)
+[ RUN      ] NavRules.LegacyAliasesOnTheirRowsOnly
+[       OK ] NavRules.LegacyAliasesOnTheirRowsOnly (11 ms)
+[----------] 2 tests from NavRules (25 ms total)
+
+[----------] 2 tests from CostLawRegistry
+[ RUN      ] CostLawRegistry.RowsAreTheReplaysLawsAndOneNameableSet
+[       OK ] CostLawRegistry.RowsAreTheReplaysLawsAndOneNameableSet (0 ms)
+[ RUN      ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte
+[       OK ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte (792 ms)
+[----------] 2 tests from CostLawRegistry (793 ms total)
+
+[----------] 1 test from TradeRateRegistry
+[ RUN      ] TradeRateRegistry.RowsCarryTheParsersFlagsAndDefaults
+[       OK ] TradeRateRegistry.RowsCarryTheParsersFlagsAndDefaults (1 ms)
+[----------] 1 test from TradeRateRegistry (1 ms total)
+
+[----------] 1 test from TargetRegistry
+[ RUN      ] TargetRegistry.UnregisteredIdIsRefusedBeforeOutput
+[       OK ] TargetRegistry.UnregisteredIdIsRefusedBeforeOutput (67 ms)
+[----------] 1 test from TargetRegistry (67 ms total)
+
+[----------] 1 test from NavAnnMeanGross
+[ RUN      ] NavAnnMeanGross.PrintOnlyOptInAddsOneSummaryKey
+[       OK ] NavAnnMeanGross.PrintOnlyOptInAddsOneSummaryKey (3159 ms)
+[----------] 1 test from NavAnnMeanGross (3159 ms total)
+
+[----------] 9 tests from InfoClockRate
+[ RUN      ] InfoClockRate.KernelAtTheWindowBoundary
+[       OK ] InfoClockRate.KernelAtTheWindowBoundary (1 ms)
+[ RUN      ] InfoClockRate.ConfigAndInputRefusals
+[       OK ] InfoClockRate.ConfigAndInputRefusals (3 ms)
+[ RUN      ] InfoClockRate.StepChangeClosedForm
+[       OK ] InfoClockRate.StepChangeClosedForm (1877 ms)
+[ RUN      ] InfoClockRate.EventClockIsCausal
+[       OK ] InfoClockRate.EventClockIsCausal (942 ms)
+[ RUN      ] InfoClockRate.CommandLineRefusalsWriteNothing
+[       OK ] InfoClockRate.CommandLineRefusalsWriteNothing (844 ms)
+[ RUN      ] InfoClockRate.CapacityCurveAcceptsThisRateOnly
+[       OK ] InfoClockRate.CapacityCurveAcceptsThisRateOnly (770 ms)
+[ RUN      ] InfoClockRate.BookWorkersOneAndFourSameBytes
+[       OK ] InfoClockRate.BookWorkersOneAndFourSameBytes (2072 ms)
+[ RUN      ] InfoClockRate.RegistryRowAndParser
+[       OK ] InfoClockRate.RegistryRowAndParser (9 ms)
+[ RUN      ] InfoClockRate.WorkspaceReserveOneRatePerName
+[       OK ] InfoClockRate.WorkspaceReserveOneRatePerName (0 ms)
+[----------] 9 tests from InfoClockRate (6522 ms total)
+
+[----------] 4 tests from InfoClockPrint
+[ RUN      ] InfoClockPrint.FlagAbsentLoadsNoClock
+[       OK ] InfoClockPrint.FlagAbsentLoadsNoClock (2690 ms)
+[ RUN      ] InfoClockPrint.PrintOnlyOptInAddsOneBlockPerScenario
+[       OK ] InfoClockPrint.PrintOnlyOptInAddsOneBlockPerScenario (3387 ms)
+[ RUN      ] InfoClockPrint.RuleOnWithoutFlagPrintsNoBlock
+[       OK ] InfoClockPrint.RuleOnWithoutFlagPrintsNoBlock (734 ms)
+[ RUN      ] InfoClockPrint.SpecEqualsArgv
+[       OK ] InfoClockPrint.SpecEqualsArgv (2863 ms)
+[----------] 4 tests from InfoClockPrint (9676 ms total)
+
+[----------] Global test environment tear-down
+[==========] 25 tests from 8 test suites ran. (23543 ms total)
+[  PASSED  ] 25 tests.

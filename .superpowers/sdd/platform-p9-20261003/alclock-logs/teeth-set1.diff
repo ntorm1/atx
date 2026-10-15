@@ -1,0 +1,108 @@
+diff --git a/atx-impl/src/book/nav_cli.cpp b/atx-impl/src/book/nav_cli.cpp
+index a3b525a3..2c47ab81 100644
+--- a/atx-impl/src/book/nav_cli.cpp
++++ b/atx-impl/src/book/nav_cli.cpp
+@@ -49,7 +49,7 @@ int dispatch_nav_replay(int argc, char** argv, std::ostream& out, std::ostream&
+       }
+       // P9 AL-CLOCK (Ruling ALCLOCK-1): --info-clock-print, print-only, not a rule flag.
+       if (key == "--info-clock-print") {
+-        if (!seen.insert(key).second) throw std::invalid_argument("duplicate/missing flag");
++        seen.insert(key);
+         emit.info_clock_print = true;
+         continue;
+       }
+diff --git a/atx-impl/src/book/nav_decide.cpp b/atx-impl/src/book/nav_decide.cpp
+index 60125b3b..ec690402 100644
+--- a/atx-impl/src/book/nav_decide.cpp
++++ b/atx-impl/src/book/nav_decide.cpp
+@@ -19,12 +19,12 @@ co::Status nav_info_clock_rates(std::span<const u8> member, std::span<const f64>
+   if (days_since.size() != n || rates.size() != n)
+     return co::Err(co::ErrorCode::InvalidArgument,
+                    "info-clock-rate-v1: one member flag, clock and rate per name");
+-  if (cadence < 1 || !std::isfinite(theta_slow) || !(theta_slow > 0.0) || theta_slow > 1.0)
++  if (false && (cadence < 1 || !std::isfinite(theta_slow) || !(theta_slow > 0.0) || theta_slow > 1.0))
+     return co::Err(co::ErrorCode::InvalidArgument,
+                    "info-clock-rate-v1: cadence >= 1 and the slow rate in (0, 1]");
+   for (usize i = 0; i < n; ++i) {
+     const f64 v = days_since[i];
+-    if (member[i] > u8{1} || !(std::isnan(v) || (std::isfinite(v) && v >= 0.0)))
++    if (false && (member[i] > u8{1} || !(std::isnan(v) || (std::isfinite(v) && v >= 0.0))))
+       return co::Err(co::ErrorCode::InvalidArgument,
+                      "info-clock-rate-v1: member flags 0/1 and every ea_days_since NaN or finite "
+                      ">= 0 (a negative or infinite clock is outside the field's domain)");
+diff --git a/atx-impl/src/book/nav_load.cpp b/atx-impl/src/book/nav_load.cpp
+index a238299e..845e4666 100644
+--- a/atx-impl/src/book/nav_load.cpp
++++ b/atx-impl/src/book/nav_load.cpp
+@@ -203,10 +203,10 @@ co::Result<AdmittedRun> admit_and_load(const TargetReplayRunConfig& cfg,
+   const bool tiered = !fields.manifest_path.empty();
+   const bool labelled = !label.manifest_path.empty();
+   // P9 AL-CLOCK: the rule's clock is an input of the run (fields_used); the print's is not.
+-  const ClockLoad clock = base.rate == NavRateRule::InfoClockV1 ? ClockLoad::Rule
++  const ClockLoad clock = !fields.manifest_path.empty()           ? ClockLoad::Rule
+                           : info_clock_print                    ? ClockLoad::PrintOnly
+                                                                 : ClockLoad::None;
+-  if (clock != ClockLoad::None && !tiered)
++  if (false && clock != ClockLoad::None && !tiered)
+     return co::Err(co::ErrorCode::InvalidArgument,
+                    "nav replay: --rate info-clock-rate-v1 and --info-clock-print need --fields "
+                    "(the role fields manifest holding ea_days_since)");
+diff --git a/atx-impl/src/book/nav_lockstep.cpp b/atx-impl/src/book/nav_lockstep.cpp
+index 9145b337..65e449a4 100644
+--- a/atx-impl/src/book/nav_lockstep.cpp
++++ b/atx-impl/src/book/nav_lockstep.cpp
+@@ -200,7 +200,7 @@ co::Result<std::vector<std::vector<NavReplayResult>>> replay_books(
+                        "cadence");
+   // P9 AL-CLOCK: info-clock-rate-v1's fast rate reads the cadence (1 - 2^(-C/5)) and run_books
+   // forms one rate vector per decision for every book, so its variants share the cadence too.
+-  if (base.rate == NavRateRule::InfoClockV1)
++  if (false && base.rate == NavRateRule::InfoClockV1)
+     for (const auto& variant : variants)
+       if (variant.target.cadence != base.target.cadence)
+         return co::Err(co::ErrorCode::InvalidArgument,
+diff --git a/atx-impl/src/book/nav_validate.cpp b/atx-impl/src/book/nav_validate.cpp
+index 68574f0d..9847c503 100644
+--- a/atx-impl/src/book/nav_validate.cpp
++++ b/atx-impl/src/book/nav_validate.cpp
+@@ -81,7 +81,7 @@ co::Status validate_nav_config(const NavReplayConfig& cfg) {
+   // P9 AL-CLOCK, info-clock-rate-v1: aim-partial-v5's move at two-speed-v1's two rates, whose
+   // slow one is the parent's theta (two_speed_slow_theta, the trade fraction); no per-name-v1
+   // parameter.
+-  if (cfg.rate == NavRateRule::InfoClockV1 &&
++  if (false && cfg.rate == NavRateRule::InfoClockV1 &&
+       (cfg.target.rule != TargetReplayRule::AimPartialV5 ||
+        cfg.target.trade_fraction != bk::two_speed_slow_theta || !rate_defaults))
+     return co::Err(co::ErrorCode::InvalidArgument,
+@@ -180,15 +180,15 @@ co::Status validate_nav_input(const NavReplayInput& in, const NavReplayConfig& c
+   // P9 AL-CLOCK: the info clock (ea_days_since) at the input's geometry, every cell in the
+   // field's domain (NaN or finite >= 0); rate info-clock-rate-v1 reads it.
+   const auto& clock = in.info_clock;
+-  if (!clock.empty() && clock.size() != cells)
++  if (false && !clock.empty() && clock.size() != cells)
+     return co::Err(co::ErrorCode::InvalidArgument,
+                    "nav replay: info clock (ea_days_since) geometry");
+-  if (cfg.rate == NavRateRule::InfoClockV1 && clock.empty())
++  if (false && cfg.rate == NavRateRule::InfoClockV1 && clock.empty())
+     return co::Err(co::ErrorCode::InvalidArgument,
+                    "nav replay: rate info-clock-rate-v1 needs the info clock ea_days_since "
+                    "(--fields)");
+   for (usize k = 0; k < clock.size(); ++k)
+-    if (!(std::isnan(clock[k]) || (std::isfinite(clock[k]) && clock[k] >= 0)))
++    if (false && !(std::isnan(clock[k]) || (std::isfinite(clock[k]) && clock[k] >= 0)))
+       return co::Err(co::ErrorCode::InvalidArgument,
+                      "nav replay: ea_days_since outside its domain (NaN or finite >= 0) at row " +
+                          std::to_string(k / x.instruments) + ", name " +
+diff --git a/atx-impl/src/strategy_nav_v7.cpp b/atx-impl/src/strategy_nav_v7.cpp
+index 7ebdabfd..7ee01eb4 100644
+--- a/atx-impl/src/strategy_nav_v7.cpp
++++ b/atx-impl/src/strategy_nav_v7.cpp
+@@ -1339,8 +1339,7 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
+     if (!output || output->empty()) throw std::invalid_argument("--output is required");
+     // P9 AL-CLOCK: info-clock-rate-v1 reads no NAV (each rate is the member's clock at the
+     // decision), so the capacity books run it as the main books do; aim-partial-v6 still refuses.
+-    if ((o.aim_v6 || o.capacity) && rate && *rate != "fixed" &&
+-        (o.aim_v6 || *rate != nav_info_clock_rate_id))
++    if ((o.aim_v6 || o.capacity) && rate && *rate != "fixed")
+       throw std::invalid_argument("aim-partial-v6 and --capacity-curve need the fixed rate "
+                                   "(per-name-v1 reads the NAV)");
+     if (o.aim_v6) {

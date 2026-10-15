@@ -1,0 +1,12 @@
+c3b-wave8 seed 0 head b182dfdd code-dirty [] exit 0 wall 245s start 2026-10-08T23:22:59Z env1-hits 0 :: 104 passed in 244.30s (0:04:04)
+c3b-kinds-evalverb seed 0 head b182dfdd code-dirty [] exit 0 wall 140s start 2026-10-08T23:27:13Z env1-hits 0 :: 118 passed in 137.86s (0:02:17)
+c3b-classes-guard seed 0 head b182dfdd code-dirty [] exit 0 wall 5s start 2026-10-08T23:30:59Z env1-hits 0 :: 5 passed, 96 subtests passed in 2.22s
+d3w-fitter4 seed 0 head 08f04e07 code-dirty [] exit 0 wall 102s start 2026-10-08T23:59:28Z env1-hits 0 :: 155 passed, 1 skipped, 43 subtests passed in 99.22s (0:01:39)
+d3w-research-spec seed 0 head 08f04e07 code-dirty [] exit 0 wall 462s start 2026-10-09T00:01:20Z env1-hits 0 :: 87 passed in 460.18s (0:07:40)
+d3w-walkfwd-enginefit-exes seed 0 head 08f04e07 code-dirty [] exit 0 wall 65s start 2026-10-09T00:20:27Z env1-hits 0 :: 47 passed, 69 subtests passed in 63.12s (0:01:03)
+d3w-classes-guard seed 0 head 08f04e07 code-dirty [] exit 0 wall 4s start 2026-10-09T00:21:54Z env1-hits 0 :: 5 passed, 96 subtests passed in 2.01s
+abs-classes-guard-before seed 0 head 898bf120 code-dirty [] exit 1 wall 7s start 2026-10-09T00:22:35Z env1-hits 0 :: 1 failed, 4 passed, 96 subtests passed in 1.24s
+abs-classes-guard-after seed 0 head 898bf120 code-dirty [ M atx-engine/schemas/research_store/classes.json ] exit 0 wall 4s start 2026-10-09T00:33:13Z env1-hits 0 :: 5 passed, 97 subtests passed in 1.72s
+abs-store-suite seed 0 head 898bf120 code-dirty [ M atx-engine/schemas/research_store/classes.json ] exit 0 wall 6s start 2026-10-09T00:33:42Z env1-hits 0 :: 43 passed, 136 subtests passed in 3.64s
+abs-store-suite seed 1 head 898bf120 code-dirty [ M atx-engine/schemas/research_store/classes.json ] exit 0 wall 5s start 2026-10-09T00:33:48Z env1-hits 0 :: 43 passed, 136 subtests passed in 3.58s
+abs-fixture-readers seed 0 head 094bcd3b code-dirty [] exit 0 wall 144s start 2026-10-09T00:40:44Z env1-hits 0 :: 138 passed in 142.13s (0:02:22)
