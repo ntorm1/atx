@@ -33,18 +33,16 @@ Registration (lane ORTH, task-R-11-report.md; every constant fixed blind, declar
 Split of work. The fitter (``fit_composition_weights.py --theme-resid theme-resid-v1``) fits the parent's composition
 unchanged and attaches ``theme_residualise`` {rule, order} and ``provenance.resid`` (``attach``). The IC runner
 (atx-impl/src/strategy_ic_theme_resid.cpp, IcThemeRule::residualise; least squares by modified Gram-Schmidt with one
-re-orthogonalisation pass, atx/engine/combine/group_residualise.hpp) applies rules 2-5 per session. ``blend`` below is
-the independent numpy reference of the runner's rule (least squares by ``numpy.linalg.lstsq``) and ``kernel`` its
-plane-level form (the arguments of add_theme_residualised), the Python side of the "Python equals C++" check
-(strategy_ic_theme_resid_test.cpp pins the same fixture values). No TRAIN statistic, window or read is added: the
+re-orthogonalisation pass, atx/engine/combine/group_residualise.hpp) applies rules 2-5 per session; the C++ is the rule's
+only producer (P9 lane D3W-PB, ruling D2-3: the independent numpy reference of the runner's rule, ``blend`` and its
+plane-level form ``kernel``, moved to test_composition_resid.py, where both sides meet the same exact values). No TRAIN
+statistic, window or read is added: the
 fitter's inputs are the parent's.
 """
 from __future__ import annotations
 
 import argparse
 import json
-
-import numpy as np
 
 import composition_engine_fit  # this directory: compare_values, ruling P12's comparison (ruling D2-R2)
 import composition_rules  # this directory: module_fingerprint (ruling D2-2)
@@ -296,129 +294,3 @@ def apply(args, document: dict, summary: dict, registered, error: type[Exception
             document["provenance"]["resid"]["parent_check_engine_fit"] = PARENT_CHECK_ENGINE_FIT
         summary["theme_residualise_parent_sha256"] = parent["sha256"]
     summary[BLOCK] = dict(document[BLOCK])
-
-
-# ---------------------------------------------------------------- reference of the runner's rule (numpy)
-def centred_tied_ranks(values: np.ndarray, keep: np.ndarray) -> np.ndarray:
-    """Centred tied rank of each kept value among the kept ones, (less + (less + equal - 1)) / (2 (n - 1)) - .5; NaN
-    elsewhere and everywhere when fewer than two are kept."""
-    out = np.full(values.shape, np.nan)
-    idx = np.flatnonzero(keep)
-    n = len(idx)
-    if n < 2:
-        return out
-    v = values[idx]
-    for a, i in enumerate(idx):
-        less, equal = int(np.sum(v < v[a])), int(np.sum(v == v[a]))
-        out[i] = (less + (less + equal - 1)) / (2.0 * (n - 1)) - 0.5
-    return out
-
-
-def residual(y: np.ndarray, x: np.ndarray, tolerance: float = SPAN_TOLERANCE) -> tuple[np.ndarray, bool]:
-    """Least-squares residual of y on [1, x] (x: n x m) by numpy.linalg.lstsq; exactly 0 (spanned) within tolerance."""
-    design = np.column_stack([np.ones(len(y))] + ([x] if x.size else []))
-    beta = np.linalg.lstsq(design, y, rcond=None)[0]
-    e = y - design @ beta
-    centred = float(np.linalg.norm(y - y.mean()))
-    if not centred > 0 or float(np.linalg.norm(e)) <= tolerance * centred:
-        return np.zeros(len(y)), True
-    return e, False
-
-
-def tie_block_means(e: np.ndarray, z: np.ndarray) -> np.ndarray:
-    """Rule 4's tie step (Ruling PM4-12): ``e`` with each run of exactly equal ``z`` (a tie block; the names sorted by
-    (z, position), so a block lists its names in ascending order) of two or more names replaced by the block mean,
-    summed from the block's first name in ascending name order and divided by the block size (the C++ expression and
-    order, strategy_ic_theme_resid.cpp mean_over_tie_blocks). A block of one name is untouched."""
-    out = np.array(e, dtype=np.float64)
-    order = sorted(range(len(z)), key=lambda k: (float(z[k]), k))
-    b = 0
-    while b < len(order):
-        end = b + 1
-        while end < len(order) and z[order[end]] == z[order[b]]:
-            end += 1
-        if end - b > 1:
-            total = float(e[order[b]])
-            for k in order[b + 1:end]:
-                total += float(e[k])
-            mean = total / float(end - b)
-            for k in order[b:end]:
-                out[k] = mean
-        b = end
-    return out
-
-
-def standardise(total: np.ndarray, present: np.ndarray) -> np.ndarray:
-    """Rule 2 on one session (themes x names): the centred tied rank of each theme's sum over its present names; a lone
-    present name 0; NaN where the theme has no present member."""
-    z = np.full(total.shape, np.nan)
-    for t in range(total.shape[0]):
-        if present[t].sum() == 1:
-            z[t, present[t]] = 0.0
-        elif present[t].sum() >= 2:
-            z[t] = centred_tied_ranks(total[t], present[t])
-    return z
-
-
-def add_session(z: np.ndarray, mass, out: np.ndarray) -> None:
-    """Rules 3-5 on one session's standardised composites ``z`` (themes x names, registered order, NaN = absent): adds
-    W_t x the theme's term to ``out`` (names) at the names where theme t is present (two or more of them)."""
-    names = z.shape[1]
-    for t in range(z.shape[0]):
-        names_t = np.flatnonzero(~np.isnan(z[t]))
-        if len(names_t) < 2:
-            continue
-        if t == 0:
-            out[names_t] += mass[0] * z[0, names_t]
-            continue
-        x = np.nan_to_num(z[:t][:, names_t], nan=0.0).T
-        e, spanned = residual(z[t, names_t], x)
-        if spanned:
-            continue
-        e = tie_block_means(e, z[t, names_t])
-        full = np.zeros(names)
-        full[names_t] = e
-        keep = np.zeros(names, dtype=bool)
-        keep[names_t] = True
-        rr = centred_tied_ranks(full, keep)
-        out[names_t] += mass[t] * rr[names_t]
-
-
-def kernel(planes, mass, names: int) -> np.ndarray:
-    """The numpy reference of strategy_ic_theme_resid.cpp add_theme_residualised: ``planes`` one dates x names row-major
-    plane per theme (registered order) of the raw sums (NaN = no member present), ``mass`` W per theme; returns what the
-    kernel adds to a zero ``out`` (dates * names)."""
-    planes = np.asarray(planes, dtype=np.float64)
-    dates = planes.shape[1] // names
-    out = np.zeros(dates * names)
-    for d in range(dates):
-        total = planes[:, d * names:(d + 1) * names]
-        add_session(standardise(np.nan_to_num(total, nan=0.0), ~np.isnan(total)), mass,
-                    out[d * names:(d + 1) * names])
-    return out
-
-
-def blend(member: np.ndarray, signals: list[np.ndarray], weights: list[float], signs: list[int], position: list[int],
-          themes: int) -> np.ndarray:
-    """theme-resid-v1 blend (dates x names): ``position[k]`` is member k's theme position in the registered order;
-    W_t sums the theme's positive weights; members with weight 0 or sign 0 add no rank; nonmember cells NaN, as the IC
-    composition writes them."""
-    dates, names = member.shape
-    out = np.where(member == 1, 0.0, np.nan)
-    mass = np.zeros(themes)
-    for k, w in enumerate(weights):
-        if w > 0:
-            mass[position[k]] += w
-    for d in range(dates):
-        total = np.zeros((themes, names))
-        present = np.zeros((themes, names), dtype=bool)
-        for k, sig in enumerate(signals):
-            if not (weights[k] > 0) or signs[k] == 0:
-                continue
-            row = sig[d]
-            r = centred_tied_ranks(row, (member[d] == 1) & np.isfinite(row))
-            ok = ~np.isnan(r)
-            total[position[k], ok] += signs[k] * weights[k] * r[ok]
-            present[position[k], ok] = True
-        add_session(standardise(total, present), mass, out[d])
-    return out
