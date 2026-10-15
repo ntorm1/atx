@@ -37,6 +37,8 @@ struct Arguments {
   std::string curve{"essvi"};
   std::string dividends{"aggregate-pv"};
   std::size_t max_rows{2000000U};
+  QuoteSliceQualityConfig quality;
+  std::size_t min_quotes{6};
 };
 
 template <class T> T number(std::string_view value, std::string_view column) {
@@ -74,7 +76,9 @@ Arguments arguments(int argc, char **argv) {
     if (key == "--help") {
       std::cout << "atx-vol-quote-bench --input quotes.csv --output predictions.csv "
                    "[--report timing.json] [--curve essvi|svi|convex-dense|spline-vol] "
-                   "[--dividends aggregate-pv|none] [--max-rows 2000000]\n";
+                   "[--dividends aggregate-pv|none] [--max-rows 2000000] "
+                   "[--min-quotes 6] [--max-spread-to-mid 0.6] [--max-spread-vol 0.05] "
+                   "[--max-weight 1000]\n";
       return args;
     }
     if (i + 1 == argc) throw std::runtime_error("Missing value for " + std::string(key));
@@ -85,6 +89,10 @@ Arguments arguments(int argc, char **argv) {
     else if (key == "--curve") args.curve = value;
     else if (key == "--dividends") args.dividends = value;
     else if (key == "--max-rows") args.max_rows = number<std::size_t>(value, key);
+    else if (key == "--min-quotes") args.min_quotes = number<std::size_t>(value, key);
+    else if (key == "--max-spread-to-mid") args.quality.max_spread_to_mid = real(value, key);
+    else if (key == "--max-spread-vol") args.quality.max_spread_vol = real(value, key);
+    else if (key == "--max-weight") args.quality.max_weight = real(value, key);
     else throw std::runtime_error("Unknown argument: " + std::string(key));
   }
   if (args.input.empty() || args.output.empty() || args.max_rows == 0U) {
@@ -92,6 +100,12 @@ Arguments arguments(int argc, char **argv) {
   }
   if (args.dividends != "aggregate-pv" && args.dividends != "none") {
     throw std::runtime_error("--dividends must be aggregate-pv or none");
+  }
+  if (args.min_quotes < 2 || !std::isfinite(args.quality.max_weight) ||
+      args.quality.max_weight <= 0.0 ||
+      !std::isfinite(args.quality.max_spread_to_mid) || args.quality.max_spread_to_mid < 0.0 ||
+      !std::isfinite(args.quality.max_spread_vol) || args.quality.max_spread_vol < 0.0) {
+    throw std::runtime_error("Invalid quote quality configuration");
   }
   if (same_file(args.input, args.output)) {
     throw std::runtime_error("Input and output must differ");
@@ -158,7 +172,8 @@ Header read_header(std::istream &stream) {
   }
   for (const auto key : {"row_id", "chain_id", "strike", "is_call", "spot", "bid", "ask",
                          "years", "years_calendar", "rate", "sdiv", "ddiv_pv",
-                         "input_status", "exercise"}) {
+                         "input_status", "exercise", "underlier", "root", "expiry_days",
+                         "snapshot_ns"}) {
     if (!header.contains(key)) throw std::runtime_error("Missing column: " + std::string(key));
   }
   return header;
@@ -186,8 +201,20 @@ InputRow convert_row(const Header &header, const std::vector<std::string> &field
   for (std::size_t i = 0; i < identity_keys.size(); ++i) {
     if (header.contains(identity_keys[i])) row.identity[i] = get(identity_keys[i]);
   }
+  // Canonical numeric identity prevents alternate spellings (e.g. 01 and 1)
+  // from bypassing same-snapshot and duplicate-expiry admission.
+  if (!row.identity[2].empty()) {
+    row.identity[2] = std::to_string(number<std::int32_t>(row.identity[2], "expiry_days"));
+  }
+  if (!row.identity[3].empty()) {
+    row.identity[3] = std::to_string(number<std::int64_t>(row.identity[3], "snapshot_ns"));
+  }
   row.input_status = get("input_status");
   if (row.input_status != "ok") return row;
+  if (std::any_of(row.identity.begin(), row.identity.end(),
+                  [](const std::string &value) { return value.empty(); })) {
+    throw std::runtime_error("Eligible contract lacks calendar/underlier identity");
+  }
   // OCC numeric suffixes 1-9 identify adjusted, nonstandard deliverables.
   // The imported schema has no share ratio/cash basket: treating these as
   // ordinary contracts fabricates intrinsic value and exercise economics.
@@ -261,6 +288,9 @@ struct RunStatistics {
   double elapsed_seconds{};
   std::vector<double> chain_microseconds;
   std::map<std::string, std::size_t> fit_failures;
+  std::size_t calendar_pairs{};
+  std::size_t calendar_rejected_chains{};
+  std::size_t ambiguous_expiry_chains{};
 };
 
 // Contract-level underlying quotes can differ inside one recorded chain snapshot.
@@ -321,6 +351,8 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   const auto kind = parse_curve_kind(args.curve);
   if (!kind) throw std::runtime_error(kind.error().to_string());
   config.curve.kind = kind.value();
+  config.quality = args.quality;
+  config.min_quotes = args.min_quotes;
   config.dividend_model = args.dividends == "aggregate-pv"
       ? QuoteSliceDividendModel::AggregatePresentValue
       : QuoteSliceDividendModel::ContinuousYield;
@@ -333,6 +365,16 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     else chains[rows[i].chain].push_back(i);
   }
   stats.chains = chains.size();
+  struct PublishedSlice {
+    std::uint64_t chain;
+    double years;
+    std::string expiry;
+    AmericanPriceSlice prices;
+  };
+  // Same underlying, deliverable root and EXACT valuation snapshot. Calendar
+  // inequalities concern prices at the same strike, not total variance after
+  // independently chosen carry transformations.
+  std::map<std::array<std::string, 3>, std::vector<PublishedSlice>> surfaces;
   const auto start = Clock::now();
   for (const auto &[chain_id, indices] : chains) {
     static_cast<void>(chain_id);
@@ -351,7 +393,12 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
       ++stats.fit_failures[fit.error().to_string()];
       for (const auto i : indices) predictions[i].status = "invalid_market";
     } else {
-      if (fit->fit_status == QuoteSliceFitStatus::Success) ++stats.fitted;
+      if (fit->fit_status == QuoteSliceFitStatus::Success) {
+        ++stats.fitted;
+        const auto &identity = rows[indices.front()].identity;
+        surfaces[{identity[0], identity[1], identity[3]}].push_back(
+            {chain_id, market.calendar_years, identity[2], *fit->prices});
+      }
       else ++stats.fit_failures[fit->fit_error];
       stats.admitted += fit->diagnostics.quotes_admitted;
       for (std::size_t j = 0; j < indices.size(); ++j) {
@@ -373,6 +420,50 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     }
     stats.chain_microseconds.push_back(
         std::chrono::duration<double, std::micro>(Clock::now() - chain_start).count());
+  }
+  std::set<std::uint64_t> calendar_failures;
+  std::set<std::uint64_t> ambiguous_expiries;
+  for (auto &[identity, slices] : surfaces) {
+    static_cast<void>(identity);
+    std::sort(slices.begin(), slices.end(),
+              [](const auto &a, const auto &b) { return a.years < b.years; });
+    // Every pair matters when domains are nested differently; adjacent expiry
+    // checks alone can miss a crossing outside the intervening slice's domain.
+    for (std::size_t i = 0; i < slices.size(); ++i) {
+      for (std::size_t j = i + 1; j < slices.size(); ++j) {
+        ++stats.calendar_pairs;
+        if (slices[i].expiry == slices[j].expiry || slices[i].years == slices[j].years) {
+          calendar_failures.insert(slices[i].chain);
+          calendar_failures.insert(slices[j].chain);
+          ambiguous_expiries.insert(slices[i].chain);
+          ambiguous_expiries.insert(slices[j].chain);
+          continue; // Duplicate surfaces are ambiguous, even with identical marks.
+        }
+        const auto accepted = check_american_calendar(slices[i].prices, slices[j].prices);
+        if (!accepted) {
+          calendar_failures.insert(slices[i].chain);
+          calendar_failures.insert(slices[j].chain);
+        }
+      }
+    }
+  }
+  stats.ambiguous_expiry_chains = ambiguous_expiries.size();
+  stats.calendar_rejected_chains = calendar_failures.size() - ambiguous_expiries.size();
+  for (const auto chain : calendar_failures) {
+    --stats.fitted;
+    for (const auto index : chains.at(chain)) {
+      if (predictions[index].status == "ok") --stats.served;
+      predictions[index].price = kNaN;
+      predictions[index].vol = kNaN;
+      predictions[index].status = ambiguous_expiries.contains(chain)
+          ? "ambiguous_expiry" : "calendar_arbitrage";
+    }
+  }
+  if (stats.calendar_rejected_chains > 0U) {
+    stats.fit_failures["American calendar price crossing"] = stats.calendar_rejected_chains;
+  }
+  if (!ambiguous_expiries.empty()) {
+    stats.fit_failures["Ambiguous duplicate expiry"] = ambiguous_expiries.size();
   }
   stats.elapsed_seconds = std::chrono::duration<double>(Clock::now() - start).count();
   return predictions;
@@ -426,9 +517,18 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
          << ",\n  \"served_rows\": " << stats.served
          << ",\n  \"admitted_quotes\": " << stats.admitted
          << ",\n  \"cash_dividend_chains\": " << stats.dividend_chains
+         << ",\n  \"calendar_pairs_checked\": " << stats.calendar_pairs
+         << ",\n  \"calendar_rejected_chains\": " << stats.calendar_rejected_chains
+         << ",\n  \"ambiguous_expiry_chains\": " << stats.ambiguous_expiry_chains
          << ",\n  \"curve\": \"" << args.curve << '"'
          << ",\n  \"dividend_model\": \"" << args.dividends << '"'
+         << ",\n  \"min_quotes\": " << args.min_quotes
+         << ",\n  \"max_spread_to_mid\": " << args.quality.max_spread_to_mid
+         << ",\n  \"max_spread_vol\": " << args.quality.max_spread_vol
+         << ",\n  \"max_weight\": " << args.quality.max_weight
          << ",\n  \"chain_market_aggregation\": \"median\""
+         << ",\n  \"contract_carry\": \"per-strike supplied yield\""
+         << ",\n  \"serving_representation\": \"bounded convex American price interpolation\""
          << ",\n  \"maximum_spot_range_bps\": " << stats.max_spot_range_bps
          << ",\n  \"fit_and_reprice_seconds\": " << stats.elapsed_seconds
          << ",\n  \"served_rows_per_second\": "

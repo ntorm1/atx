@@ -27,11 +27,11 @@ set(ATX_VOL_GTEST_SKIP_REGEX "\\[  SKIPPED \\]")
 
 # This entry point is also consumable without the engine/backtest test graph.
 # Keep a focused executable so numerical and include checks stay inexpensive.
-add_executable(atx-vol-quote-slice-tests quote_slice_test.cpp)
+add_executable(atx-vol-quote-slice-tests quote_slice_test.cpp american_price_slice_test.cpp)
 target_link_libraries(atx-vol-quote-slice-tests
     PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
 add_test(NAME atx-vol-quote-slice
-    COMMAND atx-vol-quote-slice-tests --gtest_filter=QuoteSlice.*)
+    COMMAND atx-vol-quote-slice-tests --gtest_filter=QuoteSlice.*:AmericanPriceSlice.*)
 set_tests_properties(atx-vol-quote-slice PROPERTIES LABELS "atx_vol_fast")
 
 add_executable(atx-vol-tests
@@ -74,6 +74,7 @@ add_executable(atx-vol-tests
     cstar_calib_test.cpp
     dense_slice_test.cpp
     quote_slice_test.cpp
+    american_price_slice_test.cpp
     profile_test.cpp
     fit_policy_test.cpp
     curve_selector_test.cpp

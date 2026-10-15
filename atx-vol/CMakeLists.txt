@@ -86,6 +86,7 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/convex_recovery.cpp
     src/fitting/quote_feasibility.cpp
     src/fitting/quote_slice.cpp
+    src/fitting/american_price_slice.cpp
     src/fitting/calib.cpp
     src/fitting/prepared_fitting.cpp
     src/fitting/c8.cpp

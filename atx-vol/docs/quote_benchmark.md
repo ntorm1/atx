@@ -16,7 +16,7 @@ python atx-vol/tools/quote_benchmark.py prepare `
 
 python atx-vol/tools/quote_benchmark.py run `
   --dataset C:/atx-cache/quote-benchmark/20261014-dev `
-  --binary build-vol-release/bin/atx-vol-quote-bench.exe `
+  --binary build-vol-rel-avx2/bin/atx-vol-quote-bench.exe `
   --curve svi --output C:/atx-cache/quote-benchmark/predictions-svi.csv
 
 python atx-vol/tools/quote_benchmark.py score `
@@ -191,3 +191,43 @@ Numerical reference convergence, no-arbitrage behavior, discrete dividends,
 deterministic replay, tail latency and out-of-sample behavior require separate
 measurements. A comparison is valid only for its declared cohort, coverage,
 environment conventions, executable and hardware.
+
+## Mandatory final-price admission
+
+`fit_quote_slice` accepts a slice only after constructing an owned
+`AmericanPriceSlice`. Its canonical serving values are piecewise linear in
+American price on the finite input-strike domain. The constructor enforces
+intrinsic and upper bounds, decreasing calls, increasing puts, vertical-spread
+bounds, convexity, and conservative American call/put bounds. These constraints
+hold between knots because the representation preserves their affine
+inequalities. Checks use a fixed numerical tolerance, with no disable switch.
+This closes the gap between a butterfly-free European volatility curve and
+American prices evaluated with strike-dependent carry.
+
+Price-only lookup is allocation-free. A query requesting both price and IV
+between knots inverts the canonical price through the same American model;
+this costs more than price-only lookup. Outside-domain queries fail instead
+of extrapolating an unchecked wing. Piecewise-linear strike prices do not
+provide smooth strike second derivatives; smooth model Greeks and spot/time
+scenario dynamics require a separate consistent-model representation.
+
+The native runner also checks every expiry pair for a given underlying/root
+and exact snapshot. It checks both calls and puts on the union of their knots
+inside the overlapping strike domain, so crossings between the original
+quotes cannot escape detection. Both offending chains are refused before any
+prices are published. Calendar failures stay in the original coverage
+denominator. Underlying/root, expiry and exact snapshot identity are required.
+
+These are explicit static price constraints, not a claim that an arbitrary
+dividend/carry surface comes from one joint optimal-stopping model. General
+American model existence needs stronger conditions. For the non-dividend
+case, see [Cox and Hoeggerl's American/European consistency conditions](https://arxiv.org/pdf/1301.5467).
+The next model layer must use one positive transition system, common funding
+and carry dynamics, and dated dividend events across all strikes and expiries.
+The aggregate-PV route remains an approximation to exercise economics.
+
+Quote-quality thresholds (`--max-spread-to-mid`, `--max-spread-vol`,
+`--max-weight`, `--min-quotes`) may change which raw quotes influence the fit.
+They cannot disable final-price or calendar admission. A bidless quote is not
+a midpoint observation; its contract can still receive a price from an
+accepted fit. Coverage-changing settings must be compared on paired rows.

@@ -33,7 +33,7 @@ def make_quotes(path: Path) -> list[float]:
         writer.writerow([
             "row_id", "chain_id", "strike", "is_call", "spot", "bid", "ask",
             "years", "years_calendar", "rate", "sdiv", "ddiv_pv",
-            "input_status", "exercise",
+            "input_status", "exercise", "underlier", "root", "expiry_days", "snapshot_ns",
         ])
         for row, strike in enumerate(range(75, 126, 2)):
             sigma_t = 0.3 * math.sqrt(0.5)
@@ -43,7 +43,7 @@ def make_quotes(path: Path) -> list[float]:
             values.append(price)
             writer.writerow([
                 row, 17, strike, 1, 100, price - 0.001, price + 0.001,
-                0.5, 0.5, 0, 0, 0, "ok", "American",
+                0.5, 0.5, 0, 0, 0, "ok", "American", "AAA", "AAA", 21000, 1,
             ])
     return values
 
@@ -138,12 +138,73 @@ def test_native_rejects_mixed_expiry_chain(binary, tmp_path):
 def test_native_counts_adjusted_deliverables_as_unsupported(binary, tmp_path):
     source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
     make_quotes(source)
-    lines = source.read_text().splitlines()
-    source.write_text(lines[0] + ",root\n" +
-                      "\n".join(line + ",AAA1" for line in lines[1:]) + "\n")
+    with source.open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    for row in rows:
+        row["root"] = "AAA1"
+    with source.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
     result = invoke(binary, source, output)
     assert result.returncode == 0, result.stderr
     with output.open(newline="") as stream:
         rows = list(csv.DictReader(stream))
     assert all(row["status"] == "unsupported_deliverable" for row in rows)
     assert all(row["predicted_price"] == "" for row in rows)
+
+
+def test_native_refuses_calendar_crossing_for_whole_affected_slices(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    with source.open(newline="") as stream:
+        first = list(csv.DictReader(stream))
+    later = []
+    for index, original in enumerate(first):
+        row = dict(original)
+        strike = float(row["strike"])
+        # A longer-dated call with smaller TOTAL variance costs less; both
+        # individual slices are convex, but their calendar combination is not.
+        d1 = math.log(100.0 / strike) / 0.1 + 0.05
+        d2 = d1 - 0.1
+        price = (100.0 * 0.5 * math.erfc(-d1 / math.sqrt(2.0))
+                 - strike * 0.5 * math.erfc(-d2 / math.sqrt(2.0)))
+        row.update(row_id=str(index + len(first)), chain_id="18", years="1.0",
+                   years_calendar="1.0", expiry_days="21183",
+                   bid=str(max(0.000001, price - 0.000001)), ask=str(price + 0.000001))
+        later.append(row)
+    with source.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(first[0]))
+        writer.writeheader()
+        writer.writerows(first + later)
+    result = invoke(binary, source, output)
+    assert result.returncode == 0, result.stderr
+    with output.open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert all(row["status"] == "calendar_arbitrage" for row in rows)
+    assert all(row["predicted_price"] == "" for row in rows)
+    report = json.loads(result.stdout)
+    assert report["calendar_rejected_chains"] == 2
+    assert report["served_rows"] == 0
+
+
+def test_native_canonicalizes_snapshot_identity_and_refuses_duplicate_expiry(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    with source.open(newline="") as stream:
+        first = list(csv.DictReader(stream))
+    second = []
+    for index, original in enumerate(first):
+        row = dict(original)
+        row.update(row_id=str(index + len(first)), chain_id="18",
+                   snapshot_ns="01", expiry_days="021000")
+        second.append(row)
+    with source.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(first[0]))
+        writer.writeheader()
+        writer.writerows(first + second)
+    result = invoke(binary, source, output)
+    assert result.returncode == 0, result.stderr
+    with output.open(newline="") as stream:
+        assert all(row["status"] == "ambiguous_expiry" for row in csv.DictReader(stream))
+    assert json.loads(result.stdout)["ambiguous_expiry_chains"] == 2

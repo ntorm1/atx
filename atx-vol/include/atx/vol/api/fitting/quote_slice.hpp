@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "atx/vol/api/fitting/vol_curve.hpp"
+#include "atx/vol/api/fitting/american_price_slice.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 
 namespace atx::vol {
@@ -105,7 +106,9 @@ enum class QuoteSliceEvaluationStatus : std::uint8_t {
   InvalidVolatility,
   PricingFailure
 };
-enum class QuoteSliceFitStatus : std::uint8_t { Success, InsufficientQuotes, FitFailure };
+enum class QuoteSliceFitStatus : std::uint8_t {
+  Success, InsufficientQuotes, FitFailure, ArbitrageFailure
+};
 
 [[nodiscard]] const char *to_string(QuoteSliceDividendModel value) noexcept;
 [[nodiscard]] const char *to_string(QuoteSliceQuoteStatus value) noexcept;
@@ -152,6 +155,11 @@ struct QuoteSliceFit {
   std::string fit_error;
   QuoteSliceDiagnostics diagnostics;
   std::unique_ptr<IVolCurve> curve;
+  // The accepted serving representation. Its owned piecewise-linear American
+  // prices enforce strike shape, exercise bounds and conservative cross-side
+  // bounds throughout its finite domain. The intermediate IV curve is NOT a
+  // certified serving representation. Absence means the fit cannot be served.
+  std::optional<AmericanPriceSlice> prices;
   std::vector<QuoteSliceRow> rows; // same order and length as input quotes
   QuoteSliceMarket market;
   QuoteSliceDividendModel dividend_model = QuoteSliceDividendModel::ContinuousYield;
@@ -181,9 +189,10 @@ struct QuoteSliceValue {
 // kinds; CurveConfig::parametric observation-builder gates do not run here.
 //
 // DatedCash dividends use CALENDAR tau measured from the same valuation instant
-// as calendar_years. The fitter maps tau to the variance clock at a constant
-// clock-speed ratio; callers needing intraday/session-varying clocks should map
-// those clocks before calling. Other models require an empty event span;
+// as calendar_years. The fitter assumes a constant variance/calendar clock-speed
+// ratio at every intermediate exercise time. Two maturity totals cannot encode
+// session-dependent clocks; those require an event/time-dependent model.
+// Other models require an empty event span;
 // ContinuousYield also requires dividend_pv == 0.
 //
 // Shared malformed inputs return Err. Quote-level failures are retained in rows;
@@ -197,9 +206,13 @@ fit_quote_slice(const QuoteSliceMarket &market, std::span<const QuoteSliceQuote>
                 const QuoteSliceConfig &config = {},
                 std::span<const CashDividend> calendar_dividends = {});
 
-// Query an arbitrary new strike using exactly the fitted snapshot's clocks,
-// interpolated strike carry and dividend model. Exact carry nodes reproduce
-// their supplied yields. Errors never produce fabricated zero values.
+// Query inside the certified price domain. At a grid node the fitted IV is
+// cached through the immutable curve. Between nodes, invert the certified
+// piecewise-linear price using the snapshot's local carry and American model;
+// this keeps returned price and IV consistent. Outside-domain requests fail.
+// For allocation-free PRICE-ONLY serving, call fit.prices->price(K, side).
+// A slice enforces strike constraints; publish several expiries together only
+// after check_american_calendar has accepted their overlapping price domains.
 [[nodiscard]] Result<QuoteSliceValue> evaluate_quote_slice(const QuoteSliceFit &fit, double strike,
                                                            Side side);
 

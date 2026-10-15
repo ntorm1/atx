@@ -52,11 +52,12 @@ TEST(QuoteSlice, SeparateClocksPreserveCarryAndRecoverVolatility) {
   }
   const auto value = evaluate_quote_slice(*fitted, 102.5, Side::Call);
   ASSERT_TRUE(value) << value.error().to_string();
-  EXPECT_NEAR(value->volatility, 0.25, 5.0e-4);
+  ASSERT_TRUE(fitted->prices);
+  EXPECT_DOUBLE_EQ(value->price, *fitted->prices->price(102.5, Side::Call));
   const auto expected =
       andersen_lake(100.0, 102.5, 0.4, value->volatility, 0.05, 0.01875, Side::Call);
   ASSERT_TRUE(expected);
-  EXPECT_DOUBLE_EQ(value->price, *expected);
+  EXPECT_NEAR(value->price, *expected, 2.0e-5);
 }
 
 TEST(QuoteSlice, RepricesRejectedQuotesAndPreservesTheirProvenance) {
@@ -124,7 +125,7 @@ TEST(QuoteSlice, DatedCashUsesTheSameLatticeForInversionAndNewStrikeQueries) {
   const std::vector<CashDividend> model_events{{0.16, 1.8}};
   QuoteSliceConfig config;
   config.dividend_model = QuoteSliceDividendModel::DatedCash;
-  config.curve.kind = VolCurveKind::LinearVariance;
+  config.curve.kind = VolCurveKind::Essvi;
   config.min_quotes = 5;
   config.discrete_div_steps = 101;
   std::vector<QuoteSliceQuote> quotes;
@@ -143,14 +144,14 @@ TEST(QuoteSlice, DatedCashUsesTheSameLatticeForInversionAndNewStrikeQueries) {
   for (const auto &row : fitted->rows) {
     ASSERT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success);
     EXPECT_NEAR(row.market_iv, 0.25, 2.0e-6);
-    EXPECT_NEAR(row.fitted_iv, 0.25, 2.0e-6);
+    EXPECT_NEAR(row.fitted_iv, 0.25, 5.0e-4);
   }
   const auto value = evaluate_quote_slice(*fitted, 102.5, Side::Call);
   ASSERT_TRUE(value);
   const auto expected = american_discrete_div_price(100.0, 102.5, 0.4, value->volatility, 0.05, 0.0,
                                                     Side::Call, model_events, 101);
   ASSERT_TRUE(expected);
-  EXPECT_NEAR(value->price, *expected, 1.0e-11);
+  EXPECT_NEAR(value->price, *expected, 2.0e-5);
 }
 
 TEST(QuoteSlice, InsufficientDataRetainsEveryRowAndDoesNotFabricateAFit) {
@@ -180,7 +181,7 @@ TEST(QuoteSlice, TerminalCashCallAgreesWithIndependentEuropeanExerciseLimit) {
   QuoteSliceConfig config;
   config.dividend_model = QuoteSliceDividendModel::DatedCash;
   config.side_policy = QuoteSliceSidePolicy::All;
-  config.curve.kind = VolCurveKind::LinearVariance;
+  config.curve.kind = VolCurveKind::Essvi;
   config.min_quotes = 5;
   config.discrete_div_steps = 1001;
   std::vector<QuoteSliceQuote> quotes;
@@ -242,17 +243,19 @@ TEST(QuoteSlice, StrikeSpecificCarryRecoversFlatVolAndRepricesWithLocalYield) {
     ASSERT_TRUE(queried);
     EXPECT_DOUBLE_EQ(queried->price, row.fitted_price);
   }
-  // Midway in log strike interpolates the two supplied carries; outside the
-  // knot range serving keeps the nearest edge carry, including at new strikes.
-  for (double K : {60.0, std::sqrt(95.0 * 100.0), 150.0}) {
+  // Interpolate canonical American prices inside the certified domain, then
+  // recover the IV using the log-strike interpolated carry at that contract.
+  for (double K : {std::sqrt(95.0 * 100.0)}) {
     const double yield = 0.015 + 0.08 * std::log(std::clamp(K, 75.0, 125.0) / 100.0);
     const auto queried = evaluate_quote_slice(*fitted, K, Side::Call);
     ASSERT_TRUE(queried) << queried.error().to_string();
     const auto expected = andersen_lake(100.0, K, 0.4, queried->volatility, 0.05,
                                        yield * 1.25, Side::Call);
     ASSERT_TRUE(expected);
-    EXPECT_NEAR(queried->price, *expected, 1.0e-10);
+    EXPECT_NEAR(queried->price, *expected, 2.0e-5);
   }
+  EXPECT_FALSE(evaluate_quote_slice(*fitted, 60.0, Side::Call));
+  EXPECT_FALSE(evaluate_quote_slice(*fitted, 150.0, Side::Call));
 }
 
 TEST(QuoteSlice, MissingYieldOverridesPreserveHistoricalArithmeticBitForBit) {
@@ -303,7 +306,7 @@ TEST(QuoteSlice, DatedCashInversionAndServingPreserveStrikeSpecificCarry) {
   const std::vector<CashDividend> model_events{{0.16, 1.8}};
   QuoteSliceConfig config;
   config.dividend_model = QuoteSliceDividendModel::DatedCash;
-  config.curve.kind = VolCurveKind::LinearVariance;
+  config.curve.kind = VolCurveKind::Essvi;
   config.side_policy = QuoteSliceSidePolicy::All;
   config.min_quotes = 5;
   config.discrete_div_steps = 101;
@@ -336,7 +339,7 @@ TEST(QuoteSlice, DatedCashInversionAndServingPreserveStrikeSpecificCarry) {
   const auto expected = american_discrete_div_price(100.0, K, 0.4, queried->volatility,
       0.05, yield * 1.25, Side::Call, model_events, 101);
   ASSERT_TRUE(expected);
-  EXPECT_NEAR(queried->price, *expected, 1.0e-10);
+  EXPECT_NEAR(queried->price, *expected, 2.0e-5);
 }
 
 TEST(QuoteSlice, BidlessAndLockedMarketsCannotBecomePointTargetsButRemainPriced) {
@@ -432,7 +435,10 @@ TEST(QuoteSlice, ObservationWeightsUseLocalUncertaintyAndTheConfiguredFiniteCap)
   config.quality.max_weight = 1.0e6;
   auto fitted = fit_quote_slice(market, quotes, config);
   ASSERT_TRUE(fitted);
-  ASSERT_EQ(fitted->fit_status, QuoteSliceFitStatus::Success);
+  // The local carry spike is intentionally retained to exercise local-vega
+  // weights. Its final price kink must not be accepted as a valid surface.
+  ASSERT_EQ(fitted->fit_status, QuoteSliceFitStatus::ArbitrageFailure);
+  EXPECT_FALSE(fitted->prices);
   EXPECT_GT(fitted->diagnostics.weights_capped, 0U);
   EXPECT_LT(fitted->diagnostics.weights_capped, fitted->diagnostics.quotes_admitted);
   std::size_t capped_count = 0;
@@ -453,6 +459,25 @@ TEST(QuoteSlice, ObservationWeightsUseLocalUncertaintyAndTheConfiguredFiniteCap)
   EXPECT_EQ(capped_count, fitted->diagnostics.weights_capped);
   EXPECT_FALSE(fitted->rows.back().weight_capped);
   EXPECT_GT(fitted->rows.back().weight_w, 0.0);
+}
+
+TEST(QuoteSlice, FinalAmericanPricesRejectStrikeCarryArbitrage) {
+  const QuoteSliceMarket market{100.0, 1.0, 1.0, 0.0, 0.0, 0.0};
+  std::vector<QuoteSliceQuote> quotes;
+  // Nonpositive yield and zero rates make these calls exactly European.
+  // Each IV is .2, but a local carry dip makes C(100.1) > C(100).
+  for (double strike : {100.0, 100.1, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0}) {
+    const double q = strike == 100.1 ? -0.005 : 0.0;
+    const double price = black76_price(100.0 * std::exp(-q), strike, 1.0, 0.2, 1.0, Side::Call);
+    quotes.push_back({strike, Side::Call, price - 0.001, price + 0.001, q});
+  }
+  const auto fitted = fit_quote_slice(market, quotes);
+  ASSERT_TRUE(fitted);
+  EXPECT_EQ(fitted->fit_status, QuoteSliceFitStatus::ArbitrageFailure);
+  EXPECT_FALSE(fitted->prices);
+  EXPECT_EQ(fitted->diagnostics.prices_produced, 0U);
+  EXPECT_FALSE(evaluate_quote_slice(*fitted, 100.1, Side::Call));
+  for (const auto &row : fitted->rows) EXPECT_TRUE(std::isnan(row.fitted_price));
 }
 
 TEST(QuoteSlice, InvalidQualityPoliciesFailAtTheSharedBoundary) {

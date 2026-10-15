@@ -303,6 +303,8 @@ const char *to_string(QuoteSliceFitStatus value) noexcept {
     return "insufficient_quotes";
   case QuoteSliceFitStatus::FitFailure:
     return "fit_failure";
+  case QuoteSliceFitStatus::ArbitrageFailure:
+    return "arbitrage_failure";
   }
   return "unknown";
 }
@@ -311,22 +313,37 @@ Result<QuoteSliceValue> evaluate_quote_slice(const QuoteSliceFit &fit, double st
   if (!positive(strike) || !valid_side(side)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid query contract");
   }
-  if (fit.fit_status != QuoteSliceFitStatus::Success || !fit.curve) {
-    return Err(ErrorCode::Unavailable, "quote slice: no fitted curve");
+  if (fit.fit_status != QuoteSliceFitStatus::Success || !fit.curve || !fit.prices) {
+    return Err(ErrorCode::Unavailable, "quote slice: no certified price slice");
   }
-  const double sigma = fit.curve->iv(std::log(strike / fit.diagnostics.forward));
-  if (!positive(sigma)) {
-    return Err(ErrorCode::OutOfRange, "quote slice: curve returned invalid volatility");
-  }
-  const auto price = model_price(fit, strike, side, sigma,
-                                 effective_yield(fit, calendar_yield_at(fit, strike)));
+  const auto price = fit.prices->price(strike, side);
   if (!price) {
-    return Err(price.error());
+    return Err(ErrorCode::OutOfRange, "quote slice: strike outside certified price domain");
   }
-  if (!nonnegative(*price)) {
-    return Err(ErrorCode::OutOfRange, "quote slice: model returned invalid price");
+  const auto nodes = fit.prices->nodes();
+  const auto node = std::lower_bound(nodes.begin(), nodes.end(), strike,
+      [](const AmericanPriceNode &value, double k) { return value.strike < k; });
+  if (node != nodes.end() && node->strike == strike) {
+    const double sigma = fit.curve->iv(std::log(strike / fit.diagnostics.forward));
+    if (!positive(sigma)) {
+      return Err(ErrorCode::OutOfRange, "quote slice: invalid node volatility");
+    }
+    return Ok(QuoteSliceValue{sigma, *price});
   }
-  return Ok(QuoteSliceValue{sigma, *price});
+  const double q = effective_yield(fit, calendar_yield_at(fit, strike));
+  QuoteSliceConfig query_config;
+  query_config.discrete_div_steps = fit.discrete_div_steps;
+  const QuoteSliceQuote query{strike, side, *price, *price, {}};
+  const auto sigma = fit.dividend_model == QuoteSliceDividendModel::DatedCash
+      ? dated_cash_iv(fit, query, *price, query_config, q)
+      : american_implied_vol(*price, fit.market.spot, strike, fit.market.variance_years,
+                             fit.diagnostics.effective_rate, q, side,
+                             AmericanMethod::AndersenLake, query_config.iv_tolerance,
+                             query_config.max_iv_iterations, fit.al_opts);
+  if (!sigma || !positive(*sigma)) {
+    return Err(ErrorCode::OutOfRange, "quote slice: certified price has no identifiable IV");
+  }
+  return Ok(QuoteSliceValue{*sigma, *price});
 }
 
 Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
@@ -535,6 +552,65 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
     return Ok(std::move(out));
   }
   out.curve = std::move(*curve);
+  // Certify the FINAL American prices. A no-arbitrage European IV curve is
+  // insufficient after early exercise and especially after strike-varying
+  // carry. Keep the serving function piecewise linear in PRICE so the checked
+  // affine bounds and convexity hold between nodes as well as at the nodes.
+  std::vector<double> strikes;
+  strikes.reserve(quotes.size());
+  for (const auto &quote : quotes) {
+    if (positive(quote.strike) && valid_side(quote.side)) strikes.push_back(quote.strike);
+  }
+  std::sort(strikes.begin(), strikes.end());
+  strikes.erase(std::unique(strikes.begin(), strikes.end()), strikes.end());
+  std::vector<AmericanPriceNode> prices;
+  prices.reserve(strikes.size());
+  double q_min = diag.effective_yield;
+  double q_max = diag.effective_yield;
+  for (const double strike : strikes) {
+    const double q = effective_yield(out, calendar_yield_at(out, strike));
+    q_min = std::min(q_min, q);
+    q_max = std::max(q_max, q);
+    const double sigma = out.curve->iv(std::log(strike / diag.forward));
+    if (!positive(sigma)) {
+      out.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
+      out.fit_error = "American price certification: invalid grid volatility";
+      return Ok(std::move(out));
+    }
+    const auto call = model_price(out, strike, Side::Call, sigma, q);
+    const auto put = model_price(out, strike, Side::Put, sigma, q);
+    if (!call || !put) {
+      out.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
+      out.fit_error = "American price certification: grid repricing failed";
+      return Ok(std::move(out));
+    }
+    prices.push_back({strike, *call, *put});
+  }
+  AmericanPriceBounds bounds{market.spot, std::min(1.0, diag.discount),
+                             std::max(1.0, diag.discount), 0.0, 0.0};
+  bounds.prepaid_max = market.spot * std::exp(std::max(-q_min, 0.0) * market.variance_years);
+  bounds.prepaid_min = market.spot * std::exp(-std::max(q_max, 0.0) * market.variance_years);
+  for (const auto &event : out.variance_clock_dividends) {
+    bounds.prepaid_min -= event.amount * std::exp(-diag.effective_rate * event.tau +
+        std::max(-q_min, 0.0) * (market.variance_years - event.tau));
+  }
+  bounds.prepaid_min = std::max(bounds.prepaid_min, 0.0);
+  auto certified = AmericanPriceSlice::create(prices, bounds);
+  if (!certified) {
+    out.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
+    out.fit_error = certified.error().to_string();
+    return Ok(std::move(out));
+  }
+  if (q_min == 0.0 && q_max == 0.0 && out.variance_clock_dividends.empty() &&
+      diag.effective_rate >= 0.0) {
+    const auto joint = check_nondividend_american(*certified, diag.discount);
+    if (!joint) {
+      out.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
+      out.fit_error = joint.error().to_string();
+      return Ok(std::move(out));
+    }
+  }
+  out.prices = std::move(*certified);
   out.fit_status = QuoteSliceFitStatus::Success;
   for (std::size_t i = 0; i < quotes.size(); ++i) {
     const auto &quote = quotes[i];
@@ -547,8 +623,7 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
       row.evaluation_status = QuoteSliceEvaluationStatus::InvalidVolatility;
       continue;
     }
-    const auto price = model_price(out, quote.strike, quote.side, row.fitted_iv,
-        effective_yield(out, quote.continuous_yield.value_or(market.continuous_yield)));
+    const auto price = out.prices->price(quote.strike, quote.side);
     if (!price || !nonnegative(*price)) {
       row.evaluation_status = QuoteSliceEvaluationStatus::PricingFailure;
       continue;

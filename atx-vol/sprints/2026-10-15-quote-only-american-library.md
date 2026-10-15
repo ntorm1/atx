@@ -109,3 +109,73 @@ to 200 development underliers; add paired comparison and raw-input strata;
 compare dense solver speed against the original production solver on a quiet
 Release host; evaluate frozen settings on unseen underliers. No validation
 cohort has been read yet.
+
+## Follow-up: breaking changes and mandatory arbitrage admission
+
+The user explicitly permits breaking changes and removal of outdated code.
+Numerical checks now establish independent accuracy and worker determinism;
+historical output hashes are not a reason to retain unnecessary arithmetic.
+The user also requires every valid fit to enforce no-arbitrage requirements.
+Earlier benchmark runs are development baselines, not accepted production fits.
+
+Integrated after the initial checkpoint:
+
+* Per-strike carry (`87029a0e`, native `9a10c8c2`) and paired/raw-stratum
+  evaluation (`e4c90a0e`). Carry preservation changes dev20 price MAE from
+  $0.282430 to $0.282881 on identical rows; this is input correctness, not a
+  reference-error win. All 12 focused slice and 40 Python checks passed then.
+* Quote-quality configuration (`913d741e`) excludes bidless/locked point
+  targets, records rejection reasons, and caps inverse-uncertainty weights.
+  Contracts remain in the evaluation cohort. Wide-spread gates are tunable;
+  final-price arbitrage gates cannot be disabled.
+* Dense Newton IV acceleration (`ac2eecde`, `10a830da`): 807 finite cases out
+  of 840, with 33 expected numerical-domain refusals. Against independent
+  80-step bisection, max IV difference 4.55e-12, max Black price difference
+  4.47e-9, max scaled analytic Greek difference 2.13e-9. Twenty-four American
+  comparisons give max price difference 2.85e-14 and scaled Greek difference
+  4.56e-8. All 66 targeted tests and PCH-off changed-TU compilation passed in
+  the implementing lane. Release binaries for original production bisection
+  and direct Newton are preserved outside the repository; speed measurement
+  still requires a coordinated quiet window.
+* `AmericanPriceSlice` (`370e74fa`) owns final call/put price knots, rejects
+  intrinsic/upper, vertical-spread, convexity and conservative cross-side
+  violations, and offers bounded, allocation-free piecewise-linear serving.
+  Fixed roundoff tolerance only. Ten independent focused tests passed.
+* Generic curve gate repairs (`524bf6fd`) close LinearVariance jump, spline
+  clamp, residual hinge, and warm-refit bypasses. The unsafe ConvexDense
+  variance-wing fallback and cache were removed. Ninety targeted tests passed.
+
+Development-200 cohort: `C:/atx-cache/quote-benchmark/20261014-dev200`, prepared
+using `--max-underliers 200 --buckets 1030 --split development --csv`.
+72,348 selected / 63,942 raw-eligible rows. The carry-preserving baseline serves
+62,412 rows (97.61%), price MAE $0.277666 vs same-population midpoint $0.350695.
+This baseline predates mandatory final-American/calendar admission.
+
+The strict quality defaults alone reduce coverage to 39.53%. On the exact
+25,165-row price intersection, MAE improves $0.283341 -> $0.266394, while the
+25,276-row volatility intersection worsens 432.93 -> 524.98 bp. This is not an
+overall improvement; hard filters need replacement with useful uncertainty or
+bid/ask-interval information while retaining mandatory arbitrage admission.
+
+The first final-price integration run (`essvi-release-arb-v1`) additionally
+refuses four strike-shape failures and 116 calendar-inconsistent chains. It
+serves 10,300 rows from 83 chains; 935 chains lacked enough quality point
+observations. All 1,244 available expiry pairs were checked on their full
+overlapping piecewise-linear domains. Reduced coverage is an explicit failure
+cost, never credited as an accuracy improvement. Wider quote policies are
+being measured with the same arbitrage gates.
+
+Independent math review reproduced a flat-volatility carry-spike arbitrage:
+S=100, r=0, T=1, sigma=.2, q(100)=0 and q(100.1)=-.005 gives accepted old-model
+calls 7.965567 and 8.191733. The higher strike costs more. A regression now
+requires final-price refusal. Generic European-curve certificates do not
+survive arbitrary strike-dependent carry or American exercise.
+
+Static price constraints are necessary; they do not establish a general joint
+American optimal-stopping model with arbitrary cash/carry. The next model
+layer is a common positive finite-state transition system across every strike
+and expiry, with separate funding/variance clocks, exact dividend event times,
+and shared exercise opportunities. A sub-agent is implementing scalar rollback
+first; exact convex piecewise-linear strike recursion follows. This constructs
+a consistent finite Bermudan model and requires separate convergence evidence
+for continuous-American accuracy. No heldout validation labels have been read.
