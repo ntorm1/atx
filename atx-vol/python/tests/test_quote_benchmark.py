@@ -158,7 +158,7 @@ def test_missing_reference_labels_do_not_reduce_prediction_coverage(tmp_path):
     assert metrics["price_mae"] is None
 
 
-@pytest.mark.parametrize("corruption", ["duplicates", "unknown", "wrong_chain", "hash"])
+@pytest.mark.parametrize("corruption", ["duplicates", "unknown", "wrong_chain", "null_chain", "hash"])
 def test_score_refuses_identity_or_provenance_corruption(tmp_path, corruption):
     dataset, _ = prepare(tmp_path)
     path, receipt = prediction_receipt(dataset)
@@ -169,6 +169,8 @@ def test_score_refuses_identity_or_provenance_corruption(tmp_path, corruption):
         df = df.with_columns(pl.lit(100, dtype=pl.UInt64).alias("row_id"))
     elif corruption == "wrong_chain":
         df = df.with_columns(pl.lit(0, dtype=pl.UInt64).alias("chain_id"))
+    elif corruption == "null_chain":
+        df = df.with_columns(pl.lit(None, dtype=pl.UInt64).alias("chain_id"))
     else:
         df = df.with_columns(pl.lit(999.).alias("predicted_price"))
     df.write_csv(path)
@@ -189,3 +191,100 @@ def test_explicit_selection_is_label_independent_and_keeps_original_row_ids(tmp_
     q = pl.read_parquet(tmp_path / "chosen" / "quotes.parquet")
     assert q["row_id"].to_list() == [3, 4, 5]
     assert q["underlier"].to_list() == ["BBB"] * 3
+
+
+def test_american_exercise_spelling_is_canonical_for_the_native_boundary(tmp_path):
+    table = source_table()
+    table = table.set_column(table.schema.get_field_index("exType"), "exType",
+                             pa.array(["american", "AMERICAN", "AmErIcAn", "American",
+                                       "European", None]))
+    dataset, _ = prepare(tmp_path, table)
+    quotes = pl.read_parquet(dataset / "quotes.parquet")
+    assert quotes["exercise"].to_list() == ["American"] * 4 + ["European", None]
+    assert quotes["input_status"].to_list() == ["ok"] * 4 + ["unsupported_exercise"] * 2
+
+
+@pytest.mark.parametrize("extra", [["--curve", "svi"], ["--curve=svi"]])
+def test_native_extras_cannot_override_the_recorded_curve(tmp_path, monkeypatch, extra):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "unused-native.exe"
+    binary.write_bytes(b"not executed")
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid provenance arguments reached subprocess execution")
+    monkeypatch.setattr(qb.subprocess, "run", forbidden)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary),
+        "--output", str(tmp_path / "new-predictions.csv"), "--curve", "essvi", "--", *extra,
+    ])
+    with pytest.raises(ValueError, match="provenance-bound"):
+        qb.run_native(args)
+
+
+@pytest.mark.parametrize("target", ["manifest.json", "quotes.parquet", "labels.parquet",
+                                   "predictions.csv", "predictions.csv.run.json"])
+def test_score_never_overwrites_validated_inputs_or_receipts(tmp_path, target):
+    dataset, _ = prepare(tmp_path)
+    _, receipt = prediction_receipt(dataset)
+    destination = dataset / target
+    before = destination.read_bytes()
+    args = qb.parser().parse_args([
+        "score", "--dataset", str(dataset), "--run-receipt", str(receipt),
+        "--output", str(destination), "--split", "all",
+    ])
+    with pytest.raises(ValueError, match="output already exists"):
+        qb.score(args)
+    assert destination.read_bytes() == before
+
+
+def test_exclusive_json_write_preserves_a_concurrent_output(tmp_path):
+    output = tmp_path / "already-created.json"
+    output.write_text("existing evidence")
+    with pytest.raises(FileExistsError):
+        qb.write_json(output, {"replacement": True}, overwrite=False)
+    assert output.read_text() == "existing evidence"
+
+
+@pytest.mark.parametrize("target", ["labels.parquet", "manifest.json", "predictions", "receipt"])
+def test_native_report_cannot_replace_cohort_or_pending_run_artifacts(tmp_path, monkeypatch, target):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "unused-native.exe"
+    binary.write_bytes(b"not executed")
+    output = tmp_path / "new-predictions.csv"
+    report = (output if target == "predictions" else Path(str(output) + ".run.json")
+              if target == "receipt" else dataset / target)
+    before = report.read_bytes() if report.exists() else None
+    def forbidden(*args, **kwargs):
+        pytest.fail("unsafe report output reached native execution")
+    monkeypatch.setattr(qb.subprocess, "run", forbidden)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary),
+        "--output", str(output), "--", "--report", str(report),
+    ])
+    with pytest.raises(ValueError, match="timing report must use a new path"):
+        qb.run_native(args)
+    if before is not None:
+        assert report.read_bytes() == before
+    else:
+        assert not report.exists()
+
+
+def test_native_new_timing_report_remains_usable(tmp_path, monkeypatch):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "unused-native.exe"
+    binary.write_bytes(b"not executed")
+    output = tmp_path / "new-predictions.csv"
+    report = tmp_path / "new-timing.json"
+    def execute(command, **kwargs):
+        assert command[command.index("--report") + 1] == str(report)
+        output.write_text("predictions")
+        report.write_text("{}")
+        return qb.subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(qb.subprocess, "run", execute)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary),
+        "--output", str(output), "--", "--report", str(report),
+    ])
+    receipt = qb.run_native(args)
+    assert receipt["curve"] == "essvi"
+    assert report.read_text() == "{}"
+    assert Path(str(output) + ".run.json").is_file()

@@ -75,9 +75,10 @@ def split_for(underlier: str, fraction: float = 0.2, seed: str = "atx-vol-v1") -
             else "development")
 
 
-def write_json(path: Path, data: dict) -> None:
-    path.write_text(json.dumps(data, indent=2, sort_keys=True, allow_nan=False) + "\n",
-                    encoding="utf-8")
+def write_json(path: Path, data: dict, *, overwrite: bool = True) -> None:
+    payload = json.dumps(data, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    with path.open("w" if overwrite else "x", encoding="utf-8") as stream:
+        stream.write(payload)
 
 
 def normalize_quotes(batch: pa.RecordBatch, offset: int, *, bucket_minutes: int,
@@ -103,7 +104,9 @@ def normalize_quotes(batch: pa.RecordBatch, offset: int, *, bucket_minutes: int,
           .then(pl.lit(1, pl.UInt8))
           .when(pl.col("okey_cp").str.to_lowercase().is_in(["put", "p"]))
           .then(pl.lit(0, pl.UInt8)).otherwise(pl.lit(255, pl.UInt8)).alias("is_call"),
-        pl.col("exType").cast(pl.String).alias("exercise"),
+        pl.when(pl.col("exType").cast(pl.String).str.to_lowercase() == "american")
+          .then(pl.lit("American")).otherwise(pl.col("exType").cast(pl.String))
+          .alias("exercise"),
         *[pl.col(src).cast(pl.Float64).alias(dest) for src, dest in (
             ("uBid", "spot_bid"), ("uAsk", "spot_ask"), ("bidPrc", "bid"),
             ("askPrc", "ask"), ("years", "years"), ("yearsC", "years_calendar"),
@@ -304,8 +307,29 @@ def run_native(args: argparse.Namespace) -> dict:
         raise ValueError("prediction/receipt output already exists; use a new output path")
     output.parent.mkdir(parents=True, exist_ok=True)
     extras = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
-    if any(arg.split("=", 1)[0] in {"--input", "--output"} for arg in extras):
-        raise ValueError("extra arguments cannot replace provenance-bound input/output")
+    if any(arg.split("=", 1)[0] in {"--input", "--output", "--curve"} for arg in extras):
+        raise ValueError("extra arguments cannot replace provenance-bound input/output/curve")
+    report_path = None
+    for index, argument in enumerate(extras):
+        if argument.split("=", 1)[0] != "--report":
+            continue
+        if report_path is not None:
+            raise ValueError("native timing report may be specified only once")
+        if "=" in argument:
+            value = argument.split("=", 1)[1]
+        elif index + 1 < len(extras):
+            value = extras[index + 1]
+        else:
+            raise ValueError("native timing report requires an output path")
+        if not value or value.startswith("--"):
+            raise ValueError("native timing report requires an output path")
+        report_path = Path(value).resolve()
+        protected = {output, receipt_path.resolve()} | {
+            (args.dataset / name).resolve()
+            for name in ("manifest.json", "quotes.parquet", "quotes.csv", "labels.parquet")
+        }
+        if report_path.exists() or report_path in protected:
+            raise ValueError("native timing report must use a new path distinct from predictions/receipt")
     command = [str(binary), "--input", str((args.dataset / "quotes.csv").resolve()),
                "--output", str(output), "--curve", args.curve, *extras]
     started = time.perf_counter()
@@ -370,6 +394,9 @@ def _metrics() -> list[pl.Expr]:
 def score(args: argparse.Namespace) -> dict:
     if not np.isfinite(args.tick_size) or args.tick_size <= 0:
         raise ValueError("tick size must be finite and positive")
+    output = args.output.resolve()
+    if output.exists():
+        raise ValueError("score output already exists; use a new output path")
     manifest = verify_dataset(args.dataset, labels=True)
     receipt = json.loads(args.run_receipt.read_text(encoding="utf-8"))
     predictions = Path(receipt["predictions"])
@@ -387,6 +414,8 @@ def score(args: argparse.Namespace) -> dict:
                          pl.col("row_id").null_count().alias("nulls")).collect().row(0)
         if c[0] != c[1] or c[2]:
             raise ValueError(f"{name} contains duplicate or null row identities")
+    if pred.select(pl.col("chain_id").null_count()).collect().item():
+        raise ValueError("predictions contain null chain identities")
     for name, frame in (("labels", labels), ("predictions", pred)):
         extra = frame.join(quotes.select("row_id"), on="row_id", how="anti").select(pl.len()).collect().item()
         if extra:
@@ -462,7 +491,10 @@ def score(args: argparse.Namespace) -> dict:
                   "coverage denominators include every raw-input-eligible row, including solver failures",
                   "exact quantiles; scoring memory scales with selected cohort size"],
     }
-    write_json(args.output, result)
+    # Exclusive creation also closes the race between the initial existence
+    # check and scoring. Neither aliases nor a concurrently created artifact
+    # may be overwritten after it has served as provenance evidence.
+    write_json(output, result, overwrite=False)
     print(json.dumps(metrics, allow_nan=False))
     return result
 
