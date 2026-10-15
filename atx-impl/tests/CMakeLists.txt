@@ -215,3 +215,9 @@ target_sources(atx-impl-strategy-target-tests PRIVATE strategy_nav_info_clock_te
 # P9 lane COV-MV: the NAV target rule mv-aim-v1 (MvAimRule.*) beside the NAV replay tests;
 # atx-impl-tests compiles it through its *_test.cpp glob.
 target_sources(atx-impl-strategy-target-tests PRIVATE strategy_mv_aim_rule_test.cpp)
+# P9 lane SQL4: the IC caches' SQLite index (IcCacheIndex.*, IcResultIndex.*, MarginalPairIndex.*)
+# in the focused IC target; atx-impl-tests compiles it through its *_test.cpp glob. Both open
+# indexes through the research store library (cache init's create_cache, row reads).
+target_sources(atx-impl-strategy-ic-tests PRIVATE strategy_ic_cache_index_test.cpp)
+target_link_libraries(atx-impl-strategy-ic-tests PRIVATE atx::engine-research-store)
+target_link_libraries(atx-impl-tests PRIVATE atx::engine-research-store)

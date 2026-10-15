@@ -375,8 +375,8 @@ co::Result<std::string> write_partial(const PartialFile& partial,std::span<const
 // strategy_ic_cache_index.hpp) or null (files: today's code and bytes). With an index the rows
 // are the entries (no sidecar or IC-result file is written) and legacy files are read through.
 co::Result<CacheHit> cache_store(const CacheKey& key,const IcRunnerConfig& cfg,const Role& spec,
-    const engine::data::StrategyRoleData& role,const Candidate& c,std::span<f64> signal,HashMeter& meter,
-    CacheIndex* index);
+    const engine::data::StrategyRoleData& role,const Candidate& c,std::span<f64> signal,
+    HashMeter& meter,CacheIndex* index);
 co::Result<CacheResolution> cache_resolve(const IcRunnerConfig& cfg,const Library& lib,const Role& role,
                                           const KnownManifests& known,CacheIndex* index);
 co::Result<Json> cache_plan(const IcRunnerConfig& cfg,const Library& lib,const Role& role,
@@ -404,6 +404,6 @@ co::Result<std::optional<CachedIc>> ic_cache_lookup(const std::filesystem::path&
     const IcCacheScope& scope,const Candidate& c,const std::string& signal_sha,
     const ex::ResearchIcScratch& scratch,usize active,CacheIndex* index);
 co::Status ic_cache_store(const std::filesystem::path& path,const IcCacheScope& scope,const Candidate& c,
-    const std::string& signal_sha,const ex::ResearchIcResult& result,const IcSeries& daily,usize workers,
-    CacheIndex* index);
+    const std::string& signal_sha,const ex::ResearchIcResult& result,const IcSeries& daily,
+    usize workers,CacheIndex* index);
 } // namespace atx::impl::strategy::ic_detail

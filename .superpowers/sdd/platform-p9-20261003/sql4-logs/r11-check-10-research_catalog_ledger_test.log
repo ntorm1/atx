@@ -1,0 +1,16 @@
+﻿powershell : check: no object target found for 'atx-engine\tests\research\research_catalog_ledger_test.cpp' (is its 
+target 
+At line:1 char:677
++ ... $i-$n.log"; powershell -NoProfile -File C:\atx-wt\pool-32\scripts\atx ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (check: no objec...(is its target :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+configured?)
+At C:\atx-wt\pool-32\scripts\atx-build.ps1:238 char:30
++ ... nt -eq 0) { throw "check: no object target found for '$src' (is its t ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (check: no objec...et configured?):String) [], RuntimeException
+    + FullyQualifiedErrorId : check: no object target found for 'atx-engine\tests\research\research_catalog_ledger_tes 
+   t.cpp' (is its target configured?)
+ 

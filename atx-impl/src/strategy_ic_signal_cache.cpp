@@ -365,7 +365,8 @@ bool manifest_agrees(const FieldShas& key_fields,const FieldShas& known) {
 // (pinned first) whose payload SHA256s agree with the key on every field read.
 // `text` (P9 lane SQL4; null: unused): the exact sidecar bytes of the entry returned.
 co::Result<std::optional<CacheHit>> cache_lookup(const std::filesystem::path& root,
-    const CacheKey& key,const Candidate& c,const RoleManifests& manifests,std::string* text=nullptr) {
+    const CacheKey& key,const Candidate& c,const RoleManifests& manifests,
+    std::string* text=nullptr) {
   ATX_TRY(auto sidecar,read_sidecar(key.dir/(key.stem+".json"),c,text));
   if (sidecar) {
     ATX_TRY(auto sha,v2_payload_sha(*sidecar,key,c));

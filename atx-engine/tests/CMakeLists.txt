@@ -536,3 +536,9 @@ foreach(_b2_tests IN ITEMS atx-engine-research-ledger-tests atx-engine-research-
     gtest_discover_tests(${_b2_tests} DISCOVERY_MODE PRE_TEST TEST_PREFIX "${_b2_tests}."
         PROPERTIES LABELS atx_research)
 endforeach()
+
+# P9 lane SQL4 (rulings SQL-7 / SQL-9): the catalog's ledger index head from B2's chain_head and
+# `verify --ledger` (ResearchCatalog.LedgerHeadFromResearchLedger, .RecordedHeadsArePrefixHeads)
+# beside SQL2's catalog gtests; the test reads B2's chain functions directly.
+target_sources(atx-engine-research-catalog-tests PRIVATE research/research_catalog_ledger_test.cpp)
+target_link_libraries(atx-engine-research-catalog-tests PRIVATE atx::engine-research-ledger)
