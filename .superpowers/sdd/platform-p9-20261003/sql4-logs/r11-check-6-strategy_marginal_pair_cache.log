@@ -1,0 +1,4 @@
+﻿[atx-build] ninja -C C:\atx-wt\pool-32\build-equity -j 1 atx-impl/CMakeFiles/atx-impl-strategy.dir/src/strategy_marginal_pair_cache.cpp.obj
+ninja: Entering directory `C:\atx-wt\pool-32\build-equity'
+[0/2] Re-checking globbed directories...
+[1/2] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_marginal_pair_cache.cpp.obj
