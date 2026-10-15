@@ -209,6 +209,68 @@ TEST(AmericanPriceSlice, FixedToleranceAcceptsRoundoffButNotQuoteSizedBreaches) 
   EXPECT_FALSE(AmericanPriceSlice::create(input, kBounds).has_value());
 }
 
+TEST(AmericanPriceSlice, RejectsAccumulatedButterflyAcrossThousandsOfCloseStrikes) {
+  std::vector<AmericanPriceNode> nodes;
+  for (int i = 0; i <= 2000; ++i) {
+    const double x = 0.0005 * static_cast<double>(i);
+    const double strike = 99.5 + x;
+    const double call = 5.0 - 0.2 * x - 0.3 * x * x;
+    nodes.push_back({strike, call, call + strike - 100.0});
+  }
+  // Every local chord misses convexity by only 7.5e-8, below the 1.1e-7
+  // numerical price allowance. The global butterfly costs 0.075, however.
+  for (std::size_t i = 1u; i + 1u < nodes.size(); ++i) {
+    const double fraction = (nodes[i].strike - nodes[i - 1u].strike) /
+                            (nodes[i + 1u].strike - nodes[i - 1u].strike);
+    EXPECT_LT(nodes[i].call - std::lerp(nodes[i - 1u].call, nodes[i + 1u].call, fraction),
+              1.1e-7);
+  }
+  EXPECT_NEAR(nodes[1000].call - 0.5 * (nodes.front().call + nodes.back().call), 0.075, 1.0e-12);
+  const auto fit = AmericanPriceSlice::create(nodes, kBounds);
+  ASSERT_FALSE(fit.has_value());
+  EXPECT_NE(fit.error().message().find("convexity"), std::string::npos);
+}
+
+TEST(AmericanPriceSlice, RejectsAccumulatedMonotonicityAndVerticalSpreadDrift) {
+  constexpr AmericanPriceBounds broad{100.0, 1.0, 1.0, 90.0, 110.0};
+  for (int defect = 0; defect != 4; ++defect) {
+    SCOPED_TRACE(defect);
+    std::vector<AmericanPriceNode> nodes;
+    for (int i = 0; i <= 1000; ++i) {
+      const double x = 0.001 * static_cast<double>(i);
+      const double drift = 5.0e-8 * static_cast<double>(i);
+      double call = 5.0 - 0.5 * x;
+      double put = 5.0 + 0.5 * x;
+      if (defect == 0) call = 5.0 + drift;
+      if (defect == 1) put = 5.0 - drift;
+      if (defect == 2) call = 5.0 - x - drift;
+      if (defect == 3) put = 5.0 + x + drift;
+      nodes.push_back({99.5 + x, call, put});
+    }
+    // Only 5e-8 per segment, but 5e-5 across the complete strike interval.
+    const auto fit = AmericanPriceSlice::create(nodes, broad);
+    ASSERT_FALSE(fit.has_value());
+    EXPECT_NE(fit.error().message().find("vertical-spread"), std::string::npos);
+  }
+}
+
+TEST(AmericanPriceSlice, DenseGloballyBoundedRoundoffRemainsAcceptedWithoutProjection) {
+  std::vector<AmericanPriceNode> nodes;
+  for (int i = 0; i <= 2000; ++i) {
+    const double x = 0.0005 * static_cast<double>(i);
+    const double strike = 99.5 + x;
+    const double noise = (i % 2 == 0 ? 1.0 : -1.0) * 5.0e-9;
+    const double call = 5.0 - 0.5 * x + noise;
+    nodes.push_back({strike, call, call + strike - 100.0});
+  }
+  const auto fit = AmericanPriceSlice::create(nodes, kBounds);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  for (const auto &node : nodes) {
+    EXPECT_EQ(fit->price(node.strike, Side::Call), node.call);
+    EXPECT_EQ(fit->price(node.strike, Side::Put), node.put);
+  }
+}
+
 TEST(AmericanPriceSlice, CalendarFindsCrossingAtTheOtherSlicesInteriorKnot) {
   const std::array sparse{AmericanPriceNode{90.0, 14.0, 4.0}, AmericanPriceNode{110.0, 4.0, 14.0}};
   const std::array dense{AmericanPriceNode{90.0, 14.0, 4.0}, AmericanPriceNode{100.0, 8.0, 8.0},
@@ -311,6 +373,21 @@ TEST(AmericanPriceSlice, NondividendRejectsEuropeanCallBoundsAndSlopes) {
   const auto slope_fit = AmericanPriceSlice::create(steep, bounds);
   ASSERT_TRUE(slope_fit.has_value());
   check = check_nondividend_american(*slope_fit, 0.9);
+  ASSERT_FALSE(check.has_value());
+  EXPECT_NE(check.error().message().find("call slope"), std::string::npos);
+}
+
+TEST(AmericanPriceSlice, NondividendRejectsAccumulatedDiscountedCallSlopeDrift) {
+  constexpr double df = 0.9;
+  constexpr AmericanPriceBounds bounds{100.0, df, 1.0, 100.0, 100.0};
+  std::vector<AmericanPriceNode> nodes;
+  for (int i = 0; i <= 1000; ++i) {
+    const double x = 0.001 * static_cast<double>(i);
+    nodes.push_back({100.0 + x, 30.0 - (df + 0.00005) * x, 20.0});
+  }
+  const auto fit = AmericanPriceSlice::create(nodes, bounds);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  const auto check = check_nondividend_american(*fit, df);
   ASSERT_FALSE(check.has_value());
   EXPECT_NE(check.error().message().find("call slope"), std::string::npos);
 }

@@ -34,10 +34,12 @@ struct AmericanPriceBounds {
 // inequalities between nodes; no extrapolation is offered.
 //
 // The only numerical allowance is 1e-8 + 1e-9 * max(spot, strike), in price
-// units. Pair/triple checks use their largest strike. Convexity compares the
-// middle price with its chord, equivalent to ordering adjacent secants but
-// stable for nearly coincident strikes. This is a roundoff allowance, not a
-// configurable quote-fit tolerance. It cannot be disabled or relaxed.
+// units. Vertical-spread checks apply to ALL node pairs, with the tolerance
+// at their larger strike. Convexity bounds every node's distance above its
+// side's global lower convex envelope by the tolerance at that node. These
+// O(n) checks prevent many small local violations from accumulating into a
+// material violation across the domain. Prices are never projected or changed.
+// This is a fixed numerical allowance, not a configurable quote-fit tolerance.
 //
 // Factory/copy operations allocate; price() and nodes() do not. Concurrent
 // const access is safe. Queries on an empty moved-from object return nullopt.

@@ -58,33 +58,79 @@ using atx::core::Ok;
   return Ok();
 }
 
-[[nodiscard]] Status validate_segment(const AmericanPriceNode &left, const AmericanPriceNode &right,
-                                      const AmericanPriceBounds &bounds, std::size_t index) {
-  const double width = right.strike - left.strike;
-  if (!(width > 0.0)) {
-    return node_error(index, "strikes must be strictly increasing");
-  }
-  const double tol = price_tolerance(bounds.spot, right.strike);
-  const double max_change = bounds.discount_max * width;
-  const double call_change = right.call - left.call;
-  const double put_change = right.put - left.put;
-  if (call_change > tol || call_change < -max_change - tol || put_change < -tol ||
-      put_change > max_change + tol) {
-    return node_error(index, "American vertical-spread slope bound violated");
+[[nodiscard]] Status validate_call_lower_slopes(std::span<const AmericanPriceNode> nodes,
+                                               double spot, double discount,
+                                               const char *reason) {
+  std::size_t maximum = 0u;
+  for (std::size_t i = 1u; i < nodes.size(); ++i) {
+    const auto &left = nodes[maximum];
+    const auto &right = nodes[i];
+    // Track the running maximum of C(K)+discount*K. Compare differences
+    // instead of forming those sums, which can overflow for finite prices.
+    const double change = right.call - left.call + discount * (right.strike - left.strike);
+    if (change < -price_tolerance(spot, right.strike)) {
+      return node_error(i, reason);
+    }
+    if (change > 0.0) maximum = i;
   }
   return Ok();
 }
 
-[[nodiscard]] Status validate_convexity(const AmericanPriceNode &left,
-                                        const AmericanPriceNode &middle,
-                                        const AmericanPriceNode &right,
-                                        const AmericanPriceBounds &bounds, std::size_t index) {
-  const double fraction = (middle.strike - left.strike) / (right.strike - left.strike);
-  const double call_chord = std::lerp(left.call, right.call, fraction);
-  const double put_chord = std::lerp(left.put, right.put, fraction);
-  const double tol = price_tolerance(bounds.spot, right.strike);
-  if (middle.call - call_chord > tol || middle.put - put_chord > tol) {
-    return node_error(index, "adjacent call/put secants violate convexity");
+[[nodiscard]] Status validate_vertical_spreads(std::span<const AmericanPriceNode> nodes,
+                                              const AmericanPriceBounds &bounds) {
+  double minimum_call = nodes.front().call;
+  double maximum_put = nodes.front().put;
+  std::size_t minimum_discounted_put = 0u;
+  for (std::size_t i = 1u; i < nodes.size(); ++i) {
+    const auto &node = nodes[i];
+    const auto &left = nodes[minimum_discounted_put];
+    const double tol = price_tolerance(bounds.spot, node.strike);
+    // P(K)-discount_max*K must be nonincreasing. Running extrema make
+    // the tolerance apply to every pair, not once per adjacent segment.
+    const double change =
+        node.put - left.put - bounds.discount_max * (node.strike - left.strike);
+    if (node.call - minimum_call > tol || maximum_put - node.put > tol || change > tol) {
+      return node_error(i, "American vertical-spread slope bound violated");
+    }
+    minimum_call = std::min(minimum_call, node.call);
+    maximum_put = std::max(maximum_put, node.put);
+    if (change < 0.0) minimum_discounted_put = i;
+  }
+  return validate_call_lower_slopes(nodes, bounds.spot, bounds.discount_max,
+                                     "American vertical-spread slope bound violated");
+}
+
+[[nodiscard]] Status validate_convex_envelope(std::span<const AmericanPriceNode> nodes,
+                                             const AmericanPriceBounds &bounds, Side side,
+                                             std::vector<std::size_t> &hull) {
+  const auto value = [side](const AmericanPriceNode &node) noexcept {
+    return side == Side::Call ? node.call : node.put;
+  };
+  hull.clear();
+  for (std::size_t i = 0u; i < nodes.size(); ++i) {
+    while (hull.size() >= 2u) {
+      const auto &left = nodes[hull[hull.size() - 2u]];
+      const auto &middle = nodes[hull.back()];
+      const auto &right = nodes[i];
+      const double fraction = (middle.strike - left.strike) / (right.strike - left.strike);
+      // No admission tolerance here: retaining many individually small
+      // concave bends can conceal a large butterfly over the full domain.
+      if (value(middle) <= std::lerp(value(left), value(right), fraction)) break;
+      hull.pop_back();
+    }
+    hull.push_back(i);
+  }
+  for (std::size_t segment = 1u; segment < hull.size(); ++segment) {
+    const auto &left = nodes[hull[segment - 1u]];
+    const auto &right = nodes[hull[segment]];
+    for (std::size_t i = hull[segment - 1u] + 1u; i < hull[segment]; ++i) {
+      const auto &node = nodes[i];
+      const double fraction = (node.strike - left.strike) / (right.strike - left.strike);
+      const double envelope = std::lerp(value(left), value(right), fraction);
+      if (value(node) - envelope > price_tolerance(bounds.spot, node.strike)) {
+        return node_error(i, "call/put convexity violated above the global lower convex envelope");
+      }
+    }
   }
   return Ok();
 }
@@ -167,13 +213,15 @@ Result<AmericanPriceSlice> AmericanPriceSlice::create(std::span<const AmericanPr
   }
   for (std::size_t i = 0; i < nodes.size(); ++i) {
     ATX_TRY_VOID(validate_node(nodes[i], bounds, i));
-    if (i > 0u) {
-      ATX_TRY_VOID(validate_segment(nodes[i - 1u], nodes[i], bounds, i));
-    }
-    if (i > 1u) {
-      ATX_TRY_VOID(validate_convexity(nodes[i - 2u], nodes[i - 1u], nodes[i], bounds, i - 1u));
+    if (i > 0u && !(nodes[i].strike > nodes[i - 1u].strike)) {
+      ATX_TRY_VOID(node_error(i, "strikes must be strictly increasing"));
     }
   }
+  ATX_TRY_VOID(validate_vertical_spreads(nodes, bounds));
+  std::vector<std::size_t> hull;
+  hull.reserve(nodes.size());
+  ATX_TRY_VOID(validate_convex_envelope(nodes, bounds, Side::Call, hull));
+  ATX_TRY_VOID(validate_convex_envelope(nodes, bounds, Side::Put, hull));
   return Ok(AmericanPriceSlice(std::vector<AmericanPriceNode>(nodes.begin(), nodes.end()), bounds));
 }
 
@@ -267,6 +315,8 @@ Status check_nondividend_american(const AmericanPriceSlice &slice, double df) {
       ATX_TRY_VOID(validate_nondividend_segment(nodes[i - 1u], node, spot, df, i - 1u));
     }
   }
+  ATX_TRY_VOID(validate_call_lower_slopes(nodes, spot, df,
+                                          "nondividend European call slope is below -df"));
   return validate_nondividend_upper(slice, df);
 }
 
