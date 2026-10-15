@@ -16,8 +16,14 @@
 // head_rule are filled only by a LedgerHeadFn: B2's public research/ledger chain-head function
 // takes the ledger's line texts in file order (each without its line end) and returns the
 // chain head under the existing rule plus the rule's name. default_ledger_head() is the single
-// place that function is bound; at this lane's base it returns an empty function (B2 is not
-// merged), so the head stays NULL. SQL4 / root binds it there after both lanes merge.
+// place that function is bound: P9 lane SQL4 binds it to research/ledger chain_head (chain.hpp),
+// so the CLI's catalog and ingest fill the head; a caller passing no function keeps it NULL.
+//
+// verify --ledger (SQL4, rulings SQL-7 / SQL-9): verify_ledger_heads below checks the catalogued
+// heads against the catalogued lines of named ledgers, through B2's prefix_heads only. The JSONL
+// ledger stays the authority and the index never decides N: a line edited in the file after it
+// was catalogued is refused by the next catalog run (trial_line is append-only), so a caller
+// re-catalogues, then verifies.
 
 #include <filesystem>
 #include <functional>
@@ -29,6 +35,7 @@
 
 #include "atx/core/db/sqlite.hpp"
 #include "atx/core/error.hpp"
+#include "atx/core/types.hpp"
 #include "atx/engine/research/store/catalog/classify.hpp"
 #include "atx/engine/research/store/catalog/rows_records.hpp"
 
@@ -83,5 +90,38 @@ struct IngestResult {
 // trial_line is append-only); every malformed file is IngestResult::unparsed instead.
 [[nodiscard]] core::Result<IngestResult> ingest_file(const IngestContext &ctx,
                                                      const FileView &file);
+
+// One named ledger of verify_ledger_heads: its catalogued lines and their chain head.
+struct LedgerIndexCheck {
+  std::string ledger_path;            // as catalogued (trial_line.ledger_path), '/'-separated
+  i64 lines{};                        // trial_line rows
+  std::string head_sha256;            // chain_head of those lines (genesis when none)
+  std::string rule;                   // the chain rule's name
+  std::optional<std::string> problem; // the index is inconsistent (nullopt: consistent)
+};
+// One head a catalogued verdict or wave result records (its non-null ledger_head).
+struct RecordedLedgerHead {
+  std::string table;                      // "cycle_verdict" or "wave_result"
+  std::string path;                       // the record's root-relative path
+  std::string head_sha256;
+  std::optional<std::string> ledger_path; // the ledger the record names (nullopt: none)
+  std::optional<i64> prefix_lines;        // k: the head of the first k lines; nullopt: no prefix
+};
+struct LedgerVerifyReport {
+  std::vector<LedgerIndexCheck> ledgers;    // in the order named
+  std::vector<RecordedLedgerHead> recorded; // the heads checked, table then path order
+  i64 other{};                              // heads naming a ledger not named: not checked
+  [[nodiscard]] bool ok() const noexcept;   // every ledger consistent, every head a prefix head
+};
+// `verify --ledger L...`: for each named ledger (its catalogued path; '\' read as '/') the
+// catalogued lines, their prefix heads (genesis, then one per line) and the consistency of its
+// ledger_state row (present; `lines` equal to the rows; a stored head equal to the lines' chain
+// head under kChainRule); then every recorded head: one naming a named ledger must be a prefix
+// head of that ledger, one naming no ledger a prefix head of some named ledger. A tail edit (a
+// line a recorded head covers, changed before the catalog read the ledger) leaves that head
+// outside every prefix. Reads only; Err for a database or chain-rule error (a line that is not a
+// JSON object).
+[[nodiscard]] core::Result<LedgerVerifyReport>
+verify_ledger_heads(core::db::Database &db, std::span<const std::string> ledger_paths);
 
 } // namespace atx::engine::research::store::catalog

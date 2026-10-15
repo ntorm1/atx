@@ -549,3 +549,7 @@ target_link_libraries(atx-engine-research-eval
         atx_warnings)
 add_executable(atx-research-eval EXCLUDE_FROM_ALL src/research/eval/eval_main.cpp)
 target_link_libraries(atx-research-eval PRIVATE atx::engine-research-eval atx_warnings)
+# P9 lane SQL4 (rulings SQL-7 / SQL-9): the catalog's ledger index head and `verify --ledger`
+# come from B2's research/ledger chain_head / prefix_heads (catalog/ingest_ledger.cpp), never a
+# re-implementation of the chain rule.
+target_link_libraries(atx-engine-research-catalog PRIVATE atx::engine-research-ledger)
